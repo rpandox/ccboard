@@ -7,7 +7,7 @@ import re
 import secrets
 from pathlib import Path
 
-from . import projects, tmux
+from . import notify, projects, tmux
 from .config import settings
 
 TOKEN_HEADER = "x-ccboard-token"
@@ -174,6 +174,7 @@ def apply(db, name: str, event: str, payload: dict) -> dict:
         message = m if isinstance(m, str) else str(kind)
         if "rate" in str(kind).lower() and "limit" in str(kind).lower():
             db.kv_set("rate_limited", {"session": name, "message": message})
+            notify.notify_rate_limit(name, message)
     elif event == "SessionEnd":
         state = "ended"
         kind = payload.get("reason") or payload.get("matcher")
@@ -182,4 +183,6 @@ def apply(db, name: str, event: str, payload: dict) -> dict:
 
     db.set_state(name, state, event, message=message, prompt=prompt, claude_session_id=sid, attention=attention)
     db.add_event(name, event, str(kind) if kind else None, message, payload)
+    if attention and state:
+        notify.notify_session(name, state, message, str(kind) if kind else None)
     return {"session": name, "event": event, "state": state, "kind": kind}

@@ -9,7 +9,7 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE=/etc/ccboard/env
-ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL)
+ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT)
 TTYD_VERSION=1.7.7
 TTYD_SHA_amd64=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
 TTYD_SHA_arm64=b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165
@@ -63,10 +63,17 @@ for k in "${ENV_KEYS[@]}"; do [ -n "${CALLER[$k]}" ] && printf -v "$k" '%s' "${C
 : "${CCBOARD_ALLOWED_USERS:=}"
 : "${CCBOARD_DATA_DIR:=$HOME_DIR/.local/share/ccboard}"
 : "${CODE_SERVER_VERSION:=4.139.1}"
-for k in CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT; do
+: "${NTFY_PORT:=2586}"
+: "${NTFY_HTTPS_PORT:=8444}"
+: "${NTFY_TOPIC:=ccboard}"
+: "${NTFY_URL:=}"
+: "${NTFY_PUBLIC_URL:=}"
+for k in CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT NTFY_PORT NTFY_HTTPS_PORT; do
   [[ "${!k}" =~ ^[0-9]{1,5}$ ]] || die "$k must be a port number (got '${!k}')"
 done
-[ "$CCBOARD_HTTPS_PORT" != "$CODE_HTTPS_PORT" ] || die "CCBOARD_HTTPS_PORT and CODE_HTTPS_PORT must differ"
+[ "$CCBOARD_HTTPS_PORT" != "$CODE_HTTPS_PORT" ] && [ "$NTFY_HTTPS_PORT" != "$CCBOARD_HTTPS_PORT" ] && [ "$NTFY_HTTPS_PORT" != "$CODE_HTTPS_PORT" ] \
+  || die "CCBOARD_HTTPS_PORT, CODE_HTTPS_PORT and NTFY_HTTPS_PORT must all differ"
+[[ "$NTFY_TOPIC" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || die "NTFY_TOPIC must be letters, digits, - or _"
 [ "$CCBOARD_PORT" != "$TTYD_PORT" ] && [ "$CCBOARD_PORT" != "$CODE_SERVER_PORT" ] && [ "$TTYD_PORT" != "$CODE_SERVER_PORT" ] \
   || die "CCBOARD_PORT, TTYD_PORT and CODE_SERVER_PORT must all differ"
 [[ "$PROJECTS_DIR" = /* ]] || die "PROJECTS_DIR must be an absolute path"
@@ -186,6 +193,36 @@ if have claude || [ -x "$HOME_DIR/.local/bin/claude" ]; then
 else
   note "installing with the native installer"
   curl -fsSL https://claude.ai/install.sh | bash
+fi
+
+# ---------------------------------------------------------------- ntfy (push notifications on the tailnet)
+log "ntfy"
+if [ "${CCBOARD_NTFY:-1}" = 0 ]; then
+  note "skipped (CCBOARD_NTFY=0)"; NTFY_URL=""; NTFY_PUBLIC_URL=""
+else
+  if ! have ntfy; then
+    note "installing ntfy from archive.ntfy.sh"
+    sudo mkdir -p /etc/apt/keyrings
+    sudo curl -fsSL -o /etc/apt/keyrings/ntfy.gpg https://archive.ntfy.sh/apt/keyring.gpg
+    echo "deb [arch=$ARCH signed-by=/etc/apt/keyrings/ntfy.gpg] https://archive.ntfy.sh/apt stable main" | sudo tee /etc/apt/sources.list.d/ntfy.list >/dev/null
+    sudo DEBIAN_FRONTEND=noninteractive apt-get update -q
+    sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y -q --no-install-recommends ntfy
+  fi
+  NTFY_URL="http://127.0.0.1:$NTFY_PORT"
+  NTFY_PUBLIC_URL="https://$TS_FQDN:$NTFY_HTTPS_PORT"
+  ntfy_cfg=/etc/ntfy/server.yml
+  ntfy_want=$(printf '# managed by ccboard\nlisten-http: "127.0.0.1:%s"\nbase-url: "%s"\nbehind-proxy: true\nupstream-base-url: "https://ntfy.sh"\ncache-file: "/var/cache/ntfy/cache.db"\nattachment-cache-dir: "/var/cache/ntfy/attachments"\n' "$NTFY_PORT" "$NTFY_PUBLIC_URL")
+  ntfy_changed=0
+  if [ -f "$ntfy_cfg" ] && [ "$(sudo head -1 "$ntfy_cfg")" != "# managed by ccboard" ] && sudo grep -qE '^[a-z]' "$ntfy_cfg"; then
+    if [ "${CCBOARD_REPLACE_NTFY_CONFIG:-}" = 1 ]; then sudo cp "$ntfy_cfg" "$ntfy_cfg.ccboard-bak-$(date +%s)"; warn "backed up your $ntfy_cfg"
+    else die "$ntfy_cfg has your own settings. Rerun with CCBOARD_REPLACE_NTFY_CONFIG=1 to replace it, or CCBOARD_NTFY=0 to skip ntfy."; fi
+  fi
+  if [ ! -f "$ntfy_cfg" ] || [ "$(sudo cat "$ntfy_cfg")" != "$ntfy_want" ]; then
+    printf '%s\n' "$ntfy_want" | sudo install -D -m 0644 /dev/stdin "$ntfy_cfg"; ntfy_changed=1; note "wrote $ntfy_cfg"
+  fi
+  sudo systemctl enable --now ntfy >/dev/null 2>&1 || true
+  [ "$ntfy_changed" = 0 ] || sudo systemctl restart ntfy
+  note "ntfy on $NTFY_URL, topic $NTFY_TOPIC, phone URL $NTFY_PUBLIC_URL/$NTFY_TOPIC"
 fi
 
 # ---------------------------------------------------------------- ccusage (burn rate for the usage strip; optional)
@@ -315,6 +352,7 @@ serve_apply() { # port path target
 serve_apply "$CCBOARD_HTTPS_PORT" / "http://127.0.0.1:$CCBOARD_PORT"
 serve_apply "$CCBOARD_HTTPS_PORT" /tty "http://127.0.0.1:$TTYD_PORT"
 serve_apply "$CODE_HTTPS_PORT" / "http://127.0.0.1:$CODE_SERVER_PORT"
+[ -z "$NTFY_URL" ] || serve_apply "$NTFY_HTTPS_PORT" / "$NTFY_URL"
 for spec in "$CCBOARD_HTTPS_PORT / http://127.0.0.1:$CCBOARD_PORT" "$CCBOARD_HTTPS_PORT /tty http://127.0.0.1:$TTYD_PORT" "$CODE_HTTPS_PORT / http://127.0.0.1:$CODE_SERVER_PORT"; do
   # shellcheck disable=SC2086
   [ "$(serve_check $spec)" = ours ] || die "tailscale serve did not apply ($spec). Is HTTPS enabled for the tailnet?"
@@ -331,5 +369,6 @@ note "restarted: ${restarted[*]}"
 printf '\n\033[1;32mccboard is installed.\033[0m\n'
 printf '  Dashboard:   https://%s:%s/\n' "$TS_FQDN" "$CCBOARD_HTTPS_PORT"
 printf '  code-server: https://%s:%s/\n' "$TS_FQDN" "$CODE_HTTPS_PORT"
+[ -z "$NTFY_URL" ] || printf '  ntfy topic:  %s/%s   (subscribe in the ntfy app; iOS needs the app to reach ntfy.sh for wake-ups)\n' "$NTFY_PUBLIC_URL" "$NTFY_TOPIC"
 printf '  Open them from another device on your tailnet (requests from this box carry no Tailscale identity).\n'
 printf '  Then click "Log in" on the dashboard to sign in to Claude Code.\n'

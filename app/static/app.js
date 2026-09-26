@@ -29,7 +29,7 @@ async function api(method, path, body) {
   return data;
 }
 
-const ui = { openForm: null, confirm: null, error: null, modal: false, lastJson: null, inboxSel: -1 };
+const ui = { openForm: null, confirm: null, error: null, modal: false, lastJson: null, inboxSel: -1, notifyPanel: false, deepLinked: false };
 let state = null;
 let pollTimer = null;
 
@@ -101,6 +101,26 @@ function renderUsage() {
   chips.forEach(c => u.append(c));
 }
 
+/* ---------- notifications panel ---------- */
+
+function renderNotifyPanel() {
+  const p = $('#notify');
+  if (!p) return;
+  p.textContent = '';
+  if (!ui.notifyPanel) { p.classList.add('hidden'); return; }
+  p.classList.remove('hidden');
+  const n = (state.config && state.config.ntfy) || {};
+  if (!n.enabled) {
+    p.append(el('span', { text: 'ntfy is not configured on the box (set NTFY_URL in /etc/ccboard/env or rerun install.sh).' }));
+    return;
+  }
+  const url = el('code', { text: n.subscribe_url || '' });
+  p.append(el('span', { text: 'Subscribe in the ntfy app (Android/iOS) to: ' }), url,
+    el('button', { onclick: async () => { try { await navigator.clipboard.writeText(n.subscribe_url || ''); } catch (_) { /* ignore */ } }, text: 'Copy' }),
+    el('button', { class: 'primary', onclick: async () => { try { const r = await api('POST', '/api/notify/test'); setError(r.ok ? null : 'ntfy publish failed (is ntfy running?)'); } catch (e) { setError(e.message); } }, text: 'Send test' }),
+    el('span', { class: 'dim', text: 'Pushes on needs-you, done, error and rate limit. Tap a notification to open the board; “Terminal” opens the session; “Ack” clears it.' }));
+}
+
 /* ---------- header / banner ---------- */
 
 function renderHeader() {
@@ -116,6 +136,8 @@ function renderHeader() {
   actions.append(el('span', { class: 'dim', text: state.user || '' }));
   if (c.installed && !c.loggedIn) actions.append(el('button', { class: 'primary', onclick: startLogin, text: 'Log in' }));
   if (c.installed && c.loggedIn) actions.append(el('button', { onclick: logout, text: 'Log out' }));
+  const n = state.config && state.config.ntfy;
+  actions.append(el('button', { onclick: () => { ui.notifyPanel = !ui.notifyPanel; renderNotifyPanel(); }, title: 'push notifications', text: n && n.enabled ? '🔔' : '🔕' }));
   if (state.login && state.login.running && !ui.modal) actions.append(el('button', { onclick: () => openModal(), text: 'Login in progress…' }));
 }
 
@@ -253,7 +275,7 @@ function statsText(s) {
 }
 
 function sessionRow(s) {
-  const row = el('div', { class: 'sess' + (s.needs_attention ? ' attn' : '') },
+  const row = el('div', { class: 'sess' + (s.needs_attention ? ' attn' : ''), 'data-tmux': s.tmux },
     el('span', { class: 'name', text: s.name }),
     stateBadge(s),
     el('span', { class: 'dim', text: s.launcher }),
@@ -430,11 +452,25 @@ function closeModal() { ui.modal = false; $('#modal').classList.add('hidden'); }
 
 /* ---------- polling ---------- */
 
+function applyDeepLink() {
+  // ntfy click target: /#s=<tmux name> selects that session in the inbox (or scrolls to its row).
+  if (ui.deepLinked) return;
+  const m = /^#s=([A-Za-z0-9_-]+)$/.exec(location.hash || '');
+  if (!m || !state) return;
+  ui.deepLinked = true;
+  const items = inboxItems();
+  const i = items.findIndex(s => s.tmux === m[1]);
+  if (i >= 0) { ui.inboxSel = i; renderInbox(); }
+  const row = [...document.querySelectorAll('.sess')].find(r => r.dataset.tmux === m[1]);
+  if (row) row.scrollIntoView({ block: 'center' });
+}
+
 function render(force) {
   renderHeader();
   renderUsage();
   renderBanner();
   renderInbox();
+  renderNotifyPanel();
   renderNewProject();
   const ae = document.activeElement;
   const typing = !!(ae && ae.closest('#projects') && ae.matches('input, select, textarea'));
@@ -442,6 +478,7 @@ function render(force) {
   // A background poll leaves an open form or a field being typed in alone.
   if (force ? !typing : (!ui.openForm && !typing)) renderProjects();
   updateModal();
+  applyDeepLink();
 }
 
 async function poll(force) {

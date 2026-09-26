@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import claude_auth, hooks, projects, tmux, usage
+from . import claude_auth, hooks, notify, projects, tmux, usage
 from .auth import csrf_ok, identify
 from .config import settings
 from .db import DB, now as db_now
@@ -139,7 +139,9 @@ def build_state(user: str) -> dict:
             st = {"tmux_down": down, "projects": projects.scan(sessions)}
             _scan_cache = (time.monotonic(), st)
     st["user"] = user
-    st["config"] = {"code_https_port": settings.code_https_port, "projects_dir": str(settings.projects_dir)}
+    st["config"] = {"code_https_port": settings.code_https_port, "projects_dir": str(settings.projects_dir),
+                    "ntfy": {"enabled": notify.enabled(), "subscribe_url": notify.subscribe_url(), "topic": settings.ntfy_topic},
+                    "public_url": settings.public_url}
     st["claude"] = claude_auth.status()
     st["login"] = claude_auth.login_state()
     st["usage"] = db.kv_get("rate_limits")
@@ -400,6 +402,14 @@ async def api_hook(request: Request):
         return {**result, "how": how}
 
     return await asyncio.to_thread(work)
+
+
+@app.post("/api/notify/test")
+def api_notify_test():
+    if not notify.enabled():
+        raise projects.BadRequest("ntfy is not configured (NTFY_URL is empty)")
+    ok = notify.publish("ccboard test", "Notifications work.", click=(settings.public_url or None), tags=["tada"])
+    return {"ok": ok}
 
 
 @app.post("/api/usage/rate-limit/clear")
