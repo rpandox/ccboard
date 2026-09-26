@@ -440,10 +440,12 @@ function repoBlock(p, r) {
       el('a', { class: 'btn', href: codeServerUrl(r.path), target: '_blank', rel: 'noopener', text: 'code-server' }),
       el('button', { class: 'primary', onclick: () => { ui.openForm = 'session:' + key; renderProjects(); }, text: 'New session' }),
       r.state === 'ok' ? el('button', { onclick: () => { ui.openForm = 'task:' + key; renderProjects(); }, text: 'New task' }) : null,
+      r.state === 'ok' ? el('button', { onclick: () => { ui.openForm = 'job:' + key; renderProjects(); }, text: 'Schedule…' }) : null,
       confirmButton('rm:' + key, 'Remove', () => api('DELETE', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}`))));
   const block = el('div', { class: 'repo' }, title);
   if (ui.openForm === 'session:' + key) block.append(sessionForm(p, r));
   if (ui.openForm === 'task:' + key) block.append(taskForm(p, r));
+  if (ui.openForm === 'job:' + key) block.append(jobForm(p, r));
   for (const s of r.sessions) block.append(sessionRow(s));
   return block;
 }
@@ -739,6 +741,67 @@ async function runSearch(q) {
   } catch (e) { sec.append(el('div', { class: 'bad', text: e.message })); }
 }
 
+/* ---------- schedules (headless claude -p runs) ---------- */
+
+function jobForm(p, r) {
+  const name = el('input', { type: 'text', placeholder: 'name (e.g. nightly-tests)', maxlength: 80, required: true });
+  const prompt = el('textarea', { placeholder: 'prompt for the headless run (claude -p in a fresh worktree)…', required: true });
+  const cron = el('input', { type: 'text', placeholder: 'cron, e.g. 30 2 * * * (blank = run once now)' });
+  const mode = el('select', {}, ...['acceptEdits', 'default', 'plan', 'auto', 'dontAsk'].map(m => el('option', { value: m, text: m })));
+  const turns = el('input', { type: 'number', value: '30', min: '1', max: '500', title: 'max turns' });
+  const budget = el('input', { type: 'number', placeholder: 'max $ (optional)', step: '0.5', min: '0' });
+  const args = el('input', { type: 'text', placeholder: 'extra claude args (optional)' });
+  return el('form', { class: 'form', onsubmit: async (e) => {
+    e.preventDefault();
+    const body = { name: name.value.trim(), prompt: prompt.value.trim(), permission_mode: mode.value, max_turns: parseInt(turns.value, 10) || 30, run_now: !cron.value.trim() };
+    if (cron.value.trim()) body.cron = cron.value.trim();
+    if (budget.value) body.max_budget_usd = parseFloat(budget.value);
+    if (args.value.trim()) body.args = args.value.trim();
+    try { await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/jobs`, body); ui.openForm = null; setError(null); await poll(true); }
+    catch (err) { setError(err.message); }
+  } },
+    el('label', { text: 'Schedule a headless run: claude -p in a fresh worktree; the result becomes a task card' }),
+    el('div', { class: 'row' }, name, cron),
+    prompt,
+    el('div', { class: 'row' }, el('label', { text: 'permission mode' }), mode, el('label', { text: 'max turns' }), turns, budget),
+    args,
+    el('div', { class: 'row' },
+      el('button', { class: 'primary', type: 'submit', text: cron.value ? 'Schedule' : 'Schedule / run' }),
+      el('button', { type: 'button', onclick: () => { ui.openForm = null; renderProjects(); }, text: 'Cancel' })));
+}
+
+function fmtTs(s) { return s ? s.replace('T', ' ').slice(0, 16) : ''; }
+
+function renderJobs() {
+  const sec = $('#jobs');
+  if (!sec) return;
+  sec.textContent = '';
+  const jobs = state.jobs || [];
+  const runs = state.runs || [];
+  if (!jobs.length && !runs.length) { sec.classList.add('hidden'); return; }
+  sec.classList.remove('hidden');
+  sec.append(el('div', { class: 'row head' }, el('h2', { text: `Schedules (${jobs.length})` }), el('span', { class: 'dim', text: 'headless claude -p runs · max 2 at once · paused above 85% of the 5-hour window' })));
+  for (const j of jobs) {
+    const jr = runs.filter(r => r.job_id === j.id).slice(0, 3);
+    const row = el('div', { class: 'sess' + (j.enabled ? '' : ' muted') },
+      el('span', { class: 'name', text: j.name }),
+      el('span', { class: 'dim', text: `${j.project}/${j.repo} · ${j.cron ? 'cron ' + j.cron : 'one-off'} · ${j.permission_mode} · ≤${j.max_turns} turns${j.max_budget_usd ? ' · ≤$' + j.max_budget_usd : ''}` }),
+      el('span', { class: 'dim', text: (j.enabled && j.next_run_at ? 'next ' + fmtTs(j.next_run_at) : 'disabled') + (j.last_status ? ' · last: ' + j.last_status : '') }),
+      el('button', { onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/run`); } catch (e) { setError(e.message); } await poll(true); }, text: 'Run now' }),
+      el('button', { onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/toggle`); } catch (e) { setError(e.message); } await poll(true); }, text: j.enabled ? 'Disable' : 'Enable' }),
+      confirmButton('job:' + j.id, 'Delete', () => api('DELETE', `/api/jobs/${j.id}`)));
+    for (const r of jr) {
+      row.append(el('div', { class: 'last' },
+        el('span', { class: 'dim', text: `run #${r.id} ${fmtTs(r.started_at)} · ${r.status}${typeof r.cost_usd === 'number' ? ' · $' + r.cost_usd.toFixed(2) : ''}${r.num_turns ? ' · ' + r.num_turns + ' turns' : ''}${r.error ? ' · ' + r.error : ''}` }),
+        r.result ? el('span', { text: r.result.slice(0, 300) }) : null,
+        r.task_id ? el('span', { class: 'row' },
+          el('button', { onclick: async () => { try { const x = await api('POST', `/api/runs/${r.id}/resume`); window.open(x.attach_url, '_blank', 'noopener'); } catch (e) { setError(e.message); } await poll(true); }, text: 'Resume in terminal' }),
+          el('span', { class: 'dim', text: `task card: ${r.branch}` })) : null));
+    }
+    sec.append(row);
+  }
+}
+
 /* ---------- needs-attention inbox ---------- */
 
 function inboxItems() {
@@ -895,6 +958,7 @@ function render(force) {
   renderBanner();
   renderInbox();
   renderTasks();
+  renderJobs();
   renderNotifyPanel();
   renderNewProject();
   renderQueue();

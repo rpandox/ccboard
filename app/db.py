@@ -58,6 +58,40 @@ CREATE TABLE IF NOT EXISTS tasks (
   updated_at TEXT NOT NULL,
   archived_at TEXT
 );
+CREATE TABLE IF NOT EXISTS jobs (
+  id INTEGER PRIMARY KEY,
+  project TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  name TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  cron TEXT,
+  permission_mode TEXT NOT NULL DEFAULT 'acceptEdits',
+  max_turns INTEGER NOT NULL DEFAULT 30,
+  max_budget_usd REAL,
+  args TEXT,
+  timeout_s INTEGER,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  batch_id TEXT,
+  next_run_at TEXT,
+  last_run_at TEXT,
+  last_status TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS runs (
+  id INTEGER PRIMARY KEY,
+  job_id INTEGER NOT NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  status TEXT NOT NULL DEFAULT 'running',
+  result TEXT,
+  error TEXT,
+  session_id TEXT,
+  cost_usd REAL,
+  num_turns INTEGER,
+  worktree TEXT,
+  branch TEXT,
+  task_id INTEGER
+);
 CREATE TABLE IF NOT EXISTS permissions (
   id INTEGER PRIMARY KEY,
   tmux_name TEXT NOT NULL,
@@ -216,6 +250,66 @@ class DB:
             except ValueError:
                 continue
         return out
+
+    # ---- jobs & runs
+    def job_add(self, **row) -> int:
+        cols = ["project", "repo", "name", "prompt", "cron", "permission_mode", "max_turns", "max_budget_usd", "args",
+                "timeout_s", "enabled", "batch_id", "next_run_at"]
+        with self.lock:
+            cur = self.conn.execute(
+                f"INSERT INTO jobs({', '.join(cols)}, created_at) VALUES ({', '.join('?' * len(cols))}, ?)",
+                (*[row.get(c) for c in cols], now()))
+            return int(cur.lastrowid)
+
+    def job_get(self, jid: int) -> dict | None:
+        with self.lock:
+            r = self.conn.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
+        return dict(r) if r else None
+
+    def jobs(self) -> list[dict]:
+        with self.lock:
+            rows = self.conn.execute("SELECT * FROM jobs ORDER BY id DESC").fetchall()
+        return [dict(r) for r in rows]
+
+    def jobs_due(self, at: str) -> list[dict]:
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT * FROM jobs WHERE enabled=1 AND next_run_at IS NOT NULL AND next_run_at <= ?"
+                " AND id NOT IN (SELECT job_id FROM runs WHERE status='running') ORDER BY next_run_at ASC", (at,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def job_update(self, jid: int, **fields) -> None:
+        if not fields:
+            return
+        with self.lock:
+            self.conn.execute(f"UPDATE jobs SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?", (*fields.values(), jid))
+
+    def job_delete(self, jid: int) -> None:
+        with self.lock:
+            self.conn.execute("DELETE FROM jobs WHERE id=?", (jid,))
+
+    def run_start(self, jid: int) -> int:
+        with self.lock:
+            cur = self.conn.execute("INSERT INTO runs(job_id, started_at) VALUES (?, ?)", (jid, now()))
+            return int(cur.lastrowid)
+
+    def run_finish(self, rid: int, **fields) -> None:
+        fields = {k: v for k, v in fields.items() if k in ("status", "result", "error", "session_id", "cost_usd", "num_turns",
+                                                           "worktree", "branch", "task_id")}
+        with self.lock:
+            self.conn.execute(f"UPDATE runs SET finished_at=?, {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+                              (now(), *fields.values(), rid))
+
+    def run_get(self, rid: int) -> dict | None:
+        with self.lock:
+            r = self.conn.execute("SELECT * FROM runs WHERE id=?", (rid,)).fetchone()
+        return dict(r) if r else None
+
+    def runs(self, limit: int = 50, job_id: int | None = None) -> list[dict]:
+        q = "SELECT * FROM runs" + (" WHERE job_id=?" if job_id else "") + " ORDER BY id DESC LIMIT ?"
+        with self.lock:
+            rows = self.conn.execute(q, ((job_id, limit) if job_id else (limit,))).fetchall()
+        return [dict(r) for r in rows]
 
     # ---- tasks
     def task_add(self, **row) -> int:

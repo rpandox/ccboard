@@ -18,7 +18,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import claude_auth, clonequeue, cost, github, gitops, hooks, notify, permissions, projects, prpoll, push, recover, search, tasks, tmux, usage
+from . import claude_auth, clonequeue, cost, github, gitops, hooks, notify, permissions, projects, prpoll, push, recover, scheduler, search, tasks, tmux, usage
 from .auth import csrf_ok, identify
 from .config import settings
 from .db import DB, now as db_now
@@ -31,6 +31,7 @@ MAX_ARGS = 1024
 
 db: DB | None = None
 indexer = None
+sched = None
 _scan_lock = threading.Lock()
 _scan_cache: tuple[float, dict] | None = None
 SCAN_TTL = 2.0
@@ -53,9 +54,11 @@ async def lifespan(app: FastAPI):
     cloner.start()
     prp = prpoll.Poller(db, projects.repo_path)
     prp.start()
-    global indexer
+    global indexer, sched
     indexer = search.Indexer(db)
     indexer.start()
+    sched = scheduler.Worker(db)
+    sched.start()
     try:
         rec = recover.run(db, _start_session)
         if rec["recovered"] or rec["closed"]:
@@ -69,6 +72,7 @@ async def lifespan(app: FastAPI):
     cloner.stop.set()
     prp.stop.set()
     indexer.stop.set()
+    sched.stop.set()
 
 
 app = FastAPI(title="ccboard", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -179,6 +183,8 @@ def build_state(user: str) -> dict:
     st["login"] = claude_auth.login_state()
     st["pending_permissions"] = db.perm_pending()
     st["tasks"] = _tasks_view()
+    st["jobs"] = db.jobs()
+    st["runs"] = [{k: (v[:400] if k == "result" and isinstance(v, str) else v) for k, v in r.items()} for r in db.runs(30)]
     st["clone_queue"] = clonequeue.status()
     st["last_recovery"] = db.kv_get("last_recovery")
     st["usage"] = db.kv_get("rate_limits")
@@ -540,6 +546,117 @@ def api_archive_task(tid: int, body: ArchiveIn | None = None):
     db.task_update(tid, archived_at=db_now(), status="archived")
     _invalidate_scan()
     return {"archived": tid, "worktree_removed": err is None}
+
+
+# ---------- scheduler (headless claude -p runs) ----------
+
+class JobIn(BaseModel):
+    name: str
+    prompt: str
+    cron: str | None = None
+    permission_mode: str = "acceptEdits"
+    max_turns: int = 30
+    max_budget_usd: float | None = None
+    args: str | None = None
+    timeout_s: int | None = None
+    run_now: bool = False
+
+
+def _validate_job(body: JobIn) -> None:
+    if not body.name.strip() or not body.prompt.strip():
+        raise projects.BadRequest("name and prompt are required")
+    if body.cron and not scheduler.valid_cron(body.cron.strip()):
+        raise projects.BadRequest("cron must be a 5-field expression like '30 2 * * *'")
+    if body.permission_mode not in scheduler.MODES:
+        raise projects.BadRequest(f"permission_mode must be one of {', '.join(scheduler.MODES)} (bypass only inside a devcontainer)")
+    if not (1 <= body.max_turns <= 500):
+        raise projects.BadRequest("max_turns must be 1..500")
+    if body.max_budget_usd is not None and not (0 < body.max_budget_usd <= 1000):
+        raise projects.BadRequest("max_budget_usd must be 0..1000")
+    if body.args:
+        try:
+            bad = {"--dangerously-skip-permissions", "bypassPermissions"}
+            if bad & set(shlex.split(body.args)):
+                raise projects.BadRequest("bypassPermissions is not allowed for scheduled runs")
+        except ValueError as e:
+            raise projects.BadRequest(f"args: {e}")
+
+
+@app.post("/api/projects/{project}/repos/{repo}/jobs", status_code=201)
+def api_create_job(project: str, repo: str, body: JobIn):
+    rpath = projects.repo_path(project, repo)
+    if not projects.is_repo(rpath):
+        raise projects.NotFound("not a git repo")
+    _validate_job(body)
+    if not settings.claude_bin():
+        raise projects.BadRequest("claude is not installed on this box")
+    cron = body.cron.strip() if body.cron else None
+    next_at = db_now() if (body.run_now or not cron) else scheduler.next_fire(cron)
+    jid = db.job_add(project=project, repo=repo, name=" ".join(body.name.split())[:80], prompt=body.prompt.strip(), cron=cron,
+                     permission_mode=body.permission_mode, max_turns=body.max_turns, max_budget_usd=body.max_budget_usd,
+                     args=body.args, timeout_s=body.timeout_s, enabled=1, batch_id=None, next_run_at=next_at)
+    _invalidate_scan()
+    return {"id": jid, "next_run_at": next_at}
+
+
+@app.post("/api/jobs/{jid}/run")
+def api_job_run(jid: int):
+    if not db.job_get(jid):
+        raise projects.NotFound("no such job")
+    db.job_update(jid, next_run_at=db_now(), enabled=1)
+    started = sched.tick() if sched else []
+    _invalidate_scan()
+    return {"ok": True, "started": started}
+
+
+@app.post("/api/jobs/{jid}/toggle")
+def api_job_toggle(jid: int):
+    j = db.job_get(jid)
+    if not j:
+        raise projects.NotFound("no such job")
+    enabled = 0 if j["enabled"] else 1
+    fields = {"enabled": enabled}
+    if enabled and j.get("cron"):
+        fields["next_run_at"] = scheduler.next_fire(j["cron"])
+    db.job_update(jid, **fields)
+    _invalidate_scan()
+    return {"id": jid, "enabled": enabled}
+
+
+@app.delete("/api/jobs/{jid}")
+def api_job_delete(jid: int):
+    if not db.job_get(jid):
+        raise projects.NotFound("no such job")
+    db.job_delete(jid)
+    _invalidate_scan()
+    return {"deleted": jid}
+
+
+@app.get("/api/runs/{rid}")
+def api_run_get(rid: int):
+    r = db.run_get(rid)
+    if not r:
+        raise projects.NotFound("no such run")
+    return r
+
+
+@app.post("/api/runs/{rid}/resume")
+def api_run_resume(rid: int):
+    """Open the run's worktree in a terminal session, resuming its Claude conversation."""
+    r = db.run_get(rid)
+    if not r or not r.get("task_id"):
+        raise projects.NotFound("no worktree for this run")
+    t = db.task_get(int(r["task_id"]))
+    if not t or not Path(t["worktree"]).is_dir():
+        raise projects.NotFound("worktree is gone")
+    name = t["tmux_name"]
+    if not tmux.has_session(name):
+        _, _, session = tmux.split_name(name)
+        cmd = ["claude", "--resume", r["session_id"]] if r.get("session_id") else ["claude", "--continue"]
+        _start_session(name, t["project"], t["repo"], session, "task", t["worktree"], cmd_line=shlex.join(cmd),
+                       claude_session_id=r.get("session_id"), add_dirs=[])
+    _invalidate_scan()
+    return {"tmux": name, "attach_url": f"/term/{name}"}
 
 
 # ---------- sessions ----------
