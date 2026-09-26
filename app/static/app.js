@@ -48,6 +48,59 @@ function fmtAge(epoch) {
   return `${Math.floor(s / 86400)}d`;
 }
 
+/* ---------- usage & limits strip ---------- */
+
+function fmtIn(epochSeconds) {
+  if (!epochSeconds) return '';
+  const s = Math.floor(epochSeconds - Date.now() / 1000);
+  if (s <= 0) return 'now';
+  if (s < 3600) return `${Math.ceil(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`;
+  return `${Math.floor(s / 86400)}d${Math.floor((s % 86400) / 3600)}h`;
+}
+
+function pctBar(pct) {
+  const cls = pct >= 85 ? ' bad' : pct >= 60 ? ' warn' : '';
+  const i = el('i'); i.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+  return el('span', { class: 'bar' + cls }, i);
+}
+
+function renderUsage() {
+  const u = $('#usage');
+  if (!u) return;
+  u.textContent = '';
+  const rl = (state.usage && state.usage.value) || {};
+  const blk = (state.block && state.block.value) || null;
+  const segs = [];
+  const win = (key, label) => {
+    const w = rl[key];
+    if (!w || typeof w.used_percentage !== 'number') return;
+    segs.push(el('span', { class: 'seg', title: `${label} window, from Claude Code's statusline` },
+      el('b', { text: label }), pctBar(w.used_percentage), `${Math.round(w.used_percentage)}%`,
+      w.resets_at ? el('span', { text: `resets in ${fmtIn(w.resets_at)}` }) : null));
+  };
+  win('five_hour', '5h'); win('seven_day', 'week'); win('spend_limit', 'spend');
+  if (blk && blk.available && blk.active) {
+    const bits = [];
+    if (typeof blk.burn_cost_per_hour === 'number') bits.push(`burn $${blk.burn_cost_per_hour.toFixed(2)}/h`);
+    if (typeof blk.cost_usd === 'number') bits.push(`block $${blk.cost_usd.toFixed(2)}` + (typeof blk.projected_cost === 'number' ? ` → $${blk.projected_cost.toFixed(0)} proj.` : ''));
+    if (typeof blk.remaining_minutes === 'number') bits.push(`${Math.floor(blk.remaining_minutes / 60)}h${blk.remaining_minutes % 60}m left`);
+    segs.push(el('span', { class: 'seg', title: 'ccusage blocks --active' }, el('b', { text: 'ccusage' }), bits.join(' · ')));
+  } else if (blk && !blk.available) {
+    segs.push(el('span', { class: 'seg dim', text: 'ccusage not installed (burn rate unavailable)' }));
+  }
+  const chips = [];
+  for (const p of state.projects) for (const r of p.repos) for (const s of r.sessions) {
+    if (s.stats && (s.stats.model || typeof s.stats.context_pct === 'number') && s.state !== 'ended') {
+      chips.push(el('span', { class: 'chip', text: `${p.name}/${r.name}·${s.name} ${s.stats.model || ''}${typeof s.stats.context_pct === 'number' ? ' ctx ' + Math.round(s.stats.context_pct) + '%' : ''}` }));
+    }
+  }
+  if (!segs.length && !chips.length) { u.classList.add('hidden'); return; }
+  u.classList.remove('hidden');
+  segs.forEach(s => u.append(s));
+  chips.forEach(c => u.append(c));
+}
+
 /* ---------- header / banner ---------- */
 
 function renderHeader() {
@@ -70,8 +123,13 @@ function renderBanner() {
   const b = $('#banner');
   b.textContent = '';
   b.className = '';
+  const rlim = state && state.rate_limited && state.rate_limited.value;
+  const recent = rlim && state.rate_limited.at && (Date.now() - Date.parse(state.rate_limited.at)) < 5 * 3600 * 1000;
   if (ui.error) {
     b.append(el('span', { text: ui.error }), el('button', { onclick: () => setError(null), text: 'dismiss' }));
+  } else if (recent) {
+    b.append(el('span', { text: `Rate limited: ${rlim.message || ''}${rlim.session ? ' (' + rlim.session + ')' : ''}` }),
+      el('button', { onclick: async () => { try { await api('POST', '/api/usage/rate-limit/clear'); } catch (e) { setError(e.message); } await poll(true); }, text: 'dismiss' }));
   } else if (state && state.tmux_down) {
     b.append(el('span', { text: 'The ccboard tmux server is not running. On the box: sudo systemctl start ccboard-tmux' }));
   } else if (state && state.claude && state.claude.installed && !state.claude.loggedIn) {
@@ -374,6 +432,7 @@ function closeModal() { ui.modal = false; $('#modal').classList.add('hidden'); }
 
 function render(force) {
   renderHeader();
+  renderUsage();
   renderBanner();
   renderInbox();
   renderNewProject();
@@ -393,7 +452,7 @@ async function poll(force) {
     ui.lastJson = j;
     state = s;
     if (changed || force) render(force);
-    else { renderHeader(); updateModal(); }
+    else { renderHeader(); renderUsage(); updateModal(); }
   } catch (e) {
     if (!state) { $('#banner').textContent = 'Cannot reach ccboard: ' + e.message; }
     else setError('poll failed: ' + e.message);

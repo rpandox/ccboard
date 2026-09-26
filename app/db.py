@@ -154,6 +154,10 @@ class DB:
         with self.lock:
             self.conn.execute("INSERT OR REPLACE INTO kv(key, value, at) VALUES (?,?,?)", (key, json.dumps(value), now()))
 
+    def kv_del(self, key: str) -> None:
+        with self.lock:
+            self.conn.execute("DELETE FROM kv WHERE key=?", (key,))
+
     def kv_get(self, key: str):
         with self.lock:
             r = self.conn.execute("SELECT value, at FROM kv WHERE key=?", (key,)).fetchone()

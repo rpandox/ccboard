@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import claude_auth, hooks, projects, tmux
+from . import claude_auth, hooks, projects, tmux, usage
 from .auth import csrf_ok, identify
 from .config import settings
 from .db import DB, now as db_now
@@ -40,9 +40,12 @@ async def lifespan(app: FastAPI):
     settings.validate()
     db = DB(settings.db_path)
     hooks.ensure_token()
+    poller = usage.Poller(db)
+    poller.start()
     log.info("ccboard on %s, projects in %s, allowlist=%s", settings.loopback_url(), settings.projects_dir,
              sorted(settings.allowed_users) or ("DEV BYPASS" if settings.dev_bypass_user else "EMPTY"))
     yield
+    poller.stop.set()
 
 
 app = FastAPI(title="ccboard", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -140,6 +143,7 @@ def build_state(user: str) -> dict:
     st["claude"] = claude_auth.status()
     st["login"] = claude_auth.login_state()
     st["usage"] = db.kv_get("rate_limits")
+    st["block"] = db.kv_get(usage.KV_BLOCK)
     st["rate_limited"] = db.kv_get("rate_limited")
     return st
 
@@ -396,6 +400,13 @@ async def api_hook(request: Request):
         return {**result, "how": how}
 
     return await asyncio.to_thread(work)
+
+
+@app.post("/api/usage/rate-limit/clear")
+def api_clear_rate_limit():
+    db.kv_del("rate_limited")
+    _invalidate_scan()
+    return {"ok": True}
 
 
 @app.post("/api/sessions/{name}/ack")

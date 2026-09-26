@@ -188,6 +188,16 @@ else
   curl -fsSL https://claude.ai/install.sh | bash
 fi
 
+# ---------------------------------------------------------------- ccusage (burn rate for the usage strip; optional)
+log "ccusage"
+if have ccusage || [ -x "$HOME_DIR/.local/bin/ccusage" ]; then
+  note "present"
+elif have npm; then
+  npm install -g --prefix "$HOME_DIR/.local" ccusage >/dev/null 2>&1 && note "installed to $HOME_DIR/.local/bin/ccusage" || warn "npm install ccusage failed; the usage strip will lack burn rate"
+else
+  warn "node/npm not found: ccusage skipped (the usage strip still shows the 5h/weekly limits from Claude's statusline)"
+fi
+
 # ---------------------------------------------------------------- directories, venv
 log "directories"
 sudo mkdir -p "$PROJECTS_DIR"; sudo chown "$USER_NAME:$(id -gn)" "$PROJECTS_DIR"
