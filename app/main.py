@@ -18,7 +18,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import claude_auth, hooks, notify, permissions, projects, push, recover, tmux, usage
+from . import claude_auth, clonequeue, github, hooks, notify, permissions, projects, push, recover, tmux, usage
 from .auth import csrf_ok, identify
 from .config import settings
 from .db import DB, now as db_now
@@ -48,6 +48,8 @@ async def lifespan(app: FastAPI):
         log.warning("web push disabled: %s", e)
     poller = usage.Poller(db)
     poller.start()
+    cloner = clonequeue.Worker(_launch_clone)
+    cloner.start()
     try:
         rec = recover.run(db, _start_session)
         if rec["recovered"] or rec["closed"]:
@@ -58,6 +60,7 @@ async def lifespan(app: FastAPI):
              sorted(settings.allowed_users) or ("DEV BYPASS" if settings.dev_bypass_user else "EMPTY"))
     yield
     poller.stop.set()
+    cloner.stop.set()
 
 
 app = FastAPI(title="ccboard", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -101,6 +104,11 @@ async def _conflict(_, e):
 @app.exception_handler(projects.NotFound)
 async def _notfound(_, e):
     return JSONResponse({"error": str(e)}, status_code=404)
+
+
+@app.exception_handler(github.GhError)
+async def _gh(_, e):
+    return JSONResponse({"error": str(e)}, status_code=502)
 
 
 @app.exception_handler(tmux.TmuxDown)
@@ -157,6 +165,7 @@ def build_state(user: str) -> dict:
     st["claude"] = claude_auth.status()
     st["login"] = claude_auth.login_state()
     st["pending_permissions"] = db.perm_pending()
+    st["clone_queue"] = clonequeue.status()
     st["last_recovery"] = db.kv_get("last_recovery")
     st["usage"] = db.kv_get("rate_limits")
     st["block"] = db.kv_get(usage.KV_BLOCK)
@@ -227,6 +236,43 @@ def api_create_project(body: ProjectIn):
         result["clone_session"] = _launch_clone(body.name, rname, rpath, body.url, cleanup=[rpath, p])
     _invalidate_scan()
     return result
+
+
+@app.get("/api/github/repos")
+def api_github_repos(owner: str | None = None, archived: bool = False):
+    if owner is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", owner):
+        raise projects.BadRequest("owner must be a GitHub user or org name")
+    return {"repos": github.list_repos(owner or None, include_archived=archived), "protocol": github.git_protocol()}
+
+
+class BulkIn(BaseModel):
+    repos: list[dict]
+
+
+@app.post("/api/projects/{project}/repos/bulk", status_code=202)
+def api_bulk_clone(project: str, body: BulkIn):
+    projects.check_name("project", project)
+    p = projects.project_path(project)
+    if not p.is_dir():
+        projects.create_project(project)
+    items = []
+    for r in body.repos[:500]:
+        url = projects.check_url(str(r.get("url") or ""))
+        name = r.get("name") or projects.derive_repo_name(url)
+        if not name:
+            raise projects.BadRequest(f"cannot derive a name for {url}")
+        items.append({"project": project, "repo": projects.check_name("repo", str(name)), "url": url})
+    n = clonequeue.enqueue(items)
+    clonequeue.step(_launch_clone)
+    _invalidate_scan()
+    return {"queued": n, "project": project}
+
+
+@app.post("/api/clone-queue/clear")
+def api_clone_queue_clear():
+    clonequeue.clear_done()
+    _invalidate_scan()
+    return {"ok": True}
 
 
 @app.delete("/api/projects/{project}")

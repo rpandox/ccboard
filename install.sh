@@ -227,6 +227,11 @@ else
   note "ntfy on $NTFY_URL, topic $NTFY_TOPIC, phone URL $NTFY_PUBLIC_URL/$NTFY_TOPIC"
 fi
 
+# ---------------------------------------------------------------- gh: let git use gh's credentials for https clones (bulk import)
+if have gh && gh auth status >/dev/null 2>&1; then
+  gh auth setup-git >/dev/null 2>&1 && note "gh credential helper configured for git (private https clones)" || true
+fi
+
 # ---------------------------------------------------------------- ccusage (burn rate for the usage strip; optional)
 log "ccusage"
 if have ccusage || [ -x "$HOME_DIR/.local/bin/ccusage" ]; then

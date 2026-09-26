@@ -32,7 +32,8 @@ Working rules: one phase at a time; each item is one commit; tick items as they 
    - *as built:* `GET /api/stream` (FastAPI `EventSourceResponse`) captures every non-internal session every 2 s and emits a `lines` event only when a session's tail changed plus a `tick` with the live session list; the "Live" header button toggles a grid of monospace tiles (remembered in localStorage); tiles of sessions needing attention are outlined. The visible screen is what is captured, which is the alt-screen for Claude's fullscreen TUI
 9. [x] Reboot recovery: active sessions recorded in SQLite; boot unit relaunches each with `claude --resume <id>`
    - *as built:* done inside `ccboard.service` startup (it is ordered after `ccboard-tmux.service`, so no extra boot unit): every open Claude row whose tmux session is gone is relaunched in its repo with `claude --resume <id>` (or `--continue` when the id was never learned) and its `--add-dir` list; shell rows are closed; a dismissable banner lists what was relaunched. `CCBOARD_RECOVER=0` disables it. A plain `systemctl restart ccboard` recovers nothing because the sessions are still there
-10. [ ] Bulk clone every repo via `gh repo list`
+10. [x] Bulk clone every repo via `gh repo list`
+    - *as built:* "Import from GitHub…" lists repos with `gh repo list [owner] --json … --no-archived` (URL per gh's git_protocol), you pick a target project and the repos; clones are queued and run as ordinary clone sessions, at most 3 at a time; failures show next to the queue. install.sh runs `gh auth setup-git` so private https clones use gh's token. The queue is in memory (a board restart drops what has not started)
 
 ## v0.3 — git & tasks
 

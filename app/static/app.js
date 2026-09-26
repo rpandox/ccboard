@@ -234,7 +234,71 @@ function renderNewProject() {
     try { await api('POST', '/api/projects', body); name.value = ''; url.value = ''; setError(null); await poll(true); }
     catch (err) { setError(err.message); }
   } }, name, url, el('button', { class: 'primary', type: 'submit', text: 'New project' }));
-  sec.append(el('h2', { text: 'Projects' }), el('div', { class: 'dim', text: `Folder per project under ${state.config.projects_dir}; each repo is a subfolder; sessions run inside a repo.` }), form);
+  sec.append(el('h2', { text: 'Projects' }), el('div', { class: 'dim', text: `Folder per project under ${state.config.projects_dir}; each repo is a subfolder; sessions run inside a repo.` }), form,
+    el('div', { class: 'row', id: 'importrow' }, el('button', { onclick: openImport, text: 'Import from GitHub…' }), el('span', { id: 'queue', class: 'dim' })));
+}
+
+function renderQueue() {
+  const q = $('#queue');
+  if (!q || !state.clone_queue) return;
+  const cq = state.clone_queue;
+  const failed = cq.done.filter(d => d.status === 'failed');
+  q.textContent = '';
+  if (cq.queued.length) q.append(el('span', { text: `${cq.queued.length} clone${cq.queued.length === 1 ? '' : 's'} queued (max ${cq.cap} at once) ` }));
+  if (failed.length) q.append(el('span', { class: 'bad', text: `${failed.length} failed: ${failed.map(f => f.repo + ' (' + (f.error || '') + ')').join('; ').slice(0, 300)} ` }),
+    el('button', { onclick: async () => { await api('POST', '/api/clone-queue/clear'); await poll(true); }, text: 'clear' }));
+}
+
+/* ---------- import from GitHub ---------- */
+
+function openImport() {
+  ui.modal = true;
+  const m = $('#modal');
+  m.textContent = '';
+  const owner = el('input', { type: 'text', placeholder: 'owner (blank = your repos)', maxlength: 39 });
+  const target = el('input', { type: 'text', placeholder: 'target project name', maxlength: 64 });
+  const filter = el('input', { type: 'text', placeholder: 'filter…' });
+  const list = el('div', { class: 'form' });
+  const status = el('div', { class: 'dim' });
+  let repos = [];
+  const boxes = [];
+  const renderList = () => {
+    list.textContent = ''; boxes.length = 0;
+    const f = filter.value.trim().toLowerCase();
+    for (const r of repos) {
+      if (f && !(r.name.toLowerCase().includes(f) || (r.description || '').toLowerCase().includes(f))) continue;
+      const cb = el('input', { type: 'checkbox', value: r.url, 'data-name': r.name, checked: true });
+      boxes.push(cb);
+      list.append(el('label', { class: 'row' }, cb, el('b', { text: r.name }), el('span', { class: 'dim', text: `${r.private ? 'private' : 'public'}${r.fork ? ' · fork' : ''} · ${r.description || ''}`.slice(0, 120) })));
+    }
+    if (!list.childElementCount) list.append(el('span', { class: 'dim', text: repos.length ? 'no match' : 'nothing loaded yet' }));
+  };
+  filter.addEventListener('input', renderList);
+  const load = async () => {
+    status.textContent = 'loading…';
+    try {
+      const r = await api('GET', `/api/github/repos${owner.value.trim() ? '?owner=' + encodeURIComponent(owner.value.trim()) : ''}`);
+      repos = r.repos; status.textContent = `${repos.length} repos (${r.protocol})`;
+      if (!target.value.trim()) target.value = (owner.value.trim() || (state.user || 'github').split('@')[0]).toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+      renderList();
+    } catch (e) { status.textContent = e.message; }
+  };
+  const importBtn = el('button', { class: 'primary', onclick: async () => {
+    const chosen = boxes.filter(b => b.checked).map(b => ({ name: b.dataset.name, url: b.value }));
+    if (!chosen.length) { status.textContent = 'nothing selected'; return; }
+    try {
+      const r = await api('POST', `/api/projects/${encodeURIComponent(target.value.trim())}/repos/bulk`, { repos: chosen });
+      status.textContent = `queued ${chosen.length} into ${r.project}`; closeModal(); await poll(true);
+    } catch (e) { status.textContent = e.message; }
+  }, text: 'Import selected' });
+  m.append(el('div', { class: 'modal-box' },
+    el('h2', { text: 'Import repos from GitHub' }),
+    el('div', { class: 'row' }, owner, el('button', { onclick: load, text: 'Load' })),
+    el('div', { class: 'row' }, el('label', { text: 'into project' }), target, filter),
+    status, list,
+    el('div', { class: 'row' }, importBtn, el('button', { onclick: () => { for (const b of boxes) b.checked = !b.checked; }, text: 'Invert' }), el('button', { onclick: closeModal, text: 'Close' }))));
+  m.classList.remove('hidden');
+  owner.focus();
 }
 
 /* ---------- projects ---------- */
@@ -567,7 +631,7 @@ function openModal() {
 }
 
 function updateModal() {
-  if (!ui.modal) return;
+  if (!ui.modal || !modalParts.link || !modalParts.link.isConnected) return;
   const l = state.login || {};
   const c = state.claude || {};
   modalParts.url = l.url;
@@ -576,6 +640,8 @@ function updateModal() {
   modalParts.tail.textContent = (l.tail || []).join('\n');
   if (c.loggedIn) { modalParts.status.textContent = `Logged in as ${c.email || ''}.`; modalParts.code.disabled = true; }
 }
+
+function updateModalSafe() { if (modalParts.link && modalParts.link.isConnected) updateModal(); }
 
 function closeModal() { ui.modal = false; $('#modal').classList.add('hidden'); }
 
@@ -601,6 +667,7 @@ function render(force) {
   renderInbox();
   renderNotifyPanel();
   renderNewProject();
+  renderQueue();
   const ae = document.activeElement;
   const typing = !!(ae && ae.closest('#projects') && ae.matches('input, select, textarea'));
   // A forced poll follows a user action: always redraw (a focused button must not block it).

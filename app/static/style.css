@@ -74,4 +74,6 @@ form.inline input[type=text] { flex:1 1 160px; }
 pre.tail { background:#0b0d11; border:1px solid var(--line); border-radius:8px; padding:8px; font-size:12px; max-height:220px; overflow:auto; white-space:pre-wrap; word-break:break-all; }
 .url { word-break:break-all; font-size:12px; color:var(--dim); }
 .muted { opacity:.6; }
+.bad { color:var(--bad); }
+.modal-box .form { max-height:45vh; overflow:auto; }
 @media (max-width: 600px) { .sess { padding-left:6px; } #hdr h1 { font-size:16px; } }
