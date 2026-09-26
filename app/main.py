@@ -18,7 +18,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import claude_auth, clonequeue, github, gitops, hooks, notify, permissions, projects, prpoll, push, recover, tasks, tmux, usage
+from . import claude_auth, clonequeue, cost, github, gitops, hooks, notify, permissions, projects, prpoll, push, recover, tasks, tmux, usage
 from .auth import csrf_ok, identify
 from .config import settings
 from .db import DB, now as db_now
@@ -178,6 +178,7 @@ def build_state(user: str) -> dict:
     st["last_recovery"] = db.kv_get("last_recovery")
     st["usage"] = db.kv_get("rate_limits")
     st["block"] = db.kv_get(usage.KV_BLOCK)
+    st["cost"] = db.kv_get(cost.KV_COST)
     st["rate_limited"] = db.kv_get("rate_limited")
     return st
 
@@ -792,6 +793,15 @@ def api_recovery_dismiss():
     db.kv_del("last_recovery")
     _invalidate_scan()
     return {"ok": True}
+
+
+@app.post("/api/cost/refresh")
+def api_cost_refresh():
+    r = cost.refresh(db)
+    if r is None:
+        raise projects.BadRequest("ccusage is not installed or failed")
+    _invalidate_scan()
+    return r
 
 
 @app.post("/api/usage/rate-limit/clear")

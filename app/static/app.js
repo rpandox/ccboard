@@ -426,6 +426,7 @@ function repoBlock(p, r) {
     el('div', { class: 'row' },
       el('span', { class: 'title', text: r.name }),
       r.state === 'ok' ? [el('span', { class: 'dim', text: r.branch || '' }), el('span', { class: 'dot' + (r.dirty ? ' dirty' : ''), title: r.dirty ? 'uncommitted changes' : 'clean' })] : null,
+      repoCost(p, r) ? el('span', { class: 'dim', text: repoCost(p, r) }) : null,
       r.state === 'cloning' ? el('span', { class: 'badge warn', text: 'cloning…' }) : null,
       r.state === 'clone-failed' ? el('span', { class: 'badge bad', text: 'clone failed (attach to see the error)' }) : null,
       r.state === 'nogit' ? el('span', { class: 'badge bad', text: 'no git' }) : null,
@@ -442,11 +443,23 @@ function repoBlock(p, r) {
   return block;
 }
 
+function costText(p) {
+  const c = state.cost && state.cost.value && state.cost.value.projects && state.cost.value.projects[p.name];
+  if (!c) return '';
+  return `$${c.today.toFixed(2)} today · $${c.week.toFixed(2)} 7d · $${c.total.toFixed(2)} total`;
+}
+
+function repoCost(p, r) {
+  const c = state.cost && state.cost.value && state.cost.value.projects && state.cost.value.projects[p.name];
+  const v = c && c.repos && c.repos[r.name];
+  return typeof v === 'number' ? `$${v.toFixed(2)}` : '';
+}
+
 function projectCard(p) {
   const nSess = p.repos.reduce((n, r) => n + r.sessions.length, 0) + p.orphan_sessions.length;
   const card = el('div', { class: 'card' },
     el('div', { class: 'row head' },
-      el('div', { class: 'row' }, el('h2', { text: p.name }), el('span', { class: 'dim', text: `${p.repos.length} repo${p.repos.length === 1 ? '' : 's'} · ${nSess} session${nSess === 1 ? '' : 's'}` })),
+      el('div', { class: 'row' }, el('h2', { text: p.name }), el('span', { class: 'dim', text: `${p.repos.length} repo${p.repos.length === 1 ? '' : 's'} · ${nSess} session${nSess === 1 ? '' : 's'}` }), costText(p) ? el('span', { class: 'dim', title: 'from ccusage, sessions started by ccboard', text: costText(p) }) : null),
       el('div', { class: 'row' },
         el('a', { class: 'btn', href: codeServerUrl(p.path), target: '_blank', rel: 'noopener', text: 'Open project in code-server' }),
         el('button', { onclick: () => { ui.openForm = 'repo:' + p.name; renderProjects(); }, text: 'Add repo' }),

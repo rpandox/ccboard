@@ -47,7 +47,8 @@ Working rules: one phase at a time; each item is one commit; tick items as they 
   - *as built:* a poller runs `gh pr view` + `gh pr checks` every 60 s for tasks with a PR (CI bucket pass/fail/pending, review decision, merged detection); "Fix CI" fetches the latest failed run's `gh run view --log-failed` (last 20 KB) and pastes a fix prompt into the task session with bracketed paste (relaunching `claude --continue` in the worktree if the session is gone); the New task form has a "from a GitHub issue…" picker (`gh issue list`) that prefills the title and prompt with "Closes #n"
 - [x] Cross-worktree file-overlap warning
   - *as built:* every 60 s (with the PR poll) the files changed on each open task's branch, plus its uncommitted and untracked files, are compared pairwise per repo; both cards show "⚠ overlaps <task> (files)"
-- [ ] Cost per project/task, daily/weekly, from ccusage joined on cwd
+- [x] Cost per project/task, daily/weekly, from ccusage joined on cwd
+  - *as built:* `ccusage session --json` (rows keyed by session id, no project path) is joined every 10 minutes on the Claude session ids ccboard recorded for its own sessions and tasks; project cards show today / 7 days / total, repo rows and task cards show their share. Daily buckets use each session's last activity day. Sessions started outside the board are not attributed
 - [ ] Transcript full-text search (SQLite FTS5 over ~/.claude/projects JSONL, display only)
   - *note:* Claude's transcript folder name encodes cwd with non-alphanumerics replaced by `-`, so `shop/api` and `shop-api` collide; key on ccboard's own `claude_session_id`, not the folder
 

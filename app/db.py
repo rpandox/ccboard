@@ -130,6 +130,13 @@ class DB:
             out[d["tmux_name"]] = d
         return out
 
+    def session_ids(self) -> list[dict]:
+        """Every session row that learned a Claude session id (open or ended), for cost attribution."""
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT project, repo, claude_session_id FROM sessions WHERE claude_session_id IS NOT NULL").fetchall()
+        return [dict(r) for r in rows]
+
     def open_row(self, tmux_name: str) -> dict | None:
         with self.lock:
             r = self.conn.execute(

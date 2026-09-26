@@ -9,8 +9,11 @@ import shutil
 import subprocess
 import threading
 
+from . import cost
+
 log = logging.getLogger("ccboard.usage")
 POLL_SECONDS = 120
+COST_EVERY = 5  # polls -> every 10 minutes
 KV_BLOCK = "ccusage_block"
 
 
@@ -57,9 +60,16 @@ class Poller(threading.Thread):
         self.stop = threading.Event()
 
     def run(self) -> None:
+        n = 0
         while not self.stop.is_set():
             try:
                 self.db.kv_set(KV_BLOCK, fetch_block())
             except Exception as e:  # never die
                 log.warning("ccusage poll failed: %s", e)
+            if n % COST_EVERY == 0:
+                try:
+                    cost.refresh(self.db)
+                except Exception as e:
+                    log.warning("cost refresh failed: %s", e)
+            n += 1
             self.stop.wait(POLL_SECONDS)
