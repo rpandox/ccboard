@@ -1,6 +1,8 @@
 """ccboard: a status-and-attention layer over Claude Code CLI sessions in tmux."""
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import re
 import shlex
@@ -15,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import claude_auth, projects, tmux
+from . import claude_auth, hooks, projects, tmux
 from .auth import csrf_ok, identify
 from .config import settings
 from .db import DB, now as db_now
@@ -37,6 +39,7 @@ async def lifespan(app: FastAPI):
     global db
     settings.validate()
     db = DB(settings.db_path)
+    hooks.ensure_token()
     log.info("ccboard on %s, projects in %s, allowlist=%s", settings.loopback_url(), settings.projects_dir,
              sorted(settings.allowed_users) or ("DEV BYPASS" if settings.dev_bypass_user else "EMPTY"))
     yield
@@ -49,6 +52,11 @@ app = FastAPI(title="ccboard", lifespan=lifespan, docs_url=None, redoc_url=None,
 async def auth_middleware(request: Request, call_next):
     if request.url.path == "/healthz":
         return PlainTextResponse("ok")
+    if request.url.path == "/api/hook":
+        # Hooks run on the box itself (no Tailscale identity); they carry the local token instead.
+        if request.method != "POST" or not hooks.check_token(request.headers.get(hooks.TOKEN_HEADER)):
+            return JSONResponse({"error": "bad hook token"}, status_code=403)
+        return await call_next(request)
     user = identify(request.headers, settings)
     if user is None:
         return JSONResponse({"error": "no Tailscale identity or not in CCBOARD_ALLOWED_USERS"}, status_code=403)
@@ -108,6 +116,9 @@ def _merged_sessions() -> tuple[dict[str, dict], bool]:
             "created": s["created"], "attached": s["attached"], "command": s["command"], "path": s["path"],
             "pane_id": s["pane_id"], "launcher": row.get("launcher", "external"), "cmd": row.get("cmd"),
             "claude_session_id": row.get("claude_session_id"), "add_dirs": row.get("add_dirs", []),
+            "state": row.get("state") or "unknown", "state_at": row.get("state_at"), "last_event": row.get("last_event"),
+            "last_message": row.get("last_message"), "last_prompt": row.get("last_prompt"), "stats": row.get("stats"),
+            "needs_attention": bool(row.get("state") in hooks.ATTENTION_STATES and not row.get("acked_at")),
         }
     return out, False
 
@@ -125,6 +136,8 @@ def build_state(user: str) -> dict:
     st["config"] = {"code_https_port": settings.code_https_port, "projects_dir": str(settings.projects_dir)}
     st["claude"] = claude_auth.status()
     st["login"] = claude_auth.login_state()
+    st["usage"] = db.kv_get("rate_limits")
+    st["rate_limited"] = db.kv_get("rate_limited")
     return st
 
 
@@ -353,6 +366,44 @@ def api_kill_session(name: str):
     db.end(name)
     _invalidate_scan()
     return {"killed": name}
+
+
+# ---------- hooks ----------
+
+@app.post("/api/hook")
+async def api_hook(request: Request):
+    body = await request.body()
+    if len(body) > hooks.MAX_BODY:
+        return JSONResponse({"error": "payload too large"}, status_code=413)
+    try:
+        payload = json.loads(body or b"{}")
+    except ValueError:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    event = request.headers.get("x-ccboard-event") or payload.get("hook_event_name") or "unknown"
+
+    def work():
+        rows = db.open_rows()
+        name, how = hooks.resolve_session(request.headers, payload, rows)
+        if not name or name not in rows:
+            return {"ignored": how if not name else "unknown session", "session": name}
+        result = hooks.apply(db, name, event, payload)
+        _invalidate_scan()
+        return {**result, "how": how}
+
+    return await asyncio.to_thread(work)
+
+
+@app.post("/api/sessions/{name}/ack")
+def api_ack(name: str):
+    try:
+        tmux.split_name(name)
+    except ValueError:
+        raise projects.BadRequest("not a ccboard session name")
+    db.ack(name)
+    _invalidate_scan()
+    return {"acked": name}
 
 
 # ---------- claude login ----------

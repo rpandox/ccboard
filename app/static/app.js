@@ -174,14 +174,43 @@ function addRepoForm(p) {
       el('button', { type: 'button', onclick: () => { ui.openForm = null; renderProjects(); }, text: 'Cancel' })));
 }
 
+const STATE_LABEL = { idle: 'idle', working: 'working', waiting: 'needs you', done: 'done', errored: 'error', ended: 'ended', unknown: '' };
+
+function stateBadge(s) {
+  const st = s.state || 'unknown';
+  if (!STATE_LABEL[st]) return null;
+  const age = s.state_at ? fmtAge(Date.parse(s.state_at) / 1000) : '';
+  return el('span', { class: `state ${st}` + (s.needs_attention ? ' attn' : ''), title: s.last_event || '' },
+    STATE_LABEL[st] + (age ? ` ${age}` : ''));
+}
+
+function statsText(s) {
+  const t = s.stats;
+  if (!t) return '';
+  const parts = [];
+  if (t.model) parts.push(t.model);
+  if (typeof t.context_pct === 'number') parts.push(`ctx ${Math.round(t.context_pct)}%`);
+  if (typeof t.cost_usd === 'number') parts.push(`$${t.cost_usd.toFixed(2)}`);
+  return parts.join(' · ');
+}
+
 function sessionRow(s) {
-  return el('div', { class: 'sess' },
+  const row = el('div', { class: 'sess' + (s.needs_attention ? ' attn' : '') },
     el('span', { class: 'name', text: s.name }),
+    stateBadge(s),
     el('span', { class: 'dim', text: s.launcher }),
     el('code', { text: s.command || '' }),
+    el('span', { class: 'dim', text: statsText(s) }),
     el('span', { class: 'dim', text: `${fmtAge(s.created)} · ${s.attached} attached` }),
     el('a', { class: 'btn', href: `/tty/?arg=${encodeURIComponent(s.tmux)}`, target: '_blank', rel: 'noopener', text: 'Attach' }),
+    s.needs_attention ? el('button', { onclick: async () => { try { await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/ack`); } catch (e) { setError(e.message); } await poll(true); }, text: 'Ack' }) : null,
     el('button', { class: 'danger', onclick: async () => { try { await api('DELETE', `/api/sessions/${encodeURIComponent(s.tmux)}`); setError(null); } catch (e) { setError(e.message); } await poll(true); }, text: 'Kill' }));
+  if (s.last_message || s.last_prompt) {
+    row.append(el('div', { class: 'last' },
+      s.last_prompt ? el('span', { class: 'dim', text: '› ' + s.last_prompt.slice(0, 120) }) : null,
+      s.last_message ? el('span', { text: s.last_message.slice(0, 160) }) : null));
+  }
+  return row;
 }
 
 function repoBlock(p, r) {

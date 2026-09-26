@@ -1,0 +1,15 @@
+#!/bin/sh
+# Claude Code hook -> ccboard. Registered as an async hook, so it never blocks the TUI.
+# Reads the hook JSON on stdin and POSTs it to the board over loopback with the local token.
+url="${CCBOARD_URL:-http://127.0.0.1:8000}"
+tokfile="${CCBOARD_HOOK_TOKEN_FILE:-$HOME/.local/share/ccboard/hook-token}"
+tok=$(cat "$tokfile" 2>/dev/null) || exit 0
+[ -n "$tok" ] || exit 0
+curl -s -m 3 -o /dev/null -X POST "$url/api/hook" \
+  -H "Content-Type: application/json" \
+  -H "X-CCBoard-Token: $tok" \
+  -H "X-CCBoard-Session: ${CCBOARD_SESSION:-}" \
+  -H "X-CCBoard-Pane: ${TMUX_PANE:-}" \
+  -H "X-CCBoard-Tmux: ${TMUX:-}" \
+  --data-binary @- 2>/dev/null || true
+exit 0

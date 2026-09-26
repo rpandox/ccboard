@@ -26,7 +26,8 @@ ccboard is a *status-and-attention layer*. It launches the real `claude` TUI ins
 - **Attach** from the browser through ttyd, **kill** from the board.
 - **Open in code-server**, per repo or per project (all repos in one explorer).
 - **Claude login from the board.** Click *Log in*: ccboard runs `claude auth login` in a tmux session, shows you the sign-in link, and you paste the code the browser gives you back into the board. Nothing is scraped from transcripts; the real CLI does the login.
-- **One idempotent `install.sh`** for Ubuntu 22.04 / 24.04 (amd64, arm64): apt deps, ttyd, code-server, Claude Code, venv, three systemd units, tailscale serve mappings. Rerun it any time.
+- **Session state from Claude Code hooks.** `install.sh` registers async hooks and a statusLine command in `~/.claude/settings.json`; each session shows idle / working / needs you / done / error, the last prompt, the last line Claude printed, its model and context usage. Nothing reads transcripts.
+- **One idempotent `install.sh`** for Ubuntu 22.04 / 24.04 (amd64, arm64): apt deps, ttyd, code-server, Claude Code, venv, three systemd units, tailscale serve mappings, Claude hooks. Rerun it any time.
 
 See [ROADMAP.md](ROADMAP.md) for what comes next (hook-driven status, attention inbox, usage strip, push notifications, PWA, worktrees per task, …).
 
@@ -84,12 +85,13 @@ CCBOARD_HTTPS_PORT=8443 CODE_HTTPS_PORT=10000 CODE_SERVER_PORT=8081 ./install.sh
 - `/etc/systemd/system/ccboard-tmux.service` (the tmux server that owns every session), `ccboard-ttyd.service`, `ccboard.service`, plus `code-server@<you>`
 - `tailscale serve --bg`: `/` and `/tty` on `CCBOARD_HTTPS_PORT`, `/` on `CODE_HTTPS_PORT`
 
-Update: pull or extract the new version into the same directory and rerun `./install.sh`. It restarts only `ccboard` (stateless) unless something else changed. Restarting `ccboard` never touches running Claude sessions, because they live under `ccboard-tmux.service`.
+Update: pull or extract the new version into the same directory and rerun `./install.sh`. It restarts only `ccboard` (stateless) unless something else changed. Restarting `ccboard` never touches running Claude sessions, because they live under `ccboard-tmux.service`. `install.sh` also writes `/etc/sudoers.d/ccboard`, which lets your user restart `ccboard` and `ccboard-ttyd` without a password, so code-only updates are `git pull && sudo systemctl restart ccboard` (or `scripts/deploy.sh <host>` from your machine).
 
 ## Using it
 
 - **New project** → name (+ optional first clone URL). **Add repo** on a project card → blank name or clone URL. Clones run in a visible session (`<project>--<repo>--clone`); if a clone fails the repo shows *clone failed* and *Attach* shows the error.
 - **New session** on a repo → pick a launcher, optionally a name and extra args, tick which other repos Claude may edit (`--add-dir`), then *Start & attach* opens the terminal in a new tab.
+- **State badges** come from Claude Code hooks: *working* after you send a prompt, *needs you* when Claude asks for permission or input, *done* when a turn ends (with the last line it printed), *error* on API failures. *Ack* clears a done/error highlight. The hooks are the scripts in `bin/`; they POST to the board over loopback with the token in `~/.local/share/ccboard/hook-token` and never block the TUI (they are registered `async`). `scripts/claude_settings.py show|remove` inspects or removes them. If you already had a `statusLine`, ccboard keeps yours and the per-session model/context numbers stay empty.
 - The **first launch** of `claude` in a new folder shows Claude Code's workspace-trust prompt (Enter = trust) and possibly its onboarding screens. Answer them in the terminal; a desktop browser is easiest for that.
 - tmux names are `<project>--<repo>--<session>`. From a shell on the box: `TMUX_TMPDIR=/tmp tmux -L ccboard ls`.
 - Session sizes follow the most recently active client (tmux `window-size latest`), so attaching from a phone reflows the TUI for a desktop tab that is also attached.

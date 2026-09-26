@@ -1,0 +1,27 @@
+#!/bin/sh
+# Claude Code statusLine command. Prints a short status line for the TUI and forwards the JSON
+# to ccboard in the background (per-session model, context %, cost, rate limits).
+url="${CCBOARD_URL:-http://127.0.0.1:8000}"
+tokfile="${CCBOARD_HOOK_TOKEN_FILE:-$HOME/.local/share/ccboard/hook-token}"
+payload=$(cat)
+if tok=$(cat "$tokfile" 2>/dev/null) && [ -n "$tok" ]; then
+  printf '%s' "$payload" | curl -s -m 3 -o /dev/null -X POST "$url/api/hook" \
+    -H "Content-Type: application/json" -H "X-CCBoard-Token: $tok" -H "X-CCBoard-Event: statusline" \
+    -H "X-CCBoard-Session: ${CCBOARD_SESSION:-}" -H "X-CCBoard-Pane: ${TMUX_PANE:-}" -H "X-CCBoard-Tmux: ${TMUX:-}" \
+    --data-binary @- >/dev/null 2>&1 &
+fi
+printf '%s' "$payload" | python3 -c '
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: d={}
+m=(d.get("model") or {}).get("display_name") or ""
+cw=d.get("context_window") or {}; ctx=cw.get("used_percentage")
+rl=d.get("rate_limits") or {}
+parts=[p for p in [m, f"ctx {ctx:.0f}%" if isinstance(ctx,(int,float)) else None] if p]
+for k,lab in (("five_hour","5h"),("seven_day","wk")):
+    v=(rl.get(k) or {}).get("used_percentage")
+    if isinstance(v,(int,float)): parts.append(f"{lab} {v:.0f}%")
+c=(d.get("cost") or {}).get("total_cost_usd")
+if isinstance(c,(int,float)): parts.append(f"${c:.2f}")
+print(" · ".join(parts))
+' 2>/dev/null || true

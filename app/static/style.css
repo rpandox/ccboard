@@ -24,6 +24,14 @@ main { padding:0 16px 40px; max-width:1100px; margin:0 auto; }
 .dot.unknown { background:var(--dim); }
 .sess { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:6px 0 6px 12px; border-left:2px solid var(--line); margin:4px 0 4px 6px; }
 .sess .name { font-weight:600; }
+.sess.attn { border-left-color:var(--warn); }
+.sess .last { flex-basis:100%; font-size:12px; display:flex; flex-direction:column; gap:2px; padding-left:2px; }
+.state { padding:2px 8px; border-radius:10px; font-size:11px; border:1px solid var(--line); color:var(--dim); }
+.state.working { border-color:var(--acc); color:var(--acc); }
+.state.waiting { border-color:var(--warn); color:var(--warn); background:#3a2f14; }
+.state.done { border-color:var(--ok); color:var(--ok); }
+.state.errored { border-color:var(--bad); color:var(--bad); background:#3a1f1f; }
+.state.ended { opacity:.6; }
 .sess code { color:var(--dim); font-size:12px; }
 button, .btn { background:#232835; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:5px 10px; font-size:13px; cursor:pointer; text-decoration:none; display:inline-block; }
 button:hover, .btn:hover { border-color:var(--acc); }
