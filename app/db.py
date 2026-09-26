@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_by_session ON events(tmux_name, id);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL, at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, sub TEXT NOT NULL, at TEXT NOT NULL);
 """
 
 # Added after v0.1; applied with ALTER TABLE, "duplicate column" errors are ignored.
@@ -153,6 +154,26 @@ class DB:
     def kv_set(self, key: str, value) -> None:
         with self.lock:
             self.conn.execute("INSERT OR REPLACE INTO kv(key, value, at) VALUES (?,?,?)", (key, json.dumps(value), now()))
+
+    def push_sub_add(self, sub: dict) -> None:
+        with self.lock:
+            self.conn.execute("INSERT OR REPLACE INTO push_subs(endpoint, sub, at) VALUES (?,?,?)",
+                              (sub["endpoint"], json.dumps(sub), now()))
+
+    def push_sub_del(self, endpoint: str) -> None:
+        with self.lock:
+            self.conn.execute("DELETE FROM push_subs WHERE endpoint=?", (endpoint,))
+
+    def push_subs(self) -> list[dict]:
+        with self.lock:
+            rows = self.conn.execute("SELECT endpoint, sub FROM push_subs").fetchall()
+        out = []
+        for r in rows:
+            try:
+                out.append({"endpoint": r[0], "sub": json.loads(r[1])})
+            except ValueError:
+                continue
+        return out
 
     def kv_del(self, key: str) -> None:
         with self.lock:

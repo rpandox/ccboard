@@ -101,6 +101,46 @@ function renderUsage() {
   chips.forEach(c => u.append(c));
 }
 
+/* ---------- PWA: service worker, offline shell, Web Push ---------- */
+
+const LAST_KEY = 'ccboard:last-state';
+
+function rememberState(json) { try { localStorage.setItem(LAST_KEY, JSON.stringify({ at: Date.now(), state: json })); } catch (_) { /* storage may be unavailable */ } }
+function recallState() { try { const v = JSON.parse(localStorage.getItem(LAST_KEY) || 'null'); return v && v.state ? v : null; } catch (_) { return null; } }
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => { /* no SW: the board still works */ });
+}
+
+function b64ToBytes(s) {
+  const pad = '='.repeat((4 - s.length % 4) % 4);
+  const raw = atob((s + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(raw, ch => ch.charCodeAt(0));
+}
+
+async function pushSubscription() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null;
+  const reg = await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+
+async function enablePush() {
+  if (!('PushManager' in window)) { setError('Web Push is not available in this browser (on iOS, add the board to the Home Screen first).'); return; }
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') { setError('Notifications were not allowed.'); return; }
+  const { key } = await api('GET', '/api/push/vapid');
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
+  await api('POST', '/api/push/subscribe', { subscription: sub.toJSON() });
+  setError(null); renderNotifyPanel();
+}
+
+async function disablePush() {
+  const sub = await pushSubscription();
+  if (sub) { await api('DELETE', '/api/push/subscribe', { subscription: sub.toJSON() }); await sub.unsubscribe(); }
+  renderNotifyPanel();
+}
+
 /* ---------- notifications panel ---------- */
 
 function renderNotifyPanel() {
@@ -110,15 +150,25 @@ function renderNotifyPanel() {
   if (!ui.notifyPanel) { p.classList.add('hidden'); return; }
   p.classList.remove('hidden');
   const n = (state.config && state.config.ntfy) || {};
+  const pushRow = el('div', { class: 'row' }, el('b', { text: 'This device (Web Push):' }));
+  p.append(pushRow);
+  pushSubscription().then(sub => {
+    if (sub) pushRow.append(el('span', { class: 'dim', text: 'enabled' }),
+      el('button', { onclick: () => disablePush().catch(e => setError(e.message)), text: 'Disable' }),
+      el('button', { onclick: async () => { try { const r = await api('POST', '/api/push/test'); setError(r.sent ? null : 'no push sent (' + r.subscriptions + ' subscriptions)'); } catch (e) { setError(e.message); } }, text: 'Test push' }));
+    else pushRow.append(el('button', { class: 'primary', onclick: () => enablePush().catch(e => setError(e.message)), text: 'Enable push on this device' }),
+      el('span', { class: 'dim', text: 'Works in Chrome/Android and in an installed (Home Screen) PWA on iOS 16.4+.' }));
+  }).catch(() => pushRow.append(el('span', { class: 'dim', text: 'Web Push not available here.' })));
+  const ntfyRow = el('div', { class: 'row' }, el('b', { text: 'ntfy app:' }));
+  p.append(ntfyRow);
   if (!n.enabled) {
-    p.append(el('span', { text: 'ntfy is not configured on the box (set NTFY_URL in /etc/ccboard/env or rerun install.sh).' }));
+    ntfyRow.append(el('span', { class: 'dim', text: 'not configured on the box (NTFY_URL in /etc/ccboard/env, or rerun install.sh).' }));
     return;
   }
-  const url = el('code', { text: n.subscribe_url || '' });
-  p.append(el('span', { text: 'Subscribe in the ntfy app (Android/iOS) to: ' }), url,
+  ntfyRow.append(el('span', { text: 'subscribe to ' }), el('code', { text: n.subscribe_url || '' }),
     el('button', { onclick: async () => { try { await navigator.clipboard.writeText(n.subscribe_url || ''); } catch (_) { /* ignore */ } }, text: 'Copy' }),
-    el('button', { class: 'primary', onclick: async () => { try { const r = await api('POST', '/api/notify/test'); setError(r.ok ? null : 'ntfy publish failed (is ntfy running?)'); } catch (e) { setError(e.message); } }, text: 'Send test' }),
-    el('span', { class: 'dim', text: 'Pushes on needs-you, done, error and rate limit. Tap a notification to open the board; “Terminal” opens the session; “Ack” clears it.' }));
+    el('button', { onclick: async () => { try { const r = await api('POST', '/api/notify/test'); setError(r.ok ? null : 'ntfy publish failed (is ntfy running?)'); } catch (e) { setError(e.message); } }, text: 'Send test' }),
+    el('span', { class: 'dim', text: 'Pushes on needs-you, done, error and rate limit; “Terminal” opens the session, “Ack” clears it.' }));
 }
 
 /* ---------- header / banner ---------- */
@@ -147,7 +197,10 @@ function renderBanner() {
   b.className = '';
   const rlim = state && state.rate_limited && state.rate_limited.value;
   const recent = rlim && state.rate_limited.at && (Date.now() - Date.parse(state.rate_limited.at)) < 5 * 3600 * 1000;
-  if (ui.error) {
+  if (ui.offline) {
+    b.className = 'warn';
+    b.append(el('span', { text: `Offline: showing the last known state from ${new Date(ui.offline).toLocaleTimeString()}. Retrying…` }));
+  } else if (ui.error) {
     b.append(el('span', { text: ui.error }), el('button', { onclick: () => setError(null), text: 'dismiss' }));
   } else if (recent) {
     b.append(el('span', { text: `Rate limited: ${rlim.message || ''}${rlim.session ? ' (' + rlim.session + ')' : ''}` }),
@@ -488,11 +541,16 @@ async function poll(force) {
     const changed = j !== ui.lastJson;
     ui.lastJson = j;
     state = s;
+    ui.offline = false;
     if (changed || force) render(force);
     else { renderHeader(); renderUsage(); updateModal(); }
+    rememberState(s);
   } catch (e) {
-    if (!state) { $('#banner').textContent = 'Cannot reach ccboard: ' + e.message; }
-    else setError('poll failed: ' + e.message);
+    if (!state) {
+      const last = recallState();
+      if (last) { state = last.state; ui.offline = last.at; render(true); }
+      else { $('#banner').textContent = 'Cannot reach ccboard: ' + e.message; }
+    } else { ui.offline = ui.offline || Date.now(); renderBanner(); }
   }
   clearTimeout(pollTimer);
   pollTimer = setTimeout(() => poll(false), ui.modal ? 2000 : 3000);

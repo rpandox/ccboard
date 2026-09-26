@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import claude_auth, hooks, notify, projects, tmux, usage
+from . import claude_auth, hooks, notify, projects, push, tmux, usage
 from .auth import csrf_ok, identify
 from .config import settings
 from .db import DB, now as db_now
@@ -40,6 +40,11 @@ async def lifespan(app: FastAPI):
     settings.validate()
     db = DB(settings.db_path)
     hooks.ensure_token()
+    notify.set_db(db)
+    try:
+        push.ensure_keys()
+    except Exception as e:  # pywebpush missing or unwritable data dir: the board still works
+        log.warning("web push disabled: %s", e)
     poller = usage.Poller(db)
     poller.start()
     log.info("ccboard on %s, projects in %s, allowlist=%s", settings.loopback_url(), settings.projects_dir,
@@ -404,6 +409,39 @@ async def api_hook(request: Request):
     return await asyncio.to_thread(work)
 
 
+class SubIn(BaseModel):
+    subscription: dict
+
+
+@app.get("/api/push/vapid")
+def api_push_vapid():
+    try:
+        return {"key": push.ensure_keys()}
+    except Exception as e:
+        raise projects.BadRequest(f"web push unavailable: {e}")
+
+
+@app.post("/api/push/subscribe")
+def api_push_subscribe(body: SubIn):
+    if not push.valid_subscription(body.subscription):
+        raise projects.BadRequest("invalid push subscription")
+    db.push_sub_add(body.subscription)
+    return {"ok": True, "count": len(db.push_subs())}
+
+
+@app.delete("/api/push/subscribe")
+def api_push_unsubscribe(body: SubIn):
+    if isinstance(body.subscription, dict) and isinstance(body.subscription.get("endpoint"), str):
+        db.push_sub_del(body.subscription["endpoint"])
+    return {"ok": True, "count": len(db.push_subs())}
+
+
+@app.post("/api/push/test")
+def api_push_test():
+    n = push.send_all(db, "ccboard test", "Web Push works.", "/", tag="test")
+    return {"sent": n, "subscriptions": len(db.push_subs())}
+
+
 @app.post("/api/notify/test")
 def api_notify_test():
     if not notify.enabled():
@@ -463,6 +501,12 @@ def api_logout():
 @app.get("/")
 def index():
     return FileResponse(STATIC / "index.html")
+
+
+@app.get("/sw.js")
+def service_worker():
+    # Served at the root so its scope is "/" (a worker under /static/ could only control /static/).
+    return FileResponse(STATIC / "sw.js", media_type="application/javascript", headers={"Cache-Control": "no-cache"})
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
