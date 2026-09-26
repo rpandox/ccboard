@@ -128,3 +128,36 @@ def test_overlap(tmp_path, client, projects_dir, fake_tmux):
     (wt2 / "login.py").unlink()                             # untracked file gone -> no shared files
     assert overlap.compute(main.db) == 0
     assert client.get("/api/state", headers=H).json()["tasks"][0]["overlap"] == []
+
+
+def test_merge_pushes_first_and_keeps_branch_on_failure(client, projects_dir, fake_tmux, tmp_path, monkeypatch):
+    """A local commit made after the PR was opened must reach origin before anything is destroyed."""
+    import shutil
+    from app import main
+    repo, wt, origin = make_repo(tmp_path)
+    dest = projects_dir / "shop" / "api"; dest.parent.mkdir(); shutil.move(str(repo), str(dest))
+    wt = dest / ".claude" / "worktrees" / "add-login"; sh(dest, "git", "worktree", "repair", str(wt))
+    sh(wt, "git", "push", "-q", "-u", "origin", "worktree-add-login")               # PR opened with commit 1
+    (wt / "second.py").write_text("2\n"); sh(wt, "git", "add", "."); sh(wt, "git", "commit", "-q", "-m", "second")  # local-only commit 2
+    fake_bin(tmp_path, "gh", "#!/bin/sh\ncase \"$1 $2\" in\n 'pr merge') echo merged;;\nesac\n")
+    monkeypatch.setenv("PATH", str(tmp_path / "bin") + os.pathsep + os.environ["PATH"])
+    tid = main.db.task_add(project="shop", repo="api", slug="add-login", title="Add login", prompt="p", branch="worktree-add-login",
+                           base="main", worktree=str(wt), tmux_name="shop--api--t-add-login", claude_session_id=None)
+    main.db.task_update(tid, pr_number=9, pr_url="https://github.com/o/r/pull/9", pr_state="OPEN", status="pr")
+    local = sh(wt, "git", "rev-parse", "HEAD").strip()
+    r = client.post(f"/api/tasks/{tid}/merge", headers=H, json={"method": "squash", "force": False}).json()
+    assert r["merged"] == tid
+    assert sh(origin, "git", "rev-parse", "worktree-add-login").strip() == local      # commit 2 reached origin before removal
+    assert not wt.exists()
+    # merge failure after a verified push keeps the branch and the task in the PR column
+    (tmp_path / "b").mkdir()
+    repo2, wt2, origin2 = make_repo(tmp_path / "b")
+    dest2 = projects_dir / "shop" / "web"; shutil.move(str(repo2), str(dest2))
+    wt2 = dest2 / ".claude" / "worktrees" / "add-login"; sh(dest2, "git", "worktree", "repair", str(wt2))
+    fake_bin(tmp_path, "gh", "#!/bin/sh\necho 'merge blocked' >&2; exit 1\n")
+    tid2 = main.db.task_add(project="shop", repo="web", slug="add-login", title="x", prompt="p", branch="worktree-add-login",
+                            base="main", worktree=str(wt2), tmux_name="shop--web--t-add-login", claude_session_id=None)
+    main.db.task_update(tid2, pr_number=10, pr_url="u", pr_state="OPEN", status="pr")
+    assert client.post(f"/api/tasks/{tid2}/merge", headers=H, json={"method": "squash", "force": False}).status_code == 422
+    assert "worktree-add-login" in sh(dest2, "git", "branch") and "worktree-add-login" in sh(origin2, "git", "branch")
+    assert main.db.task_get(tid2)["status"] == "pr"

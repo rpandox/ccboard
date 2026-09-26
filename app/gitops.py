@@ -113,11 +113,31 @@ def pr_view(wt: Path, branch: str) -> dict | None:
         return None
 
 
+def remote_head(wt: Path, branch: str) -> str | None:
+    cp = run(["git", "ls-remote", "--heads", "origin", branch], wt, timeout=60, check=False)
+    line = (cp.stdout or "").strip().split("\n")[0]
+    return line.split()[0] if line else None
+
+
+def local_head(wt: Path) -> str:
+    return run(["git", "rev-parse", "HEAD"], wt, check=False).stdout.strip()
+
+
+def push_and_verify(wt: Path, branch: str) -> str:
+    """Push the branch and confirm origin has exactly the local HEAD. Returns the sha."""
+    push_branch(wt, branch)
+    head = local_head(wt)
+    remote = remote_head(wt, branch)
+    if not head or remote != head:
+        raise GitError(f"origin/{branch} ({(remote or 'missing')[:8]}) does not match the local HEAD ({head[:8]}); not merging")
+    return head
+
+
 def pr_create(wt: Path, branch: str, base: str, title: str, body: str, draft: bool = False) -> dict:
+    push_and_verify(wt, branch)  # also syncs new commits when the PR already exists
     existing = pr_view(wt, branch)
     if existing and existing.get("state") == "OPEN":
         return {"url": existing["url"], "number": existing["number"], "existing": True}
-    push_branch(wt, branch)
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
         f.write(body or "")
         body_file = f.name

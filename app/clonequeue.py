@@ -12,6 +12,7 @@ CAP = 3
 _lock = threading.Lock()
 _queue: list[dict] = []          # {project, repo, url}
 _done: list[dict] = []           # {project, repo, status, error?}
+_inflight = 0                    # clones being launched right now (not yet visible in tmux)
 
 
 def enqueue(items: list[dict]) -> int:
@@ -39,14 +40,16 @@ def running_clones() -> int:
 
 def step(launch) -> int:
     """Launch as many queued clones as the cap allows. `launch(project, repo, path, url, cleanup)` starts one."""
+    global _inflight
     started = 0
     while True:
         with _lock:
             if not _queue:
                 return started
-            if running_clones() >= CAP:
+            if running_clones() + _inflight >= CAP:
                 return started
             item = _queue.pop(0)
+            _inflight += 1
         try:
             rname, rpath = projects.prepare_repo_clone(item["project"], item.get("repo"), item["url"])
             launch(item["project"], rname, rpath, item["url"], [rpath])
@@ -57,6 +60,9 @@ def step(launch) -> int:
             with _lock:
                 _done.append({"project": item["project"], "repo": item.get("repo") or item["url"], "status": "failed", "error": str(e)[:200]})
             log.warning("bulk clone %s/%s failed: %s", item["project"], item.get("repo"), e)
+        finally:
+            with _lock:
+                _inflight -= 1
 
 
 class Worker(threading.Thread):

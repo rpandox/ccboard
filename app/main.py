@@ -450,15 +450,25 @@ def api_task_merge(tid: int, body: MergeIn | None = None):
     if not t.get("pr_number"):
         raise projects.BadRequest("no PR for this task yet")
     body = body or MergeIn()
-    d = gitops.task_diff(wt, t["base"] or "main") if wt.is_dir() else None
-    if d and (d["uncommitted"] or d["files_uncommitted"]) and not body.force:
-        raise projects.Conflict("the worktree has uncommitted changes; merge with force to discard them")
+    rpath = projects.repo_path(t["project"], t["repo"])
+    if wt.is_dir():
+        d = gitops.task_diff(wt, t["base"] or "main")
+        if (d["uncommitted"] or d["files_uncommitted"]) and not body.force:
+            raise projects.Conflict("the worktree has uncommitted changes; merge with force to discard them")
+        # Nothing is destroyed before origin provably holds the local HEAD.
+        gitops.push_and_verify(wt, t["branch"])
+    # Merge on GitHub first; only then kill the session and remove the worktree (--delete-branch cannot
+    # delete a branch that is still checked out, so the merge runs from the repo dir after removal).
     if tmux.has_session(t["tmux_name"]):
         tmux.kill_session(t["tmux_name"])
         db.end(t["tmux_name"])
-    rpath = projects.repo_path(t["project"], t["repo"])
     err = tasks.remove_worktree(rpath, t["slug"], force=True) if rpath.is_dir() else None
-    out = gitops.pr_merge(rpath if rpath.is_dir() else wt, int(t["pr_number"]), body.method)
+    try:
+        out = gitops.pr_merge(rpath if rpath.is_dir() else wt, int(t["pr_number"]), body.method)
+    except gitops.GitError:
+        # The branch is intact on origin and locally; the task stays in the PR column for a retry.
+        _invalidate_scan()
+        raise
     db.task_update(tid, pr_state="MERGED", status="merged", archived_at=db_now())
     _invalidate_scan()
     return {"merged": tid, "output": out, "worktree_removed": err is None}
@@ -745,7 +755,11 @@ async def api_hook(request: Request):
         name, how = hooks.resolve_session(request.headers, payload, rows)
         if not name or name not in rows:
             return {"ignored": how if not name else "unknown session", "session": name}
-        result = hooks.apply(db, name, event, payload)
+        try:
+            result = hooks.apply(db, name, event, payload)
+        except Exception as e:  # a malformed payload must never 500 the hook path
+            log.warning("hook %s for %s failed: %s", event, name, e)
+            return {"ignored": "error", "session": name, "error": str(e)[:200]}
         _invalidate_scan()
         return {**result, "how": how}
 

@@ -41,8 +41,22 @@ def ensure_keys() -> str:
     return _public_key
 
 
+PUSH_HOSTS = ("fcm.googleapis.com", "updates.push.services.mozilla.com", ".push.services.mozilla.com",
+              "web.push.apple.com", ".push.apple.com", ".notify.windows.com", "push.samsungosp.com")
+
+
+def allowed_endpoint(url: str) -> bool:
+    """Only real browser push services: the board POSTs to this URL on every event."""
+    from urllib.parse import urlsplit
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return url.startswith("https://") and bool(host) and any(host == h or (h.startswith(".") and host.endswith(h)) for h in PUSH_HOSTS)
+
+
 def valid_subscription(sub) -> bool:
-    return (isinstance(sub, dict) and isinstance(sub.get("endpoint"), str) and sub["endpoint"].startswith("https://")
+    return (isinstance(sub, dict) and isinstance(sub.get("endpoint"), str) and allowed_endpoint(sub["endpoint"])
             and isinstance(sub.get("keys"), dict) and isinstance(sub["keys"].get("p256dh"), str)
             and isinstance(sub["keys"].get("auth"), str))
 

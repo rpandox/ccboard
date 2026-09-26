@@ -108,3 +108,12 @@ def test_last_screen_line_skips_chrome_and_prompts(monkeypatch):
     for key, expect in (("shell", "Added login page and 4 passing tests."), ("tui", "I updated login.html and added tests. All green."), ("empty", None)):
         monkeypatch.setattr(t, "capture", lambda name, lines=200, join=True, escapes=False, _k=key: screens[_k])
         assert hooks._last_screen_line("x--y--z") == expect
+
+
+def test_malformed_statusline_does_not_500(client, projects_dir, fake_tmux):
+    git_init(projects_dir / "shop" / "api")
+    name = client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "shell"}).json()["tmux"]
+    r = _hook(client, {"model": "opus", "context_window": "x", "cost": None, "rate_limits": "no"}, session=name, event="statusline")
+    assert r.status_code == 200 and r.json().get("stats") is True
+    r = _hook(client, {"hook_event_name": "Notification", "message": {"nested": 1}}, session=name)
+    assert r.status_code == 200

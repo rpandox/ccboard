@@ -6,16 +6,20 @@ from __future__ import annotations
 import logging
 import shlex
 
+from pathlib import Path
+
 from . import projects, tmux
 from .config import settings
 
 log = logging.getLogger("ccboard.recover")
-RECOVERABLE = {"claude", "resume", "continue", "recovered"}
+RECOVERABLE = {"claude", "resume", "continue", "recovered", "task"}
 
 
-def plan(rows: dict[str, dict], live: set[str]) -> list[dict]:
-    """Which open rows to relaunch (missing from tmux, Claude launcher, repo still there)."""
+def plan(rows: dict[str, dict], live: set[str], worktrees: dict[str, str] | None = None) -> list[dict]:
+    """Which open rows to relaunch (missing from tmux, Claude launcher, repo still there).
+    `worktrees` maps a task's tmux name to its worktree path, so task sessions resume in the worktree."""
     out = []
+    worktrees = worktrees or {}
     for name, row in rows.items():
         if name in live or row.get("launcher") not in RECOVERABLE:
             continue
@@ -23,8 +27,11 @@ def plan(rows: dict[str, dict], live: set[str]) -> list[dict]:
             rpath = projects.repo_path(row["project"], row["repo"])
         except projects.BadRequest:
             continue
-        if not rpath.is_dir():
-            continue
+        wt = worktrees.get(name)
+        if wt and Path(wt).is_dir():
+            rpath = Path(wt)
+        elif row.get("launcher") == "task" or not rpath.is_dir():
+            continue  # a task without its worktree cannot be resumed; the row is closed below
         cmd = ["claude"]
         if row.get("claude_session_id"):
             cmd += ["--resume", row["claude_session_id"]]
@@ -48,7 +55,8 @@ def run(db, start_session) -> dict:
         log.warning("recovery skipped: tmux server is down")
         return summary
     rows = db.open_rows()
-    todo = plan(rows, live)
+    worktrees = {t["tmux_name"]: t["worktree"] for t in db.tasks() if t.get("worktree")}
+    todo = plan(rows, live, worktrees)
     todo_names = {t["name"] for t in todo}
     for name, row in rows.items():
         if name not in live and name not in todo_names:
@@ -58,7 +66,7 @@ def run(db, start_session) -> dict:
         row = t["row"]
         db.end(t["name"])  # the old row is over; the relaunch gets a fresh row
         try:
-            start_session(t["name"], row["project"], row["repo"], row["name"], "recovered", t["cwd"],
+            start_session(t["name"], row["project"], row["repo"], row["name"], "task" if row.get("launcher") == "task" else "recovered", t["cwd"],
                           cmd_line=shlex.join(t["cmd"]), claude_session_id=row.get("claude_session_id"),
                           add_dirs=t["add_dirs"])
             summary["recovered"].append(t["name"])

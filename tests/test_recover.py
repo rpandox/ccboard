@@ -43,3 +43,24 @@ def test_disabled(monkeypatch):
     from app.config import settings
     monkeypatch.setattr(settings, "recover", False)
     assert recover.run(None, None) == {"recovered": [], "closed": [], "skipped": []}
+
+
+def test_task_session_recovers_in_worktree(client, projects_dir, fake_tmux, monkeypatch, tmp_path):
+    from app import main
+    from app.config import settings
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")
+    subprocess.run(["git", "-C", str(projects_dir), "init", "-q", "-b", "main", "shop/api"], check=True)
+    t = client.post("/api/projects/shop/repos/api/tasks", headers=H, json={"title": "Fix bug", "prompt": "fix"}).json()
+    wt = projects_dir / "shop" / "api" / ".claude" / "worktrees" / "fix-bug"
+    wt.mkdir(parents=True)
+    fake_tmux["sessions"].clear(); fake_tmux["created"].clear()
+    summary = recover.run(main.db, main._start_session)
+    assert summary["recovered"] == [t["tmux"]]
+    name, cwd, env = fake_tmux["created"][-1]
+    assert cwd == str(wt) and dict(fake_tmux["sent"])[name].startswith("claude --resume ")
+    assert main.db.open_rows()[name]["launcher"] == "task"
+    # a task whose worktree never appeared is closed, not relaunched
+    t2 = client.post("/api/projects/shop/repos/api/tasks", headers=H, json={"title": "Other", "prompt": "x"}).json()
+    fake_tmux["sessions"].clear()
+    summary = recover.run(main.db, main._start_session)
+    assert t2["tmux"] in summary["closed"]

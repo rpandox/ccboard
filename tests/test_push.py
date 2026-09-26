@@ -20,8 +20,9 @@ def test_keys_and_public_format(projects_dir):
 def test_subscribe_send_and_prune(client, projects_dir, monkeypatch):
     from app import main
     H = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
-    good = {"endpoint": "https://push.example/abc", "keys": {"p256dh": "p", "auth": "a"}}
-    dead = {"endpoint": "https://push.example/dead", "keys": {"p256dh": "p", "auth": "a"}}
+    good = {"endpoint": "https://fcm.googleapis.com/fcm/send/abc", "keys": {"p256dh": "p", "auth": "a"}}
+    dead = {"endpoint": "https://fcm.googleapis.com/fcm/send/dead", "keys": {"p256dh": "p", "auth": "a"}}
+    assert client.post("/api/push/subscribe", headers=H, json={"subscription": {"endpoint": "https://attacker.example/x", "keys": {"p256dh": "p", "auth": "a"}}}).status_code == 400
     assert client.post("/api/push/subscribe", headers=H, json={"subscription": {"endpoint": "http://nope"}}).status_code == 400
     assert client.post("/api/push/subscribe", headers=H, json={"subscription": good}).json()["count"] == 1
     assert client.post("/api/push/subscribe", headers=H, json={"subscription": dead}).json()["count"] == 2
@@ -50,3 +51,14 @@ def test_sw_and_manifest_served(client):
     m = client.get("/static/manifest.webmanifest", headers=H)
     assert m.status_code == 200 and json.loads(m.text)["start_url"] == "/"
     assert client.get("/static/icon-192.png", headers=H).headers["content-type"] == "image/png"
+
+
+def test_endpoint_allowlist():
+    assert push.allowed_endpoint("https://fcm.googleapis.com/fcm/send/abc")
+    assert push.allowed_endpoint("https://updates.push.services.mozilla.com/wpush/v2/x")
+    assert push.allowed_endpoint("https://web.push.apple.com/QW")
+    assert push.allowed_endpoint("https://wns2-bl2p.notify.windows.com/w/?token=x")
+    assert not push.allowed_endpoint("https://attacker.example/collect")
+    assert not push.allowed_endpoint("http://fcm.googleapis.com/x")
+    assert not push.allowed_endpoint("https://fcm.googleapis.com.evil.net/x")
+    assert not push.allowed_endpoint("https://127.0.0.1:8000/api/hook")

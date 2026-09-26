@@ -135,20 +135,21 @@ def apply(db, name: str, event: str, payload: dict) -> dict:
     prompt = None
 
     if event == "statusline":
+        def d(key):
+            v = payload.get(key)
+            return v if isinstance(v, dict) else {}
+        model, cw, cost = d("model"), d("context_window"), d("cost")
         stats = {
-            "model": ((payload.get("model") or {}).get("display_name")),
-            "model_id": ((payload.get("model") or {}).get("id")),
-            "context_pct": ((payload.get("context_window") or {}).get("used_percentage")),
-            "context_size": ((payload.get("context_window") or {}).get("context_window_size")),
-            "cost_usd": ((payload.get("cost") or {}).get("total_cost_usd")),
-            "lines_added": ((payload.get("cost") or {}).get("total_lines_added")),
-            "lines_removed": ((payload.get("cost") or {}).get("total_lines_removed")),
-            "version": payload.get("version"),
-            "rate_limits": payload.get("rate_limits"),
+            "model": model.get("display_name"), "model_id": model.get("id"),
+            "context_pct": cw.get("used_percentage"), "context_size": cw.get("context_window_size"),
+            "cost_usd": cost.get("total_cost_usd"), "lines_added": cost.get("total_lines_added"),
+            "lines_removed": cost.get("total_lines_removed"),
+            "version": payload.get("version") if isinstance(payload.get("version"), str) else None,
+            "rate_limits": d("rate_limits") or None,
         }
         db.set_stats(name, stats, claude_session_id=sid)
-        if payload.get("rate_limits"):
-            db.kv_set("rate_limits", payload["rate_limits"])
+        if stats["rate_limits"]:
+            db.kv_set("rate_limits", stats["rate_limits"])
         return {"session": name, "event": event, "stats": True}
 
     if event == "SessionStart":
