@@ -41,7 +41,16 @@ ccboard is a *status-and-attention layer*. It launches the real `claude` TUI ins
 - **Reboot recovery**: after a reboot every Claude session is relaunched in its repo with `claude --resume <id>`.
 - **Import from GitHub**: pick repos from `gh repo list`, clone them into a project three at a time.
 
-See [ROADMAP.md](ROADMAP.md) for how each item was built and what comes next (worktrees per task, PR flow, cost per project, scheduler, fleet).
+## What v0.3 adds: git & tasks
+
+- **Tasks**: "New task" on a repo takes a title and a prompt (or picks an open GitHub issue) and starts Claude in its own git worktree and branch (`claude --worktree`, `.worktreeinclude` honoured). The Tasks board has columns In progress / Needs you / Done / PR open / Merged, derived from the hook state and the PR.
+- **Diff / PR**: a modal shows the branch commits and diff (diff2html), "Describe with Claude" writes the PR title and body with a one-turn `claude -p` over the diff, "Create PR" pushes and runs `gh pr create`, "Merge (squash) & archive" pushes, verifies origin has your HEAD, merges with `gh pr merge --squash --delete-branch` and removes the worktree.
+- **PR / CI status** on cards (polled with `gh` every minute) and **Fix CI**, which pastes the failing job log into the task's Claude session (relaunching it in the worktree if needed).
+- **Overlap warning** when two open tasks of a repo touch the same files.
+- **Cost** per project (today / 7 days / total), repo and task, joined from `ccusage session --json` on the Claude session ids the board recorded. Sessions started outside the board are not attributed.
+- **Transcript search**: the header box searches an FTS5 index over `~/.claude/projects` transcripts (display only; hits link to the session when known).
+
+See [ROADMAP.md](ROADMAP.md) for how each item was built and what comes next (scheduler, batch runs, MCP server, previews, devcontainer, fleet, backups).
 
 ## What it is not
 
@@ -119,6 +128,7 @@ Update: pull or extract the new version into the same directory and rerun `./ins
 - Everything binds to 127.0.0.1. A process running on the box itself can still connect locally and forge the identity header; on a single-user machine that process already is you.
 - Hooks and the statusline talk to the board over loopback with the token in `~/.local/share/ccboard/hook-token` (0600); `/api/hook` and `/api/permission` accept only that token. The ntfy server is tailnet-only and, like ttyd and code-server, protected by the tailnet ACL rather than the allowlist; anyone on the tailnet could publish to or read the topic. ntfy's `upstream-base-url` sends only a wake-up (no message content) through ntfy.sh so iOS devices get pushes.
 - `install.sh` writes `/etc/sudoers.d/ccboard` so your user can run `systemctl restart ccboard` and `ccboard-ttyd` without a password (deploys), and `gh auth setup-git` so git uses gh's token for https clones.
+- Tasks run `git`, `gh` and `claude -p` on your behalf with your credentials: "Describe" sends the branch diff to Claude, "Create PR"/"Merge" push and merge on GitHub, and "Fix CI" pastes CI log text into a Claude session as a prompt. Web Push subscriptions are accepted only for known browser push services.
 - If the box has `tailscale set --operator=<you>` configured, every process running as you can change `tailscale serve` (including turning on Funnel). `install.sh` does not set the operator; it uses `sudo` for serve commands.
 - Tagged nodes and requests from the box itself carry no identity header and are rejected.
 - Do not put `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` in `/etc/ccboard/env` or the tmux server's environment: they outrank the interactive login.
