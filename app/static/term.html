@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>ccboard terminal</title>
+<meta name="theme-color" content="#0f1115">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="icon" href="/static/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/term.css">
+</head>
+<body class="term">
+<div id="termbar">
+  <a class="btn" href="/" id="back">‹ board</a>
+  <span id="termname" class="name"></span>
+  <span id="termstate" class="dim"></span>
+  <span id="termmsg" class="dim"></span>
+</div>
+<iframe id="tty" title="terminal" allow="clipboard-write"></iframe>
+<div id="keys">
+  <div class="row keys">
+    <button data-key="Escape">Esc</button>
+    <button data-key="C-c">Ctrl-C</button>
+    <button data-key="Tab">Tab</button>
+    <button data-key="Up">↑</button>
+    <button data-key="Down">↓</button>
+    <button data-key="Left">←</button>
+    <button data-key="Right">→</button>
+    <button data-key="BSpace">⌫</button>
+    <button data-text="y" data-enter="1">y ⏎</button>
+    <button data-key="Enter">Enter</button>
+  </div>
+  <div class="row quick" id="quick"></div>
+  <form class="row send" id="sendform">
+    <input id="sendtext" type="text" placeholder="type here and send (Enter)" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button class="primary" type="submit">Send</button>
+    <button type="button" id="editquick" title="edit quick replies">✎</button>
+  </form>
+</div>
+<script src="/static/term.js"></script>
+</body>
+</html>

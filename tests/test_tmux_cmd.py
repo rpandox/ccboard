@@ -72,3 +72,20 @@ def test_login_flow(client, fake_tmux, monkeypatch):
     assert client.post("/api/claude/login/code", headers=H, json={"code": "abc\nrm -rf ~"}).status_code == 400
     assert client.post("/api/claude/login/code", headers=H, json={"code": "abc123#state_1"}).status_code == 200
     assert fake_tmux["sent"][-1] == ("_ccboard-login", "abc123#state_1")
+
+
+def test_send_keys_endpoint_and_term_page(client, projects_dir, fake_tmux, monkeypatch):
+    from app import tmux as t
+    calls = []
+    monkeypatch.setattr(t, "run", lambda *a, **k: calls.append(a))
+    git_init(projects_dir / "shop" / "api")
+    name = client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "shell"}).json()["tmux"]
+    assert client.post(f"/api/sessions/{name}/keys", headers=H, json={"keys": ["Escape", "C-c"]}).status_code == 200
+    assert calls[-1] == ("send-keys", "-t", f"={name}:", "Escape", "C-c")
+    assert client.post(f"/api/sessions/{name}/keys", headers=H, json={"keys": ["C-d"]}).status_code == 400
+    assert client.post(f"/api/sessions/{name}/keys", headers=H, json={"text": "yes", "enter": True}).status_code == 200
+    assert calls[-2] == ("send-keys", "-t", f"={name}:", "-l", "--", "yes") and calls[-1][-1] == "Enter"
+    assert client.post(f"/api/sessions/{name}/keys", headers=H, json={"text": "rm\x03"}).status_code == 400
+    assert client.post("/api/sessions/nope--x--y/keys", headers=H, json={"keys": ["Enter"]}).status_code == 404
+    assert client.get(f"/term/{name}", headers=H).status_code == 200
+    assert client.get("/term/..%2Fetc", headers=H).status_code in (400, 404)

@@ -135,6 +135,29 @@ def send_line(name: str, text: str, pause: float = 0.0) -> None:
     run("send-keys", "-t", pane_target(name), "Enter")
 
 
+KEY_ALLOW = {"Escape", "C-c", "Tab", "Up", "Down", "Left", "Right", "Enter", "BSpace", "Space", "PageUp", "PageDown",
+             "Home", "End", "C-u", "C-l", "C-z"}
+
+
+def send_keys(name: str, keys: list[str]) -> None:
+    """Send named keys (allowlisted) to the session's active pane."""
+    bad = [k for k in keys if k not in KEY_ALLOW]
+    if bad:
+        raise ValueError(f"key not allowed: {bad[0]}")
+    if keys:
+        run("send-keys", "-t", pane_target(name), *keys)
+
+
+def send_text(name: str, text: str, enter: bool = False) -> None:
+    """Type literal text, optionally followed by Enter."""
+    if text:
+        run("send-keys", "-t", pane_target(name), "-l", "--", text)
+    if enter:
+        if text:
+            time.sleep(0.15)
+        run("send-keys", "-t", pane_target(name), "Enter")
+
+
 def kill_session(name: str) -> bool:
     cp = run("kill-session", "-t", f"={name}", check=False)
     if cp.returncode != 0:

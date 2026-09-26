@@ -369,6 +369,34 @@ def api_create_session(project: str, repo: str, body: SessionIn):
             "cmd": cmd_line}
 
 
+class KeysIn(BaseModel):
+    keys: list[str] | None = None
+    text: str | None = None
+    enter: bool = False
+
+
+@app.post("/api/sessions/{name}/keys")
+def api_send_keys(name: str, body: KeysIn):
+    try:
+        tmux.split_name(name)
+    except ValueError:
+        raise projects.BadRequest("not a ccboard session name")
+    if not tmux.has_session(name):
+        raise projects.NotFound(f"session {name} not found")
+    if body.text is not None:
+        if len(body.text) > 2000 or any(ord(c) < 32 and c not in "\t" for c in body.text):
+            raise projects.BadRequest("text too long or contains control characters")
+        tmux.send_text(name, body.text, enter=body.enter)
+    if body.keys:
+        if len(body.keys) > 20:
+            raise projects.BadRequest("too many keys")
+        try:
+            tmux.send_keys(name, body.keys)
+        except ValueError as e:
+            raise projects.BadRequest(str(e))
+    return {"ok": True}
+
+
 @app.delete("/api/sessions/{name}")
 def api_kill_session(name: str):
     try:
@@ -501,6 +529,16 @@ def api_logout():
 @app.get("/")
 def index():
     return FileResponse(STATIC / "index.html")
+
+
+@app.get("/term/{name}")
+def term_page(name: str):
+    try:
+        tmux.split_name(name)
+    except ValueError:
+        if name != tmux.LOGIN_SESSION:
+            raise projects.BadRequest("not a ccboard session name")
+    return FileResponse(STATIC / "term.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/sw.js")

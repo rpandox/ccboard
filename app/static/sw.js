@@ -23,6 +23,7 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/tty') || url.pathname === '/healthz') return;
+  if (req.mode === 'navigate' && url.pathname !== '/') return;   // /term/... and others: network only
   const isShell = req.mode === 'navigate' || SHELL.includes(url.pathname);
   if (!isShell) return;
   event.respondWith((async () => {

@@ -1,0 +1,12 @@
+body.term { display:flex; flex-direction:column; height:100dvh; overflow:hidden; }
+#termbar { display:flex; gap:10px; align-items:center; padding:6px 10px; border-bottom:1px solid var(--line); font-size:13px; flex-wrap:nowrap; overflow:hidden; white-space:nowrap; }
+#termbar .name { font-weight:600; }
+#termbar #termmsg { overflow:hidden; text-overflow:ellipsis; }
+#tty { flex:1 1 auto; width:100%; border:0; background:#000; min-height:120px; }
+#keys { border-top:1px solid var(--line); background:var(--card); padding:6px 8px calc(6px + env(safe-area-inset-bottom)); display:flex; flex-direction:column; gap:6px; }
+#keys .row { display:flex; gap:6px; flex-wrap:nowrap; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+#keys .row::-webkit-scrollbar { display:none; }
+#keys button { flex:0 0 auto; min-width:44px; min-height:38px; font-size:14px; }
+#keys .quick button { background:#1a2233; border-color:#2b3a5a; }
+#keys .send input { flex:1 1 auto; min-height:38px; font-size:16px; }
+#keys .quick:empty { display:none; }

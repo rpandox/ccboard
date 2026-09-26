@@ -36,7 +36,7 @@ def test_session_push_shape_and_throttle(capture):
     assert body["title"] == "shop / api · s1: needs you" and "npm test" in body["message"]
     assert body["click"] == "https://box.ts.net:8443/#s=shop--api--s1"
     acts = {a["label"]: a for a in body["actions"]}
-    assert acts["Terminal"]["url"].endswith("/tty/?arg=shop--api--s1")
+    assert acts["Terminal"]["url"].endswith("/term/shop--api--s1")
     assert acts["Ack"]["method"] == "POST" and acts["Ack"]["headers"]["X-CCBoard"] == "1"
     assert not notify.notify_session("shop--api--s1", "waiting", "again", None)      # throttled
     assert notify.notify_session("shop--api--s1", "done", "All tests pass", None)     # new state

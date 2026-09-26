@@ -88,7 +88,7 @@ def notify_session(name: str, state: str, message: str | None, kind: str | None 
     click = f"{pub}/#s={name}" if pub else None
     actions = []
     if pub:
-        actions.append({"action": "view", "label": "Terminal", "url": f"{pub}/tty/?arg={name}"})
+        actions.append({"action": "view", "label": "Terminal", "url": f"{pub}/term/{name}"})
         actions.append({"action": "http", "label": "Ack", "url": f"{pub}/api/sessions/{name}/ack", "method": "POST",
                         "headers": {"X-CCBoard": "1"}, "clear": True})
     label = f"{name.replace('--', ' / ', 1).replace('--', ' · ')}"

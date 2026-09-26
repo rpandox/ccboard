@@ -275,7 +275,7 @@ function sessionForm(p, r) {
     const tab = window.open('', '_blank');
     try {
       const res = await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/sessions`, body);
-      if (tab) tab.location = res.attach_url;
+      if (tab) tab.location = `/term/${encodeURIComponent(res.tmux)}`;
       ui.openForm = null; setError(null); await poll(true);
     } catch (err) { if (tab) tab.close(); setError(err.message); }
   } },
@@ -335,7 +335,7 @@ function sessionRow(s) {
     el('code', { text: s.command || '' }),
     el('span', { class: 'dim', text: statsText(s) }),
     el('span', { class: 'dim', text: `${fmtAge(s.created)} · ${s.attached} attached` }),
-    el('a', { class: 'btn', href: `/tty/?arg=${encodeURIComponent(s.tmux)}`, target: '_blank', rel: 'noopener', text: 'Attach' }),
+    el('a', { class: 'btn', href: `/term/${encodeURIComponent(s.tmux)}`, target: '_blank', rel: 'noopener', text: 'Attach' }),
     s.needs_attention ? el('button', { onclick: async () => { try { await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/ack`); } catch (e) { setError(e.message); } await poll(true); }, text: 'Ack' }) : null,
     el('button', { class: 'danger', onclick: async () => { try { await api('DELETE', `/api/sessions/${encodeURIComponent(s.tmux)}`); setError(null); } catch (e) { setError(e.message); } await poll(true); }, text: 'Kill' }));
   if (s.last_message || s.last_prompt) {
@@ -410,7 +410,7 @@ function renderInbox() {
       el('span', { class: 'name', text: `${s.project}/${s.repo || '?'} · ${s.name}` }),
       stateBadge(s),
       el('span', { class: 'msg', text: (s.last_message || s.last_prompt || '').slice(0, 140) }),
-      el('a', { class: 'btn', href: `/tty/?arg=${encodeURIComponent(s.tmux)}`, target: '_blank', rel: 'noopener', text: 'Attach' }),
+      el('a', { class: 'btn', href: `/term/${encodeURIComponent(s.tmux)}`, target: '_blank', rel: 'noopener', text: 'Attach' }),
       el('button', { onclick: async (e) => { e.stopPropagation(); try { await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/ack`); } catch (err) { setError(err.message); } await poll(true); }, text: 'Ack' }));
     sec.append(row);
   });
@@ -424,7 +424,7 @@ async function inboxKey(e) {
   if (!items.length) return;
   if (e.key === 'j' || e.key === 'n') { ui.inboxSel = Math.min(items.length - 1, (ui.inboxSel < 0 ? -1 : ui.inboxSel) + 1); renderInbox(); }
   else if (e.key === 'k' || e.key === 'p') { ui.inboxSel = Math.max(0, ui.inboxSel - 1); renderInbox(); }
-  else if (e.key === 'Enter' && ui.inboxSel >= 0) { window.open(`/tty/?arg=${encodeURIComponent(items[ui.inboxSel].tmux)}`, '_blank', 'noopener'); }
+  else if (e.key === 'Enter' && ui.inboxSel >= 0) { window.open(`/term/${encodeURIComponent(items[ui.inboxSel].tmux)}`, '_blank', 'noopener'); }
   else if (e.key === 'a' && ui.inboxSel >= 0) {
     e.preventDefault();
     try { await api('POST', `/api/sessions/${encodeURIComponent(items[ui.inboxSel].tmux)}/ack`); } catch (err) { setError(err.message); }
