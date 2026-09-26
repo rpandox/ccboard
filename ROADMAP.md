@@ -49,8 +49,8 @@ Working rules: one phase at a time; each item is one commit; tick items as they 
   - *as built:* every 60 s (with the PR poll) the files changed on each open task's branch, plus its uncommitted and untracked files, are compared pairwise per repo; both cards show "⚠ overlaps <task> (files)"
 - [x] Cost per project/task, daily/weekly, from ccusage joined on cwd
   - *as built:* `ccusage session --json` (rows keyed by session id, no project path) is joined every 10 minutes on the Claude session ids ccboard recorded for its own sessions and tasks; project cards show today / 7 days / total, repo rows and task cards show their share. Daily buckets use each session's last activity day. Sessions started outside the board are not attributed
-- [ ] Transcript full-text search (SQLite FTS5 over ~/.claude/projects JSONL, display only)
-  - *note:* Claude's transcript folder name encodes cwd with non-alphanumerics replaced by `-`, so `shop/api` and `shop-api` collide; key on ccboard's own `claude_session_id`, not the folder
+- [x] Transcript full-text search (SQLite FTS5 over ~/.claude/projects JSONL, display only)
+  - *as built:* an indexer thread appends new lines of every `~/.claude/projects/**/*.jsonl` (user and assistant text only, by file offset, 50 MB per minute) into an FTS5 table in ccboard's DB; the header search box queries it (bm25 ranking, snippets), and hits link to the ccboard session when the Claude session id is known. Read-only: transcripts remain display-only, never state
 
 ## v0.4 — autonomy & fleet
 

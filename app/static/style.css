@@ -4,7 +4,8 @@ body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-sy
 main { padding:0 16px 40px; max-width:1100px; margin:0 auto; }
 #hdr { display:flex; align-items:center; gap:12px; padding:12px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
 #hdr h1 { font-size:18px; margin:0 8px 0 0; }
-#hdr-actions { margin-left:auto; display:flex; gap:8px; }
+#hdr-actions { margin-left:auto; display:flex; gap:8px; align-items:center; }
+#hdr-search { width:180px; }
 .badge { padding:3px 10px; border-radius:12px; font-size:12px; border:1px solid var(--line); color:var(--dim); }
 .badge.ok { border-color:var(--ok); color:var(--ok); }
 .badge.bad { border-color:var(--bad); color:var(--bad); }

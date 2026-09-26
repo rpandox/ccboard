@@ -18,7 +18,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import claude_auth, clonequeue, cost, github, gitops, hooks, notify, permissions, projects, prpoll, push, recover, tasks, tmux, usage
+from . import claude_auth, clonequeue, cost, github, gitops, hooks, notify, permissions, projects, prpoll, push, recover, search, tasks, tmux, usage
 from .auth import csrf_ok, identify
 from .config import settings
 from .db import DB, now as db_now
@@ -30,6 +30,7 @@ LAUNCHERS = ("claude", "resume", "continue", "shell")
 MAX_ARGS = 1024
 
 db: DB | None = None
+indexer = None
 _scan_lock = threading.Lock()
 _scan_cache: tuple[float, dict] | None = None
 SCAN_TTL = 2.0
@@ -52,6 +53,9 @@ async def lifespan(app: FastAPI):
     cloner.start()
     prp = prpoll.Poller(db, projects.repo_path)
     prp.start()
+    global indexer
+    indexer = search.Indexer(db)
+    indexer.start()
     try:
         rec = recover.run(db, _start_session)
         if rec["recovered"] or rec["closed"]:
@@ -64,6 +68,7 @@ async def lifespan(app: FastAPI):
     poller.stop.set()
     cloner.stop.set()
     prp.stop.set()
+    indexer.stop.set()
 
 
 app = FastAPI(title="ccboard", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -793,6 +798,22 @@ def api_recovery_dismiss():
     db.kv_del("last_recovery")
     _invalidate_scan()
     return {"ok": True}
+
+
+@app.get("/api/search")
+def api_search(q: str = "", limit: int = 30):
+    if indexer is not None and not indexer.available:
+        raise projects.BadRequest("SQLite FTS5 is not available in this Python")
+    rows = search.search(db, q, max(1, min(limit, 100)))
+    known = {r["claude_session_id"]: r for r in db.session_ids() if r.get("claude_session_id")}
+    open_rows = db.open_rows()
+    by_claude_id = {r.get("claude_session_id"): name for name, r in open_rows.items() if r.get("claude_session_id")}
+    for r in rows:
+        k = known.get(r["session_id"])
+        r["project"] = k["project"] if k else None
+        r["repo"] = k["repo"] if k else None
+        r["tmux"] = by_claude_id.get(r["session_id"])
+    return {"q": q, "results": rows}
 
 
 @app.post("/api/cost/refresh")

@@ -18,6 +18,7 @@ def projects_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "data_dir", tmp_path / "data")
     monkeypatch.setattr(settings, "db_path", tmp_path / "data" / "ccboard.db")
     monkeypatch.setattr(settings, "dev_bypass_user", None)
+    monkeypatch.setattr(settings, "claude_config_dir", tmp_path / "claude")   # keep the transcript indexer off the real ~/.claude
     monkeypatch.setattr(settings, "allowed_users", {"alice@example.com"})
     return pdir
 

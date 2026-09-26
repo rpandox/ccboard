@@ -189,6 +189,11 @@ function renderHeader() {
   const n = state.config && state.config.ntfy;
   actions.append(el('button', { onclick: () => { ui.notifyPanel = !ui.notifyPanel; renderNotifyPanel(); }, title: 'push notifications', text: n && n.enabled ? '🔔' : '🔕' }));
   actions.append(el('button', { class: live.on ? 'primary' : '', onclick: toggleLive, title: 'live last lines of every session', text: 'Live' }));
+  if (!$('#hdr-search')) {
+    const box = el('input', { id: 'hdr-search', type: 'search', placeholder: 'search transcripts…', title: 'full-text search over Claude transcripts (display only)' });
+    box.addEventListener('keydown', (e) => { if (e.key === 'Enter') runSearch(box.value); if (e.key === 'Escape') { box.value = ''; $('#search').classList.add('hidden'); } });
+    actions.append(box);
+  } else { actions.append($('#hdr-search')); }
   if (state.login && state.login.running && !ui.modal) actions.append(el('button', { onclick: () => openModal(), text: 'Login in progress…' }));
 }
 
@@ -707,6 +712,31 @@ function taskForm(p, r) {
     el('div', { class: 'row' },
       el('button', { class: 'primary', type: 'submit', text: 'Start task & attach' }),
       el('button', { type: 'button', onclick: () => { ui.openForm = null; renderProjects(); }, text: 'Cancel' })));
+}
+
+/* ---------- transcript search ---------- */
+
+async function runSearch(q) {
+  const sec = $('#search');
+  if (!sec) return;
+  q = (q || '').trim();
+  if (!q) { sec.classList.add('hidden'); return; }
+  sec.textContent = '';
+  sec.classList.remove('hidden');
+  sec.append(el('div', { class: 'row head' }, el('h2', { text: `Search: ${q}` }), el('button', { onclick: () => sec.classList.add('hidden'), text: 'Close' })));
+  try {
+    const r = await api('GET', `/api/search?q=${encodeURIComponent(q)}`);
+    if (!r.results.length) { sec.append(el('div', { class: 'dim', text: 'no matches' })); return; }
+    for (const hit of r.results) {
+      const where = hit.project ? `${hit.project}/${hit.repo}` : (hit.cwd || '').split('/').slice(-2).join('/');
+      sec.append(el('div', { class: 'sess' },
+        el('span', { class: 'state ' + (hit.kind === 'assistant' ? 'done' : ''), text: hit.kind }),
+        el('span', { class: 'name', text: where }),
+        el('span', { class: 'dim', text: (hit.ts || '').replace('T', ' ').slice(0, 16) }),
+        hit.tmux ? el('a', { class: 'btn', href: `/term/${encodeURIComponent(hit.tmux)}`, target: '_blank', rel: 'noopener', text: 'Attach' }) : el('code', { text: hit.session_id.slice(0, 8) }),
+        el('div', { class: 'last', text: hit.snippet })));
+    }
+  } catch (e) { sec.append(el('div', { class: 'bad', text: e.message })); }
 }
 
 /* ---------- needs-attention inbox ---------- */
