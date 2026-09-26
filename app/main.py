@@ -67,6 +67,9 @@ async def auth_middleware(request: Request, call_next):
     resp.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'"
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "same-origin"
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        # Always revalidate the shell and its assets (ETag), so an update never mixes old HTML with new JS.
+        resp.headers["Cache-Control"] = "no-cache"
     return resp
 
 

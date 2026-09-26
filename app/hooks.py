@@ -100,17 +100,28 @@ def resolve_session(headers, payload: dict, open_rows: dict[str, dict]) -> tuple
     return None, "unresolved"
 
 
+CHROME_CHARS = set("─━│┃┌┐└┘├┤╭╮╯╰-=_ >·•")
+CHROME_HINTS = ("? for shortcuts", "shift+tab", "esc to interrupt", "accept edits", "plan mode", "bypass permissions",
+                "auto-accept", "ctrl+", "⏵⏵", "press enter", "Press Enter")
+PROMPT_RE = re.compile(r"^(➜|\$|%|#|>)\s|[$%#]\s*$|git:\(")
+
+
 def _last_screen_line(name: str) -> str | None:
-    """Last non-empty visible line of the pane (Claude's fullscreen TUI lives on the alt screen)."""
+    """Last visible line that looks like Claude's own output: skips box drawing, TUI footer hints,
+    the input box and shell prompts (the fullscreen TUI lives on the alt screen, so the visible
+    screen is what the user sees)."""
     try:
         text = tmux.capture(name, lines=0, join=True)
     except tmux.TmuxError:
         return None
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     for ln in reversed(lines):
-        if set(ln) <= set("─━│┃┌┐└┘├┤╭╮╯╰-=_ >") or ln.startswith("? for shortcuts"):
+        bare = ln.strip("─━│┃┌┐└┘├┤╭╮╯╰ ")
+        if not bare or set(ln) <= CHROME_CHARS:
             continue
-        return ln[:300]
+        if any(h.lower() in bare.lower() for h in CHROME_HINTS) or PROMPT_RE.search(bare):
+            continue
+        return bare[:300]
     return None
 
 

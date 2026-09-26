@@ -26,6 +26,12 @@ main { padding:0 16px 40px; max-width:1100px; margin:0 auto; }
 .sess .name { font-weight:600; }
 .sess.attn { border-left-color:var(--warn); }
 .sess .last { flex-basis:100%; font-size:12px; display:flex; flex-direction:column; gap:2px; padding-left:2px; }
+.inbox { border-color:var(--warn); }
+.inbox-item { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:8px 8px; border-radius:8px; cursor:pointer; border:1px solid transparent; }
+.inbox-item:hover { background:#1f2430; }
+.inbox-item.sel { border-color:var(--acc); background:#1a2233; }
+.inbox-item .name { font-weight:600; }
+.inbox-item .msg { flex:1 1 200px; color:var(--dim); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .state { padding:2px 8px; border-radius:10px; font-size:11px; border:1px solid var(--line); color:var(--dim); }
 .state.working { border-color:var(--acc); color:var(--acc); }
 .state.waiting { border-color:var(--warn); color:var(--warn); background:#3a2f14; }

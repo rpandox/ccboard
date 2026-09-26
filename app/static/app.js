@@ -29,7 +29,7 @@ async function api(method, path, body) {
   return data;
 }
 
-const ui = { openForm: null, confirm: null, error: null, modal: false, lastJson: null };
+const ui = { openForm: null, confirm: null, error: null, modal: false, lastJson: null, inboxSel: -1 };
 let state = null;
 let pollTimer = null;
 
@@ -249,6 +249,60 @@ function projectCard(p) {
   return card;
 }
 
+/* ---------- needs-attention inbox ---------- */
+
+function inboxItems() {
+  const items = [];
+  for (const p of state.projects) {
+    for (const r of p.repos) for (const s of r.sessions) if (s.needs_attention) items.push({ ...s, project: p.name, repo: r.name });
+    for (const s of p.orphan_sessions) if (s.needs_attention) items.push({ ...s, project: p.name });
+  }
+  return items.sort((a, b) => (a.state_at || '').localeCompare(b.state_at || ''));  // oldest first
+}
+
+function renderInbox() {
+  const sec = $('#inbox');
+  if (!sec) return;
+  sec.textContent = '';
+  const items = inboxItems();
+  document.title = (items.length ? `(${items.length}) ` : '') + 'ccboard';
+  if (!items.length) { sec.classList.add('hidden'); ui.inboxSel = -1; return; }
+  sec.classList.remove('hidden');
+  if (ui.inboxSel >= items.length) ui.inboxSel = items.length - 1;
+  sec.append(el('div', { class: 'row head' },
+    el('h2', { text: `Needs attention (${items.length})` }),
+    el('span', { class: 'dim', text: 'j / k move · Enter attach · a ack' })));
+  items.forEach((s, i) => {
+    const row = el('div', { class: 'inbox-item' + (i === ui.inboxSel ? ' sel' : ''), onclick: () => { ui.inboxSel = i; renderInbox(); } },
+      el('span', { class: 'name', text: `${s.project}/${s.repo || '?'} · ${s.name}` }),
+      stateBadge(s),
+      el('span', { class: 'msg', text: (s.last_message || s.last_prompt || '').slice(0, 140) }),
+      el('a', { class: 'btn', href: `/tty/?arg=${encodeURIComponent(s.tmux)}`, target: '_blank', rel: 'noopener', text: 'Attach' }),
+      el('button', { onclick: async (e) => { e.stopPropagation(); try { await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/ack`); } catch (err) { setError(err.message); } await poll(true); }, text: 'Ack' }));
+    sec.append(row);
+  });
+}
+
+async function inboxKey(e) {
+  const ae = document.activeElement;
+  if (ae && ae.matches('input, select, textarea')) return;
+  if (ui.modal) return;
+  const items = inboxItems();
+  if (!items.length) return;
+  if (e.key === 'j' || e.key === 'n') { ui.inboxSel = Math.min(items.length - 1, (ui.inboxSel < 0 ? -1 : ui.inboxSel) + 1); renderInbox(); }
+  else if (e.key === 'k' || e.key === 'p') { ui.inboxSel = Math.max(0, ui.inboxSel - 1); renderInbox(); }
+  else if (e.key === 'Enter' && ui.inboxSel >= 0) { window.open(`/tty/?arg=${encodeURIComponent(items[ui.inboxSel].tmux)}`, '_blank', 'noopener'); }
+  else if (e.key === 'a' && ui.inboxSel >= 0) {
+    e.preventDefault();
+    try { await api('POST', `/api/sessions/${encodeURIComponent(items[ui.inboxSel].tmux)}/ack`); } catch (err) { setError(err.message); }
+    await poll(true);
+  } else if (e.key === 'Escape') { ui.inboxSel = -1; renderInbox(); }
+  else return;
+  const sel = document.querySelector('.inbox-item.sel');
+  if (sel) sel.scrollIntoView({ block: 'nearest' });
+}
+document.addEventListener('keydown', inboxKey);
+
 function renderProjects() {
   const sec = $('#projects');
   sec.textContent = '';
@@ -321,6 +375,7 @@ function closeModal() { ui.modal = false; $('#modal').classList.add('hidden'); }
 function render(force) {
   renderHeader();
   renderBanner();
+  renderInbox();
   renderNewProject();
   const ae = document.activeElement;
   const typing = !!(ae && ae.closest('#projects') && ae.matches('input, select, textarea'));

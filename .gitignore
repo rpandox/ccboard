@@ -5,3 +5,4 @@ __pycache__/
 *.db-*
 ccboard.tar.gz
 .pytest_cache/
+.gstack/

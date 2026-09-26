@@ -96,3 +96,15 @@ def test_token_file_is_private(projects_dir):
     t = hooks.ensure_token()
     assert len(t) == 64 and oct(os.stat(p).st_mode & 0o777) == "0o600"
     assert hooks.check_token(t) and not hooks.check_token(t[:-1] + "x") and not hooks.check_token(None)
+
+
+def test_last_screen_line_skips_chrome_and_prompts(monkeypatch):
+    from app import tmux as t
+    screens = {
+        "shell": "➜ api git:(main) echo hi\nAdded login page and 4 passing tests.\n➜ api git:(main) \n",
+        "tui": "╭────────────────╮\n│ I updated login.html and added tests. All green. │\n╰────────────────╯\n╭─────╮\n│ >  │\n╰─────╯\n  ? for shortcuts    ⏵⏵ accept edits on (shift+tab to cycle)\n",
+        "empty": "\n\n",
+    }
+    for key, expect in (("shell", "Added login page and 4 passing tests."), ("tui", "I updated login.html and added tests. All green."), ("empty", None)):
+        monkeypatch.setattr(t, "capture", lambda name, lines=200, join=True, escapes=False, _k=key: screens[_k])
+        assert hooks._last_screen_line("x--y--z") == expect

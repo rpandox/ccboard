@@ -16,7 +16,8 @@ Working rules: one phase at a time; each item is one commit; tick items as they 
 
 1. [x] Hook status engine: global ~/.claude/settings.json hooks (SessionStart, UserPromptSubmit, Notification with matchers permission_prompt / idle_prompt / agent_needs_input / agent_completed, Stop, StopFailure, SessionEnd) POST stdin JSON to the board; map cwd + $TMUX_PANE → session; per-session state working / waiting / done / errored
    - *as built:* `install.sh` merges async hooks (`bin/ccboard-hook`) and a statusLine command (`bin/ccboard-statusline`) into `~/.claude/settings.json` via `scripts/claude_settings.py`; the Notification hook has no matcher and the board routes on `notification_type`; `POST /api/hook` is authenticated by a 0600 token file instead of the Tailscale identity; resolution order is `CCBOARD_SESSION` env → `$TMUX_PANE` on the ccboard socket → unique session in the hook's cwd; states are idle / working / waiting / done / errored / ended
-2. [ ] "Needs attention" inbox at top, oldest first, keyboard jump to next
+2. [x] "Needs attention" inbox at top, oldest first, keyboard jump to next
+   - *as built:* derived client-side from sessions in waiting / done / errored that are not acked; `j`/`n` and `k`/`p` move, `Enter` attaches, `a` acks, `Esc` clears; the tab title shows the count
 3. [ ] Usage & limits strip at top: 5h block %, weekly %, burn rate, reset countdown, per-session model + context %. Sources: statusLine hook JSON (per session) + `ccusage blocks --json` (plan quota). Red banner when StopFailure reports rate_limit
 4. [ ] ntfy push (self-hosted on tailnet) on done / needs input / rate-limited, with deep link and last assistant line
 5. [ ] PWA: manifest, service worker, installable, Web Push (VAPID), offline shell showing last known state
