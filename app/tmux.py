@@ -158,6 +158,17 @@ def send_text(name: str, text: str, enter: bool = False) -> None:
         run("send-keys", "-t", pane_target(name), "Enter")
 
 
+def paste_text(name: str, text: str, enter: bool = True) -> None:
+    """Paste multi-line text with bracketed paste (newlines do not submit), then Enter."""
+    cp = subprocess.run(_base() + ["load-buffer", "-b", "ccboard", "-"], input=text, text=True, capture_output=True, timeout=5)
+    if cp.returncode != 0:
+        raise TmuxError((cp.stderr or "load-buffer failed").strip())
+    run("paste-buffer", "-p", "-d", "-b", "ccboard", "-t", pane_target(name))
+    if enter:
+        time.sleep(0.3)
+        run("send-keys", "-t", pane_target(name), "Enter")
+
+
 def kill_session(name: str) -> bool:
     cp = run("kill-session", "-t", f"={name}", check=False)
     if cp.returncode != 0:

@@ -18,7 +18,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import claude_auth, clonequeue, github, gitops, hooks, notify, permissions, projects, push, recover, tasks, tmux, usage
+from . import claude_auth, clonequeue, github, gitops, hooks, notify, permissions, projects, prpoll, push, recover, tasks, tmux, usage
 from .auth import csrf_ok, identify
 from .config import settings
 from .db import DB, now as db_now
@@ -50,6 +50,8 @@ async def lifespan(app: FastAPI):
     poller.start()
     cloner = clonequeue.Worker(_launch_clone)
     cloner.start()
+    prp = prpoll.Poller(db, projects.repo_path)
+    prp.start()
     try:
         rec = recover.run(db, _start_session)
         if rec["recovered"] or rec["closed"]:
@@ -61,6 +63,7 @@ async def lifespan(app: FastAPI):
     yield
     poller.stop.set()
     cloner.stop.set()
+    prp.stop.set()
 
 
 app = FastAPI(title="ccboard", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -330,11 +333,17 @@ def _tasks_view() -> list[dict]:
     out = []
     for t in db.tasks():
         s = sessions.get(t["tmux_name"])
+        try:
+            ci = json.loads(t["ci"]) if t.get("ci") else None
+            prj = json.loads(t["pr_json"]) if t.get("pr_json") else None
+        except ValueError:
+            ci, prj = None, None
         out.append({
+            "ci": ci, "pr": prj,
             "id": t["id"], "project": t["project"], "repo": t["repo"], "slug": t["slug"], "title": t["title"],
             "branch": t["branch"], "base": t["base"], "worktree": t["worktree"], "tmux": t["tmux_name"],
             "claude_session_id": t["claude_session_id"], "pr_url": t["pr_url"], "pr_number": t["pr_number"],
-            "pr_state": t["pr_state"], "ci": t["ci"], "cost_usd": t["cost_usd"], "overlap": t["overlap"],
+            "pr_state": t["pr_state"], "cost_usd": t["cost_usd"], "overlap": t["overlap"],
             "created_at": t["created_at"], "column": tasks.derive_status(t, s),
             "session": {"state": s["state"], "state_at": s["state_at"], "last_message": s["last_message"],
                         "needs_attention": s["needs_attention"], "command": s["command"]} if s else None,
@@ -446,6 +455,52 @@ def api_task_merge(tid: int, body: MergeIn | None = None):
     db.task_update(tid, pr_state="MERGED", status="merged", archived_at=db_now())
     _invalidate_scan()
     return {"merged": tid, "output": out, "worktree_removed": err is None}
+
+
+@app.post("/api/tasks/{tid}/fix-ci")
+def api_task_fix_ci(tid: int):
+    """Fetch the failing CI logs and hand them to the task's Claude session (relaunched if gone)."""
+    t, wt = _task_or_404(tid)
+    rpath = projects.repo_path(t["project"], t["repo"])
+    cwd = wt if wt.is_dir() else rpath
+    run_name, log_text = prpoll.failed_log(cwd, t["branch"])
+    prompt = prpoll.fix_ci_prompt(t["branch"], run_name, log_text)
+    name = t["tmux_name"]
+    relaunched = False
+    if not tmux.has_session(name):
+        if not wt.is_dir():
+            raise projects.Conflict("the worktree is gone; archive this task and start a new one")
+        _, _, session = tmux.split_name(name)
+        _start_session(name, t["project"], t["repo"], session, "task", str(wt), cmd_line="claude --continue",
+                       claude_session_id=t.get("claude_session_id"), add_dirs=[])
+        relaunched = True
+        time.sleep(4)  # let claude come up before pasting
+    tmux.paste_text(name, prompt, enter=True)
+    db.add_event(name, "FixCI", run_name, f"CI logs sent ({len(log_text)} chars)", {"run": run_name})
+    db.set_state(name, "working", "FixCI", prompt=prompt[:500])
+    _invalidate_scan()
+    return {"ok": True, "relaunched": relaunched, "run": run_name, "chars": len(log_text)}
+
+
+@app.post("/api/tasks/{tid}/refresh")
+def api_task_refresh(tid: int):
+    t, wt = _task_or_404(tid)
+    if not t.get("pr_number"):
+        raise projects.BadRequest("no PR for this task")
+    cwd = wt if wt.is_dir() else projects.repo_path(t["project"], t["repo"])
+    st = prpoll.pr_status(cwd, int(t["pr_number"]))
+    db.task_update(tid, pr_state=st["state"], pr_json=json.dumps(st), ci=json.dumps(st["ci"]),
+                   **({"status": "merged"} if st["state"] == "MERGED" else {}))
+    _invalidate_scan()
+    return st
+
+
+@app.get("/api/projects/{project}/repos/{repo}/issues")
+def api_issues(project: str, repo: str):
+    rpath = projects.repo_path(project, repo)
+    if not projects.is_repo(rpath):
+        raise projects.NotFound("not a git repo")
+    return {"issues": prpoll.list_issues(rpath)}
 
 
 class ArchiveIn(BaseModel):

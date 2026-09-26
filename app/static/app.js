@@ -29,7 +29,7 @@ async function api(method, path, body) {
   return data;
 }
 
-const ui = { openForm: null, confirm: null, error: null, modal: false, lastJson: null, inboxSel: -1, notifyPanel: false, deepLinked: false };
+const ui = { openForm: null, confirm: null, error: null, notice: null, modal: false, lastJson: null, inboxSel: -1, notifyPanel: false, deepLinked: false };
 let state = null;
 let pollTimer = null;
 
@@ -198,7 +198,10 @@ function renderBanner() {
   b.className = '';
   const rlim = state && state.rate_limited && state.rate_limited.value;
   const recent = rlim && state.rate_limited.at && (Date.now() - Date.parse(state.rate_limited.at)) < 5 * 3600 * 1000;
-  if (ui.offline) {
+  if (ui.notice) {
+    b.className = 'warn';
+    b.append(el('span', { text: ui.notice }), el('button', { onclick: () => { ui.notice = null; renderBanner(); }, text: 'ok' }));
+  } else if (ui.offline) {
     b.className = 'warn';
     b.append(el('span', { text: `Offline: showing the last known state from ${new Date(ui.offline).toLocaleTimeString()}. Retrying…` }));
   } else if (ui.error) {
@@ -516,10 +519,20 @@ function toggleLive() {
 
 const COLUMNS = [['in_progress', 'In progress'], ['needs_you', 'Needs you'], ['done', 'Done'], ['pr', 'PR open'], ['merged', 'Merged']];
 
+function ciBadge(t) {
+  if (!t.pr_url) return null;
+  const b = (t.ci && t.ci.bucket) || 'none';
+  const cls = b === 'pass' ? 'ok' : b === 'fail' ? 'bad' : b === 'pending' ? 'warn' : '';
+  const review = t.pr && t.pr.review ? ` · ${t.pr.review.toLowerCase().replace('_', ' ')}` : '';
+  const txt = `${(t.pr_state || 'PR').toLowerCase()} · CI ${b}${review}`;
+  return el('span', { class: 'badge ' + cls, title: (t.ci && t.ci.checks || []).map(c => `${c.name}: ${c.bucket}`).join('\n'), text: txt });
+}
+
 function taskCard(t) {
   const s = t.session;
+  const ciFail = t.ci && t.ci.bucket === 'fail';
   const card = el('div', { class: 'task' + (s && s.needs_attention ? ' attn' : ''), 'data-task': t.id },
-    el('div', { class: 'row' }, el('span', { class: 'title', text: t.title }), s ? stateBadge(s) : el('span', { class: 'state ended', text: 'no session' })),
+    el('div', { class: 'row' }, el('span', { class: 'title', text: t.title }), s ? stateBadge(s) : el('span', { class: 'state ended', text: 'no session' }), ciBadge(t)),
     el('div', { class: 'meta', text: `${t.project}/${t.repo} · ${t.branch}${t.pr_url ? ' · PR #' + t.pr_number : ''}${typeof t.cost_usd === 'number' ? ' · $' + t.cost_usd.toFixed(2) : ''}` }),
     s && s.last_message ? el('div', { class: 'last', text: s.last_message.slice(0, 160) }) : null,
     t.overlap ? el('div', { class: 'last bad', text: 'overlaps: ' + t.overlap }) : null,
@@ -527,6 +540,8 @@ function taskCard(t) {
       el('a', { class: 'btn', href: `/term/${encodeURIComponent(t.tmux)}`, target: '_blank', rel: 'noopener', text: 'Attach' }),
       el('button', { onclick: () => openTaskModal(t), text: t.pr_url ? 'Diff / PR' : 'Diff / PR…' }),
       t.pr_url ? el('a', { class: 'btn', href: t.pr_url, target: '_blank', rel: 'noopener', text: 'PR' }) : null,
+      ciFail ? el('button', { class: 'danger', onclick: async () => { try { const r = await api('POST', `/api/tasks/${t.id}/fix-ci`); setError(null); ui.notice = `CI logs (${r.chars} chars) sent to ${t.title}${r.relaunched ? ' (session relaunched)' : ''}`; } catch (e) { setError(e.message); } await poll(true); }, text: 'Fix CI' }) : null,
+      t.pr_url ? el('button', { onclick: async () => { try { await api('POST', `/api/tasks/${t.id}/refresh`); } catch (e) { setError(e.message); } await poll(true); }, title: 'refresh PR / CI status', text: '↻' }) : null,
       confirmButton('arch:' + t.id, 'Archive', async () => {
         try { await api('POST', `/api/tasks/${t.id}/archive`, { force: false }); }
         catch (e) {
@@ -638,6 +653,23 @@ function renderTasks() {
 function taskForm(p, r) {
   const title = el('input', { type: 'text', placeholder: 'task title (becomes the branch name)', maxlength: 120, required: true });
   const prompt = el('textarea', { placeholder: 'what Claude should do in the new worktree…', required: true });
+  const issueSel = el('select', {}, el('option', { value: '', text: 'from a GitHub issue…' }));
+  let issues = [];
+  issueSel.addEventListener('focus', async () => {
+    if (issues.length) return;
+    try {
+      const res = await api('GET', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/issues`);
+      issues = res.issues;
+      for (const i of issues) issueSel.append(el('option', { value: String(i.number), text: `#${i.number} ${i.title}`.slice(0, 90) }));
+      if (!issues.length) issueSel.append(el('option', { value: '', text: '(no open issues)' }));
+    } catch (e) { issueSel.append(el('option', { value: '', text: e.message.slice(0, 80) })); }
+  }, { once: true });
+  issueSel.addEventListener('change', () => {
+    const i = issues.find(x => String(x.number) === issueSel.value);
+    if (!i) return;
+    title.value = `#${i.number} ${i.title}`.slice(0, 120);
+    prompt.value = `${i.title}\n\n${i.body || ''}\n\nGitHub issue: ${i.url}\nWhen done, commit with a message that includes "Closes #${i.number}".`;
+  });
   const args = el('input', { type: 'text', placeholder: 'extra claude args (optional)' });
   const siblings = allRepos().filter(x => x.project === p.name && x.repo !== r.name);
   const boxes = [];
@@ -655,7 +687,7 @@ function taskForm(p, r) {
     } catch (err) { if (tab) tab.close(); setError(err.message); }
   } },
     el('label', { text: 'New task: Claude works on a branch in its own worktree (claude --worktree)' }),
-    title, prompt,
+    issueSel, title, prompt,
     el('label', { text: 'extra args' }), args,
     siblings.length ? el('label', { text: 'also give access to (--add-dir)' }) : null, checks,
     el('div', { class: 'row' },
