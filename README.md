@@ -29,7 +29,19 @@ ccboard is a *status-and-attention layer*. It launches the real `claude` TUI ins
 - **Session state from Claude Code hooks.** `install.sh` registers async hooks and a statusLine command in `~/.claude/settings.json`; each session shows idle / working / needs you / done / error, the last prompt, the last line Claude printed, its model and context usage. Nothing reads transcripts.
 - **One idempotent `install.sh`** for Ubuntu 22.04 / 24.04 (amd64, arm64): apt deps, ttyd, code-server, Claude Code, venv, three systemd units, tailscale serve mappings, Claude hooks. Rerun it any time.
 
-See [ROADMAP.md](ROADMAP.md) for what comes next (hook-driven status, attention inbox, usage strip, push notifications, PWA, worktrees per task, …).
+## What v0.2 adds: the attention layer
+
+- **Needs-attention inbox** at the top: sessions waiting for you, done, or errored, oldest first. `j`/`k` move, `Enter` attaches, `a` acks, `y`/`n` allow or deny a pending permission. The tab title shows the count.
+- **Usage strip**: 5-hour and weekly limits with reset countdowns (from Claude's statusline), the active ccusage block (cost, burn rate, projection), and a chip per session with model and context %. A red banner when Claude reports a rate limit.
+- **Push notifications** two ways: a self-hosted **ntfy** server on your tailnet (installed by `install.sh`, subscribe in the ntfy app to the URL shown under 🔔) and **Web Push** for the installed PWA ("Enable push on this device"). Pushes fire on needs-you, done, error and rate limit, with a deep link, a Terminal button and an Ack button.
+- **Remote approve/deny**: when Claude asks for permission and nobody is attached to that terminal, the board pushes a notification with **Allow / Deny** buttons and holds the prompt for up to 90 s (`CCBOARD_APPROVE_TIMEOUT`). Answer from the phone, the inbox, or the `y`/`n` keys; with no answer the normal TUI prompt appears. If someone is attached, the TUI prompt appears immediately.
+- **PWA**: installable (Add to Home Screen), works offline showing the last known state.
+- **Mobile terminal** `/term/<session>`: the terminal with a key bar (Esc, Ctrl-C, Tab, arrows, ⌫, y⏎, Enter), editable quick replies and a text box. Attach links open it.
+- **Live** grid: the last 20 lines of every session, refreshed every 2 s over SSE.
+- **Reboot recovery**: after a reboot every Claude session is relaunched in its repo with `claude --resume <id>`.
+- **Import from GitHub**: pick repos from `gh repo list`, clone them into a project three at a time.
+
+See [ROADMAP.md](ROADMAP.md) for how each item was built and what comes next (worktrees per task, PR flow, cost per project, scheduler, fleet).
 
 ## What it is not
 
@@ -66,6 +78,10 @@ Every setting is an environment variable. Values are remembered in `/etc/ccboard
 | `CCBOARD_ALLOWED_USERS` | your tailnet login | Comma list of `Tailscale-User-Login` values allowed in |
 | `CCBOARD_DATA_DIR` | `~/.local/share/ccboard` | SQLite database |
 | `CODE_SERVER_VERSION` | `4.139.1` | Version installed when code-server is absent |
+| `NTFY_HTTPS_PORT` | `8444` | Tailscale HTTPS port for the ntfy server (`CCBOARD_NTFY=0` skips ntfy) |
+| `NTFY_TOPIC` | `ccboard` | ntfy topic the board publishes to |
+| `CCBOARD_APPROVE_TIMEOUT` | `90` | Seconds a permission prompt waits for a remote answer (`CCBOARD_REMOTE_APPROVE=0` disables the hook) |
+| `CCBOARD_RECOVER` | `1` | Relaunch Claude sessions after a reboot |
 
 Tailnet-only `tailscale serve` accepts any HTTPS port. If a chosen port already carries something else (another serve handler or a Funnel), `install.sh` stops and tells you; pick other ports or rerun with `CCBOARD_REPLACE_SERVE=1` to replace that port's handlers. It never runs `tailscale serve reset` and never touches ports you did not name.
 
@@ -101,6 +117,8 @@ Update: pull or extract the new version into the same directory and rerun `./ins
 - The dashboard checks the `Tailscale-User-Login` header that `tailscale serve` injects and allows only the logins in `CCBOARD_ALLOWED_USERS`. Missing, empty or unknown identity → 403. Every non-GET request must also carry an `X-CCBoard: 1` header (blocks cross-site requests), and pages are served with a strict Content-Security-Policy.
 - **The terminal (`/tty`) and code-server do not check that allowlist.** Any device your tailnet ACL lets reach this node's `CCBOARD_HTTPS_PORT` and `CODE_HTTPS_PORT` gets a shell as your user. Keep the ACL tight (a single-user tailnet is fine). ttyd runs with `-O`, so a web page you visit cannot open the terminal's WebSocket cross-site; a consequence is that clients without an `Origin` header (curl, wscat) are refused.
 - Everything binds to 127.0.0.1. A process running on the box itself can still connect locally and forge the identity header; on a single-user machine that process already is you.
+- Hooks and the statusline talk to the board over loopback with the token in `~/.local/share/ccboard/hook-token` (0600); `/api/hook` and `/api/permission` accept only that token. The ntfy server is tailnet-only and, like ttyd and code-server, protected by the tailnet ACL rather than the allowlist; anyone on the tailnet could publish to or read the topic. ntfy's `upstream-base-url` sends only a wake-up (no message content) through ntfy.sh so iOS devices get pushes.
+- `install.sh` writes `/etc/sudoers.d/ccboard` so your user can run `systemctl restart ccboard` and `ccboard-ttyd` without a password (deploys), and `gh auth setup-git` so git uses gh's token for https clones.
 - If the box has `tailscale set --operator=<you>` configured, every process running as you can change `tailscale serve` (including turning on Funnel). `install.sh` does not set the operator; it uses `sudo` for serve commands.
 - Tagged nodes and requests from the box itself carry no identity header and are rejected.
 - Do not put `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` in `/etc/ccboard/env` or the tmux server's environment: they outrank the interactive login.
