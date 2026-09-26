@@ -129,3 +129,15 @@ def test_batch_respects_cap(client, projects_dir, fake_tmux, tmp_path, monkeypat
     assert w.tick() == []
     assert sorted(main.db.run_get(x)["status"] for x in first + second) == ["ok"] * 4
     assert all(j["enabled"] == 0 for j in main.db.jobs()[:4])
+
+
+def test_extra_args_cannot_escalate(client, projects_dir, fake_tmux, tmp_path, monkeypatch):
+    from app import main
+    make_repo(projects_dir)
+    monkeypatch.setattr(main.settings, "claude_bin", lambda: str(fake_claude(tmp_path)))
+    for bad in ("--permission-mode=bypassPermissions", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions",
+                "--settings {\"permissions\":{\"defaultMode\":\"bypassPermissions\"}}", "--permission-mode auto", "--PERMISSION-MODE=auto"):
+        r = client.post("/api/projects/shop/repos/api/jobs", headers=H, json={"name": "x", "prompt": "p", "args": bad})
+        assert r.status_code == 400, bad
+    assert client.post("/api/projects/shop/repos/api/jobs", headers=H, json={"name": "x", "prompt": "p", "cron": "0 3 * * *", "args": "--model opus --add-dir /tmp"}).status_code == 201
+    assert scheduler.check_extra_args("--model opus") == ["--model", "opus"]

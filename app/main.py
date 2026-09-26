@@ -88,6 +88,12 @@ async def auth_middleware(request: Request, call_next):
         if request.method != "POST" or not hooks.check_token(request.headers.get(hooks.TOKEN_HEADER)):
             return JSONResponse({"error": "bad hook token"}, status_code=403)
         return await call_next(request)
+    if request.url.path.startswith("/api/") and request.headers.get(hooks.TOKEN_HEADER):
+        # Local automation (the MCP shim, scripts on the box) proves itself with the 0600 token file.
+        if not hooks.check_token(request.headers.get(hooks.TOKEN_HEADER)):
+            return JSONResponse({"error": "bad token"}, status_code=403)
+        request.state.user = "local-token"
+        return await call_next(request)
     user = identify(request.headers, settings)
     if user is None:
         return JSONResponse({"error": "no Tailscale identity or not in CCBOARD_ALLOWED_USERS"}, status_code=403)
@@ -574,13 +580,10 @@ def _validate_job(body: JobIn) -> None:
         raise projects.BadRequest("max_turns must be 1..500")
     if body.max_budget_usd is not None and not (0 < body.max_budget_usd <= 1000):
         raise projects.BadRequest("max_budget_usd must be 0..1000")
-    if body.args:
-        try:
-            bad = {"--dangerously-skip-permissions", "bypassPermissions"}
-            if bad & set(shlex.split(body.args)):
-                raise projects.BadRequest("bypassPermissions is not allowed for scheduled runs")
-        except ValueError as e:
-            raise projects.BadRequest(f"args: {e}")
+    try:
+        scheduler.check_extra_args(body.args)
+    except ValueError as e:
+        raise projects.BadRequest(str(e))
 
 
 @app.post("/api/projects/{project}/repos/{repo}/jobs", status_code=201)

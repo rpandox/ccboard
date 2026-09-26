@@ -269,6 +269,18 @@ else
   python3 "$APP_DIR/scripts/claude_settings.py" install --app-dir "$APP_DIR" --approve-timeout "${CCBOARD_APPROVE_TIMEOUT:-90}"
 fi
 
+# ---------------------------------------------------------------- MCP: register the board's tools with Claude Code (user scope)
+log "MCP server registration"
+if have claude || [ -x "$HOME_DIR/.local/bin/claude" ]; then
+  CLAUDE_BIN=$(command -v claude || echo "$HOME_DIR/.local/bin/claude")
+  if "$CLAUDE_BIN" mcp get ccboard >/dev/null 2>&1; then
+    note "present"
+  else
+    "$CLAUDE_BIN" mcp add --scope user ccboard -- "$APP_DIR/.venv/bin/python" "$APP_DIR/scripts/ccboard_mcp.py" >/dev/null 2>&1 \
+      && note "registered 'ccboard' (tools: list_projects, create_task, list_tasks, get_task_status)" || warn "claude mcp add failed; register manually: claude mcp add --scope user ccboard -- $APP_DIR/.venv/bin/python $APP_DIR/scripts/ccboard_mcp.py"
+  fi
+fi
+
 # ---------------------------------------------------------------- sudoers: let the user restart the stateless units (deploys)
 log "sudoers rule for restarts"
 sudoers_want=$(printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl restart ccboard.service, /usr/bin/systemctl restart ccboard-ttyd.service, /usr/bin/systemctl try-restart ccboard.service\n' "$USER_NAME")

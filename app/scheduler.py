@@ -27,6 +27,26 @@ MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk")   # bypassPermissi
 RATE_RE = re.compile(r"rate.?limit|usage limit|limit reached|too many requests", re.I)
 
 
+FORBIDDEN_ARG_PARTS = ("dangerously", "bypasspermissions", "--permission-mode", "--settings", "--setting-sources",
+                       "--permission-prompt", "--allow-dangerously")
+
+
+def check_extra_args(args: str | None) -> list[str]:
+    """Extra CLI args for unattended runs: the permission mode is set by the job itself and may never be
+    escalated through the args (any spelling, '=' forms, settings overrides)."""
+    if not args:
+        return []
+    try:
+        parts = shlex.split(args)
+    except ValueError as e:
+        raise ValueError(f"args: {e}")
+    for p in parts:
+        low = p.lower()
+        if any(f in low for f in FORBIDDEN_ARG_PARTS):
+            raise ValueError(f"argument not allowed for unattended runs: {p}")
+    return parts
+
+
 def valid_cron(expr: str) -> bool:
     try:
         return croniter.is_valid(expr)
@@ -88,7 +108,7 @@ def run_job(db, job: dict, run_id: int) -> dict:
     slug = f"{tasks.slugify(job['name'])[:30]}-{stamp}".strip("-")
     slug = tasks.unique_slug(rpath, slug, db.task_slugs(job["project"], job["repo"]))
     try:
-        extra = shlex.split(job.get("args") or "")
+        extra = check_extra_args(job.get("args"))
     except ValueError:
         extra = []
     cmd = build_command(job["prompt"], slug, job.get("permission_mode") or "acceptEdits", int(job.get("max_turns") or 30),
