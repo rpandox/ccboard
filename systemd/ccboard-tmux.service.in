@@ -1,0 +1,19 @@
+[Unit]
+Description=ccboard tmux server (owns every Claude Code session)
+After=network.target
+
+[Service]
+Type=forking
+User=__USER__
+WorkingDirectory=__HOME__
+Environment=PATH=__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=__HOME__ LANG=C.UTF-8 SHELL=__SHELL__ TMUX_TMPDIR=/tmp
+# start-server daemonises and exits; systemd adopts the server (GuessMainPID). exit-empty is off in tmux.conf,
+# so the server stays up with zero sessions and never lives inside ccboard.service's cgroup.
+ExecStart=/usr/bin/tmux -L ccboard -f __APP_DIR__/tmux.conf start-server
+ExecStop=-/usr/bin/tmux -L ccboard kill-server
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

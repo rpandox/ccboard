@@ -1,0 +1,65 @@
+# ccboard roadmap
+
+Working rules: one phase at a time; each item is one commit; tick items as they land.
+
+## v0.1 — skeleton ✅
+
+- [x] Projects: list with branch / dirty / session count; create blank (git init); clone from URL; delete (kills its sessions, removes folder)
+- [x] Sessions: unlimited per project, all concurrent; launchers: claude, claude --resume, claude --continue, shell; attach (ttyd link), kill
+- [x] Open project in code-server
+- [x] README.md, ROADMAP.md, package as tarball, git commit as v0.1
+- [x] *(added during the build)* Claude login from the board: sign-in link + paste the code
+- [x] *(added during the build)* Project folder holding one or more repos; sessions run inside a repo; sibling repos via `--add-dir`
+- [x] *(added during the build)* Public GitHub repo
+
+## v0.2 — attention layer (design for it, build later, in this order)
+
+1. [ ] Hook status engine: global ~/.claude/settings.json hooks (SessionStart, UserPromptSubmit, Notification with matchers permission_prompt / idle_prompt / agent_needs_input / agent_completed, Stop, StopFailure, SessionEnd) POST stdin JSON to the board; map cwd + $TMUX_PANE → session; per-session state working / waiting / done / errored
+   - *note:* every ccboard session already carries `CCBOARD_SESSION=<tmux name>` and `CCBOARD_URL=http://127.0.0.1:<port>` in its environment; hooks POST over loopback (no Tailscale identity there), so `/api/hook` gets its own token and a middleware exemption
+2. [ ] "Needs attention" inbox at top, oldest first, keyboard jump to next
+3. [ ] Usage & limits strip at top: 5h block %, weekly %, burn rate, reset countdown, per-session model + context %. Sources: statusLine hook JSON (per session) + `ccusage blocks --json` (plan quota). Red banner when StopFailure reports rate_limit
+4. [ ] ntfy push (self-hosted on tailnet) on done / needs input / rate-limited, with deep link and last assistant line
+5. [ ] PWA: manifest, service worker, installable, Web Push (VAPID), offline shell showing last known state
+6. [ ] Mobile terminal: fullscreen ttyd + key toolbar (Esc, Ctrl-C, Tab, arrows, y, Enter) + per-session quick-reply buttons via tmux send-keys
+   - *note:* ttyd 1.7.7's page has no viewport meta tag (fix unreleased upstream), so wrap it in a board page or serve a custom index with `-I`; xterm.js has no soft keys; consider `attach-session -f ignore-size` for phones so they do not resize the desktop view
+7. [ ] Remote approve/deny: PermissionRequest hook blocks until I tap an ntfy http action button; on timeout falls back to the normal TUI prompt
+   - *note:* the hook must answer with `hookSpecificOutput.permissionDecision` = allow | deny | ask; exit code 2 is not honoured for this event
+8. [ ] Live last-lines grid: `tmux capture-pane -p -S -20` every 2s over SSE
+   - *note:* Claude Code's fullscreen TUI uses the alternate screen, so use `capture-pane -p` (visible screen); history (`-S`) is empty while it runs
+9. [ ] Reboot recovery: active sessions recorded in SQLite; boot unit relaunches each with `claude --resume <id>`
+   - *note:* the `sessions` table already has `claude_session_id`, `add_dirs` and `ended_at`; the startup reconcile that closes stale rows becomes "relaunch"
+10. [ ] Bulk clone every repo via `gh repo list`
+
+## v0.3 — git & tasks
+
+- [ ] Worktree + branch per task via `claude --worktree`; honour .worktreeinclude for .env
+  - *note:* runs per repo (a project folder is not a git repo)
+- [ ] Task card (title + prompt) → worktree + tmux window + claude; columns derived from hook state
+- [ ] Diff view (diff2html) → AI PR description via `claude -p` → `gh pr create` → merge & archive
+- [ ] PR/CI status on cards; "fix CI" re-dispatch with failing logs; start task from GitHub issue
+- [ ] Cross-worktree file-overlap warning
+- [ ] Cost per project/task, daily/weekly, from ccusage joined on cwd
+- [ ] Transcript full-text search (SQLite FTS5 over ~/.claude/projects JSONL, display only)
+  - *note:* Claude's transcript folder name encodes cwd with non-alphanumerics replaced by `-`, so `shop/api` and `shop-api` collide; key on ccboard's own `claude_session_id`, not the folder
+
+## v0.4 — autonomy & fleet
+
+- [ ] Durable scheduler (APScheduler/systemd timers) for headless `claude -p` runs in fresh worktrees, results as cards
+- [ ] Batch one prompt across N repos with concurrency cap and quota awareness
+- [ ] Board as MCP server: create_task / list_tasks / get_task_status
+- [ ] Port-per-worktree preview links through tailscale serve
+- [ ] Devcontainer option per project; bypassPermissions allowed only inside it
+- [ ] Second box: same app in node mode, hub over MagicDNS, ACL tags, health panel (cpu/ram/disk)
+- [ ] Nightly restic of DB + transcripts; `git push --all` for WIP branches
+
+## Never
+
+- A chat UI replacing the Claude TUI (Remote Control already exists)
+- Transcripts as the source of state (format is internal; hooks only)
+- Multi-user / team features, Funnel, any public exposure
+- bypassPermissions by default; use auto or acceptEdits + deny rules
+- Cloud VM orchestration, tsnet rewrite, Kubernetes, every-agent-CLI support on day one
+
+## Proposed additions (not in the original spec)
+
+- [ ] Terminal behind the board's own WebSocket proxy, so the `Tailscale-User-Login` allowlist also covers `/tty` (today ttyd and code-server rely on the tailnet ACL only)

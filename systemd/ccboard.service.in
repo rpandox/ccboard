@@ -1,0 +1,21 @@
+[Unit]
+Description=ccboard dashboard (FastAPI on loopback, exposed by tailscale serve)
+After=network-online.target tailscaled.service ccboard-tmux.service
+Wants=network-online.target ccboard-tmux.service
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__APP_DIR__
+Environment=PATH=__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=__HOME__ LANG=C.UTF-8 SHELL=__SHELL__ TMUX_TMPDIR=/tmp
+Environment=CCBOARD_PORT=8000 TTYD_PORT=7681 CODE_SERVER_PORT=8080
+EnvironmentFile=-/etc/ccboard/env
+ExecStart=__APP_DIR__/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port ${CCBOARD_PORT} --timeout-graceful-shutdown 3
+Restart=on-failure
+RestartSec=2
+PrivateDevices=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

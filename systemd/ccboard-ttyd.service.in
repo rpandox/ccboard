@@ -1,0 +1,22 @@
+[Unit]
+Description=ccboard terminal (ttyd on loopback, attaches to ccboard tmux sessions)
+After=ccboard-tmux.service
+Wants=ccboard-tmux.service
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__HOME__
+Environment=PATH=__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=__HOME__ LANG=C.UTF-8 SHELL=__SHELL__ TMUX_TMPDIR=/tmp
+Environment=TTYD_PORT=7681
+EnvironmentFile=-/etc/ccboard/env
+# -W writable, -O origin must match Host (blocks cross-site WebSocket hijack), -a passes ?arg= to the wrapper only.
+ExecStart=__TTYD_BIN__ -i lo -p ${TTYD_PORT} -W -O -a -t titleFixed=ccboard -t disableLeaveAlert=true __APP_DIR__/bin/ccboard-attach
+Restart=always
+RestartSec=2
+PrivateDevices=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
