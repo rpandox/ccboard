@@ -99,3 +99,33 @@ def test_quota_defers(client, projects_dir, fake_tmux, tmp_path, monkeypatch):
     assert w.tick() == []
     job = main.db.job_get(j["id"])
     assert job["last_status"].startswith("deferred") and job["next_run_at"] > main.db_now() and job["enabled"] == 1
+
+
+def test_batch_respects_cap(client, projects_dir, fake_tmux, tmp_path, monkeypatch):
+    from app import main
+    make_repo(projects_dir)
+    for name in ("web", "infra", "docs"):
+        r = projects_dir / "shop" / name
+        r.mkdir()
+        subprocess.run(["git", "-C", str(r), "init", "-q", "-b", "main"], check=True)
+        subprocess.run(["git", "-C", str(r), "-c", "user.email=t@x", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    monkeypatch.setattr(main.settings, "claude_bin", lambda: str(fake_claude(tmp_path)))
+    monkeypatch.setattr(main, "sched", None)                     # control ticking from the test
+    assert client.post("/api/batch", headers=H, json={"prompt": "p", "repos": []}).status_code == 400
+    assert client.post("/api/batch", headers=H, json={"prompt": "p", "repos": ["shop/nope"]}).status_code == 404
+    r = client.post("/api/batch", headers=H, json={"prompt": "update deps", "repos": ["shop/api", "shop/web", "shop/infra", "shop/docs"], "name": "deps"}).json()
+    assert len(r["jobs"]) == 4 and r["started"] == []
+    jobs = main.db.jobs()
+    assert all(j["batch_id"] == r["batch_id"] and j["cron"] is None and j["enabled"] == 1 for j in jobs[:4])
+    w = scheduler.Worker(main.db)
+    first = w.tick()
+    assert len(first) == scheduler.CAP                            # only 2 run at once
+    for t in list(w.running.values()):
+        t.join(timeout=30)
+    second = w.tick()
+    assert len(second) == 2
+    for t in list(w.running.values()):
+        t.join(timeout=30)
+    assert w.tick() == []
+    assert sorted(main.db.run_get(x)["status"] for x in first + second) == ["ok"] * 4
+    assert all(j["enabled"] == 0 for j in main.db.jobs()[:4])

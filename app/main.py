@@ -57,8 +57,9 @@ async def lifespan(app: FastAPI):
     global indexer, sched
     indexer = search.Indexer(db)
     indexer.start()
-    sched = scheduler.Worker(db)
-    sched.start()
+    sched_worker = scheduler.Worker(db)
+    sched = sched_worker
+    sched_worker.start()
     try:
         rec = recover.run(db, _start_session)
         if rec["recovered"] or rec["closed"]:
@@ -72,7 +73,7 @@ async def lifespan(app: FastAPI):
     cloner.stop.set()
     prp.stop.set()
     indexer.stop.set()
-    sched.stop.set()
+    sched_worker.stop.set()
 
 
 app = FastAPI(title="ccboard", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -597,6 +598,48 @@ def api_create_job(project: str, repo: str, body: JobIn):
                      args=body.args, timeout_s=body.timeout_s, enabled=1, batch_id=None, next_run_at=next_at)
     _invalidate_scan()
     return {"id": jid, "next_run_at": next_at}
+
+
+class BatchIn(BaseModel):
+    prompt: str
+    repos: list[str]                 # "project/repo" ids
+    name: str | None = None
+    permission_mode: str = "acceptEdits"
+    max_turns: int = 30
+    max_budget_usd: float | None = None
+    args: str | None = None
+
+
+@app.post("/api/batch", status_code=201)
+def api_batch(body: BatchIn):
+    """One prompt across N repos: one-off jobs sharing a batch id, drained by the scheduler (cap + quota aware)."""
+    if not body.repos:
+        raise projects.BadRequest("choose at least one repo")
+    if len(body.repos) > 100:
+        raise projects.BadRequest("at most 100 repos per batch")
+    _validate_job(JobIn(name=body.name or "batch", prompt=body.prompt, permission_mode=body.permission_mode,
+                        max_turns=body.max_turns, max_budget_usd=body.max_budget_usd, args=body.args))
+    if not settings.claude_bin():
+        raise projects.BadRequest("claude is not installed on this box")
+    targets = []
+    for ident in body.repos:
+        if not isinstance(ident, str) or ident.count("/") != 1:
+            raise projects.BadRequest(f"bad repo id {ident!r}")
+        p, r = ident.split("/")
+        rpath = projects.repo_path(p, r)
+        if not projects.is_repo(rpath):
+            raise projects.NotFound(f"{ident} is not a git repo")
+        targets.append((p, r))
+    batch_id = uuid.uuid4().hex[:8]
+    name = " ".join((body.name or "batch").split())[:60]
+    ids = []
+    for p, r in targets:
+        ids.append(db.job_add(project=p, repo=r, name=f"{name} [{batch_id}]", prompt=body.prompt.strip(), cron=None,
+                              permission_mode=body.permission_mode, max_turns=body.max_turns, max_budget_usd=body.max_budget_usd,
+                              args=body.args, timeout_s=None, enabled=1, batch_id=batch_id, next_run_at=db_now()))
+    started = sched.tick() if sched else []
+    _invalidate_scan()
+    return {"batch_id": batch_id, "jobs": ids, "started": started}
 
 
 @app.post("/api/jobs/{jid}/run")

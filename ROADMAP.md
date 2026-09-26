@@ -56,7 +56,8 @@ Working rules: one phase at a time; each item is one commit; tick items as they 
 
 - [x] Durable scheduler (APScheduler/systemd timers) for headless `claude -p` runs in fresh worktrees, results as cards
   - *as built:* a `jobs` table (cron via croniter, or one-off) and a `runs` table in ccboard's SQLite; a worker ticks every 30 s, keeps at most 2 headless runs going, and defers everything while the 5-hour window (from the statusline) is above 85 %. Each run is `claude -p "<prompt>" --worktree <name-stamp> --output-format json --permission-mode <mode> --max-turns N [--max-budget-usd X]` in the repo; the JSON result (text, session id, cost, turns, errors, rate limits) is stored, the worktree is unlocked and becomes a task card, and "Resume in terminal" opens `claude --resume` there. APScheduler was not used (4.x is pre-release, 3.x adds nothing needed); systemd timers were not needed since the worker lives in ccboard.service
-- [ ] Batch one prompt across N repos with concurrency cap and quota awareness
+- [x] Batch one prompt across N repos with concurrency cap and quota awareness
+  - *as built:* "Batch prompt…" creates one one-off job per selected repo sharing a batch id; the scheduler drains them (2 at a time, deferred above 85 % of the 5-hour window) and each result becomes a task card; the Schedules section shows per-batch progress
 - [ ] Board as MCP server: create_task / list_tasks / get_task_status
 - [ ] Port-per-worktree preview links through tailscale serve
 - [ ] Devcontainer option per project; bypassPermissions allowed only inside it

@@ -243,7 +243,41 @@ function renderNewProject() {
     catch (err) { setError(err.message); }
   } }, name, url, el('button', { class: 'primary', type: 'submit', text: 'New project' }));
   sec.append(el('h2', { text: 'Projects' }), el('div', { class: 'dim', text: `Folder per project under ${state.config.projects_dir}; each repo is a subfolder; sessions run inside a repo.` }), form,
-    el('div', { class: 'row', id: 'importrow' }, el('button', { onclick: openImport, text: 'Import from GitHub…' }), el('span', { id: 'queue', class: 'dim' })));
+    el('div', { class: 'row', id: 'importrow' }, el('button', { onclick: openImport, text: 'Import from GitHub…' }), el('button', { onclick: openBatch, text: 'Batch prompt…' }), el('span', { id: 'queue', class: 'dim' })));
+}
+
+/* ---------- batch: one prompt across N repos ---------- */
+
+function openBatch() {
+  ui.modal = true;
+  const m = $('#modal');
+  m.textContent = '';
+  const name = el('input', { type: 'text', placeholder: 'batch name (optional)', maxlength: 60 });
+  const prompt = el('textarea', { placeholder: 'prompt to run headlessly in every selected repo (claude -p, fresh worktree each)…' });
+  const mode = el('select', {}, ...['acceptEdits', 'default', 'plan', 'auto', 'dontAsk'].map(x => el('option', { value: x, text: x })));
+  const turns = el('input', { type: 'number', value: '30', min: '1', max: '500' });
+  const budget = el('input', { type: 'number', placeholder: 'max $ per repo (optional)', step: '0.5', min: '0' });
+  const status = el('div', { class: 'dim' });
+  const boxes = [];
+  const list = el('div', { class: 'form' });
+  for (const x of allRepos()) { const cb = el('input', { type: 'checkbox', value: x.id, checked: false }); boxes.push(cb); list.append(el('label', { class: 'row' }, cb, x.id)); }
+  const go = el('button', { class: 'primary', onclick: async () => {
+    const repos = boxes.filter(b => b.checked).map(b => b.value);
+    if (!repos.length || !prompt.value.trim()) { status.textContent = 'pick repos and write a prompt'; return; }
+    try {
+      const r = await api('POST', '/api/batch', { prompt: prompt.value.trim(), repos, name: name.value.trim() || undefined, permission_mode: mode.value, max_turns: parseInt(turns.value, 10) || 30, max_budget_usd: budget.value ? parseFloat(budget.value) : undefined });
+      status.textContent = `queued ${r.jobs.length} runs (batch ${r.batch_id}); ${r.started.length} started, the rest wait for a free slot`;
+      closeModal(); await poll(true);
+    } catch (e) { status.textContent = e.message; }
+  }, text: 'Run on selected repos' });
+  m.append(el('div', { class: 'modal-box' },
+    el('h2', { text: 'Batch prompt across repos' }),
+    el('div', { class: 'dim', text: 'Runs are headless (claude -p) in a fresh worktree per repo, at most 2 at once, paused while the 5-hour window is above 85%. Each result becomes a task card.' }),
+    el('div', { class: 'row' }, name, el('label', { text: 'mode' }), mode, el('label', { text: 'max turns' }), turns, budget),
+    prompt,
+    list,
+    el('div', { class: 'row' }, go, el('button', { onclick: () => { for (const b of boxes) b.checked = !b.checked; }, text: 'Invert' }), el('button', { onclick: closeModal, text: 'Close' }))));
+  m.classList.remove('hidden');
 }
 
 function renderQueue() {
@@ -781,6 +815,13 @@ function renderJobs() {
   if (!jobs.length && !runs.length) { sec.classList.add('hidden'); return; }
   sec.classList.remove('hidden');
   sec.append(el('div', { class: 'row head' }, el('h2', { text: `Schedules (${jobs.length})` }), el('span', { class: 'dim', text: 'headless claude -p runs · max 2 at once · paused above 85% of the 5-hour window' })));
+  const batches = {};
+  for (const j of jobs) if (j.batch_id) (batches[j.batch_id] = batches[j.batch_id] || []).push(j);
+  for (const [bid, js] of Object.entries(batches)) {
+    const done = js.filter(j => j.last_status && !j.enabled).length;
+    const ok = js.filter(j => j.last_status === 'ok').length;
+    sec.append(el('div', { class: 'dim', text: `batch ${bid}: ${js.length} repos · ${done} finished · ${ok} ok · ${js.filter(j => j.enabled).length} waiting` }));
+  }
   for (const j of jobs) {
     const jr = runs.filter(r => r.job_id === j.id).slice(0, 3);
     const row = el('div', { class: 'sess' + (j.enabled ? '' : ' muted') },
