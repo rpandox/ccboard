@@ -6,3 +6,4 @@ __pycache__/
 ccboard.tar.gz
 .pytest_cache/
 .gstack/
+.claude/

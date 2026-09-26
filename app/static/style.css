@@ -86,4 +86,12 @@ pre.tail { background:#0b0d11; border:1px solid var(--line); border-radius:8px; 
 .muted { opacity:.6; }
 .bad { color:var(--bad); }
 .modal-box .form { max-height:45vh; overflow:auto; }
+.modal-box.wide { max-width:1100px; }
+.diffbox { max-height:50vh; overflow:auto; background:#0b0d11; border:1px solid var(--line); border-radius:8px; padding:4px; margin:6px 0; font-size:12px; }
+.diffbox .d2h-wrapper { color:#c9d1d9; }
+.diffbox .d2h-file-header { background:#12151c; color:var(--dim); border-color:var(--line); }
+.diffbox .d2h-code-linenumber, .diffbox .d2h-code-line { color:#c9d1d9; }
+.diffbox .d2h-ins { background:#12321b; } .diffbox .d2h-del { background:#3a1f1f; }
+.diffbox .d2h-code-line-ctn { color:#c9d1d9; }
+.diffbox .d2h-info { background:#1a2233; color:var(--dim); }
 @media (max-width: 600px) { .sess { padding-left:6px; } #hdr h1 { font-size:16px; } }

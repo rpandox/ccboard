@@ -525,6 +525,7 @@ function taskCard(t) {
     t.overlap ? el('div', { class: 'last bad', text: 'overlaps: ' + t.overlap }) : null,
     el('div', { class: 'row' },
       el('a', { class: 'btn', href: `/term/${encodeURIComponent(t.tmux)}`, target: '_blank', rel: 'noopener', text: 'Attach' }),
+      el('button', { onclick: () => openTaskModal(t), text: t.pr_url ? 'Diff / PR' : 'Diff / PR…' }),
       t.pr_url ? el('a', { class: 'btn', href: t.pr_url, target: '_blank', rel: 'noopener', text: 'PR' }) : null,
       confirmButton('arch:' + t.id, 'Archive', async () => {
         try { await api('POST', `/api/tasks/${t.id}/archive`, { force: false }); }
@@ -534,6 +535,85 @@ function taskCard(t) {
         }
       })));
   return card;
+}
+
+let diff2htmlLoading = null;
+function loadDiff2Html() {
+  if (window.Diff2HtmlUI) return Promise.resolve();
+  if (diff2htmlLoading) return diff2htmlLoading;
+  diff2htmlLoading = new Promise((resolve, reject) => {
+    const css = el('link', { rel: 'stylesheet', href: '/static/vendor/diff2html.min.css' });
+    document.head.append(css);
+    const s = el('script', { src: '/static/vendor/diff2html-ui-base.min.js' });
+    s.onload = () => resolve(); s.onerror = () => reject(new Error('could not load diff2html'));
+    document.head.append(s);
+  });
+  return diff2htmlLoading;
+}
+
+function openTaskModal(t) {
+  ui.modal = true;
+  const m = $('#modal');
+  m.textContent = '';
+  const status = el('div', { class: 'dim' });
+  const diffBox = el('div', { class: 'diffbox' });
+  const commits = el('div', { class: 'dim' });
+  const files = el('div', { class: 'dim' });
+  const tabs = el('div', { class: 'row' });
+  const title = el('input', { type: 'text', placeholder: 'PR title', maxlength: 250, value: t.title });
+  const body = el('textarea', { placeholder: 'PR body (Markdown)' });
+  let diff = null;
+  const show = (which) => {
+    if (!diff) return;
+    const text = which === 'uncommitted' ? diff.uncommitted : diff.committed;
+    diffBox.textContent = '';
+    if (!text) { diffBox.append(el('span', { class: 'dim', text: which === 'uncommitted' ? 'no uncommitted changes' : 'nothing committed on this branch yet' })); return; }
+    loadDiff2Html().then(() => {
+      new window.Diff2HtmlUI(diffBox, text, { drawFileList: false, matching: 'lines', outputFormat: 'line-by-line', highlight: false }).draw();
+    }).catch(e => { diffBox.append(el('pre', { class: 'tail', text: text.slice(0, 20000) })); status.textContent = e.message; });
+  };
+  const load = async () => {
+    status.textContent = 'loading diff…';
+    try {
+      diff = await api('GET', `/api/tasks/${t.id}/diff`);
+      status.textContent = diff.truncated ? 'diff truncated for display' : '';
+      commits.textContent = diff.commits.length ? `Commits (${diff.commits.length}): ` + diff.commits.slice(0, 20).join(' · ') : 'No commits on the branch yet.';
+      files.textContent = (diff.files.length ? `Files: ${diff.files.join(', ')}` : '') + (diff.files_uncommitted.length ? `  ·  uncommitted: ${diff.files_uncommitted.join(', ')}` : '');
+      tabs.textContent = '';
+      tabs.append(el('button', { onclick: () => show('committed'), text: `Committed vs ${diff.base}` }),
+        el('button', { onclick: () => show('uncommitted'), text: `Uncommitted (${diff.files_uncommitted.length})` }));
+      show('committed');
+    } catch (e) { status.textContent = e.message; }
+  };
+  const describeBtn = el('button', { onclick: async () => {
+    status.textContent = 'asking Claude for a title and description (claude -p, one turn)…'; describeBtn.disabled = true;
+    try { const r = await api('POST', `/api/tasks/${t.id}/describe`); title.value = r.title; body.value = r.body; status.textContent = 'description ready; edit and create the PR'; }
+    catch (e) { status.textContent = e.message; } finally { describeBtn.disabled = false; }
+  }, text: 'Describe with Claude' });
+  const prBtn = el('button', { class: 'primary', onclick: async () => {
+    status.textContent = 'pushing and creating the PR…'; prBtn.disabled = true;
+    try { const r = await api('POST', `/api/tasks/${t.id}/pr`, { title: title.value.trim(), body: body.value }); status.textContent = (r.existing ? 'PR already existed: ' : 'PR created: ') + r.url; t.pr_url = r.url; t.pr_number = r.number; await poll(true); render(true); }
+    catch (e) { status.textContent = e.message; } finally { prBtn.disabled = false; }
+  }, text: t.pr_url ? 'Update PR (recreate)' : 'Create PR' });
+  const mergeBtn = el('button', { class: 'danger', onclick: async () => {
+    status.textContent = 'merging…';
+    const run = async (force) => api('POST', `/api/tasks/${t.id}/merge`, { method: 'squash', force });
+    try { await run(false); status.textContent = 'merged and archived'; closeModal(); await poll(true); }
+    catch (e) {
+      if (/uncommitted/.test(e.message) && window.confirm(e.message + '\n\nDiscard them and merge?')) { try { await run(true); closeModal(); await poll(true); } catch (e2) { status.textContent = e2.message; } }
+      else status.textContent = e.message;
+    }
+  }, text: 'Merge (squash) & archive' });
+  m.append(el('div', { class: 'modal-box wide' },
+    el('div', { class: 'row head' }, el('h2', { text: t.title }), el('span', { class: 'dim', text: `${t.project}/${t.repo} · ${t.branch}` }),
+      t.pr_url ? el('a', { class: 'btn', href: t.pr_url, target: '_blank', rel: 'noopener', text: `PR #${t.pr_number}` }) : null),
+    commits, files, tabs, diffBox,
+    el('div', { class: 'form' }, el('label', { text: 'Pull request' }), title, body,
+      el('div', { class: 'row' }, describeBtn, prBtn, t.pr_number ? mergeBtn : null)),
+    status,
+    el('div', { class: 'row' }, el('button', { onclick: closeModal, text: 'Close' }))));
+  m.classList.remove('hidden');
+  load();
 }
 
 function renderTasks() {

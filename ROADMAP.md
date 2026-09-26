@@ -41,7 +41,8 @@ Working rules: one phase at a time; each item is one commit; tick items as they 
   - *as built:* "New task" on a repo starts a session in the repo typing `claude --worktree <slug> --session-id <id> "<prompt>"`; Claude creates `.claude/worktrees/<slug>` on `worktree-<slug>` from the default branch and applies `.worktreeinclude` itself; the board adds `.claude/worktrees/` to `.git/info/exclude`. Archive kills the session and runs `git worktree remove` (force to discard uncommitted work)
 - [x] Task card (title + prompt) → worktree + tmux window + claude; columns derived from hook state
   - *as built:* a Tasks board with columns In progress / Needs you / Done / PR open / Merged derived from the task's session state and PR fields (tmux session rather than a window, so it works with the rest of the board)
-- [ ] Diff view (diff2html) → AI PR description via `claude -p` → `gh pr create` → merge & archive
+- [x] Diff view (diff2html) → AI PR description via `claude -p` → `gh pr create` → merge & archive
+  - *as built:* "Diff / PR" on a task card opens a modal: commits, files, committed diff (`git diff origin/<base>...HEAD`) and uncommitted diff (including untracked files) rendered by the vendored diff2html; "Describe with Claude" runs `claude -p --bare --tools "" --max-turns 1` with the diff on stdin; "Create PR" pushes the branch and runs `gh pr create --title --body-file --base --head`; "Merge (squash) & archive" refuses while the worktree has uncommitted changes unless forced, then kills the session, removes the worktree and runs `gh pr merge --squash --delete-branch`
 - [ ] PR/CI status on cards; "fix CI" re-dispatch with failing logs; start task from GitHub issue
 - [ ] Cross-worktree file-overlap warning
 - [ ] Cost per project/task, daily/weekly, from ccusage joined on cwd

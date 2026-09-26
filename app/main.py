@@ -18,7 +18,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import claude_auth, clonequeue, github, hooks, notify, permissions, projects, push, recover, tasks, tmux, usage
+from . import claude_auth, clonequeue, github, gitops, hooks, notify, permissions, projects, push, recover, tasks, tmux, usage
 from .auth import csrf_ok, identify
 from .config import settings
 from .db import DB, now as db_now
@@ -109,6 +109,11 @@ async def _notfound(_, e):
 @app.exception_handler(github.GhError)
 async def _gh(_, e):
     return JSONResponse({"error": str(e)}, status_code=502)
+
+
+@app.exception_handler(gitops.GitError)
+async def _giterr(_, e):
+    return JSONResponse({"error": str(e)}, status_code=422)
 
 
 @app.exception_handler(tmux.TmuxDown)
@@ -380,6 +385,67 @@ def api_create_task(project: str, repo: str, body: TaskIn):
                       claude_session_id=sid)
     _invalidate_scan()
     return {"id": tid, "slug": slug, "tmux": real, "branch": f"worktree-{slug}", "attach_url": f"/term/{real}"}
+
+
+def _task_or_404(tid: int) -> tuple[dict, Path]:
+    t = db.task_get(tid)
+    if not t:
+        raise projects.NotFound("no such task")
+    return t, Path(t["worktree"])
+
+
+@app.get("/api/tasks/{tid}/diff")
+def api_task_diff(tid: int):
+    t, wt = _task_or_404(tid)
+    return {"task": tid, **gitops.task_diff(wt, t["base"] or "main")}
+
+
+@app.post("/api/tasks/{tid}/describe")
+def api_task_describe(tid: int):
+    t, wt = _task_or_404(tid)
+    return gitops.describe(wt, t["base"] or "main", t["title"], t["prompt"])
+
+
+class PrIn(BaseModel):
+    title: str
+    body: str = ""
+    draft: bool = False
+
+
+@app.post("/api/tasks/{tid}/pr")
+def api_task_pr(tid: int, body: PrIn):
+    t, wt = _task_or_404(tid)
+    if not body.title.strip():
+        raise projects.BadRequest("title is required")
+    r = gitops.pr_create(wt, t["branch"], t["base"] or "main", body.title.strip(), body.body, body.draft)
+    db.task_update(tid, pr_url=r["url"], pr_number=r["number"], pr_state="OPEN", status="pr")
+    _invalidate_scan()
+    return r
+
+
+class MergeIn(BaseModel):
+    method: str = "squash"
+    force: bool = False
+
+
+@app.post("/api/tasks/{tid}/merge")
+def api_task_merge(tid: int, body: MergeIn | None = None):
+    t, wt = _task_or_404(tid)
+    if not t.get("pr_number"):
+        raise projects.BadRequest("no PR for this task yet")
+    body = body or MergeIn()
+    d = gitops.task_diff(wt, t["base"] or "main") if wt.is_dir() else None
+    if d and (d["uncommitted"] or d["files_uncommitted"]) and not body.force:
+        raise projects.Conflict("the worktree has uncommitted changes; merge with force to discard them")
+    if tmux.has_session(t["tmux_name"]):
+        tmux.kill_session(t["tmux_name"])
+        db.end(t["tmux_name"])
+    rpath = projects.repo_path(t["project"], t["repo"])
+    err = tasks.remove_worktree(rpath, t["slug"], force=True) if rpath.is_dir() else None
+    out = gitops.pr_merge(rpath if rpath.is_dir() else wt, int(t["pr_number"]), body.method)
+    db.task_update(tid, pr_state="MERGED", status="merged", archived_at=db_now())
+    _invalidate_scan()
+    return {"merged": tid, "output": out, "worktree_removed": err is None}
 
 
 class ArchiveIn(BaseModel):
