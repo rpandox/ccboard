@@ -40,6 +40,7 @@ class Settings:
         self.ntfy_url = (env.get("NTFY_URL") or "").strip()            # loopback, e.g. http://127.0.0.1:2586
         self.ntfy_topic = (env.get("NTFY_TOPIC") or "ccboard").strip()
         self.ntfy_public_url = (env.get("NTFY_PUBLIC_URL") or "").strip()  # what the phone subscribes to
+        self.recover = (env.get("CCBOARD_RECOVER") or "1") != "0"
         try:
             self.approve_timeout = float(env.get("CCBOARD_APPROVE_TIMEOUT") or 90)
         except ValueError:

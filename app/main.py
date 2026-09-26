@@ -18,7 +18,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import claude_auth, hooks, notify, permissions, projects, push, tmux, usage
+from . import claude_auth, hooks, notify, permissions, projects, push, recover, tmux, usage
 from .auth import csrf_ok, identify
 from .config import settings
 from .db import DB, now as db_now
@@ -48,6 +48,12 @@ async def lifespan(app: FastAPI):
         log.warning("web push disabled: %s", e)
     poller = usage.Poller(db)
     poller.start()
+    try:
+        rec = recover.run(db, _start_session)
+        if rec["recovered"] or rec["closed"]:
+            log.info("recovery: relaunched %s, closed %s", rec["recovered"], rec["closed"])
+    except Exception as e:
+        log.warning("recovery failed: %s", e)
     log.info("ccboard on %s, projects in %s, allowlist=%s", settings.loopback_url(), settings.projects_dir,
              sorted(settings.allowed_users) or ("DEV BYPASS" if settings.dev_bypass_user else "EMPTY"))
     yield
@@ -151,6 +157,7 @@ def build_state(user: str) -> dict:
     st["claude"] = claude_auth.status()
     st["login"] = claude_auth.login_state()
     st["pending_permissions"] = db.perm_pending()
+    st["last_recovery"] = db.kv_get("last_recovery")
     st["usage"] = db.kv_get("rate_limits")
     st["block"] = db.kv_get(usage.KV_BLOCK)
     st["rate_limited"] = db.kv_get("rate_limited")
@@ -523,6 +530,13 @@ def api_notify_test():
         raise projects.BadRequest("ntfy is not configured (NTFY_URL is empty)")
     ok = notify.publish("ccboard test", "Notifications work.", click=(settings.public_url or None), tags=["tada"])
     return {"ok": ok}
+
+
+@app.post("/api/recovery/dismiss")
+def api_recovery_dismiss():
+    db.kv_del("last_recovery")
+    _invalidate_scan()
+    return {"ok": True}
 
 
 @app.post("/api/usage/rate-limit/clear")
