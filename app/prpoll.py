@@ -7,7 +7,7 @@ import subprocess
 import threading
 from pathlib import Path
 
-from . import gitops
+from . import gitops, overlap
 
 log = logging.getLogger("ccboard.prpoll")
 POLL_SECONDS = 60
@@ -105,4 +105,8 @@ class Poller(threading.Thread):
                 self.poll_once()
             except Exception as e:
                 log.warning("pr poll failed: %s", e)
+            try:
+                overlap.compute(self.db)
+            except Exception as e:
+                log.warning("overlap check failed: %s", e)
             self.stop.wait(POLL_SECONDS)

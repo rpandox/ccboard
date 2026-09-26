@@ -107,3 +107,24 @@ def test_task_routes(client, projects_dir, fake_tmux, tmp_path, monkeypatch):
     assert r["merged"] == tid and r["worktree_removed"] and not wt.exists()
     assert all(x["id"] != tid for x in client.get("/api/state", headers=H).json()["tasks"])  # archived
     assert client.get("/api/tasks/999/diff", headers=H).status_code == 404
+
+
+def test_overlap(tmp_path, client, projects_dir, fake_tmux):
+    from app import main, overlap
+    import shutil
+    repo, wt, origin = make_repo(tmp_path)
+    dest = projects_dir / "shop" / "api"; dest.parent.mkdir(); shutil.move(str(repo), str(dest))
+    wt1 = dest / ".claude" / "worktrees" / "add-login"; sh(dest, "git", "worktree", "repair", str(wt1))
+    wt2 = dest / ".claude" / "worktrees" / "second"
+    sh(dest, "git", "worktree", "add", "-q", "-b", "worktree-second", str(wt2), "main")
+    (wt2 / "login.py").write_text("other\n")               # uncommitted edit of the same file
+    (wt2 / "README.md").write_text("changed\n")
+    t1 = main.db.task_add(project="shop", repo="api", slug="add-login", title="Add login", prompt="p", branch="worktree-add-login", base="main", worktree=str(wt1), tmux_name="shop--api--t-add-login", claude_session_id=None)
+    t2 = main.db.task_add(project="shop", repo="api", slug="second", title="Second", prompt="p", branch="worktree-second", base="main", worktree=str(wt2), tmux_name="shop--api--t-second", claude_session_id=None)
+    assert overlap.compute(main.db) == 2
+    tasks = {x["id"]: x for x in client.get("/api/state", headers=H).json()["tasks"]}
+    assert tasks[t1]["overlap"] == [{"task": t2, "title": "Second", "files": ["login.py"]}]
+    assert tasks[t2]["overlap"][0]["files"] == ["login.py"]
+    (wt2 / "login.py").unlink()                             # untracked file gone -> no shared files
+    assert overlap.compute(main.db) == 0
+    assert client.get("/api/state", headers=H).json()["tasks"][0]["overlap"] == []

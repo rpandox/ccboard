@@ -336,14 +336,15 @@ def _tasks_view() -> list[dict]:
         try:
             ci = json.loads(t["ci"]) if t.get("ci") else None
             prj = json.loads(t["pr_json"]) if t.get("pr_json") else None
+            ovl = json.loads(t["overlap"]) if t.get("overlap") else []
         except ValueError:
-            ci, prj = None, None
+            ci, prj, ovl = None, None, []
         out.append({
             "ci": ci, "pr": prj,
             "id": t["id"], "project": t["project"], "repo": t["repo"], "slug": t["slug"], "title": t["title"],
             "branch": t["branch"], "base": t["base"], "worktree": t["worktree"], "tmux": t["tmux_name"],
             "claude_session_id": t["claude_session_id"], "pr_url": t["pr_url"], "pr_number": t["pr_number"],
-            "pr_state": t["pr_state"], "cost_usd": t["cost_usd"], "overlap": t["overlap"],
+            "pr_state": t["pr_state"], "cost_usd": t["cost_usd"], "overlap": ovl,
             "created_at": t["created_at"], "column": tasks.derive_status(t, s),
             "session": {"state": s["state"], "state_at": s["state_at"], "last_message": s["last_message"],
                         "needs_attention": s["needs_attention"], "command": s["command"]} if s else None,

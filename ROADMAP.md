@@ -45,7 +45,8 @@ Working rules: one phase at a time; each item is one commit; tick items as they 
   - *as built:* "Diff / PR" on a task card opens a modal: commits, files, committed diff (`git diff origin/<base>...HEAD`) and uncommitted diff (including untracked files) rendered by the vendored diff2html; "Describe with Claude" runs `claude -p --bare --tools "" --max-turns 1` with the diff on stdin; "Create PR" pushes the branch and runs `gh pr create --title --body-file --base --head`; "Merge (squash) & archive" refuses while the worktree has uncommitted changes unless forced, then kills the session, removes the worktree and runs `gh pr merge --squash --delete-branch`
 - [x] PR/CI status on cards; "fix CI" re-dispatch with failing logs; start task from GitHub issue
   - *as built:* a poller runs `gh pr view` + `gh pr checks` every 60 s for tasks with a PR (CI bucket pass/fail/pending, review decision, merged detection); "Fix CI" fetches the latest failed run's `gh run view --log-failed` (last 20 KB) and pastes a fix prompt into the task session with bracketed paste (relaunching `claude --continue` in the worktree if the session is gone); the New task form has a "from a GitHub issue…" picker (`gh issue list`) that prefills the title and prompt with "Closes #n"
-- [ ] Cross-worktree file-overlap warning
+- [x] Cross-worktree file-overlap warning
+  - *as built:* every 60 s (with the PR poll) the files changed on each open task's branch, plus its uncommitted and untracked files, are compared pairwise per repo; both cards show "⚠ overlaps <task> (files)"
 - [ ] Cost per project/task, daily/weekly, from ccusage joined on cwd
 - [ ] Transcript full-text search (SQLite FTS5 over ~/.claude/projects JSONL, display only)
   - *note:* Claude's transcript folder name encodes cwd with non-alphanumerics replaced by `-`, so `shop/api` and `shop-api` collide; key on ccboard's own `claude_session_id`, not the folder
