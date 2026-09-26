@@ -9,7 +9,7 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE=/etc/ccboard/env
-ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION)
+ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL)
 TTYD_VERSION=1.7.7
 TTYD_SHA_amd64=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
 TTYD_SHA_arm64=b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165
@@ -95,6 +95,7 @@ if [ -z "$CCBOARD_ALLOWED_USERS" ]; then
   [ "$TS_LOGIN" != "-" ] || die "could not derive your tailnet login; set CCBOARD_ALLOWED_USERS=you@provider"
   CCBOARD_ALLOWED_USERS=$TS_LOGIN
 fi
+CCBOARD_PUBLIC_URL="https://$TS_FQDN:$CCBOARD_HTTPS_PORT"
 note "tailnet node $TS_FQDN, allowed users: $CCBOARD_ALLOWED_USERS"
 
 # ---------------------------------------------------------------- apt ttyd unit (would hold 7681 as root)
@@ -204,6 +205,21 @@ if [ ! -f .venv/.ccboard-stamp ] || [ "$(cat .venv/.ccboard-stamp)" != "$stamp" 
   note "installed requirements"
 else
   note "up to date"
+fi
+
+# ---------------------------------------------------------------- Claude Code hooks + statusline (no sudo)
+log "Claude Code hooks"
+python3 "$APP_DIR/scripts/claude_settings.py" install --app-dir "$APP_DIR"
+
+# ---------------------------------------------------------------- sudoers: let the user restart the stateless units (deploys)
+log "sudoers rule for restarts"
+sudoers_want=$(printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl restart ccboard.service, /usr/bin/systemctl restart ccboard-ttyd.service, /usr/bin/systemctl try-restart ccboard.service\n' "$USER_NAME")
+if [ ! -f /etc/sudoers.d/ccboard ] || [ "$(sudo cat /etc/sudoers.d/ccboard)" != "$sudoers_want" ]; then
+  tmp=$(mktemp); printf '%s\n' "$sudoers_want" > "$tmp"
+  sudo visudo -cf "$tmp" >/dev/null && sudo install -m 0440 -o root -g root "$tmp" /etc/sudoers.d/ccboard && note "wrote /etc/sudoers.d/ccboard"
+  rm -f "$tmp"
+else
+  note "present"
 fi
 
 # ---------------------------------------------------------------- env file + units
