@@ -37,9 +37,10 @@ Working rules: one phase at a time; each item is one commit; tick items as they 
 
 ## v0.3 — git & tasks
 
-- [ ] Worktree + branch per task via `claude --worktree`; honour .worktreeinclude for .env
-  - *note:* runs per repo (a project folder is not a git repo)
-- [ ] Task card (title + prompt) → worktree + tmux window + claude; columns derived from hook state
+- [x] Worktree + branch per task via `claude --worktree`; honour .worktreeinclude for .env
+  - *as built:* "New task" on a repo starts a session in the repo typing `claude --worktree <slug> --session-id <id> "<prompt>"`; Claude creates `.claude/worktrees/<slug>` on `worktree-<slug>` from the default branch and applies `.worktreeinclude` itself; the board adds `.claude/worktrees/` to `.git/info/exclude`. Archive kills the session and runs `git worktree remove` (force to discard uncommitted work)
+- [x] Task card (title + prompt) → worktree + tmux window + claude; columns derived from hook state
+  - *as built:* a Tasks board with columns In progress / Needs you / Done / PR open / Merged derived from the task's session state and PR fields (tmux session rather than a window, so it works with the rest of the board)
 - [ ] Diff view (diff2html) → AI PR description via `claude -p` → `gh pr create` → merge & archive
 - [ ] PR/CI status on cards; "fix CI" re-dispatch with failing logs; start task from GitHub issue
 - [ ] Cross-worktree file-overlap warning

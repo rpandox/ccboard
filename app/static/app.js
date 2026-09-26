@@ -430,9 +430,11 @@ function repoBlock(p, r) {
     el('div', { class: 'row' },
       el('a', { class: 'btn', href: codeServerUrl(r.path), target: '_blank', rel: 'noopener', text: 'code-server' }),
       el('button', { class: 'primary', onclick: () => { ui.openForm = 'session:' + key; renderProjects(); }, text: 'New session' }),
+      r.state === 'ok' ? el('button', { onclick: () => { ui.openForm = 'task:' + key; renderProjects(); }, text: 'New task' }) : null,
       confirmButton('rm:' + key, 'Remove', () => api('DELETE', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}`))));
   const block = el('div', { class: 'repo' }, title);
   if (ui.openForm === 'session:' + key) block.append(sessionForm(p, r));
+  if (ui.openForm === 'task:' + key) block.append(taskForm(p, r));
   for (const s of r.sessions) block.append(sessionRow(s));
   return block;
 }
@@ -508,6 +510,77 @@ function toggleLive() {
   try { localStorage.setItem('ccboard:live', live.on ? '1' : '0'); } catch (_) { /* ignore */ }
   if (live.on) liveStart(); else liveStop();
   renderHeader();
+}
+
+/* ---------- tasks (worktree per task) ---------- */
+
+const COLUMNS = [['in_progress', 'In progress'], ['needs_you', 'Needs you'], ['done', 'Done'], ['pr', 'PR open'], ['merged', 'Merged']];
+
+function taskCard(t) {
+  const s = t.session;
+  const card = el('div', { class: 'task' + (s && s.needs_attention ? ' attn' : ''), 'data-task': t.id },
+    el('div', { class: 'row' }, el('span', { class: 'title', text: t.title }), s ? stateBadge(s) : el('span', { class: 'state ended', text: 'no session' })),
+    el('div', { class: 'meta', text: `${t.project}/${t.repo} · ${t.branch}${t.pr_url ? ' · PR #' + t.pr_number : ''}${typeof t.cost_usd === 'number' ? ' · $' + t.cost_usd.toFixed(2) : ''}` }),
+    s && s.last_message ? el('div', { class: 'last', text: s.last_message.slice(0, 160) }) : null,
+    t.overlap ? el('div', { class: 'last bad', text: 'overlaps: ' + t.overlap }) : null,
+    el('div', { class: 'row' },
+      el('a', { class: 'btn', href: `/term/${encodeURIComponent(t.tmux)}`, target: '_blank', rel: 'noopener', text: 'Attach' }),
+      t.pr_url ? el('a', { class: 'btn', href: t.pr_url, target: '_blank', rel: 'noopener', text: 'PR' }) : null,
+      confirmButton('arch:' + t.id, 'Archive', async () => {
+        try { await api('POST', `/api/tasks/${t.id}/archive`, { force: false }); }
+        catch (e) {
+          if (/force/.test(e.message) && window.confirm(e.message + '\n\nDiscard the worktree anyway?')) await api('POST', `/api/tasks/${t.id}/archive`, { force: true });
+          else throw e;
+        }
+      })));
+  return card;
+}
+
+function renderTasks() {
+  const sec = $('#tasks');
+  if (!sec) return;
+  sec.textContent = '';
+  const list = (state.tasks || []);
+  if (!list.length) { sec.classList.add('hidden'); return; }
+  sec.classList.remove('hidden');
+  sec.append(el('div', { class: 'row head' }, el('h2', { text: `Tasks (${list.length})` }), el('span', { class: 'dim', text: 'one worktree + branch per task; columns follow the session state' })));
+  const grid = el('div', { class: 'kanban' });
+  for (const [key, label] of COLUMNS) {
+    const items = list.filter(t => t.column === key);
+    if (!items.length && key !== 'in_progress') continue;
+    const col = el('div', { class: 'col' }, el('h3', { text: `${label} (${items.length})` }));
+    for (const t of items) col.append(taskCard(t));
+    grid.append(col);
+  }
+  sec.append(grid);
+}
+
+function taskForm(p, r) {
+  const title = el('input', { type: 'text', placeholder: 'task title (becomes the branch name)', maxlength: 120, required: true });
+  const prompt = el('textarea', { placeholder: 'what Claude should do in the new worktree…', required: true });
+  const args = el('input', { type: 'text', placeholder: 'extra claude args (optional)' });
+  const siblings = allRepos().filter(x => x.project === p.name && x.repo !== r.name);
+  const boxes = [];
+  const checks = el('div', { class: 'checks' });
+  for (const x of siblings) { const cb = el('input', { type: 'checkbox', value: x.id, checked: false }); boxes.push(cb); checks.append(el('label', { class: 'row' }, cb, x.id)); }
+  return el('form', { class: 'form', onsubmit: async (e) => {
+    e.preventDefault();
+    const body = { title: title.value.trim(), prompt: prompt.value.trim(), add_dirs: boxes.filter(b => b.checked).map(b => b.value) };
+    if (args.value.trim()) body.args = args.value.trim();
+    const tab = window.open('', '_blank');
+    try {
+      const res = await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/tasks`, body);
+      if (tab) tab.location = res.attach_url;
+      ui.openForm = null; setError(null); await poll(true);
+    } catch (err) { if (tab) tab.close(); setError(err.message); }
+  } },
+    el('label', { text: 'New task: Claude works on a branch in its own worktree (claude --worktree)' }),
+    title, prompt,
+    el('label', { text: 'extra args' }), args,
+    siblings.length ? el('label', { text: 'also give access to (--add-dir)' }) : null, checks,
+    el('div', { class: 'row' },
+      el('button', { class: 'primary', type: 'submit', text: 'Start task & attach' }),
+      el('button', { type: 'button', onclick: () => { ui.openForm = null; renderProjects(); }, text: 'Cancel' })));
 }
 
 /* ---------- needs-attention inbox ---------- */
@@ -665,6 +738,7 @@ function render(force) {
   renderUsage();
   renderBanner();
   renderInbox();
+  renderTasks();
   renderNotifyPanel();
   renderNewProject();
   renderQueue();

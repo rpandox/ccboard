@@ -18,7 +18,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import claude_auth, clonequeue, github, hooks, notify, permissions, projects, push, recover, tmux, usage
+from . import claude_auth, clonequeue, github, hooks, notify, permissions, projects, push, recover, tasks, tmux, usage
 from .auth import csrf_ok, identify
 from .config import settings
 from .db import DB, now as db_now
@@ -165,6 +165,7 @@ def build_state(user: str) -> dict:
     st["claude"] = claude_auth.status()
     st["login"] = claude_auth.login_state()
     st["pending_permissions"] = db.perm_pending()
+    st["tasks"] = _tasks_view()
     st["clone_queue"] = clonequeue.status()
     st["last_recovery"] = db.kv_get("last_recovery")
     st["usage"] = db.kv_get("rate_limits")
@@ -315,6 +316,92 @@ def api_remove_repo(project: str, repo: str):
     projects.remove_tree(r)
     _invalidate_scan()
     return {"removed": f"{project}/{repo}", "killed_sessions": killed}
+
+
+# ---------- tasks (worktree + branch per task) ----------
+
+def _tasks_view() -> list[dict]:
+    sessions, _ = _merged_sessions()
+    out = []
+    for t in db.tasks():
+        s = sessions.get(t["tmux_name"])
+        out.append({
+            "id": t["id"], "project": t["project"], "repo": t["repo"], "slug": t["slug"], "title": t["title"],
+            "branch": t["branch"], "base": t["base"], "worktree": t["worktree"], "tmux": t["tmux_name"],
+            "claude_session_id": t["claude_session_id"], "pr_url": t["pr_url"], "pr_number": t["pr_number"],
+            "pr_state": t["pr_state"], "ci": t["ci"], "cost_usd": t["cost_usd"], "overlap": t["overlap"],
+            "created_at": t["created_at"], "column": tasks.derive_status(t, s),
+            "session": {"state": s["state"], "state_at": s["state_at"], "last_message": s["last_message"],
+                        "needs_attention": s["needs_attention"], "command": s["command"]} if s else None,
+        })
+    return out
+
+
+class TaskIn(BaseModel):
+    title: str
+    prompt: str
+    args: str | None = None
+    add_dirs: list[str] | None = None
+
+
+@app.post("/api/projects/{project}/repos/{repo}/tasks", status_code=201)
+def api_create_task(project: str, repo: str, body: TaskIn):
+    rpath = projects.repo_path(project, repo)
+    if not projects.is_repo(rpath):
+        raise projects.NotFound(f"repo {project}/{repo} is not a git repo")
+    title = " ".join(body.title.split())[:120]
+    prompt = body.prompt.strip()
+    if not title or not prompt:
+        raise projects.BadRequest("title and prompt are required")
+    if len(prompt) > 20000:
+        raise projects.BadRequest("prompt too long")
+    if not settings.claude_bin():
+        raise projects.BadRequest("claude is not installed on this box")
+    extra: list[str] = []
+    if body.args:
+        try:
+            extra = shlex.split(body.args)
+        except ValueError as e:
+            raise projects.BadRequest(f"extra args: {e}")
+    add_dirs = _resolve_add_dirs(body.add_dirs, rpath)
+    slug = tasks.unique_slug(rpath, tasks.slugify(title), db.task_slugs(project, repo))
+    session = tasks.session_name_for(slug)
+    projects.check_name("session", session)
+    name = tmux.tmux_name(project, repo, session)
+    if tmux.has_session(name):
+        raise projects.Conflict(f"session {session} already exists")
+    tasks.ensure_excluded(rpath)
+    sid = str(uuid.uuid4())
+    cmd_line = tasks.build_command(slug, sid, prompt, extra, add_dirs)
+    real = _start_session(name, project, repo, session, "task", str(rpath), cmd_line=cmd_line, claude_session_id=sid,
+                          add_dirs=add_dirs)
+    tid = db.task_add(project=project, repo=repo, slug=slug, title=title, prompt=prompt, branch=f"worktree-{slug}",
+                      base=tasks.default_branch(rpath), worktree=str(tasks.worktree_path(rpath, slug)), tmux_name=real,
+                      claude_session_id=sid)
+    _invalidate_scan()
+    return {"id": tid, "slug": slug, "tmux": real, "branch": f"worktree-{slug}", "attach_url": f"/term/{real}"}
+
+
+class ArchiveIn(BaseModel):
+    force: bool = False
+
+
+@app.post("/api/tasks/{tid}/archive")
+def api_archive_task(tid: int, body: ArchiveIn | None = None):
+    t = db.task_get(tid)
+    if not t:
+        raise projects.NotFound("no such task")
+    force = bool(body and body.force)
+    if tmux.has_session(t["tmux_name"]):
+        tmux.kill_session(t["tmux_name"])
+        db.end(t["tmux_name"])
+    rpath = projects.repo_path(t["project"], t["repo"])
+    err = tasks.remove_worktree(rpath, t["slug"], force=force) if rpath.is_dir() else None
+    if err and not force:
+        raise projects.Conflict(f"worktree not removed ({err}); archive with force to discard uncommitted work")
+    db.task_update(tid, archived_at=db_now(), status="archived")
+    _invalidate_scan()
+    return {"archived": tid, "worktree_removed": err is None}
 
 
 # ---------- sessions ----------

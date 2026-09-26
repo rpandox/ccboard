@@ -34,6 +34,30 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_by_session ON events(tmux_name, id);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, sub TEXT NOT NULL, at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS tasks (
+  id INTEGER PRIMARY KEY,
+  project TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  title TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  branch TEXT NOT NULL,
+  base TEXT,
+  worktree TEXT NOT NULL,
+  tmux_name TEXT NOT NULL,
+  claude_session_id TEXT,
+  status TEXT NOT NULL DEFAULT 'open',
+  pr_number INTEGER,
+  pr_url TEXT,
+  pr_state TEXT,
+  pr_json TEXT,
+  ci TEXT,
+  cost_usd REAL,
+  overlap TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  archived_at TEXT
+);
 CREATE TABLE IF NOT EXISTS permissions (
   id INTEGER PRIMARY KEY,
   tmux_name TEXT NOT NULL,
@@ -185,6 +209,38 @@ class DB:
             except ValueError:
                 continue
         return out
+
+    # ---- tasks
+    def task_add(self, **row) -> int:
+        cols = ["project", "repo", "slug", "title", "prompt", "branch", "base", "worktree", "tmux_name", "claude_session_id"]
+        with self.lock:
+            cur = self.conn.execute(
+                f"INSERT INTO tasks({', '.join(cols)}, created_at, updated_at) VALUES ({', '.join('?' * len(cols))}, ?, ?)",
+                (*[row.get(c) for c in cols], now(), now()))
+            return int(cur.lastrowid)
+
+    def task_get(self, tid: int) -> dict | None:
+        with self.lock:
+            r = self.conn.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+        return dict(r) if r else None
+
+    def tasks(self, include_archived: bool = False) -> list[dict]:
+        q = "SELECT * FROM tasks" + ("" if include_archived else " WHERE archived_at IS NULL") + " ORDER BY id DESC"
+        with self.lock:
+            rows = self.conn.execute(q).fetchall()
+        return [dict(r) for r in rows]
+
+    def task_update(self, tid: int, **fields) -> None:
+        if not fields:
+            return
+        sets = ", ".join(f"{k}=?" for k in fields) + ", updated_at=?"
+        with self.lock:
+            self.conn.execute(f"UPDATE tasks SET {sets} WHERE id=?", (*fields.values(), now(), tid))
+
+    def task_slugs(self, project: str, repo: str) -> set[str]:
+        with self.lock:
+            rows = self.conn.execute("SELECT slug FROM tasks WHERE project=? AND repo=?", (project, repo)).fetchall()
+        return {r[0] for r in rows}
 
     def perm_add(self, tmux_name: str, tool_name: str, summary: str, tool_input) -> int:
         with self.lock:
