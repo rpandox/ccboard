@@ -89,3 +89,15 @@ def test_send_keys_endpoint_and_term_page(client, projects_dir, fake_tmux, monke
     assert client.post("/api/sessions/nope--x--y/keys", headers=H, json={"keys": ["Enter"]}).status_code == 404
     assert client.get(f"/term/{name}", headers=H).status_code == 200
     assert client.get("/term/..%2Fetc", headers=H).status_code in (400, 404)
+
+
+def test_stream_once(client, projects_dir, fake_tmux, monkeypatch):
+    from app import tmux as t
+    git_init(projects_dir / "shop" / "api")
+    name = client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "shell"}).json()["tmux"]
+    fake_tmux["screen"] = "$ npm test\n\n12 passing\n\n\n"
+    with client.stream("GET", "/api/stream?once=1", headers=H) as r:
+        assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
+        body = "".join(r.iter_text())
+    assert "event: lines" in body and '"name": "' + name + '"' in body.replace('"name":"', '"name": "') and "12 passing" in body
+    assert "event: tick" in body and name in body.split("event: tick")[1]

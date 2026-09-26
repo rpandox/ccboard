@@ -188,6 +188,7 @@ function renderHeader() {
   if (c.installed && c.loggedIn) actions.append(el('button', { onclick: logout, text: 'Log out' }));
   const n = state.config && state.config.ntfy;
   actions.append(el('button', { onclick: () => { ui.notifyPanel = !ui.notifyPanel; renderNotifyPanel(); }, title: 'push notifications', text: n && n.enabled ? '🔔' : '🔕' }));
+  actions.append(el('button', { class: live.on ? 'primary' : '', onclick: toggleLive, title: 'live last lines of every session', text: 'Live' }));
   if (state.login && state.login.running && !ui.modal) actions.append(el('button', { onclick: () => openModal(), text: 'Login in progress…' }));
 }
 
@@ -204,7 +205,8 @@ function renderBanner() {
     b.append(el('span', { text: ui.error }), el('button', { onclick: () => setError(null), text: 'dismiss' }));
   } else if (recent) {
     b.append(el('span', { text: `Rate limited: ${rlim.message || ''}${rlim.session ? ' (' + rlim.session + ')' : ''}` }),
-      el('button', { onclick: async () => { try { await api('POST', '/api/usage/rate-limit/clear'); } catch (e) { setError(e.message); } await poll(true); }, text: 'dismiss' }));
+      el('button', { onclick: async () => { try { await api('POST', '/api/usage/rate-limit/clear'); } catch (e) { setError(e.message); } await poll(true);
+try { if (localStorage.getItem('ccboard:live') === '1') { live.on = true; liveStart(); } } catch (_) { /* ignore */ } }, text: 'dismiss' }));
   } else if (state && state.tmux_down) {
     b.append(el('span', { text: 'The ccboard tmux server is not running. On the box: sudo systemctl start ccboard-tmux' }));
   } else if (state && state.claude && state.claude.installed && !state.claude.loggedIn) {
@@ -380,6 +382,63 @@ function projectCard(p) {
   for (const r of p.repos) card.append(repoBlock(p, r));
   for (const s of p.orphan_sessions) card.append(el('div', { class: 'repo' }, el('div', { class: 'dim', text: `sessions in removed repo ${s.repo}` }), sessionRow(s)));
   return card;
+}
+
+/* ---------- live last-lines grid (SSE) ---------- */
+
+const live = { on: false, es: null, tiles: {} };
+
+function liveTile(name) {
+  let t = live.tiles[name];
+  if (t) return t;
+  const pre = el('pre');
+  const parts = name.split('--');
+  t = el('div', { class: 'tile', 'data-tmux': name },
+    el('div', { class: 'row' }, el('span', { class: 'name', text: `${parts[0]}/${parts[1]} · ${parts[2] || ''}` }),
+      el('a', { class: 'btn', href: `/term/${encodeURIComponent(name)}`, target: '_blank', rel: 'noopener', text: 'Attach' })),
+    pre);
+  t.pre = pre;
+  live.tiles[name] = t;
+  $('#live .live-grid').append(t);
+  return t;
+}
+
+function liveStart() {
+  if (live.es) return;
+  const sec = $('#live');
+  sec.textContent = '';
+  sec.append(el('div', { class: 'row head' }, el('h2', { text: 'Live' }), el('span', { class: 'dim', text: 'last 20 lines of every session, every 2 s' })),
+    el('div', { class: 'live-grid' }));
+  sec.classList.remove('hidden');
+  live.tiles = {};
+  const es = new EventSource('/api/stream');
+  live.es = es;
+  es.addEventListener('lines', (e) => {
+    try { const d = JSON.parse(e.data); liveTile(d.name).pre.textContent = d.lines.join('\n'); } catch (_) { /* ignore */ }
+  });
+  es.addEventListener('tick', (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      for (const n of Object.keys(live.tiles)) if (!d.sessions.includes(n)) { live.tiles[n].remove(); delete live.tiles[n]; }
+      const attn = new Set(inboxItems().map(s => s.tmux));
+      for (const [n, t] of Object.entries(live.tiles)) t.classList.toggle('attn', attn.has(n));
+      if (!d.sessions.length) $('#live .live-grid').textContent = '';
+    } catch (_) { /* ignore */ }
+  });
+  es.onerror = () => { /* EventSource reconnects on its own */ };
+}
+
+function liveStop() {
+  if (live.es) { live.es.close(); live.es = null; }
+  $('#live').classList.add('hidden');
+  live.tiles = {};
+}
+
+function toggleLive() {
+  live.on = !live.on;
+  try { localStorage.setItem('ccboard:live', live.on ? '1' : '0'); } catch (_) { /* ignore */ }
+  if (live.on) liveStart(); else liveStop();
+  renderHeader();
 }
 
 /* ---------- needs-attention inbox ---------- */

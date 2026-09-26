@@ -14,6 +14,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -410,6 +411,50 @@ def api_kill_session(name: str):
     db.end(name)
     _invalidate_scan()
     return {"killed": name}
+
+
+# ---------- live last-lines stream (SSE) ----------
+
+LIVE_LINES = 20
+LIVE_INTERVAL = 2.0
+
+
+def _capture_all() -> dict[str, list[str]]:
+    """Visible tail of every non-internal session: name -> last LIVE_LINES lines."""
+    try:
+        names = [n for n in tmux.list_sessions() if not tmux.is_internal(n)]
+    except tmux.TmuxDown:
+        return {}
+    out: dict[str, list[str]] = {}
+    for n in names:
+        try:
+            text = tmux.capture(n, lines=LIVE_LINES, join=False)
+        except tmux.TmuxError:
+            continue
+        lines = [ln.rstrip() for ln in text.splitlines()]
+        while lines and not lines[-1]:
+            lines.pop()
+        out[n] = lines[-LIVE_LINES:]
+    return out
+
+
+@app.get("/api/stream", response_class=EventSourceResponse)
+async def api_stream(request: Request, once: bool = False):
+    """SSE: 'lines' events per session whenever its visible tail changes, a 'tick' every interval.
+    FastAPI encodes the yielded ServerSentEvent objects (response_class=EventSourceResponse)."""
+    last: dict[str, list[str]] = {}
+    while True:
+        snap = await asyncio.to_thread(_capture_all)
+        for name, lines in snap.items():
+            if last.get(name) != lines:
+                last[name] = lines
+                yield ServerSentEvent(event="lines", data={"name": name, "lines": lines})
+        for gone in [n for n in last if n not in snap]:
+            del last[gone]
+        yield ServerSentEvent(event="tick", data={"sessions": sorted(snap.keys())})
+        if once or await request.is_disconnected():
+            return
+        await asyncio.sleep(LIVE_INTERVAL)
 
 
 # ---------- hooks ----------
