@@ -595,6 +595,13 @@ function taskCard(t) {
       el('a', { class: 'btn', href: `/term/${encodeURIComponent(t.tmux)}`, target: '_blank', rel: 'noopener', text: 'Attach' }),
       el('button', { onclick: () => openTaskModal(t), text: t.pr_url ? 'Diff / PR' : 'Diff / PR…' }),
       t.pr_url ? el('a', { class: 'btn', href: t.pr_url, target: '_blank', rel: 'noopener', text: 'PR' }) : null,
+      t.preview_url ? el('a', { class: 'btn', href: t.preview_url, target: '_blank', rel: 'noopener', text: `Preview :${t.preview_port}` }) : null,
+      t.preview_url ? el('button', { onclick: async () => { try { await api('DELETE', `/api/tasks/${t.id}/preview`); } catch (e) { setError(e.message); } await poll(true); }, title: 'stop exposing the preview', text: '⏏' }) :
+        el('button', { onclick: async () => {
+          try { const r = await api('POST', `/api/tasks/${t.id}/preview`, {}); ui.notice = `preview at ${r.url} → 127.0.0.1:${r.port}`; }
+          catch (e) { if (/no listening port/.test(e.message)) { const p = window.prompt(e.message + '\n\nDev server port (leave blank to cancel):'); if (p) { try { await api('POST', `/api/tasks/${t.id}/preview`, { port: parseInt(p, 10) }); } catch (e2) { setError(e2.message); } } } else setError(e.message); }
+          await poll(true);
+        }, title: 'expose a dev server running in this session on its own tailnet HTTPS port', text: 'Preview' }),
       ciFail ? el('button', { class: 'danger', onclick: async () => { try { const r = await api('POST', `/api/tasks/${t.id}/fix-ci`); setError(null); ui.notice = `CI logs (${r.chars} chars) sent to ${t.title}${r.relaunched ? ' (session relaunched)' : ''}`; } catch (e) { setError(e.message); } await poll(true); }, text: 'Fix CI' }) : null,
       t.pr_url ? el('button', { onclick: async () => { try { await api('POST', `/api/tasks/${t.id}/refresh`); } catch (e) { setError(e.message); } await poll(true); }, title: 'refresh PR / CI status', text: '↻' }) : null,
       confirmButton('arch:' + t.id, 'Archive', async () => {

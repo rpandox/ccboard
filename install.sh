@@ -9,7 +9,7 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE=/etc/ccboard/env
-ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT)
+ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT PREVIEW_HTTPS_BASE)
 TTYD_VERSION=1.7.7
 TTYD_SHA_amd64=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
 TTYD_SHA_arm64=b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165
@@ -69,6 +69,8 @@ for k in "${ENV_KEYS[@]}"; do [ -n "${CALLER[$k]}" ] && printf -v "$k" '%s' "${C
 : "${NTFY_URL:=}"
 : "${NTFY_PUBLIC_URL:=}"
 : "${CCBOARD_APPROVE_TIMEOUT:=90}"
+: "${PREVIEW_HTTPS_BASE:=9100}"
+[[ "$PREVIEW_HTTPS_BASE" =~ ^[0-9]{1,5}$ ]] || die "PREVIEW_HTTPS_BASE must be a port number"
 [[ "$CCBOARD_APPROVE_TIMEOUT" =~ ^[0-9]{1,4}$ ]] || die "CCBOARD_APPROVE_TIMEOUT must be seconds"
 for k in CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT NTFY_PORT NTFY_HTTPS_PORT; do
   [[ "${!k}" =~ ^[0-9]{1,5}$ ]] || die "$k must be a port number (got '${!k}')"
@@ -283,7 +285,12 @@ fi
 
 # ---------------------------------------------------------------- sudoers: let the user restart the stateless units (deploys)
 log "sudoers rule for restarts"
-sudoers_want=$(printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl restart ccboard.service, /usr/bin/systemctl restart ccboard-ttyd.service, /usr/bin/systemctl try-restart ccboard.service\n' "$USER_NAME")
+if [ "${CCBOARD_PREVIEWS:-1}" = 0 ]; then
+  sudoers_want=$(printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl restart ccboard.service, /usr/bin/systemctl restart ccboard-ttyd.service, /usr/bin/systemctl try-restart ccboard.service\n' "$USER_NAME")
+else
+  # `tailscale serve` (tailnet-only) is allowed so the board can expose per-worktree preview ports; `tailscale funnel` is not.
+  sudoers_want=$(printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl restart ccboard.service, /usr/bin/systemctl restart ccboard-ttyd.service, /usr/bin/systemctl try-restart ccboard.service, /usr/bin/tailscale serve *\n' "$USER_NAME")
+fi
 if [ ! -f /etc/sudoers.d/ccboard ] || [ "$(sudo cat /etc/sudoers.d/ccboard)" != "$sudoers_want" ]; then
   tmp=$(mktemp); printf '%s\n' "$sudoers_want" > "$tmp"
   sudo visudo -cf "$tmp" >/dev/null && sudo install -m 0440 -o root -g root "$tmp" /etc/sudoers.d/ccboard && note "wrote /etc/sudoers.d/ccboard"

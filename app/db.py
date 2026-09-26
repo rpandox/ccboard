@@ -114,6 +114,8 @@ MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN last_prompt TEXT",
     "ALTER TABLE sessions ADD COLUMN stats TEXT",
     "ALTER TABLE sessions ADD COLUMN acked_at TEXT",
+    "ALTER TABLE tasks ADD COLUMN preview_port INTEGER",
+    "ALTER TABLE tasks ADD COLUMN preview_https INTEGER",
 ]
 
 
@@ -337,6 +339,11 @@ class DB:
         sets = ", ".join(f"{k}=?" for k in fields) + ", updated_at=?"
         with self.lock:
             self.conn.execute(f"UPDATE tasks SET {sets} WHERE id=?", (*fields.values(), now(), tid))
+
+    def preview_ports_in_use(self) -> set[int]:
+        with self.lock:
+            rows = self.conn.execute("SELECT preview_https FROM tasks WHERE preview_https IS NOT NULL").fetchall()
+        return {int(r[0]) for r in rows}
 
     def task_slugs(self, project: str, repo: str) -> set[str]:
         with self.lock:

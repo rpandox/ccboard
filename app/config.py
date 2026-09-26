@@ -42,6 +42,10 @@ class Settings:
         self.ntfy_public_url = (env.get("NTFY_PUBLIC_URL") or "").strip()  # what the phone subscribes to
         self.recover = (env.get("CCBOARD_RECOVER") or "1") != "0"
         try:
+            self.preview_https_base = int(env.get("PREVIEW_HTTPS_BASE") or 9100)
+        except ValueError:
+            self.preview_https_base = 9100
+        try:
             self.approve_timeout = float(env.get("CCBOARD_APPROVE_TIMEOUT") or 90)
         except ValueError:
             self.approve_timeout = 90.0

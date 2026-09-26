@@ -18,7 +18,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import claude_auth, clonequeue, cost, github, gitops, hooks, notify, permissions, projects, prpoll, push, recover, scheduler, search, tasks, tmux, usage
+from . import claude_auth, clonequeue, cost, github, gitops, hooks, notify, permissions, previews, projects, prpoll, push, recover, scheduler, search, tasks, tmux, usage
 from .auth import csrf_ok, identify
 from .config import settings
 from .db import DB, now as db_now
@@ -128,6 +128,11 @@ async def _notfound(_, e):
 @app.exception_handler(github.GhError)
 async def _gh(_, e):
     return JSONResponse({"error": str(e)}, status_code=502)
+
+
+@app.exception_handler(previews.PreviewError)
+async def _preverr(_, e):
+    return JSONResponse({"error": str(e)}, status_code=422)
 
 
 @app.exception_handler(gitops.GitError)
@@ -364,6 +369,8 @@ def _tasks_view() -> list[dict]:
             "branch": t["branch"], "base": t["base"], "worktree": t["worktree"], "tmux": t["tmux_name"],
             "claude_session_id": t["claude_session_id"], "pr_url": t["pr_url"], "pr_number": t["pr_number"],
             "pr_state": t["pr_state"], "cost_usd": t["cost_usd"], "overlap": ovl,
+            "preview_port": t.get("preview_port"), "preview_https": t.get("preview_https"),
+            "preview_url": f"https://{previews.public_host()}:{t['preview_https']}/" if t.get("preview_https") and previews.public_host() else None,
             "created_at": t["created_at"], "column": tasks.derive_status(t, s),
             "session": {"state": s["state"], "state_at": s["state_at"], "last_message": s["last_message"],
                         "needs_attention": s["needs_attention"], "command": s["command"]} if s else None,
@@ -472,6 +479,7 @@ def api_task_merge(tid: int, body: MergeIn | None = None):
         gitops.push_and_verify(wt, t["branch"])
     # Merge on GitHub first; only then kill the session and remove the worktree (--delete-branch cannot
     # delete a branch that is still checked out, so the merge runs from the repo dir after removal).
+    _drop_preview(t)
     if tmux.has_session(t["tmux_name"]):
         tmux.kill_session(t["tmux_name"])
         db.end(t["tmux_name"])
@@ -533,6 +541,57 @@ def api_issues(project: str, repo: str):
     return {"issues": prpoll.list_issues(rpath)}
 
 
+@app.get("/api/tasks/{tid}/ports")
+def api_task_ports(tid: int):
+    t, _ = _task_or_404(tid)
+    try:
+        s = tmux.list_sessions().get(t["tmux_name"])
+    except tmux.TmuxDown:
+        s = None
+    pid = int((s or {}).get("pid") or 0)
+    return {"ports": previews.ports_under(pid) if pid else [], "pane_pid": pid or None}
+
+
+class PreviewIn(BaseModel):
+    port: int | None = None
+
+
+@app.post("/api/tasks/{tid}/preview")
+def api_task_preview(tid: int, body: PreviewIn | None = None):
+    t, _ = _task_or_404(tid)
+    if not previews.public_host():
+        raise projects.BadRequest("CCBOARD_PUBLIC_URL is not set (rerun install.sh)")
+    port = body.port if body and body.port else None
+    if port is None:
+        found = api_task_ports(tid)["ports"]
+        if not found:
+            raise projects.Conflict("no listening port found under this session; start the dev server first or give the port")
+        port = found[0]
+    if not (1 <= port <= 65535):
+        raise projects.BadRequest("bad port")
+    hp = t.get("preview_https") or previews.allocate_https_port(db.preview_ports_in_use())
+    url = previews.serve_on(hp, port)
+    db.task_update(tid, preview_port=port, preview_https=hp)
+    _invalidate_scan()
+    return {"url": url, "https_port": hp, "port": port}
+
+
+@app.delete("/api/tasks/{tid}/preview")
+def api_task_preview_off(tid: int):
+    t, _ = _task_or_404(tid)
+    if t.get("preview_https"):
+        previews.serve_off(int(t["preview_https"]))
+    db.task_update(tid, preview_port=None, preview_https=None)
+    _invalidate_scan()
+    return {"ok": True}
+
+
+def _drop_preview(t: dict) -> None:
+    if t.get("preview_https"):
+        previews.serve_off(int(t["preview_https"]))
+        db.task_update(t["id"], preview_port=None, preview_https=None)
+
+
 class ArchiveIn(BaseModel):
     force: bool = False
 
@@ -543,6 +602,7 @@ def api_archive_task(tid: int, body: ArchiveIn | None = None):
     if not t:
         raise projects.NotFound("no such task")
     force = bool(body and body.force)
+    _drop_preview(t)
     if tmux.has_session(t["tmux_name"]):
         tmux.kill_session(t["tmux_name"])
         db.end(t["tmux_name"])

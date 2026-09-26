@@ -60,7 +60,8 @@ Working rules: one phase at a time; each item is one commit; tick items as they 
   - *as built:* "Batch prompt…" creates one one-off job per selected repo sharing a batch id; the scheduler drains them (2 at a time, deferred above 85 % of the 5-hour window) and each result becomes a task card; the Schedules section shows per-batch progress
 - [x] Board as MCP server: create_task / list_tasks / get_task_status
   - *as built:* `scripts/ccboard_mcp.py` is a dependency-free MCP stdio server (JSON-RPC: initialize, tools/list, tools/call, ping) that calls the board over loopback with the hook token; `install.sh` registers it at user scope (`claude mcp add --scope user ccboard -- <venv python> scripts/ccboard_mcp.py`), so every Claude session on the box (except `--bare` ones) can call list_projects, create_task, list_tasks and get_task_status. Any `/api/*` call carrying the token is treated as the local owner
-- [ ] Port-per-worktree preview links through tailscale serve
+- [x] Port-per-worktree preview links through tailscale serve
+  - *as built:* "Preview" on a task card finds TCP listeners under the session's process tree (`/proc/<pid>/task/*/children` + `ss -ltnp`) or takes a port, allocates the next free tailnet HTTPS port from `PREVIEW_HTTPS_BASE` (9100) and runs `tailscale serve --bg --https=<port> http://127.0.0.1:<devport>` (as the operator or through the sudoers rule that install.sh adds for `tailscale serve *`, never funnel); archive/merge turn it off. Path-based sharing of one port was avoided because dev servers use absolute asset URLs
 - [ ] Devcontainer option per project; bypassPermissions allowed only inside it
 - [ ] Second box: same app in node mode, hub over MagicDNS, ACL tags, health panel (cpu/ram/disk)
 - [ ] Nightly restic of DB + transcripts; `git push --all` for WIP branches
