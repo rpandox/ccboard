@@ -229,6 +229,15 @@ else
   note "ntfy on $NTFY_URL, topic $NTFY_TOPIC, phone URL $NTFY_PUBLIC_URL/$NTFY_TOPIC"
 fi
 
+# ---------------------------------------------------------------- devcontainer CLI (optional: CCBOARD_DEVCONTAINER=1)
+if [ "${CCBOARD_DEVCONTAINER:-0}" = 1 ]; then
+  log "devcontainer CLI"
+  if ! have docker; then warn "docker is not installed; devcontainer sessions will fail (install docker and add $USER_NAME to the docker group)"; fi
+  if have devcontainer || [ -x "$HOME_DIR/.local/bin/devcontainer" ]; then note "present"
+  elif have npm; then npm install -g --prefix "$HOME_DIR/.local" @devcontainers/cli >/dev/null 2>&1 && note "installed to $HOME_DIR/.local/bin/devcontainer" || warn "npm install @devcontainers/cli failed"
+  else warn "npm not found: devcontainer CLI skipped"; fi
+fi
+
 # ---------------------------------------------------------------- gh: let git use gh's credentials for https clones (bulk import)
 if have gh && gh auth status >/dev/null 2>&1; then
   gh auth setup-git >/dev/null 2>&1 && note "gh credential helper configured for git (private https clones)" || true

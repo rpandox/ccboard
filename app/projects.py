@@ -84,6 +84,10 @@ def _git(path: Path, *args: str) -> subprocess.CompletedProcess | None:
         return None
 
 
+def has_devcontainer(path: Path) -> bool:
+    return (path / ".devcontainer" / "devcontainer.json").is_file() or (path / ".devcontainer.json").is_file()
+
+
 def git_info(path: Path) -> dict:
     """branch/dirty for a repo dir; state 'unknown' when git is slow or missing."""
     cp = _git(path, "symbolic-ref", "--short", "-q", "HEAD")
@@ -140,7 +144,7 @@ def scan(sessions: dict[str, dict]) -> list[dict]:
                 info = {"branch": None, "dirty": None, "state": "clone-failed"}  # the shell shows the error
             else:
                 info = {"branch": None, "dirty": None, "state": "nogit"}
-            repos.append({"name": rname, "path": str(rdir), "sessions": rsessions, **info})
+            repos.append({"name": rname, "path": str(rdir), "sessions": rsessions, "devcontainer": has_devcontainer(rdir), **info})
         orphans = []
         for (pp, rr), ss in list(grouped.items()):
             if pp == pname:

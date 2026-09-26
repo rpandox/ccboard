@@ -101,3 +101,30 @@ def test_stream_once(client, projects_dir, fake_tmux, monkeypatch):
         body = "".join(r.iter_text())
     assert "event: lines" in body and '"name": "' + name + '"' in body.replace('"name":"', '"name": "') and "12 passing" in body
     assert "event: tick" in body and name in body.split("event: tick")[1]
+
+
+def test_devcontainer_and_bypass_rules(client, projects_dir, fake_tmux, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")
+    git_init(projects_dir / "shop" / "api")
+    git_init(projects_dir / "shop" / "web")
+    (projects_dir / "shop" / "web" / ".devcontainer").mkdir()
+    (projects_dir / "shop" / "web" / ".devcontainer" / "devcontainer.json").write_text("{}")
+    st = client.get("/api/state", headers=H).json()
+    repos = {r["name"]: r for r in st["projects"][0]["repos"]}
+    assert repos["web"]["devcontainer"] is True and repos["api"]["devcontainer"] is False
+    # bypass on the host is refused, in any spelling
+    for body in ({"launcher": "claude", "bypass": True}, {"launcher": "claude", "args": "--dangerously-skip-permissions"},
+                 {"launcher": "claude", "args": "--permission-mode=bypassPermissions"}):
+        assert client.post("/api/projects/shop/repos/api/sessions", headers=H, json=body).status_code == 400
+    assert client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude", "devcontainer": True}).status_code == 400  # no devcontainer there
+    assert client.post("/api/projects/shop/repos/api/tasks", headers=H, json={"title": "t", "prompt": "p", "args": "--dangerously-skip-permissions"}).status_code == 400
+    # inside the devcontainer it is allowed and wrapped in devcontainer up/exec
+    r = client.post("/api/projects/shop/repos/web/sessions", headers=H, json={"launcher": "claude", "devcontainer": True, "bypass": True, "args": "--model opus"})
+    assert r.status_code == 201, r.text
+    cmd = r.json()["cmd"]
+    wf = str(projects_dir / "shop" / "web")
+    assert cmd.startswith(f"devcontainer up --workspace-folder {wf} && devcontainer exec --workspace-folder {wf} -- claude --session-id ")
+    assert "--dangerously-skip-permissions --model opus" in cmd
+    r = client.post("/api/projects/shop/repos/web/sessions", headers=H, json={"launcher": "shell", "devcontainer": True}).json()
+    assert r["cmd"].endswith("-- bash -l")

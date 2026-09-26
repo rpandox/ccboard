@@ -378,9 +378,15 @@ function sessionForm(p, r) {
   for (const x of siblings) checks.append(mk(x, true));
   const otherBox = el('div', { class: 'checks' });
   for (const x of others) otherBox.append(mk(x, false));
+  const devc = el('input', { type: 'checkbox' });
+  const bypass = el('input', { type: 'checkbox', disabled: true });
+  devc.addEventListener('change', () => { bypass.disabled = !devc.checked; if (!devc.checked) bypass.checked = false; });
+  const devRow = r.devcontainer ? el('div', { class: 'checks' },
+    el('label', { class: 'row', title: 'devcontainer up + devcontainer exec (needs docker and the devcontainer CLI on the box; log in to Claude inside once)' }, devc, 'run in devcontainer'),
+    el('label', { class: 'row', title: 'claude --dangerously-skip-permissions; only inside the container' }, bypass, 'bypass permissions (container only)')) : null;
   const form = el('form', { class: 'form', onsubmit: async (e) => {
     e.preventDefault();
-    const body = { launcher: launcher.value };
+    const body = { launcher: launcher.value, devcontainer: devc.checked, bypass: bypass.checked };
     if (name.value.trim()) body.name = name.value.trim();
     if (args.value.trim()) body.args = args.value.trim();
     if (launcher.value === 'resume' && resumeId.value.trim()) body.resume_id = resumeId.value.trim();
@@ -395,6 +401,7 @@ function sessionForm(p, r) {
     el('div', { class: 'row' }, launcher, name),
     el('label', { text: 'extra args' }), args,
     resumeId,
+    devRow,
     siblings.length ? el('label', { text: 'also give access to (--add-dir)' }) : null, checks,
     others.length ? el('details', {}, el('summary', { class: 'dim', text: 'repos of other projects' }), otherBox) : null,
     el('div', { class: 'row' },
@@ -469,7 +476,8 @@ function repoBlock(p, r) {
       r.state === 'cloning' ? el('span', { class: 'badge warn', text: 'cloning…' }) : null,
       r.state === 'clone-failed' ? el('span', { class: 'badge bad', text: 'clone failed (attach to see the error)' }) : null,
       r.state === 'nogit' ? el('span', { class: 'badge bad', text: 'no git' }) : null,
-      r.state === 'unknown' ? el('span', { class: 'dot unknown', title: 'git status unknown' }) : null),
+      r.state === 'unknown' ? el('span', { class: 'dot unknown', title: 'git status unknown' }) : null,
+      r.devcontainer ? el('span', { class: 'badge', title: '.devcontainer found: sessions can run inside it', text: 'devcontainer' }) : null),
     el('div', { class: 'row' },
       el('a', { class: 'btn', href: codeServerUrl(r.path), target: '_blank', rel: 'noopener', text: 'code-server' }),
       el('button', { class: 'primary', onclick: () => { ui.openForm = 'session:' + key; renderProjects(); }, text: 'New session' }),

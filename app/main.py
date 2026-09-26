@@ -404,6 +404,8 @@ def api_create_task(project: str, repo: str, body: TaskIn):
             extra = shlex.split(body.args)
         except ValueError as e:
             raise projects.BadRequest(f"extra args: {e}")
+    if _bypass_requested(extra):
+        raise projects.BadRequest("bypassPermissions is not allowed for tasks (they run on the host, not in a devcontainer)")
     add_dirs = _resolve_add_dirs(body.add_dirs, rpath)
     slug = tasks.unique_slug(rpath, tasks.slugify(title), db.task_slugs(project, repo))
     session = tasks.session_name_for(slug)
@@ -767,12 +769,21 @@ def api_run_resume(rid: int):
 
 # ---------- sessions ----------
 
+BYPASS_PARTS = ("dangerously", "bypasspermissions")
+
+
+def _bypass_requested(extra: list[str]) -> bool:
+    return any(any(b in a.lower() for b in BYPASS_PARTS) for a in extra)
+
+
 class SessionIn(BaseModel):
     launcher: str
     name: str | None = None
     args: str | None = None
     resume_id: str | None = None
     add_dirs: list[str] | None = None  # "project/repo" ids
+    devcontainer: bool = False         # run claude inside the repo's devcontainer (devcontainer CLI)
+    bypass: bool = False               # --dangerously-skip-permissions; only allowed with devcontainer
 
 
 def _resolve_add_dirs(ids: list[str] | None, own: Path) -> list[str]:
@@ -848,11 +859,15 @@ def api_create_session(project: str, repo: str, body: SessionIn):
     cmd_line = None
     claude_session_id = None
     add_dirs: list[str] = []
+    if body.devcontainer and not projects.has_devcontainer(rpath):
+        raise projects.BadRequest("this repo has no .devcontainer/devcontainer.json")
+    if (body.bypass or _bypass_requested(extra)) and not body.devcontainer:
+        raise projects.BadRequest("bypassPermissions is only allowed inside a devcontainer (tick 'run in devcontainer')")
     if body.launcher != "shell":
         exe = settings.claude_bin()
-        if not exe:
+        if not exe and not body.devcontainer:
             raise projects.BadRequest("claude is not installed on this box")
-        add_dirs = _resolve_add_dirs(body.add_dirs, rpath)
+        add_dirs = _resolve_add_dirs(body.add_dirs, rpath) if not body.devcontainer else []
         cmd = ["claude"]
         if body.launcher == "claude":
             claude_session_id = str(uuid.uuid4())
@@ -861,10 +876,21 @@ def api_create_session(project: str, repo: str, body: SessionIn):
             cmd += ["--resume"] + ([body.resume_id] if body.resume_id else [])
         elif body.launcher == "continue":
             cmd += ["--continue"]
+        if body.bypass and not _bypass_requested(extra):
+            cmd.append("--dangerously-skip-permissions")
         cmd += extra
         if add_dirs:
             cmd += ["--add-dir", *add_dirs]
         cmd_line = shlex.join(cmd)
+        if body.devcontainer:
+            # devcontainer CLI: build/start the container, then run claude inside it (its own ~/.claude; log in once there)
+            wf = str(rpath)
+            cmd_line = (shlex.join(["devcontainer", "up", "--workspace-folder", wf]) + " && "
+                        + shlex.join(["devcontainer", "exec", "--workspace-folder", wf, "--"]) + " " + cmd_line)
+    elif body.devcontainer:
+        wf = str(rpath)
+        cmd_line = (shlex.join(["devcontainer", "up", "--workspace-folder", wf]) + " && "
+                    + shlex.join(["devcontainer", "exec", "--workspace-folder", wf, "--", "bash", "-l"]))
 
     real = _start_session(name, project, repo, session, body.launcher, str(rpath), cmd_line=cmd_line,
                           claude_session_id=claude_session_id, add_dirs=add_dirs)
