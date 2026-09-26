@@ -48,8 +48,10 @@ trap 'kill "$SUDO_KEEPALIVE" 2>/dev/null || true' EXIT
 declare -A CALLER
 for k in "${ENV_KEYS[@]}"; do CALLER[$k]="${!k:-}"; done
 if [ -f "$ENV_FILE" ]; then
-  # shellcheck disable=SC1090
-  set +u; . "$ENV_FILE"; set -u
+  # Never source it: values are data, not shell. Only whitelisted keys are read.
+  while IFS='=' read -r k v; do
+    case " ${ENV_KEYS[*]} " in *" $k "*) printf -v "$k" '%s' "$v";; esac
+  done < "$ENV_FILE"
 fi
 for k in "${ENV_KEYS[@]}"; do [ -n "${CALLER[$k]}" ] && printf -v "$k" '%s' "${CALLER[$k]}"; done
 : "${PROJECTS_DIR:=/srv/projects}"
@@ -68,6 +70,10 @@ done
 [ "$CCBOARD_PORT" != "$TTYD_PORT" ] && [ "$CCBOARD_PORT" != "$CODE_SERVER_PORT" ] && [ "$TTYD_PORT" != "$CODE_SERVER_PORT" ] \
   || die "CCBOARD_PORT, TTYD_PORT and CODE_SERVER_PORT must all differ"
 [[ "$PROJECTS_DIR" = /* ]] || die "PROJECTS_DIR must be an absolute path"
+CCBOARD_ALLOWED_USERS=$(printf '%s' "$CCBOARD_ALLOWED_USERS" | tr -d '[:space:]')
+for k in PROJECTS_DIR CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_ALLOWED_USERS; do
+  case "${!k}" in *[[:space:]\"\$\\]*) die "$k must not contain whitespace, quotes, \$ or backslashes (got '${!k}')";; esac
+done
 for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN; do
   [ -z "${!v:-}" ] || warn "$v is set in your environment; it outranks the Claude login. It is NOT written to $ENV_FILE."
 done
@@ -80,9 +86,9 @@ read -r TS_STATE TS_FQDN TS_LOGIN TS_CERTS < <(printf '%s' "$TS_STATUS" | python
 import json,sys
 d=json.load(sys.stdin); s=d.get("Self") or {}
 login=((d.get("User") or {}).get(str(s.get("UserID"))) or {}).get("LoginName","")
-print(d.get("BackendState",""), (s.get("DNSName") or "").rstrip("."), login or "-", len(d.get("CertDomains") or []))')
+print(d.get("BackendState","") or "-", (s.get("DNSName") or "").rstrip(".") or "-", login or "-", len(d.get("CertDomains") or []))')
 [ "$TS_STATE" = Running ] || die "tailscale is not running/logged in (BackendState=$TS_STATE)"
-[ -n "$TS_FQDN" ] || die "this node has no MagicDNS name; enable MagicDNS in the admin console"
+[ "$TS_FQDN" != - ] || die "this node has no MagicDNS name; enable MagicDNS in the admin console"
 [ "$TS_CERTS" != 0 ] || die "HTTPS certificates are not enabled for this tailnet: turn on 'HTTPS Certificates' at https://login.tailscale.com/admin/dns and rerun"
 tailscale serve --help 2>&1 | grep -q -- '--set-path' || die "tailscale is too old for 'serve --set-path' (need 1.54+)"
 if [ -z "$CCBOARD_ALLOWED_USERS" ]; then
@@ -90,6 +96,14 @@ if [ -z "$CCBOARD_ALLOWED_USERS" ]; then
   CCBOARD_ALLOWED_USERS=$TS_LOGIN
 fi
 note "tailnet node $TS_FQDN, allowed users: $CCBOARD_ALLOWED_USERS"
+
+# ---------------------------------------------------------------- apt ttyd unit (would hold 7681 as root)
+if [ -f /lib/systemd/system/ttyd.service ] || [ -f /usr/lib/systemd/system/ttyd.service ]; then
+  if systemctl is-enabled --quiet ttyd.service 2>/dev/null || systemctl is-active --quiet ttyd.service 2>/dev/null; then
+    log "disabling the apt package's ttyd.service (ccboard runs its own ttyd)"
+    sudo systemctl disable --now ttyd.service || true
+  fi
+fi
 
 # ---------------------------------------------------------------- port collisions
 port_busy() { ss -ltnH 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1\$"; }
@@ -131,12 +145,6 @@ if [ "$need_ttyd" = 1 ]; then
   echo "$sha  $tmp" | sha256sum -c --quiet - || die "ttyd checksum mismatch"
   sudo install -m 0755 "$tmp" "$TTYD_BIN"; rm -f "$tmp"
   note "installed ttyd $TTYD_VERSION to $TTYD_BIN"
-fi
-if [ -f /lib/systemd/system/ttyd.service ] || [ -f /usr/lib/systemd/system/ttyd.service ]; then
-  if systemctl is-enabled --quiet ttyd.service 2>/dev/null || systemctl is-active --quiet ttyd.service 2>/dev/null; then
-    note "disabling the apt package's ttyd.service (it would hold port 7681 as root)"
-    sudo systemctl disable --now ttyd.service || true
-  fi
 fi
 
 # ---------------------------------------------------------------- code-server
@@ -251,6 +259,7 @@ for p,h in handlers.items():
 h=handlers.get(path)
 if h is None: print("missing")
 elif h.get("Proxy")==target: print("ours")
+elif str(h.get("Proxy","")).startswith("http://127.0.0.1:"): print("stale")   # ccboard handler with an old backend port
 else: print(f"foreign:handler {path} -> {h}")
 ' "$TS_FQDN" "$1" "$2" "$3" "$CCBOARD_HTTPS_PORT"
 }
@@ -258,7 +267,11 @@ serve_apply() { # port path target
   st=$(serve_check "$1" "$2" "$3")
   case "$st" in
     ours) note "https://$TS_FQDN:$1$2 -> $3 (already set)";;
-    missing)
+    missing|stale)
+      if [ "$st" = stale ]; then
+        note "replacing the old ccboard handler at https://$TS_FQDN:$1$2"
+        sudo tailscale serve --https="$1" --set-path "$2" off >/dev/null 2>&1 || true
+      fi
       if [ "$2" = / ]; then sudo timeout 60 tailscale serve --bg --https="$1" "$3" >/dev/null
       else sudo timeout 60 tailscale serve --bg --https="$1" --set-path "$2" "$3" >/dev/null; fi
       note "https://$TS_FQDN:$1$2 -> $3";;
@@ -287,7 +300,7 @@ ok=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   if curl -fsS "http://127.0.0.1:$CCBOARD_PORT/healthz" >/dev/null 2>&1; then ok=1; break; fi; sleep 1
 done
-[ "$ok" = 1 ] || { sudo systemctl status ccboard.service --no-pager | tail -20; die "ccboard is not answering on 127.0.0.1:$CCBOARD_PORT"; }
+[ "$ok" = 1 ] || { sudo systemctl status ccboard.service --no-pager 2>&1 | tail -20 || true; die "ccboard is not answering on 127.0.0.1:$CCBOARD_PORT"; }
 note "restarted: ${restarted[*]}"
 printf '\n\033[1;32mccboard is installed.\033[0m\n'
 printf '  Dashboard:   https://%s:%s/\n' "$TS_FQDN" "$CCBOARD_HTTPS_PORT"

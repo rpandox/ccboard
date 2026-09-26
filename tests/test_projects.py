@@ -33,7 +33,7 @@ def test_scan_layouts(projects_dir):
 
 def test_scan_groups_sessions_and_cloning(projects_dir):
     git_init(projects_dir / "shop" / "api")
-    (projects_dir / "shop" / "web").mkdir()
+    git_init(projects_dir / "shop" / "web")   # git creates .git before it fetches: still "cloning"
     (projects_dir / "shop" / "bad").mkdir()
     sessions = {
         "shop--api--s1": {"created": 5, "attached": 1, "command": "claude", "path": "", "launcher": "claude"},

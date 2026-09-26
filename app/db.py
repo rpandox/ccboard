@@ -68,10 +68,14 @@ class DB:
                 "UPDATE sessions SET ended_at=? WHERE tmux_name=? AND ended_at IS NULL", (now(), tmux_name)
             )
 
-    def reconcile(self, alive: set[str]) -> None:
-        """Close rows whose tmux session no longer exists (reboot, manual kill)."""
+    def reconcile(self, alive: set[str], before: str) -> None:
+        """Close rows created before the tmux snapshot `before` whose session no longer exists
+        (reboot, manual kill). Rows newer than the snapshot may belong to a session created
+        after it was taken, so they are left alone."""
         with self.lock:
-            rows = self.conn.execute("SELECT DISTINCT tmux_name FROM sessions WHERE ended_at IS NULL").fetchall()
+            rows = self.conn.execute(
+                "SELECT DISTINCT tmux_name FROM sessions WHERE ended_at IS NULL AND created_at < ?", (before,)
+            ).fetchall()
             stale = [r[0] for r in rows if r[0] not in alive]
             for name in stale:
                 self.conn.execute(

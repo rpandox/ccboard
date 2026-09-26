@@ -53,10 +53,15 @@ def project_path(project: str) -> Path:
     return settings.projects_dir / project
 
 
+def is_repo(path: Path) -> bool:
+    """git's own notion: a .git directory or a .git file (worktree/submodule)."""
+    return (path / ".git").exists()
+
+
 def repo_path(project: str, repo: str) -> Path:
     p = project_path(project)
     check_name("repo", repo)
-    if repo == project and (p / ".git").is_dir():
+    if repo == project and is_repo(p):
         return p  # compat: the project folder itself is the repo
     return p / repo
 
@@ -118,24 +123,23 @@ def scan(sessions: dict[str, dict]) -> list[dict]:
     projects = []
     for pdir in _subdirs(settings.projects_dir):
         pname = pdir.name
-        if (pdir / ".git").exists():
+        if is_repo(pdir):
             repo_dirs = [(pname, pdir)]
         else:
             repo_dirs = [(c.name, c) for c in _subdirs(pdir)]
         repos = []
         for rname, rdir in repo_dirs:
             rsessions = sorted(grouped.pop((pname, rname), []), key=lambda s: s["created"])
-            if (rdir / ".git").exists():
+            clone = next((s for s in rsessions if s["name"] == "clone"), None)
+            # git creates .git before it fetches, so a live clone session decides first.
+            if clone is not None and (clone.get("command") or "") == "git":
+                info = {"branch": None, "dirty": None, "state": "cloning"}
+            elif is_repo(rdir):
                 info = git_info(rdir)
+            elif clone is not None:
+                info = {"branch": None, "dirty": None, "state": "clone-failed"}  # the shell shows the error
             else:
-                clone = next((s for s in rsessions if s["name"] == "clone"), None)
-                if clone is None:
-                    state = "nogit"
-                elif (clone.get("command") or "") == "git":
-                    state = "cloning"
-                else:
-                    state = "clone-failed"  # git exited without creating .git; the shell shows the error
-                info = {"branch": None, "dirty": None, "state": state}
+                info = {"branch": None, "dirty": None, "state": "nogit"}
             repos.append({"name": rname, "path": str(rdir), "sessions": rsessions, **info})
         orphans = []
         for (pp, rr), ss in list(grouped.items()):
@@ -159,7 +163,7 @@ def add_repo_blank(project: str, repo: str) -> Path:
     p = project_path(project)
     if not p.is_dir():
         raise NotFound(f"project {project} not found")
-    if (p / ".git").is_dir():
+    if is_repo(p):
         raise Conflict("this project folder is itself a git repo; it cannot hold more repos")
     r = p / check_name("repo", repo)
     if r.exists():
@@ -178,7 +182,7 @@ def prepare_repo_clone(project: str, repo: str | None, url: str) -> tuple[str, P
     p = project_path(project)
     if not p.is_dir():
         raise NotFound(f"project {project} not found")
-    if (p / ".git").is_dir():
+    if is_repo(p):
         raise Conflict("this project folder is itself a git repo; it cannot hold more repos")
     name = repo or derive_repo_name(url)
     if not name:
@@ -194,7 +198,10 @@ def remove_tree(path: Path) -> None:
     rp = _contained(path)
     if rp == settings.projects_dir.resolve():
         raise BadRequest("refusing to remove PROJECTS_DIR")
-    shutil.rmtree(rp)
+    # A just-killed git clone may still be deleting its own files; tolerate vanished entries once.
+    shutil.rmtree(rp, ignore_errors=True)
+    if rp.exists():
+        shutil.rmtree(rp)
 
 
 __all__ = [n for n in dir() if not n.startswith("_")]

@@ -289,12 +289,15 @@ function closeModal() { ui.modal = false; $('#modal').classList.add('hidden'); }
 
 /* ---------- polling ---------- */
 
-function render() {
+function render(force) {
   renderHeader();
   renderBanner();
   renderNewProject();
-  const typing = document.activeElement && document.activeElement.closest('#projects');
-  if (!ui.openForm && !typing) renderProjects();
+  const ae = document.activeElement;
+  const typing = !!(ae && ae.closest('#projects') && ae.matches('input, select, textarea'));
+  // A forced poll follows a user action: always redraw (a focused button must not block it).
+  // A background poll leaves an open form or a field being typed in alone.
+  if (force ? !typing : (!ui.openForm && !typing)) renderProjects();
   updateModal();
 }
 
@@ -305,7 +308,7 @@ async function poll(force) {
     const changed = j !== ui.lastJson;
     ui.lastJson = j;
     state = s;
-    if (changed || force) render();
+    if (changed || force) render(force);
     else { renderHeader(); updateModal(); }
   } catch (e) {
     if (!state) { $('#banner').textContent = 'Cannot reach ccboard: ' + e.message; }

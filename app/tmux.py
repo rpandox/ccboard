@@ -155,8 +155,9 @@ def capture(name: str, lines: int = 200, join: bool = True, escapes: bool = Fals
     return cp.stdout if cp.returncode == 0 else ""
 
 
-def kill_prefix(prefix: str) -> list[str]:
-    """Kill every session whose name starts with prefix. Returns the killed names."""
+def kill_prefix(prefix: str, wait: float = 2.0) -> list[str]:
+    """Kill every session whose name starts with prefix and wait (up to `wait` s) for their
+    processes to go away, so a following rmtree does not race git's own cleanup."""
     killed = []
     try:
         names = list(list_sessions().keys())
@@ -165,4 +166,14 @@ def kill_prefix(prefix: str) -> list[str]:
     for n in names:
         if n.startswith(prefix) and kill_session(n):
             killed.append(n)
+    deadline = time.monotonic() + wait
+    while killed and time.monotonic() < deadline:
+        try:
+            if not any(n in list_sessions() for n in killed):
+                break
+        except TmuxDown:
+            break
+        time.sleep(0.1)
+    if killed:
+        time.sleep(0.2)  # let HUP'd children finish unlinking
     return killed

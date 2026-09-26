@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from . import claude_auth, projects, tmux
 from .auth import csrf_ok, identify
 from .config import settings
-from .db import DB
+from .db import DB, now as db_now
 
 log = logging.getLogger("ccboard")
 STATIC = Path(__file__).parent / "static"
@@ -91,12 +91,13 @@ async def _tmuxerr(_, e):
 
 def _merged_sessions() -> tuple[dict[str, dict], bool]:
     """tmux sessions (non-internal) merged with DB rows. Returns (sessions, tmux_down)."""
+    snapshot_at = db_now()
     try:
         live = tmux.list_sessions()
     except tmux.TmuxDown:
         return {}, True
     assert db is not None
-    db.reconcile(set(live.keys()))
+    db.reconcile(set(live.keys()), before=snapshot_at)
     rows = db.open_rows()
     out: dict[str, dict] = {}
     for name, s in live.items():
@@ -150,27 +151,44 @@ class RepoIn(BaseModel):
     url: str | None = None
 
 
-def _launch_clone(project: str, repo: str, path: Path, url: str) -> str:
+def _launch_clone(project: str, repo: str, path: Path, url: str, cleanup: list[Path]) -> str:
+    """Start the clone session; on any failure remove the freshly created dirs in `cleanup`."""
     name = tmux.tmux_name(project, repo, "clone")
-    if tmux.has_session(name):
-        raise projects.Conflict("a clone is already running for this repo")
     cmd = ["git", "clone", "--progress", "--", url, "."]
     line = shlex.join(cmd) + " && exit"
-    _start_session(name, project, repo, "clone", "clone", str(path), cmd_line=line, claude_session_id=None,
-                   add_dirs=[])
+    try:
+        if tmux.has_session(name):
+            raise projects.Conflict("a clone is already running for this repo")
+        _start_session(name, project, repo, "clone", "clone", str(path), cmd_line=line, claude_session_id=None,
+                       add_dirs=[])
+    except Exception:
+        for d in cleanup:
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+        raise
     return name
 
 
 @app.post("/api/projects", status_code=201)
 def api_create_project(body: ProjectIn):
+    projects.check_name("project", body.name)
+    rname = None
     if body.url:
+        # Validate everything that can fail before touching the disk.
         projects.check_url(body.url)
+        rname = projects.derive_repo_name(body.url)
+        if not rname:
+            raise projects.BadRequest("could not derive a repo name from the URL; create the project, then add the repo with a name")
+        if tmux.has_session(tmux.tmux_name(body.name, rname, "clone")):
+            raise projects.Conflict("a clone is already running for this repo")
     p = projects.create_project(body.name)
     result = {"name": body.name, "path": str(p)}
     if body.url:
-        rname, rpath = projects.prepare_repo_clone(body.name, None, body.url)
+        rname, rpath = projects.prepare_repo_clone(body.name, rname, body.url)
         result["repo"] = rname
-        result["clone_session"] = _launch_clone(body.name, rname, rpath, body.url)
+        result["clone_session"] = _launch_clone(body.name, rname, rpath, body.url, cleanup=[rpath, p])
     _invalidate_scan()
     return result
 
@@ -192,7 +210,7 @@ def api_delete_project(project: str):
 def api_add_repo(project: str, body: RepoIn):
     if body.url:
         rname, rpath = projects.prepare_repo_clone(project, body.name, body.url)
-        sess = _launch_clone(project, rname, rpath, body.url)
+        sess = _launch_clone(project, rname, rpath, body.url, cleanup=[rpath])
         _invalidate_scan()
         return {"name": rname, "path": str(rpath), "clone_session": sess}
     if not body.name:

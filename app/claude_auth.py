@@ -103,12 +103,12 @@ def login_state() -> dict:
     cmd = (s.get("command") or "").lstrip("-")
     running = bool(cmd) and cmd not in SHELLS
     text = tmux.capture(tmux.LOGIN_SESSION)
-    m = URL_RE.search(text)
-    url = m.group(0).rstrip(".,)") if m else None
+    urls = URL_RE.findall(text)
+    url = urls[-1].rstrip(".,)") if urls else None  # newest login attempt wins
     if not url:
         raw = tmux.capture(tmux.LOGIN_SESSION, escapes=True)
-        m = OSC8_RE.search(raw)
-        url = m.group(1) if m else None
+        urls = OSC8_RE.findall(raw)
+        url = urls[-1] if urls else None
     tail = [ln.rstrip() for ln in text.splitlines() if ln.strip()][-15:]
     return {"running": running, "url": url, "tail": tail}
 
