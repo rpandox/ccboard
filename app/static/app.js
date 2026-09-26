@@ -386,11 +386,18 @@ function projectCard(p) {
 
 function inboxItems() {
   const items = [];
+  const pend = {};
+  for (const pr of (state.pending_permissions || [])) pend[pr.tmux_name] = pr;
   for (const p of state.projects) {
-    for (const r of p.repos) for (const s of r.sessions) if (s.needs_attention) items.push({ ...s, project: p.name, repo: r.name });
-    for (const s of p.orphan_sessions) if (s.needs_attention) items.push({ ...s, project: p.name });
+    for (const r of p.repos) for (const s of r.sessions) if (s.needs_attention) items.push({ ...s, project: p.name, repo: r.name, perm: pend[s.tmux] || null });
+    for (const s of p.orphan_sessions) if (s.needs_attention) items.push({ ...s, project: p.name, perm: pend[s.tmux] || null });
   }
   return items.sort((a, b) => (a.state_at || '').localeCompare(b.state_at || ''));  // oldest first
+}
+
+async function decide(pid, decision) {
+  try { await api('POST', `/api/permission/${pid}/${decision}`); setError(null); } catch (e) { setError(e.message); }
+  await poll(true);
 }
 
 function renderInbox() {
@@ -404,12 +411,14 @@ function renderInbox() {
   if (ui.inboxSel >= items.length) ui.inboxSel = items.length - 1;
   sec.append(el('div', { class: 'row head' },
     el('h2', { text: `Needs attention (${items.length})` }),
-    el('span', { class: 'dim', text: 'j / k move · Enter attach · a ack' })));
+    el('span', { class: 'dim', text: 'j / k move · Enter attach · a ack · y / n allow / deny' })));
   items.forEach((s, i) => {
     const row = el('div', { class: 'inbox-item' + (i === ui.inboxSel ? ' sel' : ''), onclick: () => { ui.inboxSel = i; renderInbox(); } },
       el('span', { class: 'name', text: `${s.project}/${s.repo || '?'} · ${s.name}` }),
       stateBadge(s),
-      el('span', { class: 'msg', text: (s.last_message || s.last_prompt || '').slice(0, 140) }),
+      el('span', { class: 'msg', text: (s.perm ? s.perm.summary : (s.last_message || s.last_prompt || '')).slice(0, 140) }),
+      s.perm ? el('button', { class: 'primary', onclick: (e) => { e.stopPropagation(); decide(s.perm.id, 'allow'); }, text: 'Allow (y)' }) : null,
+      s.perm ? el('button', { class: 'danger', onclick: (e) => { e.stopPropagation(); decide(s.perm.id, 'deny'); }, text: 'Deny (n)' }) : null,
       el('a', { class: 'btn', href: `/term/${encodeURIComponent(s.tmux)}`, target: '_blank', rel: 'noopener', text: 'Attach' }),
       el('button', { onclick: async (e) => { e.stopPropagation(); try { await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/ack`); } catch (err) { setError(err.message); } await poll(true); }, text: 'Ack' }));
     sec.append(row);
@@ -429,6 +438,9 @@ async function inboxKey(e) {
     e.preventDefault();
     try { await api('POST', `/api/sessions/${encodeURIComponent(items[ui.inboxSel].tmux)}/ack`); } catch (err) { setError(err.message); }
     await poll(true);
+  } else if ((e.key === 'y' || e.key === 'n') && ui.inboxSel >= 0 && items[ui.inboxSel].perm) {
+    e.preventDefault();
+    await decide(items[ui.inboxSel].perm.id, e.key === 'y' ? 'allow' : 'deny');
   } else if (e.key === 'Escape') { ui.inboxSel = -1; renderInbox(); }
   else return;
   const sel = document.querySelector('.inbox-item.sel');

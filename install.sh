@@ -9,7 +9,7 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE=/etc/ccboard/env
-ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT)
+ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT)
 TTYD_VERSION=1.7.7
 TTYD_SHA_amd64=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
 TTYD_SHA_arm64=b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165
@@ -68,6 +68,8 @@ for k in "${ENV_KEYS[@]}"; do [ -n "${CALLER[$k]}" ] && printf -v "$k" '%s' "${C
 : "${NTFY_TOPIC:=ccboard}"
 : "${NTFY_URL:=}"
 : "${NTFY_PUBLIC_URL:=}"
+: "${CCBOARD_APPROVE_TIMEOUT:=90}"
+[[ "$CCBOARD_APPROVE_TIMEOUT" =~ ^[0-9]{1,4}$ ]] || die "CCBOARD_APPROVE_TIMEOUT must be seconds"
 for k in CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT NTFY_PORT NTFY_HTTPS_PORT; do
   [[ "${!k}" =~ ^[0-9]{1,5}$ ]] || die "$k must be a port number (got '${!k}')"
 done
@@ -256,7 +258,11 @@ fi
 
 # ---------------------------------------------------------------- Claude Code hooks + statusline (no sudo)
 log "Claude Code hooks"
-python3 "$APP_DIR/scripts/claude_settings.py" install --app-dir "$APP_DIR"
+if [ "${CCBOARD_REMOTE_APPROVE:-1}" = 0 ]; then
+  python3 "$APP_DIR/scripts/claude_settings.py" install --app-dir "$APP_DIR" --no-remote-approve
+else
+  python3 "$APP_DIR/scripts/claude_settings.py" install --app-dir "$APP_DIR" --approve-timeout "${CCBOARD_APPROVE_TIMEOUT:-90}"
+fi
 
 # ---------------------------------------------------------------- sudoers: let the user restart the stateless units (deploys)
 log "sudoers rule for restarts"

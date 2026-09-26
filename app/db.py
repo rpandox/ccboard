@@ -34,6 +34,17 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_by_session ON events(tmux_name, id);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, sub TEXT NOT NULL, at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS permissions (
+  id INTEGER PRIMARY KEY,
+  tmux_name TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  input TEXT,
+  created_at TEXT NOT NULL,
+  decided_at TEXT,
+  decision TEXT,
+  source TEXT
+);
 """
 
 # Added after v0.1; applied with ALTER TABLE, "duplicate column" errors are ignored.
@@ -174,6 +185,36 @@ class DB:
             except ValueError:
                 continue
         return out
+
+    def perm_add(self, tmux_name: str, tool_name: str, summary: str, tool_input) -> int:
+        with self.lock:
+            cur = self.conn.execute(
+                "INSERT INTO permissions(tmux_name, tool_name, summary, input, created_at) VALUES (?,?,?,?,?)",
+                (tmux_name, tool_name, summary, json.dumps(tool_input)[:20000], now()))
+            return int(cur.lastrowid)
+
+    def perm_get(self, pid: int) -> dict | None:
+        with self.lock:
+            r = self.conn.execute("SELECT * FROM permissions WHERE id=?", (pid,)).fetchone()
+        return dict(r) if r else None
+
+    def perm_decide(self, pid: int, decision: str, source: str) -> bool:
+        """Record a decision once. Returns False if already decided or unknown."""
+        with self.lock:
+            cur = self.conn.execute(
+                "UPDATE permissions SET decision=?, decided_at=?, source=? WHERE id=? AND decision IS NULL",
+                (decision, now(), source, pid))
+            return cur.rowcount == 1
+
+    def perm_pending(self) -> list[dict]:
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT id, tmux_name, tool_name, summary, created_at FROM permissions WHERE decision IS NULL"
+                " ORDER BY id ASC").fetchall()
+        return [dict(r) for r in rows]
+
+    def perm_expire(self, pid: int, decision: str = "timeout") -> None:
+        self.perm_decide(pid, decision, "system")
 
     def kv_del(self, key: str) -> None:
         with self.lock:

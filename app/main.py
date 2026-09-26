@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import claude_auth, hooks, notify, projects, push, tmux, usage
+from . import claude_auth, hooks, notify, permissions, projects, push, tmux, usage
 from .auth import csrf_ok, identify
 from .config import settings
 from .db import DB, now as db_now
@@ -60,7 +60,7 @@ app = FastAPI(title="ccboard", lifespan=lifespan, docs_url=None, redoc_url=None,
 async def auth_middleware(request: Request, call_next):
     if request.url.path == "/healthz":
         return PlainTextResponse("ok")
-    if request.url.path == "/api/hook":
+    if request.url.path in ("/api/hook", "/api/permission"):
         # Hooks run on the box itself (no Tailscale identity); they carry the local token instead.
         if request.method != "POST" or not hooks.check_token(request.headers.get(hooks.TOKEN_HEADER)):
             return JSONResponse({"error": "bad hook token"}, status_code=403)
@@ -149,6 +149,7 @@ def build_state(user: str) -> dict:
                     "public_url": settings.public_url}
     st["claude"] = claude_auth.status()
     st["login"] = claude_auth.login_state()
+    st["pending_permissions"] = db.perm_pending()
     st["usage"] = db.kv_get("rate_limits")
     st["block"] = db.kv_get(usage.KV_BLOCK)
     st["rate_limited"] = db.kv_get("rate_limited")
@@ -301,7 +302,8 @@ def _free_session_name(project: str, repo: str) -> str:
 
 def _start_session(name: str, project: str, repo: str, session: str, launcher: str, cwd: str, *,
                    cmd_line: str | None, claude_session_id: str | None, add_dirs: list[str]) -> str:
-    env = {"CCBOARD_SESSION": name, "CCBOARD_URL": settings.loopback_url()}
+    env = {"CCBOARD_SESSION": name, "CCBOARD_URL": settings.loopback_url(),
+           "CCBOARD_APPROVE_TIMEOUT": str(int(settings.approve_timeout))}
     real = tmux.new_session(name, cwd, env=env)
     db.add_session(tmux_name=real, project=project, repo=repo, name=session, launcher=launcher, cmd=cmd_line,
                    claude_session_id=claude_session_id, add_dirs=add_dirs)
@@ -483,6 +485,73 @@ def api_clear_rate_limit():
     db.kv_del("rate_limited")
     _invalidate_scan()
     return {"ok": True}
+
+
+@app.post("/api/permission")
+async def api_permission(request: Request):
+    """PermissionRequest hook long-poll. Returns {behavior: allow|deny|null, message?}."""
+    body = await request.body()
+    if len(body) > hooks.MAX_BODY:
+        return JSONResponse({"behavior": None, "reason": "too large"})
+    try:
+        payload = json.loads(body or b"{}")
+        assert isinstance(payload, dict)
+    except (ValueError, AssertionError):
+        return JSONResponse({"behavior": None, "reason": "bad json"})
+    rows = await asyncio.to_thread(db.open_rows)
+    name, how = hooks.resolve_session(request.headers, payload, rows)
+    if not name or name not in rows:
+        return {"behavior": None, "reason": "unknown session"}
+    tool = str(payload.get("tool_name") or "tool")
+    summary = permissions.summarize(tool, payload.get("tool_input"))
+
+    def record():
+        db.set_state(name, "waiting", "PermissionRequest", message="permission: " + summary, attention=True)
+        db.add_event(name, "PermissionRequest", tool, summary, payload)
+        return db.perm_add(name, tool, summary, payload.get("tool_input"))
+    pid = await asyncio.to_thread(record)
+    _invalidate_scan()
+
+    def attached() -> int:
+        try:
+            return int((tmux.list_sessions().get(name) or {}).get("attached") or 0)
+        except tmux.TmuxError:
+            return 0
+    if await asyncio.to_thread(attached) > 0:
+        # Someone is looking at the terminal: let the TUI prompt appear at once. The board still
+        # lists the request; a board/phone answer within the timeout is ignored by Claude.
+        await asyncio.to_thread(db.perm_expire, pid, "tui")
+        return {"behavior": None, "reason": "attached", "id": pid}
+
+    ev = permissions.register_waiter(pid)
+    await asyncio.to_thread(permissions.push_request, pid, name, summary)
+    try:
+        await asyncio.wait_for(ev.wait(), timeout=max(1.0, settings.approve_timeout - 5))
+    except asyncio.TimeoutError:
+        await asyncio.to_thread(db.perm_expire, pid)
+        _invalidate_scan()
+        return {"behavior": None, "reason": "timeout", "id": pid}
+    finally:
+        permissions.drop_waiter(pid)
+    row = await asyncio.to_thread(db.perm_get, pid)
+    _invalidate_scan()
+    if row and row.get("decision") in ("allow", "deny"):
+        return {"behavior": row["decision"], "message": "Denied from ccboard" if row["decision"] == "deny" else None, "id": pid}
+    return {"behavior": None, "reason": "undecided", "id": pid}
+
+
+@app.post("/api/permission/{pid}/{decision}")
+def api_permission_decide(pid: int, decision: str, request: Request):
+    if decision not in ("allow", "deny"):
+        raise projects.BadRequest("decision must be allow or deny")
+    row = db.perm_get(pid)
+    if not row:
+        raise projects.NotFound("no such permission request")
+    if not db.perm_decide(pid, decision, request.state.user):
+        raise projects.Conflict(f"already decided: {row.get('decision')}")
+    permissions.wake(pid)
+    _invalidate_scan()
+    return {"ok": True, "id": pid, "decision": decision}
 
 
 @app.post("/api/sessions/{name}/ack")

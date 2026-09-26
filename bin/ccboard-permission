@@ -1,0 +1,28 @@
+#!/bin/sh
+# Claude Code PermissionRequest hook (synchronous). Asks ccboard for a remote decision and waits
+# for it; if the board answers allow/deny, that decision is returned to Claude. If the board is
+# down, the session is attached, or nobody answers in time, prints nothing so the normal TUI
+# prompt appears.
+url="${CCBOARD_URL:-http://127.0.0.1:8000}"
+tokfile="${CCBOARD_HOOK_TOKEN_FILE:-$HOME/.local/share/ccboard/hook-token}"
+tok=$(cat "$tokfile" 2>/dev/null) || exit 0
+[ -n "$tok" ] || exit 0
+resp=$(curl -s -m "${CCBOARD_APPROVE_TIMEOUT:-90}" -X POST "$url/api/permission" \
+  -H "Content-Type: application/json" -H "X-CCBoard-Token: $tok" \
+  -H "X-CCBoard-Session: ${CCBOARD_SESSION:-}" -H "X-CCBoard-Pane: ${TMUX_PANE:-}" -H "X-CCBoard-Tmux: ${TMUX:-}" \
+  --data-binary @- 2>/dev/null) || exit 0
+printf '%s' "$resp" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+b = d.get("behavior")
+if b not in ("allow", "deny"):
+    sys.exit(0)
+dec = {"behavior": b}
+if b == "deny":
+    dec["message"] = d.get("message") or "Denied from ccboard"
+print(json.dumps({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": dec}}))
+' 2>/dev/null
+exit 0

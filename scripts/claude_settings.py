@@ -17,6 +17,7 @@ from pathlib import Path
 
 EVENTS = ["SessionStart", "UserPromptSubmit", "Notification", "Stop", "StopFailure", "SessionEnd"]
 MARK = "ccboard-hook"
+PERMISSION_MARK = "ccboard-permission"
 STATUS_MARK = "ccboard-statusline"
 
 
@@ -42,7 +43,8 @@ def save(p: Path, data: dict) -> None:
 
 
 def is_ours(hook: dict, mark: str = MARK) -> bool:
-    return hook.get("type") == "command" and mark in str(hook.get("command", ""))
+    cmd = str(hook.get("command", ""))
+    return hook.get("type") == "command" and (mark in cmd or PERMISSION_MARK in cmd)
 
 
 def strip_ours(data: dict) -> dict:
@@ -67,13 +69,18 @@ def strip_ours(data: dict) -> dict:
     return data
 
 
-def install(data: dict, app_dir: Path) -> dict:
+def install(data: dict, app_dir: Path, remote_approve: bool = True, approve_timeout: int = 90) -> dict:
     data = strip_ours(data)
     hook_cmd = str(app_dir / "bin" / "ccboard-hook")
     hooks = data.setdefault("hooks", {})
     for ev in EVENTS:
         entry = {"hooks": [{"type": "command", "command": hook_cmd, "async": True, "timeout": 5}]}
         hooks.setdefault(ev, []).append(entry)
+    if remote_approve:
+        # Synchronous on purpose: it waits for a remote allow/deny, up to the timeout, then yields to the TUI prompt.
+        perm_cmd = str(app_dir / "bin" / "ccboard-permission")
+        hooks.setdefault("PermissionRequest", []).append(
+            {"hooks": [{"type": "command", "command": perm_cmd, "timeout": int(approve_timeout) + 30}]})
     sl = data.get("statusLine")
     if not sl:
         data["statusLine"] = {"type": "command", "command": str(app_dir / "bin" / "ccboard-statusline"),
@@ -89,13 +96,15 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("action", choices=["install", "remove", "show"])
     ap.add_argument("--app-dir", type=Path, default=Path(__file__).resolve().parent.parent)
+    ap.add_argument("--no-remote-approve", action="store_true", help="do not register the PermissionRequest hook")
+    ap.add_argument("--approve-timeout", type=int, default=90)
     a = ap.parse_args()
     p = settings_path()
     data = load(p)
     if a.action == "show":
         print(json.dumps({"hooks": data.get("hooks"), "statusLine": data.get("statusLine")}, indent=2))
         return
-    new = install(data, a.app_dir.resolve()) if a.action == "install" else strip_ours(data)
+    new = install(data, a.app_dir.resolve(), not a.no_remote_approve, a.approve_timeout) if a.action == "install" else strip_ours(data)
     save(p, new)
     print(f"{a.action}: {p} ({'hooks for ' + ', '.join(EVENTS) if a.action == 'install' else 'ccboard entries removed'})")
 

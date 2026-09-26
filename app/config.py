@@ -40,6 +40,10 @@ class Settings:
         self.ntfy_url = (env.get("NTFY_URL") or "").strip()            # loopback, e.g. http://127.0.0.1:2586
         self.ntfy_topic = (env.get("NTFY_TOPIC") or "ccboard").strip()
         self.ntfy_public_url = (env.get("NTFY_PUBLIC_URL") or "").strip()  # what the phone subscribes to
+        try:
+            self.approve_timeout = float(env.get("CCBOARD_APPROVE_TIMEOUT") or 90)
+        except ValueError:
+            self.approve_timeout = 90.0
         self.claude_config_dir = Path(env.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
         try:
             self.login_shell = pwd.getpwuid(os.getuid()).pw_shell or "/bin/sh"
