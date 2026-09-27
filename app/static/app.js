@@ -447,13 +447,15 @@ function openImport() {
 
 /* ---------- projects ---------- */
 
-function confirmButton(key, label, action) {
+function confirmButton(key, label, action, quiet) {
+  // Two taps: the first turns the button into "Confirm …" + Cancel. `quiet` renders the first state low-key
+  // (minimal, no red fill) for destructive actions that sit next to everyday ones on a phone.
   if (ui.confirm === key) {
     return el('span', { class: 'row' },
       el('button', { class: 'danger confirm', onclick: async () => { ui.confirm = null; try { await action(); setError(null); } catch (e) { setError(e.message); } await poll(true); }, text: `Confirm ${label}` }),
       el('button', { onclick: () => { ui.confirm = null; renderProjects(); }, text: 'Cancel' }));
   }
-  return el('button', { class: 'danger', onclick: () => { ui.confirm = key; renderProjects(); }, text: label });
+  return el('button', { class: 'danger' + (quiet ? ' minimal' : ''), onclick: () => { ui.confirm = key; renderProjects(); }, text: label });
 }
 
 function repoGroups(p) { return p.root ? [p.root, ...p.repos] : p.repos; }   // the project folder row first, then the repos
@@ -615,7 +617,7 @@ function sessionRow(s) {
     el('div', { class: 'actions' },
       el('a', { class: 'btn primary', href: `/term/${encodeURIComponent(s.tmux)}`, target: '_blank', rel: 'noopener', text: 'Open terminal' }),
       s.needs_attention ? el('button', { onclick: async () => { try { await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/ack`); } catch (e) { setError(e.message); } await poll(true); }, text: 'Ack' }) : null,
-      confirmButton('kill:' + s.tmux, 'Kill', () => api('DELETE', `/api/sessions/${encodeURIComponent(s.tmux)}`))));
+      confirmButton('kill:' + s.tmux, 'Kill session', () => api('DELETE', `/api/sessions/${encodeURIComponent(s.tmux)}`), true)));
   if (s.last_message || s.last_prompt) {
     row.append(el('div', { class: 'last' },
       s.last_prompt ? el('span', { class: 'dim', text: '› ' + s.last_prompt.slice(0, 120) }) : null,

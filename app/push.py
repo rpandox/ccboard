@@ -61,6 +61,13 @@ def valid_subscription(sub) -> bool:
             and isinstance(sub["keys"].get("auth"), str))
 
 
+def vapid_claims() -> dict:
+    """VAPID `sub`: Apple's push service rejects the JWT (403 BadJwtToken) unless it is an https URL or a well-formed
+    mailto address; 'mailto:x@localhost' is neither. The board's own tailnet URL is the honest contact."""
+    pub = (settings.public_url or "").strip().rstrip("/")
+    return {"sub": pub if pub.startswith("https://") else "mailto:ccboard@example.com"}
+
+
 def send_all(db, title: str, body: str, url: str = "/", tag: str | None = None) -> int:
     """Push to every stored subscription; drops the ones the push service reports gone. Returns sent count."""
     subs = db.push_subs()
@@ -72,7 +79,7 @@ def send_all(db, title: str, body: str, url: str = "/", tag: str | None = None) 
     for row in subs:
         try:
             webpush(subscription_info=row["sub"], data=payload, vapid_private_key=str(key_path()),
-                    vapid_claims={"sub": "mailto:ccboard@localhost"}, ttl=3600)
+                    vapid_claims=vapid_claims(), ttl=3600)
             sent += 1
         except WebPushException as e:
             status = getattr(getattr(e, "response", None), "status_code", None)

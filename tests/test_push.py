@@ -62,3 +62,12 @@ def test_endpoint_allowlist():
     assert not push.allowed_endpoint("http://fcm.googleapis.com/x")
     assert not push.allowed_endpoint("https://fcm.googleapis.com.evil.net/x")
     assert not push.allowed_endpoint("https://127.0.0.1:8000/api/hook")
+
+
+def test_vapid_subject_is_acceptable_to_apple(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "public_url", "https://ubu2.example.ts.net:8443/")
+    assert push.vapid_claims() == {"sub": "https://ubu2.example.ts.net:8443"}
+    monkeypatch.setattr(settings, "public_url", "")
+    sub = push.vapid_claims()["sub"]
+    assert sub.startswith("mailto:") and "@" in sub and "." in sub.split("@")[1] and "localhost" not in sub
