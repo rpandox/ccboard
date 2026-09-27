@@ -163,8 +163,11 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => { /* no SW: the board still works */ });
   let reloaded = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    // a new worker took over after a deploy: load the new shell once (never on the very first install)
-    if (hadController && !reloaded) { reloaded = true; location.reload(); }
+    // a new worker took over after a deploy: load the new shell once (never on the very first install, and not
+    // again right after a version-change reload)
+    let justReloaded = false;
+    try { justReloaded = sessionStorage.getItem('ccboard:reloaded') === '1'; sessionStorage.removeItem('ccboard:reloaded'); } catch (_) { /* ignore */ }
+    if (hadController && !reloaded && !justReloaded) { reloaded = true; location.reload(); }
   });
 }
 
@@ -1222,6 +1225,7 @@ function renderNav() {
 function refreshNow() {
   if (Date.now() - (ui.lastPollAt || 0) < 500) return;   // several lifecycle events fire together
   clearTimeout(pollTimer);
+  if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => { /* ignore */ });
   poll(true);
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshNow(); });
@@ -1254,6 +1258,13 @@ async function poll(force) {
   ui.lastPollAt = Date.now();
   try {
     const s = await api('GET', '/api/state');
+    if (s.version && ui.version && s.version !== ui.version) {
+      // the box was updated while this page stayed open (an installed PWA restored from memory never navigates)
+      try { sessionStorage.setItem('ccboard:reloaded', '1'); } catch (_) { /* ignore */ }
+      location.reload();
+      return;
+    }
+    if (s.version) ui.version = s.version;
     const j = JSON.stringify(s);
     const changed = j !== ui.lastJson;
     ui.lastJson = j;

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -93,6 +94,21 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ccboard", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def asset_version() -> str:
+    """Hash of the page shell; changes on every deploy that touches the UI, so open pages reload themselves."""
+    h = hashlib.sha256()
+    for name in ("index.html", "app.js", "style.css", "sw.js"):
+        try:
+            h.update((STATIC_DIR / name).read_bytes())
+        except OSError:
+            h.update(name.encode())
+    return h.hexdigest()[:12]
+
+
+ASSET_VERSION = asset_version()
 
 
 @app.middleware("http")
@@ -231,6 +247,7 @@ def build_state(user: str) -> dict:
     st["node_name"] = settings.node_name or st["health"]["host"]
     st["rate_limited"] = db.kv_get("rate_limited")
     st["scheduler"] = scheduler.quota_state(db)
+    st["version"] = ASSET_VERSION
     return st
 
 

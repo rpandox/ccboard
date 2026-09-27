@@ -222,3 +222,9 @@ def test_launch_options(client, projects_dir, fake_tmux, monkeypatch):
     sent = shlex.split(fake_tmux["sent"][-1][1])
     assert sent[1:7] == ["--model", "sonnet", "--effort", "low", "--permission-mode", "plan"] and sent[-1] == "do it" and sent[-3] == "--session-id"
     assert client.post("/api/projects/shop/repos/api/tasks", json={"title": "t2", "prompt": "p", "permission_mode": "bypassPermissions"}, headers=H).status_code == 400
+
+
+def test_state_carries_shell_version(client, projects_dir):
+    from app import main
+    v = client.get("/api/state", headers=H).json()["version"]
+    assert isinstance(v, str) and len(v) == 12 and v == main.ASSET_VERSION == main.asset_version()
