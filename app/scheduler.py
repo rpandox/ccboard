@@ -226,10 +226,13 @@ class Worker(threading.Thread):
             slots = CAP - len(self.running)
         if slots <= 0:
             return []
+        due = self.db.jobs_due(db_now())
+        if not due:
+            return []                    # idle ticks cost nothing: no `claude auth status`, no quota lookup
         blocked = login_blocked() or quota_blocked(self.db)
-        self._login_alert(blocked)
+        self._login_alert(blocked, len(due))
         started = []
-        for job in self.db.jobs_due(db_now()):
+        for job in due:
             if blocked:
                 self.db.job_update(job["id"], next_run_at=(datetime.now(timezone.utc) + timedelta(minutes=DEFER_MINUTES)).isoformat(timespec="seconds"),
                                    last_status=f"deferred: {blocked}")
@@ -249,16 +252,14 @@ class Worker(threading.Thread):
             slots -= 1
         return started
 
-    def _login_alert(self, blocked: str | None) -> None:
+    def _login_alert(self, blocked: str | None, due: int) -> None:
         """Push once when the box's Claude login is gone (a subscription login can expire); reset when it is back."""
         alerted = bool((self.db.kv_get(KV_LOGIN_ALERT) or {}).get("value"))
         logged_out = bool(blocked and "not logged in" in blocked)
         if logged_out and not alerted:
-            due = len(self.db.jobs_due(db_now()))
-            if due:
-                notify.publish("ccboard: Claude is logged out", f"{due} scheduled run(s) are waiting. Open the board and click Log in.",
-                               click=(settings.public_url + "/") if settings.public_url else None, priority=4, tags=["warning"])
-                self.db.kv_set(KV_LOGIN_ALERT, True)
+            notify.publish("ccboard: Claude is logged out", f"{due} scheduled run(s) are waiting. Open the board and click Log in.",
+                           click=(settings.public_url + "/") if settings.public_url else None, priority=4, tags=["warning"])
+            self.db.kv_set(KV_LOGIN_ALERT, True)
         elif not logged_out and alerted:
             self.db.kv_set(KV_LOGIN_ALERT, False)
 
