@@ -78,3 +78,21 @@ def test_repo_path_containment(projects_dir):
     with pytest.raises(projects.BadRequest):
         projects.remove_tree(projects_dir / "shop" / "evil")
     assert outside.exists()
+
+
+def test_root_project_folder(projects_dir):
+    git_init(projects_dir / "multi" / "api")
+    git_init(projects_dir / "single")
+    (projects_dir / "multi" / "root").mkdir()          # a stray folder with the reserved name is not listed as a repo
+    assert projects.repo_path("multi", "root") == projects_dir / "multi"
+    with pytest.raises(projects.BadRequest):
+        projects.add_repo_blank("multi", "root")
+    with pytest.raises(projects.BadRequest):
+        projects.prepare_repo_clone("multi", "root", "https://x/y.git")
+    sess = {"multi--root--s1": {"created": 1, "attached": 0, "windows": 1, "pane_id": "%1", "command": "claude", "path": str(projects_dir / "multi"), "pid": 1}}
+    out = {p["name"]: p for p in projects.scan(sess)}
+    root = out["multi"]["root"]
+    assert root["root"] is True and root["name"] == "root" and root["state"] == "project" and root["path"] == str(projects_dir / "multi")
+    assert [s["name"] for s in root["sessions"]] == ["s1"] and [r["name"] for r in out["multi"]["repos"]] == ["api"]
+    assert out["multi"]["orphan_sessions"] == []
+    assert out["single"]["root"] is None                 # a folder that is itself the repo needs none

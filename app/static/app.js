@@ -105,7 +105,7 @@ function renderUsage() {
       el('b', { text: 'backup' }), `${failed ? 'failed' : 'ok'} ${fmtAge(Date.parse(bk.at) / 1000) + " ago"}`));
   }
   const chips = [];
-  for (const p of state.projects) for (const r of p.repos) for (const s of r.sessions) {
+  for (const p of state.projects) for (const r of repoGroups(p)) for (const s of r.sessions) {
     if (s.stats && (s.stats.model || typeof s.stats.context_pct === 'number') && s.state !== 'ended') {
       chips.push(el('span', { class: 'chip', text: `${p.name}/${r.name}·${s.name} ${s.stats.model || ''}${typeof s.stats.context_pct === 'number' ? ' ctx ' + Math.round(s.stats.context_pct) + '%' : ''}` }));
     }
@@ -404,6 +404,8 @@ function confirmButton(key, label, action) {
   return el('button', { class: 'danger', onclick: () => { ui.confirm = key; renderProjects(); }, text: label });
 }
 
+function repoGroups(p) { return p.root ? [p.root, ...p.repos] : p.repos; }   // the project folder row first, then the repos
+
 function allRepos() {
   const out = [];
   for (const p of state.projects) for (const r of p.repos) if (r.state === 'ok' || r.state === 'unknown') out.push({ id: `${p.name}/${r.name}`, project: p.name, repo: r.name });
@@ -420,7 +422,7 @@ function sessionForm(p, r) {
   const args = el('input', { type: 'text', placeholder: 'extra args, e.g. --permission-mode acceptEdits --model opus' });
   const resumeId = el('input', { type: 'text', placeholder: 'session id to resume (blank = picker)', class: 'hidden' });
   launcher.addEventListener('change', () => resumeId.classList.toggle('hidden', launcher.value !== 'resume'));
-  const siblings = allRepos().filter(x => x.project === p.name && x.repo !== r.name);
+  const siblings = r.root ? [] : allRepos().filter(x => x.project === p.name && x.repo !== r.name);   // the project folder already contains them
   const others = allRepos().filter(x => x.project !== p.name);
   const checks = el('div', { class: 'checks' });
   const boxes = [];
@@ -516,6 +518,23 @@ function sessionRow(s) {
   return row;
 }
 
+function rootBlock(p, r) {
+  const key = `${p.name}/${r.name}`;
+  const title = el('div', { class: 'row head' },
+    el('div', { class: 'row' },
+      el('span', { class: 'title', text: '📁 project folder' }),
+      el('span', { class: 'dim', text: 'a session here sees every repo below (no --add-dir needed)' }),
+      repoCost(p, r) ? el('span', { class: 'dim', text: repoCost(p, r) }) : null,
+      r.devcontainer ? el('span', { class: 'badge', title: '.devcontainer found: sessions can run inside it', text: 'devcontainer' }) : null),
+    el('div', { class: 'row' },
+      el('a', { class: 'btn', href: codeServerUrl(r.path), target: '_blank', rel: 'noopener', text: 'code-server' }),
+      el('button', { class: 'primary', onclick: () => { ui.openForm = 'session:' + key; renderProjects(); }, text: 'New session' })));
+  const block = el('div', { class: 'repo root' }, title);
+  if (ui.openForm === 'session:' + key) block.append(sessionForm(p, r));
+  for (const s of r.sessions) block.append(sessionRow(s));
+  return block;
+}
+
 function repoBlock(p, r) {
   const key = `${p.name}/${r.name}`;
   const title = el('div', { class: 'row head' },
@@ -555,7 +574,7 @@ function repoCost(p, r) {
 }
 
 function projectCard(p) {
-  const nSess = p.repos.reduce((n, r) => n + r.sessions.length, 0) + p.orphan_sessions.length;
+  const nSess = repoGroups(p).reduce((n, r) => n + r.sessions.length, 0) + p.orphan_sessions.length;
   const card = el('div', { class: 'card' },
     el('div', { class: 'row head' },
       el('div', { class: 'row' }, el('h2', { text: p.name }), el('span', { class: 'dim', text: `${p.repos.length} repo${p.repos.length === 1 ? '' : 's'} · ${nSess} session${nSess === 1 ? '' : 's'}` }), costText(p) ? el('span', { class: 'dim', title: 'from ccusage, sessions started by ccboard', text: costText(p) }) : null),
@@ -564,6 +583,7 @@ function projectCard(p) {
         el('button', { onclick: () => { ui.openForm = 'repo:' + p.name; renderProjects(); }, text: 'Add repo' }),
         confirmButton('del:' + p.name, 'Delete', () => api('DELETE', `/api/projects/${encodeURIComponent(p.name)}`)))));
   if (ui.openForm === 'repo:' + p.name) card.append(addRepoForm(p));
+  if (p.root) card.append(rootBlock(p, p.root));
   if (!p.repos.length) card.append(el('div', { class: 'dim', text: 'No repos yet. Add one (blank or clone URL).' }));
   for (const r of p.repos) card.append(repoBlock(p, r));
   for (const s of p.orphan_sessions) card.append(el('div', { class: 'repo' }, el('div', { class: 'dim', text: `sessions in removed repo ${s.repo}` }), sessionRow(s)));
@@ -920,7 +940,7 @@ function inboxItems() {
   const pend = {};
   for (const pr of (state.pending_permissions || [])) pend[pr.tmux_name] = pr;
   for (const p of state.projects) {
-    for (const r of p.repos) for (const s of r.sessions) if (s.needs_attention) items.push({ ...s, project: p.name, repo: r.name, perm: pend[s.tmux] || null });
+    for (const r of repoGroups(p)) for (const s of r.sessions) if (s.needs_attention) items.push({ ...s, project: p.name, repo: r.name, perm: pend[s.tmux] || null });
     for (const s of p.orphan_sessions) if (s.needs_attention) items.push({ ...s, project: p.name, perm: pend[s.tmux] || null });
   }
   return items.sort((a, b) => (a.state_at || '').localeCompare(b.state_at || ''));  // oldest first

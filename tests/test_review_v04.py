@@ -170,3 +170,22 @@ def test_describe_uses_login_not_bare():
     from app import gitops, hooks
     assert "--bare" not in gitops.DESCRIBE_FLAGS and "--setting-sources" in gitops.DESCRIBE_FLAGS and "--strict-mcp-config" in gitops.DESCRIBE_FLAGS
     assert hooks.resolve_session({"x-ccboard-session": "none"}, {"cwd": "/"}, {}) == (None, "ignored")
+
+
+def test_project_folder_session(client, projects_dir, fake_tmux):
+    from app import hooks, main
+    make_repo(projects_dir)                                              # shop/api
+    r = client.post("/api/projects/shop/repos/root/sessions", json={"launcher": "shell"}, headers=H)
+    assert r.status_code == 201, r.text
+    name = r.json()["tmux"]
+    assert name == "shop--root--s1" and fake_tmux["created"][0][1] == str(projects_dir / "shop")
+    st = client.get("/api/state", headers=H).json()
+    proj = next(p for p in st["projects"] if p["name"] == "shop")
+    assert proj["root"]["root"] and [s["name"] for s in proj["root"]["sessions"]] == ["s1"] and [x["name"] for x in proj["repos"]] == ["api"]
+    rows = main.db.open_rows()
+    assert rows[name]["repo"] == "root"
+    assert hooks.resolve_session({}, {"cwd": str(projects_dir / "shop")}, rows) == (name, "cwd")
+    assert client.post("/api/projects/shop/repos", json={"name": "root"}, headers=H).status_code == 400
+    assert client.post("/api/projects/shop/repos/root/tasks", json={"title": "t", "prompt": "p"}, headers=H).status_code in (400, 404)
+    d = client.delete("/api/projects/shop", headers=H)
+    assert d.status_code == 200 and name in d.json()["killed_sessions"]

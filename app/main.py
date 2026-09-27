@@ -322,7 +322,7 @@ def api_bulk_clone(project: str, body: BulkIn):
         name = r.get("name") or projects.derive_repo_name(url)
         if not name:
             raise projects.BadRequest(f"cannot derive a name for {url}")
-        items.append({"project": project, "repo": projects.check_name("repo", str(name)), "url": url})
+        items.append({"project": project, "repo": projects.check_new_repo_name(str(name)), "url": url})
     n = clonequeue.enqueue(items)
     clonequeue.step(_launch_clone)
     _invalidate_scan()

@@ -11,6 +11,7 @@ from .tmux import NAME_RE, SEP, valid_name
 
 URL_RE = re.compile(r"^(https?://|ssh://|git://|git@[A-Za-z0-9._-]+:)[^\s]{1,512}$")
 GIT_TIMEOUT = 2
+ROOT = "root"   # reserved repo name: "the project folder itself" (a session there sees every repo below it)
 
 
 class BadRequest(Exception):
@@ -29,6 +30,13 @@ def check_name(kind: str, name: str) -> str:
     if not isinstance(name, str) or not valid_name(name):
         raise BadRequest(f"invalid {kind} name {name!r}: use letters, digits, '-' or '_', "
                          f"start and end with a letter or digit, no '--'")
+    return name
+
+
+def check_new_repo_name(name: str) -> str:
+    check_name("repo", name)
+    if name == ROOT:
+        raise BadRequest(f"'{ROOT}' is reserved: it names the project folder itself (sessions in the project folder)")
     return name
 
 
@@ -61,6 +69,8 @@ def is_repo(path: Path) -> bool:
 def repo_path(project: str, repo: str) -> Path:
     p = project_path(project)
     check_name("repo", repo)
+    if repo == ROOT:
+        return p  # the project folder itself
     if repo == project and is_repo(p):
         return p  # compat: the project folder itself is the repo
     return p / repo
@@ -130,7 +140,7 @@ def scan(sessions: dict[str, dict]) -> list[dict]:
         if is_repo(pdir):
             repo_dirs = [(pname, pdir)]
         else:
-            repo_dirs = [(c.name, c) for c in _subdirs(pdir)]
+            repo_dirs = [(c.name, c) for c in _subdirs(pdir) if c.name != ROOT]
         repos = []
         for rname, rdir in repo_dirs:
             rsessions = sorted(grouped.pop((pname, rname), []), key=lambda s: s["created"])
@@ -145,12 +155,18 @@ def scan(sessions: dict[str, dict]) -> list[dict]:
             else:
                 info = {"branch": None, "dirty": None, "state": "nogit"}
             repos.append({"name": rname, "path": str(rdir), "sessions": rsessions, "devcontainer": has_devcontainer(rdir), **info})
+        root_sessions = sorted(grouped.pop((pname, ROOT), []), key=lambda s: s["created"])
+        root = None
+        if not is_repo(pdir) or root_sessions:
+            # the project folder itself (kept apart from `repos`): a session started here has every repo below in scope
+            root = {"name": ROOT, "path": str(pdir), "sessions": root_sessions, "root": True, "state": "project",
+                    "branch": None, "dirty": None, "devcontainer": has_devcontainer(pdir)}
         orphans = []
         for (pp, rr), ss in list(grouped.items()):
             if pp == pname:
                 orphans += [{**s, "repo": rr} for s in ss]
                 grouped.pop((pp, rr))
-        projects.append({"name": pname, "path": str(pdir), "repos": repos,
+        projects.append({"name": pname, "path": str(pdir), "repos": repos, "root": root,
                          "orphan_sessions": sorted(orphans, key=lambda s: s["created"])})
     return projects
 
@@ -169,7 +185,7 @@ def add_repo_blank(project: str, repo: str) -> Path:
         raise NotFound(f"project {project} not found")
     if is_repo(p):
         raise Conflict("this project folder is itself a git repo; it cannot hold more repos")
-    r = p / check_name("repo", repo)
+    r = p / check_new_repo_name(repo)
     if r.exists():
         raise Conflict(f"repo {repo} already exists")
     r.mkdir(mode=0o755)
@@ -191,7 +207,7 @@ def prepare_repo_clone(project: str, repo: str | None, url: str) -> tuple[str, P
     name = repo or derive_repo_name(url)
     if not name:
         raise BadRequest("could not derive a repo name from the URL; give one")
-    r = p / check_name("repo", name)
+    r = p / check_new_repo_name(name)
     if r.exists():
         raise Conflict(f"repo {name} already exists")
     r.mkdir(mode=0o755)

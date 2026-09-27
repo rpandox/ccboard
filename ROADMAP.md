@@ -10,6 +10,7 @@ Working rules: one phase at a time; each item is one commit; tick items as they 
 - [x] README.md, ROADMAP.md, package as tarball, git commit as v0.1
 - [x] *(added during the build)* Claude login from the board: sign-in link + paste the code
 - [x] *(added during the build)* Project folder holding one or more repos; sessions run inside a repo; sibling repos via `--add-dir`
+  - *v0.4.11:* a session can also run in the project folder itself ("New session" on the project folder row; reserved repo name `root`, cwd = the project folder, every repo below in scope)
 - [x] *(added during the build)* Public GitHub repo
 
 ## v0.2 — attention layer (design for it, build later, in this order)
