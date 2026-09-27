@@ -23,7 +23,7 @@ function saveQuick(list) { try { localStorage.setItem(QUICK_KEY, JSON.stringify(
 function renderQuick() {
   const q = $('#quick'); q.textContent = '';
   for (const t of loadQuick()) {
-    const b = document.createElement('button'); b.type = 'button'; b.textContent = t;
+    const b = Object.assign(document.createElement('button'), { className: 'bp5-button' }); b.type = 'button'; b.textContent = t;
     b.addEventListener('click', () => sendText(t, true));
     q.append(b);
   }
