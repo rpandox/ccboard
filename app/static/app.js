@@ -882,7 +882,9 @@ function renderJobs() {
   const q = state.scheduler || {};
   const quota = q.backoff_until ? ` · backing off until ${fmtTs(q.backoff_until)} after a rate-limited run`
     : q.known ? ` · 5h window at ${Math.round(q.pct)}%` : ' · quota unknown until an interactive session reports the 5-hour window (runs are not deferred)';
-  sec.append(el('div', { class: 'row head' }, el('h2', { text: `Schedules (${jobs.length})` }), el('span', { class: 'dim', text: 'headless claude -p runs · max 2 at once · paused above 85% of the 5-hour window' + quota })));
+  const c = state.claude || {};
+  const login = c.installed && !c.loggedIn ? ' · Claude is not logged in on this box: runs are deferred until you Log in (headless runs use the same subscription login)' : '';
+  sec.append(el('div', { class: 'row head' }, el('h2', { text: `Schedules (${jobs.length})` }), el('span', { class: 'dim', text: 'headless claude -p runs · max 2 at once · paused above 85% of the 5-hour window' + quota + login })));
   const batches = {};
   for (const j of jobs) if (j.batch_id) (batches[j.batch_id] = batches[j.batch_id] || []).push(j);
   for (const [bid, js] of Object.entries(batches)) {

@@ -45,6 +45,7 @@ def test_tick_is_serialised(projects_dir, monkeypatch):
         return rows
     monkeypatch.setattr(db, "jobs_due", slow_due)
     monkeypatch.setattr(scheduler, "run_job", lambda d, job, rid: d.run_finish(rid, status="ok", result=""))
+    monkeypatch.setattr(scheduler.claude_auth, "status", lambda: {"installed": True, "loggedIn": True})
     w = scheduler.Worker(db)
     started = []
     ts = [threading.Thread(target=lambda: started.extend(w.tick())) for _ in range(2)]
@@ -149,3 +150,23 @@ def test_hub_poller_keeps_configured_identity(projects_dir):
     out = p.poll_once()
     assert out[0]["url"] == "https://ubu.ts.net:8443" and out[0]["name"] == "ubu" and out[0]["online"] is True and out[0]["sessions"] == 1
     assert health.Poller(db, nodes, fetch=lambda url: ["not", "a", "dict"]).poll_once()[0]["online"] is False
+
+
+def test_runs_deferred_while_logged_out(projects_dir, monkeypatch):
+    db = _db()
+    jid = db.job_add(**JOB, cron=None, enabled=1, next_run_at=db_now())
+    monkeypatch.setattr(scheduler.claude_auth, "status", lambda: {"installed": True, "loggedIn": False})
+    w = scheduler.Worker(db)
+    assert w.tick() == [] and db.runs(job_id=jid) == []
+    j = db.job_get(jid)
+    assert j["last_status"].startswith("deferred: claude is not logged in") and j["next_run_at"] > db_now()
+    monkeypatch.setattr(scheduler.claude_auth, "status", lambda: {"installed": True, "loggedIn": True})
+    monkeypatch.setattr(scheduler, "run_job", lambda d, job, rid: d.run_finish(rid, status="ok", result=""))
+    db.job_update(jid, next_run_at=db_now())
+    assert len(w.tick()) == 1
+
+
+def test_describe_uses_login_not_bare():
+    from app import gitops, hooks
+    assert "--bare" not in gitops.DESCRIBE_FLAGS and "--setting-sources" in gitops.DESCRIBE_FLAGS and "--strict-mcp-config" in gitops.DESCRIBE_FLAGS
+    assert hooks.resolve_session({"x-ccboard-session": "none"}, {"cwd": "/"}, {}) == (None, "ignored")

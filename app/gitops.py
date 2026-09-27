@@ -1,6 +1,7 @@
 """Git and GitHub operations for tasks: diff, AI PR description (claude -p), gh pr create/view/merge."""
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import tempfile
@@ -60,6 +61,7 @@ def task_diff(wt: Path, base: str) -> dict:
     }
 
 
+DESCRIBE_FLAGS = ["--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"]
 DESCRIBE_PROMPT = (
     "You are writing a GitHub pull request for the change below. Do not use any tools.\n"
     "Reply with exactly this format and nothing else:\n"
@@ -80,10 +82,13 @@ def describe(wt: Path, base: str, title_hint: str, prompt_hint: str) -> dict:
         raise GitError("nothing committed on this branch yet (ask Claude to commit first)")
     material = (f"Task: {title_hint}\nRequest: {prompt_hint[:2000]}\n\nCommits:\n" + "\n".join(d["commits"][:50])
                 + "\n\nDiff:\n" + d["committed"])[:DESCRIBE_CAP]
-    cmd = [exe, "-p", "--bare", "--tools", "", "--max-turns", "1", "--output-format", "text", "--permission-mode", "dontAsk",
+    # Not --bare: bare mode never reads the OAuth login, so on a box that runs on a subscription (no API key) it
+    # cannot answer. These flags give the same one-shot behaviour: no settings, hooks, MCP servers or skills.
+    cmd = [exe, "-p", *DESCRIBE_FLAGS, "--tools", "", "--max-turns", "1", "--output-format", "text", "--permission-mode", "dontAsk",
            DESCRIBE_PROMPT]
+    env = {**os.environ, "CCBOARD_SESSION": "none"}   # belt and braces: the hook resolver ignores this run
     try:
-        cp = subprocess.run(cmd, cwd=str(wt), input=material, capture_output=True, text=True, timeout=240)
+        cp = subprocess.run(cmd, cwd=str(wt), input=material, capture_output=True, text=True, timeout=240, env=env)
     except subprocess.TimeoutExpired:
         raise GitError("claude -p timed out")
     if cp.returncode != 0:

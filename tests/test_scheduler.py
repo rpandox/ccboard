@@ -10,6 +10,10 @@ H = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
 
 FAKE_CLAUDE = r'''#!/bin/sh
 # fake `claude -p ... --worktree <slug> ...`: create the worktree like the real one and print a JSON result
+case "$1" in
+  auth) echo '{"loggedIn": true, "email": "t@x", "subscriptionType": "max", "authMethod": "oauth"}'; exit 0;;
+  --version) echo "9.9.9 (Claude Code)"; exit 0;;
+esac
 slug=""; prev=""
 for a in "$@"; do [ "$prev" = "--worktree" ] && slug="$a"; prev="$a"; done
 git worktree add -q -b "worktree-$slug" ".claude/worktrees/$slug" HEAD >/dev/null 2>&1 || true

@@ -69,7 +69,10 @@ def _valid(name: str | None) -> str | None:
 
 def resolve_session(headers, payload: dict, open_rows: dict[str, dict]) -> tuple[str | None, str]:
     """Return (tmux session name, how). Order: CCBOARD_SESSION env, $TMUX_PANE on our socket, cwd."""
-    name = _valid(headers.get("x-ccboard-session"))
+    env_name = (headers.get("x-ccboard-session") or "").strip()
+    if env_name == "none":
+        return None, "ignored"       # a one-shot claude -p the board ran itself (PR description)
+    name = _valid(env_name)
     if name:
         return name, "env"
     pane = headers.get("x-ccboard-pane") or ""

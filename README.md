@@ -142,6 +142,12 @@ Update: pull or extract the new version into the same directory and rerun `./ins
 - tmux names are `<project>--<repo>--<session>`. From a shell on the box: `TMUX_TMPDIR=/tmp tmux -L ccboard ls`.
 - Session sizes follow the most recently active client (tmux `window-size latest`), so attaching from a phone reflows the TUI for a desktop tab that is also attached.
 
+## Running on a subscription (no API key)
+
+The box needs no `ANTHROPIC_API_KEY`. Log in once from the board ("Log in" opens the sign-in link, you paste the code back) and Claude Code stores the OAuth login in `~/.claude/.credentials.json`; it refreshes itself and survives reboots, so recovery after a restart needs no new login. Everything the board launches uses that same login: interactive sessions, tasks, "Describe with Claude", scheduled and batch `claude -p` runs. They all draw on the same 5-hour and weekly windows as your interactive use, which is why the scheduler defers runs above 85 % of the window and backs off after a rate-limited run.
+
+If the login expires or you log out, the header shows *Claude: not logged in*, the Schedules header says runs are deferred, nothing headless is started (it would only fail), and ntfy pings you once with a link to the board. Log in again and the deferred jobs pick up on their next tick. Sessions inside a devcontainer have their own `~/.claude` and need their own login (once, inside the container).
+
 ## Security model
 
 - The dashboard checks the `Tailscale-User-Login` header that `tailscale serve` injects and allows only the logins in `CCBOARD_ALLOWED_USERS`. Missing, empty or unknown identity → 403. Every non-GET request must also carry an `X-CCBoard: 1` header (blocks cross-site requests), and pages are served with a strict Content-Security-Policy.

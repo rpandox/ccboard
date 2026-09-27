@@ -13,7 +13,7 @@ from pathlib import Path
 
 from croniter import croniter
 
-from . import projects, tasks
+from . import claude_auth, notify, projects, tasks
 from .config import settings
 from .db import now as db_now
 
@@ -32,6 +32,7 @@ LIMIT_MSG_RE = re.compile(r"hit your [^.\n]{0,30}limit|usage limit|limit (has be
 BACKOFF_MINUTES = 30       # after a run comes back rate-limited, defer everything this long (or until the window resets)
 BACKOFF_MAX_HOURS = 5
 KV_BACKOFF = "sched_backoff_until"
+KV_LOGIN_ALERT = "sched_login_alerted"
 
 
 FORBIDDEN_ARG_PARTS = ("dangerously", "bypasspermissions", "--permission-mode", "--settings", "--setting-sources",
@@ -91,6 +92,17 @@ def quota_blocked(db) -> str | None:
         return f"5-hour window at {q['pct']:.0f}% (limit {QUOTA_MAX_PCT:.0f}%)"
     # An unknown reading (no interactive session yet) does not block: a headless-only box would otherwise never
     # run anything. The UI shows "quota unknown", and a rate-limited run triggers set_backoff().
+    return None
+
+
+def login_blocked() -> str | None:
+    """Headless runs use the box's own Claude login (a subscription login, on a box without an API key). While it is
+    missing or expired every run would fail at once, so defer instead and let the board say 'Log in'."""
+    st = claude_auth.status()
+    if not st.get("installed"):
+        return "claude is not installed on this box"
+    if not st.get("loggedIn"):
+        return "claude is not logged in on this box (click Log in on the board)"
     return None
 
 
@@ -214,7 +226,8 @@ class Worker(threading.Thread):
             slots = CAP - len(self.running)
         if slots <= 0:
             return []
-        blocked = quota_blocked(self.db)
+        blocked = login_blocked() or quota_blocked(self.db)
+        self._login_alert(blocked)
         started = []
         for job in self.db.jobs_due(db_now()):
             if blocked:
@@ -235,6 +248,19 @@ class Worker(threading.Thread):
             started.append(rid)
             slots -= 1
         return started
+
+    def _login_alert(self, blocked: str | None) -> None:
+        """Push once when the box's Claude login is gone (a subscription login can expire); reset when it is back."""
+        alerted = bool((self.db.kv_get(KV_LOGIN_ALERT) or {}).get("value"))
+        logged_out = bool(blocked and "not logged in" in blocked)
+        if logged_out and not alerted:
+            due = len(self.db.jobs_due(db_now()))
+            if due:
+                notify.publish("ccboard: Claude is logged out", f"{due} scheduled run(s) are waiting. Open the board and click Log in.",
+                               click=(settings.public_url + "/") if settings.public_url else None, priority=4, tags=["warning"])
+                self.db.kv_set(KV_LOGIN_ALERT, True)
+        elif not logged_out and alerted:
+            self.db.kv_set(KV_LOGIN_ALERT, False)
 
     def _run(self, job: dict, rid: int) -> None:
         try:
