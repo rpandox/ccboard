@@ -50,7 +50,16 @@ ccboard is a *status-and-attention layer*. It launches the real `claude` TUI ins
 - **Cost** per project (today / 7 days / total), repo and task, joined from `ccusage session --json` on the Claude session ids the board recorded. Sessions started outside the board are not attributed.
 - **Transcript search**: the header box searches an FTS5 index over `~/.claude/projects` transcripts (display only; hits link to the session when known).
 
-See [ROADMAP.md](ROADMAP.md) for how each item was built and what comes next (scheduler, batch runs, MCP server, previews, devcontainer, fleet, backups).
+## What v0.4 adds: autonomy & fleet
+
+- **Schedules**: cron or one-off jobs run headless `claude -p` in a fresh worktree (at most 2 at a time, deferred while the 5-hour window is above 85 %); each result becomes a task card you can resume in a terminal.
+- **Batch prompt** across the repos you pick, drained by the same scheduler, with per-batch progress.
+- **MCP server**: `scripts/ccboard_mcp.py` is registered at user scope by `install.sh`, so any Claude session on the box can call `list_projects`, `create_task`, `list_tasks` and `get_task_status`.
+- **Preview links**: "Preview" on a task card publishes the dev server the task started on its own tailnet HTTPS port (`tailscale serve`, never Funnel).
+- **Devcontainer**: repos with `.devcontainer/devcontainer.json` can run sessions inside the container, and only there is "bypass permissions" offered.
+- **Fleet**: every box shows its own cpu / ram / disk / uptime in the usage strip. Install ccboard on a second box with the same `CCBOARD_HUB_TOKEN`, set `CCBOARD_NODES=name=https://box.tailnet.ts.net:8443,…` on the one you look at, and it polls the others every minute into a Nodes strip (online, sessions, needs-you, health, 5h usage) that links to each board. Any box can be the hub; they are the same app.
+
+See [ROADMAP.md](ROADMAP.md) for how each item was built and what comes next (nightly backups).
 
 ## What it is not
 
@@ -91,6 +100,11 @@ Every setting is an environment variable. Values are remembered in `/etc/ccboard
 | `NTFY_TOPIC` | `ccboard` | ntfy topic the board publishes to |
 | `CCBOARD_APPROVE_TIMEOUT` | `90` | Seconds a permission prompt waits for a remote answer (`CCBOARD_REMOTE_APPROVE=0` disables the hook) |
 | `CCBOARD_RECOVER` | `1` | Relaunch Claude sessions after a reboot |
+| `PREVIEW_HTTPS_BASE` | `9100` | First tailnet HTTPS port used for task preview links |
+| `CCBOARD_DEVCONTAINER` | unset | `1` installs the devcontainer CLI (docker required) |
+| `CCBOARD_NODE_NAME` | `hostname -s` | This box's name in the fleet strips |
+| `CCBOARD_HUB_TOKEN` | generated | Shared secret for node-to-node `GET /api/node/summary`; copy the same value to every box |
+| `CCBOARD_NODES` | empty | `name=https://host.tailnet.ts.net:port,…` of the other boxes this one polls |
 
 Tailnet-only `tailscale serve` accepts any HTTPS port. If a chosen port already carries something else (another serve handler or a Funnel), `install.sh` stops and tells you; pick other ports or rerun with `CCBOARD_REPLACE_SERVE=1` to replace that port's handlers. It never runs `tailscale serve reset` and never touches ports you did not name.
 
@@ -130,7 +144,7 @@ Update: pull or extract the new version into the same directory and rerun `./ins
 - `install.sh` writes `/etc/sudoers.d/ccboard` so your user can run `systemctl restart ccboard` and `ccboard-ttyd` without a password (deploys), and `gh auth setup-git` so git uses gh's token for https clones.
 - Tasks run `git`, `gh` and `claude -p` on your behalf with your credentials: "Describe" sends the branch diff to Claude, "Create PR"/"Merge" push and merge on GitHub, and "Fix CI" pastes CI log text into a Claude session as a prompt. Web Push subscriptions are accepted only for known browser push services.
 - If the box has `tailscale set --operator=<you>` configured, every process running as you can change `tailscale serve` (including turning on Funnel). `install.sh` does not set the operator; it uses `sudo` for serve commands.
-- Tagged nodes and requests from the box itself carry no identity header and are rejected.
+- Tagged nodes and requests from the box itself carry no identity header and are rejected. That is also why fleet polling uses `CCBOARD_HUB_TOKEN` (in `/etc/ccboard/env`, mode 0640) instead of the login header: a box polling another box has no user identity. The summary a node returns is counts, health and the 5-hour usage, never prompts or transcripts. If you tag the boxes (`tailscale up --advertise-tags=tag:ccboard`), make sure your ACL still lets your own devices reach their ports and lets the boxes reach each other on `CCBOARD_HTTPS_PORT`.
 - Do not put `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` in `/etc/ccboard/env` or the tmux server's environment: they outrank the interactive login.
 
 ## Troubleshooting

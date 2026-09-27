@@ -89,6 +89,16 @@ function renderUsage() {
   } else if (blk && !blk.available) {
     segs.push(el('span', { class: 'seg dim', text: 'ccusage not installed (burn rate unavailable)' }));
   }
+  const h = state.health;
+  if (h && (h.cpu_pct !== null || h.mem || h.disk)) {
+    const bits = [];
+    if (typeof h.cpu_pct === 'number') bits.push(`cpu ${h.cpu_pct}%`);
+    else if (typeof h.load1 === 'number') bits.push(`load ${h.load1.toFixed(2)}`);
+    if (h.mem) bits.push(`ram ${h.mem.pct}%`);
+    if (h.disk) bits.push(`disk ${h.disk.pct}%`);
+    if (state.backup) bits.push(`backup ${state.backup.status || ''} ${(state.backup.at || '').slice(0, 10)}`.trim());
+    segs.push(el('span', { class: 'seg', title: `${h.host}${h.uptime_s ? ' · up ' + Math.floor(h.uptime_s / 3600) + 'h' : ''}` }, el('b', { text: state.node_name || 'box' }), bits.join(' · ')));
+  }
   const chips = [];
   for (const p of state.projects) for (const r of p.repos) for (const s of r.sessions) {
     if (s.stats && (s.stats.model || typeof s.stats.context_pct === 'number') && s.state !== 'ended') {
@@ -142,6 +152,23 @@ async function disablePush() {
 }
 
 /* ---------- notifications panel ---------- */
+
+function renderNodes() {
+  const n = $('#nodes');
+  if (!n) return;
+  n.textContent = '';
+  const list = (state.nodes && state.nodes.value) || [];
+  if (!list.length) { n.classList.add('hidden'); return; }
+  n.classList.remove('hidden');
+  n.append(el('b', { text: 'Nodes' }));
+  for (const x of list) {
+    const h = x.health || {};
+    const txt = x.online
+      ? `${x.sessions} sess · ${x.attention} need you${typeof h.cpu_pct === 'number' ? ' · cpu ' + h.cpu_pct + '%' : ''}${h.mem ? ' · ram ' + h.mem.pct + '%' : ''}${h.disk ? ' · disk ' + h.disk.pct + '%' : ''}${x.usage && x.usage.five_hour ? ' · 5h ' + Math.round(x.usage.five_hour.used_percentage) + '%' : ''}`
+      : 'offline' + (x.error ? ' · ' + x.error.slice(0, 60) : '');
+    n.append(el('a', { class: 'chip' + (x.online ? (x.attention ? ' attn' : '') : ' bad'), href: x.url + '/', target: '_blank', rel: 'noopener', title: x.url, text: `${x.name}: ${txt}` }));
+  }
+}
 
 function renderNotifyPanel() {
   const p = $('#notify');
@@ -1011,6 +1038,7 @@ function applyDeepLink() {
 function render(force) {
   renderHeader();
   renderUsage();
+  renderNodes();
   renderBanner();
   renderInbox();
   renderTasks();

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
 import re
 import shlex
 import threading
@@ -18,7 +19,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import claude_auth, clonequeue, cost, github, gitops, hooks, notify, permissions, previews, projects, prpoll, push, recover, scheduler, search, tasks, tmux, usage
+from . import claude_auth, clonequeue, cost, github, gitops, health, hooks, notify, permissions, previews, projects, prpoll, push, recover, scheduler, search, tasks, tmux, usage
 from .auth import csrf_ok, identify
 from .config import settings
 from .db import DB, now as db_now
@@ -60,6 +61,13 @@ async def lifespan(app: FastAPI):
     sched_worker = scheduler.Worker(db)
     sched = sched_worker
     sched_worker.start()
+    hub = None
+    nodes = health.parse_nodes(settings.nodes_raw)
+    if nodes and settings.hub_token:
+        hub = health.Poller(db, nodes)
+        hub.start()
+    elif nodes:
+        log.warning("CCBOARD_NODES is set but CCBOARD_HUB_TOKEN is empty: hub polling disabled")
     try:
         rec = recover.run(db, _start_session)
         if rec["recovered"] or rec["closed"]:
@@ -74,6 +82,8 @@ async def lifespan(app: FastAPI):
     prp.stop.set()
     indexer.stop.set()
     sched_worker.stop.set()
+    if hub:
+        hub.stop.set()
 
 
 app = FastAPI(title="ccboard", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -83,6 +93,11 @@ app = FastAPI(title="ccboard", lifespan=lifespan, docs_url=None, redoc_url=None,
 async def auth_middleware(request: Request, call_next):
     if request.url.path == "/healthz":
         return PlainTextResponse("ok")
+    if request.url.path == "/api/node/summary" and request.headers.get(health.HUB_HEADER):
+        if not health.check_hub_token(request.headers.get(health.HUB_HEADER)):
+            return JSONResponse({"error": "bad hub token"}, status_code=403)
+        request.state.user = "hub"
+        return await call_next(request)
     if request.url.path in ("/api/hook", "/api/permission"):
         # Hooks run on the box itself (no Tailscale identity); they carry the local token instead.
         if request.method != "POST" or not hooks.check_token(request.headers.get(hooks.TOKEN_HEADER)):
@@ -202,6 +217,10 @@ def build_state(user: str) -> dict:
     st["usage"] = db.kv_get("rate_limits")
     st["block"] = db.kv_get(usage.KV_BLOCK)
     st["cost"] = db.kv_get(cost.KV_COST)
+    st["health"] = health.snapshot()
+    st["nodes"] = db.kv_get(health.KV_NODES)
+    st["backup"] = health.backup_status()
+    st["node_name"] = settings.node_name or st["health"]["host"]
     st["rate_limited"] = db.kv_get("rate_limited")
     return st
 
@@ -1061,6 +1080,25 @@ def api_recovery_dismiss():
     db.kv_del("last_recovery")
     _invalidate_scan()
     return {"ok": True}
+
+
+def _node_summary() -> dict:
+    sessions, down = _merged_sessions()
+    attention = sum(1 for s in sessions.values() if s.get("needs_attention"))
+    return {"node": settings.node_name or socket.gethostname(), "health": health.snapshot(), "tmux_down": down,
+            "sessions": len(sessions), "attention": attention, "tasks": len(db.tasks()),
+            "usage": (db.kv_get("rate_limits") or {}).get("value"), "backup": health.backup_status(),
+            "url": settings.public_url or None}
+
+
+@app.get("/api/health")
+def api_health():
+    return _node_summary()
+
+
+@app.get("/api/node/summary")
+def api_node_summary():
+    return _node_summary()
 
 
 @app.get("/api/search")

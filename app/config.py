@@ -41,6 +41,9 @@ class Settings:
         self.ntfy_topic = (env.get("NTFY_TOPIC") or "ccboard").strip()
         self.ntfy_public_url = (env.get("NTFY_PUBLIC_URL") or "").strip()  # what the phone subscribes to
         self.recover = (env.get("CCBOARD_RECOVER") or "1") != "0"
+        self.node_name = (env.get("CCBOARD_NODE_NAME") or "").strip()
+        self.hub_token = (env.get("CCBOARD_HUB_TOKEN") or "").strip()
+        self.nodes_raw = env.get("CCBOARD_NODES") or ""
         try:
             self.preview_https_base = int(env.get("PREVIEW_HTTPS_BASE") or 9100)
         except ValueError:

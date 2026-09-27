@@ -18,6 +18,9 @@ main { padding:0 16px 40px; max-width:1100px; margin:0 auto; }
 .usage .bar.bad i { background:var(--bad); }
 .usage .chip { padding:1px 7px; border:1px solid var(--line); border-radius:10px; }
 .usage b { color:var(--fg); font-weight:600; }
+.usage a.chip { color:var(--fg); text-decoration:none; }
+.usage a.chip.attn { border-color:var(--warn); }
+.usage a.chip.bad { border-color:var(--bad); color:var(--bad); }
 #banner:empty { display:none; }
 #banner { margin:12px 16px 0; padding:10px 12px; border-radius:8px; background:#3a1f1f; border:1px solid var(--bad); display:flex; gap:12px; align-items:center; }
 #banner.warn { background:#3a2f14; border-color:var(--warn); }
