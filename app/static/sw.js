@@ -1,7 +1,8 @@
 /* ccboard service worker: offline shell (network-first) + Web Push. API and terminal are never cached. */
 'use strict';
-const CACHE = 'ccboard-shell-v1';
-const SHELL = ['/', '/static/app.js', '/static/style.css', '/static/manifest.webmanifest', '/static/icon-192.png'];
+const CACHE = 'ccboard-shell-v2';
+const SHELL = ['/', '/static/app.js', '/static/style.css', '/static/vendor/blueprint/blueprint.css', '/static/vendor/blueprint/blueprint-icons.css',
+               '/static/vendor/blueprint/blueprint-icons-16.woff2', '/static/vendor/blueprint/blueprint-icons-20.woff2', '/static/manifest.webmanifest', '/static/icon-192.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {

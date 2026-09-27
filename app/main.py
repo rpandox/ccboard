@@ -406,7 +406,52 @@ def _tasks_view() -> list[dict]:
     return out
 
 
-class TaskIn(BaseModel):
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+PERMISSION_MODES = ("manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions")   # the CLI's own names
+TOOL_RE = re.compile(r"^[A-Za-z0-9_*.:/ ()\-]{1,120}$")
+
+
+class LaunchOpts(BaseModel):
+    """The launch choices the board offers as proper controls (mirrors the claude CLI flags)."""
+    model: str | None = None                 # --model alias or full id
+    effort: str | None = None                # --effort low|medium|high|xhigh|max
+    permission_mode: str | None = None       # --permission-mode (bypassPermissions only inside a devcontainer)
+    allowed_tools: str | None = None         # --allowedTools, comma/newline separated patterns
+    disallowed_tools: str | None = None      # --disallowedTools
+    append_system_prompt: str | None = None  # --append-system-prompt
+
+
+def _launch_args(body: LaunchOpts) -> list[str]:
+    out: list[str] = []
+    if body.model and body.model.strip():
+        m = body.model.strip()
+        if not MODEL_RE.match(m):
+            raise projects.BadRequest("model: use an alias (fable, opus, sonnet, haiku) or a full model id")
+        out += ["--model", m]
+    if body.effort:
+        if body.effort not in EFFORTS:
+            raise projects.BadRequest(f"effort must be one of {', '.join(EFFORTS)}")
+        out += ["--effort", body.effort]
+    if body.permission_mode:
+        if body.permission_mode not in PERMISSION_MODES:
+            raise projects.BadRequest(f"permission_mode must be one of {', '.join(PERMISSION_MODES)}")
+        out += ["--permission-mode", body.permission_mode]
+    for flag, raw in (("--allowedTools", body.allowed_tools), ("--disallowedTools", body.disallowed_tools)):
+        tools = [t.strip() for t in re.split(r"[,\n]+", raw or "") if t.strip()]
+        for t in tools:
+            if not TOOL_RE.match(t):
+                raise projects.BadRequest(f"tool pattern not allowed: {t!r}")
+        if tools:
+            out += [flag, *tools]
+    if body.append_system_prompt and body.append_system_prompt.strip():
+        if len(body.append_system_prompt) > 4000:
+            raise projects.BadRequest("append_system_prompt is too long (4000 chars max)")
+        out += ["--append-system-prompt", body.append_system_prompt.strip()]
+    return out
+
+
+class TaskIn(LaunchOpts):
     title: str
     prompt: str
     args: str | None = None
@@ -433,8 +478,9 @@ def api_create_task(project: str, repo: str, body: TaskIn):
         except ValueError as e:
             raise projects.BadRequest(f"extra args: {e}")
     bad = _bypass_requested(extra)
-    if bad:
-        raise projects.BadRequest(f"{bad}: bypassPermissions (or a settings override that could enable it) is not allowed for tasks; they run on the host, not in a devcontainer")
+    if bad or body.permission_mode == "bypassPermissions":
+        raise projects.BadRequest(f"{bad or 'bypassPermissions'}: bypassPermissions (or a settings override that could enable it) is not allowed for tasks; they run on the host, not in a devcontainer")
+    extra = _launch_args(body) + extra
     add_dirs = _resolve_add_dirs(body.add_dirs, rpath)
     slug = tasks.unique_slug(rpath, tasks.slugify(title), db.task_slugs(project, repo))
     session = tasks.session_name_for(slug)
@@ -829,7 +875,7 @@ def _bypass_requested(extra: list[str]) -> str | None:
     return None
 
 
-class SessionIn(BaseModel):
+class SessionIn(LaunchOpts):
     launcher: str
     name: str | None = None
     args: str | None = None
@@ -915,6 +961,8 @@ def api_create_session(project: str, repo: str, body: SessionIn):
     if body.devcontainer and not projects.has_devcontainer(rpath):
         raise projects.BadRequest("this repo has no .devcontainer/devcontainer.json")
     bad = _bypass_requested(extra)
+    if body.permission_mode == "bypassPermissions" and not bad:
+        bad = "permission_mode=bypassPermissions"
     if (body.bypass or bad) and not body.devcontainer:
         raise projects.BadRequest((f"{bad}: " if bad else "") + "bypassPermissions (or a settings override that could enable it) is only allowed inside a devcontainer (tick 'run in devcontainer')")
     if body.launcher != "shell":
@@ -925,14 +973,14 @@ def api_create_session(project: str, repo: str, body: SessionIn):
         cmd = ["claude"]
         if body.launcher == "claude":
             claude_session_id = str(uuid.uuid4())
-            cmd += ["--session-id", claude_session_id]
+            cmd += ["--session-id", claude_session_id, "--name", session]   # the display name /resume shows
         elif body.launcher == "resume":
             cmd += ["--resume"] + ([body.resume_id] if body.resume_id else [])
         elif body.launcher == "continue":
             cmd += ["--continue"]
         if body.bypass and not _bypass_requested(extra):
             cmd.append("--dangerously-skip-permissions")
-        cmd += extra
+        cmd += _launch_args(body) + extra
         if add_dirs:
             cmd += ["--add-dir", *add_dirs]
         cmd_line = shlex.join(cmd)

@@ -3,6 +3,33 @@
 
 const $ = (sel) => document.querySelector(sel);
 
+/* Blueprint (vendored CSS, dark theme): the semantic classes used below are mapped to bp5-* classes here, so the
+   renderers stay readable. primary/danger -> intents, state/badge -> tags, card -> card, inputs -> bp5-input. */
+const INTENT = { primary: 'bp5-intent-primary', danger: 'bp5-intent-danger', ok: 'bp5-intent-success', bad: 'bp5-intent-danger',
+                 warn: 'bp5-intent-warning', working: 'bp5-intent-primary', waiting: 'bp5-intent-warning', done: 'bp5-intent-success',
+                 errored: 'bp5-intent-danger' };
+function blueprint(n, tag, cls) {
+  const list = cls ? cls.split(/\s+/) : [];
+  const has = (c) => list.includes(c);
+  if (tag === 'button' || (tag === 'a' && has('btn'))) {
+    n.classList.add('bp5-button');
+    for (const c of list) if (INTENT[c] && (c === 'primary' || c === 'danger')) n.classList.add(INTENT[c]);
+    if (has('icon') || has('minimal')) n.classList.add('bp5-minimal');
+    if (has('small')) n.classList.add('bp5-small');
+  } else if (tag === 'input') {
+    const t = n.getAttribute('type') || 'text';
+    if (t !== 'checkbox' && t !== 'radio') n.classList.add('bp5-input');
+  } else if (tag === 'textarea') {
+    n.classList.add('bp5-text-area', 'bp5-fill');
+  } else if (has('card')) {
+    n.classList.add('bp5-card', 'bp5-elevation-1');
+  } else if (has('state') || has('badge')) {
+    n.classList.add('bp5-tag', 'bp5-minimal', 'bp5-round');
+    for (const c of list) if (INTENT[c] && c !== 'primary' && c !== 'danger') n.classList.add(INTENT[c]);
+  }
+}
+function ic(name) { return el('span', { class: 'bp5-icon bp5-icon-' + name, 'aria-hidden': 'true' }); }
+
 function el(tag, attrs, ...children) {
   const n = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -12,9 +39,17 @@ function el(tag, attrs, ...children) {
     else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
     else n.setAttribute(k, v === true ? '' : v);
   }
-  for (const c of children.flat(Infinity)) {
-    if (c === null || c === undefined || c === false) continue;
-    n.append(typeof c === 'string' ? document.createTextNode(c) : c);
+  blueprint(n, tag, (attrs && attrs.class) || '');
+  const kids = children.flat(Infinity).filter(c => c !== null && c !== undefined && c !== false);
+  const isButton = n.classList.contains('bp5-button');
+  for (const c of kids) {
+    // Blueprint spaces a button's element children (icon + text) only when the text is an element too
+    if (typeof c === 'string') n.append(isButton && kids.length > 1 ? el('span', { class: 'bp5-button-text', text: c }) : document.createTextNode(c));
+    else n.append(c);
+  }
+  if (tag === 'label' && n.firstElementChild && n.firstElementChild.type === 'checkbox') {
+    n.classList.add('bp5-control', 'bp5-checkbox');
+    n.firstElementChild.after(el('span', { class: 'bp5-control-indicator' }));
   }
   return n;
 }
@@ -124,7 +159,13 @@ function rememberState(json) { try { localStorage.setItem(LAST_KEY, JSON.stringi
 function recallState() { try { const v = JSON.parse(localStorage.getItem(LAST_KEY) || 'null'); return v && v.state ? v : null; } catch (_) { return null; } }
 
 if ('serviceWorker' in navigator) {
+  const hadController = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => { /* no SW: the board still works */ });
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    // a new worker took over after a deploy: load the new shell once (never on the very first install)
+    if (hadController && !reloaded) { reloaded = true; location.reload(); }
+  });
 }
 
 function b64ToBytes(s) {
@@ -215,10 +256,16 @@ function renderNotifyPanel() {
     ntfyRow.append(el('span', { class: 'dim', text: 'not configured on the box (NTFY_URL in /etc/ccboard/env, or rerun install.sh).' }));
     return;
   }
-  ntfyRow.append(el('span', { text: 'subscribe to ' }), el('code', { text: n.subscribe_url || '' }),
+  const base = (n.subscribe_url || '').replace(/\/[^/]*$/, '');
+  ntfyRow.append(el('code', { text: n.subscribe_url || '' }),
     el('button', { onclick: async () => { try { await navigator.clipboard.writeText(n.subscribe_url || ''); } catch (_) { /* ignore */ } }, text: 'Copy' }),
-    el('button', { onclick: async () => { try { const r = await api('POST', '/api/notify/test'); setError(r.ok ? null : 'ntfy publish failed (is ntfy running?)'); } catch (e) { setError(e.message); } }, text: 'Send test' }),
-    el('span', { class: 'dim', text: 'Pushes on needs-you, done, error and rate limit; “Terminal” opens the session, “Ack” clears it.' }));
+    el('button', { class: 'primary', onclick: async () => { try { const r = await api('POST', '/api/notify/test'); setError(r.ok ? null : 'ntfy publish failed (is ntfy running?)'); ui.notice = r.ok ? 'Test sent to ntfy. If the phone stays silent, check the steps below.' : null; renderBanner(); } catch (e) { setError(e.message); } }, text: 'Send test' }));
+  p.append(el('details', { class: 'dim' }, el('summary', { text: 'Phone setup (ntfy app)' }),
+    el('ol', {},
+      el('li', {}, 'Install the ntfy app (App Store / Play Store) and keep the Tailscale VPN on: the server is only reachable on the tailnet.'),
+      el('li', {}, 'Add a subscription → "Use another server" → server ', el('code', { text: base }), ', topic ', el('code', { text: n.topic || '' }), '.'),
+      el('li', {}, 'iPhone: this server relays wake-ups through ntfy.sh (no message content); allow notifications for the app. Android: allow the app to run in the background for instant delivery.'),
+      el('li', {}, 'Tap "Send test" above. Pushes go out on needs-you, done, error and rate limit; “Terminal” opens the session, “Ack” clears it.'))));
 }
 
 /* ---------- header / banner ---------- */
@@ -233,12 +280,14 @@ function renderHeader() {
   else { badge.classList.add('warn'); badge.textContent = 'Claude: not logged in'; }
   const actions = $('#hdr-actions');
   actions.textContent = '';
-  actions.append(el('span', { class: 'dim', text: state.user || '' }));
+  actions.append(el('span', { class: 'dim user', text: state.user || '' }));
   if (c.installed && !c.loggedIn) actions.append(el('button', { class: 'primary', onclick: startLogin, text: 'Log in' }));
-  if (c.installed && c.loggedIn) actions.append(el('button', { onclick: logout, text: 'Log out' }));
+  if (c.installed && c.loggedIn) actions.append(el('button', { class: 'desk', onclick: logout, text: 'Log out' }));
   const n = state.config && state.config.ntfy;
-  actions.append(el('button', { onclick: () => { ui.notifyPanel = !ui.notifyPanel; renderNotifyPanel(); }, title: 'push notifications', text: n && n.enabled ? '🔔' : '🔕' }));
-  actions.append(el('button', { class: live.on ? 'primary' : '', onclick: toggleLive, title: 'live last lines of every session', text: 'Live' }));
+  actions.append(el('button', { class: 'icon' + (ui.notifyPanel ? ' on' : ''), onclick: () => { ui.notifyPanel = !ui.notifyPanel; renderNotifyPanel(); }, title: 'notifications' }, ic(n && n.enabled ? 'notifications' : 'notifications-snooze')));
+  actions.append(el('button', { class: live.on ? 'primary' : '', onclick: toggleLive, title: 'live last lines of every session' }, ic('pulse'), el('span', { class: 'desk', text: 'Live' })));
+  actions.append(el('button', { class: 'icon search-toggle', onclick: () => { document.body.classList.toggle('search-open'); const b = $('#hdr-search'); if (document.body.classList.contains('search-open') && b) b.focus(); }, title: 'search transcripts' }, ic('search')));
+  actions.append(el('button', { class: 'icon', onclick: refreshNow, title: 'refresh now' }, ic('refresh')));
   if (!$('#hdr-search')) {
     const box = el('input', { id: 'hdr-search', type: 'search', placeholder: 'search transcripts…', title: 'full-text search over Claude transcripts (display only)' });
     box.addEventListener('keydown', (e) => { if (e.key === 'Enter') runSearch(box.value); if (e.key === 'Escape') { box.value = ''; $('#search').classList.add('hidden'); } });
@@ -412,37 +461,88 @@ function allRepos() {
   return out;
 }
 
+const LAUNCH_KEY = (p, r) => `ccboard:launch:${p.name}/${r.name}`;
+const TASK_KEY = (p, r) => `ccboard:task:${p.name}/${r.name}`;
+const MODELS = [['', 'default (settings)'], ['fable', 'fable'], ['opus', 'opus'], ['sonnet', 'sonnet'], ['haiku', 'haiku'], ['custom', 'custom id…']];
+const EFFORTS = [['', 'default'], ['low', 'low'], ['medium', 'medium'], ['high', 'high'], ['xhigh', 'xhigh'], ['max', 'max']];
+const PERMS = [['', 'ask (default)'], ['acceptEdits', 'accept edits'], ['plan', 'plan'], ['auto', 'auto'], ['dontAsk', "don't ask: deny prompts"]];
+
+function loadPrefs(key) { try { return JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch (_) { return {}; } }
+function savePrefs(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } catch (_) { /* storage may be unavailable */ } }
+function field(label, control, hint) { return el('div', { class: 'field' }, el('span', { text: label }), control, hint ? el('span', { class: 'dim', text: hint }) : null); }
+function selectEl(options, value) {
+  const sel = el('select');
+  for (const [v, t] of options) sel.append(el('option', { value: v, text: t }));
+  if (value !== undefined && value !== null) sel.value = value;
+  return sel;
+}
+
+/* Model / effort / permission controls shared by the session and task forms. Returns the grid plus a reader. */
+function launchControls(saved, permOptions) {
+  const model = selectEl(MODELS, saved.model_sel || '');
+  const modelId = el('input', { type: 'text', placeholder: 'full model id, e.g. claude-fable-5-1', class: saved.model_sel === 'custom' ? '' : 'hidden', value: saved.model_id || '' });
+  model.addEventListener('change', () => { modelId.classList.toggle('hidden', model.value !== 'custom'); if (model.value === 'custom') modelId.focus(); });
+  const effort = selectEl(EFFORTS, saved.effort || '');
+  const perm = selectEl(permOptions, saved.permission_mode || '');
+  const grid = el('div', { class: 'grid' },
+    field('model', el('div', { class: 'field' }, model, modelId)),
+    field('effort', effort),
+    field('permissions', perm));
+  return { grid, model, modelId, effort, perm,
+    read: () => ({ model: model.value === 'custom' ? modelId.value.trim() : model.value, effort: effort.value, permission_mode: perm.value }),
+    prefs: () => ({ model_sel: model.value, model_id: modelId.value.trim(), effort: effort.value, permission_mode: perm.value }) };
+}
+
 function sessionForm(p, r) {
-  const launcher = el('select', {},
-    el('option', { value: 'claude', text: 'claude (new session)' }),
-    el('option', { value: 'resume', text: 'claude --resume' }),
-    el('option', { value: 'continue', text: 'claude --continue' }),
-    el('option', { value: 'shell', text: 'shell' }));
-  const name = el('input', { type: 'text', placeholder: 'session name (auto: s1, s2…)', maxlength: 64 });
-  const args = el('input', { type: 'text', placeholder: 'extra args, e.g. --permission-mode acceptEdits --model opus' });
+  const saved = loadPrefs(LAUNCH_KEY(p, r));
+  const launcher = selectEl([['claude', 'claude: new session'], ['resume', 'claude --resume'], ['continue', 'claude --continue'], ['shell', 'shell']], saved.launcher || 'claude');
+  const name = el('input', { type: 'text', placeholder: 'auto: s1, s2…', maxlength: 64 });
+  const lc = launchControls(saved, PERMS);
   const resumeId = el('input', { type: 'text', placeholder: 'session id to resume (blank = picker)', class: 'hidden' });
-  launcher.addEventListener('change', () => resumeId.classList.toggle('hidden', launcher.value !== 'resume'));
+  const allowed = el('input', { type: 'text', placeholder: 'e.g. Bash(npm test), Read', value: saved.allowed_tools || '' });
+  const disallowed = el('input', { type: 'text', placeholder: 'e.g. WebFetch', value: saved.disallowed_tools || '' });
+  const sysPrompt = el('textarea', { placeholder: 'text appended to the system prompt (optional)' });
+  sysPrompt.value = saved.append_system_prompt || '';
+  const args = el('input', { type: 'text', placeholder: 'anything else, e.g. --verbose --fallback-model sonnet', value: saved.args || '' });
   const siblings = r.root ? [] : allRepos().filter(x => x.project === p.name && x.repo !== r.name);   // the project folder already contains them
   const others = allRepos().filter(x => x.project !== p.name);
-  const checks = el('div', { class: 'checks' });
   const boxes = [];
-  const mk = (x, checked) => { const cb = el('input', { type: 'checkbox', value: x.id, checked }); boxes.push(cb); return el('label', { class: 'row' }, cb, x.id); };
-  for (const x of siblings) checks.append(mk(x, true));
-  const otherBox = el('div', { class: 'checks' });
-  for (const x of others) otherBox.append(mk(x, false));
+  const mk = (x, checked) => { const cb = el('input', { type: 'checkbox', value: x.id, checked }); boxes.push(cb); return el('label', {}, cb, x.id); };
+  const checks = el('div', { class: 'checks' }, siblings.map(x => mk(x, true)));
+  const otherBox = el('div', { class: 'checks' }, others.map(x => mk(x, false)));
   const devc = el('input', { type: 'checkbox' });
   const bypass = el('input', { type: 'checkbox', disabled: true });
   devc.addEventListener('change', () => { bypass.disabled = !devc.checked; if (!devc.checked) bypass.checked = false; });
   const devRow = r.devcontainer ? el('div', { class: 'checks' },
-    el('label', { class: 'row', title: 'devcontainer up + devcontainer exec (needs docker and the devcontainer CLI on the box; log in to Claude inside once)' }, devc, 'run in devcontainer'),
-    el('label', { class: 'row', title: 'claude --dangerously-skip-permissions; only inside the container' }, bypass, 'bypass permissions (container only)')) : null;
+    el('label', { title: 'devcontainer up + devcontainer exec (needs docker and the devcontainer CLI on the box; log in to Claude inside once)' }, devc, 'run in devcontainer'),
+    el('label', { title: 'claude --dangerously-skip-permissions; only inside the container' }, bypass, 'bypass permissions (container only)')) : null;
+  const claudeOnly = el('div', {}, lc.grid,
+    el('details', {}, el('summary', { text: 'More options: tools, system prompt, extra args, other repos' }),
+      el('div', { class: 'grid' },
+        field('allowed tools', allowed, 'comma-separated; --allowedTools'),
+        field('disallowed tools', disallowed, '--disallowedTools')),
+      field('append to system prompt', sysPrompt),
+      field('extra args', args),
+      siblings.length ? field('also give access to (--add-dir)', checks) : null,
+      others.length ? field('repos of other projects (--add-dir)', otherBox) : null));
+  const sync = () => { claudeOnly.classList.toggle('hidden', launcher.value === 'shell'); resumeId.classList.toggle('hidden', launcher.value !== 'resume'); };
+  launcher.addEventListener('change', sync); sync();
   const form = el('form', { class: 'form', onsubmit: async (e) => {
     e.preventDefault();
     const body = { launcher: launcher.value, devcontainer: devc.checked, bypass: bypass.checked };
     if (name.value.trim()) body.name = name.value.trim();
-    if (args.value.trim()) body.args = args.value.trim();
     if (launcher.value === 'resume' && resumeId.value.trim()) body.resume_id = resumeId.value.trim();
-    body.add_dirs = boxes.filter(b => b.checked).map(b => b.value);
+    if (launcher.value !== 'shell') {
+      Object.assign(body, lc.read());
+      if (allowed.value.trim()) body.allowed_tools = allowed.value.trim();
+      if (disallowed.value.trim()) body.disallowed_tools = disallowed.value.trim();
+      if (sysPrompt.value.trim()) body.append_system_prompt = sysPrompt.value.trim();
+      if (args.value.trim()) body.args = args.value.trim();
+      body.add_dirs = boxes.filter(b => b.checked).map(b => b.value);
+    }
+    for (const k of Object.keys(body)) if (body[k] === '' || body[k] === null) delete body[k];
+    savePrefs(LAUNCH_KEY(p, r), { launcher: launcher.value, ...lc.prefs(), allowed_tools: allowed.value.trim(), disallowed_tools: disallowed.value.trim(),
+      append_system_prompt: sysPrompt.value.trim(), args: args.value.trim() });
     const tab = window.open('', '_blank');
     try {
       const res = await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/sessions`, body);
@@ -450,14 +550,12 @@ function sessionForm(p, r) {
       ui.openForm = null; setError(null); await poll(true);
     } catch (err) { if (tab) tab.close(); setError(err.message); }
   } },
-    el('div', { class: 'row' }, launcher, name),
-    el('label', { text: 'extra args' }), args,
+    el('div', { class: 'grid' }, field('launch', launcher), field('session name', name)),
     resumeId,
+    claudeOnly,
     devRow,
-    siblings.length ? el('label', { text: 'also give access to (--add-dir)' }) : null, checks,
-    others.length ? el('details', {}, el('summary', { class: 'dim', text: 'repos of other projects' }), otherBox) : null,
-    el('div', { class: 'row' },
-      el('button', { class: 'primary', type: 'submit', text: 'Start & attach' }),
+    el('div', { class: 'submit' },
+      el('button', { class: 'primary', type: 'submit' }, ic('play'), 'Start & open terminal'),
       el('button', { type: 'button', onclick: () => { ui.openForm = null; renderProjects(); }, text: 'Cancel' })));
   return form;
 }
@@ -501,15 +599,15 @@ function statsText(s) {
 
 function sessionRow(s) {
   const row = el('div', { class: 'sess' + (s.needs_attention ? ' attn' : ''), 'data-tmux': s.tmux },
-    el('span', { class: 'name', text: s.name }),
-    stateBadge(s),
-    el('span', { class: 'dim', text: s.launcher }),
-    el('code', { text: s.command || '' }),
-    el('span', { class: 'dim', text: statsText(s) }),
-    el('span', { class: 'dim', text: `${fmtAge(s.created)} · ${s.attached} attached` }),
-    el('a', { class: 'btn', href: `/term/${encodeURIComponent(s.tmux)}`, target: '_blank', rel: 'noopener', text: 'Attach' }),
-    s.needs_attention ? el('button', { onclick: async () => { try { await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/ack`); } catch (e) { setError(e.message); } await poll(true); }, text: 'Ack' }) : null,
-    el('button', { class: 'danger', onclick: async () => { try { await api('DELETE', `/api/sessions/${encodeURIComponent(s.tmux)}`); setError(null); } catch (e) { setError(e.message); } await poll(true); }, text: 'Kill' }));
+    el('div', { class: 'main' },
+      el('span', { class: 'name', text: s.name }),
+      stateBadge(s),
+      el('span', { class: 'meta', text: [s.launcher, statsText(s), `${fmtAge(s.created)} · ${s.attached} attached`].filter(Boolean).join(' · ') }),
+      el('code', { text: s.command || '' })),
+    el('div', { class: 'actions' },
+      el('a', { class: 'btn primary', href: `/term/${encodeURIComponent(s.tmux)}`, target: '_blank', rel: 'noopener', text: 'Open terminal' }),
+      s.needs_attention ? el('button', { onclick: async () => { try { await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/ack`); } catch (e) { setError(e.message); } await poll(true); }, text: 'Ack' }) : null,
+      confirmButton('kill:' + s.tmux, 'Kill', () => api('DELETE', `/api/sessions/${encodeURIComponent(s.tmux)}`))));
   if (s.last_message || s.last_prompt) {
     row.append(el('div', { class: 'last' },
       s.last_prompt ? el('span', { class: 'dim', text: '› ' + s.last_prompt.slice(0, 120) }) : null,
@@ -523,12 +621,12 @@ function rootBlock(p, r) {
   const title = el('div', { class: 'row head' },
     el('div', { class: 'row' },
       el('span', { class: 'title', text: '📁 project folder' }),
-      el('span', { class: 'dim', text: 'a session here sees every repo below (no --add-dir needed)' }),
+      el('span', { class: 'hint', text: 'a session here sees every repo below (no --add-dir needed)' }),
       repoCost(p, r) ? el('span', { class: 'dim', text: repoCost(p, r) }) : null,
       r.devcontainer ? el('span', { class: 'badge', title: '.devcontainer found: sessions can run inside it', text: 'devcontainer' }) : null),
-    el('div', { class: 'row' },
-      el('a', { class: 'btn', href: codeServerUrl(r.path), target: '_blank', rel: 'noopener', text: 'code-server' }),
-      el('button', { class: 'primary', onclick: () => { ui.openForm = 'session:' + key; renderProjects(); }, text: 'New session' })));
+    el('div', { class: 'actions' },
+      el('button', { class: 'primary', onclick: () => { ui.openForm = 'session:' + key; renderProjects(); }, text: 'New session' }),
+      el('a', { class: 'btn', href: codeServerUrl(r.path), target: '_blank', rel: 'noopener', text: 'code-server' })));
   const block = el('div', { class: 'repo root' }, title);
   if (ui.openForm === 'session:' + key) block.append(sessionForm(p, r));
   for (const s of r.sessions) block.append(sessionRow(s));
@@ -547,11 +645,11 @@ function repoBlock(p, r) {
       r.state === 'nogit' ? el('span', { class: 'badge bad', text: 'no git' }) : null,
       r.state === 'unknown' ? el('span', { class: 'dot unknown', title: 'git status unknown' }) : null,
       r.devcontainer ? el('span', { class: 'badge', title: '.devcontainer found: sessions can run inside it', text: 'devcontainer' }) : null),
-    el('div', { class: 'row' },
-      el('a', { class: 'btn', href: codeServerUrl(r.path), target: '_blank', rel: 'noopener', text: 'code-server' }),
+    el('div', { class: 'actions' },
       el('button', { class: 'primary', onclick: () => { ui.openForm = 'session:' + key; renderProjects(); }, text: 'New session' }),
       r.state === 'ok' ? el('button', { onclick: () => { ui.openForm = 'task:' + key; renderProjects(); }, text: 'New task' }) : null,
       r.state === 'ok' ? el('button', { onclick: () => { ui.openForm = 'job:' + key; renderProjects(); }, text: 'Schedule…' }) : null,
+      el('a', { class: 'btn', href: codeServerUrl(r.path), target: '_blank', rel: 'noopener', text: 'code-server' }),
       confirmButton('rm:' + key, 'Remove', () => api('DELETE', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}`))));
   const block = el('div', { class: 'repo' }, title);
   if (ui.openForm === 'session:' + key) block.append(sessionForm(p, r));
@@ -578,9 +676,9 @@ function projectCard(p) {
   const card = el('div', { class: 'card' },
     el('div', { class: 'row head' },
       el('div', { class: 'row' }, el('h2', { text: p.name }), el('span', { class: 'dim', text: `${p.repos.length} repo${p.repos.length === 1 ? '' : 's'} · ${nSess} session${nSess === 1 ? '' : 's'}` }), costText(p) ? el('span', { class: 'dim', title: 'from ccusage, sessions started by ccboard', text: costText(p) }) : null),
-      el('div', { class: 'row' },
-        el('a', { class: 'btn', href: codeServerUrl(p.path), target: '_blank', rel: 'noopener', text: 'Open project in code-server' }),
+      el('div', { class: 'actions' },
         el('button', { onclick: () => { ui.openForm = 'repo:' + p.name; renderProjects(); }, text: 'Add repo' }),
+        el('a', { class: 'btn', href: codeServerUrl(p.path), target: '_blank', rel: 'noopener', text: 'code-server' }),
         confirmButton('del:' + p.name, 'Delete', () => api('DELETE', `/api/projects/${encodeURIComponent(p.name)}`)))));
   if (ui.openForm === 'repo:' + p.name) card.append(addRepoForm(p));
   if (p.root) card.append(rootBlock(p, p.root));
@@ -669,8 +767,8 @@ function taskCard(t) {
     s && s.last_message ? el('div', { class: 'last', text: s.last_message.slice(0, 160) }) : null,
     (t.overlap && t.overlap.length) ? el('div', { class: 'last bad', title: t.overlap.map(o => `${o.title}: ${o.files.join(', ')}`).join('\n'),
       text: '⚠ overlaps ' + t.overlap.map(o => `"${o.title}" (${o.files.length} file${o.files.length === 1 ? '' : 's'}: ${o.files.slice(0, 3).join(', ')}${o.files.length > 3 ? '…' : ''})`).join('; ') }) : null,
-    el('div', { class: 'row' },
-      el('a', { class: 'btn', href: `/term/${encodeURIComponent(t.tmux)}`, target: '_blank', rel: 'noopener', text: 'Attach' }),
+    el('div', { class: 'actions' },
+      el('a', { class: 'btn primary', href: `/term/${encodeURIComponent(t.tmux)}`, target: '_blank', rel: 'noopener' }, ic('console'), 'Terminal'),
       el('button', { onclick: () => openTaskModal(t), text: t.pr_url ? 'Diff / PR' : 'Diff / PR…' }),
       t.pr_url ? el('a', { class: 'btn', href: t.pr_url, target: '_blank', rel: 'noopener', text: 'PR' }) : null,
       t.preview_url ? el('a', { class: 'btn', href: t.preview_url, target: '_blank', rel: 'noopener', text: `Preview :${t.preview_port}` }) : null,
@@ -791,9 +889,10 @@ function renderTasks() {
 }
 
 function taskForm(p, r) {
+  const saved = loadPrefs(TASK_KEY(p, r));
   const title = el('input', { type: 'text', placeholder: 'task title (becomes the branch name)', maxlength: 120, required: true });
   const prompt = el('textarea', { placeholder: 'what Claude should do in the new worktree…', required: true });
-  const issueSel = el('select', {}, el('option', { value: '', text: 'from a GitHub issue…' }));
+  const issueSel = selectEl([['', 'from a GitHub issue…']]);
   let issues = [];
   issueSel.addEventListener('focus', async () => {
     if (issues.length) return;
@@ -810,15 +909,18 @@ function taskForm(p, r) {
     title.value = `#${i.number} ${i.title}`.slice(0, 120);
     prompt.value = `${i.title}\n\n${i.body || ''}\n\nGitHub issue: ${i.url}\nWhen done, commit with a message that includes "Closes #${i.number}".`;
   });
-  const args = el('input', { type: 'text', placeholder: 'extra claude args (optional)' });
+  const lc = launchControls(saved, PERMS);
+  const args = el('input', { type: 'text', placeholder: 'extra claude args (optional)', value: saved.args || '' });
   const siblings = allRepos().filter(x => x.project === p.name && x.repo !== r.name);
   const boxes = [];
   const checks = el('div', { class: 'checks' });
-  for (const x of siblings) { const cb = el('input', { type: 'checkbox', value: x.id, checked: false }); boxes.push(cb); checks.append(el('label', { class: 'row' }, cb, x.id)); }
+  for (const x of siblings) { const cb = el('input', { type: 'checkbox', value: x.id, checked: false }); boxes.push(cb); checks.append(el('label', {}, cb, x.id)); }
   return el('form', { class: 'form', onsubmit: async (e) => {
     e.preventDefault();
-    const body = { title: title.value.trim(), prompt: prompt.value.trim(), add_dirs: boxes.filter(b => b.checked).map(b => b.value) };
+    const body = { title: title.value.trim(), prompt: prompt.value.trim(), add_dirs: boxes.filter(b => b.checked).map(b => b.value), ...lc.read() };
     if (args.value.trim()) body.args = args.value.trim();
+    for (const k of Object.keys(body)) if (body[k] === '' || body[k] === null) delete body[k];
+    savePrefs(TASK_KEY(p, r), { ...lc.prefs(), args: args.value.trim() });
     const tab = window.open('', '_blank');
     try {
       const res = await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/tasks`, body);
@@ -828,10 +930,12 @@ function taskForm(p, r) {
   } },
     el('label', { text: 'New task: Claude works on a branch in its own worktree (claude --worktree)' }),
     issueSel, title, prompt,
-    el('label', { text: 'extra args' }), args,
-    siblings.length ? el('label', { text: 'also give access to (--add-dir)' }) : null, checks,
-    el('div', { class: 'row' },
-      el('button', { class: 'primary', type: 'submit', text: 'Start task & attach' }),
+    lc.grid,
+    el('details', {}, el('summary', { text: 'More options: extra args, other repos' }),
+      field('extra args', args),
+      siblings.length ? field('also give access to (--add-dir)', checks) : null),
+    el('div', { class: 'submit' },
+      el('button', { class: 'primary', type: 'submit' }, ic('git-branch'), 'Start task & open terminal'),
       el('button', { type: 'button', onclick: () => { ui.openForm = null; renderProjects(); }, text: 'Cancel' })));
 }
 
@@ -904,7 +1008,9 @@ function renderJobs() {
     : q.known ? ` · 5h window at ${Math.round(q.pct)}%` : ' · quota unknown until an interactive session reports the 5-hour window (runs are not deferred)';
   const c = state.claude || {};
   const login = c.installed && !c.loggedIn ? ' · Claude is not logged in on this box: runs are deferred until you Log in (headless runs use the same subscription login)' : '';
-  sec.append(el('div', { class: 'row head' }, el('h2', { text: `Schedules (${jobs.length})` }), el('span', { class: 'dim', text: 'headless claude -p runs · max 2 at once · paused above 85% of the 5-hour window' + quota + login })));
+  sec.append(el('div', { class: 'row head' }, el('h2', { text: `Schedules (${jobs.length})` }),
+    el('span', { class: 'hint', text: 'headless claude -p runs · max 2 at once · paused above 85% of the 5-hour window' + quota }),
+    login ? el('span', { class: 'dim', text: login.slice(3) }) : null));
   const batches = {};
   for (const j of jobs) if (j.batch_id) (batches[j.batch_id] = batches[j.batch_id] || []).push(j);
   for (const [bid, js] of Object.entries(batches)) {
@@ -915,12 +1021,14 @@ function renderJobs() {
   for (const j of jobs) {
     const jr = runs.filter(r => r.job_id === j.id).slice(0, 3);
     const row = el('div', { class: 'sess' + (j.enabled ? '' : ' muted') },
-      el('span', { class: 'name', text: j.name }),
-      el('span', { class: 'dim', text: `${j.project}/${j.repo} · ${j.cron ? 'cron ' + j.cron : 'one-off'} · ${j.permission_mode} · ≤${j.max_turns} turns${j.max_budget_usd ? ' · ≤$' + j.max_budget_usd : ''}` }),
-      el('span', { class: 'dim', text: (j.enabled && j.next_run_at ? 'next ' + fmtTs(j.next_run_at) : 'disabled') + (j.last_status ? ' · last: ' + j.last_status : '') }),
-      el('button', { onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/run`); } catch (e) { setError(e.message); } await poll(true); }, text: 'Run now' }),
-      el('button', { onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/toggle`); } catch (e) { setError(e.message); } await poll(true); }, text: j.enabled ? 'Disable' : 'Enable' }),
-      confirmButton('job:' + j.id, 'Delete', () => api('DELETE', `/api/jobs/${j.id}`)));
+      el('div', { class: 'main' },
+        el('span', { class: 'name', text: j.name }),
+        el('span', { class: j.enabled && j.next_run_at ? 'state' : 'state ended', text: j.enabled && j.next_run_at ? 'next ' + fmtTs(j.next_run_at) : 'disabled' }),
+        el('span', { class: 'meta', text: `${j.project}/${j.repo} · ${j.cron ? 'cron ' + j.cron : 'one-off'} · ${j.permission_mode} · ≤${j.max_turns} turns${j.max_budget_usd ? ' · ≤$' + j.max_budget_usd : ''}${j.last_status ? ' · last: ' + j.last_status : ''}` })),
+      el('div', { class: 'actions' },
+        el('button', { onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/run`); } catch (e) { setError(e.message); } await poll(true); } }, ic('play'), 'Run now'),
+        el('button', { onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/toggle`); } catch (e) { setError(e.message); } await poll(true); }, text: j.enabled ? 'Disable' : 'Enable' }),
+        confirmButton('job:' + j.id, 'Delete', () => api('DELETE', `/api/jobs/${j.id}`))));
     for (const r of jr) {
       row.append(el('div', { class: 'last' },
         el('span', { class: 'dim', text: `run #${r.id} ${fmtTs(r.started_at)} · ${r.status}${typeof r.cost_usd === 'number' ? ' · $' + r.cost_usd.toFixed(2) : ''}${r.num_turns ? ' · ' + r.num_turns + ' turns' : ''}${r.error ? ' · ' + r.error : ''}` }),
@@ -962,16 +1070,18 @@ function renderInbox() {
   if (ui.inboxSel >= items.length) ui.inboxSel = items.length - 1;
   sec.append(el('div', { class: 'row head' },
     el('h2', { text: `Needs attention (${items.length})` }),
-    el('span', { class: 'dim', text: 'j / k move · Enter attach · a ack · y / n allow / deny' })));
+    el('span', { class: 'hint', text: 'j / k move · Enter attach · a ack · y / n allow / deny' })));
   items.forEach((s, i) => {
     const row = el('div', { class: 'inbox-item' + (i === ui.inboxSel ? ' sel' : ''), onclick: () => { ui.inboxSel = i; renderInbox(); } },
-      el('span', { class: 'name', text: `${s.project}/${s.repo || '?'} · ${s.name}` }),
-      stateBadge(s),
-      el('span', { class: 'msg', text: (s.perm ? s.perm.summary : (s.last_message || s.last_prompt || '')).slice(0, 140) }),
-      s.perm ? el('button', { class: 'primary', onclick: (e) => { e.stopPropagation(); decide(s.perm.id, 'allow'); }, text: 'Allow (y)' }) : null,
-      s.perm ? el('button', { class: 'danger', onclick: (e) => { e.stopPropagation(); decide(s.perm.id, 'deny'); }, text: 'Deny (n)' }) : null,
-      el('a', { class: 'btn', href: `/term/${encodeURIComponent(s.tmux)}`, target: '_blank', rel: 'noopener', text: 'Attach' }),
-      el('button', { onclick: async (e) => { e.stopPropagation(); try { await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/ack`); } catch (err) { setError(err.message); } await poll(true); }, text: 'Ack' }));
+      el('div', { class: 'main' },
+        el('span', { class: 'name', text: `${s.project}/${s.repo === 'root' ? '📁' : (s.repo || '?')} · ${s.name}` }),
+        stateBadge(s)),
+      el('div', { class: 'msg', text: (s.perm ? s.perm.summary : (s.last_message || s.last_prompt || '')).slice(0, 200) }),
+      el('div', { class: 'actions' },
+        s.perm ? el('button', { class: 'primary', onclick: (e) => { e.stopPropagation(); decide(s.perm.id, 'allow'); }, text: 'Allow' }) : null,
+        s.perm ? el('button', { class: 'danger', onclick: (e) => { e.stopPropagation(); decide(s.perm.id, 'deny'); }, text: 'Deny' }) : null,
+        el('a', { class: 'btn' + (s.perm ? '' : ' primary'), href: `/term/${encodeURIComponent(s.tmux)}`, target: '_blank', rel: 'noopener', text: 'Open terminal' }),
+        el('button', { onclick: async (e) => { e.stopPropagation(); try { await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/ack`); } catch (err) { setError(err.message); } await poll(true); }, text: 'Ack' })));
     sec.append(row);
   });
 }
@@ -1083,8 +1193,40 @@ function applyDeepLink() {
   if (row) row.scrollIntoView({ block: 'center' });
 }
 
+function renderNav() {
+  const nav = $('#bnav');
+  if (!nav) return;
+  nav.textContent = '';
+  nav.classList.remove('hidden');
+  const inbox = inboxItems().length;
+  const tasks = (state.tasks || []).filter(t => !t.archived_at).length;
+  const jobs = (state.jobs || []).length;
+  const projects = (state.projects || []).length;
+  const items = [
+    ['inbox', 'notifications', 'Needs you', inbox, inbox > 0],
+    ['tasks', 'git-branch', 'Tasks', tasks, false],
+    ['jobs', 'time', 'Schedules', jobs, false],
+    ['projects', 'folder-close', 'Projects', projects, false],
+  ];
+  for (const [id, icon, label, cnt, attn] of items) {
+    nav.append(el('button', { class: 'minimal' + (attn ? ' attn' : ''), onclick: () => { const t = $('#' + id); if (t) { t.classList.remove('hidden'); t.scrollIntoView({ behavior: 'smooth', block: 'start' }); } } },
+      ic(icon), el('span', { class: 'lbl' }, el('span', { class: 'cnt', text: cnt ? String(cnt) + ' ' : '' }), label)));
+  }
+}
+
+function refreshNow() {
+  if (Date.now() - (ui.lastPollAt || 0) < 500) return;   // several lifecycle events fire together
+  clearTimeout(pollTimer);
+  poll(true);
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshNow(); });
+window.addEventListener('pageshow', (e) => { if (e.persisted) refreshNow(); });
+window.addEventListener('focus', () => refreshNow());
+window.addEventListener('online', () => refreshNow());
+
 function render(force) {
   renderHeader();
+  renderNav();
   renderUsage();
   renderNodes();
   renderBanner();
@@ -1104,6 +1246,7 @@ function render(force) {
 }
 
 async function poll(force) {
+  ui.lastPollAt = Date.now();
   try {
     const s = await api('GET', '/api/state');
     const j = JSON.stringify(s);

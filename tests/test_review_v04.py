@@ -189,3 +189,29 @@ def test_project_folder_session(client, projects_dir, fake_tmux):
     assert client.post("/api/projects/shop/repos/root/tasks", json={"title": "t", "prompt": "p"}, headers=H).status_code in (400, 404)
     d = client.delete("/api/projects/shop", headers=H)
     assert d.status_code == 200 and name in d.json()["killed_sessions"]
+
+
+def test_launch_options(client, projects_dir, fake_tmux, monkeypatch):
+    import shlex
+    from app.config import settings
+    make_repo(projects_dir)
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/usr/bin/claude")
+    body = {"launcher": "claude", "name": "dev", "model": "fable", "effort": "high", "permission_mode": "acceptEdits",
+            "allowed_tools": "Bash(npm test), Read", "disallowed_tools": "WebFetch", "append_system_prompt": "Be terse."}
+    r = client.post("/api/projects/shop/repos/api/sessions", json=body, headers=H)
+    assert r.status_code == 201, r.text
+    argv = shlex.split(r.json()["cmd"])
+    assert argv[:3] == ["claude", "--session-id", r.json()["claude_session_id"]] and argv[3:5] == ["--name", "dev"]
+    for part in (["--model", "fable"], ["--effort", "high"], ["--permission-mode", "acceptEdits"],
+                 ["--allowedTools", "Bash(npm test)", "Read"], ["--disallowedTools", "WebFetch"], ["--append-system-prompt", "Be terse."]):
+        i = argv.index(part[0])
+        assert argv[i:i + len(part)] == part, part
+    assert client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "effort": "extreme"}, headers=H).status_code == 400
+    assert client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "model": "opus; rm -rf /"}, headers=H).status_code == 400
+    assert client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "permission_mode": "bypassPermissions"}, headers=H).status_code == 400
+    assert client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "allowed_tools": "Bash(`id`)"}, headers=H).status_code == 400
+    r = client.post("/api/projects/shop/repos/api/tasks", json={"title": "t1", "prompt": "do it", "model": "sonnet", "effort": "low", "permission_mode": "plan"}, headers=H)
+    assert r.status_code == 201, r.text
+    sent = shlex.split(fake_tmux["sent"][-1][1])
+    assert sent[1:7] == ["--model", "sonnet", "--effort", "low", "--permission-mode", "plan"] and sent[-1] == "do it" and sent[-3] == "--session-id"
+    assert client.post("/api/projects/shop/repos/api/tasks", json={"title": "t2", "prompt": "p", "permission_mode": "bypassPermissions"}, headers=H).status_code == 400

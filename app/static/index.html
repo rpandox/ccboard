@@ -2,9 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>ccboard</title>
-<meta name="theme-color" content="#0f1115">
+<meta name="theme-color" content="#1c2127">
 <link rel="manifest" href="/static/manifest.webmanifest">
 <link rel="icon" href="/static/icon-192.png" type="image/png">
 <link rel="apple-touch-icon" href="/static/icon-180.png">
@@ -12,9 +12,11 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="ccboard">
+<link rel="stylesheet" href="/static/vendor/blueprint/blueprint.css">
+<link rel="stylesheet" href="/static/vendor/blueprint/blueprint-icons.css">
 <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
+<body class="bp5-dark">
 <header id="hdr">
   <h1>ccboard</h1>
   <div id="claude-badge" class="badge"></div>
@@ -25,14 +27,15 @@
 <div id="nodes" class="usage hidden"></div>
 <div id="banner"></div>
 <main>
-  <section id="search" class="card hidden"></section>
-  <section id="inbox" class="card inbox hidden"></section>
-  <section id="live" class="card hidden"></section>
-  <section id="tasks" class="card hidden"></section>
-  <section id="jobs" class="card hidden"></section>
-  <section id="new-project" class="card"></section>
+  <section id="search" class="card bp5-card bp5-elevation-1 hidden"></section>
+  <section id="inbox" class="card bp5-card bp5-elevation-1 inbox hidden"></section>
+  <section id="live" class="card bp5-card bp5-elevation-1 hidden"></section>
+  <section id="tasks" class="card bp5-card bp5-elevation-1 hidden"></section>
+  <section id="jobs" class="card bp5-card bp5-elevation-1 hidden"></section>
+  <section id="new-project" class="card bp5-card bp5-elevation-1"></section>
   <section id="projects"></section>
 </main>
+<nav id="bnav" class="hidden" aria-label="sections"></nav>
 <div id="modal" class="hidden"></div>
 <script src="/static/app.js"></script>
 </body>

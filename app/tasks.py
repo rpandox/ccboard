@@ -73,10 +73,12 @@ def default_branch(repo_path: Path) -> str:
 
 
 def build_command(slug: str, session_id: str, prompt: str, extra: list[str], add_dirs: list[str]) -> str:
-    cmd = ["claude", "--worktree", slug, "--session-id", session_id, *extra]
+    # Variadic options (--add-dir, --allowedTools, anything in extra) go first: the prompt is a positional and
+    # would be swallowed by a variadic list placed right before it. --session-id ends the list.
+    cmd = ["claude", *extra]
     if add_dirs:
         cmd += ["--add-dir", *add_dirs]
-    cmd.append(prompt)
+    cmd += ["--worktree", slug, "--session-id", session_id, prompt]
     return shlex.join(cmd)
 
 
