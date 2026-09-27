@@ -113,10 +113,15 @@ def test_devcontainer_and_bypass_rules(client, projects_dir, fake_tmux, monkeypa
     st = client.get("/api/state", headers=H).json()
     repos = {r["name"]: r for r in st["projects"][0]["repos"]}
     assert repos["web"]["devcontainer"] is True and repos["api"]["devcontainer"] is False
-    # bypass on the host is refused, in any spelling
-    for body in ({"launcher": "claude", "bypass": True}, {"launcher": "claude", "args": "--dangerously-skip-permissions"},
-                 {"launcher": "claude", "args": "--permission-mode=bypassPermissions"}):
-        assert client.post("/api/projects/shop/repos/api/sessions", headers=H, json=body).status_code == 400
+    # bypass on the host is an explicit choice (v0.4.13): every spelling is accepted and lands in the command
+    for i, (body, flag) in enumerate((({"launcher": "claude", "bypass": True, "name": "b1"}, "--dangerously-skip-permissions"),
+                                      ({"launcher": "claude", "args": "--dangerously-skip-permissions", "name": "b2"}, "--dangerously-skip-permissions"),
+                                      ({"launcher": "claude", "args": "--permission-mode=bypassPermissions", "name": "b3"}, "--permission-mode=bypassPermissions"),
+                                      ({"launcher": "claude", "permission_mode": "bypassPermissions", "name": "b4"}, "--permission-mode bypassPermissions"))):
+        r = client.post("/api/projects/shop/repos/api/sessions", headers=H, json=body)
+        assert r.status_code == 201 and flag in r.json()["cmd"], (body, r.text)
+    # settings overrides stay out of extra args everywhere
+    assert client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude", "args": "--settings /tmp/x.json"}).status_code == 400
     assert client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude", "devcontainer": True}).status_code == 400  # no devcontainer there
     assert client.post("/api/projects/shop/repos/api/tasks", headers=H, json={"title": "t", "prompt": "p", "args": "--dangerously-skip-permissions"}).status_code == 400
     # inside the devcontainer it is allowed and wrapped in devcontainer up/exec

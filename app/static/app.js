@@ -466,6 +466,8 @@ const TASK_KEY = (p, r) => `ccboard:task:${p.name}/${r.name}`;
 const MODELS = [['', 'default (settings)'], ['fable', 'fable'], ['opus', 'opus'], ['sonnet', 'sonnet'], ['haiku', 'haiku'], ['custom', 'custom id…']];
 const EFFORTS = [['', 'default'], ['low', 'low'], ['medium', 'medium'], ['high', 'high'], ['xhigh', 'xhigh'], ['max', 'max']];
 const PERMS = [['', 'ask (default)'], ['acceptEdits', 'accept edits'], ['plan', 'plan'], ['auto', 'auto'], ['dontAsk', "don't ask: deny prompts"]];
+const PERMS_HOST = [...PERMS, ['bypassPermissions', 'bypass: never ask (dangerous)']];
+const BYPASS_WARNING = 'Claude runs every command and edit without asking, as your user, on this box. Claude Code asks you to confirm once in the terminal.';
 
 function loadPrefs(key) { try { return JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch (_) { return {}; } }
 function savePrefs(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } catch (_) { /* storage may be unavailable */ } }
@@ -484,10 +486,16 @@ function launchControls(saved, permOptions) {
   model.addEventListener('change', () => { modelId.classList.toggle('hidden', model.value !== 'custom'); if (model.value === 'custom') modelId.focus(); });
   const effort = selectEl(EFFORTS, saved.effort || '');
   const perm = selectEl(permOptions, saved.permission_mode || '');
-  const grid = el('div', { class: 'grid' },
-    field('model', el('div', { class: 'field' }, model, modelId)),
-    field('effort', effort),
-    field('permissions', perm));
+  if (!perm.value) perm.value = '';                                       // a remembered choice that no longer exists
+  const warn = el('div', { class: 'bad hidden', text: BYPASS_WARNING });
+  const syncWarn = () => warn.classList.toggle('hidden', perm.value !== 'bypassPermissions');
+  perm.addEventListener('change', syncWarn); syncWarn();
+  const grid = el('div', {},
+    el('div', { class: 'grid' },
+      field('model', el('div', { class: 'field' }, model, modelId)),
+      field('effort', effort),
+      field('permissions', perm)),
+    warn);
   return { grid, model, modelId, effort, perm,
     read: () => ({ model: model.value === 'custom' ? modelId.value.trim() : model.value, effort: effort.value, permission_mode: perm.value }),
     prefs: () => ({ model_sel: model.value, model_id: modelId.value.trim(), effort: effort.value, permission_mode: perm.value }) };
@@ -497,7 +505,7 @@ function sessionForm(p, r) {
   const saved = loadPrefs(LAUNCH_KEY(p, r));
   const launcher = selectEl([['claude', 'claude: new session'], ['resume', 'claude --resume'], ['continue', 'claude --continue'], ['shell', 'shell']], saved.launcher || 'claude');
   const name = el('input', { type: 'text', placeholder: 'auto: s1, s2…', maxlength: 64 });
-  const lc = launchControls(saved, PERMS);
+  const lc = launchControls(saved, PERMS_HOST);
   const resumeId = el('input', { type: 'text', placeholder: 'session id to resume (blank = picker)', class: 'hidden' });
   const allowed = el('input', { type: 'text', placeholder: 'e.g. Bash(npm test), Read', value: saved.allowed_tools || '' });
   const disallowed = el('input', { type: 'text', placeholder: 'e.g. WebFetch', value: saved.disallowed_tools || '' });
@@ -511,11 +519,8 @@ function sessionForm(p, r) {
   const checks = el('div', { class: 'checks' }, siblings.map(x => mk(x, true)));
   const otherBox = el('div', { class: 'checks' }, others.map(x => mk(x, false)));
   const devc = el('input', { type: 'checkbox' });
-  const bypass = el('input', { type: 'checkbox', disabled: true });
-  devc.addEventListener('change', () => { bypass.disabled = !devc.checked; if (!devc.checked) bypass.checked = false; });
   const devRow = r.devcontainer ? el('div', { class: 'checks' },
-    el('label', { title: 'devcontainer up + devcontainer exec (needs docker and the devcontainer CLI on the box; log in to Claude inside once)' }, devc, 'run in devcontainer'),
-    el('label', { title: 'claude --dangerously-skip-permissions; only inside the container' }, bypass, 'bypass permissions (container only)')) : null;
+    el('label', { title: 'devcontainer up + devcontainer exec (needs docker and the devcontainer CLI on the box; log in to Claude inside once)' }, devc, 'run in devcontainer')) : null;
   const claudeOnly = el('div', {}, lc.grid,
     el('details', {}, el('summary', { text: 'More options: tools, system prompt, extra args, other repos' }),
       el('div', { class: 'grid' },
@@ -529,7 +534,7 @@ function sessionForm(p, r) {
   launcher.addEventListener('change', sync); sync();
   const form = el('form', { class: 'form', onsubmit: async (e) => {
     e.preventDefault();
-    const body = { launcher: launcher.value, devcontainer: devc.checked, bypass: bypass.checked };
+    const body = { launcher: launcher.value, devcontainer: devc.checked };
     if (name.value.trim()) body.name = name.value.trim();
     if (launcher.value === 'resume' && resumeId.value.trim()) body.resume_id = resumeId.value.trim();
     if (launcher.value !== 'shell') {

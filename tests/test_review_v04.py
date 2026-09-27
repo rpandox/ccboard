@@ -90,14 +90,20 @@ def test_toggle_reenables_fired_oneoff(client, projects_dir):
     assert j["enabled"] == 1 and j["next_run_at"]
 
 
-def test_settings_overrides_rejected_on_host(client, projects_dir, fake_tmux):
+def test_settings_overrides_rejected_on_host(client, projects_dir, fake_tmux, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")
     make_repo(projects_dir)
     for args in ("--settings /tmp/evil.json", '--settings={"permissions":{"defaultMode":"bypassPermissions"}}',
-                 "--setting-sources user", "--permission-prompt none", "--permission-mode bypassPermissions"):
+                 "--setting-sources user", "--permission-prompt none"):
         r = client.post("/api/projects/shop/repos/api/tasks", json={"title": "t", "prompt": "p", "args": args}, headers=H)
         assert r.status_code == 400 and "not allowed" in r.text, args
         r = client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "args": args}, headers=H)
-        assert r.status_code == 400 and "devcontainer" in r.text, args
+        assert r.status_code == 400 and "overrides" in r.text, args
+    # the bypass flag itself: never for tasks, an explicit choice for interactive sessions
+    assert client.post("/api/projects/shop/repos/api/tasks", json={"title": "t", "prompt": "p", "args": "--permission-mode bypassPermissions"}, headers=H).status_code == 400
+    r = client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "args": "--permission-mode bypassPermissions"}, headers=H)
+    assert r.status_code == 201 and "--permission-mode bypassPermissions" in r.json()["cmd"]
     r = client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "args": "--model opus"}, headers=H)
     assert "bypass" not in r.text.lower()
 
@@ -208,7 +214,8 @@ def test_launch_options(client, projects_dir, fake_tmux, monkeypatch):
         assert argv[i:i + len(part)] == part, part
     assert client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "effort": "extreme"}, headers=H).status_code == 400
     assert client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "model": "opus; rm -rf /"}, headers=H).status_code == 400
-    assert client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "permission_mode": "bypassPermissions"}, headers=H).status_code == 400
+    r = client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "permission_mode": "bypassPermissions", "name": "byp"}, headers=H)
+    assert r.status_code == 201 and "--permission-mode bypassPermissions" in r.json()["cmd"]
     assert client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "allowed_tools": "Bash(`id`)"}, headers=H).status_code == 400
     r = client.post("/api/projects/shop/repos/api/tasks", json={"title": "t1", "prompt": "do it", "model": "sonnet", "effort": "low", "permission_mode": "plan"}, headers=H)
     assert r.status_code == 201, r.text

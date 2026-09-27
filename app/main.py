@@ -477,9 +477,9 @@ def api_create_task(project: str, repo: str, body: TaskIn):
             extra = shlex.split(body.args)
         except ValueError as e:
             raise projects.BadRequest(f"extra args: {e}")
-    bad = _bypass_requested(extra)
+    bad = _override_requested(extra) or _bypass_requested(extra)
     if bad or body.permission_mode == "bypassPermissions":
-        raise projects.BadRequest(f"{bad or 'bypassPermissions'}: bypassPermissions (or a settings override that could enable it) is not allowed for tasks; they run on the host, not in a devcontainer")
+        raise projects.BadRequest(f"{bad or 'bypassPermissions'}: bypassPermissions (or a settings override) is not allowed for tasks; start a session and choose bypass there if you really want it")
     extra = _launch_args(body) + extra
     add_dirs = _resolve_add_dirs(body.add_dirs, rpath)
     slug = tasks.unique_slug(rpath, tasks.slugify(title), db.task_slugs(project, repo))
@@ -861,18 +861,26 @@ def api_run_resume(rid: int):
 
 # ---------- sessions ----------
 
-# Anything that could raise the permission mode: the bypass flags themselves, and settings overrides that can set
-# permissions.defaultMode (--settings <file|json>, --setting-sources, --permission-prompt). Same list as unattended runs.
-BYPASS_PARTS = ("dangerously", "bypasspermissions", "--settings", "--setting-sources", "--permission-prompt")
+# Settings overrides can change the permission mode (and hooks, tools) behind the board's back: always rejected in
+# extra args, use the controls instead. The bypass flags themselves are an explicit choice on interactive sessions.
+OVERRIDE_PARTS = ("--settings", "--setting-sources", "--permission-prompt")
+BYPASS_PARTS = ("dangerously", "bypasspermissions")
+
+
+def _arg_matching(extra: list[str], parts: tuple[str, ...]) -> str | None:
+    for a in extra:
+        low = a.lower()
+        if any(b in low for b in parts):
+            return a
+    return None
+
+
+def _override_requested(extra: list[str]) -> str | None:
+    return _arg_matching(extra, OVERRIDE_PARTS)
 
 
 def _bypass_requested(extra: list[str]) -> str | None:
-    """The first extra arg that could enable bypassPermissions, or None."""
-    for a in extra:
-        low = a.lower()
-        if any(b in low for b in BYPASS_PARTS):
-            return a
-    return None
+    return _arg_matching(extra, BYPASS_PARTS)
 
 
 class SessionIn(LaunchOpts):
@@ -960,11 +968,11 @@ def api_create_session(project: str, repo: str, body: SessionIn):
     add_dirs: list[str] = []
     if body.devcontainer and not projects.has_devcontainer(rpath):
         raise projects.BadRequest("this repo has no .devcontainer/devcontainer.json")
-    bad = _bypass_requested(extra)
-    if body.permission_mode == "bypassPermissions" and not bad:
-        bad = "permission_mode=bypassPermissions"
-    if (body.bypass or bad) and not body.devcontainer:
-        raise projects.BadRequest((f"{bad}: " if bad else "") + "bypassPermissions (or a settings override that could enable it) is only allowed inside a devcontainer (tick 'run in devcontainer')")
+    bad = _override_requested(extra)
+    if bad:
+        raise projects.BadRequest(f"{bad}: settings overrides are not allowed in extra args; use the model / effort / permission / tools controls")
+    # bypassPermissions on the host is an explicit choice (the permission control, the bypass flag, or the arg);
+    # Claude Code itself still asks for a one-time confirmation in the terminal. Never the default.
     if body.launcher != "shell":
         exe = settings.claude_bin()
         if not exe and not body.devcontainer:
