@@ -62,10 +62,17 @@ def valid_subscription(sub) -> bool:
 
 
 def vapid_claims() -> dict:
-    """VAPID `sub`: Apple's push service rejects the JWT (403 BadJwtToken) unless it is an https URL or a well-formed
-    mailto address; 'mailto:x@localhost' is neither. The board's own tailnet URL is the honest contact."""
-    pub = (settings.public_url or "").strip().rstrip("/")
-    return {"sub": pub if pub.startswith("https://") else "mailto:ccboard@example.com"}
+    """VAPID `sub`: py-vapid insists on a mailto: address and Apple's push service rejects the JWT (403 BadJwtToken)
+    unless that address is well-formed with a real-looking domain; 'ccboard@localhost' is not. Use the board's host."""
+    from urllib.parse import urlsplit
+    host = ""
+    try:
+        host = (urlsplit(settings.public_url or "").hostname or "").strip(".")
+    except ValueError:
+        host = ""
+    if "." not in host:
+        host = "example.com"
+    return {"sub": f"mailto:ccboard@{host}"}
 
 
 def send_all(db, title: str, body: str, url: str = "/", tag: str | None = None) -> int:

@@ -67,7 +67,9 @@ def test_endpoint_allowlist():
 def test_vapid_subject_is_acceptable_to_apple(monkeypatch):
     from app.config import settings
     monkeypatch.setattr(settings, "public_url", "https://ubu2.example.ts.net:8443/")
-    assert push.vapid_claims() == {"sub": "https://ubu2.example.ts.net:8443"}
+    assert push.vapid_claims() == {"sub": "mailto:ccboard@ubu2.example.ts.net"}
+    from py_vapid import _check_sub
+    assert _check_sub(push.vapid_claims()["sub"])
     monkeypatch.setattr(settings, "public_url", "")
     sub = push.vapid_claims()["sub"]
     assert sub.startswith("mailto:") and "@" in sub and "." in sub.split("@")[1] and "localhost" not in sub
