@@ -171,7 +171,10 @@ function renderNodes() {
     const txt = x.online
       ? `${x.sessions} sess · ${x.attention} need you${typeof h.cpu_pct === 'number' ? ' · cpu ' + h.cpu_pct + '%' : ''}${h.mem ? ' · ram ' + h.mem.pct + '%' : ''}${h.disk ? ' · disk ' + h.disk.pct + '%' : ''}${x.usage && x.usage.five_hour ? ' · 5h ' + Math.round(x.usage.five_hour.used_percentage) + '%' : ''}`
       : 'offline' + (x.error ? ' · ' + x.error.slice(0, 60) : '');
-    n.append(el('a', { class: 'chip' + (x.online ? (x.attention ? ' attn' : '') : ' bad'), href: x.url + '/', target: '_blank', rel: 'noopener', title: x.url, text: `${x.name}: ${txt}` }));
+    const cls = 'chip' + (x.online ? (x.attention ? ' attn' : '') : ' bad');
+    const safe = /^https:\/\/[A-Za-z0-9.-]+(:\d+)?$/.test(x.url || '');
+    n.append(safe ? el('a', { class: cls, href: x.url + '/', target: '_blank', rel: 'noopener', title: x.url, text: `${x.name}: ${txt}` })
+                  : el('span', { class: cls, text: `${x.name}: ${txt}` }));
   }
 }
 
@@ -876,7 +879,10 @@ function renderJobs() {
   const runs = state.runs || [];
   if (!jobs.length && !runs.length) { sec.classList.add('hidden'); return; }
   sec.classList.remove('hidden');
-  sec.append(el('div', { class: 'row head' }, el('h2', { text: `Schedules (${jobs.length})` }), el('span', { class: 'dim', text: 'headless claude -p runs · max 2 at once · paused above 85% of the 5-hour window' })));
+  const q = state.scheduler || {};
+  const quota = q.backoff_until ? ` · backing off until ${fmtTs(q.backoff_until)} after a rate-limited run`
+    : q.known ? ` · 5h window at ${Math.round(q.pct)}%` : ' · quota unknown until an interactive session reports the 5-hour window (runs are not deferred)';
+  sec.append(el('div', { class: 'row head' }, el('h2', { text: `Schedules (${jobs.length})` }), el('span', { class: 'dim', text: 'headless claude -p runs · max 2 at once · paused above 85% of the 5-hour window' + quota })));
   const batches = {};
   for (const j of jobs) if (j.batch_id) (batches[j.batch_id] = batches[j.batch_id] || []).push(j);
   for (const [bid, js] of Object.entries(batches)) {

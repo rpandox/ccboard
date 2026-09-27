@@ -25,6 +25,13 @@ DEFER_MINUTES = 15
 RUN_TIMEOUT = 3600
 MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk")   # bypassPermissions only inside a devcontainer (v0.4.5)
 RATE_RE = re.compile(r"rate.?limit|usage limit|limit reached|too many requests", re.I)
+# The way Claude Code words a hit limit; checked against the END of a result so a long run cut short mid-way is
+# caught without flagging a run that merely discussed rate limiting somewhere in its summary.
+LIMIT_MSG_RE = re.compile(r"hit your [^.\n]{0,30}limit|usage limit|limit (has been |was )?reached|out of (usage|credits)|"
+                          r"too many requests|\brate.?limited\b", re.I)
+BACKOFF_MINUTES = 30       # after a run comes back rate-limited, defer everything this long (or until the window resets)
+BACKOFF_MAX_HOURS = 5
+KV_BACKOFF = "sched_backoff_until"
 
 
 FORBIDDEN_ARG_PARTS = ("dangerously", "bypasspermissions", "--permission-mode", "--settings", "--setting-sources",
@@ -59,13 +66,47 @@ def next_fire(expr: str, base: datetime | None = None) -> str:
     return croniter(expr, base).get_next(datetime).astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
-def quota_blocked(db) -> str | None:
+def quota_state(db) -> dict:
+    """What the scheduler knows about the 5-hour window: pct is None until an interactive session's statusline has
+    reported (headless runs never do), plus any back-off set after a rate-limited run."""
     rl = db.kv_get("rate_limits")
+    pct = resets_at = None
     try:
-        pct = float(((rl or {}).get("value") or {}).get("five_hour", {}).get("used_percentage"))
-    except (TypeError, ValueError):
-        return None
-    return f"5-hour window at {pct:.0f}% (limit {QUOTA_MAX_PCT:.0f}%)" if pct >= QUOTA_MAX_PCT else None
+        w = ((rl or {}).get("value") or {}).get("five_hour") or {}
+        pct = float(w.get("used_percentage"))
+        resets_at = w.get("resets_at")
+    except (TypeError, ValueError, AttributeError):
+        pct = None
+    until = ((db.kv_get(KV_BACKOFF) or {}).get("value")) or None
+    if until and until <= db_now():
+        until = None
+    return {"pct": pct, "at": (rl or {}).get("at"), "resets_at": resets_at, "backoff_until": until, "known": pct is not None}
+
+
+def quota_blocked(db) -> str | None:
+    q = quota_state(db)
+    if q["backoff_until"]:
+        return f"backing off until {q['backoff_until']} after a rate-limited run"
+    if q["pct"] is not None and q["pct"] >= QUOTA_MAX_PCT:
+        return f"5-hour window at {q['pct']:.0f}% (limit {QUOTA_MAX_PCT:.0f}%)"
+    # An unknown reading (no interactive session yet) does not block: a headless-only box would otherwise never
+    # run anything. The UI shows "quota unknown", and a rate-limited run triggers set_backoff().
+    return None
+
+
+def set_backoff(db, resets_at=None) -> str:
+    """Defer all runs for BACKOFF_MINUTES, or until the window resets when the statusline told us when (capped)."""
+    now_dt = datetime.now(timezone.utc)
+    until = now_dt + timedelta(minutes=BACKOFF_MINUTES)
+    try:
+        r = datetime.fromtimestamp(float(resets_at), tz=timezone.utc)
+        if until < r <= now_dt + timedelta(hours=BACKOFF_MAX_HOURS):
+            until = r
+    except (TypeError, ValueError, OSError, OverflowError):
+        pass
+    s = until.isoformat(timespec="seconds")
+    db.kv_set(KV_BACKOFF, s)
+    return s
 
 
 def build_command(prompt: str, slug: str, mode: str, max_turns: int, budget: float | None, extra: list[str]) -> list[str]:
@@ -95,7 +136,8 @@ def parse_result(stdout: str) -> dict:
     # A rate-limited run can come back as "success" with the limit text as its only output (claude-code #79500),
     # so a short single-turn result that talks about limits counts too.
     rate_limited = (mentions_limit and err) or str(data.get("subtype", "")) == "error_rate_limit" or \
-        (mentions_limit and (turns is None or turns <= 1) and len(text or "") < 300)
+        (mentions_limit and (turns is None or turns <= 1) and len(text or "") < 300) or \
+        bool(LIMIT_MSG_RE.search((text or "")[-500:]))     # a limit hit after several turns ends the output with its message
     return {"text": (text or "")[:20000], "session_id": data.get("session_id"), "cost": data.get("total_cost_usd"),
             "turns": turns, "is_error": err, "subtype": data.get("subtype"), "rate_limited": rate_limited}
 
@@ -123,7 +165,11 @@ def run_job(db, job: dict, run_id: int) -> dict:
         res = parse_result(cp.stdout)
         if cp.returncode != 0 and not res["text"]:
             res["text"] = (cp.stderr or "").strip()[-4000:]
+        if not res["rate_limited"] and cp.returncode != 0 and RATE_RE.search(cp.stderr or ""):
+            res["rate_limited"] = True                       # the CLI reported the limit on stderr and gave up
         status = "rate_limited" if res["rate_limited"] else ("error" if res["is_error"] or cp.returncode != 0 else "ok")
+        if status == "rate_limited":
+            log.warning("job %s hit a rate limit; deferring all runs until %s", job["id"], set_backoff(db, quota_state(db).get("resets_at")))
         summary.update(status=status, result=res["text"], session_id=res["session_id"], cost_usd=res["cost"],
                        num_turns=res["turns"], error=None if status == "ok" else (res["subtype"] or f"exit {cp.returncode}"))
     except subprocess.TimeoutExpired:
@@ -154,10 +200,15 @@ class Worker(threading.Thread):
         self.db = db
         self.stop = threading.Event()
         self.running: dict[int, threading.Thread] = {}
-        self.lock = threading.Lock()
+        self.lock = threading.Lock()         # guards self.running
+        self.tick_lock = threading.Lock()    # one tick at a time: the worker thread and request handlers both call tick()
 
     def tick(self) -> list[int]:
         """Start due jobs within the cap. Returns the run ids started."""
+        with self.tick_lock:
+            return self._tick()
+
+    def _tick(self) -> list[int]:
         with self.lock:
             self.running = {rid: t for rid, t in self.running.items() if t.is_alive()}
             slots = CAP - len(self.running)

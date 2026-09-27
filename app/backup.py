@@ -9,11 +9,13 @@ import fcntl
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
 import sys
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,6 +30,9 @@ TAG = "ccboard"
 KEEP = ["--keep-daily", "14", "--keep-weekly", "8", "--keep-monthly", "6"]
 PUSH_TIMEOUT = 300
 GIT_ENV = {"GIT_TERMINAL_PROMPT": "0"}   # never hang on a credential prompt; ssh gets BatchMode below
+SSH_BATCH = "ssh -oBatchMode=yes -oConnectTimeout=20"
+LOCK_RE = re.compile(r"unable to create lock|already locked", re.I)
+SYSTEMD_UNIT = Path("/etc/systemd/system/ccboard-backup.service")
 
 
 def now_iso() -> str:
@@ -64,8 +69,42 @@ def restic_env() -> dict:
     return env
 
 
+def _sftp_target(repo: str) -> tuple[str, int | None] | None:
+    """'sftp:user@host:/path' or 'sftp://user@host[:port]/path' -> (user@host, port)."""
+    if repo.startswith("sftp://"):
+        u = urllib.parse.urlsplit(repo)
+        if not u.hostname:
+            return None
+        return ((f"{u.username}@" if u.username else "") + u.hostname, u.port)
+    host, sep, _ = repo[len("sftp:"):].partition(":")
+    return (host, None) if sep and host and "/" not in host else None
+
+
+def restic_opts() -> list[str]:
+    """For an sftp: repository make restic's own ssh non-interactive too (BatchMode, connect timeout), so a missing
+    key or an unreachable host fails fast instead of hanging until the run's timeout and leaving a lock behind."""
+    if not settings.restic_repo.startswith("sftp:"):
+        return []
+    t = _sftp_target(settings.restic_repo)
+    if not t:
+        return []
+    host, port = t
+    return ["-o", f"sftp.command={SSH_BATCH}{' -p ' + str(port) if port else ''} {host} -s sftp"]
+
+
 def _restic(args: list[str], env: dict, timeout: int = 3600) -> subprocess.CompletedProcess:
-    return subprocess.run(["restic", *args], env=env, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(["restic", *restic_opts(), *args], env=env, capture_output=True, text=True, timeout=timeout)
+
+
+def _restic_unlocking(args: list[str], env: dict, timeout: int = 3600) -> subprocess.CompletedProcess:
+    """restic never clears the lock of a run that was killed; on a lock error remove stale locks (`restic unlock`
+    only drops locks whose process is gone) and retry once."""
+    r = _restic(args, env, timeout)
+    if r.returncode != 0 and LOCK_RE.search((r.stderr or "") + (r.stdout or "")):
+        u = _restic(["unlock"], env, timeout=300)
+        log.warning("restic repository was locked; unlock %s", "ok" if u.returncode == 0 else _err(u))
+        r = _restic(args, env, timeout)
+    return r
 
 
 def _err(r: subprocess.CompletedProcess) -> str:
@@ -104,14 +143,14 @@ def restic_backup(paths: list[Path]) -> dict:
         if r.returncode != 0:
             raise RuntimeError("restic init failed: " + _err(r))
         log.info("initialised restic repository %s", settings.restic_repo)
-    r = _restic(["backup", "--json", "--tag", TAG, "--exclude-caches", *[str(p) for p in paths]], env)
+    r = _restic_unlocking(["backup", "--json", "--tag", TAG, "--exclude-caches", *[str(p) for p in paths]], env)
     if r.returncode not in (0, 3):     # 3 = some source files could not be read; the snapshot still exists
         raise RuntimeError("restic backup failed: " + _err(r))
     summary = parse_summary(r.stdout)
     summary["repo"] = settings.restic_repo
     if r.returncode == 3:
         summary["warning"] = "some files could not be read: " + _err(r)
-    f = _restic(["forget", "--tag", TAG, *KEEP, "--prune", "-q"], env)
+    f = _restic_unlocking(["forget", "--tag", TAG, *KEEP, "--prune", "-q"], env)
     if f.returncode != 0:
         summary["forget_error"] = _err(f)
     return summary
@@ -252,6 +291,27 @@ def run(push: bool | None = None, restic: bool | None = None) -> dict:
         notify.publish("ccboard backup failed", "\n".join(st["errors"])[:1500], priority=4, tags=["warning"],
                        click=(settings.public_url + "/") if settings.public_url else None)
     return st
+
+
+def start_detached() -> str:
+    """Start a backup pass outside the request. Through the systemd unit when installed (its own cgroup: a ccboard
+    restart cannot kill it mid-run; log in the journal), else a detached process logging to <data dir>/backup.log."""
+    if SYSTEMD_UNIT.exists() and shutil.which("systemctl") and shutil.which("sudo"):
+        try:
+            r = subprocess.run(["sudo", "-n", "systemctl", "start", "--no-block", "ccboard-backup.service"],
+                               capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            r = None
+            log.warning("systemctl start ccboard-backup failed: %s", e)
+        if r is not None and r.returncode == 0:
+            return "systemd"
+        if r is not None:
+            log.warning("systemctl start ccboard-backup failed (%s); running in-process instead", (r.stderr or "").strip()[-200:])
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    with open(settings.data_dir / LOG_FILE, "ab") as logf:
+        subprocess.Popen([sys.executable, "-m", "app.backup"], cwd=str(Path(__file__).resolve().parent.parent),
+                         stdin=subprocess.DEVNULL, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
+    return "process"
 
 
 def main(argv: list[str] | None = None) -> int:

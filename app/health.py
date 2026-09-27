@@ -110,7 +110,10 @@ class Poller(threading.Thread):
         for n in self.nodes:
             try:
                 s = self.fetch(n["url"])
-                out.append({"name": n["name"], "url": n["url"], "online": True, **s})
+                if not isinstance(s, dict):
+                    raise ValueError("summary is not a JSON object")
+                # trusted fields last: a node's own reply must not override the name/url the hub was configured with
+                out.append({**s, "name": n["name"], "url": n["url"], "online": True})
             except Exception as e:
                 out.append({"name": n["name"], "url": n["url"], "online": False, "error": str(e)[:200]})
         self.db.kv_set(KV_NODES, out)

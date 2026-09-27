@@ -1,0 +1,151 @@
+"""Regression tests for the v0.4 review findings (scheduler, previews, fleet, permission gating)."""
+import json
+import threading
+import time
+from datetime import datetime, timedelta, timezone
+
+from app import health, scheduler
+from app.db import DB, now as db_now
+from tests.test_scheduler import H, make_repo
+
+JOB = dict(project="shop", repo="api", name="once", prompt="p", permission_mode="acceptEdits", max_turns=5,
+           max_budget_usd=None, args=None, timeout_s=None, batch_id=None)
+
+
+def _db():
+    from app.config import settings
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    return DB(settings.db_path)
+
+
+def test_stale_running_runs_closed_on_startup(projects_dir, fake_tmux):
+    from fastapi.testclient import TestClient
+    from app import main
+    pre = _db()
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(timespec="seconds")
+    jid = pre.job_add(**{**JOB, "name": "nightly"}, cron="0 2 * * *", enabled=1, next_run_at=future)
+    rid = pre.run_start(jid)                    # the previous process died here, before run_finish()
+    far = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(timespec="seconds")
+    assert pre.jobs_due(far) == []              # the stale 'running' row hides the job
+    with TestClient(main.app):
+        r = main.db.run_get(rid)
+        assert r["status"] == "error" and "interrupted" in r["error"] and r["finished_at"]
+        assert [j["id"] for j in main.db.jobs_due(far)] == [jid]
+        assert main.db.job_get(jid)["last_status"] == "interrupted"
+
+
+def test_tick_is_serialised(projects_dir, monkeypatch):
+    db = _db()
+    jid = db.job_add(**JOB, cron=None, enabled=1, next_run_at=db_now())
+    real_due = db.jobs_due
+
+    def slow_due(at):                           # widen the read-then-write window a concurrent tick could slip into
+        rows = real_due(at)
+        time.sleep(0.3)
+        return rows
+    monkeypatch.setattr(db, "jobs_due", slow_due)
+    monkeypatch.setattr(scheduler, "run_job", lambda d, job, rid: d.run_finish(rid, status="ok", result=""))
+    w = scheduler.Worker(db)
+    started = []
+    ts = [threading.Thread(target=lambda: started.extend(w.tick())) for _ in range(2)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert len(started) == 1 and len(db.runs(job_id=jid)) == 1
+
+
+def test_quota_unknown_and_backoff(projects_dir):
+    db = _db()
+    q = scheduler.quota_state(db)
+    assert q["known"] is False and q["pct"] is None and scheduler.quota_blocked(db) is None
+    until = scheduler.set_backoff(db)
+    assert scheduler.quota_blocked(db).startswith("backing off until " + until[:13])
+    soon = time.time() + 3600                   # a reset within the cap extends the back-off to it
+    assert scheduler.set_backoff(db, soon)[:16] == datetime.fromtimestamp(soon, tz=timezone.utc).isoformat()[:16]
+    far = time.time() + 30 * 3600               # a bogus far-future reset does not
+    assert scheduler.set_backoff(db, far) < datetime.fromtimestamp(far, tz=timezone.utc).isoformat()
+    db.kv_set(scheduler.KV_BACKOFF, "2000-01-01T00:00:00+00:00")
+    assert scheduler.quota_blocked(db) is None  # expired
+    db.kv_set("rate_limits", {"five_hour": {"used_percentage": 90, "resets_at": soon}})
+    assert "90%" in scheduler.quota_blocked(db) and scheduler.quota_state(db)["known"]
+
+
+def test_parse_result_mid_run_limit():
+    filler = "Refactored the module and reran the suite. " * 30
+    base = {"type": "result", "subtype": "success", "is_error": False, "num_turns": 6, "session_id": "s", "total_cost_usd": 1.0}
+    r = scheduler.parse_result(json.dumps({**base, "result": filler + "You've hit your usage limit. Resets 4pm."}))
+    assert r["rate_limited"] and r["turns"] == 6
+    r = scheduler.parse_result(json.dumps({**base, "result": "Added a rate limit middleware to the API. " + filler + "All tests pass."}))
+    assert not r["rate_limited"]
+
+
+def test_toggle_reenables_fired_oneoff(client, projects_dir):
+    from app import main
+    jid = main.db.job_add(**JOB, cron=None, enabled=0, next_run_at=None)     # a one-off that already fired
+    r = client.post(f"/api/jobs/{jid}/toggle", headers=H)
+    assert r.status_code == 200 and r.json()["enabled"] == 1
+    j = main.db.job_get(jid)
+    assert j["enabled"] == 1 and j["next_run_at"]
+
+
+def test_settings_overrides_rejected_on_host(client, projects_dir, fake_tmux):
+    make_repo(projects_dir)
+    for args in ("--settings /tmp/evil.json", '--settings={"permissions":{"defaultMode":"bypassPermissions"}}',
+                 "--setting-sources user", "--permission-prompt none", "--permission-mode bypassPermissions"):
+        r = client.post("/api/projects/shop/repos/api/tasks", json={"title": "t", "prompt": "p", "args": args}, headers=H)
+        assert r.status_code == 400 and "not allowed" in r.text, args
+        r = client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "args": args}, headers=H)
+        assert r.status_code == 400 and "devcontainer" in r.text, args
+    r = client.post("/api/projects/shop/repos/api/sessions", json={"launcher": "claude", "args": "--model opus"}, headers=H)
+    assert "bypass" not in r.text.lower()
+
+
+def test_kill_session_drops_preview(client, projects_dir, fake_tmux, monkeypatch):
+    from app import main, previews, tmux
+    name = tmux.tmux_name("shop", "api", "t-fix")
+    tid = main.db.task_add(project="shop", repo="api", slug="fix", title="t", prompt="p", branch="worktree-fix", base="main",
+                           worktree=str(projects_dir / "shop/api/.claude/worktrees/fix"), tmux_name=name, claude_session_id=None)
+    main.db.task_update(tid, preview_port=3000, preview_https=9100)
+    fake_tmux["sessions"][name] = {"created": 1, "attached": 0, "windows": 1, "pane_id": "%1", "command": "claude", "path": "/", "pid": 1, "env": {}}
+    off = []
+    monkeypatch.setattr(previews, "serve_off", lambda p: off.append(p))
+    r = client.delete(f"/api/sessions/{name}", headers=H)
+    assert r.status_code == 200 and off == [9100]
+    t = main.db.task_get(tid)
+    assert t["preview_https"] is None and t["preview_port"] is None
+    assert 9100 not in main.db.preview_ports_in_use()
+
+
+def test_preview_port_allocation_is_atomic(client, projects_dir, fake_tmux, monkeypatch):
+    from app import main, previews, tmux
+    monkeypatch.setattr(previews, "public_host", lambda: "box.tailnet.ts.net")
+    barrier = threading.Barrier(2, timeout=5)
+
+    def serve_on(hp, port):                     # both requests are "inside tailscale serve" at the same time
+        barrier.wait()
+        return f"https://box.tailnet.ts.net:{hp}/"
+    monkeypatch.setattr(previews, "serve_on", serve_on)
+    tids = [main.db.task_add(project="shop", repo="api", slug=f"s{i}", title="t", prompt="p", branch=f"worktree-s{i}", base="main",
+                             worktree=str(projects_dir / f"shop/api/.claude/worktrees/s{i}"),
+                             tmux_name=tmux.tmux_name("shop", "api", f"t-s{i}"), claude_session_id=None) for i in range(2)]
+    results = {}
+
+    def go(tid):
+        results[tid] = client.post(f"/api/tasks/{tid}/preview", json={"port": 3000 + tid}, headers=H).json()
+    ts = [threading.Thread(target=go, args=(t,)) for t in tids]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert len({results[t]["https_port"] for t in tids}) == 2, results
+    assert {main.db.task_get(t)["preview_https"] for t in tids} == {results[t]["https_port"] for t in tids}
+
+
+def test_hub_poller_keeps_configured_identity(projects_dir):
+    db = _db()
+    nodes = health.parse_nodes("ubu=https://ubu.ts.net:8443")
+    p = health.Poller(db, nodes, fetch=lambda url: {"url": "https://evil.example/x", "name": "evil", "online": False, "sessions": 1})
+    out = p.poll_once()
+    assert out[0]["url"] == "https://ubu.ts.net:8443" and out[0]["name"] == "ubu" and out[0]["online"] is True and out[0]["sessions"] == 1
+    assert health.Poller(db, nodes, fetch=lambda url: ["not", "a", "dict"]).poll_once()[0]["online"] is False

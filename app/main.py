@@ -61,6 +61,9 @@ async def lifespan(app: FastAPI):
     global indexer, sched
     indexer = search.Indexer(db)
     indexer.start()
+    stale = db.runs_interrupt_stale()
+    if stale:
+        log.warning("closed %d scheduled run(s) the previous process left 'running': %s", len(stale), stale)
     sched_worker = scheduler.Worker(db)
     sched = sched_worker
     sched_worker.start()
@@ -227,6 +230,7 @@ def build_state(user: str) -> dict:
     st["backup"] = health.backup_status()
     st["node_name"] = settings.node_name or st["health"]["host"]
     st["rate_limited"] = db.kv_get("rate_limited")
+    st["scheduler"] = scheduler.quota_state(db)
     return st
 
 
@@ -428,8 +432,9 @@ def api_create_task(project: str, repo: str, body: TaskIn):
             extra = shlex.split(body.args)
         except ValueError as e:
             raise projects.BadRequest(f"extra args: {e}")
-    if _bypass_requested(extra):
-        raise projects.BadRequest("bypassPermissions is not allowed for tasks (they run on the host, not in a devcontainer)")
+    bad = _bypass_requested(extra)
+    if bad:
+        raise projects.BadRequest(f"{bad}: bypassPermissions (or a settings override that could enable it) is not allowed for tasks; they run on the host, not in a devcontainer")
     add_dirs = _resolve_add_dirs(body.add_dirs, rpath)
     slug = tasks.unique_slug(rpath, tasks.slugify(title), db.task_slugs(project, repo))
     session = tasks.session_name_for(slug)
@@ -595,8 +600,21 @@ def api_task_preview(tid: int, body: PreviewIn | None = None):
         port = found[0]
     if not (1 <= port <= 65535):
         raise projects.BadRequest("bad port")
-    hp = t.get("preview_https") or previews.allocate_https_port(db.preview_ports_in_use())
-    url = previews.serve_on(hp, port)
+    with _preview_lock:
+        # allocate and reserve under one lock: `tailscale serve` takes seconds, and two concurrent requests
+        # reading preview_ports_in_use() before either wrote would get the same port
+        t = db.task_get(tid) or t
+        hp = t.get("preview_https")
+        fresh = not hp
+        if fresh:
+            hp = previews.allocate_https_port(db.preview_ports_in_use())
+            db.task_update(tid, preview_https=hp)
+    try:
+        url = previews.serve_on(hp, port)
+    except Exception:
+        if fresh:
+            db.task_update(tid, preview_https=None)
+        raise
     db.task_update(tid, preview_port=port, preview_https=hp)
     _invalidate_scan()
     return {"url": url, "https_port": hp, "port": port}
@@ -610,6 +628,9 @@ def api_task_preview_off(tid: int):
     db.task_update(tid, preview_port=None, preview_https=None)
     _invalidate_scan()
     return {"ok": True}
+
+
+_preview_lock = threading.Lock()
 
 
 def _drop_preview(t: dict) -> None:
@@ -748,8 +769,9 @@ def api_job_toggle(jid: int):
         raise projects.NotFound("no such job")
     enabled = 0 if j["enabled"] else 1
     fields = {"enabled": enabled}
-    if enabled and j.get("cron"):
-        fields["next_run_at"] = scheduler.next_fire(j["cron"])
+    if enabled:
+        # a fired one-off job has next_run_at=NULL; enabling it again means "run it again now"
+        fields["next_run_at"] = scheduler.next_fire(j["cron"]) if j.get("cron") else db_now()
     db.job_update(jid, **fields)
     _invalidate_scan()
     return {"id": jid, "enabled": enabled}
@@ -793,11 +815,18 @@ def api_run_resume(rid: int):
 
 # ---------- sessions ----------
 
-BYPASS_PARTS = ("dangerously", "bypasspermissions")
+# Anything that could raise the permission mode: the bypass flags themselves, and settings overrides that can set
+# permissions.defaultMode (--settings <file|json>, --setting-sources, --permission-prompt). Same list as unattended runs.
+BYPASS_PARTS = ("dangerously", "bypasspermissions", "--settings", "--setting-sources", "--permission-prompt")
 
 
-def _bypass_requested(extra: list[str]) -> bool:
-    return any(any(b in a.lower() for b in BYPASS_PARTS) for a in extra)
+def _bypass_requested(extra: list[str]) -> str | None:
+    """The first extra arg that could enable bypassPermissions, or None."""
+    for a in extra:
+        low = a.lower()
+        if any(b in low for b in BYPASS_PARTS):
+            return a
+    return None
 
 
 class SessionIn(BaseModel):
@@ -885,8 +914,9 @@ def api_create_session(project: str, repo: str, body: SessionIn):
     add_dirs: list[str] = []
     if body.devcontainer and not projects.has_devcontainer(rpath):
         raise projects.BadRequest("this repo has no .devcontainer/devcontainer.json")
-    if (body.bypass or _bypass_requested(extra)) and not body.devcontainer:
-        raise projects.BadRequest("bypassPermissions is only allowed inside a devcontainer (tick 'run in devcontainer')")
+    bad = _bypass_requested(extra)
+    if (body.bypass or bad) and not body.devcontainer:
+        raise projects.BadRequest((f"{bad}: " if bad else "") + "bypassPermissions (or a settings override that could enable it) is only allowed inside a devcontainer (tick 'run in devcontainer')")
     if body.launcher != "shell":
         exe = settings.claude_bin()
         if not exe and not body.devcontainer:
@@ -960,6 +990,9 @@ def api_kill_session(name: str):
     if not tmux.kill_session(name):
         raise projects.NotFound(f"session {name} not found")
     db.end(name)
+    for t in db.tasks():
+        if t["tmux_name"] == name:
+            _drop_preview(t)     # the task's tailnet preview would otherwise keep its port and serve mapping
     _invalidate_scan()
     return {"killed": name}
 
@@ -1092,14 +1125,9 @@ def api_backup_run():
     """Start a backup pass now (same code as the nightly timer), detached from the request."""
     if backup.running():
         raise HTTPException(409, "a backup is already running")
-    settings.data_dir.mkdir(parents=True, exist_ok=True)
-    logf = open(settings.data_dir / backup.LOG_FILE, "ab")
-    try:
-        subprocess.Popen([sys.executable, "-m", "app.backup"], cwd=str(Path(__file__).resolve().parent.parent),
-                         stdin=subprocess.DEVNULL, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
-    finally:
-        logf.close()
-    return {"started": True, "log": str(settings.data_dir / backup.LOG_FILE)}
+    via = backup.start_detached()
+    return {"started": True, "via": via,
+            "log": "journalctl -u ccboard-backup" if via == "systemd" else str(settings.data_dir / backup.LOG_FILE)}
 
 
 def _node_summary() -> dict:

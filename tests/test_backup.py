@@ -20,9 +20,11 @@ case "$1" in
   init) touch "$RESTIC_REPOSITORY/config" ;;
   backup)
     if [ "${FAKE_RESTIC_FAIL:-0}" = 1 ]; then echo "Fatal: boom" >&2; exit 1; fi
+    if [ -f "$RESTIC_REPOSITORY/locked" ]; then echo "Fatal: unable to create lock in backend: repository is already locked by PID 123" >&2; exit 1; fi
     echo '{"message_type":"status","percent_done":1}'
     echo '{"message_type":"summary","snapshot_id":"abcdef1234567890","files_new":3,"files_changed":0,"data_added":1024,"total_files_processed":3,"total_bytes_processed":2048,"total_duration":0.5}' ;;
   forget) : ;;
+  unlock) rm -f "$RESTIC_REPOSITORY/locked" ;;
 esac
 exit 0
 '''
@@ -176,3 +178,44 @@ def test_api_backup_run_and_state(client, backup_env, monkeypatch):
     st = client.get("/api/state", headers=H).json()
     assert st["backup"]["status"] == "ok" and st["backup"]["restic"]["snapshot_id"]
     assert st["config"]["backup"]["restic"] and st["config"]["backup"]["push"] and st["config"]["backup"]["restic_installed"]
+
+
+def test_restic_stale_lock_is_cleared(backup_env):
+    backup_env["repo"].mkdir(exist_ok=True)
+    (backup_env["repo"] / "locked").touch()          # a killed earlier run left restic's lock behind
+    st = backup.run(push=False)
+    assert st["status"] == "ok" and st["restic"]["snapshot_id"]
+    calls = [c.split()[0] for c in (backup_env["repo"] / "calls.log").read_text().splitlines()]
+    assert calls == ["cat", "init", "backup", "unlock", "backup", "forget"]
+
+
+def test_restic_opts_sftp(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "restic_repo", "/local/repo")
+    assert backup.restic_opts() == []
+    monkeypatch.setattr(settings, "restic_repo", "sftp:bk@nas:/srv/restic")
+    assert backup.restic_opts() == ["-o", "sftp.command=ssh -oBatchMode=yes -oConnectTimeout=20 bk@nas -s sftp"]
+    monkeypatch.setattr(settings, "restic_repo", "sftp://bk@nas:2222/srv/restic")
+    assert backup.restic_opts() == ["-o", "sftp.command=ssh -oBatchMode=yes -oConnectTimeout=20 -p 2222 bk@nas -s sftp"]
+    monkeypatch.setattr(settings, "restic_repo", "sftp:")
+    assert backup.restic_opts() == []
+
+
+def test_start_detached_prefers_systemd(tmp_path, monkeypatch, projects_dir):
+    unit = tmp_path / "ccboard-backup.service"; unit.write_text("[Unit]\n")
+    monkeypatch.setattr(backup, "SYSTEMD_UNIT", unit)
+    monkeypatch.setattr(backup.shutil, "which", lambda x: f"/usr/bin/{x}")
+    calls = []
+
+    class Ok:
+        returncode = 0; stderr = ""
+    monkeypatch.setattr(backup.subprocess, "run", lambda argv, **kw: calls.append(argv) or Ok())
+    assert backup.start_detached() == "systemd"
+    assert calls == [["sudo", "-n", "systemctl", "start", "--no-block", "ccboard-backup.service"]]
+
+    class Denied:
+        returncode = 1; stderr = "sudo: a password is required"
+    monkeypatch.setattr(backup.subprocess, "run", lambda argv, **kw: Denied())
+    spawned = []
+    monkeypatch.setattr(backup.subprocess, "Popen", lambda argv, **kw: spawned.append(argv))
+    assert backup.start_detached() == "process" and spawned[0][-2:] == ["-m", "app.backup"]

@@ -302,6 +302,19 @@ class DB:
             self.conn.execute(f"UPDATE runs SET finished_at=?, {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
                               (now(), *fields.values(), rid))
 
+    def runs_interrupt_stale(self, reason: str = "interrupted: the board restarted while this run was in progress") -> list[int]:
+        """Runs still 'running' when the process starts can never finish (their worker thread died with the old
+        process) and would exclude their job from jobs_due() forever; close them as errors."""
+        with self.lock:
+            rows = self.conn.execute("SELECT id, job_id FROM runs WHERE status='running'").fetchall()
+            ids = [int(r["id"]) for r in rows]
+            if ids:
+                self.conn.execute(f"UPDATE runs SET status='error', error=?, finished_at=? WHERE id IN ({','.join('?' * len(ids))})",
+                                  (reason, now(), *ids))
+                for r in rows:
+                    self.conn.execute("UPDATE jobs SET last_status='interrupted' WHERE id=?", (r["job_id"],))
+        return ids
+
     def run_get(self, rid: int) -> dict | None:
         with self.lock:
             r = self.conn.execute("SELECT * FROM runs WHERE id=?", (rid,)).fetchone()

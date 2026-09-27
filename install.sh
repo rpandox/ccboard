@@ -9,7 +9,7 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE=/etc/ccboard/env
-ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT PREVIEW_HTTPS_BASE CCBOARD_NODE_NAME CCBOARD_HUB_TOKEN CCBOARD_NODES CCBOARD_RESTIC_REPO CCBOARD_BACKUP_PUSH CCBOARD_BACKUP_ONCALENDAR)
+ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT PREVIEW_HTTPS_BASE CCBOARD_NODE_NAME CCBOARD_HUB_TOKEN CCBOARD_NODES CCBOARD_RESTIC_REPO CCBOARD_RESTIC_PASSWORD_FILE CCBOARD_BACKUP_PUSH CCBOARD_BACKUP_ONCALENDAR CCBOARD_BACKUP_EXTRA)
 TTYD_VERSION=1.7.7
 TTYD_SHA_amd64=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
 TTYD_SHA_arm64=b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165
@@ -47,10 +47,16 @@ trap 'kill "$SUDO_KEEPALIVE" 2>/dev/null || true' EXIT
 # Explicit environment beats the previous env file, which beats the defaults.
 declare -A CALLER
 for k in "${ENV_KEYS[@]}"; do CALLER[$k]="${!k:-}"; done
+EXTRA_ENV=()
 if [ -f "$ENV_FILE" ]; then
-  # Never source it: values are data, not shell. Only whitelisted keys are read.
+  # Never source it: values are data, not shell. Whitelisted keys are read; other KEY=value lines you added by hand
+  # (e.g. AWS_* for an s3: restic repo) are kept as they are and written back.
   while IFS='=' read -r k v; do
-    case " ${ENV_KEYS[*]} " in *" $k "*) printf -v "$k" '%s' "$v";; esac
+    case "$k" in ''|'#'*) continue;; esac
+    case " ${ENV_KEYS[*]} " in
+      *" $k "*) printf -v "$k" '%s' "$v";;
+      *) [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && EXTRA_ENV+=("$k=$v");;
+    esac
   done < "$ENV_FILE"
 fi
 for k in "${ENV_KEYS[@]}"; do [ -n "${CALLER[$k]}" ] && printf -v "$k" '%s' "${CALLER[$k]}"; done
@@ -75,6 +81,8 @@ for k in "${ENV_KEYS[@]}"; do [ -n "${CALLER[$k]}" ] && printf -v "$k" '%s' "${C
 if [ -z "${CCBOARD_HUB_TOKEN:-}" ]; then CCBOARD_HUB_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(24))'); note "generated CCBOARD_HUB_TOKEN (copy it to the other boxes to form a fleet)"; fi
 [[ "$CCBOARD_NODE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$ ]] || die "CCBOARD_NODE_NAME must be letters, digits, - or _"
 : "${CCBOARD_RESTIC_REPO:=}"          # empty = local repo under CCBOARD_DATA_DIR; 'off' disables restic
+: "${CCBOARD_RESTIC_PASSWORD_FILE:=}" # empty = $CCBOARD_DATA_DIR/restic-password
+: "${CCBOARD_BACKUP_EXTRA:=}"         # colon-separated extra paths to include in the snapshot
 : "${CCBOARD_BACKUP_PUSH:=1}"
 : "${CCBOARD_BACKUP_ONCALENDAR:=*-*-* 02:30:00}"
 systemd-analyze calendar "$CCBOARD_BACKUP_ONCALENDAR" >/dev/null 2>&1 || die "CCBOARD_BACKUP_ONCALENDAR is not a systemd calendar spec: $CCBOARD_BACKUP_ONCALENDAR"
@@ -258,11 +266,13 @@ else
     sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y -q --no-install-recommends restic >/dev/null || warn "apt-get install restic failed; backups will report 'restic is not installed'"
   fi
   mkdir -p "$CCBOARD_DATA_DIR"
-  if [ ! -s "$CCBOARD_DATA_DIR/restic-password" ]; then
-    (umask 077; python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > "$CCBOARD_DATA_DIR/restic-password")
-    note "generated $CCBOARD_DATA_DIR/restic-password — copy it somewhere safe; without it the backups cannot be read"
+  pwfile="${CCBOARD_RESTIC_PASSWORD_FILE:-$CCBOARD_DATA_DIR/restic-password}"
+  if [ ! -s "$pwfile" ]; then
+    mkdir -p "$(dirname "$pwfile")"
+    (umask 077; python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > "$pwfile")
+    note "generated $pwfile — copy it somewhere safe; without it the backups cannot be read"
   fi
-  chmod 0600 "$CCBOARD_DATA_DIR/restic-password"
+  chmod 0600 "$pwfile"
   note "restic repo: ${CCBOARD_RESTIC_REPO:-$CCBOARD_DATA_DIR/restic (same disk: set CCBOARD_RESTIC_REPO to an sftp:/rclone:/s3: repo for real safety)}"
 fi
 
@@ -323,10 +333,10 @@ fi
 # ---------------------------------------------------------------- sudoers: let the user restart the stateless units (deploys)
 log "sudoers rule for restarts"
 if [ "${CCBOARD_PREVIEWS:-1}" = 0 ]; then
-  sudoers_want=$(printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl restart ccboard.service, /usr/bin/systemctl restart ccboard-ttyd.service, /usr/bin/systemctl try-restart ccboard.service\n' "$USER_NAME")
+  sudoers_want=$(printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl restart ccboard.service, /usr/bin/systemctl restart ccboard-ttyd.service, /usr/bin/systemctl try-restart ccboard.service, /usr/bin/systemctl start --no-block ccboard-backup.service\n' "$USER_NAME")
 else
   # `tailscale serve` (tailnet-only) is allowed so the board can expose per-worktree preview ports; `tailscale funnel` is not.
-  sudoers_want=$(printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl restart ccboard.service, /usr/bin/systemctl restart ccboard-ttyd.service, /usr/bin/systemctl try-restart ccboard.service, /usr/bin/tailscale serve *\n' "$USER_NAME")
+  sudoers_want=$(printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl restart ccboard.service, /usr/bin/systemctl restart ccboard-ttyd.service, /usr/bin/systemctl try-restart ccboard.service, /usr/bin/systemctl start --no-block ccboard-backup.service, /usr/bin/tailscale serve *\n' "$USER_NAME")
 fi
 if [ ! -f /etc/sudoers.d/ccboard ] || [ "$(sudo cat /etc/sudoers.d/ccboard)" != "$sudoers_want" ]; then
   tmp=$(mktemp); printf '%s\n' "$sudoers_want" > "$tmp"
@@ -340,6 +350,7 @@ fi
 log "config and systemd units"
 env_body=""
 for k in "${ENV_KEYS[@]}"; do env_body+="$k=${!k}"$'\n'; done
+for line in "${EXTRA_ENV[@]:-}"; do [ -n "$line" ] && env_body+="$line"$'\n'; done
 changed_units=()
 if [ ! -f "$ENV_FILE" ] || [ "$(cat "$ENV_FILE")" != "${env_body%$'\n'}" ]; then
   printf '%s' "$env_body" | sudo install -D -m 0640 -o root -g "$(id -gn)" /dev/stdin "$ENV_FILE"; note "wrote $ENV_FILE"
