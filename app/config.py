@@ -44,6 +44,12 @@ class Settings:
         self.node_name = (env.get("CCBOARD_NODE_NAME") or "").strip()
         self.hub_token = (env.get("CCBOARD_HUB_TOKEN") or "").strip()
         self.nodes_raw = env.get("CCBOARD_NODES") or ""
+        # Nightly backup: restic repo ('off' disables restic; empty = local repo under the data dir), its password
+        # file (written by install.sh), whether to `git push --all origin` every repo, extra paths to include.
+        self.restic_repo = (env.get("CCBOARD_RESTIC_REPO") or "").strip() or str(self.data_dir / "restic")
+        self.restic_password_file = Path((env.get("CCBOARD_RESTIC_PASSWORD_FILE") or "").strip() or (self.data_dir / "restic-password"))
+        self.backup_push = (env.get("CCBOARD_BACKUP_PUSH") or "1") != "0"
+        self.backup_extra = [x.strip() for x in (env.get("CCBOARD_BACKUP_EXTRA") or "").split(":") if x.strip()]
         try:
             self.preview_https_base = int(env.get("PREVIEW_HTTPS_BASE") or 9100)
         except ValueError:

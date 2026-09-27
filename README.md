@@ -57,9 +57,10 @@ ccboard is a *status-and-attention layer*. It launches the real `claude` TUI ins
 - **MCP server**: `scripts/ccboard_mcp.py` is registered at user scope by `install.sh`, so any Claude session on the box can call `list_projects`, `create_task`, `list_tasks` and `get_task_status`.
 - **Preview links**: "Preview" on a task card publishes the dev server the task started on its own tailnet HTTPS port (`tailscale serve`, never Funnel).
 - **Devcontainer**: repos with `.devcontainer/devcontainer.json` can run sessions inside the container, and only there is "bypass permissions" offered.
+- **Backup**: `ccboard-backup.timer` runs nightly (02:30 by default): a consistent snapshot of the board's SQLite DB and your `~/.claude/projects` transcripts go into a restic repository, then every repo under `PROJECTS_DIR` gets `git push --all origin` so WIP branches from tasks survive the box. The strip shows the last result and the 🔔 panel has "Back up now"; a failed run pushes an ntfy warning.
 - **Fleet**: every box shows its own cpu / ram / disk / uptime in the usage strip. Install ccboard on a second box with the same `CCBOARD_HUB_TOKEN`, set `CCBOARD_NODES=name=https://box.tailnet.ts.net:8443,…` on the one you look at, and it polls the others every minute into a Nodes strip (online, sessions, needs-you, health, 5h usage) that links to each board. Any box can be the hub; they are the same app.
 
-See [ROADMAP.md](ROADMAP.md) for how each item was built and what comes next (nightly backups).
+See [ROADMAP.md](ROADMAP.md) for how each item was built and what comes next.
 
 ## What it is not
 
@@ -105,6 +106,9 @@ Every setting is an environment variable. Values are remembered in `/etc/ccboard
 | `CCBOARD_NODE_NAME` | `hostname -s` | This box's name in the fleet strips |
 | `CCBOARD_HUB_TOKEN` | generated | Shared secret for node-to-node `GET /api/node/summary`; copy the same value to every box |
 | `CCBOARD_NODES` | empty | `name=https://host.tailnet.ts.net:port,…` of the other boxes this one polls |
+| `CCBOARD_RESTIC_REPO` | `<data dir>/restic` | restic repository for the nightly backup (`sftp:user@host:/path`, `rclone:remote:path`, `s3:…`, or `off`). The default is on the same disk: fine against deletion and corruption, useless against disk loss |
+| `CCBOARD_BACKUP_PUSH` | `1` | `0` skips the nightly `git push --all origin` |
+| `CCBOARD_BACKUP_ONCALENDAR` | `*-*-* 02:30:00` | systemd calendar spec of the backup timer (`CCBOARD_BACKUP=0` at install time leaves the timer disabled) |
 
 Tailnet-only `tailscale serve` accepts any HTTPS port. If a chosen port already carries something else (another serve handler or a Funnel), `install.sh` stops and tells you; pick other ports or rerun with `CCBOARD_REPLACE_SERVE=1` to replace that port's handlers. It never runs `tailscale serve reset` and never touches ports you did not name.
 
@@ -123,6 +127,7 @@ CCBOARD_HTTPS_PORT=8443 CODE_HTTPS_PORT=10000 CODE_SERVER_PORT=8081 ./install.sh
 - a venv in the checkout (`.venv`)
 - `/etc/systemd/system/ccboard-tmux.service` (the tmux server that owns every session), `ccboard-ttyd.service`, `ccboard.service`, plus `code-server@<you>`
 - `tailscale serve --bg`: `/` and `/tty` on `CCBOARD_HTTPS_PORT`, `/` on `CODE_HTTPS_PORT`
+- `restic` from apt, a random restic password in `<data dir>/restic-password` (0600; **copy it somewhere safe**, without it the backups are unreadable), and `ccboard-backup.service` + `.timer`. `sudo systemctl start ccboard-backup` runs one now; `journalctl -u ccboard-backup` has the log. Remote repos need their credentials in `/etc/ccboard/env` (for example `AWS_ACCESS_KEY_ID`, or an ssh key without passphrase for sftp; the run uses `BatchMode=yes` and never prompts)
 
 Update: pull or extract the new version into the same directory and rerun `./install.sh`. It restarts only `ccboard` (stateless) unless something else changed. Restarting `ccboard` never touches running Claude sessions, because they live under `ccboard-tmux.service`. `install.sh` also writes `/etc/sudoers.d/ccboard`, which lets your user restart `ccboard` and `ccboard-ttyd` without a password, so code-only updates are `git pull && sudo systemctl restart ccboard` (or `scripts/deploy.sh <host>` from your machine).
 
@@ -142,6 +147,7 @@ Update: pull or extract the new version into the same directory and rerun `./ins
 - Everything binds to 127.0.0.1. A process running on the box itself can still connect locally and forge the identity header; on a single-user machine that process already is you.
 - Hooks and the statusline talk to the board over loopback with the token in `~/.local/share/ccboard/hook-token` (0600); `/api/hook` and `/api/permission` accept only that token. The ntfy server is tailnet-only and, like ttyd and code-server, protected by the tailnet ACL rather than the allowlist; anyone on the tailnet could publish to or read the topic. ntfy's `upstream-base-url` sends only a wake-up (no message content) through ntfy.sh so iOS devices get pushes.
 - `install.sh` writes `/etc/sudoers.d/ccboard` so your user can run `systemctl restart ccboard` and `ccboard-ttyd` without a password (deploys), and `gh auth setup-git` so git uses gh's token for https clones.
+- The nightly backup pushes **every local branch of every repo** under `PROJECTS_DIR` to its `origin` (`git push --all`, never forced: a branch that is behind is reported, not overwritten). If a repo has branches that must not reach GitHub, set `CCBOARD_BACKUP_PUSH=0` or keep that repo outside `PROJECTS_DIR`. The restic snapshots hold your transcripts; they are encrypted with the password file above.
 - Tasks run `git`, `gh` and `claude -p` on your behalf with your credentials: "Describe" sends the branch diff to Claude, "Create PR"/"Merge" push and merge on GitHub, and "Fix CI" pastes CI log text into a Claude session as a prompt. Web Push subscriptions are accepted only for known browser push services.
 - If the box has `tailscale set --operator=<you>` configured, every process running as you can change `tailscale serve` (including turning on Funnel). `install.sh` does not set the operator; it uses `sudo` for serve commands.
 - Tagged nodes and requests from the box itself carry no identity header and are rejected. That is also why fleet polling uses `CCBOARD_HUB_TOKEN` (in `/etc/ccboard/env`, mode 0640) instead of the login header: a box polling another box has no user identity. The summary a node returns is counts, health and the 5-hour usage, never prompts or transcripts. If you tag the boxes (`tailscale up --advertise-tags=tag:ccboard`), make sure your ACL still lets your own devices reach their ports and lets the boxes reach each other on `CCBOARD_HTTPS_PORT`.

@@ -1,0 +1,17 @@
+[Unit]
+Description=ccboard backup: restic snapshot of the DB and transcripts, git push --all of every repo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=__APP_DIR__
+Environment=PATH=__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=__HOME__ LANG=C.UTF-8 GIT_TERMINAL_PROMPT=0
+EnvironmentFile=-/etc/ccboard/env
+ExecStart=__APP_DIR__/.venv/bin/python -m app.backup
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+PrivateDevices=yes

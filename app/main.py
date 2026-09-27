@@ -4,9 +4,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import socket
 import re
 import shlex
+import shutil
+import socket
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -19,7 +22,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import claude_auth, clonequeue, cost, github, gitops, health, hooks, notify, permissions, previews, projects, prpoll, push, recover, scheduler, search, tasks, tmux, usage
+from . import backup, claude_auth, clonequeue, cost, github, gitops, health, hooks, notify, permissions, previews, projects, prpoll, push, recover, scheduler, search, tasks, tmux, usage
 from .auth import csrf_ok, identify
 from .config import settings
 from .db import DB, now as db_now
@@ -205,7 +208,9 @@ def build_state(user: str) -> dict:
     st["user"] = user
     st["config"] = {"code_https_port": settings.code_https_port, "projects_dir": str(settings.projects_dir),
                     "ntfy": {"enabled": notify.enabled(), "subscribe_url": notify.subscribe_url(), "topic": settings.ntfy_topic},
-                    "public_url": settings.public_url}
+                    "public_url": settings.public_url,
+                    "backup": {"restic": backup.restic_enabled(), "repo": settings.restic_repo if backup.restic_enabled() else None,
+                               "restic_installed": shutil.which("restic") is not None, "push": settings.backup_push}}
     st["claude"] = claude_auth.status()
     st["login"] = claude_auth.login_state()
     st["pending_permissions"] = db.perm_pending()
@@ -1080,6 +1085,21 @@ def api_recovery_dismiss():
     db.kv_del("last_recovery")
     _invalidate_scan()
     return {"ok": True}
+
+
+@app.post("/api/backup/run", status_code=202)
+def api_backup_run():
+    """Start a backup pass now (same code as the nightly timer), detached from the request."""
+    if backup.running():
+        raise HTTPException(409, "a backup is already running")
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    logf = open(settings.data_dir / backup.LOG_FILE, "ab")
+    try:
+        subprocess.Popen([sys.executable, "-m", "app.backup"], cwd=str(Path(__file__).resolve().parent.parent),
+                         stdin=subprocess.DEVNULL, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
+    finally:
+        logf.close()
+    return {"started": True, "log": str(settings.data_dir / backup.LOG_FILE)}
 
 
 def _node_summary() -> dict:

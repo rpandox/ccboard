@@ -9,7 +9,7 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE=/etc/ccboard/env
-ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT PREVIEW_HTTPS_BASE CCBOARD_NODE_NAME CCBOARD_HUB_TOKEN CCBOARD_NODES)
+ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT PREVIEW_HTTPS_BASE CCBOARD_NODE_NAME CCBOARD_HUB_TOKEN CCBOARD_NODES CCBOARD_RESTIC_REPO CCBOARD_BACKUP_PUSH CCBOARD_BACKUP_ONCALENDAR)
 TTYD_VERSION=1.7.7
 TTYD_SHA_amd64=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
 TTYD_SHA_arm64=b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165
@@ -74,6 +74,10 @@ for k in "${ENV_KEYS[@]}"; do [ -n "${CALLER[$k]}" ] && printf -v "$k" '%s' "${C
 : "${CCBOARD_NODES:=}"
 if [ -z "${CCBOARD_HUB_TOKEN:-}" ]; then CCBOARD_HUB_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(24))'); note "generated CCBOARD_HUB_TOKEN (copy it to the other boxes to form a fleet)"; fi
 [[ "$CCBOARD_NODE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$ ]] || die "CCBOARD_NODE_NAME must be letters, digits, - or _"
+: "${CCBOARD_RESTIC_REPO:=}"          # empty = local repo under CCBOARD_DATA_DIR; 'off' disables restic
+: "${CCBOARD_BACKUP_PUSH:=1}"
+: "${CCBOARD_BACKUP_ONCALENDAR:=*-*-* 02:30:00}"
+systemd-analyze calendar "$CCBOARD_BACKUP_ONCALENDAR" >/dev/null 2>&1 || die "CCBOARD_BACKUP_ONCALENDAR is not a systemd calendar spec: $CCBOARD_BACKUP_ONCALENDAR"
 [[ "$PREVIEW_HTTPS_BASE" =~ ^[0-9]{1,5}$ ]] || die "PREVIEW_HTTPS_BASE must be a port number"
 [[ "$CCBOARD_APPROVE_TIMEOUT" =~ ^[0-9]{1,4}$ ]] || die "CCBOARD_APPROVE_TIMEOUT must be seconds"
 for k in CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT NTFY_PORT NTFY_HTTPS_PORT; do
@@ -242,6 +246,26 @@ if [ "${CCBOARD_DEVCONTAINER:-0}" = 1 ]; then
   else warn "npm not found: devcontainer CLI skipped"; fi
 fi
 
+# ---------------------------------------------------------------- restic (nightly backup; CCBOARD_BACKUP=0 leaves the timer off)
+log "backup"
+if [ "${CCBOARD_BACKUP:-1}" = 0 ]; then
+  note "timer will be disabled (CCBOARD_BACKUP=0)"
+elif [ "$CCBOARD_RESTIC_REPO" = off ]; then
+  note "restic off (CCBOARD_RESTIC_REPO=off); nightly git push --all only"
+else
+  if ! have restic; then
+    note "installing restic (apt)"
+    sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y -q --no-install-recommends restic >/dev/null || warn "apt-get install restic failed; backups will report 'restic is not installed'"
+  fi
+  mkdir -p "$CCBOARD_DATA_DIR"
+  if [ ! -s "$CCBOARD_DATA_DIR/restic-password" ]; then
+    (umask 077; python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > "$CCBOARD_DATA_DIR/restic-password")
+    note "generated $CCBOARD_DATA_DIR/restic-password — copy it somewhere safe; without it the backups cannot be read"
+  fi
+  chmod 0600 "$CCBOARD_DATA_DIR/restic-password"
+  note "restic repo: ${CCBOARD_RESTIC_REPO:-$CCBOARD_DATA_DIR/restic (same disk: set CCBOARD_RESTIC_REPO to an sftp:/rclone:/s3: repo for real safety)}"
+fi
+
 # ---------------------------------------------------------------- gh: let git use gh's credentials for https clones (bulk import)
 if have gh && gh auth status >/dev/null 2>&1; then
   gh auth setup-git >/dev/null 2>&1 && note "gh credential helper configured for git (private https clones)" || true
@@ -326,9 +350,10 @@ sudo chmod 0640 "$ENV_FILE"; sudo chgrp "$(id -gn)" "$ENV_FILE"
 esc() { printf '%s' "$1" | sed -e 's/[&|\\]/\\&/g'; }
 render_unit() { # name
   sed -e "s|__USER__|$(esc "$USER_NAME")|g" -e "s|__HOME__|$(esc "$HOME_DIR")|g" -e "s|__APP_DIR__|$(esc "$APP_DIR")|g" \
-      -e "s|__SHELL__|$(esc "$SHELL_PATH")|g" -e "s|__TTYD_BIN__|$(esc "$TTYD_BIN")|g" "$APP_DIR/systemd/$1.in"
+      -e "s|__SHELL__|$(esc "$SHELL_PATH")|g" -e "s|__TTYD_BIN__|$(esc "$TTYD_BIN")|g" \
+      -e "s|__BACKUP_ONCALENDAR__|$(esc "$CCBOARD_BACKUP_ONCALENDAR")|g" "$APP_DIR/systemd/$1.in"
 }
-for u in ccboard-tmux.service ccboard-ttyd.service ccboard.service; do
+for u in ccboard-tmux.service ccboard-ttyd.service ccboard.service ccboard-backup.service ccboard-backup.timer; do
   tmp=$(mktemp); render_unit "$u" > "$tmp"
   if ! cmp -s "$tmp" "/etc/systemd/system/$u"; then
     sudo install -m 0644 "$tmp" "/etc/systemd/system/$u"; changed_units+=("$u"); note "wrote /etc/systemd/system/$u"
@@ -338,6 +363,11 @@ done
 [ "$need_ttyd" = 0 ] || changed_units+=(ccboard-ttyd.service)
 sudo systemctl daemon-reload
 sudo systemctl enable --now ccboard-tmux.service ccboard-ttyd.service ccboard.service >/dev/null
+if [ "${CCBOARD_BACKUP:-1}" = 0 ]; then
+  sudo systemctl disable --now ccboard-backup.timer >/dev/null 2>&1 || true
+else
+  sudo systemctl enable --now ccboard-backup.timer >/dev/null
+fi
 restarted=()
 for u in ccboard-tmux.service ccboard-ttyd.service; do
   if printf '%s\n' "${changed_units[@]:-}" | grep -qx "$u"; then
@@ -418,3 +448,4 @@ printf '  code-server: https://%s:%s/\n' "$TS_FQDN" "$CODE_HTTPS_PORT"
 printf '  Open them from another device on your tailnet (requests from this box carry no Tailscale identity).\n'
 printf '  Then click "Log in" on the dashboard to sign in to Claude Code.\n'
 [ -z "$CCBOARD_NODES" ] || printf '  Fleet:       polling %s (same CCBOARD_HUB_TOKEN on every box)\n' "$CCBOARD_NODES"
+[ "${CCBOARD_BACKUP:-1}" = 0 ] || printf '  Backup:      nightly (%s) restic + git push --all; run one now: sudo systemctl start ccboard-backup; log: journalctl -u ccboard-backup\n' "$CCBOARD_BACKUP_ONCALENDAR"

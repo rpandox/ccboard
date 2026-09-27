@@ -96,8 +96,13 @@ function renderUsage() {
     else if (typeof h.load1 === 'number') bits.push(`load ${h.load1.toFixed(2)}`);
     if (h.mem) bits.push(`ram ${h.mem.pct}%`);
     if (h.disk) bits.push(`disk ${h.disk.pct}%`);
-    if (state.backup) bits.push(`backup ${state.backup.status || ''} ${(state.backup.at || '').slice(0, 10)}`.trim());
     segs.push(el('span', { class: 'seg', title: `${h.host}${h.uptime_s ? ' · up ' + Math.floor(h.uptime_s / 3600) + 'h' : ''}` }, el('b', { text: state.node_name || 'box' }), bits.join(' · ')));
+  }
+  const bk = state.backup;
+  if (bk && bk.at) {
+    const failed = bk.status !== 'ok';
+    segs.push(el('span', { class: 'seg' + (failed ? ' bad' : ''), title: failed ? (bk.errors || []).join('\n') : 'last nightly backup (restic + git push --all); details in the 🔔 panel' },
+      el('b', { text: 'backup' }), `${failed ? 'failed' : 'ok'} ${fmtAge(Date.parse(bk.at) / 1000) + " ago"}`));
   }
   const chips = [];
   for (const p of state.projects) for (const r of p.repos) for (const s of r.sessions) {
@@ -186,6 +191,21 @@ function renderNotifyPanel() {
     else pushRow.append(el('button', { class: 'primary', onclick: () => enablePush().catch(e => setError(e.message)), text: 'Enable push on this device' }),
       el('span', { class: 'dim', text: 'Works in Chrome/Android and in an installed (Home Screen) PWA on iOS 16.4+.' }));
   }).catch(() => pushRow.append(el('span', { class: 'dim', text: 'Web Push not available here.' })));
+  const bkRow = el('div', { class: 'row' }, el('b', { text: 'Backup:' }));
+  p.append(bkRow);
+  const bc = (state.config && state.config.backup) || {};
+  const bk = state.backup;
+  if (bk && bk.at) {
+    const r = bk.restic || {};
+    const pushed = (bk.push || []).reduce((n, x) => n + (x.pushed || []).length, 0);
+    bkRow.append(el('span', { class: bk.status === 'ok' ? '' : 'bad', text: `${bk.status} ${fmtAge(Date.parse(bk.at) / 1000) + " ago"}` }),
+      el('span', { class: 'dim', text: r.snapshot_id ? `snapshot ${String(r.snapshot_id).slice(0, 8)} → ${r.repo || ''}` : (r.skipped ? 'restic off' : 'no snapshot') + ` · ${pushed} branch(es) pushed across ${(bk.push || []).length} repo(s)` }));
+    if (bk.status !== 'ok') bkRow.append(el('span', { class: 'bad', text: (bk.errors || []).join(' · ').slice(0, 300) }));
+  } else {
+    bkRow.append(el('span', { class: 'dim', text: 'no backup has run yet (nightly via ccboard-backup.timer)' + (bc.restic && !bc.restic_installed ? ' · restic is not installed' : '') }));
+  }
+  bkRow.append(el('button', { onclick: async () => { try { await api('POST', '/api/backup/run'); setError(null); setTimeout(() => poll(true), 3000); } catch (e) { setError(e.message); } }, text: 'Back up now' }),
+    el('span', { class: 'dim', text: (bc.restic ? `restic → ${bc.repo}` : 'restic off') + (bc.push ? ' · git push --all origin for every repo' : ' · no git push') }));
   const ntfyRow = el('div', { class: 'row' }, el('b', { text: 'ntfy app:' }));
   p.append(ntfyRow);
   if (!n.enabled) {
