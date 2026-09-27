@@ -100,7 +100,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 def asset_version() -> str:
     """Hash of the page shell; changes on every deploy that touches the UI, so open pages reload themselves."""
     h = hashlib.sha256()
-    for name in ("index.html", "app.js", "style.css", "sw.js"):
+    for name in ("index.html", "app.js", "style.css", "sw.js", "term.html", "term.js", "term.css"):
         try:
             h.update((STATIC_DIR / name).read_bytes())
         except OSError:

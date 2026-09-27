@@ -553,10 +553,10 @@ function sessionForm(p, r) {
     for (const k of Object.keys(body)) if (body[k] === '' || body[k] === null) delete body[k];
     savePrefs(LAUNCH_KEY(p, r), { launcher: launcher.value, ...lc.prefs(), allowed_tools: allowed.value.trim(), disallowed_tools: disallowed.value.trim(),
       append_system_prompt: sysPrompt.value.trim(), args: args.value.trim() });
-    const tab = window.open('', '_blank');
+    const tab = isStandalone() ? null : window.open('', '_blank');
     try {
       const res = await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/sessions`, body);
-      if (tab) tab.location = `/term/${encodeURIComponent(res.tmux)}`;
+      if (tab) tab.location = `/term/${encodeURIComponent(res.tmux)}`; else openPage(`/term/${encodeURIComponent(res.tmux)}`);
       ui.openForm = null; setError(null); await poll(true);
     } catch (err) { if (tab) tab.close(); setError(err.message); }
   } },
@@ -931,10 +931,10 @@ function taskForm(p, r) {
     if (args.value.trim()) body.args = args.value.trim();
     for (const k of Object.keys(body)) if (body[k] === '' || body[k] === null) delete body[k];
     savePrefs(TASK_KEY(p, r), { ...lc.prefs(), args: args.value.trim() });
-    const tab = window.open('', '_blank');
+    const tab = isStandalone() ? null : window.open('', '_blank');
     try {
       const res = await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/tasks`, body);
-      if (tab) tab.location = res.attach_url;
+      if (tab) tab.location = res.attach_url; else openPage(res.attach_url);
       ui.openForm = null; setError(null); await poll(true);
     } catch (err) { if (tab) tab.close(); setError(err.message); }
   } },
@@ -1044,7 +1044,7 @@ function renderJobs() {
         el('span', { class: 'dim', text: `run #${r.id} ${fmtTs(r.started_at)} · ${r.status}${typeof r.cost_usd === 'number' ? ' · $' + r.cost_usd.toFixed(2) : ''}${r.num_turns ? ' · ' + r.num_turns + ' turns' : ''}${r.error ? ' · ' + r.error : ''}` }),
         r.result ? el('span', { text: r.result.slice(0, 300) }) : null,
         r.task_id ? el('span', { class: 'row' },
-          el('button', { onclick: async () => { try { const x = await api('POST', `/api/runs/${r.id}/resume`); window.open(x.attach_url, '_blank', 'noopener'); } catch (e) { setError(e.message); } await poll(true); }, text: 'Resume in terminal' }),
+          el('button', { onclick: async () => { try { const x = await api('POST', `/api/runs/${r.id}/resume`); openPage(x.attach_url); } catch (e) { setError(e.message); } await poll(true); }, text: 'Resume in terminal' }),
           el('span', { class: 'dim', text: `task card: ${r.branch}` })) : null));
     }
     sec.append(row);
@@ -1104,7 +1104,7 @@ async function inboxKey(e) {
   if (!items.length) return;
   if (e.key === 'j' || e.key === 'n') { ui.inboxSel = Math.min(items.length - 1, (ui.inboxSel < 0 ? -1 : ui.inboxSel) + 1); renderInbox(); }
   else if (e.key === 'k' || e.key === 'p') { ui.inboxSel = Math.max(0, ui.inboxSel - 1); renderInbox(); }
-  else if (e.key === 'Enter' && ui.inboxSel >= 0) { window.open(`/term/${encodeURIComponent(items[ui.inboxSel].tmux)}`, '_blank', 'noopener'); }
+  else if (e.key === 'Enter' && ui.inboxSel >= 0) { openPage(`/term/${encodeURIComponent(items[ui.inboxSel].tmux)}`); }
   else if (e.key === 'a' && ui.inboxSel >= 0) {
     e.preventDefault();
     try { await api('POST', `/api/sessions/${encodeURIComponent(items[ui.inboxSel].tmux)}/ack`); } catch (err) { setError(err.message); }
@@ -1223,6 +1223,21 @@ function renderNav() {
       ic(icon), el('span', { class: 'lbl' }, el('span', { class: 'cnt', text: cnt ? String(cnt) + ' ' : '' }), label)));
   }
 }
+
+/* Installed PWA (iOS/Android "standalone"): a target=_blank link would open Safari and leave the app, so terminal
+   pages navigate in place; the terminal's "‹ board" link comes back. Other origins (code-server, GitHub) still open
+   outside, as they must. */
+function isStandalone() { return window.navigator.standalone === true || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches); }
+function openPage(url) {
+  if (isStandalone() && url.startsWith('/')) location.assign(url);
+  else window.open(url, '_blank', 'noopener');
+}
+document.addEventListener('click', (e) => {
+  const a = e.target.closest && e.target.closest('a[target=_blank]');
+  if (!a || !isStandalone()) return;
+  const href = a.getAttribute('href') || '';
+  if (href.startsWith('/term/') || href.startsWith('/tty/')) { e.preventDefault(); location.assign(href); }
+});
 
 function refreshNow() {
   if (Date.now() - (ui.lastPollAt || 0) < 500) return;   // several lifecycle events fire together

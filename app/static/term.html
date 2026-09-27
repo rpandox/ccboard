@@ -4,18 +4,22 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <title>ccboard terminal</title>
-<meta name="theme-color" content="#0f1115">
+<meta name="theme-color" content="#252a31">
 <link rel="manifest" href="/static/manifest.webmanifest">
 <link rel="icon" href="/static/icon-192.png" type="image/png">
 <link rel="apple-touch-icon" href="/static/icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ccboard">
+<link rel="stylesheet" href="/static/vendor/blueprint/blueprint.css">
+<link rel="stylesheet" href="/static/vendor/blueprint/blueprint-icons.css">
 <link rel="stylesheet" href="/static/style.css">
 <link rel="stylesheet" href="/static/term.css">
 </head>
-<body class="term">
+<body class="term bp5-dark">
 <div id="termbar">
-  <a class="btn" href="/" id="back">‹ board</a>
+  <a class="bp5-button bp5-minimal" href="/" id="back"><span class="bp5-icon bp5-icon-chevron-left"></span><span class="bp5-button-text">board</span></a>
   <span id="termname" class="name"></span>
   <span id="termstate" class="dim"></span>
   <span id="termmsg" class="dim"></span>
@@ -23,22 +27,22 @@
 <iframe id="tty" title="terminal" allow="clipboard-write"></iframe>
 <div id="keys">
   <div class="row keys">
-    <button data-key="Escape">Esc</button>
-    <button data-key="C-c">Ctrl-C</button>
-    <button data-key="Tab">Tab</button>
-    <button data-key="Up">↑</button>
-    <button data-key="Down">↓</button>
-    <button data-key="Left">←</button>
-    <button data-key="Right">→</button>
-    <button data-key="BSpace">⌫</button>
-    <button data-text="y" data-enter="1">y ⏎</button>
-    <button data-key="Enter">Enter</button>
+    <button class="bp5-button" data-key="Escape">Esc</button>
+    <button class="bp5-button" data-key="C-c">Ctrl-C</button>
+    <button class="bp5-button" data-key="Tab">Tab</button>
+    <button class="bp5-button" data-key="Up">↑</button>
+    <button class="bp5-button" data-key="Down">↓</button>
+    <button class="bp5-button" data-key="Left">←</button>
+    <button class="bp5-button" data-key="Right">→</button>
+    <button class="bp5-button" data-key="BSpace">⌫</button>
+    <button class="bp5-button" data-text="y" data-enter="1">y ⏎</button>
+    <button class="bp5-button" data-key="Enter">Enter</button>
   </div>
   <div class="row quick" id="quick"></div>
   <form class="row send" id="sendform">
-    <input id="sendtext" type="text" placeholder="type here and send (Enter)" autocomplete="off" autocapitalize="off" spellcheck="false">
-    <button class="primary" type="submit">Send</button>
-    <button type="button" id="editquick" title="edit quick replies">✎</button>
+    <input id="sendtext" class="bp5-input" type="text" placeholder="type here and send (Enter)" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button class="bp5-button bp5-intent-primary" type="submit">Send</button>
+    <button class="bp5-button" type="button" id="editquick" title="edit quick replies"><span class="bp5-icon bp5-icon-edit"></span></button>
   </form>
 </div>
 <script src="/static/term.js"></script>

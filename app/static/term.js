@@ -41,9 +41,11 @@ async function refreshState() {
   try {
     const st = await api('GET', '/api/state');
     let found = null;
-    for (const p of st.projects) for (const r of p.repos) for (const s of r.sessions) if (s.tmux === name) found = s;
+    for (const p of st.projects) for (const r of (p.root ? [p.root, ...p.repos] : p.repos)) for (const s of r.sessions) if (s.tmux === name) found = s;
     const el = $('#termstate');
-    if (!found) { el.textContent = 'session not found'; return; }
+    const INTENT = { working: 'bp5-intent-primary', waiting: 'bp5-intent-warning', done: 'bp5-intent-success', errored: 'bp5-intent-danger' };
+    if (!found) { el.className = 'state bp5-tag bp5-minimal bp5-round'; el.textContent = 'session not found'; return; }
+    el.className = 'state bp5-tag bp5-minimal bp5-round ' + (INTENT[found.state] || '');
     el.textContent = `${found.state}${found.stats && typeof found.stats.context_pct === 'number' ? ' · ctx ' + Math.round(found.stats.context_pct) + '%' : ''}`;
     document.title = `${name} · ccboard`;
   } catch (_) { /* keep the last text */ }
