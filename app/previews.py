@@ -13,6 +13,7 @@ from .config import settings
 
 log = logging.getLogger("ccboard.previews")
 SS_RE = re.compile(r"pid=(\d+)")
+TAILSCALE_SOCK = Path("/var/run/tailscale/tailscaled.sock")   # mounted into the container by compose
 
 
 class PreviewError(Exception):
@@ -86,20 +87,36 @@ def public_host() -> str:
 
 
 def serve_cmd(*args: str) -> list[str]:
-    """tailscale as the operator if allowed, else through the sudoers rule installed by install.sh."""
+    """tailscale as the operator if allowed (always so in the container), else through the sudoers rule installed by install.sh."""
     exe = shutil.which("tailscale") or "/usr/bin/tailscale"
     return [exe, "serve", *args]
 
 
+def _denied(cp: subprocess.CompletedProcess) -> bool:
+    text = (cp.stderr + cp.stdout).lower()
+    return "denied" in text or "permission" in text or "operator" in text
+
+
+def _operator_hint() -> str:
+    # In the container the uid-1000 user is named differently than on the box; the host home is mounted at its own path.
+    user = Path.home().name or "<user>"
+    return f"tailscale serve failed; on the box run: sudo tailscale set --operator={user}"
+
+
 def _run_serve(args: list[str]) -> None:
     cmd = serve_cmd(*args)
+    docker = settings.runtime == "docker"
+    if docker and not TAILSCALE_SOCK.exists():
+        raise PreviewError(f"tailscaled socket {TAILSCALE_SOCK} is not mounted; is tailscale running on the box?")
     try:
         cp = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        if cp.returncode != 0 and "denied" in (cp.stderr + cp.stdout).lower():
+        if cp.returncode != 0 and not docker and "denied" in (cp.stderr + cp.stdout).lower():
             cp = subprocess.run(["sudo", "-n", *cmd], capture_output=True, text=True, timeout=60)
     except (subprocess.TimeoutExpired, OSError) as e:
         raise PreviewError(f"tailscale serve failed: {e.__class__.__name__}")
     if cp.returncode != 0:
+        if docker and _denied(cp):      # no sudo inside the container: the operator flag, set once on the box, is the way
+            raise PreviewError(_operator_hint())
         raise PreviewError((cp.stderr or cp.stdout).strip()[-300:] or "tailscale serve failed")
 
 

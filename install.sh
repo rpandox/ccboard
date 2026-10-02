@@ -4,12 +4,14 @@
 #
 #   CCBOARD_HTTPS_PORT=8443 CODE_HTTPS_PORT=10000 CODE_SERVER_PORT=8081 ./install.sh
 #
+# CCBOARD_RUNTIME=docker runs the board as a container (ghcr.io/rpandox/ccboard) instead of ccboard.service; see the README.
+#
 # Every setting is an environment variable; previous values are kept in /etc/ccboard/env.
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE=/etc/ccboard/env
-ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT PREVIEW_HTTPS_BASE CCBOARD_NODE_NAME CCBOARD_HUB_TOKEN CCBOARD_NODES CCBOARD_RESTIC_REPO CCBOARD_RESTIC_PASSWORD_FILE CCBOARD_BACKUP_PUSH CCBOARD_BACKUP_ONCALENDAR CCBOARD_BACKUP_EXTRA)
+ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT PREVIEW_HTTPS_BASE CCBOARD_NODE_NAME CCBOARD_HUB_TOKEN CCBOARD_NODES CCBOARD_RESTIC_REPO CCBOARD_RESTIC_PASSWORD_FILE CCBOARD_BACKUP_PUSH CCBOARD_BACKUP_ONCALENDAR CCBOARD_BACKUP_EXTRA CCBOARD_RUNTIME)
 TTYD_VERSION=1.7.7
 TTYD_SHA_amd64=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
 TTYD_SHA_arm64=b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165
@@ -85,6 +87,7 @@ if [ -z "${CCBOARD_HUB_TOKEN:-}" ]; then CCBOARD_HUB_TOKEN=$(python3 -c 'import 
 : "${CCBOARD_BACKUP_EXTRA:=}"         # colon-separated extra paths to include in the snapshot
 : "${CCBOARD_BACKUP_PUSH:=1}"
 : "${CCBOARD_BACKUP_ONCALENDAR:=*-*-* 02:30:00}"
+: "${CCBOARD_RUNTIME:=systemd}"        # systemd = the board is ccboard.service; docker = the board is a container
 systemd-analyze calendar "$CCBOARD_BACKUP_ONCALENDAR" >/dev/null 2>&1 || die "CCBOARD_BACKUP_ONCALENDAR is not a systemd calendar spec: $CCBOARD_BACKUP_ONCALENDAR"
 [[ "$PREVIEW_HTTPS_BASE" =~ ^[0-9]{1,5}$ ]] || die "PREVIEW_HTTPS_BASE must be a port number"
 [[ "$CCBOARD_APPROVE_TIMEOUT" =~ ^[0-9]{1,4}$ ]] || die "CCBOARD_APPROVE_TIMEOUT must be seconds"
@@ -97,6 +100,7 @@ done
 [ "$CCBOARD_PORT" != "$TTYD_PORT" ] && [ "$CCBOARD_PORT" != "$CODE_SERVER_PORT" ] && [ "$TTYD_PORT" != "$CODE_SERVER_PORT" ] \
   || die "CCBOARD_PORT, TTYD_PORT and CODE_SERVER_PORT must all differ"
 [[ "$PROJECTS_DIR" = /* ]] || die "PROJECTS_DIR must be an absolute path"
+case "$CCBOARD_RUNTIME" in systemd|docker) ;; *) die "CCBOARD_RUNTIME must be systemd or docker (got '$CCBOARD_RUNTIME')";; esac
 CCBOARD_ALLOWED_USERS=$(printf '%s' "$CCBOARD_ALLOWED_USERS" | tr -d '[:space:]')
 for k in PROJECTS_DIR CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_ALLOWED_USERS; do
   case "${!k}" in *[[:space:]\"\$\\]*) die "$k must not contain whitespace, quotes, \$ or backslashes (got '${!k}')";; esac
@@ -125,6 +129,187 @@ fi
 CCBOARD_PUBLIC_URL="https://$TS_FQDN:$CCBOARD_HTTPS_PORT"
 note "tailnet node $TS_FQDN, allowed users: $CCBOARD_ALLOWED_USERS"
 
+# ---------------------------------------------------------------- docker runtime (CCBOARD_RUNTIME=docker)
+# Function definitions only; nothing here runs in systemd mode. The board becomes a container (ghcr.io/rpandox/ccboard,
+# built by GitHub Actions) with your home, the tmux socket and the tailscale socket mounted. tmux, ttyd, code-server,
+# tailscale serve, ntfy and the backup timer stay on the host. docker_prepare runs before anything is touched (the image
+# is pulled first); docker_switch runs after the env file and the units are written.
+COMPOSE_DIR="$CCBOARD_DATA_DIR/compose"
+COMPOSE_FILE="$COMPOSE_DIR/docker-compose.yml"
+DOCKER_APP="$CCBOARD_DATA_DIR/app"   # bin/, scripts/ and tmux.conf the host side (ttyd, hooks, MCP) runs; the entrypoint refreshes it
+DOCKER_BIN=/usr/bin/docker
+IMAGE_TAG=latest
+dc() { docker compose -f "$COMPOSE_FILE" "$@"; }   # the .env next to the compose file supplies the variables
+
+docker_container_running() { # the board's container, not just any process on the port
+  local names; names=$(docker ps --format '{{.Names}}' 2>/dev/null || true)
+  printf '%s\n' "$names" | grep -qx ccboard
+}
+
+docker_preflight() {
+  have docker || die "docker is not installed. Install Docker Engine and the compose plugin (https://docs.docker.com/engine/install/ubuntu/), then rerun"
+  case "$(command -v docker)" in /*) DOCKER_BIN=$(command -v docker);; esac
+  docker compose version >/dev/null 2>&1 || die "the 'docker compose' plugin is missing: sudo apt-get install docker-compose-plugin (from Docker's apt repository), then rerun"
+  # id with a name reads the group database, so this also catches a user added since this shell started
+  id -nG "$USER_NAME" | tr ' ' '\n' | grep -qx docker \
+    || die "$USER_NAME is not in the docker group. Run: sudo usermod -aG docker $USER_NAME, log out and back in, then rerun"
+  docker info >/dev/null 2>&1 \
+    || die "docker is not usable from this shell. If $USER_NAME was just added to the docker group, log out and back in (or run 'newgrp docker'); otherwise start the daemon: sudo systemctl start docker"
+  case "$CCBOARD_DATA_DIR/" in "$HOME_DIR"/*) ;; *) die "docker mode mounts your home directory only: CCBOARD_DATA_DIR must be under $HOME_DIR (got $CCBOARD_DATA_DIR)";; esac
+  [ -f "$APP_DIR/deploy/docker-compose.yml" ] || die "$APP_DIR/deploy/docker-compose.yml is missing: update this checkout (git pull) or use a newer ccboard.tar.gz"
+  # A bind-mount source that does not exist is created by the docker daemon as a root-owned directory: never let that happen.
+  [ -S /var/run/tailscale/tailscaled.sock ] || die "no tailscaled socket at /var/run/tailscale/tailscaled.sock (the container mounts it for previews); is tailscaled running?"
+  [ ! -d "$HOME_DIR/.docker/config.json" ] || die "$HOME_DIR/.docker/config.json is a directory (docker created it for a missing mount source). Remove it (rmdir) and rerun"
+  if [ ! -e "$HOME_DIR/.docker/config.json" ]; then   # Watchtower mounts it read-only for registry credentials
+    mkdir -p "$HOME_DIR/.docker"; (umask 077; printf '{}\n' > "$HOME_DIR/.docker/config.json"); note "created an empty $HOME_DIR/.docker/config.json"
+  fi
+  [ "${CCBOARD_DEVCONTAINER:-0}" != 1 ] || warn "devcontainer sessions need the docker CLI and socket inside the container (not mounted); they stay a systemd-mode feature"
+  note "docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '?'), $(docker compose version --short 2>/dev/null || echo 'compose ?')"
+}
+
+docker_write_compose() { # the template is variable-driven; the .env carries this box's values
+  local want
+  mkdir -p "$COMPOSE_DIR"
+  if ! cmp -s "$APP_DIR/deploy/docker-compose.yml" "$COMPOSE_FILE"; then
+    install -m 0644 "$APP_DIR/deploy/docker-compose.yml" "$COMPOSE_FILE"; note "wrote $COMPOSE_FILE"
+  fi
+  # the shadow override (rollout step B) travels with it; compose never loads it unless named with -f
+  if [ -f "$APP_DIR/deploy/docker-compose.shadow.yml" ] && ! cmp -s "$APP_DIR/deploy/docker-compose.shadow.yml" "$COMPOSE_DIR/docker-compose.shadow.yml"; then
+    install -m 0644 "$APP_DIR/deploy/docker-compose.shadow.yml" "$COMPOSE_DIR/docker-compose.shadow.yml"
+  fi
+  # an explicit CCBOARD_IMAGE_TAG wins, then the tag already in .env (a pinned sha-<7> or vX.Y.Z survives reruns), then latest
+  IMAGE_TAG=${CCBOARD_IMAGE_TAG:-}
+  [ -n "$IMAGE_TAG" ] || IMAGE_TAG=$(sed -n 's/^CCBOARD_IMAGE_TAG=//p' "$COMPOSE_DIR/.env" 2>/dev/null | head -1 || true)
+  : "${IMAGE_TAG:=latest}"
+  [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || die "CCBOARD_IMAGE_TAG is not a valid image tag: $IMAGE_TAG"
+  want=$(printf 'CCBOARD_HOME=%s\nCCBOARD_UID=%s\nCCBOARD_GID=%s\nPROJECTS_DIR=%s\nCCBOARD_IMAGE_TAG=%s' \
+    "$HOME_DIR" "$(id -u)" "$(id -g)" "$PROJECTS_DIR" "$IMAGE_TAG")
+  if [ ! -f "$COMPOSE_DIR/.env" ] || [ "$(cat "$COMPOSE_DIR/.env")" != "$want" ]; then
+    printf '%s\n' "$want" > "$COMPOSE_DIR/.env"; note "wrote $COMPOSE_DIR/.env"
+  fi
+}
+
+docker_seed_app() { # once: ttyd and the Claude hooks need valid targets before the first container start
+  mkdir -p "$DOCKER_APP/bin" "$DOCKER_APP/scripts"
+  if [ -x "$DOCKER_APP/bin/ccboard-attach" ] && [ -f "$DOCKER_APP/scripts/claude_settings.py" ]; then
+    note "$DOCKER_APP present (the container refreshes it on every start)"
+    return 0
+  fi
+  local f
+  for f in "$APP_DIR"/bin/*; do
+    if [ -f "$f" ]; then install -m 0755 "$f" "$DOCKER_APP/bin/"; fi
+  done
+  for f in "$APP_DIR"/scripts/*; do
+    if [ -f "$f" ]; then install -m 0755 "$f" "$DOCKER_APP/scripts/"; fi
+  done
+  install -m 0644 "$APP_DIR/tmux.conf" "$DOCKER_APP/tmux.conf"
+  note "seeded $DOCKER_APP from this checkout (bin, scripts, tmux.conf)"
+}
+
+docker_pull() { # a failure here dies before any host change
+  log "docker image"
+  note "pulling ghcr.io/rpandox/ccboard:$IMAGE_TAG and the Watchtower image (can take a few minutes)"
+  dc --profile prod pull || die "docker compose pull failed; nothing running on this box was changed.
+  If the error above says denied, unauthorized or not found, the ghcr.io package is private or not built yet. Either:
+    1. make it public: GitHub -> your profile -> Packages -> ccboard -> Package settings -> Change visibility -> Public
+    2. log this box in to ghcr.io (the same login lets Watchtower pull):
+         gh auth refresh -s read:packages && gh auth token | docker login ghcr.io -u <github-user> --password-stdin
+  Otherwise check that the GitHub Actions run for the commit you installed has finished: https://github.com/rpandox/ccboard/actions"
+}
+
+# The entrypoint reads CCBOARD_REMOTE_APPROVE from /etc/ccboard/env on every start; install.sh keeps it there
+# (as a hand-added line, like AWS_* keys) so the hooks it merges match the ones merged here.
+docker_remote_approve() {
+  local line v=${CCBOARD_REMOTE_APPROVE:-} keep=()
+  for line in "${EXTRA_ENV[@]:-}"; do
+    case "$line" in
+      CCBOARD_REMOTE_APPROVE=*) [ -n "$v" ] || v=${line#*=};;
+      *) keep+=("$line");;
+    esac
+  done
+  EXTRA_ENV=("${keep[@]:-}")
+  CCBOARD_REMOTE_APPROVE=${v:-1}
+  if [ "$CCBOARD_REMOTE_APPROVE" = 0 ]; then EXTRA_ENV+=("CCBOARD_REMOTE_APPROVE=0"); fi
+}
+
+docker_prepare() {
+  log "docker runtime: preflight, compose files, image pull"
+  docker_preflight
+  docker_write_compose
+  docker_seed_app
+  docker_remote_approve
+  docker_pull
+}
+
+docker_register_mcp() { # claude-binary. Claude spawns the MCP server on the HOST, so the command must be host-valid
+  local want="$DOCKER_APP/scripts/ccboard_mcp.py" cur
+  if cur=$("$1" mcp get ccboard 2>/dev/null); then
+    if printf '%s' "$cur" | grep -qF -- "$want"; then note "present"; return 0; fi
+    note "re-pointing the 'ccboard' MCP server at $want"
+    "$1" mcp remove --scope user ccboard >/dev/null 2>&1 || warn "claude mcp remove ccboard failed"
+  fi
+  if "$1" mcp add --scope user ccboard -- /usr/bin/python3 "$want" >/dev/null 2>&1; then
+    note "registered 'ccboard' (tools: list_projects, create_task, list_tasks, get_task_status)"
+  else
+    warn "claude mcp add failed; register manually: claude mcp add --scope user ccboard -- /usr/bin/python3 $want"
+  fi
+}
+
+docker_rollback_hint() {
+  printf '\n\033[1mRollback to the systemd board\033[0m (running Claude sessions are never touched):\n'
+  printf '  docker compose -f %s --profile prod down\n' "$COMPOSE_FILE"
+  printf '  CCBOARD_RUNTIME=systemd ./install.sh      # also points the ttyd and backup units, hooks and sudoers back at this checkout (the MCP registration keeps working from %s)\n' "$DOCKER_APP"
+  printf '  # without the installer (the backup unit keeps targeting the container until you rerun it):\n'
+  printf '  sudo sed -i %s %s && sudo systemctl enable --now ccboard.service\n' "'s/^CCBOARD_RUNTIME=.*/CCBOARD_RUNTIME=systemd/'" "$ENV_FILE"
+}
+
+docker_auto_rollback() { # the switch failed: bring the systemd board back so the box is never left without a board
+  warn "rolling back: stopping the container and re-enabling ccboard.service"
+  dc --profile prod down >/dev/null 2>&1 || true
+  sudo systemctl enable --now ccboard.service >/dev/null 2>&1 || warn "could not re-enable ccboard.service; run: sudo systemctl enable --now ccboard.service"
+}
+
+docker_switch() { # replaces the restart of ccboard.service: stop it, start the container, wait for /healthz
+  log "docker runtime: switching the board to the container"
+  # the container mounts this directory; if it were missing, docker would create it root-owned and tmux could not use it
+  [ -d "/tmp/tmux-$(id -u)" ] || die "/tmp/tmux-$(id -u) does not exist: ccboard-tmux.service is not running (sudo systemctl start ccboard-tmux)"
+  sudo tailscale set --operator="$USER_NAME" || die "tailscale set --operator=$USER_NAME failed (previews need it without sudo)"
+  note "tailscale operator: $USER_NAME"
+  # After a reboot /tmp/tmux-<uid> and /var/run/tailscale exist only once ccboard-tmux and tailscaled are up, and docker
+  # does not retry a container whose bind source was missing at daemon start: order the docker daemon after them.
+  sudo install -d /etc/systemd/system/docker.service.d
+  printf '[Unit]\nAfter=ccboard-tmux.service tailscaled.service\nWants=ccboard-tmux.service\n' | sudo tee /etc/systemd/system/docker.service.d/ccboard.conf >/dev/null
+  sudo systemctl daemon-reload
+  # Only now, after the pull succeeded: the unit and the container cannot both bind 127.0.0.1:$CCBOARD_PORT.
+  sudo systemctl disable --now ccboard.service >/dev/null 2>&1 || warn "could not disable ccboard.service; the container will fail to bind the port if it is still running"
+  local up_rc=0
+  if printf '%s\n' "${changed_units[@]:-}" | grep -qx ccboard.service; then
+    dc --profile prod up -d --force-recreate || up_rc=$?   # the env file or a unit changed: make the container see it
+  else
+    dc --profile prod up -d || up_rc=$?
+  fi
+  if [ "$up_rc" != 0 ]; then
+    docker_auto_rollback
+    docker_rollback_hint >&2
+    die "docker compose up failed (exit $up_rc); rolled back to ccboard.service"
+  fi
+  local i ok=0
+  for ((i = 0; i < 60; i++)); do
+    if curl -fsS "http://127.0.0.1:$CCBOARD_PORT/healthz" >/dev/null 2>&1; then ok=1; break; fi
+    sleep 1
+  done
+  if [ "$ok" != 1 ]; then
+    dc --profile prod ps 2>&1 | tail -8 || true
+    docker logs --tail 30 ccboard 2>&1 || true
+    docker_auto_rollback
+    docker_rollback_hint >&2
+    die "the ccboard container is not answering on 127.0.0.1:$CCBOARD_PORT after 60 s; rolled back to ccboard.service"
+  fi
+  note "ccboard container healthy on 127.0.0.1:$CCBOARD_PORT"
+}
+
+if [ "$CCBOARD_RUNTIME" = docker ]; then docker_prepare; fi
+
 # ---------------------------------------------------------------- apt ttyd unit (would hold 7681 as root)
 if [ -f /lib/systemd/system/ttyd.service ] || [ -f /usr/lib/systemd/system/ttyd.service ]; then
   if systemctl is-enabled --quiet ttyd.service 2>/dev/null || systemctl is-active --quiet ttyd.service 2>/dev/null; then
@@ -141,7 +326,8 @@ check_port() { # port unit
     die "choose another port (e.g. CODE_SERVER_PORT=8081) or stop that process"
   fi
 }
-check_port "$CCBOARD_PORT" ccboard.service
+if [ "$CCBOARD_RUNTIME" = docker ] && docker_container_running; then note "port $CCBOARD_PORT is held by the ccboard container"
+else check_port "$CCBOARD_PORT" ccboard.service; fi
 check_port "$TTYD_PORT" ccboard-ttyd.service
 check_port "$CODE_SERVER_PORT" "code-server@$USER_NAME.service"
 
@@ -312,7 +498,13 @@ fi
 
 # ---------------------------------------------------------------- Claude Code hooks + statusline (no sudo)
 log "Claude Code hooks"
-if [ "${CCBOARD_REMOTE_APPROVE:-1}" = 0 ]; then
+if [ "$CCBOARD_RUNTIME" = docker ]; then   # hooks, statusline and ttyd run from the data dir the container keeps current
+  if [ "$CCBOARD_REMOTE_APPROVE" = 0 ]; then
+    python3 "$APP_DIR/scripts/claude_settings.py" install --app-dir "$DOCKER_APP" --no-remote-approve
+  else
+    python3 "$APP_DIR/scripts/claude_settings.py" install --app-dir "$DOCKER_APP" --approve-timeout "${CCBOARD_APPROVE_TIMEOUT:-90}"
+  fi
+elif [ "${CCBOARD_REMOTE_APPROVE:-1}" = 0 ]; then
   python3 "$APP_DIR/scripts/claude_settings.py" install --app-dir "$APP_DIR" --no-remote-approve
 else
   python3 "$APP_DIR/scripts/claude_settings.py" install --app-dir "$APP_DIR" --approve-timeout "${CCBOARD_APPROVE_TIMEOUT:-90}"
@@ -322,7 +514,9 @@ fi
 log "MCP server registration"
 if have claude || [ -x "$HOME_DIR/.local/bin/claude" ]; then
   CLAUDE_BIN=$(command -v claude || echo "$HOME_DIR/.local/bin/claude")
-  if "$CLAUDE_BIN" mcp get ccboard >/dev/null 2>&1; then
+  if [ "$CCBOARD_RUNTIME" = docker ]; then
+    docker_register_mcp "$CLAUDE_BIN"
+  elif "$CLAUDE_BIN" mcp get ccboard >/dev/null 2>&1; then
     note "present"
   else
     "$CLAUDE_BIN" mcp add --scope user ccboard -- "$APP_DIR/.venv/bin/python" "$APP_DIR/scripts/ccboard_mcp.py" >/dev/null 2>&1 \
@@ -332,7 +526,14 @@ fi
 
 # ---------------------------------------------------------------- sudoers: let the user restart the stateless units (deploys)
 log "sudoers rule for restarts"
-if [ "${CCBOARD_PREVIEWS:-1}" = 0 ]; then
+if [ "$CCBOARD_RUNTIME" = docker ]; then
+  # the board is a container: only ttyd is restarted through systemd; previews use the tailscale operator, serve stays as a fallback
+  if [ "${CCBOARD_PREVIEWS:-1}" = 0 ]; then
+    sudoers_want=$(printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl restart ccboard-ttyd.service\n' "$USER_NAME")
+  else
+    sudoers_want=$(printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl restart ccboard-ttyd.service, /usr/bin/tailscale serve *\n' "$USER_NAME")
+  fi
+elif [ "${CCBOARD_PREVIEWS:-1}" = 0 ]; then
   sudoers_want=$(printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl restart ccboard.service, /usr/bin/systemctl restart ccboard-ttyd.service, /usr/bin/systemctl try-restart ccboard.service, /usr/bin/systemctl start --no-block ccboard-backup.service\n' "$USER_NAME")
 else
   # `tailscale serve` (tailnet-only) is allowed so the board can expose per-worktree preview ports; `tailscale funnel` is not.
@@ -359,9 +560,18 @@ fi
 # The file holds CCBOARD_HUB_TOKEN: readable by root (systemd) and your group (reruns of this script), nobody else.
 sudo chmod 0640 "$ENV_FILE"; sudo chgrp "$(id -gn)" "$ENV_FILE"
 esc() { printf '%s' "$1" | sed -e 's/[&|\\]/\\&/g'; }
+# Values that differ per runtime. The systemd-mode values are what the unit templates used to hardcode.
+if [ "$CCBOARD_RUNTIME" = docker ]; then
+  APP_BIN="$DOCKER_APP/bin"
+  BACKUP_EXEC="$DOCKER_BIN exec ccboard /opt/ccboard/.venv/bin/python -m app.backup"   # DOCKER_BIN = command -v docker (/usr/bin/docker on Ubuntu)
+else
+  APP_BIN="$APP_DIR/bin"
+  BACKUP_EXEC="$APP_DIR/.venv/bin/python -m app.backup"
+fi
 render_unit() { # name
   sed -e "s|__USER__|$(esc "$USER_NAME")|g" -e "s|__HOME__|$(esc "$HOME_DIR")|g" -e "s|__APP_DIR__|$(esc "$APP_DIR")|g" \
       -e "s|__SHELL__|$(esc "$SHELL_PATH")|g" -e "s|__TTYD_BIN__|$(esc "$TTYD_BIN")|g" \
+      -e "s|__APP_BIN__|$(esc "$APP_BIN")|g" -e "s|__BACKUP_EXEC__|$(esc "$BACKUP_EXEC")|g" \
       -e "s|__BACKUP_ONCALENDAR__|$(esc "$CCBOARD_BACKUP_ONCALENDAR")|g" "$APP_DIR/systemd/$1.in"
 }
 for u in ccboard-tmux.service ccboard-ttyd.service ccboard.service ccboard-backup.service ccboard-backup.timer; do
@@ -373,7 +583,12 @@ for u in ccboard-tmux.service ccboard-ttyd.service ccboard.service ccboard-backu
 done
 [ "$need_ttyd" = 0 ] || changed_units+=(ccboard-ttyd.service)
 sudo systemctl daemon-reload
-sudo systemctl enable --now ccboard-tmux.service ccboard-ttyd.service ccboard.service >/dev/null
+if [ "$CCBOARD_RUNTIME" = docker ]; then   # ccboard.service stays installed (rollback) but is not enabled: the container owns the port
+  sudo systemctl enable --now ccboard-tmux.service ccboard-ttyd.service >/dev/null
+else
+  sudo systemctl enable --now ccboard-tmux.service ccboard-ttyd.service ccboard.service >/dev/null
+  if [ -f /etc/systemd/system/docker.service.d/ccboard.conf ]; then sudo rm -f /etc/systemd/system/docker.service.d/ccboard.conf; sudo systemctl daemon-reload; fi
+fi
 if [ "${CCBOARD_BACKUP:-1}" = 0 ]; then
   sudo systemctl disable --now ccboard-backup.timer >/dev/null 2>&1 || true
 else
@@ -389,7 +604,11 @@ for u in ccboard-tmux.service ccboard-ttyd.service; do
     fi
   fi
 done
-sudo systemctl restart ccboard.service; restarted+=(ccboard.service)
+if [ "$CCBOARD_RUNTIME" = docker ]; then
+  docker_switch; restarted+=(ccboard-container)
+else
+  sudo systemctl restart ccboard.service; restarted+=(ccboard.service)
+fi
 
 # ---------------------------------------------------------------- tailscale serve
 log "tailscale serve"
@@ -450,7 +669,10 @@ ok=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   if curl -fsS "http://127.0.0.1:$CCBOARD_PORT/healthz" >/dev/null 2>&1; then ok=1; break; fi; sleep 1
 done
-[ "$ok" = 1 ] || { sudo systemctl status ccboard.service --no-pager 2>&1 | tail -20 || true; die "ccboard is not answering on 127.0.0.1:$CCBOARD_PORT"; }
+if [ "$ok" != 1 ]; then
+  if [ "$CCBOARD_RUNTIME" = docker ]; then docker logs --tail 30 ccboard 2>&1 || true; else sudo systemctl status ccboard.service --no-pager 2>&1 | tail -20 || true; fi
+  die "ccboard is not answering on 127.0.0.1:$CCBOARD_PORT"
+fi
 note "restarted: ${restarted[*]}"
 printf '\n\033[1;32mccboard is installed.\033[0m\n'
 printf '  Dashboard:   https://%s:%s/\n' "$TS_FQDN" "$CCBOARD_HTTPS_PORT"
@@ -460,3 +682,8 @@ printf '  Open them from another device on your tailnet (requests from this box 
 printf '  Then click "Log in" on the dashboard to sign in to Claude Code.\n'
 [ -z "$CCBOARD_NODES" ] || printf '  Fleet:       polling %s (same CCBOARD_HUB_TOKEN on every box)\n' "$CCBOARD_NODES"
 [ "${CCBOARD_BACKUP:-1}" = 0 ] || printf '  Backup:      nightly (%s) restic + git push --all; run one now: sudo systemctl start ccboard-backup; log: journalctl -u ccboard-backup\n' "$CCBOARD_BACKUP_ONCALENDAR"
+if [ "$CCBOARD_RUNTIME" = docker ]; then
+  printf '  Runtime:     container ghcr.io/rpandox/ccboard:%s; Watchtower (scope ccboard) pulls new images every 5 minutes\n' "$IMAGE_TAG"
+  printf '  Container:   docker compose -f %s --profile prod ps     logs: docker logs -f ccboard\n' "$COMPOSE_FILE"
+  docker_rollback_hint
+fi

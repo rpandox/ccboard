@@ -58,3 +58,31 @@ def test_preview_routes(client, projects_dir, fake_tmux, monkeypatch):
     client.post(f"/api/tasks/{t['id']}/archive", headers=H, json={"force": True})
     assert calls[-1] == ["--https=9100", "--yes", "off"]
     assert client.delete(f"/api/tasks/{t2['id']}/preview", headers=H).status_code == 200 and calls[-1] == ["--https=9101", "--yes", "off"]
+
+
+def test_preview_route_docker_without_operator(lite_client, projects_dir, fake_tmux, monkeypatch, tmp_path):
+    """Inside the container a denied `tailscale serve` is answered with the one-time fix and never retried through sudo."""
+    from types import SimpleNamespace
+    from app.config import settings
+    subprocess.run(["git", "-C", str(projects_dir), "init", "-q", "-b", "main", "shop/api"], check=True)
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(settings, "public_url", "https://box.ts.net:8443")
+    monkeypatch.setattr(settings, "runtime", "docker")
+    sock = tmp_path / "tailscaled.sock"
+    sock.touch()
+    monkeypatch.setattr(previews, "TAILSCALE_SOCK", sock)
+    monkeypatch.setenv("HOME", "/home/rpandox")
+    calls, real_run = [], subprocess.run
+
+    def fake_run(argv, **kw):       # previews shares the subprocess module with git: only tailscale/sudo are faked
+        if argv[0] not in ("sudo", "tailscale") and not argv[0].endswith("/tailscale"):
+            return real_run(argv, **kw)
+        calls.append(argv)
+        return SimpleNamespace(returncode=1, stdout="", stderr="Access denied: serve config denied")
+    monkeypatch.setattr(previews.subprocess, "run", fake_run)
+    monkeypatch.setattr(previews.shutil, "which", lambda x: f"/usr/bin/{x}")
+    t = lite_client.post("/api/projects/shop/repos/api/tasks", headers=H, json={"title": "ui", "prompt": "p"}).json()
+    r = lite_client.post(f"/api/tasks/{t['id']}/preview", headers=H, json={"port": 5173})
+    assert r.status_code == 422
+    assert r.json()["error"] == "tailscale serve failed; on the box run: sudo tailscale set --operator=rpandox"
+    assert len(calls) == 1 and "sudo" not in calls[0]

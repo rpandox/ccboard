@@ -295,8 +295,9 @@ def run(push: bool | None = None, restic: bool | None = None) -> dict:
 
 def start_detached() -> str:
     """Start a backup pass outside the request. Through the systemd unit when installed (its own cgroup: a ccboard
-    restart cannot kill it mid-run; log in the journal), else a detached process logging to <data dir>/backup.log."""
-    if SYSTEMD_UNIT.exists() and shutil.which("systemctl") and shutil.which("sudo"):
+    restart cannot kill it mid-run; log in the journal), else a detached process logging to <data dir>/backup.log.
+    Inside the container there is no systemd to ask: always the detached process."""
+    if settings.runtime != "docker" and SYSTEMD_UNIT.exists() and shutil.which("systemctl") and shutil.which("sudo"):
         try:
             r = subprocess.run(["sudo", "-n", "systemctl", "start", "--no-block", "ccboard-backup.service"],
                                capture_output=True, text=True, timeout=30)

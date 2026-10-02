@@ -111,6 +111,8 @@ Every setting is an environment variable. Values are remembered in `/etc/ccboard
 | `CCBOARD_BACKUP_ONCALENDAR` | `*-*-* 02:30:00` | systemd calendar spec of the backup timer (`CCBOARD_BACKUP=0` at install time leaves the timer disabled) |
 | `CCBOARD_BACKUP_EXTRA` | empty | Colon-separated extra paths to include in the restic snapshot |
 | `CCBOARD_RESTIC_PASSWORD_FILE` | `<data dir>/restic-password` | Where the restic password lives |
+| `CCBOARD_RUNTIME` | `systemd` | `systemd` runs the board as `ccboard.service`; `docker` runs it as the `ccboard` container ([below](#run-the-board-as-a-container-optional)). Remembered in `/etc/ccboard/env`; go back with `CCBOARD_RUNTIME=systemd ./install.sh` |
+| `CCBOARD_IMAGE_TAG` | `latest` | Docker mode only, install-time only (kept in the compose `.env`, not in `/etc/ccboard/env`): the `ghcr.io/rpandox/ccboard` tag to run, e.g. `sha-1a2b3c4` or `v0.5.2` to pin; Watchtower follows `latest` only |
 
 Tailnet-only `tailscale serve` accepts any HTTPS port. If a chosen port already carries something else (another serve handler or a Funnel), `install.sh` stops and tells you; pick other ports or rerun with `CCBOARD_REPLACE_SERVE=1` to replace that port's handlers. It never runs `tailscale serve reset` and never touches ports you did not name.
 
@@ -131,7 +133,88 @@ CCBOARD_HTTPS_PORT=8443 CODE_HTTPS_PORT=10000 CODE_SERVER_PORT=8081 ./install.sh
 - `tailscale serve --bg`: `/` and `/tty` on `CCBOARD_HTTPS_PORT`, `/` on `CODE_HTTPS_PORT`
 - `restic` from apt, a random restic password in `<data dir>/restic-password` (0600; **copy it somewhere safe**, without it the backups are unreadable), and `ccboard-backup.service` + `.timer`. `sudo systemctl start ccboard-backup` runs one now; `journalctl -u ccboard-backup` has the log. Remote repos need their credentials in `/etc/ccboard/env` (for example `AWS_ACCESS_KEY_ID`; lines you add there by hand survive reruns of `install.sh`) or an ssh key without passphrase for `sftp:`; both the git pushes and restic's own ssh run with `BatchMode=yes` and a connect timeout, so nothing ever prompts. "Back up now" on the board starts the same unit (`systemctl start ccboard-backup`), so a ccboard restart cannot interrupt it; a run that was killed anyway leaves a restic lock, which the next run clears with `restic unlock` before retrying
 
+- with `CCBOARD_RUNTIME=docker`: the container instead of `ccboard.service`, plus `ccboard-watchtower`, a compose file under `<data dir>/compose` and `<data dir>/app` for the scripts the host runs (see [Run the board as a container](#run-the-board-as-a-container-optional))
+
 Update: pull or extract the new version into the same directory and rerun `./install.sh`. It restarts only `ccboard` (stateless) unless something else changed. Restarting `ccboard` never touches running Claude sessions, because they live under `ccboard-tmux.service`. `install.sh` also writes `/etc/sudoers.d/ccboard`, which lets your user restart `ccboard` and `ccboard-ttyd` without a password, so code-only updates are `git pull && sudo systemctl restart ccboard` (or `scripts/deploy.sh <host>` from your machine).
+
+## Run the board as a container (optional)
+
+`CCBOARD_RUNTIME=docker ./install.sh` runs the dashboard as a Docker container instead of `ccboard.service`, so that **a `git push` to `main` is the deploy**: GitHub Actions runs the tests and builds `ghcr.io/rpandox/ccboard`, and [Watchtower](https://github.com/nicholas-fedor/watchtower) on the box pulls the new image within five minutes. systemd mode stays the default and the fallback; nothing below is needed to use ccboard.
+
+**What moves into the container.** Only the board's own process: the FastAPI app, its pollers and scheduler, the nightly backup run, and `Back up now`. It runs as your uid and gid (it refuses to run as root), on the host network and the host pid namespace, with these host paths mounted at the same location: your home (so `~/.claude`, `~/.codex`, `~/.ssh`, `~/.config/gh` and the host's `~/.local/bin/{claude,codex,ccusage}` are what it sees; the host binaries come first on `PATH`), `PROJECTS_DIR`, `/tmp/tmux-<uid>` (the tmux socket), `/var/run/tailscale` (for `tailscale serve`) and `/etc/ccboard` read-only (every setting still lives in `/etc/ccboard/env`, which the compose file passes in as the container's environment).
+
+**What stays on the host.** `ccboard-tmux.service` (the tmux server that owns every session; install.sh never restarts it, so sessions survive every switch, update and rollback), `ccboard-ttyd`, code-server, ntfy, Tailscale and its `serve` mappings (still `127.0.0.1:CCBOARD_PORT` and `/tty`), the backup timer (its unit now runs `docker exec ccboard ... python -m app.backup`), Docker, and the Claude Code / Codex logins and binaries. The scripts the host runs (Claude hooks, statusline, the ttyd attach wrapper, the MCP server) come from `$CCBOARD_DATA_DIR/app/{bin,scripts}`, which the container refreshes from the image on every start and which install.sh seeds once from the checkout; the hooks, the ttyd unit and the backup unit are pointed there.
+
+Requirements on top of the install requirements: Docker Engine with the compose plugin, and your user in the `docker` group. Run it in three steps; each can be undone, and only the last one changes the running box.
+
+### A. Build in GitHub (nothing on the box changes)
+
+Push to `main`. The `ci` workflow runs the tests and then publishes `ghcr.io/rpandox/ccboard` with the tags `latest` (main), `sha-<7 chars>` and `vX.Y.Z` (when the commit subject starts with it). Watch the run under Actions, then check that the package exists.
+
+A new GHCR package is private by default. Pick one:
+
+1. Make it public: GitHub, your profile, Packages, `ccboard`, Package settings, Change visibility, Public (the repository is already public).
+2. Keep it private and log the box in (the same login is what Watchtower uses, through `~/.docker/config.json`):
+
+   ```sh
+   gh auth refresh -s read:packages && gh auth token | docker login ghcr.io -u <github-user> --password-stdin
+   ```
+
+### B. Shadow run (no sudo, nothing else touched)
+
+Starts the image next to the live board on `127.0.0.1:8010` with its own empty data directory (`~/.local/share/ccboard-shadow`: a fresh database and its own hook token, so no scheduled job runs twice and no hook ever reaches it). `CCBOARD_SHADOW=1` makes the entrypoint skip every host change (hooks, tmux.conf, MCP registration), the projects are mounted read-only, and it has its own compose project, so `down` can never touch the real one. On the box:
+
+```sh
+cd ~/ccboard && git pull
+export CCBOARD_HOME=$HOME CCBOARD_UID=$(id -u) CCBOARD_GID=$(id -g) PROJECTS_DIR=/srv/projects
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.shadow.yml up -d ccboard
+
+curl -fs http://127.0.0.1:8010/healthz
+curl -fs -H "X-CCBoard-Token: $(cat ~/.local/share/ccboard-shadow/hook-token)" http://127.0.0.1:8010/api/state | head -c 400   # same sessions and projects as the live board
+docker exec ccboard-shadow claude auth status --json
+docker exec ccboard-shadow ccusage --version
+docker exec ccboard-shadow git -C /srv/projects/<repo> status
+tmux -L ccboard list-sessions                                                  # unchanged
+
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.shadow.yml down
+rm -r ~/.local/share/ccboard-shadow
+```
+
+### C. Switch (you run it; it needs sudo)
+
+```sh
+ssh -t ubu2 'cd ccboard && git pull && CCBOARD_RUNTIME=docker ./install.sh'
+```
+
+In this order, with nothing on the running system changed until the image is on the box:
+
+1. Checks `docker`, `docker compose` and your docker group membership, and says how to fix what is missing.
+2. Writes `~/.local/share/ccboard/compose/docker-compose.yml` (plus the shadow override beside it) and its `.env` (`CCBOARD_HOME`, `CCBOARD_UID`, `CCBOARD_GID`, `PROJECTS_DIR`, `CCBOARD_IMAGE_TAG`; a tag you pinned, for example `CCBOARD_IMAGE_TAG=sha-1a2b3c4 ./install.sh`, is kept on reruns), seeds `$CCBOARD_DATA_DIR/app` from the checkout, and runs `docker compose --profile prod pull`. If the pull fails (private package, image not built yet) it prints the two remedies from step A and stops.
+3. Does everything the systemd install does (apt, ttyd, code-server, ntfy, restic, the venv in the checkout, which the rollback uses), except that the units and the Claude hooks and MCP registration point at `$CCBOARD_DATA_DIR/app`, the backup unit becomes `docker exec`, `ccboard.service` is installed but not enabled, and the sudoers rule keeps only `systemctl restart ccboard-ttyd` and `tailscale serve *`.
+4. `sudo tailscale set --operator=<you>` (previews run `tailscale serve` without sudo), then `systemctl disable --now ccboard.service` and straight away `docker compose --profile prod up -d`, then waits up to 60 s for `/healthz`. If the board does not come up it prints the rollback and exits 1. Hook calls during the few seconds of the switch fail silently.
+
+`CCBOARD_RUNTIME=docker` is remembered in `/etc/ccboard/env`, so a plain `./install.sh` rerun stays in docker mode. Afterwards check `docker compose -f ~/.local/share/ccboard/compose/docker-compose.yml --profile prod ps`, open the board from another tailnet device, start a Claude session and see its events arrive, and compare `tmux -L ccboard list-sessions` with what it was before.
+
+**Updating.** Watchtower runs as `ccboard-watchtower` with `--interval 300 --cleanup --label-enable --scope ccboard --include-restarting`. It only touches containers labelled `com.centurylinklabs.watchtower.enable=true` **and** `com.centurylinklabs.watchtower.scope=ccboard`, which only the ccboard container carries, so the other containers on the box are never updated, restarted or removed. `scripts/deploy.sh <host>` detects docker mode on the box (a running container named `ccboard`), pushes, waits for `ghcr.io/rpandox/ccboard:sha-<7>`, pulls and recreates the container instead of waiting for Watchtower, and keeps the checkout pulled so the rollback stays current. Rerun `./install.sh` when `install.sh`, `deploy/`, the units or `tmux.conf` change. After editing `/etc/ccboard/env` by hand: `docker compose -f ~/.local/share/ccboard/compose/docker-compose.yml up -d --force-recreate ccboard` (Watchtower recreates a container from its existing configuration and would not see the edit).
+
+**Rollback.** Sessions are never affected:
+
+```sh
+docker compose -f ~/.local/share/ccboard/compose/docker-compose.yml --profile prod down
+cd ~/ccboard && CCBOARD_RUNTIME=systemd ./install.sh
+```
+
+The second command restarts `ccboard.service` and points the ttyd and backup units, the hooks and the sudoers rule (the MCP registration keeps working from `$CCBOARD_DATA_DIR/app`) back at the checkout. Without the installer: `sudo sed -i 's/^CCBOARD_RUNTIME=.*/CCBOARD_RUNTIME=systemd/' /etc/ccboard/env && sudo systemctl enable --now ccboard.service` (the backup timer keeps trying `docker exec` until you rerun install.sh). Run `down` first: the container holds the board's port, and install.sh refuses a port that something else holds.
+
+**Limitations.**
+
+- Devcontainer sessions need the docker CLI and socket inside the board's container, which are not mounted: they stay a systemd-mode feature (`CCBOARD_DEVCONTAINER=1` warns in docker mode).
+- Task previews need operator mode: inside the container there is no `sudo`, so `tailscale serve` runs through the mounted socket as the operator. install.sh sets `tailscale set --operator=<you>` in docker mode; see the security notes for what that allows. Without it the preview button reports the error.
+- If a preview button finds no listening port for a dev server, see the AppArmor note in `deploy/README.md`.
+- The image is `linux/amd64` only for now, and Claude Code and Codex are not in it: the board runs the host's binaries from `~/.local/bin`, so they update and log in on the host as before.
+- The container can read and write everything your user can (it mounts your home), exactly like the systemd unit that runs as you. Docker group membership is root-equivalent on the box.
+- `CCBOARD_DATA_DIR` must be under your home directory (the only thing besides `PROJECTS_DIR` that is mounted).
+- Under docker, `Back up now` runs a detached process inside the container (log in `<data dir>/backup.log`) rather than the systemd unit; the nightly timer still runs the unit, which `docker exec`s into the container.
 
 ## Using it
 
@@ -159,7 +242,7 @@ If the login expires or you log out, the header shows *Claude: not logged in*, t
 - `install.sh` writes `/etc/sudoers.d/ccboard` so your user can run `systemctl restart ccboard` and `ccboard-ttyd` without a password (deploys), and `gh auth setup-git` so git uses gh's token for https clones.
 - The nightly backup pushes **every local branch of every repo** under `PROJECTS_DIR` to its `origin` (`git push --all`, never forced: a branch that is behind is reported, not overwritten). If a repo has branches that must not reach GitHub, set `CCBOARD_BACKUP_PUSH=0` or keep that repo outside `PROJECTS_DIR`. The restic snapshots hold your transcripts; they are encrypted with the password file above.
 - Tasks run `git`, `gh` and `claude -p` on your behalf with your credentials: "Describe" sends the branch diff to Claude, "Create PR"/"Merge" push and merge on GitHub, and "Fix CI" pastes CI log text into a Claude session as a prompt. Web Push subscriptions are accepted only for known browser push services.
-- If the box has `tailscale set --operator=<you>` configured, every process running as you can change `tailscale serve` (including turning on Funnel). `install.sh` does not set the operator; it uses `sudo` for serve commands.
+- If the box has `tailscale set --operator=<you>` configured, every process running as you can change `tailscale serve` (including turning on Funnel). `install.sh` does not set the operator in systemd mode (it uses `sudo` for serve commands); in docker mode it does, because the container cannot use `sudo`, so the container and every other process of yours can then change `tailscale serve`. The board itself never turns Funnel on.
 - Tagged nodes and requests from the box itself carry no identity header and are rejected. That is also why fleet polling uses `CCBOARD_HUB_TOKEN` (in `/etc/ccboard/env`, mode 0640) instead of the login header: a box polling another box has no user identity. The summary a node returns is counts, health and the 5-hour usage, never prompts or transcripts. If you tag the boxes (`tailscale up --advertise-tags=tag:ccboard`), make sure your ACL still lets your own devices reach their ports and lets the boxes reach each other on `CCBOARD_HTTPS_PORT`.
 - Do not put `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` in `/etc/ccboard/env` or the tmux server's environment: they outrank the interactive login.
 
@@ -169,7 +252,8 @@ If the login expires or you log out, the header shows *Claude: not logged in*, t
 - *"ccboard-tmux is not running"* banner: `sudo systemctl start ccboard-tmux`. Never `PrivateTmp`/`ProtectHome` these units; the tmux socket is `/tmp/tmux-<uid>/ccboard`.
 - *Login link never appears*: open `/tty/?arg=_ccboard-login` and finish the login in the terminal. The pasted value must be the whole `code#state` string; codes expire quickly.
 - *Ubuntu 22.04*: tmux 3.2a lacks `allow-passthrough` (Shift+Enter / notifications inside the TUI degrade); `tmux.conf` uses `-q` so it still loads.
-- Logs: `journalctl -u ccboard -u ccboard-ttyd -u ccboard-tmux -f`.
+- Logs: `journalctl -u ccboard -u ccboard-ttyd -u ccboard-tmux -f`; in docker mode the board's log is `docker logs -f ccboard` (the startup line shows the runtime and image version) and Watchtower's is `docker logs ccboard-watchtower`.
+- *Docker mode, board not answering*: `docker compose -f ~/.local/share/ccboard/compose/docker-compose.yml --profile prod ps`, then `docker logs --tail 50 ccboard`; roll back as described in [Run the board as a container](#run-the-board-as-a-container-optional).
 
 ### Uninstall
 
@@ -180,6 +264,8 @@ sudo tailscale serve --https=443 --set-path=/tty off      # use your CCBOARD_HTT
 sudo tailscale serve --https=443 --set-path=/ off
 sudo tailscale serve --https=8443 --set-path=/ off        # use your CODE_HTTPS_PORT
 ```
+In docker mode also run `docker compose -f ~/.local/share/ccboard/compose/docker-compose.yml --profile prod down` first (and `docker image rm ghcr.io/rpandox/ccboard` if you want the image gone).
+
 Projects in `PROJECTS_DIR` and `~/.claude` are left alone.
 
 ## Deviations from the original spec (v0.1)
@@ -202,7 +288,7 @@ TMUX_TMPDIR=/tmp tmux -L ccboard -f tmux.conf start-server
 PROJECTS_DIR=$PWD/tmp-projects CCBOARD_DATA_DIR=$PWD/tmp-data CCBOARD_DEV_BYPASS_USER=dev \
   .venv/bin/uvicorn app.main:app --port 8000
 ```
-`CCBOARD_DEV_BYPASS_USER` skips the identity check for local development only; it is ignored under systemd.
+`CCBOARD_DEV_BYPASS_USER` skips the identity check for local development only; it is honoured only when the board runs directly on a host, and ignored under systemd and in the container (`CCBOARD_RUNTIME`, `INVOCATION_ID`).
 
 The frontend is plain scripts loaded in order by `app/static/index.html` (`core.js` first, `main.js` last; `term.html` loads `core.js`, `components.js`, `term.js`): no bundler. `GET /sw.js` is rendered from `app/static/sw.js` with the cache name and the precache list generated from every file under `app/static`, and `/api/state.version` is a hash of the same files, so open pages reload after a deploy. `tests/test_static.py` enforces the CSP rules (no inline styles or scripts, no external URLs, text through `textContent`); `node` is needed for the JS checks (`tests/js`).
 

@@ -100,3 +100,14 @@ def fake_tmux(monkeypatch):
     for fn in (list_sessions, has_session, new_session, send_line, kill_session, capture):
         monkeypatch.setattr(tmux, fn.__name__, fn)
     return store
+
+
+@pytest.fixture(autouse=True)
+def _fresh_claude_auth():
+    """claude_auth.status() caches by the credentials file's stat, which is (False, 0, 0) under every test's temp
+    config dir; a not-logged-in result cached by one test would otherwise leak into the next (seen on CI, where
+    no real `claude` masks it)."""
+    from app import claude_auth
+    claude_auth.invalidate()
+    yield
+    claude_auth.invalidate()

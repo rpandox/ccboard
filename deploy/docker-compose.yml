@@ -1,0 +1,109 @@
+# ccboard as a container (v0.5.1-docker). Installed on the box as ~/.local/share/ccboard/compose/docker-compose.yml
+# next to a .env holding the box's values (CCBOARD_HOME, CCBOARD_UID, CCBOARD_GID, PROJECTS_DIR, CCBOARD_IMAGE_TAG).
+#
+#   docker compose --profile prod up -d      the board and Watchtower (the 'prod' profile is what adds Watchtower)
+#   docker compose up -d ccboard             the board only
+#
+# The container is the board's process only. The tmux server that owns the sessions, ttyd, code-server, tailscale
+# and ntfy stay on the host; the container reaches them through the host network, the host pid namespace, the host
+# home (same path inside), the tmux socket directory and the tailscale socket directory.
+name: ccboard
+
+services:
+  ccboard:
+    image: ghcr.io/rpandox/ccboard:${CCBOARD_IMAGE_TAG:-latest}
+    container_name: ccboard
+    user: "${CCBOARD_UID:-1000}:${CCBOARD_GID:-1000}"
+    network_mode: host
+    pid: host
+    restart: unless-stopped
+    stop_grace_period: 15s
+    # Every setting lives in /etc/ccboard/env (written by install.sh). `docker compose up -d` reads it when it creates
+    # the container; Watchtower recreates from the existing container, so after editing the file run
+    # `docker compose up -d --force-recreate ccboard`. Not required, so `docker compose config` works on a machine
+    # without it; install.sh guarantees it on the box, and an empty allowlist denies every request (fail closed).
+    env_file:
+      - path: /etc/ccboard/env
+        required: false
+    environment:
+      CCBOARD_RUNTIME: docker
+      HOME: ${CCBOARD_HOME:-/home/rpandox}
+      TMUX_TMPDIR: /tmp
+      # The host's claude, codex and ccusage first, then the image's venv, then the system (also for `docker exec`).
+      PATH: ${CCBOARD_HOME:-/home/rpandox}/.local/bin:/opt/ccboard/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    volumes:
+      # create_host_path: false everywhere: a missing source must fail the start, never become a root-owned directory.
+      - type: bind
+        source: ${CCBOARD_HOME:-/home/rpandox}
+        target: ${CCBOARD_HOME:-/home/rpandox}
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PROJECTS_DIR:-/srv/projects}
+        target: ${PROJECTS_DIR:-/srv/projects}
+        bind:
+          create_host_path: false
+      # The host tmux server's socket (ccboard-tmux.service, TMUX_TMPDIR=/tmp, uid 1000).
+      - type: bind
+        source: /tmp/tmux-${CCBOARD_UID:-1000}
+        target: /tmp/tmux-${CCBOARD_UID:-1000}
+        bind:
+          create_host_path: false
+      # tailscaled.sock for `tailscale serve` (previews). The directory, not the socket file: a bind-mounted socket
+      # file keeps pointing at the old inode after tailscaled restarts, the directory shows the new one.
+      - type: bind
+        source: /var/run/tailscale
+        target: /var/run/tailscale
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/ccboard
+        target: /etc/ccboard
+        read_only: true
+        bind:
+          create_host_path: false
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+      com.centurylinklabs.watchtower.scope: ccboard
+    # $$ so the shell inside the container expands it from the container's own environment (env_file, or the shadow
+    # override), not compose from the host's.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://127.0.0.1:$${CCBOARD_PORT:-8000}/healthz >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  # Updates the ccboard container within minutes of a new image. Scoped by label: nine unrelated containers share the
+  # box and none of them may be touched. Only containers labelled watchtower.enable=true in scope "ccboard" are
+  # watched; Watchtower carries the scope label itself but not the enable label, so it never updates itself.
+  # --include-restarting lets a fixed image replace a crash-looping one.
+  watchtower:
+    image: nickfedor/watchtower:1
+    container_name: ccboard-watchtower
+    profiles: ["prod"]
+    restart: unless-stopped
+    # The default docker0 bridge: no extra compose network (and subnet) on a box that already runs other containers.
+    network_mode: bridge
+    command: --interval 300 --cleanup --label-enable --scope ccboard --include-restarting
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Registry login for a private package (gh auth token | docker login ghcr.io -u rpandox --password-stdin).
+      - type: bind
+        source: ${CCBOARD_HOME:-/home/rpandox}/.docker/config.json
+        target: /config.json
+        read_only: true
+        bind:
+          create_host_path: false
+    labels:
+      com.centurylinklabs.watchtower.scope: ccboard
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

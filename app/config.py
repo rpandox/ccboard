@@ -33,8 +33,17 @@ class Settings:
         data_dir = env.get("CCBOARD_DATA_DIR") or str(Path.home() / ".local" / "share" / "ccboard")
         self.data_dir = Path(data_dir)
         self.db_path = self.data_dir / "ccboard.db"
-        # The dev bypass is ignored under systemd, where INVOCATION_ID is always set.
-        self.dev_bypass_user = env.get("CCBOARD_DEV_BYPASS_USER") if not env.get("INVOCATION_ID") else None
+        # Where this process runs: 'docker' (compose sets CCBOARD_RUNTIME=docker), 'systemd' (INVOCATION_ID is always
+        # set by a unit) or 'host' (a dev shell). An unknown CCBOARD_RUNTIME is ignored, never trusted.
+        runtime = (env.get("CCBOARD_RUNTIME") or "").strip().lower()
+        if runtime not in ("docker", "systemd", "host"):
+            if runtime:
+                log.warning("ignoring unknown CCBOARD_RUNTIME=%r", runtime)
+            runtime = "systemd" if env.get("INVOCATION_ID") else "host"
+        self.runtime = runtime
+        self.image_version = (env.get("CCBOARD_IMAGE_VERSION") or "").strip()   # baked into the image by CI
+        # The dev bypass is for a dev shell only: ignored under systemd (INVOCATION_ID) and inside the container.
+        self.dev_bypass_user = env.get("CCBOARD_DEV_BYPASS_USER") if runtime == "host" and not env.get("INVOCATION_ID") else None
         self.tmux_socket = env.get("CCBOARD_TMUX_SOCKET", "ccboard")
         self.public_url = (env.get("CCBOARD_PUBLIC_URL") or "").strip()
         self.ntfy_url = (env.get("NTFY_URL") or "").strip()            # loopback, e.g. http://127.0.0.1:2586

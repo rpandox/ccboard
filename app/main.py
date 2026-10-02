@@ -83,6 +83,7 @@ async def lifespan(app: FastAPI):
         log.warning("recovery failed: %s", e)
     log.info("ccboard on %s, projects in %s, allowlist=%s", settings.loopback_url(), settings.projects_dir,
              sorted(settings.allowed_users) or ("DEV BYPASS" if settings.dev_bypass_user else "EMPTY"))
+    log.info("runtime %s, image %s", settings.runtime, settings.image_version or "-")
     yield
     poller.stop.set()
     cloner.stop.set()
@@ -267,6 +268,7 @@ def build_state(user: str) -> dict:
             _scan_cache = (time.monotonic(), st)
     st["user"] = user
     st["config"] = {"code_https_port": settings.code_https_port, "projects_dir": str(settings.projects_dir),
+                    "runtime": settings.runtime,
                     "ntfy": {"enabled": notify.enabled(), "subscribe_url": notify.subscribe_url(), "topic": settings.ntfy_topic},
                     "public_url": settings.public_url,
                     "backup": {"restic": backup.restic_enabled(), "repo": settings.restic_repo if backup.restic_enabled() else None,

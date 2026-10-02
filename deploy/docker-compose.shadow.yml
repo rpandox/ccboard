@@ -1,0 +1,32 @@
+# A side-by-side test run of the image next to the live board (rollout step B). Use it WITH the base file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.shadow.yml up -d ccboard
+#   docker compose -f docker-compose.yml -f docker-compose.shadow.yml down
+#
+# The shadow board listens on 127.0.0.1:8010 with its own data directory (fresh database, its own hook token, no
+# scheduled jobs, no Claude hook ever points at it). It does not recover sessions, does not notify, does not poll the
+# fleet, mounts the projects read-only, is never restarted, never updated by Watchtower, and the entrypoint skips every
+# host mutation (CCBOARD_SHADOW=1). Its own compose project keeps `down` from ever touching the real stack.
+name: ccboard-shadow
+
+services:
+  ccboard:
+    container_name: ccboard-shadow
+    restart: "no"
+    environment:
+      CCBOARD_PORT: ${CCBOARD_SHADOW_PORT:-8010}
+      CCBOARD_DATA_DIR: ${CCBOARD_HOME:-/home/rpandox}/.local/share/ccboard-shadow
+      CCBOARD_SHADOW: "1"
+      CCBOARD_RECOVER: "0"
+      NTFY_URL: ""
+      NTFY_PUBLIC_URL: ""
+      CCBOARD_NODES: ""
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+    volumes:
+      - type: bind
+        source: ${PROJECTS_DIR:-/srv/projects}
+        target: ${PROJECTS_DIR:-/srv/projects}
+        read_only: true
+        bind:
+          create_host_path: false
