@@ -17,16 +17,16 @@ def test_keys_and_public_format(projects_dir):
     assert push.ensure_keys() == key  # reloaded from disk
 
 
-def test_subscribe_send_and_prune(client, projects_dir, monkeypatch):
+def test_subscribe_send_and_prune(lite_client, projects_dir, monkeypatch):
     from app import main
     H = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
     good = {"endpoint": "https://fcm.googleapis.com/fcm/send/abc", "keys": {"p256dh": "p", "auth": "a"}}
     dead = {"endpoint": "https://fcm.googleapis.com/fcm/send/dead", "keys": {"p256dh": "p", "auth": "a"}}
-    assert client.post("/api/push/subscribe", headers=H, json={"subscription": {"endpoint": "https://attacker.example/x", "keys": {"p256dh": "p", "auth": "a"}}}).status_code == 400
-    assert client.post("/api/push/subscribe", headers=H, json={"subscription": {"endpoint": "http://nope"}}).status_code == 400
-    assert client.post("/api/push/subscribe", headers=H, json={"subscription": good}).json()["count"] == 1
-    assert client.post("/api/push/subscribe", headers=H, json={"subscription": dead}).json()["count"] == 2
-    assert client.get("/api/push/vapid", headers=H).json()["key"]
+    assert lite_client.post("/api/push/subscribe", headers=H, json={"subscription": {"endpoint": "https://attacker.example/x", "keys": {"p256dh": "p", "auth": "a"}}}).status_code == 400
+    assert lite_client.post("/api/push/subscribe", headers=H, json={"subscription": {"endpoint": "http://nope"}}).status_code == 400
+    assert lite_client.post("/api/push/subscribe", headers=H, json={"subscription": good}).json()["count"] == 1
+    assert lite_client.post("/api/push/subscribe", headers=H, json={"subscription": dead}).json()["count"] == 2
+    assert lite_client.get("/api/push/vapid", headers=H).json()["key"]
 
     import pywebpush
 
@@ -39,18 +39,18 @@ def test_subscribe_send_and_prune(client, projects_dir, monkeypatch):
         fake_webpush.sent.append(json.loads(data))
     fake_webpush.sent = []
     monkeypatch.setattr(pywebpush, "webpush", fake_webpush)
-    r = client.post("/api/push/test", headers=H).json()
+    r = lite_client.post("/api/push/test", headers=H).json()
     assert r["sent"] == 1 and r["subscriptions"] == 1 and fake_webpush.sent[0]["title"] == "ccboard test"
-    assert client.request("DELETE", "/api/push/subscribe", headers=H, json={"subscription": good}).json()["count"] == 0
+    assert lite_client.request("DELETE", "/api/push/subscribe", headers=H, json={"subscription": good}).json()["count"] == 0
 
 
-def test_sw_and_manifest_served(client):
+def test_sw_and_manifest_served(lite_client):
     H = {"Tailscale-User-Login": "alice@example.com"}
-    r = client.get("/sw.js", headers=H)
+    r = lite_client.get("/sw.js", headers=H)
     assert r.status_code == 200 and "javascript" in r.headers["content-type"] and "addEventListener('push'" in r.text
-    m = client.get("/static/manifest.webmanifest", headers=H)
+    m = lite_client.get("/static/manifest.webmanifest", headers=H)
     assert m.status_code == 200 and json.loads(m.text)["start_url"] == "/"
-    assert client.get("/static/icon-192.png", headers=H).headers["content-type"] == "image/png"
+    assert lite_client.get("/static/icon-192.png", headers=H).headers["content-type"] == "image/png"
 
 
 def test_endpoint_allowlist():

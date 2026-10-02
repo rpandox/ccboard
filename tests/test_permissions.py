@@ -9,13 +9,13 @@ from app.config import settings
 H = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
 
 
-def _session(client, projects_dir):
+def _session(lite_client, projects_dir):
     subprocess.run(["git", "-C", str(projects_dir), "init", "-q", "-b", "main", "shop/api"], check=True)
-    return client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "shell"}).json()["tmux"]
+    return lite_client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "shell"}).json()["tmux"]
 
 
-def _ask(client, name, tool="Bash", tool_input=None):
-    return client.post("/api/permission", headers={"X-CCBoard-Token": hooks.ensure_token(), "X-CCBoard-Session": name},
+def _ask(lite_client, name, tool="Bash", tool_input=None):
+    return lite_client.post("/api/permission", headers={"X-CCBoard-Token": hooks.ensure_token(), "X-CCBoard-Session": name},
                        content=json.dumps({"hook_event_name": "PermissionRequest", "tool_name": tool,
                                            "tool_input": tool_input or {"command": "npm test"}}))
 
@@ -26,51 +26,51 @@ def test_summarize():
     assert permissions.summarize("mcp__x__y", {"q": 1}) == 'mcp__x__y: {"q": 1}'
 
 
-def test_timeout_falls_back_to_tui(client, projects_dir, fake_tmux, monkeypatch):
+def test_timeout_falls_back_to_tui(lite_client, projects_dir, fake_tmux, monkeypatch):
     monkeypatch.setattr(settings, "approve_timeout", 1.0)
-    name = _session(client, projects_dir)
-    r = _ask(client, name).json()
+    name = _session(lite_client, projects_dir)
+    r = _ask(lite_client, name).json()
     assert r["behavior"] is None and r["reason"] == "timeout"
-    st = client.get("/api/state", headers=H).json()
+    st = lite_client.get("/api/state", headers=H).json()
     s = st["projects"][0]["repos"][0]["sessions"][0]
     assert s["state"] == "waiting" and s["last_message"] == "permission: Bash: npm test" and st["pending_permissions"] == []
 
 
-def test_attached_session_is_not_delayed(client, projects_dir, fake_tmux):
-    name = _session(client, projects_dir)
+def test_attached_session_is_not_delayed(lite_client, projects_dir, fake_tmux):
+    name = _session(lite_client, projects_dir)
     fake_tmux["sessions"][name]["attached"] = 1
     t0 = time.monotonic()
-    r = _ask(client, name).json()
+    r = _ask(lite_client, name).json()
     assert r["behavior"] is None and r["reason"] == "attached" and time.monotonic() - t0 < 2
 
 
-def test_remote_allow_and_deny(client, projects_dir, fake_tmux, monkeypatch):
+def test_remote_allow_and_deny(lite_client, projects_dir, fake_tmux, monkeypatch):
     monkeypatch.setattr(settings, "approve_timeout", 10.0)
     sent = []
     monkeypatch.setattr(permissions, "push_request", lambda pid, name, summary: sent.append((pid, name, summary)))
-    name = _session(client, projects_dir)
+    name = _session(lite_client, projects_dir)
 
     def decide_later(decision):
         for _ in range(50):
             time.sleep(0.1)
-            pend = client.get("/api/state", headers=H).json()["pending_permissions"]
+            pend = lite_client.get("/api/state", headers=H).json()["pending_permissions"]
             if pend:
-                assert client.post(f"/api/permission/{pend[0]['id']}/{decision}", headers=H).status_code == 200
-                assert client.post(f"/api/permission/{pend[0]['id']}/{decision}", headers=H).status_code == 409  # once
+                assert lite_client.post(f"/api/permission/{pend[0]['id']}/{decision}", headers=H).status_code == 200
+                assert lite_client.post(f"/api/permission/{pend[0]['id']}/{decision}", headers=H).status_code == 409  # once
                 return
         raise AssertionError("no pending permission appeared")
 
     for decision in ("allow", "deny"):
         t = threading.Thread(target=decide_later, args=(decision,))
         t.start()
-        r = _ask(client, name, tool="Edit", tool_input={"file_path": "/x.py"}).json()
+        r = _ask(lite_client, name, tool="Edit", tool_input={"file_path": "/x.py"}).json()
         t.join()
         assert r["behavior"] == decision
         if decision == "deny":
             assert r["message"] == "Denied from ccboard"
     assert sent and sent[0][1] == name and sent[0][2] == "Edit: /x.py"
-    assert client.post("/api/permission/999999/allow", headers=H).status_code == 404
-    assert client.post("/api/permission/1/maybe", headers=H).status_code == 400
+    assert lite_client.post("/api/permission/999999/allow", headers=H).status_code == 404
+    assert lite_client.post("/api/permission/1/maybe", headers=H).status_code == 400
 
 
 def test_hook_script_output_shape(tmp_path):

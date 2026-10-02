@@ -1,0 +1,226 @@
+/* ccboard core: DOM factory with the Blueprint mapping, API client, shared state, formatting, storage, PWA
+   helpers and the state poll. Definitions only: nothing here touches the DOM or starts a timer at load;
+   main.js boots the page. Classic script (no modules), loaded first by index.html and term.html. */
+'use strict';
+
+const $ = (sel) => document.querySelector(sel);
+
+/* Blueprint (vendored CSS, dark theme): the semantic classes used below are mapped to bp5-* classes here, so the
+   renderers stay readable. primary/danger -> intents, state/badge -> tags, card -> card, inputs -> bp5-input. */
+const INTENT = { primary: 'bp5-intent-primary', danger: 'bp5-intent-danger', ok: 'bp5-intent-success', bad: 'bp5-intent-danger',
+                 warn: 'bp5-intent-warning', working: 'bp5-intent-primary', waiting: 'bp5-intent-warning', done: 'bp5-intent-success',
+                 errored: 'bp5-intent-danger' };
+function blueprint(n, tag, cls) {
+  const list = cls ? cls.split(/\s+/) : [];
+  const has = (c) => list.includes(c);
+  if (tag === 'button' || (tag === 'a' && has('btn'))) {
+    n.classList.add('bp5-button');
+    for (const c of list) if (INTENT[c] && (c === 'primary' || c === 'danger')) n.classList.add(INTENT[c]);
+    if (has('icon') || has('minimal')) n.classList.add('bp5-minimal');
+    if (has('small')) n.classList.add('bp5-small');
+  } else if (tag === 'input') {
+    const t = n.getAttribute('type') || 'text';
+    if (t !== 'checkbox' && t !== 'radio') n.classList.add('bp5-input');
+  } else if (tag === 'textarea') {
+    n.classList.add('bp5-text-area', 'bp5-fill');
+  } else if (has('card')) {
+    n.classList.add('bp5-card', 'bp5-elevation-1');
+  } else if (has('state') || has('badge')) {
+    n.classList.add('bp5-tag', 'bp5-minimal', 'bp5-round');
+    for (const c of list) if (INTENT[c] && c !== 'primary' && c !== 'danger') n.classList.add(INTENT[c]);
+  }
+}
+function ic(name) { return el('span', { class: 'bp5-icon bp5-icon-' + name, 'aria-hidden': 'true' }); }
+
+function el(tag, attrs, ...children) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k === 'class') n.className = v;
+    else if (k === 'text') n.textContent = v;
+    else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v === true ? '' : v);
+  }
+  blueprint(n, tag, (attrs && attrs.class) || '');
+  const kids = children.flat(Infinity).filter(c => c !== null && c !== undefined && c !== false);
+  const isButton = n.classList.contains('bp5-button');
+  for (const c of kids) {
+    // Blueprint spaces a button's element children (icon + text) only when the text is an element too
+    if (typeof c === 'string') n.append(isButton && kids.length > 1 ? el('span', { class: 'bp5-button-text', text: c }) : document.createTextNode(c));
+    else n.append(c);
+  }
+  if (tag === 'label' && n.firstElementChild && n.firstElementChild.type === 'checkbox') {
+    n.classList.add('bp5-control', 'bp5-checkbox');
+    n.firstElementChild.after(el('span', { class: 'bp5-control-indicator' }));
+  }
+  return n;
+}
+
+async function api(method, path, body) {
+  const headers = { 'X-CCBoard': '1' };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const r = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  let data = null;
+  try { data = await r.json(); } catch (_) { /* not json */ }
+  if (!r.ok) throw new Error((data && data.error) || `${r.status} ${r.statusText}`);
+  return data;
+}
+
+const ui = { openForm: null, confirm: null, error: null, notice: null, modal: false, lastJson: null, inboxSel: -1, notifyPanel: false, deepLinked: false };
+let state = null;
+let pollTimer = null;
+
+function setError(msg) { ui.error = msg; renderBanner(); }
+
+function codeServerUrl(path) {
+  return `https://${location.hostname}:${state.config.code_https_port}/?folder=${encodeURIComponent(path)}`;
+}
+
+function fmtAge(epoch) {
+  if (!epoch) return '';
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - epoch));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
+}
+
+
+function fmtIn(epochSeconds) {
+  if (!epochSeconds) return '';
+  const s = Math.floor(epochSeconds - Date.now() / 1000);
+  if (s <= 0) return 'now';
+  if (s < 3600) return `${Math.ceil(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`;
+  return `${Math.floor(s / 86400)}d${Math.floor((s % 86400) / 3600)}h`;
+}
+
+function fmtTs(s) { return s ? s.replace('T', ' ').slice(0, 16) : ''; }
+
+const LAST_KEY = 'ccboard:last-state';
+
+function rememberState(json) { try { localStorage.setItem(LAST_KEY, JSON.stringify({ at: Date.now(), state: json })); } catch (_) { /* storage may be unavailable */ } }
+function recallState() { try { const v = JSON.parse(localStorage.getItem(LAST_KEY) || 'null'); return v && v.state ? v : null; } catch (_) { return null; } }
+
+function registerServiceWorker() {
+if ('serviceWorker' in navigator) {
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => { /* no SW: the board still works */ });
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    // a new worker took over after a deploy: load the new shell once (never on the very first install, and not
+    // again right after a version-change reload)
+    let justReloaded = false;
+    try { justReloaded = sessionStorage.getItem('ccboard:reloaded') === '1'; sessionStorage.removeItem('ccboard:reloaded'); } catch (_) { /* ignore */ }
+    if (hadController && !reloaded && !justReloaded) { reloaded = true; location.reload(); }
+  });
+}
+}
+
+function b64ToBytes(s) {
+  const pad = '='.repeat((4 - s.length % 4) % 4);
+  const raw = atob((s + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(raw, ch => ch.charCodeAt(0));
+}
+
+async function pushSubscription() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null;
+  const reg = await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+
+async function enablePush() {
+  if (!('PushManager' in window)) { setError('Web Push is not available in this browser (on iOS, add the board to the Home Screen first).'); return; }
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') { setError('Notifications were not allowed.'); return; }
+  const { key } = await api('GET', '/api/push/vapid');
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
+  await api('POST', '/api/push/subscribe', { subscription: sub.toJSON() });
+  setError(null); renderNotifyPanel();
+}
+
+async function disablePush() {
+  const sub = await pushSubscription();
+  if (sub) { await api('DELETE', '/api/push/subscribe', { subscription: sub.toJSON() }); await sub.unsubscribe(); }
+  renderNotifyPanel();
+}
+
+function loadPrefs(key) { try { return JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch (_) { return {}; } }
+function savePrefs(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } catch (_) { /* storage may be unavailable */ } }
+
+/* Lazy vendored assets (diff2html today, uPlot later): one <link>/<script> injection per file, memoised. */
+const assetLoading = {};
+function loadAsset(path) {
+  if (assetLoading[path]) return assetLoading[path];
+  assetLoading[path] = new Promise((resolve, reject) => {
+    if (path.endsWith('.css')) { const css = el('link', { rel: 'stylesheet', href: path }); css.onload = () => resolve(); css.onerror = () => reject(new Error('could not load ' + path)); document.head.append(css); return; }
+    const s = el('script', { src: path }); s.onload = () => resolve(); s.onerror = () => reject(new Error('could not load ' + path)); document.head.append(s);
+  });
+  return assetLoading[path];
+}
+function loadDiff2Html() {
+  if (window.Diff2HtmlUI) return Promise.resolve();
+  return Promise.all([loadAsset('/static/vendor/diff2html.min.css'), loadAsset('/static/vendor/diff2html-ui-base.min.js')]).then(() => undefined);
+}
+
+/* Installed PWA (iOS/Android "standalone"): a target=_blank link would open Safari and leave the app, so terminal
+   pages navigate in place; the terminal's "‹ board" link comes back. Other origins (code-server, GitHub) still open
+   outside, as they must. */
+function isStandalone() { return window.navigator.standalone === true || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches); }
+function openPage(url) {
+  if (isStandalone() && url.startsWith('/')) location.assign(url);
+  else window.open(url, '_blank', 'noopener');
+}
+
+function installLifecycleListeners() {
+document.addEventListener('click', (e) => {
+  const a = e.target.closest && e.target.closest('a[target=_blank]');
+  if (!a || !isStandalone()) return;
+  const href = a.getAttribute('href') || '';
+  if (href.startsWith('/term/') || href.startsWith('/tty/')) { e.preventDefault(); location.assign(href); }
+});
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshNow(); });
+window.addEventListener('pageshow', (e) => { if (e.persisted) refreshNow(); });
+window.addEventListener('focus', () => refreshNow());
+window.addEventListener('online', () => refreshNow());
+}
+
+function refreshNow() {
+  if (Date.now() - (ui.lastPollAt || 0) < 500) return;   // several lifecycle events fire together
+  clearTimeout(pollTimer);
+  if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => { /* ignore */ });
+  poll(true);
+}
+
+async function poll(force) {
+  ui.lastPollAt = Date.now();
+  try {
+    const s = await api('GET', '/api/state');
+    if (s.version && ui.version && s.version !== ui.version) {
+      // the box was updated while this page stayed open (an installed PWA restored from memory never navigates)
+      try { sessionStorage.setItem('ccboard:reloaded', '1'); } catch (_) { /* ignore */ }
+      location.reload();
+      return;
+    }
+    if (s.version) ui.version = s.version;
+    const j = JSON.stringify(s);
+    const changed = j !== ui.lastJson;
+    ui.lastJson = j;
+    state = s;
+    ui.offline = false;
+    if (changed || force) render(force);
+    else { renderHeader(); renderUsage(); updateModal(); }
+    rememberState(s);
+  } catch (e) {
+    if (!state) {
+      const last = recallState();
+      if (last) { state = last.state; ui.offline = last.at; render(true); }
+      else { $('#banner').textContent = 'Cannot reach ccboard: ' + e.message; }
+    } else { ui.offline = ui.offline || Date.now(); renderBanner(); }
+  }
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(() => poll(false), ui.modal ? 2000 : 3000);
+}
+
+function startStatePolling() { return poll(true); }

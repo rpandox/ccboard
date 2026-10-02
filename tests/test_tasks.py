@@ -41,12 +41,12 @@ def test_derive_status():
     assert tasks.derive_status({**t, "archived_at": "x"}, None) == "archived"
 
 
-def test_create_and_archive_task(client, projects_dir, fake_tmux, monkeypatch):
+def test_create_and_archive_task(lite_client, projects_dir, fake_tmux, monkeypatch):
     from app.config import settings
     monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")
     git_init(projects_dir / "shop" / "api")
     git_init(projects_dir / "shop" / "web")
-    r = client.post("/api/projects/shop/repos/api/tasks", headers=H,
+    r = lite_client.post("/api/projects/shop/repos/api/tasks", headers=H,
                     json={"title": "Add login page", "prompt": "Add a login page with tests.", "add_dirs": ["shop/web"]})
     assert r.status_code == 201, r.text
     t = r.json()
@@ -57,16 +57,16 @@ def test_create_and_archive_task(client, projects_dir, fake_tmux, monkeypatch):
     assert argv[0] == "claude" and argv[-1] == "Add a login page with tests." and argv[-5:-1] == ["--worktree", "add-login-page", "--session-id", t["claude_session_id"]] if "claude_session_id" in t else True
     assert "--add-dir" in argv and argv.index("--add-dir") < argv.index("--worktree")      # variadic flags come before the prompt's neighbours
     assert (projects_dir / "shop" / "api" / ".git" / "info" / "exclude").read_text().strip().endswith(".claude/worktrees/")
-    st = client.get("/api/state", headers=H).json()
+    st = lite_client.get("/api/state", headers=H).json()
     assert st["tasks"][0]["column"] == "in_progress" and st["tasks"][0]["session"]["state"] == "unknown"
     # same title again -> unique slug
-    r2 = client.post("/api/projects/shop/repos/api/tasks", headers=H, json={"title": "Add login page", "prompt": "again"}).json()
+    r2 = lite_client.post("/api/projects/shop/repos/api/tasks", headers=H, json={"title": "Add login page", "prompt": "again"}).json()
     assert r2["slug"] == "add-login-page-2"
     # validation
-    assert client.post("/api/projects/shop/repos/api/tasks", headers=H, json={"title": " ", "prompt": "x"}).status_code == 400
-    assert client.post("/api/projects/shop/repos/nope/tasks", headers=H, json={"title": "a", "prompt": "x"}).status_code == 404
+    assert lite_client.post("/api/projects/shop/repos/api/tasks", headers=H, json={"title": " ", "prompt": "x"}).status_code == 400
+    assert lite_client.post("/api/projects/shop/repos/nope/tasks", headers=H, json={"title": "a", "prompt": "x"}).status_code == 404
     # archive: no worktree exists (fake claude never made one) -> prune path, session killed, row archived
-    a = client.post(f"/api/tasks/{t['id']}/archive", headers=H, json={"force": False}).json()
+    a = lite_client.post(f"/api/tasks/{t['id']}/archive", headers=H, json={"force": False}).json()
     assert a["archived"] == t["id"] and t["tmux"] not in fake_tmux["sessions"]
-    assert all(x["id"] != t["id"] for x in client.get("/api/state", headers=H).json()["tasks"])
-    assert client.post("/api/tasks/999/archive", headers=H, json={}).status_code == 404
+    assert all(x["id"] != t["id"] for x in lite_client.get("/api/state", headers=H).json()["tasks"])
+    assert lite_client.post("/api/tasks/999/archive", headers=H, json={}).status_code == 404

@@ -15,12 +15,12 @@ def test_parse_blocks():
     assert usage.parse_blocks("garbage")["error"]
 
 
-def test_state_exposes_block_and_clear(client, fake_tmux):
+def test_state_exposes_block_and_clear(lite_client, fake_tmux):
     from app import main
     H = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
     main.db.kv_set(usage.KV_BLOCK, usage.parse_blocks(json.dumps(SAMPLE)))
     main.db.kv_set("rate_limited", {"session": "a--b--c", "message": "limit hit"})
-    st = client.get("/api/state", headers=H).json()
+    st = lite_client.get("/api/state", headers=H).json()
     assert st["block"]["value"]["burn_cost_per_hour"] == 30.98 and st["rate_limited"]["value"]["session"] == "a--b--c"
-    assert client.post("/api/usage/rate-limit/clear", headers=H).status_code == 200
-    assert client.get("/api/state", headers=H).json()["rate_limited"] is None
+    assert lite_client.post("/api/usage/rate-limit/clear", headers=H).status_code == 200
+    assert lite_client.get("/api/state", headers=H).json()["rate_limited"] is None

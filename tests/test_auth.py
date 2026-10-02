@@ -44,14 +44,14 @@ def test_csrf():
     assert csrf_ok("POST", {"x-ccboard": "1"})
 
 
-def test_http_layer(client):
-    assert client.get("/healthz").text == "ok"
-    assert client.get("/").status_code == 403
-    assert client.get("/static/app.js").status_code == 403
-    assert client.get("/docs").status_code == 403
+def test_http_layer(lite_client):
+    assert lite_client.get("/healthz").text == "ok"
+    assert lite_client.get("/").status_code == 403
+    assert lite_client.get("/static/core.js").status_code == 403
+    assert lite_client.get("/docs").status_code == 403
     h = {"Tailscale-User-Login": "alice@example.com"}
-    r = client.get("/", headers=h)
+    r = lite_client.get("/", headers=h)
     assert r.status_code == 200 and "Content-Security-Policy" in r.headers
-    assert client.get("/static/app.js", headers=h).status_code == 200
-    assert client.post("/api/projects", headers=h, json={"name": "x"}).status_code == 403  # no X-CCBoard
-    assert client.get("/", headers={"Tailscale-User-Login": "mallory@example.com"}).status_code == 403
+    assert lite_client.get("/static/core.js", headers=h).status_code == 200
+    assert lite_client.post("/api/projects", headers=h, json={"name": "x"}).status_code == 403  # no X-CCBoard
+    assert lite_client.get("/", headers={"Tailscale-User-Login": "mallory@example.com"}).status_code == 403

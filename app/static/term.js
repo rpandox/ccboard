@@ -1,16 +1,9 @@
-/* ccboard mobile terminal: ttyd in an iframe + a key toolbar and quick replies via tmux send-keys. */
+/* ccboard mobile terminal: ttyd in an iframe + a key toolbar and quick replies via tmux send-keys.
+   Loaded after core.js and components.js, which provide $, el() and api(). */
 'use strict';
 const name = decodeURIComponent(location.pathname.replace(/^\/term\//, '').replace(/\/$/, ''));
-const $ = (s) => document.querySelector(s);
 const QUICK_KEY = 'ccboard:quick:' + name;
 const DEFAULT_QUICK = ['y', 'yes', 'continue', 'n', 'run the tests', '/compact'];
-
-async function api(method, path, body) {
-  const r = await fetch(path, { method, headers: { 'X-CCBoard': '1', ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
-  let data = null; try { data = await r.json(); } catch (_) { /* no body */ }
-  if (!r.ok) throw new Error((data && data.error) || `${r.status}`);
-  return data;
-}
 
 function flash(msg) { const m = $('#termmsg'); m.textContent = msg; setTimeout(() => { if (m.textContent === msg) m.textContent = ''; }, 2500); }
 
@@ -23,9 +16,7 @@ function saveQuick(list) { try { localStorage.setItem(QUICK_KEY, JSON.stringify(
 function renderQuick() {
   const q = $('#quick'); q.textContent = '';
   for (const t of loadQuick()) {
-    const b = Object.assign(document.createElement('button'), { className: 'bp5-button' }); b.type = 'button'; b.textContent = t;
-    b.addEventListener('click', () => sendText(t, true));
-    q.append(b);
+    q.append(el('button', { type: 'button', text: t, onclick: () => sendText(t, true) }));
   }
 }
 
@@ -42,11 +33,10 @@ async function refreshState() {
     const st = await api('GET', '/api/state');
     let found = null;
     for (const p of st.projects) for (const r of (p.root ? [p.root, ...p.repos] : p.repos)) for (const s of r.sessions) if (s.tmux === name) found = s;
-    const el = $('#termstate');
-    const INTENT = { working: 'bp5-intent-primary', waiting: 'bp5-intent-warning', done: 'bp5-intent-success', errored: 'bp5-intent-danger' };
-    if (!found) { el.className = 'state bp5-tag bp5-minimal bp5-round'; el.textContent = 'session not found'; return; }
-    el.className = 'state bp5-tag bp5-minimal bp5-round ' + (INTENT[found.state] || '');
-    el.textContent = `${found.state}${found.stats && typeof found.stats.context_pct === 'number' ? ' · ctx ' + Math.round(found.stats.context_pct) + '%' : ''}`;
+    const old = $('#termstate');
+    if (!found) { old.replaceWith(el('span', { id: 'termstate', class: 'state', text: 'session not found' })); return; }
+    const ctx = found.stats && typeof found.stats.context_pct === 'number' ? ' · ctx ' + Math.round(found.stats.context_pct) + '%' : '';
+    old.replaceWith(el('span', { id: 'termstate', class: 'state ' + found.state, text: `${found.state}${ctx}` }));
     document.title = `${name} · ccboard`;
   } catch (_) { /* keep the last text */ }
 }

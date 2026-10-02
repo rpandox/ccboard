@@ -1,3 +1,4 @@
+import contextlib
 import os
 import pathlib
 import sys
@@ -23,10 +24,46 @@ def projects_dir(tmp_path, monkeypatch):
     return pdir
 
 
+@pytest.fixture(autouse=True)
+def _stub_ccusage(monkeypatch):
+    """No test shells out to ccusage: usage and cost report 'unavailable' unless a test patches them again."""
+    from app import cost, usage
+    monkeypatch.setattr(usage, "fetch_block", lambda: {"available": False})
+    monkeypatch.setattr(cost, "fetch_sessions", lambda: None)
+
+
 @pytest.fixture
 def client(projects_dir, monkeypatch):
+    """The board with its full lifespan (pollers, indexer, scheduler worker, recovery). Slow: use lite_client unless a test needs them."""
     from fastapi.testclient import TestClient
     from app import main
+    with TestClient(main.app) as c:
+        yield c
+
+
+@pytest.fixture
+def lite_client(projects_dir, monkeypatch):
+    """The board without background workers: only the lifespan's synchronous setup (settings, DB, hook token, notify DB).
+
+    The TestClient is still entered as a context manager, because permissions._waiters needs the running event loop.
+    Tests that exercise the pollers, the transcript indexer, the scheduler or startup recovery use `client` instead.
+    """
+    from fastapi.testclient import TestClient
+    from app import hooks, main, notify
+    from app.config import settings
+    from app.db import DB
+
+    @contextlib.asynccontextmanager
+    async def lite_lifespan(app):
+        settings.validate()
+        main.db = DB(settings.db_path)
+        hooks.ensure_token()
+        notify.set_db(main.db)
+        yield
+
+    monkeypatch.setattr(main.app.router, "lifespan_context", lite_lifespan)
+    monkeypatch.setattr(main, "sched", None)         # a worker left over from a full-lifespan test must not leak into this one
+    monkeypatch.setattr(main, "indexer", None)
     with TestClient(main.app) as c:
         yield c
 

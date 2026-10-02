@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -97,18 +97,59 @@ app = FastAPI(title="ccboard", lifespan=lifespan, docs_url=None, redoc_url=None,
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
+# Every file type the page or the offline shell can load. The version and the SW shell list are both generated from
+# one glob over STATIC_DIR, so adding a file anywhere under app/static can neither be missed by the cache nor
+# leave open pages on stale code.
+STATIC_EXTS = {".js", ".css", ".html", ".webmanifest", ".woff2", ".png", ".svg"}
+SHELL_EXTS = {".js", ".css", ".woff2", ".webmanifest", ".png"}   # precached; html files are navigations, svg is not used yet
+SHELL_PATH_RE = re.compile(r"^[A-Za-z0-9_./-]+$")                 # what may sit inside the single quotes of the SW template
+
+
+def static_files() -> list[Path]:
+    """Every shippable file under STATIC_DIR (vendor included), sorted by relative path; demo/ and __pycache__ are skipped."""
+    out = []
+    for p in STATIC_DIR.rglob("*"):
+        rel = p.relative_to(STATIC_DIR)
+        if p.suffix in STATIC_EXTS and "demo" not in rel.parts and "__pycache__" not in rel.parts and p.is_file():
+            out.append(p)
+    return sorted(out, key=lambda p: p.relative_to(STATIC_DIR).as_posix())
+
+
 def asset_version() -> str:
-    """Hash of the page shell; changes on every deploy that touches the UI, so open pages reload themselves."""
+    """Hash of every static file (name and bytes, vendor and the sw.js template included); changes on every deploy that touches the UI, so open pages reload themselves."""
     h = hashlib.sha256()
-    for name in ("index.html", "app.js", "style.css", "sw.js", "term.html", "term.js", "term.css"):
+    for p in static_files():
+        h.update(p.relative_to(STATIC_DIR).as_posix().encode() + b"\0")
         try:
-            h.update((STATIC_DIR / name).read_bytes())
+            h.update(p.read_bytes())
         except OSError:
-            h.update(name.encode())
+            pass
     return h.hexdigest()[:12]
 
 
+def shell_paths() -> list[str]:
+    """URLs the service worker precaches: the board page plus every static script, style, font, manifest and icon."""
+    paths = []
+    for p in static_files():
+        rel = p.relative_to(STATIC_DIR).as_posix()
+        if p.suffix not in SHELL_EXTS or rel == "sw.js":
+            continue
+        if not SHELL_PATH_RE.match(rel):
+            log.warning("static file %r has characters the service worker shell cannot carry; not precached", rel)
+            continue
+        paths.append("/static/" + rel)
+    return ["/"] + sorted(paths)
+
+
+def render_sw(version: str | None = None) -> bytes:
+    """The /sw.js body: the sw.js template with the build id and the shell list filled in."""
+    js = (STATIC_DIR / "sw.js").read_text(encoding="utf-8")
+    js = js.replace("__ASSET_VERSION__", version or asset_version())
+    return js.replace("__SHELL_JSON__", json.dumps(shell_paths(), separators=(",", ":"))).encode("utf-8")
+
+
 ASSET_VERSION = asset_version()
+SW_JS = render_sw(ASSET_VERSION)
 
 
 @app.middleware("http")
@@ -1380,7 +1421,7 @@ def term_page(name: str):
 @app.get("/sw.js")
 def service_worker():
     # Served at the root so its scope is "/" (a worker under /static/ could only control /static/).
-    return FileResponse(STATIC / "sw.js", media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+    return Response(SW_JS, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")

@@ -1,8 +1,9 @@
-/* ccboard service worker: offline shell (network-first) + Web Push. API and terminal are never cached. */
+/* ccboard service worker: offline shell (network-first) + Web Push. API and terminal are never cached.
+   This file is a template: /sw.js (app/main.py render_sw) fills in the build id and the list of static files,
+   both generated from one glob over app/static, so no file can be forgotten. */
 'use strict';
-const CACHE = 'ccboard-shell-v2';
-const SHELL = ['/', '/static/app.js', '/static/style.css', '/static/vendor/blueprint/blueprint.css', '/static/vendor/blueprint/blueprint-icons.css',
-               '/static/vendor/blueprint/blueprint-icons-16.woff2', '/static/vendor/blueprint/blueprint-icons-20.woff2', '/static/manifest.webmanifest', '/static/icon-192.png'];
+const CACHE = 'ccboard-shell-__ASSET_VERSION__';
+const SHELL = JSON.parse('__SHELL_JSON__');
 
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
@@ -18,25 +19,51 @@ self.addEventListener('activate', (event) => {
   })());
 });
 
+function offline() { return new Response('offline', { status: 503, headers: { 'Content-Type': 'text/plain' } }); }
+
+async function remember(key, res) {
+  try { const c = await caches.open(CACHE); await c.put(key, res); } catch (_) { /* partial or opaque response: not cacheable */ }
+}
+
+// Network first, the cached copy when offline. `key` is what the response is stored under (the request, or '/' for a navigation).
+async function networkFirst(req, key) {
+  try {
+    const res = await fetch(req);
+    if (res.ok) remember(key, res.clone());
+    return res;
+  } catch (_) {
+    const c = await caches.open(CACHE);
+    return (await c.match(key)) || offline();
+  }
+}
+
+// Cache first: fonts never change under the same name, so a hit never touches the network.
+async function cacheFirst(req) {
+  const c = await caches.open(CACHE);
+  const hit = await c.match(req);
+  if (hit) return hit;
+  try {
+    const res = await fetch(req);
+    if (res.ok) remember(req, res.clone());
+    return res;
+  } catch (_) {
+    return offline();
+  }
+}
+
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
-  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/tty') || url.pathname === '/healthz') return;
-  if (req.mode === 'navigate' && url.pathname !== '/') return;   // /term/... and others: network only
-  const isShell = req.mode === 'navigate' || SHELL.includes(url.pathname);
-  if (!isShell) return;
-  event.respondWith((async () => {
-    try {
-      const res = await fetch(req);
-      if (res.ok) { const c = await caches.open(CACHE); c.put(req.mode === 'navigate' ? '/' : req, res.clone()); }
-      return res;
-    } catch (_) {
-      const cached = await caches.match(req.mode === 'navigate' ? '/' : req);
-      return cached || new Response('offline', { status: 503, headers: { 'Content-Type': 'text/plain' } });
-    }
-  })());
+  const path = url.pathname;
+  if (path.startsWith('/api/') || path.startsWith('/tty') || path === '/healthz') return;
+  if (req.mode === 'navigate') {
+    if (path === '/') event.respondWith(networkFirst(req, '/'));   // /term/... and every other document: network only
+    return;
+  }
+  if (path.startsWith('/static/vendor/fonts/')) event.respondWith(cacheFirst(req));
+  else if (path.startsWith('/static/')) event.respondWith(networkFirst(req, req));
 });
 
 self.addEventListener('push', (event) => {
