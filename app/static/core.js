@@ -56,6 +56,43 @@ function el(tag, attrs, ...children) {
   return n;
 }
 
+/* Glyphs: state is never colour-only. Every state has a fixed-width glyph plus a text label (aria-label and title);
+   the agent glyph says which tool a session runs. Unknown keys fall back instead of leaking into class names. */
+const STATE_GLYPH = { working: '✽', waiting: '✻', idle: '∙', done: '✓', errored: '✕', ended: '○', unknown: '·' };
+const AGENT_GLYPH = { claude: '◆', codex: '◇', shell: '▸' };
+const GLYPH_LABEL = { working: 'working', waiting: 'needs you', idle: 'idle', done: 'done', errored: 'error', ended: 'ended', unknown: 'unknown' };
+
+function ownKey(map, key) { return Object.prototype.hasOwnProperty.call(map, key); }
+
+function stateGlyph(state) {
+  const st = ownKey(STATE_GLYPH, state) ? state : 'unknown';
+  return el('span', { class: 'glyph ' + st, role: 'img', 'aria-label': GLYPH_LABEL[st], title: GLYPH_LABEL[st], text: STATE_GLYPH[st] });
+}
+
+function agentGlyph(agent) {
+  const glyph = ownKey(AGENT_GLYPH, agent) ? AGENT_GLYPH[agent] : AGENT_GLYPH.shell;
+  const label = agent || 'shell';
+  return el('span', { class: 'glyph agent', role: 'img', 'aria-label': label, title: label, text: glyph });
+}
+
+/* svg(): el() for SVG nodes (namespaced create, setAttribute for every attribute, 'class' included). The tofu fallback
+   for the glyphs above and the base of the hand-rolled charts; nothing calls it yet. */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function svg(tag, attrs, ...children) {
+  const n = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k === 'text') n.textContent = v;
+    else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of children.flat(Infinity)) {
+    if (c === null || c === undefined || c === false) continue;
+    n.append(typeof c === 'string' ? document.createTextNode(c) : c);
+  }
+  return n;
+}
+
 async function api(method, path, body) {
   const headers = { 'X-CCBoard': '1' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';

@@ -1,0 +1,38 @@
+/* ccboard design tokens: vendored variable fonts, the palette, density and safe-area variables, and the state / agent glyph styles.
+   Loaded first (after Blueprint, before style.css) by index.html and term.html. Local /static urls only: no inline URIs, no imports, no remote hosts. */
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:100 800;font-display:swap;
+  src:url(/static/vendor/fonts/jetbrains-mono-latin-wght-normal.woff2) format("woff2-variations"),url(/static/vendor/fonts/jetbrains-mono-latin-wght-normal.woff2) format("woff2");
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;}
+@font-face{font-family:"Inter";font-style:normal;font-weight:100 900;font-display:swap;
+  src:url(/static/vendor/fonts/inter-latin-wght-normal.woff2) format("woff2-variations"),url(/static/vendor/fonts/inter-latin-wght-normal.woff2) format("woff2");
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;}
+
+:root {
+  --font-ui:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,"DejaVu Sans Mono",monospace;
+  /* the state / agent glyphs sit outside the latin range above, so they fall through to the first symbol font that has them */
+  --font-glyph:"JetBrains Mono","Apple Symbols","Segoe UI Symbol","Noto Sans Symbols 2","DejaVu Sans",sans-serif;
+
+  --bg-0:#14181c; --bg:#1c2127; --card:#252a31; --panel:#2f343c; --line:#404854; --line-soft:#2d333b;
+  --fg:#f6f7f9; --fg-2:#c5cbd3; --dim:#abb3bf; --dim-2:#738091;                 /* --dim-2 is decoration only: it is below AA on --card */
+  --sig:#4dd0e1; --acc:var(--sig);                                               /* the single accent: focus, selection, working */
+  --ok:#32a467; --warn:#ec9a3c; --bad:#e76a6e;                                   /* reserved for attention */
+  --warn-bg:rgba(236,154,60,.12); --bad-bg:rgba(231,106,110,.12);
+
+  --row-h:30px; --tap:30px;
+  --sat:env(safe-area-inset-top,0px); --sab:env(safe-area-inset-bottom,0px); --sal:env(safe-area-inset-left,0px); --sar:env(safe-area-inset-right,0px);
+}
+@media (pointer:coarse) { :root { --tap:44px; --row-h:44px; } }
+html.force-coarse { --tap:44px; --row-h:44px; }
+
+/* ---------- state and agent glyphs (core.js stateGlyph()/agentGlyph()); state is never colour-only, the label travels with it ---------- */
+.glyph { display:inline-block; width:1.25em; text-align:center; font-family:var(--font-glyph); font-variant-emoji:text; line-height:1; }
+.glyph.working { color:var(--sig); }
+.glyph.waiting { color:var(--warn); }
+.glyph.idle, .glyph.ended, .glyph.unknown { color:var(--dim-2); }
+.glyph.done { color:var(--ok); }
+.glyph.errored { color:var(--bad); }
+.glyph.agent { color:var(--fg-2); }
+@keyframes glyph-breathe { from { opacity:.55; } to { opacity:1; } }
+.glyph.working, .glyph.waiting { animation:glyph-breathe 1.6s ease-in-out infinite alternate; }
+@media (prefers-reduced-motion:reduce) { .glyph.working, .glyph.waiting { animation:none; } }

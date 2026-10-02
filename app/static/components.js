@@ -41,8 +41,13 @@ function stateBadge(s) {
   const st = s.state || 'unknown';
   if (!STATE_LABEL[st]) return null;
   const age = s.state_at ? fmtAge(Date.parse(s.state_at) / 1000) : '';
+  // beside its text label the glyph is decoration: hide it from screen readers (no double announcement) and let the
+  // badge's own title (the last hook event) show on hover
+  const glyph = stateGlyph(st);
+  glyph.setAttribute('aria-hidden', 'true');
+  glyph.removeAttribute('title');
   return el('span', { class: `state ${st}` + (s.needs_attention ? ' attn' : ''), title: s.last_event || '' },
-    STATE_LABEL[st] + (age ? ` ${age}` : ''));
+    glyph, ' ', STATE_LABEL[st] + (age ? ` ${age}` : ''));
 }
 
 function statsText(s) {
@@ -55,13 +60,25 @@ function statsText(s) {
   return parts.join(' · ');
 }
 
+// Sessions carry no agent field until the adapter phase: shell and clone launchers run a plain shell, the rest run Claude.
+function sessionAgent(s) { return s.agent || (s.launcher === 'shell' || s.launcher === 'clone' ? 'shell' : 'claude'); }
+
+function sessionMeta(s) {
+  const stats = statsText(s);
+  const parts = [s.launcher || null, stats ? el('span', { class: 'mono', text: stats }) : null, `${fmtAge(s.created)} · ${s.attached} attached`].filter(Boolean);
+  const kids = [];
+  parts.forEach((p, i) => { if (i) kids.push(' · '); kids.push(p); });
+  return el('span', { class: 'meta' }, ...kids);
+}
+
 function sessionRow(s) {
   const row = el('div', { class: 'sess' + (s.needs_attention ? ' attn' : ''), 'data-tmux': s.tmux },
     el('div', { class: 'main' },
+      agentGlyph(sessionAgent(s)),
       el('span', { class: 'name', text: s.name }),
       stateBadge(s),
-      el('span', { class: 'meta', text: [s.launcher, statsText(s), `${fmtAge(s.created)} · ${s.attached} attached`].filter(Boolean).join(' · ') }),
-      el('code', { text: s.command || '' })),
+      sessionMeta(s),
+      el('code', { class: 'mono', text: s.command || '' })),
     el('div', { class: 'actions' },
       el('a', { class: 'btn primary', href: `/term/${encodeURIComponent(s.tmux)}`, target: '_blank', rel: 'noopener', text: 'Open terminal' }),
       s.needs_attention ? el('button', { onclick: async () => { try { await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/ack`); } catch (e) { setError(e.message); } await poll(true); }, text: 'Ack' }) : null,
@@ -102,7 +119,8 @@ function taskCard(t) {
   const ciFail = t.ci && t.ci.bucket === 'fail';
   const card = el('div', { class: 'task' + (s && s.needs_attention ? ' attn' : ''), 'data-task': t.id },
     el('div', { class: 'row' }, el('span', { class: 'title', text: t.title }), s ? stateBadge(s) : el('span', { class: 'state ended', text: 'no session' }), ciBadge(t)),
-    el('div', { class: 'meta', text: `${t.project}/${t.repo} · ${t.branch}${t.pr_url ? ' · PR #' + t.pr_number : ''}${typeof t.cost_usd === 'number' ? ' · $' + t.cost_usd.toFixed(2) : ''}` }),
+    el('div', { class: 'meta' }, `${t.project}/${t.repo} · ${t.branch}${t.pr_url ? ' · PR #' + t.pr_number : ''}`,
+      typeof t.cost_usd === 'number' ? [' · ', el('span', { class: 'mono', text: '$' + t.cost_usd.toFixed(2) })] : null),
     s && s.last_message ? el('div', { class: 'last', text: s.last_message.slice(0, 160) }) : null,
     (t.overlap && t.overlap.length) ? el('div', { class: 'last bad', title: t.overlap.map(o => `${o.title}: ${o.files.join(', ')}`).join('\n'),
       text: '⚠ overlaps ' + t.overlap.map(o => `"${o.title}" (${o.files.length} file${o.files.length === 1 ? '' : 's'}: ${o.files.slice(0, 3).join(', ')}${o.files.length > 3 ? '…' : ''})`).join('; ') }) : null,

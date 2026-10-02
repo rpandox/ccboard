@@ -169,3 +169,29 @@ def test_every_app_owned_static_file_has_a_known_extension():
            if p.is_file() and not p.relative_to(STATIC_ROOT).as_posix().startswith(("vendor/", "demo/"))
            and p.suffix not in main.STATIC_EXTS and "__pycache__" not in p.parts]
     assert not bad, f"unlisted static file types: {bad}"
+
+
+FONT_PATHS = ("/static/vendor/fonts/jetbrains-mono-latin-wght-normal.woff2", "/static/vendor/fonts/inter-latin-wght-normal.woff2")
+
+
+def test_fonts_are_in_the_generated_shell(lite_client):
+    """Both vendored fonts are precached (and, being in the shell, hashed into the build id): offline the board keeps its type."""
+    from app import main
+    for path in FONT_PATHS:
+        assert path in main.shell_paths(), path
+    served = shell_in(lite_client.get("/sw.js", headers=H).text)
+    for path in FONT_PATHS:
+        assert path in served, path
+
+
+def test_manifest_is_the_dark_installable_app():
+    manifest = json.loads((STATIC_ROOT / "manifest.webmanifest").read_text())
+    assert manifest["start_url"] == "/" and manifest["id"] == "/" and manifest["scope"] == "/"
+    assert manifest["theme_color"] == "#14181c" and manifest["background_color"] == "#14181c"
+    assert manifest["display"] == "standalone"
+    shortcuts = manifest["shortcuts"]
+    assert len(shortcuts) == 3
+    assert [s["url"] for s in shortcuts] == ["/#/inbox", "/#/quad", "/#/usage"]
+    assert all(s.get("name") for s in shortcuts)
+    sizes = {i["sizes"] for i in manifest["icons"]}
+    assert {"192x192", "512x512"} <= sizes

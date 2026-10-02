@@ -1,0 +1,190 @@
+// Contract tests for the glyph helpers in app/static/core.js (stateGlyph, agentGlyph, svg) and the way components.js
+// uses them (stateBadge, sessionRow). Run in the vm harness: nodes are the harness stubs (className, attrs, children, textContent).
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { makeWorld, plain } from './harness.mjs';
+
+function coreWorld() {
+  const w = makeWorld();
+  w.load('core.js');
+  return w;
+}
+
+function componentsWorld() {
+  const w = coreWorld();
+  w.load('components.js');
+  return w;
+}
+
+/** All the text under a stub node, in document order (text nodes and 'text' attrs both end up in textContent). */
+function flatText(n) {
+  if (n.children && n.children.length) return n.children.map(flatText).join('');
+  return n.textContent || '';
+}
+
+/** Every stub element under n (depth first) whose className has the given class. */
+function withClass(n, cls, out = []) {
+  if (typeof n.className === 'string' && n.className.split(/\s+/).includes(cls)) out.push(n);
+  for (const c of n.children || []) withClass(c, cls, out);
+  return out;
+}
+
+test('STATE_GLYPH and AGENT_GLYPH carry the planned glyphs', () => {
+  const { get } = coreWorld();
+  assert.deepEqual(plain(get('STATE_GLYPH')), { working: '✽', waiting: '✻', idle: '∙', done: '✓', errored: '✕', ended: '○', unknown: '·' });
+  assert.deepEqual(plain(get('AGENT_GLYPH')), { claude: '◆', codex: '◇', shell: '▸' });
+});
+
+test('every state glyph has a distinct character and a text label', () => {
+  const { get } = coreWorld();
+  const glyphs = plain(get('STATE_GLYPH'));
+  const labels = plain(get('GLYPH_LABEL'));
+  assert.deepEqual(Object.keys(labels).sort(), Object.keys(glyphs).sort());
+  assert.equal(new Set(Object.values(glyphs)).size, Object.keys(glyphs).length);
+  assert.ok(Object.values(labels).every((l) => typeof l === 'string' && l.length > 0), 'state is never colour-only: every glyph names itself');
+  assert.equal(labels.waiting, 'needs you');
+  assert.equal(labels.errored, 'error');
+});
+
+test('stateGlyph(working): a fixed-width .glyph span with the glyph, aria-label and title', () => {
+  const { get } = coreWorld();
+  const n = get('stateGlyph')('working');
+  assert.equal(n.tagName, 'SPAN');
+  assert.ok(n.className.includes('glyph working'), n.className);
+  assert.equal(n.textContent, '✽');
+  assert.equal(n.getAttribute('aria-label'), 'working');
+  assert.equal(n.getAttribute('title'), 'working');
+  assert.equal(n.getAttribute('role'), 'img');
+});
+
+test('stateGlyph: each known state gets its own class, glyph and label', () => {
+  const { get } = coreWorld();
+  const expected = { working: ['✽', 'working'], waiting: ['✻', 'needs you'], idle: ['∙', 'idle'], done: ['✓', 'done'], errored: ['✕', 'error'], ended: ['○', 'ended'], unknown: ['·', 'unknown'] };
+  for (const [state, [glyph, label]] of Object.entries(expected)) {
+    const n = get('stateGlyph')(state);
+    assert.equal(n.className, `glyph ${state}`);
+    assert.equal(n.textContent, glyph);
+    assert.equal(n.getAttribute('aria-label'), label);
+  }
+});
+
+test('stateGlyph: an unknown state maps to "unknown" and never reaches the class list', () => {
+  const { get } = coreWorld();
+  for (const state of ['bogus', '', undefined, null, 'constructor', '__proto__', 'toString', 'working extra']) {
+    const n = get('stateGlyph')(state);
+    assert.equal(n.className, 'glyph unknown', String(state));
+    assert.equal(n.textContent, '·');
+    assert.equal(n.getAttribute('aria-label'), 'unknown');
+  }
+});
+
+test('agentGlyph: claude, codex and shell glyphs with .glyph.agent', () => {
+  const { get } = coreWorld();
+  const agentGlyph = get('agentGlyph');
+  assert.equal(agentGlyph('codex').textContent, '◇');
+  assert.equal(agentGlyph('claude').textContent, '◆');
+  assert.equal(agentGlyph('shell').textContent, '▸');
+  const n = agentGlyph('codex');
+  assert.equal(n.tagName, 'SPAN');
+  assert.equal(n.className, 'glyph agent');
+  assert.equal(n.getAttribute('aria-label'), 'codex');
+  assert.equal(n.getAttribute('title'), 'codex');
+});
+
+test('agentGlyph: a missing or unknown agent falls back to the shell glyph', () => {
+  const { get } = coreWorld();
+  const agentGlyph = get('agentGlyph');
+  assert.equal(agentGlyph(undefined).textContent, '▸');
+  assert.equal(agentGlyph(undefined).getAttribute('aria-label'), 'shell');
+  assert.equal(agentGlyph('constructor').textContent, '▸');
+  const other = agentGlyph('gemini');
+  assert.equal(other.textContent, '▸');
+  assert.equal(other.getAttribute('aria-label'), 'gemini');          // the label still names the real agent
+  assert.equal(other.className, 'glyph agent');
+});
+
+test('svg(): namespaced element, every attribute through setAttribute, text and children appended', () => {
+  const w = coreWorld();
+  const made = [];
+  const orig = w.document.createElementNS;
+  w.document.createElementNS = (ns, tag) => { made.push([ns, tag]); return orig(ns, tag); };
+  const svg = w.get('svg');
+  let clicked = 0;
+  const circle = svg('circle', { cx: 5, cy: 5, r: 4 });
+  const title = svg('title', { text: 'a chart' });
+  const root = svg('svg', { class: 'spark', viewBox: '0 0 10 10', hidden: true, skipped: null, gone: false, nothing: undefined, onclick: () => { clicked += 1; } },
+    circle, null, [title, 'label']);
+  assert.deepEqual(made, [['http://www.w3.org/2000/svg', 'circle'], ['http://www.w3.org/2000/svg', 'title'], ['http://www.w3.org/2000/svg', 'svg']]);
+  assert.equal(root.tagName, 'SVG');
+  assert.equal(root.getAttribute('class'), 'spark');                 // class goes through setAttribute (SVG className is read-only)
+  assert.equal(root.getAttribute('viewBox'), '0 0 10 10');
+  assert.equal(root.getAttribute('hidden'), '');
+  for (const k of ['skipped', 'gone', 'nothing']) assert.equal(root.getAttribute(k), null, k);
+  assert.equal(circle.getAttribute('cx'), '5');
+  assert.equal(title.textContent, 'a chart');
+  assert.equal(root.children.length, 3);
+  assert.equal(root.children[0], circle);
+  assert.equal(root.children[1], title);
+  assert.equal(root.children[2].textContent, 'label');               // strings become text nodes
+  root.dispatch('click');
+  assert.equal(clicked, 1);
+  const bare = svg('g');
+  assert.equal(bare.children.length, 0);
+});
+
+test('stateBadge: glyph, space, then the text label (and the age); unknown state renders nothing', () => {
+  const { get } = componentsWorld();
+  const stateBadge = get('stateBadge');
+  const b = stateBadge({ state: 'waiting', needs_attention: true, last_event: 'permission_prompt' });
+  assert.equal(b.className, 'state waiting attn');
+  assert.equal(b.getAttribute('title'), 'permission_prompt');
+  assert.equal(b.children.length, 3);
+  assert.equal(b.children[0].className, 'glyph waiting');
+  assert.equal(b.children[0].textContent, '✻');
+  assert.equal(b.children[0].getAttribute('aria-hidden'), 'true');   // the text label beside it is what is announced
+  assert.equal(b.children[1].textContent, ' ');
+  assert.equal(b.children[2].textContent, 'needs you');
+  assert.equal(flatText(b), '✻ needs you');
+  const aged = stateBadge({ state: 'working', state_at: new Date(Date.now() - 120000).toISOString() });
+  assert.equal(aged.className, 'state working');
+  assert.match(flatText(aged), /^✽ working 2m$/);
+  assert.equal(stateBadge({ state: 'unknown' }), null);
+  assert.equal(stateBadge({}), null);
+});
+
+function session(extra = {}) {
+  return { tmux: 'shop--api--s1', name: 's1', launcher: 'claude', command: 'claude --model opus', created: Date.now() / 1000 - 300, attached: 1,
+           state: 'idle', stats: { model: 'opus', context_pct: 12.4, cost_usd: 0.5 }, ...extra };
+}
+
+test('sessionRow: agent glyph before the name, inferred from the launcher until sessions carry an agent', () => {
+  const { get } = componentsWorld();
+  const sessionRow = get('sessionRow');
+  const lead = (s) => { const main = sessionRow(s).children[0]; return [main.children[0], main.children[1]]; };
+  const cases = [[{ launcher: 'claude' }, '◆'], [{ launcher: 'resume' }, '◆'], [{ launcher: 'continue' }, '◆'], [{ launcher: 'task' }, '◆'],
+                 [{ launcher: 'external' }, '◆'], [{ launcher: 'shell' }, '▸'], [{ launcher: 'clone' }, '▸'],
+                 [{ launcher: 'claude', agent: 'codex' }, '◇'], [{ launcher: 'shell', agent: 'claude' }, '◆']];
+  for (const [extra, glyph] of cases) {
+    const [first, second] = lead(session(extra));
+    assert.equal(first.className, 'glyph agent', JSON.stringify(extra));
+    assert.equal(first.textContent, glyph, JSON.stringify(extra));
+    assert.equal(second.className, 'name');
+    assert.equal(second.textContent, 's1');
+  }
+});
+
+test('sessionRow: meta text is unchanged, stats and the command carry the mono class', () => {
+  const { get } = componentsWorld();
+  const row = get('sessionRow')(session());
+  const main = row.children[0];
+  const meta = withClass(main, 'meta')[0];
+  assert.equal(flatText(meta), 'claude · opus · ctx 12% · $0.50 · 5m · 1 attached');
+  const mono = withClass(main, 'mono');
+  assert.deepEqual(mono.map((n) => n.tagName), ['SPAN', 'CODE']);
+  assert.equal(mono[0].textContent, 'opus · ctx 12% · $0.50');
+  assert.equal(mono[1].textContent, 'claude --model opus');
+  assert.equal(row.getAttribute('data-tmux'), 'shop--api--s1');
+  const bare = get('sessionRow')(session({ stats: null, launcher: '' }));
+  assert.equal(flatText(withClass(bare, 'meta')[0]), '5m · 1 attached');
+  assert.equal(withClass(bare, 'mono').length, 1);                    // only the <code>: no empty stats span
+});

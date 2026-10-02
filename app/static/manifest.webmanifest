@@ -2,13 +2,20 @@
   "name": "ccboard",
   "short_name": "ccboard",
   "description": "Claude Code sessions on your box",
+  "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#1c2127",
-  "theme_color": "#1c2127",
+  "orientation": "any",
+  "background_color": "#14181c",
+  "theme_color": "#14181c",
   "icons": [
     { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "Needs you", "url": "/#/inbox", "icons": [{ "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Terminals", "url": "/#/quad", "icons": [{ "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Usage", "url": "/#/usage", "icons": [{ "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png" }] }
   ]
 }

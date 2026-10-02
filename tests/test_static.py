@@ -415,3 +415,68 @@ def test_svg_files_are_inert():
                 if name in ("href", "xlink:href", "src") and not re.match(r"(#|/(?!/))", v):
                     bad.append(f"{rel(p)}:{line}: {name}=\"{v}\"")
     assert not bad, "SVG files must carry no script, style, handlers or remote references:\n" + "\n".join(bad)
+
+
+# ---------- visual system: vendored fonts, tokens.css, the skeletons' head (v0.5.2) ----------
+
+FONTS_DIR = STATIC / "vendor" / "fonts"
+FONT_FILES = ("jetbrains-mono-latin-wght-normal.woff2", "inter-latin-wght-normal.woff2")
+FONT_LICENCES = ("OFL-JetBrainsMono.txt", "OFL-Inter.txt")
+THEME_COLOR = "#14181c"
+
+
+def _tokens_css():
+    path = STATIC / "tokens.css"
+    assert path.is_file(), "app/static/tokens.css is missing (the palette, font-face and size tokens live there)"
+    return blank_css_comments(path.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("name", FONT_FILES)
+def test_vendored_font_is_a_woff2(name):
+    path = FONTS_DIR / name
+    assert path.is_file(), f"{rel(path) if path.exists() else 'app/static/vendor/fonts/' + name} is missing"
+    head = path.read_bytes()[:4]
+    assert head == b"wOF2", f"{name} is not a WOFF2 file (starts with {head!r})"
+    assert path.stat().st_size > 10_000, f"{name} is suspiciously small"
+
+
+@pytest.mark.parametrize("name", FONT_LICENCES)
+def test_font_licence_ships_next_to_the_fonts(name):
+    path = FONTS_DIR / name
+    assert path.is_file(), f"app/static/vendor/fonts/{name} is missing: the OFL requires the licence to travel with the font"
+    assert "open font license" in path.read_text(encoding="utf-8").lower(), f"{name} does not look like the SIL Open Font License"
+
+
+def test_tokens_css_references_both_fonts_through_static_urls():
+    css = _tokens_css()
+    targets = [m.group(2).strip() for m in CSS_URL.finditer(css)]
+    font_targets = [t for t in targets if t.endswith(".woff2")]
+    for name in FONT_FILES:
+        assert f"/static/vendor/fonts/{name}" in font_targets, f"tokens.css has no url(/static/vendor/fonts/{name})"
+    for t in font_targets:
+        assert t.startswith("/static/vendor/fonts/"), f"font url outside /static/vendor/fonts: {t}"
+        assert (STATIC / t[len("/static/"):]).is_file(), f"tokens.css points at a missing file: {t}"
+    assert len(re.findall(r"@font-face\b", css)) >= 2, "expected an @font-face for JetBrains Mono and one for Inter"
+
+
+def test_tokens_css_has_no_data_uris_or_remote_urls():
+    css = _tokens_css()
+    assert "data:" not in css.lower(), "tokens.css must not embed data: URIs (CSP default-src 'self')"
+    assert not re.search(r"https?:|//[A-Za-z0-9.-]+\.[a-z]{2,}", css, re.I), "tokens.css must not reference another origin"
+
+
+@pytest.mark.parametrize("page", ["index.html", "term.html"])
+def test_html_head_carries_tokens_theme_color_and_font_preloads(page):
+    tags = html_tags(STATIC / page)
+    sheets = [a["href"] for t, a, _ in tags if t == "link" and a.get("rel") == "stylesheet"]
+    assert "/static/tokens.css" in sheets and "/static/style.css" in sheets, f"{page}: tokens.css and style.css must both be linked ({sheets})"
+    assert sheets.index("/static/tokens.css") < sheets.index("/static/style.css"), f"{page}: tokens.css must come before style.css ({sheets})"
+    themes = [a.get("content", "").lower() for t, a, _ in tags if t == "meta" and a.get("name") == "theme-color"]
+    assert themes == [THEME_COLOR], f"{page}: theme-color must be {THEME_COLOR} (found {themes})"
+    preloads = {a.get("href"): a for t, a, _ in tags if t == "link" and a.get("rel") == "preload"}
+    for name in FONT_FILES:
+        href = f"/static/vendor/fonts/{name}"
+        assert href in preloads, f"{page}: missing <link rel=preload> for {href}"
+        a = preloads[href]
+        assert a.get("as") == "font" and a.get("type") == "font/woff2", f"{page}: preload for {name} needs as=font type=font/woff2"
+        assert "crossorigin" in a, f"{page}: font preload for {name} needs the crossorigin attribute (fonts are fetched in CORS mode)"

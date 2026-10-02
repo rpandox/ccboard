@@ -151,7 +151,7 @@ Requirements on top of the install requirements: Docker Engine with the compose 
 
 Push to `main`. The `ci` workflow runs the tests and then publishes `ghcr.io/rpandox/ccboard` with the tags `latest` (main), `sha-<7 chars>` and `vX.Y.Z` (when the commit subject starts with it). Watch the run under Actions, then check that the package exists.
 
-A new GHCR package is private by default. Pick one:
+If the package comes out private (an image linked to a public repository is published public, as happened here; check the package page), pick one:
 
 1. Make it public: GitHub, your profile, Packages, `ccboard`, Package settings, Change visibility, Public (the repository is already public).
 2. Keep it private and log the box in (the same login is what Watchtower uses, through `~/.docker/config.json`):

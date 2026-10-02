@@ -1,16 +1,16 @@
 html, body.term { background:var(--bg); }
 body.term { display:flex; flex-direction:column; height:100vh; height:100dvh; overflow:hidden; }
-/* the top bar owns the notch / status-bar area: it is padded by the safe-area inset and painted in the header colour */
+/* the top bar owns the notch / status-bar area: it is padded by the safe-area inset and painted in the chrome colour (--bg-0, the theme-color) */
 #termbar { display:flex; gap:8px; align-items:center; padding:calc(4px + env(safe-area-inset-top, 0px)) 8px 4px calc(4px + env(safe-area-inset-left, 0px));
-           border-bottom:1px solid var(--line); background:#252a31; font-size:13px; flex-wrap:nowrap; overflow:hidden; white-space:nowrap; min-height:44px; }
-#termbar .name { font-weight:600; overflow:hidden; text-overflow:ellipsis; }
+           border-bottom:1px solid var(--line); background:var(--bg-0); font-size:13px; flex-wrap:nowrap; overflow:hidden; white-space:nowrap; min-height:44px; }
+#termbar .name { font-family:var(--font-mono); font-weight:600; overflow:hidden; text-overflow:ellipsis; }
 #termbar #termmsg { overflow:hidden; text-overflow:ellipsis; flex:1 1 auto; }
 #termbar .state { flex:0 0 auto; }
 #tty { flex:1 1 auto; width:100%; border:0; background:#000; min-height:120px; }
-#keys { border-top:1px solid var(--line); background:#252a31; padding:6px 8px calc(6px + env(safe-area-inset-bottom, 0px)); display:flex; flex-direction:column; gap:6px; }
+#keys { border-top:1px solid var(--line); background:var(--bg-0); padding:6px 8px calc(6px + env(safe-area-inset-bottom, 0px)); display:flex; flex-direction:column; gap:6px; }
 #keys .row { display:flex; gap:6px; flex-wrap:nowrap; overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none; }
 #keys .row::-webkit-scrollbar { display:none; }
 #keys .bp5-button { flex:0 0 auto; min-width:44px; min-height:38px; font-size:14px; }
-#keys .quick .bp5-button { background:#1a2a44; }
-#keys .send input { flex:1 1 auto; min-height:38px; height:38px; font-size:16px; }
+#keys .quick .bp5-button { background:rgba(77,208,225,.1); }
+#keys .send input { flex:1 1 auto; min-height:38px; height:38px; line-height:38px; font-size:16px; }        /* 16 px keeps iOS Safari from zooming on focus */
 #keys .quick:empty { display:none; }
