@@ -1,0 +1,15 @@
+#!/bin/sh
+# Watchtower pre-update lifecycle hook, run inside the ccboard container before it is replaced (compose label
+# com.centurylinklabs.watchtower.lifecycle.pre-update). Asks the board whether now is a good time: exit 75 (EX_TEMPFAIL)
+# makes Watchtower skip this update until its next scan; anything else lets the swap go ahead. A board that does not
+# answer is a board worth replacing, so every failure here is "go".
+url="http://127.0.0.1:${CCBOARD_PORT:-8000}"
+tokfile="${CCBOARD_HOOK_TOKEN_FILE:-${CCBOARD_DATA_DIR:-$HOME/.local/share/ccboard}/hook-token}"
+tok=$(cat "$tokfile" 2>/dev/null) || exit 0
+[ -n "$tok" ] || exit 0
+out=$(curl -s -m 8 -X POST -H "X-CCBoard-Token: $tok" -H "Content-Type: application/json" --data '{}' "$url/api/deploy/gate" 2>/dev/null) || exit 0
+case "$out" in
+  *'"hold": true'*|*'"hold":true'*) echo "ccboard deploy gate: hold: $out"; exit 75 ;;
+esac
+echo "ccboard deploy gate: go: ${out:-no answer}"
+exit 0

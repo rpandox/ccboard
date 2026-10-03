@@ -32,6 +32,15 @@ function renderBanner() {
     own(el('span', { text: `Offline: showing the last known state from ${new Date(ui.offline).toLocaleTimeString()}. Retrying…` }));
   } else if (ui.error) {
     own(el('span', { text: ui.error }), el('button', { onclick: () => setError(null), text: 'dismiss' }));
+  } else if (state && state.deploy && state.deploy.pending) {
+    const d = state.deploy;
+    if (d.hold) {
+      const why = (d.reasons || []).length ? ` (${d.reasons.join(', ')})` : '';
+      own(el('span', { text: `An update is ready. It installs when the terminals are closed${why}, or in ${d.minutes_left} min at the latest.` }),
+        el('button', { class: 'primary small', onclick: async () => { try { await api('POST', '/api/deploy/now'); } catch (e) { setError(e.message); } await poll(true); }, text: d.forced ? 'installing at the next check' : 'Install now' }));
+    } else {
+      own(el('span', { text: 'Update installing: the board restarts and is back in about a minute.' }));
+    }
   } else if (state && state.last_recovery && state.last_recovery.value && (state.last_recovery.value.recovered || []).length) {
     b.classList.add('warn');
     const v = state.last_recovery.value;

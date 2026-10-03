@@ -134,4 +134,4 @@ fi
 
 # ---------------------------------------------------------------- the board
 cd "$APP_ROOT"
-exec "$APP_ROOT/.venv/bin/uvicorn" app.main:app --host 127.0.0.1 --port "$CCBOARD_PORT" --timeout-graceful-shutdown 3
+exec "$APP_ROOT/.venv/bin/uvicorn" app.main:app --host 127.0.0.1 --port "$CCBOARD_PORT" --timeout-graceful-shutdown 2

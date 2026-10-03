@@ -24,7 +24,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agents, backup, claude_auth, clonequeue, cost, doctor, github, gitops, health, hooks, notify, permissions, previews, projects, prpoll, push, recover, samples, scheduler, search, tasks, tmux, tree, usage, usage_summary
+from . import agents, backup, claude_auth, clonequeue, cost, deploy, doctor, github, gitops, health, hooks, notify, permissions, previews, projects, prpoll, push, recover, samples, scheduler, search, tasks, tmux, tree, usage, usage_summary
 from .agents import registry
 from .agents.base import LaunchReq
 from .agents.claude import BYPASS_PARTS, OVERRIDE_PARTS
@@ -100,6 +100,7 @@ async def lifespan(app: FastAPI):
     db = DB(settings.db_path)
     hooks.ensure_token()
     notify.set_db(db)
+    deploy.clear(db)                                      # a new container is up: the update that was pending has happened
     db.on_state_change = _state_sampler(db)              # state series: one sample per real transition (set_state/end/reconcile)
     try:
         push.ensure_keys()
@@ -235,7 +236,7 @@ async def auth_middleware(request: Request, call_next):
             return JSONResponse({"error": "bad hub token"}, status_code=403)
         request.state.user = "hub"
         return await call_next(request)
-    if request.url.path in ("/api/hook", "/api/permission"):
+    if request.url.path in ("/api/hook", "/api/permission", "/api/deploy/gate"):
         # Hooks run on the box itself (no Tailscale identity); they carry the local token instead.
         if request.method != "POST" or not hooks.check_token(request.headers.get(hooks.TOKEN_HEADER)):
             return JSONResponse({"error": "bad hook token"}, status_code=403)
@@ -417,6 +418,7 @@ def build_state(user: str) -> dict:
     st["runs"] = [{k: (v[:400] if k == "result" and isinstance(v, str) else v) for k, v in r.items()} for r in db.runs(30)]
     st["clone_queue"] = clonequeue.status()
     st["last_recovery"] = db.kv_get("last_recovery")
+    st["deploy"] = deploy.view(db)                        # an update waiting for the terminals to close (None when nothing is pending)
     st["usage"] = db.kv_get("rate_limits")
     st["block"] = db.kv_get(usage.KV_BLOCK)
     st["cost"] = db.kv_get(cost.KV_COST)
@@ -1663,6 +1665,30 @@ def api_notify_test():
         raise projects.BadRequest("ntfy is not configured (NTFY_URL is empty)")
     ok = notify.publish("ccboard test", "Notifications work.", click=(settings.public_url or None), tags=["tada"])
     return {"ok": ok}
+
+
+@app.post("/api/deploy/gate")
+async def api_deploy_gate(request: Request):
+    """Watchtower's pre-update hook (scripts/ccboard-deploy-gate, hook token): {hold, reasons, since, until}. hold = someone is at a
+    terminal, a permission is pending or a clone runs, for at most deploy.HOLD_MAX since the first ask and never after Install now."""
+    if not hooks.check_token(request.headers.get(hooks.TOKEN_HEADER)):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+
+    def work():
+        try:
+            viewers = tmux.viewers()
+        except tmux.TmuxError:
+            viewers = {}
+        return deploy.decide(db, viewers=viewers, pending=db.perm_pending(), clones=clonequeue.status())
+    return await asyncio.to_thread(work)
+
+
+@app.post("/api/deploy/now")
+def api_deploy_now():
+    """Install the waiting update at Watchtower's next ask (within its scan interval), whatever is open."""
+    deploy.force(db)
+    _invalidate_scan()
+    return {"ok": True, "deploy": deploy.view(db)}
 
 
 @app.post("/api/recovery/dismiss")

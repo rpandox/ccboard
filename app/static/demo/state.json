@@ -1075,6 +1075,7 @@
     "done": [],
     "cap": 3
   },
+  "deploy": null,
   "last_recovery": null,
   "usage": {
     "value": {

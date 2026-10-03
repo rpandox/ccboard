@@ -124,7 +124,7 @@ def test_entrypoint_static():
     assert os.access(ENTRYPOINT, os.X_OK), "git keeps the executable bit; chmod +x scripts/docker-entrypoint.sh"
     assert re.search(r"^set -eu$", text, re.M)
     assert re.search(r'\[ "\$\(id -u\)" -eq 0 \]', text) and "refusing to run as root" in text
-    assert re.search(r"^exec \"?\S*uvicorn\"? app\.main:app --host 127\.0\.0\.1 --port \"\$CCBOARD_PORT\" --timeout-graceful-shutdown 3$", text, re.M)
+    assert re.search(r"^exec \"?\S*uvicorn\"? app\.main:app --host 127\.0\.0\.1 --port \"\$CCBOARD_PORT\" --timeout-graceful-shutdown 2$", text, re.M)
     assert "CCBOARD_SHADOW" in text and "claude_settings.py" in text and "source-file" in text and "mcp add" in text
     assert "[[" not in text, "dash has no [[ ]]"
 
@@ -219,7 +219,7 @@ def test_entrypoint_syncs_merges_registers_and_execs(tmp_path):
     uv = [c for c in calls if c.startswith("uvicorn ")]
     assert len(uv) == 1
     argv, _, ctx = uv[0].partition(" | ")
-    assert argv == "uvicorn app.main:app --host 127.0.0.1 --port 8123 --timeout-graceful-shutdown 3"
+    assert argv == "uvicorn app.main:app --host 127.0.0.1 --port 8123 --timeout-graceful-shutdown 2"
     cwd = re.search(r"cwd=(\S+)", ctx).group(1)
     assert os.path.samefile(cwd, box.app) and f"port=8123 data={box.data}" in ctx
 
@@ -402,3 +402,16 @@ def test_deploy_readme_names_every_file():
     for p in sorted((ROOT / "deploy").glob("docker-compose*.yml")):
         assert p.name in text, p.name
     assert "Dockerfile" in text and "docker-entrypoint.sh" in text
+
+
+def test_compose_deploy_gate_and_fast_stop():
+    """A swap waits for the terminals (Watchtower pre-update hook -> scripts/ccboard-deploy-gate) and the stop is short."""
+    text = COMPOSE.read_text()
+    assert "com.centurylinklabs.watchtower.lifecycle.pre-update: /opt/ccboard/scripts/ccboard-deploy-gate" in text
+    assert 'com.centurylinklabs.watchtower.lifecycle.pre-update-timeout: "1"' in text
+    assert re.search(r"command: .*--enable-lifecycle-hooks", text)
+    assert "stop_grace_period: 6s" in text and "stop_grace_period: 15s" not in text
+    ep = (ROOT / "scripts" / "docker-entrypoint.sh").read_text()
+    assert "--timeout-graceful-shutdown 2" in ep
+    gate = ROOT / "scripts" / "ccboard-deploy-gate"
+    assert gate.exists() and "exit 75" in gate.read_text()

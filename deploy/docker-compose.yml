@@ -17,7 +17,9 @@ services:
     network_mode: host
     pid: host
     restart: unless-stopped
-    stop_grace_period: 15s
+    # The app exits within a few seconds of SIGTERM (uvicorn --timeout-graceful-shutdown 2 in the entrypoint); 6 s is the SIGKILL
+    # backstop. SQLite is in WAL mode and the sessions live in the host tmux server, so a hard stop loses nothing that matters.
+    stop_grace_period: 6s
     # Every setting lives in /etc/ccboard/env (written by install.sh). `docker compose up -d` reads it when it creates
     # the container; Watchtower recreates from the existing container, so after editing the file run
     # `docker compose up -d --force-recreate ccboard`. Not required, so `docker compose config` works on a machine
@@ -65,6 +67,10 @@ services:
     labels:
       com.centurylinklabs.watchtower.enable: "true"
       com.centurylinklabs.watchtower.scope: ccboard
+      # Before a swap Watchtower runs this inside the container; exit 75 = not now (someone is at a terminal, a permission is
+      # pending, a clone runs), for at most 30 min, unless the board's "Install now" was pressed. See app/deploy.py.
+      com.centurylinklabs.watchtower.lifecycle.pre-update: /opt/ccboard/scripts/ccboard-deploy-gate
+      com.centurylinklabs.watchtower.lifecycle.pre-update-timeout: "1"
     # $$ so the shell inside the container expands it from the container's own environment (env_file, or the shadow
     # override), not compose from the host's.
     healthcheck:
@@ -82,7 +88,8 @@ services:
   # Updates the ccboard container within minutes of a new image. Scoped by label: nine unrelated containers share the
   # box and none of them may be touched. Only containers labelled watchtower.enable=true in scope "ccboard" are
   # watched; Watchtower carries the scope label itself but not the enable label, so it never updates itself.
-  # --include-restarting lets a fixed image replace a crash-looping one.
+  # --include-restarting lets a fixed image replace a crash-looping one. --enable-lifecycle-hooks runs the board's pre-update
+  # gate (scripts/ccboard-deploy-gate) so a swap waits while someone is at a terminal.
   watchtower:
     image: nickfedor/watchtower:1
     container_name: ccboard-watchtower
@@ -90,7 +97,7 @@ services:
     restart: unless-stopped
     # The default docker0 bridge: no extra compose network (and subnet) on a box that already runs other containers.
     network_mode: bridge
-    command: --interval 300 --cleanup --label-enable --scope ccboard --include-restarting
+    command: --interval 300 --cleanup --label-enable --scope ccboard --include-restarting --enable-lifecycle-hooks
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       # Registry login for a private package (gh auth token | docker login ghcr.io -u rpandox --password-stdin).
