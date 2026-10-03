@@ -12,5 +12,5 @@ body.term { display:flex; flex-direction:column; height:100vh; height:100dvh; ov
 #keys .row::-webkit-scrollbar { display:none; }
 #keys .bp5-button { flex:0 0 auto; min-width:44px; min-height:38px; font-size:14px; }
 #keys .quick .bp5-button { background:rgba(77,208,225,.1); }
-#keys .send input { flex:1 1 auto; min-height:38px; height:38px; line-height:38px; font-size:16px; }        /* 16 px keeps iOS Safari from zooming on focus */
+#keys .send .composer { min-height:38px; height:38px; font-size:16px; }   /* grows to 6 lines (components.js composerGrow); 16 px keeps iOS Safari from zooming on focus */
 #keys .quick:empty { display:none; }

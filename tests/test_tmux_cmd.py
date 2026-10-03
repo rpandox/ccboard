@@ -77,7 +77,8 @@ def test_login_flow(lite_client, fake_tmux, monkeypatch):
 def test_send_keys_endpoint_and_term_page(lite_client, projects_dir, fake_tmux, monkeypatch):
     from app import tmux as t
     calls = []
-    monkeypatch.setattr(t, "run", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(t, "run", lambda *a, **k: calls.append(a if k.get("input") is None else a + (k["input"],)))
+    monkeypatch.setattr(t.time, "sleep", lambda *_: None)
     git_init(projects_dir / "shop" / "api")
     name = lite_client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "shell"}).json()["tmux"]
     assert lite_client.post(f"/api/sessions/{name}/keys", headers=H, json={"keys": ["Escape", "C-c"]}).status_code == 200
@@ -86,6 +87,16 @@ def test_send_keys_endpoint_and_term_page(lite_client, projects_dir, fake_tmux, 
     assert lite_client.post(f"/api/sessions/{name}/keys", headers=H, json={"text": "yes", "enter": True}).status_code == 200
     assert calls[-2] == ("send-keys", "-t", f"={name}:", "-l", "--", "yes") and calls[-1][-1] == "Enter"
     assert lite_client.post(f"/api/sessions/{name}/keys", headers=H, json={"text": "rm\x03"}).status_code == 400
+    # multi-line text (the composer's Shift+Enter) is one bracketed paste, CRLF normalised, then Enter: newlines never submit early
+    assert lite_client.post(f"/api/sessions/{name}/keys", headers=H, json={"text": "first line\r\nsecond\n\tthird", "enter": True}).status_code == 200
+    assert calls[-3] == ("load-buffer", "-b", "ccboard", "-", "first line\nsecond\n\tthird")
+    assert calls[-2] == ("paste-buffer", "-p", "-d", "-b", "ccboard", "-t", f"={name}:")
+    assert calls[-1] == ("send-keys", "-t", f"={name}:", "Enter")
+    assert lite_client.post(f"/api/sessions/{name}/keys", headers=H, json={"text": "a\nb", "enter": False}).status_code == 200
+    assert calls[-1][0] == "paste-buffer", "without enter the paste is left in the input"
+    assert lite_client.post(f"/api/sessions/{name}/keys", headers=H, json={"text": "x" * 8001}).status_code == 400
+    assert lite_client.post(f"/api/sessions/{name}/keys", headers=H, json={"text": "x" * 8000}).status_code == 200
+    assert lite_client.post(f"/api/sessions/{name}/keys", headers=H, json={"text": "a\x1b[Ab"}).status_code == 400, "other control bytes stay out"
     assert lite_client.post("/api/sessions/nope--x--y/keys", headers=H, json={"keys": ["Enter"]}).status_code == 404
     assert lite_client.get(f"/term/{name}", headers=H).status_code == 200
     assert lite_client.get("/term/..%2Fetc", headers=H).status_code in (400, 404)

@@ -333,3 +333,69 @@ function emptyState(icon, title, hint) {
     el('h4', { class: 'empty-title', text: title || '' }),
     hint ? el('div', { class: 'empty-hint dim', text: hint }) : null);
 }
+
+/* ---- composer: the multi-line send box ----------------------------------------------------------------------------
+   Enter sends; Shift+Enter (or the ↵ button, because touch keyboards have no Shift+Enter) inserts a newline; ⌘/Ctrl+Enter
+   also sends. The box grows with its text up to maxRows (default 6) and scrolls beyond that; the height goes through the
+   CSSOM (ta.style), never a style attribute. Multi-line text reaches tmux as ONE bracketed paste (tmux.send_text), so the
+   newlines stay inside the prompt instead of submitting after the first line. */
+const COMPOSER_MAX_ROWS = 6;
+
+function composerGrow(ta, maxRows) {
+  if (!ta || !ta.style) return;
+  const rows = maxRows || ta._maxRows || COMPOSER_MAX_ROWS;
+  let lh = 20, pad = 14;                                             // fallbacks for environments without layout (tests)
+  if (typeof getComputedStyle === 'function') {
+    const cs = getComputedStyle(ta);
+    lh = parseFloat(cs.lineHeight) || (parseFloat(cs.fontSize) || 14) * 1.4;
+    pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0) + (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.borderBottomWidth) || 0);
+  }
+  const max = Math.round(lh * rows + pad);
+  if (!String(ta.value || '').length) {                               // empty: back to one row (a wrapped placeholder would otherwise inflate scrollHeight)
+    ta.style.height = ''; ta.style.overflowY = 'hidden'; return;
+  }
+  ta.style.height = 'auto';                                          // let scrollHeight shrink again after lines were deleted
+  const want = ta.scrollHeight || 0;
+  const h = Math.min(want, max);
+  ta.style.height = h ? h + 'px' : '';
+  ta.style.overflowY = want > max ? 'auto' : 'hidden';
+}
+
+function composerInsertNewline(ta) {
+  const v = String(ta.value || '');
+  const s = typeof ta.selectionStart === 'number' ? ta.selectionStart : v.length;
+  const e = typeof ta.selectionEnd === 'number' ? ta.selectionEnd : s;
+  if (typeof ta.setRangeText === 'function') ta.setRangeText('\n', s, e, 'end');
+  else ta.value = v.slice(0, s) + '\n' + v.slice(e);
+  composerGrow(ta);
+  if (typeof ta.focus === 'function') ta.focus();
+}
+
+/* Wire an existing textarea: opts {onSend(text, ta), maxRows}. onSend owns the text (it sends and clears the box). */
+function composerBind(ta, opts) {
+  const o = opts || {};
+  ta._maxRows = o.maxRows || COMPOSER_MAX_ROWS;
+  ta.classList.add('composer');
+  ta.addEventListener('input', () => composerGrow(ta));
+  ta.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.isComposing) return;                  // Enter during IME composition confirms the composition
+    e.preventDefault();                                              // no stray newline, no form submit
+    if (e.shiftKey || e.altKey) { composerInsertNewline(ta); return; }
+    if (typeof o.onSend === 'function') o.onSend(ta.value, ta);
+  });
+  return ta;
+}
+
+/* Build a composer textarea: opts {placeholder, label, id, onSend, maxRows}. */
+function composer(opts) {
+  const o = opts || {};
+  const ta = el('textarea', { class: 'composer', rows: '1', placeholder: o.placeholder || 'send', 'aria-label': o.label || o.placeholder || 'send',
+    autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'send', id: o.id || null });
+  return composerBind(ta, o);
+}
+
+/* A ↵ button that inserts a newline into `ta`; pointerdown is cancelled so focus (and the soft keyboard) stays on the box. */
+function newlineButton(ta) {
+  return el('button', { class: 'minimal small nl', type: 'button', title: 'newline (Shift+Enter)', 'aria-label': 'insert newline',
+    onpointerdown: (e) => e.preventDefault(), onclick: () => composerInsertNewline(ta) }, '↵');
+}

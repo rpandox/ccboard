@@ -44,9 +44,9 @@ def _base() -> list[str]:
     return ["tmux", "-N", "-L", settings.tmux_socket]
 
 
-def run(*args: str, timeout: float = 5, check: bool = True) -> subprocess.CompletedProcess:
+def run(*args: str, timeout: float = 5, check: bool = True, input: str | None = None) -> subprocess.CompletedProcess:
     try:
-        cp = subprocess.run(_base() + list(args), capture_output=True, text=True, timeout=timeout)
+        cp = subprocess.run(_base() + list(args), capture_output=True, text=True, timeout=timeout, input=input)
     except FileNotFoundError as e:
         raise TmuxError("tmux is not installed") from e
     except subprocess.TimeoutExpired as e:
@@ -149,7 +149,11 @@ def send_keys(name: str, keys: list[str]) -> None:
 
 
 def send_text(name: str, text: str, enter: bool = False) -> None:
-    """Type literal text, optionally followed by Enter."""
+    """Type literal text, optionally followed by Enter. Multi-line text goes through bracketed paste (paste_text), so the
+    program receives the newlines as text (Claude Code keeps them inside the prompt) instead of an Enter after each line."""
+    if text and "\n" in text:
+        paste_text(name, text, enter=enter)
+        return
     if text:
         run("send-keys", "-t", pane_target(name), "-l", "--", text)
     if enter:
@@ -160,9 +164,7 @@ def send_text(name: str, text: str, enter: bool = False) -> None:
 
 def paste_text(name: str, text: str, enter: bool = True) -> None:
     """Paste multi-line text with bracketed paste (newlines do not submit), then Enter."""
-    cp = subprocess.run(_base() + ["load-buffer", "-b", "ccboard", "-"], input=text, text=True, capture_output=True, timeout=5)
-    if cp.returncode != 0:
-        raise TmuxError((cp.stderr or "load-buffer failed").strip())
+    run("load-buffer", "-b", "ccboard", "-", input=text)
     run("paste-buffer", "-p", "-d", "-b", "ccboard", "-t", pane_target(name))
     if enter:
         time.sleep(0.3)

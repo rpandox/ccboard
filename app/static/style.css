@@ -200,3 +200,15 @@ html.force-coarse .bp5-input, html.force-coarse select, html.force-coarse textar
   #bnav { display:flex; }
   #banner { margin:10px 10px 0; }
 }
+
+/* ---- composer: multi-line send box (components.js composer/composerBind). Self-styled: el('textarea') carries
+   bp5-text-area, whose 80 px minimum and vertical resize are wrong for a one-row box that grows by itself. ---- */
+textarea.composer { display:block; flex:1 1 auto; min-width:0; width:auto; box-sizing:border-box; min-height:var(--tap); height:var(--tap); max-height:none;
+  margin:0; padding:6px 10px; line-height:1.4; resize:none; overflow-y:hidden; font-family:var(--font-mono); font-size:14px; color:var(--fg);
+  background:var(--bg); border:1px solid var(--line); border-radius:3px; box-shadow:none; }
+textarea.composer::placeholder { color:var(--dim-2); }
+textarea.composer:focus { outline:none; border-color:var(--sig); box-shadow:0 0 0 1px var(--sig); }
+.bp5-button.nl { min-width:var(--tap); font-family:var(--font-mono); font-size:15px; }
+form.peek-send, #keys .send { align-items:flex-end; }                /* the buttons stay on the last line while the box grows */
+@media (pointer:coarse) { textarea.composer { font-size:16px; } }    /* 16 px keeps iOS Safari from zooming on focus */
+html.force-coarse textarea.composer { font-size:16px; height:auto; min-height:var(--tap); line-height:1.4; }

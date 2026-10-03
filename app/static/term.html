@@ -44,7 +44,8 @@
   </div>
   <div class="row quick" id="quick"></div>
   <form class="row send" id="sendform">
-    <input id="sendtext" class="bp5-input" type="text" placeholder="type here and send (Enter)" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <textarea id="sendtext" class="composer" rows="1" placeholder="type · Enter sends · ↵ new line" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="send"></textarea>
+    <button class="bp5-button nl" type="button" id="nl" title="newline (Shift+Enter)" aria-label="insert newline">↵</button>
     <button class="bp5-button bp5-intent-primary" type="submit">Send</button>
     <button class="bp5-button" type="button" id="editquick" title="edit quick replies"><span class="bp5-icon bp5-icon-edit"></span></button>
   </form>

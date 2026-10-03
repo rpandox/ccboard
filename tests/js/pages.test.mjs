@@ -436,7 +436,7 @@ test('#/s/<tmux> opens the peek in the sheet as an overlay; the page under it st
   assert.ok(peek.querySelector('a[href="/term/shop--api--s2"]'));
   assert.ok(peek.querySelector('.slot-ack button') && peek.querySelector('.slot-kill'));
   assert.equal(peek.querySelectorAll('.chips .chip-btn').length, 6);
-  assert.ok(peek.querySelector('form.peek-send input[aria-label=send]'));
+  assert.ok(peek.querySelector('form.peek-send textarea.composer[aria-label=send]'));
   // back to the roster: the sheet closes and the roster is still there (no remount, no flash)
   w.location.hash = '#/agents';
   assert.equal(sheet(w).open, false);
@@ -451,7 +451,7 @@ test('the peek sends text with enter, answers a permission, and acknowledges', a
   const { w } = pagesWorld();
   w.location.hash = '#/s/shop--api--s2';
   const peek = sheet(w).querySelector('.peek');
-  const input = peek.querySelector('form.peek-send input');
+  const input = peek.querySelector('form.peek-send textarea');
   input.value = 'run the tests again';
   peek.querySelector('form.peek-send').dispatchEvent({ type: 'submit', preventDefault() {} });
   await tick();

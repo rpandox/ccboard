@@ -25,12 +25,13 @@ function peekSurface() {
 function peekClose() { goBack('#/'); }
 
 async function peekSend(input) {
-  const text = input.value;
+  const text = String(input.value || '').replace(/\r\n?/g, '\n');
   const tmux = sessionPeek.tmux;
   if (!text.trim() || !tmux) return;
   try {
     await api('POST', `/api/sessions/${encodeURIComponent(tmux)}/keys`, { text, enter: true });
     input.value = '';
+    if (typeof composerGrow === 'function') composerGrow(input);
     pageToast('sent', 'ok');
   } catch (e) { pageToast(e.message, 'bad'); }
 }
@@ -41,7 +42,7 @@ function peekBuild(tmux) {
     el('button', { class: 'minimal small', type: 'button', 'aria-label': 'Close', title: 'Close', onclick: peekClose }, ic('cross')));
   const host = el('div', { class: 'peek-host' });
   const gone = el('div', { class: 'dim hidden', text: 'This session is not running any more.' });
-  const input = el('input', { type: 'text', placeholder: 'send', 'aria-label': 'send', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'send' });
+  const input = composer({ placeholder: 'send · ⇧Enter new line', label: 'send', onSend: () => peekSend(input) });   // Enter sends, Shift+Enter newline
   const form = el('form', { class: 'peek-send', onsubmit: (e) => { e.preventDefault(); peekSend(input); } },
     input, el('button', { class: 'primary', type: 'submit', text: 'Send' }));
   const root = el('div', { class: 'peek', 'data-tmux': tmux }, head, host, gone, form);

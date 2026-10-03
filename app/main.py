@@ -1084,9 +1084,10 @@ def api_send_keys(name: str, body: KeysIn):
     if not tmux.has_session(name):
         raise projects.NotFound(f"session {name} not found")
     if body.text is not None:
-        if len(body.text) > 2000 or any(ord(c) < 32 and c not in "\t" for c in body.text):
+        text = body.text.replace("\r\n", "\n").replace("\r", "\n")       # the composer's newlines; multi-line goes through bracketed paste
+        if len(text) > 8000 or any(ord(c) < 32 and c not in "\t\n" for c in text):
             raise projects.BadRequest("text too long or contains control characters")
-        tmux.send_text(name, body.text, enter=body.enter)
+        tmux.send_text(name, text, enter=body.enter)
     if body.keys:
         if len(body.keys) > 20:
             raise projects.BadRequest("too many keys")

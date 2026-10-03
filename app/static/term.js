@@ -46,7 +46,17 @@ $('#tty').src = `/tty/?arg=${encodeURIComponent(name)}`;
 for (const b of document.querySelectorAll('#keys .keys button')) {
   b.addEventListener('click', () => b.dataset.key ? sendKeys([b.dataset.key]) : sendText(b.dataset.text, b.dataset.enter === '1'));
 }
-$('#sendform').addEventListener('submit', (e) => { e.preventDefault(); const i = $('#sendtext'); if (i.value) { sendText(i.value, true); i.value = ''; } else { sendKeys(['Enter']); } });
+/* The send box: Enter sends, Shift+Enter or the ↵ button adds a line (components.js composer). Multi-line text is pasted into
+   the pane as one bracketed paste, so Claude Code keeps the newlines inside the prompt. An empty box + Enter forwards a bare Enter. */
+const sendBox = $('#sendtext');
+function submitSend() {
+  const v = sendBox.value.replace(/\r\n?/g, '\n');
+  if (v.trim()) { sendText(v, true); sendBox.value = ''; composerGrow(sendBox); } else { sendKeys(['Enter']); }
+}
+composerBind(sendBox, { onSend: submitSend });
+$('#sendform').addEventListener('submit', (e) => { e.preventDefault(); submitSend(); });
+$('#nl').addEventListener('pointerdown', (e) => e.preventDefault());        // keep focus (and the soft keyboard) on the box
+$('#nl').addEventListener('click', () => composerInsertNewline(sendBox));
 $('#editquick').addEventListener('click', editQuick);
 renderQuick();
 refreshState();
