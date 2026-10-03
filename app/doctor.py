@@ -308,11 +308,19 @@ def _c_attach_wrapper(db) -> Outcome:
 
 # ------------------------------------------------------------------ box checks
 
+def code_server_settings_path() -> Path:
+    """code-server's user settings (CODE_SERVER_SETTINGS overrides, as scripts/code_server_settings.py does)."""
+    return Path(os.environ.get("CODE_SERVER_SETTINGS") or (Path.home() / ".local" / "share" / "code-server" / "User" / "settings.json"))
+
+
+CODE_SERVER_SETTINGS = code_server_settings_path()
+
+
 def _c_code_server(db) -> Outcome:
     port = settings.code_server_port
     if _port_open("127.0.0.1", port, 1.0):
         try:
-            cfg = json.loads((Path.home() / ".local" / "share" / "code-server" / "User" / "settings.json").read_text() or "{}")
+            cfg = json.loads(Path(CODE_SERVER_SETTINGS).read_text() or "{}")
         except (OSError, ValueError):
             cfg = {}
         if not isinstance(cfg, dict) or "files.watcherExclude" not in cfg:

@@ -97,6 +97,8 @@ def world(projects_dir, monkeypatch, tmp_path):
     monkeypatch.setattr(doctor, "_which", lambda n: w.which.get(n))
     monkeypatch.setattr(doctor, "_http_get", w.fake_http)
     monkeypatch.setattr(doctor, "TTYD_BIN", str(tmp_path / "no-such-ttyd"))
+    cs = tmp_path / "code-server-settings.json"; cs.write_text(json.dumps({"files.watcherExclude": {"**/node_modules/**": True}}))
+    monkeypatch.setattr(doctor, "CODE_SERVER_SETTINGS", cs)         # the managed settings exist: the check passes
     monkeypatch.setattr(socket, "create_connection", w.fake_connect)
     monkeypatch.setattr(doctor.claude_auth, "status", lambda: w.auth)
     monkeypatch.setattr(doctor.tmux, "server_up", lambda: w.tmux_up)
@@ -298,6 +300,12 @@ def test_code_server(world, monkeypatch):
     world.ports[10000] = True
     c = one("code-server")
     assert c["status"] == "pass" and "10000" in c["detail"]
+    # listening but without ccboard's user settings (no watcher excludes): a warning with the merge command, never a failure
+    Path(doctor.CODE_SERVER_SETTINGS).unlink()
+    c = one("code-server")
+    assert c["status"] == "warn" and "watcher" in c["detail"] and "code_server_settings.py" in c["fix"]["cmd"]
+    Path(doctor.CODE_SERVER_SETTINGS).write_text("{not json")
+    assert one("code-server")["status"] == "warn"
 
 
 def test_projects_dir(projects_dir):
