@@ -32,9 +32,10 @@ function settingsNotify(p) {
   if (bk && bk.at) {
     const r = bk.restic || {};
     const pushed = (bk.push || []).reduce((sum, x) => sum + (x.pushed || []).length, 0);
-    bkRow.append(el('span', { class: bk.status === 'ok' ? 'v' : 'v bad', text: `${bk.status} ${fmtAge(Date.parse(bk.at) / 1000)} ago` }),
+    bkRow.append(el('span', { class: bk.status === 'ok' ? 'v' : bk.status === 'partial' ? 'v warn' : 'v bad', text: `${bk.status} ${fmtAge(Date.parse(bk.at) / 1000)} ago` }),
       el('span', { class: 'dim', text: r.snapshot_id ? `snapshot ${String(r.snapshot_id).slice(0, 8)} → ${r.repo || ''}` : (r.skipped ? 'restic off' : 'no snapshot') + ` · ${pushed} branch(es) pushed across ${(bk.push || []).length} repo(s)` }));
-    if (bk.status !== 'ok') bkRow.append(el('span', { class: 'bad', text: (bk.errors || []).join(' · ').slice(0, 300) }));
+    if (bk.status === 'failed') bkRow.append(el('span', { class: 'bad', text: (bk.errors || []).join(' · ').slice(0, 300) }));
+    else if (bk.status === 'partial') bkRow.append(el('span', { class: 'warn', text: ('snapshot ok · ' + (bk.warnings || []).join(' · ')).slice(0, 300) }));   // mirror pushes GitHub refused: fetch first on the box
   } else {
     bkRow.append(el('span', { class: 'dim', text: 'no backup has run yet (nightly via ccboard-backup.timer)' + (bc.restic && !bc.restic_installed ? ' · restic is not installed' : '') }));
   }
@@ -91,8 +92,10 @@ function settingsBox(p) {
   } else p.append(el('div', { class: 'dim', text: 'No health data yet.' }));
   const bk = state.backup;
   if (bk && bk.at) {
-    const failed = bk.status !== 'ok';
-    p.append(settingsKv('Backup', el('span', { class: failed ? 'v bad' : 'v', title: failed ? (bk.errors || []).join('\n') : 'last nightly backup', text: `${failed ? 'failed' : 'ok'} ${fmtAge(Date.parse(bk.at) / 1000)} ago` })));
+    const failed = bk.status === 'failed';
+    const partial = bk.status === 'partial';
+    p.append(settingsKv('Backup', el('span', { class: failed ? 'v bad' : partial ? 'v warn' : 'v', title: failed ? (bk.errors || []).join('\n') : partial ? (bk.warnings || []).join('\n') : 'last nightly backup',
+      text: `${failed ? 'failed' : partial ? 'ok, pushes rejected' : 'ok'} ${fmtAge(Date.parse(bk.at) / 1000)} ago` })));
   } else p.append(settingsKv('Backup', el('span', { class: 'dim', text: 'no backup has run yet' })));
 }
 

@@ -124,6 +124,30 @@ def test_run_ok_then_failed(backup_env, monkeypatch):
     assert json.loads(backup.status_path().read_text())["status"] == "failed"
 
 
+def test_run_is_partial_not_failed_when_a_mirror_push_is_rejected(backup_env, monkeypatch, capsys):
+    """The restic snapshot is the backup; a branch GitHub refuses (someone pushed from elsewhere) is a warning: status 'partial',
+    nothing forced, no page, exit 0 (the unit must not fail every night; the board shows it on the usage card)."""
+    from app import notify
+    api, origin = backup_env["api"], backup_env["origin"]
+    sent = []
+    monkeypatch.setattr(notify, "publish", lambda title, message, **kw: sent.append((title, message)) or True)
+    assert backup.run()["status"] == "ok"                                          # first run mirrors main and worktree-x
+    other = origin.parent / "other2"; subprocess.run(["git", "clone", "-q", str(origin), str(other)], check=True)
+    git(other, "commit", "-q", "--allow-empty", "-m", "remote work"); git(other, "push", "-q", "origin", "main")
+    git(api, "commit", "-q", "--allow-empty", "-m", "local work")
+    st = backup.run()
+    assert st["status"] == "partial" and st["errors"] == []
+    assert len(st["warnings"]) == 1 and st["warnings"][0].startswith("push shop/api: main:")
+    assert st["restic"]["snapshot_id"] and sent == [], "a rejected mirror push never pages"
+    assert json.loads(backup.status_path().read_text())["status"] == "partial"
+    assert "remote work" in git(origin, "log", "-1", "--format=%s", "main"), "nothing was forced"
+    assert backup.main([]) == 0
+    assert "backup partial" in capsys.readouterr().out
+    # a restic failure is still a failure, whatever the pushes did
+    monkeypatch.setenv("FAKE_RESTIC_FAIL", "1")
+    assert backup.run()["status"] == "failed" and backup.main([]) == 1
+
+
 def test_run_flags_and_lock(backup_env, monkeypatch, capsys):
     from app.config import settings
     monkeypatch.setattr(settings, "backup_push", False)

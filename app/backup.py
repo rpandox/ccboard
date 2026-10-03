@@ -238,7 +238,7 @@ def running() -> bool:
 def run(push: bool | None = None, restic: bool | None = None) -> dict:
     """One backup pass. Never raises for a failing step: every problem lands in status['errors']."""
     started = time.time()
-    st: dict = {"at": now_iso(), "status": "ok", "restic": None, "push": [], "errors": []}
+    st: dict = {"at": now_iso(), "status": "ok", "restic": None, "push": [], "errors": [], "warnings": []}
     lock = try_lock()
     if lock is None:
         raise RuntimeError("a backup is already running")
@@ -276,7 +276,9 @@ def run(push: bool | None = None, restic: bool | None = None) -> dict:
                     res = {"repo": str(repo), "pushed": [], "rejected": [], "error": str(e)[:300]}
                 st["push"].append(res)
                 if res.get("error") or res.get("rejected"):
-                    st["errors"].append(f"push {res['repo']}: {res.get('error') or '; '.join(res['rejected'])}")
+                    # a branch GitHub refused (someone pushed from elsewhere: 'fetch first', non-fast-forward) or a push that could not
+                    # run is a warning: the restic snapshot is the backup, the mirror push is the extra; nothing is ever forced
+                    st["warnings"].append(f"push {res['repo']}: {res.get('error') or '; '.join(res['rejected'])}")
         else:
             st["push"] = []
             st["push_skipped"] = "CCBOARD_BACKUP_PUSH=0"
@@ -286,6 +288,8 @@ def run(push: bool | None = None, restic: bool | None = None) -> dict:
     st["duration_s"] = round(time.time() - started, 1)
     if st["errors"]:
         st["status"] = "failed"
+    elif st["warnings"]:
+        st["status"] = "partial"                      # snapshot fine, some mirror pushes rejected: shown on the board, not paged
     write_status(st)
     if st["errors"]:
         notify.publish("ccboard backup failed", "\n".join(st["errors"])[:1500], priority=4, tags=["warning"],
@@ -327,8 +331,9 @@ def main(argv: list[str] | None = None) -> int:
     r = st.get("restic") or {}
     pushed = sum(len(p.get("pushed", [])) for p in st["push"])
     print(f"backup {st['status']} in {st['duration_s']}s: snapshot {r.get('snapshot_id') or r.get('skipped') or '-'}, "
-          f"{pushed} branch(es) pushed across {len(st['push'])} repo(s)" + ("; " + "; ".join(st["errors"]) if st["errors"] else ""))
-    return 1 if st["errors"] else 0
+          f"{pushed} branch(es) pushed across {len(st['push'])} repo(s)" + ("; " + "; ".join(st["errors"]) if st["errors"] else "")
+          + ("; warnings: " + "; ".join(st["warnings"]) if st.get("warnings") else ""))
+    return 1 if st["errors"] else 0                   # a partial run exits 0: the unit must not fail every night over a diverged mirror
 
 
 if __name__ == "__main__":

@@ -216,9 +216,13 @@ Widgets.usageCard = function (host) {
     const bk = st.backup;
     backup.classList.toggle('hidden', !bk || !bk.at);
     if (bk && bk.at) {
-      const failed = bk.status && bk.status !== 'ok';
-      setTextIfChanged(backup, `backup ${failed ? 'failed' : 'ok'} ${fmtAge(Date.parse(bk.at) / 1000)} ago`);
-      backup.classList.toggle('bad', !!failed);
+      const failed = bk.status === 'failed';
+      const partial = bk.status === 'partial';
+      const rejected = partial ? (bk.warnings || []).length : 0;
+      const age = fmtAge(Date.parse(bk.at) / 1000);
+      setTextIfChanged(backup, failed ? `backup failed ${age} ago` : partial ? `backup ok ${age} ago · ${rejected} push${rejected === 1 ? '' : 'es'} rejected` : `backup ok ${age} ago`);
+      backup.classList.toggle('bad', failed);
+      backup.classList.toggle('warn', partial);
     }
   };
 
