@@ -31,7 +31,12 @@ async function remember(key, res) {
 async function networkFirst(req, key) {
   try {
     const res = await fetch(req);
-    if (res.ok) remember(key, res.clone());
+    if (res.ok) { remember(key, res.clone()); return res; }
+    if (res.status >= 500) {                                   // the proxy answered for a board that is restarting (a deploy, a busy box):
+      const c = await caches.open(CACHE);                      // show the last shell; the page's own poll paints 'offline' and retries
+      const hit = await c.match(key);
+      if (hit) return hit;
+    }
     return res;
   } catch (_) {
     const c = await caches.open(CACHE);

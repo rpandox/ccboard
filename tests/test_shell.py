@@ -302,6 +302,7 @@ def test_sw_precaches_past_the_http_cache_and_serves_vendor_cache_first(lite_cli
     assert "cache: 'reload'" in sw
     assert "path.startsWith('/static/vendor/')" in sw and "cacheFirst(req)" in sw
     assert "fetch(new Request(req.url, { cache: 'reload' }))" in sw
+    assert "res.status >= 500" in sw, "a 5xx from the proxy during a deploy serves the cached shell instead of a 502 page"
 
 
 def test_cache_policy_vendor_and_fonts_immutable_the_app_no_cache(lite_client):
