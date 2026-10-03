@@ -1,0 +1,694 @@
+/* ccboard shell (v0.5.3): the topbar, the sidebar tree (the 48 px rail on medium widths), the drawer, the bottom nav, the width-driven shell modes, the
+   keyboard shortcuts and the state consumers renderHeader() / renderUsage() / renderShell() / render() that core.js's poll() calls.
+   Everything is built once by installShell() (main.js calls it) and patched in place on every poll: nothing here is re-created per poll, and the
+   project tree is a keyed reconcile, so a focused row survives a state refresh. Classic script; one namespace (Shell) plus the contract functions. */
+'use strict';
+
+const Shell = {
+  mode: 'compact',          // compact < 600 | medium 600-839 | expanded 840-1199 | large >= 1200 (matchMedia only, no UA sniffing)
+  sbOpen: true,             // expanded/large: the 260 px sidebar (true) or the rail (false); persisted as localStorage ccboard:sb = '1' | '0'
+  open: new Set(),          // expanded tree nodes, persisted as ccboard:sb:open (JSON array of keys: 'p:<project>', 'older')
+  refs: null,               // topbar / sidebar / bnav nodes, set by installShell()
+  trees: [],                // the tree roots: one in #sidebar, one in #drawer
+  cache: null,              // { st, model }: the last model built from a state object
+  badge: -1,                // the last count handed to navigator.setAppBadge
+  crumbSig: '',
+  formWatch: null,          // called at the end of render(): lets a launcher form inside the sheet close it once it succeeded
+  mq: null,
+  OLDER_DAYS: 14,
+  NAV: [['home', 'Home', 'home', '#/'], ['inbox', 'Needs you', 'notifications', '#/inbox'], ['agents', 'Agents', 'console', '#/agents'],
+        ['tasks', 'Tasks', 'git-branch', '#/tasks'], ['usage', 'Usage', 'chart', '#/usage'], ['memory', 'Memory', 'database', '#/memory'],
+        ['settings', 'Settings', 'cog', '#/settings']],
+  CRUMB_NAMES: { inbox: 'Needs you', agents: 'Agents', tasks: 'Tasks', usage: 'Usage', memory: 'Memory', settings: 'Settings', search: 'Search', quad: 'Quad', onboarding: 'Onboarding' },
+};
+
+/* ---------- small helpers ---------- */
+
+Shell.hash = function (id, params, query) {
+  try { if (typeof buildHash === 'function') return buildHash(id, params, query); } catch (_) { return '#/'; }
+  return id === 'home' ? '#/' : '#/' + id;
+};
+
+Shell.go = function (hash) { if (typeof navigate === 'function') navigate(hash); else location.hash = hash; };
+
+Shell.setVar = function (node, name, value) { try { node.style.setProperty(name, value); } catch (_) { /* no CSSOM */ } };
+
+Shell.load = function () {
+  try { Shell.sbOpen = localStorage.getItem('ccboard:sb') !== '0'; } catch (_) { Shell.sbOpen = true; }
+  try {
+    const a = JSON.parse(localStorage.getItem('ccboard:sb:open') || '[]');
+    Shell.open = new Set(Array.isArray(a) ? a.filter((x) => typeof x === 'string').slice(0, 300) : []);
+  } catch (_) { Shell.open = new Set(); }
+};
+
+Shell.saveOpen = function () { try { localStorage.setItem('ccboard:sb:open', JSON.stringify([...Shell.open])); } catch (_) { /* storage may be unavailable */ } };
+
+Shell.wide = function () { return Shell.mode === 'expanded' || Shell.mode === 'large'; };
+
+/* Keyed reconcile: children of `parent` carry data-key; `items` is [{key, ...}] in the wanted order. Existing nodes are patched in place
+   and only moved when out of position, so a focused row is never re-created. */
+Shell.sync = function (parent, items, make, patch) {
+  const have = new Map();
+  for (const c of parent.children) have.set(c.getAttribute('data-key'), c);
+  let i = 0;
+  for (const it of items) {
+    let n = have.get(it.key);
+    if (n) have.delete(it.key); else n = make(it);
+    patch(n, it);
+    if (parent.children[i] !== n) parent.insertBefore(n, parent.children[i] || null);
+    i += 1;
+  }
+  for (const n of have.values()) n.remove();
+};
+
+/* ---------- the model: one pass over the state, shared by the topbar, the trees and the nav counts ---------- */
+
+const SHELL_STATE_RANK = { waiting: 0, errored: 1, working: 2, idle: 3, done: 4 };
+
+Shell.sessionItem = function (s, repo) {
+  const t = Math.max((s.state_at ? Date.parse(s.state_at) / 1000 : 0) || 0, s.created || 0);
+  return { key: 's:' + s.tmux, kind: 'sess', tmux: s.tmux, name: s.name, repo, state: s.state || 'unknown', agent: sessionAgent(s), needs: !!s.needs_attention, at: t };
+};
+
+Shell.model = function (st) {
+  if (Shell.cache && Shell.cache.st === st) return Shell.cache.model;
+  const now = Date.now() / 1000;
+  let attn = 0;
+  let live = 0;
+  const projects = [];
+  for (const p of (st && st.projects) || []) {
+    const sess = [];
+    for (const r of repoGroups(p)) for (const s of r.sessions || []) sess.push(Shell.sessionItem(s, r.name));
+    for (const s of p.orphan_sessions || []) sess.push(Shell.sessionItem(s, s.repo || '?'));
+    sess.sort((a, b) => ((a.needs ? 0 : 1) - (b.needs ? 0 : 1)) || ((SHELL_STATE_RANK[a.state] ?? 5) - (SHELL_STATE_RANK[b.state] ?? 5)) || a.name.localeCompare(b.name));
+    const needs = sess.filter((x) => x.needs).length;
+    attn += needs;
+    live += sess.filter((x) => x.state !== 'ended').length;
+    const activity = sess.reduce((m, x) => Math.max(m, x.at), 0);
+    const kids = [...sess, ...(p.repos || []).map((r) => ({ key: 'r:' + p.name + '/' + r.name, kind: 'repo', project: p.name, name: r.name }))];
+    projects.push({ key: 'p:' + p.name, kind: 'proj', name: p.name, attn: needs, count: sess.length, activity, kids,
+      older: !needs && activity > 0 && now - activity >= Shell.OLDER_DAYS * 86400 });   // no activity at all (a new project) stays in the main list
+  }
+  projects.sort((a, b) => (b.attn - a.attn) || (b.activity - a.activity) || a.name.localeCompare(b.name));
+  const main = projects.filter((p) => !p.older);
+  const older = projects.filter((p) => p.older);
+  const tasks = ((st && st.tasks) || []).filter((t) => !t.archived_at).length;
+  const model = { attn, live, tasks, main, older, empty: !projects.length };
+  Shell.cache = { st, model };
+  return model;
+};
+
+/* ---------- topbar ---------- */
+
+Shell.pill = function (key, label) {
+  const pl = el('b', { class: 'pl', text: label });
+  const pv = el('span', { class: 'pv' });
+  const pr = el('span', { class: 'pr' });
+  const n = el('span', { class: 'pill hidden', 'data-pill': key }, pl, pv, pr);
+  n.pl = pl; n.pv = pv; n.pr = pr;
+  return n;
+};
+
+Shell.buildTopbar = function (bar) {
+  const R = Shell.refs;
+  R.navBtn = el('button', { class: 'icon minimal nav-toggle', type: 'button', 'aria-label': 'Open menu', title: 'Menu', onclick: () => Shell.navToggle() }, ic('menu'));
+  R.crumbs = el('div', { id: 'crumbs', class: 'crumbs' });
+  R.p5 = Shell.pill('5h', '5H');
+  R.p7 = Shell.pill('7d', '7D');
+  R.pCodex = Shell.pill('codex', 'CX');
+  R.pSpend = Shell.pill('spend', 'SPEND');
+  R.pills = el('div', { id: 'pills', class: 'pills' }, R.p5, R.p7, R.pCodex, R.pSpend);
+  const g = stateGlyph('waiting');
+  g.setAttribute('aria-hidden', 'true'); g.removeAttribute('role'); g.removeAttribute('title');
+  R.inboxN = el('span', { class: 'pv' });
+  R.inbox = el('a', { id: 'inbox-pill', class: 'pill link', href: '#/inbox', title: 'Needs you', 'aria-label': 'Needs you: 0' }, g, R.inboxN);
+  R.adClaude = el('a', { class: 'ad claude', href: '#/settings?sec=agents', text: AGENT_GLYPH.claude });
+  R.adCodex = el('a', { class: 'ad codex hidden', href: '#/settings?sec=agents', text: AGENT_GLYPH.codex });
+  R.dots = el('span', { id: 'agent-dots', class: 'agent-dots' }, R.adClaude, R.adCodex);
+  R.search = el('input', { id: 'hdr-search', type: 'search', placeholder: 'search transcripts…', 'aria-label': 'Search transcripts', autocomplete: 'off', enterkeyhint: 'search' });
+  R.search.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const q = R.search.value.trim();
+      if (q) Shell.go('#/search?q=' + encodeURIComponent(q));
+      R.search.blur(); bar.classList.remove('search-open');
+    } else if (e.key === 'Escape') { R.search.value = ''; R.search.blur(); bar.classList.remove('search-open'); }
+  });
+  R.searchBtn = el('button', { class: 'icon minimal search-btn', type: 'button', 'aria-label': 'Search', title: 'Search transcripts  /', onclick: () => Shell.focusSearch() }, ic('search'));
+  R.plus = el('button', { class: 'icon minimal create', type: 'button', 'aria-label': 'Create', title: 'Create' }, ic('plus'));
+  menu(R.plus, () => Shell.createItems());
+  R.bell = el('button', { class: 'icon minimal bell', type: 'button', 'aria-label': 'Notifications', title: 'Notifications', onclick: () => Shell.go('#/settings?sec=notify') }, ic('notifications'));
+  R.refresh = el('button', { class: 'icon minimal refresh', type: 'button', 'aria-label': 'Refresh now', title: 'Refresh now', onclick: () => refreshNow() }, ic('refresh'));
+  bar.append(R.navBtn, el('a', { class: 'brand', href: '#/', text: 'ccboard' }), R.crumbs, el('span', { class: 'spacer' }),
+    R.pills, R.inbox, R.dots, R.search, R.searchBtn, R.plus, R.bell, R.refresh);
+};
+
+Shell.focusSearch = function () {
+  const R = Shell.refs;
+  if (!R) return;
+  R.search.parentNode.classList.add('search-open');
+  R.search.focus();
+  R.search.select();
+};
+
+/* Codex rate limits (v0.5.12 shape not final): accept a window object, a list of them or an object of them; prefer the longest window. */
+Shell.codexWindow = function (u) {
+  if (!u) return null;
+  const v = u.value !== undefined ? u.value : u;
+  const cand = [];
+  const pct = (w) => (typeof w.used_percentage === 'number' ? w.used_percentage : w.used_percent);
+  const add = (w) => { if (w && typeof w === 'object' && typeof pct(w) === 'number') cand.push(w); };
+  if (Array.isArray(v)) v.forEach(add);
+  else { add(v); if (v && typeof v === 'object') Object.values(v).forEach(add); }
+  if (!cand.length) return null;
+  cand.sort((a, b) => (b.window_minutes || 0) - (a.window_minutes || 0));
+  const w = cand[0];
+  return { used_percentage: pct(w), resets_at: w.resets_at, minutes: w.window_minutes };
+};
+
+Shell.windowLabel = function (m) {
+  if (!m) return '';
+  if (m === 10080) return '7D';
+  if (m === 300) return '5H';
+  if (m % 1440 === 0) return `${m / 1440}D`;
+  if (m % 60 === 0) return `${m / 60}H`;
+  return `${m}m`;
+};
+
+Shell.patchPill = function (node, w, what) {
+  if (!w || typeof w.used_percentage !== 'number') { node.classList.add('hidden'); return; }
+  const pct = Math.max(0, Math.min(100, w.used_percentage));
+  node.classList.remove('hidden');
+  node.classList.toggle('ok', pct < 60);
+  node.classList.toggle('warn', pct >= 60 && pct < 85);
+  node.classList.toggle('bad', pct >= 85);
+  setText(node.pv, `${Math.round(pct)}%`);
+  setText(node.pr, w.resets_at ? fmtIn(w.resets_at) : '');
+  node.setAttribute('title', `${what}: ${Math.round(pct)}% used` + (w.resets_at ? ` · resets in ${fmtIn(w.resets_at)}` : ''));
+  Shell.setVar(node, '--pct', String(Math.round(pct)));
+};
+
+Shell.patchUsage = function (st) {
+  const R = Shell.refs;
+  if (!R || !st) return;
+  const rl = (st.usage && st.usage.value) || {};
+  Shell.patchPill(R.p5, rl.five_hour, '5-hour window');
+  Shell.patchPill(R.p7, rl.seven_day, 'weekly window');
+  Shell.patchPill(R.pSpend, rl.spend_limit, 'spend limit');
+  const cx = Shell.codexWindow(st.usage_codex);
+  Shell.patchPill(R.pCodex, cx, 'Codex ' + (Shell.windowLabel(cx && cx.minutes) || 'window'));
+  if (cx) setText(R.pCodex.pl, 'CX ' + Shell.windowLabel(cx.minutes));
+};
+
+Shell.agentDot = function (node, tone, title) {
+  node.classList.toggle('ok', tone === 'ok');
+  node.classList.toggle('warn', tone === 'warn');
+  node.classList.toggle('bad', tone === 'bad');
+  node.setAttribute('title', title);
+  node.setAttribute('aria-label', title);
+};
+
+Shell.patchHeader = function (st) {
+  const R = Shell.refs;
+  if (!R || !st) return;
+  const m = Shell.model(st);
+  setText(R.inboxN, String(m.attn));
+  R.inbox.classList.toggle('attn', m.attn > 0);
+  R.inbox.setAttribute('aria-label', `Needs you: ${m.attn}`);
+  if (m.attn !== Shell.badge) {
+    Shell.badge = m.attn;
+    try {
+      if (m.attn > 0 && navigator.setAppBadge) navigator.setAppBadge(m.attn).catch(() => { /* badge refused */ });
+      else if (m.attn === 0 && navigator.clearAppBadge) navigator.clearAppBadge().catch(() => { /* ignore */ });
+    } catch (_) { /* no Badging API here */ }
+  }
+  const c = st.claude || {};
+  if (!c.installed) Shell.agentDot(R.adClaude, 'bad', 'Claude: not installed');
+  else if (c.loggedIn) Shell.agentDot(R.adClaude, 'ok', `Claude: ${c.email || 'logged in'}${c.subscriptionType ? ' (' + c.subscriptionType + ')' : ''}`);
+  else Shell.agentDot(R.adClaude, 'warn', 'Claude: not logged in');
+  const cx = st.agents && st.agents.codex;
+  R.adCodex.classList.toggle('hidden', !cx);
+  if (cx) {
+    if (cx.installed === false) Shell.agentDot(R.adCodex, 'bad', 'Codex: not installed');
+    else if (cx.loggedIn === false) Shell.agentDot(R.adCodex, 'warn', 'Codex: not logged in');
+    else Shell.agentDot(R.adCodex, 'ok', `Codex: ${cx.email || cx.version || 'ready'}`);
+  }
+};
+
+function renderHeader() { Shell.patchHeader(typeof state === 'undefined' ? null : state); }
+function renderUsage() { Shell.patchUsage(typeof state === 'undefined' ? null : state); }
+
+/* ---------- sidebar tree ---------- */
+
+Shell.rowKey = function (row) { return row.parentNode.getAttribute('data-key'); };
+
+Shell.toggle = function (key) {
+  if (Shell.open.has(key)) Shell.open.delete(key); else Shell.open.add(key);
+  Shell.saveOpen();
+  Shell.patchTrees();
+};
+
+Shell.groupRow = function (cls, level, name, extra) {
+  const n = { name: el('span', { class: 'tn-name' }), cnt: el('span', { class: 'tn-cnt' }) };
+  n.row = el('div', { class: 'tn-row ' + cls, role: 'treeitem', tabindex: '-1', 'aria-level': String(level), 'aria-expanded': 'false' },
+    el('span', { class: 'tw' }, ic('chevron-right')), n.name, ...(extra || []), n.cnt);
+  return n;
+};
+
+Shell.projNode = function () {
+  const dot = el('span', { class: 'tn-dot hidden', role: 'img', 'aria-label': 'needs you', title: 'needs you' });
+  const go = el('a', { class: 'tn-go', tabindex: '-1', title: 'Open project', 'aria-label': 'Open project' }, ic('chevron-right'));
+  const g = Shell.groupRow('proj-row', 1, '', [dot]);
+  g.row.append(go);
+  const kids = el('div', { class: 'tn-kids hidden', role: 'group' });
+  const node = el('div', { class: 'tn proj' }, g.row, kids);
+  node._r = { ...g, dot, go, kids };
+  return node;
+};
+
+Shell.patchProj = function (node, p, level) {
+  const r = node._r;
+  const open = Shell.open.has(p.key);
+  node.setAttribute('data-key', p.key);
+  node.classList.toggle('open', open);
+  node.classList.toggle('attn', p.attn > 0);
+  r.row.setAttribute('aria-expanded', open ? 'true' : 'false');
+  r.row.setAttribute('aria-level', String(level));
+  setText(r.name, p.name);
+  setText(r.cnt, p.count ? String(p.count) : '');
+  r.cnt.setAttribute('title', `${p.count} session${p.count === 1 ? '' : 's'}`);
+  r.dot.classList.toggle('hidden', !p.attn);
+  r.go.setAttribute('href', Shell.hash('project', { project: p.name }));
+  r.kids.classList.toggle('hidden', !open);
+  if (open) Shell.sync(r.kids, p.kids, Shell.kidNode, Shell.patchKid);
+  else if (r.kids.firstChild) r.kids.textContent = '';
+};
+
+Shell.kidNode = function (k) {
+  if (k.kind === 'repo') {
+    const name = el('span', { class: 'tn-name' });
+    const node = el('a', { class: 'tn-row r-row', role: 'treeitem', tabindex: '-1', 'aria-level': '2' }, el('span', { class: 'tn-g' }, ic('git-repo')), name);
+    node._k = { name };
+    return node;
+  }
+  const slot = el('span', { class: 'tn-g' });
+  const name = el('span', { class: 'tn-name' });
+  const sub = el('span', { class: 'tn-sub mono' });
+  const node = el('a', { class: 'tn-row s-row', role: 'treeitem', tabindex: '-1', 'aria-level': '2' }, slot, name, sub);
+  node._k = { slot, name, sub, state: null, agent: null };
+  return node;
+};
+
+Shell.patchKid = function (node, k) {
+  const r = node._k;
+  node.setAttribute('data-key', k.key);
+  setText(r.name, k.name);
+  if (k.kind === 'repo') { node.setAttribute('href', Shell.hash('project', { project: k.project, repo: k.name })); return; }
+  node.setAttribute('href', Shell.hash('session', { tmux: k.tmux }));
+  node.classList.toggle('attn', k.needs);
+  if (r.state !== k.state || r.agent !== k.agent) {
+    r.state = k.state; r.agent = k.agent;
+    r.slot.textContent = '';
+    r.slot.append(stateGlyph(k.state), agentGlyph(k.agent));
+  }
+  setText(r.sub, k.repo === 'root' ? 'folder' : k.repo);
+};
+
+Shell.olderNode = function () {
+  const g = Shell.groupRow('older-row', 1, '', []);
+  const kids = el('div', { class: 'tn-kids hidden', role: 'group' });
+  const node = el('div', { class: 'tn older', 'data-key': 'older' }, g.row, kids);
+  node._r = { ...g, kids };
+  return node;
+};
+
+Shell.patchOlder = function (node, it) {
+  const r = node._r;
+  const open = Shell.open.has('older');
+  node.classList.toggle('open', open);
+  r.row.setAttribute('aria-expanded', open ? 'true' : 'false');
+  setText(r.name, `older (${it.projects.length})`);
+  setText(r.cnt, '');
+  r.kids.classList.toggle('hidden', !open);
+  if (open) Shell.sync(r.kids, it.projects, Shell.projNode, (n, p) => Shell.patchProj(n, p, 2));
+  else if (r.kids.firstChild) r.kids.textContent = '';
+};
+
+Shell.patchTree = function (tree, model) {
+  const items = model.main.slice();
+  if (model.older.length) items.push({ key: 'older', kind: 'older', projects: model.older });
+  Shell.sync(tree, items, (it) => (it.kind === 'older' ? Shell.olderNode() : Shell.projNode()),
+    (n, it) => (it.kind === 'older' ? Shell.patchOlder(n, it) : Shell.patchProj(n, it, 1)));
+  tree._empty.classList.toggle('hidden', !model.empty);
+  const rows = tree.querySelectorAll('.tn-row');
+  if (rows.length && !tree.querySelector('.tn-row[tabindex="0"]')) rows[0].setAttribute('tabindex', '0');
+};
+
+Shell.patchTrees = function () {
+  if (typeof state === 'undefined' || !state) return;
+  const model = Shell.model(state);
+  for (const t of Shell.trees) Shell.patchTree(t, model);
+};
+
+Shell.treeKey = function (e) {
+  const tree = e.currentTarget;
+  const row = e.target.closest && e.target.closest('.tn-row');
+  if (!row) return;
+  const rows = [...tree.querySelectorAll('.tn-row')];
+  const i = rows.indexOf(row);
+  const group = row.hasAttribute('aria-expanded');
+  const open = row.getAttribute('aria-expanded') === 'true';
+  const focus = (n) => { if (n) n.focus(); };
+  const k = e.key;
+  if (k === 'ArrowDown') { e.preventDefault(); focus(rows[i + 1]); }
+  else if (k === 'ArrowUp') { e.preventDefault(); focus(rows[i - 1]); }
+  else if (k === 'Home') { e.preventDefault(); focus(rows[0]); }
+  else if (k === 'End') { e.preventDefault(); focus(rows[rows.length - 1]); }
+  else if (k === 'ArrowRight' && group) { e.preventDefault(); if (!open) Shell.toggle(Shell.rowKey(row)); else focus(rows[i + 1]); }
+  else if (k === 'ArrowLeft') {
+    e.preventDefault();
+    if (group && open) Shell.toggle(Shell.rowKey(row));
+    else { const up = row.closest('.tn-kids'); if (up) focus(up.parentNode.querySelector('.tn-row')); }
+  } else if (k === ' ' && group) { e.preventDefault(); Shell.toggle(Shell.rowKey(row)); }
+  else if (k === 'Enter' && group) {
+    e.preventDefault();
+    const go = row.querySelector('.tn-go');
+    if (go) go.click(); else Shell.toggle(Shell.rowKey(row));
+  } else if (k === ' ' && row.tagName === 'A') { e.preventDefault(); row.click(); }
+};
+
+Shell.bindTree = function (tree) {
+  tree.addEventListener('click', (e) => {
+    if (e.target.closest('.tn-go')) return;                    // the arrow opens the project page
+    const row = e.target.closest('.tn-row');
+    if (row && row.hasAttribute('aria-expanded')) Shell.toggle(Shell.rowKey(row));
+  });
+  tree.addEventListener('keydown', Shell.treeKey);
+  tree.addEventListener('focusin', (e) => {                     // roving tabindex: one row is a tab stop
+    const row = e.target.closest && e.target.closest('.tn-row');
+    if (!row) return;
+    for (const r of tree.querySelectorAll('.tn-row[tabindex="0"]')) if (r !== row) r.setAttribute('tabindex', '-1');
+    row.setAttribute('tabindex', '0');
+  });
+};
+
+/* The nav list + the tree: built twice (sidebar and drawer) by this one builder, each with its own root. */
+Shell.buildSide = function (container, withFoot) {
+  const nav = el('nav', { class: 'sb-nav', 'aria-label': 'Sections' });
+  for (const [id, label, icon, href] of Shell.NAV) {
+    nav.append(el('a', { class: 'nav-item', href, 'data-nav': id, title: label }, ic(icon), el('span', { class: 'lbl', text: label }),
+      id === 'inbox' || id === 'agents' || id === 'tasks' ? el('span', { class: 'cnt', 'data-cnt': id }) : null));
+  }
+  const tree = el('div', { class: 'tree', role: 'tree', 'aria-label': 'Projects' });
+  tree._empty = el('div', { class: 'sb-empty dim', text: 'No projects yet' });
+  const inner = el('div', { class: 'sb-inner' }, nav, el('div', { class: 'sb-h', text: 'Projects' }), tree, tree._empty);
+  if (withFoot) {
+    inner.append(el('div', { class: 'sb-foot' },
+      el('button', { class: 'minimal small collapse', type: 'button', title: 'Collapse sidebar  [', 'aria-label': 'Collapse sidebar', onclick: () => Shell.setSidebar(false) }, ic('double-chevron-left'), 'Collapse')));
+  }
+  container.append(inner);
+  Shell.bindTree(tree);
+  Shell.trees.push(tree);
+  return tree;
+};
+
+Shell.buildDrawer = function (dlg) {
+  const panel = el('div', { class: 'drawer-panel' },
+    el('div', { class: 'drawer-head' }, el('a', { class: 'brand', href: '#/', text: 'ccboard' }),
+      el('button', { class: 'icon minimal', type: 'button', 'aria-label': 'Close menu', title: 'Close', onclick: () => dlg.close() }, ic('cross'))));
+  Shell.buildSide(panel, false);
+  dlg.append(panel);
+  dlg.addEventListener('click', (e) => {
+    if (e.target === dlg) dlg.close();                          // backdrop
+    else if (e.target.closest && e.target.closest('a[href^="#/"]')) dlg.close();   // a link to the current hash fires no hashchange
+  });
+};
+
+Shell.openDrawer = function () {
+  const dlg = $('#drawer');
+  if (!dlg || dlg.open) return;
+  try { dlg.showModal(); } catch (_) { dlg.setAttribute('open', ''); }
+};
+
+Shell.closeDrawer = function () { const dlg = $('#drawer'); if (dlg && dlg.open) dlg.close(); };
+
+/* ---------- bottom nav (compact) ---------- */
+
+Shell.buildBnav = function (nav) {
+  for (const [id, label, icon, href] of Shell.NAV.slice(0, 4)) {
+    nav.append(el('a', { class: 'bn', href, 'data-nav': id },
+      el('span', { class: 'bn-ic' }, ic(icon), id === 'inbox' || id === 'agents' || id === 'tasks' ? el('span', { class: 'cnt', 'data-cnt': id }) : null),
+      el('span', { class: 'lbl', text: label })));
+  }
+  nav.append(el('button', { class: 'minimal bn', type: 'button', 'aria-label': 'Menu', onclick: () => Shell.openDrawer() },
+    el('span', { class: 'bn-ic' }, ic('menu')), el('span', { class: 'lbl', text: 'Menu' })));
+};
+
+/* ---------- counts, aria-current, crumbs ---------- */
+
+Shell.patchCounts = function (model) {
+  const counts = { inbox: model.attn, agents: model.live, tasks: model.tasks };
+  for (const root of [$('#sidebar'), $('#drawer'), $('#bnav')]) {
+    if (!root) continue;
+    for (const c of root.querySelectorAll('[data-cnt]')) {
+      const id = c.getAttribute('data-cnt');
+      const n = counts[id] || 0;
+      setText(c, n ? String(n) : '');
+      c.classList.toggle('attn', id === 'inbox' && n > 0);
+      const a = c.closest('[data-nav]');
+      if (a) a.classList.toggle('attn', id === 'inbox' && n > 0);
+    }
+  }
+};
+
+Shell.syncNav = function () {
+  const r = typeof currentRoute === 'function' ? currentRoute() : null;
+  const id = r ? r.id : 'home';
+  for (const root of [$('#sidebar'), $('#drawer'), $('#bnav')]) {
+    if (!root) continue;
+    for (const a of root.querySelectorAll('[data-nav]')) {
+      if (a.getAttribute('data-nav') === id) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    }
+  }
+};
+
+Shell.crumbList = function (r) {
+  if (!r || r.id === 'home') return [];
+  const p = r.params || {};
+  if (r.id === 'project') return [{ text: p.project, href: Shell.hash('project', { project: p.project }) }].concat(p.repo ? [{ text: p.repo }] : []);
+  if (r.id === 'session') {
+    const parts = String(p.tmux || '').split('--');
+    return parts.length === 3 ? [{ text: parts[0], href: Shell.hash('project', { project: parts[0] }) }, { text: parts[1] }, { text: parts[2] }] : [{ text: p.tmux }];
+  }
+  if (r.id === 'memory' && p.project) return [{ text: 'Memory', href: '#/memory' }, { text: p.project }];
+  return [{ text: Shell.CRUMB_NAMES[r.id] || r.id }];
+};
+
+Shell.syncCrumbs = function () {
+  const R = Shell.refs;
+  if (!R) return;
+  const list = Shell.crumbList(typeof currentRoute === 'function' ? currentRoute() : null);
+  const sig = JSON.stringify(list);
+  if (sig === Shell.crumbSig) return;
+  Shell.crumbSig = sig;
+  R.crumbs.textContent = '';
+  list.forEach((c, i) => {
+    if (i) R.crumbs.append(el('span', { class: 'sep', 'aria-hidden': 'true', text: '/' }));
+    R.crumbs.append(c.href ? el('a', { class: 'crumb', href: c.href, text: c.text }) : el('span', { class: 'crumb', text: c.text }));
+  });
+};
+
+Shell.syncSearchBox = function () {
+  const R = Shell.refs;
+  const r = typeof currentRoute === 'function' ? currentRoute() : null;
+  if (R && r && r.id === 'search' && document.activeElement !== R.search) R.search.value = (r.query && r.query.q) || '';
+};
+
+/* ---------- shell modes ---------- */
+
+Shell.applyMode = function () {
+  const mq = Shell.mq;
+  const mode = mq.l.matches ? 'large' : mq.e.matches ? 'expanded' : mq.m.matches ? 'medium' : 'compact';
+  Shell.mode = mode;
+  const wide = Shell.wide();
+  const sb = mode === 'compact' ? 'none' : (mode === 'medium' || !Shell.sbOpen) ? 'rail' : 'full';
+  document.body.setAttribute('data-shell', mode);
+  document.body.setAttribute('data-sb', sb);
+  const side = $('#sidebar');
+  if (side) side.classList.toggle('rail', sb === 'rail');
+  const R = Shell.refs;
+  if (R) {
+    R.navBtn.classList.toggle('hidden', wide && sb === 'full');
+    R.navBtn.setAttribute('aria-label', wide ? 'Expand sidebar' : 'Open menu');
+    R.navBtn.setAttribute('title', wide ? 'Expand sidebar  [' : 'Menu  [');
+  }
+  if (wide) Shell.closeDrawer();                                  // the persistent sidebar replaces the drawer from 840 px up
+};
+
+Shell.watchMode = function () {
+  const q = (s) => (window.matchMedia ? window.matchMedia(s) : { matches: false });
+  Shell.mq = { l: q('(min-width: 1200px)'), e: q('(min-width: 840px)'), m: q('(min-width: 600px)') };
+  for (const m of Object.values(Shell.mq)) {
+    if (m.addEventListener) m.addEventListener('change', () => Shell.applyMode());
+    else if (m.addListener) m.addListener(() => Shell.applyMode());
+  }
+  Shell.applyMode();
+};
+
+Shell.setSidebar = function (open) {
+  Shell.sbOpen = !!open;
+  try { localStorage.setItem('ccboard:sb', open ? '1' : '0'); } catch (_) { /* storage may be unavailable */ }
+  Shell.applyMode();
+};
+
+Shell.navToggle = function () { if (Shell.wide()) Shell.setSidebar(true); else Shell.openDrawer(); };
+
+Shell.toggleSidebar = function () {
+  if (Shell.wide()) { Shell.setSidebar(!Shell.sbOpen); return; }
+  const dlg = $('#drawer');
+  if (dlg && dlg.open) dlg.close(); else Shell.openDrawer();
+};
+
+/* ---------- create menu: repo picker sheet, then the existing launcher forms ---------- */
+
+Shell.createItems = function () {
+  return [
+    { label: 'New session', icon: 'console', onClick: () => Shell.pickRepo('session') },
+    { label: 'New task', icon: 'git-branch', onClick: () => Shell.pickRepo('task') },
+    { label: 'Schedule', icon: 'time', onClick: () => Shell.pickRepo('job') },
+    { label: 'New project', icon: 'folder-close', onClick: () => Shell.newProject() },
+    { label: 'Import from GitHub', icon: 'download', onClick: () => openImport() },
+    { label: 'Batch prompt', icon: 'layers', onClick: () => openBatch() },
+  ];
+};
+
+Shell.PICK_TITLES = { session: 'New session', task: 'New task', job: 'Schedule a run' };
+
+Shell.pickRepo = function (kind) {
+  if (typeof state === 'undefined' || !state) return;
+  const entries = [];
+  if (kind === 'session') for (const p of state.projects || []) if (p.root) entries.push({ p, r: p.root, label: `${p.name}/`, sub: 'project folder' });
+  for (const x of allRepos()) {
+    const p = state.projects.find((q) => q.name === x.project);
+    const r = p && p.repos.find((q) => q.name === x.repo);
+    if (r) entries.push({ p, r, label: x.id, sub: r.branch || '' });
+  }
+  const list = el('div', { class: 'pick-list' });
+  const fill = (q) => {
+    list.textContent = '';
+    const f = q.trim().toLowerCase();
+    for (const e of entries) {
+      if (f && !e.label.toLowerCase().includes(f)) continue;
+      list.append(el('button', { class: 'minimal pick-row', type: 'button', onclick: () => Shell.showForm(kind, e) },
+        el('span', { class: 'pr-name mono', text: e.label }), e.sub ? el('span', { class: 'dim', text: e.sub }) : null));
+    }
+    if (!list.childElementCount) list.append(el('div', { class: 'dim', text: 'no match' }));
+  };
+  const filter = entries.length > 8 ? el('input', { type: 'search', placeholder: 'filter repos…', 'aria-label': 'Filter repos', oninput: (ev) => fill(ev.target.value) }) : null;
+  fill('');
+  openSheet({ title: Shell.PICK_TITLES[kind], body: entries.length ? [filter, list] : emptyState('folder-close', 'No repos yet', 'Create a project and add a repo first.'),
+    onClose: () => { if (ui.openForm === 'sheet') ui.openForm = null; Shell.formWatch = null; } });
+  if (filter) filter.focus();
+};
+
+Shell.showForm = function (kind, e) {
+  const form = kind === 'session' ? sessionForm(e.p, e.r) : kind === 'task' ? taskForm(e.p, e.r) : jobForm(e.p, e.r);
+  const holder = el('div', { class: 'sheet-form' },
+    el('button', { class: 'minimal small', type: 'button', onclick: () => Shell.pickRepo(kind) }, ic('chevron-left'), 'Repos'), form);
+  // The launcher forms end with a Cancel that re-renders the home board: inside the sheet it only closes the sheet.
+  holder.addEventListener('click', (ev) => {
+    const b = ev.target.closest && ev.target.closest('button');
+    if (b && b.type === 'button' && b.textContent.trim() === 'Cancel') { ev.stopPropagation(); ev.preventDefault(); closeSheet(); }
+  }, true);
+  // The forms set ui.openForm = null and poll(true) once the launch worked: the next forced render closes the sheet.
+  ui.openForm = 'sheet';
+  Shell.formWatch = () => { if (ui.openForm !== 'sheet') { Shell.formWatch = null; closeSheet(); } };
+  openSheet({ title: `${Shell.PICK_TITLES[kind]} · ${e.label}`, body: holder,
+    onClose: () => { if (ui.openForm === 'sheet') ui.openForm = null; Shell.formWatch = null; } });
+};
+
+Shell.newProject = function () {
+  const name = el('input', { type: 'text', placeholder: 'project name (e.g. shop)', required: true, maxlength: 64 });
+  const url = el('input', { type: 'text', placeholder: 'optional: clone URL of the first repo' });
+  const form = el('form', { class: 'form', onsubmit: async (ev) => {
+    ev.preventDefault();
+    const body = { name: name.value.trim() };
+    if (url.value.trim()) body.url = url.value.trim();
+    try { await api('POST', '/api/projects', body); setError(null); closeSheet(); toast(`Project ${body.name} created`, { kind: 'ok' }); await poll(true); }
+    catch (err) { setError(err.message); }
+  } },
+  field('name', name), field('clone URL', url),
+  el('div', { class: 'submit' }, el('button', { class: 'primary', type: 'submit', text: 'Create project' }), el('button', { type: 'button', onclick: () => closeSheet(), text: 'Cancel' })));
+  openSheet({ title: 'New project', body: form });
+  name.focus();
+};
+
+/* ---------- install ---------- */
+
+Shell.listen = function () {
+  window.addEventListener('hashchange', () => { Shell.syncNav(); Shell.syncCrumbs(); Shell.syncSearchBox(); Shell.closeDrawer(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (document.querySelector('dialog[open]') || (typeof ui !== 'undefined' && ui.modal)) return;
+    if (e.key === '/') { e.preventDefault(); Shell.focusSearch(); }
+    else if (e.key === '[') { e.preventDefault(); Shell.toggleSidebar(); }
+  });
+  // An error raised while the sheet covers the board would be invisible: show it as a toast as well.
+  if (typeof setError === 'function' && !Shell.errWrapped) {
+    const base = setError;
+    Shell.errWrapped = true;
+    setError = function (msg) {
+      base(msg);
+      const sh = document.getElementById('sheet');
+      if (msg && sh && sh.open) toast(msg, { kind: 'bad' });
+    };
+  }
+};
+
+function installShell() {
+  if (Shell.refs) return;
+  const bar = $('#topbar');
+  const side = $('#sidebar');
+  const drawer = $('#drawer');
+  const bnav = $('#bnav');
+  if (!bar || !side || !drawer || !bnav) return;
+  Shell.load();
+  Shell.refs = {};
+  Shell.buildTopbar(bar);
+  Shell.buildSide(side, true);
+  Shell.buildDrawer(drawer);
+  Shell.buildBnav(bnav);
+  Shell.watchMode();
+  Shell.listen();
+  if (typeof state !== 'undefined' && state) renderShell(state);
+  else { Shell.syncNav(); Shell.syncCrumbs(); }
+}
+
+/* renderShell(st): everything the chrome shows, patched in place. render(force): renderShell + the current page's update(state, route). */
+function renderShell(st) {
+  if (!Shell.refs || !st) return;
+  const model = Shell.model(st);
+  Shell.patchHeader(st);
+  Shell.patchUsage(st);
+  Shell.patchCounts(model);
+  Shell.patchTrees();
+  Shell.syncNav();
+  Shell.syncCrumbs();
+  Shell.syncSearchBox();
+}
+
+function render(force) {
+  if (typeof state === 'undefined' || !state) return;
+  renderShell(state);
+  const r = typeof currentRoute === 'function' ? currentRoute() : null;
+  const page = r && typeof pages !== 'undefined' ? pages[r.id] : null;
+  // a page that is not mounted yet gets its update() from route() right after its mount(); the router updates the base page and the overlay
+  if (typeof updateCurrentPage === 'function') updateCurrentPage(state);
+  else if (page && typeof page.update === 'function' && (typeof mountedId === 'undefined' || mountedId === r.id)) {
+    try { page.update(state, r); } catch (e) { console.error('ccboard update', r.id, e); }
+  }
+  if (typeof renderBanner === 'function') renderBanner();
+  if (typeof updateModal === 'function') updateModal();
+  if (Shell.formWatch) Shell.formWatch();
+}

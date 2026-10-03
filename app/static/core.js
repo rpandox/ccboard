@@ -10,9 +10,19 @@ const $ = (sel) => document.querySelector(sel);
 const INTENT = { primary: 'bp5-intent-primary', danger: 'bp5-intent-danger', ok: 'bp5-intent-success', bad: 'bp5-intent-danger',
                  warn: 'bp5-intent-warning', working: 'bp5-intent-primary', waiting: 'bp5-intent-warning', done: 'bp5-intent-success',
                  errored: 'bp5-intent-danger' };
+/* Structural Blueprint widgets (pure CSS): the semantic class maps to its bp5-* class and nothing else is added, whatever the tag.
+   callout and progress also take the intent classes (ok, warn, bad, primary, danger). Used by tabs(), menu(), emptyState() in components.js. */
+const SEMANTIC = { tabs: 'bp5-tabs', tablist: 'bp5-tab-list', tab: 'bp5-tab', tabpanel: 'bp5-tab-panel', menu: 'bp5-menu', menuitem: 'bp5-menu-item',
+                   callout: 'bp5-callout', nonideal: 'bp5-non-ideal-state', progress: 'bp5-progress-bar', meter: 'bp5-progress-meter', navbar: 'bp5-navbar' };
 function blueprint(n, tag, cls) {
   const list = cls ? cls.split(/\s+/) : [];
   const has = (c) => list.includes(c);
+  const sem = list.filter((c) => ownKey(SEMANTIC, c));
+  if (sem.length) {
+    for (const c of sem) n.classList.add(SEMANTIC[c]);
+    if (has('callout') || has('progress')) for (const c of list) if (ownKey(INTENT, c)) n.classList.add(INTENT[c]);
+    return;
+  }
   if (tag === 'button' || (tag === 'a' && has('btn'))) {
     n.classList.add('bp5-button');
     for (const c of list) if (INTENT[c] && (c === 'primary' || c === 'danger')) n.classList.add(INTENT[c]);
@@ -30,6 +40,8 @@ function blueprint(n, tag, cls) {
     for (const c of list) if (INTENT[c] && c !== 'primary' && c !== 'danger') n.classList.add(INTENT[c]);
   }
 }
+/* Write text only when it changed: the poll patches the shell in place every few seconds and must not touch the DOM for nothing. */
+function setText(node, text) { const t = String(text); if (node.textContent !== t) node.textContent = t; }
 function ic(name) { return el('span', { class: 'bp5-icon bp5-icon-' + name, 'aria-hidden': 'true' }); }
 
 function el(tag, attrs, ...children) {
@@ -93,7 +105,49 @@ function svg(tag, attrs, ...children) {
   return n;
 }
 
+/* Demo mode (?demo=1 or localStorage ccboard:demo=1): GETs read fixtures under /static/demo, writes resolve {ok:true}. The fixtures are
+   excluded from the service-worker shell and the asset version. The try/catch keeps this definition-only: a missing location or
+   storage reads as "not demo". */
+let demoFlag = null;
+function demoOn() {
+  if (demoFlag === null) { try { demoFlag = /[?&]demo=1/.test(location.search) || localStorage.getItem('ccboard:demo') === '1'; } catch (_) { demoFlag = false; } }
+  return demoFlag;
+}
+/* The fixtures were captured at demo.epoch: shift every timestamp by the elapsed time so ages, countdowns and the 'older' cut stay live. */
+const ISO_TS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
+const EPOCH_KEYS = new Set(['created', 'resets_at', 'created_at_epoch', 'expires_at']);
+function demoRebase(data) {
+  const epoch = data && data.demo && data.demo.epoch;
+  if (!epoch) return data;
+  const dt = Math.floor(Date.now() / 1000 - (typeof epoch === 'number' ? epoch : Date.parse(epoch) / 1000));
+  const walk = (v, key) => {
+    if (Array.isArray(v)) return v.map((x) => walk(x, key));
+    if (v && typeof v === 'object') { const o = {}; for (const [k, x] of Object.entries(v)) o[k] = k === 'demo' ? x : walk(x, k); return o; }
+    if (typeof v === 'number' && EPOCH_KEYS.has(key) && v > 1e9) return v + dt;
+    if (typeof v === 'string' && ISO_TS.test(v)) { const t = Date.parse(v); if (!Number.isNaN(t)) return new Date(t + dt * 1000).toISOString(); }
+    return v;
+  };
+  return walk(data, '');
+}
+
+async function demoApi(method, path) {
+  if (method !== 'GET') { await new Promise((resolve) => setTimeout(resolve, 150)); return { ok: true }; }
+  const bare = path.split('?')[0];
+  let name = null;
+  if (bare === '/api/state') name = 'state';
+  else if (bare.startsWith('/api/search')) name = 'search';
+  else if (/^\/api\/projects\/.*\/tree/.test(bare)) name = 'tree';
+  else if (bare.startsWith('/api/series')) name = 'series';
+  else if (bare.startsWith('/api/memory/')) name = 'memory';
+  if (!name) return {};
+  const r = await fetch(`/static/demo/${name}.json`);
+  if (!r.ok) throw new Error(`demo fixture ${name}.json: ${r.status} ${r.statusText}`);
+  const data = await r.json();
+  return name === 'state' ? demoRebase(data) : data;
+}
+
 async function api(method, path, body) {
+  if (demoOn()) return demoApi(method, path);
   const headers = { 'X-CCBoard': '1' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   const r = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });

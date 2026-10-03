@@ -290,7 +290,7 @@ PROJECTS_DIR=$PWD/tmp-projects CCBOARD_DATA_DIR=$PWD/tmp-data CCBOARD_DEV_BYPASS
 ```
 `CCBOARD_DEV_BYPASS_USER` skips the identity check for local development only; it is honoured only when the board runs directly on a host, and ignored under systemd and in the container (`CCBOARD_RUNTIME`, `INVOCATION_ID`).
 
-The frontend is plain scripts loaded in order by `app/static/index.html` (`core.js` first, `main.js` last; `term.html` loads `core.js`, `components.js`, `term.js`): no bundler. `GET /sw.js` is rendered from `app/static/sw.js` with the cache name and the precache list generated from every file under `app/static`, and `/api/state.version` is a hash of the same files, so open pages reload after a deploy. `tests/test_static.py` enforces the CSP rules (no inline styles or scripts, no external URLs, text through `textContent`); `node` is needed for the JS checks (`tests/js`).
+The frontend is plain scripts loaded in order by `app/static/index.html` (`core.js` first, `main.js` last; `term.html` loads `core.js`, `components.js`, `term.js`): no bundler. `GET /sw.js` is rendered from `app/static/sw.js` with the cache name and the precache list generated from every file under `app/static`, and `/api/state.version` is a hash of the same files, so open pages reload after a deploy. Open the board with `?demo=1` to see every page rendered from fixtures (`app/static/demo/`, no tmux needed), and run `scripts/qa-ui.sh <base-url> <out-dir>` to drive the gstack browser (or headless Chrome) over the routes at phone, tablet and desktop widths. `tests/test_static.py` enforces the CSP rules (no inline styles or scripts, no external URLs, text through `textContent`); `node` is needed for the JS checks (`tests/js`).
 
 ## License
 

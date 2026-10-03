@@ -1,155 +1,13 @@
-/* ccboard home page (v0.4 board rehomed): header, strips, banner, inbox, tasks, schedules, projects, login modal.
-   render(force) is the state consumer that core.js's poll() calls. */
+/* ccboard home page (the v0.4 board rehomed into #page): the needs-attention list, the live grid, the tasks kanban, schedules,
+   the new-project form and the project cards, built by mount() with the ids the legacy renderers write into and patched by
+   update(). Also home to the banner and the login modal (startLogin / logout / openModal / updateModal), which every page uses.
+   The header, usage strip, nav and the render() state consumer moved to shell.js; the notify panel and nodes strip to
+   pages/settings.js; transcript search to pages/search.js. */
 'use strict';
-
-function renderUsage() {
-  const u = $('#usage');
-  if (!u) return;
-  u.textContent = '';
-  const rl = (state.usage && state.usage.value) || {};
-  const blk = (state.block && state.block.value) || null;
-  const segs = [];
-  const win = (key, label) => {
-    const w = rl[key];
-    if (!w || typeof w.used_percentage !== 'number') return;
-    segs.push(el('span', { class: 'seg', title: `${label} window, from Claude Code's statusline` },
-      el('b', { text: label }), pctBar(w.used_percentage), `${Math.round(w.used_percentage)}%`,
-      w.resets_at ? el('span', { text: `resets in ${fmtIn(w.resets_at)}` }) : null));
-  };
-  win('five_hour', '5h'); win('seven_day', 'week'); win('spend_limit', 'spend');
-  if (blk && blk.available && blk.active) {
-    const bits = [];
-    if (typeof blk.burn_cost_per_hour === 'number') bits.push(`burn $${blk.burn_cost_per_hour.toFixed(2)}/h`);
-    if (typeof blk.cost_usd === 'number') bits.push(`block $${blk.cost_usd.toFixed(2)}` + (typeof blk.projected_cost === 'number' ? ` → $${blk.projected_cost.toFixed(0)} proj.` : ''));
-    if (typeof blk.remaining_minutes === 'number') bits.push(`${Math.floor(blk.remaining_minutes / 60)}h${blk.remaining_minutes % 60}m left`);
-    segs.push(el('span', { class: 'seg', title: 'ccusage blocks --active' }, el('b', { text: 'ccusage' }), bits.join(' · ')));
-  } else if (blk && !blk.available) {
-    segs.push(el('span', { class: 'seg dim', text: 'ccusage not installed (burn rate unavailable)' }));
-  }
-  const h = state.health;
-  if (h && (h.cpu_pct !== null || h.mem || h.disk)) {
-    const bits = [];
-    if (typeof h.cpu_pct === 'number') bits.push(`cpu ${h.cpu_pct}%`);
-    else if (typeof h.load1 === 'number') bits.push(`load ${h.load1.toFixed(2)}`);
-    if (h.mem) bits.push(`ram ${h.mem.pct}%`);
-    if (h.disk) bits.push(`disk ${h.disk.pct}%`);
-    segs.push(el('span', { class: 'seg', title: `${h.host}${h.uptime_s ? ' · up ' + Math.floor(h.uptime_s / 3600) + 'h' : ''}` }, el('b', { text: state.node_name || 'box' }), bits.join(' · ')));
-  }
-  const bk = state.backup;
-  if (bk && bk.at) {
-    const failed = bk.status !== 'ok';
-    segs.push(el('span', { class: 'seg' + (failed ? ' bad' : ''), title: failed ? (bk.errors || []).join('\n') : 'last nightly backup (restic + git push --all); details in the 🔔 panel' },
-      el('b', { text: 'backup' }), `${failed ? 'failed' : 'ok'} ${fmtAge(Date.parse(bk.at) / 1000) + " ago"}`));
-  }
-  const chips = [];
-  for (const p of state.projects) for (const r of repoGroups(p)) for (const s of r.sessions) {
-    if (s.stats && (s.stats.model || typeof s.stats.context_pct === 'number') && s.state !== 'ended') {
-      chips.push(el('span', { class: 'chip', text: `${p.name}/${r.name}·${s.name} ${s.stats.model || ''}${typeof s.stats.context_pct === 'number' ? ' ctx ' + Math.round(s.stats.context_pct) + '%' : ''}` }));
-    }
-  }
-  if (!segs.length && !chips.length) { u.classList.add('hidden'); return; }
-  u.classList.remove('hidden');
-  segs.forEach(s => u.append(s));
-  chips.forEach(c => u.append(c));
-}
-
-function renderNodes() {
-  const n = $('#nodes');
-  if (!n) return;
-  n.textContent = '';
-  const list = (state.nodes && state.nodes.value) || [];
-  if (!list.length) { n.classList.add('hidden'); return; }
-  n.classList.remove('hidden');
-  n.append(el('b', { text: 'Nodes' }));
-  for (const x of list) {
-    const h = x.health || {};
-    const txt = x.online
-      ? `${x.sessions} sess · ${x.attention} need you${typeof h.cpu_pct === 'number' ? ' · cpu ' + h.cpu_pct + '%' : ''}${h.mem ? ' · ram ' + h.mem.pct + '%' : ''}${h.disk ? ' · disk ' + h.disk.pct + '%' : ''}${x.usage && x.usage.five_hour ? ' · 5h ' + Math.round(x.usage.five_hour.used_percentage) + '%' : ''}`
-      : 'offline' + (x.error ? ' · ' + x.error.slice(0, 60) : '');
-    const cls = 'chip' + (x.online ? (x.attention ? ' attn' : '') : ' bad');
-    const safe = /^https:\/\/[A-Za-z0-9.-]+(:\d+)?$/.test(x.url || '');
-    n.append(safe ? el('a', { class: cls, href: x.url + '/', target: '_blank', rel: 'noopener', title: x.url, text: `${x.name}: ${txt}` })
-                  : el('span', { class: cls, text: `${x.name}: ${txt}` }));
-  }
-}
-
-function renderNotifyPanel() {
-  const p = $('#notify');
-  if (!p) return;
-  p.textContent = '';
-  if (!ui.notifyPanel) { p.classList.add('hidden'); return; }
-  p.classList.remove('hidden');
-  const n = (state.config && state.config.ntfy) || {};
-  const pushRow = el('div', { class: 'row' }, el('b', { text: 'This device (Web Push):' }));
-  p.append(pushRow);
-  pushSubscription().then(sub => {
-    if (sub) pushRow.append(el('span', { class: 'dim', text: 'enabled' }),
-      el('button', { onclick: () => disablePush().catch(e => setError(e.message)), text: 'Disable' }),
-      el('button', { onclick: async () => { try { const r = await api('POST', '/api/push/test'); setError(r.sent ? null : 'no push sent (' + r.subscriptions + ' subscriptions)'); } catch (e) { setError(e.message); } }, text: 'Test push' }));
-    else pushRow.append(el('button', { class: 'primary', onclick: () => enablePush().catch(e => setError(e.message)), text: 'Enable push on this device' }),
-      el('span', { class: 'dim', text: 'Works in Chrome/Android and in an installed (Home Screen) PWA on iOS 16.4+.' }));
-  }).catch(() => pushRow.append(el('span', { class: 'dim', text: 'Web Push not available here.' })));
-  const bkRow = el('div', { class: 'row' }, el('b', { text: 'Backup:' }));
-  p.append(bkRow);
-  const bc = (state.config && state.config.backup) || {};
-  const bk = state.backup;
-  if (bk && bk.at) {
-    const r = bk.restic || {};
-    const pushed = (bk.push || []).reduce((n, x) => n + (x.pushed || []).length, 0);
-    bkRow.append(el('span', { class: bk.status === 'ok' ? '' : 'bad', text: `${bk.status} ${fmtAge(Date.parse(bk.at) / 1000) + " ago"}` }),
-      el('span', { class: 'dim', text: r.snapshot_id ? `snapshot ${String(r.snapshot_id).slice(0, 8)} → ${r.repo || ''}` : (r.skipped ? 'restic off' : 'no snapshot') + ` · ${pushed} branch(es) pushed across ${(bk.push || []).length} repo(s)` }));
-    if (bk.status !== 'ok') bkRow.append(el('span', { class: 'bad', text: (bk.errors || []).join(' · ').slice(0, 300) }));
-  } else {
-    bkRow.append(el('span', { class: 'dim', text: 'no backup has run yet (nightly via ccboard-backup.timer)' + (bc.restic && !bc.restic_installed ? ' · restic is not installed' : '') }));
-  }
-  bkRow.append(el('button', { onclick: async () => { try { await api('POST', '/api/backup/run'); setError(null); setTimeout(() => poll(true), 3000); } catch (e) { setError(e.message); } }, text: 'Back up now' }),
-    el('span', { class: 'dim', text: (bc.restic ? `restic → ${bc.repo}` : 'restic off') + (bc.push ? ' · git push --all origin for every repo' : ' · no git push') }));
-  const ntfyRow = el('div', { class: 'row' }, el('b', { text: 'ntfy app:' }));
-  p.append(ntfyRow);
-  if (!n.enabled) {
-    ntfyRow.append(el('span', { class: 'dim', text: 'not configured on the box (NTFY_URL in /etc/ccboard/env, or rerun install.sh).' }));
-    return;
-  }
-  const base = (n.subscribe_url || '').replace(/\/[^/]*$/, '');
-  ntfyRow.append(el('code', { text: n.subscribe_url || '' }),
-    el('button', { onclick: async () => { try { await navigator.clipboard.writeText(n.subscribe_url || ''); } catch (_) { /* ignore */ } }, text: 'Copy' }),
-    el('button', { class: 'primary', onclick: async () => { try { const r = await api('POST', '/api/notify/test'); setError(r.ok ? null : 'ntfy publish failed (is ntfy running?)'); ui.notice = r.ok ? 'Test sent to ntfy. If the phone stays silent, check the steps below.' : null; renderBanner(); } catch (e) { setError(e.message); } }, text: 'Send test' }));
-  p.append(el('details', { class: 'dim' }, el('summary', { text: 'Phone setup (ntfy app)' }),
-    el('ol', {},
-      el('li', {}, 'Install the ntfy app (App Store / Play Store) and keep the Tailscale VPN on: the server is only reachable on the tailnet.'),
-      el('li', {}, 'Add a subscription → "Use another server" → server ', el('code', { text: base }), ', topic ', el('code', { text: n.topic || '' }), '.'),
-      el('li', {}, 'iPhone: this server relays wake-ups through ntfy.sh (no message content); allow notifications for the app. Android: allow the app to run in the background for instant delivery.'),
-      el('li', {}, 'Tap "Send test" above. Pushes go out on needs-you, done, error and rate limit; “Terminal” opens the session, “Ack” clears it.'))));
-}
-
-function renderHeader() {
-  const badge = $('#claude-badge');
-  badge.textContent = '';
-  badge.className = 'badge';
-  const c = state.claude || {};
-  if (!c.installed) { badge.classList.add('bad'); badge.textContent = 'claude not installed'; }
-  else if (c.loggedIn) { badge.classList.add('ok'); badge.textContent = `Claude: ${c.email || 'logged in'}${c.subscriptionType ? ' (' + c.subscriptionType + ')' : ''}`; }
-  else { badge.classList.add('warn'); badge.textContent = 'Claude: not logged in'; }
-  const actions = $('#hdr-actions');
-  actions.textContent = '';
-  actions.append(el('span', { class: 'dim user', text: state.user || '' }));
-  if (c.installed && !c.loggedIn) actions.append(el('button', { class: 'primary', onclick: startLogin, text: 'Log in' }));
-  if (c.installed && c.loggedIn) actions.append(el('button', { class: 'desk', onclick: logout, text: 'Log out' }));
-  const n = state.config && state.config.ntfy;
-  actions.append(el('button', { class: 'icon' + (ui.notifyPanel ? ' on' : ''), onclick: () => { ui.notifyPanel = !ui.notifyPanel; renderNotifyPanel(); }, title: 'notifications' }, ic(n && n.enabled ? 'notifications' : 'notifications-snooze')));
-  actions.append(el('button', { class: live.on ? 'primary' : '', onclick: toggleLive, title: 'live last lines of every session' }, ic('pulse'), el('span', { class: 'desk', text: 'Live' })));
-  actions.append(el('button', { class: 'icon search-toggle', onclick: () => { document.body.classList.toggle('search-open'); const b = $('#hdr-search'); if (document.body.classList.contains('search-open') && b) b.focus(); }, title: 'search transcripts' }, ic('search')));
-  actions.append(el('button', { class: 'icon', onclick: refreshNow, title: 'refresh now' }, ic('refresh')));
-  if (!$('#hdr-search')) {
-    const box = el('input', { id: 'hdr-search', type: 'search', placeholder: 'search transcripts…', title: 'full-text search over Claude transcripts (display only)' });
-    box.addEventListener('keydown', (e) => { if (e.key === 'Enter') runSearch(box.value); if (e.key === 'Escape') { box.value = ''; $('#search').classList.add('hidden'); } });
-    actions.append(box);
-  } else { actions.append($('#hdr-search')); }
-  if (state.login && state.login.running && !ui.modal) actions.append(el('button', { onclick: () => openModal(), text: 'Login in progress…' }));
-}
 
 function renderBanner() {
   const b = $('#banner');
+  if (!b) return;
   b.textContent = '';
   b.className = '';
   const rlim = state && state.rate_limited && state.rate_limited.value;
@@ -349,29 +207,6 @@ function renderTasks() {
   sec.append(grid);
 }
 
-async function runSearch(q) {
-  const sec = $('#search');
-  if (!sec) return;
-  q = (q || '').trim();
-  if (!q) { sec.classList.add('hidden'); return; }
-  sec.textContent = '';
-  sec.classList.remove('hidden');
-  sec.append(el('div', { class: 'row head' }, el('h2', { text: `Search: ${q}` }), el('button', { onclick: () => sec.classList.add('hidden'), text: 'Close' })));
-  try {
-    const r = await api('GET', `/api/search?q=${encodeURIComponent(q)}`);
-    if (!r.results.length) { sec.append(el('div', { class: 'dim', text: 'no matches' })); return; }
-    for (const hit of r.results) {
-      const where = hit.project ? `${hit.project}/${hit.repo}` : (hit.cwd || '').split('/').slice(-2).join('/');
-      sec.append(el('div', { class: 'sess' },
-        el('span', { class: 'state ' + (hit.kind === 'assistant' ? 'done' : ''), text: hit.kind }),
-        el('span', { class: 'name', text: where }),
-        el('span', { class: 'dim', text: (hit.ts || '').replace('T', ' ').slice(0, 16) }),
-        hit.tmux ? el('a', { class: 'btn', href: `/term/${encodeURIComponent(hit.tmux)}`, target: '_blank', rel: 'noopener', text: 'Attach' }) : el('code', { text: hit.session_id.slice(0, 8) }),
-        el('div', { class: 'last', text: hit.snippet })));
-    }
-  } catch (e) { sec.append(el('div', { class: 'bad', text: e.message })); }
-}
-
 function renderJobs() {
   const sec = $('#jobs');
   if (!sec) return;
@@ -420,6 +255,7 @@ function renderJobs() {
 
 function inboxItems() {
   const items = [];
+  if (!state) return items;
   const pend = {};
   for (const pr of (state.pending_permissions || [])) pend[pr.tmux_name] = pr;
   for (const p of state.projects) {
@@ -436,10 +272,9 @@ async function decide(pid, decision) {
 
 function renderInbox() {
   const sec = $('#inbox');
-  if (!sec) return;
+  if (!sec) { repaintPage(); return; }            // the board is not mounted: the inbox page owns the list
   sec.textContent = '';
   const items = inboxItems();
-  document.title = (items.length ? `(${items.length}) ` : '') + 'ccboard';
   if (!items.length) { sec.classList.add('hidden'); ui.inboxSel = -1; return; }
   sec.classList.remove('hidden');
   if (ui.inboxSel >= items.length) ui.inboxSel = items.length - 1;
@@ -464,7 +299,10 @@ function renderInbox() {
 async function inboxKey(e) {
   const ae = document.activeElement;
   if (ae && ae.matches('input, select, textarea')) return;
-  if (ui.modal) return;
+  if (ui.modal || !state) return;
+  const here = currentRoute();                    // the list is only on screen on Home and on the inbox page
+  if (!here || (here.id !== 'home' && here.id !== 'inbox')) return;
+  if (document.querySelector('dialog[open]')) return;
   const items = inboxItems();
   if (!items.length) return;
   if (e.key === 'j' || e.key === 'n') { ui.inboxSel = Math.min(items.length - 1, (ui.inboxSel < 0 ? -1 : ui.inboxSel) + 1); renderInbox(); }
@@ -484,8 +322,14 @@ async function inboxKey(e) {
 }
 document.addEventListener('keydown', inboxKey);
 
+const homeConfirm = { painted: null };
+
 function renderProjects() {
   const sec = $('#projects');
+  // confirmButton() calls this after its first tap and on Cancel: off the board there is no #projects, repaint the page instead
+  if (!sec) { repaintPage(); return; }
+  // the tasks and schedules sections hold confirm buttons too (Archive, Delete): repaint them when the two-tap state flipped
+  if (homeConfirm.painted !== ui.confirm) { homeConfirm.painted = ui.confirm; renderTasks(); renderJobs(); }
   sec.textContent = '';
   if (!state.projects.length) sec.append(el('div', { class: 'card dim', text: 'No projects yet.' }));
   for (const p of state.projects) sec.append(projectCard(p));
@@ -551,57 +395,57 @@ function updateModalSafe() { if (modalParts.link && modalParts.link.isConnected)
 
 function closeModal() { ui.modal = false; $('#modal').classList.add('hidden'); }
 
-function applyDeepLink() {
-  // ntfy click target: /#s=<tmux name> selects that session in the inbox (or scrolls to its row).
-  if (ui.deepLinked) return;
-  const m = /^#s=([A-Za-z0-9_-]+)$/.exec(location.hash || '');
-  if (!m || !state) return;
-  ui.deepLinked = true;
-  const items = inboxItems();
-  const i = items.findIndex(s => s.tmux === m[1]);
-  if (i >= 0) { ui.inboxSel = i; renderInbox(); }
-  const row = [...document.querySelectorAll('.sess')].find(r => r.dataset.tmux === m[1]);
-  if (row) row.scrollIntoView({ block: 'center' });
+
+/* ---------- the Home page ---------- */
+
+function homeTitle() {
+  const n = state ? inboxItems().length : 0;
+  return (n ? `(${n}) ` : '') + 'Home';
 }
 
-function renderNav() {
-  const nav = $('#bnav');
-  if (!nav) return;
-  nav.textContent = '';
-  nav.classList.remove('hidden');
-  const inbox = inboxItems().length;
-  const tasks = (state.tasks || []).filter(t => !t.archived_at).length;
-  const jobs = (state.jobs || []).length;
-  const projects = (state.projects || []).length;
-  const items = [
-    ['inbox', 'notifications', 'Needs you', inbox, inbox > 0],
-    ['tasks', 'git-branch', 'Tasks', tasks, false],
-    ['jobs', 'time', 'Schedules', jobs, false],
-    ['projects', 'folder-close', 'Projects', projects, false],
-  ];
-  for (const [id, icon, label, cnt, attn] of items) {
-    nav.append(el('button', { class: 'minimal' + (attn ? ' attn' : ''), onclick: () => { const t = $('#' + id); if (t) { t.classList.remove('hidden'); t.scrollIntoView({ behavior: 'smooth', block: 'start' }); } } },
-      ic(icon), el('span', { class: 'lbl' }, el('span', { class: 'cnt', text: cnt ? String(cnt) + ' ' : '' }), label)));
-  }
+function homeLiveButton() {
+  return el('button', { type: 'button', class: live.on ? 'primary' : '', title: 'live last lines of every session', onclick: homeToggleLive }, ic('pulse'), 'Live');
 }
 
-function render(force) {
-  renderHeader();
-  renderNav();
-  renderUsage();
-  renderNodes();
-  renderBanner();
-  renderInbox();
-  renderTasks();
-  renderJobs();
-  renderNotifyPanel();
-  renderNewProject();
-  renderQueue();
-  const ae = document.activeElement;
-  const typing = !!(ae && ae.closest('#projects') && ae.matches('input, select, textarea'));
-  // A forced poll follows a user action: always redraw (a focused button must not block it).
-  // A background poll leaves an open form or a field being typed in alone.
-  if (force ? !typing : (!ui.openForm && !typing)) renderProjects();
-  updateModal();
-  applyDeepLink();
+function homeToggleLive() {
+  try { toggleLive(); } catch (e) { console.error('ccboard live', e); }   // toggleLive() also asks the shell to repaint its header
+  const slot = $('#home-live');
+  if (!slot) return;
+  slot.textContent = '';
+  const b = homeLiveButton();
+  slot.append(b);
+  b.focus();
 }
+
+/* The sections carry the ids the legacy renderers write into: #inbox #live #tasks #jobs #new-project #projects, and
+   renderNewProject() adds #importrow and #queue inside #new-project. */
+registerPage('home', {
+  title: () => homeTitle(),
+  mount(root) {
+    const section = (id, cls) => el('section', { id, class: cls });
+    root.append(
+      el('div', { class: 'page-head' }, el('h1', { text: 'Home' }), el('div', { class: 'actions', id: 'home-live' }, homeLiveButton())),
+      section('inbox', 'card inbox hidden'), section('live', 'card hidden'), section('tasks', 'card hidden'), section('jobs', 'card hidden'),
+      section('new-project', 'card'), section('projects', ''));
+    if (live.on) { try { liveStart(); } catch (e) { console.error('ccboard live', e); } }   // main.js only restores the flag
+  },
+  update() {
+    renderInbox();
+    renderTasks();
+    renderJobs();
+    renderNewProject();
+    renderQueue();
+    const sec = $('#projects');
+    if (!sec) return;
+    const ae = document.activeElement;
+    const typing = !!(ae && ae.closest && ae.closest('#projects') && ae.matches('input, select, textarea'));
+    // a background poll leaves an open form and a field being typed in alone; the first paint always happens
+    if (!sec.childElementCount || (!ui.openForm && !typing)) renderProjects();
+    refreshTitle();
+  },
+  unmount() {
+    // the stream stops with the board; live.on stays, so coming back restarts it
+    if ($('#live')) { try { liveStop(); } catch (e) { console.error('ccboard live', e); } }
+    else if (live.es) { live.es.close(); live.es = null; live.tiles = {}; }
+  },
+});

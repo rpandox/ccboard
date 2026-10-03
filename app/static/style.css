@@ -113,6 +113,8 @@ select:focus { outline:none; border-color:var(--acc); }
 /* touch size comes from --tap (tokens.css: 28 px, 44 px under (pointer:coarse) and html.force-coarse) */
 .bp5-button, .bp5-input, select { min-height:var(--tap); }
 .bp5-button { min-width:var(--tap); }
+@media (pointer:coarse) { .bp5-button.bp5-small { min-height:var(--tap); min-width:var(--tap); } }   /* Blueprint's small (24 px) must not win on touch */
+html.force-coarse .bp5-button.bp5-small { min-height:var(--tap); min-width:var(--tap); }
 .bp5-dark .bp5-input { background:var(--bg); }
 textarea.bp5-text-area { min-height:80px; resize:vertical; }
 .state, .badge { white-space:nowrap; }

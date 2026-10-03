@@ -1,0 +1,41 @@
+{
+  "q": "auth",
+  "results": [
+    {
+      "session_id": "6f1d2c9e-3b7a-4c1e-9a52-1d0e5b7c8a01",
+      "cwd": "/home/ccboard/projects/phasezero/website",
+      "ts": "2026-10-03T00:00:00.000Z",
+      "kind": "assistant",
+      "file": "/home/ccboard/.claude/projects/-home-ccboard-projects-phasezero-website/6f1d2c9e-3b7a-4c1e-9a52-1d0e5b7c8a01.jsonl",
+      "line": 412,
+      "snippet": "…the checkout step now reuses the [auth] session cookie, so a guest who signs in mid-flow keeps the cart and the promo code…",
+      "project": "phasezero",
+      "repo": "website",
+      "tmux": "phasezero--website--t-checkout-redesign"
+    },
+    {
+      "session_id": "7c1e9b52-3d48-4a06-8f2b-5e0d6a9c1f10",
+      "cwd": "/home/ccboard/projects/petroit/api",
+      "ts": "2026-10-01T15:00:00.000Z",
+      "kind": "user",
+      "file": "/home/ccboard/.claude/projects/-home-ccboard-projects-petroit-api/7c1e9b52-3d48-4a06-8f2b-5e0d6a9c1f10.jsonl",
+      "line": 57,
+      "snippet": "add [auth] middleware to the /v1/devices routes and return 401 with a WWW-Authenticate header, not a redirect",
+      "project": "petroit",
+      "repo": "api",
+      "tmux": null
+    },
+    {
+      "session_id": "3e8a0d64-9b17-4c52-a1f9-6d2c7b5e0a11",
+      "cwd": "/home/ccboard/projects/ccboard/ccboard",
+      "ts": "2026-09-28T12:36:01.000Z",
+      "kind": "assistant",
+      "file": "/home/ccboard/.claude/projects/-home-ccboard-projects-ccboard-ccboard/3e8a0d64-9b17-4c52-a1f9-6d2c7b5e0a11.jsonl",
+      "line": 233,
+      "snippet": "Tailscale identity is the only [auth]: the Tailscale-User-Login header is checked against ALLOWED_USERS before any route runs",
+      "project": "ccboard",
+      "repo": "ccboard",
+      "tmux": null
+    }
+  ]
+}

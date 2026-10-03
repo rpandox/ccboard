@@ -98,7 +98,7 @@ def test_asset_version_follows_every_static_file(tmp_path, monkeypatch):
     (dst / "pages" / "new.js").write_text("")                                # a new empty file still counts
     assert main.asset_version() != v4
     before = main.asset_version()
-    (dst / "demo").mkdir()
+    (dst / "demo").mkdir(exist_ok=True)
     (dst / "demo" / "fixture.js").write_text("demo data")                    # excluded: never ships in the build id
     (dst / "README.txt").write_text("not a shippable type")
     assert main.asset_version() == before
@@ -195,3 +195,79 @@ def test_manifest_is_the_dark_installable_app():
     assert all(s.get("name") for s in shortcuts)
     sizes = {i["sizes"] for i in manifest["icons"]}
     assert {"192x192", "512x512"} <= sizes
+
+
+# ---------- v0.5.3: the route table, the page registry, the boot sequence ----------
+# Written against the v0.5.3 contract; a failure here usually means a slice has not landed yet and the assertion names what is missing.
+
+ROUTE_IDS = {"home", "inbox", "tasks", "agents", "project", "quad", "usage", "memory", "onboarding", "settings", "search", "session"}
+
+
+def _blank_js(text):
+    from tests.test_static import blank_js
+    return blank_js(text)
+
+
+def _routes_block():
+    src = _blank_js((STATIC_ROOT / "router.js").read_text())
+    m = re.search(r"const ROUTES\s*=\s*\[(.*?)^\];", src, re.S | re.M)
+    assert m, "const ROUTES = [ ... ]; not found in app/static/router.js"
+    return m.group(1)
+
+
+def test_routes_array_is_exactly_the_twelve_route_ids():
+    ids = re.findall(r"\bid:\s*'([a-z]+)'", _routes_block())
+    assert len(ids) == len(set(ids)), f"duplicate route ids: {ids}"
+    assert set(ids) == ROUTE_IDS and len(ids) == 12, f"missing {sorted(ROUTE_IDS - set(ids))}, unexpected {sorted(set(ids) - ROUTE_IDS)}"
+
+
+def test_agents_route_is_the_plain_path_slash_agents():
+    block = _routes_block()
+    assert re.search(r"\{\s*id:\s*'agents',\s*re:\s*/\^\\/agents\$/\s*\}", block), \
+        "ROUTES needs { id: 'agents', re: /^\\/agents$/ } (the Agents roster, v0.5.3 plan change)"
+
+
+def _register_calls():
+    """{page id: [files that call registerPage('<id>', ...)]} over app/static/pages/*.js."""
+    calls = {}
+    for js in sorted((STATIC_ROOT / "pages").glob("*.js")):
+        code = _blank_js(js.read_text())
+        for m in re.finditer(r"\bregisterPage\(\s*'([A-Za-z0-9_-]+)'", code):
+            calls.setdefault(m.group(1), []).append(js.name)
+    return calls
+
+
+def test_exactly_one_register_page_per_route_id_across_the_pages():
+    calls = _register_calls()
+    assert set(calls) <= ROUTE_IDS, f"registerPage for an id that is not a route: {sorted(set(calls) - ROUTE_IDS)}"
+    missing = sorted(ROUTE_IDS - set(calls))
+    assert not missing, f"no registerPage call in app/static/pages/*.js for: {missing}"
+    dup = {i: files for i, files in calls.items() if len(files) != 1}
+    assert not dup, f"each route id is registered exactly once: {dup}"
+
+
+def test_each_page_registers_in_its_own_file_or_the_placeholders():
+    """pages/<id>.js owns its route; the routes with no page yet live in pages/placeholders.js until their phase lands."""
+    for page_id, files in _register_calls().items():
+        assert files[0] in (f"{page_id}.js", "placeholders.js"), f"registerPage('{page_id}') sits in pages/{files[0]}"
+    placeholders = [i for i, files in _register_calls().items() if files == ["placeholders.js"]]
+    assert {"project", "quad", "usage", "memory", "onboarding"} >= set(placeholders), placeholders
+
+
+def test_main_js_rewrites_the_legacy_hash_before_the_poll_starts():
+    code = _blank_js((STATIC_ROOT / "main.js").read_text())
+    m = re.search(r"\brewriteLegacyHash\s*\(\s*\)", code)
+    assert m, "main.js must call rewriteLegacyHash() at boot so '#s=<tmux>' becomes '#/s/<tmux>'"
+    assert m.start() < code.index("startStatePolling("), "rewriteLegacyHash() has to run before the first poll"
+
+
+def test_the_service_worker_nav_message_sets_location_hash():
+    """navigator.serviceWorker 'message' {type:'nav', url} lets a second push tap change the hash of an already open board."""
+    owners = []
+    for js in sorted(STATIC_ROOT.glob("*.js")) + sorted((STATIC_ROOT / "pages").glob("*.js")):
+        if js.name == "sw.js":
+            continue
+        code = _blank_js(js.read_text())
+        if re.search(r"serviceWorker\s*\.\s*addEventListener\(\s*'message'", code) and re.search(r"""['"]nav['"]""", code):
+            owners.append(js.name)
+    assert owners, "no app script handles the service worker 'message' event with type 'nav' (router.js owns it)"

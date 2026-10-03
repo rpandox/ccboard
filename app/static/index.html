@@ -19,34 +19,37 @@
 <link rel="stylesheet" href="/static/vendor/blueprint/blueprint-icons.css">
 <link rel="stylesheet" href="/static/tokens.css">
 <link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/shell.css">
+<link rel="stylesheet" href="/static/pages.css">
 </head>
-<body class="bp5-dark">
-<header id="hdr">
-  <h1>ccboard</h1>
-  <div id="claude-badge" class="badge"></div>
-  <div id="hdr-actions"></div>
-</header>
-<div id="usage" class="usage hidden"></div>
-<div id="notify" class="usage hidden"></div>
-<div id="nodes" class="usage hidden"></div>
-<div id="banner"></div>
-<main>
-  <section id="search" class="card bp5-card bp5-elevation-1 hidden"></section>
-  <section id="inbox" class="card bp5-card bp5-elevation-1 inbox hidden"></section>
-  <section id="live" class="card bp5-card bp5-elevation-1 hidden"></section>
-  <section id="tasks" class="card bp5-card bp5-elevation-1 hidden"></section>
-  <section id="jobs" class="card bp5-card bp5-elevation-1 hidden"></section>
-  <section id="new-project" class="card bp5-card bp5-elevation-1"></section>
-  <section id="projects"></section>
-</main>
-<nav id="bnav" class="hidden" aria-label="sections"></nav>
+<body class="bp5-dark" data-shell="" data-page="">
+<a class="skip" href="#main">Skip to content</a>
+<div id="app" class="app">
+  <header id="topbar"></header>
+  <aside id="sidebar" aria-label="Projects"></aside>
+  <main id="main" tabindex="-1"><div id="banner"></div><div id="page"></div></main>
+  <aside id="dock" class="hidden" aria-label="Terminal dock"></aside>
+</div>
+<nav id="bnav" aria-label="Sections"></nav>
+<dialog id="drawer" aria-label="Menu"></dialog>
+<dialog id="sheet"></dialog>
+<dialog id="helpdlg" aria-label="Help"></dialog>
 <div id="modal" class="hidden"></div>
+<div id="toasts" role="status" aria-live="polite"></div>
 <script src="/static/core.js"></script>
 <script src="/static/components.js"></script>
 <script src="/static/live.js"></script>
 <script src="/static/launcher.js"></script>
+<script src="/static/shell.js"></script>
 <script src="/static/router.js"></script>
 <script src="/static/pages/home.js"></script>
+<script src="/static/pages/inbox.js"></script>
+<script src="/static/pages/tasks.js"></script>
+<script src="/static/pages/agents.js"></script>
+<script src="/static/pages/settings.js"></script>
+<script src="/static/pages/search.js"></script>
+<script src="/static/pages/session.js"></script>
+<script src="/static/pages/placeholders.js"></script>
 <script src="/static/main.js"></script>
 </body>
 </html>

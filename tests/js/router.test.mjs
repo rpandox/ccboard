@@ -192,3 +192,176 @@ test('navigate: replace goes through history.replaceState and routes; plain sets
   assert.equal(w.get('currentRoute')().id, 'quad');            // the simulated hashchange ran route()
   assert.equal(w.history.calls.length, 1);
 });
+
+// ---------- v0.5.3 contract: the agents route, the twelve ids, route() lifecycle with stub pages, the service worker nav message ----------
+// Written against the v0.5.3 router contract. A failure that says "contract" means router.js has not caught up with it yet.
+
+const ROUTE_IDS = ['agents', 'home', 'inbox', 'memory', 'onboarding', 'project', 'quad', 'search', 'session', 'settings', 'tasks', 'usage'];
+
+/** routerWorld() plus the DOM the contract route() touches: body.dataset, #main (focus), #drawer (close), a #page root, scrollTo. */
+function shellWorld(extra) {
+  const w = routerWorld(extra);
+  const node = () => Object.assign(w.document.createElement('div'), { focus() {}, close() {}, showModal() {}, scrollTo() {}, scrollTop: 0 });
+  w.document.body.dataset = {};
+  for (const sel of ['#main', '#drawer', '#sheet', '#banner']) w.document.nodes[sel] = node();
+  const page = node();
+  page.textContent = 'stale content';
+  w.document.nodes['#page'] = page;
+  w.run('globalThis.scrollTo = () => {};');
+  return { w, page };
+}
+
+const bodyPage = (w) => w.document.body.dataset.page ?? w.document.body.attrs['data-page'];
+
+/** Registers a logging stub for each id; `withOnRoute` ids also get onRoute. */
+function stubPages(w, log, ids, { withOnRoute = [], titles = {} } = {}) {
+  const register = w.get('registerPage');
+  for (const id of ids) {
+    const page = {
+      title: titles[id] ?? id,
+      mount(root, route) { log.push(['mount', id, root.textContent, route.id]); },
+      update(st, route) { log.push(['update', id, st && st.marker, route.id]); },
+      unmount() { log.push(['unmount', id]); },
+    };
+    if (withOnRoute.includes(id)) page.onRoute = (route) => log.push(['onRoute', id, JSON.stringify(route.params), JSON.stringify(route.query)]);
+    register(id, page);
+  }
+}
+
+test('parseHash and buildHash know the agents roster route', () => {
+  const { get } = routerWorld();
+  const parse = (h) => plain(get('parseHash')(h));
+  assert.deepEqual(parse('#/agents'), { id: 'agents', params: {}, query: {} });
+  assert.deepEqual(parse('#/agents?x=1'), { id: 'agents', params: {}, query: { x: '1' } });
+  assert.equal(get('buildHash')('agents'), '#/agents');
+  assert.deepEqual(parse(get('buildHash')('agents')), { id: 'agents', params: {}, query: {} });
+  for (const bad of ['#/agents/', '#/agents/x', '#/agent']) {
+    assert.equal(parse(bad).unknown, true, bad);
+    assert.equal(parse(bad).id, 'home', bad);
+  }
+});
+
+test('ROUTES holds exactly the twelve route ids, each once', () => {
+  const w = routerWorld();
+  const ids = plain(w.run('ROUTES.map((r) => r.id)'));
+  assert.equal(new Set(ids).size, ids.length, `duplicate ids in ${ids}`);
+  assert.deepEqual([...ids].sort(), ROUTE_IDS);
+});
+
+test('route(): mount into a cleared #page, then update with state; the next page is preceded by unmount of the previous one', () => {
+  const { w, page } = shellWorld();
+  w.run('var state = { marker: 7 };');
+  const log = [];
+  stubPages(w, log, ['inbox', 'settings', 'home']);
+  w.location.hash = '#/inbox';
+  assert.deepEqual(log, [['mount', 'inbox', '', 'inbox'], ['update', 'inbox', 7, 'inbox']], 'contract: #page is cleared before mount; update(state, route) follows mount');
+  assert.equal(w.get('currentRoute')().id, 'inbox');
+  log.length = 0;
+  page.textContent = 'left behind by the inbox page';
+  w.location.hash = '#/settings?sec=notify';
+  assert.deepEqual(log, [['unmount', 'inbox'], ['mount', 'settings', '', 'settings'], ['update', 'settings', 7, 'settings']]);
+  log.length = 0;
+  w.location.hash = '#/';
+  assert.deepEqual(log, [['unmount', 'settings'], ['mount', 'home', '', 'home'], ['update', 'home', 7, 'home']]);
+});
+
+test('route(): document.title becomes "<page title> · ccboard" and body[data-page] the route id', () => {
+  const { w } = shellWorld();
+  w.run('var state = { marker: 1 };');
+  const log = [];
+  stubPages(w, log, ['inbox', 'settings'], { titles: { inbox: 'Needs you', settings: 'Settings' } });
+  w.location.hash = '#/inbox';
+  assert.equal(w.document.title, 'Needs you · ccboard');
+  assert.equal(bodyPage(w), 'inbox', 'contract: route() sets body[data-page]');
+  w.location.hash = '#/settings?sec=box';
+  assert.equal(w.document.title, 'Settings · ccboard');
+  assert.equal(bodyPage(w), 'settings');
+});
+
+test('route(): the agents roster page mounts at #/agents', () => {
+  const { w } = shellWorld();
+  w.run('var state = { marker: 2 };');
+  const log = [];
+  stubPages(w, log, ['agents', 'home'], { titles: { agents: 'Agents' } });
+  w.location.hash = '#/agents';
+  assert.deepEqual(log, [['mount', 'agents', '', 'agents'], ['update', 'agents', 2, 'agents']], 'contract: ROUTES has the agents id (re /^\\/agents$/)');
+  assert.equal(w.document.title, 'Agents · ccboard');
+});
+
+test('route(): update is skipped while no state has arrived, and an unknown hash mounts home', () => {
+  const { w } = shellWorld();
+  const log = [];
+  stubPages(w, log, ['home', 'inbox']);
+  w.location.hash = '#/nope';
+  assert.deepEqual(log, [['mount', 'home', '', 'home']], 'unknown routes land on home; no state yet means no update call');
+  log.length = 0;
+  w.run('var state = { marker: 1 };');
+  w.location.hash = '#/inbox';
+  assert.deepEqual(log, [['unmount', 'home'], ['mount', 'inbox', '', 'inbox'], ['update', 'inbox', 1, 'inbox']]);
+});
+
+test('route(): same id with only the query changed calls onRoute, not unmount/mount', () => {
+  const { w } = shellWorld();
+  w.run('var state = { marker: 3 };');
+  const log = [];
+  stubPages(w, log, ['settings'], { withOnRoute: ['settings'] });
+  w.location.hash = '#/settings?sec=notify';
+  log.length = 0;
+  w.location.hash = '#/settings?sec=nodes';
+  assert.deepEqual(log, [['onRoute', 'settings', '{}', '{"sec":"nodes"}']], 'contract: same id + onRoute -> onRoute(route) instead of remounting');
+  assert.deepEqual(plain(w.get('currentRoute')()), { id: 'settings', params: {}, query: { sec: 'nodes' } });
+});
+
+test('route(): same id with changed params calls onRoute too (the session peek keeps its panel when #/s/<a> becomes #/s/<b>)', () => {
+  const { w } = shellWorld();
+  w.run('var state = { marker: 3 };');
+  const log = [];
+  stubPages(w, log, ['session'], { withOnRoute: ['session'] });
+  w.location.hash = '#/s/shop--api--s1';
+  log.length = 0;
+  w.location.hash = '#/s/shop--api--s2';
+  assert.deepEqual(log, [['onRoute', 'session', '{"tmux":"shop--api--s2"}', '{}']],
+    'contract: "same id with only params/query changed and the page has onRoute -> call onRoute instead of remounting"');
+});
+
+test('route(): a page without onRoute is remounted on a same-id navigation (unmount, clear, mount, update)', () => {
+  const { w, page } = shellWorld();
+  w.run('var state = { marker: 5 };');
+  const log = [];
+  stubPages(w, log, ['search']);
+  w.location.hash = '#/search?q=a';
+  log.length = 0;
+  page.textContent = 'results of the first query';
+  w.location.hash = '#/search?q=b';
+  assert.deepEqual(log, [['unmount', 'search'], ['mount', 'search', '', 'search'], ['update', 'search', 5, 'search']]);
+});
+
+test('route(): moving from a page with onRoute to another id still unmounts it, and coming back mounts afresh', () => {
+  const { w } = shellWorld();
+  w.run('var state = { marker: 9 };');
+  const log = [];
+  stubPages(w, log, ['settings', 'tasks'], { withOnRoute: ['settings'] });
+  w.location.hash = '#/settings';
+  w.location.hash = '#/tasks';
+  w.location.hash = '#/settings?sec=box';
+  assert.deepEqual(log.map((e) => e.slice(0, 2)), [
+    ['mount', 'settings'], ['update', 'settings'], ['unmount', 'settings'], ['mount', 'tasks'], ['update', 'tasks'],
+    ['unmount', 'tasks'], ['mount', 'settings'], ['update', 'settings']]);
+});
+
+test('the service worker nav message {type:"nav", url} sets location.hash', (t) => {
+  const handlers = [];
+  const serviceWorker = { addEventListener(type, fn) { handlers.push([type, fn]); }, removeEventListener() {} };
+  const w = routerWorld({ navigator: { userAgent: 'node-test', onLine: true, serviceWorker } });
+  const message = handlers.find(([type]) => type === 'message');
+  if (!message) {
+    t.skip('router.js adds no serviceWorker "message" listener at load time (if it does so from an init function this test cannot reach it)');
+    return;
+  }
+  message[1]({ data: { type: 'nav', url: '/#/inbox' } });
+  assert.equal(w.location.hash, '#/inbox');
+  message[1]({ data: { type: 'nav', url: '/#/s/shop--api--s1' } });
+  assert.equal(w.location.hash, '#/s/shop--api--s1');
+  message[1]({ data: { type: 'other', url: '/#/tasks' } });
+  assert.equal(w.location.hash, '#/s/shop--api--s1', 'only type nav messages move the hash');
+});

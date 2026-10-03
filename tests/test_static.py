@@ -480,3 +480,408 @@ def test_html_head_carries_tokens_theme_color_and_font_preloads(page):
         a = preloads[href]
         assert a.get("as") == "font" and a.get("type") == "font/woff2", f"{page}: preload for {name} needs as=font type=font/woff2"
         assert "crossorigin" in a, f"{page}: font preload for {name} needs the crossorigin attribute (fonts are fetched in CORS mode)"
+
+
+# ---------- v0.5.3 shell: the index.html skeleton, the script and stylesheet order, demo fixtures ----------
+# Written against the v0.5.3 contract (plan "index.html skeleton and script order"): a test that fails because a slice has not
+# landed yet names the missing piece in its assertion message.
+
+import datetime  # noqa: E402
+import json  # noqa: E402
+import subprocess  # noqa: E402
+from collections import Counter  # noqa: E402
+
+INDEX = STATIC / "index.html"
+SKELETON_IDS = ("topbar", "sidebar", "main", "banner", "page", "dock", "bnav", "drawer", "sheet", "helpdlg", "modal", "toasts")
+SCRIPT_ORDER = ["/static/" + n for n in (
+    "core.js", "components.js", "live.js", "launcher.js", "shell.js", "router.js",
+    "pages/home.js", "pages/inbox.js", "pages/tasks.js", "pages/agents.js", "pages/settings.js", "pages/search.js",
+    "pages/session.js", "pages/placeholders.js", "main.js")]
+STYLE_ORDER = ["/static/vendor/blueprint/blueprint.css", "/static/vendor/blueprint/blueprint-icons.css", "/static/tokens.css",
+               "/static/style.css", "/static/shell.css", "/static/pages.css"]
+VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+
+
+class _Node:
+    def __init__(self, tag, attrs, line):
+        self.tag, self.attrs, self.line = tag, attrs, line
+        self.children = []
+        self.text = ""
+
+    @property
+    def classes(self):
+        return self.attrs.get("class", "").split()
+
+    def walk(self):
+        yield self
+        for c in self.children:
+            yield from c.walk()
+
+
+class _TreeBuilder(HTMLParser):
+    """A minimal DOM: enough to check nesting, order and emptiness of the skeleton (void tags never open a level)."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.root = _Node("#root", {}, 0)
+        self.stack = [self.root]
+
+    def handle_starttag(self, tag, attrs):
+        node = _Node(tag, {k: (v or "") for k, v in attrs}, self.getpos()[0])
+        self.stack[-1].children.append(node)
+        if tag not in VOID_TAGS:
+            self.stack.append(node)
+
+    def handle_endtag(self, tag):
+        for i in range(len(self.stack) - 1, 0, -1):
+            if self.stack[i].tag == tag:
+                del self.stack[i:]
+                break
+
+    def handle_data(self, data):
+        self.stack[-1].text += data
+
+
+def html_tree_from(text):
+    builder = _TreeBuilder()
+    builder.feed(text)
+    builder.close()
+    return builder.root
+
+
+def html_tree(path):
+    return html_tree_from(path.read_text(encoding="utf-8"))
+
+
+def _by_tag(node, tag):
+    return [n for n in node.walk() if n.tag == tag]
+
+
+def test_html_tree_builder_nests_and_skips_void_tags():
+    root = html_tree_from("<html><head><meta charset=utf-8><link rel=x></head><body><div id=a><dialog id=d> </dialog><p>t</p></div></body></html>")
+    body = _by_tag(root, "body")[0]
+    div = body.children[0]
+    assert [c.tag for c in div.children] == ["dialog", "p"] and div.children[0].text.strip() == ""
+    assert [c.tag for c in _by_tag(root, "head")[0].children] == ["meta", "link"]
+
+
+def test_index_skeleton_ids_are_present_exactly_once():
+    ids = [a["id"] for _, a, _ in html_tags(INDEX) if "id" in a]
+    for want in SKELETON_IDS:
+        assert ids.count(want) == 1, f"app/static/index.html must carry exactly one #{want} (found {ids.count(want)})"
+    assert len(ids) == len(set(ids)), f"duplicate ids in app/static/index.html: {[i for i, n in Counter(ids).items() if n > 1]}"
+
+
+def test_index_skeleton_nesting_matches_the_contract():
+    """body.bp5-dark[data-shell][data-page] > a.skip + #app{header#topbar, aside#sidebar, main#main{#banner,#page}, aside#dock.hidden}
+    + nav#bnav + dialog#drawer + dialog#sheet + dialog#helpdlg + div#modal.hidden + div#toasts; scripts after all of it."""
+    body = _by_tag(html_tree(INDEX), "body")[0]
+    assert "bp5-dark" in body.classes and "data-shell" in body.attrs and "data-page" in body.attrs, \
+        "<body> needs class bp5-dark and the data-shell / data-page attributes (the shell and router fill them in)"
+    kids = [n for n in body.children if n.tag not in ("script", "noscript")]
+    assert [(n.tag, n.attrs.get("id")) for n in kids] == [
+        ("a", None), ("div", "app"), ("nav", "bnav"), ("dialog", "drawer"), ("dialog", "sheet"), ("dialog", "helpdlg"),
+        ("div", "modal"), ("div", "toasts")], "body children are not the contract skeleton"
+    skip, app, bnav, _drawer, _sheet, _help, modal, toasts = kids
+    assert "skip" in skip.classes and skip.attrs.get("href") == "#main", "the first body child is the a.skip link to #main"
+    assert [(n.tag, n.attrs.get("id")) for n in app.children] == [
+        ("header", "topbar"), ("aside", "sidebar"), ("main", "main"), ("aside", "dock")], "#app children"
+    topbar, sidebar, main, dock = app.children
+    assert sidebar.attrs.get("aria-label") == "Projects", "aside#sidebar needs aria-label=Projects"
+    assert main.attrs.get("tabindex") == "-1", "main#main needs tabindex=-1 (the router focuses it after a route change)"
+    assert [(n.tag, n.attrs.get("id")) for n in main.children] == [("div", "banner"), ("div", "page")], "#main children"
+    assert "hidden" in dock.classes, "aside#dock starts hidden"
+    assert "hidden" in modal.classes, "the legacy div#modal starts hidden"
+    assert toasts.attrs.get("role") == "status" and toasts.attrs.get("aria-live") == "polite", "div#toasts is a polite live region"
+    assert bnav.attrs.get("aria-label"), "nav#bnav needs an aria-label"
+    last_non_script = max(i for i, n in enumerate(body.children) if n.tag not in ("script", "noscript"))
+    first_script = min(i for i, n in enumerate(body.children) if n.tag == "script")
+    assert first_script > last_non_script, "scripts belong at the end of <body>, after the skeleton"
+
+
+def test_index_scripts_follow_the_contract_order_exactly():
+    scripts = [a.get("src") for t, a, _ in html_tags(INDEX) if t == "script"]
+    assert scripts == SCRIPT_ORDER, "index.html script order differs from the v0.5.3 contract:\n  got      " + "\n  ".join(map(str, scripts)) \
+        + "\n  expected " + "\n  ".join(SCRIPT_ORDER)
+    for t, a, line in html_tags(INDEX):
+        if t == "script":
+            assert "async" not in a and a.get("type", "text/javascript") in ("", "text/javascript"), \
+                f"app/static/index.html:{line}: classic scripts only (no async, no type=module)"
+
+
+def test_index_stylesheets_follow_the_contract_order_exactly():
+    sheets = [a["href"] for t, a, _ in html_tags(INDEX) if t == "link" and a.get("rel") == "stylesheet"]
+    assert sheets == STYLE_ORDER, f"index.html stylesheet order differs from the v0.5.3 contract: {sheets}"
+
+
+def test_index_scripts_and_stylesheets_exist_on_disk():
+    missing = [p for p in SCRIPT_ORDER + STYLE_ORDER if not (STATIC / p[len("/static/"):]).is_file()]
+    assert not missing, f"index.html references files that do not exist yet: {missing}"
+
+
+def test_index_dialogs_are_empty_in_the_html():
+    """<dialog>s are filled by el() at runtime (drawer, sheet and help); static markup inside one would bypass the CSP-safe builders."""
+    dialogs = _by_tag(html_tree(INDEX), "dialog")
+    assert {d.attrs.get("id") for d in dialogs} >= {"drawer", "sheet", "helpdlg"}, "expected dialog#drawer, #sheet and #helpdlg"
+    bad = [f"app/static/index.html:{d.line}: <dialog id={d.attrs.get('id')}> has content" for d in dialogs
+           if d.children or d.text.strip()]
+    assert not bad, "every <dialog> in index.html must be empty (build its content with el()):\n" + "\n".join(bad)
+
+
+# ---------- demo fixtures (app/static/demo/*.json, read by api() when ?demo=1 or ccboard:demo=1) ----------
+
+DEMO_DIR = STATIC / "demo"
+DEMO_FILES = ("state.json", "search.json", "tree.json", "series.json", "memory.json")
+SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+--[A-Za-z0-9_-]+--[A-Za-z0-9_-]+$")
+KANBAN = ("in_progress", "needs_you", "done", "pr", "merged")
+DEMO_HEADERS = {"Tailscale-User-Login": "alice@example.com"}
+
+
+def demo_json(name):
+    return json.loads((DEMO_DIR / name).read_text(encoding="utf-8"))
+
+
+def fleet_sessions(state):
+    """Every live session in a state payload with the (project, repo-key) block it sits in; repo-key is 'root' for the project folder."""
+    out = []
+    for p in state["projects"]:
+        for r in p["repos"]:
+            out += [(p["name"], r["name"], s) for s in r["sessions"]]
+        if p.get("root"):
+            out += [(p["name"], "root", s) for s in p["root"]["sessions"]]
+        out += [(p["name"], s["repo"], s) for s in p["orphan_sessions"]]
+    return out
+
+
+def demo_epoch(state):
+    return state["demo"]["epoch"]
+
+
+def parse_iso(s):
+    return datetime.datetime.fromisoformat(s).timestamp()
+
+
+@pytest.mark.parametrize("name", DEMO_FILES)
+def test_demo_fixture_exists_and_parses(name):
+    path = DEMO_DIR / name
+    assert path.is_file(), f"app/static/demo/{name} is missing (api() reads it in demo mode)"
+    assert isinstance(json.loads(path.read_text(encoding="utf-8")), dict)
+
+
+def test_demo_fixtures_carry_no_host_specific_data():
+    bad = []
+    for name in DEMO_FILES:
+        text = (DEMO_DIR / name).read_text(encoding="utf-8")
+        for needle in ("/Users/", "/tmp/", "/private/", "gmail.com", "rpandox", "ccb-fix"):
+            if needle in text:
+                bad.append(f"app/static/demo/{name}: contains {needle!r}")
+    assert not bad, "fixtures must be anonymous:\n" + "\n".join(bad)
+
+
+def test_demo_state_has_the_seven_sessions_in_the_stated_states():
+    state = demo_json("state.json")
+    sessions = fleet_sessions(state)
+    assert len(sessions) == 7, f"expected 7 live sessions, found {len(sessions)}"
+    assert Counter(s["state"] for _, _, s in sessions) == Counter(
+        {"waiting": 1, "working": 2, "idle": 1, "done": 1, "errored": 1, "ended": 1})
+    names = [s["tmux"] for _, _, s in sessions]
+    assert len(set(names)) == 7 and all(SESSION_NAME_RE.match(n) for n in names), names
+    for project, repo, s in sessions:
+        assert s["tmux"] == f"{project}--{repo}--{s['name']}", f"{s['tmux']} sits in {project}/{repo} with name {s['name']}"
+    attn = {s["state"] for _, _, s in sessions if s["needs_attention"]}
+    assert attn == {"waiting", "done", "errored"} and sum(1 for _, _, s in sessions if s["needs_attention"]) == 3
+    codex = [s for _, _, s in sessions if s["agent"] == "codex"]
+    assert len(codex) == 1 and codex[0]["launcher"] == "codex" and codex[0]["state"] == "working"
+    assert codex[0]["stats"]["model"] == "gpt-5.5"
+    for _, _, s in sessions:
+        assert {"model", "model_id", "context_pct", "cost_usd"} <= set(s["stats"]), s["tmux"]
+        assert s["last_prompt"] and s["last_message"] and s["created"] and s["state_at"], s["tmux"]
+    assert {s["stats"]["context_pct"] for _, _, s in sessions} >= {23, 61, 88}
+    assert any(s["stats"]["model"] == "Opus 5" for _, _, s in sessions)
+
+
+def test_demo_state_session_ages_spread_from_hours_to_nine_days():
+    state = demo_json("state.json")
+    now = demo_epoch(state)
+    ages = sorted((now - s["created"]) / 86400 for _, _, s in fleet_sessions(state))
+    assert round(ages[0], 1) == 0.4 and round(ages[-1], 1) == 8.8, ages
+    assert len({round(a) for a in ages}) >= 5, f"ages should spread over the range: {ages}"
+    for _, _, s in fleet_sessions(state):
+        assert parse_iso(s["state_at"]) <= now + 1, f"{s['tmux']}: state_at is after the fixture's clock"
+
+
+def test_demo_state_projects_three_active_and_six_older():
+    state = demo_json("state.json")
+    by_name = {p["name"]: p for p in state["projects"]}
+    assert len(by_name) == 9
+    active = {"phasezero": {"website", "NestJs-Ecommerce-Backend"}, "ccboard": {"ccboard"}, "petroit": {"api"}}
+    for name, repos in active.items():
+        assert {r["name"] for r in by_name[name]["repos"]} == repos, name
+    with_sessions = {p for p, _, _ in fleet_sessions(state)}
+    assert with_sessions == set(active), f"sessions belong to {with_sessions}"
+    older = set(by_name) - set(active)
+    assert len(older) == 6 and all(by_name[n]["repos"] for n in older), older
+    assert any(by_name["phasezero"]["root"]["sessions"]), "one session lives in the project folder (repo 'root')"
+
+
+def test_demo_state_pending_permission_belongs_to_the_waiting_session():
+    state = demo_json("state.json")
+    waiting = [s for _, _, s in fleet_sessions(state) if s["state"] == "waiting"]
+    perms = state["pending_permissions"]
+    assert len(waiting) == 1 and len(perms) == 1
+    assert perms[0]["tmux_name"] == waiting[0]["tmux"] and perms[0]["tool_name"] == "Bash" and "npm test" in perms[0]["summary"]
+    assert {"id", "created_at"} <= set(perms[0])
+
+
+def test_demo_state_tasks_fill_every_kanban_column_consistently():
+    from app import tasks as tasks_mod
+    state = demo_json("state.json")
+    live = {s["tmux"]: s for _, _, s in fleet_sessions(state)}
+    listed = state["tasks"]
+    assert Counter(t["column"] for t in listed) == Counter({c: 1 for c in KANBAN}), [t["column"] for t in listed]
+    assert [t["id"] for t in listed] == sorted((t["id"] for t in listed), reverse=True), "db.tasks() lists newest id first"
+    for t in listed:
+        sess = live.get(t["tmux"])
+        row = {"pr_state": t["pr_state"], "pr_url": t["pr_url"], "status": "open", "archived_at": None}
+        assert tasks_mod.derive_status(row, sess) == t["column"], f"task {t['id']} ({t['slug']}): column disagrees with derive_status"
+        if t["session"] is not None:
+            assert sess is not None and t["session"]["state"] == sess["state"], f"task {t['id']}: session sub-object disagrees"
+        assert t["tmux"] == f"{t['project']}--{t['repo']}--t-{t['slug']}"
+    by_col = {t["column"]: t for t in listed}
+    assert by_col["in_progress"]["session"]["state"] == "working" and by_col["needs_you"]["session"]["needs_attention"] is True
+    pr, merged = by_col["pr"], by_col["merged"]
+    assert pr["pr_url"] and pr["pr_number"] and pr["pr_state"] == "OPEN" and pr["ci"]["bucket"] in ("pass", "fail", "pending", "none")
+    assert pr["pr"]["review"] and pr["ci"]["checks"]
+    assert merged["pr_state"] == "MERGED" and merged["pr_number"] and merged["ci"]["bucket"] == "pass"
+    assert any(t["overlap"] for t in listed), "one task shows the overlap warning"
+
+
+def test_demo_state_jobs_runs_and_the_rest_of_the_fleet_view():
+    state = demo_json("state.json")
+    now = demo_epoch(state)
+    assert len(state["jobs"]) == 2 and len(state["runs"]) == 3
+    assert {r["job_id"] for r in state["runs"]} <= {j["id"] for j in state["jobs"]}
+    assert any(j["enabled"] and j["cron"] for j in state["jobs"]) and any(not j["enabled"] for j in state["jobs"])
+    rl = state["usage"]["value"]
+    assert rl["five_hour"]["used_percentage"] == 42 and rl["seven_day"]["used_percentage"] == 71
+    for key in ("five_hour", "seven_day"):
+        assert now < rl[key]["resets_at"] < now + 8 * 86400, f"{key}.resets_at must lie ahead of the fixture clock"
+    assert "spend_limit" not in rl, "a Max subscription has no spend limit pill"
+    blk = state["block"]["value"]
+    assert blk["available"] and blk["active"] and blk["remaining_minutes"] > 0
+    assert {"phasezero", "ccboard", "petroit"} <= set(state["cost"]["value"]["projects"])
+    health = state["health"]
+    assert health["host"] and health["disk"]["pct"] and health["mem"]["pct"] and health["uptime_s"]
+    assert state["backup"]["status"] == "ok" and state["backup"]["at"]
+    nodes = state["nodes"]["value"]
+    assert len(nodes) == 1 and nodes[0]["online"] is True and nodes[0]["name"]
+    assert state["rate_limited"] is None and state["version"] == "demo" and state["tmux_down"] is False
+    c = state["claude"]
+    assert c["installed"] is True and c["loggedIn"] is True and c["email"] and c["subscriptionType"] == "max"
+    assert state["usage_codex"]["value"]["primary"]["window_minutes"] == 10080
+    assert state["agents"]["codex"]["installed"] is True
+    assert state["login"]["running"] is False and state["scheduler"]["known"] is True
+
+
+def _missing_keys(real, fixture, path="state"):
+    """Keys the app's real payload carries that the fixture lacks (dicts recurse; lists compare their first element)."""
+    out = []
+    if isinstance(real, dict) and isinstance(fixture, dict):
+        for k, v in real.items():
+            if k not in fixture:
+                out.append(f"{path}.{k}")
+            else:
+                out += _missing_keys(v, fixture[k], f"{path}.{k}")
+    elif isinstance(real, list) and isinstance(fixture, list) and real and fixture:
+        out += _missing_keys(real[0], fixture[0], path + "[0]")
+    return out
+
+
+def test_demo_state_covers_every_key_the_live_state_endpoint_returns(lite_client, projects_dir, fake_tmux):
+    """The fixture is a superset of a real GET /api/state, rows included, so demo mode cannot render with a hole where the app
+    would have data. When /api/state grows a key, this test says which one to add to app/static/demo/state.json."""
+    from app import hooks, main
+    repo = projects_dir / "shop" / "api"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=str(repo), check=True, capture_output=True)
+    name = "shop--api--s1"
+    fake_tmux["sessions"][name] = {"created": 1, "attached": 0, "windows": 1, "pane_id": "%1", "command": "claude",
+                                   "path": str(repo), "pid": 1, "env": {}}
+    main.db.add_session(tmux_name=name, project="shop", repo="api", name="s1", launcher="claude", cmd="claude",
+                        claude_session_id="6f1d2c9e-3b7a-4c1e-9a52-1d0e5b7c8a01", add_dirs=[])
+    hooks.apply(main.db, name, "statusline", {"model": {"display_name": "Opus 5", "id": "claude-opus-5"},
+                                              "context_window": {"used_percentage": 12, "context_window_size": 200000},
+                                              "cost": {"total_cost_usd": 1.0, "total_lines_added": 1, "total_lines_removed": 0},
+                                              "version": "2.1.288"})
+    hooks.apply(main.db, name, "UserPromptSubmit", {"session_id": "6f1d2c9e-3b7a-4c1e-9a52-1d0e5b7c8a01", "prompt": "hi"})
+    main.db.task_add(project="shop", repo="api", slug="t", title="t", prompt="p", branch="worktree-t", base="main",
+                     worktree=str(repo / ".claude" / "worktrees" / "t"), tmux_name="shop--api--t-t", claude_session_id=None)
+    jid = main.db.job_add(project="shop", repo="api", name="j", prompt="p", cron=None, permission_mode="acceptEdits", max_turns=5,
+                          max_budget_usd=None, args=None, timeout_s=None, enabled=1, batch_id=None, next_run_at=None)
+    main.db.run_finish(main.db.run_start(jid), status="ok", result="r")
+    main._invalidate_scan()
+    real = lite_client.get("/api/state", headers=DEMO_HEADERS).json()
+    assert [s for _, _, s in fleet_sessions(real)], "the probe session did not show up in the real state"
+    missing = _missing_keys(real, demo_json("state.json"))
+    assert not missing, "app/static/demo/state.json lacks keys the live /api/state returns:\n  " + "\n  ".join(missing)
+
+
+def test_demo_search_fixture_matches_api_search():
+    search = demo_json("search.json")
+    assert search["q"] == "auth" and len(search["results"]) == 3
+    for hit in search["results"]:
+        assert {"session_id", "cwd", "ts", "kind", "file", "line", "snippet", "project", "repo", "tmux"} <= set(hit)
+        assert hit["kind"] in ("user", "assistant", "subagent") and "[auth]" in hit["snippet"]
+    assert any(h["tmux"] for h in search["results"]) and any(h["tmux"] is None for h in search["results"])
+
+
+def test_demo_tree_fixture_matches_the_tree_endpoint_shape():
+    tree = demo_json("tree.json")
+    assert tree["path"] == "" and tree["project"] and tree["repo"] and isinstance(tree["entries"], list) and tree["entries"]
+    for e in tree["entries"]:
+        assert {"name", "type", "status", "dirty", "has_children", "ignored"} <= set(e), e
+        assert e["type"] in ("dir", "file") and e["status"] in (None, "M", "?") and isinstance(e["has_children"], bool)
+        assert e["dirty"] == (e["status"] is not None)
+    assert {e["status"] for e in tree["entries"]} == {None, "M", "?"}
+    assert any(e["type"] == "dir" and e["has_children"] for e in tree["entries"])
+    assert any(e["type"] == "file" and not e["has_children"] for e in tree["entries"])
+
+
+def test_demo_series_fixture_matches_the_series_endpoint_shape():
+    s = demo_json("series.json")
+    assert s["step"] == 300 and s["meta"] == {} and s["since"] and s["until"]
+    assert len(s["t"]) == 48 and all(b - a == 300 for a, b in zip(s["t"], s["t"][1:]))
+    assert set(s["series"]) == {"rl_5h:claude", "rl_7d:claude"}
+    for key, values in s["series"].items():
+        assert len(values) == 48, key
+        assert all(v is None or 0 <= v <= 100 for v in values), key
+    assert max(v for v in s["series"]["rl_5h:claude"][:20] if v is not None) == 100, "the 5h series shows one limit-hit episode"
+    assert s["series"]["rl_5h:claude"][-1] == 42 and s["series"]["rl_7d:claude"][-1] == 71, "the last point matches the state's pills"
+
+
+def test_demo_memory_fixture_matches_the_memory_envelope():
+    m = demo_json("memory.json")
+    assert m["state"] == "up" and len(m["items"]) == 5
+    for o in m["items"]:
+        assert {"id", "type", "title", "subtitle", "created_at_epoch", "concepts", "files_read"} <= set(o), o
+        assert isinstance(o["concepts"], list) and o["concepts"] and isinstance(o["files_read"], list)
+        assert isinstance(o["created_at_epoch"], int)
+    assert len({o["type"] for o in m["items"]}) >= 4 and len({o["id"] for o in m["items"]}) == 5
+
+
+@pytest.mark.parametrize("name", DEMO_FILES)
+def test_demo_files_are_served_with_the_static_headers(lite_client, name):
+    r = lite_client.get(f"/static/demo/{name}", headers=DEMO_HEADERS)
+    assert r.status_code == 200, f"/static/demo/{name} is not served"
+    assert r.json() == demo_json(name)
+    assert r.headers["Content-Security-Policy"] == "default-src 'self'; frame-ancestors 'none'"
+    assert lite_client.get(f"/static/demo/{name}").status_code == 403       # no Tailscale identity: nothing is served
+
+
+def test_demo_files_are_absent_from_the_sw_shell_and_the_asset_version(lite_client):
+    from app import main
+    assert not any("demo" in p.relative_to(main.STATIC_DIR).parts for p in main.static_files())
+    assert not any("/demo/" in p for p in main.shell_paths())
+    sw = lite_client.get("/sw.js", headers=DEMO_HEADERS).text
+    m = re.search(r"JSON\.parse\('([^']*)'\)", sw)
+    assert m and not any("demo" in p for p in json.loads(m.group(1))), "the served worker precaches a demo fixture"

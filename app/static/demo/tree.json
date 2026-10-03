@@ -1,0 +1,102 @@
+{
+  "project": "phasezero",
+  "repo": "website",
+  "path": "",
+  "git": true,
+  "branch": "main",
+  "ahead": 1,
+  "behind": 0,
+  "entries": [
+    {
+      "name": "public",
+      "type": "dir",
+      "status": null,
+      "dirty": false,
+      "has_children": true,
+      "ignored": false
+    },
+    {
+      "name": "src",
+      "type": "dir",
+      "status": "M",
+      "dirty": true,
+      "has_children": true,
+      "ignored": false
+    },
+    {
+      "name": "tests",
+      "type": "dir",
+      "status": null,
+      "dirty": false,
+      "has_children": true,
+      "ignored": false
+    },
+    {
+      "name": ".env.example",
+      "type": "file",
+      "status": null,
+      "dirty": false,
+      "has_children": false,
+      "ignored": false,
+      "size": 412
+    },
+    {
+      "name": "CHANGELOG.md",
+      "type": "file",
+      "status": null,
+      "dirty": false,
+      "has_children": false,
+      "ignored": false,
+      "size": 3180
+    },
+    {
+      "name": "next.config.js",
+      "type": "file",
+      "status": "M",
+      "dirty": true,
+      "has_children": false,
+      "ignored": false,
+      "size": 906
+    },
+    {
+      "name": "notes.txt",
+      "type": "file",
+      "status": "?",
+      "dirty": true,
+      "has_children": false,
+      "ignored": false,
+      "size": 218
+    },
+    {
+      "name": "package.json",
+      "type": "file",
+      "status": null,
+      "dirty": false,
+      "has_children": false,
+      "ignored": false,
+      "size": 1544
+    },
+    {
+      "name": "README.md",
+      "type": "file",
+      "status": null,
+      "dirty": false,
+      "has_children": false,
+      "ignored": false,
+      "size": 2764
+    },
+    {
+      "name": "tsconfig.json",
+      "type": "file",
+      "status": null,
+      "dirty": false,
+      "has_children": false,
+      "ignored": false,
+      "size": 611
+    }
+  ],
+  "truncated": false,
+  "total": 10,
+  "hidden": 3,
+  "ignored": 4
+}

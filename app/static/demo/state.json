@@ -1,0 +1,1086 @@
+{
+  "tmux_down": false,
+  "projects": [
+    {
+      "name": "ccboard",
+      "path": "/home/ccboard/projects/ccboard",
+      "repos": [
+        {
+          "name": "ccboard",
+          "path": "/home/ccboard/projects/ccboard/ccboard",
+          "sessions": [
+            {
+              "created": 1790452080,
+              "attached": 0,
+              "command": "claude",
+              "path": "/home/ccboard/projects/ccboard/ccboard",
+              "pane_id": "%3",
+              "launcher": "claude",
+              "cmd": "claude --model opus --effort high",
+              "claude_session_id": "c3a9f5d0-7e14-4b88-a6c2-90d4b1e7f503",
+              "add_dirs": [],
+              "state": "idle",
+              "state_at": "2026-10-02T22:00:00+00:00",
+              "last_event": "SessionStart",
+              "last_message": "The service worker only focuses an existing window and never posts the target URL, so the hash does not change. Fix: client.postMessage({type: 'nav', url}) plus a message listener that sets location.hash.",
+              "last_prompt": "check why the second tap on a push notification does nothing on iOS",
+              "stats": {
+                "model": "Opus 5",
+                "model_id": "claude-opus-5",
+                "context_pct": 23,
+                "context_size": 200000,
+                "cost_usd": 11.06,
+                "lines_added": 1880,
+                "lines_removed": 402,
+                "version": "2.1.288",
+                "rate_limits": null
+              },
+              "needs_attention": false,
+              "tmux": "ccboard--ccboard--s1",
+              "name": "s1",
+              "agent": "claude"
+            },
+            {
+              "created": 1790961840,
+              "attached": 0,
+              "command": "codex",
+              "path": "/home/ccboard/projects/ccboard/ccboard",
+              "pane_id": "%17",
+              "launcher": "codex",
+              "cmd": "codex --no-alt-screen",
+              "claude_session_id": "019a2b4c-8d1e-7f30-b5a6-3c9d0e1f2a04",
+              "add_dirs": [],
+              "state": "working",
+              "state_at": "2026-10-03T02:59:48+00:00",
+              "last_event": "UserPromptSubmit",
+              "last_message": "Reading app/static/shell.js (lines 1-220)",
+              "last_prompt": "review the shell.js diff for CSP violations and focus-handling bugs",
+              "stats": {
+                "model": "gpt-5.5",
+                "model_id": "gpt-5.5",
+                "context_pct": 31,
+                "context_size": 400000,
+                "cost_usd": null,
+                "lines_added": null,
+                "lines_removed": null,
+                "version": "0.58.0",
+                "rate_limits": null
+              },
+              "needs_attention": false,
+              "tmux": "ccboard--ccboard--cx1",
+              "name": "cx1",
+              "agent": "codex"
+            }
+          ],
+          "devcontainer": false,
+          "branch": "main",
+          "dirty": true,
+          "state": "ok"
+        }
+      ],
+      "root": {
+        "name": "root",
+        "path": "/home/ccboard/projects/ccboard",
+        "sessions": [],
+        "root": true,
+        "state": "project",
+        "branch": null,
+        "dirty": null,
+        "devcontainer": false
+      },
+      "orphan_sessions": []
+    },
+    {
+      "name": "HarnessAgents",
+      "path": "/home/ccboard/projects/HarnessAgents",
+      "repos": [
+        {
+          "name": "hive",
+          "path": "/home/ccboard/projects/HarnessAgents/hive",
+          "sessions": [],
+          "devcontainer": false,
+          "branch": "main",
+          "dirty": false,
+          "state": "ok"
+        }
+      ],
+      "root": {
+        "name": "root",
+        "path": "/home/ccboard/projects/HarnessAgents",
+        "sessions": [],
+        "root": true,
+        "state": "project",
+        "branch": null,
+        "dirty": null,
+        "devcontainer": false
+      },
+      "orphan_sessions": []
+    },
+    {
+      "name": "internalSystem",
+      "path": "/home/ccboard/projects/internalSystem",
+      "repos": [
+        {
+          "name": "server",
+          "path": "/home/ccboard/projects/internalSystem/server",
+          "sessions": [],
+          "devcontainer": false,
+          "branch": "main",
+          "dirty": true,
+          "state": "ok"
+        }
+      ],
+      "root": {
+        "name": "root",
+        "path": "/home/ccboard/projects/internalSystem",
+        "sessions": [],
+        "root": true,
+        "state": "project",
+        "branch": null,
+        "dirty": null,
+        "devcontainer": false
+      },
+      "orphan_sessions": []
+    },
+    {
+      "name": "mailgate",
+      "path": "/home/ccboard/projects/mailgate",
+      "repos": [
+        {
+          "name": "mailgate",
+          "path": "/home/ccboard/projects/mailgate/mailgate",
+          "sessions": [],
+          "devcontainer": false,
+          "branch": "main",
+          "dirty": false,
+          "state": "ok"
+        }
+      ],
+      "root": {
+        "name": "root",
+        "path": "/home/ccboard/projects/mailgate",
+        "sessions": [],
+        "root": true,
+        "state": "project",
+        "branch": null,
+        "dirty": null,
+        "devcontainer": false
+      },
+      "orphan_sessions": []
+    },
+    {
+      "name": "My_Brain",
+      "path": "/home/ccboard/projects/My_Brain",
+      "repos": [
+        {
+          "name": "vault",
+          "path": "/home/ccboard/projects/My_Brain/vault",
+          "sessions": [],
+          "devcontainer": false,
+          "branch": "main",
+          "dirty": false,
+          "state": "ok"
+        }
+      ],
+      "root": {
+        "name": "root",
+        "path": "/home/ccboard/projects/My_Brain",
+        "sessions": [],
+        "root": true,
+        "state": "project",
+        "branch": null,
+        "dirty": null,
+        "devcontainer": false
+      },
+      "orphan_sessions": []
+    },
+    {
+      "name": "petroit",
+      "path": "/home/ccboard/projects/petroit",
+      "repos": [
+        {
+          "name": "api",
+          "path": "/home/ccboard/projects/petroit/api",
+          "sessions": [
+            {
+              "created": 1790832240,
+              "attached": 0,
+              "command": "claude",
+              "path": "/home/ccboard/projects/petroit/api",
+              "pane_id": "%6",
+              "launcher": "claude",
+              "cmd": "claude --model fable --effort xhigh",
+              "claude_session_id": "e2b6c4a8-1f57-4d93-8c0e-5a7b3d9f1c06",
+              "add_dirs": [],
+              "state": "errored",
+              "state_at": "2026-10-03T00:12:00+00:00",
+              "last_event": "StopFailure",
+              "last_message": "5-hour limit reached · resets 6:25am",
+              "last_prompt": "do it",
+              "stats": {
+                "model": "Fable 5.1",
+                "model_id": "claude-fable-5-1",
+                "context_pct": 74,
+                "context_size": 200000,
+                "cost_usd": 9.8,
+                "lines_added": 142,
+                "lines_removed": 20,
+                "version": "2.1.288",
+                "rate_limits": null
+              },
+              "needs_attention": true,
+              "tmux": "petroit--api--s2",
+              "name": "s2",
+              "agent": "claude"
+            },
+            {
+              "created": 1790901360,
+              "attached": 0,
+              "command": "claude",
+              "path": "/home/ccboard/projects/petroit/api",
+              "pane_id": "%5",
+              "launcher": "claude",
+              "cmd": "claude --model fable --effort high",
+              "claude_session_id": "a7d1e8f2-4c39-4a60-b1d5-6e2f9c0a3b05",
+              "add_dirs": [],
+              "state": "done",
+              "state_at": "2026-10-03T02:38:00+00:00",
+              "last_event": "Stop",
+              "last_message": "Pushed 3 commits to feature/devices-pagination. The branch is ready for a PR.",
+              "last_prompt": "add commit push",
+              "stats": {
+                "model": "Fable 5.1",
+                "model_id": "claude-fable-5-1",
+                "context_pct": 47,
+                "context_size": 200000,
+                "cost_usd": 6.2,
+                "lines_added": 328,
+                "lines_removed": 71,
+                "version": "2.1.288",
+                "rate_limits": null
+              },
+              "needs_attention": true,
+              "tmux": "petroit--api--s1",
+              "name": "s1",
+              "agent": "claude"
+            }
+          ],
+          "devcontainer": false,
+          "branch": "feature/devices-pagination",
+          "dirty": false,
+          "state": "ok"
+        }
+      ],
+      "root": {
+        "name": "root",
+        "path": "/home/ccboard/projects/petroit",
+        "sessions": [],
+        "root": true,
+        "state": "project",
+        "branch": null,
+        "dirty": null,
+        "devcontainer": false
+      },
+      "orphan_sessions": []
+    },
+    {
+      "name": "phasezero",
+      "path": "/home/ccboard/projects/phasezero",
+      "repos": [
+        {
+          "name": "NestJs-Ecommerce-Backend",
+          "path": "/home/ccboard/projects/phasezero/NestJs-Ecommerce-Backend",
+          "sessions": [
+            {
+              "created": 1790633520,
+              "attached": 1,
+              "command": "claude",
+              "path": "/home/ccboard/projects/phasezero/NestJs-Ecommerce-Backend/.claude/worktrees/stock-sync",
+              "pane_id": "%9",
+              "launcher": "task",
+              "cmd": "claude --model opus --effort high --worktree stock-sync",
+              "claude_session_id": "0b8e47a4-52c6-4d1b-8f33-7a9c2e6d1f02",
+              "add_dirs": [],
+              "state": "working",
+              "state_at": "2026-10-03T02:59:20+00:00",
+              "last_event": "UserPromptSubmit",
+              "last_message": "Added StockSyncService.reconcile() and wired it to the order.cancelled event; the migration is next",
+              "last_prompt": "continue",
+              "stats": {
+                "model": "Opus 5",
+                "model_id": "claude-opus-5",
+                "context_pct": 88,
+                "context_size": 200000,
+                "cost_usd": 3.42,
+                "lines_added": 512,
+                "lines_removed": 97,
+                "version": "2.1.288",
+                "rate_limits": null
+              },
+              "needs_attention": false,
+              "tmux": "phasezero--NestJs-Ecommerce-Backend--t-stock-sync",
+              "name": "t-stock-sync",
+              "agent": "claude"
+            }
+          ],
+          "devcontainer": true,
+          "branch": "develop",
+          "dirty": true,
+          "state": "ok"
+        },
+        {
+          "name": "website",
+          "path": "/home/ccboard/projects/phasezero/website",
+          "sessions": [
+            {
+              "created": 1790771760,
+              "attached": 0,
+              "command": "claude",
+              "path": "/home/ccboard/projects/phasezero/website/.claude/worktrees/checkout-redesign",
+              "pane_id": "%14",
+              "launcher": "task",
+              "cmd": "claude --model opus --effort high --worktree checkout-redesign",
+              "claude_session_id": "6f1d2c9e-3b7a-4c1e-9a52-1d0e5b7c8a01",
+              "add_dirs": [],
+              "state": "waiting",
+              "state_at": "2026-10-03T02:57:00+00:00",
+              "last_event": "Notification",
+              "last_message": "Claude needs your permission to use Bash",
+              "last_prompt": "redesign checkout step 2: single column on mobile, sticky order summary, keep the promo field above the fold, then run the e2e suite",
+              "stats": {
+                "model": "Opus 5",
+                "model_id": "claude-opus-5",
+                "context_pct": 61,
+                "context_size": 200000,
+                "cost_usd": 1.87,
+                "lines_added": 214,
+                "lines_removed": 38,
+                "version": "2.1.288",
+                "rate_limits": null
+              },
+              "needs_attention": true,
+              "tmux": "phasezero--website--t-checkout-redesign",
+              "name": "t-checkout-redesign",
+              "agent": "claude"
+            }
+          ],
+          "devcontainer": false,
+          "branch": "main",
+          "dirty": false,
+          "state": "ok"
+        }
+      ],
+      "root": {
+        "name": "root",
+        "path": "/home/ccboard/projects/phasezero",
+        "sessions": [
+          {
+            "created": 1790236080,
+            "attached": 0,
+            "command": "zsh",
+            "path": "/home/ccboard/projects/phasezero",
+            "pane_id": "%2",
+            "launcher": "claude",
+            "cmd": "claude --model opus --effort high",
+            "claude_session_id": "94f0a7c3-6b28-4e15-a9d7-2c1e8b5d4f07",
+            "add_dirs": [],
+            "state": "ended",
+            "state_at": "2026-09-30T03:00:00+00:00",
+            "last_event": "SessionEnd",
+            "last_message": "Watchtower was polling the wrong tag: set WATCHTOWER_LABEL_ENABLE and restart the container.",
+            "last_prompt": "ssh to the box and check why watchtower did not pull the new image",
+            "stats": {
+              "model": "Opus 5",
+              "model_id": "claude-opus-5",
+              "context_pct": 12,
+              "context_size": 200000,
+              "cost_usd": 14.35,
+              "lines_added": 96,
+              "lines_removed": 14,
+              "version": "2.1.288",
+              "rate_limits": null
+            },
+            "needs_attention": false,
+            "tmux": "phasezero--root--s1",
+            "name": "s1",
+            "agent": "claude"
+          }
+        ],
+        "root": true,
+        "state": "project",
+        "branch": null,
+        "dirty": null,
+        "devcontainer": false
+      },
+      "orphan_sessions": []
+    },
+    {
+      "name": "reporting_system",
+      "path": "/home/ccboard/projects/reporting_system",
+      "repos": [
+        {
+          "name": "web",
+          "path": "/home/ccboard/projects/reporting_system/web",
+          "sessions": [],
+          "devcontainer": false,
+          "branch": "main",
+          "dirty": false,
+          "state": "ok"
+        }
+      ],
+      "root": {
+        "name": "root",
+        "path": "/home/ccboard/projects/reporting_system",
+        "sessions": [],
+        "root": true,
+        "state": "project",
+        "branch": null,
+        "dirty": null,
+        "devcontainer": false
+      },
+      "orphan_sessions": []
+    },
+    {
+      "name": "research",
+      "path": "/home/ccboard/projects/research",
+      "repos": [
+        {
+          "name": "notebooks",
+          "path": "/home/ccboard/projects/research/notebooks",
+          "sessions": [],
+          "devcontainer": false,
+          "branch": "main",
+          "dirty": false,
+          "state": "ok"
+        }
+      ],
+      "root": {
+        "name": "root",
+        "path": "/home/ccboard/projects/research",
+        "sessions": [],
+        "root": true,
+        "state": "project",
+        "branch": null,
+        "dirty": null,
+        "devcontainer": false
+      },
+      "orphan_sessions": []
+    }
+  ],
+  "user": "demo@example.com",
+  "config": {
+    "code_https_port": 10000,
+    "projects_dir": "/home/ccboard/projects",
+    "runtime": "host",
+    "ntfy": {
+      "enabled": true,
+      "subscribe_url": "https://ubu2.example.ts.net:8444/ccboard",
+      "topic": "ccboard"
+    },
+    "public_url": "https://ubu2.example.ts.net:8443",
+    "backup": {
+      "restic": true,
+      "repo": "/var/backups/ccboard",
+      "restic_installed": true,
+      "push": true
+    }
+  },
+  "claude": {
+    "installed": true,
+    "version": "2.1.288 (Claude Code)",
+    "loggedIn": true,
+    "email": "demo@example.com",
+    "subscriptionType": "max",
+    "authMethod": "claude.ai",
+    "orgName": "Demo Org"
+  },
+  "agents": {
+    "claude": {
+      "installed": true,
+      "version": "2.1.288",
+      "loggedIn": true,
+      "glyph": "◆",
+      "hooks": {
+        "installed": true
+      }
+    },
+    "codex": {
+      "installed": true,
+      "version": "0.58.0",
+      "loggedIn": true,
+      "authMethod": "chatgpt",
+      "glyph": "◇",
+      "hooks": {
+        "installed": true,
+        "trust": "review"
+      }
+    }
+  },
+  "login": {
+    "running": false,
+    "url": null,
+    "tail": []
+  },
+  "pending_permissions": [
+    {
+      "id": 12,
+      "tmux_name": "phasezero--website--t-checkout-redesign",
+      "tool_name": "Bash",
+      "summary": "Bash: npm test",
+      "created_at": "2026-10-03T02:57:00+00:00"
+    }
+  ],
+  "tasks": [
+    {
+      "ci": null,
+      "pr": null,
+      "id": 5,
+      "project": "phasezero",
+      "repo": "NestJs-Ecommerce-Backend",
+      "slug": "stock-sync",
+      "title": "Sync variant stock when an order is cancelled",
+      "branch": "worktree-stock-sync",
+      "base": "develop",
+      "worktree": "/home/ccboard/projects/phasezero/NestJs-Ecommerce-Backend/.claude/worktrees/stock-sync",
+      "tmux": "phasezero--NestJs-Ecommerce-Backend--t-stock-sync",
+      "claude_session_id": "0b8e47a4-52c6-4d1b-8f33-7a9c2e6d1f02",
+      "pr_url": null,
+      "pr_number": null,
+      "pr_state": null,
+      "cost_usd": 3.42,
+      "overlap": [],
+      "preview_port": null,
+      "preview_https": null,
+      "preview_url": null,
+      "created_at": "2026-09-28T22:12:00+00:00",
+      "column": "in_progress",
+      "session": {
+        "state": "working",
+        "state_at": "2026-10-03T02:59:20+00:00",
+        "last_message": "Added StockSyncService.reconcile() and wired it to the order.cancelled event; the migration is next",
+        "needs_attention": false,
+        "command": "claude"
+      }
+    },
+    {
+      "ci": null,
+      "pr": null,
+      "id": 4,
+      "project": "phasezero",
+      "repo": "website",
+      "slug": "checkout-redesign",
+      "title": "Redesign checkout step 2 for mobile",
+      "branch": "worktree-checkout-redesign",
+      "base": "main",
+      "worktree": "/home/ccboard/projects/phasezero/website/.claude/worktrees/checkout-redesign",
+      "tmux": "phasezero--website--t-checkout-redesign",
+      "claude_session_id": "6f1d2c9e-3b7a-4c1e-9a52-1d0e5b7c8a01",
+      "pr_url": null,
+      "pr_number": null,
+      "pr_state": null,
+      "cost_usd": 1.87,
+      "overlap": [
+        {
+          "id": 3,
+          "title": "Cart drawer accessibility fixes",
+          "files": [
+            "src/components/CartDrawer.tsx",
+            "src/pages/checkout.tsx"
+          ]
+        }
+      ],
+      "preview_port": null,
+      "preview_https": null,
+      "preview_url": null,
+      "created_at": "2026-09-30T12:36:00+00:00",
+      "column": "needs_you",
+      "session": {
+        "state": "waiting",
+        "state_at": "2026-10-03T02:57:00+00:00",
+        "last_message": "Claude needs your permission to use Bash",
+        "needs_attention": true,
+        "command": "claude"
+      }
+    },
+    {
+      "ci": {
+        "bucket": "fail",
+        "checks": [
+          {
+            "name": "build",
+            "bucket": "pass",
+            "state": "SUCCESS",
+            "link": null
+          },
+          {
+            "name": "e2e",
+            "bucket": "fail",
+            "state": "FAILURE",
+            "link": null
+          }
+        ]
+      },
+      "pr": {
+        "state": "OPEN",
+        "url": "https://github.com/example/website/pull/87",
+        "is_draft": false,
+        "mergeable": "MERGEABLE",
+        "merge_state": "BLOCKED",
+        "review": "REVIEW_REQUIRED",
+        "title": "Cart drawer accessibility fixes",
+        "ci": {
+          "bucket": "fail",
+          "checks": [
+            {
+              "name": "build",
+              "bucket": "pass",
+              "state": "SUCCESS",
+              "link": null
+            },
+            {
+              "name": "e2e",
+              "bucket": "fail",
+              "state": "FAILURE",
+              "link": null
+            }
+          ]
+        }
+      },
+      "id": 3,
+      "project": "phasezero",
+      "repo": "website",
+      "slug": "cart-drawer-a11y",
+      "title": "Cart drawer accessibility fixes",
+      "branch": "worktree-cart-drawer-a11y",
+      "base": "main",
+      "worktree": "/home/ccboard/projects/phasezero/website/.claude/worktrees/cart-drawer-a11y",
+      "tmux": "phasezero--website--t-cart-drawer-a11y",
+      "claude_session_id": null,
+      "pr_url": "https://github.com/example/website/pull/87",
+      "pr_number": 87,
+      "pr_state": "OPEN",
+      "cost_usd": 4.1,
+      "overlap": [],
+      "preview_port": null,
+      "preview_https": null,
+      "preview_url": null,
+      "created_at": "2026-09-29T17:24:00+00:00",
+      "column": "pr",
+      "session": null
+    },
+    {
+      "ci": null,
+      "pr": null,
+      "id": 2,
+      "project": "petroit",
+      "repo": "api",
+      "slug": "devices-pagination",
+      "title": "Cursor pagination for /v1/devices",
+      "branch": "worktree-devices-pagination",
+      "base": "main",
+      "worktree": "/home/ccboard/projects/petroit/api/.claude/worktrees/devices-pagination",
+      "tmux": "petroit--api--t-devices-pagination",
+      "claude_session_id": null,
+      "pr_url": null,
+      "pr_number": null,
+      "pr_state": null,
+      "cost_usd": 5.55,
+      "overlap": [],
+      "preview_port": null,
+      "preview_https": null,
+      "preview_url": null,
+      "created_at": "2026-10-02T03:00:00+00:00",
+      "column": "done",
+      "session": null
+    },
+    {
+      "ci": {
+        "bucket": "pass",
+        "checks": [
+          {
+            "name": "build",
+            "bucket": "pass",
+            "state": "SUCCESS",
+            "link": null
+          },
+          {
+            "name": "test",
+            "bucket": "pass",
+            "state": "SUCCESS",
+            "link": null
+          }
+        ]
+      },
+      "pr": {
+        "state": "MERGED",
+        "url": "https://github.com/example/ccboard/pull/41",
+        "is_draft": false,
+        "mergeable": "MERGEABLE",
+        "merge_state": "CLEAN",
+        "review": "APPROVED",
+        "title": "Fix push deep links on the second tap",
+        "ci": {
+          "bucket": "pass",
+          "checks": [
+            {
+              "name": "build",
+              "bucket": "pass",
+              "state": "SUCCESS",
+              "link": null
+            },
+            {
+              "name": "test",
+              "bucket": "pass",
+              "state": "SUCCESS",
+              "link": null
+            }
+          ]
+        }
+      },
+      "id": 1,
+      "project": "ccboard",
+      "repo": "ccboard",
+      "slug": "push-deeplinks",
+      "title": "Fix push deep links on the second tap",
+      "branch": "worktree-push-deeplinks",
+      "base": "main",
+      "worktree": "/home/ccboard/projects/ccboard/ccboard/.claude/worktrees/push-deeplinks",
+      "tmux": "ccboard--ccboard--t-push-deeplinks",
+      "claude_session_id": null,
+      "pr_url": "https://github.com/example/ccboard/pull/41",
+      "pr_number": 41,
+      "pr_state": "MERGED",
+      "cost_usd": 2.1,
+      "overlap": [],
+      "preview_port": null,
+      "preview_https": null,
+      "preview_url": null,
+      "created_at": "2026-09-27T05:24:00+00:00",
+      "column": "merged",
+      "session": null
+    }
+  ],
+  "jobs": [
+    {
+      "id": 2,
+      "project": "ccboard",
+      "repo": "ccboard",
+      "name": "Nightly dependency audit",
+      "prompt": "Audit dependencies for known vulnerabilities and propose minimal bumps on a branch.",
+      "cron": "0 2 * * *",
+      "permission_mode": "acceptEdits",
+      "max_turns": 30,
+      "max_budget_usd": 5.0,
+      "args": null,
+      "timeout_s": 1800,
+      "enabled": 1,
+      "batch_id": null,
+      "next_run_at": "2026-10-04T02:00:00+00:00",
+      "last_run_at": "2026-10-03T02:00:00+00:00",
+      "last_status": "ok",
+      "created_at": "2026-09-27T03:00:00+00:00"
+    },
+    {
+      "id": 1,
+      "project": "petroit",
+      "repo": "api",
+      "name": "Draft the release notes",
+      "prompt": "Summarise the merged PRs since the last tag into release notes.",
+      "cron": null,
+      "permission_mode": "acceptEdits",
+      "max_turns": 20,
+      "max_budget_usd": null,
+      "args": null,
+      "timeout_s": null,
+      "enabled": 0,
+      "batch_id": null,
+      "next_run_at": null,
+      "last_run_at": "2026-09-30T22:12:00+00:00",
+      "last_status": "ok",
+      "created_at": "2026-09-30T19:48:01+00:00"
+    }
+  ],
+  "runs": [
+    {
+      "id": 3,
+      "job_id": 2,
+      "started_at": "2026-10-03T02:00:00+00:00",
+      "finished_at": "2026-10-03T02:06:52+00:00",
+      "status": "ok",
+      "result": "No known vulnerabilities. Two minor bumps proposed on branch deps/2026-10-03; tests pass.",
+      "error": null,
+      "session_id": "5d2c7e91-0a4b-4f68-b3d1-8e6a9c2f4b08",
+      "cost_usd": 0.84,
+      "num_turns": 11,
+      "worktree": null,
+      "branch": null,
+      "task_id": null
+    },
+    {
+      "id": 2,
+      "job_id": 2,
+      "started_at": "2026-10-02T02:00:00+00:00",
+      "finished_at": "2026-10-02T02:01:35+00:00",
+      "status": "failed",
+      "result": null,
+      "error": "claude exited 1: 5-hour limit reached",
+      "session_id": null,
+      "cost_usd": null,
+      "num_turns": null,
+      "worktree": null,
+      "branch": null,
+      "task_id": null
+    },
+    {
+      "id": 1,
+      "job_id": 1,
+      "started_at": "2026-09-30T22:12:00+00:00",
+      "finished_at": "2026-09-30T22:15:08+00:00",
+      "status": "ok",
+      "result": "Release notes drafted: 9 PRs grouped into features, fixes and chores.",
+      "error": null,
+      "session_id": "b8f3a1d7-2e64-4c09-9d5a-1c7e0b4a6d09",
+      "cost_usd": 0.41,
+      "num_turns": 8,
+      "worktree": null,
+      "branch": null,
+      "task_id": null
+    }
+  ],
+  "clone_queue": {
+    "queued": [],
+    "done": [],
+    "cap": 3
+  },
+  "last_recovery": null,
+  "usage": {
+    "value": {
+      "five_hour": {
+        "used_percentage": 42,
+        "resets_at": 1791006000
+      },
+      "seven_day": {
+        "used_percentage": 71,
+        "resets_at": 1791270000
+      }
+    },
+    "at": "2026-10-03T02:59:40+00:00"
+  },
+  "usage_codex": {
+    "value": {
+      "primary": {
+        "used_percent": 17,
+        "window_minutes": 10080,
+        "resets_at": 1791349200
+      },
+      "secondary": null,
+      "plan_type": "plus",
+      "credits": null,
+      "reached": false,
+      "observed_at": "2026-10-03T02:58:25+00:00"
+    },
+    "at": "2026-10-03T02:58:25+00:00"
+  },
+  "block": {
+    "value": {
+      "available": true,
+      "active": true,
+      "start": "2026-10-03T00:40:00+00:00",
+      "end": "2026-10-03T05:40:00+00:00",
+      "cost_usd": 38.2,
+      "total_tokens": 41200000,
+      "burn_cost_per_hour": 11.9,
+      "burn_tokens_per_minute": 9800,
+      "projected_cost": 61.4,
+      "projected_tokens": 66000000,
+      "remaining_minutes": 160,
+      "models": [
+        "claude-opus-5",
+        "claude-fable-5-1"
+      ]
+    },
+    "at": "2026-10-03T02:59:15+00:00"
+  },
+  "cost": {
+    "value": {
+      "projects": {
+        "phasezero": {
+          "total": 412.6,
+          "today": 38.2,
+          "week": 171.4,
+          "repos": {
+            "website": 196.3,
+            "NestJs-Ecommerce-Backend": 216.3
+          }
+        },
+        "ccboard": {
+          "total": 58.1,
+          "today": 22.4,
+          "week": 58.1,
+          "repos": {
+            "ccboard": 58.1
+          }
+        },
+        "petroit": {
+          "total": 49.3,
+          "today": 15.7,
+          "week": 49.3,
+          "repos": {
+            "api": 49.3
+          }
+        },
+        "internalSystem": {
+          "total": 293.0,
+          "today": 0.0,
+          "week": 46.2,
+          "repos": {
+            "server": 293.0
+          }
+        },
+        "mailgate": {
+          "total": 739.0,
+          "today": 0.0,
+          "week": 8.5,
+          "repos": {
+            "mailgate": 739.0
+          }
+        }
+      },
+      "tasks": {
+        "5": 3.42,
+        "4": 1.87,
+        "3": 4.1,
+        "2": 5.55,
+        "1": 2.1
+      },
+      "attributed": 12,
+      "sessions_known": 61,
+      "total_all": 1620.42
+    },
+    "at": "2026-10-03T02:50:00+00:00"
+  },
+  "health": {
+    "host": "ubu2",
+    "cpu_pct": 18.4,
+    "load1": 1.32,
+    "mem": {
+      "total": 34359738368,
+      "used": 14817637171,
+      "pct": 43.1
+    },
+    "disk": {
+      "total": 1006096089088,
+      "used": 414464344064,
+      "pct": 41.2
+    },
+    "uptime_s": 1217040,
+    "cores": 8,
+    "at": 1790996400.0
+  },
+  "nodes": {
+    "value": [
+      {
+        "node": "mini",
+        "health": {
+          "host": "mini",
+          "cpu_pct": 6.8,
+          "load1": 0.41,
+          "mem": {
+            "total": 17179869184,
+            "used": 6549825126,
+            "pct": 38.1
+          },
+          "disk": {
+            "total": 493921239040,
+            "used": 204010946560,
+            "pct": 41.3
+          },
+          "uptime_s": 604800,
+          "cores": 10,
+          "at": 1790996400.0
+        },
+        "tmux_down": false,
+        "sessions": 2,
+        "attention": 0,
+        "tasks": 0,
+        "usage": {
+          "five_hour": {
+            "used_percentage": 42,
+            "resets_at": 1791006000
+          }
+        },
+        "backup": null,
+        "url": "https://mini.example.ts.net:8443",
+        "name": "mini",
+        "online": true
+      }
+    ],
+    "at": "2026-10-03T02:59:30+00:00"
+  },
+  "backup": {
+    "at": "2026-10-02T15:00:00+00:00",
+    "status": "ok",
+    "restic": {
+      "snapshot_id": "9f3ac12e77b04d1f8a6c5e2b3d7019aa",
+      "files_new": 214,
+      "files_changed": 38,
+      "files_unmodified": 18211,
+      "data_added": 48211968,
+      "total_files_processed": 18463,
+      "total_bytes_processed": 2381941760,
+      "total_duration": 31.2,
+      "repo": "/var/backups/ccboard"
+    },
+    "push": [
+      {
+        "repo": "phasezero/website",
+        "pushed": [
+          "main",
+          "feature/checkout"
+        ],
+        "rejected": []
+      },
+      {
+        "repo": "phasezero/NestJs-Ecommerce-Backend",
+        "pushed": [
+          "develop"
+        ],
+        "rejected": []
+      },
+      {
+        "repo": "ccboard/ccboard",
+        "pushed": [
+          "main"
+        ],
+        "rejected": []
+      },
+      {
+        "repo": "petroit/api",
+        "pushed": [
+          "main",
+          "feature/devices-pagination"
+        ],
+        "rejected": []
+      }
+    ],
+    "errors": [],
+    "paths": [
+      "/var/lib/ccboard/ccboard.db",
+      "/home/ccboard/.claude/projects"
+    ],
+    "duration_s": 41.7
+  },
+  "node_name": "ubu2",
+  "rate_limited": null,
+  "scheduler": {
+    "pct": 42.0,
+    "at": "2026-10-03T02:59:40+00:00",
+    "resets_at": 1791006000,
+    "backoff_until": null,
+    "known": true
+  },
+  "version": "demo",
+  "demo": {
+    "epoch": 1790996400
+  }
+}

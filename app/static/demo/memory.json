@@ -1,0 +1,80 @@
+{
+  "state": "up",
+  "items": [
+    {
+      "id": 19801,
+      "type": "bugfix",
+      "title": "Second push tap did nothing on iOS",
+      "subtitle": "client.focus() resolves but the hash never changes",
+      "created_at_epoch": 1790598961000,
+      "concepts": [
+        "gotcha",
+        "problem-solution"
+      ],
+      "files_read": [
+        "app/static/sw.js",
+        "app/static/router.js"
+      ],
+      "project": "ccboard"
+    },
+    {
+      "id": 19764,
+      "type": "decision",
+      "title": "Hash routes inside / instead of history routes",
+      "subtitle": "no FastAPI catch-all and push deep links stay valid",
+      "created_at_epoch": 1790814960000,
+      "concepts": [
+        "pattern",
+        "how-it-works"
+      ],
+      "files_read": [
+        "app/static/router.js"
+      ],
+      "project": "ccboard"
+    },
+    {
+      "id": 19702,
+      "type": "discovery",
+      "title": "Stock reconcile runs on order.cancelled and order.refunded",
+      "subtitle": "both events share one handler",
+      "created_at_epoch": 1790659440000,
+      "concepts": [
+        "how-it-works"
+      ],
+      "files_read": [
+        "src/stock/stock-sync.service.ts",
+        "src/orders/orders.events.ts"
+      ],
+      "project": "NestJs-Ecommerce-Backend"
+    },
+    {
+      "id": 19655,
+      "type": "feature",
+      "title": "Cursor pagination for /v1/devices",
+      "subtitle": "opaque base64 cursor over (updated_at, id)",
+      "created_at_epoch": 1790910000000,
+      "concepts": [
+        "pattern"
+      ],
+      "files_read": [
+        "src/devices/devices.controller.ts"
+      ],
+      "project": "api"
+    },
+    {
+      "id": 19610,
+      "type": "change",
+      "title": "Checkout summary becomes sticky below 600 px",
+      "subtitle": "order summary pins above the pay button",
+      "created_at_epoch": 1790780400000,
+      "concepts": [
+        "problem-solution"
+      ],
+      "files_read": [
+        "src/pages/checkout.tsx",
+        "src/styles/checkout.css"
+      ],
+      "project": "website"
+    }
+  ]
+}
