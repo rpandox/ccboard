@@ -509,6 +509,15 @@ if [ "$CCBOARD_RUNTIME" = docker ]; then   # hooks, statusline and ttyd run from
   else
     python3 "$APP_DIR/scripts/claude_settings.py" install --app-dir "$DOCKER_APP" --approve-timeout "${CCBOARD_APPROVE_TIMEOUT:-90}"
   fi
+  # watchdog: on a busy box Watchtower can create the new container without its start taking (seen on ubu2: state 'Created',
+  # a 502 until someone ran docker start). Every 2 minutes from the user's crontab (no sudo): start it when it is not running,
+  # restart it when it stays unhealthy. Marked so a rerun replaces the line.
+  if have crontab; then
+    wd_line=$(printf '*/2 * * * * CCBOARD_DATA_DIR=%s %s/scripts/ccboard-watchdog.sh >/dev/null 2>&1 # ccboard-watchdog' "$CCBOARD_DATA_DIR" "$DOCKER_APP")
+    { crontab -l 2>/dev/null | grep -v '# ccboard-watchdog$'; printf '%s\n' "$wd_line"; } | crontab - && note "watchdog: crontab line installed (every 2 min)"
+  else
+    warn "crontab not found: the container watchdog (scripts/ccboard-watchdog.sh) is not scheduled"
+  fi
 elif [ "${CCBOARD_REMOTE_APPROVE:-1}" = 0 ]; then
   python3 "$APP_DIR/scripts/claude_settings.py" install --app-dir "$APP_DIR" --no-remote-approve
 else
