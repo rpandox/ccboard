@@ -263,6 +263,23 @@ def pane_info(name: str) -> dict:
             "cols": _int(cols), "rows": _int(rows), "win_cols": _int(wc), "win_rows": _int(wr), "cmd": cmd}
 
 
+RESIZE_COLS = (40, 400)
+RESIZE_ROWS = (10, 200)
+
+
+def resize_window(name: str, cols: int, rows: int) -> None:
+    """Resize the session's current window to cols x rows (the board's phone-shaped terminal). `resize-window -x -y` pins the
+    window size (window-size manual); the second call unsets that window option again, so the next client that attaches sizes
+    the window the usual way and the pinned size does not outlive the board's own use. The caller checks that no full client is
+    attached. Raises ValueError outside RESIZE_COLS x RESIZE_ROWS (or for a bool or a non-int), TmuxError / TmuxDown from tmux."""
+    ok = all(isinstance(v, int) and not isinstance(v, bool) for v in (cols, rows))
+    if not ok or not (RESIZE_COLS[0] <= cols <= RESIZE_COLS[1] and RESIZE_ROWS[0] <= rows <= RESIZE_ROWS[1]):
+        raise ValueError(f"size must be {RESIZE_COLS[0]}..{RESIZE_COLS[1]} columns by {RESIZE_ROWS[0]}..{RESIZE_ROWS[1]} rows")
+    t = pane_target(name)
+    run("resize-window", "-t", t, "-x", str(cols), "-y", str(rows))
+    run("set-window-option", "-u", "-t", t, "window-size")
+
+
 def leave_copy_mode(name: str) -> bool:
     """Cancel tmux copy-mode on the session's pane when it is in it. Best effort: if the pane cannot be read, the caller's own
     command reports the real error. Returns True when it cancelled."""

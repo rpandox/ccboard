@@ -1,12 +1,11 @@
 #!/bin/sh
-# Claude Code hook -> ccboard. Registered as an async hook, so it never blocks the TUI.
-# Reads the hook JSON on stdin and POSTs it to the board over loopback with the local token.
-# CCBOARD_CURL_MAX caps the request (seconds); CCBOARD_AGENT names the agent whose hook this is (the board reads Codex's the same way).
+# Claude Code hook -> ccboard, for SessionEnd. The same POST as ccboard-hook, registered WITHOUT async and with a short cap (2 s): the
+# process is about to exit, so the event has to land before it does, and a board that is down must not hold the exit up.
 url="${CCBOARD_URL:-http://127.0.0.1:8000}"
 tokfile="${CCBOARD_HOOK_TOKEN_FILE:-$HOME/.local/share/ccboard/hook-token}"
 tok=$(cat "$tokfile" 2>/dev/null) || exit 0
 [ -n "$tok" ] || exit 0
-curl -s -m "${CCBOARD_CURL_MAX:-3}" -o /dev/null -X POST "$url/api/hook" \
+curl -s -m 2 -o /dev/null -X POST "$url/api/hook" \
   -H "Content-Type: application/json" \
   -H "X-CCBoard-Token: $tok" \
   -H "X-CCBoard-Agent: ${CCBOARD_AGENT:-claude}" \

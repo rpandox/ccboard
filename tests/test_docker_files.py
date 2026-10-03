@@ -203,7 +203,7 @@ def test_entrypoint_syncs_merges_registers_and_execs(tmp_path):
     r = box.run()
     assert r.returncode == 0, r.stderr
     app = box.data / "app"
-    for rel in ("bin/ccboard-hook", "bin/ccboard-attach", "bin/ccboard-permission", "bin/ccboard-statusline"):
+    for rel in ("bin/ccboard-hook", "bin/ccboard-hook-fast", "bin/ccboard-attach", "bin/ccboard-permission", "bin/ccboard-statusline"):
         assert (app / rel).stat().st_mode & 0o777 == 0o755, rel
     assert (app / "scripts" / "claude_settings.py").is_file() and (app / "scripts" / "ccboard_mcp.py").is_file()
     assert (app / "tmux.conf").read_text() == (ROOT / "tmux.conf").read_text()

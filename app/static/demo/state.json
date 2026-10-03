@@ -33,7 +33,21 @@
                 "lines_added": 1880,
                 "lines_removed": 402,
                 "version": "2.1.288",
-                "rate_limits": null
+                "rate_limits": null,
+                "effort": "high",
+                "fast": false,
+                "thinking": true,
+                "session_name": null,
+                "prompt_cache": {
+                  "warm": true,
+                  "hit_ratio": 0.91,
+                  "expires_at": null,
+                  "ttl": "1h"
+                },
+                "pr": null,
+                "worktree": null,
+                "repo": "ccboard",
+                "exceeds_200k": false
               },
               "needs_attention": false,
               "tmux": "ccboard--ccboard--s1",
@@ -58,7 +72,8 @@
                   "at": "2026-10-02T22:00:00+00:00",
                   "waiting_for": null
                 },
-                "subagents": 2
+                "subagents": 2,
+                "hook_seen": true
               },
               "task": null,
               "viewers": {
@@ -93,7 +108,21 @@
                 "lines_added": null,
                 "lines_removed": null,
                 "version": "0.58.0",
-                "rate_limits": null
+                "rate_limits": null,
+                "effort": "high",
+                "fast": false,
+                "thinking": true,
+                "session_name": null,
+                "prompt_cache": {
+                  "warm": true,
+                  "hit_ratio": 0.91,
+                  "expires_at": null,
+                  "ttl": "1h"
+                },
+                "pr": null,
+                "worktree": null,
+                "repo": "ccboard",
+                "exceeds_200k": false
               },
               "needs_attention": false,
               "tmux": "ccboard--ccboard--cx1",
@@ -101,7 +130,9 @@
               "agent": "codex",
               "agent_session_id": "019a2b4c-8d1e-7f30-b5a6-3c9d0e1f2a04",
               "row_id": 2,
-              "flags": {},
+              "flags": {
+                "hook_seen": true
+              },
               "task": null,
               "viewers": {
                 "full": 0,
@@ -266,7 +297,21 @@
                 "lines_added": 142,
                 "lines_removed": 20,
                 "version": "2.1.288",
-                "rate_limits": null
+                "rate_limits": null,
+                "effort": "high",
+                "fast": false,
+                "thinking": true,
+                "session_name": null,
+                "prompt_cache": {
+                  "warm": true,
+                  "hit_ratio": 0.91,
+                  "expires_at": null,
+                  "ttl": "1h"
+                },
+                "pr": null,
+                "worktree": null,
+                "repo": "api",
+                "exceeds_200k": false
               },
               "needs_attention": true,
               "tmux": "petroit--api--s2",
@@ -274,7 +319,9 @@
               "agent": "claude",
               "agent_session_id": "e2b6c4a8-1f57-4d93-8c0e-5a7b3d9f1c06",
               "row_id": 3,
-              "flags": {},
+              "flags": {
+                "hook_seen": true
+              },
               "task": null,
               "viewers": {
                 "full": 0,
@@ -308,7 +355,21 @@
                 "lines_added": 328,
                 "lines_removed": 71,
                 "version": "2.1.288",
-                "rate_limits": null
+                "rate_limits": null,
+                "effort": "high",
+                "fast": false,
+                "thinking": true,
+                "session_name": null,
+                "prompt_cache": {
+                  "warm": true,
+                  "hit_ratio": 0.91,
+                  "expires_at": null,
+                  "ttl": "1h"
+                },
+                "pr": null,
+                "worktree": null,
+                "repo": "api",
+                "exceeds_200k": false
               },
               "needs_attention": true,
               "tmux": "petroit--api--s1",
@@ -316,7 +377,9 @@
               "agent": "claude",
               "agent_session_id": "a7d1e8f2-4c39-4a60-b1d5-6e2f9c0a3b05",
               "row_id": 4,
-              "flags": {},
+              "flags": {
+                "hook_seen": true
+              },
               "task": null,
               "viewers": {
                 "full": 0,
@@ -350,7 +413,21 @@
                 "lines_added": 328,
                 "lines_removed": 71,
                 "version": "2.1.288",
-                "rate_limits": null
+                "rate_limits": null,
+                "effort": "high",
+                "fast": false,
+                "thinking": true,
+                "session_name": null,
+                "prompt_cache": {
+                  "warm": true,
+                  "hit_ratio": 0.91,
+                  "expires_at": null,
+                  "ttl": "1h"
+                },
+                "pr": null,
+                "worktree": null,
+                "repo": "api",
+                "exceeds_200k": false
               },
               "needs_attention": true,
               "tmux": "petroit--api--s3",
@@ -358,7 +435,9 @@
               "agent": "claude",
               "agent_session_id": "c4e9a1b7-3d28-4f60-9b15-8a2d6c0e7f08",
               "row_id": 8,
-              "flags": {},
+              "flags": {
+                "hook_seen": true
+              },
               "task": null,
               "viewers": {
                 "full": 0,
@@ -419,7 +498,21 @@
                 "lines_added": 512,
                 "lines_removed": 97,
                 "version": "2.1.288",
-                "rate_limits": null
+                "rate_limits": null,
+                "effort": "high",
+                "fast": false,
+                "thinking": true,
+                "session_name": null,
+                "prompt_cache": {
+                  "warm": true,
+                  "hit_ratio": 0.91,
+                  "expires_at": null,
+                  "ttl": "1h"
+                },
+                "pr": null,
+                "worktree": null,
+                "repo": "NestJs-Ecommerce-Backend",
+                "exceeds_200k": false
               },
               "needs_attention": false,
               "tmux": "phasezero--NestJs-Ecommerce-Backend--t-stock-sync",
@@ -427,7 +520,9 @@
               "agent": "claude",
               "agent_session_id": "0b8e47a4-52c6-4d1b-8f33-7a9c2e6d1f02",
               "row_id": 5,
-              "flags": {},
+              "flags": {
+                "hook_seen": true
+              },
               "task": {
                 "id": 5,
                 "title": "Sync variant stock when an order is cancelled",
@@ -476,7 +571,21 @@
                 "lines_added": 214,
                 "lines_removed": 38,
                 "version": "2.1.288",
-                "rate_limits": null
+                "rate_limits": null,
+                "effort": "high",
+                "fast": false,
+                "thinking": true,
+                "session_name": null,
+                "prompt_cache": {
+                  "warm": true,
+                  "hit_ratio": 0.91,
+                  "expires_at": null,
+                  "ttl": "1h"
+                },
+                "pr": null,
+                "worktree": null,
+                "repo": "website",
+                "exceeds_200k": false
               },
               "needs_attention": true,
               "tmux": "phasezero--website--t-checkout-redesign",
@@ -484,7 +593,9 @@
               "agent": "claude",
               "agent_session_id": "6f1d2c9e-3b7a-4c1e-9a52-1d0e5b7c8a01",
               "row_id": 6,
-              "flags": {},
+              "flags": {
+                "hook_seen": true
+              },
               "task": {
                 "id": 4,
                 "title": "Redesign checkout step 2 for mobile",
@@ -534,7 +645,21 @@
               "lines_added": 96,
               "lines_removed": 14,
               "version": "2.1.288",
-              "rate_limits": null
+              "rate_limits": null,
+              "effort": "high",
+              "fast": false,
+              "thinking": true,
+              "session_name": null,
+              "prompt_cache": {
+                "warm": true,
+                "hit_ratio": 0.91,
+                "expires_at": null,
+                "ttl": "1h"
+              },
+              "pr": null,
+              "worktree": null,
+              "repo": null,
+              "exceeds_200k": false
             },
             "needs_attention": false,
             "tmux": "phasezero--root--s1",
@@ -542,7 +667,9 @@
             "agent": "claude",
             "agent_session_id": "94f0a7c3-6b28-4e15-a9d7-2c1e8b5d4f07",
             "row_id": 7,
-            "flags": {},
+            "flags": {
+              "hook_seen": true
+            },
             "task": null,
             "viewers": {
               "full": 0,

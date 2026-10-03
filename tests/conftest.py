@@ -74,12 +74,15 @@ def fake_tmux(monkeypatch):
     """Replace tmux calls with an in-memory fake that records commands.
 
     store keys (all plain data, safe to read and to set from a test):
-      sessions   name -> {created, attached, windows, pane_id, command, path, pid, env[, window_width, window_height]}
+      sessions   name -> {created, attached, windows, pane_id, command, path, pid, env[, window_width, window_height | win]};
+                 `win: [w, h]` is the same window size as one pair (window_width/height win when both are given)
       sent       send_line calls: (name, text)           created  new_session calls: (name, cwd, env)
       texts      send_text calls: (name, text, enter)    pasted   paste_text calls: (name, text, enter); send_text of
                  multi-line text lands in both
       keys       send_keys calls: (name, [keys])         left_copy  leave_copy_mode calls: [name, ...]
       scrolled   scroll calls: (name, dir, n, agent)     run      raw tmux.run argv tuples that reached the benign run below
+      resized    resize_window calls: (name, cols, rows); the real implementation runs over the benign run (so `resize-window` and
+                 `set-window-option -u` reach `run`), then the session's window_width/height become the new size, the way tmux would
       clients    [{"session": name, "flags": {"attached", "ignore-size", ...}}]; while it is empty every session's `attached`
                  count is taken as that many full clients, so `attached = 1` alone means one person at the terminal. Set it to
                  describe grid tiles / read-only views (a session with attached=1 and clients=[a grid tile] has no real client)
@@ -93,14 +96,26 @@ def fake_tmux(monkeypatch):
     import subprocess
     from app import tmux
     store = {"sessions": {}, "sent": [], "created": [], "texts": [], "pasted": [], "keys": [], "left_copy": [],
-             "scrolled": [], "run": [], "clients": [], "clients_error": None, "pane": {}}
+             "scrolled": [], "resized": [], "run": [], "clients": [], "clients_error": None, "pane": {}}
 
     def run(*args, timeout=5, check=True, input=None):
         store["run"].append(args if input is None else args + (input,))
         return subprocess.CompletedProcess(args, 0, "", "")
 
+    def _win(s):
+        """(width, height) of a fake session's window: window_width/height when both are set, else the `win` pair, else (0, 0)."""
+        if s.get("window_width") and s.get("window_height"):
+            return int(s["window_width"]), int(s["window_height"])
+        w = s.get("win")
+        return (int(w[0]), int(w[1])) if isinstance(w, (list, tuple)) and len(w) == 2 else (0, 0)
+
     def list_sessions():
-        return {n: dict(s) for n, s in store["sessions"].items()}
+        out = {}
+        for n, s in store["sessions"].items():
+            d = dict(s)
+            d["window_width"], d["window_height"] = _win(s)
+            out[n] = d
+        return out
 
     def has_session(name):
         return name in store["sessions"]
@@ -143,7 +158,7 @@ def fake_tmux(monkeypatch):
             raise tmux.TmuxError(f"can't find session: ={name}")
         s = store["sessions"][name]
         info = {"alt": False, "in_mode": False, "scroll_pos": 0, "history": 0, "cols": 80, "rows": 24,
-                "win_cols": s.get("window_width") or 80, "win_rows": s.get("window_height") or 24, "cmd": s.get("command") or ""}
+                "win_cols": _win(s)[0] or 80, "win_rows": _win(s)[1] or 24, "cmd": s.get("command") or ""}
         info.update(store["pane"].get(name, {}))
         return info
 
@@ -174,6 +189,18 @@ def fake_tmux(monkeypatch):
         after = pane_info(name)
         return {"mode": "copy" if after["in_mode"] else "normal", "alt": after["alt"], "pos": after["scroll_pos"]}
 
+    # -- window size: record, run the real two-call implementation over the benign run, then size the fake window like tmux
+    real_resize_window = tmux.resize_window
+
+    def resize_window(name, cols, rows):
+        store["resized"].append((name, cols, rows))
+        real_resize_window(name, cols, rows)                     # raises the real ValueError outside the allowed range
+        if name not in store["sessions"]:
+            raise tmux.TmuxError(f"can't find window: ={name}:")
+        s = store["sessions"][name]
+        s.pop("win", None)
+        s.update(window_width=cols, window_height=rows)
+
     # -- sending: record, then the real code over the benign run
     real_send_text, real_send_keys, real_paste_text = tmux.send_text, tmux.send_keys, tmux.paste_text
 
@@ -192,7 +219,7 @@ def fake_tmux(monkeypatch):
         return real_paste_text(name, text, enter=enter)
 
     for fn in (run, list_sessions, has_session, new_session, send_line, kill_session, capture, clients, real_clients, viewers,
-               pane_info, leave_copy_mode, scroll, send_text, send_keys, paste_text):
+               pane_info, leave_copy_mode, scroll, resize_window, send_text, send_keys, paste_text):
         monkeypatch.setattr(tmux, fn.__name__, fn)
     class NoSleepTime:
         """tmux.py's own view of `time` without sleep: send_text/paste_text pauses never slow a test. A shim on the module attribute,

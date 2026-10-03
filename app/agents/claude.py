@@ -12,6 +12,7 @@ from __future__ import annotations
 import functools
 import importlib.util
 import json
+import math
 import re
 import shlex
 import uuid
@@ -50,6 +51,17 @@ TASK_REFUSAL = ("bypassPermissions (or a settings override) is not allowed for t
 WAITING_NOTIFICATIONS = {"permission_prompt", "idle_prompt", "elicitation_dialog", "elicitation_url_dialog"}
 WAIT_KIND = {"permission_prompt": "permission", "idle_prompt": "idle", "elicitation_dialog": "elicitation",
              "elicitation_url_dialog": "elicitation"}
+# The notifications that close an elicitation wait (hooks.apply clears wait_kind only when the row was waiting on an elicitation).
+ELICITATION_DONE = frozenset({"elicitation_complete", "elicitation_response"})
+RESULT_MAX = 20000                                # flags.last_result (the full text of a finished turn)
+KIND_MAX = 200
+PATH_MAX = 1024                                   # a transcript path is stored on the row: an oversized one is dropped
+# A session id is stored on the row and compared across rows: UUID-shaped in practice, but only the charset and length are enforced.
+SESSION_ID_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._:-]{0,127}$")
+# SessionStart sources that start a fresh conversation (no subagent of the old one can still be running); `compact` keeps the session.
+FRESH_SOURCES = ("startup", "clear", "resume", "fork")
+# SessionEnd reasons followed at once by a SessionStart on the same process: the session goes on, it is not over.
+CONTINUING_END = ("clear", "resume")
 
 RATE_RE = re.compile(r"rate.?limit|usage limit|limit reached|too many requests", re.I)
 # The way Claude Code words a hit limit ("You've hit your session limit · resets 10:05pm (Asia/Kathmandu)", "hit your usage limit");
@@ -153,7 +165,10 @@ def _claude_settings_mod():
         return None
 
 
-FALLBACK_EVENTS = ["SessionStart", "UserPromptSubmit", "Notification", "Stop", "StopFailure", "SessionEnd"]
+# Must equal scripts/claude_settings.py EVENTS (tests/test_settings_install.py pins it): used only when that file is missing.
+FALLBACK_EVENTS = ["SessionStart", "UserPromptSubmit", "Notification", "Stop", "StopFailure", "SubagentStart", "SubagentStop",
+                   "PreCompact", "PostCompact", "PostModelSwitch", "TaskCreated", "TaskCompleted", "PostToolBatch", "ConfigChange",
+                   "SessionEnd"]
 
 
 def _is_ours(hook) -> bool:
@@ -169,6 +184,68 @@ def _truthy(v) -> bool:
 
 def _str(v) -> str | None:
     return v if isinstance(v, str) and v else None
+
+
+def _kind(*vals) -> str | None:
+    """The first non-empty string of `vals`, capped: a hook's type/matcher/source field. A payload field of the wrong shape (a list,
+    a number) is ignored instead of becoming a stored 'kind' (or raising on the set lookups)."""
+    for v in vals:
+        if isinstance(v, str) and v:
+            return v[:KIND_MAX]
+    return None
+
+
+def _scalar(v, cap: int = 120):
+    """A statusline value that goes on the row: bool, finite number or a short string; anything else (a dict, a list, NaN) is None."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v if math.isfinite(v) else None
+    if isinstance(v, str):
+        v = v.strip()
+        return v[:cap] or None
+    return None
+
+
+def _num(v):
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
+
+
+def _dict(v) -> dict:
+    return v if isinstance(v, dict) else {}
+
+
+def statusline_stats(payload) -> dict:
+    """The row's `stats` from one statusline payload (the JSON Claude Code feeds bin/ccboard-statusline). Every key is optional in
+    the payload and every value is type-checked here (the body is untrusted): a missing or malformed key is None, never an error.
+    `rate_limits` keeps its own shape (the usage page and samples.record_statusline read it) but is dropped when absurdly large."""
+    p = _dict(payload)
+    model, cw, cost, ws = _dict(p.get("model")), _dict(p.get("context_window")), _dict(p.get("cost")), _dict(p.get("workspace"))
+    eff, thinking, pc, pr = p.get("effort"), _dict(p.get("thinking")), _dict(p.get("prompt_cache")), _dict(p.get("pr"))
+    repo = ws.get("repo")
+    rl = _dict(p.get("rate_limits")) or None
+    if rl is not None and len(json.dumps(rl, default=str)) > 4096:
+        rl = None
+    cache = {k: _scalar(pc.get(k)) for k in ("warm", "hit_ratio", "expires_at", "ttl")} if pc else None
+    prn = {"number": _num(pr.get("number")), "url": _scalar(pr.get("url"), 300), "review_state": _scalar(pr.get("review_state"), 40)} \
+        if pr else None
+    return {
+        "model": _scalar(model.get("display_name")), "model_id": _scalar(model.get("id")),
+        "context_pct": _scalar(cw.get("used_percentage")), "context_size": _scalar(cw.get("context_window_size")),
+        "cost_usd": _scalar(cost.get("total_cost_usd")), "lines_added": _scalar(cost.get("total_lines_added")),
+        "lines_removed": _scalar(cost.get("total_lines_removed")),
+        "version": _scalar(p.get("version"), 40),
+        "rate_limits": rl,
+        "effort": _scalar(_dict(eff).get("level") if isinstance(eff, dict) else eff, 20),
+        "fast": p.get("fast_mode") if isinstance(p.get("fast_mode"), bool) else None,
+        "thinking": thinking.get("enabled") if isinstance(thinking.get("enabled"), bool) else None,
+        "session_name": _scalar(p.get("session_name"), 120),
+        "prompt_cache": cache if cache and any(v is not None for v in cache.values()) else None,
+        "pr": prn if prn and any(v is not None for v in prn.values()) else None,
+        "worktree": _scalar(ws.get("git_worktree") or _dict(p.get("worktree")).get("name"), 120),
+        "repo": _scalar(repo.get("name") if isinstance(repo, dict) else repo, 120),
+        "exceeds_200k": p.get("exceeds_200k_tokens") if isinstance(p.get("exceeds_200k_tokens"), bool) else None,
+    }
 
 
 class ClaudeAgent(Agent):
@@ -494,56 +571,77 @@ class ClaudeAgent(Agent):
         mod.save(self._settings_file(), mod.strip_ours(self._read_settings(strict=True)))
 
     def normalise_hook(self, event: str, payload: dict) -> HookNorm:
-        """One hook payload in the board's terms, mirroring hooks.apply's mapping (Stop's screen-line fallback stays in apply: it
-        needs tmux). Malformed payloads never raise."""
+        """One hook payload in the board's terms; hooks.apply feeds EVERY event through it (Stop's screen-line fallback, the
+        last_prompt hygiene and the rules that need the row stay in apply). Malformed payloads never raise: a field of the wrong shape
+        is ignored. Besides the state it patches the row's flags: hook_seen, transcript_path, wait_kind, compacting, last_result,
+        resumed and the subagent counter (`incr`)."""
         p = payload if isinstance(payload, dict) else {}
         if event == "statusline":
             return HookNorm(event=event, ignored="statusline")           # not a hook: hooks.apply handles it before this
         n = HookNorm(event=event)
         n.flags["hook_seen"] = True
-        if _str(p.get("transcript_path")):
-            n.flags["transcript_path"] = p["transcript_path"]
+        tp = p.get("transcript_path")
+        if isinstance(tp, str) and tp and len(tp) <= PATH_MAX:
+            n.flags["transcript_path"] = tp
         if event == "SessionStart":
-            n.state, n.kind = "idle", p.get("source") or p.get("matcher")
+            n.kind = _kind(p.get("source"), p.get("matcher"))
+            n.state = None if n.kind == "compact" else "idle"             # a compaction is not a new session: a turn may go on after it
+            # a resume says how long the conversation sat and how big it is (the prompt cache is probably cold): the row keeps it
+            since, tokens, cold = _num(p.get("seconds_since_last_response")), _num(p.get("context_tokens")), p.get("prompt_cache_likely_expired")
+            if since is not None or tokens is not None:
+                n.flags["resumed"] = {k: v for k, v in (("context_tokens", tokens), ("since_s", since),
+                                                        ("cache_cold", cold if isinstance(cold, bool) else None)) if v is not None}
+            else:
+                n.flags["resumed"] = None
+            if n.kind is None or n.kind in FRESH_SOURCES:
+                n.flags["subagents"] = None                               # a new conversation: counts from the old one are stale
+            n.flags["compacting"] = None
         elif event == "UserPromptSubmit":
             n.state, n.prompt = "working", p.get("prompt") if isinstance(p.get("prompt"), str) else None
         elif event == "Notification":
-            n.kind = p.get("notification_type") or p.get("type") or p.get("matcher")
+            n.kind = _kind(p.get("notification_type"), p.get("type"), p.get("matcher"))
             n.message = p.get("message") if isinstance(p.get("message"), str) else None
             if n.kind in WAITING_NOTIFICATIONS:
                 n.state, n.attention = "waiting", True
                 n.flags["wait_kind"] = WAIT_KIND[n.kind]
         elif event == "Stop":
             last = _str(p.get("last_assistant_message"))
+            last = last[:RESULT_MAX] if last else None
             n.state, n.attention, n.message, n.result = "done", True, last, last
+            n.flags["last_result"] = last                                 # None deletes a previous turn's text
+            n.flags["compacting"] = None
         elif event == "StopFailure":
             # live shape: {"error": "rate_limit", "last_assistant_message": "You've hit your session limit · resets 10:05pm (...)"}:
             # the TYPE is `error`. Older shapes carry error_type / error_category / matcher with `error` as the text.
-            typ = p.get("error_type") or p.get("error_category") or p.get("matcher")
+            typ = _kind(p.get("error_type"), p.get("error_category"), p.get("matcher"))
             err = p.get("error")
-            kind = str(typ) if typ else (err if _str(err) else "error")
+            kind = typ or (_kind(err) or "error")
             legacy = (err if typ else None) or p.get("message")
             last = _str(p.get("last_assistant_message"))
             n.state, n.attention, n.kind = "errored", True, kind
             n.message = last or (legacy if isinstance(legacy, str) and legacy else kind)
             n.result = last
+            n.flags["last_result"] = None                                 # a failed turn has no result
+            n.flags["compacting"] = None
             if ("rate" in kind.lower() and "limit" in kind.lower()) or LIMIT_MSG_RE.search(n.message[-500:]):
                 n.limit = {**parse_limit_message(n.message), "message": n.message}
         elif event == "SessionEnd":
-            n.state, n.kind = "ended", p.get("reason") or p.get("matcher")
+            n.kind = _kind(p.get("reason"), p.get("matcher"))
+            # /clear and /resume end the conversation and start the next one in the same process: the state must not flap to 'ended'
+            n.state = None if n.kind in CONTINUING_END else "ended"
+            n.flags["subagents"] = None
+            n.flags["compacting"] = None
         elif event == "SubagentStart":
-            n.incr["subagents"], n.kind = 1, p.get("matcher")
+            n.incr["subagents"], n.kind = 1, _kind(p.get("matcher"))
         elif event == "SubagentStop":
-            n.incr["subagents"], n.kind = -1, p.get("matcher")
+            n.incr["subagents"], n.kind = -1, _kind(p.get("matcher"))
         elif event in ("PreCompact", "PostCompact"):
             n.flags["compacting"] = event == "PreCompact"
-            n.kind = p.get("trigger") or p.get("matcher")
+            n.kind = _kind(p.get("trigger"), p.get("matcher"))
         else:
-            n.kind = p.get("matcher")
+            n.kind = _kind(p.get("matcher"))
         if n.state and n.state != "waiting":
             n.flags["wait_kind"] = None                                   # whatever it waited for is over
-        if n.kind is not None:
-            n.kind = str(n.kind)
         return n
 
     # ---- data sources ----

@@ -590,7 +590,8 @@ def test_claude_auth(world):
 
 def test_claude_hooks_states():
     c = one("claude-hooks")
-    assert c["status"] == "pass" and "6 events" in c["detail"] and "statusLine" in c["detail"]
+    from app.doctor import HOOK_EVENTS
+    assert c["status"] == "pass" and f"{len(HOOK_EVENTS)} events" in c["detail"] and "statusLine" in c["detail"]
     # statusLine is somebody else's (claude_settings.py keeps an existing one)
     write_claude_settings(statusline={"type": "command", "command": "/usr/bin/my-statusline"})
     c = one("claude-hooks")
@@ -968,3 +969,13 @@ def test_app_dir_prefers_the_seeded_copy_and_falls_back_to_the_checkout(monkeypa
     assert c["status"] == "pass"
     (Path(settings.claude_config_dir) / "settings.json").unlink()
     assert str(doctor.CHECKOUT / "scripts" / "claude_settings.py") in one("claude-hooks")["fix"]["cmd"]
+
+
+def test_hook_events_match_the_installer():
+    """doctor.HOOK_EVENTS is what the doctor expects in settings.json; scripts/claude_settings.py EVENTS is what install writes."""
+    import importlib.util, pathlib
+    from app import doctor
+    path = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "claude_settings.py"
+    spec = importlib.util.spec_from_file_location("claude_settings_for_doctor", path)
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    assert set(mod.EVENTS) == set(doctor.HOOK_EVENTS), (sorted(set(mod.EVENTS) ^ set(doctor.HOOK_EVENTS)))

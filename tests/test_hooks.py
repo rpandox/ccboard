@@ -293,3 +293,781 @@ def test_limit_message_without_an_error_type_is_still_a_limit(session):
     c, name = session.client, session.name
     _hook(c, {"hook_event_name": "StopFailure", "error": "unknown", "last_assistant_message": "You've hit your weekly limit · resets Oct 9, 3pm (Asia/Kathmandu)"}, session=name)
     assert [r[1] for r in rows("lim")] == ["7d"] and len(session.limit_pushes) == 1
+
+
+# ---------- v0.5.7 hooks v2: every event through the adapter, honest prompts, wait kinds, foreign guard, statusline extras ----------
+
+SID = "55555555-5555-4555-8555-555555555555"
+SID2 = "66666666-6666-4666-8666-666666666666"
+SID3 = "77777777-7777-4777-8777-777777777777"
+
+# one fixture per payload shape (field names as Claude Code 2.1.28x sends them; research2.md sections 2 and 3)
+SHAPES = {
+    "session_start": {"hook_event_name": "SessionStart", "source": "startup", "session_id": SID, "model": "claude-opus-5-5"},
+    "session_start_resume": {"hook_event_name": "SessionStart", "source": "resume", "session_id": SID2, "seconds_since_last_response": 5400,
+                             "context_tokens": 91234, "prompt_cache_likely_expired": True, "estimated_cache_write_usd": 0.4},
+    "prompt": {"hook_event_name": "UserPromptSubmit", "session_id": SID, "prompt": "write the tests", "permission_mode": "default"},
+    "notify_permission": {"hook_event_name": "Notification", "session_id": SID, "notification_type": "permission_prompt",
+                          "message": "Claude needs your permission to use Bash"},
+    "notify_idle": {"hook_event_name": "Notification", "session_id": SID, "notification_type": "idle_prompt", "message": "Claude is waiting"},
+    "notify_elicitation": {"hook_event_name": "Notification", "session_id": SID, "notification_type": "elicitation_dialog",
+                           "message": "An MCP server asks for input"},
+    "notify_elicitation_url": {"hook_event_name": "Notification", "session_id": SID, "notification_type": "elicitation_url_dialog",
+                               "message": "Open the browser"},
+    "notify_elicitation_complete": {"hook_event_name": "Notification", "session_id": SID, "notification_type": "elicitation_complete"},
+    "stop": {"hook_event_name": "Stop", "session_id": SID, "stop_hook_active": False, "last_assistant_message": "Done. Tests pass."},
+    "subagent_start": {"hook_event_name": "SubagentStart", "session_id": SID, "agent_id": "a1", "agent_type": "Explore"},
+    "subagent_stop": {"hook_event_name": "SubagentStop", "session_id": SID, "agent_id": "a1", "agent_transcript_path": "/x/agent.jsonl"},
+    "pre_compact": {"hook_event_name": "PreCompact", "session_id": SID, "trigger": "auto"},
+    "post_compact": {"hook_event_name": "PostCompact", "session_id": SID, "trigger": "auto"},
+    "post_tool_batch": {"hook_event_name": "PostToolBatch", "session_id": SID},
+    "session_end": {"hook_event_name": "SessionEnd", "session_id": SID, "reason": "prompt_input_exit"},
+}
+
+
+def hk(session, shape, **extra):
+    """Send one SHAPES entry (with overrides) and return the JSON answer."""
+    payload = {**(SHAPES[shape] if isinstance(shape, str) else shape), **extra}
+    r = _hook(session.client, payload, session=session.name)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def row_of(name):
+    return main.db.open_row(name)
+
+
+def event_names(name):
+    with main.db.lock:
+        return [r["event"] for r in main.db.conn.execute("SELECT event FROM events WHERE tmux_name=? ORDER BY id", (name,)).fetchall()]
+
+
+def second_row(client):
+    r = client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "shell"})
+    assert r.status_code == 201, r.text
+    return r.json()["tmux"]
+
+
+# ----- hooks.is_system_turn (pure) -----
+
+@pytest.mark.parametrize("prompt,kind", [
+    ("<task-notification>\n<task-id>abc</task-id>", "task-notification"),
+    ("   \n\t<task-notification> indented", "task-notification"),
+    ("<system-reminder>be brief</system-reminder>", "system"),
+    ("[SYSTEM NOTIFICATION - the build finished]", "system"),
+    ("<pasted_content id=1>", "paste"),
+    ("<command-name>/model</command-name>", "command"),
+    ("<command-message>model</command-message><command-name>/model</command-name>", "command"),
+    ("<local-command-stdout>Set model</local-command-stdout>", "local"),
+    ("<local-command-caveat>Caveat</local-command-caveat>", "local"),
+    ("<bash-input>ls</bash-input>", "local"),
+    ("", "empty"), ("   ", "empty"), ("\n\t  ", "empty"),
+    ("write tests", None), ("fix <system-reminder> handling", None), ("a <task-notification> in the middle", None),
+    ("/model opus", None), ("[SYSTEM] not the marker", None), ("<task-notifications>", None),
+    (None, None), (5, None), ([], None), ({"a": 1}, None), (b"<task-notification>", None),
+])
+def test_is_system_turn(prompt, kind):
+    assert hooks.is_system_turn(prompt) == kind
+
+
+# ----- last_prompt hygiene -----
+
+SYSTEM_PROMPTS = [("<task-notification>\n<task-id>b7x</task-id><status>completed</status>", "task-notification"),
+                  ("<system-reminder>The task tools haven't been used recently.</system-reminder>", "system"),
+                  ("[SYSTEM NOTIFICATION] 3 background tasks finished", "system"),
+                  ("<pasted_content id=2 lines=400/>", "paste"),
+                  ("<command-name>/compact</command-name>", "command"),
+                  ("<local-command-stdout>Compacted</local-command-stdout>", "local"),
+                  ("<bash-input>git status</bash-input>", "local")]
+
+
+@pytest.mark.parametrize("prompt,kind", SYSTEM_PROMPTS)
+def test_a_system_turn_flips_to_working_but_never_becomes_the_last_prompt(session, prompt, kind):
+    hk(session, "prompt")
+    hk(session, "stop")
+    assert row_of(session.name)["state"] == "done"
+    out = hk(session, "prompt", prompt=prompt)
+    assert out["state"] == "working"
+    r = row_of(session.name)
+    assert r["state"] == "working" and r["last_prompt"] == "write the tests"
+    turn = r["flags"]["last_system_turn"]
+    assert turn["kind"] == kind and turn["head"] == prompt[:160] and turn["at"]
+    # the next real prompt replaces last_prompt as before and leaves the system record where it was
+    hk(session, "prompt", prompt="now the docs")
+    r = row_of(session.name)
+    assert r["last_prompt"] == "now the docs" and r["flags"]["last_system_turn"]["kind"] == kind
+
+
+def test_system_turn_head_is_the_first_160_characters_of_the_trimmed_text(session):
+    hk(session, "prompt", prompt="   <task-notification>" + "x" * 500)
+    turn = row_of(session.name)["flags"]["last_system_turn"]
+    assert len(turn["head"]) == 160 and turn["head"].startswith("<task-notification>x")
+
+
+def test_a_whitespace_only_prompt_is_ignored_the_same_way(session):
+    hk(session, "prompt")
+    hk(session, "stop")
+    hk(session, "prompt", prompt="  \n \t ")
+    r = row_of(session.name)
+    assert r["state"] == "working" and r["last_prompt"] == "write the tests"
+    assert r["flags"]["last_system_turn"]["kind"] == "empty" and r["flags"]["last_system_turn"]["head"] == ""
+
+
+@pytest.mark.parametrize("bad", [None, 5, ["a"], {"x": 1}, True])
+def test_a_prompt_that_is_not_text_keeps_the_last_prompt_and_stays_quiet(session, bad):
+    hk(session, "prompt")
+    hk(session, "stop")
+    hk(session, "prompt", prompt=bad)
+    r = row_of(session.name)
+    assert r["state"] == "working" and r["last_prompt"] == "write the tests" and "last_system_turn" not in r["flags"]
+
+
+def test_a_normal_prompt_writes_no_flags_beyond_hook_seen(session):
+    hk(session, "prompt")
+    assert row_of(session.name)["flags"] == {"hook_seen": True}
+
+
+# ----- subagents, compaction -----
+
+def test_subagent_counter_counts_up_and_down_with_a_floor_of_zero(session):
+    hk(session, "subagent_stop")                          # a stop before any start: never negative
+    assert row_of(session.name)["flags"].get("subagents", 0) == 0
+    hk(session, "subagent_start")
+    hk(session, "subagent_start")
+    assert row_of(session.name)["flags"]["subagents"] == 2
+    hk(session, "subagent_stop")
+    assert row_of(session.name)["flags"]["subagents"] == 1
+    hk(session, "subagent_stop")
+    hk(session, "subagent_stop")
+    hk(session, "subagent_stop")
+    assert row_of(session.name)["flags"]["subagents"] == 0
+    assert event_names(session.name).count("SubagentStart") == 2 and event_names(session.name).count("SubagentStop") == 5
+
+
+def test_a_new_conversation_or_the_end_resets_a_stale_subagent_count(session):
+    for _ in range(3):
+        hk(session, "subagent_start")
+    hk(session, "session_start", source="compact")        # the same conversation goes on: its agents may still run
+    assert row_of(session.name)["flags"]["subagents"] == 3
+    hk(session, "session_start", source="clear")
+    assert "subagents" not in row_of(session.name)["flags"]
+    hk(session, "subagent_start")
+    hk(session, "session_end")
+    assert "subagents" not in row_of(session.name)["flags"]
+
+
+def test_compaction_flag_follows_pre_and_post_compact_and_dies_with_the_turn(session):
+    hk(session, "pre_compact")
+    assert row_of(session.name)["flags"]["compacting"] is True
+    hk(session, "post_compact")
+    assert row_of(session.name)["flags"]["compacting"] is False
+    hk(session, "pre_compact", trigger="manual")
+    hk(session, "stop")                                    # PostCompact never came: the turn's end clears it
+    assert "compacting" not in row_of(session.name)["flags"]
+    kinds = [e["kind"] for e in main.db.recent_events(10) if e["event"] in ("PreCompact", "PostCompact")]
+    assert set(kinds) == {"auto", "manual"}
+
+
+# ----- wait kinds -----
+
+@pytest.mark.parametrize("shape,kind", [("notify_permission", "permission"), ("notify_idle", "idle"),
+                                         ("notify_elicitation", "elicitation"), ("notify_elicitation_url", "elicitation")])
+def test_wait_kind_per_notification_type(session, shape, kind):
+    out = hk(session, shape)
+    r = row_of(session.name)
+    assert out["state"] == "waiting" and r["state"] == "waiting" and r["flags"]["wait_kind"] == kind and not r["acked_at"]
+    hk(session, "prompt")                                  # the person answered: no wait any more
+    r = row_of(session.name)
+    assert r["state"] == "working" and "wait_kind" not in r["flags"]
+
+
+def test_wait_kind_is_dropped_when_the_turn_ends_or_the_session_stops(session):
+    hk(session, "notify_permission")
+    hk(session, "stop")
+    assert "wait_kind" not in row_of(session.name)["flags"]
+    hk(session, "notify_idle")
+    hk(session, "session_end")
+    assert "wait_kind" not in row_of(session.name)["flags"]
+
+
+@pytest.mark.parametrize("ntype", ["agent_needs_input", "input_needed", "auth_success", "agent_completed", "quota_auto_resume_fired",
+                                   "elicitation_response_x", "something_new"])
+def test_other_notification_types_record_the_event_and_change_nothing(session, ntype):
+    hk(session, "prompt")
+    before = row_of(session.name)
+    out = hk(session, "notify_permission", notification_type=ntype, message="fyi")
+    assert out["state"] is None and out["kind"] == ntype
+    after = row_of(session.name)
+    assert after["state"] == "working" and "wait_kind" not in after["flags"] and not after["acked_at"]
+    assert after["last_message"] == "fyi" and after["state_at"] == before["state_at"]
+    assert event_names(session.name)[-1] == "Notification"
+
+
+def test_the_dead_notification_types_are_gone_and_the_url_dialog_is_in():
+    assert hooks.WAITING_NOTIFICATIONS == {"permission_prompt", "idle_prompt", "elicitation_dialog", "elicitation_url_dialog"}
+    assert hooks.WAIT_KIND == {"permission_prompt": "permission", "idle_prompt": "idle", "elicitation_dialog": "elicitation",
+                               "elicitation_url_dialog": "elicitation"}
+
+
+def test_an_elicitation_completion_clears_only_the_elicitation_wait(session):
+    hk(session, "notify_elicitation")
+    out = hk(session, "notify_elicitation_complete")
+    r = row_of(session.name)
+    assert out["state"] == "working" and r["state"] == "working" and "wait_kind" not in r["flags"]
+    assert event_names(session.name)[-1] == "Notification"
+    # the response form of the completion closes it the same way
+    hk(session, "notify_elicitation_url")
+    hk(session, "notify_elicitation_complete", notification_type="elicitation_response")
+    assert row_of(session.name)["state"] == "working"
+    # a completion while the row waits for something else leaves that wait alone
+    hk(session, "notify_permission")
+    hk(session, "notify_elicitation_complete")
+    r = row_of(session.name)
+    assert r["state"] == "waiting" and r["flags"]["wait_kind"] == "permission"
+    hk(session, "notify_idle")
+    hk(session, "notify_elicitation_complete")
+    assert row_of(session.name)["flags"]["wait_kind"] == "idle"
+    # and a completion with no wait at all is just an event
+    hk(session, "prompt")
+    hk(session, "notify_elicitation_complete")
+    assert row_of(session.name)["state"] == "working"
+
+
+# ----- PostToolBatch -----
+
+def test_post_tool_batch_after_a_permission_answered_in_the_tui_flips_to_working(session):
+    hk(session, "prompt")
+    hk(session, "notify_permission")
+    assert row_of(session.name)["state"] == "waiting"
+    before = event_names(session.name)
+    out = hk(session, "post_tool_batch")
+    r = row_of(session.name)
+    assert out["skipped"] is True and out["state"] == "working"
+    assert r["state"] == "working" and "wait_kind" not in r["flags"] and r["flags"]["last_tool_at"]
+    assert r["last_event"] == "PostToolBatch", "the flip goes through set_state with the batch as its event"
+    assert event_names(session.name) == before, "and PostToolBatch is never stored as an event row"
+    assert rows("ev", "shop") == [] or sum(x[2] for x in rows("ev", "shop")) == 2        # not counted either (prompt + notification)
+
+
+def test_post_tool_batch_leaves_an_idle_wait_and_a_working_row_alone(session):
+    hk(session, "prompt")
+    hk(session, "stop")
+    hk(session, "notify_idle")
+    before = row_of(session.name)
+    out = hk(session, "post_tool_batch")
+    after = row_of(session.name)
+    assert out["skipped"] is True and "state" not in out
+    assert (after["state"], after["state_at"], after["last_event"]) == ("waiting", before["state_at"], "Notification")
+    assert after["flags"]["wait_kind"] == "idle" and after["flags"]["last_tool_at"]
+    assert not after["acked_at"] and after["acked_at"] == before["acked_at"]
+    # an elicitation wait too, and a plain working row keeps its last_event
+    hk(session, "notify_elicitation")
+    hk(session, "post_tool_batch")
+    assert row_of(session.name)["flags"]["wait_kind"] == "elicitation"
+    hk(session, "prompt")
+    snap = row_of(session.name)
+    hk(session, "post_tool_batch")
+    now = row_of(session.name)
+    assert (now["state"], now["state_at"], now["last_event"]) == (snap["state"], snap["state_at"], snap["last_event"])
+
+
+def test_post_tool_batch_only_stamps_liveness_without_a_wait(session):
+    hk(session, "post_tool_batch")
+    first = row_of(session.name)["flags"]["last_tool_at"]
+    assert first and row_of(session.name)["last_event"] is None and event_names(session.name) == []
+
+
+def test_post_tool_batch_from_another_session_is_dropped(session):
+    hk(session, "notify_permission")
+    out = hk(session, "post_tool_batch", cwd=str(mem_dirs()[0] / "observer-sessions" / "x"))
+    assert out["ignored"] == "foreign" and row_of(session.name)["state"] == "waiting"
+
+
+# ----- foreign sessions -----
+
+def mem_dirs():
+    from app.config import settings
+    return [Path.home() / ".claude-mem", settings.claude_config_dir.parent / ".claude-mem"]
+
+
+@pytest.mark.parametrize("which", [0, 1])
+def test_a_claude_mem_observer_cwd_is_foreign(session, which):
+    obs = str(mem_dirs()[which] / "observer-sessions" / "abc")
+    hk(session, "prompt")
+    hk(session, "stop")
+    before = row_of(session.name)
+    for shape in ("prompt", "notify_permission", "stop", "session_start", "session_end", "subagent_start"):
+        out = hk(session, shape, cwd=obs)
+        assert out == {"session": session.name, "event": SHAPES[shape]["hook_event_name"], "ignored": "foreign", "how": "env"}
+    out = hk(session, "prompt", cwd=str(mem_dirs()[which]))                      # the directory itself counts
+    assert out["ignored"] == "foreign"
+    after = row_of(session.name)
+    assert (after["state"], after["last_prompt"], after["last_message"], after["flags"]) == \
+        (before["state"], before["last_prompt"], before["last_message"], before["flags"])
+    assert event_names(session.name) == ["UserPromptSubmit", "Stop"], "a foreign hook writes nothing, not even an event"
+
+
+def test_a_path_that_only_looks_like_the_mem_dir_is_not_foreign(session):
+    for cwd in (str(mem_dirs()[0]) + "-notes", str(mem_dirs()[0].parent / "claude-mem"), str(Path.home() / "projects" / ".claude-mem-x")):
+        assert "ignored" not in hk(session, "prompt", cwd=cwd), cwd
+
+
+def test_a_transcript_under_observer_sessions_is_foreign(session):
+    out = hk(session, "prompt", transcript_path="/home/u/.claude/projects/-observer-sessions/abc.jsonl")
+    assert "ignored" not in out                                                  # the marker is the path segment, not a substring
+    out = hk(session, "prompt", transcript_path="/home/u/.claude-mem/observer-sessions/abc.jsonl")
+    assert out["ignored"] == "foreign"
+    assert row_of(session.name)["last_prompt"] == "write the tests"
+    assert row_of(session.name)["flags"].get("transcript_path", "").endswith("-observer-sessions/abc.jsonl")
+
+
+def test_a_conversation_another_open_row_owns_is_foreign(session):
+    other = second_row(session.client)
+    hk(session, "session_start")                                                 # SID is bound to the first row
+    out = _hook(session.client, SHAPES["prompt"], session=other).json()
+    assert out["ignored"] == "foreign" and out["session"] == other
+    assert row_of(other)["state"] != "working" and row_of(other)["claude_session_id"] is None
+    assert _hook(session.client, {**SHAPES["notify_permission"]}, session=other).json()["ignored"] == "foreign"
+    assert _hook(session.client, {**STATUSLINE, "session_id": SID}, session=other, event="statusline").json()["ignored"] == "foreign"
+    assert row_of(other)["stats"] is None
+    # an id nobody owns binds to the row that reports it, and the first row still hears its own conversation
+    assert _hook(session.client, {**SHAPES["prompt"], "session_id": SID3}, session=other).json()["state"] == "working"
+    assert row_of(other)["claude_session_id"] == SID3
+    assert hk(session, "prompt")["state"] == "working"
+
+
+def test_an_ended_row_does_not_own_its_conversation(session):
+    other = second_row(session.client)
+    hk(session, "session_start")
+    main.db.end(session.name, "killed")
+    out = _hook(session.client, SHAPES["prompt"], session=other).json()
+    assert "ignored" not in out and row_of(other)["claude_session_id"] == SID
+
+
+def test_a_resumed_conversation_under_a_new_id_on_the_same_row_still_updates_it(session):
+    hk(session, "session_start")
+    assert row_of(session.name)["claude_session_id"] == SID
+    out = hk(session, "session_start_resume")                                    # /resume: SID2, the same tmux session
+    assert out["state"] == "idle" and "ignored" not in out
+    r = row_of(session.name)
+    assert r["claude_session_id"] == SID2 and r["agent_session_id"] == SID2
+    assert hk(session, "prompt", session_id=SID2)["state"] == "working"
+    # SID is nobody's now: the row hears it as the unknown id it is, without rebinding
+    out = hk(session, "prompt", prompt="old id", session_id=SID)
+    assert out["state"] == "working" and row_of(session.name)["claude_session_id"] == SID2
+    # every SessionStart source rebinds
+    for source, sid in (("clear", SID3), ("compact", SID), ("fork", SID2), ("startup", SID3)):
+        hk(session, "session_start", source=source, session_id=sid)
+        assert row_of(session.name)["claude_session_id"] == sid, source
+
+
+def test_other_events_only_fill_a_missing_id(session):
+    assert row_of(session.name)["claude_session_id"] is None
+    hk(session, "prompt")
+    assert row_of(session.name)["claude_session_id"] == SID
+    hk(session, "notify_permission", session_id=SID3)
+    _hook(session.client, {**STATUSLINE, "session_id": SID3}, session=session.name, event="statusline")
+    assert row_of(session.name)["claude_session_id"] == SID
+
+
+def test_malformed_session_ids_are_not_stored(session):
+    for bad in (5, ["x"], "x" * 200, "has space", "../../etc", ""):
+        hk(session, "session_start", session_id=bad)
+    assert row_of(session.name)["claude_session_id"] is None
+    hk(session, "session_start", session_id="plain-id_1.2")
+    assert row_of(session.name)["claude_session_id"] == "plain-id_1.2"
+
+
+def test_the_foreign_guard_runs_before_any_write_even_to_the_stats(session):
+    out = _hook(session.client, {**STATUSLINE, "cwd": str(mem_dirs()[0] / "observer-sessions" / "z")}, session=session.name, event="statusline").json()
+    assert out["ignored"] == "foreign"
+    assert row_of(session.name)["stats"] is None and main.db.kv_get("statusline_sample") is None and values("ctx", session.name) == []
+
+
+# ----- statusline extras -----
+
+STATUSLINE_V2 = {
+    **STATUSLINE, "session_name": "login-fix", "version": "2.1.288", "cwd": "/srv/projects/shop/api",
+    "effort": {"level": "high"}, "fast_mode": False, "thinking": {"enabled": True}, "exceeds_200k_tokens": False,
+    "prompt_cache": {"warm": True, "caching_observed": True, "ttl": "5m", "expires_at": 1738426200, "requests": 12, "misses": 1,
+                     "hit_ratio": 0.92, "cache_write_tokens": 4000},
+    "workspace": {"current_dir": "/srv/projects/shop/api", "project_dir": "/srv/projects/shop/api", "git_worktree": "login-fix",
+                  "repo": {"host": "github.com", "owner": "rpandox", "name": "api"}},
+    "pr": {"number": 42, "url": "https://github.com/rpandox/api/pull/42", "review_state": "approved", "kind": "pr"},
+}
+
+
+def stats_of(session, payload):
+    assert _hook(session.client, payload, session=session.name, event="statusline").json()["stats"] is True
+    return row_of(session.name)["stats"]
+
+
+def test_statusline_extras_land_in_stats(session):
+    st = stats_of(session, STATUSLINE_V2)
+    assert (st["effort"], st["fast"], st["thinking"], st["session_name"], st["exceeds_200k"]) == ("high", False, True, "login-fix", False)
+    assert st["prompt_cache"] == {"warm": True, "hit_ratio": 0.92, "expires_at": 1738426200, "ttl": "5m"}
+    assert st["pr"] == {"number": 42, "url": "https://github.com/rpandox/api/pull/42", "review_state": "approved"}
+    assert (st["worktree"], st["repo"]) == ("login-fix", "api")
+    # everything that was there before is still there, under the same names
+    assert (st["model"], st["model_id"], st["context_pct"], st["context_size"], st["cost_usd"]) == ("Opus", "claude-opus-5-5", 41.2, 200000, 1.25)
+    assert (st["lines_added"], st["lines_removed"], st["version"]) == (10, 2, "2.1.288")
+    assert st["rate_limits"]["five_hour"]["used_percentage"] == 23.5
+    assert values("ctx", session.name) == [41.2]                                 # samples.record_statusline is unchanged
+
+
+def test_statusline_with_none_of_the_extras_has_them_as_none(session):
+    st = stats_of(session, {"model": {"id": "x", "display_name": "X"}})
+    for k in ("effort", "fast", "thinking", "session_name", "prompt_cache", "pr", "worktree", "repo", "exceeds_200k", "rate_limits",
+              "context_pct", "cost_usd"):
+        assert st[k] is None, k
+    st = stats_of(session, {"effort": {}, "workspace": {"repo": {}}, "prompt_cache": {}, "pr": {}, "thinking": {}})
+    assert st["effort"] is None and st["repo"] is None and st["prompt_cache"] is None and st["pr"] is None and st["thinking"] is None
+    st = stats_of(session, {"prompt_cache": {"warm": False}})
+    assert st["prompt_cache"] == {"warm": False, "hit_ratio": None, "expires_at": None, "ttl": None}
+    st = stats_of(session, {"workspace": {"git_worktree": "wt"}, "pr": {"number": 7}})
+    assert st["worktree"] == "wt" and st["repo"] is None and st["pr"] == {"number": 7, "url": None, "review_state": None}
+
+
+def test_statusline_extras_of_the_wrong_shape_never_raise_and_never_store_junk(session):
+    junk = {"effort": ["high"], "fast_mode": "yes", "thinking": "on", "session_name": {"a": 1}, "exceeds_200k_tokens": 1,
+            "prompt_cache": "warm", "workspace": "x", "pr": [1], "model": {"display_name": ["Opus"], "id": 5},
+            "context_window": {"used_percentage": {"x": 1}, "context_window_size": float("nan")}, "cost": {"total_cost_usd": [1]},
+            "rate_limits": {"five_hour": "x" * 10000}, "version": {"v": 1}}
+    st = stats_of(session, junk)
+    assert st["fast"] is None and st["thinking"] is None and st["exceeds_200k"] is None and st["effort"] is None
+    assert st["session_name"] is None and st["prompt_cache"] is None and st["pr"] is None and st["repo"] is None
+    assert st["model"] is None and st["context_pct"] is None and st["context_size"] is None and st["cost_usd"] is None
+    assert st["rate_limits"] is None and st["version"] is None, "an absurdly large rate_limits blob is dropped"
+    json.dumps(st, allow_nan=False)                                              # valid JSON all the way
+    st = stats_of(session, {"session_name": "n" * 500, "pr": {"url": "u" * 900}, "effort": "x" * 90})
+    assert len(st["session_name"]) == 120 and len(st["pr"]["url"]) == 300 and len(st["effort"]) == 20
+
+
+def test_statusline_sample_is_the_raw_payload_plus_at_and_is_overwritten(session):
+    assert main.db.kv_get("statusline_sample") is None
+    _hook(session.client, STATUSLINE_V2, session=session.name, event="statusline")
+    got = main.db.kv_get("statusline_sample")["value"]
+    assert got == {**STATUSLINE_V2, "at": got["at"]} and got["at"]
+    _hook(session.client, {"model": {"id": "other"}, "cwd": "/x"}, session=session.name, event="statusline")
+    again = main.db.kv_get("statusline_sample")["value"]
+    assert set(again) == {"model", "cwd", "at"}, "overwritten, not merged"
+
+
+def test_statusline_sample_is_capped_at_8kb_and_stays_valid_json(session):
+    huge = {**STATUSLINE_V2, "transcript_blob": "z" * 300_000, "tools": [{"n": i, "d": "d" * 50} for i in range(200)]}
+    assert _hook(session.client, huge, session=session.name, event="statusline").json()["stats"] is True
+    stored = main.db.kv_get("statusline_sample")["value"]
+    assert len(json.dumps(stored)) <= 8192
+    assert "transcript_blob" in stored["_truncated"] and "model" in stored and stored["at"]
+    # everything oversized and nothing small: the marker still fits
+    many = {f"k{i}": "v" * 900 for i in range(40)}
+    _hook(session.client, many, session=session.name, event="statusline")
+    stored = main.db.kv_get("statusline_sample")["value"]
+    assert len(json.dumps(stored)) <= 8192 and stored["at"] and stored["_truncated"]
+    _hook(session.client, {"x" * 9000: 1}, session=session.name, event="statusline")
+    assert len(json.dumps(main.db.kv_get("statusline_sample")["value"])) <= 8192
+
+
+def test_a_failing_statusline_sample_write_never_breaks_the_statusline(session, monkeypatch):
+    real = main.db.kv_set
+
+    def kv_set(key, value):
+        if key == "statusline_sample":
+            raise RuntimeError("disk full")
+        return real(key, value)
+
+    monkeypatch.setattr(main.db, "kv_set", kv_set)
+    out = _hook(session.client, STATUSLINE_V2, session=session.name, event="statusline").json()
+    assert out["stats"] is True and row_of(session.name)["stats"]["effort"] == "high"
+
+
+# ----- STATS_HOOKS -----
+
+def test_stats_hooks_run_right_after_the_stats_are_stored_and_a_failure_is_contained(session, monkeypatch):
+    seen = []
+
+    def spy(db, name, stats):
+        seen.append((name, stats["model"], row_of(name)["stats"]["model"]))      # the row already holds the stats
+
+    def boom(db, name, stats):
+        raise RuntimeError("hook bug")
+
+    monkeypatch.setattr(hooks, "STATS_HOOKS", [boom, spy])
+    out = _hook(session.client, STATUSLINE, session=session.name, event="statusline").json()
+    assert out["stats"] is True and "ignored" not in out
+    assert seen == [(session.name, "Opus", "Opus")]
+    assert values("ctx", session.name) == [41.2], "the series write after the hooks still happens"
+    monkeypatch.setattr(hooks, "STATS_HOOKS", [])
+    assert _hook(session.client, STATUSLINE, session=session.name, event="statusline").json()["stats"] is True
+    assert isinstance(hooks.STATS_HOOKS, list)
+
+
+def test_stats_hooks_are_a_module_level_list():
+    import importlib
+    assert isinstance(importlib.import_module("app.hooks").STATS_HOOKS, list)
+
+
+# ----- Stop -----
+
+def test_stop_prefers_the_last_assistant_message_and_keeps_the_full_text(session, fake_tmux):
+    fake_tmux["screen"] = "the screen line that must not win\n? for shortcuts\n"
+    text = "All done.\n\n  I fixed   the login   and added tests.\n" + "More detail. " * 60
+    out = hk(session, "stop", last_assistant_message=text)
+    r = row_of(session.name)
+    assert out["state"] == "done" and r["state"] == "done"
+    assert r["last_message"] == " ".join(text.split())[:300] and "\n" not in r["last_message"] and len(r["last_message"]) == 300
+    assert r["flags"]["last_result"] == text
+    assert not r["acked_at"]
+
+
+def test_stop_keeps_at_most_20000_characters_of_the_result(session):
+    hk(session, "stop", last_assistant_message="é" * 25_000)
+    r = row_of(session.name)
+    assert len(r["flags"]["last_result"]) == 20_000 and len(r["last_message"]) == 300
+
+
+def test_stop_without_the_message_falls_back_to_the_screen_and_drops_a_stale_result(session, fake_tmux):
+    hk(session, "stop", last_assistant_message="turn one result")
+    assert row_of(session.name)["flags"]["last_result"] == "turn one result"
+    fake_tmux["screen"] = "╭──────╮\n│ Fixed it on the screen. │\n╰──────╯\n? for shortcuts\n"
+    hk(session, {"hook_event_name": "Stop", "session_id": SID})
+    r = row_of(session.name)
+    assert r["last_message"] == "Fixed it on the screen." and "last_result" not in r["flags"]
+    for blank in ("", "   \n  "):                                                # nothing usable in the payload: the screen again
+        hk(session, "stop", last_assistant_message=blank)
+        assert row_of(session.name)["last_message"] == "Fixed it on the screen."
+    hk(session, "stop", last_assistant_message=None)
+    assert row_of(session.name)["last_message"] == "Fixed it on the screen."
+
+
+def test_a_stop_failure_clears_the_previous_result(session):
+    hk(session, "stop", last_assistant_message="result")
+    hk(session, {"hook_event_name": "StopFailure", "session_id": SID, "error": "server_error", "last_assistant_message": "API Error: 500"})
+    r = row_of(session.name)
+    assert r["state"] == "errored" and r["last_message"] == "API Error: 500" and "last_result" not in r["flags"]
+
+
+def test_flags_and_state_are_on_disk_before_the_notification_is_built(session, monkeypatch):
+    seen = []
+    monkeypatch.setattr(notify, "notify_session", lambda name, state, message, kind: seen.append((state, message, kind, row_of(name))) or True)
+    hk(session, "stop", last_assistant_message="shipped it")
+    hk(session, "notify_permission")
+    (state, message, kind, row), (state2, _, kind2, row2) = seen
+    assert (state, message, kind) == ("done", "shipped it", None)
+    assert row["state"] == "done" and row["flags"]["last_result"] == "shipped it"
+    assert (state2, kind2, row2["flags"]["wait_kind"]) == ("waiting", "permission_prompt", "permission")
+
+
+# ----- SessionStart / SessionEnd -----
+
+def test_a_resume_records_how_long_it_sat_and_how_big_it_is(session):
+    hk(session, "session_start")
+    assert "resumed" not in row_of(session.name)["flags"]
+    hk(session, "session_start_resume")
+    res = row_of(session.name)["flags"]["resumed"]
+    assert res["context_tokens"] == 91234 and res["since_s"] == 5400 and res["cache_cold"] is True and res["at"]
+    hk(session, "session_start", source="startup", session_id=SID2)               # a fresh start forgets it
+    assert "resumed" not in row_of(session.name)["flags"]
+    hk(session, "session_start_resume", seconds_since_last_response=None, prompt_cache_likely_expired="no")
+    assert row_of(session.name)["flags"]["resumed"]["context_tokens"] == 91234
+    assert "cache_cold" not in row_of(session.name)["flags"]["resumed"]
+    hk(session, "session_start_resume", seconds_since_last_response="soon", context_tokens=True)
+    assert "resumed" not in row_of(session.name)["flags"]
+
+
+def test_a_compaction_restart_does_not_flip_a_working_turn_to_idle(session):
+    hk(session, "prompt")
+    out = hk(session, "session_start", source="compact")
+    assert out["state"] is None and row_of(session.name)["state"] == "working"
+    assert event_names(session.name)[-1] == "SessionStart"
+    for source in ("startup", "resume", "clear", "fork"):
+        hk(session, "prompt")
+        hk(session, "session_start", source=source)
+        assert row_of(session.name)["state"] == "idle", source
+
+
+def test_session_end_ends_the_row_except_when_a_clear_or_resume_carries_on(session):
+    hk(session, "prompt")
+    hk(session, "session_end", reason="clear")
+    assert row_of(session.name)["state"] == "working"
+    hk(session, "session_end", reason="resume")
+    assert row_of(session.name)["state"] == "working"
+    out = hk(session, "session_end", reason="logout")
+    assert out["state"] == "ended" and row_of(session.name)["state"] == "ended"
+    hk(session, "session_start")
+    assert row_of(session.name)["state"] == "idle"
+    hk(session, "session_end", reason="other")
+    assert row_of(session.name)["state"] == "ended"
+    assert event_names(session.name).count("SessionEnd") == 4, "every SessionEnd is still recorded"
+
+
+def test_events_without_a_dedicated_branch_record_their_matcher_and_change_nothing(session):
+    hk(session, "prompt")
+    before = row_of(session.name)
+    for ev in ("PostModelSwitch", "TaskCreated", "TaskCompleted", "ConfigChange", "SomethingNew"):
+        out = _hook(session.client, {"hook_event_name": ev, "session_id": SID, "matcher": "user_settings"}, session=session.name).json()
+        assert out == {"session": session.name, "event": ev, "state": None, "kind": "user_settings", "how": "env"}
+    after = row_of(session.name)
+    assert (after["state"], after["state_at"], after["last_prompt"]) == (before["state"], before["state_at"], before["last_prompt"])
+    assert after["last_event"] == "SomethingNew"
+    assert {"PostModelSwitch", "TaskCreated", "TaskCompleted", "ConfigChange"} <= set(event_names(session.name))
+
+
+# ----- malformed input -----
+
+ALL_EVENTS = ["SessionStart", "UserPromptSubmit", "Notification", "Stop", "StopFailure", "SessionEnd", "SubagentStart", "SubagentStop",
+              "PreCompact", "PostCompact", "PostToolBatch", "statusline", "PostModelSwitch", "TaskCreated", "TaskCompleted",
+              "ConfigChange", "Whatever"]
+WRONG_TYPES = [None, [], ["a"], 5, 1.5, True, "str", {"a": [1]}, "x" * 5000]
+FIELDS = ["session_id", "prompt", "message", "notification_type", "type", "matcher", "source", "reason", "error", "error_type",
+          "last_assistant_message", "transcript_path", "cwd", "trigger", "seconds_since_last_response", "context_tokens", "model",
+          "context_window", "cost", "rate_limits", "effort", "workspace", "prompt_cache", "pr", "thinking", "fast_mode"]
+
+
+@pytest.mark.parametrize("payload", [None, [], 5, "x", [{"a": 1}], 1.5, True])
+def test_apply_takes_any_payload_without_raising(session, payload):
+    for ev in ALL_EVENTS:
+        out = hooks.apply(main.db, session.name, ev, payload)
+        assert out["session"] == session.name and out["event"] == ev
+
+
+@pytest.mark.parametrize("bad", WRONG_TYPES, ids=lambda v: type(v).__name__ + str(len(str(v))))
+def test_apply_takes_every_field_with_the_wrong_type_without_raising(session, bad):
+    for ev in ALL_EVENTS:
+        payload = {f: bad for f in FIELDS}
+        out = hooks.apply(main.db, session.name, ev, payload)
+        assert out["session"] == session.name
+        for f in FIELDS:                                                         # one bad field at a time too
+            hooks.apply(main.db, session.name, ev, {f: bad, "hook_event_name": ev})
+    r = row_of(session.name)
+    assert r is not None and json.dumps(r["flags"]) and len(json.dumps(r["flags"])) < 20_000 + 4096
+    json.dumps(r["stats"], allow_nan=False)
+
+
+@pytest.mark.parametrize("event", [None, 5, ["Stop"], {"a": 1}, "", "E" * 500])
+def test_apply_coerces_an_odd_event_name(session, event):
+    out = hooks.apply(main.db, session.name, event, {"hook_event_name": "Stop"})
+    assert isinstance(out["event"], str) and 0 < len(out["event"]) <= 64
+
+
+def test_hook_route_never_500s_on_malformed_bodies(session):
+    c = session.client
+    hdr = {"X-CCBoard-Token": hooks.ensure_token(), "X-CCBoard-Session": session.name}
+    for body, want in ((b"[1,2]", 400), (b"5", 400), (b"null", 400), (b'"s"', 400), (b"{not json", 400), (b"", 200),
+                       (b'{"hook_event_name": ["Stop"], "message": {"a": 1}}', 200),
+                       (b'{"hook_event_name": "Notification", "notification_type": {"a": 1}, "message": [1]}', 200),
+                       (b'{"hook_event_name": "UserPromptSubmit", "prompt": {"a": 1}, "session_id": {"b": 2}}', 200)):
+        r = c.post("/api/hook", headers=hdr, content=body)
+        assert r.status_code == want, (body, r.status_code, r.text)
+    big = json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "p" * 600_000}).encode()
+    assert c.post("/api/hook", headers=hdr, content=big).status_code == 413           # over MAX_BODY: refused, not stored
+    ok = json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "<task-notification>" + "p" * 500_000}).encode()
+    assert len(ok) < hooks.MAX_BODY and c.post("/api/hook", headers=hdr, content=ok).status_code == 200
+    r = row_of(session.name)
+    assert r["state"] == "working" and len(r["flags"]["last_system_turn"]["head"]) == 160 and len(json.dumps(r["flags"])) < 1000
+
+
+def test_a_cwd_of_the_wrong_type_is_unresolved_not_a_500(session):
+    c = session.client
+    for cwd in (5, ["x"], {"a": 1}, True, "", "x" * 10_000, "\x00bad"):
+        r = _hook(c, {"hook_event_name": "Stop", "cwd": cwd})                     # no session header: resolution falls to the cwd
+        assert r.status_code == 200 and r.json()["ignored"] == "unresolved", cwd
+
+
+def test_oversized_fields_are_bounded_where_they_are_stored(session):
+    hk(session, "stop", last_assistant_message="m" * 500_000, transcript_path="t" * 5000, matcher="k" * 5000)
+    r = row_of(session.name)
+    assert len(r["flags"]["last_result"]) == 20_000 and "transcript_path" not in r["flags"] and len(r["last_message"]) == 300
+    hk(session, "notify_permission", message="n" * 500_000, notification_type="permission_prompt")
+    assert len(row_of(session.name)["last_message"]) <= 500
+    with main.db.lock:
+        sizes = [len(x["payload"]) for x in main.db.conn.execute("SELECT payload FROM events").fetchall()]
+    assert max(sizes) <= 20_000
+    ev = main.db.recent_events(5)
+    assert all(len(e["kind"] or "") <= 200 for e in ev)
+
+
+def test_the_events_cap_and_skip_list_are_unchanged():
+    from app import db as dbmod
+    assert dbmod.EVENTS_CAP == 20000 and dbmod.SKIP_EVENTS == {"PostToolBatch", "statusline"}
+
+
+def test_hooks_status_reports_the_new_event_set(session, tmp_path):
+    from app.agents import claude
+    from app.config import settings
+    ag = claude.ClaudeAgent()
+    cfg = settings.claude_config_dir
+    cfg.mkdir(parents=True, exist_ok=True)
+    (cfg / "settings.json").write_text(json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "/x/bin/ccboard-hook"}]}]}}))
+    st = ag.hooks_status()
+    assert st["installed"] is False and st["events"] == ["Stop"]
+    ag.install_hooks(tmp_path / "app", remote_approve=False)
+    st = ag.hooks_status()
+    assert st["installed"] is True and st["events"] == ag._required_events() and "SessionEnd" in st["events"] and "PostToolBatch" in st["events"]
+    assert len(st["events"]) == 15
+
+
+def test_child_sessions_are_not_the_row(lite_client, projects_dir, fake_tmux):
+    """A nested claude (CLAUDE_CODE_CHILD_SESSION=1: claude-mem's observer, a workflow or SDK subagent) inherits CCBOARD_SESSION and
+    TMUX_PANE from the parent; on ubu2 the observer's SessionStart/Stop landed on the user's row. X-CCBoard-Child: 1 makes apply
+    ignore the event unless the session_id is the row's own."""
+    git_init(projects_dir / "shop" / "api")
+    r = lite_client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude"}).json()
+    name, own = r["tmux"], r["claude_session_id"]
+    res = _hook(lite_client, {"session_id": "11111111-1111-4111-8111-111111111111", "hook_event_name": "UserPromptSubmit", "prompt": "observer turn"},
+                session=name, extra={"X-CCBoard-Child": "1"}).json()
+    assert res.get("ignored") == "child", res
+    row = main.db.open_rows()[name]
+    assert row["state"] != "working" and (row.get("last_prompt") or "") != "observer turn"
+    res = _hook(lite_client, {"session_id": own, "hook_event_name": "UserPromptSubmit", "prompt": "the real one"}, session=name, extra={"X-CCBoard-Child": "1"}).json()
+    assert res.get("ignored") is None and main.db.open_rows()[name]["last_prompt"] == "the real one", "the row's own id is never a child"
+    res = _hook(lite_client, {"session_id": "22222222-2222-4222-8222-222222222222", "hook_event_name": "Stop",
+                              "transcript_path": "/home/x/.claude/projects/-home-x--claude-mem-observer-sessions-270/abc.jsonl"}, session=name).json()
+    assert res.get("ignored") == "foreign", "the observer transcript slug (dashes, no slashes) is foreign too"
+
+
+def test_statusline_sample_cap_is_linear():
+    """A statusline body under MAX_BODY with tens of thousands of keys must not hold the hook thread (the first version re-dumped
+    the whole payload after every dropped key: 183 s for 30000 keys)."""
+    import time
+    big = {f"k{i}": "x" * 12 for i in range(30000)}
+    t0 = time.monotonic()
+    out = hooks._statusline_sample(big)
+    assert time.monotonic() - t0 < 2.0
+    assert out["_truncated"] and "at" in out
+    mid = {f"k{i}": "y" * 300 for i in range(60)}                 # a few large keys: the biggest go first, the rest survive
+    out = hooks._statusline_sample(mid)
+    assert len(json.dumps(out)) <= hooks.STATUSLINE_SAMPLE_MAX and out["_truncated"] and any(k.startswith("k") for k in out)
+    small = {"model": {"display_name": "Opus"}, "cost": {"total_cost_usd": 1.5}}
+    assert hooks._statusline_sample(small)["model"] == {"display_name": "Opus"}
+
+
+def _hook_perm(client, session, payload):
+    """POST /api/permission the way bin/ccboard-permission does (hook token + session header); the call long-polls for a decision."""
+    hdr = {"X-CCBoard-Token": hooks.ensure_token(), "X-CCBoard-Session": session, "Content-Type": "application/json"}
+    return client.post("/api/permission", headers=hdr, content=json.dumps(payload))
+
+
+def test_a_board_permission_sets_the_wait_kind_the_tool_batch_clears(lite_client, projects_dir, fake_tmux, monkeypatch):
+    """The board's own PermissionRequest path (api_permission) must set flags.wait_kind='permission' like the Notification hook,
+    otherwise a prompt answered in the TUI never leaves 'needs you' (the PostToolBatch flip keys on that flag)."""
+    import threading, time
+    from app.config import settings
+    git_init(projects_dir / "shop" / "api")
+    r = lite_client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude"}).json()
+    name = r["tmux"]
+    monkeypatch.setattr(settings, "approve_timeout", 2)
+    out = {}
+    def ask():
+        out["r"] = _hook_perm(lite_client, name, {"tool_name": "Bash", "tool_input": {"command": "npm test"}})
+    t = threading.Thread(target=ask); t.start()
+    for _ in range(100):
+        row = main.db.open_rows()[name]
+        if row["state"] == "waiting":
+            break
+        time.sleep(0.05)
+    assert row["state"] == "waiting" and row["flags"].get("wait_kind") == "permission"
+    res = _hook(lite_client, {"session_id": r["claude_session_id"], "hook_event_name": "PostToolBatch"}, session=name, event="PostToolBatch").json()
+    row = main.db.open_rows()[name]
+    assert row["state"] == "working" and not row["flags"].get("wait_kind"), (res, row["flags"])
+    t.join(timeout=5)

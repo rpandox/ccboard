@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from app import hooks, permissions
+from app import hooks, notify, permissions
 from app.config import settings
 
 H = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
@@ -129,6 +129,97 @@ def test_remote_allow_and_deny(lite_client, projects_dir, fake_tmux, monkeypatch
     assert sent and sent[0][1] == name and sent[0][2] == "Edit: /x.py"
     assert lite_client.post("/api/permission/999999/allow", headers=H).status_code == 404
     assert lite_client.post("/api/permission/1/maybe", headers=H).status_code == 400
+
+
+@pytest.fixture
+def ntfy(monkeypatch):
+    """ntfy on with a public URL; every publish lands in the list as the JSON body the board POSTed."""
+    from app import notify
+    sent = []
+
+    class R:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(notify.urllib.request, "urlopen", lambda req, timeout=5: sent.append(json.loads(req.data)) or R())
+    monkeypatch.setattr(settings, "ntfy_url", "http://127.0.0.1:2586")
+    monkeypatch.setattr(settings, "ntfy_topic", "ccboard")
+    monkeypatch.setattr(settings, "public_url", "https://box.ts.net:8443")
+    notify._last.clear()
+    return sent
+
+
+def test_push_request_body_carries_the_ask_and_the_three_buttons(ntfy, tmp_path, monkeypatch):
+    from app import notify
+    from app.db import DB
+    d = DB(tmp_path / "p.db")
+    d.add_session(tmux_name="shop--api--s1", project="shop", repo="api", name="s1", launcher="claude")
+    d.set_state("shop--api--s1", "working", "UserPromptSubmit", prompt="run the tests and fix what breaks")
+    d.task_add(project="shop", repo="api", slug="t", title="Green CI", prompt="p", tmux_name="shop--api--s1", worktree="/w", branch="b",
+               session_row=d.open_row("shop--api--s1")["id"], phase="running")
+    monkeypatch.setattr(notify, "_db", d)
+    web = []
+    monkeypatch.setattr(notify.push, "send_all", lambda db_, title, body, url="/", tag=None, extra=None: web.append((title, body, url, tag, extra)) or 1)
+    permissions.push_request(5, "shop--api--s1", "Bash: npm test")
+    body = ntfy[-1]
+    assert body["title"] == "◆ shop/api · s1: needs you" and body["priority"] == 4 and body["tags"] == ["bell", "key"]
+    assert body["message"] == "Green CI\n› run the tests and fix what breaks\n? Bash: npm test"
+    assert body["click"] == "https://box.ts.net:8443/#/s/shop--api--s1"
+    assert [a["label"] for a in body["actions"]] == ["Allow", "Deny", "Terminal"]
+    allow, deny, term = body["actions"]
+    assert allow["url"] == "https://box.ts.net:8443/api/permission/5/allow" and allow["method"] == "POST"
+    assert deny["url"].endswith("/api/permission/5/deny") and deny["headers"] == {"X-CCBoard": "1"}
+    assert term == {"action": "view", "label": "Terminal", "url": "https://box.ts.net:8443/term/shop--api--s1"}
+    title, wbody, url, tag, extra = web[-1]
+    assert tag == "shop--api--s1" and url == "/#/s/shop--api--s1" and wbody == body["message"]
+    assert extra["perm_id"] == 5 and extra["state"] == "waiting" and extra["agent"] == "claude" and extra["tmux"] == "shop--api--s1"
+
+
+def test_push_request_without_a_row_still_asks(ntfy, monkeypatch):
+    from app import notify
+    monkeypatch.setattr(notify, "_db", None)
+    permissions.push_request(9, "x--y--z", "Edit: /a/b.py")
+    body = ntfy[-1]
+    assert body["title"] == "x / y · z: needs you" and body["message"] == "? Edit: /a/b.py"
+    assert [a["label"] for a in body["actions"]] == ["Allow", "Deny", "Terminal"] and body["actions"][0]["url"].endswith("/permission/9/allow")
+
+
+def test_push_request_never_raises(ntfy, monkeypatch):
+    from app import notify
+
+    def boom(*a, **k):
+        raise RuntimeError("no notice today")
+
+    monkeypatch.setattr(notify, "build", boom)
+    permissions.push_request(1, "x--y--z", "Bash: ls")          # the hook still gets its answer
+    assert ntfy == []
+
+
+def test_the_board_pushes_the_pending_request_with_its_id(lite_client, projects_dir, fake_tmux, monkeypatch, ntfy):
+    monkeypatch.setattr(settings, "approve_timeout", 10.0)
+    name = _session(lite_client, projects_dir)
+
+    def decide_later():
+        for _ in range(50):
+            time.sleep(0.1)
+            pend = lite_client.get("/api/state", headers=H).json()["pending_permissions"]
+            if pend:
+                lite_client.post(f"/api/permission/{pend[0]['id']}/allow", headers=H)
+                return
+        raise AssertionError("no pending permission appeared")
+
+    t = threading.Thread(target=decide_later)
+    t.start()
+    assert _ask(lite_client, name).json()["behavior"] == "allow"
+    t.join()
+    body = ntfy[0]
+    assert body["title"].endswith("· " + name.split("--")[2] + ": needs you") and "? Bash: npm test" in body["message"]
+    assert [a["label"] for a in body["actions"]] == ["Allow", "Deny", "Terminal"]
+    from app import main
+    pid = int(body["actions"][0]["url"].split("/permission/")[1].split("/")[0])         # the button names the real request
+    row = main.db.perm_get(pid)
+    assert row["tool_name"] == "Bash" and row["decision"] == "allow" and row["tmux_name"] == name
 
 
 def test_hook_script_output_shape(tmp_path):

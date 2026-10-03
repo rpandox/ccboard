@@ -6,7 +6,7 @@ tokfile="${CCBOARD_HOOK_TOKEN_FILE:-$HOME/.local/share/ccboard/hook-token}"
 payload=$(cat)
 if tok=$(cat "$tokfile" 2>/dev/null) && [ -n "$tok" ]; then
   printf '%s' "$payload" | curl -s -m 3 -o /dev/null -X POST "$url/api/hook" \
-    -H "Content-Type: application/json" -H "X-CCBoard-Token: $tok" -H "X-CCBoard-Event: statusline" \
+    -H "Content-Type: application/json" -H "X-CCBoard-Token: $tok" -H "X-CCBoard-Event: statusline" -H "X-CCBoard-Child: ${CLAUDE_CODE_CHILD_SESSION:-}" \
     -H "X-CCBoard-Session: ${CCBOARD_SESSION:-}" -H "X-CCBoard-Pane: ${TMUX_PANE:-}" -H "X-CCBoard-Tmux: ${TMUX:-}" \
     --data-binary @- >/dev/null 2>&1 &
 fi

@@ -161,6 +161,49 @@ def test_keys_endpoint_leaves_copy_mode_except_for_the_scroll_keys(lite_client, 
     assert lite_client.post(f"/api/sessions/{name}/keys", headers=H, json={"keys": ["C-Home", "C-End", "C-o"]}).status_code == 200
 
 
+# ---------------------------------------------------------------- POST /resize
+
+def resize(client, name, body, headers=H):
+    return client.post(f"/api/sessions/{name}/resize", headers=headers, json=body)
+
+
+def test_resize_sets_the_window_and_the_win_fields_follow(lite_client, name, fake_tmux):
+    fake_tmux["sessions"][name].update(window_width=220, window_height=50)
+    r = resize(lite_client, name, {"cols": 96, "rows": 30})
+    assert r.status_code == 200 and r.json() == {"ok": True, "cols": 96, "rows": 30}
+    assert fake_tmux["resized"] == [(name, 96, 30)]
+    assert [a for a in fake_tmux["run"] if a[0] in ("resize-window", "set-window-option")] == [
+        ("resize-window", "-t", f"={name}:", "-x", "96", "-y", "30"), ("set-window-option", "-u", "-t", f"={name}:", "window-size")]
+    assert lite_client.get(f"/api/sessions/{name}", headers=H).json()["win"] == [96, 30]
+    pane = lite_client.get(f"/api/sessions/{name}/pane", headers=H).json()
+    assert (pane["win_cols"], pane["win_rows"]) == (96, 30)
+
+
+@pytest.mark.parametrize("body", [{}, {"cols": 39, "rows": 24}, {"cols": 401, "rows": 24}, {"cols": 80, "rows": 9}, {"cols": 80, "rows": 201},
+                                  {"cols": "80", "rows": 24}, {"cols": 80.5, "rows": 24}, {"cols": True, "rows": 24}, {"cols": None, "rows": 24}])
+def test_resize_outside_40_400_by_10_200_is_400_and_never_reaches_tmux(lite_client, name, fake_tmux, body):
+    r = resize(lite_client, name, body)
+    assert r.status_code == 400 and "error" in r.json(), (body, r.text)
+    assert fake_tmux["resized"] == []
+
+
+def test_resize_is_409_with_a_full_client_attached_and_free_for_tiles(lite_client, name, fake_tmux):
+    fake_tmux["clients"] = [{"session": name, "flags": {"attached", "ignore-size"}}, {"session": name, "flags": {"attached", "read-only", "ignore-size"}}]
+    assert resize(lite_client, name, {"cols": 80, "rows": 24}).status_code == 200
+    fake_tmux["clients"].append({"session": name, "flags": {"attached"}})
+    r = resize(lite_client, name, {"cols": 100, "rows": 30})
+    assert r.status_code == 409 and r.json()["viewers"] == {"full": 1, "grid": 1, "ro": 1}
+    assert fake_tmux["resized"] == [(name, 80, 24)], "the refused resize never reached tmux"
+
+
+def test_resize_names_and_identity(lite_client, name, fake_tmux):
+    assert resize(lite_client, "_ccboard-login", {"cols": 80, "rows": 24}).status_code == 400
+    assert resize(lite_client, "nope--x--y", {"cols": 80, "rows": 24}).status_code == 404
+    assert resize(lite_client, name, {"cols": 80, "rows": 24}, headers={"X-CCBoard": "1"}).status_code == 403
+    assert resize(lite_client, name, {"cols": 80, "rows": 24}, headers=IDENT).status_code == 403
+    assert fake_tmux["resized"] == []
+
+
 # ---------------------------------------------------------------- the dev fake /tty
 
 @pytest.fixture

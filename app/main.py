@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -387,7 +388,7 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
             "needs_attention": bool(row.get("state") in hooks.ATTENTION_STATES and not row.get("acked_at")),
             # None for a tmux session the board has no row for (the UI guesses from the launcher and the pane command)
             "agent": row.get("agent"), "agent_session_id": row.get("agent_session_id"), "row_id": row.get("row_id"),
-            "flags": {k: v for k, v in (row.get("flags") or {}).items() if k != "transcript_path"},
+            "flags": {k: v for k, v in (row.get("flags") or {}).items() if k not in ("transcript_path", "last_result")},   # last_result is up to 20 KB: GET /api/sessions/{name} has it
             "task": chip,
         }
         if name in waits:                            # only a 'waiting' session has one: what it waits on (see _wait_kind_of)
@@ -1829,6 +1830,289 @@ def api_pane(name: str):
     return {**tmux.pane_info(name), "viewers": tmux.viewers().get(name) or {"full": 0, "grid": 0, "ro": 0}}
 
 
+# ---------- terminal commands: /resize, /command, /prompt ----------
+
+class ResizeIn(BaseModel):
+    cols: object = None            # object, not int: a wrong type answers 400 like a wrong value (see ScrollIn)
+    rows: object = None
+
+
+@app.post("/api/sessions/{name}/resize")
+def api_resize(name: str, body: ResizeIn | None = None):
+    """Size the session's tmux window (cols x rows) so a phone-shaped terminal reads right. 409 while a full (writable, sized)
+    client is attached: its size is that client's, and tmux would snap the window back to it."""
+    _check_terminal_name(name)
+    cols, rows = (body.cols, body.rows) if body else (None, None)
+    for v, what, (lo, hi) in ((cols, "cols", tmux.RESIZE_COLS), (rows, "rows", tmux.RESIZE_ROWS)):
+        if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+            raise projects.BadRequest(f"{what} must be an integer from {lo} to {hi}")
+    _terminal_session(name)
+    try:
+        viewers = tmux.viewers().get(name) or {"full": 0, "grid": 0, "ro": 0}
+    except tmux.TmuxError:               # list-clients failed: when in doubt count every attached client as a full one
+        viewers = {"full": int((tmux.list_sessions().get(name) or {}).get("attached") or 0), "grid": 0, "ro": 0}
+    if viewers["full"] > 0:
+        return JSONResponse({"error": "a terminal is attached to this session; it sets the window size", "viewers": viewers},
+                            status_code=409)
+    tmux.resize_window(name, cols, rows)
+    _invalidate_scan()
+    return {"ok": True, "cols": cols, "rows": rows}
+
+
+CMD_ARG_MAX = 200
+PROMPT_MAX = 20000
+CMD_WAIT_DEFAULT, CMD_WAIT_MAX = 1200, 4000      # ms a read command (/usage ...) gets to draw before the pane is captured
+CMD_PENDING_TTL = 20                             # seconds a typed command waits for the statusline that confirms it
+# States in which an agent's composer is live and takes typed text: idle, done and errored (a failed turn leaves the prompt up).
+# `waiting` is allowed only for wait_kind 'idle' (the idle prompt: Claude is waiting for the person), never for a permission or
+# elicitation dialog; no state yet (a row Claude has not reported on: it may still be booting behind the trust dialog) and
+# `ended` are refused.
+TYPEABLE_STATES = ("idle", "done", "errored")
+PERMISSION_GRACE = 15                            # s past approve_timeout after which an undecided request has no waiter left
+
+
+def _cmd_now() -> str:
+    """The one clock for pending_cmd.at and its 20 s rule (tests replace it)."""
+    return db_now()
+
+
+def _terminal_refusal(code: str, message: str, row: dict | None, retry: int | None, **extra) -> JSONResponse:
+    """409 {error, message, state, wait_kind, retry}: why the board will not type into this pane right now and when to ask again
+    (retry = seconds, None when waiting will not help)."""
+    flags = (row or {}).get("flags") or {}
+    return JSONResponse({"error": code, "message": message, "state": (row or {}).get("state"), "wait_kind": flags.get("wait_kind"),
+                         "retry": retry, **extra}, status_code=409)
+
+
+def _agent_row(name: str) -> tuple[dict | None, object | None, JSONResponse | None]:
+    """(row, adapter, None) for a session whose open row belongs to an agent adapter; otherwise (None, None, 409): no open row
+    (an external tmux session) or a shell row (nothing there reads slash commands or queues prompts)."""
+    row = db.open_row(name)
+    if row is None:
+        return None, None, _terminal_refusal("no_open_row", "the board has no open row for this session", None, None)
+    try:
+        return row, agents.get(row.get("agent") or "claude"), None
+    except KeyError:
+        return None, None, _terminal_refusal("not_an_agent", "this is a shell, not an agent session", row, None)
+
+
+def _typing_refusal(name: str, row: dict, queue: bool = False) -> JSONResponse | None:
+    """None when typing into the pane is safe, else the 409. compacting and a permission (pending, or the dialog waiting for its
+    answer) always refuse; `working` refuses unless `queue` (Claude queues what is typed during a turn)."""
+    flags = row.get("flags") or {}
+    state, kind = row.get("state"), flags.get("wait_kind")
+    if flags.get("compacting"):
+        return _terminal_refusal("compacting", "the session is compacting", row, 15)
+    if _permission_pending(name):
+        return _terminal_refusal("permission_pending", "a permission request is waiting for an answer", row, 10)
+    if state == "working":
+        return None if queue else _terminal_refusal("working", "the session is working", row, 5)
+    if state == "waiting":
+        if kind == "permission":
+            return _terminal_refusal("permission", "the session is asking for a permission", row, 10)
+        if kind == "elicitation":
+            return _terminal_refusal("elicitation", "the session is asking a question in a dialog", row, 10)
+        if kind != "idle":
+            return _terminal_refusal("waiting", "the session is waiting on something the board cannot name", row, 5)
+        return None
+    if state == "ended":
+        return _terminal_refusal("ended", "the session has ended", row, None)
+    if state not in TYPEABLE_STATES:
+        return _terminal_refusal("not_ready", "the session has not reported a state yet", row, 3)
+    return None
+
+
+def _permission_pending(name: str) -> bool:
+    """Is a permission request of this session waiting for its answer? Only one the hook can still be long-polling counts: a row left
+    undecided by a restart (its waiter died with the process) would otherwise block the session for good."""
+    horizon = _utcnow() - timedelta(seconds=settings.approve_timeout + PERMISSION_GRACE)
+    for p in db.perm_pending():
+        if p.get("tmux_name") == name:
+            at = _parse_at(p.get("created_at"))
+            if at is None or at >= horizon:
+                return True
+    return False
+
+
+def _clean_line(v, what: str, limit: int) -> str:
+    """One line of text for the pane: stripped, at most `limit` characters, no control or line-separator characters."""
+    if not isinstance(v, str):
+        raise projects.BadRequest(f"{what} must be text")
+    s = v.strip()
+    if len(s) > limit:
+        raise projects.BadRequest(f"{what} is longer than {limit} characters")
+    if any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in s):
+        raise projects.BadRequest(f"{what} must be one line without control characters")
+    return s
+
+
+def _parse_at(at) -> datetime | None:
+    try:
+        d = datetime.fromisoformat(at) if isinstance(at, str) else None
+    except ValueError:
+        return None
+    return d if d is None or d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def _stat_snapshot(stats) -> dict:
+    """The statusline fields a command can change, as they are when it is typed (the baseline `changed` is judged against)."""
+    s = stats if isinstance(stats, dict) else {}
+    return {k: s.get(k) for k in ("model", "model_id", "effort", "fast")}
+
+
+def _cmd_outcome(pending: dict, stats: dict, now: datetime) -> bool | None:
+    """Did this statusline confirm the pending command? True confirmed, False unconfirmed (its 20 s are over), None keep waiting.
+    model: the statusline's model (display name or id) contains the argument, or differs from the one at send time; effort: it
+    equals the argument or differs; fast: it differs; every other command: the next statusline (Claude's UI is alive and redrew)."""
+    at = _parse_at(pending.get("at"))
+    if at is None or (now - at).total_seconds() > CMD_PENDING_TTL:
+        return False
+    cmd, arg = pending.get("cmd"), str(pending.get("arg") or "").strip().lower()
+    before = pending.get("before") if isinstance(pending.get("before"), dict) else {}
+    if cmd == "model":
+        hay = [str(stats.get(k) or "").lower() for k in ("model", "model_id")]
+        want = arg.replace("[1m]", "").strip()
+        known = any(before.get(k) is not None for k in ("model", "model_id"))     # no baseline: only the argument can confirm
+        changed = known and any(stats.get(k) != before.get(k) for k in ("model", "model_id"))
+        return True if changed or (want and any(want in h for h in hay)) else None
+    if cmd == "effort":                                  # a statusline from before the change equals the baseline: no false hit
+        eff = stats.get("effort")
+        return True if eff != before.get("effort") or (arg and str(eff).lower() == arg) else None
+    if cmd == "fast":                                    # an absent key counts as off
+        return True if bool(stats.get("fast")) != bool(before.get("fast")) else None
+    return True
+
+
+def _cmd_confirm(handle, name: str, stats) -> None:
+    """The statusline hook (registered in hooks.STATS_HOOKS, called with the statusline's stats right after db.set_stats): settles
+    the row's pending_cmd into flags.last_cmd = {cmd, arg, at, confirmed} and clears pending_cmd. Never raises into the hook path."""
+    try:
+        row = handle.open_row(name)
+        pending = ((row or {}).get("flags") or {}).get("pending_cmd")
+        if not isinstance(pending, dict):
+            return
+        now = _parse_at(_cmd_now()) or datetime.now(timezone.utc)
+        done = _cmd_outcome(pending, stats if isinstance(stats, dict) else {}, now)
+        if done is not None:
+            handle.update_flags(name, {"last_cmd": {"cmd": pending.get("cmd"), "arg": pending.get("arg"), "at": pending.get("at"),
+                                                    "confirmed": done}, "pending_cmd": None})
+    except Exception as e:
+        log.warning("command confirmation for %s failed: %s", name, e)
+
+
+def _register_stats_hook() -> None:
+    """Append _cmd_confirm to hooks.STATS_HOOKS (hooks.py owns the list and calls every entry as fn(db, name, stats) after the
+    statusline's set_stats). Created here when hooks.py has none yet; a re-import replaces the old entry instead of doubling it."""
+    lst = getattr(hooks, "STATS_HOOKS", None)
+    if lst is None:
+        lst = hooks.STATS_HOOKS = []
+    lst[:] = [f for f in lst if getattr(f, "__qualname__", "") != "_cmd_confirm"] + [_cmd_confirm]
+
+
+_register_stats_hook()
+
+
+class CommandIn(BaseModel):
+    cmd: object = None
+    arg: object = None
+    wait_ms: object = None
+    confirm: object = None
+
+
+@app.post("/api/sessions/{name}/command")
+def api_command(name: str, request: Request, body: CommandIn | None = None):
+    """Type one of the agent's allowlisted slash commands into its pane ('/model opus'). Never types anything else, and refuses
+    (409 {error, state, wait_kind, retry}) unless the composer is free: the session idle, done, errored or idle-waiting, with no
+    permission pending and no compaction. Clears the composer first (C-u); the statusline that follows confirms it passively."""
+    _terminal_session(name)
+    b = body or CommandIn()
+    row, adapter, refusal = _agent_row(name)
+    if refusal:
+        return refusal
+    allow = adapter.slash_commands()
+    raw = b.cmd.strip() if isinstance(b.cmd, str) else ""
+    key = (raw[1:] if raw.startswith("/") else raw).lower()
+    spec = allow.get(key)
+    if spec is None:
+        raise projects.BadRequest("unknown command; allowed: " + ", ".join(s.cmd for s in allow.values()))
+    arg = _clean_line(b.arg, "arg", CMD_ARG_MAX) if b.arg is not None else ""
+    if spec.arg and not arg:
+        raise projects.BadRequest(f"{spec.cmd} needs an argument")
+    if not spec.arg and arg:
+        raise projects.BadRequest(f"{spec.cmd} takes no argument")
+    wait = CMD_WAIT_DEFAULT if b.wait_ms is None else b.wait_ms
+    if isinstance(wait, bool) or not isinstance(wait, int) or not 0 <= wait <= CMD_WAIT_MAX:
+        raise projects.BadRequest(f"wait_ms must be an integer from 0 to {CMD_WAIT_MAX}")
+    if b.confirm is not None and not isinstance(b.confirm, bool):
+        raise projects.BadRequest("confirm must be true or false")
+    refusal = _typing_refusal(name, row)
+    if refusal:
+        return refusal
+    if spec.destructive and b.confirm is not True:
+        return JSONResponse({"error": "confirm", "message": f"{spec.cmd} cannot be undone: send it again with confirm", "cmd": spec.cmd,
+                             "state": row.get("state"), "wait_kind": (row.get("flags") or {}).get("wait_kind"), "retry": None},
+                            status_code=409)
+
+    sent = f"{spec.cmd} {arg}".strip()
+    cmd = spec.cmd.lstrip("/")
+    prior = (row.get("flags") or {}).get("pending_cmd")
+    patch: dict = {"pending_cmd": {"cmd": cmd, "arg": arg or None, "at": _cmd_now(), "before": _stat_snapshot(row.get("stats"))}}
+    if isinstance(prior, dict):                         # an earlier command nobody confirmed: its outcome is 'unconfirmed'
+        patch["last_cmd"] = {"cmd": prior.get("cmd"), "arg": prior.get("arg"), "at": prior.get("at"), "confirmed": False}
+    db.update_flags(name, patch)                        # before typing: the statusline can answer within a few hundred ms
+    try:
+        tmux.send_keys(name, ["C-u"])
+        tmux.send_text(name, sent, enter=True)
+    except Exception:
+        db.update_flags(name, {"pending_cmd": None})
+        raise
+    db.add_event(name, "BoardCommand", cmd, sent, {"cmd": cmd, "arg": arg or None, "by": request.state.user}, agent=row.get("agent"))
+    _invalidate_scan()
+    out = {"ok": True, "sent": sent, "verified": spec.verified}
+    if spec.read:
+        time.sleep(wait / 1000)
+        out["screen"] = tmux.capture(name, lines=40)
+    return out
+
+
+class PromptIn(BaseModel):
+    text: object = None
+    enter: object = True
+    queue: object = False
+
+
+@app.post("/api/sessions/{name}/prompt")
+def api_prompt(name: str, request: Request, body: PromptIn | None = None):
+    """Paste a prompt into the agent's composer (bracketed paste, so newlines stay in the prompt) and press Enter. Same guards as
+    /command, except that a working session accepts it with queue=true (Claude queues text typed during a turn). last_prompt is
+    not set here: the UserPromptSubmit hook sets it, which also proves the paste landed."""
+    _terminal_session(name)
+    b = body or PromptIn()
+    row, _, refusal = _agent_row(name)
+    if refusal:
+        return refusal
+    if not isinstance(b.text, str):
+        raise projects.BadRequest("text must be text")
+    text = b.text.replace("\r\n", "\n").replace("\r", "\n")
+    if not text.strip():
+        raise projects.BadRequest("text is empty")
+    if len(text) > PROMPT_MAX:
+        raise projects.BadRequest(f"text is longer than {PROMPT_MAX} characters")
+    if any(unicodedata.category(c) == "Cc" and c not in "\t\n" for c in text):
+        raise projects.BadRequest("text contains control characters")
+    if not isinstance(b.enter, bool) or not isinstance(b.queue, bool):
+        raise projects.BadRequest("enter and queue must be true or false")
+    refusal = _typing_refusal(name, row, queue=b.queue)
+    if refusal:
+        return refusal
+    queued = row.get("state") == "working"
+    tmux.paste_text(name, text, enter=b.enter)
+    db.add_event(name, "BoardPrompt", None, text[:200], {"chars": len(text), "enter": b.enter, "queued": queued,
+                                                         "by": request.state.user}, agent=row.get("agent"))
+    _invalidate_scan()
+    return {"ok": True, "pasted": True, "queued": queued}
+
+
 @app.delete("/api/sessions/{name}")
 def api_kill_session(name: str):
     try:
@@ -1942,7 +2226,7 @@ async def api_hook(request: Request):
         if not name or name not in rows:
             return {"ignored": how if not name else "unknown session", "session": name}
         try:
-            result = hooks.apply(db, name, event, payload, agent=rows[name].get("agent"))
+            result = hooks.apply(db, name, event, payload, agent=rows[name].get("agent"), child=request.headers.get("x-ccboard-child", "").strip() == "1")
         except Exception as e:  # a malformed payload must never 500 the hook path
             log.warning("hook %s for %s failed: %s", event, name, e)
             return {"ignored": "error", "session": name, "error": str(e)[:200]}
@@ -2081,6 +2365,7 @@ def api_cost_refresh():
 @app.post("/api/usage/rate-limit/clear")
 def api_clear_rate_limit():
     db.kv_del("rate_limited")
+    db.kv_del_prefix("rl_notified:")                     # the once-per-window notice gate: a cleared banner may announce again
     _invalidate_scan()
     return {"ok": True}
 
@@ -2105,6 +2390,7 @@ async def api_permission(request: Request):
 
     def record():
         db.set_state(name, "waiting", "PermissionRequest", message="permission: " + summary, attention=True)
+        db.update_flags(name, {"wait_kind": "permission"})   # same value as Notification(permission_prompt): a PostToolBatch (answered in the TUI) clears it
         db.add_event(name, "PermissionRequest", tool, summary, payload, agent=rows[name].get("agent"))
         return db.perm_add(name, tool, summary, payload.get("tool_input"))
     pid = await asyncio.to_thread(record)
@@ -2142,13 +2428,15 @@ async def api_permission(request: Request):
     _invalidate_scan()
     if row and row.get("decision") in ("allow", "deny"):
         return {"behavior": row["decision"], "message": "Denied from ccboard" if row["decision"] == "deny" else None, "id": pid}
+    if row and row.get("decision") == "tui":                       # behavior None: the hook script prints nothing, the TUI asks
+        return {"behavior": None, "reason": "tui", "id": pid}
     return {"behavior": None, "reason": "undecided", "id": pid}
 
 
 @app.post("/api/permission/{pid}/{decision}")
 def api_permission_decide(pid: int, decision: str, request: Request):
-    if decision not in ("allow", "deny"):
-        raise projects.BadRequest("decision must be allow or deny")
+    if decision not in ("allow", "deny", "tui"):                  # tui: nobody answers from the board, Claude shows its own prompt
+        raise projects.BadRequest("decision must be allow, deny or tui")
     row = db.perm_get(pid)
     if not row:
         raise projects.NotFound("no such permission request")

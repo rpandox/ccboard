@@ -75,13 +75,13 @@ def vapid_claims() -> dict:
     return {"sub": f"mailto:ccboard@{host}"}
 
 
-def send_all(db, title: str, body: str, url: str = "/", tag: str | None = None) -> int:
+def send_all(db, title: str, body: str, url: str = "/", tag: str | None = None, extra: dict | None = None) -> int:
     """Push to every stored subscription; drops the ones the push service reports gone. Returns sent count."""
     subs = db.push_subs()
     if not subs:
         return 0
     from pywebpush import WebPushException, webpush
-    payload = json.dumps({"title": title[:200], "body": body[:1000], "url": url, "tag": tag})
+    payload = json.dumps({"title": title[:200], "body": body[:1000], "url": url, "tag": tag, **(extra or {})})   # v0.5.7: agent, state, tmux, perm_id, actions for the SW (consumed in v0.5.18)
     sent = 0
     for row in subs:
         try:

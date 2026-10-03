@@ -681,6 +681,12 @@ class DB:
         with self.lock:
             self.conn.execute("DELETE FROM kv WHERE key=?", (key,))
 
+    def kv_del_prefix(self, prefix: str) -> int:
+        """Delete every kv row whose key starts with `prefix` (e.g. the rl_notified:<agent>:<resets_at> gates); returns the count."""
+        with self.lock:
+            cur = self.conn.execute("DELETE FROM kv WHERE substr(key, 1, ?) = ?", (len(prefix), prefix))
+            return cur.rowcount
+
     def kv_get(self, key: str):
         with self.lock:
             r = self.conn.execute("SELECT value, at FROM kv WHERE key=?", (key,)).fetchone()

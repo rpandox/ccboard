@@ -483,7 +483,7 @@ def test_dispatch_to_a_waiting_session_needs_its_idle_prompt(board):
     pasted the prompt and Enter into the TUI dialog. Only an idle_prompt Notification (Claude idle at its prompt) lets the paste in."""
     s1 = make_session(board, state="idle")
     tid = backlog(board)
-    for kind in ("permission_prompt", "elicitation_dialog", "agent_needs_input"):
+    for kind in ("permission_prompt", "elicitation_dialog", "elicitation_url_dialog"):
         notify(board, s1, kind)
         r = board.client.post(f"/api/tasks/{tid}/dispatch", headers=H, json={"session": s1})
         assert r.status_code == 409, (kind, r.text)

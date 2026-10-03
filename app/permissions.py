@@ -7,7 +7,6 @@ import json
 import threading
 
 from . import notify
-from .config import settings
 
 _waiters: dict[int, tuple[asyncio.AbstractEventLoop, asyncio.Event]] = {}
 _lock = threading.Lock()
@@ -51,17 +50,14 @@ def wake(pid: int) -> None:
 
 
 def push_request(pid: int, name: str, summary: str) -> None:
-    pub = (settings.public_url or "").rstrip("/")
-    label = name.replace("--", " / ", 1).replace("--", " · ")
-    actions = []
-    if pub:
-        actions = [
-            {"action": "http", "label": "Allow", "url": f"{pub}/api/permission/{pid}/allow", "method": "POST",
-             "headers": {"X-CCBoard": "1"}, "clear": True},
-            {"action": "http", "label": "Deny", "url": f"{pub}/api/permission/{pid}/deny", "method": "POST",
-             "headers": {"X-CCBoard": "1"}, "clear": True},
-            {"action": "view", "label": "Terminal", "url": f"{pub}/term/{name}"},
-        ]
-    notify.web_push(f"{label}: allow?", summary, f"/#s={name}", tag=f"perm-{pid}")
-    notify.publish(f"{label}: allow?", summary, click=f"{pub}/#s={name}" if pub else None, actions=actions,
-                   priority=4, tags=["question"])
+    """The phone notice for one pending permission: Allow / Deny / Terminal and the `? Bash: npm test` line, on ntfy and Web Push.
+    Never throttled (every request needs an answer), but it counts as the session's 'waiting' notice, so the Notification hook
+    that follows when the TUI prompt shows does not buzz a second time."""
+    try:
+        row, task = notify.context(name)
+        n = notify.build(row or {"tmux_name": name}, task, "waiting", "permission_prompt", summary,
+                         {"id": pid, "summary": summary})
+        notify.mark_sent(name, "waiting")
+        notify.send(n)
+    except Exception as e:          # the permission hook must still get its answer when a notice cannot be built
+        notify.log.warning("permission push failed: %s", e)
