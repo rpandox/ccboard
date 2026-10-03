@@ -50,6 +50,7 @@ class Settings:
         self.ntfy_topic = (env.get("NTFY_TOPIC") or "ccboard").strip()
         self.ntfy_public_url = (env.get("NTFY_PUBLIC_URL") or "").strip()  # what the phone subscribes to
         self.recover = (env.get("CCBOARD_RECOVER") or "1") != "0"
+        self.auto_continue = (env.get("CCBOARD_AUTO_CONTINUE") or "1") != "0"   # type `continue` once a limit window resets (app/autoresume.py)
         self.node_name = (env.get("CCBOARD_NODE_NAME") or "").strip()
         self.hub_token = (env.get("CCBOARD_HUB_TOKEN") or "").strip()
         self.nodes_raw = env.get("CCBOARD_NODES") or ""

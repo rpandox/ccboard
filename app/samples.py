@@ -273,6 +273,9 @@ def record_counts(db, counts: dict, *, at=None) -> list[str]:
     return out
 
 
+TICK_HOOKS: list = []          # fn(db, now_epoch); app/autoresume registers itself below
+
+
 class Sampler(threading.Thread):
     """The series nobody triggers: every 15 s tick it stamps kv samples_heartbeat, records health and session counts (each by its own
     throttle) and, once per UTC day, prunes every series to its retention and truncates the WAL. A thread started in the lifespan,
@@ -300,6 +303,11 @@ class Sampler(threading.Thread):
             pruned = self._prune_daily(at)
         except Exception as e:
             log.warning("sampler: prune failed: %s", e)
+        for hook in TICK_HOOKS:                                  # small follow-ups that ride the 15 s tick (auto-continue after a limit reset)
+            try:
+                hook(self.db, now)
+            except Exception as e:
+                log.warning("sampler: %s failed: %s", getattr(hook, "__name__", "hook"), e)
         return {"at": iso(at), "wrote": wrote, "pruned": pruned}
 
     def _prune_daily(self, at: datetime) -> int | None:
@@ -477,3 +485,12 @@ def events_payload(db, series: str, since, key: str | None = None) -> dict:
     rows = rows[-EVENTS_CAP:]
     return {"events": [{"t": int(_epoch(at)), "key": k, "v": v, "m": _meta_dict(raw) or None} for at, k, v, raw in rows],
             "truncated": truncated}
+
+
+def _register_hooks() -> None:
+    from . import autoresume                                 # imported late: autoresume imports tmux/notify, never samples
+    if autoresume.tick not in TICK_HOOKS:
+        TICK_HOOKS.append(autoresume.tick)
+
+
+_register_hooks()
