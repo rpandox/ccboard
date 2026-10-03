@@ -163,10 +163,19 @@ function taskForm(p, r) {
       el('button', { type: 'button', onclick: () => { ui.openForm = null; renderProjects(); }, text: 'Cancel' })));
 }
 
+/* The schedule form's cron presets (chips that fill the cron field; a blank cron runs once now): [label, cron]. */
+const CRON_PRESETS = [['nightly 02:30', '30 2 * * *'], ['weekdays 09:00', '0 9 * * 1-5'], ['hourly', '0 * * * *'], ['one-off', '']];
+
 function jobForm(p, r) {
   const name = el('input', { type: 'text', placeholder: 'name (e.g. nightly-tests)', maxlength: 80, required: true });
   const prompt = el('textarea', { placeholder: 'prompt for the headless run (claude -p in a fresh worktree)…', required: true });
   const cron = el('input', { type: 'text', placeholder: 'cron, e.g. 30 2 * * * (blank = run once now)' });
+  const go = el('button', { class: 'primary', type: 'submit', text: 'Schedule / run' });
+  const syncGo = () => { go.textContent = cron.value.trim() ? 'Schedule' : 'Schedule / run'; };
+  cron.addEventListener('input', syncGo);
+  const presets = el('div', { class: 'chips cron-presets', role: 'group', 'aria-label': 'Cron presets' },
+    CRON_PRESETS.map(([label, value]) => el('button', { class: 'chip-btn', type: 'button', text: label, title: value ? `cron ${value}` : 'blank cron: run once now',
+      onclick: () => { cron.value = value; syncGo(); cron.focus(); } })));
   const mode = el('select', {}, ...['acceptEdits', 'default', 'plan', 'auto', 'dontAsk'].map(m => el('option', { value: m, text: m })));
   const turns = el('input', { type: 'number', value: '30', min: '1', max: '500', title: 'max turns' });
   const budget = el('input', { type: 'number', placeholder: 'max $ (optional)', step: '0.5', min: '0' });
@@ -182,11 +191,12 @@ function jobForm(p, r) {
   } },
     el('label', { text: 'Schedule a headless run: claude -p in a fresh worktree; the result becomes a task card' }),
     el('div', { class: 'row' }, name, cron),
+    presets,
     prompt,
     el('div', { class: 'row' }, el('label', { text: 'permission mode' }), mode, el('label', { text: 'max turns' }), turns, budget),
     args,
     el('div', { class: 'row' },
-      el('button', { class: 'primary', type: 'submit', text: cron.value ? 'Schedule' : 'Schedule / run' }),
+      go,
       el('button', { type: 'button', onclick: () => { ui.openForm = null; renderProjects(); }, text: 'Cancel' })));
 }
 

@@ -14,7 +14,10 @@ const INTENT = { primary: 'bp5-intent-primary', danger: 'bp5-intent-danger', ok:
    callout and progress also take the intent classes (ok, warn, bad, primary, danger). Used by tabs(), menu(), emptyState() in components.js. */
 const SEMANTIC = { tabs: 'bp5-tabs', tablist: 'bp5-tab-list', tab: 'bp5-tab', tabpanel: 'bp5-tab-panel', menu: 'bp5-menu', menuitem: 'bp5-menu-item',
                    callout: 'bp5-callout', nonideal: 'bp5-non-ideal-state', progress: 'bp5-progress-bar', meter: 'bp5-progress-meter', navbar: 'bp5-navbar',
-                   skeleton: 'bp5-skeleton', table: 'bp5-html-table bp5-compact' };
+                   skeleton: 'bp5-skeleton', table: 'bp5-html-table bp5-compact',
+                   /* the file tree (tree.js, hand-written bp5-tree markup): root, list, node, content row, caret, label, secondary label */
+                   tree: 'bp5-tree', treelist: 'bp5-tree-node-list', treenode: 'bp5-tree-node', treecontent: 'bp5-tree-node-content',
+                   treecaret: 'bp5-tree-node-caret bp5-icon-standard', treelabel: 'bp5-tree-node-label', treesecondary: 'bp5-tree-node-secondary-label' };
 function blueprint(n, tag, cls) {
   const list = cls ? cls.split(/\s+/) : [];
   const has = (c) => list.includes(c);
@@ -131,13 +134,36 @@ function demoRebase(data) {
   return walk(data, '');
 }
 
+/* A demo answer that is an HTTP error: the tree and file previews read err.status (the real endpoints answer 403 / 404 / 415 the same way). */
+function demoError(status, message) {
+  const e = new Error(message || `${status}`);
+  e.status = status;
+  return e;
+}
+
+/* Demo tree and file fixtures are maps keyed '<repo>|<path>' ('root' is the project folder, path '' a repo's top level); the query's
+   hidden / ignored / repos flags are ignored. tree.json holds the /tree payloads; file.json holds {status: 200, body} or
+   {status: 403|415, error, reveal?: {status: 200, body}} per file. An absent key answers 404. */
+function demoPick(kind, bare, query, data) {
+  const m = /^\/api\/projects\/[^/]+\/repos\/([^/]+)\//.exec(bare);
+  const q = new URLSearchParams(query || '');
+  const key = decodeURIComponent(m ? m[1] : '') + '|' + (q.get('path') || '');
+  const hit = data && ownKey(data, key) ? data[key] : null;
+  if (!hit) throw demoError(404, 'not found');
+  if (kind === 'tree') return hit;
+  const r = hit.status === 403 && q.get('reveal') === '1' && hit.reveal ? hit.reveal : hit;
+  if (r.status === 200) return r.body;
+  throw demoError(r.status, r.error);
+}
+
 async function demoApi(method, path) {
   if (method !== 'GET') { await new Promise((resolve) => setTimeout(resolve, 150)); return { ok: true }; }
   const bare = path.split('?')[0];
   let name = null;
   if (bare === '/api/state') name = 'state';
   else if (bare.startsWith('/api/search')) name = 'search';
-  else if (/^\/api\/projects\/.*\/tree/.test(bare)) name = 'tree';
+  else if (/^\/api\/projects\/[^/]+\/repos\/[^/]+\/tree$/.test(bare)) name = 'tree';
+  else if (/^\/api\/projects\/[^/]+\/repos\/[^/]+\/file$/.test(bare)) name = 'file';
   else if (bare.startsWith('/api/series')) name = 'series';
   else if (bare === '/api/usage/summary') name = 'usage_summary';
   else if (bare.startsWith('/api/memory/')) name = 'memory';
@@ -145,6 +171,7 @@ async function demoApi(method, path) {
   const r = await fetch(`/static/demo/${name}.json`);
   if (!r.ok) throw new Error(`demo fixture ${name}.json: ${r.status} ${r.statusText}`);
   const data = await r.json();
+  if (name === 'tree' || name === 'file') return demoPick(name, bare, path.slice(bare.length + 1), data);
   return name === 'state' ? demoRebase(data) : data;
 }
 
@@ -167,6 +194,20 @@ function setError(msg) { ui.error = msg; renderBanner(); }
 
 function codeServerUrl(path) {
   return `https://${location.hostname}:${state.config.code_https_port}/?folder=${encodeURIComponent(path)}`;
+}
+
+/* The authority of the vscode-remote:// file URI in codeServerFileUrl: '' gives vscode-remote:///<abs> (the contract); the box check
+   (plan v0.5.6, "Verify on box") may freeze it as the host or host:port. The one place to change it. */
+let CODE_SERVER_AUTHORITY = '';
+
+/* Open one file in code-server, at a line (and column) when given: the same folder link as codeServerUrl plus the openFile payload
+   ([["openFile", "vscode-remote://<authority><abs>:<line>:<col>"]], url-encoded). folder defaults to the file's own directory;
+   the preview passes the repo's absolute path. The only builder of this URL. */
+function codeServerFileUrl(abs, line, folder, col) {
+  const where = typeof line === 'number' && line > 0 ? `:${Math.floor(line)}${typeof col === 'number' && col > 0 ? ':' + Math.floor(col) : ''}` : '';
+  const dir = folder || String(abs).replace(/\/[^/]*$/, '') || '/';
+  const payload = JSON.stringify([['openFile', `vscode-remote://${CODE_SERVER_AUTHORITY}${abs}${where}`]]);
+  return `https://${location.hostname}:${state.config.code_https_port}/?folder=${encodeURIComponent(dir)}&payload=${encodeURIComponent(payload)}`;
 }
 
 function fmtAge(epoch) {

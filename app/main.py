@@ -24,7 +24,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agents, backup, claude_auth, clonequeue, cost, doctor, github, gitops, health, hooks, notify, permissions, previews, projects, prpoll, push, recover, samples, scheduler, search, tasks, tmux, usage, usage_summary
+from . import agents, backup, claude_auth, clonequeue, cost, doctor, github, gitops, health, hooks, notify, permissions, previews, projects, prpoll, push, recover, samples, scheduler, search, tasks, tmux, tree, usage, usage_summary
 from .agents import registry
 from .agents.base import LaunchReq
 from .agents.claude import BYPASS_PARTS, OVERRIDE_PARTS
@@ -282,6 +282,11 @@ async def _conflict(_, e):
 @app.exception_handler(projects.NotFound)
 async def _notfound(_, e):
     return JSONResponse({"error": str(e)}, status_code=404)
+
+
+@app.exception_handler(projects.Forbidden)
+async def _forbidden(_, e):
+    return JSONResponse({"error": str(e)}, status_code=403)
 
 
 @app.exception_handler(github.GhError)
@@ -984,6 +989,28 @@ def api_issues(project: str, repo: str):
     if not projects.is_repo(rpath):
         raise projects.NotFound("not a git repo")
     return {"issues": prpoll.list_issues(rpath)}
+
+
+@app.get("/api/projects/{project}/repos/{repo}/tree")
+def api_tree(project: str, repo: str, request: Request, path: str = "", hidden: str = "0", ignored: str = "0",
+             repos: str = "1", refresh: str = "0"):
+    """One level of the repo's tree (repo 'root' = the project folder). Weak ETag; a matching If-None-Match gets a bare 304."""
+    payload = tree.list_dir(project, repo, path, hidden=tree.flag(hidden), ignored=tree.flag(ignored),
+                            repos=tree.flag(repos), refresh=tree.flag(refresh))
+    headers = {"ETag": tree.etag_header(payload), "Cache-Control": "private, no-cache"}
+    if tree.not_modified(request.headers.get("if-none-match"), payload["etag"]):
+        return Response(status_code=304, headers=headers)
+    return JSONResponse(payload, headers=headers)
+
+
+@app.get("/api/projects/{project}/repos/{repo}/file")
+def api_tree_file(project: str, repo: str, path: str = "", reveal: str = "0"):
+    """Read-only preview text: 200 KB cap, 415 binary, 403 for secret-looking names unless reveal=1, 400 symlinks, 404."""
+    try:
+        body = tree.read_file(project, repo, path, reveal=tree.flag(reveal))
+    except tree.Unsupported as e:
+        return JSONResponse({"error": str(e)}, status_code=415)
+    return JSONResponse(body, headers={"Cache-Control": "private, no-store"})
 
 
 @app.get("/api/tasks/{tid}/ports")

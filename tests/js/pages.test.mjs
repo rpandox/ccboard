@@ -190,13 +190,13 @@ function fakeState(over = {}) {
   };
 }
 
-const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'agents', 'settings', 'search', 'session', 'placeholders'];       // widgets.js (Widgets, no route) loads right after inbox.js
+const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'project', 'agents', 'settings', 'search', 'session', 'placeholders'];       // widgets.js (Widgets, no route) loads right after inbox.js, project.js right after tasks.js
 
 /** A world with the DOM, the real scripts in index.html order (shell.js left out), and recorders for api, toast and registerPage. */
 function pagesWorld({ wide = false, extra = {}, state = fakeState(), realPoll = false } = {}) {
   const w = makeWorld({ matchMedia: (q) => ({ matches: wide && /1024/.test(q), addEventListener() {}, removeEventListener() {} }), ...extra });
   const dom = installDom(w);
-  for (const f of ['core.js', 'components.js', 'live.js', 'launcher.js', 'router.js']) w.load(f);
+  for (const f of ['core.js', 'components.js', 'live.js', 'launcher.js', 'tree.js', 'router.js']) w.load(f);       // tree.js (Tree, definition-only) follows launcher.js in index.html
   w.ctx.__calls = []; w.ctx.__toasts = []; w.ctx.__registered = []; w.ctx.__mounts = {}; w.ctx.__searchHits = [];
   w.run(`
     api = async (method, path, body) => {
@@ -536,34 +536,41 @@ test('a session that is gone says so instead of failing', () => {
 
 // ---------------------------------------------------------------- placeholders and onRoute
 
-test('placeholder pages take onRoute: #/p/a to #/p/a?tab=x redraws without a remount', () => {
+test('placeholder pages take onRoute: #/memory to #/memory/shop?tab=x redraws without a remount', () => {
   const { w } = pagesWorld();
-  w.location.hash = '#/p/a';
-  assert.equal(mounts(w, 'project'), 1);
-  assert.match(text(page(w)), /Project a/);
-  assert.match(text(page(w)), /arrives in v0\.5\.6/);
-  assert.equal(w.document.title, 'Project a · ccboard');
-  w.location.hash = '#/p/a?tab=x';
-  assert.equal(mounts(w, 'project'), 1, 'onRoute, not mount');
-  assert.match(text(page(w)), /Project a · x/);
-  assert.equal(w.document.title, 'Project a · x · ccboard');
-  w.location.hash = '#/p/b/api';
-  assert.equal(mounts(w, 'project'), 1, 'params changing on the same id also go through onRoute');
-  assert.match(text(page(w)), /Project b\/api/);
+  w.location.hash = '#/memory';
+  assert.equal(mounts(w, 'memory'), 1);
+  assert.match(text(page(w)), /Memory/);
+  assert.match(text(page(w)), /arrives in v0\.5\.20/);
+  assert.equal(w.document.title, 'Memory · ccboard');
+  w.location.hash = '#/memory/shop';
+  assert.equal(mounts(w, 'memory'), 1, 'params changing on the same id go through onRoute, not mount');
+  assert.match(text(page(w)), /Memory shop/);
+  assert.equal(w.document.title, 'Memory shop · ccboard');
+  w.location.hash = '#/memory/shop?tab=x';
+  assert.equal(mounts(w, 'memory'), 1, 'a query change too');
+  assert.match(text(page(w)), /Memory shop · x/);
+  assert.equal(w.document.title, 'Memory shop · x · ccboard');
   w.location.hash = '#/usage';
   assert.equal(mounts(w, 'usage'), 1);
   assert.match(text(page(w)), /Usage/);
   assert.match(text(page(w)), /arrives in v0\.5\.17/);
-  assert.doesNotMatch(text(page(w)), /Project/);
+  assert.doesNotMatch(text(page(w)), /Memory/);
 });
 
-test('every later-phase route has a placeholder that names its phase', () => {
+test('every later-phase route has a placeholder that names its phase; the project route has its real page', () => {
   const { w } = pagesWorld();
-  const cases = { '#/quad': 'v0.5.9', '#/memory/shop': 'v0.5.20', '#/onboarding/project': 'v0.5.19', '#/usage': 'v0.5.17', '#/p/shop': 'v0.5.6' };
+  const cases = { '#/quad': 'v0.5.9', '#/memory/shop': 'v0.5.20', '#/onboarding/project': 'v0.5.19', '#/usage': 'v0.5.17' };
   for (const [hash, version] of Object.entries(cases)) {
     w.location.hash = hash;
     assert.match(text(page(w)), new RegExp(`arrives in ${version.replace(/\./g, '\\.')}`), hash);
   }
+  w.location.hash = '#/p/shop';
+  assert.equal(mounts(w, 'project'), 1);
+  assert.doesNotMatch(text(page(w)), /arrives in/, 'v0.5.6 replaced the project placeholder');
+  assert.match(text(page(w)), /shop/);
+  assert.match(w.document.title, /shop/, 'the title names the project');
+  assert.equal(w.get("typeof PLACEHOLDER_INFO === 'object' && 'project' in PLACEHOLDER_INFO"), false, 'placeholders.js no longer lists the project route');
 });
 
 // ---------------------------------------------------------------- inbox, tasks, home
@@ -914,4 +921,18 @@ test('every roster row has its own send box: Enter sends the text with enter and
   assert.equal(calls(w).filter((c) => c.path.endsWith('/keys')).length, 1);
   const sh = root.querySelector('.rrow[data-tmux=blog--web--sh] form.rr-send');
   assert.ok(sh && sh.classList.contains('hidden'), 'a shell pane is never typed into from the roster');
+});
+
+test('sidebar folders: a nested repo inside a repo keeps the parent repo and extends the path; only the project folder\'s top-level repos are skipped', () => {
+  const { w } = pagesWorld();
+  w.load('shell.js');                                                   // the pages world does not load the shell by default
+  const Shell = w.get('Shell');
+  const seed = (key, entries) => Shell.dirs.set(key, { entries });
+  const k = (repo, path) => ({ key: Shell.dirKey('shop', repo, path), project: 'shop', repo, path, level: 1 });
+  seed(Shell.dirKey('shop', 'api', 'vendor'), [{ name: 'lib', type: 'repo', has_children: true, dirty: true }, { name: 'docs', type: 'dir', has_children: true }]);
+  const inside = plain(Shell.dirItems(k('api', 'vendor')).map((x) => [x.kind, x.repo, x.path, x.glyph]));
+  assert.deepEqual(inside, [['dir', 'api', 'vendor/lib', 'repo'], ['dir', 'api', 'vendor/docs', 'dir']]);
+  seed(Shell.dirKey('shop', 'root', ''), [{ name: 'api', type: 'repo', has_children: true }, { name: 'notes', type: 'dir', has_children: true }]);
+  const top = plain(Shell.dirItems(k('root', '')).map((x) => [x.kind, x.repo, x.path]));
+  assert.deepEqual(top, [['dir', 'root', 'notes']], 'the project folder\'s own repos are top-level sidebar nodes already');
 });

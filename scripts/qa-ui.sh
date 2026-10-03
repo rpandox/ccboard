@@ -27,6 +27,8 @@
 #   overflow document.documentElement.scrollWidth <= innerWidth (no horizontal scroll)
 #   targets  at 390 px with html.force-coarse every visible button and a.bp5-button is at least 44 px tall
 #   topbar   pwa pass only: html.pwa is set and #topbar is at least 48 px tall (the title-bar height under Window Controls Overlay)
+#   extra    per-route checks of the project page (v0.5.6): '#/p/phasezero' shows the project name and its code-server link, '?tab=files' mounts
+#            a role=tree with treeitems and exactly one tabbable node (roving tabindex), '?tab=tasks' draws the Backlog column
 #
 # Environment: B (browse binary), CHROME (Chrome binary), QA_TMUX (session for #/s/<tmux>, default: the first session in
 # app/static/demo/state.json), QA_HEADER (e.g. 'Tailscale-User-Login: demo@example.com' when the board is not in dev bypass),
@@ -99,7 +101,7 @@ TMUX_NAME="$(first_tmux)"
 # width x height : expected body[data-shell] [: pass]; a pass is pwa (html.pwa injected, topbar checked) or ipad (a tablet size)
 VIEWPORTS="390x844:compact 768x1024:medium 1024x768:expanded 1280x800:large 1440x900:large:pwa 1024x1366:expanded:ipad 834x1194:medium:ipad"
 # hash route | expected body[data-page]
-ROUTES="#/|home #/?f=waiting|home #/inbox|inbox #/agents|agents #/tasks|tasks #/settings|settings #/search?q=auth|search #/s/$TMUX_NAME|session"
+ROUTES="#/|home #/?f=waiting|home #/inbox|inbox #/agents|agents #/tasks|tasks #/p/phasezero|project #/p/phasezero?tab=files|project #/p/phasezero?tab=tasks|project #/settings|settings #/search?q=auth|search #/s/$TMUX_NAME|session"
 
 slug() {
   local s="${1#\#/}"
@@ -108,13 +110,25 @@ slug() {
   printf '%s' "$s" | tr '/?=&#' '-----'
 }
 
+# route-specific assertion: a JS expression that answers 'ok' or what is wrong (the project page, v0.5.6); empty = nothing extra for the route
+extra_check() {
+  case "$1" in
+    "#/p/phasezero")
+      printf '%s' "(() => { const p = document.querySelector('#page'); if (!p || p.textContent.indexOf('phasezero') < 0) return 'the project name is not on the page'; return p.querySelector('a[href*=\"folder=\"]') ? 'ok' : 'no code-server folder link'; })()" ;;
+    "#/p/phasezero?tab=files")
+      printf '%s' "(() => { const t = document.querySelector('#page [role=tree]'); if (!t) return 'no [role=tree]'; const n = t.querySelectorAll('[role=treeitem]').length; if (!n) return 'the tree has no [role=treeitem]'; const tab = t.querySelectorAll('[role=treeitem][tabindex=\"0\"]').length; return tab === 1 ? 'ok' : tab + ' tabbable treeitems (roving tabindex wants exactly 1)'; })()" ;;
+    "#/p/phasezero?tab=tasks")
+      printf '%s' "(() => { const p = document.querySelector('#page'); return p && p.textContent.indexOf('Backlog') >= 0 ? 'ok' : 'no Backlog column'; })()" ;;
+  esac
+}
+
 FAILS=0
 DETAILS=""
 fail() { FAILS=$((FAILS + 1)); DETAILS="${DETAILS}  $1"$'\n'; }
 
 js() { "$B" js "$1" 2>/dev/null | tr -d '\r' | tail -n 1; }
 
-row() { printf '%-36s %-10s %-6s %-6s %-6s %-8s %-9s %-8s %-7s %s\n' "$@"; }
+row() { printf '%-36s %-10s %-6s %-6s %-6s %-8s %-9s %-8s %-7s %-6s %s\n' "$@"; }
 
 # Load one route at one size and wait for the shell to be built and the router to have run. The browse server is one shared
 # browser: if anything else drives it meanwhile (another agent, a stray tab) the size or the hash is not what was asked for,
@@ -140,8 +154,8 @@ load_route() {   # width height url hash
 echo "ccboard qa-ui: $BASE  mode=$MODE  out=$OUT"
 echo "session peek route: #/s/$TMUX_NAME"
 echo
-row ROUTE VIEWPORT SHELL BNAV PAGE CONSOLE OVERFLOW TARGETS TOPBAR SHOT
-row ---------------------------------- ---------- ------ ------ ------ -------- --------- -------- ------- ----
+row ROUTE VIEWPORT SHELL BNAV PAGE CONSOLE OVERFLOW TARGETS TOPBAR EXTRA SHOT
+row ---------------------------------- ---------- ------ ------ ------ -------- --------- -------- ------- ------ ----
 
 if [ "$MODE" = gstack ] && [ -n "${QA_HEADER:-}" ]; then "$B" header "$QA_HEADER" >/dev/null 2>&1; fi
 
@@ -169,7 +183,7 @@ for vp in $VIEWPORTS; do
         --window-size="$w,$h" --virtual-time-budget=4000 \
         --screenshot="$shot" "$url" >/dev/null 2>&1
       [ -s "$shot" ] && s=yes || { s=FAIL; fail "$name@$vtag: headless Chrome wrote no screenshot"; }
-      row "$route" "$vlabel" skip skip skip skip skip skip skip "$s"
+      row "$route" "$vlabel" skip skip skip skip skip skip skip skip "$s"
       continue
     fi
 
@@ -221,9 +235,18 @@ for vp in $VIEWPORTS; do
       c_top=-
     fi
 
+    # route-specific content (the project page): see extra_check
+    xjs="$(extra_check "$route")"
+    if [ -n "$xjs" ]; then
+      got="$(js "$xjs")"
+      if [ "$got" = ok ]; then c_extra=PASS; else c_extra=FAIL; fail "$name@$vtag: ${got:-no answer from the page}"; fi
+    else
+      c_extra=-
+    fi
+
     shot_out=$("$B" screenshot "$shot" 2>&1 | tail -1)
     [ -s "$shot" ] && s=yes || { s=FAIL; fail "$name@$vtag: no screenshot written to $shot (${shot_out:-no output}; the browse CLI only writes under /tmp, \$TMPDIR or the repo)"; }
-    row "$route" "$vlabel" "$c_shell" "$c_bnav" "$c_page" "$c_console" "$c_over" "$c_tgt" "$c_top" "$s"
+    row "$route" "$vlabel" "$c_shell" "$c_bnav" "$c_page" "$c_console" "$c_over" "$c_tgt" "$c_top" "$c_extra" "$s"
   done
 done
 

@@ -13,6 +13,8 @@ const Shell = {
   cache: null,              // { st, model }: the last model built from a state object
   badge: -1,                // the last count handed to navigator.setAppBadge
   crumbSig: '',
+  dirs: new Map(),          // sidebar directory listings of the current project: 'd:<project>/<repo>/<path>' -> {entries} | {error}
+  dirLoading: new Set(),    // the keys whose listing is on its way
   formWatch: null,          // called at the end of render(): lets a launcher form inside the sheet close it once it succeeded
   mq: null,
   installPrompt: null,      // the deferred beforeinstallprompt event (Chromium), kept for Settings > App; null once used, after appinstalled, or where there is none
@@ -91,8 +93,9 @@ Shell.model = function (st) {
     attn += needs;
     live += sess.filter((x) => x.state !== 'ended').length;
     const activity = sess.reduce((m, x) => Math.max(m, x.at), 0);
-    const kids = [...sess, ...(p.repos || []).map((r) => ({ key: 'r:' + p.name + '/' + r.name, kind: 'repo', project: p.name, name: r.name }))];
-    projects.push({ key: 'p:' + p.name, kind: 'proj', name: p.name, attn: needs, count: sess.length, activity, kids,
+    const kids = [...sess, ...(p.repos || []).map((r) => ({ key: 'r:' + p.name + '/' + r.name, kind: 'repo', project: p.name, name: r.name, state: r.state }))];
+    const folder = !((p.repos || []).length === 1 && p.repos[0].name === p.name);     // the project folder is its own node unless it is the one repo
+    projects.push({ key: 'p:' + p.name, kind: 'proj', name: p.name, attn: needs, count: sess.length, activity, kids, folder,
       older: !needs && activity > 0 && now - activity >= Shell.OLDER_DAYS * 86400 });   // no activity at all (a new project) stays in the main list
   }
   projects.sort((a, b) => (b.attn - a.attn) || (b.activity - a.activity) || a.name.localeCompare(b.name));
@@ -252,8 +255,11 @@ Shell.rowKey = function (row) { return row.parentNode.getAttribute('data-key'); 
 Shell.toggle = function (key) {
   if (Shell.open.has(key)) Shell.open.delete(key); else Shell.open.add(key);
   Shell.saveOpen();
+  if (key.startsWith('d:') && Shell.open.has(key)) Shell.loadDir({ key, ...Shell.parseDirKey(key) }, true);      // opening a folder re-reads it (the cached rows show meanwhile)
   Shell.patchTrees();
 };
+
+Shell.toggleDir = function (key) { Shell.toggle(key); };
 
 Shell.groupRow = function (cls, level, name, extra) {
   const n = { name: el('span', { class: 'tn-name' }), cnt: el('span', { class: 'tn-cnt' }) };
@@ -287,11 +293,156 @@ Shell.patchProj = function (node, p, level) {
   r.dot.classList.toggle('hidden', !p.attn);
   r.go.setAttribute('href', Shell.hash('project', { project: p.name }));
   r.kids.classList.toggle('hidden', !open);
-  if (open) Shell.sync(r.kids, p.kids, Shell.kidNode, Shell.patchKid);
+  if (open) Shell.sync(r.kids, Shell.projKids(p, level), Shell.kidNode, Shell.patchKid);
   else if (r.kids.firstChild) r.kids.textContent = '';
 };
 
+/* ---------- directories under the current project: the repos and the project folder open into lazily loaded folders ---------- */
+
+/* The project the page is about: the project route's, or the project of a session peek. */
+Shell.currentProject = function () {
+  const r = typeof currentRoute === 'function' ? currentRoute() : null;
+  if (!r) return '';
+  if (r.id === 'project') return (r.params && r.params.project) || '';
+  if (r.id === 'session') {
+    const parts = String((r.params && r.params.tmux) || '').split('--');
+    return parts.length === 3 ? parts[0] : '';
+  }
+  return '';
+};
+
+/* 'd:<project>/<repo>/<path>' -> {project, repo, path} (names never hold a slash, so the first two segments are the project and the repo). */
+Shell.parseDirKey = function (key) {
+  const rest = String(key).slice(2);
+  const a = rest.indexOf('/');
+  const b = rest.indexOf('/', a + 1);
+  return { project: rest.slice(0, a), repo: rest.slice(a + 1, b), path: rest.slice(b + 1) };
+};
+
+Shell.dirKey = function (project, repo, path) { return `d:${project}/${repo}/${path || ''}`; };
+
+/* The kids of a project node: its sessions as before; for the current project the repos (and the project folder) become directory nodes. */
+Shell.projKids = function (p, level) {
+  if (Shell.currentProject() !== p.name) return p.kids;
+  const out = [];
+  for (const k of p.kids) {
+    if (k.kind !== 'repo') { out.push(k); continue; }
+    if (k.state === 'cloning' || k.state === 'clone-failed') { out.push(k); continue; }       // nothing to browse yet: the plain link
+    out.push({ key: Shell.dirKey(p.name, k.name, ''), kind: 'dir', project: p.name, repo: k.name, path: '', name: k.name, glyph: 'repo', level: level + 1, hasKids: true, dirty: false });
+  }
+  if (p.folder) out.push({ key: Shell.dirKey(p.name, 'root', ''), kind: 'dir', project: p.name, repo: 'root', path: '', name: 'project folder', glyph: 'folder', level: level + 1, hasKids: true, dirty: false });
+  return out;
+};
+
+Shell.loadDir = function (k, fresh) {
+  if (typeof Tree === 'undefined' || !Tree || typeof Tree.children !== 'function' || Shell.dirLoading.has(k.key)) return;
+  Shell.dirLoading.add(k.key);
+  Tree.children(k.project, k.repo, k.path, { repos: true, fresh: !!fresh }).then(
+    (data) => {
+      const entries = (data && data.entries) || [];
+      Shell.dirs.set(k.key, { entries });
+      let pruned = false;                                                              // an open key that turned out to be a file (a ?path= to a file) goes
+      for (const e of entries) if (e.type === 'file' && Shell.open.delete(Shell.dirKey(k.project, k.repo, k.path ? `${k.path}/${e.name}` : e.name))) pruned = true;
+      if (pruned) Shell.saveOpen();
+    },
+    (e) => {
+      if (!Shell.dirs.has(k.key) || !Shell.dirs.get(k.key).entries) Shell.dirs.set(k.key, { error: (e && e.message) || 'could not load' });
+      const st = e && (e.status || (/\b(400|403|404)\b|not found|not a ccboard|unsafe|bad path/i.test(String(e.message || '')) ? 404 : 0));
+      if ((st === 400 || st === 403 || st === 404) && Shell.open.delete(k.key)) Shell.saveOpen();   // a folder that cannot exist is forgotten, not retried every load
+    }).then(() => {
+    Shell.dirLoading.delete(k.key);
+    Shell.patchTrees();
+  });
+};
+
+/* The rows inside an open directory node: its sub-directories from the cached listing (asked for when it is not there yet). */
+Shell.dirItems = function (k) {
+  const hit = Shell.dirs.get(k.key);
+  if (!hit) { Shell.loadDir(k, false); return [{ key: 'note:' + k.key, kind: 'note', text: 'loading…' }]; }
+  if (hit.error) return [{ key: 'note:' + k.key, kind: 'note', text: 'could not load: ' + hit.error }];
+  const out = [];
+  for (const e of hit.entries) {
+    const topRepo = e.type === 'repo' && k.repo === 'root' && !k.path;                 // the project folder's own repos are top-level nodes already
+    if (e.type !== 'dir' && !(e.type === 'repo' && !topRepo)) continue;
+    const path = k.path ? `${k.path}/${e.name}` : e.name;
+    const repo = k.repo;                                                                 // a nested repo opens in place through the same repo name
+    out.push({ key: Shell.dirKey(k.project, repo, path), kind: 'dir', project: k.project, repo, path, name: e.name,
+      glyph: e.type === 'repo' ? 'repo' : 'dir', level: k.level + 1, hasKids: e.has_children !== false, dirty: !!e.dirty });
+  }
+  if (!out.length) out.push({ key: 'note:' + k.key, kind: 'note', text: 'no subfolders' });
+  return out;
+};
+
+Shell.dirNode = function () {
+  const tw = el('span', { class: 'tw', 'aria-hidden': 'true' }, ic('chevron-right'));
+  const glyph = el('span', { class: 'tn-g' });
+  const name = el('span', { class: 'tn-name' });
+  const dot = el('span', { class: 'tn-dot dirty hidden', title: 'uncommitted changes inside', 'aria-hidden': 'true' });
+  const row = el('a', { class: 'tn-row d-row', role: 'treeitem', tabindex: '-1', 'aria-level': '2', 'data-route': 'tree-dir' }, tw, glyph, name, dot);
+  const kids = el('div', { class: 'tn-kids hidden', role: 'group' });
+  const node = el('div', { class: 'tn dirn' }, row, kids);
+  node._d = { row, glyph, name, dot, kids, g: null };
+  return node;
+};
+
+/* Is this directory the one the Files tab shows (its repo, ?tab=files and ?path= equal to it)? */
+Shell.dirCurrent = function (k) {
+  const r = typeof currentRoute === 'function' ? currentRoute() : null;
+  if (!r || r.id !== 'project' || !r.params || r.params.project !== k.project || r.params.repo !== k.repo) return false;
+  const q = r.query || {};
+  return q.tab === 'files' && (q.path || '') === k.path;
+};
+
+Shell.patchDir = function (node, k) {
+  const d = node._d;
+  const open = Shell.open.has(k.key);
+  node.setAttribute('data-key', k.key);
+  node.classList.toggle('open', open && k.hasKids);
+  d.row.setAttribute('href', Shell.hash('project', { project: k.project, repo: k.repo }, k.path ? { tab: 'files', path: k.path } : { tab: 'files' }));
+  d.row.setAttribute('aria-level', String(k.level));
+  Shell.setVar(d.row, '--lvl', String(k.level));
+  d.row.classList.toggle('leaf', !k.hasKids);
+  if (k.hasKids) d.row.setAttribute('aria-expanded', open ? 'true' : 'false'); else d.row.removeAttribute('aria-expanded');
+  d.row.classList.toggle('cur', Shell.dirCurrent(k));
+  if (Shell.dirCurrent(k)) d.row.setAttribute('aria-selected', 'true'); else d.row.removeAttribute('aria-selected');
+  if (d.g !== k.glyph) { d.g = k.glyph; d.glyph.textContent = ''; d.glyph.append(ic(k.glyph === 'repo' ? 'git-repo' : 'folder-close')); }
+  setText(d.name, k.name);
+  d.row.setAttribute('title', k.path || (k.repo === 'root' ? 'the project folder' : k.repo));
+  d.dot.classList.toggle('hidden', !k.dirty);
+  const showKids = open && k.hasKids;
+  d.kids.classList.toggle('hidden', !showKids);
+  if (showKids) Shell.sync(d.kids, Shell.dirItems(k), Shell.kidNode, Shell.patchKid);
+  else if (d.kids.firstChild) d.kids.textContent = '';
+};
+
+/* The current project's node opens (and so do the repo and the folders down to the ?path= of the Files tab) when the page is entered; open
+   directories refresh their listing then. Called on every route change and once when the shell is installed. */
+Shell.openCurrent = function () {
+  const r = typeof currentRoute === 'function' ? currentRoute() : null;
+  if (r && r.id === 'project' && r.params && r.params.project) {
+    const proj = r.params.project;
+    let changed = false;
+    const add = (key) => { if (!Shell.open.has(key)) { Shell.open.add(key); changed = true; } };
+    add('p:' + proj);
+    if (r.params.repo) {
+      add(Shell.dirKey(proj, r.params.repo, ''));
+      let acc = '';
+      const segs = String((r.query && r.query.path) || '').split('/').filter(Boolean);
+      if (!segs.some((s) => s === '..' || s === '.' || s === '.git')) {                   // a bad deep link never becomes a persisted key
+        for (const seg of segs) { acc = acc ? `${acc}/${seg}` : seg; add(Shell.dirKey(proj, r.params.repo, acc)); }   // a file's key is dropped again once its folder is listed (loadDir)
+      }
+    }
+    if (changed) Shell.saveOpen();
+    // open folders re-read their listing; the ?path= itself is left to its own node (it may be a file, which has none)
+    const here = r.params.repo ? Shell.dirKey(proj, r.params.repo, String((r.query && r.query.path) || '')) : '';
+    for (const key of Shell.open) if (key.startsWith(`d:${proj}/`) && key !== here) Shell.loadDir({ key, ...Shell.parseDirKey(key) }, true);
+  }
+  Shell.patchTrees();
+};
+
 Shell.kidNode = function (k) {
+  if (k.kind === 'dir') return Shell.dirNode();
+  if (k.kind === 'note') return el('div', { class: 'tn-note dim' });
   if (k.kind === 'repo') {
     const name = el('span', { class: 'tn-name' });
     const node = el('a', { class: 'tn-row r-row', role: 'treeitem', tabindex: '-1', 'aria-level': '2' }, el('span', { class: 'tn-g' }, ic('git-repo')), name);
@@ -307,6 +458,8 @@ Shell.kidNode = function (k) {
 };
 
 Shell.patchKid = function (node, k) {
+  if (k.kind === 'dir') { Shell.patchDir(node, k); return; }
+  if (k.kind === 'note') { node.setAttribute('data-key', k.key); setText(node, k.text); return; }
   const r = node._k;
   node.setAttribute('data-key', k.key);
   setText(r.name, k.name);
@@ -377,6 +530,7 @@ Shell.treeKey = function (e) {
     if (group && open) Shell.toggle(Shell.rowKey(row));
     else { const up = row.closest('.tn-kids'); if (up) focus(up.parentNode.querySelector('.tn-row')); }
   } else if (k === ' ' && group) { e.preventDefault(); Shell.toggle(Shell.rowKey(row)); }
+  else if (k === 'Enter' && row.classList.contains('d-row')) { e.preventDefault(); row.click(); }       // a directory node is a link to its Files tab
   else if (k === 'Enter' && group) {
     e.preventDefault();
     const go = row.querySelector('.tn-go');
@@ -388,6 +542,14 @@ Shell.bindTree = function (tree) {
   tree.addEventListener('click', (e) => {
     if (e.target.closest('.tn-go')) return;                    // the arrow opens the project page
     const row = e.target.closest('.tn-row');
+    if (row && row.classList.contains('d-row')) {              // a directory node: the chevron toggles, the rest is a link to its Files tab
+      if (e.target.closest('.tw')) {
+        e.preventDefault();
+        e.stopPropagation();                                   // not a navigation: the drawer must stay open
+        if (row.hasAttribute('aria-expanded')) Shell.toggleDir(Shell.rowKey(row));
+      }
+      return;
+    }
     if (row && row.hasAttribute('aria-expanded')) Shell.toggle(Shell.rowKey(row));
   });
   tree.addEventListener('keydown', Shell.treeKey);
@@ -634,14 +796,17 @@ Shell.createItems = function () {
   ];
 };
 
-/* Shell.openCreate(kind): the one entry for everything the + menu, the c-chords (keymap.js) and the page buttons create. kind is
+/* Shell.openCreate(kind, ctx): the one entry for everything the + menu, the c-chords (keymap.js) and the page buttons create. kind is
    session | task | schedule (a repo picker, then the launcher form), project (the new-project form and the clone queue), import (GitHub
-   repos into a project) or batch (one headless prompt over many repos). Opens the sheet and returns true; false for an unknown kind, before
+   repos into a project) or batch (one headless prompt over many repos). ctx = {project, repo?} (the project page's buttons) skips the picker
+   when the place is clear: the form opens for that repo ('root' is the project folder: sessions only), or for the project's only repo; a project
+   with several repos and no repo in ctx gets the picker narrowed to it. Opens the sheet and returns true; false for an unknown kind, before
    the first state has arrived (every form lists the box's repos) or without the sheet dialog, so a key that asked can be left alone. */
-Shell.openCreate = function (kind) {
+Shell.openCreate = function (kind, ctx) {
   if (typeof state === 'undefined' || !state || !document.getElementById('sheet')) return false;
-  if (kind === 'session' || kind === 'task') Shell.pickRepo(kind);
-  else if (kind === 'schedule' || kind === 'job') Shell.pickRepo('job');
+  const pre = ctx && typeof ctx === 'object' && ctx.project ? ctx : null;
+  if (kind === 'session' || kind === 'task') { if (!(pre && Shell.createFor(kind, pre))) Shell.pickRepo(kind, pre); }
+  else if (kind === 'schedule' || kind === 'job') { if (!(pre && Shell.createFor('job', pre))) Shell.pickRepo('job', pre); }
   else if (kind === 'project') Shell.projectSheet();
   else if (kind === 'import') Shell.formSheet('Import repos from GitHub', importForm, 'Import queued');
   else if (kind === 'batch') Shell.formSheet('Batch prompt across repos', batchForm, 'Batch queued');
@@ -649,13 +814,31 @@ Shell.openCreate = function (kind) {
   return true;
 };
 
+/* The launcher form for a project (and repo) that is already known: true when it opened, false when the picker has to ask. */
+Shell.createFor = function (kind, ctx) {
+  const p = (state.projects || []).find((x) => x.name === ctx.project);
+  if (!p) return false;
+  const ok = (r) => r.state === 'ok' || r.state === 'unknown';
+  let r = null;
+  if (ctx.repo) r = ctx.repo === 'root' ? p.root : (p.repos || []).find((x) => x.name === ctx.repo && ok(x));
+  else {
+    const where = [...(kind === 'session' && p.root ? [p.root] : []), ...(p.repos || []).filter(ok)];
+    if (where.length === 1) r = where[0];
+  }
+  if (!r || (r === p.root && kind !== 'session')) return false;                       // tasks and schedules need a git repo
+  Shell.showForm(kind, { p, r, label: r === p.root ? `${p.name} · project folder` : `${p.name}/${r.name}` });
+  return true;
+};
+
 Shell.PICK_TITLES = { session: 'New session', task: 'New task', job: 'Schedule a run' };
 
-Shell.pickRepo = function (kind) {
+Shell.pickRepo = function (kind, ctx) {
   if (typeof state === 'undefined' || !state) return;
+  const only = ctx && ctx.project ? ctx.project : null;                                  // narrowed to one project (the project page's buttons)
   const entries = [];
-  if (kind === 'session') for (const p of state.projects || []) if (p.root) entries.push({ p, r: p.root, label: `${p.name}/`, sub: 'project folder' });
+  if (kind === 'session') for (const p of state.projects || []) if (p.root && (!only || p.name === only)) entries.push({ p, r: p.root, label: `${p.name}/`, sub: 'project folder' });
   for (const x of allRepos()) {
+    if (only && x.project !== only) continue;
     const p = state.projects.find((q) => q.name === x.project);
     const r = p && p.repos.find((q) => q.name === x.repo);
     if (r) entries.push({ p, r, label: x.id, sub: r.branch || '' });
@@ -681,7 +864,7 @@ Shell.pickRepo = function (kind) {
 Shell.showForm = function (kind, e) {
   const form = kind === 'session' ? sessionForm(e.p, e.r) : kind === 'task' ? taskForm(e.p, e.r) : jobForm(e.p, e.r);
   const holder = el('div', { class: 'sheet-form' },
-    el('button', { class: 'minimal small', type: 'button', onclick: () => Shell.pickRepo(kind) }, ic('chevron-left'), 'Repos'), form);
+    el('button', { class: 'minimal small', type: 'button', onclick: () => Shell.pickRepo(kind, e) }, ic('chevron-left'), 'Repos'), form);
   // The launcher forms end with a Cancel that re-renders the home board: inside the sheet it only closes the sheet.
   holder.addEventListener('click', (ev) => {
     const b = ev.target.closest && ev.target.closest('button');
@@ -749,7 +932,7 @@ Shell.listen = function () {
     Shell.installChanged();
     if (typeof toast === 'function') toast('ccboard is installed', { kind: 'ok' });
   });
-  window.addEventListener('hashchange', () => { Shell.syncNav(); Shell.syncCrumbs(); Shell.syncSearchBox(); Shell.closeDrawer(); });
+  window.addEventListener('hashchange', () => { Shell.syncNav(); Shell.syncCrumbs(); Shell.syncSearchBox(); Shell.closeDrawer(); Shell.openCurrent(); });
   document.addEventListener('keydown', (e) => {
     if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
     const t = e.target;
@@ -790,6 +973,7 @@ function installShell() {
   Shell.listen();
   if (typeof state !== 'undefined' && state) renderShell(state);
   else { Shell.syncNav(); Shell.syncCrumbs(); }
+  Shell.openCurrent();                                            // a deep link to a project page opens its node (and the folders of ?path=)
 }
 
 /* The rate-limit callout (pages/widgets.js) lives in #banner, which renderBanner() empties on every render: it is put back right after. */

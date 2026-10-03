@@ -342,3 +342,112 @@ html.force-coarse #page .rrow.rich .rr-name { display:inline-flex; align-items:c
 /* project route: repo list and actions beside the code-server links (until the v0.5.6 page) */
 #page .proj-repos .proj-repo { display:inline-flex; align-items:center; gap:6px; margin-right:10px; }
 #page .proj-actions { margin-top:6px; gap:8px; }
+
+/* ---------- project page + tree (v0.5.6: pages/project.js, tree.js, the sidebar's folder nodes in shell.js) ---------- */
+
+#page .proj { padding-bottom:24px; }
+#page .pj-head { display:flex; flex-direction:column; gap:10px; padding:14px 0 10px; min-width:0; }
+#page .pj-title { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 12px; min-width:0; }
+#page .pj-title .spacer { flex:1 1 0; min-width:0; }
+#page .pj-name { margin:0; font-size:18px; font-weight:600; overflow-wrap:anywhere; }
+#page .pj-path { font:12px/1.4 var(--font-mono); overflow-wrap:anywhere; }
+#page .pj-more { align-self:center; }
+#page .pj-repos { display:flex; flex-wrap:wrap; gap:6px 10px; min-width:0; }
+#page .pj-repo { display:inline-flex; align-items:center; gap:2px; max-width:100%; }
+#page a.pj-chip { display:inline-flex; align-items:center; gap:6px; min-height:var(--tap); max-width:100%; padding:0 10px; border:1px solid var(--line); border-radius:14px; background:var(--panel); color:var(--fg-2); font-size:12px; text-decoration:none; }
+#page a.pj-chip .bp5-icon { color:var(--dim); }
+#page a.pj-chip .dot { margin-left:0; flex:none; }
+#page .pj-rname { color:var(--fg); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#page .pj-branch, #page .pj-rcost { font-size:11px; white-space:nowrap; }
+@media (hover:hover) { #page a.pj-chip:hover { border-color:var(--sig); color:var(--fg); text-decoration:none; } }
+#page .pj-stats { font:12px/1.5 var(--font-mono); color:var(--dim); }
+#page .pj-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; }
+#page .pj-cs-slot { display:inline-flex; align-items:center; margin-left:auto; }
+#page .pj-manage { padding:10px 12px; border:1px solid var(--line); border-radius:2px; background:var(--card); }
+#page .pj-manage-body { display:flex; flex-direction:column; gap:6px; }
+#page .pj-mrow { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; padding:2px 0; }
+#page .pj-danger { margin-top:6px; padding-top:8px; border-top:1px solid var(--line); }
+#page .pj-panel { padding-top:12px; min-width:0; }
+#page .pj-unknown { display:flex; flex-direction:column; align-items:center; gap:8px; padding:24px 0; }
+#page .pj-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; margin:0 0 10px; min-width:0; }
+#page .pj-toolbar .spacer { flex:1 1 0; min-width:0; }
+#page .pj-kanban { margin-top:0; }
+#page .pj-kanban .col { min-width:0; }
+#page .pj-job { margin-left:0; }
+#page .pj-sessions .pblock { margin-top:0; }
+
+/* files tab: switcher and toggles above, the tree beside the preview (stacked below 840 px) */
+#page .pj-files { display:flex; flex-direction:column; min-width:0; }
+#page .pj-switch { display:inline-flex; flex-wrap:wrap; gap:4px; }
+#page .pj-repo-btn[aria-pressed=true], #page .pj-toolbar button[aria-pressed=true] { color:var(--fg); background:rgba(77,208,225,.14); box-shadow:inset 0 0 0 1px var(--sig); }
+#page .pj-branchinfo { font-size:12px; }
+#page .pj-split { display:grid; grid-template-columns:minmax(0, 1fr); gap:12px; align-items:start; min-width:0; }
+#page .pj-treebox { min-width:0; border:1px solid var(--line); background:var(--bg); border-radius:2px; overflow:auto; }
+@media (min-width:840px) {
+  #page .pj-split { grid-template-columns:minmax(260px, 360px) minmax(0, 1fr); }
+  #page .pj-treebox { position:sticky; top:8px; max-height:calc(100vh - 150px); max-height:calc(100dvh - 150px); }
+}
+#page .pj-previewbox { min-width:0; border:1px solid var(--line); background:var(--bg); border-radius:2px; }
+#page .pj-previewbar { display:flex; justify-content:flex-end; }
+#page .pj-previewbar:has(.hidden:only-child) { display:none; }
+#page .pj-hint { margin:0; padding:20px 14px; }
+@media (max-width:839px) { #page .pj-previewbox:not(.open) { display:none; } }
+
+/* the tree: Blueprint's bp5-tree markup (semantic classes in core.js), restyled to the app's rows */
+#page .ftree { font-size:13px; padding:2px 0; }
+#page .ftree .treelist { list-style:none; margin:0; padding:0; }
+#page .ftree .treenode { outline:none; }
+#page .ftree .treecontent { display:flex; align-items:center; gap:6px; width:auto; height:auto; min-height:var(--row-h); padding:0 8px 0 calc(4px + var(--lvl, 0) * 16px); border-left:2px solid transparent; color:var(--fg-2); cursor:pointer; -webkit-touch-callout:none; }
+@media (hover:hover) { #page .ftree .treecontent:hover { background:var(--card); } }
+#page .ftree .treecaret, #page .ftree .tcaret-none { flex:none; display:inline-flex; align-items:center; justify-content:center; width:18px; min-width:18px; padding:0; margin:0; transition:transform .12s; color:var(--dim); }
+#page .ftree .treenode.open > .treecontent > .treecaret { transform:rotate(90deg); }
+#page .ftree .tglyph { flex:none; display:inline-flex; align-items:center; color:var(--dim); }
+#page .ftree .tglyph .bp5-icon { color:var(--dim); }
+#page .ftree .tglyph .g-open { display:none; }
+#page .ftree .treenode.open > .treecontent .g-open { display:inline-flex; }
+#page .ftree .treenode.open > .treecontent .g-closed { display:none; }
+#page .ftree .treelabel { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:12.5px/1.3 var(--font-mono); }
+#page .ftree .treesecondary { flex:none; display:inline-flex; align-items:center; gap:8px; padding:0; }
+#page .ftree .tsize { font-size:11px; }
+#page .ftree .tstatus { min-width:1ch; font:600 11px/1 var(--font-mono); color:var(--warn); }
+#page .ftree .tstatus.st-A { color:var(--ok); }
+#page .ftree .tstatus.st-new { color:var(--sig); }
+#page .ftree .tstatus.st-D, #page .ftree .tstatus.st-U { color:var(--bad); }
+#page .ftree .tdot { flex:none; width:8px; height:8px; border-radius:50%; background:var(--warn); }
+#page .ftree .treenode.ignored > .treecontent { opacity:.55; }
+#page .ftree .treenode.selected > .treecontent { border-left-color:var(--sig); background:rgba(77,208,225,.12); color:var(--fg); }
+#page .ftree .treenode:focus-visible > .treecontent { outline:2px solid var(--sig); outline-offset:-2px; }
+#page .ftree .treenode[aria-busy=true] > .treecontent .treecaret { opacity:.5; }
+#page .ftree .treemore { display:flex; align-items:center; gap:8px; min-height:28px; padding:0 8px 0 calc(28px + var(--lvl, 0) * 16px); font:12px/1.3 var(--font-mono); color:var(--dim); }
+#page .ftree .treemore.err { color:var(--bad); }
+@media (max-width:599px) { #page .ftree .tsize { display:none; } }
+
+/* the file preview: a header, then a gutter of line numbers (counters on an ol, one li per line) that stays put while long lines scroll */
+#page .tpreview { display:flex; flex-direction:column; min-width:0; }
+#page .tp-head { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; padding:6px 10px; border-bottom:1px solid var(--line); }
+#page .tp-path { flex:1 1 auto; min-width:0; font:12px/1.4 var(--font-mono); color:var(--fg); overflow-wrap:anywhere; }
+#page .tp-meta { font-size:11px; }
+#page .tp-body { overflow:auto; max-height:calc(100vh - 230px); max-height:calc(100dvh - 230px); min-height:80px; background:var(--bg-0); }
+@media (max-width:839px) { #page .tp-body { max-height:70vh; max-height:70dvh; } }
+#page .tp-body:focus-visible { outline:2px solid var(--sig); outline-offset:-2px; }
+#page .tp-lines { counter-reset:ln; list-style:none; margin:0; padding:6px 0; width:max-content; min-width:100%; font:12px/1.55 var(--font-mono); tab-size:4; color:var(--fg-2); }
+#page .tp-lines li { counter-increment:ln; white-space:pre; min-height:1.55em; padding:0 14px 0 0; }
+#page .tp-lines li::before { content:counter(ln); display:inline-block; position:sticky; left:0; box-sizing:border-box; width:4.4em; margin-right:12px; padding-right:10px; text-align:right; color:var(--dim-2); background:var(--bg-0); user-select:none; -webkit-user-select:none; cursor:pointer; }
+#page .tp-lines li.cur { background:rgba(77,208,225,.12); color:var(--fg); }
+#page .tp-lines li.cur::before { color:var(--sig); background:#10252a; }
+#page .tp-msg { display:flex; flex-direction:column; align-items:flex-start; gap:6px; padding:16px 14px; }
+#page .tp-foot { padding:8px 12px; border-top:1px solid var(--line); }
+
+/* sidebar: the current project's repos and folders (shell.js folder nodes: a link to the Files tab, the chevron toggles) */
+#sidebar .tn-row.d-row, #drawer .tn-row.d-row { padding-left:calc(14px + (var(--lvl, 2) - 1) * 14px); }
+#sidebar .tn-row.d-row .tw, #drawer .tn-row.d-row .tw { align-items:center; justify-content:center; }
+#sidebar .tn-row.d-row.leaf .tw, #drawer .tn-row.d-row.leaf .tw { visibility:hidden; }
+#sidebar .tn-row.d-row.cur, #drawer .tn-row.d-row.cur { background:var(--bg); color:var(--fg); border-left-color:var(--sig); }
+#sidebar .tn-note, #drawer .tn-note { padding:4px 10px 4px 44px; font-size:11px; }
+@media (pointer:coarse) { #sidebar .tn-row.d-row .tw, #drawer .tn-row.d-row .tw { width:var(--tap); min-height:var(--tap); margin:0 -14px 0 -15px; } }
+html.force-coarse #sidebar .tn-row.d-row .tw, html.force-coarse #drawer .tn-row.d-row .tw { width:var(--tap); min-height:var(--tap); margin:0 -14px 0 -15px; }
+@media (max-width:599px) {
+  #page .pj-title .spacer { order:1; }
+  #page .pj-more { order:2; }
+  #page .pj-path { order:3; flex:1 1 100%; }
+}

@@ -527,9 +527,9 @@ from collections import Counter  # noqa: E402
 
 INDEX = STATIC / "index.html"
 SKELETON_IDS = ("topbar", "sidebar", "main", "banner", "page", "dock", "bnav", "drawer", "sheet", "helpdlg", "modal", "toasts")
-SCRIPT_ORDER = ["/static/" + n for n in (            # v0.5.3 contract plus keymap.js and palette.js (v0.5.3b), pages/widgets.js (v0.5.5)
-    "core.js", "components.js", "keymap.js", "live.js", "launcher.js", "palette.js", "shell.js", "router.js",
-    "pages/home.js", "pages/inbox.js", "pages/widgets.js", "pages/tasks.js", "pages/agents.js", "pages/settings.js", "pages/search.js",
+SCRIPT_ORDER = ["/static/" + n for n in (            # v0.5.3 contract plus keymap.js and palette.js (v0.5.3b), pages/widgets.js (v0.5.5), tree.js and pages/project.js (v0.5.6)
+    "core.js", "components.js", "keymap.js", "live.js", "launcher.js", "tree.js", "palette.js", "shell.js", "router.js",
+    "pages/home.js", "pages/inbox.js", "pages/widgets.js", "pages/tasks.js", "pages/project.js", "pages/agents.js", "pages/settings.js", "pages/search.js",
     "pages/session.js", "pages/placeholders.js", "main.js")]
 STYLE_ORDER = ["/static/vendor/blueprint/blueprint.css", "/static/vendor/blueprint/blueprint-icons.css", "/static/tokens.css",
                "/static/style.css", "/static/shell.css", "/static/pages.css"]
@@ -635,7 +635,7 @@ def test_index_skeleton_nesting_matches_the_contract():
 
 def test_index_scripts_follow_the_contract_order_exactly():
     scripts = [a.get("src") for t, a, _ in html_tags(INDEX) if t == "script"]
-    assert scripts == SCRIPT_ORDER, "index.html script order differs from the contract (v0.5.3 plus v0.5.3b and v0.5.5):\n  got      " + "\n  ".join(map(str, scripts)) \
+    assert scripts == SCRIPT_ORDER, "index.html script order differs from the contract (v0.5.3 plus v0.5.3b, v0.5.5 and v0.5.6):\n  got      " + "\n  ".join(map(str, scripts)) \
         + "\n  expected " + "\n  ".join(SCRIPT_ORDER)
     for t, a, line in html_tags(INDEX):
         if t == "script":
@@ -665,7 +665,7 @@ def test_index_dialogs_are_empty_in_the_html():
 # ---------- demo fixtures (app/static/demo/*.json, read by api() when ?demo=1 or ccboard:demo=1) ----------
 
 DEMO_DIR = STATIC / "demo"
-DEMO_FILES = ("state.json", "search.json", "tree.json", "series.json", "usage_summary.json", "memory.json")
+DEMO_FILES = ("state.json", "search.json", "tree.json", "file.json", "series.json", "usage_summary.json", "memory.json")
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+--[A-Za-z0-9_-]+--[A-Za-z0-9_-]+$")
 KANBAN = ("in_progress", "needs_you", "done", "pr", "merged")
 DEMO_HEADERS = {"Tailscale-User-Login": "alice@example.com"}
@@ -899,16 +899,236 @@ def test_demo_search_fixture_matches_api_search():
     assert any(h["tmux"] for h in search["results"]) and any(h["tmux"] is None for h in search["results"])
 
 
+TREE_KEYS = {"project", "repo", "path", "git", "branch", "ahead", "behind", "entries", "truncated", "total", "hidden", "ignored", "status_stale", "etag"}
+TREE_ENTRY_KEYS = {"name", "type", "status", "dirty", "has_children", "ignored", "size"}
+
+
+def tree_fixture():
+    """app/static/demo/tree.json: {'<repo>|<path>': the payload GET /api/projects/<p>/repos/<repo>/tree?path=<path> answers}; repo 'root' is the
+    project folder, path '' its top level. core.js's demoApi resolves a request by that key (the query's hidden/ignored/repos flags are ignored)."""
+    return demo_json("tree.json")
+
+
+def file_fixture():
+    """app/static/demo/file.json: {'<repo>|<path>': {status: 200, body: <the /file payload>} | {status: 415|403, error, reveal?: {status: 200, body}}}.
+    A key that is absent answers 404."""
+    return demo_json("file.json")
+
+
+def sort_key(e):
+    return (e["type"] == "file", e["name"].lower())
+
+
 def test_demo_tree_fixture_matches_the_tree_endpoint_shape():
-    tree = demo_json("tree.json")
-    assert tree["path"] == "" and tree["project"] and tree["repo"] and isinstance(tree["entries"], list) and tree["entries"]
-    for e in tree["entries"]:
-        assert {"name", "type", "status", "dirty", "has_children", "ignored"} <= set(e), e
-        assert e["type"] in ("dir", "file") and e["status"] in (None, "M", "?") and isinstance(e["has_children"], bool)
-        assert e["dirty"] == (e["status"] is not None)
-    assert {e["status"] for e in tree["entries"]} == {None, "M", "?"}
-    assert any(e["type"] == "dir" and e["has_children"] for e in tree["entries"])
-    assert any(e["type"] == "file" and not e["has_children"] for e in tree["entries"])
+    trees = tree_fixture()
+    state = demo_json("state.json")
+    owner = {r["name"]: p["name"] for p in state["projects"] for r in p["repos"]}
+    assert trees and all("|" in k for k in trees)
+    for key, t in trees.items():
+        repo, _, path = key.partition("|")
+        assert set(t) == TREE_KEYS, f"{key}: payload keys {sorted(set(t) ^ TREE_KEYS)} differ from the endpoint's"
+        assert (t["repo"], t["path"]) == (repo, path), f"{key}: repo/path inside the payload must match the key"
+        assert t["project"] == owner.get(repo, "phasezero" if repo == "root" else None), f"{key}: project {t['project']!r} does not own repo {repo!r} in state.json"
+        assert isinstance(t["git"], bool)
+        if t["git"]:
+            assert isinstance(t["ahead"], int) and isinstance(t["behind"], int)
+        else:
+            assert t["branch"] is None and t["ahead"] is None and t["behind"] is None, f"{key}: a plain directory has no branch, ahead or behind"
+        assert t["hidden"] is False and t["ignored"] is False and t["status_stale"] is False
+        assert isinstance(t["etag"], str) and t["etag"]
+        assert isinstance(t["entries"], list) and t["entries"], key
+        assert t["truncated"] == (t["total"] > len(t["entries"])), f"{key}: truncated must say whether the level was cut"
+        assert t["total"] >= len(t["entries"])
+        if t["git"]:
+            assert t["branch"], f"{key}: a git level carries its branch"
+        for e in t["entries"]:
+            assert set(e) == TREE_ENTRY_KEYS, (key, e)
+            assert e["type"] in ("dir", "file", "repo", "symlink") and e["status"] in (None, "M", "A", "?", "D", "U")
+            assert isinstance(e["has_children"], bool) and isinstance(e["dirty"], bool) and isinstance(e["ignored"], bool)
+            assert e["size"] is None or (isinstance(e["size"], int) and e["size"] >= 0)
+            assert (e["type"] == "file") == (e["size"] is not None or e["status"] == "D"), (key, e)
+            assert e["type"] not in ("dir", "repo") or e["has_children"], (key, e)
+            assert e["type"] != "file" or not e["has_children"]
+            if e["type"] == "file":
+                assert e["dirty"] == (e["status"] is not None), (key, e)
+            if e["status"] is not None:
+                assert e["dirty"], (key, e)
+        names = [e["name"] for e in t["entries"]]
+        assert len(set(names)) == len(names), f"{key}: duplicate names"
+        if not t["truncated"]:
+            assert [sort_key(e) for e in t["entries"]] == sorted(sort_key(e) for e in t["entries"]), f"{key}: dirs first, then files, both case-insensitive"
+            assert t["total"] == len(t["entries"])
+
+
+def test_demo_tree_fixture_covers_the_cases_the_page_draws():
+    trees = tree_fixture()
+    entries = [(k, e) for k, t in trees.items() for e in t["entries"]]
+    letters = {e["status"] for _, e in entries}
+    assert {None, "M", "A", "?", "D"} <= letters, f"status letters in the demo: {letters}"
+    assert any(e["type"] == "dir" and e["dirty"] and e["status"] is None for _, e in entries), "a directory that is dirty only because of its subtree"
+    assert any(e["type"] == "dir" and e["status"] == "?" for _, e in entries), "a collapsed untracked directory"
+    assert any(e["type"] == "repo" for _, e in entries), "a nested repo in the project folder"
+    assert any(t["truncated"] for t in trees.values()), "a truncated level"
+    root = trees["root|"]
+    assert root["git"] is False and root["branch"] is None, "the project folder is not a git repo"
+    assert any(e["type"] == "dir" and e["name"] == "assets" for e in root["entries"]), "the project folder holds a plain (non-git) directory"
+    assert {"website|", "NestJs-Ecommerce-Backend|", "website|src", "website|src/components"} <= set(trees)
+    assert max(len(t["entries"]) for t in trees.values()) <= 1500, "no level is longer than the endpoint's MAX_ENTRIES"
+
+
+def test_demo_tree_every_directory_and_repo_can_be_opened():
+    """A directory with children must have a listing under its own key and a nested repo must have its top level: no dead click in the demo."""
+    trees = tree_fixture()
+    missing = []
+    for key, t in trees.items():
+        repo, _, path = key.partition("|")
+        for e in t["entries"]:
+            if e["type"] == "dir":
+                child = f"{repo}|{path + '/' if path else ''}{e['name']}"
+            elif e["type"] == "repo":
+                child = f"{e['name']}|"
+            else:
+                continue
+            if child not in trees:
+                missing.append(f"{key}: {e['name']} -> {child}")
+    assert not missing, "tree.json has no listing for:\n  " + "\n  ".join(missing)
+    for key in trees:                       # and nothing is unreachable from its repo's top level
+        repo, _, path = key.partition("|")
+        if path:
+            parent = path.rpartition("/")[0]
+            assert f"{repo}|{parent}" in trees, f"{key} has no parent listing"
+
+
+def test_demo_tree_state_repos_all_have_a_top_level():
+    state = demo_json("state.json")
+    trees = tree_fixture()
+    for p in state["projects"]:
+        for r in p["repos"]:
+            assert f"{r['name']}|" in trees, f"project {p['name']}: repo {r['name']} has no '<repo>|' listing in app/static/demo/tree.json"
+    assert "root|" in trees and trees["root|"]["project"] == "phasezero"
+
+
+def test_demo_file_fixture_matches_the_file_endpoint_shape():
+    files = file_fixture()
+    trees = tree_fixture()
+    assert files and all("|" in k for k in files)
+    ok = [(k, v) for k, v in files.items() if v["status"] == 200]
+    assert len(ok) >= 2, "at least two text files"
+    for key, v in files.items():
+        repo, _, path = key.partition("|")
+        assert v["status"] in (200, 403, 415), key
+        bodies = [v["body"]] if v["status"] == 200 else [v["reveal"]["body"]] if v["status"] == 403 else []
+        if v["status"] != 200:
+            assert isinstance(v["error"], str) and v["error"], f"{key}: an error status carries its message"
+        if v["status"] == 403:
+            assert v["reveal"]["status"] == 200, f"{key}: reveal=1 answers the content"
+        else:
+            assert "reveal" not in v
+        for b in bodies:
+            assert set(b) == {"path", "size", "mtime", "truncated", "lines", "text"}, key
+            assert b["path"] == path and b["truncated"] is False
+            assert b["size"] == len(b["text"].encode("utf-8")) and b["lines"] == len(b["text"].splitlines()) and b["lines"] > 0
+            assert isinstance(b["mtime"], int) and b["size"] <= 200 * 1024
+        assert f"{repo}|{path.rpartition('/')[0]}" in trees, f"{key}: its directory has no listing"
+        parent = trees[f"{repo}|{path.rpartition('/')[0]}"]
+        assert any(e["name"] == path.rpartition("/")[2] and e["type"] == "file" for e in parent["entries"]), f"{key}: no such file in its listing"
+    assert any(v["status"] == 415 for v in files.values()), "a binary file (415)"
+    forbidden = [k for k, v in files.items() if v["status"] == 403]
+    secret = re.compile(r"^\.env|\.pem$|^id_rsa|credentials|\.key$|secret", re.I)       # the endpoint's 403 rule
+    assert forbidden and all(secret.search(k.rpartition("/")[2]) for k in forbidden), "a secret-looking name (.env*, *.pem, id_rsa*, *credentials*, *.key, *secret*)"
+
+
+def test_demo_every_listed_file_has_a_preview_unless_it_is_deleted_or_in_a_truncated_level():
+    files = file_fixture()
+    missing = []
+    for key, t in tree_fixture().items():
+        if t["truncated"]:
+            continue
+        repo, _, path = key.partition("|")
+        for e in t["entries"]:
+            if e["type"] == "file" and e["status"] != "D" and f"{repo}|{path + '/' if path else ''}{e['name']}" not in files:
+                missing.append(f"{key}: {e['name']}")
+    assert not missing, "file.json has no entry for:\n  " + "\n  ".join(missing)
+
+
+def test_demo_file_sizes_agree_with_the_listing():
+    files = file_fixture()
+    for key, t in tree_fixture().items():
+        repo, _, path = key.partition("|")
+        for e in t["entries"]:
+            k = f"{repo}|{path + '/' if path else ''}{e['name']}"
+            if e["type"] == "file" and k in files and files[k]["status"] == 200:
+                assert e["size"] == files[k]["body"]["size"], f"{k}: the listing says {e['size']} bytes, the preview {files[k]['body']['size']}"
+
+
+def _git(path, *args):
+    import subprocess
+    subprocess.run(["git", "-C", str(path), "-c", "user.name=demo", "-c", "user.email=demo@example.invalid", "-c", "commit.gpgsign=false", *args],
+                   check=True, capture_output=True)
+
+
+def test_demo_tree_fixture_is_what_list_dir_answers_for_the_same_files(projects_dir):
+    """The fixture is a recording of the endpoint: rebuild phasezero/website (and the project folder) from the fixtures' own file contents with the
+    same git state, ask app.tree.list_dir for every level that is not truncated and compare entry for entry (name, type, status, dirty,
+    has_children, ignored, size) and the payload's keys."""
+    from app import tree
+    trees, files = tree_fixture(), file_fixture()
+    proj = projects_dir / "phasezero"
+    repo = proj / "website"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q", "-b", "main")
+    deleted = "tests/legacy-cart.test.ts"
+    untracked = {"notes.txt", "src/components/CartDrawer.tsx"}
+    staged = {"src/components/ProductCard.tsx"}
+    def write(rel, text=None, data=None):
+        f = repo / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(data if data is not None else text.encode("utf-8"))
+    for key, fx in files.items():
+        r, _, rel = key.partition("|")
+        if r == "website":
+            body = fx["body"] if fx["status"] == 200 else fx["reveal"]["body"] if fx["status"] == 403 else None
+            if body is not None:
+                write(rel, body["text"])
+    write("public/favicon.ico", data=b"\0" * 15086)
+    write(deleted, "test('legacy', () => {});\n")
+    write("public/icons/icon-000.svg", "<svg/>\n")                # the truncated level's directory exists; only its first level is compared elsewhere
+    _git(repo, "add", "-A")
+    for rel in sorted(untracked | staged):
+        _git(repo, "rm", "-q", "--cached", rel)
+    _git(repo, "commit", "-qm", "base")
+    (repo / deleted).unlink()
+    for rel in staged:
+        _git(repo, "add", rel)
+    for rel in ("next.config.js", "src/middleware.ts", "src/components/Header.tsx", "src/app/checkout/Step2.tsx"):
+        (repo / rel).write_text((repo / rel).read_text() + "\n// changed\n")
+    (proj / "NestJs-Ecommerce-Backend").mkdir()
+    _git(proj / "NestJs-Ecommerce-Backend", "init", "-q", "-b", "develop")
+    for key, fx in files.items():
+        r, _, rel = key.partition("|")
+        if r == "root":
+            f = proj / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b"\0" * 482113 if fx["status"] == 415 else fx["body"]["text"].encode("utf-8"))
+    compared = 0
+    for key, fx in trees.items():
+        r, _, rel = key.partition("|")
+        if r not in ("website", "root") or fx["truncated"]:
+            continue
+        got = tree.list_dir("phasezero", r, rel)
+        assert set(got) == set(fx), f"{key}: payload keys differ: {sorted(set(got) ^ set(fx))}"
+        for k in ("project", "repo", "path", "git", "truncated", "total", "hidden", "ignored", "status_stale"):
+            assert got[k] == fx[k], f"{key}: {k} is {got[k]!r} in the endpoint, {fx[k]!r} in the fixture"
+        assert (got["branch"], got["ahead"] is None) == (fx["branch"], fx["ahead"] is None), key
+        assert [e["name"] for e in got["entries"]] == [e["name"] for e in fx["entries"]], f"{key}: entries differ"
+        for g, f in zip(got["entries"], fx["entries"]):
+            assert set(g) == set(f), (key, g)
+            for field in ("type", "status", "dirty", "has_children", "ignored"):
+                assert g[field] == f[field], f"{key}: {f['name']}.{field} is {g[field]!r} in the endpoint, {f[field]!r} in the fixture"
+            if f["type"] == "file" and f["status"] != "M":
+                assert g["size"] == f["size"], f"{key}: {f['name']} is {g['size']} bytes on disk, {f['size']} in the fixture"
+        compared += 1
+    assert compared >= 8, f"only {compared} levels were compared"
 
 
 def test_demo_series_fixture_matches_the_series_endpoint_shape():
@@ -1031,7 +1251,7 @@ def test_demo_files_are_absent_from_the_sw_shell_and_the_asset_version(lite_clie
 # ---------- terminal page on mobile: definition-only kit, no ES modules, the term.css scroll-fix set, the dev tty fake ----------
 
 REPO = STATIC.parent.parent
-DEFINE_ONLY = ("core.js", "components.js", "termkit.js", "pages/widgets.js")
+DEFINE_ONLY = ("core.js", "components.js", "termkit.js", "pages/widgets.js", "tree.js")
 # a declaration, a string (a directive), or a function / literal assigned to a property of a declared namespace (`Widgets.usageCard = function ...`):
 # none of them runs anything at load. A call, an `if`, a bare `document.x = ...` or `Name.start();` is not in the list.
 DEFINE_ONLY_START = re.compile(
@@ -1087,6 +1307,69 @@ def test_js_no_es_modules():
             if tag == "script" and attrs.get("type", "").lower() == "module":
                 bad.append(f"{rel(p)}:{line}: <script type=module>")
     assert not bad, "ES modules are banned (classic scripts share one global scope, loaded in the order the HTML lists):\n" + "\n".join(bad)
+
+
+# ---------- tree.js (v0.5.6): the WAI-ARIA tree pattern, read at grep level (tests/js/tree.test.mjs proves the behaviour) ----------
+
+def tree_js_code():
+    path = STATIC / "tree.js"
+    assert path.is_file(), "app/static/tree.js is missing"
+    return blank_js(path.read_text(encoding="utf-8"))
+
+
+def test_tree_js_sets_role_tree_once_and_treeitem_on_the_nodes():
+    code = tree_js_code()
+    roles = re.findall(r"""['"]?role['"]?\s*[:,]\s*['"](\w+)['"]""", code)
+    assert roles.count("tree") == 1, f"role=tree must be set exactly once (the list), found {roles.count('tree')}"
+    assert roles.count("treeitem") >= 1, "every node is a role=treeitem"
+    assert "group" in roles, "a directory's children sit in a role=group"
+    assert not re.search(r"role['\"]?\s*[:,]\s*['\"](?:menu|listbox|list|option)['\"]", code), "a tree is not a list or a menu"
+
+
+def test_tree_js_aria_expanded_is_only_ever_written_for_directories():
+    """Files are leaves: an aria-expanded on one would be announced as a collapsed group. Every use of the attribute in tree.js sits within
+    four lines of a directory test (the exact behaviour is asserted at run time in tests/js/tree.test.mjs)."""
+    code = tree_js_code().splitlines()
+    uses = [i for i, line in enumerate(code) if "aria-expanded" in line]
+    assert uses, "tree.js never sets aria-expanded: directories must expose their state"
+    for i in uses:
+        window = "\n".join(code[max(0, i - 4):i + 1])
+        assert re.search(r"\b(?:isDir|dir|directory|isdir)\b|'dir'|\"dir\"|has_children|hasChildren|expandable|isParent", window, re.I), \
+            f"app/static/tree.js:{i + 1}: aria-expanded without a directory test in the preceding lines: {code[i].strip()[:100]}"
+
+
+def test_tree_js_has_the_aria_level_selected_and_roving_tabindex_attributes():
+    code = tree_js_code()
+    for attr in ("aria-level", "aria-selected", "tabindex"):
+        assert attr in code, f"tree.js never sets {attr}"
+    for name in ("Tree.mount", "Tree.previewFile"):
+        assert re.search(re.escape(name) + r"\s*=", code), f"tree.js does not define {name}"
+
+
+def test_tree_js_makes_its_requests_cancellable_and_uses_semantic_classes():
+    code = tree_js_code()
+    assert "AbortController" in code, "an expand that is cancelled by a collapse aborts its request"
+    assert "If-None-Match" in code or "etag" in code.lower(), "open nodes revalidate with the ETag"
+    assert not re.search(r"bp5-", code), "Blueprint classes live in core.js (SEMANTIC): tree.js uses the semantic names"
+    for sem in ("tree", "treenode", "treecontent", "treecaret", "treelabel", "treesecondary"):
+        assert re.search(rf"\b{sem}\b", code), f"tree.js never uses the semantic class '{sem}'"
+
+
+def test_core_js_maps_the_tree_semantic_classes_to_blueprint():
+    core = (STATIC / "core.js").read_text(encoding="utf-8")
+    block = core[core.index("const SEMANTIC"):core.index("function blueprint")]
+    for sem, bp in (("tree", "bp5-tree"), ("treenode", "bp5-tree-node"), ("treecontent", "bp5-tree-node-content"), ("treecaret", "bp5-tree-node-caret"),
+                    ("treelabel", "bp5-tree-node-label"), ("treesecondary", "bp5-tree-node-secondary-label")):
+        assert re.search(rf"\b{sem}:\s*'[^']*\b{bp}\b", block), f"SEMANTIC lacks {sem}: '{bp}'"
+
+
+def test_tree_js_and_project_js_use_no_style_attributes_or_history_api():
+    for name in ("tree.js", "pages/project.js"):
+        path = STATIC / name
+        assert path.is_file(), f"app/static/{name} is missing"
+        code = blank_js(path.read_text(encoding="utf-8"), strings=False)
+        assert not re.search(r"""['"]style['"]\s*[:,]|setAttribute\(\s*['"]style|\bstyle\s*:\s*['"]""", code), f"{name}: no style attributes (the CSP forbids them)"
+        assert not re.search(r"\bhistory\s*\.\s*(?:pushState|replaceState)\b", code), f"{name}: the history API belongs to router.js"
 
 
 def test_term_scripts_carry_the_persisted_keys_and_the_back_rule():

@@ -155,6 +155,10 @@ def test_script_order_core_first_main_last():
     assert idx.index("/static/palette.js") < idx.index("/static/shell.js"), idx
     assert idx.index("/static/pages/inbox.js") + 1 == idx.index("/static/pages/widgets.js") < idx.index("/static/pages/tasks.js"), \
         "pages/widgets.js (Widgets, definition-only) loads right after pages/inbox.js"
+    assert idx.index("/static/launcher.js") + 1 == idx.index("/static/tree.js") < idx.index("/static/palette.js"), \
+        "tree.js (Tree, definition-only) loads right after launcher.js"
+    assert idx.index("/static/pages/tasks.js") + 1 == idx.index("/static/pages/project.js") < idx.index("/static/pages/agents.js"), \
+        "pages/project.js loads right after pages/tasks.js"
     assert len(idx) == len(set(idx)), f"duplicate script tag: {idx}"
     assert idx == SCRIPT_ORDER, "index.html script order differs from the contract:\n  got      " + "\n  ".join(map(str, idx)) + "\n  expected " + "\n  ".join(SCRIPT_ORDER)
     assert "/static/termkit.js" not in idx, "index.html is not changed in the terminal phase: termkit.js is loaded by term.html only (the dock and quad load it in v0.5.9)"
@@ -365,7 +369,11 @@ def test_each_page_registers_in_its_own_file_or_the_placeholders():
     for page_id, files in _register_calls().items():
         assert files[0] in (f"{page_id}.js", "placeholders.js"), f"registerPage('{page_id}') sits in pages/{files[0]}"
     placeholders = [i for i, files in _register_calls().items() if files == ["placeholders.js"]]
-    assert {"project", "quad", "usage", "memory", "onboarding"} >= set(placeholders), placeholders
+    assert {"quad", "usage", "memory", "onboarding"} >= set(placeholders), placeholders
+    assert "project" not in placeholders, "the project route has its real page since v0.5.6 (pages/project.js)"
+    assert _register_calls()["project"] == ["project.js"]
+    info = (STATIC_ROOT / "pages" / "placeholders.js").read_text().split("const PLACEHOLDER_INFO")[1].split("};")[0]
+    assert not re.search(r"\bproject\s*:", info), "PLACEHOLDER_INFO no longer names the project route"
 
 
 def test_main_js_rewrites_the_legacy_hash_before_the_poll_starts():

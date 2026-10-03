@@ -1,4 +1,5 @@
 {
+ "website|": {
   "project": "phasezero",
   "repo": "website",
   "path": "",
@@ -7,96 +8,1845 @@
   "ahead": 1,
   "behind": 0,
   "entries": [
-    {
-      "name": "public",
-      "type": "dir",
-      "status": null,
-      "dirty": false,
-      "has_children": true,
-      "ignored": false
-    },
-    {
-      "name": "src",
-      "type": "dir",
-      "status": "M",
-      "dirty": true,
-      "has_children": true,
-      "ignored": false
-    },
-    {
-      "name": "tests",
-      "type": "dir",
-      "status": null,
-      "dirty": false,
-      "has_children": true,
-      "ignored": false
-    },
-    {
-      "name": ".env.example",
-      "type": "file",
-      "status": null,
-      "dirty": false,
-      "has_children": false,
-      "ignored": false,
-      "size": 412
-    },
-    {
-      "name": "CHANGELOG.md",
-      "type": "file",
-      "status": null,
-      "dirty": false,
-      "has_children": false,
-      "ignored": false,
-      "size": 3180
-    },
-    {
-      "name": "next.config.js",
-      "type": "file",
-      "status": "M",
-      "dirty": true,
-      "has_children": false,
-      "ignored": false,
-      "size": 906
-    },
-    {
-      "name": "notes.txt",
-      "type": "file",
-      "status": "?",
-      "dirty": true,
-      "has_children": false,
-      "ignored": false,
-      "size": 218
-    },
-    {
-      "name": "package.json",
-      "type": "file",
-      "status": null,
-      "dirty": false,
-      "has_children": false,
-      "ignored": false,
-      "size": 1544
-    },
-    {
-      "name": "README.md",
-      "type": "file",
-      "status": null,
-      "dirty": false,
-      "has_children": false,
-      "ignored": false,
-      "size": 2764
-    },
-    {
-      "name": "tsconfig.json",
-      "type": "file",
-      "status": null,
-      "dirty": false,
-      "has_children": false,
-      "ignored": false,
-      "size": 611
-    }
+   {
+    "name": "config",
+    "type": "dir",
+    "status": null,
+    "dirty": false,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "public",
+    "type": "dir",
+    "status": null,
+    "dirty": false,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "src",
+    "type": "dir",
+    "status": null,
+    "dirty": true,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "tests",
+    "type": "dir",
+    "status": null,
+    "dirty": true,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "CHANGELOG.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 266
+   },
+   {
+    "name": "next.config.js",
+    "type": "file",
+    "status": "M",
+    "dirty": true,
+    "has_children": false,
+    "ignored": false,
+    "size": 280
+   },
+   {
+    "name": "notes.txt",
+    "type": "file",
+    "status": "?",
+    "dirty": true,
+    "has_children": false,
+    "ignored": false,
+    "size": 132
+   },
+   {
+    "name": "package.json",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 348
+   },
+   {
+    "name": "README.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 241
+   },
+   {
+    "name": "tsconfig.json",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 294
+   }
   ],
   "truncated": false,
   "total": 10,
-  "hidden": 3,
-  "ignored": 4
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "9accbb29ed45574c"
+ },
+ "website|config": {
+  "project": "phasezero",
+  "repo": "website",
+  "path": "config",
+  "git": true,
+  "branch": "main",
+  "ahead": 1,
+  "behind": 0,
+  "entries": [
+   {
+    "name": "credentials.example.json",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 168
+   },
+   {
+    "name": "site.json",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 75
+   }
+  ],
+  "truncated": false,
+  "total": 2,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "708ee0ca118feba2"
+ },
+ "website|public": {
+  "project": "phasezero",
+  "repo": "website",
+  "path": "public",
+  "git": true,
+  "branch": "main",
+  "ahead": 1,
+  "behind": 0,
+  "entries": [
+   {
+    "name": "icons",
+    "type": "dir",
+    "status": null,
+    "dirty": false,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "favicon.ico",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 15086
+   },
+   {
+    "name": "robots.txt",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 84
+   }
+  ],
+  "truncated": false,
+  "total": 3,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "0a66642add4dd6b8"
+ },
+ "website|public/icons": {
+  "project": "phasezero",
+  "repo": "website",
+  "path": "public/icons",
+  "git": true,
+  "branch": "main",
+  "ahead": 1,
+  "behind": 0,
+  "entries": [
+   {
+    "name": "icon-000.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 320
+   },
+   {
+    "name": "icon-001.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 327
+   },
+   {
+    "name": "icon-002.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 334
+   },
+   {
+    "name": "icon-003.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 341
+   },
+   {
+    "name": "icon-004.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 348
+   },
+   {
+    "name": "icon-005.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 355
+   },
+   {
+    "name": "icon-006.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 362
+   },
+   {
+    "name": "icon-007.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 369
+   },
+   {
+    "name": "icon-008.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 376
+   },
+   {
+    "name": "icon-009.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 383
+   },
+   {
+    "name": "icon-010.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 390
+   },
+   {
+    "name": "icon-011.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 397
+   },
+   {
+    "name": "icon-012.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 404
+   },
+   {
+    "name": "icon-013.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 321
+   },
+   {
+    "name": "icon-014.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 328
+   },
+   {
+    "name": "icon-015.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 335
+   },
+   {
+    "name": "icon-016.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 342
+   },
+   {
+    "name": "icon-017.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 349
+   },
+   {
+    "name": "icon-018.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 356
+   },
+   {
+    "name": "icon-019.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 363
+   },
+   {
+    "name": "icon-020.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 370
+   },
+   {
+    "name": "icon-021.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 377
+   },
+   {
+    "name": "icon-022.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 384
+   },
+   {
+    "name": "icon-023.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 391
+   },
+   {
+    "name": "icon-024.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 398
+   },
+   {
+    "name": "icon-025.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 405
+   },
+   {
+    "name": "icon-026.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 322
+   },
+   {
+    "name": "icon-027.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 329
+   },
+   {
+    "name": "icon-028.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 336
+   },
+   {
+    "name": "icon-029.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 343
+   },
+   {
+    "name": "icon-030.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 350
+   },
+   {
+    "name": "icon-031.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 357
+   },
+   {
+    "name": "icon-032.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 364
+   },
+   {
+    "name": "icon-033.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 371
+   },
+   {
+    "name": "icon-034.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 378
+   },
+   {
+    "name": "icon-035.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 385
+   },
+   {
+    "name": "icon-036.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 392
+   },
+   {
+    "name": "icon-037.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 399
+   },
+   {
+    "name": "icon-038.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 406
+   },
+   {
+    "name": "icon-039.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 323
+   },
+   {
+    "name": "icon-040.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 330
+   },
+   {
+    "name": "icon-041.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 337
+   },
+   {
+    "name": "icon-042.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 344
+   },
+   {
+    "name": "icon-043.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 351
+   },
+   {
+    "name": "icon-044.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 358
+   },
+   {
+    "name": "icon-045.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 365
+   },
+   {
+    "name": "icon-046.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 372
+   },
+   {
+    "name": "icon-047.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 379
+   },
+   {
+    "name": "icon-048.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 386
+   },
+   {
+    "name": "icon-049.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 393
+   },
+   {
+    "name": "icon-050.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 400
+   },
+   {
+    "name": "icon-051.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 407
+   },
+   {
+    "name": "icon-052.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 324
+   },
+   {
+    "name": "icon-053.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 331
+   },
+   {
+    "name": "icon-054.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 338
+   },
+   {
+    "name": "icon-055.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 345
+   },
+   {
+    "name": "icon-056.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 352
+   },
+   {
+    "name": "icon-057.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 359
+   },
+   {
+    "name": "icon-058.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 366
+   },
+   {
+    "name": "icon-059.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 373
+   }
+  ],
+  "truncated": true,
+  "total": 1840,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "c1538193e86a58b8"
+ },
+ "website|src": {
+  "project": "phasezero",
+  "repo": "website",
+  "path": "src",
+  "git": true,
+  "branch": "main",
+  "ahead": 1,
+  "behind": 0,
+  "entries": [
+   {
+    "name": "app",
+    "type": "dir",
+    "status": null,
+    "dirty": true,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "components",
+    "type": "dir",
+    "status": null,
+    "dirty": true,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "lib",
+    "type": "dir",
+    "status": null,
+    "dirty": false,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "middleware.ts",
+    "type": "file",
+    "status": "M",
+    "dirty": true,
+    "has_children": false,
+    "ignored": false,
+    "size": 323
+   }
+  ],
+  "truncated": false,
+  "total": 4,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "adc0afbfa2fcb617"
+ },
+ "website|src/app": {
+  "project": "phasezero",
+  "repo": "website",
+  "path": "src/app",
+  "git": true,
+  "branch": "main",
+  "ahead": 1,
+  "behind": 0,
+  "entries": [
+   {
+    "name": "checkout",
+    "type": "dir",
+    "status": null,
+    "dirty": true,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "layout.tsx",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 344
+   },
+   {
+    "name": "page.tsx",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 290
+   }
+  ],
+  "truncated": false,
+  "total": 3,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "4ef6e17015f5d359"
+ },
+ "website|src/app/checkout": {
+  "project": "phasezero",
+  "repo": "website",
+  "path": "src/app/checkout",
+  "git": true,
+  "branch": "main",
+  "ahead": 1,
+  "behind": 0,
+  "entries": [
+   {
+    "name": "page.tsx",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 177
+   },
+   {
+    "name": "Step1.tsx",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 96
+   },
+   {
+    "name": "Step2.tsx",
+    "type": "file",
+    "status": "M",
+    "dirty": true,
+    "has_children": false,
+    "ignored": false,
+    "size": 364
+   }
+  ],
+  "truncated": false,
+  "total": 3,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "402c7774e2c5fe72"
+ },
+ "website|src/components": {
+  "project": "phasezero",
+  "repo": "website",
+  "path": "src/components",
+  "git": true,
+  "branch": "main",
+  "ahead": 1,
+  "behind": 0,
+  "entries": [
+   {
+    "name": "ui",
+    "type": "dir",
+    "status": null,
+    "dirty": false,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "CartDrawer.tsx",
+    "type": "file",
+    "status": "?",
+    "dirty": true,
+    "has_children": false,
+    "ignored": false,
+    "size": 282
+   },
+   {
+    "name": "Footer.tsx",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 142
+   },
+   {
+    "name": "Header.tsx",
+    "type": "file",
+    "status": "M",
+    "dirty": true,
+    "has_children": false,
+    "ignored": false,
+    "size": 399
+   },
+   {
+    "name": "ProductCard.tsx",
+    "type": "file",
+    "status": "A",
+    "dirty": true,
+    "has_children": false,
+    "ignored": false,
+    "size": 422
+   }
+  ],
+  "truncated": false,
+  "total": 5,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "8f799266a75639dc"
+ },
+ "website|src/components/ui": {
+  "project": "phasezero",
+  "repo": "website",
+  "path": "src/components/ui",
+  "git": true,
+  "branch": "main",
+  "ahead": 1,
+  "behind": 0,
+  "entries": [
+   {
+    "name": "Button.tsx",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 204
+   },
+   {
+    "name": "Input.tsx",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 201
+   }
+  ],
+  "truncated": false,
+  "total": 2,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "b477c813349ba523"
+ },
+ "website|src/lib": {
+  "project": "phasezero",
+  "repo": "website",
+  "path": "src/lib",
+  "git": true,
+  "branch": "main",
+  "ahead": 1,
+  "behind": 0,
+  "entries": [
+   {
+    "name": "api.ts",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 287
+   },
+   {
+    "name": "cart.ts",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 204
+   },
+   {
+    "name": "format.ts",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 76
+   }
+  ],
+  "truncated": false,
+  "total": 3,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "166fed29cf89cd79"
+ },
+ "website|tests": {
+  "project": "phasezero",
+  "repo": "website",
+  "path": "tests",
+  "git": true,
+  "branch": "main",
+  "ahead": 1,
+  "behind": 0,
+  "entries": [
+   {
+    "name": "cart.test.ts",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 187
+   },
+   {
+    "name": "checkout.test.ts",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 191
+   },
+   {
+    "name": "legacy-cart.test.ts",
+    "type": "file",
+    "status": "D",
+    "dirty": true,
+    "has_children": false,
+    "ignored": false,
+    "size": null
+   }
+  ],
+  "truncated": false,
+  "total": 3,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "ff4ad1e3e6cab6db"
+ },
+ "NestJs-Ecommerce-Backend|": {
+  "project": "phasezero",
+  "repo": "NestJs-Ecommerce-Backend",
+  "path": "",
+  "git": true,
+  "branch": "develop",
+  "ahead": 0,
+  "behind": 2,
+  "entries": [
+   {
+    "name": "prisma",
+    "type": "dir",
+    "status": null,
+    "dirty": true,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "src",
+    "type": "dir",
+    "status": null,
+    "dirty": true,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "test",
+    "type": "dir",
+    "status": null,
+    "dirty": false,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "nest-cli.json",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 118
+   },
+   {
+    "name": "package.json",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 315
+   },
+   {
+    "name": "README.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 163
+   }
+  ],
+  "truncated": false,
+  "total": 6,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "943506bc38e65274"
+ },
+ "NestJs-Ecommerce-Backend|prisma": {
+  "project": "phasezero",
+  "repo": "NestJs-Ecommerce-Backend",
+  "path": "prisma",
+  "git": true,
+  "branch": "develop",
+  "ahead": 0,
+  "behind": 2,
+  "entries": [
+   {
+    "name": "migrations",
+    "type": "dir",
+    "status": "?",
+    "dirty": true,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "schema.prisma",
+    "type": "file",
+    "status": "M",
+    "dirty": true,
+    "has_children": false,
+    "ignored": false,
+    "size": 189
+   }
+  ],
+  "truncated": false,
+  "total": 2,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "713d9876ccd37368"
+ },
+ "NestJs-Ecommerce-Backend|prisma/migrations": {
+  "project": "phasezero",
+  "repo": "NestJs-Ecommerce-Backend",
+  "path": "prisma/migrations",
+  "git": true,
+  "branch": "develop",
+  "ahead": 0,
+  "behind": 2,
+  "entries": [
+   {
+    "name": "20260928_stock_sync",
+    "type": "dir",
+    "status": "?",
+    "dirty": true,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   }
+  ],
+  "truncated": false,
+  "total": 1,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "acddb05d4ec4893d"
+ },
+ "NestJs-Ecommerce-Backend|prisma/migrations/20260928_stock_sync": {
+  "project": "phasezero",
+  "repo": "NestJs-Ecommerce-Backend",
+  "path": "prisma/migrations/20260928_stock_sync",
+  "git": true,
+  "branch": "develop",
+  "ahead": 0,
+  "behind": 2,
+  "entries": [
+   {
+    "name": "migration.sql",
+    "type": "file",
+    "status": "?",
+    "dirty": true,
+    "has_children": false,
+    "ignored": false,
+    "size": 131
+   }
+  ],
+  "truncated": false,
+  "total": 1,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "87d5745a81db55f5"
+ },
+ "NestJs-Ecommerce-Backend|src": {
+  "project": "phasezero",
+  "repo": "NestJs-Ecommerce-Backend",
+  "path": "src",
+  "git": true,
+  "branch": "develop",
+  "ahead": 0,
+  "behind": 2,
+  "entries": [
+   {
+    "name": "modules",
+    "type": "dir",
+    "status": null,
+    "dirty": true,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "app.module.ts",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 241
+   },
+   {
+    "name": "main.ts",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 228
+   }
+  ],
+  "truncated": false,
+  "total": 3,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "d62094aed7eb5d35"
+ },
+ "NestJs-Ecommerce-Backend|src/modules": {
+  "project": "phasezero",
+  "repo": "NestJs-Ecommerce-Backend",
+  "path": "src/modules",
+  "git": true,
+  "branch": "develop",
+  "ahead": 0,
+  "behind": 2,
+  "entries": [
+   {
+    "name": "orders",
+    "type": "dir",
+    "status": null,
+    "dirty": false,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "stock",
+    "type": "dir",
+    "status": null,
+    "dirty": true,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   }
+  ],
+  "truncated": false,
+  "total": 2,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "2f26c2250a1cdbe2"
+ },
+ "NestJs-Ecommerce-Backend|src/modules/orders": {
+  "project": "phasezero",
+  "repo": "NestJs-Ecommerce-Backend",
+  "path": "src/modules/orders",
+  "git": true,
+  "branch": "develop",
+  "ahead": 0,
+  "behind": 2,
+  "entries": [
+   {
+    "name": "orders.controller.ts",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 320
+   },
+   {
+    "name": "orders.module.ts",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 250
+   },
+   {
+    "name": "orders.service.ts",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 380
+   }
+  ],
+  "truncated": false,
+  "total": 3,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "b8e64fa00d030a73"
+ },
+ "NestJs-Ecommerce-Backend|src/modules/stock": {
+  "project": "phasezero",
+  "repo": "NestJs-Ecommerce-Backend",
+  "path": "src/modules/stock",
+  "git": true,
+  "branch": "develop",
+  "ahead": 0,
+  "behind": 2,
+  "entries": [
+   {
+    "name": "stock-sync.service.ts",
+    "type": "file",
+    "status": "A",
+    "dirty": true,
+    "has_children": false,
+    "ignored": false,
+    "size": 458
+   },
+   {
+    "name": "stock.module.ts",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 257
+   },
+   {
+    "name": "stock.service.ts",
+    "type": "file",
+    "status": "M",
+    "dirty": true,
+    "has_children": false,
+    "ignored": false,
+    "size": 537
+   }
+  ],
+  "truncated": false,
+  "total": 3,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "d575496da9a3bf55"
+ },
+ "NestJs-Ecommerce-Backend|test": {
+  "project": "phasezero",
+  "repo": "NestJs-Ecommerce-Backend",
+  "path": "test",
+  "git": true,
+  "branch": "develop",
+  "ahead": 0,
+  "behind": 2,
+  "entries": [
+   {
+    "name": "orders.e2e-spec.ts",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 88
+   },
+   {
+    "name": "stock.e2e-spec.ts",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 102
+   }
+  ],
+  "truncated": false,
+  "total": 2,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "b8bb23a3a6bc962e"
+ },
+ "root|": {
+  "project": "phasezero",
+  "repo": "root",
+  "path": "",
+  "git": false,
+  "branch": null,
+  "ahead": null,
+  "behind": null,
+  "entries": [
+   {
+    "name": "assets",
+    "type": "dir",
+    "status": null,
+    "dirty": false,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "docs",
+    "type": "dir",
+    "status": null,
+    "dirty": false,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "NestJs-Ecommerce-Backend",
+    "type": "repo",
+    "status": null,
+    "dirty": false,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "website",
+    "type": "repo",
+    "status": null,
+    "dirty": false,
+    "has_children": true,
+    "ignored": false,
+    "size": null
+   },
+   {
+    "name": "notes.txt",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 48
+   },
+   {
+    "name": "README.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 163
+   }
+  ],
+  "truncated": false,
+  "total": 6,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "8574beb2cbf450ac"
+ },
+ "root|assets": {
+  "project": "phasezero",
+  "repo": "root",
+  "path": "assets",
+  "git": false,
+  "branch": null,
+  "ahead": null,
+  "behind": null,
+  "entries": [
+   {
+    "name": "brand-sheet.pdf",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 482113
+   },
+   {
+    "name": "logo.svg",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 253
+   }
+  ],
+  "truncated": false,
+  "total": 2,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "f7c3f33f310f87eb"
+ },
+ "root|docs": {
+  "project": "phasezero",
+  "repo": "root",
+  "path": "docs",
+  "git": false,
+  "branch": null,
+  "ahead": null,
+  "behind": null,
+  "entries": [
+   {
+    "name": "launch-checklist.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 128
+   },
+   {
+    "name": "plan.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 88
+   }
+  ],
+  "truncated": false,
+  "total": 2,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "3b9b18fff5c19564"
+ },
+ "ccboard|": {
+  "project": "ccboard",
+  "repo": "ccboard",
+  "path": "",
+  "git": true,
+  "branch": "main",
+  "ahead": 0,
+  "behind": 0,
+  "entries": [
+   {
+    "name": "NOTES.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 37
+   },
+   {
+    "name": "README.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 124
+   }
+  ],
+  "truncated": false,
+  "total": 2,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "5247d7c083f9f887"
+ },
+ "hive|": {
+  "project": "HarnessAgents",
+  "repo": "hive",
+  "path": "",
+  "git": true,
+  "branch": "main",
+  "ahead": 0,
+  "behind": 0,
+  "entries": [
+   {
+    "name": "NOTES.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 34
+   },
+   {
+    "name": "README.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 127
+   }
+  ],
+  "truncated": false,
+  "total": 2,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "bd619636bfa646ce"
+ },
+ "server|": {
+  "project": "internalSystem",
+  "repo": "server",
+  "path": "",
+  "git": true,
+  "branch": "main",
+  "ahead": 0,
+  "behind": 0,
+  "entries": [
+   {
+    "name": "NOTES.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 36
+   },
+   {
+    "name": "README.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 130
+   }
+  ],
+  "truncated": false,
+  "total": 2,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "61c89f8555cb2e09"
+ },
+ "mailgate|": {
+  "project": "mailgate",
+  "repo": "mailgate",
+  "path": "",
+  "git": true,
+  "branch": "main",
+  "ahead": 0,
+  "behind": 0,
+  "entries": [
+   {
+    "name": "NOTES.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 38
+   },
+   {
+    "name": "README.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 126
+   }
+  ],
+  "truncated": false,
+  "total": 2,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "68e80cfae0baeaa1"
+ },
+ "vault|": {
+  "project": "My_Brain",
+  "repo": "vault",
+  "path": "",
+  "git": true,
+  "branch": "main",
+  "ahead": 0,
+  "behind": 0,
+  "entries": [
+   {
+    "name": "NOTES.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 35
+   },
+   {
+    "name": "README.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 123
+   }
+  ],
+  "truncated": false,
+  "total": 2,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "5d4807815007f706"
+ },
+ "api|": {
+  "project": "petroit",
+  "repo": "api",
+  "path": "",
+  "git": true,
+  "branch": "feature/devices-pagination",
+  "ahead": 0,
+  "behind": 0,
+  "entries": [
+   {
+    "name": "NOTES.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 33
+   },
+   {
+    "name": "README.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 120
+   }
+  ],
+  "truncated": false,
+  "total": 2,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "e3ebb876eab548af"
+ },
+ "web|": {
+  "project": "reporting_system",
+  "repo": "web",
+  "path": "",
+  "git": true,
+  "branch": "main",
+  "ahead": 0,
+  "behind": 0,
+  "entries": [
+   {
+    "name": "NOTES.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 33
+   },
+   {
+    "name": "README.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 129
+   }
+  ],
+  "truncated": false,
+  "total": 2,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "0ec4302abbb8cfbd"
+ },
+ "notebooks|": {
+  "project": "research",
+  "repo": "notebooks",
+  "path": "",
+  "git": true,
+  "branch": "main",
+  "ahead": 0,
+  "behind": 0,
+  "entries": [
+   {
+    "name": "NOTES.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 39
+   },
+   {
+    "name": "README.md",
+    "type": "file",
+    "status": null,
+    "dirty": false,
+    "has_children": false,
+    "ignored": false,
+    "size": 127
+   }
+  ],
+  "truncated": false,
+  "total": 2,
+  "hidden": false,
+  "ignored": false,
+  "status_stale": false,
+  "etag": "edd23a366737f3d7"
+ }
 }

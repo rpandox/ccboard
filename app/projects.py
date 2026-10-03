@@ -26,6 +26,10 @@ class NotFound(Exception):
     pass
 
 
+class Forbidden(Exception):
+    """Mapped to 403 by main.py (a file the board will not show without an explicit reveal)."""
+
+
 def check_name(kind: str, name: str) -> str:
     if not isinstance(name, str) or not valid_name(name):
         raise BadRequest(f"invalid {kind} name {name!r}: use letters, digits, '-' or '_', "
@@ -76,15 +80,22 @@ def repo_path(project: str, repo: str) -> Path:
     return p / repo
 
 
-def _contained(path: Path) -> Path:
-    """Refuse symlinks and anything that resolves outside PROJECTS_DIR."""
-    root = settings.projects_dir.resolve()
+def contained(path: Path, root: Path | None = None) -> Path:
+    """Refuse a symlink at `path` and anything that resolves outside `root` (default: PROJECTS_DIR); returns the resolved path.
+
+    Only `path` itself is checked for being a link: callers that take a relative path under `root` (tree.py) check every
+    component of it as well."""
+    default = root is None
+    root = settings.projects_dir.resolve() if default else root.resolve()
     if path.is_symlink():
         raise BadRequest(f"{path.name} is a symlink; refusing")
     rp = path.resolve()
     if rp != root and root not in rp.parents:
-        raise BadRequest("path escapes PROJECTS_DIR")
+        raise BadRequest("path escapes PROJECTS_DIR" if default else "path escapes its repo")
     return rp
+
+
+_contained = contained   # the old private name, kept for callers that grew up with it
 
 
 def _git(path: Path, *args: str) -> subprocess.CompletedProcess | None:
@@ -215,7 +226,7 @@ def prepare_repo_clone(project: str, repo: str | None, url: str) -> tuple[str, P
 
 
 def remove_tree(path: Path) -> None:
-    rp = _contained(path)
+    rp = contained(path)
     if rp == settings.projects_dir.resolve():
         raise BadRequest("refusing to remove PROJECTS_DIR")
     # A just-killed git clone may still be deleting its own files; tolerate vanished entries once.

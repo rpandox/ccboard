@@ -1,0 +1,696 @@
+{
+ "website|README.md": {
+  "status": 200,
+  "body": {
+   "path": "README.md",
+   "size": 241,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 10,
+   "text": "# website\n\nThe PhaseZero storefront (Next.js, App Router).\n\n    npm install\n    npm run dev      # http://localhost:3000\n    npm test\n\nProduct data comes from the NestJS backend (`NEXT_PUBLIC_API_URL`).\nCheckout lives in `src/app/checkout`.\n"
+  }
+ },
+ "website|CHANGELOG.md": {
+  "status": 200,
+  "body": {
+   "path": "CHANGELOG.md",
+   "size": 266,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 12,
+   "text": "# Changelog\n\n## Unreleased\n- Checkout step 2 redesigned for phones (in progress).\n- Cart drawer keeps its scroll position.\n\n## 1.8.0\n- Size guide modal on product pages.\n- Free-shipping progress bar in the cart.\n\n## 1.7.2\n- Fix: sold-out sizes no longer selectable.\n"
+  }
+ },
+ "website|package.json": {
+  "status": 200,
+  "body": {
+   "path": "package.json",
+   "size": 348,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 19,
+   "text": "{\n  \"name\": \"phasezero-website\",\n  \"private\": true,\n  \"scripts\": {\n    \"dev\": \"next dev\",\n    \"build\": \"next build\",\n    \"start\": \"next start\",\n    \"test\": \"vitest run\"\n  },\n  \"dependencies\": {\n    \"next\": \"15.4.1\",\n    \"react\": \"19.1.0\",\n    \"react-dom\": \"19.1.0\"\n  },\n  \"devDependencies\": {\n    \"typescript\": \"5.8.3\",\n    \"vitest\": \"3.2.4\"\n  }\n}\n"
+  }
+ },
+ "website|next.config.js": {
+  "status": 200,
+  "body": {
+   "path": "next.config.js",
+   "size": 280,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 10,
+   "text": "/** @type {import('next').NextConfig} */\nconst nextConfig = {\n  reactStrictMode: true,\n  images: { formats: ['image/avif', 'image/webp'] },\n  async redirects() {\n    return [{ source: '/shop', destination: '/collections', permanent: true }];\n  },\n};\n\nmodule.exports = nextConfig;\n"
+  }
+ },
+ "website|notes.txt": {
+  "status": 200,
+  "body": {
+   "path": "notes.txt",
+   "size": 132,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 3,
+   "text": "checkout step 2: address form is too tall on 390px\n- collapse the optional fields behind \"add apartment, suite\"\n- sticky pay button\n"
+  }
+ },
+ "website|tsconfig.json": {
+  "status": 200,
+  "body": {
+   "path": "tsconfig.json",
+   "size": 294,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 12,
+   "text": "{\n  \"compilerOptions\": {\n    \"target\": \"ES2022\",\n    \"lib\": [\"dom\", \"dom.iterable\", \"esnext\"],\n    \"strict\": true,\n    \"module\": \"esnext\",\n    \"moduleResolution\": \"bundler\",\n    \"jsx\": \"preserve\",\n    \"paths\": { \"@/*\": [\"./src/*\"] }\n  },\n  \"include\": [\"next-env.d.ts\", \"**/*.ts\", \"**/*.tsx\"]\n}\n"
+  }
+ },
+ "website|public/robots.txt": {
+  "status": 200,
+  "body": {
+   "path": "public/robots.txt",
+   "size": 84,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 4,
+   "text": "User-agent: *\nAllow: /\nDisallow: /checkout\nSitemap: https://example.com/sitemap.xml\n"
+  }
+ },
+ "website|src/middleware.ts": {
+  "status": 200,
+  "body": {
+   "path": "src/middleware.ts",
+   "size": 323,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 10,
+   "text": "import { NextResponse, type NextRequest } from 'next/server';\n\nexport function middleware(req: NextRequest) {\n  const res = NextResponse.next();\n  const lang = req.cookies.get('lang')?.value ?? 'en';\n  res.headers.set('x-lang', lang);\n  return res;\n}\n\nexport const config = { matcher: ['/((?!_next|api|favicon.ico).*)'] };\n"
+  }
+ },
+ "website|src/components/Header.tsx": {
+  "status": 200,
+  "body": {
+   "path": "src/components/Header.tsx",
+   "size": 399,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 15,
+   "text": "import Link from 'next/link';\nimport { CartButton } from './CartButton';\n\nexport function Header({ items }: { items: number }) {\n  return (\n    <header className=\"header\">\n      <Link href=\"/\" className=\"logo\">PHASEZERO</Link>\n      <nav>\n        <Link href=\"/collections\">Shop</Link>\n        <Link href=\"/journal\">Journal</Link>\n      </nav>\n      <CartButton count={items} />\n    </header>\n  );\n}\n"
+  }
+ },
+ "website|src/components/Footer.tsx": {
+  "status": 200,
+  "body": {
+   "path": "src/components/Footer.tsx",
+   "size": 142,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 7,
+   "text": "export function Footer() {\n  return (\n    <footer className=\"footer\">\n      <small>PhaseZero Clothing, Kathmandu</small>\n    </footer>\n  );\n}\n"
+  }
+ },
+ "website|src/components/ProductCard.tsx": {
+  "status": 200,
+  "body": {
+   "path": "src/components/ProductCard.tsx",
+   "size": 422,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 13,
+   "text": "import Image from 'next/image';\nimport Link from 'next/link';\nimport { money } from '@/lib/format';\n\nexport function ProductCard({ p }: { p: { slug: string; name: string; price: number; image: string } }) {\n  return (\n    <Link href={`/products/${p.slug}`} className=\"card\">\n      <Image src={p.image} alt={p.name} width={480} height={600} />\n      <h3>{p.name}</h3>\n      <span>{money(p.price)}</span>\n    </Link>\n  );\n}\n"
+  }
+ },
+ "website|src/components/CartDrawer.tsx": {
+  "status": 200,
+  "body": {
+   "path": "src/components/CartDrawer.tsx",
+   "size": 282,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 12,
+   "text": "'use client';\nimport { useCart } from '@/lib/cart';\n\nexport function CartDrawer() {\n  const { lines, total } = useCart();\n  return (\n    <aside className=\"drawer\">\n      {lines.map((l) => <div key={l.id}>{l.name} x {l.qty}</div>)}\n      <strong>{total}</strong>\n    </aside>\n  );\n}\n"
+  }
+ },
+ "website|src/components/ui/Button.tsx": {
+  "status": 200,
+  "body": {
+   "path": "src/components/ui/Button.tsx",
+   "size": 204,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 5,
+   "text": "import type { ButtonHTMLAttributes } from 'react';\n\nexport function Button(props: ButtonHTMLAttributes<HTMLButtonElement>) {\n  return <button {...props} className={'btn ' + (props.className ?? '')} />;\n}\n"
+  }
+ },
+ "website|src/components/ui/Input.tsx": {
+  "status": 200,
+  "body": {
+   "path": "src/components/ui/Input.tsx",
+   "size": 201,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 5,
+   "text": "import type { InputHTMLAttributes } from 'react';\n\nexport function Input(props: InputHTMLAttributes<HTMLInputElement>) {\n  return <input {...props} className={'input ' + (props.className ?? '')} />;\n}\n"
+  }
+ },
+ "website|src/lib/api.ts": {
+  "status": 200,
+  "body": {
+   "path": "src/lib/api.ts",
+   "size": 287,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 7,
+   "text": "const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';\n\nexport async function get<T>(path: string): Promise<T> {\n  const r = await fetch(BASE + path, { next: { revalidate: 60 } });\n  if (!r.ok) throw new Error(`${r.status} ${path}`);\n  return r.json() as Promise<T>;\n}\n"
+  }
+ },
+ "website|src/lib/format.ts": {
+  "status": 200,
+  "body": {
+   "path": "src/lib/format.ts",
+   "size": 76,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 1,
+   "text": "export const money = (npr: number) => 'NPR ' + npr.toLocaleString('en-US');\n"
+  }
+ },
+ "website|src/lib/cart.ts": {
+  "status": 200,
+  "body": {
+   "path": "src/lib/cart.ts",
+   "size": 204,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 5,
+   "text": "import { create } from 'zustand';\n\ntype Line = { id: string; name: string; qty: number; price: number };\n\nexport const useCart = create<{ lines: Line[]; total: number }>(() => ({ lines: [], total: 0 }));\n"
+  }
+ },
+ "website|src/app/layout.tsx": {
+  "status": 200,
+  "body": {
+   "path": "src/app/layout.tsx",
+   "size": 344,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 15,
+   "text": "import './globals.css';\nimport { Header } from '@/components/Header';\nimport { Footer } from '@/components/Footer';\n\nexport default function RootLayout({ children }: { children: React.ReactNode }) {\n  return (\n    <html lang=\"en\">\n      <body>\n        <Header items={0} />\n        {children}\n        <Footer />\n      </body>\n    </html>\n  );\n}\n"
+  }
+ },
+ "website|src/app/page.tsx": {
+  "status": 200,
+  "body": {
+   "path": "src/app/page.tsx",
+   "size": 290,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 7,
+   "text": "import { get } from '@/lib/api';\nimport { ProductCard } from '@/components/ProductCard';\n\nexport default async function Home() {\n  const products = await get<any[]>('/products?featured=1');\n  return <main className=\"grid\">{products.map((p) => <ProductCard key={p.slug} p={p} />)}</main>;\n}\n"
+  }
+ },
+ "website|src/app/checkout/page.tsx": {
+  "status": 200,
+  "body": {
+   "path": "src/app/checkout/page.tsx",
+   "size": 177,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 11,
+   "text": "import { Step1 } from './Step1';\nimport { Step2 } from './Step2';\n\nexport default function Checkout() {\n  return (\n    <main>\n      <Step1 />\n      <Step2 />\n    </main>\n  );\n}\n"
+  }
+ },
+ "website|src/app/checkout/Step1.tsx": {
+  "status": 200,
+  "body": {
+   "path": "src/app/checkout/Step1.tsx",
+   "size": 96,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 3,
+   "text": "export function Step1() {\n  return <section><h2>Contact</h2><input name=\"email\" /></section>;\n}\n"
+  }
+ },
+ "website|src/app/checkout/Step2.tsx": {
+  "status": 200,
+  "body": {
+   "path": "src/app/checkout/Step2.tsx",
+   "size": 364,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 13,
+   "text": "import { Input } from '@/components/ui/Input';\nimport { Button } from '@/components/ui/Button';\n\nexport function Step2() {\n  return (\n    <section className=\"step2\">\n      <h2>Delivery</h2>\n      <Input name=\"address\" placeholder=\"Street address\" />\n      <Input name=\"city\" placeholder=\"City\" />\n      <Button type=\"submit\">Pay now</Button>\n    </section>\n  );\n}\n"
+  }
+ },
+ "website|tests/cart.test.ts": {
+  "status": 200,
+  "body": {
+   "path": "tests/cart.test.ts",
+   "size": 187,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 6,
+   "text": "import { describe, expect, it } from 'vitest';\nimport { money } from '@/lib/format';\n\ndescribe('money', () => {\n  it('groups thousands', () => expect(money(4500)).toBe('NPR 4,500'));\n});\n"
+  }
+ },
+ "website|tests/checkout.test.ts": {
+  "status": 200,
+  "body": {
+   "path": "tests/checkout.test.ts",
+   "size": 191,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 6,
+   "text": "import { describe, expect, it } from 'vitest';\n\ndescribe('checkout', () => {\n  it.todo('collapses the optional address fields on phones');\n  it('has two steps', () => expect(2).toBe(2));\n});\n"
+  }
+ },
+ "website|config/site.json": {
+  "status": 200,
+  "body": {
+   "path": "config/site.json",
+   "size": 75,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 5,
+   "text": "{\n  \"name\": \"PhaseZero\",\n  \"currency\": \"NPR\",\n  \"freeShippingFrom\": 5000\n}\n"
+  }
+ },
+ "website|config/credentials.example.json": {
+  "status": 403,
+  "error": "credentials.example.json may hold secrets: ask for it with reveal=1",
+  "reveal": {
+   "status": 200,
+   "body": {
+    "path": "config/credentials.example.json",
+    "size": 168,
+    "mtime": 1790990000,
+    "truncated": false,
+    "lines": 4,
+    "text": "{\n  \"esewa\": { \"merchantId\": \"EPAYTEST\", \"secret\": \"demo-not-a-real-secret\" },\n  \"khalti\": { \"publicKey\": \"test_public_key_xxx\", \"secretKey\": \"test_secret_key_xxx\" }\n}\n"
+   }
+  }
+ },
+ "NestJs-Ecommerce-Backend|README.md": {
+  "status": 200,
+  "body": {
+   "path": "README.md",
+   "size": 163,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 8,
+   "text": "# NestJs-Ecommerce-Backend\n\nNestJS + Prisma API for the PhaseZero storefront.\n\n    npm run start:dev\n    npx prisma migrate dev\n\nModules: orders, stock, products.\n"
+  }
+ },
+ "NestJs-Ecommerce-Backend|package.json": {
+  "status": 200,
+  "body": {
+   "path": "package.json",
+   "size": 315,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 14,
+   "text": "{\n  \"name\": \"nestjs-ecommerce-backend\",\n  \"version\": \"0.9.0\",\n  \"scripts\": {\n    \"start:dev\": \"nest start --watch\",\n    \"test\": \"jest\",\n    \"test:e2e\": \"jest --config ./test/jest-e2e.json\"\n  },\n  \"dependencies\": {\n    \"@nestjs/common\": \"^11.0.0\",\n    \"@nestjs/core\": \"^11.0.0\",\n    \"@prisma/client\": \"^6.2.0\"\n  }\n}\n"
+  }
+ },
+ "NestJs-Ecommerce-Backend|nest-cli.json": {
+  "status": 200,
+  "body": {
+   "path": "nest-cli.json",
+   "size": 118,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 5,
+   "text": "{\n  \"$schema\": \"https://json.schemastore.org/nest-cli\",\n  \"collection\": \"@nestjs/schematics\",\n  \"sourceRoot\": \"src\"\n}\n"
+  }
+ },
+ "NestJs-Ecommerce-Backend|src/main.ts": {
+  "status": 200,
+  "body": {
+   "path": "src/main.ts",
+   "size": 228,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 8,
+   "text": "import { NestFactory } from '@nestjs/core';\nimport { AppModule } from './app.module';\n\nasync function bootstrap() {\n  const app = await NestFactory.create(AppModule);\n  await app.listen(process.env.PORT ?? 4000);\n}\nbootstrap();\n"
+  }
+ },
+ "NestJs-Ecommerce-Backend|src/app.module.ts": {
+  "status": 200,
+  "body": {
+   "path": "src/app.module.ts",
+   "size": 241,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 6,
+   "text": "import { Module } from '@nestjs/common';\nimport { OrdersModule } from './modules/orders/orders.module';\nimport { StockModule } from './modules/stock/stock.module';\n\n@Module({ imports: [OrdersModule, StockModule] })\nexport class AppModule {}\n"
+  }
+ },
+ "NestJs-Ecommerce-Backend|src/modules/stock/stock.module.ts": {
+  "status": 200,
+  "body": {
+   "path": "src/modules/stock/stock.module.ts",
+   "size": 257,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 6,
+   "text": "import { Module } from '@nestjs/common';\nimport { StockService } from './stock.service';\nimport { StockSyncService } from './stock-sync.service';\n\n@Module({ providers: [StockService, StockSyncService], exports: [StockService] })\nexport class StockModule {}\n"
+  }
+ },
+ "NestJs-Ecommerce-Backend|src/modules/stock/stock.service.ts": {
+  "status": 200,
+  "body": {
+   "path": "src/modules/stock/stock.service.ts",
+   "size": 537,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 16,
+   "text": "import { Injectable } from '@nestjs/common';\nimport { PrismaService } from '../../prisma.service';\n\n@Injectable()\nexport class StockService {\n  constructor(private readonly db: PrismaService) {}\n\n  async available(variantId: string): Promise<number> {\n    const v = await this.db.variant.findUniqueOrThrow({ where: { id: variantId } });\n    return v.onHand - v.reserved;\n  }\n\n  async release(variantId: string, qty: number) {\n    return this.db.variant.update({ where: { id: variantId }, data: { reserved: { decrement: qty } } });\n  }\n}\n"
+  }
+ },
+ "NestJs-Ecommerce-Backend|src/modules/stock/stock-sync.service.ts": {
+  "status": 200,
+  "body": {
+   "path": "src/modules/stock/stock-sync.service.ts",
+   "size": 458,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 13,
+   "text": "import { Injectable, OnEvent } from '@nestjs/common';\nimport { StockService } from './stock.service';\n\n@Injectable()\nexport class StockSyncService {\n  constructor(private readonly stock: StockService) {}\n\n  /** Give reserved stock back when an order is cancelled. */\n  @OnEvent('order.cancelled')\n  async reconcile(order: { lines: { variantId: string; qty: number }[] }) {\n    for (const l of order.lines) await this.stock.release(l.variantId, l.qty);\n  }\n}\n"
+  }
+ },
+ "NestJs-Ecommerce-Backend|src/modules/orders/orders.module.ts": {
+  "status": 200,
+  "body": {
+   "path": "src/modules/orders/orders.module.ts",
+   "size": 250,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 6,
+   "text": "import { Module } from '@nestjs/common';\nimport { OrdersController } from './orders.controller';\nimport { OrdersService } from './orders.service';\n\n@Module({ controllers: [OrdersController], providers: [OrdersService] })\nexport class OrdersModule {}\n"
+  }
+ },
+ "NestJs-Ecommerce-Backend|src/modules/orders/orders.service.ts": {
+  "status": 200,
+  "body": {
+   "path": "src/modules/orders/orders.service.ts",
+   "size": 380,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 13,
+   "text": "import { Injectable } from '@nestjs/common';\nimport { EventEmitter2 } from '@nestjs/event-emitter';\n\n@Injectable()\nexport class OrdersService {\n  constructor(private readonly events: EventEmitter2) {}\n\n  async cancel(id: string) {\n    const order = { id, lines: [] as { variantId: string; qty: number }[] };\n    this.events.emit('order.cancelled', order);\n    return order;\n  }\n}\n"
+  }
+ },
+ "NestJs-Ecommerce-Backend|src/modules/orders/orders.controller.ts": {
+  "status": 200,
+  "body": {
+   "path": "src/modules/orders/orders.controller.ts",
+   "size": 320,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 12,
+   "text": "import { Controller, Param, Post } from '@nestjs/common';\nimport { OrdersService } from './orders.service';\n\n@Controller('orders')\nexport class OrdersController {\n  constructor(private readonly orders: OrdersService) {}\n\n  @Post(':id/cancel')\n  cancel(@Param('id') id: string) {\n    return this.orders.cancel(id);\n  }\n}\n"
+  }
+ },
+ "NestJs-Ecommerce-Backend|prisma/schema.prisma": {
+  "status": 200,
+  "body": {
+   "path": "prisma/schema.prisma",
+   "size": 189,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 11,
+   "text": "datasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nmodel Variant {\n  id       String @id\n  sku      String @unique\n  onHand   Int\n  reserved Int    @default(0)\n}\n"
+  }
+ },
+ "NestJs-Ecommerce-Backend|prisma/migrations/20260928_stock_sync/migration.sql": {
+  "status": 200,
+  "body": {
+   "path": "prisma/migrations/20260928_stock_sync/migration.sql",
+   "size": 131,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 2,
+   "text": "-- reserved stock is given back when an order is cancelled\nALTER TABLE \"Variant\" ADD COLUMN \"reserved\" INTEGER NOT NULL DEFAULT 0;\n"
+  }
+ },
+ "NestJs-Ecommerce-Backend|test/stock.e2e-spec.ts": {
+  "status": 200,
+  "body": {
+   "path": "test/stock.e2e-spec.ts",
+   "size": 102,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 3,
+   "text": "describe('stock sync', () => {\n  it.todo('gives reserved stock back when an order is cancelled');\n});\n"
+  }
+ },
+ "NestJs-Ecommerce-Backend|test/orders.e2e-spec.ts": {
+  "status": 200,
+  "body": {
+   "path": "test/orders.e2e-spec.ts",
+   "size": 88,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 3,
+   "text": "describe('orders', () => {\n  it('cancels an order', () => expect(true).toBe(true));\n});\n"
+  }
+ },
+ "root|README.md": {
+  "status": 200,
+  "body": {
+   "path": "README.md",
+   "size": 163,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 5,
+   "text": "# phasezero\n\nOne folder per project: the storefront (`website`) and its API\n(`NestJs-Ecommerce-Backend`) sit side by side, plus the shared brand\nassets and notes.\n"
+  }
+ },
+ "root|notes.txt": {
+  "status": 200,
+  "body": {
+   "path": "notes.txt",
+   "size": 48,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 1,
+   "text": "launch checklist is in docs/launch-checklist.md\n"
+  }
+ },
+ "root|docs/launch-checklist.md": {
+  "status": 200,
+  "body": {
+   "path": "docs/launch-checklist.md",
+   "size": 128,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 6,
+   "text": "# Launch checklist\n\n- [x] payment sandbox\n- [x] size guide\n- [ ] checkout step 2 on phones\n- [ ] stock sync on cancelled orders\n"
+  }
+ },
+ "root|docs/plan.md": {
+  "status": 200,
+  "body": {
+   "path": "docs/plan.md",
+   "size": 88,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 5,
+   "text": "# Q4 plan\n\n1. Checkout redesign (website)\n2. Stock sync (backend)\n3. Nepali copy review\n"
+  }
+ },
+ "root|assets/logo.svg": {
+  "status": 200,
+  "body": {
+   "path": "assets/logo.svg",
+   "size": 253,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 4,
+   "text": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\" viewBox=\"0 0 64 64\">\n  <circle cx=\"32\" cy=\"32\" r=\"30\" fill=\"none\" stroke=\"#16a34a\" stroke-width=\"4\"/>\n  <path d=\"M20 44 L32 20 L44 44\" fill=\"none\" stroke=\"#16a34a\" stroke-width=\"4\"/>\n</svg>\n"
+  }
+ },
+ "ccboard|README.md": {
+  "status": 200,
+  "body": {
+   "path": "README.md",
+   "size": 124,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 4,
+   "text": "# ccboard\n\nPart of the ccboard project. This is demo content: the files tab of a project\nthat is not the focus of the demo.\n"
+  }
+ },
+ "ccboard|NOTES.md": {
+  "status": 200,
+  "body": {
+   "path": "NOTES.md",
+   "size": 37,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 3,
+   "text": "# Notes\n\n- ccboard: nothing pending.\n"
+  }
+ },
+ "hive|README.md": {
+  "status": 200,
+  "body": {
+   "path": "README.md",
+   "size": 127,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 4,
+   "text": "# hive\n\nPart of the HarnessAgents project. This is demo content: the files tab of a project\nthat is not the focus of the demo.\n"
+  }
+ },
+ "hive|NOTES.md": {
+  "status": 200,
+  "body": {
+   "path": "NOTES.md",
+   "size": 34,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 3,
+   "text": "# Notes\n\n- hive: nothing pending.\n"
+  }
+ },
+ "server|README.md": {
+  "status": 200,
+  "body": {
+   "path": "README.md",
+   "size": 130,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 4,
+   "text": "# server\n\nPart of the internalSystem project. This is demo content: the files tab of a project\nthat is not the focus of the demo.\n"
+  }
+ },
+ "server|NOTES.md": {
+  "status": 200,
+  "body": {
+   "path": "NOTES.md",
+   "size": 36,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 3,
+   "text": "# Notes\n\n- server: nothing pending.\n"
+  }
+ },
+ "mailgate|README.md": {
+  "status": 200,
+  "body": {
+   "path": "README.md",
+   "size": 126,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 4,
+   "text": "# mailgate\n\nPart of the mailgate project. This is demo content: the files tab of a project\nthat is not the focus of the demo.\n"
+  }
+ },
+ "mailgate|NOTES.md": {
+  "status": 200,
+  "body": {
+   "path": "NOTES.md",
+   "size": 38,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 3,
+   "text": "# Notes\n\n- mailgate: nothing pending.\n"
+  }
+ },
+ "vault|README.md": {
+  "status": 200,
+  "body": {
+   "path": "README.md",
+   "size": 123,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 4,
+   "text": "# vault\n\nPart of the My_Brain project. This is demo content: the files tab of a project\nthat is not the focus of the demo.\n"
+  }
+ },
+ "vault|NOTES.md": {
+  "status": 200,
+  "body": {
+   "path": "NOTES.md",
+   "size": 35,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 3,
+   "text": "# Notes\n\n- vault: nothing pending.\n"
+  }
+ },
+ "api|README.md": {
+  "status": 200,
+  "body": {
+   "path": "README.md",
+   "size": 120,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 4,
+   "text": "# api\n\nPart of the petroit project. This is demo content: the files tab of a project\nthat is not the focus of the demo.\n"
+  }
+ },
+ "api|NOTES.md": {
+  "status": 200,
+  "body": {
+   "path": "NOTES.md",
+   "size": 33,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 3,
+   "text": "# Notes\n\n- api: nothing pending.\n"
+  }
+ },
+ "web|README.md": {
+  "status": 200,
+  "body": {
+   "path": "README.md",
+   "size": 129,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 4,
+   "text": "# web\n\nPart of the reporting_system project. This is demo content: the files tab of a project\nthat is not the focus of the demo.\n"
+  }
+ },
+ "web|NOTES.md": {
+  "status": 200,
+  "body": {
+   "path": "NOTES.md",
+   "size": 33,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 3,
+   "text": "# Notes\n\n- web: nothing pending.\n"
+  }
+ },
+ "notebooks|README.md": {
+  "status": 200,
+  "body": {
+   "path": "README.md",
+   "size": 127,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 4,
+   "text": "# notebooks\n\nPart of the research project. This is demo content: the files tab of a project\nthat is not the focus of the demo.\n"
+  }
+ },
+ "notebooks|NOTES.md": {
+  "status": 200,
+  "body": {
+   "path": "NOTES.md",
+   "size": 39,
+   "mtime": 1790990000,
+   "truncated": false,
+   "lines": 3,
+   "text": "# Notes\n\n- notebooks: nothing pending.\n"
+  }
+ },
+ "website|public/favicon.ico": {
+  "status": 415,
+  "error": "favicon.ico is a binary file"
+ },
+ "root|assets/brand-sheet.pdf": {
+  "status": 415,
+  "error": "brand-sheet.pdf is a binary file"
+ }
+}

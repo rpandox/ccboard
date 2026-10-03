@@ -212,3 +212,7 @@ textarea.composer:focus { outline:none; border-color:var(--sig); box-shadow:0 0 
 form.peek-send, #keys .send { align-items:flex-end; }                /* the buttons stay on the last line while the box grows */
 @media (pointer:coarse) { textarea.composer { font-size:16px; } }    /* 16 px keeps iOS Safari from zooming on focus */
 html.force-coarse textarea.composer { font-size:16px; height:auto; min-height:var(--tap); line-height:1.4; }
+
+/* tabs: a tap target on touch (the Files tab was 32 px wide) */
+@media (pointer:coarse) { .bp5-tab { min-width:44px; } }
+html.force-coarse .bp5-tab { min-width:44px; }
