@@ -38,7 +38,23 @@
               "needs_attention": false,
               "tmux": "ccboard--ccboard--s1",
               "name": "s1",
-              "agent": "claude"
+              "agent": "claude",
+              "agent_session_id": "c3a9f5d0-7e14-4b88-a6c2-90d4b1e7f503",
+              "row_id": 1,
+              "flags": {
+                "registry": {
+                  "status": "idle",
+                  "name": "push deep links",
+                  "name_source": "auto",
+                  "pid": 41207,
+                  "bridge": true,
+                  "kind": "cli",
+                  "job": null,
+                  "at": "2026-10-02T22:00:00+00:00",
+                  "waiting_for": null
+                }
+              },
+              "task": null
             },
             {
               "created": 1790961840,
@@ -69,7 +85,11 @@
               "needs_attention": false,
               "tmux": "ccboard--ccboard--cx1",
               "name": "cx1",
-              "agent": "codex"
+              "agent": "codex",
+              "agent_session_id": "019a2b4c-8d1e-7f30-b5a6-3c9d0e1f2a04",
+              "row_id": 2,
+              "flags": {},
+              "task": null
             }
           ],
           "devcontainer": false,
@@ -231,7 +251,11 @@
               "needs_attention": true,
               "tmux": "petroit--api--s2",
               "name": "s2",
-              "agent": "claude"
+              "agent": "claude",
+              "agent_session_id": "e2b6c4a8-1f57-4d93-8c0e-5a7b3d9f1c06",
+              "row_id": 3,
+              "flags": {},
+              "task": null
             },
             {
               "created": 1790901360,
@@ -262,7 +286,11 @@
               "needs_attention": true,
               "tmux": "petroit--api--s1",
               "name": "s1",
-              "agent": "claude"
+              "agent": "claude",
+              "agent_session_id": "a7d1e8f2-4c39-4a60-b1d5-6e2f9c0a3b05",
+              "row_id": 4,
+              "flags": {},
+              "task": null
             }
           ],
           "devcontainer": false,
@@ -320,7 +348,16 @@
               "needs_attention": false,
               "tmux": "phasezero--NestJs-Ecommerce-Backend--t-stock-sync",
               "name": "t-stock-sync",
-              "agent": "claude"
+              "agent": "claude",
+              "agent_session_id": "0b8e47a4-52c6-4d1b-8f33-7a9c2e6d1f02",
+              "row_id": 5,
+              "flags": {},
+              "task": {
+                "id": 5,
+                "title": "Sync variant stock when an order is cancelled",
+                "phase": "running",
+                "auto_close": false
+              }
             }
           ],
           "devcontainer": true,
@@ -361,7 +398,16 @@
               "needs_attention": true,
               "tmux": "phasezero--website--t-checkout-redesign",
               "name": "t-checkout-redesign",
-              "agent": "claude"
+              "agent": "claude",
+              "agent_session_id": "6f1d2c9e-3b7a-4c1e-9a52-1d0e5b7c8a01",
+              "row_id": 6,
+              "flags": {},
+              "task": {
+                "id": 4,
+                "title": "Redesign checkout step 2 for mobile",
+                "phase": "running",
+                "auto_close": false
+              }
             }
           ],
           "devcontainer": false,
@@ -403,7 +449,11 @@
             "needs_attention": false,
             "tmux": "phasezero--root--s1",
             "name": "s1",
-            "agent": "claude"
+            "agent": "claude",
+            "agent_session_id": "94f0a7c3-6b28-4e15-a9d7-2c1e8b5d4f07",
+            "row_id": 7,
+            "flags": {},
+            "task": null
           }
         ],
         "root": true,
@@ -502,7 +552,9 @@
       "glyph": "◆",
       "hooks": {
         "installed": true
-      }
+      },
+      "authMethod": "claude.ai",
+      "email": "demo@example.com"
     },
     "codex": {
       "installed": true,
@@ -560,7 +612,15 @@
         "last_message": "Added StockSyncService.reconcile() and wired it to the order.cancelled event; the migration is next",
         "needs_attention": false,
         "command": "claude"
-      }
+      },
+      "agent": "claude",
+      "mode": "worktree",
+      "auto_close": false,
+      "parent_id": null,
+      "chain_id": null,
+      "result": null,
+      "phase": "running",
+      "session_row": 5
     },
     {
       "ci": null,
@@ -600,7 +660,15 @@
         "last_message": "Claude needs your permission to use Bash",
         "needs_attention": true,
         "command": "claude"
-      }
+      },
+      "agent": "claude",
+      "mode": "worktree",
+      "auto_close": false,
+      "parent_id": null,
+      "chain_id": null,
+      "result": null,
+      "phase": "running",
+      "session_row": 6
     },
     {
       "ci": {
@@ -666,7 +734,15 @@
       "preview_url": null,
       "created_at": "2026-09-29T17:24:00+00:00",
       "column": "pr",
-      "session": null
+      "session": null,
+      "agent": "claude",
+      "mode": "worktree",
+      "auto_close": false,
+      "parent_id": null,
+      "chain_id": null,
+      "result": null,
+      "phase": "done",
+      "session_row": null
     },
     {
       "ci": null,
@@ -691,7 +767,15 @@
       "preview_url": null,
       "created_at": "2026-10-02T03:00:00+00:00",
       "column": "done",
-      "session": null
+      "session": null,
+      "agent": "claude",
+      "mode": "worktree",
+      "auto_close": false,
+      "parent_id": null,
+      "chain_id": null,
+      "result": null,
+      "phase": "done",
+      "session_row": null
     },
     {
       "ci": {
@@ -757,7 +841,15 @@
       "preview_url": null,
       "created_at": "2026-09-27T05:24:00+00:00",
       "column": "merged",
-      "session": null
+      "session": null,
+      "agent": "claude",
+      "mode": "worktree",
+      "auto_close": false,
+      "parent_id": null,
+      "chain_id": null,
+      "result": null,
+      "phase": "done",
+      "session_row": null
     }
   ],
   "jobs": [
@@ -778,7 +870,8 @@
       "next_run_at": "2026-10-04T02:00:00+00:00",
       "last_run_at": "2026-10-03T02:00:00+00:00",
       "last_status": "ok",
-      "created_at": "2026-09-27T03:00:00+00:00"
+      "created_at": "2026-09-27T03:00:00+00:00",
+      "agent": "claude"
     },
     {
       "id": 1,
@@ -797,7 +890,8 @@
       "next_run_at": null,
       "last_run_at": "2026-09-30T22:12:00+00:00",
       "last_status": "ok",
-      "created_at": "2026-09-30T19:48:01+00:00"
+      "created_at": "2026-09-30T19:48:01+00:00",
+      "agent": "claude"
     }
   ],
   "runs": [
@@ -1082,5 +1176,9 @@
   "version": "demo",
   "demo": {
     "epoch": 1790996400
+  },
+  "setup": {
+    "first_run": false,
+    "ok": true
   }
 }

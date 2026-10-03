@@ -70,3 +70,124 @@ def test_create_and_archive_task(lite_client, projects_dir, fake_tmux, monkeypat
     assert a["archived"] == t["id"] and t["tmux"] not in fake_tmux["sessions"]
     assert all(x["id"] != t["id"] for x in lite_client.get("/api/state", headers=H).json()["tasks"])
     assert lite_client.post("/api/tasks/999/archive", headers=H, json={}).status_code == 404
+
+
+# ---- v0.5.4: tasks v2 (phases, unassigned tasks, per-agent worktrees) ------------------------------------------------
+def commit_init(path):
+    git_init(path)
+    subprocess.run(["git", "-C", str(path), "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q",
+                    "--allow-empty", "-m", "init"], check=True)
+
+
+def test_derive_status_phase():
+    base = {"pr_url": None, "archived_at": None}
+    waiting, working, errored, done = {"state": "waiting"}, {"state": "working"}, {"state": "errored"}, {"state": "done"}
+    for phase in ("backlog", "queued"):                      # no session yet (or none that matters): the Backlog column
+        for s in (None, working, waiting):
+            assert tasks.derive_status({**base, "phase": phase}, s) == "backlog"
+    for s in (None, working, done):                          # failed is always the user's problem
+        assert tasks.derive_status({**base, "phase": "failed"}, s) == "needs_you"
+    for s in (None, working, waiting, errored):              # cancelled is over, whatever the session shows
+        assert tasks.derive_status({**base, "phase": "cancelled"}, s) == "done"
+    assert tasks.derive_status({**base, "phase": "done"}, None) == "done"
+    assert tasks.derive_status({**base, "phase": "done"}, done) == "done"
+    assert tasks.derive_status({**base, "phase": "done"}, working) == "done"
+    assert tasks.derive_status({**base, "phase": "done"}, waiting) == "needs_you"
+    assert tasks.derive_status({**base, "phase": "done"}, errored) == "needs_you"
+
+
+def test_derive_status_running_and_legacy_rows_use_the_session_logic():
+    base = {"pr_url": None, "archived_at": None}
+    for phase in ("running", None, ""):                      # legacy rows (no phase key, or the column default) behave as before
+        t = {**base, "phase": phase}
+        assert tasks.derive_status(t, None) == "done"
+        assert tasks.derive_status(t, {"state": "working"}) == "in_progress"
+        assert tasks.derive_status(t, {"state": "unknown"}) == "in_progress"
+        assert tasks.derive_status(t, {"state": "waiting"}) == "needs_you"
+        assert tasks.derive_status(t, {"state": "errored"}) == "needs_you"
+        assert tasks.derive_status(t, {"state": "ended"}) == "done"
+
+
+def test_derive_status_archived_merged_and_pr_beat_phase():
+    for phase in ("backlog", "queued", "running", "done", "failed", "cancelled"):
+        t = {"phase": phase, "pr_url": None, "archived_at": None}
+        assert tasks.derive_status({**t, "archived_at": "x", "pr_url": "u", "pr_state": "MERGED"}, None) == "archived"
+        assert tasks.derive_status({**t, "pr_url": "u", "pr_state": "MERGED"}, {"state": "waiting"}) == "merged"
+        assert tasks.derive_status({**t, "status": "merged"}, None) == "merged"
+        assert tasks.derive_status({**t, "pr_url": "u"}, {"state": "waiting"}) == "pr"
+    assert set(tasks.PHASES) == {"backlog", "queued", "running", "done", "failed", "cancelled"}
+
+
+def test_has_worktree_and_task_worktree(tmp_path):
+    assert tasks.has_worktree({"worktree": "/p/r/.claude/worktrees/x"})
+    for t in ({"worktree": ""}, {"worktree": None}, {"worktree": "  "}, {}, None):
+        assert not tasks.has_worktree(t), t
+        assert tasks.task_worktree(t) is None
+    assert tasks.task_worktree({"worktree": str(tmp_path / "w")}) == tmp_path / "w"
+    # why the guard exists: Path('') is the current directory, so is_dir() is true and git would run in the board's cwd
+    from pathlib import Path
+    assert Path("").is_dir()
+
+
+def test_worktree_path_per_agent(tmp_path):
+    assert tasks.worktree_path(tmp_path, "fix") == tmp_path / ".claude" / "worktrees" / "fix"
+    assert tasks.worktree_path(tmp_path, "fix", "claude") == tmp_path / ".claude" / "worktrees" / "fix"
+    assert tasks.worktree_path(tmp_path, "fix", "codex") == tmp_path / ".ccboard" / "worktrees" / "fix"
+    assert tasks.worktree_path(tmp_path, "fix", agent="anything-else") == tmp_path / ".ccboard" / "worktrees" / "fix"
+    assert tasks.worktree_path(tmp_path, "fix", None) == tmp_path / ".claude" / "worktrees" / "fix"      # legacy rows have no agent
+
+
+def test_unique_slug_sees_both_worktree_folders(tmp_path):
+    (tmp_path / ".ccboard" / "worktrees" / "fix").mkdir(parents=True)
+    assert tasks.unique_slug(tmp_path, "fix", set()) == "fix-2"
+    (tmp_path / ".claude" / "worktrees" / "fix-2").mkdir(parents=True)
+    assert tasks.unique_slug(tmp_path, "fix", set()) == "fix-3"
+
+
+def test_ensure_excluded_writes_both_folders_once(tmp_path):
+    git_init(tmp_path / "r")
+    tasks.ensure_excluded(tmp_path / "r")
+    tasks.ensure_excluded(tmp_path / "r")
+    text = (tmp_path / "r" / ".git" / "info" / "exclude").read_text()
+    assert text.count(".claude/worktrees/") == 1 and text.count(".ccboard/worktrees/") == 1
+    assert text.strip().endswith(".claude/worktrees/")
+    # a repo that only has the old entry gets the new one added, without duplicating the old
+    excl = tmp_path / "r2" / ".git" / "info" / "exclude"
+    git_init(tmp_path / "r2")
+    excl.write_text("*.log\n.claude/worktrees/\n")
+    tasks.ensure_excluded(tmp_path / "r2")
+    assert excl.read_text() == "*.log\n.claude/worktrees/\n.ccboard/worktrees/\n"
+    # a file without a trailing newline is not glued onto
+    excl.write_text("*.log")
+    tasks.ensure_excluded(tmp_path / "r2")
+    assert excl.read_text().splitlines() == ["*.log", ".ccboard/worktrees/", ".claude/worktrees/"]
+
+
+def test_remove_worktree_per_agent(tmp_path):
+    repo = tmp_path / "r"
+    commit_init(repo)
+    wt = tasks.worktree_path(repo, "x", "codex")
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "-b", "br-x", str(wt)], check=True)
+    assert wt.is_dir()
+    assert tasks.remove_worktree(repo, "x") is None            # the default only knows Claude's folder: nothing there, nothing removed
+    assert wt.is_dir()
+    assert tasks.remove_worktree(repo, "x", agent="codex") is None
+    assert not wt.exists()
+    wt2 = tasks.worktree_path(repo, "y", "codex")              # or hand over the stored path
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "-b", "br-y", str(wt2)], check=True)
+    assert tasks.remove_worktree(repo, "y", force=True, path=wt2) is None
+    assert not wt2.exists()
+    wt3 = tasks.worktree_path(repo, "z")                       # Claude's folder through the default, as before
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "-b", "br-z", str(wt3)], check=True)
+    assert tasks.remove_worktree(repo, "z") is None and not wt3.exists()
+
+
+def test_tasks_module_does_not_import_agents():
+    import ast
+    import pathlib
+    tree = ast.parse(pathlib.Path(tasks.__file__).read_text())
+    mods = {n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)} | \
+           {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+    assert not any(m == "agents" or m.startswith(("agents.", "app.agents")) for m in mods), mods
+    imported = {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.level == 1 and not n.module for a in n.names}
+    assert "agents" not in imported, imported

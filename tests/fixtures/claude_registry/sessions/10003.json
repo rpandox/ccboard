@@ -1,0 +1,35 @@
+{
+ "pid": 10003,
+ "sessionId": "2e0124bf-15b5-4b64-93d9-0659b12ab0f3",
+ "cwd": "/srv/projects/demo/repo",
+ "startedAt": 1790714243881,
+ "procStart": "Tue Sep 29 19:38:10 2026",
+ "version": "2.1.285",
+ "peerProtocol": 1,
+ "peerFeatures": [
+  "notify_idle",
+  "reply_across_default_dirs",
+  "artifact_yield"
+ ],
+ "kind": "bg",
+ "entrypoint": "cli",
+ "pidDomain": "darwin",
+ "messagingSocketPath": "/tmp/cc-socks/10003.sock",
+ "name": "resort system build",
+ "nameSince": 1790915412022,
+ "agent": "claude",
+ "jobId": "a07fdedf",
+ "status": "waiting",
+ "updatedAt": 1790960730269,
+ "statusUpdatedAt": 1790960730269,
+ "bridgeSessionId": null,
+ "nameSource": "auto",
+ "formerNames": [
+  {
+   "name": "a07fdedf",
+   "until": 1790715870298,
+   "sessionId": "a07fdedf-b0ce-4509-9099-be1d6070a788"
+  }
+ ],
+ "waitingFor": "permission prompt"
+}

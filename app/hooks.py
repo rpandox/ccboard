@@ -9,6 +9,7 @@ from pathlib import Path
 
 from . import notify, projects, tmux
 from .config import settings
+from .db import SKIP_EVENTS
 
 TOKEN_HEADER = "x-ccboard-token"
 MAX_BODY = 512 * 1024
@@ -128,8 +129,8 @@ def _last_screen_line(name: str) -> str | None:
     return None
 
 
-def apply(db, name: str, event: str, payload: dict) -> dict:
-    """Update the session row for one hook event. Returns what changed."""
+def apply(db, name: str, event: str, payload: dict, agent: str | None = None) -> dict:
+    """Update the session row for one hook event. Returns what changed. `agent` (the row's agent) is recorded on the stored event."""
     sid = payload.get("session_id") if isinstance(payload.get("session_id"), str) else None
     kind = None
     message = None
@@ -154,6 +155,10 @@ def apply(db, name: str, event: str, payload: dict) -> dict:
         if stats["rate_limits"]:
             db.kv_set("rate_limits", stats["rate_limits"])
         return {"session": name, "event": event, "stats": True}
+
+    if event in SKIP_EVENTS:
+        # PostToolBatch: db.add_event never stores it (statusline is handled above), and it must not stamp last_event either
+        return {"session": name, "event": event, "skipped": True}
 
     if event == "SessionStart":
         state = "idle"
@@ -186,7 +191,7 @@ def apply(db, name: str, event: str, payload: dict) -> dict:
         kind = payload.get("matcher")
 
     db.set_state(name, state, event, message=message, prompt=prompt, claude_session_id=sid, attention=attention)
-    db.add_event(name, event, str(kind) if kind else None, message, payload)
+    db.add_event(name, event, str(kind) if kind else None, message, payload, agent=agent)
     if attention and state:
         notify.notify_session(name, state, message, str(kind) if kind else None)
     return {"session": name, "event": event, "state": state, "kind": kind}

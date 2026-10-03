@@ -49,7 +49,47 @@ function placeholderPage(id) {
   };
 }
 
-registerPage('project', placeholderPage('project'));
+/* Project page: v0.5.6 builds the real one (tree, tabs, files). Until then the route carries the quick links that matter
+   every day: open the project folder or any of its repos in code-server, and the roster rows live on Home / Agents. */
+function projectLinks(route) {
+  const st = typeof currentState === 'function' ? currentState() : null;
+  const name = route && route.params && route.params.project;
+  const p = st && (st.projects || []).find((x) => x.name === name);
+  const box = el('div', { class: 'proj-links' });
+  if (!p) {
+    box.append(el('span', { class: 'dim', text: st ? 'unknown project' : 'loading…' }));
+    return box;
+  }
+  const port = st.config && st.config.code_https_port;
+  const open = (label, path) => el('a', { class: 'btn small', href: codeServerUrl(path), target: '_blank', rel: 'noopener', title: path }, ic('code'), label);
+  const row = el('div', { class: 'proj-row' }, el('span', { class: 'lbl', text: 'code-server' }));
+  if (!port) row.append(el('span', { class: 'dim', text: 'code-server port unknown (rerun install.sh)' }));
+  else {
+    row.append(open('project folder', p.path));
+    for (const r of (p.repos || [])) row.append(open(r.name, r.path));
+  }
+  box.append(row);
+  return box;
+}
+
+function projectPlaceholderPage() {
+  const base = placeholderPage('project');
+  let links = null;
+  const draw = (route) => { if (!links) return; links.textContent = ''; links.append(projectLinks(route)); };
+  return Object.assign({}, base, {
+    mount(root, route) {
+      links = el('div', { class: 'proj-head' });
+      root.append(links);
+      base.mount(root, route);
+      draw(route);
+    },
+    update(st, route) { draw(route); },                       // the first state arrives after mount: fill the links then
+    onRoute(route) { base.onRoute(route); draw(route); },
+    unmount() { links = null; base.unmount(); },
+  });
+}
+
+registerPage('project', projectPlaceholderPage());
 registerPage('quad', placeholderPage('quad'));
 registerPage('usage', placeholderPage('usage'));
 registerPage('memory', placeholderPage('memory'));

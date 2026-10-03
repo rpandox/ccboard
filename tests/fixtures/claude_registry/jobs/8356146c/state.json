@@ -1,0 +1,58 @@
+{
+ "state": "done",
+ "detail": "",
+ "tempo": "idle",
+ "inFlight": {
+  "tasks": 1,
+  "queued": 0,
+  "kinds": [
+   "artifact_watch"
+  ],
+  "drainableMonitors": 1
+ },
+ "tokens": 122227,
+ "output": {
+  "result": "The 21-page bilingual Daily Register Guide PDF is at `/home/user/path and has been sent to you."
+ },
+ "children": [
+  {
+   "id": "guide.html",
+   "href": "https://claude.ai/artifact/D1Fveo6YyA1NHdn2JJSw3V",
+   "kind": "frame",
+   "title": "Daily Register Guide"
+  }
+ ],
+ "linkScanOffset": 13612400,
+ "linkScanPath": "",
+ "template": "claude",
+ "respawnFlags": [
+  "--agent",
+  "claude",
+  "--permission-mode",
+  "plan",
+  "--model",
+  "opusplan"
+ ],
+ "providerEnv": {
+  "CLAUDE_CODE_SUBAGENT_MODEL": "claude-haiku-4-5-20251001"
+ },
+ "intent": "Fix the flaky CI test and open a PR",
+ "name": "deploy logs ubu2",
+ "nameSource": "auto",
+ "sessionId": "8356146c-1b32-440e-a3e9-67ce77029888",
+ "resumeSessionId": "8356146c-1b32-440e-a3e9-67ce77029888",
+ "daemonShort": "8356146c",
+ "cliVersion": "2.1.284",
+ "cwd": "/srv/projects/demo/repo",
+ "createdAt": "2026-09-29T11:28:54.980Z",
+ "updatedAt": "2026-10-02T20:27:10.666Z",
+ "firstTerminalAt": "2026-09-29T11:43:14.036Z",
+ "lastTerminalAt": "2026-09-29T16:30:44.579Z",
+ "originCwd": "/srv/projects/demo/repo",
+ "bridgeSessionId": "fixture",
+ "bridgeOwnerAccountUuid": "fixture",
+ "bridgeOwnerOrganizationUuid": "fixture",
+ "bridgeOutboundOnly": false,
+ "backend": "daemon",
+ "bridgeNoHistoryBackfill": true
+}

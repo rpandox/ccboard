@@ -1,0 +1,33 @@
+{
+ "pid": 10001,
+ "sessionId": "c7725076-aa65-4020-9087-97c18a3d922b",
+ "cwd": "/srv/projects/demo/repo",
+ "startedAt": 1790953069702,
+ "procStart": "Fri Oct  2 14:57:40 2026",
+ "version": "2.1.287",
+ "peerProtocol": 1,
+ "peerFeatures": [
+  "notify_idle",
+  "reply_across_default_dirs",
+  "artifact_yield"
+ ],
+ "kind": "bg",
+ "entrypoint": "cli",
+ "pidDomain": "darwin",
+ "messagingSocketPath": "/tmp/cc-socks/10001.sock",
+ "name": "ccboard-v0.1-planning",
+ "nameSince": 1790958516653,
+ "jobId": "4f9978a5",
+ "updatedAt": 1791002586762,
+ "status": "busy",
+ "statusUpdatedAt": 1791002586762,
+ "nameSource": "auto",
+ "bridgeSessionId": "fixture",
+ "formerNames": [
+  {
+   "name": "ccboard-dashboard-redesign",
+   "until": 1790958516653,
+   "sessionId": "c7725076-aa65-4020-9087-97c18a3d922b"
+  }
+ ]
+}

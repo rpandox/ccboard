@@ -1,0 +1,38 @@
+{
+ "pid": 10002,
+ "sessionId": "55bfe763-48a3-4f46-8d95-1a5b8980ff90",
+ "cwd": "/srv/projects/demo/repo",
+ "startedAt": 1790250508089,
+ "procStart": "Thu Sep 24 09:42:56 2026",
+ "version": "2.1.281",
+ "peerProtocol": 1,
+ "peerFeatures": [
+  "notify_idle",
+  "reply_across_default_dirs",
+  "artifact_yield"
+ ],
+ "kind": "bg",
+ "entrypoint": "cli",
+ "pidDomain": "darwin",
+ "messagingSocketPath": "/tmp/cc-socks/10002.sock",
+ "name": "m-hvac-mail",
+ "nameSince": 1790361356708,
+ "jobId": "55bfe763",
+ "status": "idle",
+ "updatedAt": 1790995960305,
+ "statusUpdatedAt": 1790995960305,
+ "nameSource": "user",
+ "bridgeSessionId": null,
+ "formerNames": [
+  {
+   "name": "Minnesota HVAC dataset for AI adoption analysis",
+   "until": 1790361356708,
+   "sessionId": "55bfe763-48a3-4f46-8d95-1a5b8980ff90"
+  },
+  {
+   "name": "hvac-outreach-mailgate",
+   "until": 1790359464480,
+   "sessionId": "55bfe763-48a3-4f46-8d95-1a5b8980ff90"
+  }
+ ]
+}

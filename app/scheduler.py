@@ -2,9 +2,7 @@
 concurrency cap and quota awareness. Results become task cards (worktree + branch), resumable in a terminal."""
 from __future__ import annotations
 
-import json
 import logging
-import re
 import shlex
 import subprocess
 import threading
@@ -13,7 +11,8 @@ from pathlib import Path
 
 from croniter import croniter
 
-from . import claude_auth, notify, projects, tasks
+from . import agents, claude_auth, notify, projects, tasks
+from .agents.claude import FORBIDDEN_ARG_PARTS, HEADLESS_MODES, LIMIT_MSG_RE, RATE_RE, parse_result   # noqa: F401 (re-exported: they live in the adapter now)
 from .config import settings
 from .db import now as db_now
 
@@ -23,35 +22,25 @@ CAP = 2                    # concurrent headless runs
 QUOTA_MAX_PCT = 85.0       # skip launching when the 5-hour window is above this
 DEFER_MINUTES = 15
 RUN_TIMEOUT = 3600
-MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk")   # bypassPermissions only inside a devcontainer (v0.4.5)
-RATE_RE = re.compile(r"rate.?limit|usage limit|limit reached|too many requests", re.I)
-# The way Claude Code words a hit limit; checked against the END of a result so a long run cut short mid-way is
-# caught without flagging a run that merely discussed rate limiting somewhere in its summary.
-LIMIT_MSG_RE = re.compile(r"hit your [^.\n]{0,30}limit|usage limit|limit (has been |was )?reached|out of (usage|credits)|"
-                          r"too many requests|\brate.?limited\b", re.I)
+MODES = HEADLESS_MODES     # bypassPermissions only inside a devcontainer (v0.4.5); defined in agents/claude.py with the rest of the argv rules
 BACKOFF_MINUTES = 30       # after a run comes back rate-limited, defer everything this long (or until the window resets)
 BACKOFF_MAX_HOURS = 5
 KV_BACKOFF = "sched_backoff_until"
 KV_LOGIN_ALERT = "sched_login_alerted"
 
 
-FORBIDDEN_ARG_PARTS = ("dangerously", "bypasspermissions", "--permission-mode", "--settings", "--setting-sources",
-                       "--permission-prompt", "--allow-dangerously")
-
-
-def check_extra_args(args: str | None) -> list[str]:
+def check_extra_args(args: str | None, agent: str = "claude") -> list[str]:
     """Extra CLI args for unattended runs: the permission mode is set by the job itself and may never be
-    escalated through the args (any spelling, '=' forms, settings overrides)."""
+    escalated through the args (any spelling, '=' forms, settings overrides). The rules live in the agent adapter."""
     if not args:
         return []
     try:
         parts = shlex.split(args)
     except ValueError as e:
         raise ValueError(f"args: {e}")
-    for p in parts:
-        low = p.lower()
-        if any(f in low for f in FORBIDDEN_ARG_PARTS):
-            raise ValueError(f"argument not allowed for unattended runs: {p}")
+    bad = agents.get(agent).forbidden_extra(parts, interactive=False)
+    if bad:
+        raise ValueError(f"argument not allowed for unattended runs: {bad}")
     return parts
 
 
@@ -122,36 +111,8 @@ def set_backoff(db, resets_at=None) -> str:
 
 
 def build_command(prompt: str, slug: str, mode: str, max_turns: int, budget: float | None, extra: list[str]) -> list[str]:
-    cmd = ["claude", "-p", prompt, "--worktree", slug, "--output-format", "json", "--permission-mode", mode,
-           "--max-turns", str(max_turns)]
-    if budget:
-        cmd += ["--max-budget-usd", f"{budget:.2f}"]
-    return cmd + extra
-
-
-def parse_result(stdout: str) -> dict:
-    """claude -p --output-format json -> {text, session_id, cost, turns, is_error, subtype, rate_limited}."""
-    data = None
-    for line in reversed([ln for ln in stdout.splitlines() if ln.strip()]):
-        try:
-            data = json.loads(line)
-            break
-        except ValueError:
-            continue
-    if not isinstance(data, dict):
-        return {"text": stdout.strip()[-20000:], "session_id": None, "cost": None, "turns": None, "is_error": True,
-                "subtype": "no_json", "rate_limited": bool(RATE_RE.search(stdout or ""))}
-    text = data.get("result") if isinstance(data.get("result"), str) else json.dumps(data.get("result"))
-    err = bool(data.get("is_error")) or str(data.get("subtype", "")).startswith("error")
-    turns = data.get("num_turns")
-    mentions_limit = bool(RATE_RE.search(text or ""))
-    # A rate-limited run can come back as "success" with the limit text as its only output (claude-code #79500),
-    # so a short single-turn result that talks about limits counts too.
-    rate_limited = (mentions_limit and err) or str(data.get("subtype", "")) == "error_rate_limit" or \
-        (mentions_limit and (turns is None or turns <= 1) and len(text or "") < 300) or \
-        bool(LIMIT_MSG_RE.search((text or "")[-500:]))     # a limit hit after several turns ends the output with its message
-    return {"text": (text or "")[:20000], "session_id": data.get("session_id"), "cost": data.get("total_cost_usd"),
-            "turns": turns, "is_error": err, "subtype": data.get("subtype"), "rate_limited": rate_limited}
+    return agents.get("claude").headless_argv(prompt, mode=mode, max_turns=max_turns, budget=budget, extra=extra, cwd=None,
+                                              slug=slug, last_message_file=None)
 
 
 def run_job(db, job: dict, run_id: int) -> dict:
@@ -174,11 +135,7 @@ def run_job(db, job: dict, run_id: int) -> dict:
         tasks.ensure_excluded(rpath)
         cp = subprocess.run(cmd, cwd=str(rpath), capture_output=True, text=True, timeout=int(job.get("timeout_s") or RUN_TIMEOUT),
                             stdin=subprocess.DEVNULL)
-        res = parse_result(cp.stdout)
-        if cp.returncode != 0 and not res["text"]:
-            res["text"] = (cp.stderr or "").strip()[-4000:]
-        if not res["rate_limited"] and cp.returncode != 0 and RATE_RE.search(cp.stderr or ""):
-            res["rate_limited"] = True                       # the CLI reported the limit on stderr and gave up
+        res = agents.get("claude").parse_headless(cp.stdout, cp.stderr, cp.returncode)
         status = "rate_limited" if res["rate_limited"] else ("error" if res["is_error"] or cp.returncode != 0 else "ok")
         if status == "rate_limited":
             log.warning("job %s hit a rate limit; deferring all runs until %s", job["id"], set_backoff(db, quota_state(db).get("resets_at")))

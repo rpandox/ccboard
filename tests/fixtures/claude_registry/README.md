@@ -1,0 +1,1 @@
+Sanitised copies of real `~/.claude/sessions/<pid>.json` (the live session registry; `.key` files omitted) and `~/.claude/jobs/<id>/state.json` (background job state) from Claude Code 2.1.287 on macOS, 2026-10-03. Prompts, paths, socket paths and bridge ids are replaced; shapes and field names are real. Used by tests/test_registry.py.

@@ -72,6 +72,21 @@ async function sessionNudge(s, text, btn) {
   finally { if (btn) btn.disabled = false; }
 }
 
+/* The row's own send box (components.js composer): Enter sends, Shift+Enter adds a line; the draft survives polls because the
+   row node is kept and patched. The text goes through /keys like the chips (multi-line arrives as one bracketed paste). */
+async function sessionSend(s, ta) {
+  const text = String(ta.value || '').replace(/\r\n?/g, '\n');
+  if (!s || !text.trim()) return;
+  ta.disabled = true;
+  try {
+    await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/keys`, { text, enter: true });
+    ta.value = '';
+    if (typeof composerGrow === 'function') composerGrow(ta);
+    pageToast(`sent to ${s.name || s.tmux}`, 'ok');
+  } catch (e) { pageToast(e.message, 'bad'); }
+  finally { ta.disabled = false; if (typeof ta.focus === 'function') ta.focus(); }
+}
+
 async function sessionAck(s) {
   try { await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/ack`); } catch (e) { setError(e.message); }
   await poll(true);
@@ -130,6 +145,13 @@ function sessionCard(s, opts) {
     b.addEventListener('click', (e) => { e.stopPropagation(); sessionNudge(cur.s, text, b); });
     chips.append(b);
   }
+  let sendRow = null;
+  if (!o.peek) {                                             // the peek has its own composer (session.js)
+    const ta = composer({ placeholder: `send to ${s.name || s.tmux} · ⇧Enter new line`, label: `send to ${s.name || s.tmux}`, onSend: () => sessionSend(cur.s, ta) });
+    ta.addEventListener('click', (e) => e.stopPropagation());
+    sendRow = el('form', { class: 'rr-send', onsubmit: (e) => { e.preventDefault(); e.stopPropagation(); sessionSend(cur.s, ta); } },
+      ta, el('button', { class: 'small primary', type: 'submit', text: 'Send', onclick: (e) => e.stopPropagation() }));
+  }
   let node;
   let promptHost = promptNode;
   let msgHost = msgNode;
@@ -147,7 +169,7 @@ function sessionCard(s, opts) {
     node = el('div', { class: 'rrow' + (o.compact ? ' compact' : '') + (o.cls ? ' ' + o.cls : ''), 'data-tmux': s.tmux },
       glyphs, el('div', { class: 'rr-main' }, nameNode, where, age), meta,
       el('div', { class: 'rr-last' }, o.perm ? permNote : null, promptNode, msgNode),
-      el('div', { class: 'rr-actions' }, o.perm ? permBtns : null, openLink, ackSlot, killSlot), chips);
+      el('div', { class: 'rr-actions' }, o.perm ? permBtns : null, openLink, ackSlot, killSlot), chips, sendRow);
   }
 
   function patchPerm(pr) {
@@ -196,6 +218,7 @@ function sessionCard(s, opts) {
       killSlot.append(confirmButton(killKey, 'Kill', () => api('DELETE', `/api/sessions/${encodeURIComponent(cur.s.tmux)}`), true));
     }
     chips.classList.toggle('hidden', !sessionNudgeable(s2));
+    if (sendRow) sendRow.classList.toggle('hidden', !sessionNudgeable(s2));
   }
 
   node.ccPatch = patch;

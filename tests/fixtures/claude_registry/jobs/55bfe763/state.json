@@ -1,0 +1,220 @@
+{
+ "state": "blocked",
+ "detail": "",
+ "tempo": "blocked",
+ "inFlight": {
+  "tasks": 1,
+  "queued": 0,
+  "kinds": [
+   "session_cron"
+  ],
+  "drainableMonitors": 0
+ },
+ "selfWake": true,
+ "fan": [
+  {
+   "id": "todo:1",
+   "kind": "todo",
+   "label": "",
+   "startedAt": 0,
+   "doneAt": 0
+  },
+  {
+   "id": "todo:2",
+   "kind": "todo",
+   "label": "",
+   "startedAt": 0,
+   "doneAt": 0
+  },
+  {
+   "id": "todo:3",
+   "kind": "todo",
+   "label": "",
+   "startedAt": 0,
+   "doneAt": 0
+  },
+  {
+   "id": "todo:4",
+   "kind": "todo",
+   "label": "",
+   "startedAt": 0,
+   "doneAt": 0
+  },
+  {
+   "id": "todo:5",
+   "kind": "todo",
+   "label": "",
+   "startedAt": 0,
+   "doneAt": 0
+  },
+  {
+   "id": "todo:6",
+   "kind": "todo",
+   "label": "",
+   "startedAt": 0,
+   "doneAt": 0
+  },
+  {
+   "id": "todo:7",
+   "kind": "todo",
+   "label": "",
+   "startedAt": 0,
+   "doneAt": 0
+  },
+  {
+   "id": "todo:8",
+   "kind": "todo",
+   "label": "",
+   "startedAt": 0
+  },
+  {
+   "id": "todo:9",
+   "kind": "todo",
+   "label": "",
+   "startedAt": 0,
+   "doneAt": 0
+  },
+  {
+   "id": "todo:10",
+   "kind": "todo",
+   "label": "",
+   "startedAt": 0,
+   "doneAt": 0
+  },
+  {
+   "id": "todo:11",
+   "kind": "todo",
+   "label": "",
+   "startedAt": 0,
+   "doneAt": 0
+  },
+  {
+   "id": "todo:12",
+   "kind": "todo",
+   "label": "",
+   "startedAt": 0,
+   "doneAt": 0
+  },
+  {
+   "id": "todo:13",
+   "kind": "todo",
+   "label": "",
+   "startedAt": 0
+  },
+  {
+   "id": "todo:14",
+   "kind": "todo",
+   "label": "",
+   "startedAt": 0,
+   "doneAt": 0
+  },
+  {
+   "id": "todo:15",
+   "kind": "todo",
+   "label": "",
+   "startedAt": 0,
+   "doneAt": 0
+  },
+  {
+   "id": "todo:16",
+   "kind": "todo",
+   "label": "",
+   "startedAt": 0
+  }
+ ],
+ "tokens": 4682886,
+ "output": null,
+ "children": [
+  {
+   "id": "decision_page.html",
+   "href": "https://claude.ai/artifact/8NYtAemFaPneyZoUMTqKnt",
+   "kind": "frame",
+   "title": "Petroit Outreach Decisions"
+  }
+ ],
+ "linkScanOffset": 40074639,
+ "linkScanPath": "",
+ "template": "bg",
+ "respawnFlags": [
+  "--add-dir",
+  "/home/user/path",
+  "--allowed-tools",
+  "mcp__computer-use__request_access",
+  "--allowed-tools",
+  "mcp__computer-use__screenshot",
+  "--allowed-tools",
+  "mcp__computer-use__zoom",
+  "--allowed-tools",
+  "mcp__computer-use__left_click",
+  "--allowed-tools",
+  "mcp__computer-use__double_click",
+  "--allowed-tools",
+  "mcp__computer-use__triple_click",
+  "--allowed-tools",
+  "mcp__computer-use__right_click",
+  "--allowed-tools",
+  "mcp__computer-use__middle_click",
+  "--allowed-tools",
+  "mcp__computer-use__type",
+  "--allowed-tools",
+  "mcp__computer-use__key",
+  "--allowed-tools",
+  "mcp__computer-use__scroll",
+  "--allowed-tools",
+  "mcp__computer-use__left_click_drag",
+  "--allowed-tools",
+  "mcp__computer-use__mouse_move",
+  "--allowed-tools",
+  "mcp__computer-use__open_application",
+  "--allowed-tools",
+  "mcp__computer-use__switch_display",
+  "--allowed-tools",
+  "mcp__computer-use__list_granted_applications",
+  "--allowed-tools",
+  "mcp__computer-use__read_clipboard",
+  "--allowed-tools",
+  "mcp__computer-use__write_clipboard",
+  "--allowed-tools",
+  "mcp__computer-use__wait",
+  "--allowed-tools",
+  "mcp__computer-use__cursor_position",
+  "--allowed-tools",
+  "mcp__computer-use__hold_key",
+  "--allowed-tools",
+  "mcp__computer-use__left_mouse_down",
+  "--allowed-tools",
+  "mcp__computer-use__left_mouse_up",
+  "--allowed-tools",
+  "mcp__computer-use__computer_batch",
+  "--model",
+  "fable[1m]",
+  "--effort",
+  "xhigh",
+  "--permission-mode",
+  "auto",
+  "--name",
+  "m-hvac-mail"
+ ],
+ "bgIsolation": "none",
+ "providerEnv": {
+  "CLAUDE_CODE_SUBAGENT_MODEL": "claude-haiku-4-5-20251001"
+ },
+ "interactiveLineage": true,
+ "intent": "Fix the flaky CI test and open a PR",
+ "name": "m-hvac-mail",
+ "nameSource": "user",
+ "sessionId": "55bfe763-48a3-4f46-8d95-1a5b8980ff90",
+ "resumeSessionId": "55bfe763-48a3-4f46-8d95-1a5b8980ff90",
+ "daemonShort": "55bfe763",
+ "cliVersion": "2.1.281",
+ "cwd": "/srv/projects/demo/repo",
+ "createdAt": "2026-09-24T11:48:23.910Z",
+ "updatedAt": "2026-10-03T02:52:40.227Z",
+ "firstTerminalAt": "2026-09-26T04:20:25.868Z",
+ "bridgeSessionId": "fixture",
+ "bridgeOwnerAccountUuid": "fixture",
+ "bridgeOwnerOrganizationUuid": "fixture",
+ "bridgeOutboundOnly": false,
+ "backend": "daemon",
+ "needs": "login required \u2014 run /login \u00b7 Login expired"
+}

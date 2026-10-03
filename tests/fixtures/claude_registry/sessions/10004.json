@@ -1,0 +1,27 @@
+{
+ "pid": 10004,
+ "sessionId": "d87838a6-9f4c-4053-9a70-3cae207bb0be",
+ "cwd": "/srv/projects/demo/repo",
+ "startedAt": 1790230172539,
+ "procStart": "Thu Sep 24 06:09:30 2026",
+ "version": "2.1.281",
+ "peerProtocol": 1,
+ "peerFeatures": [
+  "notify_idle",
+  "reply_across_default_dirs",
+  "artifact_yield"
+ ],
+ "kind": "bg",
+ "entrypoint": "cli",
+ "pidDomain": "darwin",
+ "messagingSocketPath": "/tmp/cc-socks/10004.sock",
+ "name": "seo sitemap backlinks setup",
+ "nameSince": 1790230175814,
+ "agent": "claude",
+ "jobId": "d87838a6",
+ "updatedAt": 1790241592577,
+ "status": "shell",
+ "statusUpdatedAt": 1790241592577,
+ "nameSource": "auto",
+ "bridgeSessionId": null
+}

@@ -7,7 +7,7 @@ import subprocess
 import threading
 from pathlib import Path
 
-from . import gitops, overlap
+from . import gitops, overlap, tasks as tasks_mod
 
 log = logging.getLogger("ccboard.prpoll")
 POLL_SECONDS = 60
@@ -87,7 +87,8 @@ class Poller(threading.Thread):
                 continue
             try:
                 rpath = self.repo_path_of(t["project"], t["repo"])
-                cwd = Path(t["worktree"]) if Path(t["worktree"]).is_dir() else rpath
+                wt = tasks_mod.task_worktree(t)          # None for a task without a worktree: Path('') would be the board's own cwd
+                cwd = wt if wt is not None and wt.is_dir() else rpath
                 st = pr_status(cwd, int(t["pr_number"]))
             except Exception as e:
                 log.debug("pr poll %s: %s", t["id"], e)

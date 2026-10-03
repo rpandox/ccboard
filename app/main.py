@@ -23,7 +23,10 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import backup, claude_auth, clonequeue, cost, github, gitops, health, hooks, notify, permissions, previews, projects, prpoll, push, recover, scheduler, search, tasks, tmux, usage
+from . import agents, backup, claude_auth, clonequeue, cost, doctor, github, gitops, health, hooks, notify, permissions, previews, projects, prpoll, push, recover, scheduler, search, tasks, tmux, usage
+from .agents import registry
+from .agents.base import LaunchReq
+from .agents.claude import BYPASS_PARTS, OVERRIDE_PARTS
 from .auth import csrf_ok, identify
 from .config import settings
 from .db import DB, now as db_now
@@ -31,7 +34,13 @@ from .db import DB, now as db_now
 log = logging.getLogger("ccboard")
 STATIC = Path(__file__).parent / "static"
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-LAUNCHERS = ("claude", "resume", "continue", "shell")
+# Every launcher the board knows by name. The codex ones are recognised so the error can say when they arrive, but nothing
+# starts a codex session before v0.5.11 (_normalize_launcher refuses them).
+LAUNCHERS = ("claude", "resume", "continue", "shell", "codex", "codex-resume", "codex-continue")
+_LAUNCHER_AGENT = {"claude": ("claude", "claude"), "resume": ("claude", "resume"), "continue": ("claude", "continue"),
+                   "shell": ("shell", "shell"),
+                   "codex": ("codex", "claude"), "codex-resume": ("codex", "resume"), "codex-continue": ("codex", "continue")}
+STARTABLE_AGENTS = ("claude", "shell")
 MAX_ARGS = 1024
 
 db: DB | None = None
@@ -253,8 +262,22 @@ async def _tmuxerr(_, e):
 
 # ---------- state ----------
 
-def _merged_sessions() -> tuple[dict[str, dict], bool]:
-    """tmux sessions (non-internal) merged with DB rows. Returns (sessions, tmux_down)."""
+def _registry_snapshot(pane_pids: dict[str, int] | None = None) -> dict | None:
+    """Claude's own session registry (file reads, its own 30 s ttl). Never raises: the 3 s poll must not depend on it."""
+    try:
+        return registry.snapshot(db, settings.claude_config_dir, pane_pids=pane_pids or {}, projects_dir=settings.projects_dir)
+    except Exception as e:
+        log.debug("registry snapshot failed: %s", e)
+        return None
+
+
+def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
+    """tmux sessions (non-internal) merged with DB rows. Returns (sessions, tmux_down).
+
+    Every session carries agent/agent_session_id/row_id and its flags (minus transcript_path). `rich` adds what costs a
+    query or a file read: the task chip (one db.active_tasks_by_session() query) and flags.registry (Claude's own registry,
+    cached 30 s inside registry.snapshot). It is on for /api/state and /api/sessions/{name}; the task list and the hub
+    summary only need states."""
     snapshot_at = db_now()
     try:
         live = tmux.list_sessions()
@@ -263,11 +286,13 @@ def _merged_sessions() -> tuple[dict[str, dict], bool]:
     assert db is not None
     db.reconcile(set(live.keys()), before=snapshot_at)
     rows = db.open_rows()
+    chips = db.active_tasks_by_session() if rich else {}
     out: dict[str, dict] = {}
     for name, s in live.items():
         if tmux.is_internal(name):
             continue
         row = rows.get(name, {})
+        chip = (chips.get(row.get("row_id")) or [None])[0]
         out[name] = {
             "created": s["created"], "attached": s["attached"], "command": s["command"], "path": s["path"],
             "pane_id": s["pane_id"], "launcher": row.get("launcher", "external"), "cmd": row.get("cmd"),
@@ -275,7 +300,18 @@ def _merged_sessions() -> tuple[dict[str, dict], bool]:
             "state": row.get("state") or "unknown", "state_at": row.get("state_at"), "last_event": row.get("last_event"),
             "last_message": row.get("last_message"), "last_prompt": row.get("last_prompt"), "stats": row.get("stats"),
             "needs_attention": bool(row.get("state") in hooks.ATTENTION_STATES and not row.get("acked_at")),
+            # None for a tmux session the board has no row for (the UI guesses from the launcher and the pane command)
+            "agent": row.get("agent"), "agent_session_id": row.get("agent_session_id"), "row_id": row.get("row_id"),
+            "flags": {k: v for k, v in (row.get("flags") or {}).items() if k != "transcript_path"},
+            "task": chip,
         }
+    if rich and out:
+        snap = _registry_snapshot({n: s["pid"] for n, s in live.items() if s.get("pid")})
+        if snap:
+            try:
+                registry.enrich(out, snap)           # display only: sets flags.registry on our own sessions
+            except Exception as e:
+                log.debug("registry enrich failed: %s", e)
     return out, False
 
 
@@ -285,7 +321,7 @@ def build_state(user: str) -> dict:
         if _scan_cache and time.monotonic() - _scan_cache[0] < SCAN_TTL:
             st = dict(_scan_cache[1])
         else:
-            sessions, down = _merged_sessions()
+            sessions, down = _merged_sessions(rich=True)
             st = {"tmux_down": down, "projects": projects.scan(sessions)}
             _scan_cache = (time.monotonic(), st)
     st["user"] = user
@@ -296,6 +332,7 @@ def build_state(user: str) -> dict:
                     "backup": {"restic": backup.restic_enabled(), "repo": settings.restic_repo if backup.restic_enabled() else None,
                                "restic_installed": shutil.which("restic") is not None, "push": settings.backup_push}}
     st["claude"] = claude_auth.status()
+    st["agents"] = agents.status_all()
     st["login"] = claude_auth.login_state()
     st["pending_permissions"] = db.perm_pending()
     st["tasks"] = _tasks_view()
@@ -313,7 +350,16 @@ def build_state(user: str) -> dict:
     st["rate_limited"] = db.kv_get("rate_limited")
     st["scheduler"] = scheduler.quota_state(db)
     st["version"] = ASSET_VERSION
+    st["setup"] = _setup_state(st)
     return st
+
+
+def _setup_state(st: dict) -> dict:
+    """first_run: the board has never been used (no project folder and no session row, ever); ok: tmux is up and at least
+    one agent is installed and logged in. The full box checks are GET /api/doctor."""
+    first_run = not st.get("projects") and not db.any_session_ever()
+    ready = any(a.get("installed") and a.get("loggedIn") for a in (st.get("agents") or {}).values())
+    return {"first_run": first_run, "ok": bool(ready and not st.get("tmux_down"))}
 
 
 def _invalidate_scan() -> None:
@@ -325,6 +371,63 @@ def _invalidate_scan() -> None:
 @app.get("/api/state")
 def api_state(request: Request):
     return build_state(request.state.user)
+
+
+# ---------- agents, doctor, session detail, external sessions (read only) ----------
+
+@app.get("/api/agents")
+def api_agents():
+    """Every agent the board can launch: identity, install/auth/hooks state, the launcher's option schema, the slash registry."""
+    return {"agents": {a.name: a.describe() for a in agents.all()}}
+
+
+@app.get("/api/doctor")
+def api_doctor(group: str | None = None, refresh: str | None = None):
+    """Box and agent checks, each pass|warn|fail|skip with a fix hint. A plain `def`: a check may block for up to its 5 s cap."""
+    try:
+        return doctor.run(group or None, refresh == "1", db=db)
+    except ValueError as e:                       # unknown group
+        raise projects.BadRequest(str(e))
+
+
+@app.get("/api/sessions/{name}")
+def api_session(name: str):
+    try:
+        project, repo, session = tmux.split_name(name)
+    except ValueError:
+        raise projects.BadRequest("not a ccboard session name")
+    sessions, down = _merged_sessions(rich=True)
+    if down:
+        raise tmux.TmuxDown("tmux server is down")
+    s = sessions.get(name)
+    if s is None:
+        raise projects.NotFound(f"session {name} not found")
+    return {"tmux": name, "project": project, "repo": repo, "name": session, "agent": s["agent"], "state": s["state"],
+            "state_at": s["state_at"], "last_prompt": s["last_prompt"], "last_message": s["last_message"], "stats": s["stats"],
+            "flags": s["flags"], "agent_session_id": s["agent_session_id"], "task": s["task"],
+            "pending": [p for p in db.perm_pending() if p["tmux_name"] == name],
+            # v0.5.7 (attach modes) classifies clients and learns the window size and the attach wrapper's version; until then
+            # every attached client counts as a full one
+            "viewers": {"full": s["attached"], "grid": 0, "ro": 0}, "win": None, "shell_version": None}
+
+
+@app.get("/api/external")
+def api_external(agent: str | None = None, project: str | None = None):
+    """Agent sessions running on this box that the board did not start (Claude's own registry, file reads, cached 30 s)."""
+    if agent not in (None, "", "claude", "codex"):
+        raise projects.BadRequest("agent must be claude or codex")
+    if project:
+        projects.check_name("project", project)
+    try:
+        pane_pids = {n: s["pid"] for n, s in tmux.list_sessions().items() if s.get("pid")}
+    except tmux.TmuxDown:
+        pane_pids = {}
+    snap = _registry_snapshot(pane_pids) or {"external": [], "scanned_at": None}
+    ext = snap["external"] if agent in (None, "", "claude") else []      # Codex joins in v0.5.12
+    if project:
+        base = str(settings.projects_dir / project)
+        ext = [e for e in ext if (e.get("cwd") or "") == base or (e.get("cwd") or "").startswith(base + "/")]
+    return {"claude": ext, "codex": [], "at": snap["scanned_at"]}
 
 
 # ---------- projects & repos ----------
@@ -348,7 +451,7 @@ def _launch_clone(project: str, repo: str, path: Path, url: str, cleanup: list[P
         if tmux.has_session(name):
             raise projects.Conflict("a clone is already running for this repo")
         _start_session(name, project, repo, "clone", "clone", str(path), cmd_line=line, claude_session_id=None,
-                       add_dirs=[])
+                       add_dirs=[], agent="shell")
     except Exception:
         for d in cleanup:
             try:
@@ -425,7 +528,7 @@ def api_delete_project(project: str):
         raise projects.NotFound(f"project {project} not found")
     killed = tmux.kill_prefix(project + tmux.SEP)
     for k in killed:
-        db.end(k)
+        db.end(k, "project_deleted")
     projects.remove_tree(p)
     _invalidate_scan()
     return {"deleted": project, "killed_sessions": killed}
@@ -454,7 +557,7 @@ def api_remove_repo(project: str, repo: str):
         raise projects.BadRequest("this repo is the project folder itself; delete the project instead")
     killed = tmux.kill_prefix(tmux.tmux_name(project, repo, "") )
     for k in killed:
-        db.end(k)
+        db.end(k, "project_deleted")
     projects.remove_tree(r)
     _invalidate_scan()
     return {"removed": f"{project}/{repo}", "killed_sessions": killed}
@@ -464,9 +567,18 @@ def api_remove_repo(project: str, repo: str):
 
 def _tasks_view() -> list[dict]:
     sessions, _ = _merged_sessions()
+    by_row = {s["row_id"]: s for s in sessions.values() if s.get("row_id") is not None}
     out = []
     for t in db.tasks():
-        s = sessions.get(t["tmux_name"])
+        if t.get("session_row") is not None:
+            s = by_row.get(t["session_row"])          # authoritative: tmux names are reused, session rows are not
+        else:
+            s = sessions.get(t["tmux_name"]) if t["tmux_name"] else None   # legacy task: bind by name, and remember it
+            if s is not None and s.get("row_id") is not None and s.get("launcher") == "task":   # a reused name on a non-task session is not this task's
+                try:
+                    db.task_update(t["id"], session_row=s["row_id"])
+                except Exception as e:                # a display path: never fail the poll over a bookkeeping write
+                    log.debug("could not bind task %s to session row %s: %s", t["id"], s["row_id"], e)
         try:
             ci = json.loads(t["ci"]) if t.get("ci") else None
             prj = json.loads(t["pr_json"]) if t.get("pr_json") else None
@@ -482,16 +594,14 @@ def _tasks_view() -> list[dict]:
             "preview_port": t.get("preview_port"), "preview_https": t.get("preview_https"),
             "preview_url": f"https://{previews.public_host()}:{t['preview_https']}/" if t.get("preview_https") and previews.public_host() else None,
             "created_at": t["created_at"], "column": tasks.derive_status(t, s),
+            "agent": t.get("agent") or "claude", "mode": t.get("mode") or "worktree", "phase": t.get("phase") or "running",
+            "auto_close": bool(t.get("auto_close")), "parent_id": t.get("parent_id"), "chain_id": t.get("chain_id"),
+            "session_row": t.get("session_row"), "result": (t.get("result") or "")[:300] or None,
             "session": {"state": s["state"], "state_at": s["state_at"], "last_message": s["last_message"],
                         "needs_attention": s["needs_attention"], "command": s["command"]} if s else None,
         })
     return out
 
-
-MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
-PERMISSION_MODES = ("manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions")   # the CLI's own names
-TOOL_RE = re.compile(r"^[A-Za-z0-9_*.:/ ()\-]{1,120}$")
 
 
 class LaunchOpts(BaseModel):
@@ -505,32 +615,8 @@ class LaunchOpts(BaseModel):
 
 
 def _launch_args(body: LaunchOpts) -> list[str]:
-    out: list[str] = []
-    if body.model and body.model.strip():
-        m = body.model.strip()
-        if not MODEL_RE.match(m):
-            raise projects.BadRequest("model: use an alias (fable, opus, sonnet, haiku) or a full model id")
-        out += ["--model", m]
-    if body.effort:
-        if body.effort not in EFFORTS:
-            raise projects.BadRequest(f"effort must be one of {', '.join(EFFORTS)}")
-        out += ["--effort", body.effort]
-    if body.permission_mode:
-        if body.permission_mode not in PERMISSION_MODES:
-            raise projects.BadRequest(f"permission_mode must be one of {', '.join(PERMISSION_MODES)}")
-        out += ["--permission-mode", body.permission_mode]
-    for flag, raw in (("--allowedTools", body.allowed_tools), ("--disallowedTools", body.disallowed_tools)):
-        tools = [t.strip() for t in re.split(r"[,\n]+", raw or "") if t.strip()]
-        for t in tools:
-            if not TOOL_RE.match(t):
-                raise projects.BadRequest(f"tool pattern not allowed: {t!r}")
-        if tools:
-            out += [flag, *tools]
-    if body.append_system_prompt and body.append_system_prompt.strip():
-        if len(body.append_system_prompt) > 4000:
-            raise projects.BadRequest("append_system_prompt is too long (4000 chars max)")
-        out += ["--append-system-prompt", body.append_system_prompt.strip()]
-    return out
+    """The launch controls as claude argv (validated with the board's messages). The adapter owns the rules."""
+    return agents.get("claude").launch_opt_args(body.model_dump())
 
 
 class TaskIn(LaunchOpts):
@@ -563,6 +649,8 @@ def api_create_task(project: str, repo: str, body: TaskIn):
     if bad or body.permission_mode == "bypassPermissions":
         raise projects.BadRequest(f"{bad or 'bypassPermissions'}: bypassPermissions (or a settings override) is not allowed for tasks; start a session and choose bypass there if you really want it")
     extra = _launch_args(body) + extra
+    opts_clean = agents.get("claude").validate_opts(body.model_dump(include=set(LaunchOpts.model_fields)), interactive=True,
+                                                    tasks_or_headless=True)
     add_dirs = _resolve_add_dirs(body.add_dirs, rpath)
     slug = tasks.unique_slug(rpath, tasks.slugify(title), db.task_slugs(project, repo))
     session = tasks.session_name_for(slug)
@@ -573,31 +661,41 @@ def api_create_task(project: str, repo: str, body: TaskIn):
     tasks.ensure_excluded(rpath)
     sid = str(uuid.uuid4())
     cmd_line = tasks.build_command(slug, sid, prompt, extra, add_dirs)
-    real = _start_session(name, project, repo, session, "task", str(rpath), cmd_line=cmd_line, claude_session_id=sid,
-                          add_dirs=add_dirs)
+    real, row_id = _start_session_row(name, project, repo, session, "task", str(rpath), cmd_line=cmd_line, claude_session_id=sid,
+                                      add_dirs=add_dirs, agent="claude", opts=opts_clean)
     tid = db.task_add(project=project, repo=repo, slug=slug, title=title, prompt=prompt, branch=f"worktree-{slug}",
                       base=tasks.default_branch(rpath), worktree=str(tasks.worktree_path(rpath, slug)), tmux_name=real,
-                      claude_session_id=sid)
+                      claude_session_id=sid, agent="claude", session_row=row_id)
     _invalidate_scan()
     return {"id": tid, "slug": slug, "tmux": real, "branch": f"worktree-{slug}", "attach_url": f"/term/{real}"}
 
 
-def _task_or_404(tid: int) -> tuple[dict, Path]:
+def _task_or_404(tid: int) -> tuple[dict, Path | None]:
+    """The task row and its worktree path, which is None for a task that has none (backlog, queued, session mode):
+    Path('') is Path('.'), so nothing may build a path from t['worktree'] without tasks.has_worktree."""
     t = db.task_get(tid)
     if not t:
         raise projects.NotFound("no such task")
-    return t, Path(t["worktree"])
+    return t, tasks.task_worktree(t)
+
+
+def _task_in_worktree(tid: int) -> tuple[dict, Path]:
+    """_task_or_404 for the endpoints that run git in the worktree: a task without one answers 409."""
+    t, wt = _task_or_404(tid)
+    if wt is None:
+        raise projects.Conflict("this task has no worktree yet")
+    return t, wt
 
 
 @app.get("/api/tasks/{tid}/diff")
 def api_task_diff(tid: int):
-    t, wt = _task_or_404(tid)
+    t, wt = _task_in_worktree(tid)
     return {"task": tid, **gitops.task_diff(wt, t["base"] or "main")}
 
 
 @app.post("/api/tasks/{tid}/describe")
 def api_task_describe(tid: int):
-    t, wt = _task_or_404(tid)
+    t, wt = _task_in_worktree(tid)
     return gitops.describe(wt, t["base"] or "main", t["title"], t["prompt"])
 
 
@@ -609,7 +707,7 @@ class PrIn(BaseModel):
 
 @app.post("/api/tasks/{tid}/pr")
 def api_task_pr(tid: int, body: PrIn):
-    t, wt = _task_or_404(tid)
+    t, wt = _task_in_worktree(tid)
     if not body.title.strip():
         raise projects.BadRequest("title is required")
     r = gitops.pr_create(wt, t["branch"], t["base"] or "main", body.title.strip(), body.body, body.draft)
@@ -625,7 +723,7 @@ class MergeIn(BaseModel):
 
 @app.post("/api/tasks/{tid}/merge")
 def api_task_merge(tid: int, body: MergeIn | None = None):
-    t, wt = _task_or_404(tid)
+    t, wt = _task_in_worktree(tid)
     if not t.get("pr_number"):
         raise projects.BadRequest("no PR for this task yet")
     body = body or MergeIn()
@@ -639,10 +737,9 @@ def api_task_merge(tid: int, body: MergeIn | None = None):
     # Merge on GitHub first; only then kill the session and remove the worktree (--delete-branch cannot
     # delete a branch that is still checked out, so the merge runs from the repo dir after removal).
     _drop_preview(t)
-    if tmux.has_session(t["tmux_name"]):
-        tmux.kill_session(t["tmux_name"])
-        db.end(t["tmux_name"])
-    err = tasks.remove_worktree(rpath, t["slug"], force=True) if rpath.is_dir() else None
+    if t["tmux_name"]:
+        _end_session(t["tmux_name"], "killed")
+    err = tasks.remove_worktree(rpath, t["slug"], force=True, agent=t.get("agent"), path=wt) if rpath.is_dir() else None
     try:
         out = gitops.pr_merge(rpath if rpath.is_dir() else wt, int(t["pr_number"]), body.method)
     except gitops.GitError:
@@ -657,7 +754,7 @@ def api_task_merge(tid: int, body: MergeIn | None = None):
 @app.post("/api/tasks/{tid}/fix-ci")
 def api_task_fix_ci(tid: int):
     """Fetch the failing CI logs and hand them to the task's Claude session (relaunched if gone)."""
-    t, wt = _task_or_404(tid)
+    t, wt = _task_in_worktree(tid)
     rpath = projects.repo_path(t["project"], t["repo"])
     cwd = wt if wt.is_dir() else rpath
     run_name, log_text = prpoll.failed_log(cwd, t["branch"])
@@ -668,12 +765,13 @@ def api_task_fix_ci(tid: int):
         if not wt.is_dir():
             raise projects.Conflict("the worktree is gone; archive this task and start a new one")
         _, _, session = tmux.split_name(name)
-        _start_session(name, t["project"], t["repo"], session, "task", str(wt), cmd_line="claude --continue",
-                       claude_session_id=t.get("claude_session_id"), add_dirs=[])
+        ag = agents.get(t.get("agent") or "claude")
+        _start_session(name, t["project"], t["repo"], session, "task", str(wt), cmd_line=shlex.join(ag.continue_argv(str(wt))),
+                       claude_session_id=t.get("claude_session_id"), add_dirs=[], agent=ag.name, task_id=t["id"])
         relaunched = True
         time.sleep(4)  # let claude come up before pasting
     tmux.paste_text(name, prompt, enter=True)
-    db.add_event(name, "FixCI", run_name, f"CI logs sent ({len(log_text)} chars)", {"run": run_name})
+    db.add_event(name, "FixCI", run_name, f"CI logs sent ({len(log_text)} chars)", {"run": run_name}, agent=t.get("agent"))
     db.set_state(name, "working", "FixCI", prompt=prompt[:500])
     _invalidate_scan()
     return {"ok": True, "relaunched": relaunched, "run": run_name, "chars": len(log_text)}
@@ -684,7 +782,7 @@ def api_task_refresh(tid: int):
     t, wt = _task_or_404(tid)
     if not t.get("pr_number"):
         raise projects.BadRequest("no PR for this task")
-    cwd = wt if wt.is_dir() else projects.repo_path(t["project"], t["repo"])
+    cwd = wt if wt is not None and wt.is_dir() else projects.repo_path(t["project"], t["repo"])
     st = prpoll.pr_status(cwd, int(t["pr_number"]))
     db.task_update(tid, pr_state=st["state"], pr_json=json.dumps(st), ci=json.dumps(st["ci"]),
                    **({"status": "merged"} if st["state"] == "MERGED" else {}))
@@ -718,6 +816,8 @@ class PreviewIn(BaseModel):
 @app.post("/api/tasks/{tid}/preview")
 def api_task_preview(tid: int, body: PreviewIn | None = None):
     t, _ = _task_or_404(tid)
+    if not tasks.has_worktree(t) and not t.get("tmux_name"):
+        raise projects.Conflict("this task has no session yet; dispatch it first")   # nothing to preview, never allocate a port
     if not previews.public_host():
         raise projects.BadRequest("CCBOARD_PUBLIC_URL is not set (rerun install.sh)")
     port = body.port if body and body.port else None
@@ -773,16 +873,13 @@ class ArchiveIn(BaseModel):
 
 @app.post("/api/tasks/{tid}/archive")
 def api_archive_task(tid: int, body: ArchiveIn | None = None):
-    t = db.task_get(tid)
-    if not t:
-        raise projects.NotFound("no such task")
+    t, wt = _task_in_worktree(tid)       # a backlog or queued task has nothing to clean up: it is deleted, not archived
     force = bool(body and body.force)
     _drop_preview(t)
-    if tmux.has_session(t["tmux_name"]):
-        tmux.kill_session(t["tmux_name"])
-        db.end(t["tmux_name"])
+    if t["tmux_name"]:
+        _end_session(t["tmux_name"], "killed")
     rpath = projects.repo_path(t["project"], t["repo"])
-    err = tasks.remove_worktree(rpath, t["slug"], force=force) if rpath.is_dir() else None
+    err = tasks.remove_worktree(rpath, t["slug"], force=force, agent=t.get("agent"), path=wt) if rpath.is_dir() else None
     if err and not force:
         raise projects.Conflict(f"worktree not removed ({err}); archive with force to discard uncommitted work")
     db.task_update(tid, archived_at=db_now(), status="archived")
@@ -929,14 +1026,14 @@ def api_run_resume(rid: int):
     if not r or not r.get("task_id"):
         raise projects.NotFound("no worktree for this run")
     t = db.task_get(int(r["task_id"]))
-    if not t or not Path(t["worktree"]).is_dir():
+    if not t or not tasks.has_worktree(t) or not Path(t["worktree"]).is_dir():
         raise projects.NotFound("worktree is gone")
     name = t["tmux_name"]
     if not tmux.has_session(name):
         _, _, session = tmux.split_name(name)
         cmd = ["claude", "--resume", r["session_id"]] if r.get("session_id") else ["claude", "--continue"]
         _start_session(name, t["project"], t["repo"], session, "task", t["worktree"], cmd_line=shlex.join(cmd),
-                       claude_session_id=r.get("session_id"), add_dirs=[])
+                       claude_session_id=r.get("session_id"), add_dirs=[], agent=t.get("agent") or "claude", task_id=t["id"])
     _invalidate_scan()
     return {"tmux": name, "attach_url": f"/term/{name}"}
 
@@ -945,9 +1042,7 @@ def api_run_resume(rid: int):
 
 # Settings overrides can change the permission mode (and hooks, tools) behind the board's back: always rejected in
 # extra args, use the controls instead. The bypass flags themselves are an explicit choice on interactive sessions.
-OVERRIDE_PARTS = ("--settings", "--setting-sources", "--permission-prompt")
-BYPASS_PARTS = ("dangerously", "bypasspermissions")
-
+# (OVERRIDE_PARTS and BYPASS_PARTS live in app.agents.claude, where launch_plan enforces the same rules.)
 
 def _arg_matching(extra: list[str], parts: tuple[str, ...]) -> str | None:
     for a in extra:
@@ -963,6 +1058,20 @@ def _override_requested(extra: list[str]) -> str | None:
 
 def _bypass_requested(extra: list[str]) -> str | None:
     return _arg_matching(extra, BYPASS_PARTS)
+
+
+def _normalize_launcher(launcher: str) -> tuple[str, str]:
+    """A request's launcher -> (agent, launcher), the launcher being what sessions.launcher stores (claude = a new session,
+    resume, continue, shell). Only claude and shell can be started until v0.5.11; a codex launcher is recognised and refused
+    with the version that brings it."""
+    entry = _LAUNCHER_AGENT.get(launcher) if isinstance(launcher, str) else None
+    if entry is None:
+        accepted = [k for k, (a, _l) in _LAUNCHER_AGENT.items() if a in STARTABLE_AGENTS]
+        raise projects.BadRequest(f"launcher must be one of {', '.join(accepted)}")
+    agent, norm = entry
+    if agent not in STARTABLE_AGENTS:
+        raise projects.BadRequest(f"{agent} arrives in v0.5.11")
+    return agent, norm
 
 
 class SessionIn(LaunchOpts):
@@ -1002,27 +1111,55 @@ def _free_session_name(project: str, repo: str) -> str:
     raise projects.Conflict("too many sessions")
 
 
-def _start_session(name: str, project: str, repo: str, session: str, launcher: str, cwd: str, *,
-                   cmd_line: str | None, claude_session_id: str | None, add_dirs: list[str]) -> str:
+def _start_session_row(name: str, project: str, repo: str, session: str, launcher: str, cwd: str, *,
+                       cmd_line: str | None = None, claude_session_id: str | None = None, add_dirs: list[str] | None = None,
+                       agent: str = "claude", opts: dict | None = None, task_id: int | None = None) -> tuple[str, int]:
+    """Create the tmux session and its row (agent, launch cwd and the validated opts stored on it), then type the command.
+    Returns (real tmux name, sessions.id). With task_id the task's session_row is pointed at the new row, which is how a
+    relaunched task session (fix-ci, run resume, reboot recovery) stays the task's live session."""
     env = {"CCBOARD_SESSION": name, "CCBOARD_URL": settings.loopback_url(),
-           "CCBOARD_APPROVE_TIMEOUT": str(int(settings.approve_timeout))}
+           "CCBOARD_APPROVE_TIMEOUT": str(int(settings.approve_timeout)), "CCBOARD_AGENT": agent}
     real = tmux.new_session(name, cwd, env=env)
-    db.add_session(tmux_name=real, project=project, repo=repo, name=session, launcher=launcher, cmd=cmd_line,
-                   claude_session_id=claude_session_id, add_dirs=add_dirs)
+    row_id = db.add_session(tmux_name=real, project=project, repo=repo, name=session, launcher=launcher, cmd=cmd_line,
+                            claude_session_id=claude_session_id, add_dirs=add_dirs, agent=agent, cwd=cwd, opts=opts)
     if cmd_line:
         try:
             tmux.send_line(real, cmd_line)
         except tmux.TmuxError:
             tmux.kill_session(real)
-            db.end(real)
+            db.end(real, "killed")
             raise
-    return real
+    if task_id is not None:                                   # only once the command is really typed: a failed launch leaves the task unbound
+        db.task_update(task_id, session_row=row_id)
+    return real, row_id
+
+
+def _start_session(name: str, project: str, repo: str, session: str, launcher: str, cwd: str, *,
+                   cmd_line: str | None = None, claude_session_id: str | None = None, add_dirs: list[str] | None = None,
+                   agent: str = "claude", opts: dict | None = None, task_id: int | None = None) -> str:
+    """_start_session_row for callers that only need the tmux name (reboot recovery calls it positionally)."""
+    return _start_session_row(name, project, repo, session, launcher, cwd, cmd_line=cmd_line, claude_session_id=claude_session_id,
+                              add_dirs=add_dirs, agent=agent, opts=opts, task_id=task_id)[0]
+
+
+def _end_session(name: str, reason: str = "killed") -> bool:
+    """Kill a session and close its row: kill tmux, db.end(name, reason), drop the tailnet previews of its tasks, cancel a
+    pending auto-close, invalidate the scan. Returns whether tmux had it; when it did not, nothing is written (the row, if
+    any, is closed by the next reconcile with reason 'reconciled'). reason: killed | auto_close | exited | project_deleted."""
+    if not name or not tmux.kill_session(name):
+        return False
+    db.update_flags(name, {"autoclose": None})            # a pending auto-close ({task, due}) must not fire for a dead session
+    db.end(name, reason)
+    for t in db.tasks():
+        if t["tmux_name"] == name:
+            _drop_preview(t)     # the task's tailnet preview would otherwise keep its port and serve mapping
+    _invalidate_scan()
+    return True
 
 
 @app.post("/api/projects/{project}/repos/{repo}/sessions", status_code=201)
 def api_create_session(project: str, repo: str, body: SessionIn):
-    if body.launcher not in LAUNCHERS:
-        raise projects.BadRequest(f"launcher must be one of {', '.join(LAUNCHERS)}")
+    agent, launcher = _normalize_launcher(body.launcher)
     rpath = projects.repo_path(project, repo)
     if not rpath.is_dir():
         raise projects.NotFound(f"repo {project}/{repo} not found")
@@ -1046,8 +1183,9 @@ def api_create_session(project: str, repo: str, body: SessionIn):
         raise projects.BadRequest("resume id must be a UUID")
 
     cmd_line = None
-    claude_session_id = None
+    agent_session_id = None
     add_dirs: list[str] = []
+    opts_clean: dict | None = None
     if body.devcontainer and not projects.has_devcontainer(rpath):
         raise projects.BadRequest("this repo has no .devcontainer/devcontainer.json")
     bad = _override_requested(extra)
@@ -1055,40 +1193,26 @@ def api_create_session(project: str, repo: str, body: SessionIn):
         raise projects.BadRequest(f"{bad}: settings overrides are not allowed in extra args; use the model / effort / permission / tools controls")
     # bypassPermissions on the host is an explicit choice (the permission control, the bypass flag, or the arg);
     # Claude Code itself still asks for a one-time confirmation in the terminal. Never the default.
-    if body.launcher != "shell":
+    if agent == "claude":
         exe = settings.claude_bin()
         if not exe and not body.devcontainer:
             raise projects.BadRequest("claude is not installed on this box")
         add_dirs = _resolve_add_dirs(body.add_dirs, rpath) if not body.devcontainer else []
-        cmd = ["claude"]
-        if body.launcher == "claude":
-            claude_session_id = str(uuid.uuid4())
-            cmd += ["--session-id", claude_session_id, "--name", session]   # the display name /resume shows
-        elif body.launcher == "resume":
-            cmd += ["--resume"] + ([body.resume_id] if body.resume_id else [])
-        elif body.launcher == "continue":
-            cmd += ["--continue"]
-        if body.bypass and not _bypass_requested(extra):
-            cmd.append("--dangerously-skip-permissions")
-        cmd += _launch_args(body) + extra
-        if add_dirs:
-            cmd += ["--add-dir", *add_dirs]
-        cmd_line = shlex.join(cmd)
-        if body.devcontainer:
-            # devcontainer CLI: build/start the container, then run claude inside it (its own ~/.claude; log in once there)
-            wf = str(rpath)
-            cmd_line = (shlex.join(["devcontainer", "up", "--workspace-folder", wf]) + " && "
-                        + shlex.join(["devcontainer", "exec", "--workspace-folder", wf, "--"]) + " " + cmd_line)
+        opts = {**body.model_dump(include=set(LaunchOpts.model_fields)), "extra": extra, "devcontainer": body.devcontainer}
+        plan = agents.get("claude").launch_plan(LaunchReq(
+            kind={"claude": "new", "resume": "resume", "continue": "continue"}[launcher], session_name=session, cwd=str(rpath),
+            opts=opts, resume_id=body.resume_id, add_dirs=add_dirs, bypass=body.bypass))
+        cmd_line, agent_session_id, opts_clean = plan.cmd_line, plan.agent_session_id, plan.opts_clean
     elif body.devcontainer:
         wf = str(rpath)
         cmd_line = (shlex.join(["devcontainer", "up", "--workspace-folder", wf]) + " && "
                     + shlex.join(["devcontainer", "exec", "--workspace-folder", wf, "--", "bash", "-l"]))
 
-    real = _start_session(name, project, repo, session, body.launcher, str(rpath), cmd_line=cmd_line,
-                          claude_session_id=claude_session_id, add_dirs=add_dirs)
+    real = _start_session(name, project, repo, session, launcher, str(rpath), cmd_line=cmd_line,
+                          claude_session_id=agent_session_id, add_dirs=add_dirs, agent=agent, opts=opts_clean)
     _invalidate_scan()
-    return {"tmux": real, "attach_url": f"/tty/?arg={real}", "claude_session_id": claude_session_id,
-            "cmd": cmd_line}
+    return {"tmux": real, "attach_url": f"/tty/?arg={real}", "agent": agent, "agent_session_id": agent_session_id,
+            "claude_session_id": agent_session_id, "cmd": cmd_line}
 
 
 class KeysIn(BaseModel):
@@ -1126,13 +1250,8 @@ def api_kill_session(name: str):
         tmux.split_name(name)
     except ValueError:
         raise projects.BadRequest("not a ccboard session name")
-    if not tmux.kill_session(name):
+    if not _end_session(name, "killed"):
         raise projects.NotFound(f"session {name} not found")
-    db.end(name)
-    for t in db.tasks():
-        if t["tmux_name"] == name:
-            _drop_preview(t)     # the task's tailnet preview would otherwise keep its port and serve mapping
-    _invalidate_scan()
     return {"killed": name}
 
 
@@ -1201,7 +1320,7 @@ async def api_hook(request: Request):
         if not name or name not in rows:
             return {"ignored": how if not name else "unknown session", "session": name}
         try:
-            result = hooks.apply(db, name, event, payload)
+            result = hooks.apply(db, name, event, payload, agent=rows[name].get("agent"))
         except Exception as e:  # a malformed payload must never 500 the hook path
             log.warning("hook %s for %s failed: %s", event, name, e)
             return {"ignored": "error", "session": name, "error": str(e)[:200]}
@@ -1340,7 +1459,7 @@ async def api_permission(request: Request):
 
     def record():
         db.set_state(name, "waiting", "PermissionRequest", message="permission: " + summary, attention=True)
-        db.add_event(name, "PermissionRequest", tool, summary, payload)
+        db.add_event(name, "PermissionRequest", tool, summary, payload, agent=rows[name].get("agent"))
         return db.perm_add(name, tool, summary, payload.get("tool_input"))
     pid = await asyncio.to_thread(record)
     _invalidate_scan()

@@ -227,6 +227,10 @@ The second command restarts `ccboard.service` and points the ttyd and backup uni
 - tmux names are `<project>--<repo>--<session>`. From a shell on the box: `TMUX_TMPDIR=/tmp tmux -L ccboard ls`.
 - Session sizes follow the most recently active client (tmux `window-size latest`), so attaching from a phone reflows the TUI for a desktop tab that is also attached.
 
+### Doctor and the agents API
+
+`GET /api/doctor` (optional `?group=box|terminal|claude|notify` and `&refresh=1`) runs the box checks (tmux, ttyd, code-server, git, gh, ccusage, ntfy, push, identity, Claude binary / login / hooks) with a 5 s cap each and a 20 s cache; every failing check carries a fix text and, where it makes sense, the command to run. `GET /api/agents` describes the installed agents (Claude for now: launch options, permission modes, efforts, models and the slash commands the board knows), `GET /api/sessions/<tmux>` returns one session with its task and flags, and `GET /api/external?agent=claude` lists Claude Code sessions and background jobs the board did not start (read from `~/.claude/sessions` and `~/.claude/jobs`, display only). All four are read-only and sit behind the same identity check as the rest of the API.
+
 ### Install as an app
 
 The board is a PWA, so it can live in its own window on a laptop and on the Home Screen of an iPad or phone (open it from a tailnet device over the HTTPS URL `install.sh` printed; installation needs HTTPS). **Settings › App** shows whether this window is installed, has the Install button where the browser offers one, lists these steps, shows the build id and has a *Reload app* button (an installed app has no browser reload).

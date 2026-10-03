@@ -851,3 +851,26 @@ test('main.js never shadows a render() the shell already defined', () => {
   w.run('render(true)');
   assert.equal(w.get('__shell'), 1, 'the shell render is still the one that runs');
 });
+
+test('every roster row has its own send box: Enter sends the text with enter and clears it; a shell row hides it', async () => {
+  const { w } = pagesWorld();
+  w.location.hash = '#/agents';
+  const root = page(w);
+  const row = root.querySelector('.rrow[data-tmux=shop--api--s2]');
+  const form = row.querySelector('form.rr-send');
+  const ta = form && form.querySelector('textarea.composer');
+  assert.ok(ta, 'the row carries a composer textarea');
+  assert.match(ta.getAttribute('aria-label'), /^send to /);
+  assert.equal(form.classList.contains('hidden'), false, 'a session at its prompt can be written to');
+  ta.value = 'run it\nnow';
+  ta.dispatchEvent({ type: 'keydown', key: 'Enter', preventDefault() {} });
+  await tick();
+  assert.deepEqual(calls(w).pop(), { method: 'POST', path: '/api/sessions/shop--api--s2/keys', body: { text: 'run it\nnow', enter: true } });
+  assert.equal(ta.value, '', 'the box clears after a send');
+  ta.value = 'draft';
+  ta.dispatchEvent({ type: 'keydown', key: 'Enter', shiftKey: true, preventDefault() {} });
+  assert.equal(ta.value, 'draft\n', 'Shift+Enter adds a line, nothing is sent');
+  assert.equal(calls(w).filter((c) => c.path.endsWith('/keys')).length, 1);
+  const sh = root.querySelector('.rrow[data-tmux=blog--web--sh] form.rr-send');
+  assert.ok(sh && sh.classList.contains('hidden'), 'a shell pane is never typed into from the roster');
+});

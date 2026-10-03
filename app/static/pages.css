@@ -26,7 +26,7 @@
 #page .rgroup { margin:12px 0 0; }
 #page .rgroup-head { display:flex; align-items:center; gap:8px; padding:6px 2px; border-bottom:1px solid var(--line); font-size:12px; letter-spacing:.04em; text-transform:uppercase; color:var(--dim); }
 #page .rgroup-head .mono { text-transform:none; letter-spacing:0; color:var(--fg-2); }
-#page .rrow { display:grid; grid-template-columns:auto minmax(0, 1fr) auto; grid-template-areas:"g main actions" "g meta actions" "g last actions" "g chips chips"; column-gap:10px; row-gap:2px;
+#page .rrow { display:grid; grid-template-columns:auto minmax(0, 1fr) auto; grid-template-areas:"g main actions" "g meta actions" "g last actions" "g chips chips" "g send send"; column-gap:10px; row-gap:2px;
               align-items:center; padding:8px 8px 8px 10px; border-bottom:1px solid var(--line-soft); border-left:2px solid transparent; }
 @media (hover:hover) { #page .rrow:hover { background:var(--card); } }   /* hover only where a pointer can hover: touch never keeps it */
 #page .rrow.attn { border-left-color:var(--warn); background:var(--warn-bg); }
@@ -44,7 +44,7 @@
 #page .rrow .rr-msg { overflow-wrap:anywhere; }
 #page .rrow.compact .rr-last { -webkit-line-clamp:1; }
 @media (max-width:599px) {
-  #page .rrow { grid-template-columns:auto minmax(0, 1fr); grid-template-areas:"g main" "g meta" "g last" "actions actions" "chips chips"; }
+  #page .rrow { grid-template-columns:auto minmax(0, 1fr); grid-template-areas:"g main" "g meta" "g last" "actions actions" "chips chips" "send send"; }
   #page .rrow .rr-actions { justify-content:flex-start; margin-top:6px; }
 }
 
@@ -131,3 +131,12 @@ dialog#helpdlg.palette::backdrop { background:rgba(0,0,0,.55); }
 /* install hint (Home, browser tabs only) */
 #page .install-hint { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:0 0 10px; }
 #page .install-hint .ih-text { flex:1 1 240px; }
+
+/* roster row send box (agents.js sessionSend) and the project page quick links (placeholders.js projectLinks) */
+#page .rrow .rr-send { grid-area:send; display:flex; align-items:flex-end; gap:6px; margin:4px 0 0; min-width:0; max-width:720px; }
+#page .rrow .rr-send textarea.composer { flex:1 1 0; width:0; min-width:0; min-height:var(--tap); height:var(--tap); font-size:13px; }   /* width 0 + flex: a textarea's intrinsic width must never size the grid */
+@media (pointer:coarse) { #page .rrow .rr-send textarea.composer { font-size:16px; } }
+html.force-coarse #page .rrow .rr-send textarea.composer { font-size:16px; }
+#page .proj-head { margin:0 0 12px; }
+#page .proj-links .proj-row { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+#page .proj-links .lbl { font:12px/1.3 var(--font-mono); color:var(--dim); margin-right:4px; }

@@ -6,7 +6,7 @@ import logging
 from itertools import combinations
 from pathlib import Path
 
-from . import gitops
+from . import gitops, tasks as tasks_mod
 
 log = logging.getLogger("ccboard.overlap")
 
@@ -35,7 +35,9 @@ def compute(db) -> int:
         groups.setdefault((t["project"], t["repo"]), []).append(t)
     n = 0
     for tasks in groups.values():
-        files = {t["id"]: changed_files(Path(t["worktree"]), t.get("base") or "main") for t in tasks}
+        # a task without a worktree (backlog, queued, session mode) touches no files: Path('') is Path('.') and would diff the board's own cwd
+        files = {t["id"]: changed_files(tasks_mod.task_worktree(t), t.get("base") or "main") if tasks_mod.has_worktree(t) else set()
+                 for t in tasks}
         overlaps: dict[int, list[dict]] = {t["id"]: [] for t in tasks}
         for a, b in combinations(tasks, 2):
             common = sorted(files[a["id"]] & files[b["id"]])

@@ -106,6 +106,15 @@ CREATE TABLE IF NOT EXISTS permissions (
 """
 
 # Added after v0.1; applied with ALTER TABLE, "duplicate column" errors are ignored.
+#
+# Rules (the board ships as a container image, a git push deploys within minutes and these run on every start):
+#   * idempotent: ALTER ... ADD COLUMN (a "duplicate column" error is swallowed), CREATE ... IF NOT EXISTS, and data
+#     statements that can be re-run;
+#   * additive only: never drop, rename or tighten a column, so the PREVIOUS image still runs on the migrated DB (its
+#     INSERTs name fewer columns and every new NOT NULL column has a DEFAULT; rows it writes after a rollback, e.g. a
+#     shell session with agent='claude', are fixed by the re-runnable backfill the next time the new image opens the DB);
+#   * order matters inside this list: a statement may only use columns added above it.
+# New columns are deliberately not added to SCHEMA, so a fresh DB and an upgraded one take the identical path.
 MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN state TEXT",
     "ALTER TABLE sessions ADD COLUMN state_at TEXT",
@@ -116,7 +125,108 @@ MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN acked_at TEXT",
     "ALTER TABLE tasks ADD COLUMN preview_port INTEGER",
     "ALTER TABLE tasks ADD COLUMN preview_https INTEGER",
+    # ---- v0.5.4 (agent seam, tasks v2)
+    # sessions: the physical column claude_session_id is NOT renamed; open_rows() exposes it as agent_session_id.
+    "ALTER TABLE sessions ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'",     # claude|codex|shell
+    "UPDATE sessions SET agent='shell' WHERE launcher IN ('shell','clone') AND agent='claude'",   # backfill, re-runnable
+    "ALTER TABLE sessions ADD COLUMN cwd TEXT",             # launch cwd (repo or worktree)
+    "ALTER TABLE sessions ADD COLUMN opts TEXT",            # JSON of validated launch options re-passed on resume
+    "ALTER TABLE sessions ADD COLUMN flags TEXT",           # JSON, only through DB.update_flags
+    "ALTER TABLE sessions ADD COLUMN ended_reason TEXT",    # killed|auto_close|exited|reconciled|project_deleted
+    "ALTER TABLE events ADD COLUMN agent TEXT",
+    # tasks: tmux_name, worktree and branch stay NOT NULL; an unassigned task stores '' in all three (tasks.has_worktree)
+    "ALTER TABLE tasks ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'",
+    "ALTER TABLE tasks ADD COLUMN mode TEXT NOT NULL DEFAULT 'worktree'",      # worktree|session|attached
+    "ALTER TABLE tasks ADD COLUMN phase TEXT NOT NULL DEFAULT 'running'",      # backlog|queued|running|done|failed|cancelled
+    "ALTER TABLE tasks ADD COLUMN session_row INTEGER",     # sessions.id running it (tmux names are reused)
+    "ALTER TABLE tasks ADD COLUMN auto_close INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE tasks ADD COLUMN parent_id INTEGER",
+    "ALTER TABLE tasks ADD COLUMN chain_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN spec TEXT",               # JSON dispatch intent of a queued step
+    "ALTER TABLE tasks ADD COLUMN result TEXT",             # <= RESULT_MAX chars
+    "ALTER TABLE tasks ADD COLUMN result_at TEXT",
+    "ALTER TABLE tasks ADD COLUMN assigned_at TEXT",
+    "ALTER TABLE tasks ADD COLUMN done_at TEXT",
+    "CREATE INDEX IF NOT EXISTS tasks_by_session ON tasks(session_row)",
+    "CREATE INDEX IF NOT EXISTS tasks_by_parent ON tasks(parent_id)",
+    "ALTER TABLE jobs ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'",
+    # permissions.decision takes allow|deny|tui|interrupt (plus timeout from perm_expire). It has no CHECK constraint,
+    # so nothing to migrate: the new values are plain TEXT.
 ]
+
+# Events: the table keeps the newest EVENTS_CAP rows. These names are never stored (statusline fires every few
+# seconds per session, PostToolBatch once per tool batch; they drown the interesting events and the cap with them).
+# hooks.py must not rely on add_event() for them: it should skip the call (or import SKIP_EVENTS) for these names.
+EVENTS_CAP = 20000
+SKIP_EVENTS = frozenset({"PostToolBatch", "statusline"})
+RESULT_MAX = 20000
+
+# Columns a caller may name in task_add / job_add (the column names are interpolated into SQL, so this is an allowlist;
+# an unknown key is a programming error and raises TypeError instead of being silently dropped).
+TASK_COLS = ("project", "repo", "slug", "title", "prompt", "branch", "base", "worktree", "tmux_name", "claude_session_id",
+             "status", "pr_number", "pr_url", "pr_state", "pr_json", "ci", "cost_usd", "overlap", "archived_at",
+             "preview_port", "preview_https",
+             "agent", "mode", "phase", "session_row", "auto_close", "parent_id", "chain_id", "spec", "result",
+             "result_at", "assigned_at", "done_at")
+TASK_REQUIRED = ("project", "repo", "slug", "title", "prompt")
+TASK_UNASSIGNED = ("tmux_name", "worktree", "branch")     # NOT NULL without a default: '' when there is none yet
+JOB_COLS = ("project", "repo", "name", "prompt", "cron", "permission_mode", "max_turns", "max_budget_usd", "args",
+            "timeout_s", "enabled", "batch_id", "next_run_at", "agent")
+JOB_REQUIRED = ("project", "repo", "name", "prompt")
+ACTIVE_TASK_PHASES = ("queued", "running", "done", "failed")
+
+
+def _json(v):
+    """Dict/list -> JSON text; text passes through; None stays None."""
+    if v is None or isinstance(v, str):
+        return v
+    return json.dumps(v)
+
+
+def _loads(raw, kind):
+    """Parse a JSON text column; anything unparsable or of the wrong type is `kind()` (never raises)."""
+    if isinstance(raw, kind):
+        return raw
+    if not raw or not isinstance(raw, (str, bytes)):
+        return kind()
+    try:
+        v = json.loads(raw)
+    except ValueError:
+        return kind()
+    return v if isinstance(v, kind) else kind()
+
+
+def session_view(row: dict) -> dict:
+    """A sessions row shaped for the API: JSON columns parsed (bad JSON never raises), plus the aliases
+    agent_session_id (= claude_session_id) and row_id (= id)."""
+    d = dict(row)
+    d["add_dirs"] = _loads(d.get("add_dirs"), list)
+    try:
+        d["stats"] = json.loads(d["stats"]) if d.get("stats") else None
+    except (ValueError, TypeError):
+        d["stats"] = None
+    d["flags"] = _loads(d.get("flags"), dict)
+    d["opts"] = _loads(d.get("opts"), dict)
+    d["agent"] = d.get("agent") or "claude"
+    d["agent_session_id"] = d.get("claude_session_id")
+    d["row_id"] = d.get("id")
+    return d
+
+
+def _insert(conn, table: str, vals: dict) -> int:
+    cols = list(vals)
+    cur = conn.execute(f"INSERT INTO {table}({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", tuple(vals.values()))
+    return int(cur.lastrowid)
+
+
+def _task_fields(fields: dict) -> dict:
+    """Normalise the JSON/size-bounded task columns (shared by task_add and task_update)."""
+    out = dict(fields)
+    if "spec" in out:
+        out["spec"] = _json(out["spec"])
+    if isinstance(out.get("result"), str):
+        out["result"] = out["result"][:RESULT_MAX]
+    return out
 
 
 def now() -> str:
@@ -140,31 +250,56 @@ class DB:
                     if "duplicate column" not in str(e):
                         raise
 
-    def add_session(self, *, tmux_name, project, repo, name, launcher, cmd, claude_session_id, add_dirs):
+    def add_session(self, *, tmux_name, project, repo, name, launcher, cmd=None, claude_session_id=None, add_dirs=None,
+                    agent="claude", cwd=None, opts=None, flags=None) -> int:
+        """Insert a session row and return its id (sessions.id, exposed as row_id). The column list is built from the
+        values given: a None is never written, so NOT NULL DEFAULT columns (agent) keep their default."""
+        vals = {"tmux_name": tmux_name, "project": project, "repo": repo, "name": name, "launcher": launcher, "cmd": cmd,
+                "claude_session_id": claude_session_id, "add_dirs": json.dumps(add_dirs or []),
+                "agent": agent, "cwd": str(cwd) if cwd is not None else None, "opts": _json(opts), "flags": _json(flags),
+                "created_at": now()}
         with self.lock:
-            self.conn.execute(
-                "INSERT INTO sessions(tmux_name, project, repo, name, launcher, cmd, claude_session_id,"
-                " add_dirs, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                (tmux_name, project, repo, name, launcher, cmd, claude_session_id,
-                 json.dumps(add_dirs or []), now()),
-            )
+            return _insert(self.conn, "sessions", {k: v for k, v in vals.items() if v is not None})
 
     def open_rows(self) -> dict[str, dict]:
-        """Newest open row per tmux name."""
+        """Newest open row per tmux name, shaped by session_view()."""
         with self.lock:
             rows = self.conn.execute(
                 "SELECT * FROM sessions WHERE ended_at IS NULL ORDER BY id ASC"
             ).fetchall()
-        out: dict[str, dict] = {}
-        for r in rows:
-            d = dict(r)
-            d["add_dirs"] = json.loads(d.get("add_dirs") or "[]")
-            try:
-                d["stats"] = json.loads(d["stats"]) if d.get("stats") else None
-            except ValueError:
-                d["stats"] = None
-            out[d["tmux_name"]] = d
-        return out
+        return {r["tmux_name"]: session_view(dict(r)) for r in rows}
+
+    def update_flags(self, tmux: str, patch: dict | None = None, incr: dict | None = None) -> dict:
+        """Read-modify-write sessions.flags of the newest open row for `tmux`, atomically (one lock hold, so two hook
+        threads never lose each other's update). `patch`: key -> value, a None value deletes the key. `incr`: key -> int
+        delta added to the current value (a missing or non-integer value counts as 0; the result never goes below 0).
+        The patch is applied first, then the increments. Returns the new flags dict ({} and no write when no row is
+        open; bad JSON in the column starts over from {})."""
+        with self.lock:
+            r = self.conn.execute(
+                "SELECT id, flags FROM sessions WHERE tmux_name=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1",
+                (tmux,)).fetchone()
+            if not r:
+                return {}
+            old = _loads(r["flags"], dict)
+            new = dict(old)
+            for k, v in (patch or {}).items():
+                if v is None:
+                    new.pop(k, None)
+                else:
+                    new[k] = v
+            for k, delta in (incr or {}).items():
+                cur = new.get(k)
+                cur = cur if isinstance(cur, int) and not isinstance(cur, bool) else 0
+                new[k] = max(0, cur + int(delta))
+            if new != old:
+                self.conn.execute("UPDATE sessions SET flags=? WHERE id=?", (json.dumps(new), r["id"]))
+            return new
+
+    def any_session_ever(self) -> bool:
+        """Has the board ever started (or seen) a session? Open or ended; feeds state.setup.first_run."""
+        with self.lock:
+            return self.conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone() is not None
 
     def session_ids(self) -> list[dict]:
         """Every session row that learned a Claude session id (open or ended), for cost attribution."""
@@ -178,7 +313,7 @@ class DB:
             r = self.conn.execute(
                 "SELECT * FROM sessions WHERE tmux_name=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1", (tmux_name,)
             ).fetchone()
-        return dict(r) if r else None
+        return session_view(dict(r)) if r else None
 
     def set_state(self, tmux_name: str, state: str | None, event: str, *, message: str | None = None,
                   prompt: str | None = None, claude_session_id: str | None = None, attention: bool = False) -> None:
@@ -216,12 +351,18 @@ class DB:
             self.conn.execute(
                 "UPDATE sessions SET acked_at=? WHERE tmux_name=? AND ended_at IS NULL", (now(), tmux_name))
 
-    def add_event(self, tmux_name: str, event: str, kind: str | None, message: str | None, payload: dict) -> None:
+    def add_event(self, tmux_name: str, event: str, kind: str | None, message: str | None, payload: dict,
+                  agent: str | None = None) -> bool:
+        """Store one event (and trim the table to the newest EVENTS_CAP rows). Names in SKIP_EVENTS are never stored.
+        Returns whether a row was written."""
+        if event in SKIP_EVENTS:
+            return False
         with self.lock:
             self.conn.execute(
-                "INSERT INTO events(tmux_name, event, kind, message, payload, at) VALUES (?,?,?,?,?,?)",
-                (tmux_name, event, kind, (message or "")[:500] or None, json.dumps(payload)[:20000], now()))
-            self.conn.execute("DELETE FROM events WHERE id < (SELECT MAX(id) FROM events) - 5000")
+                "INSERT INTO events(tmux_name, event, kind, message, payload, at, agent) VALUES (?,?,?,?,?,?,?)",
+                (tmux_name, event, kind, (message or "")[:500] or None, json.dumps(payload)[:20000], now(), agent))
+            self.conn.execute("DELETE FROM events WHERE id <= (SELECT MAX(id) FROM events) - ?", (EVENTS_CAP,))
+        return True
 
     def recent_events(self, limit: int = 50) -> list[dict]:
         with self.lock:
@@ -255,13 +396,17 @@ class DB:
 
     # ---- jobs & runs
     def job_add(self, **row) -> int:
-        cols = ["project", "repo", "name", "prompt", "cron", "permission_mode", "max_turns", "max_budget_usd", "args",
-                "timeout_s", "enabled", "batch_id", "next_run_at"]
+        """Insert a job. Only the keys given (and not None) are written, so NOT NULL DEFAULT columns
+        (permission_mode, max_turns, enabled, agent) take their defaults instead of failing on an explicit None."""
+        unknown = set(row) - set(JOB_COLS)
+        if unknown:
+            raise TypeError(f"job_add: unknown column(s) {sorted(unknown)}")
+        vals = {k: v for k, v in row.items() if v is not None}
+        missing = [k for k in JOB_REQUIRED if k not in vals]
+        if missing:
+            raise TypeError(f"job_add: missing {missing}")
         with self.lock:
-            cur = self.conn.execute(
-                f"INSERT INTO jobs({', '.join(cols)}, created_at) VALUES ({', '.join('?' * len(cols))}, ?)",
-                (*[row.get(c) for c in cols], now()))
-            return int(cur.lastrowid)
+            return _insert(self.conn, "jobs", {**vals, "created_at": now()})
 
     def job_get(self, jid: int) -> dict | None:
         with self.lock:
@@ -328,12 +473,41 @@ class DB:
 
     # ---- tasks
     def task_add(self, **row) -> int:
-        cols = ["project", "repo", "slug", "title", "prompt", "branch", "base", "worktree", "tmux_name", "claude_session_id"]
+        """Insert a task. Only the keys given (and not None) are written, so NOT NULL DEFAULT columns (agent, mode,
+        phase, auto_close, status) take their defaults. A task without tmux_name/worktree/branch is unassigned: those
+        store '' (tasks.has_worktree is the guard) and phase defaults to 'backlog'; one with a tmux_name defaults to the
+        column default 'running'. Pass phase explicitly (for example 'queued' with a spec) to override either."""
+        unknown = set(row) - set(TASK_COLS)
+        if unknown:
+            raise TypeError(f"task_add: unknown column(s) {sorted(unknown)}")
+        vals = _task_fields({k: v for k, v in row.items() if v is not None})
+        missing = [k for k in TASK_REQUIRED if k not in vals]
+        if missing:
+            raise TypeError(f"task_add: missing {missing}")
+        for k in TASK_UNASSIGNED:
+            vals.setdefault(k, "")
+        if "phase" not in vals and not vals["tmux_name"]:
+            vals["phase"] = "backlog"
+        ts = now()
         with self.lock:
-            cur = self.conn.execute(
-                f"INSERT INTO tasks({', '.join(cols)}, created_at, updated_at) VALUES ({', '.join('?' * len(cols))}, ?, ?)",
-                (*[row.get(c) for c in cols], now(), now()))
-            return int(cur.lastrowid)
+            return _insert(self.conn, "tasks", {**vals, "created_at": ts, "updated_at": ts})
+
+    def active_tasks_by_session(self, phases: tuple[str, ...] = ACTIVE_TASK_PHASES) -> dict[int, list[dict]]:
+        """{sessions.id: [{id, title, phase, auto_close}]} for unarchived tasks bound to a session, in ONE query.
+        Each list is ordered most relevant first (running, queued, done, failed; newest first inside a phase), so a
+        caller that shows one task per session takes the first element."""
+        marks = ",".join("?" * len(phases))
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT id, title, phase, auto_close, session_row FROM tasks"
+                f" WHERE session_row IS NOT NULL AND archived_at IS NULL AND phase IN ({marks})"
+                " ORDER BY CASE phase WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'done' THEN 2 ELSE 3 END, id DESC",
+                tuple(phases)).fetchall()
+        out: dict[int, list[dict]] = {}
+        for r in rows:
+            out.setdefault(int(r["session_row"]), []).append(
+                {"id": r["id"], "title": r["title"], "phase": r["phase"], "auto_close": bool(r["auto_close"])})
+        return out
 
     def task_get(self, tid: int) -> dict | None:
         with self.lock:
@@ -349,6 +523,7 @@ class DB:
     def task_update(self, tid: int, **fields) -> None:
         if not fields:
             return
+        fields = _task_fields(fields)
         sets = ", ".join(f"{k}=?" for k in fields) + ", updated_at=?"
         with self.lock:
             self.conn.execute(f"UPDATE tasks SET {sets} WHERE id=?", (*fields.values(), now(), tid))
@@ -407,10 +582,12 @@ class DB:
         except ValueError:
             return None
 
-    def end(self, tmux_name: str) -> None:
+    def end(self, tmux_name: str, reason: str = "killed") -> None:
+        """Close every open row of this tmux name. reason: killed|auto_close|exited|reconciled|project_deleted."""
         with self.lock:
             self.conn.execute(
-                "UPDATE sessions SET ended_at=? WHERE tmux_name=? AND ended_at IS NULL", (now(), tmux_name)
+                "UPDATE sessions SET ended_at=?, ended_reason=? WHERE tmux_name=? AND ended_at IS NULL",
+                (now(), reason, tmux_name)
             )
 
     def reconcile(self, alive: set[str], before: str) -> None:
@@ -424,5 +601,6 @@ class DB:
             stale = [r[0] for r in rows if r[0] not in alive]
             for name in stale:
                 self.conn.execute(
-                    "UPDATE sessions SET ended_at=? WHERE tmux_name=? AND ended_at IS NULL", (now(), name)
+                    "UPDATE sessions SET ended_at=?, ended_reason='reconciled' WHERE tmux_name=? AND ended_at IS NULL",
+                    (now(), name)
                 )
