@@ -178,8 +178,10 @@ def test_describe_uses_login_not_bare():
     assert hooks.resolve_session({"x-ccboard-session": "none"}, {"cwd": "/"}, {}) == (None, "ignored")
 
 
-def test_project_folder_session(client, projects_dir, fake_tmux):
+def test_project_folder_session(client, projects_dir, fake_tmux, monkeypatch):
     from app import hooks, main
+    from app.config import settings
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")        # the in-place task launch below needs a claude on PATH (CI has none)
     make_repo(projects_dir)                                              # shop/api
     r = client.post("/api/projects/shop/repos/root/sessions", json={"launcher": "shell"}, headers=H)
     assert r.status_code == 201, r.text
