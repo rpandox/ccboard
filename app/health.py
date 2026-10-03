@@ -20,11 +20,13 @@ log = logging.getLogger("ccboard.health")
 POLL_SECONDS = 60
 KV_NODES = "nodes"
 HUB_HEADER = "x-ccboard-hub"
-_cpu_prev: tuple[int, int] | None = None
+_cpu_prev: dict[str, tuple[int, int]] = {}      # consumer -> the previous (idle, total) reading
+_cpu_lock = threading.Lock()
 
 
-def _cpu_pct() -> float | None:
-    global _cpu_prev
+def _cpu_pct(consumer: str = "default") -> float | None:
+    """CPU busy % since this consumer's previous reading (None on its first reading or without /proc/stat). Every consumer
+    keeps its own previous reading, so the Sampler (60 s) and the /api/state poll (3 s) never steal each other's delta."""
     try:
         with open("/proc/stat") as f:
             fields = f.readline().split()[1:]
@@ -32,7 +34,9 @@ def _cpu_pct() -> float | None:
         idle, total = vals[3] + (vals[4] if len(vals) > 4 else 0), sum(vals)
     except (OSError, ValueError, IndexError):
         return None
-    prev, _cpu_prev = _cpu_prev, (idle, total)
+    with _cpu_lock:
+        prev = _cpu_prev.get(consumer)
+        _cpu_prev[consumer] = (idle, total)
     if not prev or total == prev[1]:
         return None
     return round(100.0 * (1 - (idle - prev[0]) / (total - prev[1])), 1)
@@ -59,7 +63,8 @@ def _uptime() -> float | None:
         return None
 
 
-def snapshot(extra: dict | None = None) -> dict:
+def snapshot(extra: dict | None = None, consumer: str = "default") -> dict:
+    """Box health. `consumer` names who is asking, for the cpu delta (see _cpu_pct)."""
     try:
         load1 = os.getloadavg()[0]
     except (OSError, AttributeError):
@@ -69,7 +74,7 @@ def snapshot(extra: dict | None = None) -> dict:
         disk = {"total": du.total, "used": du.used, "pct": round(100.0 * du.used / du.total, 1)}
     except OSError:
         disk = None
-    return {"host": socket.gethostname(), "cpu_pct": _cpu_pct(), "load1": load1, "mem": _mem(), "disk": disk,
+    return {"host": socket.gethostname(), "cpu_pct": _cpu_pct(consumer), "load1": load1, "mem": _mem(), "disk": disk,
             "uptime_s": _uptime(), "cores": os.cpu_count(), "at": time.time(), **(extra or {})}
 
 

@@ -665,7 +665,7 @@ def test_index_dialogs_are_empty_in_the_html():
 # ---------- demo fixtures (app/static/demo/*.json, read by api() when ?demo=1 or ccboard:demo=1) ----------
 
 DEMO_DIR = STATIC / "demo"
-DEMO_FILES = ("state.json", "search.json", "tree.json", "series.json", "memory.json")
+DEMO_FILES = ("state.json", "search.json", "tree.json", "series.json", "usage_summary.json", "memory.json")
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+--[A-Za-z0-9_-]+--[A-Za-z0-9_-]+$")
 KANBAN = ("in_progress", "needs_you", "done", "pr", "merged")
 DEMO_HEADERS = {"Tailscale-User-Login": "alice@example.com"}
@@ -882,15 +882,92 @@ def test_demo_tree_fixture_matches_the_tree_endpoint_shape():
 
 
 def test_demo_series_fixture_matches_the_series_endpoint_shape():
+    """24 h in 30-minute buckets: GET /api/series?series=rl_5h,rl_7d,ctx&key=*&since=24h&points=48. The lim events that
+    /api/series/events answers ride in the same file (demo mode maps both paths to it)."""
     s = demo_json("series.json")
-    assert s["step"] == 300 and s["meta"] == {} and s["since"] and s["until"]
-    assert len(s["t"]) == 48 and all(b - a == 300 for a, b in zip(s["t"], s["t"][1:]))
-    assert set(s["series"]) == {"rl_5h:claude", "rl_7d:claude"}
+    state = demo_json("state.json")
+    assert s["since"] and s["until"] and s["step"] == 1800 and len(s["t"]) == 48 and s["t"][0] % s["step"] == 0
+    assert all(b - a == s["step"] for a, b in zip(s["t"], s["t"][1:]))
+    assert parse_iso(s["until"]) == demo_epoch(state), "the series ends at the fixture clock"
+    assert parse_iso(s["until"]) - parse_iso(s["since"]) >= 23 * 3600
+    assert {"rl_5h:claude", "rl_7d:claude"} <= set(s["series"])
+    ctx = sorted(k for k in s["series"] if k.startswith("ctx:"))
+    assert len(ctx) == 2, "ctx for two sessions"
     for key, values in s["series"].items():
         assert len(values) == 48, key
         assert all(v is None or 0 <= v <= 100 for v in values), key
-    assert max(v for v in s["series"]["rl_5h:claude"][:20] if v is not None) == 100, "the 5h series shows one limit-hit episode"
-    assert s["series"]["rl_5h:claude"][-1] == 42 and s["series"]["rl_7d:claude"][-1] == 71, "the last point matches the state's pills"
+    five = s["series"]["rl_5h:claude"]
+    top = [i for i, v in enumerate(five) if v is not None and v >= 99]
+    assert top and top == list(range(top[0], top[-1] + 1)), "the 5h series shows one limit-hit plateau"
+    assert top[-1] < len(five) - 1 and min(v for v in five[top[-1] + 1:] if v is not None) < 50, "and then the window resets"
+    assert five[-1] == 42 and s["series"]["rl_7d:claude"][-1] == 71, "the last point matches the state's pills"
+    pct = {x["tmux"]: x["stats"]["context_pct"] for _, _, x in fleet_sessions(state) if x.get("stats")}
+    for key in ctx:
+        assert key[len("ctx:"):] in pct and s["series"][key][-1] == pct[key[len("ctx:"):]], f"{key} ends at the session's context %"
+        assert s["meta"][key]["window"] == 200000 and s["meta"][key]["model"]
+    assert s["meta"]["rl_5h:claude"]["resets_at"] == state["usage"]["value"]["five_hour"]["resets_at"]
+    assert s["truncated"] is False and s["events"], "a limit episode"
+    sessions = {x["tmux"] for _, _, x in fleet_sessions(state)}
+    for e in s["events"]:
+        assert {"t", "key", "v", "m"} <= set(e) and e["key"] in ("5h", "7d", "other") and e["m"]["session"] in sessions
+        assert s["t"][0] <= e["t"] <= parse_iso(s["until"])
+    assert (s["events"][0]["t"] - s["t"][0]) // s["step"] in top, "the episode sits on the plateau"
+
+
+def test_demo_usage_summary_fixture_matches_build_and_agrees_with_the_state_fixture(tmp_path):
+    from datetime import datetime, timezone
+    from app import usage_summary
+    from app.db import DB
+    state = demo_json("state.json")
+    now = datetime.fromtimestamp(demo_epoch(state), timezone.utc)
+    fx = demo_json("usage_summary.json")
+    empty = usage_summary.build(DB(tmp_path / "empty.db"), days=30, tz_min=345, now=now)
+    missing = _missing_keys(empty, fx, "usage_summary")
+    assert not missing, "app/static/demo/usage_summary.json lacks keys usage_summary.build returns:\n  " + "\n  ".join(missing)
+    assert set(fx) == set(empty), "and nothing the builder does not return"
+    assert fx["source"] == "samples" and fx["tz_min"] == 345 and fx["generated_at"] == empty["generated_at"]
+    # daily: 30 local days ending on the fixture clock's day (Kathmandu), zero days present and flagged
+    assert [d["day"] for d in fx["daily"]] == [d["day"] for d in empty["daily"]]
+    assert all(set(d) == set(empty["daily"][0]) for d in fx["daily"])
+    assert any(d["zero"] for d in fx["daily"]) and any(not d["zero"] for d in fx["daily"])
+    assert all(d["zero"] == (d["total"] == 0) and d["total"] >= 0 and d["tokens"] >= 0 for d in fx["daily"])
+    # windows are sums of the daily bars
+    w = fx["windows"]
+    assert w["today"]["total"] == round(fx["daily"][-1]["total"], 4)
+    assert w["7d"]["total"] == pytest.approx(sum(d["total"] for d in fx["daily"][-7:]), abs=1e-3)
+    assert w["30d"]["total"] == pytest.approx(sum(d["total"] for d in fx["daily"]), abs=1e-3)
+    for win in w.values():
+        assert win["total"] == pytest.approx(sum(a["total"] for a in win["by_agent"].values()), abs=1e-3)
+        assert set(win["by_agent"]) >= {"claude"} and all({"total", "tokens"} <= set(a) for a in win["by_agent"].values())
+        assert all({"project", "total", "hours"} <= set(p) for p in win["by_project"])
+        assert [p["total"] for p in win["by_project"]] == sorted((p["total"] for p in win["by_project"]), reverse=True)
+    # the same projects and per-project cost-today as the state fixture's cost record
+    cost = state["cost"]["value"]["projects"]
+    today = {p["project"]: p["total"] for p in w["today"]["by_project"]}
+    assert today == {name: c["today"] for name, c in cost.items() if c["today"]}
+    assert {p["project"] for p in w["30d"]["by_project"]} <= {p["name"] for p in state["projects"]} | {"(unattributed)"}
+    # hour of day and heatmap
+    assert len(fx["hourly_profile"]) == 24 and len(fx["heatmap"]) == 7 and all(len(r) == 24 for r in fx["heatmap"])
+    assert sum(fx["hourly_profile"]) == sum(map(sum, fx["heatmap"])) > 0
+    morning, evening = sum(fx["hourly_profile"][9:14]), sum(fx["hourly_profile"][19:24])
+    assert morning > 0 and evening > morning, "both peaks of the user's day show, the evening one higher"
+    # top sessions, active hours, rate limits, episodes, unpriced
+    top = fx["top_sessions"]
+    assert 1 < len(top) <= 10 and [t["total"] for t in top] == sorted((t["total"] for t in top), reverse=True)
+    assert all({"key", "project", "repo", "agent", "total", "hours"} <= set(t) and ":" in t["key"] for t in top)
+    assert set(fx["active_hours"]) <= {p["name"] for p in state["projects"]} and all(h > 0 for h in fx["active_hours"].values())
+    rl = fx["rate_limits"]["claude"]
+    assert rl["rl_5h"]["value"] == 42 and rl["rl_7d"]["value"] == 71
+    assert rl["rl_5h"]["meta"]["resets_at"] == state["usage"]["value"]["five_hour"]["resets_at"]
+    assert fx["episodes"] and all({"kind", "at", "resets_at", "session"} <= set(e) and e["kind"] in ("5h", "7d", "other") for e in fx["episodes"])
+    assert [e["at"] for e in fx["episodes"]] == sorted(e["at"] for e in fx["episodes"])
+    assert fx["unpriced"] and all({"key", "agent", "project", "repo", "tokens", "models"} <= set(u) for u in fx["unpriced"])
+
+
+@pytest.mark.parametrize("name", DEMO_FILES)
+def test_demo_api_maps_a_path_to_every_fixture(name):
+    """api() in demo mode reads /static/demo/<name>.json: the table in core.js must name every fixture or the file is dead weight."""
+    assert f"name = '{name[:-len('.json')]}';" in (STATIC / "core.js").read_text(encoding="utf-8")
 
 
 def test_demo_memory_fixture_matches_the_memory_envelope():

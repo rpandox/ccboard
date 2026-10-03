@@ -2,14 +2,18 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import re
 import secrets
 from pathlib import Path
 
-from . import notify, projects, tmux
+from . import agents, notify, projects, samples, tmux
+from .agents.claude import parse_limit_message
 from .config import settings
-from .db import SKIP_EVENTS
+from .db import SKIP_EVENTS, now as db_now
+
+log = logging.getLogger("ccboard.hooks")
 
 TOKEN_HEADER = "x-ccboard-token"
 MAX_BODY = 512 * 1024
@@ -129,6 +133,49 @@ def _last_screen_line(name: str) -> str | None:
     return None
 
 
+def _sample(fn, *args, **kw) -> None:
+    """Time-series writes ride along on the hook path and must never break it: a failure is logged and dropped."""
+    try:
+        fn(*args, **kw)
+    except Exception as e:
+        log.warning("samples.%s failed: %s", getattr(fn, "__name__", "write"), e)
+
+
+def _adapter(agent: str | None):
+    """The adapter that reads this row's hook payloads; a shell or unknown agent is read the way Claude's are."""
+    try:
+        return agents.get(agent or "claude")
+    except KeyError:
+        return agents.get("claude")
+
+
+def _same_episode(prev: dict | None, name: str, kind: str, resets_at) -> bool:
+    """Is this rate-limit failure the episode the kv 'rate_limited' record already describes? A reset time names the account-wide
+    window, so the same kind and reset time is the same episode whichever session reports it; without one it is the same session
+    in the same UTC hour. Subagents fail on their own and one session retried 482 times in a single episode: the person is told
+    once."""
+    v = prev.get("value") if isinstance(prev, dict) else None
+    if not isinstance(v, dict) or v.get("kind") != kind:
+        return False
+    if resets_at:
+        return v.get("resets_at") == resets_at
+    return v.get("session") == name and str(prev.get("at") or "")[:13] == db_now()[:13]
+
+
+def _rate_limited(db, name: str, limit: dict, message: str) -> None:
+    kind = str(limit.get("kind") or "other")
+    resets_at = limit.get("resets_at")
+    fresh = not _same_episode(db.kv_get("rate_limited"), name, kind, resets_at)
+    db.kv_set("rate_limited", {"session": name, "message": message[:500], "kind": kind, "resets_at": resets_at})
+    if fresh:
+        notify.notify_rate_limit(name, message)
+    _sample(_record_limit, db, name, {**limit, "kind": kind, "message": message[:500]})
+
+
+def _record_limit(db, name: str, limit: dict) -> None:
+    samples.record_limit(db, name, limit, db.open_row(name))
+
+
 def apply(db, name: str, event: str, payload: dict, agent: str | None = None) -> dict:
     """Update the session row for one hook event. Returns what changed. `agent` (the row's agent) is recorded on the stored event."""
     sid = payload.get("session_id") if isinstance(payload.get("session_id"), str) else None
@@ -154,6 +201,8 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None) ->
         db.set_stats(name, stats, claude_session_id=sid)
         if stats["rate_limits"]:
             db.kv_set("rate_limits", stats["rate_limits"])
+        # the statusline is Claude Code's own: the rate-limit series are keyed 'claude' whatever the row's agent says
+        _sample(samples.record_statusline, db, name, stats, "claude")
         return {"session": name, "event": event, "stats": True}
 
     if event in SKIP_EVENTS:
@@ -178,12 +227,17 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None) ->
         message = _last_screen_line(name)
     elif event == "StopFailure":
         state, attention = "errored", True
-        kind = payload.get("error_type") or payload.get("error_category") or payload.get("matcher") or "error"
-        m = payload.get("error") or payload.get("message")
-        message = m if isinstance(m, str) else str(kind)
-        if "rate" in str(kind).lower() and "limit" in str(kind).lower():
-            db.kv_set("rate_limited", {"session": name, "message": message})
-            notify.notify_rate_limit(name, message)
+        # The live payload carries the error TYPE in `error` ("rate_limit") and the text in last_assistant_message; older shapes
+        # carry error_type / error_category / matcher with `error` as the text. The adapter reads both.
+        n = _adapter(agent).normalise_hook(event, payload)
+        kind = n.kind or "error"
+        message = n.message or str(kind)
+        limit = n.limit
+        legacy_kind = str(payload.get("error_type") or payload.get("error_category") or payload.get("matcher") or "").lower()
+        if limit is None and "rate" in legacy_kind and "limit" in legacy_kind:      # the old reading, only as a fallback
+            limit = {**parse_limit_message(message), "message": message}
+        if limit is not None:
+            _rate_limited(db, name, limit, message)
     elif event == "SessionEnd":
         state = "ended"
         kind = payload.get("reason") or payload.get("matcher")
@@ -191,7 +245,13 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None) ->
         kind = payload.get("matcher")
 
     db.set_state(name, state, event, message=message, prompt=prompt, claude_session_id=sid, attention=attention)
-    db.add_event(name, event, str(kind) if kind else None, message, payload, agent=agent)
+    if db.add_event(name, event, str(kind) if kind else None, message, payload, agent=agent):
+        try:
+            project = tmux.split_name(name)[0]
+        except ValueError:
+            project = None
+        if project:
+            _sample(samples.bump_event, db, project)
     if attention and state:
         notify.notify_session(name, state, message, str(kind) if kind else None)
     return {"session": name, "event": event, "state": state, "kind": kind}

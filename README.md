@@ -244,6 +244,10 @@ The second command restarts `ccboard.service` and points the ttyd and backup uni
 - `POST /api/sessions/<tmux>/scroll` takes `{"dir": "up|down|top|bottom|exit", "n": 1..10}` and answers `{ok, mode, alt, pos}`; `GET /api/sessions/<tmux>/pane` reports the pane (alternate screen, copy-mode, scroll position, sizes) and who is attached; `/keys` also accepts Shift+Tab (`BTab`), `C-o`, `C-Home` and `C-End`.
 - `bin/ccboard-attach <session> [full|grid|ro]` is what ttyd runs: `full` (the default, what this page uses) is a normal client, `grid` a client that never resizes the window (`attach -f ignore-size`, for tiles) and `ro` a read-only one. tmux's `aggressive-resize` and `focus-events` are off. `install.sh` applies a changed `tmux.conf` to a running tmux server without restarting it.
 
+### Series and usage summary
+
+The board keeps its own time series in the `samples` table (rate-limit windows, context and cost per session, state changes, hook events per hour, host health and session counts, rate-limit episodes), written by the hooks and a 15 s sampler and pruned per series (14 to 180 days). `GET /api/series?series=rl_5h,rl_7d&key=claude&since=24h` returns aligned, downsampled columns (at most 8 series/key pairs and 500 points), `GET /api/series/events?series=lim&since=7d` the raw events, and `GET /api/usage/summary?days=30&tz_min=345` the per-day, per-project and per-session roll-up in the viewer's time zone (Kathmandu by default). These feed the Usage page; the header pills still come from the statusline and ccusage.
+
 ### Install as an app
 
 The board is a PWA, so it can live in its own window on a laptop and on the Home Screen of an iPad or phone (open it from a tailnet device over the HTTPS URL `install.sh` printed; installation needs HTTPS). **Settings › App** shows whether this window is installed, has the Install button where the browser offers one, lists these steps, shows the build id and has a *Reload app* button (an installed app has no browser reload).

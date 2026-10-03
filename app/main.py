@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -23,7 +24,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agents, backup, claude_auth, clonequeue, cost, doctor, github, gitops, health, hooks, notify, permissions, previews, projects, prpoll, push, recover, scheduler, search, tasks, tmux, usage
+from . import agents, backup, claude_auth, clonequeue, cost, doctor, github, gitops, health, hooks, notify, permissions, previews, projects, prpoll, push, recover, samples, scheduler, search, tasks, tmux, usage, usage_summary
 from .agents import registry
 from .agents.base import LaunchReq
 from .agents.claude import BYPASS_PARTS, OVERRIDE_PARTS
@@ -46,24 +47,68 @@ MAX_ARGS = 1024
 db: DB | None = None
 indexer = None
 sched = None
+sampler = None
 _scan_lock = threading.Lock()
 _scan_cache: tuple[float, dict] | None = None
 SCAN_TTL = 2.0
 
 
+def _state_sampler(handle: DB):
+    """The closure DB.on_state_change calls: one 'state' sample per transition. The row the DB hands over may be a closed one
+    (end/reconcile), so project, repo, name and agent are filled from it and, failing that, from the session name; internal
+    sessions are never sampled."""
+    def on_state_change(tmux_name: str, old: str | None, new: str, event: str, row: dict | None) -> None:
+        if tmux.is_internal(tmux_name):
+            return
+        r = dict(row or {})
+        try:
+            project, repo, session = tmux.split_name(tmux_name)
+        except ValueError:
+            project = repo = session = None
+        r["project"] = r.get("project") or project
+        r["repo"] = r.get("repo") or repo
+        r["name"] = r.get("name") or session
+        r["agent"] = r.get("agent") or "claude"
+        samples.record_state(handle, tmux_name, old, new, event, r)
+    return on_state_change
+
+
+def _sampler_health() -> dict:
+    """The Sampler's own cpu delta: it must not steal the one the hub poller and /api/health read."""
+    return health.snapshot(consumer="sampler")
+
+
+def _sampler_counts() -> dict:
+    """What the n_live / n_work / n_attn series record: live = not ended (a tmux session the board sees), work = working,
+    attn = needs attention."""
+    try:
+        sessions, down = _merged_sessions()
+    except tmux.TmuxError as e:                    # tmux missing or confused: skip this tick rather than record a false zero
+        log.debug("sampler counts skipped: %s", e)
+        return {}
+    if down:                                        # _merged_sessions swallows TmuxDown into ({}, True): a gap, not a zero
+        return {}
+    vals = list(sessions.values())
+    return {"live": len(vals), "work": sum(1 for s in vals if s["state"] == "working"),
+            "attn": sum(1 for s in vals if s["needs_attention"])}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global db
+    global db, sampler
     settings.validate()
     db = DB(settings.db_path)
     hooks.ensure_token()
     notify.set_db(db)
+    db.on_state_change = _state_sampler(db)              # state series: one sample per real transition (set_state/end/reconcile)
     try:
         push.ensure_keys()
     except Exception as e:  # pywebpush missing or unwritable data dir: the board still works
         log.warning("web push disabled: %s", e)
     poller = usage.Poller(db)
     poller.start()
+    sampler = samples.Sampler(db, health_fn=_sampler_health, counts_fn=_sampler_counts)
+    sampler.start()
     cloner = clonequeue.Worker(_launch_clone)
     cloner.start()
     prp = prpoll.Poller(db, projects.repo_path)
@@ -95,6 +140,7 @@ async def lifespan(app: FastAPI):
     log.info("runtime %s, image %s", settings.runtime, settings.image_version or "-")
     yield
     poller.stop.set()
+    sampler.stop()
     cloner.stop.set()
     prp.stop.set()
     indexer.stop.set()
@@ -441,6 +487,122 @@ def api_external(agent: str | None = None, project: str | None = None):
         base = str(settings.projects_dir / project)
         ext = [e for e in ext if (e.get("cwd") or "") == base or (e.get("cwd") or "").startswith(base + "/")]
     return {"claude": ext, "codex": [], "at": snap["scanned_at"]}
+
+
+# ---------- time series (samples) ----------
+
+SERIES_MAX_COMBOS = 8            # series x keys one request may ask for
+SERIES_MAX_POINTS = 500
+SERIES_MAX_BACK = timedelta(days=400)     # past the longest retention (180 d) there is nothing to read
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)            # the one clock the time-series endpoints read (tests freeze it)
+
+
+def _int_param(name: str, raw, lo: int, hi: int, default: int, clamp: bool = False) -> int:
+    """A query integer in [lo, hi]; absent means the default. A non-number is a 400 (not FastAPI's 422), and so is a value outside
+    the range unless `clamp`."""
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        v = int(str(raw).strip())
+    except ValueError:
+        raise projects.BadRequest(f"{name} must be an integer")
+    if clamp:
+        return max(lo, min(hi, v))
+    if not lo <= v <= hi:
+        raise projects.BadRequest(f"{name} must be between {lo} and {hi}")
+    return v
+
+
+def _csv(raw: str | None) -> list[str]:
+    out: list[str] = []
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if part and part not in out:
+            out.append(part)
+    return out
+
+
+def _series_names(raw: str | None, events_only: bool = False) -> list[str]:
+    names = _csv(raw)
+    if not names:
+        raise projects.BadRequest("series is required (comma-separated: " + ", ".join(sorted(samples.CATALOGUE)) + ")")
+    for n in names:
+        spec = samples.CATALOGUE.get(n)
+        if spec is None:
+            raise projects.BadRequest(f"unknown series {n!r}")
+        if events_only and spec.get("agg") != "events":
+            raise projects.BadRequest(f"{n!r} is not an event series (use state or lim)")
+    return names
+
+
+def _window(since: str | None, until: str | None, now: datetime) -> tuple[datetime, datetime]:
+    try:
+        t0 = samples.parse_since(since or "24h", now)
+        t1 = samples.parse_since(until, now) if until else now
+    except (ValueError, TypeError):
+        raise projects.BadRequest("since/until must be 1h, 6h, 24h, 7d, 30d, 90d or an ISO time")
+    t0 = max(t0, now - SERIES_MAX_BACK)
+    if t0 >= t1:
+        raise projects.BadRequest("since must be before until")
+    return t0, t1
+
+
+@app.get("/api/series")
+def api_series(series: str = "", key: str | None = None, since: str = "24h", until: str | None = None,
+               points: str | None = None):
+    """Downsampled time series: ?series=rl_5h,rl_7d&key=claude|*&since=24h&until=&points=500 -> {since, until, step, t, series, meta}."""
+    names = _series_names(series)
+    asked = _csv(key)
+    keys = None if not asked or "*" in asked else asked              # None = every key the series has (the payload caps the combos)
+    if len(names) * (len(keys) if keys is not None else 1) > SERIES_MAX_COMBOS:
+        raise projects.BadRequest(f"at most {SERIES_MAX_COMBOS} series x key combinations per request")
+    n = _int_param("points", points, 2, SERIES_MAX_POINTS, SERIES_MAX_POINTS, clamp=True)
+    t0, t1 = _window(since, until, _utcnow())
+    try:
+        body = samples.series_payload(db, names, keys, t0, t1, n)
+    except ValueError as e:                              # the payload's own limits (combos, window): the same 400 the checks above give
+        raise projects.BadRequest(str(e))
+    return JSONResponse(body, headers={"Cache-Control": "private, max-age=10"})
+
+
+@app.get("/api/series/events")
+def api_series_events(series: str = "state", since: str = "24h", key: str | None = None):
+    """Event series (state transitions, rate-limit episodes): {events: [{t, key, v, m}], truncated} (cap 5000)."""
+    names = _series_names(series, events_only=True)
+    if len(names) != 1:
+        raise projects.BadRequest("ask for one event series at a time")
+    t0, _ = _window(since, None, _utcnow())
+    k = (key or "").strip()
+    try:
+        return samples.events_payload(db, names[0], t0, None if k in ("", "*") else k)
+    except ValueError as e:
+        raise projects.BadRequest(str(e))
+
+
+USAGE_SUMMARY_TTL = 30.0                              # seconds; the Usage page polls every 60 s and the payload is a full rebuild
+_usage_summary_cache: dict[tuple[int, int, int], tuple[float, dict]] = {}
+_usage_summary_lock = threading.Lock()
+
+
+@app.get("/api/usage/summary")
+def api_usage_summary(days: str | None = None, tz_min: str | None = None):
+    """Cost, hours and limit episodes bucketed from the samples table in the viewer's zone (tz_min, default 345 = Asia/Kathmandu)."""
+    d = _int_param("days", days, 1, 365, 30)
+    tz = _int_param("tz_min", tz_min, -720, 840, 345)
+    now = time.monotonic()
+    with _usage_summary_lock:
+        hit = _usage_summary_cache.get((id(db), d, tz))
+        if hit and now - hit[0] < USAGE_SUMMARY_TTL:
+            return hit[1]
+    out = usage_summary.build(db, d, tz, _utcnow())
+    with _usage_summary_lock:
+        _usage_summary_cache[(id(db), d, tz)] = (now, out)
+        for k in [k for k in _usage_summary_cache if k[0] != id(db)]:   # a previous app's entries (tests) never linger
+            _usage_summary_cache.pop(k, None)
+    return out
 
 
 # ---------- projects & repos ----------

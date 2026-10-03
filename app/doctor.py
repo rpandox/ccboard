@@ -46,11 +46,16 @@ ATTACH_MARKER = "# ccboard-attach v2"
 HOOK_MARK = "ccboard-hook"
 STATUS_MARK = "ccboard-statusline"
 HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "Notification", "Stop", "StopFailure", "SessionEnd")  # scripts/claude_settings.py EVENTS
+HEARTBEAT_KEY = "samples_heartbeat"   # kv key the Sampler touches on every 15 s tick (app/samples.py)
+HEARTBEAT_PASS = 60.0                 # seconds: fresher than this passes
+HEARTBEAT_WARN = 600.0                # seconds: fresher than this warns, older fails
+HEARTBEAT_GRACE = 30.0                # a board up less than this long may not have ticked yet
 MIN_TMUX = (3, 2)
 MIN_GIT = (2, 15)
 DETAIL_MAX = 200
 
 _clock = time.monotonic   # patched by tests (cache age)
+_STARTED = time.monotonic()
 
 
 # ------------------------------------------------------------------ records
@@ -373,8 +378,45 @@ def _c_identity(db) -> Outcome:
     return _pass(f"runtime {rt}; the Tailscale-User-Login header is expected; {n} allowed user{'s' if n != 1 else ''}")
 
 
+def _uptime() -> float:
+    """Seconds since this process imported the doctor (patched by tests): the Sampler's first heartbeat lands within seconds of that."""
+    return time.monotonic() - _STARTED
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)                 # patched by tests
+
+
+def _heartbeat_age(hb: dict) -> float | None:
+    """Seconds since the kv row was written (its own `at`, the DB's clock); None when it carries no readable time."""
+    try:
+        at = datetime.fromisoformat(str(hb.get("at")).replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return max(0.0, (_utcnow() - at).total_seconds())
+
+
 def _c_samples(db) -> Outcome:
-    return _skip("arrives with commit B")
+    """The Sampler thread writes kv samples_heartbeat every 15 s tick: pass under a minute, warn under ten, fail beyond (or never,
+    once the board has been up a few seconds). Without a database handle there is nothing to read."""
+    kv_get = getattr(db, "kv_get", None)
+    if kv_get is None:
+        return _skip("no database handle to read the heartbeat from")
+    hb = kv_get(HEARTBEAT_KEY)
+    age = _heartbeat_age(hb) if isinstance(hb, dict) else None
+    restart = fix("Restart the board and read its log for 'sampler' errors (the time series stop accruing while this is red)")
+    if age is None:
+        if _uptime() < HEARTBEAT_GRACE:
+            return _skip("the board has only just started; the sampler writes its first heartbeat within seconds")
+        return _fail("the sampler has not written a heartbeat since the board started", restart)
+    if age < HEARTBEAT_PASS:
+        return _pass(f"the sampler last ticked {int(age)} s ago")
+    mins = f"{int(age // 60)} min" if age >= 120 else f"{int(age)} s"
+    if age < HEARTBEAT_WARN:
+        return _warn(f"the sampler last ticked {mins} ago (it ticks every 15 s)", restart)
+    return _fail(f"the sampler last ticked {mins} ago; usage history is not accruing", restart)
 
 
 # ------------------------------------------------------------------ notify checks

@@ -139,6 +139,7 @@ async function demoApi(method, path) {
   else if (bare.startsWith('/api/search')) name = 'search';
   else if (/^\/api\/projects\/.*\/tree/.test(bare)) name = 'tree';
   else if (bare.startsWith('/api/series')) name = 'series';
+  else if (bare === '/api/usage/summary') name = 'usage_summary';
   else if (bare.startsWith('/api/memory/')) name = 'memory';
   if (!name) return {};
   const r = await fetch(`/static/demo/${name}.json`);

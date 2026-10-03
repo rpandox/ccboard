@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable, Optional
+
+log = logging.getLogger("ccboard.db")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -103,6 +107,16 @@ CREATE TABLE IF NOT EXISTS permissions (
   decision TEXT,
   source TEXT
 );
+CREATE TABLE IF NOT EXISTS samples (
+  id INTEGER PRIMARY KEY,
+  series TEXT NOT NULL,
+  key TEXT NOT NULL DEFAULT '',
+  at TEXT NOT NULL,
+  value REAL,
+  meta TEXT
+);
+CREATE INDEX IF NOT EXISTS samples_series_key_at ON samples(series, key, at);
+CREATE INDEX IF NOT EXISTS samples_at ON samples(at);
 """
 
 # Added after v0.1; applied with ALTER TABLE, "duplicate column" errors are ignored.
@@ -233,12 +247,55 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def iso(at=None) -> str:
+    """A time as the one text form every timestamp column uses ('2026-10-03T10:00:00+00:00': UTC, whole seconds), so string
+    comparison is time comparison. `at` is None (now), a datetime (naive counts as UTC), epoch seconds or an ISO text (a 'Z' suffix,
+    an offset or fractional seconds are fine). Anything else raises ValueError."""
+    if at is None:
+        return now()
+    if isinstance(at, datetime):
+        d = at
+    elif isinstance(at, (int, float)) and not isinstance(at, bool):
+        d = datetime.fromtimestamp(at, tz=timezone.utc)
+    elif isinstance(at, str) and at.strip():
+        t = at.strip()
+        d = datetime.fromisoformat(t[:-1] + "+00:00" if t[-1] in "Zz" else t)
+    else:
+        raise ValueError(f"not a time: {at!r}")
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=timezone.utc)
+    return d.astimezone(timezone.utc).replace(microsecond=0).isoformat(timespec="seconds")
+
+
+def _meta_text(meta) -> str | None:
+    """Sample meta as compact JSON text (a str passes through, None stays None)."""
+    if meta is None or isinstance(meta, str):
+        return meta
+    return json.dumps(meta, separators=(",", ":"), default=str)
+
+
+def _meta_obj(raw):
+    """Sample meta text -> parsed JSON (None when absent or unparsable; never raises)."""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+
+
 class DB:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.Lock()
         self.conn = sqlite3.connect(str(path), check_same_thread=False, timeout=5, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
+        # callable(tmux_name, old_state, new_state, event, row), called OUTSIDE the lock (so it may write through this DB) when a
+        # session's state really changed: set_state (event = the hook event), end (-> 'ended', event = the reason) and reconcile
+        # (-> 'ended', event = 'reconciled'). `row` is the session_view of the row as it is after the change. Exceptions are
+        # logged and swallowed. samples.record_state is the one consumer.
+        self.on_state_change: Optional[Callable] = None
+        self._sample_last: dict[tuple[str, str], dict] = {}      # (series, key) -> {at, value, meta (JSON text)}, newest row only
         with self.lock:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA synchronous=NORMAL")
@@ -302,10 +359,11 @@ class DB:
             return self.conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone() is not None
 
     def session_ids(self) -> list[dict]:
-        """Every session row that learned a Claude session id (open or ended), for cost attribution."""
+        """Every session row that learned an agent session id (open or ended), for cost attribution: {project, repo,
+        claude_session_id, agent}."""
         with self.lock:
             rows = self.conn.execute(
-                "SELECT project, repo, claude_session_id FROM sessions WHERE claude_session_id IS NOT NULL").fetchall()
+                "SELECT project, repo, claude_session_id, agent FROM sessions WHERE claude_session_id IS NOT NULL").fetchall()
         return [dict(r) for r in rows]
 
     def open_row(self, tmux_name: str) -> dict | None:
@@ -317,12 +375,14 @@ class DB:
 
     def set_state(self, tmux_name: str, state: str | None, event: str, *, message: str | None = None,
                   prompt: str | None = None, claude_session_id: str | None = None, attention: bool = False) -> None:
-        """Update the newest open row. state=None keeps the current state."""
+        """Update the newest open row. state=None keeps the current state. When the state really changes (old != new, a first
+        state counts) on_state_change fires after the write, outside the lock."""
         sets = ["last_event=?"]
         args: list = [event]
+        ts = now()
         if state is not None:
             sets += ["state=?", "state_at=?"]
-            args += [state, now()]
+            args += [state, ts]
         if message is not None:
             sets.append("last_message=?")
             args.append(message[:500])
@@ -334,10 +394,37 @@ class DB:
             args.append(claude_session_id)
         if attention:
             sets.append("acked_at=NULL")
+        changed = None
         with self.lock:
+            before = None
+            if state is not None and self.on_state_change is not None:
+                before = self._open_row_locked(tmux_name)
             self.conn.execute(
                 f"UPDATE sessions SET {', '.join(sets)} WHERE id=(SELECT id FROM sessions WHERE tmux_name=? AND"
                 f" ended_at IS NULL ORDER BY id DESC LIMIT 1)", (*args, tmux_name))
+            if before is not None and before["state"] != state:
+                changed = (tmux_name, before["state"], state, event,
+                           session_view({**before, "state": state, "state_at": ts, "last_event": event}))
+        if changed:
+            self._fire_state([changed])
+
+    def _open_row_locked(self, tmux_name: str) -> dict | None:
+        """The newest open row of a tmux name as a plain dict (the caller holds self.lock)."""
+        r = self.conn.execute(
+            "SELECT * FROM sessions WHERE tmux_name=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1", (tmux_name,)).fetchone()
+        return dict(r) if r else None
+
+    def _fire_state(self, changes: list[tuple]) -> None:
+        """Hand state changes to on_state_change, one call each. Called with the lock released; a failing consumer is logged
+        and never breaks the write that triggered it."""
+        cb = self.on_state_change
+        if cb is None:
+            return
+        for c in changes:
+            try:
+                cb(*c)
+            except Exception as e:
+                log.warning("on_state_change(%s, %s -> %s) failed: %s", c[0], c[1], c[2], e)
 
     def set_stats(self, tmux_name: str, stats: dict, claude_session_id: str | None = None) -> None:
         with self.lock:
@@ -583,24 +670,168 @@ class DB:
             return None
 
     def end(self, tmux_name: str, reason: str = "killed") -> None:
-        """Close every open row of this tmux name. reason: killed|auto_close|exited|reconciled|project_deleted."""
+        """Close every open row of this tmux name. reason: killed|auto_close|exited|reconciled|project_deleted. A row that was
+        not already 'ended' fires on_state_change(name, old, 'ended', reason, row) once (the newest open row speaks for the name)."""
+        ts = now()
+        changed = None
         with self.lock:
+            before = self._open_row_locked(tmux_name) if self.on_state_change is not None else None
             self.conn.execute(
                 "UPDATE sessions SET ended_at=?, ended_reason=? WHERE tmux_name=? AND ended_at IS NULL",
-                (now(), reason, tmux_name)
+                (ts, reason, tmux_name)
             )
+            if before is not None and before["state"] != "ended":
+                changed = (tmux_name, before["state"], "ended", reason, self._ended_view(before, ts, reason))
+        if changed:
+            self._fire_state([changed])
+
+    @staticmethod
+    def _ended_view(before: dict, ts: str, reason: str) -> dict:
+        return session_view({**before, "state": "ended", "state_at": ts, "ended_at": ts, "ended_reason": reason})
 
     def reconcile(self, alive: set[str], before: str) -> None:
         """Close rows created before the tmux snapshot `before` whose session no longer exists
         (reboot, manual kill). Rows newer than the snapshot may belong to a session created
-        after it was taken, so they are left alone."""
+        after it was taken, so they are left alone. Each closed name fires on_state_change like end() does."""
+        changes = []
         with self.lock:
             rows = self.conn.execute(
                 "SELECT DISTINCT tmux_name FROM sessions WHERE ended_at IS NULL AND created_at < ?", (before,)
             ).fetchall()
             stale = [r[0] for r in rows if r[0] not in alive]
             for name in stale:
+                prev = self._open_row_locked(name) if self.on_state_change is not None else None
+                ts = now()
                 self.conn.execute(
                     "UPDATE sessions SET ended_at=?, ended_reason='reconciled' WHERE tmux_name=? AND ended_at IS NULL",
-                    (now(), name)
+                    (ts, name)
                 )
+                if prev is not None and prev["state"] != "ended":
+                    changes.append((name, prev["state"], "ended", "reconciled", self._ended_view(prev, ts, "reconciled")))
+        if changes:
+            self._fire_state(changes)
+
+    # ---- samples (time series; the catalogue, throttles and retention live in samples.py)
+    def _cache_put(self, series: str, key: str, at: str, value, meta) -> None:
+        """Remember the newest row of (series, key). An older (back-dated) row never replaces it, and a key that is not cached yet
+        stays uncached (sample_last loads the true newest row on first use). The caller holds self.lock."""
+        c = self._sample_last.get((series, key))
+        if c is not None and at >= c["at"]:
+            self._sample_last[(series, key)] = {"at": at, "value": value, "meta": meta}
+
+    def sample(self, series: str, key: str, value, meta=None, at=None) -> int:
+        """Append one sample and return its row id. `at` per iso() (default now); `meta` a dict (stored as JSON) or text."""
+        ts, m = iso(at), _meta_text(meta)
+        v = None if value is None else float(value)
+        with self.lock:
+            cur = self.conn.execute("INSERT INTO samples(series, key, at, value, meta) VALUES (?,?,?,?,?)",
+                                    (series, key or "", ts, v, m))
+            self._cache_put(series, key or "", ts, v, m)
+            return int(cur.lastrowid)
+
+    def sample_many(self, rows) -> int:
+        """Append many samples in one transaction: rows of (series, key, value, meta, at). Returns how many were written."""
+        data = [(s_, k or "", iso(a), None if v is None else float(v), _meta_text(m)) for s_, k, v, m, a in rows]
+        if not data:
+            return 0
+        with self.lock:
+            self.conn.execute("BEGIN")
+            try:
+                self.conn.executemany("INSERT INTO samples(series, key, at, value, meta) VALUES (?,?,?,?,?)",
+                                      [(s_, k, a, v, m) for s_, k, a, v, m in data])
+                self.conn.execute("COMMIT")
+            except BaseException:
+                self.conn.execute("ROLLBACK")
+                raise
+            for s_, k, a, v, m in data:
+                self._cache_put(s_, k, a, v, m)
+        return len(data)
+
+    def sample_bump(self, series: str, key: str, at=None, delta: float = 1.0) -> int:
+        """Count into the current UTC-hour row of (series, key): when the newest row of the pair falls in the same hour as `at`
+        its value grows by `delta` in place, otherwise a row with value `delta` is inserted (stamped `at`, the first event of that
+        hour). Read and write share one lock hold, so concurrent hook threads never lose a count. Returns the row id."""
+        ts, key = iso(at), key or ""
+        with self.lock:
+            r = self.conn.execute("SELECT id, at, value, meta FROM samples WHERE series=? AND key=? ORDER BY at DESC, id DESC LIMIT 1",
+                                  (series, key)).fetchone()
+            if r is not None and r["at"][:13] == ts[:13]:
+                v = float(r["value"] or 0) + delta
+                self.conn.execute("UPDATE samples SET value=? WHERE id=?", (v, r["id"]))
+                self._cache_put(series, key, r["at"], v, r["meta"])
+                return int(r["id"])
+            cur = self.conn.execute("INSERT INTO samples(series, key, at, value, meta) VALUES (?,?,?,?,NULL)", (series, key, ts, float(delta)))
+            self._cache_put(series, key, ts, float(delta), None)
+            return int(cur.lastrowid)
+
+    def sample_last(self, series: str, key: str) -> dict | None:
+        """The newest sample of (series, key) as {at, value, meta} (meta parsed JSON or None), None when there is none. Served from
+        memory once seen and kept current by every write, so throttles cost no query."""
+        key = key or ""
+        with self.lock:
+            c = self._sample_last.get((series, key))
+            if c is None:
+                r = self.conn.execute("SELECT at, value, meta FROM samples WHERE series=? AND key=? ORDER BY at DESC, id DESC LIMIT 1",
+                                      (series, key)).fetchone()
+                if r is None:
+                    return None
+                c = self._sample_last[(series, key)] = {"at": r["at"], "value": r["value"], "meta": r["meta"]}
+            c = dict(c)
+        return {"at": c["at"], "value": c["value"], "meta": _meta_obj(c["meta"])}
+
+    def samples_query(self, series: str, keys: list[str] | None, since, until=None, *, limit: int | None = None,
+                      newest: bool = False) -> list[tuple]:
+        """Samples of one series from `since` to `until` (both inclusive, per iso(); until None = no upper bound), oldest first, as
+        (at_iso, key, value, meta_json). `keys` None = every key. `limit` caps the rows: the oldest ones, or the newest with
+        newest=True (the result is oldest first either way)."""
+        q = "SELECT at, key, value, meta FROM samples WHERE series=? AND at>=?"
+        args: list = [series, iso(since)]
+        if until is not None:
+            q += " AND at<=?"
+            args.append(iso(until))
+        if keys is not None:
+            if not keys:
+                return []
+            q += f" AND key IN ({','.join('?' * len(keys))})"
+            args += [k or "" for k in keys]
+        q += " ORDER BY at DESC, id DESC" if newest and limit else " ORDER BY at ASC, id ASC"
+        if limit:
+            q += " LIMIT ?"
+            args.append(int(limit))
+        with self.lock:
+            rows = self.conn.execute(q, args).fetchall()
+        out = [(r["at"], r["key"], r["value"], r["meta"]) for r in rows]
+        if newest and limit:
+            out.reverse()
+        return out
+
+    def samples_distinct_keys(self, series: str, since) -> list[str]:
+        """Keys that have a sample of `series` since `since`, most recently active first (ties by name)."""
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT key, MAX(at) AS m FROM samples WHERE series=? AND at>=? GROUP BY key ORDER BY m DESC, key ASC",
+                (series, iso(since))).fetchall()
+        return [r["key"] for r in rows]
+
+    def samples_prune(self, retention: dict[str, float], now=None) -> int:
+        """Delete samples older than their series' retention (days). Series missing from the map are kept. Returns the number
+        of rows deleted."""
+        base = datetime.fromisoformat(iso(now))
+        n = 0
+        with self.lock:
+            for series, days in retention.items():
+                cutoff = (base - timedelta(days=days)).isoformat(timespec="seconds")
+                n += self.conn.execute("DELETE FROM samples WHERE series=? AND at<?", (series, cutoff)).rowcount
+            self._sample_last.clear()
+        return n
+
+    def wal_checkpoint(self) -> tuple | None:
+        """PRAGMA wal_checkpoint(TRUNCATE) under the lock (the Sampler runs it after its daily prune so the WAL file shrinks).
+        Returns sqlite's (busy, log, checkpointed) row, None when it could not run."""
+        with self.lock:
+            try:
+                r = self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            except sqlite3.OperationalError as e:
+                log.warning("wal_checkpoint failed: %s", e)
+                return None
+        return tuple(r) if r else None

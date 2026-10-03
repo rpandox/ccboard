@@ -1,0 +1,750 @@
+{
+  "generated_at": "2026-10-03T03:00:00+00:00",
+  "tz_min": 345,
+  "windows": {
+    "today": {
+      "total": 76.3,
+      "by_agent": {
+        "claude": {
+          "total": 76.3,
+          "tokens": 170595051
+        },
+        "codex": {
+          "total": 0.0,
+          "tokens": 0
+        }
+      },
+      "by_project": [
+        {
+          "project": "phasezero",
+          "total": 38.2,
+          "hours": 2.68
+        },
+        {
+          "project": "ccboard",
+          "total": 22.4,
+          "hours": 2.52
+        },
+        {
+          "project": "petroit",
+          "total": 15.7,
+          "hours": 2.65
+        }
+      ]
+    },
+    "7d": {
+      "total": 360.0,
+      "by_agent": {
+        "claude": {
+          "total": 345.3,
+          "tokens": 735090936
+        },
+        "codex": {
+          "total": 14.7,
+          "tokens": 20787415
+        }
+      },
+      "by_project": [
+        {
+          "project": "phasezero",
+          "total": 165.1,
+          "hours": 12.88
+        },
+        {
+          "project": "ccboard",
+          "total": 98.2,
+          "hours": 16.25
+        },
+        {
+          "project": "internalSystem",
+          "total": 46.2,
+          "hours": 4.55
+        },
+        {
+          "project": "petroit",
+          "total": 42.0,
+          "hours": 8.45
+        },
+        {
+          "project": "mailgate",
+          "total": 8.5,
+          "hours": 0.6
+        }
+      ]
+    },
+    "30d": {
+      "total": 1795.0,
+      "by_agent": {
+        "claude": {
+          "total": 1775.9,
+          "tokens": 3802019382
+        },
+        "codex": {
+          "total": 19.1,
+          "tokens": 26981684
+        }
+      },
+      "by_project": [
+        {
+          "project": "mailgate",
+          "total": 739.5,
+          "hours": 8.0
+        },
+        {
+          "project": "phasezero",
+          "total": 387.7,
+          "hours": 31.08
+        },
+        {
+          "project": "internalSystem",
+          "total": 282.2,
+          "hours": 13.07
+        },
+        {
+          "project": "(unattributed)",
+          "total": 218.0,
+          "hours": 0.0
+        },
+        {
+          "project": "ccboard",
+          "total": 110.6,
+          "hours": 18.73
+        },
+        {
+          "project": "petroit",
+          "total": 57.0,
+          "hours": 14.87
+        }
+      ]
+    }
+  },
+  "daily": [
+    {
+      "day": "2026-09-04",
+      "total": 26.0,
+      "by_agent": {
+        "claude": 26.0,
+        "codex": 0.0
+      },
+      "by_project": {
+        "(unattributed)": 14.0,
+        "phasezero": 12.0
+      },
+      "tokens": 53003590,
+      "hours": 1.47,
+      "zero": false
+    },
+    {
+      "day": "2026-09-05",
+      "total": 12.953,
+      "by_agent": {
+        "claude": 12.953,
+        "codex": 0.0
+      },
+      "by_project": {
+        "(unattributed)": 7.6579,
+        "phasezero": 5.2951
+      },
+      "tokens": 26781793,
+      "hours": 0.92,
+      "zero": false
+    },
+    {
+      "day": "2026-09-06",
+      "total": 20.547,
+      "by_agent": {
+        "claude": 20.547,
+        "codex": 0.0
+      },
+      "by_project": {
+        "(unattributed)": 19.3421,
+        "phasezero": 1.2049
+      },
+      "tokens": 44092718,
+      "hours": 0.25,
+      "zero": false
+    },
+    {
+      "day": "2026-09-07",
+      "total": 10.0,
+      "by_agent": {
+        "claude": 10.0,
+        "codex": 0.0
+      },
+      "by_project": {
+        "phasezero": 10.0
+      },
+      "tokens": 20687909,
+      "hours": 1.72,
+      "zero": false
+    },
+    {
+      "day": "2026-09-08",
+      "total": 43.0,
+      "by_agent": {
+        "claude": 43.0,
+        "codex": 0.0
+      },
+      "by_project": {
+        "phasezero": 22.0,
+        "(unattributed)": 21.0
+      },
+      "tokens": 88365104,
+      "hours": 1.13,
+      "zero": false
+    },
+    {
+      "day": "2026-09-09",
+      "total": 68.8304,
+      "by_agent": {
+        "claude": 68.8304,
+        "codex": 0.0
+      },
+      "by_project": {
+        "(unattributed)": 63.0,
+        "phasezero": 5.8304
+      },
+      "tokens": 130509174,
+      "hours": 0.83,
+      "zero": false
+    },
+    {
+      "day": "2026-09-10",
+      "total": 45.1696,
+      "by_agent": {
+        "claude": 45.1696,
+        "codex": 0.0
+      },
+      "by_project": {
+        "(unattributed)": 40.0,
+        "phasezero": 5.1696
+      },
+      "tokens": 88139467,
+      "hours": 0.42,
+      "zero": false
+    },
+    {
+      "day": "2026-09-11",
+      "total": 26.5,
+      "by_agent": {
+        "claude": 26.5,
+        "codex": 0.0
+      },
+      "by_project": {
+        "phasezero": 26.5
+      },
+      "tokens": 57125419,
+      "hours": 2.07,
+      "zero": false
+    },
+    {
+      "day": "2026-09-12",
+      "total": 0,
+      "by_agent": {
+        "claude": 0.0,
+        "codex": 0.0
+      },
+      "by_project": {},
+      "tokens": 0,
+      "hours": 0.0,
+      "zero": true
+    },
+    {
+      "day": "2026-09-13",
+      "total": 0,
+      "by_agent": {
+        "claude": 0.0,
+        "codex": 0.0
+      },
+      "by_project": {},
+      "tokens": 0,
+      "hours": 0.0,
+      "zero": true
+    },
+    {
+      "day": "2026-09-14",
+      "total": 0,
+      "by_agent": {
+        "claude": 0.0,
+        "codex": 0.0
+      },
+      "by_project": {},
+      "tokens": 0,
+      "hours": 0.0,
+      "zero": true
+    },
+    {
+      "day": "2026-09-15",
+      "total": 0,
+      "by_agent": {
+        "claude": 0.0,
+        "codex": 0.0
+      },
+      "by_project": {},
+      "tokens": 0,
+      "hours": 0.0,
+      "zero": true
+    },
+    {
+      "day": "2026-09-16",
+      "total": 30.0,
+      "by_agent": {
+        "claude": 30.0,
+        "codex": 0.0
+      },
+      "by_project": {
+        "phasezero": 19.0,
+        "internalSystem": 11.0
+      },
+      "tokens": 58243231,
+      "hours": 2.05,
+      "zero": false
+    },
+    {
+      "day": "2026-09-17",
+      "total": 64.0,
+      "by_agent": {
+        "claude": 64.0,
+        "codex": 0.0
+      },
+      "by_project": {
+        "internalSystem": 40.0,
+        "phasezero": 24.0
+      },
+      "tokens": 113920111,
+      "hours": 3.72,
+      "zero": false
+    },
+    {
+      "day": "2026-09-18",
+      "total": 2.5,
+      "by_agent": {
+        "claude": 2.5,
+        "codex": 0.0
+      },
+      "by_project": {
+        "petroit": 2.5
+      },
+      "tokens": 4544690,
+      "hours": 0.95,
+      "zero": false
+    },
+    {
+      "day": "2026-09-19",
+      "total": 59.0,
+      "by_agent": {
+        "claude": 59.0,
+        "codex": 0.0
+      },
+      "by_project": {
+        "internalSystem": 54.0,
+        "petroit": 5.0
+      },
+      "tokens": 94769920,
+      "hours": 3.18,
+      "zero": false
+    },
+    {
+      "day": "2026-09-20",
+      "total": 0,
+      "by_agent": {
+        "claude": 0.0,
+        "codex": 0.0
+      },
+      "by_project": {},
+      "tokens": 0,
+      "hours": 0.0,
+      "zero": true
+    },
+    {
+      "day": "2026-09-21",
+      "total": 46.8,
+      "by_agent": {
+        "claude": 46.8,
+        "codex": 0.0
+      },
+      "by_project": {
+        "phasezero": 46.8
+      },
+      "tokens": 100064700,
+      "hours": 2.48,
+      "zero": false
+    },
+    {
+      "day": "2026-09-22",
+      "total": 62.8,
+      "by_agent": {
+        "claude": 62.8,
+        "codex": 0.0
+      },
+      "by_project": {
+        "internalSystem": 62.0,
+        "petroit": 0.8
+      },
+      "tokens": 94645701,
+      "hours": 2.65,
+      "zero": false
+    },
+    {
+      "day": "2026-09-23",
+      "total": 171.3888,
+      "by_agent": {
+        "claude": 171.3888,
+        "codex": 0.0
+      },
+      "by_project": {
+        "mailgate": 167.4888,
+        "petroit": 3.9
+      },
+      "tokens": 412404848,
+      "hours": 4.5,
+      "zero": false
+    },
+    {
+      "day": "2026-09-24",
+      "total": 419.1112,
+      "by_agent": {
+        "claude": 419.1112,
+        "codex": 0.0
+      },
+      "by_project": {
+        "mailgate": 351.5112,
+        "internalSystem": 38.0,
+        "phasezero": 26.8,
+        "petroit": 2.8
+      },
+      "tokens": 969559894,
+      "hours": 8.18,
+      "zero": false
+    },
+    {
+      "day": "2026-09-25",
+      "total": 262.712,
+      "by_agent": {
+        "claude": 262.712,
+        "codex": 0.0
+      },
+      "by_project": {
+        "mailgate": 207.0243,
+        "(unattributed)": 22.0,
+        "phasezero": 18.0,
+        "internalSystem": 15.6876
+      },
+      "tokens": 597988126,
+      "hours": 3.2,
+      "zero": false
+    },
+    {
+      "day": "2026-09-26",
+      "total": 63.688,
+      "by_agent": {
+        "claude": 59.288,
+        "codex": 4.4
+      },
+      "by_project": {
+        "(unattributed)": 31.0,
+        "internalSystem": 15.3124,
+        "ccboard": 12.4,
+        "mailgate": 4.9757
+      },
+      "tokens": 118276320,
+      "hours": 3.3,
+      "zero": false
+    },
+    {
+      "day": "2026-09-27",
+      "total": 53.3,
+      "by_agent": {
+        "claude": 49.1,
+        "codex": 4.2
+      },
+      "by_project": {
+        "internalSystem": 19.0,
+        "ccboard": 15.9,
+        "phasezero": 9.9,
+        "mailgate": 8.5
+      },
+      "tokens": 102473497,
+      "hours": 5.43,
+      "zero": false
+    },
+    {
+      "day": "2026-09-28",
+      "total": 18.2021,
+      "by_agent": {
+        "claude": 18.2021,
+        "codex": 0.0
+      },
+      "by_project": {
+        "phasezero": 9.8021,
+        "ccboard": 8.4
+      },
+      "tokens": 38372955,
+      "hours": 4.12,
+      "zero": false
+    },
+    {
+      "day": "2026-09-29",
+      "total": 47.1244,
+      "by_agent": {
+        "claude": 47.1244,
+        "codex": 0.0
+      },
+      "by_project": {
+        "phasezero": 19.5979,
+        "internalSystem": 15.5265,
+        "ccboard": 12.0
+      },
+      "tokens": 88417144,
+      "hours": 5.25,
+      "zero": false
+    },
+    {
+      "day": "2026-09-30",
+      "total": 40.8735,
+      "by_agent": {
+        "claude": 40.8735,
+        "codex": 0.0
+      },
+      "by_project": {
+        "phasezero": 34.1,
+        "petroit": 4.1,
+        "internalSystem": 2.6735
+      },
+      "tokens": 85064070,
+      "hours": 4.23,
+      "zero": false
+    },
+    {
+      "day": "2026-10-01",
+      "total": 38.5389,
+      "by_agent": {
+        "claude": 32.5389,
+        "codex": 6.0
+      },
+      "by_project": {
+        "phasezero": 10.7389,
+        "petroit": 9.6,
+        "ccboard": 9.2,
+        "internalSystem": 9.0
+      },
+      "tokens": 69037499,
+      "hours": 7.75,
+      "zero": false
+    },
+    {
+      "day": "2026-10-02",
+      "total": 85.6611,
+      "by_agent": {
+        "claude": 81.1611,
+        "codex": 4.5
+      },
+      "by_project": {
+        "phasezero": 42.7611,
+        "ccboard": 30.3,
+        "petroit": 12.6
+      },
+      "tokens": 201918135,
+      "hours": 8.1,
+      "zero": false
+    },
+    {
+      "day": "2026-10-03",
+      "total": 76.3,
+      "by_agent": {
+        "claude": 76.3,
+        "codex": 0.0
+      },
+      "by_project": {
+        "phasezero": 38.2,
+        "ccboard": 22.4,
+        "petroit": 15.7
+      },
+      "tokens": 170595051,
+      "hours": 7.85,
+      "zero": false
+    }
+  ],
+  "hourly_profile": [182, 217, 153, 119, 97, 10, 0, 0, 0, 0, 159, 214, 340, 148, 0, 0, 0, 0, 0, 326, 357, 664, 302, 311],
+  "heatmap": [
+    [0, 0, 54, 11, 0, 0, 0, 0, 0, 0, 0, 0, 104, 33, 0, 0, 0, 0, 0, 0, 12, 86, 0, 50],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 60, 0, 0, 0, 0, 0, 0, 56, 165, 127, 13],
+    [91, 24, 0, 0, 0, 0, 0, 0, 0, 0, 54, 4, 65, 4, 0, 0, 0, 0, 0, 29, 97, 83, 36, 62],
+    [51, 155, 3, 0, 0, 0, 0, 0, 0, 0, 0, 65, 0, 36, 0, 0, 0, 0, 0, 116, 43, 172, 45, 53],
+    [0, 0, 96, 0, 0, 0, 0, 0, 0, 0, 56, 17, 60, 6, 0, 0, 0, 0, 0, 181, 36, 103, 94, 76],
+    [40, 38, 0, 108, 97, 10, 0, 0, 0, 0, 0, 44, 61, 9, 0, 0, 0, 0, 0, 0, 113, 0, 0, 57],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 49, 84, 50, 0, 0, 0, 0, 0, 0, 0, 0, 55, 0, 0]
+  ],
+  "top_sessions": [
+    {
+      "key": "claude:5b1c9d3e-0008-4a7e-8c2f-000000000008",
+      "project": "mailgate",
+      "repo": "mailgate",
+      "agent": "claude",
+      "total": 588.5,
+      "hours": 5.0,
+      "tokens": 1416408552,
+      "models": ["opus-5"]
+    },
+    {
+      "key": "claude:5b1c9d3e-0007-4a7e-8c2f-000000000007",
+      "project": "internalSystem",
+      "repo": "server",
+      "agent": "claude",
+      "total": 282.2,
+      "hours": 12.83,
+      "tokens": 444737006,
+      "models": ["fable-5", "opus-5"]
+    },
+    {
+      "key": "claude:5b1c9d3e-0005-4a7e-8c2f-000000000005",
+      "project": "phasezero",
+      "repo": "NestJs-Ecommerce-Backend",
+      "agent": "claude",
+      "total": 206.0,
+      "hours": 15.0,
+      "tokens": 446945290,
+      "models": ["opus-5", "haiku-4-5"]
+    },
+    {
+      "key": "claude:5b1c9d3e-0006-4a7e-8c2f-000000000006",
+      "project": "phasezero",
+      "repo": "website",
+      "agent": "claude",
+      "total": 181.7,
+      "hours": 19.5,
+      "tokens": 382290574,
+      "models": ["opus-5"]
+    },
+    {
+      "key": "claude:5b1c9d3e-0010-4a7e-8c2f-000000000010",
+      "project": "(unattributed)",
+      "repo": null,
+      "agent": "claude",
+      "total": 156.0,
+      "hours": 6.0,
+      "tokens": 296472405,
+      "models": ["fable-5"]
+    },
+    {
+      "key": "claude:5b1c9d3e-0009-4a7e-8c2f-000000000009",
+      "project": "mailgate",
+      "repo": "mailgate",
+      "agent": "claude",
+      "total": 151.0,
+      "hours": 4.17,
+      "tokens": 358731756,
+      "models": ["opus-5", "haiku-4-5"]
+    },
+    {
+      "key": "claude:5b1c9d3e-0001-4a7e-8c2f-000000000001",
+      "project": "ccboard",
+      "repo": "ccboard",
+      "agent": "claude",
+      "total": 76.0,
+      "hours": 9.5,
+      "tokens": 152715752,
+      "models": ["opus-5"]
+    },
+    {
+      "key": "claude:5b1c9d3e-0011-4a7e-8c2f-000000000011",
+      "project": "(unattributed)",
+      "repo": null,
+      "agent": "claude",
+      "total": 62.0,
+      "hours": 4.5,
+      "tokens": 127269575,
+      "models": ["opus-4-7"]
+    },
+    {
+      "key": "claude:5b1c9d3e-0003-4a7e-8c2f-000000000003",
+      "project": "petroit",
+      "repo": "api",
+      "agent": "claude",
+      "total": 47.1,
+      "hours": 10.5,
+      "tokens": 85733095,
+      "models": ["fable-5"]
+    },
+    {
+      "key": "codex:5b1c9d3e-0012-4a7e-8c2f-000000000012",
+      "project": "ccboard",
+      "repo": "ccboard",
+      "agent": "codex",
+      "total": 19.1,
+      "hours": 5.17,
+      "tokens": 26981684,
+      "models": ["gpt-5.5"]
+    }
+  ],
+  "active_hours": {
+    "phasezero": 31.08,
+    "ccboard": 18.73,
+    "petroit": 14.87,
+    "internalSystem": 13.07,
+    "mailgate": 8.0
+  },
+  "rate_limits": {
+    "claude": {
+      "rl_5h": {
+        "at": "2026-10-03T03:00:00+00:00",
+        "value": 42.0,
+        "meta": {
+          "resets_at": 1791006000
+        }
+      },
+      "rl_7d": {
+        "at": "2026-10-03T03:00:00+00:00",
+        "value": 71.0,
+        "meta": {
+          "resets_at": 1791270000
+        }
+      }
+    }
+  },
+  "episodes": [
+    {
+      "kind": "7d",
+      "at": "2026-09-08T00:00:00+00:00",
+      "resets_at": 1789020000,
+      "session": "mailgate--mailgate--s1"
+    },
+    {
+      "kind": "5h",
+      "at": "2026-09-20T23:10:00+00:00",
+      "resets_at": 1789951200,
+      "session": "internalSystem--server--s1"
+    },
+    {
+      "kind": "5h",
+      "at": "2026-09-27T23:10:00+00:00",
+      "resets_at": 1790556000,
+      "session": "phasezero--website--t-checkout-redesign"
+    },
+    {
+      "kind": "5h",
+      "at": "2026-10-02T23:10:00+00:00",
+      "resets_at": 1790988000,
+      "session": "petroit--api--s2"
+    }
+  ],
+  "unpriced": [
+    {
+      "key": "claude:5b1c9d3e-0014-4a7e-8c2f-000000000014",
+      "agent": "claude",
+      "project": "phasezero",
+      "repo": "website",
+      "tokens": 26100000,
+      "models": ["fable-5-1"]
+    },
+    {
+      "key": "claude:5b1c9d3e-0013-4a7e-8c2f-000000000013",
+      "agent": "claude",
+      "project": "ccboard",
+      "repo": "ccboard",
+      "tokens": 18400000,
+      "models": ["opus-5-5"]
+    }
+  ],
+  "source": "samples"
+}

@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -372,9 +373,116 @@ def test_identity_states(monkeypatch):
     assert "runtime systemd" in one("identity")["detail"]
 
 
-def test_samples_heartbeat_skipped_until_commit_b():
-    c = one("samples-heartbeat")
-    assert (c["status"], c["detail"]) == ("skip", "arrives with commit B")
+# ------------------------------------------------------------------ samples heartbeat (v0.5.4 commit B)
+
+HB_NOW = datetime(2026, 10, 3, 12, 0, 0, tzinfo=timezone.utc)
+
+
+class HbDB:
+    """Only what the check reads: kv_get('samples_heartbeat') -> {value, at} | None (the real DB.kv_get shape)."""
+
+    def __init__(self, age_s=None, at=None, value=None):
+        self.asked = []
+        if at is None and age_s is not None:
+            at = (HB_NOW - timedelta(seconds=age_s)).isoformat(timespec="seconds")
+        self.row = None if at is None else {"value": value if value is not None else 1790000000, "at": at}
+
+    def kv_get(self, key):
+        self.asked.append(key)
+        return self.row
+
+
+@pytest.fixture
+def clocks(monkeypatch):
+    """Freeze the doctor's wall clock and its notion of how long the board has been up."""
+    state = {"uptime": 3600.0}
+    monkeypatch.setattr(doctor, "_utcnow", lambda: HB_NOW)
+    monkeypatch.setattr(doctor, "_uptime", lambda: state["uptime"])
+    return state
+
+
+def heartbeat(db) -> dict:
+    return one("samples-heartbeat", db=db)
+
+
+@pytest.mark.parametrize("age,status", [
+    (0, "pass"), (14, "pass"), (59, "pass"),
+    (60, "warn"), (61, "warn"), (300, "warn"), (599, "warn"),
+    (600, "fail"), (601, "fail"), (3600, "fail"), (86400, "fail"),
+])
+def test_samples_heartbeat_by_age(clocks, age, status):
+    db = HbDB(age_s=age)
+    c = heartbeat(db)
+    assert c["status"] == status, (age, c)
+    assert db.asked == ["samples_heartbeat"]
+    assert c["group"] == "box" and "sampler" in c["detail"]
+    if status == "pass":
+        assert c["fix"] is None and f"{age} s ago" in c["detail"]
+    else:
+        assert c["fix"]["text"] and "restart" in c["fix"]["text"].lower()
+    assert "\n" not in c["detail"]
+
+
+def test_samples_heartbeat_detail_reads_in_minutes_when_old(clocks):
+    assert "5 min ago" in heartbeat(HbDB(age_s=300))["detail"]
+    assert "2 min ago" in heartbeat(HbDB(age_s=125))["detail"]
+    assert "90 s ago" in heartbeat(HbDB(age_s=90))["detail"]
+
+
+def test_samples_heartbeat_absent_is_skip_right_after_start_then_fail(clocks):
+    db = HbDB()
+    clocks["uptime"] = 0.0
+    c = heartbeat(db)
+    assert c["status"] == "skip" and "just started" in c["detail"]
+    clocks["uptime"] = 29.9
+    assert heartbeat(db)["status"] == "skip"
+    clocks["uptime"] = 30.0
+    c = heartbeat(db)
+    assert c["status"] == "fail" and "has not written" in c["detail"] and c["fix"]["text"]
+    clocks["uptime"] = 86400.0
+    assert heartbeat(db)["status"] == "fail"
+
+
+def test_samples_heartbeat_a_stale_row_is_a_failure_even_when_the_board_is_young(clocks):
+    clocks["uptime"] = 5.0                  # only an absent heartbeat gets the start-up grace
+    assert heartbeat(HbDB(age_s=7200))["status"] == "fail"
+
+
+def test_samples_heartbeat_unreadable_time_counts_as_absent(clocks):
+    for bad in ("", "not a time", "2026-13-99T99:99:99"):
+        db = HbDB(at=bad)
+        clocks["uptime"] = 5.0
+        assert heartbeat(db)["status"] == "skip"
+        clocks["uptime"] = 500.0
+        assert heartbeat(db)["status"] == "fail"
+
+
+def test_samples_heartbeat_accepts_z_and_naive_times_and_clock_skew(clocks):
+    assert heartbeat(HbDB(at="2026-10-03T11:59:50Z"))["status"] == "pass"
+    assert heartbeat(HbDB(at="2026-10-03T11:59:50"))["status"] == "pass"                   # naive = UTC, like db.now() without a zone
+    future = heartbeat(HbDB(at="2026-10-03T12:05:00+00:00"))                                  # a clock stepped back: never negative
+    assert future["status"] == "pass" and "0 s ago" in future["detail"]
+
+
+def test_samples_heartbeat_without_a_database_is_a_skip(clocks):
+    assert heartbeat(None)["status"] == "skip"
+    assert heartbeat(DB())["status"] == "skip"                                                # a handle with no kv_get
+
+
+def test_samples_heartbeat_reads_the_real_kv_row(clocks, tmp_path, monkeypatch):
+    from app.db import DB as RealDB
+    db = RealDB(tmp_path / "hb.db")
+    monkeypatch.setattr(doctor, "_utcnow", lambda: datetime.now(timezone.utc))                # kv_set stamps `at` with the real clock
+    monkeypatch.setattr(doctor, "_uptime", lambda: 3600.0)
+    assert heartbeat(db)["status"] == "fail"                                                  # nothing written yet
+    db.kv_set("samples_heartbeat", time.time())
+    c = heartbeat(db)
+    assert c["status"] == "pass" and "sampler last ticked" in c["detail"]
+
+
+def test_samples_heartbeat_never_leaks_the_value(clocks):
+    c = heartbeat(HbDB(age_s=30, value="sk-ant-oat01-SENTINELSENTINEL"))
+    assert "SENTINEL" not in json.dumps(c)
 
 
 # ------------------------------------------------------------------ notify
