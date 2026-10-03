@@ -95,6 +95,16 @@ host_hooks() {
     "$HOST_PYTHON" "$APP_DST/scripts/claude_settings.py" install --app-dir "$APP_DST" --approve-timeout "$CCBOARD_APPROVE_TIMEOUT"
   fi
 }
+host_code_server() {
+  # cheap-to-open code-server: user settings merged (keys you set win) and, when the config is ccboard's, the flags that skip
+  # telemetry, update checks and the workspace-trust prompt (code-server reads config.yaml at start: the next restart or reboot)
+  "$HOST_PYTHON" "$APP_DST/scripts/code_server_settings.py" install || log "code-server settings not merged"
+  cfg="$HOME/.config/code-server/config.yaml"
+  if [ -f "$cfg" ] && [ "$(head -1 "$cfg")" = "# managed by ccboard" ] && ! grep -q '^disable-workspace-trust:' "$cfg"; then
+    printf 'disable-telemetry: true\ndisable-update-check: true\ndisable-workspace-trust: true\ndisable-getting-started-override: true\n' >> "$cfg" \
+      && log "code-server config: added the no-telemetry / no-update-check / no-workspace-trust flags (applied at its next restart)"
+  fi
+}
 host_tmux() {
   if out=$(tmux -L "$CCBOARD_TMUX_SOCKET" source-file "$APP_DST/tmux.conf" 2>&1); then
     log "tmux.conf applied to the running tmux server (socket $CCBOARD_TMUX_SOCKET)"
@@ -117,6 +127,7 @@ if [ "$SHADOW" = 1 ]; then
   log "CCBOARD_SHADOW=1: Claude hooks, tmux server and MCP registration are left alone"
 else
   host_hooks || warn "could not merge the Claude hooks and statusline into settings.json; hooks keep pointing where they pointed"
+  host_code_server || true
   host_tmux
   host_mcp || warn "claude mcp add failed; register by hand: claude mcp add --scope user ccboard -- $HOST_PYTHON $APP_DST/scripts/ccboard_mcp.py"
 fi

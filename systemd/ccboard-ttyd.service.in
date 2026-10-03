@@ -15,6 +15,10 @@ EnvironmentFile=-/etc/ccboard/env
 ExecStart=__TTYD_BIN__ -i lo -p ${TTYD_PORT} -W -O -a -t titleFixed=ccboard -t disableLeaveAlert=true __APP_BIN__/ccboard-attach
 Restart=always
 RestartSec=2
+Nice=-2
+IOSchedulingClass=best-effort
+IOSchedulingPriority=1
+OOMScoreAdjust=-300
 PrivateDevices=yes
 NoNewPrivileges=yes
 

@@ -372,7 +372,8 @@ else
   note "present: $(code-server --version 2>/dev/null | head -1) (pinned $CODE_SERVER_VERSION; not changed)"
 fi
 cs_cfg="$HOME_DIR/.config/code-server/config.yaml"
-cs_want=$(printf '# managed by ccboard\nbind-addr: 127.0.0.1:%s\nauth: none\ncert: false\n' "$CODE_SERVER_PORT")
+# telemetry, update checks and the workspace-trust prompt all cost time on first open; none of them has a job on a tailnet-only box
+cs_want=$(printf '# managed by ccboard\nbind-addr: 127.0.0.1:%s\nauth: none\ncert: false\ndisable-telemetry: true\ndisable-update-check: true\ndisable-workspace-trust: true\ndisable-getting-started-override: true\n' "$CODE_SERVER_PORT")
 if [ -f "$cs_cfg" ] && [ "$(head -1 "$cs_cfg")" != "# managed by ccboard" ]; then
   if [ "${CCBOARD_REPLACE_CODE_SERVER_CONFIG:-}" = 1 ]; then
     cp "$cs_cfg" "$cs_cfg.ccboard-bak-$(date +%s)"; warn "backed up your existing $cs_cfg"
@@ -384,13 +385,17 @@ if [ ! -f "$cs_cfg" ] || [ "$(cat "$cs_cfg")" != "$cs_want" ]; then
   mkdir -p "$(dirname "$cs_cfg")"; printf '%s\n' "$cs_want" > "$cs_cfg"; cs_changed=1; note "wrote $cs_cfg"
 fi
 cs_dropin_dir="/etc/systemd/system/code-server@$USER_NAME.service.d"
-cs_dropin=$(printf '[Service]\nEnvironment=PATH=%s/.local/bin:/usr/local/bin:/usr/bin:/bin\n' "$HOME_DIR")
+# the editor is interactive: it goes ahead of batch jobs for CPU and disk, and the OOM killer takes it last
+cs_dropin=$(printf '[Service]\nEnvironment=PATH=%s/.local/bin:/usr/local/bin:/usr/bin:/bin\nNice=-5\nIOSchedulingClass=best-effort\nIOSchedulingPriority=1\nOOMScoreAdjust=-500\n' "$HOME_DIR")
 if [ ! -f "$cs_dropin_dir/ccboard.conf" ] || [ "$(cat "$cs_dropin_dir/ccboard.conf")" != "$cs_dropin" ]; then
   printf '%s\n' "$cs_dropin" | sudo install -D -m 0644 /dev/stdin "$cs_dropin_dir/ccboard.conf"
   sudo systemctl daemon-reload; cs_changed=1
 fi
 sudo systemctl enable --now "code-server@$USER_NAME" >/dev/null
 [ "$cs_changed" = 0 ] || sudo systemctl restart "code-server@$USER_NAME"
+# user settings that keep a window cheap: no watchers or searches over node_modules / venvs / build output / worktrees, no
+# telemetry, update or experiment traffic, no automatic type acquisition. Only keys you have not set; `remove` takes them back.
+python3 "$APP_DIR/scripts/code_server_settings.py" install || warn "code-server settings not merged"
 
 # ---------------------------------------------------------------- Claude Code
 log "Claude Code"

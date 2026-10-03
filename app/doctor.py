@@ -311,6 +311,13 @@ def _c_attach_wrapper(db) -> Outcome:
 def _c_code_server(db) -> Outcome:
     port = settings.code_server_port
     if _port_open("127.0.0.1", port, 1.0):
+        try:
+            cfg = json.loads((Path.home() / ".local" / "share" / "code-server" / "User" / "settings.json").read_text() or "{}")
+        except (OSError, ValueError):
+            cfg = {}
+        if not isinstance(cfg, dict) or "files.watcherExclude" not in cfg:
+            return _warn(f"listening on 127.0.0.1:{port}; no watcher excludes in its user settings (slow to open on a busy box)",
+                         fix("Merge ccboard's code-server settings", "python3 scripts/code_server_settings.py install"))
         return _pass(f"listening on 127.0.0.1:{port}")
     return _fail(f"nothing listens on 127.0.0.1:{port}", fix("Start code-server", "sudo systemctl restart code-server@$USER"))
 

@@ -14,6 +14,10 @@ ExecStart=/usr/bin/tmux -L ccboard -f __APP_DIR__/tmux.conf start-server
 ExecStop=-/usr/bin/tmux -L ccboard kill-server
 Restart=always
 RestartSec=2
+Nice=-2
+IOSchedulingClass=best-effort
+IOSchedulingPriority=1
+OOMScoreAdjust=-500
 
 [Install]
 WantedBy=multi-user.target
