@@ -88,3 +88,70 @@ def test_the_sampler_tick_runs_it(world, monkeypatch):
     s.sample_once()
     assert len(calls) == 1
     assert autoresume.tick in samples.__dict__.get("_registered", [autoresume.tick]) or True
+
+
+# --- after a reboot: a row that was working when the box went down gets `continue` once its relaunch is at the prompt ---
+
+def mark(db, name, at, prompt="build the thing"):
+    """What app/recover does for a relaunched row whose old row was working."""
+    db.add_session(tmux_name=name, project="shop", repo="api", name=name.split("--")[-1], launcher="recovered")
+    db.update_flags(name, {autoresume.RESUME_FLAG: {"reason": "reboot", "at": at, "prompt": prompt, "was_at": iso(at - 300)}})
+
+
+def session_start(db, name, at):
+    db.set_state(name, "idle", "SessionStart")
+    db.conn.execute("UPDATE sessions SET state_at=? WHERE tmux_name=?", (iso(at), name))
+
+
+def test_reboot_continue_waits_for_session_start_then_types_once(world):
+    db, T = world["db"], 1_800_000_000
+    mark(db, "shop--api--s1", at=T)
+    assert world["tick"](T + 30) == [] and world["sent"] == [], "no SessionStart yet: wait"
+    session_start(db, "shop--api--s1", T + 40)
+    assert world["tick"](T + 42) == [], "not before the settle time"
+    assert world["tick"](T + 40 + autoresume.RESUME_SETTLE) == ["shop--api--s1"]
+    assert world["sent"] == [("shop--api--s1", "continue")]
+    assert world["notes"] and "continued after the restart" in world["notes"][0]
+    assert autoresume.RESUME_FLAG not in db.open_rows()["shop--api--s1"]["flags"]
+    evs = [e for e in db.recent_events(50) if e["tmux_name"] == "shop--api--s1" and e["event"] == "AutoContinue"]
+    assert evs and evs[0]["kind"] == "reboot" and "typed 'continue' after the restart" in evs[0]["message"]
+    assert world["tick"](T + 120) == [] and len(world["sent"]) == 1, "once"
+
+
+def test_reboot_continue_drops_when_the_session_moved_on_or_never_started(world):
+    db, T = world["db"], 1_800_000_000
+    mark(db, "shop--api--s1", at=T)
+    session_start(db, "shop--api--s1", T + 40)
+    db.set_state("shop--api--s1", "working", "UserPromptSubmit", prompt="I typed first")   # the person was quicker
+    db.conn.execute("UPDATE sessions SET state_at=? WHERE tmux_name=?", (iso(T + 45), "shop--api--s1"))
+    assert world["tick"](T + 60) == [] and world["sent"] == []
+    assert autoresume.RESUME_FLAG not in db.open_rows()["shop--api--s1"]["flags"]
+    assert any("moved on" in (e["message"] or "") for e in db.recent_events(50) if e["tmux_name"] == "shop--api--s1" and e["event"] == "AutoContinue")
+    mark(db, "shop--api--s2", at=T)                                                          # no hook at all
+    assert world["tick"](T + autoresume.RESUME_WINDOW - 1) == [] and autoresume.RESUME_FLAG in db.open_rows()["shop--api--s2"]["flags"]
+    assert world["tick"](T + autoresume.RESUME_WINDOW + 1) == [] and world["sent"] == []
+    assert autoresume.RESUME_FLAG not in db.open_rows()["shop--api--s2"]["flags"]
+
+
+def test_reboot_continue_waits_while_attached_and_respects_the_switches(world, monkeypatch):
+    db, T = world["db"], 1_800_000_000
+    mark(db, "shop--api--s1", at=T)
+    session_start(db, "shop--api--s1", T + 5)
+    world["clients"] = 1
+    assert world["tick"](T + 30) == [] and world["sent"] == []
+    assert autoresume.RESUME_FLAG in db.open_rows()["shop--api--s1"]["flags"], "someone is typing: keep the flag, try later"
+    world["clients"] = 0
+    assert world["tick"](T + 45) == ["shop--api--s1"]
+    mark(db, "shop--api--s2", at=T)
+    session_start(db, "shop--api--s2", T + 5)
+    db.update_flags("shop--api--s2", {"no_autoresume": True})
+    assert world["tick"](T + 60) == [] and autoresume.RESUME_FLAG not in db.open_rows()["shop--api--s2"]["flags"]
+    mark(db, "shop--api--s3", at=T)
+    session_start(db, "shop--api--s3", T + 5)
+    world["alive"] = False
+    assert world["tick"](T + 60) == [] and autoresume.RESUME_FLAG not in db.open_rows()["shop--api--s3"]["flags"]
+    world["alive"] = True
+    mark(db, "shop--api--s4", at=T)
+    session_start(db, "shop--api--s4", T + 5)
+    monkeypatch.setattr(settings, "auto_continue", False)
+    assert world["tick"](T + 60) == [] and autoresume.RESUME_FLAG in db.open_rows()["shop--api--s4"]["flags"]

@@ -36,13 +36,13 @@ def test_plan_and_run(client, projects_dir, fake_tmux, monkeypatch):
     assert client.post("/api/recovery/dismiss", headers=H).status_code == 200
     assert client.get("/api/state", headers=H).json()["last_recovery"] is None
     # second run: everything is live now -> nothing to do
-    assert recover.run(main.db, main._start_session) == {"recovered": [], "closed": [], "skipped": []}
+    assert recover.run(main.db, main._start_session) == {"recovered": [], "closed": [], "skipped": [], "continue": []}
 
 
 def test_disabled(monkeypatch):
     from app.config import settings
     monkeypatch.setattr(settings, "recover", False)
-    assert recover.run(None, None) == {"recovered": [], "closed": [], "skipped": []}
+    assert recover.run(None, None) == {"recovered": [], "closed": [], "skipped": [], "continue": []}
 
 
 def test_task_session_recovers_in_worktree(client, projects_dir, fake_tmux, monkeypatch, tmp_path):
@@ -64,3 +64,50 @@ def test_task_session_recovers_in_worktree(client, projects_dir, fake_tmux, monk
     fake_tmux["sessions"].clear()
     summary = recover.run(main.db, main._start_session)
     assert t2["tmux"] in summary["closed"]
+
+
+def test_working_session_is_marked_to_continue_after_the_relaunch(client, projects_dir, fake_tmux, monkeypatch):
+    """A power cut mid-turn: the relaunched row carries continue_after_resume; once its SessionStart arrives and it sits
+    idle, the autoresume tick types `continue` once. An idle row before the reboot is relaunched without the flag."""
+    import time
+    from app import autoresume, hooks, main
+    from app.config import settings
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(settings, "auto_continue", True)
+    subprocess.run(["git", "-C", str(projects_dir), "init", "-q", "-b", "main", "shop/api"], check=True)
+    busy = client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude"}).json()
+    idle = client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude"}).json()
+    main.db.set_state(busy["tmux"], "working", "UserPromptSubmit", prompt="finish the migration and run the tests")
+    main.db.set_state(idle["tmux"], "idle", "SessionStart")
+    assert recover.wants_continue(main.db.open_rows()[busy["tmux"]]) and not recover.wants_continue(main.db.open_rows()[idle["tmux"]])
+    fake_tmux["sessions"].clear(); fake_tmux["created"].clear()
+    summary = recover.run(main.db, main._start_session)
+    assert sorted(summary["recovered"]) == sorted([busy["tmux"], idle["tmux"]]) and summary["continue"] == [busy["tmux"]]
+    rows = main.db.open_rows()
+    flag = rows[busy["tmux"]]["flags"][recover.CONTINUE_FLAG]
+    assert flag["reason"] == "reboot" and flag["prompt"].startswith("finish the migration")
+    assert recover.CONTINUE_FLAG not in rows[idle["tmux"]]["flags"]
+    assert client.get("/api/state", headers=H).json()["last_recovery"]["value"]["continue"] == [busy["tmux"]]
+    # the resumed session comes back and reports SessionStart; nothing is typed until it has settled, then exactly once
+    sent = []
+    tick = lambda now: autoresume.tick(main.db, now, send=lambda n, t: sent.append((n, t)), clients=lambda n: 0, alive=lambda n: True)
+    assert tick(time.time() + 1) == [] and sent == []
+    hooks.apply(main.db, busy["tmux"], "SessionStart", {"source": "resume", "session_id": busy["claude_session_id"]})
+    assert tick(time.time() + 1) == [], "settle first"
+    assert tick(time.time() + autoresume.RESUME_SETTLE + 1) == [busy["tmux"]]
+    assert sent == [(busy["tmux"], "continue")]
+    assert recover.CONTINUE_FLAG not in main.db.open_rows()[busy["tmux"]]["flags"]
+    assert tick(time.time() + 600) == [] and len(sent) == 1
+
+
+def test_a_row_working_for_days_is_not_continued(monkeypatch):
+    """A Stop hook that never arrived leaves a row 'working' for days; relaunching that is fine, nudging it is not."""
+    import time
+    from datetime import datetime, timezone
+    old = datetime.fromtimestamp(time.time() - 3 * 86400, tz=timezone.utc).isoformat(timespec="seconds")
+    assert not recover.wants_continue({"state": "working", "agent": "claude", "state_at": old, "flags": {}})
+    fresh = datetime.fromtimestamp(time.time() - 600, tz=timezone.utc).isoformat(timespec="seconds")
+    assert recover.wants_continue({"state": "working", "agent": "claude", "state_at": fresh, "flags": {}})
+    assert not recover.wants_continue({"state": "working", "agent": "shell", "state_at": fresh, "flags": {}})
+    assert not recover.wants_continue({"state": "working", "agent": "claude", "state_at": fresh, "flags": {"no_autoresume": True}})
+    assert not recover.wants_continue({"state": "waiting", "agent": "claude", "state_at": fresh, "flags": {}})

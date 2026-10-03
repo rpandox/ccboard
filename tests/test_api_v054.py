@@ -810,4 +810,4 @@ def test_recover_run_passes_agent_opts_and_rebinds_the_task(board, monkeypatch):
     assert all(env["CCBOARD_AGENT"] == "claude" for _n, _c, env in board.tmux["created"])
     st = board.client.get("/api/state", headers=H).json()
     assert next(x for x in st["tasks"] if x["id"] == t["id"])["session"] is not None
-    assert recover.run(db(), main._start_session) == {"recovered": [], "closed": [], "skipped": []}
+    assert recover.run(db(), main._start_session) == {"recovered": [], "closed": [], "skipped": [], "continue": []}
