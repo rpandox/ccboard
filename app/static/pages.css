@@ -28,7 +28,7 @@
 #page .rgroup-head .mono { text-transform:none; letter-spacing:0; color:var(--fg-2); }
 #page .rrow { display:grid; grid-template-columns:auto minmax(0, 1fr) auto; grid-template-areas:"g main actions" "g meta actions" "g last actions" "g chips chips"; column-gap:10px; row-gap:2px;
               align-items:center; padding:8px 8px 8px 10px; border-bottom:1px solid var(--line-soft); border-left:2px solid transparent; }
-#page .rrow:hover { background:var(--card); }
+@media (hover:hover) { #page .rrow:hover { background:var(--card); } }   /* hover only where a pointer can hover: touch never keeps it */
 #page .rrow.attn { border-left-color:var(--warn); background:var(--warn-bg); }
 #page .rrow .rr-g { grid-area:g; display:flex; align-items:center; gap:2px; align-self:start; padding-top:2px; }
 #page .rrow .rr-main { grid-area:main; display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 10px; min-width:0; }
@@ -51,7 +51,7 @@
 /* nudge chips: continue, merge, push, pr, add commit push, do it */
 #page .chips, #dock .chips, #sheet .chips { display:flex; flex-wrap:wrap; gap:6px; }
 #page .chip-btn, #dock .chip-btn, #sheet .chip-btn { min-height:var(--tap); padding:0 10px; border:1px solid var(--line); border-radius:14px; background:var(--panel); color:var(--fg-2); font:12px/1 var(--font-mono); cursor:pointer; }
-#page .chip-btn:hover, #dock .chip-btn:hover, #sheet .chip-btn:hover { border-color:var(--sig); color:var(--fg); }
+@media (hover:hover) { #page .chip-btn:hover, #dock .chip-btn:hover, #sheet .chip-btn:hover { border-color:var(--sig); color:var(--fg); } }
 #page .chip-btn:disabled, #dock .chip-btn:disabled, #sheet .chip-btn:disabled { opacity:.5; cursor:default; }
 
 /* session peek: the same markup in the dock (>= 1024 px) and in the bottom sheet */
@@ -79,3 +79,55 @@
 #page .rrow.sel { outline:2px solid var(--sig); outline-offset:-2px; background:rgba(77,208,225,.10); }
 @media (pointer:coarse) { #page summary { min-height:var(--tap); display:flex; align-items:center; } }
 html.force-coarse #page summary { min-height:var(--tap); display:flex; align-items:center; }
+
+/* ---------- first paint: skeleton rows before the first /api/state (pages/home.js Pages.skeleton; 'skeleton' is Blueprint's bp5-skeleton through core.js) ---------- */
+#page .skel-rows { display:flex; flex-direction:column; margin:6px 0; }
+#page .skel-row { display:grid; grid-template-columns:auto minmax(0, 1fr) auto; align-items:center; gap:10px; padding:12px 10px; border-bottom:1px solid var(--line-soft); font:12px/1.4 var(--font-mono); }
+#page .skel-row .skeleton { display:inline-block; min-height:14px; overflow:hidden; white-space:nowrap; }
+#page .skel-row .skel-main { width:min(26ch, 100%); }
+#page .skel-row .skel-meta { width:min(24ch, 38vw); }
+@media (max-width:599px) { #page .skel-row { grid-template-columns:auto minmax(0, 1fr); } #page .skel-row .skel-meta { display:none; } }
+@media (prefers-reduced-motion:reduce) { #page .skeleton { animation:none; } }
+
+/* long lists: rows far off screen skip layout and paint (the class is on the list, the rows are its children) */
+#page .cv-auto > .rrow, #page .cv-auto > .inbox-item { content-visibility:auto; contain-intrinsic-size:auto 92px; }
+
+/* ---------- command palette and shortcut help (palette.js): one modal dialog#helpdlg, class palette ---------- */
+dialog#helpdlg.palette { margin:max(8px, 9vh) auto 0; padding:0; width:min(640px, calc(100vw - 16px)); max-width:none; max-height:min(600px, calc(100vh - 16px - 9vh)); max-height:min(600px, calc(100dvh - 16px - 9vh));
+                         border:1px solid var(--line); border-radius:4px; background:var(--panel); color:var(--fg); overflow:hidden; box-shadow:0 14px 44px rgba(0,0,0,.55); }
+dialog#helpdlg.palette[open] { display:flex; flex-direction:column; animation:pal-in .12s ease-out; }
+dialog#helpdlg.palette::backdrop { background:rgba(0,0,0,.55); }
+@keyframes pal-in { from { transform:translateY(-8px); opacity:.5; } to { transform:none; opacity:1; } }
+@media (prefers-reduced-motion:reduce) { dialog#helpdlg.palette[open] { animation:none; } }
+@media (max-width:599px) { dialog#helpdlg.palette { margin-top:calc(var(--sat) + 8px); } }
+
+.palette .pal-head { flex:none; display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid var(--line); }
+.palette .pal-input { flex:1 1 auto; min-width:0; width:100%; height:40px; font:14px/1 var(--font-ui); }
+@media (pointer:coarse) { .palette .pal-input { font-size:16px; } }          /* 16 px: iOS Safari zooms into a smaller field */
+.palette .pal-list { flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:2px 0 6px; }
+.palette .pal-group { padding:10px 14px 4px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+.palette .pal-item { display:flex; align-items:center; gap:10px; min-height:var(--tap); padding:4px 14px 4px 12px; border-left:2px solid transparent; cursor:pointer; -webkit-touch-callout:none; }
+.palette .pal-item.sel { background:rgba(77,208,225,.12); border-left-color:var(--sig); }
+.palette .pal-label { flex:0 0 auto; max-width:60%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }   /* the name keeps its room; the hint is what gives */
+.palette .pal-hit { color:var(--sig); font-weight:700; }
+.palette .pal-hint { flex:1 1 0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:12px/1.3 var(--font-mono); color:var(--dim); }
+.palette .pal-kbd { flex:none; margin-left:auto; padding:1px 6px; border:1px solid var(--line); border-radius:3px; background:var(--bg); color:var(--dim); font:11px/1.5 var(--font-mono); }
+.palette .pal-hint + .pal-kbd { margin-left:0; }
+.palette .pal-empty { padding:16px 14px; color:var(--dim); }
+.palette .pal-foot { flex:none; padding:7px 14px calc(7px + var(--sab)); border-top:1px solid var(--line); font:11px/1.4 var(--font-mono); color:var(--dim); }
+@media (hover:hover) { .palette .pal-item:hover:not(.sel) { background:var(--card); } }
+.palette .pal-input:focus-visible, .palette .help-head .bp5-button:focus-visible { outline:2px solid var(--sig); outline-offset:-2px; }
+
+/* the shortcut list (Palette.openHelp) */
+.palette.help .help-head { justify-content:space-between; }
+.palette .help-title { margin:0; font-size:15px; font-weight:600; }
+.palette .help-body { flex:1 1 auto; min-height:0; overflow-y:auto; padding:4px 14px 14px; }
+.palette .help-group h3 { margin:14px 0 4px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); font-weight:600; }
+.palette .help-row { display:flex; align-items:baseline; gap:12px; padding:3px 0; }
+.palette .help-keys { flex:none; width:clamp(104px, 28%, 170px); color:var(--dim); font:12px/1.6 var(--font-mono); }
+.palette .help-keys .pal-kbd { margin-left:0; }
+.palette .help-text { min-width:0; font-size:13px; color:var(--fg-2); }
+
+/* install hint (Home, browser tabs only) */
+#page .install-hint { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:0 0 10px; }
+#page .install-hint .ih-text { flex:1 1 240px; }

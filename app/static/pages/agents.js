@@ -10,6 +10,7 @@ const SESSION_NUDGES = ['continue', 'merge', 'push', 'pr', 'add commit push', 'd
 const SESSION_RANK = { waiting: 0, errored: 1, working: 2, idle: 3, done: 3, ended: 4, unknown: 5 };
 const SESSION_NUDGE_STATES = ['waiting', 'idle', 'done', 'working', 'errored'];            // an ended pane is a shell prompt: never type into it
 const agentsTicker = { n: 0, timer: null };
+const CV_AUTO_ROWS = 30;                                                                    // a list longer than this gets the cv-auto class (content-visibility, see pages.css)
 
 /* Every live session in a state payload, each with its project, repo and whether it sits in the project folder. */
 function rosterSessions(st) {
@@ -240,6 +241,7 @@ function agentsGroupNode(g) {
     setTextIfChanged(name, grp.name);
     setTextIfChanged(count, `${grp.items.length} session${grp.items.length === 1 ? '' : 's'}`);
     rows.update(grp.items);
+    list.classList.toggle('cv-auto', grp.items.length > CV_AUTO_ROWS);
   };
   node.ccPatch(g);
   return node;
@@ -254,19 +256,31 @@ registerPage('agents', {
     const roster = el('div', { class: 'roster' });
     const none = pageEmpty('console', 'No live sessions', 'Start one from the + menu: every session on this box shows up here.');
     const external = pageEmpty('cloud', 'Background sessions', 'Background sessions from the Claude registry arrive in v0.5.4');
+    const loading = !currentState();                                    // first paint before /api/state: skeleton rows, and no empty states yet
+    if (loading) { none.classList.add('hidden'); external.classList.add('hidden'); }
+    Pages.reset();
     root.append(el('div', { class: 'agents' },
-      el('div', { class: 'page-head' }, el('h1', { text: 'Agents' }), summary), roster, none, external));
+      el('div', { class: 'page-head' }, el('h1', { text: 'Agents' }), summary), ...(loading ? [Pages.skeleton(3)] : []), roster, none, external));
+    // a click on a row selects it, so the mouse and j / k share one selection
+    roster.addEventListener('click', (e) => {
+      const row = e.target && typeof e.target.closest === 'function' ? e.target.closest('.rrow') : null;
+      const i = row ? Pages.items().findIndex((x) => x.tmux === row.getAttribute('data-tmux')) : -1;
+      if (i >= 0) Pages.setIndex(i);
+    });
     agentsPage.refs = { summary, none, external, groups: makeKeyedList(roster, { key: (g) => 'g:' + g.key, create: agentsGroupNode, patch: (n, g) => n.ccPatch(g) }) };
     startAgeTicker();
   },
   update(st) {
     const r = agentsPage.refs;
     if (!r) return;
+    Pages.dropSkeleton();
     const list = rosterSessions(st);
     setTextIfChanged(r.summary, agentsSummaryText(list));
     r.groups.update(agentsGroups(list));
     r.none.classList.toggle('hidden', list.length > 0);
     r.external.classList.toggle('hidden', !!st.external);     // registry rows arrive with state.external in v0.5.4
+    Pages.sync();                                             // the roster may have reordered or lost the selected session
+    Pages.paint();
   },
   unmount() {
     agentsPage.refs = null;

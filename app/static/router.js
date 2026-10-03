@@ -283,6 +283,24 @@ function rewriteLegacyHash() {
   return true;
 }
 
+/* A page or snippet shared to the installed app arrives as GET /?title=&text=&url= (the manifest share_target); Palette opens its "send to session"
+   list with it. Once handled (sent or dismissed) the three params leave the address so a reload does not offer them again. The hash and every
+   other param (demo=1) stay; one replaceState, no history entry. Returns whether anything was removed. */
+const SHARE_PARAMS = ['text', 'title', 'url', 'share'];
+
+function stripShare() {
+  if (typeof location === 'undefined' || !location.search) return false;
+  const q = new URLSearchParams(location.search);
+  let had = false;
+  for (const k of SHARE_PARAMS) if (q.has(k)) { q.delete(k); had = true; }
+  if (!had) return false;
+  const s = q.toString();
+  history.replaceState(null, '', (location.pathname || '/') + (s ? '?' + s : '') + (location.hash || ''));
+  return true;
+}
+
+const Router = { stripShare };
+
 /* ---------- helpers shared by the pages ---------- */
 
 function setTextIfChanged(node, text) { if (node.textContent !== text) node.textContent = text; }

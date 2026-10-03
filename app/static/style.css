@@ -70,7 +70,7 @@ section { scroll-margin-top:64px; }
 /* inbox */
 .bp5-dark .bp5-card.inbox { border-color:var(--warn); }
 .inbox-item { display:flex; flex-direction:column; gap:6px; padding:8px; border-radius:2px; cursor:pointer; border:1px solid transparent; }
-.inbox-item:hover { background:var(--bg); }
+@media (hover:hover) { .inbox-item:hover { background:var(--bg); } }   /* touch never keeps a hover state */
 .inbox-item.sel { border-color:var(--acc); background:rgba(77,208,225,.1); }
 .inbox-item .main { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 .inbox-item .name { font-weight:600; }

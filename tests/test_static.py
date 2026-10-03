@@ -6,6 +6,7 @@ and CSS rules run (a comment may say "never innerHTML"), and line numbers are pr
 """
 import pathlib
 import re
+import struct
 from html.parser import HTMLParser
 
 import pytest
@@ -182,6 +183,38 @@ def test_scan_covers_the_app_owned_files():
     for must in ("app/static/index.html", "app/static/term.html", "app/static/sw.js", "app/static/core.js", "app/static/style.css"):
         assert must in names, f"{must} is missing from the static scan (path or exclusion bug in tests/test_static.py)"
     assert not any("/vendor/" in n or "/demo/" in n for n in names)
+
+
+# ---------- PNG assets: icons and the manifest's store screenshots ----------
+
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+PNG_COLOR_TYPES_WITH_ALPHA = (4, 6)
+SCREENSHOT_MAX_BYTES = 1_000_000          # every static png is precached by the service worker: keep the offline shell light
+
+
+def png_header(path):
+    """(width, height, bit_depth, color_type) from the IHDR chunk; fails the test when the file is not a PNG."""
+    data = pathlib.Path(path).read_bytes()[:33]
+    assert data[:8] == PNG_MAGIC and data[12:16] == b"IHDR", f"{path} is not a PNG file"
+    width, height, depth, color_type = struct.unpack(">IIBB", data[16:26])
+    return width, height, depth, color_type
+
+
+def test_screenshots_dir_holds_only_valid_pngs():
+    """app/static/screenshots/ (manifest `screenshots`, captured by scripts/qa-ui.sh with QA_MANIFEST_SHOTS=1) is app-owned, so it is
+    scanned like the rest; the only thing it may contain is PNGs of a sane size."""
+    shots = STATIC / "screenshots"
+    files = sorted(p for p in shots.rglob("*") if p.is_file()) if shots.is_dir() else []
+    if not files:
+        pytest.skip("no screenshots yet (the manifest test in tests/test_shell.py asserts the ones the manifest names)")
+    bad = [rel(p) for p in files if p.suffix != ".png"]
+    assert not bad, f"only .png files belong in app/static/screenshots/: {bad}"
+    scanned = {rel(p) for p in app_files()}
+    for p in files:
+        assert rel(p) in scanned, f"{rel(p)} is missing from the static scan"
+        width, height, _, _ = png_header(p)
+        assert width >= 320 and height >= 320, f"{rel(p)} is {width}x{height}: Chrome ignores install screenshots under 320 px"
+        assert p.stat().st_size <= SCREENSHOT_MAX_BYTES, f"{rel(p)} is {p.stat().st_size} bytes (limit {SCREENSHOT_MAX_BYTES}): it ships in the offline shell"
 
 
 # ---------- JavaScript ----------
@@ -493,8 +526,8 @@ from collections import Counter  # noqa: E402
 
 INDEX = STATIC / "index.html"
 SKELETON_IDS = ("topbar", "sidebar", "main", "banner", "page", "dock", "bnav", "drawer", "sheet", "helpdlg", "modal", "toasts")
-SCRIPT_ORDER = ["/static/" + n for n in (
-    "core.js", "components.js", "live.js", "launcher.js", "shell.js", "router.js",
+SCRIPT_ORDER = ["/static/" + n for n in (            # v0.5.3 contract plus keymap.js and palette.js (v0.5.3b)
+    "core.js", "components.js", "keymap.js", "live.js", "launcher.js", "palette.js", "shell.js", "router.js",
     "pages/home.js", "pages/inbox.js", "pages/tasks.js", "pages/agents.js", "pages/settings.js", "pages/search.js",
     "pages/session.js", "pages/placeholders.js", "main.js")]
 STYLE_ORDER = ["/static/vendor/blueprint/blueprint.css", "/static/vendor/blueprint/blueprint-icons.css", "/static/tokens.css",
@@ -601,7 +634,7 @@ def test_index_skeleton_nesting_matches_the_contract():
 
 def test_index_scripts_follow_the_contract_order_exactly():
     scripts = [a.get("src") for t, a, _ in html_tags(INDEX) if t == "script"]
-    assert scripts == SCRIPT_ORDER, "index.html script order differs from the v0.5.3 contract:\n  got      " + "\n  ".join(map(str, scripts)) \
+    assert scripts == SCRIPT_ORDER, "index.html script order differs from the contract (v0.5.3 plus v0.5.3b):\n  got      " + "\n  ".join(map(str, scripts)) \
         + "\n  expected " + "\n  ".join(SCRIPT_ORDER)
     for t, a, line in html_tags(INDEX):
         if t == "script":

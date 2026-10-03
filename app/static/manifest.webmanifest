@@ -1,18 +1,32 @@
 {
   "name": "ccboard",
   "short_name": "ccboard",
-  "description": "Claude Code sessions on your box",
+  "description": "Claude Code sessions on your box: what needs you, what is running, one tap to reply.",
   "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
   "orientation": "any",
   "background_color": "#14181c",
   "theme_color": "#14181c",
+  "categories": ["developer tools", "productivity"],
+  "launch_handler": { "client_mode": "focus-existing" },
+  "prefer_related_applications": false,
   "icons": [
     { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ],
+  "screenshots": [
+    { "src": "/static/screenshots/agents-390.png", "sizes": "390x844", "type": "image/png", "form_factor": "narrow", "label": "Agents: every session, blocked ones first" },
+    { "src": "/static/screenshots/agents-1280.png", "sizes": "1280x800", "type": "image/png", "form_factor": "wide", "label": "Agents on a laptop: project sidebar and the live roster" }
+  ],
+  "share_target": {
+    "action": "/",
+    "method": "GET",
+    "params": { "title": "title", "text": "text", "url": "url" }
+  },
   "shortcuts": [
     { "name": "Needs you", "url": "/#/inbox", "icons": [{ "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png" }] },
     { "name": "Terminals", "url": "/#/quad", "icons": [{ "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png" }] },

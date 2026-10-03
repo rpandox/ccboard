@@ -265,24 +265,211 @@ function inboxItems() {
   return items.sort((a, b) => (a.state_at || '').localeCompare(b.state_at || ''));  // oldest first
 }
 
+/* ---------- the keyboard selection and the actions on it (keymap.js drives these; palette.js reads them) ----------
+   One selection for every list of sessions: the legacy Needs-attention section on Home, the inbox page and the Agents roster. The index
+   stays in ui.inboxSel (a click on a card sets it too); Pages remembers the tmux name beside it so a poll that reorders the list keeps
+   the same session selected, and the 'sel' class is painted on every row or card of that session. Only the list on screen answers:
+   on any other page items() is empty and j / k are not handled. */
+const Pages = {
+  selTmux: null,            // the selected session's tmux name (the index alone would point at another session after a reorder)
+  selHash: '',              // the route the selection was made on: with a peek open, a selection made before it opened does not beat the peek
+  retry: null,
+};
+
+Pages.hashNow = function () { return (typeof location !== 'undefined' && location.hash) || '#/'; };
+
+Pages.listId = function () {
+  const id = typeof mountedId !== 'undefined' && mountedId ? mountedId : (typeof currentRoute === 'function' && currentRoute() ? currentRoute().id : '');
+  return id === 'agents' || id === 'inbox' || id === 'home' ? id : '';
+};
+
+/* Every live session in the order the Agents page shows them (blocked first, grouped by project): mod+1..9 and the palette count in it. */
+Pages.order = function () {
+  if (typeof state === 'undefined' || !state) return [];
+  return agentsGroups(rosterSessions(state)).flatMap((g) => g.items);
+};
+
+/* The sessions the selection can walk on this page, in screen order ([] where the page has no session list). */
+Pages.items = function () {
+  if (typeof state === 'undefined' || !state) return [];
+  const id = Pages.listId();
+  if (id === 'agents') return Pages.order();
+  if (id === 'inbox' || id === 'home') return inboxItems();
+  return [];
+};
+
+Pages.active = function () { return Pages.items().length > 0; };
+
+/* Re-find the selection in the current list: by tmux name when it is still there, else by its index (clamped), else none. */
+Pages.sync = function () {
+  const items = Pages.items();
+  if (!items.length) { ui.inboxSel = -1; Pages.selTmux = null; return items; }
+  const at = Pages.selTmux ? items.findIndex((x) => x.tmux === Pages.selTmux) : -1;
+  if (at >= 0) ui.inboxSel = at;
+  else if (ui.inboxSel >= 0) { ui.inboxSel = Math.min(ui.inboxSel, items.length - 1); Pages.selTmux = items[ui.inboxSel].tmux; }
+  else Pages.selTmux = null;
+  return items;
+};
+
+Pages.selected = function () {
+  const items = Pages.items();
+  return ui.inboxSel >= 0 && ui.inboxSel < items.length ? items[ui.inboxSel] : null;
+};
+
+Pages.rowNodes = function () {
+  try { return Array.from(document.querySelectorAll('#page .rrow, #page .inbox-item')); } catch (_) { return []; }
+};
+
+Pages.nodeFor = function (tmux) { return tmux ? (Pages.rowNodes().find((n) => n.getAttribute('data-tmux') === tmux) || null) : null; };
+
+Pages.paint = function () {
+  const tmux = Pages.selected() ? Pages.selTmux : null;
+  for (const n of Pages.rowNodes()) n.classList.toggle('sel', !!tmux && n.getAttribute('data-tmux') === tmux);
+};
+
+Pages.setIndex = function (i) {
+  const items = Pages.items();
+  if (i < 0 || i >= items.length) { ui.inboxSel = -1; Pages.selTmux = null; }
+  else { ui.inboxSel = i; Pages.selTmux = items[i].tmux; Pages.selHash = Pages.hashNow(); }
+  Pages.paint();
+};
+
+/* Move the selection by delta (j = 1, k = -1): none starts at the first row. False when the page has no list, so the key is left alone. */
+Pages.select = function (delta) {
+  const items = Pages.sync();
+  if (!items.length) return false;
+  Pages.setIndex(Math.max(0, Math.min(items.length - 1, (ui.inboxSel < 0 ? -1 : ui.inboxSel) + delta)));
+  const node = Pages.nodeFor(Pages.selTmux);
+  if (node && typeof node.scrollIntoView === 'function') node.scrollIntoView({ block: 'nearest' });
+  return true;
+};
+
+Pages.clear = function () {
+  if (ui.inboxSel < 0 && !Pages.selTmux) return;
+  ui.inboxSel = -1;
+  Pages.selTmux = null;
+  Pages.paint();
+};
+
+/* A page mounts with nothing selected. */
+Pages.reset = function () { ui.inboxSel = -1; Pages.selTmux = null; Pages.selHash = ''; };
+
+Pages.peekTmux = function () {
+  const r = typeof currentRoute === 'function' ? currentRoute() : null;
+  return r && r.id === 'session' && r.params ? r.params.tmux : null;
+};
+
+/* The session a key or a palette nudge acts on: the selected row, unless a peek was opened after that selection (then the peek), else the peek. */
+Pages.target = function () {
+  const sel = Pages.selected();
+  const peek = Pages.peekTmux();
+  if (sel && (!peek || Pages.selHash === Pages.hashNow())) return sel.tmux;
+  return peek || null;
+};
+
+Pages.session = function (tmux) { return tmux ? (Pages.order().find((x) => x.tmux === tmux) || null) : null; };
+
+Pages.targetPerm = function () {
+  const t = Pages.target();
+  return t && typeof sessionPerm === 'function' ? sessionPerm(t) : null;
+};
+
+/* mod+1..9: open the nth session of Pages.order() as the peek. False (key left alone) when there is no nth session. */
+Pages.openNth = function (n) {
+  const s = Pages.order()[n - 1];
+  if (!s) return false;
+  navigate(sessionHash(s.tmux));
+  return true;
+};
+
+/* The peek's send box (session.js builds it, a composer textarea): the node, or null while no peek is open. */
+Pages.sendBox = function () {
+  if (typeof sessionPeek !== 'undefined' && sessionPeek.parts && sessionPeek.parts.input && sessionPeek.parts.input.isConnected !== false) return sessionPeek.parts.input;
+  try { return document.querySelector('.peek-send textarea, .peek-send input'); } catch (_) { return null; }
+};
+
+/* Run fn(box) as soon as the peek's send box exists: now, or within about half a second (a peek opened by the same key press mounts on hashchange). */
+Pages.withSendBox = function (fn, tries) {
+  const box = Pages.sendBox();
+  if (box) { fn(box); return true; }
+  const left = typeof tries === 'number' ? tries : 8;
+  if (left <= 0 || typeof setTimeout !== 'function') return false;
+  Pages.retry = setTimeout(() => Pages.withSendBox(fn, left - 1), 60);
+  return true;
+};
+
+/* what: peek | term | ack | allow | deny | reply. Returns true when something was done (or started). */
+Pages.act = async function (what) {
+  if (what === 'peek') {
+    const s = Pages.selected();
+    if (!s) return false;
+    const h = sessionHash(s.tmux);
+    Pages.selHash = h;
+    navigate(h);
+    return true;
+  }
+  const tmux = Pages.target();
+  if (!tmux) return false;
+  const s = Pages.session(tmux);
+  const name = (s && s.name) || tmux;
+  if (what === 'term') { openPage(`/term/${encodeURIComponent(tmux)}`); return true; }
+  if (what === 'reply') {
+    if (!Pages.peekTmux() || Pages.peekTmux() !== tmux) { const h = sessionHash(tmux); Pages.selHash = h; navigate(h); }
+    return Pages.withSendBox((box) => box.focus());
+  }
+  if (what === 'ack') {
+    if (s && !s.needs_attention) { pageToast(`${name} has nothing to acknowledge`, 'info'); return false; }
+    await sessionAck(s || { tmux });
+    pageToast(`acknowledged ${name}`, 'ok');
+    return true;
+  }
+  if (what === 'allow' || what === 'deny') {
+    const pr = typeof sessionPerm === 'function' ? sessionPerm(tmux) : null;
+    if (!pr) { pageToast(`no permission is waiting on ${name}`, 'warn'); return false; }
+    await decide(pr.id, what);
+    pageToast(`${what === 'allow' ? 'allowed' : 'denied'} ${name}`, what === 'allow' ? 'ok' : 'warn');
+    return true;
+  }
+  return false;
+};
+
+/* First-paint placeholder: n grey rows (core.js maps 'skeleton' to bp5-skeleton) until the first /api/state arrives; the page's update() drops it. */
+Pages.skeleton = function (n) {
+  const wrap = el('div', { class: 'skel-rows', 'aria-hidden': 'true' });
+  for (let i = 0; i < (n || 3); i++) {
+    wrap.append(el('div', { class: 'skel-row' },
+      el('span', { class: 'skeleton skel-g', text: '✽ ◆' }),
+      el('span', { class: 'skeleton skel-main', text: 'project/repo · session name' }),
+      el('span', { class: 'skeleton skel-meta', text: 'working · model · ctx 42%' })));
+  }
+  return wrap;
+};
+
+Pages.dropSkeleton = function () {
+  let nodes = [];
+  try { nodes = Array.from(document.querySelectorAll('#page .skel-rows')); } catch (_) { return; }
+  for (const n of nodes) n.remove();
+};
+
 async function decide(pid, decision) {
   try { await api('POST', `/api/permission/${pid}/${decision}`); setError(null); } catch (e) { setError(e.message); }
   await poll(true);
 }
 
+const INBOX_HINT = 'j / k move · Enter open · o terminal · a ack · y allow · d deny · r reply · ? all keys';
+
 function renderInbox() {
   const sec = $('#inbox');
   if (!sec) { repaintPage(); return; }            // the board is not mounted: the inbox page owns the list
   sec.textContent = '';
-  const items = inboxItems();
-  if (!items.length) { sec.classList.add('hidden'); ui.inboxSel = -1; return; }
+  const items = Pages.sync();
+  if (!items.length) { sec.classList.add('hidden'); return; }
   sec.classList.remove('hidden');
-  if (ui.inboxSel >= items.length) ui.inboxSel = items.length - 1;
   sec.append(el('div', { class: 'row head' },
     el('h2', { text: `Needs attention (${items.length})` }),
-    el('span', { class: 'hint', text: 'j / k move · Enter attach · a ack · y / n allow / deny' })));
+    el('span', { class: 'hint', text: INBOX_HINT })));
   items.forEach((s, i) => {
-    const row = el('div', { class: 'inbox-item' + (i === ui.inboxSel ? ' sel' : ''), onclick: () => { ui.inboxSel = i; renderInbox(); } },
+    const row = el('div', { class: 'inbox-item' + (i === ui.inboxSel ? ' sel' : ''), 'data-tmux': s.tmux, onclick: () => { Pages.setIndex(i); } },
       el('div', { class: 'main' },
         el('span', { class: 'name', text: `${s.project}/${s.repo === 'root' ? '📁' : (s.repo || '?')} · ${s.name}` }),
         stateBadge(s)),
@@ -295,32 +482,6 @@ function renderInbox() {
     sec.append(row);
   });
 }
-
-async function inboxKey(e) {
-  const ae = document.activeElement;
-  if (ae && ae.matches('input, select, textarea')) return;
-  if (ui.modal || !state) return;
-  const here = currentRoute();                    // the list is only on screen on Home and on the inbox page
-  if (!here || (here.id !== 'home' && here.id !== 'inbox')) return;
-  if (document.querySelector('dialog[open]')) return;
-  const items = inboxItems();
-  if (!items.length) return;
-  if (e.key === 'j' || e.key === 'n') { ui.inboxSel = Math.min(items.length - 1, (ui.inboxSel < 0 ? -1 : ui.inboxSel) + 1); renderInbox(); }
-  else if (e.key === 'k' || e.key === 'p') { ui.inboxSel = Math.max(0, ui.inboxSel - 1); renderInbox(); }
-  else if (e.key === 'Enter' && ui.inboxSel >= 0) { openPage(`/term/${encodeURIComponent(items[ui.inboxSel].tmux)}`); }
-  else if (e.key === 'a' && ui.inboxSel >= 0) {
-    e.preventDefault();
-    try { await api('POST', `/api/sessions/${encodeURIComponent(items[ui.inboxSel].tmux)}/ack`); } catch (err) { setError(err.message); }
-    await poll(true);
-  } else if ((e.key === 'y' || e.key === 'n') && ui.inboxSel >= 0 && items[ui.inboxSel].perm) {
-    e.preventDefault();
-    await decide(items[ui.inboxSel].perm.id, e.key === 'y' ? 'allow' : 'deny');
-  } else if (e.key === 'Escape') { ui.inboxSel = -1; renderInbox(); }
-  else return;
-  const sel = document.querySelector('.inbox-item.sel');
-  if (sel) sel.scrollIntoView({ block: 'nearest' });
-}
-document.addEventListener('keydown', inboxKey);
 
 const homeConfirm = { painted: null };
 
@@ -419,17 +580,39 @@ function homeToggleLive() {
 
 /* The sections carry the ids the legacy renderers write into: #inbox #live #tasks #jobs #new-project #projects, and
    renderNewProject() adds #importrow and #queue inside #new-project. */
+/* One-time hint to install the board as an app (shown in a browser tab only, until dismissed: ccboard:hint:install). */
+const INSTALL_HINT_KEY = 'ccboard:hint:install';
+function homeInstallHint() {
+  let seen = null, standalone = true;
+  try { seen = localStorage.getItem(INSTALL_HINT_KEY); } catch (_) { seen = null; }
+  try { standalone = isStandalone(); } catch (_) { standalone = true; }
+  if (seen || standalone) return null;
+  let box = null;
+  const dismiss = () => { try { localStorage.setItem(INSTALL_HINT_KEY, '1'); } catch (_) { /* storage may be unavailable */ } if (box && box.remove) box.remove(); };
+  const canPrompt = typeof Shell !== 'undefined' && Shell && Shell.installPrompt && typeof Shell.promptInstall === 'function';
+  box = el('div', { class: 'callout primary install-hint', role: 'note' },           // el() drops the null child; a raw append(null) would render "null"
+    el('span', { class: 'ih-text', text: 'Install ccboard as an app: its own window, keyboard shortcuts, the title bar on desktop.' }),
+    canPrompt ? el('button', { class: 'small primary', type: 'button', text: 'Install', onclick: () => { Shell.promptInstall(); dismiss(); } }) : null,
+    el('a', { class: 'btn small', href: '#/settings?sec=app', text: 'How' }),
+    el('button', { class: 'minimal small', type: 'button', 'aria-label': 'Dismiss', title: 'Dismiss', onclick: dismiss }, ic('cross')));
+  return box;
+}
+
 registerPage('home', {
   title: () => homeTitle(),
   mount(root) {
     const section = (id, cls) => el('section', { id, class: cls });
+    Pages.reset();
     root.append(
       el('div', { class: 'page-head' }, el('h1', { text: 'Home' }), el('div', { class: 'actions', id: 'home-live' }, homeLiveButton())),
+      homeInstallHint(),
+      ...(currentState() ? [] : [Pages.skeleton(3)]),                                       // first paint: rows until /api/state arrives
       section('inbox', 'card inbox hidden'), section('live', 'card hidden'), section('tasks', 'card hidden'), section('jobs', 'card hidden'),
       section('new-project', 'card'), section('projects', ''));
     if (live.on) { try { liveStart(); } catch (e) { console.error('ccboard live', e); } }   // main.js only restores the flag
   },
   update() {
+    Pages.dropSkeleton();
     renderInbox();
     renderTasks();
     renderJobs();

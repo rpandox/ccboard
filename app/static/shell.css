@@ -1,7 +1,9 @@
-/* ccboard shell (v0.5.3): the app frame (topbar, sidebar / rail, main, dock, bottom nav), the drawer and sheet dialogs, the toasts.
+/* ccboard shell (v0.5.3, PWA chrome v0.5.3b): the app frame (topbar, sidebar / rail, main, dock, bottom nav), the drawer and sheet dialogs, the toasts.
    Loaded after style.css, so it overrides the v0.4 header / main / bottom-nav rules there. Modes come from body[data-shell]
    (compact < 600, medium 600-839, expanded 840-1199, large >= 1200) and body[data-sb] (none | rail | full), both set by shell.js from matchMedia.
-   Palette, sizes and safe-area variables are in tokens.css. No inline styles anywhere: custom properties set from JS (--pct) are the only dynamic bit. */
+   Palette, sizes and safe-area variables are in tokens.css. No inline styles anywhere: custom properties set from JS (--pct, --sb-full) are the only dynamic bit.
+   Hover styles live only under @media (hover:hover) so a touch screen never keeps a hover state; keyboard focus is shown by :focus-visible alone.
+   The installed-app rules (html.pwa: window-controls-overlay title bar, drag regions) are at the end of the file. */
 
 :root { --topbar-h:48px; --sb-full:260px; --sb-rail:48px; --dock-w:clamp(320px, 34vw, 560px); --bnav-h:56px; }
 @media (pointer:coarse) { :root { --topbar-h:54px; } }
@@ -17,9 +19,9 @@ a { text-underline-offset:2px; }
 #app { flex:1 1 auto; min-height:0; display:grid; overflow:hidden;
        grid-template-columns:var(--sb-w, 0px) minmax(0, 1fr) auto; grid-template-rows:auto minmax(0, 1fr);
        grid-template-areas:"top top top" "side main dock"; }
-body[data-sb="none"] { --sb-w:0px; }
-body[data-sb="rail"] { --sb-w:var(--sb-rail); }
-body[data-sb="full"] { --sb-w:var(--sb-full); }
+body[data-sb="none"] #app { --sb-w:0px; }
+body[data-sb="rail"] #app { --sb-w:var(--sb-rail); }
+body[data-sb="full"] #app { --sb-w:var(--sb-full); }                   /* var() resolves on #app: shell.js overrides --sb-full there (200-400 px) */
 #topbar { grid-area:top; }
 #sidebar { grid-area:side; }
 #main { grid-area:main; }
@@ -40,11 +42,11 @@ body[data-shell=compact] #main { padding-left:max(10px, var(--sal)); padding-rig
 #topbar > * { flex:none; }
 #topbar .spacer { flex:1 1 0; min-width:0; }
 a.brand { display:inline-flex; align-items:center; min-height:var(--tap); color:var(--fg); font-weight:700; font-size:15px; letter-spacing:.01em; text-decoration:none; padding:0 4px; white-space:nowrap; }
-a.brand:hover { color:var(--fg); text-decoration:none; }
+@media (hover:hover) { a.brand:hover { color:var(--fg); text-decoration:none; } }
 .crumbs { flex:0 1 auto !important; display:flex; align-items:center; gap:6px; min-width:0; overflow:hidden; font:12px/1 var(--font-mono); color:var(--dim); white-space:nowrap; }
 .crumbs .sep { color:var(--dim-2); }
 .crumbs .crumb { overflow:hidden; text-overflow:ellipsis; color:var(--fg-2); text-decoration:none; }
-.crumbs a.crumb:hover { color:var(--fg); text-decoration:underline; }
+@media (hover:hover) { .crumbs a.crumb:hover { color:var(--fg); text-decoration:underline; } }
 .pills { display:flex; align-items:center; gap:6px; }
 .pill { --fillc:rgba(50,164,103,.20); --pct:0; display:inline-flex; align-items:center; gap:6px; height:24px; padding:0 9px; border:1px solid var(--line); border-radius:12px;
         font:600 11px/1 var(--font-mono); color:var(--fg-2); white-space:nowrap; text-decoration:none; font-variant-numeric:tabular-nums;
@@ -57,7 +59,7 @@ a.brand:hover { color:var(--fg); text-decoration:none; }
 .pill.bad { --fillc:rgba(231,106,110,.30); border-color:var(--bad); color:var(--bad); }
 .pill.warn .pl, .pill.bad .pl, .pill.warn .pr, .pill.bad .pr { color:inherit; }
 .pill.link { background:none; }
-.pill.link:hover { color:var(--fg); text-decoration:none; border-color:var(--dim-2); }
+@media (hover:hover) { .pill.link:hover { color:var(--fg); text-decoration:none; border-color:var(--dim-2); } }
 .pill.link.attn { border-color:var(--warn); color:var(--warn); background:var(--warn-bg); }
 .pill.link .glyph { width:auto; }
 @media (pointer:coarse) { .pill { height:30px; } .pill.link { min-height:var(--tap); } }
@@ -66,7 +68,7 @@ html.force-coarse .pill.link { min-height:var(--tap); }
 .agent-dots { display:flex; align-items:center; }
 .ad { display:inline-flex; align-items:center; justify-content:center; min-width:28px; min-height:var(--tap); font-family:var(--font-glyph); font-size:14px; color:var(--dim-2); text-decoration:none; }
 .ad.ok { color:var(--ok); } .ad.warn { color:var(--warn); } .ad.bad { color:var(--bad); }
-.ad:hover { text-decoration:none; filter:brightness(1.25); }
+@media (hover:hover) { .ad:hover { text-decoration:none; filter:brightness(1.25); } }
 #hdr-search { width:200px; }
 #topbar .search-btn { display:none; }
 
@@ -86,7 +88,7 @@ body[data-sb="none"] #sidebar { display:none; }
 .sb-inner { display:flex; flex-direction:column; min-height:100%; padding:6px 0 10px; }
 .sb-nav { display:flex; flex-direction:column; }
 .nav-item { position:relative; display:flex; align-items:center; gap:10px; min-height:var(--row-h); padding:0 14px; color:var(--fg-2); text-decoration:none; border-left:2px solid transparent; }
-.nav-item:hover { background:var(--bg); color:var(--fg); text-decoration:none; }
+@media (hover:hover) { .nav-item:hover { background:var(--bg); color:var(--fg); text-decoration:none; } }
 .nav-item[aria-current=page] { background:var(--card); color:var(--fg); border-left-color:var(--sig); }
 .nav-item .lbl { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .cnt { font:600 11px/1 var(--font-mono); color:var(--dim); }
@@ -101,7 +103,7 @@ body[data-sb="none"] #sidebar { display:none; }
 .tn { display:flex; flex-direction:column; }
 .tn-kids { display:flex; flex-direction:column; }
 .tn-row { position:relative; display:flex; align-items:center; gap:8px; min-height:var(--row-h); padding:0 10px 0 14px; color:var(--fg-2); text-decoration:none; cursor:pointer; border-left:2px solid transparent; outline-offset:-2px; }
-.tn-row:hover { background:var(--bg); color:var(--fg); text-decoration:none; }
+@media (hover:hover) { .tn-row:hover { background:var(--bg); color:var(--fg); text-decoration:none; } }
 .tn-row[aria-level="2"] { padding-left:30px; }
 .tn .tn .tn-row[aria-level="2"] { padding-left:30px; }
 .tn-row.s-row.attn { border-left-color:var(--warn); }
@@ -113,7 +115,7 @@ body[data-sb="none"] #sidebar { display:none; }
 .tn-cnt:empty { display:none; }
 .tn-dot { flex:none; width:8px; height:8px; border-radius:50%; background:var(--warn); }
 .tn-go { flex:none; display:inline-flex; align-items:center; justify-content:center; min-width:24px; min-height:24px; color:var(--dim-2); border-radius:2px; }
-.tn-go:hover { color:var(--fg); background:var(--panel); text-decoration:none; }
+@media (hover:hover) { .tn-go:hover { color:var(--fg); background:var(--panel); text-decoration:none; } }
 .tn-g { display:inline-flex; flex:none; align-items:center; gap:1px; color:var(--dim); }
 .tn.older > .tn-row { color:var(--dim); }
 .tn-row:focus-visible, .nav-item:focus-visible { outline:2px solid var(--sig); }
@@ -144,7 +146,7 @@ body[data-shell=compact] #bnav { display:flex; }
 body[data-page=quad] #bnav { display:none !important; }
 #bnav .bn { flex:1 1 0; min-width:0; min-height:var(--bnav-h); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; padding:4px 2px;
             color:var(--dim); font-size:11px; line-height:1.1; text-decoration:none; border-radius:0; background:none; box-shadow:none; }
-#bnav .bn:hover { color:var(--fg); background:none; text-decoration:none; }
+@media (hover:hover) { #bnav .bn:hover { color:var(--fg); background:none; text-decoration:none; } }
 #bnav .bn[aria-current=page] { color:var(--sig); }
 #bnav .bn.attn { color:var(--warn); }
 #bnav .bn .bp5-button-text, #bnav .bn .lbl { margin:0; }
@@ -188,7 +190,8 @@ body[data-shell=compact] #toasts { bottom:calc(var(--sab) + var(--bnav-h) + 14px
 /* ---------- popover menu (components.js menu()): a Blueprint menu, fixed under its button ---------- */
 .bp5-dark .menu-pop, .menu-pop { position:fixed; z-index:50; min-width:200px; max-width:calc(100vw - 16px); padding:4px; background:var(--panel); border:1px solid var(--line); border-radius:2px; box-shadow:0 8px 24px rgba(0,0,0,.5); }
 .menu-pop .menuitem { min-height:var(--tap); align-items:center; gap:10px; padding:4px 10px; color:var(--fg); cursor:pointer; }
-.menu-pop .menuitem:hover, .menu-pop .menuitem:focus { background:var(--card); outline:none; }
+.menu-pop .menuitem:focus { background:var(--card); outline:none; }
+@media (hover:hover) { .menu-pop .menuitem:hover { background:var(--card); } }
 .menu-pop .menuitem:focus-visible { outline:2px solid var(--sig); outline-offset:-2px; }
 .menu-pop .mi-text { flex:1 1 auto; min-width:0; }
 
@@ -196,21 +199,78 @@ body[data-shell=compact] #toasts { bottom:calc(var(--sab) + var(--bnav-h) + 14px
 .tabs { margin:4px 0 8px; }
 .tablist { display:flex; flex-wrap:wrap; gap:0 18px; border-bottom:1px solid var(--line); }
 .bp5-dark .tab { display:inline-flex; align-items:center; gap:6px; min-height:var(--tap); padding:0 2px; font-size:13px; line-height:1.2; color:var(--dim); box-shadow:none; user-select:none; }
-.bp5-dark .tab:not([aria-disabled=true]):hover { color:var(--fg); }
-.bp5-dark .tab[aria-selected=true], .bp5-dark .tab[aria-selected=true]:not([aria-disabled=true]):hover { color:var(--fg); box-shadow:inset 0 -2px 0 var(--sig); }
+@media (hover:hover) { .bp5-dark .tab:not([aria-disabled=true]):hover { color:var(--fg); } }
+/* the selected tab keeps its colour even while Blueprint's own :hover rule (0,4,0) is stuck on it after a tap on a touch screen */
+.bp5-dark .tab[aria-selected=true], .bp5-dark .tab[aria-selected=true]:not([aria-disabled=true]) { color:var(--fg); box-shadow:inset 0 -2px 0 var(--sig); }
 .tab:focus-visible { outline:2px solid var(--sig); outline-offset:-2px; }
 .tab-count { font:600 11px/1 var(--font-mono); color:var(--dim); padding:2px 5px; border-radius:8px; background:var(--card); }
 
 /* Blueprint colours every link in .bp5-dark (0,1,1); the shell's own anchors restate their colours at (0,2,1) */
 .bp5-dark a.nav-item, .bp5-dark a.tn-row { color:var(--fg-2); }
-.bp5-dark a.nav-item:hover, .bp5-dark a.tn-row:hover, .bp5-dark a.nav-item[aria-current=page] { color:var(--fg); text-decoration:none; }
+.bp5-dark a.nav-item[aria-current=page] { color:var(--fg); text-decoration:none; }
+@media (hover:hover) { .bp5-dark a.nav-item:hover, .bp5-dark a.tn-row:hover { color:var(--fg); text-decoration:none; } }
 .bp5-dark a.tn-go { color:var(--dim-2); }
-.bp5-dark a.tn-go:hover { color:var(--fg); }
+@media (hover:hover) { .bp5-dark a.tn-go:hover { color:var(--fg); } }
 .bp5-dark a.pill.link:not(.attn) { color:var(--fg-2); }
 .bp5-dark a.bn { color:var(--dim); }
-.bp5-dark a.bn:hover { color:var(--fg); }
+@media (hover:hover) { .bp5-dark a.bn:hover { color:var(--fg); } }
 .bp5-dark a.bn[aria-current=page] { color:var(--sig); }
 .bp5-dark a.bn.attn { color:var(--warn); }
 .bp5-dark a.ad { color:var(--dim-2); }
 .bp5-dark a.ad.ok { color:var(--ok); } .bp5-dark a.ad.warn { color:var(--warn); } .bp5-dark a.ad.bad { color:var(--bad); }
 .bp5-dark a.crumb { color:var(--fg-2); }
+.bp5-dark a.brand { color:var(--fg); }
+.bp5-dark a.skip { color:#0b0e11; }
+
+/* ---------- focus: rings for keyboard focus only (Blueprint draws one on every :focus, mouse clicks included) ---------- */
+.bp5-dark :focus:not(:focus-visible) { outline:none; }
+.bp5-dark :is(a, button, summary, [role=tab], [role=treeitem], [role=separator], [tabindex]):focus-visible { outline:2px solid var(--sig); outline-offset:2px; }
+.bp5-dark .tn-row:focus-visible, .bp5-dark .nav-item:focus-visible, .bp5-dark .tab:focus-visible { outline-offset:-2px; }
+
+/* ---------- resizable sidebar (shell.js Shell.buildResizer): a 6 px strip over the sidebar's right edge, 200-400 px, persisted as ccboard:sb:w ---------- */
+.sb-resize { display:none; grid-area:side; justify-self:end; align-self:stretch; position:relative; z-index:15; width:6px; margin-right:-3px; touch-action:none; cursor:col-resize; }
+.sb-resize::after { content:""; position:absolute; top:0; bottom:0; left:2px; width:2px; background:transparent; }
+@media (any-pointer:fine) { body[data-sb="full"] .sb-resize { display:block; } }
+@media (hover:hover) { .sb-resize:hover::after { background:var(--line); } }
+.sb-resize:focus-visible::after, #app.sb-dragging .sb-resize::after { background:var(--sig); }
+.sb-resize:focus-visible { outline:none; }
+#app.sb-dragging { cursor:col-resize; user-select:none; -webkit-user-select:none; }
+#app.sb-dragging iframe { pointer-events:none; }
+
+/* ---------- iPad and touch: no long-press callout over cards and rows (the sheet and the menus are the long-press actions) ---------- */
+.card, .bp5-card, .tile, .rrow, .tn-row, .nav-item, .bn, .pill { -webkit-touch-callout:none; }
+
+/* ---------- installed app (html.pwa is set at boot from display-mode: standalone or navigator.standalone) ---------- */
+html.pwa body { overscroll-behavior:none; }                  /* no rubber band or pull-to-refresh over the frame of an installed app */
+html.pwa #topbar, html.pwa #sidebar, html.pwa #bnav { -webkit-user-select:none; user-select:none; }
+html.pwa #topbar input { -webkit-user-select:text; user-select:text; }
+
+/* Window Controls Overlay (desktop Chrome / Edge, display_override in the manifest): the topbar is the title bar. titlebar-area-x is the left inset
+   (the traffic lights on macOS, 0 elsewhere), -width what is left of the window next to the controls. Outside the overlay the env() fallbacks (0 and
+   100 %) make the padding the plain 8 px / safe-area padding above, so html.pwa alone (a test page, a standalone window) changes nothing.
+   The same rules sit under the display-mode media query too, so the overlay never depends on the class having been set. */
+html.pwa #topbar { padding-left:calc(env(titlebar-area-x, 0px) + max(8px, var(--sal)));
+                   padding-right:calc(100% - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100%) + max(8px, var(--sar)));
+                   min-height:max(calc(var(--topbar-h) + var(--sat)), env(titlebar-area-height, 0px));
+                   -webkit-app-region:drag; app-region:drag; }
+/* a drag region swallows clicks: every control, the menus popped from a topbar button and the search dropdown opt out */
+html.pwa #topbar :is(a, button, input, select, textarea, summary, label, [tabindex], [role=menu], .menu-pop) { -webkit-app-region:no-drag; app-region:no-drag; }
+@media (display-mode: window-controls-overlay) {
+  #topbar { padding-left:calc(env(titlebar-area-x, 0px) + max(8px, var(--sal)));
+            padding-right:calc(100% - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100%) + max(8px, var(--sar)));
+            min-height:max(calc(var(--topbar-h) + var(--sat)), env(titlebar-area-height, 0px));
+            -webkit-app-region:drag; app-region:drag; }
+  #topbar :is(a, button, input, select, textarea, summary, label, [tabindex], [role=menu], .menu-pop) { -webkit-app-region:no-drag; app-region:no-drag; }
+}
+
+/* ---- touch: no sticky hover. Blueprint's vendored :hover rules (served immutable, never edited in place) would keep a tapped
+   button, menu item or card in its lighter hover fill until the next tap on a touch screen; under (hover:none) the resting
+   values win again. :not(:active) leaves the pressed state alone. The app's own hover rules are guarded with (hover:hover). */
+@media (hover:none) {
+  .bp5-dark .bp5-button:not([class*=bp5-intent-]):hover:not(:active) { background-color:#2f343c; box-shadow:inset 0 0 0 1px rgba(255,255,255,.1), 0 1px 2px rgba(17,20,24,.2); }
+  .bp5-dark .bp5-button.bp5-minimal:hover:not(:active) { background:none; box-shadow:none; }
+  .bp5-button.bp5-intent-primary:hover:not(:active) { background-color:#2d72d2; box-shadow:inset 0 0 0 1px rgba(17,20,24,.2), 0 1px 2px rgba(17,20,24,.1); }
+  .bp5-button.bp5-intent-danger:hover:not(:active) { background-color:#cd4246; box-shadow:inset 0 0 0 1px rgba(17,20,24,.2), 0 1px 2px rgba(17,20,24,.1); }
+  .bp5-menu-item:hover:not(:active), .bp5-dark .bp5-menu-item:hover:not(:active) { background-color:transparent; }
+  .bp5-dark .bp5-card.bp5-interactive:hover { box-shadow:none; }
+}

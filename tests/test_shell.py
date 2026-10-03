@@ -49,8 +49,10 @@ def test_shell_covers_every_static_file(lite_client):
     for path in shell[1:]:
         assert path.startswith("/static/") and (root / path[len("/static/"):]).is_file(), path
     expected = {"/static/" + p.relative_to(root).as_posix() for p in root.rglob("*")
-                if p.is_file() and p.suffix in SHELL_EXTS and p.name != "sw.js" and "__pycache__" not in p.parts and "demo" not in p.relative_to(root).parts}
+                if p.is_file() and p.suffix in SHELL_EXTS and p.name != "sw.js" and "__pycache__" not in p.parts
+                and "demo" not in p.relative_to(root).parts and "screenshots" not in p.relative_to(root).parts}
     assert set(shell[1:]) == expected and expected
+    assert not any("/screenshots/" in p for p in shell), "manifest screenshots are not part of the offline shell"
     assert "/static/sw.js" not in shell and not any(p.endswith(".html") for p in shell)
     assert not any("/demo/" in p for p in shell)
     for must in ("/static/style.css", "/static/manifest.webmanifest", "/static/icon-192.png", "/static/vendor/blueprint/blueprint.css"):
@@ -141,11 +143,14 @@ def _scripts(html_name):
 def test_script_order_core_first_main_last():
     """Classic scripts share one global scope: core.js must define el()/api() before anything uses them and
     main.js (the only caller of startStatePolling) must come last. term.html loads only the terminal set."""
+    from tests.test_static import SCRIPT_ORDER
     idx = _scripts("index.html")
     assert idx[0] == "/static/core.js" and idx[-1] == "/static/main.js", idx
-    assert idx[:2] == ["/static/core.js", "/static/components.js"], idx
+    assert idx[:3] == ["/static/core.js", "/static/components.js", "/static/keymap.js"], idx
     assert idx.index("/static/router.js") < idx.index("/static/pages/home.js") < idx.index("/static/main.js"), idx
+    assert idx.index("/static/palette.js") < idx.index("/static/shell.js"), idx
     assert len(idx) == len(set(idx)), f"duplicate script tag: {idx}"
+    assert idx == SCRIPT_ORDER, "index.html script order differs from the contract:\n  got      " + "\n  ".join(map(str, idx)) + "\n  expected " + "\n  ".join(SCRIPT_ORDER)
     term = _scripts("term.html")
     allowed = ["/static/core.js", "/static/components.js", "/static/termkit.js", "/static/term.js"]
     assert term[0] == "/static/core.js" and term[-1] == "/static/term.js" and all(t in allowed for t in term) and len(term) == len(set(term)), term
@@ -195,6 +200,109 @@ def test_manifest_is_the_dark_installable_app():
     assert all(s.get("name") for s in shortcuts)
     sizes = {i["sizes"] for i in manifest["icons"]}
     assert {"192x192", "512x512"} <= sizes
+
+
+def _manifest():
+    return json.loads((STATIC_ROOT / "manifest.webmanifest").read_text())
+
+
+def _static_file(url):
+    assert url.startswith("/static/"), f"{url}: manifest URLs point at /static/"
+    path = STATIC_ROOT / url[len("/static/"):]
+    assert path.is_file(), f"{url} is in the manifest but app/static/{url[len('/static/'):]} does not exist"
+    return path
+
+
+def test_manifest_is_installable_on_ipad_and_laptop():
+    """v0.5.3b: title-bar overlay on desktop Chrome/Edge, one window per app, categories, a share target, no store listing."""
+    m = _manifest()
+    assert m["display"] == "standalone" and m["id"] == "/" and m["start_url"] == "/" and m["scope"] == "/"
+    assert m["display_override"] == ["window-controls-overlay", "standalone"]
+    assert m["launch_handler"]["client_mode"] == "focus-existing"
+    assert m["prefer_related_applications"] is False
+    assert isinstance(m["description"], str) and len(m["description"]) >= 20
+    assert isinstance(m["categories"], list) and m["categories"] and all(isinstance(c, str) and c == c.lower() for c in m["categories"])
+    assert "short_name" in m and m["name"] == "ccboard"
+
+
+def test_manifest_share_target_is_a_plain_get_on_the_root():
+    """A GET share target cannot add fixed params, so the page detects a share by the title/text/url params themselves."""
+    share = _manifest()["share_target"]
+    assert share["action"] == "/" and share["method"] == "GET"
+    assert share["params"] == {"title": "title", "text": "text", "url": "url"}
+    assert "enctype" not in share or share["enctype"] == "application/x-www-form-urlencoded"
+    assert "?" not in share["action"], "share_target cannot add fixed params: detect a share by the title/text/url params"
+    assert share["action"].startswith(_manifest()["scope"])
+
+
+def test_manifest_icons_exist_with_their_declared_sizes_and_a_512_maskable():
+    from tests.test_static import PNG_COLOR_TYPES_WITH_ALPHA, png_header
+    icons = _manifest()["icons"]
+    for icon in icons:
+        assert icon["type"] == "image/png"
+        w, h = (int(n) for n in icon["sizes"].split("x"))
+        assert png_header(_static_file(icon["src"]))[:2] == (w, h), f"{icon['src']} is not {icon['sizes']}"
+    assert {"192x192", "512x512"} <= {i["sizes"] for i in icons}
+    assert any(i["sizes"] == "512x512" and i.get("purpose", "any") == "any" for i in icons), "a plain 'any' 512 icon is still needed"
+    maskable = [i for i in icons if "maskable" in i.get("purpose", "")]
+    assert maskable, "manifest needs an icon with purpose maskable"
+    for icon in maskable:
+        assert icon["purpose"] == "maskable", "keep maskable and any as separate entries (a combined 'any maskable' icon is cropped on Android)"
+        assert icon["sizes"] == "512x512"
+        width, height, _, color_type = png_header(_static_file(icon["src"]))
+        assert (width, height) == (512, 512)
+        assert color_type not in PNG_COLOR_TYPES_WITH_ALPHA, f"{icon['src']} has an alpha channel: a maskable icon is full-bleed and opaque"
+    assert _static_file("/static/icon-512-maskable.png") in [_static_file(i["src"]) for i in maskable]
+
+
+def test_manifest_screenshots_exist_with_their_declared_sizes():
+    """Chrome's rich install dialog: >= 1 narrow and >= 1 wide shot, each 320..3840 px with a long side of at most 2.3 x the short one."""
+    from tests.test_static import png_header
+    shots = _manifest()["screenshots"]
+    assert len(shots) >= 2
+    forms = {s["form_factor"] for s in shots}
+    assert forms == {"narrow", "wide"}, forms
+    for shot in shots:
+        assert shot["type"] == "image/png" and shot.get("label")
+        assert shot["src"].startswith("/static/screenshots/"), shot["src"]
+        w, h = (int(n) for n in shot["sizes"].split("x"))
+        actual = png_header(_static_file(shot["src"]))[:2]
+        assert actual == (w, h), f"{shot['src']} is {actual[0]}x{actual[1]} but the manifest says {shot['sizes']}"
+        assert 320 <= min(w, h) and max(w, h) <= 3840 and max(w, h) <= 2.3 * min(w, h), shot["sizes"]
+        assert (h > w) if shot["form_factor"] == "narrow" else (w > h), f"{shot['src']} is {shot['sizes']} for a {shot['form_factor']} shot"
+    names = {s["src"].rsplit("/", 1)[1] for s in shots}
+    assert {"agents-390.png", "agents-1280.png"} <= names
+
+
+def test_maskable_icon_in_the_shell_and_screenshots_left_out_on_purpose(lite_client):
+    from app import main
+    served = shell_in(lite_client.get("/sw.js", headers=H).text)
+    assert "/static/icon-512-maskable.png" in main.shell_paths() and "/static/icon-512-maskable.png" in served
+    for s in _manifest()["screenshots"]:              # store metadata: read from the manifest, never through the worker
+        assert s["src"] not in main.shell_paths() and s["src"] not in served, f"{s['src']} would cost every install ~100 KB for nothing"
+        assert lite_client.get(s["src"], headers=H).status_code == 200
+    assert any(p.relative_to(main.STATIC_DIR).as_posix().startswith("screenshots/") for p in main.static_files()), \
+        "screenshots still count towards the asset version"
+
+
+def test_sw_precaches_past_the_http_cache_and_serves_vendor_cache_first(lite_client):
+    """/static/vendor/** and *.woff2 are served immutable for a year under unversioned URLs: only this versioned shell cache
+    may decide when they change, so the worker must never read them through the browser's HTTP cache."""
+    sw = lite_client.get("/sw.js", headers=H).text
+    assert "cache: 'reload'" in sw
+    assert "path.startsWith('/static/vendor/')" in sw and "cacheFirst(req)" in sw
+    assert "fetch(new Request(req.url, { cache: 'reload' }))" in sw
+
+
+def test_cache_policy_vendor_and_fonts_immutable_the_app_no_cache(lite_client):
+    """The full matrix is tests/test_headers.py; this keeps the contract next to the shell it protects."""
+    immutable = "public, max-age=31536000, immutable"
+    for url in ("/static/vendor/blueprint/blueprint.css", FONT_PATHS[0], FONT_PATHS[1]):
+        r = lite_client.get(url, headers=H)
+        assert r.status_code == 200 and r.headers["cache-control"] == immutable, url
+    for url in ("/static/core.js", "/static/shell.css", "/static/manifest.webmanifest", "/"):
+        r = lite_client.get(url, headers=H)
+        assert r.status_code == 200 and r.headers["cache-control"] == "no-cache", url
 
 
 # ---------- v0.5.3: the route table, the page registry, the boot sequence ----------

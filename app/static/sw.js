@@ -1,4 +1,4 @@
-/* ccboard service worker: offline shell (network-first) + Web Push. API and terminal are never cached.
+/* ccboard service worker: offline shell (network-first; vendor and fonts cache-first) + Web Push. API and terminal are never cached.
    This file is a template: /sw.js (app/main.py render_sw) fills in the build id and the list of static files,
    both generated from one glob over app/static, so no file can be forgotten. */
 'use strict';
@@ -7,7 +7,9 @@ const SHELL = JSON.parse('__SHELL_JSON__');
 
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
-    try { const c = await caches.open(CACHE); await c.addAll(SHELL); } catch (_) { /* offline or 403 at install: keep going */ }
+    // cache: 'reload' skips the browser's HTTP cache: /static/vendor/** and fonts are served with a one-year immutable
+    // Cache-Control, and only this versioned shell cache (its name carries the build id) decides when they change.
+    try { const c = await caches.open(CACHE); await c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' }))); } catch (_) { /* offline or 403 at install: keep going */ }
     await self.skipWaiting();
   })());
 });
@@ -37,13 +39,14 @@ async function networkFirst(req, key) {
   }
 }
 
-// Cache first: fonts never change under the same name, so a hit never touches the network.
+// Cache first: vendor files and fonts are immutable under one build id, so a hit never touches the network; a miss (install
+// failed offline) refetches past the HTTP cache so a stale immutable copy from an older build can never come back.
 async function cacheFirst(req) {
   const c = await caches.open(CACHE);
   const hit = await c.match(req);
   if (hit) return hit;
   try {
-    const res = await fetch(req);
+    const res = await fetch(new Request(req.url, { cache: 'reload' }));
     if (res.ok) remember(req, res.clone());
     return res;
   } catch (_) {
@@ -62,7 +65,7 @@ self.addEventListener('fetch', (event) => {
     if (path === '/') event.respondWith(networkFirst(req, '/'));   // /term/... and every other document: network only
     return;
   }
-  if (path.startsWith('/static/vendor/fonts/')) event.respondWith(cacheFirst(req));
+  if (path.startsWith('/static/vendor/') || path.endsWith('.woff2')) event.respondWith(cacheFirst(req));   // immutable (see main.py cache headers)
   else if (path.startsWith('/static/')) event.respondWith(networkFirst(req, req));
 });
 

@@ -1,11 +1,12 @@
-/* ccboard settings page (#/settings[?sec=notify|nodes|box|agents]): the Notify panel (Web Push, ntfy, backup), the Nodes strip, the
-   box health and the agents (Claude login). The section is picked with ?sec= and tabs(); each panel is rebuilt only when the
+/* ccboard settings page (#/settings[?sec=notify|nodes|box|agents|app]): the Notify panel (Web Push, ntfy, backup), the Nodes strip, the
+   box health, the agents (Claude login) and the App panel (installed or browser, Install, Safari steps, build id, Reload app, shortcuts).
+   The section is picked with ?sec= and tabs(); each panel is rebuilt only when the
    state it shows changed, so a poll never recreates a button under a finger. renderNotifyPanel() and renderNodes() stay global:
    core.js (enablePush / disablePush) calls the first one. The login modal itself lives in pages/home.js (startLogin / openModal). */
 'use strict';
 
 const SETTINGS_SECTIONS = [
-  { id: 'notify', label: 'Notifications' }, { id: 'nodes', label: 'Nodes' }, { id: 'box', label: 'Box' }, { id: 'agents', label: 'Agents' },
+  { id: 'notify', label: 'Notifications' }, { id: 'nodes', label: 'Nodes' }, { id: 'box', label: 'Box' }, { id: 'agents', label: 'Agents' }, { id: 'app', label: 'App' },
 ];
 const settingsPage = { refs: null, active: 'notify' };
 
@@ -111,7 +112,64 @@ function settingsAgents(p) {
   if (codex) p.append(settingsKv('Codex', el('span', { class: codex.installed ? 'v' : 'v dim', text: codex.installed ? 'installed' : 'not installed' })));
 }
 
-const SETTINGS_BUILD = { notify: settingsNotify, nodes: settingsNodes, box: settingsBox, agents: settingsAgents };
+/* How this window runs: an installed app (standalone, with the title-bar overlay on desktop Chrome / Edge) or a browser tab. */
+function settingsAppMode() {
+  const mq = (q) => !!(window.matchMedia && window.matchMedia(q).matches);
+  if (mq('(display-mode: window-controls-overlay)')) return { id: 'standalone', note: 'installed app, the topbar is the title bar' };
+  if (typeof isStandalone === 'function' && isStandalone()) return { id: 'standalone', note: 'installed app' };
+  return { id: 'browser', note: 'running in a browser tab' };
+}
+
+function settingsInstallPrompt() { return typeof Shell !== 'undefined' && Shell.installPrompt ? Shell.installPrompt : null; }
+
+/* The shortcut list is the keyboard layer's help dialog (keymap.js Keymap.openHelp(), drawn by palette.js Palette.openHelp()); the button shows only when one of them exists. */
+function settingsHelpAvailable() {
+  return (typeof Keymap !== 'undefined' && typeof Keymap.openHelp === 'function') || (typeof Palette !== 'undefined' && typeof Palette.openHelp === 'function');
+}
+
+function settingsOpenShortcuts() {
+  if (typeof Keymap !== 'undefined' && typeof Keymap.openHelp === 'function' && Keymap.openHelp()) return;
+  if (typeof Palette !== 'undefined' && typeof Palette.openHelp === 'function') Palette.openHelp();
+}
+
+function settingsApp(p) {
+  p.textContent = '';
+  const mode = settingsAppMode();
+  p.append(settingsKv('Mode', el('span', { class: 'v', text: mode.id }), el('span', { class: 'dim', text: mode.note })));
+
+  const installRow = settingsKv('Install');
+  const prompt = settingsInstallPrompt();
+  if (mode.id === 'standalone') installRow.append(el('span', { class: 'v', text: 'installed' }), el('span', { class: 'dim', text: 'open it from the Dock, Launchpad or the Home Screen' }));
+  else if (prompt) installRow.append(el('button', { class: 'primary', type: 'button', onclick: async () => {
+    const outcome = await Shell.promptInstall();
+    if (outcome === 'accepted') pageToast('Installing ccboard…', 'ok');
+  }, text: 'Install ccboard' }), el('span', { class: 'dim', text: 'its own window, a Dock or taskbar icon and the shortcuts below' }));
+  else installRow.append(el('span', { class: 'dim', text: 'This browser offers no install button right now: use the steps below (Safari never has one; Chrome and Edge show it once the page has been used).' }));
+  p.append(installRow);
+
+  p.append(el('details', { class: 'dim', open: mode.id !== 'standalone' }, el('summary', { text: 'Install steps by browser' }),
+    el('ul', {},
+      el('li', {}, el('b', { text: 'Safari on a Mac' }), ': File › Add to Dock. The board then opens in its own window.'),
+      el('li', {}, el('b', { text: 'Safari on iPad / iPhone' }), ': Share › Add to Home Screen. Web Push on iOS and iPadOS only works from the Home Screen icon (16.4 and later).'),
+      el('li', {}, el('b', { text: 'Chrome or Edge on a laptop' }), ': the install icon at the right of the address bar, or the menu › Install ccboard (Edge: … › Apps › Install this site as an app). The topbar then doubles as the title bar.'),
+      el('li', {}, el('b', { text: 'Chrome on Android' }), ': menu › Install app.'))));
+
+  const swReady = !!(typeof navigator !== 'undefined' && navigator.serviceWorker && navigator.serviceWorker.controller);
+  p.append(settingsKv('Version', el('span', { class: 'v', text: (state && state.version) || '-' }),
+    el('span', { class: 'dim', text: 'build id; the board reloads itself when the box is updated' })));
+  p.append(settingsKv('Offline shell', el('span', { class: swReady ? 'v' : 'v dim', text: swReady ? 'cached on this device' : 'not active yet (reload once)' })));
+  p.append(settingsKv('Reload', el('button', { type: 'button', onclick: () => location.reload(), text: 'Reload app' }),
+    el('span', { class: 'dim', text: 'an installed app has no browser reload button' })));
+  if (settingsHelpAvailable()) {
+    p.append(settingsKv('Shortcuts', el('button', { type: 'button', onclick: settingsOpenShortcuts, text: 'Keyboard shortcuts' }),
+      el('span', { class: 'dim', text: 'press ? on any page' })));
+  }
+}
+
+/* core.js / shell.js call renderAppPanel() when the browser hands over (or withdraws) the install prompt: rebuild the panel if the page is open. */
+function renderAppPanel() { settingsFill('app', true); }
+
+const SETTINGS_BUILD = { notify: settingsNotify, nodes: settingsNodes, box: settingsBox, agents: settingsAgents, app: settingsApp };
 
 /* What a panel shows, as a string: the panel is rebuilt only when it changes. */
 function settingsSig(id, st) {
@@ -119,6 +177,7 @@ function settingsSig(id, st) {
   if (id === 'notify') return JSON.stringify([st.config && st.config.ntfy, st.config && st.config.backup, st.backup, minute]);
   if (id === 'nodes') return JSON.stringify(st.nodes);
   if (id === 'box') return JSON.stringify([st.health, st.backup, st.node_name, st.user, minute]);
+  if (id === 'app') return JSON.stringify([st.version, settingsAppMode().note, !!settingsInstallPrompt(), settingsHelpAvailable()]);
   return JSON.stringify([st.claude, st.agents, st.login && st.login.running, ui.modal]);
 }
 

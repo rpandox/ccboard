@@ -129,11 +129,14 @@ def asset_version() -> str:
 
 
 def shell_paths() -> list[str]:
-    """URLs the service worker precaches: the board page plus every static script, style, font, manifest and icon."""
+    """URLs the service worker precaches: the board page plus every static script, style, font, manifest and icon.
+    screenshots/ (the manifest's store previews) stays out: the browser reads them from the manifest, never through the
+    worker, so precaching them would cost every install about 230 KB for no offline benefit (they still count towards the
+    asset version through static_files())."""
     paths = []
     for p in static_files():
         rel = p.relative_to(STATIC_DIR).as_posix()
-        if p.suffix not in SHELL_EXTS or rel == "sw.js":
+        if p.suffix not in SHELL_EXTS or rel == "sw.js" or rel.startswith("screenshots/"):
             continue
         if not SHELL_PATH_RE.match(rel):
             log.warning("static file %r has characters the service worker shell cannot carry; not precached", rel)
@@ -151,6 +154,21 @@ def render_sw(version: str | None = None) -> bytes:
 
 ASSET_VERSION = asset_version()
 SW_JS = render_sw(ASSET_VERSION)
+
+IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
+
+
+def is_immutable_static(path: str) -> bool:
+    """True for URLs whose bytes never change under their name: /static/vendor/** and any /static/**/*.woff2.
+
+    Their bytes are hashed into the asset version and the service worker cache name. The browser's HTTP cache is keyed by URL
+    alone, though: a vendored file that changes must also change its file name (blueprint.css -> blueprint-5.x.css), or open
+    browsers keep the old bytes for a year. Dot segments are refused because StaticFiles resolves them after the URL is
+    decoded ('/static/vendor/%2e%2e/core.js' would serve core.js); HTML and JS of the app stay no-cache.
+    """
+    if not path.startswith("/static/") or ".." in path.split("/") or "//" in path:
+        return False
+    return path.startswith("/static/vendor/") or path.endswith(".woff2")
 
 
 @app.middleware("http")
@@ -184,8 +202,12 @@ async def auth_middleware(request: Request, call_next):
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "same-origin"
     if request.url.path == "/" or request.url.path.startswith("/static/"):
-        # Always revalidate the shell and its assets (ETag), so an update never mixes old HTML with new JS.
-        resp.headers["Cache-Control"] = "no-cache"
+        # Always revalidate the shell and its assets (ETag), so an update never mixes old HTML with new JS. Only vendored
+        # files and fonts are immutable, and only when they were found: a 404 must not be cached for a year.
+        if is_immutable_static(request.url.path) and resp.status_code in (200, 206, 304):
+            resp.headers["Cache-Control"] = IMMUTABLE_CACHE
+        else:
+            resp.headers["Cache-Control"] = "no-cache"
     return resp
 
 

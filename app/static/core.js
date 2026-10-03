@@ -13,13 +13,14 @@ const INTENT = { primary: 'bp5-intent-primary', danger: 'bp5-intent-danger', ok:
 /* Structural Blueprint widgets (pure CSS): the semantic class maps to its bp5-* class and nothing else is added, whatever the tag.
    callout and progress also take the intent classes (ok, warn, bad, primary, danger). Used by tabs(), menu(), emptyState() in components.js. */
 const SEMANTIC = { tabs: 'bp5-tabs', tablist: 'bp5-tab-list', tab: 'bp5-tab', tabpanel: 'bp5-tab-panel', menu: 'bp5-menu', menuitem: 'bp5-menu-item',
-                   callout: 'bp5-callout', nonideal: 'bp5-non-ideal-state', progress: 'bp5-progress-bar', meter: 'bp5-progress-meter', navbar: 'bp5-navbar' };
+                   callout: 'bp5-callout', nonideal: 'bp5-non-ideal-state', progress: 'bp5-progress-bar', meter: 'bp5-progress-meter', navbar: 'bp5-navbar',
+                   skeleton: 'bp5-skeleton', table: 'bp5-html-table bp5-compact' };
 function blueprint(n, tag, cls) {
   const list = cls ? cls.split(/\s+/) : [];
   const has = (c) => list.includes(c);
   const sem = list.filter((c) => ownKey(SEMANTIC, c));
   if (sem.length) {
-    for (const c of sem) n.classList.add(SEMANTIC[c]);
+    for (const c of sem) n.classList.add(...SEMANTIC[c].split(/\s+/));   // a value may name several classes (table): classList.add rejects a token with a space
     if (has('callout') || has('progress')) for (const c of list) if (ownKey(INTENT, c)) n.classList.add(INTENT[c]);
     return;
   }

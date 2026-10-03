@@ -15,6 +15,11 @@ const Shell = {
   crumbSig: '',
   formWatch: null,          // called at the end of render(): lets a launcher form inside the sheet close it once it succeeded
   mq: null,
+  installPrompt: null,      // the deferred beforeinstallprompt event (Chromium), kept for Settings > App; null once used, after appinstalled, or where there is none
+  sbW: 260,                 // expanded/large: the width of the full sidebar (SB_MIN..SB_MAX), persisted as localStorage ccboard:sb:w
+  SB_MIN: 200,
+  SB_MAX: 400,
+  SB_DEFAULT: 260,
   OLDER_DAYS: 14,
   NAV: [['home', 'Home', 'home', '#/'], ['inbox', 'Needs you', 'notifications', '#/inbox'], ['agents', 'Agents', 'console', '#/agents'],
         ['tasks', 'Tasks', 'git-branch', '#/tasks'], ['usage', 'Usage', 'chart', '#/usage'], ['memory', 'Memory', 'database', '#/memory'],
@@ -35,6 +40,7 @@ Shell.setVar = function (node, name, value) { try { node.style.setProperty(name,
 
 Shell.load = function () {
   try { Shell.sbOpen = localStorage.getItem('ccboard:sb') !== '0'; } catch (_) { Shell.sbOpen = true; }
+  try { Shell.sbW = Shell.clampSbW(parseInt(localStorage.getItem('ccboard:sb:w'), 10)); } catch (_) { Shell.sbW = Shell.SB_DEFAULT; }
   try {
     const a = JSON.parse(localStorage.getItem('ccboard:sb:open') || '[]');
     Shell.open = new Set(Array.isArray(a) ? a.filter((x) => typeof x === 'string').slice(0, 300) : []);
@@ -399,7 +405,7 @@ Shell.buildSide = function (container, withFoot) {
       id === 'inbox' || id === 'agents' || id === 'tasks' ? el('span', { class: 'cnt', 'data-cnt': id }) : null));
   }
   const tree = el('div', { class: 'tree', role: 'tree', 'aria-label': 'Projects' });
-  tree._empty = el('div', { class: 'sb-empty dim', text: 'No projects yet' });
+  tree._empty = el('div', { class: 'sb-empty dim hidden', text: 'No projects yet' });   // hidden until the first state says so (never a false empty state while loading)
   const inner = el('div', { class: 'sb-inner' }, nav, el('div', { class: 'sb-h', text: 'Projects' }), tree, tree._empty);
   if (withFoot) {
     inner.append(el('div', { class: 'sb-foot' },
@@ -548,6 +554,71 @@ Shell.toggleSidebar = function () {
   if (dlg && dlg.open) dlg.close(); else Shell.openDrawer();
 };
 
+/* The terminal dock arrives with the quad view (v0.5.9); the keyboard layer already binds mod+j to this, so the binding needs no change then. */
+Shell.toggleDock = function () { /* no dock yet */ };
+
+/* ---------- resizable sidebar: a drag handle over the right edge of the expanded sidebar ---------- */
+
+Shell.clampSbW = function (n) {
+  return Number.isFinite(n) ? Math.round(Math.min(Shell.SB_MAX, Math.max(Shell.SB_MIN, n))) : Shell.SB_DEFAULT;
+};
+
+/* --sb-full lives on #app (shell.css maps --sb-w to it there), set through the CSSOM: never a style attribute. */
+Shell.setSbWidth = function (w, persist) {
+  Shell.sbW = Shell.clampSbW(w);
+  const app = $('#app');
+  if (app) Shell.setVar(app, '--sb-full', Shell.sbW + 'px');
+  const R = Shell.refs;
+  if (R && R.resizer) R.resizer.setAttribute('aria-valuenow', String(Shell.sbW));
+  if (persist) { try { localStorage.setItem('ccboard:sb:w', String(Shell.sbW)); } catch (_) { /* storage may be unavailable */ } }
+};
+
+/* Back to the default width; the persisted value is removed (not overwritten) so a later default change applies. */
+Shell.resetSbWidth = function () {
+  Shell.setSbWidth(Shell.SB_DEFAULT, false);
+  try { localStorage.removeItem('ccboard:sb:w'); } catch (_) { /* storage may be unavailable */ }
+};
+
+Shell.buildResizer = function (app) {
+  const h = el('div', { class: 'sb-resize', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Resize sidebar', tabindex: '0',
+    'aria-valuemin': String(Shell.SB_MIN), 'aria-valuemax': String(Shell.SB_MAX), 'aria-valuenow': String(Shell.sbW),
+    title: 'Drag to resize the sidebar (double-click resets)' });
+  let drag = null;
+  const end = () => {
+    if (!drag) return;
+    drag = null;
+    app.classList.remove('sb-dragging');
+    Shell.setSbWidth(Shell.sbW, true);
+  };
+  h.addEventListener('pointerdown', (e) => {
+    if (e.button) return;
+    e.preventDefault();
+    const side = $('#sidebar');
+    drag = { grab: e.clientX - (side ? side.getBoundingClientRect().right : e.clientX) };          // where on the 6 px strip it was taken
+    try { h.setPointerCapture(e.pointerId); } catch (_) { /* no pointer capture: the move events still arrive over the strip */ }
+    app.classList.add('sb-dragging');
+  });
+  h.addEventListener('pointermove', (e) => {
+    if (drag) Shell.setSbWidth(e.clientX - drag.grab - app.getBoundingClientRect().left, false);
+  });
+  for (const t of ['pointerup', 'pointercancel', 'lostpointercapture']) h.addEventListener(t, end);
+  h.addEventListener('dblclick', () => Shell.resetSbWidth());
+  h.addEventListener('keydown', (e) => {
+    const step = e.shiftKey ? 48 : 16;
+    let w = null;
+    if (e.key === 'ArrowLeft') w = Shell.sbW - step;
+    else if (e.key === 'ArrowRight') w = Shell.sbW + step;
+    else if (e.key === 'Home') w = Shell.SB_MIN;
+    else if (e.key === 'End') w = Shell.SB_MAX;
+    else if (e.key === 'Enter') { e.preventDefault(); Shell.resetSbWidth(); return; }
+    if (w === null) return;
+    e.preventDefault();
+    Shell.setSbWidth(w, true);
+  });
+  app.append(h);
+  return h;
+};
+
 /* ---------- create menu: repo picker sheet, then the existing launcher forms ---------- */
 
 Shell.createItems = function () {
@@ -624,7 +695,31 @@ Shell.newProject = function () {
 
 /* ---------- install ---------- */
 
+/* Install (Chromium): the browser's own mini-infobar is suppressed and the event kept; Settings > App has the button. Safari has no such event
+   (File > Add to Dock on macOS, Share > Add to Home Screen on iPadOS: the same panel lists the steps). */
+Shell.installChanged = function () { if (typeof renderAppPanel === 'function') renderAppPanel(); };
+
+Shell.promptInstall = async function () {
+  const ev = Shell.installPrompt;
+  if (!ev || typeof ev.prompt !== 'function') return 'unavailable';
+  Shell.installPrompt = null;                                      // an install event can be used once; the browser fires a new one when it is ready again
+  let outcome = 'dismissed';
+  try { await ev.prompt(); const c = await ev.userChoice; if (c && c.outcome) outcome = c.outcome; } catch (_) { /* refused or already used */ }
+  Shell.installChanged();
+  return outcome;
+};
+
 Shell.listen = function () {
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    Shell.installPrompt = e;
+    Shell.installChanged();
+  });
+  window.addEventListener('appinstalled', () => {
+    Shell.installPrompt = null;
+    Shell.installChanged();
+    if (typeof toast === 'function') toast('ccboard is installed', { kind: 'ok' });
+  });
   window.addEventListener('hashchange', () => { Shell.syncNav(); Shell.syncCrumbs(); Shell.syncSearchBox(); Shell.closeDrawer(); });
   document.addEventListener('keydown', (e) => {
     if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -659,6 +754,8 @@ function installShell() {
   Shell.buildSide(side, true);
   Shell.buildDrawer(drawer);
   Shell.buildBnav(bnav);
+  const app = $('#app');
+  if (app) { Shell.refs.resizer = Shell.buildResizer(app); Shell.setSbWidth(Shell.sbW, false); }
   Shell.watchMode();
   Shell.listen();
   if (typeof state !== 'undefined' && state) renderShell(state);
