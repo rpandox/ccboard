@@ -341,7 +341,7 @@ def test_throttle_delta_or_age_rl(db):
 
 def test_throttle_ctx_and_ctx_tok(db):
     assert rec(db, "ctx", "t", 20, 0) and not rec(db, "ctx", "t", 20.4, 10) and rec(db, "ctx", "t", 20.5, 10)
-    assert not rec(db, "ctx", "t", 20.5, 129) and rec(db, "ctx", "t", 20.5, 130)
+    assert not rec(db, "ctx", "t", 20.5, 909) and rec(db, "ctx", "t", 20.5, 910), "unchanged: one heartbeat every 15 min, not every 2"
 
 
 def test_throttle_scost_is_delta_only(db):
