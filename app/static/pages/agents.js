@@ -3,13 +3,22 @@
    all use it (row layout by default, opts.peek for the peek's block layout), so the glyphs, age, model and context, last
    prompt and message, Open / Ack / Kill and the nudge chips look and behave the same everywhere. The node keeps references to
    its parts and node.ccPatch(session) updates only what changed, so a poll never recreates a row that holds focus.
-   The roster groups the live sessions by project, blocked sessions first. Classic script: globals are prefixed to stay unique. */
+   The roster groups the live sessions by project, blocked sessions first. Classic script: globals are prefixed to stay unique.
+   opts.rich (Home) adds the dense row: a model chip, a context meter with a one-tap compact chip, worktree / PR / subagents / cost / limit /
+   blocked chips and a tail expander (the last 12 pane lines through Live.subscribe); the plain row (Agents, Inbox) is unchanged. */
 'use strict';
 
 const SESSION_NUDGES = ['continue', 'merge', 'push', 'pr', 'add commit push', 'do it'];   // the replies typed most often, in order
 const SESSION_RANK = { waiting: 0, errored: 1, working: 2, idle: 3, done: 3, ended: 4, unknown: 5 };
 const SESSION_NUDGE_STATES = ['waiting', 'idle', 'done', 'working', 'errored'];            // an ended pane is a shell prompt: never type into it
 const agentsTicker = { n: 0, timer: null };
+const CTX_HI = 60;                                                                          // context meter turns amber here and offers the one-tap compact chip
+const CTX_CRIT = 85;                                                                        // and red here
+const COST_WARN = 10;                                                                       // session cost chip: amber at $10 (about the p99 of a session), red at $100
+const COST_BAD = 100;
+const TAIL_LINES = 12;
+const WORKTREE_PATH_RE = /(?:^|\/)\.claude\/worktrees\//;
+const agentsTails = new Set();                                                              // row nodes that hold a Live subscription (swept when their row leaves the DOM)
 const CV_AUTO_ROWS = 30;                                                                    // a list longer than this gets the cv-auto class (content-visibility, see pages.css)
 
 /* Every live session in a state payload, each with its project, repo and whether it sits in the project folder. */
@@ -56,6 +65,45 @@ function sessionMetaText(s, st) {
 
 function sessionNudgeable(s) { return sessionAgent(s) !== 'shell' && SESSION_NUDGE_STATES.includes(s.state); }
 
+/* The active rate-limit episode of a state payload, or null. state.rate_limited is the kv record, {value: {session, message, kind, resets_at}, at}
+   as the poll serves it, or the bare {session, message, kind, resets_at}: both shapes read the same. An episode is over once resets_at has passed
+   (resets_at is epoch seconds); without one it lasts 5 hours from `at`. */
+function rateLimitOf(st) {
+  const raw = st && st.rate_limited;
+  if (!raw || typeof raw !== 'object') return null;
+  const v = raw.value && typeof raw.value === 'object' ? raw.value : raw;
+  if (!v || typeof v !== 'object' || (!v.session && !v.message && !v.kind)) return null;
+  const now = Date.now() / 1000;
+  let reset = v.resets_at;
+  if (typeof reset === 'string') reset = Date.parse(reset) / 1000;
+  if (typeof reset === 'number' && Number.isFinite(reset) && reset > 0) return reset > now ? v : null;
+  const at = raw.at ? Date.parse(raw.at) / 1000 : 0;
+  return at && now - at > 5 * 3600 ? null : v;
+}
+
+/* The full task (state.tasks) behind a session's task chip: by the chip's id, else by the tmux name (legacy tasks bind by name). */
+function sessionTask(s, st) {
+  const list = (st && st.tasks) || [];
+  if (s.task && s.task.id !== undefined && s.task.id !== null) { const t = list.find((x) => x.id === s.task.id); if (t) return t; }
+  return list.find((x) => x.tmux === s.tmux && !x.archived_at) || null;
+}
+
+function sessionWorktree(s, st) {
+  if (WORKTREE_PATH_RE.test(String(s.path || ''))) return true;
+  const t = sessionTask(s, st);
+  return !!(t && t.mode === 'worktree' && s.task);
+}
+
+function sessionRegistryJob(s) {
+  const reg = s.flags && s.flags.registry;
+  return reg && reg.job && typeof reg.job === 'object' ? reg.job : null;
+}
+
+/* Subscriptions held by tail expanders: a row that left the DOM (its block collapsed, the group changed, the session ended) drops its own. */
+function sessionTailSweep() { for (const n of Array.from(agentsTails)) if (n.isConnected === false && typeof n.ccDestroy === 'function') n.ccDestroy(); }
+function sessionTailStopAll() { for (const n of Array.from(agentsTails)) if (typeof n.ccDestroy === 'function') n.ccDestroy(); }
+function sessionTailAvailable() { return typeof Live !== 'undefined' && !!Live && typeof Live.subscribe === 'function' && typeof Live.unsubscribe === 'function'; }
+
 function sessionPerm(tmux) {
   if (!state) return null;
   for (const pr of (state.pending_permissions || [])) if (pr.tmux_name === tmux) return pr;
@@ -101,16 +149,16 @@ function agentsAgeNode(node, epoch) {
 /* One timer for every <time class="age"> on screen; pages start it on mount and stop it on unmount. */
 function agentsTick() {
   if (document.hidden) return;
-  for (const n of Array.from(document.querySelectorAll('time.age[data-epoch]'))) {
+  for (const n of Array.from(document.querySelectorAll('time.age[data-epoch], time.until[data-epoch]'))) {
     const e = parseInt(n.getAttribute('data-epoch'), 10);
-    if (e) setTextIfChanged(n, fmtAge(e));
+    if (e) setTextIfChanged(n, n.classList.contains('until') ? fmtIn(e) : fmtAge(e));
   }
 }
 
 function startAgeTicker() {
   agentsTicker.n += 1;
   if (agentsTicker.timer || typeof setInterval !== 'function') return;
-  agentsTicker.timer = setInterval(agentsTick, 5000);
+  agentsTicker.timer = setInterval(agentsTick, 1000);
   if (agentsTicker.timer && typeof agentsTicker.timer.unref === 'function') agentsTicker.timer.unref();
 }
 
@@ -121,15 +169,39 @@ function stopAgeTicker() {
   agentsTicker.timer = null;
 }
 
+/* The context meter: a 40 px bar and the percentage (class ctx-hi from CTX_HI, ctx-crit from CTX_CRIT). The bar width is set through the CSSOM. */
+function ctxMeter() {
+  const fill = el('i');
+  const pctText = el('span', { class: 'ctx-pct mono' });
+  const node = el('span', { class: 'ctx', title: 'context window used' }, el('span', { class: 'ctx-bar' }, fill), pctText);
+  node.ccSet = (pct) => {
+    const p = Math.max(0, Math.min(100, Math.round(pct)));
+    if (node._p === p) return;
+    node._p = p;
+    fill.style.width = p + '%';
+    setTextIfChanged(pctText, p + '%');
+    node.classList.toggle('ctx-hi', p >= CTX_HI && p < CTX_CRIT);
+    node.classList.toggle('ctx-crit', p >= CTX_CRIT);
+  };
+  return node;
+}
+
+function sessionCostClass(usd) { return usd >= COST_BAD ? ' cost-bad' : usd >= COST_WARN ? ' cost-warn' : ''; }
+
 /* opts: compact (shorter texts), peek (block layout for the dock / sheet), perm (show a pending permission with Allow / Deny),
-   showProject (project/repo instead of just the repo), link (the name opens the peek), cls (extra class on the node). */
+   showProject (project/repo instead of just the repo), link (the name opens the peek), cls (extra class on the node),
+   rich (Home's dense row: model, context meter, compact, worktree / PR / subagents / cost / limit chips, Reply and tail toggles),
+   tail (the tail expander; defaults to rich), noWhere (hide the repo text: the block above already names it). */
 function sessionCard(s, opts) {
-  const o = Object.assign({ compact: false, peek: false, perm: false, showProject: false, link: true, cls: '' }, opts || {});
+  const o = Object.assign({ compact: false, peek: false, perm: false, showProject: false, link: true, cls: '', rich: false, tail: null, noWhere: false }, opts || {});
+  const rich = !!o.rich && !o.peek;
+  const wantTail = !o.peek && (o.tail === null || o.tail === undefined ? rich : !!o.tail) && sessionTailAvailable();
   const cur = { s };
-  const killKey = 'kill:' + s.tmux;
+  const tmux = s.tmux;
+  const killKey = 'kill:' + tmux;
   const glyphs = el('span', { class: o.peek ? 'peek-glyphs' : 'rr-g' });
-  const nameNode = o.link && !o.peek ? el('a', { class: 'rr-name', href: sessionHash(s.tmux) }) : el('span', { class: 'rr-name' });
-  const where = el('span', { class: 'rr-where' });
+  const nameNode = o.link && !o.peek ? el('a', { class: 'rr-name', href: sessionHash(tmux) }) : el('span', { class: 'rr-name' });
+  const where = el('span', { class: 'rr-where' + (o.noWhere ? ' hidden' : '') });
   const age = el('time', { class: 'age rr-age', title: 'last activity' });
   const meta = el('span', { class: 'rr-meta' });
   const promptNode = el('span', { class: 'dim' });
@@ -138,7 +210,7 @@ function sessionCard(s, opts) {
   const permBtns = el('span', { class: 'actions perm-btns' });
   const ackSlot = el('span', { class: 'slot-ack' });
   const killSlot = el('span', { class: 'slot-kill' });
-  const openLink = el('a', { class: o.peek ? 'btn primary' : 'btn small', href: `/term/${encodeURIComponent(s.tmux)}`, target: '_blank', rel: 'noopener', text: o.peek ? 'Open terminal' : 'Open' });
+  const openLink = el('a', { class: o.peek ? 'btn primary' : 'btn small', href: `/term/${encodeURIComponent(tmux)}`, target: '_blank', rel: 'noopener', text: o.peek ? 'Open terminal' : 'Open' });
   const chips = el('div', { class: 'chips' + (o.peek ? '' : ' rr-chips'), role: 'group', 'aria-label': 'Quick replies' });
   for (const text of SESSION_NUDGES) {
     const b = el('button', { class: 'chip-btn', type: 'button', text });
@@ -147,11 +219,73 @@ function sessionCard(s, opts) {
   }
   let sendRow = null;
   if (!o.peek) {                                             // the peek has its own composer (session.js)
-    const ta = composer({ placeholder: `send to ${s.name || s.tmux} · ⇧Enter new line`, label: `send to ${s.name || s.tmux}`, onSend: () => sessionSend(cur.s, ta) });
+    const ta = composer({ placeholder: `send to ${s.name || tmux} · ⇧Enter new line`, label: `send to ${s.name || tmux}`, onSend: () => sessionSend(cur.s, ta) });
     ta.addEventListener('click', (e) => e.stopPropagation());
     sendRow = el('form', { class: 'rr-send', onsubmit: (e) => { e.preventDefault(); e.stopPropagation(); sessionSend(cur.s, ta); } },
       ta, el('button', { class: 'small primary', type: 'submit', text: 'Send', onclick: (e) => e.stopPropagation() }));
   }
+
+  // rich row: badges (built once, shown and patched in place), the Reply and tail toggles
+  let badges = null;
+  let replyBtn = null;
+  let tailBtn = null;
+  let tailHost = null;
+  let tailPre = null;
+  const b = {};
+  if (rich) {
+    b.model = el('span', { class: 'bdg bdg-model mono hidden' });
+    b.ctx = ctxMeter();
+    b.ctx.classList.add('hidden');
+    b.compact = el('button', { class: 'chip-btn compact-chip hidden', type: 'button', title: 'send /compact to this session', text: 'compact' });
+    b.compact.addEventListener('click', (e) => { e.stopPropagation(); sessionNudge(cur.s, '/compact', b.compact); });
+    b.worktree = el('span', { class: 'bdg bdg-wt hidden', text: 'worktree' });
+    b.pr = el('a', { class: 'bdg bdg-pr hidden', target: '_blank', rel: 'noopener' });
+    b.sub = el('span', { class: 'bdg bdg-sub hidden' });
+    b.cost = el('span', { class: 'bdg bdg-cost mono hidden', title: 'session cost (API-equivalent)' });
+    b.limit = el('span', { class: 'bdg bdg-limit hidden', text: 'limit' });
+    b.blocked = el('span', { class: 'bdg bdg-blocked hidden', text: 'blocked' });
+    badges = el('span', { class: 'rr-badges' }, b.model, b.ctx, b.compact, b.worktree, b.pr, b.sub, b.cost, b.limit, b.blocked);
+    replyBtn = el('button', { class: 'small minimal rr-replybtn', type: 'button', 'aria-expanded': 'false', title: 'quick replies and a send box', text: 'Reply' });
+    replyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const on = !node.classList.contains('open');
+      node.classList.toggle('open', on);
+      replyBtn.setAttribute('aria-expanded', on ? 'true' : 'false');
+    });
+  }
+  if (wantTail) {
+    tailPre = el('pre', { class: 'tail' });
+    tailHost = el('div', { class: 'rr-tail hidden' }, tailPre);
+    tailBtn = el('button', { class: 'small minimal rr-tailbtn', type: 'button', 'aria-expanded': 'false', title: `last ${TAIL_LINES} lines of the pane`, text: 'Tail' });
+    tailBtn.addEventListener('click', (e) => { e.stopPropagation(); if (cur.tailFn) tailOff(); else tailOn(); });
+  }
+
+  function tailOn() {
+    if (cur.tailFn || !sessionTailAvailable()) return;
+    cur.tailFn = (lines) => {
+      const text = (Array.isArray(lines) ? lines : []).slice(-TAIL_LINES).join('\n');
+      setTextIfChanged(tailPre, text || '(no output yet)');
+      tailPre.scrollTop = tailPre.scrollHeight;
+    };
+    setTextIfChanged(tailPre, 'waiting for output…');
+    tailHost.classList.remove('hidden');
+    tailBtn.setAttribute('aria-expanded', 'true');
+    tailBtn.classList.add('on');
+    agentsTails.add(node);
+    Live.subscribe(tmux, cur.tailFn);
+  }
+
+  function tailOff() {
+    const fn = cur.tailFn;
+    if (!fn) return;
+    cur.tailFn = null;
+    agentsTails.delete(node);
+    try { if (sessionTailAvailable()) Live.unsubscribe(tmux, fn); } catch (e) { console.error('ccboard tail', e); }
+    tailHost.classList.add('hidden');
+    tailBtn.setAttribute('aria-expanded', 'false');
+    tailBtn.classList.remove('on');
+  }
+
   let node;
   let promptHost = promptNode;
   let msgHost = msgNode;
@@ -161,15 +295,15 @@ function sessionCard(s, opts) {
     promptHost = block('Last prompt', promptNode);
     msgHost = block('Last message', msgNode);
     permHost = o.perm ? block('Needs permission', [permNote, permBtns], ' peek-perm') : null;
-    node = el('div', { class: 'peek-card', 'data-tmux': s.tmux },
+    node = el('div', { class: 'peek-card', 'data-tmux': tmux },
       el('div', { class: 'peek-sub' }, glyphs, where, age, meta),
       promptHost, msgHost, permHost,
       el('div', { class: 'peek-actions' }, openLink, ackSlot, killSlot), chips);
   } else {
-    node = el('div', { class: 'rrow' + (o.compact ? ' compact' : '') + (o.cls ? ' ' + o.cls : ''), 'data-tmux': s.tmux },
-      glyphs, el('div', { class: 'rr-main' }, nameNode, where, age), meta,
+    node = el('div', { class: 'rrow' + (o.compact ? ' compact' : '') + (rich ? ' rich' : '') + (o.cls ? ' ' + o.cls : ''), 'data-tmux': tmux },
+      glyphs, el('div', { class: 'rr-main' }, nameNode, where, age), rich ? el('div', { class: 'rr-metaline' }, meta, badges) : meta,
       el('div', { class: 'rr-last' }, o.perm ? permNote : null, promptNode, msgNode),
-      el('div', { class: 'rr-actions' }, o.perm ? permBtns : null, openLink, ackSlot, killSlot), chips, sendRow);
+      el('div', { class: 'rr-actions' }, o.perm ? permBtns : null, openLink, ackSlot, killSlot, replyBtn, tailBtn), chips, sendRow, tailHost);
   }
 
   function patchPerm(pr) {
@@ -186,17 +320,71 @@ function sessionCard(s, opts) {
     for (const n of (permHost ? [permHost] : [permNote, permBtns])) n.classList.toggle('hidden', !pr);
   }
 
+  const show = (n, on) => n.classList.toggle('hidden', !on);
+
+  function patchBadges(s2, st) {
+    const t = s2.stats || {};
+    const nudge = sessionNudgeable(s2);
+    show(b.model, !!t.model);
+    if (t.model) setTextIfChanged(b.model, String(t.model));
+    const hasCtx = typeof t.context_pct === 'number';
+    show(b.ctx, hasCtx);
+    if (hasCtx) b.ctx.ccSet(t.context_pct);
+    show(b.compact, hasCtx && t.context_pct >= CTX_HI && sessionAgent(s2) === 'claude' && nudge);
+    show(b.worktree, sessionWorktree(s2, st));
+    const task = sessionTask(s2, st);
+    const prNum = task && task.pr_number;
+    show(b.pr, !!prNum);
+    if (prNum) {
+      const bucket = task.ci && task.ci.bucket;
+      setTextIfChanged(b.pr, `PR #${prNum}`);
+      b.pr.className = 'bdg bdg-pr' + (bucket === 'fail' ? ' bad' : bucket === 'pass' ? ' ok' : bucket === 'pending' ? ' warn' : '');
+      if (task.pr_url) b.pr.setAttribute('href', task.pr_url); else b.pr.removeAttribute('href');
+      b.pr.setAttribute('title', `${task.pr_state || 'PR'}${bucket && bucket !== 'none' ? ' · CI ' + bucket : ''}`);
+    }
+    const nSub = s2.flags && typeof s2.flags.subagents === 'number' ? s2.flags.subagents : 0;
+    show(b.sub, nSub > 0);
+    if (nSub > 0) setTextIfChanged(b.sub, `${nSub} subagent${nSub === 1 ? '' : 's'}`);
+    const usd = typeof t.cost_usd === 'number' ? t.cost_usd : 0;
+    show(b.cost, usd > 0);
+    if (usd > 0) { setTextIfChanged(b.cost, '$' + (usd >= 100 ? usd.toFixed(0) : usd.toFixed(2))); b.cost.className = 'bdg bdg-cost mono' + sessionCostClass(usd); }
+    const rl = rateLimitOf(st);
+    const limited = !!(rl && rl.session === s2.tmux);
+    show(b.limit, limited);
+    if (limited) b.limit.setAttribute('title', `${rl.message || 'rate limited'}${rl.resets_at ? ' · resets ' + new Date(rl.resets_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}`);
+    const job = sessionRegistryJob(s2);
+    const blocked = !!(job && job.state === 'blocked');
+    show(b.blocked, blocked);
+    if (blocked) b.blocked.setAttribute('title', job.needs ? String(job.needs) : 'blocked job');
+  }
+
+  /* What the node shows, as one string: when it did not change since the last patch there is nothing to write. The pieces that come from outside
+     the session object (a pending permission, the two-tap Kill, the linked task, the rate-limit episode) are part of it. */
+  function sigOf(s2, st) {
+    const t = rich ? sessionTask(s2, st) : null;
+    const rl = rich ? rateLimitOf(st) : null;
+    const pr = o.perm ? sessionPerm(s2.tmux) : null;
+    return JSON.stringify([s2.state, s2.state_at, s2.name, s2.last_prompt, s2.last_message, s2.needs_attention, s2.agent, s2.launcher, s2.created,
+      s2.project, s2.repo, s2.folder, s2.stats, s2.path, s2.flags, s2.task,
+      pr ? pr.id + ':' + pr.summary : '', ui.confirm === killKey,
+      t ? [t.id, t.pr_number, t.pr_url, t.pr_state, t.mode, t.ci && t.ci.bucket] : null, rl && rl.session === s2.tmux ? [rl.message, rl.resets_at] : null]);
+  }
+
   function patch(s2) {
     cur.s = s2;
-    const st = sessionStateKey(s2);
+    const st = typeof state !== 'undefined' ? state : null;
+    const sig = sigOf(s2, st);
+    if (node._sig === sig) return;
+    node._sig = sig;
+    const sk = sessionStateKey(s2);
     const agent = sessionAgent(s2);
-    const gk = st + '|' + agent;
-    if (cur.g !== gk) { glyphs.textContent = ''; glyphs.append(stateGlyph(st), agentGlyph(agent)); cur.g = gk; }
-    setTextIfChanged(nameNode, s2.name || s2.tmux);
+    const gk = sk + '|' + agent;
+    if (cur.g !== gk) { glyphs.textContent = ''; glyphs.append(stateGlyph(sk), agentGlyph(agent)); cur.g = gk; }
+    setTextIfChanged(nameNode, s2.name || tmux);
     setTextIfChanged(where, sessionWhere(s2, o.showProject));
     agentsAgeNode(age, sessionActivity(s2));
-    setTextIfChanged(meta, sessionMetaText(s2, st));
-    const lim = o.peek ? [800, 2000] : (o.compact ? [120, 160] : [200, 320]);
+    setTextIfChanged(meta, rich ? GLYPH_LABEL[sk] : sessionMetaText(s2, sk));
+    const lim = o.peek ? [800, 2000] : (o.compact || rich ? [120, 160] : [200, 320]);
     const pt = s2.last_prompt ? '› ' + String(s2.last_prompt).slice(0, lim[0]) : '';
     const mt = s2.last_message ? String(s2.last_message).slice(0, lim[1]) : '';
     setTextIfChanged(promptNode, pt);
@@ -217,11 +405,14 @@ function sessionCard(s, opts) {
       killSlot.textContent = '';
       killSlot.append(confirmButton(killKey, 'Kill', () => api('DELETE', `/api/sessions/${encodeURIComponent(cur.s.tmux)}`), true));
     }
-    chips.classList.toggle('hidden', !sessionNudgeable(s2));
-    if (sendRow) sendRow.classList.toggle('hidden', !sessionNudgeable(s2));
+    const nudge = sessionNudgeable(s2);
+    chips.classList.toggle('hidden', !nudge);
+    if (sendRow) sendRow.classList.toggle('hidden', !nudge);
+    if (rich) { patchBadges(s2, st); show(replyBtn, nudge); }
   }
 
   node.ccPatch = patch;
+  node.ccDestroy = () => { tailOff(); };
   patch(s);
   return node;
 }

@@ -240,8 +240,17 @@ Keymap.bindDefaults = function () {
   }
 
   for (const [k, hash, text] of [['h', '#/', 'Home'], ['i', '#/inbox', 'Needs you'], ['a', '#/agents', 'Agents'], ['t', '#/tasks', 'Tasks'],
-    ['u', '#/usage', 'Usage'], ['m', '#/memory', 'Memory'], ['s', '#/settings', 'Settings']]) {
+    ['q', '#/quad', 'Quad (terminals side by side)'], ['u', '#/usage', 'Usage'], ['m', '#/memory', 'Memory'], ['s', '#/settings', 'Settings']]) {
     B('g ' + k, () => { Keymap.go(hash); return true; }, { help: 'Go to ' + text, group: 'Go to' });
+  }
+
+  // c then s / t / p / r: the + menu's sheets (Shell.openCreate). A chord, so a lone c in a form still types a c. m (move) stays unbound until v0.5.15.
+  const create = (kind) => () => {
+    if (typeof Shell === 'undefined' || typeof Shell.openCreate !== 'function') return false;
+    return Shell.openCreate(kind) !== false;
+  };
+  for (const [k, kind, text] of [['s', 'session', 'New session'], ['t', 'task', 'New task'], ['p', 'project', 'New project'], ['r', 'import', 'Import repos from GitHub']]) {
+    B('c ' + k, create(kind), { help: text, group: 'Create' });
   }
 
   B('j', () => (P() ? P().select(1) : false), { when: listOn, repeat: true, help: 'Next session in the list', group: 'Sessions' });

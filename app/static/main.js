@@ -57,7 +57,5 @@ if (typeof renderHeader !== 'function') window.renderHeader = () => {};
 if (typeof renderUsage !== 'function') window.renderUsage = () => {};
 rewriteLegacyHash();                                              // #s=<tmux> (old ntfy links) becomes #/s/<tmux> in place
 watchLaunches();
-// The live grid lives on the Home page: only remember that it was on; pages/home.js starts it when it mounts.
-try { if (localStorage.getItem('ccboard:live') === '1') live.on = true; } catch (_) { /* storage may be unavailable */ }
 route();
 startStatePolling().then(openSharedText, openSharedText);         // the poll's promise settles after the first state (or the offline fallback) is painted

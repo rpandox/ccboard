@@ -527,9 +527,9 @@ from collections import Counter  # noqa: E402
 
 INDEX = STATIC / "index.html"
 SKELETON_IDS = ("topbar", "sidebar", "main", "banner", "page", "dock", "bnav", "drawer", "sheet", "helpdlg", "modal", "toasts")
-SCRIPT_ORDER = ["/static/" + n for n in (            # v0.5.3 contract plus keymap.js and palette.js (v0.5.3b)
+SCRIPT_ORDER = ["/static/" + n for n in (            # v0.5.3 contract plus keymap.js and palette.js (v0.5.3b), pages/widgets.js (v0.5.5)
     "core.js", "components.js", "keymap.js", "live.js", "launcher.js", "palette.js", "shell.js", "router.js",
-    "pages/home.js", "pages/inbox.js", "pages/tasks.js", "pages/agents.js", "pages/settings.js", "pages/search.js",
+    "pages/home.js", "pages/inbox.js", "pages/widgets.js", "pages/tasks.js", "pages/agents.js", "pages/settings.js", "pages/search.js",
     "pages/session.js", "pages/placeholders.js", "main.js")]
 STYLE_ORDER = ["/static/vendor/blueprint/blueprint.css", "/static/vendor/blueprint/blueprint-icons.css", "/static/tokens.css",
                "/static/style.css", "/static/shell.css", "/static/pages.css"]
@@ -635,7 +635,7 @@ def test_index_skeleton_nesting_matches_the_contract():
 
 def test_index_scripts_follow_the_contract_order_exactly():
     scripts = [a.get("src") for t, a, _ in html_tags(INDEX) if t == "script"]
-    assert scripts == SCRIPT_ORDER, "index.html script order differs from the contract (v0.5.3 plus v0.5.3b):\n  got      " + "\n  ".join(map(str, scripts)) \
+    assert scripts == SCRIPT_ORDER, "index.html script order differs from the contract (v0.5.3 plus v0.5.3b and v0.5.5):\n  got      " + "\n  ".join(map(str, scripts)) \
         + "\n  expected " + "\n  ".join(SCRIPT_ORDER)
     for t, a, line in html_tags(INDEX):
         if t == "script":
@@ -712,18 +712,20 @@ def test_demo_fixtures_carry_no_host_specific_data():
     assert not bad, "fixtures must be anonymous:\n" + "\n".join(bad)
 
 
-def test_demo_state_has_the_seven_sessions_in_the_stated_states():
+def test_demo_state_has_the_eight_sessions_in_the_stated_states():
+    """The five-state fleet of v0.5.3 plus petroit--api--s3 (v0.5.5): a second session that waits, with a question and no pending permission."""
     state = demo_json("state.json")
     sessions = fleet_sessions(state)
-    assert len(sessions) == 7, f"expected 7 live sessions, found {len(sessions)}"
+    assert len(sessions) == 8, f"expected 8 live sessions, found {len(sessions)}"
     assert Counter(s["state"] for _, _, s in sessions) == Counter(
-        {"waiting": 1, "working": 2, "idle": 1, "done": 1, "errored": 1, "ended": 1})
+        {"waiting": 2, "working": 2, "idle": 1, "done": 1, "errored": 1, "ended": 1})
     names = [s["tmux"] for _, _, s in sessions]
-    assert len(set(names)) == 7 and all(SESSION_NAME_RE.match(n) for n in names), names
+    assert len(set(names)) == 8 and all(SESSION_NAME_RE.match(n) for n in names), names
+    assert len({s["row_id"] for _, _, s in sessions}) == 8 and len({s["pane_id"] for _, _, s in sessions}) == 8, "row ids and panes are unique"
     for project, repo, s in sessions:
         assert s["tmux"] == f"{project}--{repo}--{s['name']}", f"{s['tmux']} sits in {project}/{repo} with name {s['name']}"
     attn = {s["state"] for _, _, s in sessions if s["needs_attention"]}
-    assert attn == {"waiting", "done", "errored"} and sum(1 for _, _, s in sessions if s["needs_attention"]) == 3
+    assert attn == {"waiting", "done", "errored"} and sum(1 for _, _, s in sessions if s["needs_attention"]) == 4
     codex = [s for _, _, s in sessions if s["agent"] == "codex"]
     assert len(codex) == 1 and codex[0]["launcher"] == "codex" and codex[0]["state"] == "working"
     assert codex[0]["stats"]["model"] == "gpt-5.5"
@@ -758,13 +760,40 @@ def test_demo_state_projects_three_active_and_six_older():
     assert any(by_name["phasezero"]["root"]["sessions"]), "one session lives in the project folder (repo 'root')"
 
 
-def test_demo_state_pending_permission_belongs_to_the_waiting_session():
+def test_demo_state_pending_permission_belongs_to_one_of_the_two_waiting_sessions():
     state = demo_json("state.json")
-    waiting = [s for _, _, s in fleet_sessions(state) if s["state"] == "waiting"]
+    waiting = {s["tmux"]: s for _, _, s in fleet_sessions(state) if s["state"] == "waiting"}
     perms = state["pending_permissions"]
-    assert len(waiting) == 1 and len(perms) == 1
-    assert perms[0]["tmux_name"] == waiting[0]["tmux"] and perms[0]["tool_name"] == "Bash" and "npm test" in perms[0]["summary"]
+    assert len(waiting) == 2 and len(perms) == 1
+    assert perms[0]["tmux_name"] in waiting and perms[0]["tool_name"] == "Bash" and "npm test" in perms[0]["summary"]
     assert {"id", "created_at"} <= set(perms[0])
+    question = waiting[next(n for n in waiting if n != perms[0]["tmux_name"])]
+    assert question["last_message"].rstrip().endswith("?"), "the other waiting session asks a question (the inbox card kind 'question')"
+    assert question["needs_attention"] is True
+
+
+def test_demo_state_carries_the_home_page_cases():
+    """v0.5.5: what the Home rows, the inbox cards and the limit banner draw, so ?demo=1 shows every chip and card kind."""
+    state = demo_json("state.json")
+    now = demo_epoch(state)
+    sessions = {s["tmux"]: s for _, _, s in fleet_sessions(state)}
+    costs = sorted(s["stats"]["cost_usd"] for s in sessions.values() if s["stats"].get("cost_usd") is not None)
+    assert 12.5 in costs and 140.0 in costs, f"a cost-warn and a cost-bad session: {costs}"
+    assert any(10 <= c < 100 for c in costs) and any(c >= 100 for c in costs) and any(c < 10 for c in costs)
+    ctx = {s["stats"]["context_pct"] for s in sessions.values()}
+    assert any(60 <= c < 85 for c in ctx) and any(c >= 85 for c in ctx) and any(c < 60 for c in ctx), "ctx-hi, ctx-crit and a plain meter"
+    assert any("/.claude/worktrees/" in s["path"] for s in sessions.values()), "a worktree badge"
+    blocked = [s for s in sessions.values() if ((s.get("flags") or {}).get("registry") or {}).get("job")]
+    assert len(blocked) == 1 and blocked[0]["flags"]["subagents"] == 2
+    job = blocked[0]["flags"]["registry"]["job"]
+    assert job == {"state": "blocked", "tempo": "blocked", "needs": "approve the plan", "suggested_reply": "approve"}
+    rl = state["rate_limited"]
+    assert rl["at"] and rl["value"]["kind"] == "5h" and rl["value"]["session"] in sessions, "an active 5h episode on one session"
+    assert rl["value"]["resets_at"] > now and len(rl["value"]["message"]) <= 200
+    assert rl["value"]["resets_at"] == state["usage"]["value"]["five_hour"]["resets_at"], "the banner and the topbar pill agree on the reset"
+    jobs = [j for j in state["jobs"] if j["enabled"] and j["next_run_at"]]
+    assert len(jobs) >= 3, "the schedules strip shows the next three runs"
+    assert all(parse_iso(j["next_run_at"]) > now for j in jobs)
 
 
 def test_demo_state_tasks_fill_every_kanban_column_consistently():
@@ -793,7 +822,8 @@ def test_demo_state_tasks_fill_every_kanban_column_consistently():
 def test_demo_state_jobs_runs_and_the_rest_of_the_fleet_view():
     state = demo_json("state.json")
     now = demo_epoch(state)
-    assert len(state["jobs"]) == 2 and len(state["runs"]) == 3
+    assert len(state["jobs"]) == 4 and len(state["runs"]) == 3
+    assert [j["id"] for j in state["jobs"]] == [4, 3, 2, 1], "db.jobs() lists newest id first"
     assert {r["job_id"] for r in state["runs"]} <= {j["id"] for j in state["jobs"]}
     assert any(j["enabled"] and j["cron"] for j in state["jobs"]) and any(not j["enabled"] for j in state["jobs"])
     rl = state["usage"]["value"]
@@ -809,7 +839,7 @@ def test_demo_state_jobs_runs_and_the_rest_of_the_fleet_view():
     assert state["backup"]["status"] == "ok" and state["backup"]["at"]
     nodes = state["nodes"]["value"]
     assert len(nodes) == 1 and nodes[0]["online"] is True and nodes[0]["name"]
-    assert state["rate_limited"] is None and state["version"] == "demo" and state["tmux_down"] is False
+    assert state["rate_limited"]["value"]["session"] and state["version"] == "demo" and state["tmux_down"] is False
     c = state["claude"]
     assert c["installed"] is True and c["loggedIn"] is True and c["email"] and c["subscriptionType"] == "max"
     assert state["usage_codex"]["value"]["primary"]["window_minutes"] == 10080
@@ -1001,8 +1031,12 @@ def test_demo_files_are_absent_from_the_sw_shell_and_the_asset_version(lite_clie
 # ---------- terminal page on mobile: definition-only kit, no ES modules, the term.css scroll-fix set, the dev tty fake ----------
 
 REPO = STATIC.parent.parent
-DEFINE_ONLY = ("core.js", "components.js", "termkit.js")
-DEFINE_ONLY_START = re.compile(r"(?:const|let|var|function|class|async\s+function)\b|['\"`]")
+DEFINE_ONLY = ("core.js", "components.js", "termkit.js", "pages/widgets.js")
+# a declaration, a string (a directive), or a function / literal assigned to a property of a declared namespace (`Widgets.usageCard = function ...`):
+# none of them runs anything at load. A call, an `if`, a bare `document.x = ...` or `Name.start();` is not in the list.
+DEFINE_ONLY_START = re.compile(
+    r"(?:const|let|var|function|class|async\s+function)\b|['\"`]"
+    r"|[A-Z]\w*\.\w+\s*=\s*(?:async\s+)?(?:function\b|\([^()]*\)\s*=>|\w+\s*=>|[{\['\"`\d]|true\b|false\b|null\b)")
 
 
 def top_level_statements(src):
@@ -1021,9 +1055,11 @@ def top_level_statements(src):
 
 
 def test_top_level_scanner_flags_calls_and_accepts_declarations():
-    ok = "'use strict';\nconst A = {\n  b: 1,\n};\nfunction f() {\n  g();\n}\nasync function h() {}\nclass K {\n  m() { x(); }\n}\nlet t = `${a} ${b}`;\n"
+    ok = ("'use strict';\nconst A = {\n  b: 1,\n};\nfunction f() {\n  g();\n}\nasync function h() {}\nclass K {\n  m() { x(); }\n}\nlet t = `${a} ${b}`;\n"
+          "Widgets.usageCard = function (host) {\n  return host;\n};\nWidgets.limitBanner = (st) => {\n  return st;\n};\nWidgets.N = 12;\nWidgets.live = async (x) => x;\n")
     assert all(DEFINE_ONLY_START.match(text) for _, text in top_level_statements(ok)), top_level_statements(ok)
-    for bad in ("setInterval(tick, 1000);", "document.title = 'x';", "(function () { go(); })();", "TermKit.boot();", "window.addEventListener('x', y);"):
+    for bad in ("setInterval(tick, 1000);", "document.title = 'x';", "(function () { go(); })();", "TermKit.boot();", "window.addEventListener('x', y);",
+                "Widgets.timer = setInterval(tick, 1000);", "Widgets.go = init();", "Widgets.x = a.b();", "Widgets.start();", "if (x) { y(); }"):
         assert not any(DEFINE_ONLY_START.match(text) for _, text in top_level_statements(bad)), bad
 
 

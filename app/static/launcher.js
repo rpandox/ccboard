@@ -190,84 +190,165 @@ function jobForm(p, r) {
       el('button', { type: 'button', onclick: () => { ui.openForm = null; renderProjects(); }, text: 'Cancel' })));
 }
 
-function openBatch() {
-  ui.modal = true;
-  const m = $('#modal');
-  m.textContent = '';
-  const name = el('input', { type: 'text', placeholder: 'batch name (optional)', maxlength: 60 });
-  const prompt = el('textarea', { placeholder: 'prompt to run headlessly in every selected repo (claude -p, fresh worktree each)…' });
-  const mode = el('select', {}, ...['acceptEdits', 'default', 'plan', 'auto', 'dontAsk'].map(x => el('option', { value: x, text: x })));
-  const turns = el('input', { type: 'number', value: '30', min: '1', max: '500' });
-  const budget = el('input', { type: 'number', placeholder: 'max $ per repo (optional)', step: '0.5', min: '0' });
-  const status = el('div', { class: 'dim' });
-  const boxes = [];
-  const list = el('div', { class: 'form' });
-  for (const x of allRepos()) { const cb = el('input', { type: 'checkbox', value: x.id, checked: false }); boxes.push(cb); list.append(el('label', { class: 'row' }, cb, x.id)); }
-  const go = el('button', { class: 'primary', onclick: async () => {
-    const repos = boxes.filter(b => b.checked).map(b => b.value);
-    if (!repos.length || !prompt.value.trim()) { status.textContent = 'pick repos and write a prompt'; return; }
-    try {
-      const r = await api('POST', '/api/batch', { prompt: prompt.value.trim(), repos, name: name.value.trim() || undefined, permission_mode: mode.value, max_turns: parseInt(turns.value, 10) || 30, max_budget_usd: budget.value ? parseFloat(budget.value) : undefined });
-      status.textContent = `queued ${r.jobs.length} runs (batch ${r.batch_id}); ${r.started.length} started, the rest wait for a free slot`;
-      closeModal(); await poll(true);
-    } catch (e) { status.textContent = e.message; }
-  }, text: 'Run on selected repos' });
-  m.append(el('div', { class: 'modal-box' },
-    el('h2', { text: 'Batch prompt across repos' }),
-    el('div', { class: 'dim', text: 'Runs are headless (claude -p) in a fresh worktree per repo, at most 2 at once, paused while the 5-hour window is above 85%. Each result becomes a task card.' }),
-    el('div', { class: 'row' }, name, el('label', { text: 'mode' }), mode, el('label', { text: 'max turns' }), turns, budget),
-    prompt,
-    list,
-    el('div', { class: 'row' }, go, el('button', { onclick: () => { for (const b of boxes) b.checked = !b.checked; }, text: 'Invert' }), el('button', { onclick: closeModal, text: 'Close' }))));
-  m.classList.remove('hidden');
+/* ---------- project, GitHub import and batch prompt: the + menu's sheets (v0.5.5) ----------
+   Each returns a <form> for openSheet() (Shell.openCreate builds the sheet around it); onDone(...) runs after the call succeeded and the
+   caller closes the sheet. They moved here from pages/home.js (the v0.4 board's project form) and from the #modal versions of this file;
+   the endpoints and fields are the same. A failed call keeps the form open and says why, inline and (the sheet covers the banner) as a toast. */
+
+function formStatus(node, text, bad) {
+  node.textContent = text || '';
+  node.classList.toggle('bad', !!bad);
 }
 
-function openImport() {
-  ui.modal = true;
-  const m = $('#modal');
-  m.textContent = '';
-  const owner = el('input', { type: 'text', placeholder: 'owner (blank = your repos)', maxlength: 39 });
-  const target = el('input', { type: 'text', placeholder: 'target project name', maxlength: 64 });
-  const filter = el('input', { type: 'text', placeholder: 'filter…' });
-  const list = el('div', { class: 'form' });
-  const status = el('div', { class: 'dim' });
+/* The clone queue line: queued clones and failed ones with a Clear button, rebuilt only when what it says changes (st.clone_queue). */
+function cloneQueueView() {
+  const node = el('div', { class: 'clone-queue dim', 'aria-live': 'polite' });
+  let sig = null;
+  const update = (st) => {
+    const cq = st && st.clone_queue;
+    if (!cq) { if (sig !== '') { sig = ''; node.textContent = ''; } return; }
+    const queued = (cq.queued || []).length;
+    const failed = (cq.done || []).filter((d) => d.status === 'failed');
+    const next = JSON.stringify([queued, cq.cap, failed.map((f) => [f.repo, f.error])]);
+    if (next === sig) return;
+    sig = next;
+    node.textContent = '';
+    if (queued) node.append(el('span', { text: `${queued} clone${queued === 1 ? '' : 's'} queued (max ${cq.cap} at once) ` }));
+    if (failed.length) {
+      node.append(el('span', { class: 'bad', text: `${failed.length} failed: ${failed.map((f) => f.repo + ' (' + (f.error || '') + ')').join('; ').slice(0, 300)} ` }),
+        el('button', { type: 'button', class: 'small', onclick: async () => { try { await api('POST', '/api/clone-queue/clear'); } catch (e) { setError(e.message); } await poll(true); }, text: 'Clear' }));
+    }
+  };
+  update(typeof state !== 'undefined' ? state : null);
+  return { node, update };
+}
+
+function projectForm(opts) {
+  const o = opts || {};
+  const name = el('input', { type: 'text', placeholder: 'project name (e.g. shop)', required: true, maxlength: 64, 'aria-label': 'project name', autocomplete: 'off', autocapitalize: 'off' });
+  const url = el('input', { type: 'text', placeholder: 'optional: clone URL of the first repo', 'aria-label': 'clone URL', autocomplete: 'off', autocapitalize: 'off' });
+  const status = el('div', { class: 'dim form-status' });
+  const where = typeof state !== 'undefined' && state && state.config ? state.config.projects_dir : '';
+  const form = el('form', { class: 'form', onsubmit: async (e) => {
+    e.preventDefault();
+    const body = { name: name.value.trim() };
+    if (url.value.trim()) body.url = url.value.trim();
+    try {
+      const res = await api('POST', '/api/projects', body);
+      name.value = ''; url.value = '';
+      formStatus(status, '');
+      setError(null);
+      if (typeof o.onDone === 'function') o.onDone(body, res);
+      await poll(true);
+      if (body.name && typeof navigate === 'function') navigate('#/p/' + encodeURIComponent(body.name));   // a new project has no sessions: Home keeps it under 'older', its page shows it
+    } catch (err) { formStatus(status, err.message, true); setError(err.message); }
+  } },
+  where ? el('div', { class: 'dim', text: `A folder per project under ${where}; each repo is a subfolder and sessions run inside a repo.` }) : null,
+  field('name', name), field('clone URL', url), status,
+  el('div', { class: 'submit' }, el('button', { class: 'primary', type: 'submit', text: 'Create project' }),
+    el('button', { type: 'button', onclick: () => { if (typeof o.onCancel === 'function') o.onCancel(); }, text: 'Cancel' })));
+  form.focusFirst = () => name.focus();
+  return form;
+}
+
+/* Run one headless prompt in every picked repo: POST /api/batch. */
+function batchForm(opts) {
+  const o = opts || {};
+  const name = el('input', { type: 'text', placeholder: 'batch name (optional)', maxlength: 60, 'aria-label': 'batch name' });
+  const prompt = el('textarea', { placeholder: 'prompt to run headlessly in every selected repo (claude -p, fresh worktree each)…', 'aria-label': 'prompt' });
+  const mode = el('select', { 'aria-label': 'permission mode' }, ...['acceptEdits', 'default', 'plan', 'auto', 'dontAsk'].map((x) => el('option', { value: x, text: x })));
+  const turns = el('input', { type: 'number', value: '30', min: '1', max: '500', 'aria-label': 'max turns' });
+  const budget = el('input', { type: 'number', placeholder: 'max $ per repo (optional)', step: '0.5', min: '0', 'aria-label': 'max dollars per repo' });
+  const status = el('div', { class: 'dim form-status' });
+  const boxes = [];
+  const list = el('div', { class: 'checks batch-repos' });
+  for (const x of (typeof state !== 'undefined' && state ? allRepos() : [])) {
+    const cb = el('input', { type: 'checkbox', value: x.id, checked: false });
+    boxes.push(cb);
+    list.append(el('label', {}, cb, x.id));
+  }
+  if (!boxes.length) list.append(el('span', { class: 'dim', text: 'No repos yet: create a project and add a repo first.' }));
+  const go = el('button', { class: 'primary', type: 'button', onclick: async () => {
+    const repos = boxes.filter((b) => b.checked).map((b) => b.getAttribute('value'));
+    if (!repos.length || !prompt.value.trim()) { formStatus(status, 'pick repos and write a prompt', true); return; }
+    try {
+      const r = await api('POST', '/api/batch', { prompt: prompt.value.trim(), repos, name: name.value.trim() || undefined, permission_mode: mode.value,
+        max_turns: parseInt(turns.value, 10) || 30, max_budget_usd: budget.value ? parseFloat(budget.value) : undefined });
+      formStatus(status, `queued ${r.jobs.length} runs (batch ${r.batch_id}); ${r.started.length} started, the rest wait for a free slot`);
+      if (typeof o.onDone === 'function') o.onDone(r);
+      await poll(true);
+    } catch (e) { formStatus(status, e.message, true); }
+  }, text: 'Run on selected repos' });
+  const form = el('form', { class: 'form', onsubmit: (e) => { e.preventDefault(); go.click(); } },
+    el('div', { class: 'dim', text: 'Runs are headless (claude -p) in a fresh worktree per repo, at most 2 at once, paused while the 5-hour window is above 85%. Each result becomes a task card.' }),
+    el('div', { class: 'grid' }, field('name', name), field('permission mode', mode), field('max turns', turns), field('max $ per repo', budget)),
+    field('prompt', prompt),
+    field('repos', list),
+    status,
+    el('div', { class: 'submit' }, go,
+      el('button', { type: 'button', onclick: () => { for (const b of boxes) b.checked = !b.checked; }, text: 'Invert' }),
+      el('button', { type: 'button', onclick: () => { if (typeof o.onCancel === 'function') o.onCancel(); }, text: 'Cancel' })));
+  form.focusFirst = () => prompt.focus();
+  return form;
+}
+
+/* Import repos from GitHub into a project: GET /api/github/repos[?owner=], then POST /api/projects/<project>/repos/bulk. */
+function importForm(opts) {
+  const o = opts || {};
+  const owner = el('input', { type: 'text', placeholder: 'owner (blank = your repos)', maxlength: 39, 'aria-label': 'GitHub owner', autocomplete: 'off', autocapitalize: 'off' });
+  const target = el('input', { type: 'text', placeholder: 'target project name', maxlength: 64, 'aria-label': 'target project', autocomplete: 'off', autocapitalize: 'off' });
+  const filter = el('input', { type: 'text', placeholder: 'filter…', 'aria-label': 'filter repos' });
+  const list = el('div', { class: 'checks import-repos' });
+  const status = el('div', { class: 'dim form-status' });
   let repos = [];
   const boxes = [];
   const renderList = () => {
-    list.textContent = ''; boxes.length = 0;
+    list.textContent = '';
+    boxes.length = 0;
     const f = filter.value.trim().toLowerCase();
     for (const r of repos) {
       if (f && !(r.name.toLowerCase().includes(f) || (r.description || '').toLowerCase().includes(f))) continue;
       const cb = el('input', { type: 'checkbox', value: r.url, 'data-name': r.name, checked: true });
       boxes.push(cb);
-      list.append(el('label', { class: 'row' }, cb, el('b', { text: r.name }), el('span', { class: 'dim', text: `${r.private ? 'private' : 'public'}${r.fork ? ' · fork' : ''} · ${r.description || ''}`.slice(0, 120) })));
+      list.append(el('label', {}, cb, el('b', { text: r.name }), el('span', { class: 'dim', text: `${r.private ? 'private' : 'public'}${r.fork ? ' · fork' : ''} · ${r.description || ''}`.slice(0, 120) })));
     }
     if (!list.childElementCount) list.append(el('span', { class: 'dim', text: repos.length ? 'no match' : 'nothing loaded yet' }));
   };
   filter.addEventListener('input', renderList);
   const load = async () => {
-    status.textContent = 'loading…';
+    formStatus(status, 'loading…');
     try {
       const r = await api('GET', `/api/github/repos${owner.value.trim() ? '?owner=' + encodeURIComponent(owner.value.trim()) : ''}`);
-      repos = r.repos; status.textContent = `${repos.length} repos (${r.protocol})`;
-      if (!target.value.trim()) target.value = (owner.value.trim() || (state.user || 'github').split('@')[0]).toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+      repos = r.repos;
+      formStatus(status, `${repos.length} repos (${r.protocol})`);
+      if (!target.value.trim()) target.value = (owner.value.trim() || ((typeof state !== 'undefined' && state && state.user) || 'github').split('@')[0]).toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
       renderList();
-    } catch (e) { status.textContent = e.message; }
+    } catch (e) { formStatus(status, e.message, true); }
   };
-  const importBtn = el('button', { class: 'primary', onclick: async () => {
-    const chosen = boxes.filter(b => b.checked).map(b => ({ name: b.dataset.name, url: b.value }));
-    if (!chosen.length) { status.textContent = 'nothing selected'; return; }
+  const importBtn = el('button', { class: 'primary', type: 'button', onclick: async () => {
+    const chosen = boxes.filter((b) => b.checked).map((b) => ({ name: b.getAttribute('data-name'), url: b.getAttribute('value') }));
+    if (!chosen.length) { formStatus(status, 'nothing selected', true); return; }
+    if (!target.value.trim()) { formStatus(status, 'name the target project', true); return; }
     try {
       const r = await api('POST', `/api/projects/${encodeURIComponent(target.value.trim())}/repos/bulk`, { repos: chosen });
-      status.textContent = `queued ${chosen.length} into ${r.project}`; closeModal(); await poll(true);
-    } catch (e) { status.textContent = e.message; }
+      formStatus(status, `queued ${chosen.length} into ${r.project}`);
+      if (typeof o.onDone === 'function') o.onDone(r, chosen);
+      await poll(true);
+    } catch (e) { formStatus(status, e.message, true); }
   }, text: 'Import selected' });
-  m.append(el('div', { class: 'modal-box' },
-    el('h2', { text: 'Import repos from GitHub' }),
-    el('div', { class: 'row' }, owner, el('button', { onclick: load, text: 'Load' })),
-    el('div', { class: 'row' }, el('label', { text: 'into project' }), target, filter),
+  renderList();
+  const form = el('form', { class: 'form', onsubmit: (e) => { e.preventDefault(); load(); } },
+    el('div', { class: 'row' }, owner, el('button', { type: 'button', onclick: load, text: 'Load' })),
+    field('into project', target),
+    field('filter', filter),
     status, list,
-    el('div', { class: 'row' }, importBtn, el('button', { onclick: () => { for (const b of boxes) b.checked = !b.checked; }, text: 'Invert' }), el('button', { onclick: closeModal, text: 'Close' }))));
-  m.classList.remove('hidden');
-  owner.focus();
+    el('div', { class: 'submit' }, importBtn,
+      el('button', { type: 'button', onclick: () => { for (const b of boxes) b.checked = !b.checked; }, text: 'Invert' }),
+      el('button', { type: 'button', onclick: () => { if (typeof o.onCancel === 'function') o.onCancel(); }, text: 'Cancel' })));
+  form.focusFirst = () => owner.focus();
+  return form;
 }
+
+/* The v0.4 entry points: the same sheets as the + menu. */
+function openBatch() { return typeof Shell !== 'undefined' && Shell.openCreate ? Shell.openCreate('batch') : false; }
+function openImport() { return typeof Shell !== 'undefined' && Shell.openCreate ? Shell.openCreate('import') : false; }

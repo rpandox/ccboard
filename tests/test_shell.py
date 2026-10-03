@@ -153,6 +153,8 @@ def test_script_order_core_first_main_last():
     assert idx[:3] == ["/static/core.js", "/static/components.js", "/static/keymap.js"], idx
     assert idx.index("/static/router.js") < idx.index("/static/pages/home.js") < idx.index("/static/main.js"), idx
     assert idx.index("/static/palette.js") < idx.index("/static/shell.js"), idx
+    assert idx.index("/static/pages/inbox.js") + 1 == idx.index("/static/pages/widgets.js") < idx.index("/static/pages/tasks.js"), \
+        "pages/widgets.js (Widgets, definition-only) loads right after pages/inbox.js"
     assert len(idx) == len(set(idx)), f"duplicate script tag: {idx}"
     assert idx == SCRIPT_ORDER, "index.html script order differs from the contract:\n  got      " + "\n  ".join(map(str, idx)) + "\n  expected " + "\n  ".join(SCRIPT_ORDER)
     assert "/static/termkit.js" not in idx, "index.html is not changed in the terminal phase: termkit.js is loaded by term.html only (the dock and quad load it in v0.5.9)"
@@ -404,6 +406,24 @@ def test_terminal_assets_are_in_the_generated_shell_and_the_build_id(lite_client
     kit = dst / "termkit.js"
     kit.write_text(kit.read_text() + "\n// edit")
     assert main.asset_version() != before, "an edit to termkit.js must change the build id (open pages reload after a deploy)"
+
+
+def test_widgets_js_is_a_shell_asset_a_build_id_input_and_no_route(lite_client, tmp_path, monkeypatch):
+    """pages/widgets.js (v0.5.5) is a library file in pages/: precached for the offline shell, hashed into the build id, and it
+    registers no route (Home and Settings call Widgets.usageCard / Widgets.limitBanner)."""
+    from app import main
+    assert "/static/pages/widgets.js" in main.shell_paths(), "widgets.js is not in the generated service-worker shell"
+    assert "/static/pages/widgets.js" in shell_in(lite_client.get("/sw.js", headers=H).text)
+    src = (STATIC_ROOT / "pages" / "widgets.js").read_text()
+    assert not re.search(r"registerPage\s*\(", _blank_js(src)), "widgets.js is not a page"
+    assert re.search(r"^const Widgets\s*=", src, re.M), "one namespace: const Widgets = {...}"
+    for fn in ("usageCard", "limitBanner"):
+        assert re.search(r"\b" + fn + r"\b", _blank_js(src)), f"Widgets.{fn} is not defined"
+    dst = static_copy(tmp_path, monkeypatch)
+    before = main.asset_version()
+    f = dst / "pages" / "widgets.js"
+    f.write_text(f.read_text() + "\n// edit")
+    assert main.asset_version() != before, "an edit to widgets.js must change the build id"
 
 
 def test_the_dev_tty_fake_never_ships_in_the_shell(lite_client):

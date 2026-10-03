@@ -1,27 +1,336 @@
-/* ccboard inbox page (#/inbox): every session that needs attention (waiting for you, done, failed and not acknowledged),
-   oldest first, as the shared session card with its pending permission (Allow / Deny) and the nudge chips. The keys (j / k move,
-   Enter open the peek, o terminal, a ack, y allow, d deny, r reply) come from keymap.js; the selection they move is Pages in
-   pages/home.js (ui.inboxSel, painted as the 'sel' class on the row). */
+/* ccboard inbox (v0.5.5): what needs you, with the context to answer it. Home's first section and #/inbox are both made of the cards below.
+
+   Inbox.kind(s, st) sorts a session into one of nine kinds, in the order the inbox lists them:
+     permission     a permission is pending for it (st.pending_permissions)            Allow / Deny, only when no full terminal client is attached
+     plan           waiting, and its last message talks about a plan (/plan|ExitPlanMode|approve/i)
+     question       waiting, and its last message ends with a question or has AskUserQuestion
+     needs          the Claude registry says its job needs you (flags.registry.job.needs, or tempo 'blocked'), with the suggested reply as a chip
+     limit          the account hit a rate limit on it (st.rate_limited names it, still in force) or it errored with a limit message
+     error          errored
+     done-question  done and not acknowledged, and its last message ends with a question
+     waiting        any other waiting
+     done           done and not acknowledged
+   Inbox.items(st) is the list: every session of one of those kinds that is not acknowledged (needs_attention), plus the ones with a
+   pending permission or a blocked job, which acknowledging does not answer; ordered by kind, then oldest first. Each item is the
+   roster session ({...s, project, repo, folder}) plus .kind and .perm.
+   inboxCard(s, st, opts) builds one keyed, patch-in-place card that LEADS with the context (the plan or question text, the permission
+   summary in mono, the job's needs and suggested reply, the limit message with its reset time), then project/repo, session and age, then
+   the actions. node.ccPatch(s, st) updates only what changed, so a poll never recreates a card that holds focus or a half-typed reply.
+   Inbox.section(host, st, {limit, link}) keyed-reconciles the cards into host (Home) and returns how many items there are.
+   The cards carry the legacy 'inbox-item' class beside 'inbox-card': the j/k selection (Pages.rowNodes in pages/home.js) paints that one.
+   state.rate_limited is the kv wrapper {value: {session, message, kind, resets_at (epoch s)}, at}; a flat record is read too.
+   Classic script: loaded before pages/agents.js, so everything from there (rosterSessions, sessionNudge, ...) is called, never captured. */
 'use strict';
 
-const inboxPage = { refs: null, items: [] };
+const Inbox = {
+  // permission first on purpose (a pending permission blocks the agent and times out in 90 s; the Mac's bypass habit does not
+  // hold on the box), then the plan's order: plan review, question, job needs, limit, error, done-with-question
+  ORDER: ['permission', 'plan', 'question', 'needs', 'limit', 'error', 'done-question', 'waiting', 'done'],
+  LABEL: { permission: 'permission', plan: 'plan review', question: 'question', needs: 'job needs you', limit: 'limit hit', error: 'error',
+           'done-question': 'done, asks', waiting: 'waiting', done: 'done' },
+  PLAN_RE: /\bplan\b|ExitPlanMode/i,
+  ASKS_RE: /\?[\s"'`)\]*_]*$|AskUserQuestion/,
+  LIMIT_RE: /limit/i,
+  HINT: 'j / k move · Enter open · o terminal · a ack · y allow · d deny · r reply · ? all keys',
+};
+
+/* ---------- classifying ---------- */
+
+Inbox.message = function (s) { return String((s && s.last_message) || '').trim(); };
+
+Inbox.asks = function (msg) { return Inbox.ASKS_RE.test(msg); };
+
+/* The registry job of a session (flags.registry.job), or null. */
+Inbox.job = function (s) {
+  const r = s && s.flags && s.flags.registry;
+  return r && r.job && typeof r.job === 'object' ? r.job : null;
+};
+
+/* Epoch seconds from a number (seconds or milliseconds) or an ISO string; 0 when unknown. */
+Inbox.epoch = function (v) {
+  if (typeof v === 'number' && Number.isFinite(v)) return v > 1e11 ? v / 1000 : v;
+  if (typeof v === 'string' && v) { const n = Number(v); if (Number.isFinite(n)) return Inbox.epoch(n); const t = Date.parse(v); return Number.isNaN(t) ? 0 : t / 1000; }
+  return 0;
+};
+
+/* The rate-limit record of a state payload as {session, message, kind, resets_at, at}, or null. */
+Inbox.limit = function (st) {
+  const r = st && st.rate_limited;
+  if (!r || typeof r !== 'object') return null;
+  const v = r.value && typeof r.value === 'object' ? r.value : r;
+  if (!v.session && !v.message && !v.resets_at) return null;
+  return { session: String(v.session || ''), message: String(v.message || ''), kind: String(v.kind || ''), resets_at: Inbox.epoch(v.resets_at), at: r.at || v.at || '' };
+};
+
+/* Is the limit still in force (no reset time known counts as in force)? */
+Inbox.limitActive = function (lim) { return !!lim && (!lim.resets_at || lim.resets_at * 1000 > Date.now()); };
+
+Inbox.pending = function (s, st) {
+  for (const pr of ((st && st.pending_permissions) || [])) if (pr.tmux_name === s.tmux) return pr;
+  return null;
+};
+
+Inbox.kind = function (s, st) {
+  if (!s) return '';
+  const msg = Inbox.message(s);
+  const waiting = s.state === 'waiting';
+  if (Inbox.pending(s, st)) return 'permission';
+  if (waiting && Inbox.PLAN_RE.test(msg)) return 'plan';
+  if (waiting && Inbox.asks(msg)) return 'question';
+  const job = Inbox.job(s);
+  if (job && (job.needs || job.tempo === 'blocked')) return 'needs';
+  const lim = Inbox.limit(st);
+  if ((lim && lim.session === s.tmux && Inbox.limitActive(lim) && s.state !== 'working') || (s.state === 'errored' && Inbox.LIMIT_RE.test(msg))) return 'limit';
+  if (s.state === 'errored') return 'error';
+  if (s.state === 'done' && s.needs_attention && Inbox.asks(msg)) return 'done-question';
+  if (waiting) return 'waiting';
+  if (s.state === 'done' && s.needs_attention) return 'done';
+  return '';
+};
+
+Inbox.items = function (st) {
+  if (!st || typeof rosterSessions !== 'function') return [];
+  const out = [];
+  for (const s of rosterSessions(st)) {
+    const kind = Inbox.kind(s, st);
+    const perm = Inbox.pending(s, st);
+    if (!kind || !(perm || kind === 'needs' || s.needs_attention)) continue;   // acknowledged: gone, unless a permission or a blocked job still waits on you
+    out.push({ ...s, kind, perm });
+  }
+  const at = (s) => (typeof sessionActivity === 'function' ? sessionActivity(s) : 0);
+  return out.sort((a, b) => Inbox.ORDER.indexOf(a.kind) - Inbox.ORDER.indexOf(b.kind) || at(a) - at(b) || String(a.tmux).localeCompare(String(b.tmux)));
+};
+
+Inbox.counts = function (items) {
+  const n = {};
+  for (const it of items) n[it.kind] = (n[it.kind] || 0) + 1;
+  return n;
+};
+
+/* ---------- the context a card leads with ---------- */
+
+Inbox.head = function (msg, n) { return msg.length > n ? msg.slice(0, n).trimEnd() + '…' : msg; };
+
+Inbox.tail = function (msg, n) { return msg.length > n ? '…' + msg.slice(-n).trimStart() : msg; };
+
+/* Local clock time of an epoch ('22:05'), with the weekday when it is more than a day away (a 5 h window that resets after midnight is still just a time). */
+Inbox.clock = function (epoch) {
+  if (!epoch) return '';
+  const d = new Date(epoch * 1000);
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  if (Math.abs(epoch - Date.now() / 1000) < 20 * 3600) return hm;
+  return `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]} ${hm}`;
+};
+
+/* {text, mono, note, reply}: the lead text (mono for a permission summary), a dim note beside it, and a suggested reply (needs). */
+Inbox.context = function (s, st, kind) {
+  const msg = Inbox.message(s);
+  const perm = Inbox.pending(s, st);
+  if (kind === 'permission') {
+    const here = perm && inboxFullViewers(s) > 0;           // a full client has the TUI prompt: the board's buttons would answer nothing
+    return { text: String((perm && perm.summary) || msg || 'permission request').slice(0, 300), mono: true, note: here ? 'a terminal is attached: answer it there' : (perm && perm.tool_name) || '', reply: '' };
+  }
+  if (kind === 'plan') return { text: Inbox.head(msg, 700), mono: false, note: '', reply: '' };
+  if (kind === 'question' || kind === 'done-question') return { text: Inbox.tail(msg, 400), mono: false, note: '', reply: '' };
+  if (kind === 'needs') {
+    const job = Inbox.job(s) || {};
+    return { text: String(job.needs || '').trim() || (msg ? Inbox.head(msg, 320) : 'a background job is blocked'), mono: false, note: job.state && job.state !== 'blocked' ? String(job.state) : '',
+             reply: String(job.suggested_reply || '').trim().slice(0, 60) };
+  }
+  if (kind === 'limit') {
+    const lim = Inbox.limit(st);
+    const mine = lim && lim.session === s.tmux;
+    const reset = mine && lim.resets_at ? Inbox.clock(lim.resets_at) : '';
+    return { text: Inbox.head((mine && lim.message) || msg || 'rate limit reached', 320), mono: false, note: reset ? `resets ${reset}${lim.resets_at * 1000 > Date.now() ? ' · in ' + fmtIn(lim.resets_at) : ''}` : '', reply: '' };
+  }
+  if (kind === 'error') return { text: Inbox.head(msg || 'the session failed', 320), mono: false, note: '', reply: '' };
+  if (kind === 'done') return { text: Inbox.head(msg || 'finished', 320), mono: false, note: '', reply: '' };
+  return { text: Inbox.head(msg || 'waiting for you', 320), mono: false, note: '', reply: '' };
+};
+
+/* Everything a card shows, as one string: a poll that changes none of it leaves the card alone. */
+Inbox.sig = function (s, st, kind) {
+  const perm = Inbox.pending(s, st);
+  const job = Inbox.job(s) || {};
+  const lim = Inbox.limit(st) || {};
+  return JSON.stringify([kind, s.state, s.state_at, s.needs_attention, s.name, s.agent, s.last_message, s.last_prompt, s.project, s.repo, s.folder,
+    perm && [perm.id, perm.summary, perm.tool_name], s.viewers && s.viewers.full, job.needs, job.tempo, job.state, job.suggested_reply,
+    lim.session === s.tmux ? [lim.message, lim.resets_at] : null, s.task && s.task.title]);
+};
+
+/* ---------- the card ---------- */
+
+function inboxFullViewers(s) { return Number((s.viewers && s.viewers.full) || 0); }
+
+function inboxCard(s, st, opts) {
+  const o = Object.assign({ cls: '', label: true }, opts || {});
+  const cur = { s, st, kind: '' };
+  const tmux = s.tmux;
+  const kindNode = el('span', { class: 'ib-kind' });
+  const ctx = el('div', { class: 'ib-ctx' });
+  const note = el('span', { class: 'ib-note dim' });
+  const reply = el('span', { class: 'ib-reply' });
+  const glyphs = el('span', { class: 'ib-glyphs' });
+  const nameNode = el('a', { class: 'ib-name', href: typeof sessionHash === 'function' ? sessionHash(tmux) : '#/s/' + tmux });
+  const where = el('span', { class: 'ib-where' });
+  const task = el('strong', { class: 'ib-task' });
+  const age = el('time', { class: 'age ib-age', title: 'last activity' });
+  const prompt = el('div', { class: 'ib-prompt dim' });
+  const permBtns = el('span', { class: 'actions perm-btns' });
+  const ackSlot = el('span', { class: 'slot-ack' });
+  const openLink = el('a', { class: 'btn small', href: `/term/${encodeURIComponent(tmux)}`, target: '_blank', rel: 'noopener', text: 'Open' });
+  const chips = el('div', { class: 'chips ib-chips', role: 'group', 'aria-label': 'Quick replies' });
+  for (const text of SESSION_NUDGES) {
+    const b = el('button', { class: 'chip-btn', type: 'button', text });
+    b.addEventListener('click', (e) => { e.stopPropagation(); sessionNudge(cur.s, text, b); });
+    chips.append(b);
+  }
+  const ta = composer({ placeholder: `reply to ${s.name || tmux} · ⇧Enter new line`, label: `reply to ${s.name || tmux}`, onSend: () => sessionSend(cur.s, ta) });
+  ta.addEventListener('click', (e) => e.stopPropagation());
+  const sendRow = el('form', { class: 'ib-send', onsubmit: (e) => { e.preventDefault(); e.stopPropagation(); sessionSend(cur.s, ta); } },
+    ta, el('button', { class: 'small primary', type: 'submit', text: 'Send', onclick: (e) => e.stopPropagation() }));
+  const node = el('div', { class: 'inbox-card inbox-item' + (o.cls ? ' ' + o.cls : ''), 'data-tmux': tmux },
+    el('div', { class: 'ib-lead' }, o.label ? kindNode : null, ctx, el('div', { class: 'ib-extra' }, note, reply)),
+    el('div', { class: 'ib-sub' }, glyphs, where, nameNode, task, age),
+    prompt,
+    el('div', { class: 'ib-actions' }, permBtns, openLink, ackSlot),
+    chips, sendRow);
+
+  function patchPerm(pr, show) {
+    const sig = show ? `${pr.id}:${pr.summary || ''}` : '';
+    if (cur.perm === sig) return;
+    cur.perm = sig;
+    permBtns.textContent = '';
+    if (show) {
+      permBtns.append(
+        el('button', { class: 'primary small', type: 'button', onclick: (e) => { e.stopPropagation(); decide(pr.id, 'allow'); }, text: 'Allow' }),
+        el('button', { class: 'danger small', type: 'button', onclick: (e) => { e.stopPropagation(); decide(pr.id, 'deny'); }, text: 'Deny' }));
+    }
+    permBtns.classList.toggle('hidden', !show);
+  }
+
+  function patchReply(text) {
+    if (cur.reply === text) return;
+    cur.reply = text;
+    reply.textContent = '';
+    if (text) {
+      const b = el('button', { class: 'chip-btn ib-suggest', type: 'button', title: 'the reply the job suggests', text });
+      b.addEventListener('click', (e) => { e.stopPropagation(); sessionNudge(cur.s, text, b); });
+      reply.append(b);
+    }
+    reply.classList.toggle('hidden', !text);
+  }
+
+  function patch(s2, st2) {
+    cur.s = s2;
+    cur.st = st2;
+    const kind = Inbox.kind(s2, st2);
+    const sig = Inbox.sig(s2, st2, kind);
+    if (node._sig === sig) return;
+    node._sig = sig;
+    if (cur.kind !== kind) {
+      if (cur.kind) node.classList.remove('kind-' + cur.kind);
+      if (kind) node.classList.add('kind-' + kind);
+      cur.kind = kind;
+      setTextIfChanged(kindNode, Inbox.LABEL[kind] || '');
+    }
+    const st3 = typeof sessionStateKey === 'function' ? sessionStateKey(s2) : (s2.state || 'unknown');
+    const agent = typeof sessionAgent === 'function' ? sessionAgent(s2) : (s2.agent || 'claude');
+    const gk = st3 + '|' + agent;
+    if (cur.g !== gk) { glyphs.textContent = ''; glyphs.append(stateGlyph(st3), agentGlyph(agent)); cur.g = gk; }
+    const c = Inbox.context(s2, st2, kind);
+    setTextIfChanged(ctx, c.text);
+    ctx.classList.toggle('mono', c.mono);
+    ctx.setAttribute('title', Inbox.message(s2).slice(0, 2000));
+    setTextIfChanged(note, c.note);
+    note.classList.toggle('hidden', !c.note);
+    patchReply(c.reply);
+    setTextIfChanged(where, typeof sessionWhere === 'function' ? sessionWhere(s2, true) : `${s2.project}/${s2.repo || '?'}`);
+    setTextIfChanged(nameNode, s2.name || tmux);
+    const title = s2.task && s2.task.title ? String(s2.task.title).slice(0, 120) : '';
+    setTextIfChanged(task, title);
+    task.classList.toggle('hidden', !title);
+    const pt = s2.last_prompt ? '› ' + String(s2.last_prompt).slice(0, 200) : '';
+    setTextIfChanged(prompt, pt);
+    prompt.classList.toggle('hidden', !pt);
+    agentsAgeNode(age, sessionActivity(s2));
+    node.classList.toggle('attn', !!s2.needs_attention || kind === 'permission' || kind === 'needs');
+    const pr = Inbox.pending(s2, st2);
+    patchPerm(pr, !!pr && inboxFullViewers(s2) === 0);       // a full terminal client has the TUI prompt in front of it: no remote buttons
+    const ack = !!s2.needs_attention;
+    if (cur.ack !== ack) {
+      cur.ack = ack;
+      ackSlot.textContent = '';
+      if (ack) ackSlot.append(el('button', { class: 'small', type: 'button', onclick: (e) => { e.stopPropagation(); sessionAck(cur.s); }, text: 'Ack' }));
+    }
+    const nudge = sessionNudgeable(s2);
+    chips.classList.toggle('hidden', !nudge);
+    sendRow.classList.toggle('hidden', !nudge);
+  }
+
+  node.ccPatch = patch;
+  patch(s, st);
+  return node;
+}
+
+/* ---------- the section Home puts first ---------- */
+
+/* Inbox.section(host, st, {limit, link}) -> number of items (all of them, not just the ones shown). Builds its parts into host on the first
+   call and patches them after; host is hidden while the inbox is empty. limit 0 shows everything; link is where "Show all" goes. */
+Inbox.section = function (host, st, opts) {
+  const o = Object.assign({ limit: 0, link: '' }, opts || {});
+  const items = Inbox.items(st);
+  let sec = host._inbox;
+  if (!sec) {
+    const title = el('h2', { class: 'ib-title' });
+    const more = el('a', { class: 'btn small ib-more', href: o.link || '#/inbox' });
+    const list = el('div', { class: 'roster inbox-list' });
+    sec = { title, more, list, st: null, kl: null };
+    sec.kl = makeKeyedList(list, { key: (s) => s.tmux, create: (s) => inboxCard(s, sec.st, {}), patch: (n, s) => n.ccPatch(s, sec.st) });
+    host.append(el('div', { class: 'row head ib-head' }, title, more), list);
+    host._inbox = sec;
+  }
+  sec.st = st;
+  const shown = o.limit > 0 ? items.slice(0, o.limit) : items;
+  sec.kl.update(shown);
+  setTextIfChanged(sec.title, `Needs you (${items.length})`);
+  sec.more.setAttribute('href', o.link || '#/inbox');
+  setTextIfChanged(sec.more, items.length > shown.length ? `Show all ${items.length}` : 'Open inbox');
+  sec.more.classList.toggle('hidden', !o.link);
+  sec.list.classList.toggle('cv-auto', shown.length > CV_AUTO_ROWS);
+  host.classList.toggle('hidden', !items.length);
+  return items.length;
+};
+
+/* ---------- #/inbox ---------- */
+
+const inboxPage = { refs: null, items: [], st: null };
 
 function inboxTitle() {
-  const n = state ? inboxItems().length : 0;
+  const n = typeof state !== 'undefined' && state ? Inbox.items(state).length : 0;
   return (n ? `(${n}) ` : '') + 'Needs you';
+}
+
+function inboxSummary(items) {
+  if (!items.length) return '';
+  const counts = Inbox.counts(items);
+  const parts = [`${STATE_GLYPH.waiting} ${items.length} need${items.length === 1 ? 's' : ''} you`];
+  for (const k of Inbox.ORDER) if (counts[k]) parts.push(`${counts[k]} ${Inbox.LABEL[k]}`);
+  return parts.join(' · ');
 }
 
 registerPage('inbox', {
   title: () => inboxTitle(),
   mount(root) {
     const summary = el('p', { class: 'summary' });
-    const hint = el('p', { class: 'hint', text: INBOX_HINT });
+    const hint = el('p', { class: 'hint', text: Inbox.HINT });
     const list = el('div', { class: 'roster inbox-list' });
     Pages.reset();
     const none = pageEmpty('inbox', 'Nothing needs you', 'Sessions that wait for you, finish or fail show up here until you acknowledge them.');
     root.append(el('div', { class: 'inbox-page' }, el('div', { class: 'page-head' }, el('h1', { text: 'Needs you' }), summary), hint, list, none));
+    // a click on a card selects it (the keyboard's selection walks Pages.items(), so look the session up by name, not by position)
     const select = (tmux) => {
-      const i = inboxPage.items.findIndex((x) => x.tmux === tmux);
+      const i = Pages.items().findIndex((x) => x.tmux === tmux);
       if (i < 0) return;
       Pages.setIndex(i);
       repaintPage();
@@ -29,20 +338,22 @@ registerPage('inbox', {
     inboxPage.refs = { summary, hint, none, listNode: list, list: makeKeyedList(list, {
       key: (s) => s.tmux,
       create: (s) => {
-        const n = sessionCard(s, { showProject: true, perm: true, cls: 'inbox-item' });
+        const n = inboxCard(s, inboxPage.st, {});
         n.addEventListener('click', () => select(s.tmux));
         return n;
       },
-      patch: (n, s) => n.ccPatch(s),
+      patch: (n, s) => n.ccPatch(s, inboxPage.st),
     }) };
     startAgeTicker();
   },
-  update() {
+  update(st) {
     const r = inboxPage.refs;
     if (!r) return;
-    const items = Pages.sync();
+    const items = Inbox.items(st);
+    inboxPage.st = st;
     inboxPage.items = items;
-    setTextIfChanged(r.summary, items.length ? `${STATE_GLYPH.waiting} ${items.length} need${items.length === 1 ? 's' : ''} you` : '');
+    Pages.sync();
+    setTextIfChanged(r.summary, inboxSummary(items));
     r.list.update(items);
     r.listNode.classList.toggle('cv-auto', items.length > CV_AUTO_ROWS);       // long lists skip the layout of rows that are off screen
     Pages.paint();
@@ -53,6 +364,7 @@ registerPage('inbox', {
   unmount() {
     inboxPage.refs = null;
     inboxPage.items = [];
+    inboxPage.st = null;
     stopAgeTicker();
   },
 });

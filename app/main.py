@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
@@ -374,6 +374,19 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
     return out, False
 
 
+RATE_LIMITED_MESSAGE_MAX = 200
+
+
+def _rate_limited_view() -> dict | None:
+    """state.rate_limited: the kv 'rate_limited' record ({value: {session, message, kind, resets_at}, at}, written by the StopFailure
+    hook) with the message cut to 200 characters (the kv keeps 500; the state is polled every 3 s), or None. Always present."""
+    rl = db.kv_get("rate_limited")
+    v = rl.get("value") if rl else None
+    if isinstance(v, dict) and isinstance(v.get("message"), str):
+        rl = {**rl, "value": {**v, "message": v["message"][:RATE_LIMITED_MESSAGE_MAX]}}
+    return rl
+
+
 def build_state(user: str) -> dict:
     global _scan_cache
     with _scan_lock:
@@ -406,7 +419,7 @@ def build_state(user: str) -> dict:
     st["nodes"] = db.kv_get(health.KV_NODES)
     st["backup"] = health.backup_status()
     st["node_name"] = settings.node_name or st["health"]["host"]
-    st["rate_limited"] = db.kv_get("rate_limited")
+    st["rate_limited"] = _rate_limited_view()
     st["scheduler"] = scheduler.quota_state(db)
     st["version"] = ASSET_VERSION
     st["setup"] = _setup_state(st)
@@ -1474,43 +1487,80 @@ def api_kill_session(name: str):
 
 # ---------- live last-lines stream (SSE) ----------
 
-LIVE_LINES = 20
+LIVE_LINES = 12                  # default tail length per session (?lines= overrides, 1..LIVE_MAX_LINES)
+LIVE_MAX_LINES = 40
+LIVE_MAX_NAMES = 20              # ?names= is a comma list of at most this many session names
 LIVE_INTERVAL = 2.0
 
 
-def _capture_all() -> dict[str, list[str]]:
-    """Visible tail of every non-internal session: name -> last LIVE_LINES lines."""
-    try:
-        names = [n for n in tmux.list_sessions() if not tmux.is_internal(n)]
-    except tmux.TmuxDown:
-        return {}
-    out: dict[str, list[str]] = {}
-    for n in names:
+def _stream_query(names: str | None = None, lines: str | None = None) -> tuple[set[str] | None, int]:
+    """GET /api/stream?names=a--b--c,d--e--f&lines=12 -> (names filter or None for every session, tail length).
+
+    A FastAPI dependency, not code inside the event generator: an exception raised after the response has started is a broken
+    stream, while one raised here is the plain 400 the client can read. Names are ccboard session names (tmux.split_name), at most
+    LIVE_MAX_NAMES distinct ones; lines is an integer in 1..LIVE_MAX_LINES (default LIVE_LINES)."""
+    wanted: set[str] | None = None
+    if names is not None:
+        wanted = set()
+        for raw in names.split(","):
+            name = raw.strip()
+            try:
+                tmux.split_name(name)
+            except ValueError:
+                raise projects.BadRequest(f"names: {name!r} is not a ccboard session name")
+            wanted.add(name)
+        if len(wanted) > LIVE_MAX_NAMES:
+            raise projects.BadRequest(f"names: at most {LIVE_MAX_NAMES} sessions per stream")
+    n = LIVE_LINES
+    if lines is not None:
         try:
-            text = tmux.capture(n, lines=LIVE_LINES, join=False)
+            n = int(lines.strip())
+        except ValueError:
+            raise projects.BadRequest("lines must be an integer")
+        if not 1 <= n <= LIVE_MAX_LINES:
+            raise projects.BadRequest(f"lines must be between 1 and {LIVE_MAX_LINES}")
+    return wanted, n
+
+
+def _capture_all(names: set[str] | None = None, nlines: int = LIVE_LINES) -> tuple[list[str], dict[str, list[str]]]:
+    """(every non-internal session name, name -> last nlines visible lines). Only the sessions in `names` (all when None) are
+    captured: one tmux capture-pane each is the expensive part, the listing is one call."""
+    try:
+        live_names = sorted(n for n in tmux.list_sessions() if not tmux.is_internal(n))
+    except tmux.TmuxDown:
+        return [], {}
+    out: dict[str, list[str]] = {}
+    for n in live_names:
+        if names is not None and n not in names:
+            continue
+        try:
+            text = tmux.capture(n, lines=nlines, join=False)
         except tmux.TmuxError:
             continue
-        lines = [ln.rstrip() for ln in text.splitlines()]
-        while lines and not lines[-1]:
-            lines.pop()
-        out[n] = lines[-LIVE_LINES:]
-    return out
+        tail = [ln.rstrip() for ln in text.splitlines()]
+        while tail and not tail[-1]:
+            tail.pop()
+        out[n] = tail[-nlines:]
+    return live_names, out
 
 
 @app.get("/api/stream", response_class=EventSourceResponse)
-async def api_stream(request: Request, once: bool = False):
-    """SSE: 'lines' events per session whenever its visible tail changes, a 'tick' every interval.
-    FastAPI encodes the yielded ServerSentEvent objects (response_class=EventSourceResponse)."""
+async def api_stream(request: Request, query=Depends(_stream_query), once: bool = False):
+    """SSE: 'lines' events {name, lines} per session whenever its visible tail changes, a 'tick' {sessions} every interval.
+    ?names=a,b (at most 20 session names) limits the 'lines' events and the captures to those sessions; ?lines=N (1..40, default 12)
+    sets the tail length. The tick always lists every live session, filtered or not. Bad names or lines are a 400 before the stream
+    starts. FastAPI encodes the yielded ServerSentEvent objects (response_class=EventSourceResponse)."""
+    names, nlines = query
     last: dict[str, list[str]] = {}
     while True:
-        snap = await asyncio.to_thread(_capture_all)
-        for name, lines in snap.items():
-            if last.get(name) != lines:
-                last[name] = lines
-                yield ServerSentEvent(event="lines", data={"name": name, "lines": lines})
+        live_names, snap = await asyncio.to_thread(_capture_all, names, nlines)
+        for name, tail in snap.items():
+            if last.get(name) != tail:
+                last[name] = tail
+                yield ServerSentEvent(event="lines", data={"name": name, "lines": tail})
         for gone in [n for n in last if n not in snap]:
             del last[gone]
-        yield ServerSentEvent(event="tick", data={"sessions": sorted(snap.keys())})
+        yield ServerSentEvent(event="tick", data={"sessions": live_names})
         if once or await request.is_disconnected():
             return
         await asyncio.sleep(LIVE_INTERVAL)

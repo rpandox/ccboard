@@ -673,7 +673,7 @@ test('Pages: mod+1..9 open the nth session of the roster order; a missing nth se
 test('Pages: a acknowledges, y allows and d denies the pending permission of the target; nothing without one', async () => {
   const { w } = world();
   mounted(w, '#/inbox');
-  assert.deepEqual(w.document.querySelectorAll('.rrow').map((r) => r.getAttribute('data-tmux')), [S2]);
+  assert.deepEqual(w.document.querySelectorAll('.inbox-card').map((r) => r.getAttribute('data-tmux')), [S2]);
   press(w, 'j');
   assert.equal(w.run('Pages.targetPerm().id'), 7);
   press(w, 'y');

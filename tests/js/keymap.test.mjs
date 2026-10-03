@@ -303,7 +303,7 @@ function appWorld({ platform = LINUX, active = true, target = 'shop--api--s1', s
     globalThis.__log = [];
     globalThis.navigate = (h) => __log.push('go ' + h);
     globalThis.Palette = { toggle: () => __log.push('palette'), openHelp: () => __log.push('help') };
-    globalThis.Shell = { toggleSidebar: () => __log.push('sidebar'), toggleDock: () => __log.push('dock'), focusSearch: () => __log.push('search') };
+    globalThis.Shell = { toggleSidebar: () => __log.push('sidebar'), toggleDock: () => __log.push('dock'), focusSearch: () => __log.push('search'), openCreate: (k) => __log.push('create ' + k) };
     globalThis.Pages = {
       active: () => ${active}, target: () => ${JSON.stringify(target)}, peekTmux: () => ${JSON.stringify(peek)}, selected: () => ${selected ? '({ tmux: "shop--api--s1" })' : 'null'}, targetPerm: () => ${perm ? '({ id: 7 })' : 'null'},
       select: (d) => { __log.push('select ' + d); return true; }, clear: () => __log.push('clear'),
@@ -362,6 +362,59 @@ test('install(): g chords go to the routes', () => {
   const { log, press } = appWorld();
   for (const k of ['h', 'i', 'a', 't', 'u', 'm', 's']) { press('g'); press(k); }
   assert.deepEqual(log(), ['go #/', 'go #/inbox', 'go #/agents', 'go #/tasks', 'go #/usage', 'go #/memory', 'go #/settings']);
+});
+
+test('install(): g q goes to the quad view', () => {
+  const { log, press, w } = appWorld();
+  press('g'); press('q');
+  assert.deepEqual(log(), ['go #/quad']);
+  const help = plain(w.run('Keymap.help()'));
+  assert.ok(help.some((h) => h.text === 'g then q' && /Quad/i.test(h.help) && h.group === 'Go to'), 'g q is in the help list under Go to');
+});
+
+test('install(): c then s / t / p / r open the create sheets (session, task, project, import) through Shell.openCreate', () => {
+  const { log, press, w } = appWorld();
+  for (const k of ['s', 't', 'p', 'r']) { press('c'); press(k); }
+  assert.deepEqual(log(), ['create session', 'create task', 'create project', 'create import']);
+  const help = plain(w.run('Keymap.help()'));
+  for (const [k, what] of [['s', /session/i], ['t', /task/i], ['p', /project/i], ['r', /import|repo/i]]) {
+    const row = help.find((h) => h.text === `c then ${k}`);
+    assert.ok(row && what.test(row.help), `c then ${k} is in the help list (${row && row.help})`);
+    assert.equal(row.group, help.find((h) => h.text === 'c then s').group, 'one group for the create chords');
+  }
+});
+
+test('install(): the c chords obey the chord rules: 800 ms window, broken chord, inputs, dialogs, modifiers', () => {
+  const a = appWorld();
+  const { w, log, press } = a;
+  const K = w.get('Keymap');
+  at(w, 1000); press('c'); at(w, 1700); press('s');
+  assert.deepEqual(log(), ['create session'], 'within 800 ms');
+  at(w, 5000); press('c'); at(w, 5900); press('s');
+  assert.deepEqual(log(), ['create session'], 'after 800 ms the chord has lapsed and s alone is nothing');
+  at(w, 9000); press('c'); press('x'); press('s');
+  assert.deepEqual(log(), ['create session'], 'a stray key breaks the chord');
+  const e = ev('c', { ctrlKey: true });
+  assert.equal(K.handle(e), null, 'Ctrl+C / Cmd+C stays the browser copy');
+  assert.equal(e.prevented, false);
+  for (const k of ['c', 's']) w.document.dispatch('keydown', ev(k, { target: input }));
+  assert.deepEqual(log(), ['create session'], 'typing "cs" in an input is just typing');
+  const d = appWorld({ dialogs: [{ id: 'helpdlg' }] });
+  d.press('c'); d.press('p');
+  assert.deepEqual(d.log(), [], 'no create sheet over an open dialog');
+});
+
+test('install(): m is not bound (move arrives with drag and drop in v0.5.15) and none of the chords swallow a plain key', () => {
+  const { w, log, press } = appWorld();
+  const specs = plain(w.run('Keymap.list.map((b) => b.spec)'));
+  assert.equal(specs.includes('m'), false);
+  for (const s of ['g q', 'c s', 'c t', 'c p', 'c r']) assert.ok(specs.includes(s), `binding ${s}`);
+  const e = press('m');
+  assert.equal(e.prevented, false);
+  assert.deepEqual(log(), []);
+  const q = press('q');
+  assert.equal(q.prevented, false, 'q alone is not the start of anything');
+  assert.deepEqual(log(), []);
 });
 
 test('install(): j and k move the selection only where a list is on screen', () => {
@@ -441,7 +494,7 @@ test('the defaults tolerate a partial deploy: no Pages, Palette or Shell, nothin
   const w = kw();
   w.run('Keymap.install()');
   w.ctx.console = { error() {} };
-  for (const [k, mods] of [['k', { ctrlKey: true }], ['?', { shiftKey: true }], ['/', {}], ['[', {}], ['1', { ctrlKey: true }], ['j', {}], ['Enter', {}], ['a', {}]]) {
+  for (const [k, mods] of [['k', { ctrlKey: true }], ['?', { shiftKey: true }], ['/', {}], ['[', {}], ['1', { ctrlKey: true }], ['j', {}], ['Enter', {}], ['a', {}], ['c', {}], ['s', {}], ['g', {}], ['q', {}]]) {
     assert.doesNotThrow(() => w.document.dispatch('keydown', ev(k, mods)), k);
   }
 });

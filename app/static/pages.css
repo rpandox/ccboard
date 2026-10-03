@@ -26,7 +26,7 @@
 #page .rgroup { margin:12px 0 0; }
 #page .rgroup-head { display:flex; align-items:center; gap:8px; padding:6px 2px; border-bottom:1px solid var(--line); font-size:12px; letter-spacing:.04em; text-transform:uppercase; color:var(--dim); }
 #page .rgroup-head .mono { text-transform:none; letter-spacing:0; color:var(--fg-2); }
-#page .rrow { display:grid; grid-template-columns:auto minmax(0, 1fr) auto; grid-template-areas:"g main actions" "g meta actions" "g last actions" "g chips chips" "g send send"; column-gap:10px; row-gap:2px;
+#page .rrow { display:grid; grid-template-columns:auto minmax(0, 1fr) auto; grid-template-areas:"g main actions" "g meta actions" "g last actions" "g chips chips" "g send send" "g tail tail"; column-gap:10px; row-gap:2px;
               align-items:center; padding:8px 8px 8px 10px; border-bottom:1px solid var(--line-soft); border-left:2px solid transparent; }
 @media (hover:hover) { #page .rrow:hover { background:var(--card); } }   /* hover only where a pointer can hover: touch never keeps it */
 #page .rrow.attn { border-left-color:var(--warn); background:var(--warn-bg); }
@@ -44,7 +44,7 @@
 #page .rrow .rr-msg { overflow-wrap:anywhere; }
 #page .rrow.compact .rr-last { -webkit-line-clamp:1; }
 @media (max-width:599px) {
-  #page .rrow { grid-template-columns:auto minmax(0, 1fr); grid-template-areas:"g main" "g meta" "g last" "actions actions" "chips chips" "send send"; }
+  #page .rrow { grid-template-columns:auto minmax(0, 1fr); grid-template-areas:"g main" "g meta" "g last" "actions actions" "chips chips" "send send" "tail tail"; }
   #page .rrow .rr-actions { justify-content:flex-start; margin-top:6px; }
 }
 
@@ -140,3 +140,205 @@ html.force-coarse #page .rrow .rr-send textarea.composer { font-size:16px; }
 #page .proj-head { margin:0 0 12px; }
 #page .proj-links .proj-row { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
 #page .proj-links .lbl { font:12px/1.3 var(--font-mono); color:var(--dim); margin-right:4px; }
+
+/* ---------- inbox + widgets (v0.5.5: pages/inbox.js cards, pages/widgets.js usage card and limit callout, the + menu's sheet forms) ---------- */
+
+/* the inbox card: the context first, then where it comes from, then what to do about it */
+#page .inbox-card { display:flex; flex-direction:column; gap:6px; margin:0 0 8px; padding:10px 10px 10px 12px; min-width:0; cursor:default;
+                    background:var(--card); border:1px solid var(--line); border-left:3px solid var(--warn); border-radius:2px; }
+#page .inbox-card.kind-limit, #page .inbox-card.kind-error { border-left-color:var(--bad); }
+#page .inbox-card.kind-done { border-left-color:var(--ok); }
+@media (hover:hover) { #page .inbox-card:hover { background:var(--panel); } }
+#page .inbox-card.sel { outline:2px solid var(--sig); outline-offset:-2px; background:rgba(77,208,225,.10); }
+#page .ib-lead { display:flex; flex-direction:column; gap:3px; min-width:0; }
+#page .ib-kind { align-self:flex-start; font:11px/1.3 var(--font-mono); letter-spacing:.05em; text-transform:uppercase; color:var(--warn); }
+#page .inbox-card.kind-limit .ib-kind, #page .inbox-card.kind-error .ib-kind { color:var(--bad); }
+#page .inbox-card.kind-done .ib-kind { color:var(--ok); }
+#page .ib-ctx { font-size:14px; line-height:1.4; color:var(--fg); white-space:pre-wrap; overflow-wrap:anywhere; overflow:hidden; display:-webkit-box; -webkit-line-clamp:6; -webkit-box-orient:vertical; }
+#page .ib-ctx.mono { padding:6px 8px; background:var(--bg); border:1px solid var(--line); border-radius:2px; font:12px/1.45 var(--font-mono); color:var(--fg-2); -webkit-line-clamp:4; }
+#page .ib-extra { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+#page .ib-note { font:12px/1.4 var(--font-mono); }
+#page .ib-sub { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; min-width:0; font:12px/1.4 var(--font-mono); color:var(--dim); }
+#page .ib-glyphs { display:inline-flex; align-items:center; gap:2px; }
+#page .ib-name { font:600 13px/1.4 var(--font-ui); color:var(--fg); }
+@media (pointer:coarse) { #page .ib-name { display:inline-flex; align-items:center; min-height:var(--tap); } }
+html.force-coarse #page .ib-name { display:inline-flex; align-items:center; min-height:var(--tap); }
+#page .ib-task { font:600 12px/1.4 var(--font-ui); color:var(--fg-2); overflow-wrap:anywhere; }
+#page .ib-prompt { font-size:12px; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow-wrap:anywhere; }
+#page .ib-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+#page .ib-actions .perm-btns { display:inline-flex; gap:6px; }
+#page .ib-chips { margin-top:2px; }
+#page .ib-suggest { border-color:var(--sig); color:var(--fg); }
+#page .ib-send { display:flex; align-items:flex-end; gap:6px; min-width:0; max-width:720px; margin:2px 0 0; }
+#page .ib-send textarea.composer { flex:1 1 0; width:0; min-width:0; min-height:var(--tap); height:var(--tap); font-size:13px; }
+@media (pointer:coarse) { #page .ib-send textarea.composer { font-size:16px; } }
+html.force-coarse #page .ib-send textarea.composer { font-size:16px; }
+#page .ib-head { margin:0 0 8px; }
+#page .ib-head .ib-title { margin:0; font-size:15px; font-weight:600; }
+#page .inbox-list { margin-top:6px; }
+
+/* the usage card */
+#page .ucard { margin:12px auto; padding:12px 14px; background:var(--card); border:1px solid var(--line); border-radius:2px; }
+#page .uc-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px 12px; }
+#page .uc-head h2 { margin:0; font-size:15px; font-weight:600; }
+#page .uc-backup { display:inline-flex; align-items:center; padding:1px 8px; border:1px solid var(--line); border-radius:10px; font:12px/1.5 var(--font-mono); color:var(--dim); text-decoration:none; }
+#page .uc-backup.bad { border-color:var(--bad); color:var(--bad); }
+@media (pointer:coarse) { #page .uc-backup { min-height:var(--tap); } }
+html.force-coarse #page .uc-backup { min-height:var(--tap); }
+#page .uc-gauges { display:flex; flex-wrap:wrap; gap:8px 22px; margin:10px 0 4px; }
+#page .gauge { display:flex; align-items:center; gap:8px; flex:1 1 230px; min-width:0; }
+#page .g-label { min-width:2ch; font:600 12px/1 var(--font-mono); color:var(--fg-2); }
+#page .g-bar { position:relative; flex:1 1 80px; height:6px; border-radius:3px; background:var(--line-soft); overflow:hidden; }
+#page .g-bar i { display:block; height:100%; background:var(--ok); }
+#page .gauge.warn .g-bar i { background:var(--warn); }
+#page .gauge.bad .g-bar i { background:var(--bad); }
+#page .g-val { min-width:4ch; text-align:right; font-size:12px; color:var(--fg); }
+#page .g-reset { white-space:nowrap; }
+#page .uc-burn { margin:2px 0 4px; font:12px/1.4 var(--font-mono); }
+#page .uc-charts { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:14px 22px; margin-top:10px; }
+#page .uc-fig { margin:0; min-width:0; }
+#page .uc-cap { display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-bottom:4px; font-size:11px; letter-spacing:.04em; text-transform:uppercase; color:var(--dim); }
+#page .uc-cap-v { text-transform:none; letter-spacing:0; color:var(--fg-2); }
+#page .uc-plot svg { display:block; width:100%; height:44px; overflow:visible; }
+#page .uc-bars .uc-plot svg { height:56px; }
+#page .sp-line { fill:none; stroke:var(--sig); stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
+#page .sp-guide { stroke:var(--warn); stroke-opacity:.4; stroke-width:1; stroke-dasharray:3 3; }
+#page .sp-base, #page .cb-base { stroke:var(--line); stroke-width:1; }
+#page .cb { fill:var(--sig); }
+#page .cb.zero { fill:url(#uc-hatch); stroke:var(--dim-2); stroke-width:1; }              /* a day without spend: hatched, never an empty gap */
+#page .cb-hatch-line { stroke:var(--dim-2); stroke-width:1; }
+@media (hover:hover) { #page .cb:hover { fill:var(--fg-2); } #page .cb.zero:hover { fill:url(#uc-hatch); } }
+#page .uc-days { display:grid; grid-template-columns:repeat(7, 1fr); margin-top:3px; text-align:center; font:10px/1.2 var(--font-mono); color:var(--dim); }
+
+/* the rate-limit callout in #banner (pages/widgets.js limitBanner): alone, it needs no second frame */
+#banner.limit-only { display:block; padding:0; background:none; border-left:0; }
+#banner .limit-callout { display:flex; align-items:center; justify-content:space-between; gap:8px; flex:1 1 100%; padding:8px 8px 8px 12px; }
+#banner .limit-callout .lc-text { min-width:0; overflow-wrap:anywhere; }
+
+/* the + menu's sheet forms: project (with the clone queue), GitHub import, batch prompt */
+.sheet-links { margin:8px 0 0; }
+.sheet-body .form .row > input[type=text] { flex:1 1 140px; min-width:0; }
+.sheet-body .clone-queue { margin-top:10px; }
+.form-status:empty { display:none; }
+.form .checks.import-repos, .form .checks.batch-repos { flex-direction:column; flex-wrap:nowrap; max-height:40vh; overflow-y:auto; gap:2px; }
+.form .checks.import-repos label { flex-wrap:wrap; gap:2px 8px; }
+@media (pointer:coarse) { .form .checks.import-repos label, .form .checks.batch-repos label { min-height:var(--tap); } }
+html.force-coarse .form .checks.import-repos label, html.force-coarse .form .checks.batch-repos label { min-height:var(--tap); }
+
+/* ---------- home (v0.5.5: pages/home.js: summary line, away strip, schedules strip, project blocks, rich rows from pages/agents.js) ---------- */
+
+/* the summary line: a filter chip per state; sticky under the page head (#main scrolls), a scrollable strip at 390 px */
+#page .summary.sumbar { position:sticky; top:0; z-index:6; display:flex; flex-wrap:nowrap; align-items:center; gap:6px; margin:0; padding:6px 0; overflow-x:auto; white-space:nowrap;
+                        background:var(--bg); border-bottom:1px solid var(--line-soft); -webkit-overflow-scrolling:touch; scrollbar-width:none; }
+#page .summary.sumbar::-webkit-scrollbar { display:none; }
+#page .sum-seg { flex:none; display:inline-flex; align-items:center; gap:6px; min-height:28px; padding:0 10px; border:1px solid var(--line); border-radius:14px; background:var(--panel); color:var(--fg-2);
+                 font:12px/1 var(--font-mono); text-decoration:none; }
+#page .sum-seg .glyph { width:1em; }
+#page .sum-seg .sum-n { color:var(--fg); font-weight:600; }
+#page .sum-seg.zero { color:var(--dim); background:none; }
+#page .sum-seg.zero .sum-n { color:var(--dim); font-weight:400; }
+#page .sum-seg.sum-waiting:not(.zero) { border-color:var(--warn); }
+#page .sum-seg.sum-errored:not(.zero) { border-color:var(--bad); }
+#page .sum-seg.on { border-color:var(--sig); background:rgba(77,208,225,.14); color:var(--fg); }
+@media (hover:hover) { #page .sum-seg:hover { border-color:var(--sig); color:var(--fg); } }
+#page .sum-seg:focus-visible, #page .seg-btn:focus-visible { outline:2px solid var(--sig); outline-offset:1px; }
+
+/* the group control in the page head */
+#page .seg-ctl { display:inline-flex; align-items:center; gap:0; }
+#page .seg-ctl .seg-k { margin-right:8px; }
+#page .seg-btn { min-height:28px; padding:0 12px; border:1px solid var(--line); border-left-width:0; background:var(--panel); color:var(--fg-2); font:12px/1 var(--font-ui); cursor:pointer; }
+#page .seg-btn:first-of-type { border-left-width:1px; border-radius:2px 0 0 2px; }
+#page .seg-btn:last-of-type { border-radius:0 2px 2px 0; }
+#page .seg-btn[aria-pressed=true] { background:rgba(77,208,225,.14); border-color:var(--sig); color:var(--fg); }
+#page .seg-btn[aria-pressed=true] + .seg-btn { border-left-width:1px; }
+@media (hover:hover) { #page .seg-btn:hover { color:var(--fg); } }
+
+/* the away strip */
+#page .away { display:flex; flex-wrap:wrap; align-items:center; gap:2px 6px; margin:10px 0 0; padding:8px 8px 8px 12px; }
+#page .away .away-text { color:var(--fg-2); }
+#page .away .away-list { flex:1 1 auto; min-width:0; }
+#page .away .away-n { color:var(--fg); font-weight:600; }
+#page .away .away-n + .away-n::before { content:'·'; display:inline-block; margin:0 8px 0 2px; color:var(--dim); font-weight:400; }
+#page .away .away-x { margin-left:auto; }
+
+/* the inbox section Inbox.section builds into #inbox-home */
+#page .home-inbox { margin:12px 0 0; }
+
+/* the schedules strip */
+#page .sched { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; margin:12px 0 0; padding:6px 0; border-top:1px solid var(--line-soft); border-bottom:1px solid var(--line-soft); font-size:12px; }
+#page .sched .sched-list { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; min-width:0; flex:1 1 auto; }
+#page .sched .sched-item { display:inline-flex; align-items:center; gap:6px; max-width:100%; min-height:28px; padding:0 4px; border:0; background:none; color:var(--fg-2); font:12px/1.2 var(--font-ui); cursor:pointer; }
+#page .sched .sched-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:28ch; }
+@media (hover:hover) { #page .sched .sched-item:hover { color:var(--fg); } }
+@media (pointer:coarse) { #page .sched .sched-item { min-height:var(--tap); } }
+html.force-coarse #page .sched .sched-item { min-height:var(--tap); }
+
+/* project (and state / agent) blocks */
+#page .pblocks { display:flex; flex-direction:column; gap:14px; margin-top:12px; }
+#page .pblock .pb-head { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; padding:4px 2px; border-bottom:1px solid var(--line); min-width:0; }
+#page .pblock .pb-toggle { min-width:28px; padding:0 4px; }
+#page .pblock .pb-name { font-size:14px; font-weight:600; color:var(--fg); text-decoration:none; overflow-wrap:anywhere; }
+#page .pblock a.pb-name { display:inline-flex; align-items:center; }
+@media (hover:hover) { #page .pblock a.pb-name:hover { color:var(--sig); text-decoration:underline; } }
+#page .pblock .pb-count, #page .pblock .pb-cost, #page .pblock .pb-git { font-size:12px; }
+#page .pblock .pb-add { margin-left:auto; }
+#page .pblock.has-attn > .pb-head { border-bottom-color:var(--warn); }
+#page .pblock.collapsed > .pb-head { border-bottom-color:var(--line-soft); }
+#page .pblock .pgroup-head { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; padding:6px 2px 2px 12px; font-size:12px; }
+#page .pblock .pg-name { color:var(--fg-2); }
+#page .pblock .pg-add { margin-left:auto; }
+#page .pblock .pg-list { display:flex; flex-direction:column; }
+#page .pblock .pb-older-toggle { display:flex; align-items:center; justify-content:flex-start; width:100%; min-height:var(--tap); padding:0 4px; border:0; border-radius:0; background:none; box-shadow:none; color:var(--fg-2); font:600 13px/1 var(--font-ui); text-align:left; cursor:pointer; }
+@media (hover:hover) { #page .pblock .pb-older-toggle:hover { color:var(--fg); } }
+#page .pblock.older > .pb-body { display:flex; flex-direction:column; gap:14px; padding-top:10px; }
+#page .pblock.older .pblock { margin-left:8px; }
+#page .home-note { margin:14px 0; }
+
+/* the rich row (sessionCard rich:true): the state label, then the chips, in one wrapping line */
+#page .rrow .rr-metaline { grid-area:meta; display:flex; flex-wrap:wrap; align-items:center; gap:3px 8px; min-width:0; }
+#page .rrow .rr-metaline .rr-meta { grid-area:auto; }
+#page .rr-badges { display:inline-flex; flex-wrap:wrap; align-items:center; gap:3px 6px; min-width:0; }
+#page .bdg { display:inline-flex; align-items:center; min-height:18px; padding:0 7px; border:1px solid var(--line); border-radius:9px; font:11px/1.5 var(--font-ui); color:var(--fg-2); white-space:nowrap; text-decoration:none; }
+#page .bdg.mono, #page .bdg-model { font-family:var(--font-mono); }
+#page .bdg-wt { color:var(--dim); }
+#page .bdg-pr.ok { border-color:var(--ok); color:var(--ok); }
+#page .bdg-pr.bad { border-color:var(--bad); color:var(--bad); }
+#page .bdg-pr.warn { border-color:var(--warn); color:var(--warn); }
+#page .bdg-cost.cost-warn { border-color:var(--warn); color:var(--warn); }
+#page .bdg-cost.cost-bad { border-color:var(--bad); color:var(--bad); background:var(--bad-bg); }
+#page .bdg-limit { border-color:var(--bad); color:var(--bad); background:var(--bad-bg); }
+#page .bdg-blocked { border-color:var(--warn); color:var(--warn); background:var(--warn-bg); }
+@media (hover:hover) { #page a.bdg:hover { border-color:var(--sig); color:var(--fg); } }
+#page .ctx { display:inline-flex; align-items:center; gap:5px; font:11px/1 var(--font-mono); color:var(--dim); }
+#page .ctx-bar { display:inline-block; width:40px; height:6px; border-radius:3px; background:var(--line-soft); overflow:hidden; }
+#page .ctx-bar i { display:block; height:100%; background:var(--dim-2); }
+#page .ctx.ctx-hi .ctx-bar i { background:var(--warn); }
+#page .ctx.ctx-hi .ctx-pct { color:var(--warn); }
+#page .ctx.ctx-crit .ctx-bar i { background:var(--bad); }
+#page .ctx.ctx-crit .ctx-pct { color:var(--bad); }
+#page .rr-badges .chip-btn { min-height:22px; padding:0 8px; }
+#page .rrow.rich .rr-last > * { -webkit-line-clamp:1; }
+#page .rrow.rich .rr-actions { gap:4px; }
+#page .rrow .rr-replybtn.on, #page .rrow .rr-tailbtn.on { color:var(--sig); }
+/* a rich row keeps the nudge chips and the send box behind Reply (the inbox section above carries the full reply UI of what needs you) */
+#page .rrow.rich:not(.open) > .rr-chips, #page .rrow.rich:not(.open) > .rr-send { display:none; }
+#page .rrow .rr-tail { grid-area:tail; margin-top:6px; min-width:0; }
+#page .rrow .rr-tail pre.tail { margin:0; max-height:210px; font-size:11px; line-height:1.4; }
+@media (pointer:coarse) {
+  #page .sum-seg, #page .seg-btn { min-height:var(--tap); }
+  #page .bdg-pr, #page .away .away-n, #page .pblock a.pb-name { min-height:var(--tap); }
+  #page .away .away-n { display:inline-flex; align-items:center; }
+  #page .rr-badges .chip-btn { min-height:var(--tap); }
+  #page .pblock .pb-toggle { min-width:var(--tap); }
+  #page .rrow.rich .rr-name { display:inline-flex; align-items:center; min-height:var(--tap); }
+}
+html.force-coarse #page .sum-seg, html.force-coarse #page .seg-btn { min-height:var(--tap); }
+html.force-coarse #page .bdg-pr, html.force-coarse #page .away .away-n, html.force-coarse #page .pblock a.pb-name { min-height:var(--tap); }
+html.force-coarse #page .away .away-n { display:inline-flex; align-items:center; }
+html.force-coarse #page .rr-badges .chip-btn { min-height:var(--tap); }
+html.force-coarse #page .pblock .pb-toggle { min-width:var(--tap); }
+html.force-coarse #page .rrow.rich .rr-name { display:inline-flex; align-items:center; min-height:var(--tap); }
+
+/* project route: repo list and actions beside the code-server links (until the v0.5.6 page) */
+#page .proj-repos .proj-repo { display:inline-flex; align-items:center; gap:6px; margin-right:10px; }
+#page .proj-actions { margin-top:6px; gap:8px; }

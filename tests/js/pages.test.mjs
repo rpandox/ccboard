@@ -190,7 +190,7 @@ function fakeState(over = {}) {
   };
 }
 
-const PAGE_FILES = ['home', 'inbox', 'tasks', 'agents', 'settings', 'search', 'session', 'placeholders'];
+const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'agents', 'settings', 'search', 'session', 'placeholders'];       // widgets.js (Widgets, no route) loads right after inbox.js
 
 /** A world with the DOM, the real scripts in index.html order (shell.js left out), and recorders for api, toast and registerPage. */
 function pagesWorld({ wide = false, extra = {}, state = fakeState(), realPoll = false } = {}) {
@@ -200,7 +200,7 @@ function pagesWorld({ wide = false, extra = {}, state = fakeState(), realPoll = 
   w.ctx.__calls = []; w.ctx.__toasts = []; w.ctx.__registered = []; w.ctx.__mounts = {}; w.ctx.__searchHits = [];
   w.run(`
     api = async (method, path, body) => {
-      __calls.push({ method, path, body });
+      if (!path.startsWith('/api/series') && !path.startsWith('/api/usage/summary')) __calls.push({ method, path, body });      // the usage card's background reads (Home under a peek) are not what these tests look at
       if (path.startsWith('/api/search')) return { results: __searchHits };
       return { ok: true };
     };
@@ -501,7 +501,7 @@ test('closing a peek opened cold (push link) lands on home, not outside the app'
   assert.equal(rep.args[2], '#/');
   assert.equal(w.location.hash, '#/');
   assert.equal(mounts(w, 'home'), 1);
-  assert.ok(page(w).querySelector('#projects'), 'home is mounted');
+  assert.ok(page(w).querySelector('.pblocks') && page(w).querySelector('.sumbar'), 'home is mounted');
 });
 
 test('in the dock from 1024 px up, and a closed peek hides it again', () => {
@@ -568,34 +568,36 @@ test('every later-phase route has a placeholder that names its phase', () => {
 
 // ---------------------------------------------------------------- inbox, tasks, home
 
-test('#/inbox lists only what needs attention, with the permission, chips and legacy selection', async () => {
+test('#/inbox lists only what needs attention as cards in kind order, with the permission, chips and legacy selection', async () => {
   const st = fakeState();
   st.projects[1].repos[0].sessions[0] = { ...st.projects[1].repos[0].sessions[0], state: 'done', needs_attention: true, state_at: ISO(90) };
   const { w } = pagesWorld({ state: st });
   w.location.hash = '#/inbox';
+  const cards = () => page(w).querySelectorAll('.inbox-card').map((n) => n.getAttribute('data-tmux'));
   assert.equal(w.document.title, '(2) Needs you · ccboard');
-  assert.deepEqual(rows(page(w)), ['blog--web--s3', 'shop--api--s2'], 'oldest first, like the legacy list');
-  const waiting = page(w).querySelector('.rrow[data-tmux=shop--api--s2]');
-  assert.equal(text(waiting.querySelector('.rr-where')), 'shop/api', 'the inbox names project and repo');
-  assert.match(text(waiting.querySelector('.rr-last')), /Bash: npm test/);
+  assert.deepEqual(cards(), ['shop--api--s2', 'blog--web--s3'], 'by kind (permission, then done), not by age');
+  const waiting = page(w).querySelector('.inbox-card[data-tmux=shop--api--s2]');
+  assert.equal(text(waiting.querySelector('.ib-where')), 'shop/api', 'the inbox names project and repo');
+  assert.match(text(waiting.querySelector('.ib-ctx')), /Bash: npm test/, 'the permission summary leads');
   const allow = waiting.querySelectorAll('button').find((b) => text(b) === 'Allow');
   allow.click();
   await tick();
   assert.deepEqual(calls(w).pop(), { method: 'POST', path: '/api/permission/7/allow' });
   assert.equal(waiting.querySelectorAll('.chips .chip-btn').length, 6);
-  waiting.click();                                                        // selecting a card drives ui.inboxSel
-  assert.equal(w.get('ui').inboxSel, 1);
+  waiting.click();                                                        // selecting a card drives ui.inboxSel (the index in the list the page draws)
+  assert.equal(w.get('ui').inboxSel, 0);
   assert.ok(waiting.classList.contains('sel'));
-  assert.equal(page(w).querySelector('.rrow[data-tmux=blog--web--s3]').classList.contains('sel'), false);
+  assert.equal(page(w).querySelector('.inbox-card[data-tmux=blog--web--s3]').classList.contains('sel'), false);
 });
 
 test('an empty inbox says so; the title loses its count', () => {
   const st = fakeState();
   st.projects[0].repos[0].sessions[1].needs_attention = false;
+  st.pending_permissions = [];                                            // a pending permission would keep its session in the inbox
   const { w } = pagesWorld({ state: st });
   w.location.hash = '#/inbox';
   assert.equal(w.document.title, 'Needs you · ccboard');
-  assert.deepEqual(rows(page(w)), []);
+  assert.deepEqual(page(w).querySelectorAll('.inbox-card'), []);
   const none = page(w).querySelectorAll('.nonideal').find((n) => /Nothing needs you/.test(text(n)));
   assert.equal(none.classList.contains('hidden'), false);
 });
@@ -614,42 +616,80 @@ test('#/tasks renders the kanban into a #tasks section, or an empty state', () =
   assert.match(text(sec), /In progress \(1\)/);
 });
 
-test('#/ mounts the board sections with the legacy ids and paints the project cards', () => {
+test('#/ mounts Home: the summary line, the inbox section, one block per project and the usage card host; the v0.4 board sections are gone', () => {
   const { w } = pagesWorld();
   w.location.hash = '#/';
   const root = page(w);
-  for (const id of ['inbox', 'live', 'tasks', 'jobs', 'new-project', 'projects']) assert.ok(root.querySelector(`#${id}`), `#${id}`);
-  assert.ok(root.querySelector('#importrow') && root.querySelector('#queue'), 'renderNewProject() built its form');
-  assert.equal(root.querySelectorAll('#projects .card').length, 2, 'one card per project');
-  assert.equal(root.querySelector('#inbox').classList.contains('hidden'), false, 'the needs-attention list is shown');
+  for (const id of ['inbox-home', 'usage-home']) assert.ok(root.querySelector(`#${id}`), `#${id}`);
+  assert.ok(root.querySelector('nav.summary.sumbar') && root.querySelector('.seg-ctl') && root.querySelector('.pblocks'));
+  for (const id of ['inbox', 'live', 'tasks', 'jobs', 'new-project', 'importrow', 'queue', 'projects']) assert.equal(root.querySelector(`#${id}`), null, `#${id} moved out of Home (the + menu, #/tasks and the schedules strip)`);
+  assert.deepEqual(root.querySelector('.pblocks').children.map((n) => n.getAttribute('data-block')), ['p:shop', 'p:blog'], 'one block per project, the one that needs you first');
+  assert.deepEqual(root.querySelectorAll('.sum-seg').map((n) => n.getAttribute('data-f') + ':' + text(n.querySelector('.sum-n'))), ['waiting:1', 'working:1', 'idle:2', 'done:0', 'errored:0']);
+  assert.equal(root.querySelector('.sum-seg[data-f=errored]').classList.contains('hidden'), true);
+  assert.equal(root.querySelector('#inbox-home').classList.contains('hidden'), false, 'the needs-you cards are shown');
+  assert.deepEqual(root.querySelectorAll('#inbox-home .inbox-card').map((n) => n.getAttribute('data-tmux')), ['shop--api--s2']);
+  assert.equal(root.querySelectorAll('.pblocks .rrow').length, 4, 'a rich row per session');
   assert.equal(w.document.title, '(1) Home · ccboard');
 });
 
-test('Home keeps the live grid alive only while mounted: main.js restores the flag, mount starts it, unmount stops it', () => {
+test('Home opens the event stream only while a session\'s tail is expanded: one connection for all of them, closed with the last, never by a poll', () => {
   const opened = [];
   class FakeES { constructor(url) { opened.push(this); this.url = url; this.closed = false; } addEventListener() {} close() { this.closed = true; } }
   const { w } = pagesWorld({ extra: { EventSource: FakeES } });
-  w.run('live.on = true');
+  w.run('Live.DEBOUNCE_MS = 0');
   w.location.hash = '#/';
+  assert.equal(opened.length, 0, 'mounting Home connects to nothing');
+  const tail = (tmux) => page(w).querySelector(`.pblocks .rrow[data-tmux="${tmux}"] .rr-tailbtn`);
+  tail('shop--api--s1').click();
   assert.equal(opened.length, 1);
-  assert.equal(opened[0].url, '/api/stream');
-  assert.ok(page(w).querySelector('#live .live-grid'));
-  w.location.hash = '#/inbox';
+  assert.equal(opened[0].url, '/api/stream?names=shop--api--s1&lines=12');
+  tail('blog--web--s3').click();
+  assert.equal(opened.length, 2, 'the subscriber set changed: one new connection');
   assert.equal(opened[0].closed, true);
-  assert.equal(w.get('live.es'), null);
-  assert.equal(w.get('live.on'), true, 'the flag survives so coming back restarts the stream');
-  w.location.hash = '#/';
-  assert.equal(opened.length, 2);
+  assert.equal(opened[1].url, '/api/stream?names=blog--web--s3,shop--api--s1&lines=12');
+  for (let i = 0; i < 4; i++) { w.ctx.__st = fakeState(); w.run('state = __st; updateCurrentPage(state)'); }
+  assert.equal(opened.length, 2, 'state polls never touch the stream');
+  assert.equal(opened[1].closed, false);
+  tail('shop--api--s1').click();
+  assert.equal(opened.length, 3, 'one session less: reconnect with the rest');
+  assert.equal(opened[2].url, '/api/stream?names=blog--web--s3&lines=12');
+  tail('blog--web--s3').click();
+  assert.equal(opened[2].closed, true, 'nobody is watching: the stream is closed');
+  assert.equal(opened.length, 3);
+  assert.equal(w.run('Live.es'), null);
+  tail('shop--api--s1').click();
+  assert.equal(opened.length, 4);
+  w.location.hash = '#/inbox';
+  assert.equal(opened[3].closed, true, 'leaving Home lets go of it');
+  assert.equal(w.run('Live.subs.size'), 0);
 });
 
-test('on Home the first tap of a task or schedule button (Archive, Delete) swaps in its Confirm', () => {
+test('on #/tasks the first tap of Archive swaps in its Confirm (the kanban repaints through the page hook)', () => {
   const task = { id: 1, title: 'Fix the cart', project: 'shop', repo: 'api', branch: 'worktree-fix', column: 'in_progress', tmux: 'shop--api--t-fix', session: sess('t-fix', { state: 'working' }), ci: null, overlap: [] };
   const { w } = pagesWorld({ state: fakeState({ tasks: [task] }) });
-  w.location.hash = '#/';
+  w.location.hash = '#/tasks';
   const archive = () => page(w).querySelector('#tasks .task .actions').querySelectorAll('button').find((b) => /Archive/.test(text(b)));
   assert.equal(text(archive()), 'Archive');
   archive().click();
-  assert.match(text(page(w).querySelector('#tasks')), /Confirm Archive/, 'the tasks section repainted, not just #projects');
+  assert.match(text(page(w).querySelector('#tasks')), /Confirm Archive/, 'the tasks section repainted, not just the page behind it');
+});
+
+test('on Home the schedules strip opens the schedules list in the sheet, and the first tap of Delete swaps in its Confirm', () => {
+  const job = { id: 3, project: 'shop', repo: 'api', name: 'Nightly audit', cron: '0 2 * * *', permission_mode: 'acceptEdits', max_turns: 20, max_budget_usd: null, enabled: 1,
+    next_run_at: new Date(Date.now() + 5 * 3600e3).toISOString(), last_status: null, agent: 'claude' };
+  const { w } = pagesWorld({ state: fakeState({ jobs: [job] }) });
+  w.location.hash = '#/';
+  const strip = page(w).querySelector('.sched');
+  assert.equal(strip.classList.contains('hidden'), false);
+  assert.equal(text(strip.querySelector('.sched-name')), 'Nightly audit');
+  assert.equal(w.document.querySelector('#sheet').open, false);
+  strip.querySelector('.sched-all').click();
+  const sheetEl = w.document.querySelector('#sheet');
+  assert.equal(sheetEl.open, true);
+  const del = () => sheetEl.querySelector('#jobs').querySelectorAll('button').find((b) => /Delete/.test(text(b)));
+  assert.equal(text(del()), 'Delete');
+  del().click();
+  assert.match(text(sheetEl.querySelector('#jobs')), /Confirm Delete/, 'the schedules list repainted with the two-tap state');
 });
 
 test('renderProjects off the board repaints the page instead of crashing', () => {
@@ -835,8 +875,9 @@ test('main.js boots in order: legacy hash rewritten, live flag restored, first r
   w.load('main.js');
   await tick();
   assert.equal(w.history.calls[0].args[2], '#/s/shop--api--s1', 'the old ntfy link was rewritten first');
-  assert.equal(w.get('live.on'), true);
-  assert.equal(w.get('live.es'), null, 'the stream waits for the Home page');
+  if (w.run('typeof live') !== 'undefined') {                             // the v0.4 flag shim: main.js still restores it, nothing acts on it any more
+  }
+  assert.equal(w.run('Live.es'), null);
   assert.equal(w.get('currentRoute')().id, 'session');
   assert.ok(sheet(w).querySelector('.peek[data-tmux=shop--api--s1]'), 'the first route mounted the peek');
   assert.ok(sheet(w).querySelector('.peek-card'), 'and the first state paints it through the fallback render()');

@@ -99,11 +99,12 @@ TMUX_NAME="$(first_tmux)"
 # width x height : expected body[data-shell] [: pass]; a pass is pwa (html.pwa injected, topbar checked) or ipad (a tablet size)
 VIEWPORTS="390x844:compact 768x1024:medium 1024x768:expanded 1280x800:large 1440x900:large:pwa 1024x1366:expanded:ipad 834x1194:medium:ipad"
 # hash route | expected body[data-page]
-ROUTES="#/|home #/inbox|inbox #/agents|agents #/tasks|tasks #/settings|settings #/search?q=auth|search #/s/$TMUX_NAME|session"
+ROUTES="#/|home #/?f=waiting|home #/inbox|inbox #/agents|agents #/tasks|tasks #/settings|settings #/search?q=auth|search #/s/$TMUX_NAME|session"
 
 slug() {
   local s="${1#\#/}"
   [ -z "$s" ] && s=home
+  case "$s" in \?*) s="home$s" ;; esac     # '#/?f=waiting' is Home with a filter: home-f-waiting
   printf '%s' "$s" | tr '/?=&#' '-----'
 }
 

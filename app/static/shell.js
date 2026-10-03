@@ -99,7 +99,9 @@ Shell.model = function (st) {
   const main = projects.filter((p) => !p.older);
   const older = projects.filter((p) => p.older);
   const tasks = ((st && st.tasks) || []).filter((t) => !t.archived_at).length;
-  const model = { attn, live, tasks, main, older, empty: !projects.length };
+  // one definition of 'needs you' everywhere: the inbox list (pending permissions and blocked jobs included), else the attention flags
+  const attnAll = (typeof Inbox !== 'undefined' && Inbox && typeof Inbox.items === 'function') ? Inbox.items(st).length : attn;
+  const model = { attn: attnAll, live, tasks, main, older, empty: !projects.length };
   Shell.cache = { st, model };
   return model;
 };
@@ -623,13 +625,28 @@ Shell.buildResizer = function (app) {
 
 Shell.createItems = function () {
   return [
-    { label: 'New session', icon: 'console', onClick: () => Shell.pickRepo('session') },
-    { label: 'New task', icon: 'git-branch', onClick: () => Shell.pickRepo('task') },
-    { label: 'Schedule', icon: 'time', onClick: () => Shell.pickRepo('job') },
-    { label: 'New project', icon: 'folder-close', onClick: () => Shell.newProject() },
-    { label: 'Import from GitHub', icon: 'download', onClick: () => openImport() },
-    { label: 'Batch prompt', icon: 'layers', onClick: () => openBatch() },
+    { label: 'New session', icon: 'console', onClick: () => Shell.openCreate('session') },
+    { label: 'New task', icon: 'git-branch', onClick: () => Shell.openCreate('task') },
+    { label: 'Schedule', icon: 'time', onClick: () => Shell.openCreate('schedule') },
+    { label: 'New project', icon: 'folder-close', onClick: () => Shell.openCreate('project') },
+    { label: 'Import from GitHub', icon: 'download', onClick: () => Shell.openCreate('import') },
+    { label: 'Batch prompt', icon: 'layers', onClick: () => Shell.openCreate('batch') },
   ];
+};
+
+/* Shell.openCreate(kind): the one entry for everything the + menu, the c-chords (keymap.js) and the page buttons create. kind is
+   session | task | schedule (a repo picker, then the launcher form), project (the new-project form and the clone queue), import (GitHub
+   repos into a project) or batch (one headless prompt over many repos). Opens the sheet and returns true; false for an unknown kind, before
+   the first state has arrived (every form lists the box's repos) or without the sheet dialog, so a key that asked can be left alone. */
+Shell.openCreate = function (kind) {
+  if (typeof state === 'undefined' || !state || !document.getElementById('sheet')) return false;
+  if (kind === 'session' || kind === 'task') Shell.pickRepo(kind);
+  else if (kind === 'schedule' || kind === 'job') Shell.pickRepo('job');
+  else if (kind === 'project') Shell.projectSheet();
+  else if (kind === 'import') Shell.formSheet('Import repos from GitHub', importForm, 'Import queued');
+  else if (kind === 'batch') Shell.formSheet('Batch prompt across repos', batchForm, 'Batch queued');
+  else return false;
+  return true;
 };
 
 Shell.PICK_TITLES = { session: 'New session', task: 'New task', job: 'Schedule a run' };
@@ -677,21 +694,33 @@ Shell.showForm = function (kind, e) {
     onClose: () => { if (ui.openForm === 'sheet') ui.openForm = null; Shell.formWatch = null; } });
 };
 
-Shell.newProject = function () {
-  const name = el('input', { type: 'text', placeholder: 'project name (e.g. shop)', required: true, maxlength: 64 });
-  const url = el('input', { type: 'text', placeholder: 'optional: clone URL of the first repo' });
-  const form = el('form', { class: 'form', onsubmit: async (ev) => {
-    ev.preventDefault();
-    const body = { name: name.value.trim() };
-    if (url.value.trim()) body.url = url.value.trim();
-    try { await api('POST', '/api/projects', body); setError(null); closeSheet(); toast(`Project ${body.name} created`, { kind: 'ok' }); await poll(true); }
-    catch (err) { setError(err.message); }
-  } },
-  field('name', name), field('clone URL', url),
-  el('div', { class: 'submit' }, el('button', { class: 'primary', type: 'submit', text: 'Create project' }), el('button', { type: 'button', onclick: () => closeSheet(), text: 'Cancel' })));
-  openSheet({ title: 'New project', body: form });
-  name.focus();
+Shell.sheetClosed = function () { if (ui.openForm === 'sheet') ui.openForm = null; Shell.formWatch = null; };
+
+/* A launcher form (import, batch) in the sheet: it calls onDone after its call succeeded, which closes the sheet with a toast. */
+Shell.formSheet = function (title, build, done) {
+  Shell.formWatch = null;
+  const form = build({ onDone: () => { closeSheet(); toast(done, { kind: 'ok' }); }, onCancel: () => closeSheet() });
+  openSheet({ title, body: form, onClose: Shell.sheetClosed });
+  if (typeof form.focusFirst === 'function') form.focusFirst();
 };
+
+/* The new-project sheet: the form, the two bulk entries the v0.4 board had beside it, and the clone queue line (st.clone_queue, patched on every
+   render through Shell.formWatch). A project created with a clone URL keeps the sheet open so the queue shows the clone; a blank one closes it. */
+Shell.projectSheet = function () {
+  const queue = cloneQueueView();
+  const form = projectForm({
+    onDone: (body) => { toast(`Project ${body.name} created`, { kind: 'ok' }); if (!body.url) closeSheet(); },
+    onCancel: () => closeSheet(),
+  });
+  const bulk = el('div', { class: 'row sheet-links' },
+    el('button', { class: 'small', type: 'button', onclick: () => Shell.openCreate('import') }, ic('download'), 'Import from GitHub…'),
+    el('button', { class: 'small', type: 'button', onclick: () => Shell.openCreate('batch') }, ic('layers'), 'Batch prompt…'));
+  Shell.formWatch = () => queue.update(typeof state === 'undefined' ? null : state);
+  openSheet({ title: 'New project', body: [form, bulk, queue.node], onClose: Shell.sheetClosed });
+  form.focusFirst();
+};
+
+Shell.newProject = function () { return Shell.openCreate('project'); };
 
 /* ---------- install ---------- */
 
@@ -735,6 +764,7 @@ Shell.listen = function () {
     Shell.errWrapped = true;
     setError = function (msg) {
       base(msg);
+      Shell.limit(typeof state === 'undefined' ? null : state);      // base() repainted #banner without the rate-limit callout
       const sh = document.getElementById('sheet');
       if (msg && sh && sh.open) toast(msg, { kind: 'bad' });
     };
@@ -762,6 +792,12 @@ function installShell() {
   else { Shell.syncNav(); Shell.syncCrumbs(); }
 }
 
+/* The rate-limit callout (pages/widgets.js) lives in #banner, which renderBanner() empties on every render: it is put back right after. */
+Shell.limit = function (st) {
+  try { if (typeof Widgets !== 'undefined' && Widgets && typeof Widgets.limitBanner === 'function') Widgets.limitBanner(st); }
+  catch (e) { console.error('ccboard limit banner', e); }
+};
+
 /* renderShell(st): everything the chrome shows, patched in place. render(force): renderShell + the current page's update(state, route). */
 function renderShell(st) {
   if (!Shell.refs || !st) return;
@@ -786,6 +822,7 @@ function render(force) {
     try { page.update(state, r); } catch (e) { console.error('ccboard update', r.id, e); }
   }
   if (typeof renderBanner === 'function') renderBanner();
+  Shell.limit(state);
   if (typeof updateModal === 'function') updateModal();
   if (Shell.formWatch) Shell.formWatch();
 }

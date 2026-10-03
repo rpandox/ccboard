@@ -69,13 +69,47 @@ function projectLinks(route) {
     for (const r of (p.repos || [])) row.append(open(r.name, r.path));
   }
   box.append(row);
+  // repos and their state (cloning / failed / no git), Remove per repo, Add repo, Delete project: the v0.4 Home card's actions
+  const repos = el('div', { class: 'proj-row proj-repos' }, el('span', { class: 'lbl', text: 'repos' }));
+  for (const r of (p.repos || [])) {
+    const bad = r.state && r.state !== 'ok' && r.state !== 'project';
+    repos.append(el('span', { class: 'proj-repo' },
+      el('span', { class: 'mono', text: r.name }),
+      r.branch ? el('span', { class: 'dim', text: ' ' + r.branch }) : null,
+      bad ? el('span', { class: 'badge warn', text: r.state }) : null,
+      typeof confirmButton === 'function' ? confirmButton('rm:' + p.name + '/' + r.name, 'Remove', () => api('DELETE', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}`), true) : null));
+  }
+  if (!(p.repos || []).length) repos.append(el('span', { class: 'dim', text: 'no repos yet' }));
+  box.append(repos);
+  const actions = el('div', { class: 'proj-row proj-actions' });
+  if (typeof addRepoForm === 'function' && typeof openSheet === 'function') {
+    actions.append(el('button', { class: 'small', type: 'button', text: 'Add repo', onclick: () => openSheet({ title: `Add a repo to ${p.name}`, body: addRepoForm(p) }) }));
+  }
+  if (typeof confirmButton === 'function') {
+    actions.append(confirmButton('del:' + p.name, 'Delete project', async () => { await api('DELETE', `/api/projects/${encodeURIComponent(p.name)}`); navigate('#/'); }));
+  }
+  box.append(actions);
   return box;
 }
 
 function projectPlaceholderPage() {
   const base = placeholderPage('project');
   let links = null;
-  const draw = (route) => { if (!links) return; links.textContent = ''; links.append(projectLinks(route)); };
+  let sig = '';
+  const shape = (route) => {
+    const st = typeof currentState === 'function' ? currentState() : null;
+    const name = route && route.params && route.params.project;
+    const p = st && (st.projects || []).find((x) => x.name === name);
+    return JSON.stringify([name, !!st, p ? [p.path, (p.repos || []).map((r) => [r.name, r.state, r.branch])] : null, st && st.config && st.config.code_https_port]);
+  };
+  const draw = (route) => {
+    if (!links) return;
+    const now = shape(route);
+    if (now === sig) return;                                  // nothing changed: keep the nodes (confirm buttons mid two-tap, focus)
+    sig = now;
+    links.textContent = '';
+    links.append(projectLinks(route));
+  };
   return Object.assign({}, base, {
     mount(root, route) {
       links = el('div', { class: 'proj-head' });
@@ -85,7 +119,7 @@ function projectPlaceholderPage() {
     },
     update(st, route) { draw(route); },                       // the first state arrives after mount: fill the links then
     onRoute(route) { base.onRoute(route); draw(route); },
-    unmount() { links = null; base.unmount(); },
+    unmount() { links = null; sig = ''; base.unmount(); },
   });
 }
 
