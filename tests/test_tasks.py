@@ -19,7 +19,13 @@ def test_slug_and_command(tmp_path):
     assert tasks.unique_slug(tmp_path, "fix", set()) == "fix-2"
     assert tasks.unique_slug(tmp_path, "new", {"new", "new-2"}) == "new-3"
     cmd = shlex.split(tasks.build_command("fix-2", "sid", "do it", ["--model", "opus"], ["/x"]))
-    assert cmd == ["claude", "--model", "opus", "--add-dir", "/x", "--worktree", "fix-2", "--session-id", "sid", "do it"]
+    assert cmd == ["claude", "--model", "opus", "--add-dir", "/x", "--worktree", "fix-2", "--session-id", "sid", "--", "do it"]
+    # `--` before the prompt: a prompt that starts with '-' (a markdown bullet) is not an option, in both command shapes
+    bullet = "- fix the bug\n- add tests"
+    assert shlex.split(tasks.build_command("fix-2", "sid", bullet, [], [])) == ["claude", "--worktree", "fix-2", "--session-id", "sid", "--", bullet]
+    assert shlex.split(tasks.build_command_inplace("sid", bullet, ["--model", "opus"], ["/x"])) == [
+        "claude", "--model", "opus", "--add-dir", "/x", "--session-id", "sid", "--", bullet]
+    assert shlex.split(tasks.build_command_inplace("sid", "do it", [], [])) == ["claude", "--session-id", "sid", "--", "do it"]
 
 
 def test_exclude_and_default_branch(tmp_path):
@@ -54,7 +60,8 @@ def test_create_and_archive_task(lite_client, projects_dir, fake_tmux, monkeypat
     name, cwd, env = fake_tmux["created"][-1]
     assert cwd == str(projects_dir / "shop" / "api")
     argv = shlex.split(fake_tmux["sent"][-1][1])
-    assert argv[0] == "claude" and argv[-1] == "Add a login page with tests." and argv[-5:-1] == ["--worktree", "add-login-page", "--session-id", t["claude_session_id"]] if "claude_session_id" in t else True
+    assert argv[0] == "claude" and argv[-1] == "Add a login page with tests." and argv[-2] == "--"
+    assert argv[-6:-3] == ["--worktree", "add-login-page", "--session-id"]          # (the old check here was vacuous: the legacy response has no claude_session_id)
     assert "--add-dir" in argv and argv.index("--add-dir") < argv.index("--worktree")      # variadic flags come before the prompt's neighbours
     assert (projects_dir / "shop" / "api" / ".git" / "info" / "exclude").read_text().strip().endswith(".claude/worktrees/")
     st = lite_client.get("/api/state", headers=H).json()

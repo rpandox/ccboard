@@ -10,7 +10,7 @@ import { STATIC, plain } from './harness.mjs';
 import { EPOCH, ISO, fixtureState } from './world.mjs';
 import { byPath, focused, key, labelOf, makeNetworkWorld, pathOf, settle, treeItems, visibleItems, TREE_FIXTURE } from './treekit.mjs';
 
-const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'project', 'agents', 'settings', 'search', 'session', 'placeholders'];       // widgets.js is also loaded earlier when the shell is (shell.js reads Widgets)
+const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'project', 'agents', 'settings', 'search', 'session', 'usage', 'placeholders'];       // widgets.js is also loaded earlier when the shell is (shell.js reads Widgets)
 
 const SUMMARY = { windows: { '7d': { total: 171.4, by_project: [{ project: 'phasezero', total: 171.4, hours: 12.5 }, { project: 'ccboard', total: 58.1, hours: 8.6 }] } } };
 
@@ -29,7 +29,7 @@ function projectState(over = {}) {
 }
 
 /** A world with every page loaded; `answers` are api prefix answers. Returns helpers over it. */
-function projectWorld({ state = projectState(), answers = {}, wide = false, shell = false } = {}) {
+function projectWorld({ state = projectState(), answers = {}, wide = false, shell = false, realCreate = false } = {}) {
   const env = makeNetworkWorld({ extra: { matchMedia: (q) => ({ matches: wide && /(1024|840)/.test(q), addEventListener() {}, removeEventListener() {} }) } });
   const { w, server } = env;
   Object.assign(server.answers, { '/api/usage/summary': SUMMARY }, answers);
@@ -38,7 +38,7 @@ function projectWorld({ state = projectState(), answers = {}, wide = false, shel
   w.run(`
     toast = (text, o) => { __toasts.push({ text, kind: o && o.kind }); };
     poll = async () => {};
-    ${shell ? 'Shell.openCreate = (kind, pre) => { __created.push({ kind, pre }); return true; };' : 'globalThis.Shell = { openCreate: (kind, pre) => { __created.push({ kind, pre }); return true; } };'}
+    ${shell ? (realCreate ? '' : 'Shell.openCreate = (kind, pre) => { __created.push({ kind, pre }); return true; };') : 'globalThis.Shell = { openCreate: (kind, pre) => { __created.push({ kind, pre }); return true; } };'}
     Live.subscribe = (tmux, fn) => { __live.subscribed.push(tmux); return () => {}; };
     Live.unsubscribe = () => {};
   `);
@@ -369,7 +369,7 @@ test('the tasks tab draws the kanban columns with an empty Backlog first, only t
   assert.deepEqual(heads.slice(0, 6), ['Backlog', 'In progress', 'Needs you', 'Done', 'PR open', 'Merged'], 'Backlog joins the five columns of COLUMNS');
   assert.deepEqual(all(page, '.task').map((t) => t.getAttribute('data-task')).sort(), ['4', '5'], 'phasezero\'s two tasks; petroit\'s is not here');
   const backlog = all(page, '.col').find((c) => /^Backlog/.test(c.querySelector('h3').textContent));
-  assert.equal(all(backlog, '.task').length, 0, 'the Backlog is empty until v0.5.14');
+  assert.equal(all(backlog, '.task').length, 0, 'the Backlog is empty when no task is waiting (a task added with Later lands here: tests/js/tasks.test.mjs)');
   const inProgress = all(page, '.col').find((c) => /^In progress/.test(c.querySelector('h3').textContent));
   assert.deepEqual(all(inProgress, '.task').map((t) => t.getAttribute('data-task')), ['5']);
   const needs = all(page, '.col').find((c) => /^Needs you/.test(c.querySelector('h3').textContent));
@@ -377,6 +377,68 @@ test('the tasks tab draws the kanban columns with an empty Backlog first, only t
   button(page, /\+\s*task/i).click();
   assert.equal(created(env).at(-1).kind, 'task');
   assert.equal(created(env).at(-1).pre.project, 'phasezero');
+});
+
+test('a backlog task is a card in the Backlog column of its own project, counted on the tab, with Start, Send to session, Edit and Delete', async () => {
+  const st = projectState();
+  const row = { ci: null, pr: null, id: 30, project: 'phasezero', repo: 'website', slug: 'alt-text', title: 'Add alt text to the gallery', branch: '', base: 'main', worktree: '', tmux: '', claude_session_id: null,
+    pr_url: null, pr_number: null, pr_state: null, cost_usd: null, overlap: [], preview_port: null, preview_https: null, preview_url: null, created_at: ISO(20), column: 'backlog', session: null,
+    agent: 'claude', mode: 'worktree', auto_close: false, parent_id: null, chain_id: null, result: null, phase: 'backlog', session_row: null, prompt: 'every gallery img has an empty alt', prompt_len: 35 };
+  st.tasks.unshift(row, { ...row, id: 31, project: 'petroit', repo: 'api', title: 'Another project\'s idea' });
+  const env = projectWorld({ state: st });
+  const page = await go(env, '#/p/phasezero?tab=tasks');
+  const backlog = all(page, '.col').find((c) => /^Backlog/.test(c.querySelector('h3').textContent));
+  assert.deepEqual(all(backlog, '.task').map((t) => t.getAttribute('data-task')), ['30'], 'only this project\'s backlog card');
+  const card = all(backlog, '.task')[0];
+  assert.deepEqual(all(card, 'button').map((b) => b.textContent.trim()).filter((l) => /^(Start|Send to session|Edit|Delete)$/.test(l)), ['Start', 'Send to session', 'Edit', 'Delete']);
+  assert.match(card.textContent, /Add alt text to the gallery/);
+  assert.match(card.textContent, /phasezero\/website/);
+  const count = all(page, '[role=tab]').find((t) => t.getAttribute('data-tab') === 'tasks').querySelector('.tab-count');
+  assert.equal(count.textContent, '3', 'the tab counts the backlog card with the two running tasks');
+});
+
+test('+ task on the project page never stops at a picker: it names a git repo of the project (the project folder only when that is the git repo); + session still asks', async () => {
+  const st = projectState();
+  st.projects.push({ name: 'notes', path: '/srv/projects/notes', root: { name: 'root', path: '/srv/projects/notes', root: true, state: 'ok', branch: 'main', dirty: false, sessions: [] }, orphan_sessions: [], repos: [] });
+  const env = projectWorld({ state: st, shell: true });                                      // the real Shell.defaultRepo; only openCreate is a recorder
+  let page = await go(env, '#/p/phasezero?tab=tasks');
+  button(page, /\+\s*task/i).click();
+  const t1 = created(env).at(-1);
+  assert.equal(t1.kind, 'task');
+  assert.ok(['website', 'NestJs-Ecommerce-Backend'].includes(t1.pre.repo), `a repo of the project, not the non-git folder: ${t1.pre.repo}`);
+  page = await go(env, '#/p/phasezero/website?tab=tasks');
+  button(page, /\+\s*task/i).click();
+  assert.equal(created(env).at(-1).pre.repo, 'website', 'the repo of the address wins');
+  page = await go(env, '#/p/phasezero?tab=files');
+  button(page, /\+\s*task/i).click();
+  assert.ok(created(env).at(-1).pre.repo, 'on the Files tab the repo the tree shows (or the first)');
+  page = await go(env, '#/p/notes?tab=tasks');
+  button(page, /\+\s*task/i).click();
+  assert.equal(created(env).at(-1).pre.repo, 'root', 'a project whose only git place is its folder');
+  button(page, /\+\s*schedule/i).click();
+  assert.equal(created(env).at(-1).kind, 'schedule');
+  assert.equal(created(env).at(-1).pre.repo, 'root');
+  page = await go(env, '#/p/phasezero?tab=tasks');
+  button(page, /\+\s*session/i).click();
+  assert.notEqual(created(env).at(-1).kind, 'task');
+});
+
+test('a tap on + task / + session before the first /api/state says "still loading the board…" instead of doing nothing', async () => {
+  const env = projectWorld({ shell: true, realCreate: true });                              // the real Shell.openCreate behind the page's buttons
+  const page = await go(env, '#/p/phasezero?tab=tasks');
+  env.w.run('state = null');                                                                // the board has not delivered a state (the buttons are drawn from the route already)
+  for (const re of [/\+\s*task/i, /\+\s*schedule/i]) {
+    const before = plain(env.w.get('__toasts')).length;
+    const b = button(page, re);
+    assert.ok(b, `a ${re} button`);
+    b.click();
+    const said = plain(env.w.get('__toasts')).slice(before);
+    assert.deepEqual(said.map((t) => t.text), ['still loading the board…'], `${re} answers the tap`);
+  }
+  assert.equal(env.w.document.getElementById('sheet').open, false, 'and opens no sheet');
+  env.w.run('state = __st');                                                                // the state arrives: the same tap opens the sheet
+  button(page, /\+\s*task/i).click();
+  assert.equal(env.w.document.getElementById('sheet').open, true);
 });
 
 test('a project with no tasks still shows its columns or an empty state with + task', async () => {

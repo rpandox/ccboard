@@ -33,87 +33,87 @@
       ]
     },
     "7d": {
-      "total": 360.0,
+      "total": 306.7,
       "by_agent": {
         "claude": {
-          "total": 345.3,
-          "tokens": 735090936
+          "total": 296.2,
+          "tokens": 640692274
         },
         "codex": {
-          "total": 14.7,
-          "tokens": 20787415
+          "total": 10.5,
+          "tokens": 12712580
         }
       },
       "by_project": [
         {
           "project": "phasezero",
-          "total": 165.1,
-          "hours": 12.88
+          "total": 92.5,
+          "hours": 11.24
         },
         {
           "project": "ccboard",
-          "total": 98.2,
-          "hours": 16.25
+          "total": 82.3,
+          "hours": 14.18
         },
         {
-          "project": "internalSystem",
-          "total": 46.2,
-          "hours": 4.55
+          "project": "(unattributed)",
+          "total": 62.7,
+          "hours": 0.0
         },
         {
           "project": "petroit",
           "total": 42.0,
-          "hours": 8.45
+          "hours": 7.38
         },
         {
-          "project": "mailgate",
-          "total": 8.5,
-          "hours": 0.6
+          "project": "internalSystem",
+          "total": 27.2,
+          "hours": 3.97
         }
       ]
     },
     "30d": {
-      "total": 1795.0,
+      "total": 1741.7,
       "by_agent": {
         "claude": {
-          "total": 1775.9,
-          "tokens": 3802019382
+          "total": 1726.8,
+          "tokens": 3707620720
         },
         "codex": {
-          "total": 19.1,
-          "tokens": 26981684
+          "total": 14.9,
+          "tokens": 18906849
         }
       },
       "by_project": [
         {
           "project": "mailgate",
-          "total": 739.5,
-          "hours": 8.0
+          "total": 731.0,
+          "hours": 7.49
         },
         {
           "project": "phasezero",
-          "total": 387.7,
-          "hours": 31.08
-        },
-        {
-          "project": "internalSystem",
-          "total": 282.2,
-          "hours": 13.07
+          "total": 315.1,
+          "hours": 29.11
         },
         {
           "project": "(unattributed)",
-          "total": 218.0,
+          "total": 280.7,
           "hours": 0.0
         },
         {
+          "project": "internalSystem",
+          "total": 263.2,
+          "hours": 12.24
+        },
+        {
           "project": "ccboard",
-          "total": 110.6,
-          "hours": 18.73
+          "total": 94.7,
+          "hours": 17.54
         },
         {
           "project": "petroit",
           "total": 57.0,
-          "hours": 14.87
+          "hours": 13.93
         }
       ]
     }
@@ -453,20 +453,15 @@
     },
     {
       "day": "2026-09-27",
-      "total": 53.3,
+      "total": 0,
       "by_agent": {
-        "claude": 49.1,
-        "codex": 4.2
+        "claude": 0.0,
+        "codex": 0.0
       },
-      "by_project": {
-        "internalSystem": 19.0,
-        "ccboard": 15.9,
-        "phasezero": 9.9,
-        "mailgate": 8.5
-      },
-      "tokens": 102473497,
-      "hours": 5.43,
-      "zero": false
+      "by_project": {},
+      "tokens": 0,
+      "hours": 0.0,
+      "zero": true
     },
     {
       "day": "2026-09-28",
@@ -476,8 +471,9 @@
         "codex": 0.0
       },
       "by_project": {
-        "phasezero": 9.8021,
-        "ccboard": 8.4
+        "ccboard": 8.4,
+        "phasezero": 5.5021,
+        "(unattributed)": 4.3
       },
       "tokens": 38372955,
       "hours": 4.12,
@@ -491,9 +487,10 @@
         "codex": 0.0
       },
       "by_project": {
-        "phasezero": 19.5979,
         "internalSystem": 15.5265,
-        "ccboard": 12.0
+        "ccboard": 12.0,
+        "(unattributed)": 11.4,
+        "phasezero": 8.1979
       },
       "tokens": 88417144,
       "hours": 5.25,
@@ -507,7 +504,8 @@
         "codex": 0.0
       },
       "by_project": {
-        "phasezero": 34.1,
+        "phasezero": 19.5,
+        "(unattributed)": 14.6,
         "petroit": 4.1,
         "internalSystem": 2.6735
       },
@@ -523,10 +521,11 @@
         "codex": 6.0
       },
       "by_project": {
-        "phasezero": 10.7389,
         "petroit": 9.6,
         "ccboard": 9.2,
-        "internalSystem": 9.0
+        "internalSystem": 9.0,
+        "(unattributed)": 8.4,
+        "phasezero": 2.3389
       },
       "tokens": 69037499,
       "hours": 7.75,
@@ -540,8 +539,9 @@
         "codex": 4.5
       },
       "by_project": {
-        "phasezero": 42.7611,
         "ccboard": 30.3,
+        "(unattributed)": 24.0,
+        "phasezero": 18.7611,
         "petroit": 12.6
       },
       "tokens": 201918135,
@@ -584,7 +584,7 @@
       "total": 588.5,
       "hours": 5.0,
       "tokens": 1416408552,
-      "models": ["opus-5"]
+      "models": ["claude-opus-5"]
     },
     {
       "key": "claude:5b1c9d3e-0007-4a7e-8c2f-000000000007",
@@ -594,17 +594,17 @@
       "total": 282.2,
       "hours": 12.83,
       "tokens": 444737006,
-      "models": ["fable-5", "opus-5"]
+      "models": ["claude-fable-5", "claude-opus-5"]
     },
     {
-      "key": "claude:5b1c9d3e-0005-4a7e-8c2f-000000000005",
+      "key": "claude:0b8e47a4-52c6-4d1b-8f33-7a9c2e6d1f02",
       "project": "phasezero",
       "repo": "NestJs-Ecommerce-Backend",
       "agent": "claude",
       "total": 206.0,
       "hours": 15.0,
       "tokens": 446945290,
-      "models": ["opus-5", "haiku-4-5"]
+      "models": ["claude-opus-5", "claude-haiku-4-5"]
     },
     {
       "key": "claude:5b1c9d3e-0006-4a7e-8c2f-000000000006",
@@ -614,7 +614,7 @@
       "total": 181.7,
       "hours": 19.5,
       "tokens": 382290574,
-      "models": ["opus-5"]
+      "models": ["claude-opus-5"]
     },
     {
       "key": "claude:5b1c9d3e-0010-4a7e-8c2f-000000000010",
@@ -624,7 +624,7 @@
       "total": 156.0,
       "hours": 6.0,
       "tokens": 296472405,
-      "models": ["fable-5"]
+      "models": ["claude-fable-5"]
     },
     {
       "key": "claude:5b1c9d3e-0009-4a7e-8c2f-000000000009",
@@ -634,17 +634,17 @@
       "total": 151.0,
       "hours": 4.17,
       "tokens": 358731756,
-      "models": ["opus-5", "haiku-4-5"]
+      "models": ["claude-opus-5", "claude-haiku-4-5"]
     },
     {
-      "key": "claude:5b1c9d3e-0001-4a7e-8c2f-000000000001",
+      "key": "claude:c3a9f5d0-7e14-4b88-a6c2-90d4b1e7f503",
       "project": "ccboard",
       "repo": "ccboard",
       "agent": "claude",
       "total": 76.0,
       "hours": 9.5,
       "tokens": 152715752,
-      "models": ["opus-5"]
+      "models": ["claude-opus-5"]
     },
     {
       "key": "claude:5b1c9d3e-0011-4a7e-8c2f-000000000011",
@@ -654,7 +654,7 @@
       "total": 62.0,
       "hours": 4.5,
       "tokens": 127269575,
-      "models": ["opus-4-7"]
+      "models": ["claude-opus-4-7"]
     },
     {
       "key": "claude:5b1c9d3e-0003-4a7e-8c2f-000000000003",
@@ -664,7 +664,7 @@
       "total": 47.1,
       "hours": 10.5,
       "tokens": 85733095,
-      "models": ["fable-5"]
+      "models": ["claude-fable-5"]
     },
     {
       "key": "codex:5b1c9d3e-0012-4a7e-8c2f-000000000012",
@@ -678,11 +678,11 @@
     }
   ],
   "active_hours": {
-    "phasezero": 31.08,
-    "ccboard": 18.73,
-    "petroit": 14.87,
-    "internalSystem": 13.07,
-    "mailgate": 8.0
+    "mailgate": 7.49,
+    "phasezero": 29.11,
+    "internalSystem": 12.24,
+    "ccboard": 17.54,
+    "petroit": 13.93
   },
   "rate_limits": {
     "claude": {
@@ -722,6 +722,12 @@
       "session": "phasezero--website--t-checkout-redesign"
     },
     {
+      "kind": "7d",
+      "at": "2026-09-28T09:35:00+00:00",
+      "resets_at": 1790665200,
+      "session": "ccboard--ccboard--s1"
+    },
+    {
       "kind": "5h",
       "at": "2026-10-02T23:10:00+00:00",
       "resets_at": 1790988000,
@@ -735,7 +741,7 @@
       "project": "phasezero",
       "repo": "website",
       "tokens": 26100000,
-      "models": ["fable-5-1"]
+      "models": ["claude-fable-5-1"]
     },
     {
       "key": "claude:5b1c9d3e-0013-4a7e-8c2f-000000000013",
@@ -743,7 +749,7 @@
       "project": "ccboard",
       "repo": "ccboard",
       "tokens": 18400000,
-      "models": ["opus-5-5"]
+      "models": ["claude-opus-5-5"]
     }
   ],
   "source": "samples"

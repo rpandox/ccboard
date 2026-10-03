@@ -326,6 +326,25 @@ def _registry_snapshot(pane_pids: dict[str, int] | None = None) -> dict | None:
         return None
 
 
+def _wait_kind_of(last: dict | None) -> str | None:
+    """What a 'waiting' session is waiting on, from its newest stored event: the Notification kind ('idle_prompt': Claude is idle at
+    its prompt; 'permission_prompt' / 'elicitation_dialog': a dialog is open), else the name of the newer event (e.g.
+    'PermissionRequest'), None without any event. Only 'idle_prompt' means the TUI is at its prompt, so a caller that types into the
+    session treats everything else, None included, as a dialog."""
+    if not last:
+        return None
+    return (last.get("kind") or "Notification") if last.get("event") == "Notification" else last.get("event")
+
+
+def _wait_kinds(rows: dict[str, dict]) -> dict[str, str | None]:
+    """{tmux name: wait kind} for the sessions whose state is 'waiting' (one grouped query for all of them); {} when none is."""
+    names = [n for n, r in rows.items() if (r.get("state") or "") == "waiting"]
+    if not names:
+        return {}
+    last = db.last_events(names)
+    return {n: _wait_kind_of(last.get(n)) for n in names}
+
+
 def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
     """tmux sessions (non-internal) merged with DB rows. Returns (sessions, tmux_down).
 
@@ -342,6 +361,7 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
     db.reconcile(set(live.keys()), before=snapshot_at)
     rows = db.open_rows()
     chips = db.active_tasks_by_session() if rich else {}
+    waits = _wait_kinds({n: rows.get(n, {}) for n in live if not tmux.is_internal(n)})
     try:                                             # one list-clients per scan; the 3 s poll must not depend on it
         viewers = tmux.viewers()
     except (tmux.TmuxError, tmux.TmuxDown) as e:
@@ -370,6 +390,8 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
             "flags": {k: v for k, v in (row.get("flags") or {}).items() if k != "transcript_path"},
             "task": chip,
         }
+        if name in waits:                            # only a 'waiting' session has one: what it waits on (see _wait_kind_of)
+            out[name]["wait_kind"] = waits[name]
     if rich and out:
         snap = _registry_snapshot({n: s["pid"] for n, s in live.items() if s.get("pid")})
         if snap:
@@ -760,11 +782,21 @@ def api_remove_repo(project: str, repo: str):
 
 # ---------- tasks (worktree + branch per task) ----------
 
-def _tasks_view() -> list[dict]:
-    sessions, _ = _merged_sessions()
+TASK_PROMPT_HEAD = 600     # chars of the prompt a backlog/queued row carries in the poll payload; GET /api/tasks/{id} has the rest
+
+
+def _tasks_view(rows: list[dict] | None = None) -> list[dict]:
+    """The state.tasks rows (all unarchived tasks, or just `rows`, db.tasks() dicts). Backlog and queued rows also carry
+    `prompt` (its first TASK_PROMPT_HEAD characters) and `prompt_len` (the full length: prompt shorter than prompt_len means
+    fetch GET /api/tasks/{id} before editing); every other row has prompt None."""
+    rows = db.tasks() if rows is None else rows
+    if any(t.get("session_row") is not None or t.get("tmux_name") for t in rows):
+        sessions, _ = _merged_sessions()           # an all-backlog list (a fresh card's 201) needs no tmux scan
+    else:
+        sessions = {}
     by_row = {s["row_id"]: s for s in sessions.values() if s.get("row_id") is not None}
     out = []
-    for t in db.tasks():
+    for t in rows:
         if t.get("session_row") is not None:
             s = by_row.get(t["session_row"])          # authoritative: tmux names are reused, session rows are not
         else:
@@ -792,6 +824,8 @@ def _tasks_view() -> list[dict]:
             "agent": t.get("agent") or "claude", "mode": t.get("mode") or "worktree", "phase": t.get("phase") or "running",
             "auto_close": bool(t.get("auto_close")), "parent_id": t.get("parent_id"), "chain_id": t.get("chain_id"),
             "session_row": t.get("session_row"), "result": (t.get("result") or "")[:300] or None,
+            "prompt": (t.get("prompt") or "")[:TASK_PROMPT_HEAD] if (t.get("phase") or "running") in ("backlog", "queued") else None,
+            "prompt_len": len(t.get("prompt") or ""),
             "session": {"state": s["state"], "state_at": s["state_at"], "last_message": s["last_message"],
                         "needs_attention": s["needs_attention"], "command": s["command"]} if s else None,
         })
@@ -821,21 +855,44 @@ class TaskIn(LaunchOpts):
     add_dirs: list[str] | None = None
 
 
-@app.post("/api/projects/{project}/repos/{repo}/tasks", status_code=201)
-def api_create_task(project: str, repo: str, body: TaskIn):
-    rpath = projects.repo_path(project, repo)
-    if not projects.is_repo(rpath):
-        raise projects.NotFound(f"repo {project}/{repo} is not a git repo")
-    title = " ".join(body.title.split())[:120]
-    prompt = body.prompt.strip()
+TASK_TITLE_MAX = 120
+TASK_PROMPT_MAX = 20000
+TASK_SPEC_KEYS = (*LaunchOpts.model_fields, "args", "add_dirs")     # what a backlog task remembers to start with later
+_task_lock = threading.RLock()     # one launch or dispatch at a time: a double-tapped Start must not start two sessions
+
+
+def _task_text(title: str | None, prompt: str | None) -> tuple[str, str]:
+    """A task's title (whitespace collapsed, cut at 120) and prompt (stripped, at most 20000), both required."""
+    title = " ".join((title or "").split())[:TASK_TITLE_MAX]
+    prompt = (prompt or "").strip()
     if not title or not prompt:
         raise projects.BadRequest("title and prompt are required")
-    if len(prompt) > 20000:
+    if len(prompt) > TASK_PROMPT_MAX:
         raise projects.BadRequest("prompt too long")
-    if not settings.claude_bin():
+    return title, prompt
+
+
+def _task_check(project: str, repo: str, body, *, launching: bool) -> dict:
+    """Everything a task needs to be true before it is created or started, in the order the legacy route always checked it:
+    the repo is a git repo (repo 'root' is the project folder, which must itself be one), title and prompt, claude installed
+    (only when launching), the extra args and the bypass/override refusal, the launch controls, the add-dirs. `body` is
+    anything with title, prompt, args, add_dirs and the LaunchOpts fields (TaskIn, TaskCreateIn). Raises 400/404 with the
+    board's messages; returns {rpath, title, prompt, extra, opts_clean, add_dirs}."""
+    rpath = projects.repo_path(project, repo)
+    inplace = False
+    if not projects.is_repo(rpath):
+        if repo != projects.ROOT:
+            raise projects.NotFound(f"repo {project}/{repo} is not a git repo")
+        if not rpath.is_dir():
+            raise projects.NotFound(f"project {project} not found")
+        inplace = True      # the whole project folder, not a git repo: the task runs in place (mode 'attached'), no worktree or branch
+    title, prompt = _task_text(body.title, body.prompt)
+    if launching and not settings.claude_bin():
         raise projects.BadRequest("claude is not installed on this box")
     extra: list[str] = []
     if body.args:
+        if len(body.args) > MAX_ARGS:
+            raise projects.BadRequest("extra args too long")
         try:
             extra = shlex.split(body.args)
         except ValueError as e:
@@ -847,22 +904,285 @@ def api_create_task(project: str, repo: str, body: TaskIn):
     opts_clean = agents.get("claude").validate_opts(body.model_dump(include=set(LaunchOpts.model_fields)), interactive=True,
                                                     tasks_or_headless=True)
     add_dirs = _resolve_add_dirs(body.add_dirs, rpath)
-    slug = tasks.unique_slug(rpath, tasks.slugify(title), db.task_slugs(project, repo))
-    session = tasks.session_name_for(slug)
-    projects.check_name("session", session)
-    name = tmux.tmux_name(project, repo, session)
-    if tmux.has_session(name):
-        raise projects.Conflict(f"session {session} already exists")
-    tasks.ensure_excluded(rpath)
-    sid = str(uuid.uuid4())
-    cmd_line = tasks.build_command(slug, sid, prompt, extra, add_dirs)
-    real, row_id = _start_session_row(name, project, repo, session, "task", str(rpath), cmd_line=cmd_line, claude_session_id=sid,
-                                      add_dirs=add_dirs, agent="claude", opts=opts_clean)
-    tid = db.task_add(project=project, repo=repo, slug=slug, title=title, prompt=prompt, branch=f"worktree-{slug}",
-                      base=tasks.default_branch(rpath), worktree=str(tasks.worktree_path(rpath, slug)), tmux_name=real,
-                      claude_session_id=sid, agent="claude", session_row=row_id)
+    return {"rpath": rpath, "title": title, "prompt": prompt, "extra": extra, "opts_clean": opts_clean, "add_dirs": add_dirs, "inplace": inplace}
+
+
+def _task_launch(project: str, repo: str, body, *, task_id: int | None = None) -> dict:
+    """Start a task: a tmux session running claude in a fresh worktree branch 'worktree-<slug>' of the repo (repo 'root' = the
+    project folder). Without task_id a new task row is inserted (phase running, mode worktree). With task_id that backlog row is
+    UPDATED instead (slug from its current title, tmux_name, branch, worktree, base, claude_session_id, session_row, assigned_at,
+    phase running), so an edited title names the branch. Returns {id, slug, tmux, branch, attach_url}."""
+    with _task_lock:
+        c = _task_check(project, repo, body, launching=True)
+        rpath, title, prompt = c["rpath"], c["title"], c["prompt"]
+        taken = db.task_slugs(project, repo)
+        if task_id is not None:
+            own = db.task_get(task_id)
+            if not own:
+                raise projects.NotFound("no such task")
+            taken = taken - {own["slug"]}             # the backlog row's own slug is not a collision
+        slug = tasks.unique_slug(rpath, tasks.slugify(title), taken)
+        session = tasks.session_name_for(slug)
+        projects.check_name("session", session)
+        name = tmux.tmux_name(project, repo, session)
+        if tmux.has_session(name):
+            raise projects.Conflict(f"session {session} already exists")
+        inplace = bool(c.get("inplace"))
+        if not inplace:
+            tasks.ensure_excluded(rpath)
+        sid = str(uuid.uuid4())
+        cmd_line = (tasks.build_command_inplace(sid, prompt, c["extra"], c["add_dirs"]) if inplace
+                    else tasks.build_command(slug, sid, prompt, c["extra"], c["add_dirs"]))
+        real, row_id = _start_session_row(name, project, repo, session, "task", str(rpath), cmd_line=cmd_line, claude_session_id=sid,
+                                          add_dirs=c["add_dirs"], agent="claude", opts=c["opts_clean"], task_id=task_id)
+        if inplace:
+            branch, worktree, base, mode = "", "", "", "attached"
+        else:
+            branch, worktree, base, mode = f"worktree-{slug}", str(tasks.worktree_path(rpath, slug)), tasks.default_branch(rpath), "worktree"
+        if task_id is None:
+            tid = db.task_add(project=project, repo=repo, slug=slug, title=title, prompt=prompt, branch=branch, base=base,
+                              worktree=worktree, tmux_name=real, claude_session_id=sid, agent="claude", session_row=row_id, mode=mode,
+                              assigned_at=db_now(), auto_close=1 if getattr(body, "auto_close", False) else None)
+        else:
+            tid = task_id
+            db.task_update(tid, slug=slug, tmux_name=real, branch=branch, base=base, worktree=worktree, claude_session_id=sid,
+                           session_row=row_id, agent="claude", mode=mode, phase="running", assigned_at=db_now())
+        _invalidate_scan()
+        return {"id": tid, "slug": slug, "tmux": real, "branch": branch, "attach_url": f"/term/{real}"}
+
+
+@app.post("/api/projects/{project}/repos/{repo}/tasks", status_code=201)
+def api_create_task(project: str, repo: str, body: TaskIn):
+    """The legacy create: always starts the task now (POST /api/tasks with when 'now'). Response unchanged."""
+    return _task_launch(project, repo, body)
+
+
+def _task_agent(agent: str | None) -> None:
+    if agent in (None, "", "claude"):
+        return
+    raise projects.BadRequest("codex arrives in v0.5.11" if agent == "codex" else f"unknown agent {agent!r}; use claude")
+
+
+def _task_row(tid: int) -> dict | None:
+    """The state.tasks-shaped row of one task (what a create/dispatch response carries as `task`, so the client paints the card
+    at once). Never raises: it is decoration on a write that already happened."""
+    try:
+        t = db.task_get(tid)
+        return _tasks_view([t])[0] if t else None
+    except Exception as e:
+        log.debug("could not build the view row of task %s: %s", tid, e)
+        return None
+
+
+def _task_spec(t: dict) -> dict:
+    try:
+        spec = json.loads(t["spec"]) if t.get("spec") else {}
+    except ValueError:
+        spec = {}
+    return spec if isinstance(spec, dict) else {}
+
+
+class TaskCreateIn(LaunchOpts):
+    project: str = ""
+    repo: str = ""                       # a repo of the project, or 'root' for the project folder (a git repo)
+    title: str = ""
+    prompt: str = ""
+    when: str = "now"                    # now = start a session at once; later = a backlog card
+    agent: str = "claude"
+    args: str | None = None
+    add_dirs: list[str] | None = None
+    auto_close: bool = False             # stored only until the task runtime lands
+
+
+@app.post("/api/tasks", status_code=201)
+def api_tasks_create(body: TaskCreateIn):
+    """Create a task from anywhere. when 'now' starts it (like the legacy route) and answers {id, slug, tmux, branch, attach_url,
+    phase 'running', session_row, task}; when 'later' adds a backlog card with the launch choices kept in `spec` and answers
+    {id, slug, phase 'backlog', tmux null, task}. `task` is the state.tasks row."""
+    project, repo = body.project.strip(), body.repo.strip()
+    if not project or not repo:
+        raise projects.BadRequest("project and repo are required")
+    _task_agent(body.agent)
+    if body.when not in ("now", "later"):
+        raise projects.BadRequest("when must be 'now' or 'later'")
+    if body.when == "now":
+        out = _task_launch(project, repo, body)
+        t = db.task_get(out["id"]) or {}
+        return {**out, "phase": "running", "session_row": t.get("session_row"), "task": _task_row(out["id"])}
+    with _task_lock:
+        c = _task_check(project, repo, body, launching=False)      # a card for a repo that cannot run it, or with bypass, is refused now
+        slug = tasks.unique_slug(c["rpath"], tasks.slugify(c["title"]), db.task_slugs(project, repo))
+        spec = {k: v for k in TASK_SPEC_KEYS if (v := getattr(body, k, None)) not in (None, "", [])}
+        tid = db.task_add(project=project, repo=repo, slug=slug, title=c["title"], prompt=c["prompt"], tmux_name="", worktree="",
+                          branch="", base="" if c.get("inplace") else tasks.default_branch(c["rpath"]), agent="claude",
+                          mode="attached" if c.get("inplace") else "worktree", phase="backlog",
+                          auto_close=1 if body.auto_close else None, spec=spec)
     _invalidate_scan()
-    return {"id": tid, "slug": slug, "tmux": real, "branch": f"worktree-{slug}", "attach_url": f"/term/{real}"}
+    return {"id": tid, "slug": slug, "phase": "backlog", "tmux": None, "task": _task_row(tid)}
+
+
+@app.get("/api/tasks")
+def api_tasks_list(project: str | None = None, repo: str | None = None, phase: str | None = None):
+    """The state.tasks rows (unarchived), filtered: ?project=&repo=&phase= (phase may be a comma list, e.g. backlog,queued)."""
+    want = [p.strip() for p in (phase or "").split(",") if p.strip()]
+    bad = [p for p in want if p not in tasks.PHASES]
+    if bad:
+        raise projects.BadRequest(f"phase must be one of {', '.join(tasks.PHASES)}")
+    rows = [t for t in db.tasks() if (not project or t["project"] == project) and (not repo or t["repo"] == repo)
+            and (not want or (t.get("phase") or "running") in want)]
+    return {"tasks": _tasks_view(rows)}
+
+
+@app.get("/api/tasks/{tid}")
+def api_task_get(tid: int):
+    """One task with what the poll leaves out: the full prompt, the full result and the parsed spec (the launch choices a
+    backlog card will start with)."""
+    t = db.task_get(tid)
+    if not t:
+        raise projects.NotFound("no such task")
+    row = _task_row(tid) or {}
+    return {**row, "prompt": t["prompt"], "result": t.get("result"), "spec": _task_spec(t)}
+
+
+class TaskPatchIn(BaseModel):
+    title: str | None = None
+    prompt: str | None = None
+
+
+@app.patch("/api/tasks/{tid}")
+def api_task_patch(tid: int, body: TaskPatchIn):
+    """Edit a backlog or queued task's title and/or prompt (the branch name is taken from the title when it starts)."""
+    with _task_lock:
+        t = db.task_get(tid)
+        if not t:
+            raise projects.NotFound("no such task")
+        if (t.get("phase") or "running") not in ("backlog", "queued"):
+            raise projects.Conflict("only a backlog task can be edited")
+        if body.title is None and body.prompt is None:
+            raise projects.BadRequest("title or prompt is required")
+        title, prompt = _task_text(t["title"] if body.title is None else body.title, t["prompt"] if body.prompt is None else body.prompt)
+        db.task_update(tid, title=title, prompt=prompt)
+    _invalidate_scan()
+    return {"id": tid, "title": title, "prompt": prompt, "task": _task_row(tid)}
+
+
+@app.delete("/api/tasks/{tid}", status_code=204)
+def api_task_delete(tid: int):
+    """Delete a backlog, queued or cancelled-without-a-worktree task. A started task is archived instead."""
+    with _task_lock:
+        t = db.task_get(tid)
+        if not t:
+            raise projects.NotFound("no such task")
+        phase = t.get("phase") or "running"
+        if phase not in ("backlog", "queued") and not (phase == "cancelled" and not tasks.has_worktree(t)):
+            raise projects.Conflict("archive a started task instead")
+        db.task_delete(tid)
+    _invalidate_scan()
+    return Response(status_code=204)
+
+
+class DispatchIn(LaunchOpts):
+    mode: str | None = None              # 'lane' (a new session in its own worktree; the default) or 'session'
+    session: str | None = None           # hand the prompt to this running session instead (implies mode 'session')
+    force: bool = False                  # session whose project/repo differ from the task's: send anyway, naming the repo
+    args: str | None = None              # lane only: overrides of what the card remembered
+    add_dirs: list[str] | None = None
+    agent: str | None = None
+    auto_close: bool | None = None       # stored only until the task runtime lands
+
+
+def _conflict_body(error: str, **extra) -> JSONResponse:
+    return JSONResponse({"error": error, **extra}, status_code=409)
+
+
+def _clean_paste(text: str) -> str:
+    """The prompt as one bracketed paste: CRLF normalised and every control character except tab and newline dropped (an ESC
+    in a copied log could otherwise end the paste early and type the rest as keys)."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return "".join(c for c in text if c in "\t\n" or ord(c) >= 32)
+
+
+def _dispatch_lane(t: dict, body: DispatchIn):
+    """Start the backlog task in a new session and worktree, with what it remembered (`spec`) plus the body's overrides."""
+    merged = {k: v for k, v in _task_spec(t).items() if k in TASK_SPEC_KEYS}
+    merged.update({k: v for k in TASK_SPEC_KEYS if (v := getattr(body, k, None)) is not None})
+    try:
+        launch = TaskIn(title=t["title"], prompt=t["prompt"], **merged)
+    except ValueError as e:
+        raise projects.BadRequest(f"the saved launch options are invalid: {e}")
+    out = _task_launch(t["project"], t["repo"], launch, task_id=t["id"])
+    if body.auto_close is not None:
+        db.task_update(t["id"], auto_close=int(body.auto_close))
+    row = db.task_get(t["id"]) or {}
+    return {"id": t["id"], "phase": "running", "tmux": out["tmux"], "session_row": row.get("session_row"),
+            "attach_url": out["attach_url"], "slug": out["slug"], "branch": out["branch"], "task": _task_row(t["id"])}
+
+
+def _dispatch_session(t: dict, body: DispatchIn):
+    """Hand the backlog task's prompt to a running Claude session that is ready for it: 404 unknown session, 409 {error, state}
+    unless it is idle, done, or waiting at its idle prompt (a 'waiting' session whose newest event is not the idle_prompt
+    Notification is in a permission prompt or a dialog and typing into it would answer it: 409 {error, state, wait_kind}; a pending
+    permission row is 409 {error, state, pending_permission}), 409 {error, mismatch: {task, session}} when it works in another
+    repo (unless force, which prefixes the prompt with 'Work in <the task's repo path>.')."""
+    name = body.session or ""
+    try:
+        sproject, srepo, _ = tmux.split_name(name)
+    except ValueError:
+        raise projects.BadRequest("not a ccboard session name")
+    if not tmux.has_session(name):
+        raise projects.NotFound(f"session {name} not found")
+    row = db.open_rows().get(name)
+    state = (row or {}).get("state") or "unknown"
+    if row is None or row.get("agent") != (t.get("agent") or "claude"):
+        return _conflict_body(f"{name} is not a {t.get('agent') or 'claude'} session the board started", state=state, agent=(row or {}).get("agent"))
+    if state not in ("idle", "done", "waiting"):
+        return _conflict_body(f"the session is {state}; wait for it to finish or pick another", state=state)
+    if any(p["tmux_name"] == name for p in db.perm_pending()):
+        return _conflict_body("the session is waiting for a permission decision; answer it first", state=state, pending_permission=True)
+    if state == "waiting":
+        kind = _wait_kind_of(db.last_event(name))
+        if kind != "idle_prompt":
+            return _conflict_body("the session is waiting on a prompt (permission or dialog): answer it first", state=state, wait_kind=kind)
+    task_path = projects.repo_path(t["project"], t["repo"])
+    prompt = _clean_paste(t["prompt"])
+    if projects.repo_path(sproject, srepo) != task_path:
+        if not body.force:
+            return _conflict_body("this session works in another repo", mismatch={"task": f"{t['project']}/{t['repo']}", "session": f"{sproject}/{srepo}"})
+        prompt = f"Work in {task_path}.\n\n{prompt}"
+    tmux.paste_text(name, prompt, enter=True)
+    # the UserPromptSubmit hook says the same within a second; painting it now keeps the card in In progress, not in Done
+    db.set_state(name, "working", "TaskDispatch", prompt=prompt[:500])
+    db.add_event(name, "TaskDispatch", t["title"], f"task {t['id']} sent to the session", {"task": t["id"], "force": bool(body.force)},
+                 agent=row.get("agent"))
+    db.task_update(t["id"], tmux_name=name, session_row=row["row_id"], mode="session", phase="running", assigned_at=db_now(),
+                   **({"auto_close": int(body.auto_close)} if body.auto_close is not None else {}))
+    _invalidate_scan()
+    return {"id": t["id"], "phase": "running", "tmux": name, "session_row": row["row_id"], "pasted": True, "task": _task_row(t["id"])}
+
+
+@app.post("/api/tasks/{tid}/dispatch")
+def api_task_dispatch(tid: int, body: DispatchIn | None = None):
+    """Start a backlog task: in a new session of its own ({mode: 'lane'}, the default; launch choices from the card's spec,
+    overridable in the body) or in a running session ({session: '<tmux>', force?}). Answers {id, phase 'running', tmux,
+    session_row, attach_url (lane) | pasted (session), task}; the client navigates to the tmux session from this response."""
+    body = body or DispatchIn()
+    if body.mode not in (None, "lane", "session"):
+        raise projects.BadRequest("mode must be 'lane' or 'session'")
+    if body.mode == "session" and not body.session:
+        raise projects.BadRequest("session is required to hand a task to a session")
+    if body.mode == "lane" and body.session:
+        raise projects.BadRequest("a lane dispatch starts a new session; drop session or use mode 'session'")
+    _task_agent(body.agent)
+    with _task_lock:                                   # re-read inside the lock: a second tap sees the first one's phase
+        t = db.task_get(tid)
+        if not t:
+            raise projects.NotFound("no such task")
+        phase = t.get("phase") or "running"
+        if phase == "queued":
+            raise projects.Conflict("this task is queued behind another step")
+        if phase != "backlog":
+            raise projects.Conflict("already dispatched")
+        return _dispatch_session(t, body) if body.session else _dispatch_lane(t, body)
 
 
 def _task_or_404(tid: int) -> tuple[dict, Path | None]:
@@ -1090,6 +1410,12 @@ class ArchiveIn(BaseModel):
 
 @app.post("/api/tasks/{tid}/archive")
 def api_archive_task(tid: int, body: ArchiveIn | None = None):
+    t = db.task_get(tid)
+    if t and t.get("mode") == "session" and (t.get("phase") or "running") not in ("backlog", "queued"):
+        # a task handed to a running session borrowed it: no worktree to remove and the session is the user's, so only the card goes
+        db.task_update(tid, archived_at=db_now(), status="archived")
+        _invalidate_scan()
+        return {"archived": tid, "worktree_removed": False}
     t, wt = _task_in_worktree(tid)       # a backlog or queued task has nothing to clean up: it is deleted, not archived
     force = bool(body and body.force)
     _drop_preview(t)

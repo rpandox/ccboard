@@ -209,12 +209,16 @@ def test_task_launch_parity(ag, tmp_path):
     repo = tmp_path / "api"
     p = plan(ag, cwd=str(repo), worktree="fix-bug", prompt="fix it", task=True, add_dirs=["/x"],
              opts={"model": "opus", "extra": ["--max-turns", "3"]})
-    assert p.argv == ["claude", "--model", "opus", "--max-turns", "3", "--add-dir", "/x", "--worktree", "fix-bug", "--session-id", SID, "fix it"]
+    assert p.argv == ["claude", "--model", "opus", "--max-turns", "3", "--add-dir", "/x", "--worktree", "fix-bug", "--session-id", SID, "--", "fix it"]
     assert shlex.split(tasks.build_command("fix-bug", SID, "fix it", ["--model", "opus", "--max-turns", "3"], ["/x"])) == p.argv
     assert p.cmd_line == tasks.build_command("fix-bug", SID, "fix it", ["--model", "opus", "--max-turns", "3"], ["/x"])
     assert p.worktree == str(tasks.worktree_path(repo, "fix-bug")) == str(repo / ".claude" / "worktrees" / "fix-bug")
     assert (p.cwd, p.agent_session_id) == (str(repo), SID)
-    assert plan(ag, cwd=str(repo), worktree="w", prompt="p", task=True).argv == ["claude", "--worktree", "w", "--session-id", SID, "p"]
+    assert plan(ag, cwd=str(repo), worktree="w", prompt="p", task=True).argv == ["claude", "--worktree", "w", "--session-id", SID, "--", "p"]
+    # a prompt that starts with '-' (a markdown bullet) is a prompt: `--` ends the options, in both builders
+    bullet = "- fix the bug\n- add tests"
+    assert plan(ag, cwd=str(repo), worktree="w", prompt=bullet, task=True).argv == ["claude", "--worktree", "w", "--session-id", SID, "--", bullet]
+    assert shlex.split(tasks.build_command("w", SID, bullet, [], [])) == ["claude", "--worktree", "w", "--session-id", SID, "--", bullet]
     assert tasks.WORKTREES == claude.WORKTREE_DIR
 
 
@@ -244,7 +248,9 @@ def test_prompt_form_puts_variadics_before_the_positional(ag):
     """A first prompt on a normal session: --add-dir and --allowedTools are variadic and would swallow the prompt, so they go first
     and `--session-id <id> --name <n>` ends the list (the same trick tasks.build_command uses)."""
     p = plan(ag, prompt="hello", add_dirs=["/x"], opts={"model": "opus", "allowed_tools": "A,B"})
-    assert p.argv == ["claude", "--model", "opus", "--allowedTools", "A", "B", "--add-dir", "/x", "--session-id", SID, "--name", "s1", "hello"]
+    assert p.argv == ["claude", "--model", "opus", "--allowedTools", "A", "B", "--add-dir", "/x", "--session-id", SID, "--name", "s1", "--", "hello"]
+    dash = plan(ag, prompt="- fix the bug\n- add tests")
+    assert dash.argv[-2:] == ["--", "- fix the bug\n- add tests"], "a prompt that starts with '-' is a prompt, not an option"
 
 
 # ---------- resume / continue argv (recover.py, api_run_resume) ----------

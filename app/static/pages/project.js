@@ -64,13 +64,21 @@ function pjCodeLink(st, path, text, cls, title) {
   return el('a', { class: 'btn small ' + (cls || ''), href: codeServerUrl(path), target: '_blank', rel: 'noopener', title: title || path }, ic('code'), text || null);
 }
 
-/* + session / + task / + schedule: the sheet of Shell.openCreate with the project, and the repo the page is about, preselected. */
+/* + session / + task / + schedule: the sheet of Shell.openCreate with the project, and the repo the page is about, preselected. A task or a schedule
+   never stops at the picker: the repo of the route, else the one the Files tab shows, else the repo a task was last started in, else the first repo,
+   else the project folder when it is a git repo (the form's "in" select switches). */
 function pjCreate(kind) {
   const P = projectPage.cur;
   if (!P || typeof Shell === 'undefined' || !Shell || typeof Shell.openCreate !== 'function') return false;
   const st = pjState();
   const cur = pjParse(P.route, st);
-  const repo = cur.repo || (P.view && P.view.repo) || undefined;
+  let repo = cur.repo || (P.view && P.view.repo) || undefined;
+  if (kind === 'task' || kind === 'schedule' || kind === 'job') {
+    const p = pjFind(st, cur.project);
+    const can = kind === 'task' ? taskTarget : gitTarget;                                           // a task may run in place in a non-git project folder
+    const ok = (name) => !!p && (name === 'root' ? !!p.root && can(p, p.root) : (p.repos || []).some((r) => r.name === name && can(p, r)));
+    if (p && !(repo && ok(repo))) repo = typeof Shell.defaultRepo === 'function' ? Shell.defaultRepo(p, kind) : ((p.repos || []).find((r) => gitTarget(p, r)) || {}).name;
+  }
   return Shell.openCreate(kind, { project: cur.project, repo });
 }
 
@@ -233,7 +241,7 @@ function pjSessionsView(P, route) {
 function pjTasksView(P, route) {
   const scopeNote = pjScopeNote(P, route);
   const grid = el('div', { class: 'kanban pj-kanban' });
-  const none = el('p', { class: 'dim hidden', text: 'No tasks in this project yet. A task is one worktree and branch per piece of work: start one with + task.' });
+  const none = el('p', { class: 'dim hidden', text: 'No tasks in this project yet. A task is one worktree and branch per piece of work: + task starts one now, parks it in the Backlog, or schedules it.' });
   const bar = pjToolbar(el('button', { class: 'small primary', type: 'button', text: '+ task', onclick: () => pjCreate('task') }),
     el('span', { class: 'dim', text: 'one worktree and branch per task; the columns follow the session state' }));
   let sig = null;
@@ -243,13 +251,14 @@ function pjTasksView(P, route) {
     update(st, rt) {
       const cur = pjParse(rt, st);
       scopeNote.ccPatch(cur);
-      const tasks = (st.tasks || []).filter((t) => t.project === cur.project && (!cur.repo || t.repo === cur.repo));
+      const tasks = boardTasks(st).filter((t) => t.project === cur.project && (!cur.repo || t.repo === cur.repo));       // the poll's rows with the optimistic Start / add / edit / delete laid over them
       none.classList.toggle('hidden', !!tasks.length);
-      const next = pjSig([tasks, ui.confirm]);
+      const ready = tasks.filter(taskIsBacklog).map((t) => taskSessionTargets(t, st).filter((x) => x.ok && x.same).map((x) => x.s.tmux));      // a backlog card's quick send follows the sessions
+      const next = pjSig([tasks, ui.confirm, ready]);
       if (sig === next) return;
       sig = next;
       grid.textContent = '';
-      for (const [key, label] of [['backlog', 'Backlog'], ...COLUMNS]) {
+      for (const [key, label] of BOARD_COLUMNS) {
         const items = tasks.filter((t) => t.column === key);
         const col = el('div', { class: 'col', 'data-col': key }, el('h3', { text: `${label} (${items.length})` }));
         if (!items.length && key === 'backlog') col.append(el('div', { class: 'dim', text: 'nothing queued' }));
@@ -463,7 +472,7 @@ function pjTabItems(P, st) {
 }
 
 function pjCounts(P, st, cur) {
-  const tasks = (st.tasks || []).filter((t) => t.project === cur.project && (!cur.repo || t.repo === cur.repo)).length;
+  const tasks = boardTasks(st).filter((t) => t.project === cur.project && (!cur.repo || t.repo === cur.repo)).length;
   const jobs = (st.jobs || []).filter((j) => j.project === cur.project && (!cur.repo || j.repo === cur.repo)).length;
   const hit = homeScan(st).projects.find((x) => x.p.name === cur.project);
   const sessions = hit ? hit.groups.filter((g) => !cur.repo || (g.repo && g.repo.name === cur.repo)).reduce((n, g) => n + g.items.length, 0) : 0;
@@ -561,7 +570,7 @@ registerPage('project', {
   update(st, route) {
     const P = projectPage.cur;
     if (!P) return;
-    if (route) P.route = route;
+    if (route && route.id === 'project') P.route = route;     // under the session peek the router hands this page the peek's route: keep the project's own
     pjUpdate(false);
   },
   onRoute(route) {

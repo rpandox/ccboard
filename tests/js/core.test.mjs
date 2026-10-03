@@ -188,3 +188,32 @@ test('sessionRow: meta text is unchanged, stats and the command carry the mono c
   assert.equal(flatText(withClass(bare, 'meta')[0]), '5m · 1 attached');
   assert.equal(withClass(bare, 'mono').length, 1);                    // only the <code>: no empty stats span
 });
+
+// ---------------------------------------------------------------- api(): what a failed call hands to its caller
+
+/** The Error api() rejects with for a fake fetch answer. json: the parsed body, or null for a body that is not JSON. */
+async function apiFailure({ status, statusText, json }) {
+  const w = makeWorld({ fetch: async () => ({ ok: false, status, statusText, json: async () => { if (json === null) throw new SyntaxError('not json'); return json; } }) });
+  w.load('core.js');
+  w.run('globalThis.__err = null; api("POST", "/api/tasks/1/dispatch", { session: "x" }).catch((e) => { __err = e; });');
+  await new Promise((r) => setImmediate(r));
+  return { isError: w.run('__err instanceof Error'), message: w.run('__err && __err.message'), status: w.run('__err && __err.status'), body: plain(w.get('__err').body) };
+}
+
+test('api() rejects with an Error that keeps the status and the parsed body next to the message (a 409 says why in body.mismatch / body.state)', async () => {
+  const body = { error: 'this session works in another repo', mismatch: { task: 'shop/api', session: 'shop/web' } };
+  const e = await apiFailure({ status: 409, statusText: 'Conflict', json: body });
+  assert.equal(e.isError, true);
+  assert.equal(e.message, 'this session works in another repo', 'the message is still the server\'s error text');
+  assert.equal(e.status, 409);
+  assert.deepEqual(e.body, body, 'the whole body, so a caller can branch on its fields instead of on the words');
+  const busy = await apiFailure({ status: 409, statusText: 'Conflict', json: { error: 'the session is waiting on a prompt', state: 'waiting', wait_kind: 'permission_prompt' } });
+  assert.deepEqual(busy.body, { error: 'the session is waiting on a prompt', state: 'waiting', wait_kind: 'permission_prompt' });
+});
+
+test('api() on an answer that is not JSON (a proxy 502 page): the message is the status line, the body is null, the status is kept', async () => {
+  const e = await apiFailure({ status: 502, statusText: 'Bad Gateway', json: null });
+  assert.equal(e.message, '502 Bad Gateway');
+  assert.equal(e.status, 502);
+  assert.equal(e.body, null);
+});

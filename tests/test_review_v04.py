@@ -192,7 +192,8 @@ def test_project_folder_session(client, projects_dir, fake_tmux):
     assert rows[name]["repo"] == "root"
     assert hooks.resolve_session({}, {"cwd": str(projects_dir / "shop")}, rows) == (name, "cwd")
     assert client.post("/api/projects/shop/repos", json={"name": "root"}, headers=H).status_code == 400
-    assert client.post("/api/projects/shop/repos/root/tasks", json={"title": "t", "prompt": "p"}, headers=H).status_code in (400, 404)
+    t = client.post("/api/projects/shop/repos/root/tasks", json={"title": "t", "prompt": "p"}, headers=H)   # v0.5.14a: in place, no worktree
+    assert t.status_code == 201 and t.json()["branch"] == "" and main.db.task_get(t.json()["id"])["mode"] == "attached", t.text
     d = client.delete("/api/projects/shop", headers=H)
     assert d.status_code == 200 and name in d.json()["killed_sessions"]
 
@@ -220,7 +221,7 @@ def test_launch_options(client, projects_dir, fake_tmux, monkeypatch):
     r = client.post("/api/projects/shop/repos/api/tasks", json={"title": "t1", "prompt": "do it", "model": "sonnet", "effort": "low", "permission_mode": "plan"}, headers=H)
     assert r.status_code == 201, r.text
     sent = shlex.split(fake_tmux["sent"][-1][1])
-    assert sent[1:7] == ["--model", "sonnet", "--effort", "low", "--permission-mode", "plan"] and sent[-1] == "do it" and sent[-3] == "--session-id"
+    assert sent[1:7] == ["--model", "sonnet", "--effort", "low", "--permission-mode", "plan"] and sent[-1] == "do it" and sent[-2] == "--" and sent[-4] == "--session-id"
     assert client.post("/api/projects/shop/repos/api/tasks", json={"title": "t2", "prompt": "p", "permission_mode": "bypassPermissions"}, headers=H).status_code == 400
 
 

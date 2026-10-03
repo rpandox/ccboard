@@ -2,6 +2,8 @@
 // never ride the state poll, hidden until data came back, errors swallowed, destroy) and the rate-limit callout in #banner (idempotent, comes back
 // after renderBanner() emptied the banner, dismissed per episode, gone when the window resets). Real core.js, components.js, router.js and widgets.js
 // on minidom's DOM inside the vm harness.
+// v0.5.17 (the way into the Usage page): the card's header link and both gauges point at #/usage; the sparkline is drawn by Charts.spark when charts.js
+// is loaded and by the card's own sparkline() when it is not, throws or draws nothing; widgets.js never reads Charts at load.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { makeWorld, plain } from './harness.mjs';
@@ -14,10 +16,10 @@ const tick = () => new Promise((r) => setImmediate(r));
 const text = (n) => (n ? n.textContent : '');
 
 /** A world with the DOM, the scripts the widgets need and an api() that records and answers from __answers (prefix -> value | Error | fn). */
-function wWorld(extra = {}) {
+function wWorld(extra = {}, more = []) {
   const w = makeWorld(extra);
   installDom(w);
-  for (const f of ['core.js', 'components.js', 'router.js', 'pages/widgets.js']) w.load(f);
+  for (const f of ['core.js', 'components.js', 'router.js', ...more, 'pages/widgets.js']) w.load(f);
   w.ctx.__calls = [];
   w.ctx.__answers = {};
   w.run(`api = async (method, path) => {
@@ -304,5 +306,159 @@ test('the backup chip tells a partial run apart: snapshot ok, some mirror pushes
   w.ctx.__st = { usage: null, block: null, backup: { at: ISO(1), status: 'partial', warnings: ['push a/b: main: [rejected]'] } };
   w.run('__card.update(__st)');
   assert.match(text(chip), /1 push rejected$/);
+  c.destroy();
+});
+
+
+// ---------------------------------------------------------------- v0.5.17: the way into the Usage page
+
+/** A Charts stand-in that draws like charts.js's spark: records the call, puts one <svg class="spark"> with a polyline into the host. */
+const CHARTS_STUB = `globalThis.Charts = {
+  calls: [],
+  spark(host, t, vals, opts) {
+    this.calls.push({ n: t.length, vals: vals.slice(), opts });
+    host.append(svg('svg', { class: 'spark', viewBox: '0 0 ' + opts.w + ' ' + opts.h }, svg('polyline', { class: 'chart-spark', points: '0,0 1,1' })));
+  },
+};`;
+
+test('the card points at the Usage page: a header link and both gauges are anchors to #/usage', async () => {
+  const w = wWorld();
+  const { root, card: c } = card(w);
+  await c.refresh();
+  const more = root.querySelector('.uc-head .uc-more');
+  assert.ok(more, 'the header carries the link');
+  assert.equal(more.tagName, 'A');
+  assert.equal(more.getAttribute('href'), '#/usage');
+  assert.equal(text(more), 'Usage →');
+  assert.ok(more.classList.contains('small'));
+  assert.equal(more.classList.contains('bp5-button'), false, 'a plain link: the semantic map only makes a button of a.btn');
+  assert.ok(root.querySelector('.uc-head .uc-backup'), 'the backup chip stays in the header beside it');
+  assert.equal(root.querySelector('.uc-head .uc-backup').getAttribute('href'), '#/settings?sec=box');
+  const gauges = root.querySelectorAll('.gauge');
+  assert.equal(gauges.length, 2);
+  for (const g of gauges) {
+    assert.equal(g.tagName, 'A', 'a gauge is a link');
+    assert.equal(g.getAttribute('href'), '#/usage');
+    assert.ok(g.getAttribute('title'), 'and keeps its tooltip');
+  }
+  assert.equal(root.querySelectorAll('a[href="#/usage"]').length, 3, 'one link in the header, one per gauge');
+  c.destroy();
+});
+
+test('the Usage link shows even before any fetch answered: it is part of the card, which is hidden as a whole until data came back', () => {
+  const w = wWorld();
+  const { root, card: c } = card(w, { answers: { '/api/series': { __error: 'down' }, '/api/usage/summary': { __error: 'down' } } });
+  assert.equal(root.classList.contains('hidden'), true);
+  assert.ok(root.querySelector('.uc-more'), 'built with the card, so the first paint after the data has the way in');
+  c.destroy();
+});
+
+test('widgets.js reads Charts only when the card paints: loading it with no Charts is fine, and the card then draws its own sparkline', async () => {
+  const w = wWorld();
+  assert.equal(w.run('typeof Charts'), 'undefined');
+  const { root, card: c } = card(w);
+  await c.refresh();
+  assert.equal(root.querySelectorAll('polyline.sp-line').length, 2, 'the card\'s own sparkline');
+  assert.equal(root.querySelector('svg.spark').getAttribute('viewBox'), '0 0 240 44');
+  c.destroy();
+});
+
+test('with charts.js loaded the sparkline is Charts.spark: the host, the series arrays and the 240 x 44 box on a 0-100 scale; the caption and the aria label stay', async () => {
+  const w = wWorld();
+  w.run(CHARTS_STUB);
+  const { root, card: c } = card(w);
+  await c.refresh();
+  const calls_ = plain(w.get('Charts.calls'));
+  assert.equal(calls_.length, 1, 'one draw for the first data');
+  assert.equal(calls_[0].n, 8);
+  assert.deepEqual(calls_[0].vals, [10, 20, null, null, 60, 70, 65, 42], 'nulls go through as they are: the gap is Charts\' to draw');
+  assert.deepEqual(calls_[0].opts, { w: 240, h: 44, min: 0, max: 100, guide: 85, label: '5-hour window, last 24 hours' }, 'the same box, 0-100 scale and 85 % guide as the card\'s own sparkline, and the label its aria text starts with');
+  assert.equal(root.querySelectorAll('polyline.chart-spark').length, 1, 'the stub\'s polyline is in the card');
+  assert.equal(root.querySelectorAll('polyline.sp-line').length, 0, 'and the card\'s own is not drawn on top');
+  assert.equal(root.querySelectorAll('.uc-plot svg').filter((n) => n.classList.contains('spark')).length, 1, 'exactly one spark svg in the box');
+  assert.equal(text(root.querySelector('.uc-spark .uc-cap-v')), 'now 42%');
+  const svgNode = root.querySelector('.uc-spark svg');
+  assert.equal(svgNode.getAttribute('role'), 'img', 'an svg without its own label gets one');
+  assert.match(svgNode.getAttribute('aria-label'), /5-hour window, last 24 hours: now 42%, peak 70%/);
+  c.destroy();
+});
+
+test('a second refresh redraws into the same box (no second svg), and the bars stay the card\'s own either way', async () => {
+  const w = wWorld();
+  w.run(CHARTS_STUB);
+  const { root, card: c } = card(w);
+  await c.refresh();
+  await c.refresh();
+  assert.equal(root.querySelectorAll('.uc-spark svg').length, 1);
+  assert.equal(plain(w.get('Charts.calls')).length, 2);
+  assert.equal(root.querySelectorAll('rect.cb').length, 7);
+  c.destroy();
+});
+
+test('a Charts.spark that throws, draws nothing or is not a function leaves the card with its own sparkline', async () => {
+  for (const [name, stub] of [
+    ['throws', 'globalThis.Charts = { spark() { throw new Error("uPlot not ready"); } };'],
+    ['draws nothing', 'globalThis.Charts = { spark() {} };'],
+    ['no spark', 'globalThis.Charts = { line() {} };'],
+    ['null', 'globalThis.Charts = null;'],
+  ]) {
+    const logged = [];
+    const w = wWorld({ console: { log() {}, warn() {}, error: (...a) => logged.push(a) } });
+    w.run(stub);
+    const { root, card: c } = card(w);
+    await assert.doesNotReject(c.refresh(), name);
+    assert.equal(logged.length, name === 'throws' ? 1 : 0, `${name}: only a throwing Charts.spark is logged`);
+    assert.equal(root.querySelectorAll('polyline.sp-line').length, 2, `${name}: the card's own sparkline`);
+    assert.equal(root.querySelectorAll('.uc-spark svg').length, 1, `${name}: one svg, no leftovers`);
+    assert.equal(root.classList.contains('hidden'), false, `${name}: the card still shows`);
+    c.destroy();
+  }
+});
+
+test('a Charts.spark that returns its node instead of appending it is placed in the box', async () => {
+  const w = wWorld();
+  w.run('globalThis.Charts = { spark(host, t, v, o) { return svg("svg", { class: "spark", "aria-label": "mine" }, svg("polyline", { class: "chart-spark", points: "0,0 1,1" })); } };');
+  const { root, card: c } = card(w);
+  await c.refresh();
+  assert.equal(root.querySelectorAll('polyline.chart-spark').length, 1);
+  assert.equal(root.querySelector('.uc-spark svg').getAttribute('aria-label'), 'mine', 'an aria label the chart set is kept');
+  c.destroy();
+});
+
+test('Widgets.sparkDesc says now and peak, or that there are no samples', () => {
+  const w = wWorld();
+  assert.equal(w.run('Widgets.sparkDesc([10, null, 100, 42.4])'), '5-hour window, last 24 hours: now 42%, peak 100%');
+  assert.equal(w.run('Widgets.sparkDesc([null, null])'), '5-hour window, last 24 hours: no samples');
+  assert.equal(w.run('Widgets.sparkDesc([])'), '5-hour window, last 24 hours: no samples');
+});
+
+test('against the real charts.js: Charts.spark draws the same two runs, the 240 x 44 box and the same label as the card\'s own sparkline', async () => {
+  const own = wWorld();
+  const a = card(own);
+  await a.card.refresh();
+  const mine = a.root.querySelector('.uc-spark svg');
+  const w = wWorld({}, ['charts.js']);                                       // charts.js loads before widgets.js here; either order works, Charts is read at paint time
+  assert.equal(w.run('typeof Charts.spark'), 'function');
+  const { root, card: c } = card(w);
+  await c.refresh();
+  const real = root.querySelector('.uc-spark svg');
+  assert.equal(root.querySelectorAll('.uc-spark svg').length, 1);
+  assert.equal(root.querySelectorAll('polyline.sp-line').length, 2, 'the null gap is a break: two runs');
+  assert.equal(real.getAttribute('viewBox'), mine.getAttribute('viewBox'));
+  assert.equal(real.getAttribute('aria-label'), mine.getAttribute('aria-label'), 'one description, whichever drew it');
+  assert.equal(real.getAttribute('role'), 'img');
+  assert.equal(root.querySelectorAll('line.sp-guide').length, 1, 'the 85 % guide');
+  for (const n of [real]) assert.equal(n.getAttribute('style'), null);
+  c.destroy();
+  a.card.destroy();
+});
+
+test('charts.js loaded AFTER widgets.js works the same: the card finds Charts when it paints', async () => {
+  const w = wWorld();
+  w.load('charts.js');
+  const { root, card: c } = card(w);
+  await c.refresh();
+  assert.equal(root.querySelectorAll('polyline.sp-line').length, 2);
+  assert.equal(root.querySelectorAll('.uc-spark svg').length, 1);
   c.destroy();
 });

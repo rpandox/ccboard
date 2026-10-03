@@ -9,6 +9,9 @@
      last 7 days of cost (GET /api/usage/summary, one bar per day, a day without spend hatched). It runs once when the card is built and then every
      60 s while the tab is visible, never from the 3 s state poll, and returns the promise of the fetches. An error is swallowed: the card keeps what
      it had. The whole card stays hidden until a fetch has returned data. destroy() stops the timer and removes the card.
+     v0.5.17: the card is the way into the Usage page: a 'Usage' link in its header and both gauges are links to #/usage (one tap from the
+     5H number to the limits chart). The sparkline is drawn by Charts.spark when charts.js is loaded and by this file's own sparkline() when it is not
+     (or when Charts.spark throws or draws nothing): Charts is looked up when the card paints, never at load, so Home does not depend on script order.
    Widgets.limitBanner(st)
      Puts a callout in #banner while st.rate_limited names a limit whose reset time is still ahead ('Claude rate limit (5h) · resets 22:05 · s1'),
      takes it away when the limit is over, and remembers a dismissal (the reset time, in sessionStorage) so the same episode stays quiet.
@@ -67,13 +70,14 @@ Widgets.hiddenTab = function () { try { return !!(typeof document !== 'undefined
 
 /* ---------- the usage card ---------- */
 
-/* One gauge: label, a bar filled to the used percentage, the number and the reset countdown. set(window | null). */
+/* One gauge: label, a bar filled to the used percentage, the number and the reset countdown. set(window | null). The gauge is a link to the
+   Usage page (the limits chart is one tap from the number that worries you). */
 Widgets.gauge = function (label) {
   const fill = el('i');
   const val = el('span', { class: 'g-val mono' });
   const reset = el('span', { class: 'g-reset dim' });
   const bar = el('span', { class: 'g-bar', role: 'img' }, fill);
-  const root = el('div', { class: 'gauge hidden' }, el('b', { class: 'g-label', text: label }), bar, val, reset);
+  const root = el('a', { class: 'gauge hidden', href: '#/usage' }, el('b', { class: 'g-label', text: label }), bar, val, reset);
   root.set = (w) => {
     const ok = !!w && typeof w.used_percentage === 'number';
     root.classList.toggle('hidden', !ok);
@@ -88,6 +92,13 @@ Widgets.gauge = function (label) {
     root.setAttribute('title', `${label} window: ${Math.round(pct)}% used` + (w.resets_at ? ` · resets ${Widgets.clock(w.resets_at)}` : ''));
   };
   return root;
+};
+
+/* The text alternative of the 5H sparkline: '5-hour window, last 24 hours: now 42%, peak 100%'. */
+Widgets.sparkDesc = function (values) {
+  const known = values.filter((v) => typeof v === 'number' && Number.isFinite(v));
+  if (!known.length) return '5-hour window, last 24 hours: no samples';
+  return `5-hour window, last 24 hours: now ${Math.round(known[known.length - 1])}%, peak ${Math.round(Math.max(...known))}%`;
 };
 
 /* The sparkline: {t:[epoch s], values:[0..100|null]} -> an svg with one polyline per run of known points (a gap is a break, not a zero). */
@@ -111,11 +122,30 @@ Widgets.sparkline = function (t, values) {
   };
   values.forEach((v, i) => { if (typeof v === 'number' && Number.isFinite(v)) run.push(`${px(i).toFixed(1)},${py(v).toFixed(1)}`); else flush(); });
   flush();
-  const known = values.filter((v) => typeof v === 'number');
-  const now = known.length ? Math.round(known[known.length - 1]) : null;
-  const peak = known.length ? Math.round(Math.max(...known)) : null;
-  const desc = known.length ? `5-hour window, last 24 hours: now ${now}%, peak ${peak}%` : '5-hour window, last 24 hours: no samples';
+  const desc = Widgets.sparkDesc(values);
   return svg('svg', { class: 'spark', viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', role: 'img', 'aria-label': desc }, svg('title', { text: desc }), ...kids);
+};
+
+/* Draws the 5H sparkline into box: charts.js's Charts.spark when it is loaded (one polyline implementation for Home and the Usage page), this
+   file's sparkline() otherwise. Charts is read here, when the card paints (a classic-script const is a global binding, not a window property),
+   so neither script has to load first. A Charts.spark that throws or leaves the box empty falls back too. Returns the svg node. */
+Widgets.paintSpark = function (box, t, values) {
+  box.textContent = '';
+  const C = typeof Charts !== 'undefined' ? Charts : null;
+  if (C && typeof C.spark === 'function') {
+    try {
+      const r = C.spark(box, t, values, { w: Widgets.SPARK_W, h: Widgets.SPARK_H, min: 0, max: 100, guide: 85, label: '5-hour window, last 24 hours' });   // the same box, scale and 85 % guide as sparkline() below
+      if (r && typeof r === 'object' && r.parentNode !== box && !box.children.length) box.append(r);   // a Charts.spark that returns the node instead of appending it
+      const node = box.children[0];
+      if (node) {
+        if (!node.getAttribute('aria-label')) { node.setAttribute('role', 'img'); node.setAttribute('aria-label', Widgets.sparkDesc(values)); }
+        return node;
+      }
+    } catch (e) { box.textContent = ''; console.error('ccboard Charts.spark', e); }
+  }
+  const node = Widgets.sparkline(t, values);
+  box.append(node);
+  return node;
 };
 
 /* Seven bars: daily = [{day:'YYYY-MM-DD', total, zero}] -> an svg with one rect per day (a day without spend is a short hatched stub). */
@@ -154,6 +184,7 @@ Widgets.usageCard = function (host) {
   const g7 = Widgets.gauge('7D');
   const burn = el('div', { class: 'uc-burn dim hidden' });
   const backup = el('a', { class: 'uc-backup hidden', href: '#/settings?sec=box' });
+  const more = el('a', { class: 'uc-more small', href: '#/usage', title: 'Limits, cost per day, sessions and projects', text: 'Usage →' });
   const sparkTitle = el('span', { class: 'uc-cap-t', text: '5H window · last 24 h' });
   const sparkNow = el('span', { class: 'uc-cap-v mono' });
   const sparkBox = el('div', { class: 'uc-plot' });
@@ -164,7 +195,7 @@ Widgets.usageCard = function (host) {
   const spark = el('figure', { class: 'uc-fig uc-spark hidden' }, el('figcaption', { class: 'uc-cap' }, sparkTitle, sparkNow), sparkBox);
   const bars = el('figure', { class: 'uc-fig uc-bars hidden' }, el('figcaption', { class: 'uc-cap' }, barsTitle, barsSum), barsBox, days);
   const root = el('section', { class: 'ucard hidden', 'aria-label': 'Usage' },
-    el('div', { class: 'uc-head' }, el('h2', { text: 'Usage' }), backup),
+    el('div', { class: 'uc-head' }, el('h2', { text: 'Usage' }), el('span', { class: 'uc-tools' }, backup, ' ', more)),
     el('div', { class: 'uc-gauges' }, g5, g7),
     burn,
     el('div', { class: 'uc-charts' }, spark, bars));
@@ -181,8 +212,7 @@ Widgets.usageCard = function (host) {
     const hasSpark = t.length > 1 && known.length > 0;
     spark.classList.toggle('hidden', !hasSpark);
     if (hasSpark) {
-      sparkBox.textContent = '';
-      sparkBox.append(Widgets.sparkline(t, values));
+      Widgets.paintSpark(sparkBox, t, values);
       setTextIfChanged(sparkNow, `now ${Math.round(known[known.length - 1])}%`);
     }
     const d = self.summary && Array.isArray(self.summary.daily) ? self.summary.daily.slice(-7) : [];

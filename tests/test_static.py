@@ -528,11 +528,11 @@ from collections import Counter  # noqa: E402
 INDEX = STATIC / "index.html"
 SKELETON_IDS = ("topbar", "sidebar", "main", "banner", "page", "dock", "bnav", "drawer", "sheet", "helpdlg", "modal", "toasts")
 SCRIPT_ORDER = ["/static/" + n for n in (            # v0.5.3 contract plus keymap.js and palette.js (v0.5.3b), pages/widgets.js (v0.5.5), tree.js and pages/project.js (v0.5.6)
-    "core.js", "components.js", "keymap.js", "live.js", "launcher.js", "tree.js", "palette.js", "shell.js", "router.js",
+    "core.js", "components.js", "keymap.js", "live.js", "launcher.js", "tree.js", "charts.js", "palette.js", "shell.js", "router.js",
     "pages/home.js", "pages/inbox.js", "pages/widgets.js", "pages/tasks.js", "pages/project.js", "pages/agents.js", "pages/settings.js", "pages/search.js",
-    "pages/session.js", "pages/placeholders.js", "main.js")]
+    "pages/session.js", "pages/usage.js", "pages/placeholders.js", "main.js")]
 STYLE_ORDER = ["/static/vendor/blueprint/blueprint.css", "/static/vendor/blueprint/blueprint-icons.css", "/static/tokens.css",
-               "/static/style.css", "/static/shell.css", "/static/pages.css"]
+               "/static/style.css", "/static/shell.css", "/static/pages.css", "/static/charts.css"]
 VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 
 
@@ -665,9 +665,9 @@ def test_index_dialogs_are_empty_in_the_html():
 # ---------- demo fixtures (app/static/demo/*.json, read by api() when ?demo=1 or ccboard:demo=1) ----------
 
 DEMO_DIR = STATIC / "demo"
-DEMO_FILES = ("state.json", "search.json", "tree.json", "file.json", "series.json", "usage_summary.json", "memory.json")
+DEMO_FILES = ("state.json", "search.json", "tree.json", "file.json", "series.json", "series_events.json", "usage_summary.json", "memory.json")
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+--[A-Za-z0-9_-]+--[A-Za-z0-9_-]+$")
-KANBAN = ("in_progress", "needs_you", "done", "pr", "merged")
+KANBAN = ("backlog", "in_progress", "needs_you", "done", "pr", "merged")
 DEMO_HEADERS = {"Tailscale-User-Login": "alice@example.com"}
 
 
@@ -800,23 +800,58 @@ def test_demo_state_tasks_fill_every_kanban_column_consistently():
     from app import tasks as tasks_mod
     state = demo_json("state.json")
     live = {s["tmux"]: s for _, _, s in fleet_sessions(state)}
+    rows = {s["row_id"]: s for _, _, s in fleet_sessions(state)}
     listed = state["tasks"]
-    assert Counter(t["column"] for t in listed) == Counter({c: 1 for c in KANBAN}), [t["column"] for t in listed]
+    cols = Counter(t["column"] for t in listed)
+    assert set(cols) == set(KANBAN), [t["column"] for t in listed]
+    assert cols == Counter({"backlog": 2, "in_progress": 2, "needs_you": 1, "done": 1, "pr": 1, "merged": 1}), cols
     assert [t["id"] for t in listed] == sorted((t["id"] for t in listed), reverse=True), "db.tasks() lists newest id first"
     for t in listed:
-        sess = live.get(t["tmux"])
-        row = {"pr_state": t["pr_state"], "pr_url": t["pr_url"], "status": "open", "archived_at": None}
-        assert tasks_mod.derive_status(row, sess) == t["column"], f"task {t['id']} ({t['slug']}): column disagrees with derive_status"
+        started = t["phase"] not in ("backlog", "queued")
+        sess = rows.get(t["session_row"]) if t["session_row"] is not None else live.get(t["tmux"])
+        row = {"pr_state": t["pr_state"], "pr_url": t["pr_url"], "status": "open", "archived_at": None, "phase": t["phase"]}
+        assert tasks_mod.derive_status(row, sess if started else None) == t["column"], f"task {t['id']} ({t['slug']}): column disagrees with derive_status"
         if t["session"] is not None:
             assert sess is not None and t["session"]["state"] == sess["state"], f"task {t['id']}: session sub-object disagrees"
-        assert t["tmux"] == f"{t['project']}--{t['repo']}--t-{t['slug']}"
-    by_col = {t["column"]: t for t in listed}
-    assert by_col["in_progress"]["session"]["state"] == "working" and by_col["needs_you"]["session"]["needs_attention"] is True
+        if t["mode"] == "worktree" and started:
+            assert t["tmux"] == f"{t['project']}--{t['repo']}--t-{t['slug']}"
+    by_id = {t["id"]: t for t in listed}
+    assert by_id[5]["session"]["state"] == "working" and by_id[4]["session"]["needs_attention"] is True
+    by_col = {t["column"]: t for t in listed if t["mode"] == "worktree"}
     pr, merged = by_col["pr"], by_col["merged"]
     assert pr["pr_url"] and pr["pr_number"] and pr["pr_state"] == "OPEN" and pr["ci"]["bucket"] in ("pass", "fail", "pending", "none")
     assert pr["pr"]["review"] and pr["ci"]["checks"]
     assert merged["pr_state"] == "MERGED" and merged["pr_number"] and merged["ci"]["bucket"] == "pass"
     assert any(t["overlap"] for t in listed), "one task shows the overlap warning"
+
+
+def test_demo_state_has_a_backlog_task_and_a_task_handed_to_a_running_session():
+    """v0.5.14a: a task before any session (Backlog column, Start / Send to session) and a task that runs in an existing session (the 'in <session>' chip)."""
+    state = demo_json("state.json")
+    rows = {s["row_id"]: s for _, _, s in fleet_sessions(state)}
+    owner = {s["tmux"]: (p, r) for p, r, s in fleet_sessions(state)}
+    by_id = {t["id"]: t for t in state["tasks"]}
+    backlog = [t for t in state["tasks"] if t["phase"] == "backlog"]
+    assert len(backlog) == 2, "two cards in the Backlog column: one in a repo with no ready session, one in a repo whose only ready session gets the one-tap button"
+    repos = {(p["name"], r["name"]) for p in state["projects"] for r in p["repos"]}
+    ready = {(p, r) for p, r, s in fleet_sessions(state) if s["state"] in ("idle", "done", "waiting") and s["agent"] == "claude" and s["tmux"] not in {x["tmux_name"] for x in state["pending_permissions"]}}
+    for b in backlog:
+        assert (b["tmux"], b["branch"], b["worktree"], b["session"], b["session_row"]) == ("", "", "", None, None)
+        assert b["mode"] == "worktree" and b["column"] == "backlog" and b["agent"] == "claude"
+        assert (b["project"], b["repo"]) in repos, "a backlog task targets a real repo (the project folder is not a git repo in the demo)"
+        assert b["created_at"] and b["title"] and b["slug"]
+        assert b["prompt"] and len(b["prompt"]) <= 600 and b["prompt_len"] == len(b["prompt"]), "a backlog row carries the head of its prompt (<= 600 chars) and the full length"
+    assert {(b["project"], b["repo"]) for b in backlog} == {("phasezero", "website"), ("ccboard", "ccboard")}
+    assert ("ccboard", "ccboard") in ready and ("phasezero", "website") not in ready, "the demo shows both a one-tap send and a sheet of sessions that are all busy"
+    assert all(t["prompt"] is None and t["prompt_len"] > 0 for t in state["tasks"] if t["phase"] not in ("backlog", "queued")), "started rows carry no prompt, only its length"
+    handed = [t for t in state["tasks"] if t["mode"] == "session"]
+    assert len(handed) == 1
+    s = handed[0]
+    assert s["phase"] == "running" and s["column"] == "in_progress" and s["session"]["state"] == "working"
+    assert s["session_row"] in rows and rows[s["session_row"]]["tmux"] == s["tmux"], "bound to a live session by its row id"
+    assert owner[s["tmux"]] == (s["project"], s["repo"]), "handed to a session of its own repo (no 'work in <path>' prefix)"
+    assert (s["branch"], s["worktree"]) == ("", ""), "a session-mode task never creates a worktree"
+    assert by_id[5]["session_row"] == s["session_row"], "a session may carry several tasks"
 
 
 def test_demo_state_jobs_runs_and_the_rest_of_the_fleet_view():

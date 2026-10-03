@@ -132,15 +132,18 @@ function renderTasks() {
   const sec = $('#tasks');
   if (!sec) return;
   sec.textContent = '';
-  const list = (state.tasks || []);
+  const list = boardTasks(state);                                  // the poll's rows with the optimistic Start / add / edit / delete laid over them
   if (!list.length) { sec.classList.add('hidden'); return; }
   sec.classList.remove('hidden');
-  sec.append(el('div', { class: 'row head' }, el('h2', { text: `Tasks (${list.length})` }), el('span', { class: 'dim', text: 'one worktree + branch per task; columns follow the session state' })));
+  sec.append(el('div', { class: 'row head' },
+    el('div', { class: 'row' }, el('h2', { text: `Tasks (${list.length})` }), el('span', { class: 'dim', text: 'one worktree + branch per task; columns follow the session state' })),
+    el('button', { class: 'small primary', type: 'button', text: '+ task', title: 'new task: now, later (backlog) or scheduled', onclick: () => homeCreate('task') })));
   const grid = el('div', { class: 'kanban' });
-  for (const [key, label] of COLUMNS) {
+  for (const [key, label] of BOARD_COLUMNS) {
     const items = list.filter(t => t.column === key);
-    if (!items.length && key !== 'in_progress') continue;
-    const col = el('div', { class: 'col' }, el('h3', { text: `${label} (${items.length})` }));
+    if (!items.length && key !== 'in_progress' && key !== 'backlog') continue;
+    const col = el('div', { class: 'col', 'data-col': key }, el('h3', { text: `${label} (${items.length})` }));
+    if (!items.length && key === 'backlog') col.append(el('div', { class: 'dim', text: 'nothing queued: + task, then Later' }));
     for (const t of items) col.append(taskCard(t));
     grid.append(col);
   }

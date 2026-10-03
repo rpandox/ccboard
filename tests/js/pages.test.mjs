@@ -190,7 +190,7 @@ function fakeState(over = {}) {
   };
 }
 
-const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'project', 'agents', 'settings', 'search', 'session', 'placeholders'];       // widgets.js (Widgets, no route) loads right after inbox.js, project.js right after tasks.js
+const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'project', 'agents', 'settings', 'search', 'session', 'usage', 'placeholders'];       // widgets.js (Widgets, no route) loads right after inbox.js, project.js right after tasks.js
 
 /** A world with the DOM, the real scripts in index.html order (shell.js left out), and recorders for api, toast and registerPage. */
 function pagesWorld({ wide = false, extra = {}, state = fakeState(), realPoll = false } = {}) {
@@ -554,13 +554,13 @@ test('placeholder pages take onRoute: #/memory to #/memory/shop?tab=x redraws wi
   w.location.hash = '#/usage';
   assert.equal(mounts(w, 'usage'), 1);
   assert.match(text(page(w)), /Usage/);
-  assert.match(text(page(w)), /arrives in v0\.5\.17/);
+  assert.doesNotMatch(text(page(w)), /arrives in/, 'v0.5.17 replaced the usage placeholder');
   assert.doesNotMatch(text(page(w)), /Memory/);
 });
 
 test('every later-phase route has a placeholder that names its phase; the project route has its real page', () => {
   const { w } = pagesWorld();
-  const cases = { '#/quad': 'v0.5.9', '#/memory/shop': 'v0.5.20', '#/onboarding/project': 'v0.5.19', '#/usage': 'v0.5.17' };
+  const cases = { '#/quad': 'v0.5.9', '#/memory/shop': 'v0.5.20', '#/onboarding/project': 'v0.5.19' };
   for (const [hash, version] of Object.entries(cases)) {
     w.location.hash = hash;
     assert.match(text(page(w)), new RegExp(`arrives in ${version.replace(/\./g, '\\.')}`), hash);
@@ -679,6 +679,55 @@ test('on #/tasks the first tap of Archive swaps in its Confirm (the kanban repai
   assert.equal(text(archive()), 'Archive');
   archive().click();
   assert.match(text(page(w).querySelector('#tasks')), /Confirm Archive/, 'the tasks section repainted, not just the page behind it');
+});
+
+/** A state.tasks row of the shape _tasks_view makes (v0.5.14a: phase, mode, prompt head), `over` on top. */
+const taskRow = (id, over = {}) => ({
+  ci: null, pr: null, id, project: 'shop', repo: 'api', slug: `t-${id}`, title: `Task ${id}`, branch: '', base: 'main', worktree: '', tmux: '', pr_url: null, pr_number: null, pr_state: null,
+  cost_usd: null, overlap: [], created_at: ISO(45), column: 'backlog', session: null, agent: 'claude', mode: 'worktree', phase: 'backlog', session_row: null, prompt: 'do the thing', prompt_len: 12, ...over,
+});
+const withShell = (w) => w.run("globalThis.__created = []; globalThis.Shell = { openCreate: (k) => { __created.push(k); return true; } };");
+
+test('#/tasks draws the Backlog column first (empty too, with what to do) and a + task button in the head that opens the task sheet', () => {
+  const running = taskRow(1, { title: 'Fix the cart', branch: 'worktree-fix', column: 'in_progress', phase: 'running', tmux: 'shop--api--t-fix', prompt: null, session: sess('t-fix', { state: 'working' }) });
+  const { w } = pagesWorld({ state: fakeState({ tasks: [running] }) });
+  withShell(w);
+  w.location.hash = '#/tasks';
+  const sec = page(w).querySelector('section#tasks');
+  assert.deepEqual(sec.querySelectorAll('.col h3').map((h) => text(h).replace(/\s*\(\d+\)$/, '')), ['Backlog', 'In progress'], 'Backlog first, even with nothing in it; the other empty columns stay out of the way');
+  assert.match(text(sec.querySelector('.col[data-col=backlog]')), /nothing queued/);
+  const add = sec.querySelectorAll('button').find((b) => /^\+\s*task$/.test(text(b)));
+  assert.ok(add, 'a + task button in the head');
+  add.click();
+  assert.deepEqual(plain(w.get('__created')), ['task'], 'Shell.openCreate(\'task\'): the picker, or the form at once from a project page');
+});
+
+test('#/tasks with no task at all shows the empty state with a + task button, never a dead end', () => {
+  const { w } = pagesWorld();
+  withShell(w);
+  w.location.hash = '#/tasks';
+  const none = page(w).querySelectorAll('.nonideal').find((n) => /No tasks yet/.test(text(n)));
+  assert.ok(none && !none.classList.contains('hidden'));
+  const add = none.querySelectorAll('button').find((b) => /^\+\s*task$/.test(text(b)));
+  assert.ok(add, 'the next step is in the empty state');
+  add.click();
+  assert.deepEqual(plain(w.get('__created')), ['task']);
+  assert.match(text(none), /Backlog|schedule/i, 'and it says what a task can be: now, later, scheduled');
+});
+
+test('#/tasks: a backlog card has Start, Send to session, Edit and Delete and no terminal; a started card keeps its Terminal and Archive', () => {
+  const backlog = taskRow(2, { title: 'Park this for later', prompt: 'refactor the cart reducer\nkeep the tests green' });
+  const running = taskRow(1, { title: 'Fix the cart', branch: 'worktree-fix', column: 'in_progress', phase: 'running', tmux: 'shop--api--t-fix', prompt: null, session: sess('t-fix', { state: 'working' }) });
+  const { w } = pagesWorld({ state: fakeState({ tasks: [backlog, running] }) });
+  withShell(w);
+  w.location.hash = '#/tasks';
+  const cardOf = (id) => page(w).querySelector(`#tasks .task[data-task="${id}"]`);
+  const labels = (n) => n.querySelectorAll('button').map((b) => text(b).trim());
+  assert.deepEqual(labels(cardOf(2)).filter((l) => /^(Start|Send to session|Edit|Delete)$/.test(l)), ['Start', 'Send to session', 'Edit', 'Delete']);
+  assert.equal(cardOf(2).querySelectorAll('a').filter((a) => /\/term\//.test(a.getAttribute('href') || '')).length, 0, 'no terminal before there is a session');
+  assert.match(text(cardOf(2)), /refactor the cart reducer/, 'the prompt head');
+  assert.ok(labels(cardOf(1)).includes('Archive') && !labels(cardOf(1)).includes('Start'), 'a started card has the old actions');
+  assert.ok(cardOf(1).querySelectorAll('a').some((a) => /\/term\/shop--api--t-fix/.test(a.getAttribute('href') || '')));
 });
 
 test('on Home the schedules strip opens the schedules list in the sheet, and the first tap of Delete swaps in its Confirm', () => {

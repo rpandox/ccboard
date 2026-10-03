@@ -115,7 +115,8 @@ Shell.pill = function (key, label) {
   const pl = el('b', { class: 'pl', text: label });
   const pv = el('span', { class: 'pv' });
   const pr = el('span', { class: 'pr' });
-  const n = el('span', { class: 'pill hidden', 'data-pill': key }, pl, pv, pr);
+  const link = key === '5h' || key === '7d';                                  // one tap to the Usage page (v0.5.17)
+  const n = el(link ? 'a' : 'span', { class: 'pill hidden', 'data-pill': key, href: link ? '#/usage' : null, title: link ? 'Usage' : null }, pl, pv, pr);
   n.pl = pl; n.pv = pv; n.pr = pr;
   return n;
 };
@@ -799,12 +800,20 @@ Shell.createItems = function () {
 /* Shell.openCreate(kind, ctx): the one entry for everything the + menu, the c-chords (keymap.js) and the page buttons create. kind is
    session | task | schedule (a repo picker, then the launcher form), project (the new-project form and the clone queue), import (GitHub
    repos into a project) or batch (one headless prompt over many repos). ctx = {project, repo?} (the project page's buttons) skips the picker
-   when the place is clear: the form opens for that repo ('root' is the project folder: sessions only), or for the project's only repo; a project
-   with several repos and no repo in ctx gets the picker narrowed to it. Opens the sheet and returns true; false for an unknown kind, before
-   the first state has arrived (every form lists the box's repos) or without the sheet dialog, so a key that asked can be left alone. */
+   when the place is clear: the form opens for that repo ('root' is the project folder: a session always, a task or schedule when it is itself
+   a git repo), or for the project's only place; a project with several places and no repo in ctx gets the picker narrowed to it. Without a ctx
+   the place comes from the route (Shell.routeCtx: the project page, or the session open in the peek; for a task off a project page, the place
+   the last task went to), so c t on a project page is the form for that project at once. Opens the sheet and returns true; false for an unknown
+   kind, before the first state has arrived (every form lists the box's repos; the tap says 'still loading the board…') or without the sheet
+   dialog, so a key that asked can be left alone. */
 Shell.openCreate = function (kind, ctx) {
-  if (typeof state === 'undefined' || !state || !document.getElementById('sheet')) return false;
-  const pre = ctx && typeof ctx === 'object' && ctx.project ? ctx : null;
+  if (typeof state === 'undefined' || !state) {                    // a tap before the first /api/state: say so (the buttons are drawn already)
+    if (['session', 'task', 'schedule', 'job', 'project', 'import', 'batch'].includes(kind) && typeof toast === 'function') toast('still loading the board…');
+    return false;
+  }
+  if (!document.getElementById('sheet')) return false;
+  let pre = ctx && typeof ctx === 'object' && ctx.project ? ctx : null;
+  if (!pre && (kind === 'session' || kind === 'task' || kind === 'schedule' || kind === 'job')) pre = Shell.routeCtx(kind);
   if (kind === 'session' || kind === 'task') { if (!(pre && Shell.createFor(kind, pre))) Shell.pickRepo(kind, pre); }
   else if (kind === 'schedule' || kind === 'job') { if (!(pre && Shell.createFor('job', pre))) Shell.pickRepo('job', pre); }
   else if (kind === 'project') Shell.projectSheet();
@@ -814,19 +823,58 @@ Shell.openCreate = function (kind, ctx) {
   return true;
 };
 
+/* The project (and repo) the current route is about: the project page, or the session open in the peek (its tmux name is project--repo--name).
+   For a task or schedule without a repo in the route the repo is Shell.defaultRepo's (the one used last, else the first). Off a project page a TASK
+   goes where the last task went (launcher.js taskLastAny: ccboard:task:last), so + task on #/tasks, the + menu and c t from Home open the form at
+   once, with its "in" select to switch; null when nothing was saved, or the place is gone or no longer takes a task (then the picker asks). */
+Shell.routeCtx = function (kind) {
+  let r = null;
+  try { r = typeof currentRoute === 'function' ? currentRoute() : null; } catch (_) { r = null; }
+  let project = '';
+  let repo = '';
+  if (r && r.params) {
+    if (r.id === 'project') { project = r.params.project || ''; repo = r.params.repo || (r.query && r.query.repo) || ''; }
+    else if (r.id === 'session' && r.params.tmux) { const parts = String(r.params.tmux).split('--'); if (parts.length >= 3) { project = parts[0]; repo = parts[1]; } }
+  }
+  if (!project) {
+    const last = kind === 'task' && typeof taskLastAny === 'function' ? taskLastAny() : null;
+    const lp = last && (state.projects || []).find((x) => x.name === last.project);
+    const lr = lp && (last.repo === 'root' ? lp.root : (lp.repos || []).find((x) => x.name === last.repo));
+    return lr && taskTarget(lp, lr) ? { project: last.project, repo: last.repo } : null;
+  }
+  const p = (state.projects || []).find((x) => x.name === project);
+  if (!p) return null;
+  if (!repo && (kind === 'task' || kind === 'schedule' || kind === 'job')) repo = Shell.defaultRepo(p, 'task') || '';
+  return repo ? { project, repo } : { project };
+};
+
+/* Where a task or schedule starts in a project when nobody said: the repo a task was last started in (remembered per project), else its first
+   repo, else its project folder when that is a git repo. undefined when it has none. Sessions have no default: they ask. */
+Shell.defaultRepo = function (p, kind) {
+  if (!p || (kind !== 'task' && kind !== 'schedule' && kind !== 'job')) return undefined;
+  const list = taskTargets(p, kind).map((x) => x.r);
+  if (!list.length) return undefined;
+  const last = typeof taskLastRepo === 'function' ? taskLastRepo(p.name) : '';
+  const hit = last ? list.find((x) => x.name === last) : null;
+  return (hit || list[0]).name;
+};
+
+Shell.targetLabel = function (p, r) { return r === p.root || r.root ? `${p.name} · project folder` : `${p.name}/${r.name}`; };
+
 /* The launcher form for a project (and repo) that is already known: true when it opened, false when the picker has to ask. */
 Shell.createFor = function (kind, ctx) {
   const p = (state.projects || []).find((x) => x.name === ctx.project);
   if (!p) return false;
+  const git = kind === 'task' || kind === 'job';                                          // tasks and schedules need a git repo
   const ok = (r) => r.state === 'ok' || r.state === 'unknown';
   let r = null;
   if (ctx.repo) r = ctx.repo === 'root' ? p.root : (p.repos || []).find((x) => x.name === ctx.repo && ok(x));
   else {
-    const where = [...(kind === 'session' && p.root ? [p.root] : []), ...(p.repos || []).filter(ok)];
+    const where = git ? taskTargets(p, kind).map((x) => x.r) : [...(p.root ? [p.root] : []), ...(p.repos || []).filter(ok)];
     if (where.length === 1) r = where[0];
   }
-  if (!r || (r === p.root && kind !== 'session')) return false;                       // tasks and schedules need a git repo
-  Shell.showForm(kind, { p, r, label: r === p.root ? `${p.name} · project folder` : `${p.name}/${r.name}` });
+  if (!r || (git && !(kind === 'task' ? taskTarget : gitTarget)(p, r))) return false;      // a task may run in place in a non-git project folder
+  Shell.showForm(kind, { p, r, label: Shell.targetLabel(p, r) });
   return true;
 };
 
@@ -835,13 +883,32 @@ Shell.PICK_TITLES = { session: 'New session', task: 'New task', job: 'Schedule a
 Shell.pickRepo = function (kind, ctx) {
   if (typeof state === 'undefined' || !state) return;
   const only = ctx && ctx.project ? ctx.project : null;                                  // narrowed to one project (the project page's buttons)
+  const git = kind === 'task' || kind === 'job';
   const entries = [];
-  if (kind === 'session') for (const p of state.projects || []) if (p.root && (!only || p.name === only)) entries.push({ p, r: p.root, label: `${p.name}/`, sub: 'project folder' });
-  for (const x of allRepos()) {
-    if (only && x.project !== only) continue;
-    const p = state.projects.find((q) => q.name === x.project);
-    const r = p && p.repos.find((q) => q.name === x.repo);
-    if (r) entries.push({ p, r, label: x.id, sub: r.branch || '' });
+  const notGit = [];                                                                     // projects whose folder is no git repo: a hint under the list for tasks
+  if (kind === 'session') {
+    for (const p of state.projects || []) {
+      if (!p.root || (only && p.name !== only)) continue;
+      entries.push({ p, r: p.root, label: `${p.name}/`, sub: gitTarget(p, p.root) ? 'project folder' : 'project folder · not a git repo' });
+    }
+  }
+  for (const p of state.projects || []) {
+    if (only && p.name !== only) continue;
+    const here = [];
+    for (const x of allRepos()) {
+      if (x.project !== p.name) continue;
+      const r = p.repos.find((q) => q.name === x.repo);
+      if (r) here.push({ p, r, label: x.id, sub: r.path && r.path === p.path ? 'project folder' : (r.branch || '') });
+    }
+    if (git) {
+      const rootOk = p.root && (kind === 'task' ? taskTarget(p, p.root) : gitTarget(p, p.root));
+      if (rootOk) here.push({ p, r: p.root, label: Shell.targetLabel(p, p.root), sub: rootIsGit(p.root) ? (p.root.branch || '') : 'in place (not a git repo)' });
+      else if (p.root && !(p.repos || []).some((q) => q.path === p.root.path)) notGit.push(p.name);      // schedules: the folder needs git
+      const last = typeof taskLastRepo === 'function' ? taskLastRepo(p.name) : '';
+      const i = last ? here.findIndex((e) => e.r.name === last) : -1;
+      if (i > 0) here.unshift(...here.splice(i, 1));                                     // the repo used last comes first
+    }
+    entries.push(...here);
   }
   const list = el('div', { class: 'pick-list' });
   const fill = (q) => {
@@ -856,13 +923,20 @@ Shell.pickRepo = function (kind, ctx) {
   };
   const filter = entries.length > 8 ? el('input', { type: 'search', placeholder: 'filter repos…', 'aria-label': 'Filter repos', oninput: (ev) => fill(ev.target.value) }) : null;
   fill('');
-  openSheet({ title: Shell.PICK_TITLES[kind], body: entries.length ? [filter, list] : emptyState('folder-close', 'No repos yet', 'Create a project and add a repo first.'),
+  const hint = git && notGit.length ? el('p', { class: 'dim pick-hint', text: notGit.length === 1 ? `The folder of ${notGit[0]} is not a git repo: tasks need git (git init there to run tasks in it).`
+    : `The folders of ${notGit.slice(0, 4).join(', ')}${notGit.length > 4 ? '…' : ''} are not git repos: tasks need git (git init there to run tasks in them).` }) : null;
+  openSheet({ title: Shell.PICK_TITLES[kind], body: entries.length ? [filter, list, hint] : emptyState('folder-close', 'No repos yet', 'Create a project and add a repo first.'),
     onClose: () => { if (ui.openForm === 'sheet') ui.openForm = null; Shell.formWatch = null; } });
   if (filter) filter.focus();
 };
 
-Shell.showForm = function (kind, e) {
-  const form = kind === 'session' ? sessionForm(e.p, e.r) : kind === 'task' ? taskForm(e.p, e.r) : jobForm(e.p, e.r);
+/* The launcher form in the sheet. The task form takes a "where" select over the project's places (a switch re-opens it for the other repo with the
+   typed text carried over) and closes the sheet itself once its call worked; the session and schedule forms close it through the next render. */
+Shell.showForm = function (kind, e, carry) {
+  const form = kind === 'session' ? sessionForm(e.p, e.r)
+    : kind === 'task' ? taskForm(e.p, e.r, { carry, targets: taskTargets(e.p), onTarget: (x, c) => Shell.showForm('task', { p: x.p, r: x.r, label: x.label }, c),
+      onDone: () => { closeSheet(); }, onCancel: () => closeSheet() })
+      : jobForm(e.p, e.r);
   const holder = el('div', { class: 'sheet-form' },
     el('button', { class: 'minimal small', type: 'button', onclick: () => Shell.pickRepo(kind, e) }, ic('chevron-left'), 'Repos'), form);
   // The launcher forms end with a Cancel that re-renders the home board: inside the sheet it only closes the sheet.
@@ -875,6 +949,7 @@ Shell.showForm = function (kind, e) {
   Shell.formWatch = () => { if (ui.openForm !== 'sheet') { Shell.formWatch = null; closeSheet(); } };
   openSheet({ title: `${Shell.PICK_TITLES[kind]} · ${e.label}`, body: holder,
     onClose: () => { if (ui.openForm === 'sheet') ui.openForm = null; Shell.formWatch = null; } });
+  if (typeof form.focusFirst === 'function') form.focusFirst();
 };
 
 Shell.sheetClosed = function () { if (ui.openForm === 'sheet') ui.openForm = null; Shell.formWatch = null; };

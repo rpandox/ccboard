@@ -95,13 +95,24 @@ def default_branch(repo_path: Path) -> str:
     return "main"
 
 
+def build_command_inplace(session_id: str, prompt: str, extra: list[str], add_dirs: list[str]) -> str:
+    """The in-place variant (mode 'attached'): the same launch without --worktree, for a project folder that is not a git repo.
+    The session runs in the folder itself; every repo inside it is under the cwd, so Claude reaches them all."""
+    cmd = ["claude", *extra]
+    if add_dirs:
+        cmd += ["--add-dir", *add_dirs]
+    cmd += ["--session-id", session_id, "--", prompt]      # `--`: a prompt that starts with '-' (a markdown bullet) is a prompt, not an option
+    return shlex.join(cmd)
+
+
 def build_command(slug: str, session_id: str, prompt: str, extra: list[str], add_dirs: list[str]) -> str:
     # Variadic options (--add-dir, --allowedTools, anything in extra) go first: the prompt is a positional and
     # would be swallowed by a variadic list placed right before it. --session-id ends the list.
     cmd = ["claude", *extra]
     if add_dirs:
         cmd += ["--add-dir", *add_dirs]
-    cmd += ["--worktree", slug, "--session-id", session_id, prompt]
+    # `--` ends the options: a prompt that starts with '-' (a markdown bullet) would be parsed as an unknown option and the session would die at once
+    cmd += ["--worktree", slug, "--session-id", session_id, "--", prompt]
     return shlex.join(cmd)
 
 

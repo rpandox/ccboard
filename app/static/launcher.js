@@ -112,10 +112,102 @@ function addRepoForm(p) {
       el('button', { type: 'button', onclick: () => { ui.openForm = null; renderProjects(); }, text: 'Cancel' })));
 }
 
-function taskForm(p, r) {
+/* ---------- the task form (v0.5.14a): one form for Now / Later / Schedule ----------
+   Type a prompt and press Cmd/Ctrl+Enter: the title is the first line of the prompt unless you typed one. Run: Now starts a session in its own
+   worktree and opens it, Later parks a card in the Backlog, Schedule hands the same prompt to a headless job (cron presets, or once now).
+   The run mode (Now or Later only: a schedule is never remembered, and no cron is prefilled in Now or Later) and the Claude options are remembered
+   per repo (ccboard:task:<project>/<repo>), the last repo per project (ccboard:task:last:<project>) and the last {project, repo} anywhere
+   (ccboard:task:last: where + task opens when the page names no project, Shell.routeCtx). taskForm(p, r, opts):
+   opts.when forces a mode, opts.carry {title, prompt, when, name, cron} refills the form after a repo switch, opts.targets [{p, r, label}] adds a
+   "where" select that calls opts.onTarget(entry, carry), opts.onDone(res, when) runs once the call worked (the sheet closes), opts.onCancel. */
+
+const TASK_WHEN = [['now', 'Now'], ['later', 'Later'], ['schedule', 'Schedule']];
+const TASK_SUBMIT = { now: 'Start task', later: 'Add to backlog', schedule: 'Schedule' };
+const TASK_BUSY = { now: 'Starting…', later: 'Adding…', schedule: 'Scheduling…' };
+const TASK_LEDE = {
+  now: 'Starts Claude in its own worktree and branch, then opens it.',
+  later: 'Parks it in the Backlog: Start it, or send it to a running session, when you are ready.',
+  schedule: 'A headless run (claude -p) in a fresh worktree, on a cron or once now; the result becomes a task card.',
+};
+const TASK_ICON = { now: 'play', later: 'add', schedule: 'time' };
+const JOB_MODES = ['acceptEdits', 'default', 'plan', 'auto', 'dontAsk'];
+const TASK_LAST_KEY = (project) => `ccboard:task:last:${project}`;       // the repo a task was last started in, per project
+const TASK_LAST_ANY_KEY = 'ccboard:task:last';                          // and the {project, repo} of the last task anywhere: where '+ task' opens off a project page
+
+/* The title a task gets when none was typed: the first line of the prompt, whitespace collapsed, cut at a word near 80 characters. */
+function taskTitleFrom(prompt) {
+  const line = String(prompt || '').split('\n').map((l) => l.trim()).find(Boolean) || '';
+  let t = line.replace(/\s+/g, ' ');
+  if (t.length > 80) { t = t.slice(0, 80); const i = t.lastIndexOf(' '); if (i > 40) t = t.slice(0, i); }
+  return t.replace(/[\s.:;,]+$/, '') || 'task';
+}
+
+function taskLastRepo(project) { try { return localStorage.getItem(TASK_LAST_KEY(project)) || ''; } catch (_) { return ''; } }
+function taskSaveLastRepo(project, repo) {
+  try {
+    localStorage.setItem(TASK_LAST_KEY(project), repo);
+    localStorage.setItem(TASK_LAST_ANY_KEY, JSON.stringify({ project, repo }));
+  } catch (_) { /* storage may be unavailable */ }
+}
+/* The {project, repo} a task was last created in, on any page, or null (nothing saved, or not shaped like that). The caller checks it still exists. */
+function taskLastAny() {
+  try {
+    const v = JSON.parse(localStorage.getItem(TASK_LAST_ANY_KEY) || 'null');
+    return v && typeof v.project === 'string' && typeof v.repo === 'string' && v.project && v.repo ? { project: v.project, repo: v.repo } : null;
+  } catch (_) { return null; }
+}
+
+/* A segmented control: buttons with aria-pressed (one on), arrow keys move. items [[value, label]]; onChange(value) runs on a change, not at build. */
+function segControl(items, initial, onChange, label) {
+  const node = el('div', { class: 'seg-ctl tf-when', role: 'group', 'aria-label': label || null });
+  const btns = new Map();
+  let cur = items.some(([v]) => v === initial) ? initial : items[0][0];
+  const paint = () => { for (const [v, b] of btns) b.setAttribute('aria-pressed', v === cur ? 'true' : 'false'); };
+  const set = (v, focus) => {
+    if (!btns.has(v)) return;
+    const changed = v !== cur;
+    cur = v;
+    paint();
+    if (focus) btns.get(v).focus();
+    if (changed && typeof onChange === 'function') onChange(v);
+  };
+  for (const [v, text] of items) {
+    const b = el('button', { class: 'seg-btn', type: 'button', 'aria-pressed': 'false', 'data-when': v, text, onclick: () => set(v), onkeydown: (e) => {
+      const i = items.findIndex(([x]) => x === cur);
+      const to = e.key === 'ArrowRight' ? items[(i + 1) % items.length][0] : e.key === 'ArrowLeft' ? items[(i + items.length - 1) % items.length][0] : null;
+      if (to === null) return;
+      e.preventDefault();
+      set(to, true);
+    } });
+    btns.set(v, b);
+    node.append(b);
+  }
+  paint();
+  return { node, get value() { return cur; }, set };
+}
+
+function taskForm(p, r, opts) {
+  const o = opts || {};
+  const carry = o.carry || {};
   const saved = loadPrefs(TASK_KEY(p, r));
-  const title = el('input', { type: 'text', placeholder: 'task title (becomes the branch name)', maxlength: 120, required: true });
-  const prompt = el('textarea', { placeholder: 'what Claude should do in the new worktree…', required: true });
+  const prefs = { ...saved };
+  if (!prefs.model_sel && typeof prefs.model === 'string' && prefs.model) {        // the contract's {model} next to launchControls' own model_sel / model_id
+    if (MODELS.some(([v]) => v && v !== 'custom' && v === prefs.model)) prefs.model_sel = prefs.model;
+    else { prefs.model_sel = 'custom'; prefs.model_id = prefs.model; }
+  }
+  // What was remembered is only now | later: a schedule is a recurring job, and opening the next task in Schedule with its cron filled in
+  // would make Cmd+Enter create one by accident. Schedule is a choice made on the form (carry/opts: the "in" switch, or a Schedule entry).
+  const savedWhen = saved.when === 'now' || saved.when === 'later' ? saved.when : '';
+  const whenWant = carry.when || o.when || savedWhen;
+  const when0 = TASK_WHEN.some(([v]) => v === whenWant) ? whenWant : 'now';
+
+  const promptEl = el('textarea', { class: 'composer task-prompt', rows: '3', 'aria-label': 'prompt', autocomplete: 'off', spellcheck: 'true',
+    placeholder: 'What should Claude do?' });
+  promptEl._maxRows = 12;
+  promptEl.value = carry.prompt || '';
+  const title = el('input', { type: 'text', maxlength: 120, 'aria-label': 'title', placeholder: 'title (optional: the first line of the prompt)', value: carry.title || '' });
+  const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
+
   const issueSel = selectEl([['', 'from a GitHub issue…']]);
   let issues = [];
   issueSel.addEventListener('focus', async () => {
@@ -128,39 +220,194 @@ function taskForm(p, r) {
     } catch (e) { issueSel.append(el('option', { value: '', text: e.message.slice(0, 80) })); }
   }, { once: true });
   issueSel.addEventListener('change', () => {
-    const i = issues.find(x => String(x.number) === issueSel.value);
+    const i = issues.find((x) => String(x.number) === issueSel.value);
     if (!i) return;
     title.value = `#${i.number} ${i.title}`.slice(0, 120);
-    prompt.value = `${i.title}\n\n${i.body || ''}\n\nGitHub issue: ${i.url}\nWhen done, commit with a message that includes "Closes #${i.number}".`;
+    promptEl.value = `${i.title}\n\n${i.body || ''}\n\nGitHub issue: ${i.url}\nWhen done, commit with a message that includes "Closes #${i.number}".`;
+    composerGrow(promptEl);
   });
-  const lc = launchControls(saved, PERMS);
-  const args = el('input', { type: 'text', placeholder: 'extra claude args (optional)', value: saved.args || '' });
-  const siblings = allRepos().filter(x => x.project === p.name && x.repo !== r.name);
+
+  const lc = launchControls(prefs, PERMS);
+  const args = el('input', { type: 'text', placeholder: 'extra claude args (optional)', 'aria-label': 'extra args', value: prefs.args || '' });
+  const siblings = allRepos().filter((x) => x.project === p.name && x.repo !== r.name);
   const boxes = [];
   const checks = el('div', { class: 'checks' });
   for (const x of siblings) { const cb = el('input', { type: 'checkbox', value: x.id, checked: false }); boxes.push(cb); checks.append(el('label', {}, cb, x.id)); }
-  return el('form', { class: 'form', onsubmit: async (e) => {
-    e.preventDefault();
-    const body = { title: title.value.trim(), prompt: prompt.value.trim(), add_dirs: boxes.filter(b => b.checked).map(b => b.value), ...lc.read() };
+  const jobMode = selectEl(JOB_MODES.map((m) => [m, m]), JOB_MODES.includes(saved.job_mode) ? saved.job_mode : 'acceptEdits');
+  const turns = el('input', { type: 'number', value: String(saved.max_turns || 30), min: '1', max: '500', 'aria-label': 'max turns' });
+  const budget = el('input', { type: 'number', placeholder: 'optional', step: '0.5', min: '0', 'aria-label': 'max dollars' });
+
+  /* the Schedule half: a name (from the title), a cron with presets (blank = run once now) */
+  const nameEl = el('input', { type: 'text', placeholder: 'name (e.g. nightly-tests)', maxlength: 80, 'aria-label': 'schedule name', value: carry.name || '' });
+  let nameTyped = !!carry.name;
+  nameEl.addEventListener('input', () => { nameTyped = true; });
+  const cron = el('input', { type: 'text', placeholder: 'cron: 30 2 * * *  (blank = once, now)', 'aria-label': 'cron', value: carry.cron !== undefined ? carry.cron : (when0 === 'schedule' ? (saved.cron || '') : '') });
+  const cronNote = el('div', { class: 'dim tf-cronnote' });
+  const presetBtns = CRON_PRESETS.map(([label, value]) => el('button', { class: 'chip-btn', type: 'button', text: label, 'aria-pressed': 'false', 'data-cron': value,
+    title: value ? `cron ${value}` : 'blank cron: run once, now', onclick: () => { cron.value = value; syncCron(); if (!promptEl.value.trim()) promptEl.focus(); } }));
+  const presets = el('div', { class: 'chips cron-presets', role: 'group', 'aria-label': 'Cron presets' }, presetBtns);
+  const syncCron = () => {
+    const v = cron.value.trim();
+    for (const b of presetBtns) b.setAttribute('aria-pressed', b.getAttribute('data-cron') === v ? 'true' : 'false');
+    cronNote.textContent = !v ? 'Runs once, right now.' : v.split(/\s+/).length === 5 ? `Runs on cron ${v}.` : 'A cron has 5 fields, e.g. 30 2 * * *.';
+  };
+  cron.addEventListener('input', syncCron);
+
+  let seg = null;
+  const upperOnly = [];                                                       // shown for Now and Later
+  const lowerOnly = [];                                                       // shown for Schedule
+  const lede = el('p', { class: 'dim tf-lede' });
+  const goText = el('span', { class: 'tf-go-text' });
+  const goIcon = el('span', { class: 'tf-go-ic' });
+  const go = el('button', { class: 'primary', type: 'submit', title: 'Cmd/Ctrl+Enter' }, goIcon, goText);
+  const optNote = el('span', { class: 'dim tf-optnote' });
+  const titleField = field('title', title);
+  const optNoteSync = () => {
+    const v = lc.read();
+    const bits = [v.model, v.effort, v.permission_mode].filter(Boolean);
+    optNote.textContent = bits.length ? ' · ' + bits.join(' · ') : '';
+  };
+  for (const c of [lc.model, lc.effort, lc.perm]) c.addEventListener('change', optNoteSync);
+  optNoteSync();
+
+  /* the schedule's name follows the title, else the first line of the prompt, until it is typed by hand */
+  const autoName = () => {
+    if (nameTyped) return;
+    nameEl.value = title.value.trim() || (promptEl.value.trim() ? taskTitleFrom(promptEl.value) : '');
+  };
+
+  const syncMode = () => {
+    const w = seg ? seg.value : when0;
+    for (const n of upperOnly) n.classList.toggle('hidden', w === 'schedule');
+    for (const n of lowerOnly) n.classList.toggle('hidden', w !== 'schedule');
+    lede.textContent = TASK_LEDE[w];
+    goText.textContent = TASK_SUBMIT[w];
+    goIcon.textContent = '';
+    goIcon.append(ic(TASK_ICON[w]));
+    if (w === 'schedule') { autoName(); syncCron(); }
+  };
+  seg = segControl(TASK_WHEN, when0, syncMode, 'Run');
+
+  const issueField = field('from a GitHub issue', issueSel);
+  const lcBox = el('div', {}, lc.grid);
+  const sibField = siblings.length ? field('also give access to (--add-dir)', checks) : null;
+  const jobOpts = el('div', { class: 'grid' }, field('permission mode', jobMode), field('max turns', turns), field('max $', budget));
+  const schedBox = el('div', { class: 'tf-schedule' }, field('name', nameEl), field('cron', cron), presets, cronNote);
+  upperOnly.push(titleField, issueField, lcBox);
+  if (sibField) upperOnly.push(sibField);
+  lowerOnly.push(schedBox, jobOpts);
+  const options = el('details', { class: 'tf-options' }, el('summary', {}, 'Options', optNote), issueField, lcBox, jobOpts, field('extra args', args), sibField);
+
+  const targets = Array.isArray(o.targets) ? o.targets : [];
+  const here = Math.max(0, targets.findIndex((x) => x.p === p && x.r === r));
+  const whereSel = targets.length > 1 ? selectEl(targets.map((x, i) => [String(i), x.label]), String(here)) : null;
+  if (whereSel) whereSel.addEventListener('change', () => {
+    const x = targets[parseInt(whereSel.value, 10)];
+    if (x && typeof o.onTarget === 'function') o.onTarget(x, { title: title.value, prompt: promptEl.value, when: seg.value, name: nameEl.value, cron: cron.value });
+  });
+
+  let busy = false;
+  const setBusy = (on) => {
+    busy = on;
+    go.disabled = on;
+    goText.textContent = on ? TASK_BUSY[seg.value] : TASK_SUBMIT[seg.value];
+  };
+
+  const remember = (when) => {
+    const v = lc.read();
+    savePrefs(TASK_KEY(p, r), { ...lc.prefs(), model: v.model, effort: v.effort, permission_mode: v.permission_mode, args: args.value.trim(),
+      when: when === 'schedule' ? saved.when : when,                                  // a schedule run never becomes the next task's mode
+      cron: cron.value.trim(), job_mode: jobMode.value, max_turns: parseInt(turns.value, 10) || 30 });
+    taskSaveLastRepo(p.name, r.name);
+  };
+
+  const finish = (res, when) => {
+    setError(null);
+    if (typeof o.onDone === 'function') o.onDone(res, when); else ui.openForm = null;
+    if (typeof poll === 'function') poll(true);
+  };
+
+  const submitTask = async (when, prompt, titleText) => {
+    const body = { project: p.name, repo: r.name, title: titleText, prompt, when, agent: 'claude', add_dirs: boxes.filter((b) => b.checked).map((b) => b.value), ...lc.read() };
     if (args.value.trim()) body.args = args.value.trim();
     for (const k of Object.keys(body)) if (body[k] === '' || body[k] === null) delete body[k];
-    savePrefs(TASK_KEY(p, r), { ...lc.prefs(), args: args.value.trim() });
-    const tab = isStandalone() ? null : window.open('', '_blank');
+    remember(when);
+    const res = (await api('POST', '/api/tasks', body)) || {};
+    const demo = typeof demoOn === 'function' && demoOn();
+    const base = { id: res.id !== undefined && res.id !== null ? res.id : -Date.now(), project: p.name, repo: r.name, slug: res.slug || '', title: titleText, branch: '', base: '', worktree: '',
+      tmux: '', created_at: new Date().toISOString(), column: 'backlog', phase: 'backlog', mode: 'worktree', agent: 'claude', auto_close: false, parent_id: null, chain_id: null,
+      session_row: null, session: null, result: null, prompt: prompt.slice(0, 600), prompt_len: prompt.length, claude_session_id: null, pr_url: null, pr_number: null, pr_state: null,
+      cost_usd: null, overlap: [], ci: null, pr: null };
+    if (when === 'now') {
+      const row = taskRowFromResponse(base, res, { mode: 'worktree' });
+      if (!row.tmux && demo) row.tmux = `${p.name}--${r.name}--t-${row.slug || 'task'}`;
+      taskOverrideSet(row, null, { _new: true });
+      toast(`started ${row.slug || titleText}`, { kind: 'ok' });
+      taskRepaint();
+      finish(res, when);
+      taskOpenPeek(row.tmux);
+    } else {
+      const row = { ...base, ...(res.task && typeof res.task === 'object' ? res.task : {}), phase: 'backlog', column: 'backlog', tmux: '' };
+      taskOverrideSet(row, null, { _new: true });
+      toast(`added to backlog: ${titleText}`.slice(0, 120), { kind: 'ok' });
+      taskRepaint();
+      finish(res, when);
+    }
+  };
+
+  const submitJob = async (prompt, titleText) => {
+    const name = (nameEl.value.trim() || titleText).slice(0, 80);
+    const c = cron.value.trim();
+    const body = { name, prompt, permission_mode: jobMode.value, max_turns: parseInt(turns.value, 10) || 30, run_now: !c };
+    if (c) body.cron = c;
+    if (budget.value) body.max_budget_usd = parseFloat(budget.value);
+    if (args.value.trim()) body.args = args.value.trim();
+    remember('schedule');
+    const res = await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/jobs`, body);
+    toast(c ? `scheduled ${name}` : `running ${name} once`, { kind: 'ok' });
+    finish(res, 'schedule');
+  };
+
+  const submit = async () => {
+    if (busy) return;
+    const when = seg.value;
+    const prompt = promptEl.value.trim();
+    if (!prompt) { formStatus(status, 'write what Claude should do', true); promptEl.focus(); return; }
+    const titleText = title.value.trim() || taskTitleFrom(prompt);
+    if (/bypassPermissions|dangerously-skip-permissions/i.test(args.value)) {                // the server refuses it as well: say so before the round trip
+      formStatus(status, 'bypassPermissions is not allowed for tasks or schedules; start a session and choose bypass there if you really want it', true);
+      return;
+    }
+    setBusy(true);
+    formStatus(status, '');
     try {
-      const res = await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/tasks`, body);
-      if (tab) tab.location = res.attach_url; else openPage(res.attach_url);
-      ui.openForm = null; setError(null); await poll(true);
-    } catch (err) { if (tab) tab.close(); setError(err.message); }
-  } },
-    el('label', { text: 'New task: Claude works on a branch in its own worktree (claude --worktree)' }),
-    issueSel, title, prompt,
-    lc.grid,
-    el('details', {}, el('summary', { text: 'More options: extra args, other repos' }),
-      field('extra args', args),
-      siblings.length ? field('also give access to (--add-dir)', checks) : null),
-    el('div', { class: 'submit' },
-      el('button', { class: 'primary', type: 'submit' }, ic('git-branch'), 'Start task & open terminal'),
-      el('button', { type: 'button', onclick: () => { ui.openForm = null; renderProjects(); }, text: 'Cancel' })));
+      if (when === 'schedule') await submitJob(prompt, titleText); else await submitTask(when, prompt, titleText);
+    } catch (err) { formStatus(status, err.message, true); setError(err.message); }
+    setBusy(false);
+  };
+
+  const keys = (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); submit(); } };
+  promptEl.addEventListener('input', () => { composerGrow(promptEl); if (seg.value === 'schedule') autoName(); });
+  promptEl.addEventListener('keydown', keys);
+
+  const form = el('form', { class: 'form task-form', onsubmit: (e) => { e.preventDefault(); submit(); } },
+    whereSel ? field('in', whereSel) : null,
+    field('run', seg.node),
+    lede,
+    field('prompt', promptEl),
+    titleField,
+    schedBox,
+    options,
+    status,
+    el('div', { class: 'submit' }, go,
+      el('button', { type: 'button', onclick: () => { if (typeof o.onCancel === 'function') o.onCancel(); else { ui.openForm = null; if (typeof renderProjects === 'function') renderProjects(); } }, text: 'Cancel' }),
+      el('span', { class: 'dim tf-hint', text: 'Enter: new line · Cmd/Ctrl+Enter: submit' })));
+  form.addEventListener('keydown', keys);
+  seg.node.addEventListener('click', (e) => { if (e.detail !== 0) promptEl.focus(); });          // a tap or click on a mode goes on to typing; the keyboard keeps its focus on the control
+  form.focusFirst = () => promptEl.focus();
+  syncMode();
+  if (carry.prompt) composerGrow(promptEl);
+  return form;
 }
 
 /* The schedule form's cron presets (chips that fill the cron field; a blank cron runs once now): [label, cron]. */

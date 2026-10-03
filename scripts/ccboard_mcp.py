@@ -2,7 +2,7 @@
 """ccboard as an MCP server (stdio). A dependency-free JSON-RPC shim that calls the board over loopback
 with the local hook token. Register once with:
     claude mcp add --scope user ccboard -- /path/to/ccboard/.venv/bin/python /path/to/ccboard/scripts/ccboard_mcp.py
-Tools: list_projects, create_task, list_tasks, get_task_status.
+Tools: list_projects, create_task (dispatch false = a Backlog card), list_tasks, get_task_status.
 """
 from __future__ import annotations
 
@@ -21,11 +21,13 @@ TOOLS = [
     {"name": "list_projects", "description": "List ccboard projects with their repos, branches and live sessions.",
      "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "create_task",
-     "description": "Start a ccboard task: Claude works on <prompt> in a fresh git worktree + branch of <project>/<repo>. Returns the task id and tmux session.",
+     "description": "Create a ccboard task for <project>/<repo> (repo 'root' = the project folder, when it is a git repo). By default Claude starts at once on <prompt> in a fresh git worktree + branch and the answer has the task id and tmux session; with dispatch false the task only goes to the Backlog column for a person to start later. Returns the task id.",
      "inputSchema": {"type": "object", "properties": {
          "project": {"type": "string"}, "repo": {"type": "string"},
          "title": {"type": "string", "description": "short title; becomes the branch name"},
-         "prompt": {"type": "string", "description": "what Claude should do"}},
+         "prompt": {"type": "string", "description": "what Claude should do"},
+         "dispatch": {"type": "boolean", "default": True,
+                      "description": "true (default): start a Claude session now; false: add to the Backlog without starting anything"}},
          "required": ["project", "repo", "title", "prompt"], "additionalProperties": False}},
     {"name": "list_tasks", "description": "List ccboard tasks (optionally for one project) with their board column and PR state.",
      "inputSchema": {"type": "object", "properties": {"project": {"type": "string"}}, "additionalProperties": False}},
@@ -68,12 +70,16 @@ def tool_call(name: str, args: dict) -> dict:
         for k in ("project", "repo", "title", "prompt"):
             if not isinstance(args.get(k), str) or not args[k].strip():
                 raise RuntimeError(f"{k} is required")
+        if args.get("dispatch", True) is False:          # a backlog card: nothing starts until someone dispatches it
+            return call_api("POST", "/api/tasks", {"project": args["project"], "repo": args["repo"], "title": args["title"],
+                                                   "prompt": args["prompt"], "when": "later"})
         return call_api("POST", f"/api/projects/{args['project']}/repos/{args['repo']}/tasks",
                         {"title": args["title"], "prompt": args["prompt"]})
     if name == "list_tasks":
         st = call_api("GET", "/api/state")
         out = [{"id": t["id"], "project": t["project"], "repo": t["repo"], "title": t["title"], "column": t["column"],
-                "branch": t["branch"], "pr_url": t.get("pr_url"), "session_state": (t.get("session") or {}).get("state")}
+                "phase": t.get("phase"), "branch": t["branch"], "pr_url": t.get("pr_url"),
+                "session_state": (t.get("session") or {}).get("state")}
                for t in st["tasks"] if not args.get("project") or t["project"] == args["project"]]
         return {"tasks": out}
     if name == "get_task_status":
@@ -82,7 +88,7 @@ def tool_call(name: str, args: dict) -> dict:
         t = next((t for t in st["tasks"] if t["id"] == tid), None)
         if not t:
             raise RuntimeError(f"no task {tid}")
-        return {"id": t["id"], "title": t["title"], "column": t["column"], "branch": t["branch"], "worktree": t["worktree"],
+        return {"id": t["id"], "title": t["title"], "column": t["column"], "phase": t.get("phase"), "branch": t["branch"], "worktree": t["worktree"],
                 "session": t.get("session"), "pr_url": t.get("pr_url"), "pr_state": t.get("pr_state"), "ci": t.get("ci"),
                 "cost_usd": t.get("cost_usd"), "overlap": t.get("overlap")}
     raise RuntimeError(f"unknown tool {name}")

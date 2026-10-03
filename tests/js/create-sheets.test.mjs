@@ -91,7 +91,7 @@ test('session, task and schedule go through the repo picker, then the launcher f
   assert.ok(sheet(w).querySelector('form.form'), 'the launcher form');
   closed(w);
   open(w, 'task');
-  assert.deepEqual(sheet(w).querySelectorAll('.pick-row').map((r) => text(r.querySelector('.pr-name'))), ['shop/api', 'shop/web'], 'a task needs a repo');
+  assert.deepEqual(sheet(w).querySelectorAll('.pick-row').map((r) => text(r.querySelector('.pr-name'))), ['shop/api', 'shop/web', 'shop · project folder'], 'the project folder is a task target too: a task runs in place there');
   closed(w);
   open(w, 'schedule');
   assert.equal(title(w), 'Schedule a run');

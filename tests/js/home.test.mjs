@@ -901,7 +901,7 @@ test('the away strip says what happened since the board was last seen, each coun
   const { strip } = awayWorld(4 * 3600);
   const s = strip();
   assert.equal(s.classList.contains('hidden'), false);
-  assert.match(text(s.querySelector('.away-text')), /^while you were away \(since \d{2}:\d{2}\)$/);
+  assert.match(text(s.querySelector('.away-text')), /^while you were away \(since (\w{3} )?\d{2}:\d{2}\)$/);   // 'Sat 20:05' when the since fell on another day (homeSinceLabel)
   assert.deepEqual(awayLinks(s), [
     ['1 done', '#/?f=done'], ['2 need you', '#/?f=waiting'], ['1 error', '#/?f=errored'], ['1 blocked', '#/agents'],
   ]);

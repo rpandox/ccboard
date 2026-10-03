@@ -66,7 +66,8 @@
                 "grid": 0,
                 "ro": 0
               },
-              "win": null
+              "win": null,
+              "wait_kind": null
             },
             {
               "created": 1790961840,
@@ -107,7 +108,8 @@
                 "grid": 0,
                 "ro": 0
               },
-              "win": null
+              "win": null,
+              "wait_kind": null
             }
           ],
           "devcontainer": false,
@@ -279,7 +281,8 @@
                 "grid": 0,
                 "ro": 0
               },
-              "win": null
+              "win": null,
+              "wait_kind": null
             },
             {
               "created": 1790901360,
@@ -320,7 +323,8 @@
                 "grid": 0,
                 "ro": 0
               },
-              "win": null
+              "win": null,
+              "wait_kind": null
             },
             {
               "created": 1790930000,
@@ -361,7 +365,8 @@
                 "grid": 0,
                 "ro": 0
               },
-              "win": null
+              "win": null,
+              "wait_kind": "idle_prompt"
             }
           ],
           "devcontainer": false,
@@ -434,7 +439,8 @@
                 "grid": 0,
                 "ro": 0
               },
-              "win": null
+              "win": null,
+              "wait_kind": null
             }
           ],
           "devcontainer": true,
@@ -490,7 +496,8 @@
                 "grid": 0,
                 "ro": 0
               },
-              "win": null
+              "win": null,
+              "wait_kind": "permission_prompt"
             }
           ],
           "devcontainer": false,
@@ -542,7 +549,8 @@
               "grid": 0,
               "ro": 0
             },
-            "win": null
+            "win": null,
+            "wait_kind": null
           }
         ],
         "root": true,
@@ -675,6 +683,117 @@
     {
       "ci": null,
       "pr": null,
+      "id": 8,
+      "project": "ccboard",
+      "repo": "ccboard",
+      "slug": "update-toast-for-waiting-service-worker",
+      "title": "Show a toast when a new service worker is waiting",
+      "branch": "",
+      "base": "main",
+      "worktree": "",
+      "tmux": "",
+      "claude_session_id": null,
+      "pr_url": null,
+      "pr_number": null,
+      "pr_state": null,
+      "cost_usd": null,
+      "overlap": [],
+      "preview_port": null,
+      "preview_https": null,
+      "preview_url": null,
+      "created_at": "2026-10-03T02:20:00+00:00",
+      "column": "backlog",
+      "session": null,
+      "agent": "claude",
+      "mode": "worktree",
+      "auto_close": false,
+      "parent_id": null,
+      "chain_id": null,
+      "result": null,
+      "phase": "backlog",
+      "session_row": null,
+      "prompt": "When sw.js installs a new version while a page is open, show a toast with a Reload action instead of waiting for the next navigation. Add a test under tests/js.",
+      "prompt_len": 160
+    },
+    {
+      "ci": null,
+      "pr": null,
+      "id": 7,
+      "project": "phasezero",
+      "repo": "website",
+      "slug": "alt-text-for-product-images",
+      "title": "Add alt text to the product gallery images",
+      "branch": "",
+      "base": "main",
+      "worktree": "",
+      "tmux": "",
+      "claude_session_id": null,
+      "pr_url": null,
+      "pr_number": null,
+      "pr_state": null,
+      "cost_usd": null,
+      "overlap": [],
+      "preview_port": null,
+      "preview_https": null,
+      "preview_url": null,
+      "created_at": "2026-10-03T01:48:00+00:00",
+      "column": "backlog",
+      "session": null,
+      "agent": "claude",
+      "mode": "worktree",
+      "auto_close": false,
+      "parent_id": null,
+      "chain_id": null,
+      "result": null,
+      "phase": "backlog",
+      "session_row": null,
+      "prompt": "Every <img> in the product gallery on the PDP has an empty alt. Use the product name and the colour or angle from the image filename, keep it under 100 characters, and add a test that fails when a gallery image has no alt text.",
+      "prompt_len": 227
+    },
+    {
+      "ci": null,
+      "pr": null,
+      "id": 6,
+      "project": "phasezero",
+      "repo": "NestJs-Ecommerce-Backend",
+      "slug": "reconcile-edge-case-test",
+      "title": "Add a unit test for the reconcile edge case where stock goes negative",
+      "branch": "",
+      "base": "develop",
+      "worktree": "",
+      "tmux": "phasezero--NestJs-Ecommerce-Backend--t-stock-sync",
+      "claude_session_id": null,
+      "pr_url": null,
+      "pr_number": null,
+      "pr_state": null,
+      "cost_usd": null,
+      "overlap": [],
+      "preview_port": null,
+      "preview_https": null,
+      "preview_url": null,
+      "created_at": "2026-10-03T02:58:00+00:00",
+      "column": "in_progress",
+      "session": {
+        "state": "working",
+        "state_at": "2026-10-03T02:59:20+00:00",
+        "last_message": "Added StockSyncService.reconcile() and wired it to the order.cancelled event; the migration is next",
+        "needs_attention": false,
+        "command": "claude"
+      },
+      "agent": "claude",
+      "mode": "session",
+      "auto_close": false,
+      "parent_id": null,
+      "chain_id": null,
+      "result": null,
+      "phase": "running",
+      "session_row": 5,
+      "prompt": null,
+      "prompt_len": 150
+    },
+    {
+      "ci": null,
+      "pr": null,
       "id": 5,
       "project": "phasezero",
       "repo": "NestJs-Ecommerce-Backend",
@@ -709,7 +828,9 @@
       "chain_id": null,
       "result": null,
       "phase": "running",
-      "session_row": 5
+      "session_row": 5,
+      "prompt": null,
+      "prompt_len": 236
     },
     {
       "ci": null,
@@ -757,7 +878,9 @@
       "chain_id": null,
       "result": null,
       "phase": "running",
-      "session_row": 6
+      "session_row": 6,
+      "prompt": null,
+      "prompt_len": 318
     },
     {
       "ci": {
@@ -831,7 +954,9 @@
       "chain_id": null,
       "result": null,
       "phase": "done",
-      "session_row": null
+      "session_row": null,
+      "prompt": null,
+      "prompt_len": 274
     },
     {
       "ci": null,
@@ -864,7 +989,9 @@
       "chain_id": null,
       "result": null,
       "phase": "done",
-      "session_row": null
+      "session_row": null,
+      "prompt": null,
+      "prompt_len": 196
     },
     {
       "ci": {
@@ -938,7 +1065,9 @@
       "chain_id": null,
       "result": null,
       "phase": "done",
-      "session_row": null
+      "session_row": null,
+      "prompt": null,
+      "prompt_len": 187
     }
   ],
   "jobs": [

@@ -457,6 +457,23 @@ class DB:
                 "SELECT id, tmux_name, event, kind, message, at FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
 
+    def last_events(self, tmux_names) -> dict[str, dict]:
+        """The newest stored event of each tmux name, {name: {event, kind, at}} (a name without events is absent): one query for
+        any number of sessions, on the events_by_session index."""
+        names = sorted({n for n in tmux_names if n})
+        if not names:
+            return {}
+        marks = ",".join("?" * len(names))
+        with self.lock:
+            rows = self.conn.execute(
+                f"SELECT tmux_name, event, kind, at FROM events WHERE id IN "
+                f"(SELECT MAX(id) FROM events WHERE tmux_name IN ({marks}) GROUP BY tmux_name)", names).fetchall()
+        return {r["tmux_name"]: {"event": r["event"], "kind": r["kind"], "at": r["at"]} for r in rows}
+
+    def last_event(self, tmux_name: str) -> dict | None:
+        """The newest stored event of one session, {event, kind, at}, or None when it has none."""
+        return self.last_events([tmux_name]).get(tmux_name)
+
     def kv_set(self, key: str, value) -> None:
         with self.lock:
             self.conn.execute("INSERT OR REPLACE INTO kv(key, value, at) VALUES (?,?,?)", (key, json.dumps(value), now()))
@@ -614,6 +631,11 @@ class DB:
         sets = ", ".join(f"{k}=?" for k in fields) + ", updated_at=?"
         with self.lock:
             self.conn.execute(f"UPDATE tasks SET {sets} WHERE id=?", (*fields.values(), now(), tid))
+
+    def task_delete(self, tid: int) -> bool:
+        """Remove a task row (a backlog, queued or cancelled one: the caller decides). Returns whether a row went."""
+        with self.lock:
+            return self.conn.execute("DELETE FROM tasks WHERE id=?", (tid,)).rowcount == 1
 
     def preview_ports_in_use(self) -> set[int]:
         with self.lock:

@@ -211,7 +211,10 @@ body[data-shell=compact] #toasts { bottom:calc(var(--sab) + var(--bnav-h) + 14px
 @media (hover:hover) { .bp5-dark a.nav-item:hover, .bp5-dark a.tn-row:hover { color:var(--fg); text-decoration:none; } }
 .bp5-dark a.tn-go { color:var(--dim-2); }
 @media (hover:hover) { .bp5-dark a.tn-go:hover { color:var(--fg); } }
-.bp5-dark a.pill.link:not(.attn) { color:var(--fg-2); }
+.bp5-dark a.pill.link:not(.attn):not(.warn):not(.bad) { color:var(--fg-2); }
+#topbar a.pill { text-decoration:none; color:inherit; }                      /* the 5H/7D pills link to #/usage and keep their tint */
+@media (pointer:coarse) { #topbar a.pill { min-height:var(--tap); } }
+html.force-coarse #topbar a.pill { min-height:var(--tap); }
 .bp5-dark a.bn { color:var(--dim); }
 @media (hover:hover) { .bp5-dark a.bn:hover { color:var(--fg); } }
 .bp5-dark a.bn[aria-current=page] { color:var(--sig); }

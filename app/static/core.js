@@ -164,6 +164,7 @@ async function demoApi(method, path) {
   else if (bare.startsWith('/api/search')) name = 'search';
   else if (/^\/api\/projects\/[^/]+\/repos\/[^/]+\/tree$/.test(bare)) name = 'tree';
   else if (/^\/api\/projects\/[^/]+\/repos\/[^/]+\/file$/.test(bare)) name = 'file';
+  else if (bare.startsWith('/api/series/events')) name = 'series_events';   // before the '/api/series' prefix: the Gantt must not draw the limit series as sessions
   else if (bare.startsWith('/api/series')) name = 'series';
   else if (bare === '/api/usage/summary') name = 'usage_summary';
   else if (bare.startsWith('/api/memory/')) name = 'memory';
@@ -172,6 +173,10 @@ async function demoApi(method, path) {
   if (!r.ok) throw new Error(`demo fixture ${name}.json: ${r.status} ${r.statusText}`);
   const data = await r.json();
   if (name === 'tree' || name === 'file') return demoPick(name, bare, path.slice(bare.length + 1), data);
+  if (name === 'series_events' && data && data.demo && data.demo.epoch && Array.isArray(data.events)) {   // keep the fixture's 24 h alive, like state.json
+    const dt = Math.floor(Date.now() / 1000 - data.demo.epoch);
+    return { ...data, events: data.events.map((e) => ({ ...e, t: e.t + dt })) };
+  }
   return name === 'state' ? demoRebase(data) : data;
 }
 
@@ -182,13 +187,23 @@ async function api(method, path, body) {
   const r = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   let data = null;
   try { data = await r.json(); } catch (_) { /* not json */ }
-  if (!r.ok) throw new Error((data && data.error) || `${r.status} ${r.statusText}`);
+  if (!r.ok) {
+    const err = new Error((data && data.error) || `${r.status} ${r.statusText}`);
+    err.status = r.status;                       // callers branch on these, not on the message text (components.js taskIsMismatch)
+    err.body = data;
+    throw err;
+  }
   return data;
 }
 
 const ui = { openForm: null, confirm: null, error: null, notice: null, modal: false, lastJson: null, inboxSel: -1, notifyPanel: false, deepLinked: false };
 let state = null;
 let pollTimer = null;
+
+/* Client-side optimism that outlives one render (v0.5.14a): store.tasksOverride[taskId] is a state.tasks row painted over the poll's own
+   until the poll agrees (components.js boardTasks merges and clears it): a Start, a card added to the backlog, an edit or a delete shows
+   at once instead of after the next poll. Memory only; nothing here survives a reload. */
+const store = { tasksOverride: {} };
 
 function setError(msg) { ui.error = msg; renderBanner(); }
 

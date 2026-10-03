@@ -372,15 +372,16 @@ class ClaudeAgent(Agent):
             if req.worktree:
                 if not WORKTREE_RE.match(req.worktree) or ".." in req.worktree:
                     raise projects.BadRequest("worktree name: use letters, digits, '.', '_' or '-'")
-                # tasks.build_command order: variadic options first, then --worktree / --session-id, the prompt last
+                # tasks.build_command order: variadic options first, then --worktree / --session-id, `--`, the prompt last
+                # (`--` so a prompt that starts with '-', a markdown bullet, is a prompt and not an unknown option)
                 argv = ["claude", *bypass, *tail, *more, "--worktree", req.worktree, "--session-id", agent_sid]
                 if req.prompt:
-                    argv.append(req.prompt)
+                    argv += ["--", req.prompt]
                 worktree = str(Path(cwd) / WORKTREE_DIR / req.worktree)
             elif req.prompt:
                 # --add-dir and --allowedTools are variadic and would swallow a trailing positional: they go first, and the
                 # non-variadic --session-id / --name end the list
-                argv = ["claude", *bypass, *tail, *more, "--session-id", agent_sid, *naming, req.prompt]
+                argv = ["claude", *bypass, *tail, *more, "--session-id", agent_sid, *naming, "--", req.prompt]   # `--`: a prompt starting with - is a prompt
             else:
                 argv = ["claude", "--session-id", agent_sid, *naming, *bypass, *tail, *more]
         else:

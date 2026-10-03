@@ -66,3 +66,36 @@ def test_token_grants_local_owner(client, projects_dir, fake_tmux):
     assert client.post("/api/projects", headers=T, json={"name": "viamcp"}).status_code == 201
     assert client.get("/api/state", headers={"X-CCBoard-Token": "wrong"}).status_code == 403
     assert client.get("/", headers=T).status_code == 403          # token only covers /api
+
+
+def test_create_task_dispatch_flag(monkeypatch):
+    """dispatch (default true) keeps the legacy start-now call byte for byte; false files a Backlog card through POST /api/tasks."""
+    m = load_shim()
+    schema = next(t for t in m.TOOLS if t["name"] == "create_task")["inputSchema"]
+    assert schema["properties"]["dispatch"]["type"] == "boolean" and schema["properties"]["dispatch"]["default"] is True
+    assert "dispatch" not in schema["required"] and len(m.TOOLS) == 4
+    calls = []
+
+    def fake_api(method, path, body=None):
+        calls.append((method, path, body))
+        if path == "/api/state":
+            return {"tasks": [{"id": 3, "project": "shop", "repo": "api", "title": "T", "column": "backlog", "phase": "backlog",
+                               "branch": "", "worktree": "", "session": None}]}
+        return {"id": 9, "slug": "x", "phase": "backlog", "tmux": None}
+    monkeypatch.setattr(m, "call_api", fake_api)
+
+    def create(**extra):
+        r = m.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "create_task", "arguments": {
+            "project": "shop", "repo": "api", "title": "X", "prompt": "do", **extra}}})
+        assert not r["result"]["isError"], r
+        return json.loads(r["result"]["content"][0]["text"])
+    assert create(dispatch=False)["phase"] == "backlog"
+    assert calls[-1] == ("POST", "/api/tasks", {"project": "shop", "repo": "api", "title": "X", "prompt": "do", "when": "later"})
+    create()
+    assert calls[-1] == ("POST", "/api/projects/shop/repos/api/tasks", {"title": "X", "prompt": "do"})
+    create(dispatch=True)
+    assert calls[-1] == ("POST", "/api/projects/shop/repos/api/tasks", {"title": "X", "prompt": "do"})
+    r = m.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "list_tasks", "arguments": {}}})
+    assert json.loads(r["result"]["content"][0]["text"])["tasks"][0]["phase"] == "backlog"
+    r = m.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "get_task_status", "arguments": {"task_id": 3}}})
+    assert json.loads(r["result"]["content"][0]["text"])["phase"] == "backlog"

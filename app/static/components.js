@@ -106,6 +106,8 @@ function repoCost(p, r) {
 }
 
 const COLUMNS = [['in_progress', 'In progress'], ['needs_you', 'Needs you'], ['done', 'Done'], ['pr', 'PR open'], ['merged', 'Merged']];
+/* Every kanban: Backlog (a task before any session: phase backlog | queued) first, then COLUMNS. */
+const BOARD_COLUMNS = [['backlog', 'Backlog'], ...COLUMNS];
 
 function ciBadge(t) {
   if (!t.pr_url) return null;
@@ -116,30 +118,337 @@ function ciBadge(t) {
   return el('span', { class: 'badge ' + cls, title: (t.ci && t.ci.checks || []).map(c => `${c.name}: ${c.bucket}`).join('\n'), text: txt });
 }
 
+/* ---------- tasks v2 (v0.5.14a): git targets, optimistic rows, the backlog card, Start / Send to session / Edit / Delete ---------- */
+
+const TASK_OVERRIDE_TTL = 20000;         // ms an optimistic row outlives a poll that never agrees (a write that failed unseen); demo mode keeps them
+
+function taskPhase(t) { return (t && t.phase) || 'running'; }
+function taskIsBacklog(t) { const ph = taskPhase(t); return ph === 'backlog' || ph === 'queued'; }
+function taskWhere(t) { return t.repo === 'root' ? `${t.project} · project folder` : `${t.project}/${t.repo}`; }
+function sessionNameOf(tmux) { const s = String(tmux || ''); const i = s.lastIndexOf('--'); return i >= 0 ? s.slice(i + 2) : s; }
+function taskPeekHash(tmux) { try { return buildHash('session', { tmux }); } catch (_) { return ''; } }
+function taskDemo() { return typeof demoOn === 'function' && demoOn(); }
+
+/* Can a task or a schedule run here? A repo that is ok (or not yet known to be broken), or the project folder when it is a git repo itself
+   (state.projects[].root carries a branch or state 'ok' then) and is not already listed as the project's one repo. */
+function gitTarget(p, r) {
+  if (!p || !r) return false;
+  if (r.root || r.name === 'root') {
+    if ((p.repos || []).some((x) => x.path && x.path === r.path)) return false;      // the folder is already listed as a repo of the same name
+    return !!(r.git === true || r.branch || r.state === 'ok');
+  }
+  return r.state === 'ok' || r.state === 'unknown';
+}
+
+function rootIsGit(r) { return !!(r && (r.git === true || r.branch || r.state === 'ok')); }
+
+/* Can a TASK run here? Like gitTarget, except that the project folder is always a target: a git repo gets a worktree, any other folder runs
+   the task in place (mode 'attached', v0.5.14a: "give the whole project a task"). Schedules keep gitTarget (a run needs a worktree). */
+function taskTarget(p, r) {
+  if (!p || !r) return false;
+  if (r.root || r.name === 'root') return !(p.repos || []).some((x) => x.path && x.path === r.path);
+  return r.state === 'ok' || r.state === 'unknown';
+}
+
+/* The places a task (kind 'task', default) or a schedule (kind 'job'/'schedule') can start in a project: its repos, then its project folder.
+   [{p, r, label, sub}]; sub says 'in place (not a git repo)' for a folder a task runs in without a worktree. */
+function taskTargets(p, kind) {
+  const forTask = !kind || kind === 'task';
+  const can = forTask ? taskTarget : gitTarget;
+  const out = [];
+  for (const r of (p.repos || [])) if (can(p, r)) out.push({ p, r, label: `${p.name}/${r.name}`, sub: r.branch || '' });
+  if (p.root && can(p, p.root)) out.push({ p, r: p.root, label: `${p.name} · project folder`, sub: rootIsGit(p.root) ? (p.root.branch || 'project folder') : 'in place (not a git repo)' });
+  return out;
+}
+
+function taskOverrideSet(row, keys, extra) {
+  if (!row || row.id === undefined || row.id === null) return null;
+  const o = { ...row, ...(extra || {}), _at: Date.now() };
+  if (keys) o._keys = keys;
+  store.tasksOverride[row.id] = o;
+  return o;
+}
+
+function taskOverrideDrop(id) { delete store.tasksOverride[id]; }
+function taskRepaint() { if (typeof repaintPage === 'function') repaintPage(); }
+function taskStartingSession() { return { state: 'working', state_at: new Date().toISOString(), last_message: '', needs_attention: false, command: 'claude' }; }
+
+/* Has the poll caught up with an optimistic row? Same phase, session and text. */
+function taskConfirmed(o, t) {
+  if (taskPhase(t) !== taskPhase(o) || (t.tmux || '') !== (o.tmux || '') || t.title !== o.title) return false;
+  return o.prompt === undefined || o.prompt === null || t.prompt === undefined || t.prompt === null || t.prompt === o.prompt;
+}
+
+function taskApply(t, o) {
+  const row = t ? { ...t } : {};
+  for (const k of (o._keys || Object.keys(o).filter((x) => x.charAt(0) !== '_'))) row[k] = o[k];
+  return row;
+}
+
+/* state.tasks with store.tasksOverride painted over it: an optimistic Start, a card added or edited, a delete that has not reached the poll yet.
+   An override is dropped when the poll agrees (taskConfirmed), when its task is gone for a delete, or after TASK_OVERRIDE_TTL. */
+function boardTasks(st) {
+  const base = st && Array.isArray(st.tasks) ? st.tasks : [];
+  const ov = store.tasksOverride;
+  if (!Object.keys(ov).length) return base;
+  const keep = taskDemo();
+  const now = Date.now();
+  const out = [];
+  const used = new Set();
+  for (const t of base) {
+    const o = ov[t.id];
+    if (!o) { out.push(t); continue; }
+    used.add(String(t.id));
+    if (!keep && (now - o._at > TASK_OVERRIDE_TTL || (!o._gone && taskConfirmed(o, t)))) { delete ov[t.id]; out.push(t); continue; }
+    if (!o._gone) out.push(taskApply(t, o));
+  }
+  const fresh = [];
+  for (const id of Object.keys(ov)) {
+    const o = ov[id];
+    if (used.has(id)) continue;
+    if (o._gone || (!keep && now - o._at > TASK_OVERRIDE_TTL)) { if (!keep) delete ov[id]; continue; }    // a delete the poll has caught up with
+    if (o._new) fresh.push(taskApply(null, o));
+  }
+  return fresh.concat(out);
+}
+
+/* The row an optimistic update paints: the server's own state.tasks-shaped row when the response carries it (res.task), else `base` with the
+   response's tmux / session_row / slug / branch laid over it. */
+function taskRowFromResponse(base, res, patch) {
+  const row = { ...base, ...(res && res.task && typeof res.task === 'object' ? res.task : {}), ...(patch || {}) };
+  if (res && res.tmux) row.tmux = res.tmux;
+  if (res && res.session_row !== undefined && res.session_row !== null) row.session_row = res.session_row;
+  if (res && res.slug) row.slug = res.slug;
+  if (res && res.branch) row.branch = res.branch;
+  row.phase = 'running';
+  if (!row.column || row.column === 'backlog') row.column = 'in_progress';
+  if (!row.session) row.session = taskStartingSession();
+  return row;
+}
+
+/* Open the peek of a session just started (the sheet in front of it closes first); false in demo mode, where there is no such session. */
+function taskOpenPeek(tmux) {
+  if (!tmux || taskDemo() || typeof navigate !== 'function') return false;
+  const h = taskPeekHash(tmux);
+  if (!h) return false;
+  if (typeof closeSheet === 'function') closeSheet();
+  navigate(h);
+  return true;
+}
+
+function taskStatus(node, text, bad) { node.textContent = text || ''; node.classList.toggle('bad', !!bad); }
+
+function taskFail(e) { toast(e && e.message ? e.message : String(e), { kind: 'bad' }); }
+
+/* Start: a new session in the task's own worktree. The card moves to In progress at once; the response (or an error that puts it back) settles it. */
+async function taskStart(t) {
+  const cur = store.tasksOverride[t.id];
+  if (cur && cur._busy) return;                                           // a double tap
+  const pending = { ...t, phase: 'running', column: 'in_progress', tmux: '', session_row: null, mode: 'worktree', session: taskStartingSession() };
+  taskOverrideSet(pending, ['phase', 'column', 'tmux', 'session_row', 'mode', 'session'], { _busy: true });
+  taskRepaint();
+  try {
+    const res = await api('POST', `/api/tasks/${t.id}/dispatch`, { mode: 'lane' });
+    const row = taskRowFromResponse(pending, res, { mode: 'worktree' });
+    if (!row.tmux && taskDemo()) row.tmux = `${t.project}--${t.repo}--t-${t.slug}`;
+    taskOverrideSet(row);
+    toast(`started ${row.slug || t.slug}`, { kind: 'ok' });
+    taskRepaint();
+    taskOpenPeek(row.tmux);
+    if (typeof poll === 'function') poll(true);
+  } catch (e) {
+    taskOverrideDrop(t.id);
+    taskRepaint();
+    taskFail(e);
+  }
+}
+
+/* Sessions of the task's project that could take its prompt: Claude sessions that are not ended, ready ones (idle, done, waiting at its idle
+   prompt: wait_kind 'idle_prompt') first and those in the task's own repo before the others. A waiting session in a permission prompt or a dialog
+   is listed but off ('waiting on a prompt': typing into it would answer it), and so is one that has just started (state unknown: 'starting…').
+   [{s, repo, same, ok, why}] */
+function taskSessionTargets(t, st) {
+  const out = [];
+  const cur = st || (typeof state !== 'undefined' ? state : null);
+  const p = cur && (cur.projects || []).find((x) => x.name === t.project);
+  if (!p) return out;
+  const pend = new Set(((cur && cur.pending_permissions) || []).map((x) => x.tmux_name));
+  const seen = new Set();
+  const take = (s, repo) => {
+    if (!s || !s.tmux || seen.has(s.tmux)) return;
+    seen.add(s.tmux);
+    const stt = s.state || 'unknown';
+    if (sessionAgent(s) !== 'claude' || stt === 'ended' || s.name === 'clone') return;
+    let why = '';
+    if (stt === 'working') why = 'working: wait for its turn to end';
+    else if (stt === 'waiting' && pend.has(s.tmux)) why = 'waiting for a permission decision';
+    else if (stt === 'waiting' && s.wait_kind !== 'idle_prompt') why = 'waiting on a prompt';
+    else if (stt === 'unknown') why = 'starting…';
+    else if (stt !== 'idle' && stt !== 'done' && stt !== 'waiting') why = stt === 'errored' ? 'stopped with an error' : stt;
+    out.push({ s, repo, same: repo === t.repo, ok: !why, why });
+  };
+  for (const r of repoGroups(p)) for (const s of (r.sessions || [])) take(s, r.name);
+  for (const s of (p.orphan_sessions || [])) take(s, s.repo || '?');
+  const rank = { idle: 0, done: 1, waiting: 2 };
+  out.sort((a, b) => (b.ok - a.ok) || (b.same - a.same) || ((rank[a.s.state] ?? 9) - (rank[b.s.state] ?? 9)) || String(b.s.state_at || '').localeCompare(String(a.s.state_at || '')));
+  return out;
+}
+
+/* The repo-mismatch 409 ({error, mismatch: {task, session}}): api() keeps the body on the error (err.body, err.status), so that is what is
+   tested first; the message is only the fallback for an error that was built without a body. */
+function taskIsMismatch(e) { return !!(e && ((e.body && e.body.mismatch) || e.mismatch || /another repo|mismatch/i.test(e.message || ''))); }
+
+/* Hand the task's prompt to a running session. A session of another repo answers 409 (mismatch): ask, then retry with force. */
+async function taskSend(t, target, force) {
+  const tmux = target.s.tmux;
+  const cur = store.tasksOverride[t.id];
+  if (cur && cur._busy) return;
+  const pending = { ...t, phase: 'running', column: 'in_progress', tmux, session_row: target.s.row_id === undefined ? null : target.s.row_id, mode: 'session', session: taskStartingSession() };
+  taskOverrideSet(pending, ['phase', 'column', 'tmux', 'session_row', 'mode', 'session'], { _busy: true });
+  taskRepaint();
+  try {
+    const res = await api('POST', `/api/tasks/${t.id}/dispatch`, force ? { session: tmux, force: true } : { session: tmux });
+    taskOverrideSet(taskRowFromResponse(pending, res, { mode: 'session', tmux }));
+    toast(`sent to ${target.s.name}`, { kind: 'ok' });
+    taskRepaint();
+    if (typeof poll === 'function') poll(true);
+  } catch (e) {
+    taskOverrideDrop(t.id);
+    taskRepaint();
+    if (!force && taskIsMismatch(e)) {
+      const ask = typeof window !== 'undefined' && typeof window.confirm === 'function'
+        && window.confirm(`${e.message}\n\n${target.s.name} works in ${target.repo}, this task is in ${t.repo}. Work there anyway? The prompt goes in with "Work in <this task's repo>." in front.`);
+      if (ask) await taskSend(t, target, true);
+      return;
+    }
+    taskFail(e);
+  }
+}
+
+/* The sheet behind "Send to session": the project's live sessions, each one tap. */
+function taskSendSheet(t) {
+  const list = taskSessionTargets(t);
+  const rows = list.map((x) => el('button', { class: 'minimal pick-row tk-pick' + (x.ok ? '' : ' off'), type: 'button', disabled: !x.ok, 'data-tmux': x.s.tmux,
+    title: x.why || `send the prompt to ${x.s.name}`, onclick: () => { closeSheet(); taskSend(t, x); } },
+  stateGlyph(x.s.state),
+  el('span', { class: 'pr-name mono', text: x.s.name }),
+  el('span', { class: 'dim tk-repo', text: (x.repo === 'root' ? 'project folder' : x.repo) + (x.same ? '' : ' · other repo') }),
+  x.why ? el('span', { class: 'dim', text: x.why }) : null,
+  x.s.last_prompt ? el('span', { class: 'dim tk-last', text: '› ' + String(x.s.last_prompt).slice(0, 100) }) : null));
+  const start = el('div', { class: 'submit' }, el('button', { class: 'primary', type: 'button', onclick: () => { closeSheet(); taskStart(t); } }, ic('play'), 'Start in a new session'));
+  const anyOk = list.some((x) => x.ok);
+  const body = !list.length ? [emptyState('console', 'No session to send to', 'No Claude session of this project is running.'), start]
+    : [el('p', { class: 'dim tk-note', text: anyOk ? 'Ready sessions first. A session in another repo asks before it works there.' : 'None of these can take it right now: wait for one, or start a new session.' }),
+      el('div', { class: 'pick-list' }, ...rows), ...(anyOk ? [] : [start])];                    // never a dead end: with no ready session the way out is the new one
+  openSheet({ title: `Send “${String(t.title).slice(0, 60)}”`, body });
+}
+
+/* Edit a backlog card: a title and a prompt in a small sheet (PATCH sends only what changed). The full prompt is fetched when the row carries only its head. */
+function taskEditSheet(t) {
+  const title = el('input', { type: 'text', maxlength: 120, value: t.title || '', 'aria-label': 'title' });
+  const prompt = el('textarea', { class: 'composer task-prompt', rows: '4', 'aria-label': 'prompt', autocomplete: 'off', spellcheck: 'false' });
+  const status = el('div', { class: 'dim form-status' });
+  const truncated = typeof t.prompt_len === 'number' && typeof t.prompt === 'string' && t.prompt.length < t.prompt_len;
+  let original = typeof t.prompt === 'string' ? t.prompt : '';
+  prompt.value = original;
+  if (truncated) {
+    prompt.disabled = true;
+    prompt.placeholder = 'loading the full prompt…';
+    Promise.resolve().then(() => api('GET', `/api/tasks/${t.id}`)).then((full) => {
+      original = String((full && full.prompt) || t.prompt || '');
+      prompt.value = original;
+      prompt.disabled = false;
+      if (typeof composerGrow === 'function') composerGrow(prompt, 12);
+    }).catch((e) => { prompt.placeholder = 'could not load the full prompt: leave empty to keep it'; prompt.disabled = false; taskStatus(status, e.message, true); });
+  }
+  const save = async () => {
+    const body = {};
+    const nt = title.value.trim();
+    if (!nt) { taskStatus(status, 'a title is required', true); title.focus(); return; }       // the sheet stays: closing it would look like a save
+    if (nt !== t.title) body.title = nt;
+    const np = prompt.value.trim();
+    if (np && np !== original.trim()) body.prompt = np;
+    if (!Object.keys(body).length) { closeSheet(); return; }
+    taskStatus(status, 'saving…');
+    try {
+      const res = await api('PATCH', `/api/tasks/${t.id}`, body);
+      const head = typeof res.prompt === 'string' ? res.prompt.slice(0, 600) : (body.prompt ? body.prompt.slice(0, 600) : t.prompt);
+      const row = res && res.task && typeof res.task === 'object' ? { ...t, ...res.task } : { ...t, title: body.title || t.title, prompt: head, prompt_len: body.prompt ? body.prompt.length : t.prompt_len };
+      taskOverrideSet(row, ['title', 'prompt', 'prompt_len']);
+      closeSheet();
+      toast('saved', { kind: 'ok' });
+      taskRepaint();
+      if (typeof poll === 'function') poll(true);
+    } catch (e) { taskStatus(status, e.message, true); }
+  };
+  prompt.addEventListener('input', () => { if (typeof composerGrow === 'function') composerGrow(prompt, 12); });
+  prompt.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); save(); } });
+  const form = el('form', { class: 'form', onsubmit: (e) => { e.preventDefault(); save(); } },
+    field('title', title), field('prompt', prompt), status,
+    el('div', { class: 'submit' }, el('button', { class: 'primary', type: 'submit', text: 'Save' }),
+      el('button', { type: 'button', onclick: () => closeSheet(), text: 'Cancel' })));
+  openSheet({ title: `Edit task · ${taskWhere(t)}`, body: form });
+  if (typeof composerGrow === 'function') composerGrow(prompt, 12);
+  title.focus();
+}
+
+/* Delete a backlog card: gone at once, back with an error toast if the server refused. Called through confirmButton (two taps). */
+async function taskDelete(t) {
+  taskOverrideSet(t, ['phase'], { _gone: true });
+  taskRepaint();
+  try { await api('DELETE', `/api/tasks/${t.id}`); }
+  catch (e) { taskOverrideDrop(t.id); taskRepaint(); throw e; }
+}
+
+/* A task before any session (phase backlog | queued): title, the head of its prompt, where, how old; Start, Send to session, Edit, Delete. */
+function backlogCard(t) {
+  const queued = taskPhase(t) === 'queued';
+  const when = t.created_at ? Date.parse(t.created_at) / 1000 : 0;
+  const added = !when ? '' : (Date.now() / 1000 - when < 20 ? 'added just now' : `added ${fmtAge(when)} ago`);
+  const quick = taskSessionTargets(t).filter((x) => x.ok && x.same);
+  const head = String(t.prompt || '');
+  const more = head.startsWith(t.title) ? head.slice(t.title.length).replace(/^[\s.:;,-]+/, '') : head;       // a title cut from the prompt's first line is not said twice
+  const card = el('div', { class: 'task backlog' + (queued ? ' queued' : ''), 'data-task': t.id, 'data-phase': taskPhase(t) },
+    el('div', { class: 'row' }, el('span', { class: 'title', text: t.title }), queued ? el('span', { class: 'state ended', text: 'waiting for a step' }) : null),
+    more ? el('div', { class: 'tk-prompt', text: more }) : null,
+    el('div', { class: 'meta' }, taskWhere(t), added ? ` · ${added}` : ''),
+    el('div', { class: 'actions' },
+      queued ? null : el('button', { class: 'primary tk-start', type: 'button', title: 'Start in a new session, in its own worktree and branch', onclick: () => taskStart(t) }, ic('play'), 'Start'),
+      queued ? null : el('button', { class: 'tk-send', type: 'button', title: 'Hand the prompt to a running session', onclick: () => taskSendSheet(t), text: 'Send to session' }),
+      queued || quick.length !== 1 ? null : el('button', { class: 'tk-quick', type: 'button', title: `Send the prompt to ${quick[0].s.name} now`, onclick: () => taskSend(t, quick[0]), text: `→ ${quick[0].s.name}` }),
+      el('button', { class: 'tk-edit', type: 'button', onclick: () => taskEditSheet(t), text: 'Edit' }),
+      confirmButton('tdel:' + t.id, 'Delete', () => taskDelete(t), true)));
+  return card;
+}
+
 function taskCard(t) {
+  if (taskIsBacklog(t)) return backlogCard(t);
   const s = t.session;
   const ciFail = t.ci && t.ci.bucket === 'fail';
-  const card = el('div', { class: 'task' + (s && s.needs_attention ? ' attn' : ''), 'data-task': t.id },
+  const starting = !t.tmux;
+  const handed = t.mode === 'session';
+  const chip = handed && t.tmux ? el('a', { class: 'chip-btn tk-chip', href: taskPeekHash(t.tmux), title: `this task runs in ${sessionNameOf(t.tmux)}`, text: `in ${sessionNameOf(t.tmux)}` }) : null;
+  const card = el('div', { class: 'task' + (s && s.needs_attention ? ' attn' : '') + (handed ? ' handed' : ''), 'data-task': t.id },
     el('div', { class: 'row' }, el('span', { class: 'title', text: t.title }), s ? stateBadge(s) : el('span', { class: 'state ended', text: 'no session' }), ciBadge(t)),
-    el('div', { class: 'meta' }, `${t.project}/${t.repo} · ${t.branch}${t.pr_url ? ' · PR #' + t.pr_number : ''}`,
-      typeof t.cost_usd === 'number' ? [' · ', el('span', { class: 'mono', text: '$' + t.cost_usd.toFixed(2) })] : null),
+    el('div', { class: 'meta' }, starting ? `${taskWhere(t)} · starting…` : (t.branch ? `${t.project}/${t.repo} · ${t.branch}` : taskWhere(t) + (t.mode === 'attached' ? ' · in place' : '')), t.pr_url ? ' · PR #' + t.pr_number : null,
+      typeof t.cost_usd === 'number' ? [' · ', el('span', { class: 'mono', text: '$' + t.cost_usd.toFixed(2) })] : null, chip ? ' ' : null, chip),
     s && s.last_message ? el('div', { class: 'last', text: s.last_message.slice(0, 160) }) : null,
     (t.overlap && t.overlap.length) ? el('div', { class: 'last bad', title: t.overlap.map(o => `${o.title}: ${o.files.join(', ')}`).join('\n'),
       text: '⚠ overlaps ' + t.overlap.map(o => `"${o.title}" (${o.files.length} file${o.files.length === 1 ? '' : 's'}: ${o.files.slice(0, 3).join(', ')}${o.files.length > 3 ? '…' : ''})`).join('; ') }) : null,
     el('div', { class: 'actions' },
-      el('a', { class: 'btn primary', href: `/term/${encodeURIComponent(t.tmux)}`, target: '_blank', rel: 'noopener' }, ic('console'), 'Terminal'),
-      el('button', { onclick: () => openTaskModal(t), text: t.pr_url ? 'Diff / PR' : 'Diff / PR…' }),
+      starting ? null : el('a', { class: 'btn primary', href: `/term/${encodeURIComponent(t.tmux)}`, target: '_blank', rel: 'noopener' }, ic('console'), 'Terminal'),
+      t.branch ? el('button', { onclick: () => openTaskModal(t), text: t.pr_url ? 'Diff / PR' : 'Diff / PR…' }) : null,
       t.pr_url ? el('a', { class: 'btn', href: t.pr_url, target: '_blank', rel: 'noopener', text: 'PR' }) : null,
       t.preview_url ? el('a', { class: 'btn', href: t.preview_url, target: '_blank', rel: 'noopener', text: `Preview :${t.preview_port}` }) : null,
-      t.preview_url ? el('button', { onclick: async () => { try { await api('DELETE', `/api/tasks/${t.id}/preview`); } catch (e) { setError(e.message); } await poll(true); }, title: 'stop exposing the preview', text: '⏏' }) :
+      starting ? null : (t.preview_url ? el('button', { onclick: async () => { try { await api('DELETE', `/api/tasks/${t.id}/preview`); } catch (e) { setError(e.message); } await poll(true); }, title: 'stop exposing the preview', text: '⏏' }) :
         el('button', { onclick: async () => {
           try { const r = await api('POST', `/api/tasks/${t.id}/preview`, {}); toast(`preview at ${r.url} → 127.0.0.1:${r.port}`, { kind: 'ok', ttl: 8000 }); }
           catch (e) { if (/no listening port/.test(e.message)) { const p = window.prompt(e.message + '\n\nDev server port (leave blank to cancel):'); if (p) { try { await api('POST', `/api/tasks/${t.id}/preview`, { port: parseInt(p, 10) }); } catch (e2) { setError(e2.message); } } } else setError(e.message); }
           await poll(true);
-        }, title: 'expose a dev server running in this session on its own tailnet HTTPS port', text: 'Preview' }),
+        }, title: 'expose a dev server running in this session on its own tailnet HTTPS port', text: 'Preview' })),
       ciFail ? el('button', { class: 'danger', onclick: async () => { try { const r = await api('POST', `/api/tasks/${t.id}/fix-ci`); setError(null); toast(`CI logs (${r.chars} chars) sent to ${t.title}${r.relaunched ? ' (session relaunched)' : ''}`, { kind: 'ok', ttl: 8000 }); } catch (e) { setError(e.message); } await poll(true); }, text: 'Fix CI' }) : null,
       t.pr_url ? el('button', { onclick: async () => { try { await api('POST', `/api/tasks/${t.id}/refresh`); } catch (e) { setError(e.message); } await poll(true); }, title: 'refresh PR / CI status', text: '↻' }) : null,
-      confirmButton('arch:' + t.id, 'Archive', async () => {
+      starting ? null : confirmButton('arch:' + t.id, 'Archive', async () => {
         try { await api('POST', `/api/tasks/${t.id}/archive`, { force: false }); }
         catch (e) {
           if (/force/.test(e.message) && window.confirm(e.message + '\n\nDiscard the worktree anyway?')) await api('POST', `/api/tasks/${t.id}/archive`, { force: true });
