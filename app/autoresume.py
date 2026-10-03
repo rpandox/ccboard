@@ -14,8 +14,8 @@ What it did is an AutoContinue event on the session and one low-priority notific
 flags.no_autoresume on a session row opts that session out (a later Settings toggle writes it).
 
 The same tick also finishes a reboot recovery: app/recover marks a relaunched row with flags.continue_after_resume when the
-old row was `working` when the box went down. Once the resumed session reports SessionStart (state idle) and has sat at its
-prompt for RESUME_SETTLE seconds with nobody attached, `continue` is typed once and the flag cleared; a hook that shows the
+old row was `working` when the box went down. Once the resumed session reports SessionStart (state idle), drew its statusline and
+sat at its prompt for RESUME_SETTLE seconds (RESUME_SETTLE_MAX without a statusline) with nobody attached, `continue` is typed once and the flag cleared; a hook that shows the
 person or the agent moved on (any other state after the relaunch) drops the flag, and so does RESUME_WINDOW without any hook.
 """
 from __future__ import annotations
@@ -36,7 +36,8 @@ WINDOW_AFTER = 2 * 3600    # seconds after resets_at during which an episode is 
 LOOKBACK_DAYS = 8          # a weekly window resets within 7 days
 TEXT = "continue"
 RESUME_FLAG = "continue_after_resume"
-RESUME_SETTLE = 8          # seconds after the resumed session's SessionStart before typing (the TUI finishes drawing first)
+RESUME_SETTLE = 8          # seconds after the resumed session's SessionStart before typing, once its first statusline arrived (the prompt is drawn)
+RESUME_SETTLE_MAX = 45     # without a statusline (none configured, or a slow cold box) type after this long anyway
 RESUME_WINDOW = 15 * 60    # seconds after the relaunch during which a SessionStart is still waited for
 
 
@@ -119,7 +120,10 @@ def recovered_tick(db, rows: dict[str, dict], now: float, *, send, clients, aliv
         if state != "idle":                                         # a prompt was typed, or the agent is busy or gone
             drop(f"the session moved on ({state})")
             continue
-        if now < state_at + RESUME_SETTLE:
+        # the fresh row has no stats until the resumed TUI drew its statusline: that is the "prompt is up" signal; a cold, I/O-bound box
+        # can take a while, so without it wait RESUME_SETTLE_MAX rather than type into a half-started process
+        drawn = bool(row.get("stats"))
+        if now < state_at + (RESUME_SETTLE if drawn else RESUME_SETTLE_MAX):
             continue
         try:
             if not alive(name):

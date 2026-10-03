@@ -94,6 +94,9 @@ def test_working_session_is_marked_to_continue_after_the_relaunch(client, projec
     assert tick(time.time() + 1) == [] and sent == []
     hooks.apply(main.db, busy["tmux"], "SessionStart", {"source": "resume", "session_id": busy["claude_session_id"]})
     assert tick(time.time() + 1) == [], "settle first"
+    assert tick(time.time() + autoresume.RESUME_SETTLE + 1) == [], "no statusline yet: wait for the prompt to be drawn"
+    hooks.apply(main.db, busy["tmux"], "statusline", {"session_id": busy["claude_session_id"], "model": {"display_name": "Opus"},
+                                                      "context_window": {"used_percentage": 2, "context_window_size": 200000}})
     assert tick(time.time() + autoresume.RESUME_SETTLE + 1) == [busy["tmux"]]
     assert sent == [(busy["tmux"], "continue")]
     assert recover.CONTINUE_FLAG not in main.db.open_rows()[busy["tmux"]]["flags"]

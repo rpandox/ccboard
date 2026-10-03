@@ -98,9 +98,11 @@ def mark(db, name, at, prompt="build the thing"):
     db.update_flags(name, {autoresume.RESUME_FLAG: {"reason": "reboot", "at": at, "prompt": prompt, "was_at": iso(at - 300)}})
 
 
-def session_start(db, name, at):
+def session_start(db, name, at, statusline=True):
     db.set_state(name, "idle", "SessionStart")
     db.conn.execute("UPDATE sessions SET state_at=? WHERE tmux_name=?", (iso(at), name))
+    if statusline:
+        db.set_stats(name, {"model": "Opus", "context_pct": 3})           # the resumed TUI drew its statusline: the prompt is up
 
 
 def test_reboot_continue_waits_for_session_start_then_types_once(world):
@@ -116,6 +118,15 @@ def test_reboot_continue_waits_for_session_start_then_types_once(world):
     evs = [e for e in db.recent_events(50) if e["tmux_name"] == "shop--api--s1" and e["event"] == "AutoContinue"]
     assert evs and evs[0]["kind"] == "reboot" and "typed 'continue' after the restart" in evs[0]["message"]
     assert world["tick"](T + 120) == [] and len(world["sent"]) == 1, "once"
+
+
+def test_reboot_continue_without_a_statusline_waits_longer(world):
+    db, T = world["db"], 1_800_000_000
+    mark(db, "shop--api--s1", at=T)
+    session_start(db, "shop--api--s1", T + 40, statusline=False)
+    assert world["tick"](T + 40 + autoresume.RESUME_SETTLE + 1) == [], "no statusline yet: the TUI may still be starting"
+    assert world["tick"](T + 40 + autoresume.RESUME_SETTLE_MAX - 1) == []
+    assert world["tick"](T + 40 + autoresume.RESUME_SETTLE_MAX) == ["shop--api--s1"]
 
 
 def test_reboot_continue_drops_when_the_session_moved_on_or_never_started(world):
