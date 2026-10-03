@@ -915,6 +915,7 @@ test('every roster row has its own send box: Enter sends the text with enter and
   await tick();
   assert.deepEqual(calls(w).pop(), { method: 'POST', path: '/api/sessions/shop--api--s2/keys', body: { text: 'run it\nnow', enter: true } });
   assert.equal(ta.value, '', 'the box clears after a send');
+  assert.equal(text(row.querySelector('.rr-last .dim')), '› run it', 'the row echoes the sent text at once, before any poll');
   ta.value = 'draft';
   ta.dispatchEvent({ type: 'keydown', key: 'Enter', shiftKey: true, preventDefault() {} });
   assert.equal(ta.value, 'draft\n', 'Shift+Enter adds a line, nothing is sent');

@@ -110,12 +110,20 @@ function sessionPerm(tmux) {
   return null;
 }
 
+/* 10x pass: the row echoes a sent text at once ('› continue'); the next poll's last_prompt is the same text. `from` is any node inside the row. */
+function sessionEcho(from, text) {
+  const row = from && typeof from.closest === 'function' ? from.closest('.rrow, .peek, .inbox-card') : null;
+  const line = row && row.querySelector('.rr-last .dim, .peek-block .dim');
+  if (line) setTextIfChanged(line, '› ' + String(text).split('\n')[0].slice(0, 160));
+}
+
 async function sessionNudge(s, text, btn) {
   if (!s || (btn && btn.disabled)) return;
   if (btn) btn.disabled = true;
   try {
     await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/keys`, { text, enter: true });
     pageToast(`sent "${text}" to ${s.name || s.tmux}`, 'ok');
+    sessionEcho(btn, text);
   } catch (e) { pageToast(e.message, 'bad'); }
   finally { if (btn) btn.disabled = false; }
 }
@@ -131,6 +139,7 @@ async function sessionSend(s, ta) {
     ta.value = '';
     if (typeof composerGrow === 'function') composerGrow(ta);
     pageToast(`sent to ${s.name || s.tmux}`, 'ok');
+    sessionEcho(ta, text);
   } catch (e) { pageToast(e.message, 'bad'); }
   finally { ta.disabled = false; if (typeof ta.focus === 'function') ta.focus(); }
 }
