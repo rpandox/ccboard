@@ -36,8 +36,8 @@ log = logging.getLogger("ccboard.samples")
 CATALOGUE: dict[str, dict] = {
     "rl_5h":   {"agg": "avg",    "throttle": {"delta": 1,     "seconds": 300},  "retention_days": 90},
     "rl_7d":   {"agg": "avg",    "throttle": {"delta": 1,     "seconds": 300},  "retention_days": 90},
-    "ctx":     {"agg": "avg",    "throttle": {"delta": 0.5,   "seconds": 120},  "retention_days": 14},
-    "ctx_tok": {"agg": "avg",    "throttle": {"delta": 0.5,   "seconds": 120},  "retention_days": 14},
+    "ctx":     {"agg": "avg",    "throttle": {"delta": 0.5,   "seconds": 900},  "retention_days": 14},
+    "ctx_tok": {"agg": "avg",    "throttle": {"delta": 0.5,   "seconds": 900},  "retention_days": 14},
     "scost":   {"agg": "last",   "throttle": {"delta": 0.005, "seconds": None}, "retention_days": 30},
     "stok":    {"agg": "last",   "throttle": {"delta": 0,     "seconds": None}, "retention_days": 30},
     "state":   {"agg": "events", "throttle": {"delta": 0,     "seconds": None}, "retention_days": 90},
@@ -120,6 +120,12 @@ def record(db, series: str, key: str, value, meta=None, at=None, force: bool = F
     return True
 
 
+def spec_seconds(series: str) -> float:
+    """The heartbeat interval of a series (its throttle's 'seconds'), 0 when it has none."""
+    t = (CATALOGUE.get(series) or {}).get("throttle") or {}
+    return float(t.get("seconds") or 0)
+
+
 def record_statusline(db, tmux: str, stats: dict, agent: str = "claude", *, at=None) -> list[str]:
     """The samples one statusline event yields (stats is the dict hooks.apply builds): ctx (context %, meta model/window) and, when
     the window size is known, ctx_tok (used % x window; written together with ctx, so it follows ctx's throttle), scost (session USD)
@@ -145,6 +151,10 @@ def record_statusline(db, tmux: str, stats: dict, agent: str = "claude", *, at=N
             used = w.get("used_percentage")          # the statusline's own name; used_percent is the Codex rollout's
             used = w.get("used_percent") if _num(used) is None else used
             meta = _clean({"resets_at": w.get("resets_at")})
+            last = db.sample_last(series, agent or "claude")
+            if last is not None and used < (last["value"] or 0) and (last.get("meta") or {}).get("resets_at") == meta.get("resets_at") \
+                    and _epoch(iso(at)) - _epoch(last["at"]) < spec_seconds(series):
+                continue                                        # the same window and a lower number: another session's staler statusline (60 after 62)
             if record(db, series, agent or "claude", used, meta, at):
                 wrote.append(series)
     return wrote

@@ -322,7 +322,7 @@ def test_catalogue_is_the_plan_table_plus_lim():
     assert {k: v["retention_days"] for k, v in c.items()} == {
         "rl_5h": 90, "rl_7d": 90, "ctx": 14, "ctx_tok": 14, "scost": 30, "stok": 30, "state": 90, "ev": 120, "cost": 120, "h_cpu": 14,
         "h_mem": 14, "h_load": 14, "h_disk": 30, "n_live": 30, "n_work": 30, "n_attn": 30, "lim": 180}
-    assert c["rl_5h"]["throttle"] == {"delta": 1, "seconds": 300} and c["ctx"]["throttle"] == {"delta": 0.5, "seconds": 120}
+    assert c["rl_5h"]["throttle"] == {"delta": 1, "seconds": 300} and c["ctx"]["throttle"] == {"delta": 0.5, "seconds": 900}
     assert c["scost"]["throttle"] == {"delta": 0.005, "seconds": None} and c["cost"]["throttle"] == {"delta": None, "seconds": 600}
     assert c["h_disk"]["throttle"]["seconds"] == 900 and c["h_cpu"]["throttle"]["seconds"] == 60 == c["n_work"]["throttle"]["seconds"]
     assert samples.RETENTION["lim"] == 180
@@ -910,3 +910,18 @@ def test_snapshot_takes_a_consumer(monkeypatch):
     assert health.snapshot()["cpu_pct"] == 1.5 and health.snapshot(consumer="sampler")["cpu_pct"] == 1.5
     assert health.snapshot({"x": 1}, "sampler")["x"] == 1
     assert seen == ["default", "sampler", "sampler"]
+
+
+def test_rate_limit_readings_from_two_sessions_do_not_ping_pong(db):
+    """Two sessions report the same account-wide window a little apart (62 then 60): the lower, staler reading is dropped; a rise, a
+    new window or the 5 min heartbeat still write."""
+    def sl(used, resets_at=1791048600):
+        return {"rate_limits": {"five_hour": {"used_percent": used, "resets_at": resets_at}}}
+    assert "rl_5h" in samples.record_statusline(db, "shop--api--s1", sl(62), at=T(0))
+    assert "rl_5h" not in samples.record_statusline(db, "shop--api--s2", sl(60), at=T(10)), "lower in the same window: stale"
+    assert "rl_5h" not in samples.record_statusline(db, "shop--api--s1", sl(62), at=T(20)), "unchanged: throttled"
+    assert "rl_5h" in samples.record_statusline(db, "shop--api--s2", sl(63), at=T(30)), "a rise is news"
+    assert "rl_5h" not in samples.record_statusline(db, "shop--api--s1", sl(62), at=T(40))
+    assert "rl_5h" in samples.record_statusline(db, "shop--api--s1", sl(3, resets_at=1791066600), at=T(50)), "a new window starts low"
+    assert "rl_5h" in samples.record_statusline(db, "shop--api--s2", sl(1, resets_at=1791066600), at=T(50 + 301)), "the heartbeat still writes a lower value after 5 min"
+    assert [r[2] for r in db.samples_query("rl_5h", None, "2000-01-01T00:00:00+00:00", None)] == [62.0, 63.0, 3.0, 1.0]
