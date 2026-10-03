@@ -294,14 +294,14 @@ test('limitBanner survives storage that throws', () => {
 });
 
 test('the backup chip tells a partial run apart: snapshot ok, some mirror pushes rejected (warn, never bad)', async () => {
-  const { w } = world();
-  const { root, card: c } = card(w, { st: { usage: null, block: null, backup: { at: ISO(12 * 3600), status: 'partial', warnings: ['push a/b: main: [rejected] (fetch first)', 'push c/d: main: [rejected] (non-fast-forward)'] } } });
+  const w = wWorld();
+  const { root, card: c } = card(w, { st: { usage: null, block: null, backup: { at: ISO(12 * 60), status: 'partial', warnings: ['push a/b: main: [rejected] (fetch first)', 'push c/d: main: [rejected] (non-fast-forward)'] } } });
   await c.refresh();
   const chip = root.querySelector('.uc-backup');
   assert.equal(chip.classList.contains('hidden'), false);
   assert.match(text(chip), /^backup ok 12h ago · 2 pushes rejected$/);
   assert.ok(chip.classList.contains('warn') && !chip.classList.contains('bad'));
-  w.ctx.__st = { usage: null, block: null, backup: { at: ISO(60), status: 'partial', warnings: ['push a/b: main: [rejected]'] } };
+  w.ctx.__st = { usage: null, block: null, backup: { at: ISO(1), status: 'partial', warnings: ['push a/b: main: [rejected]'] } };
   w.run('__card.update(__st)');
   assert.match(text(chip), /1 push rejected$/);
   c.destroy();
