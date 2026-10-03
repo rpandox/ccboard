@@ -243,3 +243,15 @@ def _fresh_claude_auth():
     claude_auth.invalidate()
     yield
     claude_auth.invalidate()
+
+
+@pytest.fixture(autouse=True)
+def _ci_like_no_claude(monkeypatch):
+    """CCBOARD_TEST_NO_CLAUDE=1 makes the suite run like CI's runner, which has no `claude` binary: settings.claude_bin() answers None
+    unless a test fakes it itself (a test-level monkeypatch runs after this autouse one and wins). The local full suite is run with it
+    before every push (memory: feedback-run-tests-before-push), so a session-creating test that forgot the fake fails here, not on CI."""
+    import os
+    if os.environ.get("CCBOARD_TEST_NO_CLAUDE") == "1":
+        from app.config import settings
+        monkeypatch.setattr(settings, "claude_bin", lambda: None)
+    yield
