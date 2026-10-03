@@ -207,7 +207,10 @@ async def auth_middleware(request: Request, call_next):
         return JSONResponse({"error": "missing X-CCBoard header"}, status_code=403)
     request.state.user = user
     resp = await call_next(request)
-    resp.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'"
+    if not (settings.dev_bypass_user and request.url.path.startswith("/tty/")):
+        # Only the dev harness's fake terminal (served under /tty/ while the dev bypass is on) goes without: the real /tty/ is
+        # ttyd's and never passes through the board, and frame-ancestors 'none' would block the fake from the terminal page's iframe.
+        resp.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'"
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "same-origin"
     if request.url.path == "/" or request.url.path.startswith("/static/"):
@@ -287,6 +290,11 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
     db.reconcile(set(live.keys()), before=snapshot_at)
     rows = db.open_rows()
     chips = db.active_tasks_by_session() if rich else {}
+    try:                                             # one list-clients per scan; the 3 s poll must not depend on it
+        viewers = tmux.viewers()
+    except (tmux.TmuxError, tmux.TmuxDown) as e:
+        log.debug("list-clients failed: %s", e)
+        viewers = None
     out: dict[str, dict] = {}
     for name, s in live.items():
         if tmux.is_internal(name):
@@ -296,6 +304,11 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
         out[name] = {
             "created": s["created"], "attached": s["attached"], "command": s["command"], "path": s["path"],
             "pane_id": s["pane_id"], "launcher": row.get("launcher", "external"), "cmd": row.get("cmd"),
+            # who is looking: full clients (a person at the terminal), grid tiles (ignore-size) and read-only views; without
+            # list-clients every attached client counts as a full one. win = the session window's [cols, rows] or None.
+            "viewers": (viewers.get(name) or {"full": 0, "grid": 0, "ro": 0}) if viewers is not None
+                       else {"full": s["attached"], "grid": 0, "ro": 0},
+            "win": [s["window_width"], s["window_height"]] if s.get("window_width") and s.get("window_height") else None,
             "claude_session_id": row.get("claude_session_id"), "add_dirs": row.get("add_dirs", []),
             "state": row.get("state") or "unknown", "state_at": row.get("state_at"), "last_event": row.get("last_event"),
             "last_message": row.get("last_message"), "last_prompt": row.get("last_prompt"), "stats": row.get("stats"),
@@ -406,9 +419,9 @@ def api_session(name: str):
             "state_at": s["state_at"], "last_prompt": s["last_prompt"], "last_message": s["last_message"], "stats": s["stats"],
             "flags": s["flags"], "agent_session_id": s["agent_session_id"], "task": s["task"],
             "pending": [p for p in db.perm_pending() if p["tmux_name"] == name],
-            # v0.5.7 (attach modes) classifies clients and learns the window size and the attach wrapper's version; until then
-            # every attached client counts as a full one
-            "viewers": {"full": s["attached"], "grid": 0, "ro": 0}, "win": None, "shell_version": None}
+            # viewers and win come from tmux (list-clients, the session window's size); shell_version (the attach wrapper's) is
+            # still unset
+            "viewers": s["viewers"], "win": s["win"], "shell_version": ASSET_VERSION}
 
 
 @app.get("/api/external")
@@ -1244,6 +1257,48 @@ def api_send_keys(name: str, body: KeysIn):
     return {"ok": True}
 
 
+class ScrollIn(BaseModel):
+    # object, not str/int: a wrong type must answer 400 like a wrong value (the app has no 422 handler for bodies)
+    dir: object = None
+    n: object = 1
+
+
+def _check_terminal_name(name: str) -> None:
+    """400 for a name that is not a ccboard session (internal sessions included)."""
+    try:
+        tmux.split_name(name)
+    except ValueError:
+        raise projects.BadRequest("not a ccboard session name")
+
+
+def _terminal_session(name: str) -> None:
+    """400 for a name that is not a ccboard session, 404 for one tmux does not have."""
+    _check_terminal_name(name)
+    if not tmux.has_session(name):
+        raise projects.NotFound(f"session {name} not found")
+
+
+@app.post("/api/sessions/{name}/scroll")
+def api_scroll(name: str, body: ScrollIn | None = None):
+    """Scroll the terminal: copy-mode for a shell pane, forwarded PageUp/PageDown/C-Home/C-End for Claude's fullscreen TUI."""
+    _check_terminal_name(name)
+    d, n = (body.dir, body.n) if body else (None, 1)
+    if d not in tmux.SCROLL_DIRS:
+        raise projects.BadRequest("dir must be one of " + ", ".join(tmux.SCROLL_DIRS))
+    if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= tmux.SCROLL_MAX:
+        raise projects.BadRequest(f"n must be an integer from 1 to {tmux.SCROLL_MAX}")
+    _terminal_session(name)
+    agent = (db.open_rows().get(name) or {}).get("agent") or "claude"
+    return {"ok": True, **tmux.scroll(name, d, n, agent)}
+
+
+@app.get("/api/sessions/{name}/pane")
+def api_pane(name: str):
+    """The pane's terminal state (alternate screen, copy-mode, scroll position, sizes) and who is attached."""
+    _terminal_session(name)
+    return {**tmux.pane_info(name), "viewers": tmux.viewers().get(name) or {"full": 0, "grid": 0, "ro": 0}}
+
+
 @app.delete("/api/sessions/{name}")
 def api_kill_session(name: str):
     try:
@@ -1464,12 +1519,19 @@ async def api_permission(request: Request):
     pid = await asyncio.to_thread(record)
     _invalidate_scan()
 
-    def attached() -> int:
+    def at_terminal() -> int:
+        """Real (full, writable) clients on the session. A grid tile (ignore-size) or a read-only view is not a person at the
+        terminal, so it must not short-circuit remote approve. If list-clients fails, fall back to the attached count
+        (every client counts): when in doubt the TUI prompt is shown, never swallowed."""
+        try:
+            return tmux.real_clients(name)
+        except (tmux.TmuxError, tmux.TmuxDown):
+            pass
         try:
             return int((tmux.list_sessions().get(name) or {}).get("attached") or 0)
-        except tmux.TmuxError:
+        except (tmux.TmuxError, tmux.TmuxDown):
             return 0
-    if await asyncio.to_thread(attached) > 0:
+    if await asyncio.to_thread(at_terminal) > 0:
         # Someone is looking at the terminal: let the TUI prompt appear at once. The board still
         # lists the request; a board/phone answer within the timeout is ignored by Claude.
         await asyncio.to_thread(db.perm_expire, pid, "tui")
@@ -1568,4 +1630,20 @@ def service_worker():
     return Response(SW_JS, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
 
 
+DEV_TTY_DIR = Path(__file__).resolve().parent.parent / "scripts" / "dev" / "fake_tty"
+
+
+class _DevTty:
+    """Dev harness: serves scripts/dev/fake_tty/ (a stand-in for ttyd's terminal, no network) at /tty, but only while
+    settings.dev_bypass_user is set (read per request, so it follows the setting). Otherwise it answers 404 like any
+    unknown path: in production the real /tty/ is ttyd's, reached through tailscale serve, and never the board's."""
+
+    async def __call__(self, scope, receive, send):
+        if not settings.dev_bypass_user or not DEV_TTY_DIR.is_dir():
+            await JSONResponse({"detail": "Not Found"}, status_code=404)(scope, receive, send)
+            return
+        await StaticFiles(directory=str(DEV_TTY_DIR), html=True)(scope, receive, send)
+
+
+app.mount("/tty", _DevTty(), name="dev-tty")
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")

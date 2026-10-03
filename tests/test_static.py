@@ -180,7 +180,8 @@ def test_js_comment_blanker():
 
 def test_scan_covers_the_app_owned_files():
     names = {rel(p) for p in app_files()}
-    for must in ("app/static/index.html", "app/static/term.html", "app/static/sw.js", "app/static/core.js", "app/static/style.css"):
+    for must in ("app/static/index.html", "app/static/term.html", "app/static/sw.js", "app/static/core.js", "app/static/style.css",
+                 "app/static/termkit.js", "app/static/term.js", "app/static/term.css"):
         assert must in names, f"{must} is missing from the static scan (path or exclusion bug in tests/test_static.py)"
     assert not any("/vendor/" in n or "/demo/" in n for n in names)
 
@@ -918,3 +919,254 @@ def test_demo_files_are_absent_from_the_sw_shell_and_the_asset_version(lite_clie
     sw = lite_client.get("/sw.js", headers=DEMO_HEADERS).text
     m = re.search(r"JSON\.parse\('([^']*)'\)", sw)
     assert m and not any("demo" in p for p in json.loads(m.group(1))), "the served worker precaches a demo fixture"
+
+
+# ---------- terminal page on mobile: definition-only kit, no ES modules, the term.css scroll-fix set, the dev tty fake ----------
+
+REPO = STATIC.parent.parent
+DEFINE_ONLY = ("core.js", "components.js", "termkit.js")
+DEFINE_ONLY_START = re.compile(r"(?:const|let|var|function|class|async\s+function)\b|['\"`]")
+
+
+def top_level_statements(src):
+    """(line, text) for each line that starts in column 0 at bracket depth 0 of the comment- and string-blanked source."""
+    out = []
+    depth = 0
+    for n, line in enumerate(blank_js(src, strings=True).splitlines(), 1):
+        if depth == 0 and line.strip() and not line[0].isspace():
+            out.append((n, line.strip()))
+        for ch in line:
+            if ch in "({[":
+                depth += 1
+            elif ch in ")}]":
+                depth -= 1
+    return out
+
+
+def test_top_level_scanner_flags_calls_and_accepts_declarations():
+    ok = "'use strict';\nconst A = {\n  b: 1,\n};\nfunction f() {\n  g();\n}\nasync function h() {}\nclass K {\n  m() { x(); }\n}\nlet t = `${a} ${b}`;\n"
+    assert all(DEFINE_ONLY_START.match(text) for _, text in top_level_statements(ok)), top_level_statements(ok)
+    for bad in ("setInterval(tick, 1000);", "document.title = 'x';", "(function () { go(); })();", "TermKit.boot();", "window.addEventListener('x', y);"):
+        assert not any(DEFINE_ONLY_START.match(text) for _, text in top_level_statements(bad)), bad
+
+
+@pytest.mark.parametrize("name", DEFINE_ONLY)
+def test_definition_only_scripts_declare_and_never_run_at_the_top_level(name):
+    """core.js, components.js and termkit.js only define: a column-0 statement that is not a declaration would run at load, in every
+    page that includes the file (tests/js/define-only.test.mjs proves the same at run time with a hostile world)."""
+    path = STATIC / name
+    assert path.is_file(), f"app/static/{name} is missing"
+    bad = [f"{rel(path)}:{n}: {text[:100]}" for n, text in top_level_statements(path.read_text(encoding="utf-8"))
+           if not DEFINE_ONLY_START.match(text)]
+    assert not bad, "top-level statement that is not a declaration (only term.js / main.js start things):\n" + "\n".join(bad)
+
+
+def test_js_no_es_modules():
+    """Classic scripts only: no import/export, no dynamic import(), no type=module (the app is loaded script by script, in order)."""
+    bad = []
+    pattern = re.compile(r"(?<![\w.$])import\s*\(|^\s*import\s+[\w{*'\"]|\bimport\.meta\b|^\s*export\s+(?:default\b|const\b|let\b|var\b|function\b|class\b|async\b|\{|\*)", re.M)
+    for p in app_files(".js"):
+        code = blank_js(p.read_text(encoding="utf-8"))
+        for m in pattern.finditer(code):
+            bad.append(f"{rel(p)}:{line_of(code, m.start())}: {snippet(code, m.start())}")
+    for p in app_files(".html"):
+        for tag, attrs, line in html_tags(p):
+            if tag == "script" and attrs.get("type", "").lower() == "module":
+                bad.append(f"{rel(p)}:{line}: <script type=module>")
+    assert not bad, "ES modules are banned (classic scripts share one global scope, loaded in the order the HTML lists):\n" + "\n".join(bad)
+
+
+def test_term_scripts_carry_the_persisted_keys_and_the_back_rule():
+    """v0.5.8 contract: font size, context strip and key-bar mode survive a reload; the back chevron returns to where the user came
+    from (history.back() for a same-origin referrer) and otherwise lands on the Agents roster."""
+    term = (STATIC / "term.js").read_text(encoding="utf-8")
+    both = term + (STATIC / "termkit.js").read_text(encoding="utf-8")
+    for key in ("ccboard:term:fs", "ccboard:term:ctx", "ccboard:term:keys"):
+        assert key in both, f"{key} is not used by term.js or termkit.js"
+    code = blank_js(term)
+    assert re.search(r"\bhistory\s*\.\s*back\s*\(", code), "term.js: the back chevron uses history.back() for a same-origin referrer"
+    assert re.search(r"\blocation\s*\.\s*assign\s*\(", code) and "/#/agents" in term, "term.js: otherwise location.assign('/#/agents')"
+    assert re.search(r"\breferrer\b", code), "term.js: the same-origin test reads document.referrer"
+
+
+# -- term.css: the iOS scroll fix set (d) and the layout rules, read as parsed rules so spacing and ordering do not matter --
+
+_CSS_CONTAINERS = ("@media", "@supports", "@keyframes", "@-webkit-keyframes", "@layer", "@container")
+
+
+def css_decls(body):
+    out = {}
+    for part in body.split(";"):
+        prop, sep, value = part.partition(":")
+        if sep and prop.strip():
+            out[prop.strip().lower()] = re.sub(r"\s+", " ", re.sub(r"!important", "", value, flags=re.I)).strip()
+    return out
+
+
+def css_rules(css):
+    """[(enclosing at-rules joined by space, selector text, {prop: value})] for blanked CSS; containers (media, supports) nest."""
+    css = blank_css_comments(css)
+    rules, stack, start, i = [], [], 0, 0
+    while i < len(css):
+        c = css[i]
+        if c == "{":
+            prelude = re.sub(r"\s+", " ", css[start:i]).strip()
+            if prelude.startswith(_CSS_CONTAINERS):
+                stack.append(prelude)
+                i += 1
+            else:
+                j = css.find("}", i)
+                j = len(css) if j < 0 else j
+                rules.append((" ".join(stack), prelude, css_decls(css[i + 1:j])))
+                i = j + 1
+            start = i
+        elif c == "}":
+            if stack:
+                stack.pop()
+            i += 1
+            start = i
+        else:
+            i += 1
+    return rules
+
+
+def test_css_rule_parser_handles_media_lists_and_important():
+    css = "/* c */ html, body.term { a: 1 !important; b:  x   y }\n@media (min-width: 840px) { .a > .b { c: d; e: f } }\n@font-face { src: url(/static/x.woff2) }\nz { k: v }"
+    got = css_rules(css)
+    assert got[0] == ("", "html, body.term", {"a": "1", "b": "x y"})
+    assert got[1] == ("@media (min-width: 840px)", ".a > .b", {"c": "d", "e": "f"})
+    assert got[2][1] == "@font-face" and got[3] == ("", "z", {"k": "v"})
+
+
+def term_css():
+    path = STATIC / "term.css"
+    assert path.is_file(), "app/static/term.css is missing"
+    return path.read_text(encoding="utf-8")
+
+
+def term_style(selector, in_media=False):
+    """The declarations the given selector (one entry of a rule's selector list) gets, later rules winning; top-level rules by default."""
+    merged = {}
+    for media, sel, decls in css_rules(term_css()):
+        if selector in [s.strip() for s in sel.split(",")] and (bool(media) == in_media):
+            merged.update(decls)
+    return merged
+
+
+def _zero_inset(d):
+    return d.get("inset") in ("0", "0px") or all(d.get(k) in ("0", "0px") for k in ("top", "right", "bottom", "left"))
+
+
+def test_term_css_body_is_a_fixed_visual_viewport_box_that_never_bounces():
+    body = term_style("body.term")
+    assert body.get("position") == "fixed" and _zero_inset(body), body
+    assert "var(--vvh" in body.get("height", ""), "body.term height comes from --vvh (TermKit.viewportFit), with a 100dvh fallback"
+    assert "100dvh" in body.get("height", "")
+    assert body.get("overflow") == "hidden", body
+    assert body.get("overscroll-behavior", body.get("overscroll-behavior-y")) == "none", body
+    html = term_style("html")
+    assert html.get("overscroll-behavior", html.get("overscroll-behavior-y")) == "none", "html needs overscroll-behavior:none too (pull-to-refresh bounce)"
+    assert re.search(r"-webkit-tap-highlight-color\s*:\s*transparent", term_css()), "no grey tap flash on the keys"
+
+
+def test_term_css_ttywrap_clips_and_the_iframe_fills_it():
+    wrap = term_style("#ttywrap")
+    assert wrap.get("position") == "relative" and wrap.get("overflow") == "hidden", wrap
+    frame = {}
+    for media, sel, decls in css_rules(term_css()):
+        if not media and any(re.fullmatch(r"#ttywrap\s*>?\s*iframe(?:#tty)?|iframe#tty|#tty", s.strip()) for s in sel.split(",")):
+            frame.update(decls)
+    assert frame.get("position") == "absolute" and _zero_inset(frame), f"the iframe is absolute inset 0 inside #ttywrap, got {frame}"
+    assert frame.get("width") in (None, "100%") and frame.get("height") in (None, "100%")
+
+
+def test_term_css_safe_area_on_all_four_sides():
+    css = term_css()
+    for side in ("top", "right", "bottom", "left"):
+        assert f"safe-area-inset-{side}" in css, f"term.css never reads env(safe-area-inset-{side})"
+
+
+def test_term_css_two_columns_from_840px_with_a_300px_side_column():
+    media = [(m, sel, d) for m, sel, d in css_rules(term_css()) if re.search(r"min-width\s*:\s*840px", m)]
+    assert media, "no @media (min-width: 840px) block in term.css"
+    assert any("300px" in v for _, _, d in media for v in d.values()), "the side column is 300 px wide at 840 px and up"
+    assert not any(re.search(r"max-width\s*:\s*(?:[0-7]\d\d|8[0-3]\d)px", m) and "grid-template-columns" in d for m, _, d in css_rules(term_css())), \
+        "below 840 px the terminal page stays a single column"
+
+
+def test_term_css_inputs_are_16px_so_ios_does_not_zoom_on_focus():
+    ok = [(sel, d) for m, sel, d in css_rules(term_css())
+          if re.search(r"composer|textarea|input|sendtext", sel) and d.get("font-size") == "16px"]
+    assert ok, "the composer (and any input) needs font-size:16px on coarse pointers"
+
+
+def _px(value):
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)px", (value or "").strip())
+    return float(m.group(1)) if m else None
+
+
+def _rules_for(fragment):
+    """Declarations of every top-level rule one of whose selectors contains `fragment`, merged in file order."""
+    merged = {}
+    for media, sel, decls in css_rules(term_css()):
+        if not media and any(fragment in part for part in sel.split(",")):
+            merged.update(decls)
+    return merged
+
+
+def test_term_css_key_bar_keys_and_scroll_rail_buttons_are_at_least_44px():
+    """The key bar's whole point on a phone: a thumb-sized target for every key and for the scroll rail (WCAG 2.5.5, Apple HIG 44 pt)."""
+    for fragment in (".kb-key", ".rail-btn"):
+        d = _rules_for(fragment)
+        assert d, f"term.css has no rule for {fragment}"
+        for prop in ("min-height", "min-width"):
+            v = d.get(prop)
+            assert v is not None and (v == "var(--tap)" or (_px(v) or 0) >= 44), f"{fragment} {prop} is {v!r}, expected at least 44px"
+    chip = _rules_for(".chip-history")
+    assert chip.get("min-height") in ("var(--tap)", None) or (_px(chip.get("min-height")) or 0) >= 44, chip
+
+
+def test_term_css_compact_key_bar_keeps_row_one_and_the_more_toggle():
+    """Soft keyboard up (.kb.compact): Esc ^C Tab Shift+Tab Enter + More stay, rows 2 and 3 fold away until More is tapped."""
+    rules = css_rules(term_css())
+    hidden = [sel for media, sel, d in rules if not media and d.get("display") == "none" and ".kb.compact" in sel]
+    joined = ",".join(hidden)
+    assert ".kb-r2" in joined and ".kb-r3" in joined and ":not(.more)" in joined, f"rows 2 and 3 must fold away in .kb.compact:not(.more), got {hidden}"
+    assert ".kb-r1" not in joined, "row 1 (the five compact keys) must stay visible"
+    assert term_style(".kb-more").get("display") == "none", "More is hidden outside compact mode"
+    shown = [d for media, sel, d in rules if not media and ".kb.compact .kb-more" in sel and ".kb-more" in sel and d.get("display") not in (None, "none")]
+    assert shown, "More is shown in compact mode"
+
+
+def test_term_css_has_no_remote_or_data_urls_and_no_100vh_without_a_dynamic_fallback():
+    css = blank_css_comments(term_css())
+    assert not re.search(r"url\(\s*['\"]?(?:data:|https?:|//)", css, re.I)
+    for m in re.finditer(r"height\s*:\s*100vh\b", css):
+        assert "100dvh" in css[m.end():m.end() + 80], f"term.css:{line_of(css, m.start())}: 100vh must be followed by a 100dvh (or --vvh) declaration"
+
+
+# -- scripts/dev/fake_tty: the dev harness page is outside app/static (so no app rule scans it) but must still reach nothing --
+
+FAKE_TTY = REPO / "scripts" / "dev" / "fake_tty"
+FAKE_TTY_ALLOWED_URLS = ("http://www.w3.org/2000/svg",)
+
+
+def test_fake_tty_is_outside_the_app_scan_and_the_service_worker_shell():
+    assert STATIC not in FAKE_TTY.parents
+    assert not any(FAKE_TTY in p.parents or p == FAKE_TTY for p in app_files())
+
+
+@pytest.mark.parametrize("name", ["index.html", "fake_tty.js"])
+def test_fake_tty_has_no_external_url_and_no_network_call(name):
+    path = FAKE_TTY / name
+    if not path.is_file():
+        pytest.skip(f"{path.relative_to(REPO)} does not exist yet (tests/test_dev_harness.py asserts it)")
+    text = path.read_text(encoding="utf-8")
+    code = blank_js(text) if name.endswith(".js") else text
+    urls = [m.group() for m in re.finditer(r"https?://[^\s'\"<>)]*", code) if not m.group().startswith(FAKE_TTY_ALLOWED_URLS)]
+    urls += [m.group() for m in re.finditer(r"""\b(?:src|href|action)\s*=\s*['"]//[^'"]*""", code)]
+    urls += [host for host in CDN_HOSTS if host in text]
+    assert not urls, f"{path.relative_to(REPO)} reaches out to {urls}: the fake tty is offline by construction"
+    if name.endswith(".js"):
+        for what in ("fetch", "XMLHttpRequest", "WebSocket", "EventSource", "sendBeacon", "importScripts", "Worker", "innerHTML", "eval"):
+            assert not re.search(rf"\b{what}\b", code), f"{name}: {what} (the fake tty is a static page with a counter)"

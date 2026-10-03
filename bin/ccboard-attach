@@ -1,15 +1,21 @@
 #!/bin/sh
-# ccboard: the only command ttyd runs. Attaches a browser to ONE tmux session by exact name.
-# Validates the name so URL args can never become extra tmux commands.
+# ccboard-attach v2: the only command ttyd runs. usage: ccboard-attach <session> [full|grid|ro]
 set -u
 fail() { printf 'ccboard: %s\n' "$1"; sleep 2; exit 1; }
-[ "$#" -eq 1 ] || fail "usage: ccboard-attach <session>"
+{ [ "$#" -ge 1 ] && [ "$#" -le 2 ]; } || fail "usage: ccboard-attach <session> [full|grid|ro]"
 name=$1
+mode=${2-full}                      # '-' not ':-': an empty 2nd arg is an invalid mode, not 'full'
 [ -n "$name" ] || fail "empty session name"
 case "$name" in *[!A-Za-z0-9_-]*) fail "invalid session name";; esac
 [ "${#name}" -le 200 ] || fail "session name too long"
 case "$name" in
-  _ccboard-login) ;;
+  _ccboard-login|_ccboard-login-codex) [ "$mode" = full ] || fail "login session is full only";;
   _ccboard*) fail "internal session";;
 esac
-exec tmux -N -L "${CCBOARD_TMUX_SOCKET:-ccboard}" attach-session -t "=$name"
+sock=${CCBOARD_TMUX_SOCKET:-ccboard}
+case "$mode" in
+  full) exec tmux -N -L "$sock" attach-session -t "=$name";;
+  grid) exec tmux -N -L "$sock" attach-session -f ignore-size -t "=$name";;
+  ro)   exec tmux -N -L "$sock" attach-session -r -t "=$name";;
+  *)    fail "invalid mode";;
+esac

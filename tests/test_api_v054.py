@@ -163,7 +163,7 @@ def test_api_session_detail_shape_and_values(board):
     assert d["flags"] == {"hook_seen": True, "subagents": 2}, "transcript_path never leaves the box"
     assert d["task"] == {"id": tid, "title": "Fix login", "phase": "running", "auto_close": False}
     assert [p["id"] for p in d["pending"]] == [pid] and d["pending"][0]["tmux_name"] == name
-    assert d["viewers"] == {"full": 2, "grid": 0, "ro": 0} and d["win"] is None and d["shell_version"] is None
+    assert d["viewers"] == {"full": 2, "grid": 0, "ro": 0} and d["win"] is None and isinstance(d["shell_version"], str) and len(d["shell_version"]) == 12
     json.dumps(d)
 
 

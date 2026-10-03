@@ -140,9 +140,13 @@ def _scripts(html_name):
     return found
 
 
+TERM_SCRIPTS = ["/static/core.js", "/static/components.js", "/static/termkit.js", "/static/term.js"]
+
+
 def test_script_order_core_first_main_last():
     """Classic scripts share one global scope: core.js must define el()/api() before anything uses them and
-    main.js (the only caller of startStatePolling) must come last. term.html loads only the terminal set."""
+    main.js (the only caller of startStatePolling) must come last. term.html loads exactly the terminal set, in this order:
+    core.js (el/api), components.js (composer), termkit.js (TermKit, definition-only), term.js (starts the page)."""
     from tests.test_static import SCRIPT_ORDER
     idx = _scripts("index.html")
     assert idx[0] == "/static/core.js" and idx[-1] == "/static/main.js", idx
@@ -151,9 +155,9 @@ def test_script_order_core_first_main_last():
     assert idx.index("/static/palette.js") < idx.index("/static/shell.js"), idx
     assert len(idx) == len(set(idx)), f"duplicate script tag: {idx}"
     assert idx == SCRIPT_ORDER, "index.html script order differs from the contract:\n  got      " + "\n  ".join(map(str, idx)) + "\n  expected " + "\n  ".join(SCRIPT_ORDER)
-    term = _scripts("term.html")
-    allowed = ["/static/core.js", "/static/components.js", "/static/termkit.js", "/static/term.js"]
-    assert term[0] == "/static/core.js" and term[-1] == "/static/term.js" and all(t in allowed for t in term) and len(term) == len(set(term)), term
+    assert "/static/termkit.js" not in idx, "index.html is not changed in the terminal phase: termkit.js is loaded by term.html only (the dock and quad load it in v0.5.9)"
+    assert "termkit" not in (STATIC_ROOT / "index.html").read_text()
+    assert _scripts("term.html") == TERM_SCRIPTS, _scripts("term.html")
 
 
 def test_only_main_js_starts_the_poll():
@@ -379,3 +383,100 @@ def test_the_service_worker_nav_message_sets_location_hash():
         if re.search(r"serviceWorker\s*\.\s*addEventListener\(\s*'message'", code) and re.search(r"""['"]nav['"]""", code):
             owners.append(js.name)
     assert owners, "no app script handles the service worker 'message' event with type 'nav' (router.js owns it)"
+
+
+# ---------- terminal page on mobile: termkit.js, term.html, the dev tty fake stays out of the shell ----------
+
+TERM_ASSETS = ("/static/termkit.js", "/static/term.js", "/static/term.css", "/static/core.js", "/static/components.js")
+
+
+def test_terminal_assets_are_in_the_generated_shell_and_the_build_id(lite_client, tmp_path, monkeypatch):
+    """termkit.js is a new static file: it must be precached (offline terminal shell) and hashed into the build id, both from the glob."""
+    from app import main
+    for path in TERM_ASSETS:
+        assert path in main.shell_paths(), f"{path} is not in the generated service-worker shell"
+    served = shell_in(lite_client.get("/sw.js", headers=H).text)
+    for path in TERM_ASSETS:
+        assert path in served, path
+    assert (STATIC_ROOT / "termkit.js").is_file()
+    dst = static_copy(tmp_path, monkeypatch)
+    before = main.asset_version()
+    kit = dst / "termkit.js"
+    kit.write_text(kit.read_text() + "\n// edit")
+    assert main.asset_version() != before, "an edit to termkit.js must change the build id (open pages reload after a deploy)"
+
+
+def test_the_dev_tty_fake_never_ships_in_the_shell(lite_client):
+    """scripts/dev/fake_tty lives outside app/static: not precached, not hashed, not served under /static."""
+    from app import main
+    assert not any("fake_tty" in p for p in main.shell_paths())
+    assert not any("fake_tty" in p.as_posix() for p in main.static_files())
+    assert lite_client.get("/static/fake_tty.js", headers=H).status_code == 404
+    assert lite_client.get("/static/fake_tty/index.html", headers=H).status_code == 404
+
+
+def test_term_page_is_the_no_cache_skeleton_with_the_terminal_scripts(lite_client):
+    r = lite_client.get("/term/ccboard--ccboard--s1", headers=H)
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
+    assert r.headers["cache-control"] == "no-cache"
+    assert r.headers["Content-Security-Policy"] == "default-src 'self'; frame-ancestors 'none'"
+    for path in TERM_SCRIPTS:
+        assert f'src="{path}"' in r.text, path
+    assert r.text.index("/static/core.js") < r.text.index("/static/components.js") < r.text.index("/static/termkit.js") < r.text.index("/static/term.js")
+    assert lite_client.get("/term/not-a-ccboard-name", headers=H).status_code == 400
+
+
+def _meta(name):
+    from html.parser import HTMLParser
+    found = []
+
+    class P(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            a = dict(attrs)
+            if tag == "meta" and a.get("name") == name:
+                found.append(a.get("content", ""))
+    P().feed((STATIC_ROOT / "term.html").read_text())
+    return found
+
+
+def test_term_html_keeps_the_viewport_that_resizes_with_the_soft_keyboard():
+    """interactive-widget=resizes-content makes the layout viewport shrink for the soft keyboard (Chrome Android); body.term sizes
+    itself from --vvh for iOS Safari, which ignores it. viewport-fit=cover is what makes the safe-area insets non-zero."""
+    metas = _meta("viewport")
+    assert len(metas) == 1, metas
+    content = {k.strip(): v.strip() for k, _, v in (part.partition("=") for part in metas[0].split(","))}
+    assert content.get("width") == "device-width" and content.get("initial-scale") == "1"
+    assert content.get("viewport-fit") == "cover"
+    assert content.get("interactive-widget") == "resizes-content"
+    assert "user-scalable" not in content and "maximum-scale" not in content, "never lock zoom (accessibility)"
+
+
+def test_term_html_body_is_the_fixed_terminal_layout_and_dark():
+    from tests.test_static import html_tree
+    body = next(n for n in html_tree(STATIC_ROOT / "term.html").walk() if n.tag == "body")
+    assert "term" in body.classes and "bp5-dark" in body.classes, body.classes
+
+
+
+def test_term_html_skeleton_has_the_ids_the_page_and_scripts_qa_terminal_use():
+    """term.js fills these (el()) and scripts/qa_terminal.sh selects them: renaming one silently blinds the QA run."""
+    from tests.test_static import html_tree
+    root = html_tree(STATIC_ROOT / "term.html")
+    by_id = {}
+    for n in root.walk():
+        if "id" in n.attrs:
+            assert n.attrs["id"] not in by_id, f"duplicate id {n.attrs['id']}"
+            by_id[n.attrs["id"]] = n
+    for must in ("termhead", "termmain", "ctxstrip", "ttywrap", "tty", "rail", "histchip", "keyhost", "quickrow", "quick", "sendform", "sendtext", "nl", "sendbtn", "toasts", "back"):
+        assert must in by_id, f"term.html has no #{must}"
+    wrap = by_id["ttywrap"]
+    inside = {n.attrs.get("id") for n in wrap.walk() if n is not wrap}
+    assert {"tty", "rail", "histchip"} <= inside, "the iframe, the scroll rail and the History chip live inside #ttywrap (position:relative; the iframe is absolute)"
+    assert by_id["tty"].tag == "iframe"
+    assert by_id["sendtext"].tag == "textarea" and "composer" in by_id["sendtext"].classes
+    assert any(n is by_id["sendtext"] for n in by_id["sendform"].walk()), "the composer is inside the send form"
+    assert by_id["sendbtn"].attrs.get("type") == "submit"
+    order = [c.attrs.get("id") for c in by_id["termmain"].children]
+    assert order == ["ctxstrip", "ttywrap", "keyhost", "quickrow", "sendform"], order
+    assert "hidden" in by_id["histchip"].classes, "the History chip starts hidden and shows only while the pane is in copy-mode"
+    assert not any("style" in n.attrs for n in root.walk())

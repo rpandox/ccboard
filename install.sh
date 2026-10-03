@@ -594,6 +594,19 @@ if [ "${CCBOARD_BACKUP:-1}" = 0 ]; then
 else
   sudo systemctl enable --now ccboard-backup.timer >/dev/null
 fi
+# tmux.conf, live: the server read it at its start, so a changed file needs source-file to take effect. Only when the server is up
+# (-N: never start one; ccboard-tmux.service owns it and is never restarted here), and a failure only warns: the options are
+# idempotent and the next start of the server reads the file anyway. Sessions are untouched.
+log "tmux.conf (live)"
+if tmux -N -L ccboard show-options -s >/dev/null 2>&1; then
+  if out=$(tmux -N -L ccboard source-file "$APP_DIR/tmux.conf" 2>&1); then
+    note "applied to the running tmux server (no restart; sessions untouched)"
+  else
+    warn "tmux.conf was not applied to the running tmux server (${out:-tmux failed}); the server reads it at its next start"
+  fi
+else
+  note "tmux server is not running; it reads tmux.conf when ccboard-tmux.service starts it"
+fi
 restarted=()
 for u in ccboard-tmux.service ccboard-ttyd.service; do
   if printf '%s\n' "${changed_units[@]:-}" | grep -qx "$u"; then

@@ -54,7 +54,13 @@
                   "waiting_for": null
                 }
               },
-              "task": null
+              "task": null,
+              "viewers": {
+                "full": 0,
+                "grid": 0,
+                "ro": 0
+              },
+              "win": null
             },
             {
               "created": 1790961840,
@@ -89,7 +95,13 @@
               "agent_session_id": "019a2b4c-8d1e-7f30-b5a6-3c9d0e1f2a04",
               "row_id": 2,
               "flags": {},
-              "task": null
+              "task": null,
+              "viewers": {
+                "full": 0,
+                "grid": 0,
+                "ro": 0
+              },
+              "win": null
             }
           ],
           "devcontainer": false,
@@ -255,7 +267,13 @@
               "agent_session_id": "e2b6c4a8-1f57-4d93-8c0e-5a7b3d9f1c06",
               "row_id": 3,
               "flags": {},
-              "task": null
+              "task": null,
+              "viewers": {
+                "full": 0,
+                "grid": 0,
+                "ro": 0
+              },
+              "win": null
             },
             {
               "created": 1790901360,
@@ -290,7 +308,13 @@
               "agent_session_id": "a7d1e8f2-4c39-4a60-b1d5-6e2f9c0a3b05",
               "row_id": 4,
               "flags": {},
-              "task": null
+              "task": null,
+              "viewers": {
+                "full": 0,
+                "grid": 0,
+                "ro": 0
+              },
+              "win": null
             }
           ],
           "devcontainer": false,
@@ -357,7 +381,13 @@
                 "title": "Sync variant stock when an order is cancelled",
                 "phase": "running",
                 "auto_close": false
-              }
+              },
+              "viewers": {
+                "full": 0,
+                "grid": 0,
+                "ro": 0
+              },
+              "win": null
             }
           ],
           "devcontainer": true,
@@ -407,7 +437,13 @@
                 "title": "Redesign checkout step 2 for mobile",
                 "phase": "running",
                 "auto_close": false
-              }
+              },
+              "viewers": {
+                "full": 0,
+                "grid": 0,
+                "ro": 0
+              },
+              "win": null
             }
           ],
           "devcontainer": false,
@@ -453,7 +489,13 @@
             "agent_session_id": "94f0a7c3-6b28-4e15-a9d7-2c1e8b5d4f07",
             "row_id": 7,
             "flags": {},
-            "task": null
+            "task": null,
+            "viewers": {
+              "full": 0,
+              "grid": 0,
+              "ro": 0
+            },
+            "win": null
           }
         ],
         "root": true,

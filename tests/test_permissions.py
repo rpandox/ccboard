@@ -3,6 +3,8 @@ import subprocess
 import threading
 import time
 
+import pytest
+
 from app import hooks, permissions
 from app.config import settings
 
@@ -39,9 +41,65 @@ def test_timeout_falls_back_to_tui(lite_client, projects_dir, fake_tmux, monkeyp
 def test_attached_session_is_not_delayed(lite_client, projects_dir, fake_tmux):
     name = _session(lite_client, projects_dir)
     fake_tmux["sessions"][name]["attached"] = 1
+    fake_tmux["clients"] = [{"session": name, "flags": {"attached", "focused", "UTF-8"}}]       # a full client: a person at the terminal
     t0 = time.monotonic()
     r = _ask(lite_client, name).json()
     assert r["behavior"] is None and r["reason"] == "attached" and time.monotonic() - t0 < 2
+
+
+GRID_ONLY = [{"attached", "focused", "ignore-size"}]                                   # attach -f ignore-size: a quad/dock tile
+RO_ONLY = [{"attached", "focused", "ignore-size", "read-only"}]                         # attach -r sets read-only AND ignore-size
+CONTROL_ONLY = [{"attached", "control-mode"}]
+
+
+@pytest.mark.parametrize("flag_sets", [GRID_ONLY, RO_ONLY, CONTROL_ONLY, GRID_ONLY + RO_ONLY], ids=["grid", "ro", "control", "grid+ro"])
+def test_grid_and_read_only_clients_do_not_short_circuit_remote_approve(lite_client, projects_dir, fake_tmux, monkeypatch, flag_sets):
+    """tmux counts every client in session_attached, but a tile or a read-only view is not someone who can answer the TUI prompt."""
+    monkeypatch.setattr(settings, "approve_timeout", 1.0)
+    name = _session(lite_client, projects_dir)
+    fake_tmux["sessions"][name]["attached"] = len(flag_sets)
+    fake_tmux["clients"] = [{"session": name, "flags": f} for f in flag_sets]
+    r = _ask(lite_client, name).json()
+    assert r["behavior"] is None and r["reason"] == "timeout", "waited for a remote answer instead of 'attached'"
+    st = lite_client.get("/api/state", headers=H).json()
+    assert st["pending_permissions"] == [], "the timed-out request is expired, not left pending"
+
+
+def test_a_full_client_short_circuits_even_next_to_tiles_but_not_on_another_session(lite_client, projects_dir, fake_tmux, monkeypatch):
+    monkeypatch.setattr(settings, "approve_timeout", 1.0)
+    name = _session(lite_client, projects_dir)
+    fake_tmux["sessions"][name]["attached"] = 3
+    fake_tmux["clients"] = [{"session": name, "flags": f} for f in GRID_ONLY + RO_ONLY] + [{"session": name, "flags": {"attached"}}]
+    t0 = time.monotonic()
+    assert _ask(lite_client, name).json()["reason"] == "attached" and time.monotonic() - t0 < 2
+    fake_tmux["clients"] = [{"session": "other--x--y", "flags": {"attached"}}]                    # someone else's terminal
+    fake_tmux["sessions"][name]["attached"] = 0
+    assert _ask(lite_client, name).json()["reason"] == "timeout"
+
+
+def test_list_clients_failure_falls_back_to_the_attached_count(lite_client, projects_dir, fake_tmux, monkeypatch):
+    """When in doubt the TUI prompt is shown at once (every client counts), never swallowed behind a remote-approve wait."""
+    monkeypatch.setattr(settings, "approve_timeout", 1.0)
+    name = _session(lite_client, projects_dir)
+    fake_tmux["clients_error"] = True
+    fake_tmux["sessions"][name]["attached"] = 1
+    t0 = time.monotonic()
+    r = _ask(lite_client, name).json()
+    assert r["behavior"] is None and r["reason"] == "attached" and time.monotonic() - t0 < 2
+    fake_tmux["sessions"][name]["attached"] = 0                  # nobody attached and list-clients down: the remote-approve path
+    assert _ask(lite_client, name).json()["reason"] == "timeout"
+
+
+def test_tmux_down_during_the_check_still_answers(lite_client, projects_dir, fake_tmux, monkeypatch):
+    from app import tmux
+    monkeypatch.setattr(settings, "approve_timeout", 1.0)
+    name = _session(lite_client, projects_dir)
+
+    def down(*a, **k):
+        raise tmux.TmuxDown("no server running")
+    monkeypatch.setattr(tmux, "real_clients", down)
+    monkeypatch.setattr(tmux, "list_sessions", down)
+    assert _ask(lite_client, name).json()["reason"] == "timeout"       # not a 503: the hook script would show nothing and Claude its prompt
 
 
 def test_remote_allow_and_deny(lite_client, projects_dir, fake_tmux, monkeypatch):

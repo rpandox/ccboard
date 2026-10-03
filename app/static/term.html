@@ -22,36 +22,34 @@
 <link rel="stylesheet" href="/static/term.css">
 </head>
 <body class="term bp5-dark">
-<div id="termbar">
-  <a class="bp5-button bp5-minimal" href="/" id="back"><span class="bp5-icon bp5-icon-chevron-left"></span><span class="bp5-button-text">board</span></a>
-  <span id="termname" class="name"></span>
-  <span id="termstate" class="dim"></span>
-  <span id="termmsg" class="dim"></span>
-</div>
-<iframe id="tty" title="terminal" allow="clipboard-write"></iframe>
-<div id="keys">
-  <div class="row keys">
-    <button class="bp5-button" data-key="Escape">Esc</button>
-    <button class="bp5-button" data-key="C-c">Ctrl-C</button>
-    <button class="bp5-button" data-key="Tab">Tab</button>
-    <button class="bp5-button" data-key="Up">↑</button>
-    <button class="bp5-button" data-key="Down">↓</button>
-    <button class="bp5-button" data-key="Left">←</button>
-    <button class="bp5-button" data-key="Right">→</button>
-    <button class="bp5-button" data-key="BSpace">⌫</button>
-    <button class="bp5-button" data-text="y" data-enter="1">y ⏎</button>
-    <button class="bp5-button" data-key="Enter">Enter</button>
+<!-- Skeleton only: term.js fills the header, the strip, the rail, the key bar and the quick replies with el() (no inline styles, no handlers). -->
+<header id="termhead">
+  <a id="back" class="bp5-button bp5-minimal" href="/#/agents" aria-label="Back" title="Back"><span class="bp5-icon bp5-icon-chevron-left" aria-hidden="true"></span></a>
+  <div id="headid"></div>
+  <div id="headtools"></div>
+</header>
+<div id="termmain">
+  <section id="ctxstrip" class="hidden" aria-label="Task and prompt"></section>
+  <div id="ttywrap">
+    <iframe id="tty" title="terminal" allow="clipboard-write"></iframe>
+    <div id="rail" role="toolbar" aria-label="Scroll the terminal"></div>
+    <button id="histchip" class="bp5-button chip-history hidden" type="button" aria-label="Leave history and go live" title="Leave history">History</button>
   </div>
-  <div class="row quick" id="quick"></div>
-  <form class="row send" id="sendform">
-    <textarea id="sendtext" class="composer" rows="1" placeholder="type · Enter sends · ↵ new line" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="send"></textarea>
+  <div id="keyhost"></div>
+  <div id="quickrow">
+    <div id="quick"></div>
+    <div id="qtools"></div>
+  </div>
+  <form id="sendform" autocomplete="off">
+    <textarea id="sendtext" class="composer" rows="1" placeholder="send" aria-label="Send to the terminal" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="send"></textarea>
     <button class="bp5-button nl" type="button" id="nl" title="newline (Shift+Enter)" aria-label="insert newline">↵</button>
-    <button class="bp5-button bp5-intent-primary" type="submit">Send</button>
-    <button class="bp5-button" type="button" id="editquick" title="edit quick replies"><span class="bp5-icon bp5-icon-edit"></span></button>
+    <button class="bp5-button bp5-intent-primary" type="submit" id="sendbtn">Send</button>
   </form>
 </div>
+<div id="toasts" role="status" aria-live="polite"></div>
 <script src="/static/core.js"></script>
 <script src="/static/components.js"></script>
+<script src="/static/termkit.js"></script>
 <script src="/static/term.js"></script>
 </body>
 </html>
