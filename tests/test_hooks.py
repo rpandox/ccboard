@@ -1007,7 +1007,9 @@ def test_hooks_status_reports_the_new_event_set(session, tmp_path):
     assert len(st["events"]) == 15
 
 
-def test_child_sessions_are_not_the_row(lite_client, projects_dir, fake_tmux):
+def test_child_sessions_are_not_the_row(lite_client, projects_dir, fake_tmux, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")        # CI has no claude: a session create needs one
     """A nested claude (CLAUDE_CODE_CHILD_SESSION=1: claude-mem's observer, a workflow or SDK subagent) inherits CCBOARD_SESSION and
     TMUX_PANE from the parent; on ubu2 the observer's SessionStart/Stop landed on the user's row. X-CCBoard-Child: 1 makes apply
     ignore the event unless the session_id is the row's own."""
@@ -1053,6 +1055,7 @@ def test_a_board_permission_sets_the_wait_kind_the_tool_batch_clears(lite_client
     otherwise a prompt answered in the TUI never leaves 'needs you' (the PostToolBatch flip keys on that flag)."""
     import threading, time
     from app.config import settings
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")        # CI has no claude: a session create needs one
     git_init(projects_dir / "shop" / "api")
     r = lite_client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude"}).json()
     name = r["tmux"]
