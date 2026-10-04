@@ -25,7 +25,8 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agents, backup, claude_auth, clonequeue, cost, deploy, doctor, github, gitops, health, hooks, notify, permissions, previews, projects, prpoll, push, recover, samples, scheduler, search, tasks, tmux, tree, usage, usage_summary
+from . import agents, backup, claude_auth, clonequeue, cost, deploy, doctor, github, gitops, health, hooks, memory, notify, permissions, previews, projects, prpoll, push, recover, samples, scheduler, search, tasks, tmux, tree, usage, usage_summary
+from .agents import monitor as mem_monitor
 from .agents import registry
 from .agents.base import LaunchReq
 from .agents.claude import BYPASS_PARTS, OVERRIDE_PARTS
@@ -115,6 +116,10 @@ async def lifespan(app: FastAPI):
     cloner.start()
     prp = prpoll.Poller(db, projects.repo_path)
     prp.start()
+    mem_mon = None
+    if settings.claude_mem:                               # claude-mem health: kv mem_health every 20 s (CCBOARD_CLAUDE_MEM=0 skips it)
+        mem_mon = mem_monitor.Monitor(db)
+        mem_mon.start()
     global indexer, sched
     indexer = search.Indexer(db)
     indexer.start()
@@ -145,6 +150,8 @@ async def lifespan(app: FastAPI):
     sampler.stop()
     cloner.stop.set()
     prp.stop.set()
+    if mem_mon:
+        mem_mon.stop.set()
     indexer.stop.set()
     sched_worker.stop.set()
     if hub:
@@ -442,6 +449,7 @@ def build_state(user: str) -> dict:
     st["clone_queue"] = clonequeue.status()
     st["last_recovery"] = db.kv_get("last_recovery")
     st["deploy"] = deploy.view(db)                        # an update waiting for the terminals to close (None when nothing is pending)
+    st["memory"] = memory.state_view(db)                  # claude-mem worker health as the monitor last saw it (None: off, or not sampled yet)
     st["usage"] = db.kv_get("rate_limits")
     st["block"] = db.kv_get(usage.KV_BLOCK)
     st["cost"] = db.kv_get(cost.KV_COST)

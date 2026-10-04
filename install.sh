@@ -11,7 +11,7 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE=/etc/ccboard/env
-ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT PREVIEW_HTTPS_BASE CCBOARD_NODE_NAME CCBOARD_HUB_TOKEN CCBOARD_NODES CCBOARD_RESTIC_REPO CCBOARD_RESTIC_PASSWORD_FILE CCBOARD_BACKUP_PUSH CCBOARD_BACKUP_ONCALENDAR CCBOARD_BACKUP_EXTRA CCBOARD_RUNTIME CCBOARD_AUTO_CONTINUE)
+ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT PREVIEW_HTTPS_BASE CCBOARD_NODE_NAME CCBOARD_HUB_TOKEN CCBOARD_NODES CCBOARD_RESTIC_REPO CCBOARD_RESTIC_PASSWORD_FILE CCBOARD_BACKUP_PUSH CCBOARD_BACKUP_ONCALENDAR CCBOARD_BACKUP_EXTRA CCBOARD_RUNTIME CCBOARD_AUTO_CONTINUE CCBOARD_CLAUDE_MEM CCBOARD_MEM_PORT CCBOARD_MEM_SERVICE)
 TTYD_VERSION=1.7.7
 TTYD_SHA_amd64=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
 TTYD_SHA_arm64=b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165
@@ -88,6 +88,10 @@ if [ -z "${CCBOARD_HUB_TOKEN:-}" ]; then CCBOARD_HUB_TOKEN=$(python3 -c 'import 
 : "${CCBOARD_BACKUP_PUSH:=1}"
 : "${CCBOARD_BACKUP_ONCALENDAR:=*-*-* 02:30:00}"
 : "${CCBOARD_RUNTIME:=systemd}"        # systemd = the board is ccboard.service; docker = the board is a container
+: "${CCBOARD_AUTO_CONTINUE:=1}"         # the app reads an empty value as 1; the env file below needs every ENV_KEYS name bound (set -u)
+: "${CCBOARD_CLAUDE_MEM:=1}"           # 1 = verify/install the claude-mem plugin and let the board watch its worker; 0 = neither
+: "${CCBOARD_MEM_PORT:=}"              # empty = the board finds the worker's port itself (worker.pid, then claude-mem's settings)
+: "${CCBOARD_MEM_SERVICE:=0}"          # 1 = run the worker as ccboard-mem.service from a clean environment (off until verified on the box)
 systemd-analyze calendar "$CCBOARD_BACKUP_ONCALENDAR" >/dev/null 2>&1 || die "CCBOARD_BACKUP_ONCALENDAR is not a systemd calendar spec: $CCBOARD_BACKUP_ONCALENDAR"
 [[ "$PREVIEW_HTTPS_BASE" =~ ^[0-9]{1,5}$ ]] || die "PREVIEW_HTTPS_BASE must be a port number"
 [[ "$CCBOARD_APPROVE_TIMEOUT" =~ ^[0-9]{1,4}$ ]] || die "CCBOARD_APPROVE_TIMEOUT must be seconds"
@@ -101,6 +105,9 @@ done
   || die "CCBOARD_PORT, TTYD_PORT and CODE_SERVER_PORT must all differ"
 [[ "$PROJECTS_DIR" = /* ]] || die "PROJECTS_DIR must be an absolute path"
 case "$CCBOARD_RUNTIME" in systemd|docker) ;; *) die "CCBOARD_RUNTIME must be systemd or docker (got '$CCBOARD_RUNTIME')";; esac
+case "$CCBOARD_CLAUDE_MEM" in 0|1) ;; *) die "CCBOARD_CLAUDE_MEM must be 0 or 1 (got '$CCBOARD_CLAUDE_MEM')";; esac
+case "$CCBOARD_MEM_SERVICE" in 0|1) ;; *) die "CCBOARD_MEM_SERVICE must be 0 or 1 (got '$CCBOARD_MEM_SERVICE')";; esac
+[ -z "$CCBOARD_MEM_PORT" ] || [[ "$CCBOARD_MEM_PORT" =~ ^[0-9]{1,5}$ ]] || die "CCBOARD_MEM_PORT must be empty or a port number (got '$CCBOARD_MEM_PORT')"
 CCBOARD_ALLOWED_USERS=$(printf '%s' "$CCBOARD_ALLOWED_USERS" | tr -d '[:space:]')
 for k in PROJECTS_DIR CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_ALLOWED_USERS; do
   case "${!k}" in *[[:space:]\"\$\\]*) die "$k must not contain whitespace, quotes, \$ or backslashes (got '${!k}')";; esac
@@ -406,6 +413,132 @@ else
   curl -fsSL https://claude.ai/install.sh | bash
 fi
 
+# ---------------------------------------------------------------- claude-mem (the plugin; the clean-environment worker unit is set up with the other units)
+# CCBOARD_CLAUDE_MEM=0 skips all of it. The plugin is a Claude Code plugin (claude-mem@thedotmack) that runs one worker per box;
+# the board only reads it. Never installed here: bun (the plugin looks for it and installs nothing itself) and anything for Codex.
+# Nothing in this block may fail the install: both entry points return 0 on a miss and their call sites end in `|| warn`.
+# The functions between the two marker lines are exercised on their own by tests/test_install_mem.py (stubbed sudo and systemctl).
+# >>> claude-mem helpers
+MEM_PLUGIN_KEY="claude-mem@thedotmack"
+MEM_UNIT_DIR=/etc/systemd/system
+MEM_SETTLE=3
+
+mem_timeout() { if have timeout; then timeout "$@"; else shift; "$@"; fi; }
+
+mem_plugin_state() { # "<version> enabled|disabled", or "missing" when installed_plugins.json has no claude-mem@thedotmack entry
+  python3 - "${CLAUDE_CONFIG_DIR:-$HOME_DIR/.claude}" "$MEM_PLUGIN_KEY" <<'PY' 2>/dev/null || echo missing
+import json, os, sys
+cfg, key = sys.argv[1:3]
+def load(name):
+    try:
+        with open(os.path.join(cfg, name)) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+entries = (load("plugins/installed_plugins.json").get("plugins") or {}).get(key) or []
+if not entries:
+    print("missing")
+else:
+    off = (load("settings.json").get("enabledPlugins") or {}).get(key) is False
+    print("%s %s" % (entries[0].get("version") or "?", "disabled" if off else "enabled"))
+PY
+}
+
+mem_plugin_step() {
+  local st claude="" ver en out
+  if [ "$CCBOARD_CLAUDE_MEM" = 0 ]; then note "skipped (CCBOARD_CLAUDE_MEM=0)"; return 0; fi
+  st=$(mem_plugin_state)
+  if [ "$st" = missing ]; then
+    if have claude; then claude=$(command -v claude); elif [ -x "$HOME_DIR/.local/bin/claude" ]; then claude="$HOME_DIR/.local/bin/claude"; fi
+    note "the claude-mem plugin is not installed; installing it with:"
+    note "  claude plugin marketplace add thedotmack/claude-mem"
+    note "  claude plugin install $MEM_PLUGIN_KEY"
+    if [ -z "$claude" ]; then warn "claude is not available; run the two commands above by hand"; return 0; fi
+    # not chained with &&: a marketplace that is already added may answer with an error, and the install is what counts
+    mem_timeout 300 "$claude" plugin marketplace add thedotmack/claude-mem || note "marketplace add reported an error (continuing with the install)"
+    mem_timeout 300 "$claude" plugin install "$MEM_PLUGIN_KEY" || warn "claude plugin install $MEM_PLUGIN_KEY failed (it needs github.com); run it by hand"
+    st=$(mem_plugin_state)
+    if [ "$st" = missing ]; then
+      warn "claude-mem is still not in installed_plugins.json; the board's doctor will say so"
+      return 0
+    fi
+    read -r ver en <<<"$st"
+    note "installed claude-mem $ver; Claude sessions that are already open load its hooks when they next start"
+  else
+    read -r ver en <<<"$st"
+    note "present: claude-mem $ver ($en)"
+  fi
+  if [ "$en" = disabled ]; then warn "claude-mem is disabled for Claude; enable it with: claude plugin enable $MEM_PLUGIN_KEY"; fi
+  # the worker needs bun, which the plugin finds (or does not) by itself; say so now rather than in a silent memory gap
+  if out=$(sh "$APP_DIR/bin/ccboard-mem-run" --print 2>&1); then
+    note "worker runtime: $(printf '%s\n' "$out" | sed -n 's/^bun=//p')"
+  else
+    warn "the claude-mem worker cannot be launched on this box yet: ${out#ccboard-mem-run: }"
+  fi
+  return 0
+}
+
+mem_autostart_hint() { # $1 unit, $2 bun, $3 worker script, $4 data dir. Printed only: ccboard never writes ~/.claude-mem/settings.json
+  note "a plugin update can undo this: the first hook after it sees a worker of the old version, kills it and starts one of its own"
+  note "(with that hook's environment, so the leak is back). Recover the same way: $2 $3 stop, then sudo systemctl start $1"
+  note "Optional, your decision: \"CLAUDE_MEM_WORKER_AUTOSTART\": \"false\" in $4/settings.json (plugin 13.29.0) keeps hooks from"
+  note "starting or replacing a worker. Then only $1 starts one, and the doctor's memory-worker check is what tells you when it is down."
+}
+
+mem_service_setup() { # after the other units are enabled: ccboard-mem.service on (CCBOARD_MEM_SERVICE=1) or off
+  local u=ccboard-mem.service unit out bun worker data wpid main changed=0 tmp
+  unit="$MEM_UNIT_DIR/$u"
+  if [ "$CCBOARD_CLAUDE_MEM" != 1 ] || [ "$CCBOARD_MEM_SERVICE" != 1 ]; then
+    if [ -f "$unit" ] && { systemctl is-enabled --quiet "$u" 2>/dev/null || systemctl is-active --quiet "$u" 2>/dev/null; }; then
+      sudo systemctl disable --now "$u" >/dev/null 2>&1 || warn "could not disable $u"
+      note "$u disabled: the claude-mem worker is started by Claude's hooks again (the unit file stays)"
+    elif [ "$CCBOARD_CLAUDE_MEM" = 1 ]; then
+      note "$u is off (CCBOARD_MEM_SERVICE=1 runs the worker from a clean environment; see the README)"
+    fi
+    return 0
+  fi
+  if ! out=$(sh "$APP_DIR/bin/ccboard-mem-run" --print 2>&1); then
+    warn "$u not installed: ${out#ccboard-mem-run: }"
+    return 0
+  fi
+  bun=$(printf '%s\n' "$out" | sed -n 's/^bun=//p'); worker=$(printf '%s\n' "$out" | sed -n 's/^worker=//p')
+  # the unit runs the launcher from APP_BIN: the checkout's bin/ in systemd mode, the data dir's copy in docker mode
+  if [ "$APP_BIN" != "$APP_DIR/bin" ]; then install -m 0755 "$APP_DIR/bin/ccboard-mem-run" "$APP_BIN/ccboard-mem-run"
+  else chmod 0755 "$APP_BIN/ccboard-mem-run"; fi
+  tmp=$(mktemp); render_unit "$u" > "$tmp"
+  if ! cmp -s "$tmp" "$unit"; then sudo install -m 0644 "$tmp" "$unit"; changed=1; note "wrote $unit"; fi
+  rm -f "$tmp"
+  sudo systemctl daemon-reload
+  sudo systemctl enable "$u" >/dev/null
+  # Two workers must never race on worker.pid. A worker a hook started (it carries that session's environment, which is what
+  # this unit is for) keeps running and makes a second one exit at once, so it is handed over by hand, not killed here.
+  data=${CLAUDE_MEM_DATA_DIR:-$HOME_DIR/.claude-mem}
+  wpid=$(python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1])).get("pid") or 0))' "$data/worker.pid" 2>/dev/null || echo 0)
+  main=$(systemctl show -p MainPID --value "$u" 2>/dev/null || echo 0)
+  if [ "${wpid:-0}" -gt 0 ] && kill -0 "$wpid" 2>/dev/null && [ "$wpid" != "${main:-0}" ]; then
+    warn "a claude-mem worker started by a hook is running (pid $wpid): $u is enabled for the next boot but not started"
+    note "hand over when no session is mid-turn:"
+    note "  $bun $worker stop"
+    note "  sudo systemctl start $u"
+    note "  tr '\\0' '\\n' < /proc/\$(systemctl show -p MainPID --value $u)/environ | grep -c '^CCBOARD_SESSION='    # expect 0"
+    mem_autostart_hint "$u" "$bun" "$worker" "$data"
+    return 0
+  fi
+  if [ "$changed" = 1 ] && systemctl is-active --quiet "$u" 2>/dev/null; then sudo systemctl restart "$u"; else sudo systemctl start "$u"; fi
+  sleep "$MEM_SETTLE"
+  if systemctl is-active --quiet "$u" 2>/dev/null; then
+    note "$u running (worker pid $(systemctl show -p MainPID --value "$u" 2>/dev/null || echo '?'))"
+    mem_autostart_hint "$u" "$bun" "$worker" "$data"
+  else
+    warn "$u is not running: journalctl -u ccboard-mem -n 30. A worker a hook started in the meantime would be the cause (see the README, claude-mem)"
+  fi
+  return 0
+}
+# <<< claude-mem helpers
+
+log "claude-mem"
+mem_plugin_step || warn "the claude-mem step failed; the rest of the install goes on"
+
 # ---------------------------------------------------------------- ntfy (push notifications on the tailnet)
 log "ntfy"
 if [ "${CCBOARD_NTFY:-1}" = 0 ]; then
@@ -608,6 +741,8 @@ if [ "${CCBOARD_BACKUP:-1}" = 0 ]; then
 else
   sudo systemctl enable --now ccboard-backup.timer >/dev/null
 fi
+# claude-mem worker as a unit of its own, from a clean environment (CCBOARD_MEM_SERVICE=1; both runtimes: it is a host process)
+mem_service_setup || warn "the ccboard-mem.service step failed; the rest of the install goes on"
 # tmux.conf, live: the server read it at its start, so a changed file needs source-file to take effect. Only when the server is up
 # (-N: never start one; ccboard-tmux.service owns it and is never restarted here), and a failure only warns: the options are
 # idempotent and the next start of the server reads the file anyway. Sessions are untouched.

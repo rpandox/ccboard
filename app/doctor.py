@@ -10,7 +10,8 @@ Rules every check follows: one line of detail, never a secret (versions are pars
 `gh auth status` is judged by its exit code only; settings.json and credential files are never quoted), every subprocess
 goes through _run() (timeout; a missing binary is a 'fail' with an install fix). Later phases add checks with
 register() (one check) or register_provider() (a function returning several finished checks, which is the shape of
-Agent.doctor_checks() in app/agents/base.py); Check.to_dict() is the record they produce.
+Agent.doctor_checks() in app/agents/base.py); Check.to_dict() is the record they produce. The `memory` group (claude-mem, v0.5.10)
+is such a provider, memory_checks(): one probe of the worker (app/memory.py) feeds seven checks, and registering it adds the group.
 """
 from __future__ import annotations
 
@@ -32,10 +33,10 @@ from pathlib import Path
 from typing import Callable, NamedTuple
 from urllib.parse import urlsplit
 
-from . import claude_auth, push, tmux
+from . import claude_auth, memory, projects, push, tmux
 from .config import settings
 
-GROUPS = ["box", "claude", "notify", "terminal"]
+GROUPS = ["box", "claude", "notify", "terminal"]   # register()/register_provider() append the others (memory, later codex)
 STATUSES = ("pass", "warn", "fail", "skip")
 CHECK_TIMEOUT = 5.0       # hard cap per check; the answer for a slower one is 'warn: timed out'
 CACHE_TTL = 20.0
@@ -554,6 +555,206 @@ def _c_claude_hooks(db) -> Outcome:
     return _pass(f"hooks for {len(ours)} events and the statusLine are installed")
 
 
+# ------------------------------------------------------------------ memory checks (claude-mem)
+
+MEM_GROUP = "memory"
+MEM_QUEUE_WARN = 200              # queued observations above this: the observer is behind
+MEM_ERROR_WINDOW = 3600.0         # a provider error newer than this (seconds) is a warning
+MEM_BUN_DIRS = ("/usr/local/bin", "/opt/homebrew/bin", "/home/linuxbrew/.linuxbrew/bin", "/usr/bin", "/snap/bin")   # = bin/ccboard-mem-run
+MEM_PLUGIN_ADD = "claude plugin marketplace add thedotmack/claude-mem && claude plugin install claude-mem@thedotmack"
+MEM_BEHIND = "the observer is behind: it shares your Claude subscription window"
+MEM_IDS = (("memory-plugin", "claude-mem plugin"), ("memory-worker", "claude-mem worker"), ("memory-queue", "Observer queue"),
+           ("memory-error", "Observer provider errors"), ("memory-projects", "Project keys"), ("memory-env", "Worker environment"),
+           ("memory-bun", "bun runtime"))
+_MEM_PORT_SOURCE = {"env": "CCBOARD_MEM_PORT", "worker.pid": "worker.pid", "settings": "settings.json", "default": "default"}
+
+
+def _mem_where(h: dict) -> str:
+    return f"127.0.0.1:{h.get('port')} ({_MEM_PORT_SOURCE.get(h.get('port_source'), '?')})"
+
+
+def _ago(seconds: float) -> str:
+    s = int(max(0.0, seconds))
+    return f"{s // 3600} h {s % 3600 // 60} min" if s >= 3600 else f"{s // 60} min" if s >= 120 else f"{s} s"
+
+
+def _mem_plugin(db, ctx: dict) -> Outcome:
+    pl = ctx["plugin"] = memory.plugin_status()
+    if not pl["installed"]:
+        return _warn("the claude-mem plugin is not installed, so Claude sessions keep no memory",
+                     fix("Install the plugin for Claude (the installer does this too)", MEM_PLUGIN_ADD))
+    ver = f" {pl['version']}" if pl["version"] else ""
+    if pl["enabled"] is False:
+        return _warn(f"claude-mem{ver} is installed but disabled in Claude's settings",
+                     fix("Enable the plugin", f"claude plugin enable {memory.PLUGIN_KEY}"))
+    return _pass(f"claude-mem{ver} installed" + (" and enabled" if pl["enabled"] else ""))
+
+
+def _mem_health(ctx: dict) -> dict:
+    if "health" not in ctx:
+        ctx["health"] = memory.health()
+    return ctx["health"]
+
+
+def _mem_worker(db, ctx: dict) -> Outcome:
+    h = _mem_health(ctx)
+    where = _mem_where(h)
+    if h["state"] == "up":
+        bits = [f"claude-mem {h['version']}" if h.get("version") else "claude-mem", f"is up on {where}"]
+        tail = f"{h['observations']:,} observations" if isinstance(h.get("observations"), int) else ""
+        return _pass(" ".join(bits) + (f", {tail}" if tail else ""))
+    if h["state"] == "degraded":
+        return _warn(f"{where}: {h.get('reason') or 'the worker is not answering'}",
+                     fix("Give it a minute; if it stays stuck, stop the worker (its pid is in ~/.claude-mem/worker.pid) and start any Claude session"))
+    return _warn(f"no worker on {where}: {h.get('reason') or 'connection refused'}",
+                 fix("Start any Claude session: the plugin's hooks start the worker. With CLAUDE_MEM_WORKER_AUTOSTART=false only ccboard-mem.service "
+                     "does: systemctl status ccboard-mem"))
+
+
+def _mem_queue(db, ctx: dict) -> Outcome:
+    h = _mem_health(ctx)
+    if h["state"] != "up":
+        return _skip("the worker is not up")
+    depth = h.get("queue_depth")
+    if depth is None:
+        return _pass("the worker does not report a queue depth")
+    busy = ", processing" if h.get("processing") else ", idle"
+    if depth > MEM_QUEUE_WARN:
+        return _warn(f"{depth:,} observations are queued{busy}; {MEM_BEHIND}",
+                     fix("Let it drain, or stop the worker while you need the whole window; it starts again with the next session"))
+    return _pass(f"{depth:,} observation{'s' if depth != 1 else ''} queued{busy}")
+
+
+def _mem_time(v) -> datetime | None:
+    """An ISO time as an aware UTC datetime, or None for anything else."""
+    try:
+        t = datetime.fromisoformat(str(v).replace("Z", "+00:00")) if v else None
+    except ValueError:
+        return None
+    return t.replace(tzinfo=timezone.utc) if t is not None and t.tzinfo is None else t
+
+
+def _mem_error(db, ctx: dict) -> Outcome:
+    e = _mem_health(ctx).get("last_error")
+    if not e:
+        return _pass("no observer provider error recorded")
+    at = _mem_time(e.get("at"))
+    if at is None:
+        return _pass("an observer provider error is on record, without a time")
+    age = max(0.0, (_utcnow() - at).total_seconds())
+    who = f" ({e['provider']})" if e.get("provider") else ""
+    if age > MEM_ERROR_WINDOW:
+        return _pass(f"the last observer provider error was {_ago(age)} ago{who}")
+    # a transient error the observer has since got past is not a problem: no failures counted now and a success after the error
+    ok = _mem_time(e.get("last_success_at"))
+    if not e.get("failures") and ok is not None and ok >= at:
+        return _pass(f"the observer's provider failed {_ago(age)} ago{who} and has recovered (a success followed)")
+    still = " and is still failing" if e.get("failures") else ""
+    return _warn(f"the observer's provider failed {_ago(age)} ago{who}{still}: {e.get('message') or 'no message'}",
+                 fix("The observer uses your Claude subscription and retries once the allowance is back; nothing to do unless it keeps failing"))
+
+
+def _repo_dirs_by_name() -> dict[str, list[str]]:
+    """claude-mem keys memories by the folder name a session starts in: basename -> ['project/repo', ...] for every folder
+    under PROJECTS_DIR that scan() lists as a repo. Cheap on purpose (no git): a doctor check has 5 s."""
+    out: dict[str, list[str]] = {}
+    for pdir in projects._subdirs(Path(settings.projects_dir)):
+        repos = [pdir] if projects.is_repo(pdir) else [c for c in projects._subdirs(pdir) if c.name != projects.ROOT]
+        for r in repos:
+            out.setdefault(r.name, []).append(pdir.name if r == pdir else f"{pdir.name}/{r.name}")
+    return out
+
+
+def _mem_projects(db, ctx: dict) -> Outcome:
+    if not Path(settings.projects_dir).is_dir():
+        return _skip("the projects directory does not exist")
+    dup = {k: v for k, v in _repo_dirs_by_name().items() if len(v) > 1}
+    if not dup:
+        return _pass("every repo has its own claude-mem project key")
+    shown = "; ".join(f"'{k}' = {' and '.join(v[:3])}" for k, v in sorted(dup.items())[:2])
+    more = f" (+{len(dup) - 2} more)" if len(dup) > 2 else ""
+    return _warn(f"repos that share a folder name share one claude-mem project, so their memories merge: {shown}{more}",
+                 fix("Rename one folder of each pair (claude-mem keys memories by the folder name)"))
+
+
+def _mem_env(db, ctx: dict) -> Outcome:
+    h = _mem_health(ctx)
+    pid = h.get("pid")
+    if not pid:
+        return _skip("no worker process to inspect")
+    leaks = memory.env_leaks(pid)
+    if leaks is None:
+        return _skip("could not read the worker's environment (another user's process, or no /proc here)")
+    if leaks:
+        return _warn(f"the memory worker inherited a session's environment; install ccboard-mem.service (it holds {', '.join(leaks)})",
+                     fix("Install the unit, then hand over: the plugin's `worker-service.cjs stop`, then `sudo systemctl start ccboard-mem`. "
+                         "An update undoes it unless CLAUDE_MEM_WORKER_AUTOSTART=false (README, claude-mem)",
+                         "CCBOARD_MEM_SERVICE=1 ./install.sh"))
+    return _pass("the worker's environment holds no ccboard session variables")
+
+
+def _executable(p) -> bool:      # patched by tests (a dev box has a real bun in /usr/local/bin)
+    return bool(p) and os.path.isfile(p) and os.access(p, os.X_OK)
+
+
+def _mem_find_bun() -> tuple[str | None, list[str]]:
+    """(the first bun found, the places looked at): the order of bin/ccboard-mem-run, which follows the plugin's own search
+    (CCBOARD_MEM_BUN is the launcher's override; the plugin reads BUN, BUN_PATH, BUN_INSTALL, ~/.bun/bin and the system directories)."""
+    env = os.environ
+    first = [env.get("CCBOARD_MEM_BUN"), env.get("BUN"), env.get("BUN_PATH")]
+    if env.get("BUN_INSTALL"):
+        first += [os.path.join(env["BUN_INSTALL"], "bin", "bun"), os.path.join(env["BUN_INSTALL"], "bun")]
+    first.append(str(Path.home() / ".bun" / "bin" / "bun"))
+    raw_dirs = env.get("CCBOARD_MEM_BUN_DIRS")               # set (even empty) replaces the default list, as in the launcher
+    dirs = list(MEM_BUN_DIRS) if raw_dirs is None else raw_dirs.split()
+    where = ["CCBOARD_MEM_BUN", "BUN", "BUN_PATH", "BUN_INSTALL", "~/.bun/bin", *dirs, "PATH"]
+    for p in first:
+        if _executable(p):
+            return p, where
+    for d in dirs:
+        if _executable(os.path.join(d, "bun")):
+            return os.path.join(d, "bun"), where
+    w = _which("bun")
+    return (w if w and os.path.isabs(w) else None), where
+
+
+def _mem_bun(db, ctx: dict) -> Outcome:
+    """The plugin's worker runs on bun and nothing here installs it: bun-runner.js exits 1 ("Bun not found") and the hooks' lazy
+    spawn of a worker refuses without it (plugin 13.29.0). A missing bun only matters while no worker is running."""
+    exe, where = _mem_find_bun()
+    if exe:
+        return _pass(f"bun found at {exe}; the plugin's worker runs on it")
+    if _mem_health(ctx)["state"] != "down":
+        return _pass("bun is not visible from here, but a worker is running, so the plugin found its own (the board may see another filesystem)")
+    return _warn("bun not found and no worker is running, so hooks cannot start one; looked in " + ", ".join(where[4:]),
+                 fix("The plugin runs on bun and installs none: install it (https://bun.sh) or point BUN at it. Also read: BUN_PATH, BUN_INSTALL, "
+                     "and CCBOARD_MEM_BUN for ccboard-mem.service"))
+
+
+_MEM_FNS = {"memory-plugin": _mem_plugin, "memory-worker": _mem_worker, "memory-queue": _mem_queue, "memory-error": _mem_error,
+            "memory-projects": _mem_projects, "memory-env": _mem_env, "memory-bun": _mem_bun}
+
+
+def memory_checks(db) -> list[Check]:
+    """The `memory` group, as one provider: a single probe of the worker feeds every check (a check each probing would be
+    four requests per run). CCBOARD_CLAUDE_MEM=0 skips them all; without the plugin only the plugin check speaks. One check
+    that raises becomes its own warning and never takes the group down."""
+    if not settings.claude_mem:
+        return [Check(cid, MEM_GROUP, label, "skip", "claude-mem is turned off (CCBOARD_CLAUDE_MEM=0)") for cid, label in MEM_IDS]
+    ctx: dict = {}
+    out: list[Check] = []
+    for cid, label in MEM_IDS:
+        if cid != "memory-plugin" and not ctx.get("plugin", {}).get("installed"):
+            out.append(Check(cid, MEM_GROUP, label, "skip", "the claude-mem plugin is not installed"))
+            continue
+        try:
+            st, detail, f = _MEM_FNS[cid](db, ctx)
+        except Exception as e:
+            st, detail, f = "warn", f"check error: {e.__class__.__name__}", None
+        out.append(Check(cid, MEM_GROUP, label, st, detail, f))
+    return out
+
+
 # ------------------------------------------------------------------ registry and runner
 
 CHECKS: list[tuple[str, str, str, Callable]] = []
@@ -600,6 +801,7 @@ for _id, _group, _label, _fn in (
 ):
     register(_id, _group, _label, _fn)
 del _id, _group, _label, _fn
+register_provider("memory", MEM_GROUP, memory_checks)       # claude-mem (v0.5.10): one probe, seven checks
 
 
 def _finish(cid: str, group: str, label: str, status: str, detail, f) -> Check:

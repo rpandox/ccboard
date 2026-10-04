@@ -7,6 +7,7 @@ and settings.claude_bin, and starts from an all-healthy box that tests then brea
 import http.server
 import json
 import os
+import re
 import socket
 import stat
 import subprocess
@@ -979,3 +980,450 @@ def test_hook_events_match_the_installer():
     spec = importlib.util.spec_from_file_location("claude_settings_for_doctor", path)
     mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
     assert set(mod.EVENTS) == set(doctor.HOOK_EVENTS), (sorted(set(mod.EVENTS) ^ set(doctor.HOOK_EVENTS)))
+
+
+# ------------------------------------------------------------------ claude-mem: the `memory` group (v0.5.10)
+#
+# One provider (doctor.memory_checks) runs seven checks off ONE probe. Here memory.health() is canned, the plugin files and /proc are
+# temp files, HOME is a temp dir (so ~/.bun is never looked at); the real probe against a fake worker is in tests/test_memory.py.
+
+IMPORT_PROVIDERS = [p[0] for p in doctor.PROVIDERS]       # captured at import, before the autouse `world` fixture empties them
+IMPORT_GROUPS = list(doctor.GROUPS)
+MEM_BEHIND = "the observer is behind: it shares your Claude subscription window"
+MEM_NOW = datetime(2026, 10, 4, 6, 0, 0, tzinfo=timezone.utc)
+MEM_HEALTHY = {"state": "up", "version": "13.29.0", "port": 37700, "port_source": "worker.pid", "pid": 4242, "observations": 9684,
+               "sessions": 270, "summaries": 170, "db_size": 123456789, "queue_depth": 3, "processing": False, "active_sessions": 1,
+               "last_error": None, "reason": None, "at": "2026-10-04T06:00:00+00:00"}
+
+
+class Mem:
+    def __init__(self, tmp_path):
+        self.health = dict(MEM_HEALTHY)
+        self.calls = 0
+        self.proc = tmp_path / "proc"
+
+    def environ(self, pid, text: bytes):
+        (self.proc / str(pid)).mkdir(parents=True, exist_ok=True)
+        (self.proc / str(pid) / "environ").write_bytes(text)
+
+    def plugin(self, installed=True, enabled=True):
+        d = Path(settings.claude_config_dir) / "plugins"
+        d.mkdir(parents=True, exist_ok=True)
+        plugins = {"claude-mem@thedotmack": [{"scope": "user", "version": "13.29.0"}]} if installed else {}
+        (d / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": plugins}))
+        write_claude_settings(extra={"enabledPlugins": {"claude-mem@thedotmack": enabled}} if enabled is not None else None)
+
+
+@pytest.fixture
+def mem(world, monkeypatch, tmp_path):
+    """The memory group on a healthy box: plugin installed and enabled, worker up with a clean environment, nothing queued."""
+    from copy import deepcopy
+    m = Mem(tmp_path)
+
+    def fake_health(*a, **k):
+        m.calls += 1
+        return deepcopy(m.health)
+    monkeypatch.setattr(doctor.memory, "health", fake_health)
+    monkeypatch.setattr(doctor.memory, "PROC_ROOT", m.proc)
+    monkeypatch.setattr(settings, "claude_mem", True)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    for var in ("CCBOARD_MEM_BUN", "BUN", "BUN_PATH", "BUN_INSTALL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("CCBOARD_MEM_BUN_DIRS", "")                                 # a dev box may have a bun in /usr/local/bin
+    monkeypatch.setattr(doctor, "PROVIDERS", [("memory", "memory", doctor.memory_checks)])
+    monkeypatch.setattr(doctor, "GROUPS", BUILTIN_GROUPS + ["memory"])
+    monkeypatch.setattr(doctor, "_utcnow", lambda: MEM_NOW)
+    m.plugin()
+    m.environ(4242, b"PATH=/usr/bin\0HOME=/home/u\0")
+    return m
+
+
+def mem_report():
+    doctor.invalidate()
+    out = doctor.run("memory", refresh=True)
+    doctor.invalidate()
+    return out, {c["id"]: c for c in out["checks"]}
+
+
+def mc(check_id):
+    return mem_report()[1][check_id]
+
+
+def test_memory_group_is_registered_at_import():
+    assert "memory" in IMPORT_PROVIDERS and "memory" in IMPORT_GROUPS
+    assert [i for i, _ in doctor.MEM_IDS] == ["memory-plugin", "memory-worker", "memory-queue", "memory-error", "memory-projects",
+                                              "memory-env", "memory-bun"]
+
+
+def test_memory_healthy_box_passes_every_check_off_one_probe(mem):
+    out, by = mem_report()
+    assert list(by) == [i for i, _ in doctor.MEM_IDS]
+    assert {c["status"] for c in out["checks"]} == {"pass"} and out["summary"] == {"pass": 7, "warn": 0, "fail": 0, "skip": 0}
+    assert out["ok"] is True and {c["group"] for c in out["checks"]} == {"memory"}
+    assert mem.calls == 1, "seven checks, one probe of the worker"
+    assert by["memory-worker"]["detail"] == "claude-mem 13.29.0 is up on 127.0.0.1:37700 (worker.pid), 9,684 observations"
+    assert by["memory-plugin"]["detail"] == "claude-mem 13.29.0 installed and enabled"
+    for c in out["checks"]:
+        assert c["fix"] is None and 0 < len(c["detail"]) <= doctor.DETAIL_MAX
+
+
+def test_memory_group_is_not_part_of_the_builtin_groups(mem, monkeypatch):
+    monkeypatch.setattr(doctor, "PROVIDERS", [])
+    monkeypatch.setattr(doctor, "GROUPS", list(BUILTIN_GROUPS))
+    doctor.invalidate()
+    assert not any(c["group"] == "memory" for c in doctor.run(refresh=True)["checks"])
+
+
+def test_memory_off_skips_every_check_and_never_probes(mem, monkeypatch):
+    monkeypatch.setattr(settings, "claude_mem", False)
+    out, by = mem_report()
+    assert {c["status"] for c in out["checks"]} == {"skip"} and len(by) == 7
+    assert all("CCBOARD_CLAUDE_MEM=0" in c["detail"] for c in out["checks"]) and mem.calls == 0 and out["ok"] is True
+
+
+def test_memory_plugin_missing_warns_and_the_rest_skip(mem):
+    mem.plugin(installed=False)
+    out, by = mem_report()
+    assert by["memory-plugin"]["status"] == "warn"
+    assert by["memory-plugin"]["fix"]["cmd"] == ("claude plugin marketplace add thedotmack/claude-mem && "
+                                                 "claude plugin install claude-mem@thedotmack")
+    assert {c["status"] for i, c in by.items() if i != "memory-plugin"} == {"skip"}
+    assert mem.calls == 0, "nothing to probe without the plugin"
+    assert out["ok"] is True
+    (Path(settings.claude_config_dir) / "plugins" / "installed_plugins.json").unlink()
+    assert mc("memory-plugin")["status"] == "warn"                                 # no file at all
+
+
+def test_memory_plugin_disabled_and_enable_state_unknown(mem):
+    mem.plugin(enabled=False)
+    c = mc("memory-plugin")
+    assert c["status"] == "warn" and "disabled" in c["detail"] and c["fix"]["cmd"] == "claude plugin enable claude-mem@thedotmack"
+    mem.plugin(enabled=None)
+    c = mc("memory-plugin")
+    assert c["status"] == "pass" and c["detail"] == "claude-mem 13.29.0 installed"
+
+
+def test_memory_worker_states(mem):
+    c = mc("memory-worker")
+    assert c["status"] == "pass"
+    mem.health.update(state="degraded", reason="the port is open but /health did not answer within 2 s")
+    c = mc("memory-worker")
+    assert c["status"] == "warn" and "127.0.0.1:37700 (worker.pid)" in c["detail"] and "did not answer within 2 s" in c["detail"] and c["fix"]
+    mem.health.update(state="down", reason="connection refused (worker.pid is stale or the worker stopped)")
+    c = mc("memory-worker")
+    assert c["status"] == "warn", "down is a hint, never a failure: the worker starts with the first session"
+    assert "no worker on 127.0.0.1:37700 (worker.pid)" in c["detail"] and "stale" in c["detail"] and "first" not in c["detail"]
+    assert "plugin's hooks start the worker" in c["fix"]["text"]
+    assert "CLAUDE_MEM_WORKER_AUTOSTART=false" in c["fix"]["text"] and "ccboard-mem" in c["fix"]["text"], "with that setting only the unit starts one"
+    out, _ = mem_report()
+    assert out["ok"] is True and out["summary"]["fail"] == 0
+
+
+@pytest.mark.parametrize("source,label", [("env", "CCBOARD_MEM_PORT"), ("worker.pid", "worker.pid"), ("settings", "settings.json"), ("default", "default")])
+def test_memory_worker_names_where_the_port_came_from(mem, source, label):
+    mem.health.update(port=37701, port_source=source)
+    assert f"127.0.0.1:37701 ({label})" in mc("memory-worker")["detail"]
+
+
+def test_memory_worker_up_without_numbers(mem):
+    mem.health.update(version=None, observations=None)
+    assert mc("memory-worker")["detail"] == "claude-mem is up on 127.0.0.1:37700 (worker.pid)"
+
+
+@pytest.mark.parametrize("depth,status", [(0, "pass"), (1, "pass"), (200, "pass"), (201, "warn"), (435, "warn")])
+def test_memory_queue_threshold_is_above_200(mem, depth, status):
+    mem.health.update(queue_depth=depth, processing=True)
+    c = mc("memory-queue")
+    assert c["status"] == status
+    if status == "warn":
+        assert MEM_BEHIND in c["detail"] and f"{depth:,}" in c["detail"] and c["fix"]
+    else:
+        assert c["fix"] is None and "queued" in c["detail"]
+
+
+def test_memory_queue_other_states(mem):
+    mem.health.update(queue_depth=None)
+    assert mc("memory-queue")["status"] == "pass"
+    mem.health.update(state="down", queue_depth=None)
+    assert mc("memory-queue")["status"] == "skip"
+    mem.health.update(state="degraded")
+    assert mc("memory-queue")["status"] == "skip"
+    mem.health.update(state="up", queue_depth=1, processing=False)
+    assert mc("memory-queue")["detail"] == "1 observation queued, idle"
+
+
+def err(minutes_ago, **kw):
+    at = (MEM_NOW - timedelta(minutes=minutes_ago)).isoformat(timespec="seconds")
+    return {"at": at, "message": "Provider reported the inference allowance exhausted", "provider": "claude", "failures": 0, **kw}
+
+
+def test_memory_error_within_an_hour_warns(mem):
+    mem.health["last_error"] = err(23)
+    c = mc("memory-error")
+    assert c["status"] == "warn"
+    assert c["detail"] == "the observer's provider failed 23 min ago (claude): Provider reported the inference allowance exhausted"
+    assert c["fix"]
+    mem.health["last_error"] = err(0.5)
+    assert mc("memory-error")["detail"].startswith("the observer's provider failed 30 s ago")
+    mem.health["last_error"] = err(59, failures=4)
+    assert "and is still failing" in mc("memory-error")["detail"]
+    mem.health["last_error"] = err(-5)                                              # a clock a little ahead is "just now", not an error
+    assert mc("memory-error")["status"] == "warn"
+
+
+def ok_at(minutes_ago):
+    return (MEM_NOW - timedelta(minutes=minutes_ago)).isoformat(timespec="seconds")
+
+
+def test_memory_error_the_observer_got_past_is_recovered_not_a_warning(mem):
+    """The real shape on a healthy box: lastErrorAt older than lastSuccessAt and consecutiveFailures 0 (23 min ago: still inside the hour)."""
+    mem.health["last_error"] = err(23, last_success_at=ok_at(10))
+    c = mc("memory-error")
+    assert c["status"] == "pass" and c["fix"] is None
+    assert c["detail"] == "the observer's provider failed 23 min ago (claude) and has recovered (a success followed)"
+    assert "Provider reported" not in c["detail"], "a recovered error does not repeat its message"
+    mem.health["last_error"] = err(23, last_success_at=ok_at(23))              # a success at the error's own time is not earlier than it
+    assert mc("memory-error")["status"] == "pass"
+    mem.health["last_error"] = err(23, last_success_at=ok_at(10).replace("+00:00", "Z"))
+    assert mc("memory-error")["status"] == "pass"
+    mem.health["last_error"] = err(23, last_success_at=ok_at(10).replace("+00:00", ""))   # a naive time is read as UTC
+    assert mc("memory-error")["status"] == "pass"
+    out, by = mem_report()
+    assert out["ok"] is True and by["memory-error"]["status"] == "pass"
+
+
+def test_memory_error_still_warns_without_a_later_success_or_with_failures_counted(mem):
+    mem.health["last_error"] = err(23, last_success_at=ok_at(10), failures=2)  # a success after the error, but it is failing again now
+    c = mc("memory-error")
+    assert c["status"] == "warn" and "and is still failing" in c["detail"] and "Provider reported" in c["detail"] and c["fix"]
+    mem.health["last_error"] = err(23, last_success_at=ok_at(40))              # the last success is earlier than the error
+    assert mc("memory-error")["status"] == "warn"
+    mem.health["last_error"] = err(23, last_success_at=None)                   # no success on record
+    assert mc("memory-error")["status"] == "warn"
+    mem.health["last_error"] = err(23)                                         # no key at all (an older stored value)
+    assert mc("memory-error")["status"] == "warn"
+    mem.health["last_error"] = err(23, last_success_at="garbage")
+    assert mc("memory-error")["status"] == "warn"
+
+
+def test_memory_error_older_than_an_hour_or_absent_passes(mem):
+    mem.health["last_error"] = err(61)
+    c = mc("memory-error")
+    assert c["status"] == "pass" and c["detail"] == "the last observer provider error was 1 h 1 min ago (claude)"
+    mem.health["last_error"] = err(60 * 30)
+    assert mc("memory-error")["status"] == "pass"
+    mem.health["last_error"] = None
+    assert mc("memory-error")["detail"] == "no observer provider error recorded"
+    mem.health["last_error"] = {"at": None, "message": "x", "provider": None, "failures": 0}
+    assert mc("memory-error")["status"] == "pass"
+    mem.health["last_error"] = {"at": "garbage", "message": "x", "provider": None, "failures": 0}
+    assert mc("memory-error")["status"] == "pass"
+
+
+def test_memory_error_is_read_even_when_the_worker_is_down(mem):
+    mem.health.update(state="down", last_error=err(5))
+    assert mc("memory-error")["status"] == "warn"
+
+
+def test_memory_error_message_is_scrubbed_like_every_detail(mem):
+    mem.health["last_error"] = err(5, message="auth failed token=" + "ab" * 40 + " for sk-ant-oat01-SENTINELSENTINEL")
+    c = mc("memory-error")
+    assert "ab" * 20 not in c["detail"] and "sk-ant-oat01-SENTINEL" not in c["detail"] and "[redacted]" in c["detail"]
+
+
+def make_repos(projects_dir, layout):
+    for project, repos in layout.items():
+        for r in repos:
+            (projects_dir / project / r / ".git").mkdir(parents=True)
+
+
+def test_memory_projects_unique_basenames_pass(mem, projects_dir):
+    make_repos(projects_dir, {"acme": ["api", "web"], "petroit": ["backend"]})
+    (projects_dir / "solo" / ".git").mkdir(parents=True)                           # a project folder that is itself the repo
+    c = mc("memory-projects")
+    assert c["status"] == "pass" and c["fix"] is None
+
+
+def test_memory_projects_shared_basename_warns_and_names_both(mem, projects_dir):
+    make_repos(projects_dir, {"acme": ["api", "web"], "petroit": ["api"], "zed": ["web"]})
+    c = mc("memory-projects")
+    assert c["status"] == "warn"
+    assert "'api' = acme/api and petroit/api" in c["detail"] and "'web' = acme/web and zed/web" in c["detail"]
+    assert "memories merge" in c["detail"] and c["fix"]
+
+
+def test_memory_projects_a_single_repo_project_collides_with_a_repo_elsewhere(mem, projects_dir):
+    (projects_dir / "shop" / ".git").mkdir(parents=True)                           # the repo is `shop` (folder = repo)
+    make_repos(projects_dir, {"acme": ["shop"]})
+    c = mc("memory-projects")
+    assert c["status"] == "warn" and "'shop' = acme/shop and shop" in c["detail"]
+
+
+def test_memory_projects_more_than_two_collisions_are_counted(mem, projects_dir):
+    make_repos(projects_dir, {"a": ["x", "y", "z"], "b": ["x", "y", "z"]})
+    c = mc("memory-projects")
+    assert c["status"] == "warn" and "(+1 more)" in c["detail"]
+
+
+def test_memory_projects_ignores_hidden_and_non_directories(mem, projects_dir):
+    make_repos(projects_dir, {"a": ["x"]})
+    (projects_dir / "b").mkdir()
+    (projects_dir / "b" / ".x").mkdir()
+    (projects_dir / "b" / "x").write_text("a file, not a repo")
+    assert mc("memory-projects")["status"] == "pass"
+
+
+def test_memory_projects_needs_the_directory(mem, projects_dir):
+    import shutil
+    shutil.rmtree(projects_dir)
+    assert mc("memory-projects")["status"] == "skip"
+
+
+def test_memory_env_inherited_session_variables_warn_with_the_hint(mem):
+    mem.environ(4242, b"PATH=/usr/bin\0CCBOARD_SESSION=SENTINEL-SESSION-VALUE\0TMUX_PANE=%0\0CLAUDECODE=1\0")
+    out, by = mem_report()
+    c = by["memory-env"]
+    assert c["status"] == "warn"
+    assert "the memory worker inherited a session's environment; install ccboard-mem.service" in c["detail"]
+    assert "CCBOARD_SESSION, TMUX_PANE" in c["detail"] and c["fix"]["cmd"] == "CCBOARD_MEM_SERVICE=1 ./install.sh"
+    ft = c["fix"]["text"]
+    assert "worker-service.cjs stop" in ft and "sudo systemctl start ccboard-mem" in ft and "CLAUDE_MEM_WORKER_AUTOSTART=false" in ft
+    assert len(ft) < doctor.DETAIL_MAX - 1, "the fix text is capped like a detail: nothing of the recovery is cut off"
+    assert "SENTINEL-SESSION-VALUE" not in json.dumps(out), "variable names only, never values"
+    mem.environ(4242, b"PATH=/usr/bin\0TMUX_PANE=%0\0")
+    assert mc("memory-env")["detail"].endswith("(it holds TMUX_PANE)")
+
+
+def test_memory_env_is_fail_soft(mem):
+    mem.health["pid"] = 31337                                                       # no /proc/31337
+    c = mc("memory-env")
+    assert c["status"] == "skip" and "could not read" in c["detail"]
+    mem.health["pid"] = None
+    assert mc("memory-env")["status"] == "skip"
+    mem.environ(4242, b"")
+    mem.health["pid"] = 4242
+    assert mc("memory-env")["status"] == "skip"
+    mem.environ(4242, b"PATH=/x\0")
+    assert mc("memory-env")["status"] == "pass"
+
+
+def test_memory_env_is_checked_for_a_degraded_worker_too(mem):
+    mem.health.update(state="degraded")
+    mem.environ(4242, b"TMUX_PANE=%1\0")
+    assert mc("memory-env")["status"] == "warn"
+
+
+def make_bun(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\n")
+    path.chmod(0o755)
+    return str(path)
+
+
+def test_memory_bun_found_says_the_worker_runs_on_it(mem, world):
+    world.which["bun"] = "/usr/local/bin/bun"
+    c = mc("memory-bun")
+    assert c["status"] == "pass" and c["fix"] is None
+    assert c["detail"] == "bun found at /usr/local/bin/bun; the plugin's worker runs on it"
+    assert "does not need" not in c["detail"] and "bundles" not in c["detail"], "the plugin needs bun (13.29.0 exits 1: Bun not found)"
+
+
+def test_memory_bun_found_in_the_home_dir(mem, tmp_path):
+    exe = make_bun(tmp_path / "home" / ".bun" / "bin" / "bun")
+    assert mc("memory-bun")["detail"] == f"bun found at {exe}; the plugin's worker runs on it"
+
+
+def test_memory_bun_a_file_that_is_not_executable_is_not_a_bun(mem, tmp_path):
+    f = tmp_path / "home" / ".bun" / "bin" / "bun"
+    f.parent.mkdir(parents=True)
+    f.write_text("#!/bin/sh\n")                                                  # mode 644
+    assert mc("memory-bun")["status"] == "pass" and "not visible from here" in mc("memory-bun")["detail"]
+    mem.health.update(state="down")
+    assert mc("memory-bun")["status"] == "warn"
+
+
+def test_memory_bun_looks_where_the_launcher_and_the_plugin_look(mem, tmp_path, monkeypatch):
+    own, env_bun, bun_path = (make_bun(tmp_path / "b" / n / "bun") for n in ("own", "env", "path"))
+    install = tmp_path / "b" / "install"
+    make_bun(install / "bin" / "bun")
+    sysdir = tmp_path / "b" / "sys"
+    make_bun(sysdir / "bun")
+
+    def found():
+        return mc("memory-bun")["detail"].split(" found at ")[1].split(";")[0]
+
+    monkeypatch.setenv("CCBOARD_MEM_BUN", own)
+    monkeypatch.setenv("BUN", env_bun)
+    monkeypatch.setenv("BUN_PATH", bun_path)
+    assert found() == own
+    monkeypatch.delenv("CCBOARD_MEM_BUN")
+    assert found() == env_bun
+    monkeypatch.delenv("BUN")
+    assert found() == bun_path
+    monkeypatch.delenv("BUN_PATH")
+    monkeypatch.setenv("BUN_INSTALL", str(install))
+    assert found() == str(install / "bin" / "bun")
+    (install / "bin" / "bun").unlink()
+    make_bun(install / "bun")
+    assert found() == str(install / "bun")
+    monkeypatch.delenv("BUN_INSTALL")
+    monkeypatch.setenv("CCBOARD_MEM_BUN_DIRS", f"/nonexistent {sysdir}")           # a set list replaces the default one, as in the launcher
+    assert found() == str(sysdir / "bun")
+    monkeypatch.delenv("CCBOARD_MEM_BUN_DIRS")
+    monkeypatch.setattr(doctor, "MEM_BUN_DIRS", (str(sysdir),))                    # unset: the default list
+    assert found() == str(sysdir / "bun")
+
+
+def test_memory_bun_default_dirs_are_the_launchers(mem):
+    src = (Path(__file__).resolve().parents[1] / "bin" / "ccboard-mem-run").read_text()
+    m = re.search(r"CCBOARD_MEM_BUN_DIRS-([^}]+)\}", src)
+    assert m and tuple(m.group(1).split()) == doctor.MEM_BUN_DIRS
+
+
+def test_memory_bun_not_found_with_a_worker_running_is_still_a_pass(mem):
+    for state in ("up", "degraded"):
+        mem.health.update(state=state)
+        c = mc("memory-bun")
+        assert c["status"] == "pass" and c["fix"] is None
+        assert c["detail"].startswith("bun is not visible from here, but a worker is running, so the plugin found its own")
+        assert "bundles" not in c["detail"] and "nothing to do" not in c["detail"]
+
+
+def test_memory_bun_not_found_and_no_worker_warns_and_names_where_it_looked(mem, monkeypatch):
+    monkeypatch.delenv("CCBOARD_MEM_BUN_DIRS")                                     # the default directory list ...
+    monkeypatch.setattr(doctor, "_executable", lambda p: False)                    # ... with no bun in any of it
+    mem.health.update(state="down", reason="connection refused (no worker.pid: the worker starts with the first Claude session)")
+    out, by = mem_report()
+    c = by["memory-bun"]
+    assert c["status"] == "warn" and out["ok"] is True, "a hint, never a failure"
+    assert c["detail"].startswith("bun not found and no worker is running, so hooks cannot start one; looked in ~/.bun/bin, ")
+    for place in ("/usr/local/bin", "/opt/homebrew/bin", "/home/linuxbrew/.linuxbrew/bin", "/usr/bin", "/snap/bin"):
+        assert place in c["detail"], place
+    assert c["detail"].endswith(", PATH")
+    assert "https://bun.sh" in c["fix"]["text"] and "BUN" in c["fix"]["text"] and "installs none" in c["fix"]["text"]
+    assert "bundles" not in c["detail"] + c["fix"]["text"]
+
+
+def test_memory_bun_warning_names_the_directories_actually_searched(mem, monkeypatch):
+    mem.health.update(state="down")
+    monkeypatch.setenv("CCBOARD_MEM_BUN_DIRS", "/opt/mine /srv/tools")
+    assert "~/.bun/bin, /opt/mine, /srv/tools, PATH" in mc("memory-bun")["detail"]
+
+
+def test_memory_a_check_that_raises_does_not_take_the_group_down(mem, monkeypatch):
+    def boom(db, ctx):
+        raise RuntimeError("bug")
+    monkeypatch.setitem(doctor._MEM_FNS, "memory-queue", boom)
+    out, by = mem_report()
+    assert by["memory-queue"]["status"] == "warn" and by["memory-queue"]["detail"] == "check error: RuntimeError"
+    assert by["memory-worker"]["status"] == "pass" and by["memory-bun"]["status"] == "pass" and len(by) == 7
+
+
+def test_memory_group_filter_and_caching(mem):
+    doctor.invalidate()
+    a = doctor.run("memory")
+    b = doctor.run("memory")
+    assert a == b and mem.calls == 1, "cached for 20 s like every group"
+    with pytest.raises(ValueError):
+        doctor.run("nope")
+    doctor.invalidate()

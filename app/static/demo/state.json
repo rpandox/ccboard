@@ -1332,6 +1332,7 @@
     "cap": 3
   },
   "deploy": null,
+  "memory": null,
   "last_recovery": null,
   "usage": {
     "value": {

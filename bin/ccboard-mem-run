@@ -1,0 +1,89 @@
+#!/bin/sh
+# ccboard-mem-run: run claude-mem's worker in the foreground from a clean environment. It is ExecStart of ccboard-mem.service.
+#
+#   ccboard-mem-run            exec <bun> <plugin>/scripts/worker-service.cjs --daemon
+#   ccboard-mem-run --print    print the resolved plugin dir, worker script and bun, then exit (0 = resolvable, 78 = not)
+#
+# --daemon is exactly what the plugin's own `worker-service.cjs start` hands to its detached child (setsid <bun> worker-service.cjs
+# --daemon); run directly it stays in the foreground, so systemd owns the process. Not `bun-runner.js worker-service.cjs --daemon`:
+# bun-runner treats any argument other than start|stop|restart|status as a hook call, and without a stdin payload (systemd gives it
+# /dev/null) it writes ~/.claude-mem/CAPTURE_BROKEN, kills its child and exits 0.
+#
+# Resolved on every start, never at install time: Claude Code replaces the plugin directory on each update (~/.claude/plugins/cache/
+# thedotmack/claude-mem/<version>/) and marks the old one with .orphaned_at.
+#   plugin dir  $CCBOARD_MEM_PLUGIN_DIR, else the newest cached version without .orphaned_at (plain N.N.N before pre-releases)
+#   bun         $CCBOARD_MEM_BUN, $BUN, $BUN_PATH, $BUN_INSTALL/bin/bun, ~/.bun/bin/bun, then $CCBOARD_MEM_BUN_DIRS (default
+#               /usr/local/bin /opt/homebrew/bin /home/linuxbrew/.linuxbrew/bin /usr/bin /snap/bin), then PATH. The plugin looks in
+#               the same places and installs nothing itself, and neither does ccboard.
+# Exit 78 (EX_CONFIG) when the plugin or bun is missing. Override either with `systemctl edit ccboard-mem` (Environment=CCBOARD_MEM_BUN=...).
+#
+# The clean environment: every CCBOARD_* variable and the tmux and Claude Code session markers are dropped before the exec, so the
+# worker (and the observer `claude` sessions it spawns) cannot be mistaken for a board session by the hooks. The plugin's own spawn
+# keeps CCBOARD_SESSION and TMUX_PANE (it strips only CLAUDECODE and CLAUDE_CODE_*), which is how a hook-started worker ends up
+# reporting through a user's row.
+set -u
+
+fail() { printf 'ccboard-mem-run: %s\n' "$*" >&2; exit 78; }
+
+[ -n "${HOME:-}" ] || fail "HOME is not set"
+cache="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/thedotmack/claude-mem"
+
+plugin_root() { # dir -> the directory that holds scripts/worker-service.cjs (the dir itself or its plugin/ subdir, as the hooks check)
+  for p in "$1/plugin" "$1"; do
+    if [ -f "$p/scripts/worker-service.cjs" ]; then printf '%s\n' "$p"; return 0; fi
+  done
+  return 1
+}
+
+newest_cached() { # plain|any -> the newest cached version dir without .orphaned_at
+  [ -d "$cache" ] || return 1
+  for d in "$cache"/[0-9]*; do
+    [ -d "$d" ] || continue
+    [ ! -e "$d/.orphaned_at" ] || continue
+    plugin_root "$d" >/dev/null || continue
+    v=${d##*/}
+    if [ "$1" = plain ]; then case "$v" in *[!0-9.]*) continue;; esac; fi
+    printf '%s %s\n' "$v" "$d"
+  done | sort -V | tail -n 1 | cut -d' ' -f2-
+}
+
+find_bun() {
+  for b in "${CCBOARD_MEM_BUN:-}" "${BUN:-}" "${BUN_PATH:-}" \
+           "${BUN_INSTALL:+$BUN_INSTALL/bin/bun}" "${BUN_INSTALL:+$BUN_INSTALL/bun}" "$HOME/.bun/bin/bun"; do
+    if [ -n "$b" ] && [ -f "$b" ] && [ -x "$b" ]; then printf '%s\n' "$b"; return 0; fi
+  done
+  # shellcheck disable=SC2086 # the directory list is a space separated word list
+  for dir in ${CCBOARD_MEM_BUN_DIRS-/usr/local/bin /opt/homebrew/bin /home/linuxbrew/.linuxbrew/bin /usr/bin /snap/bin}; do
+    if [ -f "$dir/bun" ] && [ -x "$dir/bun" ]; then printf '%s\n' "$dir/bun"; return 0; fi
+  done
+  b=$(command -v bun 2>/dev/null || true)
+  case "$b" in /*) printf '%s\n' "$b"; return 0;; esac
+  return 1
+}
+
+root=
+if [ -n "${CCBOARD_MEM_PLUGIN_DIR:-}" ]; then
+  root=$(plugin_root "$CCBOARD_MEM_PLUGIN_DIR") || fail "CCBOARD_MEM_PLUGIN_DIR=$CCBOARD_MEM_PLUGIN_DIR has no scripts/worker-service.cjs"
+else
+  dir=$(newest_cached plain)
+  [ -n "$dir" ] || dir=$(newest_cached any)
+  [ -n "$dir" ] && root=$(plugin_root "$dir")
+  [ -n "$root" ] || fail "the claude-mem plugin is not installed ($cache has no usable version). Install it: claude plugin marketplace add thedotmack/claude-mem && claude plugin install claude-mem@thedotmack"
+fi
+worker=$root/scripts/worker-service.cjs
+bun=$(find_bun) || fail "bun not found (looked at CCBOARD_MEM_BUN, BUN, BUN_PATH, BUN_INSTALL, ~/.bun/bin, the system directories and PATH). The plugin runs on bun; install it as the plugin documents (https://bun.sh), or set Environment=CCBOARD_MEM_BUN=/path/to/bun with systemctl edit ccboard-mem"
+
+if [ "${1:-}" = --print ]; then
+  printf 'plugin=%s\nworker=%s\nbun=%s\n' "$root" "$worker" "$bun"
+  exit 0
+fi
+
+# clean environment (see the header); the loop reads names only, a value with a newline cannot unset anything it should not
+for v in $(env | sed -n 's/^\(CCBOARD_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
+unset TMUX TMUX_PANE CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION CLAUDE_CODE_ENTRYPOINT MCP_SESSION_ID
+
+# the plugin spawns its worker with the data directory as cwd (and moves there itself when it cannot)
+data=${CLAUDE_MEM_DATA_DIR:-$HOME/.claude-mem}
+mkdir -p "$data" 2>/dev/null || true
+cd "$data" 2>/dev/null || cd "$HOME" || true
+exec "$bun" "$worker" --daemon

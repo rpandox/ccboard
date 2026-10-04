@@ -1,0 +1,37 @@
+[Unit]
+Description=ccboard claude-mem worker, started from a clean environment
+After=network.target
+# Ordering only (no Requires/Wants, so a failed or disabled unit blocks nothing): the worker comes up before the board and the tmux server,
+# which recover the Claude sessions after a boot. A hook of such a session that won the race would start a worker with that session's
+# environment, and this unit's --daemon would then exit 0 and sit inactive. The doctor's memory-env check is the safety net.
+Before=ccboard-tmux.service ccboard.service
+# a worker that cannot boot (exit 78) or a plugin that is not installed must not restart forever
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__HOME__
+Environment=PATH=__HOME__/.bun/bin:__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=__HOME__ LANG=C.UTF-8
+# No EnvironmentFile=/etc/ccboard/env on purpose: it holds CCBOARD_* settings and the hub token, and a worker that carries them
+# hands them to every observer session it spawns. The worker's own settings stay in ~/.claude-mem/settings.json (its port too:
+# the hooks read it there, so the port must not be forced from here).
+# bin/ccboard-mem-run resolves the plugin version and bun on every start (the plugin directory changes with each update), drops
+# every CCBOARD_* variable once more, and execs: bun <plugin>/scripts/worker-service.cjs --daemon (the foreground form of the
+# plugin's own start). The env -u list below is the same clean-up one layer up.
+ExecStart=/usr/bin/env -u CCBOARD_SESSION -u CCBOARD_URL -u CCBOARD_APPROVE_TIMEOUT -u TMUX -u TMUX_PANE -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION __APP_BIN__/ccboard-mem-run
+Restart=on-failure
+RestartSec=5
+# the default KillMode takes the worker's children (chroma-mcp, the observer's claude sessions) down with it
+TimeoutStopSec=20
+# best-effort, a little below interactive work, but never idle: the observer has to keep up with the sessions it watches
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+OOMScoreAdjust=200
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

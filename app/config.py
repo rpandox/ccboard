@@ -69,6 +69,21 @@ class Settings:
         except ValueError:
             self.approve_timeout = 90.0
         self.claude_config_dir = Path(env.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
+        # claude-mem (the memory plugin): 0 skips the installer's plugin step and the health monitor (app/memory.py). The worker's
+        # port is read from its own worker.pid; CCBOARD_MEM_PORT pins it (loopback only, 1-65535, anything else is ignored).
+        self.claude_mem = (env.get("CCBOARD_CLAUDE_MEM") or "1") != "0"
+        self.mem_port = None
+        raw_mem_port = (env.get("CCBOARD_MEM_PORT") or "").strip()
+        if raw_mem_port:
+            try:
+                p = int(raw_mem_port)
+            except ValueError:
+                p = 0
+            if 0 < p < 65536:
+                self.mem_port = p
+            else:
+                log.warning("ignoring CCBOARD_MEM_PORT=%r (not a port number)", raw_mem_port)
+        self.claude_mem_dir = Path(env.get("CLAUDE_MEM_DATA_DIR") or (Path.home() / ".claude-mem"))   # claude-mem's own override
         try:
             self.login_shell = pwd.getpwuid(os.getuid()).pw_shell or "/bin/sh"
         except KeyError:

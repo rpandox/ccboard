@@ -114,6 +114,9 @@ Every setting is an environment variable. Values are remembered in `/etc/ccboard
 | `CCBOARD_RESTIC_PASSWORD_FILE` | `<data dir>/restic-password` | Where the restic password lives |
 | `CCBOARD_RUNTIME` | `systemd` | `systemd` runs the board as `ccboard.service`; `docker` runs it as the `ccboard` container ([below](#run-the-board-as-a-container-optional)). Remembered in `/etc/ccboard/env`; go back with `CCBOARD_RUNTIME=systemd ./install.sh` |
 | `CCBOARD_IMAGE_TAG` | `latest` | Docker mode only, install-time only (kept in the compose `.env`, not in `/etc/ccboard/env`): the `ghcr.io/rpandox/ccboard` tag to run, e.g. `sha-1a2b3c4` or `v0.5.2` to pin; Watchtower follows `latest` only |
+| `CCBOARD_CLAUDE_MEM` | `1` | `1` verifies the claude-mem plugin (installs it when it is missing) and lets the board watch its worker; `0` skips both ([claude-mem](#claude-mem)) |
+| `CCBOARD_MEM_PORT` | empty | Port the board probes for claude-mem's worker. Empty finds it by itself (`~/.claude-mem/worker.pid`, then claude-mem's settings, then the plugin's own default, 37700 plus your uid modulo 100: 37700 on ubu2, 37701 on a Mac). It only tells the board where to look; the worker's own port is `CLAUDE_MEM_WORKER_PORT` in `~/.claude-mem/settings.json` |
+| `CCBOARD_MEM_SERVICE` | `0` | `1` runs the worker as `ccboard-mem.service` from a clean environment; off until it has been verified on the box ([claude-mem](#claude-mem)). Remembered in `/etc/ccboard/env`; `0` disables the unit again |
 
 Tailnet-only `tailscale serve` accepts any HTTPS port. If a chosen port already carries something else (another serve handler or a Funnel), `install.sh` stops and tells you; pick other ports or rerun with `CCBOARD_REPLACE_SERVE=1` to replace that port's handlers. It never runs `tailscale serve reset` and never touches ports you did not name.
 
@@ -134,6 +137,7 @@ CCBOARD_HTTPS_PORT=8443 CODE_HTTPS_PORT=10000 CODE_SERVER_PORT=8081 ./install.sh
 - `tailscale serve --bg`: `/` and `/tty` on `CCBOARD_HTTPS_PORT`, `/` on `CODE_HTTPS_PORT`
 - `restic` from apt, a random restic password in `<data dir>/restic-password` (0600; **copy it somewhere safe**, without it the backups are unreadable), and `ccboard-backup.service` + `.timer`. `sudo systemctl start ccboard-backup` runs one now; `journalctl -u ccboard-backup` has the log. Remote repos need their credentials in `/etc/ccboard/env` (for example `AWS_ACCESS_KEY_ID`; lines you add there by hand survive reruns of `install.sh`) or an ssh key without passphrase for `sftp:`; both the git pushes and restic's own ssh run with `BatchMode=yes` and a connect timeout, so nothing ever prompts. "Back up now" on the board starts the same unit (`systemctl start ccboard-backup`), so a ccboard restart cannot interrupt it; a run that was killed anyway leaves a restic lock, which the next run clears with `restic unlock` before retrying
 
+- the `claude-mem@thedotmack` Claude Code plugin, when it is missing (`CCBOARD_CLAUDE_MEM=0` skips this; bun is never installed) and, only with `CCBOARD_MEM_SERVICE=1`, `ccboard-mem.service` (see [claude-mem](#claude-mem))
 - with `CCBOARD_RUNTIME=docker`: the container instead of `ccboard.service`, plus `ccboard-watchtower`, a compose file under `<data dir>/compose` and `<data dir>/app` for the scripts the host runs (see [Run the board as a container](#run-the-board-as-a-container-optional))
 
 Update: pull or extract the new version into the same directory and rerun `./install.sh`. It restarts only `ccboard` (stateless) unless something else changed. Restarting `ccboard` never touches running Claude sessions, because they live under `ccboard-tmux.service`. `install.sh` also writes `/etc/sudoers.d/ccboard`, which lets your user restart `ccboard` and `ccboard-ttyd` without a password, so code-only updates are `git pull && sudo systemctl restart ccboard` (or `scripts/deploy.sh <host>` from your machine).
@@ -341,6 +345,58 @@ What the installed app adds:
 - **Share target** (Chrome and Edge, desktop and Android): once installed, *ccboard* appears in the system share sheet; sharing a page or a text snippet opens the board with the palette's *send to session* list and the shared text prefilled, so it can go to a session as a prompt. Safari does not support share targets: on iPadOS copy the text and paste it into a session's send box instead.
 - **Fast and never stale**: the app shell is cached by a service worker whose cache name changes with every deploy, vendored fonts and Blueprint are served `immutable`, and an open window reloads itself when the box is updated.
 
+## claude-mem
+
+[claude-mem](https://github.com/thedotmack/claude-mem) is a Claude Code plugin (`claude-mem@thedotmack`) that records what your sessions do and feeds it back to later ones. It runs one **worker** per box: an HTTP service on loopback (port from `CLAUDE_MEM_WORKER_PORT` in `~/.claude-mem/settings.json`, recorded in `~/.claude-mem/worker.pid`) that spawns an observer `claude` session per observed session. The board never writes to it; it reads its health.
+
+**The install step.** `install.sh` looks for the plugin's `claude-mem@thedotmack` key in `~/.claude/plugins/installed_plugins.json`. When it is missing it prints and runs
+
+```sh
+claude plugin marketplace add thedotmack/claude-mem
+claude plugin install claude-mem@thedotmack
+```
+
+(the second runs even if the first answers that the marketplace is already added) and goes on whatever happens: a failure is a warning, never an abort. It warns when the plugin is installed but disabled (`claude plugin enable claude-mem@thedotmack`) and when no `bun` can be found. The plugin's worker runs on bun. In 13.29.0 the plugin only looks for it (`bun-runner.js` and `version-check.js` search `PATH`, `BUN`, `BUN_PATH`, `BUN_INSTALL`, `~/.bun/bin`, `/usr/local/bin` and a few more; nothing in its hooks installs it), and `install.sh` does not install it either. `CCBOARD_CLAUDE_MEM=0` skips the step. Nothing here touches Codex (that comes with the Codex adapter). Docker mode needs nothing extra: the worker is a host process, the container shares the host network, and `docker-entrypoint.sh` never installs the unit.
+
+**Why a service.** A worker is started by the plugin's SessionStart hook, so it is a child of whichever Claude session ran that hook first, and it inherits that session's environment. The plugin strips `CLAUDECODE` and `CLAUDE_CODE_*` when it spawns, but `CCBOARD_SESSION`, `CCBOARD_URL` and `TMUX_PANE` pass through. Every observer session the worker starts then runs the box's hooks as if it were that board session (seen on ubu2: its events landed on the user's row; v0.5.7 ignores child-session events, the service removes the cause). The doctor's *memory* group warns while a worker's environment still carries `CCBOARD_SESSION` or `TMUX_PANE`.
+
+**`ccboard-mem.service`** (off by default: the hooks start a worker on demand today, and two workers must never race on `worker.pid`). Turn it on with `CCBOARD_MEM_SERVICE=1 ./install.sh`; turn it off with `CCBOARD_MEM_SERVICE=0 ./install.sh` (the unit file stays, the hooks start workers again). It is a system unit running as you, with `Restart=on-failure`, `Nice=5`, best-effort I/O priority 7 (not idle: the observer has to keep up) and `OOMScoreAdjust=200`. It is ordered `Before=ccboard-tmux.service ccboard.service` (ordering only, no `Requires`, so a failed or disabled unit blocks nothing), so after a boot the worker is up before the sessions the board recovers; the order is not a guarantee, and the doctor's `memory-env` check is the safety net: it warns while the worker holds `CCBOARD_SESSION` or `TMUX_PANE`, i.e. when a session's hook won the race and started a worker first. It does **not** read `/etc/ccboard/env` (that file holds the hub token and every `CCBOARD_*` setting). `ExecStart` is
+
+```
+/usr/bin/env -u CCBOARD_SESSION -u CCBOARD_URL -u CCBOARD_APPROVE_TIMEOUT -u TMUX -u TMUX_PANE -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION  <checkout>/bin/ccboard-mem-run
+```
+
+(`<data dir>/app/bin/ccboard-mem-run` in docker mode, where `install.sh` copies the launcher next to the other host-side scripts), and `bin/ccboard-mem-run` resolves, on every start, the newest `~/.claude/plugins/cache/thedotmack/claude-mem/<version>/` that has no `.orphaned_at` file (Claude Code replaces that directory on every plugin update) and bun, drops every other `CCBOARD_*` variable, and execs
+
+```
+<bun> ~/.claude/plugins/cache/thedotmack/claude-mem/<version>/scripts/worker-service.cjs --daemon
+```
+
+That is the plugin's own start, in the foreground: `worker-service.cjs start` only spawns `setsid <bun> worker-service.cjs --daemon` detached and exits (useless under `Type=simple`), and `bun-runner.js worker-service.cjs --daemon` is wrong because bun-runner treats any argument other than `start|stop|restart|status` as a hook call and, with no stdin payload, writes `~/.claude-mem/CAPTURE_BROKEN` and kills its child. A second `--daemon` while one is healthy exits 0 without doing anything, so the unit then sits inactive and `Restart=on-failure` leaves it alone; a boot failure exits 78 and is retried every 5 s until the start limit (5 starts in 5 minutes) leaves the unit `failed`; fix the cause, then `sudo systemctl reset-failed ccboard-mem && sudo systemctl start ccboard-mem`. `ccboard-mem-run --print` shows what it resolved (exit 78 when the plugin or bun is missing). Override with `sudo systemctl edit ccboard-mem` (`Environment=CCBOARD_MEM_BUN=/path/to/bun` or `CCBOARD_MEM_PLUGIN_DIR=...`). The worker's port is not forced from here: the hooks read it from `~/.claude-mem/settings.json`, so change it there.
+
+**Handing over from a hook-started worker.** If one is running when you enable the unit, `install.sh` enables it for the next boot, starts nothing, and prints these steps plus the `CLAUDE_MEM_WORKER_AUTOSTART` note below (do them when no session is mid-turn; the observer's queue is kept in claude-mem's database):
+
+```sh
+<bun> <plugin>/scripts/worker-service.cjs stop       # the plugin's own stop
+sudo systemctl start ccboard-mem
+# verify: the unit owns the worker, and its environment is clean (expect 0)
+systemctl show -p MainPID --value ccboard-mem
+tr '\0' '\n' < /proc/$(systemctl show -p MainPID --value ccboard-mem)/environ | grep -c '^CCBOARD_SESSION='
+curl -s "http://127.0.0.1:$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.claude-mem/worker.pid")))["port"])')/health"
+```
+
+If a hook wins the race after the `stop` and starts a worker first, the unit's start exits at once: repeat both commands.
+
+**Day to day and plugin updates.** Restart the worker with `sudo systemctl restart ccboard-mem`, not with the plugin's `restart` (it hands the worker over to a process it spawns itself, outside the unit's supervision). Logs: `journalctl -u ccboard-mem`, plus `~/.claude-mem/logs/`. The unit is not in `/etc/sudoers.d/ccboard`.
+
+A plugin update is the one thing that undoes the clean environment, and the old worker does not keep running until you restart it. Per the plugin's code (13.29.0, `worker-service.cjs`), the first hook of any Claude session after an update compares the running worker's version with the installed plugin's, logs `Worker version mismatch`, kills the unit's worker and spawns a replacement itself, with that hook's environment: `CCBOARD_SESSION` and `TMUX_PANE` are back. The unit's next start (its own `Restart=on-failure` after 5 s, or your `systemctl restart`) then runs a second `--daemon` that finds the hook's worker healthy and exits 0, so the unit sits inactive and the leaky worker stays. The doctor's `memory-env` check warns when that has happened. Recover as in the hand-over above: `<bun> <plugin>/scripts/worker-service.cjs stop`, then `sudo systemctl start ccboard-mem` (the launcher re-resolves the newest plugin version on every start).
+
+**Optional, for boxes that run the unit: `CLAUDE_MEM_WORKER_AUTOSTART=false`.** The plugin has a switch for a worker that something else manages: the key `CLAUDE_MEM_WORKER_AUTOSTART` in `~/.claude-mem/settings.json` (default `"true"`; the string `"false"`, in any case, turns it off. Write it quoted: the plugin calls `.trim()` on the value as read, and a JSON boolean has no such method). Per the plugin's code (13.29.0), with it set the hooks never lazy-spawn a worker, never recycle a worker whose version differs from the plugin's (they log `using it as is`) and never recycle a wedged one, and the plugin's own `worker-service.cjs start` does not launch one either; `--daemon`, which is what the unit runs, and `stop` are not affected. So the unit becomes the only thing that starts a worker, and after a plugin update `sudo systemctl restart ccboard-mem` is the whole procedure. The trade-off is the mirror image: with the setting on, nothing starts a worker unless the unit runs, so while the unit is failed, inactive or stopped there is no memory capture at all, and the doctor's *claude-mem worker* check (`memory-worker`, *no worker on 127.0.0.1:...*) is what tells you. It is your decision and ccboard never writes it (`install.sh` only prints this hint after enabling the unit). To opt in, add this line yourself inside the top-level object of `~/.claude-mem/settings.json` (a fragment, not a file; mind the comma next to its neighbours):
+
+```json
+  "CLAUDE_MEM_WORKER_AUTOSTART": "false",
+```
+
 ## Running on a subscription (no API key)
 
 The box needs no `ANTHROPIC_API_KEY`. Log in once from the board ("Log in" opens the sign-in link, you paste the code back) and Claude Code stores the OAuth login in `~/.claude/.credentials.json`; it refreshes itself and survives reboots, so recovery after a restart needs no new login. Everything the board launches uses that same login: interactive sessions, tasks, "Describe with Claude", scheduled and batch `claude -p` runs. They all draw on the same 5-hour and weekly windows as your interactive use, which is why the scheduler defers runs above 85 % of the window and backs off after a rate-limited run.
@@ -373,6 +429,7 @@ If the login expires or you log out, the header shows *Claude: not logged in*, t
 
 ```sh
 sudo systemctl disable --now ccboard ccboard-ttyd ccboard-tmux code-server@$USER
+sudo systemctl disable --now ccboard-mem        # only when you enabled CCBOARD_MEM_SERVICE; the plugin itself stays (claude plugin uninstall claude-mem@thedotmack)
 sudo rm /etc/systemd/system/ccboard*.service /etc/ccboard/env; sudo rm -r /etc/systemd/system/code-server@$USER.service.d
 sudo tailscale serve --https=443 --set-path=/tty off      # use your CCBOARD_HTTPS_PORT
 sudo tailscale serve --https=443 --set-path=/ off
