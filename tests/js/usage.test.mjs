@@ -1,6 +1,7 @@
 // Contract tests for app/static/pages/usage.js (v0.5.17): the Usage page. Real core.js, components.js, keymap.js, router.js and usage.js on minidom's DOM
 // inside the vm harness; window.Charts is a recording fake (so the page is tested without charts.js), api() answers from __answers.
-// The last test runs the page against the real charts.js (with a stub uPlot) and is skipped while that file does not exist.
+// The last tests run the page against the real charts.js (with a stub uPlot) and are skipped while that file does not exist.
+// v0.5.17b: the Accounts section (rows, total, 'most room' line, rename sheet) and the Limits account chips are tested with two demo-like accounts.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -81,8 +82,10 @@ globalThis.Charts = {
   shortModel(m) { return String(m).replace(/^claude-/, ''); },
 };`;
 
-/** A world with the real scripts and the router mounted on #page. opts: wide, charts (false = no Charts at all), timers, st, noState. */
-function usageWorld({ wide = false, charts = true, st = STATE(), over = {}, extra = {} } = {}) {
+/** A world with the real scripts and the router mounted on #page. opts: wide, charts (false = no Charts at all), timers, st, noState, shared (also load
+ *  pages/agents.js and pages/settings.js: the account rows' pencil opens settingsRenameAccount, which needs them; off by default because the chip hue
+ *  tests want a world without agents.js). */
+function usageWorld({ wide = false, charts = true, st = STATE(), over = {}, extra = {}, shared = false } = {}) {
   const timers = [];
   const cleared = [];
   const w = makeWorld({
@@ -91,10 +94,11 @@ function usageWorld({ wide = false, charts = true, st = STATE(), over = {}, extr
   });
   installDom(w);
   for (const f of ['core.js', 'components.js', 'keymap.js', 'router.js']) w.load(f);
+  w.run('globalThis.__polls = 0; poll = async () => { __polls++; };');                // the shared rename sheet asks for a fresh state after a save; the tests own their state
   w.ctx.__calls = [];
   w.ctx.__answers = answers(over);
-  w.run(`api = async (method, path) => {
-    __calls.push({ method, path });
+  w.run(`api = async (method, path, body) => {
+    __calls.push({ method, path, body });
     for (const [prefix, v] of Object.entries(__answers)) {
       if (!path.startsWith(prefix)) continue;
       if (v && v.__error) throw new Error(v.__error);
@@ -103,6 +107,10 @@ function usageWorld({ wide = false, charts = true, st = STATE(), over = {}, extr
     return {};
   };`);
   if (charts) w.run(CHARTS_STUB);
+  if (shared) {
+    w.load('pages/agents.js');                                                        // agentsAccounts / agentsAcctName: the rename sheet's helpers
+    w.load('pages/settings.js');                                                      // settingsRenameAccount: the one rename sheet the pencil opens
+  }
   w.load('pages/usage.js');
   if (st) { w.ctx.__st = st; w.run('state = __st'); }
   return { w, timers, cleared };
@@ -124,17 +132,18 @@ const keyR = (w) => w.get('Keymap').handle({ key: 'r', target: w.document.body, 
 
 // ---------------------------------------------------------------- structure and first paint
 
-test('the six sections in the asked order, each with an h2 and a provenance label; a skeleton paints before any answer', async () => {
+test('the seven sections in the asked order (Accounts first), each with an h2 and a provenance label; a skeleton paints before any answer', async () => {
   const { w } = usageWorld();
   w.location.hash = '#/usage';
   const secs = qa(w, 'section.usec');
-  assert.deepEqual(secs.map((s) => s.getAttribute('data-sec')), ['limits', 'cost', 'sessions', 'projects', 'activity', 'timeline']);
-  assert.deepEqual(secs.map((s) => text(s.querySelector('h2'))), ['Limits', 'Cost per day', 'Sessions', 'Projects', 'Activity', 'Timeline']);
+  assert.deepEqual(secs.map((s) => s.getAttribute('data-sec')), ['accounts', 'limits', 'cost', 'sessions', 'projects', 'activity', 'timeline']);
+  assert.deepEqual(secs.map((s) => text(s.querySelector('h2'))), ['Accounts', 'Limits', 'Cost per day', 'Sessions', 'Projects', 'Activity', 'Timeline']);
   assert.ok(secs.every((s) => s.querySelector('.prov')), 'a provenance span in every section');
-  assert.equal(text(secs[0].querySelector('.prov')), 'statusline (official)');
-  assert.equal(text(secs[1].querySelector('.prov')), 'API-equivalent (ccusage list price)');
+  assert.equal(text(secs[0].querySelector('.prov')), 'subscription windows (statusline) · API-equivalent $ last');
+  assert.equal(text(secs[1].querySelector('.prov')), 'statusline (official)');
+  assert.equal(text(secs[2].querySelector('.prov')), 'API-equivalent (ccusage list price)');
   assert.equal(text(q(w, '[data-sec="activity"] .prov')), 'hook events, local time');
-  for (const id of ['cost', 'sessions', 'projects', 'activity', 'timeline']) assert.ok(q(w, `[data-sec="${id}"] .usk`), `${id}: skeleton before the first answer`);
+  for (const id of ['accounts', 'cost', 'sessions', 'projects', 'activity', 'timeline']) assert.ok(q(w, `[data-sec="${id}"] .usk`), `${id}: skeleton before the first answer`);
   assert.ok(q(w, '.lim-chart').classList.contains('loading'), 'the limits chart host is a skeleton too');
   assert.equal(text(q(w, 'h1')), 'Usage');
   assert.equal(w.document.title, 'Usage · ccboard');
@@ -711,6 +720,596 @@ test('usage.js is definition-only apart from registerPage: loading it touches no
   assert.equal(w.get('Usage.cur'), null);
 });
 
+// ---------------------------------------------------------------- accounts (v0.5.17b)
+
+const AK1 = '7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001';          // the account in use: no label, name Demo, plan max
+const AK2 = '7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a002';          // the other one: label Work, plan pro, a 5-hour window that has rolled over since its reading
+const win = (total, tokens, hours, sessions) => ({ total, tokens, hours, sessions });
+const ACCOUNTS = (over1 = {}, over2 = {}) => [
+  { key: AK1, email: 'demo@example.com', name: 'Demo', label: null, plan: 'max', current: true,
+    rl_5h: { value: 42, resets_at: NOW + 3 * 3600, at: ISO(60) }, rl_7d: { value: 71, resets_at: NOW + 3 * 86400, at: ISO(60) },
+    windows: { today: win(12.5, 3000000, 1.5, 2), '7d': win(60, 20000000, 9.5, 4), '30d': win(200, 90000000, 30, 9) }, episodes: 2, last_seen: ISO(30), ...over1 },
+  { key: AK2, email: 'work@example.com', name: 'Work', label: 'Work', plan: 'pro', current: false,
+    rl_5h: { value: 100, resets_at: NOW - 3600, at: ISO(7200) }, rl_7d: { value: 83, resets_at: NOW + 2 * 86400, at: ISO(7200) },
+    windows: { today: win(0, 0, 0, 0), '7d': win(30, 10000000, 4.5, 2), '30d': win(80, 40000000, 10, 3) }, episodes: 1, last_seen: ISO(7200), ...over2 },
+  { key: 'unknown', email: null, name: '(before account tracking)', label: null, plan: null, current: false, rl_5h: null, rl_7d: null,
+    windows: { today: win(0, 0, 0, 0), '7d': win(0, 0, 0, 0), '30d': win(20, 5000000, 2, 4) }, episodes: 1, last_seen: null },
+];
+const TOTALS = (over = {}) => ({ today: win(12.5, 3000000, 1.5, 2), '7d': win(90, 30000000, 14, 5), '30d': win(300, 135000000, 42, 14), accounts: 2,
+  headroom_5h: [{ key: AK2, left_pct: 100 }, { key: AK1, left_pct: 58 }], headroom_7d: [{ key: AK1, left_pct: 29 }, { key: AK2, left_pct: 17 }], ...over });
+const EPISODES = [
+  { kind: '5h', at: ISO(30 * 3600), resets_at: NOW - 25 * 3600, session: 's1', acct: AK1 },
+  { kind: '7d', at: ISO(100 * 3600), resets_at: NOW - 90 * 3600, session: 's2', acct: AK2 },
+  { kind: '5h', at: ISO(200 * 3600), resets_at: NOW - 190 * 3600, session: 's3', acct: null },              // before account tracking: 30 days only
+];
+const ACC_SUMMARY = (over = {}) => SUMMARY(DAILY7, { accounts: ACCOUNTS(), total: TOTALS(), episodes: EPISODES, ...over });
+const ACC_SUMMARY30 = (over = {}) => SUMMARY(DAILY30, { accounts: ACCOUNTS(), total: TOTALS(), episodes: EPISODES, ...over });
+// one account's own limit series (key=acct:<key>): the same body as SERIES with the account in the names
+const SERIES_OF = (key, five = 33, seven = 44) => ({ ...SERIES(), series: { [`rl_5h:acct:${key}`]: [1, 2, null, null, 5, 6, 7, 8, 9, 10, 11, five], [`rl_7d:acct:${key}`]: [2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 30, seven] },
+  meta: { [`rl_5h:acct:${key}`]: { resets_at: NOW + 3600 }, [`rl_7d:acct:${key}`]: { resets_at: NOW + 86400 } } });
+const SERIES_ANSWER = (p) => (/key=acct:([0-9a-f-]+)/.exec(p) ? SERIES_OF(/key=acct:([0-9a-f-]+)/.exec(p)[1]) : SERIES());
+const HUES = `globalThis.chipHue = (kind, key) => 'hue-' + (kind === 'account' ? (String(key).endsWith('1') ? 'blue' : 'violet') : 'slate');`;
+const accWorld = (opts = {}) => {
+  const r = usageWorld({ shared: true, ...opts, over: { '/api/usage/summary?days=7': ACC_SUMMARY(), '/api/usage/summary?days=30': ACC_SUMMARY30(), '/api/series?series=rl_5h,rl_7d': SERIES_ANSWER, ...(opts.over || {}) } });
+  r.w.run(HUES);
+  return r;
+};
+const row = (w, key) => q(w, `.ua-row[data-account="${key}"]`);
+const cell = (r, col) => text(r.querySelector(`[data-col="${col}"] .ua-v`));
+const submit = (form) => form.dispatchEvent({ type: 'submit', preventDefault() {} });
+
+test('accounts: the first section, one row per account (current first; the pre-tracking history last and dim once the range reaches it) and a closing TOTAL row', async () => {
+  const { w } = accWorld();
+  await go(w);
+  const sec = q(w, '[data-sec="accounts"]');
+  assert.equal(text(sec.querySelector('h2')), 'Accounts');
+  assert.equal(qa(w, '[data-sec="accounts"] .usk').length, 0);
+  assert.deepEqual(qa(w, '[data-sec="accounts"] .ua-row').map((r) => r.getAttribute('data-account') || 'total'), [AK1, AK2, 'total'], '7 days: the history before tracking has nothing in it, so no row for it');
+  const r1 = row(w, AK1);
+  const r2 = row(w, AK2);
+  assert.equal(text(r1.querySelector('.ua-chip')), 'Demo', 'no label: the name');
+  assert.equal(text(r2.querySelector('.ua-chip')), 'Work', 'the label wins over the name');
+  assert.ok(r1.querySelector('.ua-chip').classList.contains('hue-blue') && r2.querySelector('.ua-chip').classList.contains('hue-violet'), 'the chip wears chipHue(account, key)');
+  assert.equal(text(r1.querySelector('.ua-plan')), 'max');
+  assert.equal(text(r2.querySelector('.ua-plan')), 'pro');
+  assert.equal(r1.getAttribute('data-current'), '');
+  assert.equal(r2.getAttribute('data-current'), null);
+  assert.equal(qa(w, '.ua-current').length, 1, 'one account is marked current');
+  assert.ok(r1.querySelector('.ua-current'));
+  assert.equal(text(r1.querySelector('.ua-email')), 'demo@example.com');
+  assert.equal(text(r2.querySelector('.ua-email')), 'work@example.com');
+  // the selected range (7d): tokens, active hours, sessions, limit hits, then the API-equivalent dollars last
+  assert.deepEqual(['tokens', 'hours', 'sessions', 'hits', 'usd'].map((c) => cell(r1, c)), ['20.0M', '9.5 h', '4', '1', '$60.00']);
+  assert.deepEqual(['tokens', 'hours', 'sessions', 'hits', 'usd'].map((c) => cell(r2, c)), ['10.0M', '4.5 h', '2', '1', '$30.00']);
+  assert.deepEqual(qa(w, '.ua-row[data-account="' + AK1 + '"] .ua-stat').map((n) => n.getAttribute('data-col')), ['tokens', 'hours', 'sessions', 'hits', 'usd'], 'dollars last');
+  assert.ok(r1.querySelector('[data-col="usd"]').classList.contains('ua-dim'), 'and dim');
+  assert.match(r1.querySelector('[data-col="usd"]').getAttribute('title'), /API list price/);
+  const tot = q(w, '.ua-row.total');
+  assert.equal(text(tot.querySelector('.ua-total-l')), 'Total');
+  assert.equal(text(tot.querySelector('.ua-count')), '2 accounts');
+  assert.deepEqual(['tokens', 'hours', 'sessions', 'hits', 'usd'].map((c) => cell(tot, c)), ['30.0M', '14.0 h', '5', '2', '$90.00']);
+  assert.match(tot.querySelector('[data-col="sessions"]').getAttribute('title'), /ran on two accounts counts once/, 'the rows add up to 6 sessions, the total says 5: the cell says why');
+  assert.equal(text(q(w, '[data-note="sessions"]')), 'Sessions: 5 in total, 6 in the rows above: a session that ran on two accounts counts once in the total and once in each row.', 'and so does a visible line (a phone has no hover)');
+  assert.equal(qa(w, '.ua-row.total [role="cell"]').length, 8, 'a table row keeps its eight cells');
+  assert.equal(tot.querySelector('.gauge'), null);
+  assert.equal(q(w, '.uacc').getAttribute('role'), 'table');
+  assert.equal(qa(w, '.uacc-head [role="columnheader"]').length, 8);
+  // 30 days reaches the history before tracking: its row comes last and dim, with no gauges, no pencil and no hue chip
+  q(w, 'button[data-range="30d"]').click();
+  await loading(w);
+  assert.deepEqual(qa(w, '[data-sec="accounts"] .ua-row').map((r) => r.getAttribute('data-account') || 'total'), [AK1, AK2, 'unknown', 'total']);
+  const ru = row(w, 'unknown');
+  assert.ok(ru.classList.contains('unknown'));
+  assert.equal(text(ru.querySelector('.ua-name')), '(before account tracking)');
+  assert.equal(ru.querySelector('.gauge'), null, 'no gauges for the history before tracking');
+  assert.equal(ru.querySelector('.ua-edit'), null, 'and nothing to rename');
+  assert.equal(ru.querySelector('.ua-chip'), null, 'and no hue chip');
+  assert.deepEqual(['tokens', 'hours', 'sessions', 'hits', 'usd'].map((c) => cell(ru, c)), ['5.0M', '2.0 h', '4', '1', '$20.00']);
+  assert.equal(qa(w, '.ua-row[data-account="unknown"] [role="cell"]').length, 8);
+  clean(w, 'accounts');
+});
+
+test('accounts: the "(before account tracking)" row is shown only when the range has something in it: tokens, hours, sessions or a limit hit; all zero hides it, and so does an empty section', async () => {
+  const unknown = (win30, win7) => ({ ...ACCOUNTS()[2], windows: { today: win(0, 0, 0, 0), '7d': win7 || win(0, 0, 0, 0), '30d': win30 } });
+  const rowsOf = async (accounts, episodes, range) => {
+    const { w } = accWorld({ over: { '/api/usage/summary?days=7': ACC_SUMMARY({ accounts, episodes }), '/api/usage/summary?days=30': ACC_SUMMARY30({ accounts, episodes }) } });
+    await go(w, range ? `#/usage?range=${range}` : '#/usage');
+    return qa(w, '[data-sec="accounts"] .ua-row').map((r) => r.getAttribute('data-account') || 'total');
+  };
+  const real = ACCOUNTS().slice(0, 2);
+  const live = [{ kind: '5h', at: ISO(3600), resets_at: NOW + 100, session: 's9', acct: AK1 }];           // an episode of the current account, 1 h ago: in every range
+  assert.deepEqual(await rowsOf([...real, unknown(win(0, 0, 0, 0))], live), [AK1, AK2, 'total'], 'all zero in 7d: hidden');
+  assert.deepEqual(await rowsOf([...real, unknown(win(0, 0, 0, 0))], live, '30d'), [AK1, AK2, 'total'], 'all zero in 30d: hidden');
+  for (const [label, w30] of [['tokens', win(0, 1000, 0, 0)], ['hours', win(0, 0, 0.5, 0)], ['sessions', win(0, 0, 0, 1)]]) {
+    assert.deepEqual(await rowsOf([...real, unknown(w30)], live, '30d'), [AK1, AK2, 'unknown', 'total'], `${label} alone keep the row`);
+  }
+  assert.deepEqual(await rowsOf([...real, unknown(win(0, 0, 0, 0))], [...live, { kind: '7d', at: ISO(3600), resets_at: NOW + 100, session: 's8', acct: null }]), [AK1, AK2, 'unknown', 'total'],
+    'a limit hit alone keeps it (it belongs to no account: the row is where it is counted)');
+  // the history and nothing else: zero in this range -> the empty state, not a table of one total row
+  const { w } = accWorld({ over: { '/api/usage/summary?days=7': ACC_SUMMARY({ accounts: [unknown(win(20, 5000000, 2, 4))], episodes: [], total: TOTALS({ accounts: 0, headroom_5h: [], headroom_7d: [] }) }) } });
+  w.run('globalThis.Shell = { openCreate() {} }');
+  await go(w);
+  assert.equal(row(w, 'unknown'), null);
+  assert.match(text(q(w, '[data-sec="accounts"] .ubody')), /No account seen yet/);
+  clean(w, 'hidden history');
+});
+
+test('accounts: the gauges of a row are the Limits classes (warn from 60, bad from 85); a window whose reset has passed reads 0 % rolled over; no reading says so', async () => {
+  const hot = ACCOUNTS({ rl_5h: { value: 91, resets_at: NOW + 600, at: ISO(30) } }, { rl_5h: null });
+  const { w } = accWorld({ over: { '/api/usage/summary?days=7': ACC_SUMMARY({ accounts: hot }) } });
+  await go(w);
+  const g = (key, label) => row(w, key).querySelector(`.gauge[data-gauge="${label}"]`);
+  assert.equal(text(g(AK1, '5H').querySelector('.g-val')), '91%');
+  assert.ok(g(AK1, '5H').classList.contains('bad'));
+  assert.match(text(g(AK1, '5H').querySelector('.g-reset')), /^resets in \d+m · \d\d:\d\d$/);
+  assert.equal(g(AK1, '5H').querySelector('.g-bar i').style.width, '91%');
+  assert.equal(text(g(AK1, '7D').querySelector('.g-val')), '71%');
+  assert.ok(g(AK1, '7D').classList.contains('warn'));
+  assert.equal(g(AK2, '5H'), null, 'a null reading draws no gauge');
+  assert.equal(text(row(w, AK2).querySelector('[data-win="5H"] .ua-none')), 'no reading yet');
+  assert.equal(text(g(AK2, '7D').querySelector('.g-val')), '83%');
+  assert.ok(g(AK2, '7D').classList.contains('warn') && !g(AK2, '7D').classList.contains('bad'));
+  const { w: w2 } = accWorld();
+  await go(w2);
+  const rolled = row(w2, AK2).querySelector('.gauge[data-gauge="5H"]');
+  assert.equal(text(rolled.querySelector('.g-val')), '0%', 'reset since the reading: the new window has nothing counted');
+  assert.equal(text(rolled.querySelector('.g-reset')), 'window rolled over');
+  assert.ok(rolled.classList.contains('ok'));
+  assert.match(rolled.getAttribute('title'), /Work 5H: the window reset .*last reading was 100%, read 2h ago/);
+  assert.doesNotMatch(text(q(w2, '[data-sec="accounts"]')), /resets in now/);
+});
+
+test('accounts: the range switches the numbers (today / 7 days / 30 days), the limit hits count the range\'s episodes, and the totals add up', async () => {
+  const { w } = accWorld();
+  await go(w);
+  q(w, 'button[data-range="30d"]').click();
+  await loading(w);
+  const r1 = row(w, AK1);
+  assert.deepEqual(['tokens', 'hours', 'sessions', 'usd'].map((c) => cell(r1, c)), ['90.0M', '30.0 h', '9', '$200.00']);
+  assert.equal(cell(row(w, 'unknown'), 'tokens'), '5.0M', 'the history before tracking shows once the range reaches it');
+  assert.deepEqual([AK1, AK2, 'unknown'].map((k) => cell(row(w, k), 'hits')), ['1', '1', '1'], '30 days reaches the episode of 8 days ago, which belongs to no account');
+  assert.equal(cell(q(w, '.ua-row.total'), 'hits'), '3');
+  // the sum of the rows is the total (tokens, hours, dollars)
+  const sum = (c, f) => [AK1, AK2, 'unknown'].reduce((a, k) => a + f(cell(row(w, k), c)), 0);
+  assert.equal(sum('tokens', (t) => parseFloat(t) * 1e6).toFixed(0), String(parseFloat(cell(q(w, '.ua-row.total'), 'tokens')) * 1e6));
+  assert.equal(sum('usd', (t) => parseFloat(t.slice(1))).toFixed(2), '300.00');
+  q(w, 'button[data-range="24h"]').click();
+  await loading(w);
+  assert.deepEqual(['tokens', 'hours', 'sessions', 'hits', 'usd'].map((c) => cell(row(w, AK1), c)), ['3.0M', '1.5 h', '2', '0', '$12.50'], 'today');
+  assert.deepEqual(['tokens', 'sessions', 'usd'].map((c) => cell(row(w, AK2), c)), ['0', '0', '$0.00']);
+  assert.match(q(w, '.uacc').getAttribute('aria-label'), /today/);
+  clean(w, 'ranges');
+});
+
+test('accounts: the headroom line names the account with the most room in each window (info, dim, no button)', async () => {
+  const { w } = accWorld();
+  await go(w);
+  const line = q(w, '.ua-room');
+  assert.equal(text(line), 'most room: Work, 100 % of the 5-hour window left · Demo, 29 % of the 7-day window left');
+  assert.equal(line.getAttribute('data-room'), 'info');
+  assert.ok(line.classList.contains('dim') && !line.classList.contains('attn'));
+  assert.equal(line.querySelector('button'), null);
+});
+
+test('accounts: the account in use at 85 % or more with room on another account turns the line into an amber callout, no button; no room elsewhere keeps it plain', async () => {
+  const hot = ACCOUNTS({ rl_5h: { value: 91, resets_at: NOW + 600, at: ISO(30) } });
+  const { w } = accWorld({ over: { '/api/usage/summary?days=7': ACC_SUMMARY({ accounts: hot, total: TOTALS({ headroom_5h: [{ key: AK2, left_pct: 100 }, { key: AK1, left_pct: 9 }] }) }) } });
+  await go(w);
+  const line = q(w, '.ua-room');
+  assert.equal(line.getAttribute('data-room'), 'attention');
+  assert.ok(line.classList.contains('attn'));
+  assert.equal(text(line), 'Demo is at 91 % of the 5-hour window. most room: Work, 100 % of the 5-hour window left');
+  assert.equal(line.querySelector('button'), null, 'a callout with no button');
+  assert.equal(line.querySelector('a'), null);
+  // 7 days wins when both are hot; the pick is the best other account for that window
+  const both = ACCOUNTS({ rl_5h: { value: 91, resets_at: NOW + 600, at: ISO(30) }, rl_7d: { value: 88, resets_at: NOW + 86400, at: ISO(30) } });
+  const { w: w2 } = accWorld({ over: { '/api/usage/summary?days=7': ACC_SUMMARY({ accounts: both, total: TOTALS({ headroom_7d: [{ key: AK2, left_pct: 40 }, { key: AK1, left_pct: 12 }] }) }) } });
+  await go(w2);
+  assert.equal(text(q(w2, '.ua-room')), 'Demo is at 88 % of the 7-day window. most room: Work, 40 % of the 7-day window left');
+  // the other account has no more room than the one in use: nothing to switch to, the plain line
+  const { w: w3 } = accWorld({ over: { '/api/usage/summary?days=7': ACC_SUMMARY({ accounts: hot, total: TOTALS({ headroom_5h: [{ key: AK1, left_pct: 9 }, { key: AK2, left_pct: 4 }] }) }) } });
+  await go(w3);
+  assert.equal(q(w3, '.ua-room').getAttribute('data-room'), 'info');
+  assert.match(text(q(w3, '.ua-room')), /^most room: Demo, 9 % of the 5-hour window left/);
+  // an account below 85 % never raises it, however much room another one has
+  const warm = ACCOUNTS({ rl_5h: { value: 84, resets_at: NOW + 600, at: ISO(30) } });
+  const { w: w4 } = accWorld({ over: { '/api/usage/summary?days=7': ACC_SUMMARY({ accounts: warm, total: TOTALS({ headroom_5h: [{ key: AK2, left_pct: 100 }, { key: AK1, left_pct: 16 }] }) }) } });
+  await go(w4);
+  assert.equal(q(w4, '.ua-room').getAttribute('data-room'), 'info');
+});
+
+test('accounts: one account still shows one row and the total, in subscription terms; no headroom line, no chips on the limits', async () => {
+  const one = [ACCOUNTS()[0]];
+  const { w } = accWorld({ over: { '/api/usage/summary?days=7': ACC_SUMMARY({ accounts: one, total: TOTALS({ accounts: 1, headroom_5h: [{ key: AK1, left_pct: 58 }], headroom_7d: [{ key: AK1, left_pct: 29 }], '7d': win(60, 20000000, 9.5, 4) }) }) } });
+  await go(w);
+  assert.deepEqual(qa(w, '[data-sec="accounts"] .ua-row').map((r) => r.getAttribute('data-account') || 'total'), [AK1, 'total']);
+  assert.equal(text(q(w, '.ua-count')), '1 account');
+  assert.equal(cell(q(w, '.ua-row.total'), 'tokens'), '20.0M');
+  assert.equal(q(w, '.ua-room'), null, 'one account has no "most room"');
+  assert.equal(q(w, '[data-note="sessions"]'), null, 'and nothing to reconcile');
+  assert.ok(q(w, '.ua-picks').classList.contains('hidden'), 'no chips with one account');
+  assert.equal(qa(w, '.ua-pick').length, 0);
+  assert.equal(chartCalls(w, 'line')[0].opts.names[0], 'rl_5h:claude');
+  assert.equal(chartCalls(w, 'line')[0].opts.marks.length, 2, 'every episode stays on the chart: there is nobody to tell them apart from');
+  clean(w, 'one account');
+});
+
+test('accounts: a server without accounts (or none seen yet) gets an empty state with its next step, never a blank or a skeleton', async () => {
+  const { w } = usageWorld();
+  w.run('globalThis.Shell = { openCreate() {} }');                                // the + session button needs the shell's create flow
+  await go(w);
+  const body = q(w, '[data-sec="accounts"] .ubody');
+  assert.equal(qa(w, '[data-sec="accounts"] .usk').length, 0);
+  assert.match(text(body), /No account seen yet.*within a minute.*\+ session.*\/login/);
+  assert.ok(body.querySelector('button'), 'the + session button');
+  const { w: w2 } = usageWorld({ over: { '/api/usage/summary?days=7': ACC_SUMMARY({ accounts: [], total: { accounts: 0 } }) } });
+  await go(w2);
+  assert.match(text(q(w2, '[data-sec="accounts"] .ubody')), /No account seen yet/);
+  const { w: w3 } = usageWorld({ over: { '/api/usage/summary?days=7': { __error: 'boom' } } });
+  await go(w3);
+  assert.match(text(q(w3, '[data-sec="accounts"] .uerr')), /Could not load the usage summary: boom/);
+  clean(w, 'empty');
+});
+
+test('accounts: only the history before tracking (no real account yet) shows its row, the total and the way to get one', async () => {
+  const history = { ...ACCOUNTS()[2], windows: { today: win(0, 0, 0, 0), '7d': win(20, 5000000, 2, 4), '30d': win(20, 5000000, 2, 4) } };            // something in the last 7 days
+  const { w } = accWorld({ over: { '/api/usage/summary?days=7': ACC_SUMMARY({ accounts: [history], total: TOTALS({ accounts: 0, headroom_5h: [], headroom_7d: [] }) }) } });
+  await go(w);
+  assert.deepEqual(qa(w, '[data-sec="accounts"] .ua-row').map((r) => r.getAttribute('data-account') || 'total'), ['unknown', 'total']);
+  assert.equal(text(q(w, '.ua-count')), '0 accounts');
+  assert.match(text(q(w, '[data-sec="accounts"]')), /No Claude account has been seen yet/);
+  assert.equal(q(w, '.ua-room'), null);
+  clean(w, 'unknown only');
+});
+
+const RENAME_HINT = 'Shown on the Usage page, the topbar chip and the session rows. Leave it empty to go back to the name Claude reports.';
+const STATE_ACCTS = (over = {}) => STATE({ accounts: { current: AK1, list: [{ key: AK1, name: 'Demo', email: 'demo@example.com', label: null, current: true }, { key: AK2, name: 'Work', email: 'work@example.com', label: 'Work' }] }, ...over });
+
+test('accounts: the pencil opens THE rename sheet of settings.js (one function, no second copy in usage.js): same title, hint, 60 characters, Save the one primary, PATCH {label}', async () => {
+  const { w } = accWorld({ st: STATE_ACCTS() });
+  await go(w);
+  w.run('globalThis.__opened = []; { const real = settingsRenameAccount; settingsRenameAccount = (a) => { __opened.push(a.key); return real(a); }; }');
+  const sheet = w.document.getElementById('sheet');
+  assert.notEqual(sheet.open, true);
+  const pencil = row(w, AK1).querySelector('.ua-edit');
+  assert.equal(pencil.getAttribute('aria-label'), 'Rename Demo');
+  pencil.click();
+  assert.deepEqual(plain(w.get('__opened')), [AK1], 'the pencil calls settingsRenameAccount');
+  assert.equal(sheet.open, true, 'one tap opens the sheet');
+  assert.equal(text(sheet.querySelector('.sheet-title')), 'Rename account · Demo', 'the same title the Settings row shows');
+  assert.equal(text(sheet.querySelector('.field-hint')), RENAME_HINT, 'and the same hint');
+  const input = sheet.querySelector('input');
+  assert.equal(input.value, '', 'no label yet');
+  assert.equal(input.getAttribute('placeholder'), 'Demo');
+  assert.equal(input.getAttribute('maxlength'), '60');
+  const primaries = sheet.querySelectorAll('button.primary');
+  assert.equal(primaries.length, 1, 'Save is the one primary');
+  assert.equal(text(primaries[0]), 'Save');
+  assert.deepEqual(sheet.querySelectorAll('button').map(text).filter(Boolean), ['Save', 'Cancel']);
+  // no second implementation behind the pencil
+  const src = fs.readFileSync(path.join(STATIC, 'pages', 'usage.js'), 'utf8');
+  assert.ok(!/Usage\.rename\b|Usage\.applyLabel\b|\bLABEL_MAX\b|P\.labels\b/.test(src), 'no rename sheet, label overlay or 60-character constant left in usage.js');
+  assert.ok(!/api\(\s*'PATCH'/.test(src), 'usage.js sends no PATCH of its own');
+  assert.equal(w.get('typeof Usage.rename'), 'undefined');
+});
+
+test('accounts: Save paints the label on every surface at once (the row, the Limits chips, the headroom line, the state list) while the sheet stays open and PATCH /api/accounts/<key> {label} runs; success closes it', async () => {
+  const { w } = accWorld({ st: STATE_ACCTS() });
+  await go(w);
+  let release;
+  w.ctx.__answers['/api/accounts/'] = () => new Promise((r) => { release = r; });
+  const sheet = w.document.getElementById('sheet');
+  row(w, AK1).querySelector('.ua-edit').click();
+  const input = sheet.querySelector('input');
+  input.value = '  Personal   max ';
+  submit(sheet.querySelector('form'));
+  await tick();
+  assert.equal(sheet.open, true, 'open while the box answers');
+  assert.equal(sheet.querySelector('button.primary').disabled, true);
+  assert.deepEqual(calls(w).filter((c) => c.method === 'PATCH'), [{ method: 'PATCH', path: `/api/accounts/${AK1}`, body: { label: 'Personal max' } }], 'whitespace is tidied before it is sent');
+  assert.equal(text(row(w, AK1).querySelector('.ua-chip')), 'Personal max', 'the row repaints before the answer, without a refetch');
+  assert.equal(text(qa(w, '.ua-pick .ua-pick-l')[0]), 'Personal max', 'so do the Limits chips');
+  assert.match(text(q(w, '.ua-room')), /Personal max, 29 % of the 7-day window left/, 'and the headroom line names the new label');
+  assert.equal(w.get('state.accounts.list[0].label'), 'Personal max', 'the state list (the topbar chip, Settings, the session rows) is the one source');
+  release({ ok: true });
+  await tick(); await tick();
+  assert.notEqual(sheet.open, true, 'the sheet closes once the box has it');
+  assert.match(text(w.document.getElementById('toasts')), /Renamed to Personal max/);
+  assert.equal(w.get('__polls'), 1, 'one fresh state to agree with the server');
+  assert.equal(paths(w, '/api/usage/summary').length, 1, 'no summary refetch for a rename');
+  // the 60 s refresh brings the server's summary (which has the name by then, or not yet): the page keeps the state's label
+  w.run('Usage.cur.cache["7d"].summary = ' + JSON.stringify(ACC_SUMMARY()) + '; Usage.cur.sigs = {}; Usage.paintSummary(Usage.cur)');
+  assert.equal(text(row(w, AK1).querySelector('.ua-chip')), 'Personal max');
+});
+
+test('accounts: a rename made in Settings (state.accounts.list changed, the summary not refetched) reaches the rows, the chips and the headroom line at the next poll, not at the next 60 s refetch', async () => {
+  const { w } = accWorld({ st: STATE_ACCTS() });
+  await go(w);
+  assert.equal(text(row(w, AK2).querySelector('.ua-chip')), 'Work');
+  const n = paths(w, '/api/usage/summary').length;
+  const st = STATE_ACCTS();
+  st.accounts.list[1].label = 'Client work';                                       // what the Settings sheet (or another tab, then a poll) put in the state
+  w.ctx.__st = st;
+  w.run('state = __st; updateCurrentPage(state)');                                 // the 3 s poll
+  assert.equal(text(row(w, AK2).querySelector('.ua-chip')), 'Client work');
+  assert.equal(text(qa(w, '.ua-pick .ua-pick-l')[1]), 'Client work');
+  assert.deepEqual(qa(w, '.ua-edit').map((b) => b.getAttribute('aria-label')), ['Rename Demo', 'Rename Client work'], 'the pencil names it too');
+  assert.match(text(q(w, '.ua-room')), /Client work, 100 % of the 5-hour window left/);
+  assert.equal(paths(w, '/api/usage/summary').length, n, 'nothing was refetched');
+  // a label cleared in Settings goes back to the account name here too
+  const cleared = STATE_ACCTS();
+  cleared.accounts.list[1].label = null;
+  w.ctx.__st = cleared;
+  w.run('state = __st; updateCurrentPage(state)');
+  assert.equal(text(row(w, AK2).querySelector('.ua-chip')), 'Work', 'the name of the account (the summary says "Work" as its label and name)');
+  // an unchanged poll leaves the rows alone
+  const first = row(w, AK2);
+  w.run('updateCurrentPage(state)');
+  assert.equal(row(w, AK2), first);
+  // an account the state does not list keeps the summary's label
+  w.ctx.__st = STATE({ accounts: { current: AK1, list: [{ key: AK1, label: 'Mine' }] } });
+  w.run('state = __st; updateCurrentPage(state)');
+  assert.equal(text(row(w, AK1).querySelector('.ua-chip')), 'Mine');
+  assert.equal(text(row(w, AK2).querySelector('.ua-chip')), 'Work');
+  w.ctx.__st = STATE();                                                            // a state without accounts at all: the summary's labels
+  w.run('state = __st; updateCurrentPage(state)');
+  assert.equal(text(row(w, AK1).querySelector('.ua-chip')), 'Demo');
+  clean(w, 'state labels');
+});
+
+test('accounts: renaming checks the 60 characters; a refused PATCH puts the old label back on every surface and says why in the sheet (and a toast), which stays open; an empty label goes back to the name', async () => {
+  const { w } = accWorld({ st: STATE_ACCTS() });
+  await go(w);
+  const sheet = w.document.getElementById('sheet');
+  row(w, AK2).querySelector('.ua-edit').click();
+  const input = sheet.querySelector('input');
+  assert.equal(input.value, 'Work', 'the label is prefilled');
+  input.value = 'x'.repeat(61);
+  submit(sheet.querySelector('form'));
+  await tick();
+  assert.match(text(sheet.querySelector('.field-err')), /At most 60 characters/);
+  assert.equal(calls(w).filter((c) => c.method === 'PATCH').length, 0, 'nothing was sent');
+  input.value = 'Team';
+  w.ctx.__answers['/api/accounts/'] = { __error: 'account not found' };
+  submit(sheet.querySelector('form'));
+  await tick(); await tick();
+  assert.equal(sheet.open, true, 'the sheet stays');
+  assert.equal(text(sheet.querySelector('.field-err')), 'Rename failed: account not found', 'the reason, under the field');
+  assert.match(text(w.document.getElementById('toasts')), /Rename failed: account not found/);
+  assert.equal(text(row(w, AK2).querySelector('.ua-chip')), 'Work', 'the row went back to what it was');
+  assert.equal(text(qa(w, '.ua-pick .ua-pick-l')[1]), 'Work', 'and so did the chip');
+  assert.equal(w.get('state.accounts.list[1].label'), 'Work');
+  assert.equal(sheet.querySelector('button.primary').disabled, false, 'Save can be tried again');
+  assert.equal(input.value, 'Team', 'what was typed is still there');
+  delete w.ctx.__answers['/api/accounts/'];
+  input.value = '';
+  submit(sheet.querySelector('form'));
+  await tick(); await tick();
+  assert.deepEqual(calls(w).filter((c) => c.method === 'PATCH').at(-1).body, { label: '' });
+  assert.equal(text(row(w, AK2).querySelector('.ua-chip')), 'Work', 'an empty label falls back to the account name (also Work here)');
+  assert.notEqual(sheet.open, true);
+  assert.match(text(w.document.getElementById('toasts')), /Work is back to its own name/);
+});
+
+test('limits: with two accounts a chip each (default the current one, key=claude, its episodes only); one account shows none', async () => {
+  const { w } = accWorld();
+  await go(w);
+  const picks = qa(w, '.ua-pick');
+  assert.deepEqual(picks.map((b) => b.getAttribute('data-account')), [AK1, AK2], 'real accounts only: the pre-tracking history is no account');
+  assert.equal(q(w, '.ua-picks').classList.contains('hidden'), false);
+  assert.deepEqual(picks.map((b) => b.getAttribute('aria-pressed')), ['true', 'false'], 'the current account is the default');
+  assert.deepEqual(picks.map((b) => text(b.querySelector('.ua-pick-l'))), ['Demo', 'Work']);
+  assert.ok(picks[0].querySelector('.ua-dot').classList.contains('hue-blue'));
+  assert.match(paths(w, '/api/series?')[0], /key=claude&/, 'the default request still follows the current account');
+  const line = chartCalls(w, 'line').filter((c) => c.opts.names.some((n) => n.startsWith('rl_')));
+  assert.equal(line.length, 1);
+  assert.deepEqual(plain(line[0].opts.marks).map((m) => [m.label, m.cls]), [['5h limit', 'mark-5h']], 'the current account\'s episode only: the other account\'s and the untracked one are left out');
+  clean(w, 'chips');
+});
+
+test('limits: choosing an account chip reloads only the series with key=acct:<key>, moves the gauges and the episodes to that account, and the current chip goes back to key=claude', async () => {
+  const { w } = accWorld();
+  await go(w);
+  const before = calls(w).length;
+  qa(w, '.ua-pick')[1].click();
+  assert.ok(q(w, '.lim-chart').classList.contains('loading'), 'the skeleton until that account\'s series is here');
+  await loading(w);
+  const fresh = paths(w, '/api/').slice(before);
+  assert.deepEqual(fresh, [`/api/series?series=rl_5h,rl_7d&key=acct:${AK2}&since=7d&points=${/points=(\d+)/.exec(paths(w, '/api/series?')[0])[1]}`], 'one request: the series, nothing else');
+  assert.deepEqual(qa(w, '.ua-pick').map((b) => b.getAttribute('aria-pressed')), ['false', 'true']);
+  const last = chartCalls(w, 'line').filter((c) => c.opts.names.some((n) => n.startsWith('rl_'))).at(-1);
+  assert.deepEqual(plain(last.opts.names), [`rl_5h:acct:${AK2}`, `rl_7d:acct:${AK2}`]);
+  assert.deepEqual(plain(last.opts.labels), { [`rl_5h:acct:${AK2}`]: '5H', [`rl_7d:acct:${AK2}`]: '7D' });
+  assert.deepEqual(plain(last.opts.marks).map((m) => [m.label, m.cls]), [['7d limit', 'mark-7d']], 'only that account\'s episode');
+  // the two gauges above the chart are that account's windows now, and the note says so
+  const g5 = q(w, '.uc-gauges .gauge[data-gauge="5H"]');
+  const g7 = q(w, '.uc-gauges .gauge[data-gauge="7D"]');
+  assert.equal(text(g7.querySelector('.g-val')), '83%');
+  assert.equal(text(g5.querySelector('.g-val')), '0%', 'its 5-hour window rolled over since the reading');
+  assert.match(text(q(w, '[data-sec="limits"] .unote')), /^Gauges show Work's last statusline readings, 2h ago: it is not the account in use\.$/);
+  w.get('pages').usage.update(STATE());                                           // the 3 s poll reports the current account: the gauges stay on the picked one
+  assert.equal(text(g7.querySelector('.g-val')), '83%');
+  // a range change keeps the account
+  q(w, 'button[data-range="30d"]').click();
+  await loading(w);
+  assert.ok(paths(w, '/api/series?').at(-1).includes(`key=acct:${AK2}&since=30d`), paths(w, '/api/series?').at(-1));
+  // and the current account's chip is the way back (no acct: key: claude follows whoever is logged in)
+  qa(w, '.ua-pick')[0].click();
+  await loading(w);
+  assert.match(paths(w, '/api/series?').at(-1), /key=claude&since=30d/);
+  assert.equal(text(q(w, '.uc-gauges .gauge[data-gauge="7D"] .g-val')), '59%', 'the live reading of the state again');
+  assert.deepEqual(qa(w, '.ua-pick').map((b) => b.getAttribute('aria-pressed')), ['true', 'false']);
+  assert.deepEqual(plain(chartCalls(w, 'line').at(-1).opts.names), ['rl_5h:claude', 'rl_7d:claude']);
+  clean(w, 'account switch');
+});
+
+test('limits: a late series of the account left behind is dropped; an account with no samples says so; a refresh keeps the pick', async () => {
+  const { w, timers } = accWorld();
+  await go(w);
+  let release;
+  w.ctx.__hold = new Promise((r) => { release = r; });
+  w.ctx.__answers['/api/series?series=rl_5h,rl_7d'] = (p) => (p.includes('key=acct:') ? w.get('__hold').then(() => SERIES_OF(AK2)) : SERIES());
+  const lines = chartCalls(w, 'line').length;
+  qa(w, '.ua-pick')[1].click();
+  qa(w, '.ua-pick')[0].click();                                                   // back to the current account before Work's series arrived
+  await loading(w);
+  release();
+  await tick(); await tick();
+  assert.equal(plain(chartCalls(w, 'line').at(-1).opts.names)[0], 'rl_5h:claude', 'Work\'s late answer was not drawn');
+  assert.ok(chartCalls(w, 'line').length >= lines);
+  assert.deepEqual(qa(w, '.ua-pick').map((b) => b.getAttribute('aria-pressed')), ['true', 'false']);
+  // no samples for the picked account: the empty state names it
+  w.ctx.__answers['/api/series?series=rl_5h,rl_7d'] = (p) => (p.includes('key=acct:') ? { since: ISO(86400), until: ISO(0), step: 600, t: [NOW - 600, NOW], series: {}, meta: {} } : SERIES());
+  qa(w, '.ua-pick')[1].click();
+  await loading(w);
+  assert.match(text(q(w, '[data-sec="limits"] .uslot')), /No samples for Work in this range.*another account/);
+  assert.ok(q(w, '.lim-chart').classList.contains('hidden'));
+  // the 60 s refresh keeps asking for the picked account
+  const n = paths(w, '/api/series?').length;
+  timers[0].fn();
+  await loading(w);
+  assert.ok(paths(w, '/api/series?').slice(n).every((p) => p.includes(`key=acct:${AK2}`)));
+  clean(w, 'late');
+});
+
+test('accounts: with charts.js missing the Accounts section still paints, renames and picks; only the chart sections show their inline error', async () => {
+  const { w } = accWorld({ charts: false });
+  await go(w);
+  assert.equal(qa(w, '[data-sec="accounts"] .uerr').length, 0);
+  assert.equal(qa(w, '[data-sec="accounts"] .ua-row').length, 3, 'two accounts and the total (the history row has nothing in 7 days)');
+  assert.equal(cell(row(w, AK1), 'tokens'), '20.0M', 'the fallback formatter');
+  assert.equal(cell(row(w, AK1), 'usd'), '$60.00');
+  assert.ok(qa(w, '.ua-pick').length === 2);
+  qa(w, '.ua-pick')[1].click();
+  await loading(w);
+  assert.match(text(q(w, '[data-sec="limits"] .uerr')), /charts\.js did not load|chart library did not load/);
+  clean(w, 'no charts');
+});
+
+test('accounts: the rows are left alone while nothing moved and repainted when a minute has passed (the countdowns); an unmount leaves no timer', async () => {
+  const { w, timers } = accWorld();
+  w.run(`globalThis.__clock = Date.now(); Date.now = () => __clock;`);            // a frozen clock: no minute boundary can fall inside the test
+  await go(w);
+  const first = row(w, AK1);
+  const countdown = (r) => text(r.querySelector('.gauge[data-gauge="5H"] .g-reset'));
+  const before = countdown(first);
+  assert.match(before, /^resets in [23]h\d*m? · \d\d:\d\d$/);
+  w.run('Usage.paintSummary(Usage.cur)');
+  assert.equal(row(w, AK1), first, 'same minute, same numbers: the same nodes');
+  w.run('Date.now = () => __clock + 61000');
+  timers[0].fn();                                                                  // the 60 s refresh
+  await loading(w);
+  assert.notEqual(row(w, AK1), first, 'a new minute repaints the rows');
+  assert.notEqual(countdown(row(w, AK1)), before, 'with the countdown moved on');
+  assert.equal(qa(w, '.ua-row').length, 3);
+  assert.equal(text(row(w, AK1).querySelector('.ua-chip')), 'Demo');
+  w.run('pages.usage.unmount()');
+  assert.equal(w.get('Usage.cur'), null);
+});
+
+test('charts.css: the accounts section is full width on a wide grid, a card below 700 px of its own width and a table from there (a 1024 px tablet gets the table), with 44 px targets on touch', () => {
+  const css = fs.readFileSync(path.join(STATIC, 'charts.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.match(css, /#page \.ugrid > \.usec\[data-sec="accounts"\][^{]*\{\s*grid-column:\s*1 \/ -1/, 'a full-width row of the two-column grid');
+  assert.match(css, /#page \.usec\[data-sec="accounts"\]\s*\{[^}]*container-type:\s*inline-size/, 'the section is the container: the sidebar takes width a viewport query would not see');
+  const table = /@container accsec \(min-width:\s*700px\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  assert.ok(table, 'the table layout lives in a container query that starts at 700 px: the section of a 1024 x 768 tablet (1024 - 260 sidebar - gutters) is about 730');
+  assert.ok(!/min-width:\s*760px/.test(css), 'and no 760 px threshold is left');
+  assert.match(table[1], /\.uacc-head, #page \.ua-row \{ display:grid; grid-template-columns:(?:minmax\([^)]*\)\s*){8}/, 'eight columns: account, 5H, 7D, tokens, hours, sessions, hits, dollars');
+  // the table must fit the narrowest section it is used in: the sum of the column minimums + the gaps + the row padding is at most 700 px
+  const cols = /grid-template-columns:((?:\s*minmax\([^)]*\))+)\s*;\s*gap:0 (\d+)px/.exec(table[1]);
+  assert.ok(cols, 'the columns and the column gap');
+  const mins = [...cols[1].matchAll(/minmax\((\d+)px/g)].map((m) => Number(m[1]));
+  const pad = Number(/#page \.ua-row \{[^}]*padding:\s*\d+px (\d+)px/.exec(table[1])[1]);
+  assert.equal(mins.length, 8);
+  assert.ok(mins.reduce((a, b) => a + b, 0) + 7 * Number(cols[2]) + 2 * pad <= 700, `the table needs ${mins.reduce((a, b) => a + b, 0) + 7 * Number(cols[2]) + 2 * pad} px at the least: it must fit the 700 px it starts at`);
+  assert.doesNotMatch(css.replace(table[0], ''), /#page \.uacc-head \{[^}]*display:\s*(?:grid|flex)/, 'under the table width the header row is gone');
+  assert.match(css, /#page \.uacc-head \{ display:none; \}/);
+  assert.match(css, /@media \(pointer:coarse\) \{ #page \.ua-edit \{ min-width:var\(--tap\); \} \}/);
+  assert.match(css, /html\.force-coarse #page \.ua-edit \{ min-width:var\(--tap\); \}/);
+  assert.doesNotMatch(css, /#page \.ua-row[^{]*\{[^}]*(?:min-width:\s*\d{3,}px|white-space:\s*nowrap)/, 'a card never forces a width');
+  assert.match(css, /#page \.ua-room\.attn \{[^}]*var\(--mute-amber-bd\)[^}]*var\(--mute-amber-bg\)[^}]*var\(--mute-amber\)/, 'the muted amber tokens, not the loud warn colour');
+});
+
+test('accounts: the card header keeps the rename pencil beside the identity for every account: name, plan, current marker and email wrap inside .ua-who, the pencil is its own non-wrapping flex item', async () => {
+  const { w } = accWorld();
+  await go(w);
+  for (const key of [AK1, AK2]) {
+    const id = row(w, key).querySelector('.ua-id');
+    assert.deepEqual(id.children.map((n) => n.className.split(' ')[0]), ['ua-who', 'icon'], `${key}: the header is who + pencil`);
+    assert.ok(id.children[1].classList.contains('ua-edit'), 'the pencil is a direct child of the header, not inside the wrapping part');
+    assert.equal(id.querySelector('.ua-who .ua-edit'), null);
+  }
+  assert.ok(row(w, AK1).querySelector('.ua-who .ua-current') && row(w, AK1).querySelector('.ua-who .ua-email'), 'the current account\'s long line (chip, plan, current, email) is what used to push the pencil down');
+  const css = fs.readFileSync(path.join(STATIC, 'charts.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const header = /#page \.ua-id \{([^}]*)\}/.exec(css);
+  assert.ok(header && /display:\s*flex/.test(header[1]) && !/flex-wrap:\s*wrap/.test(header[1]), 'the header itself never wraps');
+  assert.match(css, /#page \.ua-who \{[^}]*flex:1 1 0;[^}]*display:flex;[^}]*flex-wrap:wrap/, 'the identity wraps inside its own box');
+  assert.match(css, /#page \.ua-edit \{[^}]*flex:none/, 'the pencil keeps its size and its place');
+});
+
+test('accounts: the Total row\'s dollar cell says the figure is rounded (the rows are rounded one by one: a $1 gap is not an error); the rows keep the API-equivalent hint', async () => {
+  const { w } = accWorld();
+  await go(w);
+  assert.match(q(w, '.ua-row.total [data-col="usd"]').getAttribute('title'), /rounded/i);
+  assert.match(row(w, AK1).querySelector('[data-col="usd"]').getAttribute('title'), /API list price/);
+  assert.doesNotMatch(row(w, AK1).querySelector('[data-col="usd"]').getAttribute('title'), /rounded/i);
+});
+
+// ---------------------------------------------------------------- demo mode (?demo=1): the fixtures through the real api()
+
+/** The Usage page on the demo fixtures: core.js's real api() in demo mode (fetch serves /static/demo/*.json), the state rebased the way poll() gets it. */
+function demoUsageWorld() {
+  const w = makeWorld({
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    setInterval: () => 1, clearInterval() {},
+    fetch: async (url) => {
+      const m = /^\/static\/demo\/(\w+)\.json$/.exec(String(url));
+      if (!m) throw new Error(`demo mode asked for ${url}`);
+      const body = fs.readFileSync(path.join(STATIC, 'demo', `${m[1]}.json`), 'utf8');
+      return { ok: true, status: 200, statusText: 'OK', json: async () => JSON.parse(body) };
+    },
+  });
+  installDom(w);
+  w.location.search = '?demo=1';
+  for (const f of ['core.js', 'components.js', 'keymap.js', 'router.js', 'pages/agents.js', 'pages/settings.js']) w.load(f);
+  w.run(CHARTS_STUB);
+  w.load('pages/usage.js');
+  w.ctx.__demo = fs.readFileSync(path.join(STATIC, 'demo', 'state.json'), 'utf8');
+  w.run('globalThis.__clock = Date.now(); Date.now = () => __clock;');            // one instant for every rebase: the state's and the summary's reset times then agree to the second
+  w.run('state = demoRebase(JSON.parse(__demo))');
+  return w;
+}
+
+test('demo mode: the Accounts rows read the same 5H percentage and countdown as the topbar pill and the Limits gauge, and the 7D reset time is the gauge\'s; every other section still paints', async () => {
+  const w = demoUsageWorld();
+  await go(w);
+  assert.equal(row(w, 'unknown'), null, 'the history row has nothing in 7 days');
+  const r1 = qa(w, '[data-sec="accounts"] .ua-row[data-current]')[0];
+  assert.ok(r1, 'the account in use');
+  const g5 = r1.querySelector('.gauge[data-gauge="5H"]');
+  const g7 = r1.querySelector('.gauge[data-gauge="7D"]');
+  const lim5 = q(w, '.uc-gauges .gauge[data-gauge="5H"]');
+  const lim7 = q(w, '.uc-gauges .gauge[data-gauge="7D"]');
+  const pct = w.get('state.usage.value.five_hour.used_percentage');
+  assert.equal(text(g5.querySelector('.g-val')), `${pct}%`, 'the Accounts row says what the topbar pill says (state.usage), not "0%"');
+  assert.equal(text(g5.querySelector('.g-val')), text(lim5.querySelector('.g-val')));
+  assert.match(text(g5.querySelector('.g-reset')), /^resets in \d+[hm]/, 'with a countdown, not "window rolled over"');
+  assert.equal(text(g5.querySelector('.g-reset')), text(lim5.querySelector('.g-reset')), 'the same countdown as the Limits gauge');
+  assert.equal(text(g7.querySelector('.g-val')), text(lim7.querySelector('.g-val')));
+  assert.equal(text(g7.querySelector('.g-reset')), text(lim7.querySelector('.g-reset')), 'the 7D reset time of the row is the gauge\'s');
+  assert.doesNotMatch(text(q(w, '[data-sec="accounts"]')).replace(/Work[\s\S]*$/, ''), /rolled over/, 'only the other account, whose window did reset, says so');
+  // the rebase also shifts the ISO strings of the other sections: they must still draw
+  assert.equal(qa(w, 'section.usec .uerr').length, 0, qa(w, 'section.usec .uerr').map(text).join(' | '));
+  assert.equal(qa(w, '.usk').length, 0, 'no skeleton left');
+  assert.equal(chartCalls(w, 'stackedBars').at(-1).days.length, 7, 'the daily bars');
+  assert.equal(chartCalls(w, 'heatmap').length, 1, 'the heatmap');
+  assert.ok(qa(w, '.usessions .srow').length >= 2, 'the top sessions');
+  assert.match(text(q(w, '[data-sec="projects"] .ubody')), /phasezero/, 'the projects section');
+  const hits = (key) => cell(row(w, key), 'hits');
+  assert.deepEqual([hits('7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001'), hits('7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a002')], ['2', '1'], 'the episodes keep their age: the fixture\'s limit hits are inside the last 7 days now as then');
+  clean(w, 'demo usage');
+});
+
 // ---------------------------------------------------------------- the real charts.js
 
 const REAL = path.join(STATIC, 'charts.js');
@@ -731,5 +1330,22 @@ test('against the real charts.js (stub uPlot): no section is blank, no error blo
   await loading(w);
   assert.equal(qa(w, '.uerr').length, 0);
   clean(w, 'real charts');
+  w.run('pages.usage.unmount()');
+});
+
+test('against the real charts.js (stub uPlot): the account chips rebuild the limits chart for another account, no error block, no stray undefined/NaN', { skip: !fs.existsSync(REAL) && 'charts.js does not exist yet' }, async () => {
+  const { w } = accWorld({ charts: false });
+  w.run(`globalThis.__uplots = []; globalThis.uPlot = class { constructor(o, d, h) { __uplots.push({ o, d, h }); this.root = document.createElement('div'); if (h && h.append) h.append(this.root); }
+    setData() {} setSize() {} destroy() {} redraw() {} };`);
+  w.load('charts.js');
+  await go(w);
+  assert.equal(qa(w, '.uerr').length, 0, qa(w, '.uerr').map(text).join(' | '));
+  const n = w.get('__uplots').length;
+  qa(w, '.ua-pick')[1].click();
+  await loading(w);
+  assert.equal(qa(w, '.uerr').length, 0, qa(w, '.uerr').map(text).join(' | '));
+  assert.ok(w.get('__uplots').length > n, 'another series set builds another chart');
+  assert.equal(qa(w, '[data-sec="accounts"] .ua-row').length, 3);
+  clean(w, 'real charts, accounts');
   w.run('pages.usage.unmount()');
 });

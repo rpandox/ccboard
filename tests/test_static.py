@@ -1209,7 +1209,8 @@ def test_demo_usage_summary_fixture_matches_build_and_agrees_with_the_state_fixt
     empty = usage_summary.build(DB(tmp_path / "empty.db"), days=30, tz_min=345, now=now)
     missing = _missing_keys(empty, fx, "usage_summary")
     assert not missing, "app/static/demo/usage_summary.json lacks keys usage_summary.build returns:\n  " + "\n  ".join(missing)
-    assert set(fx) == set(empty), "and nothing the builder does not return"
+    assert set(fx) - {"demo"} == set(empty), "and nothing the builder does not return (the fixture clock `demo` is the one extra: demoApi rebases the summary with it)"
+    assert fx["demo"]["epoch"] == demo_epoch(state), "the same fixture clock as state.json: demoApi shifts the reset times and stamps by it"
     assert fx["source"] == "samples" and fx["tz_min"] == 345 and fx["generated_at"] == empty["generated_at"]
     # daily: 30 local days ending on the fixture clock's day (Kathmandu), zero days present and flagged
     assert [d["day"] for d in fx["daily"]] == [d["day"] for d in empty["daily"]]

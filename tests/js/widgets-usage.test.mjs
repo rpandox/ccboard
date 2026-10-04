@@ -462,3 +462,69 @@ test('charts.js loaded AFTER widgets.js works the same: the card finds Charts wh
   assert.equal(root.querySelectorAll('.uc-spark svg').length, 1);
   c.destroy();
 });
+
+// ---------------------------------------------------------------- v0.5.17b: the accounts line
+
+const TOTAL = (over = {}) => ({ today: { total: 76.3, tokens: 170595051, hours: 7.85, sessions: 5 }, '7d': { total: 296.2, tokens: 640692274, hours: 37.3, sessions: 15 },
+  '30d': { total: 1726.8, tokens: 3707620720, hours: 80.32, sessions: 41 }, accounts: 2, headroom_5h: [], headroom_7d: [], ...over });
+const withTotal = (over) => ({ ...SUMMARY, total: TOTAL(over) });
+const acctLine = (root) => root.querySelector('.uc-acct');
+
+test('Widgets.tokens: 812, 1.2k, 48.7M, 1.2B; no trailing .0, never 1000k, never NaN', () => {
+  const w = wWorld();
+  const f = (v) => w.run(`Widgets.tokens(${JSON.stringify(v)})`);
+  assert.deepEqual([0, 7, 812, 999.6].map(f), ['0', '7', '812', '1k']);
+  assert.deepEqual([1000, 1234, 48700000, 170595051, 999950, 1.2e9].map(f), ['1k', '1.2k', '48.7M', '170.6M', '1M', '1.2B']);
+  for (const bad of [null, undefined, 'x', -5, NaN, Infinity]) assert.equal(f(bad), '0', String(bad));
+});
+
+test('with more than one account the card gets one dim line: "N accounts · <tokens today> tokens today"; it is plain text, not another link', async () => {
+  const w = wWorld();
+  const { root, card: c } = card(w, { answers: { '/api/series': SERIES, '/api/usage/summary': withTotal() } });
+  assert.ok(acctLine(root), 'built with the card');
+  assert.equal(acctLine(root).classList.contains('hidden'), true, 'hidden until the summary came back');
+  await c.refresh();
+  const line = acctLine(root);
+  assert.equal(line.classList.contains('hidden'), false);
+  assert.equal(text(line), '2 accounts · 170.6M tokens today');
+  assert.ok(line.classList.contains('dim'));
+  assert.equal(line.tagName, 'DIV');
+  assert.equal(root.querySelectorAll('a[href="#/usage"]').length, 3, 'still one link in the header and one per gauge');
+  // it sits under the gauges and the burn line, above the charts
+  const order = root.children.map((n) => (n.className.match(/uc-(head|gauges|burn|acct|charts)/) || [])[1]);
+  assert.deepEqual(order, ['head', 'gauges', 'burn', 'acct', 'charts']);
+  c.destroy();
+});
+
+test('one account, no `total` (an older box), or nothing sensible: no line, no NaN, and the rest of the card is unchanged', async () => {
+  for (const total of [TOTAL({ accounts: 1 }), TOTAL({ accounts: 0 }), TOTAL({ accounts: null }), TOTAL({ accounts: 'x' })]) {
+    const w = wWorld();
+    const { root, card: c } = card(w, { answers: { '/api/series': SERIES, '/api/usage/summary': { ...SUMMARY, total } } });
+    await c.refresh();
+    assert.equal(acctLine(root).classList.contains('hidden'), true, JSON.stringify(total.accounts));
+    assert.equal(root.classList.contains('hidden'), false, 'the card itself shows');
+    c.destroy();
+  }
+  const w = wWorld();
+  const { root, card: c } = card(w);                                                  // the existing SUMMARY has no `total` at all
+  await c.refresh();
+  assert.equal(acctLine(root).classList.contains('hidden'), true);
+  assert.equal(text(acctLine(root)), '');
+  assert.ok(!/NaN|undefined/.test(root.textContent));
+  c.destroy();
+});
+
+test('a total without today still says how many accounts there are (0 tokens), and the line follows the 60 s refresh both ways', async () => {
+  const w = wWorld();
+  let n = 2;
+  const { root, card: c } = card(w, { answers: { '/api/series': SERIES, '/api/usage/summary': () => withTotal({ accounts: n, today: undefined }) } });
+  await c.refresh();
+  assert.equal(text(acctLine(root)), '2 accounts · 0 tokens today');
+  n = 3;
+  await c.refresh();
+  assert.equal(text(acctLine(root)), '3 accounts · 0 tokens today');
+  n = 1;                                                                              // the second subscription went away
+  await c.refresh();
+  assert.equal(acctLine(root).classList.contains('hidden'), true);
+  c.destroy();
+});

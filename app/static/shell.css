@@ -65,6 +65,18 @@ a.brand { display:inline-flex; align-items:center; min-height:var(--tap); color:
 @media (pointer:coarse) { .pill { height:30px; } .pill.link { min-height:var(--tap); } }
 html.force-coarse .pill { height:30px; }
 html.force-coarse .pill.link { min-height:var(--tap); }
+/* v0.5.17b: the account chip before the 5H / 7D pills (shell.js Shell.patchAccount; only with more than one account). It wears the account's muted hue
+   (chipHue('account', key)), the amber tint when another account has more room; a link to #/usage like the pills, 44 px tall on a touch screen. */
+#topbar a.pill.acct { padding:0 7px; background:var(--hue-bg, none); border-color:var(--hue-bd, var(--line)); color:var(--hue, var(--fg-2)); text-decoration:none; }
+#topbar a.pill.acct .pl { color:inherit; font-weight:700; }
+@media (hover:hover) { #topbar a.pill.acct:hover { border-color:var(--hue, var(--dim-2)); color:var(--hue, var(--fg)); } }
+body[data-shell=compact] #pills { gap:4px; }
+/* 390 px has no room for the chip as well as the brand text: with the account chip shown (#topbar.has-acct, set by Shell.patchAccount) the compact shell drops the
+   'ccboard' brand (Home is the first tab of the bottom nav, the drawer carries the brand too) so the + button stays inside the viewport: 401 px of 390 without this.
+   The chip itself and every 44 px target stay; on a touch screen the chip is a 44 px square at least. */
+body[data-shell=compact] #topbar.has-acct a.brand { display:none; }
+@media (pointer:coarse) { #topbar a.pill.acct { min-width:var(--tap); justify-content:center; } }
+html.force-coarse #topbar a.pill.acct { min-width:var(--tap); justify-content:center; }
 .agent-dots { display:flex; align-items:center; }
 .ad { display:inline-flex; align-items:center; justify-content:center; min-width:28px; min-height:var(--tap); font-family:var(--font-glyph); font-size:14px; color:var(--dim-2); text-decoration:none; }
 .ad.ok { color:var(--ok); } .ad.warn { color:var(--warn); } .ad.bad { color:var(--bad); }
@@ -202,8 +214,9 @@ body[data-shell=compact] #toasts { bottom:calc(var(--sab) + var(--bnav-h) + 14px
 
 /* tabs (components.js tabs()): Blueprint tab list with the accent underline, no React indicator */
 .tabs { margin:4px 0 8px; }
-.tablist { display:flex; flex-wrap:wrap; gap:0; border-bottom:1px solid var(--line); }
-.bp5-dark .tab { display:inline-flex; align-items:center; gap:6px; min-height:var(--tap); min-width:0; padding:0 12px; font-size:13px; line-height:1.2; color:var(--dim); box-shadow:none; user-select:none; }
+.tablist { display:flex; flex-wrap:nowrap; gap:0; overflow-x:auto; overflow-y:hidden; overscroll-behavior-x:contain; scrollbar-width:none; border-bottom:1px solid var(--line); }   /* one row that scrolls sideways: six tabs wrapped onto a second row at 390 */
+.tablist::-webkit-scrollbar { display:none; }
+.bp5-dark .tab { display:inline-flex; flex:none; align-items:center; gap:6px; min-height:var(--tap); min-width:0; white-space:nowrap; padding:0 12px; font-size:13px; line-height:1.2; color:var(--dim); box-shadow:none; user-select:none; }
 @media (hover:hover) { .bp5-dark .tab:not([aria-disabled=true]):hover { color:var(--fg); } }
 /* the selected tab keeps its colour even while Blueprint's own :hover rule (0,4,0) is stuck on it after a tap on a touch screen */
 .bp5-dark .tab[aria-selected=true], .bp5-dark .tab[aria-selected=true]:not([aria-disabled=true]) { color:var(--fg); box-shadow:inset 0 -2px 0 var(--sig); }

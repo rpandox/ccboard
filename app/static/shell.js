@@ -123,13 +123,16 @@ Shell.pill = function (key, label) {
 
 Shell.buildTopbar = function (bar) {
   const R = Shell.refs;
+  R.bar = bar;                                                                 // patchAccount marks it .has-acct (shell.css gives the chip its room in the compact shell)
   R.navBtn = el('button', { class: 'icon minimal nav-toggle', type: 'button', 'aria-label': 'Open menu', title: 'Menu', onclick: () => Shell.navToggle() }, ic('menu'));
   R.crumbs = el('div', { id: 'crumbs', class: 'crumbs' });
   R.p5 = Shell.pill('5h', '5H');
   R.p7 = Shell.pill('7d', '7D');
   R.pCodex = Shell.pill('codex', 'CX');
   R.pSpend = Shell.pill('spend', 'SPEND');
-  R.pills = el('div', { id: 'pills', class: 'pills' }, R.p5, R.p7, R.pCodex, R.pSpend);
+  R.acctT = el('b', { class: 'pl' });
+  R.acct = el('a', { class: 'pill acct hidden', 'data-pill': 'acct', href: '#/usage' }, R.acctT);       // v0.5.17b: which subscription account the pills below belong to (only with more than one)
+  R.pills = el('div', { id: 'pills', class: 'pills' }, R.acct, R.p5, R.p7, R.pCodex, R.pSpend);
   const g = stateGlyph('waiting');
   g.setAttribute('aria-hidden', 'true'); g.removeAttribute('role'); g.removeAttribute('title');
   R.inboxN = el('span', { class: 'pv' });
@@ -199,12 +202,67 @@ Shell.patchPill = function (node, w, what) {
   Shell.setVar(node, '--pct', String(Math.round(pct)));
 };
 
+/* The account chip of the topbar (v0.5.17b), or null with fewer than two accounts or no current one. {key, name, text, hue, title, amber}:
+   text = the first two letters of the label (else the name, else the email), hue = chipHue('account', key) (one subscription, one hue everywhere).
+   The chip is the amber tint, and its title names the better account and the window, when the current account is at 85 % or more of a window and another
+   account has strictly more of THAT window left: the same rule as the Usage page's 'most room' line (Usage.room): the 7-day window is checked first, then the
+   5-hour one, and the first that trips decides: '<label> has 80 % of the 5-hour window left'. A window that has reset since its last reading counts as
+   empty (0 % used), an account with no reading of the window is not offered. The current account's own numbers are the pills' (state.usage), the others'
+   come from state.accounts. */
+Shell.accountChip = function (st, now) {
+  if (typeof agentsAccounts !== 'function' || typeof agentsAcctUsedNow !== 'function') return null;
+  const list = agentsAccounts(st);
+  if (list.length < 2) return null;
+  const t = typeof now === 'number' ? now : Date.now() / 1000;
+  const curKey = st.accounts && st.accounts.current;
+  const cur = list.find((a) => a.current) || list.find((a) => a.key === curKey) || null;
+  if (!cur) return null;
+  const name = agentsAcctName(cur);
+  let move = null;                                                   // {who, left, win}: where to go instead
+  for (const [win, nm] of [['7d', '7-day'], ['5h', '5-hour']]) {
+    const used = agentsAcctUsedNow(st, cur, win, t);
+    if (used === null || used < 85) continue;
+    let best = null;
+    for (const a of list) {
+      if (a === cur) continue;
+      const u = agentsAcctUsed(a, win, t);
+      if (u !== null && (!best || 100 - u > best.left)) best = { a, left: 100 - u };
+    }
+    if (best && best.left > 100 - used) { move = { who: agentsAcctName(best.a), left: best.left, win: nm }; break; }
+  }
+  const letters = Array.from(name.replace(/\s+/g, '')).slice(0, 2).join('');
+  return {
+    key: cur.key, name, amber: !!move,
+    text: letters.charAt(0).toUpperCase() + letters.slice(1),
+    hue: move ? 'hue-amber' : chipHue('account', cur.key),
+    title: move ? `${move.who} has ${Math.round(move.left)} % of the ${move.win} window left` : `Account: ${name}${cur.plan ? ' (' + cur.plan + ')' : ''} · usage per account`,
+  };
+};
+
+/* Paint the chip; returns what accountChip answered (patchUsage titles the pills with its name). */
+Shell.patchAccount = function (st) {
+  const R = Shell.refs;
+  if (!R || !R.acct) return null;
+  let c = null;
+  try { c = Shell.accountChip(st); } catch (e) { console.error('ccboard account chip', e); }
+  R.acct.classList.toggle('hidden', !c);
+  if (R.bar) R.bar.classList.toggle('has-acct', !!c);                  // the compact topbar drops the brand text for the chip (shell.css)
+  if (!c) return null;
+  setText(R.acctT, c.text);
+  if (typeof chipHueSet === 'function') chipHueSet(R.acct, c.hue);
+  R.acct.setAttribute('title', c.title);
+  R.acct.setAttribute('aria-label', c.amber ? `${c.name}: ${c.title}` : c.title);      // the amber title alone would not say whose numbers the pills show
+  return c;
+};
+
 Shell.patchUsage = function (st) {
   const R = Shell.refs;
   if (!R || !st) return;
   const rl = (st.usage && st.usage.value) || {};
-  Shell.patchPill(R.p5, rl.five_hour, '5-hour window');
-  Shell.patchPill(R.p7, rl.seven_day, 'weekly window');
+  const who = Shell.patchAccount(st);
+  const pre = who ? who.name + ' · ' : '';                       // with several accounts the pill title names the one whose numbers it shows
+  Shell.patchPill(R.p5, rl.five_hour, pre + '5-hour window');
+  Shell.patchPill(R.p7, rl.seven_day, pre + 'weekly window');
   Shell.patchPill(R.pSpend, rl.spend_limit, 'spend limit');
   const cx = Shell.codexWindow(st.usage_codex);
   Shell.patchPill(R.pCodex, cx, 'Codex ' + (Shell.windowLabel(cx && cx.minutes) || 'window'));

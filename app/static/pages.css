@@ -564,5 +564,15 @@ html.force-coarse #page a.gauge { min-height:var(--tap); }
   #page .settings-page .kv > .kv-act { justify-content:flex-start; }
 }
 
+/* v0.5.17b accounts: the session row's account chip (a .bdg in the account's hue: label or name, cut at 14 characters), the Home usage card's dim line
+   ('2 accounts · 170.6M tokens today', plain text: the gauges and the header already link to the Usage page) and the Settings > Accounts rows (name in the hue, plan + current chips, email, readings, Rename) */
+#page .bdg-acct { max-width:14ch; overflow:hidden; text-overflow:ellipsis; }
+#page .uc-acct { margin:2px 0 4px; font:12px/1.4 var(--font-mono); color:var(--dim); }
+#page .badge.cur { border-color:var(--line-strong, var(--line)); color:var(--fg); }                /* 'current' is a plain marker: the accent and the hues carry other meanings */
+#page .settings-page .set-chips { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+#page .settings-page .set-acct > .k { overflow-wrap:anywhere; }
+#page .settings-page .set-acct > .k[class*="hue-"] { color:var(--hue); }
+#page .settings-page .set-note { margin:6px 0 0; font-size:13px; line-height:1.5; max-width:62ch; }
+
 /* search: Peek and Attach sit at the right of the result's head, beside the role chip, the place and the time */
 #page .res-actions { margin-left:auto; display:inline-flex; align-items:center; gap:6px; }

@@ -935,7 +935,9 @@ test('the away strip adds PRs, scheduled runs and limit episodes: one fetch of t
   const st = fixtureState();
   st.tasks.push({ id: 8, tmux: 'x--y--z', title: 'pr task', project: 'shop', repo: 'api', column: 'pr', pr_number: 9, updated: ISO(60) });
   st.jobs[0].last_run_at = ISO(30);
+  const before = Date.now() / 1000;       // the last-seen time is stamped while the world is built: bracket that moment, a loaded machine can take seconds afterwards
   const { w, strip } = awayWorld(sinceAgo, { state: st, answers: { '/api/series/events': { events: [ev(7200, 111), ev(7100, 111), ev(60, 222)], truncated: false } } });
+  const after = Date.now() / 1000;
   await tick(); await tick();
   const links = awayLinks(strip());
   assert.deepEqual(links.map((l) => l[0]), ['1 done', '2 need you', '1 error', '2 limit hits', '1 PR', '1 scheduled run', '1 blocked']);
@@ -945,7 +947,8 @@ test('the away strip adds PRs, scheduled runs and limit episodes: one fetch of t
   assert.equal(fetches.length, 1, 'one fetch, at mount');
   const url = new URL('http://x' + fetches[0].path);
   assert.equal(url.searchParams.get('series'), 'lim');
-  assert.ok(Math.abs(Date.parse(url.searchParams.get('since')) / 1000 - (Date.now() / 1000 - sinceAgo)) < 5, 'since is the last seen time, as ISO');
+  const since = Date.parse(url.searchParams.get('since')) / 1000;
+  assert.ok(since >= before - sinceAgo - 2 && since <= after - sinceAgo + 2, 'since is the last seen time, as ISO');
   for (let i = 0; i < 3; i++) setState(w, st);
   assert.equal(plain(w.get('__calls')).filter((c) => c.path.startsWith('/api/series/events')).length, 1, 'polls never refetch');
   // an error leaves the strip without the episodes
@@ -1097,4 +1100,104 @@ test('?demo=1: the fixture feeds Inbox.kind every kind it has a card for, in the
   const everyone = plain(w.run('rosterSessions(state).map((s) => [s.tmux, Inbox.kind(s, state)])'));
   assert.equal(everyone.find((x) => x[0] === ROOT)[1], '', 'the ended session is not asking for anything');
   assert.equal(everyone.find((x) => x[0] === CX)[1], '', 'nor the working Codex session');
+});
+
+// ---------------------------------------------------------------- v0.5.17b: the account chip on a rich row, chipHue('account', key)
+
+const ACCT_A = '7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001', ACCT_B = '7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a002';
+const acct = (key, over = {}) => ({ key, email: `${key.slice(-4)}@example.com`, name: null, label: null, plan: 'max', rl_5h: 10, rl_7d: 20, resets_5h: EPOCH(-120), resets_7d: EPOCH(-4000), current: false, ...over });
+const TWO = (over = {}) => ({ current: ACCT_A, list: [acct(ACCT_A, { name: 'Demo', current: true }), acct(ACCT_B, { name: 'Work', label: 'Work', plan: 'pro' })], ...over });
+const acctState = (accounts, s) => fakeState({ projects: projectsOf({ shop: { api: [s] } }), accounts });
+const acctChip = (row) => bdg(row, 'bdg-acct');
+
+test('chipHue(account, key): one stable hue per key from the project pool (never amber or rose), the same hash as a project name', () => {
+  const { w } = homeWorld();
+  const hue = (kind, key) => w.run(`chipHue(${JSON.stringify(kind)}, ${JSON.stringify(key)})`);
+  const POOL = ['hue-blue', 'hue-teal', 'hue-green', 'hue-violet', 'hue-slate'];
+  const seen = new Set();
+  for (const key of [ACCT_A, ACCT_B, 'a001', 'a002', 'unknown', 'k1', 'k2', 'k3', 'k4', 'k5', 'k6']) {
+    const h = hue('account', key);
+    assert.ok(POOL.includes(h), `${key} -> ${h}`);
+    assert.equal(hue('account', key), h, 'stable');
+    assert.equal(h, hue('project', key), 'the same stable hash as a project name');
+    seen.add(h);
+  }
+  assert.ok(seen.size >= 3, 'the keys spread over the pool');
+  assert.equal(hue('account', ''), hue('account', null), 'no key is still a hue, not a throw');
+});
+
+test('the account chip shows on a Claude row only when the board has more than one account', () => {
+  const { w } = homeWorld();
+  const s = sess('shop', 'api', 's1', { account: ACCT_B });
+  const row = rowFor(w, s, acctState(TWO(), s));
+  assert.ok(shown(acctChip(row)));
+  assert.equal(text(acctChip(row)), 'Work');
+  assert.ok(acctChip(row).classList.contains(w.run(`chipHue('account', ${JSON.stringify(ACCT_B)})`)), 'the account\'s hue');
+  assert.match(acctChip(row).getAttribute('title'), /^subscription account: Work · .*@example\.com$/);
+  // one account: a single-account board stays uncluttered
+  repatch(w, s, acctState({ current: ACCT_A, list: [acct(ACCT_B, { label: 'Work', current: true })] }, s));
+  assert.equal(shown(acctChip(row)), false);
+  // two again
+  repatch(w, s, acctState(TWO(), s));
+  assert.ok(shown(acctChip(row)));
+});
+
+test('no accounts in the state, or a session without an account (shell, Codex, older record): no chip, no error', () => {
+  const { w } = homeWorld();
+  const s = sess('shop', 'api', 's1', { account: ACCT_A });
+  const row = rowFor(w, s, fakeState({ projects: projectsOf({ shop: { api: [s] } }) }));          // fakeState has no `accounts` key at all
+  assert.equal(shown(acctChip(row)), false);
+  for (const accounts of [null, {}, { current: null, list: [] }, { list: 'nope' }]) {
+    repatch(w, s, acctState(accounts, s));
+    assert.equal(shown(acctChip(row)), false, JSON.stringify(accounts));
+  }
+  repatch(w, { ...s, account: null }, acctState(TWO(), s));
+  assert.equal(shown(acctChip(row)), false, 'a session that carries no account');
+  repatch(w, { ...s, account: undefined, agent: 'codex', launcher: 'codex' }, acctState(TWO(), s));
+  assert.equal(shown(acctChip(row)), false, 'a Codex session');
+});
+
+test('the chip names the account by label, else the name Claude reports, else the email, else the key; never undefined', () => {
+  const { w } = homeWorld();
+  const s = sess('shop', 'api', 's1', { account: ACCT_A });
+  const named = (over) => acctState({ current: ACCT_A, list: [acct(ACCT_A, { current: true, name: null, email: null, ...over }), acct(ACCT_B, { label: 'Work' })] }, s);
+  const row = rowFor(w, s, named({ label: 'Personal', name: 'Roshan', email: 'r@example.com' }));
+  assert.equal(text(acctChip(row)), 'Personal');
+  repatch(w, s, named({ name: 'Roshan', email: 'r@example.com' }));
+  assert.equal(text(acctChip(row)), 'Roshan');
+  repatch(w, s, named({ email: 'r@example.com' }));
+  assert.equal(text(acctChip(row)), 'r@example.com');
+  repatch(w, s, named({}));
+  assert.equal(text(acctChip(row)), ACCT_A.slice(0, 6), 'the first characters of the key');
+  repatch(w, { ...s, account: 'ffff0000-unknown' }, named({ label: 'Personal' }));
+  assert.equal(text(acctChip(row)), 'ffff00', 'an account the list does not know yet');
+  for (const t of [text(acctChip(row)), acctChip(row).getAttribute('title')]) assert.ok(!/undefined|null|NaN/.test(t), t);
+});
+
+test('a rename repaints the row at once (the label is part of the row\'s signature), and the hue follows the key, not the label', () => {
+  const { w } = homeWorld();
+  const s = sess('shop', 'api', 's1', { account: ACCT_B });
+  const row = rowFor(w, s, acctState(TWO(), s));
+  const hue = [...['hue-blue', 'hue-teal', 'hue-green', 'hue-violet', 'hue-slate']].filter((c) => acctChip(row).classList.contains(c));
+  assert.equal(hue.length, 1, 'exactly one hue class');
+  const renamed = TWO();
+  renamed.list[1].label = 'Client work';
+  repatch(w, s, acctState(renamed, s));
+  assert.equal(text(acctChip(row)), 'Client work');
+  assert.ok(acctChip(row).classList.contains(hue[0]) && [...acctChip(row).className.split(' ')].filter((c) => c.startsWith('hue-')).length === 1, 'the same single hue after the rename');
+  // an unchanged poll writes nothing (the node keeps its text node)
+  const t0 = acctChip(row).textContent;
+  repatch(w, s, acctState(renamed, s));
+  assert.equal(acctChip(row).textContent, t0);
+});
+
+test('the account chip sits in the row\'s badges right after the model chip, and the plain (non-rich) row has none', () => {
+  const { w } = homeWorld();
+  const s = sess('shop', 'api', 's1', { account: ACCT_A });
+  const row = rowFor(w, s, acctState(TWO(), s));
+  const order = row.querySelector('.rr-badges').children.map((c) => (c.className.match(/bdg-(model|acct)/) || [])[1]).filter(Boolean);
+  assert.deepEqual(order, ['model', 'acct']);
+  w.ctx.__s = s; w.ctx.__stx = acctState(TWO(), s);
+  w.run('state = __stx; globalThis.__plain = sessionCard({ ...__s, project: "shop", repo: "api" }, { compact: true })');
+  assert.equal(w.get('__plain').querySelector('.bdg-acct'), null, 'Agents/Inbox plain rows are unchanged');
 });

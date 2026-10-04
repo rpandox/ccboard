@@ -1,17 +1,25 @@
-/* ccboard usage page (v0.5.17, #/usage?range=24h|7d|30d): where the limits, the spend and the activity of the box are read. Six sections in the
-   order the usage analysis asked for (phone-heavy evenings, the live pain is the limit): Limits (two gauges from the 3 s state, one line chart of
-   rl_5h / rl_7d over the range with the limit episodes marked), Cost per day (stacked bars by project or agent), Sessions (the priciest ones, an
-   Open button on a live session, a per-session ctx and cost chart under a row), Projects ($, active hours and $/h side by side), Activity (the
-   24x7 heatmap and the hour-of-day profile) and Timeline (a session Gantt of the last 24 h, 48 h on desktop).
+/* ccboard usage page (v0.5.17, #/usage?range=24h|7d|30d): where the limits, the spend and the activity of the box are read. Seven sections in the
+   order the usage analysis asked for (phone-heavy evenings, the live pain is the limit): Accounts (v0.5.17b: one row per Claude subscription account
+   with its 5H and 7D gauges, then tokens, active hours, sessions and limit hits for the range, the API-equivalent dollars last and dim, a TOTAL row
+   and the 'most room' line; a pencil renames an account), Limits (two gauges from the 3 s state, one line chart of rl_5h / rl_7d over the range
+   with the limit episodes marked; with two or more accounts a chip per account picks whose windows the gauges and the chart show), Cost per day
+   (stacked bars by project or agent), Sessions (the priciest ones, an Open button on a live session, a per-session ctx and cost chart under a row),
+   Projects ($, active hours and $/h side by side), Activity (the 24x7 heatmap and the hour-of-day profile) and Timeline (a session Gantt of the
+   last 24 h, 48 h on desktop).
 
    Definition only at load, apart from the registerPage call. The drawing is charts.js (window.Charts: line, stackedBars, gantt, heatmap and the
    formatters); every call here is guarded, so a charts.js that failed to load shows an inline error with Retry instead of a blank page.
 
    Data (all GETs, never from the 3 s state poll): /api/usage/summary?days=7|30 (cost, windows, sessions, heatmap, episodes, unpriced),
-   /api/series?series=rl_5h,rl_7d&key=claude&since=<range>, /api/series/events?series=state&since=24h|48h, and per open live session
+   /api/series?series=rl_5h,rl_7d&key=claude&since=<range> (key=acct:<key> once an account chip other than the current one is picked),
+   /api/series/events?series=state&since=24h|48h, and per open live session
    /api/series?series=ctx,scost&key=<tmux>&since=24h. They are fetched in parallel on mount and on a range change, then every 60 s while the tab is
    visible. A response for a range or a page that is no longer current is cached and never painted (the route token). A range already seen paints
    at once from its cache and refreshes behind it; a new one paints a skeleton. uPlot is loaded lazily through Charts.ready(), only on this page.
+
+   The accounts come from the same summary (accounts[], total, episodes[].acct, rate_limits.by_account): no extra polling; their labels are overlaid
+   from state.accounts.list (the 3 s poll). The one write, PATCH /api/accounts/{key} {label}, belongs to the shared rename sheet of settings.js
+   (settingsRenameAccount: the pencil of a row opens it).
 
    Usage.cur is the mounted page record (null when not mounted); its .loading is the promise of the latest load, for the tests. */
 'use strict';
@@ -32,7 +40,10 @@ const Usage = {
   PROJECT_ROWS: 12,
   UNATTRIBUTED: '(unattributed)',
   UNATTRIBUTED_TIP: 'sessions the board did not start',
+  UNKNOWN: 'unknown',                              // the summary's row for history from before the board tracked accounts
+  HOT_PCT: 85,                                     // an account window at or above this is 'in trouble' (the bad tone, and the cue to use another account)
   SECTIONS: [
+    ['accounts', 'Accounts', 'subscription windows (statusline) · API-equivalent $ last'],
     ['limits', 'Limits', 'statusline (official)'],
     ['cost', 'Cost per day', 'API-equivalent (ccusage list price)'],
     ['sessions', 'Sessions', 'API-equivalent · top 10 by cost'],
@@ -121,7 +132,7 @@ Usage.tok = function (v) {
 Usage.hours = function (v) { return `${Usage.num(v).toFixed(1)} h`; };
 Usage.model = function (m) { const f = Usage.charts('shortModel'); const s = String(m === null || m === undefined ? '' : m); return f ? String(f(s)) : s.replace(/^claude-/, ''); };
 
-/* The muted hue class of a model or project chip (pages/agents.js chipHue), '' when that file is not there. */
+/* The muted hue class of a model, project or account chip (pages/agents.js chipHue), '' when that file is not there. */
 Usage.hue = function (kind, key) { return typeof chipHue === 'function' ? chipHue(kind, key) : ''; };
 
 /* The caption of the cost chart: '<window>: $ · tokens · hours' ('Last 7 days · today: ...' for 24h, which still draws a week of bars). */
@@ -199,9 +210,9 @@ Usage.gauge = function (label) {
     fill.style.width = `${pct}%`;
     setText(val, `${Math.round(pct)}%`);
     const eta = w.resets_at ? fmtIn(w.resets_at) : '';
-    setText(reset, eta ? `resets in ${eta} · ${Usage.clock(w.resets_at)}` : '');
+    setText(reset, w.reset_text || (eta ? `resets in ${eta} · ${Usage.clock(w.resets_at)}` : ''));
     bar.setAttribute('aria-label', `${label} ${Math.round(pct)}% used`);
-    root.setAttribute('title', `${label} window: ${Math.round(pct)}% used` + (w.resets_at ? ` · resets ${Usage.clock(w.resets_at)}` : ''));
+    root.setAttribute('title', w.title || (`${label} window: ${Math.round(pct)}% used` + (w.resets_at ? ` · resets ${Usage.clock(w.resets_at)}` : '')));
   };
   return root;
 };
@@ -263,7 +274,8 @@ Usage.build = function (root, route) {
   if (fromRoute) Usage.saveRange(fromRoute);
   const P = { range, token: 0, dead: false, route, st: null, cache: {}, open: new Set(), details: new Map(), stack: Usage.storedStack(), sigs: {},
     refs: { body: {}, prov: {}, toggle: {}, stackBtn: {} }, timer: null, onVisible: null, unbind: null, stale: false, liveSig: '', showAll: false,
-    events: null, evErr: '', evDone: false, loading: Promise.resolve(), ready: null, rows: new Map(), limDrawn: false };
+    events: null, evErr: '', evDone: false, loading: Promise.resolve(), ready: null, rows: new Map(), limDrawn: false,
+    limAcct: null, accSeq: 0 };                               // limAcct: the account the Limits section shows (null = the current one, via key=claude)
   const R = P.refs;
 
   const seg = el('div', { class: 'useg pj-switch', role: 'group', 'aria-label': 'Time range' });
@@ -279,6 +291,7 @@ Usage.build = function (root, route) {
   R.g5 = Usage.gauge('5H');
   R.g7 = Usage.gauge('7D');
   R.gnote = el('p', { class: 'dim unote hidden' });
+  R.limAcct = el('div', { class: 'ua-picks pj-switch hidden', role: 'group', 'aria-label': 'Account shown in the limits' });
   R.limSlot = el('div', { class: 'uslot hidden' });
   R.limHost = el('div', { class: 'chart lim-chart loading', 'aria-busy': 'true' });
   R.limCap = el('p', { class: 'dim unote hidden', text: 'dashed lines: 60% warn, 85% critical · ticks mark limit hits and window resets' });
@@ -297,7 +310,7 @@ Usage.build = function (root, route) {
     if (id === 'cost') kids.push(stack);
     const body = el('div', { class: 'ubody', 'data-body': id });
     R.body[id] = body;
-    if (id === 'limits') body.append(el('div', { class: 'uc-gauges' }, R.g5, R.g7), R.gnote, R.limSlot, R.limHost, R.limCap);
+    if (id === 'limits') body.append(R.limAcct, el('div', { class: 'uc-gauges' }, R.g5, R.g7), R.gnote, R.limSlot, R.limHost, R.limCap);
     else body.append(Usage.skeleton());
     sections.push(el('section', { class: 'usec', 'data-sec': id }, el('div', { class: 'usec-head' }, ...kids), body));
   }
@@ -321,8 +334,11 @@ Usage.applyRange = function (P, range) {
   Usage.syncToggle(P);
   const c = Usage.entry(P);
   if (c && (c.summary || c.series)) {
+    const other = c.serAcct !== P.limAcct;                                       // its limit series is another account's: fetch this one's (series only)
+    if (other) { c.series = null; c.serDone = false; delete c.err.series; }
     Usage.paintAll(P);
     if (Date.now() - c.at > Usage.STALE_MS) Usage.load(P);                      // old enough: refresh behind the paint
+    else if (other) Usage.reloadSeries(P);
   } else {
     Usage.paintSkeleton(P);
     Usage.load(P);
@@ -368,13 +384,13 @@ Usage.load = function (P, opts) {
   const o = opts || {};
   const range = P.range;
   const token = P.token;
-  const c = P.cache[range] || (P.cache[range] = { summary: null, series: null, at: 0, err: {}, sumDone: false, serDone: false });
+  const c = P.cache[range] || (P.cache[range] = { summary: null, series: null, at: 0, err: {}, sumDone: false, serDone: false, serAcct: P.limAcct });
+  if (c.serAcct !== P.limAcct) { c.series = null; c.serDone = false; delete c.err.series; }
   const current = () => Usage.alive(P) && P.token === token;
   const hours = Usage.wide() ? 48 : 24;
   c.hours = hours;
   const get = (path) => Usage.get(path, o.fresh);
   const sum = get(`/api/usage/summary?days=${Usage.days(range)}&tz_min=${Usage.tzMin()}`);
-  const ser = get(`/api/series?series=rl_5h,rl_7d&key=claude&since=${range}&points=${Usage.points(P)}`);
   const evs = get(`/api/series/events?series=state&since=${hours}h`);
 
   const sSum = sum.then((v) => {
@@ -383,9 +399,7 @@ Usage.load = function (P, opts) {
     c.sumDone = true;
     if (current()) Usage.paintSummary(P);
   });
-  const sSer = ser.then((v) => {
-    if (v && typeof v === 'object') { c.series = v; c.at = Date.now(); delete c.err.series; } else c.err.series = 'empty answer';
-  }, (e) => { c.err.series = Usage.errText(e); }).then(() => { c.serDone = true; });
+  const sSer = Usage.fetchSeries(P, c, o.fresh);
   const sEv = evs.then((v) => {
     P.events = v && typeof v === 'object' ? v : { events: [] };
     P.evErr = '';
@@ -398,6 +412,36 @@ Usage.load = function (P, opts) {
   const sLim = Promise.all([sSum, sSer]).then(() => { if (current()) Usage.safe(P, 'limits', () => Usage.paintLimits(P)); });
   const done = Promise.all([sLim, sEv]).then(() => {
     if (current()) { Usage.paintAlert(P); Usage.refreshDetails(P, o.fresh); }
+  });
+  P.loading = done;
+  return done;
+};
+
+/* The limit series of the page's account for c's range (key=claude follows the current account; acct:<key> is one account's own windows). It
+   fills c.series / c.serDone, never paints, and drops its answer when the account was changed while it was on its way. */
+Usage.seriesPath = function (P) {
+  const key = P.limAcct ? 'acct:' + encodeURIComponent(P.limAcct) : 'claude';
+  return `/api/series?series=rl_5h,rl_7d&key=${key}&since=${P.range}&points=${Usage.points(P)}`;
+};
+
+Usage.fetchSeries = function (P, c, fresh) {
+  const acct = P.limAcct;
+  c.serAcct = acct;
+  return Usage.get(Usage.seriesPath(P), fresh).then((v) => {
+    if (c.serAcct !== acct) return;
+    if (v && typeof v === 'object') { c.series = v; c.at = Date.now(); delete c.err.series; } else c.err.series = 'empty answer';
+  }, (e) => { if (c.serAcct === acct) c.err.series = Usage.errText(e); }).then(() => { if (c.serAcct === acct) c.serDone = true; });
+};
+
+/* Only the series (the account changed, or a cached range holds another account's): fetch it and repaint the limits. P.loading follows it. */
+Usage.reloadSeries = function (P, fresh) {
+  const c = Usage.entry(P);
+  if (!c) return Promise.resolve();
+  const token = P.token;
+  const seq = P.accSeq;
+  if (c.serAcct !== P.limAcct) { c.series = null; c.serDone = false; delete c.err.series; }
+  const done = Usage.fetchSeries(P, c, fresh).then(() => {
+    if (Usage.alive(P) && P.token === token && P.accSeq === seq) Usage.safe(P, 'limits', () => Usage.paintLimits(P));
   });
   P.loading = done;
   return done;
@@ -417,7 +461,7 @@ Usage.retry = function (P) {
 /* ---------- paint ---------- */
 
 Usage.paintSkeleton = function (P) {
-  for (const id of ['cost', 'sessions', 'projects', 'activity']) Usage.setBody(P, id, Usage.skeleton());
+  for (const id of ['accounts', 'cost', 'sessions', 'projects', 'activity']) Usage.setBody(P, id, Usage.skeleton());
   if (!P.evDone) Usage.setBody(P, 'timeline', Usage.skeleton());
   Usage.limitsShow(P, 'loading');
   P.refs.alert.classList.add('hidden');
@@ -432,7 +476,9 @@ Usage.paintAll = function (P) {
 };
 
 Usage.paintSummary = function (P) {
+  Usage.checkAccount(P);
   Usage.paintGauges(P);
+  Usage.safe(P, 'accounts', () => Usage.paintAccounts(P));
   Usage.safe(P, 'cost', () => Usage.paintCost(P));
   Usage.safe(P, 'sessions', () => Usage.paintSessions(P));
   Usage.safe(P, 'projects', () => Usage.paintProjects(P));
@@ -445,7 +491,7 @@ Usage.noSummary = function (P, id, title, hint) {
   P.sigs[id] = '';
   if (!c || !c.sumDone) { Usage.setBody(P, id, Usage.skeleton()); return; }
   if (c.err.summary) { Usage.setBody(P, id, Usage.errorBlock(P, `Could not load the usage summary: ${c.err.summary}`)); return; }
-  Usage.setBody(P, id, Usage.empty(title, hint, id === 'cost'));
+  Usage.setBody(P, id, Usage.empty(title, hint, id === 'cost' || id === 'accounts'));
 };
 
 Usage.paintAlert = function (P) {
@@ -466,6 +512,9 @@ Usage.paintAlert = function (P) {
 /* The two gauges follow the state on every update(); with no live reading they fall back to the summary's last statusline sample. */
 Usage.paintGauges = function (P) {
   const R = P.refs;
+  Usage.paintPicks(P);
+  const chosen = P.limAcct ? Usage.accounts(P).find((a) => a.key === P.limAcct) : null;
+  if (chosen) { Usage.paintAccountGauges(P, chosen); return; }
   const rl = (P.st && P.st.usage && P.st.usage.value) || {};
   let five = Usage.reading(rl.five_hour);
   let seven = Usage.reading(rl.seven_day);
@@ -511,10 +560,12 @@ Usage.hasData = function (data, names) {
 
 Usage.paintLimits = function (P) {
   const c = Usage.entry(P);
-  if (!c || !c.serDone || !c.sumDone) { Usage.limitsShow(P, 'loading'); return; }
+  if (!c || !c.serDone || !c.sumDone || c.serAcct !== P.limAcct) { Usage.limitsShow(P, 'loading'); return; }
   const empty = () => {
     P.sigs.limits = '';
     if (c.err.series && !c.series) { Usage.limitsShow(P, 'slot', Usage.errorBlock(P, `Could not load the limit series: ${c.err.series}`)); return; }
+    const who = P.limAcct ? Usage.accounts(P).find((a) => a.key === P.limAcct) : null;
+    if (who) { Usage.limitsShow(P, 'slot', Usage.empty(`No samples for ${Usage.accName(who)} in this range`, 'Readings arrive while a session runs on that account. Pick a longer range or another account.', false)); return; }
     Usage.limitsShow(P, 'slot', Usage.empty('No samples yet', 'The board records usage from its first hook event: start a session and the 5H and 7D history appears here.', true));
   };
   const data = c.series;
@@ -527,8 +578,10 @@ Usage.paintLimits = function (P) {
   const resets = [];
   const seen = new Set();
   const reset = (t) => { const k = Math.round(t); if (t >= since && t <= until && !seen.has(k)) { seen.add(k); resets.push({ t, label: `resets ${Usage.clock(t)}` }); } };
+  const only = Usage.limitAccount(P);                                           // with two accounts or more the chart shows one account's hits only
   if (sum && Array.isArray(sum.episodes)) {
     for (const ep of sum.episodes) {
+      if (only && Usage.str(ep && ep.acct) !== only) continue;
       const t = Usage.epoch(ep && ep.at);
       if (t >= since && t <= until) marks.push({ t, label: `${String(ep.kind || '').toLowerCase()} limit`, cls: ep.kind === '7d' ? 'mark-7d' : 'mark-5h' });
       reset(Usage.epoch(ep && ep.resets_at));
@@ -539,8 +592,9 @@ Usage.paintLimits = function (P) {
   const colors = {};
   for (const n of names) { labels[n] = n.indexOf('rl_5h') === 0 ? '5H' : '7D'; colors[n] = n.indexOf('rl_5h') === 0 ? '--sig' : '--fg-2'; }
   if (!P.limDrawn) Usage.limitsShow(P, 'loading');                              // the skeleton until the first draw, then the chart stays put while it refreshes
+  const acct = P.limAcct;
   Promise.resolve(P.ready || (P.ready = Usage.ready())).then((ok) => {
-    if (!Usage.alive(P) || Usage.entry(P) !== c) return;
+    if (!Usage.alive(P) || Usage.entry(P) !== c || P.limAcct !== acct) return;      // another range or account was picked while uPlot loaded
     if (!ok) { P.limDrawn = false; Usage.limitsShow(P, 'slot', Usage.errorBlock(P, 'The chart library did not load.')); return; }
     try {
       Usage.limitsShow(P, P.limDrawn ? 'chart' : 'loading');                  // visible while Charts.line measures it
@@ -605,6 +659,247 @@ Usage.paintCost = function (P) {
   }
   Usage.setBody(P, 'cost', ...kids);
   Usage.need('stackedBars')(host, daily, { by: P.stack, top: 6, unpriced, hatchZero: true, hueOf: (name) => Usage.hue('project', name) });   // a project keeps the hue it has everywhere else (chipHue)   // Charts adds the legend and the tap-a-bar readout
+};
+
+/* ---------- accounts (v0.5.17b): the subscription is the unit, so the windows lead and the dollars come last and dim ---------- */
+
+Usage.str = function (v) { return typeof v === 'string' && v.trim() ? v.trim() : ''; };
+
+Usage.plural = function (n, word) { return `${n} ${word}${n === 1 ? '' : 's'}`; };
+
+/* What an account is called: the person's label, else the display name, else the email. */
+Usage.accName = function (a) { return Usage.str(a && a.label) || Usage.str(a && a.name) || Usage.str(a && a.email) || 'account'; };
+
+/* The summary's accounts for the page's range, with the labels of state.accounts.list laid over them: the state is polled every 3 s, the summary every 60 s,
+   so a rename made anywhere (the shared sheet of settings.js, a Settings row, another tab) shows here at once, not at the next summary. Real accounts first
+   (the server sorts the current one first), the '(before account tracking)' row last. [] while there is no summary or the server predates accounts. */
+Usage.accounts = function (P) {
+  const sum = Usage.summaryOf(P);
+  const raw = sum && Array.isArray(sum.accounts) ? sum.accounts.filter((a) => a && typeof a === 'object' && typeof a.key === 'string' && a.key) : [];
+  const fresh = new Map();
+  try {
+    const list = typeof state !== 'undefined' && state && state.accounts && Array.isArray(state.accounts.list) ? state.accounts.list : [];
+    for (const x of list) if (x && typeof x === 'object' && typeof x.key === 'string') fresh.set(x.key, Usage.str(x.label) || null);
+  } catch (_) { /* no state yet */ }
+  const out = raw.map((a) => (fresh.has(a.key) && fresh.get(a.key) !== (Usage.str(a.label) || null) ? { ...a, label: fresh.get(a.key) } : a));
+  return [...out.filter((a) => a.key !== Usage.UNKNOWN), ...out.filter((a) => a.key === Usage.UNKNOWN)];
+};
+
+Usage.realAccounts = function (list) { return list.filter((a) => a.key !== Usage.UNKNOWN); };
+
+/* {pct, resets_at, at, reset_text?, title} of an account reading {value, resets_at, at}, or null without one. A reading whose reset instant has
+   passed is a window that rolled over: nothing is counted in the new one yet, so it reads 0 % (the server's headroom says 100 % left for it too). */
+Usage.accReading = function (r, who) {
+  if (!r || typeof r !== 'object' || typeof r.value !== 'number' || !Number.isFinite(r.value)) return null;
+  const resets = Usage.epoch(r.resets_at);
+  const at = Usage.epoch(r.at);
+  const rolled = resets > 0 && resets <= Date.now() / 1000;
+  const age = at ? `, read ${fmtAge(at)} ago` : '';
+  const out = { pct: rolled ? 0 : Math.max(0, Math.min(100, r.value)), resets_at: rolled ? 0 : resets, at };
+  if (rolled) { out.reset_text = 'window rolled over'; out.title = `${who}: the window reset ${Usage.clock(resets)}; the last reading was ${Math.round(r.value)}%${age}`; }
+  else out.title = `${who}: ${Math.round(r.value)}% used${resets ? ' · resets ' + Usage.clock(resets) : ''}${age}`;
+  return out;
+};
+
+/* The 5H / 7D gauges of the Limits section follow the account a chip picked: its last statusline readings from the summary. */
+Usage.paintAccountGauges = function (P, a) {
+  const R = P.refs;
+  const name = Usage.accName(a);
+  const five = Usage.accReading(a.rl_5h, `${name} 5H`);
+  const seven = Usage.accReading(a.rl_7d, `${name} 7D`);
+  R.g5.set(five);
+  R.g7.set(seven);
+  const at = Math.max(five ? five.at : 0, seven ? seven.at : 0);
+  const text = !five && !seven ? `No 5H / 7D reading for ${name} yet: it appears once a session runs on that account.`
+    : `Gauges show ${name}'s last statusline readings${at ? ', ' + fmtAge(at) + ' ago' : ''}: it is not the account in use.`;
+  R.gnote.classList.remove('hidden');
+  setText(R.gnote, text);
+};
+
+/* The account whose episodes the chart marks: null (all of them) with one account, else the picked one, else the current one. */
+Usage.limitAccount = function (P) {
+  const real = Usage.realAccounts(Usage.accounts(P));
+  if (real.length < 2) return null;
+  const cur = real.find((a) => a.current) || real[0];
+  return P.limAcct || cur.key;
+};
+
+/* A picked account the summary no longer lists goes back to the current one (and its series with it). */
+Usage.checkAccount = function (P) {
+  if (!P.limAcct || !Usage.summaryOf(P)) return;
+  if (!Usage.realAccounts(Usage.accounts(P)).some((a) => a.key === P.limAcct)) Usage.setAccount(P, null);
+};
+
+/* Pick whose windows the Limits section shows: null = the current account (the series key stays 'claude'), else an account key. */
+Usage.setAccount = function (P, key) {
+  if (!Usage.alive(P)) return;
+  const next = key || null;
+  if (next === P.limAcct) return;
+  P.limAcct = next;
+  P.accSeq += 1;
+  Usage.paintGauges(P);                                                          // also the chips
+  Usage.safe(P, 'limits', () => Usage.paintLimits(P));                           // the skeleton until this account's series arrives
+  Usage.reloadSeries(P);
+};
+
+/* One chip per real account above the Limits gauges (nothing with a single account). */
+Usage.paintPicks = function (P) {
+  const host = P.refs.limAcct;
+  if (!host) return;
+  const list = Usage.realAccounts(Usage.accounts(P));
+  if (list.length < 2) { P.sigs.picks = ''; host.textContent = ''; host.classList.add('hidden'); return; }
+  const cur = list.find((a) => a.current) || list[0];
+  const sel = P.limAcct || cur.key;
+  host.classList.remove('hidden');
+  const sig = Usage.sig([list.map((a) => [a.key, Usage.accName(a), !!a.current]), sel]);
+  if (P.sigs.picks === sig) return;
+  P.sigs.picks = sig;
+  host.textContent = '';
+  host.append(el('span', { class: 'dim ua-picks-l', text: 'Account' }));
+  for (const a of list) {
+    const name = Usage.accName(a);
+    host.append(el('button', { class: 'small ua-pick pj-repo-btn', type: 'button', 'data-account': a.key, 'aria-pressed': a.key === sel ? 'true' : 'false',
+      title: `Show the windows of ${name}${a.current ? ' (the account in use)' : ''}`, onclick: () => Usage.setAccount(P, a.key === cur.key ? null : a.key) },
+      el('span', { class: ['ua-dot', Usage.hue('account', a.key)].filter(Boolean).join(' '), 'aria-hidden': 'true' }),
+      el('span', { class: 'ua-pick-l', text: name }), a.current ? el('span', { class: 'dim ua-pick-now', text: 'now' }) : null));
+  }
+};
+
+/* Local midnight of the first day of the range (24h is today only, like the summary's 'today' window), in epoch seconds. */
+Usage.rangeStart = function (range) {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((range === '24h' ? 1 : Usage.days(range)) - 1));
+  return d.getTime() / 1000;
+};
+
+/* The limit episodes of the range ('lim' rows: {kind, at, resets_at, session, acct}). */
+Usage.episodesIn = function (sum, range) {
+  const from = Usage.rangeStart(range);
+  return (Array.isArray(sum.episodes) ? sum.episodes : []).filter((e) => e && typeof e === 'object' && Usage.epoch(e.at) >= from);
+};
+
+/* {total, tokens, hours, sessions} of an account (or of the summary's total) for a window name, zeros for what is missing. */
+Usage.accStat = function (rec, w) {
+  const s = rec && rec.windows && rec.windows[w] && typeof rec.windows[w] === 'object' ? rec.windows[w] : {};
+  return { total: Usage.num(s.total), tokens: Usage.num(s.tokens), hours: Usage.num(s.hours), sessions: Math.max(0, Math.round(Usage.num(s.sessions))) };
+};
+
+Usage.statCell = function (col, label, value, dim, title) {
+  return el('div', { class: `ua-stat${dim ? ' ua-dim' : ''}`, role: 'cell', 'data-col': col, title: title || null },
+    el('span', { class: 'ua-k dim', text: label }), el('span', { class: 'ua-v mono', text: value }));
+};
+
+Usage.accGauge = function (label, reading, who) {
+  const r = Usage.accReading(reading, `${who} ${label}`);
+  if (!r) return el('div', { class: 'ua-win', role: 'cell', 'data-win': label }, el('span', { class: 'ua-wl mono', text: label }), el('span', { class: 'dim ua-none', text: 'no reading yet' }));
+  const g = Usage.gauge(label);
+  g.set(r);
+  return el('div', { class: 'ua-win', role: 'cell', 'data-win': label }, g);
+};
+
+Usage.accStats = function (st, hits, hitsTitle, sessionsTitle, usdTitle) {
+  return [Usage.statCell('tokens', 'tokens', Usage.tok(st.tokens)), Usage.statCell('hours', 'active hours', Usage.hours(st.hours)),
+    Usage.statCell('sessions', 'sessions', String(st.sessions), false, sessionsTitle), Usage.statCell('hits', 'limit hits', String(hits), false, hitsTitle),
+    Usage.statCell('usd', 'API-equivalent', Usage.usd(st.total), true, usdTitle || 'What the same tokens would cost at API list price: not the subscription fee')];
+};
+
+Usage.accRow = function (a, w, hits) {
+  const unknown = a.key === Usage.UNKNOWN;
+  const name = Usage.accName(a);
+  const email = Usage.str(a.email);
+  const plan = Usage.str(a.plan);
+  const hue = unknown ? '' : Usage.hue('account', a.key);
+  const who = [unknown ? el('span', { class: 'ua-name', text: name }) : el('span', { class: ['bdg ua-chip', hue].filter(Boolean).join(' '), title: email || name, text: name })];
+  if (plan) who.push(el('span', { class: 'bdg mono ua-plan', title: 'Subscription plan', text: plan }));
+  if (a.current) who.push(el('span', { class: 'bdg ua-current', title: 'The account this board is logged in with', text: 'current' }));
+  if (email && email !== name) who.push(el('span', { class: 'dim ua-email', text: email }));
+  // the name, plan, current marker and email wrap among themselves (.ua-who); the pencil is its own flex item at the right of the card header, so a long
+  // email never pushes it onto a line of its own
+  const id = [el('span', { class: 'ua-who' }, ...who)];
+  if (!unknown) id.push(el('button', { class: 'icon minimal small ua-edit', type: 'button', title: 'Rename this account', 'aria-label': `Rename ${name}`, onclick: () => settingsRenameAccount(a) }, ic('edit')));   // the one rename sheet, settings.js
+  const wins = unknown ? [el('div', { class: 'ua-win ua-blank', role: 'cell' }), el('div', { class: 'ua-win ua-blank', role: 'cell' })]
+    : [Usage.accGauge('5H', a.rl_5h, name), Usage.accGauge('7D', a.rl_7d, name)];
+  return el('div', { class: 'ua-row' + (unknown ? ' unknown' : ''), role: 'row', 'data-account': a.key, 'data-current': a.current ? true : null },
+    el('div', { class: 'ua-id', role: 'cell' }, ...id), ...wins, ...Usage.accStats(Usage.accStat(a, w), hits, 'Limit hits in this range'));
+};
+
+/* The closing row: the summary's total for the window (it counts a session that ran on two accounts once; the rows count it once each). */
+Usage.accTotal = function (sum, list, real, w, hits) {
+  const tot = sum.total && typeof sum.total === 'object' ? sum.total : {};
+  const rows = list.map((a) => Usage.accStat(a, w));
+  const add = (f) => rows.reduce((x, r) => x + f(r), 0);
+  const st = tot[w] && typeof tot[w] === 'object' ? Usage.accStat({ windows: { [w]: tot[w] } }, w)
+    : { total: add((r) => r.total), tokens: add((r) => r.tokens), hours: add((r) => r.hours), sessions: add((r) => r.sessions) };
+  const n = typeof tot.accounts === 'number' && Number.isFinite(tot.accounts) ? Math.round(tot.accounts) : real.length;
+  const split = st.sessions !== add((r) => r.sessions) ? 'A session that ran on two accounts counts once here and once in each account row' : null;
+  return el('div', { class: 'ua-row total', role: 'row', 'data-total': '' },
+    el('div', { class: 'ua-id', role: 'cell' }, el('b', { class: 'ua-total-l', text: 'Total' }), el('span', { class: 'dim ua-count', text: Usage.plural(n, 'account') })),
+    el('div', { class: 'ua-win ua-blank', role: 'cell' }), el('div', { class: 'ua-win ua-blank', role: 'cell' }),
+    ...Usage.accStats(st, hits, 'Limit hits in this range, every account', split, 'API-equivalent dollars, rounded: each row is rounded on its own, so the rows can differ from this total by $1'));
+};
+
+/* 'most room: Work, 62 % of the 5-hour window left': the account with the most of a window left. When the account in use is at 85 % or more of a
+   window and another account has more of it left, it is the attention line (amber, no button): {text, attn}. null with fewer than two accounts. */
+Usage.room = function (sum, real) {
+  const tot = sum.total && typeof sum.total === 'object' ? sum.total : {};
+  if (real.length < 2) return null;
+  const by = new Map(real.map((a) => [a.key, a]));
+  const ranked = (list) => (Array.isArray(list) ? list.filter((x) => x && by.has(x.key) && typeof x.left_pct === 'number' && Number.isFinite(x.left_pct)) : []);
+  const wins = [['7-day', ranked(tot.headroom_7d), 'rl_7d'], ['5-hour', ranked(tot.headroom_5h), 'rl_5h']];
+  const clause = (e, nm) => `${Usage.accName(by.get(e.key))}, ${Math.round(e.left_pct)} % of the ${nm} window left`;
+  const cur = real.find((a) => a.current);
+  if (cur) {
+    for (const [nm, list, field] of wins) {
+      const r = Usage.accReading(cur[field], nm);
+      if (!r || r.pct < Usage.HOT_PCT) continue;
+      const other = list.find((x) => x.key !== cur.key);
+      if (other && other.left_pct > 100 - r.pct) return { attn: true, text: `${Usage.accName(cur)} is at ${Math.round(r.pct)} % of the ${nm} window. most room: ${clause(other, nm)}` };
+    }
+  }
+  const parts = [];
+  for (const [nm, list] of [wins[1], wins[0]]) if (list.length) parts.push(clause(list[0], nm));
+  return parts.length ? { attn: false, text: `most room: ${parts.join(' · ')}` } : null;
+};
+
+Usage.paintAccounts = function (P) {
+  const sum = Usage.summaryOf(P);
+  const w = Usage.WINDOW[P.range];
+  const eps = sum ? Usage.episodesIn(sum, P.range) : [];
+  const hits = (key) => eps.filter((e) => (Usage.str(e.acct) || Usage.UNKNOWN) === key).length;
+  // the '(before account tracking)' row is history: with nothing in it for this range (no tokens, hours, sessions or limit hits) it is only noise
+  const list = sum ? Usage.accounts(P).filter((a) => {
+    if (a.key !== Usage.UNKNOWN) return true;
+    const st = Usage.accStat(a, w);
+    return st.tokens > 0 || st.hours > 0 || st.sessions > 0 || hits(a.key) > 0;
+  }) : [];
+  if (!sum || !list.length) {
+    Usage.noSummary(P, 'accounts', 'No account seen yet', 'The board reads the logged-in Claude account within a minute of the first session. Start one with + session, or run /login in a terminal.');
+    return;
+  }
+  const minute = Math.floor(Date.now() / 60000);                                // the countdowns move: repaint at least once a minute
+  const sig = Usage.sig([P.range, minute, list, sum.total, eps.map((e) => [e.acct, e.at])]);
+  if (P.sigs.accounts === sig) return;
+  P.sigs.accounts = sig;
+  const real = Usage.realAccounts(list);
+  const head = el('div', { class: 'uacc-head', role: 'row' },
+    ...[['Account', ''], ['5H window', ''], ['7D window', ''], ['Tokens', ' ua-r'], ['Active hours', ' ua-r'], ['Sessions', ' ua-r'], ['Limit hits', ' ua-r'], ['API-equiv. $', ' ua-r ua-dim']]
+      .map(([t, c]) => el('div', { class: 'ua-h' + c, role: 'columnheader', text: t })));
+  const table = el('div', { class: 'uacc', role: 'table', 'aria-label': `Usage per account, ${Usage.WINDOW_NAME[P.range].toLowerCase()}` }, head,
+    ...list.map((a) => Usage.accRow(a, w, hits(a.key))), Usage.accTotal(sum, list, real, w, eps.length));
+  const room = Usage.room(sum, real);
+  const kids = [table];
+  if (room) kids.push(el('p', { class: 'ua-room' + (room.attn ? ' attn' : ' dim'), 'data-room': room.attn ? 'attention' : 'info', text: room.text }));
+  // the sessions of the rows can add up to more than the total (one that ran on two accounts is counted in each row, once in the total): say so in
+  // the open, because the cell's title does not show on a phone
+  const rowSessions = list.reduce((x, a) => x + Usage.accStat(a, w).sessions, 0);
+  const totSessions = sum.total && sum.total[w] && typeof sum.total[w] === 'object' ? Usage.accStat({ windows: { [w]: sum.total[w] } }, w).sessions : rowSessions;
+  if (totSessions !== rowSessions) {
+    kids.push(el('p', { class: 'dim unote', 'data-note': 'sessions', text: `Sessions: ${totSessions} in total, ${rowSessions} in the rows above: a session that ran on two accounts counts once in the total and once in each row.` }));
+  }
+  if (!real.length) kids.push(el('p', { class: 'dim unote', text: 'No Claude account has been seen yet: the board reads the logged-in one within a minute of the first session.' }));
+  kids.push(el('p', { class: 'dim unote', text: `${Usage.WINDOW_NAME[P.range]}. The 5H and 7D bars are the subscription's own windows, tokens and hours are what each account used in the range; dollars are API-equivalent (list price), not what a plan costs. To use another subscription, run /login in any terminal.` }));
+  Usage.setBody(P, 'accounts', ...kids);
 };
 
 /* ---------- sessions ---------- */
@@ -900,6 +1195,7 @@ registerPage('usage', {
     if (!P || !st) return;
     P.st = st;
     Usage.paintGauges(P);
+    if (Usage.summaryOf(P)) Usage.safe(P, 'accounts', () => Usage.paintAccounts(P));      // a rename (or a /login switch) shows now; the signature keeps an unchanged poll from rebuilding the rows
     const sig = Usage.liveSig(st);
     if (sig !== P.liveSig) {                               // a session started or ended: the Open buttons follow, without a fetch
       P.liveSig = sig;

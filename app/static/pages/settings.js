@@ -1,14 +1,15 @@
-/* ccboard settings page (#/settings[?sec=notify|nodes|box|agents|app]): the Notify panel (Web Push, ntfy, backup), the Nodes strip, the
-   box health, the agents (Claude login) and the App panel (installed or browser, Install, Safari steps, build id, Reload app, shortcuts).
+/* ccboard settings page (#/settings[?sec=notify|nodes|box|agents|accounts|app]): the Notify panel (Web Push, ntfy, backup), the Nodes strip, the
+   box health, the agents (Claude login), the subscription Accounts (v0.5.17b: label, email, plan, windows, last seen, Rename, and how to add another)
+   and the App panel (installed or browser, Install, Safari steps, build id, Reload app, shortcuts).
    The section is picked with ?sec= and tabs(); each panel is rebuilt only when the
    state it shows changed, so a poll never recreates a button under a finger. renderNotifyPanel() and renderNodes() stay global:
    core.js (enablePush / disablePush) calls the first one. The login modal itself lives in pages/home.js (startLogin / openModal). */
 'use strict';
 
 const SETTINGS_SECTIONS = [
-  { id: 'notify', label: 'Notifications' }, { id: 'nodes', label: 'Nodes' }, { id: 'box', label: 'Box' }, { id: 'agents', label: 'Agents' }, { id: 'app', label: 'App' },
+  { id: 'notify', label: 'Notifications' }, { id: 'nodes', label: 'Nodes' }, { id: 'box', label: 'Box' }, { id: 'agents', label: 'Agents' }, { id: 'accounts', label: 'Accounts' }, { id: 'app', label: 'App' },
 ];
-const settingsPage = { refs: null, active: 'notify' };
+const settingsPage = { refs: null, active: 'notify', acct: { at: 0, full: null } };         // acct: when GET /api/accounts last ran, and its rows by key (for 'seen 3h ago')
 
 /* One setting as the shared .kv row (v0.5.6d): the label in a 120 px column, the value in mono with its helper text under it, the actions at the right
    (under the value on a phone). Buttons, link-buttons and the two-tap pair go to the actions, everything else to the value. row.add() files late
@@ -160,6 +161,113 @@ function settingsAgents(p) {
   if (codex) p.append(settingsKv('Codex', el('span', { class: codex.installed ? 'badge hue-teal' : 'v dim', text: codex.installed ? 'installed' : 'not installed' })));
 }
 
+/* ---------- Accounts (v0.5.17b): the subscription accounts the board has seen ----------
+   state.accounts.list gives the rows (label, email, plan, the two window readings); GET /api/accounts adds last_seen, asked once when the panel opens and then at
+   most every 5 minutes (the panel rebuilds each minute so the ages move: that is no polling of its own). Rename opens a small sheet: one field, Save is the
+   one primary; the label is painted at once and PATCH /api/accounts/<key> follows (a refusal puts the old label back). */
+const SETTINGS_LOGIN_HOWTO = 'To use another subscription, run /login in any terminal; the board notices within a minute and starts a new row for it.';
+
+function settingsAcctSeen(a) {
+  const full = settingsPage.acct.full && settingsPage.acct.full[a.key];
+  const t = full && full.last_seen ? Date.parse(full.last_seen) / 1000 : 0;
+  return t > 0 ? `seen ${fmtAge(t)} ago` : '';
+}
+
+function settingsAcctLoad() {
+  const m = settingsPage.acct;
+  if (typeof api !== 'function' || Date.now() - m.at < 300000) return;
+  m.at = Date.now();
+  Promise.resolve().then(() => api('GET', '/api/accounts')).then((r) => {
+    const rows = r && Array.isArray(r.list) ? r.list : null;
+    if (!rows) return;
+    m.full = {};
+    for (const x of rows) if (x && x.key) m.full[x.key] = x;
+    if (settingsPage.refs && settingsPage.active === 'accounts') settingsFill('accounts', true);
+  }).catch(() => { /* the rows still show; only 'seen' is missing */ });
+}
+
+function settingsAcctRow(a) {
+  const name = agentsAcctName(a);
+  const now = Date.now() / 1000;
+  const chips = el('span', { class: 'set-chips' });
+  if (a.plan) chips.append(el('span', { class: 'badge ' + chipHue('account', a.key), text: String(a.plan) }));
+  if (a.current) chips.append(el('span', { class: 'badge cur', title: 'the account signed in on this box right now', text: 'current' }));
+  const u5 = agentsAcctUsedNow(state, a, '5h', now);                 // the account in use shows the pills' numbers
+  const u7 = agentsAcctUsedNow(state, a, '7d', now);
+  const pct = (v) => (v === null ? 'no reading' : `${Math.round(v)}%`);
+  const seen = settingsAcctSeen(a);
+  const usage = (u5 === null && u7 === null ? 'no usage reading yet' : `5H ${pct(u5)} · 7D ${pct(u7)}`) + (seen ? ` · ${seen}` : '');
+  const row = settingsKv(name, chips.firstChild ? chips : null, a.email && a.email !== name ? el('span', { class: 'v', text: a.email }) : null,
+    el('span', { class: 'dim', text: usage }),
+    el('button', { class: 'small', type: 'button', 'aria-label': `Rename ${name}`, title: 'Rename this account', onclick: () => settingsRenameAccount(a), text: 'Rename' }));
+  row.classList.add('set-acct');
+  row.setAttribute('data-account', a.key);
+  const k = row.querySelector('.k');
+  if (k) k.classList.add(chipHue('account', a.key));
+  return row;
+}
+
+function settingsAccounts(p) {
+  p.textContent = '';
+  const list = agentsAccounts(state);
+  p.append(settingsHead('Subscription accounts'));
+  if (!list.length) p.append(el('div', { class: 'dim set-note', text: 'No Claude account seen yet. The board records the account a session is signed in with once one is running.' }));
+  for (const a of list) p.append(settingsAcctRow(a));
+  p.append(settingsHead('Add another subscription'));
+  p.append(el('div', { class: 'dim set-note', text: SETTINGS_LOGIN_HOWTO }));
+  settingsAcctLoad();
+}
+
+/* THE rename sheet of an account: the Settings row and the Usage pencil both open it, so the title, the hint, the 60 characters, Save as the one primary and
+   the behaviour are one. a: an account record (state.accounts.list, or the summary's: only key, label, name, email are read). The label is painted at once
+   on every surface (this panel, the topbar chip and pills, the page behind: Usage rows, Limits chips, session rows) while the sheet stays open and PATCH
+   /api/accounts/<key> {label} runs; success closes it, a refusal puts the old label back everywhere and says why in the sheet (and a toast), which stays open. */
+function settingsRenameAccount(a) {
+  if (!a || !a.key) return null;
+  const name = agentsAcctName(a);
+  const input = el('input', { type: 'text', maxlength: 60, autocomplete: 'off', autocapitalize: 'words', placeholder: a.name || a.email || 'label' });
+  input.value = a.label || '';
+  const f = field('Label', input, 'Shown on the Usage page, the topbar chip and the session rows. Leave it empty to go back to the name Claude reports.');
+  const live = () => agentsAccounts(state).find((q) => q.key === a.key) || a;                // the poll may have replaced the record since the sheet opened
+  const put = (label) => { live().label = label; };
+  const repaint = () => {
+    if (settingsPage.refs) settingsFill('accounts', true);
+    if (typeof Shell !== 'undefined' && Shell.patchUsage) Shell.patchUsage(state);
+    if (typeof updateCurrentPage === 'function') updateCurrentPage(state);
+  };
+  const saveBtn = el('button', { class: 'primary', type: 'submit', text: 'Save' });
+  const save = async () => {
+    const label = input.value.trim().replace(/\s+/g, ' ');
+    if (label.length > 60) { fieldError(f, 'At most 60 characters.', true); return; }
+    fieldError(f, '');
+    const before = live().label || null;
+    if (label === (before || '')) { closeSheet(); return; }
+    saveBtn.disabled = true;
+    put(label || null);                                   // painted at once; the server's answer decides whether it stays
+    repaint();
+    try {
+      await api('PATCH', `/api/accounts/${encodeURIComponent(a.key)}`, { label });
+    } catch (e) {
+      const why = e && e.message ? e.message : 'the box refused it';
+      put(before);
+      repaint();
+      saveBtn.disabled = false;
+      fieldError(f, `Rename failed: ${why}`, true);       // the sheet stays open with the reason under the field ...
+      pageToast(`Rename failed: ${why}`, 'bad');         // ... and a toast, because the sheet may have been dismissed meanwhile
+      return;
+    }
+    closeSheet();
+    pageToast(label ? `Renamed to ${label}` : `${name} is back to its own name`, 'ok');
+    if (typeof poll === 'function') poll(true);
+  };
+  const form = el('form', { class: 'form', novalidate: true, onsubmit: (e) => { e.preventDefault(); save(); } },
+    f,
+    el('div', { class: 'submit' }, saveBtn, el('button', { type: 'button', onclick: () => closeSheet(), text: 'Cancel' })));
+  const sheet = openSheet({ title: `Rename account · ${name}`, body: form });
+  if (typeof focusFine === 'function') focusFine(input);
+  return sheet;
+}
+
 /* How this window runs: an installed app (standalone, with the title-bar overlay on desktop Chrome / Edge) or a browser tab. */
 function settingsAppMode() {
   const mq = (q) => !!(window.matchMedia && window.matchMedia(q).matches);
@@ -221,7 +329,7 @@ function settingsApp(p) {
 /* core.js / shell.js call renderAppPanel() when the browser hands over (or withdraws) the install prompt: rebuild the panel if the page is open. */
 function renderAppPanel() { settingsFill('app', true); }
 
-const SETTINGS_BUILD = { notify: settingsNotify, nodes: settingsNodes, box: settingsBox, agents: settingsAgents, app: settingsApp };
+const SETTINGS_BUILD = { notify: settingsNotify, nodes: settingsNodes, box: settingsBox, agents: settingsAgents, accounts: settingsAccounts, app: settingsApp };
 
 /* What a panel shows, as a string: the panel is rebuilt only when it changes. */
 function settingsSig(id, st) {
@@ -229,6 +337,9 @@ function settingsSig(id, st) {
   if (id === 'notify') return JSON.stringify([st.config && st.config.ntfy, st.config && st.config.backup, st.backup, minute]);
   if (id === 'nodes') return JSON.stringify(st.nodes);
   if (id === 'box') return JSON.stringify([st.health, st.backup, st.node_name, st.user, minute]);
+  if (id === 'accounts') {                                             // identity and labels, not the readings: those move with every statusline and would rebuild the Rename button under a finger (they refresh with the minute)
+    return JSON.stringify([st.accounts && st.accounts.current, agentsAccounts(st).map((a) => [a.key, a.label, a.name, a.email, a.plan, !!a.current]), minute]);
+  }
   if (id === 'app') return JSON.stringify([st.version, settingsAppMode().note, !!settingsInstallPrompt(), settingsHelpAvailable()]);
   return JSON.stringify([st.claude, st.agents, st.login && st.login.running, ui.modal, ui.confirm === 'logout']);     // the two-tap Log out repaints the panel
 }

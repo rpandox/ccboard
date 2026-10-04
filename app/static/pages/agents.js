@@ -24,7 +24,8 @@ const CV_AUTO_ROWS = 30;                                                        
 /* Muted category hues (tokens.css: .hue-blue ... .hue-slate set --hue / --hue-bg / --hue-bd, pages.css paints a chip with them). The hue only helps scanning:
    the label always says what the chip is. chipHue(kind, key) -> the class: agent (claude violet, codex teal, shell slate), model (opus blue, fable violet,
    sonnet green, haiku slate, gpt / codex teal, anything else slate), project (a stable hash of the name into blue / teal / green / violet / slate: amber and
-   rose mean attention, so they are never handed out), and slate for everything else (branch, PR, worktree, folder). */
+   rose mean attention, so they are never handed out), account (v0.5.17b: the same stable hash of the account key, so one subscription wears one hue on the
+   Usage page, the topbar chip, the session rows and Settings), and slate for everything else (branch, PR, worktree, folder). */
 const HUE_POOL = ['blue', 'teal', 'green', 'violet', 'slate'];
 function chipHue(kind, key) {
   const k = String(key === null || key === undefined ? '' : key).toLowerCase();
@@ -37,7 +38,7 @@ function chipHue(kind, key) {
     if (/gpt|codex|\bo\d/.test(k)) return 'hue-teal';
     return 'hue-slate';
   }
-  if (kind === 'project') {
+  if (kind === 'project' || kind === 'account') {
     let h = 5381;
     for (let i = 0; i < k.length; i++) h = ((h * 33) ^ k.charCodeAt(i)) >>> 0;
     return 'hue-' + HUE_POOL[h % HUE_POOL.length];
@@ -51,6 +52,40 @@ function chipHueSet(node, cls) {
   if (node._hue) node.classList.remove(node._hue);
   node.classList.add(cls);
   node._hue = cls;
+}
+
+/* Subscription accounts (v0.5.17b). state.accounts = {current, list: [{key, email, name, label, plan, rl_5h, rl_7d, resets_5h, resets_7d, current}]} is always there on
+   a live board and absent in older fixtures: every read goes through agentsAccounts(), which answers [] for anything else. The name of an account is its label,
+   else the name Claude reports, else the email, else the first characters of the key: never 'undefined'. */
+function agentsAccounts(st) {
+  const a = st && st.accounts;
+  return a && Array.isArray(a.list) ? a.list.filter((x) => x && typeof x === 'object' && x.key) : [];
+}
+
+function agentsAcctName(a) {
+  if (!a) return 'account';
+  const n = [a.label, a.name, a.email].find((x) => typeof x === 'string' && x.trim());
+  return n ? n.trim() : (a.key ? String(a.key).slice(0, 6) : 'account');
+}
+
+/* The used percentage of one of an account's windows ('5h' | '7d') at `now` (epoch s): its last reading, 0 once that window has reset since (the reading is then
+   from the window before, and a quiet account has not been read again), null without a reading. */
+function agentsAcctUsed(a, win, now) {
+  const v = a ? a['rl_' + win] : null;
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  const r = a['resets_' + win];
+  if (typeof r === 'number' && r > 0 && r <= (typeof now === 'number' ? now : Date.now() / 1000)) return 0;
+  return Math.max(0, Math.min(100, v));
+}
+
+/* Same, but the account in use answers with the numbers the topbar pills show (state.usage, the freshest statusline) so no screen shows two figures for it. */
+function agentsAcctUsedNow(st, a, win, now) {
+  if (a && (a.current || (st && st.accounts && st.accounts.current === a.key))) {
+    const rl = (st && st.usage && st.usage.value) || {};
+    const w = win === '5h' ? rl.five_hour : rl.seven_day;
+    if (w && typeof w.used_percentage === 'number' && Number.isFinite(w.used_percentage)) return Math.max(0, Math.min(100, w.used_percentage));
+  }
+  return agentsAcctUsed(a, win, now);
 }
 
 /* The reply box's placeholder: a phone gets the bare verb ('Reply…', 'Send…'): the one-row box is about 330 px wide and a long session name wrapped onto a
@@ -300,6 +335,7 @@ function sessionCard(s, opts) {
   const b = {};
   if (rich) {
     b.model = el('span', { class: 'bdg bdg-model mono hidden' });
+    b.acct = el('span', { class: 'bdg bdg-acct hidden' });                    // which subscription account the session runs on: only when the board has more than one
     b.ctx = ctxMeter();
     b.ctx.classList.add('hidden');
     b.compact = el('button', { class: 'chip-btn compact-chip hue-slate hidden', type: 'button', title: 'send /compact to this session', text: 'compact' });
@@ -310,7 +346,7 @@ function sessionCard(s, opts) {
     b.cost = el('span', { class: 'bdg bdg-cost mono hidden', title: 'session cost (API-equivalent)' });
     b.limit = el('span', { class: 'bdg bdg-limit hidden', text: 'limit' });
     b.blocked = el('span', { class: 'bdg bdg-blocked hidden', text: 'blocked' });
-    badges = el('span', { class: 'rr-badges' }, b.model, b.ctx, b.compact, b.worktree, b.pr, b.sub, b.cost, b.limit, b.blocked);
+    badges = el('span', { class: 'rr-badges' }, b.model, b.acct, b.ctx, b.compact, b.worktree, b.pr, b.sub, b.cost, b.limit, b.blocked);
   }
   if (!o.peek) {
     moreBtn = el('button', { class: 'icon minimal rr-more', type: 'button', 'aria-label': 'More actions', title: 'More: acknowledge, reply, tail, kill' }, ic('more'));
@@ -406,6 +442,14 @@ function sessionCard(s, opts) {
     const nudge = sessionNudgeable(s2);
     show(b.model, !!t.model);
     if (t.model) { setTextIfChanged(b.model, String(t.model)); chipHueSet(b.model, chipHue('model', t.model)); }
+    const accts = agentsAccounts(st);
+    const acct = s2.account && accts.length > 1 ? (accts.find((x) => x.key === s2.account) || { key: s2.account }) : null;
+    show(b.acct, !!acct);
+    if (acct) {
+      setTextIfChanged(b.acct, agentsAcctName(acct));
+      chipHueSet(b.acct, chipHue('account', acct.key));
+      b.acct.setAttribute('title', `subscription account: ${agentsAcctName(acct)}${acct.email && acct.email !== agentsAcctName(acct) ? ' · ' + acct.email : ''}`);
+    }
     const hasCtx = typeof t.context_pct === 'number';
     show(b.ctx, hasCtx);
     if (hasCtx) b.ctx.ccSet(t.context_pct);
@@ -443,10 +487,13 @@ function sessionCard(s, opts) {
     const t = rich ? sessionTask(s2, st) : null;
     const rl = rich ? rateLimitOf(st) : null;
     const pr = o.perm ? sessionPerm(s2.tmux) : null;
+    const accts = rich && s2.account ? agentsAccounts(st) : [];
+    const ac = accts.length > 1 ? (accts.find((x) => x.key === s2.account) || null) : null;
     return JSON.stringify([s2.state, s2.state_at, s2.name, s2.last_prompt, s2.last_message, s2.needs_attention, s2.agent, s2.launcher, s2.created,
       s2.project, s2.repo, s2.folder, s2.stats, s2.path, s2.flags, s2.task,
       pr ? pr.id + ':' + pr.summary : '', ui.confirm === killKey,
-      t ? [t.id, t.pr_number, t.pr_url, t.pr_state, t.mode, t.ci && t.ci.bucket] : null, rl && rl.session === s2.tmux ? [rl.message, rl.resets_at] : null]);
+      t ? [t.id, t.pr_number, t.pr_url, t.pr_state, t.mode, t.ci && t.ci.bucket] : null, rl && rl.session === s2.tmux ? [rl.message, rl.resets_at] : null,
+      rich ? [s2.account || '', accts.length > 1, ac ? [ac.label, ac.name, ac.email] : null] : null]);
   }
 
   function patch(s2) {

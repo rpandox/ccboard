@@ -576,12 +576,25 @@ function tabs(items, activeId, onChange) {
   const counts = new Map();
   const ids = items.map((it) => it.id);
   let current = ids.includes(activeId) ? activeId : ids[0];
+  // the tab list scrolls sideways when the tabs do not fit (390 px, six tabs): bring the selected one into view once the list is in the page
+  const reveal = (n) => {
+    if (typeof requestAnimationFrame !== 'function') return;
+    requestAnimationFrame(() => {
+      try {
+        const a = n.getBoundingClientRect();
+        const b = list.getBoundingClientRect();
+        if (a.left < b.left) list.scrollLeft -= b.left - a.left;
+        else if (a.right > b.right) list.scrollLeft += a.right - b.right;
+      } catch (_) { /* no layout */ }
+    });
+  };
   const paint = (id) => {
     current = id;
     for (const [tid, n] of nodes) {
       n.setAttribute('aria-selected', tid === id ? 'true' : 'false');
       n.setAttribute('tabindex', tid === id ? '0' : '-1');
     }
+    if (nodes.has(id)) reveal(nodes.get(id));
   };
   const pick = (id, focus) => {
     if (id !== current) { paint(id); if (typeof onChange === 'function') onChange(id); }

@@ -1010,3 +1010,201 @@ test('sidebar folders: a nested repo inside a repo keeps the parent repo and ext
   const top = plain(Shell.dirItems(k('root', '')).map((x) => [x.kind, x.repo, x.path]));
   assert.deepEqual(top, [['dir', 'root', 'notes']], 'the project folder\'s own repos are top-level sidebar nodes already');
 });
+
+// ---------------------------------------------------------------- v0.5.17b: Settings > Accounts (rows, rename sheet, last seen)
+
+const A1 = '7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001', A2 = '7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a002';
+const secs = (n) => Math.floor(Date.now() / 1000) + n;
+const TWO_ACCTS = () => ({ current: A1, list: [
+  { key: A1, email: 'demo@example.com', name: 'Demo', label: null, plan: 'max', rl_5h: 42, rl_7d: 71, resets_5h: secs(7200), resets_7d: secs(200000), current: true },
+  { key: A2, email: 'work@example.com', name: 'Work', label: 'Work', plan: 'pro', rl_5h: 100, rl_7d: 83, resets_5h: secs(-3600), resets_7d: secs(90000), current: false },
+] });
+const isPrimary = (b) => b.classList.contains('primary') || b.classList.contains('bp5-intent-primary');
+
+/** The pages world on #/settings?sec=accounts with api() answering GET /api/accounts (full) and PATCH /api/accounts/<key> (patch(method, path, body)). */
+function acctWorld(opts = {}) {
+  const { full = null, patch = null } = opts;
+  const accounts = 'accounts' in opts ? opts.accounts : TWO_ACCTS();               // an explicit undefined means a state without the key
+  const { w } = pagesWorld({ state: fakeState({ accounts }) });
+  w.ctx.__full = full;
+  w.ctx.__patch = patch;
+  w.ctx.__shellPaints = 0;
+  w.run(`globalThis.Shell = { patchUsage() { __shellPaints++; } };
+    { const prev = api; api = async (method, path, body) => {
+      if (method === 'GET' && path === '/api/accounts') { __calls.push({ method, path, body }); return __full; }
+      if (method === 'PATCH' && path.startsWith('/api/accounts/')) { __calls.push({ method, path, body }); return __patch ? __patch(method, path, body) : { ok: true }; }
+      return prev(method, path, body); }; }`);
+  w.location.hash = '#/settings?sec=accounts';
+  return w;
+}
+const acctPanel = (w) => page(w).querySelector('.settings-panel[data-sec=accounts]');
+const acctRows = (w) => acctPanel(w).querySelectorAll('.kv.set-acct');
+const renameBtn = (row) => row.querySelectorAll('button').find((b) => text(b) === 'Rename');
+const openRename = (w, i = 0) => { renameBtn(acctRows(w)[i]).click(); return sheet(w); };
+const submitSheet = (w) => sheet(w).querySelector('form').dispatchEvent({ type: 'submit', preventDefault() {} });
+
+test('settings tabs: Accounts sits after Agents and before App', () => {
+  const w = acctWorld();
+  assert.deepEqual(page(w).querySelectorAll('.tab').map((t) => t.getAttribute('data-tab')), ['notify', 'nodes', 'box', 'agents', 'accounts', 'app']);
+  assert.equal(page(w).querySelector('.tab[data-tab=accounts]').getAttribute('aria-selected'), 'true');
+  assert.equal(acctPanel(w).classList.contains('hidden'), false);
+});
+
+test('Settings > Accounts: one row per account with its name in the account\'s hue, plan and current chips, email, readings and Rename; the how-to closes the panel', () => {
+  const w = acctWorld();
+  assert.deepEqual(acctPanel(w).querySelectorAll('.set-h').map(text), ['Subscription accounts', 'Add another subscription']);
+  const rows = acctRows(w);
+  assert.equal(rows.length, 2);
+  const hueOf = (key) => w.run(`chipHue('account', ${JSON.stringify(key)})`);
+  assert.deepEqual(rows.map((r) => text(r.querySelector('.k'))), ['Demo', 'Work'], 'label, else the name Claude reports');
+  rows.forEach((r, i) => assert.ok(r.querySelector('.k').classList.contains(hueOf([A1, A2][i])), 'the same hue as the chips elsewhere'));
+  assert.deepEqual(rows[0].querySelectorAll('.badge').map(text), ['max', 'current']);
+  assert.deepEqual(rows[1].querySelectorAll('.badge').map(text), ['pro'], 'only the account in use is marked current');
+  assert.ok(rows[0].querySelector('.badge.cur'));
+  assert.ok(rows[0].querySelector('.badge').classList.contains(hueOf(A1)), 'the plan chip wears the hue');
+  assert.match(text(rows[0].querySelector('.kv-main')), /demo@example\.com/);
+  assert.match(text(rows[0].querySelector('.kv-main')), /5H 42% · 7D 71%/);
+  assert.match(text(rows[1].querySelector('.kv-main')), /5H 0% · 7D 83%/, 'a window that reset since the last reading counts as empty');
+  for (const r of rows) {
+    const b = renameBtn(r);
+    assert.ok(b && b.closest('.kv-act'), 'Rename lives in the action cell');
+    assert.equal(isPrimary(b), false, 'a quiet button: Settings has no filled primary here');
+    assert.match(b.getAttribute('aria-label'), /^Rename (Demo|Work)$/);
+  }
+  assert.match(text(acctPanel(w)), /To use another subscription, run \/login in any terminal; the board notices within a minute and starts a new row for it\./);
+  assert.ok(!/undefined|NaN|null/.test(text(acctPanel(w))));
+});
+
+test('Settings > Accounts: the account in use shows the topbar pills\' numbers (state.usage), the others their own last reading', () => {
+  const { w } = pagesWorld({ state: fakeState({ accounts: TWO_ACCTS(), usage: { value: { five_hour: { used_percentage: 55, resets_at: secs(7000) }, seven_day: { used_percentage: 72.4, resets_at: secs(200000) } }, at: new Date().toISOString() } }) });
+  w.location.hash = '#/settings?sec=accounts';
+  const rows = acctRows(w);
+  assert.match(text(rows[0].querySelector('.kv-main')), /5H 55% · 7D 72%/, 'one figure for the account in use on every screen');
+  assert.match(text(rows[1].querySelector('.kv-main')), /5H 0% · 7D 83%/, 'a quiet account: its own reading, its reset window counted as open');
+});
+
+test('Settings > Accounts empty state: says what is missing and still shows how to add a subscription', () => {
+  for (const accounts of [undefined, null, { current: null, list: [] }, { list: 'x' }]) {
+    const w = acctWorld({ accounts });
+    assert.equal(acctRows(w).length, 0);
+    assert.match(text(acctPanel(w)), /No Claude account seen yet/);
+    assert.match(text(acctPanel(w)), /run \/login in any terminal/);
+    assert.equal(acctPanel(w).querySelectorAll('button').length, 0);
+  }
+});
+
+test('Settings > Accounts names an account by label, name, email or key; one account still lists one row', () => {
+  const w = acctWorld({ accounts: { current: A1, list: [{ key: A1, email: 'solo@example.com', name: null, label: null, plan: null, rl_5h: null, rl_7d: null, resets_5h: null, resets_7d: null, current: true }] } });
+  const rows = acctRows(w);
+  assert.equal(rows.length, 1);
+  assert.equal(text(rows[0].querySelector('.k')), 'solo@example.com');
+  assert.deepEqual(rows[0].querySelectorAll('.badge').map(text), ['current'], 'no plan, no plan chip');
+  assert.match(text(rows[0].querySelector('.kv-main')), /no usage reading yet/);
+  assert.equal(text(rows[0].querySelector('.kv-main')).includes('solo@example.com'), false, 'the email is not said twice when it is the name');
+});
+
+test('Settings > Accounts asks GET /api/accounts once for last_seen, shows "seen 3h ago", and a refusal or odd answer only costs that word', async () => {
+  const w = acctWorld({ full: { current: A1, list: [{ key: A1, last_seen: new Date(Date.now() - 3 * 3600e3).toISOString() }, { key: A2, last_seen: new Date(Date.now() - 2 * 86400e3).toISOString() }] } });
+  await tick(); await tick();
+  assert.deepEqual(calls(w).filter((c) => c.path === '/api/accounts').map((c) => c.method), ['GET']);
+  assert.deepEqual(acctRows(w).map((r) => (/seen \w+ ago/.exec(text(r.querySelector('.kv-main'))) || [])[0]), ['seen 3h ago', 'seen 2d ago']);
+  w.run('updateCurrentPage(state)');
+  w.location.hash = '#/settings?sec=box';
+  w.location.hash = '#/settings?sec=accounts';
+  await tick();
+  assert.equal(calls(w).filter((c) => c.path === '/api/accounts').length, 1, 'not again within five minutes');
+  for (const full of [{ ok: true }, null, { list: 'x' }, { list: [null, {}, { key: 'zz' }] }]) {
+    const w2 = acctWorld({ full });
+    await tick(); await tick();
+    assert.equal(acctRows(w2).length, 2);
+    assert.ok(!/seen/.test(text(acctPanel(w2))), JSON.stringify(full));
+  }
+});
+
+test('Rename: the sheet has one field (the current label, 60 characters) and Save as the one primary; Save paints the label at once, the sheet stays open while PATCH {label} runs and closes when it succeeds', async () => {
+  let release;
+  const w = acctWorld({ patch: () => new Promise((r) => { release = r; }) });
+  const sh = openRename(w, 1);
+  assert.equal(sh.open, true);
+  assert.equal(text(sh.querySelector('.sheet-title')), 'Rename account · Work');
+  const input = sh.querySelector('input');
+  assert.equal(input.value, 'Work');
+  assert.equal(input.getAttribute('maxlength'), '60');
+  assert.deepEqual(sh.querySelectorAll('button').filter(isPrimary).map(text), ['Save'], 'one primary in the sheet');
+  assert.ok(sh.querySelectorAll('button').some((b) => text(b) === 'Cancel'));
+  input.value = '  Client   work ';
+  submitSheet(w);
+  assert.equal(sheet(w).open, true, 'open while the box answers: a refusal needs somewhere to say why');
+  assert.equal(sheet(w).querySelector('button.primary').disabled, true, 'Save cannot be tapped twice');
+  assert.equal(text(acctRows(w)[1].querySelector('.k')), 'Client work', 'painted before the server answers, whitespace tidied');
+  assert.equal(w.get('state').accounts.list[1].label, 'Client work');
+  assert.ok(w.get('__shellPaints') >= 1, 'the topbar chip repaints too');
+  assert.deepEqual(calls(w).filter((c) => c.method === 'PATCH'), [{ method: 'PATCH', path: `/api/accounts/${A2}`, body: { label: 'Client work' } }]);
+  release({ ok: true });
+  await tick(); await tick();
+  assert.equal(sheet(w).open, false, 'closed once the box has it');
+  assert.deepEqual(plain(w.get('__toasts')).pop(), { text: 'Renamed to Client work', kind: 'ok' });
+  assert.equal(text(acctRows(w)[1].querySelector('.k')), 'Client work');
+});
+
+test('Rename: a refusal puts the old label back everywhere and says why in the sheet (and a toast), which stays open for another try; an empty label clears it; an unchanged one sends nothing', async () => {
+  const w = acctWorld({ patch: () => { throw new Error('no such account'); } });
+  openRename(w, 1).querySelector('input').value = 'Nope';
+  submitSheet(w);
+  await tick(); await tick();
+  assert.equal(text(acctRows(w)[1].querySelector('.k')), 'Work', 'reverted');
+  assert.equal(w.get('state').accounts.list[1].label, 'Work');
+  assert.equal(sheet(w).open, true, 'the sheet stays open');
+  assert.match(text(sheet(w).querySelector('.field-err')), /^Rename failed: no such account$/, 'the reason, under the field');
+  assert.equal(sheet(w).querySelector('button.primary').disabled, false, 'Save can be tried again');
+  assert.equal(sheet(w).querySelector('input').value, 'Nope', 'and what was typed is still there');
+  assert.deepEqual(plain(w.get('__toasts')).pop(), { text: 'Rename failed: no such account', kind: 'bad' });
+  // unchanged: close, no PATCH
+  const before = calls(w).filter((c) => c.method === 'PATCH').length;
+  openRename(w, 1);
+  submitSheet(w);
+  assert.equal(sheet(w).open, false);
+  assert.equal(calls(w).filter((c) => c.method === 'PATCH').length, before);
+  // clearing goes back to the name Claude reports
+  const w2 = acctWorld();
+  openRename(w2, 1).querySelector('input').value = '   ';
+  submitSheet(w2);
+  assert.deepEqual(calls(w2).filter((c) => c.method === 'PATCH').pop(), { method: 'PATCH', path: `/api/accounts/${A2}`, body: { label: '' } });
+  assert.equal(text(acctRows(w2)[1].querySelector('.k')), 'Work', 'its own name again (Claude reports "Work" here)');
+  await tick(); await tick();
+  assert.equal(sheet(w2).open, false);
+  assert.match(plain(w2.get('__toasts')).pop().text, /^Work is back to its own name$/);
+});
+
+test('Rename: more than 60 characters is refused in the sheet, which stays open and sends nothing', () => {
+  const w = acctWorld();
+  const sh = openRename(w, 0);
+  sh.querySelector('input').value = 'x'.repeat(61);
+  submitSheet(w);
+  assert.equal(sheet(w).open, true);
+  assert.match(text(sheet(w).querySelector('.field-err')), /At most 60 characters/);
+  assert.equal(calls(w).filter((c) => c.method === 'PATCH').length, 0);
+});
+
+test('the Accounts panel is rebuilt when an identity or label changes, and not by a new usage reading or an unchanged poll', () => {
+  const w = acctWorld();
+  const first = acctRows(w)[0];
+  w.run('updateCurrentPage(state)');
+  assert.equal(acctRows(w)[0], first, 'an unchanged poll leaves the Rename button alone');
+  const moved = TWO_ACCTS();
+  moved.list[0].rl_5h = 55; moved.list[1].rl_7d = 90;
+  w.ctx.__st = fakeState({ accounts: moved });
+  w.run('state = __st; updateCurrentPage(state)');
+  assert.equal(acctRows(w)[0], first, 'readings move with every statusline: they wait for the minute');
+  const renamed = TWO_ACCTS();
+  renamed.list[0].label = 'Personal';
+  w.ctx.__st = fakeState({ accounts: renamed });
+  w.run('state = __st; updateCurrentPage(state)');
+  assert.notEqual(acctRows(w)[0], first);
+  assert.equal(text(acctRows(w)[0].querySelector('.k')), 'Personal');
+  const switched = TWO_ACCTS();
+  switched.current = A2; switched.list[0].current = false; switched.list[1].current = true;
+  w.ctx.__st = fakeState({ accounts: switched });
+  w.run('state = __st; updateCurrentPage(state)');
+  assert.deepEqual(acctRows(w).map((r) => !!r.querySelector('.badge.cur')), [false, true], 'a /login switch moves the marker');
+});

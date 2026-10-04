@@ -127,7 +127,7 @@ html.force-coarse #page .usec .btn, html.force-coarse #page .usec button { min-h
 #page .ugrid > .usec { margin:8px 0; }
 @media (min-width:1000px) {
   #page .ugrid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
-  #page .ugrid > .usec[data-sec="sessions"], #page .ugrid > .usec[data-sec="timeline"] { grid-column:1 / -1; }
+  #page .ugrid > .usec[data-sec="accounts"], #page .ugrid > .usec[data-sec="sessions"], #page .ugrid > .usec[data-sec="timeline"] { grid-column:1 / -1; }
 }
 #page .ubody { min-width:0; }
 #page .usk { min-height:120px; }
@@ -166,3 +166,64 @@ html.force-coarse #page .srow-link, html.force-coarse #page a.p-name { display:i
   #page .utable .c-hrs { display:none; }
   #page .sdetail > td > .sd { position:sticky; left:0; max-width:calc(100vw - 44px); }
 }
+
+/* ---------- accounts (pages/usage.js, v0.5.17b): the subscription is the unit. One card per account (no wide table, so nothing scrolls sideways at
+   390), a compact table once the section itself is 700 px wide: a container query, not the viewport, because the 260 px sidebar takes a third of
+   an 840 px screen and a table that fits the screen would not fit the section. The 5H / 7D gauges are the Limits section's own classes; the hue
+   chip is chipHue('account', key); amber (the muted token) is only the 'switch account' cue, never a hue of an account. ---------- */
+#page .usec[data-sec="accounts"] { container-type:inline-size; container-name:accsec; }
+#page .uacc { display:flex; flex-direction:column; gap:8px; min-width:0; }
+#page .uacc-head { display:none; }
+#page .ua-row { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px 14px; min-width:0; padding:10px 12px; border:1px solid var(--line); border-radius:2px; background:var(--bg); }
+#page .ua-row[data-current] { border-color:var(--line-strong, var(--line)); }
+#page .ua-row.total { background:var(--panel, var(--bg)); }
+#page .ua-id { grid-column:1 / -1; display:flex; align-items:flex-start; gap:8px; min-width:0; }   /* the card header: who (wraps inside itself) and the pencil, always side by side */
+#page .ua-who { flex:1 1 0; display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; min-width:0; }
+#page .ua-chip { min-height:22px; max-width:100%; min-width:0; overflow:hidden; text-overflow:ellipsis; font-size:12px; font-weight:600; }
+#page .ua-current { --bd:var(--ok); --bgc:var(--ok-bg, transparent); color:var(--ok-fg, var(--ok)); }
+#page .ua-name { min-width:0; overflow-wrap:anywhere; font-style:italic; }
+#page .ua-email { min-width:0; overflow-wrap:anywhere; font-size:11px; }
+#page .ua-edit { flex:none; margin-left:auto; }
+#page .ua-total-l { font-size:13px; }
+#page .ua-win { grid-column:1 / -1; min-width:0; }
+#page .ua-win .gauge { display:grid; grid-template-columns:2ch minmax(40px, 1fr) auto; gap:2px 8px; align-items:center; }   /* label, bar and % on the first line, the countdown under them */
+#page .ua-win .g-bar { flex:none; }
+#page .ua-win .g-reset { grid-column:1 / -1; padding-left:calc(2ch + 8px); font-size:11px; white-space:normal; }
+#page .ua-wl { margin-right:8px; font-size:12px; font-weight:600; color:var(--fg-2); }
+#page .ua-none { font-size:12px; }
+#page .ua-blank { display:none; }
+#page .ua-stat { display:flex; flex-direction:column; gap:1px; min-width:0; }
+#page .ua-k { font-size:11px; }
+#page .ua-v { font-size:13px; color:var(--fg); }
+#page .ua-stat.ua-dim .ua-v { color:var(--dim); }
+#page .ua-stat[data-col="usd"] { grid-column:1 / -1; flex-direction:row; align-items:baseline; gap:8px; }   /* the dollars come last and dim, on a row of their own */
+#page .ua-row.unknown { background:none; border-style:dashed; }
+#page .ua-row.unknown .ua-v, #page .ua-row.unknown .ua-name { color:var(--dim); }
+#page .ua-room { margin:10px 0 0; font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+#page .ua-room.attn { padding:8px 10px; border:1px solid var(--mute-amber-bd); border-radius:2px; background:var(--mute-amber-bg); color:var(--mute-amber); }
+/* the Limits section's account chips: a hue dot and the name, the pressed look is the shared .pj-repo-btn one */
+#page .ua-picks { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:0 0 8px; }
+#page .ua-picks.hidden { display:none; }
+#page .ua-picks-l { margin-right:2px; }
+#page .ua-pick { display:inline-flex; align-items:center; gap:6px; max-width:100%; min-width:0; }
+#page .ua-pick-l { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#page .ua-pick-now { font-size:11px; }
+#page .ua-dot { flex:none; width:8px; height:8px; border-radius:50%; background:var(--hue, var(--dim-2)); }
+@media (pointer:coarse) { #page .ua-edit { min-width:var(--tap); } }
+html.force-coarse #page .ua-edit { min-width:var(--tap); }
+@container accsec (min-width:700px) {
+  #page .uacc { gap:0; }
+  #page .uacc-head, #page .ua-row { display:grid; grid-template-columns:minmax(120px, 1.6fr) minmax(100px, 1.1fr) minmax(100px, 1.1fr) minmax(52px, .6fr) minmax(46px, .5fr) minmax(46px, .5fr) minmax(40px, .45fr) minmax(62px, .6fr); gap:0 10px; align-items:center; }
+  #page .uacc-head { padding:0 12px 6px; border-bottom:1px solid var(--line); font:600 11px/1.3 var(--font-ui); color:var(--dim); }
+  #page .ua-h.ua-r { text-align:right; }
+  #page .ua-h.ua-dim { font-weight:500; }
+  #page .ua-row { padding:8px 12px; border:0; border-bottom:1px solid var(--line-soft); border-radius:0; background:none; }
+  #page .ua-row.unknown { border-bottom:1px dashed var(--line-soft); }
+  #page .ua-row.total { border-bottom:0; border-top:1px solid var(--line); background:none; }
+  #page .ua-id, #page .ua-win, #page .ua-stat[data-col="usd"] { grid-column:auto; }
+  #page .ua-blank { display:block; }
+  #page .ua-stat, #page .ua-stat[data-col="usd"] { flex-direction:column; align-items:flex-end; gap:0; text-align:right; }
+  #page .ua-k { display:none; }
+  #page .ua-edit { margin-left:0; }
+}
+

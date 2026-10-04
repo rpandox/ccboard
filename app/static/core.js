@@ -119,7 +119,7 @@ function demoOn() {
 }
 /* The fixtures were captured at demo.epoch: shift every timestamp by the elapsed time so ages, countdowns and the 'older' cut stay live. */
 const ISO_TS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
-const EPOCH_KEYS = new Set(['created', 'resets_at', 'created_at_epoch', 'expires_at']);
+const EPOCH_KEYS = new Set(['created', 'resets_at', 'created_at_epoch', 'expires_at', 'resets_5h', 'resets_7d']);   // resets_5h / resets_7d: state.accounts.list[] (v0.5.17b)
 function demoRebase(data) {
   const epoch = data && data.demo && data.demo.epoch;
   if (!epoch) return data;
@@ -177,7 +177,7 @@ async function demoApi(method, path) {
     const dt = Math.floor(Date.now() / 1000 - data.demo.epoch);
     return { ...data, events: data.events.map((e) => ({ ...e, t: e.t + dt })) };
   }
-  return name === 'state' ? demoRebase(data) : data;
+  return name === 'state' || name === 'usage_summary' ? demoRebase(data) : data;   // both carry demo.epoch: the summary's reset times and ISO stamps ride along with the state's
 }
 
 async function api(method, path, body) {

@@ -2,7 +2,9 @@
 // uses them (stateBadge, sessionRow). Run in the vm harness: nodes are the harness stubs (className, attrs, children, textContent).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { makeWorld, plain } from './harness.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
+import { STATIC, makeWorld, plain } from './harness.mjs';
 
 function coreWorld() {
   const w = makeWorld();
@@ -276,4 +278,95 @@ test('el(): hue-*, has-text and info are plain classes: nothing is added or drop
   assertClasses(state, ['bp5-tag', 'bp5-minimal', 'bp5-round', 'bp5-intent-primary', 'state', 'working', 'hue-slate']);
   assert.deepEqual(classesOf(el('form', { class: 'ib-send has-text' })), ['has-text', 'ib-send']);
   assert.deepEqual(classesOf(el('div', { id: 'banner', class: 'info' })), ['info']);
+});
+
+// ---------------------------------------------------------------- demo mode: the usage summary and the accounts' reset times ride along with the state
+
+/** A ?demo=1 world whose fetch serves /static/demo/<name>.json from disk, the way the board does. */
+function demoWorld() {
+  const w = makeWorld({
+    fetch: async (url) => {
+      const m = /^\/static\/demo\/(\w+)\.json$/.exec(String(url));
+      if (!m) throw new Error(`demo mode asked for ${url}`);
+      const body = fs.readFileSync(path.join(STATIC, 'demo', `${m[1]}.json`), 'utf8');
+      return { ok: true, status: 200, statusText: 'OK', json: async () => JSON.parse(body) };
+    },
+  });
+  w.location.search = '?demo=1';
+  w.load('core.js');
+  return w;
+}
+
+test('demoRebase shifts the per-account reset times of state.accounts.list (resets_5h, resets_7d) like every other epoch', () => {
+  const w = coreWorld();
+  assert.ok(w.run("EPOCH_KEYS.has('resets_5h') && EPOCH_KEYS.has('resets_7d') && EPOCH_KEYS.has('resets_at')"));
+  const epoch = Math.floor(Date.now() / 1000) - 3600;
+  w.ctx.__d = { demo: { epoch }, accounts: { list: [{ key: 'a', rl_5h: 42, resets_5h: epoch + 600, resets_7d: epoch + 86400, resets_never: epoch }] } };
+  const out = plain(w.run('demoRebase(__d)'));
+  assert.ok(Math.abs(out.accounts.list[0].resets_5h - (epoch + 600 + 3600)) <= 1, 'one hour on');
+  assert.ok(Math.abs(out.accounts.list[0].resets_7d - (epoch + 86400 + 3600)) <= 1);
+  assert.equal(out.accounts.list[0].resets_never, epoch, 'a key that is not a reset time stays');
+  assert.equal(out.accounts.list[0].rl_5h, 42, 'and so do the percentages');
+});
+
+test('demoApi rebases the usage summary with the state\'s own epoch: the accounts\' reset times, the rate limits and the ISO stamps move to now, and agree with the state', async () => {
+  const w = demoWorld();
+  const st = plain(await w.run("api('GET', '/api/state')"));
+  const sum = plain(await w.run("api('GET', '/api/usage/summary?days=7')"));
+  const fx = JSON.parse(fs.readFileSync(path.join(STATIC, 'demo', 'usage_summary.json'), 'utf8'));
+  const state = JSON.parse(fs.readFileSync(path.join(STATIC, 'demo', 'state.json'), 'utf8'));
+  assert.equal(fx.demo.epoch, state.demo.epoch, 'one fixture clock for the state and the summary');
+  assert.deepEqual(sum.demo, fx.demo, 'the clock rides along unshifted');
+  const now = Date.now() / 1000;
+  const [demo, work] = sum.accounts;
+  assert.ok(demo.rl_5h.resets_at > now && demo.rl_7d.resets_at > now, 'the account in use has its 5H and 7D windows ahead of it: a countdown, not "rolled over"');
+  const near = (a, b) => Math.abs(a - b) <= 2;
+  assert.ok(near(demo.rl_5h.resets_at, st.accounts.list[0].resets_5h), 'Accounts row 5H = state list');
+  assert.ok(near(demo.rl_7d.resets_at, st.accounts.list[0].resets_7d), 'Accounts row 7D = state list');
+  assert.ok(near(demo.rl_5h.resets_at, st.usage.value.five_hour.resets_at), 'and the topbar pill / Limits gauge (state.usage)');
+  assert.ok(near(demo.rl_7d.resets_at, st.usage.value.seven_day.resets_at));
+  assert.ok(near(work.rl_5h.resets_at, st.accounts.list[1].resets_5h) && near(work.rl_7d.resets_at, st.accounts.list[1].resets_7d), 'the other account too');
+  assert.ok(work.rl_5h.resets_at < now, 'the Work 5-hour window of the fixture had reset before it was captured: still behind us');
+  assert.ok(near(sum.rate_limits.claude.rl_5h.meta.resets_at, st.usage.value.five_hour.resets_at));
+  assert.ok(near(Date.parse(sum.generated_at) / 1000, now), 'generated_at is now');
+  assert.ok(near(Date.parse(demo.rl_5h.at) / 1000 - Date.parse(fx.accounts[0].rl_5h.at) / 1000, now - fx.demo.epoch), 'the readings\' own stamps moved by the same amount');
+  assert.ok(sum.episodes.every((e, i) => near(Date.parse(e.at) / 1000 - Date.parse(fx.episodes[i].at) / 1000, now - fx.demo.epoch)), 'the episodes keep their age');
+  assert.deepEqual(sum.daily, fx.daily, 'the daily buckets (local dates, no clock) are untouched');
+  assert.deepEqual(sum.heatmap, fx.heatmap);
+  assert.deepEqual(sum.top_sessions, fx.top_sessions);
+  assert.deepEqual(sum.total, fx.total);
+});
+
+// ---------------------------------------------------------------- tabs(): the tab list scrolls sideways, the selected tab is brought into view
+
+test('tabs(): once the page lays the list out the selected tab is scrolled into its sideways-scrolling list (six Settings tabs at 390 px); without requestAnimationFrame or layout nothing happens and nothing throws', () => {
+  const w = componentsWorld();
+  const rect = (l, r) => ({ left: l, right: r, top: 0, bottom: 44, width: r - l, height: 44 });
+  const LIST = rect(0, 390);
+  const TABS = { notify: rect(-30, 60), app: rect(330, 450) };
+  const made = w.document.createElement;
+  w.document.createElement = (tag) => { const n = made(tag); n.getBoundingClientRect = () => (n.className === 'tablist' ? LIST : (TABS[n.getAttribute('data-tab')] || rect(100, 160))); return n; };
+  const queued = [];
+  w.ctx.requestAnimationFrame = (f) => { queued.push(f); };
+  const items = ['notify', 'nodes', 'box', 'agents', 'accounts', 'app'].map((id) => ({ id, label: id }));
+  const t = w.get('tabs')(items, 'app', () => {});
+  const list = t.root.children[0];
+  list.scrollLeft = 0;
+  assert.equal(queued.length, 1, 'the first paint waits for the layout (the list is not in the page yet)');
+  queued.shift()();
+  assert.equal(list.scrollLeft, 60, 'the sixth tab ends 60 px beyond the list: scroll that far');
+  t.set('notify');
+  queued.shift()();
+  assert.equal(list.scrollLeft, 30, 'the first tab starts 30 px before the list: scroll back');
+  t.set('nodes');
+  queued.shift()();
+  assert.equal(list.scrollLeft, 30, 'a tab that is already in view moves nothing');
+  // no rAF: nothing is queued and nothing throws
+  delete w.ctx.requestAnimationFrame;
+  w.ctx.requestAnimationFrame = undefined;
+  assert.doesNotThrow(() => w.get('tabs')(items, 'box', () => {}));
+  // no layout: getBoundingClientRect missing or throwing
+  w.ctx.requestAnimationFrame = (f) => f();
+  w.document.createElement = made;
+  assert.doesNotThrow(() => w.get('tabs')(items, 'app', () => {}));
 });

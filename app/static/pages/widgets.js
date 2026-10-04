@@ -12,6 +12,8 @@
      v0.5.17: the card is the way into the Usage page: a 'Usage' link in its header and both gauges are links to #/usage (one tap from the
      5H number to the limits chart). The sparkline is drawn by Charts.spark when charts.js is loaded and by this file's own sparkline() when it is not
      (or when Charts.spark throws or draws nothing): Charts is looked up when the card paints, never at load, so Home does not depend on script order.
+     v0.5.17b: with more than one subscription account the summary fetch also feeds one dim line under the gauges ('2 accounts · 170.6M tokens today', from
+     summary.total.accounts and total.today.tokens); a single account keeps the card as it was.
    Widgets.limitBanner(st)
      Puts a callout in #banner while st.rate_limited names a limit whose reset time is still ahead ('Claude rate limit (5h) · resets 22:05 · s1'),
      takes it away when the limit is over, and remembers a dismissal (the reset time, in sessionStorage) so the same episode stays quiet.
@@ -62,6 +64,28 @@ Widgets.money = function (v) {
 Widgets.tzMin = function () {
   try { const m = -new Date().getTimezoneOffset(); if (Number.isFinite(m)) return Math.max(-720, Math.min(840, m)); } catch (_) { /* no Date zone */ }
   return 345;
+};
+
+/* 812, 1.2k, 48.7M, 1.2B: one decimal, no trailing '.0' (the same shape as Charts.fmtTok, which Home may not have loaded). Never 'NaN'. */
+Widgets.tokens = function (n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return '0';
+  if (v < 999.5) return String(Math.round(v));
+  const units = ['k', 'M', 'B'];
+  let x = v / 1000;
+  let i = 0;
+  let s = x.toFixed(1);
+  while (parseFloat(s) >= 1000 && i < units.length - 1) { x /= 1000; i++; s = x.toFixed(1); }
+  return s.replace(/\.0$/, '') + units[i];
+};
+
+/* The accounts line of a summary payload: '2 accounts · 170.6M tokens today', or '' for one account, none, or a payload without `total` (an older box). */
+Widgets.accountsLine = function (summary) {
+  const t = summary && summary.total;
+  const n = t && Number(t.accounts);
+  if (!Number.isFinite(n) || n < 2) return '';
+  const today = t.today && Number(t.today.tokens);
+  return `${n} accounts · ${Widgets.tokens(Number.isFinite(today) ? today : 0)} tokens today`;
 };
 
 Widgets.tone = function (pct) { return pct >= 85 ? 'bad' : pct >= 60 ? 'warn' : 'ok'; };
@@ -183,6 +207,7 @@ Widgets.usageCard = function (host) {
   const g5 = Widgets.gauge('5H');
   const g7 = Widgets.gauge('7D');
   const burn = el('div', { class: 'uc-burn dim hidden' });
+  const accts = el('div', { class: 'uc-acct dim hidden' });
   const backup = el('a', { class: 'uc-backup hidden', href: '#/settings?sec=box' });
   const more = el('a', { class: 'uc-more small', href: '#/usage', title: 'Limits, cost per day, sessions and projects', text: 'Usage →' });
   const sparkTitle = el('span', { class: 'uc-cap-t', text: '5H window · last 24 h' });
@@ -198,6 +223,7 @@ Widgets.usageCard = function (host) {
     el('div', { class: 'uc-head' }, el('h2', { text: 'Usage' }), el('span', { class: 'uc-tools' }, backup, ' ', more)),
     el('div', { class: 'uc-gauges' }, g5, g7),
     burn,
+    accts,
     el('div', { class: 'uc-charts' }, spark, bars));
   host.append(root);
 
@@ -224,6 +250,9 @@ Widgets.usageCard = function (host) {
       for (const x of d) days.append(el('span', { text: Widgets.dayInitial(x.day) }));
       setTextIfChanged(barsSum, Widgets.money(d.reduce((a, x) => a + (Number(x.total) || 0), 0)));
     }
+    const line = Widgets.accountsLine(self.summary);
+    accts.classList.toggle('hidden', !line);
+    if (line) setTextIfChanged(accts, line);
     root.classList.toggle('hidden', !(hasSpark || d.length));
   };
 
