@@ -159,6 +159,25 @@ test('geom.stack: top cut into other, (unattributed) its own segment on top, zer
   assert.equal(keys[3].total, 12);
 });
 
+test('geom.rank with hueOf: a project wears the segment of its own muted hue (the colour it has elsewhere); a collision gives the smaller one a free segment, so the stack stays distinct', () => {
+  const w = cWorld();
+  w.ctx.__days = DAYS;
+  const HUES = { A: 'hue-violet', B: 'hue-blue', C: 'hue-violet', D: 'hue-slate' };           // A and C hash to the same hue
+  w.ctx.__hue = (k) => HUES[k] || '';
+  const keys = plain(w.run('Charts.geom.rank(__days, "project", 4, __hue)'));
+  const cls = Object.fromEntries(keys.filter((k) => /^[A-D]$/.test(k.key)).map((k) => [k.key, k.cls]));
+  assert.deepEqual(cls, { A: 'seg-3', B: 'seg-0', C: 'seg-1', D: 'seg-4' }, 'A (the bigger) keeps violet, B blue, D slate; C takes the first free segment');
+  assert.equal(new Set(Object.values(cls)).size, 4, 'never two series of one colour');
+  const plainKeys = plain(w.run('Charts.geom.rank(__days, "project", 4)'));
+  assert.deepEqual(plainKeys.filter((k) => /^[A-D]$/.test(k.key)).map((k) => k.cls), ['seg-0', 'seg-1', 'seg-2', 'seg-3'], 'without hueOf: by rank, as before');
+  const noHue = plain(w.run('Charts.geom.rank(__days, "project", 4, () => "")'));
+  assert.deepEqual(noHue.filter((k) => /^[A-D]$/.test(k.key)).map((k) => k.cls), ['seg-0', 'seg-1', 'seg-2', 'seg-3'], 'a helper that knows no hue changes nothing');
+  const agent = plain(w.run('Charts.geom.rank(__days, "agent", 6, __hue)'));
+  assert.deepEqual(agent.map((k) => k.cls), ['agent-claude', 'agent-codex'], 'agent series keep their own colours');
+  const bars = plain(w.run('Charts.geom.stack(__days, "project", 4, __hue)'));
+  assert.deepEqual(bars[0].segs.map((s) => s.key).slice(0, 4), ['A', 'B', 'C', 'D']);
+});
+
 test('geom.stack: (unattributed) is never ranked against projects or folded into other, even with top 0', () => {
   const w = cWorld();
   w.ctx.__days = DAYS;
@@ -494,7 +513,7 @@ test('line: a second, right-hand axis for series of another unit (ctx % and scos
   assert.equal(u.opts.axes.length, 3);
   assert.equal(u.opts.axes[2].scale, 'y2');
   assert.equal(u.opts.axes[1].values(null, [0, 50, 100]).join(), '0%,50%,100%');
-  assert.equal(u.opts.axes[2].values(null, [0, 1.5, 3]).join(), '$0,$1.5,$3');
+  assert.equal(u.opts.axes[2].values(null, [0, 1.5, 3]).join(), '$0,$1.50,$3', 'money never has one decimal: $1.50, like the tables');
   assert.deepEqual(plain(u.opts.scales.y2.range(null, 0, 3)), [0, 3.3000000000000003]);
   assert.equal(h.querySelectorAll('.legend').length, 0, 'legend: false');
 });
@@ -653,7 +672,7 @@ test('stackedBars: hover and tap write the readout and call onHover; the geometr
   w.ctx.__seen = [];
   w.run('Charts.stackedBars(__h, __days, { by: "project", top: 2, onHover: (i) => __seen.push(i) })');
   const read = h.querySelector('.chart-read');
-  assert.match(text(read), /Hover or tap a bar/);
+  assert.match(text(read), /Hover or tap a day/);
   const rects = h.querySelectorAll('rect');
   const a = rects.find((r) => r.classList.contains('seg-0'));
   a.click();
@@ -906,4 +925,88 @@ test('charts.js and charts.css carry nothing the CSP or the static scan forbids'
   }
   assert.match(css, /\.chart \{[^}]*touch-action:pan-y/);
   assert.match(css, /@media \(max-width:599px\)/);
+});
+
+// ---------------------------------------------------------------- v0.5.6d: taps that miss the drawn marks, one money format
+
+const tapAt = (target, props) => target.dispatchEvent({ type: 'click', target, preventDefault() {}, stopPropagation() {}, ...props });
+
+test('stackedBars: a tap beside the drawn segments picks the day under it, the whole column answers (a 30-day bar is 7 px)', () => {
+  const w = cWorld({ extra: { console: { log() {}, error() {} } } });
+  const h = host(w, 400);
+  w.ctx.__h = h; w.ctx.__days = DAYS;
+  w.run('Charts.stackedBars(__h, __days, { by: "project", top: 2 })');
+  const node = h.querySelector('svg');
+  node.getBoundingClientRect = () => ({ left: 0, right: 400, top: 0, bottom: 170, width: 400, height: 170 });
+  const read = h.querySelector('.chart-read');
+  const seg = h.querySelectorAll('rect').find((r) => r.classList.contains('seg-0'));            // day index 0 (2026-10-02)
+  const mid = Number(seg.getAttribute('x')) + Number(seg.getAttribute('width')) / 2;
+  tapAt(node, { clientX: mid, clientY: 20 });                                                    // high above the bar: no segment under the finger
+  assert.match(text(read), /^2026-10-02 · day \$30\.00 · 3k tok · A \$10\.00, /, 'the day total and every segment');
+  assert.ok(h.querySelectorAll('rect').filter((r) => r.classList.contains('day-sel')).every((r) => r.getAttribute('data-i') === '0'), 'the picked day is marked');
+  assert.ok(h.querySelectorAll('rect').some((r) => r.classList.contains('day-sel')));
+  tapAt(node, { clientX: 5, clientY: 20 });                                                      // left of the plot (the axis labels): nothing changes
+  assert.match(text(read), /^2026-10-02 · day /);
+  tapAt(node, { clientX: 395, clientY: 20 });                                                    // beyond the last slot: nothing changes
+  assert.match(text(read), /^2026-10-02 · day /);
+  const zero = h.querySelectorAll('rect').find((r) => r.classList.contains('bar-zero'));
+  tapAt(node, { clientX: Number(zero.getAttribute('x')) + 1, clientY: 20 });
+  assert.match(text(read), /^2026-10-03 · no spend$/, 'a day without spend says so');
+});
+
+test('Charts.dayTitle: the total, tokens and every segment; a zero day has no spend', () => {
+  const w = cWorld();
+  const row = { day: '2026-10-02', total: 30, zero: false, segs: [{ key: 'A', v: 10 }, { key: 'B', v: 20 }] };
+  w.ctx.__row = row;
+  assert.equal(w.run('Charts.dayTitle(__row, { tokens: 3000 })'), '2026-10-02 · day $30.00 · 3k tok · A $10.00, B $20.00');
+  assert.equal(w.run('Charts.dayTitle({ day: "2026-10-03", total: 0, zero: true, segs: [] }, {})'), '2026-10-03 · no spend');
+});
+
+test('money: axis and legend never print one decimal ($3.40, not $3.4); big numbers drop the cents', () => {
+  const w = cWorld();
+  assert.equal(w.run('Charts.fmtAxis(3.4, "usd")'), '$3.40');
+  assert.equal(w.run('Charts.fmtAxis(0.5, "usd")'), '$0.50');
+  assert.equal(w.run('Charts.fmtAxis(2, "usd")'), '$2');
+  assert.equal(w.run('Charts._fmtLegend("usd")(3.4)'), '$3.40');
+  assert.equal(w.run('Charts._fmtLegend("usd")(589.2)'), '$589');
+  assert.equal(w.run('Charts._fmtLegend("pct")(42.4)'), '42%');
+});
+
+test('gantt: a tap on a row (its label, a span, or the space beside it) names it in full with its times', () => {
+  const w = cWorld();
+  const h = host(w, 400);
+  w.ctx.__h = h; w.ctx.__ev = GEV;
+  w.run(`Charts.gantt(__h, __ev, { since: ${T0}, until: ${T0 + 4000}, rowHeight: 24 })`);
+  const read = h.querySelector('.chart-read');
+  assert.match(text(read), /Tap a row/);
+  const rows = h.querySelectorAll('g.g-row');
+  tapAt(rows[1].querySelector('text'), {});                                                      // the label of c1: alpha · s1
+  assert.match(text(read), /^alpha · s1 · \d\d:\d\d–\d\d:\d\d working, \d\d:\d\d–\d\d:\d\d waiting, \d\d:\d\d–\d\d:\d\d done$/);
+  assert.ok(rows[1].classList.contains('sel') && !rows[0].classList.contains('sel'));
+  tapAt(rows[0].querySelector('rect'), {});                                                      // a span of c2, which ended
+  assert.match(text(read), /^beta\/web · s2 · ended · \d\d:\d\d–\d\d:\d\d working$/);
+  assert.ok(rows[0].classList.contains('sel') && !rows[1].classList.contains('sel'), 'one row at a time');
+  const node = h.querySelector('svg');
+  node.getBoundingClientRect = () => ({ left: 0, top: 0, right: 400, bottom: 70, width: 400, height: 70 });
+  const H = Number(node.getAttribute('viewBox').split(' ')[3]);
+  tapAt(node, { clientX: 390, clientY: (16 + 24 * 1.5) * (70 / H) });                            // empty space right of row 2 (index 1)
+  assert.match(text(read), /^alpha · s1 /);
+});
+
+test('heatmap: a tap beside a cell (the gap, a label) picks the nearest one; the hourly profile answers below the grid', () => {
+  const w = cWorld();
+  const h = host(w, 400);
+  const grid = Array.from({ length: 7 }, (_, d) => Array.from({ length: 24 }, (__, hr) => (d === 1 && hr === 21 ? 14 : 0)));
+  w.ctx.__h = h; w.ctx.__g = grid;
+  const node = w.run('Charts.heatmap(__h, __g, null, {})');
+  const cells = h.querySelectorAll('.cell');
+  // lay the 7 x 24 grid out on a 10 x 14 px pitch from (30, 20)
+  cells.forEach((c, i) => { const d = Math.floor(i / 24); const hr = i % 24; const L = 30 + hr * 10; const T = 20 + d * 14; c.getBoundingClientRect = () => ({ left: L, right: L + 10, top: T, bottom: T + 14, width: 10, height: 14 }); });
+  const read = h.querySelector('.chart-read');
+  tapAt(node, { clientX: 30 + 21 * 10 + 9.5, clientY: 20 + 14 * 1 + 7 });                        // in the 2 px gap right of Tue 21:00
+  assert.equal(text(read), 'Tue 21:00 · 14 events');
+  tapAt(node, { clientX: 2, clientY: 20 + 14 * 3 + 1 });                                         // on the weekday label: hour 0 of Thursday
+  assert.equal(text(read), 'Thu 00:00 · 0 events');
+  tapAt(node, { clientX: 30 + 21 * 10 + 3, clientY: 20 + 14 * 7 + 10 });                         // under the grid: the hour profile
+  assert.equal(text(read), '21:00 · 14 events');
 });

@@ -309,6 +309,8 @@ test('cost: stacked bars over the daily series, the window totals line, the unat
   assert.equal(call.opts.by, 'project');
   assert.equal(call.opts.top, 6);
   assert.equal(call.opts.hatchZero, true);
+  assert.equal(typeof call.opts.hueOf, 'function', 'the chart colours a project by the hue it has everywhere else (chipHue)');
+  assert.equal(call.opts.hueOf('Phasezero'), w.run("Usage.hue('project', 'Phasezero')"));
   assert.equal(call.days[1].zero, true, 'the zero day is passed on as it is (Charts hatches it)');
   assert.equal(call.days[6].by_project['(unattributed)'], 24.81, 'unattributed stays its own key, never folded into a project');
   assert.equal(call.opts.unpriced.has('Phasezero'), true, 'the project with an unpriced session is marked');
@@ -362,18 +364,47 @@ test('sessions: compact table with short model chips, $, tokens and hours; Open 
   assert.deepEqual(first.querySelectorAll('td').map(text).slice(2, 5), ['$68.96', '180.4M', '1.2 h']);
   assert.equal(text(rows[1].querySelector('.srow-link')), 'SD-Law-website', 'repo root is not repeated');
   assert.equal(text(rows[2].querySelector('.srow-link')), 'my.proj/api');
+  assert.equal(rows[2].querySelector('.srow-link').querySelectorAll('wbr').length, 1, 'the name may wrap after the slash (not inside a word)');
+  assert.equal(rows[1].querySelector('.srow-link').querySelectorAll('wbr').length, 0, 'a name without a slash has no break point added');
   const opens = qa(w, '.srow-open');
   assert.equal(opens.length, 1, 'Open appears for the live session only');
   assert.equal(opens[0].closest('tr'), first);
   assert.equal(opens[0].getAttribute('href'), `#/s/${TMUX1}`);
   assert.equal(text(opens[0]), 'Open');
+  assert.equal(opens[0].classList.contains('bp5-intent-primary'), false, 'the page has no primary: Open is a plain small button');
   // one tap to the terminal: the href is a route the router knows
   assert.equal(plain(w.run(`parseHash('#/s/${TMUX1}')`)).id, 'session');
-  // the others link to their project when the name is a route param
-  assert.equal(rows[1].querySelector('a.srow-link').getAttribute('href'), '#/p/SD-Law-website');
-  assert.equal(first.querySelector('a.srow-link').getAttribute('href'), '#/p/ccboard');
-  assert.equal(rows[2].querySelector('a.srow-link'), null, 'a project name with a dot is not a route param: plain text, no broken link');
+  // the NAME is not a link (a tap on it toggles the detail); the project has its own small icon link in the last cell
+  for (const r of rows) assert.equal(r.querySelector('a.srow-link'), null, 'the name is plain text: it toggles the row, it never navigates');
+  assert.equal(first.querySelector('a.srow-proj').getAttribute('href'), '#/p/ccboard');
+  assert.equal(rows[1].querySelector('a.srow-proj').getAttribute('href'), '#/p/SD-Law-website');
+  assert.equal(first.querySelector('a.srow-proj').getAttribute('title'), 'Open the project');
+  assert.ok(first.querySelector('a.srow-proj').getAttribute('aria-label'), 'an icon link needs a name');
+  assert.equal(rows[2].querySelector('a.srow-proj'), null, 'a project name with a dot is not a route param: no broken link');
   clean(w);
+});
+
+test('sessions: project and model chips wear the muted hue chipHue gives them (the page asks pages/agents.js; without it they stay plain)', async () => {
+  const { w } = usageWorld({ extra: {} });
+  w.run("globalThis.chipHue = (kind, key) => 'hue-' + kind + '-' + String(key).toLowerCase().replace(/[^a-z0-9]+/g, '')");
+  await go(w);
+  const first = qa(w, 'tr.srow')[0];
+  assert.ok(first.querySelector('.srow-link').classList.contains('hue-project-ccboard'), 'the project name is hued by its project');
+  assert.deepEqual(first.querySelectorAll('.bdg-model').map((n) => n.className.split(/\s+/).find((c) => c.startsWith('hue-'))), ['hue-model-claudesonnet55', 'hue-model-claudeopus55'], 'each model chip by its full model id');
+  const plainWorld = usageWorld();
+  await go(plainWorld.w);
+  assert.ok(qa(plainWorld.w, 'tr.srow')[0].querySelectorAll('.bdg-model').every((n) => !/hue-/.test(n.className)), 'no chipHue, no hue class');
+});
+
+test('Usage.caption: 24 h says both windows (the bars are a week, the numbers are today), 7 d and 30 d keep their name', () => {
+  const { w } = usageWorld();
+  const sum = { windows: { today: { total: 12.5 }, '7d': { total: 80 }, '30d': { total: 300 } }, daily: [] };
+  w.ctx.__sum = sum;
+  const cap = (range) => w.run(`Usage.caption(__sum, ${JSON.stringify(range)})`);
+  assert.match(cap('24h'), /^Last 7 days · today \$12\.50/);
+  assert.match(cap('7d'), /^Last 7 days: \$80\.00/);
+  assert.match(cap('30d'), /^Last 30 days: \$300/);
+  assert.match(w.run("Usage.CAPTION_TIP['24h']"), /today only/);
 });
 
 test('sessions: the Open buttons follow the state (a session that starts or ends) with no fetch', async () => {
@@ -413,6 +444,7 @@ test('sessions: a row toggles its detail (a button, aria-expanded); a live sessi
   assert.deepEqual(plain(lines[0].opts.thresholds), [60, 85]);
   assert.equal(lines[1].opts.yMax, undefined);
   assert.match(text(d1), /claude-sonnet-5-5, claude-opus-5-5 · 180\.4M tokens · 1\.2 h · claude:/);
+  assert.equal(d1.querySelector('a').getAttribute('href'), '#/p/ccboard', 'the detail names the way on to the project (the row\'s icon link is hidden on a phone)');
   // a row whose id is not live: the message and the way on, no request
   toggle(rows[1]).click();
   const d2 = q(w, `tr.sdetail[data-detail="claude:${UUID2}"]`);
@@ -424,9 +456,14 @@ test('sessions: a row toggles its detail (a button, aria-expanded); a live sessi
   rows[1].click();
   assert.equal(toggle(rows[1]).getAttribute('aria-expanded'), 'false');
   assert.equal(d2.classList.contains('hidden'), true);
-  const link = rows[1].querySelector('a.srow-link');
+  const link = rows[1].querySelector('a.srow-proj');
   link.dispatchEvent({ type: 'click', preventDefault() {} });
   assert.equal(toggle(rows[1]).getAttribute('aria-expanded'), 'false', 'a link click navigates, it does not toggle');
+  rows[1].querySelector('.srow-link').click();                                 // the session NAME toggles the detail (it used to jump to the project)
+  assert.equal(toggle(rows[1]).getAttribute('aria-expanded'), 'true', 'a tap on the name opens the row');
+  assert.equal(w.location.hash, '#/usage', 'and stays on the page');
+  rows[1].querySelector('.srow-link').click();
+  assert.equal(toggle(rows[1]).getAttribute('aria-expanded'), 'false');
   // closing keeps the chart alive: opening again does not refetch
   toggle(rows[0]).click();
   toggle(rows[0]).click();
@@ -661,7 +698,8 @@ test('onRoute: a hash change inside the page (#/usage -> #/usage?range=24h) move
   assert.equal(w.get('Usage.cur.id'), ids);
   assert.equal(w.localStorage.getItem('ccboard:charts:range'), '24h');
   assert.match(paths(w, '/api/series?').at(-1), /since=24h/);
-  assert.equal(text(q(w, '.utotals')).startsWith('Today: '), true, 'the 24 h range reads the today window');
+  assert.match(text(q(w, '.utotals')), /^Last 7 days · today \$/, 'the 24 h range draws a week of bars and says so, then names the number\'s window');
+  assert.match(q(w, '.utotals').getAttribute('title'), /bars show the last 7 days.*today only/i, 'the title names the exact windows');
 });
 
 test('usage.js is definition-only apart from registerPage: loading it touches no DOM, storage, network or timer', () => {

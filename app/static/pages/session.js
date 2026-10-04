@@ -6,7 +6,7 @@
    is the shared sessionCard from pages/agents.js. Closing goes back in history when the app itself opened the peek, else home. */
 'use strict';
 
-const sessionPeek = { tmux: null, surface: null, parts: null, pageRoot: null, token: 0 };
+const sessionPeek = { tmux: null, surface: null, parts: null, pageRoot: null, token: 0, row: null };
 
 function peekLabel(tmux) {
   const p = String(tmux).split('--');
@@ -31,9 +31,26 @@ async function peekSend(input) {
   try {
     await api('POST', `/api/sessions/${encodeURIComponent(tmux)}/keys`, { text, enter: true });
     input.value = '';
-    if (typeof composerGrow === 'function') composerGrow(input);
+    if (typeof rowCleared === 'function') rowCleared(input);
+    else if (typeof composerGrow === 'function') composerGrow(input);
     pageToast('sent', 'ok');
   } catch (e) { pageToast(e.message, 'bad'); }
+}
+
+/* The nudge chips of the peek's card come from the same list as the terminal page's quick replies (components.js quickLoad, localStorage
+   ccboard:quick:<tmux>; the agent defaults until edited). A hold on a chip or the pencil chip opens the <dialog> editor (quickReplyEditor).
+   The chips div itself stays the card's own: agents.js ccPatch toggles its `hidden` class with the session's state. */
+function peekChips(card, tmux) {
+  const chips = card && typeof card.querySelector === 'function' ? card.querySelector('.chips') : null;
+  if (!chips || typeof quickLoad !== 'function') return;
+  const target = () => sessionPeek.row || { tmux, name: typeof sessionNameOf === 'function' ? sessionNameOf(tmux) : tmux };
+  const edit = () => quickReplyEditor({ items: quickLoad(tmux), defaults: QUICK_DEFAULTS, onSave: (items) => { quickSave(tmux, items); fill(); } });
+  function fill() {
+    chips.textContent = '';
+    for (const text of quickLoad(tmux)) chips.append(quickChip(text, { cls: 'chip-btn', onSend: (b) => sessionNudge(target(), text, b), onEdit: edit }));
+    chips.append(el('button', { class: 'icon minimal qr-edit', type: 'button', title: 'Edit quick replies', 'aria-label': 'Edit quick replies', onclick: edit }, ic('edit')));
+  }
+  fill();
 }
 
 function peekBuild(tmux) {
@@ -42,9 +59,11 @@ function peekBuild(tmux) {
     el('button', { class: 'minimal small', type: 'button', 'aria-label': 'Close', title: 'Close', onclick: peekClose }, ic('cross')));
   const host = el('div', { class: 'peek-host' });
   const gone = el('div', { class: 'dim hidden', text: 'This session is not running any more.' });
-  const input = composer({ placeholder: 'send · ⇧Enter new line', label: 'send', onSend: () => peekSend(input) });   // Enter sends, Shift+Enter newline
+  const hint = 'Enter sends, Shift+Enter adds a line';
+  const input = composer({ placeholder: typeof sessionPlaceholder === 'function' ? sessionPlaceholder('send', '') : 'send · ⇧Enter new line', label: 'send', onSend: () => peekSend(input) });   // Enter sends, Shift+Enter newline
+  input.setAttribute('title', `send to the session: ${hint}`);
   const form = el('form', { class: 'peek-send', onsubmit: (e) => { e.preventDefault(); peekSend(input); } },
-    input, el('button', { class: 'primary', type: 'submit', text: 'Send' }));
+    input, el('button', { class: 'primary small', type: 'submit', text: 'Send' }));      // tinted until the box has text (style.css, .has-text on the form)
   const root = el('div', { class: 'peek', 'data-tmux': tmux }, head, host, gone, form);
   return { root, head, title, host, gone, input, card: null };
 }
@@ -90,8 +109,9 @@ function peekUpdate(st) {
   if (!p || !st) return;
   if (peekSurface() !== sessionPeek.surface) { peekShow(sessionPeek.tmux); return peekUpdate(st); }   // the window crossed 1024 px
   const s = rosterSessions(st).find((x) => x.tmux === sessionPeek.tmux);
+  sessionPeek.row = s || null;
   if (s) {
-    if (!p.card) { p.card = sessionCard(s, { peek: true, perm: true, showProject: true, link: false }); p.host.append(p.card); }
+    if (!p.card) { p.card = sessionCard(s, { peek: true, perm: true, showProject: true, link: false }); p.host.append(p.card); peekChips(p.card, sessionPeek.tmux); }
     else p.card.ccPatch(s);
   } else if (p.card) { p.card.remove(); p.card = null; }
   p.gone.classList.toggle('hidden', !!s);
@@ -118,6 +138,7 @@ registerPage('session', {
     sessionPeek.parts = null;
     sessionPeek.surface = null;
     sessionPeek.tmux = null;
+    sessionPeek.row = null;
     sessionPeek.pageRoot = null;
     stopAgeTicker();
   },

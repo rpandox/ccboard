@@ -3,13 +3,15 @@
    tokens below. uPlot's own stylesheet stays vendored; the overrides here only recolour its cursor for the dark theme. */
 
 :root {
-  /* session state (/api/series/events v 0..5): the Gantt spans and their legend chips */
-  --st-idle:var(--dim-2); --st-working:var(--sig); --st-waiting:var(--warn); --st-done:var(--ok); --st-errored:var(--bad); --st-ended:#3a424d;
-  /* agent: the cost-by-agent stacking */
-  --agent-claude:var(--sig); --agent-codex:#b78cf0; --agent-shell:#8a97a8;
-  /* the six project segments, then everything else, then the sessions the board did not start */
-  --seg-0:#4dd0e1; --seg-1:#7b8cff; --seg-2:#b78cf0; --seg-3:#ef8fb4; --seg-4:#6fd3a3; --seg-5:#d9c46a;
-  --seg-other:#8a97a8; --c-unattributed:#5d6978;
+  /* session state (/api/series/events v 0..5): the Gantt spans and their legend chips. The accent is the working state only; amber and red are the
+     attention states; idle is the muted slate (dimmed in the Gantt) and ended is dim */
+  --st-idle:var(--mute-slate, var(--dim-2)); --st-working:var(--sig); --st-waiting:var(--warn); --st-done:var(--ok); --st-errored:var(--bad); --st-ended:#3a424d;
+  /* agent: the cost-by-agent stacking, the same hues as the agent chips (claude violet, codex teal, shell slate) */
+  --agent-claude:var(--mute-violet, #b9a9ee); --agent-codex:var(--mute-teal, #6cc4b8); --agent-shell:var(--mute-slate, #adb7c4);
+  /* the six project segments, from the muted category hues (never the accent, never amber or rose), then everything else, then the sessions the board
+     did not start. --seg-5 is a periwinkle between blue and violet so six series stay apart */
+  --seg-0:var(--mute-blue, #8db4e8); --seg-1:var(--mute-teal, #6cc4b8); --seg-2:var(--mute-green, #84c096); --seg-3:var(--mute-violet, #b9a9ee); --seg-4:var(--mute-slate, #adb7c4); --seg-5:#a3b0e6;
+  --seg-other:#7c8898; --c-unattributed:#5d6978;
 }
 
 /* a segment class sets the colour once (--c); the bars, the pattern backgrounds, the Gantt spans and the legend swatches all read it */
@@ -57,6 +59,7 @@
 .bars .seg-hx { stroke:var(--card); stroke-width:.5; }                                /* unpriced: fill is the ch-hx-<class> pattern (the colour with dark diagonals) */
 .bars .seg.seg-unattributed { stroke:var(--dim); stroke-width:.75; stroke-dasharray:3 2; }
 .bars .bar-zero { stroke:var(--dim-2); stroke-width:1; }                              /* a day without spend: hatched, never an empty gap */
+.bars .day-sel { stroke:var(--fg); stroke-width:1; }                                  /* the day a tap or hover picked (the readout line says which) */
 .ch-hl { stroke:var(--dim-2); stroke-width:1; }
 .ch-defs path { fill:var(--c); }
 .ch-hxl { stroke:var(--card); stroke-width:1.6; }
@@ -65,6 +68,9 @@
 /* ---------- session Gantt ---------- */
 .gantt .sp { fill:var(--c); }
 .gantt .g-row.ended { opacity:.5; }                                                    /* an ended session fades */
+.gantt .sp.st-0 { opacity:.55; }                                                       /* idle (slate) recedes behind working, waiting and errored */
+.gantt .g-row.sel .g-lab { fill:var(--fg); font-weight:700; }                          /* the row a tap picked */
+.gantt .g-row.sel .sp { stroke:var(--fg); stroke-width:1; }
 .gantt .g-lab { fill:var(--fg-2); font:10px var(--font-mono); }
 @media (hover:hover) { .gantt .sp:hover { stroke:var(--fg); stroke-width:1; } }
 
@@ -73,6 +79,9 @@
 .heat-hr { font:9px/1 var(--font-mono); color:var(--dim); white-space:nowrap; overflow:visible; }
 .heat-day { font:10px/1 var(--font-mono); color:var(--dim); }
 .heat-grid .cell { height:14px; min-width:0; border-radius:2px; background:var(--line-soft); }
+@media (pointer:coarse) { .heat-grid .cell { height:22px; } .heat-grid .hb { height:44px; } }          /* a finger needs a taller cell: the tap also picks the nearest one */
+html.force-coarse .heat-grid .cell { height:22px; }
+html.force-coarse .heat-grid .hb { height:44px; }
 .heat-grid .cell.lv0 { background:var(--line-soft); }
 .heat-grid .cell.lv1 { background:rgb(46, 79, 88); background:color-mix(in srgb, var(--sig) 22%, var(--card)); }
 .heat-grid .cell.lv2 { background:rgb(54, 112, 123); background:color-mix(in srgb, var(--sig) 42%, var(--card)); }
@@ -134,10 +143,12 @@ html.force-coarse #page .usec .btn, html.force-coarse #page .usec button { min-h
 #page .usessions .c-chev { width:var(--tap); padding:0; }
 #page .usessions .chev { min-width:var(--tap); padding:0; }
 #page .usessions .c-act { width:1%; white-space:nowrap; text-align:right; }
+#page .usessions .c-act .srow-proj { margin-right:2px; }
+#page .sd-links { margin:8px 0 0; }
 #page .srow { cursor:pointer; }
 #page .srow.open { background:var(--bg); }
 #page .srow-name { display:flex; flex-direction:column; gap:3px; min-width:0; }
-#page .srow-link, #page .p-name { color:var(--fg); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#page .srow-link, #page .p-name { color:var(--hue, var(--fg)); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }   /* a project's name in its muted hue (pages/agents.js chipHue) */
 #page .srow-models { display:flex; flex-wrap:wrap; gap:3px 4px; }
 #page .sdetail > td { padding:8px 10px 14px; background:var(--bg); cursor:default; }
 #page .sd-meta { margin:0 0 8px; font-size:11px; overflow-wrap:anywhere; }
@@ -145,7 +156,7 @@ html.force-coarse #page .usec .btn, html.force-coarse #page .usec button { min-h
 #page .sd-gone { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; }
 #page .prow.unattributed .p-name { color:var(--fg-2); font-style:italic; }
 #page .prow .p-tip { display:block; font-size:11px; }
-@media (max-width:599px) { #page .usessions .c-tok { display:none; } }
+@media (max-width:599px) { #page .usessions .c-tok { display:none; } #page .usessions .srow-proj { display:none; } }     /* the project link moves into the detail row: the name column needs the 46 px */
 @media (pointer:coarse) { #page .srow-link, #page a.p-name { display:inline-flex; align-items:center; min-height:var(--tap); min-width:var(--tap); } }
 html.force-coarse #page .srow-link, html.force-coarse #page a.p-name { display:inline-flex; align-items:center; min-height:var(--tap); min-width:var(--tap); }
 /* 2: the sessions table on a phone: the name wraps, the hours column goes, the detail row keeps the card width (no sideways scroll to reach Open) */

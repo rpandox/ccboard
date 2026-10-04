@@ -927,7 +927,7 @@ Shell.pickRepo = function (kind, ctx) {
     : `The folders of ${notGit.slice(0, 4).join(', ')}${notGit.length > 4 ? '…' : ''} are not git repos: tasks need git (git init there to run tasks in them).` }) : null;
   openSheet({ title: Shell.PICK_TITLES[kind], body: entries.length ? [filter, list, hint] : emptyState('folder-close', 'No repos yet', 'Create a project and add a repo first.'),
     onClose: () => { if (ui.openForm === 'sheet') ui.openForm = null; Shell.formWatch = null; } });
-  if (filter) filter.focus();
+  focusFine(filter);                                                                    // a phone keeps its keyboard down until a field is tapped
 };
 
 /* The launcher form in the sheet. The task form takes a "where" select over the project's places (a switch re-opens it for the other repo with the
@@ -937,8 +937,7 @@ Shell.showForm = function (kind, e, carry) {
     : kind === 'task' ? taskForm(e.p, e.r, { carry, targets: taskTargets(e.p), onTarget: (x, c) => Shell.showForm('task', { p: x.p, r: x.r, label: x.label }, c),
       onDone: () => { closeSheet(); }, onCancel: () => closeSheet() })
       : jobForm(e.p, e.r);
-  const holder = el('div', { class: 'sheet-form' },
-    el('button', { class: 'minimal small', type: 'button', onclick: () => Shell.pickRepo(kind, e) }, ic('chevron-left'), 'Repos'), form);
+  const holder = el('div', { class: 'sheet-form' }, form);
   // The launcher forms end with a Cancel that re-renders the home board: inside the sheet it only closes the sheet.
   holder.addEventListener('click', (ev) => {
     const b = ev.target.closest && ev.target.closest('button');
@@ -947,9 +946,9 @@ Shell.showForm = function (kind, e, carry) {
   // The forms set ui.openForm = null and poll(true) once the launch worked: the next forced render closes the sheet.
   ui.openForm = 'sheet';
   Shell.formWatch = () => { if (ui.openForm !== 'sheet') { Shell.formWatch = null; closeSheet(); } };
-  openSheet({ title: `${Shell.PICK_TITLES[kind]} · ${e.label}`, body: holder,
+  openSheet({ title: `${Shell.PICK_TITLES[kind]} · ${e.label}`, body: holder, back: { label: 'Back to the repo list', onClick: () => Shell.pickRepo(kind, e) },
     onClose: () => { if (ui.openForm === 'sheet') ui.openForm = null; Shell.formWatch = null; } });
-  if (typeof form.focusFirst === 'function') form.focusFirst();
+  if (typeof form.focusFirst === 'function') form.focusFirst();          // focusFine inside: the first field on a fine pointer, nothing on touch
 };
 
 Shell.sheetClosed = function () { if (ui.openForm === 'sheet') ui.openForm = null; Shell.formWatch = null; };
@@ -962,7 +961,7 @@ Shell.formSheet = function (title, build, done) {
   if (typeof form.focusFirst === 'function') form.focusFirst();
 };
 
-/* The new-project sheet: the form, the two bulk entries the v0.4 board had beside it, and the clone queue line (st.clone_queue, patched on every
+/* The new-project sheet: the two bulk entries the v0.4 board had beside the form, the clone queue line, then the form (its footer is the last row) (st.clone_queue, patched on every
    render through Shell.formWatch). A project created with a clone URL keeps the sheet open so the queue shows the clone; a blank one closes it. */
 Shell.projectSheet = function () {
   const queue = cloneQueueView();
@@ -974,7 +973,7 @@ Shell.projectSheet = function () {
     el('button', { class: 'small', type: 'button', onclick: () => Shell.openCreate('import') }, ic('download'), 'Import from GitHub…'),
     el('button', { class: 'small', type: 'button', onclick: () => Shell.openCreate('batch') }, ic('layers'), 'Batch prompt…'));
   Shell.formWatch = () => queue.update(typeof state === 'undefined' ? null : state);
-  openSheet({ title: 'New project', body: [form, bulk, queue.node], onClose: Shell.sheetClosed });
+  openSheet({ title: 'New project', body: [bulk, queue.node, form], onClose: Shell.sheetClosed });       // the two bulk entries and the clone queue above the form: its sticky footer (Create project / Cancel) is the last row
   form.focusFirst();
 };
 

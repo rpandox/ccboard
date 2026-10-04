@@ -99,26 +99,44 @@ function pjAddRepo(p) {
 
 /* ---------- the header ---------- */
 
+/* The `...` menu: the things a project does rarely, so the header keeps three buttons. Add repo, the folder in code-server, the repos-and-danger panel. */
+function pjMoreItems(P) {
+  const st = pjState();
+  const p = pjFind(st, P.project);
+  const items = [];
+  if (p) items.push({ label: 'Add repo', icon: 'plus', onClick: () => pjAddRepo(p) });
+  if (p && p.path && pjCodePort(st)) items.push({ label: 'Open the folder in code-server', icon: 'code', onClick: () => openPage(codeServerUrl(p.path)) });
+  items.push({ label: 'Repos and danger zone', icon: 'git-repo', onClick: () => { P.manage = !P.manage; pjUpdate(); } });
+  items.push({ label: 'Delete project', icon: 'trash', onClick: () => { P.manage = true; ui.confirm = 'del:' + P.project; pjUpdate(); } });
+  return items;
+}
+
 function pjHeader(P) {
   const name = el('h1', { class: 'pj-name' });
   const path = el('span', { class: 'pj-path mono dim' });
-  const more = el('button', { class: 'icon minimal pj-more', type: 'button', 'aria-label': 'More actions', title: 'More: repos, delete project' }, ic('more'));
-  menu(more, () => [
-    { label: 'Repos and danger zone', icon: 'git-repo', onClick: () => { P.manage = !P.manage; pjUpdate(); } },
-    { label: 'Delete project', icon: 'trash', onClick: () => { P.manage = true; ui.confirm = 'del:' + P.project; pjUpdate(); } },
-  ]);
+  const more = el('button', { class: 'icon minimal pj-more', type: 'button', 'aria-label': 'More actions', title: 'More: add repo, code-server, repos, delete project' }, ic('more'));
+  menu(more, () => pjMoreItems(P));
   const repos = el('div', { class: 'pj-repos', role: 'group', 'aria-label': 'Repos' });
   const stats = el('div', { class: 'pj-stats mono' });
-  const actions = el('div', { class: 'pj-actions' },
-    el('button', { class: 'small primary', type: 'button', text: '+ session', onclick: () => pjCreate('session') }),
-    el('button', { class: 'small', type: 'button', text: '+ task', onclick: () => pjCreate('task') }),
-    el('button', { class: 'small', type: 'button', text: '+ schedule', onclick: () => pjCreate('schedule') }),
-    el('button', { class: 'small', type: 'button', text: 'Add repo', onclick: () => { const p = pjFind(pjState(), P.project); if (p) pjAddRepo(p); } }));
-  const cs = el('span', { class: 'pj-cs-slot' });
-  actions.append(cs);
+  const actions = el('div', { class: 'pj-actions' });                 // pjPatchActions fills it: the filled primary follows the tab
   const manage = el('div', { class: 'pj-manage hidden', role: 'region', 'aria-label': 'Repos and danger zone' });
   const node = el('header', { class: 'pj-head' }, el('div', { class: 'pj-title' }, name, path, el('span', { class: 'spacer' }), more), repos, stats, actions, manage);
-  return { node, name, path, repos, stats, cs, manage, sig: { repos: null, cs: null, manage: null } };
+  return { node, name, path, repos, stats, actions, manage, sig: { repos: null, tab: null, manage: null } };
+}
+
+/* + session / + task / + schedule, built per tab (v0.5.6d): the Sessions tab's primary is + session; on Tasks and Schedules the tab's own button is the one
+   primary and the header keeps the other two quiet (the tab's own is not repeated here). A different primary is a different button, so the three are rebuilt
+   when the tab changes. */
+function pjPatchActions(P, tab) {
+  const h = P.head;
+  if (h.sig.tab === tab) return;
+  h.sig.tab = tab;
+  h.actions.textContent = '';
+  // a raw append(null) would draw the text "null": the buttons are collected first
+  const btns = [el('button', { class: (tab === 'sessions' ? 'primary ' : '') + 'small', type: 'button', text: '+ session', onclick: () => pjCreate('session') })];
+  if (tab !== 'tasks') btns.push(el('button', { class: 'small', type: 'button', text: '+ task', onclick: () => pjCreate('task') }));
+  if (tab !== 'schedules') btns.push(el('button', { class: 'small', type: 'button', text: '+ schedule', onclick: () => pjCreate('schedule') }));
+  h.actions.append(...btns);
 }
 
 function pjRepoChip(st, p, r) {
@@ -143,6 +161,8 @@ function pjManage(P, st, p) {
       confirmButton('rm:' + p.name + '/' + r.name, 'Remove', () => api('DELETE', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}`), true)));
   }
   if (!(p.repos || []).length) box.append(el('div', { class: 'dim', text: 'no repos yet' }));
+  box.append(el('div', { class: 'pj-mrow' }, el('span', { class: 'dim', text: 'Project folder' }),
+    pjCodeLink(st, p.path, 'code-server', '', `open ${p.path} in code-server`) || el('span', { class: 'dim', text: 'code-server port unknown (rerun install.sh)' })));
   box.append(el('div', { class: 'pj-mrow pj-danger' }, el('span', { class: 'dim', text: 'Deletes the project folder and every repo in it.' }),
     confirmButton('del:' + p.name, 'Delete project', async () => { await api('DELETE', `/api/projects/${encodeURIComponent(p.name)}`); navigate('#/'); })));
   return box;
@@ -157,12 +177,9 @@ function pjPatchHeader(P, st, p) {
     h.sig.repos = sig;
     h.repos.textContent = '';
     for (const r of (p.repos || [])) h.repos.append(pjRepoChip(st, p, r));
-    if (!(p.repos || []).length) h.repos.append(el('span', { class: 'dim', text: 'no repos yet: Add repo, or start a session in the project folder' }));
-    h.cs.textContent = '';
-    const link = pjCodeLink(st, p.path, 'code-server', '', `open ${p.path} in code-server`);
-    if (link) h.cs.append(link);
-    else h.cs.append(el('span', { class: 'dim', text: 'code-server port unknown (rerun install.sh)' }));
+    if (!(p.repos || []).length) h.repos.append(el('span', { class: 'dim', text: 'no repos yet: ... > Add repo, or start a session in the project folder' }));
   }
+  pjPatchActions(P, pjParse(P.route, st).tab);
   const cost = typeof costText === 'function' ? costText(p) : '';
   const hrs = pjHours(P, p.name);
   setText(h.stats, [cost, hrs].filter(Boolean).join(' · '));
@@ -170,7 +187,7 @@ function pjPatchHeader(P, st, p) {
   const awaiting = typeof ui.confirm === 'string' && (ui.confirm === 'del:' + p.name || ui.confirm.startsWith('rm:' + p.name + '/'));
   const open = P.manage || awaiting;
   h.manage.classList.toggle('hidden', !open);
-  const msig = pjSig([ui.confirm, (p.repos || []).map((r) => [r.name, r.state])]);
+  const msig = pjSig([ui.confirm, (p.repos || []).map((r) => [r.name, r.state]), p.path, pjCodePort(st)]);
   if (h.sig.manage !== msig) {                                  // built even while it is closed: the overflow menu only reveals it
     h.sig.manage = msig;
     h.manage.textContent = '';
@@ -215,8 +232,8 @@ function pjSessionsView(P, route) {
   const scopeNote = pjScopeNote(P, route);
   const body = el('div', { class: 'pb-body' });
   const block = el('section', { class: 'pblock pb-project', 'data-block': 'sessions' }, body);
-  const empty = pageEmpty('console', 'No sessions here', 'A session is a Claude, Codex or shell window in a repo of this project. Start one with + session.');
-  empty.append(el('button', { class: 'primary', type: 'button', text: '+ session', onclick: () => pjCreate('session') }));
+  // no button here: the header's + session is the primary of this tab and is already on screen
+  const empty = pageEmpty('console', 'No sessions here', 'A session is a Claude, Codex or shell window in a repo of this project. Start one with + session above.');
   const project = () => pjFind(pjState(), P.project);
   const groups = makeKeyedList(body, { key: (g) => 'g:' + g.key, create: (g) => homeGroupNode(g, 'project', project), patch: (n, g) => n.ccPatch(g) });
   const node = el('div', { class: 'pj-sessions' }, scopeNote, block, empty);
@@ -232,6 +249,7 @@ function pjSessionsView(P, route) {
       block.classList.toggle('hidden', !list.length);
       empty.classList.toggle('hidden', !!list.length);
       if (typeof sessionTailSweep === 'function') sessionTailSweep();
+      if (typeof Pages !== 'undefined' && Pages && typeof Pages.markLead === 'function') Pages.markLead();   // the first row with a permission waiting carries the filled Allow
     },
     onRoute(rt) { this.update(pjState(), rt); },
     destroy() { if (typeof sessionTailStopAll === 'function') sessionTailStopAll(); },
@@ -241,7 +259,10 @@ function pjSessionsView(P, route) {
 function pjTasksView(P, route) {
   const scopeNote = pjScopeNote(P, route);
   const grid = el('div', { class: 'kanban pj-kanban' });
-  const none = el('p', { class: 'dim hidden', text: 'No tasks in this project yet. A task is one worktree and branch per piece of work: + task starts one now, parks it in the Backlog, or schedules it.' });
+  // nothing yet: only the empty state, with the tab's one primary (the toolbar and the columns would just be headings above it)
+  const none = pageEmpty('git-branch', 'No tasks in this project yet', 'A task is one worktree and branch per piece of work: + task starts one now, parks it in the Backlog, or schedules it.');
+  none.append(el('button', { class: 'primary', type: 'button', text: '+ task', onclick: () => pjCreate('task') }));
+  none.classList.add('hidden');
   const bar = pjToolbar(el('button', { class: 'small primary', type: 'button', text: '+ task', onclick: () => pjCreate('task') }),
     el('span', { class: 'dim', text: 'one worktree and branch per task; the columns follow the session state' }));
   let sig = null;
@@ -253,6 +274,8 @@ function pjTasksView(P, route) {
       scopeNote.ccPatch(cur);
       const tasks = boardTasks(st).filter((t) => t.project === cur.project && (!cur.repo || t.repo === cur.repo));       // the poll's rows with the optimistic Start / add / edit / delete laid over them
       none.classList.toggle('hidden', !!tasks.length);
+      bar.classList.toggle('hidden', !tasks.length);
+      grid.classList.toggle('hidden', !tasks.length);
       const ready = tasks.filter(taskIsBacklog).map((t) => taskSessionTargets(t, st).filter((x) => x.ok && x.same).map((x) => x.s.tmux));      // a backlog card's quick send follows the sessions
       const next = pjSig([tasks, ui.confirm, ready]);
       if (sig === next) return;
@@ -260,6 +283,7 @@ function pjTasksView(P, route) {
       grid.textContent = '';
       for (const [key, label] of BOARD_COLUMNS) {
         const items = tasks.filter((t) => t.column === key);
+        if (!items.length && key !== 'backlog') continue;            // a column is drawn when it has a card; Backlog stays, it is where a task starts
         const col = el('div', { class: 'col', 'data-col': key }, el('h3', { text: `${label} (${items.length})` }));
         if (!items.length && key === 'backlog') col.append(el('div', { class: 'dim', text: 'nothing queued' }));
         for (const t of items) col.append(taskCard(t));
@@ -281,8 +305,8 @@ function pjJobRow(j, runs) {
       el('span', { class: 'meta', text: `${j.project}/${j.repo} · ${j.cron ? 'cron ' + j.cron : 'one-off'} · ${j.permission_mode} · ≤${j.max_turns} turns${j.max_budget_usd ? ' · ≤$' + j.max_budget_usd : ''}${j.last_status ? ' · last: ' + j.last_status + (j.last_run_at ? ' ' + fmtTs(j.last_run_at) : '') : ''}` })),
     el('div', { class: 'actions' },
       el('button', { type: 'button', onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/run`); } catch (e) { setError(e.message); } await poll(true); } }, ic('play'), 'Run now'),
-      el('button', { type: 'button', onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/toggle`); } catch (e) { setError(e.message); } await poll(true); }, text: j.enabled ? 'Disable' : 'Enable' }),
-      confirmButton('job:' + j.id, 'Delete', () => api('DELETE', `/api/jobs/${j.id}`))));
+      el('button', { class: 'minimal', type: 'button', onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/toggle`); } catch (e) { setError(e.message); } await poll(true); }, text: j.enabled ? 'Disable' : 'Enable' }),
+      confirmButton('job:' + j.id, 'Delete', () => api('DELETE', `/api/jobs/${j.id}`), true)));       // quiet: red-outlined until the second tap, then filled
   for (const r of jr) {
     row.append(el('div', { class: 'last' },
       el('span', { class: 'dim', text: `run #${r.id} ${fmtTs(r.started_at)} · ${r.status}${typeof r.cost_usd === 'number' ? ' · $' + r.cost_usd.toFixed(2) : ''}${r.num_turns ? ' · ' + r.num_turns + ' turns' : ''}${r.error ? ' · ' + r.error : ''}` }),
@@ -297,8 +321,8 @@ function pjJobRow(j, runs) {
 function pjSchedulesView(P, route) {
   const scopeNote = pjScopeNote(P, route);
   const list = el('div', { class: 'pj-jobs' });
+  // no button in the empty state: the toolbar's + schedule is the tab's primary and stays on screen
   const none = pageEmpty('time', 'No schedules in this project', 'A schedule runs a headless prompt on a cron, or once now, in a fresh worktree. Presets: nightly 02:30, weekdays 09:00, hourly.');
-  none.append(el('button', { class: 'primary', type: 'button', text: '+ schedule', onclick: () => pjCreate('schedule') }));
   const bar = pjToolbar(el('button', { class: 'small primary', type: 'button', text: '+ schedule', onclick: () => pjCreate('schedule') }),
     el('button', { class: 'small', type: 'button', onclick: () => { if (typeof Shell !== 'undefined' && Shell && typeof Shell.openCreate === 'function') Shell.openCreate('batch'); } }, ic('layers'), 'Batch prompt'),
     el('span', { class: 'dim', text: 'headless claude -p runs · at most 2 at once · paused above 85% of the 5-hour window' }));
@@ -346,7 +370,7 @@ function pjFilesView(P, route) {
   const branch = el('span', { class: 'pj-branchinfo mono dim' });
   const switcher = el('div', { class: 'pj-switch', role: 'group', 'aria-label': 'Repository' });
   const flagBtn = (key, label, title) => {
-    const b = el('button', { class: 'small', type: 'button', 'aria-pressed': fl.flags[key] ? 'true' : 'false', title, text: label });
+    const b = el('button', { class: 'minimal small', type: 'button', 'aria-pressed': fl.flags[key] ? 'true' : 'false', title, text: label });
     b.addEventListener('click', () => {
       fl.flags[key] = !fl.flags[key];
       b.setAttribute('aria-pressed', fl.flags[key] ? 'true' : 'false');
@@ -355,7 +379,7 @@ function pjFilesView(P, route) {
     });
     return b;
   };
-  const refreshBtn = el('button', { class: 'small', type: 'button', title: 'Reload the tree and the open file', onclick: () => { if (fl.tree) fl.tree.refresh(); if (fl.preview) fl.preview.reload(); } }, ic('refresh'), 'Refresh');
+  const refreshBtn = el('button', { class: 'minimal small', type: 'button', title: 'Reload the tree and the open file', onclick: () => { if (fl.tree) fl.tree.refresh(); if (fl.preview) fl.preview.reload(); } }, ic('refresh'), 'Refresh');
   const bar = pjToolbar(switcher, branch, el('span', { class: 'spacer' }), flagBtn('hidden', 'hidden', 'show dotfiles'), flagBtn('ignored', 'ignored', 'show git-ignored files'), refreshBtn);
   const node = el('div', { class: 'pj-files' }, bar, el('div', { class: 'pj-split' }, el('div', { class: 'pj-treebox' }, treeHost), previewBox));
   let swSig = null;
@@ -527,7 +551,7 @@ function pjUpdate(routed) {
   const st = pjState();
   const route = P.route;
   const cur = pjParse(route, st);
-  if (cur.project !== P.project) { P.project = cur.project; P.viewKey = null; P.tabSig = null; P.manage = false; P.head.sig = { repos: null, cs: null, manage: null }; if (P.view) { P.view.destroy(); P.view.node.remove(); P.view = null; } }
+  if (cur.project !== P.project) { P.project = cur.project; P.viewKey = null; P.tabSig = null; P.manage = false; P.head.sig = { repos: null, tab: null, manage: null }; if (P.view) { P.view.destroy(); P.view.node.remove(); P.view = null; } }
   P.loading = !st;
   const p = pjFind(st, cur.project);
   if (typeof Pages !== 'undefined' && Pages && typeof Pages.dropSkeleton === 'function' && st) Pages.dropSkeleton();

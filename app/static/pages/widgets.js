@@ -349,7 +349,7 @@ Widgets.limitBanner = function (st) {
     if (node) node.remove();
     const label = el('span', { class: 'lc-text', text });
     node = el('div', { class: 'callout warn limit-callout', role: 'status' }, label,
-      el('button', { class: 'minimal small', type: 'button', 'aria-label': 'Dismiss', title: 'Dismiss', onclick: () => {
+      el('button', { class: 'icon minimal small', type: 'button', 'aria-label': 'Dismiss', title: 'Dismiss', onclick: () => {
         Widgets.dismiss(node._resets);
         node.remove();
         Widgets.limitNode = null;

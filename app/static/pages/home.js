@@ -20,20 +20,21 @@ function renderBanner() {
     if (typeof b.removeChild === 'function') b.removeChild(n);
   }
   bannerOwn.length = 0;
-  b.classList.remove('warn');                                                // only the class this function owns: Widgets.limitBanner keeps its own
+  b.classList.remove('warn', 'info');                                        // only the classes this function owns: Widgets.limitBanner keeps its own
   const own = (...nodes) => { for (const n of nodes) { bannerOwn.push(n); b.append(n); } };
   const limitWidget = typeof Widgets !== 'undefined' && Widgets && typeof Widgets.limitBanner === 'function';
   const rl = limitWidget ? null : rateLimitOf(state);                      // the limit callout is Widgets' job once it exists
   if (ui.notice) {
     b.classList.add('warn');
-    own(el('span', { text: ui.notice }), el('button', { onclick: () => { ui.notice = null; renderBanner(); }, text: 'ok' }));
+    own(el('span', { text: ui.notice }), el('button', { class: 'minimal small', type: 'button', onclick: () => { ui.notice = null; renderBanner(); }, text: 'ok' }));
   } else if (ui.offline) {
     b.classList.add('warn');
     own(el('span', { text: `Offline: showing the last known state from ${new Date(ui.offline).toLocaleTimeString()}. Retrying…` }));
   } else if (ui.error) {
-    own(el('span', { text: ui.error }), el('button', { onclick: () => setError(null), text: 'dismiss' }));
+    own(el('span', { text: ui.error }), el('button', { class: 'minimal small', type: 'button', onclick: () => setError(null), text: 'dismiss' }));
   } else if (state && state.deploy && state.deploy.pending) {
     const d = state.deploy;
+    b.classList.add('info');                                                 // an update is news, not an error: the red bar is for ui.error and tmux_down
     if (d.hold) {
       const why = (d.reasons || []).length ? ` (${d.reasons.join(', ')})` : '';
       own(el('span', { text: `An update is ready. It installs when the terminals are closed${why}, or in ${d.minutes_left} min at the latest.` }),
@@ -46,15 +47,15 @@ function renderBanner() {
     const v = state.last_recovery.value;
     const cont = v.continue || [];
     own(el('span', { text: `After a restart, ${v.recovered.length} Claude session${v.recovered.length === 1 ? '' : 's'} relaunched with --resume: ${v.recovered.join(', ')}${cont.length ? ' · was working, continue typed once back: ' + cont.join(', ') : ''}${v.closed.length ? ' · closed: ' + v.closed.join(', ') : ''}` }),
-      el('button', { onclick: async () => { try { await api('POST', '/api/recovery/dismiss'); } catch (e) { setError(e.message); } await poll(true); }, text: 'dismiss' }));
+      el('button', { class: 'minimal small', type: 'button', onclick: async () => { try { await api('POST', '/api/recovery/dismiss'); } catch (e) { setError(e.message); } await poll(true); }, text: 'dismiss' }));
   } else if (rl) {
     own(el('span', { text: `Rate limited: ${rl.message || ''}${rl.session ? ' (' + rl.session + ')' : ''}` }),
-      el('button', { onclick: async () => { try { await api('POST', '/api/usage/rate-limit/clear'); } catch (e) { setError(e.message); } await poll(true); }, text: 'dismiss' }));
+      el('button', { class: 'minimal small', type: 'button', onclick: async () => { try { await api('POST', '/api/usage/rate-limit/clear'); } catch (e) { setError(e.message); } await poll(true); }, text: 'dismiss' }));
   } else if (state && state.tmux_down) {
     own(el('span', { text: 'The ccboard tmux server is not running. On the box: sudo systemctl start ccboard-tmux' }));
   } else if (state && state.claude && state.claude.installed && !state.claude.loggedIn) {
     b.classList.add('warn');
-    own(el('span', { text: 'Claude Code is not logged in on this box.' }), el('button', { class: 'primary', onclick: startLogin, text: 'Log in' }));
+    own(el('span', { text: 'Claude Code is not logged in on this box.' }), el('button', { class: 'primary small', type: 'button', onclick: startLogin, text: 'Log in' }));
   }
   if (bannerOwn.length) b.classList.remove('limit-only');                    // the limit callout is no longer alone in the banner
   if (state) homeAwayTouch(state);                                           // every render counts as "the tab was looked at", on any page
@@ -135,13 +136,15 @@ function renderTasks() {
   const list = boardTasks(state);                                  // the poll's rows with the optimistic Start / add / edit / delete laid over them
   if (!list.length) { sec.classList.add('hidden'); return; }
   sec.classList.remove('hidden');
-  sec.append(el('div', { class: 'row head' },
-    el('div', { class: 'row' }, el('h2', { text: `Tasks (${list.length})` }), el('span', { class: 'dim', text: 'one worktree + branch per task; columns follow the session state' })),
-    el('button', { class: 'small primary', type: 'button', text: '+ task', title: 'new task: now, later (backlog) or scheduled', onclick: () => homeCreate('task') })));
+  // the page's own head (no card around the board: the task cards are the only bordered boxes), then one column per column that has a card
+  sec.append(el('div', { class: 'page-head tk-head' },
+    el('h1', { text: `Tasks (${list.length})` }),
+    el('span', { class: 'summary', text: 'one worktree + branch per task; columns follow the session state' }),
+    el('div', { class: 'actions' }, el('button', { class: 'small primary', type: 'button', text: '+ task', title: 'new task: now, later (backlog) or scheduled', onclick: () => homeCreate('task') }))));
   const grid = el('div', { class: 'kanban' });
   for (const [key, label] of BOARD_COLUMNS) {
     const items = list.filter(t => t.column === key);
-    if (!items.length && key !== 'in_progress' && key !== 'backlog') continue;
+    if (!items.length && key !== 'backlog') continue;                // Backlog stays (it is where a task starts); an empty In progress / PR / Merged column is only a heading
     const col = el('div', { class: 'col', 'data-col': key }, el('h3', { text: `${label} (${items.length})` }));
     if (!items.length && key === 'backlog') col.append(el('div', { class: 'dim', text: 'nothing queued: + task, then Later' }));
     for (const t of items) col.append(taskCard(t));
@@ -181,9 +184,9 @@ function renderJobs() {
         el('span', { class: j.enabled && j.next_run_at ? 'state' : 'state ended', text: j.enabled && j.next_run_at ? 'next ' + fmtTs(j.next_run_at) : 'disabled' }),
         el('span', { class: 'meta', text: `${j.project}/${j.repo} · ${j.cron ? 'cron ' + j.cron : 'one-off'} · ${j.permission_mode} · ≤${j.max_turns} turns${j.max_budget_usd ? ' · ≤$' + j.max_budget_usd : ''}${j.last_status ? ' · last: ' + j.last_status : ''}` })),
       el('div', { class: 'actions' },
-        el('button', { onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/run`); } catch (e) { setError(e.message); } await poll(true); } }, ic('play'), 'Run now'),
-        el('button', { onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/toggle`); } catch (e) { setError(e.message); } await poll(true); }, text: j.enabled ? 'Disable' : 'Enable' }),
-        confirmButton('job:' + j.id, 'Delete', () => api('DELETE', `/api/jobs/${j.id}`))));
+        el('button', { type: 'button', onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/run`); } catch (e) { setError(e.message); } await poll(true); } }, ic('play'), 'Run now'),
+        el('button', { type: 'button', class: 'minimal', onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/toggle`); } catch (e) { setError(e.message); } await poll(true); }, text: j.enabled ? 'Disable' : 'Enable' }),
+        confirmButton('job:' + j.id, 'Delete', () => api('DELETE', `/api/jobs/${j.id}`), true)));
     for (const r of jr) {
       row.append(el('div', { class: 'last' },
         el('span', { class: 'dim', text: `run #${r.id} ${fmtTs(r.started_at)} · ${r.status}${typeof r.cost_usd === 'number' ? ' · $' + r.cost_usd.toFixed(2) : ''}${r.num_turns ? ' · ' + r.num_turns + ' turns' : ''}${r.error ? ' · ' + r.error : ''}` }),
@@ -270,6 +273,18 @@ Pages.nodeFor = function (tmux) { return tmux ? (Pages.rowNodes().find((n) => n.
 Pages.paint = function () {
   const tmux = Pages.selected() ? Pages.selTmux : null;
   for (const n of Pages.rowNodes()) n.classList.toggle('sel', !!tmux && n.getAttribute('data-tmux') === tmux);
+  Pages.markLead();
+};
+
+/* The screen's one filled primary (v0.5.6d): of the cards and rows that can carry one (an inbox card always can; a row only while a permission waits on it),
+   the selected one leads, else the first in screen order. node.ccLead(true) paints that card's action filled and opens its chips and send box; every other
+   one is told false and shows the same action tinted. On Home the inbox section comes first, so its first card leads and the rows below keep Allow tinted;
+   on the Agents page and a project's Sessions tab the first row with a pending permission leads. */
+Pages.markLead = function () {
+  const nodes = Pages.rowNodes().filter((n) => typeof n.ccLead === 'function');
+  const can = (n) => (typeof n.ccCanLead === 'function' ? !!n.ccCanLead() : true);
+  const lead = nodes.find((n) => n.classList.contains('sel') && can(n)) || nodes.find(can) || null;
+  for (const n of nodes) n.ccLead(n === lead);
 };
 
 Pages.setIndex = function (i) {
@@ -480,11 +495,12 @@ function homeInstallHint() {
   let box = null;
   const dismiss = () => { try { localStorage.setItem(INSTALL_HINT_KEY, '1'); } catch (_) { /* storage may be unavailable */ } if (box && box.remove) box.remove(); };
   const canPrompt = typeof Shell !== 'undefined' && Shell && Shell.installPrompt && typeof Shell.promptInstall === 'function';
-  box = el('div', { class: 'callout primary install-hint', role: 'note' },           // el() drops the null child; a raw append(null) would render "null"
+  // a neutral callout (no second accent, no primary: the hint never competes with what needs you); text, How and the x share one row
+  box = el('div', { class: 'callout install-hint', role: 'note' },                    // el() drops the null child; a raw append(null) would render "null"
     el('span', { class: 'ih-text', text: 'Install ccboard as an app: its own window, keyboard shortcuts, the title bar on desktop.' }),
-    canPrompt ? el('button', { class: 'small primary', type: 'button', text: 'Install', onclick: () => { Shell.promptInstall(); dismiss(); } }) : null,
+    canPrompt ? el('button', { class: 'small', type: 'button', text: 'Install', onclick: () => { Shell.promptInstall(); dismiss(); } }) : null,
     el('a', { class: 'btn small', href: '#/settings?sec=app', text: 'How' }),
-    el('button', { class: 'minimal small', type: 'button', 'aria-label': 'Dismiss', title: 'Dismiss', onclick: dismiss }, ic('cross')));
+    el('button', { class: 'icon minimal small', type: 'button', 'aria-label': 'Dismiss', title: 'Dismiss', onclick: dismiss }, ic('cross')));
   return box;
 }
 
@@ -902,7 +918,7 @@ function homeGroupNode(g, kind, getProject) {
 
 function homeBlockNode(b) {
   const toggle = el('button', { class: 'minimal small pb-toggle', type: 'button', 'aria-expanded': 'true' });
-  const name = b.kind === 'project' ? el('a', { class: 'pb-name', href: homeProjectHash(b.name) }) : el('span', { class: 'pb-name' });
+  const name = b.kind === 'project' ? el('a', { class: 'pb-name ' + chipHue('project', b.name), href: homeProjectHash(b.name) }) : el('span', { class: 'pb-name' });
   const lead = b.kind === 'state' ? stateGlyph(b.stateKey) : (b.kind === 'agent' ? agentGlyph(b.agent) : null);
   const count = el('span', { class: 'pb-count dim' });
   const git = el('span', { class: 'pb-git dim mono' });

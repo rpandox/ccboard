@@ -47,7 +47,7 @@ const calls = (w) => plain(w.get('__calls'));
 const toasts = (w) => plain(w.get('__toasts'));
 const sheet = (w) => w.document.getElementById('sheet');
 const title = (w) => text(sheet(w).querySelector('.sheet-title'));
-const field = (n, label) => n.querySelectorAll('.field').find((f) => text(f.querySelector('span')) === label);
+const field = (n, label) => n.querySelectorAll('.field').find((f) => text(f.querySelector('label')) === label);
 const submit = (form) => form.dispatchEvent({ type: 'submit', preventDefault() {} });
 const open = (w, kind) => w.run(`Shell.openCreate(${JSON.stringify(kind)})`);
 const closed = (w) => { sheet(w).close(); };
@@ -104,7 +104,7 @@ test('the project sheet: POST /api/projects {name}, a toast, and the sheet close
   open(w, 'project');
   const form = sheet(w).querySelector('form.form');
   assert.match(text(sheet(w).querySelector('.sheet-body')), /A folder per project under \/srv\/projects/);
-  field(form, 'name').querySelector('input').value = ' shop2 ';
+  field(form, 'Name').querySelector('input').value = ' shop2 ';
   submit(form);
   await tick();
   assert.deepEqual(calls(w).pop(), { method: 'POST', path: '/api/projects', body: { name: 'shop2' } });
@@ -117,13 +117,13 @@ test('a project with a clone URL keeps the sheet open so the queue shows the clo
   const w = sWorld();
   open(w, 'project');
   const form = sheet(w).querySelector('form.form');
-  field(form, 'name').querySelector('input').value = 'blog';
-  field(form, 'clone URL').querySelector('input').value = 'https://example.invalid/blog.git';
+  field(form, 'Name').querySelector('input').value = 'blog';
+  field(form, 'Clone URL').querySelector('input').value = 'https://example.invalid/blog.git';
   submit(form);
   await tick();
   assert.deepEqual(calls(w).pop(), { method: 'POST', path: '/api/projects', body: { name: 'blog', url: 'https://example.invalid/blog.git' } });
   assert.equal(sheet(w).open, true);
-  assert.equal(field(form, 'name').querySelector('input').value, '', 'the form is ready for the next one');
+  assert.equal(field(form, 'Name').querySelector('input').value, '', 'the form is ready for the next one');
 });
 
 test('a failed create stays open and says why, inline and as a toast through setError', async () => {
@@ -131,7 +131,7 @@ test('a failed create stays open and says why, inline and as a toast through set
   w.run('globalThis.__errors = []; setError = (m) => { __errors.push(m); };');
   open(w, 'project');
   const form = sheet(w).querySelector('form.form');
-  field(form, 'name').querySelector('input').value = 'shop';
+  field(form, 'Name').querySelector('input').value = 'shop';
   submit(form);
   await tick();
   assert.equal(sheet(w).open, true);
@@ -167,6 +167,9 @@ test('the project sheet offers the two bulk entries the v0.4 board had beside it
   open(w, 'project');
   const links = sheet(w).querySelectorAll('.sheet-links button');
   assert.deepEqual(links.map(text), ['Import from GitHub…', 'Batch prompt…']);
+  const kids = sheet(w).querySelector('.sheet-body').children;
+  assert.ok(kids[kids.length - 1].classList.contains('form'), 'the form (with its sticky Create project / Cancel footer) is the last row: the bulk entries sit above it');
+  assert.ok(kids.findIndex((k) => k.classList.contains('sheet-links')) < kids.length - 1);
   links[0].click();
   assert.equal(title(w), 'Import repos from GitHub', 'the same sheet is swapped in place');
   assert.equal(w.get('Shell.formWatch'), null, 'and the project sheet\'s watch is dropped');
@@ -212,7 +215,7 @@ test('import: Load lists the repos (GET /api/github/repos), filter narrows, Impo
   assert.equal(sheet(w).open, false);
 });
 
-test('import: nothing selected, or no target, says so and posts nothing; a failed load stays open', async () => {
+test('import: nothing selected, or no target, says so next to the field and posts nothing; a failed load stays open', async () => {
   const w = sWorld({ answers: { '/api/github/repos': { __error: 'gh is not logged in' } } });
   open(w, 'import');
   const form = sheet(w).querySelector('form.form');
@@ -223,9 +226,23 @@ test('import: nothing selected, or no target, says so and posts nothing; a faile
   const before = calls(w).length;
   buttons('Import selected').click();
   await tick();
-  assert.equal(text(form.querySelector('.form-status')), 'nothing selected');
+  assert.match(text(field(form, 'Repos').querySelector('.field-err')), /nothing selected/i, 'next to the repo list, not only under the form');
   assert.equal(calls(w).length, before, 'no POST');
   assert.equal(sheet(w).open, true);
+  assert.equal(field(form, 'Repos').querySelector('.field-err').getAttribute('role'), 'alert');
+});
+
+test('import: Load and Invert live in the list header (quiet, small), so the footer carries Import selected and Cancel only', () => {
+  const w = sWorld();
+  open(w, 'import');
+  const form = sheet(w).querySelector('form.form');
+  const footer = form.querySelector('.submit');
+  assert.deepEqual(footer.querySelectorAll('button').map(text), ['Import selected', 'Cancel'], 'the primary and Cancel, nothing else');
+  assert.ok(footer.querySelector('button.primary'), 'Import selected is the primary');
+  const head = form.querySelector('.list-head');
+  assert.deepEqual(head.querySelectorAll('button').map(text), ['Load', 'Invert']);
+  assert.ok(head.querySelectorAll('button').every((b) => b.classList.contains('bp5-small')), 'quiet small buttons');
+  assert.ok(!head.querySelector('button.primary'));
 });
 
 // ---------------------------------------------------------------- batch prompt
@@ -237,15 +254,17 @@ test('batch: pick repos and write a prompt, then POST /api/batch with the mode, 
   const run = form.querySelectorAll('button').find((b) => text(b) === 'Run on selected repos');
   run.click();
   await tick();
-  assert.equal(text(form.querySelector('.form-status')), 'pick repos and write a prompt');
+  assert.match(text(field(form, 'Prompt').querySelector('.field-err')), /write the prompt/i, 'the missing prompt is said next to the prompt');
+  assert.match(text(field(form, 'Repos').querySelector('.field-err')), /at least one repo/i, 'and the missing repos next to the list');
+  assert.equal(w.document.activeElement, form.querySelector('textarea'), 'the first thing to fix has the focus');
   assert.equal(calls(w).length, 0, 'nothing posted');
   assert.deepEqual(form.querySelectorAll('.batch-repos label').map(text), ['shop/api', 'shop/web'], 'repos with a working clone; the project folder is not a repo');
   form.querySelectorAll('.batch-repos input[type=checkbox]').forEach((b) => { b.checked = true; });
   form.querySelector('textarea').value = 'update the changelog';
-  field(form, 'name').querySelector('input').value = 'changelog';
-  field(form, 'permission mode').querySelector('select').value = 'plan';
-  field(form, 'max turns').querySelector('input').value = '12';
-  field(form, 'max $ per repo').querySelector('input').value = '2.5';
+  field(form, 'Name').querySelector('input').value = 'changelog';
+  field(form, 'Permission mode').querySelector('select').value = 'plan';
+  field(form, 'Max turns').querySelector('input').value = '12';
+  field(form, 'Max $ per repo').querySelector('input').value = '2.5';
   run.click();
   await tick();
   assert.deepEqual(calls(w).pop(), { method: 'POST', path: '/api/batch', body: { prompt: 'update the changelog', repos: ['shop/api', 'shop/web'], name: 'changelog', permission_mode: 'plan', max_turns: 12, max_budget_usd: 2.5 } });
@@ -259,8 +278,9 @@ test('batch: a failed call stays open with the reason; Invert flips the checks',
   const form = sheet(w).querySelector('form.form');
   const boxes = form.querySelectorAll('.batch-repos input[type=checkbox]');
   boxes[0].checked = true;
-  form.querySelectorAll('button').find((b) => text(b) === 'Invert').click();
+  form.querySelector('.list-head').querySelectorAll('button').find((b) => text(b) === 'Invert').click();
   assert.deepEqual(boxes.map((b) => !!b.checked), [false, true]);
+  assert.deepEqual(form.querySelector('.submit').querySelectorAll('button').map(text), ['Run on selected repos', 'Cancel'], 'Invert is a list tool, not a footer button');
   form.querySelector('textarea').value = 'go';
   form.querySelectorAll('button').find((b) => text(b) === 'Run on selected repos').click();
   await tick();

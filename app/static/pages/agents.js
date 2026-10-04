@@ -21,6 +21,55 @@ const WORKTREE_PATH_RE = /(?:^|\/)\.claude\/worktrees\//;
 const agentsTails = new Set();                                                              // row nodes that hold a Live subscription (swept when their row leaves the DOM)
 const CV_AUTO_ROWS = 30;                                                                    // a list longer than this gets the cv-auto class (content-visibility, see pages.css)
 
+/* Muted category hues (tokens.css: .hue-blue ... .hue-slate set --hue / --hue-bg / --hue-bd, pages.css paints a chip with them). The hue only helps scanning:
+   the label always says what the chip is. chipHue(kind, key) -> the class: agent (claude violet, codex teal, shell slate), model (opus blue, fable violet,
+   sonnet green, haiku slate, gpt / codex teal, anything else slate), project (a stable hash of the name into blue / teal / green / violet / slate: amber and
+   rose mean attention, so they are never handed out), and slate for everything else (branch, PR, worktree, folder). */
+const HUE_POOL = ['blue', 'teal', 'green', 'violet', 'slate'];
+function chipHue(kind, key) {
+  const k = String(key === null || key === undefined ? '' : key).toLowerCase();
+  if (kind === 'agent') return 'hue-' + (k === 'claude' ? 'violet' : k === 'codex' ? 'teal' : 'slate');
+  if (kind === 'model') {
+    if (/opus/.test(k)) return 'hue-blue';
+    if (/fable/.test(k)) return 'hue-violet';
+    if (/sonnet/.test(k)) return 'hue-green';
+    if (/haiku/.test(k)) return 'hue-slate';
+    if (/gpt|codex|\bo\d/.test(k)) return 'hue-teal';
+    return 'hue-slate';
+  }
+  if (kind === 'project') {
+    let h = 5381;
+    for (let i = 0; i < k.length; i++) h = ((h * 33) ^ k.charCodeAt(i)) >>> 0;
+    return 'hue-' + HUE_POOL[h % HUE_POOL.length];
+  }
+  return 'hue-slate';
+}
+
+/* Put a hue class on a node that is patched in place, taking the previous one off. */
+function chipHueSet(node, cls) {
+  if (!node || node._hue === cls) return;
+  if (node._hue) node.classList.remove(node._hue);
+  node.classList.add(cls);
+  node._hue = cls;
+}
+
+/* The reply box's placeholder: a phone gets the bare verb ('Reply…', 'Send…'): the one-row box is about 330 px wide and a long session name wrapped onto a
+   second line that was cut off at the bottom, and there is no Shift+Enter on a touch keyboard. The name and the hint live in the box's title and aria-label
+   (the callers set both). A fine pointer gets the full text. */
+function sessionPlaceholder(verb, name) {
+  let coarse = false;
+  try { coarse = document.documentElement.classList.contains('force-coarse') || (typeof matchMedia === 'function' && !!matchMedia('(pointer:coarse)').matches); } catch (_) { coarse = false; }
+  const who = name ? ' ' + name : '';
+  const bare = String(verb).split(/\s+/)[0];
+  return coarse ? `${bare.charAt(0).toUpperCase()}${bare.slice(1)}…` : `${verb}${who} · ⇧Enter new line`;
+}
+
+/* A send box was emptied from code (no input event fired): let its listeners (the auto-grow, the row's has-text class) see it. */
+function rowCleared(ta) {
+  if (typeof composerGrow === 'function') composerGrow(ta);
+  try { if (typeof ta.dispatchEvent === 'function' && typeof Event === 'function') ta.dispatchEvent(new Event('input')); } catch (_) { /* no events here */ }
+}
+
 /* Every live session in a state payload, each with its project, repo and whether it sits in the project folder. */
 function rosterSessions(st) {
   const out = [];
@@ -137,7 +186,7 @@ async function sessionSend(s, ta) {
   try {
     await api('POST', `/api/sessions/${encodeURIComponent(s.tmux)}/keys`, { text, enter: true });
     ta.value = '';
-    if (typeof composerGrow === 'function') composerGrow(ta);
+    rowCleared(ta);
     pageToast(`sent to ${s.name || s.tmux}`, 'ok');
     sessionEcho(ta, text);
   } catch (e) { pageToast(e.message, 'bad'); }
@@ -199,13 +248,17 @@ function sessionCostClass(usd) { return usd >= COST_BAD ? ' cost-bad' : usd >= C
 
 /* opts: compact (shorter texts), peek (block layout for the dock / sheet), perm (show a pending permission with Allow / Deny),
    showProject (project/repo instead of just the repo), link (the name opens the peek), cls (extra class on the node),
-   rich (Home's dense row: model, context meter, compact, worktree / PR / subagents / cost / limit chips, Reply and tail toggles),
-   tail (the tail expander; defaults to rich), noWhere (hide the repo text: the block above already names it). */
+   rich (the dense row: model, context meter, compact, worktree / PR / subagents / cost / limit chips; the nudge chips and the send box stay behind
+   the row's own `...` menu > Reply), tail (the tail expander in that menu; defaults to rich), noWhere (hide the repo text: the block above already
+   names it), autoOpen (Agents: a waiting row keeps its chips and send box open until the person toggles them).
+   v0.5.6d: a row's actions are [Allow / Deny while a permission waits] [Open] [...]: Ack, Reply, Tail and Kill live in the menu and Kill's second tap
+   shows inline. node.ccLead(on) says whether this row carries the screen's one filled primary (Allow); the others show it tinted. Only the peek keeps
+   Open terminal / Ack / Kill in view. */
 function sessionCard(s, opts) {
-  const o = Object.assign({ compact: false, peek: false, perm: false, showProject: false, link: true, cls: '', rich: false, tail: null, noWhere: false }, opts || {});
+  const o = Object.assign({ compact: false, peek: false, perm: false, showProject: false, link: true, cls: '', rich: false, tail: null, noWhere: false, autoOpen: false }, opts || {});
   const rich = !!o.rich && !o.peek;
   const wantTail = !o.peek && (o.tail === null || o.tail === undefined ? rich : !!o.tail) && sessionTailAvailable();
-  const cur = { s };
+  const cur = { s, lead: undefined, pr: null, manual: false };
   const tmux = s.tmux;
   const killKey = 'kill:' + tmux;
   const glyphs = el('span', { class: o.peek ? 'peek-glyphs' : 'rr-g' });
@@ -219,7 +272,11 @@ function sessionCard(s, opts) {
   const permBtns = el('span', { class: 'actions perm-btns' });
   const ackSlot = el('span', { class: 'slot-ack' });
   const killSlot = el('span', { class: 'slot-kill' });
-  const openLink = el('a', { class: o.peek ? 'btn primary' : 'btn small', href: `/term/${encodeURIComponent(tmux)}`, target: '_blank', rel: 'noopener', text: o.peek ? 'Open terminal' : 'Open' });
+  const openSlot = el('span', { class: 'slot-open' });     // the peek's Open terminal: the primary only while no permission waits
+  const openHref = `/term/${encodeURIComponent(tmux)}`;
+  const openNode = (primary) => el('a', { class: 'btn' + (primary ? ' primary' : ''), href: openHref, target: '_blank', rel: 'noopener', text: 'Open terminal' });
+  const openLink = o.peek ? null : el('a', { class: 'btn small', href: openHref, target: '_blank', rel: 'noopener', text: 'Open' });
+  if (o.peek) { openSlot.append(openNode(true)); cur.openP = true; }
   const chips = el('div', { class: 'chips' + (o.peek ? '' : ' rr-chips'), role: 'group', 'aria-label': 'Quick replies' });
   for (const text of SESSION_NUDGES) {
     const b = el('button', { class: 'chip-btn', type: 'button', text });
@@ -228,16 +285,16 @@ function sessionCard(s, opts) {
   }
   let sendRow = null;
   if (!o.peek) {                                             // the peek has its own composer (session.js)
-    const ta = composer({ placeholder: `send to ${s.name || tmux} · ⇧Enter new line`, label: `send to ${s.name || tmux}`, onSend: () => sessionSend(cur.s, ta) });
+    const ta = composer({ placeholder: sessionPlaceholder('send to', s.name || tmux), label: `send to ${s.name || tmux}`, onSend: () => sessionSend(cur.s, ta) });
+    ta.setAttribute('title', `send to ${s.name || tmux}: Enter sends, Shift+Enter adds a line`);
     ta.addEventListener('click', (e) => e.stopPropagation());
     sendRow = el('form', { class: 'rr-send', onsubmit: (e) => { e.preventDefault(); e.stopPropagation(); sessionSend(cur.s, ta); } },
       ta, el('button', { class: 'small primary', type: 'submit', text: 'Send', onclick: (e) => e.stopPropagation() }));
   }
 
-  // rich row: badges (built once, shown and patched in place), the Reply and tail toggles
+  // rich row: badges (built once, shown and patched in place), the `...` menu with Reply and Tail
   let badges = null;
-  let replyBtn = null;
-  let tailBtn = null;
+  let moreBtn = null;
   let tailHost = null;
   let tailPre = null;
   const b = {};
@@ -245,29 +302,42 @@ function sessionCard(s, opts) {
     b.model = el('span', { class: 'bdg bdg-model mono hidden' });
     b.ctx = ctxMeter();
     b.ctx.classList.add('hidden');
-    b.compact = el('button', { class: 'chip-btn compact-chip hidden', type: 'button', title: 'send /compact to this session', text: 'compact' });
+    b.compact = el('button', { class: 'chip-btn compact-chip hue-slate hidden', type: 'button', title: 'send /compact to this session', text: 'compact' });
     b.compact.addEventListener('click', (e) => { e.stopPropagation(); sessionNudge(cur.s, '/compact', b.compact); });
-    b.worktree = el('span', { class: 'bdg bdg-wt hidden', text: 'worktree' });
-    b.pr = el('a', { class: 'bdg bdg-pr hidden', target: '_blank', rel: 'noopener' });
-    b.sub = el('span', { class: 'bdg bdg-sub hidden' });
+    b.worktree = el('span', { class: 'bdg bdg-wt hue-slate hidden', text: 'worktree' });
+    b.pr = el('a', { class: 'bdg bdg-pr hue-slate hidden', target: '_blank', rel: 'noopener' });
+    b.sub = el('span', { class: 'bdg bdg-sub hue-slate hidden' });
     b.cost = el('span', { class: 'bdg bdg-cost mono hidden', title: 'session cost (API-equivalent)' });
     b.limit = el('span', { class: 'bdg bdg-limit hidden', text: 'limit' });
     b.blocked = el('span', { class: 'bdg bdg-blocked hidden', text: 'blocked' });
     badges = el('span', { class: 'rr-badges' }, b.model, b.ctx, b.compact, b.worktree, b.pr, b.sub, b.cost, b.limit, b.blocked);
-    replyBtn = el('button', { class: 'small minimal rr-replybtn', type: 'button', 'aria-expanded': 'false', title: 'quick replies and a send box', text: 'Reply' });
-    replyBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const on = !node.classList.contains('open');
-      node.classList.toggle('open', on);
-      replyBtn.setAttribute('aria-expanded', on ? 'true' : 'false');
-    });
+  }
+  if (!o.peek) {
+    moreBtn = el('button', { class: 'icon minimal rr-more', type: 'button', 'aria-label': 'More actions', title: 'More: acknowledge, reply, tail, kill' }, ic('more'));
+    moreBtn.addEventListener('click', (e) => e.stopPropagation());
+    if (typeof menu === 'function') menu(moreBtn, () => moreItems());
   }
   if (wantTail) {
     tailPre = el('pre', { class: 'tail' });
     tailHost = el('div', { class: 'rr-tail hidden' }, tailPre);
-    tailBtn = el('button', { class: 'small minimal rr-tailbtn', type: 'button', 'aria-expanded': 'false', title: `last ${TAIL_LINES} lines of the pane`, text: 'Tail' });
-    tailBtn.addEventListener('click', (e) => { e.stopPropagation(); if (cur.tailFn) tailOff(); else tailOn(); });
   }
+
+  /* The `...` menu, read when it opens: only what applies to the session right now. Kill is the first tap of the two-tap button: it asks the row to
+     show 'Confirm Kill' / 'Cancel' inline, where the second tap (or Esc / Cancel) decides. */
+  function moreItems() {
+    const s2 = cur.s;
+    const items = [];
+    if (s2.needs_attention) items.push({ label: 'Acknowledge', icon: 'tick', onClick: () => sessionAck(cur.s) });
+    if (rich && sessionNudgeable(s2)) items.push({ label: node.classList.contains('open') ? 'Hide reply box' : 'Reply', icon: 'comment', onClick: toggleReply });
+    if (wantTail) items.push({ label: cur.tailFn ? 'Hide tail' : 'Tail', icon: 'console', onClick: () => { if (cur.tailFn) tailOff(); else tailOn(); } });
+    items.push({ label: 'Kill', icon: 'trash', onClick: () => { ui.confirm = killKey; if (typeof repaintPage === 'function') repaintPage(); } });
+    return items;
+  }
+
+  function toggleReply() { cur.manual = true; node.classList.toggle('open'); syncMore(); }
+
+  /* the `...` button wears the accent while the row's reply box or tail is open */
+  function syncMore() { if (moreBtn) moreBtn.classList.toggle('on', (rich && node.classList.contains('open')) || !!cur.tailFn); }
 
   function tailOn() {
     if (cur.tailFn || !sessionTailAvailable()) return;
@@ -278,9 +348,8 @@ function sessionCard(s, opts) {
     };
     setTextIfChanged(tailPre, 'waiting for output…');
     tailHost.classList.remove('hidden');
-    tailBtn.setAttribute('aria-expanded', 'true');
-    tailBtn.classList.add('on');
     agentsTails.add(node);
+    syncMore();
     Live.subscribe(tmux, cur.tailFn);
   }
 
@@ -291,8 +360,7 @@ function sessionCard(s, opts) {
     agentsTails.delete(node);
     try { if (sessionTailAvailable()) Live.unsubscribe(tmux, fn); } catch (e) { console.error('ccboard tail', e); }
     tailHost.classList.add('hidden');
-    tailBtn.setAttribute('aria-expanded', 'false');
-    tailBtn.classList.remove('on');
+    syncMore();
   }
 
   let node;
@@ -307,22 +375,24 @@ function sessionCard(s, opts) {
     node = el('div', { class: 'peek-card', 'data-tmux': tmux },
       el('div', { class: 'peek-sub' }, glyphs, where, age, meta),
       promptHost, msgHost, permHost,
-      el('div', { class: 'peek-actions' }, openLink, ackSlot, killSlot), chips);
+      el('div', { class: 'peek-actions' }, openSlot, ackSlot, killSlot), chips);
   } else {
     node = el('div', { class: 'rrow' + (o.compact ? ' compact' : '') + (rich ? ' rich' : '') + (o.cls ? ' ' + o.cls : ''), 'data-tmux': tmux },
       glyphs, el('div', { class: 'rr-main' }, nameNode, where, age), rich ? el('div', { class: 'rr-metaline' }, meta, badges) : meta,
       el('div', { class: 'rr-last' }, o.perm ? permNote : null, promptNode, msgNode),
-      el('div', { class: 'rr-actions' }, o.perm ? permBtns : null, openLink, ackSlot, killSlot, replyBtn, tailBtn), chips, sendRow, tailHost);
+      el('div', { class: 'rr-actions' }, o.perm ? permBtns : null, openLink, killSlot, moreBtn), chips, sendRow, tailHost);
   }
 
   function patchPerm(pr) {
-    const sig = pr ? `${pr.id}:${pr.summary || ''}` : '';
+    const lead = o.peek || cur.lead !== false;                // the peek is its own surface: its Allow is always the filled one
+    const sig = pr ? `${pr.id}:${pr.summary || ''}:${lead ? 1 : 0}` : '';
+    cur.pr = pr || null;
     if (cur.perm === sig) return;
     cur.perm = sig;
     permBtns.textContent = '';
     if (pr) {
       permBtns.append(
-        el('button', { class: 'primary small', type: 'button', onclick: (e) => { e.stopPropagation(); decide(pr.id, 'allow'); }, text: 'Allow' }),
+        el('button', { class: (lead ? 'primary' : 'primary tinted') + ' small', type: 'button', onclick: (e) => { e.stopPropagation(); decide(pr.id, 'allow'); }, text: 'Allow' }),
         el('button', { class: 'danger small', type: 'button', onclick: (e) => { e.stopPropagation(); decide(pr.id, 'deny'); }, text: 'Deny' }));
     }
     permNote.textContent = pr ? String(pr.summary || 'permission request').slice(0, o.peek ? 800 : 200) : '';
@@ -335,7 +405,7 @@ function sessionCard(s, opts) {
     const t = s2.stats || {};
     const nudge = sessionNudgeable(s2);
     show(b.model, !!t.model);
-    if (t.model) setTextIfChanged(b.model, String(t.model));
+    if (t.model) { setTextIfChanged(b.model, String(t.model)); chipHueSet(b.model, chipHue('model', t.model)); }
     const hasCtx = typeof t.context_pct === 'number';
     show(b.ctx, hasCtx);
     if (hasCtx) b.ctx.ccSet(t.context_pct);
@@ -347,7 +417,7 @@ function sessionCard(s, opts) {
     if (prNum) {
       const bucket = task.ci && task.ci.bucket;
       setTextIfChanged(b.pr, `PR #${prNum}`);
-      b.pr.className = 'bdg bdg-pr' + (bucket === 'fail' ? ' bad' : bucket === 'pass' ? ' ok' : bucket === 'pending' ? ' warn' : '');
+      b.pr.className = 'bdg bdg-pr hue-slate' + (bucket === 'fail' ? ' bad' : bucket === 'pass' ? ' ok' : bucket === 'pending' ? ' warn' : '');
       if (task.pr_url) b.pr.setAttribute('href', task.pr_url); else b.pr.removeAttribute('href');
       b.pr.setAttribute('title', `${task.pr_state || 'PR'}${bucket && bucket !== 'none' ? ' · CI ' + bucket : ''}`);
     }
@@ -388,9 +458,16 @@ function sessionCard(s, opts) {
     const sk = sessionStateKey(s2);
     const agent = sessionAgent(s2);
     const gk = sk + '|' + agent;
-    if (cur.g !== gk) { glyphs.textContent = ''; glyphs.append(stateGlyph(sk), agentGlyph(agent)); cur.g = gk; }
+    if (cur.g !== gk) {
+      const ag = agentGlyph(agent);
+      ag.classList.add(chipHue('agent', agent));             // claude violet, codex teal, shell slate
+      glyphs.textContent = '';
+      glyphs.append(stateGlyph(sk), ag);
+      cur.g = gk;
+    }
     setTextIfChanged(nameNode, s2.name || tmux);
     setTextIfChanged(where, sessionWhere(s2, o.showProject));
+    if (o.showProject && s2.project) chipHueSet(where, chipHue('project', s2.project));
     agentsAgeNode(age, sessionActivity(s2));
     setTextIfChanged(meta, rich ? GLYPH_LABEL[sk] : sessionMetaText(s2, sk));
     const lim = o.peek ? [800, 2000] : (o.compact || rich ? [120, 160] : [200, 320]);
@@ -402,26 +479,40 @@ function sessionCard(s, opts) {
     msgHost.classList.toggle('hidden', !mt);
     node.classList.toggle('attn', !!s2.needs_attention);
     if (o.perm) patchPerm(sessionPerm(s2.tmux));
-    const ack = !!s2.needs_attention;
-    if (cur.ack !== ack) {
-      cur.ack = ack;
-      ackSlot.textContent = '';
-      if (ack) ackSlot.append(el('button', { class: 'small', type: 'button', onclick: (e) => { e.stopPropagation(); sessionAck(cur.s); }, text: 'Ack' }));
+    if (o.peek) {
+      const wantPrimary = !cur.pr;                            // Open terminal leads only while nothing waits on an Allow
+      if (cur.openP !== wantPrimary) { cur.openP = wantPrimary; openSlot.textContent = ''; openSlot.append(openNode(wantPrimary)); }
+      const ack = !!s2.needs_attention;
+      if (cur.ack !== ack) {
+        cur.ack = ack;
+        ackSlot.textContent = '';
+        if (ack) ackSlot.append(el('button', { class: 'small minimal', type: 'button', onclick: (e) => { e.stopPropagation(); sessionAck(cur.s); }, text: 'Ack' }));
+      }
     }
-    const confirming = ui.confirm === killKey;                // rebuilt only when the two-tap state flips (confirmButton repaints through renderProjects)
+    const confirming = ui.confirm === killKey;                // rebuilt only when the two-tap state flips (confirmButton repaints through repaintPage)
     if (cur.kill !== confirming) {
       cur.kill = confirming;
       killSlot.textContent = '';
-      killSlot.append(confirmButton(killKey, 'Kill', () => api('DELETE', `/api/sessions/${encodeURIComponent(cur.s.tmux)}`), true));
+      if (confirming || o.peek) killSlot.append(confirmButton(killKey, 'Kill', () => api('DELETE', `/api/sessions/${encodeURIComponent(cur.s.tmux)}`), true));
     }
     const nudge = sessionNudgeable(s2);
     chips.classList.toggle('hidden', !nudge);
     if (sendRow) sendRow.classList.toggle('hidden', !nudge);
-    if (rich) { patchBadges(s2, st); show(replyBtn, nudge); }
+    if (rich) {
+      patchBadges(s2, st);
+      if (o.autoOpen && !cur.manual) node.classList.toggle('open', sk === 'waiting' && nudge);   // a waiting row keeps its reply box open until the person toggles it
+      syncMore();
+    }
   }
 
   node.ccPatch = patch;
   node.ccDestroy = () => { tailOff(); };
+  node.ccCanLead = () => !!cur.pr;                           // only a row with an Allow button can carry the screen's filled primary
+  node.ccLead = (on) => {
+    if (cur.lead === on) return;
+    cur.lead = on;
+    if (o.perm) patchPerm(sessionPerm(cur.s.tmux));
+  };
   patch(s);
   return node;
 }
@@ -442,6 +533,34 @@ function agentsSummaryText(list) {
   return parts.join(' · ');
 }
 
+/* The state summary as the chips Home's summary bar uses (class sum-seg), here a legend rather than filters: a count per state, the error and ended
+   segments only while there is one. */
+const AGENTS_SEGS = [['waiting', 'need you'], ['working', 'working'], ['idle', 'idle'], ['done', 'done'], ['errored', 'error'], ['ended', 'ended']];
+
+function agentsSummaryNode() {
+  const node = el('nav', { class: 'summary sumbar sumbar-static', 'aria-label': 'Sessions by state' });
+  const segs = {};
+  for (const [k, label] of AGENTS_SEGS) {
+    const n = el('span', { class: 'sum-n' });
+    const seg = el('span', { class: 'sum-seg sum-' + k + (k === 'errored' || k === 'ended' ? ' hidden' : ''), 'data-state': k }, stateGlyph(k), n, el('span', { class: 'sum-l', text: label }));
+    segs[k] = { seg, n };
+    node.append(seg);
+  }
+  node.ccSegs = segs;
+  return node;
+}
+
+function agentsPatchSummary(node, list) {
+  const n = agentsCounts(list);
+  for (const [k] of AGENTS_SEGS) {
+    const { seg, n: num } = node.ccSegs[k];
+    const c = n[k] || 0;
+    setTextIfChanged(num, String(c));
+    seg.classList.toggle('zero', !c);
+    if (k === 'errored' || k === 'ended') seg.classList.toggle('hidden', !c);
+  }
+}
+
 /* Groups by project (directory): the group with the most urgent session first, then the most recently active. */
 function agentsGroups(list) {
   const by = new Map();
@@ -459,9 +578,10 @@ function agentsGroupNode(g) {
   const count = el('span', { class: 'mono' });
   const list = el('div', { class: 'rg-list' });
   const node = el('section', { class: 'rgroup' }, el('div', { class: 'rgroup-head' }, name, count), list);
-  const rows = makeKeyedList(list, { key: (s) => s.tmux, create: (s) => sessionCard(s, { compact: true }), patch: (n, s) => n.ccPatch(s) });
+  const rows = makeKeyedList(list, { key: (s) => s.tmux, create: (s) => sessionCard(s, { compact: true, rich: true, autoOpen: true, perm: true }), patch: (n, s) => n.ccPatch(s) });
   node.ccPatch = (grp) => {
     setTextIfChanged(name, grp.name);
+    chipHueSet(name, chipHue('project', grp.name));
     setTextIfChanged(count, `${grp.items.length} session${grp.items.length === 1 ? '' : 's'}`);
     rows.update(grp.items);
     list.classList.toggle('cv-auto', grp.items.length > CV_AUTO_ROWS);
@@ -475,7 +595,7 @@ const agentsPage = { refs: null };
 registerPage('agents', {
   title: 'Agents',
   mount(root) {
-    const summary = el('p', { class: 'summary' });
+    const summary = agentsSummaryNode();
     const roster = el('div', { class: 'roster' });
     const none = pageEmpty('console', 'No live sessions', 'Start one from the + menu: every session on this box shows up here.');
     const external = pageEmpty('cloud', 'Background sessions', 'Background sessions from the Claude registry arrive in v0.5.4');
@@ -498,7 +618,7 @@ registerPage('agents', {
     if (!r) return;
     Pages.dropSkeleton();
     const list = rosterSessions(st);
-    setTextIfChanged(r.summary, agentsSummaryText(list));
+    agentsPatchSummary(r.summary, list);
     r.groups.update(agentsGroups(list));
     r.none.classList.toggle('hidden', list.length > 0);
     r.external.classList.toggle('hidden', !!st.external);     // registry rows arrive with state.external in v0.5.4

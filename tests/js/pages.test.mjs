@@ -219,9 +219,21 @@ function pagesWorld({ wide = false, extra = {}, state = fakeState(), realPoll = 
 const page = (w) => w.document.querySelector('#page');
 const tick = () => new Promise((r) => setImmediate(r));
 const rows = (root) => root.querySelectorAll('.rrow').map((n) => n.getAttribute('data-tmux'));
+/** The visible chips of the Agents state summary as 'count label'. */
+const summaryOf = (root) => root.querySelectorAll('.summary .sum-seg').filter((n) => !n.classList.contains('hidden')).map((n) => `${text(n.querySelector('.sum-n'))} ${text(n.querySelector('.sum-l'))}`);
 const mounts = (w, id) => w.get('__mounts')[id];
 const calls = (w) => plain(w.get('__calls'));
 const text = (n) => n.textContent;
+/** A session row's `...` menu (v0.5.6d: Ack, Reply, Tail and Kill live there): its labels, and a pick by label (the menu closes itself on a pick). */
+const rowMenuLabels = (w, row) => { const b = row.querySelector('.rr-more'); b.click(); const l = w.document.querySelectorAll('.menuitem').map((i) => text(i).trim()); b.click(); return l; };
+const rowMenu = (w, row, label) => {
+  const b = row.querySelector('.rr-more');
+  b.click();
+  const hit = w.document.querySelectorAll('.menuitem').find((i) => (label instanceof RegExp ? label.test(text(i).trim()) : text(i).trim() === label));
+  if (hit) { hit.click(); return true; }
+  b.click();
+  return false;
+};
 
 // ---------------------------------------------------------------- registration
 
@@ -263,7 +275,8 @@ test('#/agents mounts into #page, updates with the state and lists the waiting s
   assert.equal(list.length, 4);
   assert.deepEqual(list.slice(0, 2), ['shop--api--s2', 'shop--api--s1'], 'waiting first, then working');
   assert.deepEqual(root.querySelectorAll('.rg-name').map(text), ['shop', 'blog'], 'the group with the waiting session leads');
-  assert.equal(text(root.querySelector('.summary')), '✻ 1 need you · ✽ 1 working · ∙ 2 idle · ✓ 0 done');
+  assert.deepEqual(summaryOf(root), ['1 need you', '1 working', '2 idle', '0 done'], 'the states as the chips Home\'s summary bar uses; error and ended only while there is one');
+  assert.ok(root.querySelector('nav.summary.sumbar'));
 });
 
 test('#/agents with just a waiting and a working session renders two rows, waiting first', () => {
@@ -274,7 +287,7 @@ test('#/agents with just a waiting and a working session renders two rows, waiti
   assert.deepEqual(rows(page(w)), ['shop--api--s2', 'shop--api--s1']);
 });
 
-test('a row shows glyphs, name, repo, age, model and context, last prompt and message, Open / Ack / Kill and the chips', () => {
+test('a row shows glyphs, name, repo, age, model chip and context meter, last prompt and message, Open, a ... menu with Ack / Reply / Tail / Kill, and the chips', () => {
   const { w } = pagesWorld();
   w.location.hash = '#/agents';
   const row = page(w).querySelector('.rrow[data-tmux=shop--api--s2]');
@@ -285,16 +298,21 @@ test('a row shows glyphs, name, repo, age, model and context, last prompt and me
   const age = row.querySelector('time.age');
   assert.match(text(age), /^\d+m$/);
   assert.ok(Number(age.getAttribute('data-epoch')) > 0);
-  assert.equal(text(row.querySelector('.rr-meta')), 'needs you · Opus 5 · ctx 42%');
+  assert.equal(text(row.querySelector('.rr-meta')), 'needs you');
+  assert.equal(text(row.querySelector('.bdg-model')), 'Opus 5', 'the model is a chip in its hue (the Agents rows are the rich rows)');
+  assert.ok(row.querySelector('.bdg-model').classList.contains('hue-blue'));
+  assert.equal(text(row.querySelector('.ctx-pct')), '42%');
   assert.match(text(row.querySelector('.rr-last')), /fix the login bug/);
   assert.match(text(row.querySelector('.rr-last')), /done, tests pass/);
   const open = row.querySelector('a[href="/term/shop--api--s2"]');
   assert.ok(open && text(open) === 'Open');
-  assert.ok(row.querySelector('.slot-ack button'), 'Ack for a session that needs attention');
-  assert.equal(text(row.querySelector('.slot-kill')), 'Kill');
+  assert.deepEqual(rowMenuLabels(w, row), ['Acknowledge', 'Hide reply box', 'Tail', 'Kill'], 'Ack only for a session that needs attention; the waiting row\'s reply box is already open');
+  assert.equal(text(row.querySelector('.slot-kill')), '', 'Kill shows inline only for its second tap');
   assert.deepEqual(row.querySelectorAll('.chips .chip-btn').map(text), ['continue', 'merge', 'push', 'pr', 'add commit push', 'do it']);
   const idle = page(w).querySelector('.rrow[data-tmux=blog--web--s3]');
-  assert.equal(idle.querySelector('.slot-ack button'), null, 'no Ack when nothing needs attention');
+  assert.deepEqual(rowMenuLabels(w, idle), ['Reply', 'Tail', 'Kill'], 'no Acknowledge when nothing needs attention');
+  assert.equal(row.classList.contains('open'), true, 'a waiting row keeps its chips and send box open');
+  assert.equal(idle.classList.contains('open'), false, 'an idle one folds them behind Reply');
 });
 
 test('a plain shell session shows no nudge chips (typing "push" into bash would run it)', () => {
@@ -321,7 +339,7 @@ test('rows are keyed by tmux and patched in place: a poll keeps the nodes, reord
   const s2 = root.querySelector('.rrow[data-tmux=shop--api--s2]');
   const glyph = s2.querySelector('.glyph.waiting');
   // the user is on the Allow/chips of s2 (a focused button) while the states swap: s1 now waits, s2 works
-  const chip = s2.querySelector('.chip-btn');
+  const chip = s2.querySelector('.chips .chip-btn');
   chip.focus();
   const st = fakeState();
   st.pending_permissions = [];
@@ -337,9 +355,9 @@ test('rows are keyed by tmux and patched in place: a poll keeps the nodes, reord
   assert.equal(s2.querySelector('.glyph.waiting'), null);
   assert.ok(s2.querySelector('.glyph.working'), 'the glyph followed the state');
   assert.notEqual(s2.querySelector('.glyph.working'), glyph);
-  assert.equal(s2.querySelector('.slot-ack button'), null, 'Ack went away with needs_attention');
-  assert.ok(s1.querySelector('.slot-ack button'));
   assert.equal(chip.parentNode.parentNode, s2, 'the chip itself was never recreated');
+  assert.equal(rowMenuLabels(w, s2).includes('Acknowledge'), false, 'Ack went away with needs_attention');
+  assert.ok(rowMenuLabels(w, s1).includes('Acknowledge'));
 });
 
 test('a session that disappears removes its row, and an empty roster shows the empty state', () => {
@@ -354,7 +372,7 @@ test('a session that disappears removes its row, and an empty roster shows the e
   w.ctx.__st = none; w.run('state = __st; updateCurrentPage(state)');
   assert.deepEqual(rows(page(w)), []);
   assert.match(text(page(w)), /No live sessions/);
-  assert.equal(text(page(w).querySelector('.summary')), '✻ 0 need you · ✽ 0 working · ∙ 0 idle · ✓ 0 done');
+  assert.deepEqual(summaryOf(page(w)), ['0 need you', '0 working', '0 idle', '0 done']);
 });
 
 test('the registry placeholder shows only while state.external is absent', () => {
@@ -385,18 +403,23 @@ test('nudge chips POST the text with enter and toast the outcome', async () => {
   assert.deepEqual(plain(w.get('__toasts')).pop(), { text: 'no such session', kind: 'bad' });
 });
 
-test('Kill is the two-tap quiet button: the first tap swaps in Confirm and Cancel through the repaint hook, Cancel restores it', () => {
+test('Kill is a two-tap: the menu item swaps in Confirm and Cancel through the repaint hook, Cancel restores the row, Confirm kills', async () => {
   const { w } = pagesWorld();
   w.location.hash = '#/agents';
   const row = () => page(w).querySelector('.rrow[data-tmux=shop--api--s1]');
   const kill = () => row().querySelector('.slot-kill');
-  assert.equal(text(kill()), 'Kill');
-  kill().querySelector('button').click();                               // confirmButton -> renderProjects() -> no #projects -> repaintPage()
+  assert.equal(text(kill()), '', 'nothing inline until the first tap');
+  assert.ok(rowMenu(w, row(), 'Kill'));                                 // the menu item is the first tap: it asks the row to show Confirm / Cancel through the repaint hook
   assert.equal(w.get('ui').confirm, 'kill:shop--api--s1');
   assert.match(text(kill()), /Confirm Kill/);
   assert.match(text(kill()), /Cancel/);
   kill().querySelectorAll('button').find((b) => text(b) === 'Cancel').click();
-  assert.equal(text(kill()), 'Kill');
+  assert.equal(w.get('ui').confirm, null);
+  assert.equal(text(kill()), '', 'Cancel restores the row');
+  assert.ok(rowMenu(w, row(), 'Kill'));
+  kill().querySelectorAll('button').find((b) => /Confirm Kill/.test(text(b))).click();
+  await tick();
+  assert.deepEqual(calls(w).pop(), { method: 'DELETE', path: '/api/sessions/shop--api--s1' }, 'the second tap kills');
 });
 
 test('the age ticker starts on mount and stops on unmount', () => {
@@ -590,7 +613,8 @@ test('#/inbox lists only what needs attention as cards in kind order, with the p
   allow.click();
   await tick();
   assert.deepEqual(calls(w).pop(), { method: 'POST', path: '/api/permission/7/allow' });
-  assert.equal(waiting.querySelectorAll('.chips .chip-btn').length, 6);
+  assert.equal(waiting.querySelectorAll('.chips .chip-btn').filter((b) => !b.classList.contains('chip-more')).length, 6, 'all six chips are on the card; four show, a ... brings the rest');
+  assert.ok(waiting.classList.contains('lead'), 'the first card leads: its Allow is the screen\'s filled primary');
   waiting.click();                                                        // selecting a card drives ui.inboxSel (the index in the list the page draws)
   assert.equal(w.get('ui').inboxSel, 0);
   assert.ok(waiting.classList.contains('sel'));
@@ -646,7 +670,7 @@ test('Home opens the event stream only while a session\'s tail is expanded: one 
   w.run('Live.DEBOUNCE_MS = 0');
   w.location.hash = '#/';
   assert.equal(opened.length, 0, 'mounting Home connects to nothing');
-  const tail = (tmux) => page(w).querySelector(`.pblocks .rrow[data-tmux="${tmux}"] .rr-tailbtn`);
+  const tail = (tmux) => ({ click: () => assert.ok(rowMenu(w, page(w).querySelector(`.pblocks .rrow[data-tmux="${tmux}"]`), /^(Tail|Hide tail)$/)) });
   tail('shop--api--s1').click();
   assert.equal(opened.length, 1);
   assert.equal(opened[0].url, '/api/stream?names=shop--api--s1&lines=12');

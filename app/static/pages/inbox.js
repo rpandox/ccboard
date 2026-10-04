@@ -32,6 +32,9 @@ const Inbox = {
   ASKS_RE: /\?[\s"'`)\]*_]*$|AskUserQuestion/,
   LIMIT_RE: /limit/i,
   HINT: 'j / k move · Enter open · o terminal · a ack · y allow · d deny · r reply · ? all keys',
+  // the one action each kind of card leads with (v0.5.6d): the lead card shows it filled, the others tinted
+  PRIMARY: { permission: 'allow', plan: 'reply', question: 'reply', 'done-question': 'reply', waiting: 'reply', needs: 'open', error: 'open', limit: 'ack', done: 'ack' },
+  CHIPS_SHOWN: 4,                                  // quick-reply chips before the '…' that shows the rest
 };
 
 /* ---------- classifying ---------- */
@@ -128,7 +131,11 @@ Inbox.context = function (s, st, kind) {
   const perm = Inbox.pending(s, st);
   if (kind === 'permission') {
     const here = perm && inboxFullViewers(s) > 0;           // a full client has the TUI prompt: the board's buttons would answer nothing
-    return { text: String((perm && perm.summary) || msg || 'permission request').slice(0, 300), mono: true, note: here ? 'a terminal is attached: answer it there' : (perm && perm.tool_name) || '', reply: '' };
+    const text = String((perm && perm.summary) || msg || 'permission request').slice(0, 300);
+    const tool = String((perm && perm.tool_name) || '');
+    // 'Bash: npm test' already names the tool: the dim line beside it only says it when the summary does not
+    const dup = !!tool && text.toLowerCase().startsWith(tool.toLowerCase());
+    return { text, mono: true, note: here ? 'a terminal is attached: answer it there' : (dup ? '' : tool), reply: '' };
   }
   if (kind === 'plan') return { text: Inbox.head(msg, 700), mono: false, note: '', reply: '' };
   if (kind === 'question' || kind === 'done-question') return { text: Inbox.tail(msg, 400), mono: false, note: '', reply: '' };
@@ -162,10 +169,15 @@ Inbox.sig = function (s, st, kind) {
 
 function inboxFullViewers(s) { return Number((s.viewers && s.viewers.full) || 0); }
 
+/* v0.5.6d: ONE filled primary per screen. node.ccLead(on) says whether this card is the lead (the j/k selection, else the first card: Pages.markLead in
+   pages/home.js decides): the lead card shows its kind's primary action filled, the quick-reply chips and the send box; every other card shows the same
+   action tinted and keeps the chips and the send box behind a quiet Reply (class `open` on the card). The primary per kind is Inbox.PRIMARY: Allow for a
+   permission, Reply for a question or a plan, Open for a job that needs you or an error, Ack for a limit or a finished session. */
 function inboxCard(s, st, opts) {
   const o = Object.assign({ cls: '', label: true }, opts || {});
-  const cur = { s, st, kind: '' };
+  const cur = { s, st, kind: '', lead: true, allow: false, nudge: false, ack: false, actKey: '' };
   const tmux = s.tmux;
+  const name = s.name || tmux;
   const kindNode = el('span', { class: 'ib-kind' });
   const ctx = el('div', { class: 'ib-ctx' });
   const note = el('span', { class: 'ib-note dim' });
@@ -177,36 +189,76 @@ function inboxCard(s, st, opts) {
   const age = el('time', { class: 'age ib-age', title: 'last activity' });
   const prompt = el('div', { class: 'ib-prompt dim' });
   const permBtns = el('span', { class: 'actions perm-btns' });
+  const replySlot = el('span', { class: 'slot-reply' });
+  const openSlot = el('span', { class: 'slot-open' });
   const ackSlot = el('span', { class: 'slot-ack' });
-  const openLink = el('a', { class: 'btn small', href: `/term/${encodeURIComponent(tmux)}`, target: '_blank', rel: 'noopener', text: 'Open' });
   const chips = el('div', { class: 'chips ib-chips', role: 'group', 'aria-label': 'Quick replies' });
-  for (const text of SESSION_NUDGES) {
-    const b = el('button', { class: 'chip-btn', type: 'button', text });
+  SESSION_NUDGES.forEach((text, i) => {
+    const b = el('button', { class: 'chip-btn' + (i >= Inbox.CHIPS_SHOWN ? ' chip-extra' : ''), type: 'button', text });
     b.addEventListener('click', (e) => { e.stopPropagation(); sessionNudge(cur.s, text, b); });
     chips.append(b);
-  }
-  const ta = composer({ placeholder: `reply to ${s.name || tmux} · ⇧Enter new line`, label: `reply to ${s.name || tmux}`, onSend: () => sessionSend(cur.s, ta) });
+  });
+  const moreChips = el('button', { class: 'chip-btn chip-more', type: 'button', 'aria-label': 'More quick replies', title: 'more quick replies', text: '…' });
+  moreChips.addEventListener('click', (e) => { e.stopPropagation(); chips.classList.add('all'); });
+  chips.append(moreChips);
+  const ta = composer({ placeholder: sessionPlaceholder('reply to', name), label: `reply to ${name}`, onSend: () => sessionSend(cur.s, ta) });
+  ta.setAttribute('title', `reply to ${name}: Enter sends, Shift+Enter adds a line`);
   ta.addEventListener('click', (e) => e.stopPropagation());
   const sendRow = el('form', { class: 'ib-send', onsubmit: (e) => { e.preventDefault(); e.stopPropagation(); sessionSend(cur.s, ta); } },
     ta, el('button', { class: 'small primary', type: 'submit', text: 'Send', onclick: (e) => e.stopPropagation() }));
-  const node = el('div', { class: 'inbox-card inbox-item' + (o.cls ? ' ' + o.cls : ''), 'data-tmux': tmux },
+  const node = el('div', { class: 'inbox-card inbox-item lead' + (o.cls ? ' ' + o.cls : ''), 'data-tmux': tmux },
     el('div', { class: 'ib-lead' }, o.label ? kindNode : null, ctx, el('div', { class: 'ib-extra' }, note, reply)),
     el('div', { class: 'ib-sub' }, glyphs, where, nameNode, task, age),
     prompt,
-    el('div', { class: 'ib-actions' }, permBtns, openLink, ackSlot),
+    el('div', { class: 'ib-actions' }, permBtns, replySlot, openSlot, ackSlot),
     chips, sendRow);
 
-  function patchPerm(pr, show) {
-    const sig = show ? `${pr.id}:${pr.summary || ''}` : '';
-    if (cur.perm === sig) return;
-    cur.perm = sig;
+  /* The one action this card leads with, falling back to Open when the preferred one is not there (no Allow while a terminal is attached, no Reply to a
+     shell or an ended pane, no Ack once acknowledged). */
+  function primaryRole() {
+    const want = Inbox.PRIMARY[cur.kind] || 'open';
+    if (want === 'allow') return cur.allow ? 'allow' : (cur.nudge ? 'reply' : 'open');
+    if (want === 'reply') return cur.nudge ? 'reply' : 'open';
+    if (want === 'ack') return cur.ack ? 'ack' : 'open';
+    return 'open';
+  }
+
+  function replyVisible() { return node.classList.contains('lead') || node.classList.contains('open'); }
+  function syncReply() {
+    const b = replySlot.firstElementChild;
+    if (b) b.setAttribute('aria-expanded', replyVisible() ? 'true' : 'false');
+  }
+
+  function toggleReply(e) {
+    e.stopPropagation();
+    if (!node.classList.contains('lead')) node.classList.toggle('open');
+    syncReply();
+    if (replyVisible() && typeof ta.focus === 'function') ta.focus();
+  }
+
+  /* The action buttons, rebuilt only when their variant changes (a poll that changes nothing here leaves them, and their focus, alone). */
+  function paintActions() {
+    const lead = cur.lead !== false;
+    const role = primaryRole();
+    const v = (r) => (role === r ? (lead ? 'primary' : 'primary tinted') : '');
+    const key = [cur.allow ? cur.permSig : 0, cur.nudge ? 1 : 0, cur.ack ? 1 : 0, v('allow'), v('reply'), v('open'), v('ack')].join('|');
+    if (cur.actKey === key) return;
+    cur.actKey = key;
     permBtns.textContent = '';
-    if (show) {
+    if (cur.allow) {
+      const pr = cur.perm;
       permBtns.append(
-        el('button', { class: 'primary small', type: 'button', onclick: (e) => { e.stopPropagation(); decide(pr.id, 'allow'); }, text: 'Allow' }),
+        el('button', { class: `${v('allow') || 'primary'} small`, type: 'button', onclick: (e) => { e.stopPropagation(); decide(pr.id, 'allow'); }, text: 'Allow' }),
         el('button', { class: 'danger small', type: 'button', onclick: (e) => { e.stopPropagation(); decide(pr.id, 'deny'); }, text: 'Deny' }));
     }
-    permBtns.classList.toggle('hidden', !show);
+    permBtns.classList.toggle('hidden', !cur.allow);
+    replySlot.textContent = '';
+    if (cur.nudge) replySlot.append(el('button', { class: `${v('reply') || 'minimal'} small ib-replybtn`, type: 'button', title: 'quick replies and a send box', onclick: toggleReply, text: 'Reply' }));
+    syncReply();
+    openSlot.textContent = '';
+    openSlot.append(el('a', { class: ['btn', v('open'), 'small'].filter(Boolean).join(' '), href: `/term/${encodeURIComponent(tmux)}`, target: '_blank', rel: 'noopener', text: 'Open' }));
+    ackSlot.textContent = '';
+    if (cur.ack) ackSlot.append(el('button', { class: [v('ack'), 'small'].filter(Boolean).join(' '), type: 'button', onclick: (e) => { e.stopPropagation(); sessionAck(cur.s); }, text: 'Ack' }));
   }
 
   function patchReply(text) {
@@ -237,7 +289,13 @@ function inboxCard(s, st, opts) {
     const st3 = typeof sessionStateKey === 'function' ? sessionStateKey(s2) : (s2.state || 'unknown');
     const agent = typeof sessionAgent === 'function' ? sessionAgent(s2) : (s2.agent || 'claude');
     const gk = st3 + '|' + agent;
-    if (cur.g !== gk) { glyphs.textContent = ''; glyphs.append(stateGlyph(st3), agentGlyph(agent)); cur.g = gk; }
+    if (cur.g !== gk) {
+      const ag = agentGlyph(agent);
+      if (typeof chipHue === 'function') ag.classList.add(chipHue('agent', agent));
+      glyphs.textContent = '';
+      glyphs.append(stateGlyph(st3), ag);
+      cur.g = gk;
+    }
     const c = Inbox.context(s2, st2, kind);
     setTextIfChanged(ctx, c.text);
     ctx.classList.toggle('mono', c.mono);
@@ -246,6 +304,7 @@ function inboxCard(s, st, opts) {
     note.classList.toggle('hidden', !c.note);
     patchReply(c.reply);
     setTextIfChanged(where, typeof sessionWhere === 'function' ? sessionWhere(s2, true) : `${s2.project}/${s2.repo || '?'}`);
+    if (s2.project && typeof chipHue === 'function') chipHueSet(where, chipHue('project', s2.project));
     setTextIfChanged(nameNode, s2.name || tmux);
     const title = s2.task && s2.task.title ? String(s2.task.title).slice(0, 120) : '';
     setTextIfChanged(task, title);
@@ -256,19 +315,25 @@ function inboxCard(s, st, opts) {
     agentsAgeNode(age, sessionActivity(s2));
     node.classList.toggle('attn', !!s2.needs_attention || kind === 'permission' || kind === 'needs');
     const pr = Inbox.pending(s2, st2);
-    patchPerm(pr, !!pr && inboxFullViewers(s2) === 0);       // a full terminal client has the TUI prompt in front of it: no remote buttons
-    const ack = !!s2.needs_attention;
-    if (cur.ack !== ack) {
-      cur.ack = ack;
-      ackSlot.textContent = '';
-      if (ack) ackSlot.append(el('button', { class: 'small', type: 'button', onclick: (e) => { e.stopPropagation(); sessionAck(cur.s); }, text: 'Ack' }));
-    }
-    const nudge = sessionNudgeable(s2);
-    chips.classList.toggle('hidden', !nudge);
-    sendRow.classList.toggle('hidden', !nudge);
+    cur.perm = pr;
+    cur.allow = !!pr && inboxFullViewers(s2) === 0;           // a full terminal client has the TUI prompt in front of it: no remote buttons
+    cur.ack = !!s2.needs_attention;
+    cur.nudge = sessionNudgeable(s2);
+    if (cur.allow) cur.permSig = `${pr.id}:${pr.summary || ''}`;
+    paintActions();
+    chips.classList.toggle('hidden', !cur.nudge);
+    sendRow.classList.toggle('hidden', !cur.nudge);
   }
 
   node.ccPatch = patch;
+  node.ccCanLead = () => true;
+  node.ccLead = (on) => {
+    if (cur.lead === on) return;
+    cur.lead = on;
+    node.classList.toggle('lead', on);
+    paintActions();
+    syncReply();
+  };
   patch(s, st);
   return node;
 }
@@ -293,6 +358,7 @@ Inbox.section = function (host, st, opts) {
   sec.st = st;
   const shown = o.limit > 0 ? items.slice(0, o.limit) : items;
   sec.kl.update(shown);
+  if (typeof Pages !== 'undefined' && Pages && typeof Pages.markLead === 'function') Pages.markLead();   // the lead card leads before the first paint
   setTextIfChanged(sec.title, `Needs you (${items.length})`);
   sec.more.setAttribute('href', o.link || '#/inbox');
   setTextIfChanged(sec.more, items.length > shown.length ? `Show all ${items.length}` : 'Open inbox');

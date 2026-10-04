@@ -1,11 +1,12 @@
-// Contract tests for app/static/termkit.js (namespace TermKit): ttyUrl, touchScroller, bind, fitSoon, viewportFit, keyBar and its
+// Contract tests for app/static/termkit.js (namespace TermKit): ttyUrl, touchScroller, bind (and its font spike), fitSoon, viewportFit, keyBar and its
 // hold-to-repeat. The vm harness has no layout and no real events, so the tests drive the kit through stub nodes, fake timers (the
 // kit reads setTimeout / setInterval / clearTimeout / clearInterval as globals, so the stubs go in as harness extra globals) and a
 // fake Date.now. Microtasks are real: `settle()` lets the repeater's in-flight promise chain run between timer steps.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { installDom } from './minidom.mjs';
-import { makeWorld, plain } from './harness.mjs';
+import path from 'node:path';
+import { ROOT, makeWorld, plain } from './harness.mjs';
 
 // ---------------------------------------------------------------- helpers
 
@@ -594,13 +595,13 @@ test('bind: every load of the iframe binds again, and destroy() stops listening'
 
 function barWorld(opts = {}) {
   const world = kitWorld({ dom: true });
-  const calls = { send: [], text: [], scroll: [] };
-  const hold = { send: null, scroll: null };                     // set to a promise to keep a request "in flight"
+  const calls = { send: [], text: [], scroll: [] };              // scroll stays empty: the bar has no scroll keys any more (the rail owns them), and it ignores a scroll option
+  const hold = { send: null };                                   // set to a promise to keep a request "in flight"
   const host = world.w.document.createElement('div');
   const bar = world.kit.keyBar(host, {
     send: (keys) => { calls.send.push(Array.isArray(keys) ? Array.from(keys) : Array.from(keys.keys)); return hold.send; },
     sendText: (text, enter) => { calls.text.push([text, enter]); },
-    scroll: (dir) => { calls.scroll.push(dir); return hold.scroll; },
+    scroll: (dir) => { calls.scroll.push(dir); },
     ...opts,
   });
   const buttons = () => [...host.querySelectorAll('button')];
@@ -612,24 +613,35 @@ const ev = (type, extra = {}) => { const calls = { prevented: 0 }; return { type
 const press = (b) => { const e = ev('pointerdown'); b.dispatchEvent(e); return e; };
 const release = (b) => b.dispatchEvent(ev('pointerup'));
 
-test('keyBar: three rows with the contract keys in the contract order, mounted in the host', () => {
+test('keyBar: two rows with the contract keys in the contract order, mounted in the host (the scroll keys are the rail\'s)', () => {
   const b = barWorld();
   assert.ok(b.host.contains(b.bar.root), 'the bar is appended to the host');
   assert.equal(b.bar.root.getAttribute('role'), 'toolbar');
   const rows = [...b.bar.root.querySelectorAll('.kb-row')].filter((r) => r.querySelector('button[data-key]') && !r.classList.contains('kb-ask-row'));
+  assert.equal(rows.length, 2, 'one 50 px row less than before: PgUp, PgDn, Top and Bottom duplicated the scroll rail');
   const keysOf = (row) => [...row.querySelectorAll('button')].map((x) => x.getAttribute('data-key')).filter((k) => k);
   assert.deepEqual(keysOf(rows[0]), ['Escape', 'Tab', 'BTab', 'C-c', 'Enter']);
-  assert.deepEqual(keysOf(rows[1]), ['Up', 'Down', 'Left', 'Right', 'BSpace']);
-  assert.deepEqual(keysOf(rows[2]), ['up', 'down', 'top', 'bottom', 'C-o'], 'PgUp PgDn Top Bottom Ctrl+O (the first four are scroll buttons, not raw keys)');
+  assert.deepEqual(keysOf(rows[1]), ['Up', 'Down', 'Left', 'Right', 'BSpace', 'C-o'], 'Ctrl+O joined the arrows (six columns)');
   const labels = (row) => [...row.querySelectorAll('button')].map((x) => x.textContent);
-  assert.deepEqual(labels(rows[1]), ['↑', '↓', '←', '→', '⌫']);
-  assert.deepEqual(labels(rows[2]), ['PgUp', 'PgDn', 'Top', 'Bottom', 'Ctrl+O']);
-  assert.ok(labels(rows[0]).slice(0, 3).join(' ').includes('Esc') && labels(rows[0]).some((t) => /Tab/.test(t)) && labels(rows[0]).includes('Enter'));
+  assert.deepEqual(labels(rows[1]), ['↑', '↓', '←', '→', '⌫', 'Ctrl+O']);
+  assert.ok(labels(rows[0]).includes('Esc') && labels(rows[0]).includes('Tab') && labels(rows[0]).includes('Enter'));
+  const btab = b.byKey('BTab');
+  assert.equal(btab.textContent, '⇧Tab', 'one 13 px label at every width (no 10.5 px override)');
+  assert.equal(btab.getAttribute('title'), 'Shift+Tab', 'the title spells it out');
+  assert.equal(btab.getAttribute('aria-label'), 'Shift+Tab');
+});
+
+test('keyBar: there are no scroll keys on the bar: PgUp, PgDn, Top and Bottom are the rail\'s, and a scroll option is never called', () => {
+  const b = barWorld();
+  for (const dir of ['up', 'down', 'top', 'bottom']) assert.equal(b.byKey(dir), undefined, `no ${dir} key`);
+  assert.equal(b.buttons().filter((x) => /^(PgUp|PgDn|Top|Bottom)$/.test(x.textContent)).length, 0);
+  for (const x of b.buttons()) { press(x); release(x); }
+  assert.deepEqual(b.calls.scroll, [], 'pressing every key never scrolls');
 });
 
 test('keyBar: every key is a type=button with tabindex -1 and an accessible name, so the soft keyboard and the tab order are left alone', () => {
   const b = barWorld();
-  assert.ok(b.buttons().length >= 15);
+  assert.ok(b.buttons().length >= 11, 'five keys, six keys and the More toggle');
   for (const x of b.buttons()) {
     assert.equal(x.getAttribute('type'), 'button');
     assert.equal(x.getAttribute('tabindex'), '-1', x.textContent);
@@ -659,13 +671,6 @@ test('keyBar: each plain key sends its tmux key name, a text key sends text', ()
   for (const key of ['Escape', 'Tab', 'BTab', 'C-c', 'Enter', 'C-o']) { press(b.byKey(key)); release(b.byKey(key)); }
   assert.deepEqual(b.calls.send, [['Escape'], ['Tab'], ['BTab'], ['C-c'], ['Enter'], ['C-o']]);
   assert.deepEqual(b.calls.scroll, []);
-});
-
-test('keyBar: PgUp, PgDn, Top and Bottom call scroll(dir) and never send raw keys', () => {
-  const b = barWorld();
-  for (const dir of ['up', 'down', 'top', 'bottom']) { press(b.byKey(dir)); release(b.byKey(dir)); }
-  assert.deepEqual(b.calls.scroll, ['up', 'down', 'top', 'bottom']);
-  assert.deepEqual(b.calls.send, [], 'the server decides between tmux copy-mode and a forwarded PageUp');
 });
 
 test('keyBar: hold an arrow, 400 ms later it repeats every 90 ms, repeats travel in coalesced batches, and it stops on pointerup', async () => {
@@ -736,29 +741,31 @@ test('keyBar: backspace repeats like the arrows, Enter and Esc do not repeat whe
   assert.deepEqual(b.calls.send[before], ['Enter']);
 });
 
-test('keyBar: holding PgUp scrolls repeatedly but never queues scrolls behind a slow request', async () => {
-  const b = barWorld();
+test('pressable: a rail button held down scrolls repeatedly but never queues scrolls behind a slow request (repeat, backlog: false)', async () => {
+  const world = kitWorld({ dom: true });
+  const btn = world.w.document.createElement('button');
+  const fired = [];
   let done;
-  b.hold.scroll = new Promise((resolve) => { done = resolve; });
-  press(b.byKey('up'));
+  let hold = new Promise((resolve) => { done = resolve; });
+  world.kit.pressable(btn, (n) => { fired.push(n); return hold; }, { repeat: true, every: 150, backlog: false });
+  press(btn);
   await settle();
-  b.clock.advance(400 + 150 * 20);
+  world.clock.advance(400 + 150 * 20);
   await settle();
-  assert.equal(b.calls.scroll.length, 1, 'while the first /scroll is in flight the ticks are dropped, not queued');
-  b.hold.scroll = null;
+  assert.equal(fired.length, 1, 'while the first /scroll is in flight the ticks are dropped, not queued');
+  hold = null;
   done();
   await settle();
-  assert.equal(b.calls.scroll.length, 1, 'and nothing is replayed afterwards: the finger has no business scrolling later');
-  b.clock.advance(300);
+  assert.equal(fired.length, 1, 'and nothing is replayed afterwards: the finger has no business scrolling later');
+  world.clock.advance(300);
   await settle();
-  assert.ok(b.calls.scroll.length >= 2, 'it repeats again once the request is back');
-  release(b.byKey('up'));
+  assert.ok(fired.length >= 2, 'it repeats again once the request is back');
+  release(btn);
   await settle();
-  const n = b.calls.scroll.length;
-  b.clock.advance(3000);
+  const n = fired.length;
+  world.clock.advance(3000);
   await settle();
-  assert.equal(b.calls.scroll.length, n, 'released: it stops');
-  assert.ok(b.calls.scroll.every((d) => d === 'up'));
+  assert.equal(fired.length, n, 'released: it stops');
 });
 
 test('keyBar: releasing in any way (cancel, leave, lost capture) ends the hold', async () => {
@@ -800,11 +807,11 @@ test('keyBar: compact mode swaps Ctrl-C for ^C, marks the bar and hides the rest
 test('keyBar: the five compact keys are the first row (Esc, ^C, Tab, Shift+Tab, Enter) and the other rows are the ones that collapse', () => {
   const b = barWorld({ compact: true });
   const rows = [...b.bar.root.querySelectorAll('.kb-row')].filter((r) => !r.classList.contains('kb-ask-row'));
-  assert.equal(rows.length, 3);
+  assert.equal(rows.length, 2);
   const first = [...rows[0].querySelectorAll('button')].map((x) => x.getAttribute('data-key')).filter((k) => k);
   assert.deepEqual(first, ['Escape', 'Tab', 'BTab', 'C-c', 'Enter'], 'what compact mode keeps on screen');
   assert.ok(rows[0].querySelector('.kb-more'), 'the More toggle lives in that row');
-  assert.ok(!rows[1].querySelector('.kb-more') && !rows[2].querySelector('.kb-more'));
+  assert.ok(!rows[1].querySelector('.kb-more'));
 });
 
 test('keyBar: setApproval toggles the y/n row, whose keys type the answer with Enter', () => {
@@ -829,4 +836,466 @@ test('keyBar: callbacks are optional and a thrown error in one does not break th
   press(tab); release(tab);
   const boom = world.kit.keyBar(world.w.document.createElement('div'), { send() { throw new Error('offline'); } });
   assert.ok(bar.root && boom.root);
+});
+
+// ---------------------------------------------------------------- the font spike (bind, flag only)
+// OFF by default: ccboard:term:font=1 (or bind's `font: true`) loads the vendored JetBrains Mono into the iframe, THEN sets
+// term.options.fontFamily and fits. TermKit.fontState is 'off' | 'loading' | 'on' | 'failed', TermKit.fontReady a promise that never rejects.
+
+const FONT_SRC = 'url(/static/vendor/fonts/jetbrains-mono-latin-wght-normal.woff2)';
+const TTYD_FAMILY = 'Consolas,Liberation Mono,Menlo,Courier,monospace';
+
+/** A ttyd frame whose window can build FontFace objects the test settles by hand: faces[i].resolve() / .reject(). `mode: 'missing'` has none. */
+function fontFrame({ mode = 'hand', clock } = {}) {
+  const f = ttydFrame({ clock });
+  const faces = [];
+  const fonts = { added: [], add(face) { this.added.push(face); return this; } };
+  const order = [];                                                    // what happened, in order: made, added, family:<v>, fit
+  f.term.options.fontFamily = TTYD_FAMILY;
+  let family = TTYD_FAMILY;
+  Object.defineProperty(f.term.options, 'fontFamily', { get: () => family, set: (v) => { family = v; order.push('family'); }, enumerable: true });
+  const baseFit = f.term.fit;
+  f.term.fit = function fit() { order.push('fit'); return baseFit.call(this); };
+  if (mode !== 'missing') {
+    f.win.FontFace = class FontFace {
+      constructor(fam, source, descriptors) { this.family = fam; this.source = source; this.descriptors = descriptors; faces.push(this); order.push('made'); }
+      load() { return new Promise((resolve, reject) => { this.resolve = () => resolve(this); this.reject = (e) => reject(e || new Error('network')); }); }
+    };
+    f.doc.fonts = { add(face) { fonts.added.push(face); order.push('added'); return this; } };
+  }
+  return { ...f, faces, fonts, order };
+}
+
+test('font spike: off by default, and a fresh namespace says so', async () => {
+  const { kit, clock } = kitWorld();
+  assert.equal(kit.fontState, 'off');
+  assert.equal(await kit.fontReady, 'off');
+  const f = fontFrame({ clock });
+  kit.bind(f.frame, { touchScroll: false, fontSize: 13 });
+  f.frame.load();
+  assert.equal(kit.fontState, 'off');
+  assert.equal(f.faces.length, 0, 'no FontFace is built unless asked');
+  assert.equal(f.term.options.fontFamily, TTYD_FAMILY);
+  assert.equal(await kit.fontReady, 'off');
+  assert.equal(clock.pending, 0, 'and no timer is left running');
+});
+
+test('font spike: bind({font:true}) loads first, adds to document.fonts, THEN sets the family and fits', async () => {
+  const { kit, clock } = kitWorld();
+  const f = fontFrame({ clock });
+  kit.bind(f.frame, { touchScroll: false, fontSize: 15, font: true });
+  f.frame.load();
+  assert.equal(kit.fontState, 'loading');
+  assert.equal(f.faces.length, 1);
+  assert.equal(f.faces[0].family, 'JetBrains Mono');
+  assert.equal(f.faces[0].source, FONT_SRC);
+  assert.deepEqual(plain(f.faces[0].descriptors), { weight: '100 800' });
+  assert.equal(f.fonts.added.length, 0, 'not added before the download finished');
+  assert.equal(f.term.options.fontFamily, TTYD_FAMILY, 'the family is untouched while loading');
+  const ready = kit.fontReady;
+  f.faces[0].resolve();
+  await settle();
+  assert.equal(kit.fontState, 'on');
+  assert.equal(await ready, 'on');
+  assert.equal(f.fonts.added.length, 1);
+  assert.equal(f.term.options.fontFamily, "'JetBrains Mono', " + TTYD_FAMILY, 'prepended: ttyd\'s own fonts stay as the fallback');
+  assert.deepEqual(f.order, ['fit', 'made', 'added', 'family', 'fit'],
+    'fit (the font size step), made, added, family, fit: the face is in document.fonts before xterm measures with the new family');
+  assert.equal(f.term.options.fontSize, 15, 'the size step still ran');
+  assert.equal(clock.pending, 0, 'the load timer is gone once settled');
+});
+
+test('font spike: a rejected load ends as failed and leaves ttyd\'s fonts alone', async () => {
+  const { kit, clock } = kitWorld();
+  const f = fontFrame({ clock });
+  kit.bind(f.frame, { touchScroll: true, fontSize: 13, font: true });
+  f.frame.load();
+  assert.equal(kit.fontState, 'loading');
+  f.faces[0].reject();
+  await settle();
+  assert.equal(kit.fontState, 'failed');
+  assert.equal(await kit.fontReady, 'failed', 'fontReady resolves, it never rejects');
+  assert.equal(f.fonts.added.length, 0);
+  assert.equal(f.term.options.fontFamily, TTYD_FAMILY);
+  assert.equal(f.xterm.style.touchAction, 'none', 'and the rest of bind() was not affected');
+  assert.equal((f.screen.listeners.touchstart || []).length, 1);
+  assert.equal(clock.pending, 0);
+});
+
+test('font spike: bind() never throws when FontFace or document.fonts is missing, the state is failed, the terminal still binds', async () => {
+  for (const variant of ['no FontFace', 'no document.fonts']) {
+    const { kit, clock } = kitWorld();
+    const f = fontFrame({ mode: variant === 'no FontFace' ? 'missing' : 'hand', clock });
+    if (variant === 'no document.fonts') delete f.doc.fonts;
+    kit.bind(f.frame, { touchScroll: true, fontSize: 12, font: true });
+    assert.doesNotThrow(() => f.frame.load(), variant);
+    assert.equal(kit.fontState, 'failed', variant);
+    assert.equal(await kit.fontReady, 'failed', variant);
+    assert.equal(f.term.options.fontFamily, TTYD_FAMILY, variant);
+    assert.equal(f.term.options.fontSize, 12, variant);
+    assert.equal((f.screen.listeners.touchstart || []).length, 1, `${variant}: touch shim installed`);
+    assert.equal(clock.pending, 0, variant);
+  }
+});
+
+test('font spike: a FontFace constructor that throws, a load() that throws, and a fonts.add() that throws all end as failed', async () => {
+  for (const what of ['constructor', 'load', 'add']) {
+    const { kit, clock } = kitWorld();
+    const f = fontFrame({ clock });
+    if (what === 'constructor') f.win.FontFace = function Boom() { throw new Error('bad descriptor'); };
+    if (what === 'load') f.win.FontFace = class { load() { throw new Error('sync boom'); } };
+    if (what === 'add') f.doc.fonts.add = () => { throw new Error('read-only set'); };
+    kit.bind(f.frame, { touchScroll: false, font: true });
+    assert.doesNotThrow(() => f.frame.load(), what);
+    if (what === 'add') { f.faces[0].resolve(); }
+    await settle();
+    assert.equal(kit.fontState, 'failed', what);
+    assert.equal(f.term.options.fontFamily, TTYD_FAMILY, `${what}: family untouched`);
+    assert.equal(clock.pending, 0, what);
+  }
+});
+
+test('font spike: a download that stalls ends as failed after 8 s, and arriving later changes nothing', async () => {
+  const { kit, clock } = kitWorld();
+  const f = fontFrame({ clock });
+  kit.bind(f.frame, { touchScroll: false, font: true });
+  f.frame.load();
+  clock.advance(7999);
+  await settle();
+  assert.equal(kit.fontState, 'loading');
+  clock.advance(1);
+  await settle();
+  assert.equal(kit.fontState, 'failed');
+  assert.equal(await kit.fontReady, 'failed');
+  f.faces[0].resolve();
+  await settle();
+  assert.equal(kit.fontState, 'failed', 'late arrival after the verdict');
+  assert.equal(f.fonts.added.length, 0);
+  assert.equal(f.term.options.fontFamily, TTYD_FAMILY);
+});
+
+test('font spike: the flag ccboard:term:font=1 turns it on when bind() is not told, and an explicit font:false beats the flag', async () => {
+  const { kit, clock, w } = kitWorld();
+  w.localStorage.setItem('ccboard:term:font', '1');
+  const on = fontFrame({ clock });
+  kit.bind(on.frame, { touchScroll: false });
+  on.frame.load();
+  assert.equal(kit.fontState, 'loading');
+  on.faces[0].resolve();
+  await settle();
+  assert.equal(kit.fontState, 'on');
+
+  const kit2 = kitWorld();
+  kit2.w.localStorage.setItem('ccboard:term:font', '1');
+  const off = fontFrame({ clock: kit2.clock });
+  kit2.kit.bind(off.frame, { touchScroll: false, font: false });
+  off.frame.load();
+  assert.equal(kit2.kit.fontState, 'off');
+  assert.equal(off.faces.length, 0);
+
+  const kit3 = kitWorld();
+  kit3.w.localStorage.setItem('ccboard:term:font', '0');
+  const zero = fontFrame({ clock: kit3.clock });
+  kit3.kit.bind(zero.frame, { touchScroll: false });
+  zero.frame.load();
+  assert.equal(kit3.kit.fontState, 'off', 'only the exact value 1 turns it on');
+});
+
+test('font spike: ?font=1 on the page URL turns it on and keeps it on, ?font=0 turns it off and forgets it (a phone has no console)', async () => {
+  const on = kitWorld();
+  on.w.location.search = '?font=1&x=2';
+  const a = fontFrame({ clock: on.clock });
+  on.kit.bind(a.frame, { touchScroll: false });
+  a.frame.load();
+  assert.equal(on.kit.fontState, 'loading');
+  assert.equal(on.w.localStorage.getItem('ccboard:term:font'), '1', 'persisted for the next visit');
+  a.faces[0].resolve();
+  await settle();
+  assert.equal(on.kit.fontState, 'on');
+
+  const off = kitWorld();
+  off.w.localStorage.setItem('ccboard:term:font', '1');
+  off.w.location.search = '?font=0';
+  const b = fontFrame({ clock: off.clock });
+  off.kit.bind(b.frame, { touchScroll: false });
+  b.frame.load();
+  assert.equal(off.kit.fontState, 'off');
+  assert.equal(b.faces.length, 0);
+  assert.equal(off.w.localStorage.getItem('ccboard:term:font'), null, 'forgotten');
+
+  const other = kitWorld();
+  other.w.location.search = '?font=yes';
+  const c = fontFrame({ clock: other.clock });
+  other.kit.bind(c.frame, { touchScroll: false });
+  c.frame.load();
+  assert.equal(other.kit.fontState, 'off', 'only 1 and 0 mean anything');
+  assert.equal(other.w.localStorage.getItem('ccboard:term:font'), null);
+
+  const stuck = kitWorld({ extra: { localStorage: { getItem() { throw new Error('SecurityError'); }, setItem() { throw new Error('SecurityError'); }, removeItem() { throw new Error('SecurityError'); } } } });
+  stuck.w.location.search = '?font=1';
+  const d = fontFrame({ clock: stuck.clock });
+  stuck.kit.bind(d.frame, { touchScroll: false });
+  assert.doesNotThrow(() => d.frame.load());
+  assert.equal(stuck.kit.fontState, 'loading', 'blocked storage: the URL still decides this load');
+});
+
+test('font spike: unreadable localStorage means off, never an exception', () => {
+  const { kit, clock } = kitWorld({ extra: { localStorage: { getItem() { throw new Error('SecurityError'); } } } });
+  const f = fontFrame({ clock });
+  kit.bind(f.frame, { touchScroll: false });
+  assert.doesNotThrow(() => f.frame.load());
+  assert.equal(kit.fontState, 'off');
+});
+
+test('font spike: a window.term that never appears ends as failed with the poll, not as loading for ever', async () => {
+  const { kit, clock } = kitWorld();
+  const f = fontFrame({ clock });
+  delete f.win.term;
+  kit.bind(f.frame, { touchScroll: false, font: true });
+  f.frame.load();
+  assert.equal(kit.fontState, 'loading', 'asked for, waiting for ttyd to build the terminal');
+  clock.advance(10500);
+  await settle();
+  assert.equal(kit.fontState, 'failed');
+  assert.equal(f.faces.length, 0);
+  assert.equal(clock.pending, 0);
+});
+
+test('font spike: a cross-origin frame ends as failed and does not throw', async () => {
+  const { kit, clock } = kitWorld();
+  const frame = { listeners: {}, addEventListener(t, fn) { (this.listeners[t] ||= []).push(fn); }, removeEventListener() {}, get contentWindow() { throw new Error('SecurityError'); } };
+  kit.bind(frame, { touchScroll: false, font: true });
+  assert.doesNotThrow(() => frame.listeners.load[0]({ type: 'load' }));
+  clock.advance(11000);
+  await settle();
+  assert.equal(kit.fontState, 'failed');
+  assert.equal(clock.pending, 0);
+});
+
+test('font spike: a reload of the iframe starts a new attempt, and the old download cannot touch the new document', async () => {
+  const { kit, clock } = kitWorld();
+  const f = fontFrame({ clock });
+  kit.bind(f.frame, { touchScroll: false, font: true });
+  f.frame.load();
+  const first = f.faces[0];
+  const firstReady = kit.fontReady;
+  f.frame.load();                                                      // ttyd reconnected and rebuilt its document before the font arrived
+  assert.equal(kit.fontState, 'loading');
+  assert.equal(f.faces.length, 2, 'a second FontFace for the second load');
+  assert.equal(await firstReady, 'off', 'the first attempt is over, and says so');
+  first.resolve();
+  await settle();
+  assert.equal(f.fonts.added.length, 0, 'the superseded attempt added nothing');
+  assert.equal(kit.fontState, 'loading', 'and did not decide the state of the new one');
+  f.faces[1].resolve();
+  await settle();
+  assert.equal(kit.fontState, 'on');
+  assert.equal(f.fonts.added.length, 1);
+  assert.equal(f.fonts.added[0], f.faces[1]);
+});
+
+test('font spike: destroy() while loading settles as off and the late download changes nothing', async () => {
+  const { kit, clock } = kitWorld();
+  const f = fontFrame({ clock });
+  const handle = kit.bind(f.frame, { touchScroll: false, font: true });
+  f.frame.load();
+  const ready = kit.fontReady;
+  handle.destroy();
+  assert.equal(await ready, 'off');
+  assert.equal(kit.fontState, 'off');
+  f.faces[0].resolve();
+  await settle();
+  assert.equal(kit.fontState, 'off');
+  assert.equal(f.fonts.added.length, 0);
+  assert.equal(f.term.options.fontFamily, TTYD_FAMILY);
+  assert.equal(clock.pending, 0);
+});
+
+test('font spike: several terminals on one page each get the font, TermKit.fontState follows the newest, and one terminal without it leaves the others alone', async () => {
+  const { kit, clock } = kitWorld();
+  const a = fontFrame({ clock });
+  const b = fontFrame({ clock });
+  const c = fontFrame({ clock });
+  kit.bind(a.frame, { touchScroll: false, font: true });
+  kit.bind(b.frame, { touchScroll: false, font: true });
+  kit.bind(c.frame, { touchScroll: false, font: false });
+  a.frame.load();
+  b.frame.load();
+  c.frame.load();
+  assert.equal(kit.fontState, 'loading');
+  a.faces[0].resolve();
+  await settle();
+  assert.equal(a.term.options.fontFamily, "'JetBrains Mono', " + TTYD_FAMILY, 'the older attempt still lands in its own terminal');
+  assert.equal(kit.fontState, 'loading', 'the state is the newest attempt\'s');
+  b.faces[0].resolve();
+  await settle();
+  assert.equal(kit.fontState, 'on');
+  assert.equal(c.term.options.fontFamily, TTYD_FAMILY);
+});
+
+test('font spike: the family is prepended once (a terminal that already names JetBrains Mono is left as it is)', async () => {
+  const { kit, clock } = kitWorld();
+  const f = fontFrame({ clock });
+  f.term.options.fontFamily = "'JetBrains Mono', monospace";
+  kit.bind(f.frame, { touchScroll: false, font: true });
+  f.frame.load();
+  f.faces[0].resolve();
+  await settle();
+  assert.equal(kit.fontState, 'on');
+  assert.equal(f.term.options.fontFamily, "'JetBrains Mono', monospace");
+});
+
+test('font spike: with the font on, setFontSize and fit keep working and the font step does not delay the touch shim', async () => {
+  const { kit, clock } = kitWorld();
+  const f = fontFrame({ clock });
+  const handle = kit.bind(f.frame, { touchScroll: true, fontSize: 11, font: true });
+  f.frame.load();
+  assert.equal((f.screen.listeners.touchstart || []).length, 1, 'bound while the font is still downloading');
+  assert.equal(handle.setFontSize(13), 13);
+  f.faces[0].resolve();
+  await settle();
+  assert.equal(handle.setFontSize(14), 14);
+  assert.equal(f.term.options.fontSize, 14);
+});
+
+// The fake tty (scripts/dev/fake_tty/fake_tty.js) is what scripts/qa_terminal.sh puts in the iframe: run it for real in a vm window and
+// bind TermKit to it, so the node path and the browser path exercise the same code.
+
+function fakeTty(clock, mode) {
+  const w = makeWorld({ setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, setInterval: clock.setInterval, clearInterval: clock.clearInterval });
+  installDom(w);
+  if (mode) w.localStorage.setItem('ccboard:fake:font', mode);
+  w.load(path.join(ROOT, 'scripts', 'dev', 'fake_tty', 'fake_tty.js'));
+  const win = w.run('globalThis');
+  const frame = { contentWindow: win, listeners: {}, addEventListener(t, fn) { (this.listeners[t] ||= []).push(fn); }, removeEventListener(t, fn) { this.listeners[t] = (this.listeners[t] || []).filter((x) => x !== fn); },
+    load() { for (const fn of [...(this.listeners.load || [])]) fn({ type: 'load' }); } };
+  return { w, win, frame };
+}
+
+test('fake tty: it defines the surface the spike reads (FontFace, document.fonts, term.options.fontFamily) and counts what happens', () => {
+  const { win } = fakeTty(fakeClock());
+  assert.equal(typeof win.FontFace, 'function');
+  assert.equal(typeof win.document.fonts.add, 'function');
+  assert.equal(win.term.options.fontFamily, TTYD_FAMILY);
+  assert.equal(win.term.options.fontSize, 13);
+  assert.deepEqual(plain(win.__font), { mode: '', made: 0, loaded: 0, failed: 0, added: 0, families: [] });
+  assert.equal(win.__fitsAtFamily, -1);
+});
+
+test('fake tty: a bound spike loads the stand-in, adds it, sets the family and fits after it (cols measured and stable)', async () => {
+  const k = kitWorld();
+  const t = fakeTty(k.clock, 'stub');
+  k.kit.bind(t.frame, { touchScroll: false, fontSize: 13, font: true });
+  t.frame.load();
+  assert.equal(k.kit.fontState, 'loading');
+  assert.equal(t.win.__font.made, 1);
+  k.clock.advance(20);
+  await settle();
+  assert.equal(k.kit.fontState, 'on');
+  assert.deepEqual(plain(t.win.__font.families), ['JetBrains Mono']);
+  assert.equal(t.win.__font.added, 1);
+  assert.match(t.win.term.options.fontFamily, /^'JetBrains Mono', Consolas/);
+  assert.ok(t.win.__fits > t.win.__fitsAtFamily, 'a fit() ran after the family was assigned');
+  const cols = t.win.term.cols;
+  assert.ok(cols > 0 && cols < 400, `cols ${cols}`);
+  t.win.term.fit();
+  t.win.term.fit();
+  assert.equal(t.win.term.cols, cols, 'cols are stable across further fits');
+});
+
+test('fake tty: fail, hang and missing modes give failed, failed (after 8 s) and failed, and never break the page', async () => {
+  const k = kitWorld();
+  const fail = fakeTty(k.clock, 'fail');
+  k.kit.bind(fail.frame, { touchScroll: false, font: true });
+  fail.frame.load();
+  k.clock.advance(20);
+  await settle();
+  assert.equal(k.kit.fontState, 'failed');
+  assert.equal(fail.win.__font.failed, 1);
+  assert.equal(fail.win.term.options.fontFamily, TTYD_FAMILY);
+
+  const k2 = kitWorld();
+  const hang = fakeTty(k2.clock, 'hang');
+  k2.kit.bind(hang.frame, { touchScroll: false, font: true });
+  hang.frame.load();
+  k2.clock.advance(7000);
+  await settle();
+  assert.equal(k2.kit.fontState, 'loading');
+  k2.clock.advance(1000);
+  await settle();
+  assert.equal(k2.kit.fontState, 'failed');
+
+  const k3 = kitWorld();
+  const missing = fakeTty(k3.clock, 'missing');
+  assert.equal(missing.win.FontFace, undefined);
+  k3.kit.bind(missing.frame, { touchScroll: false, font: true });
+  assert.doesNotThrow(() => missing.frame.load());
+  assert.equal(k3.kit.fontState, 'failed');
+  assert.equal(missing.win.term.options.fontFamily, TTYD_FAMILY);
+});
+
+test('fake tty: without the flag nothing is built, and the family stays ttyd\'s', async () => {
+  const k = kitWorld();
+  const t = fakeTty(k.clock);
+  k.kit.bind(t.frame, { touchScroll: false, fontSize: 13 });
+  t.frame.load();
+  k.clock.advance(100);
+  await settle();
+  assert.equal(k.kit.fontState, 'off');
+  assert.equal(t.win.__font.made, 0);
+  assert.equal(t.win.term.options.fontFamily, TTYD_FAMILY);
+});
+
+// ---- the soft-keyboard simulation of the fake tty (?vv=<height> on the page URL, or localStorage ccboard:fake:vv): qa_terminal.sh KBD relies on it
+
+/** the fake tty loaded in a vm window whose parent is a page with a real-looking visualViewport (accessors on the PROTOTYPE, like the browser's) */
+function fakeTtyUnder({ search = '', key = null, vv = true, parentLocation = null } = {}) {
+  class VisualViewport {
+    constructor() { this.events = []; }
+    get height() { return 844; }
+    get offsetTop() { return 0; }
+    dispatchEvent(e) { this.events.push(e.type); return true; }
+  }
+  const viewport = new VisualViewport();
+  const parent = { location: parentLocation || { search }, Event: class { constructor(type) { this.type = type; } } };
+  if (vv) parent.visualViewport = viewport;
+  const w = makeWorld({ parent });
+  installDom(w);
+  if (key !== null) w.localStorage.setItem('ccboard:fake:vv', key);
+  w.load(path.join(ROOT, 'scripts', 'dev', 'fake_tty', 'fake_tty.js'));
+  return { w, viewport, win: w.run('globalThis') };
+}
+
+test('fake tty soft keyboard: ?vv=520 on the page URL pins the visual viewport (height 520, offsetTop 0) and fires resize on it', () => {
+  const t = fakeTtyUnder({ search: '?qa=1&vv=520' });
+  assert.equal(t.viewport.height, 520);
+  assert.equal(t.viewport.offsetTop, 0);
+  assert.deepEqual(t.viewport.events, ['resize'], 'the page\'s listeners (term.js applyLayout, TermKit.viewportFit) hear it');
+  assert.deepEqual(plain(t.win.__vv), { height: 520, offsetTop: 0 });
+});
+
+test('fake tty soft keyboard: localStorage ccboard:fake:vv does the same, and the page URL wins over it', () => {
+  const k = fakeTtyUnder({ key: '480' });
+  assert.equal(k.viewport.height, 480);
+  assert.deepEqual(k.viewport.events, ['resize']);
+  const both = fakeTtyUnder({ search: '?vv=300', key: '480' });
+  assert.equal(both.viewport.height, 300);
+});
+
+test('fake tty soft keyboard: off by default, and a bad value, a page without a visualViewport or an unreadable parent change nothing and throw nothing', () => {
+  const off = fakeTtyUnder();
+  assert.equal(off.viewport.height, 844);
+  assert.deepEqual(off.viewport.events, []);
+  assert.equal(off.win.__vv, undefined);
+  for (const bad of [{ search: '?vv=abc' }, { search: '?vv=0' }, { key: 'x' }, { key: '0' }]) {
+    const t = fakeTtyUnder(bad);
+    assert.equal(t.viewport.height, 844, JSON.stringify(bad));
+    assert.deepEqual(t.viewport.events, [], JSON.stringify(bad));
+  }
+  const none = fakeTtyUnder({ search: '?vv=520', vv: false });
+  assert.equal(none.win.__vv, undefined, 'a parent without a visualViewport: nothing to pin');
+  const cross = { get search() { throw new Error('cross-origin'); } };
+  const blocked = fakeTtyUnder({ parentLocation: cross, key: '500' });                    // the page URL is unreadable: the stored value still works
+  assert.equal(blocked.viewport.height, 500);
+  assert.doesNotThrow(() => { const w = makeWorld(); installDom(w); w.load(path.join(ROOT, 'scripts', 'dev', 'fake_tty', 'fake_tty.js')); });   // no parent at all (the fake opened on its own)
 });

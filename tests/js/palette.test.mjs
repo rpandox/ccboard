@@ -7,7 +7,8 @@ import { installDom } from './minidom.mjs';
 
 // ---------------------------------------------------------------- fixtures and the world
 
-const ISO = (minsAgo) => new Date(Date.now() - minsAgo * 60000).toISOString();
+const T0 = Date.now();                                                    // one clock reading for every fixture: two sessions 30 min old must have the SAME state_at (the roster sorts on it to the millisecond; two readings flipped the order now and then)
+const ISO = (minsAgo) => new Date(T0 - minsAgo * 60000).toISOString();
 const sess = (name, over) => ({
   tmux: `shop--api--${name}`, name, created: Math.floor(Date.now() / 1000) - 7200, attached: 0, command: 'claude', launcher: 'claude',
   state: 'idle', state_at: ISO(30), needs_attention: false, last_prompt: 'fix the login bug', last_message: 'done, tests pass',
@@ -306,7 +307,7 @@ test('toggle() opens, closes, and swaps the help for the palette', () => {
 
 // ---------------------------------------------------------------- nudges, controls, modes
 
-test('nudges and controls for the selected session POST {text, enter: true} through /keys and toast the outcome', async () => {
+test('nudges POST {text, enter: true} through /keys and controls POST {cmd} through /command, each toasting the outcome', async () => {
   const { w } = world();
   mounted(w, '#/agents');
   press(w, 'j');
@@ -326,8 +327,9 @@ test('nudges and controls for the selected session POST {text, enter: true} thro
   w.run('Palette.open()');
   nudge('/compact').click();
   await tick();
-  assert.deepEqual(calls(w).pop(), { method: 'POST', path: `/api/sessions/${S1}/keys`, body: { text: '/compact', enter: true } });
+  assert.deepEqual(calls(w).pop(), { method: 'POST', path: `/api/sessions/${S1}/command`, body: { cmd: 'compact' } }, 'a control goes through the guarded endpoint, cmd without the slash');
   assert.deepEqual(toasts(w).pop(), { text: 'sent "/compact" to s1', kind: 'ok' });
+  assert.equal(calls(w).filter((c) => c.path.endsWith('/keys')).length, 1, 'only the nudge used /keys');
 });
 
 test('the controls are exactly /compact /context /cost /usage /status: /clear, /effort and /model wait for the guarded endpoint', () => {
@@ -340,6 +342,195 @@ test('the controls are exactly /compact /context /cost /usage /status: /clear, /
   for (const c of ['/clear', '/effort', '/model']) assert.ok(!all.includes(c), `${c} is not offered yet`);
   typeInto(w, '/clear');
   assert.ok(!labels(w).includes('/clear'));
+});
+
+// ---- controls through POST /command (v0.5.8): 404 falls back to /keys, 409 toasts the reason, a read command shows its screen, registry labels
+
+const httpError = (status, message, body) => Object.assign(new Error(message), { status, body });
+/** api answers through fn(method, path, body) (return a value or throw), recording every call. */
+function replying(w, fn) {
+  w.ctx.__reply = fn;
+  w.run('api = async (method, path, body) => { __calls.push({ method, path, body }); return __reply(method, path, body); }');
+}
+const kind = (c) => c.path.split('/').pop();
+/** The world with s1 selected and the palette open (the roster order is s2, s1). */
+function withS1() {
+  const env = world();
+  mounted(env.w, '#/agents');
+  press(env.w, 'j');
+  press(env.w, 'j');
+  return env;
+}
+const pickControl = async (w, query) => { w.run('Palette.open()'); typeInto(w, query); keyInBox(w, 'Enter'); await tick(); };
+
+test('a control posts /command {cmd} for the session in focus: cmd has no slash, nothing is typed through /keys', async () => {
+  const { w } = withS1();
+  await pickControl(w, '/status');
+  assert.deepEqual(calls(w), [{ method: 'POST', path: `/api/sessions/${S1}/command`, body: { cmd: 'status' } }]);
+  assert.deepEqual(toasts(w).pop(), { text: 'sent "/status" to s1', kind: 'ok' });
+  assert.equal(dlg(w).open, false);
+});
+
+test('an older server without /command (404 with no error body) gets the control typed through /keys instead', async () => {
+  const { w } = withS1();
+  replying(w, (m, path) => { if (path.endsWith('/command')) throw httpError(404, '404 Not Found', { detail: 'Not Found' }); return { ok: true }; });
+  await pickControl(w, '/compact');
+  assert.deepEqual(calls(w).map((c) => [kind(c), c.body]), [['command', { cmd: 'compact' }], ['keys', { text: '/compact', enter: true }]]);
+  assert.deepEqual(toasts(w).pop(), { text: 'sent "/compact" to s1', kind: 'ok' });
+});
+
+test('a 404 that names the session ("session ... not found") is the real answer: no fallback, the message is toasted', async () => {
+  const { w } = withS1();
+  replying(w, () => { throw httpError(404, `session ${S1} not found`, { error: `session ${S1} not found` }); });
+  await pickControl(w, '/compact');
+  assert.deepEqual(calls(w).map(kind), ['command'], 'nothing is typed into a session that is gone');
+  assert.deepEqual(toasts(w).pop(), { text: `session ${S1} not found`, kind: 'bad' });
+});
+
+test('a 409 toasts the reason and when to ask again as a warning; no fallback, no retry on its own', async () => {
+  const { w } = withS1();
+  replying(w, () => { throw httpError(409, 'working', { error: 'working', message: 'the session is working', state: 'working', wait_kind: null, retry: 5 }); });
+  await pickControl(w, '/compact');
+  assert.deepEqual(calls(w).map(kind), ['command']);
+  assert.deepEqual(toasts(w).pop(), { text: 'the session is working (try again in 5 s)', kind: 'warn' });
+  replying(w, () => { throw httpError(409, 'ended', { error: 'ended', message: 'the session has ended', state: 'ended', wait_kind: null, retry: null }); });
+  await pickControl(w, '/cost');
+  assert.deepEqual(toasts(w).pop(), { text: 'the session has ended', kind: 'warn' }, 'retry: null means waiting will not help: no suffix');
+  replying(w, () => { throw httpError(400, 'unknown command; allowed: /clear', { error: 'unknown command; allowed: /clear' }); });
+  await pickControl(w, '/usage');
+  assert.equal(toasts(w).pop().kind, 'bad', 'anything but a 409 is an error');
+});
+
+test('a read control shows the captured screen in its own dialog instead of a toast, and presses Escape when it closes (Claude keeps its dialog open)', async () => {
+  const { w } = withS1();
+  replying(w, (m, path) => (path.endsWith('/command') ? { ok: true, sent: '/usage', verified: false, screen: 'Usage\n  5h  12%\n  7d  40%\n\n' } : { ok: true }));
+  const before = toasts(w).length;
+  await pickControl(w, '/usage');
+  const rd = w.document.querySelector('dialog.readout');
+  assert.ok(rd && rd.open, 'a modal <dialog>');
+  assert.equal(rd.querySelector('.qr-title').textContent, '/usage · s1');
+  assert.equal(rd.querySelector('pre.cmd-readout').textContent, 'Usage\n  5h  12%\n  7d  40%', 'the screen, trailing blank lines trimmed');
+  assert.equal(toasts(w).length, before, 'no "sent" toast: the readout is the answer');
+  assert.deepEqual(calls(w).map(kind), ['command'], 'Escape waits until the readout closes');
+  rd.querySelector('button').click();
+  await tick();
+  assert.equal(w.document.querySelector('dialog.readout'), null);
+  assert.deepEqual(calls(w).pop(), { method: 'POST', path: `/api/sessions/${S1}/keys`, body: { keys: ['Escape'] } });
+  assert.equal(calls(w).filter((c) => kind(c) === 'keys').length, 1, 'exactly one Escape');
+  // Esc closes it the same way; a set command has no screen and gets the toast
+  await pickControl(w, '/usage');
+  w.document.querySelector('dialog.readout').dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
+  await tick();
+  assert.deepEqual(calls(w).pop(), { method: 'POST', path: `/api/sessions/${S1}/keys`, body: { keys: ['Escape'] } });
+  replying(w, (m, path) => (path.endsWith('/command') ? { ok: true, sent: '/compact', verified: false } : { ok: true }));
+  await pickControl(w, '/compact');
+  assert.equal(toasts(w).pop().text, 'sent "/compact" to s1');
+  assert.equal(w.document.querySelector('dialog.readout'), null);
+});
+
+test('a readout opened over an open peek leaves the peek alone (it is its own dialog, not the sheet)', async () => {
+  const { w } = world();
+  mounted(w, `#/s/${S1}`);
+  assert.equal(sheet(w).open, true);
+  replying(w, (m, path) => (path.endsWith('/command') ? { ok: true, sent: '/status', verified: false, screen: 'Status: ok' } : { ok: true }));
+  w.run('Palette.open()');
+  typeInto(w, '/status');
+  keyInBox(w, 'Enter');
+  await tick();
+  assert.ok(w.document.querySelector('dialog.readout').open);
+  assert.equal(sheet(w).open, true, 'the peek is still there');
+  assert.ok(sheet(w).querySelector('.peek-send textarea'), 'with its content');
+  assert.equal(w.location.hash, `#/s/${S1}`);
+});
+
+const REGISTRY = { agents: { claude: { slash: {
+  clear: { cmd: '/clear', label: 'Clear', weight: 155, destructive: true }, compact: { cmd: '/compact', label: 'Compact', weight: 120 }, usage: { cmd: '/usage', label: 'Usage', read: true, weight: 100 },
+  context: { cmd: '/context', label: 'Context', read: true, weight: 9 }, status: { cmd: '/status', label: 'Status', read: true, weight: 3 }, cost: { cmd: '/cost', label: 'Cost', read: true, weight: 0 } } } } };
+const controlLabels = (w) => plain(w.run("Palette.ui.shown.filter((i) => i.id.startsWith('c:')).map((i) => i.label)"));   // the Controls group (a route is also called Usage)
+const STATIC_CONTROLS = ['/compact', '/context', '/cost', '/usage', '/status'];
+const BY_WEIGHT = ['Compact', 'Usage', 'Context', 'Status', 'Cost'];
+
+test('with the registry cached by the terminal page the controls carry its labels, heaviest first (only the five: /clear stays in the tuning strip), and a typed /usage still finds Usage', async () => {
+  const { w } = withS1();
+  w.sessionStorage.setItem('ccboard:agents', JSON.stringify({ at: Date.now(), data: REGISTRY }));
+  w.run('Palette.open()');
+  assert.deepEqual(controlLabels(w), BY_WEIGHT);
+  assert.ok(!labels(w).includes('Clear'));
+  const hint = plain(w.run("Palette.ui.shown.find((i) => i.id === 'c:/usage').hint"));
+  assert.equal(hint, '/usage · typed into s1', 'the slash text stays visible next to the registry label');
+  typeInto(w, '/usage');
+  assert.equal(labels(w)[0], 'Usage', 'the slash command is still searchable');
+  keyInBox(w, 'Enter');
+  await tick();
+  assert.deepEqual(calls(w).pop(), { method: 'POST', path: `/api/sessions/${S1}/command`, body: { cmd: 'usage' } });
+});
+
+test('the cached registry is read as the bare answer too, ignored when older than 10 minutes or unreadable, and only offers what the agent has', () => {
+  const read = (raw) => {
+    const { w } = withS1();
+    if (raw !== null) w.sessionStorage.setItem('ccboard:agents', typeof raw === 'string' ? raw : JSON.stringify(raw));
+    w.run('Palette.open()');
+    return controlLabels(w);
+  };
+  assert.deepEqual(read(null), STATIC_CONTROLS, 'nothing cached: the static list');
+  assert.deepEqual(read('not json'), STATIC_CONTROLS);
+  assert.deepEqual(read({ at: Date.now() - 11 * 60 * 1000, data: REGISTRY }), STATIC_CONTROLS, 'older than 10 minutes');
+  assert.deepEqual(read(REGISTRY), BY_WEIGHT, 'the bare GET /api/agents answer');
+  assert.deepEqual(read({ at: Date.now(), agents: REGISTRY.agents }), BY_WEIGHT, 'the entry the terminal page writes (term.js: {at, agents}, key TermPage.AGENTS_KEY)');
+  assert.deepEqual(read({ t: Math.floor(Date.now() / 1000), v: { agents: { claude: { slash: { compact: { label: 'Compact', weight: 1 } } } } } }), ['Compact'], 'a seconds stamp; a command the agent lacks is not offered');
+  assert.deepEqual(read({ agents: { codex: { slash: {} } } }), STATIC_CONTROLS, 'no entry for this agent: the static list');
+});
+
+// ---- the peek's nudge chips share the quick-reply list with the terminal page
+
+const DEFAULT_CHIPS = ['continue', 'merge', 'push', 'pr', 'add commit push', 'do it'];
+
+test('the quick-reply defaults (components.js) are the nudges of the session cards and the palette: one list, three places', () => {
+  const { w } = world();
+  assert.deepEqual(plain(w.get('QUICK_DEFAULTS')), DEFAULT_CHIPS);
+  assert.deepEqual(plain(w.get('SESSION_NUDGES')), DEFAULT_CHIPS);
+  assert.deepEqual(plain(w.run('Palette.NUDGES')), DEFAULT_CHIPS);
+});
+
+test('the peek: chips are ccboard:quick:<tmux> (the agent defaults until edited), the pencil opens the dialog editor, Save re-renders them and stores the list', async () => {
+  const { w } = world();
+  mounted(w, `#/s/${S1}`);
+  const chips = () => sheet(w).querySelector('.chips');
+  const names = () => chips().querySelectorAll('.chip-btn').map((n) => n.textContent);
+  assert.deepEqual(names(), DEFAULT_CHIPS);
+  const pencil = chips().querySelector('.qr-edit');
+  assert.ok(pencil && !pencil.classList.contains('chip-btn'), 'a pencil beside the chips, not counted as a reply');
+  assert.equal(pencil.getAttribute('aria-label'), 'Edit quick replies');
+  pencil.click();
+  const ed = w.document.querySelector('dialog.qr-editor');
+  assert.ok(ed && ed.open, 'a <dialog>, never window.prompt');
+  const inputs = ed.querySelectorAll('input');
+  assert.deepEqual(inputs.map((i) => i.value), DEFAULT_CHIPS);
+  inputs[0].value = '  ship it  ';
+  inputs[1].value = '';
+  inputs[2].value = 'ship it';                                          // a duplicate of the first
+  ed.querySelector('form').dispatchEvent({ type: 'submit', preventDefault() {} });
+  assert.equal(w.document.querySelector('dialog.qr-editor'), null, 'the dialog is gone after Save');
+  assert.deepEqual(names(), ['ship it', 'pr', 'add commit push', 'do it']);
+  assert.deepEqual(JSON.parse(w.localStorage.getItem(`ccboard:quick:${S1}`)), ['ship it', 'pr', 'add commit push', 'do it'], 'the key the terminal page reads');
+  chips().querySelectorAll('.chip-btn')[0].click();
+  await tick();
+  assert.deepEqual(calls(w).pop(), { method: 'POST', path: `/api/sessions/${S1}/keys`, body: { text: 'ship it', enter: true } }, 'a tap sends the (edited) reply like the card chips do');
+  mounted(w, '#/agents');
+  mounted(w, `#/s/${S3}`);
+  assert.deepEqual(chips().querySelectorAll('.chip-btn').map((n) => n.textContent), DEFAULT_CHIPS, 'another session has its own list');
+});
+
+test('the peek chips pick up what the terminal page saved, and a long press on a chip opens the same editor', () => {
+  const { w } = world();
+  w.localStorage.setItem(`ccboard:quick:${S1}`, JSON.stringify(['y', 'n']));
+  mounted(w, `#/s/${S1}`);
+  const chip = sheet(w).querySelectorAll('.chips .chip-btn')[0];
+  assert.deepEqual(sheet(w).querySelectorAll('.chips .chip-btn').map((n) => n.textContent), ['y', 'n']);
+  chip.dispatchEvent({ type: 'contextmenu', preventDefault() {} });
+  const ed = w.document.querySelector('dialog.qr-editor');
+  assert.ok(ed && ed.open);
+  assert.deepEqual(ed.querySelectorAll('input').map((i) => i.value), ['y', 'n']);
 });
 
 test('a failed send says so as a bad toast, and the palette is already closed', async () => {
@@ -556,6 +747,18 @@ test('openHelp lists the keyboard layer grouped, with the platform key names, an
   assert.ok(rows.some((r) => /⌘1…9/.test(r)));
   dlg(w).querySelector('button').click();
   assert.equal(dlg(w).open, false);
+});
+
+test('openHelp focuses the dialog itself (tabindex -1), not its Close button: no cyan ring on open', () => {
+  const { w } = world();
+  mounted(w, '#/');
+  w.run('Palette.openHelp()');
+  assert.equal(w.document.activeElement, dlg(w), 'the dialog holds the focus, like a sheet');
+  assert.equal(dlg(w).getAttribute('tabindex'), '-1');
+  assert.notEqual(w.document.activeElement.tagName, 'BUTTON');
+  w.run('Palette.close()');
+  w.run('Palette.open()');
+  assert.equal(w.document.activeElement, dlg(w).querySelector('input.pal-input'), 'the palette still focuses its box');
 });
 
 test('Keymap.openHelp (what Settings asks for) opens the same dialog', () => {

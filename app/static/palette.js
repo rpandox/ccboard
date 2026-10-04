@@ -5,8 +5,10 @@
      Sessions   every live session in the Agents order, state glyph, project/repo; Enter opens its peek (mod+1..9 jump straight there)
      Routes     Home, Needs you, Agents, Tasks, Usage, Memory, Settings, Search (and "search transcripts for <what you typed>")
      Nudges     for the selected or peeked session: continue, merge, push, pr, add commit push, do it (typed into it with Enter)
-     Controls   for the same session: /compact /context /cost /usage /status, typed with Enter and confirmed by a toast
-                (/clear, /effort and /model wait for the guarded command endpoint of v0.5.7)
+     Controls   for the same session: /compact /context /cost /usage /status through POST /api/sessions/<name>/command (v0.5.7), confirmed by
+                a toast; a read command (/usage ...) shows the captured screen in the sheet and presses Escape when it closes; a 409 toasts the
+                reason; an older server without the endpoint (404) gets the text through /keys. Labelled from the registry that the terminal
+                page cached (GET /api/agents, sessionStorage) when there is one. /clear, /effort and /model stay in the terminal's tuning strip.
      Modes      ultracode / plan, inserted into the peek's send box
      More       collapsed; the fun commands (/color /copy /rewind /radio /stickers /tui /passes) as plain inserts into that box
    mode 'send' is the share target: the box holds the shared text (editable) and the list is "send to session"; Enter sends it with Enter,
@@ -19,7 +21,9 @@ const Palette = {
   ROUTES: [['Home', '#/', 'g h'], ['Needs you', '#/inbox', 'g i'], ['Agents', '#/agents', 'g a'], ['Tasks', '#/tasks', 'g t'],
     ['Usage', '#/usage', 'g u'], ['Memory', '#/memory', 'g m'], ['Settings', '#/settings', 'g s'], ['Search', '#/search', '/']],
   NUDGES: ['continue', 'merge', 'push', 'pr', 'add commit push', 'do it'],            // the same six as the session cards (SESSION_NUDGES in pages/agents.js)
-  CONTROLS: ['/compact', '/context', '/cost', '/usage', '/status'],
+  CONTROLS: ['/compact', '/context', '/cost', '/usage', '/status'],                    // read-only or harmless: no argument, nothing destructive
+  AGENTS_KEY: 'ccboard:agents',                                                          // sessionStorage: the GET /api/agents answer, cached by the terminal page's tuning strip
+  AGENTS_TTL: 10 * 60 * 1000,
   MODES: ['ultracode ', 'plan '],
   MORE: ['/color', '/copy', '/rewind', '/radio', '/stickers', '/tui', '/passes'],
   NUDGE_STATES: ['waiting', 'idle', 'done', 'working', 'errored'],
@@ -137,6 +141,79 @@ Palette.send = async function (tmux, text, name, enter) {
   } catch (e) { Palette.say(e.message, 'bad'); return false; }
 };
 
+/* The slash registry ({cmd: {label, arg, read, weight, ...}}) of `agent` from the sessionStorage copy of GET /api/agents (written by the terminal
+   page's tuning strip, at most AGENTS_TTL old), or null when there is none. Tolerates a wrapped value ({at|t, data|value|v}) and the bare answer. */
+Palette.registry = function (agent) {
+  try {
+    const raw = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(Palette.AGENTS_KEY) : null;
+    if (!raw) return null;
+    const v = JSON.parse(raw);
+    if (!v || typeof v !== 'object') return null;
+    let at = [v.at, v.t, v.ts, v.time].find((x) => typeof x === 'number');
+    if (typeof at === 'number') {
+      if (at < 1e11) at *= 1000;                                                         // seconds
+      if (Date.now() - at > Palette.AGENTS_TTL) return null;
+    }
+    const data = [v.data, v.value, v.v].find((x) => x && typeof x === 'object') || v;
+    const agents = data.agents && typeof data.agents === 'object' ? data.agents : data;
+    const a = agents[agent || 'claude'];
+    return a && a.slash && typeof a.slash === 'object' ? a.slash : null;
+  } catch (_) { return null; }
+};
+
+/* The controls offered for session `s`: [{ text: '/compact', key: 'compact', label }]. With the registry cached, the registry's labels and order
+   (heaviest first) and only what that agent has; otherwise the static list. */
+Palette.controlsFor = function (s) {
+  const reg = Palette.registry(s && (s.agent || (typeof sessionAgent === 'function' ? sessionAgent(s) : null)));
+  const out = [];
+  Palette.CONTROLS.forEach((text, i) => {
+    const key = text.slice(1);
+    const spec = reg && ownKey(reg, key) ? reg[key] : null;
+    if (reg && !spec) return;
+    out.push({ text, key, label: spec && spec.label ? spec.label : text, weight: spec && typeof spec.weight === 'number' ? spec.weight : 0, i });
+  });
+  if (reg) out.sort((a, b) => b.weight - a.weight || a.i - b.i);
+  return out;
+};
+
+/* Why /command said no, for a toast: the message of a 409 (error is only its code) and when asking again can work. */
+Palette.refusal = function (e) {
+  const b = e && e.body && typeof e.body === 'object' ? e.body : {};
+  const wait = typeof b.retry === 'number' && b.retry > 0 ? ` (try again in ${b.retry} s)` : '';
+  return (b.message || (e && e.message) || 'the command was refused') + wait;
+};
+
+/* A read command leaves Claude's own dialog open on the pane: show what it printed and press Escape when the readout closes. The readout is its
+   own <dialog> (components.js modalShell), not the sheet: a peek that is open in the sheet must survive it. */
+Palette.readout = function (tmux, cmd, name, screen) {
+  if (typeof modalShell !== 'function' || typeof el !== 'function') return false;
+  const title = `/${cmd} · ${name || tmux}`;
+  const shut = () => { Promise.resolve(api('POST', `/api/sessions/${encodeURIComponent(tmux)}/keys`, { keys: ['Escape'] })).catch(() => {}); };
+  const shell = modalShell('qr-editor readout', title, shut);
+  shell.dlg.append(el('div', { class: 'qr-box' },
+    el('h2', { class: 'qr-title', text: title }),
+    el('pre', { class: 'cmd-readout', text: String(screen).replace(/\s+$/, '') }),
+    el('div', { class: 'qr-actions' }, el('button', { type: 'button', class: 'primary', onclick: () => shell.close(), text: 'Close' }))));
+  shell.show();
+  return true;
+};
+
+/* One control through the guarded endpoint: POST /command {cmd} ('compact', no slash). 409 says why (working, permission, compacting ...) and
+   when to retry; 404 without an error body is a server that has no /command yet, so the old way (type it through /keys) is used. */
+Palette.command = async function (tmux, cmd, name) {
+  const base = `/api/sessions/${encodeURIComponent(tmux)}`;
+  try {
+    const r = await api('POST', base + '/command', { cmd });
+    if (r && typeof r.screen === 'string' && r.screen.trim() && Palette.readout(tmux, cmd, name, r.screen)) return true;
+    Palette.say(`sent "/${cmd}" to ${name || tmux}`, 'ok');
+    return true;
+  } catch (e) {
+    if (e && e.status === 404 && !(e.body && e.body.error)) return Palette.send(tmux, '/' + cmd, name);
+    Palette.say(Palette.refusal(e), e && e.status === 409 ? 'warn' : 'bad');
+    return false;
+  }
+};
+
 /* Put text into the peek's send box: modes go in front, a command goes in at the caret (or alone in an empty box). With no peek open the
    selected session's peek is opened first; with neither there is no box to fill. */
 Palette.insert = function (text, how) {
@@ -191,7 +268,8 @@ Palette.catalog = function (ctx, query) {
     const name = t.name || t.tmux;
     const nudges = typeof SESSION_NUDGES !== 'undefined' ? SESSION_NUDGES : Palette.NUDGES;
     groups.push({ id: 'nudges', title: `Nudge · ${name}`, items: nudges.map((text) => ({ id: 'n:' + text, label: text, hint: 'typed into ' + name, run: () => { close(); Palette.send(t.tmux, text, name); } })) });
-    groups.push({ id: 'controls', title: `Controls · ${name}`, items: Palette.CONTROLS.map((text) => ({ id: 'c:' + text, label: text, hint: 'typed into ' + name, run: () => { close(); Palette.send(t.tmux, text, name); } })) });
+    groups.push({ id: 'controls', title: `Controls · ${name}`, items: Palette.controlsFor(t).map((c) => ({ id: 'c:' + c.text, label: c.label, hint: c.label === c.text ? 'typed into ' + name : `${c.text} · typed into ${name}`, keywords: c.text,
+      run: () => { close(); Palette.command(t.tmux, c.key, name); } })) });
   }
 
   if (ctx.box || ctx.targetTmux) {
@@ -459,6 +537,7 @@ Palette.openHelp = function () {
   const u = { dlg, view: 'help', mode: 'default', timer: null, shown: [], nodes: [] };
   Palette.ui = u;
   Palette.show(dlg);
+  try { dlg.setAttribute('tabindex', '-1'); dlg.focus(); } catch (_) { /* no focus API */ }       // the dialog itself, like openSheet: showModal would hand the focus (and a cyan ring) to the Close button
   return u;
 };
 

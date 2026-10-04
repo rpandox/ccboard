@@ -39,7 +39,10 @@
 #page .rrow .rr-last { grid-area:last; display:flex; flex-direction:column; gap:1px; min-width:0; font-size:12px; color:var(--fg-2); }
 #page .rrow .rr-last > * { overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow-wrap:anywhere; }
 #page .rrow .rr-last .dim { color:var(--dim); }
-#page .rrow .rr-actions { grid-area:actions; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:6px; align-self:start; }
+#page .rrow .rr-actions { grid-area:actions; display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:6px; align-self:start; }
+#page .rrow .rr-actions .slot-kill { display:inline-flex; }
+#page .rrow .rr-actions .slot-kill:empty { display:none; }
+#page .rrow .rr-more.on { color:var(--sig); }                       /* the row's reply box or tail is open */
 #page .rrow .rr-chips { grid-area:chips; margin-top:4px; }
 #page .rrow .rr-msg { overflow-wrap:anywhere; }
 #page .rrow.compact .rr-last { -webkit-line-clamp:1; }
@@ -50,7 +53,7 @@
 
 /* nudge chips: continue, merge, push, pr, add commit push, do it */
 #page .chips, #dock .chips, #sheet .chips { display:flex; flex-wrap:wrap; gap:6px; }
-#page .chip-btn, #dock .chip-btn, #sheet .chip-btn { min-height:var(--tap); padding:0 10px; border:1px solid var(--line); border-radius:14px; background:var(--panel); color:var(--fg-2); font:12px/1 var(--font-mono); cursor:pointer; }
+#page .chip-btn, #dock .chip-btn, #sheet .chip-btn { min-height:var(--tap); padding:0 10px; border:1px solid var(--line-strong, var(--line)); border-radius:14px; background:var(--panel); color:var(--fg-2); font:12px/1 var(--font-mono); cursor:pointer; }
 @media (hover:hover) { #page .chip-btn:hover, #dock .chip-btn:hover, #sheet .chip-btn:hover { border-color:var(--sig); color:var(--fg); } }
 #page .chip-btn:disabled, #dock .chip-btn:disabled, #sheet .chip-btn:disabled { opacity:.5; cursor:default; }
 
@@ -77,6 +80,7 @@
 
 /* keyboard selection (j/k) in the inbox and roster */
 #page .rrow.sel { outline:2px solid var(--sig); outline-offset:-2px; background:rgba(77,208,225,.10); }
+#page .glyph.agent[class*="hue-"] { color:var(--hue); }               /* the agent glyph in its hue: claude violet, codex teal, shell slate (pages/agents.js chipHue) */
 @media (pointer:coarse) { #page summary { min-height:var(--tap); display:flex; align-items:center; } }
 html.force-coarse #page summary { min-height:var(--tap); display:flex; align-items:center; }
 
@@ -117,6 +121,8 @@ dialog#helpdlg.palette::backdrop { background:rgba(0,0,0,.55); }
 .palette .pal-foot { flex:none; padding:7px 14px calc(7px + var(--sab)); border-top:1px solid var(--line); font:11px/1.4 var(--font-mono); color:var(--dim); }
 @media (hover:hover) { .palette .pal-item:hover:not(.sel) { background:var(--card); } }
 .palette .pal-input:focus-visible, .palette .help-head .bp5-button:focus-visible { outline:2px solid var(--sig); outline-offset:-2px; }
+.palette .pal-input:focus, .palette .pal-input:focus-visible { box-shadow:none; }       /* Blueprint's inset focus shadow would be a second --sig ring inside the outline */
+dialog#helpdlg:focus { outline:none; }                                                  /* the help dialog holds the focus itself (palette.js openHelp), like the sheets */
 
 /* the shortcut list (Palette.openHelp) */
 .palette.help .help-head { justify-content:space-between; }
@@ -128,9 +134,10 @@ dialog#helpdlg.palette::backdrop { background:rgba(0,0,0,.55); }
 .palette .help-keys .pal-kbd { margin-left:0; }
 .palette .help-text { min-width:0; font-size:13px; color:var(--fg-2); }
 
-/* install hint (Home, browser tabs only) */
-#page .install-hint { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:0 0 10px; }
-#page .install-hint .ih-text { flex:1 1 240px; }
+/* install hint (Home, browser tabs only): a neutral note, not a second accent; the text, How and the x share one row, also at 390 px */
+#page .install-hint { display:flex; align-items:center; gap:8px; flex-wrap:nowrap; margin:0 0 10px; padding:8px 8px 8px 12px; background:var(--card); border:1px solid var(--line); border-left:3px solid var(--sig-bd, var(--sig)); border-radius:2px; }
+#page .install-hint .ih-text { flex:1 1 0; min-width:0; font-size:13px; color:var(--fg-2); }
+#page .install-hint .bp5-button { flex:0 0 auto; }
 
 /* roster row send box (agents.js sessionSend) and the project page quick links (placeholders.js projectLinks) */
 #page .rrow .rr-send { grid-area:send; display:flex; align-items:flex-end; gap:6px; margin:4px 0 0; min-width:0; max-width:720px; }
@@ -161,13 +168,19 @@ html.force-coarse #page .rrow .rr-send textarea.composer { font-size:16px; }
 #page .ib-sub { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; min-width:0; font:12px/1.4 var(--font-mono); color:var(--dim); }
 #page .ib-glyphs { display:inline-flex; align-items:center; gap:2px; }
 #page .ib-name { font:600 13px/1.4 var(--font-ui); color:var(--fg); }
-@media (pointer:coarse) { #page .ib-name { display:inline-flex; align-items:center; min-height:var(--tap); } }
-html.force-coarse #page .ib-name { display:inline-flex; align-items:center; min-height:var(--tap); }
+/* a session's name is a link: on a touch screen it is a 44 px target in both places it appears (a short name like 's1' is 13 px wide on its own) */
+@media (pointer:coarse) { #page .ib-name, #page .rr-name { display:inline-flex; align-items:center; min-height:var(--tap); min-width:var(--tap); padding:0 4px; } }
+html.force-coarse #page .ib-name, html.force-coarse #page .rr-name { display:inline-flex; align-items:center; min-height:var(--tap); min-width:var(--tap); padding:0 4px; }
+#page .ib-where[class*="hue-"], #page .rrow .rr-where[class*="hue-"], #page .rg-name[class*="hue-"], #page .pblock a.pb-name[class*="hue-"], #page .sess .name[class*="hue-"] { color:var(--hue); }   /* a project's name in its muted hue */
 #page .ib-task { font:600 12px/1.4 var(--font-ui); color:var(--fg-2); overflow-wrap:anywhere; }
 #page .ib-prompt { font-size:12px; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow-wrap:anywhere; }
 #page .ib-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
 #page .ib-actions .perm-btns { display:inline-flex; gap:6px; }
 #page .ib-chips { margin-top:2px; }
+/* the lead card (the selection, else the first) carries the chips and the send box; the others keep them behind Reply (class open); six chips are four and a '…' */
+#page .inbox-card:not(.lead):not(.open) > .ib-chips, #page .inbox-card:not(.lead):not(.open) > .ib-send { display:none; }
+#page .ib-chips:not(.all) .chip-extra { display:none; }
+#page .ib-chips.all .chip-more { display:none; }
 #page .ib-suggest { border-color:var(--sig); color:var(--fg); }
 #page .ib-send { display:flex; align-items:flex-end; gap:6px; min-width:0; max-width:720px; margin:2px 0 0; }
 #page .ib-send textarea.composer { flex:1 1 0; width:0; min-width:0; min-height:var(--tap); height:var(--tap); font-size:13px; }
@@ -210,10 +223,18 @@ html.force-coarse #page .uc-backup { min-height:var(--tap); }
 @media (hover:hover) { #page .cb:hover { fill:var(--fg-2); } #page .cb.zero:hover { fill:url(#uc-hatch); } }
 #page .uc-days { display:grid; grid-template-columns:repeat(7, 1fr); margin-top:3px; text-align:center; font:10px/1.2 var(--font-mono); color:var(--dim); }
 
-/* the rate-limit callout in #banner (pages/widgets.js limitBanner): alone, it needs no second frame */
+/* the banner: the message takes the row and its action stays beside it (no 44 px row of its own); an update is news (info, the accent's tint), the red bar
+   is for errors */
+#banner { flex-wrap:nowrap; }
+#banner > span { flex:1 1 0; min-width:0; overflow-wrap:anywhere; }
+#banner > .bp5-button { flex:0 0 auto; }
+#banner.info { background:var(--sig-bg, rgba(77,208,225,.12)); border-left-color:var(--sig); }
+/* the rate-limit callout in #banner (pages/widgets.js limitBanner): alone, it needs no second frame; beside another message it loses its frame and sits under a divider */
 #banner.limit-only { display:block; padding:0; background:none; border-left:0; }
 #banner .limit-callout { display:flex; align-items:center; justify-content:space-between; gap:8px; flex:1 1 100%; padding:8px 8px 8px 12px; }
 #banner .limit-callout .lc-text { min-width:0; overflow-wrap:anywhere; }
+#banner:has(.limit-callout):not(.limit-only) { flex-wrap:wrap; }
+#banner:not(.limit-only) .limit-callout { padding:8px 0 0; background:none; border:0; border-top:1px solid var(--line-soft); border-radius:0; }
 
 /* the + menu's sheet forms: project (with the clone queue), GitHub import, batch prompt */
 .sheet-links { margin:8px 0 0; }
@@ -231,8 +252,9 @@ html.force-coarse .form .checks.import-repos label, html.force-coarse .form .che
 #page .summary.sumbar { position:sticky; top:0; z-index:6; display:flex; flex-wrap:nowrap; align-items:center; gap:6px; margin:0; padding:6px 0; overflow-x:auto; white-space:nowrap;
                         background:var(--bg); border-bottom:1px solid var(--line-soft); -webkit-overflow-scrolling:touch; scrollbar-width:none; }
 #page .summary.sumbar::-webkit-scrollbar { display:none; }
-#page .sum-seg { flex:none; display:inline-flex; align-items:center; gap:6px; min-height:28px; padding:0 10px; border:1px solid var(--line); border-radius:14px; background:var(--panel); color:var(--fg-2);
+#page .sum-seg { flex:none; display:inline-flex; align-items:center; gap:6px; min-height:28px; padding:0 10px; border:1px solid var(--line-strong, var(--line)); border-radius:14px; background:var(--panel); color:var(--fg-2);
                  font:12px/1 var(--font-mono); text-decoration:none; }
+#page .sumbar-static .sum-seg { cursor:default; }                     /* the Agents page's summary is a legend, not a filter bar */
 #page .sum-seg .glyph { width:1em; }
 #page .sum-seg .sum-n { color:var(--fg); font-weight:600; }
 #page .sum-seg.zero { color:var(--dim); background:none; }
@@ -240,13 +262,13 @@ html.force-coarse .form .checks.import-repos label, html.force-coarse .form .che
 #page .sum-seg.sum-waiting:not(.zero) { border-color:var(--warn); }
 #page .sum-seg.sum-errored:not(.zero) { border-color:var(--bad); }
 #page .sum-seg.on { border-color:var(--sig); background:rgba(77,208,225,.14); color:var(--fg); }
-@media (hover:hover) { #page .sum-seg:hover { border-color:var(--sig); color:var(--fg); } }
+@media (hover:hover) { #page a.sum-seg:hover { border-color:var(--sig); color:var(--fg); } }
 #page .sum-seg:focus-visible, #page .seg-btn:focus-visible { outline:2px solid var(--sig); outline-offset:1px; }
 
 /* the group control in the page head */
 #page .seg-ctl { display:inline-flex; align-items:center; gap:0; }
 #page .seg-ctl .seg-k { margin-right:8px; }
-#page .seg-btn { min-height:28px; padding:0 12px; border:1px solid var(--line); border-left-width:0; background:var(--panel); color:var(--fg-2); font:12px/1 var(--font-ui); cursor:pointer; }
+#page .seg-btn { min-height:28px; padding:0 12px; border:1px solid var(--line-strong, var(--line)); border-left-width:0; background:var(--panel); color:var(--fg-2); font:12px/1 var(--font-ui); cursor:pointer; }
 #page .seg-btn:first-of-type { border-left-width:1px; border-radius:2px 0 0 2px; }
 #page .seg-btn:last-of-type { border-radius:0 2px 2px 0; }
 #page .seg-btn[aria-pressed=true] { background:rgba(77,208,225,.14); border-color:var(--sig); color:var(--fg); }
@@ -298,17 +320,19 @@ html.force-coarse #page .sched .sched-item { min-height:var(--tap); }
 #page .rrow .rr-metaline { grid-area:meta; display:flex; flex-wrap:wrap; align-items:center; gap:3px 8px; min-width:0; }
 #page .rrow .rr-metaline .rr-meta { grid-area:auto; }
 #page .rr-badges { display:inline-flex; flex-wrap:wrap; align-items:center; gap:3px 6px; min-width:0; }
-#page .bdg { display:inline-flex; align-items:center; min-height:18px; padding:0 7px; border:1px solid var(--line); border-radius:9px; font:11px/1.5 var(--font-ui); color:var(--fg-2); white-space:nowrap; text-decoration:none; }
+/* a chip: text, tint and edge come from the muted hue class it wears (tokens.css .hue-*: --hue / --hue-bg / --hue-bd; pages/agents.js chipHue), grey without one.
+   --bd and --bgc are the edge and the fill, so the touch rule below can draw the same pill behind a 44 px target. The label always says what the chip is. */
+#page .bdg { --bd:var(--hue-bd, var(--line)); --bgc:var(--hue-bg, transparent); display:inline-flex; align-items:center; min-height:18px; padding:0 7px; border:1px solid var(--bd); border-radius:9px; background:var(--bgc);
+             font:11px/1.5 var(--font-ui); color:var(--hue, var(--fg-2)); white-space:nowrap; text-decoration:none; }
 #page .bdg.mono, #page .bdg-model { font-family:var(--font-mono); }
-#page .bdg-wt { color:var(--dim); }
-#page .bdg-pr.ok { border-color:var(--ok); color:var(--ok); }
-#page .bdg-pr.bad { border-color:var(--bad); color:var(--bad); }
-#page .bdg-pr.warn { border-color:var(--warn); color:var(--warn); }
-#page .bdg-cost.cost-warn { border-color:var(--warn); color:var(--warn); }
-#page .bdg-cost.cost-bad { border-color:var(--bad); color:var(--bad); background:var(--bad-bg); }
-#page .bdg-limit { border-color:var(--bad); color:var(--bad); background:var(--bad-bg); }
-#page .bdg-blocked { border-color:var(--warn); color:var(--warn); background:var(--warn-bg); }
-@media (hover:hover) { #page a.bdg:hover { border-color:var(--sig); color:var(--fg); } }
+#page .bdg-wt { color:var(--hue, var(--dim)); }
+#page .bdg-pr.ok { --bd:var(--ok); --bgc:var(--ok-bg, transparent); color:var(--ok-fg, var(--ok)); }
+#page .bdg-pr.bad { --bd:var(--bad); --bgc:var(--bad-bg); color:var(--bad-fg, var(--bad)); }
+#page .bdg-pr.warn { --bd:var(--warn); --bgc:var(--warn-bg); color:var(--warn-fg, var(--warn)); }
+#page .bdg-cost.cost-warn { --bd:var(--warn); color:var(--warn-fg, var(--warn)); }
+#page .bdg-cost.cost-bad, #page .bdg-limit { --bd:var(--bad); --bgc:var(--bad-bg); color:var(--bad-fg, var(--bad)); }
+#page .bdg-blocked { --bd:var(--warn); --bgc:var(--warn-bg); color:var(--warn-fg, var(--warn)); }
+@media (hover:hover) { #page a.bdg:hover { --bd:var(--sig); color:var(--fg); } }
 #page .ctx { display:inline-flex; align-items:center; gap:5px; font:11px/1 var(--font-mono); color:var(--dim); }
 #page .ctx-bar { display:inline-block; width:40px; height:6px; border-radius:3px; background:var(--line-soft); overflow:hidden; }
 #page .ctx-bar i { display:block; height:100%; background:var(--dim-2); }
@@ -316,28 +340,37 @@ html.force-coarse #page .sched .sched-item { min-height:var(--tap); }
 #page .ctx.ctx-hi .ctx-pct { color:var(--warn); }
 #page .ctx.ctx-crit .ctx-bar i { background:var(--bad); }
 #page .ctx.ctx-crit .ctx-pct { color:var(--bad); }
-#page .rr-badges .chip-btn { min-height:22px; padding:0 8px; }
+#page .rr-badges .chip-btn { --bd:var(--line-strong, var(--line)); --bgc:var(--hue-bg, transparent); min-height:22px; padding:0 8px; border-color:var(--bd); background:var(--bgc); color:var(--hue, var(--fg-2)); }
 #page .rrow.rich .rr-last > * { -webkit-line-clamp:1; }
 #page .rrow.rich .rr-actions { gap:4px; }
-#page .rrow .rr-replybtn.on, #page .rrow .rr-tailbtn.on { color:var(--sig); }
 /* a rich row keeps the nudge chips and the send box behind Reply (the inbox section above carries the full reply UI of what needs you) */
 #page .rrow.rich:not(.open) > .rr-chips, #page .rrow.rich:not(.open) > .rr-send { display:none; }
 #page .rrow .rr-tail { grid-area:tail; margin-top:6px; min-width:0; }
 #page .rrow .rr-tail pre.tail { margin:0; max-height:210px; font-size:11px; line-height:1.4; }
+/* touch: a chip keeps its small look and gets the 44 px target around it: the element is 44 px tall (so the audit and a thumb agree), transparent and borderless,
+   the negative margin gives the row its height back, and the pill is drawn behind the label (::before at -1) */
 @media (pointer:coarse) {
   #page .sum-seg, #page .seg-btn { min-height:var(--tap); }
-  #page .bdg-pr, #page .away .away-n, #page .pblock a.pb-name { min-height:var(--tap); }
+  #page .away .away-n, #page .pblock a.pb-name { min-height:var(--tap); }
   #page .away .away-n { display:inline-flex; align-items:center; }
-  #page .rr-badges .chip-btn { min-height:var(--tap); }
+  #page .rr-badges .chip-btn, #page .rr-badges a.bdg-pr { position:relative; isolation:isolate; min-height:var(--tap); border-color:transparent; background:none; }
+  #page .rr-badges .chip-btn { margin:-11px 0; }
+  #page .rr-badges a.bdg-pr { margin:-13px 0; }
+  #page .rr-badges .chip-btn::before, #page .rr-badges a.bdg-pr::before { content:''; position:absolute; left:0; right:0; z-index:-1; border:1px solid var(--bd); background:var(--bgc); pointer-events:none; }
+  #page .rr-badges .chip-btn::before { top:11px; bottom:11px; border-radius:11px; }
+  #page .rr-badges a.bdg-pr::before { top:13px; bottom:13px; border-radius:9px; }
   #page .pblock .pb-toggle { min-width:var(--tap); }
-  #page .rrow.rich .rr-name { display:inline-flex; align-items:center; min-height:var(--tap); }
 }
 html.force-coarse #page .sum-seg, html.force-coarse #page .seg-btn { min-height:var(--tap); }
-html.force-coarse #page .bdg-pr, html.force-coarse #page .away .away-n, html.force-coarse #page .pblock a.pb-name { min-height:var(--tap); }
+html.force-coarse #page .away .away-n, html.force-coarse #page .pblock a.pb-name { min-height:var(--tap); }
 html.force-coarse #page .away .away-n { display:inline-flex; align-items:center; }
-html.force-coarse #page .rr-badges .chip-btn { min-height:var(--tap); }
+html.force-coarse #page .rr-badges .chip-btn, html.force-coarse #page .rr-badges a.bdg-pr { position:relative; isolation:isolate; min-height:var(--tap); border-color:transparent; background:none; }
+html.force-coarse #page .rr-badges .chip-btn { margin:-11px 0; }
+html.force-coarse #page .rr-badges a.bdg-pr { margin:-13px 0; }
+html.force-coarse #page .rr-badges .chip-btn::before, html.force-coarse #page .rr-badges a.bdg-pr::before { content:''; position:absolute; left:0; right:0; z-index:-1; border:1px solid var(--bd); background:var(--bgc); pointer-events:none; }
+html.force-coarse #page .rr-badges .chip-btn::before { top:11px; bottom:11px; border-radius:11px; }
+html.force-coarse #page .rr-badges a.bdg-pr::before { top:13px; bottom:13px; border-radius:9px; }
 html.force-coarse #page .pblock .pb-toggle { min-width:var(--tap); }
-html.force-coarse #page .rrow.rich .rr-name { display:inline-flex; align-items:center; min-height:var(--tap); }
 
 /* project route: repo list and actions beside the code-server links (until the v0.5.6 page) */
 #page .proj-repos .proj-repo { display:inline-flex; align-items:center; gap:6px; margin-right:10px; }
@@ -352,9 +385,12 @@ html.force-coarse #page .rrow.rich .rr-name { display:inline-flex; align-items:c
 #page .pj-name { margin:0; font-size:18px; font-weight:600; overflow-wrap:anywhere; }
 #page .pj-path { font:12px/1.4 var(--font-mono); overflow-wrap:anywhere; }
 #page .pj-more { align-self:center; }
-#page .pj-repos { display:flex; flex-wrap:wrap; gap:6px 10px; min-width:0; }
-#page .pj-repo { display:inline-flex; align-items:center; gap:2px; max-width:100%; }
-#page a.pj-chip { display:inline-flex; align-items:center; gap:6px; min-height:var(--tap); max-width:100%; padding:0 10px; border:1px solid var(--line); border-radius:14px; background:var(--panel); color:var(--fg-2); font-size:12px; text-decoration:none; }
+/* the repos are one row that scrolls sideways (two chips used to take a row each); from 840 px they wrap again */
+#page .pj-repos { display:flex; flex-wrap:nowrap; gap:6px 10px; min-width:0; overflow-x:auto; overscroll-behavior-x:contain; scrollbar-width:none; -webkit-overflow-scrolling:touch; }
+#page .pj-repos::-webkit-scrollbar { display:none; }
+@media (min-width:840px) { #page .pj-repos { flex-wrap:wrap; overflow-x:visible; } }
+#page .pj-repo { flex:0 0 auto; display:inline-flex; align-items:center; gap:2px; max-width:100%; }
+#page a.pj-chip { display:inline-flex; align-items:center; gap:6px; min-height:var(--tap); max-width:100%; padding:0 10px; border:1px solid var(--line-strong, var(--line)); border-radius:14px; background:var(--panel); color:var(--fg-2); font-size:12px; text-decoration:none; }
 #page a.pj-chip .bp5-icon { color:var(--dim); }
 #page a.pj-chip .dot { margin-left:0; flex:none; }
 #page .pj-rname { color:var(--fg); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -362,7 +398,7 @@ html.force-coarse #page .rrow.rich .rr-name { display:inline-flex; align-items:c
 @media (hover:hover) { #page a.pj-chip:hover { border-color:var(--sig); color:var(--fg); text-decoration:none; } }
 #page .pj-stats { font:12px/1.5 var(--font-mono); color:var(--dim); }
 #page .pj-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; }
-#page .pj-cs-slot { display:inline-flex; align-items:center; margin-left:auto; }
+
 #page .pj-manage { padding:10px 12px; border:1px solid var(--line); border-radius:2px; background:var(--card); }
 #page .pj-manage-body { display:flex; flex-direction:column; gap:6px; }
 #page .pj-mrow { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; padding:2px 0; }
@@ -468,7 +504,8 @@ html.force-coarse #sheet .seg-btn { min-height:var(--tap); }
 
 .task-form .field { margin-bottom:8px; }
 .task-form .tf-lede { margin:4px 0 8px; font-size:12px; }
-.task-form .tf-go-ic { display:inline-flex; align-items:center; margin-right:7px; }
+.task-form .tf-go-ic { display:inline-flex; align-items:center; justify-content:center; flex:0 0 14px; width:14px; margin-right:0; }   /* a flex item that collapsed to 0 px (the icon overflowed it, so the label touched the glyph): a fixed 14 px box */
+.task-form .submit .bp5-button { gap:6px; }                                                                                              /* the icon-to-label gap the session form's Start button gets from its text span */
 #sheet textarea.task-prompt { min-height:96px; }
 .task-form .tf-schedule { display:flex; flex-direction:column; gap:6px; margin-top:6px; }
 .task-form .tf-cronnote { font-size:12px; }
@@ -482,6 +519,9 @@ html.force-coarse #sheet .seg-btn { min-height:var(--tap); }
 .task .tk-prompt { margin:2px 0 4px; font-size:12px; color:var(--fg-2); display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; }
 .task.backlog .actions { display:flex; flex-wrap:wrap; align-items:center; }
 .task .tk-start { min-width:var(--tap); }
+#page .tasks-board { margin:12px auto; }
+#page .tk-head .summary { flex:1 1 220px; }
+#page .tk-head .actions { margin-left:auto; }
 #page .task .tk-chip { display:inline-flex; align-items:center; min-height:22px; padding:0 8px; text-decoration:none; }
 @media (pointer:coarse) { #page .task .tk-chip { min-height:var(--tap); } }
 html.force-coarse #page .task .tk-chip { min-height:var(--tap); }
@@ -503,3 +543,26 @@ html.force-coarse .task-form details > summary { line-height:var(--tap); }
 @media (pointer:coarse) { #page .uc-more { display:inline-flex; align-items:center; min-height:var(--tap); } #page a.gauge { min-height:var(--tap); } }
 html.force-coarse #page .uc-more { display:inline-flex; align-items:center; min-height:var(--tap); }
 html.force-coarse #page a.gauge { min-height:var(--tap); }
+
+/* ---------- v0.5.6d: settings rows, search results, the Agents legend ---------- */
+
+/* every setting is one .kv row: the label in a 120 px column, the value (mono) with its helper text under it, the actions at the right; under 600 px they stack */
+#page .settings-page .kv { display:grid; grid-template-columns:120px minmax(0, 1fr) auto; grid-template-areas:"k v a"; align-items:start; gap:4px 12px; padding:8px 0; border-bottom:1px solid var(--line-soft); }
+#page .settings-page .kv > .k { grid-area:k; font-size:13px; font-weight:500; color:var(--dim); }
+#page .settings-page .kv > .kv-main { grid-area:v; display:flex; flex-direction:column; gap:2px; min-width:0; font:12px/1.5 var(--font-mono); color:var(--fg-2); overflow-wrap:anywhere; }
+#page .settings-page .kv-main .dim { font-family:var(--font-ui); font-size:12px; color:var(--dim); }               /* helper text, under the value */
+#page .settings-page .kv-main .bar { max-width:200px; }
+#page .settings-page .kv > .kv-act { grid-area:a; display:flex; flex-wrap:wrap; justify-content:flex-end; align-items:center; gap:6px; }
+#page .settings-page .set-h { margin:18px 0 2px; font-size:13px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+#page .settings-page .settings-panel > .set-h:first-child { margin-top:0; }
+#page .settings-page .set-steps { margin:8px 0 0; }
+/* an identity chip (Claude violet, Codex teal) wears its hue like every other chip; it keeps the whole email (the global 46vw cap would cut it) */
+#page .badge[class*="hue-"] { color:var(--hue); background:var(--hue-bg); border-color:var(--hue-bd); }
+#page .settings-page .kv-main .badge { align-self:flex-start; max-width:100%; }
+@media (max-width:599px) {
+  #page .settings-page .kv { grid-template-columns:minmax(0, 1fr); grid-template-areas:"k" "v" "a"; }
+  #page .settings-page .kv > .kv-act { justify-content:flex-start; }
+}
+
+/* search: Peek and Attach sit at the right of the result's head, beside the role chip, the place and the time */
+#page .res-actions { margin-left:auto; display:inline-flex; align-items:center; gap:6px; }

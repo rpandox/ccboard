@@ -395,9 +395,10 @@ test('Edit with an empty title or prompt PATCHes nothing', async () => {
   await settle();
   assert.equal(calls(env).filter((c) => c.method === 'PATCH').length, 0, 'a blank title is never sent (the old title stays)');
   assert.equal(sh.open, true, 'the sheet stays open: closing it would look like a save');
-  const say = all(sh, '.form-status').find((n) => /title is required/i.test(textOf(n)));
-  assert.ok(say, 'the inline status says what is missing');
-  assert.ok(say.classList.contains('bad'), 'as an error');
+  const say = all(sh, '.field-err').find((n) => /title is required/i.test(textOf(n)));
+  assert.ok(say, 'the inline error next to the title says what is missing');
+  assert.equal(say.getAttribute('role'), 'alert', 'announced as an alert');
+  assert.equal(env.w.document.activeElement.getAttribute('aria-invalid'), 'true', 'and the title has the focus, flagged'); 
   assert.deepEqual(toasts(env).filter((t) => /saved/.test(t.text)), [], 'and nothing toasts "saved"');
   all(sh, 'input').find((i) => i.value === '   ').value = 'A better title';              // typing a title and saving again goes through
   all(sh, 'form')[0].dispatchEvent({ type: 'submit', preventDefault() {} });
@@ -717,4 +718,116 @@ test('the server still says "another repo" where the client looks for it (the on
   w.load('core.js');
   w.load('components.js');
   assert.equal(w.run(`taskIsMismatch(new Error(${JSON.stringify(SERVER_MISMATCH)}))`), true);
+});
+
+// ---------------------------------------------------------------- the 10x pass: button hierarchy, the phone layout, no browser prompt()
+
+const hasCls = (n, c) => n.classList.contains(c);
+const STARTED_ROW = (id, over = {}) => row(id, { title: `Running ${id}`, phase: 'running', column: 'in_progress', tmux: `petroit--api--t-r${id}`, slug: `r${id}`, branch: `worktree-r${id}`,
+  session: sess('petroit', 'api', `t-r${id}`, { state: 'working' }), ...over });
+const narrow = (env) => env.w.run(`matchMedia = (q) => ({ matches: /max-width:\\s*599px/.test(q), addEventListener() {}, removeEventListener() {} })`);
+
+test('a backlog card: Start is a tinted primary (the cards repeat it), Delete rests red-outlined and quiet, nothing is a filled red button', async () => {
+  const env = tasksWorld();
+  await go(env, PETROIT);
+  const c = card(env, 20);
+  assert.ok(hasCls(startBtn(c), 'bp5-intent-primary') && hasCls(startBtn(c), 'tinted'), 'Start: primary, tinted');
+  assert.ok(!hasCls(sendBtn(c), 'bp5-intent-primary') && !hasCls(editBtn(c), 'bp5-intent-primary'), 'the others are plain');
+  assert.ok(hasCls(deleteBtn(c), 'bp5-intent-danger') && hasCls(deleteBtn(c), 'bp5-minimal'), 'Delete: danger, quiet (outlined by the stylesheet)');
+  deleteBtn(c).click();
+  const armed = button(env.page(), /^Confirm Delete$/);
+  assert.ok(hasCls(armed, 'bp5-intent-danger') && hasCls(armed, 'confirm'), 'only the armed second tap carries .confirm, the one filled red button');
+});
+
+test('under 600 px a backlog card keeps Start and folds Send to session, Edit and Delete into a ... menu; Delete stays two taps', async () => {
+  const env = tasksWorld();
+  narrow(env);
+  await go(env, PETROIT);
+  const c = card(env, 20);
+  assert.ok(startBtn(c), 'Start stays');
+  assert.equal(sendBtn(c), undefined, 'Send to session is in the menu');
+  assert.equal(editBtn(c), undefined, 'Edit too');
+  assert.equal(deleteBtn(c), undefined, 'and Delete');
+  const more = all(c, 'button').find((b) => b.getAttribute('aria-label') === 'More actions');
+  assert.ok(more, 'one icon button with a name');
+  assert.equal(more.getAttribute('title'), 'More actions');
+  assert.equal(all(c, '.actions button').length, 2, 'Start and the menu: two controls, not five');
+  more.click();
+  const items = () => env.w.document.querySelectorAll('.menuitem');
+  assert.deepEqual(items().map((i) => i.textContent.trim()), ['Send to session', 'Edit', 'Delete']);
+  items().find((i) => /^Edit$/.test(i.textContent.trim())).click();
+  assert.equal(env.sheet().open, true, 'Edit opens the edit sheet');
+  assert.match(textOf(env.sheet().querySelector('.sheet-title')), /Edit task/);
+  env.sheet().close();
+  all(card(env, 20), 'button').find((b) => b.getAttribute('aria-label') === 'More actions').click();
+  items().find((i) => /^Delete$/.test(i.textContent.trim())).click();
+  assert.equal(calls(env).filter((c2) => c2.method === 'DELETE').length, 0, 'picking Delete only asks');
+  const confirm = button(card(env, 20), /^Confirm Delete$/);
+  assert.ok(confirm, 'the card shows Confirm Delete');
+  assert.ok(button(card(env, 20), /^Cancel$/));
+  assert.equal(all(card(env, 20), 'button').find((b) => b.getAttribute('aria-label') === 'More actions'), undefined, 'in place of the menu button');
+  confirm.click();
+  await settle();
+  assert.equal(calls(env).filter((c2) => c2.method === 'DELETE').length, 1);
+  assert.equal(card(env, 20), undefined, 'gone at once');
+});
+
+test('under 600 px a queued card (no Start, no Send) still folds Edit and Delete into the menu, and the one-tap session target stays on the card', async () => {
+  const env = tasksWorld({ state: stateWith([BACKLOG({ phase: 'queued' })]) });
+  narrow(env);
+  await go(env, PETROIT);
+  all(card(env, 20), 'button').find((b) => b.getAttribute('aria-label') === 'More actions').click();
+  assert.deepEqual(env.w.document.querySelectorAll('.menuitem').map((i) => i.textContent.trim()), ['Edit', 'Delete']);
+  const solo = tasksWorld({ state: stateWith([BACKLOG({ id: 21, repo: 'api' })]) });          // petroit/api has two ready sessions: no guess
+  narrow(solo);
+  await go(solo, PETROIT);
+  assert.ok(startBtn(card(solo, 21)));
+});
+
+test('a started task: the Terminal link is a tinted primary only on the card that needs you; Archive is quiet red; Fix CI is not a danger button', async () => {
+  const waiting = STARTED_ROW(30, { column: 'needs_you', session: sess('petroit', 'api', 't-r30', { state: 'waiting', needs_attention: true }) });
+  const failing = STARTED_ROW(31, { pr_url: 'https://example.invalid/pr/7', pr_number: 7, pr_state: 'OPEN', ci: { bucket: 'fail', checks: [{ name: 'unit', bucket: 'fail' }] } });
+  const env = tasksWorld({ state: stateWith([waiting, failing]) });
+  await go(env, PETROIT);
+  const term = (n) => all(n, 'a').find((a) => /Terminal/.test(textOf(a)));
+  assert.ok(term(card(env, 30)) && hasCls(term(card(env, 30)), 'bp5-intent-primary') && hasCls(term(card(env, 30)), 'tinted'), 'the waiting card leads');
+  assert.ok(term(card(env, 31)) && !hasCls(term(card(env, 31)), 'bp5-intent-primary'), 'a card that is only running keeps Terminal plain');
+  const arch = button(card(env, 31), /^Archive$/);
+  assert.ok(hasCls(arch, 'bp5-intent-danger') && hasCls(arch, 'bp5-minimal') && !hasCls(arch, 'confirm'), 'Archive rests quiet, red-outlined; only Confirm Archive is filled');
+  const fix = button(card(env, 31), /^Fix CI$/);
+  assert.ok(fix, 'Fix CI shows on a failing PR');
+  assert.ok(!hasCls(fix, 'bp5-intent-danger'), 'it is not a destructive action: no danger style');
+  assert.ok(hasCls(fix, 'tk-fixci'), 'it carries its own hook for the warn colour');
+  assert.equal(all(env.page(), '.task .actions .bp5-intent-primary').filter((n) => !hasCls(n, 'tinted')).length, 0, 'no card carries a filled primary: the cards repeat the action, tinted');
+});
+
+test('Preview asks for a port in a labelled sheet, never window.prompt(): empty says so next to the field, a port posts {port}, the sheet closes', async () => {
+  const started = STARTED_ROW(32);
+  const env = tasksWorld({ state: stateWith([started]), answers: { '/api/tasks/32/preview': (req) => {
+    if (!req.body || !req.body.port) throw env.w.get('mkErr')('no listening port found in this session', 400);
+    return { url: 'https://box.example:9443', port: req.body.port };
+  } } });
+  env.w.ctx.prompt = () => { throw new Error('window.prompt must not be used'); };
+  await go(env, PETROIT);
+  button(card(env, 32), /^Preview$/).click();
+  await settle();
+  const sh = env.sheet();
+  assert.equal(sh.open, true, 'the port sheet is open');
+  assert.match(textOf(sh.querySelector('.sheet-title')), /Preview/);
+  const fieldNode = all(sh, '.field').find((f) => /Dev server port/.test(textOf(f.querySelector('label'))));
+  assert.ok(fieldNode, 'a labelled Dev server port field');
+  assert.match(textOf(fieldNode.querySelector('.field-hint')), /no listening port found/, 'the server\'s reason is the helper text');
+  const input = fieldNode.querySelector('input');
+  assert.equal(fieldNode.querySelector('label').getAttribute('for'), input.getAttribute('id'), 'the label is tied to the input');
+  all(sh, 'form')[0].dispatchEvent({ type: 'submit', preventDefault() {} });
+  await settle();
+  assert.match(textOf(fieldNode.querySelector('.field-err')), /between 1 and 65535/, 'an empty port is said next to the field');
+  assert.equal(calls(env).filter((c) => /preview$/.test(c.path) && c.body && c.body.port).length, 0, 'nothing posted');
+  input.value = '3000';
+  all(sh, 'form')[0].dispatchEvent({ type: 'submit', preventDefault() {} });
+  await settle();
+  const posted = calls(env).filter((c) => c.method === 'POST' && /\/tasks\/32\/preview$/.test(c.path));
+  assert.deepEqual(posted.map((c) => c.body), [{}, { port: 3000 }], 'the blind try, then the port');
+  assert.equal(sh.open, false, 'the sheet closes');
+  assert.match(toasts(env).map((t) => t.text).join(' | '), /preview at https:\/\/box\.example:9443/);
 });

@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { STATIC } from './harness.mjs';
-import { EPOCH, ISO, calls, fakeState, fixtureState, homeWorld, page, plain, projectsOf, sess, setState, text, tick } from './world.mjs';
+import { EPOCH, ISO, calls, fakeState, fixtureState, homeWorld, page, plain, projectsOf, rowMenu, rowMenuLabels, sess, setState, text, tick } from './world.mjs';
 
 const CK = 'phasezero--website--t-checkout-redesign', S1 = 'ccboard--ccboard--s1', P2 = 'petroit--api--s2', P3 = 'petroit--api--s3', P1 = 'petroit--api--s1';
 const WT = 'phasezero--NestJs-Ecommerce-Backend--t-stock-sync', CX = 'ccboard--ccboard--cx1', ROOT = 'phasezero--root--s1';
@@ -201,13 +201,15 @@ test('the plain row (Agents roster, inbox peek) carries none of the rich chips',
   w.run('globalThis.__plain = sessionCard(__s, { compact: true })');
   const row = w.get('__plain');
   assert.equal(row.classList.contains('rich'), false);
-  for (const cls of ['bdg-model', 'ctx', 'compact-chip', 'bdg-cost', 'bdg-sub', 'rr-tailbtn', 'rr-replybtn']) assert.equal(row.querySelector('.' + cls), null, cls);
+  for (const cls of ['bdg-model', 'ctx', 'compact-chip', 'bdg-cost', 'bdg-sub']) assert.equal(row.querySelector('.' + cls), null, cls);
+  assert.deepEqual(plain(rowMenuLabels(w, row)), ['Kill'], 'the plain row has no Reply and no Tail in its menu (and nothing to acknowledge)');
   assert.match(text(row.querySelector('.rr-meta')), /Opus 5 · ctx 90%/, 'the plain row keeps its meta line');
 });
 
 // ---------------------------------------------------------------- the tail expander
 
-const tailBtn = (row) => row.querySelector('.rr-tailbtn');
+const toggleTail = (w, row) => assert.ok(rowMenu(w, row, /^(Tail|Hide tail)$/), 'the row menu offers the tail');   // the tail toggle is an item of the row's ... menu
+const tailOpen = (row) => !row.querySelector('.rr-tail').classList.contains('hidden');
 const pre = (row) => row.querySelector('pre.tail');
 
 test('the tail expander subscribes once on expand and unsubscribes once on collapse, through Live', () => {
@@ -215,14 +217,15 @@ test('the tail expander subscribes once on expand and unsubscribes once on colla
   const s = sess('shop', 'api', 's1');
   const row = rowFor(w, s);
   const live = () => plain(w.get('__live'));
-  assert.ok(tailBtn(row) && pre(row), 'a rich row has the toggle and its pre.tail');
+  assert.ok(rowMenuLabels(w, row).includes('Tail') && pre(row), 'a rich row has the toggle (in its ... menu) and its pre.tail');
   assert.equal(row.querySelector('.rr-tail').classList.contains('hidden'), true, 'collapsed at first');
-  assert.equal(tailBtn(row).getAttribute('aria-expanded'), 'false');
+  assert.equal(tailOpen(row), false);
   assert.deepEqual(live().subscribed, [], 'nothing is subscribed until it is expanded');
-  tailBtn(row).click();
+  toggleTail(w, row);
   assert.deepEqual(live().subscribed, ['shop--api--s1']);
   assert.equal(row.querySelector('.rr-tail').classList.contains('hidden'), false);
-  assert.equal(tailBtn(row).getAttribute('aria-expanded'), 'true');
+  assert.equal(tailOpen(row), true);
+  assert.ok(rowMenuLabels(w, row).includes('Hide tail'), 'the menu item says what the next tap does');
   // lines arrive: the last 12 of them
   const lines = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
   w.ctx.__lines = lines;
@@ -231,12 +234,12 @@ test('the tail expander subscribes once on expand and unsubscribes once on colla
   w.ctx.__lines = ['$ npm test', '12 passing'];
   w.run("__live.fns['shop--api--s1'](__lines)");
   assert.equal(text(pre(row)), '$ npm test\n12 passing');
-  tailBtn(row).click();
+  toggleTail(w, row);
   assert.deepEqual(live().unsubscribed, ['shop--api--s1']);
   assert.equal(live().subscribed.length, 1, 'one subscribe in all');
   assert.equal(row.querySelector('.rr-tail').classList.contains('hidden'), true);
-  assert.equal(tailBtn(row).getAttribute('aria-expanded'), 'false');
-  tailBtn(row).click();
+  assert.equal(tailOpen(row), false);
+  toggleTail(w, row);
   assert.equal(plain(w.get('__live')).subscribed.length, 2, 'expanding again subscribes again');
 });
 
@@ -245,7 +248,7 @@ test('a state poll never touches the subscription: re-patching an expanded row n
   const s = sess('shop', 'api', 's1');
   const st = fakeState({ projects: projectsOf({ shop: { api: [s] } }) });
   const row = rowFor(w, s, st);
-  tailBtn(row).click();
+  toggleTail(w, row);
   for (let i = 0; i < 3; i++) repatch(w, { ...s, state_at: ISO(i), last_message: 'tick ' + i, stats: { ...s.stats, context_pct: 50 + i } }, st);
   const live = plain(w.get('__live'));
   assert.deepEqual([live.subscribed.length, live.unsubscribed.length], [1, 0]);
@@ -255,14 +258,14 @@ test('a state poll never touches the subscription: re-patching an expanded row n
 test('a row that is destroyed or leaves the document drops its subscription', () => {
   const { w } = homeWorld();
   const a = rowFor(w, sess('shop', 'api', 'a'));
-  tailBtn(a).click();
+  toggleTail(w, a);
   a.ccDestroy();
   assert.deepEqual(plain(w.get('__live')).unsubscribed, ['shop--api--a']);
   a.ccDestroy();
   assert.equal(plain(w.get('__live')).unsubscribed.length, 1, 'destroying twice is harmless');
   const b = rowFor(w, sess('shop', 'api', 'b'));
   w.document.querySelector('#page').append(b);
-  tailBtn(b).click();
+  toggleTail(w, b);
   b.remove();                                                              // its block collapsed or the session ended
   w.run('sessionTailSweep()');
   assert.deepEqual(plain(w.get('__live')).unsubscribed, ['shop--api--a', 'shop--api--b']);
@@ -272,7 +275,7 @@ test('demo mode: the tail shows the one-line note and nothing else (Live is a qu
   const { w } = homeWorld({ realLive: true, extra: { location: undefined } });
   w.run('demoFlag = true');
   const row = rowFor(w, sess('shop', 'api', 's1'));
-  tailBtn(row).click();
+  toggleTail(w, row);
   assert.equal(text(pre(row)), 'demo: live tail unavailable');
   assert.equal(w.run('Live.es'), null);
   assert.equal(w.run('Live.subs.size'), 0, 'no subscriber is kept in demo mode');
@@ -648,7 +651,7 @@ test('collapsing a block with an open tail drops the row and its subscription', 
   const { w, mount } = home();
   mount();
   const row = q(w, `[data-block="p:petroit"] [data-tmux="${P3}"]`);
-  row.querySelector('.rr-tailbtn').click();
+  toggleTail(w, row);
   assert.deepEqual(plain(w.get('__live')).subscribed, [P3]);
   q(w, '[data-block="p:petroit"] .pb-toggle').click();
   assert.deepEqual(plain(w.get('__live')).unsubscribed, [P3], 'the row left the document: its tail let go of the stream');
@@ -1041,7 +1044,7 @@ test('leaving Home stops the ticker, drops tail subscriptions and destroys the u
   const { w, mount, mounts } = home();
   mount();
   assert.notEqual(w.get('agentsTicker.timer'), null);
-  q(w, `[data-block="p:petroit"] [data-tmux="${P3}"] .rr-tailbtn`).click();
+  toggleTail(w, q(w, `[data-block="p:petroit"] [data-tmux="${P3}"]`));
   assert.deepEqual(plain(w.get('__live')).subscribed, [P3]);
   mount('#/agents');
   assert.deepEqual(plain(w.get('__live')).unsubscribed, [P3], 'the stream is let go of on unmount');

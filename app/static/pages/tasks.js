@@ -11,11 +11,11 @@ function tasksCreate() { return typeof Shell !== 'undefined' && Shell && typeof 
 registerPage('tasks', {
   title: 'Tasks',
   mount(root) {
-    const section = el('section', { id: 'tasks', class: 'card hidden' });
+    const section = el('section', { id: 'tasks', class: 'tasks-board hidden' });   // no card around the board: the task cards are the only bordered boxes
     tasksPage.empty = pageEmpty('git-branch', 'No tasks yet', 'A task is one worktree and branch per piece of work: start one now, park it in the Backlog for later, or schedule it.');
     tasksPage.empty.append(el('button', { class: 'primary', type: 'button', text: '+ task', onclick: () => tasksCreate() }));
     tasksPage.empty.classList.add('hidden');
-    root.append(section, tasksPage.empty);   // the kanban card carries its own 'Tasks (N)' heading
+    root.append(section, tasksPage.empty);   // the board carries its own 'Tasks (N)' page head
   },
   update(st) {
     const section = $('#tasks');

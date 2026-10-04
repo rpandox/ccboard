@@ -91,7 +91,7 @@ const submitBtn = (f) => f.querySelector('button[type=submit]');
 const label = (f) => text(submitBtn(f)).trim();
 const titleInput = (f) => f.querySelectorAll('input').find((i) => /title/i.test(i.getAttribute('placeholder') || i.getAttribute('aria-label') || '')) || f.querySelectorAll('input').find((i) => i.getAttribute('maxlength') === '120');
 const promptBox = (f) => f.querySelector('textarea');
-const fieldOf = (f, re) => f.querySelectorAll('.field').find((x) => re.test(text(x.querySelector('span'))));
+const fieldOf = (f, re) => f.querySelectorAll('.field').find((x) => re.test(text(x.querySelector('label'))));
 const selectOf = (f, re) => fieldOf(f, re).querySelector('select');
 const status = (f) => f.querySelector('.form-status');
 const has = (actual, expected, msg) => { for (const [k, v] of Object.entries(expected)) assert.deepStrictEqual(actual[k], v, `${msg || 'body'}.${k}`); };
@@ -210,7 +210,15 @@ test('an empty prompt posts nothing and says so inline (the title is optional)',
   submit(f);
   await tick();
   assert.equal(posts(w, '/api/tasks').length, 0, 'a blank prompt is no prompt');
-  assert.ok(status(f) && /what Claude should do|prompt/i.test(text(status(f))) && status(f).classList.contains('bad'), `inline: ${text(status(f))}`);
+  const err = fieldOf(f, /^Prompt$/).querySelector('.field-err');
+  assert.match(text(err), /what Claude should do/i, `said next to the prompt: ${text(err)}`);
+  assert.equal(err.getAttribute('role'), 'alert', 'announced');
+  assert.equal(promptBox(f).getAttribute('aria-invalid'), 'true', 'the box is flagged');
+  assert.equal(w.document.activeElement, promptBox(f), 'and has the focus: that is the thing to fix');
+  promptBox(f).value = 'now there is text';
+  promptBox(f).dispatchEvent({ type: 'input' });
+  assert.equal(text(err), '', 'typing clears the message');
+  assert.equal(promptBox(f).getAttribute('aria-invalid'), null);
 });
 
 test('a task without a title takes the first line of the prompt, cut at a word near 80 characters', async () => {
@@ -491,7 +499,7 @@ test('after a task on shop/api, + task from Home (and the c t chord, and the + m
     assert.equal(title(w), 'New task · shop/api', `from ${hash} the form opens at once: no picker, 1 tap instead of 3`);
     const f = form(w);
     assert.ok(f && promptBox(f), 'the form, ready to type');
-    const where = selectOf(f, /^in$/i);
+    const where = selectOf(f, /^Repo$/);
     assert.ok(where, 'the "in" select is there to switch targets');
     assert.ok(where.querySelectorAll('option').length >= 3, 'shop/api, shop/web and blog/site are all offered');
     w.run('closeSheet()');

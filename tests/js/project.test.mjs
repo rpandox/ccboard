@@ -163,10 +163,12 @@ test('without a code-server port the page still renders and says why there is no
   assert.match(textOf(page), /code-server port unknown|install\.sh/i);
 });
 
-test('Add repo opens the sheet with addRepoForm; submitting it POSTs to the project', async () => {
+test('Add repo (in the ... menu) opens the sheet with addRepoForm; submitting it POSTs to the project', async () => {
   const env = projectWorld();
   const page = await go(env, '#/p/phasezero');
-  button(page, /add repo/i).click();
+  assert.equal(shownButtons(page, /add repo/i).length, 0, 'the header keeps three buttons: Add repo is in the ... menu');
+  all(page, 'button').find((b) => b.getAttribute('aria-haspopup') === 'menu').click();
+  env.w.document.querySelectorAll('.menuitem').find((i) => /^Add repo$/.test(i.textContent.trim())).click();
   const sheet = env.w.document.querySelector('#sheet');
   assert.equal(sheet.open, true, 'the sheet is open');
   const name = all(sheet, 'input').find((i) => /repo name/i.test(i.getAttribute('placeholder') || ''));
@@ -192,7 +194,7 @@ test('the repos and danger panel is closed until the overflow menu opens it', as
   const more = overflow(env);
   assert.ok(more, 'an overflow button');
   more.click();
-  assert.deepEqual(env.w.document.querySelectorAll('.menuitem').map((i) => i.textContent.trim()), ['Repos and danger zone', 'Delete project']);
+  assert.deepEqual(env.w.document.querySelectorAll('.menuitem').map((i) => i.textContent.trim()), ['Add repo', 'Open the folder in code-server', 'Repos and danger zone', 'Delete project']);
   menuItem(env, /repos and danger/i).click();
   assert.equal(shownButtons(env.page(), /^Remove$/).length, 2, 'one Remove per repo');
   assert.equal(shownButtons(env.page(), /^Delete project$/).length, 1);
@@ -366,7 +368,7 @@ test('the tasks tab draws the kanban columns with an empty Backlog first, only t
   const env = projectWorld();
   const page = await go(env, '#/p/phasezero?tab=tasks');
   const heads = all(page, '.col h3').map((h) => h.textContent.replace(/\s*\(\d+\)\s*$/, ''));
-  assert.deepEqual(heads.slice(0, 6), ['Backlog', 'In progress', 'Needs you', 'Done', 'PR open', 'Merged'], 'Backlog joins the five columns of COLUMNS');
+  assert.deepEqual(heads, ['Backlog', 'In progress', 'Needs you'], 'Backlog always, then only the columns that have a card (no empty Done / PR open / Merged headings)');
   assert.deepEqual(all(page, '.task').map((t) => t.getAttribute('data-task')).sort(), ['4', '5'], 'phasezero\'s two tasks; petroit\'s is not here');
   const backlog = all(page, '.col').find((c) => /^Backlog/.test(c.querySelector('h3').textContent));
   assert.equal(all(backlog, '.task').length, 0, 'the Backlog is empty when no task is waiting (a task added with Later lands here: tests/js/tasks.test.mjs)');
@@ -441,12 +443,41 @@ test('a tap on + task / + session before the first /api/state says "still loadin
   assert.equal(env.w.document.getElementById('sheet').open, true);
 });
 
-test('a project with no tasks still shows its columns or an empty state with + task', async () => {
+test('a project with no tasks shows only the empty state with one + task primary: no column headings, no second button', async () => {
   const env = projectWorld();
   const page = await go(env, '#/p/mailgate?tab=tasks');
   assert.equal(all(page, '.task').length, 0);
-  assert.ok(button(page, /\+\s*task/i));
-  assert.match(textOf(page), /Backlog|no tasks/i);
+  assert.match(textOf(all(page, '.nonideal').find((n) => shownNode(n))), /No tasks in this project yet/);
+  assert.equal(all(page, '.col').filter(shownNode).length, 0, 'no (0) column headings above the hint');
+  const plus = shownButtons(page, /\+\s*task/i);
+  assert.equal(plus.length, 1, 'one + task on screen: the empty state\'s (the toolbar is hidden with the columns)');
+  assert.ok(plus[0].classList.contains('bp5-intent-primary'), 'and it is the filled primary');
+  assert.equal(shownButtons(page, /\+\s*session/i).filter((b) => b.classList.contains('bp5-intent-primary')).length, 0, 'the header + session is plain on this tab');
+});
+
+test('the header\'s filled primary follows the tab: + session on Sessions, the tab\'s own button on Tasks and Schedules, none on Files', async () => {
+  const env = projectWorld();
+  const primaries = (page) => shownButtons(page, /^\+ (session|task|schedule)$/).filter((b) => b.classList.contains('bp5-intent-primary')).map((b) => b.textContent.trim());
+  const headBtns = (page) => all(page.querySelector('.pj-actions'), 'button').map((b) => b.textContent.trim());
+  let page = await go(env, '#/p/phasezero');
+  assert.deepEqual(headBtns(page), ['+ session', '+ task', '+ schedule'], 'three buttons, no Add repo, no code-server link');
+  assert.deepEqual(primaries(page), ['+ session']);
+  page = await go(env, '#/p/phasezero?tab=tasks');
+  assert.deepEqual(headBtns(page), ['+ session', '+ schedule'], 'the tab\'s own + task is not repeated in the header');
+  assert.deepEqual(primaries(page), ['+ task'], 'exactly one filled primary: the toolbar\'s');
+  page = await go(env, '#/p/phasezero?tab=schedules');
+  assert.deepEqual(headBtns(page), ['+ session', '+ task']);
+  assert.deepEqual(primaries(page), ['+ schedule']);
+  page = await go(env, '#/p/phasezero?tab=files');
+  assert.deepEqual(primaries(page), [], 'the Files tab has no primary');
+});
+
+test('the repos are one scrolling row, and the repos panel keeps the folder\'s code-server link', async () => {
+  const env = projectWorld();
+  const page = await go(env, '#/p/phasezero');
+  assert.equal(all(page, '.pj-repos .pj-repo').length, 2, 'both repos in the one row');
+  assert.equal(all(page, '.pj-actions a').length, 0, 'code-server is not an orphan beside the buttons');
+  assert.ok(all(page.querySelector('.pj-manage'), 'a').some((a) => /folder=|code-server/.test((a.getAttribute('href') || '') + a.textContent)), 'the folder link lives in the repos and danger panel');
 });
 
 // ---------------------------------------------------------------- schedules tab
@@ -501,11 +532,33 @@ test('the schedules tab offers the Batch prompt entry', async () => {
   assert.ok(kinds.includes('batch') || sheetOpen, 'it opens the batch form');
 });
 
-test('a project with no jobs shows an empty state with + schedule', async () => {
+test('a project with no jobs says what a schedule is, and + schedule is on screen once (the toolbar\'s, not repeated in the empty state)', async () => {
   const env = projectWorld();
   const page = await go(env, '#/p/mailgate?tab=schedules');
-  assert.ok(button(page, /\+\s*schedule/i));
   assert.match(textOf(page), /no schedules|nothing scheduled|no jobs/i);
+  const plus = shownButtons(page, /^\+\s*schedule$/);
+  assert.equal(plus.length, 1, 'one + schedule');
+  assert.ok(plus[0].classList.contains('bp5-intent-primary'));
+  assert.equal(all(page, '.nonideal button').length, 0, 'the empty state carries no button of its own');
+});
+
+test('a job row: Run now is plain, Disable is quiet, Delete rests red-outlined (quiet danger) and only the armed Confirm is filled', async () => {
+  const env = projectWorld();
+  const page = await go(env, '#/p/phasezero?tab=schedules');
+  const row = all(page, '.pj-job')[0];
+  const btn = (re) => all(row, 'button').find((b) => re.test(b.textContent.trim()));
+  const labels = all(row.querySelector('.actions'), 'button').map((b) => b.textContent.trim());
+  assert.equal(labels[0], 'Run now');
+  assert.match(labels[1], /^(Disable|Enable)$/);
+  assert.equal(labels[2], 'Delete', 'Delete is last');
+  assert.ok(!btn(/Run now/).classList.contains('bp5-intent-danger') && !btn(/Run now/).classList.contains('bp5-minimal'));
+  assert.ok(btn(/Disable|Enable/).classList.contains('bp5-minimal'), 'Disable is quiet');
+  const del = btn(/^Delete$/);
+  assert.ok(del.classList.contains('bp5-intent-danger') && del.classList.contains('bp5-minimal'), 'Delete: danger, quiet');
+  assert.ok(!del.classList.contains('confirm'));
+  del.click();
+  const armed = shownButtons(env.page(), /^Confirm Delete$/)[0];
+  assert.ok(armed && armed.classList.contains('confirm'), 'the second tap is the one filled red button');
 });
 
 // ---------------------------------------------------------------- files tab

@@ -304,7 +304,8 @@ test('Open links to the terminal, Ack shows only for an unacknowledged session a
 test('the nudge chips and the reply box are on the card; a shell session gets neither', async () => {
   const { w } = world();
   const n = card(w, P3);
-  assert.deepEqual(buttons(n, '.ib-chips .chip-btn'), ['continue', 'merge', 'push', 'pr', 'add commit push', 'do it']);
+  assert.deepEqual(buttons(n, '.ib-chips .chip-btn'), ['continue', 'merge', 'push', 'pr', 'add commit push', 'do it', '…'], 'six chips and the … that shows the last two');
+  assert.deepEqual(n.querySelectorAll('.ib-chips .chip-extra').map(text), ['add commit push', 'do it'], 'only the first four show until the … is tapped');
   n.querySelectorAll('.ib-chips .chip-btn').find((b) => text(b) === 'merge').click();
   await tick();
   assert.deepEqual(calls(w).filter((c) => c.path.endsWith('/keys')), [{ method: 'POST', path: '/api/sessions/petroit--api--s3/keys', body: { text: 'merge', enter: true } }]);

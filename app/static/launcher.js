@@ -12,36 +12,48 @@ const BYPASS_WARNING = 'Claude runs every command and edit without asking, as yo
 /* Model / effort / permission controls shared by the session and task forms. Returns the grid plus a reader. */
 function launchControls(saved, permOptions) {
   const model = selectEl(MODELS, saved.model_sel || '');
-  const modelId = el('input', { type: 'text', placeholder: 'full model id, e.g. claude-fable-5-1', class: saved.model_sel === 'custom' ? '' : 'hidden', value: saved.model_id || '' });
+  const modelId = el('input', { type: 'text', placeholder: 'full model id, e.g. claude-fable-5-1', 'aria-label': 'Custom model id', autocomplete: 'off', autocapitalize: 'off',
+    class: saved.model_sel === 'custom' ? '' : 'hidden', value: saved.model_id || '' });
   model.addEventListener('change', () => { modelId.classList.toggle('hidden', model.value !== 'custom'); if (model.value === 'custom') modelId.focus(); });
   const effort = selectEl(EFFORTS, saved.effort || '');
   const perm = selectEl(permOptions, saved.permission_mode || '');
   if (!perm.value) perm.value = '';                                       // a remembered choice that no longer exists
-  const warn = el('div', { class: 'bad hidden', text: BYPASS_WARNING });
+  const warn = el('div', { class: 'bad hidden', role: 'alert', text: BYPASS_WARNING });
   const syncWarn = () => warn.classList.toggle('hidden', perm.value !== 'bypassPermissions');
   perm.addEventListener('change', syncWarn); syncWarn();
+  const modelBox = el('div', { class: 'field' }, model, modelId);
+  modelBox._labelFor = model;                                             // the label names the select, not the wrapper
   const grid = el('div', {},
     el('div', { class: 'grid' },
-      field('model', el('div', { class: 'field' }, model, modelId)),
-      field('effort', effort),
-      field('permissions', perm)),
+      field('Model', modelBox),
+      field('Effort', effort),
+      field('Permissions', perm)),
     warn);
   return { grid, model, modelId, effort, perm,
     read: () => ({ model: model.value === 'custom' ? modelId.value.trim() : model.value, effort: effort.value, permission_mode: perm.value }),
     prefs: () => ({ model_sel: model.value, model_id: modelId.value.trim(), effort: effort.value, permission_mode: perm.value }) };
 }
 
+/* A launch that failed: the message goes next to the field it is about when it names one (rules [[regex, field]]), else under the form; setError
+   keeps the banner honest (and the shell toasts it while a sheet covers the banner). The sheet stays open with what was typed. */
+function formFail(status, rules, msg) {
+  const hit = (rules || []).find(([re]) => re.test(msg));
+  formStatus(status, hit ? '' : msg, !hit);
+  if (hit) fieldError(hit[1], msg, true);
+  setError(msg);
+}
+
 function sessionForm(p, r) {
   const saved = loadPrefs(LAUNCH_KEY(p, r));
   const launcher = selectEl([['claude', 'claude: new session'], ['resume', 'claude --resume'], ['continue', 'claude --continue'], ['shell', 'shell']], saved.launcher || 'claude');
-  const name = el('input', { type: 'text', placeholder: 'auto: s1, s2…', maxlength: 64 });
+  const name = el('input', { type: 'text', placeholder: 'auto: s1, s2…', maxlength: 64, autocomplete: 'off', autocapitalize: 'off' });
   const lc = launchControls(saved, PERMS_HOST);
-  const resumeId = el('input', { type: 'text', placeholder: 'session id to resume (blank = picker)', class: 'hidden' });
-  const allowed = el('input', { type: 'text', placeholder: 'e.g. Bash(npm test), Read', value: saved.allowed_tools || '' });
-  const disallowed = el('input', { type: 'text', placeholder: 'e.g. WebFetch', value: saved.disallowed_tools || '' });
+  const resumeId = el('input', { type: 'text', placeholder: 'session id to resume (blank = picker)', autocomplete: 'off', autocapitalize: 'off' });
+  const allowed = el('input', { type: 'text', placeholder: 'e.g. Bash(npm test), Read', value: saved.allowed_tools || '', autocomplete: 'off', autocapitalize: 'off' });
+  const disallowed = el('input', { type: 'text', placeholder: 'e.g. WebFetch', value: saved.disallowed_tools || '', autocomplete: 'off', autocapitalize: 'off' });
   const sysPrompt = el('textarea', { placeholder: 'text appended to the system prompt (optional)' });
   sysPrompt.value = saved.append_system_prompt || '';
-  const args = el('input', { type: 'text', placeholder: 'anything else, e.g. --verbose --fallback-model sonnet', value: saved.args || '' });
+  const args = el('input', { type: 'text', placeholder: 'anything else, e.g. --verbose --fallback-model sonnet', value: saved.args || '', autocomplete: 'off', autocapitalize: 'off' });
   const siblings = r.root ? [] : allRepos().filter(x => x.project === p.name && x.repo !== r.name);   // the project folder already contains them
   const others = allRepos().filter(x => x.project !== p.name);
   const boxes = [];
@@ -51,19 +63,25 @@ function sessionForm(p, r) {
   const devc = el('input', { type: 'checkbox' });
   const devRow = r.devcontainer ? el('div', { class: 'checks' },
     el('label', { title: 'devcontainer up + devcontainer exec (needs docker and the devcontainer CLI on the box; log in to Claude inside once)' }, devc, 'run in devcontainer')) : null;
+  const nameField = field('Session name', name, 'Blank takes the next free one (s1, s2…).');
+  const resumeField = field('Session id to resume', resumeId, 'Blank opens the picker.');
+  const argsField = field('Extra args', args);
   const claudeOnly = el('div', {}, lc.grid,
     el('details', {}, el('summary', { text: 'More options: tools, system prompt, extra args, other repos' }),
       el('div', { class: 'grid' },
-        field('allowed tools', allowed, 'comma-separated; --allowedTools'),
-        field('disallowed tools', disallowed, '--disallowedTools')),
-      field('append to system prompt', sysPrompt),
-      field('extra args', args),
-      siblings.length ? field('also give access to (--add-dir)', checks) : null,
-      others.length ? field('repos of other projects (--add-dir)', otherBox) : null));
-  const sync = () => { claudeOnly.classList.toggle('hidden', launcher.value === 'shell'); resumeId.classList.toggle('hidden', launcher.value !== 'resume'); };
+        field('Allowed tools', allowed, 'Comma-separated; --allowedTools.'),
+        field('Disallowed tools', disallowed, '--disallowedTools.')),
+      field('Append to system prompt', sysPrompt),
+      argsField,
+      siblings.length ? field('Also give access to', checks, '--add-dir') : null,
+      others.length ? field('Repos of other projects', otherBox, '--add-dir') : null));
+  const sync = () => { claudeOnly.classList.toggle('hidden', launcher.value === 'shell'); resumeField.classList.toggle('hidden', launcher.value !== 'resume'); };
   launcher.addEventListener('change', sync); sync();
+  const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
   const form = el('form', { class: 'form', onsubmit: async (e) => {
     e.preventDefault();
+    for (const f of [nameField, resumeField, argsField]) fieldError(f, '');
+    formStatus(status, '');
     const body = { launcher: launcher.value, devcontainer: devc.checked };
     if (name.value.trim()) body.name = name.value.trim();
     if (launcher.value === 'resume' && resumeId.value.trim()) body.resume_id = resumeId.value.trim();
@@ -83,33 +101,45 @@ function sessionForm(p, r) {
       const res = await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/sessions`, body);
       if (tab) tab.location = `/term/${encodeURIComponent(res.tmux)}`; else openPage(`/term/${encodeURIComponent(res.tmux)}`);
       ui.openForm = null; setError(null); await poll(true);
-    } catch (err) { if (tab) tab.close(); setError(err.message); }
+    } catch (err) {
+      if (tab) tab.close();
+      formFail(status, [[/resume id/i, resumeField], [/extra args|settings overrides/i, argsField], [/session .*(exists|name)|name .*(invalid|allowed)|reserved/i, nameField]], err.message);
+    }
   } },
-    el('div', { class: 'grid' }, field('launch', launcher), field('session name', name)),
-    resumeId,
+    el('div', { class: 'grid' }, field('Launch', launcher), nameField),
+    resumeField,
     claudeOnly,
     devRow,
+    status,
     el('div', { class: 'submit' },
       el('button', { class: 'primary', type: 'submit' }, ic('play'), 'Start & open terminal'),
       el('button', { type: 'button', onclick: () => { ui.openForm = null; renderProjects(); }, text: 'Cancel' })));
+  form.focusFirst = () => focusFine(name);
   return form;
 }
 
 function addRepoForm(p) {
-  const name = el('input', { type: 'text', placeholder: 'repo name (blank git init)', maxlength: 64 });
-  const url = el('input', { type: 'text', placeholder: 'or clone URL' });
-  return el('form', { class: 'form', onsubmit: async (e) => {
+  const name = el('input', { type: 'text', placeholder: 'repo name', maxlength: 64, autocomplete: 'off', autocapitalize: 'off' });
+  const url = el('input', { type: 'text', placeholder: 'https://github.com/you/repo.git', autocomplete: 'off', autocapitalize: 'off' });
+  const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
+  const nameField = field('New repo', name, 'A blank repo: git init in a new folder.');
+  const urlField = field('Clone URL', url, 'Or clone an existing repo instead; the name defaults to the one in the URL.');
+  const form = el('form', { class: 'form', onsubmit: async (e) => {
     e.preventDefault();
     const body = {};
     if (name.value.trim()) body.name = name.value.trim();
     if (url.value.trim()) body.url = url.value.trim();
+    fieldError(nameField, ''); fieldError(urlField, ''); formStatus(status, '');
+    if (!body.name && !body.url) { fieldError(nameField, 'Name a new repo, or give a URL to clone.', true); return; }
     try { await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos`, body); ui.openForm = null; setError(null); await poll(true); }
-    catch (err) { setError(err.message); }
+    catch (err) { formFail(status, [[/url|clone|git@|https?:/i, urlField], [/name|exists|reserved/i, nameField]], err.message); }
   } },
-    el('div', { class: 'row' }, name, url),
-    el('div', { class: 'row' },
+    nameField, urlField, status,
+    el('div', { class: 'submit' },
       el('button', { class: 'primary', type: 'submit', text: 'Add repo' }),
       el('button', { type: 'button', onclick: () => { ui.openForm = null; renderProjects(); }, text: 'Cancel' })));
+  form.focusFirst = () => focusFine(name);
+  return form;
 }
 
 /* ---------- the task form (v0.5.14a): one form for Now / Later / Schedule ----------
@@ -201,11 +231,11 @@ function taskForm(p, r, opts) {
   const whenWant = carry.when || o.when || savedWhen;
   const when0 = TASK_WHEN.some(([v]) => v === whenWant) ? whenWant : 'now';
 
-  const promptEl = el('textarea', { class: 'composer task-prompt', rows: '3', 'aria-label': 'prompt', autocomplete: 'off', spellcheck: 'true',
+  const promptEl = el('textarea', { class: 'composer task-prompt', rows: '3', autocomplete: 'off', spellcheck: 'true',
     placeholder: 'What should Claude do?' });
   promptEl._maxRows = 12;
   promptEl.value = carry.prompt || '';
-  const title = el('input', { type: 'text', maxlength: 120, 'aria-label': 'title', placeholder: 'title (optional: the first line of the prompt)', value: carry.title || '' });
+  const title = el('input', { type: 'text', maxlength: 120, placeholder: 'e.g. Fix the login redirect', autocomplete: 'off', value: carry.title || '' });
   const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
 
   const issueSel = selectEl([['', 'from a GitHub issue…']]);
@@ -228,28 +258,28 @@ function taskForm(p, r, opts) {
   });
 
   const lc = launchControls(prefs, PERMS);
-  const args = el('input', { type: 'text', placeholder: 'extra claude args (optional)', 'aria-label': 'extra args', value: prefs.args || '' });
+  const args = el('input', { type: 'text', placeholder: 'extra claude args (optional)', autocomplete: 'off', autocapitalize: 'off', value: prefs.args || '' });
   const siblings = allRepos().filter((x) => x.project === p.name && x.repo !== r.name);
   const boxes = [];
   const checks = el('div', { class: 'checks' });
   for (const x of siblings) { const cb = el('input', { type: 'checkbox', value: x.id, checked: false }); boxes.push(cb); checks.append(el('label', {}, cb, x.id)); }
   const jobMode = selectEl(JOB_MODES.map((m) => [m, m]), JOB_MODES.includes(saved.job_mode) ? saved.job_mode : 'acceptEdits');
-  const turns = el('input', { type: 'number', value: String(saved.max_turns || 30), min: '1', max: '500', 'aria-label': 'max turns' });
-  const budget = el('input', { type: 'number', placeholder: 'optional', step: '0.5', min: '0', 'aria-label': 'max dollars' });
+  const turns = el('input', { type: 'number', value: String(saved.max_turns || 30), min: '1', max: '500', inputmode: 'numeric' });
+  const budget = el('input', { type: 'number', placeholder: 'optional', step: '0.5', min: '0', inputmode: 'decimal' });
 
   /* the Schedule half: a name (from the title), a cron with presets (blank = run once now) */
-  const nameEl = el('input', { type: 'text', placeholder: 'name (e.g. nightly-tests)', maxlength: 80, 'aria-label': 'schedule name', value: carry.name || '' });
+  const nameEl = el('input', { type: 'text', placeholder: 'name (e.g. nightly-tests)', maxlength: 80, autocomplete: 'off', autocapitalize: 'off', value: carry.name || '' });
   let nameTyped = !!carry.name;
   nameEl.addEventListener('input', () => { nameTyped = true; });
-  const cron = el('input', { type: 'text', placeholder: 'cron: 30 2 * * *  (blank = once, now)', 'aria-label': 'cron', value: carry.cron !== undefined ? carry.cron : (when0 === 'schedule' ? (saved.cron || '') : '') });
+  const cron = el('input', { type: 'text', placeholder: 'cron: 30 2 * * *  (blank = once, now)', autocomplete: 'off', autocapitalize: 'off', value: carry.cron !== undefined ? carry.cron : (when0 === 'schedule' ? (saved.cron || '') : '') });
   const cronNote = el('div', { class: 'dim tf-cronnote' });
   const presetBtns = CRON_PRESETS.map(([label, value]) => el('button', { class: 'chip-btn', type: 'button', text: label, 'aria-pressed': 'false', 'data-cron': value,
-    title: value ? `cron ${value}` : 'blank cron: run once, now', onclick: () => { cron.value = value; syncCron(); if (!promptEl.value.trim()) promptEl.focus(); } }));
+    title: value ? `cron ${value}` : 'blank cron: run once, now', onclick: () => { cron.value = value; syncCron(); if (!promptEl.value.trim()) focusFine(promptEl); } }));
   const presets = el('div', { class: 'chips cron-presets', role: 'group', 'aria-label': 'Cron presets' }, presetBtns);
   const syncCron = () => {
     const v = cron.value.trim();
     for (const b of presetBtns) b.setAttribute('aria-pressed', b.getAttribute('data-cron') === v ? 'true' : 'false');
-    cronNote.textContent = !v ? 'Runs once, right now.' : v.split(/\s+/).length === 5 ? `Runs on cron ${v}.` : 'A cron has 5 fields, e.g. 30 2 * * *.';
+    cronNote.textContent = cronNoteText(v);
   };
   cron.addEventListener('input', syncCron);
 
@@ -261,7 +291,9 @@ function taskForm(p, r, opts) {
   const goIcon = el('span', { class: 'tf-go-ic' });
   const go = el('button', { class: 'primary', type: 'submit', title: 'Cmd/Ctrl+Enter' }, goIcon, goText);
   const optNote = el('span', { class: 'dim tf-optnote' });
-  const titleField = field('title', title);
+  const titleField = field('Title', title, 'Optional: the first line of the prompt is used.');
+  const promptField = field('Prompt', promptEl, coarsePointer() ? null : 'Enter adds a line · Cmd/Ctrl+Enter submits.');
+  const argsField = field('Extra args', args);
   const optNoteSync = () => {
     const v = lc.read();
     const bits = [v.model, v.effort, v.permission_mode].filter(Boolean);
@@ -286,17 +318,18 @@ function taskForm(p, r, opts) {
     goIcon.append(ic(TASK_ICON[w]));
     if (w === 'schedule') { autoName(); syncCron(); }
   };
-  seg = segControl(TASK_WHEN, when0, syncMode, 'Run');
+  seg = segControl(TASK_WHEN, when0, syncMode, 'When');
 
-  const issueField = field('from a GitHub issue', issueSel);
+  const issueField = field('From a GitHub issue', issueSel);
   const lcBox = el('div', {}, lc.grid);
-  const sibField = siblings.length ? field('also give access to (--add-dir)', checks) : null;
-  const jobOpts = el('div', { class: 'grid' }, field('permission mode', jobMode), field('max turns', turns), field('max $', budget));
-  const schedBox = el('div', { class: 'tf-schedule' }, field('name', nameEl), field('cron', cron), presets, cronNote);
+  const sibField = siblings.length ? field('Also give access to', checks, '--add-dir') : null;
+  const jobOpts = el('div', { class: 'grid' }, field('Permission mode', jobMode), field('Max turns', turns), field('Max $', budget, 'Optional.'));
+  const nameField = field('Name', nameEl, 'Shown on the task card.');
+  const schedBox = el('div', { class: 'tf-schedule' }, nameField, field('Cron', cron), presets, cronNote);
   upperOnly.push(titleField, issueField, lcBox);
   if (sibField) upperOnly.push(sibField);
   lowerOnly.push(schedBox, jobOpts);
-  const options = el('details', { class: 'tf-options' }, el('summary', {}, 'Options', optNote), issueField, lcBox, jobOpts, field('extra args', args), sibField);
+  const options = el('details', { class: 'tf-options' }, el('summary', {}, 'Options', optNote), issueField, lcBox, jobOpts, argsField, sibField);
 
   const targets = Array.isArray(o.targets) ? o.targets : [];
   const here = Math.max(0, targets.findIndex((x) => x.p === p && x.r === r));
@@ -372,10 +405,12 @@ function taskForm(p, r, opts) {
     if (busy) return;
     const when = seg.value;
     const prompt = promptEl.value.trim();
-    if (!prompt) { formStatus(status, 'write what Claude should do', true); promptEl.focus(); return; }
+    fieldError(promptField, ''); fieldError(argsField, '');
+    if (!prompt) { fieldError(promptField, 'Write what Claude should do.', true); return; }
     const titleText = title.value.trim() || taskTitleFrom(prompt);
     if (/bypassPermissions|dangerously-skip-permissions/i.test(args.value)) {                // the server refuses it as well: say so before the round trip
-      formStatus(status, 'bypassPermissions is not allowed for tasks or schedules; start a session and choose bypass there if you really want it', true);
+      options.setAttribute('open', '');                                                       // the field sits under Options: show it before pointing at it
+      fieldError(argsField, 'bypassPermissions is not allowed for tasks or schedules; start a session and choose bypass there if you really want it.', true);
       return;
     }
     setBusy(true);
@@ -387,24 +422,23 @@ function taskForm(p, r, opts) {
   };
 
   const keys = (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); submit(); } };
-  promptEl.addEventListener('input', () => { composerGrow(promptEl); if (seg.value === 'schedule') autoName(); });
+  promptEl.addEventListener('input', () => { composerGrow(promptEl); fieldError(promptField, ''); if (seg.value === 'schedule') autoName(); });
   promptEl.addEventListener('keydown', keys);
 
   const form = el('form', { class: 'form task-form', onsubmit: (e) => { e.preventDefault(); submit(); } },
-    whereSel ? field('in', whereSel) : null,
-    field('run', seg.node),
+    whereSel ? field('Repo', whereSel) : null,
+    field('When', seg.node),
     lede,
-    field('prompt', promptEl),
+    promptField,
     titleField,
     schedBox,
     options,
     status,
     el('div', { class: 'submit' }, go,
-      el('button', { type: 'button', onclick: () => { if (typeof o.onCancel === 'function') o.onCancel(); else { ui.openForm = null; if (typeof renderProjects === 'function') renderProjects(); } }, text: 'Cancel' }),
-      el('span', { class: 'dim tf-hint', text: 'Enter: new line · Cmd/Ctrl+Enter: submit' })));
+      el('button', { type: 'button', onclick: () => { if (typeof o.onCancel === 'function') o.onCancel(); else { ui.openForm = null; if (typeof renderProjects === 'function') renderProjects(); } }, text: 'Cancel' })));
   form.addEventListener('keydown', keys);
-  seg.node.addEventListener('click', (e) => { if (e.detail !== 0) promptEl.focus(); });          // a tap or click on a mode goes on to typing; the keyboard keeps its focus on the control
-  form.focusFirst = () => promptEl.focus();
+  seg.node.addEventListener('click', (e) => { if (e.detail !== 0) focusFine(promptEl); });         // a click on a mode goes on to typing on a desktop (a phone keeps its keyboard down until the box is tapped); the keyboard keeps its focus on the control
+  form.focusFirst = () => focusFine(promptEl);
   syncMode();
   if (carry.prompt) composerGrow(promptEl);
   return form;
@@ -413,38 +447,73 @@ function taskForm(p, r, opts) {
 /* The schedule form's cron presets (chips that fill the cron field; a blank cron runs once now): [label, cron]. */
 const CRON_PRESETS = [['nightly 02:30', '30 2 * * *'], ['weekdays 09:00', '0 9 * * 1-5'], ['hourly', '0 * * * *'], ['one-off', '']];
 
+const JOB_KEY = (p, r) => `ccboard:job:${p.name}/${r.name}`;               // the schedule form's own memory per repo: cron, mode, turns, budget
+const BATCH_KEY = 'ccboard:batch';                                        // the batch form's: mode, turns, budget (it spans repos, so one key)
+
+/* The line under a cron field: what it will do, or what is off about it. */
+function cronNoteText(v) {
+  return !v ? 'Runs once, right now.' : v.split(/\s+/).length === 5 ? `Runs on cron ${v}.` : 'A cron has 5 fields, e.g. 30 2 * * *.';
+}
+
 function jobForm(p, r) {
-  const name = el('input', { type: 'text', placeholder: 'name (e.g. nightly-tests)', maxlength: 80, required: true });
+  const saved = loadPrefs(JOB_KEY(p, r));
+  const name = el('input', { type: 'text', placeholder: 'e.g. nightly-tests', maxlength: 80, required: true, autocomplete: 'off', autocapitalize: 'off' });
   const prompt = el('textarea', { placeholder: 'prompt for the headless run (claude -p in a fresh worktree)…', required: true });
-  const cron = el('input', { type: 'text', placeholder: 'cron, e.g. 30 2 * * * (blank = run once now)' });
+  const cron = el('input', { type: 'text', placeholder: 'cron: 30 2 * * *  (blank = run once now)', autocomplete: 'off', autocapitalize: 'off', value: typeof saved.cron === 'string' ? saved.cron : '' });
+  cron.value = typeof saved.cron === 'string' ? saved.cron : '';          // the property too: syncGo reads it before the attribute is reflected anywhere
+  const cronNote = el('div', { class: 'dim tf-cronnote' });
   const go = el('button', { class: 'primary', type: 'submit', text: 'Schedule / run' });
-  const syncGo = () => { go.textContent = cron.value.trim() ? 'Schedule' : 'Schedule / run'; };
+  const presetBtns = CRON_PRESETS.map(([label, value]) => el('button', { class: 'chip-btn', type: 'button', text: label, 'aria-pressed': 'false', 'data-cron': value,
+    title: value ? `cron ${value}` : 'blank cron: run once now', onclick: () => { cron.value = value; syncGo(); focusFine(cron); } }));
+  const presets = el('div', { class: 'chips cron-presets', role: 'group', 'aria-label': 'Cron presets' }, presetBtns);
+  const syncGo = () => {
+    const v = cron.value.trim();
+    go.textContent = v ? 'Schedule' : 'Schedule / run';
+    cronNote.textContent = cronNoteText(v);
+    for (const b of presetBtns) b.setAttribute('aria-pressed', b.getAttribute('data-cron') === v ? 'true' : 'false');
+  };
   cron.addEventListener('input', syncGo);
-  const presets = el('div', { class: 'chips cron-presets', role: 'group', 'aria-label': 'Cron presets' },
-    CRON_PRESETS.map(([label, value]) => el('button', { class: 'chip-btn', type: 'button', text: label, title: value ? `cron ${value}` : 'blank cron: run once now',
-      onclick: () => { cron.value = value; syncGo(); cron.focus(); } })));
-  const mode = el('select', {}, ...['acceptEdits', 'default', 'plan', 'auto', 'dontAsk'].map(m => el('option', { value: m, text: m })));
-  const turns = el('input', { type: 'number', value: '30', min: '1', max: '500', title: 'max turns' });
-  const budget = el('input', { type: 'number', placeholder: 'max $ (optional)', step: '0.5', min: '0' });
-  const args = el('input', { type: 'text', placeholder: 'extra claude args (optional)' });
-  return el('form', { class: 'form', onsubmit: async (e) => {
+  syncGo();
+  const mode = selectEl(JOB_MODES.map((m) => [m, m]), JOB_MODES.includes(saved.mode) ? saved.mode : 'acceptEdits');
+  const turns = el('input', { type: 'number', value: String(saved.turns || 30), min: '1', max: '500', inputmode: 'numeric' });
+  const budget = el('input', { type: 'number', placeholder: 'optional', step: '0.5', min: '0', inputmode: 'decimal', value: saved.budget || '' });
+  const args = el('input', { type: 'text', placeholder: 'extra claude args (optional)', autocomplete: 'off', autocapitalize: 'off' });
+  const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
+  const nameField = field('Name', name, 'Shown on the task card and in Schedules.');
+  const promptField = field('Prompt', prompt);
+  const cronField = field('Cron', cron);
+  const argsField = field('Extra args', args);
+  name.addEventListener('input', () => fieldError(nameField, ''));
+  prompt.addEventListener('input', () => fieldError(promptField, ''));
+  const form = el('form', { class: 'form task-form job-form', novalidate: true, onsubmit: async (e) => {
     e.preventDefault();
+    for (const f of [nameField, promptField, cronField, argsField]) fieldError(f, '');
+    formStatus(status, '');
+    if (!name.value.trim()) { fieldError(nameField, 'Give the schedule a name.', true); return; }
+    if (!prompt.value.trim()) { fieldError(promptField, 'Write the prompt for the run.', true); return; }
     const body = { name: name.value.trim(), prompt: prompt.value.trim(), permission_mode: mode.value, max_turns: parseInt(turns.value, 10) || 30, run_now: !cron.value.trim() };
     if (cron.value.trim()) body.cron = cron.value.trim();
     if (budget.value) body.max_budget_usd = parseFloat(budget.value);
     if (args.value.trim()) body.args = args.value.trim();
+    savePrefs(JOB_KEY(p, r), { cron: cron.value.trim(), mode: mode.value, turns: parseInt(turns.value, 10) || 30, budget: budget.value });
     try { await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/jobs`, body); ui.openForm = null; setError(null); await poll(true); }
-    catch (err) { setError(err.message); }
+    catch (err) { formFail(status, [[/cron/i, cronField], [/name/i, nameField], [/extra args|args/i, argsField]], err.message); }
   } },
-    el('label', { text: 'Schedule a headless run: claude -p in a fresh worktree; the result becomes a task card' }),
-    el('div', { class: 'row' }, name, cron),
+    el('p', { class: 'dim tf-lede', text: 'A headless run (claude -p) in a fresh worktree; the result becomes a task card.' }),
+    nameField,
+    promptField,
+    cronField,
     presets,
-    prompt,
-    el('div', { class: 'row' }, el('label', { text: 'permission mode' }), mode, el('label', { text: 'max turns' }), turns, budget),
-    args,
-    el('div', { class: 'row' },
+    cronNote,
+    el('details', { class: 'tf-options' }, el('summary', { text: 'Advanced' }),
+      el('div', { class: 'grid' }, field('Permission mode', mode), field('Max turns', turns), field('Max $', budget, 'Optional.')),
+      argsField),
+    status,
+    el('div', { class: 'submit' },
       go,
       el('button', { type: 'button', onclick: () => { ui.openForm = null; renderProjects(); }, text: 'Cancel' })));
+  form.focusFirst = () => focusFine(name);
+  return form;
 }
 
 /* ---------- project, GitHub import and batch prompt: the + menu's sheets (v0.5.5) ----------
@@ -455,6 +524,7 @@ function jobForm(p, r) {
 function formStatus(node, text, bad) {
   node.textContent = text || '';
   node.classList.toggle('bad', !!bad);
+  node.setAttribute('role', bad ? 'alert' : 'status');
 }
 
 /* The clone queue line: queued clones and failed ones with a Clear button, rebuilt only when what it says changes (st.clone_queue). */
@@ -480,15 +550,26 @@ function cloneQueueView() {
   return { node, update };
 }
 
+/* The header of a list in a form (repos to pick): a title, an optional count, and the list's own tools (Load, Invert) as quiet small buttons,
+   so the footer carries the primary and Cancel and nothing else. */
+function listHead(title, ...tools) {
+  return el('div', { class: 'row list-head' }, el('span', { class: 'dim list-title', text: title }), ...tools);
+}
+
 function projectForm(opts) {
   const o = opts || {};
-  const name = el('input', { type: 'text', placeholder: 'project name (e.g. shop)', required: true, maxlength: 64, 'aria-label': 'project name', autocomplete: 'off', autocapitalize: 'off' });
-  const url = el('input', { type: 'text', placeholder: 'optional: clone URL of the first repo', 'aria-label': 'clone URL', autocomplete: 'off', autocapitalize: 'off' });
-  const status = el('div', { class: 'dim form-status' });
+  const name = el('input', { type: 'text', placeholder: 'e.g. shop', required: true, maxlength: 64, autocomplete: 'off', autocapitalize: 'off' });
+  const url = el('input', { type: 'text', placeholder: 'https://github.com/you/repo.git', autocomplete: 'off', autocapitalize: 'off' });
+  const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
   const where = typeof state !== 'undefined' && state && state.config ? state.config.projects_dir : '';
-  const form = el('form', { class: 'form', onsubmit: async (e) => {
+  const nameField = field('Name', name, 'A folder in the projects directory: letters, digits, - and _ (start and end with a letter or digit).');
+  const urlField = field('Clone URL', url, 'Optional: the first repo, cloned into the project.');
+  name.addEventListener('input', () => fieldError(nameField, ''));
+  const form = el('form', { class: 'form', novalidate: true, onsubmit: async (e) => {
     e.preventDefault();
+    fieldError(nameField, '');
     const body = { name: name.value.trim() };
+    if (!body.name) { fieldError(nameField, 'Name the project.', true); return; }
     if (url.value.trim()) body.url = url.value.trim();
     try {
       const res = await api('POST', '/api/projects', body);
@@ -501,22 +582,23 @@ function projectForm(opts) {
     } catch (err) { formStatus(status, err.message, true); setError(err.message); }
   } },
   where ? el('div', { class: 'dim', text: `A folder per project under ${where}; each repo is a subfolder and sessions run inside a repo.` }) : null,
-  field('name', name), field('clone URL', url), status,
+  nameField, urlField, status,
   el('div', { class: 'submit' }, el('button', { class: 'primary', type: 'submit', text: 'Create project' }),
     el('button', { type: 'button', onclick: () => { if (typeof o.onCancel === 'function') o.onCancel(); }, text: 'Cancel' })));
-  form.focusFirst = () => name.focus();
+  form.focusFirst = () => focusFine(name);
   return form;
 }
 
 /* Run one headless prompt in every picked repo: POST /api/batch. */
 function batchForm(opts) {
   const o = opts || {};
-  const name = el('input', { type: 'text', placeholder: 'batch name (optional)', maxlength: 60, 'aria-label': 'batch name' });
-  const prompt = el('textarea', { placeholder: 'prompt to run headlessly in every selected repo (claude -p, fresh worktree each)…', 'aria-label': 'prompt' });
-  const mode = el('select', { 'aria-label': 'permission mode' }, ...['acceptEdits', 'default', 'plan', 'auto', 'dontAsk'].map((x) => el('option', { value: x, text: x })));
-  const turns = el('input', { type: 'number', value: '30', min: '1', max: '500', 'aria-label': 'max turns' });
-  const budget = el('input', { type: 'number', placeholder: 'max $ per repo (optional)', step: '0.5', min: '0', 'aria-label': 'max dollars per repo' });
-  const status = el('div', { class: 'dim form-status' });
+  const saved = loadPrefs(BATCH_KEY);
+  const name = el('input', { type: 'text', placeholder: 'optional', maxlength: 60, autocomplete: 'off', autocapitalize: 'off' });
+  const prompt = el('textarea', { placeholder: 'prompt to run headlessly in every selected repo (claude -p, fresh worktree each)…' });
+  const mode = selectEl(JOB_MODES.map((x) => [x, x]), JOB_MODES.includes(saved.mode) ? saved.mode : 'acceptEdits');
+  const turns = el('input', { type: 'number', value: String(saved.turns || 30), min: '1', max: '500', inputmode: 'numeric' });
+  const budget = el('input', { type: 'number', placeholder: 'optional', step: '0.5', min: '0', inputmode: 'decimal', value: saved.budget || '' });
+  const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
   const boxes = [];
   const list = el('div', { class: 'checks batch-repos' });
   for (const x of (typeof state !== 'undefined' && state ? allRepos() : [])) {
@@ -525,9 +607,18 @@ function batchForm(opts) {
     list.append(el('label', {}, cb, x.id));
   }
   if (!boxes.length) list.append(el('span', { class: 'dim', text: 'No repos yet: create a project and add a repo first.' }));
+  const invert = el('button', { class: 'small', type: 'button', onclick: () => { for (const b of boxes) b.checked = !b.checked; }, text: 'Invert' });
+  const promptField = field('Prompt', prompt);
+  const reposBox = el('div', {}, listHead('Tick the repos to run in', invert), list);
+  const reposField = field('Repos', reposBox);
+  prompt.addEventListener('input', () => fieldError(promptField, ''));
+  list.addEventListener('change', () => fieldError(reposField, ''));
   const go = el('button', { class: 'primary', type: 'button', onclick: async () => {
     const repos = boxes.filter((b) => b.checked).map((b) => b.getAttribute('value'));
-    if (!repos.length || !prompt.value.trim()) { formStatus(status, 'pick repos and write a prompt', true); return; }
+    fieldError(promptField, ''); fieldError(reposField, ''); formStatus(status, '');
+    if (!prompt.value.trim()) { fieldError(promptField, 'Write the prompt to run.', true); if (!repos.length) fieldError(reposField, 'Pick at least one repo.'); return; }
+    if (!repos.length) { fieldError(reposField, 'Pick at least one repo.', true); return; }
+    savePrefs(BATCH_KEY, { mode: mode.value, turns: parseInt(turns.value, 10) || 30, budget: budget.value });
     try {
       const r = await api('POST', '/api/batch', { prompt: prompt.value.trim(), repos, name: name.value.trim() || undefined, permission_mode: mode.value,
         max_turns: parseInt(turns.value, 10) || 30, max_budget_usd: budget.value ? parseFloat(budget.value) : undefined });
@@ -536,27 +627,27 @@ function batchForm(opts) {
       await poll(true);
     } catch (e) { formStatus(status, e.message, true); }
   }, text: 'Run on selected repos' });
-  const form = el('form', { class: 'form', onsubmit: (e) => { e.preventDefault(); go.click(); } },
+  const form = el('form', { class: 'form', novalidate: true, onsubmit: (e) => { e.preventDefault(); go.click(); } },
     el('div', { class: 'dim', text: 'Runs are headless (claude -p) in a fresh worktree per repo, at most 2 at once, paused while the 5-hour window is above 85%. Each result becomes a task card.' }),
-    el('div', { class: 'grid' }, field('name', name), field('permission mode', mode), field('max turns', turns), field('max $ per repo', budget)),
-    field('prompt', prompt),
-    field('repos', list),
+    promptField,
+    reposField,
+    el('details', { class: 'tf-options' }, el('summary', { text: 'Options' }),
+      el('div', { class: 'grid' }, field('Name', name, 'Optional label for the batch.'), field('Permission mode', mode), field('Max turns', turns), field('Max $ per repo', budget, 'Optional.'))),
     status,
     el('div', { class: 'submit' }, go,
-      el('button', { type: 'button', onclick: () => { for (const b of boxes) b.checked = !b.checked; }, text: 'Invert' }),
       el('button', { type: 'button', onclick: () => { if (typeof o.onCancel === 'function') o.onCancel(); }, text: 'Cancel' })));
-  form.focusFirst = () => prompt.focus();
+  form.focusFirst = () => focusFine(prompt);
   return form;
 }
 
 /* Import repos from GitHub into a project: GET /api/github/repos[?owner=], then POST /api/projects/<project>/repos/bulk. */
 function importForm(opts) {
   const o = opts || {};
-  const owner = el('input', { type: 'text', placeholder: 'owner (blank = your repos)', maxlength: 39, 'aria-label': 'GitHub owner', autocomplete: 'off', autocapitalize: 'off' });
-  const target = el('input', { type: 'text', placeholder: 'target project name', maxlength: 64, 'aria-label': 'target project', autocomplete: 'off', autocapitalize: 'off' });
-  const filter = el('input', { type: 'text', placeholder: 'filter…', 'aria-label': 'filter repos' });
+  const owner = el('input', { type: 'text', placeholder: 'blank = your repos', maxlength: 39, autocomplete: 'off', autocapitalize: 'off' });
+  const target = el('input', { type: 'text', placeholder: 'target project name', maxlength: 64, autocomplete: 'off', autocapitalize: 'off' });
+  const filter = el('input', { type: 'text', placeholder: 'filter by name or description…', 'aria-label': 'Filter repos', autocomplete: 'off', autocapitalize: 'off' });
   const list = el('div', { class: 'checks import-repos' });
-  const status = el('div', { class: 'dim form-status' });
+  const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
   let repos = [];
   const boxes = [];
   const renderList = () => {
@@ -569,9 +660,12 @@ function importForm(opts) {
       boxes.push(cb);
       list.append(el('label', {}, cb, el('b', { text: r.name }), el('span', { class: 'dim', text: `${r.private ? 'private' : 'public'}${r.fork ? ' · fork' : ''} · ${r.description || ''}`.slice(0, 120) })));
     }
-    if (!list.childElementCount) list.append(el('span', { class: 'dim', text: repos.length ? 'no match' : 'nothing loaded yet' }));
+    if (!list.childElementCount) list.append(el('span', { class: 'dim', text: repos.length ? 'no match' : 'nothing loaded yet: press Load' }));
   };
   filter.addEventListener('input', renderList);
+  filter.addEventListener('keydown', (e) => { if (e.key === 'Enter') e.preventDefault(); });          // the filter is live: Enter must not re-fetch the list from GitHub
+  const ownerField = field('GitHub owner', owner, 'Blank lists your own repos. Enter loads them.');
+  const targetField = field('Into project', target, 'The project the repos are cloned into.');
   const load = async () => {
     formStatus(status, 'loading…');
     try {
@@ -582,10 +676,16 @@ function importForm(opts) {
       renderList();
     } catch (e) { formStatus(status, e.message, true); }
   };
+  const loadBtn = el('button', { class: 'small', type: 'button', onclick: load, text: 'Load' });
+  const invert = el('button', { class: 'small', type: 'button', onclick: () => { for (const b of boxes) b.checked = !b.checked; }, text: 'Invert' });
+  const reposField = field('Repos', el('div', {}, listHead('Tick the repos to import', loadBtn, invert), filter, list));
+  target.addEventListener('input', () => fieldError(targetField, ''));
+  list.addEventListener('change', () => fieldError(reposField, ''));
   const importBtn = el('button', { class: 'primary', type: 'button', onclick: async () => {
     const chosen = boxes.filter((b) => b.checked).map((b) => ({ name: b.getAttribute('data-name'), url: b.getAttribute('value') }));
-    if (!chosen.length) { formStatus(status, 'nothing selected', true); return; }
-    if (!target.value.trim()) { formStatus(status, 'name the target project', true); return; }
+    fieldError(targetField, ''); fieldError(reposField, '');
+    if (!chosen.length) { fieldError(reposField, 'Nothing selected: press Load, then tick the repos to import.', true); return; }
+    if (!target.value.trim()) { fieldError(targetField, 'Name the target project.', true); return; }
     try {
       const r = await api('POST', `/api/projects/${encodeURIComponent(target.value.trim())}/repos/bulk`, { repos: chosen });
       formStatus(status, `queued ${chosen.length} into ${r.project}`);
@@ -594,15 +694,14 @@ function importForm(opts) {
     } catch (e) { formStatus(status, e.message, true); }
   }, text: 'Import selected' });
   renderList();
-  const form = el('form', { class: 'form', onsubmit: (e) => { e.preventDefault(); load(); } },
-    el('div', { class: 'row' }, owner, el('button', { type: 'button', onclick: load, text: 'Load' })),
-    field('into project', target),
-    field('filter', filter),
-    status, list,
+  const form = el('form', { class: 'form', novalidate: true, onsubmit: (e) => { e.preventDefault(); load(); } },
+    ownerField,
+    targetField,
+    reposField,
+    status,
     el('div', { class: 'submit' }, importBtn,
-      el('button', { type: 'button', onclick: () => { for (const b of boxes) b.checked = !b.checked; }, text: 'Invert' }),
       el('button', { type: 'button', onclick: () => { if (typeof o.onCancel === 'function') o.onCancel(); }, text: 'Cancel' })));
-  form.focusFirst = () => owner.focus();
+  form.focusFirst = () => focusFine(owner);
   return form;
 }
 

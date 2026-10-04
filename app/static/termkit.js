@@ -3,12 +3,14 @@
    page script (term.js) calls into it. Classic script (no modules). Loaded by term.html between components.js and term.js.
 
      TermKit.ttyUrl(name, {mode, fontSize, renderer, quiet})   the iframe URL for ttyd (mode whitelisted: full | grid | ro)
-     TermKit.bind(iframe, {onActive, touchScroll, fontSize})   per iframe load: poll window.term, activity events, font size,
-                                                               touch-to-wheel shim, overscroll hardening -> handle
+     TermKit.bind(iframe, {onActive, touchScroll, fontSize, font})   per iframe load: poll window.term, activity events, font size,
+                                                               touch-to-wheel shim, overscroll hardening, and (flag only) the
+                                                               JetBrains Mono spike -> handle
+     TermKit.fontState / TermKit.fontReady                     'off' | 'loading' | 'on' | 'failed', and a promise of the final one
      TermKit.touchScroller({step, threshold, edge, momentum, onWheel})   the shim's accumulator, testable on its own
      TermKit.fitSoon(iframe)                                   debounced term.fit() (resize event when fit() is missing)
      TermKit.viewportFit()                                     --vvh / --vvt from visualViewport (soft keyboard aware)
-     TermKit.keyBar(host, {send, sendText, scroll, compact})   the 44 px key bar -> {root, setCompact(on), setApproval(on)}
+     TermKit.keyBar(host, {send, sendText, compact})   the 44 px key bar -> {root, setCompact(on), setApproval(on)}
      TermKit.pressable(button, fire, opts) / TermKit.repeater(fire, opts)   press and hold-to-repeat, soft keyboard stays up
      TermKit.contextParts(session) / compactKeys(...) / backTarget(...) / clampFont(...)   small pure helpers */
 'use strict';
@@ -21,6 +23,14 @@ const TermKit = (() => {
   const GRID_FONT = 11;
   const BIND_TIMEOUT_MS = 10000;
   const BIND_POLL_MS = 100;
+
+  /* The font spike (v0.5.8, OFF by default): ttyd's own page asks for system fonts, which differ per device (a phone has no Menlo, no
+     Consolas), so cell width, cursor and box drawing vary. bind() can load the vendored JetBrains Mono into the iframe instead. Verdict
+     on real devices first: ccboard:term:font=1 (or bind's `font: true`) turns it on; see TermKit.fontState. */
+  const FONT_FLAG = 'ccboard:term:font';
+  const FONT_FAMILY = 'JetBrains Mono';
+  const FONT_URL = '/static/vendor/fonts/jetbrains-mono-latin-wght-normal.woff2';
+  const FONT_LOAD_MS = 8000;                    // a stalled download ends as 'failed' instead of 'loading' for ever
 
   /* ---- pure helpers ------------------------------------------------------------------------------------------------ */
 
@@ -272,6 +282,82 @@ const TermKit = (() => {
     };
   }
 
+  /* ---- font spike state ------------------------------------------------------------------------------------------- */
+
+  let fontState = 'off';                        // 'off' | 'loading' | 'on' | 'failed'
+  let fontPromise = null;                       // created per attempt; null = nothing was asked for (fontReady then resolves with the state)
+  let fontSeq = 0;
+
+  /* One attempt = one token (one terminal's document). settle(state) is the only way out of 'loading' and takes effect once; the
+     exported state and promise follow the latest attempt only, so a page with several terminals (a grid) still gives every one its
+     own font while TermKit.fontState reports the newest. A reload or destroy() settles the old attempt as 'off': a slow download then
+     never repaints a dead document. The promise never rejects; it resolves with the state at the time it settled. */
+  function fontAttempt() {
+    const seq = ++fontSeq;
+    let resolve = () => {};
+    fontPromise = new Promise((res) => { resolve = res; });
+    fontState = 'loading';
+    let settled = false;
+    let cleanup = null;
+    return {
+      open: () => !settled,
+      onSettled(fn) { cleanup = fn; },                                // the load timer is cleared however the attempt ends
+      settle(state) {
+        if (settled) return;
+        settled = true;
+        if (seq === fontSeq) fontState = state;
+        if (cleanup) { try { cleanup(); } catch (_) { /* a cleanup must not keep the state from settling */ } }
+        resolve(seq === fontSeq ? fontState : state);
+      },
+    };
+  }
+
+  /* The persisted switch: ccboard:term:font = '1'. Read when a frame loads (never at load time of this file). A phone has no console, so
+     the page URL can flip it: /term/<session>?font=1 turns it on (and keeps it on), ?font=0 turns it off and forgets it. */
+  function fontFlag() {
+    try {
+      const q = new URLSearchParams(location.search || '').get('font');
+      if (q === '1' || q === '0') {
+        try { if (q === '1') localStorage.setItem(FONT_FLAG, '1'); else localStorage.removeItem(FONT_FLAG); } catch (_) { /* storage may be unavailable: the URL still decides this load */ }
+        return q === '1';
+      }
+    } catch (_) { /* no location */ }
+    try { return localStorage.getItem(FONT_FLAG) === '1'; } catch (_) { return false; }
+  }
+
+  /* "'JetBrains Mono', <what ttyd had>": prepended once, so a second pass over the same terminal changes nothing. */
+  function withFontFamily(prev) {
+    const cur = typeof prev === 'string' && prev.trim() ? prev : 'monospace';
+    return cur.includes(FONT_FAMILY) ? cur : "'" + FONT_FAMILY + "', " + cur;
+  }
+
+  /* The spike itself, for one ttyd window (same origin: the caller already read w.document). Order matters: the face is loaded and added
+     to the iframe's document.fonts FIRST, so that when term.options.fontFamily changes xterm measures the cell with the real glyphs and
+     the fit() after it gets the final cols and rows. Every step is guarded; any failure ends as 'failed' and leaves the terminal as ttyd
+     made it. Never throws, never blocks the caller (the rest of bind() does not wait for the download). */
+  function startFont(w, iframe, attempt) {
+    let timer = null;
+    const done = (state) => attempt.settle(state);
+    attempt.onSettled(() => { if (timer !== null) { clearTimeout(timer); timer = null; } });
+    try {
+      const Face = w.FontFace;
+      const fonts = w.document ? w.document.fonts : null;
+      if (typeof Face !== 'function' || !fonts || typeof fonts.add !== 'function') { done('failed'); return; }
+      const face = new Face(FONT_FAMILY, 'url(' + FONT_URL + ')', { weight: '100 800' });
+      timer = setTimeout(() => { timer = null; done('failed'); }, FONT_LOAD_MS);
+      Promise.resolve(face.load()).then(() => {
+        if (!attempt.open()) return;                                   // superseded, destroyed or timed out meanwhile
+        fonts.add(face);
+        const t = w.term;
+        if (t && t.options) t.options.fontFamily = withFontFamily(t.options.fontFamily);
+        fitNow(iframe);
+        done('on');
+      }).catch(() => done('failed'));
+    } catch (_) {
+      done('failed');
+    }
+  }
+
   /* ---- the iframe -------------------------------------------------------------------------------------------------- */
 
   const fitTimers = new WeakMap();
@@ -329,6 +415,10 @@ const TermKit = (() => {
        - applies fontSize (term.options.fontSize, then fit())
        - sets touch-action:none on .xterm and overscroll-behavior:none on the document, through the CSSOM
        - installs the touch -> wheel shim on .xterm-screen (tmux mouse mode turns wheel into history scroll)
+       - the font spike, only when `font` is true (an explicit false wins) or, with `font` left out, ccboard:term:font = '1' in
+         localStorage (or ?font=1 on the page URL, ?font=0 to clear): loads JetBrains Mono into the iframe, THEN sets
+         term.options.fontFamily and fits (see startFont). The outcome is TermKit.fontState; without FontFace, or when the load
+         fails, the terminal keeps the fonts ttyd chose.
      It gives up silently when the frame is cross-origin or never defines term. */
   function bind(iframe, opts) {
     const o = opts || {};
@@ -350,7 +440,13 @@ const TermKit = (() => {
     }
     handle.setFontSize = setFontSize;
     handle.fit = () => fitNow(iframe);
-    handle.destroy = () => { generation += 1; stopPoll(); iframe.removeEventListener('load', onLoad); };
+    let fontTry = null;                       // this binding's current font attempt (null: the spike is off for this load)
+    handle.destroy = () => {
+      generation += 1;
+      stopPoll();
+      iframe.removeEventListener('load', onLoad);
+      if (fontTry) { fontTry.settle('off'); fontTry = null; }
+    };
 
     function wheelDispatcher(w, screen) {
       return (deltaY, target, at) => {
@@ -403,6 +499,11 @@ const TermKit = (() => {
       generation += 1;
       const gen = generation;
       stopPoll();
+      if (fontTry) fontTry.settle('off');                                  // the previous document's attempt is over
+      const wantFont = o.font !== undefined && o.font !== null ? !!o.font : fontFlag();
+      fontTry = wantFont ? fontAttempt() : null;
+      const attempt = fontTry;
+      let fontStarted = false;
       const started = Date.now();
       let w = null;
       const step = () => {
@@ -414,6 +515,7 @@ const TermKit = (() => {
               w = win;
               listenActive(w.document);
               if (o.fontSize !== undefined && o.fontSize !== null) setFontSize(o.fontSize);
+              if (attempt) { fontStarted = true; startFont(w, iframe, attempt); }
             }
           }
           if (w) {
@@ -424,8 +526,12 @@ const TermKit = (() => {
               return true;
             }
           }
-        } catch (_) { return true; }
-        if (Date.now() - started > BIND_TIMEOUT_MS) { if (w) harden(w.document); return true; }
+        } catch (_) { if (attempt && !fontStarted) attempt.settle('failed'); return true; }
+        if (Date.now() - started > BIND_TIMEOUT_MS) {
+          if (attempt && !fontStarted) attempt.settle('failed');          // window.term never showed up: nothing to put a font into
+          if (w) harden(w.document);
+          return true;
+        }
         return false;
       };
       if (step()) return;
@@ -437,13 +543,14 @@ const TermKit = (() => {
 
   /* ---- the key bar ------------------------------------------------------------------------------------------------- */
 
-  /* label: visible text; short: label in compact mode; key: tmux key name for send(); scroll: argument of scroll(); title: tooltip and
-     aria-label; repeat: hold-to-repeat. The scroll keys never send raw keys: the server decides between copy-mode and PageUp. */
+  /* label: visible text; short: label in compact mode; key: tmux key name for send(); title: tooltip and aria-label; repeat: hold-to-repeat.
+     Two rows (v0.5.6d): PgUp / PgDn / Top / Bottom are the scroll rail's job (term.js, the right edge of the terminal), so they are not repeated
+     here and Ctrl+O joined the arrows. Shift+Tab reads '⇧Tab' at every width: one label, 13 px like the others, the title spells it out. */
   const KEY_ROWS = [
     [
       { label: 'Esc', key: 'Escape', title: 'Escape' },
       { label: 'Tab', key: 'Tab', title: 'Tab' },
-      { label: 'Shift+Tab', short: '⇧Tab', key: 'BTab', title: 'Shift+Tab' },
+      { label: '⇧Tab', key: 'BTab', title: 'Shift+Tab' },
       { label: 'Ctrl-C', short: '^C', key: 'C-c', title: 'Ctrl-C' },
       { label: 'Enter', key: 'Enter', title: 'Enter' },
     ],
@@ -453,33 +560,25 @@ const TermKit = (() => {
       { label: '←', key: 'Left', title: 'Left', repeat: true },
       { label: '→', key: 'Right', title: 'Right', repeat: true },
       { label: '⌫', key: 'BSpace', title: 'Backspace', repeat: true },
-    ],
-    [
-      { label: 'PgUp', scroll: 'up', title: 'Page up (scroll back)', repeat: true },
-      { label: 'PgDn', scroll: 'down', title: 'Page down (scroll forward)', repeat: true },
-      { label: 'Top', scroll: 'top', title: 'Scroll to the top' },
-      { label: 'Bottom', scroll: 'bottom', title: 'Scroll to the bottom' },
       { label: 'Ctrl+O', key: 'C-o', title: 'Ctrl+O' },
     ],
   ];
 
-  /* keyBar(host, {send(keys[]), sendText(text, enter), scroll(dir), compact}) -> {root, setCompact(on), setApproval(on)}.
-     Rows: Esc Tab Shift+Tab Ctrl-C Enter / arrows and backspace / PgUp PgDn Top Bottom Ctrl+O. Every key is at least 44 px
-     (term.css). Holding an arrow or backspace repeats it after 400 ms, every 90 ms, batched into one send() of at most 20 keys.
-     Compact (soft keyboard up) keeps Esc ^C Tab Shift+Tab Enter and a More toggle for the other rows. setApproval(true) adds a
-     y / n row (a pending permission: remote approve is off while this page is open, the answer is typed into the terminal). */
+  /* keyBar(host, {send(keys[]), sendText(text, enter), compact}) -> {root, setCompact(on), setApproval(on)}.
+     Rows: Esc Tab ⇧Tab Ctrl-C Enter / arrows, backspace and Ctrl+O. Every key is at least 44 px (term.css). Holding an arrow or backspace repeats it
+     after 400 ms, every 90 ms, batched into one send() of at most 20 keys. Compact (soft keyboard up) keeps Esc ^C Tab ⇧Tab Enter and a More toggle
+     for the second row. setApproval(true) adds a y / n row (a pending permission: remote approve is off while this page is open, the answer is typed
+     into the terminal). */
   function keyBar(host, opts) {
     const o = opts || {};
     const send = typeof o.send === 'function' ? o.send : () => {};
     const sendText = typeof o.sendText === 'function' ? o.sendText : () => {};
-    const scroll = typeof o.scroll === 'function' ? o.scroll : () => {};
     const shorts = [];
 
     function keyButton(spec) {
-      const b = el('button', { type: 'button', class: 'kb-key', 'aria-label': spec.title || spec.label, title: spec.title || spec.label, 'data-key': spec.key || spec.scroll, text: spec.label });
+      const b = el('button', { type: 'button', class: 'kb-key', 'aria-label': spec.title || spec.label, title: spec.title || spec.label, 'data-key': spec.key, text: spec.label });
       if (spec.short) shorts.push({ node: b, long: spec.label, short: spec.short });
-      if (spec.scroll) pressable(b, () => scroll(spec.scroll), spec.repeat ? { repeat: true, every: 150, backlog: false } : {});
-      else pressable(b, (n) => send(new Array(n).fill(spec.key)), spec.repeat ? { repeat: true, delay: 400, every: 90, max: 20 } : {});
+      pressable(b, (n) => send(new Array(n).fill(spec.key)), spec.repeat ? { repeat: true, delay: 400, every: 90, max: 20 } : {});
       return b;
     }
     function textButton(label, text, title) {
@@ -512,5 +611,10 @@ const TermKit = (() => {
     return { root, setCompact, setApproval };
   }
 
-  return { ttyUrl, bind, touchScroller, fitSoon, fitNow, viewportFit, keyBar, pressable, repeater, compactKeys, backTarget, contextParts, clampFont, FONT_MIN, FONT_MAX };
+  return {
+    ttyUrl, bind, touchScroller, fitSoon, fitNow, viewportFit, keyBar, pressable, repeater, compactKeys, backTarget, contextParts, clampFont, FONT_MIN, FONT_MAX,
+    /* the font spike's outcome ('off' until a bind asked for it) and a promise of the final state; it never rejects */
+    get fontState() { return fontState; },
+    get fontReady() { return fontPromise || Promise.resolve(fontState); },
+  };
 })();

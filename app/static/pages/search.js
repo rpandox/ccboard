@@ -24,13 +24,15 @@ async function renderSearch(sec, q) {
     if (!r.results || !r.results.length) { sec.append(el('div', { class: 'dim', text: 'no matches' })); return; }
     for (const hit of r.results) {
       const where = hit.project ? `${hit.project}/${hit.repo}` : (hit.cwd || '').split('/').slice(-2).join('/');
+      // the role is a label, not a verdict: violet for the assistant, slate for you (never the green that means done); Peek and Attach sit at the right
       sec.append(el('div', { class: 'sess' },
         el('div', { class: 'main' },
-          el('span', { class: 'state ' + (hit.kind === 'assistant' ? 'done' : ''), text: hit.kind }),
-          el('span', { class: 'name', text: where }),
-          el('span', { class: 'dim', text: (hit.ts || '').replace('T', ' ').slice(0, 16) }),
-          hit.tmux ? el('a', { class: 'btn small', href: sessionHash(hit.tmux), text: 'Peek' }) : null,
-          hit.tmux ? el('a', { class: 'btn small', href: `/term/${encodeURIComponent(hit.tmux)}`, target: '_blank', rel: 'noopener', text: 'Attach' }) : el('code', { text: String(hit.session_id || '').slice(0, 8) })),
+          el('span', { class: 'bdg ' + (hit.kind === 'assistant' ? 'hue-violet' : 'hue-slate'), text: hit.kind }),
+          el('span', { class: 'name ' + (hit.project && typeof chipHue === 'function' ? chipHue('project', hit.project) : ''), text: where }),
+          el('span', { class: 'dim mono', text: (hit.ts || '').replace('T', ' ').slice(0, 16) }),
+          el('span', { class: 'res-actions' },
+            hit.tmux ? el('a', { class: 'btn small', href: sessionHash(hit.tmux), text: 'Peek' }) : null,
+            hit.tmux ? el('a', { class: 'btn small minimal', href: `/term/${encodeURIComponent(hit.tmux)}`, target: '_blank', rel: 'noopener', text: 'Attach' }) : el('code', { text: String(hit.session_id || '').slice(0, 8) }))),
         el('div', { class: 'last', text: hit.snippet })));
     }
   } catch (e) {

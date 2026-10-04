@@ -17,9 +17,9 @@ section { scroll-margin-top:64px; }
 #hdr-search { width:200px; }
 #hdr .search-toggle { display:none; }
 .badge { padding:3px 10px; border-radius:12px; font-size:12px; border:1px solid var(--line); color:var(--dim); white-space:nowrap; max-width:46vw; overflow:hidden; text-overflow:ellipsis; }
-.badge.ok { border-color:var(--ok); color:var(--ok); }
-.badge.bad { border-color:var(--bad); color:var(--bad); }
-.badge.warn { border-color:var(--warn); color:var(--warn); }
+.badge.ok { border-color:var(--ok); color:var(--ok-fg); }
+.badge.bad { border-color:var(--bad); color:var(--bad-fg); }
+.badge.warn { border-color:var(--warn); color:var(--warn-fg); }
 
 /* ---------- strips (usage, notify panel, nodes) ---------- */
 .usage { display:flex; gap:14px; flex-wrap:wrap; align-items:center; padding:8px 12px; border-bottom:1px solid var(--line); font-size:12px; color:var(--dim); background:var(--bg-0); }
@@ -32,7 +32,7 @@ section { scroll-margin-top:64px; }
 .usage b { color:var(--fg); font-weight:600; }
 .usage a.chip { color:var(--fg); text-decoration:none; }
 .usage a.chip.attn { border-color:var(--warn); }
-.usage a.chip.bad { border-color:var(--bad); color:var(--bad); }
+.usage a.chip.bad { border-color:var(--bad); color:var(--bad-fg); }
 #notify { flex-direction:column; align-items:stretch; gap:8px; }
 #notify .row { gap:8px; }
 #notify ol { margin:0; padding-left:18px; }
@@ -96,12 +96,20 @@ section { scroll-margin-top:64px; }
 
 /* states */
 .state { padding:2px 8px; border-radius:10px; font-size:11px; border:1px solid var(--line); color:var(--dim); white-space:nowrap; }
-.state.working { border-color:var(--acc); color:var(--acc); }
-.bp5-dark .state.working.bp5-tag { color:var(--sig); background:rgba(77,208,225,.12); }   /* Blueprint's intent-primary blue would outrank the token */
-.state.waiting { border-color:var(--warn); color:var(--warn); background:var(--warn-bg); }
-.state.done { border-color:var(--ok); color:var(--ok); }
-.state.errored { border-color:var(--bad); color:var(--bad); background:var(--bad-bg); }
+.state.working { border-color:var(--sig-bd); color:var(--sig); }
+.state.waiting { border-color:var(--warn); color:var(--warn-fg); background:var(--warn-bg); }
+.state.done { border-color:var(--mute-green-bd); color:var(--mute-green); }
+.state.errored { border-color:var(--bad); color:var(--bad-fg); background:var(--bad-bg); }
+.state.idle { border-color:var(--mute-slate-bd); color:var(--mute-slate); }
 .state.ended { opacity:.6; }
+/* state chips are Blueprint tags whose intent classes (working = primary blue, waiting, done, errored) colour them at (0,4,0): restated at (0,5,0) from the tokens
+   so the accent stays cyan and the rest is the muted set: working sig, waiting amber, done green, errored rose, idle slate, ended dim */
+.bp5-dark .state.bp5-tag.bp5-minimal.working { color:var(--sig); background:var(--sig-bg); }
+.bp5-dark .state.bp5-tag.bp5-minimal.waiting { color:var(--warn-fg); background:var(--warn-bg); }
+.bp5-dark .state.bp5-tag.bp5-minimal.done { color:var(--mute-green); background:var(--mute-green-bg); }
+.bp5-dark .state.bp5-tag.bp5-minimal.errored { color:var(--bad-fg); background:var(--bad-bg); }
+.bp5-dark .state.bp5-tag.bp5-minimal.idle { color:var(--mute-slate); background:var(--mute-slate-bg); }
+.bp5-dark .state.bp5-tag.bp5-minimal.ended { color:var(--dim); background:transparent; }
 
 /* ---------- controls (Blueprint owns buttons, tags and inputs; only sizing lives here) ---------- */
 .bp5-button.icon { padding:5px 7px; }
@@ -109,14 +117,21 @@ section { scroll-margin-top:64px; }
 .bp5-dark .bp5-button .bp5-icon + span, .bp5-dark .bp5-button > .bp5-icon + span { margin-left:6px; }
 .bp5-button > .bp5-icon:not(:last-child) { margin-right:6px; }
 select { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:2px; padding:6px 8px; font-size:14px; min-width:0; font-family:inherit; height:30px; }
-select:focus { outline:none; border-color:var(--acc); }
+select:focus { outline:none; border-color:var(--sig); box-shadow:0 0 0 1px var(--sig); }
 /* touch size comes from --tap (tokens.css: 28 px, 44 px under (pointer:coarse) and html.force-coarse) */
 .bp5-button, .bp5-input, select { min-height:var(--tap); }
 .bp5-button { min-width:var(--tap); }
+.bp5-button.bp5-small { min-height:var(--row-btn,28px); min-width:var(--row-btn,28px); padding:0 10px; }   /* one height for a.btn and button in a row: 28 px, 44 on touch */
+.bp5-button.bp5-small.icon { padding:0 6px; }
 @media (pointer:coarse) { .bp5-button.bp5-small { min-height:var(--tap); min-width:var(--tap); } }   /* Blueprint's small (24 px) must not win on touch */
 html.force-coarse .bp5-button.bp5-small { min-height:var(--tap); min-width:var(--tap); }
 .bp5-dark .bp5-input { background:var(--bg); }
 textarea.bp5-text-area { min-height:80px; resize:vertical; }
+/* a textarea without a Blueprint rule fell back to the browser's grey: same surface as the inputs, 1 px --line edge, and one focus ring (--sig) for every field */
+.bp5-dark .bp5-text-area { background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:2px; box-shadow:none; }
+.bp5-text-area::placeholder, .bp5-input::placeholder { color:var(--dim); opacity:1; }
+.bp5-dark .bp5-input:focus { outline:none; box-shadow:inset 0 0 0 1px var(--sig), 0 0 0 1px var(--sig); }
+.bp5-dark .bp5-text-area:focus, .bp5-dark select:focus { outline:none; border-color:var(--sig); box-shadow:0 0 0 1px var(--sig); }
 .state, .badge { white-space:nowrap; }
 .state.ended { opacity:.6; }
 .bp5-tag.bp5-minimal:not([class*=intent]) { color:var(--dim); }
@@ -125,15 +140,30 @@ form.inline input[type=text] { flex:1 1 160px; min-width:0; }
 
 /* forms */
 .form { background:var(--panel); border:1px solid var(--line); border-radius:2px; padding:10px 12px; margin:8px 0; }
-.form label { display:block; margin:6px 0 2px; color:var(--dim); font-size:12px; }
-.form .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:8px; margin:4px 0; }
-.form .field { display:flex; flex-direction:column; gap:3px; min-width:0; }
-.form .field > span { color:var(--dim); font-size:12px; }
+/* rhythm: 12 px between fields, 2-4 px between a label and its control, helper text (.dim) under the control. A label is --fg-2 12 px / 500; helper text stays --dim. */
+.form label { display:block; margin:0 0 2px; color:var(--fg-2); font-size:12px; font-weight:500; }
+.form > * + * { margin-top:12px; }
+.form > label { margin-top:12px; }                 /* a bare label opens a new field */
+.form > label:first-child { margin-top:0; }
+.form > label + * { margin-top:2px; }
+.form .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap:8px; margin:4px 0; }
+.form .field { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.form .field > span:first-child { margin:0 0 2px; color:var(--fg-2); font-size:12px; font-weight:500; }
+.form .field > .dim { margin-top:2px; color:var(--dim); font-size:12px; }
+.field-err { color:var(--bad-fg); font-size:12px; }
+.field-err:empty { display:none; }
 .form .field input, .form .field select, .form .field textarea { width:100%; }
 .form .checks { display:flex; flex-wrap:wrap; gap:6px 14px; }
 .form .checks label { display:flex; align-items:center; gap:6px; margin:0; color:var(--fg); font-size:13px; }
 .form details { margin-top:6px; }
-.form details summary { cursor:pointer; color:var(--dim); font-size:12px; }
+/* a disclosure reads as a control: a rotating caret, 28 px tall (44 on touch), the whole row is the target */
+.form details summary { display:flex; align-items:center; gap:6px; min-height:var(--row-btn,28px); cursor:pointer; color:var(--fg-2); font-size:12px; list-style:none; }
+.form details summary::-webkit-details-marker { display:none; }
+.form details summary::before { content:""; flex:none; width:6px; height:6px; border-right:1.5px solid currentColor; border-bottom:1.5px solid currentColor; transform:rotate(-45deg); transition:transform .12s; }
+.form details[open] > summary::before { transform:rotate(45deg); }
+@media (pointer:coarse) { .form details summary { min-height:var(--tap); } }
+html.force-coarse .form details summary { min-height:var(--tap); }
+@media (prefers-reduced-motion:reduce) { .form details summary::before { transition:none; } }
 .form .submit { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
 .hidden { display:none !important; }
 .bp5-control.bp5-checkbox { margin:0; }
@@ -148,7 +178,7 @@ form.inline input[type=text] { flex:1 1 160px; min-width:0; }
 pre.tail { background:var(--bg); border:1px solid var(--line); border-radius:2px; padding:8px; font-size:12px; font-family:var(--font-mono); font-variant-ligatures:none; font-variant-numeric:tabular-nums; max-height:220px; overflow:auto; white-space:pre-wrap; word-break:break-all; }
 .url { word-break:break-all; font-size:12px; color:var(--dim); }
 .muted { opacity:.6; }
-.bad { color:var(--bad); }
+.bad { color:var(--bad-fg); }                                   /* red TEXT (inline form errors, status lines): 5.1:1 on --card and --panel */
 .diffbox { max-height:50vh; overflow:auto; background:var(--bg); border:1px solid var(--line); border-radius:2px; padding:4px; margin:6px 0; font-size:12px; }
 .diffbox .d2h-wrapper { color:var(--fg-2); }
 .diffbox .d2h-file-header { background:var(--bg-0); color:var(--dim); border-color:var(--line); }
@@ -191,6 +221,7 @@ html.force-coarse .bp5-input, html.force-coarse select, html.force-coarse textar
   .actions { flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; padding-bottom:2px; }
   .actions::-webkit-scrollbar { display:none; }
   .actions > * { flex:0 0 auto; }
+  .task .actions { flex-wrap:wrap; overflow:visible; padding-bottom:0; }              /* a task card's seven buttons wrap onto a second and third line: none hides past the edge of a 348 px row (the Archive and retry buttons did) */
   .sess { padding-left:8px; margin-left:0; }
   .sess .main > code { display:none; }
   #modal { padding:0; align-items:flex-end; }
@@ -206,13 +237,100 @@ html.force-coarse .bp5-input, html.force-coarse select, html.force-coarse textar
 textarea.composer { display:block; flex:1 1 auto; min-width:0; width:auto; box-sizing:border-box; min-height:var(--tap); height:var(--tap); max-height:none;
   margin:0; padding:6px 10px; line-height:1.4; resize:none; overflow-y:hidden; font-family:var(--font-mono); font-size:14px; color:var(--fg);
   background:var(--bg); border:1px solid var(--line); border-radius:3px; box-shadow:none; }
-textarea.composer::placeholder { color:var(--dim-2); }
+textarea.composer::placeholder { color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }   /* one line, however long the session's name */
 textarea.composer:focus { outline:none; border-color:var(--sig); box-shadow:0 0 0 1px var(--sig); }
 .bp5-button.nl { min-width:var(--tap); font-family:var(--font-mono); font-size:15px; }
 form.peek-send, #keys .send { align-items:flex-end; }                /* the buttons stay on the last line while the box grows */
 @media (pointer:coarse) { textarea.composer { font-size:16px; } }    /* 16 px keeps iOS Safari from zooming on focus */
 html.force-coarse textarea.composer { font-size:16px; height:auto; min-height:var(--tap); line-height:1.4; }
 
-/* tabs: a tap target on touch (the Files tab was 32 px wide) */
-@media (pointer:coarse) { .bp5-tab { min-width:44px; } }
-html.force-coarse .bp5-tab { min-width:44px; }
+/* ================= buttons: one hierarchy on every screen (v0.5.6d) =================
+   Blueprint colours buttons in its own blue, red and grey. The rules below restate them from the tokens (tokens.css) so the page has one accent.
+   primary   filled --sig, dark text. One per screen or form; in a list of cards or rows the lead item is filled and the rest are `primary tinted`.
+   tinted    class `tinted` next to `primary`: cyan outline on a 12 % tint. A Send beside a composer (.ib-send .rr-send .peek-send) is tinted while the box is empty
+             and filled once the row has class `has-text` (components.js composerBind toggles it). A plain `small` Send in those rows turns primary on has-text as well.
+   default   secondary: --btn-bg fill and a 1 px --line-strong edge (3:1 against the cards), so it never disappears on a dark card.
+   minimal   text-labelled: transparent with a 1 px --line edge. Icon-only buttons (class icon, an aria-label, or a lone icon child) stay borderless; every minimal
+             button shows its hover and pressed tint. The structural minimal buttons (bottom nav, pick rows, tabs, toggles) are listed in the :where() exclusion below.
+   danger    red outline on a faint red tint, --bad-fg text. Only the armed second tap (class `confirm`, confirmButton) is a solid red fill. `danger minimal` is the
+             same outline without the tint. Never a loud fill at rest.
+   warn      class `warn` on a default button: amber outline (Fix CI and other attention that is not destructive).
+   Hover and pressed tints sit under (hover:hover) where they are hover; the resting rules outrank Blueprint's :hover (0,4,0) on a tie because this file loads later, so a
+   tapped button on a phone never keeps Blueprint's hover colour. The variants flip custom properties (--pb-* for primary, --db-* for danger) that one resting rule consumes. */
+.bp5-dark a.bp5-button { text-decoration:none; }
+
+/* default */
+.bp5-dark .bp5-button:not([class*=bp5-intent-]):not(.bp5-minimal) { background:var(--btn-bg); border:1px solid var(--line-strong); box-shadow:none; color:var(--fg); }
+
+/* minimal: transparent at rest (Blueprint's :hover tint is also (0,4,0)); the text-labelled ones get a quiet edge */
+.bp5-dark .bp5-button.bp5-minimal:not([class*=bp5-intent-]) { background:transparent; box-shadow:none; }
+.bp5-dark .bp5-button.bp5-minimal:not([class*=bp5-intent-]):not(:where(.icon, .bn, .pick-row, .tk-pick, .nl, .fs, .chev, .pb-toggle, [role=tab], [aria-label])) { border:1px solid var(--line); color:var(--fg-2); }
+.bp5-dark .bp5-button.bp5-minimal:not([class*=bp5-intent-]):has(> .bp5-icon:only-child) { border:0; }
+
+/* primary */
+.bp5-dark .bp5-button.bp5-intent-primary:not(.bp5-minimal) { background:var(--pb-bg, var(--sig)); color:var(--pb-fg, var(--on-sig)); border:1px solid var(--pb-bd, var(--sig)); box-shadow:none; font-weight:600; }
+.bp5-dark .bp5-button.bp5-intent-primary.tinted,
+.bp5-dark :is(.ib-send, .rr-send, .peek-send):not(.has-text) .bp5-button.bp5-intent-primary { --pb-bg:var(--sig-bg); --pb-fg:var(--sig); --pb-bd:var(--sig-bd); --pb-bg-h:var(--sig-bg-hover); }
+.bp5-dark :is(.ib-send, .rr-send, .peek-send).has-text .bp5-button.bp5-intent-primary { --pb-bg:var(--sig); --pb-fg:var(--on-sig); --pb-bd:var(--sig); --pb-bg-h:var(--sig); }
+.bp5-dark :is(.ib-send, .rr-send, .peek-send).has-text > .bp5-button[type=submit]:not([class*=bp5-intent-]):not(.bp5-minimal):not(:disabled) { background:var(--sig); border-color:var(--sig); color:var(--on-sig); font-weight:600; }
+
+/* danger: outlined, the armed second tap is the only fill */
+.bp5-dark .bp5-button.bp5-intent-danger:not(.bp5-minimal) { background:var(--db-bg, var(--bad-bg)); color:var(--db-fg, var(--bad-fg)); border:1px solid var(--db-bd, var(--bad)); box-shadow:none; }
+.bp5-dark .bp5-button.bp5-minimal.bp5-intent-danger { background:var(--db-bg, transparent); color:var(--db-fg, var(--bad-fg)); border:1px solid var(--db-bd, var(--bad)); box-shadow:none; }
+.bp5-dark .bp5-button.bp5-intent-danger.confirm { --db-bg:var(--bad-solid); --db-fg:#fff; --db-bd:var(--bad-solid); --db-bg-h:var(--bad-solid); }
+
+/* warn: attention that is not destructive (Fix CI) */
+.bp5-dark .bp5-button.warn:not([class*=bp5-intent-]):not(.bp5-minimal) { background:var(--warn-bg); border-color:var(--warn); color:var(--warn-fg); }
+
+/* hover: only where a pointer hovers; pressed tints apply everywhere (the button is under a finger) */
+@media (hover:hover) {
+  .bp5-dark .bp5-button:not([class*=bp5-intent-]):where(:not(:disabled):not(.bp5-disabled)):hover { background:var(--btn-bg-hover); }
+  .bp5-dark .bp5-button.bp5-intent-primary:not(.bp5-minimal):where(:not(:disabled):not(.bp5-disabled)):hover { background:var(--pb-bg-h, var(--pb-bg, var(--sig))); filter:brightness(1.08); }
+  .bp5-dark :is(.ib-send, .rr-send, .peek-send).has-text > .bp5-button[type=submit]:not([class*=bp5-intent-]):not(.bp5-minimal):not(:disabled):hover { filter:brightness(1.08); }
+  .bp5-dark .bp5-button.bp5-intent-danger:not(.bp5-minimal):where(:not(:disabled):not(.bp5-disabled)):hover { background:var(--db-bg-h, var(--bad-bg-hover)); }
+  .bp5-dark .bp5-button.bp5-minimal.bp5-intent-danger:where(:not(:disabled):not(.bp5-disabled)):hover { background:var(--db-bg-h, var(--bad-bg-hover)); color:var(--db-fg, var(--bad-fg)); }
+  .bp5-dark .bp5-button.bp5-intent-danger.confirm:where(:not(:disabled):not(.bp5-disabled)):hover { filter:brightness(1.12); }
+  .bp5-dark .bp5-button.warn:not([class*=bp5-intent-]):not(.bp5-minimal):where(:not(:disabled):not(.bp5-disabled)):hover { filter:brightness(1.12); }
+}
+.bp5-dark .bp5-button:not([class*=bp5-intent-]):where(:not(:disabled):not(.bp5-disabled)):active { background:var(--btn-bg-active); }
+.bp5-dark .bp5-button.bp5-intent-primary:not(.bp5-minimal):where(:not(:disabled):not(.bp5-disabled)):active { filter:brightness(.92); }
+.bp5-dark .bp5-button.bp5-intent-danger:not(.bp5-minimal):where(:not(:disabled):not(.bp5-disabled)):active { background:var(--db-bg-h, var(--bad-bg-hover)); filter:brightness(.92); }
+.bp5-dark .bp5-button.bp5-minimal.bp5-intent-danger:where(:not(:disabled):not(.bp5-disabled)):active { background:var(--db-bg-h, var(--bad-bg-hover)); color:var(--db-fg, var(--bad-fg)); }
+
+/* disabled looks disabled and is never invisible (the title says why) */
+.bp5-dark .bp5-button:disabled, .bp5-dark .bp5-button.bp5-disabled { opacity:.5; cursor:not-allowed; }
+.bp5-dark .bp5-button.bp5-intent-primary:disabled, .bp5-dark .bp5-button.bp5-intent-primary.bp5-disabled { opacity:.45; filter:none; }
+
+/* keyboard focus: the accent ring, never after a mouse click (shell.css states the same for the rest of the app; the terminal page does not load it) */
+.bp5-dark .bp5-button:focus-visible { outline:2px solid var(--sig); outline-offset:2px; }
+.bp5-dark .bp5-button:focus:not(:focus-visible) { outline:none; }
+
+/* ---- quick-reply editor (components.js quickReplyEditor): a modal <dialog> on the terminal page and the board (one implementation, also the peek's).
+   Buttons follow the hierarchy above: Save is the one filled primary, Cancel the default bordered button, + add / Reset quiet, remove a quiet icon.
+   The dialog has no padding (a click on it is the backdrop); .qr-box carries it. Inputs are 16 px on coarse pointers (the rule above) so iOS
+   does not zoom. It is anchored to the TOP of the visual viewport, not centred in the layout one (a soft keyboard would put Save under it):
+   components.js modalShell keeps --vvt (the visual viewport's offset) and --vvh (its height) on the dialog while it is open. The list scrolls
+   when the keyboard leaves little height. ---- */
+dialog.qr-editor { position:fixed; inset:calc(var(--vvt, 0px) + env(safe-area-inset-top, 0px) + 12px) 0 auto 0; margin:0 auto; padding:0; width:min(440px, calc(100vw - 24px)); max-width:none;
+  max-height:calc(100vh - 24px - env(safe-area-inset-top, 0px)); max-height:calc(var(--vvh, 100dvh) - 24px - env(safe-area-inset-top, 0px));
+  border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--fg); overflow:hidden; }
+dialog.qr-editor:focus { outline:none; }                              /* the dialog itself holds the focus on a phone (components.js modalShell) */
+dialog.qr-editor[open] { display:flex; flex-direction:column; }
+dialog.qr-editor::backdrop { background:rgba(0,0,0,.55); }
+dialog.qr-editor .qr-box { display:flex; flex-direction:column; gap:10px; min-height:0; padding:14px 14px calc(14px + var(--sab)); }
+dialog.qr-editor .qr-title { margin:0; font-size:15px; font-weight:600; }
+dialog.qr-editor .qr-hint { margin:0; }
+dialog.qr-editor .qr-list { display:flex; flex-direction:column; gap:6px; min-height:0; overflow-y:auto; overscroll-behavior:contain; }
+dialog.qr-editor .qr-row { display:flex; align-items:center; gap:6px; }
+dialog.qr-editor .qr-input { flex:1 1 auto; min-width:0; font-family:var(--font-mono); }
+dialog.qr-editor .qr-tools { display:flex; align-items:center; gap:8px; }
+dialog.qr-editor .qr-count { margin-left:auto; }
+dialog.qr-editor .qr-err { margin:0; font-size:12px; }                /* .bad: --bad-fg text under the list; the offending row is aria-invalid */
+dialog.qr-editor .qr-err:empty { display:none; }
+dialog.qr-editor .qr-input[aria-invalid=true] { border-color:var(--bad); }
+dialog.qr-editor .qr-actions { display:flex; justify-content:flex-end; gap:8px; }
+.chips .qr-edit { min-height:var(--tap); min-width:var(--tap); border-radius:14px; color:var(--dim); }       /* the pencil beside the peek's chips: not a .chip-btn, so it is never counted as a reply */
+dialog.qr-editor.readout { width:min(640px, calc(100vw - 24px)); }
+#quick .bp5-button, .chips .chip-btn { -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; touch-action:manipulation; }   /* a long press edits: no iOS callout or text selection */
+pre.cmd-readout { margin:0; padding:8px; background:var(--bg); border:1px solid var(--line); border-radius:2px; font:12px/1.35 var(--font-mono); font-variant-ligatures:none;
+  max-height:60vh; overflow:auto; white-space:pre-wrap; word-break:break-word; }

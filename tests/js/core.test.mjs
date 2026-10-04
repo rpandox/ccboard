@@ -217,3 +217,63 @@ test('api() on an answer that is not JSON (a proxy 502 page): the message is the
   assert.equal(e.status, 502);
   assert.equal(e.body, null);
 });
+
+// ---------------------------------------------------------------- el(): the button hierarchy classes (v0.5.6d)
+// The polish pass is CSS only (style.css, tokens.css, shell.css): `primary` and `danger` still become the Blueprint intents there, and the plain
+// marker classes the CSS keys on (tinted, confirm, has-text, hue-*, warn, info) are left in the DOM verbatim: no SEMANTIC map entry is needed.
+
+/** Every class of a built node. The harness keeps the authored className string and the classList.add() set apart (a real DOM merges them), so read both. */
+function classesOf(n) {
+  const out = new Set(String(n.className || '').split(/\s+/).filter(Boolean));
+  for (const c of ['bp5-button', 'bp5-minimal', 'bp5-small', 'bp5-tag', 'bp5-round', 'bp5-intent-primary', 'bp5-intent-danger', 'bp5-intent-success', 'bp5-intent-warning', 'bp5-input', 'bp5-text-area', 'bp5-card']) {
+    if (n.classList.contains(c)) out.add(c);
+  }
+  return [...out].sort();
+}
+
+function assertClasses(n, want, label) {
+  const have = classesOf(n);
+  for (const c of want) assert.ok(have.includes(c), `${label || ''} ${c} missing from ${have.join(' ')}`);
+}
+
+test('el(button): primary and danger map to the Blueprint intents, small and minimal to their classes, and the marker classes survive', () => {
+  const { get } = coreWorld();
+  const el = get('el');
+  const tinted = el('button', { class: 'small primary tinted', type: 'button' }, 'Allow');
+  assertClasses(tinted, ['bp5-button', 'bp5-intent-primary', 'bp5-small', 'tinted']);
+  assert.ok(!classesOf(tinted).includes('bp5-minimal'), 'a primary is never minimal');
+  assertClasses(el('button', { class: 'danger confirm' }, 'Confirm Delete'), ['bp5-button', 'bp5-intent-danger', 'confirm']);
+  const quiet = el('button', { class: 'danger minimal' }, 'Kill');
+  assertClasses(quiet, ['bp5-button', 'bp5-intent-danger', 'bp5-minimal']);
+  assert.ok(!classesOf(quiet).includes('confirm'), 'the first tap is not the armed state');
+  assertClasses(el('a', { class: 'btn small primary', href: '#/' }, 'Open'), ['bp5-button', 'bp5-intent-primary', 'bp5-small']);
+});
+
+test('el(button): icon and minimal both become bp5-minimal; a plain button gets no intent and no minimal', () => {
+  const { get } = coreWorld();
+  const el = get('el');
+  assertClasses(el('button', { class: 'icon' }), ['bp5-button', 'bp5-minimal']);
+  assertClasses(el('button', { class: 'minimal small' }, 'Reply'), ['bp5-button', 'bp5-minimal', 'bp5-small']);
+  const plain = classesOf(el('button', { class: 'small' }, 'Open')).filter((c) => c.startsWith('bp5-'));
+  assert.deepEqual(plain, ['bp5-button', 'bp5-small']);
+});
+
+test('el(button): warn, ok and bad are not button intents (a warn button is the CSS class `warn`; only primary and danger map)', () => {
+  const { get } = coreWorld();
+  const el = get('el');
+  for (const word of ['warn', 'ok', 'bad']) {
+    const b = classesOf(el('button', { class: 'small ' + word }, 'Fix CI'));
+    assert.ok(!b.some((c) => c.startsWith('bp5-intent-')), `${word} -> ${b.join(' ')}`);
+    assert.ok(b.includes(word), `${word} keeps its own class`);
+  }
+});
+
+test('el(): hue-*, has-text and info are plain classes: nothing is added or dropped, even on a badge or a form', () => {
+  const { get } = coreWorld();
+  const el = get('el');
+  assert.deepEqual(classesOf(el('span', { class: 'bdg hue-violet', text: 'claude' })), ['bdg', 'hue-violet']);
+  const state = el('span', { class: 'state working hue-slate' }, 'x');   // a state chip is still a Blueprint tag with the working intent
+  assertClasses(state, ['bp5-tag', 'bp5-minimal', 'bp5-round', 'bp5-intent-primary', 'state', 'working', 'hue-slate']);
+  assert.deepEqual(classesOf(el('form', { class: 'ib-send has-text' })), ['has-text', 'ib-send']);
+  assert.deepEqual(classesOf(el('div', { id: 'banner', class: 'info' })), ['info']);
+});

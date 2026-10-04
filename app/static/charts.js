@@ -45,7 +45,9 @@ const Charts = {
   FALLBACK: {
     '--sig': '#4dd0e1', '--ok': '#32a467', '--warn': '#ec9a3c', '--bad': '#e76a6e', '--dim': '#abb3bf', '--dim-2': '#738091', '--fg-2': '#c5cbd3',
     '--line': '#404854', '--line-soft': '#2d333b', '--card': '#252a31',
-    '--seg-0': '#4dd0e1', '--seg-1': '#7b8cff', '--seg-2': '#b78cf0', '--seg-3': '#ef8fb4', '--seg-4': '#6fd3a3', '--seg-5': '#d9c46a',
+    // the muted category hues (tokens.css): the project / agent series and the chart lines that are not a state
+    '--mute-blue': '#8db4e8', '--mute-teal': '#6cc4b8', '--mute-green': '#84c096', '--mute-violet': '#b9a9ee', '--mute-slate': '#adb7c4',
+    '--seg-0': '#8db4e8', '--seg-1': '#6cc4b8', '--seg-2': '#84c096', '--seg-3': '#b9a9ee', '--seg-4': '#adb7c4', '--seg-5': '#a3b0e6',
     '--font-mono': 'ui-monospace, Menlo, monospace',
   },
   _cache: new Map(),
@@ -157,10 +159,13 @@ Charts.fmtAxis = function (v, kind) {
     if (v === 0) return '$0';
     if (v >= 1000) return '$' + (v / 1000).toFixed(v % 1000 === 0 ? 0 : 1) + 'k';
     if (Number.isInteger(v)) return '$' + v;
-    return '$' + (v < 1 ? v.toFixed(2) : v.toFixed(1));
+    return '$' + v.toFixed(2);                                     // money has two decimals under $100, never one (fmtUsd is the rule; the axis only drops '.00' on whole dollars)
   }
   return String(+v.toFixed(2));
 };
+
+/* A line's value in the legend chips: a dollar value is fmtUsd (the same '$3.40' as the tables), everything else reads like its axis. */
+Charts._fmtLegend = function (kind) { return kind === 'usd' ? (v) => Charts.fmtUsd(v) : Charts._fmtFor(kind); };
 
 /* ---------- uPlot loader ---------- */
 
@@ -468,7 +473,9 @@ Charts._lineOpts = function (host, model, o, st, width) {
   const fmtL = Charts._fmtFor(o.fmt || 'pct');
   const fmtR = Charts._fmtFor(o.rightFmt || 'usd');
   st.mono = mono;
-  st.fmts = model.names.map((n) => (right.has(n) ? fmtR : fmtL));
+  const legL = Charts._fmtLegend(o.fmt || 'pct');
+  const legR = Charts._fmtLegend(o.rightFmt || 'usd');
+  st.fmts = model.names.map((n) => (right.has(n) ? legR : legL));
   const axes = [
     { stroke: dim, font, size: 40, grid, ticks },                                   // uPlot's two-line time labels (time over date) need 40 px
     { scale: 'y', stroke: dim, font, size: 42, grid, ticks, values: (_u, vals) => vals.map((v) => fmtL(v)) },
@@ -579,7 +586,25 @@ Charts.geom.dayMap = function (d, by) {
 /* The segments of the whole window in stacking order (bottom up): the `top` biggest keys by total, then 'other' (the rest and anything the
    keys do not explain), then '(unattributed)', which is always its own segment: never ranked against projects, never folded into 'other'.
    -> [{key, total, cls, members?}] with cls seg-0..5 | seg-other | seg-unattributed | agent-claude|codex|shell. */
-Charts.geom.rank = function (days, by, top) {
+/* Project colours that agree with the rest of the app: chipHue('project', name) (pages/agents.js) hashes a project into blue / teal / green / violet / slate, and
+   --seg-0..4 are those same five muted tokens, so a series wears the segment of its own hue. Two projects can hash to one hue and a stack needs distinct colours:
+   the biggest claimant keeps the hue, the others take the free segments (--seg-5 and the unclaimed hues) in rank order. segsFor(names, hueOf) -> [seg-N]. */
+Charts.HUE_SEG = { 'hue-blue': 'seg-0', 'hue-teal': 'seg-1', 'hue-green': 'seg-2', 'hue-violet': 'seg-3', 'hue-slate': 'seg-4' };
+Charts.geom.segsFor = function (names, hueOf) {
+  const out = names.map(() => null);
+  const taken = new Set();
+  names.forEach((n, i) => {
+    let want = null;
+    try { want = Charts.HUE_SEG[hueOf(n)] || null; } catch (_) { want = null; }
+    if (want && !taken.has(want)) { taken.add(want); out[i] = want; }
+  });
+  const free = ['seg-0', 'seg-1', 'seg-2', 'seg-3', 'seg-4', 'seg-5'].filter((c) => !taken.has(c));
+  let f = 0;
+  names.forEach((n, i) => { if (out[i] === null) out[i] = f < free.length ? free[f++] : 'seg-' + (i % 6); });
+  return out;
+};
+
+Charts.geom.rank = function (days, by, top, hueOf) {
   const tot = new Map();
   let resid = 0;
   for (const d of days) {
@@ -589,7 +614,9 @@ Charts.geom.rank = function (days, by, top) {
   }
   const named = [...tot.entries()].filter(([k]) => k !== Charts.UNATTRIBUTED).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
   const cut = top === undefined || top === null ? 6 : Math.max(0, Math.floor(Number(top)) || 0);
-  const keys = named.slice(0, cut).map(([key, total], i) => ({ key, total, cls: by === 'agent' && /^(claude|codex|shell)$/.test(key) ? 'agent-' + key : 'seg-' + (i % 6) }));
+  const head = named.slice(0, cut);
+  const segs = by !== 'agent' && typeof hueOf === 'function' ? Charts.geom.segsFor(head.map(([k]) => k), hueOf) : null;
+  const keys = head.map(([key, total], i) => ({ key, total, cls: by === 'agent' && /^(claude|codex|shell)$/.test(key) ? 'agent-' + key : (segs ? segs[i] : 'seg-' + (i % 6)) }));
   const rest = named.slice(cut);
   const restTotal = rest.reduce((a, [, v]) => a + v, 0) + resid;
   if (rest.length || resid > 0) keys.push({ key: 'other', total: restTotal, cls: 'seg-other', members: rest.map(([k]) => k) });
@@ -598,8 +625,8 @@ Charts.geom.rank = function (days, by, top) {
 };
 
 /* -> [{day, total, zero, segs:[{key, v, y0, y1}]}], y0/y1 are cumulative dollars (the base and the top of the segment). */
-Charts.geom.stack = function (days, by, top) {
-  const keys = Charts.geom.rank(days, by, top);
+Charts.geom.stack = function (days, by, top, hueOf) {
+  const keys = Charts.geom.rank(days, by, top, hueOf);
   const order = keys.map((k) => k.key);
   const named = new Set(order.filter((k) => k !== 'other'));
   return days.map((d) => {
@@ -633,6 +660,13 @@ Charts.geom.scale = function (max, H) {
   const r = (x) => +x.toFixed(6);
   const k = h / nice;
   return { max: r(nice), ticks: [0, r(nice / 2), r(nice)], k, y: (v) => h - v * k };
+};
+
+/* The readout of a whole day (a tap beside the drawn bars, on a phone where a 30-day bar is 7 px wide): the day, its total and every segment. */
+Charts.dayTitle = function (row, day) {
+  if (!row || row.zero || !row.segs.length) return `${row && row.day} · no spend`;
+  const tok = day && Number(day.tokens) > 0 ? ` · ${Charts.fmtTok(day.tokens)} tok` : '';
+  return `${row.day} · day ${Charts.fmtUsd(row.total)}${tok} · ${row.segs.map((s) => `${s.key} ${Charts.fmtUsd(s.v)}`).join(', ')}`;
 };
 
 Charts.barTitle = function (row, seg, day) {
@@ -676,8 +710,8 @@ Charts._paintBars = function (host, st) {
   const maxSegs = Math.max(2, Math.floor(Charts.MAX_RECTS / n));
   const want = o.top === undefined || o.top === null ? 6 : Math.max(0, Math.floor(Number(o.top)) || 0);
   const top = Math.min(want, maxSegs - 2);
-  const rows = Charts.geom.stack(days, by, top);
-  const keys = Charts.geom.rank(days, by, top);
+  const rows = Charts.geom.stack(days, by, top, o.hueOf);
+  const keys = Charts.geom.rank(days, by, top, o.hueOf);
   const cls = new Map(keys.map((k) => [k.key, k.cls]));
   const unpriced = o.unpriced instanceof Set ? o.unpriced : new Set(Array.isArray(o.unpriced) ? o.unpriced : []);
   const W = Math.max(240, Charts._width(host) || 640);
@@ -726,16 +760,27 @@ Charts._paintBars = function (host, st) {
     cls: k.cls, label: k.key, v: Charts.fmtUsd(k.total), hatch: unpriced.has(k.key),
     tip: k.key === Charts.UNATTRIBUTED ? Charts.UNATTRIBUTED_TIP : (k.members && k.members.length ? `${k.members.length} more: ${k.members.slice(0, 8).join(', ')}` : k.key),
   })));
-  const read = el('p', { class: 'chart-read dim', 'aria-live': 'polite', text: o.hint || 'Hover or tap a bar for the day.' });
+  const read = el('p', { class: 'chart-read dim', 'aria-live': 'polite', text: o.hint || 'Hover or tap a day for its numbers.' });
+  /* A tap or a hover that misses every drawn segment still picks the day under it (the whole column answers, a 30-day bar is 7 px wide): the pointer's
+     x maps to a slot. The page's touch-action keeps vertical scrolling. */
+  const dayAt = (e) => {
+    if (!e || typeof e.clientX !== 'number' || typeof node.getBoundingClientRect !== 'function') return null;
+    const r = node.getBoundingClientRect();
+    if (!(r.width > 0)) return null;
+    const i = Math.floor((((e.clientX - r.left) * (W / r.width)) - M.l) / slot);
+    return i >= 0 && i < n ? i : null;
+  };
+  const mark = (i) => { for (const r of node.querySelectorAll('rect')) r.classList.toggle('day-sel', r.getAttribute('data-i') === String(i)); };
   const show = (e) => {
     const t = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-i]') : null;
-    if (!t) return;
-    const row = rows[Number(t.getAttribute('data-i'))];
+    const i = t ? Number(t.getAttribute('data-i')) : dayAt(e);
+    const row = i === null ? null : rows[i];
     if (!row) return;
-    const s = t.getAttribute('data-s');
+    const s = t ? t.getAttribute('data-s') : null;
     const seg = s === null ? null : row.segs[Number(s)];
-    const day = days[Number(t.getAttribute('data-i'))] || {};
-    const text = Charts.barTitle(row, seg, day);
+    const day = days[i] || {};
+    const text = t ? Charts.barTitle(row, seg, day) : Charts.dayTitle(row, day);
+    mark(i);
     read.textContent = text;
     if (typeof o.onHover === 'function') {
       try { o.onHover({ day: row.day, key: seg ? seg.key : null, v: seg ? seg.v : 0, total: row.total, zero: row.zero, tokens: Number(day.tokens) || 0, hours: Number(day.hours) || 0, text }); } catch (err) { console.error('ccboard charts onHover', err); }
@@ -743,6 +788,7 @@ Charts._paintBars = function (host, st) {
   };
   node.addEventListener('click', show);
   node.addEventListener('pointerover', show);
+  node.addEventListener('pointermove', (e) => { if (e && e.pointerType === 'mouse') show(e); });
   host.append(node, legend, read);
   return { rows, keys, svg: node, legend };
 };
@@ -868,7 +914,26 @@ Charts._paintGantt = function (host, st) {
   if (model.rows.some((r) => r.ended)) seen.add(5);
   const glyphs = typeof STATE_GLYPH !== 'undefined' ? STATE_GLYPH : {};
   const legend = Charts.legendNode([...seen].sort().map((v) => ({ cls: 'st-' + v, label: `${glyphs[Charts.STATES[v]] || ''} ${Charts.STATES[v]}`.trim(), tip: v === 5 ? 'ended: the row fades' : Charts.STATES[v] })));
-  host.append(node, legend);
+  // a row's label is cut to fit and the times live in tooltips a phone never shows: a tap on a row (its label, a span, or the space beside it) says it all
+  const read = el('p', { class: 'chart-read dim', 'aria-live': 'polite', text: o.hint || 'Tap a row for its full name and times.' });
+  const rowText = (row) => {
+    const spans = row.spans.map((sp) => `${Charts.when(sp.t0, wide)}–${Charts.when(sp.t1, wide)} ${Charts.STATES[sp.v]}`);
+    return `${row.label}${row.ended ? ' · ended' : ''} · ${(spans.length > 6 ? ['…', ...spans.slice(-6)] : spans).join(', ')}`;
+  };
+  const pick = (e) => {
+    const g = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-key]') : null;
+    let key = g ? g.getAttribute('data-key') : null;
+    if (key === null && e && typeof e.clientY === 'number' && typeof node.getBoundingClientRect === 'function') {
+      const r = node.getBoundingClientRect();
+      if (r.height > 0) { const i = Math.floor((((e.clientY - r.top) * (H / r.height)) - top) / rowH); if (i >= 0 && i < model.rows.length) key = model.rows[i].key; }
+    }
+    const row = key === null ? null : model.rows.find((x) => x.key === key);
+    if (!row) return;
+    for (const gr of node.querySelectorAll('.g-row')) gr.classList.toggle('sel', gr.getAttribute('data-key') === key);
+    read.textContent = rowText(row);
+  };
+  node.addEventListener('click', pick);
+  host.append(node, legend, read);
   if (model.truncated) host.append(el('p', { class: 'chart-note dim', text: `${model.truncated} more session${model.truncated === 1 ? '' : 's'} not shown` }));
   if (o.truncated || (body && body.truncated)) host.append(el('p', { class: 'chart-note dim', text: 'The server cut the event list: older activity in this window may be missing.' }));
   return { rows: model.rows, truncated: model.truncated, svg: node, legend };
@@ -900,24 +965,42 @@ Charts.heatmap = function (host, grid, hourly, opts) {
   const node = el('div', { class: 'heat-grid', role: 'img', 'aria-label': `Hook events by weekday and hour, local time${o.tzLabel ? ' (' + o.tzLabel + ')' : ''}: busiest hour ${hh(prof.indexOf(pmax))}, ${plural(pmax)}` });
   node.append(el('span', { class: 'heat-corner' }));
   for (let h = 0; h < 24; h++) node.append(el('span', { class: 'heat-hr', text: h % 3 === 0 ? Charts.pad2(h) : '' }));
+  const cellAt = [];                                                     // [weekday][hour] -> the cell, and the hour profile's bars after the 7 rows (the tap's nearest-cell lookup)
   rows.forEach((r, d) => {
     node.append(el('span', { class: 'heat-day', text: Charts.WEEKDAYS[d] }));
+    cellAt[d] = [];
     r.forEach((v, h) => {
       const tip = `${Charts.WEEKDAYS[d]} ${hh(h)} · ${plural(v)}`;
-      node.append(el('div', { class: `cell lv${Charts.geom.level(v, max)}`, title: tip, 'data-tip': tip }));
+      const c = el('div', { class: `cell lv${Charts.geom.level(v, max)}`, title: tip, 'data-tip': tip });
+      cellAt[d][h] = c;
+      node.append(c);
     });
   });
   node.append(el('span', { class: 'heat-day heat-all', text: 'all' }));
+  cellAt[7] = [];
   prof.forEach((v, h) => {
     const tip = `${hh(h)} · ${plural(v)}`;
     const bar = el('i');
     bar.style.height = v > 0 ? `${Math.max(6, Math.round((v / pmax) * 100))}%` : '0';
-    node.append(el('div', { class: 'hb', title: tip, 'data-tip': tip }, bar));
+    const b = el('div', { class: 'hb', title: tip, 'data-tip': tip }, bar);
+    cellAt[7][h] = b;
+    node.append(b);
   });
   const read = el('p', { class: 'chart-read dim', 'aria-live': 'polite', text: o.hint || 'Hover or tap a cell for its count.' });
   let sel = null;
+  /* An 11 px cell is no target for a finger: a tap beside a cell (the gap, a label, the corner) picks the nearest one by its position in the grid. */
+  const nearest = (e) => {
+    if (!e || typeof e.clientX !== 'number' || typeof e.clientY !== 'number' || typeof cellAt[0][0].getBoundingClientRect !== 'function') return null;
+    const tl = cellAt[0][0].getBoundingClientRect();
+    const tr = cellAt[0][23].getBoundingClientRect();
+    const bl = cellAt[6][0].getBoundingClientRect();
+    if (!(tr.right > tl.left) || !(bl.bottom > tl.top)) return null;
+    const h = Math.max(0, Math.min(23, Math.floor((e.clientX - tl.left) / ((tr.right - tl.left) / 24))));
+    const d = e.clientY > bl.bottom ? 7 : Math.max(0, Math.min(6, Math.floor((e.clientY - tl.top) / ((bl.bottom - tl.top) / 7))));
+    return cellAt[d][h];
+  };
   const show = (e) => {
-    const t = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-tip]') : null;
+    const t = (e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-tip]') : null) || nearest(e);
     if (!t) return;
     if (sel && sel !== t) sel.classList.remove('sel');
     t.classList.add('sel');

@@ -19,20 +19,64 @@
   --ok:#32a467; --warn:#ec9a3c; --bad:#e76a6e;                                   /* reserved for attention */
   --warn-bg:rgba(236,154,60,.12); --bad-bg:rgba(231,106,110,.12);
 
-  --row-h:30px; --tap:30px;
+  --row-h:30px; --tap:30px; --row-btn:28px;                                       /* --row-btn: the height of a small button in a row (44 px on touch) */
   --sat:env(safe-area-inset-top,0px); --sab:env(safe-area-inset-bottom,0px); --sal:env(safe-area-inset-left,0px); --sar:env(safe-area-inset-right,0px);
 }
-@media (pointer:coarse) { :root { --tap:44px; --row-h:44px; } }
-html.force-coarse { --tap:44px; --row-h:44px; }
+@media (pointer:coarse) { :root { --tap:44px; --row-h:44px; --row-btn:44px; } }
+html.force-coarse { --tap:44px; --row-h:44px; --row-btn:44px; }
 
 /* ---------- state and agent glyphs (core.js stateGlyph()/agentGlyph()); state is never colour-only, the label travels with it ---------- */
 .glyph { display:inline-block; width:1.25em; text-align:center; font-family:var(--font-glyph); font-variant-emoji:text; line-height:1; }
 .glyph.working { color:var(--sig); }
 .glyph.waiting { color:var(--warn); }
-.glyph.idle, .glyph.ended, .glyph.unknown { color:var(--dim-2); }
-.glyph.done { color:var(--ok); }
+.glyph.idle { color:var(--mute-slate); }
+.glyph.ended, .glyph.unknown { color:var(--dim-2); }
+.glyph.done { color:var(--mute-green); }
 .glyph.errored { color:var(--bad); }
 .glyph.agent { color:var(--fg-2); }
+.glyph.agent[aria-label=claude] { color:var(--mute-violet); }   /* agentGlyph() puts the agent name in aria-label: claude violet, codex teal, shell slate */
+.glyph.agent[aria-label=codex] { color:var(--mute-teal); }
+.glyph.agent[aria-label=shell] { color:var(--mute-slate); }
 @keyframes glyph-breathe { from { opacity:.55; } to { opacity:1; } }
 .glyph.working, .glyph.waiting { animation:glyph-breathe 1.6s ease-in-out infinite alternate; }
 @media (prefers-reduced-motion:reduce) { .glyph.working, .glyph.waiting { animation:none; } }
+
+/* ===== v0.5.6d muted category hues =====
+   text colour = --mute-<h>; 12 % tint = --mute-<h>-bg; 32 % edge = --mute-<h>-bd.
+   Every text colour is at least 4.5:1 on --bg-0, --bg, --card and --panel, and also on its own 12 % tint over each of them (measured minimum 4.68).
+   Hue only helps scanning: the chip label and the glyph always say what it is. Never a saturated fill on a big area; the accent --sig stays cyan and rare.
+   Usage map (chips and small marks only):
+     agent    claude = violet   codex = teal   shell = slate
+     state    working = --sig (accent)   waiting = amber   done = green   errored = rose   idle = slate   ended = --dim (no hue)
+     model    opus = blue   fable = violet   sonnet = green   haiku = slate   gpt-* and codex = teal   unknown = slate
+     project  stable hash of the name into [blue teal green violet slate]; amber and rose are never hashed (they mean attention)
+     branch, PR, worktree and project folder = slate */
+:root {
+  --mute-blue:#8db4e8;   --mute-blue-bg:rgba(141,180,232,.12);   --mute-blue-bd:rgba(141,180,232,.32);
+  --mute-teal:#6cc4b8;   --mute-teal-bg:rgba(108,196,184,.12);   --mute-teal-bd:rgba(108,196,184,.32);
+  --mute-green:#84c096;  --mute-green-bg:rgba(132,192,150,.12);  --mute-green-bd:rgba(132,192,150,.32);
+  --mute-violet:#b9a9ee; --mute-violet-bg:rgba(185,169,238,.12); --mute-violet-bd:rgba(185,169,238,.32);
+  --mute-amber:#dcb26a;  --mute-amber-bg:rgba(220,178,106,.12);  --mute-amber-bd:rgba(220,178,106,.32);
+  --mute-rose:#e9a2a5;   --mute-rose-bg:rgba(233,162,165,.12);   --mute-rose-bd:rgba(233,162,165,.32);
+  --mute-slate:#adb7c4;  --mute-slate-bg:rgba(173,183,196,.12);  --mute-slate-bd:rgba(173,183,196,.32);
+}
+
+/* ===== supporting tokens for the button and chip pass ===== */
+:root {
+  --line-strong:#74819a;                       /* edge of a quiet button, chip or input: 3.7:1 on --card, 3.2:1 on --panel (WCAG 1.4.11 asks 3:1) */
+  --btn-bg:#2a3038; --btn-bg-hover:#343b46; --btn-bg-active:#3d4551;      /* default button fill, hover, pressed */
+  --on-sig:#0b0e11;                            /* text on a --sig fill: 10.5:1 */
+  --sig-bg:rgba(77,208,225,.12); --sig-bd:rgba(77,208,225,.45); --sig-bg-hover:rgba(77,208,225,.2);   /* tinted (outlined) primary, info banner */
+  --ok-fg:#66c692; --warn-fg:#f2a94f; --bad-fg:#f49b9e;                   /* TEXT on tinted chips, 5.1:1 or more on --card and --panel tints; --ok --warn --bad stay for edges, bars, stripes */
+  --ok-bg:rgba(50,164,103,.12);
+  --bad-bg-hover:rgba(231,106,110,.2);         /* a red-outlined destructive button under the pointer */
+  --bad-solid:#cd4246;                         /* the armed second tap of a destructive button (white text on it is 4.7:1) */
+}
+/* one utility class per hue: chips set --hue, --hue-bg and --hue-bd through it; pages.css .bdg and the project, model and agent chips consume them */
+.hue-blue{--hue:var(--mute-blue);--hue-bg:var(--mute-blue-bg);--hue-bd:var(--mute-blue-bd);}
+.hue-teal{--hue:var(--mute-teal);--hue-bg:var(--mute-teal-bg);--hue-bd:var(--mute-teal-bd);}
+.hue-green{--hue:var(--mute-green);--hue-bg:var(--mute-green-bg);--hue-bd:var(--mute-green-bd);}
+.hue-violet{--hue:var(--mute-violet);--hue-bg:var(--mute-violet-bg);--hue-bd:var(--mute-violet-bd);}
+.hue-amber{--hue:var(--mute-amber);--hue-bg:var(--mute-amber-bg);--hue-bd:var(--mute-amber-bd);}
+.hue-rose{--hue:var(--mute-rose);--hue-bg:var(--mute-rose-bg);--hue-bd:var(--mute-rose-bd);}
+.hue-slate{--hue:var(--mute-slate);--hue-bg:var(--mute-slate-bg);--hue-bd:var(--mute-slate-bd);}

@@ -55,12 +55,12 @@ a.brand { display:inline-flex; align-items:center; min-height:var(--tap); color:
 .pill .pr { color:var(--dim); font-weight:400; }
 .pill .pr:empty { display:none; }
 .pill.ok { border-color:var(--line); }
-.pill.warn { --fillc:rgba(236,154,60,.26); border-color:var(--warn); color:var(--warn); }
-.pill.bad { --fillc:rgba(231,106,110,.30); border-color:var(--bad); color:var(--bad); }
+.pill.warn { --fillc:rgba(236,154,60,.26); border-color:var(--warn); color:var(--warn-fg); }
+.pill.bad { --fillc:rgba(231,106,110,.30); border-color:var(--bad); color:var(--bad-fg); }
 .pill.warn .pl, .pill.bad .pl, .pill.warn .pr, .pill.bad .pr { color:inherit; }
 .pill.link { background:none; }
 @media (hover:hover) { .pill.link:hover { color:var(--fg); text-decoration:none; border-color:var(--dim-2); } }
-.pill.link.attn { border-color:var(--warn); color:var(--warn); background:var(--warn-bg); }
+.pill.link.attn { border-color:var(--warn); color:var(--warn-fg); background:var(--warn-bg); }
 .pill.link .glyph { width:auto; }
 @media (pointer:coarse) { .pill { height:30px; } .pill.link { min-height:var(--tap); } }
 html.force-coarse .pill { height:30px; }
@@ -110,7 +110,7 @@ body[data-sb="none"] #sidebar { display:none; }
 .tn-row .tw { display:inline-flex; width:14px; color:var(--dim); transition:transform .12s; }
 .tn.open > .tn-row .tw { transform:rotate(90deg); }
 .tn-name { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.tn-sub { flex:none; max-width:42%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; color:var(--dim-2); }
+.tn-sub { flex:none; max-width:42%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; color:var(--dim); }
 .tn-cnt { flex:none; font:11px/1 var(--font-mono); color:var(--dim); }
 .tn-cnt:empty { display:none; }
 .tn-dot { flex:none; width:8px; height:8px; border-radius:50%; background:var(--warn); }
@@ -168,6 +168,11 @@ dialog#sheet.bottom::backdrop { background:rgba(0,0,0,.55); }
 .sheet-body { flex:1 1 auto; min-height:0; overflow-y:auto; padding:12px 16px 16px; }
 .sheet-actions { flex:none; display:flex; flex-wrap:wrap; gap:8px; padding:10px 16px; border-top:1px solid var(--line); }
 .sheet-body .form { margin:8px 0 0; }
+/* a form inside a sheet drops its own frame (the sheet is the frame) and pins its action row to the bottom of the scrolling body:
+   primary on the left, Cancel beside it, nothing else in the row. The body gives up its bottom padding for forms so the row sits flush. */
+.sheet-body .form { padding:0; border:0; background:none; }
+.sheet-body:has(.form .submit) { padding-bottom:0; scroll-padding-bottom:72px; }
+.sheet-body .form .submit { position:sticky; bottom:0; z-index:1; margin:12px -16px 0; padding:10px 16px; background:var(--panel); border-top:1px solid var(--line); box-shadow:0 -8px 12px -8px rgba(0,0,0,.4); }
 .sheet-form > .bp5-button { margin-bottom:6px; }
 .pick-list { display:flex; flex-direction:column; margin-top:6px; }
 .pick-row.bp5-button { width:100%; justify-content:flex-start; gap:10px; text-align:left; border-bottom:1px solid var(--line-soft); border-radius:0; }
@@ -197,8 +202,8 @@ body[data-shell=compact] #toasts { bottom:calc(var(--sab) + var(--bnav-h) + 14px
 
 /* tabs (components.js tabs()): Blueprint tab list with the accent underline, no React indicator */
 .tabs { margin:4px 0 8px; }
-.tablist { display:flex; flex-wrap:wrap; gap:0 18px; border-bottom:1px solid var(--line); }
-.bp5-dark .tab { display:inline-flex; align-items:center; gap:6px; min-height:var(--tap); padding:0 2px; font-size:13px; line-height:1.2; color:var(--dim); box-shadow:none; user-select:none; }
+.tablist { display:flex; flex-wrap:wrap; gap:0; border-bottom:1px solid var(--line); }
+.bp5-dark .tab { display:inline-flex; align-items:center; gap:6px; min-height:var(--tap); min-width:0; padding:0 12px; font-size:13px; line-height:1.2; color:var(--dim); box-shadow:none; user-select:none; }
 @media (hover:hover) { .bp5-dark .tab:not([aria-disabled=true]):hover { color:var(--fg); } }
 /* the selected tab keeps its colour even while Blueprint's own :hover rule (0,4,0) is stuck on it after a tap on a touch screen */
 .bp5-dark .tab[aria-selected=true], .bp5-dark .tab[aria-selected=true]:not([aria-disabled=true]) { color:var(--fg); box-shadow:inset 0 -2px 0 var(--sig); }
@@ -229,6 +234,8 @@ html.force-coarse #topbar a.pill { min-height:var(--tap); }
 .bp5-dark :focus:not(:focus-visible) { outline:none; }
 .bp5-dark :is(a, button, summary, [role=tab], [role=treeitem], [role=separator], [tabindex]):focus-visible { outline:2px solid var(--sig); outline-offset:2px; }
 .bp5-dark .tn-row:focus-visible, .bp5-dark .nav-item:focus-visible, .bp5-dark .tab:focus-visible { outline-offset:-2px; }
+/* a modal dialog that takes focus itself (openSheet gives the panel tabindex -1 when there is no field to focus) draws no ring around the whole panel */
+dialog#sheet:focus, dialog#sheet:focus-visible, dialog#drawer:focus, dialog#drawer:focus-visible { outline:none; }
 
 /* ---------- resizable sidebar (shell.js Shell.buildResizer): a 6 px strip over the sidebar's right edge, 200-400 px, persisted as ccboard:sb:w ---------- */
 .sb-resize { display:none; grid-area:side; justify-self:end; align-self:stretch; position:relative; z-index:15; width:6px; margin-right:-3px; touch-action:none; cursor:col-resize; }
@@ -268,12 +275,16 @@ html.pwa #topbar :is(a, button, input, select, textarea, summary, label, [tabind
 
 /* ---- touch: no sticky hover. Blueprint's vendored :hover rules (served immutable, never edited in place) would keep a tapped
    button, menu item or card in its lighter hover fill until the next tap on a touch screen; under (hover:none) the resting
-   values win again. :not(:active) leaves the pressed state alone. The app's own hover rules are guarded with (hover:hover). */
+   values win again. They are the v0.5.6d values from style.css (tokens only, a variant such as `tinted` or `confirm` keeps its own through the
+   --pb-* and --db-* custom properties the resting rules read). :not(:active) leaves the pressed state alone. The app's own hover rules are
+   guarded with (hover:hover). */
 @media (hover:none) {
-  .bp5-dark .bp5-button:not([class*=bp5-intent-]):hover:not(:active) { background-color:#2f343c; box-shadow:inset 0 0 0 1px rgba(255,255,255,.1), 0 1px 2px rgba(17,20,24,.2); }
-  .bp5-dark .bp5-button.bp5-minimal:hover:not(:active) { background:none; box-shadow:none; }
-  .bp5-button.bp5-intent-primary:hover:not(:active) { background-color:#2d72d2; box-shadow:inset 0 0 0 1px rgba(17,20,24,.2), 0 1px 2px rgba(17,20,24,.1); }
-  .bp5-button.bp5-intent-danger:hover:not(:active) { background-color:#cd4246; box-shadow:inset 0 0 0 1px rgba(17,20,24,.2), 0 1px 2px rgba(17,20,24,.1); }
+  .bp5-dark .bp5-button:not([class*=bp5-intent-]):not(.bp5-minimal):hover:not(:active) { background:var(--btn-bg); box-shadow:none; }
+  .bp5-dark .bp5-button.bp5-minimal:not([class*=bp5-intent-]):hover:not(:active) { background:transparent; box-shadow:none; }
+  .bp5-dark .bp5-button.bp5-intent-primary:not(.bp5-minimal):hover:not(:active) { background:var(--pb-bg, var(--sig)); box-shadow:none; filter:none; }
+  .bp5-dark .bp5-button.bp5-intent-danger:not(.bp5-minimal):hover:not(:active) { background:var(--db-bg, var(--bad-bg)); box-shadow:none; filter:none; }
+  .bp5-dark .bp5-button.bp5-minimal.bp5-intent-danger:hover:not(:active) { background:var(--db-bg, transparent); color:var(--db-fg, var(--bad-fg)); box-shadow:none; }
+  .bp5-dark .bp5-button.warn:not([class*=bp5-intent-]):not(.bp5-minimal):hover:not(:active) { background:var(--warn-bg); filter:none; }
   .bp5-menu-item:hover:not(:active), .bp5-dark .bp5-menu-item:hover:not(:active) { background-color:transparent; }
   .bp5-dark .bp5-card.bp5-interactive:hover { box-shadow:none; }
 }

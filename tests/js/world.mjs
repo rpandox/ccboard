@@ -133,3 +133,24 @@ export const tick = () => new Promise((r) => setImmediate(r));
 export const calls = (w) => plain(w.get('__calls'));
 export const text = (n) => (n ? n.textContent : '');
 export const setState = (w, st) => { w.ctx.__st = st; w.run('state = __st; updateCurrentPage(state)'); };
+
+/** Open a session row's `...` menu (v0.5.6d: Ack, Reply, Tail and Kill live there) and pick the item called `label` (a string or a regexp). The menu closes itself
+    on a pick; false, with the menu closed again, when it has no such item. */
+export function rowMenu(w, row, label) {
+  const btn = row.querySelector('.rr-more');
+  btn.click();
+  const want = (t) => (label instanceof RegExp ? label.test(t) : t === label);
+  const hit = w.document.querySelectorAll('.menuitem').find((i) => want(i.textContent.trim()));
+  if (hit) { hit.click(); return true; }
+  btn.click();
+  return false;
+}
+
+/** The labels of a session row's `...` menu, in order (opens it and closes it again). */
+export function rowMenuLabels(w, row) {
+  const btn = row.querySelector('.rr-more');
+  btn.click();
+  const labels = w.document.querySelectorAll('.menuitem').map((i) => i.textContent.trim());
+  btn.click();
+  return labels;
+}

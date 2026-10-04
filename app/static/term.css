@@ -4,7 +4,8 @@
    The page never scrolls: body.term is a fixed box the size of the VISUAL viewport (--vvh from TermKit.viewportFit, 100dvh until it runs), so on a
    phone the composer sits right above the soft keyboard and #ttywrap, the only flexible row, shrinks instead. The iframe is absolute inside
    #ttywrap (overflow hidden), the page has overscroll-behavior none (no pull-to-refresh, no rubber band) and the terminal inside the iframe gets
-   touch-action none through the CSSOM (TermKit.bind). Below 840 px one column; from 840 px the terminal on the left and a 300 px side column. */
+   touch-action none through the CSSOM (TermKit.bind). Below 840 px one column; from 840 px the terminal on the left and a 300 px side column.
+   The tuning strip (#tune, built by term.js under the context strip) is one scrolling row of 44 px chips below 840 px and wraps in the side column. */
 
 html, body.term { overscroll-behavior:none; background:var(--bg-0); -webkit-tap-highlight-color:transparent; }
 body.term { position:fixed; inset:0; top:var(--vvt, 0px); height:var(--vvh, 100dvh); margin:0; overflow:hidden; display:flex; flex-direction:column;
@@ -13,74 +14,148 @@ body.term { position:fixed; inset:0; top:var(--vvt, 0px); height:var(--vvh, 100d
 body.term.kbd { padding-bottom:0; }                                       /* the soft keyboard covers the home indicator */
 body.term input, body.term textarea { -webkit-user-select:text; user-select:text; }
 
-/* ---------- header: back, session, state, model / context, text size, context strip toggle ---------- */
-#termhead { flex:0 0 auto; display:flex; align-items:center; gap:2px; min-height:48px; padding:2px 4px; background:var(--bg-0); border-bottom:1px solid var(--line); }
+/* ---------- header: back, session, state, model / context, view options (Aa), context strip toggle ---------- */
+/* line 1 is the name alone (it keeps the whole width); line 2 is glyph, state badge and the project / model / context text */
+#termhead { position:relative; flex:0 0 auto; display:flex; align-items:center; gap:2px; min-height:48px; padding:2px 4px; background:var(--bg-0); border-bottom:1px solid var(--line); }
 #termhead .bp5-button { min-width:44px; min-height:44px; padding:0 6px; flex:0 0 auto; }
 #termhead .fs { font-family:var(--font-mono); font-weight:600; font-size:15px; }
 #headid { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; justify-content:center; padding:0 4px; line-height:1.3; }
-#headid .l1 { display:flex; align-items:center; gap:6px; min-width:0; white-space:nowrap; }
+#headid .l1 { display:flex; align-items:center; min-width:0; white-space:nowrap; }
 #headid .name { font-family:var(--font-mono); font-weight:600; font-size:14px; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:0 1 auto; }
-#headid .state { flex:0 0 auto; }
-#headid .l2 { font-size:11px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-#headid .l2 .warn { color:var(--warn); }
-#headid .l2 .bad { color:var(--bad); }
+#headid .l2 { display:flex; align-items:center; gap:6px; min-width:0; font-size:11px; color:var(--dim); white-space:nowrap; overflow:hidden; }
+#headid .l2 .glyph { flex:0 0 auto; }
+#headid .l2 .state { flex:0 0 auto; }
+#headid .l2 .l2-text { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+#headid .l2 .warn { color:var(--warn-fg, var(--warn)); }
+#headid .l2 .bad { color:var(--bad-fg, var(--bad)); }
 #headtools { flex:0 0 auto; display:flex; align-items:center; }
+
+/* the Aa panel under the header: text size and the key-bar mode (term.js viewMenu); hidden through the shared .hidden class */
+.viewmenu { position:absolute; top:100%; right:4px; z-index:6; min-width:220px; display:flex; flex-direction:column; gap:6px; padding:8px; background:var(--panel); border:1px solid var(--line-strong, var(--line)); border-radius:2px; box-shadow:0 8px 24px rgba(0, 0, 0, .5); }
+.viewmenu .vm-row { display:flex; align-items:center; gap:8px; }
+.viewmenu .vm-k { flex:0 0 auto; min-width:44px; font-size:12px; }
+.viewmenu .vm-val { min-width:3ch; text-align:center; font-size:13px; }
+.viewmenu .bp5-button { min-width:var(--tap); min-height:var(--tap); }
 
 /* ---------- the grid: one column below 840 px, terminal + side column above ---------- */
 #termmain { flex:1 1 auto; min-height:0; min-width:0; display:grid; background:var(--bg-0);
-            grid-template-columns:minmax(0, 1fr); grid-template-rows:auto minmax(0, 1fr) auto auto auto;
-            grid-template-areas:"ctx" "tty" "keys" "quick" "send"; }
+            grid-template-columns:minmax(0, 1fr); grid-template-rows:auto auto minmax(0, 1fr) auto auto auto;
+            grid-template-areas:"ctx" "tune" "tty" "keys" "quick" "send"; }
 #termmain::after { display:none; }
 
 /* ---------- context strip: task, last prompt (2 lines, tap to expand), the question or last message ---------- */
 #ctxstrip { grid-area:ctx; min-width:0; padding:6px 10px; background:var(--bg); border-bottom:1px solid var(--line-soft); font-size:12px; line-height:1.4; cursor:pointer; overflow:hidden; }
 #ctxstrip .cx-task { font-weight:600; color:var(--fg); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-#ctxstrip .cx-task .badge { margin-left:6px; font-weight:400; font-size:11px; padding:0 7px; }
+#ctxstrip .cx-task .badge, #ctxstrip .cx-task .state { margin-left:6px; font-weight:400; font-size:11px; padding:0 7px; }
 #ctxstrip .cx-prompt, #ctxstrip .cx-ask { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; color:var(--dim); }
 #ctxstrip .cx-ask { color:var(--fg-2); }
 #ctxstrip .cx-ask.permission, #ctxstrip .cx-ask.waiting { color:var(--warn); }
 #ctxstrip.open { max-height:42dvh; overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
 #ctxstrip.open .cx-prompt, #ctxstrip.open .cx-ask { display:block; -webkit-line-clamp:none; overflow:visible; white-space:pre-wrap; }
-#ctxstrip .cx-links { display:flex; gap:14px; margin-top:2px; }
-#ctxstrip .cx-link { color:var(--sig); text-decoration:none; padding:4px 0; }
+/* the two links are secondary buttons (a visible edge, a full tap row), not bare accent text 25 px tall */
+#ctxstrip .cx-links { display:flex; flex-wrap:wrap; gap:8px; margin-top:6px; }
+#ctxstrip .cx-link { display:inline-flex; align-items:center; min-height:var(--tap); padding:0 12px; border:1px solid var(--line-strong, var(--line)); border-radius:2px; background:var(--btn-bg, transparent); color:var(--fg-2); font-size:12px; text-decoration:none; }
+@media (hover:hover) { #ctxstrip .cx-link:hover { background:var(--btn-bg-hover, var(--panel)); color:var(--fg); } }
+#ctxstrip .cx-link:focus-visible { outline:2px solid var(--sig); outline-offset:1px; }
+
+/* ---------- tuning strip (term.js): ONE scrolling row, 44 px chips: Clear Compact Usage Rename Context Status, then the Effort and Model segments.
+   4 + 44 + 3 + 1 = 52 px on a phone. The fade (more-l / more-r, toggled from scrollLeft / scrollWidth) is a scroll shadow: "more this way".
+   `collapsed` is the header `tune` button's state; `hidden` is the page's (a shell, a gone session) ---------- */
+#tune { grid-area:tune; position:relative; min-width:0; padding:4px 0 3px; background:var(--bg); border-bottom:1px solid var(--line-soft); }
+#tune.hidden, #tune.collapsed { display:none; }
+.tune-row { display:flex; align-items:center; gap:6px; min-width:0; padding-left:8px; overflow-x:auto; overscroll-behavior-x:contain; scrollbar-width:none; -webkit-overflow-scrolling:touch; }
+.tune-row::-webkit-scrollbar { display:none; }
+.tune-row::after { content:''; flex:0 0 2px; }                                  /* the last chip keeps its 8 px of air when scrolled to the end */
+#tune::before, #tune::after { content:''; position:absolute; top:0; bottom:0; width:28px; z-index:1; pointer-events:none; opacity:0; transition:opacity .15s; }
+#tune::before { left:0; background:linear-gradient(to right, var(--bg), transparent); }
+#tune::after { right:0; background:linear-gradient(to left, var(--bg), transparent); }
+#tune.more-l::before, #tune.more-r::after { opacity:1; }
+.tune-seg { flex:0 0 auto; display:flex; align-items:center; gap:3px; }
+.tune-lbl { flex:0 0 auto; padding:0 3px; font-size:11px; color:var(--dim); }
+/* a chip is the default bordered button (style.css: --btn-bg, 1 px --line-strong): no ring of its own on top. Sizes only here. */
+.bp5-dark #tune .bp5-button.tune-chip:not([class*=bp5-intent-]) { flex:0 0 auto; min-height:var(--tap); min-width:var(--tap); padding:0 10px; justify-content:center; white-space:nowrap; font-size:13px; touch-action:manipulation; }
+.bp5-dark #tune .bp5-button.tune-opt:not([class*=bp5-intent-]) { padding:0 8px; font-size:12px; }
+/* a model wears its muted hue (tokens.css .hue-*: opus blue, fable violet, sonnet green, haiku slate; term.js MODEL_HUE) */
+.bp5-dark #tune .bp5-button.tune-model:not([class*=bp5-intent-]) { color:var(--hue, var(--fg)); background:var(--hue-bg, var(--btn-bg)); border-color:var(--hue-bd, var(--line-strong)); }
+/* Clear: red-outlined at rest; the armed second tap is the one solid red fill (the same as the board's confirm buttons) */
+.bp5-dark #tune .bp5-button.tune-chip.destructive:not([class*=bp5-intent-]) { color:var(--bad-fg); background:var(--bad-bg); border-color:var(--bad); }
+.bp5-dark #tune .bp5-button.tune-chip.confirm:not([class*=bp5-intent-]) { color:#fff; background:var(--bad-solid); border-color:var(--bad-solid); font-weight:600; }
+/* the current effort / model / fast: the accent TINT (outlined primary), never a second filled primary */
+.bp5-dark #tune .bp5-button.tune-chip.on:not([class*=bp5-intent-]) { color:var(--sig); background:var(--sig-bg); border-color:var(--sig-bd); font-weight:600; }
+.bp5-dark #tune .bp5-button.tune-chip.pending:not([class*=bp5-intent-]) { border-color:var(--warn); animation:tune-pending 1.1s ease-in-out infinite; }
+.bp5-dark #tune .bp5-button.tune-chip.ok:not([class*=bp5-intent-]) { border-color:var(--ok); color:var(--ok-fg); }
+.bp5-dark #tune .bp5-button.tune-chip:disabled { opacity:.45; pointer-events:none; }                 /* a tap falls through to #tune, which explains why (term.js) */
+#termhead .tune-toggle { font-size:12px; color:var(--dim); }                                           /* the header button that collapses the strip */
+#termhead .tune-toggle[aria-pressed=true] { color:var(--sig); }
+@keyframes tune-pending { 0%, 100% { opacity:1; } 50% { opacity:.55; } }
+
+/* ---------- command readout (a bottom sheet) and the rename dialog (top, clear of the soft keyboard); both are <dialog>s appended to <body> ---------- */
+dialog.readout, dialog.rename-dlg { padding:0; border:1px solid var(--line); background:var(--bg); color:var(--fg); box-shadow:0 8px 32px rgba(0, 0, 0, .6); }
+dialog.readout::backdrop, dialog.rename-dlg::backdrop { background:rgba(0, 0, 0, .55); }
+dialog.readout { position:fixed; inset:auto 0 0 0; margin:0 auto; width:min(100%, 720px); max-width:none; max-height:80dvh; border-radius:8px 8px 0 0; padding-bottom:env(safe-area-inset-bottom, 0px); }
+dialog.readout[open] { display:flex; flex-direction:column; }
+dialog.rename-dlg { position:fixed; inset:calc(var(--vvt, 0px) + env(safe-area-inset-top, 0px) + 56px) 0 auto 0; margin:0 auto; width:min(420px, calc(100% - 24px)); max-width:none; border-radius:6px; }
+.ro-head { flex:0 0 auto; padding:10px 12px 0; }
+.ro-title { margin:0; font:600 13px var(--font-mono); color:var(--dim); }
+.ro-text { flex:1 1 auto; min-height:0; margin:0; padding:8px 12px; overflow:auto; white-space:pre; font:12px/1.35 var(--font-mono); font-variant-ligatures:none; color:var(--fg-2); overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
+body.term .ro-text { -webkit-user-select:text; user-select:text; }
+.ro-actions { flex:0 0 auto; display:flex; justify-content:flex-end; gap:8px; padding:8px 12px 10px; }
+.ro-actions .bp5-button { min-height:var(--tap); min-width:var(--tap); }
+.rn-form { display:flex; flex-direction:column; gap:8px; padding:12px 12px 0; }
+.rn-label { font-size:12px; font-weight:500; color:var(--fg-2); }
+.rn-form .bp5-input { min-height:var(--tap); }
+.rn-form .rn-err { margin:0; font-size:12px; }                        /* .bad: --bad-fg text, under the input it belongs to */
+.rn-form .rn-err:empty { display:none; }
+.rn-form .bp5-input[aria-invalid=true] { border-color:var(--bad); }
+dialog.rename-dlg:focus, dialog.readout:focus { outline:none; }
+.rn-form .ro-actions { padding:0 0 10px; }
+@media (pointer:coarse) { .rn-form .bp5-input { font-size:16px; } }
+html.force-coarse .rn-form .bp5-input { font-size:16px; }
 
 /* ---------- the terminal: iframe absolute inside a clipped box, scroll rail on its right edge, History chip on top ---------- */
 #ttywrap { grid-area:tty; position:relative; overflow:hidden; min-height:0; min-width:0; background:#000; }
 #tty { position:absolute; inset:0; width:100%; height:100%; border:0; background:#000; }
 #ttywrap::after { content:''; position:absolute; inset:0; pointer-events:none; border:1px solid transparent; z-index:2; }
 #ttywrap.active::after { border-color:var(--sig); }
-#rail { position:absolute; right:calc(6px + env(safe-area-inset-right, 0px)); top:50%; transform:translateY(-50%); z-index:3; display:flex; flex-direction:column; gap:6px; opacity:.8; transition:opacity .15s; max-height:calc(100% - 8px); overflow:hidden; }
-#rail:hover, #rail:focus-within, #rail:active { opacity:1; }
-.bp5-dark .bp5-button.rail-btn:not([class*=bp5-intent-]) { width:44px; height:44px; min-width:44px; min-height:44px; padding:0; border-radius:22px; justify-content:center;
-                                                           background:rgba(47, 52, 60, .92); box-shadow:inset 0 0 0 1px var(--line); touch-action:manipulation; }
-.bp5-dark .bp5-button.rail-btn.down:not([class*=bp5-intent-]) { background:var(--sig); color:#0b0e11; }
-.bp5-dark .bp5-button.rail-btn.down:not([class*=bp5-intent-]) .bp5-icon { color:#0b0e11; }
+/* the rail rests at 45 %: four buttons over the terminal's right edge would otherwise cover its last columns. Each is a 44 px target that draws a 34 px
+   disc (::before), full strength while touched or while the pane is in history mode; the accent fills a disc only while it is pressed (.down), and the
+   'bottom' one while there is a history to leave. */
+#rail { position:absolute; right:calc(6px + env(safe-area-inset-right, 0px)); top:50%; transform:translateY(-50%); z-index:3; display:flex; flex-direction:column; gap:2px; opacity:.45; transition:opacity .15s; max-height:calc(100% - 8px); overflow:hidden; }
+#rail:hover, #rail:focus-within, #rail:active, #ttywrap.scrolled #rail { opacity:1; }
+.bp5-dark .bp5-button.rail-btn:not([class*=bp5-intent-]) { position:relative; width:44px; height:44px; min-width:44px; min-height:44px; padding:0; border-radius:22px; justify-content:center;
+                                                           background:none; border:0; box-shadow:none; touch-action:manipulation; }
+.bp5-dark .bp5-button.rail-btn:not([class*=bp5-intent-])::before { content:''; position:absolute; top:5px; right:5px; bottom:5px; left:5px; border-radius:50%;
+                                                                   background:var(--btn-bg, rgba(47, 52, 60, .92)); border:1px solid var(--line-strong, var(--line)); }
+.bp5-dark .bp5-button.rail-btn .bp5-icon { position:relative; }
+.bp5-dark .bp5-button.rail-btn.down:not([class*=bp5-intent-])::before, #ttywrap.scrolled .bp5-button.rail-btn.rail-bottom:not([class*=bp5-intent-])::before { background:var(--sig); border-color:var(--sig); }
+.bp5-dark .bp5-button.rail-btn.down:not([class*=bp5-intent-]) .bp5-icon, #ttywrap.scrolled .bp5-button.rail-btn.rail-bottom .bp5-icon { color:var(--on-sig, #0b0e11); }
 .bp5-dark .bp5-button.chip-history:not([class*=bp5-intent-]) { position:absolute; top:8px; left:50%; transform:translateX(-50%); z-index:3; min-height:var(--tap); padding:0 14px; border-radius:18px;
-                                                               background:var(--warn); color:#0b0e11; font-weight:600; box-shadow:0 2px 8px rgba(0, 0, 0, .5); touch-action:manipulation; }
+                                                               background:var(--warn); border-color:var(--warn); color:#0b0e11; font-weight:600; box-shadow:0 2px 8px rgba(0, 0, 0, .5); touch-action:manipulation; }
 .bp5-dark .bp5-button.chip-history.down:not([class*=bp5-intent-]) { background:var(--fg); }
 .bp5-dark .bp5-button.chip-history .dim { color:rgba(11, 14, 17, .7); margin-left:6px; font-weight:400; font-size:12px; }
 
-/* ---------- key bar: three rows of 44 px keys; compact (soft keyboard up) keeps one row and a More toggle ---------- */
+/* ---------- key bar: two rows of 44 px keys (the scroll keys are the rail's); compact (soft keyboard up) keeps one row and a More toggle ---------- */
 #keyhost { grid-area:keys; min-width:0; padding:6px 8px; background:var(--bg-0); border-top:1px solid var(--line); }
 .kb { display:flex; flex-direction:column; gap:6px; }
 .kb-row { display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:6px; }
 .bp5-dark .bp5-button.kb-key:not([class*=bp5-intent-]) { min-width:44px; min-height:44px; padding:0 2px; font-size:13px; font-weight:500; justify-content:center; text-align:center; white-space:nowrap;
                                                          touch-action:manipulation; background:var(--panel); }
-.bp5-dark .bp5-button.kb-key[data-key=BTab]:not([class*=bp5-intent-]) { font-size:12px; }
-.bp5-dark .bp5-button.kb-key.down:not([class*=bp5-intent-]) { background:var(--sig); color:#0b0e11; }
+.bp5-dark .bp5-button.kb-key.down:not([class*=bp5-intent-]) { background:var(--sig); color:var(--on-sig, #0b0e11); }
+.kb-r2 { grid-template-columns:repeat(6, minmax(0, 1fr)); }
 .kb-more { display:none; }
 .kb.compact .kb-r1 { grid-template-columns:repeat(6, minmax(0, 1fr)); }
 .kb.compact .kb-more { display:inline-flex; }
 .kb.compact:not(.more) .kb-r2, .kb.compact:not(.more) .kb-r3 { display:none; }
 .kb-ask-row { display:none; grid-template-columns:repeat(2, minmax(0, 1fr)); }
 .kb.approval .kb-ask-row { display:grid; }
-.bp5-dark .bp5-button.kb-ask:not([class*=bp5-intent-]) { background:var(--warn-bg); box-shadow:inset 0 0 0 1px var(--warn); color:var(--warn); }
+.bp5-dark .bp5-button.kb-ask:not([class*=bp5-intent-]) { background:var(--warn-bg); border-color:var(--warn); box-shadow:none; color:var(--warn-fg, var(--warn)); }
 
 /* ---------- quick replies and the two small view toggles ---------- */
 #quickrow { grid-area:quick; min-width:0; display:flex; align-items:center; gap:6px; padding:4px 8px; background:var(--bg-0); }
 #quick { flex:1 1 auto; min-width:0; display:flex; gap:6px; overflow-x:auto; overscroll-behavior-x:contain; scrollbar-width:none; -webkit-overflow-scrolling:touch; }
 #quick::-webkit-scrollbar { display:none; }
-#quick .bp5-button { flex:0 0 auto; min-height:var(--tap); background:rgba(77, 208, 225, .1); }
+#quick.fade { -webkit-mask-image:linear-gradient(90deg, #000 88%, transparent); mask-image:linear-gradient(90deg, #000 88%, transparent); }   /* term.js sets it while chips are cut off at the right: a clipped chip reads as scrollable */
+#quick .bp5-button { flex:0 0 auto; min-height:var(--tap); background:var(--btn-bg, var(--panel)); border:1px solid var(--line-strong, var(--line)); box-shadow:none; }
 #qtools { flex:0 0 auto; display:flex; gap:4px; }
 #qtools .bp5-button { min-height:var(--tap); font-size:12px; padding:0 8px; }
 
@@ -103,20 +178,25 @@ html.force-coarse #sendtext, html.force-coarse textarea.composer { font-size:16p
 
 /* ---------- soft keyboard up (body.kbd) or a short window (body.short): the terminal needs the room, so the strip and the quick replies step aside ---------- */
 @media (max-width:839px) {
-  body.term.kbd #ctxstrip, body.term.kbd #quickrow { display:none; }
+  body.term.kbd #ctxstrip, body.term.kbd #quickrow, body.term.kbd #tune { display:none; }
 }
 /* a short window (landscape phone, under 500 px): same squeeze at any width, and the rail keeps only PgUp / PgDn so it fits the pane */
-body.term.short #ctxstrip, body.term.short #quickrow { display:none; }
+body.term.short #ctxstrip, body.term.short #quickrow, body.term.short #tune { display:none; }
 body.term.kbd #rail .rail-btn:nth-child(n+3), body.term.short #rail .rail-btn:nth-child(n+3) { display:none; }
 
 /* ---------- 840 px and up: terminal left, a 300 px side column (context, keys, quick replies, composer) ---------- */
 @media (min-width:840px) {
-  #termmain { grid-template-columns:minmax(0, 1fr) 300px; grid-template-rows:auto auto auto minmax(0, 1fr) auto;
-              grid-template-areas:"tty ctx" "tty keys" "tty quick" "tty fill" "tty send"; }
+  #termmain { grid-template-columns:minmax(0, 1fr) 300px; grid-template-rows:auto auto auto auto minmax(0, 1fr) auto;
+              grid-template-areas:"tty ctx" "tty tune" "tty keys" "tty quick" "tty fill" "tty send"; }
   #termmain::after { display:block; content:''; grid-area:fill; border-left:1px solid var(--line); background:var(--bg-0); }
-  #ctxstrip, #keyhost, #quickrow, #sendform { border-left:1px solid var(--line); }
+  #ctxstrip, #tune, #keyhost, #quickrow, #sendform { border-left:1px solid var(--line); }
+  /* the side column has the height: wrap instead of scrolling. A segment takes its own line (and wraps inside it: 'ultracode' must not poke out of
+     the 300 px column), no fade, no scroll */
+  #tune { padding:4px 8px; }
+  .tune-row { flex-wrap:wrap; overflow:visible; padding-left:0; }
+  .tune-row::after, #tune::before, #tune::after { display:none; }
+  .tune-seg { flex:1 1 100%; min-width:0; max-width:100%; flex-wrap:wrap; }
   #ctxstrip.open { max-height:36dvh; }
-  .kb.compact .kb-r1 { gap:4px; }                                       /* six 44 px tracks fit the 284 px inner width */
-  .bp5-dark .bp5-button.kb-key[data-key=BTab]:not([class*=bp5-intent-]) { font-size:10.5px; letter-spacing:-.2px; }   /* five keys in 276 px */
+  .kb.compact .kb-r1, .kb-r2 { gap:4px; }                               /* six 44 px tracks fit the 284 px inner width */
 }
-@media (prefers-reduced-motion:reduce) { #rail { transition:none; } }
+@media (prefers-reduced-motion:reduce) { #rail, #tune::before, #tune::after { transition:none; } .bp5-dark #tune .bp5-button.tune-chip.pending { animation:none; } }

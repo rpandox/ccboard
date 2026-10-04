@@ -8,9 +8,32 @@ function pctBar(pct) {
   return el('span', { class: 'bar' + cls }, i);
 }
 
+/* Pointer helpers for the forms (components.js is loaded by index.html and term.html, shell.js only by the board).
+   coarsePointer(): a touch device, or the html.force-coarse QA switch. focusFine(node): focus a field only on a fine pointer, so a phone never
+   opens its soft keyboard (with a cyan ring over the first field) the moment a sheet opens; a tap on a field focuses it as before.
+   narrowViewport(): the phone layout (under 600 px), for the controls that fold into a menu there. Each answers false where it cannot tell. */
+function coarsePointer() {
+  try { if (document.documentElement && document.documentElement.classList && document.documentElement.classList.contains('force-coarse')) return true; } catch (_) { /* no document element */ }
+  try { return !!(window.matchMedia && window.matchMedia('(pointer:coarse)').matches); } catch (_) { return false; }
+}
+function focusFine(node) {
+  if (!node || typeof node.focus !== 'function' || coarsePointer()) return false;
+  node.focus();
+  return true;
+}
+function narrowViewport() {
+  try { return !!(window.matchMedia && window.matchMedia('(max-width: 599px)').matches); } catch (_) { return false; }
+}
+
+/* Arm a two-tap button: the page repaints (whichever is mounted) with its Confirm + Cancel. */
+function confirmArm(key) {
+  ui.confirm = key;
+  if (typeof repaintPage === 'function') repaintPage(); else if (typeof render === 'function') render(true);
+}
+
 function confirmButton(key, label, action, quiet) {
-  // Two taps: the first turns the button into "Confirm …" + Cancel. `quiet` renders the first state low-key
-  // (minimal, no red fill) for destructive actions that sit next to everyday ones on a phone.
+  // Two taps: the first turns the button into "Confirm …" + Cancel. A destructive button rests red-outlined (style.css); only the armed
+  // "Confirm …" is filled red. `quiet` renders the resting state as a minimal (borderless-fill) button for rows crowded with everyday actions.
   // Repaint whichever page is mounted (a keyed roster row, the peek, the board): never a home-only renderer, so it is safe off the board.
   const repaint = () => { if (typeof repaintPage === 'function') repaintPage(); else if (typeof render === 'function') render(true); };
   if (ui.confirm === key) {
@@ -18,7 +41,7 @@ function confirmButton(key, label, action, quiet) {
       el('button', { class: 'danger confirm', onclick: async () => { ui.confirm = null; try { await action(); setError(null); } catch (e) { setError(e.message); } await poll(true); }, text: `Confirm ${label}` }),
       el('button', { onclick: () => { ui.confirm = null; repaint(); }, text: 'Cancel' }));
   }
-  return el('button', { class: 'danger' + (quiet ? ' minimal' : ''), onclick: () => { ui.confirm = key; repaint(); }, text: label });
+  return el('button', { class: 'danger' + (quiet ? ' minimal' : ''), title: `${label} (tap again to confirm)`, onclick: () => confirmArm(key), text: label });
 }
 
 function repoGroups(p) { return p.root ? [p.root, ...p.repos] : p.repos; }   // the project folder row first, then the repos
@@ -29,7 +52,45 @@ function allRepos() {
   return out;
 }
 
-function field(label, control, hint) { return el('div', { class: 'field' }, el('span', { text: label }), control, hint ? el('span', { class: 'dim', text: hint }) : null); }
+/* A labelled control: the label above, the control, an (initially empty) inline error, then helper text in --dim.
+   The label is tied to the control: <label for> when the control is an input, select or textarea (or names one in control._labelFor), and
+   aria-labelledby on a wrapper (checks, a segmented control) so a click on the label never toggles its first checkbox. aria-describedby names
+   the hint and the error slot. The node carries .errNode and .target; fieldError(node, text, focus) fills the slot. */
+let fieldSeq = 0;
+function fieldLabelable(n) { return !!n && /^(INPUT|SELECT|TEXTAREA)$/.test(String(n.tagName || '').toUpperCase()); }
+
+function field(label, control, hint, err) {
+  const n = ++fieldSeq;
+  const target = control && control._labelFor ? control._labelFor : (fieldLabelable(control) ? control : null);
+  let id = target ? target.getAttribute('id') : null;
+  if (target && !id) { id = `fld${n}`; target.setAttribute('id', id); }
+  const labelId = `fld${n}-l`;
+  const lab = el('label', { class: 'field-label', id: labelId, for: id, text: label });
+  const errNode = el('span', { class: 'field-err bad', role: 'alert', id: `fld${n}-e`, text: err || '' });
+  const hintNode = hint ? el('span', { class: 'dim field-hint', id: `fld${n}-h`, text: hint }) : null;
+  const owner = target || control;
+  if (owner && typeof owner.setAttribute === 'function') {
+    owner.setAttribute('aria-describedby', hintNode ? `fld${n}-h fld${n}-e` : `fld${n}-e`);
+    if (!target) {
+      owner.setAttribute('aria-labelledby', labelId);
+      if (!owner.getAttribute('role')) owner.setAttribute('role', 'group');
+    }
+  }
+  const node = el('div', { class: 'field' }, lab, control, errNode, hintNode);
+  node.errNode = errNode;
+  node.target = owner;
+  return node;
+}
+
+/* Say what is wrong next to the field (and flag the control for assistive tech); an empty text clears it. focus: move to the control (a
+   submit that failed is an action of the person's: the keyboard may open then). */
+function fieldError(f, text, focus) {
+  if (!f || !f.errNode) return;
+  f.errNode.textContent = text || '';
+  const t = f.target;
+  if (t && typeof t.setAttribute === 'function') { if (text) t.setAttribute('aria-invalid', 'true'); else t.removeAttribute('aria-invalid'); }
+  if (text && focus && t && typeof t.focus === 'function') t.focus();
+}
 function selectEl(options, value) {
   const sel = el('select');
   for (const [v, t] of options) sel.append(el('option', { value: v, text: t }));
@@ -345,9 +406,11 @@ function taskSendSheet(t) {
 
 /* Edit a backlog card: a title and a prompt in a small sheet (PATCH sends only what changed). The full prompt is fetched when the row carries only its head. */
 function taskEditSheet(t) {
-  const title = el('input', { type: 'text', maxlength: 120, value: t.title || '', 'aria-label': 'title' });
-  const prompt = el('textarea', { class: 'composer task-prompt', rows: '4', 'aria-label': 'prompt', autocomplete: 'off', spellcheck: 'false' });
-  const status = el('div', { class: 'dim form-status' });
+  const title = el('input', { type: 'text', maxlength: 120, value: t.title || '', autocomplete: 'off' });
+  const prompt = el('textarea', { class: 'composer task-prompt', rows: '4', autocomplete: 'off', spellcheck: 'false' });
+  const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
+  const titleField = field('Title', title);
+  const promptField = field('Prompt', prompt, 'Cmd/Ctrl+Enter saves.');
   const truncated = typeof t.prompt_len === 'number' && typeof t.prompt === 'string' && t.prompt.length < t.prompt_len;
   let original = typeof t.prompt === 'string' ? t.prompt : '';
   prompt.value = original;
@@ -364,7 +427,8 @@ function taskEditSheet(t) {
   const save = async () => {
     const body = {};
     const nt = title.value.trim();
-    if (!nt) { taskStatus(status, 'a title is required', true); title.focus(); return; }       // the sheet stays: closing it would look like a save
+    fieldError(titleField, '');
+    if (!nt) { fieldError(titleField, 'A title is required.', true); return; }                  // the sheet stays: closing it would look like a save
     if (nt !== t.title) body.title = nt;
     const np = prompt.value.trim();
     if (np && np !== original.trim()) body.prompt = np;
@@ -384,12 +448,12 @@ function taskEditSheet(t) {
   prompt.addEventListener('input', () => { if (typeof composerGrow === 'function') composerGrow(prompt, 12); });
   prompt.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); save(); } });
   const form = el('form', { class: 'form', onsubmit: (e) => { e.preventDefault(); save(); } },
-    field('title', title), field('prompt', prompt), status,
+    titleField, promptField, status,
     el('div', { class: 'submit' }, el('button', { class: 'primary', type: 'submit', text: 'Save' }),
       el('button', { type: 'button', onclick: () => closeSheet(), text: 'Cancel' })));
   openSheet({ title: `Edit task · ${taskWhere(t)}`, body: form });
   if (typeof composerGrow === 'function') composerGrow(prompt, 12);
-  title.focus();
+  focusFine(title);
 }
 
 /* Delete a backlog card: gone at once, back with an error toast if the server refused. Called through confirmButton (two taps). */
@@ -400,7 +464,9 @@ async function taskDelete(t) {
   catch (e) { taskOverrideDrop(t.id); taskRepaint(); throw e; }
 }
 
-/* A task before any session (phase backlog | queued): title, the head of its prompt, where, how old; Start, Send to session, Edit, Delete. */
+/* A task before any session (phase backlog | queued): title, the head of its prompt, where, how old; Start (a tinted primary: the cards repeat it),
+   Send to session, Edit, Delete. Under 600 px only Start (and the one-tap "→ s1" target) stay on the card: the other three fold into a ... menu,
+   and Delete there is still two taps (the menu arms it, the card then shows Confirm Delete + Cancel). */
 function backlogCard(t) {
   const queued = taskPhase(t) === 'queued';
   const when = t.created_at ? Date.parse(t.created_at) / 1000 : 0;
@@ -408,17 +474,57 @@ function backlogCard(t) {
   const quick = taskSessionTargets(t).filter((x) => x.ok && x.same);
   const head = String(t.prompt || '');
   const more = head.startsWith(t.title) ? head.slice(t.title.length).replace(/^[\s.:;,-]+/, '') : head;       // a title cut from the prompt's first line is not said twice
+  const delKey = 'tdel:' + t.id;
+  const del = confirmButton(delKey, 'Delete', () => taskDelete(t), true);
+  let tail;
+  if (narrowViewport()) {
+    const dots = el('button', { class: 'icon minimal tk-more', type: 'button', 'aria-label': 'More actions', title: 'More actions' }, ic('more'));
+    menu(dots, [...(queued ? [] : [{ label: 'Send to session', icon: 'send-message', onClick: () => taskSendSheet(t) }]),
+      { label: 'Edit', icon: 'edit', onClick: () => taskEditSheet(t) },
+      { label: 'Delete', icon: 'trash', onClick: () => confirmArm(delKey) }]);
+    tail = [ui.confirm === delKey ? del : dots];
+  } else {
+    tail = [queued ? null : el('button', { class: 'tk-send', type: 'button', title: 'Hand the prompt to a running session', onclick: () => taskSendSheet(t), text: 'Send to session' }),
+      el('button', { class: 'tk-edit', type: 'button', onclick: () => taskEditSheet(t), text: 'Edit' }), del];
+  }
   const card = el('div', { class: 'task backlog' + (queued ? ' queued' : ''), 'data-task': t.id, 'data-phase': taskPhase(t) },
     el('div', { class: 'row' }, el('span', { class: 'title', text: t.title }), queued ? el('span', { class: 'state ended', text: 'waiting for a step' }) : null),
     more ? el('div', { class: 'tk-prompt', text: more }) : null,
     el('div', { class: 'meta' }, taskWhere(t), added ? ` · ${added}` : ''),
     el('div', { class: 'actions' },
-      queued ? null : el('button', { class: 'primary tk-start', type: 'button', title: 'Start in a new session, in its own worktree and branch', onclick: () => taskStart(t) }, ic('play'), 'Start'),
-      queued ? null : el('button', { class: 'tk-send', type: 'button', title: 'Hand the prompt to a running session', onclick: () => taskSendSheet(t), text: 'Send to session' }),
+      queued ? null : el('button', { class: 'primary tinted tk-start', type: 'button', title: 'Start in a new session, in its own worktree and branch', onclick: () => taskStart(t) }, ic('play'), 'Start'),
       queued || quick.length !== 1 ? null : el('button', { class: 'tk-quick', type: 'button', title: `Send the prompt to ${quick[0].s.name} now`, onclick: () => taskSend(t, quick[0]), text: `→ ${quick[0].s.name}` }),
-      el('button', { class: 'tk-edit', type: 'button', onclick: () => taskEditSheet(t), text: 'Edit' }),
-      confirmButton('tdel:' + t.id, 'Delete', () => taskDelete(t), true)));
+      ...tail));
   return card;
+}
+
+/* Preview: expose the task's dev server on its own tailnet HTTPS port. When the server cannot find the listening port on its own it asks, in a small
+   sheet (a labelled number field, Expose + Cancel, the reason in --dim), never a browser prompt(). */
+async function taskPreview(t, port) {
+  const r = await api('POST', `/api/tasks/${t.id}/preview`, port ? { port } : {});
+  toast(`preview at ${r.url} → 127.0.0.1:${r.port}`, { kind: 'ok', ttl: 8000 });
+  return r;
+}
+
+function taskPortSheet(t, why) {
+  const port = el('input', { type: 'number', min: '1', max: '65535', step: '1', inputmode: 'numeric', autocomplete: 'off', placeholder: 'e.g. 3000' });
+  const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
+  const portField = field('Dev server port', port, why || 'The port the dev server in this session listens on.');
+  const go = el('button', { class: 'primary', type: 'submit', text: 'Expose preview' });
+  const form = el('form', { class: 'form', novalidate: true, onsubmit: async (e) => {
+    e.preventDefault();
+    const n = parseInt(port.value, 10);
+    fieldError(portField, '');
+    if (!(n >= 1 && n <= 65535)) { fieldError(portField, 'Enter a port between 1 and 65535.', true); return; }
+    go.disabled = true;
+    taskStatus(status, 'exposing…');
+    try { await taskPreview(t, n); closeSheet(); if (typeof poll === 'function') await poll(true); }
+    catch (err) { taskStatus(status, err.message, true); }
+    go.disabled = false;
+  } }, portField, status,
+  el('div', { class: 'submit' }, go, el('button', { type: 'button', onclick: () => closeSheet(), text: 'Cancel' })));
+  openSheet({ title: `Preview · ${String(t.title).slice(0, 60)}`, body: form });
+  focusFine(port);
 }
 
 function taskCard(t) {
@@ -427,6 +533,7 @@ function taskCard(t) {
   const ciFail = t.ci && t.ci.bucket === 'fail';
   const starting = !t.tmux;
   const handed = t.mode === 'session';
+  const lead = !!(s && s.needs_attention);                                 // the card that waits for you carries the tinted primary; the others are quiet
   const chip = handed && t.tmux ? el('a', { class: 'chip-btn tk-chip', href: taskPeekHash(t.tmux), title: `this task runs in ${sessionNameOf(t.tmux)}`, text: `in ${sessionNameOf(t.tmux)}` }) : null;
   const card = el('div', { class: 'task' + (s && s.needs_attention ? ' attn' : '') + (handed ? ' handed' : ''), 'data-task': t.id },
     el('div', { class: 'row' }, el('span', { class: 'title', text: t.title }), s ? stateBadge(s) : el('span', { class: 'state ended', text: 'no session' }), ciBadge(t)),
@@ -436,17 +543,17 @@ function taskCard(t) {
     (t.overlap && t.overlap.length) ? el('div', { class: 'last bad', title: t.overlap.map(o => `${o.title}: ${o.files.join(', ')}`).join('\n'),
       text: '⚠ overlaps ' + t.overlap.map(o => `"${o.title}" (${o.files.length} file${o.files.length === 1 ? '' : 's'}: ${o.files.slice(0, 3).join(', ')}${o.files.length > 3 ? '…' : ''})`).join('; ') }) : null,
     el('div', { class: 'actions' },
-      starting ? null : el('a', { class: 'btn primary', href: `/term/${encodeURIComponent(t.tmux)}`, target: '_blank', rel: 'noopener' }, ic('console'), 'Terminal'),
+      starting ? null : el('a', { class: 'btn' + (lead ? ' primary tinted' : ''), href: `/term/${encodeURIComponent(t.tmux)}`, target: '_blank', rel: 'noopener' }, ic('console'), 'Terminal'),
       t.branch ? el('button', { onclick: () => openTaskModal(t), text: t.pr_url ? 'Diff / PR' : 'Diff / PR…' }) : null,
       t.pr_url ? el('a', { class: 'btn', href: t.pr_url, target: '_blank', rel: 'noopener', text: 'PR' }) : null,
       t.preview_url ? el('a', { class: 'btn', href: t.preview_url, target: '_blank', rel: 'noopener', text: `Preview :${t.preview_port}` }) : null,
       starting ? null : (t.preview_url ? el('button', { onclick: async () => { try { await api('DELETE', `/api/tasks/${t.id}/preview`); } catch (e) { setError(e.message); } await poll(true); }, title: 'stop exposing the preview', text: '⏏' }) :
         el('button', { onclick: async () => {
-          try { const r = await api('POST', `/api/tasks/${t.id}/preview`, {}); toast(`preview at ${r.url} → 127.0.0.1:${r.port}`, { kind: 'ok', ttl: 8000 }); }
-          catch (e) { if (/no listening port/.test(e.message)) { const p = window.prompt(e.message + '\n\nDev server port (leave blank to cancel):'); if (p) { try { await api('POST', `/api/tasks/${t.id}/preview`, { port: parseInt(p, 10) }); } catch (e2) { setError(e2.message); } } } else setError(e.message); }
+          try { await taskPreview(t); }
+          catch (e) { if (/no listening port/.test(e.message)) taskPortSheet(t, e.message); else setError(e.message); }
           await poll(true);
         }, title: 'expose a dev server running in this session on its own tailnet HTTPS port', text: 'Preview' })),
-      ciFail ? el('button', { class: 'danger', onclick: async () => { try { const r = await api('POST', `/api/tasks/${t.id}/fix-ci`); setError(null); toast(`CI logs (${r.chars} chars) sent to ${t.title}${r.relaunched ? ' (session relaunched)' : ''}`, { kind: 'ok', ttl: 8000 }); } catch (e) { setError(e.message); } await poll(true); }, text: 'Fix CI' }) : null,
+      ciFail ? el('button', { class: 'tk-fixci', title: 'send the failing CI logs to the session', onclick: async () => { try { const r = await api('POST', `/api/tasks/${t.id}/fix-ci`); setError(null); toast(`CI logs (${r.chars} chars) sent to ${t.title}${r.relaunched ? ' (session relaunched)' : ''}`, { kind: 'ok', ttl: 8000 }); } catch (e) { setError(e.message); } await poll(true); }, text: 'Fix CI' }) : null,
       t.pr_url ? el('button', { onclick: async () => { try { await api('POST', `/api/tasks/${t.id}/refresh`); } catch (e) { setError(e.message); } await poll(true); }, title: 'refresh PR / CI status', text: '↻' }) : null,
       starting ? null : confirmButton('arch:' + t.id, 'Archive', async () => {
         try { await api('POST', `/api/tasks/${t.id}/archive`, { force: false }); }
@@ -454,7 +561,7 @@ function taskCard(t) {
           if (/force/.test(e.message) && window.confirm(e.message + '\n\nDiscard the worktree anyway?')) await api('POST', `/api/tasks/${t.id}/archive`, { force: true });
           else throw e;
         }
-      })));
+      }, true)));
   return card;
 }
 
@@ -507,9 +614,12 @@ function tabs(items, activeId, onChange) {
   };
 }
 
-/* openSheet({title, body, actions?, placement?, onClose?}) -> { dialog, body, close }. dialog#sheet through showModal(): a right panel from 840 px up,
+/* openSheet({title, body, actions?, placement?, onClose?, back?}) -> { dialog, body, close }. dialog#sheet through showModal(): a right panel from 840 px up,
    a bottom sheet below (placement 'right' | 'bottom' forces one). Calling it again while open swaps the content in place. body and actions
-   take a node, an array of nodes or a string. Esc, the backdrop and the close button end it; closeSheet() does the same from code. */
+   take a node, an array of nodes or a string. Esc, the backdrop and the close button end it; closeSheet() does the same from code.
+   back {label, onClick} puts a chevron button before the title (the way up one level: the repo picker behind a form). The dialog itself takes
+   the focus on open, so the browser does not ring the close button; a form's focusFirst (focusFine) then moves it on to the first field, on a
+   fine pointer only. */
 function sheetKids(x) { return x === null || x === undefined || x === false ? [] : (Array.isArray(x) ? x : [x]).flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false); }
 
 function openSheet(opts) {
@@ -518,6 +628,7 @@ function openSheet(opts) {
   const o = opts || {};
   if (!dlg.dataset.wired) {
     dlg.dataset.wired = '1';
+    try { dlg.style.outline = 'none'; } catch (_) { /* no CSSOM */ }                // the dialog takes the focus on open (below): no ring around the whole sheet
     dlg.addEventListener('close', () => {
       const cb = dlg._onClose;
       dlg._onClose = null;
@@ -534,12 +645,14 @@ function openSheet(opts) {
   const actions = sheetKids(o.actions);
   dlg.textContent = '';
   dlg.append(
-    el('div', { class: 'sheet-head' }, el('h2', { class: 'sheet-title', text: o.title || '' }),
+    el('div', { class: 'sheet-head' }, el('h2', { class: 'sheet-title' }, o.back && typeof o.back.onClick === 'function'
+      ? el('button', { class: 'icon minimal sheet-back', type: 'button', 'aria-label': o.back.label || 'Back', title: o.back.label || 'Back', onclick: o.back.onClick }, ic('chevron-left')) : null, o.title || ''),
       el('button', { class: 'icon minimal', type: 'button', 'aria-label': 'Close', title: 'Close', onclick: () => closeSheet() }, ic('cross'))),
     body);
   if (actions.length) dlg.append(el('div', { class: 'sheet-actions' }, ...actions));   // Element.append(null) would add the text "null"
   dlg._onClose = typeof o.onClose === 'function' ? o.onClose : null;
   if (!dlg.open) { try { dlg.showModal(); } catch (_) { dlg.setAttribute('open', ''); } }
+  try { dlg.setAttribute('tabindex', '-1'); dlg.focus(); } catch (_) { /* no focus API */ }
   return { dialog: dlg, body, close: closeSheet };
 }
 
@@ -650,8 +763,17 @@ function emptyState(icon, title, hint) {
    newlines stay inside the prompt instead of submitting after the first line. */
 const COMPOSER_MAX_ROWS = 6;
 
+/* A send row with a draft says so (class has-text on the textarea's parent, set by composerBind): the Send button is a tinted primary while the
+   box is empty and a filled one once there is text, so the box you are about to send stands out. composerGrow is the one choke point: every
+   path that changes the text (typing, the newline key, a send that clears the box, an import that fills it) calls it. */
+function composerMark(ta) {
+  const row = ta._rowMark ? ta.parentNode : null;
+  if (row && row.classList) row.classList.toggle('has-text', !!String(ta.value || '').trim());
+}
+
 function composerGrow(ta, maxRows) {
   if (!ta || !ta.style) return;
+  composerMark(ta);
   const rows = maxRows || ta._maxRows || COMPOSER_MAX_ROWS;
   let lh = 20, pad = 14;                                             // fallbacks for environments without layout (tests)
   if (typeof getComputedStyle === 'function') {
@@ -684,6 +806,7 @@ function composerInsertNewline(ta) {
 function composerBind(ta, opts) {
   const o = opts || {};
   ta._maxRows = o.maxRows || COMPOSER_MAX_ROWS;
+  ta._rowMark = true;
   ta.classList.add('composer');
   ta.addEventListener('input', () => composerGrow(ta));
   ta.addEventListener('keydown', (e) => {
@@ -695,10 +818,19 @@ function composerBind(ta, opts) {
   return ta;
 }
 
-/* Build a composer textarea: opts {placeholder, label, id, onSend, maxRows}. */
+/* The keyboard hint a caller appends to a placeholder ("reply to s1 · ⇧Enter new line"): meaningless on a touch keyboard, and on a phone it wraps
+   to a second line the one-row box cuts off. */
+const COMPOSER_HINT = /\s·\s⇧Enter new line$/;
+
+/* Build a composer textarea: opts {placeholder, label, id, onSend, maxRows}. On a coarse pointer a placeholder that carries the hint suffix is cut down to its
+   bare verb ("Reply…": one short line in the one-row box, never wrapped and clipped, whatever the session is called) and the full text moves to the title
+   (the label stays the accessible name). style.css also keeps any placeholder on one line with an ellipsis. */
 function composer(opts) {
   const o = opts || {};
-  const ta = el('textarea', { class: 'composer', rows: '1', placeholder: o.placeholder || 'send', 'aria-label': o.label || o.placeholder || 'send',
+  const full = o.placeholder || 'send';
+  const bare = String(full).replace(COMPOSER_HINT, '').trim().split(/\s+/)[0];
+  const short = coarsePointer() && COMPOSER_HINT.test(full) && bare ? bare.charAt(0).toUpperCase() + bare.slice(1) + '…' : full;
+  const ta = el('textarea', { class: 'composer', rows: '1', placeholder: short, 'aria-label': o.label || full, title: short === full ? null : full,
     autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'send', id: o.id || null });
   return composerBind(ta, o);
 }
@@ -707,4 +839,191 @@ function composer(opts) {
 function newlineButton(ta) {
   return el('button', { class: 'minimal small nl', type: 'button', title: 'newline (Shift+Enter)', 'aria-label': 'insert newline',
     onpointerdown: (e) => e.preventDefault(), onclick: () => composerInsertNewline(ta) }, '↵');
+}
+
+/* ---- modal <dialog>s without window.prompt: a small shell and the quick-reply editor -----------------------------
+   modalShell(cls, label, onClose) -> { dlg, close, show }: a <dialog class=cls> that is appended to <body> on show(), takes Esc and a
+   backdrop click as "cancel" (handled here, so the same code runs where a browser would not fire `cancel`) and removes itself when it
+   closes. The dialog has no padding of its own: a click that lands on the dialog itself is the backdrop. Definitions only.
+   On a phone the soft keyboard shrinks the VISUAL viewport but not the layout viewport a centred dialog is placed in, which left Save under the
+   keyboard. So the dialog is anchored to the top of the visual viewport (style.css dialog.qr-editor: position fixed, top = --vvt + 12 px,
+   max-height from --vvh), and show() keeps those two custom properties on the dialog itself, from visualViewport, for as long as it is open (the
+   terminal page's TermKit.viewportFit keeps them on <html> only, and the other pages have none). Under a coarse pointer show() also puts the focus on
+   the dialog, so the browser does not hand it to the first input and pop the keyboard up before anything was tapped. */
+function modalFit(dlg) {
+  const vv = window.visualViewport || null;
+  const put = () => {
+    if (!dlg.style || typeof dlg.style.setProperty !== 'function') return;
+    const h = Math.floor(vv ? vv.height : window.innerHeight);
+    if (h > 0) dlg.style.setProperty('--vvh', h + 'px');
+    dlg.style.setProperty('--vvt', Math.max(0, Math.floor(vv ? vv.offsetTop : 0)) + 'px');
+  };
+  put();
+  if (!vv || typeof vv.addEventListener !== 'function') return () => {};
+  vv.addEventListener('resize', put);                                // the keyboard came up (or went away) after the dialog opened
+  vv.addEventListener('scroll', put);                                // iOS pans the visual viewport inside the layout one
+  return () => { vv.removeEventListener('resize', put); vv.removeEventListener('scroll', put); };
+}
+
+function modalShell(cls, label, onClose) {
+  const dlg = el('dialog', { class: cls, 'aria-label': label });
+  let done = false;
+  let unfit = null;
+  const gone = () => { if (done) return; done = true; if (unfit) { unfit(); unfit = null; } dlg.remove(); if (typeof onClose === 'function') onClose(); };   // once, whichever of close() and the close event comes first
+  const close = () => {
+    if (dlg.open) { try { dlg.close(); } catch (_) { dlg.removeAttribute('open'); } }
+    gone();                                                          // a browser fires `close` a task later; callers (a second long press) must not see the old dialog
+  };
+  dlg.addEventListener('close', gone);
+  dlg.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } });
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) close(); });
+  const show = () => {
+    document.body.append(dlg);
+    const touch = coarsePointer();
+    if (touch) { dlg.setAttribute('tabindex', '-1'); dlg.setAttribute('autofocus', ''); }   // autofocus: where showModal honours it, the dialog itself is the target
+    unfit = modalFit(dlg);
+    try { dlg.showModal(); } catch (_) { dlg.setAttribute('open', ''); }
+    if (touch) { try { dlg.focus(); } catch (_) { /* nothing to focus */ } }   // not the first input: no soft keyboard until the person taps one
+  };
+  return { dlg, close, show };
+}
+
+/* ---- quick replies: one list per session in localStorage `ccboard:quick:<tmux>`, shared by the terminal page and the peek ---------
+   Stored as a JSON array of lines; no key (or a list equal to the defaults) means the agent defaults. quickClean trims, drops empty and
+   duplicate lines and keeps at most QUICK_MAX. */
+const QUICK_DEFAULTS = ['continue', 'merge', 'push', 'pr', 'add commit push', 'do it'];   // the agent nudges (SESSION_NUDGES in pages/agents.js)
+const QUICK_MAX = 12;
+const QUICK_LINE_MAX = 200;
+const QUICK_HOLD_MS = 500;
+let quickEditing = null;                                             // the editor that is open, if any (a second long-press must not stack another)
+
+function quickKey(tmux) { return 'ccboard:quick:' + tmux; }
+
+function quickClean(list) {
+  const out = [];
+  for (const x of Array.isArray(list) ? list : []) {
+    const t = String(x === null || x === undefined ? '' : x).trim();
+    if (t && !out.includes(t)) out.push(t);
+    if (out.length >= QUICK_MAX) break;
+  }
+  return out;
+}
+
+function quickLoad(tmux) {
+  try {
+    const raw = localStorage.getItem(quickKey(tmux));
+    if (raw) { const v = JSON.parse(raw); if (Array.isArray(v)) return quickClean(v); }
+  } catch (_) { /* no storage, or not JSON: the defaults */ }
+  return QUICK_DEFAULTS.slice();
+}
+
+/* Save the cleaned list; null (or a list equal to the defaults) removes the key. Returns the list that is in effect. */
+function quickSave(tmux, items) {
+  const list = items === null ? QUICK_DEFAULTS.slice() : quickClean(items);
+  const same = list.length === QUICK_DEFAULTS.length && list.every((x, i) => x === QUICK_DEFAULTS[i]);
+  try {
+    if (same) localStorage.removeItem(quickKey(tmux)); else localStorage.setItem(quickKey(tmux), JSON.stringify(list));
+  } catch (_) { /* storage may be unavailable: the list lasts until the page closes */ }
+  return list;
+}
+
+/* quickReplyEditor({items, defaults?, onSave(items)}) -> { dialog, close, save, values } | the editor already open.
+   A <dialog class="qr-editor">: one row per reply (input + quiet remove), "+ add" and Reset (quiet text buttons; Reset puts the defaults in the rows, saved only with
+   Save), Cancel (the default bordered button) and Save (the one filled primary). Enter in a row saves, Esc and the backdrop cancel (onSave is not called).
+   Limits: at most QUICK_MAX (12) replies ("+ add" stops at twelve) and QUICK_LINE_MAX (200) characters each; a longer line is not cut silently: Save refuses and
+   says so in the inline error under the list (--bad-fg, role alert), with the row marked aria-invalid and focused. Blank and duplicate lines are dropped on Save.
+   16 px inputs on coarse pointers come from style.css. */
+function quickReplyEditor(opts) {
+  if (quickEditing) return quickEditing;
+  const o = opts || {};
+  const defaults = quickClean(Array.isArray(o.defaults) ? o.defaults : QUICK_DEFAULTS);
+  let saved = false;
+  const shell = modalShell('qr-editor', 'Edit quick replies', () => { quickEditing = null; });
+  const list = el('div', { class: 'qr-list' });
+  const count = el('span', { class: 'dim qr-count' });
+  const err = el('p', { class: 'qr-err bad', role: 'alert' });
+  const addBtn = el('button', { type: 'button', class: 'minimal qr-add', onclick: () => { if (rows().length < QUICK_MAX) { const r = addRow(''); sync(); r.querySelector('input').focus(); } }, text: '+ add' });
+  const rows = () => Array.from(list.querySelectorAll('.qr-row'));
+  const inputs = () => Array.from(list.querySelectorAll('input'));
+  const values = () => inputs().map((i) => i.value);
+  function clearError() { err.textContent = ''; for (const i of inputs()) i.removeAttribute('aria-invalid'); }
+  function sync() {
+    const n = rows().length;
+    addBtn.disabled = n >= QUICK_MAX;
+    if (n >= QUICK_MAX) addBtn.setAttribute('title', 'At most ' + QUICK_MAX + ' replies'); else addBtn.removeAttribute('title');
+    count.textContent = n + ' of ' + QUICK_MAX;
+  }
+  function addRow(text) {
+    const input = el('input', { type: 'text', class: 'qr-input', 'aria-label': 'Quick reply', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'done' });
+    input.value = text;
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); save(); } });
+    input.addEventListener('input', clearError);
+    const row = el('div', { class: 'qr-row' }, input,
+      el('button', { type: 'button', class: 'icon minimal qr-rm', title: 'Remove', 'aria-label': 'Remove this reply', onclick: () => { row.remove(); sync(); clearError(); } }, ic('cross')));
+    list.append(row);
+    return row;
+  }
+  function fill(items) { list.textContent = ''; for (const t of items) addRow(t); sync(); clearError(); }
+  /* '' when the rows are fine, else the message for the inline error (and the first offending input) */
+  function problem() {
+    const ins = inputs();
+    if (ins.length > QUICK_MAX) return { msg: 'At most ' + QUICK_MAX + ' replies (this has ' + ins.length + ').', input: ins[QUICK_MAX] };
+    const long = ins.find((i) => i.value.trim().length > QUICK_LINE_MAX);
+    if (long) { const v = long.value.trim(); return { msg: 'A reply is at most ' + QUICK_LINE_MAX + ' characters ("' + v.slice(0, 24) + '…" has ' + v.length + ').', input: long }; }
+    return null;
+  }
+  function save() {
+    if (saved) return;
+    const bad = problem();
+    if (bad) {
+      err.textContent = bad.msg;
+      bad.input.setAttribute('aria-invalid', 'true');
+      try { bad.input.focus(); } catch (_) { /* nothing to focus */ }
+      return;
+    }
+    saved = true;
+    const items = quickClean(values());
+    try { if (typeof o.onSave === 'function') o.onSave(items); } catch (e) { console.error('ccboard quickReplyEditor onSave', e); }
+    shell.close();
+  }
+  fill(quickClean(Array.isArray(o.items) ? o.items : defaults));
+  shell.dlg.append(el('form', { class: 'qr-box', onsubmit: (e) => { e.preventDefault(); save(); } },
+    el('h2', { class: 'qr-title', text: 'Quick replies' }),
+    el('p', { class: 'dim qr-hint', text: 'One per row, sent to the session with Enter. Up to ' + QUICK_MAX + ', ' + QUICK_LINE_MAX + ' characters each.' }),
+    list, err,
+    el('div', { class: 'qr-tools' }, addBtn, el('button', { type: 'button', class: 'minimal qr-reset', title: 'Back to the default replies', onclick: () => fill(defaults), text: 'Reset' }), count),
+    el('div', { class: 'qr-actions' },
+      el('button', { type: 'button', class: 'qr-cancel', onclick: () => shell.close(), text: 'Cancel' }),
+      el('button', { type: 'submit', class: 'primary qr-save', text: 'Save' }))));
+  const ctl = { dialog: shell.dlg, close: shell.close, save, values };
+  quickEditing = ctl;
+  shell.show();
+  if (!coarsePointer()) { const first = list.querySelector('input'); if (first) first.focus(); }
+  return ctl;
+}
+
+/* quickChip(text, {cls?, onSend(button), onEdit}) -> a button that sends on a tap and opens the editor on a long press (500 ms; right click
+   does too, which is also what a long press on touch becomes). The tap that ends a long press is swallowed. Callers that must not steal
+   focus from the composer add their own pointerdown preventDefault (term.js keep()). */
+function quickChip(text, opts) {
+  const o = opts || {};
+  let timer = null;
+  let held = false;
+  const stop = () => { if (timer !== null) { clearTimeout(timer); timer = null; } };
+  const edit = () => { stop(); held = true; if (typeof o.onEdit === 'function') o.onEdit(); };
+  const b = el('button', { type: 'button', class: o.cls || '', title: 'tap to send · hold to edit', text });
+  b.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button) return;
+    held = false;
+    stop();
+    timer = setTimeout(() => { timer = null; edit(); }, QUICK_HOLD_MS);
+  });
+  for (const t of ['pointerup', 'pointercancel', 'pointerleave']) b.addEventListener(t, stop);
+  b.addEventListener('contextmenu', (e) => { e.preventDefault(); edit(); });
+  b.addEventListener('click', (e) => {
+    if (held && e.detail) { held = false; e.preventDefault(); return; }       // the lift that ends a long press (a keyboard click has detail 0 and always sends)
+    held = false;
+    if (typeof o.onSend === 'function') o.onSend(b);
+  });
+  return b;
 }

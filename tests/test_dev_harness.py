@@ -9,6 +9,7 @@ Whether the mount is decided at import or per request is the backend's choice, s
 a fresh interpreter whose environment sets (or lacks) CCBOARD_DEV_BYPASS_USER, one request batch through TestClient (no lifespan: the
 static and routing layers need no database).
 """
+import http.server
 import json
 import os
 import pathlib
@@ -16,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -94,6 +96,18 @@ def test_fake_tty_script_defines_the_ttyd_surface_the_terminal_page_uses():
     assert re.search(r"['\"]wheel['\"]", js), "fake_tty.js counts 'wheel' events on the screen"
     assert re.search(r"\bfontSize\s*:\s*13\b", js) and re.search(r"\bcols\s*:\s*80\b", js) and re.search(r"\brows\s*:\s*24\b", js), \
         "window.term = { fit, options: { fontSize: 13 }, cols: 80, rows: 24 }"
+
+
+def test_fake_tty_script_has_the_font_spike_surface():
+    """The v0.5.8 font spike (TermKit.bind with ccboard:term:font=1) needs what ttyd's page has: window.FontFace, document.fonts and
+    term.options.fontFamily, measured into cols and rows by fit(); the recorder and the modes are what scripts/qa_terminal.sh drives."""
+    js = (FAKE / "fake_tty.js").read_text(encoding="utf-8")
+    for needle in ("FontFace", "document.fonts", "fontFamily", "__font", "__fitsAtFamily", "ccboard:fake:font", "measureText"):
+        assert needle in js, f"fake_tty.js never mentions {needle}"
+    for mode in ("stub", "fail", "hang", "missing"):
+        assert re.search(rf"""['"]{mode}['"]""", js), f"fake_tty.js has no '{mode}' font mode"
+    assert "Consolas,Liberation Mono,Menlo,Courier,monospace" in js, "the default family is ttyd's own, so 'unchanged' means something"
+    assert not re.search(r"\burl\s*\(", js), "the fake never names a font URL itself: the spike passes the vendored woff2, the stand-in only records it"
 
 
 def test_fake_tty_script_parses():
@@ -175,3 +189,162 @@ def test_in_process_board_has_no_tty_route(lite_client):
         assert r.status_code == 404, path
         assert r.headers["Content-Security-Policy"] == CSP, path
     assert lite_client.get("/tty/").status_code == 403
+
+
+# ---------- scripts/qa_terminal.sh: the v0.5.8 assertions, and the script itself run against a stub board with a browser that sees nothing ----------
+
+QA = ROOT / "scripts" / "qa_terminal.sh"
+
+#: a browse CLI with no browser: it logs every `js` snippet (NUL separated) and answers just enough for qa_terminal.sh to walk its branches
+FAKE_BROWSE = r"""#!/usr/bin/env bash
+LOG="${FAKE_BROWSE_LOG:?}"
+VP="${LOG}.vp"
+case "${1:-}" in
+  js)
+    printf '%s' "$2" >> "$LOG"; printf '\0' >> "$LOG"
+    case "$2" in
+      "1 + 1") echo 2 ;;
+      "window.innerWidth") cat "$VP" 2>/dev/null || echo 390 ;;
+      *"return 'ok'"*|*": 'ok'"*) echo ok ;;
+      *) echo 1 ;;
+    esac ;;
+  viewport) printf '%s' "${2%x*}" > "$VP" ;;
+  screenshot) echo png > "$2" ;;
+esac
+exit 0
+"""
+
+NODE_PARSE = r"""
+const vm = require('vm');
+const snippets = require('fs').readFileSync(process.argv[1], 'utf8').split('\0').filter((s) => s.trim());
+let bad = 0;
+snippets.forEach((s, i) => { try { new vm.Script(s); } catch (e) { bad += 1; console.log('SYNTAX #' + i + ': ' + e.message + '\n' + s.slice(0, 400)); } });
+console.log('SNIPPETS ' + snippets.length + ' BAD ' + bad);
+"""
+
+
+class _StubBoard(http.server.BaseHTTPRequestHandler):
+    """/ answers 200, /tty/ is the fake tty's page or a ttyd-looking one (class attribute), /api/ is a 404 (no session on this board)."""
+    tty_is_fake = True
+
+    def do_GET(self):
+        if self.path.startswith("/tty/"):
+            body = b'<script src="fake_tty.js"></script>' if self.tty_is_fake else b"<html>ttyd</html>"
+            code = 200
+        elif self.path.startswith("/api/"):
+            body, code = b"{}", 404
+        else:
+            body, code = b"ok", 200
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_):
+        pass
+
+
+def run_qa(tmp_path, fake_tty, env_extra=None, width="390"):
+    """Run the script once against a stub board and the blind browser: (CompletedProcess, [snippets]). Not a verdict about the page (that
+    is the reviewer's browser run); it proves every JS snippet the script sends parses, that no branch dies on `set -u` or a typo, and
+    which checks each mode runs."""
+    for tool in ("bash", "curl", "python3", "node"):
+        if not shutil.which(tool):
+            pytest.skip(f"{tool} is not installed")
+    handler = type("Board", (_StubBoard,), {"tty_is_fake": fake_tty})
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        browse = tmp_path / "fakebrowse"
+        browse.write_text(FAKE_BROWSE, encoding="utf-8")
+        browse.chmod(0o755)
+        log = tmp_path / "js.log"
+        env = dict(os.environ, B=str(browse), FAKE_BROWSE_LOG=str(log), QA_WIDTHS=width, QA_SETTLE="0", QA_TICK="0.01", QA_START_WAIT="0.02",
+                   QA_TMUX="qa--terminal--s1")
+        for k in ("QA_REAL_TTYD", "QA_FONT", "QA_FONT_W", "QA_HEADER", "QA_TMUX_CREATE", "QA_SHARED_BROWSER"):
+            env.pop(k, None)
+        env.update(env_extra or {})
+        r = subprocess.run(["bash", str(QA), f"http://127.0.0.1:{srv.server_address[1]}", str(tmp_path / "out")], cwd=ROOT, env=env,
+                           capture_output=True, text=True, timeout=240)
+    finally:
+        srv.shutdown()
+    snippets = [x for x in (log.read_bytes().decode("utf-8", "replace").split("\0") if log.exists() else []) if x.strip()]
+    return r, snippets
+
+
+def assert_snippets_parse(tmp_path, snippets):
+    path = tmp_path / "snippets.bin"
+    path.write_bytes("\0".join(snippets).encode("utf-8"))
+    out = subprocess.run(["node", "-e", NODE_PARSE, str(path)], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    assert re.search(r"SNIPPETS \d+ BAD 0\b", out.stdout), out.stdout[-2000:]
+
+
+def test_qa_terminal_script_is_valid_bash():
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash is not installed")
+    r = subprocess.run([bash, "-n", str(QA)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+
+def test_qa_terminal_script_carries_the_v058_assertions_and_the_real_ttyd_mode():
+    text = QA.read_text(encoding="utf-8")
+    for needle in ("QA_REAL_TTYD", "QA_FONT", "#tune", "dialog.readout", "dialog.qr-editor", "Edit quick replies", "window.prompt",
+                   "ccboard:term:font", "ccboard:fake:font", "TermKit.fontState", "confirm:true", "Escape", "queue", "44",
+                   "TUNE QUICK FONT KBD", "ccboard:fake:vv", "ccboard:term:tune", ".tune-toggle", "more-r", "document.body.scrollWidth", "poke out of #tune"):
+        assert needle in text, f"qa_terminal.sh never mentions {needle}"
+    # the ultracode switch is `/effort ultracode on` (term.js EFFORT_ARG, claude.py V19): the script asserts the argument the page really sends, and says the two retire together
+    assert "fake_cmd_count effort 'ultracode on'" in text, "the TUNE check waits for arg 'ultracode on', not 'ultracode'"
+    assert "fake_cmd_count effort ultracode" not in text
+    assert re.search(r"retire\s+TOGETHER", text), "the script says the EFFORT_ARG mapping and this assertion retire together"
+    assert re.search(r"window\.prompt\s*=", text) or "window.prompt = boom" in text, "the script replaces window.prompt before the click"
+
+
+def test_qa_terminal_fake_mode_walks_every_branch_and_every_snippet_parses(tmp_path):
+    r, snippets = run_qa(tmp_path, fake_tty=True)
+    assert r.returncode == 1, f"the blind browser fails assertions, so the script exits 1, not {r.returncode}:\n{r.stdout[-1500:]}\n{r.stderr[-1500:]}"
+    for bad in ("unbound variable", "syntax error", "command not found", "bad substitution", "unexpected EOF"):
+        assert bad not in r.stderr, r.stderr[-2000:]
+    assert "mode=fake-tty" in r.stdout
+    header = next(l for l in r.stdout.splitlines() if l.startswith("VIEWPORT"))
+    assert header.split()[11:17] == ["COMPACT", "TUNE", "QUICK", "FONT", "KBD", "CONSOLE"], header
+    assert "font spike at 390px wide" in r.stdout
+    assert len(snippets) > 150, len(snippets)
+    assert_snippets_parse(tmp_path, snippets)
+    joined = "\n".join(snippets)
+    for needle in ("window.__qaFake", "#tune button", "dialog.readout[open]", "dialog.qr-editor[open]", "window.prompt = boom", "visibilitychange",
+                   "x.body.arg === 'ultracode on'", "#headtools .tune-toggle", "localStorage.setItem('ccboard:fake:vv', '520')", "document.body.classList.contains('kbd')", ".qr-save",
+                   "Edit quick replies", "localStorage.setItem('ccboard:term:font', '1')", "localStorage.setItem('ccboard:fake:font', 'stub')",
+                   "localStorage.setItem('ccboard:fake:font', 'fail')", "localStorage.setItem('ccboard:fake:font', 'missing')", "TermKit.fontState", "__wheel"):
+        assert needle in joined, f"no snippet contains {needle}"
+
+
+def test_qa_terminal_real_ttyd_mode_skips_the_fake_only_checks_and_runs_the_on_box_font_numbers(tmp_path):
+    r, snippets = run_qa(tmp_path, fake_tty=False, env_extra={"QA_REAL_TTYD": "1", "QA_FONT": "1"})
+    assert r.returncode == 1, f"{r.returncode}:\n{r.stdout[-1500:]}\n{r.stderr[-1500:]}"
+    for bad in ("unbound variable", "syntax error", "command not found", "bad substitution", "unexpected EOF"):
+        assert bad not in r.stderr, r.stderr[-2000:]
+    assert "mode=real-ttyd" in r.stdout
+    rows = [l.split() for l in r.stdout.splitlines() if l.startswith("390 ")]
+    assert rows and rows[0][8] == "skip", f"the touch check needs the fake's wheel counter and is skipped on a real ttyd: {rows}"
+    assert_snippets_parse(tmp_path, snippets)
+    joined = "\n".join(snippets)
+    assert "window.__qaFake" not in joined, "nothing is faked on a real board: no stubbed fetch, nothing typed into a real session"
+    assert "__wheel" not in joined.replace("window.__wheel", ""), "the wheel counter belongs to the fake"
+    assert not re.search(r"setItem\('ccboard:fake:font', '[a-z]+'\)", joined), "no fake font mode is ever set against a real ttyd"
+    assert "ccboard:fake:vv" not in joined, "no soft-keyboard shim against a real ttyd either (it is the fake tty's)"
+    assert rows[0][15] == "skip", f"the KBD column (the fake tty's soft-keyboard shim) is skipped on a real ttyd: {rows[0]}"
+    assert "localStorage.setItem('ccboard:term:font', '1')" in joined, "QA_FONT=1 runs the on-box font spike"
+    assert "real ttyd, flag off" in r.stdout
+    for keep in ("#keyhost .kb-key", "#rail .rail-btn", "#ttywrap", "dialog.qr-editor[open]"):
+        assert keep in joined, f"the real-ttyd run still checks {keep}"
+
+
+def test_qa_terminal_real_mode_refuses_the_fake_tty_and_fake_mode_refuses_a_real_one(tmp_path):
+    r, _ = run_qa(tmp_path, fake_tty=True, env_extra={"QA_REAL_TTYD": "1"})
+    assert r.returncode == 2 and "is the fake tty" in r.stderr, (r.returncode, r.stderr)
+    second = tmp_path / "second"
+    second.mkdir()
+    r2, _ = run_qa(second, fake_tty=False)
+    assert r2.returncode == 2 and "QA_REAL_TTYD=1" in r2.stderr, (r2.returncode, r2.stderr)

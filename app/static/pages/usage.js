@@ -25,6 +25,9 @@ const Usage = {
   STALE_MS: 20000,                                 // a cached range older than this is refetched behind the paint when it is shown again
   WINDOW: { '24h': 'today', '7d': '7d', '30d': '30d' },
   WINDOW_NAME: { '24h': 'Today', '7d': 'Last 7 days', '30d': 'Last 30 days' },
+  // the cost caption: the 24 h range still draws a week of bars, so it says both (the bars' window, then the number's)
+  CAPTION_NAME: { '24h': 'Last 7 days · today', '7d': 'Last 7 days', '30d': 'Last 30 days' },
+  CAPTION_TIP: { '24h': 'The bars show the last 7 days; the numbers count today only (since local midnight)', '7d': 'The last 7 days, bars and numbers', '30d': 'The last 30 days, bars and numbers' },
   GANTT_ROWS: 30,
   PROJECT_ROWS: 12,
   UNATTRIBUTED: '(unattributed)',
@@ -92,6 +95,11 @@ Usage.hidden = function () { try { return !!(typeof document !== 'undefined' && 
 
 Usage.wide = function () { try { return typeof matchMedia === 'function' && !!matchMedia('(min-width: 840px)').matches; } catch (_) { return false; } };
 
+/* A touch screen (or the QA's html.force-coarse): the timeline rows get taller so a finger can pick one. */
+Usage.coarse = function () {
+  try { return !!(typeof document !== 'undefined' && document.documentElement && document.documentElement.classList.contains('force-coarse')) || (typeof matchMedia === 'function' && !!matchMedia('(pointer:coarse)').matches); } catch (_) { return false; }
+};
+
 /* A Charts function, bound, or null while charts.js is missing. */
 Usage.charts = function (name) {
   return typeof Charts !== 'undefined' && Charts && typeof Charts[name] === 'function' ? Charts[name].bind(Charts) : null;
@@ -112,6 +120,12 @@ Usage.tok = function (v) {
 };
 Usage.hours = function (v) { return `${Usage.num(v).toFixed(1)} h`; };
 Usage.model = function (m) { const f = Usage.charts('shortModel'); const s = String(m === null || m === undefined ? '' : m); return f ? String(f(s)) : s.replace(/^claude-/, ''); };
+
+/* The muted hue class of a model or project chip (pages/agents.js chipHue), '' when that file is not there. */
+Usage.hue = function (kind, key) { return typeof chipHue === 'function' ? chipHue(kind, key) : ''; };
+
+/* The caption of the cost chart: '<window>: $ · tokens · hours' ('Last 7 days · today: ...' for 24h, which still draws a week of bars). */
+Usage.caption = function (sum, range) { return `${Usage.CAPTION_NAME[range]}${range === '24h' ? ' ' : ': '}${Usage.totalsText(sum, range)}`; };
 
 Usage.sig = function (v) { try { return JSON.stringify(v); } catch (_) { return String(Math.random()); } };
 
@@ -216,7 +230,7 @@ Usage.setBody = function (P, id, ...kids) {
 
 Usage.newSession = function () {
   if (typeof Shell === 'undefined' || !Shell || typeof Shell.openCreate !== 'function') return null;
-  return el('button', { class: 'small primary', type: 'button', text: '+ session', onclick: () => Shell.openCreate('session') });
+  return el('button', { class: 'small', type: 'button', text: '+ session', onclick: () => Shell.openCreate('session') });     // the page has no primary: an empty section's next step is a plain button
 };
 
 /* An empty state that names its next step (text, and the + session button when asked for). */
@@ -573,11 +587,11 @@ Usage.paintCost = function (P) {
   const sig = Usage.sig([P.range, P.stack, daily, sum.unpriced, sum.windows]);
   if (P.sigs.cost === sig) return;
   P.sigs.cost = sig;
-  const totals = el('p', { class: 'utotals mono', 'data-totals': '', text: `${Usage.WINDOW_NAME[P.range]}: ${Usage.totalsText(sum, P.range)}` });
+  const totals = el('p', { class: 'utotals mono', 'data-totals': '', title: Usage.CAPTION_TIP[P.range], text: Usage.caption(sum, P.range) });
   const host = el('div', { class: 'chart cost-chart' });
   const unpriced = new Set();
   for (const u of (Array.isArray(sum.unpriced) ? sum.unpriced : [])) { const k = P.stack === 'agent' ? u && u.agent : u && u.project; if (k) unpriced.add(k); }
-  const kids = [totals, host, el('p', { class: 'dim unote', text: `${daily.length} days, stacked by ${P.stack}${P.range === '24h' ? ' · the 24 h view still shows a week of bars' : ''}` })];
+  const kids = [totals, host, el('p', { class: 'dim unote', text: `${daily.length} days, stacked by ${P.stack}` })];
   const un = Usage.windowRows(sum, P.range).find((r) => r.project === Usage.UNATTRIBUTED);
   if (P.stack === 'project' && un && Usage.num(un.total) > 0) {
     kids.push(el('p', { class: 'dim unote', 'data-note': 'unattributed', title: Usage.UNATTRIBUTED_TIP,
@@ -590,7 +604,7 @@ Usage.paintCost = function (P) {
       text: `${n} session${n === 1 ? ' has' : 's have'} tokens but no price (hatched): the cost shown is a floor.` }));
   }
   Usage.setBody(P, 'cost', ...kids);
-  Usage.need('stackedBars')(host, daily, { by: P.stack, top: 6, unpriced, hatchZero: true });   // Charts adds the legend and the tap-a-bar readout
+  Usage.need('stackedBars')(host, daily, { by: P.stack, top: 6, unpriced, hatchZero: true, hueOf: (name) => Usage.hue('project', name) });   // a project keeps the hue it has everywhere else (chipHue)   // Charts adds the legend and the tap-a-bar readout
 };
 
 /* ---------- sessions ---------- */
@@ -600,10 +614,19 @@ Usage.sessionLabel = function (s) {
   return `${s.project || '(no project)'}${repo}`;
 };
 
+/* A project/repo name that may wrap after each '/' (a <wbr> there) before anything breaks inside a word ('internalSystem/se rver' at 390 px). */
+Usage.breakable = function (text) {
+  const parts = String(text).split('/');
+  const out = [];
+  parts.forEach((part, i) => { out.push(i < parts.length - 1 ? part + '/' : part); if (i < parts.length - 1) out.push(el('wbr')); });
+  return out;
+};
+
 Usage.projectLink = function (project, text, cls) {
   const hash = Usage.projectHash(project);
-  if (hash) return el('a', { class: cls || null, href: hash, title: `Open the ${project} project`, text: text || project });
-  return el('span', { class: cls || null, title: project === Usage.UNATTRIBUTED ? Usage.UNATTRIBUTED_TIP : null, text: text || project });
+  const klass = [cls, project === Usage.UNATTRIBUTED ? '' : Usage.hue('project', project)].filter(Boolean).join(' ') || null;
+  if (hash) return el('a', { class: klass, href: hash, title: `Open the ${project} project`, text: text || project });
+  return el('span', { class: klass, title: project === Usage.UNATTRIBUTED ? Usage.UNATTRIBUTED_TIP : null, text: text || project });
 };
 
 Usage.sessionMeta = function (s) {
@@ -630,15 +653,19 @@ Usage.paintSessions = function (P) {
     const open = P.open.has(s.key);
     const chev = el('button', { class: 'minimal small chev srow-toggle', type: 'button', 'aria-expanded': open ? 'true' : 'false', 'data-key': s.key,
       'aria-label': `Details of ${Usage.sessionLabel(s)}`, title: 'Show the context and cost of this session', text: open ? '▾' : '▸' });
-    const name = el('div', { class: 'srow-name' }, Usage.projectLink(s.project, Usage.sessionLabel(s), 'srow-link'),
-      el('span', { class: 'srow-models' }, ...(Array.isArray(s.models) ? s.models : []).map((m) => el('span', { class: 'bdg bdg-model mono', title: String(m), text: Usage.model(m) }))));
+    // the name toggles the detail (the whole row does); the project has its own small link in the last cell
+    const name = el('div', { class: 'srow-name' }, el('span', { class: ['srow-link', Usage.hue('project', s.project)].filter(Boolean).join(' ') }, ...Usage.breakable(Usage.sessionLabel(s))),
+      el('span', { class: 'srow-models' }, ...(Array.isArray(s.models) ? s.models : []).map((m) => el('span', { class: ['bdg bdg-model mono', Usage.hue('model', m)].filter(Boolean).join(' '), title: String(m), text: Usage.model(m) }))));
+    const projHash = Usage.projectHash(s.project);
     const tr = el('tr', { class: 'srow' + (open ? ' open' : ''), 'data-key': s.key, 'data-agent': s.agent || null },
       el('td', { class: 'c-chev' }, chev),
       el('td', { class: 'c-name' }, name),
       el('td', { class: 'c-num mono', text: Usage.usd(s.total) }),
       el('td', { class: 'c-num c-tok mono', text: Usage.tok(s.tokens) }),
       el('td', { class: 'c-num c-hrs mono', text: Usage.hours(s.hours) }),
-      el('td', { class: 'c-act' }, openHash ? el('a', { class: 'btn small primary srow-open', href: openHash, title: `Open the terminal of ${lv.tmux}`, text: 'Open' }) : null));
+      el('td', { class: 'c-act' },
+        projHash ? el('a', { class: 'btn icon minimal small srow-proj', href: projHash, title: 'Open the project', 'aria-label': `Open the ${s.project} project` }, ic('git-repo')) : null,
+        openHash ? el('a', { class: 'btn small srow-open', href: openHash, title: `Open the terminal of ${lv.tmux}`, text: 'Open' }) : null));
     tr.addEventListener('click', (e) => {
       const t = e && e.target;
       if (t && typeof t.closest === 'function' && t.closest('a')) return;           // a link or Open navigates; everything else on the row toggles
@@ -676,7 +703,9 @@ Usage.toggleRow = function (P, key) {
 Usage.makeDetail = function (P, s) {
   const meta = el('p', { class: 'dim sd-meta mono' });
   const body = el('div', { class: 'sd-body' });
-  const tr = el('tr', { class: 'sdetail hidden', 'data-detail': s.key }, el('td', { colspan: '6' }, el('div', { class: 'sd' }, meta, body)));
+  // the way on to the project, for a live session and a gone one alike (the row's own icon link is hidden on a phone: the name column needs the room)
+  const links = Usage.projectHash(s.project) ? el('p', { class: 'sd-links' }, Usage.projectLink(s.project, `Open the ${s.project} project`, 'btn small')) : null;
+  const tr = el('tr', { class: 'sdetail hidden', 'data-detail': s.key }, el('td', { colspan: '6' }, el('div', { class: 'sd' }, meta, body, links)));
   const rec = { key: s.key, tr, meta, body, session: s, live: null, shown: '', seq: 0, hosts: [] };
   P.details.set(s.key, rec);
   return rec;
@@ -708,8 +737,7 @@ Usage.fillDetail = function (P, rec, fresh) {
     if (destroy) for (const h of rec.hosts) { try { destroy(h); } catch (_) { /* already gone */ } }
     rec.hosts = [];
     rec.body.textContent = '';
-    rec.body.append(el('div', { class: 'sd-gone' }, el('p', { class: 'dim', text: 'no live session for this id' }),
-      Usage.projectHash(rec.session.project) ? Usage.projectLink(rec.session.project, `Open the ${rec.session.project} project`, 'btn small') : null));
+    rec.body.append(el('div', { class: 'sd-gone' }, el('p', { class: 'dim', text: 'no live session for this id' })));
     return;
   }
   const tmux = lv.tmux;
@@ -735,8 +763,8 @@ Usage.fillDetail = function (P, rec, fresh) {
       Usage.need('line')(host, data, { names: [name], labels: { [name]: opts.label }, colors: { [name]: opts.color }, yMax: opts.yMax, thresholds: opts.thresholds, fmt: opts.fmt || 'pct', height: 120 });
     };
     try {
-      fig(ctxHost, names[0], { label: 'ctx', color: '--sig', yMax: 100, thresholds: [60, 85] }, 'no context samples for this session in the last 24 h');
-      fig(costHost, names[1], { label: 'cost', color: '--warn', yMax: undefined, thresholds: [], fmt: 'usd' }, 'no cost samples for this session in the last 24 h');
+      fig(ctxHost, names[0], { label: 'ctx', color: '--mute-blue', yMax: 100, thresholds: [60, 85] }, 'no context samples for this session in the last 24 h');
+      fig(costHost, names[1], { label: 'cost', color: '--mute-teal', yMax: undefined, thresholds: [], fmt: 'usd' }, 'no cost samples for this session in the last 24 h');
     } catch (e) { console.error('ccboard usage detail', e); rec.body.textContent = ''; rec.body.append(Usage.errorBlock(P, Usage.errText(e))); rec.shown = ''; }
   }, (e) => {
     if (stale()) return;
@@ -822,7 +850,7 @@ Usage.paintTimeline = function (P) {
   P.timelineUntil = until;
   const host = el('div', { class: 'chart gantt-chart' });
   Usage.setBody(P, 'timeline', host);
-  Usage.need('gantt')(host, events, { since, until, maxRows: Usage.GANTT_ROWS, truncated: !!P.events.truncated });   // Charts says "N more" and that the server cut the list
+  Usage.need('gantt')(host, events, { since, until, maxRows: Usage.GANTT_ROWS, truncated: !!P.events.truncated, rowHeight: Usage.coarse() ? 24 : 18 });   // Charts says "N more" and that the server cut the list; a tap on a row names it in full
 };
 
 /* ---------- the page ---------- */

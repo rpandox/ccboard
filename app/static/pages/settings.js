@@ -10,48 +10,78 @@ const SETTINGS_SECTIONS = [
 ];
 const settingsPage = { refs: null, active: 'notify' };
 
-function settingsKv(label, ...kids) { return el('div', { class: 'kv' }, el('b', { text: label }), ...kids); }
+/* One setting as the shared .kv row (v0.5.6d): the label in a 120 px column, the value in mono with its helper text under it, the actions at the right
+   (under the value on a phone). Buttons, link-buttons and the two-tap pair go to the actions, everything else to the value. row.add() files late
+   arrivals (the Web Push state resolves after the panel is built) the same way. */
+function settingsIsAction(k) {
+  if (!k || k.nodeType !== 1) return false;
+  const tag = String(k.tagName || '').toUpperCase();
+  return tag === 'BUTTON' || (tag === 'A' && k.classList.contains('btn')) || (tag === 'SPAN' && k.classList.contains('row'));
+}
+
+function settingsKv(label, ...kids) {
+  const val = el('div', { class: 'kv-main' });
+  const act = el('div', { class: 'kv-act' });
+  const row = el('div', { class: 'kv' }, el('b', { class: 'k', text: label }), val, act);
+  row.add = (...more) => {
+    for (const k of more.flat(Infinity)) {
+      if (k === null || k === undefined || k === false) continue;
+      if (settingsIsAction(k)) act.append(k); else val.append(k);
+    }
+    act.classList.toggle('hidden', !act.firstChild);
+    return row;
+  };
+  return row.add(...kids);
+}
+
+/* A section heading inside a panel: 13 px, upper case, dim. */
+function settingsHead(text) { return el('h3', { class: 'set-h', text }); }
 
 function settingsNotify(p) {
   p.textContent = '';
   const n = (state.config && state.config.ntfy) || {};
-  const pushRow = settingsKv('Web Push');
+  p.append(settingsHead('Web Push'));
+  const pushRow = settingsKv('This device');
   p.append(pushRow);
+  // one primary per section: Enable push while it is off; once it is on that button is gone and the test is an ordinary secondary
   pushSubscription().then((sub) => {
-    if (sub) pushRow.append(el('span', { class: 'v', text: 'enabled on this device' }),
-      el('button', { type: 'button', onclick: () => disablePush().catch((e) => setError(e.message)), text: 'Disable' }),
-      el('button', { type: 'button', onclick: async () => { try { const r = await api('POST', '/api/push/test'); if (r.sent) pageToast('Test push sent', 'ok'); else setError('no push sent (' + r.subscriptions + ' subscriptions)'); } catch (e) { setError(e.message); } }, text: 'Test push' }));
-    else pushRow.append(el('button', { class: 'primary', type: 'button', onclick: () => enablePush().catch((e) => setError(e.message)), text: 'Enable push on this device' }),
-      el('span', { class: 'dim', text: 'Works in Chrome/Android and in an installed (Home Screen) PWA on iOS 16.4+.' }));
-  }).catch(() => pushRow.append(el('span', { class: 'dim', text: 'Web Push not available here.' })));
+    if (sub) pushRow.add(el('span', { class: 'v', text: 'enabled on this device' }),
+      el('button', { type: 'button', onclick: async () => { try { const r = await api('POST', '/api/push/test'); if (r.sent) pageToast('Test push sent', 'ok'); else setError('no push sent (' + r.subscriptions + ' subscriptions)'); } catch (e) { setError(e.message); } }, text: 'Send test push' }),
+      el('button', { type: 'button', onclick: () => disablePush().catch((e) => setError(e.message)), text: 'Disable' }));
+    else pushRow.add(el('span', { class: 'dim', text: 'Works in Chrome/Android and in an installed (Home Screen) PWA on iOS 16.4+.' }),
+      el('button', { class: 'primary', type: 'button', onclick: () => enablePush().catch((e) => setError(e.message)), text: 'Enable push on this device' }),
+      el('button', { type: 'button', disabled: true, title: 'Enable push first', text: 'Send test push' }));
+  }).catch(() => pushRow.add(el('span', { class: 'dim', text: 'Web Push not available here.' })));
 
   const bc = (state.config && state.config.backup) || {};
   const bk = state.backup;
-  const bkRow = settingsKv('Backup');
+  p.append(settingsHead('Backup'));
+  const bkRow = settingsKv('Last run');
   p.append(bkRow);
   if (bk && bk.at) {
     const r = bk.restic || {};
     const pushed = (bk.push || []).reduce((sum, x) => sum + (x.pushed || []).length, 0);
-    bkRow.append(el('span', { class: bk.status === 'ok' ? 'v' : bk.status === 'partial' ? 'v warn' : 'v bad', text: `${bk.status} ${fmtAge(Date.parse(bk.at) / 1000)} ago` }),
+    bkRow.add(el('span', { class: bk.status === 'ok' ? 'v' : bk.status === 'partial' ? 'v warn' : 'v bad', text: `${bk.status} ${fmtAge(Date.parse(bk.at) / 1000)} ago` }),
       el('span', { class: 'dim', text: r.snapshot_id ? `snapshot ${String(r.snapshot_id).slice(0, 8)} → ${r.repo || ''}` : (r.skipped ? 'restic off' : 'no snapshot') + ` · ${pushed} branch(es) pushed across ${(bk.push || []).length} repo(s)` }));
-    if (bk.status === 'failed') bkRow.append(el('span', { class: 'bad', text: (bk.errors || []).join(' · ').slice(0, 300) }));
-    else if (bk.status === 'partial') bkRow.append(el('span', { class: 'warn', text: ('snapshot ok · ' + (bk.warnings || []).join(' · ')).slice(0, 300) }));   // mirror pushes GitHub refused: fetch first on the box
+    if (bk.status === 'failed') bkRow.add(el('span', { class: 'bad', text: (bk.errors || []).join(' · ').slice(0, 300) }));
+    else if (bk.status === 'partial') bkRow.add(el('span', { class: 'warn', text: ('snapshot ok · ' + (bk.warnings || []).join(' · ')).slice(0, 300) }));   // mirror pushes GitHub refused: fetch first on the box
   } else {
-    bkRow.append(el('span', { class: 'dim', text: 'no backup has run yet (nightly via ccboard-backup.timer)' + (bc.restic && !bc.restic_installed ? ' · restic is not installed' : '') }));
+    bkRow.add(el('span', { class: 'dim', text: 'no backup has run yet (nightly via ccboard-backup.timer)' + (bc.restic && !bc.restic_installed ? ' · restic is not installed' : '') }));
   }
-  bkRow.append(el('button', { type: 'button', onclick: async () => { try { await api('POST', '/api/backup/run'); setError(null); pageToast('Backup started', 'ok'); setTimeout(() => poll(true), 3000); } catch (e) { setError(e.message); } }, text: 'Back up now' }),
-    el('span', { class: 'dim', text: (bc.restic ? `restic → ${bc.repo}` : 'restic off') + (bc.push ? ' · git push --all origin for every repo' : ' · no git push') }));
+  bkRow.add(el('span', { class: 'dim', text: (bc.restic ? `restic → ${bc.repo}` : 'restic off') + (bc.push ? ' · git push --all origin for every repo' : ' · no git push') }),
+    el('button', { type: 'button', onclick: async () => { try { await api('POST', '/api/backup/run'); setError(null); pageToast('Backup started', 'ok'); setTimeout(() => poll(true), 3000); } catch (e) { setError(e.message); } }, text: 'Back up now' }));
 
-  const ntfyRow = settingsKv('ntfy app');
+  p.append(settingsHead('ntfy'));
+  const ntfyRow = settingsKv('Subscribe');
   p.append(ntfyRow);
   if (!n.enabled) {
-    ntfyRow.append(el('span', { class: 'dim', text: 'not configured on the box (NTFY_URL in /etc/ccboard/env, or rerun install.sh).' }));
+    ntfyRow.add(el('span', { class: 'dim', text: 'not configured on the box (NTFY_URL in /etc/ccboard/env, or rerun install.sh).' }));
     return;
   }
   const base = (n.subscribe_url || '').replace(/\/[^/]*$/, '');
-  ntfyRow.append(el('code', { text: n.subscribe_url || '' }),
-    el('button', { type: 'button', onclick: async () => { try { await navigator.clipboard.writeText(n.subscribe_url || ''); pageToast('Copied', 'ok'); } catch (_) { pageToast('Copy failed', 'warn'); } }, text: 'Copy' }),
-    el('button', { class: 'primary', type: 'button', onclick: async () => {
+  ntfyRow.add(el('code', { text: n.subscribe_url || '' }),
+    el('button', { class: 'small', type: 'button', onclick: async () => { try { await navigator.clipboard.writeText(n.subscribe_url || ''); pageToast('Copied', 'ok'); } catch (_) { pageToast('Copy failed', 'warn'); } }, text: 'Copy' }),
+    el('button', { type: 'button', onclick: async () => {
       try { const r = await api('POST', '/api/notify/test'); if (r.ok) { setError(null); pageToast('Test sent to ntfy. If the phone stays silent, check the steps below.', 'ok'); } else setError('ntfy publish failed (is ntfy running?)'); }
       catch (e) { setError(e.message); }
     }, text: 'Send test' }));
@@ -81,6 +111,7 @@ function settingsNodes(p) {
 function settingsBox(p) {
   p.textContent = '';
   const h = state.health;
+  p.append(settingsHead('Host'));
   p.append(settingsKv('Box', el('span', { class: 'v', text: `${state.node_name || (h && h.host) || 'this box'}${state.user ? ' · ' + state.user : ''}` })));
   if (h && (h.cpu_pct !== null || h.mem || h.disk)) {
     if (h.uptime_s) p.append(settingsKv('Uptime', el('span', { class: 'v', text: h.uptime_s >= 86400 ? `${Math.floor(h.uptime_s / 86400)}d ${Math.floor((h.uptime_s % 86400) / 3600)}h` : `${Math.floor(h.uptime_s / 3600)}h` })));
@@ -91,28 +122,30 @@ function settingsBox(p) {
     if (h.disk) gauge('Disk', h.disk.pct, `${h.disk.pct}%`);
   } else p.append(el('div', { class: 'dim', text: 'No health data yet.' }));
   const bk = state.backup;
+  p.append(settingsHead('Backup'));
   if (bk && bk.at) {
     const failed = bk.status === 'failed';
     const partial = bk.status === 'partial';
-    p.append(settingsKv('Backup', el('span', { class: failed ? 'v bad' : partial ? 'v warn' : 'v', title: failed ? (bk.errors || []).join('\n') : partial ? (bk.warnings || []).join('\n') : 'last nightly backup',
+    p.append(settingsKv('Last run', el('span', { class: failed ? 'v bad' : partial ? 'v warn' : 'v', title: failed ? (bk.errors || []).join('\n') : partial ? (bk.warnings || []).join('\n') : 'last nightly backup',
       text: `${failed ? 'failed' : partial ? 'ok, pushes rejected' : 'ok'} ${fmtAge(Date.parse(bk.at) / 1000)} ago` })));
-  } else p.append(settingsKv('Backup', el('span', { class: 'dim', text: 'no backup has run yet' })));
+  } else p.append(settingsKv('Last run', el('span', { class: 'dim', text: 'no backup has run yet' })));
 }
 
 function settingsAgents(p) {
   p.textContent = '';
   const c = state.claude || {};
   const badge = el('span', { class: 'badge' });
+  // who is logged in is an identity, not a verdict: the agent's own hue (violet for Claude, teal for Codex), never the green that means ok
   if (!c.installed) { badge.classList.add('bad'); badge.textContent = 'claude not installed'; }
-  else if (c.loggedIn) { badge.classList.add('ok'); badge.textContent = `Claude: ${c.email || 'logged in'}${c.subscriptionType ? ' (' + c.subscriptionType + ')' : ''}`; }
+  else if (c.loggedIn) { badge.classList.add('hue-violet'); badge.textContent = `Claude: ${c.email || 'logged in'}${c.subscriptionType ? ' (' + c.subscriptionType + ')' : ''}`; }
   else { badge.classList.add('warn'); badge.textContent = 'Claude: not logged in'; }
   const row = settingsKv('Claude', badge);
-  if (c.installed && !c.loggedIn) row.append(el('button', { class: 'primary', type: 'button', onclick: startLogin, text: 'Log in' }));
-  if (c.installed && c.loggedIn) row.append(el('button', { type: 'button', onclick: logout, text: 'Log out' }));
-  if (state.login && state.login.running && !ui.modal) row.append(el('button', { type: 'button', onclick: () => openModal(), text: 'Login in progress…' }));
+  if (c.installed && !c.loggedIn) row.add(el('button', { class: 'primary', type: 'button', onclick: startLogin, text: 'Log in' }));
+  if (c.installed && c.loggedIn) row.add(confirmButton('logout', 'Log out', logout, true));          // red-outlined, two taps: the login is not one tap to lose
+  if (state.login && state.login.running && !ui.modal) row.add(el('button', { type: 'button', onclick: () => openModal(), text: 'Login in progress…' }));
   p.append(row);
   const codex = state.agents && state.agents.codex;
-  if (codex) p.append(settingsKv('Codex', el('span', { class: codex.installed ? 'v' : 'v dim', text: codex.installed ? 'installed' : 'not installed' })));
+  if (codex) p.append(settingsKv('Codex', el('span', { class: codex.installed ? 'badge hue-teal' : 'v dim', text: codex.installed ? 'installed' : 'not installed' })));
 }
 
 /* How this window runs: an installed app (standalone, with the title-bar overlay on desktop Chrome / Edge) or a browser tab. */
@@ -138,19 +171,21 @@ function settingsOpenShortcuts() {
 function settingsApp(p) {
   p.textContent = '';
   const mode = settingsAppMode();
+  p.append(settingsHead('Install'));
   p.append(settingsKv('Mode', el('span', { class: 'v', text: mode.id }), el('span', { class: 'dim', text: mode.note })));
 
   const installRow = settingsKv('Install');
   const prompt = settingsInstallPrompt();
-  if (mode.id === 'standalone') installRow.append(el('span', { class: 'v', text: 'installed' }), el('span', { class: 'dim', text: 'open it from the Dock, Launchpad or the Home Screen' }));
-  else if (prompt) installRow.append(el('button', { class: 'primary', type: 'button', onclick: async () => {
+  if (mode.id === 'standalone') installRow.add(el('span', { class: 'v', text: 'installed' }), el('span', { class: 'dim', text: 'open it from the Dock, Launchpad or the Home Screen' }));
+  else if (prompt) installRow.add(el('span', { class: 'dim', text: 'its own window, a Dock or taskbar icon and the shortcuts below' }), el('button', { class: 'primary', type: 'button', onclick: async () => {
     const outcome = await Shell.promptInstall();
     if (outcome === 'accepted') pageToast('Installing ccboard…', 'ok');
-  }, text: 'Install ccboard' }), el('span', { class: 'dim', text: 'its own window, a Dock or taskbar icon and the shortcuts below' }));
-  else installRow.append(el('span', { class: 'dim', text: 'This browser offers no install button right now: use the steps below (Safari never has one; Chrome and Edge show it once the page has been used).' }));
+  }, text: 'Install ccboard' }));
+  else installRow.add(el('span', { class: 'dim', text: 'This browser offers no install button right now: use the steps below (Safari never has one; Chrome and Edge show it once the page has been used).' }));
   p.append(installRow);
 
-  p.append(el('details', { class: 'dim', open: mode.id !== 'standalone' }, el('summary', { text: 'Install steps by browser' }),
+  // the steps are reference text: closed until asked for, so the App tab is a short list and not a wall
+  p.append(el('details', { class: 'dim set-steps' }, el('summary', { text: 'Install steps by browser' }),
     el('ul', {},
       el('li', {}, el('b', { text: 'Safari on a Mac' }), ': File › Add to Dock. The board then opens in its own window.'),
       el('li', {}, el('b', { text: 'Safari on iPad / iPhone' }), ': Share › Add to Home Screen. Web Push on iOS and iPadOS only works from the Home Screen icon (16.4 and later).'),
@@ -158,14 +193,16 @@ function settingsApp(p) {
       el('li', {}, el('b', { text: 'Chrome on Android' }), ': menu › Install app.'))));
 
   const swReady = !!(typeof navigator !== 'undefined' && navigator.serviceWorker && navigator.serviceWorker.controller);
+  p.append(settingsHead('This build'));
   p.append(settingsKv('Version', el('span', { class: 'v', text: (state && state.version) || '-' }),
     el('span', { class: 'dim', text: 'build id; the board reloads itself when the box is updated' })));
   p.append(settingsKv('Offline shell', el('span', { class: swReady ? 'v' : 'v dim', text: swReady ? 'cached on this device' : 'not active yet (reload once)' })));
-  p.append(settingsKv('Reload', el('button', { type: 'button', onclick: () => location.reload(), text: 'Reload app' }),
-    el('span', { class: 'dim', text: 'an installed app has no browser reload button' })));
+  p.append(settingsHead('Tools'));
+  p.append(settingsKv('Reload', el('span', { class: 'dim', text: 'an installed app has no browser reload button' }),
+    el('button', { type: 'button', onclick: () => location.reload(), text: 'Reload app' })));
   if (settingsHelpAvailable()) {
-    p.append(settingsKv('Shortcuts', el('button', { type: 'button', onclick: settingsOpenShortcuts, text: 'Keyboard shortcuts' }),
-      el('span', { class: 'dim', text: 'press ? on any page' })));
+    p.append(settingsKv('Shortcuts', el('span', { class: 'dim', text: 'press ? on any page' }),
+      el('button', { type: 'button', onclick: settingsOpenShortcuts, text: 'Keyboard shortcuts' })));
   }
 }
 
@@ -181,7 +218,7 @@ function settingsSig(id, st) {
   if (id === 'nodes') return JSON.stringify(st.nodes);
   if (id === 'box') return JSON.stringify([st.health, st.backup, st.node_name, st.user, minute]);
   if (id === 'app') return JSON.stringify([st.version, settingsAppMode().note, !!settingsInstallPrompt(), settingsHelpAvailable()]);
-  return JSON.stringify([st.claude, st.agents, st.login && st.login.running, ui.modal]);
+  return JSON.stringify([st.claude, st.agents, st.login && st.login.running, ui.modal, ui.confirm === 'logout']);     // the two-tap Log out repaints the panel
 }
 
 function settingsSecOf(r) {
