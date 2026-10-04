@@ -31,12 +31,14 @@ def put(db, series, key, value, when, meta=None):
     db.sample(series, key, value, meta, iso(when))
 
 
-def cost(db, key, value, when, p="shop", r="api", tok=None, a=None, m=None):
+def cost(db, key, value, when, p="shop", r="api", tok=None, a=None, m=None, acct=None):
     meta = {"p": p, "r": r, "a": a or key.split(":")[0]}
     if tok is not None:
         meta["tok"] = tok
     if m:
         meta["m"] = m
+    if acct:
+        meta["acct"] = acct
     put(db, "cost", key, value, when, meta)
 
 
@@ -49,7 +51,7 @@ def day_of(summary, day):
 def test_empty_db_is_an_all_zero_payload_with_the_full_shape(sdb):
     s = usage_summary.build(sdb, days=30, tz_min=KTM, now=NOW)
     assert set(s) == {"generated_at", "tz_min", "windows", "daily", "hourly_profile", "heatmap", "top_sessions", "active_hours",
-                      "rate_limits", "episodes", "unpriced", "source"}
+                      "rate_limits", "episodes", "unpriced", "source", "accounts", "total"}
     assert s["source"] == "samples" and s["tz_min"] == 345 and s["generated_at"] == "2026-10-03T06:00:00+00:00"
     assert set(s["windows"]) == {"today", "7d", "30d"}
     for w in s["windows"].values():
@@ -59,7 +61,10 @@ def test_empty_db_is_an_all_zero_payload_with_the_full_shape(sdb):
     assert s["daily"][-1] == {"day": "2026-10-03", "total": 0, "by_agent": {"claude": 0}, "by_project": {}, "tokens": 0, "hours": 0, "zero": True}
     assert s["hourly_profile"] == [0] * 24 and s["heatmap"] == [[0] * 24 for _ in range(7)]
     assert s["top_sessions"] == [] and s["active_hours"] == {} and s["episodes"] == [] and s["unpriced"] == []
-    assert s["rate_limits"] == {"claude": {"rl_5h": None, "rl_7d": None}}
+    assert s["rate_limits"] == {"claude": {"rl_5h": None, "rl_7d": None}, "by_account": {}}
+    assert s["accounts"] == []
+    zero = {"total": 0, "tokens": 0, "hours": 0, "sessions": 0}
+    assert s["total"] == {"today": zero, "7d": zero, "30d": zero, "accounts": 0, "headroom_5h": [], "headroom_7d": []}
     json.dumps(s)                                       # the endpoint serialises it as is
 
 
@@ -263,8 +268,11 @@ def test_a_key_without_a_project_is_unattributed(sdb):
 
 # ---------- active hours from state-event gaps ----------
 
-def state(db, tmux, when, value=1, p="shop"):
-    put(db, "state", tmux, value, when, {"p": p, "r": "api", "s": tmux, "a": "claude"})
+def state(db, tmux, when, value=1, p="shop", acct=None, a="claude"):
+    meta = {"p": p, "r": "api", "s": tmux, "a": a}
+    if acct:
+        meta["acct"] = acct
+    put(db, "state", tmux, value, when, meta)
 
 
 def test_active_hours_count_gaps_of_at_most_15_minutes(sdb):
@@ -328,7 +336,7 @@ def test_rate_limits_are_the_last_samples(sdb):
     put(sdb, "rl_7d", "claude", 71.0, utc(2026, 10, 3, 5, 30), {"resets_at": 1791270000})
     put(sdb, "rl_5h", "codex", 9.0, utc(2026, 10, 3, 5, 30), {"resets_at": 1})
     r = usage_summary.build(sdb, days=30, tz_min=KTM, now=NOW)["rate_limits"]
-    assert set(r) == {"claude"}
+    assert set(r) == {"claude", "by_account"} and r["by_account"] == {}, "agent keys other than claude are not rate limits of a subscription account"
     assert r["claude"]["rl_5h"] == {"at": "2026-10-03T05:00:00+00:00", "value": 42.0, "meta": {"resets_at": 1791010000}}
     assert r["claude"]["rl_7d"] == {"at": "2026-10-03T05:30:00+00:00", "value": 71.0, "meta": {"resets_at": 1791270000}}
 
@@ -340,9 +348,9 @@ def test_episodes_are_the_lim_events_of_the_last_30_days(sdb):
     put(sdb, "lim", "other", 1, utc(2026, 10, 3, 1, 0), {"session": "x"})
     s = usage_summary.build(sdb, days=7, tz_min=KTM, now=NOW)            # `days` does not shorten the episode history
     assert s["episodes"] == [
-        {"kind": "5h", "at": "2026-10-01T17:30:00+00:00", "resets_at": 1791006000, "session": "shop--api--s1"},
-        {"kind": "7d", "at": "2026-10-02T22:00:00+00:00", "resets_at": 1791270000, "session": "blog--site--s1"},
-        {"kind": "other", "at": "2026-10-03T01:00:00+00:00", "resets_at": None, "session": "x"},
+        {"kind": "5h", "at": "2026-10-01T17:30:00+00:00", "resets_at": 1791006000, "session": "shop--api--s1", "acct": None},
+        {"kind": "7d", "at": "2026-10-02T22:00:00+00:00", "resets_at": 1791270000, "session": "blog--site--s1", "acct": None},
+        {"kind": "other", "at": "2026-10-03T01:00:00+00:00", "resets_at": None, "session": "x", "acct": None},
     ]
 
 
@@ -375,3 +383,392 @@ def test_bad_rows_never_break_the_summary(sdb):
     s = usage_summary.build(sdb, days=30, tz_min=KTM, now=NOW)
     assert s["windows"]["30d"]["total"] == 1.0 and sum(s["hourly_profile"]) == 0       # the one row with a number still counts
     assert s["windows"]["30d"]["by_project"][0]["project"] == "(unattributed)"             # its meta text is not JSON
+
+
+# ---------- accounts: which subscription account used what, and the total ----------
+
+A, B, C = "acc-a-0000", "acc-b-0000", "acc-c-0000"
+NOW_TS = int(NOW.timestamp())
+ZERO = {"total": 0, "tokens": 0, "hours": 0, "sessions": 0}
+
+
+def acct_event(db, key, when, frm=None):
+    put(db, "acct", key, 1, when, {"from": frm, "to": key})
+
+
+def by_key(summary):
+    return {a["key"]: a for a in summary["accounts"]}
+
+
+def check_totals(s):
+    """The invariants the Usage page relies on: total = the accounts added up = the claude agent's window = the daily bars."""
+    claude_days = {w: n for w, n in (("today", 1), ("7d", 7), ("30d", 30))}
+    for w, n in claude_days.items():
+        rows = [a["windows"][w] for a in s["accounts"]]
+        t = s["total"][w]
+        assert t["total"] == pytest.approx(sum(r["total"] for r in rows), abs=1e-9)
+        assert t["tokens"] == sum(r["tokens"] for r in rows)
+        assert t["hours"] == pytest.approx(sum(r["hours"] for r in rows), abs=1e-9)
+        assert max([r["sessions"] for r in rows] or [0]) <= t["sessions"] <= sum(r["sessions"] for r in rows)
+        assert t["total"] == pytest.approx(s["windows"][w]["by_agent"]["claude"]["total"], abs=1e-3 * max(1, len(rows)))
+        assert t["tokens"] == s["windows"][w]["by_agent"]["claude"]["tokens"]
+        assert t["total"] == pytest.approx(sum(d["total"] for d in s["daily"][-n:]) - sum(
+            v for d in s["daily"][-n:] for k, v in d["by_agent"].items() if k != "claude"), abs=1e-3 * max(1, len(rows)))
+    real = [a for a in s["accounts"] if a["key"] != usage_summary.UNKNOWN_ACCOUNT]
+    assert s["total"]["accounts"] == len(real)
+
+
+def test_two_accounts_with_overlapping_days_split_spend_tokens_hours_and_sessions(sdb):
+    cost(sdb, "claude:a1111111-0000-4000-8000-000000000001", 2.0, utc(2026, 10, 1, 8), tok=1000, acct=A)
+    cost(sdb, "claude:a1111111-0000-4000-8000-000000000001", 5.0, utc(2026, 10, 2, 8), tok=2500, acct=A)
+    cost(sdb, "claude:a1111111-0000-4000-8000-000000000002", 1.0, utc(2026, 10, 2, 9), tok=400, acct=B)
+    cost(sdb, "claude:a1111111-0000-4000-8000-000000000002", 4.0, utc(2026, 10, 3, 1), tok=1900, acct=B)
+    cost(sdb, "claude:a1111111-0000-4000-8000-000000000003", 0.5, utc(2026, 10, 2, 10), tok=200, acct=A)     # a second session of A on Oct 2
+    state(sdb, "shop--api--s1", utc(2026, 10, 2, 8, 0), acct=A)
+    state(sdb, "shop--api--s1", utc(2026, 10, 2, 8, 10), acct=A)
+    state(sdb, "shop--api--s2", utc(2026, 10, 3, 1, 0), acct=B)
+    state(sdb, "shop--api--s2", utc(2026, 10, 3, 1, 6), acct=B)
+    sdb.kv_set("accounts", {A: {"key": A, "email": "a@example.com", "name": "Ann", "plan": "max"},
+                            B: {"key": B, "email": "b@example.com", "name": "Bob", "plan": "pro", "label": "work"}})
+    sdb.kv_set("account_current", {"key": B, "since": "2026-10-03T00:30:00+00:00"})
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert [a["key"] for a in s["accounts"]] == [B, A], "the current account first"
+    b, a = s["accounts"]
+    assert (b["current"], a["current"]) == (True, False)
+    assert (b["email"], b["name"], b["label"], b["plan"]) == ("b@example.com", "Bob", "work", "pro")
+    assert (a["email"], a["name"], a["label"], a["plan"]) == ("a@example.com", "Ann", None, "max")
+    assert b["windows"] == {"today": {"total": 3.0, "tokens": 1500, "hours": 0.1, "sessions": 1},
+                            "7d": {"total": 4.0, "tokens": 1900, "hours": 0.1, "sessions": 1},
+                            "30d": {"total": 4.0, "tokens": 1900, "hours": 0.1, "sessions": 1}}
+    assert a["windows"]["today"] == ZERO
+    assert a["windows"]["7d"] == {"total": 5.5, "tokens": 2700, "hours": 0.17, "sessions": 2}
+    assert a["windows"]["30d"] == a["windows"]["7d"]
+    assert s["total"]["today"] == {"total": 3.0, "tokens": 1500, "hours": 0.1, "sessions": 1}
+    assert s["total"]["7d"] == {"total": 9.5, "tokens": 4600, "hours": 0.27, "sessions": 3}
+    assert s["total"]["accounts"] == 2
+    # the day the two accounts overlap (Oct 2): A spent 3.0 + 0.5, B 1.0, and the daily bar is their sum
+    assert day_of(s, "2026-10-02")["total"] == 4.5 and day_of(s, "2026-10-01")["total"] == 2.0 and day_of(s, "2026-10-03")["total"] == 3.0
+    check_totals(s)
+    json.dumps(s)
+
+
+def test_a_mid_day_switch_splits_the_day_of_one_session_between_the_accounts(sdb):
+    k = "claude:a2222222-0000-4000-8000-000000000001"
+    cost(sdb, k, 1.0, utc(2026, 9, 30, 9), tok=100, acct=A)                    # baseline on an earlier day
+    cost(sdb, k, 3.0, utc(2026, 10, 2, 8), tok=300, acct=A)
+    cost(sdb, k, 6.0, utc(2026, 10, 2, 10), tok=700, acct=A)
+    cost(sdb, k, 9.0, utc(2026, 10, 2, 14), tok=1000, acct=B)                  # /login to B in the afternoon
+    cost(sdb, k, 10.0, utc(2026, 10, 3, 1), tok=1100, acct=B)
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert day_of(s, "2026-10-02")["total"] == 8.0 and day_of(s, "2026-10-02")["tokens"] == 900
+    a, b = by_key(s)[A], by_key(s)[B]
+    assert a["windows"]["30d"] == {"total": 6.0, "tokens": 700, "hours": 0, "sessions": 1}      # 1.0 on Sep 30 + 2.0 + 3.0 on Oct 2
+    assert b["windows"]["30d"] == {"total": 4.0, "tokens": 400, "hours": 0, "sessions": 1}      # 3.0 on Oct 2 + 1.0 on Oct 3
+    assert b["windows"]["today"] == {"total": 1.0, "tokens": 100, "hours": 0, "sessions": 1}
+    assert a["windows"]["today"] == ZERO
+    assert s["total"]["30d"]["sessions"] == 1, "one session that straddled the switch counts once in the total"
+    assert s["total"]["30d"]["total"] == 10.0
+    check_totals(s)
+
+
+def test_a_repriced_dip_inside_a_day_never_changes_the_days_total(sdb):
+    k = "claude:a2222222-0000-4000-8000-000000000002"
+    cost(sdb, k, 5.0, utc(2026, 10, 2, 8), acct=A)
+    cost(sdb, k, 3.0, utc(2026, 10, 2, 9), acct=B)                              # re-priced downwards under B
+    cost(sdb, k, 8.0, utc(2026, 10, 2, 10), acct=B)
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert day_of(s, "2026-10-02")["total"] == 8.0
+    assert by_key(s)[A]["windows"]["30d"]["total"] == 5.0 and by_key(s)[B]["windows"]["30d"]["total"] == 3.0
+    check_totals(s)
+
+
+def test_a_dip_across_days_stays_clamped_per_account(sdb):
+    k = "claude:a2222222-0000-4000-8000-000000000003"
+    cost(sdb, k, 6.0, utc(2026, 10, 1, 8), acct=A)
+    cost(sdb, k, 4.0, utc(2026, 10, 2, 8), acct=B)                              # re-priced on the next day: that day is 0
+    cost(sdb, k, 5.0, utc(2026, 10, 3, 1), acct=B)
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert by_key(s)[A]["windows"]["30d"]["total"] == 6.0 and by_key(s)[B]["windows"]["30d"]["total"] == 1.0
+    assert by_key(s)[B]["windows"]["7d"]["sessions"] == 1
+    check_totals(s)
+
+
+def test_the_samples_own_acct_beats_the_timeline(sdb):
+    acct_event(sdb, B, utc(2026, 10, 1, 0))
+    cost(sdb, "claude:a3333333-0000-4000-8000-000000000001", 2.0, utc(2026, 10, 2, 8), acct=A)
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert by_key(s)[A]["windows"]["30d"]["total"] == 2.0 and by_key(s)[B]["windows"]["30d"]["total"] == 0
+
+
+# ---------- history without acct: the timeline, then the unknown bucket ----------
+
+def test_history_before_account_tracking_goes_to_the_unknown_bucket_and_later_samples_follow_the_timeline(sdb):
+    acct_event(sdb, A, utc(2026, 10, 2, 0))                                       # the first observation: nothing known before it
+    cost(sdb, "claude:a4444444-0000-4000-8000-000000000001", 3.0, utc(2026, 9, 28, 8), tok=300)                # before tracking, no acct
+    cost(sdb, "claude:a4444444-0000-4000-8000-000000000002", 2.0, utc(2026, 10, 2, 8), tok=200)                # after it, no acct: A is current
+    state(sdb, "shop--api--s1", utc(2026, 9, 28, 8, 0))
+    state(sdb, "shop--api--s1", utc(2026, 9, 28, 8, 12))
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert [a["key"] for a in s["accounts"]] == [A, "unknown"], "the bucket is last"
+    a, unk = s["accounts"]
+    assert a["current"] is True, "no kv account_current: the newest acct event says who is current"
+    assert (unk["key"], unk["name"], unk["current"], unk["email"], unk["plan"]) == ("unknown", "(before account tracking)", False, None, None)
+    assert unk["rl_5h"] is None and unk["rl_7d"] is None
+    assert a["windows"]["30d"] == {"total": 2.0, "tokens": 200, "hours": 0, "sessions": 1}
+    assert unk["windows"]["7d"] == {"total": 3.0, "tokens": 300, "hours": 0.2, "sessions": 1}
+    assert unk["windows"]["today"] == ZERO
+    assert s["total"]["30d"] == {"total": 5.0, "tokens": 500, "hours": 0.2, "sessions": 2}
+    assert s["total"]["accounts"] == 1, "the bucket is history, not an account"
+    assert "unknown" not in s["rate_limits"]["by_account"]
+    assert s["total"]["headroom_5h"] == [] and s["total"]["headroom_7d"] == []
+    check_totals(s)
+
+
+def test_a_first_event_that_names_the_previous_account_covers_the_history_before_it(sdb):
+    acct_event(sdb, B, utc(2026, 10, 1, 12), frm=A)
+    cost(sdb, "claude:a4444444-0000-4000-8000-000000000003", 4.0, utc(2026, 9, 29, 8))                          # before the event: A
+    cost(sdb, "claude:a4444444-0000-4000-8000-000000000004", 1.5, utc(2026, 10, 2, 8))                          # after it: B
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert [a["key"] for a in s["accounts"]] == [B, A]                              # B is the newest event's key: current
+    assert by_key(s)[A]["windows"]["30d"]["total"] == 4.0 and by_key(s)[B]["windows"]["30d"]["total"] == 1.5
+    assert "unknown" not in by_key(s)
+    check_totals(s)
+
+
+def test_a_mid_history_switch_attributes_samples_by_the_account_current_at_their_time(sdb):
+    acct_event(sdb, A, utc(2026, 9, 1))
+    acct_event(sdb, B, utc(2026, 9, 20, 12), frm=A)
+    acct_event(sdb, A, utc(2026, 9, 25, 12), frm=B)
+    for i, (when, v) in enumerate(((utc(2026, 9, 10, 8), 1.0), (utc(2026, 9, 21, 8), 2.0), (utc(2026, 9, 26, 8), 4.0))):
+        cost(sdb, f"claude:a5555555-0000-4000-8000-00000000000{i}", v, when)
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert by_key(s)[A]["windows"]["30d"]["total"] == 5.0 and by_key(s)[B]["windows"]["30d"]["total"] == 2.0
+    assert [a["key"] for a in s["accounts"]] == [A, B] and s["accounts"][0]["current"] is True
+    check_totals(s)
+
+
+def test_no_account_information_at_all_is_one_unknown_bucket_that_still_adds_up(sdb):
+    cost(sdb, "claude:a6666666-0000-4000-8000-000000000001", 7.0, utc(2026, 10, 2, 8), tok=70)
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert [a["key"] for a in s["accounts"]] == ["unknown"] and s["accounts"][0]["current"] is False
+    assert s["total"]["30d"] == {"total": 7.0, "tokens": 70, "hours": 0, "sessions": 1} and s["total"]["accounts"] == 0
+    check_totals(s)
+
+
+def test_only_claude_usage_is_attributed_to_subscription_accounts(sdb):
+    cost(sdb, "claude:a7777777-0000-4000-8000-000000000001", 2.0, utc(2026, 10, 2, 8), tok=20, acct=A)
+    cost(sdb, "codex:a7777777-0000-4000-8000-000000000002", 9.0, utc(2026, 10, 2, 8), tok=90, acct=A)          # a stray acct tag on a Codex sample
+    state(sdb, "shop--api--s1", utc(2026, 10, 2, 8, 0), acct=A)
+    state(sdb, "shop--api--s1", utc(2026, 10, 2, 8, 6), acct=A)
+    state(sdb, "shop--api--x1", utc(2026, 10, 2, 8, 0), acct=A, a="codex")
+    state(sdb, "shop--api--x1", utc(2026, 10, 2, 8, 12), acct=A, a="codex")
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert s["windows"]["30d"]["total"] == 11.0, "the all-agent windows keep Codex"
+    assert by_key(s)[A]["windows"]["30d"] == {"total": 2.0, "tokens": 20, "hours": 0.1, "sessions": 1}
+    assert s["total"]["30d"] == {"total": 2.0, "tokens": 20, "hours": 0.1, "sessions": 1}
+    check_totals(s)
+
+
+# ---------- windows, order, days ----------
+
+def test_account_windows_follow_the_same_local_day_ranges_as_the_daily_bars(sdb):
+    # tz 0, now = Oct 3: 7d starts Sep 27, 30d starts Sep 4
+    for i, (acct, when) in enumerate(((A, utc(2026, 10, 3, 1)), (A, utc(2026, 9, 27, 12)), (A, utc(2026, 9, 26, 12)),
+                                      (B, utc(2026, 9, 4, 12)), (B, utc(2026, 9, 3, 12)))):
+        cost(sdb, f"claude:a8888888-0000-4000-8000-00000000000{i}", 1.0, when, tok=10, acct=acct)
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    a, b = by_key(s)[A], by_key(s)[B]
+    assert [a["windows"][w]["total"] for w in ("today", "7d", "30d")] == [1.0, 2.0, 3.0]
+    assert [b["windows"][w]["total"] for w in ("today", "7d", "30d")] == [0, 0, 1.0]
+    assert [b["windows"][w]["sessions"] for w in ("today", "7d", "30d")] == [0, 0, 1]
+    assert [s["total"][w]["total"] for w in ("today", "7d", "30d")] == [1.0, 2.0, 4.0]
+    check_totals(s)
+
+
+def test_the_local_day_decides_which_window_a_switch_spend_belongs_to(sdb):
+    cost(sdb, "claude:a8888888-0000-4000-8000-000000000010", 2.0, utc(2026, 10, 2, 18, 30), acct=B)            # 00:15 Oct 3 in Kathmandu
+    s = usage_summary.build(sdb, days=30, tz_min=KTM, now=NOW)
+    assert by_key(s)[B]["windows"]["today"]["total"] == 2.0
+    u = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert by_key(u)[B]["windows"]["today"]["total"] == 0 and by_key(u)[B]["windows"]["7d"]["total"] == 2.0
+
+
+def test_a_shorter_days_param_does_not_change_the_account_windows(sdb):
+    cost(sdb, "claude:a8888888-0000-4000-8000-000000000011", 4.0, utc(2026, 9, 20, 12), tok=40, acct=A)
+    week = usage_summary.build(sdb, days=7, tz_min=0, now=NOW)
+    month = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert week["accounts"] == month["accounts"] and week["total"] == month["total"]
+    assert by_key(week)[A]["windows"]["30d"]["total"] == 4.0 and by_key(week)[A]["windows"]["7d"]["total"] == 0
+
+
+def test_accounts_sort_current_first_then_by_7d_total_and_the_bucket_last(sdb):
+    sdb.kv_set("accounts", {x: {"key": x} for x in (A, B, C)})
+    sdb.kv_set("account_current", {"key": C})
+    cost(sdb, "claude:a9999999-0000-4000-8000-000000000001", 1.0, utc(2026, 10, 2, 8), acct=A)
+    cost(sdb, "claude:a9999999-0000-4000-8000-000000000002", 6.0, utc(2026, 10, 2, 8), acct=B)
+    cost(sdb, "claude:a9999999-0000-4000-8000-000000000003", 50.0, utc(2026, 10, 2, 8))                          # unknown, the biggest
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert [a["key"] for a in s["accounts"]] == [C, B, A, "unknown"]
+    check_totals(s)
+
+
+# ---------- rate limits and headroom ----------
+
+def test_per_account_windows_headroom_and_by_account_rate_limits(sdb):
+    sdb.kv_set("accounts", {x: {"key": x, "email": f"{x}@example.com"} for x in (A, B, C, "acc-d-0000")})
+    sdb.kv_set("account_current", {"key": A})
+    put(sdb, "rl_5h", "claude", 42.0, utc(2026, 10, 3, 5, 0), {"resets_at": NOW_TS + 3600})                    # the current-account series is untouched
+    put(sdb, "rl_5h", f"acct:{A}", 42.0, utc(2026, 10, 3, 5, 0), {"resets_at": NOW_TS + 3600})
+    put(sdb, "rl_7d", f"acct:{A}", 71.0, utc(2026, 10, 3, 5, 30), {"resets_at": NOW_TS + 86400})
+    put(sdb, "rl_5h", f"acct:{B}", 11.0, utc(2026, 10, 3, 3, 0), {"resets_at": NOW_TS + 7200})
+    put(sdb, "rl_5h", f"acct:{B}", 12.0, utc(2026, 10, 3, 4, 0), {"resets_at": NOW_TS + 7200})
+    put(sdb, "rl_7d", f"acct:{B}", 38.0, utc(2026, 10, 3, 4, 0), {"resets_at": NOW_TS + 200000})
+    put(sdb, "rl_5h", f"acct:{C}", 90.0, utc(2026, 10, 2, 22, 0), {"resets_at": NOW_TS})                       # its window reset exactly now: all of it is free again
+    put(sdb, "rl_7d", f"acct:{C}", 55.0, utc(2026, 10, 2, 22, 0), {"resets_at": NOW_TS + 100000})
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert [a["key"] for a in s["accounts"]] == [A, B, C, "acc-d-0000"]
+    a, b, c, d = s["accounts"]
+    assert a["rl_5h"] == {"value": 42.0, "resets_at": NOW_TS + 3600, "at": "2026-10-03T05:00:00+00:00"}
+    assert a["rl_7d"] == {"value": 71.0, "resets_at": NOW_TS + 86400, "at": "2026-10-03T05:30:00+00:00"}
+    assert b["rl_5h"]["value"] == 12.0 and b["rl_5h"]["resets_at"] == NOW_TS + 7200, "the newest reading"
+    assert d["rl_5h"] is None and d["rl_7d"] is None and d["email"] == "acc-d-0000@example.com"
+    assert s["total"]["headroom_5h"] == [{"key": C, "left_pct": 100.0}, {"key": B, "left_pct": 88.0}, {"key": A, "left_pct": 58.0}]
+    assert s["total"]["headroom_7d"] == [{"key": B, "left_pct": 62.0}, {"key": C, "left_pct": 45.0}, {"key": A, "left_pct": 29.0}]
+    assert s["total"]["accounts"] == 4
+    r = s["rate_limits"]
+    assert r["claude"]["rl_5h"] == {"at": "2026-10-03T05:00:00+00:00", "value": 42.0, "meta": {"resets_at": NOW_TS + 3600}}
+    assert r["claude"]["rl_7d"] is None, "the claude series keeps exactly what it had"
+    assert set(r["by_account"]) == {A, B, C, "acc-d-0000"}
+    assert r["by_account"][B]["rl_7d"] == {"at": "2026-10-03T04:00:00+00:00", "value": 38.0, "meta": {"resets_at": NOW_TS + 200000}}
+    assert r["by_account"]["acc-d-0000"] == {"rl_5h": None, "rl_7d": None}
+    assert a["last_seen"] == "2026-10-03T05:30:00+00:00", "no kv last_seen: the newest reading says"
+
+
+def test_equal_headroom_lists_the_current_account_first(sdb):
+    sdb.kv_set("accounts", {A: {}, B: {}, C: {}})
+    sdb.kv_set("account_current", {"key": C})
+    for x in (A, B, C):
+        put(sdb, "rl_5h", f"acct:{x}", 30.25, utc(2026, 10, 3, 5, 0), {"resets_at": NOW_TS + 3600})
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert s["total"]["headroom_5h"] == [{"key": C, "left_pct": 69.8}, {"key": A, "left_pct": 69.8}, {"key": B, "left_pct": 69.8}]
+
+
+def test_a_window_with_a_just_passed_reset_reads_as_full_headroom_and_a_full_window_as_zero(sdb):
+    sdb.kv_set("accounts", {A: {}, B: {}})
+    put(sdb, "rl_5h", f"acct:{A}", 100.0, utc(2026, 10, 3, 5, 0), {"resets_at": NOW_TS + 60})
+    put(sdb, "rl_5h", f"acct:{B}", 100.0, utc(2026, 10, 3, 1, 0), {"resets_at": NOW_TS - 1})
+    put(sdb, "rl_7d", f"acct:{B}", 130.0, utc(2026, 10, 3, 1, 0), None)                                         # over 100 and no reset time: clamped, not stale
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert s["total"]["headroom_5h"] == [{"key": B, "left_pct": 100.0}, {"key": A, "left_pct": 0.0}]
+    assert s["total"]["headroom_7d"] == [{"key": B, "left_pct": 0.0}]
+    assert by_key(s)[B]["rl_7d"] == {"value": 130.0, "resets_at": None, "at": "2026-10-03T01:00:00+00:00"}
+
+
+# ---------- episodes per account ----------
+
+def test_episodes_carry_their_account_and_are_counted_per_account(sdb):
+    acct_event(sdb, B, utc(2026, 10, 1, 0), frm=A)
+    put(sdb, "lim", "5h", 1, utc(2026, 9, 30, 12), {"session": "s0", "resets_at": 1})                              # before the first event: A (its `from`)
+    put(sdb, "lim", "5h", 1, utc(2026, 10, 1, 17, 30), {"session": "s1", "resets_at": 1791006000, "acct": A})      # the meta says A even though B is current
+    put(sdb, "lim", "7d", 1, utc(2026, 10, 2, 22, 0), {"session": "s2", "resets_at": 1791270000})                  # no acct: the timeline says B
+    put(sdb, "lim", "other", 1, utc(2026, 10, 3, 1, 0), {"session": "s3", "acct": B})
+    s = usage_summary.build(sdb, days=7, tz_min=0, now=NOW)
+    assert [(e["session"], e["acct"]) for e in s["episodes"]] == [("s0", A), ("s1", A), ("s2", B), ("s3", B)]
+    assert (by_key(s)[A]["episodes"], by_key(s)[B]["episodes"]) == (2, 2)
+
+
+def test_an_episode_nobody_can_place_counts_for_the_unknown_bucket(sdb):
+    put(sdb, "lim", "5h", 1, utc(2026, 10, 1, 17, 30), {"session": "s1", "resets_at": 1791006000})
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert s["episodes"][0]["acct"] is None
+    assert [(a["key"], a["episodes"]) for a in s["accounts"]] == [("unknown", 1)]
+
+
+# ---------- the kv records and bad data ----------
+
+def test_identity_comes_from_the_kv_records_and_current_falls_back_to_the_newest_event(sdb):
+    sdb.kv_set("accounts", {A: {"key": A, "email": "a@example.com", "name": "Ann", "plan": "max", "tier": "default_claude_max_20x",
+                                "org": "Acme", "label": "personal", "last_seen": "2026-10-03T05:59:00+00:00"}})
+    acct_event(sdb, A, utc(2026, 10, 3, 0))
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert s["accounts"] == [{"key": A, "email": "a@example.com", "name": "Ann", "label": "personal", "plan": "max", "current": True,
+                              "rl_5h": None, "rl_7d": None, "windows": {"today": ZERO, "7d": ZERO, "30d": ZERO}, "episodes": 0,
+                              "last_seen": "2026-10-03T05:59:00+00:00"}]
+    sdb.kv_set("account_current", {"key": B, "since": "x"})                       # kv wins over the event when both exist
+    assert [(a["key"], a["current"]) for a in usage_summary.build(sdb, days=30, tz_min=0, now=NOW)["accounts"]] == [(B, True), (A, False)]
+
+
+def test_garbled_kv_records_and_garbled_acct_events_never_break_the_summary(sdb):
+    sdb.kv_set("accounts", ["not", "a", "dict"])
+    sdb.kv_set("account_current", "a string")
+    sdb.sample("acct", "", 1.0, "{not json", iso(utc(2026, 10, 2, 1)))
+    sdb.sample("acct", "", None, None, iso(utc(2026, 10, 2, 2)))
+    put(sdb, "acct", "", 1, utc(2026, 10, 2, 3), {"to": 5})
+    cost(sdb, "claude:abababab-0000-4000-8000-000000000001", 3.0, utc(2026, 10, 2, 8), tok=30)
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert [a["key"] for a in s["accounts"]] == ["unknown"] and s["total"]["30d"]["total"] == 3.0
+    sdb.kv_set("accounts", {A: "text", B: {"email": 5, "name": ["x"], "plan": None, "label": "", "last_seen": 3}})
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    b = by_key(s)[B]
+    assert (b["email"], b["name"], b["label"], b["plan"], b["last_seen"]) == (None, None, None, None, None)
+    assert A not in by_key(s), "a record that is not a dict names no account"
+    check_totals(s)
+
+
+def test_a_cost_sample_with_a_garbled_meta_goes_to_the_timeline_or_the_bucket(sdb):
+    acct_event(sdb, A, utc(2026, 10, 1))
+    sdb.sample("cost", "claude:acacacac-0000-4000-8000-000000000001", 2.0, "{not json", iso(utc(2026, 10, 2, 8)))
+    s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
+    assert by_key(s)[A]["windows"]["30d"]["total"] == 2.0
+    check_totals(s)
+
+
+# ---------- the demo fixture ----------
+
+def _demo_fixture():
+    from pathlib import Path
+    return json.loads((Path(usage_summary.__file__).parent / "static" / "demo" / "usage_summary.json").read_text(encoding="utf-8"))
+
+
+def test_the_demo_fixture_has_the_shape_build_returns_for_accounts(sdb):
+    sdb.kv_set("accounts", {A: {"key": A, "email": "a@example.com", "name": "Ann", "plan": "max"}, B: {"key": B}})
+    sdb.kv_set("account_current", {"key": A})
+    cost(sdb, "claude:acacacac-0000-4000-8000-000000000002", 2.0, utc(2026, 10, 2, 8), tok=20, acct=A)
+    put(sdb, "rl_5h", f"acct:{A}", 42.0, utc(2026, 10, 3, 5, 0), {"resets_at": NOW_TS + 3600})
+    put(sdb, "rl_7d", f"acct:{A}", 71.0, utc(2026, 10, 3, 5, 0), {"resets_at": NOW_TS + 86400})
+    put(sdb, "lim", "5h", 1, utc(2026, 10, 2, 22), {"session": "s", "resets_at": 1, "acct": A})
+    real, fx = usage_summary.build(sdb, days=30, tz_min=0, now=NOW), _demo_fixture()
+    assert set(real) == set(fx) and set(real["total"]) == set(fx["total"]) and set(real["total"]["7d"]) == set(fx["total"]["7d"])
+    assert set(real["accounts"][0]) == set(fx["accounts"][0]) and set(real["accounts"][0]["windows"]["7d"]) == set(fx["accounts"][0]["windows"]["7d"])
+    assert set(real["accounts"][0]["rl_5h"]) == set(fx["accounts"][0]["rl_5h"])
+    assert set(real["total"]["headroom_5h"][0]) == set(fx["total"]["headroom_5h"][0])
+    assert set(real["rate_limits"]["by_account"][A]["rl_5h"]) == set(fx["rate_limits"]["by_account"][fx["accounts"][0]["key"]]["rl_5h"])
+    assert set(real["episodes"][0]) == set(fx["episodes"][0])
+
+
+def test_the_demo_fixtures_accounts_add_up_like_the_real_thing():
+    fx = _demo_fixture()
+    accounts, total, now = fx["accounts"], fx["total"], datetime.fromisoformat(fx["generated_at"]).timestamp()
+    real = [a for a in accounts if a["key"] != "unknown"]
+    assert len(real) >= 2 and total["accounts"] == len(real) and accounts[0]["current"] is True and sum(a["current"] for a in accounts) == 1
+    assert accounts[-1]["key"] == "unknown" and accounts[-1]["name"] == "(before account tracking)", "the history bucket is the last row"
+    assert [a["windows"]["7d"]["total"] for a in real[1:]] == sorted((a["windows"]["7d"]["total"] for a in real[1:]), reverse=True)
+    for w in ("today", "7d", "30d"):
+        rows = [a["windows"][w] for a in accounts]
+        assert total[w]["total"] == pytest.approx(sum(r["total"] for r in rows), abs=1e-3)
+        assert total[w]["tokens"] == sum(r["tokens"] for r in rows) == fx["windows"][w]["by_agent"]["claude"]["tokens"]
+        assert total[w]["total"] == pytest.approx(fx["windows"][w]["by_agent"]["claude"]["total"], abs=1e-3)
+        assert total[w]["hours"] == pytest.approx(sum(r["hours"] for r in rows), abs=1e-9)
+        assert max(r["sessions"] for r in rows) <= total[w]["sessions"] <= sum(r["sessions"] for r in rows)
+    for a in accounts:                                                    # a wider window never holds less than a narrower one
+        w = a["windows"]
+        assert all(w["today"][f] <= w["7d"][f] <= w["30d"][f] for f in ("total", "tokens", "hours", "sessions")), a["key"]
+    assert sum(a["episodes"] for a in accounts) == len(fx["episodes"]) and {e["acct"] for e in fx["episodes"]} <= {a["key"] for a in accounts} | {None}
+    resets = {a["key"]: (a["rl_5h"]["resets_at"], a["rl_7d"]["resets_at"]) for a in real}
+    assert len(set(resets.values())) == len(resets) and len({r[1] for r in resets.values()}) == len(resets), "the accounts' windows reset at different instants"
+    cur = fx["rate_limits"]["claude"]
+    assert accounts[0]["rl_5h"]["value"] == cur["rl_5h"]["value"] and accounts[0]["rl_7d"]["resets_at"] == cur["rl_7d"]["meta"]["resets_at"]
+    assert set(fx["rate_limits"]["by_account"]) == {a["key"] for a in real}
+    for series, field in (("rl_5h", "headroom_5h"), ("rl_7d", "headroom_7d")):
+        left = {a["key"]: (100.0 if a[series]["resets_at"] <= now else round(100 - a[series]["value"], 1)) for a in real}
+        assert total[field] == [{"key": k, "left_pct": v} for k, v in sorted(left.items(), key=lambda kv: (-kv[1], kv[0]))]

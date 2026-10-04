@@ -25,7 +25,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agents, backup, claude_auth, clonequeue, cost, deploy, doctor, github, gitops, health, hooks, memory, notify, permissions, previews, projects, prpoll, push, recover, samples, scheduler, search, tasks, tmux, tree, usage, usage_summary
+from . import accounts, agents, backup, claude_auth, clonequeue, cost, deploy, doctor, github, gitops, health, hooks, memory, notify, permissions, previews, projects, prpoll, push, recover, samples, scheduler, search, tasks, tmux, tree, usage, usage_summary
 from .agents import monitor as mem_monitor
 from .agents import registry
 from .agents.base import LaunchReq
@@ -71,7 +71,12 @@ def _state_sampler(handle: DB):
         r["repo"] = r.get("repo") or repo
         r["name"] = r.get("name") or session
         r["agent"] = r.get("agent") or "claude"
-        samples.record_state(handle, tmux_name, old, new, event, r)
+        try:           # the account the session runs under, else the current one, for Claude rows only (accounts are Claude subscriptions)
+            acct = r.get("account") or (accounts.current(handle) if r["agent"] == "claude" else None)
+        except Exception as e:
+            log.debug("state sample account lookup failed: %s", e)
+            acct = None
+        samples.record_state(handle, tmux_name, old, new, event, r, acct=acct)
     return on_state_change
 
 
@@ -395,6 +400,7 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
             "needs_attention": bool(row.get("state") in hooks.ATTENTION_STATES and not row.get("acked_at")),
             # None for a tmux session the board has no row for (the UI guesses from the launcher and the pane command)
             "agent": row.get("agent"), "agent_session_id": row.get("agent_session_id"), "row_id": row.get("row_id"),
+            "account": row.get("account"),           # the subscription account key the session last ran under (accounts.py), None = unknown
             "flags": {k: v for k, v in (row.get("flags") or {}).items() if k not in ("transcript_path", "last_result")},   # last_result is up to 20 KB: GET /api/sessions/{name} has it
             "task": chip,
         }
@@ -451,6 +457,7 @@ def build_state(user: str) -> dict:
     st["deploy"] = deploy.view(db)                        # an update waiting for the terminals to close (None when nothing is pending)
     st["memory"] = memory.state_view(db)                  # claude-mem worker health as the monitor last saw it (None: off, or not sampled yet)
     st["usage"] = db.kv_get("rate_limits")
+    st["accounts"] = _accounts_view()
     st["block"] = db.kv_get(usage.KV_BLOCK)
     st["cost"] = db.kv_get(cost.KV_COST)
     st["health"] = health.snapshot()
@@ -462,6 +469,16 @@ def build_state(user: str) -> dict:
     st["version"] = ASSET_VERSION
     st["setup"] = _setup_state(st)
     return st
+
+
+def _accounts_view(full: bool = False) -> dict:
+    """state.accounts: {current: key | None, list: [{key, email, name, label, plan, rl_5h, rl_7d, resets_5h, resets_7d, current}]}, always
+    present. Built from the kv and the sample cache only (app/accounts.py); a failure answers the empty shape, never an error."""
+    try:
+        return accounts.view(db, full=full)
+    except Exception as e:
+        log.warning("accounts view failed: %s", e)
+        return {"current": None, "list": []}
 
 
 def _setup_state(st: dict) -> dict:
@@ -514,7 +531,7 @@ def api_session(name: str):
         raise projects.NotFound(f"session {name} not found")
     return {"tmux": name, "project": project, "repo": repo, "name": session, "agent": s["agent"], "state": s["state"],
             "state_at": s["state_at"], "last_prompt": s["last_prompt"], "last_message": s["last_message"], "stats": s["stats"],
-            "flags": s["flags"], "agent_session_id": s["agent_session_id"], "task": s["task"],
+            "flags": s["flags"], "agent_session_id": s["agent_session_id"], "account": s["account"], "task": s["task"],
             "pending": [p for p in db.perm_pending() if p["tmux_name"] == name],
             # viewers and win come from tmux (list-clients, the session window's size); shell_version (the attach wrapper's) is
             # still unset
@@ -654,6 +671,30 @@ def api_usage_summary(days: str | None = None, tz_min: str | None = None):
         for k in [k for k in _usage_summary_cache if k[0] != id(db)]:   # a previous app's entries (tests) never linger
             _usage_summary_cache.pop(k, None)
     return out
+
+
+class AccountPatchIn(BaseModel):
+    label: str | None = None
+
+
+@app.get("/api/accounts")
+def api_accounts():
+    """The subscription accounts the board has seen: {current, list: [{key, email, name, label, plan, org, org_id, tier, config_dir,
+    first_seen, last_seen, rl_5h, rl_7d, rl_5h_at, rl_7d_at, resets_5h, resets_7d, current}]} (the kv accounts record plus each
+    account's newest window readings; rl_* are used percentages, resets_* epoch seconds)."""
+    return accounts.view(db, full=True)
+
+
+@app.patch("/api/accounts/{key}")
+def api_account_patch(key: str, body: AccountPatchIn):
+    """Rename an account: {label} (at most 60 characters; '' or null clears it). The label is the only editable field."""
+    if "label" not in body.model_fields_set:
+        raise projects.BadRequest("label is required")
+    try:
+        accounts.set_label(db, key, body.label)
+    except KeyError:
+        raise projects.NotFound("no such account")
+    return next(r for r in accounts.view(db, full=True)["list"] if r["key"] == key)
 
 
 # ---------- projects & repos ----------
@@ -1672,8 +1713,14 @@ def _start_session_row(name: str, project: str, repo: str, session: str, launche
     env = {"CCBOARD_SESSION": name, "CCBOARD_URL": settings.loopback_url(),
            "CCBOARD_APPROVE_TIMEOUT": str(int(settings.approve_timeout)), "CCBOARD_AGENT": agent}
     real = tmux.new_session(name, cwd, env=env)
+    try:                                                      # the account the session starts under (None: unknown, the column stays NULL)
+        account = accounts.current(db) if agent == "claude" else None
+    except Exception as e:
+        log.debug("current account lookup failed: %s", e)
+        account = None
     row_id = db.add_session(tmux_name=real, project=project, repo=repo, name=session, launcher=launcher, cmd=cmd_line,
-                            claude_session_id=claude_session_id, add_dirs=add_dirs, agent=agent, cwd=cwd, opts=opts)
+                            claude_session_id=claude_session_id, add_dirs=add_dirs, agent=agent, cwd=cwd, opts=opts,
+                            account=account)
     if cmd_line:
         try:
             tmux.send_line(real, cmd_line)

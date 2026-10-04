@@ -9,7 +9,7 @@ import re
 import secrets
 from pathlib import Path
 
-from . import agents, notify, projects, samples, tmux
+from . import accounts, agents, notify, projects, samples, tmux
 from .agents.claude import ELICITATION_DONE, SESSION_ID_RE, WAIT_KIND, WAITING_NOTIFICATIONS, parse_limit_message, statusline_stats
 from .config import settings
 from .db import SKIP_EVENTS, now as db_now
@@ -186,8 +186,44 @@ def _rate_limited(db, name: str, limit: dict, message: str) -> None:
     _sample(_record_limit, db, name, {**limit, "kind": kind, "message": message[:500]})
 
 
+def _limit_account(db, limit: dict) -> str | None:
+    """The subscription account that hit this limit: the one whose remembered 5 h / 7 d reset the episode's reset time matches, else the
+    current account. None when no account is known (and never an error: the episode is recorded either way)."""
+    try:
+        resets = limit.get("resets_at")
+        window = {"5h": "five_hour", "7d": "seven_day"}.get(limit.get("kind"))
+        # a lookup only: the reset time of a message is parsed wall-clock text, a good guess but not a fingerprint to remember
+        key = accounts.for_reading(db, {window: {"resets_at": resets}} if window and resets else {}, remember=False)
+        return None if key == accounts.UNKNOWN else key
+    except Exception as e:
+        log.warning("accounts.for_reading (limit) failed: %s", e)
+        return None
+
+
 def _record_limit(db, name: str, limit: dict) -> None:
-    samples.record_limit(db, name, limit, db.open_row(name))
+    samples.record_limit(db, name, limit, db.open_row(name), account=_limit_account(db, limit))
+
+
+def _attribute_reading(db, name: str, row: dict | None, rate_limits: dict) -> tuple[str | None, bool]:
+    """(account key, is it the current account) for a statusline's rate_limits; also keeps the session row's `account` current. The
+    attribution is best effort: any failure answers (None, True), which is exactly the behaviour without account tracking."""
+    try:
+        acct = accounts.for_reading(db, rate_limits)
+        is_current = acct == (accounts.current(db) or accounts.UNKNOWN)
+        if acct != accounts.UNKNOWN and not is_current:
+            # the reading matches an account the board does not think is logged in: either a session still on the old token (the
+            # file still says the other account: one stat) or a /login back to this one that the 15 s tick has not seen yet. Look
+            # at the file now so the pills, the scheduler guard and the banner follow on the first reading, not up to a minute later
+            accounts.observe(db, force=True, auth=False)
+            is_current = acct == (accounts.current(db) or accounts.UNKNOWN)
+    except Exception as e:
+        log.warning("accounts.for_reading failed: %s", e)
+        return None, True
+    if acct == accounts.UNKNOWN:                                  # no identity known: nothing to attribute, the series stay as they were
+        return None, True
+    if (row or {}).get("account") != acct:
+        _sample(db.set_session_account, name, acct)
+    return acct, is_current
 
 
 def is_system_turn(prompt) -> str | None:
@@ -319,11 +355,17 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None, ch
         stats = statusline_stats(p)
         db.set_stats(name, stats, claude_session_id=sid)
         _stats_hooks(db, name, stats)
+        acct, is_current = None, True
         if stats["rate_limits"]:
-            db.kv_set("rate_limits", stats["rate_limits"])
+            # whose windows are these? A session still running on account A's token keeps reporting A after the shared login moved to
+            # B: such a reading belongs to A's own series, and the current-account views (the pills, the scheduler's quota guard, the
+            # limit banner: kv rate_limits and the 'claude' series) keep B's numbers
+            acct, is_current = _attribute_reading(db, name, row, stats["rate_limits"])
+            if is_current:
+                db.kv_set("rate_limits", stats["rate_limits"])
         _sample(db.kv_set, "statusline_sample", _statusline_sample(p))
         # the statusline is Claude Code's own: the rate-limit series are keyed 'claude' whatever the row's agent says
-        _sample(samples.record_statusline, db, name, stats, "claude")
+        _sample(samples.record_statusline, db, name, stats, "claude", account=acct, current=is_current)
         return {"session": name, "event": event, "stats": True}
 
     if event == "PostToolBatch":

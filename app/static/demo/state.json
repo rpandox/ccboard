@@ -55,6 +55,7 @@
               "agent": "claude",
               "agent_session_id": "c3a9f5d0-7e14-4b88-a6c2-90d4b1e7f503",
               "row_id": 1,
+              "account": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001",
               "flags": {
                 "registry": {
                   "status": "idle",
@@ -319,6 +320,7 @@
               "agent": "claude",
               "agent_session_id": "e2b6c4a8-1f57-4d93-8c0e-5a7b3d9f1c06",
               "row_id": 3,
+              "account": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001",
               "flags": {
                 "hook_seen": true
               },
@@ -377,6 +379,7 @@
               "agent": "claude",
               "agent_session_id": "a7d1e8f2-4c39-4a60-b1d5-6e2f9c0a3b05",
               "row_id": 4,
+              "account": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001",
               "flags": {
                 "hook_seen": true
               },
@@ -435,6 +438,7 @@
               "agent": "claude",
               "agent_session_id": "c4e9a1b7-3d28-4f60-9b15-8a2d6c0e7f08",
               "row_id": 8,
+              "account": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001",
               "flags": {
                 "hook_seen": true
               },
@@ -520,6 +524,7 @@
               "agent": "claude",
               "agent_session_id": "0b8e47a4-52c6-4d1b-8f33-7a9c2e6d1f02",
               "row_id": 5,
+              "account": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a002",
               "flags": {
                 "hook_seen": true
               },
@@ -593,6 +598,7 @@
               "agent": "claude",
               "agent_session_id": "6f1d2c9e-3b7a-4c1e-9a52-1d0e5b7c8a01",
               "row_id": 6,
+              "account": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001",
               "flags": {
                 "hook_seen": true
               },
@@ -667,6 +673,7 @@
             "agent": "claude",
             "agent_session_id": "94f0a7c3-6b28-4e15-a9d7-2c1e8b5d4f07",
             "row_id": 7,
+            "account": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001",
             "flags": {
               "hook_seen": true
             },
@@ -1346,6 +1353,35 @@
       }
     },
     "at": "2026-10-03T02:59:40+00:00"
+  },
+  "accounts": {
+    "current": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001",
+    "list": [
+      {
+        "key": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001",
+        "email": "demo@example.com",
+        "name": "Demo",
+        "label": null,
+        "plan": "max",
+        "rl_5h": 42.0,
+        "rl_7d": 71.0,
+        "resets_5h": 1791006000,
+        "resets_7d": 1791270000,
+        "current": true
+      },
+      {
+        "key": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a002",
+        "email": "work@example.com",
+        "name": "Work",
+        "label": "Work",
+        "plan": "pro",
+        "rl_5h": 100.0,
+        "rl_7d": 83.0,
+        "resets_5h": 1790988000,
+        "resets_7d": 1791180000,
+        "current": false
+      }
+    ]
   },
   "usage_codex": {
     "value": {

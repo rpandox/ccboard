@@ -28,7 +28,7 @@ UUID1 = "11111111-1111-4111-8111-111111111111"
 AUTH = {"installed": True, "version": "2.1.287 (Claude Code)", "loggedIn": True, "authMethod": "claude.ai",
         "email": "me@example.com", "subscriptionType": "max"}
 SESSION_KEYS = {"tmux", "project", "repo", "name", "agent", "state", "state_at", "last_prompt", "last_message", "stats", "flags",
-                "agent_session_id", "task", "pending", "viewers", "win", "shell_version"}      # the plan's GET /api/sessions/{name}
+                "agent_session_id", "account", "task", "pending", "viewers", "win", "shell_version"}      # the plan's GET /api/sessions/{name}
 
 
 @pytest.fixture(autouse=True)
@@ -98,7 +98,7 @@ def unassigned_task(**kw):
 
 # ---------------------------------------------------------------- auth: every new endpoint is GET and behind the identity check
 
-@pytest.mark.parametrize("path", ["/api/agents", "/api/doctor", "/api/external", "/api/sessions/shop--api--s1"])
+@pytest.mark.parametrize("path", ["/api/agents", "/api/doctor", "/api/external", "/api/accounts", "/api/sessions/shop--api--s1"])
 def test_new_endpoints_need_an_identity_and_only_answer_get(board, path):
     assert board.client.get(path).status_code == 403
     assert board.client.get(path, headers={"Tailscale-User-Login": "mallory@example.com", "X-CCBoard": "1"}).status_code == 403
@@ -321,10 +321,11 @@ LEGACY_TOP = {"tmux_down", "projects", "user", "config", "claude", "login", "pen
 def test_state_legacy_keys_are_unchanged(board):
     db().kv_set("rate_limits", {"five_hour": {"used_percentage": 42, "resets_at": 1791349200}})
     st = board.client.get("/api/state", headers=H).json()
-    assert LEGACY_TOP <= set(st) and set(st) - LEGACY_TOP == {"agents", "setup", "deploy", "memory"}
+    assert LEGACY_TOP <= set(st) and set(st) - LEGACY_TOP == {"agents", "setup", "deploy", "memory", "accounts"}
     assert st["claude"] == AUTH, "state.claude keeps its shape (the claude_auth.status() dict, as is)"
     assert st["login"] == claude_auth.login_state()
     assert st["usage"] == db().kv_get("rate_limits") and st["usage"]["value"]["five_hour"]["used_percentage"] == 42
+    assert st["accounts"] == {"current": None, "list": []}, "v0.5.17b: the account list is always present, empty until an identity is read"
 
 
 def test_state_agents_and_setup(board):

@@ -9,7 +9,7 @@ import shutil
 import subprocess
 from datetime import datetime, timedelta, timezone
 
-from . import samples
+from . import accounts, samples
 
 log = logging.getLogger("ccboard.cost")
 UUID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
@@ -122,6 +122,23 @@ def unpriced(entries: list[dict]) -> dict:
                      "models": e["models"]} for e in rows[:UNPRICED_TOP]]}
 
 
+def _tag_accounts(db, entries: list[dict]) -> None:
+    """Add `acct` (the subscription account key) to each Claude entry the cost samples will carry: the account its board session last
+    ran under (sessions.account, kept current by the statusline attribution), else the account that is current now. Left off when
+    neither is known (history from before account tracking). Only Claude entries are tagged: the accounts are Claude subscriptions
+    and a Codex session is not billed to one. Best effort: a failure leaves the entries untagged."""
+    try:
+        by_sid, cur = db.session_accounts(), accounts.current(db)
+        for e in entries:
+            if (e.get("agent") or "claude") != "claude":
+                continue
+            acct = by_sid.get(str(e.get("id") or "").lower()) or cur
+            if acct:
+                e["acct"] = acct
+    except Exception as e:
+        log.warning("account tags for cost samples failed: %s", e)
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)                 # patched by tests
 
@@ -134,6 +151,7 @@ def refresh(db) -> dict | None:
     rows = db.session_ids()
     result = attribute(costs, rows, db.tasks(include_archived=True), now)
     entries = session_samples(costs, rows)
+    _tag_accounts(db, entries)
     result["unpriced"] = unpriced(entries)
     db.kv_set(KV_COST, result)
     for tid, c in result["tasks"].items():

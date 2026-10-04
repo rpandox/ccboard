@@ -164,6 +164,8 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS tasks_by_session ON tasks(session_row)",
     "CREATE INDEX IF NOT EXISTS tasks_by_parent ON tasks(parent_id)",
     "ALTER TABLE jobs ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'",
+    # ---- v0.5.17b (usage per subscription account): the account key (app/accounts.py) the session last ran under; NULL = unknown
+    "ALTER TABLE sessions ADD COLUMN account TEXT",
     # permissions.decision takes allow|deny|tui|interrupt (plus timeout from perm_expire). It has no CHECK constraint,
     # so nothing to migrate: the new values are plain TEXT.
 ]
@@ -224,6 +226,7 @@ def session_view(row: dict) -> dict:
     d["agent"] = d.get("agent") or "claude"
     d["agent_session_id"] = d.get("claude_session_id")
     d["row_id"] = d.get("id")
+    d["account"] = d.get("account") or None
     return d
 
 
@@ -308,13 +311,14 @@ class DB:
                         raise
 
     def add_session(self, *, tmux_name, project, repo, name, launcher, cmd=None, claude_session_id=None, add_dirs=None,
-                    agent="claude", cwd=None, opts=None, flags=None) -> int:
+                    agent="claude", cwd=None, opts=None, flags=None, account=None) -> int:
         """Insert a session row and return its id (sessions.id, exposed as row_id). The column list is built from the
-        values given: a None is never written, so NOT NULL DEFAULT columns (agent) keep their default."""
+        values given: a None is never written, so NOT NULL DEFAULT columns (agent) keep their default. `account` is the
+        subscription account key the session starts under (accounts.current); None leaves the column NULL (unknown)."""
         vals = {"tmux_name": tmux_name, "project": project, "repo": repo, "name": name, "launcher": launcher, "cmd": cmd,
                 "claude_session_id": claude_session_id, "add_dirs": json.dumps(add_dirs or []),
                 "agent": agent, "cwd": str(cwd) if cwd is not None else None, "opts": _json(opts), "flags": _json(flags),
-                "created_at": now()}
+                "account": account or None, "created_at": now()}
         with self.lock:
             return _insert(self.conn, "sessions", {k: v for k, v in vals.items() if v is not None})
 
@@ -432,6 +436,25 @@ class DB:
                 "UPDATE sessions SET stats=?, claude_session_id=COALESCE(claude_session_id, ?) WHERE id=(SELECT id FROM"
                 " sessions WHERE tmux_name=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1)",
                 (json.dumps(stats), claude_session_id, tmux_name))
+
+    def set_session_account(self, tmux_name: str, account: str | None) -> bool:
+        """Record the subscription account key the newest open row of `tmux_name` runs under (accounts.for_reading attributed one of
+        its statusline readings to it). Writes only when the value changes. Returns whether a row was updated."""
+        if not account:
+            return False
+        with self.lock:
+            cur = self.conn.execute(
+                "UPDATE sessions SET account=? WHERE id=(SELECT id FROM sessions WHERE tmux_name=? AND ended_at IS NULL"
+                " ORDER BY id DESC LIMIT 1) AND COALESCE(account, '')<>?", (account, tmux_name, account))
+            return cur.rowcount > 0
+
+    def session_accounts(self) -> dict[str, str]:
+        """{agent session id (lower case): account key} for every session row that has both (open or ended): which subscription
+        account a conversation last ran under, for cost.refresh's cost samples. The newest row wins when two rows share an id."""
+        with self.lock:
+            rows = self.conn.execute("SELECT claude_session_id, account FROM sessions WHERE claude_session_id IS NOT NULL"
+                                     " AND account IS NOT NULL ORDER BY id ASC").fetchall()
+        return {str(r[0]).lower(): r[1] for r in rows}
 
     def ack(self, tmux_name: str) -> None:
         with self.lock:

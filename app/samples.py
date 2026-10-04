@@ -31,8 +31,10 @@ log = logging.getLogger("ccboard.samples")
 #   throttle   record() writes a sample when the value moved by at least `delta` OR the last sample is older than `seconds`.
 #              delta None: no value trigger; delta 0: any change (value != last); seconds None: no time trigger. Both None = every
 #              call writes (ev counts per event, state and lim are written by their own change/dedupe rules).
-#   key        (documentation) rl_*: agent; ctx, ctx_tok, scost, stok, state: tmux session; ev: project; cost: '<agent>:<uuid>';
-#              h_*: node; n_*: ''; lim: 5h | 7d | other.
+#   key        (documentation) rl_*: agent ('claude' = the CURRENT account) or 'acct:<account key>' (one subscription account, see
+#              app/accounts.py); ctx, ctx_tok, scost, stok, state: tmux session; ev: project; cost: '<agent>:<uuid>';
+#              h_*: node; n_*: ''; lim: 5h | 7d | other; acct: the account key that became current.
+#   meta       state, cost and lim carry `acct` (the subscription account key) when it is known; acct events carry {from, to}.
 CATALOGUE: dict[str, dict] = {
     "rl_5h":   {"agg": "avg",    "throttle": {"delta": 1,     "seconds": 300},  "retention_days": 90},
     "rl_7d":   {"agg": "avg",    "throttle": {"delta": 1,     "seconds": 300},  "retention_days": 90},
@@ -51,6 +53,7 @@ CATALOGUE: dict[str, dict] = {
     "n_work":  {"agg": "avg",    "throttle": {"delta": None,  "seconds": 60},   "retention_days": 30},
     "n_attn":  {"agg": "avg",    "throttle": {"delta": None,  "seconds": 60},   "retention_days": 30},
     "lim":     {"agg": "events", "throttle": {"delta": None,  "seconds": None}, "retention_days": 180},
+    "acct":    {"agg": "events", "throttle": {"delta": None,  "seconds": None}, "retention_days": 365},   # the current account changed: key = new account, meta {from, to}
 }
 RETENTION = {name: spec["retention_days"] for name, spec in CATALOGUE.items()}
 
@@ -126,10 +129,24 @@ def spec_seconds(series: str) -> float:
     return float(t.get("seconds") or 0)
 
 
-def record_statusline(db, tmux: str, stats: dict, agent: str = "claude", *, at=None) -> list[str]:
+def _record_rl(db, series: str, key: str, used, meta, at) -> bool:
+    """One rate-limit reading into (series, key): the stale guard (a lower number for the same window inside the heartbeat is another
+    session's staler statusline, 60 after 62) and then the series' throttle. Returns whether a row was written."""
+    last = db.sample_last(series, key)
+    if last is not None and used < (last["value"] or 0) and (last.get("meta") or {}).get("resets_at") == (meta or {}).get("resets_at") \
+            and _epoch(iso(at)) - _epoch(last["at"]) < spec_seconds(series):
+        return False                                            # the same window and a lower number: another session's staler statusline
+    return record(db, series, key, used, meta, at)
+
+
+def record_statusline(db, tmux: str, stats: dict, agent: str = "claude", *, at=None, account: str | None = None,
+                      current: bool = True) -> list[str]:
     """The samples one statusline event yields (stats is the dict hooks.apply builds): ctx (context %, meta model/window) and, when
     the window size is known, ctx_tok (used % x window; written together with ctx, so it follows ctx's throttle), scost (session USD)
-    and, from stats['rate_limits'], rl_5h / rl_7d keyed by `agent` (value used %, meta resets_at). Returns the series written."""
+    and, from stats['rate_limits'], rl_5h / rl_7d keyed by `agent` (value used %, meta resets_at). With `account` (the subscription
+    account key accounts.for_reading attributed the reading to) the same reading also goes to key 'acct:<account>', each key with its
+    own throttle and stale guard; and with current=False (the reading is another account's, from a session still on its token) the
+    `agent` key, which stands for the CURRENT account, is left alone. Returns the series written (a series once per name)."""
     st = stats if isinstance(stats, dict) else {}
     wrote: list[str] = []
     pct, size = _num(st.get("context_pct")), _num(st.get("context_size"))
@@ -144,31 +161,33 @@ def record_statusline(db, tmux: str, stats: dict, agent: str = "claude", *, at=N
         wrote.append("scost")
     rl = st.get("rate_limits")
     if isinstance(rl, dict):
+        # the rate-limit series are keyed 'claude' whatever the row's agent says (the statusline is Claude Code's own)
+        keys = ([agent or "claude"] if current or not account else []) + ([f"acct:{account}"] if account else [])
         for series, window in (("rl_5h", "five_hour"), ("rl_7d", "seven_day")):
             w = rl.get(window)
             if not isinstance(w, dict):
                 continue
             used = w.get("used_percentage")          # the statusline's own name; used_percent is the Codex rollout's
             used = w.get("used_percent") if _num(used) is None else used
+            if _num(used) is None:
+                continue
             meta = _clean({"resets_at": w.get("resets_at")})
-            last = db.sample_last(series, agent or "claude")
-            if last is not None and used < (last["value"] or 0) and (last.get("meta") or {}).get("resets_at") == meta.get("resets_at") \
-                    and _epoch(iso(at)) - _epoch(last["at"]) < spec_seconds(series):
-                continue                                        # the same window and a lower number: another session's staler statusline (60 after 62)
-            if record(db, series, agent or "claude", used, meta, at):
+            if any([_record_rl(db, series, k, used, meta, at) for k in keys]):
                 wrote.append(series)
     return wrote
 
 
-def record_state(db, tmux: str, old, new, event, row, *, at=None) -> bool:
+def record_state(db, tmux: str, old, new, event, row, *, at=None, acct: str | None = None) -> bool:
     """One 'state' event per real state change (DB.on_state_change's consumer): value the state's code (0 idle 1 working 2 waiting
-    3 done 4 errored 5 ended), meta {p: project, r: repo, s: session name, a: agent} from the session row. An unknown state or a
+    3 done 4 errored 5 ended), meta {p: project, r: repo, s: session name, a: agent, acct: subscription account key} from the session
+    row (`acct` is what the caller knows, else the row's own `account`; absent when neither is known). An unknown state or a
     repeat (old == new) writes nothing."""
     code = STATE_CODES.get(new)
     if code is None or old == new:
         return False
     r = row if isinstance(row, dict) else {}
-    meta = _clean({"p": r.get("project"), "r": r.get("repo"), "s": r.get("name"), "a": r.get("agent") or "claude"})
+    meta = _clean({"p": r.get("project"), "r": r.get("repo"), "s": r.get("name"), "a": r.get("agent") or "claude",
+                   "acct": acct or r.get("account")})
     return record(db, "state", tmux, code, meta, at)
 
 
@@ -185,8 +204,9 @@ def _resets_at(v):
     return int(n) if n is not None else v
 
 
-def record_limit(db, tmux: str, limit: dict, row=None, *, at=None) -> bool:
-    """A rate-limit episode as a 'lim' event: key = the limit kind (5h | 7d | other), meta {session, resets_at, message[:120]}.
+def record_limit(db, tmux: str, limit: dict, row=None, *, at=None, account: str | None = None) -> bool:
+    """A rate-limit episode as a 'lim' event: key = the limit kind (5h | 7d | other), meta {session, resets_at, message[:120], acct}
+    (`acct`: the subscription account that hit it, when known).
     At most one row per (session, kind, reset time): the repeats of one episode (a session retried 482 times, its subagents fail
     on their own) collapse. Without a reset time the dedupe window is the UTC hour. `row` (the session's row, may be None) is accepted
     for the callers' convenience and not stored. Returns whether a row was written."""
@@ -206,7 +226,8 @@ def record_limit(db, tmux: str, limit: dict, row=None, *, at=None) -> bool:
             elif m.get("resets_at") is None and t[:13] == ts[:13]:
                 return False
         msg = lim.get("message")
-        meta = _clean({"session": tmux, "resets_at": resets, "message": msg[:120] if isinstance(msg, str) and msg else None})
+        meta = _clean({"session": tmux, "resets_at": resets, "message": msg[:120] if isinstance(msg, str) and msg else None,
+                       "acct": account})
         db.sample("lim", kind, 1, meta, at=ts)
     return True
 
@@ -218,8 +239,9 @@ def _meta_dict(raw) -> dict:
 
 def record_cost(db, cost_result: dict, now=None) -> int:
     """Cumulative USD per ccusage session into the 'cost' series, key '<agent>:<uuid>', meta {p: project, r: repo, a: agent,
-    tok: tokens, m: models[:3]}. `cost_result['sessions']` is cost.session_samples()'s list of {agent, id, cost, tokens, last,
-    project, repo, models}. A session's first sample is stamped at its lastActivity (not older than the series' retention); after
+    tok: tokens, m: models[:3], acct: subscription account key}. `cost_result['sessions']` is cost.session_samples()'s list of {agent,
+    id, cost, tokens, last, project, repo, models} (cost.refresh adds `acct`, the account the session ran under, when it knows one).
+    A session's first sample is stamped at its lastActivity (not older than the series' retention); after
     that a row is written only when the cost or the token count changed AND the last row is at least 10 minutes old, so an idle
     session adds nothing and an active one adds at most 6 rows an hour. One transaction. Returns the rows written."""
     entries = (cost_result or {}).get("sessions") if isinstance(cost_result, dict) else None
@@ -240,7 +262,9 @@ def record_cost(db, cost_result: dict, now=None) -> int:
         key = f"{agent}:{sid}"
         tok = int(_num(e.get("tokens")) or 0)
         models = [m for m in (e.get("models") or []) if isinstance(m, str)][:COST_META_MODELS]
-        meta = _clean({"p": e.get("project"), "r": e.get("repo"), "a": agent, "tok": tok, "m": models or None})
+        acct = e.get("acct")
+        meta = _clean({"p": e.get("project"), "r": e.get("repo"), "a": agent, "tok": tok, "m": models or None,
+                       "acct": acct if isinstance(acct, str) and acct else None})
         last = db.sample_last("cost", key)
         if last is None:
             try:
@@ -283,7 +307,7 @@ def record_counts(db, counts: dict, *, at=None) -> list[str]:
     return out
 
 
-TICK_HOOKS: list = []          # fn(db, now_epoch); app/autoresume registers itself below
+TICK_HOOKS: list = []          # fn(db, now_epoch); autoresume.tick and accounts.observe are registered below
 
 
 class Sampler(threading.Thread):
@@ -498,9 +522,10 @@ def events_payload(db, series: str, since, key: str | None = None) -> dict:
 
 
 def _register_hooks() -> None:
-    from . import autoresume                                 # imported late: autoresume imports tmux/notify, never samples
-    if autoresume.tick not in TICK_HOOKS:
-        TICK_HOOKS.append(autoresume.tick)
+    from . import accounts, autoresume                       # imported late: autoresume imports tmux/notify and accounts imports samples lazily
+    for fn in (autoresume.tick, accounts.observe):           # observe: who is logged in (kv accounts / account_current, 'acct' events)
+        if fn not in TICK_HOOKS:
+            TICK_HOOKS.append(fn)
 
 
 _register_hooks()

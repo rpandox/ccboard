@@ -700,6 +700,40 @@
           "resets_at": 1791270000
         }
       }
+    },
+    "by_account": {
+      "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001": {
+        "rl_5h": {
+          "at": "2026-10-03T03:00:00+00:00",
+          "value": 42.0,
+          "meta": {
+            "resets_at": 1791006000
+          }
+        },
+        "rl_7d": {
+          "at": "2026-10-03T03:00:00+00:00",
+          "value": 71.0,
+          "meta": {
+            "resets_at": 1791270000
+          }
+        }
+      },
+      "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a002": {
+        "rl_5h": {
+          "at": "2026-10-02T23:10:00+00:00",
+          "value": 100.0,
+          "meta": {
+            "resets_at": 1790988000
+          }
+        },
+        "rl_7d": {
+          "at": "2026-10-02T23:10:00+00:00",
+          "value": 83.0,
+          "meta": {
+            "resets_at": 1791180000
+          }
+        }
+      }
     }
   },
   "episodes": [
@@ -707,31 +741,36 @@
       "kind": "7d",
       "at": "2026-09-08T00:00:00+00:00",
       "resets_at": 1789020000,
-      "session": "mailgate--mailgate--s1"
+      "session": "mailgate--mailgate--s1",
+      "acct": null
     },
     {
       "kind": "5h",
       "at": "2026-09-20T23:10:00+00:00",
       "resets_at": 1789951200,
-      "session": "internalSystem--server--s1"
+      "session": "internalSystem--server--s1",
+      "acct": null
     },
     {
       "kind": "5h",
       "at": "2026-09-27T23:10:00+00:00",
       "resets_at": 1790556000,
-      "session": "phasezero--website--t-checkout-redesign"
+      "session": "phasezero--website--t-checkout-redesign",
+      "acct": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001"
     },
     {
       "kind": "7d",
       "at": "2026-09-28T09:35:00+00:00",
       "resets_at": 1790665200,
-      "session": "ccboard--ccboard--s1"
+      "session": "ccboard--ccboard--s1",
+      "acct": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001"
     },
     {
       "kind": "5h",
       "at": "2026-10-02T23:10:00+00:00",
       "resets_at": 1790988000,
-      "session": "petroit--api--s2"
+      "session": "petroit--api--s2",
+      "acct": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a002"
     }
   ],
   "unpriced": [
@@ -752,5 +791,160 @@
       "models": ["claude-opus-5-5"]
     }
   ],
+  "accounts": [
+    {
+      "key": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001",
+      "email": "demo@example.com",
+      "name": "Demo",
+      "label": null,
+      "plan": "max",
+      "current": true,
+      "rl_5h": {
+        "value": 42.0,
+        "resets_at": 1791006000,
+        "at": "2026-10-03T03:00:00+00:00"
+      },
+      "rl_7d": {
+        "value": 71.0,
+        "resets_at": 1791270000,
+        "at": "2026-10-03T03:00:00+00:00"
+      },
+      "windows": {
+        "today": {
+          "total": 76.3,
+          "tokens": 170595051,
+          "hours": 7.85,
+          "sessions": 5
+        },
+        "7d": {
+          "total": 195.8995,
+          "tokens": 423738339,
+          "hours": 25.33,
+          "sessions": 11
+        },
+        "30d": {
+          "total": 1171.1995,
+          "tokens": 2513089930,
+          "hours": 47.16,
+          "sessions": 17
+        }
+      },
+      "episodes": 2,
+      "last_seen": "2026-10-03T02:59:40+00:00"
+    },
+    {
+      "key": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a002",
+      "email": "work@example.com",
+      "name": "Work",
+      "label": "Work",
+      "plan": "pro",
+      "current": false,
+      "rl_5h": {
+        "value": 100.0,
+        "resets_at": 1790988000,
+        "at": "2026-10-02T23:10:00+00:00"
+      },
+      "rl_7d": {
+        "value": 83.0,
+        "resets_at": 1791180000,
+        "at": "2026-10-02T23:10:00+00:00"
+      },
+      "windows": {
+        "today": {
+          "total": 0,
+          "tokens": 0,
+          "hours": 0,
+          "sessions": 0
+        },
+        "7d": {
+          "total": 100.3005,
+          "tokens": 216953935,
+          "hours": 11.97,
+          "sessions": 5
+        },
+        "30d": {
+          "total": 100.3005,
+          "tokens": 216953935,
+          "hours": 11.97,
+          "sessions": 5
+        }
+      },
+      "episodes": 1,
+      "last_seen": "2026-10-02T23:10:00+00:00"
+    },
+    {
+      "key": "unknown",
+      "email": null,
+      "name": "(before account tracking)",
+      "label": null,
+      "plan": null,
+      "current": false,
+      "rl_5h": null,
+      "rl_7d": null,
+      "windows": {
+        "today": {
+          "total": 0,
+          "tokens": 0,
+          "hours": 0,
+          "sessions": 0
+        },
+        "7d": {
+          "total": 0,
+          "tokens": 0,
+          "hours": 0,
+          "sessions": 0
+        },
+        "30d": {
+          "total": 455.3,
+          "tokens": 977576855,
+          "hours": 21.19,
+          "sessions": 21
+        }
+      },
+      "episodes": 2,
+      "last_seen": null
+    }
+  ],
+  "total": {
+    "today": {
+      "total": 76.3,
+      "tokens": 170595051,
+      "hours": 7.85,
+      "sessions": 5
+    },
+    "7d": {
+      "total": 296.2,
+      "tokens": 640692274,
+      "hours": 37.3,
+      "sessions": 15
+    },
+    "30d": {
+      "total": 1726.8,
+      "tokens": 3707620720,
+      "hours": 80.32,
+      "sessions": 41
+    },
+    "accounts": 2,
+    "headroom_5h": [
+      {
+        "key": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a002",
+        "left_pct": 100.0
+      },
+      {
+        "key": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001",
+        "left_pct": 58.0
+      }
+    ],
+    "headroom_7d": [
+      {
+        "key": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001",
+        "left_pct": 29.0
+      },
+      {
+        "key": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a002",
+        "left_pct": 17.0
+      }
+    ]
+  },
   "source": "samples"
 }
