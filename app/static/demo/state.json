@@ -763,7 +763,8 @@
       "restic": true,
       "repo": "/var/backups/ccboard",
       "restic_installed": true,
-      "push": true
+      "push": true,
+      "ns": "ccboard-backup/demo"
     }
   },
   "claude": {
@@ -1537,6 +1538,7 @@
   "backup": {
     "at": "2026-10-02T15:00:00+00:00",
     "status": "ok",
+    "push_ns": "ccboard-backup/demo",
     "restic": {
       "snapshot_id": "9f3ac12e77b04d1f8a6c5e2b3d7019aa",
       "files_new": 214,
@@ -1552,7 +1554,6 @@
       {
         "repo": "phasezero/website",
         "pushed": [
-          "main",
           "feature/checkout"
         ],
         "rejected": []
@@ -1566,9 +1567,7 @@
       },
       {
         "repo": "ccboard/ccboard",
-        "pushed": [
-          "main"
-        ],
+        "pushed": [],
         "rejected": []
       },
       {

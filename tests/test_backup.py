@@ -47,6 +47,7 @@ def backup_env(projects_dir, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "restic_password_file", tmp_path / "restic-password")
     (tmp_path / "restic-password").write_text("pw\n")
     monkeypatch.setattr(settings, "backup_push", True)
+    monkeypatch.setattr(settings, "node_name", "testbox")
     monkeypatch.setattr(settings, "backup_extra", [])
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     DB(settings.db_path).kv_set("hello", {"x": 1})
@@ -78,22 +79,111 @@ def test_parse_summary():
     assert backup.parse_summary("") == {}
 
 
+NS = "ccboard-backup/testbox"
+
+
+def branches(origin):
+    return sorted(git(origin, "branch", "--format=%(refname:short)").split())
+
+
 def test_repos_and_push(backup_env, projects_dir):
     api, origin, local = backup_env["api"], backup_env["origin"], backup_env["local"]
     assert backup.repos() == [api, local]          # the linked worktree under api/.claude/worktrees is not listed
-    r = backup.push_all(api)
-    assert r["repo"] == "shop/api" and sorted(r["pushed"]) == ["main", "worktree-x"] and r["rejected"] == [] and "error" not in r
-    assert sorted(git(origin, "branch", "--format=%(refname:short)").split()) == ["main", "worktree-x"]
+    assert backup.backup_ns() == NS
+    r = backup.push_all(api)                       # nothing of this repo is on origin yet: both branches are unpushed work
+    assert r["repo"] == "shop/api" and r["ns"] == NS and sorted(r["pushed"]) == ["main", "worktree-x"]
+    assert r["rejected"] == [] and r["cleaned"] == [] and "error" not in r
+    assert branches(origin) == [f"{NS}/main", f"{NS}/worktree-x"], "the backup writes only its own namespace, never main"
     assert backup.push_all(api)["pushed"] == []    # up to date
     assert backup.push_all(local) == {"repo": "shop/local", "skipped": "no origin"}
-    # origin moves ahead on main -> that branch is rejected, nothing is forced, the other branch still goes
+
+
+def test_a_branch_that_is_only_behind_its_remote_is_not_a_problem(backup_env, projects_dir):
+    """The case that turned the box's backup amber every night: somebody merged to GitHub main, the box's main is merely
+    behind. `git push --all` got '[rejected] (fetch first)'. Now there is nothing to copy and nothing is reported."""
+    api, origin = backup_env["api"], backup_env["origin"]
+    git(api, "push", "-q", "origin", "main")       # main is published the normal way
     other = projects_dir.parent / "other"; subprocess.run(["git", "clone", "-q", str(origin), str(other)], check=True)
     git(other, "commit", "-q", "--allow-empty", "-m", "remote work"); git(other, "push", "-q", "origin", "main")
-    git(api, "commit", "-q", "--allow-empty", "-m", "local work")
-    git(api / ".claude" / "worktrees" / "x", "commit", "-q", "--allow-empty", "-m", "more wip")
     r = backup.push_all(api)
-    assert r["pushed"] == ["worktree-x"] and len(r["rejected"]) == 1 and r["rejected"][0].startswith("main:") and "error" not in r
+    assert r["pushed"] == ["worktree-x"] and r["rejected"] == [] and "error" not in r, "main is behind, not unpushed"
+    assert branches(origin) == [f"{NS}/worktree-x", "main"]
     assert "remote work" in git(origin, "log", "-1", "--format=%s", "main")
+    assert "remote work" in git(api, "log", "-1", "--format=%s", "origin/main"), "the run fetched first"
+
+
+def test_unpushed_commits_on_main_go_to_a_backup_branch_never_to_main(backup_env, projects_dir):
+    api, origin = backup_env["api"], backup_env["origin"]
+    git(api, "push", "-q", "origin", "main", "worktree-x")
+    assert backup.push_all(api)["pushed"] == []    # everything is on real branches
+    other = projects_dir.parent / "other"; subprocess.run(["git", "clone", "-q", str(origin), str(other)], check=True)
+    git(other, "commit", "-q", "--allow-empty", "-m", "remote work"); git(other, "push", "-q", "origin", "main")
+    git(api, "commit", "-q", "--allow-empty", "-m", "local work")       # main diverged: commits on both sides
+    r = backup.push_all(api)
+    assert r["pushed"] == ["main"] and r["rejected"] == [] and "error" not in r
+    assert git(origin, "log", "-1", "--format=%s", "main").strip() == "remote work", "origin main is never written"
+    assert git(origin, "log", "-1", "--format=%s", f"{NS}/main").strip() == "local work"
+    # the copy follows a rewrite of the local branch (forced, inside the backup's own namespace only)
+    git(api, "commit", "-q", "--amend", "--allow-empty", "-m", "local work, reworded")
+    r = backup.push_all(api)
+    assert r["pushed"] == ["main"] and r["rejected"] == []
+    assert git(origin, "log", "-1", "--format=%s", f"{NS}/main").strip() == "local work, reworded"
+    assert git(origin, "log", "-1", "--format=%s", "main").strip() == "remote work"
+
+
+def test_a_backup_branch_goes_away_once_its_commits_are_on_a_real_branch(backup_env, projects_dir):
+    api, origin = backup_env["api"], backup_env["origin"]
+    wt = api / ".claude" / "worktrees" / "x"
+    backup.push_all(api)
+    assert branches(origin) == [f"{NS}/main", f"{NS}/worktree-x"]
+    git(api, "push", "-q", "origin", "main")                      # main published: its copy is redundant now
+    r = backup.push_all(api)
+    assert r["cleaned"] == ["main"] and r["pushed"] == [] and r["rejected"] == []
+    assert branches(origin) == [f"{NS}/worktree-x", "main"]
+    # more work on the worktree branch: its copy is updated, not removed
+    git(wt, "commit", "-q", "--allow-empty", "-m", "more wip")
+    r = backup.push_all(api)
+    assert r["pushed"] == ["worktree-x"] and r["cleaned"] == []
+    assert git(origin, "log", "-1", "--format=%s", f"{NS}/worktree-x").strip() == "more wip"
+    # the local branch is deleted by mistake: its copy on origin is the only one left and stays
+    git(api, "worktree", "remove", "--force", str(wt)); git(api, "branch", "-D", "worktree-x")
+    r = backup.push_all(api)
+    assert r["cleaned"] == [] and r["pushed"] == []
+    assert f"{NS}/worktree-x" in branches(origin)
+    # merged on the remote: now the copy is redundant and goes
+    other = projects_dir.parent / "other"; subprocess.run(["git", "clone", "-q", str(origin), str(other)], check=True)
+    git(other, "merge", "-q", "--no-ff", "-m", "merge wip", f"origin/{NS}/worktree-x"); git(other, "push", "-q", "origin", "main")
+    r = backup.push_all(api)
+    assert r["cleaned"] == ["worktree-x"]
+    assert branches(origin) == ["main"]
+
+
+def test_another_box_and_a_checked_out_backup_branch_are_left_alone(backup_env, projects_dir, monkeypatch):
+    from app.config import settings
+    api, origin = backup_env["api"], backup_env["origin"]
+    backup.push_all(api)
+    # the same remote seen from a second box: its namespace is its own, and testbox's copies are not 'real' branches
+    monkeypatch.setattr(settings, "node_name", "mini box/2")
+    assert backup.backup_ns() == "ccboard-backup/mini-box-2"
+    r = backup.push_all(api)
+    assert sorted(r["pushed"]) == ["main", "worktree-x"] and r["cleaned"] == []
+    assert branches(origin) == ["ccboard-backup/mini-box-2/main", "ccboard-backup/mini-box-2/worktree-x", f"{NS}/main", f"{NS}/worktree-x"]
+    # a backup branch checked out locally is never copied into the namespace again
+    git(api, "branch", f"{NS}/main", "main")
+    git(api, "commit", "-q", "--allow-empty", "-m", "newer")
+    r = backup.push_all(api)
+    assert r["pushed"] == ["main"]
+    assert not any(b.count("ccboard-backup") > 1 for b in branches(origin))
+    monkeypatch.setattr(settings, "node_name", "")
+    assert backup.backup_ns().startswith("ccboard-backup/") and len(backup.backup_ns()) > len("ccboard-backup/")
+
+
+def test_a_fetch_that_fails_is_reported_and_nothing_is_pushed(backup_env):
+    api, origin = backup_env["api"], backup_env["origin"]
+    git(api, "remote", "set-url", "origin", str(origin) + "-gone")
+    r = backup.push_all(api)
+    assert r["pushed"] == [] and r["rejected"] == [] and r["error"].startswith("git fetch: ")
+    assert branches(origin) == []
 
 
 def test_run_ok_then_failed(backup_env, monkeypatch):
@@ -109,6 +199,7 @@ def test_run_ok_then_failed(backup_env, monkeypatch):
     assert calls[0].startswith("cat config") and calls[1].startswith("init") and calls[2].startswith("backup --json --tag ccboard")
     assert calls[3].startswith("forget --tag ccboard --keep-daily 14")
     assert [p["repo"] for p in st["push"]] == ["shop/api", "shop/local"] and sorted(st["push"][0]["pushed"]) == ["main", "worktree-x"]
+    assert st["push_ns"] == NS and st["push"][0]["ns"] == NS
     assert not (settings.data_dir / "backup-stage").exists()          # staging dir cleaned up
     saved = json.loads(backup.status_path().read_text())
     assert saved["status"] == "ok" and saved["at"] == st["at"] and sent == []
@@ -124,25 +215,34 @@ def test_run_ok_then_failed(backup_env, monkeypatch):
     assert json.loads(backup.status_path().read_text())["status"] == "failed"
 
 
-def test_run_is_partial_not_failed_when_a_mirror_push_is_rejected(backup_env, monkeypatch, capsys):
-    """The restic snapshot is the backup; a branch GitHub refuses (someone pushed from elsewhere) is a warning: status 'partial',
-    nothing forced, no page, exit 0 (the unit must not fail every night; the board shows it on the usage card)."""
+def test_run_is_partial_not_failed_when_a_backup_branch_is_refused(backup_env, monkeypatch, capsys):
+    """The restic snapshot is the backup; a backup branch the remote refuses (a branch rule, no write access) is a warning:
+    status 'partial', no page, exit 0 (the unit must not fail every night; the board shows it on the usage card)."""
     from app import notify
     api, origin = backup_env["api"], backup_env["origin"]
     sent = []
     monkeypatch.setattr(notify, "publish", lambda title, message, **kw: sent.append((title, message)) or True)
-    assert backup.run()["status"] == "ok"                                          # first run mirrors main and worktree-x
+    st = backup.run()
+    assert st["status"] == "ok" and st["warnings"] == []                           # first run copies main and worktree-x
+    # a diverged main is no longer a warning: its local commits go to the backup branch and the run is ok
+    git(api, "push", "-q", "origin", "main")
     other = origin.parent / "other2"; subprocess.run(["git", "clone", "-q", str(origin), str(other)], check=True)
     git(other, "commit", "-q", "--allow-empty", "-m", "remote work"); git(other, "push", "-q", "origin", "main")
     git(api, "commit", "-q", "--allow-empty", "-m", "local work")
     st = backup.run()
+    assert st["status"] == "ok" and st["warnings"] == [] and st["push"][0]["pushed"] == ["main"]
+    assert "remote work" in git(origin, "log", "-1", "--format=%s", "main"), "origin main is never written"
+    # the remote refuses the write: partial, never failed, never paged
+    hook = origin / "hooks" / "pre-receive"; hook.write_text("#!/bin/sh\nexit 1\n"); hook.chmod(0o755)
+    git(api, "commit", "-q", "--allow-empty", "-m", "more local work")
+    st = backup.run()
     assert st["status"] == "partial" and st["errors"] == []
-    assert len(st["warnings"]) == 1 and st["warnings"][0].startswith("push shop/api: main:")
-    assert st["restic"]["snapshot_id"] and sent == [], "a rejected mirror push never pages"
+    assert len(st["warnings"]) == 1 and st["warnings"][0].startswith("push shop/api: main:") and "pre-receive hook declined" in st["warnings"][0]
+    assert st["restic"]["snapshot_id"] and sent == [], "a refused backup branch never pages"
     assert json.loads(backup.status_path().read_text())["status"] == "partial"
-    assert "remote work" in git(origin, "log", "-1", "--format=%s", "main"), "nothing was forced"
     assert backup.main([]) == 0
-    assert "backup partial" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "backup partial" in out and f"copied to {NS}/" in out
     # a restic failure is still a failure, whatever the pushes did
     monkeypatch.setenv("FAKE_RESTIC_FAIL", "1")
     assert backup.run()["status"] == "failed" and backup.main([]) == 1

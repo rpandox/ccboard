@@ -62,13 +62,13 @@ function settingsNotify(p) {
     const r = bk.restic || {};
     const pushed = (bk.push || []).reduce((sum, x) => sum + (x.pushed || []).length, 0);
     bkRow.add(el('span', { class: bk.status === 'ok' ? 'v' : bk.status === 'partial' ? 'v warn' : 'v bad', text: `${bk.status} ${fmtAge(Date.parse(bk.at) / 1000)} ago` }),
-      el('span', { class: 'dim', text: r.snapshot_id ? `snapshot ${String(r.snapshot_id).slice(0, 8)} → ${r.repo || ''}` : (r.skipped ? 'restic off' : 'no snapshot') + ` · ${pushed} branch(es) pushed across ${(bk.push || []).length} repo(s)` }));
+      el('span', { class: 'dim', text: (r.snapshot_id ? `snapshot ${String(r.snapshot_id).slice(0, 8)} → ${r.repo || ''}` : (r.skipped ? 'restic off' : 'no snapshot')) + backupPushText(bk) }));
     if (bk.status === 'failed') bkRow.add(el('span', { class: 'bad', text: (bk.errors || []).join(' · ').slice(0, 300) }));
-    else if (bk.status === 'partial') bkRow.add(el('span', { class: 'warn', text: ('snapshot ok · ' + (bk.warnings || []).join(' · ')).slice(0, 300) }));   // mirror pushes GitHub refused: fetch first on the box
+    else if (bk.status === 'partial') bkRow.add(el('span', { class: 'warn', text: ('snapshot ok · ' + (bk.warnings || []).join(' · ')).slice(0, 300) }));   // a backup branch the remote refused, or a fetch that failed
   } else {
     bkRow.add(el('span', { class: 'dim', text: 'no backup has run yet (nightly via ccboard-backup.timer)' + (bc.restic && !bc.restic_installed ? ' · restic is not installed' : '') }));
   }
-  bkRow.add(el('span', { class: 'dim', text: (bc.restic ? `restic → ${bc.repo}` : 'restic off') + (bc.push ? ' · git push --all origin for every repo' : ' · no git push') }),
+  bkRow.add(el('span', { class: 'dim', text: (bc.restic ? `restic → ${bc.repo}` : 'restic off') + (bc.push ? ` · unpushed work → ${bc.ns || 'ccboard-backup/<node>'}/<branch> on origin, never to main` : ' · no git push') }),
     el('button', { type: 'button', onclick: async () => { try { await api('POST', '/api/backup/run'); setError(null); pageToast('Backup started', 'ok'); setTimeout(() => poll(true), 3000); } catch (e) { setError(e.message); } }, text: 'Back up now' }));
 
   p.append(settingsHead('ntfy'));
@@ -127,8 +127,20 @@ function settingsBox(p) {
     const failed = bk.status === 'failed';
     const partial = bk.status === 'partial';
     p.append(settingsKv('Last run', el('span', { class: failed ? 'v bad' : partial ? 'v warn' : 'v', title: failed ? (bk.errors || []).join('\n') : partial ? (bk.warnings || []).join('\n') : 'last nightly backup',
-      text: `${failed ? 'failed' : partial ? 'ok, pushes rejected' : 'ok'} ${fmtAge(Date.parse(bk.at) / 1000)} ago` })));
+      text: `${failed ? 'failed' : partial ? 'ok, backup branch refused' : 'ok'} ${fmtAge(Date.parse(bk.at) / 1000)} ago` })));
   } else p.append(settingsKv('Last run', el('span', { class: 'dim', text: 'no backup has run yet' })));
+}
+
+/* What the git step of the last backup did: ' · 2 branches copied to ccboard-backup/ubu2/ in 1 of 9 repos', or that every repo was
+   already on the remote. Runs older than the backup branches (no push_ns) keep their old wording. */
+function backupPushText(bk) {
+  const list = bk.push || [];
+  if (bk.push_skipped || !list.length) return '';
+  const n = list.reduce((sum, x) => sum + (x.pushed || []).length, 0);
+  if (!bk.push_ns) return ` · ${n} branch(es) pushed across ${list.length} repo(s)`;
+  const repos = list.filter((x) => (x.pushed || []).length).length;
+  if (!n) return ` · ${list.length} repo(s) checked, nothing unpushed`;
+  return ` · ${n} branch${n === 1 ? '' : 'es'} copied to ${bk.push_ns}/ in ${repos} of ${list.length} repo(s)`;
 }
 
 function settingsAgents(p) {

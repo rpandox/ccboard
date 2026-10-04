@@ -1,5 +1,7 @@
 """Nightly backup: a consistent SQLite snapshot plus the Claude transcripts go into a restic repository, then
-every repo under PROJECTS_DIR gets `git push --all origin` so WIP branches survive the box.
+every repo under PROJECTS_DIR gets its unpushed work copied to backup branches on origin
+(`ccboard-backup/<node>/<branch>`) so WIP survives the box. The backup never pushes to `main` or to any other
+branch people work on.
 
 Run by ccboard-backup.timer (`python -m app.backup`) or by "Back up now" on the board. The outcome is written
 to <data dir>/backup-status.json, which the board shows in the usage strip and the 🔔 panel."""
@@ -11,6 +13,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -29,6 +32,8 @@ LOG_FILE = "backup.log"
 TAG = "ccboard"
 KEEP = ["--keep-daily", "14", "--keep-weekly", "8", "--keep-monthly", "6"]
 PUSH_TIMEOUT = 300
+FETCH_TIMEOUT = 180
+BACKUP_PREFIX = "ccboard-backup"         # refs/heads/ccboard-backup/<node>/<branch> on origin: the only refs the backup ever writes
 GIT_ENV = {"GIT_TERMINAL_PROMPT": "0"}   # never hang on a credential prompt; ssh gets BatchMode below
 SSH_BATCH = "ssh -oBatchMode=yes -oConnectTimeout=20"
 LOCK_RE = re.compile(r"unable to create lock|already locked", re.I)
@@ -156,7 +161,7 @@ def restic_backup(paths: list[Path]) -> dict:
     return summary
 
 
-# ---------------------------------------------------------------- git push --all
+# ---------------------------------------------------------------- backup branches on origin
 
 def repos() -> list[Path]:
     """Main worktrees of every repo (<projects>/<project>/<repo>/.git is a directory). Linked worktrees share the
@@ -172,31 +177,89 @@ def repos() -> list[Path]:
     return out
 
 
+def backup_ns() -> str:
+    """The branch namespace this box writes on every origin: ccboard-backup/<node>. One per box, so two boxes
+    that share a remote never overwrite each other's copies."""
+    node = re.sub(r"[^A-Za-z0-9_-]+", "-", settings.node_name or socket.gethostname().split(".")[0]).strip("-")
+    return f"{BACKUP_PREFIX}/{node or 'box'}"
+
+
+def _git(repo: Path, args: list[str], env: dict, timeout: int = 60) -> subprocess.CompletedProcess:
+    # gc.auto=0: a fetch from the nightly run must not start a background gc next to the sessions working in the repo
+    return subprocess.run(["git", "-C", str(repo), "-c", "gc.auto=0", *args], capture_output=True, text=True, env=env, timeout=timeout)
+
+
+def _unpushed(repo: Path, sha: str, env: dict) -> bool:
+    """True unless every commit reachable from sha is already on a branch of origin that people work on (the
+    backup's own namespaces do not count). Anything that cannot be decided counts as unpushed: when in doubt, copy."""
+    try:
+        r = _git(repo, ["rev-list", "--count", sha, "--not", f"--exclude=origin/{BACKUP_PREFIX}/*", "--remotes=origin"], env)
+    except subprocess.TimeoutExpired:
+        return True
+    return not (r.returncode == 0 and r.stdout.strip() == "0")
+
+
 def push_all(repo: Path) -> dict:
+    """Copy this repo's unpushed work to origin without touching a branch anyone works on.
+
+    1. `git fetch --prune origin`, so "is it on GitHub already?" is answered from the remote's state now, not from the
+       last time somebody fetched (a `main` that is merely behind is then simply up to date: nothing to do).
+    2. Every local branch that has commits which are on no real branch of origin is pushed to
+       refs/heads/ccboard-backup/<node>/<branch>. That push is forced: the namespace belongs to this box alone and WIP
+       gets rebased. `main`, a PR branch, any branch under its own name: never written by the backup.
+    3. A backup branch whose commits have since reached a real branch (pushed, merged) is deleted again, so the
+       namespace only holds work that exists nowhere else on the remote. A backup branch whose local branch was deleted
+       on the box stays (that copy may be the only one left); it goes once its commits are merged.
+
+    Returns {repo, ns, pushed: [branch], cleaned: [branch], rejected: ["branch: reason"], error?} or {repo, skipped}."""
     rel = str(repo.relative_to(settings.projects_dir)) if repo.is_relative_to(settings.projects_dir) else str(repo)
     env = {**os.environ, **GIT_ENV}
-    env.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes -oConnectTimeout=20")
-    r = subprocess.run(["git", "-C", str(repo), "remote", "get-url", "origin"], capture_output=True, text=True, env=env)
-    if r.returncode != 0:
+    env.setdefault("GIT_SSH_COMMAND", SSH_BATCH)
+    if _git(repo, ["remote", "get-url", "origin"], env).returncode != 0:
         return {"repo": rel, "skipped": "no origin"}
+    ns = backup_ns()
+    out: dict = {"repo": rel, "ns": ns, "pushed": [], "cleaned": [], "rejected": []}
     try:
-        r = subprocess.run(["git", "-C", str(repo), "push", "--all", "--porcelain", "origin"],
-                           capture_output=True, text=True, env=env, timeout=PUSH_TIMEOUT)
+        f = _git(repo, ["fetch", "--prune", "--no-tags", "--quiet", "origin"], env, timeout=FETCH_TIMEOUT)
     except subprocess.TimeoutExpired:
-        return {"repo": rel, "pushed": [], "rejected": [], "error": f"git push timed out after {PUSH_TIMEOUT}s"}
-    pushed, rejected = [], []
+        return {**out, "error": f"git fetch timed out after {FETCH_TIMEOUT}s"}
+    if f.returncode != 0:
+        return {**out, "error": "git fetch: " + ((f.stderr or "").strip() or "failed")[-300:]}
+    specs: list[str] = []
+    heads = _git(repo, ["for-each-ref", "--format=%(refname)%09%(objectname)", "refs/heads"], env)
+    for line in heads.stdout.splitlines():
+        ref, _, sha = line.partition("\t")
+        name = ref.removeprefix("refs/heads/")
+        if not sha or name.startswith(BACKUP_PREFIX + "/"):
+            continue                     # a backup branch someone checked out on the box is not backed up again
+        if _unpushed(repo, sha, env):
+            specs.append(f"+refs/heads/{name}:refs/heads/{ns}/{name}")
+    writing = {x.split(":", 1)[1] for x in specs}
+    mine = _git(repo, ["for-each-ref", "--format=%(refname)%09%(objectname)", f"refs/remotes/origin/{ns}/"], env)
+    for line in mine.stdout.splitlines():
+        ref, _, sha = line.partition("\t")
+        dst = "refs/heads/" + ref.removeprefix("refs/remotes/origin/")
+        if sha and dst not in writing and not _unpushed(repo, sha, env):
+            specs.append(":" + dst)      # its commits are on a real branch now
+    if not specs:
+        return out
+    try:
+        r = _git(repo, ["push", "--porcelain", "origin", *specs], env, timeout=PUSH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return {**out, "error": f"git push timed out after {PUSH_TIMEOUT}s"}
     for line in r.stdout.splitlines():
         parts = line.split("\t")
         if len(parts) < 3:
             continue                     # "To <url>" / "Done"
         flag, refspec, summary = parts[0], parts[1], parts[2]
-        name = refspec.split(":", 1)[0].removeprefix("refs/heads/")
+        name = refspec.split(":", 1)[1].removeprefix(f"refs/heads/{ns}/")
         if flag == "!":
-            rejected.append(f"{name}: {summary}")
+            out["rejected"].append(f"{name}: {summary}")
+        elif flag == "-":
+            out["cleaned"].append(name)
         elif flag in (" ", "+", "*"):
-            pushed.append(name)
-    out = {"repo": rel, "pushed": pushed, "rejected": rejected}
-    if r.returncode != 0 and not rejected:
+            out["pushed"].append(name)   # "=" (up to date) is neither
+    if r.returncode != 0 and not out["rejected"]:
         out["error"] = ((r.stderr or "").strip() or "git push failed")[-300:]
     return out
 
@@ -269,6 +332,7 @@ def run(push: bool | None = None, restic: bool | None = None) -> dict:
         else:
             st["restic"] = {"skipped": "CCBOARD_RESTIC_REPO is off"}
         if do_push:
+            st["push_ns"] = backup_ns()
             for repo in repos():
                 try:
                     res = push_all(repo)
@@ -276,8 +340,9 @@ def run(push: bool | None = None, restic: bool | None = None) -> dict:
                     res = {"repo": str(repo), "pushed": [], "rejected": [], "error": str(e)[:300]}
                 st["push"].append(res)
                 if res.get("error") or res.get("rejected"):
-                    # a branch GitHub refused (someone pushed from elsewhere: 'fetch first', non-fast-forward) or a push that could not
-                    # run is a warning: the restic snapshot is the backup, the mirror push is the extra; nothing is ever forced
+                    # a backup branch the remote refused (a branch rule that also covers ccboard-backup/*, no write access) or a
+                    # fetch/push that could not run is a warning: the snapshot is fine, the run is 'partial'. A branch that is
+                    # merely behind its remote is not a warning any more: there is nothing of it to copy.
                     st["warnings"].append(f"push {res['repo']}: {res.get('error') or '; '.join(res['rejected'])}")
         else:
             st["push"] = []
@@ -289,7 +354,7 @@ def run(push: bool | None = None, restic: bool | None = None) -> dict:
     if st["errors"]:
         st["status"] = "failed"
     elif st["warnings"]:
-        st["status"] = "partial"                      # snapshot fine, some mirror pushes rejected: shown on the board, not paged
+        st["status"] = "partial"                      # snapshot fine, some backup branches not written: shown on the board, not paged
     write_status(st)
     if st["errors"]:
         notify.publish("ccboard backup failed", "\n".join(st["errors"])[:1500], priority=4, tags=["warning"],
@@ -331,9 +396,9 @@ def main(argv: list[str] | None = None) -> int:
     r = st.get("restic") or {}
     pushed = sum(len(p.get("pushed", [])) for p in st["push"])
     print(f"backup {st['status']} in {st['duration_s']}s: snapshot {r.get('snapshot_id') or r.get('skipped') or '-'}, "
-          f"{pushed} branch(es) pushed across {len(st['push'])} repo(s)" + ("; " + "; ".join(st["errors"]) if st["errors"] else "")
+          f"{pushed} branch(es) copied to {st.get('push_ns') or backup_ns()}/ across {len(st['push'])} repo(s)" + ("; " + "; ".join(st["errors"]) if st["errors"] else "")
           + ("; warnings: " + "; ".join(st["warnings"]) if st.get("warnings") else ""))
-    return 1 if st["errors"] else 0                   # a partial run exits 0: the unit must not fail every night over a diverged mirror
+    return 1 if st["errors"] else 0                   # a partial run exits 0: the unit must not fail every night over a refused backup branch
 
 
 if __name__ == "__main__":

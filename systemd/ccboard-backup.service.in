@@ -1,5 +1,5 @@
 [Unit]
-Description=ccboard backup: restic snapshot of the DB and transcripts, git push --all of every repo
+Description=ccboard backup: restic snapshot of the DB and transcripts, unpushed work to backup branches on origin
 After=network-online.target
 Wants=network-online.target
 

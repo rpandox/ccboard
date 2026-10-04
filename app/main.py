@@ -444,7 +444,7 @@ def build_state(user: str) -> dict:
                     "ntfy": {"enabled": notify.enabled(), "subscribe_url": notify.subscribe_url(), "topic": settings.ntfy_topic},
                     "public_url": settings.public_url,
                     "backup": {"restic": backup.restic_enabled(), "repo": settings.restic_repo if backup.restic_enabled() else None,
-                               "restic_installed": shutil.which("restic") is not None, "push": settings.backup_push}}
+                               "restic_installed": shutil.which("restic") is not None, "push": settings.backup_push, "ns": backup.backup_ns()}}
     st["claude"] = claude_auth.status()
     st["agents"] = agents.status_all()
     st["login"] = claude_auth.login_state()

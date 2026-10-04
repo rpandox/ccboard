@@ -583,7 +583,7 @@ log "backup"
 if [ "${CCBOARD_BACKUP:-1}" = 0 ]; then
   note "timer will be disabled (CCBOARD_BACKUP=0)"
 elif [ "$CCBOARD_RESTIC_REPO" = off ]; then
-  note "restic off (CCBOARD_RESTIC_REPO=off); nightly git push --all only"
+  note "restic off (CCBOARD_RESTIC_REPO=off); nightly backup branches on origin only"
 else
   if ! have restic; then
     note "installing restic (apt)"
@@ -843,7 +843,7 @@ printf '  code-server: https://%s:%s/\n' "$TS_FQDN" "$CODE_HTTPS_PORT"
 printf '  Open them from another device on your tailnet (requests from this box carry no Tailscale identity).\n'
 printf '  Then click "Log in" on the dashboard to sign in to Claude Code.\n'
 [ -z "$CCBOARD_NODES" ] || printf '  Fleet:       polling %s (same CCBOARD_HUB_TOKEN on every box)\n' "$CCBOARD_NODES"
-[ "${CCBOARD_BACKUP:-1}" = 0 ] || printf '  Backup:      nightly (%s) restic + git push --all; run one now: sudo systemctl start ccboard-backup; log: journalctl -u ccboard-backup\n' "$CCBOARD_BACKUP_ONCALENDAR"
+[ "${CCBOARD_BACKUP:-1}" = 0 ] || printf '  Backup:      nightly (%s) restic + unpushed work to ccboard-backup/<node>/ branches; run one now: sudo systemctl start ccboard-backup; log: journalctl -u ccboard-backup\n' "$CCBOARD_BACKUP_ONCALENDAR"
 if [ "$CCBOARD_RUNTIME" = docker ]; then
   printf '  Runtime:     container ghcr.io/rpandox/ccboard:%s; Watchtower (scope ccboard) pulls new images every 5 minutes\n' "$IMAGE_TAG"
   printf '  Container:   docker compose -f %s --profile prod ps     logs: docker logs -f ccboard\n' "$COMPOSE_FILE"

@@ -1,5 +1,5 @@
 [Unit]
-Description=ccboard nightly backup (restic + git push --all)
+Description=ccboard nightly backup (restic + backup branches on origin)
 
 [Timer]
 OnCalendar=__BACKUP_ONCALENDAR__

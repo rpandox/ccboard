@@ -55,7 +55,7 @@ class Settings:
         self.hub_token = (env.get("CCBOARD_HUB_TOKEN") or "").strip()
         self.nodes_raw = env.get("CCBOARD_NODES") or ""
         # Nightly backup: restic repo ('off' disables restic; empty = local repo under the data dir), its password
-        # file (written by install.sh), whether to `git push --all origin` every repo, extra paths to include.
+        # file (written by install.sh), whether to copy unpushed work to backup branches on every repo's origin, extra paths to include.
         self.restic_repo = (env.get("CCBOARD_RESTIC_REPO") or "").strip() or str(self.data_dir / "restic")
         self.restic_password_file = Path((env.get("CCBOARD_RESTIC_PASSWORD_FILE") or "").strip() or (self.data_dir / "restic-password"))
         self.backup_push = (env.get("CCBOARD_BACKUP_PUSH") or "1") != "0"
