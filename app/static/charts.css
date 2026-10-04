@@ -226,4 +226,8 @@ html.force-coarse #page .ua-edit { min-width:var(--tap); }
   #page .ua-k { display:none; }
   #page .ua-edit { margin-left:0; }
 }
+/* with room to spare the two window columns take it: 'resets in 3d3h · Wed 15:10' stays on one line under its bar */
+@container accsec (min-width:900px) {
+  #page .uacc-head, #page .ua-row { grid-template-columns:minmax(150px, 1.3fr) minmax(176px, 1.25fr) minmax(176px, 1.25fr) minmax(52px, .6fr) minmax(46px, .5fr) minmax(46px, .5fr) minmax(40px, .45fr) minmax(62px, .6fr); }
+}
 
