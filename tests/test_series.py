@@ -319,18 +319,18 @@ def test_session_ids_carry_the_agent(db):
 
 
 # ================================================================== catalogue and record()
-def test_catalogue_is_the_plan_table_plus_lim_and_acct():
+def test_catalogue_is_the_plan_table_plus_lim_acct_and_cacct():
     c = samples.CATALOGUE
     assert set(c) == {"rl_5h", "rl_7d", "ctx", "ctx_tok", "scost", "stok", "state", "ev", "cost", "h_cpu", "h_mem", "h_load",
-                      "h_disk", "n_live", "n_work", "n_attn", "lim", "acct"}
+                      "h_disk", "n_live", "n_work", "n_attn", "lim", "acct", "cacct"}
     assert all(set(v) == {"agg", "throttle", "retention_days"} and set(v["throttle"]) == {"delta", "seconds"} for v in c.values())
     assert {k: v["agg"] for k, v in c.items()} == {
         "rl_5h": "avg", "rl_7d": "avg", "ctx": "avg", "ctx_tok": "avg", "scost": "last", "stok": "last", "state": "events", "ev": "sum",
         "cost": "last", "h_cpu": "avg", "h_mem": "avg", "h_load": "avg", "h_disk": "avg", "n_live": "avg", "n_work": "avg",
-        "n_attn": "avg", "lim": "events", "acct": "events"}
+        "n_attn": "avg", "lim": "events", "acct": "events", "cacct": "events"}
     assert {k: v["retention_days"] for k, v in c.items()} == {
         "rl_5h": 90, "rl_7d": 90, "ctx": 14, "ctx_tok": 14, "scost": 30, "stok": 30, "state": 90, "ev": 120, "cost": 120, "h_cpu": 14,
-        "h_mem": 14, "h_load": 14, "h_disk": 30, "n_live": 30, "n_work": 30, "n_attn": 30, "lim": 180, "acct": 365}
+        "h_mem": 14, "h_load": 14, "h_disk": 30, "n_live": 30, "n_work": 30, "n_attn": 30, "lim": 180, "acct": 365, "cacct": 365}
     assert c["rl_5h"]["throttle"] == {"delta": 1, "seconds": 300} and c["ctx"]["throttle"] == {"delta": 0.5, "seconds": 900}
     assert c["scost"]["throttle"] == {"delta": 0.005, "seconds": None} and c["cost"]["throttle"] == {"delta": None, "seconds": 600}
     assert c["h_disk"]["throttle"]["seconds"] == 900 and c["h_cpu"]["throttle"]["seconds"] == 60 == c["n_work"]["throttle"]["seconds"]

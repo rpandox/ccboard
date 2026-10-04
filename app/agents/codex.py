@@ -100,6 +100,14 @@ BASELINE_CAPS = {"no_daemon": False, "approve_for_me": False, "worktree": False,
 BASELINE_EXEC_CAPS = {"exec_approval": False, "exec_search": False, "exec_cd": True, "exec_output_file": True, "exec_skip_git": True,
                       "exec_json": True}
 
+# `codex login --help`: --device-auth (codex-cli 0.157 and newer; the box runs 0.160) prints a URL and a one-time code the person types ON THE PAGE, with
+# nothing pasted back into the terminal. 0.145 has no such flag: its login wants a browser on the same machine.
+BASELINE_LOGIN_CAPS = {"device_auth": False}
+DEVICE_LOGIN_CMD = "codex login --device-auth"      # what the board types into its login tmux session (CODEX_HOME=<pending dir> is set on the session)
+PROC = Path("/proc")                                # patched by tests (a fake process table)
+PROC_NAME = "codex"                                 # /proc/<pid>/comm of a Codex process: the native binary names itself so, the npm node wrapper is `node`
+MAX_ANCESTOR_HOPS = 40
+
 # `codex debug models` fallback: the visible slugs on ubu2 at 0.145.0 (reasoning levels as that catalogue lists them).
 _ALL_LEVELS = ["low", "medium", "high", "xhigh", "max"]
 FALLBACK_MODELS = [{"slug": s, "name": s, "reasoning": list(_ALL_LEVELS), "default_reasoning": "medium"}
@@ -169,6 +177,48 @@ def reset_caches() -> None:
     _AGENT_AUTH.clear()
 
 
+def _ppid(pid: int) -> int | None:
+    """Parent pid from /proc/<pid>/stat ('pid (comm) S ppid ...'; comm may contain spaces and parentheses)."""
+    try:
+        raw = (PROC / str(pid) / "stat").read_text(errors="replace")
+        return int(raw.rsplit(")", 1)[1].split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def foreign_processes(board_pids=()) -> int:
+    """How many Codex processes run on this box that the board did not start: a process named `codex` (/proc/<pid>/comm) that is not this
+    process and has none of `board_pids` (the panes of the board's own tmux sessions) among its ancestors. Such a process (a Hermes agent's
+    app-server daemon, a Codex in somebody's terminal) keeps the login it read when it started, and may write that login's refreshed token
+    back into auth.json. Linux only (no /proc elsewhere: 0). Reads names and parent pids only, never an environment or a command line."""
+    try:
+        names = [n for n in os.listdir(PROC) if n.isdigit()]
+    except OSError:
+        return 0
+    skip = {int(p) for p in board_pids if isinstance(p, int) and not isinstance(p, bool)} | {os.getpid()}
+    n = 0
+    for name in names:
+        pid = int(name)
+        try:
+            if (PROC / name / "comm").read_text(errors="replace").strip() != PROC_NAME:
+                continue
+        except OSError:
+            continue
+        cur, seen, mine = pid, {pid}, False
+        for _ in range(MAX_ANCESTOR_HOPS):
+            if cur in skip:
+                mine = True
+                break
+            nxt = _ppid(cur)
+            if not nxt or nxt <= 1 or nxt in seen:
+                break
+            seen.add(nxt)
+            cur = nxt
+        if not mine:
+            n += 1
+    return n
+
+
 def _bin_key(exe: str) -> tuple:
     try:
         st = os.stat(exe)
@@ -234,6 +284,14 @@ def parse_exec_help(text: str) -> dict | None:
     return {"exec_approval": "--ask-for-approval" in flags, "exec_search": "--search" in flags, "exec_cd": "--cd" in flags,
             "exec_output_file": "--output-last-message" in flags, "exec_skip_git": "--skip-git-repo-check" in flags,
             "exec_json": "--json" in flags}
+
+
+def parse_login_help(text: str) -> dict | None:
+    """`codex login --help` -> {device_auth}, or None when the text defines no options at all (not a help text)."""
+    flags = _help_flags(text)
+    if not flags:
+        return None
+    return {"device_auth": "--device-auth" in flags}
 
 
 def _version_tuple(v: str | None) -> tuple | None:
@@ -423,7 +481,7 @@ class CodexAgent(Agent):
     def capabilities(self) -> dict:
         """The flag set of the installed codex (a fresh dict): `codex --help` once per binary mtime; the 0.145 baseline when there
         is no binary or the probe failed. Merged with the exec subcommand's own caps (exec_*)."""
-        return {**self._probe_caps()[0], **self._probe_exec_caps()}
+        return {**self._probe_caps()[0], **self._probe_exec_caps(), **(self.login_caps() or BASELINE_LOGIN_CAPS)}
 
     def _probe_caps(self) -> tuple[dict, bool]:
         exe = self.bin()
@@ -453,6 +511,54 @@ class CodexAgent(Agent):
             caps = parse_exec_help(out) if rc == 0 else None
             return (caps, True) if caps else (dict(BASELINE_EXEC_CAPS), False)
         return dict(_memo(("exec-caps", _bin_key(exe)), float("inf"), probe))
+
+    def login_caps(self, fetch: bool = True) -> dict | None:
+        """{device_auth} from `codex login --help`, probed once per binary mtime (a failed probe is retried after a minute). No binary: the
+        baseline (False). fetch=False never starts a subprocess: the cached answer, or None while this binary has not been probed
+        successfully (the caller treats None as "not known yet", see warm_login_caps)."""
+        exe = self.bin()
+        if not exe:
+            return dict(BASELINE_LOGIN_CAPS)
+        key = ("login-caps", _bin_key(exe))
+        if not fetch:
+            with _memo_lock:
+                hit = _memo_items.get(key)
+            return dict(hit[1]) if hit and hit[2] else None
+
+        def probe():
+            try:
+                rc, out, err = _run([exe, "login", "--help"])
+            except _ERRORS:
+                return dict(BASELINE_LOGIN_CAPS), False
+            caps = parse_login_help(out or err) if rc == 0 else None
+            return (caps, True) if caps else (dict(BASELINE_LOGIN_CAPS), False)
+        return dict(_memo(key, float("inf"), probe))
+
+    def device_auth(self, fetch: bool = True) -> bool | None:
+        """Does this codex have `login --device-auth`? None while that is not known (fetch=False and not probed yet)."""
+        caps = self.login_caps(fetch)
+        return None if caps is None else bool(caps.get("device_auth"))
+
+    def warm_login_caps(self) -> None:
+        """Probe `codex login --help` in the background when it has not been probed (one at a time), so a state poll never waits for it."""
+        exe = self.bin()
+        if not exe or self.login_caps(fetch=False) is not None:
+            return
+        key = ("login-caps", _bin_key(exe))
+        with _warm_lock:
+            if key in _warming:
+                return
+            _warming.add(key)
+
+        def work():
+            try:
+                self.login_caps(fetch=True)
+            except Exception:                                  # a failed probe stays "not known": the next call tries again after a minute
+                pass
+            finally:
+                with _warm_lock:
+                    _warming.discard(key)
+        threading.Thread(target=work, daemon=True, name="codex-login-caps").start()
 
     def models(self, fetch: bool = True) -> list[dict]:
         """The visible models [{slug, name, reasoning[], default_reasoning}]: `codex debug models` cached for an hour (only

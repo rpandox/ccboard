@@ -4,13 +4,14 @@
    The section is picked with ?sec= and tabs(); each panel is rebuilt only when the
    state it shows changed, so a poll never recreates a button under a finger. renderNotifyPanel() and renderNodes() stay global:
    core.js (enablePush / disablePush) calls the first one. Adding an account (the sign-in link, the code) and switching accounts live in the Accounts panel;
-   the Log in buttons of Agents and Home lead there (accountLogin, pages/agents.js). */
+   the Log in buttons of Agents and Home lead there (accountLogin, pages/agents.js). Below the Claude accounts sits the Codex section (v0.5.17e: settingsCxRow, settingsCxAddBlock,
+   cxSwitch in pages/agents.js): the same rows and add block on state.codex_accounts, with the device login's one-time code shown to type on the page. */
 'use strict';
 
 const SETTINGS_SECTIONS = [
   { id: 'notify', label: 'Notifications' }, { id: 'nodes', label: 'Nodes' }, { id: 'box', label: 'Box' }, { id: 'agents', label: 'Agents' }, { id: 'accounts', label: 'Accounts' }, { id: 'app', label: 'App' },
 ];
-const settingsPage = { refs: null, active: 'notify', acct: { at: 0, full: null }, add: null, seenAt: null };         // acct: when GET /api/accounts last ran, and its rows by key (for 'seen 3h ago'); add: the add-account block of this mount; seenAt: the login result already announced
+const settingsPage = { refs: null, active: 'notify', acct: { at: 0, full: null }, add: null, seenAt: null, cx: null, cxSeenAt: null };         // acct: when GET /api/accounts last ran, and its rows by key (for 'seen 3h ago'); add: the add-account block of this mount; seenAt: the login result already announced; cx / cxSeenAt: the same for the Codex add block (v0.5.17e)
 
 /* One setting as the shared .kv row (v0.5.6d): the label in a 120 px column, the value in mono with its helper text under it, the actions at the right
    (under the value on a phone). Buttons, link-buttons and the two-tap pair go to the actions, everything else to the value. row.add() files late
@@ -175,6 +176,11 @@ const SETTINGS_CODE_RE = /^[A-Za-z0-9._~-]{1,256}#[A-Za-z0-9._~-]{1,256}$/;     
 const SETTINGS_CODE_HINT = "paste the whole code shown by the browser, including the part after '#'";
 const SETTINGS_DEMO_LINK = 'https://claude.ai/oauth/authorize?code=true&client_id=demo&response_type=code&state=demo';       // what the demo board shows as the sign-in link (nothing signs in)
 const SETTINGS_WATCH_SECONDS = 60;                                                      // after a code is sent the page asks for the result every second, this long
+
+const SETTINGS_CX_HOWTO = 'Sign in with another ChatGPT account from here: name it, open the link, sign in and type the one-time code on the page that opens. Nothing is pasted back. The account in use does not change until you switch.';
+const SETTINGS_CX_NOTE = 'A Codex that is already running keeps the login it started with. Switch while no Codex session of the board is open; other Codex programs on this box keep the previous login until they restart.';
+const SETTINGS_CX_DEMO_LINK = 'https://auth.openai.com/codex/device';                      // what the demo board shows as the sign-in link (nothing signs in)
+const SETTINGS_CX_WATCH_SECONDS = 900;                                                     // the page asks for the result every second this long: a device code lives 15 minutes
 
 function settingsAcctSeen(a) {
   const full = settingsPage.acct.full && settingsPage.acct.full[a.key];
@@ -484,6 +490,267 @@ function settingsAcctWant() {
   if (acctStore(state).supported) settingsPage.add.start(w.email);
 }
 
+/* ---------- Codex accounts (v0.5.17e): the same rows and the same add block, on state.codex_accounts (pages/agents.js: cxState, cxSwitch) ----------
+   An account is named by its label alone (Codex gives no email), wears the teal of its agent, and shows its plan once the box has learned it from a session. Adding one: a
+   required name, then Codex's device login: the link to open and a one-time code to TYPE ON THE PAGE (there is nothing to paste back), the page asking for the result every
+   second until the box has seen the login. Not one filled primary in this section: the Claude add block owns the panel's one. */
+function settingsCxRow(a) {
+  const name = cxName(a);
+  const store = cxStore(state);
+  const busy = !!cxFlow.busy;
+  const chips = el('span', { class: 'set-chips' });
+  if (a.plan) chips.append(el('span', { class: 'badge hue-teal', text: String(a.plan) }));
+  if (a.current) chips.append(el('span', { class: 'badge cur', title: 'the Codex login in use on this box right now', text: 'current' }));
+  if (store.supported) {
+    chips.append(a.saved ? el('span', { class: 'badge hue-slate', title: 'a login for this account is saved on the box: it can be switched to', text: 'saved login' })
+      : el('span', { class: 'dim', text: 'no saved login' }));
+  }
+  const ago = (iso) => { const t = iso ? Date.parse(iso) / 1000 : 0; return t > 0 ? fmtAge(t) : ''; };
+  const seen = ago(a.last_seen), added = ago(a.added_at);
+  const dim = [added ? `added ${added} ago` : '', seen ? `seen ${seen} ago` : ''].filter(Boolean).join(' · ');
+  const acts = [];
+  if (store.supported && !a.current && a.saved) {
+    acts.push(el('button', { class: 'primary tinted', type: 'button', disabled: busy, 'aria-label': `Switch to ${name}`, title: 'Make this the Codex account in use on this box', onclick: () => cxSwitch(a), text: 'Switch' }));
+  }
+  if (store.supported && store.add && !a.current && !a.saved) {
+    acts.push(el('button', { type: 'button', disabled: busy, 'aria-label': `Log in again as ${name}`, title: 'Sign in with this account again to save its login', onclick: () => settingsCxAddStart(name), text: 'Log in again' }));
+  }
+  acts.push(el('button', { type: 'button', 'aria-label': `Rename ${name}`, title: 'Rename this account', onclick: () => settingsRenameAccount(a, { codex: true }), text: 'Rename' }));
+  if (store.supported && !a.current && a.saved) {
+    acts.push(busy ? el('button', { class: 'danger', type: 'button', disabled: true, text: 'Forget login' })
+      : confirmButton(`cx-forget:${a.key}`, 'Forget login', () => settingsCxForget(a), false));
+  }
+  const row = settingsKv(name, chips.firstChild ? chips : null, dim ? el('span', { class: 'dim', text: dim }) : null, ...acts);
+  row.classList.add('set-cx');
+  row.setAttribute('data-cx-account', a.key);
+  const k = row.querySelector('.k');
+  if (k) k.classList.add('hue-teal');
+  return row;
+}
+
+/* Forget login: DELETE /api/codex-accounts/<key>/saved (the second tap of the red button); the row then shows 'no saved login'. */
+async function settingsCxForget(a) {
+  const name = cxName(a);
+  cxFlow.err = '';
+  try {
+    const r = await api('DELETE', `/api/codex-accounts/${encodeURIComponent(a.key)}/saved`);
+    if (r && r.accounts && Array.isArray(r.accounts.list)) state.codex_accounts = r.accounts;
+    else {                                                              // an answer without accounts (the demo's {ok: true}): the local row says it
+      const rec = cxAccounts(state).find((x) => x.key === a.key);
+      if (rec) rec.saved = false;
+      if (typeof demoOn === 'function' && demoOn()) cxDemo().forgot.push(a.key);
+    }
+    cxRepaint();
+    pageToast(`Forgot the saved login of ${name}`, 'ok');
+  } catch (e) {
+    cxFlow.err = `Could not forget the login of ${name}: ${acctReason(e)}`;
+    cxRepaint();
+    pageToast(cxFlow.err, 'bad');
+  }
+}
+
+function settingsCxAddBlock() {
+  const m = { starting: false, timer: null, demoTimer: null, ticks: 0, slow: false, err: '', label: '', sawAdding: false, hide: false, tail: [] };      // tail: the login's terminal output, asked for only while the disclosure is open (/api/state leaves it out)
+  const root = el('div', { class: 'set-add cx-add' });
+
+  const name = el('input', { type: 'text', class: 'cx-name', maxlength: 60, autocomplete: 'off', autocapitalize: 'words', placeholder: 'work, personal, a client' });
+  const nameField = field('Account name', name, 'Required. Codex gives no email at sign-in, so this name is how the account is listed.');
+  const startBtn = el('button', { type: 'submit', disabled: true, text: 'Add Codex account' });
+  const nameForm = el('form', { class: 'add-form cx-form', novalidate: true, onsubmit: (e) => { e.preventDefault(); start(name.value); } },
+    nameField, el('div', { class: 'add-btns' }, startBtn));
+  name.addEventListener('input', () => { startBtn.disabled = !name.value.trim(); if (name.value.trim()) fieldError(nameField, ''); });
+  const idle = el('div', { class: 'add-idle' }, el('div', { class: 'dim set-note', text: SETTINGS_CX_HOWTO }), nameForm);
+
+  const urlInput = el('input', { type: 'text', class: 'add-url', readonly: true, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'aria-label': 'Sign-in link', placeholder: 'the link appears here' });
+  urlInput.addEventListener('focus', () => { if (typeof urlInput.select === 'function') urlInput.select(); });
+  const copyLink = el('button', { type: 'button', disabled: true, onclick: () => doCopy(urlInput.value, 'Link', urlInput), text: 'Copy link' });
+  const open = el('a', { class: 'btn', target: '_blank', rel: 'noopener', 'aria-disabled': 'true', text: 'Open' });
+  const wait = el('div', { class: 'dim add-wait', role: 'status', text: 'starting the login…' });
+  const step1 = el('div', { class: 'add-step' }, el('b', { class: 'add-k', text: 'Step 1' }),
+    el('p', { class: 'add-t', text: 'Open this link and sign in with the account you want to add.' }), urlInput, el('div', { class: 'add-btns' }, copyLink, open));
+
+  const codeBox = el('div', { class: 'cx-code', role: 'status', 'aria-label': 'One-time code', text: '…' });
+  const copyCode = el('button', { type: 'button', disabled: true, onclick: () => doCopy(codeBox.textContent, 'Code', null), text: 'Copy code' });
+  const step2 = el('div', { class: 'add-step' }, el('b', { class: 'add-k', text: 'Step 2' }),
+    el('p', { class: 'add-t', text: 'Type this code on the page. Nothing is pasted back here.' }), codeBox, el('div', { class: 'add-btns' }, copyCode));
+
+  const status = el('div', { class: 'dim add-status', role: 'status', text: 'waiting for the sign-in…' });
+  const cancelBtn = el('button', { type: 'button', onclick: () => doCancel(), text: 'Cancel' });
+  const tail = el('pre', { class: 'tail add-tail' });
+  const details = el('details', { class: 'dim add-out' }, el('summary', { text: 'terminal output' }), tail,
+    el('a', { class: 'add-term', href: '/term/_ccboard-login', target: '_blank', rel: 'noopener', text: 'Open the login terminal' }));
+  const flight = el('div', { class: 'add-flight hidden' }, wait, step1, step2, el('div', { class: 'add-step' }, status, el('div', { class: 'add-btns' }, cancelBtn)), details);
+
+  const errText = el('div', { class: 'bad add-err', role: 'alert' });
+  const retry = el('button', { type: 'button', onclick: () => start(m.label || name.value, true), text: 'Try again' });
+  const dismiss = el('button', { type: 'button', onclick: () => { m.err = ''; patch(); }, text: 'Dismiss' });
+  const failed = el('div', { class: 'add-error hidden' }, errText, el('div', { class: 'add-btns' }, retry, dismiss));
+
+  const reason = el('div', { class: 'dim set-note add-reason' });
+  const cmd = el('code', { class: 'cx-cmd hidden' });
+  const off = el('div', { class: 'add-off hidden' }, reason, cmd);
+  root.append(idle, flight, failed, off);
+
+  const show = (node, on) => node.classList.toggle('hidden', !on);
+  const stopWatch = () => { if (m.timer) { clearInterval(m.timer); m.timer = null; } };
+  const pullTail = async () => {                                         // state.codex_accounts.login has no `tail`: GET /api/codex-accounts has it, so ask while the disclosure is open
+    if (!details.open || typeof api !== 'function') return;
+    try {
+      const r = await api('GET', '/api/codex-accounts');
+      if (r && r.login && Array.isArray(r.login.tail)) { m.tail = r.login.tail; patch(); }
+    } catch (_) { /* the output is a convenience: the link and the code are in the state */ }
+  };
+  details.addEventListener('toggle', pullTail);
+  const watch = () => {                                                  // one timer at most: the result is asked for every second, for a device code's lifetime
+    if (m.timer) return;
+    m.ticks = 0;
+    m.timer = setInterval(() => {
+      m.ticks++;
+      if (typeof poll === 'function') poll(true);
+      pullTail();
+      if (m.ticks >= SETTINGS_CX_WATCH_SECONDS) { stopWatch(); m.slow = true; patch(); }
+    }, 1000);
+  };
+
+  function finish(res) {
+    stopWatch();
+    m.starting = m.sawAdding = m.slow = false;
+    m.tail = [];
+    if (res.ok) {
+      m.err = '';
+      name.value = '';
+      startBtn.disabled = true;
+      pageToast(`Added ${res.label || 'the account'}${res.live ? ' · it is the Codex account in use now' : ''}`, 'ok');
+      if (typeof poll === 'function') poll(true);                        // the new row is in the next state
+    } else m.err = res.error || 'the login did not complete';
+  }
+
+  function patch() {
+    const st = typeof state === 'undefined' ? null : state;
+    const store = cxStore(st);
+    const c = cxState(st);
+    const l = (c && c.login) || {};
+    const res = l.result;
+    if (res && res.at && res.at !== settingsPage.cxSeenAt) {
+      const mine = m.starting || m.sawAdding || !!m.timer;
+      settingsPage.cxSeenAt = res.at;                                    // announced once, here or never (a result nobody here waited for is not news)
+      if (mine) finish(res);
+    }
+    if (m.hide && !l.adding) m.hide = false;
+    const adding = !!l.adding && !m.hide;
+    if (adding) { m.sawAdding = true; m.starting = false; if (!m.timer && !m.slow) watch(); }   // a page opened in the middle of a login keeps asking too
+    const inFlight = m.starting || adding;
+    const mode = !store.supported || !store.add ? 'off' : m.err ? 'error' : inFlight ? 'flight' : 'idle';
+    show(idle, mode === 'idle');
+    show(flight, mode === 'flight');
+    show(failed, mode === 'error');
+    show(off, mode === 'off');
+    if (mode === 'off') {
+      const why = store.reason || 'Codex accounts cannot be added on this box.';
+      const i = why.indexOf(': ');
+      const head = i > 0 ? why.slice(0, i) : why;
+      setText(reason, `${head.charAt(0).toUpperCase()}${head.slice(1)}${i > 0 ? ':' : '.'}`);
+      setText(cmd, i > 0 ? why.slice(i + 2) : '');
+      show(cmd, i > 0);
+    }
+    if (mode === 'error') setText(errText, m.err);
+    if (mode !== 'flight') return;
+    const url = adding && typeof l.url === 'string' ? l.url : '';
+    const code = adding && typeof l.code === 'string' ? l.code : '';
+    show(wait, !url && !code);
+    if (urlInput.value !== url) urlInput.value = url;
+    copyLink.disabled = !url;
+    const link = /^https:\/\//.test(url) ? url : '';
+    if (link) { if (open.getAttribute('href') !== link) open.setAttribute('href', link); open.removeAttribute('aria-disabled'); open.classList.remove('is-off'); }
+    else { open.removeAttribute('href'); open.setAttribute('aria-disabled', 'true'); open.classList.add('is-off'); }
+    setText(codeBox, code || '…');
+    codeBox.classList.toggle('is-empty', !code);
+    copyCode.disabled = !code;
+    setText(status, m.slow ? 'Still waiting… the code has probably expired. Cancel and start again.' : 'waiting for the sign-in…');
+    const t = (Array.isArray(l.tail) && l.tail.length ? l.tail : m.tail).join('\n');
+    if (tail.textContent !== t) tail.textContent = t;
+  }
+
+  async function doCopy(text, what, input) {
+    if (!text) return;
+    try { await navigator.clipboard.writeText(text); pageToast(`${what} copied`, 'ok'); return; } catch (_) { /* no clipboard API here: select the field and copy */ }
+    let ok = false;
+    try { if (input) { input.focus(); input.select(); ok = !!document.execCommand('copy'); } } catch (_) { ok = false; }
+    if (ok) pageToast(`${what} copied`, 'ok'); else pageToast(`Copy failed: select the ${what.toLowerCase()} and copy it`, 'warn');
+  }
+
+  async function start(raw, restart) {
+    if (m.starting) return;
+    const label = String(raw || '').trim().replace(/\s+/g, ' ');
+    if (!label) { fieldError(nameField, 'Give the account a name.', true); return; }
+    if (label.length > 60) { fieldError(nameField, 'At most 60 characters.', true); return; }
+    fieldError(nameField, '');
+    m.err = '';
+    m.label = label;
+    m.starting = true;
+    m.hide = false;
+    m.slow = false;
+    patch();
+    if (root.scrollIntoView) { try { root.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) { /* no scrolling here */ } }
+    try {
+      await api('POST', '/api/codex-accounts/login', restart ? { label, restart: true } : { label });
+    } catch (e) {
+      m.starting = false;
+      m.err = acctReason(e);
+      patch();
+      return;
+    }
+    if (typeof demoOn === 'function' && demoOn()) demoStart();
+    watch();
+    if (typeof poll === 'function') poll(true);
+  }
+
+  async function doCancel() {
+    stopWatch();
+    clearTimeout(m.demoTimer);
+    m.starting = m.sawAdding = m.slow = false;
+    m.tail = [];
+    m.err = '';
+    m.hide = true;                                                       // until the poll says the login is gone: the stale `adding` must not bring the steps back
+    if (typeof demoOn === 'function' && demoOn()) cxDemo().login = null;
+    patch();
+    try { await api('DELETE', '/api/codex-accounts/login'); } catch (e) { m.hide = false; m.err = acctReason(e); }
+    patch();
+    if (typeof poll === 'function') poll(true);
+  }
+
+  /* The demo board has no box behind it: the login it shows (a made-up code) is laid over the poll, and a few seconds later the "sign-in" completes (cxFlow.demo, agents.js cxOverlay). */
+  function demoStart() {
+    clearTimeout(m.demoTimer);
+    m.demoTimer = setTimeout(() => {
+      cxDemo().login = { running: true, adding: true, label: m.label, started_at: new Date().toISOString(), result: null, url: SETTINGS_CX_DEMO_LINK, code: 'DEMO-4821',
+        tail: ['Follow these steps to sign in with ChatGPT using device code authorization:', `1. Open this link in your browser and sign in to your account: ${SETTINGS_CX_DEMO_LINK}`, '2. Enter this one-time code: DEMO-4821'] };
+      if (typeof poll === 'function') poll(true);
+      m.demoTimer = setTimeout(demoFinish, 6000);
+    }, 900);
+  }
+  function demoFinish() {
+    const d = cxDemo();
+    const key = `demo-cx-added-${d.accounts.length + 1}`;
+    d.accounts.push({ key, label: m.label || 'New Codex account', account_id: null, plan: null, saved: true, current: false, added_at: new Date().toISOString(), last_seen: null });
+    d.login = { running: false, adding: false, label: null, started_at: null, url: null, code: null, tail: [], result: { ok: true, key, label: m.label || 'New Codex account', live: false, at: new Date().toISOString() } };
+    if (typeof poll === 'function') poll(true);
+  }
+
+  return {
+    root, patch, start,
+    dispose() { stopWatch(); clearTimeout(m.demoTimer); },
+    get busy() { return m.starting || !!m.timer; },
+    get timers() { return m.timer ? 1 : 0; },
+  };
+}
+
+/* 'Log in again' on a Codex row: start the add flow in the block with the account's name. */
+function settingsCxAddStart(label) {
+  const b = settingsPage.cx;
+  if (b && cxStore(state).add) b.start(label || null);
+}
+
 /* The panel's skeleton, built the first time the Accounts section is filled and kept: the error line, the rows' host, the recovery line, the switch choice and the add block. */
 function settingsAcctSkeleton(p) {
   p.textContent = '';
@@ -497,8 +764,16 @@ function settingsAcctSkeleton(p) {
   if (settingsPage.add) settingsPage.add.dispose();
   const add = settingsAddBlock();
   settingsPage.add = add;
-  p.append(err, settingsHead('Subscription accounts'), list, el('div', { class: 'dim set-note', text: SETTINGS_RECOVERY }), sw, settingsHead('Add another subscription'), add.root);
-  return { err, list, sw, cont, add };
+  if (settingsPage.cx) settingsPage.cx.dispose();
+  const cx = settingsCxAddBlock();
+  settingsPage.cx = cx;
+  const cxErr = el('div', { class: 'set-err bad hidden', role: 'alert' });
+  const cxList = el('div', { class: 'set-acct-list cx-list' });
+  const cxNote = el('div', { class: 'dim set-note cx-note', text: SETTINGS_CX_NOTE });
+  const cxWarn = el('div', { class: 'warn set-note cx-warn hidden', role: 'status' });
+  const cxSec = el('div', { class: 'cx-section hidden' }, settingsHead('Codex accounts'), cxErr, cxList, cxNote, cxWarn, settingsHead('Add a Codex account'), cx.root);
+  p.append(err, settingsHead('Subscription accounts'), list, el('div', { class: 'dim set-note', text: SETTINGS_RECOVERY }), sw, settingsHead('Add another subscription'), add.root, cxSec);
+  return { err, list, sw, cont, add, cxSec, cxErr, cxList, cxNote, cxWarn, cx };
 }
 
 /* Everything of the panel that is not the rows, repainted on every update: the error line, the switch choice, the add block, a Log in tapped elsewhere. */
@@ -513,6 +788,16 @@ function settingsAcctPatch() {
   const pref = acctContinuePref();
   if (s.cont.checked !== pref) s.cont.checked = pref;
   s.add.patch();
+  const cs = cxState(state);                                          // older boxes and fixtures have no state.codex_accounts: the Codex section is then not there at all
+  s.cxSec.classList.toggle('hidden', !cs);
+  const cmsg = cxFlow.err || '';
+  if (s.cxErr.textContent !== cmsg) s.cxErr.textContent = cmsg;
+  s.cxErr.classList.toggle('hidden', !cmsg);
+  const warn = cxFlow.note ? `Switched, but ${cxFlow.note}.` : '';
+  if (s.cxWarn.textContent !== warn) s.cxWarn.textContent = warn;
+  s.cxWarn.classList.toggle('hidden', !warn);
+  s.cxNote.classList.toggle('hidden', !cxStore(state).supported);
+  s.cx.patch();
   settingsAcctWant();
 }
 
@@ -522,6 +807,10 @@ function settingsAccounts(p) {
   s.list.textContent = '';
   if (!list.length) s.list.append(el('div', { class: 'dim set-note', text: 'No Claude account seen yet. The board records the account a session is signed in with once one is running.' }));
   for (const a of list) s.list.append(settingsAcctRow(a));
+  s.cxList.textContent = '';
+  const cl = cxAccounts(state);
+  if (cxState(state) && !cl.length) s.cxList.append(el('div', { class: 'dim set-note', text: 'No Codex account saved yet. Add one below, or run codex login on the box: the board saves the login it finds.' }));
+  for (const a of cl) s.cxList.append(settingsCxRow(a));
   settingsAcctPatch();
   settingsAcctLoad();
 }
@@ -530,16 +819,19 @@ function settingsAccounts(p) {
    the behaviour are one. a: an account record (state.accounts.list, or the summary's: only key, label, name, email are read). The label is painted at once
    on every surface (this panel, the topbar chip and pills, the page behind: Usage rows, Limits chips, session rows) while the sheet stays open and PATCH
    /api/accounts/<key> {label} runs; success closes it, a refusal puts the old label back everywhere and says why in the sheet (and a toast), which stays open. */
-function settingsRenameAccount(a) {
+function settingsRenameAccount(a, cfg) {
   if (!a || !a.key) return null;
-  const name = agentsAcctName(a);
-  const input = el('input', { type: 'text', maxlength: 60, autocomplete: 'off', autocapitalize: 'words', placeholder: a.name || a.email || 'label' });
+  const cx = !!(cfg && cfg.codex);                                                         // a Codex account: its own endpoint, no name to fall back to, so the label is required
+  const name = cx ? cxName(a) : agentsAcctName(a);
+  const input = el('input', { type: 'text', maxlength: 60, autocomplete: 'off', autocapitalize: 'words', placeholder: cx ? 'account name' : (a.name || a.email || 'label') });
   input.value = a.label || '';
-  const f = field('Label', input, 'Shown on the Usage page, the topbar chip and the session rows. Leave it empty to go back to the name Claude reports.');
-  const live = () => agentsAccounts(state).find((q) => q.key === a.key) || a;                // the poll may have replaced the record since the sheet opened
+  const f = field(cx ? 'Name' : 'Label', input, cx ? 'Required. How this Codex account is listed here: Codex gives no email, so the name is the only way to tell accounts apart.'
+    : 'Shown on the Usage page, the topbar chip and the session rows. Leave it empty to go back to the name Claude reports.');
+  const live = () => (cx ? cxAccounts(state) : agentsAccounts(state)).find((q) => q.key === a.key) || a;                // the poll may have replaced the record since the sheet opened
   const put = (label) => { live().label = label; };
   const repaint = () => {
     if (settingsPage.refs) settingsFill('accounts', true);
+    if (cx) return;
     if (typeof Shell !== 'undefined' && Shell.patchUsage) Shell.patchUsage(state);
     if (typeof updateCurrentPage === 'function') updateCurrentPage(state);
   };
@@ -547,6 +839,7 @@ function settingsRenameAccount(a) {
   const save = async () => {
     const label = input.value.trim().replace(/\s+/g, ' ');
     if (label.length > 60) { fieldError(f, 'At most 60 characters.', true); return; }
+    if (cx && !label) { fieldError(f, 'Give the account a name.', true); return; }
     fieldError(f, '');
     const before = live().label || null;
     if (label === (before || '')) { closeSheet(); return; }
@@ -554,9 +847,9 @@ function settingsRenameAccount(a) {
     put(label || null);                                   // painted at once; the server's answer decides whether it stays
     repaint();
     try {
-      await api('PATCH', `/api/accounts/${encodeURIComponent(a.key)}`, { label });
+      await api('PATCH', `${cx ? '/api/codex-accounts' : '/api/accounts'}/${encodeURIComponent(a.key)}`, { label });
     } catch (e) {
-      const why = e && e.message ? e.message : 'the box refused it';
+      const why = cx ? acctReason(e) : (e && e.message ? e.message : 'the box refused it');
       put(before);
       repaint();
       saveBtn.disabled = false;
@@ -646,8 +939,9 @@ function settingsSig(id, st) {
   if (id === 'nodes') return JSON.stringify(st.nodes);
   if (id === 'box') return JSON.stringify([st.health, st.backup, st.node_name, st.user, minute]);
   if (id === 'accounts') {                                             // identity and labels, not the readings: those move with every statusline and would rebuild the Rename button under a finger (they refresh with the minute)
-    const forget = String(ui.confirm || '').startsWith('acct-forget:') ? ui.confirm : null;      // the two-tap Forget login repaints the row
-    return JSON.stringify([st.accounts && st.accounts.current, agentsAccounts(st).map((a) => [a.key, a.label, a.name, a.email, a.plan, !!a.current, !!a.saved]), acctStore(st), acctFlow.busy, forget, minute]);
+    const forget = /^(acct|cx)-forget:/.test(String(ui.confirm || '')) ? ui.confirm : null;      // the two-tap Forget login repaints the row
+    return JSON.stringify([st.accounts && st.accounts.current, agentsAccounts(st).map((a) => [a.key, a.label, a.name, a.email, a.plan, !!a.current, !!a.saved]), acctStore(st), acctFlow.busy, forget, minute,
+      cxState(st) ? [st.codex_accounts.current, cxAccounts(st).map((a) => [a.key, a.label, a.plan, !!a.current, !!a.saved]), cxStore(st), cxFlow.busy] : null]);
   }
   if (id === 'app') return JSON.stringify([st.version, settingsAppMode().note, !!settingsInstallPrompt(), settingsHelpAvailable()]);
   return JSON.stringify([st.claude, st.agents, ui.confirm === 'logout']);     // the two-tap Log out repaints the panel
@@ -711,6 +1005,8 @@ registerPage('settings', {
     root.append(wrap);
     if (settingsPage.add) settingsPage.add.dispose();
     settingsPage.add = null;                                          // the add block is built again with the Accounts panel of this mount
+    if (settingsPage.cx) settingsPage.cx.dispose();
+    settingsPage.cx = null;
     settingsPage.refs = { tabs: tabCtl, panels };
     settingsShow(active);
   },
@@ -719,6 +1015,8 @@ registerPage('settings', {
   unmount() {
     if (settingsPage.add) settingsPage.add.dispose();                   // its one-second timer must not outlive the page
     settingsPage.add = null;
+    if (settingsPage.cx) settingsPage.cx.dispose();
+    settingsPage.cx = null;
     settingsPage.refs = null;
   },
 });

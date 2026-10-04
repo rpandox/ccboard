@@ -25,7 +25,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, cost, deploy, doctor, github, gitops, health, hooks, memory, notify, permissions, previews, projects, prpoll, push, recover, samples, scheduler, search, tasks, tmux, tree, usage, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, memory, notify, permissions, previews, projects, prpoll, push, recover, samples, scheduler, search, tasks, tmux, tree, usage, usage_summary
 from .agents import monitor as mem_monitor
 from .agents import registry
 from .agents.base import LaunchReq
@@ -113,6 +113,12 @@ async def lifespan(app: FastAPI):
         pass
     except Exception as e:
         log.warning("saved-login seed failed: %s", e.__class__.__name__)
+    try:                                                  # the same for the live Codex login (a slot per account, kept off /tmp)
+        codex_accounts.seed_current(db)
+    except codex_accounts.Unsupported:
+        pass
+    except Exception as e:
+        log.warning("saved Codex login seed failed: %s", e.__class__.__name__)
     db.on_state_change = _state_sampler(db)              # state series: one sample per real transition (set_state/end/reconcile)
     try:
         push.ensure_keys()
@@ -463,6 +469,7 @@ def build_state(user: str) -> dict:
     st["memory"] = memory.state_view(db)                  # claude-mem worker health as the monitor last saw it (None: off, or not sampled yet)
     st["usage"] = db.kv_get("rate_limits")
     st["accounts"] = account_store.decorate(_accounts_view())
+    st["codex_accounts"] = _codex_accounts_view(tail=False)
     st["block"] = db.kv_get(usage.KV_BLOCK)
     st["cost"] = db.kv_get(cost.KV_COST)
     st["health"] = health.snapshot()
@@ -480,6 +487,18 @@ def _login_payload() -> dict:
     """state.login and GET /api/accounts login: the login tmux session ({running, url, tail}) plus what Settings is adding through it
     ({adding, email, started_at, result}, app/account_store.py)."""
     return {**claude_auth.login_state(), **account_store.login_view()}
+
+
+def _codex_accounts_view(tail: bool = True) -> dict:
+    """state.codex_accounts and GET /api/codex-accounts: the saved Codex accounts (app/codex_accounts.py). The state's copy leaves the login's terminal
+    output out. A failure answers the empty, unsupported shape, never an error."""
+    try:
+        return codex_accounts.view(db, tail=tail)
+    except Exception as e:
+        log.warning("codex accounts view failed: %s", e.__class__.__name__)
+        return {"current": None, "list": [], "store": {"supported": False, "add": False, "reason": codex_accounts.REASON_NOT_INSTALLED, "count": 0},
+                "login": {"running": False, "adding": False, "label": None, "started_at": None, "url": None, "code": None, "result": None,
+                          **({"tail": []} if tail else {})}}
 
 
 def _accounts_view(full: bool = False) -> dict:
@@ -802,6 +821,92 @@ def api_account_forget(key: str):
     except account_store.StoreError as e:
         return _refuse(409, str(e))
     return {**res, "accounts": account_store.decorate(accounts.view(db, full=True))}
+
+
+# ---- saved Codex logins (app/codex_accounts.py): the same shapes under /api/codex-accounts. Errors carry {detail, error} like the Claude ones.
+
+class CodexAccountLoginIn(BaseModel):
+    label: str | None = None
+    restart: bool = False
+
+
+class CodexAccountPatchIn(BaseModel):
+    label: str | None = None
+
+
+@app.get("/api/codex-accounts")
+def api_codex_accounts():
+    """The saved Codex accounts: {current, list: [{key, label, account_id, plan, saved, current, added_at, last_seen}], store: {supported, add, reason,
+    count}, login: {running, adding, label, started_at, url, code, tail, result}}. `saved` = a login is saved for the account, so it can be switched
+    to; account_id and plan are learned from the rollouts of sessions run while the account was live (null until then); `store.add` is false
+    where `codex login --device-auth` is missing (`store.reason` says what to do); url and code are the sign-in link and the one-time code
+    of the login being added."""
+    return _codex_accounts_view(tail=True)
+
+
+@app.post("/api/codex-accounts/login", status_code=202)
+def api_codex_account_login(body: CodexAccountLoginIn | None = None):
+    """Add a Codex account: `codex login --device-auth` runs in the login tmux session with a CODEX_HOME of its own, so the live login is untouched.
+    {label: str (1..60 characters, required), restart?: bool}. 202 {ok}; 400 for a missing or bad label; 409 when codex is not installed or lacks
+    --device-auth, or a login is already running (restart: true replaces it). The link and the one-time code (typed on the page; nothing is
+    pasted back) are state.codex_accounts.login.url / .code; the login ends by itself when auth.json appears."""
+    body = body or CodexAccountLoginIn()
+    try:
+        label = codex_accounts.clean_label(body.label)
+    except ValueError as e:
+        return _refuse(400, str(e))
+    try:
+        codex_accounts.start_login(db, label, restart=body.restart)
+    except codex_accounts.StoreError as e:
+        return _refuse(409, str(e))
+    return {"ok": True}
+
+
+@app.delete("/api/codex-accounts/login")
+def api_codex_account_login_cancel():
+    """Give up the login that was started from Settings: its session and its pending directory go."""
+    codex_accounts.cancel_login()
+    return {"ok": True}
+
+
+@app.patch("/api/codex-accounts/{key}")
+def api_codex_account_patch(key: str, body: CodexAccountPatchIn):
+    """Rename a Codex account: {label} (1..60 characters; an account has no other name, so an empty label is a 400). Answers the account's row."""
+    if "label" not in body.model_fields_set:
+        return _refuse(400, "label is required")
+    try:
+        return codex_accounts.set_label(db, key, body.label)
+    except ValueError as e:
+        return _refuse(400, str(e))
+    except codex_accounts.UnknownAccount as e:
+        return _refuse(404, str(e))
+
+
+@app.post("/api/codex-accounts/{key}/switch")
+def api_codex_account_switch(key: str):
+    """Make a Codex account the live login (its saved copy replaces auth.json; a running Codex keeps the login it started with). 200 {ok, already,
+    from, to, warnings: [text], accounts}; 404 unknown account; 409 {detail} when there is no saved login, a login is in progress, one of the
+    board's own Codex sessions is open, the current login could not be saved first, or codex is not installed."""
+    try:
+        res = codex_accounts.switch(db, key)
+    except codex_accounts.UnknownAccount as e:
+        return _refuse(404, str(e))
+    except codex_accounts.StoreError as e:
+        return _refuse(409, str(e))
+    _invalidate_scan()
+    return {**res, "accounts": _codex_accounts_view(tail=False)}
+
+
+@app.delete("/api/codex-accounts/{key}/saved")
+def api_codex_account_forget(key: str):
+    """Delete a Codex account's saved login (the account's record stays, unsaved). 404 unknown account; 409 for the live account."""
+    try:
+        res = codex_accounts.forget(db, key)
+    except codex_accounts.UnknownAccount as e:
+        return _refuse(404, str(e))
+    except codex_accounts.StoreError as e:
+        return _refuse(409, str(e))
+    return {**res, "accounts": _codex_accounts_view(tail=False)}
 
 
 # ---------- projects & repos ----------

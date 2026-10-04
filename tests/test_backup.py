@@ -394,3 +394,53 @@ def test_a_missing_accounts_dir_changes_nothing_for_other_extras(backup_env, tmp
     monkeypatch.setattr(settings, "backup_extra", [str(other), str(tmp_path / "does-not-exist-either")])
     st = backup.run(push=False)
     assert str(other) in st["paths"] and st["warnings"] == []
+
+
+# ---------------------------------------------------------------- v0.5.17e: the saved Codex logins are never backed up either
+
+def make_codex_store(settings):
+    """<data dir>/codex-accounts/<slot>/auth.json, the way app/codex_accounts.py lays it out."""
+    slot = settings.data_dir / "codex-accounts" / "89abcdef0123456789abcdef"
+    slot.mkdir(parents=True)
+    (slot / "auth.json").write_bytes(b'{"tokens":{"access_token":"SECRET-CODEX-A"}}')
+    (slot / "meta.json").write_text('{"label": "Work"}')
+    return slot.parent, slot
+
+
+def test_the_nightly_paths_never_include_the_saved_codex_logins(backup_env, tmp_path):
+    from app.config import settings
+    store, _slot = make_codex_store(settings)
+    st = backup.run(push=False)
+    assert st["status"] == "ok" and st["warnings"] == []
+    assert st["paths"] and not [p for p in st["paths"] if os.path.realpath(p).startswith(str(store.resolve()))]
+    assert not any("codex-accounts" in p for p in st["paths"])
+
+
+def test_backup_extra_entries_that_hold_either_store_are_dropped_with_a_warning(backup_env, tmp_path, monkeypatch):
+    from app.config import settings
+    claude_store, claude_slot = make_store(settings)
+    codex_store, codex_slot = make_codex_store(settings)
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    link = tmp_path / "link-to-codex-accounts"
+    link.symlink_to(codex_store)
+    dotted = f"{codex_store}/../codex-accounts"
+    bad = [str(settings.data_dir), str(codex_store), str(codex_slot), str(codex_slot / "auth.json"), str(link), dotted, str(tmp_path),
+           str(claude_store)]
+    monkeypatch.setattr(settings, "backup_extra", bad + [str(notes)])
+    st = backup.run(push=False)
+    assert str(notes) in st["paths"], "an ordinary extra path is kept"
+    assert [p for p in st["paths"] if p in bad] == []
+    for p in bad:
+        assert f"skipped {p}: saved logins are never backed up" in st["warnings"], p
+    calls = (backup_env["repo"] / "calls.log").read_text()
+    assert str(codex_store) not in calls and str(codex_slot) not in calls and str(claude_slot) not in calls
+
+
+def test_holds_saved_logins_names_both_store_dirs_and_nothing_else(backup_env, tmp_path):
+    from app.config import settings
+    assert backup._holds_saved_logins(settings.data_dir / "codex-accounts") is True
+    assert backup._holds_saved_logins(settings.data_dir / "codex-accounts" / "x" / "auth.json") is True
+    assert backup._holds_saved_logins(settings.data_dir / "accounts") is True
+    assert backup._holds_saved_logins(settings.data_dir / "codex-accounts-notes") is False
+    assert backup._holds_saved_logins(tmp_path / "elsewhere") is False

@@ -1055,7 +1055,7 @@ test('settings tabs: Accounts sits after Agents and before App', () => {
 
 test('Settings > Accounts: one row per account with its name in the account\'s hue, plan and current chips, email, readings and Rename; the how-to closes the panel', () => {
   const w = acctWorld();
-  assert.deepEqual(acctPanel(w).querySelectorAll('.set-h').map(text), ['Subscription accounts', 'When you switch', 'Add another subscription'], 'labelled sections (the switch choice is hidden where saved logins are not supported)');
+  assert.deepEqual(acctPanel(w).querySelectorAll('.set-h').map(text), ['Subscription accounts', 'When you switch', 'Add another subscription', 'Codex accounts', 'Add a Codex account'], 'labelled sections (the switch choice is hidden where saved logins are not supported; the Codex section is hidden on a box that sends no codex_accounts)');
   const rows = acctRows(w);
   assert.equal(rows.length, 2);
   const hueOf = (key) => w.run(`chipHue('account', ${JSON.stringify(key)})`);

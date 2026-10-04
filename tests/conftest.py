@@ -275,6 +275,21 @@ def _saved_logins_off_by_default(monkeypatch):
     account_store._set_result(None, 0.0)
 
 
+@pytest.fixture(autouse=True)
+def _codex_accounts_reset():
+    """The Codex accounts module's login state, watcher threads and learning clock are reset around every test (it is on only where a codex
+    binary exists, and no test has one unless it fakes it: _isolate_codex)."""
+    from app import codex_accounts
+    codex_accounts._reset_login()
+    codex_accounts._set_result(None, 0.0)
+    codex_accounts._learn_at = 0.0
+    yield
+    codex_accounts.stop_watchers()
+    codex_accounts._reset_login()
+    codex_accounts._set_result(None, 0.0)
+    codex_accounts._learn_at = 0.0
+
+
 @pytest.fixture
 def codex_home(tmp_path, monkeypatch):
     """A temp CODEX_HOME: settings.codex_home and the CODEX_HOME env both point at it, so nothing a test does (hooks.json, config.toml,
@@ -303,11 +318,33 @@ def _isolate_codex(codex_home, monkeypatch):
 
 
 FAKE_CODEX_SCRIPT = """#!/bin/sh
-# a stand-in for codex-cli 0.145.0: answers the probes the adapter and the doctor make, nothing else
+# a stand-in for codex-cli 0.145.0: answers the probes the adapter and the doctor make, nothing else. With device_auth=True (write_fake_codex)
+# it is a 0.160: `login --help` lists --device-auth, and `login --device-auth` prints a link and a one-time code and writes a fake login
+# file into $CODEX_HOME (the tests run it by hand; the board's own tests never start it: the fake tmux does not run what is typed).
 case "$1" in
-  --version) echo "codex-cli 0.145.0" ;;
+  --version) echo "codex-cli {version}" ;;
   --help) cat "{help}" ;;
-  login) if [ "$2" = "status" ]; then echo "{login}"; [ "{login}" != "Not logged in" ]; else exit 0; fi ;;
+  login)
+    case "$2" in
+      status) echo "{login}"; [ "{login}" != "Not logged in" ] ;;
+      --help) [ -n "{login_help}" ] && cat "{login_help}"; exit 0 ;;
+      --device-auth)
+        echo "Welcome to Codex [v{version}]"
+        echo ""
+        echo "Follow these steps to sign in with ChatGPT using device code authorization:"
+        echo ""
+        echo "1. Open this link in your browser and sign in to your account"
+        echo "   {device_url}"
+        echo ""
+        echo "2. Enter this one-time code (expires in 15 minutes)"
+        echo "   {device_code}"
+        echo ""
+        mkdir -p "${{CODEX_HOME:?CODEX_HOME is not set}}"
+        printf '%s' '{auth_blob}' > "$CODEX_HOME/auth.json"
+        chmod 600 "$CODEX_HOME/auth.json"
+        echo "Successfully logged in" ;;
+      *) exit 0 ;;
+    esac ;;
   features) printf 'hooks    stable    true\nmulti_agent    stable    true\n' ;;
   mcp) [ "$2" = "get" ] && exit {mcp_rc}; exit 0 ;;
   debug) echo '{{"models": []}}'; exit 1 ;;
@@ -321,7 +358,8 @@ esac
 def fake_codex(tmp_path, monkeypatch):
     """A fake `codex` binary that behaves like 0.145.0 for the probes (--version, --help from tests/fixtures/codex_help_0145_real.txt,
     login status, features list, mcp get). Sets settings.codex_bin to it and returns its path; write_fake_codex(path, login=...,
-    mcp_rc=..., help_name=...) rewrites it for another behaviour (a logged-out codex, a newer --help)."""
+    mcp_rc=..., help_name=..., device_auth=True) rewrites it for another behaviour (a logged-out codex, a newer --help, a 0.160 that has
+    `login --device-auth`)."""
     from app.agents import codex
     from app.config import settings
     path = write_fake_codex(tmp_path / "fakebin" / "codex")
@@ -330,11 +368,19 @@ def fake_codex(tmp_path, monkeypatch):
     return path
 
 
+FAKE_AUTH_BLOB = '{"tokens":{"access_token":"SECRET-FAKE-LOGIN","refresh_token":"SECRET-FAKE-REFRESH"}}'
+
+
 def write_fake_codex(path, *, login="Logged in using ChatGPT", mcp_rc=0, help_name="codex_help_0145_real.txt",
-                     exec_help_name="codex_exec_help_0145_real.txt"):
-    """Write an executable fake codex at `path` (see fake_codex) and return it."""
+                     exec_help_name="codex_exec_help_0145_real.txt", device_auth=False, device_code="ABCD-12345",
+                     device_url="https://auth.openai.com/codex/device", auth_blob=FAKE_AUTH_BLOB):
+    """Write an executable fake codex at `path` (see fake_codex) and return it. device_auth=True makes it a 0.160 (see FAKE_CODEX_SCRIPT);
+    its login prints device_url and device_code and writes auth_blob into $CODEX_HOME/auth.json."""
     fx = ROOT / "tests" / "fixtures"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(FAKE_CODEX_SCRIPT.format(help=fx / help_name, exec_help=fx / exec_help_name, login=login, mcp_rc=mcp_rc))
+    login_help = fx / ("codex_login_help_0160.txt" if device_auth else "codex_login_help_0145.txt")
+    path.write_text(FAKE_CODEX_SCRIPT.format(help=fx / help_name, exec_help=fx / exec_help_name, login=login, mcp_rc=mcp_rc,
+                                             version="0.160.0" if device_auth else "0.145.0", login_help=login_help,
+                                             device_url=device_url, device_code=device_code, auth_blob=auth_blob))
     path.chmod(0o755)
     return path

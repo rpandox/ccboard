@@ -321,13 +321,16 @@ LEGACY_TOP = {"tmux_down", "projects", "user", "config", "claude", "login", "pen
 def test_state_legacy_keys_are_unchanged(board):
     db().kv_set("rate_limits", {"five_hour": {"used_percentage": 42, "resets_at": 1791349200}})
     st = board.client.get("/api/state", headers=H).json()
-    assert LEGACY_TOP <= set(st) and set(st) - LEGACY_TOP == {"agents", "setup", "deploy", "memory", "accounts"}
+    assert LEGACY_TOP <= set(st) and set(st) - LEGACY_TOP == {"agents", "setup", "deploy", "memory", "accounts", "codex_accounts"}
     assert st["claude"] == AUTH, "state.claude keeps its shape (the claude_auth.status() dict, as is)"
     assert st["login"] == {**claude_auth.login_state(), **account_store.login_view()}, "v0.5.17c: the login view adds adding/email/started_at/result"
     assert set(st["login"]) == {"running", "url", "tail", "adding", "email", "started_at", "result"}
     assert st["usage"] == db().kv_get("rate_limits") and st["usage"]["value"]["five_hour"]["used_percentage"] == 42
     assert st["accounts"] == {"current": None, "list": [], "store": {"supported": False, "reason": account_store.REASON, "count": 0}}, \
         "v0.5.17b: the account list is always present, empty until an identity is read (v0.5.17c: plus the saved-login store summary)"
+    assert st["codex_accounts"] == {"current": None, "list": [], "store": {"supported": False, "add": False, "reason": "codex is not installed", "count": 0},
+                                    "login": {"running": False, "adding": False, "label": None, "started_at": None, "url": None, "code": None, "result": None}}, \
+        "v0.5.17e: the one new top-level key, the saved Codex accounts (the GET body without login.tail); unsupported without a codex binary"
 
 
 def test_state_agents_and_setup(board):

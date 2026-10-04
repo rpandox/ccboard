@@ -27,7 +27,7 @@ const off = (b) => b.disabled || b.hasAttribute('disabled');
 const submitBtn = (w) => block(w).querySelector('.add-form button.primary');
 
 const made = [];
-const settle = () => { for (const w of made.splice(0)) { try { w.run('settingsPage.add && settingsPage.add.dispose()'); } catch (_) { /* a world that never mounted Settings */ } } };
+const settle = () => { for (const w of made.splice(0)) { try { w.run('settingsPage.add && settingsPage.add.dispose(); settingsPage.cx && settingsPage.cx.dispose()'); } catch (_) { /* a world that never mounted Settings */ } } };
 afterEach(settle);                                                       // a real one-second timer would keep node alive for a minute
 const fake = (on) => { if (on) mock.timers.enable({ apis: ['setInterval', 'setTimeout'] }); else { settle(); mock.timers.reset(); } };   // timers are mocked before the world is made; the blocks go before the mock does
 
@@ -104,7 +104,8 @@ test('the recovery line is always under the list; the add how-to names both ways
     assert.match(text(panel(w)), /If anything looks wrong, run \/login in any terminal; the board records it\./);
   }
   const w = acctWorld();
-  assert.deepEqual(panel(w).querySelectorAll('.set-h').map(text), ['Subscription accounts', 'When you switch', 'Add another subscription']);
+  assert.deepEqual(panel(w).querySelectorAll('.set-h').map(text), ['Subscription accounts', 'When you switch', 'Add another subscription', 'Codex accounts', 'Add a Codex account']);
+  assert.deepEqual(panel(w).querySelectorAll('.set-h').filter((h) => !hidden(h)).map(text), ['Subscription accounts', 'When you switch', 'Add another subscription'], 'the Codex section is not there without state.codex_accounts');
   assert.match(text(block(w).querySelector('.add-idle')), /open the link, sign in, paste the code\. Running \/login in any terminal works too/);
   const kids = panel(w).children.map((n) => n.className.split(' ')[0]);
   assert.ok(kids.indexOf('set-acct-list') < kids.findIndex((c, i) => c === 'dim' && /If anything looks wrong/.test(text(panel(w).children[i]))), 'the recovery line follows the list');
@@ -674,4 +675,509 @@ test('the overlay changes nothing on a live board without a running switch', () 
   w.run('accountOverlay(__st2)');
   assert.equal(JSON.stringify(w.get('__st2')), before);
   assert.doesNotThrow(() => w.run('accountOverlay(null); accountOverlay({}); accountOverlay({ accounts: null })'));
+});
+
+// ================================================================ v0.5.17e: Codex accounts (the section below the Claude ones in Settings > Accounts)
+
+const K1 = '1a2b3c4d5e6f7a8b9c0d1e2f', K2 = '2b3c4d5e6f7a8b9c0d1e2f3a', K3 = '3c4d5e6f7a8b9c0d1e2f3a4b';
+const cxAcct = (key, over = {}) => ({ key, label: `Codex ${key.slice(0, 2)}`, account_id: null, plan: null, saved: true, current: false, added_at: '2026-10-01T09:00:00+00:00', last_seen: null, ...over });
+const CX_THREE = () => [cxAcct(K1, { label: 'Main', plan: 'plus', current: true, last_seen: '2026-10-04T10:00:00+00:00' }), cxAcct(K2, { label: 'Work', plan: 'pro' }), cxAcct(K3, { label: 'Old', saved: false })];
+const CX_STORE = { supported: true, add: true, reason: null, count: 2 };
+const cxOf = (list, store = CX_STORE, login = {}) => ({ current: (list.find((a) => a.current) || {}).key || null, list, store, login: { running: false, adding: false, label: null, started_at: null, url: null, code: null, result: null, ...login } });
+const cxStateOf = (over = {}) => stateOf({ codex_accounts: cxOf(CX_THREE()), ...over });
+const CX_URL = 'https://auth.openai.com/codex/device';
+const CX_CODE = 'ABCD-12345';
+const cxWorld = (o = {}) => acctWorld({ state: cxStateOf(), ...o });
+const cxSec = (w) => panel(w).querySelector('.cx-section');
+const cxRows = (w) => cxSec(w).querySelectorAll('.kv.set-cx');
+const cxRow = (w, key) => cxRows(w).find((r) => r.getAttribute('data-cx-account') === key);
+const cxBlock = (w) => panel(w).querySelector('.cx-add');
+const cxLogin = (w, login, over = {}) => { const st = w.get('state'); setState(w, { ...st, codex_accounts: { ...plain(st.codex_accounts), login: { ...plain(st.codex_accounts.login), ...login }, ...over } }); };
+const cxFlight = (w, over = {}) => cxLogin(w, { running: true, adding: true, label: 'Home', url: CX_URL, code: CX_CODE, tail: ['Welcome to Codex', CX_URL, CX_CODE], ...over });
+const cxName = (w) => cxBlock(w).querySelector('.cx-name');
+const cxSubmit = (w) => cxBlock(w).querySelector('.cx-form').dispatchEvent({ type: 'submit', preventDefault() {} });
+const cxStart = (w, label = 'Home') => { cxName(w).value = label; cxName(w).dispatchEvent({ type: 'input' }); cxSubmit(w); };
+
+test('codex: without state.codex_accounts the section is not there at all (an older box); the Claude panel is as it was', () => {
+  const w = acctWorld();
+  assert.equal(hidden(cxSec(w)), true);
+  assert.deepEqual(visibleButtons(panel(w)).map(text).sort(), ['Add account', 'Forget login', 'Log in again', 'Rename', 'Rename', 'Rename', 'Switch'].sort());
+});
+
+test('codex rows: the account in use has Rename only; a saved one has Switch (primary tinted), Rename and a two-tap Forget login; an unsaved one has Log in again; the name wears the teal of its agent', () => {
+  const w = cxWorld();
+  assert.equal(hidden(cxSec(w)), false);
+  assert.deepEqual(panel(w).querySelectorAll('.set-h').filter((h) => !hidden(h)).map(text), ['Subscription accounts', 'When you switch', 'Add another subscription', 'Codex accounts', 'Add a Codex account']);
+  assert.equal(cxRows(w).length, 3);
+  const [main, work, old] = [cxRow(w, K1), cxRow(w, K2), cxRow(w, K3)];
+  assert.deepEqual(labels(main), ['Rename']);
+  assert.deepEqual(labels(work), ['Switch', 'Rename', 'Forget login']);
+  assert.deepEqual(labels(old), ['Log in again', 'Rename']);
+  const sw = btn(work, 'Switch');
+  assert.ok(hasCls(sw, 'primary') && hasCls(sw, 'tinted'));
+  assert.equal(sw.getAttribute('aria-label'), 'Switch to Work');
+  assert.ok(hasCls(btn(work, 'Forget login'), 'danger') && !isFilled(btn(work, 'Forget login')));
+  assert.equal(isFilled(btn(old, 'Log in again')), false);
+  assert.deepEqual(main.querySelectorAll('.badge').map(text), ['plus', 'current', 'saved login']);
+  assert.deepEqual(work.querySelectorAll('.badge').map(text), ['pro', 'saved login']);
+  assert.deepEqual(old.querySelectorAll('.badge').map(text), [], 'no plan learned, nothing saved: no chip');
+  assert.equal(text(old.querySelector('.set-chips .dim')), 'no saved login');
+  for (const r of [main, work, old]) assert.ok(hasCls(r.querySelector('.k'), 'hue-teal'), 'the agent hue, not a hash of the key');
+  assert.ok(hasCls(main.querySelector('.badge.hue-teal'), 'badge'), 'the plan chip is teal');
+  assert.match(text(main), /added .* ago · seen .* ago/);
+  assert.equal(hasCls(rowOf(w, A1), 'set-cx'), false);
+  assert.equal(rows(w).length, 3, 'the Claude rows are the same three');
+  assert.match(text(cxSec(w).querySelector('.cx-note')), /A Codex that is already running keeps the login it started with/);
+});
+
+test('codex: no filled primary anywhere in the Codex section in any state; the panel has exactly the Claude block\'s one or none', async () => {
+  const w = cxWorld();
+  const inCx = () => visibleButtons(cxSec(w)).filter(isFilled).map(text);
+  assert.deepEqual(inCx(), [], 'idle');
+  assert.deepEqual(filled(panel(w)), [], 'idle with accounts: no filled primary on the screen at all');
+  cxStart(w);
+  await tick();
+  assert.deepEqual(inCx(), [], 'starting');
+  cxFlight(w);
+  assert.deepEqual(inCx(), [], 'in flight');
+  assert.deepEqual(filled(panel(w)), []);
+  cxLogin(w, { running: false, adding: false, url: null, code: null, result: { ok: false, error: 'the login did not complete', at: 'x1' } });
+  assert.deepEqual(inCx(), [], 'a failed login: Try again is bordered');
+  assert.deepEqual(visibleButtons(cxBlock(w)).map(text), ['Try again', 'Dismiss']);
+  const none = cxWorld({ state: cxStateOf({ codex_accounts: cxOf(CX_THREE(), { supported: true, add: false, reason: 'update Codex to 0.157 or newer: npm install -g @openai/codex', count: 2 }) }) });
+  assert.deepEqual(visibleButtons(cxSec(none)).filter(isFilled), []);
+  const w2 = acctWorld({ state: cxStateOf({ accounts: accountsOf([]) }) });
+  assert.deepEqual(filled(panel(w2)), ['Log in'], 'the Claude Log in is the one primary and the Codex section adds none');
+});
+
+test('codex: where codex is not installed the section says so and offers nothing but Rename', () => {
+  const store = { supported: false, add: false, reason: 'codex is not installed', count: 0 };
+  const w = cxWorld({ state: cxStateOf({ codex_accounts: cxOf(CX_THREE().map((a) => ({ ...a, saved: false })), store) }) });
+  for (const r of cxRows(w)) assert.deepEqual(labels(r), ['Rename']);
+  assert.equal(cxSec(w).querySelectorAll('.badge').filter((b) => /saved login/.test(text(b))).length, 0);
+  const off = cxBlock(w).querySelector('.add-off');
+  assert.equal(hidden(off), false);
+  assert.equal(text(off.querySelector('.add-reason')), 'Codex is not installed.');
+  assert.equal(hidden(off.querySelector('.cx-cmd')), true);
+  assert.equal(hidden(cxBlock(w).querySelector('.add-idle')), true);
+  assert.equal(hidden(cxSec(w).querySelector('.cx-note')), true, 'no switching advice either');
+});
+
+test('codex: a Codex that is too old shows the reason and the npm command in a code line, no name field; Switch still works', () => {
+  const store = { supported: true, add: false, reason: 'update Codex to 0.157 or newer: npm install -g @openai/codex', count: 2 };
+  const w = cxWorld({ state: cxStateOf({ codex_accounts: cxOf(CX_THREE(), store) }) });
+  const off = cxBlock(w).querySelector('.add-off');
+  assert.equal(hidden(off), false);
+  assert.equal(text(off.querySelector('.add-reason')), 'Update Codex to 0.157 or newer:');
+  assert.equal(text(off.querySelector('.cx-cmd')), 'npm install -g @openai/codex');
+  assert.equal(off.querySelector('.cx-cmd').tagName.toLowerCase(), 'code');
+  assert.equal(hidden(cxBlock(w).querySelector('.add-idle')), true);
+  assert.deepEqual(labels(cxRow(w, K2)), ['Switch', 'Rename', 'Forget login']);
+  assert.deepEqual(labels(cxRow(w, K3)), ['Rename'], 'Log in again needs the device login too');
+});
+
+test('codex switch is one tap: painted at once, POST /api/codex-accounts/<key>/switch with no body, every row disabled meanwhile, the server accounts replace the state; the Claude rows do not move', async () => {
+  const d = defer();
+  const w = cxWorld({ answers: { '/api/codex-accounts/': () => d.p } });
+  btn(cxRow(w, K2), 'Switch').click();
+  assert.deepEqual(cxRows(w).map((r) => !!r.querySelector('.badge.cur')), [false, true, false], 'painted before the answer');
+  assert.equal(w.get('state').codex_accounts.current, K2);
+  assert.deepEqual(cxRows(w).flatMap((r) => r.querySelectorAll('button')).filter((b) => /Switch|Log in again|Forget/.test(text(b))).map(off), [true, true, true]);
+  assert.deepEqual(apiCalls(w, '/api/codex-accounts').filter((c) => c.method === 'POST'), [{ method: 'POST', path: `/api/codex-accounts/${K2}/switch` }]);
+  assert.equal(w.get('state').accounts.current, A1, 'the Claude account in use is untouched');
+  assert.equal(w.run('acctFlow.busy'), null, 'and a Claude switch is not blocked by it');
+  btn(cxRow(w, K1), 'Switch').click();
+  assert.equal(apiCalls(w, '/api/codex-accounts').filter((c) => c.method === 'POST').length, 1, 'one switch at a time');
+  const after = cxOf([cxAcct(K1, { label: 'Main', plan: 'plus' }), cxAcct(K2, { label: 'Work', plan: 'pro', current: true }), cxAcct(K3, { label: 'Old', saved: false })]);
+  d.resolve({ ok: true, already: false, from: K1, to: K2, warnings: [], accounts: after });
+  await tick(); await tick();
+  assert.deepEqual(plain(w.get('state').codex_accounts), plain(after));
+  assert.deepEqual(toasts(w).pop(), { text: 'Switched to Work · Codex sessions started from now on use it', kind: 'ok' });
+  assert.deepEqual(labels(cxRow(w, K1)), ['Switch', 'Rename', 'Forget login']);
+  assert.equal(hidden(cxSec(w).querySelector('.cx-warn')), true);
+  assert.ok(polls(w) >= 1);
+});
+
+test('codex switch warnings: other Codex processes keep the previous login: a warn toast and the panel\'s note line', async () => {
+  const warn = 'other Codex processes on this box keep the previous login until they restart';
+  const w = cxWorld({ answers: { '/api/codex-accounts/': { ok: true, already: false, warnings: [warn], accounts: cxOf([cxAcct(K1, { label: 'Main' }), cxAcct(K2, { label: 'Work', current: true }), cxAcct(K3, { label: 'Old', saved: false })]) } } });
+  btn(cxRow(w, K2), 'Switch').click();
+  await tick(); await tick();
+  assert.deepEqual(toasts(w).pop(), { text: `Switched to Work · Codex sessions started from now on use it · ${warn}`, kind: 'warn' });
+  const note = cxSec(w).querySelector('.cx-warn');
+  assert.equal(hidden(note), false);
+  assert.equal(text(note), `Switched, but ${warn}.`);
+  btn(cxRow(w, K1), 'Switch').click();                                   // the next switch clears the line until its own answer
+  assert.equal(hidden(cxSec(w).querySelector('.cx-warn')), true);
+});
+
+test('codex switch refused (a board Codex session is open, a login is in progress ...): every flag back, the reason in the section\'s error line and a toast', async () => {
+  const why = "close the board's Codex sessions first; a running Codex keeps its login and would write it back";
+  const w = cxWorld({ answers: { '/api/codex-accounts/': () => { const e = new Error(why); e.status = 409; e.body = { detail: why, error: why }; throw e; } } });
+  const before = plain(w.get('state').codex_accounts);
+  btn(cxRow(w, K2), 'Switch').click();
+  await tick(); await tick();
+  assert.deepEqual(plain(w.get('state').codex_accounts), before);
+  assert.deepEqual(cxRows(w).map((r) => !!r.querySelector('.badge.cur')), [true, false, false]);
+  assert.equal(off(btn(cxRow(w, K2), 'Switch')), false);
+  const err = cxSec(w).querySelector('.set-err');
+  assert.equal(hidden(err), false);
+  assert.equal(text(err), `Switch failed: ${why}`);
+  assert.deepEqual(toasts(w).pop(), { text: `Switch failed: ${why}`, kind: 'bad' });
+  assert.equal(hidden(panel(w).querySelector('.set-acct-list + .dim + .set-err')) || true, true);
+});
+
+test('codex: a poll that lands while the switch runs does not flip the rows back; a poll after the answer shows the truth', async () => {
+  const d = defer();
+  const w = cxWorld({ answers: { '/api/codex-accounts/': () => d.p } });
+  btn(cxRow(w, K2), 'Switch').click();
+  w.ctx.__stale = cxStateOf();                                            // the box still says K1 while the request runs
+  w.run('state = __stale; accountOverlay(state); updateCurrentPage(state)');
+  assert.equal(w.get('state').codex_accounts.current, K2, 'the overlay keeps the painted switch');
+  assert.deepEqual(cxRows(w).map((r) => !!r.querySelector('.badge.cur')), [false, true, false]);
+  d.resolve({ ok: true, accounts: cxOf([cxAcct(K1, { label: 'Main' }), cxAcct(K2, { label: 'Work', current: true }), cxAcct(K3, { label: 'Old', saved: false })]) });
+  await tick(); await tick();
+  w.ctx.__fresh = stateOf({ codex_accounts: cxOf([cxAcct(K1, { label: 'Main', current: true }), cxAcct(K2, { label: 'Work' }), cxAcct(K3, { label: 'Old', saved: false })]) });
+  w.run('state = __fresh; accountOverlay(state); updateCurrentPage(state)');
+  assert.deepEqual(cxRows(w).map((r) => !!r.querySelector('.badge.cur')), [true, false, false], 'no hold any more: the box says so');
+});
+
+test('codex Forget login takes two taps, DELETEs /api/codex-accounts/<key>/saved and the row says "no saved login"; a refusal says why', async () => {
+  const after = cxOf([cxAcct(K1, { label: 'Main', current: true }), cxAcct(K2, { label: 'Work', saved: false }), cxAcct(K3, { label: 'Old', saved: false })], { ...CX_STORE, count: 1 });
+  const w = cxWorld({ answers: { '/api/codex-accounts/': { ok: true, forgotten: true, accounts: after } } });
+  btn(cxRow(w, K2), 'Forget login').click();
+  assert.equal(apiCalls(w, '/api/codex-accounts').filter((c) => c.method === 'DELETE').length, 0, 'the first tap only arms it');
+  assert.deepEqual(labels(cxRow(w, K2)).filter((l) => /Confirm|Cancel/.test(l)), ['Confirm Forget login', 'Cancel']);
+  btn(cxRow(w, K2), 'Cancel').click();
+  assert.deepEqual(labels(cxRow(w, K2)), ['Switch', 'Rename', 'Forget login']);
+  btn(cxRow(w, K2), 'Forget login').click();
+  btn(cxRow(w, K2), 'Confirm Forget login').click();
+  await tick(); await tick();
+  assert.deepEqual(apiCalls(w, '/api/codex-accounts').filter((c) => c.method === 'DELETE'), [{ method: 'DELETE', path: `/api/codex-accounts/${K2}/saved` }]);
+  assert.equal(text(cxRow(w, K2).querySelector('.set-chips .dim')), 'no saved login');
+  assert.deepEqual(labels(cxRow(w, K2)), ['Log in again', 'Rename']);
+  assert.deepEqual(toasts(w).pop(), { text: 'Forgot the saved login of Work', kind: 'ok' });
+  const w2 = cxWorld({ answers: { '/api/codex-accounts/': () => { const e = new Error('x'); e.body = { detail: 'this account is the live login; switch to another account first' }; throw e; } } });
+  btn(cxRow(w2, K2), 'Forget login').click();
+  btn(cxRow(w2, K2), 'Confirm Forget login').click();
+  await tick(); await tick();
+  assert.match(text(cxSec(w2).querySelector('.set-err')), /Could not forget the login of Work: this account is the live login/);
+  assert.deepEqual(labels(cxRow(w2, K2)), ['Switch', 'Rename', 'Forget login']);
+});
+
+test('codex Rename: its own sheet (PATCH /api/codex-accounts/<key>), the name is required, painted at once, a refusal puts the old name back', async () => {
+  const w = cxWorld({ answers: { '/api/codex-accounts/': { ok: true } } });
+  btn(cxRow(w, K2), 'Rename').click();
+  const sheet = w.document.querySelector('form.form');
+  const input = sheet.querySelector('input');
+  assert.equal(input.value, 'Work');
+  assert.match(text(sheet), /Required\. How this Codex account is listed here/);
+  input.value = '   ';
+  sheet.dispatchEvent({ type: 'submit', preventDefault() {} });
+  assert.match(text(sheet), /Give the account a name\./, 'empty is refused before anything is sent');
+  assert.equal(apiCalls(w, '/api/codex-accounts').length, 0);
+  input.value = 'Work  laptop';
+  sheet.dispatchEvent({ type: 'submit', preventDefault() {} });
+  assert.equal(text(cxRow(w, K2).querySelector('.k')), 'Work laptop', 'painted at once');
+  await tick(); await tick();
+  assert.deepEqual(apiCalls(w, '/api/codex-accounts'), [{ method: 'PATCH', path: `/api/codex-accounts/${K2}`, body: { label: 'Work laptop' } }]);
+  assert.equal(apiCalls(w, '/api/accounts/').length, 0, 'not the Claude endpoint');
+  const w2 = cxWorld({ answers: { '/api/codex-accounts/': () => { const e = new Error('nope'); e.body = { detail: 'give the account a name' }; throw e; } } });
+  btn(cxRow(w2, K2), 'Rename').click();
+  const s2 = w2.document.querySelector('form.form');
+  s2.querySelector('input').value = 'Other';
+  s2.dispatchEvent({ type: 'submit', preventDefault() {} });
+  await tick(); await tick();
+  assert.equal(text(cxRow(w2, K2).querySelector('.k')), 'Work', 'the old name is back');
+  assert.match(text(s2), /Rename failed: give the account a name/);
+});
+
+test('codex add, idle: a required name field (16 px input class), the how-to, a bordered Add Codex account button disabled until there is a name', () => {
+  const w = cxWorld();
+  const idle = cxBlock(w).querySelector('.add-idle');
+  assert.equal(hidden(idle), false);
+  assert.match(text(idle), /name it, open the link, sign in and type the one-time code on the page that opens\. Nothing is pasted back\./);
+  const add = btn(idle, 'Add Codex account');
+  assert.equal(isFilled(add), false);
+  assert.equal(add.hasAttribute('disabled'), true, 'no name yet');
+  assert.equal(cxName(w).getAttribute('maxlength'), '60');
+  cxName(w).value = 'Home';
+  cxName(w).dispatchEvent({ type: 'input' });
+  assert.equal(add.disabled, false);
+  cxName(w).value = '  ';
+  cxName(w).dispatchEvent({ type: 'input' });
+  assert.equal(add.disabled, true, 'blanks are no name');
+  assert.match(text(idle), /Account name/);
+  assert.match(text(idle), /Codex gives no email at sign-in/);
+});
+
+test('codex add: submitting with no name or a name over 60 characters says so under the field and sends nothing', async () => {
+  const w = cxWorld();
+  cxName(w).value = '';
+  cxSubmit(w);
+  assert.match(text(cxBlock(w)), /Give the account a name\./);
+  cxName(w).value = 'x'.repeat(61);
+  cxSubmit(w);
+  assert.match(text(cxBlock(w)), /At most 60 characters\./);
+  await tick();
+  assert.equal(apiCalls(w, '/api/codex-accounts').length, 0);
+});
+
+test('codex add: POST /api/codex-accounts/login {label}, "starting the login…" until the link arrives, then step 1 (link, Copy link, Open), step 2 (the code shown large, Copy code), waiting line, Cancel, terminal output; no code input', async () => {
+  const w = cxWorld();
+  cxStart(w, '  Home  ');
+  await tick();
+  assert.deepEqual(apiCalls(w, '/api/codex-accounts/login'), [{ method: 'POST', path: '/api/codex-accounts/login', body: { label: 'Home' } }]);
+  const b = cxBlock(w);
+  assert.equal(hidden(b.querySelector('.add-flight')), false);
+  assert.equal(hidden(b.querySelector('.add-idle')), true);
+  assert.equal(text(b.querySelector('.add-wait')), 'starting the login…');
+  const url = b.querySelector('.add-url'), copy = btn(b, 'Copy link'), open = btn(b, 'Open'), codeBox = b.querySelector('.cx-code'), copyCode = btn(b, 'Copy code');
+  assert.equal(copy.disabled, true);
+  assert.equal(copyCode.disabled, true);
+  assert.equal(open.getAttribute('aria-disabled'), 'true');
+  cxFlight(w);
+  assert.equal(hidden(b.querySelector('.add-wait')), true);
+  assert.equal(url.value, CX_URL);
+  assert.equal(url.getAttribute('readonly'), '');
+  assert.equal(open.getAttribute('href'), CX_URL);
+  assert.equal(open.getAttribute('target'), '_blank');
+  assert.equal(open.getAttribute('rel'), 'noopener');
+  assert.equal(text(codeBox), CX_CODE);
+  assert.equal(codeBox.classList.contains('is-empty'), false);
+  assert.equal(copy.disabled, false);
+  assert.equal(copyCode.disabled, false);
+  assert.deepEqual(b.querySelectorAll('.add-k').map(text), ['Step 1', 'Step 2']);
+  assert.match(text(b), /Type this code on the page\. Nothing is pasted back here\./);
+  assert.equal(b.querySelectorAll('input').filter((i) => !hidden(i) && !i.hasAttribute('readonly')).length, 0, 'nothing to type in: no code input');
+  assert.equal(text(b.querySelector('.add-status')), 'waiting for the sign-in…');
+  assert.deepEqual(visibleButtons(b).map(text), ['Copy link', 'Open', 'Copy code', 'Cancel']);
+  assert.equal(b.querySelector('.add-tail').textContent, `Welcome to Codex\n${CX_URL}\n${CX_CODE}`);
+  assert.equal(b.querySelector('details.add-out').open, false);
+  assert.equal(b.querySelector('details.add-out a').getAttribute('href'), '/term/_ccboard-login');
+});
+
+test('codex add: the code shows "…" until the login has printed it; an unsafe link is shown but never made a link', () => {
+  const w = cxWorld();
+  cxStart(w);
+  cxFlight(w, { code: null });
+  const codeBox = cxBlock(w).querySelector('.cx-code');
+  assert.equal(text(codeBox), '…');
+  assert.equal(codeBox.classList.contains('is-empty'), true);
+  assert.equal(btn(cxBlock(w), 'Copy code').disabled, true);
+  cxFlight(w, { url: 'javascript:alert(1)' });
+  assert.equal(btn(cxBlock(w), 'Open').getAttribute('href'), null);
+  assert.equal(btn(cxBlock(w), 'Open').getAttribute('aria-disabled'), 'true');
+  assert.equal(cxBlock(w).querySelector('.add-url').value, 'javascript:alert(1)');
+});
+
+test('codex add: Copy link and Copy code use the clipboard and say so; where it fails a message says to select and copy', async () => {
+  const w = cxWorld();
+  cxStart(w);
+  cxFlight(w);
+  btn(cxBlock(w), 'Copy link').click();
+  await tick();
+  btn(cxBlock(w), 'Copy code').click();
+  await tick();
+  assert.deepEqual(plain(w.get('__copied')), [CX_URL, CX_CODE]);
+  assert.deepEqual(toasts(w).slice(-2), [{ text: 'Link copied', kind: 'ok' }, { text: 'Code copied', kind: 'ok' }]);
+  w.ctx.navigator.clipboard = { writeText: async () => { throw new Error('denied'); } };
+  w.run('document.execCommand = () => false');
+  btn(cxBlock(w), 'Copy code').click();
+  await tick();
+  assert.deepEqual(toasts(w).pop(), { text: 'Copy failed: select the code and copy it', kind: 'warn' });
+});
+
+test('codex add: the page asks for the result every second (one timer), stops when the result arrives, on Cancel, after a device code\'s 15 minutes and on unmount', async () => {
+  fake(true);
+  try {
+    const w = cxWorld();
+    cxStart(w);
+    await tick();
+    cxFlight(w);
+    assert.equal(w.run('settingsPage.cx.timers'), 1);
+    const base = polls(w);
+    mock.timers.tick(5000);
+    assert.equal(polls(w) - base, 5);
+    cxLogin(w, { running: false, adding: false, url: null, code: null, result: { ok: true, key: K3, label: 'Home', live: false, at: 'r1' } });
+    assert.equal(w.run('settingsPage.cx.timers'), 0, 'the result ends it');
+    const b = polls(w);
+    mock.timers.tick(5000);
+    assert.equal(polls(w), b);
+    // Cancel
+    const w2 = cxWorld();
+    cxStart(w2);
+    await tick();
+    cxFlight(w2);
+    btn(cxBlock(w2), 'Cancel').click();
+    await tick();
+    assert.equal(w2.run('settingsPage.cx.timers'), 0);
+    assert.deepEqual(apiCalls(w2, '/api/codex-accounts/login').filter((c) => c.method === 'DELETE'), [{ method: 'DELETE', path: '/api/codex-accounts/login' }]);
+    assert.equal(hidden(cxBlock(w2).querySelector('.add-flight')), true, 'idle again even while the poll still says adding');
+    // 15 minutes
+    const w3 = cxWorld();
+    cxStart(w3);
+    await tick();
+    cxFlight(w3);
+    const b3 = polls(w3);
+    mock.timers.tick(899000);
+    assert.equal(polls(w3) - b3, 899);
+    mock.timers.tick(1000);
+    mock.timers.tick(10000);
+    assert.equal(polls(w3) - b3, 900, 'stopped at fifteen minutes');
+    assert.match(text(cxBlock(w3).querySelector('.add-status')), /Still waiting… the code has probably expired\. Cancel and start again\./);
+    // unmount
+    const w4 = cxWorld();
+    cxStart(w4);
+    await tick();
+    cxFlight(w4);
+    w4.location.hash = '#/agents';
+    const b4 = polls(w4);
+    mock.timers.tick(5000);
+    assert.equal(polls(w4), b4, 'leaving the page stops it');
+  } finally { fake(false); }
+});
+
+test('codex add: a page opened in the middle of a login (state says adding) shows the steps and keeps asking', () => {
+  fake(true);
+  try {
+    const w = acctWorld({ state: cxStateOf({ codex_accounts: cxOf(CX_THREE(), CX_STORE, { running: true, adding: true, label: 'Home', url: CX_URL, code: CX_CODE, tail: [] }) }) });
+    assert.equal(hidden(cxBlock(w).querySelector('.add-flight')), false);
+    assert.equal(text(cxBlock(w).querySelector('.cx-code')), CX_CODE);
+    assert.equal(w.run('settingsPage.cx.timers'), 1);
+  } finally { fake(false); }
+});
+
+test('codex add: a successful result: toast "Added <label>" (+ the one in use), the name field is empty, the block is idle; announced once per result.at; a result nobody here waited for is not announced', async () => {
+  const w = cxWorld();
+  cxStart(w, 'Home');
+  await tick();
+  cxFlight(w);
+  cxLogin(w, { running: false, adding: false, url: null, code: null, result: { ok: true, key: K3, label: 'Home', live: true, at: 'r1' } });
+  assert.deepEqual(toasts(w).pop(), { text: 'Added Home · it is the Codex account in use now', kind: 'ok' });
+  assert.equal(cxName(w).value, '');
+  assert.equal(hidden(cxBlock(w).querySelector('.add-idle')), false);
+  assert.equal(hidden(cxBlock(w).querySelector('.add-flight')), true);
+  const n = toasts(w).length;
+  cxLogin(w, { result: { ok: true, key: K3, label: 'Home', live: true, at: 'r1' } });
+  assert.equal(toasts(w).length, n, 'once');
+  const w2 = cxWorld();
+  cxLogin(w2, { result: { ok: true, key: K3, label: 'Home', live: false, at: 'r9' } });
+  assert.equal(toasts(w2).length, 0, 'a reload within the ten minutes is not news');
+});
+
+test('codex add: a failed login shows the reason with Try again (bordered; restarts with {label, restart: true}) and Dismiss', async () => {
+  const w = cxWorld();
+  cxStart(w, 'Home');
+  await tick();
+  cxFlight(w);
+  cxLogin(w, { running: false, adding: false, url: null, code: null, result: { ok: false, error: 'the login did not complete', at: 'f1' } });
+  const failed = cxBlock(w).querySelector('.add-error');
+  assert.equal(hidden(failed), false);
+  assert.equal(text(failed.querySelector('.add-err')), 'the login did not complete');
+  assert.equal(isFilled(btn(failed, 'Try again')), false);
+  btn(failed, 'Try again').click();
+  await tick();
+  assert.deepEqual(apiCalls(w, '/api/codex-accounts/login').filter((c) => c.method === 'POST').pop(), { method: 'POST', path: '/api/codex-accounts/login', body: { label: 'Home', restart: true } });
+  const w2 = cxWorld();
+  cxStart(w2, 'Home');
+  await tick();
+  cxFlight(w2);
+  cxLogin(w2, { running: false, adding: false, url: null, code: null, result: { ok: false, error: 'nope', at: 'f2' } });
+  btn(cxBlock(w2).querySelector('.add-error'), 'Dismiss').click();
+  assert.equal(hidden(cxBlock(w2).querySelector('.add-idle')), false);
+});
+
+test('codex add: a refused start (409, a login already running) shows the reason in the block', async () => {
+  const w = cxWorld({ answers: { '/api/codex-accounts/login': () => { const e = new Error('x'); e.status = 409; e.body = { detail: 'a login is already running', error: 'a login is already running' }; throw e; } } });
+  cxStart(w);
+  await tick(); await tick();
+  assert.equal(text(cxBlock(w).querySelector('.add-err')), 'a login is already running');
+  assert.equal(w.run('settingsPage.cx.timers'), 0);
+});
+
+test('codex Log in again on an unsaved row starts the flow with the account\'s name', async () => {
+  const w = cxWorld();
+  btn(cxRow(w, K3), 'Log in again').click();
+  await tick();
+  assert.deepEqual(apiCalls(w, '/api/codex-accounts/login'), [{ method: 'POST', path: '/api/codex-accounts/login', body: { label: 'Old' } }]);
+});
+
+test('codex: the add block\'s name field is the same node across updates and keeps what was typed', () => {
+  const w = cxWorld();
+  const input = cxName(w);
+  input.value = 'Half typed';
+  setState(w, cxStateOf());
+  setState(w, stateOf({ codex_accounts: cxOf([cxAcct(K1, { label: 'Main', current: true }), cxAcct(K2, { label: 'Work' })]) }));
+  assert.equal(cxName(w), input);
+  assert.equal(input.value, 'Half typed');
+});
+
+test('demo: a Codex switch moves `current` locally and survives the poll; Forget moves the row to "no saved login"; the add flow shows a made-up link and code, then adds a row', async () => {
+  fake(true);
+  try {
+    const w = cxWorld();
+    w.location.search = '?demo=1';
+    w.ctx.__fix = () => cxStateOf();
+    w.run('poll = async () => { __polls++; state = accountOverlay(__fix()); updateCurrentPage(state); };');
+    btn(cxRow(w, K2), 'Switch').click();
+    await tick(); await tick();
+    assert.deepEqual(cxRows(w).map((r) => !!r.querySelector('.badge.cur')), [false, true, false]);
+    w.run('state = __fix(); accountOverlay(state); updateCurrentPage(state)');
+    assert.deepEqual(cxRows(w).map((r) => !!r.querySelector('.badge.cur')), [false, true, false], 'the demo board keeps its move');
+    btn(cxRow(w, K1), 'Forget login').click();
+    btn(cxRow(w, K1), 'Confirm Forget login').click();
+    await tick(); await tick();
+    assert.equal(text(cxRow(w, K1).querySelector('.set-chips .dim')), 'no saved login');
+    cxStart(w, 'Demo home');
+    await tick();
+    mock.timers.tick(1000);
+    await tick();
+    assert.equal(cxBlock(w).querySelector('.add-url').value, 'https://auth.openai.com/codex/device');
+    assert.equal(text(cxBlock(w).querySelector('.cx-code')), 'DEMO-4821');
+    mock.timers.tick(6000);
+    await tick(); await tick();
+    assert.equal(cxRows(w).length, 4);
+    assert.match(toasts(w).pop().text, /^Added Demo home/);
+    cxStart(w, 'Another');
+    await tick();
+    mock.timers.tick(1000);
+    await tick();
+    btn(cxBlock(w), 'Cancel').click();
+    await tick();
+    assert.equal(hidden(cxBlock(w).querySelector('.add-flight')), true);
+  } finally { fake(false); }
+});
+
+test('the Codex overlay changes nothing on a live board without a running switch, and never throws on odd states', () => {
+  const w = cxWorld();
+  const st = cxStateOf();
+  const before = JSON.stringify(st);
+  w.ctx.__st3 = st;
+  w.run('accountOverlay(__st3)');
+  assert.equal(JSON.stringify(w.get('__st3')), before);
+  assert.doesNotThrow(() => w.run('accountOverlay({ codex_accounts: null }); accountOverlay({ codex_accounts: {} }); cxOverlay(null); cxOverlay({})'));
+});
+
+test('codex add: the terminal output is asked for (GET /api/codex-accounts) only while the disclosure is open, and survives the polls that carry no tail', async () => {
+  fake(true);
+  try {
+    const w = cxWorld({ answers: { '/api/codex-accounts': { ok: true, login: { tail: ['Welcome to Codex', CX_URL, 'ABCD-12345'] } } } });
+    cxStart(w);
+    await tick();
+    cxFlight(w, { tail: undefined });                                      // /api/state has no login.tail
+    const get = () => apiCalls(w, '/api/codex-accounts').filter((c) => c.method === 'GET');
+    mock.timers.tick(3000);
+    await tick();
+    assert.equal(get().length, 0, 'closed: nothing asked for');
+    assert.equal(cxBlock(w).querySelector('.add-tail').textContent, '');
+    const det = cxBlock(w).querySelector('details.add-out');
+    det.open = true;
+    mock.timers.tick(1000);
+    await tick(); await tick();
+    assert.ok(get().length >= 1, 'open: the next tick asks');
+    assert.equal(cxBlock(w).querySelector('.add-tail').textContent, 'Welcome to Codex\n' + CX_URL + '\nABCD-12345');
+    cxFlight(w, { tail: undefined, running: true });                       // another poll without a tail does not blank it
+    assert.equal(cxBlock(w).querySelector('.add-tail').textContent, 'Welcome to Codex\n' + CX_URL + '\nABCD-12345');
+  } finally { fake(false); }
 });

@@ -619,5 +619,20 @@ html.force-coarse #page a.gauge { min-height:var(--tap); }
 html.force-coarse #page .settings-page .add-term { display:inline-flex; align-items:center; min-height:var(--tap); }
 html.force-coarse #page .settings-page .add-url { font-size:16px; }
 
+/* v0.5.17e Codex accounts: the Claude rows and add block, on the teal of the agent. The one-time code is shown large in mono (the thing to read off and type on the page);
+   no filled primary lives in this section (the Claude add block owns the panel's one). */
+#page .settings-page .cx-section { margin-top:6px; }
+#page .settings-page .set-cx > .k { overflow-wrap:anywhere; color:var(--hue); }
+#page .settings-page .cx-warn { margin:6px 0 0; font-size:13px; line-height:1.5; max-width:62ch; color:var(--warn); }
+#page .settings-page .cx-form { display:flex; flex-direction:column; gap:8px; }
+#page .settings-page .cx-code { font-family:var(--font-mono); font-size:28px; font-weight:600; line-height:1.2; letter-spacing:.14em; text-align:center; padding:12px; border:1px solid var(--line); border-radius:2px; background:var(--bg-0); color:var(--fg); user-select:all; overflow-wrap:anywhere; }
+#page .settings-page .cx-code.is-empty { color:var(--dim-2); letter-spacing:0; }
+#page .settings-page .cx-cmd { display:block; padding:8px 10px; border:1px solid var(--line-soft); border-radius:2px; background:var(--bg-0); font-family:var(--font-mono); font-size:13px; overflow-wrap:anywhere; user-select:all; }
+@media (max-width:599px) {
+  #page .settings-page .set-cx > .kv-act { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:8px; justify-content:stretch; }
+  #page .settings-page .set-cx > .kv-act > .row { grid-column:1 / -1; display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px; }
+  #page .settings-page .cx-code { font-size:24px; letter-spacing:.1em; }
+}
+
 /* search: Peek and Attach sit at the right of the result's head, beside the role chip, the place and the time */
 #page .res-actions { margin-left:auto; display:inline-flex; align-items:center; gap:6px; }

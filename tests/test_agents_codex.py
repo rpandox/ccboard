@@ -37,6 +37,7 @@ def fixture_text(name: str) -> str:
 
 
 HELP_0145, HELP_0157 = fixture_text("codex_help_0145_real.txt"), fixture_text("codex_help_0157.txt")
+LOGIN_0145, LOGIN_0160 = fixture_text("codex_login_help_0145.txt"), fixture_text("codex_login_help_0160.txt")   # shaped like clap's output (not captured from a real codex)
 EXEC_0145, EXEC_0157 = fixture_text("codex_exec_help_0145_real.txt"), fixture_text("codex_exec_help_0157.txt")
 RESUME_0145 = fixture_text("codex_resume_help_0145_real.txt")
 MODELS_JSON = fixture_text("codex_models_small.json")
@@ -93,11 +94,12 @@ class FakeCodex:
         return self.calls.count(key)
 
     def use(self, version="0.145.0", help_text=HELP_0145, exec_text=EXEC_0145, login=(0, "Logged in using ChatGPT\n", ""),
-            features="hooks  stable  true\n", mcp=0, models=None):
+            features="hooks  stable  true\n", mcp=0, models=None, login_help=None):
         self.answers[("--version",)] = (0, f"codex-cli {version}\n", "")
         self.answers[("--help",)] = (0, help_text, "")
         self.answers[("exec", "--help")] = (0, exec_text, "")
         self.answers[("login", "status")] = login
+        self.answers[("login", "--help")] = (0, LOGIN_0160 if login_help is None else login_help, "")
         self.answers[("features", "list")] = (0, features, "")
         self.answers[("mcp", "get", "ccboard")] = (mcp, "", "")
         if models is not None:

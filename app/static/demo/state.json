@@ -1395,6 +1395,46 @@
       "count": 2
     }
   },
+  "codex_accounts": {
+    "current": "3b9f1c2a7d4e5f6a8b0c1d2e",
+    "list": [
+      {
+        "key": "3b9f1c2a7d4e5f6a8b0c1d2e",
+        "label": "Codex main",
+        "account_id": "acct-demo-0001",
+        "plan": "plus",
+        "saved": true,
+        "current": true,
+        "added_at": "2026-10-01T09:00:00+00:00",
+        "last_seen": "2026-10-04T10:00:00+00:00"
+      },
+      {
+        "key": "7c8d9e0f1a2b3c4d5e6f7a8b",
+        "label": "Codex work",
+        "account_id": "acct-demo-0002",
+        "plan": "pro",
+        "saved": true,
+        "current": false,
+        "added_at": "2026-10-02T09:00:00+00:00",
+        "last_seen": "2026-10-03T18:00:00+00:00"
+      }
+    ],
+    "store": {
+      "supported": true,
+      "add": true,
+      "reason": null,
+      "count": 2
+    },
+    "login": {
+      "running": false,
+      "adding": false,
+      "label": null,
+      "started_at": null,
+      "url": null,
+      "code": null,
+      "result": null
+    }
+  },
   "usage_codex": {
     "value": {
       "primary": {

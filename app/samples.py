@@ -33,7 +33,7 @@ log = logging.getLogger("ccboard.samples")
 #              call writes (ev counts per event, state and lim are written by their own change/dedupe rules).
 #   key        (documentation) rl_*: agent ('claude' = the CURRENT account) or 'acct:<account key>' (one subscription account, see
 #              app/accounts.py); ctx, ctx_tok, scost, stok, state: tmux session; ev: project; cost: '<agent>:<uuid>';
-#              h_*: node; n_*: ''; lim: 5h | 7d | other; acct: the account key that became current.
+#              h_*: node; n_*: ''; lim: 5h | 7d | other; acct: the account key that became current; cacct: the Codex account key that became current.
 #   meta       state, cost and lim carry `acct` (the subscription account key) when it is known; acct events carry {from, to}.
 CATALOGUE: dict[str, dict] = {
     "rl_5h":   {"agg": "avg",    "throttle": {"delta": 1,     "seconds": 300},  "retention_days": 90},
@@ -54,6 +54,7 @@ CATALOGUE: dict[str, dict] = {
     "n_attn":  {"agg": "avg",    "throttle": {"delta": None,  "seconds": 60},   "retention_days": 30},
     "lim":     {"agg": "events", "throttle": {"delta": None,  "seconds": None}, "retention_days": 180},
     "acct":    {"agg": "events", "throttle": {"delta": None,  "seconds": None}, "retention_days": 365},   # the current account changed: key = new account, meta {from, to}
+    "cacct":   {"agg": "events", "throttle": {"delta": None,  "seconds": None}, "retention_days": 365},   # the Codex login in use changed (app/codex_accounts.py): key = new slot key, meta {from, to}
 }
 RETENTION = {name: spec["retention_days"] for name, spec in CATALOGUE.items()}
 
@@ -522,8 +523,8 @@ def events_payload(db, series: str, since, key: str | None = None) -> dict:
 
 
 def _register_hooks() -> None:
-    from . import account_store, accounts, autoresume       # imported late: autoresume imports tmux/notify and accounts imports samples lazily
-    for fn in (autoresume.tick, accounts.observe, account_store.tick):   # observe: who is logged in (kv accounts / account_current, 'acct' events); account_store.tick: saved logins
+    from . import account_store, accounts, autoresume, codex_accounts   # imported late: autoresume imports tmux/notify and accounts imports samples lazily
+    for fn in (autoresume.tick, accounts.observe, account_store.tick, codex_accounts.tick):   # observe: who is logged in (kv accounts / account_current, 'acct' events); account_store.tick: saved logins; codex_accounts.tick: the same for Codex
         if fn not in TICK_HOOKS:
             TICK_HOOKS.append(fn)
 

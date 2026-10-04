@@ -144,6 +144,7 @@ function accountOverlay(s) {
     }
   }
   if (typeof demoOn === 'function' && demoOn() && acctFlow.demo && acctFlow.demo.login) s.login = { ...(s.login || {}), ...acctFlow.demo.login };
+  if (typeof cxOverlay === 'function') cxOverlay(s);
   return s;
 }
 
@@ -208,6 +209,114 @@ function accountLogin(email) {
   acctFlow.want = { email: typeof email === 'string' && email ? email : null };
   if (typeof navigate === 'function' && typeof buildHash === 'function') navigate(buildHash('settings', {}, { sec: 'accounts' }));
   if (typeof settingsPage !== 'undefined' && settingsPage.refs && typeof settingsShow === 'function') settingsShow('accounts');   // already on Settings: the route may not change
+}
+
+/* ---------- saved Codex logins (v0.5.17e): the twin of the Claude flow above, on state.codex_accounts ----------
+   state.codex_accounts = {current, list: [{key, label, account_id, plan, saved, current, added_at, last_seen}], store: {supported, add, reason, count}, login: {running, adding, label,
+   started_at, url, code, result}} (older boxes and fixtures have none: the Codex section of Settings > Accounts is then not shown). An account is named by its label alone: Codex
+   gives no email at login. cxFlow is its page-side state, separate from acctFlow so a Claude switch and a Codex switch never block each other:
+     busy   the key being switched to while POST /api/codex-accounts/<key>/switch runs
+     hold   {key}: the switch is painted as done and laid over the poll until the request ends (the demo board keeps it)
+     err    the reason of the last refused switch / forget; note: the warnings of the last switch (other Codex processes keep the previous login)
+     demo   the demo board's make-believe login, accounts it "added" and logins it "forgot" */
+const cxFlow = { busy: null, hold: null, err: '', note: '', demo: null };
+
+function cxState(st) {
+  const c = st && st.codex_accounts;
+  return c && typeof c === 'object' && Array.isArray(c.list) ? c : null;
+}
+
+function cxAccounts(st) {
+  const c = cxState(st);
+  return c ? c.list.filter((x) => x && typeof x === 'object' && x.key) : [];
+}
+
+function cxStore(st) {
+  const s = st && st.codex_accounts && st.codex_accounts.store;
+  return { supported: !!(s && s.supported), add: !!(s && s.add), reason: (s && typeof s.reason === 'string' && s.reason) || '' };
+}
+
+function cxName(a) {
+  const n = a && typeof a.label === 'string' ? a.label.trim() : '';
+  return n || (a && a.key ? String(a.key).slice(0, 6) : 'Codex account');
+}
+
+function cxDemo() {
+  if (!cxFlow.demo) cxFlow.demo = { login: null, accounts: [], forgot: [], current: null };
+  return cxFlow.demo;
+}
+
+/* Lay the unfinished Codex actions over a fresh /api/state answer (accountOverlay calls this): the demo's accounts, logins and login, and a switch still running. */
+function cxOverlay(s) {
+  const c = s && s.codex_accounts;
+  if (!c || !Array.isArray(c.list)) return s;
+  const d = typeof demoOn === 'function' && demoOn() ? cxFlow.demo : null;
+  if (d) {
+    for (const x of d.accounts) if (!c.list.some((y) => y && y.key === x.key)) c.list.push({ ...x });
+    for (const x of c.list) if (x && d.forgot.includes(x.key)) x.saved = false;
+    if (d.login) c.login = { ...(c.login || {}), ...d.login };
+  }
+  const h = cxFlow.hold;
+  if (h && c.list.some((x) => x && x.key === h.key)) {
+    for (const x of c.list) if (x) x.current = x.key === h.key;
+    c.current = h.key;
+  }
+  return s;
+}
+
+/* Every surface that shows the Codex accounts, repainted from `state` (the Accounts panel is the only one). */
+function cxRepaint() {
+  if (typeof settingsPage !== 'undefined' && settingsPage.refs && typeof settingsFill === 'function') settingsFill('accounts', true);
+}
+
+/* THE Codex switch (the Settings rows call it): the tapped row becomes the one in use at once, POST /api/codex-accounts/<key>/switch follows, success takes the server's
+   accounts and says so in a toast (a warning toast and the panel's note line when other Codex processes on the box keep the previous login), a refusal puts every row back
+   and says why (the panel's error line and a toast). One switch at a time. Resolves true when the account is now in use. */
+async function cxSwitch(a) {
+  if (!a || !a.key || cxFlow.busy) return false;
+  const st = cxState(state);
+  if (!st) return false;
+  const key = a.key;
+  const target = st.list.find((x) => x && x.key === key);
+  if (!target || target.current) return false;
+  const name = cxName(target);
+  const was = new Map(st.list.filter(Boolean).map((x) => [x.key, !!x.current]));
+  const wasCurrent = st.current;
+  const paint = (to) => {
+    const now = cxState(state);
+    if (!now) return;
+    for (const x of now.list) if (x) x.current = to === null ? !!was.get(x.key) : x.key === to;
+    now.current = to === null ? wasCurrent : to;
+  };
+  cxFlow.busy = key;
+  cxFlow.hold = { key };
+  cxFlow.err = '';
+  cxFlow.note = '';
+  paint(key);
+  cxRepaint();
+  let r = null;
+  try {
+    r = await api('POST', `/api/codex-accounts/${encodeURIComponent(key)}/switch`);
+  } catch (e) {
+    const why = acctReason(e);
+    cxFlow.busy = null;
+    cxFlow.hold = null;
+    paint(null);
+    cxFlow.err = `Switch failed: ${why}`;
+    cxRepaint();
+    if (typeof pageToast === 'function') pageToast(`Switch failed: ${why}`, 'bad');
+    return false;
+  }
+  cxFlow.busy = null;
+  if (!(typeof demoOn === 'function' && demoOn())) cxFlow.hold = null;
+  if (r && r.accounts && Array.isArray(r.accounts.list)) state.codex_accounts = r.accounts;
+  const warns = r && Array.isArray(r.warnings) ? r.warnings.filter((w) => typeof w === 'string' && w) : [];
+  cxFlow.note = warns.join(' · ');
+  cxRepaint();
+  const text = r && r.already ? `${name} is already in use` : `Switched to ${name} · Codex sessions started from now on use it${warns.length ? ` · ${warns.join(' · ')}` : ''}`;
+  if (typeof pageToast === 'function') pageToast(text, warns.length ? 'warn' : 'ok');
+  if (typeof poll === 'function') poll(true);
+  return true;
 }
 
 /* The reply box's placeholder: a phone gets the bare verb ('Reply…', 'Send…'): the one-row box is about 330 px wide and a long session name wrapped onto a

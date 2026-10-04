@@ -299,15 +299,19 @@ def running() -> bool:
 
 
 def _holds_saved_logins(p: Path) -> bool:
-    """Would backing up `p` take the saved Claude logins (<data dir>/accounts, app/account_store.py)? True for the data dir itself, the
-    accounts dir, anything inside it, and any directory above them (a snapshot of the home dir contains them too). The nightly paths
-    are the DB snapshot, the transcripts and CCBOARD_BACKUP_EXTRA: credentials are in none of them, whatever CCBOARD_BACKUP_EXTRA says."""
-    store = (settings.data_dir / "accounts").resolve()
+    """Would backing up `p` take the saved logins (<data dir>/accounts: Claude's, app/account_store.py; <data dir>/codex-accounts: Codex's,
+    app/codex_accounts.py)? True for the data dir itself, either store dir, anything inside them, and any directory above them (a snapshot of
+    the home dir contains them too). The nightly paths are the DB snapshot, the transcripts and CCBOARD_BACKUP_EXTRA: credentials are in none
+    of them, whatever CCBOARD_BACKUP_EXTRA says."""
     try:
         target = p.expanduser().resolve()
     except (OSError, RuntimeError):
         return False
-    return target == store or store.is_relative_to(target) or target.is_relative_to(store)
+    for name in ("accounts", "codex-accounts"):
+        store = (settings.data_dir / name).resolve()
+        if target == store or store.is_relative_to(target) or target.is_relative_to(store):
+            return True
+    return False
 
 
 def run(push: bool | None = None, restic: bool | None = None) -> dict:
