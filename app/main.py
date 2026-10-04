@@ -25,7 +25,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import accounts, agents, backup, claude_auth, clonequeue, cost, deploy, doctor, github, gitops, health, hooks, memory, notify, permissions, previews, projects, prpoll, push, recover, samples, scheduler, search, tasks, tmux, tree, usage, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, cost, deploy, doctor, github, gitops, health, hooks, memory, notify, permissions, previews, projects, prpoll, push, recover, samples, scheduler, search, tasks, tmux, tree, usage, usage_summary
 from .agents import monitor as mem_monitor
 from .agents import registry
 from .agents.base import LaunchReq
@@ -108,6 +108,12 @@ async def lifespan(app: FastAPI):
     hooks.ensure_token()
     notify.set_db(db)
     deploy.clear(db)                                      # a new container is up: the update that was pending has happened
+    try:                                                  # the live login gets its saved copy at once: a bad switch is then one tap from recovery
+        account_store.seed_current(db)
+    except account_store.Unsupported:
+        pass
+    except Exception as e:
+        log.warning("saved-login seed failed: %s", e.__class__.__name__)
     db.on_state_change = _state_sampler(db)              # state series: one sample per real transition (set_state/end/reconcile)
     try:
         push.ensure_keys()
@@ -447,7 +453,7 @@ def build_state(user: str) -> dict:
                                "restic_installed": shutil.which("restic") is not None, "push": settings.backup_push, "ns": backup.backup_ns()}}
     st["claude"] = claude_auth.status()
     st["agents"] = agents.status_all()
-    st["login"] = claude_auth.login_state()
+    st["login"] = _login_payload()
     st["pending_permissions"] = db.perm_pending()
     st["tasks"] = _tasks_view()
     st["jobs"] = db.jobs()
@@ -457,7 +463,7 @@ def build_state(user: str) -> dict:
     st["deploy"] = deploy.view(db)                        # an update waiting for the terminals to close (None when nothing is pending)
     st["memory"] = memory.state_view(db)                  # claude-mem worker health as the monitor last saw it (None: off, or not sampled yet)
     st["usage"] = db.kv_get("rate_limits")
-    st["accounts"] = _accounts_view()
+    st["accounts"] = account_store.decorate(_accounts_view())
     st["block"] = db.kv_get(usage.KV_BLOCK)
     st["cost"] = db.kv_get(cost.KV_COST)
     st["health"] = health.snapshot()
@@ -469,6 +475,12 @@ def build_state(user: str) -> dict:
     st["version"] = ASSET_VERSION
     st["setup"] = _setup_state(st)
     return st
+
+
+def _login_payload() -> dict:
+    """state.login and GET /api/accounts login: the login tmux session ({running, url, tail}) plus what Settings is adding through it
+    ({adding, email, started_at, result}, app/account_store.py)."""
+    return {**claude_auth.login_state(), **account_store.login_view()}
 
 
 def _accounts_view(full: bool = False) -> dict:
@@ -680,9 +692,12 @@ class AccountPatchIn(BaseModel):
 @app.get("/api/accounts")
 def api_accounts():
     """The subscription accounts the board has seen: {current, list: [{key, email, name, label, plan, org, org_id, tier, config_dir,
-    first_seen, last_seen, rl_5h, rl_7d, rl_5h_at, rl_7d_at, resets_5h, resets_7d, current}]} (the kv accounts record plus each
-    account's newest window readings; rl_* are used percentages, resets_* epoch seconds)."""
-    return accounts.view(db, full=True)
+    first_seen, last_seen, rl_5h, rl_7d, rl_5h_at, rl_7d_at, resets_5h, resets_7d, current, saved}], store: {supported, reason, count},
+    login: {running, url, tail, adding, email, started_at, result}} (the kv accounts record plus each account's newest window readings;
+    rl_* are used percentages, resets_* epoch seconds; `saved` = a login is saved for the account, so it can be switched to)."""
+    out = account_store.decorate(accounts.view(db, full=True))
+    out["login"] = _login_payload()
+    return out
 
 
 @app.patch("/api/accounts/{key}")
@@ -695,6 +710,99 @@ def api_account_patch(key: str, body: AccountPatchIn):
     except KeyError:
         raise projects.NotFound("no such account")
     return next(r for r in accounts.view(db, full=True)["list"] if r["key"] == key)
+
+
+# ---- saved logins and the account switch (app/account_store.py). The error body carries the message as both `detail` and `error`.
+
+def _refuse(status: int, message: str) -> JSONResponse:
+    return JSONResponse({"detail": message, "error": message}, status_code=status)
+
+
+class AccountLoginIn(BaseModel):
+    email: str | None = None
+    restart: bool = False
+
+
+class AccountSwitchIn(BaseModel):
+    continue_parked: bool = False
+
+
+class AccountCodeIn(BaseModel):                       # same body as CodeIn (below): a model used in an annotation must exist before the route
+    code: str
+
+
+@app.post("/api/accounts/login", status_code=202)
+def api_account_login(body: AccountLoginIn | None = None):
+    """Add an account: `claude auth login` runs in the login tmux session against an empty config dir of its own, so the live login is
+    untouched. {email?: str | null, restart?: bool}. 202 {ok}; 400 for a bad email; 409 when saved logins are not supported (macOS) or a
+    login is already running (restart: true replaces it). The sign-in link is state.login.url; the code goes to /api/accounts/login/code."""
+    body = body or AccountLoginIn()
+    if not account_store.supported():
+        return _refuse(409, account_store.REASON)
+    try:
+        email = claude_auth.clean_email(body.email)
+    except ValueError as e:
+        return _refuse(400, str(e))
+    try:
+        account_store.start_login(db, email, restart=body.restart)
+    except account_store.StoreError as e:
+        return _refuse(409, str(e))
+    return {"ok": True}
+
+
+@app.post("/api/accounts/login/code")
+def api_account_login_code(body: AccountCodeIn):
+    """The code the browser showed after signing in ('code#state'). Same validation and errors as /api/claude/login/code; then the login is
+    finished at once (a short poll in the background) instead of at the next 15 s tick: state.login.result says how it ended."""
+    try:
+        claude_auth.submit_code(body.code)
+    except ValueError as e:
+        return _refuse(400, str(e))
+    except LookupError as e:
+        return _refuse(409, str(e))
+    account_store.finalize_soon(db)
+    return {"ok": True}
+
+
+@app.delete("/api/accounts/login")
+def api_account_login_cancel():
+    """Give up the login that was started from Settings: its session and its pending directory go."""
+    account_store.cancel_login()
+    return {"ok": True}
+
+
+@app.post("/api/accounts/{key}/switch")
+def api_account_switch(key: str, body: AccountSwitchIn | None = None):
+    """Make an account the live login (its saved copy replaces the live credentials; running sessions follow on their next request).
+    {continue_parked?: bool} types `continue` into sessions parked on a limit after a real switch. 200 {ok, already, from, to, continued:
+    [session names], accounts}; 404 unknown account; 409 {detail} when there is no saved login, a login is in progress, the current login
+    could not be saved first, or saved logins are not supported."""
+    try:
+        res = account_store.switch(db, key)
+    except account_store.UnknownAccount as e:
+        return _refuse(404, str(e))
+    except account_store.StoreError as e:
+        return _refuse(409, str(e))
+    continued: list[str] = []
+    if body and body.continue_parked and not res.get("already"):
+        try:
+            continued = autoresume.continue_parked(db)
+        except Exception as e:
+            log.warning("continue after the switch failed: %s", e.__class__.__name__)
+    _invalidate_scan()
+    return {**res, "continued": continued, "accounts": account_store.decorate(accounts.view(db, full=True))}
+
+
+@app.delete("/api/accounts/{key}/saved")
+def api_account_forget(key: str):
+    """Delete an account's saved login (its usage history stays). 404 unknown account; 409 for the live account."""
+    try:
+        res = account_store.forget(db, key)
+    except account_store.UnknownAccount as e:
+        return _refuse(404, str(e))
+    except account_store.StoreError as e:
+        return _refuse(409, str(e))
+    return {**res, "accounts": account_store.decorate(accounts.view(db, full=True))}
 
 
 # ---------- projects & repos ----------

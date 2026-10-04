@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import threading
 import time
@@ -13,6 +14,7 @@ from .config import settings
 CODE_RE = re.compile(r"^[A-Za-z0-9._~-]{1,256}#[A-Za-z0-9._~-]{1,256}$")
 URL_RE = re.compile(r"https://\S*oauth\S+")
 OSC8_RE = re.compile(r"\x1b\]8;;(https://[^\x1b\x07]+)")
+EMAIL_RE = re.compile(r"^[^\s@'\"\\]{1,120}@[^\s@'\"\\]{1,200}$")
 STATUS_TTL = 60.0
 SHELLS = {"sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh"}
 
@@ -77,15 +79,37 @@ def status() -> dict:
     return out
 
 
-def start_login() -> None:
-    """(Re)start `claude auth login` in the internal tmux session."""
+def clean_email(email) -> str | None:
+    """The address `claude auth login --email` may be given, None for none. Anything else raises ValueError. The line is typed into a
+    login shell, so beyond EMAIL_RE (no whitespace, quote, backslash or second @) nothing unprintable gets through either: a control
+    character typed into the pane would be a key press, not text."""
+    if email is None:
+        return None
+    if not isinstance(email, str):
+        raise ValueError("email must be text")
+    e = email.strip()
+    if not e:
+        return None
+    if not EMAIL_RE.match(e) or not e.isprintable():
+        raise ValueError("that does not look like an email address")
+    return e
+
+
+def start_login(config_dir=None, email: str | None = None) -> None:
+    """(Re)start `claude auth login` in the internal tmux session. With no arguments it logs in the board's own config dir. `config_dir`
+    runs it with CLAUDE_CONFIG_DIR=<dir> (an empty dir of its own: the live login is not touched, which is how a second account is
+    added); `email` is typed as `--email <address>` (shell-quoted: the line goes to a login shell). ValueError for a bad address."""
+    email = clean_email(email)
     exe = settings.claude_bin()
     if not exe:
         raise tmux.TmuxError("claude is not installed")
     tmux.kill_session(tmux.LOGIN_SESSION)
+    env = {"BROWSER": "/bin/true"}
+    if config_dir is not None:
+        env["CLAUDE_CONFIG_DIR"] = str(config_dir)
     tmux.new_session(tmux.LOGIN_SESSION, str(settings.claude_config_dir.parent),
-                     env={"BROWSER": "/bin/true"}, width=400, height=50)
-    tmux.send_line(tmux.LOGIN_SESSION, "claude auth login")
+                     env=env, width=400, height=50)
+    tmux.send_line(tmux.LOGIN_SESSION, "claude auth login" + (f" --email {shlex.quote(email)}" if email else ""))
     invalidate()
 
 

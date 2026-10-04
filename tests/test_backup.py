@@ -343,3 +343,54 @@ def test_start_detached_prefers_systemd(tmp_path, monkeypatch, projects_dir):
     spawned = []
     monkeypatch.setattr(backup.subprocess, "Popen", lambda argv, **kw: spawned.append(argv))
     assert backup.start_detached() == "process" and spawned[0][-2:] == ["-m", "app.backup"]
+
+
+# ---------------------------------------------------------------- v0.5.17c: the saved Claude logins are never backed up
+
+def make_store(settings):
+    """<data dir>/accounts/<slot>/.credentials.json, the way app/account_store.py lays it out."""
+    slot = settings.data_dir / "accounts" / "0123456789abcdef01234567"
+    slot.mkdir(parents=True)
+    (slot / ".credentials.json").write_bytes(b'{"claudeAiOauth":{"accessToken":"SECRET-A"}}')
+    return slot.parent, slot
+
+
+def test_the_nightly_paths_never_include_the_saved_logins(backup_env, tmp_path):
+    from app.config import settings
+    accounts_dir, _slot = make_store(settings)
+    st = backup.run(push=False)
+    assert st["status"] == "ok" and st["warnings"] == []
+    assert st["paths"] and not [p for p in st["paths"] if os.path.realpath(p).startswith(str(accounts_dir.resolve()))]
+    assert not any("accounts" in p for p in st["paths"])
+
+
+def test_backup_extra_entries_that_hold_the_saved_logins_are_dropped_with_a_warning(backup_env, tmp_path, monkeypatch):
+    from app.config import settings
+    accounts_dir, slot = make_store(settings)
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    link = tmp_path / "link-to-accounts"
+    link.symlink_to(accounts_dir)
+    dotted = f"{accounts_dir}/../accounts"
+    bad = [str(settings.data_dir), str(accounts_dir), str(slot), str(slot / ".credentials.json"), str(link), dotted, str(tmp_path)]
+    monkeypatch.setattr(settings, "backup_extra", bad + [str(notes)])
+    st = backup.run(push=False)
+    assert str(notes) in st["paths"], "an ordinary extra path is kept"
+    taken = [p for p in st["paths"] if p in bad]
+    assert taken == [], f"saved logins would be in the snapshot: {taken}"
+    for p in bad:
+        assert f"skipped {p}: saved logins are never backed up" in st["warnings"], p
+    assert st["status"] == "partial" and st["errors"] == []
+    saved = json.loads(backup.status_path().read_text())
+    assert saved["warnings"] == st["warnings"]
+    calls = (backup_env["repo"] / "calls.log").read_text()
+    assert str(accounts_dir) not in calls and str(slot) not in calls
+
+
+def test_a_missing_accounts_dir_changes_nothing_for_other_extras(backup_env, tmp_path, monkeypatch):
+    from app.config import settings
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    monkeypatch.setattr(settings, "backup_extra", [str(other), str(tmp_path / "does-not-exist-either")])
+    st = backup.run(push=False)
+    assert str(other) in st["paths"] and st["warnings"] == []

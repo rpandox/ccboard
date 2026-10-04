@@ -166,3 +166,83 @@ def test_reboot_continue_waits_while_attached_and_respects_the_switches(world, m
     session_start(db, "shop--api--s4", T + 5)
     monkeypatch.setattr(settings, "auto_continue", False)
     assert world["tick"](T + 60) == [] and autoresume.RESUME_FLAG in db.open_rows()["shop--api--s4"]["flags"]
+
+
+# --- v0.5.17c: after an account switch the sessions parked on a limit continue at once (autoresume.continue_parked) ---
+
+def cp(world, now, **over):
+    kw = {"send": lambda n, t: world["sent"].append((n, t)), "clients": lambda n: world["clients"], "alive": lambda n: world["alive"]}
+    kw.update(over)
+    return autoresume.continue_parked(world["db"], now, **kw)
+
+
+def test_continue_parked_types_once_and_the_reset_tick_stays_quiet(world):
+    db, T = world["db"], 1_800_000_000
+    seed(db, "shop--api--s1", hit_at=T - 3600, resets_at=T + 7200)                     # the window resets in two hours: the switch is why it goes now
+    assert cp(world, T) == ["shop--api--s1"]
+    assert world["sent"] == [("shop--api--s1", "continue")]
+    assert db.kv_get("autoresume:shop--api--s1:%d" % (T + 7200))["value"] == {"continued": True, "at": T, "kind": "5h", "switch": True}
+    ev = [e for e in db.recent_events(50) if e["tmux_name"] == "shop--api--s1" and e["event"] == "AutoContinue"]
+    assert len(ev) == 1 and ev[0]["kind"] == "switch" and ev[0]["message"] == "typed 'continue' after the account switch"
+    assert world["notes"] == [], "an explicit request: no notification of its own"
+    assert cp(world, T + 1) == [] and len(world["sent"]) == 1, "once per episode"
+    assert world["tick"](T + 7200 + 60) == [] and len(world["sent"]) == 1, "the reset tick does not type again"
+
+
+def test_continue_parked_works_with_auto_continue_off(world, monkeypatch):
+    db, T = world["db"], 1_800_000_000
+    seed(db, "shop--api--s1", hit_at=T - 3600, resets_at=T)
+    monkeypatch.setattr(settings, "auto_continue", False)
+    assert world["tick"](T + 60) == []
+    assert cp(world, T + 60) == ["shop--api--s1"] and world["sent"] == [("shop--api--s1", "continue")]
+
+
+def test_continue_parked_skips_attached_moved_on_and_dead_sessions_without_marking_them(world):
+    db, T = world["db"], 1_800_000_000
+    seed(db, "shop--api--s1", hit_at=T - 3600, resets_at=T + 600)
+    world["clients"] = 1
+    assert cp(world, T) == [] and db.kv_get("autoresume:shop--api--s1:%d" % (T + 600)) is None, "someone is at the terminal: left for later"
+    world["clients"] = 0
+    world["alive"] = False
+    assert cp(world, T) == [] and db.kv_get("autoresume:shop--api--s1:%d" % (T + 600)) is None
+    world["alive"] = True
+    db.set_state("shop--api--s1", "working", "UserPromptSubmit", prompt="I moved on")
+    db.conn.execute("UPDATE sessions SET state_at=? WHERE tmux_name=?", (iso(T - 1800), "shop--api--s1"))
+    assert cp(world, T) == [] and db.kv_get("autoresume:shop--api--s1:%d" % (T + 600)) is None, "the reset tick decides for itself"
+    seed(db, "shop--api--s2", hit_at=T - 3600, resets_at=T + 600, message="Error: something else entirely")
+    seed(db, "shop--api--s3", hit_at=T - 3600, resets_at=T + 600)
+    db.update_flags("shop--api--s3", {"no_autoresume": True})
+    assert cp(world, T) == [] and world["sent"] == []
+
+
+def test_continue_parked_types_into_a_session_once_however_many_episodes_it_has(world):
+    db, T = world["db"], 1_800_000_000
+    seed(db, "shop--api--s1", hit_at=T - 3600, resets_at=T + 600)
+    db.sample("lim", "7d", 1.0, {"session": "shop--api--s1", "resets_at": T + 90000, "message": "limit"}, at=iso(T - 3600))
+    assert cp(world, T) == ["shop--api--s1"] and world["sent"] == [("shop--api--s1", "continue")]
+    assert db.kv_get("autoresume:shop--api--s1:%d" % (T + 90000)) is None
+
+
+def test_continue_parked_leaves_decided_episodes_old_episodes_and_tmux_hiccups(world):
+    db, T = world["db"], 1_800_000_000
+    seed(db, "shop--api--s1", hit_at=T - 3600, resets_at=T + 600)
+    db.kv_set("autoresume:shop--api--s1:%d" % (T + 600), {"skipped": "moved on", "at": T - 10})
+    assert cp(world, T) == []
+    seed(db, "shop--api--s2", hit_at=T - 9 * 86400, resets_at=T - 8 * 86400)           # older than the 8-day look-back
+    assert cp(world, T) == []
+    seed(db, "shop--api--s3", hit_at=T - 3600, resets_at=T + 600)
+
+    def boom(n, t):
+        raise RuntimeError("tmux hiccup")
+    assert cp(world, T, send=boom) == [] and db.kv_get("autoresume:shop--api--s3:%d" % (T + 600)) is None
+    assert cp(world, T) == ["shop--api--s3"], "tried again on the next call"
+
+
+def test_continue_parked_defaults_use_tmux(world, monkeypatch):
+    db, T = world["db"], 1_800_000_000
+    seed(db, "shop--api--s1", hit_at=T - 3600, resets_at=T + 600)
+    calls = []
+    monkeypatch.setattr(autoresume.tmux, "has_session", lambda n: True)
+    monkeypatch.setattr(autoresume.tmux, "real_clients", lambda n: 0)
+    monkeypatch.setattr(autoresume.tmux, "send_text", lambda n, t, enter=False: calls.append((n, t, enter)))
+    assert autoresume.continue_parked(db, T) == ["shop--api--s1"] and calls == [("shop--api--s1", "continue", True)]

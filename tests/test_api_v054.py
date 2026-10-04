@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import claude_auth, doctor, gitops, hooks, overlap, prpoll, projects, recover
+from app import account_store, claude_auth, doctor, gitops, hooks, overlap, prpoll, projects, recover
 from app.agents import registry
 from app.config import settings
 
@@ -323,9 +323,11 @@ def test_state_legacy_keys_are_unchanged(board):
     st = board.client.get("/api/state", headers=H).json()
     assert LEGACY_TOP <= set(st) and set(st) - LEGACY_TOP == {"agents", "setup", "deploy", "memory", "accounts"}
     assert st["claude"] == AUTH, "state.claude keeps its shape (the claude_auth.status() dict, as is)"
-    assert st["login"] == claude_auth.login_state()
+    assert st["login"] == {**claude_auth.login_state(), **account_store.login_view()}, "v0.5.17c: the login view adds adding/email/started_at/result"
+    assert set(st["login"]) == {"running", "url", "tail", "adding", "email", "started_at", "result"}
     assert st["usage"] == db().kv_get("rate_limits") and st["usage"]["value"]["five_hour"]["used_percentage"] == 42
-    assert st["accounts"] == {"current": None, "list": []}, "v0.5.17b: the account list is always present, empty until an identity is read"
+    assert st["accounts"] == {"current": None, "list": [], "store": {"supported": False, "reason": account_store.REASON, "count": 0}}, \
+        "v0.5.17b: the account list is always present, empty until an identity is read (v0.5.17c: plus the saved-login store summary)"
 
 
 def test_state_agents_and_setup(board):

@@ -803,7 +803,11 @@
   "login": {
     "running": false,
     "url": null,
-    "tail": []
+    "tail": [],
+    "adding": false,
+    "email": null,
+    "started_at": null,
+    "result": null
   },
   "pending_permissions": [
     {
@@ -1368,7 +1372,8 @@
         "rl_7d": 71.0,
         "resets_5h": 1791006000,
         "resets_7d": 1791270000,
-        "current": true
+        "current": true,
+        "saved": true
       },
       {
         "key": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a002",
@@ -1380,9 +1385,15 @@
         "rl_7d": 83.0,
         "resets_5h": 1790988000,
         "resets_7d": 1791180000,
-        "current": false
+        "current": false,
+        "saved": true
       }
-    ]
+    ],
+    "store": {
+      "supported": true,
+      "reason": null,
+      "count": 2
+    }
   },
   "usage_codex": {
     "value": {

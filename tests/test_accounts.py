@@ -1005,3 +1005,88 @@ def test_the_per_account_series_is_served_by_the_existing_endpoint(env, lite_cli
     assert r.status_code == 200 and f"rl_5h:acct:{UUID_A}" in r.json()["series"]
     ev = lite_client.get("/api/series/events", params={"series": "acct", "since": "30d"}, headers=H).json()["events"]
     assert [(e["key"], e["m"]) for e in ev] == [(UUID_A, {"to": UUID_A})]
+
+
+# ---------------------------------------------------------------- v0.5.17c: remember, adopt, hold (what the saved-login store needs)
+
+UUID_C = "cccccccc-0000-4000-8000-000000000004"
+
+
+def ident(uuid=UUID_A, email="a@example.com", name="Ann", config_dir=None, **kw):
+    return {"key": uuid, "email": email, "name": name, "org": None, "org_id": None, "plan": "max", "tier": None, "config_dir": config_dir,
+            "source": "file", **kw}
+
+
+def acct_events(db):
+    return [(k, json.loads(m)) for _at, k, _v, m in db.samples_query("acct", None, iso(0))]
+
+
+def test_remember_records_an_account_without_moving_current_or_writing_an_event(env):
+    assert accounts.adopt(env.db, ident(UUID_A, config_dir="/live"), T0) == UUID_A
+    key = accounts.remember(env.db, ident(UUID_B, "b@example.com", "Bob"), T0 + 5)
+    assert key == UUID_B and kv(env.db, "account_current")["key"] == UUID_A and accounts.current(env.db) == UUID_A
+    rec = kv(env.db, "accounts")[UUID_B]
+    assert rec["email"] == "b@example.com" and rec["name"] == "Bob" and rec["label"] is None and rec["config_dir"] is None
+    assert rec["first_seen"] == rec["last_seen"] == iso(T0 + 5), "a new record is seen as of the moment it was added"
+    assert acct_events(env.db) == [(UUID_A, {"to": UUID_A})], "no acct event for an account that is not live"
+    accounts.set_label(env.db, UUID_B, "Work")
+    assert accounts.remember(env.db, ident(UUID_B, "b@example.com", "Bobby", config_dir=None), T0 + 9000) == UUID_B
+    rec = kv(env.db, "accounts")[UUID_B]
+    assert (rec["name"], rec["label"], rec["last_seen"], rec["first_seen"]) == ("Bobby", "Work", iso(T0 + 5), iso(T0 + 5)), "a refresh keeps last_seen and the label"
+    assert accounts.remember(env.db, ident("another-key", "b@example.com"), T0) == UUID_B, "the same email is the same account"
+    assert set(kv(env.db, "accounts")) == {UUID_A, UUID_B}
+    assert accounts.remember(env.db, ident(UUID_B, config_dir="/elsewhere"), T0)
+    assert kv(env.db, "accounts")[UUID_B]["config_dir"] == "/elsewhere"
+
+
+def test_adopt_is_the_public_current_account_change(env):
+    assert accounts.adopt(env.db, ident(UUID_A), T0) == UUID_A and accounts.current(env.db) == UUID_A
+    assert accounts.adopt(env.db, ident(UUID_A), T0 + 1) == UUID_A and len(acct_events(env.db)) == 1, "no event without a change"
+    assert accounts.adopt(env.db, ident(UUID_B, "b@example.com", "Bob"), T0 + 2) == UUID_B
+    assert accounts.current(env.db) == UUID_B and acct_events(env.db)[-1] == (UUID_B, {"from": UUID_A, "to": UUID_B})
+
+
+def test_hold_reads_a_stale_identity_of_the_old_account_as_the_new_one(env):
+    state_file(settings.claude_config_dir, UUID_A)
+    assert accounts.observe(env.db, T0) == UUID_A
+    accounts.adopt(env.db, ident(UUID_B, "b@example.com", "Bob"), T0 + 1)               # a switch done elsewhere: current is B, the file still says A
+    accounts.hold(to=UUID_B, frm=UUID_A, seconds=90)
+    assert accounts.held() == {"to": UUID_B, "frm": UUID_A}
+    assert accounts.observe(env.db, T0 + 2, force=True) == UUID_B and accounts.current(env.db) == UUID_B, "the stale A is not a switch back"
+    assert len(acct_events(env.db)) == 2, "and writes no event"
+    state_file(settings.claude_config_dir, UUID_B, "b@example.com", "Bob")              # the file now names the new account: applied as usual, hold stays
+    assert accounts.observe(env.db, T0 + 3, force=True) == UUID_B and accounts.held() is not None
+    state_file(settings.claude_config_dir, UUID_A)                                      # a stale write-back again
+    assert accounts.observe(env.db, T0 + 4, force=True) == UUID_B and accounts.current(env.db) == UUID_B
+    state_file(settings.claude_config_dir, UUID_C, "c@example.com", "Cy")               # a real /login to a third account: hold dropped, applied
+    assert accounts.observe(env.db, T0 + 5, force=True) == UUID_C and accounts.current(env.db) == UUID_C and accounts.held() is None
+    state_file(settings.claude_config_dir, UUID_A)
+    assert accounts.observe(env.db, T0 + 6, force=True) == UUID_A, "with the hold gone the old account is an ordinary switch"
+
+
+def test_the_hold_runs_out_after_its_seconds(env):
+    state_file(settings.claude_config_dir, UUID_A)
+    accounts.observe(env.db, T0)
+    accounts.adopt(env.db, ident(UUID_B, "b@example.com", "Bob"), T0 + 1)
+    accounts.hold(to=UUID_B, frm=UUID_A, seconds=90)
+    env.later(89)
+    assert accounts.observe(env.db, T0 + 2, force=True) == UUID_B
+    env.later(2)
+    assert accounts.held() is None
+    assert accounts.observe(env.db, T0 + 3, force=True) == UUID_A and accounts.current(env.db) == UUID_A
+
+
+def test_a_hold_without_a_from_account_holds_nothing(env):
+    state_file(settings.claude_config_dir, UUID_A)
+    accounts.hold(to=UUID_B, frm=None)
+    assert accounts.observe(env.db, T0, force=True) == UUID_A and accounts.held() is None
+
+
+def test_for_reading_honours_the_hold_too(env):
+    """A reading that matches no fingerprint forces an identity re-read: a stale A in the file must not take B's reading."""
+    state_file(settings.claude_config_dir, UUID_A)
+    accounts.observe(env.db, T0)
+    accounts.adopt(env.db, ident(UUID_B, "b@example.com", "Bob"), T0 + 1)
+    accounts.hold(to=UUID_B, frm=UUID_A)
+    assert accounts.for_reading(env.db, rl(T0 + 3000, T0 + 200000), T0 + 2) == UUID_B
+    assert accounts.current(env.db) == UUID_B and kv(env.db, "accounts")[UUID_B]["resets_7d"] == T0 + 200000

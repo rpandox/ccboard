@@ -255,3 +255,19 @@ def _ci_like_no_claude(monkeypatch):
         from app.config import settings
         monkeypatch.setattr(settings, "claude_bin", lambda: None)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _saved_logins_off_by_default(monkeypatch):
+    """Saved logins (app/account_store.py) exist on Linux only, so what the suite does must not depend on the platform it runs on: they are
+    off here, a test that is about them turns them on (monkeypatch account_store.supported) and sandboxes settings.data_dir and
+    settings.claude_config_dir itself. The module's login state, finalize threads and accounts.hold are reset around every test."""
+    from app import account_store, accounts
+    monkeypatch.setattr(account_store, "supported", lambda: False)
+    monkeypatch.setattr(accounts, "_hold", None)
+    account_store._reset_login()
+    account_store._set_result(None, 0.0)
+    yield
+    account_store.stop_watchers()
+    account_store._reset_login()
+    account_store._set_result(None, 0.0)

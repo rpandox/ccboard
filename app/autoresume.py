@@ -12,6 +12,7 @@ episode whose reset time has passed and whose session is still parked on it, and
 
 What it did is an AutoContinue event on the session and one low-priority notification. CCBOARD_AUTO_CONTINUE=0 turns it off;
 flags.no_autoresume on a session row opts that session out (a later Settings toggle writes it).
+continue_parked() is the same typing on request: after an account switch the sessions parked on a limit continue at once.
 
 The same tick also finishes a reboot recovery: app/recover marks a relaunched row with flags.continue_after_resume when the
 old row was `working` when the box went down. Once the resumed session reports SessionStart (state idle), drew its statusline and
@@ -143,6 +144,43 @@ def recovered_tick(db, rows: dict[str, dict], now: float, *, send, clients, aliv
         done.append(name)
         _tell(name, "continued after the restart", f"it was working when the box went down; the board typed '{TEXT}' for you")
         log.info("autoresume: continued %s after the restart", name)
+    return done
+
+
+def continue_parked(db, now: float | None = None, *, send=None, clients=None, alive=None) -> list[str]:
+    """After an account switch: type `continue` now into every session that is still parked on a limit it hit in the last LOOKBACK_DAYS,
+    without waiting for the window's reset (the new account has room). The same checks as tick() (the row is open and still on the
+    limit, the tmux session is alive, nobody is attached) and the same kv key autoresume:<session>:<resets_at>, set to {continued, at,
+    kind, switch: True}, so the reset tick does not type a second time. An explicit request, so CCBOARD_AUTO_CONTINUE does not matter.
+    A session is continued once per call however many episodes it has. Returns the session names."""
+    now = time.time() if now is None else now
+    send = send or (lambda name, text: tmux.send_text(name, text, enter=True))
+    clients = clients or tmux.real_clients
+    alive = alive or tmux.has_session
+    opened = db.open_rows()
+    rows = opened if isinstance(opened, dict) else {r["tmux_name"]: r for r in opened}
+    done: list[str] = []
+    for ep in episodes(db, now):
+        name = ep["session"]
+        if not ep["resets_at"] or name in done:
+            continue
+        key = f"autoresume:{name}:{int(ep['resets_at'])}"
+        if db.kv_get(key) is not None:
+            continue
+        row = rows.get(name)
+        if row is None or not _still_parked(row, ep):
+            continue                                            # nothing is remembered: the reset tick decides for itself
+        try:
+            if not alive(name) or clients(name) > 0:
+                continue
+            send(name, TEXT)
+        except Exception as e:
+            log.warning("autoresume (switch) %s: %s", name, e)
+            continue
+        db.kv_set(key, {"continued": True, "at": now, "kind": ep["kind"], "switch": True})
+        db.add_event(name, "AutoContinue", "switch", f"typed '{TEXT}' after the account switch", {"resets_at": ep["resets_at"]})
+        done.append(name)
+        log.info("autoresume: continued %s after the account switch", name)
     return done
 
 

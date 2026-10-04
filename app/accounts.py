@@ -25,6 +25,12 @@ Account key: oauthAccount.accountUuid, else its organizationUuid, else the email
 account uuid, so it keys by email; an existing record with the same email is reused whichever form the key came in, so an account
 whose state file is briefly unreadable does not split into two.
 
+saved logins  app/account_store.py keeps one directory of credentials per account and switches the live login between them. It needs
+               three things of this module: remember() (an account the board knows but is not logged in as: a record without a
+               current-account change), adopt() (the switch itself: current moves and the `acct` event is written at once) and hold()
+               (for 90 s after a switch a running Claude session may write its stale `oauthAccount` back into the state file; the hold
+               makes observe() read that as the new account instead of as a switch back).
+
 Nothing here runs on the request path except for_reading (kv reads, no file or process access except one forced identity re-read
 when a reading matches no fingerprint) and the views (kv and the in-memory sample_last cache). A forced re-read is decided by the
 state file's stamp (path, mtime, size, inode of both candidate files), not by the clock: unchanged stamp = one stat and the cached
@@ -66,6 +72,7 @@ _lock = threading.RLock()                   # kv accounts / account_current read
 # config dir -> (monotonic time, identity, auth fallback was allowed, state file stamp when it was read, the file read cleanly)
 _cache: dict[str, tuple[float, dict | None, bool, tuple | None, bool]] = {}
 _clock = time.monotonic                     # patched by tests
+_hold: dict | None = None                   # {to, frm, until}: see hold(); in memory only (a restart drops it, the kv is already right)
 
 
 # ------------------------------------------------------------------ small helpers
@@ -314,6 +321,9 @@ def _observe(db, now, force: bool, auth: bool) -> tuple[str | None, bool]:
         ident, fresh = _identity(None, force, auth)
         if not ident:
             return None, False
+        held = _held_for(db, ident)
+        if held:
+            return held, fresh                                  # a stale copy of the account a switch just left: not a switch back
         return _apply_identity(db, ident, now), fresh
     except Exception as e:
         log.warning("accounts.observe failed: %s", e.__class__.__name__)
@@ -327,6 +337,73 @@ def observe(db, now=None, *, force: bool = False, auth: bool = True) -> str | No
     `force` re-reads the identity if the state file changed (see read_identity). Returns the current key, None when no identity can be
     read (nothing is changed then). Never raises."""
     return _observe(db, now, force, auth)[0]
+
+
+def hold(to: str, frm: str | None, seconds: float = 90) -> None:
+    """After a switch from `frm` to `to` (record keys): for `seconds` a state file whose identity still names `frm` reads as `to` in
+    observe() (nothing is applied, `to` is returned), because a Claude session that was running before the switch can write its own
+    stale `oauthAccount` back. An identity naming `to` is applied as usual and keeps the hold; any other identity (a real `/login` to
+    a third account) drops the hold and is applied normally. In memory only."""
+    global _hold
+    with _lock:
+        _hold = {"to": to, "frm": frm, "until": _clock() + float(seconds)}
+
+
+def held() -> dict | None:
+    """The hold in force right now as {to, frm}, None when there is none (or it ran out). For the saved-login sync, which must not
+    copy the live credentials into the account a switch has just left."""
+    global _hold
+    with _lock:
+        h = _hold
+        if h and _clock() >= h["until"]:
+            _hold = h = None
+        return {"to": h["to"], "frm": h["frm"]} if h else None
+
+
+def _held_for(db, ident: dict) -> str | None:
+    """`to` when a hold is in force and `ident` names the account it moved away from, else None (dropping the hold when the identity is
+    a third account)."""
+    global _hold
+    with _lock:
+        h = _hold
+        if h and _clock() >= h["until"]:
+            _hold = h = None
+        if not h:
+            return None
+        key = _key_for(_load(db), ident)
+        if h["frm"] is not None and key == h["frm"]:
+            return h["to"]
+        if key != h["to"]:
+            _hold = None
+        return None
+
+
+def adopt(db, ident: dict, now=None) -> str:
+    """Make the account behind `ident` the current one at once (what observe() does when it sees a switch): the record is created or
+    refreshed, kv account_current moves and the `acct` event is written when the account changed. Returns the canonical key."""
+    return _apply_identity(db, ident, now)
+
+
+def remember(db, ident: dict, now=None) -> str:
+    """Create or refresh the record of an account the board knows but is not logged in as (a login added from Settings): identity fields
+    and first_seen only, kv account_current untouched and no `acct` event. A new record's last_seen is the moment it was added; an
+    existing record keeps its own. Returns the canonical key."""
+    ts = iso(now)
+    with _lock:
+        accts = _load(db)
+        key = _key_for(accts, ident)
+        rec = dict(accts.get(key) or {"key": key, "first_seen": ts, "label": None, "last_seen": ts})
+        dirty = key not in accts
+        for f in ("email", "name", "org", "org_id", "plan", "tier", "config_dir"):
+            v = ident.get(f)
+            if v is not None and rec.get(f) != v:
+                rec[f] = v
+                dirty = True
+            rec.setdefault(f, None)
+        if dirty:
+            accts[key] = rec
+            db.kv_set(KV_ACCOUNTS, accts)
+    return key
 
 
 # ------------------------------------------------------------------ attribution

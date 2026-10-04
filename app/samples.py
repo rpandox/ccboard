@@ -307,7 +307,7 @@ def record_counts(db, counts: dict, *, at=None) -> list[str]:
     return out
 
 
-TICK_HOOKS: list = []          # fn(db, now_epoch); autoresume.tick and accounts.observe are registered below
+TICK_HOOKS: list = []          # fn(db, now_epoch); autoresume.tick, accounts.observe and account_store.tick are registered below
 
 
 class Sampler(threading.Thread):
@@ -522,8 +522,8 @@ def events_payload(db, series: str, since, key: str | None = None) -> dict:
 
 
 def _register_hooks() -> None:
-    from . import accounts, autoresume                       # imported late: autoresume imports tmux/notify and accounts imports samples lazily
-    for fn in (autoresume.tick, accounts.observe):           # observe: who is logged in (kv accounts / account_current, 'acct' events)
+    from . import account_store, accounts, autoresume       # imported late: autoresume imports tmux/notify and accounts imports samples lazily
+    for fn in (autoresume.tick, accounts.observe, account_store.tick):   # observe: who is logged in (kv accounts / account_current, 'acct' events); account_store.tick: saved logins
         if fn not in TICK_HOOKS:
             TICK_HOOKS.append(fn)
 

@@ -298,6 +298,18 @@ def running() -> bool:
     return False
 
 
+def _holds_saved_logins(p: Path) -> bool:
+    """Would backing up `p` take the saved Claude logins (<data dir>/accounts, app/account_store.py)? True for the data dir itself, the
+    accounts dir, anything inside it, and any directory above them (a snapshot of the home dir contains them too). The nightly paths
+    are the DB snapshot, the transcripts and CCBOARD_BACKUP_EXTRA: credentials are in none of them, whatever CCBOARD_BACKUP_EXTRA says."""
+    store = (settings.data_dir / "accounts").resolve()
+    try:
+        target = p.expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    return target == store or store.is_relative_to(target) or target.is_relative_to(store)
+
+
 def run(push: bool | None = None, restic: bool | None = None) -> dict:
     """One backup pass. Never raises for a failing step: every problem lands in status['errors']."""
     started = time.time()
@@ -322,6 +334,9 @@ def run(push: bool | None = None, restic: bool | None = None) -> dict:
             if transcripts.is_dir():
                 paths.append(transcripts)
             for extra in settings.backup_extra:
+                if _holds_saved_logins(Path(extra)):
+                    st["warnings"].append(f"skipped {extra}: saved logins are never backed up")
+                    continue
                 if Path(extra).exists():
                     paths.append(Path(extra))
             st["paths"] = [str(p) for p in paths]
