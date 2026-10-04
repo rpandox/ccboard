@@ -522,6 +522,8 @@ html.force-coarse #sheet .seg-btn { min-height:var(--tap); }
 #page .tasks-board { margin:12px auto; }
 #page .tk-head .summary { flex:1 1 220px; }
 #page .tk-head .actions { margin-left:auto; }
+/* a phone: the title and + task share the first line, the summary takes its own line under them (not a button stranded under a two-line sentence) */
+@media (max-width:599px) { #page .tk-head .summary { order:3; flex:1 1 100%; } #page .tk-head .actions { order:2; } }
 #page .task .tk-chip { display:inline-flex; align-items:center; min-height:22px; padding:0 8px; text-decoration:none; }
 @media (pointer:coarse) { #page .task .tk-chip { min-height:var(--tap); } }
 html.force-coarse #page .task .tk-chip { min-height:var(--tap); }

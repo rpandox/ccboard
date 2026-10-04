@@ -187,7 +187,7 @@ dialog#sheet.bottom::backdrop { background:rgba(0,0,0,.55); }
 .sheet-body .form .submit { position:sticky; bottom:0; z-index:1; margin:12px -16px 0; padding:10px 16px; background:var(--panel); border-top:1px solid var(--line); box-shadow:0 -8px 12px -8px rgba(0,0,0,.4); }
 .sheet-form > .bp5-button { margin-bottom:6px; }
 .pick-list { display:flex; flex-direction:column; margin-top:6px; }
-.pick-row.bp5-button { width:100%; justify-content:flex-start; gap:10px; text-align:left; border-bottom:1px solid var(--line-soft); border-radius:0; }
+.pick-row.bp5-button { width:100%; justify-content:flex-start; gap:10px; text-align:left; border-bottom:1px solid var(--line); border-radius:0; }   /* a visible hairline per row: the list reads as rows to tap */
 .pick-row .pr-name { color:var(--fg); }
 @keyframes sheet-up { from { transform:translateY(24px); opacity:.4; } to { transform:none; opacity:1; } }
 @media (prefers-reduced-motion:reduce) { dialog#drawer[open], dialog#sheet.bottom { animation:none; } .tn-row .tw { transition:none; } }

@@ -682,12 +682,12 @@ const MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', 
     try { return document.documentElement.classList.contains('force-coarse') || window.matchMedia('(pointer:coarse)').matches; } catch (_) { return false; }
   }
 
-  const keyModeBtn = keep(el('button', { type: 'button', class: 'small', title: 'Key bar: auto, compact or full (tap to change)', onclick: () => {
-    const cur = keysOverride();
-    const next = cur === null ? 'compact' : (cur === 'compact' ? 'full' : null);
-    store.set(KEY_KEYS, next);
-    applyLayout();
-  } }));
+  /* the key-bar mode as a segmented control (one track, the current option tinted), not a button that cycles through three words */
+  const KEY_MODES = [[null, 'auto', 'Compact while the soft keyboard is up or the window is short, both rows otherwise'],
+    ['compact', 'compact', 'Always the one-row key bar'], ['full', 'full', 'Always both rows']];
+  const keyModeBtns = KEY_MODES.map(([v, label, title]) => keep(el('button', { type: 'button', class: 'small vm-opt', 'data-mode': v || 'auto', title, 'aria-pressed': 'false', text: label,
+    onclick: () => { store.set(KEY_KEYS, v); applyLayout(); } })));
+  const keyModeSeg = el('div', { class: 'vm-ctl vm-seg', role: 'group', 'aria-label': 'Key bar' }, ...keyModeBtns);
 
   /* Keyboard up = the visual viewport lost 30 % of the window. Android Chrome (interactive-widget=resizes-content) shrinks the window itself, so
      the reference height is the largest one seen at this width, not innerHeight alone. */
@@ -703,7 +703,7 @@ const MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', 
     const mode = keysOverride();
     const compact = mode ? mode === 'compact' : (kbd || short);
     if (compact !== lastCompact) { lastCompact = compact; kb.setCompact(compact); }
-    setText(keyModeBtn, 'keys: ' + (mode || 'auto'));
+    for (const b of keyModeBtns) { const on = b.getAttribute('data-mode') === (mode || 'auto'); b.classList.toggle('on', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); }
   }
 
   /* ---------- quick replies ---------- */
@@ -770,11 +770,12 @@ const MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', 
   /* One 'Aa' button instead of A− and A+ (they were two of the four 44 px controls that squeezed the session name): it opens a small panel under the
      header with the text size and the key-bar mode. Tapping outside or Esc closes it. term.html has no shared menu, so this is the page's own. */
   const viewMenu = el('div', { id: 'viewmenu', class: 'viewmenu hidden', role: 'group', 'aria-label': 'View options' },
-    el('div', { class: 'vm-row' }, el('span', { class: 'vm-k dim', text: 'Text' }),
-      keep(el('button', { class: 'small fs', type: 'button', 'aria-label': 'Smaller text', title: 'Smaller text', onclick: () => bumpFont(-1) }, 'A−')),
-      fsVal,
-      keep(el('button', { class: 'small fs', type: 'button', 'aria-label': 'Larger text', title: 'Larger text', onclick: () => bumpFont(1) }, 'A+'))),
-    el('div', { class: 'vm-row' }, el('span', { class: 'vm-k dim', text: 'Keys' }), keyModeBtn));
+    el('div', { class: 'vm-row' }, el('span', { class: 'vm-k', text: 'Text size' }),
+      el('div', { class: 'vm-ctl vm-step' },
+        keep(el('button', { class: 'small fs', type: 'button', 'aria-label': 'Smaller text', title: 'Smaller text', onclick: () => bumpFont(-1) }, 'A−')),
+        fsVal,
+        keep(el('button', { class: 'small fs', type: 'button', 'aria-label': 'Larger text', title: 'Larger text', onclick: () => bumpFont(1) }, 'A+')))),
+    el('div', { class: 'vm-row' }, el('span', { class: 'vm-k', text: 'Key bar' }), keyModeSeg));
   const viewBtn = keep(el('button', { class: 'minimal fs', type: 'button', 'aria-label': 'Text size and key bar', title: 'Text size and key bar', 'aria-expanded': 'false', 'aria-haspopup': 'true',
     onclick: () => toggleViewMenu() }, 'Aa'));
   function toggleViewMenu(force) {

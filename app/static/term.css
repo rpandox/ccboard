@@ -31,12 +31,18 @@ body.term input, body.term textarea { -webkit-user-select:text; user-select:text
 #headid .l2 .bad { color:var(--bad-fg, var(--bad)); }
 #headtools { flex:0 0 auto; display:flex; align-items:center; }
 
-/* the Aa panel under the header: text size and the key-bar mode (term.js viewMenu); hidden through the shared .hidden class */
-.viewmenu { position:absolute; top:100%; right:4px; z-index:6; min-width:220px; display:flex; flex-direction:column; gap:6px; padding:8px; background:var(--panel); border:1px solid var(--line-strong, var(--line)); border-radius:2px; box-shadow:0 8px 24px rgba(0, 0, 0, .5); }
-.viewmenu .vm-row { display:flex; align-items:center; gap:8px; }
-.viewmenu .vm-k { flex:0 0 auto; min-width:44px; font-size:12px; }
-.viewmenu .vm-val { min-width:3ch; text-align:center; font-size:13px; }
-.viewmenu .bp5-button { min-width:var(--tap); min-height:var(--tap); }
+/* the Aa panel under the header (term.js viewMenu): two labelled rows, the text size as a stepper (A− 13 A+ on one track) and the key-bar mode as
+   a segmented control; hidden through the shared .hidden class */
+.viewmenu { position:absolute; top:100%; right:4px; z-index:6; min-width:248px; display:flex; flex-direction:column; gap:10px; padding:10px 12px 12px; background:var(--panel); border:1px solid var(--line-strong, var(--line)); border-radius:3px; box-shadow:0 8px 24px rgba(0, 0, 0, .5); }
+.viewmenu .vm-row { display:flex; flex-direction:column; align-items:stretch; gap:4px; }
+.viewmenu .vm-k { font-size:10.5px; font-weight:600; letter-spacing:.07em; text-transform:uppercase; color:var(--dim); line-height:16px; }
+.viewmenu .vm-ctl { display:flex; align-items:stretch; }
+.viewmenu .bp5-button { min-width:var(--tap); min-height:var(--tap); border-radius:0; margin-left:-1px; }
+.viewmenu .vm-ctl > .bp5-button:first-child { margin-left:0; border-radius:3px 0 0 3px; }
+.viewmenu .vm-ctl > .bp5-button:last-child { border-radius:0 3px 3px 0; }
+.viewmenu .vm-val { flex:1 1 auto; display:flex; align-items:center; justify-content:center; min-width:3ch; padding:0 10px; border-top:1px solid var(--line-strong, var(--line)); border-bottom:1px solid var(--line-strong, var(--line)); font-size:13px; }
+.viewmenu .vm-seg .bp5-button { flex:1 1 0; }
+.bp5-dark .viewmenu .bp5-button.vm-opt.on:not([class*=bp5-intent-]) { position:relative; z-index:1; color:var(--sig); background:var(--sig-bg); border-color:var(--sig-bd); }
 
 /* ---------- the grid: one column below 840 px, terminal + side column above ---------- */
 #termmain { flex:1 1 auto; min-height:0; min-width:0; display:grid; background:var(--bg-0);

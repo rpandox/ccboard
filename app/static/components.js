@@ -705,7 +705,9 @@ function toast(text, opts) {
 }
 
 /* menu(button, items:[{label, icon?, onClick}] | () => items) -> { open(), close(), toggle(), root }. A small popover under the button, in the
-   button's dialog when it sits in one, else inside #topbar. Click outside, Esc, Tab or a route change close it; arrows move, Enter picks. */
+   button's dialog when it sits in one, else inside #topbar. Click outside, Esc, Tab or a route change close it; arrows move, Enter picks.
+   Opened from the keyboard (Enter or Space on the button: a click with detail 0) the first item takes focus, so the arrows work at once; opened
+   with a pointer the popover itself holds the focus: a focus ring on the first item would read as "this one is selected" under a thumb. */
 function menu(button, items) {
   let pop = null;
   const ctl = { get root() { return pop; } };
@@ -732,10 +734,10 @@ function menu(button, items) {
     window.removeEventListener('hashchange', onHash);
     if (refocus) button.focus();
   };
-  ctl.open = () => {
+  ctl.open = (byKeyboard) => {
     if (pop) return;
     const list = typeof items === 'function' ? items() : items;
-    pop = el('div', { class: 'menu menu-pop', role: 'menu' });
+    pop = el('div', { class: 'menu menu-pop', role: 'menu', tabindex: '-1' });
     for (const it of list) {
       const pick = () => { ctl.close(false); if (typeof it.onClick === 'function') it.onClick(); };
       pop.append(el('div', { class: 'menuitem', role: 'menuitem', tabindex: '-1', onclick: pick,
@@ -752,12 +754,12 @@ function menu(button, items) {
     document.addEventListener('keydown', onKey, true);
     window.addEventListener('hashchange', onHash);
     const first = pop.querySelector('.menuitem');
-    if (first) first.focus();
+    if (byKeyboard && first) first.focus(); else pop.focus();
   };
-  ctl.toggle = () => (pop ? ctl.close(true) : ctl.open());
+  ctl.toggle = (byKeyboard) => (pop ? ctl.close(true) : ctl.open(byKeyboard));
   button.setAttribute('aria-haspopup', 'menu');
   button.setAttribute('aria-expanded', 'false');
-  button.addEventListener('click', () => ctl.toggle());
+  button.addEventListener('click', (e) => ctl.toggle(!!(e && e.detail === 0 && e.isTrusted)));
   return ctl;
 }
 

@@ -738,7 +738,8 @@ def test_the_demo_fixture_has_the_shape_build_returns_for_accounts(sdb):
     put(sdb, "rl_7d", f"acct:{A}", 71.0, utc(2026, 10, 3, 5, 0), {"resets_at": NOW_TS + 86400})
     put(sdb, "lim", "5h", 1, utc(2026, 10, 2, 22), {"session": "s", "resets_at": 1, "acct": A})
     real, fx = usage_summary.build(sdb, days=30, tz_min=0, now=NOW), _demo_fixture()
-    assert set(real) == set(fx) and set(real["total"]) == set(fx["total"]) and set(real["total"]["7d"]) == set(fx["total"]["7d"])
+    fx_keys = set(fx) - {"demo"}                                   # `demo` is the fixture's own rebase stamp (core.js demoRebase), not a field build() returns
+    assert set(real) == fx_keys and set(real["total"]) == set(fx["total"]) and set(real["total"]["7d"]) == set(fx["total"]["7d"])
     assert set(real["accounts"][0]) == set(fx["accounts"][0]) and set(real["accounts"][0]["windows"]["7d"]) == set(fx["accounts"][0]["windows"]["7d"])
     assert set(real["accounts"][0]["rl_5h"]) == set(fx["accounts"][0]["rl_5h"])
     assert set(real["total"]["headroom_5h"][0]) == set(fx["total"]["headroom_5h"][0])
