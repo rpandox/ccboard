@@ -130,6 +130,8 @@ def fake_tmux(monkeypatch):
         store["sent"].append((name, text))
         if text.startswith("claude"):
             store["sessions"][name]["command"] = "claude"
+        elif text.startswith("codex"):
+            store["sessions"][name]["command"] = "codex"
 
     def kill_session(name):
         return store["sessions"].pop(name, None) is not None
@@ -271,3 +273,68 @@ def _saved_logins_off_by_default(monkeypatch):
     account_store.stop_watchers()
     account_store._reset_login()
     account_store._set_result(None, 0.0)
+
+
+@pytest.fixture
+def codex_home(tmp_path, monkeypatch):
+    """A temp CODEX_HOME: settings.codex_home and the CODEX_HOME env both point at it, so nothing a test does (hooks.json, config.toml,
+    sessions/, state_*.sqlite) can reach the real ~/.codex. Every test gets one (see _isolate_codex); ask for it to read or fill it."""
+    from app.config import settings
+    home = tmp_path / "codex"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setattr(settings, "codex_home", home)
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    return home
+
+
+@pytest.fixture(autouse=True)
+def _isolate_codex(codex_home, monkeypatch):
+    """No test runs a real codex or reads the real ~/.codex: settings.claude_bin's twin answers None (like CI's runner, which has no
+    codex) until a test fakes the binary itself (fake_codex), the codex home is the temp one, and the adapter's probe caches start
+    and end empty. A test-level monkeypatch runs after this autouse one and wins."""
+    from app.agents import codex
+    from app.config import settings
+    monkeypatch.setattr(settings, "codex_bin", lambda: None)
+    monkeypatch.setattr(settings, "codex_hook_trust", "review")
+    monkeypatch.delenv("CCBOARD_REMOTE_APPROVE", raising=False)      # the adapter's required-events rule reads it: unset means remote approve on
+    codex.reset_caches()
+    yield
+    codex.reset_caches()
+
+
+FAKE_CODEX_SCRIPT = """#!/bin/sh
+# a stand-in for codex-cli 0.145.0: answers the probes the adapter and the doctor make, nothing else
+case "$1" in
+  --version) echo "codex-cli 0.145.0" ;;
+  --help) cat "{help}" ;;
+  login) if [ "$2" = "status" ]; then echo "{login}"; [ "{login}" != "Not logged in" ]; else exit 0; fi ;;
+  features) printf 'hooks    stable    true\nmulti_agent    stable    true\n' ;;
+  mcp) [ "$2" = "get" ] && exit {mcp_rc}; exit 0 ;;
+  debug) echo '{{"models": []}}'; exit 1 ;;
+  exec) cat "{exec_help}" ;;
+  *) exit 0 ;;
+esac
+"""
+
+
+@pytest.fixture
+def fake_codex(tmp_path, monkeypatch):
+    """A fake `codex` binary that behaves like 0.145.0 for the probes (--version, --help from tests/fixtures/codex_help_0145_real.txt,
+    login status, features list, mcp get). Sets settings.codex_bin to it and returns its path; write_fake_codex(path, login=...,
+    mcp_rc=..., help_name=...) rewrites it for another behaviour (a logged-out codex, a newer --help)."""
+    from app.agents import codex
+    from app.config import settings
+    path = write_fake_codex(tmp_path / "fakebin" / "codex")
+    monkeypatch.setattr(settings, "codex_bin", lambda: str(path))
+    codex.reset_caches()
+    return path
+
+
+def write_fake_codex(path, *, login="Logged in using ChatGPT", mcp_rc=0, help_name="codex_help_0145_real.txt",
+                     exec_help_name="codex_exec_help_0145_real.txt"):
+    """Write an executable fake codex at `path` (see fake_codex) and return it."""
+    fx = ROOT / "tests" / "fixtures"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(FAKE_CODEX_SCRIPT.format(help=fx / help_name, exec_help=fx / exec_help_name, login=login, mcp_rc=mcp_rc))
+    path.chmod(0o755)
+    return path

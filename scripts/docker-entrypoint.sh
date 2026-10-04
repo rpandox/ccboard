@@ -8,8 +8,10 @@
 #      no git checkout on the box;
 #   2. re-merge the Claude Code hooks and statusline into ~/.claude/settings.json (scripts/claude_settings.py);
 #   3. re-apply tmux.conf to the running tmux server (never starts or restarts it: it owns the sessions);
-#   4. register the MCP server with Claude Code when it is missing, with a command the HOST can run.
-# Steps 2-4 touch the host and are skipped when CCBOARD_SHADOW=1 (a side-by-side test run). Every step is best effort:
+#   4. register the MCP server with Claude Code when it is missing, with a command the HOST can run;
+#   5. when the host has codex, the same two things for Codex: merge the hooks into $CODEX_HOME/hooks.json
+#      (scripts/codex_hooks.py) and register the MCP server (`codex mcp add`), both skipped without the binary.
+# Steps 2-5 touch the host and are skipped when CCBOARD_SHADOW=1 (a side-by-side test run). Every step is best effort:
 # a failure is a warning, never a reason to keep the board down. Then it execs uvicorn.
 set -eu
 
@@ -123,13 +125,48 @@ host_mcp() {
     return 1
   fi
 }
+host_codex_hooks() {
+  if [ "${CCBOARD_REMOTE_APPROVE:-1}" = 0 ]; then
+    "$HOST_PYTHON" "$APP_DST/scripts/codex_hooks.py" install --app-dir "$APP_DST" --no-remote-approve --approve-timeout "$CCBOARD_APPROVE_TIMEOUT"
+  else
+    "$HOST_PYTHON" "$APP_DST/scripts/codex_hooks.py" install --app-dir "$APP_DST" --approve-timeout "$CCBOARD_APPROVE_TIMEOUT"
+  fi
+}
+host_codex_mcp() { # registers 'ccboard' with the host's codex, or re-points an entry whose script or board URL went stale
+  want="$APP_DST/scripts/ccboard_mcp.py"
+  url="http://127.0.0.1:$CCBOARD_PORT"
+  cur=$(run_timeout 30 codex mcp get ccboard --json 2>/dev/null) || cur=$(run_timeout 30 codex mcp get ccboard 2>/dev/null) || cur=""
+  if [ -n "$cur" ]; then
+    stale=0
+    case "$cur" in *"$want"*) ;; *) stale=1;; esac
+    case "$cur" in *'"transport"'*) case "$cur" in *"\"$url\""*) ;; *) stale=1;; esac;; esac   # only the --json form shows env values
+    if [ "$stale" = 0 ]; then log "Codex MCP server 'ccboard' is already registered"; return 0; fi
+    log "re-pointing the Codex MCP server 'ccboard' at $want ($url)"
+    run_timeout 30 codex mcp remove ccboard >/dev/null 2>&1 || return 1
+  fi
+  if run_timeout 60 codex mcp add ccboard --env "CCBOARD_URL=$url" -- "$HOST_PYTHON" "$want" >/dev/null 2>&1; then
+    log "registered the 'ccboard' MCP server with Codex"
+  else
+    return 1
+  fi
+}
+host_codex() {
+  [ -n "${CODEX_HOME:-}" ] || unset CODEX_HOME   # /etc/ccboard/env carries `CODEX_HOME=` (empty): codex must see it unset, not as a path
+  if ! command -v codex >/dev/null 2>&1; then
+    log "codex is not on PATH ($HOME/.local/bin first): Codex hooks and MCP registration skipped"
+    return 0
+  fi
+  host_codex_hooks || warn "could not merge the Codex hooks into hooks.json; Codex sessions keep the hooks they have"
+  host_codex_mcp || warn "codex mcp add failed; register by hand: codex mcp add ccboard --env CCBOARD_URL=http://127.0.0.1:$CCBOARD_PORT -- $HOST_PYTHON $APP_DST/scripts/ccboard_mcp.py"
+}
 if [ "$SHADOW" = 1 ]; then
-  log "CCBOARD_SHADOW=1: Claude hooks, tmux server and MCP registration are left alone"
+  log "CCBOARD_SHADOW=1: Claude and Codex hooks, tmux server and MCP registration are left alone"
 else
   host_hooks || warn "could not merge the Claude hooks and statusline into settings.json; hooks keep pointing where they pointed"
   host_code_server || true
   host_tmux
   host_mcp || warn "claude mcp add failed; register by hand: claude mcp add --scope user ccboard -- $HOST_PYTHON $APP_DST/scripts/ccboard_mcp.py"
+  host_codex
 fi
 
 # ---------------------------------------------------------------- the board

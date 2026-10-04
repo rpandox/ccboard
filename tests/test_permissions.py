@@ -28,6 +28,41 @@ def test_summarize():
     assert permissions.summarize("mcp__x__y", {"q": 1}) == 'mcp__x__y: {"q": 1}'
 
 
+PATCH = """*** Begin Patch
+*** Update File: src/app/main.py
+@@ def run():
+-    old()
++    new()
+*** Add File: docs/new notes.md
++hello
+*** Delete File: legacy/old.txt
+*** Update File: src/app/main.py
+@@
+-    again()
++    twice()
+*** End Patch"""
+
+
+def test_summarize_apply_patch_lists_the_files_not_the_patch():
+    want = "apply_patch: src/app/main.py, docs/new notes.md, legacy/old.txt"                   # each file once, in patch order
+    assert permissions.summarize("apply_patch", {"input": PATCH}) == want                         # the apply_patch tool's own key
+    assert permissions.summarize("apply_patch", {"command": PATCH}) == want                       # a shell-style request
+    assert permissions.summarize("apply_patch", {"command": ["apply_patch", PATCH]}) == want      # argv: ["apply_patch", <patch>]
+    assert permissions.summarize("apply_patch", PATCH) == want                                    # the plain string the tool was given
+    assert permissions.summarize("apply_patch", {"input": PATCH.replace("\n", "\r\n")}) == want   # CRLF does not stick to a name
+    assert "@@" not in permissions.summarize("apply_patch", {"input": PATCH})
+    many = "\n".join(f"*** Add File: dir/file-{i:03d}.txt" for i in range(60))
+    assert len(permissions.summarize("apply_patch", many)) <= 300
+
+
+def test_summarize_apply_patch_falls_back_to_what_there_is():
+    assert permissions.summarize("apply_patch", {"input": "*** Begin Patch"}) == "apply_patch: *** Begin Patch"      # no file lines: the text
+    assert permissions.summarize("apply_patch", "just some words") == "apply_patch: just some words"
+    assert permissions.summarize("apply_patch", {}) == "apply_patch: {}" and permissions.summarize("apply_patch", None) == "apply_patch: {}"
+    assert permissions.summarize("apply_patch", {"input": 5}) == 'apply_patch: {"input": 5}'
+    assert permissions.summarize("Bash", PATCH) == "Bash: ", "only apply_patch reads a plain string as a patch"
+
+
 def test_timeout_falls_back_to_tui(lite_client, projects_dir, fake_tmux, monkeypatch):
     monkeypatch.setattr(settings, "approve_timeout", 1.0)
     name = _session(lite_client, projects_dir)

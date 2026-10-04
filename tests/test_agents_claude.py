@@ -47,12 +47,12 @@ def plan(ag, **kw):
 # ---------- registry ----------
 
 def test_registry(ag):
-    assert agents.names() == ["claude"]
-    assert [a.name for a in agents.all()] == ["claude"]
+    assert agents.names() == ["claude", "codex"]                  # Codex joined in v0.5.11 (tests/test_agents_codex.py)
+    assert [a.name for a in agents.all()] == ["claude", "codex"]
     assert agents.get("claude") is ag and isinstance(ag, Agent) and isinstance(ag, claude.ClaudeAgent)
     assert (ag.name, ag.label, ag.glyph) == ("claude", "Claude", "◆")
     with pytest.raises(KeyError):
-        agents.get("codex")                      # no Codex adapter in v0.5.4
+        agents.get("gemini")                     # no adapter for it
     with pytest.raises(KeyError):
         agents.get("shell")                      # shell is not an adapter
     with pytest.raises(TypeError):
@@ -664,13 +664,15 @@ def test_status_all_shape_and_no_extra_binary_calls(ag, monkeypatch):
                 "subscriptionType": "max"}
     monkeypatch.setattr(claude_auth, "status", status)
     out = agents.status_all()
+    assert list(out) == ["claude", "codex"]
+    out = {"claude": out["claude"]}                               # codex's own summary is tests/test_agents_codex.py's
     assert out == {"claude": {"installed": True, "version": "2.1.287 (Claude Code)", "loggedIn": True, "authMethod": "claude.ai",
                               "email": "a@b.c", "glyph": "◆", "hooks": {"installed": False}}}
     assert n["status"] == 1, "one claude_auth.status() per call (it is the cached layer)"
-    out["claude"]["hooks"]["installed"] = True                    # callers cannot poison later results
+    agents.status_all()["claude"]["hooks"]["installed"] = True    # callers cannot poison later results
     assert agents.status_all()["claude"]["hooks"]["installed"] is False
     monkeypatch.setattr(claude_auth, "status", lambda: {"installed": False, "version": None, "loggedIn": False})
-    assert agents.status_all() == {"claude": {"installed": False, "version": None, "loggedIn": False, "glyph": "◆", "hooks": {"installed": False}}}
+    assert agents.status_all()["claude"] == {"installed": False, "version": None, "loggedIn": False, "glyph": "◆", "hooks": {"installed": False}}
     # hooks installed after the fact show up at once: the settings file is read on every call, there is no cache to wait out
     cfg = settings.claude_config_dir
     ag.install_hooks(Path("/opt/ccboard"), remote_approve=False, approve_timeout=90)

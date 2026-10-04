@@ -12,6 +12,7 @@ from pathlib import Path
 from croniter import croniter
 
 from . import agents, claude_auth, notify, projects, tasks
+from .agents import codex as codex_agent
 from .agents.claude import FORBIDDEN_ARG_PARTS, HEADLESS_MODES, LIMIT_MSG_RE, RATE_RE, parse_result   # noqa: F401 (re-exported: they live in the adapter now)
 from .config import settings
 from .db import now as db_now
@@ -29,6 +30,32 @@ KV_BACKOFF = "sched_backoff_until"
 KV_LOGIN_ALERT = "sched_login_alerted"
 
 
+# Unattended-run argument rules per agent. FORBIDDEN_ARG_PARTS (above, re-exported) is Claude's list of substrings, any spelling. Codex's
+# are the substrings dangerously / yolo / bypass plus exact tokens that change configuration or the model's profile behind the board's
+# back (-c, --config, -p, --profile, --enable, --disable, --strict-config) and anything --remote*. app/agents/codex.py enforces them
+# through forbidden_extra(); these are the mirror (tests pin both against each other).
+CODEX_FORBIDDEN_PARTS = codex_agent.FORBIDDEN_ARG_PARTS            # ("dangerously", "yolo", "bypass"): one list, the adapter's
+CODEX_FORBIDDEN_EXACT = ("-c", "--config", "-p", "--profile", "--enable", "--disable", "--strict-config")
+CODEX_FORBIDDEN_PREFIX = ("--remote",)
+FORBIDDEN_ARG_PARTS_BY_AGENT = {"claude": FORBIDDEN_ARG_PARTS, "codex": CODEX_FORBIDDEN_PARTS}
+
+
+def forbidden_arg(extra: list[str], agent: str = "claude") -> str | None:
+    """The first argument an unattended run of `agent` may not carry, by the scheduler's own mirror of the rules (None when clean).
+    check_extra_args asks the adapter; this is the adapter-free check, for callers that must not import it and for the tests."""
+    parts = FORBIDDEN_ARG_PARTS_BY_AGENT.get(agent, FORBIDDEN_ARG_PARTS)
+    for a in extra:
+        low = str(a).lower()
+        if any(p in low for p in parts):
+            return a
+        tok = str(a)
+        if agent == "codex" and (tok in CODEX_FORBIDDEN_EXACT or low.startswith(CODEX_FORBIDDEN_PREFIX)
+                                 or any(tok.startswith(x + "=") for x in CODEX_FORBIDDEN_EXACT if x.startswith("--"))
+                                 or (tok.startswith(("-c", "-p")) and not tok.startswith("--"))):   # -cmodel=x: a short flag with its value attached
+            return a
+    return None
+
+
 def check_extra_args(args: str | None, agent: str = "claude") -> list[str]:
     """Extra CLI args for unattended runs: the permission mode is set by the job itself and may never be
     escalated through the args (any spelling, '=' forms, settings overrides). The rules live in the agent adapter."""
@@ -38,7 +65,7 @@ def check_extra_args(args: str | None, agent: str = "claude") -> list[str]:
         parts = shlex.split(args)
     except ValueError as e:
         raise ValueError(f"args: {e}")
-    bad = agents.get(agent).forbidden_extra(parts, interactive=False)
+    bad = agents.get(agent).forbidden_extra(parts, interactive=False) or forbidden_arg(parts, agent)
     if bad:
         raise ValueError(f"argument not allowed for unattended runs: {bad}")
     return parts
@@ -123,8 +150,8 @@ def run_job(db, job: dict, run_id: int) -> dict:
     slug = f"{tasks.slugify(job['name'])[:30]}-{stamp}".strip("-")
     slug = tasks.unique_slug(rpath, slug, db.task_slugs(job["project"], job["repo"]))
     try:
-        extra = check_extra_args(job.get("args"))
-    except ValueError:
+        extra = check_extra_args(job.get("args"), job.get("agent") or "claude")
+    except (ValueError, KeyError):
         extra = []
     cmd = build_command(job["prompt"], slug, job.get("permission_mode") or "acceptEdits", int(job.get("max_turns") or 30),
                         job.get("max_budget_usd"), extra)

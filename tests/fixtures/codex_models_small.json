@@ -1,0 +1,68 @@
+{
+  "models": [
+    {
+      "slug": "gpt-5.5",
+      "display_name": "GPT-5.5",
+      "description": "Frontier model for complex coding, research, and real-world work.",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        {"effort": "low", "description": "Fast responses with lighter reasoning"},
+        {"effort": "medium", "description": "Balances speed and reasoning depth"},
+        {"effort": "high", "description": "Greater reasoning depth for complex problems"},
+        {"effort": "xhigh", "description": "Extra high reasoning depth for complex problems"}
+      ],
+      "visibility": "list",
+      "priority": 3,
+      "additional_speed_tiers": [],
+      "service_tiers": []
+    },
+    {
+      "slug": "gpt-5.6-sol",
+      "display_name": "GPT-5.6 Sol",
+      "description": "Largest model.",
+      "default_reasoning_level": "low",
+      "supported_reasoning_levels": [
+        {"effort": "low", "description": "Fast"},
+        {"effort": "medium", "description": "Balanced"},
+        {"effort": "high", "description": "Deep"},
+        {"effort": "xhigh", "description": "Deeper"},
+        {"effort": "max", "description": "Deepest"}
+      ],
+      "visibility": "list",
+      "priority": 1,
+      "additional_speed_tiers": ["fast"],
+      "service_tiers": [{"id": "priority"}]
+    },
+    {
+      "slug": "gpt-5.6-terra",
+      "display_name": "GPT-5.6 Terra",
+      "description": "Balanced model.",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        {"effort": "low", "description": "Fast"},
+        {"effort": "medium", "description": "Balanced"},
+        {"effort": "high", "description": "Deep"},
+        {"effort": "xhigh", "description": "Deeper"},
+        {"effort": "max", "description": "Deepest"}
+      ],
+      "visibility": "list",
+      "priority": 2,
+      "additional_speed_tiers": [],
+      "service_tiers": []
+    },
+    {
+      "slug": "gpt-reserve",
+      "display_name": "Reserve",
+      "description": "Hidden.",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [{"effort": "medium", "description": "Balanced"}],
+      "visibility": "hide",
+      "priority": 0,
+      "additional_speed_tiers": [],
+      "service_tiers": []
+    },
+    {"slug": "bad slug!", "display_name": "Not a slug", "visibility": "list", "priority": 9},
+    {"slug": 5},
+    "not a model"
+  ]
+}

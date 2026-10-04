@@ -113,7 +113,7 @@ def test_api_agents_shape(board):
     r = board.client.get("/api/agents", headers=H)
     assert r.status_code == 200
     body = r.json()
-    assert list(body) == ["agents"] and list(body["agents"]) == ["claude"], "Claude only until v0.5.11"
+    assert list(body) == ["agents"] and list(body["agents"]) == ["claude", "codex"], "Claude and Codex (v0.5.11)"
     c = body["agents"]["claude"]
     assert {"name", "label", "glyph", "installed", "version", "auth", "hooks", "options", "permission_modes", "efforts", "models",
             "reasoning_by_model", "slash"} <= set(c)
@@ -332,10 +332,13 @@ def test_state_legacy_keys_are_unchanged(board):
 
 def test_state_agents_and_setup(board):
     st = board.client.get("/api/state", headers=H).json()
-    assert list(st["agents"]) == ["claude"]
+    assert list(st["agents"]) == ["claude", "codex"]
     a = st["agents"]["claude"]
     assert a == {"installed": True, "version": AUTH["version"], "loggedIn": True, "authMethod": "claude.ai",
                  "email": "me@example.com", "glyph": "◆", "hooks": {"installed": False}}
+    # codex lives under the same key (v0.5.11); the suite has no codex binary (conftest _isolate_codex), so it reads as not installed
+    assert st["agents"]["codex"] == {"installed": False, "version": None, "loggedIn": False, "glyph": "◇",
+                                     "hooks": {"installed": False, "trust": "review"}}
     # first_run: no project folder and no session ever. A repo exists in this fixture, so it is not a first run
     assert st["setup"] == {"first_run": False, "ok": True}
 
@@ -475,11 +478,14 @@ def test_normalize_launcher_matrix():
     assert n("resume") == ("claude", "resume")
     assert n("continue") == ("claude", "continue")
     assert n("shell") == ("shell", "shell")
-    for codex in ("codex", "codex-resume", "codex-continue"):
-        with pytest.raises(projects.BadRequest, match="codex arrives in v0.5.11"):
-            n(codex)
+    assert n("codex") == ("codex", "claude") and n("codex-resume") == ("codex", "resume") and n("codex-continue") == ("codex", "continue")
+    assert n("claude", "codex") == ("codex", "claude") and n("resume", "codex") == ("codex", "resume") and n("continue", "codex") == ("codex", "continue")
+    assert n("claude", "claude") == ("claude", "claude") and n("shell", "shell") == ("shell", "shell") and n("claude", None) == ("claude", "claude")
+    for launcher, agent in (("codex", "claude"), ("shell", "codex"), ("claude", "shell"), ("claude", "gemini")):
+        with pytest.raises(projects.BadRequest):
+            n(launcher, agent)
     for bad in ("", "clone", "task", "recovered", "bash", "Claude", None, 3):
-        with pytest.raises(projects.BadRequest, match="launcher must be one of claude, resume, continue, shell"):
+        with pytest.raises(projects.BadRequest, match="launcher must be one of claude, resume, continue, shell, codex, codex-resume, codex-continue"):
             n(bad)
 
 
@@ -488,11 +494,11 @@ def test_launchers_is_a_superset_of_the_old_tuple():
     assert {"claude", "resume", "continue", "shell"} <= set(main.LAUNCHERS) and "codex" in main.LAUNCHERS
 
 
-def test_api_create_session_refuses_codex_and_unknown(board):
+def test_api_create_session_refuses_codex_without_a_binary_and_unknown(board):
     r = board.client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "codex"})
-    assert r.status_code == 400 and "v0.5.11" in r.json()["error"]
+    assert r.status_code == 400 and r.json()["error"] == "codex is not installed on this box"
     r = board.client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "emacs"})
-    assert r.status_code == 400 and r.json()["error"] == "launcher must be one of claude, resume, continue, shell"
+    assert r.status_code == 400 and r.json()["error"] == "launcher must be one of claude, resume, continue, shell, codex, codex-resume, codex-continue"
     assert board.tmux["created"] == [], "nothing was started"
 
 
@@ -776,7 +782,7 @@ def test_recover_never_repasses_a_bypass_and_survives_bad_rows(board):
     ok = _open_row("shop--api--ok", claude_session_id=UUID1, opts={"model": "sonnet"})
     junk_id = _open_row("shop--api--junk", claude_session_id="not-a-uuid")
     bad_opts = _open_row("shop--api--badopts", claude_session_id=UUID1, opts={"effort": "extreme"})
-    codex = _open_row("shop--api--cx", agent="codex", claude_session_id=UUID1)
+    codex = _open_row("shop--api--cx", agent="gemini", claude_session_id=UUID1)      # an agent with no adapter (codex has one since v0.5.11)
     shell = _open_row("shop--api--sh", launcher="shell", agent="shell")
     rows = {r["tmux_name"]: r for r in (ok, junk_id, bad_opts, codex, shell)}
     todo = {t["name"]: t["cmd"] for t in recover.plan(rows, set())}
@@ -793,7 +799,7 @@ def test_recover_run_passes_agent_opts_and_rebinds_the_task(board, monkeypatch):
     wt = board.projects / "shop" / "api" / ".claude" / "worktrees" / "fix-bug"
     wt.mkdir(parents=True)
     plain = new_session(board, "claude", name="plain", model="opus", effort="low")
-    codex_row = _open_row("shop--api--cx", agent="codex")
+    codex_row = _open_row("shop--api--cx", agent="gemini")            # no adapter: closed, not relaunched
     board.tmux["sessions"].clear()
     board.tmux["created"].clear()
     from app import main

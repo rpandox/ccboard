@@ -9,7 +9,7 @@ import re
 import secrets
 from pathlib import Path
 
-from . import accounts, agents, notify, projects, samples, tmux
+from . import accounts, agents, notify, permissions, projects, samples, tmux
 from .agents.claude import ELICITATION_DONE, SESSION_ID_RE, WAIT_KIND, WAITING_NOTIFICATIONS, parse_limit_message, statusline_stats
 from .config import settings
 from .db import SKIP_EVENTS, now as db_now
@@ -87,13 +87,22 @@ def _valid(name: str | None) -> str | None:
 
 
 def resolve_session(headers, payload: dict, open_rows: dict[str, dict]) -> tuple[str | None, str]:
-    """Return (tmux session name, how). Order: CCBOARD_SESSION env, $TMUX_PANE on our socket, cwd."""
+    """Return (tmux session name, how). Order: CCBOARD_SESSION env, the payload session_id of exactly one open row, $TMUX_PANE on
+    our socket, cwd (the one open row of that repo). The Tailer bind of an unbound Codex row (rollout cwd + time) joins in v0.5.12
+    (see bind_unbound_rows)."""
     env_name = (headers.get("x-ccboard-session") or "").strip()
     if env_name == "none":
         return None, "ignored"       # a one-shot claude -p the board ran itself (PR description)
     name = _valid(env_name)
     if name:
         return name, "env"
+    sid = payload.get("session_id")
+    if isinstance(sid, str) and SESSION_ID_RE.match(sid):
+        # the agent's own conversation id (Codex: bound by its first SessionStart, or by the rollout Tailer in v0.5.12) names the row
+        # when the hook lost its env (a Codex that did not inherit the tmux environment): only when exactly one open row owns it
+        owners = [n for n, row in open_rows.items() if row.get("claude_session_id") == sid]
+        if len(owners) == 1:
+            return owners[0], "session_id"
     pane = headers.get("x-ccboard-pane") or ""
     if re.fullmatch(r"%\d+", pane) and _our_socket(headers.get("x-ccboard-tmux")):
         try:
@@ -113,9 +122,12 @@ def resolve_session(headers, payload: dict, open_rows: dict[str, dict]) -> tuple
             matches = []
             for n, row in open_rows.items():
                 try:
-                    if projects.repo_path(row["project"], row["repo"]).resolve() == target:
+                    where = {projects.repo_path(row["project"], row["repo"]).resolve()}
+                    if isinstance(row.get("cwd"), str) and row["cwd"]:
+                        where.add(Path(row["cwd"]).resolve())         # sessions.cwd: a task's own worktree (Codex tasks start in it)
+                    if target in where:
                         matches.append(n)
-                except projects.BadRequest:
+                except (projects.BadRequest, OSError, ValueError, RuntimeError):
                     continue
             if len(matches) == 1:
                 return matches[0], "cwd"
@@ -161,6 +173,43 @@ def _adapter(agent: str | None):
         return agents.get(agent or "claude")
     except KeyError:
         return agents.get("claude")
+
+
+def hook_agent(row_agent: str | None, header_agent: str | None) -> str | None:
+    """Which agent's adapter reads a hook: the row's own agent when it has an adapter (a Claude row is never relabelled by a header),
+    else the X-CCBoard-Agent header the hook script sent (a shell row where the person ran `codex` by hand), else the row's value as
+    is (shell, None: read the way Claude's are)."""
+    known = agents.names()
+    if row_agent in known:
+        return row_agent
+    header = (header_agent or "").strip().lower()
+    return header if header in known else row_agent
+
+
+def agent_mismatch(row_agent: str | None, header_agent: str | None) -> bool:
+    """Does the hook name one adapter agent while the row it resolved to belongs to a different one? True means it is somebody else's
+    event: a Codex run that is not the row's (Hermes, `codex exec`, Codex Desktop: ccboard's hooks sit in the global hooks.json, so
+    every Codex process on the box fires at the board), or a Claude hook from a run that merely shares the row's cwd. Such a hook is
+    ignored before anything is written. A shell row is not an adapter agent, so it keeps taking hooks from either (the person may run
+    `claude` or `codex` by hand in it), and so does a hook that names no agent or one this build does not know."""
+    known = agents.names()
+    header = (header_agent or "").strip().lower()
+    return row_agent in known and header in known and header != row_agent
+
+
+def bind_unbound_rows(db) -> int:
+    """Identity step 3 for Codex (plan v0.5.11 'Identity join order'), a seam until v0.5.12: bind open codex rows that have no
+    conversation id yet to their rollout (cwd + start time, FIFO, ambiguity left unbound). The rollout Tailer lands in v0.5.12 with
+    `agents.codex.bind_unbound_rows(db)`; until that function exists this returns 0 and binds nothing. Steps 1 (the CCBOARD_SESSION
+    env header), 2 (the payload session_id, resolve_session) and 4 (the cwd match) are live. Never raises."""
+    fn = getattr(getattr(agents, "codex", None), "bind_unbound_rows", None)
+    if not callable(fn):
+        return 0
+    try:
+        return int(fn(db) or 0)
+    except Exception as e:
+        log.warning("codex bind_unbound_rows failed: %s", e)
+        return 0
 
 
 def _same_episode(prev: dict | None, name: str, kind: str, resets_at) -> bool:
@@ -334,8 +383,34 @@ def _tool_batch(db, name: str, event: str, sid: str | None, row: dict | None) ->
     return out
 
 
+def _subthread(adapter, row: dict | None, sid: str | None, event: str, payload: dict) -> bool:
+    """Is this event from another thread than the one the row follows? Codex runs the hooks for every thread of the process (a
+    guardian reviewer, a thread_spawn subagent), each under its own session_id and in the same pane with the same env, so such an
+    event arrives at the main row. The adapter owns the rule (`thread_relation`: own | rebind | subthread; a SessionStart that says
+    clear / resume / fork, or any SessionStart while the row is idle, done or ended, is the same session's next thread, a rebind: the
+    row's state goes in). An adapter without that method (Claude) has no sub-threads. A sub-thread event is counted
+    (flags.subthreads), recorded, and never touches the state."""
+    rel = getattr(adapter, "thread_relation", None)
+    if not callable(rel) or not sid or not (row or {}).get("claude_session_id"):
+        return False
+    return rel(event, payload, row["claude_session_id"], row.get("state")) == "subthread"
+
+
+def _expire_permissions(db, name: str, decision: str) -> int:
+    """Close every pending permission request of a session (an Interrupt answered them: Codex dropped the prompt) and wake each long
+    poll so the hook script returns at once. Returns how many."""
+    n = 0
+    for p in db.perm_pending():
+        if p["tmux_name"] == name:
+            db.perm_expire(p["id"], decision)
+            permissions.wake(p["id"])
+            n += 1
+    return n
+
+
 def apply(db, name: str, event: str, payload: dict, agent: str | None = None, child: bool = False) -> dict:
-    """Update the session row for one hook event. Returns what changed. `agent` (the row's agent) is recorded on the stored event.
+    """Update the session row for one hook event. Returns what changed. `agent` is the agent whose adapter reads the payload and is
+    recorded on the stored event: the row's own agent, or for a shell row the X-CCBoard-Agent the hook script sent (hook_agent).
 
     Order: guard (foreign sessions write nothing) -> statusline -> PostToolBatch -> the adapter reads the payload (every other event)
     -> one flags write -> state -> event row -> notification. Flags and state are on disk before the notification is built."""
@@ -373,7 +448,12 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None, ch
     if event in SKIP_EVENTS:
         return {"session": name, "event": event, "skipped": True}
 
-    n = _adapter(agent).normalise_hook(event, p)
+    adapter = _adapter(agent)
+    if _subthread(adapter, row, sid, event, p):
+        db.update_flags(name, None, {"subthreads": 1})
+        db.add_event(name, event, "subthread", None, p, agent=agent)           # recorded and counted, never a state change
+        return {"session": name, "event": event, "ignored": "subthread"}
+    n = adapter.normalise_hook(event, p)
     if n.ignored:
         return {"session": name, "event": event, "ignored": n.ignored}
     state, kind, message, prompt, attention = n.state, n.kind, n.message, n.prompt, n.attention
@@ -412,6 +492,8 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None, ch
         if limit is not None:
             _rate_limited(db, name, limit, message)
 
+    if event == "Interrupt" and n.kind == "interrupt":
+        _expire_permissions(db, name, "interrupt")            # the turn was cancelled: a prompt still on the board has nothing to answer
     if flags or n.incr:
         db.update_flags(name, flags, n.incr)
     db.set_state(name, state, event, message=message, prompt=prompt, claude_session_id=sid, attention=attention)

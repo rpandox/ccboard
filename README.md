@@ -1,6 +1,6 @@
 # ccboard
 
-A self-hosted dashboard for **Claude Code CLI sessions** on your own Linux box, reachable only over your Tailscale network.
+A self-hosted dashboard for **Claude Code CLI sessions** (and, since v0.5.11, **Codex CLI sessions**: see [Codex](#codex)) on your own Linux box, reachable only over your Tailscale network.
 
 ccboard is a *status-and-attention layer*. It launches the real `claude` TUI inside tmux, shows you what is running where, lets you attach from any device (including your phone), and tells you when a session needs you. It never reimplements Claude or its chat: every Claude Code feature (slash commands, MCP, hooks, plan mode, resume, skills, worktrees) works untouched because the real terminal is what runs.
 
@@ -117,6 +117,8 @@ Every setting is an environment variable. Values are remembered in `/etc/ccboard
 | `CCBOARD_CLAUDE_MEM` | `1` | `1` verifies the claude-mem plugin (installs it when it is missing) and lets the board watch its worker; `0` skips both ([claude-mem](#claude-mem)) |
 | `CCBOARD_MEM_PORT` | empty | Port the board probes for claude-mem's worker. Empty finds it by itself (`~/.claude-mem/worker.pid`, then claude-mem's settings, then the plugin's own default, 37700 plus your uid modulo 100: 37700 on ubu2, 37701 on a Mac). It only tells the board where to look; the worker's own port is `CLAUDE_MEM_WORKER_PORT` in `~/.claude-mem/settings.json` |
 | `CCBOARD_MEM_SERVICE` | `0` | `1` runs the worker as `ccboard-mem.service` from a clean environment; off until it has been verified on the box ([claude-mem](#claude-mem)). Remembered in `/etc/ccboard/env`; `0` disables the unit again |
+| `CCBOARD_CODEX_HOOK_TRUST` | `review` | `review` (default): trust ccboard's Codex hooks once in Codex itself. `bypass`: every Codex session the board starts gets `--dangerously-bypass-hook-trust`, which also runs the `.codex/hooks.json` of any repository you cloned without asking (the same risk class as bypassPermissions; the doctor warns about repo-level hook files). Remembered in `/etc/ccboard/env` ([Codex](#codex)) |
+| `CODEX_HOME` | empty | Where Codex keeps its config (empty means `~/.codex`, as for Codex itself). `hooks.json` is written there and `codex mcp add` registers there. Remembered in `/etc/ccboard/env`; absolute path, no spaces |
 
 Tailnet-only `tailscale serve` accepts any HTTPS port. If a chosen port already carries something else (another serve handler or a Funnel), `install.sh` stops and tells you; pick other ports or rerun with `CCBOARD_REPLACE_SERVE=1` to replace that port's handlers. It never runs `tailscale serve reset` and never touches ports you did not name.
 
@@ -138,6 +140,7 @@ CCBOARD_HTTPS_PORT=8443 CODE_HTTPS_PORT=10000 CODE_SERVER_PORT=8081 ./install.sh
 - `restic` from apt, a random restic password in `<data dir>/restic-password` (0600; **copy it somewhere safe**, without it the backups are unreadable), and `ccboard-backup.service` + `.timer`. `sudo systemctl start ccboard-backup` runs one now; `journalctl -u ccboard-backup` has the log. Remote repos need their credentials in `/etc/ccboard/env` (for example `AWS_ACCESS_KEY_ID`; lines you add there by hand survive reruns of `install.sh`) or an ssh key without passphrase for `sftp:`; both the git pushes and restic's own ssh run with `BatchMode=yes` and a connect timeout, so nothing ever prompts. "Back up now" on the board starts the same unit (`systemctl start ccboard-backup`), so a ccboard restart cannot interrupt it; a run that was killed anyway leaves a restic lock, which the next run clears with `restic unlock` before retrying
 
 - the `claude-mem@thedotmack` Claude Code plugin, when it is missing (`CCBOARD_CLAUDE_MEM=0` skips this; bun is never installed) and, only with `CCBOARD_MEM_SERVICE=1`, `ccboard-mem.service` (see [claude-mem](#claude-mem))
+- when `codex` is installed (`~/.local/bin/codex` counts; the login shell's PATH is not needed): ccboard's hooks merged into `$CODEX_HOME/hooks.json` (`scripts/codex_hooks.py install`) and the `ccboard` MCP server registered with `codex mcp add ccboard --env CCBOARD_URL=http://127.0.0.1:$CCBOARD_PORT` (a stale entry that names another checkout or port is re-pointed). Without Codex both steps are skipped with a note; a failure is a warning, never an abort. See [Codex](#codex)
 - with `CCBOARD_RUNTIME=docker`: the container instead of `ccboard.service`, plus `ccboard-watchtower`, a compose file under `<data dir>/compose` and `<data dir>/app` for the scripts the host runs (see [Run the board as a container](#run-the-board-as-a-container-optional))
 
 Update: pull or extract the new version into the same directory and rerun `./install.sh`. It restarts only `ccboard` (stateless) unless something else changed. Restarting `ccboard` never touches running Claude sessions, because they live under `ccboard-tmux.service`. `install.sh` also writes `/etc/sudoers.d/ccboard`, which lets your user restart `ccboard` and `ccboard-ttyd` without a password, so code-only updates are `git pull && sudo systemctl restart ccboard` (or `scripts/deploy.sh <host>` from your machine).
@@ -305,7 +308,7 @@ What the board now does with them:
 
 ### Doctor and the agents API
 
-`GET /api/doctor` (optional `?group=box|terminal|claude|notify` and `&refresh=1`) runs the box checks (tmux, ttyd, code-server, git, gh, ccusage, ntfy, push, identity, Claude binary / login / hooks) with a 5 s cap each and a 20 s cache; every failing check carries a fix text and, where it makes sense, the command to run. `GET /api/agents` describes the installed agents (Claude for now: launch options, permission modes, efforts, models and the slash commands the board knows), `GET /api/sessions/<tmux>` returns one session with its task and flags, and `GET /api/external?agent=claude` lists Claude Code sessions and background jobs the board did not start (read from `~/.claude/sessions` and `~/.claude/jobs`, display only). All four are read-only and sit behind the same identity check as the rest of the API.
+`GET /api/doctor` (optional `?group=box|terminal|claude|notify|memory|codex` and `&refresh=1`) runs the box checks (tmux, ttyd, code-server, git, gh, ccusage, ntfy, push, identity, Claude binary / login / hooks) with a 5 s cap each and a 20 s cache; every failing check carries a fix text and, where it makes sense, the command to run. `GET /api/agents` describes the installed agents (Claude and Codex: launch options, permission modes, efforts, models and the slash commands the board knows), `GET /api/sessions/<tmux>` returns one session with its task and flags, and `GET /api/external?agent=claude` lists Claude Code sessions and background jobs the board did not start (read from `~/.claude/sessions` and `~/.claude/jobs`, display only). All four are read-only and sit behind the same identity check as the rest of the API.
 
 ### The terminal on a phone
 
@@ -441,6 +444,77 @@ A plugin update is the one thing that undoes the clean environment, and the old 
   "CLAUDE_MEM_WORKER_AUTOSTART": "false",
 ```
 
+## Codex
+
+ccboard starts, resumes and tracks Codex sessions next to Claude ones. Codex is a second agent, not a mode: the launcher takes `codex`, `codex-resume` and `codex-continue` (or `agent: "codex"` on the plain launchers), a task takes `agent: "codex"`, and a Codex row carries the `◇` glyph. The adapter was written against codex-cli 0.145.0 (what ubu2 runs) and uses a newer flag only when `codex --help` lists it. Below: how the board starts Codex, then the box setup (hooks, the one-time trust review, the MCP server). `./install.sh` does the box setup when `codex` is on the box, and in container mode `docker-entrypoint.sh` repeats it on every start (guarded by `command -v codex`; `CCBOARD_SHADOW=1` leaves Codex alone).
+
+### How the board starts Codex
+
+**The launch line.** One line, built in `app/agents/codex.py` and nowhere else. Extra arguments never carry a flag the board owns.
+
+```
+codex [--no-daemon] [--dangerously-bypass-hook-trust] --no-alt-screen <permission flags> [-m <model>]
+      [-c model_reasoning_effort="<level>"] [--search] [--add-dir <dir>]... [-p <profile>] [<extra>] [-- "<first prompt>"]
+codex resume <same flags> <conversation id>      # resume
+codex resume <same flags> --last                  # continue the last conversation of this directory
+```
+
+`--no-alt-screen` keeps Codex's scrollback in tmux. The prompt follows `--`, so a prompt that starts with a dash is still a prompt. There is no `-C`: the tmux session starts in the repo (or the task's worktree), which is where Codex works. `--no-daemon` is added only on a Codex that has it (0.157 and newer); `--dangerously-bypass-hook-trust` only with `CCBOARD_CODEX_HOOK_TRUST=bypass`.
+
+**The permission map.**
+
+| Mode | 0.145 (the ubu2 build) | Newer Codex |
+|---|---|---|
+| `default`, `acceptEdits` | `-s workspace-write -a on-request` | the same |
+| `plan` | `-s read-only -a on-request` | the same |
+| `dontAsk` | `-s workspace-write -a never` | the same |
+| `auto` | `-s workspace-write -a on-request` (0.145's `-a` offers `untrusted`, `on-request` and `never`; there is no `on-failure`) | `--approve-for-me -s workspace-write` where `--approve-for-me` exists (0.157+); `-a on-failure -s workspace-write` on a build whose `-a` lists `on-failure` |
+| `bypassPermissions` | `--dangerously-bypass-approvals-and-sandbox`, alone | the same |
+
+The advanced Sandbox and Approval options replace their half of the mode (`approval: never` on `plan` is `-s read-only -a never`). Without a mode the launch line has no permission flags and Codex's own `config.toml` decides, as it does when you type `codex` yourself.
+
+**Tasks and managed worktrees.** Codex has no worktree flag, so for a Codex task ccboard runs `git worktree add -b worktree-<slug> <repo>/.ccboard/worktrees/<slug>` (Claude's stay under `.claude/worktrees`), copies the repo's `.worktreeinclude` files into it, and starts the session inside it. Both folders are kept out of `git status` through `.git/info/exclude`; a launch that fails takes its worktree and branch with it. A project folder that is not a git repo runs the task in place, as Claude's does. A task never inherits its permissions from `config.toml`: with no permission mode it runs `default`, so its line always carries both `-s` and `-a`; an explicit sandbox or approval replaces only its own half (`approval: never` is `-s workspace-write -a never`). After a reboot a task comes back inside its worktree with its conversation id, or `codex resume --last` when none was bound (the worktree is its own directory, so that can only be its own conversation).
+
+**Bypass rules.**
+
+- `bypassPermissions` and `bypass: true` skip every prompt and the sandbox. They are an explicit choice on an interactive session; the launcher's red acknowledgement arrives with v0.5.13.
+- `sandbox: danger-full-access` is the same class. It is refused unless `bypass: true` comes with it, and then the launch line is the one bypass flag. `approval: never` together with an explicit sandbox is your own call (Claude's `dontAsk`), not a bypass.
+- Tasks, backlog dispatch, scheduled and headless runs, resume and reboot recovery never carry one: they refuse `bypassPermissions`, `danger-full-access`, any `bypass`/`yolo`/`dangerous` option and any such spelling in extra arguments, and a stored option set never holds one, so a relaunch cannot inherit it.
+- Extra arguments cannot carry `-c`, `-p`, `-s`, `-a`, `-m`, `-C`, `--enable`, `--disable`, `--strict-config`, `--remote*`, `--search`, `--no-alt-screen`, `--sandbox`, `--ask-for-approval`, a bare `--`, or anything containing `dangerously`, `yolo` or `bypass`; use the launch controls instead.
+- `--dangerously-bypass-hook-trust` is a separate switch (`CCBOARD_CODEX_HOOK_TRUST`, below).
+
+**The capability probe.** `codex --help` and `codex exec --help` run once per binary (path, mtime and size, so a `codex update` is noticed) and are cached; a flag is used only when it is defined as an option in that text, not merely mentioned. A failed probe is retried after a minute and the 0.145 flag set applies meanwhile, so a line can always be built (with no Codex installed too). `codex exec`, which headless runs will use (v0.5.16), gets `-a never` and `--search` only when `codex exec --help` lists them; neither 0.145 nor 0.157 does. The model list comes from `codex debug models`, cached for an hour (the first `/api/agents` after a start shows a built-in list and refreshes it in the background). The real help texts of the ubu2 build are test fixtures (`tests/fixtures/codex_help_0145_real.txt`, `codex_exec_help_0145_real.txt`, `codex_resume_help_0145_real.txt`); the tests check that no launch, resume or continue line carries a flag those texts lack.
+
+**The doctor group.** `GET /api/doctor?group=codex` (every check is a skip without Codex): `codex-bin` (the version; 0.145 is a pass that says 0.157+ adds `--approve-for-me` and `--no-daemon`), `codex-auth` (`codex login status`), `codex-hooks` (every ccboard event registered, PermissionRequest included unless `CCBOARD_REMOTE_APPROVE=0`), `codex-trust` (a trust record in `config.toml` for each ccboard hook; warns in `bypass` mode), `codex-alt-screen`, `codex-features` (Codex's `hooks` feature on), `codex-sessions` (the rollouts folder is readable), `codex-mcp` (`codex mcp get ccboard`) and `codex-repo-hooks` (`.codex/hooks.json` files inside projects: Codex reviews each one in `review` mode, they run unreviewed in `bypass` mode). The probes run side by side (`codex --version` once, beside `codex login status`), so the group fits the 5 s cap of one check.
+
+**Other Codex processes.** ccboard's hooks sit in the global `hooks.json`, so every Codex process on the box calls the board: Hermes, `codex exec`, Codex Desktop. Every hook command names its agent (`env CCBOARD_AGENT=codex`, the permission hook included), and a hook or permission request whose agent is not the agent of the row it resolves to is ignored (`{"ignored": "foreign"}`): a Codex run that merely shares a Claude row's directory changes nothing and never parks a prompt on it. A shell row takes either, since you may run `claude` or `codex` by hand in it. Events of another thread of the same Codex process (a guardian reviewer, a subagent) carry their own session id: they are counted in `flags.subthreads` and never move the row's state. A SessionStart with a new id (`/new`, `/clear`, `codex resume`, `codex fork`) is the same session's next thread and rebinds the row, and so is any SessionStart with a new id while the row is idle, done or ended (those threads start mid-turn, never at rest).
+
+**Recovery limits.** Until the rollout Tailer of v0.5.12 binds conversation ids, a Codex session row has no id before you have trusted the hooks. After a reboot such a row comes back with `codex resume --last` only when it is the only open Codex row in its directory; with a second one (or a bound one) next to it, it starts a fresh `codex` instead (the earlier conversation is not resumed) and `last_recovery.notes` says so, and no `continue` is typed into it. Another program's Codex run in the same directory is invisible to the board, so even a lone row's `--last` is a best guess; trust the hooks once and the ids bind on the first event.
+
+### The box: hooks, trust and MCP
+
+**The hooks.** `scripts/codex_hooks.py` is the twin of `claude_settings.py` and writes `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`). The shape is Claude's: `{"hooks": {"<Event>": [{"hooks": [{"type": "command", "command": "...", "timeout": 5}]}]}}`.
+
+| Event | Script | Mode and timeout |
+|---|---|---|
+| SessionStart, UserPromptSubmit, Stop, SubagentStart, SubagentStop, PreCompact, PostCompact | `bin/ccboard-hook` | `async`, 5 s |
+| Interrupt, SessionEnd | `bin/ccboard-hook-fast` (2 s request cap: the event has to land before the turn is cut or the process exits) | synchronous, 3 s |
+| PermissionRequest | `bin/ccboard-permission` (waits for a remote allow/deny, then yields to the TUI prompt; `CCBOARD_REMOTE_APPROVE=0` skips it) | synchronous, `CCBOARD_APPROVE_TIMEOUT` + 30 s |
+
+PreToolUse and PostToolUse are deliberately not registered (they fire per tool call, and PreToolUse can block a tool). All ten commands read `env CCBOARD_AGENT=codex <app>/bin/<script>`: the board hears "codex" from the command itself, not from the session's environment, so a `codex exec` started inside a Claude session cannot pass itself off as Claude, and the board ignores a hook or permission request whose agent is not its row's. A Codex permission request shows on the phone with the files an `apply_patch` touches (its `*** Update/Add/Delete File:` lines), not the patch.
+
+Why only those seven are `async`: on codex-cli 0.157.1 (checked through its app-server, one shim hook per event) an async hook runs in the background and shows no "running hook" line, while Codex runs a SessionEnd hook synchronously even when it says async (with a warning) and clamps the Interrupt and SessionEnd timeouts to 3 s. So those two are written synchronous with timeout 3, and `hooks/list` reports no warnings. If a Codex build skips `async` hooks (not checked on 0.145), set `CCBOARD_CODEX_HOOKS_ASYNC=0` where the installer runs (or pass `--no-async`): every hook is then written synchronous.
+
+Other tools' hooks in `hooks.json` are kept, and the installer is idempotent: it rewrites ccboard's hook where it already sits (or appends a group after what is there), never moving it, because Codex files its trust under `<file>:<event>:<group index>:<hook index>`. `codex_hooks.py` takes `--hooks PATH`, `--no-remote-approve`, `--approve-timeout N` and `--no-async`; `show` prints the hooks, `remove` takes ccboard's out again, `trust-help` prints the review steps for this box.
+
+**The trust review.** Codex runs a hook only after you have reviewed it once. Once, on the box, in any terminal: run `codex`, type `/hooks` ("view and manage lifecycle hooks"; newer builds may also open the review by themselves, "N hooks need review before they can run") and trust every ccboard hook. Until then a Codex session started from the board works as a terminal but reports no state (the "no hooks (untrusted?)" chip for it arrives with the launcher in v0.5.13). Codex stores the review as `[hooks.state."<file>:<event>:<group>:<index>"] trusted_hash = "sha256:..."` in `config.toml`; the hash covers the definition (command, timeout, async). You review again when the checkout or data directory moves (the command path changes), when ccboard changes a hook definition (the review reads "modified"), or when somebody puts a hook group above ccboard's in the same event. `CCBOARD_CODEX_HOOK_TRUST=bypass` skips the review: every Codex session the board starts then gets `--dangerously-bypass-hook-trust`, so ccboard's hooks run unreviewed and so does the `.codex/hooks.json` of any repository you cloned (the same risk class as `bypassPermissions`; the doctor's `codex-trust` and `codex-repo-hooks` checks warn). The default is `review`.
+
+**MCP.** The `ccboard` server (`list_projects`, `create_task`, `list_tasks`, `get_task_status`) is registered in Codex's `config.toml` with `CCBOARD_URL` pointing at this board's loopback port. Check it with `codex mcp get ccboard`; remove it with `codex mcp remove ccboard`.
+
+**Check what Codex sees.** `codex_hooks.py` was checked against Codex's own parser (the app-server `hooks/list` call: no warnings or errors, every hook parsed, the async flags and timeouts as above). To repeat it anywhere there is a `codex` binary, in a throwaway home: `CCBOARD_TEST_CODEX_BINARY=1 .venv/bin/python -m pytest -p no:cacheprovider -q tests/test_codex_hooks.py -k parses_the_installed`.
+
+**Going back.** `python3 scripts/codex_hooks.py remove && codex mcp remove ccboard`. Your other hooks and Codex's own files are left alone; the `[hooks.state]` lines Codex wrote stay in `config.toml` and are harmless.
+
 ## Running on a subscription (no API key)
 
 The box needs no `ANTHROPIC_API_KEY`. Log in once from the board ("Log in" opens the sign-in link, you paste the code back) and Claude Code stores the OAuth login in `~/.claude/.credentials.json`; it refreshes itself and survives reboots, so recovery after a restart needs no new login. Everything the board launches uses that same login: interactive sessions, tasks, "Describe with Claude", scheduled and batch `claude -p` runs. They all draw on the same 5-hour and weekly windows as your interactive use, which is why the scheduler defers runs above 85 % of the window and backs off after a rate-limited run.
@@ -459,6 +533,7 @@ If the login expires or you log out, the header shows *Claude: not logged in*, t
 - If the box has `tailscale set --operator=<you>` configured, every process running as you can change `tailscale serve` (including turning on Funnel). `install.sh` does not set the operator in systemd mode (it uses `sudo` for serve commands); in docker mode it does, because the container cannot use `sudo`, so the container and every other process of yours can then change `tailscale serve`. The board itself never turns Funnel on.
 - Tagged nodes and requests from the box itself carry no identity header and are rejected. That is also why fleet polling uses `CCBOARD_HUB_TOKEN` (in `/etc/ccboard/env`, mode 0640) instead of the login header: a box polling another box has no user identity. The summary a node returns is counts, health and the 5-hour usage, never prompts or transcripts. If you tag the boxes (`tailscale up --advertise-tags=tag:ccboard`), make sure your ACL still lets your own devices reach their ports and lets the boxes reach each other on `CCBOARD_HTTPS_PORT`.
 - Do not put `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` in `/etc/ccboard/env` or the tmux server's environment: they outrank the interactive login.
+- Codex: the board never reads Codex's credentials (`~/.codex/auth.json`); login state comes from `codex login status`. Skipping approvals and the sandbox (`bypassPermissions`, `bypass: true`, `sandbox: danger-full-access`) is an explicit choice on an interactive session and is refused for tasks, backlog dispatch, scheduled or headless runs and every relaunch. `CCBOARD_CODEX_HOOK_TRUST=bypass` is a second, separate opt-in: it runs ccboard's Codex hooks without Codex's one-time review and also runs the `.codex/hooks.json` of any repository you cloned, without asking. Leave it on `review` unless you vet every repository on the box.
 
 ## Troubleshooting
 
@@ -474,6 +549,7 @@ If the login expires or you log out, the header shows *Claude: not logged in*, t
 ```sh
 sudo systemctl disable --now ccboard ccboard-ttyd ccboard-tmux code-server@$USER
 sudo systemctl disable --now ccboard-mem        # only when you enabled CCBOARD_MEM_SERVICE; the plugin itself stays (claude plugin uninstall claude-mem@thedotmack)
+python3 ~/.local/share/ccboard/app/scripts/codex_hooks.py remove   # or scripts/codex_hooks.py from the checkout; then: codex mcp remove ccboard
 sudo rm /etc/systemd/system/ccboard*.service /etc/ccboard/env; sudo rm -r /etc/systemd/system/code-server@$USER.service.d
 sudo tailscale serve --https=443 --set-path=/tty off      # use your CCBOARD_HTTPS_PORT
 sudo tailscale serve --https=443 --set-path=/ off
@@ -481,7 +557,7 @@ sudo tailscale serve --https=8443 --set-path=/ off        # use your CODE_HTTPS_
 ```
 In docker mode also run `docker compose -f ~/.local/share/ccboard/compose/docker-compose.yml --profile prod down` first (and `docker image rm ghcr.io/rpandox/ccboard` if you want the image gone).
 
-Projects in `PROJECTS_DIR` and `~/.claude` are left alone.
+Projects in `PROJECTS_DIR`, `~/.claude` and `~/.codex` are left alone.
 
 ## Deviations from the original spec (v0.1)
 

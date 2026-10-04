@@ -11,7 +11,7 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE=/etc/ccboard/env
-ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT PREVIEW_HTTPS_BASE CCBOARD_NODE_NAME CCBOARD_HUB_TOKEN CCBOARD_NODES CCBOARD_RESTIC_REPO CCBOARD_RESTIC_PASSWORD_FILE CCBOARD_BACKUP_PUSH CCBOARD_BACKUP_ONCALENDAR CCBOARD_BACKUP_EXTRA CCBOARD_RUNTIME CCBOARD_AUTO_CONTINUE CCBOARD_CLAUDE_MEM CCBOARD_MEM_PORT CCBOARD_MEM_SERVICE)
+ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT PREVIEW_HTTPS_BASE CCBOARD_NODE_NAME CCBOARD_HUB_TOKEN CCBOARD_NODES CCBOARD_RESTIC_REPO CCBOARD_RESTIC_PASSWORD_FILE CCBOARD_BACKUP_PUSH CCBOARD_BACKUP_ONCALENDAR CCBOARD_BACKUP_EXTRA CCBOARD_RUNTIME CCBOARD_AUTO_CONTINUE CCBOARD_CLAUDE_MEM CCBOARD_MEM_PORT CCBOARD_MEM_SERVICE CCBOARD_CODEX_HOOK_TRUST CODEX_HOME)
 TTYD_VERSION=1.7.7
 TTYD_SHA_amd64=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
 TTYD_SHA_arm64=b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165
@@ -92,6 +92,8 @@ if [ -z "${CCBOARD_HUB_TOKEN:-}" ]; then CCBOARD_HUB_TOKEN=$(python3 -c 'import 
 : "${CCBOARD_CLAUDE_MEM:=1}"           # 1 = verify/install the claude-mem plugin and let the board watch its worker; 0 = neither
 : "${CCBOARD_MEM_PORT:=}"              # empty = the board finds the worker's port itself (worker.pid, then claude-mem's settings)
 : "${CCBOARD_MEM_SERVICE:=0}"          # 1 = run the worker as ccboard-mem.service from a clean environment (off until verified on the box)
+: "${CCBOARD_CODEX_HOOK_TRUST:=review}"  # review = trust ccboard's Codex hooks once in Codex (/hooks); bypass = start Codex with --dangerously-bypass-hook-trust
+: "${CODEX_HOME:=}"                    # empty = Codex's own default (~/.codex); the hooks.json and the MCP entry go where Codex reads them
 systemd-analyze calendar "$CCBOARD_BACKUP_ONCALENDAR" >/dev/null 2>&1 || die "CCBOARD_BACKUP_ONCALENDAR is not a systemd calendar spec: $CCBOARD_BACKUP_ONCALENDAR"
 [[ "$PREVIEW_HTTPS_BASE" =~ ^[0-9]{1,5}$ ]] || die "PREVIEW_HTTPS_BASE must be a port number"
 [[ "$CCBOARD_APPROVE_TIMEOUT" =~ ^[0-9]{1,4}$ ]] || die "CCBOARD_APPROVE_TIMEOUT must be seconds"
@@ -108,10 +110,14 @@ case "$CCBOARD_RUNTIME" in systemd|docker) ;; *) die "CCBOARD_RUNTIME must be sy
 case "$CCBOARD_CLAUDE_MEM" in 0|1) ;; *) die "CCBOARD_CLAUDE_MEM must be 0 or 1 (got '$CCBOARD_CLAUDE_MEM')";; esac
 case "$CCBOARD_MEM_SERVICE" in 0|1) ;; *) die "CCBOARD_MEM_SERVICE must be 0 or 1 (got '$CCBOARD_MEM_SERVICE')";; esac
 [ -z "$CCBOARD_MEM_PORT" ] || [[ "$CCBOARD_MEM_PORT" =~ ^[0-9]{1,5}$ ]] || die "CCBOARD_MEM_PORT must be empty or a port number (got '$CCBOARD_MEM_PORT')"
+case "$CCBOARD_CODEX_HOOK_TRUST" in review|bypass) ;; *) die "CCBOARD_CODEX_HOOK_TRUST must be review or bypass (got '$CCBOARD_CODEX_HOOK_TRUST')";; esac
+[ -z "$CODEX_HOME" ] || [[ "$CODEX_HOME" = /* ]] || die "CODEX_HOME must be empty or an absolute path (got '$CODEX_HOME')"
+[ "$CCBOARD_CODEX_HOOK_TRUST" != bypass ] || warn "CCBOARD_CODEX_HOOK_TRUST=bypass: every Codex session the board starts skips the hook review, including a .codex/hooks.json inside a repository you cloned (the same risk class as bypassPermissions)"
 CCBOARD_ALLOWED_USERS=$(printf '%s' "$CCBOARD_ALLOWED_USERS" | tr -d '[:space:]')
-for k in PROJECTS_DIR CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_ALLOWED_USERS; do
+for k in PROJECTS_DIR CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_ALLOWED_USERS CODEX_HOME; do
   case "${!k}" in *[[:space:]\"\$\\]*) die "$k must not contain whitespace, quotes, \$ or backslashes (got '${!k}')";; esac
 done
+[ -z "$CODEX_HOME" ] || export CODEX_HOME   # codex_hooks.py and the codex CLI below read it
 for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN; do
   [ -z "${!v:-}" ] || warn "$v is set in your environment; it outranks the Claude login. It is NOT written to $ENV_FILE."
 done
@@ -671,6 +677,41 @@ if have claude || [ -x "$HOME_DIR/.local/bin/claude" ]; then
   fi
 fi
 
+# ---------------------------------------------------------------- Codex: hooks.json + the MCP server (only when codex is installed)
+codex_mcp_register() { # codex-binary host-python script board-url: add the 'ccboard' MCP server to Codex, re-pointing a stale one
+  local bin=$1 py=$2 script=$3 url=$4 cur="" stale=0
+  cur=$("$bin" mcp get ccboard --json 2>/dev/null) || cur=$("$bin" mcp get ccboard 2>/dev/null) || cur=""
+  if [ -n "$cur" ]; then
+    case "$cur" in *"$script"*) ;; *) stale=1;; esac
+    case "$cur" in *'"transport"'*) case "$cur" in *"\"$url\""*) ;; *) stale=1;; esac;; esac   # only the --json form shows env values
+    if [ "$stale" = 0 ]; then note "present"; return 0; fi
+    note "re-pointing the 'ccboard' MCP server at $script ($url)"
+    "$bin" mcp remove ccboard >/dev/null 2>&1 || { warn "codex mcp remove ccboard failed"; return 1; }
+  fi
+  if "$bin" mcp add ccboard --env "CCBOARD_URL=$url" -- "$py" "$script" >/dev/null 2>&1; then
+    note "registered 'ccboard' with Codex (tools: list_projects, create_task, list_tasks, get_task_status)"
+  else
+    warn "codex mcp add failed; register manually: codex mcp add ccboard --env CCBOARD_URL=$url -- $py $script"
+    return 1
+  fi
+}
+log "Codex hooks and MCP server"
+CODEX_BIN=""
+if have codex; then CODEX_BIN=$(command -v codex); elif [ -x "$HOME_DIR/.local/bin/codex" ]; then CODEX_BIN="$HOME_DIR/.local/bin/codex"; fi
+if [ -z "$CODEX_BIN" ]; then
+  note "codex is not installed: Codex hooks and MCP skipped (install Codex, then rerun ./install.sh)"
+else
+  if [ "$CCBOARD_RUNTIME" = docker ]; then CODEX_APP="$DOCKER_APP"; CODEX_PY=/usr/bin/python3; else CODEX_APP="$APP_DIR"; CODEX_PY="$APP_DIR/.venv/bin/python"; fi
+  if [ "${CCBOARD_REMOTE_APPROVE:-1}" = 0 ]; then
+    python3 "$APP_DIR/scripts/codex_hooks.py" install --app-dir "$CODEX_APP" --no-remote-approve \
+      || warn "could not merge the Codex hooks into ${CODEX_HOME:-$HOME_DIR/.codex}/hooks.json; Codex sessions will not report to the board"
+  else
+    python3 "$APP_DIR/scripts/codex_hooks.py" install --app-dir "$CODEX_APP" --approve-timeout "${CCBOARD_APPROVE_TIMEOUT:-90}" \
+      || warn "could not merge the Codex hooks into ${CODEX_HOME:-$HOME_DIR/.codex}/hooks.json; Codex sessions will not report to the board"
+  fi
+  codex_mcp_register "$CODEX_BIN" "$CODEX_PY" "$CODEX_APP/scripts/ccboard_mcp.py" "http://127.0.0.1:$CCBOARD_PORT" || true
+fi
+
 # ---------------------------------------------------------------- sudoers: let the user restart the stateless units (deploys)
 log "sudoers rule for restarts"
 if [ "$CCBOARD_RUNTIME" = docker ]; then
@@ -842,6 +883,7 @@ printf '  code-server: https://%s:%s/\n' "$TS_FQDN" "$CODE_HTTPS_PORT"
 [ -z "$NTFY_URL" ] || printf '  ntfy topic:  %s/%s   (subscribe in the ntfy app; iOS needs the app to reach ntfy.sh for wake-ups)\n' "$NTFY_PUBLIC_URL" "$NTFY_TOPIC"
 printf '  Open them from another device on your tailnet (requests from this box carry no Tailscale identity).\n'
 printf '  Then click "Log in" on the dashboard to sign in to Claude Code.\n'
+[ -z "$CODEX_BIN" ] || printf '  Codex:       trust the board'"'"'s hooks once so Codex sessions report state: run codex on this box, review them (or type /hooks); details: python3 %s/scripts/codex_hooks.py trust-help\n' "$APP_DIR"
 [ -z "$CCBOARD_NODES" ] || printf '  Fleet:       polling %s (same CCBOARD_HUB_TOKEN on every box)\n' "$CCBOARD_NODES"
 [ "${CCBOARD_BACKUP:-1}" = 0 ] || printf '  Backup:      nightly (%s) restic + unpushed work to ccboard-backup/<node>/ branches; run one now: sudo systemctl start ccboard-backup; log: journalctl -u ccboard-backup\n' "$CCBOARD_BACKUP_ONCALENDAR"
 if [ "$CCBOARD_RUNTIME" = docker ]; then

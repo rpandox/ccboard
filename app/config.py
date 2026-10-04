@@ -69,6 +69,16 @@ class Settings:
         except ValueError:
             self.approve_timeout = 90.0
         self.claude_config_dir = Path(env.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
+        # Codex (app/agents/codex.py): its home (hooks.json, config.toml, sessions/ and state_*.sqlite live there; auth.json is never
+        # read by the board) and how its hooks are trusted. `review` (default) relies on the one-time /hooks review in the TUI;
+        # `bypass` adds --dangerously-bypass-hook-trust to every interactive launch line (and also skips the review of repo-level
+        # .codex/hooks.json, which the doctor warns about). Anything else is ignored.
+        self.codex_home = Path(env.get("CODEX_HOME") or (Path.home() / ".codex"))
+        trust = (env.get("CCBOARD_CODEX_HOOK_TRUST") or "review").strip().lower()
+        if trust not in ("review", "bypass"):
+            log.warning("ignoring unknown CCBOARD_CODEX_HOOK_TRUST=%r (use review or bypass)", trust)
+            trust = "review"
+        self.codex_hook_trust = trust
         # claude-mem (the memory plugin): 0 skips the installer's plugin step and the health monitor (app/memory.py). The worker's
         # port is read from its own worker.pid; CCBOARD_MEM_PORT pins it (loopback only, 1-65535, anything else is ignored).
         self.claude_mem = (env.get("CCBOARD_CLAUDE_MEM") or "1") != "0"
@@ -94,6 +104,14 @@ class Settings:
         if found:
             return found
         local = Path.home() / ".local" / "bin" / "claude"
+        return str(local) if local.exists() else None
+
+    def codex_bin(self) -> str | None:
+        """codex on PATH, else ~/.local/bin/codex (the box installs it there, and that dir is only on a login shell's PATH)."""
+        found = shutil.which("codex")
+        if found:
+            return found
+        local = Path.home() / ".local" / "bin" / "codex"
         return str(local) if local.exists() else None
 
     def loopback_url(self) -> str:

@@ -198,14 +198,19 @@ def test_bypass_is_refused_for_now_later_and_dispatch(board):
     assert db().task_get(tid)["phase"] == "backlog"
 
 
-def test_codex_and_unknown_agents_are_refused(board):
+def test_codex_without_a_binary_and_unknown_agents_are_refused(board):
+    """Codex is a task agent since v0.5.11 (tests/test_recover.py covers a launch with a fake codex); with no codex binary a start is
+    refused, a backlog card is not (it starts nothing), and an agent the board has no adapter for is always a 400."""
     r = post_task(board, agent="codex")
-    assert r.status_code == 400 and "codex arrives in v0.5.11" in r.json()["error"]
-    assert post_task(board, agent="codex", when="later").status_code == 400
-    assert post_task(board, agent="gemini").status_code == 400
+    assert r.status_code == 400 and r.json()["error"] == "codex is not installed on this box"
+    assert post_task(board, agent="codex", when="later").status_code == 201
+    r = post_task(board, agent="gemini")
+    assert r.status_code == 400 and "unknown agent 'gemini'" in r.json()["error"]
     assert post_task(board, agent="claude").status_code == 201
     tid = backlog(board, title="Other")
-    assert board.client.post(f"/api/tasks/{tid}/dispatch", headers=H, json={"agent": "codex"}).status_code == 400
+    r = board.client.post(f"/api/tasks/{tid}/dispatch", headers=H, json={"agent": "codex"})
+    assert r.status_code == 400 and r.json()["error"] == "codex is not installed on this box"
+    assert board.client.post(f"/api/tasks/{tid}/dispatch", headers=H, json={"agent": "gemini"}).status_code == 400
     assert db().task_get(tid)["phase"] == "backlog"
 
 

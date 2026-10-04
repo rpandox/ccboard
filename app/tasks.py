@@ -4,8 +4,10 @@ ccboard manages under .ccboard/worktrees), or an unassigned backlog task with no
 This module must not import app.agents: that keeps the import graph acyclic."""
 from __future__ import annotations
 
+import os
 import re
 import shlex
+import shutil
 import subprocess
 import uuid
 from pathlib import Path
@@ -151,6 +153,96 @@ def derive_status(task: dict, session: dict | None) -> str:
 def worktree_path(repo_path: Path, slug: str, agent: str | None = "claude") -> Path:
     """Where a task's worktree lives: .claude/worktrees/<slug> for Claude, .ccboard/worktrees/<slug> for any other agent."""
     return repo_path / (WORKTREES if (agent or "claude") == "claude" else MANAGED_WORKTREES) / slug
+
+
+class WorktreeError(Exception):
+    """A managed worktree could not be created (git said no); the message is git's own, cut to one screen."""
+
+
+WORKTREE_INCLUDE = ".worktreeinclude"
+INCLUDE_MAX_FILES = 2000                     # a runaway pattern (node_modules/) must not copy a whole dependency tree
+INCLUDE_MAX_BYTES = 50 * 1024 * 1024
+
+
+def _ref_exists(repo_path: Path, ref: str) -> bool:
+    try:
+        return subprocess.run(["git", "-C", str(repo_path), "rev-parse", "--verify", "-q", ref], capture_output=True,
+                              timeout=5).returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def create_managed_worktree(repo_path: Path, slug: str, base: str | None = None, agent: str | None = "codex") -> Path:
+    """`git worktree add -b worktree-<slug> <repo>/.ccboard/worktrees/<slug> <base>`: the worktree ccboard makes itself for an
+    agent without a native one (Codex has no --worktree). The branch name is the one Claude uses, so diff, PR, merge, archive and
+    reboot recovery treat both agents' tasks alike. The start point is origin/<base> when that exists (what a PR diffs against),
+    else the local <base>. Raises WorktreeError (git's message); never leaves a half-made folder behind."""
+    wt = worktree_path(repo_path, slug, agent)
+    if wt.exists():
+        raise WorktreeError(f"{wt} already exists")
+    base = base or default_branch(repo_path)
+    ref = f"origin/{base}" if _ref_exists(repo_path, f"origin/{base}") else base
+    try:
+        wt.parent.mkdir(parents=True, exist_ok=True)
+        cp = subprocess.run(["git", "-C", str(repo_path), "worktree", "add", "-b", f"worktree-{slug}", str(wt), ref],
+                            capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        raise WorktreeError("git worktree add timed out")
+    except OSError as e:
+        raise WorktreeError(f"git worktree add failed: {e}")
+    if cp.returncode != 0:
+        raise WorktreeError((cp.stderr or cp.stdout).strip()[-400:] or "git worktree add failed")
+    return wt
+
+
+def discard_managed_worktree(repo_path: Path, slug: str, wt: Path) -> None:
+    """Undo create_managed_worktree after a launch that failed (best effort, never raises): remove the worktree, then its branch."""
+    remove_worktree(repo_path, slug, force=True, path=wt)
+    try:
+        subprocess.run(["git", "-C", str(repo_path), "branch", "-D", f"worktree-{slug}"], capture_output=True, timeout=10)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
+def apply_worktreeinclude(repo_path: Path, wt_path: Path) -> list[str]:
+    """Copy the files `<repo>/.worktreeinclude` names into a new worktree, the way `claude --worktree` does for its own: the file is
+    gitignore syntax and selects files that are ALSO gitignored (.env, local config); tracked files are in the worktree already.
+    Returns the relative paths copied. Never overwrites, never follows a symlink, stays under the worktree, and stops at
+    INCLUDE_MAX_FILES files or INCLUDE_MAX_BYTES bytes. Any git or filesystem failure copies less and never raises."""
+    inc = Path(repo_path) / WORKTREE_INCLUDE
+    if not inc.is_file():
+        return []
+    root, dest_root = Path(repo_path).resolve(), Path(wt_path).resolve()
+    try:
+        listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--others", "--ignored", "--exclude-from", str(inc)],
+                                capture_output=True, text=True, timeout=30)
+        names = [f for f in listed.stdout.split("\0") if f] if listed.returncode == 0 else []
+        if not names:
+            return []
+        chk = subprocess.run(["git", "-C", str(root), "check-ignore", "-z", "--stdin"], input="\0".join(names) + "\0",
+                             capture_output=True, text=True, timeout=30)
+        ignored = {f for f in chk.stdout.split("\0") if f}
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    copied: list[str] = []
+    total = 0
+    for rel in sorted(n for n in names if n in ignored):
+        src, dst = root / rel, dest_root / rel
+        try:
+            if src.is_symlink() or not src.is_file() or dst.exists() or ".git" in Path(rel).parts:
+                continue
+            size = src.stat().st_size
+            if len(copied) >= INCLUDE_MAX_FILES or total + size > INCLUDE_MAX_BYTES:
+                break
+            if os.path.commonpath([str(dest_root), str(dst.resolve().parent)]) != str(dest_root):
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst, follow_symlinks=False)
+        except (OSError, ValueError):
+            continue
+        copied.append(rel)
+        total += size
+    return copied
 
 
 def remove_worktree(repo_path: Path, slug: str, force: bool = False, agent: str | None = "claude",

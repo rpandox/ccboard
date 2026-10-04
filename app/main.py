@@ -37,13 +37,12 @@ from .db import DB, now as db_now
 log = logging.getLogger("ccboard")
 STATIC = Path(__file__).parent / "static"
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-# Every launcher the board knows by name. The codex ones are recognised so the error can say when they arrive, but nothing
-# starts a codex session before v0.5.11 (_normalize_launcher refuses them).
+# Every launcher the board knows by name: claude / resume / continue / shell, and the three codex ones (v0.5.11).
 LAUNCHERS = ("claude", "resume", "continue", "shell", "codex", "codex-resume", "codex-continue")
 _LAUNCHER_AGENT = {"claude": ("claude", "claude"), "resume": ("claude", "resume"), "continue": ("claude", "continue"),
                    "shell": ("shell", "shell"),
                    "codex": ("codex", "claude"), "codex-resume": ("codex", "resume"), "codex-continue": ("codex", "continue")}
-STARTABLE_AGENTS = ("claude", "shell")
+STARTABLE_AGENTS = ("claude", "codex", "shell")
 MAX_ARGS = 1024
 
 db: DB | None = None
@@ -999,6 +998,24 @@ class LaunchOpts(BaseModel):
     allowed_tools: str | None = None         # --allowedTools, comma/newline separated patterns
     disallowed_tools: str | None = None      # --disallowedTools
     append_system_prompt: str | None = None  # --append-system-prompt
+    reasoning_effort: str | None = None      # codex: model_reasoning_effort (a Claude `effort` is read as this when a codex launch has none)
+    opts: dict | None = None                 # the agent's own options, as its option_schema names them (codex: sandbox, approval, search,
+                                             # profile, ...); wins over the flat fields. Claude ignores it.
+
+
+def _agent_opts(agent: str, body) -> dict:
+    """The raw option dict one agent's adapter validates, from a request body that carries the flat LaunchOpts fields and `opts`.
+    Claude: the flat fields as always (its adapter reads only the keys it knows). Any other agent: the flat fields, with a Claude-style
+    `effort` read as `reasoning_effort` when none is given, then `opts` on top. Empty values are dropped."""
+    flat = {k: v for k, v in body.model_dump(include=set(LaunchOpts.model_fields)).items() if v not in (None, "")}
+    own = flat.pop("opts", None)
+    if agent == "claude":
+        flat.pop("reasoning_effort", None)
+        return flat
+    if "effort" in flat:
+        effort = flat.pop("effort")
+        flat.setdefault("reasoning_effort", effort)
+    return {**flat, **(own if isinstance(own, dict) else {})}
 
 
 def _launch_args(body: LaunchOpts) -> list[str]:
@@ -1011,6 +1028,7 @@ class TaskIn(LaunchOpts):
     prompt: str
     args: str | None = None
     add_dirs: list[str] | None = None
+    agent: str = "claude"
 
 
 TASK_TITLE_MAX = 120
@@ -1045,8 +1063,9 @@ def _task_check(project: str, repo: str, body, *, launching: bool) -> dict:
             raise projects.NotFound(f"project {project} not found")
         inplace = True      # the whole project folder, not a git repo: the task runs in place (mode 'attached'), no worktree or branch
     title, prompt = _task_text(body.title, body.prompt)
-    if launching and not settings.claude_bin():
-        raise projects.BadRequest("claude is not installed on this box")
+    agent = _task_agent(getattr(body, "agent", None))
+    if launching and not (settings.claude_bin() if agent == "claude" else agents.get(agent).bin()):
+        raise projects.BadRequest(f"{agent} is not installed on this box")
     extra: list[str] = []
     if body.args:
         if len(body.args) > MAX_ARGS:
@@ -1055,23 +1074,56 @@ def _task_check(project: str, repo: str, body, *, launching: bool) -> dict:
             extra = shlex.split(body.args)
         except ValueError as e:
             raise projects.BadRequest(f"extra args: {e}")
+    refusal = ("bypassPermissions (or a settings override) is not allowed for tasks; start a session and choose bypass there "
+               "if you really want it")
+    if agent != "claude":
+        # the adapter's own rules (Codex: -c/-p/--profile/--enable... and every bypass spelling), the board's bypass spellings, and
+        # a bypass or an unsandboxed run asked for through the controls: none of them reaches a task
+        raw = _agent_opts(agent, body)
+        bad = (agents.get(agent).forbidden_extra(extra, interactive=True, task=True) or _override_requested(extra)
+               or _bypass_requested(extra) or _task_danger(raw))
+        if bad:
+            raise projects.BadRequest(f"{bad}: {refusal}")
+        if not raw.get("permission_mode"):
+            # a task never inherits its permissions from the person's config.toml (which may say danger-full-access / approval never,
+            # the way the box's own Codex threads run): without a mode it runs with the default one (workspace-write + on-request), so
+            # the line always carries both -s and -a; an explicit sandbox or approval still replaces its own half of that mode
+            raw["permission_mode"] = "default"
+        raw["extra"] = extra
+        opts_clean = agents.get(agent).validate_opts(raw, interactive=True, tasks_or_headless=True)
+        return {"rpath": rpath, "title": title, "prompt": prompt, "extra": [], "opts_clean": opts_clean,
+                "add_dirs": _resolve_add_dirs(body.add_dirs, rpath), "inplace": inplace, "agent": agent, "raw_opts": raw}
     bad = _override_requested(extra) or _bypass_requested(extra)
     if bad or body.permission_mode == "bypassPermissions":
-        raise projects.BadRequest(f"{bad or 'bypassPermissions'}: bypassPermissions (or a settings override) is not allowed for tasks; start a session and choose bypass there if you really want it")
+        raise projects.BadRequest(f"{bad or 'bypassPermissions'}: {refusal}")
     extra = _launch_args(body) + extra
     opts_clean = agents.get("claude").validate_opts(body.model_dump(include=set(LaunchOpts.model_fields)), interactive=True,
                                                     tasks_or_headless=True)
     add_dirs = _resolve_add_dirs(body.add_dirs, rpath)
-    return {"rpath": rpath, "title": title, "prompt": prompt, "extra": extra, "opts_clean": opts_clean, "add_dirs": add_dirs, "inplace": inplace}
+    return {"rpath": rpath, "title": title, "prompt": prompt, "extra": extra, "opts_clean": opts_clean, "add_dirs": add_dirs, "inplace": inplace,
+            "agent": "claude"}
+
+
+def _task_danger(raw: dict) -> str | None:
+    """A task's agent options that would skip the approval prompts or the sandbox, whatever they are called: the offending
+    option, else None (recover._is_bypass is the rule; tasks never run with bypass, the adapter refuses it too and this is the
+    board's own check)."""
+    for k, v in (raw or {}).items():
+        if recover._is_bypass(k, v):
+            return f"{k}={v}"
+    return None
 
 
 def _task_launch(project: str, repo: str, body, *, task_id: int | None = None) -> dict:
-    """Start a task: a tmux session running claude in a fresh worktree branch 'worktree-<slug>' of the repo (repo 'root' = the
-    project folder). Without task_id a new task row is inserted (phase running, mode worktree). With task_id that backlog row is
-    UPDATED instead (slug from its current title, tmux_name, branch, worktree, base, claude_session_id, session_row, assigned_at,
-    phase running), so an edited title names the branch. Returns {id, slug, tmux, branch, attach_url}."""
+    """Start a task: a tmux session running the agent in a fresh worktree branch 'worktree-<slug>' of the repo (repo 'root' = the
+    project folder). Claude makes the worktree itself (`claude --worktree`); Codex has no such flag, so ccboard runs `git worktree
+    add` under .ccboard/worktrees first (see _launch_managed_task). Without task_id a new task row is inserted (phase running, mode
+    worktree). With task_id that backlog row is UPDATED instead (slug from its current title, tmux_name, branch, worktree, base,
+    claude_session_id, session_row, assigned_at, phase running), so an edited title names the branch. Returns {id, slug, tmux, branch,
+    attach_url}."""
     with _task_lock:
         c = _task_check(project, repo, body, launching=True)
+        agent = c["agent"]
         rpath, title, prompt = c["rpath"], c["title"], c["prompt"]
         taken = db.task_slugs(project, repo)
         if task_id is not None:
@@ -1086,27 +1138,60 @@ def _task_launch(project: str, repo: str, body, *, task_id: int | None = None) -
         if tmux.has_session(name):
             raise projects.Conflict(f"session {session} already exists")
         inplace = bool(c.get("inplace"))
-        if not inplace:
-            tasks.ensure_excluded(rpath)
-        sid = str(uuid.uuid4())
-        cmd_line = (tasks.build_command_inplace(sid, prompt, c["extra"], c["add_dirs"]) if inplace
-                    else tasks.build_command(slug, sid, prompt, c["extra"], c["add_dirs"]))
-        real, row_id = _start_session_row(name, project, repo, session, "task", str(rpath), cmd_line=cmd_line, claude_session_id=sid,
-                                          add_dirs=c["add_dirs"], agent="claude", opts=c["opts_clean"], task_id=task_id)
+        if agent == "claude":
+            if not inplace:
+                tasks.ensure_excluded(rpath)
+            sid: str | None = str(uuid.uuid4())
+            cmd_line = (tasks.build_command_inplace(sid, prompt, c["extra"], c["add_dirs"]) if inplace
+                        else tasks.build_command(slug, sid, prompt, c["extra"], c["add_dirs"]))
+            real, row_id = _start_session_row(name, project, repo, session, "task", str(rpath), cmd_line=cmd_line, claude_session_id=sid,
+                                              add_dirs=c["add_dirs"], agent="claude", opts=c["opts_clean"], task_id=task_id)
+            wt_path = str(tasks.worktree_path(rpath, slug))
+        else:
+            real, row_id, sid, wt_path = _launch_managed_task(c, project, repo, session, name, slug, task_id)
         if inplace:
             branch, worktree, base, mode = "", "", "", "attached"
         else:
-            branch, worktree, base, mode = f"worktree-{slug}", str(tasks.worktree_path(rpath, slug)), tasks.default_branch(rpath), "worktree"
+            branch, worktree, base, mode = f"worktree-{slug}", wt_path, tasks.default_branch(rpath), "worktree"
         if task_id is None:
             tid = db.task_add(project=project, repo=repo, slug=slug, title=title, prompt=prompt, branch=branch, base=base,
-                              worktree=worktree, tmux_name=real, claude_session_id=sid, agent="claude", session_row=row_id, mode=mode,
+                              worktree=worktree, tmux_name=real, claude_session_id=sid, agent=agent, session_row=row_id, mode=mode,
                               assigned_at=db_now(), auto_close=1 if getattr(body, "auto_close", False) else None)
         else:
             tid = task_id
             db.task_update(tid, slug=slug, tmux_name=real, branch=branch, base=base, worktree=worktree, claude_session_id=sid,
-                           session_row=row_id, agent="claude", mode=mode, phase="running", assigned_at=db_now())
+                           session_row=row_id, agent=agent, mode=mode, phase="running", assigned_at=db_now())
         _invalidate_scan()
         return {"id": tid, "slug": slug, "tmux": real, "branch": branch, "attach_url": f"/term/{real}"}
+
+
+def _launch_managed_task(c: dict, project: str, repo: str, session: str, name: str, slug: str, task_id: int | None):
+    """The agent without a native worktree flag (Codex): `git worktree add -b worktree-<slug> <repo>/.ccboard/worktrees/<slug>` in the
+    request thread (git's refusal is a GitError, 422), the repo's .worktreeinclude files copied in, then the adapter's launch line
+    typed into a session that starts IN the worktree (so the line carries no -C). A project folder that is not a git repo runs in
+    place, as Claude's does. The launch is a task launch: never a bypass. A launch that fails takes its worktree and branch with it.
+    Returns (tmux name, sessions.id, agent session id | None, worktree path)."""
+    agent, ag, rpath = c["agent"], agents.get(c["agent"]), c["rpath"]
+    wt: Path | None = None
+    if not c.get("inplace"):
+        tasks.ensure_excluded(rpath)
+        try:
+            wt = tasks.create_managed_worktree(rpath, slug, tasks.default_branch(rpath), agent)
+        except tasks.WorktreeError as e:
+            raise gitops.GitError(str(e)) from e
+        tasks.apply_worktreeinclude(rpath, wt)
+    cwd = str(wt or rpath)
+    try:
+        plan = ag.launch_plan(LaunchReq(kind="new", session_name=session, cwd=cwd, opts=c["raw_opts"], add_dirs=c["add_dirs"],
+                                        prompt=c["prompt"], bypass=False, task=True))
+        real, row_id = _start_session_row(name, project, repo, session, "task", cwd, cmd_line=plan.cmd_line,
+                                          claude_session_id=plan.agent_session_id, add_dirs=c["add_dirs"], agent=agent,
+                                          opts=plan.opts_clean or c["opts_clean"], task_id=task_id)
+    except Exception:
+        if wt is not None:
+            tasks.discard_managed_worktree(rpath, slug, wt)
+        raise
+    return real, row_id, plan.agent_session_id, cwd
 
 
 @app.post("/api/projects/{project}/repos/{repo}/tasks", status_code=201)
@@ -1115,10 +1200,13 @@ def api_create_task(project: str, repo: str, body: TaskIn):
     return _task_launch(project, repo, body)
 
 
-def _task_agent(agent: str | None) -> None:
-    if agent in (None, "", "claude"):
-        return
-    raise projects.BadRequest("codex arrives in v0.5.11" if agent == "codex" else f"unknown agent {agent!r}; use claude")
+def _task_agent(agent: str | None) -> str:
+    """The agent a task runs: claude (the default) or any adapter the board has (codex). Anything else is a 400."""
+    if agent in (None, ""):
+        return "claude"
+    if isinstance(agent, str) and agent in agents.names():
+        return agent
+    raise projects.BadRequest(f"unknown agent {agent!r}; use {' or '.join(agents.names())}")
 
 
 def _task_row(tid: int) -> dict | None:
@@ -1160,7 +1248,7 @@ def api_tasks_create(body: TaskCreateIn):
     project, repo = body.project.strip(), body.repo.strip()
     if not project or not repo:
         raise projects.BadRequest("project and repo are required")
-    _task_agent(body.agent)
+    agent = _task_agent(body.agent)
     if body.when not in ("now", "later"):
         raise projects.BadRequest("when must be 'now' or 'later'")
     if body.when == "now":
@@ -1172,7 +1260,7 @@ def api_tasks_create(body: TaskCreateIn):
         slug = tasks.unique_slug(c["rpath"], tasks.slugify(c["title"]), db.task_slugs(project, repo))
         spec = {k: v for k in TASK_SPEC_KEYS if (v := getattr(body, k, None)) not in (None, "", [])}
         tid = db.task_add(project=project, repo=repo, slug=slug, title=c["title"], prompt=c["prompt"], tmux_name="", worktree="",
-                          branch="", base="" if c.get("inplace") else tasks.default_branch(c["rpath"]), agent="claude",
+                          branch="", base="" if c.get("inplace") else tasks.default_branch(c["rpath"]), agent=agent,
                           mode="attached" if c.get("inplace") else "worktree", phase="backlog",
                           auto_close=1 if body.auto_close else None, spec=spec)
     _invalidate_scan()
@@ -1265,7 +1353,7 @@ def _dispatch_lane(t: dict, body: DispatchIn):
     merged = {k: v for k, v in _task_spec(t).items() if k in TASK_SPEC_KEYS}
     merged.update({k: v for k in TASK_SPEC_KEYS if (v := getattr(body, k, None)) is not None})
     try:
-        launch = TaskIn(title=t["title"], prompt=t["prompt"], **merged)
+        launch = TaskIn(title=t["title"], prompt=t["prompt"], agent=_task_agent(body.agent or t.get("agent")), **merged)
     except ValueError as e:
         raise projects.BadRequest(f"the saved launch options are invalid: {e}")
     out = _task_launch(t["project"], t["repo"], launch, task_id=t["id"])
@@ -1761,22 +1849,30 @@ def _bypass_requested(extra: list[str]) -> str | None:
     return _arg_matching(extra, BYPASS_PARTS)
 
 
-def _normalize_launcher(launcher: str) -> tuple[str, str]:
+def _normalize_launcher(launcher: str, agent: str | None = None) -> tuple[str, str]:
     """A request's launcher -> (agent, launcher), the launcher being what sessions.launcher stores (claude = a new session,
-    resume, continue, shell). Only claude and shell can be started until v0.5.11; a codex launcher is recognised and refused
-    with the version that brings it."""
+    resume, continue, shell). The codex launchers (codex, codex-resume, codex-continue) start a Codex session; so does the plain
+    claude / resume / continue launcher with `agent: "codex"` (the launcher then only says new, resume or continue). Any other
+    pairing of a launcher with a different agent is a 400."""
     entry = _LAUNCHER_AGENT.get(launcher) if isinstance(launcher, str) else None
     if entry is None:
         accepted = [k for k, (a, _l) in _LAUNCHER_AGENT.items() if a in STARTABLE_AGENTS]
         raise projects.BadRequest(f"launcher must be one of {', '.join(accepted)}")
-    agent, norm = entry
-    if agent not in STARTABLE_AGENTS:
-        raise projects.BadRequest(f"{agent} arrives in v0.5.11")
-    return agent, norm
+    named, norm = entry
+    if agent not in (None, "", named):
+        if not (isinstance(agent, str) and agent in STARTABLE_AGENTS):
+            raise projects.BadRequest(f"unknown agent {agent!r}; use {' or '.join(STARTABLE_AGENTS)}")
+        if named != "claude" or agent == "shell":            # only a new/resume/continue launcher can be pointed at another agent
+            raise projects.BadRequest(f"launcher {launcher!r} starts {named}; it cannot start {agent}")
+        named = agent
+    if named not in STARTABLE_AGENTS or (named != "shell" and named not in agents.names()):
+        raise projects.BadRequest(f"{named} is not available on this build")
+    return named, norm
 
 
 class SessionIn(LaunchOpts):
     launcher: str
+    agent: str | None = None           # None: the launcher's own agent; "codex" turns claude / resume / continue into the Codex launch
     name: str | None = None
     args: str | None = None
     resume_id: str | None = None
@@ -1866,7 +1962,7 @@ def _end_session(name: str, reason: str = "killed") -> bool:
 
 @app.post("/api/projects/{project}/repos/{repo}/sessions", status_code=201)
 def api_create_session(project: str, repo: str, body: SessionIn):
-    agent, launcher = _normalize_launcher(body.launcher)
+    agent, launcher = _normalize_launcher(body.launcher, body.agent)
     rpath = projects.repo_path(project, repo)
     if not rpath.is_dir():
         raise projects.NotFound(f"repo {project}/{repo} not found")
@@ -1895,7 +1991,7 @@ def api_create_session(project: str, repo: str, body: SessionIn):
     opts_clean: dict | None = None
     if body.devcontainer and not projects.has_devcontainer(rpath):
         raise projects.BadRequest("this repo has no .devcontainer/devcontainer.json")
-    bad = _override_requested(extra)
+    bad = _override_requested(extra) if agent != "codex" else agents.get("codex").forbidden_extra(extra, interactive=True)
     if bad:
         raise projects.BadRequest(f"{bad}: settings overrides are not allowed in extra args; use the model / effort / permission / tools controls")
     # bypassPermissions on the host is an explicit choice (the permission control, the bypass flag, or the arg);
@@ -1909,6 +2005,19 @@ def api_create_session(project: str, repo: str, body: SessionIn):
         plan = agents.get("claude").launch_plan(LaunchReq(
             kind={"claude": "new", "resume": "resume", "continue": "continue"}[launcher], session_name=session, cwd=str(rpath),
             opts=opts, resume_id=body.resume_id, add_dirs=add_dirs, bypass=body.bypass))
+        cmd_line, agent_session_id, opts_clean = plan.cmd_line, plan.agent_session_id, plan.opts_clean
+    elif agent == "codex":
+        # Codex has no --session-id: a new session's id is learned from its first hook (or, in v0.5.12, its rollout), and a resume
+        # keeps the id it was asked for. The adapter builds the whole line and applies the bypass gate (interactive sessions only).
+        ag = agents.get("codex")
+        if not ag.bin():
+            raise projects.BadRequest("codex is not installed on this box")
+        if body.devcontainer:
+            raise projects.BadRequest("devcontainer is only supported for claude sessions")
+        add_dirs = _resolve_add_dirs(body.add_dirs, rpath)
+        plan = ag.launch_plan(LaunchReq(
+            kind={"claude": "new", "resume": "resume", "continue": "continue"}[launcher], session_name=session, cwd=str(rpath),
+            opts={**_agent_opts("codex", body), "extra": extra}, resume_id=body.resume_id, add_dirs=add_dirs, bypass=body.bypass))
         cmd_line, agent_session_id, opts_clean = plan.cmd_line, plan.agent_session_id, plan.opts_clean
     elif body.devcontainer:
         wf = str(rpath)
@@ -2389,7 +2498,10 @@ async def api_hook(request: Request):
         if not name or name not in rows:
             return {"ignored": how if not name else "unknown session", "session": name}
         try:
-            result = hooks.apply(db, name, event, payload, agent=rows[name].get("agent"), child=request.headers.get("x-ccboard-child", "").strip() == "1")
+            if hooks.agent_mismatch(rows[name].get("agent"), request.headers.get("x-ccboard-agent")):
+                return {"ignored": "foreign", "session": name, "how": how}     # another agent's process: nothing is written
+            result = hooks.apply(db, name, event, payload, agent=hooks.hook_agent(rows[name].get("agent"), request.headers.get("x-ccboard-agent")),
+                                 child=request.headers.get("x-ccboard-child", "").strip() == "1")
         except Exception as e:  # a malformed payload must never 500 the hook path
             log.warning("hook %s for %s failed: %s", event, name, e)
             return {"ignored": "error", "session": name, "error": str(e)[:200]}
@@ -2548,6 +2660,9 @@ async def api_permission(request: Request):
     name, how = hooks.resolve_session(request.headers, payload, rows)
     if not name or name not in rows:
         return {"behavior": None, "reason": "unknown session"}
+    if hooks.agent_mismatch(rows[name].get("agent"), request.headers.get("x-ccboard-agent")):
+        # another agent's process (a Hermes or `codex exec` run in this row's cwd): never a request on the row, never a wait, never a deny
+        return {"behavior": None, "reason": "foreign", "ignored": "foreign", "session": name}
     tool = str(payload.get("tool_name") or "tool")
     summary = permissions.summarize(tool, payload.get("tool_input"))
 
@@ -2593,6 +2708,8 @@ async def api_permission(request: Request):
         return {"behavior": row["decision"], "message": "Denied from ccboard" if row["decision"] == "deny" else None, "id": pid}
     if row and row.get("decision") == "tui":                       # behavior None: the hook script prints nothing, the TUI asks
         return {"behavior": None, "reason": "tui", "id": pid}
+    if row and row.get("decision") == "interrupt":                 # Codex's Interrupt hook dropped the prompt: nothing left to answer
+        return {"behavior": None, "reason": "interrupt", "id": pid}
     return {"behavior": None, "reason": "undecided", "id": pid}
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import threading
 
 from . import notify
@@ -12,9 +13,31 @@ _waiters: dict[int, tuple[asyncio.AbstractEventLoop, asyncio.Event]] = {}
 _lock = threading.Lock()
 
 
+PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File:[ \t]*(.+?)[ \t\r]*$", re.M)     # the file lines of an apply_patch envelope
+
+
+def _patch_text(tool_input) -> str:
+    """The patch text of a Codex apply_patch request: the `input` or `command` of a dict (a command may be argv, ["apply_patch", text]),
+    or the plain string the tool was given."""
+    if isinstance(tool_input, str):
+        return tool_input
+    ti = tool_input if isinstance(tool_input, dict) else {}
+    for key in ("input", "command"):
+        v = ti.get(key)
+        if isinstance(v, (list, tuple)):
+            v = "\n".join(str(x) for x in v)
+        if isinstance(v, str) and v.strip():
+            return v
+    return ""
+
+
 def summarize(tool_name: str, tool_input) -> str:
     ti = tool_input if isinstance(tool_input, dict) else {}
-    if tool_name == "Bash":
+    patch = _patch_text(tool_input) if tool_name == "apply_patch" else ""
+    if patch:
+        # the files the patch touches, not its body; with no file lines (a malformed patch) whatever text there is, cut below
+        s = ", ".join(dict.fromkeys(PATCH_FILE_RE.findall(patch))) or patch
+    elif tool_name == "Bash":
         s = str(ti.get("command") or "")
     elif tool_name in ("Edit", "Write", "MultiEdit", "NotebookEdit", "Read"):
         s = str(ti.get("file_path") or ti.get("notebook_path") or "")

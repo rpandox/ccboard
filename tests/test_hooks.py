@@ -1044,9 +1044,10 @@ def test_statusline_sample_cap_is_linear():
     assert hooks._statusline_sample(small)["model"] == {"display_name": "Opus"}
 
 
-def _hook_perm(client, session, payload):
-    """POST /api/permission the way bin/ccboard-permission does (hook token + session header); the call long-polls for a decision."""
-    hdr = {"X-CCBoard-Token": hooks.ensure_token(), "X-CCBoard-Session": session, "Content-Type": "application/json"}
+def _hook_perm(client, session, payload, extra=None):
+    """POST /api/permission the way bin/ccboard-permission does (hook token + session header, X-CCBoard-Agent in `extra`); the call
+    long-polls for a decision."""
+    hdr = {"X-CCBoard-Token": hooks.ensure_token(), "X-CCBoard-Session": session, "Content-Type": "application/json", **(extra or {})}
     return client.post("/api/permission", headers=hdr, content=json.dumps(payload))
 
 
@@ -1074,3 +1075,349 @@ def test_a_board_permission_sets_the_wait_kind_the_tool_batch_clears(lite_client
     row = main.db.open_rows()[name]
     assert row["state"] == "working" and not row["flags"].get("wait_kind"), (res, row["flags"])
     t.join(timeout=5)
+
+
+# ---------------------------------------------------------------- Codex hooks (v0.5.11)
+#
+# Codex payloads go through /api/hook with X-CCBoard-Agent: codex (what bin/ccboard-hook sends from a codex session, CCBOARD_AGENT in the
+# tmux env). The row's agent picks the adapter; the sub-thread rule and the Interrupt permission expiry live in hooks.apply.
+
+CXA = "0198aaaa-bbbb-7ccc-8ddd-eeeeeeeeeee1"          # the row's own thread
+CXB = "0198aaaa-bbbb-7ccc-8ddd-eeeeeeeeeee2"          # a guardian / subagent thread (or the next conversation after a /resume)
+CXC = "0198aaaa-bbbb-7ccc-8ddd-eeeeeeeeeee3"
+
+
+@pytest.fixture
+def cxs(lite_client, projects_dir, fake_tmux, fake_codex):
+    """A board with one codex session row (no conversation id yet) and a claude one next to it."""
+    git_init(projects_dir / "shop" / "api")
+    name = lite_client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "codex"}).json()["tmux"]
+    return type("CX", (), {"client": lite_client, "name": name})
+
+
+def cx_hook(s, event, name=None, agent="codex", extra=None, **payload):
+    r = _hook(s.client, {"hook_event_name": event, "session_id": CXA, **payload}, session=name or s.name,
+              extra={"X-CCBoard-Agent": agent, **(extra or {})})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_a_codex_row_follows_its_hooks_through_a_whole_turn(cxs):
+    assert row_of(cxs.name)["agent"] == "codex" and row_of(cxs.name)["claude_session_id"] is None
+    out = cx_hook(cxs, "SessionStart", source="startup", cwd="/srv/projects/shop/api")
+    assert out["state"] == "idle" and out["how"] == "env" and out["kind"] == "startup"
+    r = row_of(cxs.name)
+    assert r["claude_session_id"] == CXA and r["flags"]["hook_seen"] is True, "the first hook binds the conversation id"
+    out = cx_hook(cxs, "UserPromptSubmit", prompt="add a login page", turn_id="t1")
+    assert out["state"] == "working" and row_of(cxs.name)["last_prompt"] == "add a login page"
+    out = cx_hook(cxs, "Stop", last_assistant_message="Done: added /login with tests.", turn_id="t1")
+    r = row_of(cxs.name)
+    assert out["state"] == "done" and r["state"] == "done" and r["last_message"] == "Done: added /login with tests."
+    assert r["flags"]["last_result"] == "Done: added /login with tests."
+    cx_hook(cxs, "SubagentStart", agent_type="explorer")
+    cx_hook(cxs, "SubagentStart", agent_type="explorer")
+    cx_hook(cxs, "SubagentStop", agent_type="explorer")
+    assert row_of(cxs.name)["flags"]["subagents"] == 1
+    cx_hook(cxs, "PreCompact", trigger="auto")
+    assert row_of(cxs.name)["flags"]["compacting"] is True
+    cx_hook(cxs, "PostCompact", trigger="auto")
+    assert row_of(cxs.name)["flags"]["compacting"] is False
+    out = cx_hook(cxs, "SessionEnd", reason="prompt_input_exit")
+    assert out["state"] == "ended" and row_of(cxs.name)["state"] == "ended"
+    assert {"SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"} <= set(event_names(cxs.name))
+    with main.db.lock:
+        agents_on_events = {r[0] for r in main.db.conn.execute("SELECT agent FROM events WHERE tmux_name=?", (cxs.name,)).fetchall()}
+    assert agents_on_events == {"codex"}
+
+
+def test_a_codex_interrupt_goes_idle_and_closes_the_pending_permissions_as_interrupted(cxs):
+    cx_hook(cxs, "SessionStart", source="startup")
+    cx_hook(cxs, "UserPromptSubmit", prompt="run the migration")
+    pid = main.db.perm_add(cxs.name, "Bash", "Bash: ./migrate.sh", {"command": "./migrate.sh"})
+    other = main.db.perm_add("shop--api--elsewhere", "Bash", "Bash: ls", {})
+    main.db.set_state(cxs.name, "waiting", "PermissionRequest", message="permission: Bash: ./migrate.sh", attention=True)
+    out = cx_hook(cxs, "Interrupt", extra={"X-CCBoard-Agent": "codex"})
+    assert out["state"] == "idle" and out["kind"] == "interrupt" and row_of(cxs.name)["state"] == "idle"
+    got = main.db.perm_get(pid)
+    assert got["decision"] == "interrupt" and got["source"] == "system" and got["decided_at"]
+    assert main.db.perm_get(other)["decision"] is None, "another session's request is not this session's to close"
+    assert [p["id"] for p in main.db.perm_pending()] == [other]
+    assert row_of(cxs.name)["flags"].get("wait_kind") is None
+    assert "Interrupt" in event_names(cxs.name)
+
+
+def test_an_interrupt_wakes_the_permission_long_poll_at_once(cxs, monkeypatch):
+    import threading, time
+    from app.config import settings
+    monkeypatch.setattr(settings, "approve_timeout", 30)
+    cx_hook(cxs, "SessionStart", source="startup")
+    out = {}
+
+    def ask():
+        out["r"] = _hook_perm(cxs.client, cxs.name, {"tool_name": "apply_patch", "tool_input": {"input": "*** Begin Patch"}})
+    t = threading.Thread(target=ask)
+    t.start()
+    for _ in range(100):
+        if main.db.perm_pending():
+            break
+        time.sleep(0.05)
+    assert main.db.perm_pending() and row_of(cxs.name)["state"] == "waiting"
+    started = time.monotonic()
+    cx_hook(cxs, "Interrupt")
+    t.join(timeout=10)
+    assert not t.is_alive() and time.monotonic() - started < 5, "the waiter was woken, not left to its 25 s timeout"
+    assert out["r"].json()["behavior"] is None and out["r"].json()["reason"] == "interrupt"
+    assert row_of(cxs.name)["state"] == "idle" and main.db.perm_pending() == []
+
+
+def test_events_of_another_codex_thread_are_counted_and_never_change_the_state(cxs):
+    cx_hook(cxs, "SessionStart", source="startup")
+    cx_hook(cxs, "UserPromptSubmit", prompt="review the diff")
+    before = row_of(cxs.name)
+    # a guardian / subagent thread reports under its own id, in the same pane with the same env
+    for event, extra in (("SessionStart", {"source": "startup"}), ("UserPromptSubmit", {"prompt": "guardian: assess this command"}),
+                         ("Stop", {"last_assistant_message": "allow"}), ("Interrupt", {}), ("SessionEnd", {"reason": "other"})):
+        out = _hook(cxs.client, {"hook_event_name": event, "session_id": CXB, **extra}, session=cxs.name,
+                    extra={"X-CCBoard-Agent": "codex"}).json()
+        assert out == {"session": cxs.name, "event": event, "ignored": "subthread", "how": "env"}, (event, out)
+    after = row_of(cxs.name)
+    assert after["state"] == before["state"] == "working" and after["state_at"] == before["state_at"]
+    assert after["last_prompt"] == "review the diff" and after["last_message"] == before["last_message"]
+    assert after["claude_session_id"] == CXA and after["flags"]["subthreads"] == 5
+    assert after["flags"].get("last_result") is None
+    with main.db.lock:
+        own = [r[0] for r in main.db.conn.execute("SELECT event FROM events WHERE tmux_name=? AND COALESCE(kind, '')<>'subthread' ORDER BY id",
+                                                  (cxs.name,)).fetchall()]
+        subs = [r[0] for r in main.db.conn.execute("SELECT event FROM events WHERE tmux_name=? AND kind='subthread' ORDER BY id",
+                                                   (cxs.name,)).fetchall()]
+    assert own == ["SessionStart", "UserPromptSubmit"], "the sub-thread events are stored as such, not as the row's own"
+    assert subs == ["SessionStart", "UserPromptSubmit", "Stop", "Interrupt", "SessionEnd"]
+    # the row's own thread still drives it
+    assert cx_hook(cxs, "Stop", last_assistant_message="all good")["state"] == "done"
+
+
+def test_a_subthread_interrupt_does_not_close_the_rows_permission(cxs):
+    cx_hook(cxs, "SessionStart", source="startup")
+    pid = main.db.perm_add(cxs.name, "Bash", "Bash: ls", {})
+    main.db.set_state(cxs.name, "waiting", "PermissionRequest", attention=True)
+    _hook(cxs.client, {"hook_event_name": "Interrupt", "session_id": CXB}, session=cxs.name, extra={"X-CCBoard-Agent": "codex"})
+    assert main.db.perm_get(pid)["decision"] is None and row_of(cxs.name)["state"] == "waiting"
+
+
+def test_a_resume_clear_or_fork_session_start_rebinds_the_codex_row(cxs):
+    cx_hook(cxs, "SessionStart", source="startup")
+    for source, sid in (("resume", CXB), ("clear", CXC), ("fork", CXA)):
+        out = cx_hook(cxs, "SessionStart", source=source, session_id=sid)
+        assert out["state"] == "idle" and "ignored" not in out, source
+        assert row_of(cxs.name)["claude_session_id"] == sid, source
+        assert cx_hook(cxs, "UserPromptSubmit", prompt="next", session_id=sid)["state"] == "working"
+    assert row_of(cxs.name)["flags"].get("subthreads") is None, "none of those was a sub-thread"
+
+
+def test_before_the_first_hook_binds_an_id_nothing_is_a_subthread(cxs):
+    assert row_of(cxs.name)["claude_session_id"] is None
+    out = cx_hook(cxs, "UserPromptSubmit", prompt="hello", session_id=CXB)           # no SessionStart seen (hooks reviewed late)
+    assert out["state"] == "working" and row_of(cxs.name)["claude_session_id"] == CXB
+    assert row_of(cxs.name)["flags"].get("subthreads") is None
+
+
+def test_the_header_never_relabels_a_claude_row_and_picks_the_adapter_of_a_shell_row(lite_client, projects_dir, fake_tmux, fake_codex, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")
+    git_init(projects_dir / "shop" / "api")
+    claude = lite_client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude"}).json()
+    shell = second_row(lite_client)
+    assert hooks.hook_agent("claude", "codex") == "claude" and hooks.hook_agent("codex", "claude") == "codex"
+    assert hooks.hook_agent("shell", "codex") == "codex" and hooks.hook_agent("shell", "CODEX ") == "codex"
+    assert hooks.hook_agent("shell", "claude") == "claude" and hooks.hook_agent("shell", "gemini") == "shell"
+    assert hooks.hook_agent(None, None) is None and hooks.hook_agent("shell", None) == "shell"
+    # an Interrupt that claims to be codex's, sent to a Claude row, is somebody else's hook (a Codex process that is not this row's): it
+    # is ignored before anything is written: no state change, no permission closed, no event row
+    pid = main.db.perm_add(claude["tmux"], "Bash", "Bash: ls", {})
+    main.db.set_state(claude["tmux"], "waiting", "PermissionRequest", attention=True)
+    before = event_names(claude["tmux"])
+    res = _hook(lite_client, {"hook_event_name": "Interrupt", "session_id": claude["claude_session_id"]}, session=claude["tmux"],
+                extra={"X-CCBoard-Agent": "codex"}).json()
+    assert res == {"ignored": "foreign", "session": claude["tmux"], "how": "env"}
+    assert main.db.perm_get(pid)["decision"] is None and row_of(claude["tmux"])["state"] == "waiting" and event_names(claude["tmux"]) == before
+    # a shell row where somebody ran codex by hand: the header makes it a codex event (stored as one), and the Stop text lands
+    res = _hook(lite_client, {"hook_event_name": "Stop", "session_id": CXA, "last_assistant_message": "hand-run answer"}, session=shell,
+                extra={"X-CCBoard-Agent": "codex"}).json()
+    assert res["state"] == "done"
+    with main.db.lock:
+        got = main.db.conn.execute("SELECT agent FROM events WHERE tmux_name=? AND event='Stop'", (shell,)).fetchone()
+    assert got[0] == "codex" and row_of(shell)["agent"] == "shell", "the row keeps its own agent"
+
+
+@pytest.mark.parametrize("row,header,mismatch", [
+    ("claude", "codex", True), ("codex", "claude", True), ("claude", " CODEX ", True), ("codex", "Claude", True),
+    ("claude", "claude", False), ("codex", "codex", False),
+    ("shell", "claude", False), ("shell", "codex", False), ("shell", "shell", False),       # a shell row takes either: the person may run both by hand
+    ("claude", None, False), ("codex", "", False), ("claude", "gemini", False), ("codex", "shell", False),   # no or unknown agent: not a mismatch
+    (None, "codex", False), ("gemini", "codex", False),
+])
+def test_agent_mismatch_is_two_known_adapter_agents_that_differ(row, header, mismatch):
+    assert hooks.agent_mismatch(row, header) is mismatch
+
+
+def _new_claude_row(client, monkeypatch, repo="api"):
+    from app.config import settings
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")
+    return client.post(f"/api/projects/shop/repos/{repo}/sessions", headers=H, json={"launcher": "claude"}).json()
+
+
+def _untouched(name, before):
+    r = row_of(name)
+    assert {k: r[k] for k in ("state", "state_at", "last_prompt", "last_message", "claude_session_id", "flags")} == before["row"]
+    assert event_names(name) == before["events"]
+
+
+def _snapshot(name):
+    r = row_of(name)
+    return {"row": {k: r[k] for k in ("state", "state_at", "last_prompt", "last_message", "claude_session_id", "flags")},
+            "events": event_names(name)}
+
+
+def test_a_codex_hook_on_a_claude_row_is_ignored_by_env_and_by_cwd_and_the_row_is_untouched(lite_client, projects_dir, fake_tmux, monkeypatch):
+    """Defect 2: ccboard's hooks sit in the global ~/.codex/hooks.json, so Hermes, `codex exec` and Codex Desktop fire at the board too.
+    Whatever their cwd or inherited env, they must not move a Claude row."""
+    git_init(projects_dir / "shop" / "api")
+    claude = _new_claude_row(lite_client, monkeypatch)
+    name = claude["tmux"]
+    _hook(lite_client, {"hook_event_name": "SessionStart", "source": "startup", "session_id": claude["claude_session_id"]}, session=name)
+    _hook(lite_client, {"hook_event_name": "UserPromptSubmit", "session_id": claude["claude_session_id"], "prompt": "real prompt"}, session=name)
+    before = _snapshot(name)
+    foreign = {"X-CCBoard-Agent": "codex"}
+    for event, extra in (("UserPromptSubmit", {"prompt": "hermes prompt"}), ("Stop", {"last_assistant_message": "hermes done"}),
+                         ("SessionStart", {"source": "startup"}), ("Interrupt", {}), ("SessionEnd", {"reason": "other"})):
+        payload = {"hook_event_name": event, "session_id": CXA, **extra}
+        out = _hook(lite_client, payload, session=name, extra=foreign).json()                       # the env path (an inherited CCBOARD_SESSION)
+        assert out == {"ignored": "foreign", "session": name, "how": "env"}, (event, out)
+        out = _hook(lite_client, {**payload, "cwd": str(projects_dir / "shop" / "api")}, extra=foreign).json()      # the cwd path
+        assert out == {"ignored": "foreign", "session": name, "how": "cwd"}, (event, out)
+        _untouched(name, before)
+    assert row_of(name)["state"] == "working" and row_of(name)["last_prompt"] == "real prompt"
+    # the row's own agent (and a hook that names none) still drives it
+    assert _hook(lite_client, {"hook_event_name": "Stop", "session_id": claude["claude_session_id"]}, session=name,
+                 extra={"X-CCBoard-Agent": "claude"}).json()["state"] == "done"
+    assert _hook(lite_client, {"hook_event_name": "UserPromptSubmit", "session_id": claude["claude_session_id"], "prompt": "again"},
+                 session=name).json()["state"] == "working"
+
+
+def test_a_claude_hook_on_a_codex_row_is_ignored_the_same_way(cxs, projects_dir):
+    cx_hook(cxs, "SessionStart", source="startup")
+    cx_hook(cxs, "UserPromptSubmit", prompt="the codex prompt")
+    before = _snapshot(cxs.name)
+    for event, extra in (("UserPromptSubmit", {"prompt": "claude prompt"}), ("Stop", {}), ("SessionStart", {"source": "startup"})):
+        payload = {"hook_event_name": event, "session_id": "11111111-1111-4111-8111-111111111111", **extra}
+        out = _hook(cxs.client, payload, session=cxs.name, extra={"X-CCBoard-Agent": "claude"}).json()
+        assert out == {"ignored": "foreign", "session": cxs.name, "how": "env"}, (event, out)
+        out = _hook(cxs.client, {**payload, "cwd": str(projects_dir / "shop" / "api")}, extra={"X-CCBoard-Agent": "claude"}).json()
+        assert out == {"ignored": "foreign", "session": cxs.name, "how": "cwd"}, (event, out)
+        _untouched(cxs.name, before)
+    assert cx_hook(cxs, "Stop", last_assistant_message="fine")["state"] == "done", "a codex hook for the codex row still lands"
+
+
+def test_a_shell_row_takes_hooks_from_either_agent_and_a_headerless_hook_takes_the_old_path(lite_client, projects_dir, fake_tmux, fake_codex):
+    git_init(projects_dir / "shop" / "api")
+    for agent, sid in (("claude", "22222222-2222-4222-8222-222222222222"), ("codex", CXA)):
+        shell = second_row(lite_client)                                                  # one shell row per agent the person runs by hand
+        out = _hook(lite_client, {"hook_event_name": "UserPromptSubmit", "session_id": sid, "prompt": f"by hand with {agent}"}, session=shell,
+                    extra={"X-CCBoard-Agent": agent}).json()
+        assert out["state"] == "working" and "ignored" not in out, (agent, out)
+        out = _hook(lite_client, {"hook_event_name": "Stop", "session_id": sid}, session=shell).json()      # no header: an older hook script
+        assert out["state"] == "done", (agent, out)
+
+
+def test_a_hook_of_an_unknown_agent_is_not_a_mismatch(lite_client, projects_dir, fake_tmux, monkeypatch):
+    git_init(projects_dir / "shop" / "api")
+    claude = _new_claude_row(lite_client, monkeypatch)
+    out = _hook(lite_client, {"hook_event_name": "UserPromptSubmit", "session_id": claude["claude_session_id"], "prompt": "x"},
+                session=claude["tmux"], extra={"X-CCBoard-Agent": "gemini"}).json()
+    assert out["state"] == "working"
+
+
+def test_a_foreign_permission_request_never_touches_the_row_or_blocks_the_caller(lite_client, projects_dir, fake_tmux, fake_codex, monkeypatch):
+    """Defect 3: the PermissionRequest hook is synchronous. A Hermes or `codex exec` run whose request resolves to a board row must get
+    an immediate empty answer: no pending request, no `waiting`, no phone notice, no event row, no deny."""
+    import time
+    from app.config import settings
+    monkeypatch.setattr(settings, "approve_timeout", 30)
+    git_init(projects_dir / "shop" / "api")
+    claude = _new_claude_row(lite_client, monkeypatch)
+    cxname = lite_client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "codex"}).json()["tmux"]
+    pushes = []
+    monkeypatch.setattr("app.permissions.push_request", lambda *a, **k: pushes.append(a))
+    payload = {"tool_name": "Bash", "tool_input": {"command": "rm -rf /tmp/x"}}
+    for name, agent in ((claude["tmux"], "codex"), (cxname, "claude")):
+        before = _snapshot(name)
+        started = time.monotonic()
+        r = _hook_perm(lite_client, name, payload, {"X-CCBoard-Agent": agent})
+        assert r.status_code == 200 and time.monotonic() - started < 5, "it answered at once, not after the approve timeout"
+        assert r.json() == {"behavior": None, "reason": "foreign", "ignored": "foreign", "session": name}, r.json()
+        assert main.db.perm_pending() == [] and pushes == []
+        _untouched(name, before)
+    # the owner's own request is recorded: the codex row with the codex header (no waiter answers, so it times out after the minimum 1 s)
+    monkeypatch.setattr(settings, "approve_timeout", 2)
+    r = _hook_perm(lite_client, cxname, payload, {"X-CCBoard-Agent": "codex"})
+    assert r.json()["behavior"] is None and r.json().get("reason") != "foreign" and "id" in r.json()
+    assert row_of(cxname)["state"] == "waiting" and "PermissionRequest" in event_names(cxname)
+    # and a request without any agent header (an older bin/ccboard-permission) keeps working on a Claude row
+    r = _hook_perm(lite_client, claude["tmux"], payload)
+    assert r.json().get("reason") != "foreign" and "id" in r.json()
+
+
+def test_a_startup_session_start_with_a_new_id_rebinds_an_idle_row_and_is_a_subthread_while_working(cxs):
+    """Defect 10 (the prepared fallback): a build that reports `startup` for the first SessionStart of a /new or `codex fork` thread must
+    not freeze the row on the old id; a guardian or subagent thread starts mid-turn and still counts as a sub-thread."""
+    cx_hook(cxs, "SessionStart", source="startup")
+    assert row_of(cxs.name)["state"] == "idle" and row_of(cxs.name)["claude_session_id"] == CXA
+    out = cx_hook(cxs, "SessionStart", source="startup", session_id=CXB)                     # /new on an idle row
+    assert out["state"] == "idle" and "ignored" not in out and row_of(cxs.name)["claude_session_id"] == CXB
+    assert cx_hook(cxs, "UserPromptSubmit", prompt="next turn", session_id=CXB)["state"] == "working"
+    out = cx_hook(cxs, "SessionStart", source="startup", session_id=CXC)                      # a guardian thread, mid-turn
+    assert out["ignored"] == "subthread" and row_of(cxs.name)["claude_session_id"] == CXB and row_of(cxs.name)["flags"]["subthreads"] == 1
+    assert row_of(cxs.name)["state"] == "working"
+    assert cx_hook(cxs, "Stop", last_assistant_message="done", session_id=CXB)["state"] == "done"
+    out = cx_hook(cxs, "SessionStart", source="startup", session_id=CXA)                      # a fork on a finished row
+    assert out["state"] == "idle" and row_of(cxs.name)["claude_session_id"] == CXA and row_of(cxs.name)["flags"]["subthreads"] == 1
+    cx_hook(cxs, "SessionEnd", reason="other", session_id=CXA)
+    assert row_of(cxs.name)["state"] == "ended"
+
+
+def test_resolve_session_by_the_payload_session_id_when_the_env_is_gone(cxs, projects_dir):
+    cx_hook(cxs, "SessionStart", source="startup")
+    second = second_row(cxs.client)
+    out = _hook(cxs.client, {"hook_event_name": "UserPromptSubmit", "session_id": CXA, "prompt": "no env here"},
+                extra={"X-CCBoard-Agent": "codex"}).json()
+    assert out["session"] == cxs.name and out["how"] == "session_id" and out["state"] == "working"
+    # the env header still wins over the id; an unknown or malformed id is not a match; two open owners of one id are not either
+    assert _hook(cxs.client, {"hook_event_name": "UserPromptSubmit", "session_id": CXA, "prompt": "x"}, session=second).json()["ignored"] == "foreign"
+    assert _hook(cxs.client, {"hook_event_name": "Stop", "session_id": CXB}).json()["ignored"] == "unresolved"
+    assert _hook(cxs.client, {"hook_event_name": "Stop", "session_id": ["x"]}).json()["ignored"] == "unresolved"
+    with main.db.lock:
+        main.db.conn.execute("UPDATE sessions SET claude_session_id=? WHERE tmux_name=?", (CXA, second))
+    assert _hook(cxs.client, {"hook_event_name": "Stop", "session_id": CXA}).json()["ignored"] == "unresolved"
+
+
+def test_hook_cwd_matches_a_rows_own_launch_directory(lite_client, projects_dir, fake_tmux):
+    git_init(projects_dir / "shop" / "api")
+    wt = projects_dir / "shop" / "api" / ".ccboard" / "worktrees" / "job"
+    wt.mkdir(parents=True)
+    name = second_row(lite_client)
+    with main.db.lock:
+        main.db.conn.execute("UPDATE sessions SET cwd=? WHERE tmux_name=?", (str(wt), name))
+    out = _hook(lite_client, {"hook_event_name": "UserPromptSubmit", "prompt": "x", "cwd": str(wt)}).json()
+    assert out["session"] == name and out["how"] == "cwd"
+    # the repo path itself still matches (the row's cwd is not the only candidate)
+    out = _hook(lite_client, {"hook_event_name": "UserPromptSubmit", "prompt": "y", "cwd": str(projects_dir / "shop" / "api")}).json()
+    assert out["session"] == name and out["how"] == "cwd"
+
+
+def test_the_rollout_bind_is_a_seam_that_binds_nothing_until_v0512(monkeypatch):
+    from app import agents
+    assert hooks.bind_unbound_rows(main.db) == 0
+    monkeypatch.setattr(agents.codex, "bind_unbound_rows", lambda db: 3)
+    assert hooks.bind_unbound_rows(object()) == 3
+    monkeypatch.setattr(agents.codex, "bind_unbound_rows", lambda db: 1 / 0)
+    assert hooks.bind_unbound_rows(object()) == 0, "a failing Tailer step never reaches the hook path"

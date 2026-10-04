@@ -36,7 +36,7 @@ from urllib.parse import urlsplit
 from . import claude_auth, memory, projects, push, tmux
 from .config import settings
 
-GROUPS = ["box", "claude", "notify", "terminal"]   # register()/register_provider() append the others (memory, later codex)
+GROUPS = ["box", "claude", "notify", "terminal"]   # register()/register_provider() append the others (memory, codex)
 STATUSES = ("pass", "warn", "fail", "skip")
 CHECK_TIMEOUT = 5.0       # hard cap per check; the answer for a slower one is 'warn: timed out'
 CACHE_TTL = 20.0
@@ -755,6 +755,24 @@ def memory_checks(db) -> list[Check]:
     return out
 
 
+# ------------------------------------------------------------------ codex checks (the adapter's, v0.5.11)
+
+CODEX_GROUP = "codex"
+
+
+def codex_checks(db) -> list[Check]:
+    """The `codex` group, as one provider: whatever the Codex adapter reports (version, login, hooks.json, hook trust mode,
+    --no-alt-screen support, features, sessions and state database, the ccboard MCP server, repo-level hooks). Codex is optional:
+    the adapter answers `skip` for every check on a box without the binary (so the report stays ok), and a build without the adapter
+    has no content in this group at all."""
+    from . import agents                       # lazy: the adapter package imports config/projects/claude_auth, and tests swap it out
+    try:
+        ag = agents.get("codex")
+    except KeyError:
+        return []
+    return list(ag.doctor_checks())
+
+
 # ------------------------------------------------------------------ registry and runner
 
 CHECKS: list[tuple[str, str, str, Callable]] = []
@@ -802,6 +820,7 @@ for _id, _group, _label, _fn in (
     register(_id, _group, _label, _fn)
 del _id, _group, _label, _fn
 register_provider("memory", MEM_GROUP, memory_checks)       # claude-mem (v0.5.10): one probe, seven checks
+register_provider("codex", CODEX_GROUP, codex_checks)       # the Codex adapter's checks (v0.5.11)
 
 
 def _finish(cid: str, group: str, label: str, status: str, detail, f) -> Check:

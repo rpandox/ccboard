@@ -129,6 +129,18 @@ def test_entrypoint_static():
     assert "[[" not in text, "dash has no [[ ]]"
 
 
+def test_entrypoint_unsets_an_empty_codex_home_before_any_codex_call():
+    """/etc/ccboard/env supplies `CODEX_HOME=` (empty): host_codex must hand codex an unset variable, not an empty path, before it runs
+    `codex mcp get/add/remove` (and the hooks installer). The guard is the first line of host_codex."""
+    text = ENTRYPOINT.read_text()
+    guard = '[ -n "${CODEX_HOME:-}" ] || unset CODEX_HOME'
+    assert text.count(guard) == 1
+    body = text.split("host_codex() {\n", 1)[1]
+    assert body.lstrip().startswith(guard), "the first thing host_codex does"
+    for use in ("command -v codex", "host_codex_hooks ||", "host_codex_mcp ||", "\n  host_codex\n"):   # every way into codex comes after it
+        assert text.index(use, text.index("host_codex() {")) > text.index(guard), use
+
+
 @pytest.mark.skipif(not shutil.which("bash"), reason="bash not installed")
 def test_entrypoint_bash_n():
     r = subprocess.run(["bash", "-n", str(ENTRYPOINT)], capture_output=True, text=True)
