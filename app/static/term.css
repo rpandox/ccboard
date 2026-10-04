@@ -181,6 +181,7 @@ html.force-coarse #sendtext, html.force-coarse textarea.composer { font-size:16p
 /* ---------- soft keyboard up (body.kbd) or a short window (body.short): the terminal needs the room, so the strip and the quick replies step aside ---------- */
 @media (max-width:839px) {
   body.term.kbd #ctxstrip, body.term.kbd #quickrow, body.term.kbd #tune { display:none; }
+  #ctxstrip:not(.open) .cx-links { display:none; }                        /* a phone: the links cost a 50 px row of the terminal; a tap on the strip opens it and shows them */
 }
 /* a short window (landscape phone, under 500 px): same squeeze at any width, and the rail keeps only PgUp / PgDn so it fits the pane */
 body.term.short #ctxstrip, body.term.short #quickrow, body.term.short #tune { display:none; }
