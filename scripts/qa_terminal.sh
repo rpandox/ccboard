@@ -11,7 +11,7 @@
 #
 # Needs the gstack browser CLI ($B, default ~/.claude/skills/gstack/browse/dist/browse), like scripts/qa-ui.sh.
 #
-# Viewports: 390x844 (phone, single column), 768x1024 (tablet, single column), 1280x800 (desktop, terminal + 300 px side column).
+# Viewports: 390x844 (phone, single column), 768x1024 (tablet, single column), 1280x800 (desktop, terminal + a side column of 320 to 360 px).
 #
 # Assertions per viewport (all in the browser, over the page's own DOM and the fake tty inside its iframe):
 #   wrap      #ttywrap does not scroll (scrollHeight <= clientHeight, same for width), the page itself does not scroll, the iframe fills
@@ -19,11 +19,12 @@
 #   bounce    body and html have overscroll-behavior none, body.term is position:fixed, and TermKit.bind hardened the iframe document
 #             (overscroll none on its root, touch-action none on .xterm)
 #   overflow  document.documentElement.scrollWidth <= innerWidth, and document.body.scrollWidth <= innerWidth (body.term is position:fixed
-#             with overflow hidden, so the root's scrollWidth never shows a chip poking out of the 300 px side column: the body's does)
-#   keys      every visible key-bar key (.kb-key) is at least 44 px tall and wide, and so is every scroll-rail button
+#             with overflow hidden, so the root's scrollWidth never shows a chip poking out of the side column: the body's does)
+#   keys      every visible key-bar key (.kb-key) is at least 44 px tall and wide, and so is every scroll-rail button. One exception: in the side
+#             column (840 px and up) with a mouse (no html.force-coarse, pointer:fine) a key is 32 px tall; its width stays 44 px or more
 #   targets   390 px only, with html.force-coarse: every visible button and a.bp5-button is at least 44 px tall
 #   composer  #sendtext is visible and inside the window, 16 px (no iOS zoom) under force-coarse at 390
-#   layout    below 840 px the key bar and the composer sit under the terminal; from 840 px the composer is in a 300 px column to its right
+#   layout    below 840 px the key bar and the composer sit under the terminal; from 840 px the composer is in a column of 320 to 360 px to its right
 #   touch     a synthetic one-finger swipe on the fake .xterm-screen produces wheel events (window.__wheel grows, __lastDelta set), a swipe
 #             starting 10 px from the left edge produces none
 #   scroll    pressing PgUp on the scroll rail POSTs /api/sessions/<name>/scroll {dir:'up'} (seen by wrapping fetch in the page; with
@@ -41,7 +42,7 @@
 #             tall, the edge fade `more-r` is set, and the current effort and model chips and the `model` label were scrolled into view);
 #             at 390 with html.force-coarse every chip is at least 44x44 and the strip does not squeeze the terminal under 40 % of the
 #             window or make the page scroll; from 840 px every #tune button's right edge is inside #tune (the segments wrap inside the
-#             300 px column); document.body.scrollWidth <= innerWidth at every width; the header `tune` button (#headtools) hides and
+#             side column); document.body.scrollWidth <= innerWidth at every width; the header `tune` button (#headtools) hides and
 #             restores the strip and stores ccboard:term:tune (0 / 1); with the row 'working' every chip is disabled with a title that
 #             says why and the send button reads "queue"; back to idle, Usage posts /command {cmd:'usage'} and opens `dialog.readout` with
 #             the captured text, and the next /command (Compact) is preceded by an Escape through /keys; a 409 answer toasts the reason and
@@ -309,7 +310,7 @@ tune_fake_checks() {
     return bad.length ? bad.join('; ') + ' [chips: ' + labels.join(',') + ']' : 'ok'; })()")"
   [ "$got" = ok ] || t_fail="$t_fail chips: $got;"
   # the strip must not squeeze the terminal or make the page scroll; 44 px chips on the phone (coarse forced earlier). Below 840 px it is ONE
-  # scrolling row with an edge fade and the current chips in view; from 840 px the segments wrap inside the 300 px column
+  # scrolling row with an edge fade and the current chips in view; from 840 px two segmented controls over a command grid, all inside the column
   got="$(js "(() => { const bad = []; const bs = $TUNE_BTNS; const wrap = document.querySelector('#ttywrap').getBoundingClientRect(); const r = document.documentElement; const tune = document.querySelector('#tune'); const tr = tune.getBoundingClientRect();
     if (wrap.height < innerHeight * 0.4) bad.push('the terminal is only ' + Math.round(wrap.height) + ' px of ' + innerHeight + ' (' + Math.round(wrap.height / innerHeight * 100) + ' %) with the strip, the rule is 40 %');
     if (r.scrollWidth > innerWidth) bad.push('page scrollWidth ' + r.scrollWidth + ' > ' + innerWidth);
@@ -681,10 +682,11 @@ for vp in $VIEWPORTS; do
   got="$(js "(() => { const d = document.documentElement; const b = document.body; if (d.scrollWidth > window.innerWidth) return 'documentElement ' + d.scrollWidth + '>' + window.innerWidth; if (b.scrollWidth > window.innerWidth) return 'body ' + b.scrollWidth + '>' + window.innerWidth; return 'ok'; })()")"
   if [ "$got" = ok ]; then c_over=PASS; else c_over=FAIL; fail "$tag: horizontal overflow, scrollWidth>innerWidth is $got"; fi
 
-  # --- keys: 44 px key-bar keys and scroll-rail buttons at every width
+  # --- keys: 44 px key-bar keys and scroll-rail buttons at every width (a mouse in the side column: keys 32 px tall, still 44 px wide)
   got="$(js "(() => { const vis = (e) => e.getClientRects().length > 0; const all = [...document.querySelectorAll('#keyhost .kb-key, #rail .rail-btn')].filter(vis);
     if (all.length < 15) return 'only ' + all.length + ' visible keys';
-    const bad = all.filter((e) => e.offsetHeight < 44 || e.offsetWidth < 44);
+    const dense = innerWidth >= 840 && !document.documentElement.classList.contains('force-coarse') && matchMedia('(pointer:fine)').matches;
+    const bad = all.filter((e) => e.offsetWidth < 44 || e.offsetHeight < (dense && e.classList.contains('kb-key') ? 32 : 44));
     return bad.length ? bad.length + ' under 44 px: ' + bad.slice(0, 4).map((e) => (e.getAttribute('data-key') || e.getAttribute('aria-label') || e.className) + '=' + e.offsetWidth + 'x' + e.offsetHeight).join(',') : 'ok'; })()")"
   if [ "$got" = ok ]; then c_keys=PASS; else c_keys=FAIL; fail "$tag: keys: $got"; fi
 
@@ -705,9 +707,9 @@ for vp in $VIEWPORTS; do
     return bad.length ? bad.join('; ') : 'ok'; })()")"
   if [ "$got" = ok ]; then c_comp=PASS; else c_comp=FAIL; fail "$tag: composer: $got"; fi
 
-  # --- layout: one column under the terminal below 840 px, a 300 px side column from 840 px
+  # --- layout: one column under the terminal below 840 px, a side column of 320 to 360 px from 840 px
   got="$(js "(() => { const g = (s) => document.querySelector(s).getBoundingClientRect(); const wrap = g('#ttywrap'); const send = g('#sendform'); const keys = g('#keyhost'); const bad = [];
-    if (innerWidth >= 840) { if (send.left < wrap.right - 1) bad.push('composer at x ' + Math.round(send.left) + ' is not right of the terminal (ends ' + Math.round(wrap.right) + ')'); if (keys.left < wrap.right - 1) bad.push('key bar is not in the side column'); if (Math.abs(send.width - 300) > 2) bad.push('side column is ' + Math.round(send.width) + ' px, expected 300'); }
+    if (innerWidth >= 840) { if (send.left < wrap.right - 1) bad.push('composer at x ' + Math.round(send.left) + ' is not right of the terminal (ends ' + Math.round(wrap.right) + ')'); if (keys.left < wrap.right - 1) bad.push('key bar is not in the side column'); if (send.width < 318 || send.width > 362) bad.push('side column is ' + Math.round(send.width) + ' px, expected 320 to 360'); }
     else { if (send.top < wrap.bottom - 1) bad.push('composer (top ' + Math.round(send.top) + ') is not under the terminal (bottom ' + Math.round(wrap.bottom) + ')'); if (keys.top < wrap.bottom - 1) bad.push('key bar is not under the terminal'); if (send.width < innerWidth - 2) bad.push('composer is ' + Math.round(send.width) + ' px wide in a ' + innerWidth + ' px window'); }
     return bad.length ? bad.join('; ') : 'ok'; })()")"
   if [ "$got" = ok ]; then c_layout=PASS; else c_layout=FAIL; fail "$tag: layout: $got"; fi

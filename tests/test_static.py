@@ -1518,10 +1518,10 @@ def test_term_css_safe_area_on_all_four_sides():
         assert f"safe-area-inset-{side}" in css, f"term.css never reads env(safe-area-inset-{side})"
 
 
-def test_term_css_two_columns_from_840px_with_a_300px_side_column():
+def test_term_css_two_columns_from_840px_with_a_side_column_of_320_to_360px():
     media = [(m, sel, d) for m, sel, d in css_rules(term_css()) if re.search(r"min-width\s*:\s*840px", m)]
     assert media, "no @media (min-width: 840px) block in term.css"
-    assert any("300px" in v for _, _, d in media for v in d.values()), "the side column is 300 px wide at 840 px and up"
+    assert any("clamp(320px, 27vw, 360px)" in v for _, _, d in media for v in d.values()), "the side column is 320 to 360 px wide at 840 px and up"
     assert not any(re.search(r"max-width\s*:\s*(?:[0-7]\d\d|8[0-3]\d)px", m) and "grid-template-columns" in d for m, _, d in css_rules(term_css())), \
         "below 840 px the terminal page stays a single column"
 

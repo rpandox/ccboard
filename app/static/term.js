@@ -21,6 +21,7 @@
   const KEY_KEYS = 'ccboard:term:keys';
   const KEY_TUNE = 'ccboard:term:tune';                       // '1' = the tuning strip is shown, '0' = hidden (default: shown from a 700 px tall window up)
   const TUNE_TALL = 700;
+  const TUNE_TALL_WIDE = 560;                                  // the side column (840 px and up) with a mouse: its controls are 28 px, the strip fits a lower window
   const POLL_MS = 3000;
 
   const store = {
@@ -433,7 +434,7 @@ const MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', 
      scroll shadow) says "swipe", and the current effort and model chips are scrolled into view once after the first render (and again when the
      strip is reopened after a collapse). A `tune` button in the
      header collapses the strip (localStorage ccboard:term:tune, '1' shown / '0' hidden; default shown from a 700 px tall window up). From 840 px the
-     row wraps inside the 300 px side column instead of scrolling (term.css). -- */
+     strip is two segmented controls over a command grid in the side column instead of a scrolling row (term.css). -- */
 
   const tuneEl = keep(el('div', { id: 'tune', class: 'hidden', role: 'toolbar', 'aria-label': 'Tune this session' }));   // the gaps and the dimmed chips must not blur the composer either
   if (!INTERNAL) $('#termmain').insertBefore(tuneEl, $('#ttywrap'));
@@ -448,13 +449,22 @@ const MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', 
   let armed = false;                                           // Clear waits for its second tap
   let armTimer = null;
 
+  /* The height under which the strip starts hidden: 700 px on a phone and on any touch screen (44 px controls); 560 px in the side column with a
+     mouse or trackpad, where the strip is three compact rows and the column gives up its reply chips and context first (term.css). */
+  function tuneTall() {
+    const mq = (q) => { try { return typeof window.matchMedia === 'function' && window.matchMedia(q).matches; } catch (_) { return false; } };
+    if (!mq('(min-width:840px)')) return TUNE_TALL;
+    const coarse = document.documentElement.classList.contains('force-coarse') || mq('(pointer:coarse)');
+    return coarse ? TUNE_TALL : TUNE_TALL_WIDE;
+  }
+
   /* shown: the person's choice ('1' / '0'); without one, a window under 700 px tall starts with it hidden (a phone with the browser's own bars) */
   function tuneWanted() {
     const v = store.get(KEY_TUNE);
     if (v === '1') return true;
     if (v === '0') return false;
     const h = Number(window.innerHeight);
-    return !(h > 0 && h < TUNE_TALL);                          // an unknown height counts as tall
+    return !(h > 0 && h < tuneTall());                         // an unknown height counts as tall
   }
 
   const tuneBtn = keep(el('button', { class: 'minimal tune-toggle hidden', type: 'button', text: 'tune', title: 'Show or hide the tuning strip', 'aria-label': 'Show or hide the tuning strip', 'aria-pressed': 'true', onclick: () => {

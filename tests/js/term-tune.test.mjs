@@ -728,7 +728,7 @@ test('a strip that starts collapsed does its first scroll when the person opens 
   assert.deepEqual(scrolls.slice(3).map((x) => x.text), ['high', 'model', 'opus']);
 });
 
-// ---- term.css: node has no layout, so the rules that make the strip one row (and keep it inside the 300 px column) are pinned as text
+// ---- term.css: node has no layout, so the rules that make the strip one row (and lay it out in the side column) are pinned as text
 
 const termCss = () => fs.readFileSync(path.join(STATIC, 'term.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 const rule = (css, selector) => {
@@ -765,18 +765,59 @@ test('term.css: #tune is one scrolling row (not a column of rows), the toggle\'s
   for (const sel of ['.bp5-dark #tune .bp5-button.tune-chip:not([class*=bp5-intent-])']) assert.match(rule(css, sel), /min-height:\s*var\(--tap\)/, '44 px on a coarse pointer comes from --tap');
 });
 
-test('term.css at 840 px and up: the row and the segments wrap inside the 300 px side column (ultracode must not poke out), no fade, no scroll', () => {
-  const wide = mediaBlock(termCss(), '(min-width:840px)');
+test('term.css at 840 px and up: an inspector column (320 to 360 px): segmented effort and model over a three-column command grid, a six-column key grid, the reply block at the bottom', () => {
+  const css = termCss();
+  const wide = mediaBlock(css, '(min-width:840px)');
+  const main = rule(wide, '#termmain');
+  assert.match(main, /grid-template-columns:\s*minmax\(0, 1fr\) clamp\(320px, 27vw, 360px\)/, 'the column grows with the window, 320 to 360 px');
+  assert.match(main, /grid-template-areas:\s*"tty ctx" "tty tune" "tty keys" "tty fill" "tty quick" "tty send"/, 'the free room sits above the reply block: quick replies touch the composer');
+  // the commands are a grid of three equal columns, nothing scrolls and nothing fades
   const row = rule(wide, '.tune-row');
-  assert.match(row, /flex-wrap:\s*wrap/);
+  assert.match(row, /display:\s*grid/);
+  assert.match(row, /grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)/);
   assert.match(row, /overflow:\s*visible/);
-  const seg = rule(wide, '.tune-seg');
-  assert.ok(seg, 'the 840 px block restyles .tune-seg');
-  assert.match(seg, /max-width:\s*100%/);
-  assert.match(seg, /flex:\s*1 1 100%/, 'a segment takes its own line of the column');
-  assert.match(seg, /min-width:\s*0/);
-  assert.match(seg, /flex-wrap:\s*wrap/, 'and wraps its own chips: Effort is 370 px wide in a 283 px column');
   assert.match(rule(wide, '.tune-row::after, #tune::before, #tune::after'), /display:\s*none/);
+  assert.match(rule(wide, '.tune-row::before'), /content:\s*'commands'/, 'the grid is labelled');
+  assert.match(rule(wide, '.bp5-dark #tune .tune-row > .bp5-button.tune-chip.destructive:not([class*=bp5-intent-])'), /order:\s*2/, 'Clear closes the grid');
+  // effort and model: one line each, above the commands, as a segmented control
+  const seg = rule(wide, '.tune-seg');
+  assert.match(seg, /grid-column:\s*1 \/ -1/, 'a segment takes the whole width of the column');
+  assert.match(seg, /order:\s*-1/, 'what is set comes before what can be run');
+  assert.match(seg, /max-width:\s*100%/);
+  assert.match(seg, /min-width:\s*0/);
+  assert.match(seg, /flex-wrap:\s*wrap/, 'the label takes its own line above the track');
+  const opt = rule(wide, '.bp5-dark #tune .tune-seg .bp5-button.tune-opt:not([class*=bp5-intent-])');
+  assert.match(opt, /flex:\s*1 1 auto/, 'an option is as wide as its word plus a share of the rest: ultracode fits, low does not waste room');
+  assert.match(opt, /min-width:\s*0/);
+  assert.match(opt, /margin-left:\s*-1px/, 'neighbours share one border');
+  assert.match(opt, /border-radius:\s*0/, 'only the two ends of the track are rounded');
+  assert.match(rule(wide, '.bp5-dark #tune .tune-seg .bp5-button.tune-opt.on:not([class*=bp5-intent-])'), /font-weight:\s*500/, 'choosing an option never changes its width');
+  // the keys: both rows on one six-column grid, Enter two tracks wide (not in compact mode, where More joins the row)
+  assert.match(rule(wide, '.kb-row, .kb-r2, .kb.compact .kb-r1'), /grid-template-columns:\s*repeat\(6, minmax\(0, 1fr\)\)/);
+  assert.match(rule(wide, '.kb:not(.compact) .kb-r1 .kb-key[data-key=Enter]'), /grid-column:\s*span 2/);
+  assert.match(rule(wide, '.bp5-dark .bp5-button.kb-key:not([class*=bp5-intent-])'), /min-height:\s*var\(--key-h\)/);
+  assert.match(rule(wide, 'body.term'), /--key-h:\s*44px/, 'a touch screen keeps 44 px keys');
+  assert.match(rule(mediaBlock(css, '(min-width:840px) and (pointer:fine)'), 'html:not(.force-coarse) body.term'), /--key-h:\s*32px/, 'a mouse gets denser keys, never under force-coarse');
+  // the reply block: chips wrap under their label, the pencil shares the label's line
+  assert.match(rule(wide, '#quickrow'), /flex-wrap:\s*wrap/);
+  assert.match(rule(wide, '#quickrow::before'), /content:\s*'quick replies'/);
+  const quick = rule(wide, '#quick, #quick.fade');
+  assert.match(quick, /flex-wrap:\s*wrap/);
+  assert.match(quick, /mask-image:\s*none/, 'nothing is cut off, so nothing fades');
+  // a low window gives room back instead of pushing the composer off the column
+  const low = mediaBlock(css, '(min-width:840px) and (max-height:700px)');
+  assert.match(rule(low, '#quick, #quick.fade'), /flex-wrap:\s*nowrap/, 'one scrolling row of chips again');
+  assert.match(rule(low, '#quickrow::before'), /display:\s*none/);
+  assert.match(rule(mediaBlock(css, '(min-width:840px) and (max-height:600px)'), '#ctxstrip'), /display:\s*none/);
+  assert.match(rule(mediaBlock(css, '(min-width:840px) and (max-height:860px) and (pointer:coarse)'), '#quick, #quick.fade'), /flex-wrap:\s*nowrap/, '44 px controls need the room earlier');
+});
+
+test('the tuning strip starts shown in the side column with a mouse down to 560 px of height; a phone and a touch screen keep 700', async () => {
+  const src = fs.readFileSync(path.join(STATIC, 'term.js'), 'utf8');
+  assert.match(src, /const TUNE_TALL = 700;/);
+  assert.match(src, /const TUNE_TALL_WIDE = 560;/);
+  assert.match(src, /function tuneTall\(\)/);
+  assert.match(src, /h < tuneTall\(\)/, 'the default visibility asks tuneTall, not the constant');
 });
 
 // ---------------------------------------------------------------- rename
@@ -1037,7 +1078,7 @@ test('quick row: the editor refuses a reply over 200 characters with an inline e
   assert.deepEqual(JSON.parse(p.w.localStorage.getItem('ccboard:quick:' + NAME)), ['keep'], 'nothing was stored');
 });
 
-test('tuning strip: the current effort and model are the accent TINT (never a second filled primary); models wear their muted hue; Clear is red-outlined, armed it is the solid fill', async () => {
+test('tuning strip: the current effort is the accent TINT (never a second filled primary); the current model wears its own muted hue, the others stay neutral; Clear is red-outlined, armed it is the solid fill', async () => {
   const css = fs.readFileSync(path.join(STATIC, 'term.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
   const rule = (sel) => { const m = css.split('}').map((r) => r.split('{')).find((r) => r[0] && r[0].replace(/\s+/g, ' ').trim() === sel); return m ? m[1].replace(/\s+/g, ' ') : ''; };
   const on = rule('.bp5-dark #tune .bp5-button.tune-chip.on:not([class*=bp5-intent-])');
@@ -1049,7 +1090,10 @@ test('tuning strip: the current effort and model are the accent TINT (never a se
   assert.doesNotMatch(rule('.bp5-dark #tune .bp5-button.tune-chip:not([class*=bp5-intent-])'), /box-shadow/, 'one border (the default button\'s --line-strong), not a second ring');
   assert.match(rule('.bp5-dark #tune .bp5-button.tune-chip.destructive:not([class*=bp5-intent-])'), /border-color:\s*var\(--bad\)/);
   assert.match(rule('.bp5-dark #tune .bp5-button.tune-chip.confirm:not([class*=bp5-intent-])'), /background:\s*var\(--bad-solid\)/);
-  assert.match(rule('.bp5-dark #tune .bp5-button.tune-model:not([class*=bp5-intent-])'), /var\(--hue/);
+  const model = rule('.bp5-dark #tune .bp5-button.tune-model.on:not([class*=bp5-intent-])');
+  assert.match(model, /color:\s*var\(--hue/, 'the current model is tinted with its own hue');
+  assert.match(model, /background:\s*var\(--hue-bg/);
+  assert.equal(rule('.bp5-dark #tune .bp5-button.tune-model:not([class*=bp5-intent-])'), '', 'a model that is not set has no colour of its own: one coloured chip per group');
   assert.equal(css.includes('qedit'), false, 'the page-local quick editor\'s CSS is gone');
   const p = await page();
   const hueOf = (v) => plain(p.chip('model', v).className.split(/\s+/)).find((c) => /^hue-/.test(c));
