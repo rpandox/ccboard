@@ -88,6 +88,128 @@ function agentsAcctUsedNow(st, a, win, now) {
   return agentsAcctUsed(a, win, now);
 }
 
+/* ---------- saved logins and the one-tap switch (v0.5.17c UI) ----------
+   acctFlow is the page-side state of the account flows, shared by Settings > Accounts, the Usage callout and the Log in buttons:
+     busy     the key being switched to while POST /api/accounts/<key>/switch runs (every row's Switch is disabled meanwhile)
+     hold     {key}: the switch is painted as done; the poll's answer is laid over so a poll that lands mid-request does not flip the rows back.
+              It ends with the request (the server's accounts replace the local ones); only the demo board keeps it, its fixtures never change
+     want     {email}: set by accountLogin(), taken by Settings > Accounts, which then starts the add flow
+     err      the reason of the last refused switch / forget, shown in the Accounts panel's error line
+     demo     the demo board's make-believe login ({login, accounts}), laid over the poll's answer like hold */
+const acctFlow = { busy: null, hold: null, want: null, err: '', demo: null, cont: null };
+const ACCT_CONTINUE_KEY = 'ccboard:acct:continue';
+
+/* 'After a switch, type continue in sessions parked on a limit': on unless the person turned it off. Kept in localStorage; where writing there fails the choice lasts in
+   memory (acctFlow.cont) until reload. */
+function acctContinuePref() {
+  if (typeof acctFlow.cont === 'boolean') return acctFlow.cont;
+  try { return localStorage.getItem(ACCT_CONTINUE_KEY) !== '0'; } catch (_) { return true; }
+}
+function acctContinueSet(on) {
+  try { localStorage.setItem(ACCT_CONTINUE_KEY, on ? '1' : '0'); acctFlow.cont = null; } catch (_) { acctFlow.cont = !!on; }
+}
+
+/* Whether this box keeps saved logins (Linux with Claude's file credentials) and, if not, why: a state without `store` (older fixtures) counts as no. */
+function acctStore(st) {
+  const s = st && st.accounts && st.accounts.store;
+  return { supported: !!(s && s.supported), reason: (s && typeof s.reason === 'string' && s.reason) || '' };
+}
+
+/* The demo board's make-believe account actions (no box behind it): a login in flight, accounts it "added", logins it "forgot". Created on first use. */
+function acctDemo() {
+  if (!acctFlow.demo) acctFlow.demo = { login: null, accounts: [], forgot: [] };
+  return acctFlow.demo;
+}
+
+/* The server's reason for a refusal ({detail, error} body), else the error's message. */
+function acctReason(e, fallback) {
+  const b = e && e.body && typeof e.body === 'object' ? e.body : null;
+  return (b && (b.detail || b.error)) || (e && e.message) || fallback || 'the box refused it';
+}
+
+/* Lay the unfinished account actions over a fresh /api/state answer (core.js poll calls this right after `state = s`). */
+function accountOverlay(s) {
+  if (!s || typeof s !== 'object') return s;
+  const a = s.accounts;
+  if (a && Array.isArray(a.list)) {
+    const d = typeof demoOn === 'function' && demoOn() ? acctFlow.demo : null;
+    if (d) {
+      for (const x of d.accounts) if (!a.list.some((y) => y && y.key === x.key)) a.list.push({ ...x });
+      for (const x of a.list) if (x && d.forgot.includes(x.key)) x.saved = false;
+    }
+    const h = acctFlow.hold;
+    if (h && a.list.some((x) => x && x.key === h.key)) {
+      for (const x of a.list) if (x) x.current = x.key === h.key;
+      a.current = h.key;
+    }
+  }
+  if (typeof demoOn === 'function' && demoOn() && acctFlow.demo && acctFlow.demo.login) s.login = { ...(s.login || {}), ...acctFlow.demo.login };
+  return s;
+}
+
+/* Every surface that shows the account in use, repainted from `state`. */
+function accountsRepaint() {
+  if (typeof settingsPage !== 'undefined' && settingsPage.refs && typeof settingsFill === 'function') settingsFill('accounts', true);
+  if (typeof Shell !== 'undefined' && Shell.patchUsage) Shell.patchUsage(state);
+  if (typeof updateCurrentPage === 'function') updateCurrentPage(state);
+}
+
+/* THE account switch (Settings rows and the Usage callout call it): the tapped row becomes the one in use at once, POST /api/accounts/<key>/switch follows with
+   {continue_parked} from the persisted choice, success takes the server's accounts and says so in a toast, a refusal puts every row back and says why (the
+   Accounts panel's error line and a toast). One switch at a time. Resolves true when the account is now in use. */
+async function accountSwitch(a) {
+  if (!a || !a.key || acctFlow.busy) return false;
+  const st = state && state.accounts && Array.isArray(state.accounts.list) ? state.accounts : null;
+  if (!st) return false;
+  const key = a.key;
+  const target = st.list.find((x) => x && x.key === key);
+  if (!target || target.current) return false;
+  const name = agentsAcctName(target);
+  const was = new Map(st.list.filter(Boolean).map((x) => [x.key, !!x.current]));       // every row's flag and the account in use, to put back
+  const wasCurrent = st.current;
+  const paint = (to) => {                                                                // on the accounts `state` holds NOW: a poll may have replaced the object since
+    const now = state && state.accounts;
+    if (!now || !Array.isArray(now.list)) return;
+    for (const x of now.list) if (x) x.current = to === null ? !!was.get(x.key) : x.key === to;
+    now.current = to === null ? wasCurrent : to;
+  };
+  acctFlow.busy = key;
+  acctFlow.hold = { key };
+  acctFlow.err = '';
+  paint(key);
+  accountsRepaint();
+  let r = null;
+  try {
+    r = await api('POST', `/api/accounts/${encodeURIComponent(key)}/switch`, { continue_parked: acctContinuePref() });
+  } catch (e) {
+    const why = acctReason(e);
+    acctFlow.busy = null;
+    acctFlow.hold = null;
+    paint(null);
+    acctFlow.err = `Switch failed: ${why}`;
+    accountsRepaint();
+    if (typeof pageToast === 'function') pageToast(`Switch failed: ${why}`, 'bad');
+    return false;
+  }
+  acctFlow.busy = null;
+  if (!(typeof demoOn === 'function' && demoOn())) acctFlow.hold = null;
+  if (r && r.accounts && Array.isArray(r.accounts.list)) state.accounts = r.accounts;        // the server's view (demo answers {ok: true}: the local move stays)
+  accountsRepaint();
+  const done = r && Array.isArray(r.continued) ? r.continued : [];
+  const text = r && r.already ? `${name} is already in use`
+    : `Switched to ${name} · running sessions follow within seconds${done.length ? ` · continue typed in ${done.length} session${done.length === 1 ? '' : 's'}` : ''}`;
+  if (typeof pageToast === 'function') pageToast(text, 'ok');
+  if (typeof poll === 'function') poll(true);
+  return true;
+}
+
+/* The Log in buttons (Settings > Agents, the Home banner): the add flow lives in Settings > Accounts, so go there and start it. email: the account to sign in again. */
+function accountLogin(email) {
+  acctFlow.want = { email: typeof email === 'string' && email ? email : null };
+  if (typeof navigate === 'function' && typeof buildHash === 'function') navigate(buildHash('settings', {}, { sec: 'accounts' }));
+  if (typeof settingsPage !== 'undefined' && settingsPage.refs && typeof settingsShow === 'function') settingsShow('accounts');   // already on Settings: the route may not change
+}
+
 /* The reply box's placeholder: a phone gets the bare verb ('Reply…', 'Send…'): the one-row box is about 330 px wide and a long session name wrapped onto a
    second line that was cut off at the bottom, and there is no Shift+Enter on a touch keyboard. The name and the hint live in the box's title and aria-label
    (the callers set both). A fine pointer gets the full text. */

@@ -201,6 +201,9 @@ html.force-coarse #page .srow-link, html.force-coarse #page a.p-name { display:i
 #page .ua-row.unknown .ua-v, #page .ua-row.unknown .ua-name { color:var(--dim); }
 #page .ua-room { margin:10px 0 0; font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
 #page .ua-room.attn { padding:8px 10px; border:1px solid var(--mute-amber-bd); border-radius:2px; background:var(--mute-amber-bg); color:var(--mute-amber); }
+#page .ua-room.has-act { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; }
+#page .ua-room.has-act > .ua-room-t { flex:1 1 220px; min-width:0; }
+#page .ua-room.has-act > .bp5-button { flex:none; max-width:100%; }
 /* the Limits section's account chips: a hue dot and the name, the pressed look is the shared .pj-repo-btn one */
 #page .ua-picks { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:0 0 8px; }
 #page .ua-picks.hidden { display:none; }

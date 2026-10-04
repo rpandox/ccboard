@@ -1139,6 +1139,5 @@ function render(force) {
   }
   if (typeof renderBanner === 'function') renderBanner();
   Shell.limit(state);
-  if (typeof updateModal === 'function') updateModal();
   if (Shell.formWatch) Shell.formWatch();
 }

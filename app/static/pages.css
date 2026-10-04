@@ -576,5 +576,48 @@ html.force-coarse #page a.gauge { min-height:var(--tap); }
 #page .settings-page .set-acct > .k[class*="hue-"] { color:var(--hue); }
 #page .settings-page .set-note { margin:6px 0 0; font-size:13px; line-height:1.5; max-width:62ch; }
 
+/* v0.5.17c saved logins. A row's actions (Switch, Log in again, Rename, Forget login) sit on equal cells on a phone, never a ragged wrap; the add-account block is two
+   labelled steps with a hairline between them; every control is 44 px under touch through --tap, the inputs are 16 px (style.css). */
+#page .settings-page .set-err { margin:0 0 10px; padding:8px 10px; border:1px solid var(--bad); border-radius:2px; background:var(--bad-bg); color:var(--bad-fg); font-size:13px; line-height:1.45; overflow-wrap:anywhere; }
+#page .settings-page .set-chips > .dim { font-size:12px; }
+#page .settings-page .set-check { display:flex; align-items:center; gap:8px; margin:6px 0 0; min-height:var(--tap); font-size:13px; color:var(--fg); cursor:pointer; }
+#page .settings-page .set-check input { flex:none; }
+/* the CSP (default-src 'self') blocks the data: image Blueprint draws its tick with: a checked box gets a tick made of two borders instead */
+#page .settings-page .set-check input:checked ~ .bp5-control-indicator::before { background-image:none; content:''; display:block; box-sizing:border-box; width:5px; height:9px; margin:1px auto 0; border:solid var(--on-sig); border-width:0 2px 2px 0; transform:rotate(45deg); }
+#page .settings-page .set-add { max-width:640px; }
+#page .settings-page .add-flight, #page .settings-page .add-error, #page .settings-page .add-idle, #page .settings-page .add-off { display:flex; flex-direction:column; gap:8px; margin-top:6px; }
+#page .settings-page .add-step { display:flex; flex-direction:column; gap:8px; padding:12px 0; border-top:1px solid var(--line-soft); }
+#page .settings-page .add-wait + .add-step { border-top:0; }
+#page .settings-page .add-flight > .add-step:first-child { border-top:0; }
+#page .settings-page .add-k { font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); }
+#page .settings-page .add-t { margin:0; font-size:13px; line-height:1.5; color:var(--fg-2); }
+#page .settings-page .add-url, #page .settings-page .add-code { width:100%; min-width:0; }
+#page .settings-page .add-url { font-family:var(--font-mono); font-size:12px; text-overflow:ellipsis; }
+#page .settings-page .add-code { font-family:var(--font-mono); }
+#page .settings-page .add-form { display:flex; flex-direction:column; gap:8px; }
+#page .settings-page .add-form .field { display:flex; flex-direction:column; gap:6px; min-width:0; }
+#page .settings-page .add-form .field-label { margin:0; font-size:13px; font-weight:400; color:var(--fg-2); }
+#page .settings-page .add-btns { display:flex; flex-wrap:wrap; gap:8px; align-items:stretch; }          /* stretch: an anchor button (Open) and a button (Copy link) are one height */
+#page .settings-page .add-status { font-size:13px; line-height:1.45; }
+#page .settings-page .add-err { font-size:13px; line-height:1.45; overflow-wrap:anywhere; }
+#page .settings-page .add-out { margin-top:2px; border-top:1px solid var(--line-soft); padding-top:4px; }
+#page .settings-page .add-out summary { display:flex; align-items:center; gap:6px; min-height:var(--row-btn,28px); cursor:pointer; color:var(--fg-2); font-size:12px; list-style:none; }
+#page .settings-page .add-out summary::-webkit-details-marker { display:none; }
+#page .settings-page .add-out summary::before { content:""; flex:none; width:6px; height:6px; border-right:1.5px solid currentColor; border-bottom:1.5px solid currentColor; transform:rotate(-45deg); transition:transform .12s; }
+#page .settings-page .add-out[open] > summary::before { transform:rotate(45deg); }
+@media (prefers-reduced-motion:reduce) { #page .settings-page .add-out summary::before { transition:none; } }
+#page .settings-page .add-out .add-tail { margin:6px 0 8px; max-height:160px; overflow:auto; font-size:11px; line-height:1.4; white-space:pre-wrap; overflow-wrap:anywhere; }
+#page .settings-page .add-term { display:inline-block; font-size:12px; }
+#page .settings-page a.btn.is-off { opacity:.5; pointer-events:none; }
+@media (max-width:599px) {
+  #page .settings-page .set-acct > .kv-act { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:8px; justify-content:stretch; }          /* three equal cells whatever the row has: Rename is as wide on every row */
+  #page .settings-page .set-acct > .kv-act > .row { grid-column:1 / -1; display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px; }          /* the armed Forget: Confirm and Cancel share the row */
+  #page .settings-page .add-btns { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(0, 1fr); gap:8px; }
+  #page .settings-page .add-btns > .bp5-button { min-width:0; }
+}
+@media (pointer:coarse) { #page .settings-page .add-term { display:inline-flex; align-items:center; min-height:var(--tap); } #page .settings-page .add-url { font-size:16px; } }       /* 16 px keeps iOS Safari from zooming on focus: the link field selects itself when tapped */
+html.force-coarse #page .settings-page .add-term { display:inline-flex; align-items:center; min-height:var(--tap); }
+html.force-coarse #page .settings-page .add-url { font-size:16px; }
+
 /* search: Peek and Attach sit at the right of the result's head, beside the role chip, the place and the time */
 #page .res-actions { margin-left:auto; display:inline-flex; align-items:center; gap:6px; }

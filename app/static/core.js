@@ -357,9 +357,10 @@ async function poll(force) {
     const changed = j !== ui.lastJson;
     ui.lastJson = j;
     state = s;
+    if (typeof accountOverlay === 'function') accountOverlay(s);       // an account switch still running, the demo's make-believe login (pages/agents.js)
     ui.offline = false;
     if (changed || force) render(force);
-    else { renderHeader(); renderUsage(); updateModal(); }
+    else { renderHeader(); renderUsage(); }
     rememberState(s);
   } catch (e) {
     if (!state) {

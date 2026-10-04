@@ -3,7 +3,7 @@
    since the tab was last looked at), the inbox section (Inbox.section, only when something needs you), the schedules strip, the project
    blocks (grouped by project, state or agent; projects idle for a week fold into one 'older' block) and the usage card (Widgets.usageCard).
    The rows are the shared sessionCard from pages/agents.js in its rich form; the keyed lists keep their nodes across polls.
-   Also home to the banner and the login modal (startLogin / logout / openModal / updateModal), the keyboard selection (Pages) and the v0.4
+   Also home to the banner (its Log in goes to Settings > Accounts: accountLogin, pages/agents.js), logout, the legacy #modal (closeModal / openTaskModal), the keyboard selection (Pages) and the v0.4
    renderers other pages still import (renderTasks, renderJobs, openTaskModal, inboxItems).
    The header, usage pills, nav and the render() state consumer are in shell.js; the notify panel and nodes strip in pages/settings.js. */
 'use strict';
@@ -55,7 +55,7 @@ function renderBanner() {
     own(el('span', { text: 'The ccboard tmux server is not running. On the box: sudo systemctl start ccboard-tmux' }));
   } else if (state && state.claude && state.claude.installed && !state.claude.loggedIn) {
     b.classList.add('warn');
-    own(el('span', { text: 'Claude Code is not logged in on this box.' }), el('button', { class: 'primary small', type: 'button', onclick: startLogin, text: 'Log in' }));
+    own(el('span', { text: 'Claude Code is not logged in on this box.' }), el('button', { class: 'primary small', type: 'button', onclick: () => accountLogin(), text: 'Log in' }));
   }
   if (bannerOwn.length) b.classList.remove('limit-only');                    // the limit callout is no longer alone in the banner
   if (state) homeAwayTouch(state);                                           // every render counts as "the tab was looked at", on any page
@@ -425,63 +425,11 @@ function renderInbox() { repaintPage(); }
 function renderProjects() { repaintPage(); }
 
 
-async function startLogin() {
-  try { await api('POST', '/api/claude/login'); setError(null); openModal(); await poll(true); }
-  catch (e) { setError(e.message); }
-}
-
 async function logout() {
   try { const r = await api('POST', '/api/claude/logout'); if (!r.ok) setError('logout: ' + (r.output || 'failed')); else setError(null); }
   catch (e) { setError(e.message); }
   await poll(true);
 }
-
-const modalParts = {};
-
-function openModal() {
-  ui.modal = true;
-  const m = $('#modal');
-  m.textContent = '';
-  const link = el('a', { class: 'btn primary', href: '#', target: '_blank', rel: 'noopener', text: 'Open sign-in page' });
-  const urlText = el('div', { class: 'url' });
-  const copy = el('button', { onclick: async () => { try { await navigator.clipboard.writeText(modalParts.url || ''); copy.textContent = 'copied'; } catch (_) { copy.textContent = 'copy failed'; } }, text: 'Copy link' });
-  const code = el('input', { type: 'text', placeholder: 'paste the whole code from the browser (code#state)', autocomplete: 'off' });
-  const send = el('button', { class: 'primary', type: 'submit', text: 'Send code' });
-  const form = el('form', { class: 'inline', onsubmit: async (e) => {
-    e.preventDefault();
-    try { await api('POST', '/api/claude/login/code', { code: code.value.trim() }); code.value = ''; setError(null); status.textContent = 'Code sent. Waiting for Claude to confirm…'; }
-    catch (err) { status.textContent = err.message; }
-    await poll(true);
-  } }, code, send);
-  const status = el('div', { class: 'dim' });
-  const tail = el('pre', { class: 'tail' });
-  Object.assign(modalParts, { link, urlText, code, status, tail, url: null });
-  m.append(el('div', { class: 'modal-box' },
-    el('h2', { text: 'Log in to Claude Code' }),
-    el('ol', {},
-      el('li', {}, 'Open the sign-in page and log in with your Anthropic account.'),
-      el('li', {}, 'The page shows a code. Copy the whole thing and paste it below.')),
-    el('div', { class: 'row' }, link, copy, el('a', { class: 'btn', href: '/tty/?arg=_ccboard-login', target: '_blank', rel: 'noopener', text: 'Open in terminal' })),
-    urlText,
-    form, status,
-    el('details', {}, el('summary', { class: 'dim', text: 'terminal output' }), tail),
-    el('div', { class: 'row' }, el('button', { onclick: closeModal, text: 'Close' }))));
-  m.classList.remove('hidden');
-  updateModal();
-}
-
-function updateModal() {
-  if (!ui.modal || !modalParts.link || !modalParts.link.isConnected) return;
-  const l = state.login || {};
-  const c = state.claude || {};
-  modalParts.url = l.url;
-  if (l.url) { modalParts.link.href = l.url; modalParts.link.classList.remove('muted'); modalParts.urlText.textContent = l.url; }
-  else { modalParts.link.href = '#'; modalParts.link.classList.add('muted'); modalParts.urlText.textContent = l.running ? 'waiting for the sign-in link…' : 'login is not running'; }
-  modalParts.tail.textContent = (l.tail || []).join('\n');
-  if (c.loggedIn) { modalParts.status.textContent = `Logged in as ${c.email || ''}.`; modalParts.code.disabled = true; }
-}
-
-function updateModalSafe() { if (modalParts.link && modalParts.link.isConnected) updateModal(); }
 
 function closeModal() { ui.modal = false; $('#modal').classList.add('hidden'); }
 

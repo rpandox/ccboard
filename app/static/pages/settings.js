@@ -3,13 +3,14 @@
    and the App panel (installed or browser, Install, Safari steps, build id, Reload app, shortcuts).
    The section is picked with ?sec= and tabs(); each panel is rebuilt only when the
    state it shows changed, so a poll never recreates a button under a finger. renderNotifyPanel() and renderNodes() stay global:
-   core.js (enablePush / disablePush) calls the first one. The login modal itself lives in pages/home.js (startLogin / openModal). */
+   core.js (enablePush / disablePush) calls the first one. Adding an account (the sign-in link, the code) and switching accounts live in the Accounts panel;
+   the Log in buttons of Agents and Home lead there (accountLogin, pages/agents.js). */
 'use strict';
 
 const SETTINGS_SECTIONS = [
   { id: 'notify', label: 'Notifications' }, { id: 'nodes', label: 'Nodes' }, { id: 'box', label: 'Box' }, { id: 'agents', label: 'Agents' }, { id: 'accounts', label: 'Accounts' }, { id: 'app', label: 'App' },
 ];
-const settingsPage = { refs: null, active: 'notify', acct: { at: 0, full: null } };         // acct: when GET /api/accounts last ran, and its rows by key (for 'seen 3h ago')
+const settingsPage = { refs: null, active: 'notify', acct: { at: 0, full: null }, add: null, seenAt: null };         // acct: when GET /api/accounts last ran, and its rows by key (for 'seen 3h ago'); add: the add-account block of this mount; seenAt: the login result already announced
 
 /* One setting as the shared .kv row (v0.5.6d): the label in a 120 px column, the value in mono with its helper text under it, the actions at the right
    (under the value on a phone). Buttons, link-buttons and the two-tap pair go to the actions, everything else to the value. row.add() files late
@@ -153,19 +154,27 @@ function settingsAgents(p) {
   else if (c.loggedIn) { badge.classList.add('hue-violet'); badge.textContent = `Claude: ${c.email || 'logged in'}${c.subscriptionType ? ' (' + c.subscriptionType + ')' : ''}`; }
   else { badge.classList.add('warn'); badge.textContent = 'Claude: not logged in'; }
   const row = settingsKv('Claude', badge);
-  if (c.installed && !c.loggedIn) row.add(el('button', { class: 'primary', type: 'button', onclick: startLogin, text: 'Log in' }));
+  if (c.installed && !c.loggedIn) row.add(el('button', { class: 'primary', type: 'button', title: 'Sign in from Settings > Accounts', onclick: () => accountLogin(), text: 'Log in' }));
   if (c.installed && c.loggedIn) row.add(confirmButton('logout', 'Log out', logout, true));          // red-outlined, two taps: the login is not one tap to lose
-  if (state.login && state.login.running && !ui.modal) row.add(el('button', { type: 'button', onclick: () => openModal(), text: 'Login in progress…' }));
   p.append(row);
   const codex = state.agents && state.agents.codex;
   if (codex) p.append(settingsKv('Codex', el('span', { class: codex.installed ? 'badge hue-teal' : 'v dim', text: codex.installed ? 'installed' : 'not installed' })));
 }
 
-/* ---------- Accounts (v0.5.17b): the subscription accounts the board has seen ----------
-   state.accounts.list gives the rows (label, email, plan, the two window readings); GET /api/accounts adds last_seen, asked once when the panel opens and then at
-   most every 5 minutes (the panel rebuilds each minute so the ages move: that is no polling of its own). Rename opens a small sheet: one field, Save is the
-   one primary; the label is painted at once and PATCH /api/accounts/<key> follows (a refusal puts the old label back). */
-const SETTINGS_LOGIN_HOWTO = 'To use another subscription, run /login in any terminal; the board notices within a minute and starts a new row for it.';
+/* ---------- Accounts (v0.5.17b rows, v0.5.17c saved logins): the subscription accounts the board has seen ----------
+   state.accounts.list gives the rows (label, email, plan, the two window readings, `saved`: a login is saved on the box); GET /api/accounts adds last_seen, asked once when
+   the panel opens and then at most every 5 minutes (the panel rebuilds each minute so the ages move: that is no polling of its own). Rename opens a small sheet: one field,
+   Save is the one primary; the label is painted at once and PATCH /api/accounts/<key> follows (a refusal puts the old label back).
+   Where the box keeps saved logins (state.accounts.store.supported) a row also has Switch (accountSwitch, pages/agents.js: one tap), Log in again and Forget login, and
+   the panel carries the add-account block: the sign-in link to copy, the code to paste, both without leaving Settings.
+   The panel is built once (settingsAcctSkeleton): a poll rebuilds only the list of rows, never the add block, so a code being typed keeps its node and its focus. */
+const SETTINGS_RECOVERY = 'If anything looks wrong, run /login in any terminal; the board records it.';
+const SETTINGS_LOGIN_HOWTO = 'Sign in with another subscription from here: open the link, sign in, paste the code. Running /login in any terminal works too; the board notices within a minute and starts a new row for it.';
+const SETTINGS_LOGIN_TERMINAL = 'To use another subscription, run /login in any terminal; the board notices within a minute and starts a new row for it.';
+const SETTINGS_CODE_RE = /^[A-Za-z0-9._~-]{1,256}#[A-Za-z0-9._~-]{1,256}$/;           // the server's rule (claude_auth.CODE_RE)
+const SETTINGS_CODE_HINT = "paste the whole code shown by the browser, including the part after '#'";
+const SETTINGS_DEMO_LINK = 'https://claude.ai/oauth/authorize?code=true&client_id=demo&response_type=code&state=demo';       // what the demo board shows as the sign-in link (nothing signs in)
+const SETTINGS_WATCH_SECONDS = 60;                                                      // after a code is sent the page asks for the result every second, this long
 
 function settingsAcctSeen(a) {
   const full = settingsPage.acct.full && settingsPage.acct.full[a.key];
@@ -189,17 +198,34 @@ function settingsAcctLoad() {
 function settingsAcctRow(a) {
   const name = agentsAcctName(a);
   const now = Date.now() / 1000;
+  const store = acctStore(state);
+  const busy = !!acctFlow.busy;                                       // a switch is running: no second action on any row
   const chips = el('span', { class: 'set-chips' });
   if (a.plan) chips.append(el('span', { class: 'badge ' + chipHue('account', a.key), text: String(a.plan) }));
   if (a.current) chips.append(el('span', { class: 'badge cur', title: 'the account signed in on this box right now', text: 'current' }));
+  if (store.supported) {
+    chips.append(a.saved ? el('span', { class: 'badge hue-slate', title: 'a login for this account is saved on the box: it can be switched to', text: 'saved login' })
+      : el('span', { class: 'dim', text: 'no saved login' }));
+  }
   const u5 = agentsAcctUsedNow(state, a, '5h', now);                 // the account in use shows the pills' numbers
   const u7 = agentsAcctUsedNow(state, a, '7d', now);
   const pct = (v) => (v === null ? 'no reading' : `${Math.round(v)}%`);
   const seen = settingsAcctSeen(a);
   const usage = (u5 === null && u7 === null ? 'no usage reading yet' : `5H ${pct(u5)} · 7D ${pct(u7)}`) + (seen ? ` · ${seen}` : '');
+  const acts = [];
+  if (store.supported && !a.current && a.saved) {
+    acts.push(el('button', { class: 'primary tinted', type: 'button', disabled: busy, 'aria-label': `Switch to ${name}`, title: 'Make this the account signed in on this box', onclick: () => accountSwitch(a), text: 'Switch' }));
+  }
+  if (store.supported && !a.current && !a.saved) {
+    acts.push(el('button', { type: 'button', disabled: busy, 'aria-label': `Log in again as ${name}`, title: 'Sign in with this account again to save its login', onclick: () => settingsAddStart(a.email), text: 'Log in again' }));
+  }
+  acts.push(el('button', { type: 'button', 'aria-label': `Rename ${name}`, title: 'Rename this account', onclick: () => settingsRenameAccount(a), text: 'Rename' }));
+  if (store.supported && !a.current && a.saved) {
+    acts.push(busy ? el('button', { class: 'danger', type: 'button', disabled: true, text: 'Forget login' })
+      : confirmButton(`acct-forget:${a.key}`, 'Forget login', () => settingsForgetLogin(a), false));
+  }
   const row = settingsKv(name, chips.firstChild ? chips : null, a.email && a.email !== name ? el('span', { class: 'v', text: a.email }) : null,
-    el('span', { class: 'dim', text: usage }),
-    el('button', { class: 'small', type: 'button', 'aria-label': `Rename ${name}`, title: 'Rename this account', onclick: () => settingsRenameAccount(a), text: 'Rename' }));
+    el('span', { class: 'dim', text: usage }), ...acts);
   row.classList.add('set-acct');
   row.setAttribute('data-account', a.key);
   const k = row.querySelector('.k');
@@ -207,14 +233,296 @@ function settingsAcctRow(a) {
   return row;
 }
 
-function settingsAccounts(p) {
+/* Forget login: DELETE /api/accounts/<key>/saved (the second tap of the red button); the row then shows 'no saved login'. The box answers with its accounts. */
+async function settingsForgetLogin(a) {
+  const name = agentsAcctName(a);
+  acctFlow.err = '';
+  try {
+    const r = await api('DELETE', `/api/accounts/${encodeURIComponent(a.key)}/saved`);
+    if (r && r.accounts && Array.isArray(r.accounts.list)) state.accounts = r.accounts;
+    else {                                                              // an answer without accounts (the demo's {ok: true}): the local row says it
+      const rec = agentsAccounts(state).find((x) => x.key === a.key);
+      if (rec) rec.saved = false;
+      if (typeof demoOn === 'function' && demoOn()) acctDemo().forgot.push(a.key);
+    }
+    accountsRepaint();
+    pageToast(`Forgot the saved login of ${name}`, 'ok');
+  } catch (e) {
+    const why = acctReason(e);
+    acctFlow.err = `Could not forget the login of ${name}: ${why}`;
+    accountsRepaint();
+    pageToast(acctFlow.err, 'bad');
+  }
+}
+
+/* The add-account block, built once per mount (settingsPage.add) and only patched afterwards: idle (Add account, or the one primary Log in while nobody is signed in),
+   in flight (step 1: the link to copy or open; step 2: the code to paste, Add account the one primary; Cancel; the terminal output), checking (the code is sent: the page
+   asks for the result every second for a minute), a failed login (the reason, Try again) and, where saved logins are not supported, the reason and the /login how-to.
+   The two inputs are never rebuilt. A login result is announced once per `result.at` (settingsPage.seenAt). */
+function settingsAddBlock() {
+  const m = { starting: false, sending: false, checking: false, slow: false, ticks: 0, timer: null, demoTimer: null, err: '', email: null, sawAdding: false, hide: false };
+  const root = el('div', { class: 'set-add' });
+
+  const urlInput = el('input', { type: 'text', class: 'add-url', readonly: true, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'aria-label': 'Sign-in link', placeholder: 'the link appears here' });
+  urlInput.addEventListener('focus', () => { if (typeof urlInput.select === 'function') urlInput.select(); });
+  const copy = el('button', { type: 'button', disabled: true, onclick: () => doCopy(), text: 'Copy link' });
+  const open = el('a', { class: 'btn', target: '_blank', rel: 'noopener', 'aria-disabled': 'true', text: 'Open' });
+  const wait = el('div', { class: 'dim add-wait', role: 'status', text: 'starting the login…' });
+  const step1 = el('div', { class: 'add-step' }, el('b', { class: 'add-k', text: 'Step 1' }),
+    el('p', { class: 'add-t', text: 'Open this link and sign in with the account you want to add.' }), urlInput, el('div', { class: 'add-btns' }, copy, open));
+
+  const code = el('input', { type: 'text', class: 'add-code', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false', disabled: true, placeholder: 'code#state' });
+  const codeField = field('Paste the code the page shows.', code);
+  const addBtn = el('button', { class: 'primary', type: 'submit', disabled: true, text: 'Add account' });
+  const cancelBtn = el('button', { type: 'button', onclick: () => doCancel(), text: 'Cancel' });
+  const status = el('div', { class: 'dim add-status hidden', role: 'status' });
+  const form = el('form', { class: 'add-form', novalidate: true, onsubmit: (e) => { e.preventDefault(); submit(); } },
+    codeField, el('div', { class: 'add-btns' }, addBtn, cancelBtn), status);
+  const step2 = el('div', { class: 'add-step' }, el('b', { class: 'add-k', text: 'Step 2' }), form);
+
+  const tail = el('pre', { class: 'tail add-tail' });
+  const details = el('details', { class: 'dim add-out' }, el('summary', { text: 'terminal output' }), tail,
+    el('a', { class: 'add-term', href: '/term/_ccboard-login', target: '_blank', rel: 'noopener', text: 'Open the login terminal' }));
+  const flight = el('div', { class: 'add-flight hidden' }, wait, step1, step2, details);
+
+  const addIdle = el('button', { type: 'button', onclick: () => start(null), text: 'Add account' });
+  const logIn = el('button', { class: 'primary hidden', type: 'button', onclick: () => start(null), text: 'Log in' });
+  const idle = el('div', { class: 'add-idle' }, el('div', { class: 'dim set-note', text: SETTINGS_LOGIN_HOWTO }), el('div', { class: 'add-btns' }, addIdle, logIn));
+
+  const errText = el('div', { class: 'bad add-err', role: 'alert' });
+  const retry = el('button', { class: 'primary', type: 'button', onclick: () => start(m.email || (state && state.login && state.login.email) || null, true), text: 'Try again' });
+  const dismiss = el('button', { type: 'button', onclick: () => { m.err = ''; patch(); }, text: 'Dismiss' });
+  const failed = el('div', { class: 'add-error hidden' }, errText, el('div', { class: 'add-btns' }, retry, dismiss));
+
+  const reason = el('div', { class: 'dim set-note add-reason' });
+  const off = el('div', { class: 'add-off hidden' }, reason, el('div', { class: 'dim set-note', text: SETTINGS_LOGIN_TERMINAL }));
+  root.append(idle, flight, failed, off);
+
+  const show = (node, on) => node.classList.toggle('hidden', !on);
+  const stopWatch = () => { if (m.timer) { clearInterval(m.timer); m.timer = null; } };
+  const watch = () => {                                                  // one timer at most: the result is asked for every second, for a minute
+    if (m.timer) return;
+    m.ticks = 0;
+    m.timer = setInterval(() => {
+      m.ticks++;
+      if (typeof poll === 'function') poll(true);
+      if (m.ticks >= SETTINGS_WATCH_SECONDS) { stopWatch(); m.slow = true; patch(); }
+    }, 1000);
+  };
+
+  function finish(res) {
+    stopWatch();
+    m.starting = m.sending = m.checking = m.sawAdding = m.slow = false;
+    code.value = '';
+    fieldError(codeField, '');
+    if (res.ok) {
+      m.err = '';
+      pageToast(`Added ${res.name || 'the account'}${res.live ? ' · it is the account in use now' : ''}`, 'ok');
+      if (typeof poll === 'function') poll(true);                        // the new row is in the next state
+    } else m.err = res.error || 'the login did not complete';
+  }
+
+  function patch() {
+    const st = typeof state === 'undefined' ? null : state;
+    const store = acctStore(st);
+    const l = (st && st.login) || {};
+    const res = l.result;
+    if (res && res.at && res.at !== settingsPage.seenAt) {
+      const mine = m.starting || m.sending || m.checking || m.sawAdding;
+      settingsPage.seenAt = res.at;                                      // announced once, here or never (a result nobody here waited for is not news)
+      if (mine) finish(res);
+    }
+    if (m.hide && !l.adding) m.hide = false;
+    const adding = !!l.adding && !m.hide;
+    if (adding) { m.sawAdding = true; m.starting = false; }
+    const url = adding && typeof l.url === 'string' ? l.url : '';
+    const list = agentsAccounts(st);
+    const needLogin = !list.length || !(st.accounts && st.accounts.current) || !!(st.claude && st.claude.installed && st.claude.loggedIn === false);
+    const inFlight = m.starting || m.sending || m.checking || adding;
+    const mode = !store.supported ? 'off' : m.err ? 'error' : inFlight ? 'flight' : 'idle';
+    show(idle, mode === 'idle');
+    show(flight, mode === 'flight');
+    show(failed, mode === 'error');
+    show(off, mode === 'off');
+    show(addIdle, !needLogin);
+    show(logIn, needLogin);
+    if (mode === 'off') setText(reason, store.reason ? `${store.reason.charAt(0).toUpperCase()}${store.reason.slice(1)}: adding and switching accounts is off on this box.` : 'Saved logins are not available on this box: adding and switching accounts is off.');
+    if (mode === 'error') setText(errText, m.err);
+    if (mode !== 'flight') return;
+    show(wait, !url);
+    if (urlInput.value !== url) urlInput.value = url;
+    copy.disabled = !url;
+    const link = /^https:\/\//.test(url) ? url : '';
+    if (link) { if (open.getAttribute('href') !== link) open.setAttribute('href', link); open.removeAttribute('aria-disabled'); open.classList.remove('is-off'); }
+    else { open.removeAttribute('href'); open.setAttribute('aria-disabled', 'true'); open.classList.add('is-off'); }
+    const locked = !url || m.sending || m.checking;
+    code.disabled = locked;
+    addBtn.disabled = locked;
+    show(status, m.sending || m.checking);
+    setText(status, m.slow ? 'Still checking the code… this is taking longer than usual. Cancel and try again if it does not finish.' : 'Checking the code…');
+    const t = (Array.isArray(l.tail) ? l.tail : []).join('\n');
+    if (tail.textContent !== t) tail.textContent = t;
+  }
+
+  async function doCopy() {
+    const url = urlInput.value;
+    if (!url) return;
+    try { await navigator.clipboard.writeText(url); pageToast('Link copied', 'ok'); return; } catch (_) { /* no clipboard API here: select the field and copy */ }
+    let ok = false;
+    try { urlInput.focus(); urlInput.select(); ok = !!document.execCommand('copy'); } catch (_) { ok = false; }
+    if (ok) pageToast('Link copied', 'ok'); else pageToast('Copy failed: select the link and copy it', 'warn');
+  }
+
+  async function start(email, restart) {
+    if (m.starting || m.sending || m.checking) return;
+    m.err = '';
+    m.email = email || null;
+    m.starting = true;
+    m.hide = false;
+    m.slow = false;
+    patch();
+    if (root.scrollIntoView) { try { root.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) { /* no scrolling here */ } }
+    const body = {};
+    if (m.email) body.email = m.email;
+    if (restart) body.restart = true;
+    try {
+      await api('POST', '/api/accounts/login', body);
+    } catch (e) {
+      m.starting = false;
+      m.err = acctReason(e);
+      patch();
+      return;
+    }
+    if (typeof demoOn === 'function' && demoOn()) demoStart();
+    if (typeof poll === 'function') poll(true);
+  }
+
+  async function submit() {
+    if (m.sending || m.checking) return;
+    const v = code.value.trim();
+    if (!SETTINGS_CODE_RE.test(v)) { fieldError(codeField, SETTINGS_CODE_HINT, true); return; }
+    fieldError(codeField, '');
+    m.sending = true;
+    patch();
+    try {
+      await api('POST', '/api/accounts/login/code', { code: v });
+    } catch (e) {
+      m.sending = false;
+      patch();
+      fieldError(codeField, acctReason(e), true);
+      return;
+    }
+    m.sending = false;
+    m.checking = true;
+    m.slow = false;
+    code.value = '';                                                     // the code is used once: it does not stay in the page
+    watch();
+    if (typeof demoOn === 'function' && demoOn()) demoFinish();
+    patch();
+    if (typeof poll === 'function') poll(true);
+  }
+
+  async function doCancel() {
+    stopWatch();
+    clearTimeout(m.demoTimer);
+    m.starting = m.sending = m.checking = m.sawAdding = m.slow = false;
+    m.err = '';
+    m.hide = true;                                                       // until the poll says the login is gone: the stale `adding` must not bring the steps back
+    code.value = '';
+    fieldError(codeField, '');
+    if (typeof demoOn === 'function' && demoOn()) acctDemo().login = null;
+    patch();
+    try { await api('DELETE', '/api/accounts/login'); } catch (e) { m.hide = false; m.err = acctReason(e); }
+    patch();
+    if (typeof poll === 'function') poll(true);
+  }
+
+  /* The demo board has no box behind it: the login it shows is made up here and laid over the poll (acctFlow.demo, agents.js accountOverlay). */
+  function demoStart() {
+    clearTimeout(m.demoTimer);
+    m.demoTimer = setTimeout(() => {
+      acctDemo().login = { running: true, adding: true, email: m.email, started_at: new Date().toISOString(), result: null,
+        url: SETTINGS_DEMO_LINK, tail: ['Opening browser to sign in…', `If the browser did not open, visit: ${SETTINGS_DEMO_LINK}`, 'Paste code here if prompted >'] };
+      if (typeof poll === 'function') poll(true);
+    }, 900);
+  }
+  function demoFinish() {
+    clearTimeout(m.demoTimer);
+    m.demoTimer = setTimeout(() => {
+      const d = acctDemo();
+      const old = agentsAccounts(state).find((x) => m.email && x.email === m.email);
+      let key, name;
+      if (old) { key = old.key; name = agentsAcctName(old); d.forgot = d.forgot.filter((k) => k !== key); }
+      else {
+        key = `demo-added-${d.accounts.length + 1}`;
+        name = 'New account';
+        d.accounts.push({ key, email: m.email || 'new@example.com', name, label: null, plan: 'pro', rl_5h: null, rl_7d: null, resets_5h: null, resets_7d: null, current: false, saved: true });
+      }
+      d.login = { running: false, adding: false, url: null, tail: [], email: null, started_at: null, result: { ok: true, key, name, live: false, at: new Date().toISOString() } };
+      if (typeof poll === 'function') poll(true);
+    }, 2500);
+  }
+
+  return {
+    root, patch, start,
+    dispose() { stopWatch(); clearTimeout(m.demoTimer); },
+    get busy() { return m.starting || m.sending || m.checking; },
+    get timers() { return m.timer ? 1 : 0; },
+  };
+}
+
+/* 'Log in again' on a row, and the Log in buttons of Agents and Home (through acctFlow.want): start the add flow in the block, if there is one. */
+function settingsAddStart(email) {
+  const b = settingsPage.add;
+  if (b && acctStore(state).supported) b.start(email || null);
+}
+
+function settingsAcctWant() {
+  const w = acctFlow.want;
+  if (!w || !settingsPage.refs || settingsPage.active !== 'accounts' || !settingsPage.add || typeof state === 'undefined' || !state) return;
+  acctFlow.want = null;
+  if (acctStore(state).supported) settingsPage.add.start(w.email);
+}
+
+/* The panel's skeleton, built the first time the Accounts section is filled and kept: the error line, the rows' host, the recovery line, the switch choice and the add block. */
+function settingsAcctSkeleton(p) {
   p.textContent = '';
+  const err = el('div', { class: 'set-err bad hidden', role: 'alert' });
+  const list = el('div', { class: 'set-acct-list' });
+  const cont = el('input', { type: 'checkbox' });
+  cont.checked = acctContinuePref();
+  cont.addEventListener('change', () => acctContinueSet(cont.checked));
+  const sw = el('div', { class: 'set-switching hidden' }, settingsHead('When you switch'),
+    el('label', { class: 'set-check' }, cont, 'After a switch, type continue in sessions parked on a limit'));
+  if (settingsPage.add) settingsPage.add.dispose();
+  const add = settingsAddBlock();
+  settingsPage.add = add;
+  p.append(err, settingsHead('Subscription accounts'), list, el('div', { class: 'dim set-note', text: SETTINGS_RECOVERY }), sw, settingsHead('Add another subscription'), add.root);
+  return { err, list, sw, cont, add };
+}
+
+/* Everything of the panel that is not the rows, repainted on every update: the error line, the switch choice, the add block, a Log in tapped elsewhere. */
+function settingsAcctPatch() {
+  const r = settingsPage.refs;
+  const s = r && r.panels.accounts.ccAcct;
+  if (!s) return;
+  const msg = acctFlow.err || '';
+  if (s.err.textContent !== msg) s.err.textContent = msg;
+  s.err.classList.toggle('hidden', !msg);
+  s.sw.classList.toggle('hidden', !acctStore(state).supported);
+  const pref = acctContinuePref();
+  if (s.cont.checked !== pref) s.cont.checked = pref;
+  s.add.patch();
+  settingsAcctWant();
+}
+
+function settingsAccounts(p) {
+  const s = p.ccAcct || (p.ccAcct = settingsAcctSkeleton(p));
   const list = agentsAccounts(state);
-  p.append(settingsHead('Subscription accounts'));
-  if (!list.length) p.append(el('div', { class: 'dim set-note', text: 'No Claude account seen yet. The board records the account a session is signed in with once one is running.' }));
-  for (const a of list) p.append(settingsAcctRow(a));
-  p.append(settingsHead('Add another subscription'));
-  p.append(el('div', { class: 'dim set-note', text: SETTINGS_LOGIN_HOWTO }));
+  s.list.textContent = '';
+  if (!list.length) s.list.append(el('div', { class: 'dim set-note', text: 'No Claude account seen yet. The board records the account a session is signed in with once one is running.' }));
+  for (const a of list) s.list.append(settingsAcctRow(a));
+  settingsAcctPatch();
   settingsAcctLoad();
 }
 
@@ -338,10 +646,11 @@ function settingsSig(id, st) {
   if (id === 'nodes') return JSON.stringify(st.nodes);
   if (id === 'box') return JSON.stringify([st.health, st.backup, st.node_name, st.user, minute]);
   if (id === 'accounts') {                                             // identity and labels, not the readings: those move with every statusline and would rebuild the Rename button under a finger (they refresh with the minute)
-    return JSON.stringify([st.accounts && st.accounts.current, agentsAccounts(st).map((a) => [a.key, a.label, a.name, a.email, a.plan, !!a.current]), minute]);
+    const forget = String(ui.confirm || '').startsWith('acct-forget:') ? ui.confirm : null;      // the two-tap Forget login repaints the row
+    return JSON.stringify([st.accounts && st.accounts.current, agentsAccounts(st).map((a) => [a.key, a.label, a.name, a.email, a.plan, !!a.current, !!a.saved]), acctStore(st), acctFlow.busy, forget, minute]);
   }
   if (id === 'app') return JSON.stringify([st.version, settingsAppMode().note, !!settingsInstallPrompt(), settingsHelpAvailable()]);
-  return JSON.stringify([st.claude, st.agents, st.login && st.login.running, ui.modal, ui.confirm === 'logout']);     // the two-tap Log out repaints the panel
+  return JSON.stringify([st.claude, st.agents, ui.confirm === 'logout']);     // the two-tap Log out repaints the panel
 }
 
 function settingsSecOf(r) {
@@ -366,6 +675,7 @@ function settingsShow(id) {
   for (const sec of SETTINGS_SECTIONS) r.panels[sec.id].classList.toggle('hidden', sec.id !== id);
   r.tabs.set(id);
   settingsFill(id, false);
+  if (id === 'accounts') settingsAcctPatch();                         // a Log in tapped on another page starts the add flow here
 }
 
 /* core.js calls renderNotifyPanel() after push was enabled or disabled: rebuild that panel if the page is open. */
@@ -399,10 +709,16 @@ registerPage('settings', {
       wrap.append(panels[sec.id]);
     }
     root.append(wrap);
+    if (settingsPage.add) settingsPage.add.dispose();
+    settingsPage.add = null;                                          // the add block is built again with the Accounts panel of this mount
     settingsPage.refs = { tabs: tabCtl, panels };
     settingsShow(active);
   },
-  update() { settingsFill(settingsPage.active, false); },
+  update() { settingsFill(settingsPage.active, false); settingsAcctPatch(); },     // the add block follows the login state on every poll, not only when the rows change
   onRoute(route) { settingsShow(settingsSecOf(route)); },
-  unmount() { settingsPage.refs = null; },
+  unmount() {
+    if (settingsPage.add) settingsPage.add.dispose();                   // its one-second timer must not outlive the page
+    settingsPage.add = null;
+    settingsPage.refs = null;
+  },
 });

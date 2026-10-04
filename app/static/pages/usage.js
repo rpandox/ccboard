@@ -840,7 +840,8 @@ Usage.accTotal = function (sum, list, real, w, hits) {
 };
 
 /* 'most room: Work, 62 % of the 5-hour window left': the account with the most of a window left. When the account in use is at 85 % or more of a
-   window and another account has more of it left, it is the attention line (amber, no button): {text, attn}. null with fewer than two accounts. */
+   window and another account has more of it left, it is the attention line (amber): {text, attn, to: the key of the account with the room}; paintAccounts adds a Switch
+   button when that account has a saved login. null with fewer than two accounts. */
 Usage.room = function (sum, real) {
   const tot = sum.total && typeof sum.total === 'object' ? sum.total : {};
   if (real.length < 2) return null;
@@ -854,12 +855,22 @@ Usage.room = function (sum, real) {
       const r = Usage.accReading(cur[field], nm);
       if (!r || r.pct < Usage.HOT_PCT) continue;
       const other = list.find((x) => x.key !== cur.key);
-      if (other && other.left_pct > 100 - r.pct) return { attn: true, text: `${Usage.accName(cur)} is at ${Math.round(r.pct)} % of the ${nm} window. most room: ${clause(other, nm)}` };
+      if (other && other.left_pct > 100 - r.pct) return { attn: true, to: other.key, text: `${Usage.accName(cur)} is at ${Math.round(r.pct)} % of the ${nm} window. most room: ${clause(other, nm)}` };
     }
   }
   const parts = [];
   for (const [nm, list] of [wins[1], wins[0]]) if (list.length) parts.push(clause(list[0], nm));
   return parts.length ? { attn: false, text: `most room: ${parts.join(' · ')}` } : null;
+};
+
+/* The saved logins the board knows (state.accounts.list, pages/agents.js; none where that script is not loaded), whether a switch is running, and the account the amber
+   callout points at when it can be switched to: its login is saved, it is not the one in use, and this box keeps saved logins. */
+Usage.logins = function () { return typeof agentsAccounts === 'function' && typeof state !== 'undefined' ? agentsAccounts(state) : []; };
+Usage.busy = function () { return typeof acctFlow !== 'undefined' && !!acctFlow.busy; };
+Usage.swapTarget = function (room) {
+  if (!room || !room.attn || !room.to || typeof accountSwitch !== 'function' || typeof acctStore !== 'function') return null;
+  const to = Usage.logins().find((a) => a.key === room.to);
+  return to && to.saved && !to.current && acctStore(state).supported ? to : null;
 };
 
 Usage.paintAccounts = function (P) {
@@ -878,7 +889,7 @@ Usage.paintAccounts = function (P) {
     return;
   }
   const minute = Math.floor(Date.now() / 60000);                                // the countdowns move: repaint at least once a minute
-  const sig = Usage.sig([P.range, minute, list, sum.total, eps.map((e) => [e.acct, e.at])]);
+  const sig = Usage.sig([P.range, minute, list, sum.total, eps.map((e) => [e.acct, e.at]), Usage.logins().map((a) => [a.key, !!a.saved, !!a.current]), Usage.busy()]);       // the callout's Switch button follows the saved logins, the account in use and a switch under way
   if (P.sigs.accounts === sig) return;
   P.sigs.accounts = sig;
   const real = Usage.realAccounts(list);
@@ -889,7 +900,14 @@ Usage.paintAccounts = function (P) {
     ...list.map((a) => Usage.accRow(a, w, hits(a.key))), Usage.accTotal(sum, list, real, w, eps.length));
   const room = Usage.room(sum, real);
   const kids = [table];
-  if (room) kids.push(el('p', { class: 'ua-room' + (room.attn ? ' attn' : ' dim'), 'data-room': room.attn ? 'attention' : 'info', text: room.text }));
+  if (room) {
+    // the amber callout: with a saved login on the account that has the room, one button makes it the account in use (the same accountSwitch as Settings)
+    const swap = Usage.swapTarget(room);
+    if (swap) {
+      kids.push(el('div', { class: 'ua-room attn has-act', 'data-room': 'attention' }, el('span', { class: 'ua-room-t', text: room.text }),
+        el('button', { class: 'primary tinted', type: 'button', disabled: Usage.busy(), onclick: () => accountSwitch(swap), text: `Switch to ${Usage.accName(swap)}` })));
+    } else kids.push(el('p', { class: 'ua-room' + (room.attn ? ' attn' : ' dim'), 'data-room': room.attn ? 'attention' : 'info', text: room.text }));
+  }
   // the sessions of the rows can add up to more than the total (one that ran on two accounts is counted in each row, once in the total): say so in
   // the open, because the cell's title does not show on a phone
   const rowSessions = list.reduce((x, a) => x + Usage.accStat(a, w).sessions, 0);

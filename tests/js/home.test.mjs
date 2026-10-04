@@ -393,9 +393,9 @@ test('Home drops the v0.4 board: no project form, no kanban, no jobs list, no li
   assert.equal(q(w, '.kanban'), null);
 });
 
-test('the symbols other pages import stay global', () => {
+test('the symbols other pages import stay global (the login modal is gone: its Log in buttons are accountLogin, pages/agents.js)', () => {
   const { w } = home();
-  for (const name of ['renderTasks', 'renderJobs', 'openModal', 'updateModal', 'closeModal', 'startLogin', 'logout', 'renderBanner', 'homeInstallHint', 'taskCard', 'openTaskModal', 'awayDigest', 'decide']) {
+  for (const name of ['renderTasks', 'renderJobs', 'closeModal', 'logout', 'renderBanner', 'homeInstallHint', 'taskCard', 'openTaskModal', 'awayDigest', 'decide']) {
     assert.equal(w.run(`typeof ${name}`), 'function', name);
   }
   for (const name of ['skeleton', 'dropSkeleton', 'items', 'select', 'act', 'paint', 'sync', 'target', 'order', 'openNth', 'reset']) assert.equal(w.run(`typeof Pages.${name}`), 'function', `Pages.${name}`);

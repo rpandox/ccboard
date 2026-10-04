@@ -176,7 +176,6 @@ html.force-coarse .form details summary { min-height:var(--tap); }
 .modal-box .form { max-height:45vh; overflow:auto; }
 .modal-box.wide { max-width:1100px; }
 pre.tail { background:var(--bg); border:1px solid var(--line); border-radius:2px; padding:8px; font-size:12px; font-family:var(--font-mono); font-variant-ligatures:none; font-variant-numeric:tabular-nums; max-height:220px; overflow:auto; white-space:pre-wrap; word-break:break-all; }
-.url { word-break:break-all; font-size:12px; color:var(--dim); }
 .muted { opacity:.6; }
 .bad { color:var(--bad-fg); }                                   /* red TEXT (inline form errors, status lines): 5.1:1 on --card and --panel */
 .diffbox { max-height:50vh; overflow:auto; background:var(--bg); border:1px solid var(--line); border-radius:2px; padding:4px; margin:6px 0; font-size:12px; }

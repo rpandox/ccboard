@@ -918,6 +918,42 @@ test('accounts: the account in use at 85 % or more with room on another account 
   assert.equal(q(w4, '.ua-room').getAttribute('data-room'), 'info');
 });
 
+test('accounts: the amber callout carries "Switch to <name>" (primary tinted) only when that account has a saved login on a board that keeps them; it is the same switch as Settings', async () => {
+  const hot = ACCOUNTS({ rl_5h: { value: 91, resets_at: NOW + 600, at: ISO(30) } });
+  const over = { '/api/usage/summary?days=7': ACC_SUMMARY({ accounts: hot, total: TOTALS({ headroom_5h: [{ key: AK2, left_pct: 100 }, { key: AK1, left_pct: 9 }] }) }), '/api/accounts/': { ok: true, already: false, continued: [] } };
+  const accts = (saved, supported = true) => ({ current: AK1, list: [{ key: AK1, name: 'Demo', email: 'demo@example.com', label: null, current: true, saved: true }, { key: AK2, name: 'Work', email: 'work@example.com', label: 'Work', current: false, saved }], store: { supported, reason: supported ? null : 'x', count: 1 } });
+  const { w } = accWorld({ st: STATE({ accounts: accts(true) }), over });
+  await go(w);
+  const line = q(w, '.ua-room');
+  assert.equal(line.getAttribute('data-room'), 'attention');
+  assert.ok(line.classList.contains('attn'));
+  assert.equal(text(line.querySelector('.ua-room-t')), 'Demo is at 91 % of the 5-hour window. most room: Work, 100 % of the 5-hour window left', 'the callout text is unchanged');
+  const b = line.querySelector('button');
+  assert.equal(text(b), 'Switch to Work');
+  assert.ok(b.classList.contains('primary') && b.classList.contains('tinted'), 'the repeated-row primary, not a second filled one');
+  assert.equal(qa(w, '.ua-room button').length, 1);
+  b.click();
+  await tick(); await tick();
+  assert.deepEqual(calls(w).filter((c) => c.method === 'POST'), [{ method: 'POST', path: `/api/accounts/${AK2}/switch`, body: { continue_parked: true } }], 'accountSwitch, the one shared function');
+  assert.equal(w.get('state.accounts.current'), AK2, 'the account in use moved at once');
+  assert.match(text(w.document.getElementById('toasts')), /Switched to Work · running sessions follow within seconds/);
+  // no saved login on the account with the room, or a board that keeps none: the callout stays as it is
+  for (const [saved, supported] of [[false, true], [true, false]]) {
+    const r = accWorld({ st: STATE({ accounts: accts(saved, supported) }), over });
+    await go(r.w);
+    assert.equal(r.w.document.querySelector('#page .ua-room').getAttribute('data-room'), 'attention');
+    assert.equal(r.w.document.querySelector('#page .ua-room button'), null, `saved ${saved}, supported ${supported}: no button`);
+    assert.equal(text(r.w.document.querySelector('#page .ua-room')), 'Demo is at 91 % of the 5-hour window. most room: Work, 100 % of the 5-hour window left');
+  }
+  // the button follows the saved logins without a reload of the page
+  const r2 = accWorld({ st: STATE({ accounts: accts(false) }), over });
+  await go(r2.w);
+  assert.equal(r2.w.document.querySelector('#page .ua-room button'), null);
+  r2.w.ctx.__st = STATE({ accounts: accts(true) });
+  r2.w.run('state = __st; updateCurrentPage(state)');
+  assert.equal(text(r2.w.document.querySelector('#page .ua-room button')), 'Switch to Work');
+});
+
 test('accounts: one account still shows one row and the total, in subscription terms; no headroom line, no chips on the limits', async () => {
   const one = [ACCOUNTS()[0]];
   const { w } = accWorld({ over: { '/api/usage/summary?days=7': ACC_SUMMARY({ accounts: one, total: TOTALS({ accounts: 1, headroom_5h: [{ key: AK1, left_pct: 58 }], headroom_7d: [{ key: AK1, left_pct: 29 }], '7d': win(60, 20000000, 9.5, 4) }) }) } });

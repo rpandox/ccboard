@@ -809,21 +809,23 @@ test('clicking a settings tab navigates with ?sec= (replace, no history entry)',
   assert.equal(page(w).querySelector('.settings-panel[data-sec=agents]').classList.contains('hidden'), false);
 });
 
-test('settings > Agents carries the login button, wired to startLogin', async () => {
+test('settings > Agents carries the login button: it leads to Settings > Accounts (the add flow lives there), no modal', async () => {
   const st = fakeState({ claude: { installed: true, loggedIn: false } });
   const { w } = pagesWorld({ state: st });
-  w.run('globalThis.__modals = 0; openModal = () => { __modals++; };');
   w.location.hash = '#/settings?sec=agents';
   const panel = page(w).querySelector('.settings-panel[data-sec=agents]');
   assert.match(text(panel), /Claude: not logged in/);
+  assert.ok(!panel.querySelectorAll('button').some((b) => /in progress/.test(text(b))), 'no "Login in progress…" button any more');
   const login = panel.querySelectorAll('button').find((b) => text(b) === 'Log in');
   login.click();
   await tick();
-  assert.deepEqual(calls(w).pop(), { method: 'POST', path: '/api/claude/login' });
-  assert.equal(w.get('__modals'), 1, 'the login modal opens');
+  assert.equal(w.location.hash, '#/settings?sec=accounts');
+  assert.ok(!calls(w).some((c) => c.path === '/api/claude/login'), 'the old endpoint is not used by the page any more');
+  assert.equal(w.get('ui.modal'), false);
   // logged in: Log out instead
   w.ctx.__st = fakeState();
   w.run('state = __st; updateCurrentPage(state)');
+  w.location.hash = '#/settings?sec=agents';
   assert.match(text(panel), /Claude: a@example\.com \(max\)/);
   assert.ok(panel.querySelectorAll('button').some((b) => text(b) === 'Log out'));
 });
@@ -1038,6 +1040,7 @@ function acctWorld(opts = {}) {
   return w;
 }
 const acctPanel = (w) => page(w).querySelector('.settings-panel[data-sec=accounts]');
+const hiddenIn = (n) => { for (let x = n; x && x.nodeType === 1; x = x.parentNode) if (x.classList.contains('hidden')) return true; return false; };
 const acctRows = (w) => acctPanel(w).querySelectorAll('.kv.set-acct');
 const renameBtn = (row) => row.querySelectorAll('button').find((b) => text(b) === 'Rename');
 const openRename = (w, i = 0) => { renameBtn(acctRows(w)[i]).click(); return sheet(w); };
@@ -1052,7 +1055,7 @@ test('settings tabs: Accounts sits after Agents and before App', () => {
 
 test('Settings > Accounts: one row per account with its name in the account\'s hue, plan and current chips, email, readings and Rename; the how-to closes the panel', () => {
   const w = acctWorld();
-  assert.deepEqual(acctPanel(w).querySelectorAll('.set-h').map(text), ['Subscription accounts', 'Add another subscription']);
+  assert.deepEqual(acctPanel(w).querySelectorAll('.set-h').map(text), ['Subscription accounts', 'When you switch', 'Add another subscription'], 'labelled sections (the switch choice is hidden where saved logins are not supported)');
   const rows = acctRows(w);
   assert.equal(rows.length, 2);
   const hueOf = (key) => w.run(`chipHue('account', ${JSON.stringify(key)})`);
@@ -1089,7 +1092,7 @@ test('Settings > Accounts empty state: says what is missing and still shows how 
     assert.equal(acctRows(w).length, 0);
     assert.match(text(acctPanel(w)), /No Claude account seen yet/);
     assert.match(text(acctPanel(w)), /run \/login in any terminal/);
-    assert.equal(acctPanel(w).querySelectorAll('button').length, 0);
+    assert.equal(acctPanel(w).querySelectorAll('button').filter((b) => !hiddenIn(b)).length, 0, 'no button shows: this board keeps no saved logins');
   }
 });
 
