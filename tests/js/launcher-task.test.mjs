@@ -4,6 +4,8 @@
 // double-submit guard and the targets (the project folder when it is a git repo). The 10x pass is measured here too: from a project page,
 // + task, type, Start task is three actions (see tasks.test.mjs for the click count over the whole page).
 // Real core.js, components.js, launcher.js, router.js, widgets.js and shell.js on minidom's DOM; api(), toast(), poll() and navigate() are recorders.
+// v0.5.13: + task now opens the launcher sheet (launch() -> openLauncher; its task mode is tested in launcher.test.mjs). This file pins the OLD form, taskForm, which stays working for the
+// code and the tests that call it, so tWorld sends the last hop of the create route (Shell.launchAt) to Shell.showForm, the way Shell.openCreate reached it before.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { makeWorld, plain } from './harness.mjs';
@@ -54,6 +56,7 @@ function tWorld({ state = STATE(), answers = {}, confirm = () => true } = {}) {
   selectSemantics(w);
   for (const f of ['core.js', 'components.js', 'launcher.js', 'router.js', 'pages/widgets.js', 'shell.js']) w.load(f);
   w.ctx.__calls = []; w.ctx.__toasts = []; w.ctx.__nav = []; w.ctx.__answers = answers; w.ctx.__polls = 0; w.ctx.__st = state;
+  w.run('Shell.launchAt = (kind, e) => Shell.showForm(kind, e);');          // the old form, not the launcher sheet (see the header)
   w.run(`
     api = async (method, path, body) => {
       __calls.push({ method, path, body });

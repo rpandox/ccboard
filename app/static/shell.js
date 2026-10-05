@@ -3,7 +3,9 @@
    Everything is built once by installShell() (main.js calls it) and patched in place on every poll: nothing here is re-created per poll, and the
    project tree is a keyed reconcile, so a focused row survives a state refresh. Classic script; one namespace (Shell) plus the contract functions.
    v0.5.9: the terminal dock (Shell.openDock / closeDock / toggleDock, section 'the terminal dock'): the live terminal of one session in #dock from
-   1024 px up, built from TermKit.termPane (termkit.js), with a drag handle, the sidebar folding to the rail below 1440 px, and a row's Open link opening it. */
+   1024 px up, built from TermKit.termPane (termkit.js), with a drag handle, the sidebar folding to the rail below 1440 px, and a row's Open link opening it.
+   v0.5.13: create from anywhere. The + menu, the c-chords, the repo picker, the sidebar's + on a project row and the dock's + all end in launch() (components.js), which
+   opens the launcher sheet (launcher.js openLauncher) with the project and the repo filled in: Shell.openCreate / launchAt / sideNew / dockNew. */
 'use strict';
 
 const Shell = {
@@ -384,11 +386,13 @@ Shell.groupRow = function (cls, level, name, extra) {
 Shell.projNode = function () {
   const dot = el('span', { class: 'tn-dot hidden', role: 'img', 'aria-label': 'needs you', title: 'needs you' });
   const go = el('a', { class: 'tn-go', tabindex: '-1', title: 'Open project', 'aria-label': 'Open project' }, ic('chevron-right'));
+  const add = el('button', { class: 'icon minimal small tn-add', type: 'button', tabindex: '-1', title: 'New session in this project', 'aria-label': 'New session in this project' }, ic('plus'));
+  add.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); Shell.sideNew(add.getAttribute('data-project')); });
   const g = Shell.groupRow('proj-row', 1, '', [dot]);
-  g.row.append(go);
+  g.row.append(add, go);
   const kids = el('div', { class: 'tn-kids hidden', role: 'group' });
   const node = el('div', { class: 'tn proj' }, g.row, kids);
-  node._r = { ...g, dot, go, kids };
+  node._r = { ...g, dot, go, add, kids };
   return node;
 };
 
@@ -405,9 +409,22 @@ Shell.patchProj = function (node, p, level) {
   r.cnt.setAttribute('title', `${p.count} session${p.count === 1 ? '' : 's'}`);
   r.dot.classList.toggle('hidden', !p.attn);
   r.go.setAttribute('href', Shell.hash('project', { project: p.name }));
+  r.add.setAttribute('data-project', p.name);
   r.kids.classList.toggle('hidden', !open);
   if (open) Shell.sync(r.kids, Shell.projKids(p, level), Shell.kidNode, Shell.patchKid);
   else if (r.kids.firstChild) r.kids.textContent = '';
+};
+
+/* The + on a project row: the launcher sheet (launch(), components.js) for this project, in the repo (or folder) it worked in last, so a new session is one tap to Start & open.
+   The drawer (a phone's sidebar) closes first. A project with no place yet gets the repo picker narrowed to it. */
+Shell.sideNew = function (name) {
+  Shell.closeDrawer();
+  const st = typeof state === 'undefined' ? null : state;
+  const p = st ? (st.projects || []).find((x) => x.name === name) : null;
+  if (!p) return false;
+  const hit = launchPlace(p, 'session');
+  if (hit) return launch({ mode: 'session', project: hit.project, repo: hit.repo });
+  return Shell.openCreate('session', { project: name });
 };
 
 /* ---------- directories under the current project: the repos and the project folder open into lazily loaded folders ---------- */
@@ -627,6 +644,7 @@ Shell.patchTrees = function () {
 
 Shell.treeKey = function (e) {
   const tree = e.currentTarget;
+  if (e.target.closest && e.target.closest('.tn-add')) return;           // the + is a button: Enter and Space are its own
   const row = e.target.closest && e.target.closest('.tn-row');
   if (!row) return;
   const rows = [...tree.querySelectorAll('.tn-row')];
@@ -655,7 +673,7 @@ Shell.treeKey = function (e) {
 
 Shell.bindTree = function (tree) {
   tree.addEventListener('click', (e) => {
-    if (e.target.closest('.tn-go')) return;                    // the arrow opens the project page
+    if (e.target.closest('.tn-go') || e.target.closest('.tn-add')) return;                    // the arrow opens the project page, the + the launcher
     const row = e.target.closest('.tn-row');
     if (row && row.classList.contains('d-row')) {              // a directory node: the chevron toggles, the rest is a link to its Files tab
       if (e.target.closest('.tw')) {
@@ -1081,6 +1099,33 @@ Shell.patchDock = function (st) {
   try { D.pane.update(Shell.dockRow(st, D.tmux), st); } catch (e) { console.error('ccboard dock', e); }
 };
 
+/* {project, repo} (state objects) of the place a session name project--repo--name is in, or null when the board does not know it (yet). */
+Shell.placeOf = function (tmux) {
+  const st = typeof state === 'undefined' ? null : state;
+  const parts = String(tmux || '').split('--');
+  if (!st || parts.length < 3) return null;
+  const p = (st.projects || []).find((x) => x.name === parts[0]);
+  const r = p ? (parts[1] === 'root' ? p.root : (p.repos || []).find((x) => x.name === parts[1])) : null;
+  return p && r ? { project: p, repo: r } : null;
+};
+
+/* The dock's +: a new session in the place of the one the dock shows (launch(), components.js: the launcher sheet with that project and repo filled in, one tap to Start & open).
+   When the board no longer knows the place, the repo picker. */
+Shell.dockNew = function (tmux) {
+  const place = Shell.placeOf(tmux || Shell.dock.tmux);
+  if (place) return launch({ mode: 'session', project: place.project, repo: place.repo });
+  return Shell.openCreate('session');
+};
+
+/* The + among the pane's own header buttons (termkit.js builds those; it has no callback for this one), first, before reconnect. */
+Shell.dockAddButton = function (pane, tmux) {
+  const btns = pane && pane.head && typeof pane.head.querySelector === 'function' ? pane.head.querySelector('.tp-btns') : null;
+  if (!btns) return null;
+  const add = el('button', { class: 'icon minimal tp-btn', type: 'button', 'data-act': 'new', 'aria-label': 'New session in this repo', title: 'New session in this repo', onclick: () => Shell.dockNew(tmux) }, ic('plus'));
+  btns.insertBefore(add, btns.firstChild);
+  return add;
+};
+
 /* DOM only (no mode pass): put a pane for `tmux` into #dock, replacing the one there. */
 Shell.dockMount = function (tmux, o) {
   const D = Shell.dock;
@@ -1101,6 +1146,7 @@ Shell.dockMount = function (tmux, o) {
     if (typeof toast === 'function') toast('Not a terminal session name', { kind: 'bad' });
     return false;
   }
+  Shell.dockAddButton(pane, tmux);
   Shell.dockUnmount(true);
   if (!D.resizer) D.resizer = Shell.buildDockResizer();
   host.textContent = '';
@@ -1276,7 +1322,7 @@ Shell.onTermLink = function (e) {
   return true;
 };
 
-/* ---------- create menu: repo picker sheet, then the existing launcher forms ---------- */
+/* ---------- create menu: repo picker sheet, then the launcher sheet (launch(), components.js) ---------- */
 
 Shell.createItems = function () {
   return [
@@ -1290,10 +1336,11 @@ Shell.createItems = function () {
 };
 
 /* Shell.openCreate(kind, ctx): the one entry for everything the + menu, the c-chords (keymap.js) and the page buttons create. kind is
-   session | task | schedule (a repo picker, then the launcher form), project (the new-project form and the clone queue), import (GitHub
+   session | task | schedule (a repo picker, then the launcher sheet), project (the new-project form and the clone queue), import (GitHub
    repos into a project) or batch (one headless prompt over many repos). ctx = {project, repo?} (the project page's buttons) skips the picker
    when the place is clear: the form opens for that repo ('root' is the project folder: a session always, a task or schedule when it is itself
-   a git repo), or for the project's only place; a project with several places and no repo in ctx gets the picker narrowed to it. Without a ctx
+   a git repo), or for the project's only place; a session in a project with several places and no repo in ctx opens where the project worked last (launchPlace), a project with
+   no place at all gets the picker narrowed to it. Without a ctx
    the place comes from the route (Shell.routeCtx: the project page, or the session open in the peek; for a task off a project page, the place
    the last task went to), so c t on a project page is the form for that project at once. Opens the sheet and returns true; false for an unknown
    kind, before the first state has arrived (every form lists the box's repos; the tap says 'still loading the board…') or without the sheet
@@ -1364,10 +1411,18 @@ Shell.createFor = function (kind, ctx) {
   else {
     const where = git ? taskTargets(p, kind).map((x) => x.r) : [...(p.root ? [p.root] : []), ...(p.repos || []).filter(ok)];
     if (where.length === 1) r = where[0];
+    else if (kind === 'session' && typeof launchPlace === 'function') { const hit = launchPlace(p, 'session'); if (hit && hit.project === p) r = hit.repo; }       // a project page without a repo: where the project worked last, the sheet's chevron goes back to the list
   }
   if (!r || (git && !(kind === 'task' ? taskTarget : gitTarget)(p, r))) return false;      // a task may run in place in a non-git project folder
-  Shell.showForm(kind, { p, r, label: Shell.targetLabel(p, r) });
+  Shell.launchAt(kind, { p, r, label: Shell.targetLabel(p, r) });
   return true;
+};
+
+/* A place is chosen (the picker row, or a route that names it): a session or a task opens the launcher sheet (launch(), components.js: the project and the repo are filled in,
+   the chevron goes back to the repo list); a schedule its own form. e = {p, r, label}. */
+Shell.launchAt = function (kind, e) {
+  if (kind === 'session' || kind === 'task') return launch({ mode: kind, project: e.p, repo: e.r, label: e.label, back: { label: 'Back to the repo list', onClick: () => Shell.pickRepo(kind, e) } });
+  return Shell.showForm(kind, e);
 };
 
 Shell.PICK_TITLES = { session: 'New session', task: 'New task', job: 'Schedule a run' };
@@ -1408,7 +1463,7 @@ Shell.pickRepo = function (kind, ctx) {
     const f = q.trim().toLowerCase();
     for (const e of entries) {
       if (f && !e.label.toLowerCase().includes(f)) continue;
-      list.append(el('button', { class: 'minimal pick-row', type: 'button', onclick: () => Shell.showForm(kind, e) },
+      list.append(el('button', { class: 'minimal pick-row', type: 'button', onclick: () => Shell.launchAt(kind, e) },
         el('span', { class: 'pr-name mono', text: e.label }), e.sub ? el('span', { class: 'dim', text: e.sub }) : null));
     }
     if (!list.childElementCount) list.append(el('div', { class: 'dim', text: 'no match' }));
@@ -1507,7 +1562,7 @@ Shell.listen = function () {
     if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
     const t = e.target;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
-    if (document.querySelector('dialog[open]') || (typeof ui !== 'undefined' && ui.modal)) return;
+    if (document.querySelector('dialog[open]')) return;
     if (e.key === '/') { e.preventDefault(); Shell.focusSearch(); }
     else if (e.key === '[') { e.preventDefault(); Shell.toggleSidebar(); }
   });

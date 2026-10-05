@@ -295,7 +295,7 @@ test('the v0.4 entry points openImport() and openBatch() open the same sheets', 
   w.run('openBatch()');
   assert.equal(title(w), 'Batch prompt across repos');
   assert.equal(sheet(w).querySelectorAll('.modal-box').length, 0, 'not the legacy #modal');
-  assert.equal(w.get('ui.modal'), false);
+  assert.ok(!w.get('ui.modal'), 'the old ui.modal flag is gone with the #modal');
 });
 
 test('Cancel closes the sheet from every form', () => {

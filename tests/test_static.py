@@ -526,7 +526,7 @@ import subprocess  # noqa: E402
 from collections import Counter  # noqa: E402
 
 INDEX = STATIC / "index.html"
-SKELETON_IDS = ("topbar", "sidebar", "main", "banner", "page", "dock", "bnav", "drawer", "sheet", "helpdlg", "modal", "toasts")
+SKELETON_IDS = ("topbar", "sidebar", "main", "banner", "page", "dock", "bnav", "drawer", "sheet", "helpdlg", "toasts")
 SCRIPT_ORDER = ["/static/" + n for n in (            # v0.5.3 contract plus keymap.js and palette.js (v0.5.3b), pages/widgets.js (v0.5.5), tree.js and pages/project.js (v0.5.6), termkit.js (v0.5.9: the dock), pages/quad.js (v0.5.9)
     "core.js", "components.js", "keymap.js", "live.js", "termkit.js", "launcher.js", "tree.js", "charts.js", "dnd.js", "palette.js", "shell.js", "router.js",
     "pages/home.js", "pages/inbox.js", "pages/widgets.js", "pages/tasks.js", "pages/project.js", "pages/agents.js", "pages/settings.js", "pages/search.js",
@@ -608,15 +608,15 @@ def test_index_skeleton_ids_are_present_exactly_once():
 
 def test_index_skeleton_nesting_matches_the_contract():
     """body.bp5-dark[data-shell][data-page] > a.skip + #app{header#topbar, aside#sidebar, main#main{#banner,#page}, aside#dock.hidden}
-    + nav#bnav + dialog#drawer + dialog#sheet + dialog#helpdlg + div#modal.hidden + div#toasts; scripts after all of it."""
+    + nav#bnav + dialog#drawer + dialog#sheet + dialog#helpdlg + div#toasts; scripts after all of it. (v0.5.13: the legacy div#modal is gone: the diff viewer is a sheet.)"""
     body = _by_tag(html_tree(INDEX), "body")[0]
     assert "bp5-dark" in body.classes and "data-shell" in body.attrs and "data-page" in body.attrs, \
         "<body> needs class bp5-dark and the data-shell / data-page attributes (the shell and router fill them in)"
     kids = [n for n in body.children if n.tag not in ("script", "noscript")]
     assert [(n.tag, n.attrs.get("id")) for n in kids] == [
         ("a", None), ("div", "app"), ("nav", "bnav"), ("dialog", "drawer"), ("dialog", "sheet"), ("dialog", "helpdlg"),
-        ("div", "modal"), ("div", "toasts")], "body children are not the contract skeleton"
-    skip, app, bnav, _drawer, _sheet, _help, modal, toasts = kids
+        ("div", "toasts")], "body children are not the contract skeleton"
+    skip, app, bnav, _drawer, _sheet, _help, toasts = kids
     assert "skip" in skip.classes and skip.attrs.get("href") == "#main", "the first body child is the a.skip link to #main"
     assert [(n.tag, n.attrs.get("id")) for n in app.children] == [
         ("header", "topbar"), ("aside", "sidebar"), ("main", "main"), ("aside", "dock")], "#app children"
@@ -625,12 +625,22 @@ def test_index_skeleton_nesting_matches_the_contract():
     assert main.attrs.get("tabindex") == "-1", "main#main needs tabindex=-1 (the router focuses it after a route change)"
     assert [(n.tag, n.attrs.get("id")) for n in main.children] == [("div", "banner"), ("div", "page")], "#main children"
     assert "hidden" in dock.classes, "aside#dock starts hidden"
-    assert "hidden" in modal.classes, "the legacy div#modal starts hidden"
     assert toasts.attrs.get("role") == "status" and toasts.attrs.get("aria-live") == "polite", "div#toasts is a polite live region"
     assert bnav.attrs.get("aria-label"), "nav#bnav needs an aria-label"
     last_non_script = max(i for i, n in enumerate(body.children) if n.tag not in ("script", "noscript"))
     first_script = min(i for i, n in enumerate(body.children) if n.tag == "script")
     assert first_script > last_non_script, "scripts belong at the end of <body>, after the skeleton"
+
+
+def test_the_legacy_modal_is_gone_from_the_page_the_styles_and_the_scripts():
+    """v0.5.13: the diff / PR viewer, the import and batch forms are <dialog> sheets built with el(); nothing draws into a div#modal, no rule styles it, no script opens it."""
+    assert 'id="modal"' not in INDEX.read_text(encoding="utf-8"), "app/static/index.html still has a div#modal"
+    for name in ("style.css", "shell.css", "pages.css", "term.css", "charts.css"):
+        css = (STATIC / name).read_text(encoding="utf-8")
+        assert not re.search(r"#modal\s*[{,.]|\.modal-box", css), f"app/static/{name} still styles the legacy #modal"
+    legacy = re.compile(r"""['"]#modal['"]|getElementById\(['"]modal['"]\)|\bcloseModal\b|\bmodal-box\b""")
+    for js in sorted(STATIC.glob("*.js")) + sorted((STATIC / "pages").glob("*.js")):
+        assert not legacy.search(js.read_text(encoding="utf-8")), f"{js.relative_to(STATIC)} still reaches for the legacy #modal"
 
 
 def test_index_scripts_follow_the_contract_order_exactly():
@@ -665,7 +675,8 @@ def test_index_dialogs_are_empty_in_the_html():
 # ---------- demo fixtures (app/static/demo/*.json, read by api() when ?demo=1 or ccboard:demo=1) ----------
 
 DEMO_DIR = STATIC / "demo"
-DEMO_FILES = ("state.json", "search.json", "tree.json", "file.json", "series.json", "series_events.json", "usage_summary.json", "memory.json")
+DEMO_FILES = ("state.json", "search.json", "tree.json", "file.json", "series.json", "series_events.json", "usage_summary.json", "memory.json",
+              "agents.json")
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+--[A-Za-z0-9_-]+--[A-Za-z0-9_-]+$")
 KANBAN = ("backlog", "in_progress", "needs_you", "done", "pr", "merged")
 DEMO_HEADERS = {"Tailscale-User-Login": "alice@example.com"}

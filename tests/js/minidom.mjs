@@ -150,7 +150,7 @@ export function installDom(w) {
   const main = mk('main', 'main');
   main.append(mk('div', 'banner'), mk('div', 'page'));
   body.append(mk('header', 'topbar'), mk('aside', 'sidebar'), main, mk('aside', 'dock', 'hidden'), mk('nav', 'bnav'),
-    mk('dialog', 'drawer'), mk('dialog', 'sheet'), mk('dialog', 'helpdlg'), mk('div', 'modal', 'hidden'), mk('div', 'toasts'));
+    mk('dialog', 'drawer'), mk('dialog', 'sheet'), mk('dialog', 'helpdlg'), mk('div', 'toasts'));
   return { El, body, page: () => doc.querySelector('#page') };
 }
 

@@ -155,7 +155,7 @@ function installDom(w) {
   const main = mk('main', 'main');
   main.append(mk('div', 'banner'), mk('div', 'page'));
   body.append(mk('header', 'topbar'), mk('aside', 'sidebar'), main, mk('aside', 'dock', 'hidden'), mk('nav', 'bnav'),
-    mk('dialog', 'drawer'), mk('dialog', 'sheet'), mk('dialog', 'helpdlg'), mk('div', 'modal', 'hidden'), mk('div', 'toasts'));
+    mk('dialog', 'drawer'), mk('dialog', 'sheet'), mk('dialog', 'helpdlg'), mk('div', 'toasts'));
   return { El, body, page: () => doc.querySelector('#page') };
 }
 
@@ -840,7 +840,7 @@ test('settings > Agents carries the login button: it leads to Settings > Account
   await tick();
   assert.equal(w.location.hash, '#/settings?sec=accounts');
   assert.ok(!calls(w).some((c) => c.path === '/api/claude/login'), 'the old endpoint is not used by the page any more');
-  assert.equal(w.get('ui.modal'), false);
+  assert.ok(!w.get('ui.modal'), 'the old ui.modal flag is gone with the #modal');
   // logged in: Log out instead
   w.ctx.__st = fakeState();
   w.run('state = __st; updateCurrentPage(state)');

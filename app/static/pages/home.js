@@ -3,7 +3,7 @@
    since the tab was last looked at), the inbox section (Inbox.section, only when something needs you), the schedules strip, the project
    blocks (grouped by project, state or agent; projects idle for a week fold into one 'older' block) and the usage card (Widgets.usageCard).
    The rows are the shared sessionCard from pages/agents.js in its rich form; the keyed lists keep their nodes across polls.
-   Also home to the banner (its Log in goes to Settings > Accounts: accountLogin, pages/agents.js), logout, the legacy #modal (closeModal / openTaskModal), the keyboard selection (Pages) and the v0.4
+   Also home to the banner (its Log in goes to Settings > Accounts: accountLogin, pages/agents.js), logout, the diff and PR sheet (openTaskModal), the keyboard selection (Pages) and the v0.4
    renderers other pages still import (renderTasks, renderJobs, openTaskModal, inboxItems).
    The header, usage pills, nav and the render() state consumer are in shell.js; the notify panel and nodes strip in pages/settings.js. */
 'use strict';
@@ -73,15 +73,14 @@ function renderBanner() {
 
 
 
+/* The diff and pull request of a task card, in the sheet (v0.5.13: it was the legacy #modal): the commits and files, the diff one side at a time (a segmented control),
+   then the pull request (Describe with Claude, Create PR, and for a card that has one, Merge). The diff wants room, so the sheet is wider than the forms. */
 function openTaskModal(t) {
-  ui.modal = true;
-  const m = $('#modal');
-  m.textContent = '';
-  const status = el('div', { class: 'dim' });
+  const status = el('div', { class: 'dim form-status tm-status', role: 'status', 'aria-live': 'polite' });
   const diffBox = el('div', { class: 'diffbox' });
-  const commits = el('div', { class: 'dim' });
-  const files = el('div', { class: 'dim' });
-  const tabs = el('div', { class: 'row' });
+  const commits = el('div', { class: 'dim tm-line' });
+  const files = el('div', { class: 'dim tm-line' });
+  const tabs = el('div', { class: 'tm-tabs' });
   const title = el('input', { type: 'text', placeholder: 'PR title', maxlength: 250, value: t.title });
   const body = el('textarea', { placeholder: 'PR body (Markdown)' });
   let diff = null;
@@ -102,40 +101,74 @@ function openTaskModal(t) {
       commits.textContent = diff.commits.length ? `Commits (${diff.commits.length}): ` + diff.commits.slice(0, 20).join(' · ') : 'No commits on the branch yet.';
       files.textContent = (diff.files.length ? `Files: ${diff.files.join(', ')}` : '') + (diff.files_uncommitted.length ? `  ·  uncommitted: ${diff.files_uncommitted.join(', ')}` : '');
       tabs.textContent = '';
-      tabs.append(el('button', { onclick: () => show('committed'), text: `Committed vs ${diff.base}` }),
-        el('button', { onclick: () => show('uncommitted'), text: `Uncommitted (${diff.files_uncommitted.length})` }));
+      tabs.append(diffSideControl([['committed', `Committed vs ${diff.base}`], ['uncommitted', `Uncommitted (${diff.files_uncommitted.length})`]], 'committed', show));
       show('committed');
     } catch (e) { status.textContent = e.message; }
   };
-  const describeBtn = el('button', { onclick: async () => {
+  const describeBtn = el('button', { type: 'button', onclick: async () => {
     status.textContent = 'asking Claude for a title and description (claude -p, one turn)…'; describeBtn.disabled = true;
     try { const r = await api('POST', `/api/tasks/${t.id}/describe`); title.value = r.title; body.value = r.body; status.textContent = 'description ready; edit and create the PR'; }
     catch (e) { status.textContent = e.message; } finally { describeBtn.disabled = false; }
   }, text: 'Describe with Claude' });
-  const prBtn = el('button', { class: 'primary', onclick: async () => {
+  const prBtn = el('button', { class: 'primary', type: 'button', onclick: async () => {
     status.textContent = 'pushing and creating the PR…'; prBtn.disabled = true;
-    try { const r = await api('POST', `/api/tasks/${t.id}/pr`, { title: title.value.trim(), body: body.value }); status.textContent = (r.existing ? 'PR already existed: ' : 'PR created: ') + r.url; t.pr_url = r.url; t.pr_number = r.number; await poll(true); render(true); }
-    catch (e) { status.textContent = e.message; } finally { prBtn.disabled = false; }
+    try {
+      const r = await api('POST', `/api/tasks/${t.id}/pr`, { title: title.value.trim(), body: body.value });
+      status.textContent = (r.existing ? 'PR already existed: ' : 'PR created: ') + r.url; t.pr_url = r.url; t.pr_number = r.number;
+      mergeRow.classList.remove('hidden');
+      await poll(true); render(true);
+    } catch (e) { status.textContent = e.message; } finally { prBtn.disabled = false; }
   }, text: t.pr_url ? 'Update PR (recreate)' : 'Create PR' });
-  const mergeBtn = el('button', { class: 'danger', onclick: async () => {
+  // Merge is destructive: red-outlined, two taps (confirmButton repaints the page, not a sheet, so the arming is local)
+  const mergeRow = el('span', { class: 'tm-merge' + (t.pr_number ? '' : ' hidden') });
+  const doMerge = async () => {
     status.textContent = 'merging…';
     const run = async (force) => api('POST', `/api/tasks/${t.id}/merge`, { method: 'squash', force });
-    try { await run(false); status.textContent = 'merged and archived'; closeModal(); await poll(true); }
+    try { await run(false); status.textContent = 'merged and archived'; closeSheet(); await poll(true); }
     catch (e) {
-      if (/uncommitted/.test(e.message) && window.confirm(e.message + '\n\nDiscard them and merge?')) { try { await run(true); closeModal(); await poll(true); } catch (e2) { status.textContent = e2.message; } }
+      if (/uncommitted/.test(e.message) && window.confirm(e.message + '\n\nDiscard them and merge?')) { try { await run(true); closeSheet(); await poll(true); } catch (e2) { status.textContent = e2.message; } }
       else status.textContent = e.message;
     }
-  }, text: 'Merge (squash) & archive' });
-  m.append(el('div', { class: 'modal-box wide' },
-    el('div', { class: 'row head' }, el('h2', { text: t.title }), el('span', { class: 'dim', text: `${t.project}/${t.repo} · ${t.branch}` }),
-      t.pr_url ? el('a', { class: 'btn', href: t.pr_url, target: '_blank', rel: 'noopener', text: `PR #${t.pr_number}` }) : null),
-    commits, files, tabs, diffBox,
-    el('div', { class: 'form' }, el('label', { text: 'Pull request' }), title, body,
-      el('div', { class: 'row' }, describeBtn, prBtn, t.pr_number ? mergeBtn : null)),
-    status,
-    el('div', { class: 'row' }, el('button', { onclick: closeModal, text: 'Close' }))));
-  m.classList.remove('hidden');
+  };
+  const paintMerge = (armed) => {
+    mergeRow.textContent = '';
+    if (!armed) mergeRow.append(el('button', { class: 'danger', type: 'button', title: 'Merge (squash) & archive (tap again to confirm)', onclick: () => paintMerge(true), text: 'Merge (squash) & archive' }));
+    else mergeRow.append(el('button', { class: 'danger confirm', type: 'button', onclick: doMerge, text: 'Confirm merge' }), el('button', { type: 'button', onclick: () => paintMerge(false), text: 'Cancel' }));
+  };
+  paintMerge(false);
+  const sec = (label, ...kids) => el('section', { class: 'tm-sec' }, el('h3', { class: 'tm-k', text: label }), ...kids);
+  openSheet({ title: t.title, wide: true, body: [
+    el('div', { class: 'tm-meta' }, el('span', { class: 'dim mono', text: `${t.project}/${t.repo} · ${t.branch}` }),
+      t.pr_url ? el('a', { class: 'btn small', href: t.pr_url, target: '_blank', rel: 'noopener', text: `PR #${t.pr_number}` }) : null),
+    sec('Changes', commits, files),
+    sec('Diff', tabs, diffBox),
+    sec('Pull request', el('div', { class: 'form tm-form' }, field('Title', title), field('Description', body),
+      el('div', { class: 'tm-actions' }, describeBtn, prBtn, mergeRow)), status)] });
   load();
+}
+
+/* Two or three exclusive sides of one thing as a segmented control (one track, aria-pressed, arrow keys): the diff's committed / uncommitted switch. */
+function diffSideControl(items, initial, onPick) {
+  const node = el('div', { class: 'seg-ctl tm-seg', role: 'group', 'aria-label': 'Diff' });
+  const btns = new Map();
+  let cur = initial;
+  const set = (v, focus) => {
+    cur = v;
+    for (const [k, b] of btns) b.setAttribute('aria-pressed', k === cur ? 'true' : 'false');
+    if (focus) btns.get(v).focus();
+    onPick(v);
+  };
+  for (const [v, text] of items) {
+    btns.set(v, el('button', { class: 'seg-btn', type: 'button', 'data-side': v, 'aria-pressed': v === cur ? 'true' : 'false', text, onclick: () => set(v), onkeydown: (e) => {
+      const i = items.findIndex(([x]) => x === cur);
+      const to = e.key === 'ArrowRight' ? items[(i + 1) % items.length][0] : e.key === 'ArrowLeft' ? items[(i + items.length - 1) % items.length][0] : null;
+      if (to === null) return;
+      e.preventDefault();
+      set(to, true);
+    } }));
+    node.append(btns.get(v));
+  }
+  return node;
 }
 
 let homeLaneBar = null;                                            // the dispatch bar of #/tasks (dnd.js): one node kept across repaints
@@ -451,8 +484,6 @@ async function logout() {
   catch (e) { setError(e.message); }
   await poll(true);
 }
-
-function closeModal() { ui.modal = false; $('#modal').classList.add('hidden'); }
 
 /* One-time hint to install the board as an app (shown in a browser tab only, until dismissed: ccboard:hint:install). */
 const INSTALL_HINT_KEY = 'ccboard:hint:install';
@@ -821,25 +852,20 @@ function homeToggleCollapsed(key) {
 
 /* ---------- blocks, groups and rows ---------- */
 
-/* Where the block's + session starts one: the repo (or project folder) of the project's most recent session, else its only repo, else the project
-   folder, else its first repo. null when the project has nowhere to run one. */
+/* Where the block's + session starts one (components.js launchPlace): the repo (or project folder) of the project's most recent session, else its only repo, else the
+   project folder, else its first repo. null when the project has nowhere to run one. */
 function homeLaunchTarget(p) {
-  const ok = (p.repos || []).filter((x) => x.state === 'ok' || x.state === 'unknown');
-  const make = (r) => ({ r, label: r === p.root ? `${p.name} · project folder` : `${p.name}/${r.name}` });
-  let best = null;
-  let at = -1;
-  for (const r of [p.root, ...ok]) for (const s of ((r && r.sessions) || [])) { const t = sessionActivity(s); if (t > at) { at = t; best = r; } }
-  if (best) return make(best);
-  if (ok.length === 1) return make(ok[0]);
-  if (p.root) return make(p.root);
-  return ok[0] ? make(ok[0]) : null;
+  const hit = launchPlace(p, 'session');
+  return hit ? { r: hit.repo, label: hit.repo === p.root ? `${p.name} · project folder` : `${p.name}/${hit.repo.name}` } : null;
 }
 
-/* The existing launcher form in the sheet (Shell.showForm closes the sheet on its Cancel and once the launch worked). */
-function homeNewSession(p, r, label) {
-  if (typeof Shell !== 'undefined' && Shell && typeof Shell.showForm === 'function') { Shell.showForm('session', { p, r, label }); return; }
-  ui.openForm = 'sheet';
-  openSheet({ title: `New session · ${label}`, body: sessionForm(p, r), onClose: () => { if (ui.openForm === 'sheet') ui.openForm = null; } });
+/* A new session in a place: the launcher sheet (launch(), components.js) with the project and the repo filled in, so + session is one tap to Start & open. */
+function homeNewSession(p, r) { return launch({ mode: 'session', project: p, repo: r }); }
+
+/* + task on a project block: the same sheet in task mode, in the repo a task went to last, else where the project works most. */
+function homeNewTask(p) {
+  const hit = p ? launchPlace(p, 'task') : null;
+  return hit ? launch({ mode: 'task', project: p, repo: hit.repo }) : false;
 }
 
 function homeCreate(kind) {
@@ -864,7 +890,7 @@ function homeGroupNode(g, kind, getProject) {
   add.addEventListener('click', () => {
     const r = cur.g.repo;
     const p = getProject();
-    if (r && p) homeNewSession(p, r, cur.g.folder ? `${p.name} · project folder` : `${p.name}/${r.name}`);
+    if (r && p) homeNewSession(p, r);
   });
   const rows = makeKeyedList(list, { key: (s) => s.tmux, create: (s) => sessionCard(s, homeRowOpts(kind)), patch: (n, s) => n.ccPatch(s) });
   node.ccPatch = (g2) => {
@@ -894,14 +920,16 @@ function homeBlockNode(b) {
   const dot = el('span', { class: 'dot hidden' });
   const cost = el('span', { class: 'pb-cost dim mono' });
   const add = b.kind === 'project' ? el('button', { class: 'small pb-add', type: 'button', title: 'start a session in this project', text: '+ session' }) : null;
+  const addTask = b.kind === 'project' ? el('button', { class: 'small pb-add-task', type: 'button', title: 'new task in this project: now, later or scheduled', text: '+ task' }) : null;
   const body = el('div', { class: 'pb-body' });
   const node = el('section', { class: 'pblock pb-' + b.kind, 'data-block': b.key, 'data-project': b.kind === 'project' ? b.name : null },
-    el('header', { class: 'pb-head' }, toggle, lead, name, count, git, dot, cost, add), body);
+    el('header', { class: 'pb-head' }, toggle, lead, name, count, git, dot, cost, add, addTask), body);
   const cur = { b };
   const key = b.kind === 'project' ? b.name : b.key;
   toggle.addEventListener('click', () => homeToggleCollapsed(key));
   const project = () => cur.b.project || null;                                  // the newest payload's project object, not the one the node was built with
-  if (add) add.addEventListener('click', () => { const p = project(); const t = p && homeLaunchTarget(p); if (t) homeNewSession(p, t.r, t.label); });
+  if (add) add.addEventListener('click', () => { const p = project(); const t = p && homeLaunchTarget(p); if (t) homeNewSession(p, t.r); });
+  if (addTask) addTask.addEventListener('click', () => homeNewTask(project()));
   const groups = makeKeyedList(body, { key: (g) => 'g:' + g.key, create: (g) => homeGroupNode(g, b.kind, project), patch: (n, g) => n.ccPatch(g) });
   node.ccPatch = (b2) => {
     cur.b = b2;
@@ -919,6 +947,7 @@ function homeBlockNode(b) {
     dot.classList.toggle('dirty', !!(gr && gr.dirty));
     setTextIfChanged(cost, p ? homeCostText(p) : '');
     if (add) add.classList.toggle('hidden', !(p && homeLaunchTarget(p)));
+    if (addTask) addTask.classList.toggle('hidden', !(p && launchPlace(p, 'task')));
     body.classList.toggle('hidden', !!b2.collapsed);
     groups.update(b2.collapsed ? [] : b2.groups);                              // a collapsed block drops its rows (and their tail subscriptions)
   };

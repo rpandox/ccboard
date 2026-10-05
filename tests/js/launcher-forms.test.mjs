@@ -2,6 +2,8 @@
 // fine pointer, the dialog (not the close button) taking the focus on a phone, the failed launch that says why NEXT TO the field (the sheet
 // covers the banner), the schedule form (labels above, Advanced collapsed, remembered per repo), the add-repo form, the back button in the sheet
 // header, and the list tools that left the footer. Real core.js, components.js, launcher.js, router.js, widgets.js and shell.js on minidom's DOM.
+// v0.5.13: + session and + task now open the launcher sheet (launch() -> openLauncher; launcher.test.mjs tests it). This file pins the OLD forms, sessionForm / taskForm / jobForm, which stay
+// working for the code and the tests that call them, so fWorld sends the last hop of the create route (Shell.launchAt) to Shell.showForm, the way Shell.openCreate reached them before.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { makeWorld, plain } from './harness.mjs';
@@ -30,6 +32,7 @@ function fWorld({ answers = {}, coarse = false, forceCoarse = false } = {}) {
   if (forceCoarse) w.document.documentElement.classList.add('force-coarse');
   for (const f of ['core.js', 'components.js', 'launcher.js', 'router.js', 'pages/widgets.js', 'shell.js']) w.load(f);
   w.ctx.__tabs = tabs; w.ctx.__calls = []; w.ctx.__errors = []; w.ctx.__answers = answers; w.ctx.__polls = 0; w.ctx.__st = STATE(); w.ctx.__nav = [];
+  w.run('Shell.launchAt = (kind, e) => Shell.showForm(kind, e);');          // the old forms, not the launcher sheet (see the header)
   w.run(`
     api = async (method, path, body) => {
       __calls.push({ method, path, body });

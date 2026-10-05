@@ -1,0 +1,851 @@
+{
+ "agents": {
+  "claude": {
+   "name": "claude",
+   "label": "Claude",
+   "glyph": "◆",
+   "installed": true,
+   "version": "2.1.288",
+   "auth": {
+    "installed": true,
+    "version": "2.1.288",
+    "loggedIn": true,
+    "authMethod": "claude.ai",
+    "email": "demo@example.com",
+    "subscriptionType": "max"
+   },
+   "hooks": {
+    "installed": true
+   },
+   "options": [
+    {
+     "key": "launcher",
+     "label": "Start",
+     "kind": "select",
+     "choices": [
+      "new",
+      "resume",
+      "continue",
+      "from_pr"
+     ],
+     "default": "new",
+     "help": "new: a fresh session. resume: pick up an earlier one (--resume, blank id = the picker). continue: the latest in this folder (--continue). from_pr: the session linked to a pull request (--from-pr).",
+     "group": "basic",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "resume_id",
+     "label": "Session to resume",
+     "kind": "text",
+     "choices": null,
+     "default": null,
+     "help": "An id (UUID); blank opens Claude's picker.",
+     "group": "basic",
+     "danger": false,
+     "when": {
+      "launcher": [
+       "resume"
+      ]
+     }
+    },
+    {
+     "key": "from_pr",
+     "label": "Pull request",
+     "kind": "text",
+     "choices": null,
+     "default": null,
+     "help": "--from-pr: a PR number (123 or #123) or its URL.",
+     "group": "basic",
+     "danger": false,
+     "when": {
+      "launcher": [
+       "from_pr"
+      ]
+     }
+    },
+    {
+     "key": "name",
+     "label": "Session name",
+     "kind": "text",
+     "choices": null,
+     "default": null,
+     "help": "--name, and the board's own label. Blank takes the next free one (s1, s2...).",
+     "group": "basic",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "model",
+     "label": "Model",
+     "kind": "combo",
+     "choices": [
+      "opus",
+      "fable",
+      "sonnet",
+      "haiku",
+      "opusplan",
+      "best",
+      "opus[1m]",
+      "sonnet[1m]"
+     ],
+     "default": "opus",
+     "help": "An alias or a full model id; add [1m] for the 1M-context variant. opus, fable, sonnet and haiku lead; opusplan, best and the [1m] variants follow.",
+     "group": "basic",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "effort",
+     "label": "Effort",
+     "kind": "select",
+     "choices": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+     ],
+     "default": "high",
+     "help": "--effort. ultracode is not a flag on this box (V19): it is applied after start with /effort ultracode on.",
+     "group": "basic",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "fast",
+     "label": "Fast mode",
+     "kind": "bool",
+     "choices": null,
+     "default": false,
+     "help": "There is no CLI flag: the board sends /fast after the session starts.",
+     "group": "basic",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "permission_mode",
+     "label": "Permission mode",
+     "kind": "select",
+     "choices": [
+      "manual",
+      "acceptEdits",
+      "plan",
+      "auto",
+      "dontAsk",
+      "bypassPermissions"
+     ],
+     "default": null,
+     "help": "--permission-mode. bypassPermissions skips every prompt: use the bypass acknowledgement, never for tasks.",
+     "group": "basic",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "prompt",
+     "label": "First prompt",
+     "kind": "textarea",
+     "choices": null,
+     "default": null,
+     "help": "Typed as the first message of a new session (8000 characters at most).",
+     "group": "basic",
+     "danger": false,
+     "when": {
+      "launcher": [
+       "new"
+      ]
+     }
+    },
+    {
+     "key": "bypass",
+     "label": "Skip all permission prompts",
+     "kind": "bool",
+     "choices": null,
+     "default": false,
+     "help": "--dangerously-skip-permissions. Needs an explicit acknowledgement; never offered for tasks, dispatch or scheduled runs, and never stored for resume.",
+     "group": "advanced",
+     "danger": true,
+     "when": null
+    },
+    {
+     "key": "allowed_tools",
+     "label": "Allowed tools",
+     "kind": "textarea",
+     "choices": null,
+     "default": null,
+     "help": "--allowedTools: one pattern per line or comma separated, e.g. Bash(git *).",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "disallowed_tools",
+     "label": "Disallowed tools",
+     "kind": "textarea",
+     "choices": null,
+     "default": null,
+     "help": "--disallowedTools, same format.",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "tools",
+     "label": "Available tools",
+     "kind": "textarea",
+     "choices": null,
+     "default": null,
+     "help": "--tools: the built-in tools the session has at all, comma or one per line (Bash, Edit, Read).",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "append_system_prompt",
+     "label": "Append to system prompt",
+     "kind": "textarea",
+     "choices": null,
+     "default": null,
+     "help": "--append-system-prompt (4000 characters at most).",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "agent_name",
+     "label": "Agent",
+     "kind": "text",
+     "choices": null,
+     "default": null,
+     "help": "--agent: run as one of your subagent definitions.",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "fallback_model",
+     "label": "Fallback model",
+     "kind": "text",
+     "choices": null,
+     "default": null,
+     "help": "--fallback-model: up to 3 models, comma separated, tried when the main one is overloaded.",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "autocompact",
+     "label": "Auto-compact",
+     "kind": "combo",
+     "choices": [
+      "auto"
+     ],
+     "default": null,
+     "help": "--autocompact: auto, or the context size (a number such as 150000) at which the conversation is compacted. Blank = Claude's own setting.",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "worktree",
+     "label": "Start in a new git worktree",
+     "kind": "bool",
+     "choices": null,
+     "default": false,
+     "help": "claude --worktree <name>: a branch and folder of its own under .claude/worktrees.",
+     "group": "advanced",
+     "danger": false,
+     "when": {
+      "launcher": [
+       "new"
+      ]
+     }
+    },
+    {
+     "key": "worktree_name",
+     "label": "Worktree name",
+     "kind": "text",
+     "choices": null,
+     "default": null,
+     "help": "Letters, digits, '.', '_' and '-'. Blank: the session name plus a short suffix.",
+     "group": "advanced",
+     "danger": false,
+     "when": {
+      "worktree": true
+     }
+    },
+    {
+     "key": "fork_session",
+     "label": "Fork instead of continuing",
+     "kind": "bool",
+     "choices": null,
+     "default": false,
+     "help": "--fork-session: a copy of the old conversation under a new id; the original stays as it was.",
+     "group": "advanced",
+     "danger": false,
+     "when": {
+      "launcher": [
+       "resume",
+       "continue"
+      ]
+     }
+    },
+    {
+     "key": "add_dirs",
+     "label": "Extra directories",
+     "kind": "dirs",
+     "choices": null,
+     "default": null,
+     "help": "--add-dir: sibling repos (project/repo) the session may read and edit.",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "devcontainer",
+     "label": "Run in the devcontainer",
+     "kind": "bool",
+     "choices": null,
+     "default": false,
+     "help": "devcontainer up, then claude inside it (its own login).",
+     "group": "advanced",
+     "danger": false,
+     "when": {
+      "repo.devcontainer": true
+     }
+    },
+    {
+     "key": "mcp_config",
+     "label": "MCP config file",
+     "kind": "text",
+     "choices": null,
+     "default": null,
+     "help": "--mcp-config: the path of a JSON file inside the projects folder or the Claude config folder.",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "extra",
+     "label": "Extra arguments",
+     "kind": "args",
+     "choices": null,
+     "default": null,
+     "help": "Raw CLI arguments. --settings, --setting-sources and --permission-prompt* are rejected: use the controls.",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    }
+   ],
+   "permission_modes": [
+    "manual",
+    "acceptEdits",
+    "plan",
+    "auto",
+    "dontAsk",
+    "bypassPermissions"
+   ],
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "models": [
+    "opus",
+    "fable",
+    "sonnet",
+    "haiku",
+    "opusplan",
+    "best",
+    "opus[1m]",
+    "sonnet[1m]"
+   ],
+   "reasoning_by_model": {},
+   "capabilities": {
+    "ultracode_flag": false
+   },
+   "slash": {
+    "clear": {
+     "cmd": "/clear",
+     "label": "Clear",
+     "arg": false,
+     "read": false,
+     "verified": false,
+     "weight": 155,
+     "destructive": true
+    },
+    "compact": {
+     "cmd": "/compact",
+     "label": "Compact",
+     "arg": false,
+     "read": false,
+     "verified": false,
+     "weight": 120,
+     "destructive": false
+    },
+    "usage": {
+     "cmd": "/usage",
+     "label": "Usage",
+     "arg": false,
+     "read": true,
+     "verified": false,
+     "weight": 100,
+     "destructive": false
+    },
+    "effort": {
+     "cmd": "/effort",
+     "label": "Effort",
+     "arg": true,
+     "read": false,
+     "verified": false,
+     "weight": 58,
+     "destructive": false
+    },
+    "model": {
+     "cmd": "/model",
+     "label": "Model",
+     "arg": true,
+     "read": false,
+     "verified": false,
+     "weight": 39,
+     "destructive": false
+    },
+    "rename": {
+     "cmd": "/rename",
+     "label": "Rename",
+     "arg": true,
+     "read": false,
+     "verified": false,
+     "weight": 10,
+     "destructive": false
+    },
+    "context": {
+     "cmd": "/context",
+     "label": "Context",
+     "arg": false,
+     "read": true,
+     "verified": false,
+     "weight": 9,
+     "destructive": false
+    },
+    "status": {
+     "cmd": "/status",
+     "label": "Status",
+     "arg": false,
+     "read": true,
+     "verified": false,
+     "weight": 3,
+     "destructive": false
+    },
+    "cost": {
+     "cmd": "/cost",
+     "label": "Cost",
+     "arg": false,
+     "read": true,
+     "verified": false,
+     "weight": 0,
+     "destructive": false
+    },
+    "fast": {
+     "cmd": "/fast",
+     "label": "Fast",
+     "arg": false,
+     "read": false,
+     "verified": false,
+     "weight": 0,
+     "destructive": false
+    }
+   }
+  },
+  "codex": {
+   "name": "codex",
+   "label": "Codex",
+   "glyph": "◇",
+   "installed": true,
+   "version": "0.58.0",
+   "auth": {
+    "installed": true,
+    "version": "0.58.0",
+    "loggedIn": true,
+    "authMethod": "chatgpt"
+   },
+   "hooks": {
+    "installed": true,
+    "trust": "review"
+   },
+   "options": [
+    {
+     "key": "launcher",
+     "label": "Start",
+     "kind": "select",
+     "choices": [
+      "new",
+      "resume",
+      "continue",
+      "fork"
+     ],
+     "default": "new",
+     "help": "new: a fresh session. resume: an earlier one by id or name (blank = Codex's picker). continue: the most recent in this folder (resume --last). fork: a copy of an earlier one (codex fork).",
+     "group": "basic",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "resume_id",
+     "label": "Session to resume or fork",
+     "kind": "text",
+     "choices": null,
+     "default": null,
+     "help": "An id (UUID) or the name Codex shows; blank opens Codex's picker.",
+     "group": "basic",
+     "danger": false,
+     "when": {
+      "launcher": [
+       "resume",
+       "fork"
+      ]
+     }
+    },
+    {
+     "key": "name",
+     "label": "Session name",
+     "kind": "text",
+     "choices": null,
+     "default": null,
+     "help": "The board's own label (and the tmux session name). Codex has no --name: it is not passed on.",
+     "group": "basic",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "model",
+     "label": "Model",
+     "kind": "combo",
+     "choices": [
+      "gpt-5.6-terra",
+      "gpt-5.6-sol",
+      "gpt-5.6-luna",
+      "gpt-5.5",
+      "codex-auto-review"
+     ],
+     "default": null,
+     "help": "-m. A slug from `codex debug models` (cached for an hour) or any model id; empty = Codex's own default.",
+     "group": "basic",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "reasoning_effort",
+     "label": "Reasoning",
+     "kind": "select",
+     "choices": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+     ],
+     "default": null,
+     "help": "-c model_reasoning_effort=...; the levels a model accepts come from the catalogue (reasoning_by_model). Sent as `reasoning` or `reasoning_effort`.",
+     "group": "basic",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "mode",
+     "label": "Mode",
+     "kind": "select",
+     "choices": [
+      "default",
+      "auto",
+      "read-only",
+      "bypass",
+      "custom"
+     ],
+     "default": "default",
+     "help": "default: -s workspace-write -a on-request. auto: automatic approval review. read-only: -s read-only. bypass: no approvals and no sandbox (needs the acknowledgement, never for tasks). custom: choose the sandbox and approval below.",
+     "group": "basic",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "sandbox",
+     "label": "Sandbox",
+     "kind": "select",
+     "choices": [
+      "read-only",
+      "workspace-write",
+      "danger-full-access"
+     ],
+     "default": null,
+     "help": "-s. danger-full-access skips the sandbox like bypass: it needs the bypass acknowledgement and is interactive only.",
+     "group": "basic",
+     "danger": false,
+     "when": {
+      "mode": [
+       "custom"
+      ]
+     }
+    },
+    {
+     "key": "approval",
+     "label": "Approval policy",
+     "kind": "select",
+     "choices": [
+      "untrusted",
+      "on-request",
+      "never"
+     ],
+     "default": null,
+     "help": "-a. on-failure and untrusted only where this Codex has them.",
+     "group": "basic",
+     "danger": false,
+     "when": {
+      "mode": [
+       "custom"
+      ]
+     }
+    },
+    {
+     "key": "prompt",
+     "label": "First prompt",
+     "kind": "textarea",
+     "choices": null,
+     "default": null,
+     "help": "Typed as the first message of a new session (8000 characters at most).",
+     "group": "basic",
+     "danger": false,
+     "when": {
+      "launcher": [
+       "new"
+      ]
+     }
+    },
+    {
+     "key": "search",
+     "label": "Live web search",
+     "kind": "bool",
+     "choices": null,
+     "default": false,
+     "help": "--search.",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "bypass",
+     "label": "Skip approvals and the sandbox",
+     "kind": "bool",
+     "choices": null,
+     "default": false,
+     "help": "--dangerously-bypass-approvals-and-sandbox. Needs an explicit acknowledgement; never offered for tasks, dispatch or scheduled runs, and never stored for resume.",
+     "group": "advanced",
+     "danger": true,
+     "when": null
+    },
+    {
+     "key": "permission_mode",
+     "label": "Permission mode (Claude's words)",
+     "kind": "select",
+     "choices": [
+      "default",
+      "acceptEdits",
+      "plan",
+      "auto",
+      "dontAsk",
+      "bypassPermissions"
+     ],
+     "default": null,
+     "help": "The same choice as Mode in Claude's words: default and acceptEdits: -s workspace-write -a on-request. plan: -s read-only. dontAsk: -a never. auto: automatic approval review. bypassPermissions needs the bypass acknowledgement, never for tasks. Mode wins when both are sent.",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "add_dirs",
+     "label": "Extra directories",
+     "kind": "dirs",
+     "choices": null,
+     "default": null,
+     "help": "--add-dir: sibling repos (project/repo) the session may write.",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "worktree",
+     "label": "Start in a new git worktree",
+     "kind": "bool",
+     "choices": null,
+     "default": false,
+     "help": "ccboard runs `git worktree add -b worktree-<slug> .ccboard/worktrees/<slug>` and starts Codex in it; Codex has no native worktree flag here.",
+     "group": "advanced",
+     "danger": false,
+     "when": {
+      "launcher": [
+       "new"
+      ]
+     }
+    },
+    {
+     "key": "worktree_name",
+     "label": "Worktree name",
+     "kind": "text",
+     "choices": null,
+     "default": null,
+     "help": "Letters, digits, '.', '_' and '-'. Blank: the session name.",
+     "group": "advanced",
+     "danger": false,
+     "when": {
+      "worktree": true
+     }
+    },
+    {
+     "key": "config",
+     "label": "Config overrides",
+     "kind": "textarea",
+     "choices": null,
+     "default": null,
+     "help": "-c: one key=value per line (key: letters, digits, '_' and '.'; 20 lines at most). Keys the launcher owns (model, sandbox, approval, profile, hooks, MCP servers, providers) are refused.",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "profile",
+     "label": "Profile",
+     "kind": "text",
+     "choices": null,
+     "default": null,
+     "help": "-p: a profile (config.toml [profiles.<name>] or $CODEX_HOME/<name>.config.toml). Unknown names only warn.",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "no_alt_screen",
+     "label": "Keep scrollback (no alternate screen)",
+     "kind": "bool",
+     "choices": null,
+     "default": true,
+     "help": "--no-alt-screen: lets tmux copy-mode and the board's scroll see the whole conversation.",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "extra",
+     "label": "Extra arguments",
+     "kind": "args",
+     "choices": null,
+     "default": null,
+     "help": "Raw CLI arguments. Flags the board sets itself (-c, -p, -s, -a, -m, --enable, --remote*, bypass spellings) are rejected.",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    }
+   ],
+   "permission_modes": [
+    "default",
+    "acceptEdits",
+    "plan",
+    "auto",
+    "dontAsk",
+    "bypassPermissions"
+   ],
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "models": [
+    "gpt-5.6-terra",
+    "gpt-5.6-sol",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "codex-auto-review"
+   ],
+   "reasoning_by_model": {
+    "gpt-5.6-terra": [
+     "low",
+     "medium",
+     "high",
+     "xhigh",
+     "max"
+    ],
+    "gpt-5.6-sol": [
+     "low",
+     "medium",
+     "high",
+     "xhigh",
+     "max"
+    ],
+    "gpt-5.6-luna": [
+     "low",
+     "medium",
+     "high",
+     "xhigh",
+     "max"
+    ],
+    "gpt-5.5": [
+     "low",
+     "medium",
+     "high",
+     "xhigh"
+    ],
+    "codex-auto-review": [
+     "low",
+     "medium",
+     "high",
+     "xhigh",
+     "max"
+    ]
+   },
+   "capabilities": {
+    "fork": true,
+    "no_daemon": false,
+    "approve_for_me": false,
+    "worktree": false,
+    "yolo": false,
+    "bypass_approvals": true,
+    "hook_trust_flag": true,
+    "no_alt_screen": true,
+    "search": true,
+    "add_dir": true,
+    "cd": true,
+    "profile": true,
+    "config": true,
+    "model": true,
+    "sandbox": true,
+    "ask_for_approval": true,
+    "approval_on_failure": false,
+    "approval_untrusted": true,
+    "device_auth": false
+   },
+   "slash": {
+    "model": {
+     "cmd": "/model",
+     "label": "Model",
+     "arg": true,
+     "read": false,
+     "verified": false,
+     "weight": 0,
+     "destructive": false
+    },
+    "reasoning": {
+     "cmd": "/reasoning",
+     "label": "Reasoning",
+     "arg": true,
+     "read": false,
+     "verified": false,
+     "weight": 0,
+     "destructive": false
+    }
+   }
+  }
+ }
+}

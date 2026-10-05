@@ -30,7 +30,8 @@ from .agents import codex_discovery
 from .agents import monitor as mem_monitor
 from .agents import registry
 from .agents.base import LaunchReq
-from .agents.claude import BYPASS_PARTS, OVERRIDE_PARTS
+from .agents.claude import BYPASS_PARTS, OVERRIDE_PARTS, WORKTREE_RE
+from .agents.codex import NAME_RE as CODEX_NAME_RE
 from .auth import csrf_ok, identify
 from .config import settings
 from .db import DB, now as db_now
@@ -2387,14 +2388,35 @@ def _normalize_launcher(launcher: str, agent: str | None = None) -> tuple[str, s
 
 
 class SessionIn(LaunchOpts):
+    """The body of POST .../sessions. The flat LaunchOpts fields and the first group below are the compat shape (the launcher before v0.5.13
+    and the API's callers); the second group is the launcher sheet's semantic fields (v0.5.13): the UI sends words, the adapter turns them into
+    flags. `launcher` also accepts new, from_pr and fork (new = claude; from_pr = Claude `--from-pr`; fork = Codex `codex fork`)."""
     launcher: str
     agent: str | None = None           # None: the launcher's own agent; "codex" turns claude / resume / continue into the Codex launch
     name: str | None = None
     args: str | None = None
-    resume_id: str | None = None
+    resume_id: str | None = None       # Claude: a UUID; Codex: a UUID or a session name
     add_dirs: list[str] | None = None  # "project/repo" ids
     devcontainer: bool = False         # run claude inside the repo's devcontainer (devcontainer CLI)
-    bypass: bool = False               # --dangerously-skip-permissions; only allowed with devcontainer
+    bypass: bool = False               # --dangerously-skip-permissions (Claude) / the bypass acknowledgement; needed by mode "bypass"
+    mode: str | None = None            # default | auto | read-only | bypass | custom (Codex's picker); Claude also takes its permission modes
+    reasoning: str | None = None       # Codex reasoning effort (Claude: read as effort when none is sent)
+    prompt: str | None = None          # the first message of a new session
+    worktree: object = None            # true, or the worktree's name: Claude `--worktree <name>`; Codex: a managed `git worktree add`
+    worktree_name: str | None = None
+    from_pr: object = None             # Claude: the PR (123, #123 or its URL) whose session to resume
+    fork_session: bool = False         # resume / continue as a copy (Claude --fork-session; Codex: resume by id becomes `codex fork`)
+    fallback_model: object = None      # Claude: up to three models, a list or comma separated
+    autocompact: object = None         # Claude: auto or a token count
+    tools: object = None               # Claude --tools: the built-in tools the session has
+    agent_name: str | None = None      # Claude --agent <name>
+    mcp_config: str | None = None      # Claude --mcp-config <file>
+    config: object = None              # Codex -c lines: a list, or one text with a key=value per line
+    fast: bool | None = None           # Claude fast mode (stored; there is no CLI flag)
+    cwd_rel: str | None = None         # start in this folder of the repo (relative, no ..)
+    sandbox: str | None = None         # Codex -s (mode custom); `opts` carries the same and wins
+    approval: str | None = None        # Codex -a (mode custom)
+    search: bool | None = None         # Codex --search
 
 
 def _resolve_add_dirs(ids: list[str] | None, own: Path) -> list[str]:
@@ -2476,9 +2498,99 @@ def _end_session(name: str, reason: str = "killed") -> bool:
     return True
 
 
+# The launch kinds the launcher sheet adds to the launcher names: new (Claude unless `agent` says otherwise), from_pr (Claude --from-pr) and
+# fork (Codex `codex fork`). Each names the launcher it is stored as and the adapter's launch kind. They stay out of _LAUNCHER_AGENT so the
+# "launcher must be one of ..." answer for an unknown name does not change.
+_KIND_LAUNCHERS = {"new": ("claude", "new"), "from_pr": ("resume", "from_pr"), "from-pr": ("resume", "from_pr"),
+                   "fork": ("resume", "fork"), "codex-fork": ("codex-resume", "fork")}
+_ON = ("1", "true", "yes", "on")
+MAX_CWD_REL = 300
+
+
+def _wants(v) -> bool:
+    """Did the launcher ask for this switch? True, or an on-word; a name (a worktree's) counts as on for the caller that reads it."""
+    if isinstance(v, str):
+        return v.strip().lower() in _ON
+    return bool(v) if isinstance(v, (bool, int)) else False
+
+
+def _worktree_request(body) -> tuple[bool, str | None]:
+    """(on, name) from `worktree` (true, or the name itself) and `worktree_name`. A worktree_name beside an off switch is nothing."""
+    w, named = body.worktree, (body.worktree_name or "").strip() or None
+    if isinstance(w, str) and w.strip() and not _wants(w) and w.strip().lower() not in ("0", "false", "no", "off"):
+        return True, named or w.strip()
+    return _wants(w), named
+
+
+def _session_cwd(rpath: Path, rel: str | None) -> Path:
+    """Where the session starts: the repo, or a folder inside it (`cwd_rel`: relative, no '..', an existing directory whose real path stays
+    under the repo's)."""
+    if rel in (None, "", ".", "./"):
+        return rpath
+    if not isinstance(rel, str) or len(rel) > MAX_CWD_REL or "\0" in rel or rel.startswith(("/", "~")) or ".." in Path(rel).parts:
+        raise projects.BadRequest("cwd_rel: a folder inside the repo, written relative to it (no '..')")
+    target = rpath / rel
+    real, root = target.resolve(), rpath.resolve()
+    if not target.is_dir() or not (real == root or root in real.parents):
+        raise projects.BadRequest(f"cwd_rel: {rel} is not a folder inside this repo")
+    return target
+
+
+def _launch_kind(body) -> tuple[str, str, str]:
+    """(agent, stored launcher, adapter launch kind) of a session request. The agent and stored launcher come from _normalize_launcher
+    (new / from_pr / fork are spelled through _KIND_LAUNCHERS first); `from_pr` beside a new launch makes it a from_pr launch, and
+    `fork_session` beside a Codex resume makes it a fork. Raises the board's 400s for a pairing that does not exist."""
+    named = body.launcher
+    kind: str | None = None
+    if isinstance(named, str) and named in _KIND_LAUNCHERS:
+        named, kind = _KIND_LAUNCHERS[named]
+    agent, launcher = _normalize_launcher(named, body.agent)
+    kind = kind or {"claude": "new", "resume": "resume", "continue": "continue"}.get(launcher, "new")
+    if body.from_pr not in (None, "", 0, False):
+        if kind == "new":
+            kind, launcher = "from_pr", "resume"
+        elif kind != "from_pr":
+            raise projects.BadRequest("from_pr: only a new launch takes a pull request (resume and continue pick up a session by themselves)")
+    if kind == "from_pr" and agent != "claude":
+        raise projects.BadRequest("from_pr: only Claude resumes a session from its pull request")
+    if kind == "fork" and agent != "codex":
+        raise projects.BadRequest("fork: a Codex launch; with Claude resume or continue and tick fork_session")
+    if body.fork_session and agent == "codex":
+        if kind != "resume":
+            raise projects.BadRequest("fork_session: Codex forks a session by its id or name (or from its picker), not the latest one")
+        kind = "fork"
+    return agent, launcher, kind
+
+
+def _claude_session_opts(body, extra: list[str]) -> dict:
+    """The raw option dict the Claude adapter validates: the flat compat fields as always, then the launcher's words (mode, tools, ...).
+    Empty values are the form's untouched fields: dropped, so they never reach validation."""
+    opts = {**body.model_dump(include=set(LaunchOpts.model_fields)), "extra": extra, "devcontainer": body.devcontainer}
+    for k in ("mode", "reasoning", "tools", "agent_name", "fallback_model", "autocompact", "mcp_config", "from_pr", "fork_session", "fast"):
+        v = getattr(body, k)
+        if v not in (None, "", [], False):
+            opts[k] = str(v) if k in ("from_pr", "autocompact") and isinstance(v, int) else v
+    return opts
+
+
+def _codex_session_opts(body, extra: list[str]) -> dict:
+    """The raw option dict the Codex adapter validates. Claude-only fields are forwarded too, so the adapter refuses them by name
+    ("tools: not supported by codex") instead of this route dropping them silently; `opts` (the agent's own keys) wins over the rest."""
+    own: dict = {}
+    for k in ("mode", "reasoning", "sandbox", "approval", "search", "config", "tools", "fallback_model", "autocompact", "agent_name",
+              "mcp_config"):
+        v = getattr(body, k)
+        if v not in (None, "", [], False):
+            own[k] = v
+    flat = _agent_opts("codex", body)
+    if own.get("reasoning"):
+        flat["reasoning_effort"] = own.pop("reasoning")
+    return {**own, **flat, "extra": extra}
+
+
 @app.post("/api/projects/{project}/repos/{repo}/sessions", status_code=201)
 def api_create_session(project: str, repo: str, body: SessionIn):
-    agent, launcher = _normalize_launcher(body.launcher, body.agent)
+    agent, launcher, kind = _launch_kind(body)
     rpath = projects.repo_path(project, repo)
     if not rpath.is_dir():
         raise projects.NotFound(f"repo {project}/{repo} not found")
@@ -2498,8 +2610,9 @@ def api_create_session(project: str, repo: str, body: SessionIn):
             extra = shlex.split(body.args)
         except ValueError as e:
             raise projects.BadRequest(f"extra args: {e}")
-    if body.resume_id and not UUID_RE.match(body.resume_id):
-        raise projects.BadRequest("resume id must be a UUID")
+    codex_names = agent == "codex"                 # a Codex resume or fork may name the session instead of giving its UUID
+    if body.resume_id and not (UUID_RE.match(body.resume_id) or (codex_names and CODEX_NAME_RE.match(body.resume_id))):
+        raise projects.BadRequest("resume id must be a UUID" + (" or a session name" if codex_names else ""))
 
     cmd_line = None
     agent_session_id = None
@@ -2510,17 +2623,36 @@ def api_create_session(project: str, repo: str, body: SessionIn):
     bad = _override_requested(extra) if agent != "codex" else agents.get("codex").forbidden_extra(extra, interactive=True)
     if bad:
         raise projects.BadRequest(f"{bad}: settings overrides are not allowed in extra args; use the model / effort / permission / tools controls")
+    # The danger gate of the launcher sheet: mode "bypass" is the explicit choice and needs the acknowledgement that came with it. The flat
+    # compat spellings (permission_mode bypassPermissions, bypass, the args) stay what they were: on the host an explicit choice, never the
+    # default, never for tasks / dispatch / headless runs (those routes never read `mode`).
+    bypass_mode = isinstance(body.mode, str) and body.mode == "bypass" and agent != "shell"
+    if bypass_mode and not body.bypass:
+        raise projects.BadRequest("mode bypass skips every approval and the sandbox: send bypass: true with the acknowledgement")
+    prompt = (body.prompt or "").strip() or None
+    wt_on, wt_name = _worktree_request(body)
+    if wt_on and agent != "shell":
+        if kind != "new":
+            raise projects.BadRequest("worktree: only a new session can start in a new worktree")
+        if not projects.is_repo(rpath):
+            raise projects.BadRequest("worktree: this folder is not a git repo")
+        if wt_name and not WORKTREE_RE.match(wt_name):
+            raise projects.BadRequest("worktree name: use letters, digits, '.', '_' or '-'")
+    if body.cwd_rel not in (None, "", ".", "./") and (body.devcontainer or (wt_on and agent != "shell")):
+        raise projects.BadRequest("cwd_rel: not together with a worktree or the devcontainer (both start at the repo's root)")
+    cwd = _session_cwd(rpath, body.cwd_rel)
     # bypassPermissions on the host is an explicit choice (the permission control, the bypass flag, or the arg);
     # Claude Code itself still asks for a one-time confirmation in the terminal. Never the default.
+    managed: tuple[str, Path] | None = None
     if agent == "claude":
         exe = settings.claude_bin()
         if not exe and not body.devcontainer:
             raise projects.BadRequest("claude is not installed on this box")
         add_dirs = _resolve_add_dirs(body.add_dirs, rpath) if not body.devcontainer else []
-        opts = {**body.model_dump(include=set(LaunchOpts.model_fields)), "extra": extra, "devcontainer": body.devcontainer}
         plan = agents.get("claude").launch_plan(LaunchReq(
-            kind={"claude": "new", "resume": "resume", "continue": "continue"}[launcher], session_name=session, cwd=str(rpath),
-            opts=opts, resume_id=body.resume_id, add_dirs=add_dirs, bypass=body.bypass))
+            kind=kind, session_name=session, cwd=str(cwd), opts=_claude_session_opts(body, extra), resume_id=body.resume_id,
+            add_dirs=add_dirs, prompt=prompt, bypass=body.bypass and not bypass_mode,
+            worktree=(wt_name or f"{session}-{uuid.uuid4().hex[:6]}") if wt_on else None))
         cmd_line, agent_session_id, opts_clean = plan.cmd_line, plan.agent_session_id, plan.opts_clean
     elif agent == "codex":
         # Codex has no --session-id: a new session's id is learned from its first hook (or, in v0.5.12, its rollout), and a resume
@@ -2531,17 +2663,39 @@ def api_create_session(project: str, repo: str, body: SessionIn):
         if body.devcontainer:
             raise projects.BadRequest("devcontainer is only supported for claude sessions")
         add_dirs = _resolve_add_dirs(body.add_dirs, rpath)
-        plan = ag.launch_plan(LaunchReq(
-            kind={"claude": "new", "resume": "resume", "continue": "continue"}[launcher], session_name=session, cwd=str(rpath),
-            opts={**_agent_opts("codex", body), "extra": extra}, resume_id=body.resume_id, add_dirs=add_dirs, bypass=body.bypass))
+        raw = _codex_session_opts(body, extra)
+        if wt_on:
+            ag.validate_opts(raw, interactive=True, tasks_or_headless=False, bypass=body.bypass)    # a 400 before there is a worktree to clean up
+            # Codex has no native worktree: the board makes it (git worktree add -b worktree-<slug> under .ccboard/worktrees, the repo's
+            # .worktreeinclude files copied in, as for a task) and starts Codex inside it; a launch that fails takes it away again
+            slug = tasks.unique_slug(rpath, tasks.slugify(wt_name or session), db.task_slugs(project, repo))
+            tasks.ensure_excluded(rpath)
+            try:
+                wt = tasks.create_managed_worktree(rpath, slug, tasks.default_branch(rpath), "codex")
+            except tasks.WorktreeError as e:
+                raise gitops.GitError(str(e)) from e
+            tasks.apply_worktreeinclude(rpath, wt)
+            managed, cwd = (slug, wt), wt
+        try:
+            plan = ag.launch_plan(LaunchReq(kind=kind, session_name=session, cwd=str(cwd), opts=raw, resume_id=body.resume_id,
+                                            add_dirs=add_dirs, prompt=prompt, bypass=body.bypass))
+        except Exception:
+            if managed:
+                tasks.discard_managed_worktree(rpath, managed[0], managed[1])
+            raise
         cmd_line, agent_session_id, opts_clean = plan.cmd_line, plan.agent_session_id, plan.opts_clean
     elif body.devcontainer:
         wf = str(rpath)
         cmd_line = (shlex.join(["devcontainer", "up", "--workspace-folder", wf]) + " && "
                     + shlex.join(["devcontainer", "exec", "--workspace-folder", wf, "--", "bash", "-l"]))
 
-    real = _start_session(name, project, repo, session, launcher, str(rpath), cmd_line=cmd_line,
-                          claude_session_id=agent_session_id, add_dirs=add_dirs, agent=agent, opts=opts_clean)
+    try:
+        real = _start_session(name, project, repo, session, launcher, str(cwd), cmd_line=cmd_line,
+                              claude_session_id=agent_session_id, add_dirs=add_dirs, agent=agent, opts=opts_clean)
+    except Exception:
+        if managed:
+            tasks.discard_managed_worktree(rpath, managed[0], managed[1])
+        raise
     _invalidate_scan()
     return {"tmux": real, "attach_url": f"/tty/?arg={real}", "agent": agent, "agent_session_id": agent_session_id,
             "claude_session_id": agent_session_id, "cmd": cmd_line}

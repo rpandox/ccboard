@@ -168,13 +168,8 @@ html.force-coarse .form details summary { min-height:var(--tap); }
 .hidden { display:none !important; }
 .bp5-control.bp5-checkbox { margin:0; }
 .bp5-dark .bp5-control input:checked ~ .bp5-control-indicator { background:var(--acc); }
+.bp5-dark .bp5-control input:checked ~ .bp5-control-indicator::before { background-image:none; content:''; display:block; box-sizing:border-box; width:5px; height:9px; margin:1px auto 0; border:solid var(--on-sig, #14181c); border-width:0 2px 2px 0; transform:rotate(45deg); }   /* Blueprint's tick is a data: image the CSP blocks: draw it in CSS everywhere, as Settings did */
 
-/* ---------- modal ---------- */
-#modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:flex-start; justify-content:center; padding:40px 12px; overflow:auto; z-index:40; }
-.modal-box { background:var(--panel); border:1px solid var(--line); border-radius:4px; padding:16px; width:100%; max-width:640px; box-shadow:0 8px 24px rgba(0,0,0,.5); }
-.modal-box h2 { margin-top:0; }
-.modal-box .form { max-height:45vh; overflow:auto; }
-.modal-box.wide { max-width:1100px; }
 pre.tail { background:var(--bg); border:1px solid var(--line); border-radius:2px; padding:8px; font-size:12px; font-family:var(--font-mono); font-variant-ligatures:none; font-variant-numeric:tabular-nums; max-height:220px; overflow:auto; white-space:pre-wrap; word-break:break-all; }
 .muted { opacity:.6; }
 .bad { color:var(--bad-fg); }                                   /* red TEXT (inline form errors, status lines): 5.1:1 on --card and --panel */
@@ -223,9 +218,6 @@ html.force-coarse .bp5-input, html.force-coarse select, html.force-coarse textar
   .task .actions { flex-wrap:wrap; overflow:visible; padding-bottom:0; }              /* a task card's seven buttons wrap onto a second and third line: none hides past the edge of a 348 px row (the Archive and retry buttons did) */
   .sess { padding-left:8px; margin-left:0; }
   .sess .main > code { display:none; }
-  #modal { padding:0; align-items:flex-end; }
-  .modal-box { max-width:none; border-radius:14px 14px 0 0; max-height:calc(100vh - var(--sat) - 20px); overflow:auto; padding-bottom:calc(16px + var(--sab)); }
-  .modal-box .form { max-height:none; }
   .diffbox { max-height:60vh; }
   #bnav { display:flex; }
   #banner { margin:10px 10px 0; }

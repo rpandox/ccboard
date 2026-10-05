@@ -222,6 +222,71 @@ function taskTargets(p, kind) {
   return out;
 }
 
+/* ---- the launcher entry (v0.5.13): ONE call for every create entry point ----
+   launch({mode: 'session' | 'task' | 'dispatch', project, repo, agent?, task?, ...}) opens the launcher sheet (launcher.js openLauncher). project and repo are the OBJECTS of
+   state.projects (a project and one of its repos, or its root, the pair sessionForm and taskForm take), not names; a dispatch carries the task. The topbar +, the Home block,
+   the project page, the sidebar, the quad's empty tiles, the dock and the Move sheet's Options… all call this, so the sheet is built in one place. Without openLauncher
+   (a partial deploy, a test world) the older forms open instead: Shell.showForm for a session or a task when the shell is there, else the form in the sheet; the dispatch
+   sheet for a dispatch. true when something opened (else false: no place, no task). */
+function launch(o) {
+  const opts = o || {};
+  if (typeof openLauncher === 'function') return openLauncher(opts) !== false;
+  if (opts.mode === 'dispatch') {
+    if (!opts.task || typeof taskDispatchSheet !== 'function') return false;
+    taskDispatchSheet(opts.task, { agent: opts.agent, session: opts.session, auto_close: opts.auto_close });
+    return true;
+  }
+  const kind = opts.mode === 'task' ? 'task' : 'session';
+  const p = opts.project;
+  const r = opts.repo;
+  if (!p || !r) return false;
+  const label = opts.label || (r === p.root || r.root ? `${p.name} · project folder` : `${p.name}/${r.name}`);
+  if (typeof Shell !== 'undefined' && Shell && typeof Shell.showForm === 'function') { Shell.showForm(kind, { p, r, label }); return true; }
+  ui.openForm = 'sheet';
+  const done = () => { if (typeof closeSheet === 'function') closeSheet(); };
+  openSheet({ title: `${kind === 'task' ? 'New task' : 'New session'} · ${label}`,
+    body: kind === 'task' ? taskForm(p, r, { onDone: done, onCancel: done }) : sessionForm(p, r), onClose: () => { if (ui.openForm === 'sheet') ui.openForm = null; } });
+  return true;
+}
+
+/* Where a new session (kind 'session') or task (kind 'task') starts when nobody picked a place, so an entry point can skip the repo picker: {project, repo} (state objects)
+   or null. In a project: the repo (or the project folder) of its most recent session, else its only repo, else the project folder, else its first repo. A task needs a
+   place that takes one and prefers the repo a task was last started in. project null looks at every project: the one with the most recent session, else the first that
+   has any place. */
+function launchPlace(project, kind) {
+  const st = typeof state !== 'undefined' ? state : null;
+  const projects = project ? [project] : ((st && st.projects) || []);
+  const forTask = kind === 'task';
+  const okRepo = (r) => r.state === 'ok' || r.state === 'unknown';
+  const fits = (p, r) => !!r && (forTask ? taskTarget(p, r) : (r === p.root || okRepo(r)));
+  const when = (s) => { const t = s.state_at ? Date.parse(s.state_at) / 1000 : NaN; return Number.isFinite(t) ? t : (s.created || 0); };
+  let best = null;
+  let at = -1;
+  for (const p of projects) {
+    for (const r of [p.root, ...(p.repos || [])]) {
+      if (!fits(p, r)) continue;
+      for (const s of (r.sessions || [])) { const t = when(s); if (t > at) { at = t; best = { project: p, repo: r }; } }
+    }
+  }
+  const only = (p) => {                                                    // no session to go by: a task's last repo, the only repo, the folder, the first repo
+    const last = forTask && typeof taskLastRepo === 'function' ? taskLastRepo(p.name) : '';
+    const hit = last ? (last === 'root' ? p.root : (p.repos || []).find((x) => x.name === last)) : null;
+    if (hit && fits(p, hit)) return hit;
+    const ok = (p.repos || []).filter((x) => fits(p, x));
+    if (ok.length === 1) return ok[0];
+    if (p.root && fits(p, p.root)) return p.root;
+    return ok[0] || null;
+  };
+  if (forTask && project) {                                                // the repo a task went to last beats the busiest one
+    const last = typeof taskLastRepo === 'function' ? taskLastRepo(project.name) : '';
+    const hit = last ? (last === 'root' ? project.root : (project.repos || []).find((x) => x.name === last)) : null;
+    if (hit && fits(project, hit)) return { project, repo: hit };
+  }
+  if (best) return best;
+  for (const p of projects) { const r = only(p); if (r) return { project: p, repo: r }; }
+  return null;
+}
+
 function taskOverrideSet(row, keys, extra) {
   if (!row || row.id === undefined || row.id === null) return null;
   const o = { ...row, ...(extra || {}), _at: Date.now() };
@@ -599,6 +664,15 @@ function taskDefaultsLine(t, agent) {
   return bits.filter((x) => typeof x === 'string' && x).join(' · ');
 }
 
+/* The opts of the launcher in dispatch mode (launch) for a Backlog card: its project and repo as state objects (a bare {name} when the poll no longer has the place: the sheet
+   still opens for the task), the task, and an optional preset {agent, session, auto_close} (dnd.js: Edit options… after a drop). */
+function taskLaunchOpts(t, preset) {
+  const st = typeof state !== 'undefined' ? state : null;
+  const p = ((st && st.projects) || []).find((x) => x.name === t.project) || { name: t.project };
+  const r = t.repo === 'root' ? (p.root || { name: 'root', root: true }) : ((p.repos || []).find((x) => x.name === t.repo) || { name: t.repo });
+  return { mode: 'dispatch', project: p, repo: r, task: t, ...(preset || {}) };
+}
+
 function taskMoveable(t) { return taskPhase(t) === 'backlog'; }
 
 function taskMoveSheet(t) {
@@ -627,7 +701,7 @@ function taskMoveSheet(t) {
   });
   const anyOk = list.some((x) => x.ok);
   const foot = el('div', { class: 'tk-foot' },
-    typeof taskDispatchSheet === 'function' ? el('button', { type: 'button', class: 'tk-opts', onclick: () => taskDispatchSheet(t), text: 'Options…' }) : null,         // no closeSheet() first: a closed dialog fires its close event a task later and would wipe the form that replaced it
+    typeof openLauncher === 'function' || typeof taskDispatchSheet === 'function' ? el('button', { type: 'button', class: 'tk-opts', onclick: () => launch(taskLaunchOpts(t)), text: 'Options…' }) : null,         // the launcher in dispatch mode; no closeSheet() first: a closed dialog fires its close event a task later and would wipe the form that replaced it
     el('button', { type: 'button', class: 'tk-cancel', onclick: () => closeSheet(), text: 'Cancel' }));
   const body = el('div', { class: 'tk-move' },
     el('h3', { class: 'tk-sec', text: 'Start in a new session' }),
@@ -1011,7 +1085,7 @@ function taskPortSheet(t, why) {
   focusFine(port);
 }
 
-/* Open the diff / PR modal of the card from home.js (the existing task modal: diff, Describe, Create PR, Merge) */
+/* Open the diff / PR sheet of the card (home.js openTaskModal: diff, Describe, Create PR, Merge) */
 function taskModal(t) { if (typeof openTaskModal === 'function') openTaskModal(t); }
 
 /* Archive (two taps through confirmButton): a worktree with unsaved work asks once more. */
@@ -1172,7 +1246,7 @@ function tabs(items, activeId, onChange) {
   };
 }
 
-/* openSheet({title, body, actions?, placement?, onClose?, back?}) -> { dialog, body, close }. dialog#sheet through showModal(): a right panel from 840 px up,
+/* openSheet({title, body, actions?, placement?, wide?, onClose?, back?}) -> { dialog, body, close }. dialog#sheet through showModal(): a right panel from 840 px up,
    a bottom sheet below (placement 'right' | 'bottom' forces one). Calling it again while open swaps the content in place. body and actions
    take a node, an array of nodes or a string. Esc, the backdrop and the close button end it; closeSheet() does the same from code.
    back {label, onClick} puts a chevron button before the title (the way up one level: the repo picker behind a form). The dialog itself takes
@@ -1199,6 +1273,7 @@ function openSheet(opts) {
   const place = o.placement === 'bottom' || o.placement === 'right' ? o.placement : (wide ? 'right' : 'bottom');
   dlg.classList.toggle('bottom', place === 'bottom');
   dlg.classList.toggle('right', place === 'right');
+  dlg.classList.toggle('wide', o.wide === true);                                     // room for a diff (home.js openTaskModal): ~1100 px instead of 460 / 680
   const body = el('div', { class: 'sheet-body' }, ...sheetKids(typeof o.body === 'string' ? document.createTextNode(o.body) : o.body));
   const actions = sheetKids(o.actions);
   dlg.textContent = '';

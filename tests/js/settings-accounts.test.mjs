@@ -582,7 +582,7 @@ test('Settings > Agents: Log in goes to Settings > Accounts and starts the add f
   assert.equal(w.location.hash, '#/settings?sec=accounts');
   assert.deepEqual(apiCalls(w, '/api/').map((c) => `${c.method} ${c.path}`).filter((s) => /login/.test(s)), ['POST /api/accounts/login'], 'one POST, to the account flow');
   assert.equal(hidden(block(w).querySelector('.add-flight')), false, 'the steps are showing');
-  assert.equal(w.get('ui.modal'), false);
+  assert.ok(!w.get('ui.modal'), 'the old ui.modal flag is gone with the #modal');
 });
 
 test('Home\'s "not logged in" banner button does the same: Settings > Accounts, flow started', async () => {
@@ -609,10 +609,10 @@ test('where saved logins are not supported the Log in buttons still lead to the 
   assert.equal(w.get('acctFlow.want'), null, 'the wish is not kept for later');
 });
 
-test('the old modal login is gone: no startLogin / openModal / updateModal / modalParts, the legacy #modal and closeModal stay for the task dialog', () => {
+test('the old modal login is gone: no startLogin / openModal / updateModal / modalParts, and (v0.5.13) no #modal or closeModal either: the task dialog is a sheet', () => {
   const { w } = homeWorld();
-  for (const name of ['startLogin', 'openModal', 'updateModal', 'updateModalSafe', 'modalParts']) assert.equal(w.run(`typeof ${name}`), 'undefined', name);
-  for (const name of ['closeModal', 'openTaskModal', 'logout', 'accountLogin', 'accountSwitch']) assert.equal(w.run(`typeof ${name}`), 'function', name);
+  for (const name of ['startLogin', 'openModal', 'updateModal', 'updateModalSafe', 'modalParts', 'closeModal']) assert.equal(w.run(`typeof ${name}`), 'undefined', name);
+  for (const name of ['openTaskModal', 'logout', 'accountLogin', 'accountSwitch']) assert.equal(w.run(`typeof ${name}`), 'function', name);
 });
 
 // ---------------------------------------------------------------- the demo board

@@ -13,8 +13,12 @@ import functools
 import importlib.util
 import json
 import math
+import os
 import re
 import shlex
+import subprocess
+import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,17 +27,31 @@ from .. import claude_auth, projects
 from ..config import settings
 from .base import Agent, Check, HookNorm, LaunchPlan, LaunchReq, OptField, SlashSpec
 
-MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}(\[1m\])?$")           # an alias or id, optionally the 1M-context variant (opus[1m])
 # V19 (box check): `claude --effort ultracode -p 'say ok'`. The installed binary's --help lists low..max only, so ultracode joins
-# EFFORTS only when that command is accepted on ubu2. Until then the launcher's ultracode switch is `/effort ultracode on` sent through
-# POST /command right after SessionStart (v0.5.13), never through --settings (the board's own override rule blocks that).
+# the accepted efforts only when this box's claude takes it: its `--help` names it on the --effort option, or CCBOARD_CLAUDE_ULTRACODE_FLAG=1
+# records that V19 passed (0 records that it did not). Until then the launcher's ultracode switch is `/effort ultracode on` sent through
+# POST /command right after SessionStart, never through --settings (the board's own override rule blocks that).
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+ULTRACODE = "ultracode"
+ULTRACODE_ENV = "CCBOARD_CLAUDE_ULTRACODE_FLAG"
 PERMISSION_MODES = ("manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions")   # the CLI's own names
+# The launcher's mode names (the same five words the Codex picker uses) as Claude permission modes: `custom` is Codex's sandbox + approval pair.
+MODE_ALIASES = {"default": "manual", "read-only": "plan", "bypass": "bypassPermissions"}
+LAUNCH_KINDS = ("new", "resume", "continue", "from_pr")                  # LaunchReq.kind; from_pr is `claude --from-pr <n|url>`
+CAPS_TIMEOUT = 5.0                                # `claude --help` is read once per binary; a failed probe is retried after FAIL_TTL
+FAIL_TTL = 60.0
+PR_RE = re.compile(r"^(#?\d{1,7}|https://[A-Za-z0-9.-]{1,100}(:\d{1,5})?/[A-Za-z0-9._~%@:+/-]{1,300})$")   # a PR number or its URL
+AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,79}$")      # --agent <name> (a subagent definition)
+AUTOCOMPACT_RE = re.compile(r"^(auto|\d{4,9})$")                         # --autocompact auto | <tokens>
+MAX_FALLBACKS = 3                                 # --fallback-model takes a chain, capped at three
+MAX_MCP_PATH = 400
 HEADLESS_MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk")   # bypassPermissions only inside a devcontainer (v0.4.5)
 TOOL_RE = re.compile(r"^[A-Za-z0-9_*.:/ ()\-]{1,120}$")
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 WORKTREE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 MAX_APPEND = 4000
+MAX_PROMPT = 8000                                 # a first prompt is typed into the pane with the command: longer ones belong in a task
 WORKTREE_DIR = ".claude/worktrees"                # where `claude --worktree <name>` puts its worktrees (tasks.WORKTREES is the same)
 
 # Settings overrides can change the permission mode (and hooks, tools) behind the board's back: always rejected in extra args, use
@@ -81,6 +99,42 @@ def _arg_matching(extra: list[str], parts: tuple[str, ...]) -> str | None:
         if any(b in low for b in parts):
             return a
     return None
+
+
+# ---------- what this box's claude can do (one `claude --help` per binary, never on a hot path twice) ----------
+
+_clock = time.monotonic                           # patched by tests (failure retry age)
+_caps_lock = threading.Lock()
+_caps_items: dict = {}                            # (exe, mtime_ns) -> (at, {ultracode_flag}, ok)
+
+
+def reset_caches() -> None:
+    with _caps_lock:
+        _caps_items.clear()
+
+
+def help_lists_ultracode(text: str) -> bool:
+    """Does `claude --help` name `ultracode` on its --effort option? The option's own lines only (it may wrap onto indented lines): a word
+    in another option's text does not count."""
+    block: list[str] = []
+    inside = False
+    for ln in (text or "").splitlines():
+        stripped = ln.strip()
+        if "--effort" in ln and ln.lstrip().startswith(("-", "--")):
+            inside, block = True, [ln]
+            continue
+        if inside:
+            if not stripped or stripped.startswith("-"):
+                break
+            block.append(ln)
+    return ULTRACODE in " ".join(block).lower()
+
+
+def _bin_key(exe: str) -> tuple:
+    try:
+        return (exe, os.stat(exe).st_mtime_ns)
+    except OSError:
+        return (exe, 0)
 
 
 def parse_result(stdout: str) -> dict:
@@ -253,8 +307,7 @@ class ClaudeAgent(Agent):
     label = "Claude"
     glyph = "◆"
     PERMISSION_MODES = PERMISSION_MODES
-    EFFORTS = EFFORTS
-    MODELS = ("opus", "fable", "sonnet", "haiku", "opusplan", "best")
+    MODELS = ("opus", "fable", "sonnet", "haiku", "opusplan", "best", "opus[1m]", "sonnet[1m]")
 
     # ---- detection and auth: thin over claude_auth (it owns the 60 s cache, so no extra binary calls) ----
     def bin(self) -> str | None:
@@ -278,32 +331,106 @@ class ClaudeAgent(Agent):
     def logout(self) -> dict:
         return claude_auth.logout()
 
+    # ---- capabilities: what this box's claude takes ----
+    def capabilities(self) -> dict:
+        """{ultracode_flag}: does `claude --effort ultracode` work here? CCBOARD_CLAUDE_ULTRACODE_FLAG=1|0 records the V19 box check and
+        wins; otherwise the --effort option of `claude --help` (read once per binary mtime, a failed probe retried after a minute, no
+        binary or an unreadable help = False). Never raises."""
+        env = os.environ.get(ULTRACODE_ENV, "").strip().lower()
+        if env in ("1", "true", "yes", "on"):
+            return {"ultracode_flag": True}
+        if env in ("0", "false", "no", "off"):
+            return {"ultracode_flag": False}
+        exe = self.bin()
+        if not exe:
+            return {"ultracode_flag": False}
+        key = _bin_key(exe)
+        with _caps_lock:
+            hit = _caps_items.get(key)
+            if hit and (hit[2] or _clock() - hit[0] < FAIL_TTL):
+                return dict(hit[1])
+        try:
+            cp = subprocess.run([exe, "--help"], capture_output=True, text=True, timeout=CAPS_TIMEOUT)
+            ok = cp.returncode == 0 and "--effort" in (cp.stdout or "")
+            caps = {"ultracode_flag": help_lists_ultracode(cp.stdout) if ok else False}
+        except (subprocess.SubprocessError, OSError, ValueError):
+            ok, caps = False, {"ultracode_flag": False}
+        with _caps_lock:
+            _caps_items[key] = (_clock(), caps, ok)
+        return dict(caps)
+
+    def launch_caps(self) -> dict:
+        return self.capabilities()
+
+    def efforts(self) -> tuple:
+        """The efforts `--effort` takes on this box: low..max, plus ultracode when the box's claude accepts it."""
+        return EFFORTS + ((ULTRACODE,) if self.capabilities()["ultracode_flag"] else ())
+
+    @property
+    def EFFORTS(self) -> tuple:                          # type: ignore[override]
+        return self.efforts()
+
     # ---- option schema ----
     def option_schema(self) -> list[OptField]:
+        """Every launcher control, in the order the sheet shows them (basic first). `launcher` is the launch kind; fields that only apply to
+        some kinds carry a `when` ({"launcher": [...]} = any of those kinds). The launcher reads this once per page load and keeps an
+        embedded copy for when the request fails."""
+        efforts = list(self.efforts())
+        ultra = ULTRACODE in efforts
+        launch_when = lambda *kinds: {"launcher": list(kinds)}   # noqa: E731
         return [
+            OptField("launcher", "Start", "select", list(LAUNCH_KINDS), "new",
+                     "new: a fresh session. resume: pick up an earlier one (--resume, blank id = the picker). continue: the latest in this "
+                     "folder (--continue). from_pr: the session linked to a pull request (--from-pr).", "basic"),
+            OptField("resume_id", "Session to resume", "text", None, None,
+                     "An id (UUID); blank opens Claude's picker.", "basic", False, launch_when("resume")),
+            OptField("from_pr", "Pull request", "text", None, None,
+                     "--from-pr: a PR number (123 or #123) or its URL.", "basic", False, launch_when("from_pr")),
+            OptField("name", "Session name", "text", None, None,
+                     "--name, and the board's own label. Blank takes the next free one (s1, s2...).", "basic"),
             OptField("model", "Model", "combo", list(self.MODELS), "opus",
-                     "An alias or a full model id. opusplan and best are kept for completeness; [1m] variants join in v0.5.13.", "basic"),
-            OptField("effort", "Effort", "select", list(EFFORTS), "high",
-                     "--effort. ultracode is not offered here: it joins this list only after V19 shows the installed binary accepts "
-                     "`--effort ultracode`; until then it is applied after start with /effort ultracode on.", "basic"),
-            OptField("permission_mode", "Permission mode", "select", list(PERMISSION_MODES), None,
-                     "--permission-mode. bypassPermissions skips every prompt: use the bypass acknowledgement, never for tasks.", "basic"),
+                     "An alias or a full model id; add [1m] for the 1M-context variant. opus, fable, sonnet and haiku lead; opusplan, best and "
+                     "the [1m] variants follow.", "basic"),
+            OptField("effort", "Effort", "select", efforts, "high",
+                     "--effort." + (" ultracode is accepted by this box's claude." if ultra else
+                                    " ultracode is not a flag on this box (V19): it is applied after start with /effort ultracode on."),
+                     "basic"),
             OptField("fast", "Fast mode", "bool", None, False,
                      "There is no CLI flag: the board sends /fast after the session starts.", "basic"),
+            OptField("permission_mode", "Permission mode", "select", list(PERMISSION_MODES), None,
+                     "--permission-mode. bypassPermissions skips every prompt: use the bypass acknowledgement, never for tasks.", "basic"),
+            OptField("prompt", "First prompt", "textarea", None, None,
+                     f"Typed as the first message of a new session ({MAX_PROMPT} characters at most).", "basic", False, launch_when("new")),
             OptField("bypass", "Skip all permission prompts", "bool", None, False,
                      "--dangerously-skip-permissions. Needs an explicit acknowledgement; never offered for tasks, dispatch or scheduled runs, "
                      "and never stored for resume.", "advanced", True),
             OptField("allowed_tools", "Allowed tools", "textarea", None, None,
                      "--allowedTools: one pattern per line or comma separated, e.g. Bash(git *).", "advanced"),
             OptField("disallowed_tools", "Disallowed tools", "textarea", None, None, "--disallowedTools, same format.", "advanced"),
+            OptField("tools", "Available tools", "textarea", None, None,
+                     "--tools: the built-in tools the session has at all, comma or one per line (Bash, Edit, Read).", "advanced"),
             OptField("append_system_prompt", "Append to system prompt", "textarea", None, None,
                      f"--append-system-prompt ({MAX_APPEND} characters at most).", "advanced"),
+            OptField("agent_name", "Agent", "text", None, None, "--agent: run as one of your subagent definitions.", "advanced"),
+            OptField("fallback_model", "Fallback model", "text", None, None,
+                     f"--fallback-model: up to {MAX_FALLBACKS} models, comma separated, tried when the main one is overloaded.", "advanced"),
+            OptField("autocompact", "Auto-compact", "combo", ["auto"], None,
+                     "--autocompact: auto, or the context size (a number such as 150000) at which the conversation is compacted. Blank = Claude's own setting.",
+                     "advanced"),
+            OptField("worktree", "Start in a new git worktree", "bool", None, False,
+                     "claude --worktree <name>: a branch and folder of its own under .claude/worktrees.", "advanced", False,
+                     launch_when("new")),
+            OptField("worktree_name", "Worktree name", "text", None, None,
+                     "Letters, digits, '.', '_' and '-'. Blank: the session name plus a short suffix.", "advanced", False, {"worktree": True}),
+            OptField("fork_session", "Fork instead of continuing", "bool", None, False,
+                     "--fork-session: a copy of the old conversation under a new id; the original stays as it was.", "advanced", False,
+                     launch_when("resume", "continue")),
             OptField("add_dirs", "Extra directories", "dirs", None, None,
                      "--add-dir: sibling repos (project/repo) the session may read and edit.", "advanced"),
             OptField("devcontainer", "Run in the devcontainer", "bool", None, False,
                      "devcontainer up, then claude inside it (its own login).", "advanced", False, {"repo.devcontainer": True}),
-            OptField("worktree", "Start in a new git worktree", "bool", None, False,
-                     "claude --worktree <name>: a branch and folder of its own under .claude/worktrees.", "advanced"),
+            OptField("mcp_config", "MCP config file", "text", None, None,
+                     "--mcp-config: the path of a JSON file inside the projects folder or the Claude config folder.", "advanced"),
             OptField("extra", "Extra arguments", "args", None, None,
                      "Raw CLI arguments. --settings, --setting-sources and --permission-prompt* are rejected: use the controls.", "advanced"),
         ]
@@ -342,10 +469,49 @@ class ClaudeAgent(Agent):
                 raise projects.BadRequest(f"tool pattern not allowed: {t!r}")
         return tools
 
-    def _validate(self, raw: dict | None, *, interactive: bool, tasks_or_headless: bool) -> tuple[dict, dict, list[str]]:
-        """-> (full, clean, extra). `full` drives argv (it keeps permission_mode=bypassPermissions); `clean` is what may be stored and
-        re-passed on resume (never a bypass, never the one-off extra args)."""
+    @staticmethod
+    def _with_mode(raw: dict) -> dict:
+        """The launcher's `mode` word as a permission_mode (it wins over a permission_mode sent beside it): default = manual, read-only =
+        plan, bypass = bypassPermissions, or any Claude permission mode by its own name. `custom` is Codex's sandbox + approval pair."""
+        mode = raw.get("mode")
+        if mode in (None, ""):
+            return raw
+        pm = MODE_ALIASES.get(mode, mode) if isinstance(mode, str) else None
+        if pm not in PERMISSION_MODES:
+            raise projects.BadRequest(f"mode must be one of default, read-only, bypass, {', '.join(m for m in PERMISSION_MODES if m != 'manual')}")
+        return {**raw, "permission_mode": pm}
+
+    @staticmethod
+    def _model_list(raw, what: str, cap: int) -> list[str]:
+        items = [t for t in re.split(r"[,\s]+", raw) if t] if isinstance(raw, str) else (list(raw) if isinstance(raw, (list, tuple)) else None)
+        if items is None or not all(isinstance(m, str) and MODEL_RE.match(m) for m in items) or len(items) > cap:
+            raise projects.BadRequest(f"{what}: use up to {cap} aliases or model ids, comma separated")
+        return list(dict.fromkeys(items))
+
+    @staticmethod
+    def _mcp_config(raw, *, must_exist: bool) -> str:
+        """The path of an MCP config file: absolute (or ~/...), a file under the projects folder or the Claude config folder. A stored
+        path that has since gone is not an error on resume (must_exist False): Claude says so itself."""
+        what = "mcp_config: use the absolute path of a JSON file inside the projects folder or the Claude config folder"
+        if not isinstance(raw, str) or not raw.strip() or len(raw) > MAX_MCP_PATH or "\0" in raw or raw.strip().startswith("-"):
+            raise projects.BadRequest(what)
+        path = Path(raw.strip()).expanduser()
+        if not path.is_absolute():
+            raise projects.BadRequest(what)
+        roots = [Path(settings.projects_dir), Path(settings.claude_config_dir)]
+        real = Path(os.path.realpath(path))
+        if not any(real == r or r.resolve() in real.parents for r in roots):
+            raise projects.BadRequest(what)
+        if must_exist and not real.is_file():
+            raise projects.BadRequest("mcp_config: no such file")
+        return str(path)
+
+    def _validate(self, raw: dict | None, *, interactive: bool, tasks_or_headless: bool, files: bool = True) -> tuple[dict, dict, list[str]]:
+        """-> (full, clean, extra). `full` drives argv (it keeps permission_mode=bypassPermissions and the one-launch from_pr /
+        fork_session); `clean` is what may be stored and re-passed on resume (never a bypass, never the one-off extra args, never a
+        from_pr or fork_session). `files` False skips the existence check of an MCP config file (a stored option on resume)."""
         raw = raw if isinstance(raw, dict) else {}
+        raw = self._with_mode(raw)
         extra = self._extra_list(raw.get("extra"))
         pm = raw.get("permission_mode")
         if not interactive:                                   # scheduled / headless run
@@ -372,10 +538,11 @@ class ClaudeAgent(Agent):
             if not MODEL_RE.match(m):
                 raise projects.BadRequest("model: use an alias (fable, opus, sonnet, haiku) or a full model id")
             full["model"] = m
-        effort = raw.get("effort")
+        effort = raw.get("effort") or raw.get("reasoning")           # `reasoning` is the other agents' word for it
         if effort:
-            if effort not in EFFORTS:
-                raise projects.BadRequest(f"effort must be one of {', '.join(EFFORTS)}")
+            allowed = self.efforts()
+            if effort not in allowed:
+                raise projects.BadRequest(f"effort must be one of {', '.join(allowed)}")
             full["effort"] = effort
         if pm:
             if interactive and pm not in PERMISSION_MODES:    # a scheduled run was checked against HEADLESS_MODES above
@@ -390,11 +557,37 @@ class ClaudeAgent(Agent):
             if len(asp) > MAX_APPEND:
                 raise projects.BadRequest(f"append_system_prompt is too long ({MAX_APPEND} chars max)")
             full["append_system_prompt"] = asp.strip()
+        tools = self._tools(raw.get("tools"))
+        if tools:
+            full["tools"] = tools
+        name = raw.get("agent_name")
+        if name not in (None, ""):
+            if not isinstance(name, str) or not AGENT_NAME_RE.match(name.strip()):
+                raise projects.BadRequest("agent_name: use letters, digits, '.', '_', ':', '@', '/' or '-'")
+            full["agent_name"] = name.strip()
+        if raw.get("fallback_model") not in (None, "", []):
+            full["fallback_model"] = self._model_list(raw["fallback_model"], "fallback_model", MAX_FALLBACKS)
+        ac = raw.get("autocompact")
+        if ac not in (None, ""):
+            ac = str(ac).strip().lower() if isinstance(ac, (str, int)) and not isinstance(ac, bool) else None
+            if not ac or not AUTOCOMPACT_RE.match(ac):
+                raise projects.BadRequest("autocompact: use auto or a number of tokens (4 to 9 digits)")
+            full["autocompact"] = ac
+        if raw.get("mcp_config") not in (None, ""):
+            full["mcp_config"] = self._mcp_config(raw["mcp_config"], must_exist=files)
         if _truthy(raw.get("fast")):
             full["fast"] = True
         if _truthy(raw.get("devcontainer")):
             full["devcontainer"] = True
-        clean = {k: v for k, v in full.items() if not (k == "permission_mode" and v == "bypassPermissions")}
+        pr = raw.get("from_pr")
+        if pr not in (None, ""):
+            if not isinstance(pr, str) or not PR_RE.match(pr.strip()):
+                raise projects.BadRequest("from_pr: use a pull request number (123 or #123) or its URL")
+            full["from_pr"] = pr.strip().lstrip("#")
+        if _truthy(raw.get("fork_session")):
+            full["fork_session"] = True
+        ONE_LAUNCH = ("from_pr", "fork_session")
+        clean = {k: v for k, v in full.items() if k not in ONE_LAUNCH and not (k == "permission_mode" and v == "bypassPermissions")}
         return full, clean, extra
 
     def validate_opts(self, raw: dict | None, *, interactive: bool = True, tasks_or_headless: bool = False) -> dict:
@@ -416,6 +609,16 @@ class ClaudeAgent(Agent):
                 out += [flag, *full[key]]
         if "append_system_prompt" in full:
             out += ["--append-system-prompt", full["append_system_prompt"]]
+        if full.get("tools"):
+            out += ["--tools", ",".join(full["tools"])]                  # one token (the flag is variadic): nothing after it is swallowed
+        if "agent_name" in full:
+            out += ["--agent", full["agent_name"]]
+        if full.get("fallback_model"):
+            out += ["--fallback-model", ",".join(full["fallback_model"])]
+        if "autocompact" in full:
+            out += ["--autocompact", full["autocompact"]]
+        if "mcp_config" in full:
+            out += ["--mcp-config", full["mcp_config"]]
         return out
 
     def launch_opt_args(self, raw: dict | None, *, interactive: bool = True, tasks_or_headless: bool = False) -> list[str]:
@@ -423,9 +626,18 @@ class ClaudeAgent(Agent):
         return self._opt_args(self._validate(raw, interactive=interactive, tasks_or_headless=tasks_or_headless)[0])
 
     def launch_plan(self, req: LaunchReq) -> LaunchPlan:
-        if req.kind not in ("new", "resume", "continue"):
-            raise projects.BadRequest("launch kind must be one of new, resume, continue")
+        if req.kind not in LAUNCH_KINDS:
+            raise projects.BadRequest(f"launch kind must be one of {', '.join(LAUNCH_KINDS)}")
         full, clean, extra = self._validate(req.opts, interactive=True, tasks_or_headless=bool(req.task))
+        if not req.task and req.prompt is not None and len(req.prompt) > MAX_PROMPT:
+            raise projects.BadRequest(f"prompt is too long ({MAX_PROMPT} characters at most); a task takes a longer one")
+        if req.kind == "from_pr":
+            if not full.get("from_pr"):
+                raise projects.BadRequest("from_pr: give the pull request number or URL")
+        elif full.get("from_pr"):
+            raise projects.BadRequest("from_pr: only the from_pr launch takes a pull request")
+        if full.get("fork_session") and req.kind not in ("resume", "continue"):
+            raise projects.BadRequest("fork_session: only a resume or continue launch can fork")
         if req.task:
             first = req.prompt.split(None, 1)[0] if req.prompt and req.prompt.strip() else ""
             bad = self.forbidden_extra([first], interactive=True, task=True) if first.startswith("-") else None
@@ -451,7 +663,8 @@ class ClaudeAgent(Agent):
                     raise projects.BadRequest("worktree name: use letters, digits, '.', '_' or '-'")
                 # tasks.build_command order: variadic options first, then --worktree / --session-id, `--`, the prompt last
                 # (`--` so a prompt that starts with '-', a markdown bullet, is a prompt and not an unknown option)
-                argv = ["claude", *bypass, *tail, *more, "--worktree", req.worktree, "--session-id", agent_sid]
+                argv = ["claude", *bypass, *tail, *more, "--worktree", req.worktree, "--session-id", agent_sid,
+                        *([] if req.task else naming)]               # a task has no session name of its own to show in /resume
                 if req.prompt:
                     argv += ["--", req.prompt]
                 worktree = str(Path(cwd) / WORKTREE_DIR / req.worktree)
@@ -463,16 +676,20 @@ class ClaudeAgent(Agent):
                 argv = ["claude", "--session-id", agent_sid, *naming, *bypass, *tail, *more]
         else:
             if req.prompt:
-                raise projects.BadRequest("a first prompt can only start a new session; resume and continue take none")
+                raise projects.BadRequest("a first prompt can only start a new session; resume, continue and from_pr take none")
             if req.worktree:
                 raise projects.BadRequest("worktree: only a new session can start in a native worktree")
+            fork = ["--fork-session"] if full.get("fork_session") else []
             if req.kind == "resume":
                 if req.resume_id and not UUID_RE.match(req.resume_id):
                     raise projects.BadRequest("resume id must be a UUID")
                 agent_sid = req.resume_id or None
-                argv = ["claude", "--resume", *([req.resume_id] if req.resume_id else []), *bypass, *tail, *more]
+                argv = ["claude", "--resume", *([req.resume_id] if req.resume_id else []), *fork, *bypass, *tail, *more]
+            elif req.kind == "from_pr":
+                # the conversation linked to that PR: its id is learned from the first hook, there is nothing to pass or name
+                argv = ["claude", "--from-pr", full["from_pr"], *bypass, *tail, *more]
             else:
-                argv = ["claude", "--continue", *bypass, *tail, *more]
+                argv = ["claude", "--continue", *fork, *bypass, *tail, *more]
         cmd_line = shlex.join(argv)
         if devc:
             # devcontainer CLI: build/start the container, then run claude inside it (its own ~/.claude; log in once there)
@@ -483,14 +700,14 @@ class ClaudeAgent(Agent):
     def resume_argv(self, session_id: str | None = None, *, name: str | None = None, opts: dict | None = None, add_dirs=()) -> list[str]:
         if session_id and not UUID_RE.match(session_id):
             raise projects.BadRequest("resume id must be a UUID")
-        full = self._validate(opts, interactive=True, tasks_or_headless=False)[0]
+        full = self._validate(opts, interactive=True, tasks_or_headless=False, files=False)[0]
         target = session_id or name
         argv = ["claude", "--resume", *([target] if target else []), *self._opt_args(full)]
         dirs = [str(d) for d in (add_dirs or ())]
         return argv + (["--add-dir", *dirs] if dirs else [])
 
     def continue_argv(self, cwd: str, opts: dict | None = None, add_dirs=()) -> list[str]:
-        full = self._validate(opts, interactive=True, tasks_or_headless=False)[0]
+        full = self._validate(opts, interactive=True, tasks_or_headless=False, files=False)[0]
         dirs = [str(d) for d in (add_dirs or ())]
         return ["claude", "--continue", *self._opt_args(full), *(["--add-dir", *dirs] if dirs else [])]
 

@@ -934,6 +934,21 @@ Quad.mount = function (root, route) {
     return e;
   }
 
+  /* + New session in an empty tile: the launcher sheet (launch(), components.js) for the quad's project (the one in the address), else where the board worked last.
+     onDone(response) is the launcher's hook for a session that started: the sheet closes and the new session takes this tile (open: false asks it not to open the
+     terminal anywhere else: the tile is where it is shown). Without a place anywhere it is the repo picker. */
+  function newSessionHere(slot) {
+    const p = I.project && I.st ? (I.st.projects || []).find((x) => x.name === I.project) : null;
+    const hit = typeof launchPlace === 'function' ? launchPlace(p || null, 'session') : null;
+    const onDone = (res) => {
+      if (typeof closeSheet === 'function') closeSheet();
+      if (!I.disposed && res && typeof res.tmux === 'string' && res.tmux) assign(slot, res.tmux);
+    };
+    if (hit && typeof launch === 'function') return launch({ mode: 'session', project: hit.project, repo: hit.repo, slot, open: false, onDone });
+    if (typeof Shell !== 'undefined' && Shell && typeof Shell.openCreate === 'function') return Shell.openCreate('session', I.project ? { project: I.project } : undefined);
+    return false;
+  }
+
   function patchEmpty(e) {
     const free = Quad.candidates(I.st, I.project).filter((s) => !I.slots.includes(s.tmux)).slice(0, 6);
     const sig = `${I.st ? 1 : 0}|${free.map((s) => `${s.tmux}:${s.state}`).join(',')}`;
@@ -947,7 +962,7 @@ Quad.mount = function (root, route) {
       list.append(el('button', { class: 'small qe-pick', type: 'button', 'data-tmux': s.tmux, onclick: () => assign(e.slot, s.tmux) },
         stateGlyph(s.state), el('span', { class: 'qe-name', text: Quad.label(s.tmux) })));
     }
-    e.node.append(list);
+    e.node.append(list, el('button', { class: 'small qe-new', type: 'button', title: 'start a new session for this tile', onclick: () => newSessionHere(e.slot) }, ic('plus'), 'New session'));
   }
 
   /* ----- the one-up chip switcher ----- */

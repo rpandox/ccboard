@@ -44,10 +44,12 @@ class TTLCache:
 @dataclass
 class LaunchReq:
     """One launch, agent-neutral. `opts` holds the agent's own options (Claude: model, effort, permission_mode, allowed_tools,
-    disallowed_tools, append_system_prompt, fast, devcontainer, and `extra`: the already shlex-split extra CLI args). `bypass` is
-    separate from `opts` on purpose: it is never stored. `task=True` applies the stricter task rules (no bypass, no settings
-    overrides). `worktree` is the native worktree name (a slug), not a path."""
-    kind: str                                          # new | resume | continue
+    disallowed_tools, append_system_prompt, fast, devcontainer, tools, agent_name, fallback_model, autocompact, mcp_config and, for
+    one launch only, from_pr and fork_session; Codex: model, reasoning_effort, mode / permission_mode, sandbox, approval, search,
+    config lines ...; and `extra`: the already shlex-split extra CLI args). `bypass` is separate from `opts` on purpose: it is never
+    stored. `task=True` applies the stricter task rules (no bypass, no settings overrides). `worktree` is the native worktree name (a
+    slug), not a path."""
+    kind: str                                          # new | resume | continue | from_pr (Claude) | fork (Codex)
     session_name: str = ""
     cwd: str = ""
     opts: dict = field(default_factory=dict)
@@ -76,8 +78,10 @@ class LaunchPlan:
 @dataclass
 class OptField:
     """One launcher control. kind: select | combo (select plus free text) | bool | text | textarea | dirs | args.
-    `default` pre-fills the launcher UI (None = leave the CLI's own default). `when` shows the field only while every listed
-    condition holds, e.g. {"repo.devcontainer": True} or {"worktree": True}."""
+    `key` is the name the launch request carries the value under (the `launcher` field is the launch kind). `default` pre-fills the
+    launcher UI (None = leave the CLI's own default). `when` shows the field only while every listed condition holds: a value
+    must equal the field's current value, a list means "any of these", e.g. {"repo.devcontainer": True}, {"worktree": True},
+    {"launcher": ["resume", "continue"]}."""
     key: str
     label: str
     kind: str
@@ -167,6 +171,10 @@ class Agent(ABC):
     # ---- launching ----
     @abstractmethod
     def option_schema(self) -> list[OptField]: ...
+    def launch_caps(self) -> dict:
+        """What this box's binary can do that the launcher cares about (GET /api/agents `capabilities`). Built from cached probes only,
+        never a subprocess of its own on a hot path. Claude: {ultracode_flag}; Codex: its flag set (fork, approve_for_me, ...)."""
+        return {}
     @abstractmethod
     def validate_opts(self, raw: dict | None, *, interactive: bool, tasks_or_headless: bool) -> dict: ...   # raises projects.BadRequest
     @abstractmethod
@@ -229,8 +237,10 @@ class Agent(ABC):
         return out
 
     def describe(self) -> dict:
-        """The GET /api/agents entry for this agent: identity, install/auth/hooks state, the launcher's option schema and the slash
-        registry. Built from cached pieces only; JSON-serialisable; carries no credentials (auth_status holds none)."""
+        """The GET /api/agents entry for this agent: identity, install/auth/hooks state, the launcher's option schema (one OptField per
+        control: launch kinds, name, model, effort, permissions, prompt, the advanced ones) with the lists it draws from (permission
+        modes, efforts, models, reasoning per model), the box capabilities and the slash registry. Built from cached pieces only;
+        JSON-serialisable; carries no credentials (auth_status holds none)."""
         st = self.auth_status() or {}
         hs = self.hooks_status() or {}
         hooks = {"installed": bool(hs.get("installed"))}
@@ -240,4 +250,5 @@ class Agent(ABC):
                 "version": st.get("version"), "auth": dict(st), "hooks": hooks,
                 "options": [asdict(f) for f in self.option_schema()], "permission_modes": list(self.PERMISSION_MODES),
                 "efforts": list(self.EFFORTS), "models": list(self.MODELS), "reasoning_by_model": dict(self.REASONING_BY_MODEL),
+                "capabilities": self.launch_caps(),
                 "slash": {k: asdict(v) for k, v in self.slash_commands().items()}}

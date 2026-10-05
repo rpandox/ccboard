@@ -232,7 +232,7 @@ def test_the_agent_field_and_the_codex_resume_and_continue_launchers(cx):
     assert row(cx, r["tmux"])["launcher"] == "continue"
     # a launcher of one agent cannot be pointed at another
     for body in ({"launcher": "codex", "agent": "claude"}, {"launcher": "shell", "agent": "codex"}, {"launcher": "claude", "agent": "gemini"},
-                 {"launcher": "codex-resume", "resume_id": "not-a-uuid"}):
+                 {"launcher": "codex-resume", "resume_id": "--last"}):       # v0.5.13: a Codex resume takes a UUID or a session name, never a flag
         before = len(cx.tmux["created"])
         assert cx.client.post("/api/projects/shop/repos/api/sessions", headers=H, json=body).status_code == 400, body
         assert len(cx.tmux["created"]) == before

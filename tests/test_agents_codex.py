@@ -418,17 +418,20 @@ def test_resume_continue_and_resume_by_name(ag):
     assert ag.continue_argv("/p/shop/api", opts={"model": "gpt-5.5"}) == ["codex", "resume", "--no-alt-screen", "-m", "gpt-5.5", "--last"]
     for bad in ("not-a-uuid", "../etc/passwd", "-x"):
         with pytest.raises(projects.BadRequest):
-            ag.resume_argv(bad)
-        with pytest.raises(projects.BadRequest):
-            plan(ag, kind="resume", resume_id=bad)
+            ag.resume_argv(bad)                                 # a recovery id is a UUID: the stored thread
+    for bad in ("../etc/passwd", "-x", "a;b", "x" * 81):
+        with pytest.raises(projects.BadRequest, match="^resume id must be a UUID or a session name"):
+            plan(ag, kind="resume", resume_id=bad)             # a launch may name the thread instead (v0.5.13)
+    named = plan(ag, kind="resume", resume_id="my session")
+    assert named.argv == ["codex", "resume", "--no-alt-screen", "my session"] and named.agent_session_id is None, "a name: the id is learned later"
     with pytest.raises(projects.BadRequest):
         ag.resume_argv(None, name="--last")                     # a name never starts with '-'
     with pytest.raises(projects.BadRequest, match="first prompt"):
         plan(ag, kind="resume", resume_id=SID, prompt="more")
     with pytest.raises(projects.BadRequest, match="worktree"):
         plan(ag, kind="continue", worktree="w")
-    with pytest.raises(projects.BadRequest, match="launch kind"):
-        plan(ag, kind="fork")
+    with pytest.raises(projects.BadRequest, match="^launch kind must be one of new, resume, continue, fork$"):
+        plan(ag, kind="bogus")
 
 
 def test_managed_worktree_task_argv(ag):
@@ -723,13 +726,20 @@ def test_option_schema_and_describe(ag, fake, monkeypatch):
     fake.use(models=MODELS_JSON, version="0.145.0")
     ag.models()
     fields = {f.key: f for f in ag.option_schema()}
-    assert list(fields) == ["model", "reasoning_effort", "permission_mode", "search", "bypass", "sandbox", "approval", "add_dirs",
-                            "profile", "no_alt_screen", "worktree", "extra"]
+    assert list(fields) == ["launcher", "resume_id", "name", "model", "reasoning_effort", "mode", "sandbox", "approval", "prompt", "search",
+                            "bypass", "permission_mode", "add_dirs", "worktree", "worktree_name", "config", "profile", "no_alt_screen", "extra"]
+    assert [k for k, f in fields.items() if f.group == "basic"] == ["launcher", "resume_id", "name", "model", "reasoning_effort", "mode",
+                                                                     "sandbox", "approval", "prompt"]
+    assert fields["launcher"].choices == ["new", "resume", "continue", "fork"] and fields["launcher"].default == "new"
+    assert fields["resume_id"].when == {"launcher": ["resume", "fork"]} and fields["prompt"].when == {"launcher": ["new"]}
+    assert fields["mode"].choices == ["default", "auto", "read-only", "bypass", "custom"] == list(codex.MODES) and fields["mode"].default == "default"
+    assert fields["sandbox"].when == fields["approval"].when == {"mode": ["custom"]} and fields["worktree_name"].when == {"worktree": True}
     assert fields["model"].kind == "combo" and fields["model"].choices == ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"]
     assert fields["reasoning_effort"].choices == ["low", "medium", "high", "xhigh", "max"]
-    assert fields["permission_mode"].choices == list(codex.PERMISSION_MODES)
+    assert fields["permission_mode"].choices == list(codex.PERMISSION_MODES) and fields["permission_mode"].group == "advanced"
     assert fields["approval"].choices == ["untrusted", "on-request", "never"]                         # 0.145's -a: no on-failure
     assert fields["bypass"].danger is True and fields["bypass"].group == "advanced"
+    assert fields["config"].kind == "textarea" and fields["config"].group == "advanced" and fields["search"].group == "advanced"
     assert fields["no_alt_screen"].default is True
     for k in ("allowed_tools", "disallowed_tools", "append_system_prompt", "tools", "fallback_model", "fork_session", "from_pr", "max_turns"):
         assert k not in fields
@@ -738,9 +748,27 @@ def test_option_schema_and_describe(ag, fake, monkeypatch):
     assert (d["name"], d["glyph"], d["installed"], d["version"]) == ("codex", "◇", True, "0.145.0")
     assert d["models"] == ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"] and d["reasoning_by_model"]["gpt-5.6-sol"][-1] == "max"
     assert set(d["slash"]) == {"model", "reasoning"} and d["auth"]["loggedIn"] is True
+    caps = d["capabilities"]
+    assert caps["fork"] is True and caps["approve_for_me"] is False and caps["device_auth"] is False and caps["no_alt_screen"] is True
     codex.reset_caches()
     fake.use(help_text=HELP_0157)
     assert {f.key: f for f in ag.option_schema()}["approval"].choices == ["on-request", "never"]
+    assert ag.describe()["capabilities"]["approve_for_me"] is True
+
+
+def test_the_launch_field_offers_fork_only_where_codex_has_it(ag, fake, monkeypatch):
+    monkeypatch.setattr(codex.CodexAgent, "_warm_models", lambda self, exe: None)
+    no_fork = HELP_0145.replace("  fork            Fork a previous interactive session (picker by default; use --last to fork the\n"
+                                "                  most recent)\n", "")
+    assert no_fork != HELP_0145
+    fake.use(help_text=no_fork)
+    assert {f.key: f for f in ag.option_schema()}["launcher"].choices == ["new", "resume", "continue"]
+    assert ag.launch_caps()["fork"] is False
+    with pytest.raises(projects.BadRequest, match="^fork: this codex has no `codex fork` command"):
+        plan(ag, kind="fork")
+    codex.reset_caches()
+    fake.use(help_text=HELP_0145)
+    assert {f.key: f for f in ag.option_schema()}["launcher"].choices == ["new", "resume", "continue", "fork"]
 
 
 def test_option_schema_without_a_binary_never_starts_a_thread(ag, monkeypatch):
@@ -1331,3 +1359,144 @@ def test_a_hung_version_probe_does_not_chain_with_the_login_probe(ag, fake):
     c = by_id(ag.doctor_checks())
     assert c["codex-bin"].status == "warn" and "version unknown" in c["codex-bin"].detail
     assert c["codex-auth"].status == "pass" and fake.count("--version") == 1, "the failed probe is remembered, not retried by the login probe"
+
+
+# ---------- v0.5.13: the launcher's mode picker, config lines, fork, reasoning ----------
+
+def test_the_fork_command_is_a_capability_of_the_commands_list():
+    assert codex._help_commands(HELP_0145) >= {"exec", "resume", "fork", "login"} and "fork" in codex._help_commands(HELP_0157)
+    assert codex.parse_help(HELP_0145)["fork"] is True and codex.parse_help(HELP_0157)["fork"] is True
+    assert codex.BASELINE_CAPS["fork"] is True and codex.parse_help(HELP_0145) == codex.BASELINE_CAPS
+    # an option's text that mentions the word is not a command
+    assert codex.parse_help("Options:\n  -m, --model <M>\n          Fork it with fork\n")["fork"] is False
+    assert codex._help_commands("") == set() and codex._help_commands("Usage: codex\n  fork   x\n") == set()
+
+
+@pytest.mark.parametrize("mode,flags", [
+    ("default", ["-s", "workspace-write", "-a", "on-request"]),
+    ("auto", ["-s", "workspace-write", "-a", "on-request"]),                      # 0.145: no --approve-for-me, no on-failure
+    ("read-only", ["-s", "read-only", "-a", "on-request"]),
+    ("acceptEdits", ["-s", "workspace-write", "-a", "on-request"]),               # a Claude permission mode by its own name still works
+    ("dontAsk", ["-s", "workspace-write", "-a", "never"]),
+    ("bypass", ["--dangerously-bypass-approvals-and-sandbox"]),
+])
+def test_the_mode_picker_maps_onto_the_permission_flags(ag, mode, flags):
+    assert plan(ag, opts={"mode": mode}).argv == ["codex", "--no-alt-screen", *flags]
+
+
+def test_mode_auto_uses_the_approval_review_where_codex_has_it(ag, fake):
+    fake.use(version="0.157.1", help_text=HELP_0157, exec_text=EXEC_0157)
+    assert plan(ag, opts={"mode": "auto"}).argv == ["codex", "--no-daemon", "--no-alt-screen", "--approve-for-me", "-s", "workspace-write"]
+
+
+def test_mode_custom_is_the_sandbox_and_approval_picked(ag):
+    assert plan(ag, opts={"mode": "custom", "sandbox": "read-only", "approval": "never"}).argv == \
+        ["codex", "--no-alt-screen", "-s", "read-only", "-a", "never"]
+    assert plan(ag, opts={"mode": "custom", "approval": "untrusted"}).argv == ["codex", "--no-alt-screen", "-a", "untrusted"]
+    assert plan(ag, opts={"mode": "custom", "sandbox": "workspace-write", "permission_mode": "plan"}).argv[-2:] == ["-s", "workspace-write"], \
+        "custom drops a permission mode beside it"
+    with pytest.raises(projects.BadRequest, match="^mode custom: choose a sandbox, an approval policy or both$"):
+        plan(ag, opts={"mode": "custom"})
+    with pytest.raises(projects.BadRequest, match="^mode must be one of default, auto, read-only, bypass, custom$"):
+        plan(ag, opts={"mode": "yolo"})
+    # the mode word is stored as the permission mode it stands for, and a bypass is never stored
+    assert ag.validate_opts({"mode": "read-only"}) == {"permission_mode": "plan"} and ag.validate_opts({"mode": "bypass"}) == {}
+    assert ag.validate_opts({"mode": "auto", "permission_mode": "plan"}) == {"permission_mode": "auto"}, "mode wins"
+
+
+def test_danger_full_access_still_needs_the_acknowledgement_under_mode_custom(ag):
+    with pytest.raises(projects.BadRequest, match="danger-full-access"):
+        plan(ag, opts={"mode": "custom", "sandbox": "danger-full-access"})
+    assert plan(ag, opts={"mode": "custom", "sandbox": "danger-full-access"}, bypass=True).argv == \
+        ["codex", "--no-alt-screen", "--dangerously-bypass-approvals-and-sandbox"], "the acknowledgement turns it into the one danger flag"
+    # tasks, dispatch and headless runs get no bypass under any spelling of it
+    for raw in ({"mode": "bypass"}, {"permission_mode": "bypassPermissions"}, {"mode": "custom", "sandbox": "danger-full-access"}):
+        with pytest.raises(projects.BadRequest):
+            ag.validate_opts(raw, interactive=True, tasks_or_headless=True)
+        with pytest.raises(projects.BadRequest):
+            ag.validate_opts(raw, interactive=False, tasks_or_headless=True)
+        with pytest.raises(projects.BadRequest):
+            plan(ag, opts=raw, task=True, prompt="p")
+
+
+def test_reasoning_is_the_reasoning_effort(ag, fake, monkeypatch):
+    monkeypatch.setattr(codex.CodexAgent, "_warm_models", lambda self, exe: None)
+    fake.use(models=MODELS_JSON)
+    ag.models()
+    assert plan(ag, opts={"model": "gpt-5.5", "reasoning": "high"}).argv[-4:] == ["-m", "gpt-5.5", "-c", 'model_reasoning_effort="high"']
+    assert ag.validate_opts({"reasoning": "low", "reasoning_effort": "high"}) == {"reasoning_effort": "high"}
+    with pytest.raises(projects.BadRequest, match="^reasoning_effort must be one of"):
+        plan(ag, opts={"reasoning": "ultra"})
+
+
+def test_config_lines_become_c_flags_after_the_reasoning(ag):
+    p = plan(ag, opts={"reasoning": "high", "config": "tui.theme=dark\n  shell_environment_policy.inherit=all \n\nmodel_verbosity=\"low\""})
+    assert p.argv == ["codex", "--no-alt-screen", "-c", 'model_reasoning_effort="high"', "-c", "tui.theme=dark", "-c", "shell_environment_policy.inherit=all",
+                      "-c", 'model_verbosity="low"']
+    assert p.opts_clean == {"reasoning_effort": "high", "config": ["tui.theme=dark", "shell_environment_policy.inherit=all", 'model_verbosity="low"']}
+    assert plan(ag, opts={"config": ["a.b=c"]}).argv[-2:] == ["-c", "a.b=c"]
+    # stored, so a resume or a recovery carries them again
+    assert ag.resume_argv(SID, opts=p.opts_clean) == ["codex", "resume", "--no-alt-screen", "-c", 'model_reasoning_effort="high"', "-c", "tui.theme=dark",
+                                                      "-c", "shell_environment_policy.inherit=all", "-c", 'model_verbosity="low"', SID]
+    assert plan(ag, kind="continue", opts={"config": "a.b=c"}).argv[-3:] == ["-c", "a.b=c", "--last"]
+
+
+@pytest.mark.parametrize("line", ["noequals", "=x", "a b=c", "a=", "a-b=c", "key=va\nlue\x00", "k=" + "v" * 400, "a=b\x1b[31m"])
+def test_config_lines_that_are_not_key_value_are_refused(ag, line):
+    with pytest.raises(projects.BadRequest, match="^config "):
+        plan(ag, opts={"config": [line]})
+
+
+@pytest.mark.parametrize("key", ["model", "model_reasoning_effort", "sandbox_mode", "approval_policy", "sandbox_permissions", "profile", "hooks",
+                                 "hooks.session_start", "features.hooks", "notify", "mcp_servers.x.command", "model_providers.x.base_url",
+                                 "openai_base_url", "projects.x.trust_level", "sandbox_workspace_write.network_access", "Model",
+                                 "features.dangerously_x", "my_yolo_mode", "bypass_it", "profiles.work.model"])
+def test_config_keys_the_launcher_owns_are_refused(ag, key):
+    with pytest.raises(projects.BadRequest, match=rf"^config {re.escape(key.lower())}: the launcher sets this itself"):
+        plan(ag, opts={"config": [f"{key}=x"]})
+
+
+def test_config_has_a_line_cap_and_a_shape(ag):
+    assert len(plan(ag, opts={"config": [f"a.k{i}=1" for i in range(20)]}).argv) == 2 + 40
+    with pytest.raises(projects.BadRequest, match="^config: 20 lines at most$"):
+        plan(ag, opts={"config": [f"a.k{i}=1" for i in range(21)]})
+    with pytest.raises(projects.BadRequest, match="^config: give key=value lines$"):
+        plan(ag, opts={"config": 5})
+    with pytest.raises(projects.BadRequest, match="^config: give key=value lines$"):
+        plan(ag, opts={"config": [1]})
+    assert plan(ag, opts={"config": ""}).argv == ["codex", "--no-alt-screen"], "an untouched field"
+    assert codex.CodexAgent.config_lines("a=b\n\n c.d=e ") == ["a=b", "c.d=e"]
+    assert "-c" in codex.FORBIDDEN_SHORT, "extra args still cannot carry -c: the config lines are the way"
+    assert ag.forbidden_extra(["-c", "x=1"], interactive=True) == "-c"
+
+
+def test_fork_is_resume_by_another_name(ag):
+    assert plan(ag, kind="fork", resume_id=SID).argv == ["codex", "fork", "--no-alt-screen", SID]
+    assert plan(ag, kind="fork", resume_id="my session").argv == ["codex", "fork", "--no-alt-screen", "my session"]
+    assert plan(ag, kind="fork").argv == ["codex", "fork", "--no-alt-screen"], "no id opens Codex's picker"
+    p = plan(ag, kind="fork", resume_id=SID, opts={"model": "gpt-5.5", "mode": "read-only"}, add_dirs=["/p/x"])
+    assert p.argv == ["codex", "fork", "--no-alt-screen", "-s", "read-only", "-a", "on-request", "-m", "gpt-5.5", "--add-dir", "/p/x", SID]
+    assert p.agent_session_id is None, "a fork is a new thread: its id is learned from the first hook, never the one forked"
+    assert plan(ag, kind="resume", resume_id=SID).agent_session_id == SID
+    with pytest.raises(projects.BadRequest, match="first prompt"):
+        plan(ag, kind="fork", resume_id=SID, prompt="more")
+    with pytest.raises(projects.BadRequest, match="worktree"):
+        plan(ag, kind="fork", worktree="w")
+    with pytest.raises(projects.BadRequest, match="^resume id must be a UUID or a session name"):
+        plan(ag, kind="fork", resume_id="-x")
+    # a fork never re-passes a stored bypass either
+    assert "--dangerously-bypass-approvals-and-sandbox" not in plan(ag, kind="fork", resume_id=SID, opts={"permission_mode": "bypassPermissions"}).argv
+
+
+def test_claude_only_fields_are_refused_by_name(ag):
+    for key, val in (("agent_name", "reviewer"), ("autocompact", "auto"), ("mcp_config", "/x.json"), ("tools", "Bash"), ("fork_session", True)):
+        with pytest.raises(projects.BadRequest, match=f"^{key}: not supported by codex$"):
+            plan(ag, opts={key: val})
+    assert ag.validate_opts({"fast": True}) == {}, "fast is ignored, as the form sends it untouched"
+
+
+def test_a_session_prompt_is_capped_but_a_task_prompt_is_not(ag):
+    assert plan(ag, prompt="x" * codex.MAX_PROMPT).argv[-1] == "x" * codex.MAX_PROMPT
+    with pytest.raises(projects.BadRequest, match="^prompt is too long"):
+        plan(ag, prompt="x" * (codex.MAX_PROMPT + 1))
+    assert plan(ag, prompt="x" * 20000, task=True, opts={"permission_mode": "default"}).argv[-1] == "x" * 20000

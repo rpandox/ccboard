@@ -52,7 +52,7 @@ function stateWith(tasks = [BACKLOG()], extra = {}) {
  * A world with the pages, dnd.js and the fake network. `fine` says whether (pointer: fine) matches. api() is the fake of treekit.mjs: every call
  * lands in __calls, answers come from server.answers; toast() and poll() are recorders and navigate() records. poll() never repaints.
  */
-function dndWorld({ state = stateWith(), fine = true, answers = {}, extra = {}, install = true } = {}) {
+function dndWorld({ state = stateWith(), fine = true, answers = {}, extra = {}, install = true, launcher = 'legacy' } = {}) {
   const env = makeNetworkWorld({ extra: { matchMedia: (q) => ({ matches: fine && /pointer:\s*fine/.test(q), addEventListener() {}, removeEventListener() {} }), ...extra } });
   const { w, server } = env;
   Object.assign(server.answers, answers);
@@ -68,6 +68,10 @@ function dndWorld({ state = stateWith(), fine = true, answers = {}, extra = {}, 
   for (const f of PAGE_FILES) if (fs.existsSync(path.join(STATIC, 'pages', `${f}.js`))) w.load(`pages/${f}.js`);
   w.ctx.__st = state;
   w.run('state = __st');
+  // v0.5.13: Edit options… goes through launch() (components.js): the launcher in dispatch mode when openLauncher exists, else taskDispatchSheet. 'legacy' (the default) takes
+  // openLauncher away so these tests pin the older sheet; 'stub' makes it a recorder (__launched); 'real' leaves launcher.js's own.
+  if (launcher === 'legacy') w.run('openLauncher = undefined');
+  else if (launcher === 'stub') w.run('globalThis.__launched = []; globalThis.openLauncher = (o) => { __launched.push(o); return true; };');
   const Dnd = w.get('Dnd');
   if (install) Dnd.install();            // in the app the first target that is drawn (a row, a lane bar) does this
   return { ...env, state, Dnd, page: () => w.document.querySelector('#page') };
@@ -508,9 +512,26 @@ test('Edit options… hands the drop to the launcher in dispatch mode (taskDispa
   assert.equal(posts(env).length, 0);
 });
 
+test('Edit options… with openLauncher: the launcher in dispatch mode with the card, its place (state objects), the agent and the switch; the popover gives way and nothing is sent', async () => {
+  const env = dndWorld({ launcher: 'stub' });
+  startDrag(env);
+  fire(env, 'drop', laneTarget(env, 'claude'), { dataTransfer: dataTransfer() });
+  popover(env).querySelector('.dnd-switch input').checked = false;
+  popover(env).querySelector('.dnd-optsbtn').click();
+  assert.equal(popover(env), null);
+  const got = plain(env.w.run('__launched.map((o) => ({ mode: o.mode, task: o.task.id, project: o.project.name, repo: o.repo.name, agent: o.agent, auto_close: o.auto_close }))'));
+  assert.deepEqual(got, [{ mode: 'dispatch', task: 20, project: 'petroit', repo: 'api', agent: 'claude', auto_close: false }]);
+  assert.equal(env.w.run('__launched[0].project === state.projects.find((p) => p.name === "petroit")'), true);
+  await settle();
+  assert.equal(posts(env).length, 0);
+  startDrag(env);
+  fire(env, 'drop', sessionTarget(env, 'petroit--api--s1'), { dataTransfer: dataTransfer() });
+  assert.equal(popover(env).querySelector('.dnd-optsbtn'), null, 'launch options are about a new session');
+});
+
 test('without the launcher sheet, Edit options opens the launch controls in place (Claude lane only) and sends what the person touched', async () => {
   const env = dndWorld({ answers: { '/api/tasks/20/dispatch': LANE_ANSWER } });
-  env.w.run('taskDispatchSheet = undefined;');
+  env.w.run('taskDispatchSheet = undefined;');                // no openLauncher either (the legacy world): neither sheet exists
   startDrag(env);
   fire(env, 'drop', laneTarget(env, 'codex'), { dataTransfer: dataTransfer() });
   assert.equal(popover(env).querySelector('.dnd-optsbtn'), null, 'Claude launch controls are not offered for Codex');

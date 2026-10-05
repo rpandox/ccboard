@@ -53,8 +53,10 @@ function stateWith(tasks, extra = {}) {
 /**
  * A world with every page, the shell's create sheet and the fake network. `answers` are api path prefixes (a value, or a function of the request
  * that may throw). `confirm` answers window.confirm and records the messages in __confirms. poll() and navigate() only record.
+ * `launcher` says what the entry points open (v0.5.13: launch() in components.js): 'legacy' (the default) takes openLauncher away, so + task and Options… open the
+ * forms and the dispatch sheet these tests pin (taskForm, taskDispatchSheet); 'stub' makes openLauncher a recorder (__launched); 'real' leaves launcher.js's own.
  */
-function tasksWorld({ state = stateWith([BACKLOG()]), answers = {}, confirm = () => true, keymap = false } = {}) {
+function tasksWorld({ state = stateWith([BACKLOG()]), answers = {}, confirm = () => true, keymap = false, launcher = 'legacy' } = {}) {
   const env = makeNetworkWorld({ extra: { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), confirm: (m) => { env.w.ctx.__confirms.push(String(m)); return confirm(m); } } });
   const { w, server } = env;
   Object.assign(server.answers, answers);
@@ -71,6 +73,8 @@ function tasksWorld({ state = stateWith([BACKLOG()]), answers = {}, confirm = ()
   for (const f of PAGE_FILES) if (fs.existsSync(path.join(STATIC, 'pages', `${f}.js`))) w.load(`pages/${f}.js`);
   w.ctx.__st = state;
   w.run('state = __st');
+  if (launcher === 'legacy') w.run('openLauncher = undefined');
+  else if (launcher === 'stub') w.run('globalThis.__launched = []; globalThis.openLauncher = (o) => { __launched.push(o); return true; };');
   w.run('globalThis.mkErr = (m, s, d) => { const e = new Error(m); e.status = s; e.data = d; e.body = d; e.mismatch = d && d.mismatch; return e; };');
   return { ...env, state, page: () => w.document.querySelector('#page'), sheet: () => w.document.querySelector('#sheet') };
 }
@@ -1345,4 +1349,64 @@ test('the Move sheet offers a working Claude session as a queued hand-over (the 
   assert.equal(byName.i1.queue, false);
   assert.deepEqual(rows.map((r) => r.s.name), ['i1', 'w1'], 'the session at its prompt ranks first');
   assert.ok(!button(card(env, 20), /^→ w1/), 'the one-tap target is never the queue');
+});
+
+// ---------------------------------------------------------------- v0.5.13: Options… is the launcher in dispatch mode (openLauncher)
+
+test('Options… calls openLauncher({mode: dispatch, task, project, repo}) with the card and the state\'s own objects; the Move sheet stays (the launcher swaps it)', async () => {
+  const env = tasksWorld({ state: withAgents([BACKLOG()]), launcher: 'stub' });
+  await go(env, PETROIT);
+  sendBtn(card(env, 20)).click();
+  button(env.sheet(), /^Options…$/).click();
+  const got = plain(env.w.run('__launched.map((o) => ({ mode: o.mode, task: o.task && o.task.id, title: o.task && o.task.title, project: o.project && o.project.name, repo: o.repo && o.repo.name, keys: Object.keys(o).sort() }))'));
+  assert.deepEqual(got, [{ mode: 'dispatch', task: 20, title: 'Unify the devices pagination', project: 'petroit', repo: 'api', keys: ['mode', 'project', 'repo', 'task'] }]);
+  assert.equal(env.w.run('__launched[0].project === state.projects.find((p) => p.name === "petroit") && __launched[0].repo === __launched[0].project.repos.find((r) => r.name === "api")'), true);
+  assert.equal(env.sheet().open, true, 'no closeSheet() first: a closed dialog fires its close event a task later and would wipe what the launcher put in');
+});
+
+test('Options… is offered with openLauncher alone (no taskDispatchSheet) and not at all with neither; a task whose place the board no longer lists still opens it with a bare {name}', async () => {
+  const env = tasksWorld({ state: withAgents([BACKLOG({ repo: 'gone-repo' })]), launcher: 'stub' });
+  await go(env, PETROIT);
+  env.w.run('taskDispatchSheet = undefined;');
+  sendBtn(card(env, 20)).click();
+  const opts = button(env.sheet(), /^Options…$/);
+  assert.ok(opts, 'offered by the launcher alone');
+  opts.click();
+  assert.deepEqual(plain(env.w.run('__launched.map((o) => [o.project.name, o.repo.name])')), [['petroit', 'gone-repo']]);
+  env.sheet().close();
+  env.w.run('openLauncher = undefined');
+  sendBtn(card(env, 20)).click();
+  assert.equal(button(env.sheet(), /^Options…$/), undefined, 'neither: no button');
+  assert.ok(button(env.sheet(), /^Cancel$/));
+});
+
+test('without openLauncher, Options… still opens the dispatch sheet of launcher.js (taskDispatchSheet), with the card and no preset', async () => {
+  const env = tasksWorld({ state: withAgents([BACKLOG()]) });                                // legacy: openLauncher is gone
+  await go(env, PETROIT);
+  env.w.run('globalThis.__sheets = []; taskDispatchSheet = (t, preset) => { __sheets.push({ id: t.id, preset }); };');
+  sendBtn(card(env, 20)).click();
+  button(env.sheet(), /^Options…$/).click();
+  assert.deepEqual(plain(env.w.get('__sheets')), [{ id: 20, preset: {} }]);
+});
+
+test('taskLaunchOpts: a project folder card carries the project root as its repo, and a preset rides along', async () => {
+  const env = tasksWorld({ state: withAgents([BACKLOG({ project: 'phasezero', repo: 'root' })]), launcher: 'stub' });
+  const got = plain(env.w.run('(() => { const o = taskLaunchOpts({ id: 3, project: "phasezero", repo: "root" }, { agent: "codex", auto_close: false }); return { mode: o.mode, project: o.project.name, folder: o.repo === o.project.root, agent: o.agent, auto_close: o.auto_close, id: o.task.id }; })()'));
+  assert.deepEqual(got, { mode: 'dispatch', project: 'phasezero', folder: true, agent: 'codex', auto_close: false, id: 3 });
+});
+
+test('+ task on a project page opens the launcher sheet filled in (project and repo in the title) with ONE filled primary: one tap to the sheet, one to Start task', async () => {
+  const env = tasksWorld({ state: stateWith([]), launcher: 'real', answers: { '/api/tasks': { id: 41, slug: 'fix-the-footer', tmux: 'petroit--api--t-fix-the-footer', branch: 'worktree-fix-the-footer', attach_url: '/term/petroit--api--t-fix-the-footer' } } });
+  await go(env, PETROIT);
+  let taps = 0;
+  button(env.page(), /\+\s*task/i).click();                                                // tap 1: the sheet opens with the project and the repo chosen
+  taps++;
+  const sh = env.sheet();
+  assert.equal(sh.open, true);
+  assert.match(textOf(sh.querySelector('.sheet-title')), /^New task · petroit\/api$/, 'the place is in the title: nothing to choose');
+  const primaries = all(sh, 'button').filter((b) => b.classList.contains('bp5-intent-primary'));
+  assert.equal(primaries.length, 1, 'one filled primary in the sheet');
+  assert.match(textOf(primaries[0]), /Start task/);
+  assert.equal(posts(env, /\/api\/tasks$/).length, 0, 'nothing is sent by opening it');
+  assert.equal(taps, 1, 'one tap to the filled sheet; Start task is the second');
 });

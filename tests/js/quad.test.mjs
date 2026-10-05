@@ -24,6 +24,13 @@ const BASE = 1_800_000_000_000;
 
 const GRID = (name) => `/tty/?arg=${name}&arg=grid&fontSize=11&rendererType=canvas&disableResizeOverlay=true&disableReconnect=true`;
 
+/** The quad's part of pages.css: from its section header to the next section header (v0.5.13: later sections such as the launcher sheet's are not the quad's). */
+function quadBlock(css) {
+  const at = css.indexOf('/* ---------- quad (v0.5.9');
+  const next = css.indexOf('/* ---------- ', at + 20);
+  return css.slice(at, next < 0 ? undefined : next);
+}
+
 // ---------------------------------------------------------------- a world
 
 function fakeClock() {
@@ -1318,7 +1325,7 @@ test('Quad.addToQuad while the quad is up shows the session at once (a free slot
 
 test('pages.css (quad block): the title keeps 40 % of the tile, the pieces shed in the measured order, the mode picker is a menu button under 354 px, touch sheds earlier', () => {
   const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
-  const quad = css.slice(css.indexOf('/* ---------- quad (v0.5.9'));
+  const quad = quadBlock(css);
   assert.match(quad, /\.qt-title \{[^}]*min-width:40cqi/, 'the title floor is 40 % of the size container (the tile)');
   const hide = (sel, scope = '') => { const m = new RegExp(`@container \\(max-width: (\\d+)px\\) \\{ #page \\.quad${scope} ${sel.replace('.', '\\.')} \\{ display:none; \\}`).exec(quad); return m ? Number(m[1]) : null; };
   const mouse = { size: hide('.qt-size'), reconnect: hide('.qt-reconnect'), ctx: hide('.qt-ctx'), zoom: hide('.qt-zoom'), open: hide('.qt-open') };
@@ -1337,7 +1344,7 @@ test('pages.css (quad block): the title keeps 40 % of the tile, the pieces shed 
 
 test('pages.css (quad block): one row for the permission line from 358 px, 28 px keys and chips with a mouse (--row-btn, never --tap), the session name never shrinks', () => {
   const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
-  const quad = css.slice(css.indexOf('/* ---------- quad (v0.5.9'));
+  const quad = quadBlock(css);
   assert.match(quad, /\.qt-perm \{[^}]*display:flex; align-items:center;/);
   assert.doesNotMatch(quad.match(/\.qt-perm \{[^}]*\}/)[0], /flex-wrap:wrap/, 'nowrap by default: the text truncates (its tooltip has it all)');
   assert.match(quad, /@container \(max-width: 357px\) \{ #page \.quad \.qt-perm \{ flex-wrap:wrap; \}/, 'wraps only when too narrow for the text and three buttons');
@@ -1645,4 +1652,82 @@ test('quad.js is registered once, as the quad route, and does nothing at load', 
   assert.equal(w.get('Quad').current, null);
   assert.equal(w.run('PLACEHOLDER_INFO.quad'), undefined);
   assert.equal(w.document.listeners.keydown ? w.document.listeners.keydown.length : 0, 0, 'no listener before the page is mounted');
+});
+
+// ---------------------------------------------------------------- v0.5.13: a new session from an empty tile (openLauncher)
+
+/** openLauncher as a recorder; the opts it got are read back as plain values (the project and repo are the state's objects, onStarted a function). */
+const stubLauncher = (w) => w.run('globalThis.__launched = []; globalThis.openLauncher = (o) => { __launched.push(o); return true; };');
+const launched = (w) => plain(w.run('__launched.map((o) => ({ mode: o.mode, project: o.project && o.project.name, repo: o.repo && o.repo.name, slot: o.slot, open: o.open, hook: typeof o.onDone }))'));
+const emptyTile = (w, slot) => page(w).querySelectorAll('.qempty').find((n) => n.getAttribute('data-slot') === String(slot));
+
+test('an empty tile has + New session: openLauncher in session mode for the project of the quad, in the repo it worked in last, with the slot; the page opens no sheet itself', () => {
+  const { w } = quadWorld({ hash: '#/quad?p=petroit' });
+  stubLauncher(w);
+  tileOf(w, P3).querySelector('.qt-close').click();
+  const e = emptyTile(w, 0) || emptyTile(w, 1);
+  const btn = button(e, /New session/);
+  assert.ok(btn, 'the button is in the empty tile, beside the pick list');
+  assert.equal(btn.getAttribute('title'), 'start a new session for this tile');
+  btn.click();
+  assert.deepEqual(launched(w), [{ mode: 'session', project: 'petroit', repo: 'api', slot: Number(e.getAttribute('data-slot')), open: false, hook: 'function' }]);
+  assert.equal(w.run('__launched[0].project === state.projects.find((p) => p.name === "petroit")'), true, 'the state object');
+  assert.equal(w.document.getElementById('sheet').open, false);
+});
+
+test('on the board-wide quad the new session goes where the board worked last; onDone (the launcher hook for a started session) closes the sheet and puts the new session into that tile', () => {
+  const st = fixtureState();
+  st.projects.find((p) => p.name === 'phasezero').repos.find((r) => r.name === 'website').sessions[0].state_at = new Date(Date.now() + 60000).toISOString();     // the newest activity anywhere
+  const { w } = quadWorld({ hash: '#/quad', state: st });
+  stubLauncher(w);
+  tileOf(w, P3).querySelector('.qt-close').click();
+  const e = page(w).querySelectorAll('.qempty')[0];
+  button(e, /New session/).click();
+  const [c] = launched(w);
+  assert.deepEqual([c.mode, c.project, c.repo], ['session', 'phasezero', 'website']);
+  const slot = c.slot;
+  w.ctx.__started = { tmux: 'phasezero--website--fresh' };
+  w.run("document.getElementById('sheet').showModal && document.getElementById('sheet').showModal()");
+  w.run('__launched[0].onDone(__started, "now")');
+  assert.equal(slotsOf(w)['phasezero--website--fresh'], String(slot), 'the new session takes the tile it was started for');
+  assert.equal(w.document.getElementById('sheet').open, false, 'and the sheet is closed (the launcher leaves that to its caller when it has an onDone)');
+  w.run('__launched[0].onDone({})');
+  w.run('__launched[0].onDone(null)');
+  assert.equal(page(w).querySelectorAll('.qtile[data-tmux]').length >= 1, true, 'a response without a tmux name changes nothing and throws nothing');
+});
+
+test('with no project and no repo anywhere + New session falls back to the repo picker (Shell.openCreate)', () => {
+  const { w } = quadWorld({ hash: '#/quad', state: fakeState({ projects: [] }) });
+  stubLauncher(w);
+  w.run('globalThis.__kinds = []; globalThis.Shell = { openCreate: (k, ctx) => { __kinds.push([k, ctx === undefined ? null : ctx]); return true; } };');
+  const e = page(w).querySelectorAll('.qempty')[0];
+  button(e, /New session/).click();
+  assert.deepEqual(launched(w), []);
+  assert.deepEqual(plain(w.get('__kinds')), [['session', null]]);
+});
+
+test('tap count (real launcher): a new session from an empty quad tile is 2 taps with the remembered defaults: + New session, then Start & open; the new session lands in the tile', async () => {
+  const { w } = quadWorld({ hash: '#/quad?p=petroit' });
+  w.load('launcher.js');                                                                  // the quad world has no launcher; the real one here
+  w.ctx.__opened = []; w.run('renderBanner = () => {}; openPage = (u) => { __opened.push(u); }; api = async (method, path, body) => { __calls.push({ method, path, body }); return path.endsWith("/sessions") ? { tmux: "petroit--api--s9", attach_url: "/term/petroit--api--s9", agent: "claude", cmd: "claude" } : { ok: true }; }');
+  tileOf(w, P3).querySelector('.qt-close').click();
+  const e = page(w).querySelectorAll('.qempty')[0];
+  const slot = e.getAttribute('data-slot');
+  let taps = 0;
+  taps++;                                                                                  // 1: + New session in the empty tile
+  button(e, /New session/).click();
+  const sh = w.document.getElementById('sheet');
+  assert.equal(sh.open, true);
+  assert.equal(text(sh.querySelector('.sheet-title')), 'New session · petroit/api');
+  const primaries = sh.querySelectorAll('button').filter((b) => b.classList.contains('bp5-intent-primary'));
+  assert.equal(primaries.length, 1);
+  assert.match(text(primaries[0]), /Start & open/);
+  taps++;                                                                                  // 2: Start & open
+  sh.querySelector('form').dispatchEvent({ type: 'submit', preventDefault() {} });
+  await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r));
+  assert.deepEqual(posts(w, '/api/projects/').map((c) => c.path), ['/api/projects/petroit/repos/api/sessions']);
+  assert.equal(taps, 2);
+  assert.equal(slotsOf(w)['petroit--api--s9'], slot, 'the new session takes the tile it was started for (the launcher\'s onDone)');
+  assert.equal(sh.open, false, 'and the sheet is closed');
+  assert.deepEqual(plain(w.get('__opened')), [], 'open: false: no terminal page or tab is opened elsewhere, the tile shows it');
 });

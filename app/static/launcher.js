@@ -873,3 +873,1449 @@ function importForm(opts) {
 /* The v0.4 entry points: the same sheets as the + menu. */
 function openBatch() { return typeof Shell !== 'undefined' && Shell.openCreate ? Shell.openCreate('batch') : false; }
 function openImport() { return typeof Shell !== 'undefined' && Shell.openCreate ? Shell.openCreate('import') : false; }
+
+/* ---------- launcher v2 (v0.5.13): openLauncher, ONE sheet for starting a session, a task or a dispatch ----------
+   openLauncher({project, repo, agent?, task?, mode: 'session' | 'task' | 'dispatch', ...}) opens it in the sheet (components.js openSheet: a right panel from 840 px up, a
+   bottom sheet below). project / repo are the state objects or their names ('root' is the project folder). Options (all optional): cwd_rel (a folder under the repo to start in,
+   sent as is), carry {title, prompt, when, name, cron} (refills a task form after a repo switch), targets [{p, r, label}] + onTarget(entry, carry) (a 'Repo' select, like taskForm),
+   onDone(res, when), onCancel(), back {label, onClick}, when ('now' | 'later' | 'schedule'), preset {agent, session, auto_close} (dispatch). It answers the controller {form, V, preview(),
+   body(), submit(), sheet}. launcherForm(opts) is the same without the sheet (Shell.showForm wraps a form in its own).
+   The fields of each agent come from AGENT_SCHEMAS, the embedded fallback that GET /api/agents overrides ONCE per page load (launcherSchemaLoad: never on the poll; an answer without
+   agents keeps the fallback, a failed request is tried again on the next open). The agent's option_schema() decides which advanced fields exist; the model chips, the reasoning levels
+   (disabled per model from reasoning_by_model), the permission modes and the capabilities come from it too.
+   Remembered per repo and agent: ccboard:launch:<project>/<repo>:<agent> (the pre-v0.5.13 ccboard:launch:<project>/<repo> is read once as Claude, converted and removed),
+   ccboard:agent:<project>/<repo> (the agent last used), ccboard:defaults:<project> (what a repo with no memory of its own starts from), ccboard:task:<project>/<repo>[:codex] (task mode;
+   Claude keeps the bare key: components.js taskDefaultsLine and dnd.js read it), ccboard:presets:<project>/<repo> (saved presets). A bypass-class choice (bypassPermissions, Codex bypass,
+   danger-full-access) is never remembered; its 'I understand' is, once per repo (ccboard:bypass-ack:<project>/<repo>), and it exists in a session only: task and dispatch modes never offer it. */
+
+const LX_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+const LX_CLAUDE_CHIPS = ['opus', 'fable', 'sonnet', 'haiku'];                  // the model chips, in this order (the brief's F7: opus first)
+const LX_CLAUDE_MORE = ['opusplan', 'best', 'opus[1m]', 'sonnet[1m]'];         // under 'More models' with default and a custom id
+const LX_MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', haiku: 'hue-slate' };   // tokens.css .hue-*, the same four as the terminal's tuning strip
+const LX_CX_MODES = [['default', 'default'], ['auto', 'auto'], ['read-only', 'read-only'], ['bypass', 'bypass'], ['custom', 'custom']];
+const LX_CX_MODE_PERM = { default: 'default', auto: 'auto', 'read-only': 'plan' };   // the adapter's permission_mode behind each picker entry (custom sends sandbox + approval instead)
+const LX_SANDBOXES = ['read-only', 'workspace-write', 'danger-full-access'];
+const LX_APPROVALS = ['untrusted', 'on-failure', 'on-request', 'never'];
+const LX_CONFIG_RE = /^[A-Za-z0-9_.]+=.+$/;                                  // one -c line; the server's blocklist still wins
+const LX_PERM_LABEL = { manual: 'ask (default)', acceptEdits: 'accept edits', plan: 'plan', auto: 'auto', dontAsk: "don't ask: deny prompts", bypassPermissions: 'bypass: never ask (dangerous)' };
+const BYPASS_WARNING_CODEX = 'Codex runs every command and edit without asking and without its sandbox, as your user, on this box.';
+const LX_BYPASS_ACK = 'I understand';
+
+function lxOpt(key, label, kind, choices, def, help, group, danger, when) {
+  return { key, label, kind, choices: choices || null, default: def === undefined ? null : def, help: help || '', group: group || 'basic', danger: !!danger, when: when || null };
+}
+
+/* The embedded fallback: the shape GET /api/agents answers per agent (app/agents/base.py Agent.describe): options [{key, label, kind, choices, default, help, group, danger, when}],
+   permission_modes, efforts, models, reasoning_by_model, capabilities (Codex). Codex's models are the box's visible slugs at codex 0.145. */
+const AGENT_SCHEMAS = {
+  claude: {
+    name: 'claude', label: 'Claude', glyph: '◆', installed: true,
+    options: [
+      lxOpt('launcher', 'Start', 'select', ['new', 'resume', 'continue', 'from_pr'], 'new'),
+      lxOpt('resume_id', 'Session to resume', 'text', null, null, '', 'basic', false, { launcher: ['resume'] }),
+      lxOpt('from_pr', 'Pull request', 'text', null, null, '', 'basic', false, { launcher: ['from_pr'] }),
+      lxOpt('name', 'Session name', 'text', null, null),
+      lxOpt('model', 'Model', 'combo', ['opus', 'fable', 'sonnet', 'haiku', 'opusplan', 'best', 'opus[1m]', 'sonnet[1m]'], 'opus'),
+      lxOpt('effort', 'Effort', 'select', LX_EFFORTS, 'high'),
+      lxOpt('permission_mode', 'Permission mode', 'select', ['manual', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'], null),
+      lxOpt('prompt', 'First prompt', 'textarea', null, null, '', 'basic', false, { launcher: ['new'] }),
+      lxOpt('fast', 'Fast mode', 'bool', null, false),
+      lxOpt('bypass', 'Skip all permission prompts', 'bool', null, false, '', 'advanced', true),
+      lxOpt('allowed_tools', 'Allowed tools', 'textarea', null, null, '', 'advanced'),
+      lxOpt('disallowed_tools', 'Disallowed tools', 'textarea', null, null, '', 'advanced'),
+      lxOpt('tools', 'Available tools', 'textarea', null, null, '', 'advanced'),
+      lxOpt('append_system_prompt', 'Append to system prompt', 'textarea', null, null, '', 'advanced'),
+      lxOpt('agent_name', 'Agent', 'text', null, null, '', 'advanced'),
+      lxOpt('fallback_model', 'Fallback model', 'text', null, null, '', 'advanced'),
+      lxOpt('autocompact', 'Auto-compact', 'combo', ['auto'], null, '', 'advanced'),
+      lxOpt('worktree', 'Start in a new git worktree', 'bool', null, false, '', 'advanced', false, { launcher: ['new'] }),
+      lxOpt('worktree_name', 'Worktree name', 'text', null, null, '', 'advanced', false, { worktree: true }),
+      lxOpt('fork_session', 'Fork instead of continuing', 'bool', null, false, '', 'advanced', false, { launcher: ['resume', 'continue'] }),
+      lxOpt('add_dirs', 'Extra directories', 'dirs', null, null, '', 'advanced'),
+      lxOpt('devcontainer', 'Run in the devcontainer', 'bool', null, false, '', 'advanced', false, { 'repo.devcontainer': true }),
+      lxOpt('mcp_config', 'MCP config file', 'text', null, null, '', 'advanced'),
+      lxOpt('extra', 'Extra arguments', 'args', null, null, '', 'advanced'),
+    ],
+    permission_modes: ['manual', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'], efforts: LX_EFFORTS,
+    models: ['opus', 'fable', 'sonnet', 'haiku', 'opusplan', 'best', 'opus[1m]', 'sonnet[1m]'], reasoning_by_model: {}, capabilities: { ultracode_flag: false },
+  },
+  codex: {
+    name: 'codex', label: 'Codex', glyph: '◇', installed: false,
+    options: [
+      lxOpt('launcher', 'Start', 'select', ['new', 'resume', 'continue', 'fork'], 'new'),
+      lxOpt('resume_id', 'Session to resume or fork', 'text', null, null, '', 'basic', false, { launcher: ['resume', 'fork'] }),
+      lxOpt('name', 'Session name', 'text', null, null),
+      lxOpt('model', 'Model', 'combo', ['gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.5', 'codex-auto-review'], null),
+      lxOpt('reasoning_effort', 'Reasoning', 'select', LX_EFFORTS, null),
+      lxOpt('mode', 'Mode', 'select', ['default', 'auto', 'read-only', 'bypass', 'custom'], 'default'),
+      lxOpt('sandbox', 'Sandbox', 'select', LX_SANDBOXES, null, '', 'basic', false, { mode: ['custom'] }),
+      lxOpt('approval', 'Approval policy', 'select', ['untrusted', 'on-request', 'never'], null, '', 'basic', false, { mode: ['custom'] }),
+      lxOpt('prompt', 'First prompt', 'textarea', null, null, '', 'basic', false, { launcher: ['new'] }),
+      lxOpt('search', 'Live web search', 'bool', null, false, '', 'advanced'),
+      lxOpt('bypass', 'Skip approvals and the sandbox', 'bool', null, false, '', 'advanced', true),
+      lxOpt('permission_mode', 'Permission mode (Claude\'s words)', 'select', ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'], null, '', 'advanced'),
+      lxOpt('add_dirs', 'Extra directories', 'dirs', null, null, '', 'advanced'),
+      lxOpt('worktree', 'Start in a new git worktree', 'bool', null, false, '', 'advanced', false, { launcher: ['new'] }),
+      lxOpt('worktree_name', 'Worktree name', 'text', null, null, '', 'advanced', false, { worktree: true }),
+      lxOpt('config', 'Config overrides', 'textarea', null, null, '', 'advanced'),
+      lxOpt('extra', 'Extra arguments', 'args', null, null, '', 'advanced'),
+    ],
+    permission_modes: ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'], efforts: LX_EFFORTS,
+    models: ['gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.5', 'codex-auto-review'],
+    reasoning_by_model: { 'gpt-5.6-terra': LX_EFFORTS, 'gpt-5.6-sol': LX_EFFORTS, 'gpt-5.6-luna': LX_EFFORTS, 'gpt-5.5': LX_EFFORTS, 'codex-auto-review': LX_EFFORTS },
+    capabilities: { fork: true, approve_for_me: false, bypass_approvals: true, yolo: false, search: true, add_dir: true, no_alt_screen: true, approval_on_failure: false, approval_untrusted: true },
+  },
+};
+const LX_SHELL = { name: 'shell', label: 'Shell', glyph: '▸', installed: true, options: [], permission_modes: [], efforts: [], models: [], reasoning_by_model: {}, capabilities: {} };
+
+/* GET /api/agents, once per page load (never on the poll). The sheet opens at once on the fallback and repaints when the answer lands. */
+const LX_LOAD = { agents: null, promise: null };
+
+function launcherSchemaLoad() {
+  if (LX_LOAD.promise) return LX_LOAD.promise;
+  LX_LOAD.promise = (async () => {
+    try {
+      const r = await api('GET', '/api/agents');
+      const m = r && r.agents && typeof r.agents === 'object' ? r.agents : null;
+      if (m && (m.claude || m.codex)) LX_LOAD.agents = m;               // an answer without agents (the demo board before its fixture exists) keeps the fallback
+    } catch (_) { LX_LOAD.promise = null; }                              // a failed request is tried again on the next open, never on the poll
+    return LX_LOAD.agents;
+  })();
+  return LX_LOAD.promise;
+}
+
+/* The schema of one agent: the embedded one with whatever GET /api/agents said laid over it (a list that came back empty keeps the embedded one). */
+function launcherSchema(agent) {
+  const base = agent === 'shell' ? LX_SHELL : (AGENT_SCHEMAS[agent] || LX_SHELL);
+  const got = LX_LOAD.agents && LX_LOAD.agents[agent] && typeof LX_LOAD.agents[agent] === 'object' ? LX_LOAD.agents[agent] : null;
+  if (!got) return base;
+  const list = (k) => (Array.isArray(got[k]) && got[k].length ? got[k] : base[k]);
+  const map = got.reasoning_by_model && typeof got.reasoning_by_model === 'object' && Object.keys(got.reasoning_by_model).length ? got.reasoning_by_model : base.reasoning_by_model;
+  return { ...base, ...got, options: list('options'), permission_modes: list('permission_modes'), efforts: list('efforts'), models: list('models'), reasoning_by_model: map,
+    capabilities: { ...(base.capabilities || {}), ...(got.capabilities && typeof got.capabilities === 'object' ? got.capabilities : {}) } };
+}
+
+function lxHas(agent, key) { return launcherSchema(agent).options.some((o) => o.key === key); }
+
+function lxInstalled(agent) {
+  if (agent === 'shell') return true;
+  const st = typeof state !== 'undefined' ? state : null;
+  const a = st && st.agents && st.agents[agent];
+  if (agent === 'claude') return !(a && a.installed === false);
+  return !!(a && a.installed);
+}
+
+/* Reasoning levels of a Codex model: {all: every level any model offers, allowed: the levels this model accepts (all of them for a model the catalogue does not list)}. */
+function launcherReasoning(schema, model) {
+  const by = schema.reasoning_by_model || {};
+  const all = [];
+  for (const e of [...(schema.efforts || []), ...Object.values(by).flat()]) if (typeof e === 'string' && e && !all.includes(e)) all.push(e);
+  all.sort((a, b) => { const i = LX_EFFORTS.indexOf(a); const j = LX_EFFORTS.indexOf(b); return (i < 0 ? 99 : i) - (j < 0 ? 99 : j); });
+  const own = model && Array.isArray(by[model]) && by[model].length ? by[model] : null;
+  return { all, allowed: own || all };
+}
+
+/* ---------- what is remembered ---------- */
+
+function lxGet(key) { try { return localStorage.getItem(key); } catch (_) { return null; } }
+function lxPut(key, value) { try { if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value); } catch (_) { /* storage may be unavailable */ } }
+function lxJson(raw) { try { const v = JSON.parse(raw || 'null'); return v && typeof v === 'object' && !Array.isArray(v) ? v : null; } catch (_) { return null; } }
+
+const LX_KEY = (p, r, agent) => `ccboard:launch:${p}/${r}:${agent}`;
+const LX_LEGACY_KEY = (p, r) => `ccboard:launch:${p}/${r}`;
+const LX_AGENT_KEY = (p, r) => `ccboard:agent:${p}/${r}`;
+const LX_DEFAULTS_KEY = (p) => `ccboard:defaults:${p}`;
+const LX_ACK_KEY = (p, r) => `ccboard:bypass-ack:${p}/${r}`;
+const LX_PRESETS_KEY = (p, r) => `ccboard:presets:${p}/${r}`;
+const LX_TASK_KEY = (p, r, agent) => `ccboard:task:${p}/${r}` + (agent === 'claude' ? '' : `:${agent}`);   // Claude keeps the bare key: components.js taskDefaultsLine and dnd.js read it
+
+/* The pre-v0.5.13 session form's memory ({launcher, model_sel, model_id, effort, permission_mode, allowed_tools, ...}) in this sheet's terms. The launch kind is not carried over:
+   a new session is what a + opens. A remembered bypass is dropped, like every bypass. */
+function launcherLegacyPrefs(old) {
+  const o = old && typeof old === 'object' ? old : {};
+  const v = {};
+  if (o.model_sel === 'custom' && o.model_id) { v.model = 'custom'; v.model_custom = String(o.model_id); }
+  else if (typeof o.model_sel === 'string') v.model = o.model_sel;
+  if (typeof o.effort === 'string') v.effort = o.effort;
+  if (typeof o.permission_mode === 'string' && o.permission_mode !== 'bypassPermissions') v.permission_mode = o.permission_mode;
+  for (const k of ['allowed_tools', 'disallowed_tools', 'append_system_prompt', 'args']) if (typeof o[k] === 'string' && o[k]) v[k] = o[k];
+  return v;
+}
+
+/* What a launch of `agent` in p/r starts from: its own memory, else (Claude) the old key, converted and removed here (read once), else the project's defaults, else {}. */
+function launcherPrefs(p, r, agent) {
+  const own = lxJson(lxGet(LX_KEY(p, r, agent)));
+  if (own) return own;
+  if (agent === 'claude') {
+    const old = lxJson(lxGet(LX_LEGACY_KEY(p, r)));
+    if (old) {
+      const conv = launcherLegacyPrefs(old);
+      lxPut(LX_KEY(p, r, 'claude'), JSON.stringify(conv));
+      lxPut(LX_LEGACY_KEY(p, r), null);
+      return conv;
+    }
+  }
+  const d = lxJson(lxGet(LX_DEFAULTS_KEY(p)));
+  return d && d[agent] && typeof d[agent] === 'object' ? { ...d[agent] } : {};
+}
+
+function launcherAgentPref(p, r) {
+  const own = lxGet(LX_AGENT_KEY(p, r));
+  if (own === 'claude' || own === 'codex' || own === 'shell') return own;
+  const d = lxJson(lxGet(LX_DEFAULTS_KEY(p)));
+  return d && (d.agent === 'claude' || d.agent === 'codex' || d.agent === 'shell') ? d.agent : '';
+}
+
+function launcherAcked(p, r) { return lxGet(LX_ACK_KEY(p, r)) === '1'; }
+function launcherAck(p, r) { lxPut(LX_ACK_KEY(p, r), '1'); }
+
+const LX_BUILTIN_PRESETS = {
+  claude: [{ id: 'opus-high-worktree', name: 'opus high worktree', v: { model: 'opus', effort: 'high', worktree: true } },
+    { id: 'ultracode', name: 'ultracode', v: { ultracode: true } }],
+  codex: [],
+};
+function launcherPresets(p, r, agent) {
+  const saved = lxJson(lxGet(LX_PRESETS_KEY(p, r)));
+  const mine = saved && Array.isArray(saved.list) ? saved.list.filter((x) => x && x.agent === agent && typeof x.name === 'string' && x.v && typeof x.v === 'object') : [];
+  return { builtin: LX_BUILTIN_PRESETS[agent] || [], saved: mine };
+}
+function launcherPresetSave(p, r, agent, name, v) {
+  const saved = lxJson(lxGet(LX_PRESETS_KEY(p, r)));
+  const list = saved && Array.isArray(saved.list) ? saved.list.filter((x) => x && !(x.agent === agent && x.name === name)) : [];
+  list.push({ agent, name, v });
+  lxPut(LX_PRESETS_KEY(p, r), JSON.stringify({ list: list.slice(-24) }));
+}
+function launcherPresetDrop(p, r, agent, name) {
+  const saved = lxJson(lxGet(LX_PRESETS_KEY(p, r)));
+  const list = saved && Array.isArray(saved.list) ? saved.list.filter((x) => x && !(x.agent === agent && x.name === name)) : [];
+  lxPut(LX_PRESETS_KEY(p, r), JSON.stringify({ list }));
+}
+
+/* ---------- the values of the form, and what they mean ---------- */
+
+/* The values a form starts from, per agent. Claude: model opus, effort high (the brief's F7); everything else empty until remembered. */
+function launcherDefaults(agent) {
+  if (agent === 'claude') return { model: 'opus', model_custom: '', effort: 'high', ultracode: false, fast: false, permission_mode: '', tools: '', allowed_tools: '', disallowed_tools: '', append_system_prompt: '',
+    agent_name: '', fallback_model: '', autocompact: '', mcp_config: '', devcontainer: false };
+  if (agent === 'codex') return { model: '', model_custom: '', reasoning: '', cx_mode: 'default', sandbox: 'workspace-write', approval: 'on-request', search: false, config: '' };
+  return {};
+}
+
+function lxIsDangerous(v) {
+  if (!v) return false;
+  if (v.agent === 'claude') return v.permission_mode === 'bypassPermissions';
+  if (v.agent === 'codex') return v.cx_mode === 'bypass' || (v.cx_mode === 'custom' && v.sandbox === 'danger-full-access');
+  return false;
+}
+
+/* The danger gate: does this set of values need the red callout (and, until the repo has acknowledged it, the 'I understand' box)? Never in task or dispatch mode: there the bypass
+   choices are not offered, and a remembered one is turned back to the default. */
+function launcherDanger(v, mode) { return (mode || 'session') === 'session' && lxIsDangerous(v); }
+
+/* The part of a form's values that is remembered: no bypass-class choice, no first prompt, no name, no resume id, no PR, no worktree (a branch per session is a choice of the moment: the preset chip is one tap). A switch that is off and a box that is empty are not kept (they
+   are the defaults), except an empty model or effort: 'default (settings)' is a choice next to opus and high. Codex's sandbox and approval only count in its custom mode. */
+function launcherRemember(v) {
+  const keep = v.agent === 'claude'
+    ? ['model', 'model_custom', 'effort', 'ultracode', 'fast', 'permission_mode', 'tools', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'agent_name', 'fallback_model', 'autocompact', 'mcp_config', 'devcontainer', 'args']
+    : v.agent === 'codex' ? ['model', 'model_custom', 'reasoning', 'cx_mode', 'sandbox', 'approval', 'search', 'config', 'args'] : [];
+  const out = {};
+  for (const k of keep) {
+    const x = v[k];
+    if (x === undefined || x === null || x === false) continue;
+    if (x === '' && !(k === 'effort' || (k === 'model' && v.agent === 'claude'))) continue;
+    out[k] = x;
+  }
+  if (v.agent === 'claude' && out.permission_mode === 'bypassPermissions') delete out.permission_mode;
+  if (v.agent === 'codex') {
+    if (out.cx_mode === 'bypass' || (out.cx_mode === 'custom' && out.sandbox === 'danger-full-access')) { out.cx_mode = 'default'; delete out.sandbox; delete out.approval; }
+    else if (out.cx_mode !== 'custom') { delete out.sandbox; delete out.approval; }
+  }
+  return out;
+}
+
+/* A shell-ish splitter for the extra-args box ('--verbose --fallback-model "x y"'): quotes group, a backslash escapes. A line that does not split cleanly is returned as one token. */
+function lxSplit(text) {
+  const out = [];
+  let cur = '';
+  let q = '';
+  let has = false;
+  const s = String(text || '');
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q) { if (c === q) q = ''; else if (c === '\\' && q === '"' && i + 1 < s.length) cur += s[++i]; else cur += c; continue; }
+    if (c === '"' || c === "'") { q = c; has = true; continue; }
+    if (c === '\\' && i + 1 < s.length) { cur += s[++i]; has = true; continue; }
+    if (/\s/.test(c)) { if (cur || has) { out.push(cur); cur = ''; has = false; } continue; }
+    cur += c;
+  }
+  if (cur || has) out.push(cur);
+  return out;
+}
+function lxQuote(s) { const t = String(s); return /^[A-Za-z0-9_@%+=:,./-]+$/.test(t) ? t : `'${t.replace(/'/g, "'\\''")}'`; }
+function lxJoin(args) { return args.map(lxQuote).join(' '); }
+/* A command line as nodes for the preview: every token (a quoted string is one) in a .lx-t span that does not break, so a flag is never cut after its `--`; the spaces between them are the
+   only places a line wraps. A token longer than 44 characters (a path; the longest flag, --dangerously-bypass-approvals-and-sandbox, is 42) stays plain text and may break anywhere; a note line (`# then /fast`) is plain text. Copy reads the plain string. */
+function lxCmdNodes(text) {
+  const out = [];
+  String(text).split('\n').forEach((line, i) => {
+    if (i) out.push('\n');
+    if (line.startsWith('#')) { out.push(line); return; }
+    const toks = [];
+    let cur = '';
+    let q = false;
+    for (let k = 0; k < line.length; k++) {
+      const c = line[k];
+      if (!q && c === '\\' && k + 1 < line.length) { cur += c + line[++k]; continue; }
+      if (c === "'") q = !q;
+      if (!q && /\s/.test(c)) { if (cur) toks.push(cur); cur = ''; continue; }
+      cur += c;
+    }
+    if (cur) toks.push(cur);
+    toks.forEach((t, j) => {
+      if (j) out.push(' ');
+      out.push(t.length <= 44 ? el('span', { class: 'lx-t', text: t }) : t);
+    });
+  });
+  return out;
+}
+function lxList(text) { return String(text || '').split(/[,\n]+/).map((x) => x.trim()).filter(Boolean); }
+function lxShort(text, n) { const t = String(text || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n - 1) + '…' : t; }
+function lxModelOf(v) { return v.model === 'custom' ? String(v.model_custom || '').trim() : String(v.model || ''); }
+
+/* The command a launch starts, as the adapter would build it (app/agents/claude.py and codex.py launch_plan: the same flags in the same order). APPROXIMATE: the session id, a cut
+   copy of the prompt and the paths are placeholders, and Codex's hook-trust flags depend on the box; the response's cmd is the truth and replaces this line after Start.
+   v: the flat values {agent, launch, name, resume_id, from_pr, prompt, model, ..., args, worktree, worktree_name, add_dirs}; ctx {mode, caps, cwd, nextName, dirs}. */
+function commandPreview(v, ctx) {
+  const c = ctx || {};
+  const mode = c.mode || 'session';
+  const lane = mode !== 'session';                                           // a task or a dispatched lane: its own worktree, the prompt is the task's, never a bypass
+  const then = [];
+  if (v.agent === 'shell') {
+    const cmd = c.devcontainer ? lxJoin(['devcontainer', 'up', '--workspace-folder', c.cwd || '.']) + ' && ' + lxJoin(['devcontainer', 'exec', '--workspace-folder', c.cwd || '.', '--', 'bash', '-l']) : '';
+    return cmd || `# a plain shell${c.cwd ? ' in ' + c.cwd : ''}`;
+  }
+  const dirs = (v.add_dirs || []).map((d) => (c.dirs && c.dirs[d]) || d);
+  const prompt = (!lane && v.launch !== 'new') ? '' : String(v.prompt || '').trim();
+  const flags = [];
+  const wt = lane ? true : !!v.worktree;
+  const sname = String(v.name || '').trim() || c.nextName || 's1';           // the session's name: --name, and what a blank worktree name is made from
+  const wtGiven = String(v.worktree_name || '').trim();
+  const wtName = wtGiven || (lane ? (c.slug || '<task>') : sname);          // Codex: the managed worktree folder (the board slugs the name; no suffix)
+  const wtClaude = wtGiven || (lane ? (c.slug || '<task>') : `${sname}-xxxxxx`);   // Claude: a blank name becomes <session>-<6 random hex> on the server; the six x stand for them
+  let argv;
+  if (v.agent === 'claude') {
+    const model = lxModelOf(v);
+    if (model) flags.push('--model', model);
+    if (v.effort || (v.ultracode && c.ultraNative)) flags.push('--effort', v.ultracode && c.ultraNative ? 'ultracode' : v.effort);
+    if (v.permission_mode && v.permission_mode !== 'manual') flags.push('--permission-mode', v.permission_mode);
+    const al = lxList(v.allowed_tools); if (al.length) flags.push('--allowedTools', ...al);
+    const dl = lxList(v.disallowed_tools); if (dl.length) flags.push('--disallowedTools', ...dl);
+    if (String(v.append_system_prompt || '').trim()) flags.push('--append-system-prompt', String(v.append_system_prompt).trim());    // the adapter's order: this one BEFORE --tools
+    const tl = lxList(v.tools); if (tl.length) flags.push('--tools', tl.join(','));                                                    // one comma-joined token
+    if (String(v.agent_name || '').trim()) flags.push('--agent', String(v.agent_name).trim());
+    const fm = [...new Set(String(v.fallback_model || '').split(/[,\s]+/).filter(Boolean))]; if (fm.length) flags.push('--fallback-model', fm.join(','));
+    if (String(v.autocompact || '').trim()) flags.push('--autocompact', String(v.autocompact).trim());
+    if (String(v.mcp_config || '').trim()) flags.push('--mcp-config', String(v.mcp_config).trim());
+    flags.push(...lxSplit(v.args));
+    const more = dirs.length && !v.devcontainer ? ['--add-dir', ...dirs] : [];
+    const fork = v.fork_session && !lane && (v.launch === 'resume' || v.launch === 'continue') ? ['--fork-session'] : [];    // right after --resume <id> / --continue, as the adapter builds it
+    const pr = String(v.from_pr || '').trim().replace(/^#+/, '');                                                               // the route strips the # from a PR number
+    const kind = lane ? 'new' : (v.launch === 'from_pr' ? 'resume' : v.launch);
+    if (kind === 'resume') {
+      argv = ['claude', ...(v.launch === 'from_pr' ? ['--from-pr', pr].filter((x) => x !== '') : ['--resume', ...(String(v.resume_id || '').trim() ? [String(v.resume_id).trim()] : []), ...fork]), ...flags, ...more];
+    } else if (kind === 'continue') argv = ['claude', '--continue', ...fork, ...flags, ...more];
+    else if (wt) argv = ['claude', ...flags, ...more, '--worktree', wtClaude, '--session-id', '<uuid>', ...(lane ? [] : ['--name', sname]), ...(prompt ? ['--', lxShort(prompt, 60)] : [])];   // a task has no session name of its own
+    else if (prompt) argv = ['claude', ...flags, ...more, '--session-id', '<uuid>', '--name', sname, '--', lxShort(prompt, 60)];
+    else argv = ['claude', '--session-id', '<uuid>', '--name', sname, ...flags, ...more];
+    if (v.ultracode && !c.ultraNative) then.push('/effort ultracode on');
+    if (v.fast) then.push('/fast');
+  } else {
+    const caps = { approve_for_me: false, bypass_approvals: true, yolo: false, no_alt_screen: true, search: true, add_dir: true, ...(c.caps || {}) };
+    if (caps.no_alt_screen) flags.push('--no-alt-screen');
+    const md = v.cx_mode || 'default';
+    const danger = md === 'bypass' || (md === 'custom' && v.sandbox === 'danger-full-access');         // the sheet sends bypass: true for both, and the adapter then builds the one bypass flag
+    if (danger && !lane) flags.push(caps.bypass_approvals || !caps.yolo ? '--dangerously-bypass-approvals-and-sandbox' : '--yolo');
+    else if (md === 'custom') { if (v.sandbox) flags.push('-s', v.sandbox === 'danger-full-access' ? 'workspace-write' : v.sandbox); if (v.approval) flags.push('-a', v.approval); }   // a lane never takes the danger sandbox
+    else if (md === 'read-only') flags.push('-s', 'read-only', '-a', 'on-request');
+    else if (md === 'auto') { if (caps.approve_for_me) flags.push('--approve-for-me', '-s', 'workspace-write'); else flags.push('-s', 'workspace-write', '-a', 'on-request'); }
+    else flags.push('-s', 'workspace-write', '-a', 'on-request');
+    const model = lxModelOf(v);
+    if (model) flags.push('-m', model);
+    if (v.reasoning) flags.push('-c', `model_reasoning_effort="${v.reasoning}"`);
+    for (const line of String(v.config || '').split('\n').map((x) => x.trim()).filter(Boolean)) flags.push('-c', line);
+    if (v.search && caps.search) flags.push('--search');
+    if (caps.add_dir) for (const d of dirs) flags.push('--add-dir', d);
+    flags.push(...lxSplit(v.args));
+    const kind = lane ? 'new' : v.launch;
+    const target = String(v.resume_id || '').trim();
+    if (kind === 'resume') argv = ['codex', 'resume', ...flags, ...(target ? [target] : [])];
+    else if (kind === 'continue') argv = ['codex', 'resume', ...flags, '--last'];
+    else if (kind === 'fork') argv = ['codex', 'fork', ...flags, ...(target ? [target] : [])];           // a blank id opens Codex's picker: the server adds no --last
+    else argv = ['codex', ...flags, ...(prompt ? ['--', lxShort(prompt, 60)] : [])];
+  }
+  let line = lxJoin(argv);
+  if (v.devcontainer && v.agent === 'claude') line = lxJoin(['devcontainer', 'up', '--workspace-folder', c.cwd || '.']) + ' && ' + lxJoin(['devcontainer', 'exec', '--workspace-folder', c.cwd || '.', '--']) + ' ' + line;
+  const notes = [];
+  if (v.agent === 'codex' && wt) notes.push(`# in a new worktree: .ccboard/worktrees/${wtName}`);
+  if (then.length) notes.push(`# then ${then.join(' · ')}`);
+  return [line, ...notes].join('\n');
+}
+
+/* ---------- the account a new session runs on ---------- */
+
+/* {agent, name, text, pct, switchTo, run} or null. Claude: state.accounts' current login and the more used of its two windows (the same reader the topbar pills use, so no screen
+   shows two figures); Codex: state.codex_accounts' current login and the window of state.usage_codex when that reading is its. switchTo: from 85 % on, another SAVED login
+   (Claude: one with a known, lower reading on that window; Codex: state holds no reading of the others, so any other saved login), and run() makes it the one in use (the shared
+   accountSwitch / cxSwitch of pages/agents.js). null for a shell, a box with no login seen yet, or scripts that are not loaded. */
+function launcherAccount(agent) {
+  const st = typeof state !== 'undefined' ? state : null;
+  if (!st) return null;
+  const hot = 85;
+  if (agent === 'claude') {
+    const list = typeof agentsAccounts === 'function' ? agentsAccounts(st) : [];
+    const cur = list.find((a) => a.current) || list.find((a) => st.accounts && st.accounts.current === a.key);
+    if (!cur) return null;
+    const now = Date.now() / 1000;
+    const used = (a, w) => (typeof agentsAcctUsedNow === 'function' ? agentsAcctUsedNow(st, a, w, now) : null);
+    const wins = ['5h', '7d'].map((w) => ({ w, pct: used(cur, w) })).filter((x) => x.pct !== null).sort((a, b) => b.pct - a.pct);
+    const worst = wins[0] || null;
+    const name = typeof agentsAcctName === 'function' ? agentsAcctName(cur) : String(cur.email || cur.key).slice(0, 24);
+    let switchTo = null;
+    if (worst && worst.pct >= hot && typeof acctStore === 'function' && acctStore(st).supported) {
+      const better = list.filter((a) => a.saved && !a.current && a.key !== cur.key).map((a) => ({ a, pct: used(a, worst.w) })).filter((x) => x.pct !== null && x.pct < worst.pct).sort((a, b) => a.pct - b.pct);
+      if (better.length) switchTo = better[0].a;
+    }
+    return { agent, name, pct: worst ? worst.pct : null, switchTo, run: switchTo && typeof accountSwitch === 'function' ? () => accountSwitch(switchTo) : null,
+      text: `Runs on ${name}${worst ? ` · ${Math.round(100 - worst.pct)}% of the ${worst.w === '5h' ? '5-hour' : '7-day'} window left` : ''}` };
+  }
+  if (agent === 'codex') {
+    const cs = typeof cxState === 'function' ? cxState(st) : null;
+    const list = typeof cxAccounts === 'function' ? cxAccounts(st) : [];
+    const cur = cs ? (list.find((a) => a.current) || list.find((a) => a.key === cs.current)) : null;
+    if (!cur) return null;
+    const w = typeof Shell !== 'undefined' && Shell && typeof Shell.codexWindow === 'function' ? Shell.codexWindow(st.usage_codex) : null;
+    const mine = w && typeof w.used_percentage === 'number' && (!w.account || w.account === cur.key) ? w : null;
+    const name = typeof cxName === 'function' ? cxName(cur) : String(cur.label || cur.key).slice(0, 24);
+    const pct = mine ? Math.max(0, Math.min(100, mine.used_percentage)) : null;
+    const win = mine && typeof Shell.windowName === 'function' ? Shell.windowName(mine.minutes) : 'usage';
+    let switchTo = null;
+    if (pct !== null && pct >= hot && typeof cxStore === 'function' && cxStore(st).supported) switchTo = list.find((a) => a.saved !== false && !a.current && a.key !== cur.key) || null;
+    return { agent, name, pct, switchTo, run: switchTo && typeof cxSwitch === 'function' ? () => cxSwitch(switchTo) : null,
+      text: `Runs on ${name}${pct !== null ? ` · ${Math.round(100 - pct)}% of the ${win} window left` : ''}` };
+  }
+  return null;
+}
+
+/* ---------- the request ---------- */
+
+const LX_PR = /^(#?\d{1,7}|https:\/\/\S{3,300})$/;
+const LX_UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/* The permission part of a Codex form in the adapter's terms: {permission_mode?, bypass?, opts: {sandbox?, approval?}}. */
+function lxCodexPerm(v) {
+  const out = { opts: {} };
+  if (v.cx_mode === 'bypass') { out.permission_mode = 'bypassPermissions'; out.bypass = true; }
+  else if (v.cx_mode === 'custom') {
+    if (v.sandbox) out.opts.sandbox = v.sandbox;
+    if (v.approval) out.opts.approval = v.approval;
+    if (v.sandbox === 'danger-full-access') out.bypass = true;                  // the adapter refuses that sandbox without the acknowledgement
+  } else out.permission_mode = LX_CX_MODE_PERM[v.cx_mode] || 'default';
+  return out;
+}
+
+/* The body of POST /api/projects/{p}/repos/{r}/sessions for a form (brief v0.5.13; app/main.py SessionIn): the launcher's words (agent, launcher: claude | resume | continue | fork, mode (Codex's
+   one picker), reasoning, prompt, worktree, worktree_name, from_pr, fork_session, fallback_model, autocompact, tools, agent_name, mcp_config, config[], fast, search, sandbox, approval,
+   cwd_rel) next to the flat compat fields the route has always read (name, model, effort, permission_mode, allowed_tools, disallowed_tools, append_system_prompt, reasoning_effort, args,
+   resume_id, add_dirs, devcontainer, bypass). Blank and false values are left out; ctx.has(key) says which options the agent's schema knows (the others are not sent). A Claude
+   from-PR launch is a 'claude' launcher with from_pr beside it (the route reads that as --from-pr). ultracode is not part of it unless this box's claude takes --effort ultracode
+   (ctx.ultraNative: then it IS the effort); otherwise it is applied after the start (/effort ultracode on). */
+function launcherPayload(v, ctx) {
+  const c = ctx || {};
+  const has = typeof c.has === 'function' ? c.has : () => true;
+  const body = {};
+  const put = (k, x) => { if (x !== undefined && x !== null && x !== '' && x !== false && !(Array.isArray(x) && !x.length)) body[k] = x; };
+  const t = (x) => String(x === undefined || x === null ? '' : x).trim();
+  if (v.agent === 'shell') {
+    body.launcher = 'shell'; body.agent = 'shell';
+    put('name', t(v.name)); put('devcontainer', !!v.devcontainer);
+    return body;
+  }
+  const kind = v.launch || 'new';
+  body.launcher = kind === 'resume' ? 'resume' : kind === 'continue' ? 'continue' : (kind === 'fork' && v.agent === 'codex') ? 'fork' : 'claude';
+  body.agent = v.agent;
+  put('name', t(v.name));
+  put('resume_id', (kind === 'resume' || kind === 'fork') ? t(v.resume_id) : '');
+  if (kind === 'from_pr') put('from_pr', t(v.from_pr));
+  if (kind === 'new') put('prompt', t(v.prompt));
+  put('model', lxModelOf(v));
+  if (v.agent === 'claude') {
+    put('effort', v.ultracode && c.ultraNative ? 'ultracode' : v.effort);
+    if (v.permission_mode && v.permission_mode !== 'manual') body.permission_mode = v.permission_mode;
+    if (v.permission_mode === 'bypassPermissions') { body.mode = 'bypass'; body.bypass = true; }      // the danger gate's answer, said the way the Codex path says it (the route's `mode: bypass` needs `bypass: true`)
+    put('fast', !!v.fast && has('fast'));
+    for (const k of ['allowed_tools', 'disallowed_tools', 'append_system_prompt']) put(k, t(v[k]));
+    for (const k of ['tools', 'agent_name', 'fallback_model', 'autocompact', 'mcp_config']) if (has(k)) put(k, t(v[k]));
+    if (v.fork_session && (kind === 'resume' || kind === 'continue') && has('fork_session')) body.fork_session = true;
+    put('devcontainer', !!v.devcontainer);
+  } else {
+    put('reasoning', v.reasoning); put('reasoning_effort', v.reasoning);
+    const perm = lxCodexPerm(v);
+    body.mode = v.cx_mode || 'default';                                          // the one picker (C's `mode`) and, beside it, the same choice in the adapter's older words
+    put('permission_mode', perm.permission_mode); put('bypass', perm.bypass);
+    if (v.cx_mode === 'custom') { put('sandbox', perm.opts.sandbox); put('approval', perm.opts.approval); }
+    if (v.search && has('search')) body.search = true;
+    const cfg = String(v.config || '').split('\n').map((x) => x.trim()).filter(Boolean);
+    if (has('config')) put('config', cfg);
+  }
+  if (v.worktree && has('worktree') && kind === 'new') { body.worktree = true; put('worktree_name', t(v.worktree_name)); }
+  put('args', t(v.args));
+  put('add_dirs', v.add_dirs);
+  put('cwd_rel', t(c.cwd_rel));
+  return body;
+}
+
+/* The launch choices a task or a dispatch carries (POST /api/tasks, POST /api/tasks/{id}/dispatch: TaskIn / DispatchIn read the flat LaunchOpts): never a bypass, never a worktree flag
+   (a task is always in its own worktree). */
+function launcherTaskOpts(v) {
+  const out = {};
+  const t = (x) => String(x === undefined || x === null ? '' : x).trim();
+  const put = (k, x) => { if (x !== undefined && x !== null && x !== '' && x !== false && !(Array.isArray(x) && !x.length)) out[k] = x; };
+  put('model', lxModelOf(v));
+  if (v.agent === 'claude') {
+    put('effort', v.effort);
+    if (v.permission_mode && v.permission_mode !== 'manual' && v.permission_mode !== 'bypassPermissions') out.permission_mode = v.permission_mode;
+    for (const k of ['allowed_tools', 'disallowed_tools', 'append_system_prompt']) put(k, t(v[k]));
+  } else {
+    put('reasoning_effort', v.reasoning);
+    const perm = lxCodexPerm({ ...v, cx_mode: v.cx_mode === 'bypass' ? 'default' : v.cx_mode, sandbox: v.sandbox === 'danger-full-access' ? 'workspace-write' : v.sandbox });
+    put('permission_mode', perm.permission_mode);
+    const opts = { ...perm.opts };
+    if (v.search) opts.search = true;
+    if (Object.keys(opts).length) out.opts = opts;
+  }
+  return out;
+}
+
+/* The project/repo a launcher call names: state objects, or names ('root' or nothing is the project folder). {p, r} or null. */
+function lxResolve(project, repo) {
+  const st = typeof state !== 'undefined' ? state : null;
+  const p = project && typeof project === 'object' ? project : ((st && st.projects) || []).find((x) => x.name === project);
+  if (!p) return null;
+  let r = repo && typeof repo === 'object' ? repo : null;
+  if (!r) r = (repo === undefined || repo === null || repo === 'root') ? (p.root || null) : ((p.repos || []).find((x) => x.name === repo) || null);
+  return r ? { p, r } : null;
+}
+
+function lxNextName(r) {
+  const used = new Set((r.sessions || []).map((s) => s && s.name));
+  for (let i = 1; i < 1000; i++) if (!used.has(`s${i}`)) return `s${i}`;
+  return 's1';
+}
+
+/* A control that must not be used and says why: both the attribute and the property (a browser reflects one into the other; minidom does not). */
+function lxDisable(node, on, why) {
+  if (!node) return;
+  node.disabled = !!on;
+  if (on) node.setAttribute('disabled', ''); else node.removeAttribute('disabled');
+  if (why !== undefined) { if (on && why) node.setAttribute('title', why); else if (!on) node.removeAttribute('title'); }
+}
+
+/* A segmented control: the sheet's .seg-ctl / .seg-btn (pages.css), buttons with aria-pressed (one on, or none), arrow keys move and skip the disabled ones.
+   items [[value, label, {title, disabled, cls}]]; onPick(value) runs on a tap; set(value) only paints. */
+function lxSeg(items, onPick, label, extra) {
+  const node = el('div', { class: 'seg-ctl lx-seg' + (extra ? ' ' + extra : ''), role: 'group', 'aria-label': label || null });
+  const btns = new Map();
+  let cur = null;
+  const set = (v) => { cur = v; for (const [k, b] of btns) b.setAttribute('aria-pressed', k === v ? 'true' : 'false'); };
+  const step = (from, dir) => {
+    const keys = [...btns.keys()];
+    let i = keys.indexOf(from);
+    for (let n = 0; n < keys.length; n++) { i = (i + dir + keys.length) % keys.length; if (!btns.get(keys[i]).hasAttribute('disabled')) return keys[i]; }
+    return from;
+  };
+  for (const [v, text, o] of items) {
+    const b = el('button', { class: 'seg-btn' + (o && o.cls ? ' ' + o.cls : ''), type: 'button', 'aria-pressed': 'false', 'data-when': v, text, title: (o && o.title) || null,
+      onclick: () => { if (b.hasAttribute('disabled')) return; onPick(v); },
+      onkeydown: (e) => {
+        if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+        e.preventDefault();
+        const to = step(cur === null ? v : cur, e.key === 'ArrowRight' ? 1 : -1);
+        onPick(to);
+        const nb = btns.get(to);
+        if (nb && typeof nb.focus === 'function') nb.focus();
+      } });
+    if (o && o.disabled) lxDisable(b, true, o.title);
+    btns.set(v, b);
+    node.append(b);
+  }
+  set(null);
+  return { node, set, get value() { return cur; }, btn: (v) => btns.get(v), disable: (v, on, why) => lxDisable(btns.get(v), on, why) };
+}
+
+/* ---------- the sheet ---------- */
+
+const LX_LAUNCH = {
+  claude: [['new', 'New'], ['resume', 'Resume'], ['continue', 'Continue'], ['from_pr', 'From PR']],
+  codex: [['new', 'New'], ['resume', 'Resume'], ['continue', 'Last'], ['fork', 'Fork']],
+};
+const LX_TASK_ICON = { now: 'play', later: 'add', schedule: 'time' };
+
+function launcherForm(o) {
+  const opt = o || {};
+  const mode = opt.mode === 'task' || opt.mode === 'dispatch' ? opt.mode : 'session';
+  const rp = lxResolve(opt.project, opt.repo);
+  if (!rp) return null;
+  const { p, r } = rp;
+  const session = mode === 'session';
+  const task = opt.task && typeof opt.task === 'object' ? opt.task : null;
+  if (mode === 'dispatch' && !task) return null;
+  const carry = opt.carry && typeof opt.carry === 'object' ? opt.carry : (mode === 'task' && task ? task : {});
+  const preset = { agent: opt.agent, session: opt.session, auto_close: opt.auto_close, ...(opt.preset && typeof opt.preset === 'object' ? opt.preset : {}) };      // launch() passes them at the top level
+  const agentsHere = session ? ['claude', 'codex', 'shell'] : ['claude', 'codex'];
+  const painters = [];
+  const sib = r.root ? [] : allRepos().filter((x) => x.project === p.name && x.repo !== r.name);
+  const others = allRepos().filter((x) => x.project !== p.name);
+  const dirPath = {};
+  for (const x of allRepos()) { const pj = (state.projects || []).find((q) => q.name === x.project); const rr = pj && [pj.root, ...(pj.repos || [])].find((q) => q && q.name === x.repo); if (rr && rr.path) dirPath[x.id] = rr.path; }
+
+  /* ---- the values ---- */
+  const known = (agent, m) => agent === 'claude' ? (LX_CLAUDE_CHIPS.includes(m) || LX_CLAUDE_MORE.includes(m) || launcherSchema('claude').models.includes(m)) : launcherSchema('codex').models.includes(m);
+  const fromPrefs = (agent) => {
+    const saved = session ? launcherPrefs(p.name, r.name, agent) : (lxJson(lxGet(LX_TASK_KEY(p.name, r.name, agent))) || {});
+    const v = { ...launcherDefaults(agent), ...saved };
+    if (agent === 'codex' && !saved.reasoning && saved.reasoning_effort) v.reasoning = saved.reasoning_effort;
+    if (typeof v.model === 'string' && v.model && v.model !== 'custom' && !known(agent, v.model)) { v.model_custom = v.model; v.model = 'custom'; }
+    if (agent === 'claude') {
+      if (v.permission_mode === 'manual') v.permission_mode = '';
+      if (!session && v.permission_mode === 'bypassPermissions') v.permission_mode = '';
+    } else if (agent === 'codex' && !session) {
+      if (v.cx_mode === 'bypass') v.cx_mode = 'default';
+      if (v.sandbox === 'danger-full-access') v.sandbox = 'workspace-write';
+    }
+    if (agent === 'codex' && !LX_CX_MODES.some(([k]) => k === v.cx_mode)) v.cx_mode = 'default';
+    return { worktree: false, worktree_name: '', fork_session: false, args: '', ...v };
+  };
+  const first = [opt.agent, mode === 'dispatch' ? (preset.agent || task.agent) : '', launcherAgentPref(p.name, r.name), 'claude', 'codex', 'shell'].find((a) => agentsHere.includes(a) && lxInstalled(a)) || 'claude';
+  const V = { agent: first, claude: fromPrefs('claude'), codex: fromPrefs('codex'), shell: { devcontainer: false },
+    common: { launch: 'new', name: carry.name && session ? carry.name : '', resume_id: '', from_pr: '', prompt: String(mode === 'dispatch' ? (task.prompt || '') : (carry.prompt || '')), add_dirs: session && first === 'claude' ? sib.map((x) => x.id) : [] } };         // a session starts with its sibling repos checked (as the old form did); a task's directories are a choice
+  const view = () => ({ ...V.common, ...V[V.agent], agent: V.agent });
+  const schema = () => launcherSchema(V.agent);
+  const ctx = () => ({ mode, caps: launcherSchema('codex').capabilities, cwd: r.path || '', nextName: lxNextName(r), dirs: dirPath, slug: (mode === 'dispatch' && task.slug) || taskTitleFrom(V.common.prompt).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || '<task>',
+    devcontainer: !!V.shell.devcontainer, has: (k) => lxHas(V.agent, k), cwd_rel: opt.cwd_rel || '', ultraNative: ultraNative() });
+  const ultraNative = () => launcherSchema('claude').efforts.includes('ultracode');
+
+  /* ---- small builders: a control reads its value from V and writes it back; paint() puts V into the controls (a preset, an agent switch, a model change) ---- */
+  let update = () => {};
+  const edit = () => { truth = ''; visible(); update(); };
+  const text = (get, set, attrs) => {
+    const n = el('input', { type: 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', ...(attrs || {}) });
+    n.value = get();
+    const on = () => { set(n.value); edit(); };
+    n.addEventListener('input', on); n.addEventListener('change', on);
+    painters.push(() => { if (n.value !== get()) n.value = get(); });
+    return n;
+  };
+  const area = (get, set, attrs) => {
+    const n = el('textarea', { autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', rows: '3', ...(attrs || {}) });
+    n.value = get();
+    const on = () => { set(n.value); edit(); };
+    n.addEventListener('input', on); n.addEventListener('change', on);
+    painters.push(() => { if (n.value !== get()) n.value = get(); });
+    return n;
+  };
+  const check = (label, get, set, title) => {
+    const cb = el('input', { type: 'checkbox' });
+    cb.checked = !!get();
+    cb.addEventListener('change', () => { set(cb.checked); edit(); });
+    painters.push(() => { cb.checked = !!get(); });
+    return { node: el('label', { title: title || null }, cb, label), input: cb };
+  };
+  const pick = (options, get, set) => {
+    const s = selectEl(options, get());
+    s.addEventListener('change', () => { set(s.value); edit(); });
+    painters.push(() => { s.value = get(); });
+    return s;
+  };
+  const hide = (n, on) => { if (n) n.classList.toggle('hidden', !!on); };
+  const sec = (label) => el('h3', { class: 'lx-k', text: label });
+  const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
+  const checksRow = (...kids) => el('div', { class: 'checks' }, ...kids.filter(Boolean).map((k) => k.node || k));
+
+  /* ---- the agent ---- */
+  const agentItems = [['claude', '◆ Claude'], ['codex', '◇ Codex'], ['shell', '▸ Shell']].filter(([a]) => agentsHere.includes(a));
+  const agentSeg = lxSeg(agentItems, (a) => switchAgent(a), 'Agent', 'lx-agent');
+  const agentWhy = el('p', { class: 'dim lx-hint lx-why' });                            // the reasons a button is off, as text: a title is invisible on touch (shown there by pages.css)
+  const paintAgentSeg = () => {
+    const reasons = [];
+    for (const [a] of agentItems) {
+      const why = !lxInstalled(a) ? `${AGENT_NAME[a] || a} is not installed on this box` : (a !== 'claude' && when() === 'schedule' ? 'Scheduled runs are Claude only for now' : '');
+      agentSeg.disable(a, !!why, why);
+      if (why) reasons.push(why);
+    }
+    agentWhy.textContent = [...new Set(reasons)].join(' · ');
+    agentSeg.set(V.agent);
+  };
+  const switchAgent = (a) => {
+    if (a === V.agent || !agentsHere.includes(a) || !lxInstalled(a)) return;
+    V.agent = a;
+    const kinds = (LX_LAUNCH[a] || [['new']]).map((x) => x[0]);
+    if (!kinds.includes(V.common.launch)) V.common.launch = 'new';
+    paintAgent();
+  };
+
+  /* ---- presets ---- */
+  const presetBox = el('div', { class: 'chips lx-presets', role: 'group', 'aria-label': 'Presets' });
+  const presetField = field('Presets', presetBox);
+  let presetBtns = [];
+  const saveRow = el('div', { class: 'row lx-saverow hidden' });
+  const saveName = el('input', { type: 'text', maxlength: 40, placeholder: 'preset name', 'aria-label': 'Preset name', autocomplete: 'off', autocapitalize: 'off' });
+  const applyPreset = (pr) => {
+    const c = V[V.agent];
+    for (const [k, x] of Object.entries(pr.v || {})) if (k in c) c[k] = x;
+    if (typeof c.model === 'string' && c.model && c.model !== 'custom' && !known(V.agent, c.model)) { c.model_custom = c.model; c.model = 'custom'; }
+    if (!session) {
+      if (c.permission_mode === 'bypassPermissions') c.permission_mode = '';
+      if (c.cx_mode === 'bypass') c.cx_mode = 'default';
+      if (c.sandbox === 'danger-full-access') c.sandbox = 'workspace-write';
+    }
+    reasoningFix();
+    paint();
+  };
+  const paintPresets = () => {
+    presetBox.textContent = '';
+    presetBtns = [];
+    const ps = launcherPresets(p.name, r.name, V.agent);
+    const chips = [];
+    for (const [kind, list] of [['builtin', session ? ps.builtin : []], ['saved', ps.saved]]) {      // the built-in ones are a session's: a task is always in a worktree, and ultracode is typed into a live session
+      for (const pr of list) {
+        const b = el('button', { class: 'chip-btn', type: 'button', text: pr.name, 'aria-pressed': 'false', 'data-preset': pr.id || pr.name, onclick: () => applyPreset(pr) });
+        presetBtns.push({ b, pr });
+        if (kind === 'saved') {
+          chips.push(el('span', { class: 'lx-pchip' }, b, el('button', { class: 'chip-btn lx-pdrop', type: 'button', 'aria-label': `Remove preset ${pr.name}`, title: 'Remove this preset', text: '×',
+            onclick: () => { launcherPresetDrop(p.name, r.name, V.agent, pr.name); paintPresets(); update(); } })));
+        } else chips.push(b);
+      }
+    }
+    const saveBtn = el('button', { class: 'chip-btn lx-save', type: 'button', text: '+ save these', title: 'Remember the choices above as a preset for this repo', onclick: () => { saveRow.classList.remove('hidden'); focusFine(saveName); } });
+    const last = chips.pop();
+    presetBox.append(...chips);
+    if (last) presetBox.append(el('span', { class: 'lx-ptail' }, last, saveBtn));            // the save chip travels with the chip before it: never alone on a line
+    else presetBox.append(saveBtn);
+    presetBox.append(saveRow);
+  };
+  const saveNow = () => {
+    const name = saveName.value.trim();
+    if (!name) { saveName.focus(); return; }
+    const v = launcherRemember(view());
+    delete v.args;
+    launcherPresetSave(p.name, r.name, V.agent, name, v);
+    saveName.value = ''; saveRow.classList.add('hidden');
+    paintPresets(); update();
+  };
+  saveName.addEventListener('keydown', (e) => {                                      // Enter saves the preset, it must not start the session; Escape closes only this row
+    if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); e.stopPropagation(); saveNow(); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); saveName.value = ''; saveRow.classList.add('hidden'); }
+  });
+  saveRow.append(saveName, el('button', { class: 'small', type: 'button', text: 'Save', onclick: () => {
+    const name = saveName.value.trim();
+    if (!name) { saveName.focus(); return; }
+    const v = launcherRemember(view());
+    delete v.args;
+    launcherPresetSave(p.name, r.name, V.agent, name, v);
+    saveName.value = ''; saveRow.classList.add('hidden');
+    paintPresets(); update();
+  } }), el('button', { class: 'small minimal', type: 'button', text: 'Cancel', onclick: () => { saveName.value = ''; saveRow.classList.add('hidden'); } }));
+  const presetOn = (pr) => Object.entries(pr.v || {}).every(([k, x]) => (V[V.agent][k] === undefined ? (x === false || x === '') : V[V.agent][k] === x));
+
+  /* ---- launch kind, name, ids ---- */
+  const launchHost = el('div', { class: 'lx-launchhost' });
+  const paintLaunch = () => {
+    const items = LX_LAUNCH[V.agent] || [];
+    const lo = launcherSchema(V.agent).options.find((x) => x.key === 'launcher');
+    const offered = (k) => !lo || !Array.isArray(lo.choices) || !lo.choices.length || lo.choices.includes(k);          // the schema lists the kinds this box can start (no fork without `codex fork`)
+    const why = { fork: 'this Codex has no `codex fork` command', from_pr: 'this Claude Code has no --from-pr', resume: 'resume is not offered here', continue: 'continue is not offered here' };
+    const seg = lxSeg(items.map(([k, label]) => [k, label, offered(k) ? null : { disabled: true, title: why[k] }]),
+      (k) => { V.common.launch = k; seg.set(k); edit(); }, 'Launch');
+    seg.set(V.common.launch);
+    launchHost.textContent = '';
+    launchHost.append(seg.node);
+  };
+  const nameInput = text(() => V.common.name, (x) => { V.common.name = x.trim(); }, { maxlength: 64 });
+  nameInput.setAttribute('placeholder', `auto: ${lxNextName(r)}`);
+  const nameField = field('Session name', nameInput);
+  const resumeInput = text(() => V.common.resume_id, (x) => { V.common.resume_id = x.trim(); }, { placeholder: 'session id (blank = the picker)' });
+  const resumeField = field('Session to resume', resumeInput, 'Blank opens the picker.');
+  const prInput = text(() => V.common.from_pr, (x) => { V.common.from_pr = x.trim(); }, { placeholder: 'number or URL' });
+  const prField = field('Pull request', prInput, 'Resumes the session linked to it.');
+  const launchField = field('Launch', launchHost);
+
+  /* ---- Claude: model chips, effort, switches, permissions ---- */
+  const C = V.claude;
+  const X = V.codex;
+  const claudeChips = () => { const m = launcherSchema('claude').models; return LX_CLAUDE_CHIPS.filter((c) => !m.length || m.includes(c)); };
+  const claudeMore = () => [...new Set([...launcherSchema('claude').models.filter((m) => !LX_CLAUDE_CHIPS.includes(m)), ...LX_CLAUDE_MORE])];
+  const modelChips = lxSeg(LX_CLAUDE_CHIPS.map((m) => [m, m, { cls: LX_MODEL_HUE[m] }]), (m) => { C.model = m; edit(); paintModel(); }, 'Model', 'lx-chips');
+  const moreSel = selectEl([['__', 'More models…']], '__');
+  moreSel.setAttribute('aria-label', 'More models');
+  const modelId = text(() => C.model_custom, (x) => { C.model_custom = x.trim(); }, { placeholder: 'full model id, e.g. claude-fable-5-1', 'aria-label': 'Custom model id' });
+  moreSel.addEventListener('change', () => { if (moreSel.value !== '__') { C.model = moreSel.value; edit(); if (C.model === 'custom') focusFine(modelId); } paintModel(); });
+  const paintModelOptions = () => {
+    const chips = claudeChips();
+    for (const m of LX_CLAUDE_CHIPS) lxDisable(modelChips.btn(m), !chips.includes(m), chips.includes(m) ? '' : `${m} is not offered by this build of Claude Code`);
+    moreSel.textContent = '';
+    for (const [v, t] of [['__', 'More models…'], ['', 'default (settings)'], ...claudeMore().map((m) => [m, m]), ['custom', 'custom id…']]) moreSel.append(el('option', { value: v, text: t }));
+  };
+  const paintModel = () => {
+    const chips = claudeChips();
+    modelChips.set(chips.includes(C.model) ? C.model : null);
+    moreSel.value = chips.includes(C.model) ? '__' : C.model;
+    hide(modelId, C.model !== 'custom');
+  };
+  painters.push(paintModel);
+  const modelBox = el('div', { class: 'lx-model' }, modelChips.node, moreSel, modelId);
+  const modelField = field('Model', modelBox);
+  let effortSeg = null;
+  const effortHost = el('div', { class: 'lx-effhost' });
+  const paintEffortItems = () => {
+    const eff = launcherSchema('claude').efforts.filter((e) => e !== 'ultracode');
+    const seg = lxSeg([['', 'default'], ...eff.map((e) => [e, e])], (e) => { C.effort = e; seg.set(e); edit(); }, 'Effort', 'lx-effort');
+    seg.set(C.effort || '');
+    effortHost.textContent = '';
+    effortHost.append(seg.node);
+    effortSeg = seg;
+  };
+  painters.push(() => { if (effortSeg) effortSeg.set(C.effort || ''); });
+  const effortField = field('Effort', effortHost);
+  const fast = check('Fast mode', () => C.fast, (x) => { C.fast = x; }, 'The board types /fast once the session is up. /fast switches fast mode on or off, so if your settings already turn it on, this turns it off.');
+  const ultra = check('Ultracode', () => C.ultracode, (x) => { C.ultracode = x; }, 'The board types /effort ultracode on once the session is up');
+  const switchRow = checksRow(fast, ultra);
+  const permSel = selectEl([['', 'ask (default)']], '');
+  const paintPermOptions = () => {
+    permSel.textContent = '';
+    const modes = launcherSchema('claude').permission_modes.filter((m) => m !== 'manual' && m !== 'default' && (session || m !== 'bypassPermissions'));
+    for (const [v, t] of [['', 'ask (default)'], ...modes.map((m) => [m, LX_PERM_LABEL[m] || m])]) permSel.append(el('option', { value: v, text: t }));
+    permSel.value = C.permission_mode;
+  };
+  permSel.addEventListener('change', () => { C.permission_mode = permSel.value; edit(); });
+  painters.push(() => { permSel.value = C.permission_mode; });
+  const permField = field('Permissions', permSel);
+
+  /* ---- Codex: model, reasoning per model, ONE mode picker ---- */
+  const cxModelSel = selectEl([['', 'default (Codex)']], '');
+  const cxModelId = text(() => X.model_custom, (x) => { X.model_custom = x.trim(); }, { placeholder: 'model slug', 'aria-label': 'Custom model id' });
+  cxModelSel.addEventListener('change', () => { X.model = cxModelSel.value; reasoningFix(); edit(); hide(cxModelId, X.model !== 'custom'); paintReasoning(); if (X.model === 'custom') focusFine(cxModelId); });
+  const paintCxModels = () => {
+    cxModelSel.textContent = '';
+    for (const [v, t] of [['', 'default (Codex)'], ...launcherSchema('codex').models.map((m) => [m, m]), ['custom', 'custom id…']]) cxModelSel.append(el('option', { value: v, text: t }));
+    cxModelSel.value = X.model;
+    hide(cxModelId, X.model !== 'custom');
+  };
+  painters.push(() => { cxModelSel.value = X.model; hide(cxModelId, X.model !== 'custom'); });
+  const cxModelField = field('Model', el('div', { class: 'lx-model' }, cxModelSel, cxModelId));
+  const reasoningHost = el('div', { class: 'lx-effhost' });
+  let reasoningSeg = null;
+  const reasoningFix = () => {
+    const ok = launcherReasoning(launcherSchema('codex'), X.model === 'custom' ? '' : X.model).allowed;
+    if (X.reasoning && !ok.includes(X.reasoning)) X.reasoning = '';
+  };
+  const paintReasoning = () => {
+    const rs = launcherReasoning(launcherSchema('codex'), X.model === 'custom' ? '' : X.model);
+    const seg = lxSeg([['', 'default'], ...rs.all.map((l) => [l, l])], (l) => { X.reasoning = l; seg.set(l); edit(); }, 'Reasoning', 'lx-effort');
+    const model = X.model === 'custom' ? 'this model' : (X.model || 'this model');
+    for (const l of rs.all) seg.disable(l, !rs.allowed.includes(l), `${model} has no ${l} reasoning level`);
+    seg.set(X.reasoning || '');
+    reasoningHost.textContent = '';
+    reasoningHost.append(seg.node);
+    reasoningSeg = seg;
+  };
+  painters.push(() => { reasoningFix(); paintReasoning(); });
+  const reasoningField = field('Reasoning', reasoningHost);
+  const modeHost = el('div', { class: 'lx-modehost' });
+  let modeSeg = null;
+  const sandboxSel = selectEl([['workspace-write', 'workspace-write']], 'workspace-write');
+  const approvalSel = selectEl([['on-request', 'on-request']], 'on-request');
+  const paintModeItems = () => {
+    const caps = launcherSchema('codex').capabilities || {};
+    const tips = { default: 'sandboxed to the repo, asks before anything else', auto: caps.approve_for_me ? 'auto-review: Codex approves what it judges safe' : 'auto-review: this Codex has no --approve-for-me, so it asks on request',
+      'read-only': 'read-only sandbox, asks before anything else', bypass: 'no approvals and no sandbox', custom: 'choose the sandbox and the approval policy yourself' };
+    const seg = lxSeg(LX_CX_MODES.filter(([k]) => session || k !== 'bypass').map(([k, label]) => [k, label, { title: tips[k] }]), (k) => { X.cx_mode = k; seg.set(k); edit(); }, 'Codex mode', 'lx-modes');
+    seg.set(X.cx_mode);
+    modeHost.textContent = '';
+    modeHost.append(seg.node);
+    modeSeg = seg;
+    const sbx = launcherSchema('codex').options.find((x) => x.key === 'sandbox');
+    const apv = launcherSchema('codex').options.find((x) => x.key === 'approval');
+    sandboxSel.textContent = ''; approvalSel.textContent = '';
+    for (const s of ((sbx && sbx.choices) || LX_SANDBOXES).filter((s) => session || s !== 'danger-full-access')) sandboxSel.append(el('option', { value: s, text: s }));
+    for (const a of ((apv && apv.choices) || LX_APPROVALS)) approvalSel.append(el('option', { value: a, text: a }));
+    sandboxSel.value = X.sandbox; approvalSel.value = X.approval;
+  };
+  painters.push(() => { if (modeSeg) modeSeg.set(X.cx_mode); sandboxSel.value = X.sandbox; approvalSel.value = X.approval; });
+  sandboxSel.addEventListener('change', () => { X.sandbox = sandboxSel.value; edit(); });
+  approvalSel.addEventListener('change', () => { X.approval = approvalSel.value; edit(); });
+  const customRow = el('div', { class: 'grid lx-custom' }, field('Sandbox', sandboxSel), field('Approval policy', approvalSel));
+  const modeField = field('Mode', modeHost, 'default asks on request inside a sandbox; auto asks Codex to review its own approvals.');
+
+  /* ---- the first prompt ---- */
+  const promptEl = el('textarea', { class: 'task-prompt lx-prompt', rows: '3', autocomplete: 'off', spellcheck: 'true', 'aria-label': session ? 'First prompt' : 'Prompt',
+    placeholder: session ? 'First prompt (optional)' : 'What should it do?' });
+  promptEl._maxRows = 10;
+  promptEl.value = V.common.prompt;
+  painters.push(() => { if (promptEl.value !== V.common.prompt) promptEl.value = V.common.prompt; composerGrow(promptEl); });
+  const nlBtn = newlineButton(promptEl);
+  const promptField = field(session ? 'First prompt' : 'Prompt', el('div', { class: 'lx-promptbox' }, promptEl, nlBtn),
+    session ? 'Optional. Enter starts it · Shift+Enter adds a line.' : 'Enter starts it · Shift+Enter adds a line.');
+
+  /* ---- Advanced: Claude ---- */
+  const dirBoxes = [];
+  const dirsField = (label, list, hint) => {
+    const wrap = el('div', { class: 'checks' });
+    for (const x of list) {
+      const cb = el('input', { type: 'checkbox', value: x.id });
+      cb.checked = V.common.add_dirs.includes(x.id);
+      cb.addEventListener('change', () => { const s = new Set(V.common.add_dirs); if (cb.checked) s.add(x.id); else s.delete(x.id); V.common.add_dirs = [...s]; edit(); });
+      dirBoxes.push([cb, x.id]);
+      wrap.append(el('label', {}, cb, x.id));
+    }
+    return field(label, wrap, hint);
+  };
+  painters.push(() => { for (const [cb, id] of dirBoxes) cb.checked = V.common.add_dirs.includes(id); });
+  const wtCheck = (c) => {
+    const box = check('Start in a new git worktree', () => c.worktree, (x) => { c.worktree = x; }, 'A branch and folder of its own for this session');
+    const nm = text(() => c.worktree_name, (x) => { c.worktree_name = x.trim(); }, { placeholder: 'name (blank: the session name)', 'aria-label': 'Worktree name', maxlength: 80 });
+    const wrap = el('div', { class: 'lx-wt' }, checksRow(box), nm);
+    painters.push(() => hide(nm, !c.worktree));
+    hide(nm, !c.worktree);
+    return { wrap, box, nm };
+  };
+  const wtBlocked = !!(r.root && typeof rootIsGit === 'function' && !rootIsGit(r));
+  const cWt = wtCheck(C);
+  const xWt = wtCheck(X);
+  if (wtBlocked) for (const w of [cWt, xWt]) lxDisable(w.box.input, true, 'the project folder is not a git repo');
+  const devc = check('Run in the devcontainer', () => C.devcontainer, (x) => { C.devcontainer = x; }, 'devcontainer up + devcontainer exec (needs docker and the devcontainer CLI on the box)');
+  const forkChk = check('Fork the session instead of continuing it', () => C.fork_session, (x) => { C.fork_session = x; });
+  const forkRow = checksRow(forkChk);
+  const textField = (label, key, c, hint, attrs) => field(label, text(() => c[key], (x) => { c[key] = x; }, attrs), hint);
+  const allowedF = field('Allowed tools', area(() => C.allowed_tools, (x) => { C.allowed_tools = x; }, { rows: '2', placeholder: 'e.g. Bash(npm test), Read' }), '--allowedTools: comma or one per line.');
+  const disallowedF = field('Disallowed tools', area(() => C.disallowed_tools, (x) => { C.disallowed_tools = x; }, { rows: '2', placeholder: 'e.g. WebFetch' }), '--disallowedTools.');
+  const toolsF = textField('Available tools', 'tools', C, '--tools: the built-in tools the session has at all, comma separated.', { placeholder: 'e.g. Bash, Edit, Read' });
+  const sysF = field('Append to system prompt', area(() => C.append_system_prompt, (x) => { C.append_system_prompt = x; }, { placeholder: 'text appended to the system prompt (optional)' }));
+  const agentF = textField('Agent', 'agent_name', C, '--agent: a subagent definition to run as.', { placeholder: 'e.g. reviewer' });
+  const fallbackF = textField('Fallback model', 'fallback_model', C, '--fallback-model: used when the first is overloaded.', { placeholder: 'e.g. sonnet' });
+  const compactF = textField('Auto-compact', 'autocompact', C, '--autocompact: auto, or the context size to compact at (a number such as 150000).', { placeholder: 'auto or 150000' });
+  const mcpF = textField('MCP config file', 'mcp_config', C, '--mcp-config: the absolute path of a JSON file.', { placeholder: '/srv/projects/…/mcp.json' });
+  const argsC = textField('Extra args', 'args', C, null, { placeholder: 'anything else, e.g. --verbose' });
+  const argsX = textField('Extra args', 'args', X, null, { placeholder: 'anything else' });
+  const sibF = sib.length ? dirsField('Also give access to', sib, '--add-dir') : null;
+  const sibX = sib.length ? dirsField('Also give write access to', sib, '--add-dir') : null;
+  const otherF = others.length ? el('details', { class: 'lx-others' }, el('summary', { text: `Repos of other projects (${others.length})` }), dirsField('Also give access to', others, '--add-dir')) : null;
+  const cfgArea = area(() => X.config, (x) => { X.config = x; fieldError(cfgF, ''); }, { rows: '3', placeholder: 'one key=value per line, e.g. model_verbosity=low' });
+  const cfgF = field('Config overrides', cfgArea, '-c key=value, one per line. Keys the board manages are refused.');
+  const searchChk = check('Live web search', () => X.search, (x) => { X.search = x; }, '--search');
+  /* An advanced field exists while the agent's schema lists its key (the answer of GET /api/agents may arrive after the sheet opened: visible() follows it); a task or a dispatch takes the tools,
+     the system prompt, the directories and the extra args, the rest (a worktree flag, a fork, a devcontainer, --agent ...) is a session's. gate(node, agent, key, sessionOnly) -> node. */
+  const gated = [];
+  const gate = (n, agent, key, so) => { gated.push([n, agent, key, !!so]); return n; };
+  const devRow = checksRow(devc);
+  const claudeAdv = el('details', { class: 'tf-options lx-adv', 'data-agent': 'claude' }, el('summary', { text: 'Advanced' }),
+    el('div', { class: 'grid' }, gate(allowedF, 'claude', 'allowed_tools'), gate(disallowedF, 'claude', 'disallowed_tools')),
+    gate(toolsF, 'claude', 'tools', true), gate(sysF, 'claude', 'append_system_prompt'),
+    gate(el('div', { class: 'grid' }, gate(agentF, 'claude', 'agent_name'), gate(fallbackF, 'claude', 'fallback_model')), 'claude', null, true),      // pairs, so no field is left alone on a row of the 2-column grid
+    gate(el('div', { class: 'grid' }, gate(compactF, 'claude', 'autocompact'), gate(mcpF, 'claude', 'mcp_config')), 'claude', null, true),
+    gate(cWt.wrap, 'claude', 'worktree', true), gate(forkRow, 'claude', 'fork_session'),
+    sibF, otherF, gate(devRow, 'claude', 'devcontainer', true),
+    argsC);
+  if (!r.devcontainer) gate(devRow, 'claude', '__never', true);
+  const xWtBox = el('div', {}, xWt.wrap, el('p', { class: 'dim lx-hint', text: 'Codex has no worktree flag: the board makes a git worktree under .ccboard/worktrees and starts Codex in it.' }));
+  const searchRow = checksRow(searchChk);
+  const codexAdv = el('details', { class: 'tf-options lx-adv', 'data-agent': 'codex' }, el('summary', { text: 'Advanced' }),
+    gate(searchRow, 'codex', 'search'), gate(xWtBox, 'codex', 'worktree', true),
+    sibX, gate(cfgF, 'codex', 'config', true), argsX);
+  gate(fast.node, 'claude', 'fast');
+  const shellDev = check('Run in the devcontainer', () => V.shell.devcontainer, (x) => { V.shell.devcontainer = x; }, 'devcontainer up + devcontainer exec');
+  const shellBox = el('div', { class: 'lx-agentbox', 'data-agent': 'shell' }, el('p', { class: 'dim lx-lede', text: `A plain shell in ${r.root ? 'the project folder' : r.name}: no agent, just a terminal.` }), r.devcontainer ? checksRow(shellDev) : null);
+
+  /* ---- the panels ---- */
+  const claudeBasic = el('div', { class: 'lx-agentbox', 'data-agent': 'claude' }, modelField, effortField, switchRow, permField);
+  const codexBasic = el('div', { class: 'lx-agentbox', 'data-agent': 'codex' }, cxModelField, reasoningField, modeField, customRow);
+
+  /* ---- the danger gate ---- */
+  const dangerText = el('span', { class: 'lx-danger-t' });
+  const ack = el('input', { type: 'checkbox' });
+  ack.addEventListener('change', () => { fieldError(ackRow, ''); update(); });
+  const ackErr = el('span', { class: 'field-err bad', role: 'alert' });
+  const ackRow = el('div', { class: 'lx-ack' }, el('div', { class: 'checks' }, el('label', {}, ack, LX_BYPASS_ACK)), ackErr);
+  ackRow.errNode = ackErr;
+  ackRow.target = ack;
+  const dangerBox = el('div', { class: 'lx-danger hidden', role: 'alert' }, ic('warning-sign'), el('div', { class: 'lx-danger-b' }, dangerText, ackRow));
+  const acked = () => launcherAcked(p.name, r.name);
+
+  /* ---- the command ---- */
+  let cmdText = '';
+  let truth = '';                                                                // the response's cmd, shown in place of the approximation until a value changes
+  const cmdNode = el('pre', { class: 'lx-cmd', 'aria-label': 'Command preview' });
+  const paintCmd = () => { cmdNode.textContent = ''; cmdNode.append(...lxCmdNodes(cmdText)); };           // each token in its own span (see lxCmdNodes); cmdText stays the plain line Copy takes
+  const copyBtn = el('button', { class: 'minimal small lx-copy', type: 'button', text: 'Copy', onclick: async () => {
+    try { if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(cmdText); else throw new Error('no clipboard'); toast('Copied', { kind: 'ok', ttl: 1800 }); }
+    catch (_) { toast('Could not copy: select the text instead', { kind: 'warn' }); }
+  } });
+  const cmdBox = el('div', { class: 'lx-cmdbox' }, el('div', { class: 'lx-cmdhead' }, el('h3', { class: 'lx-k', text: 'Command' }), copyBtn), cmdNode,
+    el('p', { class: 'dim lx-hint', text: 'Approximate: what the board runs is shown after it starts.' }));
+
+  /* ---- dispatch mode: a new session or a running one ---- */
+  const ready = mode === 'dispatch' ? taskSessionTargets(task).filter((x) => x.ok) : [];
+  const D = { where: preset.session ? 'session' : 'lane', session: preset.session || (ready[0] ? ready[0].s.tmux : ''), autoClose: typeof preset.auto_close === 'boolean' ? preset.auto_close : null };
+  const whereSeg = lxSeg([['lane', 'New session'], ['session', 'Running session']], (w) => { D.where = w; whereSeg.set(w); edit(); }, 'Where', 'lx-where');
+  const sessSel = selectEl(ready.length ? ready.map((x) => [x.s.tmux, `${x.s.name} · ${x.repo === 'root' ? 'project folder' : x.repo}${x.same ? '' : ' (other repo)'}`]) : [['', '(no session is ready)']], D.session);
+  sessSel.addEventListener('change', () => { D.session = sessSel.value; });
+  const sessField = field('Session', sessSel, ready.length ? 'The prompt is pasted into it; a session in another repo asks first.' : 'Every session of this project is busy or waiting on a prompt.');
+  function autoValue() { return mode === 'dispatch' ? (D.autoClose === null ? D.where === 'lane' : D.autoClose) : T.autoClose; }
+
+  /* ---- task mode: run when, title, issue, chain, close when finished ---- */
+  const T = { when: ['now', 'later', 'schedule'].includes(carry.when || opt.when) ? (carry.when || opt.when) : (() => { const s = lxJson(lxGet(LX_TASK_KEY(p.name, r.name, 'claude'))); return s && (s.when === 'now' || s.when === 'later') ? s.when : 'now'; })(),
+    title: String(carry.title || ''), autoClose: true, cron: carry.cron || '', jobMode: 'acceptEdits', turns: '30', budget: '', schedName: String(carry.name || '') };
+  const taskSaved = lxJson(lxGet(LX_TASK_KEY(p.name, r.name, 'claude'))) || {};
+  if (taskSaved.auto_close === false) T.autoClose = false;
+  if (JOB_MODES.includes(taskSaved.job_mode)) T.jobMode = taskSaved.job_mode;
+  if (taskSaved.max_turns) T.turns = String(taskSaved.max_turns);
+  let nameTyped = !!carry.name;
+  const whenSeg = lxSeg(TASK_WHEN, (w) => { T.when = w; whenSeg.set(w); paintAgentSeg(); edit(); focusFine(promptEl); }, 'Run', 'lx-when');      // a mouse moves on to the prompt (an arrow key's own focus move runs after this and wins); touch raises no keyboard
+  const lede = el('p', { class: 'dim tf-lede' });
+  const titleIn = text(() => T.title, (x) => { T.title = x; if (T.when === 'schedule' && !nameTyped) autoName(); }, { maxlength: 120, placeholder: 'e.g. Fix the login redirect' });
+  const titleField = field('Title', titleIn, 'Optional: the first line of the prompt is used.');
+  const issueSel = selectEl([['', 'from a GitHub issue…']]);
+  let issues = [];
+  issueSel.addEventListener('focus', async () => {
+    if (issues.length) return;
+    try {
+      const res = await api('GET', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/issues`);
+      issues = res.issues || [];
+      for (const i of issues) issueSel.append(el('option', { value: String(i.number), text: `#${i.number} ${i.title}`.slice(0, 90) }));
+      if (!issues.length) issueSel.append(el('option', { value: '', text: '(no open issues)' }));
+    } catch (e) { issueSel.append(el('option', { value: '', text: String(e.message).slice(0, 80) })); }
+  }, { once: true });
+  issueSel.addEventListener('change', () => {
+    const i = issues.find((x) => String(x.number) === issueSel.value);
+    if (!i) return;
+    T.title = `#${i.number} ${i.title}`.slice(0, 120);
+    V.common.prompt = `${i.title}\n\n${i.body || ''}\n\nGitHub issue: ${i.url}\nWhen done, commit with a message that includes "Closes #${i.number}".`;
+    titleIn.value = T.title;
+    promptEl.value = V.common.prompt;
+    composerGrow(promptEl);
+    update();
+  });
+  const issueField = field('From a GitHub issue', issueSel);
+  const chain = mode === 'task' ? chainBuilder() : null;
+  const autoChk = check('Close the session', () => autoValue(), (x) => { if (mode === 'dispatch') D.autoClose = x; else T.autoClose = x; });
+  const autoField = field('When it finishes', checksRow(autoChk),
+    'The session closes itself about a minute after the task stops, unless it asked you something. Keep it open from the card.');
+  const nameEl = text(() => T.schedName, (x) => { T.schedName = x; nameTyped = true; }, { maxlength: 80, placeholder: 'name (e.g. nightly-tests)' });
+  const autoName = () => { if (!nameTyped) { T.schedName = T.title.trim() || (V.common.prompt.trim() ? taskTitleFrom(V.common.prompt) : ''); nameEl.value = T.schedName; } };
+  const cronEl = text(() => T.cron, (x) => { T.cron = x; syncCron(); }, { placeholder: 'cron: 30 2 * * *  (blank = once, now)' });
+  const cronNote = el('div', { class: 'dim tf-cronnote' });
+  const presetCron = CRON_PRESETS.map(([label, value]) => el('button', { class: 'chip-btn', type: 'button', text: label, 'aria-pressed': 'false', 'data-cron': value, title: value ? `cron ${value}` : 'blank cron: run once, now',
+    onclick: () => { T.cron = value; cronEl.value = value; syncCron(); } }));
+  const syncCron = () => { const v = T.cron.trim(); for (const b of presetCron) b.setAttribute('aria-pressed', b.getAttribute('data-cron') === v ? 'true' : 'false'); cronNote.textContent = cronNoteText(v); };
+  const jobModeSel = pick(JOB_MODES.map((m) => [m, m]), () => T.jobMode, (x) => { T.jobMode = x; });
+  const turnsIn = text(() => T.turns, (x) => { T.turns = x; }, { type: 'number', min: '1', max: '500', inputmode: 'numeric' });
+  const budgetIn = text(() => T.budget, (x) => { T.budget = x; }, { type: 'number', step: '0.5', min: '0', inputmode: 'decimal', placeholder: 'optional' });
+  const schedBox = el('div', { class: 'tf-schedule' }, field('Name', nameEl, 'Shown on the task card.'), field('Cron', cronEl), el('div', { class: 'chips cron-presets', role: 'group', 'aria-label': 'Cron presets' }, presetCron), cronNote,
+    el('div', { class: 'grid' }, field('Permission mode', jobModeSel), field('Max turns', turnsIn), field('Max $', budgetIn, 'Optional.')));
+  const when = () => (mode === 'task' ? T.when : 'now');
+
+  /* ---- targets (the repo select of the task form) ---- */
+  const targets = Array.isArray(opt.targets) ? opt.targets : (mode === 'task' && typeof taskTargets === 'function' ? taskTargets(p) : []);      // the places a task can start in this project
+  const here = Math.max(0, targets.findIndex((x) => x.p === p && x.r === r));
+  const whereRepo = targets.length > 1 ? selectEl(targets.map((x, i) => [String(i), x.label]), String(here)) : null;
+  if (whereRepo) whereRepo.addEventListener('change', () => {
+    const x = targets[parseInt(whereRepo.value, 10)];
+    const carryOn = { title: T.title, prompt: V.common.prompt, when: T.when, name: T.schedName, cron: T.cron };
+    if (x && typeof opt.onTarget === 'function') opt.onTarget(x, carryOn);
+    else if (x) openLauncher({ ...opt, project: x.p, repo: x.r, carry: carryOn, label: x.label, targets: opt.targets });
+  });
+
+  /* ---- the account line and the footer ---- */
+  const acctText = el('span', { class: 'lx-acct-t dim' });
+  const acctBtn = el('button', { class: 'minimal small lx-switch', type: 'button', text: 'Switch first' });
+  const acctRow = el('div', { class: 'lx-acct hidden' }, acctText, acctBtn);
+  let acct = null;
+  const paintAccount = () => {
+    acct = V.agent === 'shell' || (mode === 'dispatch' && D.where === 'session') ? null : launcherAccount(V.agent);
+    hide(acctRow, !acct);
+    if (!acct) return;
+    acctText.textContent = acct.text;
+    hide(acctBtn, !acct.run);
+    if (acct.run) acctBtn.setAttribute('title', `Switch to ${acct.switchTo.label || acct.switchTo.name || acct.switchTo.email || 'the other account'} first, then start`);
+  };
+  acctBtn.addEventListener('click', async () => {
+    if (!acct || !acct.run) return;
+    lxDisable(acctBtn, true);
+    try { await acct.run(); } finally { lxDisable(acctBtn, false); paintAccount(); }
+  });
+  const goText = el('span', { class: 'tf-go-text' });
+  const goIcon = el('span', { class: 'tf-go-ic' });
+  const go = el('button', { class: 'primary', type: 'submit', title: 'Enter in the prompt starts it' }, goIcon, goText);
+  const cancel = el('button', { type: 'button', text: 'Cancel', onclick: () => { if (typeof opt.onCancel === 'function') opt.onCancel(); else { ui.openForm = null; closeSheet(); } } });
+  const foot = el('div', { class: 'submit lx-foot' }, acctRow, go, cancel);
+
+  /* ---- what shows ---- */
+  function visible() {
+    const a = V.agent;
+    const sch = when() === 'schedule';
+    const launch = V.common.launch;
+    hide(claudeBasic, a !== 'claude' || sch); hide(codexBasic, a !== 'codex' || sch);
+    hide(claudeAdv, a !== 'claude' || sch); hide(codexAdv, a !== 'codex' || sch);
+    hide(shellBox, a !== 'shell');
+    hide(agentField, sch);
+    hide(presetField, a === 'shell' || sch || (mode === 'dispatch' && D.where !== 'lane'));
+    hide(launchField, !session || a === 'shell');
+    hide(resumeField, !session || a === 'shell' || launch !== 'resume' && !(a === 'codex' && launch === 'fork'));
+    hide(prField, !session || a !== 'claude' || launch !== 'from_pr');
+    hide(nameField, !session);
+    hide(switchRow, !session);
+    for (const [n, ag, key, so] of gated) hide(n, (key !== null && !lxHas(ag, key)) || (so && !session));
+    /* the launch kind decides these two, after the schema gate above (which would show them again): a fork copies a conversation that resume or continue picks up, a worktree is a new session's */
+    if (!(launch === 'resume' || launch === 'continue') || a !== 'claude') hide(forkRow, true);
+    if (launch !== 'new') { hide(cWt.wrap, true); hide(xWtBox, true); }
+    hide(customRow, X.cx_mode !== 'custom');
+    hide(promptField, a === 'shell' || (session && launch !== 'new') || (mode === 'dispatch'));
+    hide(titleField, mode !== 'task' || sch); hide(issueField, mode !== 'task' || sch);
+    if (chain) hide(chain.node, sch || mode !== 'task');
+    hide(autoField, mode === 'session' || sch);
+    hide(schedBox, !sch);
+    hide(cmdBox, (a === 'shell' && !r.devcontainer) || sch);
+    if (mode === 'dispatch') { hide(sessField, D.where !== 'session'); hide(agentField, D.where !== 'lane'); hide(claudeBasic, D.where !== 'lane' || a !== 'claude'); hide(codexBasic, D.where !== 'lane' || a !== 'codex'); hide(claudeAdv, true); hide(codexAdv, true); hide(cmdBox, D.where !== 'lane'); }
+    lede.textContent = mode === 'task' ? TASK_LEDE[T.when] : '';
+    hide(lede, mode !== 'task');
+  }
+
+  update = () => {
+    const v = view();
+    cmdText = truth || commandPreview(v, ctx());
+    paintCmd();
+    for (const x of presetBtns) x.b.setAttribute('aria-pressed', presetOn(x.pr) ? 'true' : 'false');
+    const d = launcherDanger(v, mode);
+    hide(dangerBox, !d);
+    dangerText.textContent = v.agent === 'codex' ? BYPASS_WARNING_CODEX : BYPASS_WARNING;
+    hide(ackRow, !d || acked());
+    const gated = d && !acked() && !ack.checked;
+    const w = when();
+    if (mode === 'session') { goText.textContent = busy ? 'Starting…' : 'Start & open'; }
+    else if (mode === 'task') goText.textContent = busy ? TASK_BUSY[w] : TASK_SUBMIT[w];
+    else goText.textContent = busy ? 'Starting…' : (D.where === 'lane' ? `Start in ${AGENT_NAME[v.agent] || 'a new session'}` : 'Send to the session');
+    goIcon.textContent = '';
+    goIcon.append(ic(mode === 'task' ? LX_TASK_ICON[w] : 'play'));
+    lxDisable(go, busy || gated || (mode === 'dispatch' && D.where === 'session' && !ready.length));
+    go.setAttribute('title', gated ? 'Tick I understand to go on' : 'Enter in the prompt starts it');
+    if (mode !== 'session') autoChk.input.checked = autoValue();
+    if (mode === 'task') whenSeg.disable('schedule', v.agent !== 'claude', 'Scheduled runs are Claude only for now');
+    paintAccount();
+  };
+
+  const paintAgent = () => {
+    paintAgentSeg();
+    paintLaunch();
+    paintPresets();
+    paintReasoning();
+    visible();
+    update();
+  };
+  const paint = () => {
+    for (const f of painters) f();
+    if (mode === 'task') { whenSeg.set(T.when); syncCron(); }
+    if (mode === 'dispatch') whereSeg.set(D.where);
+    paintAgentSeg();
+    paintLaunch();
+    paintPresets();
+    visible();
+    update();
+  };
+  const agentField = field('Agent', el('div', { class: 'lx-agentctl' }, agentSeg.node, agentWhy));
+  const whenField = field('Run', whenSeg.node);
+  const whereField = field('Where', whereSeg.node);
+
+  let busy = false;
+  const setBusy = (on) => { busy = on; update(); };
+  const wipe = () => { for (const f of [promptField, nameField, resumeField, prField, argsC, cfgF, ackRow, modelField, effortField]) fieldError(f, ''); formStatus(status, ''); };
+  const failAt = (f, msg) => { const d = f && f.closest ? f.closest('details') : null; if (d) d.setAttribute('open', ''); fieldError(f, msg, true); };
+
+  /* ---- submit ---- */
+  const remember = (v, w) => {
+    const keep = launcherRemember(v);
+    if (session) {
+      launcherSaveAll(p.name, r.name, v.agent, keep);
+    } else if (v.agent === 'claude' || v.agent === 'codex') {
+      const flat = { ...keep };
+      const m = lxModelOf(v);
+      if (m) flat.model = m; else delete flat.model;
+      delete flat.model_custom;
+      if (v.agent === 'claude') { if (v.effort) flat.effort = v.effort; else delete flat.effort; }
+      else if (v.reasoning) flat.reasoning_effort = v.reasoning;
+      const base = lxJson(lxGet(LX_TASK_KEY(p.name, r.name, v.agent))) || {};
+      const next = { ...flat };
+      if (mode === 'task') { next.when = w === 'schedule' ? base.when : w; next.auto_close = T.autoClose; next.cron = T.cron.trim(); next.job_mode = T.jobMode; next.max_turns = parseInt(T.turns, 10) || 30; }
+      else for (const k of ['when', 'auto_close', 'cron', 'job_mode', 'max_turns']) if (base[k] !== undefined) next[k] = base[k];
+      lxPut(LX_TASK_KEY(p.name, r.name, v.agent), JSON.stringify(next));
+    }
+  };
+
+  const openIt = (tmux, tab) => {
+    const url = '/term/' + encodeURIComponent(tmux);
+    if (tab) { tab.location = url; return; }
+    if (typeof Shell !== 'undefined' && Shell && typeof Shell.openTerm === 'function') Shell.openTerm(tmux); else openPage(url);
+  };
+  const finish = (res, w) => {
+    setError(null);
+    if (typeof opt.onDone === 'function') opt.onDone(res, w); else { ui.openForm = null; closeSheet(); }
+    if (typeof poll === 'function') poll(true);
+  };
+
+  const submitSession = async (v) => {
+    const body = launcherPayload(v, ctx());
+    remember(v);
+    const useDock = typeof Shell !== 'undefined' && Shell && typeof Shell.dockOn === 'function' && Shell.dockOn() && !(typeof Shell.dockHeld === 'function' && Shell.dockHeld());
+    const quiet = opt.open === false;                                    // the caller shows the session itself (the quad's empty tile: onDone puts it there)
+    const tab = !quiet && !useDock && !isStandalone() && typeof window.open === 'function' ? window.open('', '_blank') : null;     // opened on the tap: a popup blocker lets it through
+    let res;
+    try { res = await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/sessions`, body); }
+    catch (err) {
+      if (tab) tab.close();
+      formFail(status, [[/resume id|resume/i, resumeField], [/pull request|from.pr/i, prField], [/extra args|settings overrides|argument/i, argsC], [/session .*(exists|name)|name .*(invalid|allowed)|reserved/i, nameField],
+        [/model/i, modelField], [/config|-c /i, cfgF]], err.message);
+      return;
+    }
+    if (res && typeof res.cmd === 'string' && res.cmd) { truth = res.cmd; cmdText = truth; paintCmd(); }       // the truth replaces the approximation
+    if (res && res.tmux && !quiet) openIt(res.tmux, tab); else if (tab) tab.close();
+    if (res && res.tmux && v.agent === 'claude') {                      // what has no flag is typed once the session is at its prompt
+      if (v.ultracode && !ultraNative()) launcherAfterStart(res.tmux, 'effort', 'ultracode on');
+      if (v.fast && lxHas('claude', 'fast')) launcherAfterStart(res.tmux, 'fast');
+    }
+    finish(res, 'now');
+  };
+
+  const taskBase = (v) => ({ project: p.name, repo: r.name, agent: v.agent, ...launcherTaskOpts(v), add_dirs: v.add_dirs });
+  const submitTaskNow = async (v, w, prompt, title) => {
+    const body = { ...taskBase(v), title, prompt, when: w };
+    if (!T.autoClose) body.auto_close = false;
+    for (const k of Object.keys(body)) if (body[k] === '' || body[k] === null || (Array.isArray(body[k]) && !body[k].length)) delete body[k];
+    remember(v, w); taskSaveLastRepo(p.name, r.name);
+    const res = (await api('POST', '/api/tasks', body)) || {};
+    const demo = typeof demoOn === 'function' && demoOn();
+    const base = { id: res.id !== undefined && res.id !== null ? res.id : -Date.now(), project: p.name, repo: r.name, slug: res.slug || '', title, branch: '', base: '', worktree: '', tmux: '', created_at: new Date().toISOString(),
+      column: 'backlog', phase: 'backlog', mode: 'worktree', agent: v.agent, auto_close: false, parent_id: null, chain_id: null, session_row: null, session: null, result: null, prompt: prompt.slice(0, 600), prompt_len: prompt.length,
+      claude_session_id: null, pr_url: null, pr_number: null, pr_state: null, cost_usd: null, overlap: [], ci: null, pr: null };
+    if (w === 'now') {
+      const row = taskRowFromResponse(base, res, { mode: 'worktree' });
+      if (!row.tmux && demo) row.tmux = `${p.name}--${r.name}--t-${row.slug || 'task'}`;
+      taskOverrideSet(row, null, { _new: true });
+      toast(`started ${row.slug || title}`, { kind: 'ok' });
+      taskRepaint();
+      finish(res, w);
+      taskOpenPeek(row.tmux);
+    } else {
+      const row = { ...base, ...(res.task && typeof res.task === 'object' ? res.task : {}), phase: 'backlog', column: 'backlog', tmux: '' };
+      taskOverrideSet(row, null, { _new: true });
+      toast(`added to backlog: ${title}`.slice(0, 120), { kind: 'ok' });
+      taskRepaint();
+      finish(res, w);
+    }
+  };
+  const submitChainNow = async (v, w, prompt, title, more) => {
+    const first = {};
+    for (const [k, x] of Object.entries({ ...launcherTaskOpts(v), add_dirs: v.add_dirs })) if (x && !(Array.isArray(x) && !x.length)) first[k] = x;
+    const steps = [{ title, prompt, agent: v.agent, ...first }, ...more.map((s) => ({ title: s.title || taskTitleFrom(s.prompt), prompt: s.prompt, agent: s.agent }))];
+    const body = { steps, dispatch: w === 'now' };
+    if (!T.autoClose) body.auto_close = false;
+    remember(v, w); taskSaveLastRepo(p.name, r.name);
+    const res = (await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/chains`, body)) || {};
+    const demo = typeof demoOn === 'function' && demoOn();
+    const chainId = res.chain_id !== undefined && res.chain_id !== null ? res.chain_id : (demo ? `demo-${Date.now()}` : null);
+    const ids = Array.isArray(res.ids) && res.ids.length === steps.length ? res.ids : (demo ? steps.map((_, i) => -(Date.now() + i)) : null);
+    let opened = '';
+    const started = res.started && typeof res.started === 'object' ? res.started : res;
+    const given = Array.isArray(res.tasks) && res.tasks.length === steps.length ? res.tasks : [];
+    if (ids) {
+      steps.forEach((s, i) => {
+        const base = { id: ids[i], project: p.name, repo: r.name, slug: '', title: s.title, branch: '', base: '', worktree: '', tmux: '', created_at: new Date().toISOString(), column: 'backlog',
+          phase: i ? 'queued' : 'backlog', mode: 'worktree', agent: s.agent, auto_close: T.autoClose, parent_id: i ? ids[i - 1] : null, chain_id: chainId, session_row: null, session: null, result: null,
+          prompt: s.prompt.slice(0, 600), prompt_len: s.prompt.length, claude_session_id: null, pr_url: null, pr_number: null, pr_state: null, cost_usd: null, overlap: [], ci: null, pr: null,
+          ...(given[i] && typeof given[i] === 'object' ? given[i] : {}) };
+        if (i === 0 && w === 'now') {
+          const row = taskRowFromResponse(base, { tmux: started.tmux, session_row: started.session_row, slug: started.slug, branch: started.branch, task: started.task }, { mode: 'worktree' });
+          if (!row.tmux && demo) row.tmux = `${p.name}--${r.name}--t-chain-${Math.abs(ids[0])}`;
+          opened = row.tmux || '';
+          taskOverrideSet(row, null, { _new: true });
+        } else taskOverrideSet(base, null, { _new: true });
+      });
+    }
+    toast(w === 'now' ? `started a chain of ${steps.length} steps` : `added a chain of ${steps.length} steps to the backlog`, { kind: 'ok' });
+    taskWarn(res);
+    taskRepaint();
+    finish(res, w);
+    if (opened) taskOpenPeek(opened);
+  };
+  const submitJobNow = async (v, prompt, title) => {
+    const name = (T.schedName.trim() || title).slice(0, 80);
+    const c = T.cron.trim();
+    const body = { name, prompt, permission_mode: T.jobMode, max_turns: parseInt(T.turns, 10) || 30, run_now: !c };
+    if (c) body.cron = c;
+    if (T.budget) body.max_budget_usd = parseFloat(T.budget);
+    if (String(C.args || '').trim()) body.args = String(C.args).trim();
+    lxPut(LX_TASK_KEY(p.name, r.name, 'claude'), JSON.stringify({ ...taskSaved, cron: c, job_mode: T.jobMode, max_turns: parseInt(T.turns, 10) || 30 }));
+    const res = await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/jobs`, body);
+    toast(c ? `scheduled ${name}` : `running ${name} once`, { kind: 'ok' });
+    finish(res, 'schedule');
+  };
+  const submitDispatch = (v) => {
+    if (D.where === 'session') {
+      const x = ready.find((q) => q.s.tmux === D.session);
+      if (!x) { formStatus(status, 'Pick a session that is ready.', true); return; }
+      closeSheet();
+      taskSend(task, x, false, autoValue() ? { auto_close: true } : undefined);
+      return;
+    }
+    const extra = launcherTaskOpts(v);
+    remember(v);
+    closeSheet();
+    taskStart(task, { agent: v.agent, auto_close: autoValue() ? undefined : false, extra });
+  };
+
+  const submit = async () => {
+    if (busy) return;
+    wipe();
+    V.common.prompt = promptEl.value;
+    const v = view();
+    const w = when();
+    const errs = (f, m) => { failAt(f, m); };
+    if (mode === 'session' && v.agent !== 'shell') {
+      if (v.launch === 'from_pr' && !LX_PR.test(String(v.from_pr).trim())) return errs(prField, 'Give a pull request number (123 or #123) or its URL.');
+      if (v.agent === 'claude' && String(v.autocompact || '').trim() && !/^(auto|\d{4,9})$/.test(String(v.autocompact).trim())) return errs(compactF, 'auto, or a context size such as 150000.');
+      if (v.agent === 'claude' && v.launch === 'resume' && v.resume_id && !LX_UUID.test(v.resume_id)) return errs(resumeField, 'A session id looks like 8-4-4-4-12 hex digits.');
+    }
+    if (v.agent === 'codex' && w !== 'schedule') {
+      const bad = String(v.config || '').split('\n').map((x) => x.trim()).filter(Boolean).find((x) => !LX_CONFIG_RE.test(x));
+      if (bad) return errs(cfgF, `"${bad}" is not key=value (letters, digits, _ and . before the =).`);
+    }
+    if (launcherDanger(v, mode) && !acked() && !ack.checked) return errs(ackRow, 'Tick I understand to start without approvals.');
+    if (mode === 'dispatch') { submitDispatch(v); return; }
+    if (mode === 'task') {
+      const prompt = V.common.prompt.trim();
+      if (!prompt) return errs(promptField, 'Write what it should do.');
+      const title = T.title.trim() || taskTitleFrom(prompt);
+      const steps = w === 'schedule' ? [] : chain.read();
+      if (w !== 'schedule' && chain.problem()) { chain.node.setAttribute('open', ''); return; }
+      if (w !== 'schedule' && /bypassPermissions|dangerously-skip-permissions/i.test(String(v.args || ''))) return errs(v.agent === 'claude' ? argsC : argsX, 'bypassPermissions is not allowed for tasks or schedules; start a session and choose bypass there if you really want it.');
+      setBusy(true);
+      try {
+        if (w === 'schedule') await submitJobNow(v, prompt, title);
+        else if (steps.length) await submitChainNow(v, w, prompt, title, steps);
+        else await submitTaskNow(v, w, prompt, title);
+      } catch (err) { formStatus(status, err.message, true); setError(err.message); }
+      setBusy(false);
+      return;
+    }
+    if (launcherDanger(v, mode)) launcherAck(p.name, r.name);
+    setBusy(true);
+    try { await submitSession(v); } catch (err) { formStatus(status, err.message, true); setError(err.message); }
+    setBusy(false);
+  };
+
+  composerBind(promptEl, { maxRows: 10, onSend: () => submit() });                 // Enter starts, Shift+Enter (or the newline button) adds a line, Cmd/Ctrl+Enter starts too
+  const syncPrompt = () => { if (V.common.prompt !== promptEl.value) { V.common.prompt = promptEl.value; if (T.when === 'schedule') autoName(); edit(); } };   // a newline typed by script fires no input event
+  promptEl.addEventListener('input', () => { fieldError(promptField, ''); syncPrompt(); });
+  promptEl.addEventListener('keyup', syncPrompt);
+  nlBtn.addEventListener('click', syncPrompt);
+
+  const form = el('form', { class: 'form lx-form' + (mode === 'session' ? '' : ' task-form'), onsubmit: (e) => { e.preventDefault(); submit(); } },
+    whereRepo ? field('Repo', whereRepo) : null,
+    mode === 'task' ? [whenField, lede] : null,
+    mode === 'dispatch' ? whereField : null,
+    mode === 'dispatch' ? sessField : null,
+    agentField,
+    presetField,
+    launchField, resumeField, prField,
+    nameField,
+    claudeBasic, codexBasic, shellBox,
+    dangerBox,
+    promptField, titleField, issueField, chain ? chain.node : null, schedBox,
+    claudeAdv, codexAdv,
+    autoField,
+    cmdBox,
+    status,
+    foot);
+  form.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); if (typeof e.stopPropagation === 'function') e.stopPropagation(); cancel.click(); } });
+  form.focusFirst = () => focusFine(promptEl);
+
+  paintModelOptions(); paintEffortItems(); paintPermOptions(); paintCxModels(); paintModeItems();
+  paint();
+  if (mode === 'task') syncCron();
+
+  /* the schema may arrive after the sheet opened: the model lists, the efforts, the permission modes and the reasoning levels follow it */
+  const refreshSchema = () => {
+    paintModelOptions(); paintEffortItems(); paintPermOptions(); paintCxModels(); paintModeItems();
+    paintModel(); reasoningFix(); paint();
+  };
+  const ctl = { form, V, view, schema, refreshSchema, paint, submit, go, status, acct: () => acct,
+    preview: () => cmdText, payload: () => launcherPayload(view(), ctx()), T, D, busy: () => busy };
+  form._launcher = ctl;
+  return ctl;
+}
+
+/* Everything remembered by a session launch: the agent's own memory, the agent last used here, and the project's defaults (what a repo with no memory of its own starts from). */
+function launcherSaveAll(pname, rname, agent, keep) {
+  if (agent === 'claude' || agent === 'codex') lxPut(LX_KEY(pname, rname, agent), JSON.stringify(keep));
+  lxPut(LX_AGENT_KEY(pname, rname), agent);
+  const d = lxJson(lxGet(LX_DEFAULTS_KEY(pname))) || {};
+  d.agent = agent;
+  if (agent === 'claude' || agent === 'codex') {
+    const light = {};
+    for (const k of agent === 'claude' ? ['model', 'model_custom', 'effort', 'permission_mode'] : ['model', 'model_custom', 'reasoning', 'cx_mode']) if (keep[k] !== undefined) light[k] = keep[k];
+    d[agent] = light;
+  }
+  lxPut(LX_DEFAULTS_KEY(pname), JSON.stringify(d));
+}
+
+/* A slash command typed once the new session is at its prompt (POST /api/sessions/{tmux}/command; the board's /command refuses with 409 until then): `/effort ultracode on` and `/fast`
+   have no flag to carry them. Tried for about 20 seconds, then said. Two of them for one session go one after the other (the second starts when the first has landed or given up), so
+   they never type over each other. cmd is the command's name (effort, fast), arg its argument or nothing (the /fast SlashSpec takes none). */
+const LX_AFTER = new Map();
+function launcherAfterStart(tmux, cmd, arg) {
+  const typed = `/${cmd}${arg ? ' ' + arg : ''}`;
+  const body = arg ? { cmd, arg } : { cmd };
+  const once = () => new Promise((done) => {
+    let tries = 0;
+    const later = (fn, ms) => { const t = setTimeout(fn, ms); if (t && typeof t.unref === 'function') t.unref(); };
+    const attempt = async () => {
+      tries += 1;
+      try { await api('POST', `/api/sessions/${encodeURIComponent(tmux)}/command`, body); done(); return; }
+      catch (e) {
+        if (e && e.status === 409 && tries < 10) { later(attempt, 2000); return; }
+        toast(`${typed} was not applied: type it in the terminal`, { kind: 'warn' });
+        done();
+      }
+    };
+    later(attempt, 1500);
+  });
+  const next = (LX_AFTER.get(tmux) || Promise.resolve()).then(once);
+  LX_AFTER.set(tmux, next);
+  next.then(() => { if (LX_AFTER.get(tmux) === next) LX_AFTER.delete(tmux); });
+}
+
+/* Open the launcher in the sheet. See the comment at the top of this section for the options. Returns the controller (launcherForm's), or false when the project or repo is unknown (or a dispatch has no task). */
+function openLauncher(o) {
+  const opt = o || {};
+  const ctl = launcherForm(opt);
+  if (!ctl) return false;                                               // launch() (components.js) reads false as 'nothing opened'
+  const rp = lxResolve(opt.project, opt.repo);
+  const label = typeof opt.label === 'string' && opt.label ? opt.label : (rp.r.root ? `${rp.p.name} · project folder` : `${rp.p.name}/${rp.r.name}`);
+  const mode = opt.mode === 'task' || opt.mode === 'dispatch' ? opt.mode : 'session';
+  const title = mode === 'task' ? `New task · ${label}` : mode === 'dispatch' ? `Start “${String(opt.task.title).slice(0, 60)}”` : `New session · ${label}`;
+  const holder = el('div', { class: 'sheet-form' }, ctl.form);
+  ui.openForm = 'sheet';
+  ctl.sheet = openSheet({ title, body: holder, back: opt.back && typeof opt.back.onClick === 'function' ? opt.back : null,
+    onClose: () => { if (ui.openForm === 'sheet') ui.openForm = null; if (typeof Shell !== 'undefined' && Shell) Shell.formWatch = null; } });
+  if (typeof Shell !== 'undefined' && Shell) Shell.formWatch = () => { if (ui.openForm !== 'sheet') { Shell.formWatch = null; closeSheet(); } };
+  if (typeof ctl.form.focusFirst === 'function') ctl.form.focusFirst();
+  launcherSchemaLoad().then((m) => { if (m) ctl.refreshSchema(); });
+  return ctl;
+}

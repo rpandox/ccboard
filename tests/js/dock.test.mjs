@@ -8,7 +8,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { STATIC, makeWorld, plain } from './harness.mjs';
 import { installDom } from './minidom.mjs';
-import { projectsOf, sess, fakeState } from './world.mjs';
+import { ISO, projectsOf, sess, fakeState } from './world.mjs';
 
 // ---------------------------------------------------------------- the world
 
@@ -968,4 +968,150 @@ test('index.html loads termkit.js (the dock and the quad need TermKit) after liv
   assert.ok(order.indexOf('/static/termkit.js') > order.indexOf('/static/live.js'));
   assert.ok(order.indexOf('/static/termkit.js') < order.indexOf('/static/shell.js'));
   assert.match(html, /<aside id="dock" class="hidden" aria-label="Terminal dock"><\/aside>/);
+});
+
+// ---------------------------------------------------------------- v0.5.13: create from anywhere: the dock's +, the sidebar's +, the topbar menu (openLauncher)
+
+/** openLauncher as a recorder; read back as plain values (the project and the repo are the state's own objects). */
+const stubLauncher = (w) => w.run('globalThis.__launched = []; globalThis.openLauncher = (o) => { __launched.push(o); return true; };');
+const launched = (w) => plain(w.run('__launched.map((o) => ({ mode: o.mode, project: o.project && o.project.name, repo: o.repo && o.repo.name, folder: !!(o.project && o.repo && o.repo === o.project.root) }))'));
+const sheetOpen = (d) => d.q('#sheet').open === true;
+
+test('the dock\'s header has a + first among its buttons: a new session in the repo of the session shown, through openLauncher (one tap to the filled sheet)', () => {
+  const d = dWorld({ state: stateOf() });
+  stubLauncher(d.w);
+  assert.equal(d.Shell.openDock(S3), true);
+  const btns = d.dock().querySelector('.tp-btns');
+  assert.deepEqual(btns.children.map((b) => b.getAttribute('data-act')).slice(0, 2), ['new', 'reconnect'], 'first, before the pane\'s own buttons');
+  const add = btns.querySelector('[data-act=new]');
+  assert.equal(add.getAttribute('aria-label'), 'New session in this repo');
+  assert.ok(add.classList.contains('tp-btn') && add.classList.contains('icon'), 'the same icon button as its neighbours');
+  click(add);
+  assert.deepEqual(launched(d.w), [{ mode: 'session', project: 'shop', repo: 'web', folder: false }], 'the repo of the session in the dock: web, not api');
+  assert.equal(d.w.run('__launched[0].project === state.projects[0] && __launched[0].repo === state.projects[0].repos[1]'), true, 'the state objects');
+  assert.equal(sheetOpen(d), false, 'the dock opens no sheet itself');
+  d.Shell.openDock(S1);
+  click(d.dock().querySelector('[data-act=new]'));
+  assert.equal(launched(d.w).at(-1).repo, 'api', 'a repainted dock keeps the button and follows the session it shows');
+});
+
+test('the dock\'s + for a session the board no longer knows opens the repo picker instead of nothing', () => {
+  const d = dWorld({ state: stateOf() });
+  stubLauncher(d.w);
+  assert.equal(d.Shell.openDock('gone--repo--s9'), true);
+  click(d.dock().querySelector('[data-act=new]'));
+  assert.deepEqual(launched(d.w), []);
+  assert.equal(sheetOpen(d), true);
+  assert.equal(d.q('#sheet').querySelector('.sheet-title').textContent, 'New session');
+});
+
+test('every project row of the sidebar has a +: openLauncher for that project, in the repo it worked in last; the row does not open or close and the page does not navigate', () => {
+  const d = dWorld({ state: stateOf({ s3: { state_at: ISO(1) } }) });
+  stubLauncher(d.w);
+  d.w.run('renderShell(state)');
+  const row = d.q('#sidebar .proj-row');
+  const add = row.querySelector('.tn-add');
+  assert.ok(add, 'the + is on the project row');
+  assert.equal(add.getAttribute('aria-label'), 'New session in this project');
+  assert.equal(add.getAttribute('data-project'), 'shop');
+  assert.ok(add.classList.contains('bp5-button'), 'a real button, not a link inside the row\'s link');
+  const open0 = row.getAttribute('aria-expanded');
+  const e = click(add);
+  assert.equal(e.prevented > 0 || e.stopped > 0, true, 'the click is its own');
+  assert.deepEqual(launched(d.w), [{ mode: 'session', project: 'shop', repo: 'web', folder: false }], 'web has the newest session');
+  assert.equal(row.getAttribute('aria-expanded'), open0, 'the tree row did not toggle');
+  assert.equal(d.w.location.hash, '', 'and nothing navigated');
+});
+
+test('the sidebar + closes the phone drawer first, and a project with no place at all gets the repo picker narrowed to it', () => {
+  const st = stateOf();
+  st.projects.push({ name: 'empty', path: '/srv/projects/empty', root: null, orphan_sessions: [], repos: [] });
+  const d = dWorld({ state: st });
+  stubLauncher(d.w);
+  d.w.run('renderShell(state)');
+  d.w.run('Shell.openDrawer()');
+  assert.equal(d.q('#drawer').open, true);
+  const drawerRow = d.q('#drawer .proj-row[data-key], #drawer .tn.proj');
+  assert.ok(drawerRow, 'the drawer has the same tree');
+  click(d.q('#drawer .tn-add'));
+  assert.equal(d.q('#drawer').open, false, 'the drawer closes so the sheet is not under it');
+  assert.equal(launched(d.w).length, 1);
+  d.w.run('Shell.sideNew("empty")');
+  assert.equal(launched(d.w).length, 1, 'no place in that project: no launcher call');
+  assert.equal(sheetOpen(d), true, 'the picker (narrowed to it) says so');
+  assert.equal(d.w.run('Shell.sideNew("nope")'), false, 'an unknown project does nothing');
+});
+
+test('the topbar + menu: New session and New task open the launcher with the project and repo of the route; off a project page they ask the repo first, then open it', () => {
+  const d = dWorld({ state: stateOf() });
+  stubLauncher(d.w);
+  const item = (label) => d.w.get('Shell').createItems().find((i) => i.label === label);
+  d.w.location.hash = '#/p/shop/web';
+  item('New session').onClick();
+  item('New task').onClick();
+  assert.deepEqual(launched(d.w), [{ mode: 'session', project: 'shop', repo: 'web', folder: false }, { mode: 'task', project: 'shop', repo: 'web', folder: false }]);
+  assert.equal(sheetOpen(d), false, 'no picker in between');
+  d.w.location.hash = '#/';
+  item('New session').onClick();
+  assert.equal(sheetOpen(d), true, 'no project in the route: the repo picker');
+  const rows = d.q('#sheet').querySelectorAll('.pick-row');
+  assert.ok(rows.length >= 2);
+  const second = rows.find((r) => /shop\/web/.test(r.textContent));
+  second.click();
+  assert.deepEqual(launched(d.w).at(-1), { mode: 'session', project: 'shop', repo: 'web', folder: false }, 'a picker row opens the launcher for that repo');
+  assert.equal(launched(d.w).length, 3);
+  const labels = plain(d.w.run('Shell.createItems().map((i) => i.label)'));
+  assert.deepEqual(labels, ['New session', 'New task', 'Schedule', 'New project', 'Import from GitHub', 'Batch prompt'], 'schedule, project, import and batch keep their own sheets');
+});
+
+test('the topbar + menu on a project page that names no repo: New session opens the launcher where the project worked last (no picker), the chevron goes back to the list', () => {
+  const d = dWorld({ state: stateOf({ s3: { state_at: new Date(Date.now() - 5000).toISOString() }, s1: { state_at: new Date(Date.now() - 600000).toISOString() }, s2: { state_at: new Date(Date.now() - 700000).toISOString() } }) });
+  stubLauncher(d.w);
+  d.w.location.hash = '#/p/shop';
+  d.w.get('Shell').createItems()[0].onClick();
+  assert.deepEqual(launched(d.w), [{ mode: 'session', project: 'shop', repo: 'web', folder: false }], 'web holds the project\'s newest session');
+  assert.equal(sheetOpen(d), false, 'no picker in between');
+  assert.equal(typeof d.w.run('__launched[0].back.onClick'), 'function', 'the chevron has somewhere to go: the repo list');
+  assert.equal(d.w.run('__launched[0].back.label'), 'Back to the repo list');
+});
+
+test('without openLauncher the + menu falls back to the old session form in the sheet (a deploy before launcher.js has it)', () => {
+  const d = dWorld({ state: stateOf() });
+  d.w.run('openLauncher = undefined');
+  d.w.location.hash = '#/p/shop/api';
+  d.w.get('Shell').createItems()[0].onClick();
+  assert.equal(sheetOpen(d), true);
+  assert.equal(d.q('#sheet').querySelector('.sheet-title').textContent, 'New session · shop/api');
+  assert.ok(d.q('#sheet').querySelector('form.form'));
+});
+
+test('index.html has no #modal (v0.5.13: the diff viewer is a sheet) and shell.css styles the wide sheet and the sidebar +', () => {
+  const html = fs.readFileSync(path.join(STATIC, 'index.html'), 'utf8');
+  assert.doesNotMatch(html, /id="modal"/);
+  for (const file of ['style.css', 'shell.css', 'pages.css']) assert.doesNotMatch(fs.readFileSync(path.join(STATIC, file), 'utf8'), /#modal\s*[{,]|\.modal-box/, `${file} has no #modal rules`);
+  const css = fs.readFileSync(path.join(STATIC, 'shell.css'), 'utf8');
+  assert.match(css, /dialog#sheet\.right\.wide \{ width:min\(1100px, 100vw\); \}/);
+  assert.match(css, /\.tn-row \.tn-add \{/);
+});
+
+test('tap count (real launcher): a new session from the dock is 2 taps with the remembered defaults: the dock\'s +, then Start & open', async () => {
+  const d = dWorld({ state: stateOf() });
+  d.w.run('renderBanner = () => {}; api = async (method, path, body) => { __calls.push({ method, path, body }); return path.endsWith("/sessions") ? { tmux: "shop--web--s9", attach_url: "/term/shop--web--s9", agent: "claude", cmd: "claude" } : { ok: true }; }');
+  assert.equal(d.Shell.openDock(S3), true);
+  let taps = 0;
+  taps++;                                                                                  // 1: the dock's +
+  click(d.dock().querySelector('[data-act=new]'));
+  const sh = d.q('#sheet');
+  assert.equal(sh.open, true);
+  assert.equal(sh.querySelector('.sheet-title').textContent, 'New session · shop/web', 'the repo of the session in the dock, already chosen');
+  const primaries = sh.querySelectorAll('button').filter((b) => b.classList.contains('bp5-intent-primary'));
+  assert.equal(primaries.length, 1);
+  assert.match(primaries[0].textContent, /Start & open/);
+  assert.deepEqual(plain(d.w.get('__calls')).filter((c) => c.method === 'POST'), [], 'opening sent nothing');
+  taps++;                                                                                  // 2: Start & open
+  sh.querySelector('form').dispatchEvent({ type: 'submit', preventDefault() {} });
+  await settle(); await settle();
+  const posts = plain(d.w.get('__calls')).filter((c) => c.method === 'POST' && /\/sessions$/.test(c.path));
+  assert.deepEqual(posts.map((c) => c.path), ['/api/projects/shop/repos/web/sessions']);
+  assert.equal(taps, 2);
 });

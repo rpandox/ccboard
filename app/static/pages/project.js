@@ -70,21 +70,29 @@ function pjCodeLink(st, path, text, cls, title) {
   return el('a', { class: 'btn small ' + (cls || ''), href: codeServerUrl(path), target: '_blank', rel: 'noopener', title: title || path }, ic('code'), text || null);
 }
 
-/* + session / + task / + schedule: the sheet of Shell.openCreate with the project, and the repo the page is about, preselected. A task or a schedule
-   never stops at the picker: the repo of the route, else the one the Files tab shows, else the repo a task was last started in, else the first repo,
-   else the project folder when it is a git repo (the form's "in" select switches). */
+/* + session / + task / + schedule. A session or a task opens the launcher sheet (launch(), components.js) with this project and the repo the page is about filled in,
+   so + session is one tap to Start & open; a schedule opens its form through Shell.openCreate. The repo is the route's, else the one the Files tab shows. A task or a
+   schedule never stops at the picker: that repo, else the repo a task was last started in, else the first repo, else the project folder when it is a git repo (the form's
+   "in" select switches). A session without a repo goes where the project last worked (launchPlace). */
 function pjCreate(kind) {
   const P = projectPage.cur;
-  if (!P || typeof Shell === 'undefined' || !Shell || typeof Shell.openCreate !== 'function') return false;
+  if (!P) return false;
   const st = pjState();
   const cur = pjParse(P.route, st);
+  const p = pjFind(st, cur.project);
   let repo = cur.repo || (P.view && P.view.repo) || undefined;
   if (kind === 'task' || kind === 'schedule' || kind === 'job') {
-    const p = pjFind(st, cur.project);
     const can = kind === 'task' ? taskTarget : gitTarget;                                           // a task may run in place in a non-git project folder
     const ok = (name) => !!p && (name === 'root' ? !!p.root && can(p, p.root) : (p.repos || []).some((r) => r.name === name && can(p, r)));
-    if (p && !(repo && ok(repo))) repo = typeof Shell.defaultRepo === 'function' ? Shell.defaultRepo(p, kind) : ((p.repos || []).find((r) => gitTarget(p, r)) || {}).name;
+    if (p && !(repo && ok(repo))) repo = typeof Shell !== 'undefined' && Shell && typeof Shell.defaultRepo === 'function' ? Shell.defaultRepo(p, kind) : ((p.repos || []).find((r) => gitTarget(p, r)) || {}).name;
   }
+  if ((kind === 'session' || kind === 'task') && p) {
+    const r = repo ? (repo === 'root' ? p.root : (p.repos || []).find((x) => x.name === repo)) : null;
+    const fits = !!r && (kind === 'task' ? taskTarget(p, r) : (r === p.root || r.state === 'ok' || r.state === 'unknown'));
+    const place = fits ? r : (launchPlace(p, kind) || {}).repo;
+    if (place) return launch({ mode: kind, project: p, repo: place });
+  }
+  if (typeof Shell === 'undefined' || !Shell || typeof Shell.openCreate !== 'function') return false;
   return Shell.openCreate(kind, { project: cur.project, repo });
 }
 

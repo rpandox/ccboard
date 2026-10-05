@@ -37,6 +37,7 @@ import shlex
 import subprocess
 import threading
 import time
+import unicodedata
 from pathlib import Path
 
 try:
@@ -68,12 +69,31 @@ WORKTREE_DIR = ".ccboard/worktrees"             # managed worktrees (tasks.WORKT
 
 PERMISSION_MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions")
 MODE_ALIASES = {"manual": "default"}            # Claude's name for the default mode
+# The launcher's one mode picker (v0.5.13) over the permission modes above: default = -s workspace-write -a on-request, auto = the automatic
+# approval review, read-only = -s read-only, bypass = the one danger flag (an explicit acknowledgement), custom = the sandbox and approval
+# the person picks (neither: Codex's own config.toml decides).
+MODES = ("default", "auto", "read-only", "bypass", "custom")
+MODE_TO_PERMISSION = {"default": "default", "auto": "auto", "read-only": "plan", "bypass": "bypassPermissions"}
+LAUNCH_KINDS = ("new", "resume", "continue", "fork")      # LaunchReq.kind; continue = `codex resume --last`, fork = `codex fork [id]`
+MAX_PROMPT = 8000                               # a first prompt is typed into the pane with the command: longer ones belong in a task
+# `-c key=value` lines the person may add (v0.5.13): the shape, how many, and the keys the board never lets through. The adapter owns the
+# model, reasoning, sandbox, approval, profile and hook settings (their own controls set them), and the rest would loosen the sandbox, run a
+# command of their own (notify, MCP servers) or point Codex at another server or login.
+CONFIG_LINE_RE = re.compile(r"^[A-Za-z0-9_.]+=.+$")
+MAX_CONFIG_LINES = 20
+MAX_CONFIG_LINE = 400
+CONFIG_BLOCKED = frozenset({"model", "model_reasoning_effort", "model_provider", "model_providers", "sandbox_mode", "approval_policy",
+                            "approvals_reviewer", "profile", "profiles", "hooks", "notify", "mcp_servers", "projects", "sandbox_workspace_write",
+                            "chatgpt_base_url", "openai_base_url", "cli_auth_credentials_store",
+                            "forced_login_method", "experimental_use_profile", "default_permissions", "permissions"})
+CONFIG_BLOCKED_PREFIX = ("features.hooks", "features.codex_hooks", "features.approve_for_me", "features.yolo", "hooks.", "profiles.",
+                         "model_providers.", "mcp_servers.", "projects.", "sandbox_workspace_write.", "permissions.")
 HEADLESS_MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk")      # a headless run never bypasses
 SANDBOXES = ("read-only", "workspace-write", "danger-full-access")
 APPROVALS = ("untrusted", "on-failure", "on-request", "never")
 EFFORTS = ("low", "medium", "high", "xhigh")    # the catalogue may add more per model (the box lists `max` too)
 UNSUPPORTED = ("allowed_tools", "disallowed_tools", "tools", "append_system_prompt", "fallback_model", "fork_session", "from_pr",
-               "max_turns", "max_budget_usd", "devcontainer")
+               "max_turns", "max_budget_usd", "devcontainer", "agent_name", "autocompact", "mcp_config")
 TASK_REFUSAL = ("bypassPermissions, danger-full-access or a flag override is not allowed for tasks; start a session and choose bypass "
                 "there if you really want it")
 DANGER_REFUSAL = ("skips the sandbox, so it needs the same explicit acknowledgement as bypassPermissions (bypass: true); otherwise use "
@@ -92,7 +112,7 @@ FORBIDDEN_ARG_TOKENS = tuple(sorted(FORBIDDEN_SHORT | FORBIDDEN_LONG))
 
 # Codex's own flag set at 0.145.0 (the box, from its real `codex --help`, tests/fixtures/codex_help_0145_real.txt): used when `codex --help`
 # cannot be probed. Its -a offers untrusted | on-request | never: there is no on-failure.
-BASELINE_CAPS = {"no_daemon": False, "approve_for_me": False, "worktree": False, "yolo": False, "bypass_approvals": True,
+BASELINE_CAPS = {"fork": True, "no_daemon": False, "approve_for_me": False, "worktree": False, "yolo": False, "bypass_approvals": True,
                  "hook_trust_flag": True, "no_alt_screen": True, "search": True, "add_dir": True, "cd": True, "profile": True,
                  "config": True, "model": True, "sandbox": True, "ask_for_approval": True, "approval_on_failure": False,
                  "approval_untrusted": True}
@@ -259,6 +279,20 @@ def _option_block(text: str, flag: str) -> str:
     return "\n".join(out)
 
 
+def _help_commands(text: str) -> set[str]:
+    """The subcommands a clap help text lists under its `Commands:` heading (a name at column 2; descriptions are indented deeper)."""
+    out: set[str] = set()
+    inside = False
+    for ln in (text or "").splitlines():
+        if ln and not ln[0].isspace():
+            inside = ln.strip().lower().startswith("commands")
+        elif inside:
+            m = re.match(r"^ {2}([a-z][a-z0-9-]*)(?:\s{2,}|$)", ln)
+            if m:
+                out.add(m.group(1))
+    return out
+
+
 def parse_help(text: str) -> dict | None:
     """`codex --help` -> capability dict (see BASELINE_CAPS for the keys), or None when the text defines no options at all."""
     flags = _help_flags(text)
@@ -266,6 +300,7 @@ def parse_help(text: str) -> dict | None:
         return None
     approval = _option_block(text, "--ask-for-approval")
     return {
+        "fork": "fork" in _help_commands(text),
         "no_daemon": "--no-daemon" in flags, "approve_for_me": "--approve-for-me" in flags, "worktree": "--worktree" in flags,
         "yolo": "--yolo" in flags, "bypass_approvals": "--dangerously-bypass-approvals-and-sandbox" in flags,
         "hook_trust_flag": "--dangerously-bypass-hook-trust" in flags, "no_alt_screen": "--no-alt-screen" in flags,
@@ -620,42 +655,72 @@ class CodexAgent(Agent):
         return tuple(a for a in APPROVALS if (a not in ("on-failure", "untrusted")
                                               or caps.get("approval_on_failure" if a == "on-failure" else "approval_untrusted")))
 
+    def launch_caps(self) -> dict:
+        """What the launcher may offer on this box: the flag set of `codex --help` (cached per binary; the 0.145 baseline until it is
+        probed) plus, from the cached login probe only, device_auth. `fork` is the `codex fork` subcommand."""
+        caps = dict(self._probe_caps()[0])
+        caps["device_auth"] = bool((self.login_caps(fetch=False) or BASELINE_LOGIN_CAPS).get("device_auth"))
+        return caps
+
     # ---- option schema ----
     def option_schema(self) -> list[OptField]:
+        """Every launcher control, in the order the sheet shows them (basic first). `launcher` is the launch kind (fork only where this
+        codex has `codex fork`); `mode` is the one permission picker, `sandbox` and `approval` appear for its `custom` choice. A `when`
+        list means "any of these" ({"launcher": ["resume", "fork"]})."""
         exe = self.bin()
         if exe:
             self._warm_models(exe)                       # background; the schema below uses what is cached (or the fallback)
         models = [m["slug"] for m in self.models(fetch=False)]
         efforts = list(self._allowed_efforts(None))
+        caps = self.launch_caps()
+        kinds = [k for k in LAUNCH_KINDS if k != "fork" or caps.get("fork")]
         return [
+            OptField("launcher", "Start", "select", kinds, "new",
+                     "new: a fresh session. resume: an earlier one by id or name (blank = Codex's picker). continue: the most recent in this "
+                     "folder (resume --last)." + (" fork: a copy of an earlier one (codex fork)." if "fork" in kinds else ""), "basic"),
+            OptField("resume_id", "Session to resume or fork", "text", None, None,
+                     "An id (UUID) or the name Codex shows; blank opens Codex's picker.", "basic", False, {"launcher": ["resume", "fork"]}),
+            OptField("name", "Session name", "text", None, None,
+                     "The board's own label (and the tmux session name). Codex has no --name: it is not passed on.", "basic"),
             OptField("model", "Model", "combo", models, None,
                      "-m. A slug from `codex debug models` (cached for an hour) or any model id; empty = Codex's own default.", "basic"),
             OptField("reasoning_effort", "Reasoning", "select", efforts, None,
-                     "-c model_reasoning_effort=...; the levels a model accepts come from the catalogue (reasoning_by_model).", "basic"),
-            OptField("permission_mode", "Permission mode", "select", list(PERMISSION_MODES), None,
-                     "default and acceptEdits: -s workspace-write -a on-request. plan: -s read-only. dontAsk: -a never. auto: automatic "
-                     "approval review (--approve-for-me, or -a on-request on a Codex without it). bypassPermissions skips every prompt and the "
-                     "sandbox: needs the bypass acknowledgement, never for tasks.", "basic"),
-            OptField("search", "Live web search", "bool", None, False, "--search.", "basic"),
+                     "-c model_reasoning_effort=...; the levels a model accepts come from the catalogue (reasoning_by_model). Sent as `reasoning` "
+                     "or `reasoning_effort`.", "basic"),
+            OptField("mode", "Mode", "select", list(MODES), "default",
+                     "default: -s workspace-write -a on-request. auto: automatic approval review. read-only: -s read-only. bypass: no "
+                     "approvals and no sandbox (needs the acknowledgement, never for tasks). custom: choose the sandbox and approval below.",
+                     "basic"),
+            OptField("sandbox", "Sandbox", "select", list(SANDBOXES), None,
+                     "-s. danger-full-access skips the sandbox like bypass: it needs the bypass acknowledgement and is interactive only.",
+                     "basic", False, {"mode": ["custom"]}),
+            OptField("approval", "Approval policy", "select", list(self._approvals()), None,
+                     "-a. on-failure and untrusted only where this Codex has them.", "basic", False, {"mode": ["custom"]}),
+            OptField("prompt", "First prompt", "textarea", None, None,
+                     f"Typed as the first message of a new session ({MAX_PROMPT} characters at most).", "basic", False, {"launcher": ["new"]}),
+            OptField("search", "Live web search", "bool", None, False, "--search.", "advanced"),
             OptField("bypass", "Skip approvals and the sandbox", "bool", None, False,
                      "--dangerously-bypass-approvals-and-sandbox. Needs an explicit acknowledgement; never offered for tasks, dispatch or "
                      "scheduled runs, and never stored for resume.", "advanced", True),
-            OptField("sandbox", "Sandbox", "select", list(SANDBOXES), None,
-                     "-s. Overrides the sandbox of the permission mode. danger-full-access skips the sandbox like bypass: it needs the bypass "
-                     "acknowledgement and is interactive only.", "advanced"),
-            OptField("approval", "Approval policy", "select", list(self._approvals()), None,
-                     "-a. Overrides the approval policy of the permission mode (on-failure and untrusted only where this Codex has them).",
-                     "advanced"),
+            OptField("permission_mode", "Permission mode (Claude's words)", "select", list(PERMISSION_MODES), None,
+                     "The same choice as Mode in Claude's words: default and acceptEdits: -s workspace-write -a on-request. plan: -s read-only. "
+                     "dontAsk: -a never. auto: automatic approval review. bypassPermissions needs the bypass acknowledgement, never for tasks. "
+                     "Mode wins when both are sent.", "advanced"),
             OptField("add_dirs", "Extra directories", "dirs", None, None,
                      "--add-dir: sibling repos (project/repo) the session may write.", "advanced"),
+            OptField("worktree", "Start in a new git worktree", "bool", None, False,
+                     "ccboard runs `git worktree add -b worktree-<slug> .ccboard/worktrees/<slug>` and starts Codex in it; Codex has no "
+                     "native worktree flag here.", "advanced", False, {"launcher": ["new"]}),
+            OptField("worktree_name", "Worktree name", "text", None, None,
+                     "Letters, digits, '.', '_' and '-'. Blank: the session name.", "advanced", False, {"worktree": True}),
+            OptField("config", "Config overrides", "textarea", None, None,
+                     f"-c: one key=value per line (key: letters, digits, '_' and '.'; {MAX_CONFIG_LINES} lines at most). Keys the launcher "
+                     "owns (model, sandbox, approval, profile, hooks, MCP servers, providers) are refused.", "advanced"),
             OptField("profile", "Profile", "text", None, None,
                      "-p: a profile (config.toml [profiles.<name>] or $CODEX_HOME/<name>.config.toml). Unknown names only warn.",
                      "advanced"),
             OptField("no_alt_screen", "Keep scrollback (no alternate screen)", "bool", None, True,
                      "--no-alt-screen: lets tmux copy-mode and the board's scroll see the whole conversation.", "advanced"),
-            OptField("worktree", "Start in a new git worktree", "bool", None, False,
-                     "ccboard runs `git worktree add -b worktree-<slug> .ccboard/worktrees/<slug>`; Codex has no native worktree flag here.",
-                     "advanced"),
             OptField("extra", "Extra arguments", "args", None, None,
                      "Raw CLI arguments. Flags the board sets itself (-c, -p, -s, -a, -m, --enable, --remote*, bypass spellings) are rejected.",
                      "advanced"),
@@ -692,6 +757,43 @@ class CodexAgent(Agent):
             return list(raw)
         raise projects.BadRequest("extra args must be a list of strings")
 
+    @staticmethod
+    def _with_mode(raw: dict) -> dict:
+        """The launcher's `mode` as a permission_mode (it wins over a permission_mode beside it): default, auto, read-only (= plan), bypass
+        (= bypassPermissions, which every rule below treats as the danger it is), or any permission mode by its own name. `custom` drops
+        the permission mode: the sandbox and approval beside it decide."""
+        mode = raw.get("mode")
+        if mode in (None, ""):
+            return raw
+        if not isinstance(mode, str) or mode not in (*MODES, *PERMISSION_MODES, *MODE_ALIASES):
+            raise projects.BadRequest(f"mode must be one of {', '.join(MODES)}")
+        if mode == "custom":
+            return {k: v for k, v in raw.items() if k != "permission_mode"}
+        return {**raw, "permission_mode": MODE_TO_PERMISSION.get(mode) or MODE_ALIASES.get(mode, mode)}
+
+    @staticmethod
+    def config_lines(raw) -> list[str]:
+        """The `-c key=value` lines of a launch: a list of strings or one text with a line each. Every line is stripped, must match
+        ^[A-Za-z0-9_.]+=.+$ and stay short and free of control characters, and its key may not be one the launcher owns (CONFIG_BLOCKED,
+        CONFIG_BLOCKED_PREFIX, anything sandbox- or approval-shaped, any bypass spelling). Raises BadRequest naming the line."""
+        if isinstance(raw, str):
+            raw = raw.splitlines()
+        if not isinstance(raw, (list, tuple)) or not all(isinstance(x, str) for x in raw):
+            raise projects.BadRequest("config: give key=value lines")
+        lines = [x.strip() for x in raw if x.strip()]
+        if len(lines) > MAX_CONFIG_LINES:
+            raise projects.BadRequest(f"config: {MAX_CONFIG_LINES} lines at most")
+        for line in lines:
+            if len(line) > MAX_CONFIG_LINE or any(unicodedata.category(c).startswith("C") for c in line) or not CONFIG_LINE_RE.match(line):
+                raise projects.BadRequest(f"config {line[:60]!r}: use key=value (the key: letters, digits, '_' and '.'; one line, "
+                                          f"{MAX_CONFIG_LINE} characters at most)")
+            key = line.split("=", 1)[0].lower()
+            if (key in CONFIG_BLOCKED or key.startswith(CONFIG_BLOCKED_PREFIX) or key.startswith(("sandbox", "approval"))
+                    or any(part in key for part in FORBIDDEN_ARG_PARTS)):
+                raise projects.BadRequest(f"config {key}: the launcher sets this itself, or it would loosen the sandbox or run something of "
+                                          "its own; use the model / reasoning / mode controls")
+        return lines
+
     def _validate(self, raw: dict | None, *, interactive: bool, tasks_or_headless: bool, bypass: bool = False) -> tuple[dict, dict, list[str]]:
         """-> (full, clean, extra). `full` drives argv (it keeps bypassPermissions / danger-full-access for an interactive launch);
         `clean` is what may be stored and re-passed on resume (never a bypass, never the one-off extra args). `bypass` is the launch's
@@ -701,6 +803,7 @@ class CodexAgent(Agent):
         for key in UNSUPPORTED:
             if raw.get(key):
                 raise projects.BadRequest(f"{key}: not supported by codex")
+        raw = self._with_mode(raw)
         extra = self._extra_list(raw.get("extra"))
         pm = raw.get("permission_mode")
         if pm is not None and not isinstance(pm, str):
@@ -740,7 +843,7 @@ class CodexAgent(Agent):
             if not MODEL_RE.match(m):
                 raise projects.BadRequest("model: use a model slug such as gpt-5.5")
             full["model"] = m
-        effort = raw.get("reasoning_effort") or raw.get("effort")
+        effort = raw.get("reasoning_effort") or raw.get("reasoning") or raw.get("effort")
         if effort:
             allowed = self._allowed_efforts(full.get("model"))
             if not isinstance(effort, str) or effort not in allowed:
@@ -758,6 +861,10 @@ class CodexAgent(Agent):
             if approval not in ok:
                 raise projects.BadRequest(f"approval must be one of {', '.join(ok)} (this codex supports no other)")
             full["approval"] = approval
+        if raw.get("mode") == "custom" and not (sandbox or approval) and not tasks_or_headless and interactive:
+            raise projects.BadRequest("mode custom: choose a sandbox, an approval policy or both")
+        if raw.get("config") not in (None, "", []):
+            full["config"] = self.config_lines(raw["config"])
         if _truthy(raw.get("search")):
             full["search"] = True
         profile = raw.get("profile")
@@ -842,6 +949,9 @@ class CodexAgent(Agent):
             out += ["-m", full["model"]]
         if "reasoning_effort" in full:
             out += ["-c", f'model_reasoning_effort="{full["reasoning_effort"]}"']
+        if caps.get("config", True):
+            for line in full.get("config") or ():
+                out += ["-c", line]
         if full.get("search") and caps.get("search"):
             out.append("--search")
         if caps.get("add_dir"):
@@ -868,9 +978,11 @@ class CodexAgent(Agent):
         return cls._no_bypass(opts) if isinstance(opts, dict) else opts
 
     def launch_plan(self, req: LaunchReq) -> LaunchPlan:
-        if req.kind not in ("new", "resume", "continue"):
-            raise projects.BadRequest("launch kind must be one of new, resume, continue")
+        if req.kind not in LAUNCH_KINDS:
+            raise projects.BadRequest(f"launch kind must be one of {', '.join(LAUNCH_KINDS)}")
         full, clean, extra = self._validate(req.opts, interactive=True, tasks_or_headless=bool(req.task), bypass=bool(req.bypass))
+        if not req.task and req.prompt is not None and len(req.prompt) > MAX_PROMPT:
+            raise projects.BadRequest(f"prompt is too long ({MAX_PROMPT} characters at most); a task takes a longer one")
         if req.task:
             first = req.prompt.split(None, 1)[0] if req.prompt and req.prompt.strip() else ""
             bad = self.forbidden_extra([first], interactive=True, task=True) if first.startswith("-") and first != "--" else None
@@ -878,6 +990,8 @@ class CodexAgent(Agent):
                 #                                                the prompt follows `--`, which V16 confirms on the box)
                 raise projects.BadRequest(f"{bad or 'bypassPermissions'}: {TASK_REFUSAL}")
         caps = self._probe_caps()[0]
+        if req.kind == "fork" and not caps.get("fork"):
+            raise projects.BadRequest("fork: this codex has no `codex fork` command; update codex or resume the session instead")
         bypass = bool(req.bypass) or full.get("permission_mode") == "bypassPermissions"
         if bypass and req.kind != "new":
             full = self._no_bypass(full)                       # resume/continue: only an explicit req.bypass re-passes it
@@ -901,11 +1015,16 @@ class CodexAgent(Agent):
             if req.worktree:
                 raise projects.BadRequest("worktree: only a new session can start in a new worktree")
             flags = self._flags(full, caps, bypass=bypass, add_dirs=req.add_dirs, extra=extra)
-            if req.kind == "resume":
-                if req.resume_id and not UUID_RE.match(req.resume_id):
-                    raise projects.BadRequest("resume id must be a UUID")
-                agent_sid = req.resume_id or None
-                argv = ["codex", "resume", *flags, *([req.resume_id] if req.resume_id else [])]
+            if req.kind in ("resume", "fork"):
+                rid = req.resume_id or None
+                if rid and not (UUID_RE.match(rid) or NAME_RE.match(rid)):
+                    raise projects.BadRequest("resume id must be a UUID or a session name (letters, digits, spaces, '.', '_', ':', '@', '/' "
+                                              "or '-', not starting with '-')")
+                # a UUID is the thread to resume; a name only says which one: the id is learned from the first hook, as for a new session.
+                # `codex fork` takes the same flags and the same id or name; no id opens the picker, as resume does. The forked thread is a
+                # new one: its id is never the one asked for.
+                agent_sid = rid if rid and UUID_RE.match(rid) and req.kind == "resume" else None
+                argv = ["codex", "resume" if req.kind == "resume" else "fork", *flags, *([rid] if rid else [])]
             else:
                 argv = ["codex", "resume", *flags, "--last"]
         # agent_sid stays None for a new session: Codex picks the thread id; the hook payload (or the v0.5.12 Tailer) binds it

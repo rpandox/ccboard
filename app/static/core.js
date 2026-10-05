@@ -199,6 +199,7 @@ async function demoApi(method, path) {
   const bare = path.split('?')[0];
   let name = null;
   if (bare === '/api/state') name = 'state';
+  else if (bare === '/api/agents') name = 'agents';   // the launcher's option schemas (v0.5.13); the same shape GET /api/agents answers
   else if (bare.startsWith('/api/search')) name = 'search';
   else if (/^\/api\/projects\/[^/]+\/repos\/[^/]+\/tree$/.test(bare)) name = 'tree';
   else if (/^\/api\/projects\/[^/]+\/repos\/[^/]+\/file$/.test(bare)) name = 'file';
@@ -241,7 +242,7 @@ async function api(method, path, body) {
   return data;
 }
 
-const ui = { openForm: null, confirm: null, error: null, notice: null, modal: false, lastJson: null, inboxSel: -1, notifyPanel: false, deepLinked: false };
+const ui = { openForm: null, confirm: null, error: null, notice: null, lastJson: null, inboxSel: -1, notifyPanel: false, deepLinked: false };
 let state = null;
 let pollTimer = null;
 
@@ -472,7 +473,7 @@ async function poll(force) {
     } else { ui.offline = ui.offline || Date.now(); renderBanner(); }
   }
   clearTimeout(pollTimer);
-  pollTimer = setTimeout(() => poll(false), ui.modal ? 2000 : 3000);
+  pollTimer = setTimeout(() => poll(false), 3000);
 }
 
 function startStatePolling() { return poll(true); }

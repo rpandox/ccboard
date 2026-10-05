@@ -445,16 +445,16 @@ Dnd.confirm = function (plan, at) {
   const sw = el('label', { class: 'dnd-switch', title: 'Ends the session a minute after the task finishes, unless it asks you something' },
     el('span', { class: 'dnd-switch-text', text: 'Close the session when it finishes' }), auto);
 
-  /* Edit options…: the launcher in dispatch mode (launcher.js taskDispatchSheet, the same sheet as the Move sheet's Options…) when it exists, else the
+  /* Edit options…: the launcher in dispatch mode (launch(): the same sheet as the Move sheet's Options…) when it exists, else the
      launch controls opened in place (model, effort, permissions: Claude only, and only what the person touches is sent). */
   let lc = null;
   let opened = false;
   const optsHost = el('div', { class: 'dnd-opts hidden' });
-  const hook = typeof taskDispatchSheet === 'function';
+  const hook = typeof openLauncher === 'function' || typeof taskDispatchSheet === 'function';       // launch() (components.js): the launcher in dispatch mode, else the dispatch sheet
   const inline = !hook && lane && plan.agent === 'claude' && typeof launchControls === 'function';
   const optsBtn = !lane || !(hook || inline) ? null
     : el('button', { class: 'minimal dnd-optsbtn', type: 'button', 'aria-expanded': hook ? null : 'false', text: 'Edit options…', onclick: () => {
-      if (hook) { Dnd.closePop(); taskDispatchSheet(t, { agent: plan.agent, auto_close: auto.checked }); return; }
+      if (hook) { Dnd.closePop(); launch(taskLaunchOpts(t, { agent: plan.agent, auto_close: auto.checked })); return; }
       opened = !opened;
       if (opened && !lc) {
         lc = launchControls(Dnd.prefsOf(t, plan.agent) || {}, typeof PERMS !== 'undefined' ? PERMS : [['', 'ask (default)']]);

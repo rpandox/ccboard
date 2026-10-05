@@ -1,7 +1,7 @@
 // Contract tests for the v0.5.6 project page (app/static/pages/project.js, route #/p/<project>[/<repo>]?tab=&path=): header, tabs without a remount,
 // sessions grouped like Home, the tasks columns with Backlog, schedules, the files tab (tree + preview), Add repo, Remove repo and Delete project.
 // The real scripts in index.html order on minidom's DOM; api() is the fake of tests/js/treekit.mjs (tree and file requests are answered from the demo
-// fixtures, everything else from server.answers), Shell.openCreate and the toasts are recorders.
+// fixtures, everything else from server.answers), Shell.openCreate, openLauncher (v0.5.13: + session and + task open the launcher sheet) and the toasts are recorders.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -34,10 +34,11 @@ function projectWorld({ state = projectState(), answers = {}, wide = false, shel
   const { w, server } = env;
   Object.assign(server.answers, { '/api/usage/summary': SUMMARY }, answers);
   for (const f of ['live.js', 'launcher.js', 'tree.js', 'router.js', ...(shell ? ['pages/widgets.js', 'shell.js'] : [])]) w.load(f);
-  w.ctx.__toasts = []; w.ctx.__created = []; w.ctx.__live = { subscribed: [] };
+  w.ctx.__toasts = []; w.ctx.__created = []; w.ctx.__launched = []; w.ctx.__live = { subscribed: [] };
   w.run(`
     toast = (text, o) => { __toasts.push({ text, kind: o && o.kind }); };
     poll = async () => {};
+    globalThis.openLauncher = (o) => { __launched.push(o); return true; };
     ${shell ? (realCreate ? '' : 'Shell.openCreate = (kind, pre) => { __created.push({ kind, pre }); return true; };') : 'globalThis.Shell = { openCreate: (kind, pre) => { __created.push({ kind, pre }); return true; } };'}
     Live.subscribe = (tmux, fn) => { __live.subscribed.push(tmux); return () => {}; };
     Live.unsubscribe = () => {};
@@ -57,6 +58,8 @@ const byText = (root, sel, re) => all(root, sel).find((n) => re.test(n.textConte
 const button = (root, re) => byText(root, 'button', re);
 const callsOf = (env, method, prefix) => plain(env.w.get('__calls')).filter((c) => c.method === method && c.path.startsWith(prefix));
 const created = (env) => plain(env.w.get('__created'));
+/** The openLauncher calls as plain values: the mode and the NAMES of the project and the repo (the call carries the state's own objects), and whether the repo is the project folder. */
+const launched = (env) => plain(env.w.run('__launched.map((o) => ({ mode: o.mode, project: o.project && o.project.name, repo: o.repo && o.repo.name, folder: !!(o.project && o.repo && o.repo === o.project.root) }))'));
 const tabIds = (root) => all(root, '[role=tab]').map((t) => t.getAttribute('data-tab'));
 const selectedTab = (root) => all(root, '[role=tab]').filter((t) => t.getAttribute('aria-selected') === 'true').map((t) => t.getAttribute('data-tab'));
 const shownNode = (n) => { for (let x = n; x && x.nodeType === 1; x = x.parentNode) if (x.classList.contains('hidden')) return false; return true; };
@@ -119,7 +122,7 @@ test('a project that has no cost record or hours yet renders its header', async 
   assert.doesNotMatch(textOf(page), /NaN|undefined|null/);
 });
 
-test('+ session, + task and + schedule open the create sheets with the project (and the repo of the route) preselected', async () => {
+test('+ session and + task call openLauncher with the project and the repo of the route; + schedule opens its own sheet (Shell.openCreate) with the same place', async () => {
   const env = projectWorld();
   const page = await go(env, '#/p/phasezero/website');
   for (const [re, kind] of [[/\+\s*session/i, 'session'], [/\+\s*task/i, 'task'], [/\+\s*schedule/i, 'schedule']]) {
@@ -127,18 +130,20 @@ test('+ session, + task and + schedule open the create sheets with the project (
     assert.ok(b, `a ${kind} button in the header`);
     b.click();
   }
+  assert.deepEqual(launched(env), [{ mode: 'session', project: 'phasezero', repo: 'website', folder: false }, { mode: 'task', project: 'phasezero', repo: 'website', folder: false }],
+    'the state objects of the project and the repo, so the sheet opens filled in: one tap to Start & open');
+  assert.equal(env.w.run('__launched[0].project === state.projects.find((p) => p.name === "phasezero") && __launched[0].repo === __launched[0].project.repos.find((r) => r.name === "website")'), true);
   const got = created(env);
-  assert.deepEqual(got.map((c) => c.kind), ['session', 'task', 'schedule']);
-  for (const c of got) assert.deepEqual([c.pre.project, c.pre.repo], ['phasezero', 'website'], `${c.kind} is preselected`);
+  assert.deepEqual(got.map((c) => c.kind), ['schedule'], 'a schedule is a job form: it keeps Shell.openCreate');
+  assert.deepEqual([got[0].pre.project, got[0].pre.repo], ['phasezero', 'website']);
 });
 
-test('without a repo in the route the sheets get the project and the repo the page would use (a repo of the project, never another project)', async () => {
+test('without a repo in the route + session goes where the project worked last (its newest session), never to a picker and never to another project', async () => {
   const env = projectWorld();
   const page = await go(env, '#/p/phasezero');
   button(page, /\+\s*session/i).click();
-  const c = created(env)[0];
-  assert.equal(c.pre.project, 'phasezero');
-  assert.ok([undefined, null, 'root', 'website', 'NestJs-Ecommerce-Backend'].includes(c.pre.repo), String(c.pre.repo));
+  assert.deepEqual(launched(env), [{ mode: 'session', project: 'phasezero', repo: 'NestJs-Ecommerce-Backend', folder: false }], 'the repo of the newest session of the project');
+  assert.deepEqual(created(env), [], 'no repo picker (Shell.openCreate) in between');
 });
 
 test('code-server links: the project folder and every repo, built from the state', async () => {
@@ -358,8 +363,7 @@ test('a project with no sessions shows an empty state with + session', async () 
   const add = button(page, /\+\s*session/i);
   assert.ok(add);
   add.click();
-  assert.equal(created(env)[0].kind, 'session');
-  assert.equal(created(env)[0].pre.project, 'mailgate');
+  assert.deepEqual(launched(env), [{ mode: 'session', project: 'mailgate', repo: 'mailgate', folder: false }], 'its only repo');
 });
 
 // ---------------------------------------------------------------- tasks tab
@@ -377,8 +381,8 @@ test('the tasks tab draws the kanban columns with an empty Backlog first, only t
   const needs = all(page, '.col').find((c) => /^Needs you/.test(c.querySelector('h3').textContent));
   assert.deepEqual(all(needs, '.task').map((t) => t.getAttribute('data-task')), ['4']);
   button(page, /\+\s*task/i).click();
-  assert.equal(created(env).at(-1).kind, 'task');
-  assert.equal(created(env).at(-1).pre.project, 'phasezero');
+  assert.equal(launched(env).at(-1).mode, 'task');
+  assert.equal(launched(env).at(-1).project, 'phasezero');
 });
 
 test('a backlog task is a card in the Backlog column of its own project, counted on the tab, with Start, Move…, Edit and Delete', async () => {
@@ -399,30 +403,33 @@ test('a backlog task is a card in the Backlog column of its own project, counted
   assert.equal(count.textContent, '3', 'the tab counts the backlog card with the two running tasks');
 });
 
-test('+ task on the project page never stops at a picker: it names a git repo of the project (the project folder only when that is the git repo); + session still asks', async () => {
+test('+ task on the project page never stops at a picker: it names a git repo of the project (the project folder only when that is the git repo); + session goes where the project worked', async () => {
   const st = projectState();
   st.projects.push({ name: 'notes', path: '/srv/projects/notes', root: { name: 'root', path: '/srv/projects/notes', root: true, state: 'ok', branch: 'main', dirty: false, sessions: [] }, orphan_sessions: [], repos: [] });
   const env = projectWorld({ state: st, shell: true });                                      // the real Shell.defaultRepo; only openCreate is a recorder
   let page = await go(env, '#/p/phasezero?tab=tasks');
   button(page, /\+\s*task/i).click();
-  const t1 = created(env).at(-1);
-  assert.equal(t1.kind, 'task');
-  assert.ok(['website', 'NestJs-Ecommerce-Backend'].includes(t1.pre.repo), `a repo of the project, not the non-git folder: ${t1.pre.repo}`);
+  const t1 = launched(env).at(-1);
+  assert.equal(t1.mode, 'task');
+  assert.ok(['website', 'NestJs-Ecommerce-Backend'].includes(t1.repo), `a repo of the project, not the non-git folder: ${t1.repo}`);
   page = await go(env, '#/p/phasezero/website?tab=tasks');
   button(page, /\+\s*task/i).click();
-  assert.equal(created(env).at(-1).pre.repo, 'website', 'the repo of the address wins');
+  assert.equal(launched(env).at(-1).repo, 'website', 'the repo of the address wins');
   page = await go(env, '#/p/phasezero?tab=files');
   button(page, /\+\s*task/i).click();
-  assert.ok(created(env).at(-1).pre.repo, 'on the Files tab the repo the tree shows (or the first)');
+  assert.ok(launched(env).at(-1).repo, 'on the Files tab the repo the tree shows (or the first)');
   page = await go(env, '#/p/notes?tab=tasks');
   button(page, /\+\s*task/i).click();
-  assert.equal(created(env).at(-1).pre.repo, 'root', 'a project whose only git place is its folder');
+  assert.deepEqual([launched(env).at(-1).repo, launched(env).at(-1).folder], ['root', true], 'a project whose only git place is its folder');
   button(page, /\+\s*schedule/i).click();
   assert.equal(created(env).at(-1).kind, 'schedule');
   assert.equal(created(env).at(-1).pre.repo, 'root');
+  const before = launched(env).length;
   page = await go(env, '#/p/phasezero?tab=tasks');
   button(page, /\+\s*session/i).click();
-  assert.notEqual(created(env).at(-1).kind, 'task');
+  assert.equal(launched(env).length, before + 1);
+  assert.equal(launched(env).at(-1).mode, 'session');
+  assert.equal(created(env).filter((c) => c.kind === 'session' || c.kind === 'task').length, 0, 'neither goes through the picker');
 });
 
 test('a tap on + task / + session before the first /api/state says "still loading the board…" instead of doing nothing', async () => {
@@ -438,9 +445,10 @@ test('a tap on + task / + session before the first /api/state says "still loadin
     assert.deepEqual(said.map((t) => t.text), ['still loading the board…'], `${re} answers the tap`);
   }
   assert.equal(env.w.document.getElementById('sheet').open, false, 'and opens no sheet');
-  env.w.run('state = __st');                                                                // the state arrives: the same tap opens the sheet
+  assert.deepEqual(launched(env), [], 'and the launcher is not called without a state either');
+  env.w.run('state = __st');                                                                // the state arrives: the same tap opens the launcher
   button(page, /\+\s*task/i).click();
-  assert.equal(env.w.document.getElementById('sheet').open, true);
+  assert.deepEqual(launched(env).map((c) => [c.mode, c.project]), [['task', 'phasezero']]);
 });
 
 test('a project with no tasks shows only the empty state with one + task primary: no column headings, no second button', async () => {

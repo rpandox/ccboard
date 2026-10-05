@@ -395,9 +395,10 @@ test('Home drops the v0.4 board: no project form, no kanban, no jobs list, no li
 
 test('the symbols other pages import stay global (the login modal is gone: its Log in buttons are accountLogin, pages/agents.js)', () => {
   const { w } = home();
-  for (const name of ['renderTasks', 'renderJobs', 'closeModal', 'logout', 'renderBanner', 'homeInstallHint', 'taskCard', 'openTaskModal', 'awayDigest', 'decide']) {
+  for (const name of ['renderTasks', 'renderJobs', 'logout', 'renderBanner', 'homeInstallHint', 'taskCard', 'openTaskModal', 'awayDigest', 'decide']) {
     assert.equal(w.run(`typeof ${name}`), 'function', name);
   }
+  assert.equal(w.run('typeof closeModal'), 'undefined', 'the legacy #modal and its closeModal are gone (v0.5.13): the diff and PR viewer is a sheet');
   for (const name of ['skeleton', 'dropSkeleton', 'items', 'select', 'act', 'paint', 'sync', 'target', 'order', 'openNth', 'reset']) assert.equal(w.run(`typeof Pages.${name}`), 'function', `Pages.${name}`);
 });
 
@@ -1213,4 +1214,201 @@ test('the account chip sits in the row\'s badges right after the model chip, and
   w.ctx.__s = s; w.ctx.__stx = acctState(TWO(), s);
   w.run('state = __stx; globalThis.__plain = sessionCard({ ...__s, project: "shop", repo: "api" }, { compact: true })');
   assert.equal(w.get('__plain').querySelector('.bdg-acct'), null, 'Agents/Inbox plain rows are unchanged');
+});
+
+// ---------------------------------------------------------------- v0.5.13: create from anywhere (openLauncher) and the diff sheet (the #modal is gone)
+
+/** openLauncher as a recorder: nothing opens, every call lands in __launched. */
+const stubLauncher = (w) => w.run('globalThis.__launched = []; globalThis.openLauncher = (o) => { __launched.push(o); return true; };');
+/** What each call carried, as plain values: the mode, the project and repo names, whether the repo is the project folder, the extra keys. */
+const launched = (w) => plain(w.run('__launched.map((o) => ({ mode: o.mode, project: o.project && o.project.name, repo: o.repo && o.repo.name, folder: !!(o.project && o.repo && o.repo === o.project.root), keys: Object.keys(o).sort() }))'));
+const sheetOf = (w) => w.document.getElementById('sheet');
+
+test('+ session on a project block calls openLauncher({mode: session, project, repo}) with the repo the project worked in last: no sheet of its own, one tap to the launcher', () => {
+  const { w, mount } = home();
+  mount();
+  stubLauncher(w);
+  const add = q(w, '[data-block="p:phasezero"] .pb-add');
+  assert.equal(text(add), '+ session');
+  add.click();
+  assert.deepEqual(launched(w), [{ mode: 'session', project: 'phasezero', repo: 'NestJs-Ecommerce-Backend', folder: false, keys: ['mode', 'project', 'repo'] }], 'the repo of the newest session, as the state\'s own objects');
+  assert.equal(w.run('__launched[0].project === state.projects.find((p) => p.name === "phasezero")'), true, 'the project is the state object, not a copy or a name');
+  assert.equal(sheetOf(w).open, false, 'the page opens nothing itself: the launcher does');
+});
+
+test('+ task sits beside + session on a project block and opens the launcher in task mode, in the repo a task went to last, else where the project works', () => {
+  const { w, mount } = home();
+  mount();
+  stubLauncher(w);
+  const block = q(w, '[data-block="p:phasezero"]');
+  assert.deepEqual(block.querySelectorAll('.pb-head button').filter((b) => /^\+ /.test(text(b))).map(text), ['+ session', '+ task']);
+  const addTask = block.querySelector('.pb-add-task');
+  assert.equal(text(addTask), '+ task');
+  addTask.click();
+  assert.deepEqual(launched(w).map((c) => [c.mode, c.project, c.repo]), [['task', 'phasezero', 'NestJs-Ecommerce-Backend']]);
+  w.localStorage.setItem('ccboard:task:last:phasezero', 'website');
+  addTask.click();
+  assert.deepEqual(launched(w).at(-1), { mode: 'task', project: 'phasezero', repo: 'website', folder: false, keys: ['mode', 'project', 'repo'] }, 'the remembered repo beats the busiest one');
+  assert.equal(sheetOf(w).open, false);
+});
+
+test('a repo group\'s own + opens the launcher for that repo, the project folder\'s for the folder', () => {
+  const { w, mount } = home();
+  mount();
+  stubLauncher(w);
+  const groups = q(w, '[data-block="p:phasezero"]').querySelectorAll('.pgroup');
+  const addOf = (label) => groups.find((g) => text(g.querySelector('.pg-name')) === label).querySelector('.pg-add');
+  addOf('website').click();
+  addOf('project folder').click();
+  assert.deepEqual(launched(w).map((c) => [c.mode, c.project, c.repo, c.folder]), [['session', 'phasezero', 'website', false], ['session', 'phasezero', 'root', true]]);
+});
+
+test('without openLauncher (a deploy before launcher.js has it) + session still opens the old session form in the sheet; + task opens the task form', () => {
+  const { w, mount } = home();
+  mount();
+  w.run('openLauncher = undefined');                       // whatever launcher.js defines: this is the world before it has one
+  q(w, '[data-block="p:phasezero"] .pb-add').click();
+  assert.equal(sheetOf(w).open, true);
+  assert.match(text(sheetOf(w)), /New session/);
+  assert.ok(sheetOf(w).querySelector('form'));
+  sheetOf(w).close();
+  q(w, '[data-block="p:phasezero"] .pb-add-task').click();
+  assert.equal(sheetOf(w).open, true);
+  assert.match(text(sheetOf(w)), /New task/);
+});
+
+const DIFF = { base: 'main', truncated: false, commits: ['a1 add stock sync', 'b2 tests'], files: ['src/stock.ts'], files_uncommitted: ['README.md', 'x.ts'], committed: 'diff --git a/src/stock.ts b/src/stock.ts\n+x', uncommitted: '' };
+const TASK = () => ({ id: 5, title: 'Sync variant stock when an order is cancelled', project: 'phasezero', repo: 'NestJs-Ecommerce-Backend', branch: 'ccb/stock-sync', pr_url: null, pr_number: null });
+
+function diffWorld(over = {}) {
+  const h = homeWorld();
+  const { w } = h;
+  w.ctx.__answers['/api/tasks/5/diff'] = DIFF;
+  w.ctx.__answers['/api/tasks/5/pr'] = { url: 'https://example.invalid/pull/9', number: 9, existing: false };
+  w.ctx.__answers['/api/tasks/5/merge'] = { ok: true };
+  w.ctx.__answers['/api/tasks/5/describe'] = { title: 'Sync stock', body: 'Cancelling restocks.' };
+  w.run('globalThis.__drawn = []; loadDiff2Html = () => Promise.resolve(); window.Diff2HtmlUI = class { constructor(box, text, o) { this.box = box; this.text = text; __drawn.push({ text, o }); } draw() { this.box.append(document.createElement("div")); } };');
+  w.ctx.__t = { ...TASK(), ...over };
+  w.run('render = () => {}');
+  return h;
+}
+const sectionsOf = (w) => sheetOf(w).querySelectorAll('.tm-sec').map((s) => text(s.querySelector('.tm-k')));
+
+test('the diff and PR viewer is a sheet, not the legacy #modal: wide, sections with labels, no #modal node, ui.modal never set', async () => {
+  const { w } = diffWorld();
+  assert.equal(w.document.getElementById('modal'), null, 'index.html has no #modal');
+  w.run('openTaskModal(__t)');
+  await tick(); await tick();
+  const sh = sheetOf(w);
+  assert.equal(sh.open, true);
+  assert.ok(sh.classList.contains('wide'), 'room for a diff');
+  assert.equal(sh.querySelectorAll('.modal-box').length, 0);
+  assert.equal(w.run("'modal' in ui"), false, 'the old ui.modal flag is gone with the #modal');
+  assert.equal(text(sh.querySelector('.sheet-title')), 'Sync variant stock when an order is cancelled');
+  assert.deepEqual(sectionsOf(w), ['Changes', 'Diff', 'Pull request']);
+  assert.match(text(sh.querySelector('.tm-meta')), /phasezero\/NestJs-Ecommerce-Backend · ccb\/stock-sync/);
+  assert.match(text(sh), /Commits \(2\): a1 add stock sync · b2 tests/);
+  assert.match(text(sh), /Files: src\/stock\.ts {2}· {2}uncommitted: README\.md, x\.ts/);
+  assert.deepEqual(calls(w).filter((c) => c.path.startsWith('/api/tasks/5')).map((c) => `${c.method} ${c.path}`), ['GET /api/tasks/5/diff']);
+  assert.equal(plain(w.get('__drawn')).length, 1, 'the committed side is drawn');
+  sh.close();
+  assert.equal(sh.classList.contains('wide'), true, 'a later sheet resets it through openSheet');
+  w.run('openSheet({ title: "x", body: "y" })');
+  assert.equal(sheetOf(w).classList.contains('wide'), false, 'another sheet is not wide');
+});
+
+test('the diff sides are one segmented control (aria-pressed, arrows move), committed first; the other side is drawn on a press, and an empty one says so', async () => {
+  const { w } = diffWorld();
+  w.run('openTaskModal(__t)');
+  await tick(); await tick();
+  const seg = sheetOf(w).querySelector('.tm-seg');
+  const btns = seg.querySelectorAll('.seg-btn');
+  assert.deepEqual(btns.map(text), ['Committed vs main', 'Uncommitted (2)']);
+  assert.deepEqual(btns.map((b) => b.getAttribute('aria-pressed')), ['true', 'false']);
+  btns[1].click();
+  await tick();
+  assert.deepEqual(btns.map((b) => b.getAttribute('aria-pressed')), ['false', 'true']);
+  assert.match(text(sheetOf(w).querySelector('.diffbox')), /no uncommitted changes/);
+  btns[1].dispatchEvent({ type: 'keydown', key: 'ArrowLeft', preventDefault() {} });
+  await tick();
+  assert.deepEqual(btns.map((b) => b.getAttribute('aria-pressed')), ['true', 'false'], 'an arrow key moves the choice');
+  assert.equal(plain(w.get('__drawn')).length, 2, 'drawn again for the committed side');
+});
+
+test('the pull request section: one filled primary (Create PR), Describe fills the fields, Create PR posts them; Merge is red-outlined, hidden without a PR and two taps with one', async () => {
+  const { w } = diffWorld();
+  w.run('openTaskModal(__t)');
+  await tick(); await tick();
+  const sh = sheetOf(w);
+  const btn = (re) => sh.querySelectorAll('button').find((b) => re.test(text(b)));
+  assert.equal(sh.querySelectorAll('button').filter((b) => b.classList.contains('bp5-intent-primary')).length, 1, 'one filled primary in the sheet');
+  assert.equal(text(btn(/Create PR/)), 'Create PR');
+  assert.ok(btn(/Create PR/).classList.contains('bp5-intent-primary'));
+  assert.ok(sh.querySelector('.tm-merge').classList.contains('hidden'), 'nothing to merge before a PR exists');
+  btn(/Describe with Claude/).click();
+  await tick();
+  const [title, body] = [sh.querySelector('.tm-form input'), sh.querySelector('.tm-form textarea')];
+  assert.equal(title.value, 'Sync stock');
+  assert.equal(body.value, 'Cancelling restocks.');
+  btn(/Create PR/).click();
+  await tick(); await tick();
+  assert.deepEqual(calls(w).filter((c) => c.path === '/api/tasks/5/pr'), [{ method: 'POST', path: '/api/tasks/5/pr', body: { title: 'Sync stock', body: 'Cancelling restocks.' } }]);
+  assert.match(text(sh.querySelector('.tm-status')), /PR created: https:\/\/example\.invalid\/pull\/9/);
+  assert.equal(sh.querySelector('.tm-merge').classList.contains('hidden'), false, 'the PR now exists: Merge appears');
+  const merge = btn(/^Merge \(squash\)/);
+  assert.ok(merge.classList.contains('bp5-intent-danger') && !merge.classList.contains('confirm'), 'red-outlined at rest');
+  merge.click();
+  assert.deepEqual(calls(w).filter((c) => c.path.endsWith('/merge')), [], 'the first tap only arms it');
+  assert.ok(btn(/^Confirm merge$/) && btn(/^Cancel$/));
+  btn(/^Cancel$/).click();
+  assert.ok(btn(/^Merge \(squash\)/), 'Cancel disarms it');
+  btn(/^Merge \(squash\)/).click();
+  btn(/^Confirm merge$/).click();
+  await tick(); await tick();
+  assert.deepEqual(calls(w).filter((c) => c.path.endsWith('/merge')), [{ method: 'POST', path: '/api/tasks/5/merge', body: { method: 'squash', force: false } }]);
+  assert.equal(sheetOf(w).open, false, 'merged: the sheet closes');
+});
+
+test('a task that already has a PR shows its link and Merge at once, and Update PR in place of Create PR', async () => {
+  const { w } = diffWorld({ pr_url: 'https://example.invalid/pull/3', pr_number: 3 });
+  w.run('openTaskModal(__t)');
+  await tick(); await tick();
+  const sh = sheetOf(w);
+  assert.equal(text(sh.querySelector('.tm-meta a')), 'PR #3');
+  assert.equal(sh.querySelector('.tm-merge').classList.contains('hidden'), false);
+  assert.ok(sh.querySelectorAll('button').find((b) => /^Update PR/.test(text(b))));
+});
+
+test('a diff that fails to load says why in the status line and leaves the PR section usable', async () => {
+  const { w } = diffWorld();
+  w.ctx.__answers['/api/tasks/5/diff'] = () => { throw new Error('worktree is gone'); };
+  w.run('openTaskModal(__t)');
+  await tick(); await tick();
+  assert.match(text(sheetOf(w).querySelector('.tm-status')), /worktree is gone/);
+  assert.equal(sheetOf(w).querySelector('.tm-seg'), null);
+  assert.ok(sheetOf(w).querySelectorAll('button').find((b) => /Create PR/.test(text(b))));
+});
+
+test('tap count (real launcher): a new session from a Home project block is 2 taps with the remembered defaults: + session, then Start & open', async () => {
+  const { w, mount } = home();
+  mount();
+  w.ctx.__answers['/api/projects/'] = { tmux: 'phasezero--NestJs-Ecommerce-Backend--s9', attach_url: '/term/phasezero--NestJs-Ecommerce-Backend--s9', agent: 'claude', cmd: 'claude --model opus' };
+  let taps = 0;
+  const tap = (b) => { taps++; b.click(); };
+  tap(q(w, '[data-block="p:phasezero"] .pb-add'));                                  // 1: the sheet opens with the project and the repo chosen
+  const sh = sheetOf(w);
+  assert.equal(sh.open, true);
+  assert.match(text(sh.querySelector('.sheet-title')), /^New session · phasezero\/NestJs-Ecommerce-Backend$/);
+  const primaries = sh.querySelectorAll('button').filter((b) => b.classList.contains('bp5-intent-primary'));
+  assert.equal(primaries.length, 1, 'one filled primary');
+  assert.match(text(primaries[0]), /Start & open/);
+  assert.deepEqual(calls(w).filter((c) => c.method === 'POST'), [], 'opening sent nothing');
+  assert.equal(primaries[0].getAttribute('type'), 'submit', 'the primary is the form\'s submit button');
+  taps++;                                                                             // 2: Start & open (a click on a submit button is the form's submit event)
+  sh.querySelector('form').dispatchEvent({ type: 'submit', preventDefault() {} });
+  await tick(); await tick();
+  const posts = calls(w).filter((c) => c.method === 'POST' && /\/sessions$/.test(c.path));
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].path, '/api/projects/phasezero/repos/NestJs-Ecommerce-Backend/sessions');
+  assert.equal(taps, 2, 'two taps, nothing typed');
 });
