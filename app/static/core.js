@@ -156,8 +156,46 @@ function demoPick(kind, bare, query, data) {
   throw demoError(r.status, r.error);
 }
 
+/* The demo's make-believe usage refresh (v0.5.17f, part 2): in demo mode a POST never reaches a box, so the Usage page's Refresh is played here. A tap is answered
+   at once; the reading the state carries holds still for 3 s ('refreshing…') and then moves to that moment, from Claude Code's cache. A query flag picks the state:
+     ?refresh=none   no Claude session is live (the button reads 'start a session to refresh'; a POST would be refused with a 409)
+     ?refresh=stale  the newest reading is 10 minutes old (opening the Usage page asks once by itself)
+     ?refresh=stuck  a tap is answered but the reading never moves (the wait ends with 'no new reading yet')
+   Only demoApi calls these, so a real board never sees them. */
+const demoRefresh = { tap: 0, base: 0, shown: 0 };       // tap: when the make-believe ask was made (epoch s), base: the reading's time then, shown: the last one handed out
+const DEMO_REFRESH_HOLD = 3;                              // seconds the reading holds still after a tap
+function demoRefreshFlag() { try { const m = /[?&]refresh=([a-z]+)/.exec(location.search); return m ? m[1] : ''; } catch (_) { return ''; } }
+function demoUsageRefresh(st) {
+  if (!st || !st.usage || typeof st.usage !== 'object') return st;
+  const flag = demoRefreshFlag();
+  const now = Date.now() / 1000;
+  let at = flag === 'stale' ? now - 600 : Date.parse(st.usage.at) / 1000;
+  let cache = false;
+  if (demoRefresh.tap) {
+    if (flag === 'stuck' || now - demoRefresh.tap < DEMO_REFRESH_HOLD) at = demoRefresh.base;
+    else { at = demoRefresh.tap + DEMO_REFRESH_HOLD; cache = true; }
+  }
+  if (!Number.isFinite(at)) return st;
+  demoRefresh.shown = at;
+  const usage = { ...st.usage, at: new Date(at * 1000).toISOString(), value: { ...(st.usage.value || {}), ...(cache ? { source: 'cache' } : {}) } };
+  if (flag !== 'none') return { ...st, usage };
+  const notClaude = (list) => (Array.isArray(list) ? list.filter((x) => !x || x.agent !== 'claude') : list);
+  const projects = (st.projects || []).map((p) => ({ ...p, root: p.root ? { ...p.root, sessions: notClaude(p.root.sessions) } : p.root,
+    repos: (p.repos || []).map((r) => ({ ...r, sessions: notClaude(r.sessions) })), orphan_sessions: notClaude(p.orphan_sessions) }));
+  return { ...st, usage, projects };
+}
+
 async function demoApi(method, path) {
-  if (method !== 'GET') { await new Promise((resolve) => setTimeout(resolve, 150)); return { ok: true }; }
+  if (method !== 'GET') {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    if (path === '/api/usage/refresh') {
+      if (demoRefreshFlag() === 'none') throw demoError(409, 'no Claude session is at its prompt; start one to refresh');
+      demoRefresh.tap = Date.now() / 1000;
+      demoRefresh.base = demoRefresh.shown;
+      return { ok: true, session: 'ccboard--ccboard--s1', started_at: new Date().toISOString() };
+    }
+    return { ok: true };
+  }
   const bare = path.split('?')[0];
   let name = null;
   if (bare === '/api/state') name = 'state';
@@ -183,7 +221,8 @@ async function demoApi(method, path) {
     for (const [k, m] of Object.entries(data.meta)) meta[k] = m && typeof m.resets_at === 'number' ? { ...m, resets_at: m.resets_at + dt } : m;
     return { ...data, meta };
   }
-  return name === 'state' || name === 'usage_summary' ? demoRebase(data) : data;   // both carry demo.epoch: the summary's reset times and ISO stamps ride along with the state's
+  if (name === 'state') return demoUsageRefresh(demoRebase(data));                 // the usage reading's own time follows the make-believe refresh above
+  return name === 'usage_summary' ? demoRebase(data) : data;                         // both carry demo.epoch: the summary's reset times and ISO stamps ride along with the state's
 }
 
 async function api(method, path, body) {

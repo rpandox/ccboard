@@ -134,6 +134,14 @@ html.force-coarse #page .usec .btn, html.force-coarse #page .usec button { min-h
 #page .usk { min-height:120px; }
 #page .unote { margin:6px 0 0; }
 #page .ufresh { margin:2px 0 8px; font-size:13px; }          /* v0.5.17f: the freshness caption right under the Limits title ('updated 5m ago · from the last session'); wraps, never clipped */
+/* v0.5.17f part 2: the caption and its Refresh button (a quiet bordered one, never a filled primary) share a row that wraps at 390 instead of clipping; the button
+   stays when the caption is hidden (no reading yet), the whole row goes on the Codex tab. 44 px on touch comes from the section's own button rule above. */
+#page .ufresh-row { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; margin:2px 0 8px; min-width:0; }
+#page .ufresh-row.hidden { display:none; }
+#page .ufresh-row .ufresh { margin:0; flex:0 1 auto; min-width:0; }
+#page .ufresh-row .ufresh-btn { flex:0 0 auto; max-width:100%; }
+#page .ufresh-row .ufresh-note { margin:0; font-size:13px; flex:0 1 auto; min-width:0; }
+#page .ufresh-row .ufresh-note.hidden { display:none; }
 #page .unote.warn { color:var(--warn); }
 #page .utotals { margin:0 0 8px; font-size:12px; color:var(--fg-2); }
 #page .uslot .nonideal.empty, #page .ubody > .nonideal.empty { min-height:140px; }

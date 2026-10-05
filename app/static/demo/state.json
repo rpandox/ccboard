@@ -1780,6 +1780,10 @@
       "replace_key": null
     }
   },
+  "usage_refresh": {
+    "running": false,
+    "last": null
+  },
   "usage_codex": {
     "value": {
       "primary": {

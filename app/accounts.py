@@ -84,6 +84,7 @@ _clock = time.monotonic                     # patched by tests
 _hold: dict | None = None                   # {to, frm, until}: see hold(); in memory only (a restart drops it, the kv is already right)
 _ucache: dict[str, tuple[tuple, dict | None]] = {}    # config dir -> (state file stamp, the usage cache read at that stamp): the tick's gate
 _fed: dict[str, int] = {}                   # account key ('' = none known) -> the fetchedAt (epoch s) of the cache reading last fed
+_poll_lock = threading.Lock()               # one poll_usage_cache at a time: the Sampler tick and a usage refresh's follow-up (main._refresh_finish) must not feed one reading twice
 
 
 # ------------------------------------------------------------------ small helpers
@@ -410,7 +411,8 @@ def poll_usage_cache(db, now=None) -> bool:
     account the kv `rate_limits` follows (the pills read it; keys the cache does not carry, like spend_limit, are kept). A reading
     already fed is never fed again. Returns whether anything was fed. Never raises."""
     try:
-        return _poll(db, _to_epoch(now))
+        with _poll_lock:
+            return _poll(db, _to_epoch(now))
     except Exception as e:
         log.warning("accounts.poll_usage_cache failed: %s", e.__class__.__name__)
         return False

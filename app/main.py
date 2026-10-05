@@ -25,7 +25,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, notify, permissions, previews, projects, prpoll, push, recover, samples, scheduler, search, taskflow, tasks, tmux, tree, usage, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, notify, permissions, previews, projects, prpoll, push, recover, samples, scheduler, search, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import codex_discovery
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -474,6 +474,7 @@ def build_state(user: str) -> dict:
     st["deploy"] = deploy.view(db)                        # an update waiting for the terminals to close (None when nothing is pending)
     st["memory"] = memory.state_view(db)                  # claude-mem worker health as the monitor last saw it (None: off, or not sampled yet)
     st["usage"] = _usage_view()                           # the kv rate_limits record; a window it lacks comes from the account's last reading (usage.rate_limits_view)
+    st["usage_refresh"] = usage_refresh.view(db)          # {running, last}: a /usage refresh in flight (Usage page button) and the newest one asked for
     st["usage_codex"] = db.kv_get("rate_limits_codex")     # the Codex account's windows (agents/codex_rollout.py): {value{limit_id, plan_type, primary, secondary, credits, reached, observed_at, account}, at} | None
     st["accounts"] = account_store.decorate(_accounts_view(), db)
     st["codex_accounts"] = _codex_accounts_view(tail=False)
@@ -2799,6 +2800,28 @@ def _register_stats_hook() -> None:
 _register_stats_hook()
 
 
+def _type_command(name: str, row: dict, spec, arg: str, by: str) -> str:
+    """Type one allowlisted slash command into the pane (C-u to clear the composer, then the text and Enter), with flags.pending_cmd set
+    first (the statusline that follows confirms it) and a BoardCommand event after. The guards are the caller's: POST /command and the
+    usage refresh (POST /api/usage/refresh) both come here. Returns the text typed."""
+    sent = f"{spec.cmd} {arg}".strip()
+    cmd = spec.cmd.lstrip("/")
+    prior = (row.get("flags") or {}).get("pending_cmd")
+    patch: dict = {"pending_cmd": {"cmd": cmd, "arg": arg or None, "at": _cmd_now(), "before": _stat_snapshot(row.get("stats"))}}
+    if isinstance(prior, dict):                         # an earlier command nobody confirmed: its outcome is 'unconfirmed'
+        patch["last_cmd"] = {"cmd": prior.get("cmd"), "arg": prior.get("arg"), "at": prior.get("at"), "confirmed": False}
+    db.update_flags(name, patch)                        # before typing: the statusline can answer within a few hundred ms
+    try:
+        tmux.send_keys(name, ["C-u"])
+        tmux.send_text(name, sent, enter=True)
+    except Exception:
+        db.update_flags(name, {"pending_cmd": None})
+        raise
+    db.add_event(name, "BoardCommand", cmd, sent, {"cmd": cmd, "arg": arg or None, "by": by}, agent=row.get("agent"))
+    _invalidate_scan()
+    return sent
+
+
 class CommandIn(BaseModel):
     cmd: object = None
     arg: object = None
@@ -2840,21 +2863,7 @@ def api_command(name: str, request: Request, body: CommandIn | None = None):
                              "state": row.get("state"), "wait_kind": (row.get("flags") or {}).get("wait_kind"), "retry": None},
                             status_code=409)
 
-    sent = f"{spec.cmd} {arg}".strip()
-    cmd = spec.cmd.lstrip("/")
-    prior = (row.get("flags") or {}).get("pending_cmd")
-    patch: dict = {"pending_cmd": {"cmd": cmd, "arg": arg or None, "at": _cmd_now(), "before": _stat_snapshot(row.get("stats"))}}
-    if isinstance(prior, dict):                         # an earlier command nobody confirmed: its outcome is 'unconfirmed'
-        patch["last_cmd"] = {"cmd": prior.get("cmd"), "arg": prior.get("arg"), "at": prior.get("at"), "confirmed": False}
-    db.update_flags(name, patch)                        # before typing: the statusline can answer within a few hundred ms
-    try:
-        tmux.send_keys(name, ["C-u"])
-        tmux.send_text(name, sent, enter=True)
-    except Exception:
-        db.update_flags(name, {"pending_cmd": None})
-        raise
-    db.add_event(name, "BoardCommand", cmd, sent, {"cmd": cmd, "arg": arg or None, "by": request.state.user}, agent=row.get("agent"))
-    _invalidate_scan()
+    sent = _type_command(name, row, spec, arg, request.state.user)
     out = {"ok": True, "sent": sent, "verified": spec.verified}
     if spec.read:
         time.sleep(wait / 1000)
@@ -3162,6 +3171,83 @@ def api_clear_rate_limit():
     db.kv_del_prefix("rl_notified:")                     # the once-per-window notice gate: a cleared banner may announce again
     _invalidate_scan()
     return {"ok": True}
+
+
+class UsageRefreshIn(BaseModel):
+    auto: object = None
+
+
+def _refresh_panes() -> list[dict]:
+    """The board's live Claude panes (usage_refresh.panes): tmux's sessions joined to the open rows, with who is attached. [] when tmux is down."""
+    try:
+        live = tmux.list_sessions()
+    except tmux.TmuxDown:
+        return []
+    try:
+        viewers = tmux.viewers()
+    except (tmux.TmuxError, tmux.TmuxDown):             # list-clients failed: every attached client counts as a full one
+        viewers = None
+    return usage_refresh.panes(live, db.open_rows(), viewers)
+
+
+def _refresh_finish(name: str, at: str) -> None:
+    """The follow-up of a refresh, a few seconds after /usage was typed (usage_refresh.later): Escape closes Claude's panel, then the cache Claude
+    Code just rewrote is read at once (accounts.poll_usage_cache, the Sampler tick's own hook) instead of up to 15 s later. Escape goes only to a
+    pane that is still where the refresh left it: once the session works, waits on a permission or compacts, an Escape would interrupt it or
+    answer its dialog, so it is not sent and the kv says why. Never raises; always frees the lock."""
+    try:
+        row = db.open_row(name)
+        if row is None or not tmux.has_session(name):
+            usage_refresh.record(db, name, at, ok=False, error="the session ended before the panel could be closed")
+        elif _typing_refusal(name, row) is not None:
+            usage_refresh.record(db, name, at, ok=False, error="the session was busy again; its /usage panel was left open")
+        else:
+            tmux.send_keys(name, ["Escape"])
+        accounts.poll_usage_cache(db)
+    except Exception as e:
+        log.warning("usage refresh follow-up for %s failed: %s", name, e.__class__.__name__)
+        try:
+            usage_refresh.record(db, name, at, ok=False, error=f"the follow-up failed ({e.__class__.__name__})")
+        except Exception:
+            pass
+    finally:
+        usage_refresh.release()
+        _invalidate_scan()
+
+
+@app.post("/api/usage/refresh", status_code=202)
+def api_usage_refresh(request: Request, body: UsageRefreshIn | None = None):
+    """Ask one idle Claude session for /usage so the board's numbers catch up (v0.5.17f). Claude Code fetches the official 5-hour / 7-day
+    figures with its own login when /usage runs and rewrites its state file; accounts.poll_usage_cache reads that (credential-free). The pane
+    is chosen with the command route's own guards (idle, done, errored or idle-waiting; no permission pending; not compacting; a running
+    Claude pane; never an internal, Codex or shell row), an unattached one first, then the most recently active. `auto: true` (the Usage
+    page opening on stale numbers) never picks a pane somebody is attached to. /usage is typed through the command route's typing helper;
+    four seconds later Escape closes the panel and the cache is read. 202 {ok, session, started_at}; 409 {error, sessions} when no pane
+    qualifies (sessions = live Claude panes); 409 {error} while another refresh runs (one at a time, a 20 s lock)."""
+    b = body or UsageRefreshIn()
+    if b.auto is not None and not isinstance(b.auto, bool):
+        raise projects.BadRequest("auto must be true or false")
+    if usage_refresh.busy():
+        return JSONResponse({"error": usage_refresh.BUSY}, status_code=409)
+    panes = _refresh_panes()
+    pick = usage_refresh.choose(panes, lambda p: _typing_refusal(p["name"], p["row"]) is None, unattached_only=b.auto is True)
+    if pick is None:
+        return JSONResponse({"error": usage_refresh.NO_SESSION, "sessions": len(panes)}, status_code=409)
+    if not usage_refresh.claim():                        # another request got there between busy() and now
+        return JSONResponse({"error": usage_refresh.BUSY}, status_code=409)
+    name, at = pick["name"], db_now()
+    try:
+        _type_command(name, pick["row"], agents.get("claude").slash_commands()["usage"], "", request.state.user)
+    except Exception as e:
+        usage_refresh.release()
+        try:
+            usage_refresh.record(db, name, at, ok=False, error=f"typing failed ({e.__class__.__name__})")
+        except Exception:
+            pass
+        raise
+    usage_refresh.record(db, name, at)
+    usage_refresh.later(usage_refresh.ESCAPE_AFTER_S, lambda: _refresh_finish(name, at))
+    return {"ok": True, "session": name, "started_at": at}
 
 
 @app.post("/api/permission")

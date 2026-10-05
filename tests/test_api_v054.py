@@ -321,7 +321,8 @@ LEGACY_TOP = {"tmux_down", "projects", "user", "config", "claude", "login", "pen
 def test_state_legacy_keys_are_unchanged(board):
     db().kv_set("rate_limits", {"five_hour": {"used_percentage": 42, "resets_at": 1791349200}})
     st = board.client.get("/api/state", headers=H).json()
-    assert LEGACY_TOP <= set(st) and set(st) - LEGACY_TOP == {"agents", "setup", "deploy", "memory", "accounts", "codex_accounts", "usage_codex"}
+    assert LEGACY_TOP <= set(st) and set(st) - LEGACY_TOP == {"agents", "setup", "deploy", "memory", "accounts", "codex_accounts", "usage_codex", "usage_refresh"}
+    assert st["usage_refresh"] == {"running": False, "last": None}, "v0.5.17f: the Usage page's Refresh: a /usage ask in flight, and the newest one"
     assert st["usage_codex"] is None, "v0.5.12: the Codex account's windows (kv rate_limits_codex), null until a rollout reported them"
     assert st["claude"] == AUTH, "state.claude keeps its shape (the claude_auth.status() dict, as is)"
     assert st["login"] == {**claude_auth.login_state(), **account_store.login_view()}, "v0.5.17c: the login view adds adding/email/started_at/result"

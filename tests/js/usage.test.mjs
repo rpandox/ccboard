@@ -1398,7 +1398,8 @@ test('limits: the freshness caption sits right under the Limits title and says h
   const { w } = usageWorld({ st: st() });
   await go(w);
   const sec = q(w, '[data-sec="limits"]');
-  assert.equal(sec.querySelector('.ubody').children[0], fresh(w), 'the first thing under the title, above the account chips and the gauges');
+  const row = sec.querySelector('.ubody').children[0];
+  assert.ok(row.classList.contains('ufresh-row') && row.children[0] === fresh(w), 'the first thing under the title, above the account chips and the gauges: the caption leads its row (v0.5.17f part 2: the Refresh button follows it)');
   assert.equal(text(fresh(w)), 'updated 5m ago · from the last session');
   assert.ok(!fresh(w).classList.contains('hidden'));
   const { w: w2 } = usageWorld({ st: st('cache') });

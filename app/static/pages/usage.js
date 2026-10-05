@@ -28,6 +28,14 @@
    Codex account (label in the teal of its agent, plan, current, 5H / 7D gauges) read from ONE series request of the page (rl_5h,rl_7d for key=cacct:<key>,...: P.cx), the
    account in use answering with the live state.usage_codex; tokens and dollars are the box's (the summary's windows.by_agent.codex), not an account's.
 
+   Refresh (v0.5.17f, part 2): a quiet button beside the freshness caption under the Limits title. A tap asks the box for /usage (POST /api/usage/refresh: it types
+   /usage into one idle Claude session, Claude Code fetches the official numbers with its own login, the board reads them from Claude Code's state file), then the
+   page asks the state every 1.5 s until the newest reading is newer than the one it held at the tap (P.rf.base: the box's own clock on both sides, so a phone's
+   clock does not matter) and repaints; 20 s without one reads 'no new reading yet'. A 409 shows its reason as a toast; with no live Claude session the button
+   says 'start a session to refresh' and opens the launcher. The page also asks once on opening, by itself, when the newest reading is older than 5 minutes and a
+   session nobody is attached to is at its prompt ({auto: true}: the server never picks an attached pane for it). Nothing here runs on a timer apart from the
+   wait of a tap; the answer of an automatic ask is silent.
+
    Usage.cur is the mounted page record (null when not mounted); its .loading is the promise of the latest load, for the tests. */
 'use strict';
 
@@ -53,6 +61,10 @@ const Usage = {
   UNATTRIBUTED_TIP: 'sessions the board did not start',
   UNKNOWN: 'unknown',                              // the summary's row for history from before the board tracked accounts
   HOT_PCT: 85,                                     // an account window at or above this is 'in trouble' (the bad tone, and the cue to use another account)
+  REFRESH_WAIT_MS: 20000,                          // a tap on Refresh waits this long for a newer reading before it says 'no new reading yet'
+  REFRESH_POLL_MS: 1500,                           // ... and asks the state this often meanwhile
+  REFRESH_STALE_S: 300,                            // opening the page asks for a refresh by itself only when the newest reading is older than this
+  REFRESH_SHELLS: ['sh', 'bash', 'zsh', 'fish', 'dash', 'ksh', 'tcsh', 'csh'],   // a pane back at its login shell is no Claude (claude_auth.SHELLS)
   SECTIONS: [
     ['accounts', 'Accounts', 'subscription windows (statusline) · API-equivalent $ last'],
     ['limits', 'Limits', 'statusline (official)'],
@@ -254,6 +266,137 @@ Usage.windowReading = function (win, pct, resets, at, source, who) {
     title: `${who}: ${Math.round(x.pct)}% used${x.resets_at ? ' · resets ' + Usage.clock(x.resets_at) : ''}${caption ? ' · ' + caption : ''}` };
 };
 
+/* ---------- refresh (v0.5.17f, part 2) ---------- */
+
+/* Every session of a state as one list (project roots, repos and orphans). */
+Usage.sessionList = function (st) {
+  const out = [];
+  for (const p of ((st && st.projects) || [])) {
+    if (p && p.root) out.push(...(p.root.sessions || []));
+    for (const r of ((p && p.repos) || [])) out.push(...((r && r.sessions) || []));
+    out.push(...((p && p.orphan_sessions) || []));
+  }
+  return out.filter((s) => s && typeof s === 'object');
+};
+
+/* What a refresh could ask, read from the state the way the server reads it (app/usage_refresh.py, the command route's guards): {live: Claude panes that
+   run something other than a login shell, ready: of those the ones at their prompt (idle, done, errored or idle-waiting; no permission pending; not compacting),
+   free: of those the ones nobody is attached to}. The server decides; this only words the button and gates the automatic ask. */
+Usage.refreshTargets = function (st) {
+  const perm = new Set(((st && st.pending_permissions) || []).map((p) => p && p.tmux_name));
+  let live = 0;
+  let ready = 0;
+  let free = 0;
+  for (const s of Usage.sessionList(st)) {
+    if (s.agent !== 'claude') continue;
+    const cmd = String(s.command || '').replace(/^-/, '');
+    if (!cmd || Usage.REFRESH_SHELLS.includes(cmd)) continue;
+    live += 1;
+    const flags = s.flags || {};
+    const atPrompt = ['idle', 'done', 'errored'].includes(s.state) || (s.state === 'waiting' && flags.wait_kind === 'idle');
+    if (!atPrompt || flags.compacting || perm.has(s.tmux)) continue;
+    ready += 1;
+    if (!(s.viewers && s.viewers.full > 0)) free += 1;
+  }
+  return { live, ready, free };
+};
+
+/* Epoch seconds of the newest Claude reading in a state (the record's time and each window's own), 0 when there is none. */
+Usage.newestReading = function (st) {
+  const u = st && st.usage;
+  if (!u || typeof u !== 'object') return 0;
+  const rl = u.value || {};
+  const times = [Usage.epoch(u.at)];
+  for (const w of [rl.five_hour, rl.seven_day]) if (w && typeof w === 'object') times.push(Usage.epoch(w.at));
+  return Math.max(...times);
+};
+
+/* The empty refresh record of a page: on = a tap (or the opening ask) is waiting for its reading, base = the newest reading's epoch when it was asked,
+   timer / poll = the give-up and the state polls, note = the line next to the button ('no new reading yet'). */
+Usage.refreshFresh = function () { return { on: false, base: 0, timer: null, poll: null, note: '' }; };
+
+Usage.refreshBusy = function (P) { return !!(P.rf.on || (P.st && P.st.usage_refresh && P.st.usage_refresh.running)); };
+
+/* The button and its note follow the state: 'Refresh', 'refreshing…' (disabled; a refresh another device asked for counts too) or 'start a session to refresh'. */
+Usage.refreshPaint = function (P) {
+  const R = P.refs;
+  if (!R.refresh) return;
+  const busy = Usage.refreshBusy(P);
+  const none = !busy && !!P.st && Usage.refreshTargets(P.st).live === 0;
+  const title = busy ? 'Asking a Claude session for /usage…'
+    : none ? 'No Claude session is running: start one, then refresh'
+      : "Ask an idle Claude session for /usage: Claude Code fetches the official numbers with its own login, and the board reads them from Claude Code's state file";
+  setText(R.refresh, busy ? 'refreshing…' : none ? 'start a session to refresh' : 'Refresh');
+  if (R.refresh.disabled !== busy) R.refresh.disabled = busy;                         // the poll repaints every 3 s: touch an attribute only when it changed (a browser drops an open tooltip on any write)
+  if (R.refresh.getAttribute('aria-busy') !== String(busy)) R.refresh.setAttribute('aria-busy', String(busy));
+  if (R.refresh.getAttribute('title') !== title) R.refresh.setAttribute('title', title);
+  R.refresh.classList.toggle('hidden', !!P.limAcct);                                  // a chip picked another account: the caption is about that account's reading, and a refresh asks the account in use
+  setText(R.refreshNote, P.rf.note);
+  R.refreshNote.classList.toggle('hidden', !P.rf.note || busy || !!P.limAcct);
+};
+
+/* A wait is over: its timers go, the note says why when it gave up, and a reading that arrived repaints the limits (the chart and the summary refetch behind). */
+Usage.refreshEnd = function (P, note, arrived) {
+  if (P.rf.timer !== null) clearTimeout(P.rf.timer);
+  if (P.rf.poll !== null) clearTimeout(P.rf.poll);
+  P.rf.timer = null;
+  P.rf.poll = null;
+  P.rf.on = false;
+  P.rf.note = note || '';
+  if (!Usage.alive(P)) return;
+  if (arrived) { Usage.paintGauges(P); Usage.load(P, { fresh: true }); } else Usage.refreshPaint(P);
+};
+
+/* update(): did the reading a tap waits for arrive? Newer than the one held at the tap, from either source (a statusline that spoke meanwhile is as good). */
+Usage.refreshCheck = function (P) {
+  if (P.rf.on && Usage.newestReading(P.st) > P.rf.base) Usage.refreshEnd(P, '', true);
+};
+
+/* The state asked for every REFRESH_POLL_MS while a wait is on (poll(true) is core.js's own fetch; update() sees the answer). */
+Usage.refreshWatch = function (P) {
+  const step = () => {
+    P.rf.poll = null;
+    if (!Usage.alive(P) || !P.rf.on) return;
+    if (typeof poll === 'function') Promise.resolve(poll(true)).catch(() => { /* the next step asks again */ });
+    P.rf.poll = setTimeout(step, Usage.REFRESH_POLL_MS);
+  };
+  P.rf.poll = setTimeout(step, Usage.REFRESH_POLL_MS);
+};
+
+Usage.startSession = function () {
+  if (typeof Shell === 'undefined' || !Shell || typeof Shell.openCreate !== 'function') return false;
+  return Shell.openCreate('session') !== false;
+};
+
+/* One refresh. A tap (auto false) with no live Claude session opens the launcher instead; a 409 toasts its reason. auto (the page opening on stale
+   numbers) is silent when it is refused. Resolves true when the box took the ask. */
+Usage.refresh = function (P, auto) {
+  if (!Usage.alive(P) || Usage.refreshBusy(P)) return Promise.resolve(false);
+  if (!auto && P.st && Usage.refreshTargets(P.st).live === 0) { Usage.startSession(); return Promise.resolve(false); }
+  P.rf.on = true;
+  P.rf.base = Usage.newestReading(P.st);
+  P.rf.note = '';
+  P.rf.timer = setTimeout(() => { if (Usage.alive(P) && P.rf.on) Usage.refreshEnd(P, 'no new reading yet', false); }, Usage.REFRESH_WAIT_MS);
+  Usage.refreshPaint(P);
+  return Promise.resolve().then(() => api('POST', '/api/usage/refresh', auto ? { auto: true } : {})).then(() => {
+    if (Usage.alive(P) && P.rf.on) Usage.refreshWatch(P);
+    return true;
+  }, (e) => {
+    Usage.refreshEnd(P, '', false);
+    if (!auto && typeof toast === 'function') toast(Usage.errText(e), { kind: 'warn' });
+    return false;
+  });
+};
+
+/* Once per page open, from the first state: ask by itself when the newest reading is older than REFRESH_STALE_S and a session nobody is attached to is at its prompt. */
+Usage.refreshAuto = function (P) {
+  if (P.autoDone || !P.st) return;
+  P.autoDone = true;
+  const newest = Usage.newestReading(P.st);
+  const stale = !newest || Date.now() / 1000 - newest > Usage.REFRESH_STALE_S;
+  if (stale && Usage.refreshTargets(P.st).free > 0) Usage.refresh(P, true);
+};
+
 /* ---------- page state ---------- */
 
 Usage.alive = function (P) { return !!P && !P.dead && Usage.cur === P; };
@@ -305,6 +448,7 @@ Usage.build = function (root, route) {
     refs: { body: {}, prov: {}, toggle: {}, stackBtn: {} }, timer: null, onVisible: null, unbind: null, stale: false, liveSig: '', showAll: false,
     events: null, evErr: '', evDone: false, loading: Promise.resolve(), ready: null, rows: new Map(), limDrawn: false,
     limAcct: null, accSeq: 0,                                 // limAcct: the account the Limits section shows (null = the current one, via key=claude)
+    rf: Usage.refreshFresh(), autoDone: false,                // v0.5.17f: the Refresh button's wait, and the once-per-open automatic ask
     agent: 'claude', agentNow: 'claude', cxAcct: null,        // v0.5.12: the provider tab, the one it last painted, and the Codex account its chip picked (null = the one in use, key=codex)
     cx: { acc: {}, seq: 0, done: false, err: '', keys: '' } };  // the Codex accounts' own readings (one series request for all of them)
   const R = P.refs;
@@ -335,6 +479,9 @@ Usage.build = function (root, route) {
   R.g7 = Usage.gauge('7D');
   R.gnote = el('p', { class: 'dim unote hidden' });
   R.gfresh = el('p', { class: 'dim ufresh hidden', 'data-fresh': '' });        // v0.5.17f: when the gauges were last read and where from, right under the Limits title
+  R.refresh = el('button', { class: 'small ufresh-btn', type: 'button', 'data-refresh': '', text: 'Refresh', onclick: () => Usage.refresh(P, false) });   // beside it: a quiet bordered button, never a primary
+  R.refreshNote = el('p', { class: 'dim ufresh-note hidden', 'data-refresh-note': '', role: 'status' });
+  R.freshRow = el('div', { class: 'ufresh-row' }, R.gfresh, R.refresh, R.refreshNote);
   R.limAcct = el('div', { class: 'ua-picks pj-switch hidden', role: 'group', 'aria-label': 'Account shown in the limits' });
   R.limSlot = el('div', { class: 'uslot hidden' });
   R.limHost = el('div', { class: 'chart lim-chart loading', 'aria-busy': 'true' });
@@ -355,7 +502,7 @@ Usage.build = function (root, route) {
     if (id === 'limits') kids.push(R.agentSeg);
     const body = el('div', { class: 'ubody', 'data-body': id });
     R.body[id] = body;
-    if (id === 'limits') body.append(R.gfresh, R.limAcct, el('div', { class: 'uc-gauges' }, R.g5, R.g7), R.gnote, R.limSlot, R.limHost, R.limCap);
+    if (id === 'limits') body.append(R.freshRow, R.limAcct, el('div', { class: 'uc-gauges' }, R.g5, R.g7), R.gnote, R.limSlot, R.limHost, R.limCap);
     else body.append(Usage.skeleton());
     sections.push(el('section', { class: 'usec', 'data-sec': id }, el('div', { class: 'usec-head' }, ...kids), body));
   }
@@ -567,6 +714,8 @@ Usage.paintFresh = function (P, readings) {
   else if (rs) { const best = rs.reduce((a, b) => ((b.at || 0) > (a.at || 0) ? b : a)); text = best.at ? limitFreshness(best.at, best.source) : ''; }
   node.classList.toggle('hidden', !text);
   setText(node, text);
+  P.refs.freshRow.classList.toggle('hidden', !rs);                       // the Codex tab (null readings) has neither the caption nor the Claude refresh
+  Usage.refreshPaint(P);
 };
 
 /* The two gauges follow the state on every update(); with no live reading they fall back to the summary's last statusline sample. */
@@ -1494,6 +1643,7 @@ Usage.paintTimeline = function (P) {
 Usage.teardown = function (P) {
   P.dead = true;
   P.token += 1;
+  if (P.rf) { if (P.rf.timer !== null) clearTimeout(P.rf.timer); if (P.rf.poll !== null) clearTimeout(P.rf.poll); P.rf.timer = null; P.rf.poll = null; P.rf.on = false; }
   if (P.timer !== null && typeof clearInterval === 'function') clearInterval(P.timer);
   P.timer = null;
   if (P.onVisible && typeof document !== 'undefined') document.removeEventListener('visibilitychange', P.onVisible);
@@ -1536,6 +1686,8 @@ registerPage('usage', {
     if (!P || !st) return;
     P.st = st;
     if (!Usage.syncAgent(P)) Usage.paintGauges(P);
+    Usage.refreshCheck(P);                                                              // a tap waits for a reading newer than the one it found
+    Usage.refreshAuto(P);                                                               // the first state of this page open: ask by itself when the numbers are stale
     if (Usage.cxKeys(st).join(',') !== P.cx.keys) Usage.fetchCx(P);                    // a Codex account came or went (or the state arrived after the page): ask for its readings
     if (Usage.summaryOf(P)) Usage.safe(P, 'accounts', () => Usage.paintAccounts(P));      // a rename (or a /login switch) shows now; the signature keeps an unchanged poll from rebuilding the rows
     const sig = Usage.liveSig(st);

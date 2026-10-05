@@ -337,6 +337,60 @@ test('demoApi rebases the usage summary with the state\'s own epoch: the account
   assert.deepEqual(sum.total, fx.total);
 });
 
+// ---------------------------------------------------------------- demo mode: the make-believe usage refresh (v0.5.17f, part 2)
+
+function demoSessions(st) {
+  const out = [];
+  for (const p of st.projects) { if (p.root) out.push(...p.root.sessions); for (const r of p.repos) out.push(...r.sessions); out.push(...p.orphan_sessions); }
+  return out;
+}
+
+test('demo refresh: a tap is answered at once, the reading holds still for 3 s and then moves to that moment, from Claude Code\'s cache', async () => {
+  const w = demoWorld();
+  const before = plain(await w.run("api('GET', '/api/state')"));
+  const at0 = Date.parse(before.usage.at) / 1000;
+  assert.ok(Math.abs(at0 - Date.now() / 1000) < 60, 'the fixture reading is seconds old, like the rest of the demo');
+  assert.equal(before.usage.value.source, undefined);
+  const r = plain(await w.run("api('POST', '/api/usage/refresh', {})"));
+  assert.equal(r.ok, true);
+  assert.match(r.session, /^[\w-]+--[\w-]+--[\w-]+$/);
+  assert.ok(Math.abs(Date.parse(r.started_at) / 1000 - Date.now() / 1000) < 5);
+  const held = plain(await w.run("api('GET', '/api/state')"));
+  assert.equal(Date.parse(held.usage.at) / 1000, at0, 'held at the reading the tap found: "refreshing…" stays visible');
+  assert.equal(held.usage.value.source, undefined);
+  w.run('demoRefresh.tap -= 5');                                           // the 3 s are over
+  const after = plain(await w.run("api('GET', '/api/state')"));
+  assert.ok(Date.parse(after.usage.at) / 1000 > at0, 'a newer reading');
+  assert.equal(after.usage.value.source, 'cache');
+  assert.equal(after.usage.value.five_hour.used_percentage, before.usage.value.five_hour.used_percentage, 'the numbers themselves are the fixture\'s');
+  assert.ok(after.projects.length && demoSessions(after).some((x) => x.agent === 'claude'), 'the sessions are untouched');
+});
+
+test('demo refresh: ?refresh=none leaves no Claude session (the Codex one stays) and refuses a tap with the real 409 text', async () => {
+  const w = demoWorld();
+  w.location.search = '?demo=1&refresh=none';
+  const st = plain(await w.run("api('GET', '/api/state')"));
+  const rows = demoSessions(st);
+  assert.ok(rows.length > 0 && rows.every((x) => x.agent !== 'claude'), rows.map((x) => x.agent).join());
+  assert.ok(rows.some((x) => x.agent === 'codex'));
+  await assert.rejects(w.run("api('POST', '/api/usage/refresh', {})"), (e) => e.status === 409 && e.message === 'no Claude session is at its prompt; start one to refresh');
+});
+
+test('demo refresh: ?refresh=stale makes the newest reading 10 minutes old; ?refresh=stuck never lets a tap move it', async () => {
+  const w = demoWorld();
+  w.location.search = '?demo=1&refresh=stale';
+  const st = plain(await w.run("api('GET', '/api/state')"));
+  assert.ok(Math.abs(Date.now() / 1000 - Date.parse(st.usage.at) / 1000 - 600) < 5);
+  const w2 = demoWorld();
+  w2.location.search = '?demo=1&refresh=stuck';
+  const a = plain(await w2.run("api('GET', '/api/state')"));
+  await w2.run("api('POST', '/api/usage/refresh', {})");
+  w2.run('demoRefresh.tap -= 100');
+  const b = plain(await w2.run("api('GET', '/api/state')"));
+  assert.equal(b.usage.at, a.usage.at, 'a minute and a half later it is still the reading the tap found');
+  assert.equal(b.usage.value.source, undefined);
+});
+
 // ---------------------------------------------------------------- tabs(): the tab list scrolls sideways, the selected tab is brought into view
 
 test('tabs(): once the page lays the list out the selected tab is scrolled into its sideways-scrolling list (six Settings tabs at 390 px); without requestAnimationFrame or layout nothing happens and nothing throws', () => {
