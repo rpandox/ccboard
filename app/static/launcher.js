@@ -161,6 +161,7 @@ const TASK_LEDE = {
   later: 'Parks it in the Backlog: Start it, or send it to a running session, when you are ready.',
   schedule: 'A headless run (claude -p) in a fresh worktree, on a cron or once now; the result becomes a task card.',
 };
+const TASK_LEDE_CODEX_SCHEDULE = 'A headless run (codex exec) in its own worktree, on a cron or once now; the result becomes a task card.';
 const TASK_ICON = { now: 'play', later: 'add', schedule: 'time' };
 const JOB_MODES = ['acceptEdits', 'default', 'plan', 'auto', 'dontAsk'];
 const TASK_LAST_KEY = (project) => `ccboard:task:last:${project}`;       // the repo a task was last started in, per project
@@ -620,8 +621,71 @@ function cronNoteText(v) {
   return !v ? 'Runs once, right now.' : v.split(/\s+/).length === 5 ? `Runs on cron ${v}.` : 'A cron has 5 fields, e.g. 30 2 * * *.';
 }
 
+/* The agent control of the schedule and batch forms (v0.5.16): a segmented Claude | Codex (Codex off, with the reason said as text, when it is not installed on this box) and, for
+   Codex, its model and reasoning: the same choices and the same prefs the launcher sheet keeps per repo (ccboard:task:<project>/<repo>:codex). A Claude job keeps its model in the
+   extra args, as it always did. `want` is the agent the form was last used with. Returns {agent, field, box, modelField, reasoningField, set(a), body(), remember()}. */
+function jobAgentPick(p, r, want, onChange, seed) {
+  const key = p && r ? LX_TASK_KEY(p.name, r.name, 'codex') : null;
+  const kept = (key && lxJson(lxGet(key))) || (seed && typeof seed === 'object' ? seed : {});
+  const S = { agent: want === 'codex' && lxInstalled('codex') ? 'codex' : 'claude', model: String(kept.model || ''), reasoning: String(kept.reasoning_effort || kept.reasoning || '') };
+  const seg = lxSeg([['claude', `${AGENT_GLYPH.claude} Claude`], ['codex', `${AGENT_GLYPH.codex} Codex`]], (a) => set(a), 'Agent', 'lx-agent');
+  const why = el('p', { class: 'dim lx-hint lx-why' });
+  const modelSel = selectEl([['', 'default (Codex)']], '');
+  const reasoningHost = el('div', { class: 'lx-effhost' });
+  const modelField = field('Model', modelSel, 'Optional: blank uses the model Codex is set to.');
+  const reasoningField = field('Reasoning', reasoningHost);
+  const box = el('div', { class: 'lx-agentbox hidden', 'data-agent': 'codex' }, modelField, reasoningField);
+  const paintReasoning = () => {
+    const rs = launcherReasoning(launcherSchema('codex'), S.model);
+    if (S.reasoning && !rs.allowed.includes(S.reasoning)) S.reasoning = '';
+    const sg = lxSeg([['', 'default'], ...rs.all.map((l) => [l, l])], (l) => { S.reasoning = l; sg.set(l); }, 'Reasoning', 'lx-effort');
+    for (const l of rs.all) sg.disable(l, !rs.allowed.includes(l), `${S.model || 'this model'} has no ${l} reasoning level`);
+    sg.set(S.reasoning || '');
+    reasoningHost.textContent = '';
+    reasoningHost.append(sg.node);
+  };
+  const paintModels = () => {
+    const models = launcherSchema('codex').models;
+    modelSel.textContent = '';
+    for (const [v, t] of [['', 'default (Codex)'], ...(S.model && !models.includes(S.model) ? [[S.model, S.model]] : []), ...models.map((m) => [m, m])]) modelSel.append(el('option', { value: v, text: t }));
+    modelSel.value = S.model;
+  };
+  modelSel.addEventListener('change', () => { S.model = modelSel.value; paintReasoning(); });
+  const paint = () => {
+    const ok = lxInstalled('codex');
+    seg.disable('codex', !ok, ok ? '' : 'Codex is not installed on this box');
+    why.textContent = ok ? '' : 'Codex is not installed on this box';
+    seg.set(S.agent);
+    box.classList.toggle('hidden', S.agent !== 'codex');
+    if (S.agent === 'codex') { paintModels(); paintReasoning(); }
+  };
+  function set(a) {
+    if (a === S.agent || (a === 'codex' && !lxInstalled('codex'))) return;
+    S.agent = a;
+    paint();
+    if (typeof onChange === 'function') onChange(a);
+  }
+  paint();
+  return {
+    get agent() { return S.agent; },
+    get model() { return S.model; },
+    get reasoning() { return S.reasoning; },
+    field: field('Agent', el('div', { class: 'lx-agentctl' }, seg.node, why)),
+    box, modelField, reasoningField, set, repaint: paint,
+    body() { return S.agent === 'codex' ? { agent: 'codex', ...(S.model ? { model: S.model } : {}), ...(S.reasoning ? { reasoning_effort: S.reasoning } : {}) } : {}; },
+    remember() {
+      if (S.agent !== 'codex' || !key) return;
+      const next = { ...kept };
+      for (const [k, v] of [['model', S.model], ['reasoning_effort', S.reasoning]]) { if (v) next[k] = v; else delete next[k]; }
+      delete next.reasoning;
+      lxPut(key, JSON.stringify(next));
+    },
+  };
+}
+
 function jobForm(p, r) {
   const saved = loadPrefs(JOB_KEY(p, r));
+  const ag = jobAgentPick(p, r, saved.agent, () => paintAgent());
   const name = el('input', { type: 'text', placeholder: 'e.g. nightly-tests', maxlength: 80, required: true, autocomplete: 'off', autocapitalize: 'off' });
   const prompt = el('textarea', { placeholder: 'prompt for the headless run (claude -p in a fresh worktree)…', required: true });
   const cron = el('input', { type: 'text', placeholder: 'cron: 30 2 * * *  (blank = run once now)', autocomplete: 'off', autocapitalize: 'off', value: typeof saved.cron === 'string' ? saved.cron : '' });
@@ -644,40 +708,58 @@ function jobForm(p, r) {
   const budget = el('input', { type: 'number', placeholder: 'optional', step: '0.5', min: '0', inputmode: 'decimal', value: saved.budget || '' });
   const args = el('input', { type: 'text', placeholder: 'extra claude args (optional)', autocomplete: 'off', autocapitalize: 'off' });
   const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
+  const lede = el('p', { class: 'dim tf-lede' });
   const nameField = field('Name', name, 'Shown on the task card and in Schedules.');
   const promptField = field('Prompt', prompt);
   const cronField = field('Cron', cron);
   const argsField = field('Extra args', args);
+  const turnsField = field('Max turns', turns);
+  const budgetField = field('Max $', budget, 'Optional.');
+  const paintAgent = () => {
+    const codex = ag.agent === 'codex';
+    lede.textContent = codex ? 'A headless run (codex exec) in its own worktree; the result becomes a task card. Codex has no turn or budget limit: a run ends when the task does.'
+      : 'A headless run (claude -p) in a fresh worktree; the result becomes a task card.';
+    prompt.setAttribute('placeholder', codex ? 'prompt for the headless run (codex exec in its own worktree)…' : 'prompt for the headless run (claude -p in a fresh worktree)…');
+    args.setAttribute('placeholder', codex ? 'extra codex args (optional)' : 'extra claude args (optional)');
+    turnsField.classList.toggle('hidden', codex);
+    budgetField.classList.toggle('hidden', codex);
+  };
   name.addEventListener('input', () => fieldError(nameField, ''));
   prompt.addEventListener('input', () => fieldError(promptField, ''));
   const form = el('form', { class: 'form task-form job-form', novalidate: true, onsubmit: async (e) => {
     e.preventDefault();
-    for (const f of [nameField, promptField, cronField, argsField]) fieldError(f, '');
+    for (const f of [nameField, promptField, cronField, argsField, ag.modelField, ag.reasoningField]) fieldError(f, '');
     formStatus(status, '');
     if (!name.value.trim()) { fieldError(nameField, 'Give the schedule a name.', true); return; }
     if (!prompt.value.trim()) { fieldError(promptField, 'Write the prompt for the run.', true); return; }
-    const body = { name: name.value.trim(), prompt: prompt.value.trim(), permission_mode: mode.value, max_turns: parseInt(turns.value, 10) || 30, run_now: !cron.value.trim() };
+    const codex = ag.agent === 'codex';
+    const body = { name: name.value.trim(), prompt: prompt.value.trim(), permission_mode: mode.value, run_now: !cron.value.trim(), ...ag.body() };
+    if (!codex) body.max_turns = parseInt(turns.value, 10) || 30;
     if (cron.value.trim()) body.cron = cron.value.trim();
-    if (budget.value) body.max_budget_usd = parseFloat(budget.value);
+    if (!codex && budget.value) body.max_budget_usd = parseFloat(budget.value);
     if (args.value.trim()) body.args = args.value.trim();
-    savePrefs(JOB_KEY(p, r), { cron: cron.value.trim(), mode: mode.value, turns: parseInt(turns.value, 10) || 30, budget: budget.value });
+    savePrefs(JOB_KEY(p, r), { cron: cron.value.trim(), mode: mode.value, turns: parseInt(turns.value, 10) || 30, budget: budget.value, ...(codex ? { agent: 'codex' } : {}) });
+    ag.remember();
     try { await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/jobs`, body); ui.openForm = null; setError(null); await poll(true); }
-    catch (err) { formFail(status, [[/cron/i, cronField], [/name/i, nameField], [/extra args|args/i, argsField]], err.message); }
+    catch (err) { formFail(status, [[/cron/i, cronField], [/name/i, nameField], [/extra args|args|argument/i, argsField], [/reasoning/i, ag.reasoningField], [/model/i, ag.modelField]], err.message); }
   } },
-    el('p', { class: 'dim tf-lede', text: 'A headless run (claude -p) in a fresh worktree; the result becomes a task card.' }),
+    lede,
+    ag.field,
+    ag.box,
     nameField,
     promptField,
     cronField,
     presets,
     cronNote,
     el('details', { class: 'tf-options' }, el('summary', { text: 'Advanced' }),
-      el('div', { class: 'grid' }, field('Permission mode', mode), field('Max turns', turns), field('Max $', budget, 'Optional.')),
+      el('div', { class: 'grid' }, field('Permission mode', mode), turnsField, budgetField),
       argsField),
     status,
     el('div', { class: 'submit' },
       go,
       el('button', { type: 'button', onclick: () => { ui.openForm = null; renderProjects(); }, text: 'Cancel' })));
   form.focusFirst = () => focusFine(name);
+  paintAgent();
   return form;
 }
 
@@ -754,16 +836,28 @@ function projectForm(opts) {
   return form;
 }
 
-/* Run one headless prompt in every picked repo: POST /api/batch. */
+/* Run one headless prompt in every picked repo: POST /api/batch, with Claude or Codex (v0.5.16: the agent picker; every job of the batch runs with it). */
 function batchForm(opts) {
   const o = opts || {};
   const saved = loadPrefs(BATCH_KEY);
+  const ag = jobAgentPick(null, null, saved.agent, () => paintAgent(), { model: saved.cx_model, reasoning_effort: saved.cx_reasoning });
   const name = el('input', { type: 'text', placeholder: 'optional', maxlength: 60, autocomplete: 'off', autocapitalize: 'off' });
   const prompt = el('textarea', { placeholder: 'prompt to run headlessly in every selected repo (claude -p, fresh worktree each)…' });
   const mode = selectEl(JOB_MODES.map((x) => [x, x]), JOB_MODES.includes(saved.mode) ? saved.mode : 'acceptEdits');
   const turns = el('input', { type: 'number', value: String(saved.turns || 30), min: '1', max: '500', inputmode: 'numeric' });
   const budget = el('input', { type: 'number', placeholder: 'optional', step: '0.5', min: '0', inputmode: 'decimal', value: saved.budget || '' });
   const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
+  const lede = el('div', { class: 'dim' });
+  const turnsField = field('Max turns', turns);
+  const budgetField = field('Max $ per repo', budget, 'Optional.');
+  const paintAgent = () => {
+    const codex = ag.agent === 'codex';
+    lede.textContent = codex ? 'Runs are headless (codex exec) in its own worktree per repo, at most 2 at once, paused while the Codex usage window is above 85%. Each result becomes a task card.'
+      : 'Runs are headless (claude -p) in a fresh worktree per repo, at most 2 at once, paused while the 5-hour window is above 85%. Each result becomes a task card.';
+    prompt.setAttribute('placeholder', codex ? 'prompt to run headlessly in every selected repo (codex exec, its own worktree each)…' : 'prompt to run headlessly in every selected repo (claude -p, fresh worktree each)…');
+    turnsField.classList.toggle('hidden', codex);
+    budgetField.classList.toggle('hidden', codex);
+  };
   const boxes = [];
   const list = el('div', { class: 'checks batch-repos' });
   for (const x of (typeof state !== 'undefined' && state ? allRepos() : [])) {
@@ -780,28 +874,33 @@ function batchForm(opts) {
   list.addEventListener('change', () => fieldError(reposField, ''));
   const go = el('button', { class: 'primary', type: 'button', onclick: async () => {
     const repos = boxes.filter((b) => b.checked).map((b) => b.getAttribute('value'));
-    fieldError(promptField, ''); fieldError(reposField, ''); formStatus(status, '');
+    fieldError(promptField, ''); fieldError(reposField, ''); fieldError(ag.modelField, ''); fieldError(ag.reasoningField, ''); formStatus(status, '');
     if (!prompt.value.trim()) { fieldError(promptField, 'Write the prompt to run.', true); if (!repos.length) fieldError(reposField, 'Pick at least one repo.'); return; }
     if (!repos.length) { fieldError(reposField, 'Pick at least one repo.', true); return; }
-    savePrefs(BATCH_KEY, { mode: mode.value, turns: parseInt(turns.value, 10) || 30, budget: budget.value });
+    const codex = ag.agent === 'codex';
+    savePrefs(BATCH_KEY, { mode: mode.value, turns: parseInt(turns.value, 10) || 30, budget: budget.value, ...(codex ? { agent: 'codex', cx_model: ag.model, cx_reasoning: ag.reasoning } : {}) });
     try {
-      const r = await api('POST', '/api/batch', { prompt: prompt.value.trim(), repos, name: name.value.trim() || undefined, permission_mode: mode.value,
-        max_turns: parseInt(turns.value, 10) || 30, max_budget_usd: budget.value ? parseFloat(budget.value) : undefined });
+      const body = { prompt: prompt.value.trim(), repos, name: name.value.trim() || undefined, permission_mode: mode.value, ...ag.body() };
+      if (!codex) { body.max_turns = parseInt(turns.value, 10) || 30; body.max_budget_usd = budget.value ? parseFloat(budget.value) : undefined; }
+      const r = await api('POST', '/api/batch', body);
       formStatus(status, `queued ${r.jobs.length} runs (batch ${r.batch_id}); ${r.started.length} started, the rest wait for a free slot`);
       if (typeof o.onDone === 'function') o.onDone(r);
       await poll(true);
     } catch (e) { formStatus(status, e.message, true); }
   }, text: 'Run on selected repos' });
-  const form = el('form', { class: 'form', novalidate: true, onsubmit: (e) => { e.preventDefault(); go.click(); } },
-    el('div', { class: 'dim', text: 'Runs are headless (claude -p) in a fresh worktree per repo, at most 2 at once, paused while the 5-hour window is above 85%. Each result becomes a task card.' }),
+  const form = el('form', { class: 'form batch-form', novalidate: true, onsubmit: (e) => { e.preventDefault(); go.click(); } },
+    lede,
+    ag.field,
+    ag.box,
     promptField,
     reposField,
     el('details', { class: 'tf-options' }, el('summary', { text: 'Options' }),
-      el('div', { class: 'grid' }, field('Name', name, 'Optional label for the batch.'), field('Permission mode', mode), field('Max turns', turns), field('Max $ per repo', budget, 'Optional.'))),
+      el('div', { class: 'grid' }, field('Name', name, 'Optional label for the batch.'), field('Permission mode', mode), turnsField, budgetField)),
     status,
     el('div', { class: 'submit' }, go,
       el('button', { type: 'button', onclick: () => { if (typeof o.onCancel === 'function') o.onCancel(); }, text: 'Cancel' })));
   form.focusFirst = () => focusFine(prompt);
+  paintAgent();
   return form;
 }
 
@@ -1548,7 +1647,7 @@ function launcherForm(o) {
   const paintAgentSeg = () => {
     const reasons = [];
     for (const [a] of agentItems) {
-      const why = !lxInstalled(a) ? `${AGENT_NAME[a] || a} is not installed on this box` : (a !== 'claude' && when() === 'schedule' ? 'Scheduled runs are Claude only for now' : '');
+      const why = !lxInstalled(a) ? `${AGENT_NAME[a] || a} is not installed on this box` : '';
       agentSeg.disable(a, !!why, why);
       if (why) reasons.push(why);
     }
@@ -1919,8 +2018,11 @@ function launcherForm(o) {
   const jobModeSel = pick(JOB_MODES.map((m) => [m, m]), () => T.jobMode, (x) => { T.jobMode = x; });
   const turnsIn = text(() => T.turns, (x) => { T.turns = x; }, { type: 'number', min: '1', max: '500', inputmode: 'numeric' });
   const budgetIn = text(() => T.budget, (x) => { T.budget = x; }, { type: 'number', step: '0.5', min: '0', inputmode: 'decimal', placeholder: 'optional' });
+  const turnsF = field('Max turns', turnsIn);
+  const budgetF = field('Max $', budgetIn, 'Optional.');
+  const codexSchedNote = el('p', { class: 'dim lx-hint hidden', text: 'Codex runs in a workspace-write sandbox (plan: read-only) and never stops to ask. It has no turn or budget limit: a run ends when the task does.' });
   const schedBox = el('div', { class: 'tf-schedule' }, field('Name', nameEl, 'Shown on the task card.'), field('Cron', cronEl), el('div', { class: 'chips cron-presets', role: 'group', 'aria-label': 'Cron presets' }, presetCron), cronNote,
-    el('div', { class: 'grid' }, field('Permission mode', jobModeSel), field('Max turns', turnsIn), field('Max $', budgetIn, 'Optional.')));
+    el('div', { class: 'grid' }, field('Permission mode', jobModeSel), turnsF, budgetF), codexSchedNote);
   const when = () => (mode === 'task' ? T.when : 'now');
 
   /* ---- targets (the repo select of the task form) ---- */
@@ -1963,10 +2065,11 @@ function launcherForm(o) {
     const a = V.agent;
     const sch = when() === 'schedule';
     const launch = V.common.launch;
-    hide(claudeBasic, a !== 'claude' || sch); hide(codexBasic, a !== 'codex' || sch);
+    hide(claudeBasic, a !== 'claude' || sch); hide(codexBasic, a !== 'codex');
     hide(claudeAdv, a !== 'claude' || sch); hide(codexAdv, a !== 'codex' || sch);
     hide(shellBox, a !== 'shell');
-    hide(agentField, sch);
+    hide(modeField, sch); hide(customRow, sch || X.cx_mode !== 'custom');                  // a schedule's permission mode is the schedule's own (Codex: plan = read-only, else workspace-write)
+    hide(turnsF, a === 'codex'); hide(budgetF, a === 'codex'); hide(codexSchedNote, a !== 'codex');
     hide(presetField, a === 'shell' || sch || (mode === 'dispatch' && D.where !== 'lane'));
     hide(launchField, !session || a === 'shell');
     hide(resumeField, !session || a === 'shell' || launch !== 'resume' && !(a === 'codex' && launch === 'fork'));
@@ -1977,7 +2080,7 @@ function launcherForm(o) {
     /* the launch kind decides these two, after the schema gate above (which would show them again): a fork copies a conversation that resume or continue picks up, a worktree is a new session's */
     if (!(launch === 'resume' || launch === 'continue') || a !== 'claude') hide(forkRow, true);
     if (launch !== 'new') { hide(cWt.wrap, true); hide(xWtBox, true); }
-    hide(customRow, X.cx_mode !== 'custom');
+    hide(customRow, sch || X.cx_mode !== 'custom');
     hide(promptField, a === 'shell' || (session && launch !== 'new') || (mode === 'dispatch'));
     hide(titleField, mode !== 'task' || sch); hide(issueField, mode !== 'task' || sch);
     if (chain) hide(chain.node, sch || mode !== 'task');
@@ -1985,7 +2088,7 @@ function launcherForm(o) {
     hide(schedBox, !sch);
     hide(cmdBox, (a === 'shell' && !r.devcontainer) || sch);
     if (mode === 'dispatch') { hide(sessField, D.where !== 'session'); hide(agentField, D.where !== 'lane'); hide(claudeBasic, D.where !== 'lane' || a !== 'claude'); hide(codexBasic, D.where !== 'lane' || a !== 'codex'); hide(claudeAdv, true); hide(codexAdv, true); hide(cmdBox, D.where !== 'lane'); }
-    lede.textContent = mode === 'task' ? TASK_LEDE[T.when] : '';
+    lede.textContent = mode === 'task' ? (T.when === 'schedule' && a === 'codex' ? TASK_LEDE_CODEX_SCHEDULE : TASK_LEDE[T.when]) : '';
     hide(lede, mode !== 'task');
   }
 
@@ -2008,7 +2111,6 @@ function launcherForm(o) {
     lxDisable(go, busy || gated || (mode === 'dispatch' && D.where === 'session' && !ready.length));
     go.setAttribute('title', gated ? 'Tick I understand to go on' : 'Enter in the prompt starts it');
     if (mode !== 'session') autoChk.input.checked = autoValue();
-    if (mode === 'task') whenSeg.disable('schedule', v.agent !== 'claude', 'Scheduled runs are Claude only for now');
     paintAccount();
   };
 
@@ -2157,11 +2259,21 @@ function launcherForm(o) {
   const submitJobNow = async (v, prompt, title) => {
     const name = (T.schedName.trim() || title).slice(0, 80);
     const c = T.cron.trim();
-    const body = { name, prompt, permission_mode: T.jobMode, max_turns: parseInt(T.turns, 10) || 30, run_now: !c };
+    const codex = v.agent === 'codex';
+    const body = { name, prompt, permission_mode: T.jobMode, run_now: !c };
     if (c) body.cron = c;
-    if (T.budget) body.max_budget_usd = parseFloat(T.budget);
-    if (String(C.args || '').trim()) body.args = String(C.args).trim();
-    lxPut(LX_TASK_KEY(p.name, r.name, 'claude'), JSON.stringify({ ...taskSaved, cron: c, job_mode: T.jobMode, max_turns: parseInt(T.turns, 10) || 30 }));
+    if (codex) {                                                       // Codex: its model and reasoning are the job's options; it has no turn or budget limit
+      body.agent = 'codex';
+      const m = lxModelOf(v);
+      if (m) body.model = m;
+      if (v.reasoning) body.reasoning_effort = v.reasoning;
+    } else {
+      body.max_turns = parseInt(T.turns, 10) || 30;
+      if (T.budget) body.max_budget_usd = parseFloat(T.budget);
+      if (String(C.args || '').trim()) body.args = String(C.args).trim();
+    }
+    if (codex) remember(v, 'schedule');                                // the model, reasoning, cron and mode go under the Codex task key, as a Codex task's do
+    else lxPut(LX_TASK_KEY(p.name, r.name, 'claude'), JSON.stringify({ ...taskSaved, cron: c, job_mode: T.jobMode, max_turns: parseInt(T.turns, 10) || 30 }));
     const res = await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/jobs`, body);
     toast(c ? `scheduled ${name}` : `running ${name} once`, { kind: 'ok' });
     finish(res, 'schedule');

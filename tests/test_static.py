@@ -815,7 +815,7 @@ def test_demo_state_tasks_fill_every_kanban_column_consistently():
     listed = state["tasks"]
     cols = Counter(t["column"] for t in listed)
     assert set(cols) == set(KANBAN), [t["column"] for t in listed]
-    assert cols == Counter({"backlog": 4, "in_progress": 2, "needs_you": 3, "done": 3, "pr": 1, "merged": 1}), cols     # v0.5.15 added a chain of three, a failed task, a held question and a pending close
+    assert cols == Counter({"backlog": 4, "in_progress": 2, "needs_you": 3, "done": 4, "pr": 1, "merged": 1}), cols     # v0.5.15 added a chain of three, a failed task, a held question and a pending close; v0.5.16 a Codex run's task card
     assert [t["id"] for t in listed] == sorted((t["id"] for t in listed), reverse=True), "db.tasks() lists newest id first"
     for t in listed:
         started = t["phase"] not in ("backlog", "queued")
@@ -825,7 +825,8 @@ def test_demo_state_tasks_fill_every_kanban_column_consistently():
         if t["session"] is not None:
             assert sess is not None and t["session"]["state"] == sess["state"], f"task {t['id']}: session sub-object disagrees"
         if t["mode"] == "worktree" and started:
-            assert t["tmux"] == f"{t['project']}--{t['repo']}--t-{t['slug']}"
+            kind = "j" if t["title"].startswith("[") else "t"           # a scheduled run's card is named <project>--<repo>--j-<slug> (scheduler.run_job)
+            assert t["tmux"] == f"{t['project']}--{t['repo']}--{kind}-{t['slug']}"
     by_id = {t["id"]: t for t in listed}
     assert by_id[5]["session"]["state"] == "working" and by_id[4]["session"]["needs_attention"] is True
     by_col = {t["column"]: t for t in listed if t["mode"] == "worktree"}
@@ -868,9 +869,17 @@ def test_demo_state_has_a_backlog_task_and_a_task_handed_to_a_running_session():
 def test_demo_state_jobs_runs_and_the_rest_of_the_fleet_view():
     state = demo_json("state.json")
     now = demo_epoch(state)
-    assert len(state["jobs"]) == 4 and len(state["runs"]) == 3
-    assert [j["id"] for j in state["jobs"]] == [4, 3, 2, 1], "db.jobs() lists newest id first"
+    assert len(state["jobs"]) == 5 and len(state["runs"]) == 4
+    assert [j["id"] for j in state["jobs"]] == [5, 4, 3, 2, 1], "db.jobs() lists newest id first"
     assert {r["job_id"] for r in state["runs"]} <= {j["id"] for j in state["jobs"]}
+    codex_job = state["jobs"][0]                                   # v0.5.16: a Codex schedule, its run and the task card the run left, in the demo
+    assert (codex_job["agent"], codex_job["opts"]) == ("codex", {"model": "gpt-5.5", "reasoning_effort": "high"}) and codex_job["max_budget_usd"] is None
+    assert all(j["agent"] == "claude" and j["opts"] is None for j in state["jobs"][1:])
+    crun = state["runs"][0]
+    task = next(t for t in state["tasks"] if t["id"] == crun["task_id"])
+    assert (crun["agent"], crun["job_id"], crun["cost_usd"], task["agent"], task["branch"]) == ("codex", 5, None, "codex", crun["branch"])
+    assert task["worktree"] == crun["worktree"] and ".ccboard/worktrees/" in task["worktree"] and all(r["agent"] == "claude" for r in state["runs"][1:])
+    assert state["scheduler"]["codex"]["known"] is True and state["scheduler"]["known"] is True
     assert any(j["enabled"] and j["cron"] for j in state["jobs"]) and any(not j["enabled"] for j in state["jobs"])
     rl = state["usage"]["value"]
     assert rl["five_hour"]["used_percentage"] == 42 and rl["seven_day"]["used_percentage"] == 71

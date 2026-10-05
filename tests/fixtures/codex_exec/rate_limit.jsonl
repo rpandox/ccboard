@@ -1,0 +1,4 @@
+{"type": "thread.started", "thread_id": "019a4f3c-7b1e-7c2a-9d55-3f0e2b6a1c44"}
+{"type": "turn.started"}
+{"type": "error", "message": "You've hit your usage limit. Try again at 3:14 PM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Try again at 3:14 PM."}}

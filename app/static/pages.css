@@ -627,6 +627,37 @@ html.force-coarse .task .tk-result > summary { min-height:var(--tap); }
 @media (pointer:coarse) { #page .tk-step { min-height:var(--tap); } }
 html.force-coarse #page .tk-step { min-height:var(--tap); }
 
+/* v0.5.16: the schedule and batch forms' agent picker (Claude | Codex, with Codex's model and reasoning), and the Schedules tab's chains as connected cards */
+.job-form .lx-agentbox, .batch-form .lx-agentbox { display:flex; flex-direction:column; gap:12px; min-width:0; }
+.job-form .lx-hint, .batch-form .lx-hint { margin:4px 0 0; font-size:12px; }
+.job-form .lx-why:empty, .batch-form .lx-why:empty { display:none; }
+#page .pj-windows { flex:1 1 220px; min-width:0; }
+#page .pj-run-line { display:inline-flex; align-items:baseline; gap:4px; min-width:0; }
+#page .pj-chains { margin:14px 0 0; min-width:0; }
+#page .pj-sec { margin:0 0 6px; font-size:12px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+#page .pj-chain { margin:0 0 12px; padding:8px 10px 10px; border:1px solid var(--line); border-radius:2px; background:var(--panel); min-width:0; }
+#page .pj-chain-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 10px; margin:0 0 8px; }
+#page .pj-chain-title { margin:0; font-size:13px; font-weight:600; }
+#page .pj-steps { list-style:none; margin:0; padding:0 0 4px; display:flex; align-items:stretch; overflow-x:auto; scrollbar-width:thin; }
+#page .pj-step { position:relative; flex:1 0 200px; max-width:320px; display:flex; flex-direction:column; align-items:flex-start; gap:4px; margin:0 28px 0 0; padding:8px 10px; border:1px solid var(--line-strong); border-radius:2px; background:var(--bg); min-width:0; }
+#page .pj-step:last-child { margin-right:0; }
+#page .pj-step:not(:last-child)::after { content:'→'; position:absolute; right:-23px; top:50%; transform:translateY(-50%); color:var(--dim); font-size:14px; }   /* the connector: an arrow in the gap between two cards */
+#page .pj-step[data-phase=running] { border-color:var(--sig-bd); }
+#page .pj-step[data-phase=failed] { border-color:var(--bad); }
+#page .pj-step[data-phase=queued], #page .pj-step[data-phase=backlog] { border-style:dashed; }
+#page .pj-step-n { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border:1px solid var(--line-strong); border-radius:50%; font:600 11px/1 var(--font-mono); color:var(--fg-2); }
+#page .pj-step-head { display:flex; align-items:baseline; gap:6px; min-width:0; max-width:100%; }
+#page .pj-step-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+#page .pj-step-st { color:var(--dim); white-space:nowrap; }
+#page .pj-step-res { margin:0; font-size:12px; line-height:1.35; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; }
+#page .pj-step button { margin-top:2px; min-height:var(--row-btn); }
+@media (max-width:640px) {
+  #page .pj-steps { flex-direction:column; overflow-x:visible; }
+  #page .pj-step { flex:0 0 auto; max-width:none; margin:0 0 26px 0; }
+  #page .pj-step:last-child { margin-bottom:0; }
+  #page .pj-step:not(:last-child)::after { content:'↓'; right:auto; left:16px; top:auto; bottom:-23px; transform:none; }              /* stacked: the arrow points down */
+}
+
 /* the 'Then…' builder in the task form, and the dispatch-mode form behind Options… */
 .task-form .tf-then { margin:4px 0 8px; }
 .task-form .tf-steps { display:flex; flex-direction:column; gap:10px; margin:6px 0; }

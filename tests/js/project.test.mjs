@@ -974,3 +974,102 @@ test('visiting a project\'s quad moves the sidebar\'s Quad entry to it at once, 
 });
 
 void EPOCH; void TREE_FIXTURE; void focused; void pathOf;
+
+// ---------------------------------------------------------------- v0.5.16: schedules and chains per agent
+
+const CODEX_JOB = { id: 21, project: 'phasezero', repo: 'website', name: 'Nightly Codex review', prompt: 'review main', cron: '30 2 * * *', permission_mode: 'plan', max_turns: 30, max_budget_usd: null,
+  enabled: 1, next_run_at: new Date(Date.now() + 3600e3).toISOString(), last_run_at: ISO(60), last_status: 'ok', agent: 'codex', opts: { model: 'gpt-5.5', reasoning_effort: 'high' } };
+const CODEX_RUN = { id: 31, job_id: 21, started_at: ISO(60), finished_at: ISO(56), status: 'ok', result: 'Reviewed 6 commits.', error: null, session_id: '019a4f3c-7b1e-7c2a-9d55-3f0e2b6a1c44', cost_usd: null,
+  num_turns: 1, worktree: '/srv/projects/phasezero/website/.ccboard/worktrees/x', branch: 'worktree-nightly-codex-review-1', task_id: 77, agent: 'codex' };
+const STEP = (id, extra) => ({ id, slug: `step-${id}`, title: `Step ${id}`, project: 'phasezero', repo: 'website', tmux: '', branch: '', worktree: '', column: 'backlog', phase: 'queued', mode: 'worktree', agent: 'claude',
+  parent_id: null, chain_id: 'c-1', result: null, session: null, overlap: [], pr_url: null, pr_number: null, pr_state: null, auto_close: true, ...extra });
+
+test('a Codex schedule: the agent glyph on the job and on its run, the model and reasoning instead of turns, no cost, and Resume says the codex line', async () => {
+  const st = projectState();
+  st.agents = { claude: { installed: true, loggedIn: true }, codex: { installed: true, loggedIn: true } };
+  st.jobs = [...st.jobs, CODEX_JOB];
+  st.runs = [CODEX_RUN, ...st.runs];
+  st.scheduler = { known: true, pct: 42, backoff_until: null, codex: { known: true, pct: 61, backoff_until: null } };
+  const env = projectWorld({ state: st });
+  const page = await go(env, '#/p/phasezero?tab=schedules');
+  const row = all(page, '.pj-job').find((r) => r.getAttribute('data-job') === '21');
+  assert.equal(row.getAttribute('data-agent'), 'codex');
+  assert.equal(row.querySelector('.main .glyph.agent').textContent, '◇', 'the job carries its agent glyph');
+  const meta = textOf(row.querySelector('.meta'));
+  assert.match(meta, /cron 30 2 \* \* \*/);
+  assert.match(meta, /plan · gpt-5\.5 · high reasoning/, 'Codex shows its model and reasoning');
+  assert.doesNotMatch(meta, /turns|≤\$/, 'Codex has no turn or budget limit');
+  const run = row.querySelector('.last[data-run="31"]');
+  assert.equal(run.querySelector('.glyph.agent').textContent, '◇', 'and so does the run');
+  assert.doesNotMatch(textOf(run.querySelector('.pj-run-line')), /\$|turns/, 'no cost and no turn count for a Codex run');
+  assert.match(textOf(run), /Reviewed 6 commits\./);
+  const resume = all(run, 'button').find((b) => /Resume in terminal/.test(b.textContent));
+  assert.equal(resume.getAttribute('title'), 'codex resume 019a4f3c-7b1e-7c2a-9d55-3f0e2b6a1c44');
+  const claudeRow = all(page, '.pj-job').find((r) => r.getAttribute('data-job') === '3');
+  assert.equal(claudeRow.querySelector('.main .glyph.agent').textContent, '◆');
+  assert.match(textOf(claudeRow.querySelector('.meta')), /≤\d+ turns|≤undefined/, 'a Claude job keeps its turn limit');
+  assert.match(textOf(page.querySelector('.pj-windows')), /Claude 5-hour window at 42%/);
+  assert.match(textOf(page.querySelector('.pj-windows')), /Codex usage window at 61%/);
+});
+
+test('the schedules tab says only the windows of the agents it shows, and a back-off in plain words', async () => {
+  const st = projectState();
+  st.scheduler = { known: true, pct: 91, backoff_until: null, codex: { known: false, pct: null, backoff_until: '2026-10-06T09:30:00+00:00' } };
+  st.jobs = [...st.jobs.filter((j) => j.project !== 'phasezero'), CODEX_JOB];
+  const env = projectWorld({ state: st });
+  const page = await go(env, '#/p/phasezero?tab=schedules');
+  const note = textOf(page.querySelector('.pj-windows'));
+  assert.match(note, /Codex is backing off until 2026-10-06 09:30 after a rate-limited run/);
+  assert.doesNotMatch(note, /Claude/, 'no Claude schedule in this project: no Claude window');
+});
+
+test('the schedules tab draws each chain as connected cards: agent glyph, step state, the head of the result, what a waiting step waits for', async () => {
+  const st = projectState();
+  st.tasks = [...st.tasks,
+    STEP(101, { title: 'Write it', phase: 'done', column: 'done', agent: 'claude', result: 'Wrote   the thing\nin thing.py.', tmux: 'phasezero--website--t-write-it' }),
+    STEP(102, { title: 'Review it', phase: 'running', column: 'in_progress', agent: 'codex', parent_id: 101, tmux: 'phasezero--website--t-review-it', session: { state: 'working' } }),
+    STEP(103, { title: 'Ship it', phase: 'queued', agent: 'claude', parent_id: 102 }),
+    STEP(201, { title: 'Other project', project: 'petroit', repo: 'api', chain_id: 'c-2' }), STEP(202, { title: 'Other two', project: 'petroit', repo: 'api', chain_id: 'c-2', parent_id: 201 }),
+    STEP(301, { title: 'Alone', chain_id: 'c-3' })];
+  const env = projectWorld({ state: st });
+  const page = await go(env, '#/p/phasezero?tab=schedules');
+  const chains = all(page, '.pj-chain');
+  assert.equal(chains.length, 1, 'one chain of this project; another project\'s and a chain of one step are not drawn');
+  assert.equal(chains[0].getAttribute('data-chain'), 'c-1');
+  assert.match(textOf(chains[0].querySelector('.pj-chain-head')), /Chain of 3/);
+  assert.match(textOf(chains[0].querySelector('.pj-chain-head')), /◆ → ◇ → ◆/, 'the agents along the chain');
+  assert.match(textOf(chains[0].querySelector('.pj-chain-head')), /1 of 3 done/);
+  const steps = all(chains[0], '.pj-step');
+  assert.deepEqual(steps.map((s) => s.getAttribute('data-step')), ['101', '102', '103'], 'in step order');
+  assert.deepEqual(steps.map((s) => s.getAttribute('data-phase')), ['done', 'running', 'queued']);
+  assert.deepEqual(steps.map((s) => s.querySelector('.pj-step-head .glyph.agent').textContent), ['◆', '◇', '◆'], 'the agent glyph on every card');
+  assert.deepEqual(steps.map((s) => s.querySelector('.pj-step-n').textContent), ['1', '2', '3']);
+  assert.match(textOf(steps[0].querySelector('.pj-step-st')).trim(), /done$/);
+  assert.equal(textOf(steps[0].querySelector('.pj-step-res')), 'Wrote the thing in thing.py.', 'the head of the result, whitespace folded');
+  assert.match(textOf(steps[2].querySelector('.pj-step-res')), /starts when step 2 is done/);
+  assert.ok(all(steps[1], 'button').some((b) => b.textContent === 'Open'), 'a step with a session can be opened');
+  assert.equal(all(steps[2], 'button').length, 0, 'a step that has not started has nothing to open');
+  assert.equal(page.querySelector('.pj-chains').classList.contains('hidden'), false);
+});
+
+test('a chain step the limit window holds says so, and a project with only chains is not "no schedules"', async () => {
+  const st = projectState();
+  st.jobs = st.jobs.filter((j) => j.project !== 'phasezero');
+  st.tasks = [...st.tasks,
+    STEP(111, { title: 'First', phase: 'done', column: 'done', result: 'ok' }),
+    STEP(112, { title: 'Second', phase: 'queued', agent: 'codex', parent_id: 111, limit_hold: { kind: 'codex', resets_at: Math.floor(Date.now() / 1000) + 1800, pct: 90 } })];
+  const env = projectWorld({ state: st });
+  const page = await go(env, '#/p/phasezero?tab=schedules');
+  assert.equal(all(page, '.pj-chain').length, 1);
+  assert.match(textOf(all(page, '.pj-step')[1].querySelector('.pj-step-res')), /waiting for the limit window/);
+  const empties = all(page, '*').filter((n) => n.childElementCount === 0 && /No schedules in this project/.test(n.textContent));
+  assert.ok(empties.length && empties.every((n) => !shownNode(n)), 'the chain is something to show: the empty state is hidden');
+  assert.equal(all(page, '.pj-job').length, 0);
+});
+
+test('the schedules tab has no chain section while no chain exists', async () => {
+  const env = projectWorld();
+  const page = await go(env, '#/p/phasezero?tab=schedules');
+  assert.equal(all(page, '.pj-chain').length, 0);
+  assert.equal(page.querySelector('.pj-chains').classList.contains('hidden'), true);
+});

@@ -791,6 +791,31 @@ test('on Home the schedules strip opens the schedules list in the sheet, and the
   assert.match(text(sheetEl.querySelector('#jobs')), /Confirm Delete/, 'the schedules list repainted with the two-tap state');
 });
 
+test('the schedules list in the Home sheet: an agent glyph on every job and run, Codex shows its model not turns, each agent\'s window is named', () => {
+  const at = (h) => new Date(Date.now() + h * 3600e3).toISOString();
+  const jobs = [{ id: 3, project: 'shop', repo: 'api', name: 'Nightly audit', cron: '0 2 * * *', permission_mode: 'acceptEdits', max_turns: 20, max_budget_usd: 2, enabled: 1, next_run_at: at(5), last_status: 'ok', agent: 'claude' },
+    { id: 4, project: 'shop', repo: 'api', name: 'Nightly review', cron: '30 2 * * *', permission_mode: 'plan', max_turns: 30, max_budget_usd: null, enabled: 1, next_run_at: at(6), last_status: 'ok', agent: 'codex', opts: { model: 'gpt-5.5', reasoning_effort: 'high' } }];
+  const runs = [{ id: 9, job_id: 4, started_at: new Date().toISOString(), status: 'ok', result: 'Reviewed.', error: null, session_id: 'x', cost_usd: null, num_turns: 1, task_id: null, agent: 'codex' },
+    { id: 8, job_id: 3, started_at: new Date().toISOString(), status: 'ok', result: 'Audited.', error: null, session_id: 'y', cost_usd: 0.4, num_turns: 7, task_id: null, agent: 'claude' }];
+  const { w } = pagesWorld({ state: fakeState({ jobs, runs, scheduler: { known: true, pct: 30, backoff_until: null, codex: { known: true, pct: 55, backoff_until: null } },
+    agents: { claude: { installed: true, loggedIn: true }, codex: { installed: true, loggedIn: false } } }) });
+  w.location.hash = '#/';
+  page(w).querySelector('.sched-all').click();
+  const sec = w.document.querySelector('#sheet').querySelector('#jobs');
+  const rows = sec.querySelectorAll('.sess');
+  assert.deepEqual(rows.map((r) => r.querySelector('.main .glyph.agent').textContent), ['◆', '◇']);
+  assert.match(text(rows[0].querySelector('.meta')), /≤20 turns · ≤\$2/, 'Claude keeps its limits');
+  assert.match(text(rows[1].querySelector('.meta')), /plan · gpt-5\.5 · high reasoning/);
+  assert.doesNotMatch(text(rows[1].querySelector('.meta')), /turns/);
+  const runLine = (r) => text(r.querySelector('.last .dim'));
+  assert.match(runLine(rows[0]), /^◆ run #8 .* · ok · \$0\.40 · 7 turns/);
+  assert.match(runLine(rows[1]), /^◇ run #9 .* · ok$/, 'a Codex run has no cost or turn count');
+  const head = text(sec.querySelector('.head'));
+  assert.match(head, /Claude 5-hour window at 30%/);
+  assert.match(head, /Codex usage window at 55%/);
+  assert.match(head, /Codex is not logged in on this box: its runs are deferred/);
+});
+
 test('renderProjects off the board repaints the page instead of crashing', () => {
   const { w } = pagesWorld();
   w.location.hash = '#/agents';

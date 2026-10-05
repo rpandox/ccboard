@@ -13,7 +13,7 @@ A task is backlog -> queued -> running -> done | failed | cancelled. This module
     a tool batch, a compaction or an interrupt cancels the countdown. Pending closes live in memory and are dropped on restart;
   - chains: a queued step waits for `parent_id` (the plan's after_id); once the parent is done its result goes into the step's prompt
     (`{{result}}`, else appended) and the step starts in a lane of its own; a failed or cancelled parent cancels its children ("blocked:
-    step failed"). Steps are held while the Claude 5 h or 7 d window is at 85 % or a limit episode is active (limit_gate), never a
+    step failed"). Steps are held while their own agent's window is at 85 % (Claude: the 5 h or 7 d window or a limit episode; Codex: its usage window) (limit_gate), never a
     hand dispatch;
   - the sweep: a running task whose session row has ended without a result is cancelled.
 
@@ -137,24 +137,30 @@ def _active_episodes(db, now: float) -> list[dict]:
     return out
 
 
-def limit_gate(db, now: float | None = None) -> dict | None:
-    """Why auto-dispatch (queued chain steps) must wait, or None when it may go: the Claude 5 h or 7 d window at 85 % or more (the
+def limit_gate(db, now: float | None = None, agent: str = "claude") -> dict | None:
+    """Why auto-dispatch (queued chain steps) must wait, or None when it may go. Claude: the 5 h or 7 d window at 85 % or more (the
     current account's reading; a window whose reset time has passed is open again), an active limit episode, or the scheduler's
-    back-off after a rate-limited run. {kind: '5h' | '7d' | 'limit' | 'backoff', resets_at: epoch | None, pct: float | None}: when
-    several apply, the one that clears last. A hand dispatch is never held by it, only warned."""
+    back-off after a rate-limited run. Codex (v0.5.16): its own usage window at 85 % or more (kv rate_limits_codex) or its own back-off;
+    a Claude limit never holds a Codex step and the other way round. {kind: '5h' | '7d' | 'limit' | 'backoff' | 'codex', resets_at: epoch
+    | None, pct: float | None}: when several apply, the one that clears last. A hand dispatch is never held by it, only warned."""
     now = time.time() if now is None else now
     holds: list[dict] = []
-    rl = ((db.kv_get("rate_limits") or {}).get("value")) or {}
-    for key, kind in (("five_hour", "5h"), ("seven_day", "7d")):
-        w = rl.get(key) if isinstance(rl, dict) else None
-        if not isinstance(w, dict):
-            continue
-        pct, resets = _num(w.get("used_percentage")), _num(w.get("resets_at"))
-        if pct is not None and pct >= LIMIT_PCT and not (resets and resets <= now):
-            holds.append({"kind": kind, "resets_at": resets, "pct": pct})
-    for ep in _active_episodes(db, now):
-        holds.append({"kind": "limit", "resets_at": ep["resets_at"], "pct": None})
-    until = scheduler.quota_state(db).get("backoff_until")
+    if agent == "codex":
+        pct, resets = scheduler._codex_window(db, now)
+        if pct is not None and pct >= LIMIT_PCT:
+            holds.append({"kind": "codex", "resets_at": _num(resets), "pct": pct})
+    else:
+        rl = ((db.kv_get("rate_limits") or {}).get("value")) or {}
+        for key, kind in (("five_hour", "5h"), ("seven_day", "7d")):
+            w = rl.get(key) if isinstance(rl, dict) else None
+            if not isinstance(w, dict):
+                continue
+            pct, resets = _num(w.get("used_percentage")), _num(w.get("resets_at"))
+            if pct is not None and pct >= LIMIT_PCT and not (resets and resets <= now):
+                holds.append({"kind": kind, "resets_at": resets, "pct": pct})
+        for ep in _active_episodes(db, now):
+            holds.append({"kind": "limit", "resets_at": ep["resets_at"], "pct": None})
+    until = scheduler.quota_state(db, agent if agent == "codex" else "claude").get("backoff_until")
     if until and _epoch(until) > now:
         holds.append({"kind": "backoff", "resets_at": _epoch(until), "pct": None})
     if not holds:
@@ -535,13 +541,14 @@ class Runtime:
 
     # ---- chains
     def _gate_once(self, now: float):
-        """A callable that looks the limit gate up on first use and remembers the answer for the rest of one pass (False = open)."""
-        box: list = []
+        """A callable that looks the limit gate up per agent on first use and remembers the answer for the rest of one pass (False = open)."""
+        box: dict = {}
 
-        def gate():
-            if not box:
-                box.append(limit_gate(self.db, now) or False)
-            return box[0]
+        def gate(agent: str = "claude"):
+            agent = "codex" if agent == "codex" else "claude"
+            if agent not in box:
+                box[agent] = limit_gate(self.db, now, agent) or False
+            return box[agent]
         return gate
 
     def advance(self, parent_id: int) -> list[int]:
@@ -575,7 +582,7 @@ class Runtime:
             self._block(child)
             out["blocked"].append(child["id"])
             return True
-        if phase != "done" or self._retry.get(child["id"], 0) > now or gate():
+        if phase != "done" or self._retry.get(child["id"], 0) > now or gate(child.get("agent") or "claude"):
             return False
         with self._lock:
             if child["id"] in self._starting:

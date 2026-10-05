@@ -301,39 +301,87 @@ function pjTasksView(P, route) {
   };
 }
 
+/* The cron presets of the schedule form, as plain words under the list when it is empty. */
+const PJ_PRESET_WORDS = 'Presets: nightly 02:30, weekdays 09:00, hourly, one-off.';
+
 function pjJobRow(j, runs) {
   const jr = runs.filter((r) => r.job_id === j.id).slice(0, 3);
-  const row = el('div', { class: 'sess pj-job' + (j.enabled ? '' : ' muted'), 'data-job': j.id },
+  const agent = j.agent || 'claude';
+  const row = el('div', { class: 'sess pj-job' + (j.enabled ? '' : ' muted'), 'data-job': j.id, 'data-agent': agent },
     el('div', { class: 'main' },
-      agentGlyph(j.agent || 'claude'),
+      agentGlyph(agent),
       el('span', { class: 'name', text: j.name }),
       el('span', { class: j.enabled && j.next_run_at ? 'state' : 'state ended', text: j.enabled && j.next_run_at ? 'next ' + fmtTs(j.next_run_at) : 'disabled' }),
-      el('span', { class: 'meta', text: `${j.project}/${j.repo} · ${j.cron ? 'cron ' + j.cron : 'one-off'} · ${j.permission_mode} · ≤${j.max_turns} turns${j.max_budget_usd ? ' · ≤$' + j.max_budget_usd : ''}${j.last_status ? ' · last: ' + j.last_status + (j.last_run_at ? ' ' + fmtTs(j.last_run_at) : '') : ''}` })),
+      el('span', { class: 'meta', text: `${j.project}/${j.repo} · ${j.cron ? 'cron ' + j.cron : 'one-off'} · ${j.permission_mode}${jobLimitText(j)}${j.last_status ? ' · last: ' + j.last_status + (j.last_run_at ? ' ' + fmtTs(j.last_run_at) : '') : ''}` })),
     el('div', { class: 'actions' },
       el('button', { type: 'button', onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/run`); } catch (e) { setError(e.message); } await poll(true); } }, ic('play'), 'Run now'),
       el('button', { class: 'minimal', type: 'button', onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/toggle`); } catch (e) { setError(e.message); } await poll(true); }, text: j.enabled ? 'Disable' : 'Enable' }),
       confirmButton('job:' + j.id, 'Delete', () => api('DELETE', `/api/jobs/${j.id}`), true)));       // quiet: red-outlined until the second tap, then filled
   for (const r of jr) {
-    row.append(el('div', { class: 'last' },
-      el('span', { class: 'dim', text: `run #${r.id} ${fmtTs(r.started_at)} · ${r.status}${typeof r.cost_usd === 'number' ? ' · $' + r.cost_usd.toFixed(2) : ''}${r.num_turns ? ' · ' + r.num_turns + ' turns' : ''}${r.error ? ' · ' + r.error : ''}` }),
+    const ra = r.agent || agent;
+    row.append(el('div', { class: 'last', 'data-run': r.id, 'data-agent': ra },
+      el('span', { class: 'dim pj-run-line' }, agentGlyph(ra), ' ', runLineText(r, agent)),
       r.result ? el('span', { text: String(r.result).slice(0, 300) }) : null,
       r.task_id ? el('span', { class: 'row' },
-        el('button', { type: 'button', onclick: async () => { try { const x = await api('POST', `/api/runs/${r.id}/resume`); openPage(x.attach_url); } catch (e) { setError(e.message); } await poll(true); }, text: 'Resume in terminal' }),
+        el('button', { type: 'button', title: ra === 'codex' && r.session_id ? `codex resume ${r.session_id}` : null, onclick: async () => { try { const x = await api('POST', `/api/runs/${r.id}/resume`); openPage(x.attach_url); } catch (e) { setError(e.message); } await poll(true); }, text: 'Resume in terminal' }),
         el('span', { class: 'dim', text: `task card: ${r.branch}` })) : null));
   }
   return row;
 }
 
+/* The chains of the scope as connected cards, one row per chain: a card per step with its agent glyph, its state (taskStepStatus) and the head of its result, joined by arrows.
+   A step that is waiting says what for. Built from the board's task rows (chain_id / parent_id link the steps; taskChainInfo orders them). */
+function pjChainCards(tasks) {
+  const info = taskChainInfo(tasks);
+  const groups = new Map();
+  for (const t of tasks) {
+    const i = info.get(t.id);
+    if (!i) continue;
+    if (!groups.has(i.chain)) groups.set(i.chain, []);
+    groups.get(i.chain).push({ t, i });
+  }
+  const out = [];
+  for (const [key, steps] of groups) {
+    if (steps.length < 2) continue;
+    steps.sort((a, b) => a.i.step - b.i.step || Number(a.t.id) - Number(b.t.id));
+    const done = steps.filter(({ t }) => taskPhase(t) === 'done').length;
+    const list = el('ol', { class: 'pj-steps' });
+    steps.forEach(({ t, i }) => {
+      const st = taskStepStatus(t);
+      const hold = taskLimitHold(t);
+      const ph = taskPhase(t);
+      const head = String(t.result || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+      const parent = steps.find((x) => String(x.t.id) === String(t.parent_id));
+      const note = head || (ph === 'queued' ? (hold ? hold.text : `starts when step ${parent ? parent.i.step : Math.max(1, i.step - 1)} is done`) : ph === 'backlog' ? 'ready: dispatch it from the Tasks tab' : ph === 'cancelled' ? 'cancelled' : '');
+      const live = t.tmux && (ph === 'running' || ph === 'done') ? t.tmux : '';
+      list.append(el('li', { class: 'pj-step', 'data-step': t.id, 'data-phase': ph, 'data-agent': t.agent || 'claude' },
+        el('span', { class: 'pj-step-n', text: String(i.step) }),
+        el('span', { class: 'pj-step-head' }, agentGlyph(t.agent || 'claude'), el('span', { class: 'pj-step-title', text: t.title })),
+        el('span', { class: 'pj-step-st' }, stateGlyph(st.glyph), ' ', st.label),
+        note ? el('span', { class: 'pj-step-res dim', text: note }) : null,
+        live ? el('button', { class: 'small minimal', type: 'button', title: `open ${t.title}`, onclick: () => { if (typeof taskOpenPeek === 'function') taskOpenPeek(live); }, text: 'Open' }) : null));
+    });
+    const flow = steps.map(({ t }) => AGENT_GLYPH[t.agent || 'claude'] || AGENT_GLYPH.shell).join(' → ');
+    out.push(el('section', { class: 'pj-chain', 'data-chain': key, role: 'group', 'aria-label': `A chain of ${steps.length} steps` },
+      el('div', { class: 'pj-chain-head' }, el('h3', { class: 'pj-chain-title', text: `Chain of ${steps.length}` }), el('span', { class: 'dim mono', text: flow }),
+        el('span', { class: 'dim', text: `${done} of ${steps.length} done` })),
+      list));
+  }
+  return out;
+}
+
 function pjSchedulesView(P, route) {
   const scopeNote = pjScopeNote(P, route);
   const list = el('div', { class: 'pj-jobs' });
+  const chainsHost = el('div', { class: 'pj-chains hidden' });
   // no button in the empty state: the toolbar's + schedule is the tab's primary and stays on screen
-  const none = pageEmpty('time', 'No schedules in this project', 'A schedule runs a headless prompt on a cron, or once now, in a fresh worktree. Presets: nightly 02:30, weekdays 09:00, hourly.');
+  const none = pageEmpty('time', 'No schedules in this project', `A schedule runs a headless prompt on a cron, or once now, in a fresh worktree, with Claude or Codex. ${PJ_PRESET_WORDS}`);
+  const note = el('span', { class: 'dim pj-windows' });
   const bar = pjToolbar(el('button', { class: 'small primary', type: 'button', text: '+ schedule', onclick: () => pjCreate('schedule') }),
     el('button', { class: 'small', type: 'button', onclick: () => { if (typeof Shell !== 'undefined' && Shell && typeof Shell.openCreate === 'function') Shell.openCreate('batch'); } }, ic('layers'), 'Batch prompt'),
-    el('span', { class: 'dim', text: 'headless claude -p runs · at most 2 at once · paused above 85% of the 5-hour window' }));
+    note);
   let sig = null;
-  const node = el('div', { class: 'pj-schedules' }, bar, scopeNote, list, none);
+  const node = el('div', { class: 'pj-schedules' }, bar, scopeNote, list, none, chainsHost);
   return {
     node,
     update(st, rt) {
@@ -342,13 +390,20 @@ function pjSchedulesView(P, route) {
       const jobs = (st.jobs || []).filter((j) => j.project === cur.project && (!cur.repo || j.repo === cur.repo));
       const ids = new Set(jobs.map((j) => j.id));
       const runs = (st.runs || []).filter((r) => ids.has(r.job_id));
-      none.classList.toggle('hidden', !!jobs.length);
+      const chained = boardTasks(st).filter((t) => t.project === cur.project && (!cur.repo || t.repo === cur.repo) && t.chain_id);
+      const notes = schedWindowNotes(st, jobs);
+      none.classList.toggle('hidden', !!jobs.length || !!chained.length);
       list.classList.toggle('hidden', !jobs.length);
-      const next = pjSig([jobs, runs, ui.confirm]);
+      const next = pjSig([jobs, runs, ui.confirm, chained, notes]);
       if (sig === next) return;
       sig = next;
+      note.textContent = `headless runs · at most 2 at once · each agent pauses above 85% of its window · ${notes.map((x) => x.text).join(' · ')}`;
       list.textContent = '';
       for (const j of jobs) list.append(pjJobRow(j, runs));
+      const cards = pjChainCards(chained);
+      chainsHost.textContent = '';
+      if (cards.length) chainsHost.append(el('h3', { class: 'pj-sec', text: 'Chains' }), ...cards);
+      chainsHost.classList.toggle('hidden', !cards.length);
     },
     onRoute(rt) { this.update(pjState(), rt); },
     destroy() { /* nothing is subscribed */ },

@@ -468,8 +468,10 @@ def build_state(user: str) -> dict:
     st["login"] = _login_payload()
     st["pending_permissions"] = db.perm_pending()
     st["tasks"] = _tasks_view()
-    st["jobs"] = db.jobs()
-    st["runs"] = [{k: (v[:400] if k == "result" and isinstance(v, str) else v) for k, v in r.items()} for r in db.runs(30)]
+    st["jobs"] = _jobs_view()
+    by_job = {j["id"]: j["agent"] for j in st["jobs"]}
+    st["runs"] = [{**{k: (v[:400] if k == "result" and isinstance(v, str) else v) for k, v in r.items()}, "agent": by_job.get(r["job_id"], "claude")}
+                  for r in db.runs(30)]
     st["clone_queue"] = clonequeue.status()
     st["last_recovery"] = db.kv_get("last_recovery")
     st["deploy"] = deploy.view(db)                        # an update waiting for the terminals to close (None when nothing is pending)
@@ -486,10 +488,19 @@ def build_state(user: str) -> dict:
     st["backup"] = health.backup_status()
     st["node_name"] = settings.node_name or st["health"]["host"]
     st["rate_limited"] = _rate_limited_view()
-    st["scheduler"] = scheduler.quota_state(db)
+    st["scheduler"] = {**scheduler.quota_state(db), "codex": scheduler.quota_state(db, "codex")}      # Codex's own window and back-off ride along: a Codex job never waits on Claude's
     st["version"] = ASSET_VERSION
     st["setup"] = _setup_state(st)
     return st
+
+
+def _jobs_view() -> list[dict]:
+    """db.jobs() for the board: `agent` always set and `opts` (stored as JSON text) as an object, so the page reads a Codex job's model and
+    reasoning without parsing."""
+    out = []
+    for j in db.jobs():
+        out.append({**j, "agent": j.get("agent") or "claude", "opts": scheduler.job_opts(j) or None})
+    return out
 
 
 def _login_payload() -> dict:
@@ -1160,7 +1171,7 @@ def _tasks_view(rows: list[dict] | None = None) -> list[dict]:
     gone = db.sessions_ended([t["session_row"] for t in rows if t.get("session_row") is not None and t["session_row"] not in by_row])
     chains = taskflow.chain_positions(db, rows) if any(t.get("chain_id") for t in rows) else {}
     queued = any((t.get("phase") or "running") == "queued" for t in rows)
-    gate = taskflow.limit_gate(db) if queued else None
+    gates = {a: taskflow.limit_gate(db, agent=a) for a in ("claude", "codex")} if queued else {}      # each agent waits on its own window
     by_id = {t["id"]: t for t in rows}
     out = []
     for t in rows:
@@ -1183,6 +1194,7 @@ def _tasks_view(rows: list[dict] | None = None) -> list[dict]:
         ac = flags.get("autoclose") if isinstance(flags.get("autoclose"), dict) and flags["autoclose"].get("task") == t["id"] else None
         end = gone.get(t.get("session_row")) or {}
         held = None                                  # a chain step whose parent is done but the limit window holds auto-dispatch
+        gate = gates.get("codex" if t.get("agent") == "codex" else "claude")
         if gate and (t.get("phase") or "running") == "queued" and t.get("parent_id") is not None:
             parent = by_id.get(t["parent_id"]) or db.task_get(t["parent_id"])
             held = gate if (parent or {}).get("phase") == "done" else None
@@ -1484,7 +1496,7 @@ def api_tasks_create(body: TaskCreateIn):
     if when == "now":
         out = _task_launch(project, repo, body)
         t = db.task_get(out["id"]) or {}
-        gate = taskflow.limit_gate(db)
+        gate = taskflow.limit_gate(db, agent=agent)
         return {**out, "phase": "running", "session_row": t.get("session_row"), "task": _task_row(out["id"]),
                 **({"limit_warning": gate} if gate else {})}
     with _task_lock:
@@ -1703,7 +1715,7 @@ def api_task_dispatch(tid: int, body: DispatchIn | None = None):
         elif phase != "backlog":
             raise projects.Conflict("already dispatched")
         res = _dispatch_session(t, body, prompt) if body.session else _dispatch_lane(t, body, prompt)
-        gate = taskflow.limit_gate(db) if isinstance(res, dict) else None
+        gate = taskflow.limit_gate(db, agent=_task_agent(body.agent or t.get("agent"))) if isinstance(res, dict) else None
         if gate:                                             # a hand dispatch is never held by the window, only warned
             res["limit_warning"] = gate
         return res
@@ -1820,7 +1832,7 @@ def api_task_reopen(tid: int, body: ReopenIn | None = None):
         db.task_update(tid, result=None, result_at=None, done_at=None,
                        auto_close=int(_effective_auto_close(t, body.auto_close, lane=True)))
     _invalidate_scan()
-    gate = taskflow.limit_gate(db)
+    gate = taskflow.limit_gate(db, agent=_task_agent(t.get("agent")))
     return {"id": tid, "phase": "running", "tmux": real, "session_row": row_id, "attach_url": f"/term/{real}", "slug": slug,
             "branch": branch, "reopened": "worktree" if in_worktree else "fresh", "task": _task_row(tid),
             **({"limit_warning": gate} if gate else {})}
@@ -1943,7 +1955,7 @@ def api_create_chain(project: str, repo: str, body: ChainIn):
                                    auto_close=1 if auto else None, spec=spec, parent_id=ids[-1] if ids else None, chain_id=chain_id))
         started = _dispatch_lane(db.task_get(ids[0]), DispatchIn(mode="lane", auto_close=auto)) if body.dispatch else None
     _invalidate_scan()
-    gate = taskflow.limit_gate(db) if started else None
+    gate = taskflow.limit_gate(db, agent=checked[0][3]) if started else None
     return {"chain_id": chain_id, "ids": ids, "tasks": _tasks_view([t for t in (db.task_get(i) for i in ids) if t]), "started": started,
             **({"limit_warning": gate} if gate else {})}
 
@@ -2200,28 +2212,54 @@ class JobIn(BaseModel):
     prompt: str
     cron: str | None = None
     permission_mode: str = "acceptEdits"
-    max_turns: int = 30
-    max_budget_usd: float | None = None
+    max_turns: int | None = None             # Claude: 1..500 (30 when unset); Codex has no such limit and refuses the field
+    max_budget_usd: float | None = None      # Claude only, like max_turns
     args: str | None = None
     timeout_s: int | None = None
     run_now: bool = False
+    agent: str = "claude"                    # claude | codex: which CLI the headless run uses (v0.5.16)
+    model: str | None = None                 # Codex: -m (Claude's model travels in args, as it always did)
+    reasoning_effort: str | None = None      # Codex: -c model_reasoning_effort=
+    opts: dict | None = None                 # the agent's own options by name (Codex: model, reasoning_effort); wins over the flat fields
 
 
-def _validate_job(body: JobIn) -> None:
+def _job_agent(agent: str | None) -> str:
+    name = (agent or "claude").strip().lower() if isinstance(agent, str) else "claude"
+    if name not in agents.names():
+        raise projects.BadRequest(f"agent must be one of {', '.join(agents.names())}")
+    return name
+
+
+def _job_installed(agent: str) -> None:
+    if not (settings.claude_bin() if agent == "claude" else agents.get(agent).bin()):
+        raise projects.BadRequest(f"{agent} is not installed on this box")
+
+
+def _validate_job(body) -> dict:
+    """Everything a schedule or a batch must satisfy before it is stored (400 otherwise). Returns the agent's own options to store with the
+    job ({} for Claude; Codex: model and reasoning_effort, validated by the adapter, whose wording refuses max_turns / max_budget_usd)."""
+    agent = _job_agent(body.agent)
     if not body.name.strip() or not body.prompt.strip():
         raise projects.BadRequest("name and prompt are required")
     if body.cron and not scheduler.valid_cron(body.cron.strip()):
         raise projects.BadRequest("cron must be a 5-field expression like '30 2 * * *'")
     if body.permission_mode not in scheduler.MODES:
         raise projects.BadRequest(f"permission_mode must be one of {', '.join(scheduler.MODES)} (bypass only inside a devcontainer)")
-    if not (1 <= body.max_turns <= 500):
+    if agent == "claude" and body.max_turns is not None and not (1 <= body.max_turns <= 500):
         raise projects.BadRequest("max_turns must be 1..500")
     if body.max_budget_usd is not None and not (0 < body.max_budget_usd <= 1000):
         raise projects.BadRequest("max_budget_usd must be 0..1000")
     try:
-        scheduler.check_extra_args(body.args)
+        scheduler.check_extra_args(body.args, agent)
     except ValueError as e:
         raise projects.BadRequest(str(e))
+    if agent == "claude":
+        return {}
+    flat = {k: v for k, v in (("model", body.model), ("reasoning_effort", body.reasoning_effort),
+                              ("max_turns", body.max_turns), ("max_budget_usd", body.max_budget_usd)) if v not in (None, "")}
+    own = body.opts if isinstance(body.opts, dict) else {}
+    clean = agents.get(agent).validate_opts({**flat, **own}, interactive=False, tasks_or_headless=True)
+    return {k: clean[k] for k in ("model", "reasoning_effort") if k in clean}
 
 
 @app.post("/api/projects/{project}/repos/{repo}/jobs", status_code=201)
@@ -2229,16 +2267,17 @@ def api_create_job(project: str, repo: str, body: JobIn):
     rpath = projects.repo_path(project, repo)
     if not projects.is_repo(rpath):
         raise projects.NotFound("not a git repo")
-    _validate_job(body)
-    if not settings.claude_bin():
-        raise projects.BadRequest("claude is not installed on this box")
+    opts = _validate_job(body)
+    agent = _job_agent(body.agent)
+    _job_installed(agent)
     cron = body.cron.strip() if body.cron else None
     next_at = db_now() if (body.run_now or not cron) else scheduler.next_fire(cron)
     jid = db.job_add(project=project, repo=repo, name=" ".join(body.name.split())[:80], prompt=body.prompt.strip(), cron=cron,
                      permission_mode=body.permission_mode, max_turns=body.max_turns, max_budget_usd=body.max_budget_usd,
-                     args=body.args, timeout_s=body.timeout_s, enabled=1, batch_id=None, next_run_at=next_at)
+                     args=body.args, timeout_s=body.timeout_s, enabled=1, batch_id=None, next_run_at=next_at, agent=agent,
+                     opts=opts or None)
     _invalidate_scan()
-    return {"id": jid, "next_run_at": next_at}
+    return {"id": jid, "next_run_at": next_at, "agent": agent}
 
 
 class BatchIn(BaseModel):
@@ -2246,22 +2285,27 @@ class BatchIn(BaseModel):
     repos: list[str]                 # "project/repo" ids
     name: str | None = None
     permission_mode: str = "acceptEdits"
-    max_turns: int = 30
+    max_turns: int | None = None
     max_budget_usd: float | None = None
     args: str | None = None
+    agent: str = "claude"            # every job of the batch runs with this agent
+    model: str | None = None
+    reasoning_effort: str | None = None
+    opts: dict | None = None
 
 
 @app.post("/api/batch", status_code=201)
 def api_batch(body: BatchIn):
-    """One prompt across N repos: one-off jobs sharing a batch id, drained by the scheduler (cap + quota aware)."""
+    """One prompt across N repos: one-off jobs sharing a batch id, drained by the scheduler (cap + quota aware), for Claude or Codex."""
     if not body.repos:
         raise projects.BadRequest("choose at least one repo")
     if len(body.repos) > 100:
         raise projects.BadRequest("at most 100 repos per batch")
-    _validate_job(JobIn(name=body.name or "batch", prompt=body.prompt, permission_mode=body.permission_mode,
-                        max_turns=body.max_turns, max_budget_usd=body.max_budget_usd, args=body.args))
-    if not settings.claude_bin():
-        raise projects.BadRequest("claude is not installed on this box")
+    agent = _job_agent(body.agent)
+    opts = _validate_job(JobIn(name=body.name or "batch", prompt=body.prompt, permission_mode=body.permission_mode,
+                               max_turns=body.max_turns, max_budget_usd=body.max_budget_usd, args=body.args, agent=agent,
+                               model=body.model, reasoning_effort=body.reasoning_effort, opts=body.opts))
+    _job_installed(agent)
     targets = []
     for ident in body.repos:
         if not isinstance(ident, str) or ident.count("/") != 1:
@@ -2277,10 +2321,11 @@ def api_batch(body: BatchIn):
     for p, r in targets:
         ids.append(db.job_add(project=p, repo=r, name=f"{name} [{batch_id}]", prompt=body.prompt.strip(), cron=None,
                               permission_mode=body.permission_mode, max_turns=body.max_turns, max_budget_usd=body.max_budget_usd,
-                              args=body.args, timeout_s=None, enabled=1, batch_id=batch_id, next_run_at=db_now()))
+                              args=body.args, timeout_s=None, enabled=1, batch_id=batch_id, next_run_at=db_now(), agent=agent,
+                              opts=opts or None))
     started = sched.tick() if sched else []
     _invalidate_scan()
-    return {"batch_id": batch_id, "jobs": ids, "started": started}
+    return {"batch_id": batch_id, "jobs": ids, "started": started, "agent": agent}
 
 
 @app.post("/api/jobs/{jid}/run")
@@ -2317,29 +2362,40 @@ def api_job_delete(jid: int):
     return {"deleted": jid}
 
 
+def _job_agents() -> dict[int, str]:
+    return {j["id"]: j.get("agent") or "claude" for j in db.jobs()}
+
+
 @app.get("/api/runs/{rid}")
 def api_run_get(rid: int):
     r = db.run_get(rid)
     if not r:
         raise projects.NotFound("no such run")
-    return r
+    j = db.job_get(r["job_id"])
+    return {**r, "agent": (j or {}).get("agent") or "claude"}
 
 
 @app.post("/api/runs/{rid}/resume")
 def api_run_resume(rid: int):
-    """Open the run's worktree in a terminal session, resuming its Claude conversation."""
+    """Open the run's worktree in a terminal session, resuming its conversation: `claude --resume <id>`, or `codex resume <thread id>`
+    for a Codex run (the headless run's rollout stays on disk, it is never --ephemeral)."""
     r = db.run_get(rid)
     if not r or not r.get("task_id"):
         raise projects.NotFound("no worktree for this run")
     t = db.task_get(int(r["task_id"]))
     if not t or not tasks.has_worktree(t) or not Path(t["worktree"]).is_dir():
         raise projects.NotFound("worktree is gone")
+    agent = t.get("agent") or "claude"
     name = t["tmux_name"]
     if not tmux.has_session(name):
         _, _, session = tmux.split_name(name)
-        cmd = ["claude", "--resume", r["session_id"]] if r.get("session_id") else ["claude", "--continue"]
+        if agent == "claude":
+            cmd = ["claude", "--resume", r["session_id"]] if r.get("session_id") else ["claude", "--continue"]
+        else:
+            ag = agents.get(agent)
+            cmd = ag.resume_argv(r["session_id"]) if r.get("session_id") else ag.continue_argv(t["worktree"])
         _start_session(name, t["project"], t["repo"], session, "task", t["worktree"], cmd_line=shlex.join(cmd),
-                       claude_session_id=r.get("session_id"), add_dirs=[], agent=t.get("agent") or "claude", task_id=t["id"])
+                       claude_session_id=r.get("session_id"), add_dirs=[], agent=agent, task_id=t["id"])
     _invalidate_scan()
     return {"tmux": name, "attach_url": f"/term/{name}"}
 

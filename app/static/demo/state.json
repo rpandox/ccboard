@@ -830,6 +830,47 @@
     {
       "ci": null,
       "pr": null,
+      "id": 27,
+      "project": "ccboard",
+      "repo": "ccboard",
+      "slug": "nightly-review-of-main-20261003-0230",
+      "title": "[Nightly review of main] 20261003-0230",
+      "branch": "worktree-nightly-review-of-main-20261003-0230",
+      "base": "main",
+      "worktree": "/home/ccboard/projects/ccboard/ccboard/.ccboard/worktrees/nightly-review-of-main-20261003-0230",
+      "tmux": "ccboard--ccboard--j-nightly-review-of-main-20261003-0230",
+      "claude_session_id": null,
+      "pr_url": null,
+      "pr_number": null,
+      "pr_state": null,
+      "cost_usd": null,
+      "overlap": [],
+      "preview_port": null,
+      "preview_https": null,
+      "preview_url": null,
+      "created_at": "2026-10-03T02:30:00+00:00",
+      "column": "done",
+      "session": null,
+      "agent": "codex",
+      "mode": "worktree",
+      "auto_close": false,
+      "parent_id": null,
+      "chain_id": null,
+      "result": "Reviewed 6 commits. One risk: the service worker caches /api/agents for a day, so a freshly installed Codex looks missing until the cache expires.",
+      "phase": "done",
+      "session_row": null,
+      "prompt": null,
+      "prompt_len": 68,
+      "result_at": "2026-10-03T02:33:41+00:00",
+      "done_at": "2026-10-03T02:33:41+00:00",
+      "closed_at": null,
+      "autoclose": null,
+      "chain": null,
+      "limit_hold": null
+    },
+    {
+      "ci": null,
+      "pr": null,
       "id": 26,
       "project": "petroit",
       "repo": "api",
@@ -955,9 +996,9 @@
         "n": 3
       },
       "limit_hold": {
-        "kind": "5h",
+        "kind": "codex",
         "resets_at": 1791007200,
-        "pct": 91.0
+        "pct": 88.0
       }
     },
     {
@@ -1544,6 +1585,30 @@
   ],
   "jobs": [
     {
+      "id": 5,
+      "project": "ccboard",
+      "repo": "ccboard",
+      "name": "Nightly review of main",
+      "prompt": "Review what changed on main since yesterday and list anything risky.",
+      "cron": "30 2 * * *",
+      "permission_mode": "plan",
+      "max_turns": 30,
+      "max_budget_usd": null,
+      "args": null,
+      "timeout_s": 1800,
+      "enabled": 1,
+      "batch_id": null,
+      "next_run_at": "2026-10-04T02:30:00+00:00",
+      "last_run_at": "2026-10-03T02:30:00+00:00",
+      "last_status": "ok",
+      "created_at": "2026-10-01T03:00:00+00:00",
+      "agent": "codex",
+      "opts": {
+        "model": "gpt-5.5",
+        "reasoning_effort": "high"
+      }
+    },
+    {
       "id": 4,
       "project": "petroit",
       "repo": "api",
@@ -1561,7 +1626,8 @@
       "last_run_at": "2026-10-02T06:30:00+00:00",
       "last_status": "ok",
       "created_at": "2026-09-29T02:00:00+00:00",
-      "agent": "claude"
+      "agent": "claude",
+      "opts": null
     },
     {
       "id": 3,
@@ -1581,7 +1647,8 @@
       "last_run_at": "2026-09-28T03:15:00+00:00",
       "last_status": "ok",
       "created_at": "2026-09-28T02:00:00+00:00",
-      "agent": "claude"
+      "agent": "claude",
+      "opts": null
     },
     {
       "id": 2,
@@ -1601,7 +1668,8 @@
       "last_run_at": "2026-10-03T02:00:00+00:00",
       "last_status": "ok",
       "created_at": "2026-09-27T03:00:00+00:00",
-      "agent": "claude"
+      "agent": "claude",
+      "opts": null
     },
     {
       "id": 1,
@@ -1621,10 +1689,27 @@
       "last_run_at": "2026-09-30T22:12:00+00:00",
       "last_status": "ok",
       "created_at": "2026-09-30T19:48:01+00:00",
-      "agent": "claude"
+      "agent": "claude",
+      "opts": null
     }
   ],
   "runs": [
+    {
+      "id": 4,
+      "job_id": 5,
+      "started_at": "2026-10-03T02:30:00+00:00",
+      "finished_at": "2026-10-03T02:33:41+00:00",
+      "status": "ok",
+      "result": "Reviewed 6 commits. One risk: the service worker caches /api/agents for a day, so a freshly installed Codex looks missing until the cache expires.",
+      "error": null,
+      "session_id": "019a4f3c-7b1e-7c2a-9d55-3f0e2b6a1c44",
+      "cost_usd": null,
+      "num_turns": 1,
+      "worktree": "/home/ccboard/projects/ccboard/ccboard/.ccboard/worktrees/nightly-review-of-main-20261003-0230",
+      "branch": "worktree-nightly-review-of-main-20261003-0230",
+      "task_id": 27,
+      "agent": "codex"
+    },
     {
       "id": 3,
       "job_id": 2,
@@ -1638,7 +1723,8 @@
       "num_turns": 11,
       "worktree": null,
       "branch": null,
-      "task_id": null
+      "task_id": null,
+      "agent": "claude"
     },
     {
       "id": 2,
@@ -1653,7 +1739,8 @@
       "num_turns": null,
       "worktree": null,
       "branch": null,
-      "task_id": null
+      "task_id": null,
+      "agent": "claude"
     },
     {
       "id": 1,
@@ -1668,7 +1755,8 @@
       "num_turns": 8,
       "worktree": null,
       "branch": null,
-      "task_id": null
+      "task_id": null,
+      "agent": "claude"
     }
   ],
   "clone_queue": {
@@ -2089,7 +2177,14 @@
     "at": "2026-10-03T02:59:40+00:00",
     "resets_at": 1791006000,
     "backoff_until": null,
-    "known": true
+    "known": true,
+    "codex": {
+      "pct": 38.0,
+      "at": "2026-10-03T02:59:40+00:00",
+      "resets_at": 1791006000,
+      "backoff_until": null,
+      "known": true
+    }
   },
   "version": "demo",
   "demo": {

@@ -504,6 +504,36 @@ async function taskSend(t, target, force, extra) {
 const TASK_HOLD_MS = 450;               // a touch held this long on a card opens the Move sheet
 const TASK_HOLD_SLOP = 8;               // px of travel that makes it a scroll or a swipe instead
 const AGENT_NAME = { claude: 'Claude', codex: 'Codex' };
+
+/* ---- schedules per agent (v0.5.16): the words a job and a run share on the Schedules tab and the Home schedules sheet ---- */
+
+/* ' · ≤30 turns · ≤$2' for a Claude job; ' · gpt-5.5 · high reasoning' for a Codex one (Codex has no turn or budget limit, its model and reasoning are the job's own options). '' when there is nothing to say. */
+function jobLimitText(j) {
+  if (!j) return '';
+  if (j.agent === 'codex') {
+    const o = j.opts && typeof j.opts === 'object' ? j.opts : {};
+    return ` · ${o.model || 'default model'}${o.reasoning_effort ? ' · ' + o.reasoning_effort + ' reasoning' : ''}`;
+  }
+  return ` · ≤${j.max_turns} turns${j.max_budget_usd ? ' · ≤$' + j.max_budget_usd : ''}`;
+}
+
+/* One run as a line: 'run #12 12:30 · ok · $0.42 · 7 turns'. A Codex run reports no dollar cost (tokens only) and its turn count says nothing, so it shows neither. */
+function runLineText(r, agent) {
+  const codex = (r && r.agent || agent) === 'codex';
+  return `run #${r.id} ${fmtTs(r.started_at)} · ${r.status}${typeof r.cost_usd === 'number' ? ' · $' + r.cost_usd.toFixed(2) : ''}${!codex && r.num_turns ? ' · ' + r.num_turns + ' turns' : ''}${r.error ? ' · ' + r.error : ''}`;
+}
+
+/* The window each agent's schedules wait on, in plain words: [{agent, text}] for the agents among `jobs` (all when none). Claude: the 5-hour window; Codex: its usage window. */
+function schedWindowNotes(st, jobs) {
+  const q = (st && st.scheduler) || {};
+  const agents = new Set((jobs || []).map((j) => j.agent || 'claude'));
+  if (!agents.size) { agents.add('claude'); agents.add('codex'); }
+  const one = (name, w, label) => w.backoff_until ? `${name} is backing off until ${fmtTs(w.backoff_until)} after a rate-limited run` : w.known ? `${name} ${label} at ${Math.round(w.pct)}%` : `${name} ${label} unknown`;
+  const out = [];
+  if (agents.has('claude')) out.push({ agent: 'claude', text: one('Claude', q, '5-hour window') });
+  if (agents.has('codex')) out.push({ agent: 'codex', text: one('Codex', q.codex || {}, 'usage window') });
+  return out;
+}
 const taskUi = { open: {}, full: {}, timer: null, wired: false };   // open {task id: true}: result excerpts the person expanded; full {task id: text}: whole results fetched
 
 function taskAgentInstalled(agent) {

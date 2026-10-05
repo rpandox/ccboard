@@ -1169,14 +1169,15 @@ test('task mode: Later adds a Backlog card, Close when finished OFF is the only 
   assert.equal(f.querySelectorAll('label').find((l) => /Close the session/.test(text(l))).querySelector('input').checked, false);
 });
 
-test('task mode, Schedule: a Claude-only headless run through POST /jobs (name, cron presets, mode, turns); Codex disables it with the reason, and Schedule disables Codex', async () => {
+test('task mode, Schedule: a headless run through POST /jobs (name, cron presets, mode, turns); both agents can schedule', async () => {
   const w = lWorld({ answers: { '/api/projects/shop/repos/api/jobs': { ok: true } } });
   open(w, { mode: 'task', when: 'schedule' });
   const f = form(w);
   assert.deepEqual(pressed(f, 'Run'), ['Schedule']);
-  assert.ok(off(btn(f, 'Agent', '◇ Codex')));
-  assert.match(btn(f, 'Agent', '◇ Codex').getAttribute('title'), /Claude only/);
-  assert.equal(hidden(f.querySelector('.lx-agentbox[data-agent=claude]')), true, 'the model and effort are not part of a schedule');
+  assert.ok(!off(btn(f, 'Agent', '◇ Codex')), 'v0.5.16: Codex can schedule too');
+  assert.ok(!hidden(group(f, 'Agent')), 'the agent is chosen in Schedule mode');
+  assert.equal(hidden(f.querySelector('.lx-agentbox[data-agent=claude]')), true, 'the model and effort are not part of a Claude schedule');
+  assert.equal(hidden(f.querySelector('.lx-agentbox[data-agent=codex]')), true);
   assert.equal(text(start(f)).trim(), 'Schedule');
   typeInto(f.querySelector('textarea.lx-prompt'), 'Run the audit');
   f.querySelectorAll('button.chip-btn').find((b) => text(b) === 'nightly 02:30').click();
@@ -1185,8 +1186,40 @@ test('task mode, Schedule: a Claude-only headless run through POST /jobs (name, 
   assert.deepEqual(posts(w, /\/jobs$/).map((c) => c.body), [{ name: 'Run the audit', prompt: 'Run the audit', permission_mode: 'acceptEdits', max_turns: 30, run_now: false, cron: '30 2 * * *' }]);
   const w2 = lWorld();
   open(w2, { mode: 'task', agent: 'codex' });
-  assert.ok(off(btn(form(w2), 'Run', 'Schedule')));
+  assert.ok(!off(btn(form(w2), 'Run', 'Schedule')));
   assert.equal(store(w, 'ccboard:task:shop/api').when, undefined, 'a schedule is never the next task\'s mode');
+});
+
+test('task mode, Schedule with Codex: model and reasoning only, no turns or budget, the body names the agent, the Codex task key remembers it', async () => {
+  const w = lWorld({ answers: { '/api/projects/shop/repos/api/jobs': { ok: true } } });
+  open(w, { mode: 'task', when: 'schedule', agent: 'codex' });
+  const f = form(w);
+  assert.deepEqual(pressed(f, 'Agent'), ['◇ Codex']);
+  assert.equal(hidden(f.querySelector('.lx-agentbox[data-agent=codex]')), false, 'Codex\'s model and reasoning show in Schedule');
+  assert.equal(hidden(fieldOf(f, /^Mode$/)), true, 'the schedule\'s own permission mode replaces the Codex mode picker');
+  assert.equal(hidden(fieldOf(f, /^Max turns$/)), true);
+  assert.equal(hidden(fieldOf(f, /^Max \$$/)), true);
+  assert.match(text(f.querySelector('.tf-lede')), /codex exec/);
+  choose(fieldOf(f, /^Model$/).querySelector('select'), 'gpt-5.5');
+  btn(f, 'Reasoning', 'high').click();
+  typeInto(f.querySelector('textarea.lx-prompt'), 'Review main');
+  f.querySelectorAll('button.chip-btn').find((b) => text(b) === 'weekdays 09:00').click();
+  submit(f);
+  await tick(); await tick();
+  const body = posts(w, /\/jobs$/)[0].body;
+  assert.deepEqual(body, { name: 'Review main', prompt: 'Review main', permission_mode: 'acceptEdits', run_now: false, cron: '0 9 * * 1-5', agent: 'codex', model: 'gpt-5.5', reasoning_effort: 'high' });
+  const kept = store(w, 'ccboard:task:shop/api:codex');
+  assert.equal(kept.model, 'gpt-5.5');
+  assert.equal(kept.reasoning_effort, 'high');
+  assert.equal(kept.cron, '0 9 * * 1-5');
+  assert.equal(kept.when, undefined, 'a schedule is never the next task\'s mode');
+  const f2 = lWorld();
+  open(f2, { mode: 'task', when: 'schedule' });
+  btn(form(f2), 'Agent', '◇ Codex').click();
+  assert.deepEqual(pressed(form(f2), 'Agent'), ['◇ Codex'], 'the agent can be switched to Codex while Schedule is picked');
+  assert.equal(hidden(fieldOf(form(f2), /^Max turns$/)), true);
+  btn(form(f2), 'Agent', '◆ Claude').click();
+  assert.equal(hidden(fieldOf(form(f2), /^Max turns$/)), false, 'and back');
 });
 
 test('task mode, Codex: the same sheet with Codex\'s fields; the body names the agent, reasoning and the permission word; its memory is ccboard:task:<p>/<r>:codex', async () => {

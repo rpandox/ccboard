@@ -783,6 +783,19 @@ test('the schedules strip lists the next three enabled runs soonest first with t
   assert.equal(strip.classList.contains('hidden'), true);
 });
 
+test('the schedules strip shows ◇ for a Codex job and ◆ for a Claude one, and repaints when only the agent changes', () => {
+  const { w, mount } = home();
+  mount();
+  const at = (h) => new Date(Date.now() + h * 3600e3).toISOString();
+  const jobs = [{ id: 1, project: 'a', repo: 'b', name: 'Claude one', cron: '* * * * *', enabled: 1, next_run_at: at(1), agent: 'claude' },
+    { id: 2, project: 'a', repo: 'b', name: 'Codex one', cron: '* * * * *', enabled: 1, next_run_at: at(2), agent: 'codex', opts: { model: 'gpt-5.5' } }];
+  setState(w, fixtureState({ jobs }));
+  const glyphs = () => q(w, '.sched').querySelectorAll('.sched-item').map((n) => `${text(n.querySelector('.glyph.agent'))} ${text(n.querySelector('.sched-name'))}`);
+  assert.deepEqual(glyphs(), ['◆ Claude one', '◇ Codex one']);
+  setState(w, fixtureState({ jobs: [{ ...jobs[0], agent: 'codex' }, jobs[1]] }));
+  assert.deepEqual(glyphs(), ['◇ Claude one', '◇ Codex one'], 'the agent is part of what the strip repaints on');
+});
+
 test('the age and countdown texts tick without a re-render', () => {
   const { w, mount } = home();
   mount();

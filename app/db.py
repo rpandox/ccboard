@@ -164,6 +164,8 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS tasks_by_session ON tasks(session_row)",
     "CREATE INDEX IF NOT EXISTS tasks_by_parent ON tasks(parent_id)",
     "ALTER TABLE jobs ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'",
+    # ---- v0.5.16 (schedules per agent): the agent's own options for a headless run as JSON (Codex: model, reasoning_effort); NULL = none
+    "ALTER TABLE jobs ADD COLUMN opts TEXT",
     # ---- v0.5.17b (usage per subscription account): the account key (app/accounts.py) the session last ran under; NULL = unknown
     "ALTER TABLE sessions ADD COLUMN account TEXT",
     # permissions.decision takes allow|deny|tui|interrupt (plus timeout from perm_expire). It has no CHECK constraint,
@@ -187,7 +189,7 @@ TASK_COLS = ("project", "repo", "slug", "title", "prompt", "branch", "base", "wo
 TASK_REQUIRED = ("project", "repo", "slug", "title", "prompt")
 TASK_UNASSIGNED = ("tmux_name", "worktree", "branch")     # NOT NULL without a default: '' when there is none yet
 JOB_COLS = ("project", "repo", "name", "prompt", "cron", "permission_mode", "max_turns", "max_budget_usd", "args",
-            "timeout_s", "enabled", "batch_id", "next_run_at", "agent")
+            "timeout_s", "enabled", "batch_id", "next_run_at", "agent", "opts")
 JOB_REQUIRED = ("project", "repo", "name", "prompt")
 ACTIVE_TASK_PHASES = ("queued", "running", "done", "failed")
 
@@ -533,6 +535,8 @@ class DB:
         if unknown:
             raise TypeError(f"job_add: unknown column(s) {sorted(unknown)}")
         vals = {k: v for k, v in row.items() if v is not None}
+        if "opts" in vals:
+            vals["opts"] = _json(vals["opts"])
         missing = [k for k in JOB_REQUIRED if k not in vals]
         if missing:
             raise TypeError(f"job_add: missing {missing}")

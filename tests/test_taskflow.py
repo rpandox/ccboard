@@ -507,6 +507,37 @@ def test_a_chain_may_cross_agents_and_inherits_the_agent_of_its_row(rig):
     assert rig.started[0]["agent"] == "codex" and rig.started[0]["task"] == b
 
 
+def test_each_agents_chain_steps_wait_on_that_agents_own_window(rig):
+    """v0.5.16: a Claude limit never holds a Codex step and a Codex limit never holds a Claude step."""
+    now = rig.clock()
+    gate = lambda agent: taskflow.limit_gate(rig.db, rig.clock(), agent)   # noqa: E731
+    rig.db.kv_set("rate_limits", {"five_hour": {"used_percentage": 91, "resets_at": now + 600}, "seven_day": {"used_percentage": 10}})
+    assert gate("claude")["kind"] == "5h" and gate("codex") is None
+    rig.db.kv_del("rate_limits")
+    rig.db.kv_set("rate_limits_codex", {"primary": {"used_percent": 88, "window_minutes": 300, "resets_at": now + 900}})
+    assert gate("codex") == {"kind": "codex", "resets_at": now + 900, "pct": 88.0} and gate("claude") is None
+    rig.db.kv_set("rate_limits_codex", {"primary": {"used_percent": 88, "window_minutes": 300, "resets_at": now - 1}})
+    assert gate("codex") is None, "a window that already reset is open again"
+    rig.db.kv_set("sched_backoff_until_codex", iso(now + 1200))
+    assert gate("codex") == {"kind": "backoff", "resets_at": now + 1200, "pct": None} and gate("claude") is None
+    rig.db.kv_del("sched_backoff_until_codex")
+    # the runtime: a Claude -> Codex chain with the Claude window full still starts its Codex step
+    a, b = chain(rig, 2, agents={0: "claude", 1: "codex"})
+    rig.db.kv_set("rate_limits", {"five_hour": {"used_percentage": 95, "resets_at": now + 3600}, "seven_day": {"used_percentage": 10}})
+    run_step(rig, a, "Review this.")
+    assert [s["task"] for s in rig.started] == [b], "Codex has its own room"
+    c, d = chain(rig, 2, agents={0: "codex", 1: "claude"})
+    rig.db.kv_set("rate_limits_codex", {"primary": {"used_percent": 90, "window_minutes": 300, "resets_at": rig.clock() + 3600}})
+    rig.db.kv_del("rate_limits")
+    rig.started.clear()
+    run_step(rig, c, "Codex result.")
+    assert [s["task"] for s in rig.started] == [d], "a full Codex window does not hold a Claude step"
+    e, f = chain(rig, 2, agents={0: "claude", 1: "codex"})
+    rig.started.clear()
+    run_step(rig, e, "Claude result.")
+    assert rig.started == [] and rig.db.task_get(f)["phase"] == "queued", "the Codex step waits for the Codex window"
+
+
 def test_a_failed_or_cancelled_parent_cancels_the_steps_behind_it_all_the_way_down(rig):
     a, b, c = chain(rig)
     name, rid = session(rig, "s0")
@@ -1147,6 +1178,28 @@ def test_a_chain_crosses_from_claude_to_codex_through_the_board(flow, fake_codex
     assert shlex.split(line)[0] == "codex" and "Review this work:\nI wrote the thing in thing.py." in shlex.split(line)[-1]
     assert flow.tmux["created"][-1][1] == row["worktree"], "Codex starts in the worktree ccboard made for it"
     assert db().open_rows()[row["tmux_name"]]["agent"] == "codex" and row["auto_close"] == 1
+
+
+def test_a_codex_chain_step_dispatches_with_its_own_permission_map(flow, fake_codex):
+    subprocess.run(["git", "-C", str(flow.projects / "shop" / "api"), "-c", "user.email=t@e.x", "-c", "user.name=t", "commit", "-q",
+                    "--allow-empty", "-m", "init"], check=True)
+    r = post_chain(flow, [{"title": "Write it", "prompt": "Write the thing."},
+                          {"title": "Review it", "prompt": "Review:\n{{result}}", "agent": "codex", "permission_mode": "plan",
+                           "model": "gpt-5.5", "reasoning_effort": "high"},
+                          {"title": "Summarise", "prompt": "Summarise:\n{{result}}"}], dispatch=True)
+    assert r.status_code == 201, r.text
+    a, b, c = r.json()["ids"]
+    assert [db().task_get(i)["agent"] for i in (a, b, c)] == ["claude", "codex", "codex"]
+    assert json.loads(db().task_get(b)["spec"])["permission_mode"] == "plan"
+    name_a = db().task_get(a)["tmux_name"]
+    hook(flow, name_a, "UserPromptSubmit", prompt="Write the thing.")
+    hook(flow, name_a, "Stop", last_assistant_message="Done: thing.py.")
+    line = shlex.split(dict(flow.tmux["sent"])[db().task_get(b)["tmux_name"]])
+    assert line[0] == "codex" and line[line.index("-s") + 1] == "read-only" and line[line.index("-a") + 1] == "on-request"
+    assert line[line.index("-m") + 1] == "gpt-5.5" and 'model_reasoning_effort="high"' in line
+    assert "--dangerously-bypass-approvals-and-sandbox" not in line and line[-1] == "Review:\nDone: thing.py."
+    bad = post_chain(flow, [{"title": "x", "prompt": "p", "agent": "codex", "permission_mode": "bypassPermissions"}])
+    assert bad.status_code == 400 and "step 1" in bad.text
 
 
 def test_the_limit_window_holds_chain_steps_and_the_card_says_so(flow):

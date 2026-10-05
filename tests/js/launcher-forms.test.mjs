@@ -235,7 +235,8 @@ test('the schedule form: every control has its label above it, the options are u
   open(w, 'schedule', SHOP_API);
   const f = form(w);
   const labels = f.querySelectorAll('.field-label').map(text);
-  assert.deepEqual(labels, ['Name', 'Prompt', 'Cron', 'Permission mode', 'Max turns', 'Max $', 'Extra args']);
+  assert.deepEqual(labels, ['Agent', 'Model', 'Reasoning', 'Name', 'Prompt', 'Cron', 'Permission mode', 'Max turns', 'Max $', 'Extra args'], 'v0.5.16: the agent picker leads, and Codex\'s model and reasoning follow it');
+  assert.equal(f.querySelector('.lx-agentbox[data-agent=codex]').classList.contains('hidden'), true, 'Codex\'s options stay hidden while Claude is picked');
   const adv = f.querySelector('details');
   assert.equal(text(adv.querySelector('summary')), 'Advanced');
   assert.ok(!adv.getAttribute('open'), 'collapsed');
@@ -427,4 +428,115 @@ test('on a phone, tapping a Run mode or a cron preset does not raise the keyboar
   desk.document.activeElement && desk.document.activeElement.blur();
   form(desk).querySelectorAll('.seg-btn').find((b) => text(b) === 'Later').dispatchEvent({ type: 'click', detail: 1, preventDefault() {} });
   assert.equal(desk.document.activeElement, form(desk).querySelector('textarea'));
+});
+
+
+// ---------------------------------------------------------------- v0.5.16: schedules and batches per agent
+
+const CODEX_ON = { claude: { installed: true, loggedIn: true }, codex: { installed: true, loggedIn: true } };
+const seg = (f, label) => f.querySelectorAll('.seg-ctl').find((g) => g.getAttribute('aria-label') === label);
+const segBtn = (f, label, name) => seg(f, label).querySelectorAll('button').find((b) => text(b).trim() === name);
+const segOn = (f, label) => seg(f, label).querySelectorAll('button').filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => text(b).trim());
+const isOff = (n) => n.disabled || n.hasAttribute('disabled');
+const hiddenIn = (n) => { for (let x = n; x && x.nodeType === 1; x = x.parentNode) if (x.classList.contains('hidden')) return true; return false; };
+
+test('the schedule form: Claude | Codex segmented; Codex is off with its reason when it is not installed, and a Claude body is exactly what it was', async () => {
+  const w = fWorld({ answers: { '/api/projects/shop/repos/api/jobs': { id: 9 } } });
+  open(w, 'schedule', SHOP_API);
+  const f = form(w);
+  assert.deepEqual(segOn(f, 'Agent'), ['◆ Claude']);
+  assert.equal(isOff(segBtn(f, 'Agent', '◇ Codex')), true, 'no codex on this box');
+  assert.match(text(f.querySelector('.lx-why')), /Codex is not installed on this box/, 'said as text, not only as a title');
+  segBtn(f, 'Agent', '◇ Codex').click();
+  assert.deepEqual(segOn(f, 'Agent'), ['◆ Claude'], 'a disabled button does nothing');
+  fieldOf(f, /^Name$/).querySelector('input').value = 'n';
+  fieldOf(f, /^Prompt$/).querySelector('textarea').value = 'p';
+  submit(f);
+  await tick();
+  assert.deepEqual(calls(w).filter((c) => c.method === 'POST')[0].body, { name: 'n', prompt: 'p', permission_mode: 'acceptEdits', max_turns: 30, run_now: true }, 'no agent key for Claude: the server default stands');
+});
+
+test('the schedule form with Codex: model and reasoning, no turn or budget limit, the body names the agent, the sheet\'s prefs key remembers the choices', async () => {
+  const w = fWorld({ answers: { '/api/projects/shop/repos/api/jobs': { id: 9 } } });
+  w.ctx.__st.agents = CODEX_ON;
+  open(w, 'schedule', SHOP_API);
+  const f = form(w);
+  assert.equal(isOff(segBtn(f, 'Agent', '◇ Codex')), false);
+  segBtn(f, 'Agent', '◇ Codex').click();
+  assert.deepEqual(segOn(f, 'Agent'), ['◇ Codex']);
+  const box = f.querySelector('.lx-agentbox[data-agent=codex]');
+  assert.equal(hiddenIn(box), false, 'Codex\'s options show');
+  assert.equal(hiddenIn(fieldOf(f, /^Max turns$/)), true, 'Codex has no turn limit');
+  assert.equal(hiddenIn(fieldOf(f, /^Max \$$/)), true, 'nor a budget');
+  assert.match(text(f.querySelector('.tf-lede')), /codex exec/);
+  assert.match(fieldOf(f, /^Prompt$/).querySelector('textarea').getAttribute('placeholder'), /codex exec/);
+  assert.match(fieldOf(f, /^Extra args$/).querySelector('input').getAttribute('placeholder'), /codex/);
+  const model = fieldOf(f, /^Model$/).querySelector('select');
+  assert.ok(model.querySelectorAll('option').map((o) => o.getAttribute('value')).includes('gpt-5.5'), 'the models of the Codex schema');
+  model.value = 'gpt-5.5';
+  model.dispatchEvent({ type: 'change' });
+  segBtn(f, 'Reasoning', 'high').click();
+  fieldOf(f, /^Name$/).querySelector('input').value = 'nightly-review';
+  fieldOf(f, /^Prompt$/).querySelector('textarea').value = 'review main';
+  fieldOf(f, /^Permission mode$/).querySelector('select').value = 'plan';
+  f.querySelectorAll('button').find((b) => /nightly/i.test(text(b))).click();
+  submit(f);
+  await tick();
+  const body = calls(w).filter((c) => c.method === 'POST')[0].body;
+  assert.deepEqual(body, { name: 'nightly-review', prompt: 'review main', permission_mode: 'plan', run_now: false, cron: '30 2 * * *', agent: 'codex', model: 'gpt-5.5', reasoning_effort: 'high' });
+  assert.deepEqual(JSON.parse(w.localStorage.getItem('ccboard:task:shop/api:codex')), { model: 'gpt-5.5', reasoning_effort: 'high' }, 'the sheet\'s own key for Codex');
+  assert.equal(JSON.parse(w.localStorage.getItem('ccboard:job:shop/api')).agent, 'codex');
+  w.run('closeSheet()');
+  open(w, 'schedule', SHOP_API);
+  const g = form(w);
+  assert.deepEqual(segOn(g, 'Agent'), ['◇ Codex'], 'the next schedule for this repo starts with Codex');
+  assert.equal(fieldOf(g, /^Model$/).querySelector('select').value, 'gpt-5.5');
+  assert.deepEqual(segOn(g, 'Reasoning'), ['high']);
+});
+
+test('the schedule form with Codex: a refused argument lands under Extra args, a bad model under Model', async () => {
+  const w = fWorld({ answers: { '/api/projects/shop/repos/api/jobs': { __error: 'argument not allowed for unattended runs: -c' } } });
+  w.ctx.__st.agents = CODEX_ON;
+  open(w, 'schedule', SHOP_API);
+  const f = form(w);
+  segBtn(f, 'Agent', '◇ Codex').click();
+  fieldOf(f, /^Name$/).querySelector('input').value = 'n';
+  fieldOf(f, /^Prompt$/).querySelector('textarea').value = 'p';
+  fieldOf(f, /^Extra args$/).querySelector('input').value = '-c x=1';
+  submit(f);
+  await tick();
+  assert.match(text(fieldOf(f, /^Extra args$/).querySelector('.field-err')), /not allowed for unattended runs/);
+  w.ctx.__answers['/api/projects/shop/repos/api/jobs'] = { __error: 'model: use a model slug such as gpt-5.5' };
+  submit(f);
+  await tick();
+  assert.match(text(fieldOf(f, /^Model$/).querySelector('.field-err')), /model slug/);
+  assert.equal(text(fieldOf(f, /^Extra args$/).querySelector('.field-err')), '');
+});
+
+test('the batch form with Codex: every job runs with it, no turn or budget is sent, the choice is remembered', async () => {
+  const w = fWorld({ answers: { '/api/batch': { batch_id: 'b9', jobs: [{ id: 1 }], started: [1] } } });
+  w.ctx.__st.agents = CODEX_ON;
+  open(w, 'batch');
+  let f = form(w);
+  assert.deepEqual(segOn(f, 'Agent'), ['◆ Claude']);
+  segBtn(f, 'Agent', '◇ Codex').click();
+  assert.match(text(f.querySelector('.dim')), /codex exec/);
+  assert.equal(hiddenIn(fieldOf(f, /^Max turns$/)), true);
+  assert.equal(hiddenIn(fieldOf(f, /^Max \$ per repo$/)), true);
+  fieldOf(f, /^Model$/).querySelector('select').value = 'gpt-5.5';
+  fieldOf(f, /^Model$/).querySelector('select').dispatchEvent({ type: 'change' });
+  f.querySelector('textarea').value = 'update the changelog';
+  f.querySelectorAll('.batch-repos input[type=checkbox]')[0].checked = true;
+  f.querySelector('.submit button.primary').click();
+  await tick();
+  const body = calls(w).filter((c) => c.method === 'POST' && c.path === '/api/batch')[0].body;
+  assert.equal(body.agent, 'codex');
+  assert.equal(body.model, 'gpt-5.5');
+  assert.ok(!('max_turns' in body) && !('max_budget_usd' in body), 'Codex has neither');
+  assert.deepEqual(JSON.parse(w.localStorage.getItem('ccboard:batch')), { mode: 'acceptEdits', turns: 30, budget: '', agent: 'codex', cx_model: 'gpt-5.5', cx_reasoning: '' });
+  w.run('closeSheet()');
+  open(w, 'batch');
+  f = form(w);
+  assert.deepEqual(segOn(f, 'Agent'), ['◇ Codex']);
+  assert.equal(fieldOf(f, /^Model$/).querySelector('select').value, 'gpt-5.5');
 });
