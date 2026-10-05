@@ -724,6 +724,20 @@ html.force-coarse #page a.gauge { min-height:var(--tap); }
 #page .settings-page .set-check input { flex:none; }
 /* the CSP (default-src 'self') blocks the data: image Blueprint draws its tick with: a checked box gets a tick made of two borders instead */
 #page .settings-page .set-check input:checked ~ .bp5-control-indicator::before { background-image:none; content:''; display:block; box-sizing:border-box; width:5px; height:9px; margin:1px auto 0; border:solid var(--on-sig); border-width:0 2px 2px 0; transform:rotate(45deg); }
+/* v0.5.18 What to notify: one switch per kind with a plain-word caption, then an example notification (a picture, not buttons: its two
+   "buttons" are what a phone shows) behind a segmented control. The switch rows keep the 44 px touch height through .set-check. */
+#page .settings-page .set-pref { align-items:flex-start; margin:2px 0 0; padding:4px 0 4px 26px; }                        /* keep Blueprint's 26 px for the box: its indicator sits at margin-left -26px */
+#page .settings-page .set-pref-t { display:flex; flex-direction:column; gap:1px; min-width:0; }
+#page .settings-page .set-pref-t > b { font-weight:500; }
+#page .settings-page .set-pref-t > .dim { font-size:12px; line-height:1.45; }
+#page .settings-page .set-kind-seg { margin:8px 0; max-width:100%; }
+#page .settings-page .set-notif { display:flex; flex-direction:column; gap:3px; max-width:380px; padding:10px 12px; border:1px solid var(--line); border-radius:6px; background:var(--panel); }
+#page .settings-page .set-notif-app { font-size:11px; }
+#page .settings-page .set-notif-title { font-size:13px; font-weight:600; color:var(--fg); overflow-wrap:anywhere; }
+#page .settings-page .set-notif-line { font-size:12px; line-height:1.45; color:var(--fg-2); overflow-wrap:anywhere; }
+#page .settings-page .set-notif-line.mono { font-family:var(--font-mono); }
+#page .settings-page .set-notif-btns { display:flex; gap:6px; margin-top:6px; }
+#page .settings-page .set-notif-btn { padding:3px 10px; border:1px solid var(--line); border-radius:2px; font:12px/1.4 var(--font-ui); color:var(--fg-2); }
 #page .settings-page .set-add { max-width:640px; }
 #page .settings-page .add-flight, #page .settings-page .add-error, #page .settings-page .add-idle, #page .settings-page .add-off { display:flex; flex-direction:column; gap:8px; margin-top:6px; }
 #page .settings-page .add-step { display:flex; flex-direction:column; gap:8px; padding:12px 0; border-top:1px solid var(--line-soft); }

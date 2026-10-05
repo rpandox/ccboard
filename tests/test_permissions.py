@@ -182,6 +182,7 @@ def ntfy(monkeypatch):
     monkeypatch.setattr(settings, "ntfy_topic", "ccboard")
     monkeypatch.setattr(settings, "public_url", "https://box.ts.net:8443")
     notify._last.clear()
+    notify._rl_last.clear()
     return sent
 
 
@@ -196,6 +197,7 @@ def test_push_request_body_carries_the_ask_and_the_three_buttons(ntfy, tmp_path,
     monkeypatch.setattr(notify, "_db", d)
     web = []
     monkeypatch.setattr(notify.push, "send_all", lambda db_, title, body, url="/", tag=None, extra=None: web.append((title, body, url, tag, extra)) or 1)
+    d.set_state("shop--api--s1", "waiting", "PermissionRequest", message="permission: Bash: npm test", attention=True)    # what the permission route does first
     permissions.push_request(5, "shop--api--s1", "Bash: npm test")
     body = ntfy[-1]
     assert body["title"] == "◆ shop/api · s1: needs you" and body["priority"] == 4 and body["tags"] == ["bell", "key"]
@@ -209,6 +211,8 @@ def test_push_request_body_carries_the_ask_and_the_three_buttons(ntfy, tmp_path,
     title, wbody, url, tag, extra = web[-1]
     assert tag == "shop--api--s1" and url == "/#/s/shop--api--s1" and wbody == body["message"]
     assert extra["perm_id"] == 5 and extra["state"] == "waiting" and extra["agent"] == "claude" and extra["tmux"] == "shop--api--s1"
+    assert extra["actions"] == [{"action": "allow", "title": "Allow"}, {"action": "deny", "title": "Deny"}, {"action": "terminal", "title": "Terminal"}]
+    assert extra["renotify"] is True and extra["badge"] == 1 and isinstance(extra["ts"], int)          # the SW shows the first two buttons; the session is waiting
 
 
 def test_push_request_without_a_row_still_asks(ntfy, monkeypatch):
@@ -284,3 +288,18 @@ def test_settings_registers_permission_hook(tmp_path, monkeypatch):
 def pathlib_root():
     import pathlib
     return pathlib.Path(__file__).resolve().parent.parent
+
+
+def test_push_request_obeys_the_needs_you_switch(ntfy, tmp_path, monkeypatch):
+    from app import notify
+    from app.db import DB
+    d = DB(tmp_path / "q.db")
+    monkeypatch.setattr(notify, "_db", d)
+    web = []
+    monkeypatch.setattr(notify.push, "send_all", lambda db_, title, body, url="/", tag=None, extra=None: web.append(title) or 1)
+    notify.set_prefs({"needs": False})
+    permissions.push_request(3, "shop--api--s1", "Bash: ls")
+    assert ntfy == [] and web == []                                                       # the request is still on the board; only the phone stays quiet
+    notify.set_prefs({"needs": True})
+    permissions.push_request(3, "shop--api--s1", "Bash: ls")
+    assert len(ntfy) == 1 and len(web) == 1

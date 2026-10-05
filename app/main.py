@@ -3274,8 +3274,31 @@ def api_push_unsubscribe(body: SubIn):
 
 @app.post("/api/push/test")
 def api_push_test():
-    n = push.send_all(db, "ccboard test", "Web Push works.", "/", tag="test")
+    # two buttons, so the phone shows whether this device does notification actions (iOS ignores them); neither names a session
+    n = push.send_all(db, "ccboard test", "Web Push works. Two buttons under this text mean this device shows notification actions.", "/", tag="test",
+                      extra={"agent": "claude", "state": "done", "tmux": "", "perm_id": None, "ts": int(time.time() * 1000)},
+                      actions=[{"action": "terminal", "title": "Open board"}, {"action": "ack", "title": "Dismiss"}], renotify=True)
     return {"sent": n, "subscriptions": len(db.push_subs())}
+
+
+class NotifyPrefsIn(BaseModel):
+    needs: bool | None = None       # needs-you: permission prompts, questions, idle
+    done: bool | None = None
+    limit: bool | None = None       # rate limit hit
+    error: bool | None = None       # error / crash
+    login: bool | None = None       # a login that no longer works
+
+
+@app.get("/api/notify/prefs")
+def api_notify_prefs():
+    """{prefs: {needs, done, limit, error, login}, samples: {<same keys>: {title, body, priority, buttons}}}: the Settings toggles and the
+    example notice behind each, built by the code that builds the real ones."""
+    return {"prefs": notify.prefs(), "samples": notify.samples()}
+
+
+@app.put("/api/notify/prefs")
+def api_notify_prefs_set(body: NotifyPrefsIn):
+    return {"prefs": notify.set_prefs(body.model_dump(exclude_none=True)), "samples": notify.samples()}
 
 
 @app.post("/api/notify/test")

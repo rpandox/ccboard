@@ -853,6 +853,8 @@ def _announce(db, key: str | None, sel: dict, accts: dict, now: float) -> bool:
         from .. import notify
         if not notify.any_channel():
             return False
+        if not notify.kind_enabled("limit"):                               # the limit toggle is off: claim nothing, so the window is told once it is on
+            return False
         label = (accts.get(key) or {}).get("label") if key else None
         sent = False
         for w in reached:

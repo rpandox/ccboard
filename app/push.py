@@ -75,13 +75,28 @@ def vapid_claims() -> dict:
     return {"sub": f"mailto:ccboard@{host}"}
 
 
-def send_all(db, title: str, body: str, url: str = "/", tag: str | None = None, extra: dict | None = None) -> int:
-    """Push to every stored subscription; drops the ones the push service reports gone. Returns sent count."""
+def payload_for(title: str, body: str, url: str = "/", tag: str | None = None, extra: dict | None = None,
+                actions: list | None = None, renotify: bool | None = None) -> dict:
+    """The JSON the service worker's push handler reads: {title, body, url, tag} always, and when the notice has them renotify (only with
+    a tag: the browser refuses it otherwise), actions ({action, title}, the SW shows two), agent, state, tmux, perm_id, badge, ts."""
+    out = {"title": title[:200], "body": body[:1000], "url": url, "tag": tag, **(extra or {})}
+    acts = actions if actions is not None else out.get("actions")
+    if isinstance(acts, list):
+        out["actions"] = [{"action": str(a.get("action") or "")[:16], "title": str(a.get("title") or "")[:24]} for a in acts if isinstance(a, dict)][:3]
+    if renotify is not None:
+        out["renotify"] = bool(renotify and tag)
+    return out
+
+
+def send_all(db, title: str, body: str, url: str = "/", tag: str | None = None, extra: dict | None = None,
+             actions: list | None = None, renotify: bool | None = None) -> int:
+    """Push to every stored subscription; drops the ones the push service reports gone. Returns sent count. One tag per session, so a
+    session's notices replace each other on the phone (renotify makes the replacement buzz again)."""
     subs = db.push_subs()
     if not subs:
         return 0
     from pywebpush import WebPushException, webpush
-    payload = json.dumps({"title": title[:200], "body": body[:1000], "url": url, "tag": tag, **(extra or {})})   # v0.5.7: agent, state, tmux, perm_id, actions for the SW (consumed in v0.5.18)
+    payload = json.dumps(payload_for(title, body, url, tag, extra, actions, renotify))
     sent = 0
     for row in subs:
         try:

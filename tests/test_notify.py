@@ -40,6 +40,7 @@ def capture(monkeypatch):
     monkeypatch.setattr(notify, "_db", None)             # a stale DB from an earlier test must not leak in
     notify._last.clear()
     notify._rl_mem.clear()
+    notify._rl_last.clear()
     notify._login_told.clear()
     clock = [1000.0]
     monkeypatch.setattr(notify, "_clock", lambda: clock[0])
@@ -299,8 +300,11 @@ def test_rate_limit_notice_once_per_window(capture, db):
     for _ in range(50):                                                                  # one session retried 482 times
         assert not notify.notify_rate_limit(TMUX, "You have hit your limit")
     assert len(capture) == 1
-    _limited(db, 1791367200)                                                             # the next window is told again
-    assert notify.notify_rate_limit(TMUX, "You have hit your limit") and len(capture) == 2
+    _limited(db, 1791367200)                                                             # the next window: not inside the 15 minute floor ...
+    assert not notify.notify_rate_limit(TMUX, "You have hit your limit") and len(capture) == 1
+    capture.clock[0] += notify.RATE_LIMIT_EVERY
+    _limited(db, 1791367200)
+    assert notify.notify_rate_limit(TMUX, "You have hit your limit") and len(capture) == 2    # ... and told again after it
     assert db.kv_get("rl_notified:claude:1791367200") is not None
 
 
@@ -333,17 +337,43 @@ def test_the_session_error_tells_a_window_nobody_announced_yet(capture, db):
     assert not notify.notify_rate_limit(TMUX, "You have hit your limit")                 # the window is told now
 
 
-def test_without_a_reset_time_there_is_no_window_gate(capture, db):
+def test_without_a_reset_time_the_gate_is_fifteen_minutes_per_agent(capture, db):
     db.kv_set("rate_limited", {"session": TMUX, "message": "slow down", "kind": "other", "resets_at": None})
-    assert notify.notify_rate_limit(TMUX, "slow down") and notify.notify_rate_limit(TMUX, "slow down")
+    assert notify.notify_rate_limit(TMUX, "slow down")
+    capture.clock[0] += notify.RATE_LIMIT_EVERY - 1
+    assert not notify.notify_rate_limit(TMUX, "slow down")                               # not the 60 s errored cooldown: a quarter of an hour
+    capture.clock[0] += 1
+    assert notify.notify_rate_limit(TMUX, "slow down") and len(capture) == 2
     assert not [k for k in ("rl_notified:claude:None", "rl_notified:claude:") if db.kv_get(k)]
     # a record of another session (or an old one) is not this session's window
     _limited(db, 1791349200, session="other--x--y")
-    assert notify.notify_rate_limit(TMUX, "limit") and notify.notify_rate_limit(TMUX, "limit")
+    capture.clock[0] += notify.RATE_LIMIT_EVERY
+    assert notify.notify_rate_limit(TMUX, "limit") and not notify.notify_rate_limit(TMUX, "limit")
+
+
+def test_a_session_that_reports_the_limit_again_and_again_is_told_once_per_agent_per_quarter_hour(capture, db):
+    for _ in range(40):                                                                  # one session retried 482 times; a minute apart is the old cooldown
+        notify.notify_session(TMUX, "errored", "You have hit your limit", "rate_limit")
+        capture.clock[0] += 61
+    assert len(capture) == 3                                                             # 40 minutes: minute 0, 15:xx and 30:xx
+    assert all(b["title"].endswith(": error") and b["priority"] == 5 for _, b in capture)
+
+
+def test_the_account_notice_and_the_session_error_of_one_limit_are_one_notice(capture, db):
+    db.kv_set("rate_limited", {"session": TMUX, "message": "slow down", "kind": "other", "resets_at": None})
+    assert notify.notify_rate_limit(TMUX, "slow down")
+    assert not notify.notify_session(TMUX, "errored", "slow down", "rate_limit")
+    assert len(capture) == 1 and capture[0][1]["title"] == "Claude rate limited"
+
+
+def test_each_agents_limit_has_its_own_fifteen_minutes(capture, db):
+    assert notify.notify_rate_limit(TMUX, "limit") and not notify.notify_rate_limit(TMUX, "limit")
+    assert notify.notify_rate_limit(TMUX, "limit", agent="codex") and not notify.notify_rate_limit(TMUX, "limit", agent="codex")
 
 
 def test_rate_limit_window_is_remembered_in_memory_without_a_db(capture):
     assert notify.notify_rate_limit(TMUX, "limit", resets_at=111) and not notify.notify_rate_limit(TMUX, "limit", resets_at=111)
+    capture.clock[0] += notify.RATE_LIMIT_EVERY
     assert notify.notify_rate_limit(TMUX, "limit", resets_at=222)
     assert capture[0][1]["message"].startswith("shop / api · s1")                         # no row: the old label names the session
 
@@ -409,7 +439,7 @@ def test_context_picks_the_most_relevant_task_and_survives_a_dead_db(capture, db
     db.task_add(project="shop", repo="api", slug="new", title="Running now", prompt="p", tmux_name=TMUX, worktree="/w2", branch="b2",
                 session_row=rid, phase="running")
     row, task = notify.context(TMUX)
-    assert row["project"] == "shop" and task["title"] == "Running now"
+    assert row["project"] == "shop" and task["title"] == "Running now" and task["chain_next"] is False
     assert notify.context("nobody--x--y") == (None, None)
 
     def boom(*a, **k):
@@ -430,10 +460,12 @@ def test_hook_triggers_push(client, projects_dir, fake_tmux, capture):
     name = client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "shell"}).json()["tmux"]
     from app import hooks, main
     notify.set_db(main.db)                                       # the capture fixture cleared it; the board's DB is the real one
-    client.post("/api/hook", headers={"X-CCBoard-Token": hooks.ensure_token(), "X-CCBoard-Session": name},
-                content=json.dumps({"hook_event_name": "StopFailure", "error_type": "rate_limit", "error": "limit"}))
+    hook = {"X-CCBoard-Token": hooks.ensure_token(), "X-CCBoard-Session": name}
+    client.post("/api/hook", headers=hook, content=json.dumps({"hook_event_name": "StopFailure", "error_type": "rate_limit", "error": "limit"}))
+    assert [b["title"] for _, b in capture] == ["Claude rate limited"]                   # the account's notice; the session's own error adds nothing
+    client.post("/api/hook", headers=hook, content=json.dumps({"hook_event_name": "StopFailure", "error_type": "server_error", "error": "boom"}))
     titles = [b["title"] for _, b in capture]
-    assert "Claude rate limited" in titles and any(t.endswith(": error") for t in titles)
+    assert any(t.endswith(": error") for t in titles)
     err = [b for _, b in capture if b["title"].endswith(": error")][0]
     assert err["title"] == "▸ shop/api · " + name.split("--")[2] + ": error"                # a shell row: the ▸ glyph
     assert client.post("/api/notify/test", headers=H).json()["ok"] is True
@@ -469,3 +501,183 @@ def test_login_problem_notice_without_an_account_or_a_message_still_reads_well(d
     assert notify.notify_login_problem(None, None, TMUX, None) is True
     _url, body = capture[-1]
     assert body["title"] == "Claude login not valid" and body["click"] == f"{PUB}/#/settings?sec=accounts" and "Log in again in Settings" in body["message"]
+
+
+# ---------------------------------------------------------------- v0.5.18: per-kind toggles, chain hand-over, auto-close, payload
+
+def _web(monkeypatch):
+    """Replace push.send_all with a recorder (the Web Push senders are always fakes in tests); returns the list of calls."""
+    calls = []
+
+    def fake(db_, title, body, url="/", tag=None, extra=None):
+        calls.append({"title": title, "body": body, "url": url, "tag": tag, "extra": extra})
+        return 1
+
+    monkeypatch.setattr(push, "send_all", fake)
+    return calls
+
+
+def _task(db, title="Fix login redirect", **kw):
+    rid = db.open_row(TMUX)["id"]
+    return db.task_add(project="shop", repo="api", slug=kw.pop("slug", "t"), title=title, prompt="p", tmux_name=TMUX, worktree="/w",
+                       branch=kw.pop("branch", "b"), session_row=rid, phase=kw.pop("phase", "running"), **kw)
+
+
+def test_every_toggle_is_on_until_switched_off_and_is_kept_in_kv(capture, db):
+    assert notify.prefs() == {"needs": True, "done": True, "limit": True, "error": True, "login": True}
+    assert notify.set_prefs({"done": False, "bogus": False, "limit": "no"}) == {"needs": True, "done": False, "limit": True, "error": True, "login": True}
+    assert db.kv_get("notify_prefs")["value"]["done"] is False
+    assert notify.prefs()["done"] is False and notify.prefs()["limit"] is True            # not a boolean: ignored
+    assert notify.kind_enabled("done") is False and notify.kind_enabled("permission") is True
+    assert notify.kind_enabled("test") is True                                           # a kind with no toggle is never switched off
+    notify.set_prefs({"done": True})
+    assert notify.prefs()["done"] is True
+
+
+def test_prefs_survive_a_dead_db_and_a_damaged_row(capture, db, monkeypatch):
+    db.kv_set("notify_prefs", ["not", "a", "dict"])
+    assert notify.prefs()["needs"] is True
+    monkeypatch.setattr(db, "kv_get", lambda k: (_ for _ in ()).throw(RuntimeError("db closed")))
+    assert notify.prefs() == {k: True for k in notify.PREF_KEYS}
+    monkeypatch.setattr(notify, "_db", None)
+    assert notify.prefs()["done"] is True
+
+
+@pytest.mark.parametrize("toggle,fire", [
+    ("needs", lambda: notify.notify_session(TMUX, "waiting", "Claude is waiting for your input", "idle_prompt")),
+    ("needs", lambda: notify.notify_session(TMUX, "waiting", "question?", "elicitation_dialog")),
+    ("done", lambda: notify.notify_session(TMUX, "done", "ok", None)),
+    ("error", lambda: notify.notify_session(TMUX, "errored", "API Error: 500", "server_error")),
+    ("limit", lambda: notify.notify_session(TMUX, "errored", "You have hit your limit", "rate_limit")),
+    ("limit", lambda: notify.notify_rate_limit(TMUX, "You have hit your limit", resets_at=99)),
+    ("login", lambda: notify.notify_login_problem("work", "work", TMUX, "Please run /login")),
+])
+def test_a_switched_off_kind_sends_nothing_on_either_channel(capture, db, monkeypatch, toggle, fire):
+    web = _web(monkeypatch)
+    notify.set_prefs({toggle: False})
+    assert not fire()
+    assert capture == [] and web == []
+    notify.set_prefs({toggle: True})
+    assert fire() and len(capture) == 1 and len(web) == 1                                 # back on: it goes out (a switched-off kind used no cooldown)
+
+
+def test_the_permission_push_obeys_the_needs_you_toggle_too(capture, db, monkeypatch):
+    from app import permissions
+    web = _web(monkeypatch)
+    notify.set_prefs({"needs": False})
+    permissions.push_request(5, TMUX, "Bash: npm test")                                  # skips the throttles, not the toggle
+    assert capture == [] and web == []
+    notify.set_prefs({"needs": True})
+    permissions.push_request(5, TMUX, "Bash: npm test")
+    assert len(capture) == 1 and len(web) == 1
+
+
+def test_a_switched_off_limit_does_not_claim_its_window(capture, db):
+    notify.set_prefs({"limit": False})
+    assert not notify.notify_rate_limit(TMUX, "limit", resets_at=77)
+    assert db.kv_get("rl_notified:claude:77") is None
+    notify.set_prefs({"limit": True})
+    assert notify.notify_rate_limit(TMUX, "limit", resets_at=77)
+
+
+def test_send_alone_honours_the_toggles_but_the_ntfy_test_does_not(capture, db):
+    notify.set_prefs({"done": False})
+    assert notify.send(notify.build(ROW, TASK, "done", None, "ok")) is False and capture == []
+    assert notify.publish("ccboard test", "Notifications work.", tags=["tada"])          # /api/notify/test goes through publish()
+    assert capture[-1][1]["title"] == "ccboard test"
+
+
+def test_a_chain_step_that_hands_over_is_priority_2_ntfy_only(capture, db, monkeypatch):
+    web = _web(monkeypatch)
+    first = _task(db)
+    db.task_add(project="shop", repo="api", slug="step2", title="Second step", prompt="p", phase="queued", parent_id=first, chain_id="c1")
+    db.task_update(first, chain_id="c1")
+    row, task = notify.context(TMUX)
+    assert task["chain_next"] is True
+    assert notify.notify_session(TMUX, "done", "step one finished", None)
+    assert capture[-1][1]["priority"] == 2 and capture[-1][1]["tags"] == ["white_check_mark"]
+    assert web == []                                                                     # no Web Push for a hand-over
+    n = notify.build(row, task, "done", None, "x")
+    assert n.priority == 2 and n.web is False
+
+
+def test_the_last_step_of_a_chain_and_a_plain_task_notify_normally(capture, db, monkeypatch):
+    web = _web(monkeypatch)
+    first = _task(db)
+    last = db.task_add(project="shop", repo="api", slug="step2", title="Last step", prompt="p", phase="done", parent_id=first, chain_id="c1")
+    db.task_update(first, chain_id="c1", phase="done")
+    assert notify.context(TMUX)[1]["chain_next"] is False                                # nothing is queued behind it
+    assert notify.notify_session(TMUX, "done", "all done", None)
+    assert capture[-1][1]["priority"] == 3 and len(web) == 1 and last
+
+
+def test_a_chain_hand_over_is_only_quiet_for_done(capture, db):
+    first = _task(db)
+    db.task_add(project="shop", repo="api", slug="step2", title="Second", prompt="p", phase="queued", parent_id=first, chain_id="c1")
+    row, task = notify.context(TMUX)
+    assert notify.build(row, task, "waiting", "idle_prompt", "?").priority == 4 and notify.build(row, task, "waiting", "idle_prompt", "?").web
+    assert notify.build(row, task, "errored", "server_error", "boom").priority == 4
+
+
+def test_an_auto_close_done_notice_says_when_the_session_closes(capture, db, monkeypatch):
+    monkeypatch.setattr(settings, "autoclose_grace", 45.0)
+    _task(db, auto_close=1)
+    assert notify.notify_session(TMUX, "done", "Fixed the redirect.", None)
+    assert capture[-1][1]["message"].splitlines()[-2:] == ["? Fixed the redirect.", "(session closes in 45s)"]
+    monkeypatch.setattr(settings, "autoclose_grace", 12.5)
+    n = notify.build(ROW, {"title": "T", "auto_close": True}, "done", None, "ok")
+    assert n.body.endswith("\n(session closes in 12.5s)")
+
+
+def test_no_close_promise_without_auto_close_or_when_the_message_asks_something(capture, db):
+    assert not notify.build(ROW, {"title": "T", "auto_close": False}, "done", None, "ok").body.endswith("s)")
+    assert not notify.build(ROW, None, "done", None, "ok").body.endswith("s)")
+    held = notify.build(ROW, {"title": "T", "auto_close": True}, "done", None, "Shall I also update the docs?")
+    assert "session closes" not in held.body                                             # a question holds the close (taskflow)
+    assert "session closes" not in notify.build(ROW, {"title": "T", "auto_close": True}, "waiting", "idle_prompt", "waiting").body
+    assert "session closes" not in notify.build(ROW, {"title": "T", "auto_close": True}, "errored", "server_error", "boom").body
+
+
+def test_web_extras_carry_renotify_a_timestamp_and_the_attention_count(capture, db, monkeypatch):
+    web = _web(monkeypatch)
+    db.add_session(tmux_name="shop--api--s2", project="shop", repo="api", name="s2", launcher="claude")
+    db.set_state("shop--api--s2", "waiting", "Notification", message="?", attention=True)
+    db.set_state(TMUX, "done", "Stop", message="ok", attention=True)
+    assert notify.notify_session(TMUX, "done", "ok", None)
+    extra = web[-1]["extra"]
+    assert extra["renotify"] is True and extra["badge"] == 2 and isinstance(extra["ts"], int) and extra["ts"] > 1.7e12
+    db.ack(TMUX)
+    capture.clock[0] += 500
+    assert notify.notify_session(TMUX, "done", "ok again", None)
+    assert web[-1]["extra"]["badge"] == 1                                                # acknowledged sessions are not counted
+
+
+def test_a_notice_without_a_tag_never_asks_to_renotify(capture):
+    n = notify.Notice(title="t", body="b", click=None, url="/", tag="", priority=3, tags=[], actions=[], web_actions=[], kind="done")
+    assert n.web_extra()["renotify"] is False
+    assert notify.build({"tmux_name": TMUX}, None, "done", None, "ok").web_extra()["renotify"] is True
+
+
+def test_the_sample_notices_come_from_the_real_builder(capture):
+    smp = notify.samples()
+    assert list(smp) == ["needs", "done", "limit", "error", "login"]
+    assert smp["needs"]["title"] == "◆ shop/api · s1: needs you" and smp["needs"]["body"].endswith("? Bash: npm test")
+    assert smp["needs"]["buttons"] == ["Allow", "Deny"] and smp["done"]["buttons"] == ["Terminal", "Ack"]
+    assert smp["limit"]["title"] == "Claude rate limited" and smp["limit"]["priority"] == 5
+    assert smp["error"]["title"].endswith(": error") and smp["login"]["title"].startswith("Claude login not valid")
+    assert set(smp["needs"]) == {"title", "body", "priority", "kind", "buttons"}
+
+
+def test_notify_prefs_api_reads_and_writes_the_toggles(lite_client, capture):
+    from app import main
+    notify.set_db(main.db)
+    H = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
+    r = lite_client.get("/api/notify/prefs", headers=H).json()
+    assert r["prefs"] == {k: True for k in notify.PREF_KEYS} and list(r["samples"]) == list(notify.PREF_KEYS)
+    r = lite_client.put("/api/notify/prefs", headers=H, json={"done": False, "error": False}).json()
+    assert r["prefs"]["done"] is False and r["prefs"]["error"] is False and r["prefs"]["needs"] is True
+    assert lite_client.get("/api/notify/prefs", headers=H).json()["prefs"]["done"] is False
+    assert lite_client.put("/api/notify/prefs", headers=H, json={"done": "maybe"}).status_code == 422
+    assert lite_client.put("/api/notify/prefs", headers={"Tailscale-User-Login": "alice@example.com"}, json={"done": True}).status_code == 403   # no X-CCBoard
+    assert lite_client.post("/api/notify/test", headers=H).json()["ok"] is True          # the test notice ignores the toggles
+    assert capture[-1][1]["title"] == "ccboard test"

@@ -40,6 +40,99 @@ function settingsKv(label, ...kids) {
 /* A section heading inside a panel: 13 px, upper case, dim. */
 function settingsHead(text) { return el('h3', { class: 'set-h', text }); }
 
+/* What to notify (v0.5.18): five switches stored on the box (kv notify_prefs through /api/notify/prefs) and an example of the notice each one
+   sends, built by the same code that builds the real ones (GET answers {prefs, samples}). The panel is rebuilt on a minute tick: what was
+   fetched stays in settingsNotifyState and paints at once, then refreshes in the background. */
+const NOTIFY_KINDS = [
+  { key: 'needs', label: 'Needs you', pick: 'Needs you', note: 'A permission to answer, a question for you, or a session waiting on you.' },
+  { key: 'done', label: 'Done', pick: 'Done', note: 'A session finished its turn. The middle steps of a chain stay quiet.' },
+  { key: 'limit', label: 'Rate limit', pick: 'Limit', note: 'Claude or Codex ran out of allowance. You hear it once until it resets.' },
+  { key: 'error', label: 'Error or crash', pick: 'Error', note: 'A turn failed for some other reason.' },
+  { key: 'login', label: 'Login problem', pick: 'Login', note: 'A saved login stopped working.' },
+];
+/* The same five examples GET /api/notify/prefs answers, for ?demo=1 (the demo layer has no fixture file for this route). */
+const SETTINGS_NOTIFY_DEMO = { prefs: { needs: true, done: true, limit: true, error: true, login: true }, samples: {
+  needs: { title: '◆ shop/api · s1: needs you', body: 'Fix login redirect\n› fix the login redirect\n? Bash: npm test', buttons: ['Allow', 'Deny'] },
+  done: { title: '◆ shop/api · s1: done', body: 'Fix login redirect\n› fix the login redirect\n? Fixed the redirect and the tests pass.', buttons: ['Terminal', 'Ack'] },
+  limit: { title: 'Claude rate limited', body: '◆ shop/api · s1\nFix login redirect\n› fix the login redirect\n? 5-hour limit reached, resets 14:00', buttons: ['Terminal', 'Ack'] },
+  error: { title: '◆ shop/api · s1: error', body: 'Fix login redirect\n› fix the login redirect\n? API Error: 500 Internal server error', buttons: ['Terminal', 'Ack'] },
+  login: { title: 'Claude login not valid: work', body: '◆ shop/api · s1\nPlease run /login\nLog in again in Settings > Accounts.', buttons: [] },
+} };
+const settingsNotifyState = { prefs: { needs: true, done: true, limit: true, error: true, login: true }, samples: {}, kind: 'needs', at: 0, repaint: null };
+
+function settingsNotifyAdopt(r) {
+  const st = settingsNotifyState;
+  if (r && r.prefs && typeof r.prefs === 'object') st.prefs = Object.assign({}, st.prefs, r.prefs);
+  if (r && r.samples && typeof r.samples === 'object') st.samples = r.samples;
+}
+
+async function settingsNotifyLoad() {
+  const st = settingsNotifyState;
+  if (st.at && Date.now() - st.at < 20000) return;
+  st.at = Date.now();
+  if (typeof demoOn === 'function' && demoOn()) { if (!Object.keys(st.samples).length) { settingsNotifyAdopt(SETTINGS_NOTIFY_DEMO); if (st.repaint) st.repaint(); } return; }
+  try { settingsNotifyAdopt(await api('GET', '/api/notify/prefs')); } catch (e) { st.at = 0; setError(e.message); return; }
+  if (st.repaint) st.repaint();
+}
+
+async function settingsNotifySet(key, on, box) {
+  const st = settingsNotifyState;
+  const before = st.prefs[key];
+  st.prefs[key] = on;
+  if (st.repaint) st.repaint();
+  try { if (!(typeof demoOn === 'function' && demoOn())) settingsNotifyAdopt(await api('PUT', '/api/notify/prefs', { [key]: on })); setError(null); } catch (e) {
+    st.prefs[key] = before;
+    if (box) box.checked = before !== false;
+    setError(e.message);
+  }
+  if (st.repaint) st.repaint();
+}
+
+function settingsNotifyBlock() {
+  const st = settingsNotifyState;
+  const boxes = {};
+  const list = el('div', { class: 'set-prefs', role: 'group', 'aria-label': 'What to notify' });
+  for (const k of NOTIFY_KINDS) {
+    const box = el('input', { type: 'checkbox' });
+    box.checked = st.prefs[k.key] !== false;
+    box.addEventListener('change', () => settingsNotifySet(k.key, box.checked, box));
+    boxes[k.key] = box;
+    list.append(el('label', { class: 'set-check set-pref' }, box, el('span', { class: 'set-pref-t' }, el('b', { text: k.label }), el('span', { class: 'dim', text: k.note }))));
+  }
+  const seg = el('div', { class: 'seg-ctl set-kind-seg', role: 'group', 'aria-label': 'Example for' });
+  const btns = {};
+  const pick = (key, focus) => { st.kind = key; paint(); if (focus) btns[key].focus(); };
+  for (const k of NOTIFY_KINDS) {
+    btns[k.key] = el('button', { class: 'seg-btn', type: 'button', 'data-kind': k.key, 'aria-pressed': 'false', text: k.pick, onclick: () => pick(k.key), onkeydown: (e) => {
+      const i = NOTIFY_KINDS.findIndex((x) => x.key === st.kind);
+      const to = e.key === 'ArrowRight' ? NOTIFY_KINDS[(i + 1) % NOTIFY_KINDS.length] : e.key === 'ArrowLeft' ? NOTIFY_KINDS[(i + NOTIFY_KINDS.length - 1) % NOTIFY_KINDS.length] : null;
+      if (!to) return;
+      e.preventDefault();
+      pick(to.key, true);
+    } });
+    seg.append(btns[k.key]);
+  }
+  const card = el('div', { class: 'set-notif', role: 'group', 'aria-label': 'Example notification' });
+  const cap = el('div', { class: 'dim set-note set-notif-cap' });
+  function paint() {
+    for (const k of NOTIFY_KINDS) {
+      btns[k.key].setAttribute('aria-pressed', k.key === st.kind ? 'true' : 'false');
+      if (boxes[k.key].checked !== (st.prefs[k.key] !== false)) boxes[k.key].checked = st.prefs[k.key] !== false;
+    }
+    card.textContent = '';
+    const smp = st.samples[st.kind];
+    if (!smp) { card.append(el('div', { class: 'dim', text: 'The example is not available right now.' })); cap.textContent = ''; return; }
+    card.append(el('div', { class: 'set-notif-app dim', text: 'ccboard · now' }), el('div', { class: 'set-notif-title', text: smp.title }),
+      ...String(smp.body || '').split('\n').map((line) => el('div', { class: 'set-notif-line' + (line.startsWith('?') ? ' mono' : ''), text: line })));
+    if (smp.buttons && smp.buttons.length) card.append(el('div', { class: 'set-notif-btns' }, ...smp.buttons.map((b) => el('span', { class: 'set-notif-btn', text: b }))));
+    cap.textContent = (st.prefs[st.kind] === false ? 'This kind is switched off: nothing like it is sent. ' : '')
+      + (smp.buttons && smp.buttons.length ? 'Android shows the buttons under the text. An iPhone shows the text only; a tap opens the session, where Allow, Deny and Ack are one tap away.' : 'A tap opens the board where this needs attention.');
+  }
+  st.repaint = paint;
+  paint();
+  return el('div', { class: 'set-notify-kinds' }, settingsHead('What to notify'), list, settingsHead('What it looks like'), seg, card, cap);
+}
+
 function settingsNotify(p) {
   p.textContent = '';
   const n = (state.config && state.config.ntfy) || {};
@@ -55,6 +148,9 @@ function settingsNotify(p) {
       el('button', { class: 'primary', type: 'button', onclick: () => enablePush().catch((e) => setError(e.message)), text: 'Enable push on this device' }),
       el('button', { type: 'button', disabled: true, title: 'Enable push first', text: 'Send test push' }));
   }).catch(() => pushRow.add(el('span', { class: 'dim', text: 'Web Push not available here.' })));
+
+  p.append(settingsNotifyBlock());
+  settingsNotifyLoad();
 
   const bc = (state.config && state.config.backup) || {};
   const bk = state.backup;
@@ -93,7 +189,7 @@ function settingsNotify(p) {
       el('li', {}, 'Install the ntfy app (App Store / Play Store) and keep the Tailscale VPN on: the server is only reachable on the tailnet.'),
       el('li', {}, 'Add a subscription → "Use another server" → server ', el('code', { text: base }), ', topic ', el('code', { text: n.topic || '' }), '.'),
       el('li', {}, 'iPhone: this server relays wake-ups through ntfy.sh (no message content); allow notifications for the app. Android: allow the app to run in the background for instant delivery.'),
-      el('li', {}, 'Tap "Send test" above. Pushes go out on needs-you, done, error and rate limit; “Terminal” opens the session, “Ack” clears it.'))));
+      el('li', {}, 'Tap "Send test" above. Pushes follow the switches under What to notify. Allow and Deny answer a permission from the notification, “Terminal” opens the session, “Ack” marks it seen.'))));
 }
 
 function settingsNodes(p) {

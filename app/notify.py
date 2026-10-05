@@ -53,6 +53,8 @@ THROTTLE_SECONDS = 60
 STATE_COOLDOWN = {"waiting": 30, "done": 120, "errored": 60}      # per (session, state); the longer of this and THROTTLE_SECONDS wins
 _last: dict[tuple[str, str], float] = {}                        # (tmux name, state) -> clock of the last notice sent
 _rl_mem: set[str] = set()                                       # rate-limit windows told while there is no DB to remember them
+RATE_LIMIT_EVERY = 15 * 60                                      # a limit notice for one agent repeats at most this often, whatever the window says
+_rl_last: dict[str, float] = {}                                 # agent -> clock of the last limit notice
 LOGIN_EVERY = 15 * 60                                           # one "login not valid" notice per account per this long
 _login_told: dict[str, float] = {}                              # '<agent>:<account>' -> clock of the last such notice
 _lock = threading.Lock()
@@ -76,6 +78,47 @@ def enabled() -> bool:
 
 def any_channel() -> bool:
     return enabled() or (_db is not None and bool(_db.push_subs()))
+
+
+# ---------------------------------------------------------------- per-kind toggles (Settings > Notifications)
+
+PREF_KEYS = ("needs", "done", "limit", "error", "login")        # needs-you, done, rate limit, error / crash, login problem
+PREF_KIND = {"permission": "needs", "idle": "needs", "elicitation": "needs", "waiting": "needs", "done": "done",
+             "rate_limit": "limit", "error": "error", "login": "login"}      # Notice.kind -> toggle
+
+
+def prefs() -> dict:
+    """The five toggles, all on until the person switches one off (kv notify_prefs). Never raises: a dead DB means everything on."""
+    out = {k: True for k in PREF_KEYS}
+    if _db is None:
+        return out
+    try:
+        rec = _db.kv_get("notify_prefs")
+        v = rec.get("value") if isinstance(rec, dict) else None
+        if isinstance(v, dict):
+            for k in PREF_KEYS:
+                if isinstance(v.get(k), bool):
+                    out[k] = v[k]
+    except Exception as e:
+        log.warning("notify prefs: %s", e)
+    return out
+
+
+def set_prefs(patch: dict) -> dict:
+    """Merge booleans for the known toggles into kv notify_prefs and return the full set. Unknown keys and non-booleans are ignored."""
+    cur = prefs()
+    for k in PREF_KEYS:
+        if isinstance(patch.get(k), bool):
+            cur[k] = patch[k]
+    if _db is not None:
+        _db.kv_set("notify_prefs", cur)
+    return cur
+
+
+def kind_enabled(kind) -> bool:
+    """Is the toggle behind this Notice.kind on? A kind with no toggle (a test notice) is always on."""
+    key = PREF_KIND.get(str(kind or ""))
+    return True if key is None else prefs()[key]
 
 
 def subscribe_url() -> str | None:
@@ -113,7 +156,7 @@ def publish(title: str, message: str, *, click: str | None = None, actions: list
 class Notice:
     """One notification, channel-neutral. `click`/`url` are the board link ({public_url}/#/s/<tmux>; `url` falls back to the
     relative route when no public URL is set), `path` is always the relative route Web Push opens. `actions` are ntfy buttons
-    (<= 3); `web_actions` are the same choices for a Web Push notification (the service worker reads them in v0.5.18)."""
+    (<= 3); `web_actions` are the same choices for a Web Push notification (the service worker shows the first two)."""
     title: str
     body: str
     click: str | None
@@ -129,10 +172,17 @@ class Notice:
     agent: str = "claude"
     perm_id: int | None = None
     path: str = "/"
+    web: bool = True                # False: ntfy only (a chain step that hands over to the next one is not worth a buzz on the phone)
+    renotify: bool = True           # a notice that replaces its session's earlier one (same tag) buzzes again
+    ts: int = 0                     # epoch milliseconds the event happened (the notification's own time); 0 = now
+    badge: int | None = None        # attention count for the app icon; send() fills it
 
     def web_extra(self) -> dict:
-        return {"agent": self.agent, "state": self.state, "tmux": self.tmux, "perm_id": self.perm_id,
-                "actions": self.web_actions}
+        extra = {"agent": self.agent, "state": self.state, "tmux": self.tmux, "perm_id": self.perm_id,
+                 "actions": self.web_actions, "renotify": bool(self.renotify and self.tag), "ts": self.ts or int(time.time() * 1000)}
+        if self.badge is not None:
+            extra["badge"] = self.badge
+        return extra
 
 
 def _one_line(s, limit: int) -> str:
@@ -164,7 +214,7 @@ def is_rate_limit(kind) -> bool:
 
 
 def category(state: str, kind, perm=None) -> str:
-    """What the notice is about: the key of its priority and tags, and what the per-kind toggles of v0.5.18 will switch."""
+    """What the notice is about: the key of its priority and tags, and (through PREF_KIND) of the per-kind toggle that switches it."""
     k = str(kind or "").lower()
     if state == "errored":
         return "rate_limit" if is_rate_limit(k) else "error"
@@ -211,6 +261,20 @@ def _where(row: dict, agent: str, tmux_name: str) -> str:
     return f"{GLYPHS.get(agent, '▸')} {place} · {session}"
 
 
+def _grace() -> str:
+    g = float(getattr(settings, "autoclose_grace", 45) or 0)
+    return f"{g:g}"
+
+
+def _asks_back(message) -> bool:
+    """A final message that ends with a question holds the auto-close (taskflow), so no 'closes in' promise is made for it."""
+    try:
+        from . import taskflow
+        return bool(taskflow.ends_with_question(message))
+    except Exception:
+        return str(message or "").rstrip(" \t*_`\"'’”)]>\n").endswith("?")
+
+
 def build(row: dict | None, task: dict | None, state: str, kind: str | None, message: str | None,
           perm: dict | None = None) -> Notice:
     """The Notice for a session entering `state`. `row` is a session_view dict, `task` {title, phase} or None, `perm` {id, summary}
@@ -236,6 +300,8 @@ def build(row: dict | None, task: dict | None, state: str, kind: str | None, mes
         asked = _one_line(message, ASKED_CHARS)
     if asked:
         lines.append("? " + asked)
+    if cat == "done" and isinstance(task, dict) and task.get("auto_close") and not _asks_back(message):
+        lines.append(f"(session closes in {_grace()}s)")             # taskflow closes the session after the grace unless the person keeps it open
     body = "\n".join(lines) or str(kind or "") or TITLES.get(state, state)       # ntfy shows "triggered" for an empty message
 
     pid = perm.get("id") if perm else None
@@ -256,15 +322,37 @@ def build(row: dict | None, task: dict | None, state: str, kind: str | None, mes
             actions = [terminal, {"action": "http", "label": "Ack", "url": f"{pub}/api/sessions/{tmux_name}/ack", "method": "POST",
                                   "headers": {"X-CCBoard": "1"}, "clear": True}]
     priority, tags = LOOK.get(cat, (PRIORITY.get(state, 3), TAGS.get(state, [])))
+    handover = cat == "done" and isinstance(task, dict) and bool(task.get("chain_next"))     # a chain step with another one queued behind it
+    if handover:
+        priority = 2
     link = f"{pub}{path}" if pub else None
     return Notice(title=title, body=body, click=link, url=link or path, tag=tmux_name, priority=priority, tags=list(tags),
                   actions=actions[:3], web_actions=web_actions, kind=cat, state=state, tmux=tmux_name, agent=agent,
-                  perm_id=pid, path=path)
+                  perm_id=pid, path=path, web=not handover)
+
+
+def _attention_count() -> int | None:
+    """Sessions that need a look right now (waiting, done or errored, not acknowledged): the number on the app icon. None without a DB."""
+    if _db is None:
+        return None
+    try:
+        from . import hooks
+        return sum(1 for r in _db.open_rows().values() if r.get("state") in hooks.ATTENTION_STATES and not r.get("acked_at"))
+    except Exception as e:
+        log.warning("notify badge count: %s", e)
+        return None
 
 
 def send(n: Notice) -> bool:
-    """Deliver a Notice on both channels (Web Push first, as always). True when either took it."""
-    sent = web_push(n.title, n.body, n.path, tag=n.tag or None, extra=n.web_extra())
+    """Deliver a Notice on both channels (Web Push first, as always). True when either took it. The one gate every notice passes
+    (a permission push skips the throttles but not this): a kind the person switched off in Settings goes nowhere."""
+    if not kind_enabled(n.kind):
+        return False
+    sent = 0
+    if n.web:
+        if n.badge is None:
+            n = replace(n, badge=_attention_count())
+        sent = web_push(n.title, n.body, n.path, tag=n.tag or None, extra=n.web_extra())
     ok = publish(n.title, n.body, click=n.click, actions=n.actions, priority=n.priority, tags=n.tags)
     return bool(sent) or ok
 
@@ -286,6 +374,8 @@ def context(name: str) -> tuple[dict | None, dict | None]:
     try:
         found = _db.active_tasks_by_session().get(row.get("id") if row.get("id") is not None else row.get("row_id")) or []
         task = found[0] if found else None
+        if task:                                                # is another step queued behind this one? (a chain's non-final step)
+            task = {**task, "chain_next": any(c.get("phase") == "queued" for c in _db.children_of(task["id"]))}
     except Exception as e:
         log.warning("notify task lookup: %s", e)
     return row, task
@@ -304,6 +394,19 @@ def _admit(name: str, state: str) -> bool:
             for k in [k for k, t in _last.items() if now - t > 2 * max(THROTTLE_SECONDS, *STATE_COOLDOWN.values())]:
                 del _last[k]
     return True
+
+
+def _rl_blocked(agent: str) -> bool:
+    """Was a limit notice for this agent sent within RATE_LIMIT_EVERY (15 minutes), whichever session reported it and whatever its reset
+    time says? Read-only: a window that is held back here is not claimed, so the next report after the quarter hour tells it."""
+    with _lock:
+        prev = _rl_last.get(agent)
+    return prev is not None and _clock() - prev < RATE_LIMIT_EVERY
+
+
+def _rl_stamp(agent: str) -> None:
+    with _lock:
+        _rl_last[agent] = _clock()
 
 
 def mark_sent(name: str, state: str = "waiting") -> None:
@@ -369,13 +472,18 @@ def notify_session(name: str, state: str, message: str | None, kind: str | None 
     (session, state). Without a row the notice keeps the old plain label."""
     if state not in TITLES or not any_channel():
         return False
+    if not kind_enabled(category(state, kind)):
+        return False                                       # switched off in Settings: do not use up the cooldown either
     row, task = context(name)
     if state == "errored" and is_rate_limit(kind):
-        # the account-level notice already told this window (notify_rate_limit): the session's own error adds nothing
+        # a limit is the account's, not the session's: one notice per agent until the window resets (and never twice in 15 minutes),
+        # not the 60 s errored cooldown (one session reported the same limit 482 times). notify_rate_limit has usually told it already.
+        agent = _limit_agent(row)
         resets_at = _recent_resets_at(name)
-        if resets_at is not None and not _claim_window(_limit_agent(row), resets_at, name):
+        if _rl_blocked(agent) or (resets_at is not None and not _claim_window(agent, resets_at, name)):
             return False
-    if not _admit(name, state):
+        _rl_stamp(agent)
+    elif not _admit(name, state):
         return False
     perm = None
     if state == "waiting" and category(state, kind) == "permission" and _db is not None:
@@ -387,29 +495,32 @@ def notify_session(name: str, state: str, message: str | None, kind: str | None 
     return send(build(row or {"tmux_name": name}, task, state, kind, message, perm))
 
 
+def _limit_notice(row: dict, task: dict | None, name: str, agent: str, message: str | None) -> Notice:
+    n = build(row, task, "errored", "rate_limit", message or "rate limit hit")
+    # the title names the account, so the first body line names the session that hit it
+    return replace(n, title=f"{AGENT_LABELS.get(agent, str(agent).title())} rate limited", tag="rate-limit",
+                   body=f"{_where(row, _agent_of(row), name)}\n{n.body}")
+
+
 def notify_rate_limit(name: str, message: str | None, agent: str | None = None, resets_at=None) -> bool:
-    """The account-level 'rate limited' notice, once per (agent, resets_at) window (kv rl_notified:<agent>:<resets_at>); without a
-    reset time every call goes out and hooks' own same-episode check is the only gate."""
-    if not any_channel():
+    """The account-level 'rate limited' notice, once per (agent, resets_at) window (kv rl_notified:<agent>:<resets_at>) and never twice for
+    one agent within RATE_LIMIT_EVERY; without a reset time that 15-minute floor and hooks' same-episode check are the gates."""
+    if not any_channel() or not kind_enabled("rate_limit"):
         return False
     row, task = context(name)
     agent = agent or _limit_agent(row)
     if resets_at is None:
         resets_at = _recent_resets_at(name)
-    if resets_at is not None and not _claim_window(agent, resets_at, name):
+    if _rl_blocked(agent) or (resets_at is not None and not _claim_window(agent, resets_at, name)):
         return False
-    row = row or {"tmux_name": name}
-    n = build(row, task, "errored", "rate_limit", message or "rate limit hit")
-    # the title names the account, so the first body line names the session that hit it
-    n = replace(n, title=f"{AGENT_LABELS.get(agent, str(agent).title())} rate limited", tag="rate-limit",
-                body=f"{_where(row, _agent_of(row), name)}\n{n.body}")
-    return send(n)
+    _rl_stamp(agent)
+    return send(_limit_notice(row or {"tmux_name": name}, task, name, agent, message))
 
 
 def notify_login_problem(account: str | None, label: str | None, name: str, message: str | None, agent: str = "claude") -> bool:
     """The account-level 'login not valid' notice (a session reported an authentication failure), at most once per account per LOGIN_EVERY
     seconds whichever session reports it. Taps open Settings > Accounts on that account's row."""
-    if not any_channel():
+    if not any_channel() or not kind_enabled("login"):
         return False
     k = f"{agent}:{account or '-'}"
     now = _clock()
@@ -422,14 +533,39 @@ def notify_login_problem(account: str | None, label: str | None, name: str, mess
             for old in [o for o, t in _login_told.items() if now - t > 2 * LOGIN_EVERY]:
                 del _login_told[old]
     row, _task = context(name)
+    return send(_login_notice(row or {}, account, label, name, message, agent))
+
+
+def _login_notice(row: dict, account: str | None, label: str | None, name: str, message: str | None, agent: str) -> Notice:
     who = AGENT_LABELS.get(agent, str(agent).title())
     path = "/#/settings?sec=accounts" + (f"&acct={quote(account, safe='')}" if account else "")
     pub = (settings.public_url or "").rstrip("/")
     link = f"{pub}{path}" if pub else None
-    where = _where(row or {}, _agent_of(row or {}), name)
+    where = _where(row, _agent_of(row), name)
     body = f"{where}\n{_one_line(message, ASKED_CHARS)}\nLog in again in Settings > Accounts." if message else f"{where}\nLog in again in Settings > Accounts."
     actions = [{"action": "view", "label": "Log in again", "url": link}] if link else []
-    n = Notice(title=f"{who} login not valid" + (f": {_one_line(label, 60)}" if label else ""), body=body, click=link, url=link or path,
-               tag="login-problem", priority=4, tags=["warning", "key"], actions=actions, web_actions=[], kind="login", state="errored",
-               tmux=name, agent=agent, path=path)
-    return send(n)
+    return Notice(title=f"{who} login not valid" + (f": {_one_line(label, 60)}" if label else ""), body=body, click=link, url=link or path,
+                  tag="login-problem", priority=4, tags=["warning", "key"], actions=actions, web_actions=[], kind="login", state="errored",
+                  tmux=name, agent=agent, path=path)
+
+
+# ---------------------------------------------------------------- Settings preview
+
+SAMPLE_ROW = {"tmux_name": "shop--api--s1", "project": "shop", "repo": "api", "name": "s1", "agent": "claude",
+              "last_prompt": "fix the login redirect"}
+SAMPLE_TASK = {"title": "Fix login redirect", "phase": "running"}
+
+
+def samples() -> dict:
+    """One example notice per toggle, built by the same code that builds the real ones, for the Settings preview card:
+    {needs|done|limit|error|login: {title, body, priority, buttons: [titles Web Push shows], kind}}."""
+    row, task, tmux = SAMPLE_ROW, SAMPLE_TASK, SAMPLE_ROW["tmux_name"]
+    made = {
+        "needs": build(row, task, "waiting", "permission_prompt", "Claude needs your permission to use Bash", {"id": 0, "summary": "Bash: npm test"}),
+        "done": build(row, task, "done", None, "Fixed the redirect and the tests pass."),
+        "limit": _limit_notice(row, task, tmux, "claude", "5-hour limit reached, resets 14:00"),
+        "error": build(row, task, "errored", "error", "API Error: 500 Internal server error"),
+        "login": _login_notice(row, "work", "work", tmux, "Please run /login", "claude"),
+    }
+    return {k: {"title": n.title, "body": n.body, "priority": n.priority, "kind": n.kind,
+                "buttons": [a["title"] for a in n.web_actions][:2]} for k, n in made.items()}

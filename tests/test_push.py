@@ -48,6 +48,10 @@ def test_sw_and_manifest_served(lite_client):
     H = {"Tailscale-User-Login": "alice@example.com"}
     r = lite_client.get("/sw.js", headers=H)
     assert r.status_code == 200 and "javascript" in r.headers["content-type"] and "addEventListener('push'" in r.text
+    assert "addEventListener('notificationclick'" in r.text
+    for name in ("renotify", "requireInteraction", "timestamp", "actions", "setAppBadge", "postMessage", "X-CCBoard", "/api/permission/", "/ack"):
+        assert name in r.text, f"sw.js lost {name}"
+    assert "__ASSET_VERSION__" not in r.text and "__SHELL_JSON__" not in r.text
     m = lite_client.get("/static/manifest.webmanifest", headers=H)
     assert m.status_code == 200 and json.loads(m.text)["start_url"] == "/"
     assert lite_client.get("/static/icon-192.png", headers=H).headers["content-type"] == "image/png"
@@ -73,3 +77,41 @@ def test_vapid_subject_is_acceptable_to_apple(monkeypatch):
     monkeypatch.setattr(settings, "public_url", "")
     sub = push.vapid_claims()["sub"]
     assert sub.startswith("mailto:") and "@" in sub and "." in sub.split("@")[1] and "localhost" not in sub
+
+
+def test_payload_keeps_the_old_four_fields_and_adds_the_new_ones():
+    old = push.payload_for("t", "b", "/#/s/a--b--c", "a--b--c")
+    assert old == {"title": "t", "body": "b", "url": "/#/s/a--b--c", "tag": "a--b--c"}
+    acts = [{"action": "allow", "title": "Allow", "junk": 1}, {"action": "deny", "title": "Deny"}, {"action": "terminal", "title": "Terminal"}, {"action": "x", "title": "y"}, "bad"]
+    new = push.payload_for("t", "b", "/", "a--b--c", extra={"agent": "claude", "perm_id": 5}, actions=acts, renotify=True)
+    assert new["agent"] == "claude" and new["perm_id"] == 5 and new["renotify"] is True
+    assert new["actions"] == [{"action": "allow", "title": "Allow"}, {"action": "deny", "title": "Deny"}, {"action": "terminal", "title": "Terminal"}]   # at most three, only the two keys
+    assert push.payload_for("t", "b", "/", None, renotify=True)["renotify"] is False                                  # renotify needs a tag
+    via_extra = push.payload_for("t", "b", "/", "x", extra={"actions": acts[:2], "renotify": True})
+    assert via_extra["actions"] == [{"action": "allow", "title": "Allow"}, {"action": "deny", "title": "Deny"}] and via_extra["renotify"] is True
+
+
+def test_send_all_sends_the_notice_context_one_tag_per_session(lite_client, projects_dir, monkeypatch):
+    from app import main
+    import pywebpush
+    main.db.push_sub_add({"endpoint": "https://fcm.googleapis.com/fcm/send/abc", "keys": {"p256dh": "p", "auth": "a"}})
+    sent = []
+    monkeypatch.setattr(pywebpush, "webpush", lambda subscription_info, data, vapid_private_key, vapid_claims, ttl=0: sent.append(json.loads(data)))
+    n = push.send_all(main.db, "◆ shop/api · s1: needs you", "Fix login\n? Bash: npm test", "/#/s/shop--api--s1", "shop--api--s1",
+                      extra={"agent": "claude", "state": "waiting", "tmux": "shop--api--s1", "perm_id": 5, "badge": 2, "ts": 1760000000000},
+                      actions=[{"action": "allow", "title": "Allow"}, {"action": "deny", "title": "Deny"}], renotify=True)
+    assert n == 1 and sent[0]["tag"] == "shop--api--s1" and sent[0]["renotify"] is True and sent[0]["badge"] == 2
+    assert [a["action"] for a in sent[0]["actions"]] == ["allow", "deny"] and sent[0]["perm_id"] == 5 and sent[0]["ts"] == 1760000000000
+
+
+def test_the_settings_test_push_shows_two_buttons_and_names_no_session(lite_client, projects_dir, monkeypatch):
+    import pywebpush
+    from app import main
+    H = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
+    main.db.push_sub_add({"endpoint": "https://fcm.googleapis.com/fcm/send/abc", "keys": {"p256dh": "p", "auth": "a"}})
+    sent = []
+    monkeypatch.setattr(pywebpush, "webpush", lambda subscription_info, data, vapid_private_key, vapid_claims, ttl=0: sent.append(json.loads(data)))
+    assert lite_client.post("/api/push/test", headers=H).json()["sent"] == 1
+    p = sent[0]
+    assert p["title"] == "ccboard test" and p["tag"] == "test" and p["tmux"] == "" and p["perm_id"] is None
+    assert len(p["actions"]) == 2 and p["renotify"] is True

@@ -619,7 +619,8 @@ function sessionCard(s, opts) {
   const meta = el('span', { class: 'rr-meta' });
   const promptNode = el('span', { class: 'dim' });
   const msgNode = el('span', { class: 'rr-msg' });
-  const permNote = el('span', { class: 'perm-note' });
+  const permNote = el('span', { class: 'perm-note' + (o.peek ? ' mono' : '') });      // the peek shows what is asked the way a notification does: `Bash: npm test` in mono
+  const taskNode = el('strong', { class: 'peek-task' });
   const permBtns = el('span', { class: 'actions perm-btns' });
   const ackSlot = el('span', { class: 'slot-ack' });
   const killSlot = el('span', { class: 'slot-kill' });
@@ -723,14 +724,16 @@ function sessionCard(s, opts) {
   let promptHost = promptNode;
   let msgHost = msgNode;
   let permHost = null;                                       // what to hide when no permission is pending (peek: its own block)
+  let taskHost = null;                                       // the peek's Task block: the task card behind the session, hidden without one
   if (o.peek) {
     const block = (label, body, extra) => el('div', { class: 'peek-block' + (extra || '') }, el('span', { class: 'k', text: label }), body);
+    taskHost = block('Task', taskNode);
     promptHost = block('Last prompt', promptNode);
     msgHost = block('Last message', msgNode);
     permHost = o.perm ? block('Needs permission', [permNote, permBtns], ' peek-perm') : null;
     node = el('div', { class: 'peek-card', 'data-tmux': tmux },
       el('div', { class: 'peek-sub' }, glyphs, where, age, meta),
-      promptHost, msgHost, permHost,
+      taskHost, promptHost, msgHost, permHost,
       el('div', { class: 'peek-actions' }, openSlot, ackSlot, killSlot), chips);
   } else {
     node = el('div', { class: 'rrow' + (o.compact ? ' compact' : '') + (rich ? ' rich' : '') + (o.cls ? ' ' + o.cls : ''), 'data-tmux': tmux },
@@ -843,6 +846,11 @@ function sessionCard(s, opts) {
     const mt = s2.last_message ? String(s2.last_message).slice(0, lim[1]) : '';
     setTextIfChanged(promptNode, pt);
     setTextIfChanged(msgNode, mt);
+    if (taskHost) {
+      const tt = s2.task && s2.task.title ? String(s2.task.title).slice(0, 160) : '';
+      setTextIfChanged(taskNode, tt);
+      taskHost.classList.toggle('hidden', !tt);
+    }
     promptHost.classList.toggle('hidden', !pt);
     msgHost.classList.toggle('hidden', !mt);
     node.classList.toggle('attn', !!s2.needs_attention);

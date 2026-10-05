@@ -269,7 +269,7 @@ test('settings: every setting is one .kv row (label, value, actions), and button
 test('settings: every tab that has sections titles them with the same .set-h heading (13 px upper case, dim); no section is only a row label', async () => {
   const { w } = settingsWorld(fixtureState({ claude: { installed: true, loggedIn: true, email: 'demo@example.com', subscriptionType: 'max' } }));
   const heads = async (sec) => { w.location.hash = '#/settings?sec=' + sec; await tick(); return page(w).querySelectorAll('.settings-panel[data-sec=' + sec + '] .set-h').map(text); };
-  assert.deepEqual(await heads('notify'), ['Web Push', 'Backup', 'ntfy']);
+  assert.deepEqual(await heads('notify'), ['Web Push', 'What to notify', 'What it looks like', 'Backup', 'ntfy']);
   assert.deepEqual(await heads('box'), ['Host', 'Backup']);
   assert.deepEqual(await heads('app'), ['Install', 'This build', 'Tools']);
   w.location.hash = '#/settings?sec=notify'; await tick();
