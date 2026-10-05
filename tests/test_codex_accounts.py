@@ -738,7 +738,9 @@ def test_start_login_runs_the_device_login_in_pending_under_the_data_dir_with_a_
     put_auth(box.live, AUTH["A"])
     cx.start_login(box.db, "  My  work\x00 account ")
     pend = cx.pending_dir()
-    assert pend == box.store / ".pending" and not str(pend).startswith("/tmp/") and mode(pend) == 0o700 and mode(box.store) == 0o700
+    # under the data dir (Codex refuses helper binaries under a temp dir, so the pending dir is never /tmp in production; the test's own data dir
+    # may well live under /tmp on CI, so that is not asserted by path prefix)
+    assert pend == box.store / ".pending" and mode(pend) == 0o700 and mode(box.store) == 0o700
     assert sorted(p.name for p in pend.iterdir()) == ["config.toml"], "the live login and the hooks are not copied"
     assert (pend / "config.toml").read_text() == 'model = "gpt-5.6-sol"\n' and mode(pend / "config.toml") == 0o600
     name, cwd, env = box.tmux["created"][-1]
