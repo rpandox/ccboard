@@ -384,10 +384,11 @@ def _in_git_repo(cwd: str | None) -> bool:
 
 
 def bind_unbound_rows(db) -> int:
-    """Seam for v0.5.12: bind open codex rows with a NULL agent_session_id to their rollout (Tailer: /proc fd scan, then
-    ~/.codex/sessions by cwd + start time, FIFO, ambiguity left unbound). Until then the join relies on the hook payload's
-    session_id and the cwd match, and this binds nothing."""
-    return 0
+    """Identity step 3 (v0.5.12): bind open codex rows with a NULL agent_session_id to their rollout by cwd + originator + start time
+    (FIFO, ambiguity left unbound): codex_rollout.bind_unbound_rows, imported late because that module imports this package. The Sampler's
+    Tailer calls it every pass; hooks.bind_unbound_rows is the same call for a hook path."""
+    from . import codex_rollout
+    return codex_rollout.bind_unbound_rows(db)
 
 
 class CodexAgent(Agent):

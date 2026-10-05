@@ -1,0 +1,32 @@
+{
+  "session": [
+    {"period": "11111111-1111-4111-8111-111111111111", "agent": "claude", "totalCost": 1.5, "totalTokens": 100,
+     "modelsUsed": ["claude-opus-4-7"], "metadata": {"lastActivity": "2026-09-27T01:00:00.000Z"}},
+    {"period": "22222222-2222-4222-8222-222222222222", "agent": "claude", "totalCost": 2.0, "totalTokens": 50,
+     "modelsUsed": ["claude-sonnet-5"], "metadata": {"lastActivity": "2026-09-20T01:00:00.000Z"}},
+    {"period": "33333333-3333-4333-8333-333333333333", "agent": "claude", "totalCost": 0.25, "totalTokens": 5,
+     "metadata": {"lastActivity": "2026-09-25T01:00:00.000Z"}},
+    {"period": "44444444-4444-4444-8444-444444444444", "agent": "claude", "totalCost": 0, "totalTokens": 700,
+     "modelsUsed": ["claude-opus-5"], "metadata": {"lastActivity": "2026-09-26T01:00:00.000Z"}},
+
+    {"period": "11111111-1111-4111-8111-111111111111/subagents/workflows/wf_1dae1434-2f1", "agent": "claude", "totalCost": 0.5,
+     "totalTokens": 40, "modelsUsed": ["claude-sonnet-5"], "metadata": {"lastActivity": "2026-09-27T02:30:00.000Z"}},
+    {"period": "-srv-projects-shop-api/11111111-1111-4111-8111-111111111111/subagents/workflows/wf_9f00aa11-c3d/agent-ab12",
+     "agent": "claude", "totalCost": 0.25, "totalTokens": 10, "metadata": {"lastActivity": "2026-09-26T05:00:00.000Z"}},
+    {"period": "55555555-5555-4555-8555-555555555555/subagents/workflows/wf_0aa0bb11-d4e", "agent": "claude", "totalCost": 0.1,
+     "totalTokens": 20, "metadata": {"lastActivity": "2026-09-26T06:00:00.000Z"}},
+
+    {"period": "2026/09/27/rollout-2026-09-27T01-02-03-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "agent": "codex", "totalCost": 4.0,
+     "totalTokens": 9000, "modelsUsed": ["gpt-5.6-sol"], "metadata": {"lastActivity": "2026-09-27T02:00:00.000Z"}},
+    {"sessionFile": "2026/09/10/rollout-2026-09-10T07-08-09-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "totalCost": 0, "totalTokens": 500,
+     "lastActivity": "2026-09-10T08:00:00.000Z"},
+
+    {"period": "66666666-6666-4666-8666-666666666666", "agent": "claude", "totalCost": 0.9, "totalTokens": 900,
+     "projectPath": "-home-x--claude-mem-observer-sessions-12", "metadata": {"lastActivity": "2026-09-27T01:30:00.000Z"}},
+    {"period": "-home-x--claude-mem-observer-sessions-13/77777777-7777-4777-8777-777777777777", "agent": "claude", "totalCost": 0.8,
+     "totalTokens": 800},
+    {"period": "88888888-8888-4888-8888-888888888888", "agent": "opencode", "totalCost": 3.0, "totalTokens": 3000},
+    {"period": "2026/09/03/rollout-codex", "agent": "codex", "totalCost": 9.0, "totalTokens": 1}
+  ],
+  "totals": {"totalCost": 99.0}
+}

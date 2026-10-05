@@ -375,15 +375,15 @@ test('a session that disappears removes its row, and an empty roster shows the e
   assert.deepEqual(summaryOf(page(w)), ['0 need you', '0 working', '0 idle', '0 done']);
 });
 
-test('the registry placeholder shows only while state.external is absent', () => {
+test('the registry placeholder is gone: the outside-threads section stays hidden until a Codex thread is listed (tests/js/agents-external.test.mjs has the rest)', () => {
   const { w } = pagesWorld();
   w.location.hash = '#/agents';
-  const find = () => page(w).querySelectorAll('.nonideal').find((n) => /Background sessions/.test(text(n)));
-  assert.match(text(find()), /Background sessions from the Claude registry arrive in v0\.5\.4/);
-  assert.equal(find().classList.contains('hidden'), false);
-  w.ctx.__st = fakeState({ external: { sessions: [] } });
+  assert.equal(page(w).querySelectorAll('.nonideal').some((n) => /Background sessions/.test(text(n))), false, 'no v0.5.4 placeholder any more');
+  const sec = () => page(w).querySelector('[data-sec=external]');
+  assert.ok(sec().classList.contains('hidden'), 'no state.external, no Codex: nothing to list');
+  w.ctx.__st = fakeState({ external: { sessions: [] } });                  // the old registry shape: not a Codex list, still nothing
   w.run('state = __st; updateCurrentPage(state)');
-  assert.equal(find().classList.contains('hidden'), true);
+  assert.ok(sec().classList.contains('hidden'));
 });
 
 test('nudge chips POST the text with enter and toast the outcome', async () => {

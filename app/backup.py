@@ -1,4 +1,4 @@
-"""Nightly backup: a consistent SQLite snapshot plus the Claude transcripts go into a restic repository, then
+"""Nightly backup: a consistent SQLite snapshot plus the Claude transcripts and the Codex rollouts go into a restic repository, then
 every repo under PROJECTS_DIR gets its unpushed work copied to backup branches on origin
 (`ccboard-backup/<node>/<branch>`) so WIP survives the box. The backup never pushes to `main` or to any other
 branch people work on.
@@ -301,7 +301,7 @@ def running() -> bool:
 def _holds_saved_logins(p: Path) -> bool:
     """Would backing up `p` take the saved logins (<data dir>/accounts: Claude's, app/account_store.py; <data dir>/codex-accounts: Codex's,
     app/codex_accounts.py)? True for the data dir itself, either store dir, anything inside them, and any directory above them (a snapshot of
-    the home dir contains them too). The nightly paths are the DB snapshot, the transcripts and CCBOARD_BACKUP_EXTRA: credentials are in none
+    the home dir contains them too). The nightly paths are the DB snapshot, the transcripts, the Codex rollouts and CCBOARD_BACKUP_EXTRA: credentials are in none
     of them, whatever CCBOARD_BACKUP_EXTRA says."""
     try:
         target = p.expanduser().resolve()
@@ -337,6 +337,9 @@ def run(push: bool | None = None, restic: bool | None = None) -> dict:
             transcripts = settings.claude_config_dir / "projects"
             if transcripts.is_dir():
                 paths.append(transcripts)
+            rollouts = settings.codex_home / "sessions"          # only sessions/: CODEX_HOME itself holds auth.json
+            if rollouts.is_dir():
+                paths.append(rollouts)
             for extra in settings.backup_extra:
                 if _holds_saved_logins(Path(extra)):
                     st["warnings"].append(f"skipped {extra}: saved logins are never backed up")

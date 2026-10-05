@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, memory, notify, permissions, previews, projects, prpoll, push, recover, samples, scheduler, search, taskflow, tasks, tmux, tree, usage, usage_summary
+from .agents import codex_discovery
 from .agents import monitor as mem_monitor
 from .agents import registry
 from .agents.base import LaunchReq
@@ -473,6 +474,7 @@ def build_state(user: str) -> dict:
     st["deploy"] = deploy.view(db)                        # an update waiting for the terminals to close (None when nothing is pending)
     st["memory"] = memory.state_view(db)                  # claude-mem worker health as the monitor last saw it (None: off, or not sampled yet)
     st["usage"] = db.kv_get("rate_limits")
+    st["usage_codex"] = db.kv_get("rate_limits_codex")     # the Codex account's windows (agents/codex_rollout.py): {value{limit_id, plan_type, primary, secondary, credits, reached, observed_at, account}, at} | None
     st["accounts"] = account_store.decorate(_accounts_view())
     st["codex_accounts"] = _codex_accounts_view(tail=False)
     st["block"] = db.kv_get(usage.KV_BLOCK)
@@ -575,21 +577,83 @@ def api_session(name: str):
 
 @app.get("/api/external")
 def api_external(agent: str | None = None, project: str | None = None):
-    """Agent sessions running on this box that the board did not start (Claude's own registry, file reads, cached 30 s)."""
+    """Agent sessions running on this box that the board did not start: Claude's own registry (file reads, cached 30 s) and Codex's thread
+    index plus rollouts (read-only, cached 30 s; the originator of a thread that is not codex-tui rides along as `badge`).
+    {claude: [...], codex: [...], at}: `at` is the registry's scan time (the Codex scan's when only Codex is asked)."""
     if agent not in (None, "", "claude", "codex"):
         raise projects.BadRequest("agent must be claude or codex")
     if project:
         projects.check_name("project", project)
-    try:
-        pane_pids = {n: s["pid"] for n, s in tmux.list_sessions().items() if s.get("pid")}
-    except tmux.TmuxDown:
-        pane_pids = {}
-    snap = _registry_snapshot(pane_pids) or {"external": [], "scanned_at": None}
-    ext = snap["external"] if agent in (None, "", "claude") else []      # Codex joins in v0.5.12
-    if project:
-        base = str(settings.projects_dir / project)
-        ext = [e for e in ext if (e.get("cwd") or "") == base or (e.get("cwd") or "").startswith(base + "/")]
-    return {"claude": ext, "codex": [], "at": snap["scanned_at"]}
+    want_claude, want_codex = agent in (None, "", "claude"), agent in (None, "", "codex")
+    claude_ext: list = []
+    at = None
+    if want_claude:
+        try:
+            pane_pids = {n: s["pid"] for n, s in tmux.list_sessions().items() if s.get("pid")}
+        except tmux.TmuxDown:
+            pane_pids = {}
+        snap = _registry_snapshot(pane_pids) or {"external": [], "scanned_at": None}
+        claude_ext, at = snap["external"], snap["scanned_at"]
+        if project:
+            base = str(settings.projects_dir / project)
+            claude_ext = [e for e in claude_ext if (e.get("cwd") or "") == base or (e.get("cwd") or "").startswith(base + "/")]
+    codex_ext: list = []
+    if want_codex:
+        codex_ext, codex_at = codex_discovery.external(db, project)
+        if not want_claude:
+            at = codex_at
+    return {"claude": claude_ext, "codex": codex_ext, "at": at}
+
+
+def _external_target(agent: str, sid: str) -> dict:
+    """The external session `sid` of `agent` that POST /api/external/<agent>/<sid>/open acts on, as {cwd, project, repo, name}. 404 when the
+    board's last scan does not list it (or it is one of the board's own sessions), 400 when its directory is not a project directory."""
+    if agent == "codex":
+        e = codex_discovery.find(db, sid)
+        cwd = e.get("cwd") if e else None
+    else:
+        try:
+            pane_pids = {n: s["pid"] for n, s in tmux.list_sessions().items() if s.get("pid")}
+        except tmux.TmuxDown:
+            pane_pids = {}
+        snap = _registry_snapshot(pane_pids) or {"external": []}
+        e = next((x for x in snap["external"] if (x.get("session_id") or "").lower() == sid), None)
+        cwd = e.get("cwd") if e else None
+    if e is None:
+        raise projects.NotFound(f"no external {agent} session {sid} (it may have been opened on the board already)")
+    pr = codex_discovery.project_repo(cwd)
+    if not pr or not cwd or not Path(cwd).is_dir():
+        raise projects.BadRequest(f"this session's directory ({cwd or 'unknown'}) is not under the projects folder, so the board cannot open it")
+    projects.contained(Path(cwd))                      # a symlink, or a path that resolves outside PROJECTS_DIR, is refused like everywhere else
+    return {"cwd": cwd, "project": pr[0], "repo": pr[1], "name": e.get("name") or e.get("title")}
+
+
+@app.post("/api/external/{agent}/{sid}/open", status_code=201)
+def api_external_open(agent: str, sid: str):
+    """Open an external session on the board: a new board session in its directory that resumes it (`codex resume <id>` or
+    `claude --resume <id>`, built by the adapter). Only sessions the last scan lists and whose directory is under PROJECTS_DIR; the
+    resumed conversation is then the board's own (its id is bound to the new row, so it leaves the external list)."""
+    if agent not in ("claude", "codex"):
+        raise projects.BadRequest("agent must be claude or codex")
+    if not UUID_RE.match(sid or ""):
+        raise projects.BadRequest("session id must be a UUID")
+    sid = sid.lower()
+    ag = agents.get(agent)
+    if not ag.bin():
+        raise projects.BadRequest(f"{agent} is not installed on this box")
+    for name, row in db.open_rows().items():                    # already running on the board: go there, never a second resume
+        if (row.get("agent_session_id") or "").lower() == sid:
+            raise projects.Conflict(f"session {sid} is already open on the board as {name}")
+    t = _external_target(agent, sid)
+    project, repo, cwd = t["project"], t["repo"], t["cwd"]
+    session = _free_session_name(project, repo)
+    name = tmux.tmux_name(project, repo, session)
+    plan = ag.launch_plan(LaunchReq(kind="resume", session_name=session, cwd=cwd, resume_id=sid))
+    real = _start_session(name, project, repo, session, "resume", cwd, cmd_line=plan.cmd_line, claude_session_id=sid, agent=agent,
+                          opts=plan.opts_clean)
+    _invalidate_scan()                                          # the next poll drops the thread from the external list: the new row owns its id
+    return {"tmux": real, "attach_url": f"/tty/?arg={real}", "agent": agent, "agent_session_id": sid, "claude_session_id": sid,
+            "cmd": plan.cmd_line, "project": project, "repo": repo}
 
 
 # ---------- time series (samples) ----------
@@ -3048,8 +3112,12 @@ def api_search(q: str = "", limit: int = 30):
     by_claude_id = {r.get("claude_session_id"): name for name, r in open_rows.items() if r.get("claude_session_id")}
     for r in rows:
         k = known.get(r["session_id"])
+        r["agent"] = search.agent_of(r.get("file"))
         r["project"] = k["project"] if k else None
         r["repo"] = k["repo"] if k else None
+        if k is None and r["agent"] == "codex":                  # a Codex thread the board did not start: its directory names the project
+            pr = codex_discovery.project_repo(r.get("cwd"))
+            r["project"], r["repo"] = pr if pr else (None, None)
         r["tmux"] = by_claude_id.get(r["session_id"])
     return {"q": q, "results": rows}
 

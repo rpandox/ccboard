@@ -115,8 +115,8 @@ Shell.pill = function (key, label) {
   const pl = el('b', { class: 'pl', text: label });
   const pv = el('span', { class: 'pv' });
   const pr = el('span', { class: 'pr' });
-  const link = key === '5h' || key === '7d';                                  // one tap to the Usage page (v0.5.17)
-  const n = el(link ? 'a' : 'span', { class: 'pill hidden', 'data-pill': key, href: link ? '#/usage' : null, title: link ? 'Usage' : null }, pl, pv, pr);
+  const link = key === '5h' || key === '7d' || key === 'codex';              // one tap to the Usage page (v0.5.17); the Codex pill lands on its Codex tab (v0.5.12)
+  const n = el(link ? 'a' : 'span', { class: 'pill hidden', 'data-pill': key, href: link ? (key === 'codex' ? '#/usage?agent=codex' : '#/usage') : null, title: link ? 'Usage' : null }, pl, pv, pr);
   n.pl = pl; n.pv = pv; n.pr = pr;
   return n;
 };
@@ -165,19 +165,23 @@ Shell.focusSearch = function () {
   R.search.select();
 };
 
-/* Codex rate limits (v0.5.12 shape not final): accept a window object, a list of them or an object of them; prefer the longest window. */
+/* Codex rate limits: state.usage_codex = {value: {limit_id, plan_type, primary, secondary, credits, reached, observed_at, account}, at}, a window being
+   {used_percent, window_minutes, resets_at}. Also accepts a bare window, a list of them or an object of them. The pill shows ONE window, the longest one the plan
+   reports (weekly: 10080 minutes; a plan with a 5-hour window as well still shows the weekly one), labelled from its window_minutes. */
 Shell.codexWindow = function (u) {
   if (!u) return null;
   const v = u.value !== undefined ? u.value : u;
   const cand = [];
   const pct = (w) => (typeof w.used_percentage === 'number' ? w.used_percentage : w.used_percent);
-  const add = (w) => { if (w && typeof w === 'object' && typeof pct(w) === 'number') cand.push(w); };
+  const add = (w) => { if (w && typeof w === 'object' && typeof pct(w) === 'number' && Number.isFinite(pct(w))) cand.push(w); };
   if (Array.isArray(v)) v.forEach(add);
   else { add(v); if (v && typeof v === 'object') Object.values(v).forEach(add); }
   if (!cand.length) return null;
   cand.sort((a, b) => (b.window_minutes || 0) - (a.window_minutes || 0));
   const w = cand[0];
-  return { used_percentage: pct(w), resets_at: w.resets_at, minutes: w.window_minutes };
+  const rec = v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  return { used_percentage: pct(w), resets_at: w.resets_at, minutes: w.window_minutes, plan: typeof rec.plan_type === 'string' ? rec.plan_type : '',
+    reached: rec.reached === true, account: typeof rec.account === 'string' ? rec.account : '' };
 };
 
 Shell.windowLabel = function (m) {
@@ -187,6 +191,15 @@ Shell.windowLabel = function (m) {
   if (m % 1440 === 0) return `${m / 1440}D`;
   if (m % 60 === 0) return `${m / 60}H`;
   return `${m}m`;
+};
+
+/* 'weekly' for 10080 minutes, '5-hour' for 300, '3-day' / '2-hour' for the rest, 'window' when the plan names none: the word of the pill's title. */
+Shell.windowName = function (m) {
+  if (!m) return 'window';
+  if (m === 10080) return 'weekly';
+  if (m % 1440 === 0) return `${m / 1440}-day`;
+  if (m % 60 === 0) return `${m / 60}-hour`;
+  return `${m}-minute`;
 };
 
 Shell.patchPill = function (node, w, what) {
@@ -264,9 +277,30 @@ Shell.patchUsage = function (st) {
   Shell.patchPill(R.p5, rl.five_hour, pre + '5-hour window');
   Shell.patchPill(R.p7, rl.seven_day, pre + 'weekly window');
   Shell.patchPill(R.pSpend, rl.spend_limit, 'spend limit');
+  Shell.patchCodex(st);
+};
+
+/* The CX pill (v0.5.12): ONE window of state.usage_codex, labelled from its window_minutes ('CX 7D' for the weekly window of 10080 minutes, 'CX 5H' for 300). A reading
+   whose reset instant has passed is a window that rolled over (nothing counted in the new one yet): it shows 0 %, like the Usage page's account rows. A reached limit
+   makes it red whatever the percentage says, with several Codex accounts the title names the one the reading belongs to, and the pill is the way to the Codex tab. */
+Shell.patchCodex = function (st) {
+  const R = Shell.refs;
   const cx = Shell.codexWindow(st.usage_codex);
-  Shell.patchPill(R.pCodex, cx, 'Codex ' + (Shell.windowLabel(cx && cx.minutes) || 'window'));
-  if (cx) setText(R.pCodex.pl, 'CX ' + Shell.windowLabel(cx.minutes));
+  if (!cx) { Shell.patchPill(R.pCodex, null, ''); return; }
+  const rolled = typeof cx.resets_at === 'number' && cx.resets_at > 0 && cx.resets_at <= Date.now() / 1000;
+  let who = '';
+  try {
+    if (typeof cxAccounts === 'function' && typeof cxState === 'function' && cxAccounts(st).length > 1) {
+      const key = cx.account || (cxState(st) || {}).current;
+      const a = cxAccounts(st).find((x) => x.key === key);
+      if (a) who = cxName(a) + ' · ';
+    }
+  } catch (e) { console.error('ccboard codex pill', e); }
+  Shell.patchPill(R.pCodex, rolled ? { ...cx, used_percentage: 0, resets_at: 0 } : cx, `${who}Codex ${Shell.windowName(cx.minutes)} window`);
+  setText(R.pCodex.pl, `CX ${Shell.windowLabel(cx.minutes)}`.trim());
+  const extra = [cx.plan ? `${cx.plan} plan` : '', rolled ? 'the window rolled over since the last reading' : '', cx.reached ? 'limit reached' : ''].filter(Boolean);
+  if (cx.reached) { R.pCodex.classList.remove('ok', 'warn'); R.pCodex.classList.add('bad'); }
+  if (extra.length) R.pCodex.setAttribute('title', `${R.pCodex.getAttribute('title')} · ${extra.join(' · ')}`);
 };
 
 Shell.agentDot = function (node, tone, title) {

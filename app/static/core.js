@@ -177,6 +177,12 @@ async function demoApi(method, path) {
     const dt = Math.floor(Date.now() / 1000 - data.demo.epoch);
     return { ...data, events: data.events.map((e) => ({ ...e, t: e.t + dt })) };
   }
+  if (name === 'series' && data && data.demo && data.demo.epoch && data.meta && typeof data.meta === 'object') {   // the window resets of the series follow the clock too: a Codex window that ends after the fixture's moment must not read as 'rolled over' now
+    const dt = Math.floor(Date.now() / 1000 - data.demo.epoch);
+    const meta = {};
+    for (const [k, m] of Object.entries(data.meta)) meta[k] = m && typeof m.resets_at === 'number' ? { ...m, resets_at: m.resets_at + dt } : m;
+    return { ...data, meta };
+  }
   return name === 'state' || name === 'usage_summary' ? demoRebase(data) : data;   // both carry demo.epoch: the summary's reset times and ISO stamps ride along with the state's
 }
 

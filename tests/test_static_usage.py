@@ -342,7 +342,7 @@ def test_demo_top_sessions_give_open_buttons_to_live_sessions_only():
         "models come as the ccusage full names ('claude-opus-5-5'): the chips shorten them"
 
 
-def test_demo_series_events_fixture_is_a_state_gantt_of_four_live_sessions():
+def test_demo_series_events_fixture_is_a_state_gantt_of_five_live_sessions():
     body = demo("series_events.json")
     live = live_sessions()
     events = body["events"]
@@ -353,7 +353,8 @@ def test_demo_series_events_fixture_is_a_state_gantt_of_four_live_sessions():
         assert {"p", "r", "s", "a"} <= set(e["m"]), e
         assert e["key"] in live, f"{e['key']} is not a session of the state fixture"
     keys = {e["key"] for e in events}
-    assert len(keys) == 4, f"state events for 4 tmux keys, found {len(keys)}"
+    assert len(keys) == 5, f"state events for 5 tmux keys (four Claude sessions and the live Codex one, v0.5.12), found {len(keys)}"
+    assert {e["m"]["a"] for e in events} == {"claude", "codex"}, "a teal Codex row among the Claude ones"
     epoch = demo("state.json")["demo"]["epoch"]
     assert body["demo"]["epoch"] == epoch, "the fixture clock rides along (like state.json) so demoApi can shift the events to now"
     assert all(epoch - 24 * 3600 <= e["t"] <= epoch for e in events), "all inside the 24 h before the fixture clock"

@@ -31,8 +31,8 @@ log = logging.getLogger("ccboard.samples")
 #   throttle   record() writes a sample when the value moved by at least `delta` OR the last sample is older than `seconds`.
 #              delta None: no value trigger; delta 0: any change (value != last); seconds None: no time trigger. Both None = every
 #              call writes (ev counts per event, state and lim are written by their own change/dedupe rules).
-#   key        (documentation) rl_*: agent ('claude' = the CURRENT account) or 'acct:<account key>' (one subscription account, see
-#              app/accounts.py); ctx, ctx_tok, scost, stok, state: tmux session; ev: project; cost: '<agent>:<uuid>';
+#   key        (documentation) rl_*: agent ('claude' / 'codex' = the CURRENT account) or 'acct:<account key>' (one Claude subscription account, see
+#              app/accounts.py) or 'cacct:<account key>' (one Codex account, app/codex_accounts.py; written by agents/codex_rollout.py); ctx, ctx_tok, scost, stok, state: tmux session; ev: project; cost: '<agent>:<uuid>';
 #              h_*: node; n_*: ''; lim: 5h | 7d | other; acct: the account key that became current; cacct: the Codex account key that became current.
 #   meta       state, cost and lim carry `acct` (the subscription account key) when it is known; acct events carry {from, to}.
 CATALOGUE: dict[str, dict] = {
@@ -524,7 +524,8 @@ def events_payload(db, series: str, since, key: str | None = None) -> dict:
 
 def _register_hooks() -> None:
     from . import account_store, accounts, autoresume, codex_accounts   # imported late: autoresume imports tmux/notify and accounts imports samples lazily
-    for fn in (autoresume.tick, accounts.observe, account_store.tick, codex_accounts.tick):   # observe: who is logged in (kv accounts / account_current, 'acct' events); account_store.tick: saved logins; codex_accounts.tick: the same for Codex
+    from .agents import codex_rollout
+    for fn in (autoresume.tick, accounts.observe, account_store.tick, codex_accounts.tick, codex_rollout.tick):   # observe: who is logged in (kv accounts / account_current, 'acct' events); account_store.tick: saved logins; codex_accounts.tick: the same for Codex; codex_rollout.tick: Codex rollout stats and rate limits (after codex_accounts: it reads the account the tick above just learned)
         if fn not in TICK_HOOKS:
             TICK_HOOKS.append(fn)
 

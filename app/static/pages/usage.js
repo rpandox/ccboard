@@ -21,6 +21,13 @@
    from state.accounts.list (the 3 s poll). The one write, PATCH /api/accounts/{key} {label}, belongs to the shared rename sheet of settings.js
    (settingsRenameAccount: the pencil of a row opens it).
 
+   Codex (v0.5.12): with a Codex on the box the Limits section head carries a Claude | Codex switch (P.agent, ?agent=codex in the address, the last pick in localStorage).
+   The Codex tab draws the gauges from state.usage_codex (primary / secondary, told apart by window_minutes: up to 360 is the 5H slot, from 7200 the 7D one; a plan that
+   reports only the weekly window shows one gauge) and the chart from /api/series?series=rl_5h,rl_7d&key=codex (key=cacct:<key> once a Codex account chip other than the
+   one in use is picked; its gauges then read the last point of that series). The Accounts section ends with a Codex block when state.codex_accounts exists: one row per
+   Codex account (label in the teal of its agent, plan, current, 5H / 7D gauges) read from ONE series request of the page (rl_5h,rl_7d for key=cacct:<key>,...: P.cx), the
+   account in use answering with the live state.usage_codex; tokens and dollars are the box's (the summary's windows.by_agent.codex), not an account's.
+
    Usage.cur is the mounted page record (null when not mounted); its .loading is the promise of the latest load, for the tests. */
 'use strict';
 
@@ -28,6 +35,10 @@ const Usage = {
   RANGES: ['24h', '7d', '30d'],
   RANGE_KEY: 'ccboard:charts:range',               // localStorage: the last range (a ?range= in the address wins and is written back)
   STACK_KEY: 'ccboard:charts:stack',               // localStorage: the cost bars' stack (project | agent)
+  AGENT_KEY: 'ccboard:usage:agent',                // localStorage: the provider tab of the Limits section (claude | codex)
+  AGENTS: ['claude', 'codex'],
+  CX_WIN: { five: 360, seven: 7200 },              // a Codex window of at most 360 minutes is the 5H slot, one of at least 7200 the 7D slot, anything between none
+  CX_ACCT_MAX: 8,                                  // the series endpoint takes at most 8 series x key combinations per request
   DEFAULT_RANGE: '7d',
   REFRESH_MS: 60000,
   STALE_MS: 20000,                                 // a cached range older than this is refetched behind the paint when it is shown again
@@ -71,6 +82,13 @@ Usage.storedStack = function () {
   try { const s = localStorage.getItem(Usage.STACK_KEY); if (s === 'project' || s === 'agent') return s; } catch (_) { /* storage may be unavailable */ }
   return 'project';
 };
+
+Usage.storedAgent = function () {
+  try { const a = localStorage.getItem(Usage.AGENT_KEY); if (Usage.AGENTS.includes(a)) return a; } catch (_) { /* storage may be unavailable */ }
+  return 'claude';
+};
+Usage.saveAgent = function (a) { try { localStorage.setItem(Usage.AGENT_KEY, a); } catch (_) { /* storage may be unavailable */ } };
+Usage.routeAgent = function (route) { const a = route && route.query ? route.query.agent : null; return Usage.AGENTS.includes(a) ? a : null; };
 
 /* The viewer's zone in minutes east of UTC (-720..840); the summary buckets its days and hours in it. */
 Usage.tzMin = function () {
@@ -275,8 +293,14 @@ Usage.build = function (root, route) {
   const P = { range, token: 0, dead: false, route, st: null, cache: {}, open: new Set(), details: new Map(), stack: Usage.storedStack(), sigs: {},
     refs: { body: {}, prov: {}, toggle: {}, stackBtn: {} }, timer: null, onVisible: null, unbind: null, stale: false, liveSig: '', showAll: false,
     events: null, evErr: '', evDone: false, loading: Promise.resolve(), ready: null, rows: new Map(), limDrawn: false,
-    limAcct: null, accSeq: 0 };                               // limAcct: the account the Limits section shows (null = the current one, via key=claude)
+    limAcct: null, accSeq: 0,                                 // limAcct: the account the Limits section shows (null = the current one, via key=claude)
+    agent: 'claude', agentNow: 'claude', cxAcct: null,        // v0.5.12: the provider tab, the one it last painted, and the Codex account its chip picked (null = the one in use, key=codex)
+    cx: { acc: {}, seq: 0, done: false, err: '', keys: '' } };  // the Codex accounts' own readings (one series request for all of them)
   const R = P.refs;
+  const fromAgent = Usage.routeAgent(route);
+  P.agent = fromAgent || Usage.storedAgent();
+  if (fromAgent) Usage.saveAgent(fromAgent);
+  P.agentNow = Usage.agent(P);
 
   const seg = el('div', { class: 'useg pj-switch', role: 'group', 'aria-label': 'Time range' });
   for (const r of Usage.RANGES) {
@@ -285,6 +309,14 @@ Usage.build = function (root, route) {
     seg.append(R.toggle[r]);
   }
   R.alert = el('div', { class: 'callout warn ualert hidden', role: 'alert' });
+  // the provider tab of the Limits section: only with a Codex on the box (Usage.paintAgentSeg shows it)
+  R.agentSeg = el('div', { class: 'useg pj-switch hidden', role: 'group', 'aria-label': 'Provider of the limits', 'data-seg': 'agent' });
+  R.agentBtn = {};
+  for (const a of Usage.AGENTS) {
+    R.agentBtn[a] = el('button', { class: 'small useg-btn pj-repo-btn', type: 'button', 'data-agent': a, 'aria-pressed': a === Usage.agent(P) ? 'true' : 'false',
+      title: `Show the ${a === 'codex' ? 'Codex' : 'Claude'} limits`, text: a === 'codex' ? 'Codex' : 'Claude', onclick: () => Usage.setAgent(P, a) });
+    R.agentSeg.append(R.agentBtn[a]);
+  }
   const head = el('div', { class: 'page-head' }, el('h1', { text: 'Usage' }), el('div', { class: 'actions' }, seg));
 
   // Limits: the gauges and their note, the slot for an empty or error block, the chart host Charts.line owns (kept, never rebuilt)
@@ -308,6 +340,7 @@ Usage.build = function (root, route) {
     R.prov[id] = el('span', { class: 'prov dim', text: prov });
     const kids = [el('h2', { text: title }), R.prov[id]];
     if (id === 'cost') kids.push(stack);
+    if (id === 'limits') kids.push(R.agentSeg);
     const body = el('div', { class: 'ubody', 'data-body': id });
     R.body[id] = body;
     if (id === 'limits') body.append(R.limAcct, el('div', { class: 'uc-gauges' }, R.g5, R.g7), R.gnote, R.limSlot, R.limHost, R.limCap);
@@ -334,7 +367,7 @@ Usage.applyRange = function (P, range) {
   Usage.syncToggle(P);
   const c = Usage.entry(P);
   if (c && (c.summary || c.series)) {
-    const other = c.serAcct !== P.limAcct;                                       // its limit series is another account's: fetch this one's (series only)
+    const other = c.serAcct !== Usage.scope(P);                                  // its limit series is another account's (or provider's): fetch this one's (series only)
     if (other) { c.series = null; c.serDone = false; delete c.err.series; }
     Usage.paintAll(P);
     if (Date.now() - c.at > Usage.STALE_MS) Usage.load(P);                      // old enough: refresh behind the paint
@@ -351,7 +384,7 @@ Usage.setRange = function (P, range) {
   Usage.saveRange(range);
   Usage.applyRange(P, range);
   try {
-    if (typeof navigate === 'function' && typeof buildHash === 'function') navigate(buildHash('usage', {}, { range }), { replace: true });
+    if (typeof navigate === 'function' && typeof buildHash === 'function') navigate(buildHash('usage', {}, { range, agent: Usage.agent(P) === 'codex' ? 'codex' : null }), { replace: true });
   } catch (e) { console.error('ccboard usage range', e); }
 };
 
@@ -384,8 +417,8 @@ Usage.load = function (P, opts) {
   const o = opts || {};
   const range = P.range;
   const token = P.token;
-  const c = P.cache[range] || (P.cache[range] = { summary: null, series: null, at: 0, err: {}, sumDone: false, serDone: false, serAcct: P.limAcct });
-  if (c.serAcct !== P.limAcct) { c.series = null; c.serDone = false; delete c.err.series; }
+  const c = P.cache[range] || (P.cache[range] = { summary: null, series: null, at: 0, err: {}, sumDone: false, serDone: false, serAcct: Usage.scope(P) });
+  if (c.serAcct !== Usage.scope(P)) { c.series = null; c.serDone = false; delete c.err.series; }
   const current = () => Usage.alive(P) && P.token === token;
   const hours = Usage.wide() ? 48 : 24;
   c.hours = hours;
@@ -410,7 +443,8 @@ Usage.load = function (P, opts) {
   });
   // the limit chart wants the series and the summary (episodes, resets) at once: Charts.line only redraws marks when the data moved
   const sLim = Promise.all([sSum, sSer]).then(() => { if (current()) Usage.safe(P, 'limits', () => Usage.paintLimits(P)); });
-  const done = Promise.all([sLim, sEv]).then(() => {
+  const sCx = Usage.fetchCx(P, o.fresh);                                         // the Codex accounts' readings (nothing without a Codex account)
+  const done = Promise.all([sLim, sEv, sCx]).then(() => {
     if (current()) { Usage.paintAlert(P); Usage.refreshDetails(P, o.fresh); }
   });
   P.loading = done;
@@ -420,12 +454,13 @@ Usage.load = function (P, opts) {
 /* The limit series of the page's account for c's range (key=claude follows the current account; acct:<key> is one account's own windows). It
    fills c.series / c.serDone, never paints, and drops its answer when the account was changed while it was on its way. */
 Usage.seriesPath = function (P) {
-  const key = P.limAcct ? 'acct:' + encodeURIComponent(P.limAcct) : 'claude';
+  const codex = Usage.agent(P) === 'codex';                                      // the Codex tab: key=codex, or one Codex account's own windows (cacct:<key>)
+  const key = codex ? (P.cxAcct ? 'cacct:' + encodeURIComponent(P.cxAcct) : 'codex') : (P.limAcct ? 'acct:' + encodeURIComponent(P.limAcct) : 'claude');
   return `/api/series?series=rl_5h,rl_7d&key=${key}&since=${P.range}&points=${Usage.points(P)}`;
 };
 
 Usage.fetchSeries = function (P, c, fresh) {
-  const acct = P.limAcct;
+  const acct = Usage.scope(P);
   c.serAcct = acct;
   return Usage.get(Usage.seriesPath(P), fresh).then((v) => {
     if (c.serAcct !== acct) return;
@@ -439,7 +474,7 @@ Usage.reloadSeries = function (P, fresh) {
   if (!c) return Promise.resolve();
   const token = P.token;
   const seq = P.accSeq;
-  if (c.serAcct !== P.limAcct) { c.series = null; c.serDone = false; delete c.err.series; }
+  if (c.serAcct !== Usage.scope(P)) { c.series = null; c.serDone = false; delete c.err.series; }
   const done = Usage.fetchSeries(P, c, fresh).then(() => {
     if (Usage.alive(P) && P.token === token && P.accSeq === seq) Usage.safe(P, 'limits', () => Usage.paintLimits(P));
   });
@@ -512,7 +547,9 @@ Usage.paintAlert = function (P) {
 /* The two gauges follow the state on every update(); with no live reading they fall back to the summary's last statusline sample. */
 Usage.paintGauges = function (P) {
   const R = P.refs;
+  Usage.paintAgentSeg(P);
   Usage.paintPicks(P);
+  if (Usage.agent(P) === 'codex') { Usage.paintCodexGauges(P); return; }
   const chosen = P.limAcct ? Usage.accounts(P).find((a) => a.key === P.limAcct) : null;
   if (chosen) { Usage.paintAccountGauges(P, chosen); return; }
   const rl = (P.st && P.st.usage && P.st.usage.value) || {};
@@ -560,16 +597,23 @@ Usage.hasData = function (data, names) {
 
 Usage.paintLimits = function (P) {
   const c = Usage.entry(P);
-  if (!c || !c.serDone || !c.sumDone || c.serAcct !== P.limAcct) { Usage.limitsShow(P, 'loading'); return; }
+  if (!c || !c.serDone || !c.sumDone || c.serAcct !== Usage.scope(P)) { Usage.limitsShow(P, 'loading'); return; }
+  const codex = Usage.agent(P) === 'codex';
   const empty = () => {
     P.sigs.limits = '';
     if (c.err.series && !c.series) { Usage.limitsShow(P, 'slot', Usage.errorBlock(P, `Could not load the limit series: ${c.err.series}`)); return; }
+    if (codex) {
+      const cxWho = P.cxAcct ? Usage.cxAccts(Usage.stOf(P)).find((a) => a.key === P.cxAcct) : null;
+      if (cxWho) { Usage.limitsShow(P, 'slot', Usage.empty(`No samples for ${cxName(cxWho)} in this range`, 'Readings arrive while a Codex session runs on that account. Pick a longer range or another account.', false)); return; }
+      Usage.limitsShow(P, 'slot', Usage.empty('No Codex samples yet', 'The board reads the limits from the rollout of a Codex session: start one with + session and the history appears here.', true));
+      return;
+    }
     const who = P.limAcct ? Usage.accounts(P).find((a) => a.key === P.limAcct) : null;
     if (who) { Usage.limitsShow(P, 'slot', Usage.empty(`No samples for ${Usage.accName(who)} in this range`, 'Readings arrive while a session runs on that account. Pick a longer range or another account.', false)); return; }
     Usage.limitsShow(P, 'slot', Usage.empty('No samples yet', 'The board records usage from its first hook event: start a session and the 5H and 7D history appears here.', true));
   };
   const data = c.series;
-  const names = data && data.series ? Object.keys(data.series).filter((k) => /^rl_(5h|7d):/.test(k)) : [];
+  const names = data && data.series ? Object.keys(data.series).filter((k) => Usage.limName(k, P)) : [];
   if (!Usage.hasData(data, names)) { empty(); return; }
   const sum = Usage.summaryOf(P);
   const since = Usage.epoch(data.since) || data.t[0];
@@ -579,7 +623,7 @@ Usage.paintLimits = function (P) {
   const seen = new Set();
   const reset = (t) => { const k = Math.round(t); if (t >= since && t <= until && !seen.has(k)) { seen.add(k); resets.push({ t, label: `resets ${Usage.clock(t)}` }); } };
   const only = Usage.limitAccount(P);                                           // with two accounts or more the chart shows one account's hits only
-  if (sum && Array.isArray(sum.episodes)) {
+  if (!codex && sum && Array.isArray(sum.episodes)) {                           // limit hits are Claude's (the statusline / hook episodes); a Codex window only has its resets
     for (const ep of sum.episodes) {
       if (only && Usage.str(ep && ep.acct) !== only) continue;
       const t = Usage.epoch(ep && ep.at);
@@ -592,9 +636,10 @@ Usage.paintLimits = function (P) {
   const colors = {};
   for (const n of names) { labels[n] = n.indexOf('rl_5h') === 0 ? '5H' : '7D'; colors[n] = n.indexOf('rl_5h') === 0 ? '--sig' : '--fg-2'; }
   if (!P.limDrawn) Usage.limitsShow(P, 'loading');                              // the skeleton until the first draw, then the chart stays put while it refreshes
-  const acct = P.limAcct;
+  setText(P.refs.limCap, `dashed lines: 60% warn, 85% critical · ticks mark ${codex ? 'window resets' : 'limit hits and window resets'}`);
+  const acct = Usage.scope(P);
   Promise.resolve(P.ready || (P.ready = Usage.ready())).then((ok) => {
-    if (!Usage.alive(P) || Usage.entry(P) !== c || P.limAcct !== acct) return;      // another range or account was picked while uPlot loaded
+    if (!Usage.alive(P) || Usage.entry(P) !== c || Usage.scope(P) !== acct) return;      // another range, account or provider was picked while uPlot loaded
     if (!ok) { P.limDrawn = false; Usage.limitsShow(P, 'slot', Usage.errorBlock(P, 'The chart library did not load.')); return; }
     try {
       Usage.limitsShow(P, P.limDrawn ? 'chart' : 'loading');                  // visible while Charts.line measures it
@@ -742,27 +787,212 @@ Usage.setAccount = function (P, key) {
   Usage.reloadSeries(P);
 };
 
-/* One chip per real account above the Limits gauges (nothing with a single account). */
+/* One chip per real account above the Limits gauges (nothing with a single account); on the Codex tab one per Codex account (state.codex_accounts). */
 Usage.paintPicks = function (P) {
   const host = P.refs.limAcct;
   if (!host) return;
-  const list = Usage.realAccounts(Usage.accounts(P));
+  const cx = Usage.agent(P) === 'codex';
+  const list = cx ? Usage.cxAccts(Usage.stOf(P)) : Usage.realAccounts(Usage.accounts(P));
   if (list.length < 2) { P.sigs.picks = ''; host.textContent = ''; host.classList.add('hidden'); return; }
   const cur = list.find((a) => a.current) || list[0];
-  const sel = P.limAcct || cur.key;
+  const sel = (cx ? P.cxAcct : P.limAcct) || cur.key;
   host.classList.remove('hidden');
-  const sig = Usage.sig([list.map((a) => [a.key, Usage.accName(a), !!a.current]), sel]);
+  const nameOf = (a) => (cx ? cxName(a) : Usage.accName(a));
+  const sig = Usage.sig([cx, list.map((a) => [a.key, nameOf(a), !!a.current]), sel]);
   if (P.sigs.picks === sig) return;
   P.sigs.picks = sig;
   host.textContent = '';
   host.append(el('span', { class: 'dim ua-picks-l', text: 'Account' }));
   for (const a of list) {
-    const name = Usage.accName(a);
+    const name = nameOf(a);
+    const pick = () => (cx ? Usage.setCxAccount(P, a.key === cur.key ? null : a.key) : Usage.setAccount(P, a.key === cur.key ? null : a.key));
     host.append(el('button', { class: 'small ua-pick pj-repo-btn', type: 'button', 'data-account': a.key, 'aria-pressed': a.key === sel ? 'true' : 'false',
-      title: `Show the windows of ${name}${a.current ? ' (the account in use)' : ''}`, onclick: () => Usage.setAccount(P, a.key === cur.key ? null : a.key) },
-      el('span', { class: ['ua-dot', Usage.hue('account', a.key)].filter(Boolean).join(' '), 'aria-hidden': 'true' }),
+      title: `Show the windows of ${name}${a.current ? ' (the account in use)' : ''}`, onclick: pick },
+      el('span', { class: ['ua-dot', cx ? 'hue-teal' : Usage.hue('account', a.key)].filter(Boolean).join(' '), 'aria-hidden': 'true' }),
       el('span', { class: 'ua-pick-l', text: name }), a.current ? el('span', { class: 'dim ua-pick-now', text: 'now' }) : null));
   }
+};
+
+/* ---------- the Codex tab (v0.5.12): the provider switch of the Limits section, its gauges and the Codex block of the Accounts section ---------- */
+
+Usage.stOf = function (P) { return (P && P.st) || (typeof state !== 'undefined' ? state : null); };
+
+/* The saved Codex accounts of a state ([] where pages/agents.js is not loaded or the box predates them). */
+Usage.cxAccts = function (st) { return typeof cxAccounts === 'function' && st ? cxAccounts(st) : []; };
+
+/* Is there a Codex on this box worth a tab: a rate-limit reading, saved Codex accounts, or an installed Codex agent. */
+Usage.hasCodex = function (st) {
+  if (!st || typeof st !== 'object') return false;
+  if (st.usage_codex && typeof st.usage_codex === 'object') return true;
+  if (typeof cxState === 'function' && cxState(st)) return true;
+  const a = st.agents && st.agents.codex;
+  return !!(a && typeof a === 'object' && a.installed !== false);
+};
+
+/* The provider the Limits section shows: the picked one, Claude while the box has no Codex. */
+Usage.agent = function (P) { return P && P.agent === 'codex' && Usage.hasCodex(Usage.stOf(P)) ? 'codex' : 'claude'; };
+
+/* What the cached limit series of a range was fetched for: null or an account key for Claude (as before v0.5.12), 'codex:<picked Codex account>' for Codex. */
+Usage.scope = function (P) { return Usage.agent(P) === 'codex' ? 'codex:' + (P.cxAcct || '') : P.limAcct; };
+
+/* Does a series name belong to the limit chart of the page's provider? 'rl_7d:claude' and 'rl_5h:acct:<key>' are Claude's, 'rl_7d:codex' and 'rl_7d:cacct:<key>' Codex's
+   (the demo's series file holds all of them; a live answer only has the key that was asked for). On the Codex tab one account's windows at a time. */
+Usage.limName = function (name, P) {
+  const m = /^rl_(?:5h|7d):(.+)$/.exec(String(name));
+  if (!m) return false;
+  const isCx = m[1] === 'codex' || m[1].indexOf('cacct:') === 0;
+  if (Usage.agent(P) !== 'codex') return !isCx;
+  return m[1] === (P.cxAcct ? 'cacct:' + P.cxAcct : 'codex');
+};
+
+/* The provider switch: shown with a Codex on the box, the pressed button follows the provider painted, the section's provenance label says where its numbers come from. */
+Usage.paintAgentSeg = function (P) {
+  const R = P.refs;
+  if (!R.agentSeg) return;
+  const ag = Usage.agent(P);
+  R.agentSeg.classList.toggle('hidden', !Usage.hasCodex(Usage.stOf(P)));
+  for (const a of Usage.AGENTS) R.agentBtn[a].setAttribute('aria-pressed', a === ag ? 'true' : 'false');
+  setText(R.prov.limits, ag === 'codex' ? 'rollout rate limits (Codex)' : 'statusline (official)');
+};
+
+/* The provider changed (a tap, the address, or the state arriving after the page: a stored Codex pick waits for the box to say it has one): repaint the gauges and the chips
+   and fetch the other provider's series. False when nothing changed. */
+Usage.syncAgent = function (P) {
+  const ag = Usage.agent(P);
+  if (ag === P.agentNow) return false;
+  P.agentNow = ag;
+  P.accSeq += 1;
+  P.sigs.picks = '';
+  Usage.paintGauges(P);
+  Usage.safe(P, 'limits', () => Usage.paintLimits(P));
+  Usage.reloadSeries(P);
+  return true;
+};
+
+Usage.setAgent = function (P, agent) {
+  if (!Usage.alive(P) || !Usage.AGENTS.includes(agent) || agent === P.agent) return;
+  P.agent = agent;
+  Usage.saveAgent(agent);
+  if (!Usage.syncAgent(P)) Usage.paintGauges(P);
+  try {
+    if (typeof navigate === 'function' && typeof buildHash === 'function') navigate(buildHash('usage', {}, { range: P.range, agent: Usage.agent(P) === 'codex' ? 'codex' : null }), { replace: true });
+  } catch (e) { console.error('ccboard usage agent', e); }
+};
+
+/* Pick whose windows the Codex tab shows: null = the account in use (key=codex), else a Codex account key (key=cacct:<key>). */
+Usage.setCxAccount = function (P, key) {
+  if (!Usage.alive(P)) return;
+  const next = key || null;
+  if (next === P.cxAcct) return;
+  P.cxAcct = next;
+  P.accSeq += 1;
+  Usage.paintGauges(P);
+  Usage.safe(P, 'limits', () => Usage.paintLimits(P));
+  Usage.reloadSeries(P);
+};
+
+/* A Codex rate-limit record ({primary, secondary}: {used_percent, window_minutes, resets_at}) by slot: {five, seven}, each {value, resets_at, at} (the shape of an
+   account reading, Usage.accReading) or null. The slot comes from window_minutes: up to 360 is the 5H one, from 7200 the 7D one, a window in between has none. */
+Usage.cxSlots = function (rec) {
+  const out = { five: null, seven: null };
+  if (!rec || typeof rec !== 'object') return out;
+  for (const w of [rec.primary, rec.secondary]) {
+    if (!w || typeof w !== 'object') continue;
+    const pct = typeof w.used_percent === 'number' ? w.used_percent : w.used_percentage;
+    const m = Usage.num(w.window_minutes);
+    if (typeof pct !== 'number' || !Number.isFinite(pct) || !m) continue;
+    const slot = m <= Usage.CX_WIN.five ? 'five' : m >= Usage.CX_WIN.seven ? 'seven' : null;
+    if (slot && !out[slot]) out[slot] = { value: pct, resets_at: w.resets_at, at: rec.observed_at };
+  }
+  return out;
+};
+
+/* What is known of one Codex account's windows: {five, seven, plan, reached, live}. The account in use (or the one state.usage_codex names) answers with the live reading
+   the topbar pill shows, and falls back to the page's series; any other account has its last series point (P.cx.acc). A null key is 'the reading', whoever it belongs to. */
+Usage.cxReading = function (P, key) {
+  const st = Usage.stOf(P);
+  const v = st && st.usage_codex && typeof st.usage_codex === 'object' && st.usage_codex.value && typeof st.usage_codex.value === 'object' ? st.usage_codex.value : null;
+  const cs = typeof cxState === 'function' ? cxState(st) : null;
+  const liveKey = v && typeof v.account === 'string' && v.account ? v.account : (cs ? cs.current : null);      // a reading that names no account is the one in use's
+  const live = Usage.cxSlots(v);
+  const own = (key && P.cx && P.cx.acc && P.cx.acc[key]) || { five: null, seven: null };
+  if (!key || key === liveKey) return { five: live.five || own.five, seven: live.seven || own.seven, plan: v && typeof v.plan_type === 'string' ? v.plan_type : '', reached: !!(v && v.reached === true), live: !!v };
+  return { five: own.five, seven: own.seven, plan: '', reached: false, live: false };
+};
+
+/* The two gauges and the note of the Codex tab. */
+Usage.paintCodexGauges = function (P) {
+  const R = P.refs;
+  const st = Usage.stOf(P);
+  const list = Usage.cxAccts(st);
+  if (P.cxAcct && !list.some((a) => a.key === P.cxAcct)) { Usage.setCxAccount(P, null); return; }     // a picked account that is gone: back to the one in use
+  const chosen = P.cxAcct ? list.find((a) => a.key === P.cxAcct) : null;
+  const cs = typeof cxState === 'function' ? cxState(st) : null;
+  const key = chosen ? chosen.key : (cs ? cs.current : null);
+  const name = chosen ? cxName(chosen) : 'Codex';
+  const rd = Usage.cxReading(P, key);
+  const five = Usage.accReading(rd.five, `${name} 5H`);
+  const seven = Usage.accReading(rd.seven, `${name} 7D`);
+  R.g5.set(five);
+  R.g7.set(seven);
+  const at = Math.max(five ? five.at : 0, seven ? seven.at : 0);
+  let text = '';
+  if (!five && !seven) {
+    text = chosen ? `No 5H / 7D reading for ${name} yet: it appears once a Codex session runs on that account.`
+      : 'No Codex reading yet: the board reads the limits from the rollout of a Codex session. Start one with + session.';
+  } else {
+    const plan = rd.plan || (chosen && Usage.str(chosen.plan)) || '';
+    const parts = [`${plan ? plan + ' plan' : 'Codex'}`, at ? `last reading ${fmtAge(at)} ago` : '',
+      !five || !seven ? `the ${seven ? 'weekly' : '5-hour'} window is the only one this plan reports` : '', rd.reached ? 'limit reached' : '',
+      chosen && !chosen.current ? 'not the account in use' : ''];
+    text = parts.filter(Boolean).join(' · ');
+  }
+  R.gnote.classList.toggle('hidden', !text);
+  setText(R.gnote, text);
+};
+
+/* The Codex accounts' own windows: ONE series request for all of them (rl_5h and rl_7d with key=cacct:<key>, the last 30 days; the weekly one alone past 4 accounts because the
+   endpoint takes 8 series x key combinations), reduced to each account's last point. P.cx.acc[key] = {five, seven} in the shape of Usage.cxSlots. Nothing is asked without a Codex account. */
+Usage.cxKeys = function (st) {
+  if (!Usage.hasCodex(st)) return [];
+  const keys = Usage.cxAccts(st).map((a) => a.key);
+  return keys.slice(0, keys.length * 2 <= Usage.CX_ACCT_MAX ? keys.length : Usage.CX_ACCT_MAX);
+};
+
+Usage.cxParse = function (data, keys) {
+  const acc = {};
+  const ok = data && typeof data === 'object' && Array.isArray(data.t) && data.series && typeof data.series === 'object';
+  for (const k of keys) {
+    const slot = { five: null, seven: null };
+    for (const [field, name] of [['five', 'rl_5h'], ['seven', 'rl_7d']]) {
+      const full = `${name}:cacct:${k}`;
+      const col = ok ? data.series[full] : null;
+      if (!Array.isArray(col)) continue;
+      let i = col.length - 1;
+      while (i >= 0 && !(typeof col[i] === 'number' && Number.isFinite(col[i]))) i -= 1;
+      if (i < 0) continue;
+      const meta = data.meta && data.meta[full];
+      slot[field] = { value: col[i], resets_at: meta && meta.resets_at, at: data.t[i] };
+    }
+    acc[k] = slot;
+  }
+  return acc;
+};
+
+Usage.fetchCx = function (P, fresh) {
+  const keys = Usage.cxKeys(Usage.stOf(P));
+  const cx = P.cx;
+  cx.keys = keys.join(',');
+  if (!keys.length) { cx.seq += 1; cx.acc = {}; cx.err = ''; cx.done = true; return Promise.resolve(); }
+  const names = keys.length * 2 <= Usage.CX_ACCT_MAX ? 'rl_5h,rl_7d' : 'rl_7d';
+  const path = `/api/series?series=${names}&key=${keys.map((k) => 'cacct:' + encodeURIComponent(k)).join(',')}&since=30d&points=60`;
+  const mine = ++cx.seq;
+  return Usage.get(path, fresh).then((data) => { if (cx.seq === mine) { cx.acc = Usage.cxParse(data, keys); cx.err = ''; } },
+    (e) => { if (cx.seq === mine) cx.err = Usage.errText(e); }).then(() => {
+    if (cx.seq !== mine) return;
+    cx.done = true;
+    if (Usage.alive(P) && Usage.summaryOf(P)) Usage.safe(P, 'accounts', () => Usage.paintAccounts(P));      // the block's gauges arrive
+  });
 };
 
 /* Local midnight of the first day of the range (24h is today only, like the summary's 'today' window), in epoch seconds. */
@@ -886,10 +1116,12 @@ Usage.paintAccounts = function (P) {
   }) : [];
   if (!sum || !list.length) {
     Usage.noSummary(P, 'accounts', 'No account seen yet', 'The board reads the logged-in Claude account within a minute of the first session. Start one with + session, or run /login in a terminal.');
+    const only = sum ? Usage.cxBlock(P, sum, w) : null;                         // a box that runs Codex only still shows its Codex accounts
+    if (only) { P.sigs.accounts = ''; P.refs.body.accounts.append(only); }
     return;
   }
   const minute = Math.floor(Date.now() / 60000);                                // the countdowns move: repaint at least once a minute
-  const sig = Usage.sig([P.range, minute, list, sum.total, eps.map((e) => [e.acct, e.at]), Usage.logins().map((a) => [a.key, !!a.saved, !!a.current]), Usage.busy()]);       // the callout's Switch button follows the saved logins, the account in use and a switch under way
+  const sig = Usage.sig([P.range, minute, list, sum.total, eps.map((e) => [e.acct, e.at]), Usage.logins().map((a) => [a.key, !!a.saved, !!a.current]), Usage.busy(), Usage.cxSig(P, sum, w)]);       // the callout's Switch button follows the saved logins, the account in use and a switch under way; the Codex block follows its accounts and readings
   if (P.sigs.accounts === sig) return;
   P.sigs.accounts = sig;
   const real = Usage.realAccounts(list);
@@ -917,7 +1149,58 @@ Usage.paintAccounts = function (P) {
   }
   if (!real.length) kids.push(el('p', { class: 'dim unote', text: 'No Claude account has been seen yet: the board reads the logged-in one within a minute of the first session.' }));
   kids.push(el('p', { class: 'dim unote', text: `${Usage.WINDOW_NAME[P.range]}. The 5H and 7D bars are the subscription's own windows, tokens and hours are what each account used in the range; dollars are API-equivalent (list price), not what a plan costs. To use another subscription, run /login in any terminal.` }));
+  kids.push(Usage.cxBlock(P, sum, w));
   Usage.setBody(P, 'accounts', ...kids);
+};
+
+/* ---------- the Codex block of the Accounts section (v0.5.12) ---------- */
+
+/* What the block repaints on: the accounts, their readings and the box's Codex totals of the window. */
+Usage.cxSig = function (P, sum, w) {
+  const list = Usage.cxAccts(Usage.stOf(P));
+  if (!list.length) return null;
+  return [list.map((a) => [a.key, a.label, a.plan, !!a.current, Usage.cxReading(P, a.key)]), Usage.cxTotals(sum, w)];
+};
+
+/* {total, tokens} the summary counts for Codex in a window (ccusage counts sessions, not accounts), null without it. */
+Usage.cxTotals = function (sum, w) {
+  const by = sum && sum.windows && sum.windows[w] && sum.windows[w].by_agent && typeof sum.windows[w].by_agent === 'object' ? sum.windows[w].by_agent.codex : null;
+  return by && typeof by === 'object' ? { total: Usage.num(by.total), tokens: Usage.num(by.tokens) } : null;
+};
+
+/* One Codex account: its name in the teal of its agent, the plan once the box has learned it, 'current', the rename pencil, and its 5H and 7D gauges (a plan that only has
+   a weekly window leaves the 5H cell empty). */
+Usage.cxRow = function (P, a) {
+  const name = cxName(a);
+  const rd = Usage.cxReading(P, a.key);
+  const plan = Usage.str(a.plan) || rd.plan;
+  const who = [el('span', { class: 'bdg ua-chip hue-teal', title: `${name}: a Codex account`, text: name })];
+  if (plan) who.push(el('span', { class: 'bdg mono ua-plan', title: 'Codex plan', text: plan }));
+  if (a.current) who.push(el('span', { class: 'bdg ua-current', title: 'The Codex login in use on this box', text: 'current' }));
+  const id = [el('span', { class: 'ua-who' }, ...who)];
+  if (typeof settingsRenameAccount === 'function') {
+    id.push(el('button', { class: 'icon minimal small ua-edit', type: 'button', title: 'Rename this account', 'aria-label': `Rename ${name}`, onclick: () => settingsRenameAccount(a, { codex: true }) }, ic('edit')));
+  }
+  const blank = () => el('div', { class: 'ua-win ua-blank', role: 'cell' });
+  const win5 = rd.five ? Usage.accGauge('5H', rd.five, name) : blank();
+  const win7 = rd.seven || !rd.five ? Usage.accGauge('7D', rd.seven, name) : blank();
+  return el('div', { class: 'ua-row ucx-row', role: 'row', 'data-codex-account': a.key, 'data-current': a.current ? true : null },
+    el('div', { class: 'ua-id', role: 'cell' }, ...id), win5, win7, blank(), blank(), blank(), blank(), blank());
+};
+
+/* The block: a head, one row per Codex account, and the box's Codex tokens and dollars for the window under them. null without state.codex_accounts or without an account. */
+Usage.cxBlock = function (P, sum, w) {
+  const list = Usage.cxAccts(Usage.stOf(P));
+  if (!list.length) return null;
+  const head = el('div', { class: 'uacc-head', role: 'row' },
+    ...[['Codex account', ''], ['5H window', ''], ['7D window', '']].map(([t, c]) => el('div', { class: 'ua-h' + c, role: 'columnheader', text: t })));
+  const table = el('div', { class: 'uacc ucx-table', role: 'table', 'aria-label': 'Codex accounts' }, head, ...list.map((a) => Usage.cxRow(P, a)));
+  const t = Usage.cxTotals(sum, w);
+  const totals = t ? `${Usage.WINDOW_NAME[P.range]}: ${Usage.tok(t.tokens)} tokens · ${Usage.usd(t.total)} API-equivalent, for the whole box: ccusage counts Codex sessions, not accounts. ` : '';
+  return el('div', { class: 'ucx', 'data-block': 'codex' },
+    el('h3', { class: 'ucx-h' }, el('span', { text: 'Codex' }), el('span', { class: 'prov dim', text: 'rollout rate limits' })),
+    table,
+    el('p', { class: 'dim unote', 'data-note': 'codex', text: `${totals}The bars are the Codex plan's own windows, read from the rollout of a session that ran on the account.` }));
 };
 
 /* ---------- sessions ---------- */
@@ -1212,7 +1495,8 @@ registerPage('usage', {
     const P = Usage.cur;
     if (!P || !st) return;
     P.st = st;
-    Usage.paintGauges(P);
+    if (!Usage.syncAgent(P)) Usage.paintGauges(P);
+    if (Usage.cxKeys(st).join(',') !== P.cx.keys) Usage.fetchCx(P);                    // a Codex account came or went (or the state arrived after the page): ask for its readings
     if (Usage.summaryOf(P)) Usage.safe(P, 'accounts', () => Usage.paintAccounts(P));      // a rename (or a /login switch) shows now; the signature keeps an unchanged poll from rebuilding the rows
     const sig = Usage.liveSig(st);
     if (sig !== P.liveSig) {                               // a session started or ended: the Open buttons follow, without a fetch
@@ -1226,6 +1510,8 @@ registerPage('usage', {
     P.route = route;
     const r = Usage.routeRange(route);
     if (r) { Usage.saveRange(r); if (r !== P.range) Usage.applyRange(P, r); }
+    const a = Usage.routeAgent(route);                       // the CX pill lands on #/usage?agent=codex
+    if (a && a !== P.agent) { P.agent = a; Usage.saveAgent(a); if (!Usage.syncAgent(P)) Usage.paintGauges(P); }
   },
   unmount() {
     const P = Usage.cur;

@@ -362,12 +362,14 @@ class DB:
         with self.lock:
             return self.conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone() is not None
 
-    def session_ids(self) -> list[dict]:
+    def session_ids(self, agent: str | None = None) -> list[dict]:
         """Every session row that learned an agent session id (open or ended), for cost attribution: {project, repo,
-        claude_session_id, agent}."""
+        claude_session_id (the id of either agent), agent}. `agent` selects one agent's rows ('claude' or 'codex')."""
+        sql, args = "SELECT project, repo, claude_session_id, agent FROM sessions WHERE claude_session_id IS NOT NULL", ()
+        if agent:
+            sql, args = sql + " AND agent=?", (agent,)
         with self.lock:
-            rows = self.conn.execute(
-                "SELECT project, repo, claude_session_id, agent FROM sessions WHERE claude_session_id IS NOT NULL").fetchall()
+            rows = self.conn.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
 
     def open_row(self, tmux_name: str) -> dict | None:
