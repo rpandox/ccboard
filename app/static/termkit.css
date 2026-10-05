@@ -1,0 +1,142 @@
+/* ccboard termkit styles (v0.5.9c, quad v3): the tile menu, the prompt composer and the tune panel built by termkit.js (TermKit.tileMenu / composer / tune).
+   Linked by index.html (after charts.css) and term.html (after term.css), so a rule here is the last word. No inline styles: the only dynamic bits are the popover's
+   top / left / max-height, which termkit.js sets through the CSSOM. Three surfaces share one vocabulary:
+     a popover under its anchor (.tk-pop; with a mouse), a bottom sheet (components.js openSheet; on touch, .tk-touch inside it), and a panel mounted in a page (.tk-tune).
+   Sizes: a control is 28 px with a mouse and 44 px on touch (--tk-h, flipped by .tk-touch); the menu is at least 260 px wide, the tune popover 320 px, the composer 420 px;
+   every popover is capped to the window (max-width here, max-height from the script) and scrolls inside itself, so nothing is cut off. Group labels are small caps
+   (the 10.5 px / .07em label of the terminal page's inspector). The accent is a tint (outlined), never a filled primary; Send is a bordered button; Kill is red-outlined. */
+
+/* ---------- the popover ---------- */
+.tk-pop { position:fixed; top:64px; left:16px; z-index:55; box-sizing:border-box; width:max-content; min-width:240px; max-width:calc(100vw - 16px); max-height:calc(100vh - 16px); max-height:calc(100dvh - 16px);
+          overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; background:var(--panel); color:var(--fg); border:1px solid var(--line-strong, var(--line)); border-radius:3px;
+          box-shadow:0 8px 24px rgba(0, 0, 0, .5); font-size:13px; line-height:1.35; }
+.tk-pop:focus, .tk-pop:focus-visible, .bp5-dark .tk-pop[tabindex]:focus-visible { outline:none; }   /* a pointer-opened popover holds the focus itself: no ring around the whole box */
+.tk-pop-menu { min-width:300px; }                                             /* wide enough for the four mode labels (Read only) on one row */
+.tk-pop-composer { width:min(420px, calc(100vw - 16px)); }
+.tk-pop-tune { width:min(320px, calc(100vw - 16px)); }
+
+/* a label that names a group of controls: VIEW, INPUT, MODEL ... (the text is set in capitals; the style keeps it small and quiet) */
+.tk-gl { padding:2px 8px 0; font-size:10.5px; font-weight:600; letter-spacing:.07em; text-transform:uppercase; color:var(--dim); line-height:16px; }
+.tk-note { margin:0; padding:2px 8px 4px; font-size:12px; line-height:1.35; color:var(--dim); overflow-wrap:anywhere; }
+.tk-note.tk-perm { color:var(--warn-fg, var(--warn)); display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; }
+
+/* ---------- the tile menu: groups of rows ---------- */
+.tk-menu { --tk-h:28px; display:flex; flex-direction:column; min-width:0; padding:4px 0; }
+.tk-group { min-width:0; padding:2px 4px 4px; border-top:1px solid var(--line-soft); }
+.tk-group:first-child { border-top:0; }
+.tk-item { display:flex; align-items:center; gap:8px; box-sizing:border-box; min-width:0; min-height:var(--tk-h); padding:0 10px 0 6px; border-radius:2px; color:var(--fg); cursor:pointer;
+           -webkit-user-select:none; user-select:none; }
+.tk-item:focus { background:var(--card); outline:none; }
+@media (hover:hover) { .tk-item:hover { background:var(--card); } }
+.tk-item:focus-visible, .bp5-dark .tk-item[tabindex]:focus-visible { outline:2px solid var(--sig); outline-offset:-2px; }
+.tk-item.tk-off { color:var(--dim); cursor:default; }
+.tk-item.tk-off:hover { background:transparent; }
+.tk-item.tk-off:focus-visible { background:var(--card); }
+.tk-tick { flex:0 0 16px; width:16px; display:inline-flex; align-items:center; justify-content:center; color:var(--sig); }
+.tk-label { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; justify-content:center; }
+.tk-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tk-item.on .tk-name { font-weight:600; }
+.tk-sub { font-size:11.5px; line-height:1.3; color:var(--dim); }
+/* the mode row: four equal cells sharing one track (their borders overlap by a pixel), the current one tinted like a segmented control elsewhere in the app */
+.tk-modes { display:flex; min-width:0; margin:2px 4px 4px; padding:1px 0 0 1px; }
+.tk-mode { flex:1 1 0; display:flex; align-items:center; justify-content:center; box-sizing:border-box; min-width:0; min-height:var(--tk-h); margin:-1px 0 0 -1px; padding:0 4px;
+           border:1px solid var(--line); background:var(--panel); color:var(--fg-2); font-size:12px; font-weight:500; cursor:pointer; -webkit-user-select:none; user-select:none; }
+.tk-mode:first-child { border-radius:3px 0 0 3px; }
+.tk-mode:last-child { border-radius:0 3px 3px 0; }
+.tk-mode .tk-name { text-align:center; }
+.tk-mode:focus { outline:none; }
+.tk-mode:focus-visible { position:relative; z-index:2; outline:2px solid var(--sig); outline-offset:-2px; }
+@media (hover:hover) { .tk-mode:hover { background:var(--card); } .tk-mode.on:hover { background:var(--sig-bg); } }
+.tk-mode.on { position:relative; z-index:1; color:var(--sig); background:var(--sig-bg); border-color:var(--sig-bd); font-weight:600; }
+.tk-modenote { padding-top:0; }
+.tk-kill { margin-top:4px; padding:6px 6px 2px; border-top:1px solid var(--line-soft); }
+.tk-kill .row { flex-wrap:nowrap; gap:6px; }
+.bp5-dark .tk-kill .bp5-button { flex:1 1 auto; box-sizing:border-box; height:var(--tk-h); min-height:var(--tk-h); padding-top:0; padding-bottom:0; justify-content:center; white-space:nowrap; }
+.bp5-dark .tk-kill > .bp5-button { display:flex; width:100%; }
+
+/* touch: the same groups as sections of a bottom sheet, 44 px rows */
+.tk-touch { --tk-h:44px; }
+.tk-menu.tk-touch { padding:0; }
+.tk-touch .tk-group { padding:0 0 6px; }
+.tk-touch .tk-modes { margin:4px 8px; }
+.tk-touch .tk-mode { font-size:14px; }
+.tk-touch .tk-gl { padding:12px 8px 4px; font-size:11px; }
+.tk-touch .tk-note { padding:2px 8px 6px; font-size:12.5px; }
+.tk-touch .tk-item { padding:6px 10px 6px 4px; font-size:15px; }
+.tk-touch .tk-sub { font-size:12px; }
+.tk-touch .tk-kill { padding:8px 4px 4px; }
+
+/* ---------- buttons shared by the composer and the tune panel ---------- */
+.bp5-dark .bp5-button.tk-send:not([class*=bp5-intent-]) { flex:0 0 auto; box-sizing:border-box; min-height:var(--tk-h); min-width:64px; padding:0 14px; justify-content:center; font-weight:600; }
+.bp5-dark .bp5-button.tk-cancel { min-height:var(--tk-h); }
+.tk-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; min-width:0; }
+.tk-hint { flex:1 1 auto; min-width:0; font-size:12px; line-height:1.3; color:var(--dim); overflow-wrap:anywhere; }
+
+/* ---------- the prompt composer ---------- */
+.tk-composer { --tk-h:28px; display:flex; flex-direction:column; gap:8px; box-sizing:border-box; min-width:0; padding:10px 12px 12px; }
+.tk-composer.tk-touch { --tk-h:44px; padding:0 0 4px; }
+.tk-composer > .tk-gl { padding:0; }
+.tk-composer textarea.composer.tk-ta { display:block; flex:0 0 auto; box-sizing:border-box; width:100%; height:auto; min-height:0; max-height:none; margin:0; padding:6px 10px; font-size:13px; line-height:1.4; }
+.tk-composer.tk-touch textarea.composer.tk-ta { padding:10px 12px; font-size:16px; }
+.tk-chips { display:flex; flex-wrap:wrap; gap:6px; min-width:0; }
+.tk-chips:empty { display:none; }
+.bp5-dark .bp5-button.tk-chip:not([class*=bp5-intent-]) { box-sizing:border-box; min-width:0; min-height:var(--tk-h); padding:0 10px; border-radius:14px; background:var(--panel); color:var(--fg-2); font:12px/1 var(--font-mono); }
+.tk-composer .bp5-button.nl { min-height:var(--tk-h); }
+/* the docked variant: ONE row at the bottom of a tile (the owner mounts `el`): a one-row box that does not grow, a … button (the roomy box with the chips), a bordered Send */
+.tk-docked { --tk-h:28px; display:flex; flex-direction:row; flex-wrap:nowrap; align-items:center; gap:6px; box-sizing:border-box; min-width:0; padding:4px 6px; background:var(--bg-0); border-top:1px solid var(--line-soft); }
+.tk-docked textarea.composer.tk-ta { flex:1 1 auto; display:block; box-sizing:border-box; width:auto; min-width:0; height:var(--tk-h); min-height:var(--tk-h); max-height:var(--tk-h); margin:0; padding:3px 8px; font-size:13px; line-height:1.4; resize:none; overflow-y:hidden; }
+.tk-docked .tk-send, .tk-docked .tk-more { flex:0 0 auto; align-self:center; }
+.bp5-dark .bp5-button.tk-more:not([class*=bp5-intent-]) { box-sizing:border-box; min-width:var(--tk-h); min-height:var(--tk-h); padding:0 6px; justify-content:center; font-weight:600; }
+@media (pointer:coarse) { .tk-docked { --tk-h:44px; } .tk-docked textarea.composer.tk-ta { padding:10px 12px; font-size:16px; } }
+html.force-coarse .tk-docked { --tk-h:44px; }
+html.force-coarse .tk-docked textarea.composer.tk-ta { padding:10px 12px; font-size:16px; }
+
+/* ---------- the tune panel ---------- */
+.tk-tune { --tk-h:28px; display:flex; flex-direction:column; gap:10px; box-sizing:border-box; min-width:0; padding:10px 12px 12px; }
+.tk-tune.tk-touch { --tk-h:44px; gap:12px; padding:0 0 4px; }
+.tk-sec { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.tk-sec > .tk-gl { padding:0; }
+.tk-gate { margin:0; padding:6px 8px; border:1px solid var(--line); border-left:3px solid var(--warn); border-radius:2px; background:var(--bg); color:var(--fg-2); font-size:12px; line-height:1.35; }
+
+/* a segmented control: the options share one track, their borders overlap by a pixel, the current one is tinted */
+.tk-seg { display:flex; flex-wrap:wrap; min-width:0; padding:1px 0 0 1px; }
+.bp5-dark .bp5-button.tk-opt:not([class*=bp5-intent-]) { flex:1 1 0; box-sizing:border-box; min-width:0; min-height:var(--tk-h); margin:-1px 0 0 -1px; padding:0 4px; border-radius:0; justify-content:center;
+                                                            font-size:12px; font-weight:500; color:var(--fg-2); white-space:nowrap; }
+.bp5-dark .bp5-button.tk-opt:first-child:not([class*=bp5-intent-]) { border-radius:3px 0 0 3px; }
+.bp5-dark .bp5-button.tk-opt:last-child:not([class*=bp5-intent-]) { border-radius:0 3px 3px 0; }
+/* a long name (a Codex model) takes half the track, many short ones a third: the options wrap into equal cells */
+.bp5-dark .tk-seg.tk-wrap2 .bp5-button.tk-opt:not([class*=bp5-intent-]) { flex:1 1 50%; border-radius:0; }
+.bp5-dark .tk-seg.tk-wrap3 .bp5-button.tk-opt:not([class*=bp5-intent-]) { flex:1 1 33%; border-radius:0; }
+.bp5-dark .tk-seg .bp5-button.tk-opt.on:not([class*=bp5-intent-]), .bp5-dark .bp5-button.tk-tog.on:not([class*=bp5-intent-]) { position:relative; z-index:1; color:var(--sig); background:var(--sig-bg); border-color:var(--sig-bd); }
+.bp5-dark .tk-seg .bp5-button.tk-model.on:not([class*=bp5-intent-]) { color:var(--hue, var(--sig)); background:var(--hue-bg, var(--sig-bg)); border-color:var(--hue-bd, var(--sig-bd)); }
+
+/* the switches: two equal cells, each says its state in words */
+.tk-toggles { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:6px; }
+.bp5-dark .bp5-button.tk-tog:not([class*=bp5-intent-]) { box-sizing:border-box; min-width:0; min-height:var(--tk-h); padding:0 10px; justify-content:space-between; gap:8px; font-size:12.5px; }
+.tk-tog .tk-state { font-size:10.5px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+.tk-tog.on .tk-state { color:inherit; }
+
+/* the commands: an equal-cell grid */
+.tk-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:6px; }
+.bp5-dark .bp5-button.tk-cell:not([class*=bp5-intent-]) { box-sizing:border-box; min-width:0; min-height:var(--tk-h); padding:0 4px; justify-content:center; font:12px/1 var(--font-mono); white-space:nowrap; }
+
+/* a setting that was typed and waits for the statusline; the one that just landed */
+.bp5-dark .bp5-button.tk-opt.pending:not([class*=bp5-intent-]), .bp5-dark .bp5-button.tk-tog.pending:not([class*=bp5-intent-]) { border-color:var(--warn); animation:tk-pending 1.1s ease-in-out infinite; }
+.bp5-dark .bp5-button.tk-opt.ok:not([class*=bp5-intent-]), .bp5-dark .bp5-button.tk-tog.ok:not([class*=bp5-intent-]) { border-color:var(--ok); color:var(--ok-fg); }
+.bp5-dark .tk-tune .bp5-button:disabled { opacity:.45; }
+@keyframes tk-pending { 0%, 100% { opacity:1; } 50% { opacity:.55; } }
+
+/* what a read command printed, and the rename box */
+.tk-readout, .tk-rename { display:flex; flex-direction:column; gap:6px; min-width:0; padding-top:8px; border-top:1px solid var(--line-soft); }
+.tk-readout > .tk-gl, .tk-rename > .tk-gl { padding:0; }
+.tk-pre { margin:0; max-height:220px; overflow:auto; padding:6px 8px; background:var(--bg); border:1px solid var(--line); border-radius:2px; font:11.5px/1.35 var(--font-mono); font-variant-ligatures:none; white-space:pre;
+          color:var(--fg-2); overscroll-behavior:contain; -webkit-user-select:text; user-select:text; }
+.tk-rename .bp5-input { box-sizing:border-box; min-height:var(--tk-h); }
+.tk-rename .bp5-input[aria-invalid=true] { border-color:var(--bad); }
+.tk-rename .tk-err { margin:0; font-size:12px; }
+.tk-rename .tk-err:empty { display:none; }
+.tk-touch .tk-rename .bp5-input { font-size:16px; }
+@media (pointer:coarse) { .tk-rename .bp5-input { font-size:16px; } }
+html.force-coarse .tk-rename .bp5-input { font-size:16px; }
+
+@media (prefers-reduced-motion:reduce) { .bp5-dark .bp5-button.tk-opt.pending, .bp5-dark .bp5-button.tk-tog.pending { animation:none; } }

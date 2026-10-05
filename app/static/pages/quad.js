@@ -1,16 +1,23 @@
-/* ccboard quad page (v0.5.9, route #/quad[?s=a,b,c,d&l=1|2|4&p=<project>]): up to four live terminals side by side, each labelled with its task.
+/* ccboard quad page (v0.5.9, v3 in v0.5.9c; route #/quad[?s=a,b,c,...&l=1|2|4|6|8|10&p=<project>]): up to ten live terminals side by side, each labelled with its task.
    Classic script, one namespace (Quad). Definition only at load: nothing here touches the DOM, storage, the network or a timer until the page is
    mounted, and TermKit / Live / Keymap / Dnd are looked up when they are used (this file may load before or without them).
 
-   Layouts 1, 2 (side by side) and 4 (2 x 2); the default is 2. A window under 840 px (the phone) or a quad column under 600 px (the dock open at
-   1024) is the one-up chip switcher instead: one scroll-snap strip of 44 px chips above ONE mounted tile in full mode, so only one websocket is live.
+   Layouts 1, 2, 4 (2 x 2), 6 (3 x 2), 8 (4 x 2) and 10 (5 x 2), a numeric segmented control in the header; the default is 2. The window caps them: under 840 px (the
+   phone) one tile with the chip switcher (a scroll-snap strip of 44 px chips above ONE mounted tile in full mode, so only one websocket is live); 840-1199 up to 4;
+   1200-1599 up to 8; 1600 and up 10. A tile is never narrower than 240 px: a layout that cannot fit at that width gives way to the next one that does (Quad.layoutFor
+   says why, in the control's title and a quiet caption; the wanted layout stays saved and comes back with the room). Quad.SLOTS is 10; the slots beyond the
+   layout stay saved and their tiles are torn down.
    A tile is article.qtile[data-tmux][data-slot][data-mode=grid|full|ro|tail][data-drop=session] built ONCE per tmux name: its header (state and agent
-   glyph, project/repo · session as a menu, the mode as a 4-way segmented control (a menu button under 366 px), ctx %, size chip, zoom, open, reconnect,
-   close; pages.css sheds them as the tile narrows), the task line (task title, else the last prompt; the last message while it waits), the
-   pending-permission line (Allow / Deny / In terminal) and the body (a ttyd iframe, or pre.tail fed by Live). The grid places a tile by its data-slot in
-   CSS and nobody ever reorders the DOM: moving an iframe reloads it.
+   glyph, project/repo · session with a ▾ that opens the tile's view dropdown (TermKit.tileMenu: view, input, tune, session), the mode as a 4-way segmented control (a menu
+   button under 352 px), ctx %, size chip, zoom, open, reconnect, close; pages.css sheds them as the tile narrows, down to glyphs, name and the ▾ at 300 px), the task line
+   (task title, else the last prompt; the last message while it waits), the pending-permission line (Allow / Deny / In terminal), the body (a ttyd iframe,
+   or pre.tail fed by Live) and, from 520 px up and when 'Show composer' is ticked, the docked composer. The grid places a tile by its data-slot with CSS `order` and
+   nobody ever reorders the DOM: moving an iframe reloads it.
    Zoom is an overlay over an unchanged grid, so the other tiles keep their pixel size (no refit, no /resize POST). Tiles beyond the layout are torn
    down: iframe.src = 'about:blank', then remove(), observers off, Live.unsubscribe.
+   Fullscreen (never entered by itself, never remembered): the header button or F or Ctrl+Alt+F puts html.quad-fs on the page (pages.css hides the topbar, sidebar, banner and
+   bottom nav and makes the quad header one row) and asks the browser for real fullscreen on the document element, so a popover mounted outside the quad still paints; where
+   the browser has no Fullscreen API (iOS Safari) or refuses, the class alone does the same inside the page. Esc or Exit fullscreen leaves.
 
    The scope (v0.5.9b): #/quad is every project, #/quad?p=<project> is one project's quad. The scope picks the sessions: auto-fill, the needs-you order, the sessions an
    empty tile offers, the tile menu's swaps and the phone chips all read Quad.candidates(st, project). A native select in the header (Quad.scopeOptions: All projects,
@@ -33,25 +40,29 @@
 'use strict';
 
 const Quad = {
-  LAYOUTS: [1, 2, 4],
+  LAYOUTS: [1, 2, 4, 6, 8, 10],
   DEFAULT_LAYOUT: 2,
-  SLOTS: 4,
+  SLOTS: 10,
+  GRID: { 1: [1, 1], 2: [2, 1], 4: [2, 2], 6: [3, 2], 8: [4, 2], 10: [5, 2] },      // layout -> [columns, rows]
+  WIDTH_AT: { 1: 0, 2: 840, 4: 840, 6: 1200, 8: 1200, 10: 1600 },                    // the window width a layout needs: 840-1199 up to 4, 1200-1599 up to 8, 1600 up 10
+  TILE_MIN: 240,                   // a tile is never narrower than this many px
+  DOCK_MIN: 520,                   // a docked composer needs a tile this wide (pages.css hides it under; the menu does not offer it there)
+  GAP: 8,                          // the grid gap (pages.css)
   MODES: ['grid', 'full', 'ro', 'tail'],
   MODE_TITLE: { grid: 'Grid: a small tile that does not size the session', full: 'Full: a writable terminal that sizes the session', ro: 'Read only: watch it, nothing you type reaches the session', tail: 'Tail: the last lines of the pane, no terminal' },
   WIDE_MIN: 840,                   // under this window width the quad is the one-up chip switcher
-  COLS_MIN: 600,                   // two columns need 300 px each: a quad column narrower than this is one-up as well (the dock open at 1024)
   STORE: 'ccboard:quad:',
   SCOPE_KEY: 'ccboard:quad:scope', // the scope last used: 'all' or a project name (a raw string, read by shell.js for the nav link)
   RESERVED: ['all', 'scope', 'keys'], // project names that would share a storage key with the all-projects scope, the scope pref and the key-bar pref: they save under ccboard:quad:p:<name>
   KEYS_PREF: 'ccboard:quad:keys',  // '1' shows the host key bar, '0' hides it; unset: shown on touch and in one-up
-  MODES_MAX: 24,                   // remembered modes per scope
+  MODES_MAX: 24,                   // remembered modes (and docked-composer flags) per scope
   HIDDEN_MS: 60000,                // a tab hidden longer than this reloads its live tiles when it comes back
   MEASURE_MS: 320,                 // the size chip and the auto-fit look after TermKit.fitSoon's 250 ms debounce
   FIT_REPEAT_MS: 60000,            // the same auto-fit target is not asked for again inside this window
   FIT_TRIES: 3,
   COLS: [40, 400],                 // POST /resize bounds (tmux.RESIZE_COLS / RESIZE_ROWS)
   ROWS: [10, 200],
-  CHIPS_MAX: 20,                   // Live's cap on ?names=
+  CHIPS_MAX: 10,                   // the one-up switcher lists this many sessions (Live's cap on ?names= is 20)
   NAME_RE: /^[A-Za-z0-9_-]+--[A-Za-z0-9_-]+--[A-Za-z0-9_-]+$/,
   WORD_RE: /^[A-Za-z0-9_-]+$/,
   current: null,                   // the mounted page (see Quad.mount), for the tests and Quad.addToQuad
@@ -59,16 +70,47 @@ const Quad = {
 
 /* ---------- layout ---------- */
 
-/* {n, cols, rows, oneUp, forced, capped} for a window `width`, the wanted layout (1 | 2 | 4) and the quad's own column width `avail` (optional).
-   Under 840 px (the phone, and 600-839: one-up, not 'max 2') or with a column under 600 px the layout is one tile with the chip switcher (forced). */
+/* The most tiles a window of `width` px takes: 1 under 840, 4 under 1200, 8 under 1600, else 10. An unknown width is the phone. */
+Quad.capFor = function (width) {
+  const w = Number(width);
+  if (!(w >= Quad.WIDE_MIN)) return 1;
+  return w < 1200 ? 4 : (w < 1600 ? 8 : 10);
+};
+
+/* The most columns a quad column of `avail` px holds with every tile at least TILE_MIN wide (at least 1). */
+Quad.maxCols = function (avail) {
+  const a = Number(avail);
+  return a > 0 ? Math.max(1, Math.floor((a + Quad.GAP) / (Quad.TILE_MIN + Quad.GAP))) : Infinity;
+};
+
+/* The largest layout <= `n` whose columns fit in `cols`. */
+Quad.fitLayout = function (n, cols) {
+  let i = Quad.LAYOUTS.lastIndexOf(n);
+  if (i < 0) i = 0;
+  while (i > 0 && Quad.GRID[Quad.LAYOUTS[i]][0] > cols) i--;
+  return Quad.LAYOUTS[i];
+};
+
+/* The plain-word reason a wanted layout is not what shows ('' when it is): the window is too narrow for that many tiles, or the quad column is (a tile would be under 240 px). */
+Quad.layoutNote = function (want, n, why) {
+  if (!(n < want)) return '';
+  if (why === 'room') return `${want} tiles would be narrower than ${Quad.TILE_MIN} px here: showing ${n}`;
+  return `${want} tiles need a window ${Quad.WIDTH_AT[want]} px wide or more: showing ${n}`;
+};
+
+/* The layout that shows for a window `width`, the wanted layout (1 | 2 | 4 | 6 | 8 | 10) and the quad's own column width `avail` (optional; unknown skips the 240 px rule):
+   {n, cols, rows, oneUp, forced, capped, want, cap, why, reason}. `cap` is the largest layout this window and column take (the control disables the ones above it); `capped` says
+   n < want; why is '' | 'width' (the window caps it) | 'room' (the window would, the column does not); reason is the caption for it. Under 840 px (the phone, and 600-839: one
+   tile, not 'max 2') it is one tile with the chip switcher (forced), whatever the column; a column that leaves only one tile at 240 px is the same (forced). */
 Quad.layoutFor = function (width, wanted, avail) {
   const w = Number(width);
   const want = Quad.LAYOUTS.includes(Number(wanted)) ? Number(wanted) : Quad.DEFAULT_LAYOUT;
-  const one = () => ({ n: 1, cols: 1, rows: 1, oneUp: true, forced: true, capped: want !== 1 });
-  if (!(w >= Quad.WIDE_MIN)) return one();
-  const a = Number(avail);
-  if (want > 1 && a > 0 && a < Quad.COLS_MIN) return one();
-  return { n: want, cols: want === 1 ? 1 : 2, rows: want === 4 ? 2 : 1, oneUp: want === 1, forced: false, capped: false };
+  if (!(w >= Quad.WIDE_MIN)) return { n: 1, cols: 1, rows: 1, oneUp: true, forced: true, capped: want !== 1, want, cap: 1, why: want !== 1 ? 'width' : '', reason: '' };
+  const byWindow = Quad.capFor(w);
+  const cap = Quad.fitLayout(byWindow, Quad.maxCols(avail));
+  const n = Math.min(want, cap);
+  const why = n < want ? (cap < byWindow && want <= byWindow ? 'room' : 'width') : '';
+  return { n, cols: Quad.GRID[n][0], rows: Quad.GRID[n][1], oneUp: n === 1, forced: n === 1 && want > 1, capped: n < want, want, cap, why, reason: Quad.layoutNote(want, n, why) };
 };
 
 /* ---------- names, the URL and the saved state ---------- */
@@ -85,7 +127,7 @@ Quad.label = function (tmux) {
   return `${p}${r === 'root' ? '' : '/' + r} · ${n}`;
 };
 
-/* Four strings: a valid, not repeated tmux name or ''. */
+/* Quad.SLOTS strings: a valid, not repeated tmux name or ''. */
 Quad.cleanSlots = function (list) {
   const out = [];
   const seen = new Set();
@@ -96,7 +138,7 @@ Quad.cleanSlots = function (list) {
   return out;
 };
 
-/* The route query {s, l, p} as {slots: string[4] | null, layout: 1|2|4 | null, project: string | null, any}: whatever is not valid is left out. */
+/* The route query {s, l, p} as {slots: string[10] | null, layout: 1|2|4|6|8|10 | null, project: string | null, any}: whatever is not valid is left out. */
 Quad.parseQuery = function (query) {
   const q = query && typeof query === 'object' ? query : {};
   const out = { slots: null, layout: null, project: null, any: false };
@@ -138,23 +180,28 @@ Quad.rememberScope = function (project) {
   try { if (typeof Shell !== 'undefined' && Shell && typeof Shell.syncQuadLinks === 'function') Shell.syncQuadLinks(); } catch (e) { console.error('ccboard quad link', e); }
 };
 
-/* The saved {layout, slots, modes, zoom} of a scope, or null when nothing (usable) was saved. */
+/* The saved {layout, slots, modes, zoom, composers} of a scope, or null when nothing (usable) was saved. `composers` is {tmux: true} for the tiles whose docked composer is on. */
 Quad.load = function (project) {
   let raw = null;
   try { raw = JSON.parse(localStorage.getItem(Quad.storageKey(project)) || 'null'); } catch (_) { raw = null; }
   if (!raw || typeof raw !== 'object') return null;
   const modes = {};
   if (raw.modes && typeof raw.modes === 'object') for (const [k, v] of Object.entries(raw.modes)) if (Quad.NAME_RE.test(k) && Quad.MODES.includes(v)) modes[k] = v;
+  const composers = {};
+  if (raw.composers && typeof raw.composers === 'object') for (const [k, v] of Object.entries(raw.composers)) if (Quad.NAME_RE.test(k) && v === true) composers[k] = true;
   const zoom = Number.isInteger(raw.zoom) && raw.zoom >= 0 && raw.zoom < Quad.SLOTS ? raw.zoom : null;
-  return { layout: Quad.LAYOUTS.includes(raw.layout) ? raw.layout : Quad.DEFAULT_LAYOUT, slots: Quad.cleanSlots(raw.slots), modes, zoom };
+  return { layout: Quad.LAYOUTS.includes(raw.layout) ? raw.layout : Quad.DEFAULT_LAYOUT, slots: Quad.cleanSlots(raw.slots), modes, zoom, composers };
 };
 
 Quad.save = function (project, st) {
   const modes = {};
   const keys = Object.keys(st.modes || {});
   for (const k of keys.slice(Math.max(0, keys.length - Quad.MODES_MAX))) modes[k] = st.modes[k];
+  const composers = {};
+  const docked = Object.keys(st.composers || {}).filter((k) => st.composers[k] === true);
+  for (const k of docked.slice(Math.max(0, docked.length - Quad.MODES_MAX))) composers[k] = true;
   const zoom = Number.isInteger(st.zoom) && st.zoom >= 0 && st.zoom < Quad.SLOTS ? st.zoom : null;
-  const value = { layout: Quad.LAYOUTS.includes(Number(st.layout)) ? Number(st.layout) : Quad.DEFAULT_LAYOUT, slots: Quad.cleanSlots(st.slots), modes, zoom };
+  const value = { layout: Quad.LAYOUTS.includes(Number(st.layout)) ? Number(st.layout) : Quad.DEFAULT_LAYOUT, slots: Quad.cleanSlots(st.slots), modes, zoom, composers };
   if (typeof savePrefs === 'function') savePrefs(Quad.storageKey(project), value);
   else { try { localStorage.setItem(Quad.storageKey(project), JSON.stringify(value)); } catch (_) { /* storage may be unavailable */ } }
   return value;
@@ -266,18 +313,27 @@ Quad.autoFill = function (st, n, opts) {
   return Quad.candidates(st, o.project).map((s) => s.tmux).filter((t) => !skip.has(t)).slice(0, Math.max(0, n));
 };
 
-/* `slots` with the empty ones among the indexes `only` (default: the first n) filled by auto-fill; the rest is untouched. */
+/* `slots` with the empty ones among the indexes `only` (default: the first n) filled: first by the live sessions that sit in the hidden slots (n and up: a smaller layout
+   left them there, no tile shows them), in slot order, each moving into the empty visible slot (its hidden slot is cleared: a session is in one slot only); then by auto-fill;
+   the rest is untouched. Only slot numbers change, never a tile node: a hidden slot has no tile, so no iframe moves in the DOM. */
 Quad.fillSlots = function (slots, st, n, opts) {
   const o = opts || {};
   const out = Quad.cleanSlots(slots);
-  const idx = (o.only || Array.from({ length: Math.min(n, Quad.SLOTS) }, (_, i) => i)).filter((i) => i >= 0 && i < Quad.SLOTS && !out[i]);
-  const picks = Quad.autoFill(st, idx.length, { project: o.project, exclude: out.filter(Boolean) });
-  idx.forEach((i, k) => { if (picks[k]) out[i] = picks[k]; });
+  const shown = Math.min(Math.max(0, n), Quad.SLOTS);
+  const idx = (o.only || Array.from({ length: shown }, (_, i) => i)).filter((i) => i >= 0 && i < Quad.SLOTS && !out[i]);
+  const live = new Set(Quad.candidates(st, o.project).map((s) => s.tmux));
+  const hidden = [];
+  for (let i = shown; i < Quad.SLOTS; i++) if (out[i] && live.has(out[i])) hidden.push(i);
+  let k = 0;
+  while (k < hidden.length && k < idx.length) { out[idx[k]] = out[hidden[k]]; out[hidden[k]] = ''; k++; }
+  const rest = idx.slice(k);
+  const picks = Quad.autoFill(st, rest.length, { project: o.project, exclude: out.filter(Boolean) });
+  rest.forEach((i, j) => { if (picks[j]) out[i] = picks[j]; });
   return out;
 };
 
 /* What the page starts from, URL over saved over auto-fill. o = {query (the route query), saved (Quad.load), state (the /api/state payload, null before
-   the first poll), project, n (visible slots; default the layout)} -> {layout, slots, modes, zoom, fromUrl}. A saved slot whose session is gone is
+   the first poll), project, n (visible slots; default the layout)} -> {layout, slots, modes, zoom, composers, fromUrl}. A saved slot whose session is gone is
    dropped; a URL slot is kept as it is (the tile then says the session is not running); every empty visible slot is then filled by auto-fill (an empty
    tile is something the person does inside one visit, with Close: a reload starts from what needs you again). */
 Quad.slotsState = function (o) {
@@ -286,9 +342,10 @@ Quad.slotsState = function (o) {
   const layout = parsed.layout || (saved && saved.layout) || Quad.DEFAULT_LAYOUT;
   const n = Math.min(Quad.SLOTS, Math.max(1, o.n || layout));
   const st = o.state || null;
-  let slots = parsed.slots ? parsed.slots.slice() : (saved ? saved.slots.slice() : ['', '', '', '']);
+  let slots = parsed.slots ? parsed.slots.slice() : (saved ? saved.slots.slice() : Quad.cleanSlots([]));
   if (o.project) slots = slots.map((t) => (t && !Quad.inProject(st, t, o.project) ? '' : t));         // a project's quad shows that project's sessions only
   const modes = saved ? { ...saved.modes } : {};
+  const composers = saved && saved.composers ? { ...saved.composers } : {};
   let zoom = saved && saved.zoom !== null && saved.zoom < n ? saved.zoom : null;
   if (st) {
     const live = new Set(Quad.roster(st).map((s) => s.tmux));
@@ -296,7 +353,7 @@ Quad.slotsState = function (o) {
     slots = Quad.fillSlots(slots, st, n, { project: o.project || '' });
   }
   if (zoom !== null && !slots[zoom]) zoom = null;
-  return { layout, slots, modes, zoom, fromUrl: { slots: !!parsed.slots, layout: !!parsed.layout } };
+  return { layout, slots, modes, zoom, composers, fromUrl: { slots: !!parsed.slots, layout: !!parsed.layout } };
 };
 
 /* ---------- one tile ---------- */
@@ -325,6 +382,20 @@ Quad.taskLine = function (s) {
   return prompt ? { text: prompt, kind: 'prompt' } : { text: '', kind: '' };
 };
 
+/* Can this session take a typed command or prompt right now? {show, ok, why}: show is false for a shell and a row that is not there (nothing to tune); ok is true when the pane sits
+   at its prompt (idle, done, errored, or waiting on the idle prompt: the server's TYPEABLE_STATES) with no compaction and no permission request open; why is the sentence
+   for what is disabled otherwise. The same rule as the terminal page's tuning strip (term.js tuneGate, which the board does not load) and the server's 409. */
+Quad.atPrompt = function (s, st) {
+  const r = s && typeof s === 'object' ? s : null;
+  const agent = r ? Quad.agentOf(r) : '';
+  if (!r || agent === 'shell') return { show: false, ok: false, why: '' };
+  const flags = r.flags && typeof r.flags === 'object' ? r.flags : {};
+  const at = r.state === 'idle' || r.state === 'done' || r.state === 'errored' || (r.state === 'waiting' && flags.wait_kind === 'idle');
+  const open = (Array.isArray(r.pending) && r.pending.length > 0) || !!Quad.perm(st, r.tmux);
+  const ok = at && !flags.compacting && !open;
+  return { show: true, ok, why: ok ? '' : 'Available when the session is at its prompt' };
+};
+
 /* The size chip: the session window ('45x30') or 'cropped' when the tile's terminal is narrower than the window (a grid tile does not size it).
    win = [cols, rows] | null, dims = {cols, rows} | null (the tile's xterm). */
 Quad.sizeInfo = function (win, dims) {
@@ -347,16 +418,17 @@ Quad.needsFit = function (viewers, win, dims) {
   return { cols, rows };
 };
 
-/* Ctrl+Alt+1..4 focus a tile, Z zooms the active one, K goes to the next session that needs you, R reloads every tile. e.code first: Option+digit types
-   another character on a Mac; AltGr (Ctrl+Alt on Windows, it types characters on some layouts) is not a shortcut. */
+/* Ctrl+Alt+1..9 and Ctrl+Alt+0 focus tiles 1..10, Z zooms the active one, F goes full screen (or back), K goes to the next session that needs you, R reloads every tile.
+   e.code first: Option+digit types another character on a Mac; AltGr (Ctrl+Alt on Windows, it types characters on some layouts) is not a shortcut. */
 Quad.shortcutOf = function (e) {
   if (!e || !e.ctrlKey || !e.altKey || e.metaKey || e.shiftKey || e.isComposing) return null;
   try { if (typeof e.getModifierState === 'function' && e.getModifierState('AltGraph')) return null; } catch (_) { /* no modifier state */ }      // AltGr is Ctrl+Alt on Windows: it types ~ { # on some layouts
   const code = typeof e.code === 'string' ? e.code : '';
   const key = typeof e.key === 'string' ? e.key.toLowerCase() : '';
-  const m = /^(?:Digit|Numpad)([1-4])$/.exec(code) || (/^[1-4]$/.test(key) ? [key, key] : null);
-  if (m) return { act: 'focus', n: Number(m[1]) };
+  const m = /^(?:Digit|Numpad)([0-9])$/.exec(code) || (/^[0-9]$/.test(key) ? [key, key] : null);
+  if (m) return { act: 'focus', n: m[1] === '0' ? 10 : Number(m[1]) };
   if (code === 'KeyZ' || (!code && key === 'z')) return { act: 'zoom' };
+  if (code === 'KeyF' || (!code && key === 'f')) return { act: 'fullscreen' };
   if (code === 'KeyK' || (!code && key === 'k')) return { act: 'attention' };
   if (code === 'KeyR' || (!code && key === 'r')) return { act: 'reload' };
   return null;
@@ -369,7 +441,8 @@ Quad.attentionNext = function (st, project, current) {
   return list[(list.indexOf(current) + 1) % list.length];
 };
 
-/* Put a session into the saved slots of a scope (the first free visible slot, else the last slot) and go to #/quad there: the dock's 'add to quad'. */
+/* Put a session into the saved slots of a scope (the first free visible slot, else the last visible one) and go to #/quad there: the dock's 'add to quad'. The layout grows
+   (1, 2, 4, 6, 8, 10) rather than evict a tile, as far as this window takes tiles. */
 Quad.addToQuad = function (tmux, project) {
   if (typeof tmux !== 'string' || !Quad.NAME_RE.test(tmux)) return false;
   const scope = project && Quad.WORD_RE.test(project) ? project : '';
@@ -378,13 +451,17 @@ Quad.addToQuad = function (tmux, project) {
     cur.pick(tmux);
     return true;
   }
-  const saved = Quad.load(scope) || { layout: Quad.DEFAULT_LAYOUT, slots: ['', '', '', ''], modes: {}, zoom: null };
+  const saved = Quad.load(scope) || { layout: Quad.DEFAULT_LAYOUT, slots: Quad.cleanSlots([]), modes: {}, zoom: null, composers: {} };
   const slots = saved.slots.slice();
   let layout = saved.layout;
   if (!slots.includes(tmux)) {
-    let free = slots.findIndex((t, i) => !t && i < layout);
-    while (free < 0 && layout < 4) { layout = layout === 1 ? 2 : 4; free = slots.findIndex((t, i) => !t && i < layout); }     // full: the layout grows rather than evict a tile
-    slots[free >= 0 ? free : layout - 1] = tmux;
+    let width = 0;
+    try { width = typeof window !== 'undefined' && window.innerWidth > 0 ? window.innerWidth : 0; } catch (_) { width = 0; }
+    const cap = width > 0 ? Math.max(4, Quad.capFor(width)) : 4;                                  // a phone or an unknown window grows to the 4-up this function always grew to
+    const shown = () => Math.min(layout, cap);
+    let free = slots.findIndex((t, i) => !t && i < shown());
+    while (free < 0 && shown() < cap && layout < Quad.SLOTS) { layout = Quad.LAYOUTS[Quad.LAYOUTS.indexOf(layout) + 1]; free = slots.findIndex((t, i) => !t && i < shown()); }     // full: the layout grows rather than evict a tile
+    slots[free >= 0 ? free : shown() - 1] = tmux;
   }
   Quad.save(scope, { ...saved, layout, slots });
   if (typeof navigate === 'function') navigate(buildHash('quad', {}, scope ? { p: scope } : {}));
@@ -399,8 +476,9 @@ Quad.mount = function (root, route) {
   const parsed0 = Quad.parseQuery(route && route.query);
   const I = {
     root, host: null, project: parsed0.project || '', query: route && route.query ? route.query : {}, carry: null, noScope: false, scopeSig: null,
-    layout: parsed0.layout || Quad.DEFAULT_LAYOUT, slots: ['', '', '', ''], modes: {}, zoom: null,
-    n: 1, oneUp: true, forced: true, reMode: false, focused: false, touch: false, resolved: false, st: null, roster: [], index: new Map(),
+    layout: parsed0.layout || Quad.DEFAULT_LAYOUT, slots: Quad.cleanSlots([]), modes: {}, composers: {}, zoom: null,
+    n: 1, oneUp: true, forced: true, cap: 1, reason: '', reMode: false, focused: false, touch: false, resolved: false, st: null, roster: [], index: new Map(),
+    fs: false, fsApi: false, fsZoom: false, pop: null, menu: null, menuTile: null,
     active: '', tiles: new Map(), empties: new Map(), manualEmpty: new Set(),
     chipTails: new Map(), chipLines: new Map(), chipList: null,
     hiddenAt: 0, writeTimer: null, writing: false, disposed: false, listeners: [], offs: [], chipOrder: [], chipSel: '',
@@ -435,7 +513,7 @@ Quad.mount = function (root, route) {
   const modeFor = (tmux) => Quad.modeOf(I.modes, tmux, I.forced);
 
   /* ----- persistence and the address ----- */
-  function snapshot() { return { layout: I.layout, slots: I.slots, modes: I.modes, zoom: I.zoom, project: I.project }; }
+  function snapshot() { return { layout: I.layout, slots: I.slots, modes: I.modes, composers: I.composers, zoom: I.zoom, project: I.project }; }
 
   function flush() {
     if (I.writeTimer !== null) { clearTimeout(I.writeTimer); I.writeTimer = null; }
@@ -729,6 +807,8 @@ Quad.mount = function (root, route) {
     return true;
   }
 
+  function zoomActive() { const t = I.tiles.get(I.active); return t ? zoomSlot(t.slot) : false; }
+
   function focusSlot(i) {
     if (!(i >= 0 && i < I.n)) return false;
     const t = tileAt(i);
@@ -762,16 +842,19 @@ Quad.mount = function (root, route) {
   /* ----- tiles ----- */
   function buildTile(tmux) {
     const tile = { tmux, slot: -1, mode: '', node: null, body: null, frame: null, bound: null, url: '', pre: null, tailOff: null, note: null, ro: null, measureTimer: null,
-      dims: null, session: null, perm: null, permSig: '', decided: null, sig: '', missing: 0, gone: false, zoomed: false, fit: { key: '', at: 0, tries: 0, blocked: '' }, modeBtns: [] };
+      dims: null, session: null, perm: null, permSig: '', decided: null, sig: '', missing: 0, gone: false, zoomed: false, fit: { key: '', at: 0, tries: 0, blocked: '' }, modeBtns: [],
+      kit: hasKit('tileMenu'), menuCtl: null, composerCtl: null, tuneCtl: null, docked: false, head: null, dock: null };
     const label = Quad.label(tmux);
     tile.glyphs = el('span', { class: 'qt-glyphs' });
     const [proj, repo, sname] = Quad.parts(tmux);
     // two spans so a narrow header drops the project/repo first and keeps the session name: 'phasezero/website · ' shrinks, 't-checkout-redesign' stays
     tile.where = el('span', { class: 'qt-where', text: repo ? `${proj}${repo === 'root' ? '' : '/' + repo} · ` : '' });
     tile.name = el('span', { class: 'qt-name' }, tile.where, el('span', { class: 'qt-sess', text: repo ? sname : tmux }));
-    tile.title = el('button', { class: 'minimal small qt-title', type: 'button', title: `${tmux}: swap, reconnect, close`, 'aria-label': `${label}: tile menu` },
+    // the name and its ▾ open the tile's view dropdown (TermKit.tileMenu: view, input, tune, session); a kit without it (slice B not loaded) keeps the old title menu
+    tile.title = el('button', { class: 'minimal small qt-title', type: 'button', title: tile.kit ? `${tmux}: view, input and tune options` : `${tmux}: swap, reconnect, close`, 'aria-label': `${label}: tile menu`, 'aria-haspopup': 'menu' },
       tile.name, el('span', { class: 'qt-caret', 'aria-hidden': 'true', text: '▾' }));
-    if (typeof menu === 'function') menu(tile.title, () => titleItems(tile));
+    if (tile.kit) tile.title.addEventListener('click', (e) => toggleTileMenu(tile, !!(e && e.detail === 0 && e.isTrusted)));
+    else if (typeof menu === 'function') menu(tile.title, () => titleItems(tile));
     // the mode picker: a 4-way segmented control from 366 px up (a compact one under 460), one menu button under that (pages.css picks; both are always here)
     tile.modeBtns = Quad.MODES.map((m) => el('button', { class: 'seg-btn qt-mode', type: 'button', 'data-mode': m, 'aria-pressed': 'false', title: Quad.MODE_TITLE[m], text: m, onclick: () => setMode(tile, m) }));
     tile.modes = el('div', { class: 'seg-ctl qt-modes', role: 'group', 'aria-label': 'View mode' }, ...tile.modeBtns);
@@ -786,12 +869,14 @@ Quad.mount = function (root, route) {
     const again = el('button', { class: 'icon minimal small qt-reconnect', type: 'button', 'aria-label': 'Reconnect', title: 'Reconnect this tile', onclick: () => reconnect(tile) }, ic('refresh'));
     const shut = el('button', { class: 'icon minimal small qt-close', type: 'button', 'aria-label': 'Close this tile', title: 'Close this tile', onclick: () => close(tile) }, ic('cross'));
     const head = el('header', { class: 'qt-head' }, tile.glyphs, tile.title, tile.modes, tile.modeMenu, tile.ctx, tile.size, tile.zoomBtn, open, again, shut);
+    tile.head = head;
     tile.task = el('div', { class: 'qt-task hidden' });
     tile.permText = el('span', { class: 'qt-perm-text' });
     tile.permBtns = el('div', { class: 'qt-perm-btns' });
     tile.permNode = el('div', { class: 'qt-perm hidden' }, tile.permText, tile.permBtns);
     tile.body = el('div', { class: 'qt-body' });
-    tile.node = el('article', { class: 'qtile', 'data-tmux': tmux, 'data-slot': '-1', 'data-mode': '', 'data-drop': 'session', tabindex: '-1', 'aria-label': label }, head, tile.task, tile.permNode, tile.body);
+    tile.dock = el('div', { class: 'qt-dock hidden' });                 // the docked composer, from 520 px (pages.css), when 'Show composer' is ticked
+    tile.node = el('article', { class: 'qtile', 'data-tmux': tmux, 'data-slot': '-1', 'data-mode': '', 'data-drop': 'session', tabindex: '-1', 'aria-label': label }, head, tile.task, tile.permNode, tile.body, tile.dock);
     tile.node.addEventListener('pointerdown', () => { touched(); setActive(tmux); }, true);
     tile.node.addEventListener('focusin', () => setActive(tmux));                // ttyd focuses its own terminal on load: that is no use of the tile
     if (typeof Dnd !== 'undefined' && typeof Dnd.bind === 'function') Dnd.bind(tile.node, { drop: 'session', tmux });      // a backlog card dropped on the tile is handed to the session
@@ -822,6 +907,9 @@ Quad.mount = function (root, route) {
 
   function teardownTile(tile) {
     if (tile.measureTimer !== null) { clearTimeout(tile.measureTimer); tile.measureTimer = null; }
+    if (I.menuTile === tile.tmux) closeMenu();
+    if (I.pop === tile.composerCtl || I.pop === tile.tuneCtl) I.pop = null;
+    dropCtls(tile);
     if (tile.ro) { try { tile.ro.disconnect(); } catch (_) { /* gone */ } tile.ro = null; }
     dropTail(tile);
     dropFrame(tile);
@@ -830,6 +918,333 @@ Quad.mount = function (root, route) {
     if (I.active === tile.tmux) { I.active = ''; patchKeys(); }
   }
 
+  /* ----- the tile's view dropdown (TermKit.tileMenu) and what its items do ----- */
+  function hasKit(name) { return typeof TermKit !== 'undefined' && !!TermKit && typeof TermKit[name] === 'function'; }
+
+  /* One surface at a time: the tile menu (I.menu) and the composer or tune panel it leads to (I.pop). Opening a menu closes everything; opening a panel closes the other panel
+     but NOT the menu it was picked from: the menu closes itself around the action (a sheet after it, so a sheet opened by the action is swapped in place, not wiped by the
+     close event of the one before). */
+  function closeMenu() {
+    const m = I.menu;
+    I.menu = null;
+    I.menuTile = null;
+    if (m && typeof m.close === 'function') { try { m.close(); } catch (e) { console.error('ccboard quad menu', e); } }
+  }
+
+  function closePop() {
+    const p = I.pop;
+    I.pop = null;
+    if (p && typeof p.close === 'function') { try { p.close(); } catch (e) { console.error('ccboard quad popover', e); } }
+  }
+
+  function closeAll() { closeMenu(); closePop(); }
+
+  function toggleTileMenu(tile, byKeyboard) {
+    const cur = tile.menuCtl;
+    if (cur && I.menu === cur && isOpen(cur)) { closeMenu(); return false; }                      // a second tap on the ▾ closes it
+    closeAll();
+    let ctl = null;
+    try { ctl = TermKit.tileMenu(menuCtx(tile)); } catch (e) { console.error('ccboard quad menu', e); return false; }
+    if (!ctl || typeof ctl.open !== 'function') return false;
+    tile.menuCtl = ctl;
+    I.menu = ctl;
+    I.menuTile = tile.tmux;
+    ctl.open(tile.title, !!byKeyboard);                              // a pointer highlights nothing; the keyboard focuses the first item (the menu's rule)
+    return true;
+  }
+
+  /* What TermKit.tileMenu gets, built fresh at each open (the row, the pending permission and whether the prompt is free change with every poll). Items whose action is null
+     are left out by the menu. Optional extras the menu knows: `schema` (the agent's registry, for which tune items exist), `zoomed` (Zoom says 'Back to the grid'),
+     `composerDocked` + actions.dockComposer (the 'Show composer' tick) and `keysTarget` (the 'Keys here' tick). */
+  function menuCtx(tile) {
+    const s = tile.session || sessionOf(tile.tmux) || null;
+    const agent = s ? Quad.agentOf(s) : 'claude';
+    const gate = Quad.atPrompt(s, I.st);
+    const live = !tile.gone && !!s;
+    const pr = live && tile.perm ? tile.perm : null;
+    const tune = live && gate.show;
+    const actions = {
+      setMode: (m) => setMode(tile, m),
+      zoom: I.n >= 2 ? () => zoomSlot(tile.slot) : null,
+      fullscreenTile: () => fullscreenTile(tile),
+      popout: () => popOut(tile),
+      openTerm: live ? () => openTerminal(tile) : null,
+      dock: live && dockPossible() ? () => dockTile(tile) : null,
+      reload: () => reconnect(tile),
+      keysHere: live ? () => keysHere(tile) : null,
+      allow: pr ? () => decide(tile, pr, 'allow') : null,
+      deny: pr ? () => decide(tile, pr, 'deny') : null,
+      tui: pr ? () => decide(tile, pr, 'tui') : null,
+      composer: live && hasKit('composer') ? () => openComposer(tile) : null,
+      dockComposer: live && hasKit('composer') && !tooNarrowForDock(tile) ? () => toggleDocked(tile) : null,
+      tune: tune && hasKit('tune') ? () => openTune(tile) : null,
+      compact: tune && hasKit('tune') ? () => tuneRun(tile, 'compact') : null,
+      context: tune && hasKit('tune') ? () => tuneRun(tile, 'context') : null,
+      usage: tune && hasKit('tune') ? () => tuneRun(tile, 'usage') : null,
+      rename: tune && hasKit('tune') ? () => tuneRename(tile) : null,
+      close: () => close(tile),
+      kill: live ? () => kill(tile) : null,
+    };
+    return {
+      tmux: tile.tmux, session: s, agent, mode: tile.mode, modes: Quad.MODES.slice(), touch: coarse(), actions,
+      perm: { pending: !!pr, summary: pr ? String(pr.summary || pr.tool_name || '') : '' },
+      atPrompt: gate.ok, why: gate.ok ? '' : (gate.show ? gate.why : ''), schema: schemaOf(agent),
+      zoomed: I.n >= 2 && I.zoom === tile.slot, composerDocked: !!I.composers[tile.tmux], keysTarget: I.active === tile.tmux && keysShown(),
+    };
+  }
+
+  /* The docked composer is hidden under 520 px (pages.css, a container query): a menu row that ticks and shows nothing would lie, so it is left out there. An unmeasured tile (0) is not narrow. */
+  function tooNarrowForDock(tile) {
+    const w = Number(tile && tile.node && tile.node.offsetWidth);
+    return w > 0 && w < Quad.DOCK_MIN;
+  }
+
+  function dockPossible() {
+    try { return typeof Shell !== 'undefined' && !!Shell && typeof Shell.dockOn === 'function' && !!Shell.dockOn(); } catch (_) { return false; }
+  }
+
+  /* The dock and the quad are exclusive (shell.js: the quad owns the window), so 'Add to dock' keeps this session for the dock: it opens there when the Quad is left. */
+  function dockTile(tile) {
+    try {
+      if (typeof Shell === 'undefined' || !Shell || !Shell.dock) return false;
+      Shell.dock.wanted = tile.tmux;
+      if (Shell.dockStore && typeof Shell.dockStore.set === 'function') Shell.dockStore.set('ccboard:dock', tile.tmux);
+    } catch (e) { console.error('ccboard quad dock', e); return false; }
+    note(`${Quad.label(tile.tmux)} opens in the dock when you leave the Quad`, 'info');
+    return true;
+  }
+
+  /* Pop out: the terminal page in a window of its own beside the board (a tab when the browser blocks it, and inside an installed app). */
+  function popOut(tile) {
+    const url = `/term/${enc(tile.tmux)}`;
+    let win = null;
+    try {
+      const app = typeof isStandalone === 'function' && isStandalone();
+      if (!app && typeof window.open === 'function') win = window.open(url, `ccboard-term-${tile.tmux}`, 'popup=yes,width=1000,height=680');
+    } catch (_) { win = null; }
+    if (!win && typeof openPage === 'function') openPage(url);
+    return true;
+  }
+
+  /* Open in terminal: the board's own way (the dock when it is on and free, else the terminal page in a new tab). */
+  function openTerminal(tile) {
+    if (typeof Shell !== 'undefined' && Shell && typeof Shell.openTerm === 'function') { Shell.openTerm(tile.tmux); return true; }
+    if (typeof openPage === 'function') openPage(`/term/${enc(tile.tmux)}`);
+    return true;
+  }
+
+  /* Keys here: the host key bar is shown and aims at this tile; the menu's tick says so, and a second pick hides the bar again. */
+  function keysShown() { return keysWanted() && !I.noScope; }
+
+  function keysHere(tile) {
+    const off = I.active === tile.tmux && keysShown();
+    if (!off) { touched(); setActive(tile.tmux); }
+    try { localStorage.setItem(Quad.KEYS_PREF, off ? '0' : '1'); } catch (_) { /* storage may be unavailable */ }
+    patchKeys();
+    fitAll();
+    return !off;
+  }
+
+  /* Fullscreen this tile: zoom it over the grid (nothing to zoom in one-up) and go full screen; leaving full screen puts the grid back when this call zoomed it. */
+  function fullscreenTile(tile) {
+    if (I.n >= 2 && I.zoom !== tile.slot) {
+      if (I.zoom === null) I.fsZoom = true;
+      I.zoom = tile.slot;
+      changed();
+    }
+    setActive(tile.tmux);
+    enterFullscreen();
+    return true;
+  }
+
+  /* ----- composer and tune: TermKit's components, built once per tile and kept current ----- */
+  const isOpen = (c) => !!c && (typeof c.isOpen === 'function' ? c.isOpen() : !!c.isOpen);
+
+  function schemaOf(agent) { return (I.st && I.st.agents && typeof I.st.agents === 'object' && I.st.agents[agent]) || null; }
+
+  /* The composer is built when first wanted and lives as long as the tile (a draft survives a close); its popover and the docked box are the same controller. */
+  function getComposer(tile) {
+    if (tile.composerCtl) return tile.composerCtl;
+    if (!hasKit('composer')) return null;
+    const s = tile.session || sessionOf(tile.tmux) || null;
+    try { tile.composerCtl = TermKit.composer({ tmux: tile.tmux, session: s, agent: s ? Quad.agentOf(s) : 'claude', touch: coarse(), onSent: () => { setActive(tile.tmux); } }); } catch (e) { console.error('ccboard quad composer', e); }
+    return tile.composerCtl || null;
+  }
+
+  /* The tune panel's controller, with the row, the stats and the prompt gate as of now (its values are read from them). */
+  function getTune(tile) {
+    const s = tile.session || sessionOf(tile.tmux) || null;
+    if (!s || !hasKit('tune')) return null;
+    const agent = Quad.agentOf(s);
+    const ctx = { session: s, agent, stats: s.stats || {}, atPrompt: Quad.atPrompt(s, I.st).ok, touch: coarse(), schema: schemaOf(agent) };
+    if (!tile.tuneCtl) { try { tile.tuneCtl = TermKit.tune({ tmux: tile.tmux, ...ctx }); } catch (e) { console.error('ccboard quad tune', e); } }
+    else if (typeof tile.tuneCtl.update === 'function') tile.tuneCtl.update(ctx);
+    return tile.tuneCtl || null;
+  }
+
+  /* The poll brought a new row: the composer's queue note and an open tune panel follow it. */
+  function patchCtls(tile, s) {
+    if (tile.composerCtl && typeof tile.composerCtl.update === 'function') tile.composerCtl.update({ session: s, agent: Quad.agentOf(s) });
+    if (tile.tuneCtl && isOpen(tile.tuneCtl)) getTune(tile);
+  }
+
+  function dropCtls(tile) {
+    for (const c of [tile.composerCtl, tile.tuneCtl]) {                  // destroy() when the kit has it: it also cancels the pending-setting timer (no toast about a dead tile) and takes the docked box out
+      const end = c && (typeof c.destroy === 'function' ? c.destroy : (typeof c.close === 'function' ? c.close : null));
+      if (end) { try { end.call(c); } catch (e) { console.error('ccboard quad popover', e); } }
+    }
+    tile.composerCtl = null;
+    tile.tuneCtl = null;
+    tile.docked = false;
+    if (tile.dock) { tile.dock.textContent = ''; tile.dock.classList.add('hidden'); }
+  }
+
+  /* Send a prompt…: the composer as a popover under the tile header (a bottom sheet on touch). */
+  function openComposer(tile) {
+    const c = getComposer(tile);
+    if (!c || typeof c.open !== 'function') return false;
+    closePop();
+    const s = tile.session || sessionOf(tile.tmux) || null;
+    if (typeof c.update === 'function') c.update({ session: s, agent: s ? Quad.agentOf(s) : 'claude', touch: coarse() });      // the row as of now, and the pointer as of now (a sheet or a popover)
+    I.pop = c;
+    c.open(tile.head);
+    return true;
+  }
+
+  /* Tune…: model, effort, fast, ultracode and the command cells. */
+  function openTune(tile) {
+    const t = getTune(tile);
+    if (!t || typeof t.open !== 'function') return false;
+    closePop();
+    I.pop = t;
+    t.open(tile.head);
+    return true;
+  }
+
+  /* /compact, /context, /usage: the tune panel's own run() types the command and shows what a read command printed (a plain Tune… when a kit has no run()). */
+  function tuneRun(tile, cmd) {
+    const t = getTune(tile);
+    if (!t) return false;
+    if (typeof t.run !== 'function') return openTune(tile);
+    closePop();
+    t.run(cmd, '', { anchor: tile.head });
+    return true;
+  }
+
+  /* Rename…: the tune panel's rename row (a plain Tune… when a kit has none). */
+  function tuneRename(tile) {
+    const t = getTune(tile);
+    if (!t) return false;
+    if (typeof t.rename !== 'function') return openTune(tile);
+    closePop();
+    I.pop = t;
+    t.rename(tile.head);
+    return true;
+  }
+
+  /* Show composer: the one-line composer docked at the bottom of this tile (tiles 520 px wide and up), remembered with the tile's mode. */
+  function toggleDocked(tile) {
+    if (I.composers[tile.tmux]) delete I.composers[tile.tmux]; else I.composers[tile.tmux] = true;
+    patchDock(tile);
+    persist();
+    return !!I.composers[tile.tmux];
+  }
+
+  function patchDock(tile) {
+    const c = I.composers[tile.tmux] && !tile.gone ? getComposer(tile) : null;
+    if (c && c.el) {
+      if (c.el.parentNode !== tile.dock) { tile.dock.textContent = ''; tile.dock.append(c.el); }
+      tile.docked = true;
+    } else if (tile.docked) {
+      tile.docked = false;
+      if (tile.composerCtl && tile.composerCtl.el) tile.composerCtl.el.remove();
+      tile.dock.textContent = '';
+    }
+    tile.dock.classList.toggle('hidden', !tile.docked);
+  }
+
+  function settleSoon() { if (typeof poll === 'function') { try { Promise.resolve(poll(true)).catch(() => {}); } catch (_) { /* the next tick */ } } }
+
+  /* Kill session: the end of the session itself (the menu asks twice, through confirmButton); the tile is emptied and the poll catches up. */
+  async function kill(tile) {
+    try { await api('DELETE', `/api/sessions/${enc(tile.tmux)}`); } catch (e) { note(e.message); return false; }
+    note(`${Quad.label(tile.tmux)} ended`, 'ok');
+    if (!I.disposed && I.tiles.get(tile.tmux) === tile) close(tile);
+    settleSoon();
+    return true;
+  }
+
+  /* ----- fullscreen ----- */
+  function fsActive() {
+    try { return typeof document !== 'undefined' && !!(document.fullscreenElement || document.webkitFullscreenElement); } catch (_) { return false; }
+  }
+
+  function setFsClass(on) {
+    try { if (typeof document !== 'undefined' && document.documentElement) document.documentElement.classList.toggle('quad-fs', !!on); } catch (_) { /* no document element */ }
+  }
+
+  /* The page has gone full screen or come back: the head says so and every tile looks at its size again (the observers do it too, a hidden chrome resizes them). */
+  function fsChanged() {
+    patchHead();
+    if (typeof window !== 'undefined') onWindowSize();
+  }
+
+  /* html.quad-fs first (it alone does the job where the browser has no Fullscreen API: iOS Safari), then the browser's full screen on the document element: the topbar's
+     popovers (components.menu appends them there) and the sheet still paint, which they would not if only the quad root were full screen. */
+  function enterFullscreen() {
+    if (I.fs) return true;
+    if (I.disposed || I.noScope) return false;                        // a project with nothing to show has no header with an Exit button
+    I.fs = true;
+    I.fsApi = false;
+    setFsClass(true);
+    closeAll();
+    try {
+      const root = typeof document !== 'undefined' ? document.documentElement : null;
+      const req = root && (root.requestFullscreen || root.webkitRequestFullscreen);
+      if (typeof req === 'function') {
+        I.fsApi = true;
+        const p = req.call(root, { navigationUI: 'hide' });
+        if (p && typeof p.catch === 'function') p.catch(() => { I.fsApi = false; });             // refused (no gesture, an iframe policy): the class alone stands
+      }
+    } catch (_) { I.fsApi = false; }
+    fsChanged();
+    return true;
+  }
+
+  function leaveFullscreen() {
+    if (!I.fs) return false;
+    I.fs = false;
+    setFsClass(false);
+    if (fsActive()) {
+      try {
+        const out = document.exitFullscreen || document.webkitExitFullscreen;
+        const p = typeof out === 'function' ? out.call(document) : null;
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch (_) { /* already out */ }
+    }
+    I.fsApi = false;
+    if (I.fsZoom) { I.fsZoom = false; if (I.zoom !== null && !I.disposed) { I.zoom = null; changed(); } }       // Fullscreen this tile zoomed it: the grid comes back with the page
+    if (!I.disposed) fsChanged();
+    return true;
+  }
+
+  function toggleFullscreen() { return I.fs ? leaveFullscreen() : enterFullscreen(); }
+
+  /* The browser left full screen on its own (Esc, a gesture): the class goes with it. */
+  function onFullscreenChange() { if (I.fs && I.fsApi && !fsActive()) leaveFullscreen(); }
+
+  /* Esc leaves the in-page fullscreen (the browser's own handles its Esc itself); never with a menu, a popover, a sheet or a field that has its own use for it. */
+  function onEscape(e) {
+    if (!I.fs || I.disposed || !e || e.key !== 'Escape' || e.defaultPrevented) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(?:INPUT|TEXTAREA|SELECT)$/.test(String(t.tagName || '')))) return;       // a field's Esc is the field's own
+    if (isOpen(I.menu) || isOpen(I.pop)) return;                      // the tile menu, the composer or the tune panel is up: its Esc closes it, not the page
+    try { if (document.querySelector('dialog[open], .menu-pop')) return; } catch (_) { /* no document */ }
+    if (typeof e.preventDefault === 'function') e.preventDefault();
+    leaveFullscreen();
+  }
+
+  /* The old title menu, kept for a kit without TermKit.tileMenu. */
   function titleItems(tile) {
     // everything the header sheds as the tile narrows is here: the menu is the one place that always has it
     const items = [
@@ -856,7 +1271,7 @@ Quad.mount = function (root, route) {
     tile.permSig = sig;
     tile.permBtns.textContent = '';
     tile.permText.textContent = '';
-    tile.perm = pr || null;
+    tile.perm = sig ? pr : null;                                    // the request the line shows (a decided one is gone)
     if (!sig) { tile.permNode.classList.add('hidden'); tile.permText.removeAttribute('title'); return; }
     const sum = String(pr.summary || pr.tool_name || 'permission request').slice(0, 300);
     tile.permText.append(el('span', { class: 'qt-perm-sum', text: sum }));
@@ -912,6 +1327,7 @@ Quad.mount = function (root, route) {
     tile.task.setAttribute('data-kind', line.kind);
     patchPerm(tile, Quad.perm(st, tile.tmux), s);
     patchSize(tile);
+    patchCtls(tile, s);
   }
 
   /* A tile whose session has been missing for two polls in a row says so instead of showing a dead iframe; a blip (tmux down, an empty first poll) never does. */
@@ -950,7 +1366,8 @@ Quad.mount = function (root, route) {
   }
 
   function patchEmpty(e) {
-    const free = Quad.candidates(I.st, I.project).filter((s) => !I.slots.includes(s.tmux)).slice(0, 6);
+    const shown = I.slots.slice(0, I.n);                                                      // a session in a hidden slot is free for a visible tile (picking it moves it)
+    const free = Quad.candidates(I.st, I.project).filter((s) => !shown.includes(s.tmux)).slice(0, 6);
     const sig = `${I.st ? 1 : 0}|${free.map((s) => `${s.tmux}:${s.state}`).join(',')}`;
     if (e.sig === sig) return;
     e.sig = sig;
@@ -1046,12 +1463,14 @@ Quad.mount = function (root, route) {
   /* ----- layout, sync and the head ----- */
   function relayout(force) {
     const L = Quad.layoutFor(viewportWidth(), I.layout, columnWidth());
+    I.cap = L.cap;                                                     // the control and its caption follow the window even when no tile count changed
+    I.reason = L.reason;
     if (!force && L.n === I.n && L.oneUp === I.oneUp && L.forced === I.forced) return false;
-    const grew = L.n > I.n;
+    const countChanged = L.n !== I.n;
     if (L.forced !== I.forced) I.reMode = true;                        // the one thing that changes a tile's default mode: the window going to or from 'one tile because it is too narrow'
     I.n = L.n; I.oneUp = L.oneUp; I.forced = L.forced;
     if (I.zoom !== null && (I.zoom >= I.n || I.n < 2)) I.zoom = null;
-    if (grew && I.resolved && I.st) {                                // new visible slots start filled, unless the person emptied them
+    if (countChanged && I.resolved && I.st) {                        // a new count (growth or shrink): visible slots start filled, the live sessions of hidden slots first, unless the person emptied them
       const only = [];
       for (let i = 0; i < I.n; i++) if (!I.slots[i] && !I.manualEmpty.has(i)) only.push(i);
       if (only.length) I.slots = Quad.fillSlots(I.slots, I.st, I.n, { project: I.project, only });
@@ -1072,12 +1491,36 @@ Quad.mount = function (root, route) {
       if (typeof TermKit !== 'undefined' && TermKit && typeof TermKit.fitName === 'function') for (const t of I.tiles.values()) TermKit.fitName(t.where);
     }
     if (I.zoom !== null) I.grid.setAttribute('data-zoom', String(I.zoom)); else I.grid.removeAttribute('data-zoom');
-    for (const b of I.layoutBtns) b.setAttribute('aria-pressed', Number(b.getAttribute('data-layout')) === I.layout ? 'true' : 'false');
+    for (const b of I.layoutBtns) {                                      // the one that shows is pressed (a saved layout above the cap shows the cap); the ones the window cannot take are off
+      const n = Number(b.getAttribute('data-layout'));
+      b.setAttribute('aria-pressed', n === I.n ? 'true' : 'false');
+      b.disabled = n > I.cap;
+      b.setAttribute('title', layoutTitle(n));
+    }
+    I.layoutCtl.setAttribute('title', I.reason || 'How many terminals to show');
+    setTextIfChanged(I.capNote, I.reason);
+    I.capNote.classList.toggle('hidden', !I.reason || I.forced || I.noScope);
+    patchFullscreenBtn();
     I.fillBtn.disabled = !I.st;
     I.grid.classList.toggle('hidden', I.noScope);
     I.actions.classList.toggle('hidden', I.noScope);
     patchScope();
     patchNone();
+  }
+
+  /* The title of one cell of the layout control: what it is, or why this window cannot take it. */
+  function layoutTitle(n) {
+    const [c, r] = Quad.GRID[n];
+    if (n <= I.cap) return n === 1 ? 'One terminal' : (n === 2 ? 'Two side by side' : `${n} terminals, ${c} by ${r}`);
+    return n > Quad.capFor(viewportWidth()) ? `${n} terminals need a window ${Quad.WIDTH_AT[n]} px wide or more` : `${n} terminals would be narrower than ${Quad.TILE_MIN} px here`;
+  }
+
+  function patchFullscreenBtn() {
+    if (!I.fsBtn) return;
+    I.fsBtn.classList.toggle('on', I.fs);                           // the label says which way it goes (Exit fullscreen): no aria-pressed on top of it
+    setTextIfChanged(I.fsLabel, I.fs ? 'Exit fullscreen' : 'Fullscreen');
+    I.fsBtn.setAttribute('title', I.fs ? 'Leave full screen (Esc, F)' : 'Fill the screen with the tiles (F)');
+    if (I.fsShown !== I.fs) { I.fsShown = I.fs; I.fsIcon.textContent = ''; I.fsIcon.append(ic(I.fs ? 'minimize' : 'fullscreen')); }
   }
 
   function sync() {
@@ -1092,6 +1535,7 @@ Quad.mount = function (root, route) {
     }
     I.reMode = false;
     I.noScope = emptyScope();
+    if (I.noScope && I.fs) leaveFullscreen();                         // nothing to show: the header that has the Exit button is hidden too
     for (const [slot, e] of Array.from(I.empties)) {
       if (!I.noScope && slot < I.n && !I.slots[slot]) continue;
       e.node.remove();
@@ -1106,6 +1550,7 @@ Quad.mount = function (root, route) {
       t.zoomBtn.setAttribute('aria-label', z ? 'Back to the grid' : 'Zoom this tile');
       if (t.zoomed !== z) { t.zoomed = z; t.zoomBtn.textContent = ''; t.zoomBtn.append(ic(z ? 'minimize' : 'maximize')); }
       t.zoomBtn.classList.toggle('hidden', I.n < 2);
+      patchDock(t);
       if (I.zoom !== null && !z) t.node.setAttribute('inert', ''); else t.node.removeAttribute('inert');      // under the zoomed tile: no focus, no pointer
     }
     if (!I.active || !I.tiles.has(I.active)) { const first = tileAt(0) || I.tiles.values().next().value; setActive(first ? first.tmux : ''); }
@@ -1133,7 +1578,7 @@ Quad.mount = function (root, route) {
     I.layout = parsed.layout || (saved && saved.layout) || Quad.DEFAULT_LAYOUT;
     relayout(true);
     const r = Quad.slotsState({ query: I.query, saved, state: I.st, project: I.project, n: I.n });
-    I.layout = r.layout; I.slots = r.slots; I.modes = r.modes; I.zoom = r.zoom;
+    I.layout = r.layout; I.slots = r.slots; I.modes = r.modes; I.composers = r.composers; I.zoom = r.zoom;
     if (I.zoom !== null && I.zoom >= I.n) I.zoom = null;
     I.resolved = true;
   }
@@ -1182,6 +1627,7 @@ Quad.mount = function (root, route) {
     const carry = I.carry && I.carry.project === project ? I.carry : null;
     I.carry = null;
     const before = I.modes;
+    const beforeComposers = I.composers;
     if (I.resolved) Quad.save(I.project, snapshot());
     I.project = project;
     I.resolved = false;
@@ -1191,6 +1637,7 @@ Quad.mount = function (root, route) {
       resolveInitial(carry);
       const here = new Set(I.slots.filter(Boolean));
       for (const [tmux, mode] of Object.entries(before)) if (here.has(tmux) && !I.modes[tmux]) I.modes[tmux] = mode;         // a mode that was chosen on a tile that stays stays
+      for (const [tmux, on] of Object.entries(beforeComposers)) if (here.has(tmux) && !I.composers[tmux]) I.composers[tmux] = on;      // and so does its docked composer
       sync();
       for (const t of I.tiles.values()) { const s = sessionOf(t.tmux); if (s) patchTile(t, s); }
       persist();
@@ -1249,7 +1696,8 @@ Quad.mount = function (root, route) {
     if (typeof e.preventDefault === 'function') e.preventDefault();
     if (typeof e.stopPropagation === 'function') e.stopPropagation();
     if (a.act === 'focus') focusSlot(a.n - 1);
-    else if (a.act === 'zoom') { const t = I.tiles.get(I.active); if (t) zoomSlot(t.slot); }
+    else if (a.act === 'zoom') zoomActive();
+    else if (a.act === 'fullscreen') toggleFullscreen();
     else if (a.act === 'attention') goAttention();
     else if (a.act === 'reload') reloadAll();
   }
@@ -1264,14 +1712,15 @@ Quad.mount = function (root, route) {
   }
 
   function onWindowSize() {
-    if (relayout(false)) { sync(); persist(); }
+    if (relayout(false)) { sync(); persist(); } else patchHead();
     fitAll();
   }
 
   /* ----- build the page ----- */
   I.layoutBtns = Quad.LAYOUTS.map((n) => el('button', { class: 'seg-btn', type: 'button', 'data-layout': String(n), 'aria-pressed': 'false',
-    title: n === 1 ? 'One terminal' : (n === 2 ? 'Two side by side' : 'Four, 2 by 2'), text: String(n), onclick: () => setLayout(n) }));
-  I.layoutCtl = el('div', { class: 'seg-ctl q-layout', role: 'group', 'aria-label': 'Layout' }, el('span', { class: 'seg-k dim', text: 'tiles' }), ...I.layoutBtns);
+    title: n === 1 ? 'One terminal' : (n === 2 ? 'Two side by side' : `${n} terminals, ${Quad.GRID[n][0]} by ${Quad.GRID[n][1]}`), text: String(n), onclick: () => setLayout(n) }));
+  I.layoutCtl = el('div', { class: 'seg-ctl q-layout', role: 'group', 'aria-label': 'Tiles on screen' }, el('span', { class: 'seg-k dim', text: 'tiles' }), ...I.layoutBtns);
+  I.capNote = el('p', { class: 'q-cap dim hidden', role: 'status' });                    // why the layout that shows is not the one asked for, in plain words
   I.fillBtn = el('button', { class: 'small q-fill', type: 'button', title: 'Fill the empty tiles with the sessions that need you first', text: 'Auto-fill', onclick: () => { if (I.st) autoFillAll(); } });
   I.reloadBtn = el('button', { class: 'small q-reload', type: 'button', title: 'Reload every terminal (Ctrl+Alt+R)', onclick: () => reloadAll() }, ic('refresh'), 'Reload all');
   I.keysBtn = el('button', { class: 'small q-keys-toggle', type: 'button', 'aria-pressed': 'false', title: 'Show or hide the key bar',
@@ -1282,7 +1731,10 @@ Quad.mount = function (root, route) {
   I.scopeSel.addEventListener('blur', () => patchScope());                   // an option list that grew while the picker was open is built now
   I.scopeAll = el('a', { class: 'q-all hidden', href: '#/quad', text: 'all projects' });
   I.scope = el('span', { class: 'q-scope' }, I.scopeSel, I.scopeAll);
-  I.actions = el('div', { class: 'actions q-actions' }, I.layoutCtl, I.fillBtn, I.reloadBtn, I.keysBtn);
+  I.fsIcon = el('span', { class: 'q-fs-ic' });
+  I.fsLabel = el('span', { class: 'q-fs-label', text: 'Fullscreen' });
+  I.fsBtn = el('button', { class: 'small q-fs', type: 'button', title: 'Fill the screen with the tiles (F)', onclick: () => toggleFullscreen() }, I.fsIcon, I.fsLabel);
+  I.actions = el('div', { class: 'actions q-actions' }, I.layoutCtl, I.fillBtn, I.reloadBtn, I.keysBtn, I.fsBtn);
   const head = el('div', { class: 'page-head q-head' }, el('h1', { text: 'Quad' }), I.scope, I.actions);
   I.noneLine = el('p', { class: 'q-none-line' });
   I.noneNew = el('button', { class: 'small q-none-new hidden', type: 'button', text: 'New session', onclick: () => newSession() });
@@ -1303,11 +1755,14 @@ Quad.mount = function (root, route) {
     }
     I.keysHost.append(el('div', { class: 'q-keys-row' }, kb.root, rail));
   }
-  I.host = el('div', { class: 'quad', 'data-layout': '1' }, head, I.chipsHost, I.none, I.grid, I.keysHost);
+  I.host = el('div', { class: 'quad', 'data-layout': '1' }, head, I.capNote, I.chipsHost, I.none, I.grid, I.keysHost);
   root.append(I.host);
   Quad.rememberScope(I.project);
 
   if (typeof document !== 'undefined') listen(document, 'keydown', onKey, true);
+  if (typeof document !== 'undefined') listen(document, 'keydown', onEscape);                  // bubble phase: a menu or a field that took the Esc has already stopped it
+  if (typeof document !== 'undefined') listen(document, 'fullscreenchange', onFullscreenChange);
+  if (typeof document !== 'undefined') listen(document, 'webkitfullscreenchange', onFullscreenChange);
   if (typeof document !== 'undefined') listen(document, 'visibilitychange', onVisibility);
   listen(window, 'resize', onWindowSize);
   listen(window, 'orientationchange', onWindowSize);
@@ -1317,8 +1772,8 @@ Quad.mount = function (root, route) {
   }
   if (typeof Keymap !== 'undefined' && typeof Keymap.bindKey === 'function') {
     // help-only entries: the page's own capture listener above runs first and handles these keys (also inside the terminals, where Keymap is inert)
-    for (const [spec, help, label] of [['mod+alt+1', 'Quad: focus tile 1 to 4', 'Ctrl+Alt+1…4'], ['mod+alt+z', 'Quad: zoom the active tile', 'Ctrl+Alt+Z'],
-      ['mod+alt+k', 'Quad: the next session that needs you', 'Ctrl+Alt+K'], ['mod+alt+r', 'Quad: reload every tile', 'Ctrl+Alt+R']]) {
+    for (const [spec, help, label] of [['mod+alt+1', 'Quad: focus tile 1 to 10 (0 is the tenth)', 'Ctrl+Alt+1…0'], ['mod+alt+z', 'Quad: zoom the active tile', 'Ctrl+Alt+Z'],
+      ['mod+alt+k', 'Quad: the next session that needs you', 'Ctrl+Alt+K'], ['mod+alt+r', 'Quad: reload every tile', 'Ctrl+Alt+R'], ['mod+alt+f', 'Quad: full screen on or off, also inside a terminal', 'Ctrl+Alt+F']]) {
       try { I.offs.push(Keymap.bindKey(spec, () => false, { help, label, group: 'Quad' })); } catch (_) { /* a spec Keymap does not take */ }
     }
   }
@@ -1338,6 +1793,16 @@ Quad.mount = function (root, route) {
   I.setMode = (tmux, mode) => { const t = I.tiles.get(tmux); if (t) setMode(t, mode); };
   I.focusSlot = focusSlot;
   I.zoomSlot = zoomSlot;
+  I.zoomActive = zoomActive;
+  I.toggleFullscreen = toggleFullscreen;
+  I.enterFullscreen = enterFullscreen;
+  I.leaveFullscreen = leaveFullscreen;
+  I.menuCtx = (tmux) => { const t = I.tiles.get(tmux); return t ? menuCtx(t) : null; };      // what TermKit.tileMenu gets for a tile
+  I.openMenu = (tmux, byKeyboard) => { const t = I.tiles.get(tmux); return t ? toggleTileMenu(t, !!byKeyboard) : false; };
+  I.openComposer = (tmux) => { const t = I.tiles.get(tmux); return t ? openComposer(t) : false; };
+  I.openTune = (tmux) => { const t = I.tiles.get(tmux); return t ? openTune(t) : false; };
+  I.toggleDocked = (tmux) => { const t = I.tiles.get(tmux); return t ? toggleDocked(t) : false; };
+  I.closePop = closeAll;
   I.goAttention = goAttention;
   I.reloadAll = reloadAll;
   I.autoFill = autoFillAll;
@@ -1349,7 +1814,10 @@ Quad.mount = function (root, route) {
     if (I.disposed) return;
     I.disposed = true;
     if (I.writeTimer !== null) { clearTimeout(I.writeTimer); I.writeTimer = null; }
+    if (I.fsZoom) { I.fsZoom = false; I.zoom = null; }               // the zoom that Fullscreen this tile made is not kept
     if (I.resolved) Quad.save(I.project, snapshot());
+    closeAll();
+    leaveFullscreen();                                                // the page owned the full screen: it goes back to the browser with the quad
     if (I.rootRO) { try { I.rootRO.disconnect(); } catch (_) { /* gone */ } I.rootRO = null; }
     for (const t of Array.from(I.tiles.values())) teardownTile(t);
     for (const e of I.empties.values()) e.node.remove();

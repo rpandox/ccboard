@@ -262,6 +262,14 @@ Keymap.bindDefaults = function () {
   B('y', act('allow'), { when: permOn, dialog: peekKeys, help: 'Allow the pending permission', group: 'Selected or open session' });
   B('d', act('deny'), { when: permOn, dialog: peekKeys, help: 'Deny the pending permission', group: 'Selected or open session' });
   B('r', act('reply'), { when: targetOn, dialog: peekKeys, help: 'Reply: focus the send box', group: 'Selected or open session' });
+
+  // The quad page (v0.5.9c): F is full screen and Z zooms the active tile, only while the quad is mounted (Quad.current); like every plain key they are inert in a field, in a
+  // dialog and while a terminal iframe has the focus (Ctrl+Alt+F and Ctrl+Alt+Z, which the page binds itself, are the ones that work there). A page method that says
+  // false (nothing to zoom) leaves the key alone.
+  const quadOn = () => typeof Quad !== 'undefined' && !!Quad && !!Quad.current;
+  const quadDo = (name) => () => (quadOn() && typeof Quad.current[name] === 'function' ? Quad.current[name]() !== false : false);
+  B('f', quadDo('toggleFullscreen'), { when: quadOn, help: 'Quad: full screen on or off', label: 'F', group: 'Quad' });
+  B('z', quadDo('zoomActive'), { when: quadOn, help: 'Quad: zoom the active tile', label: 'Z', group: 'Quad' });
 };
 
 Keymap.listen = function () {

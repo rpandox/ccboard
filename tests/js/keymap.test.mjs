@@ -503,11 +503,65 @@ test('install(): nothing fires in an input, and the registered set is the docume
   assert.equal(help.filter((h) => /1…9/.test(h.keys[0])).length, 1, 'mod+1..9 is one help row, not nine');
 });
 
+test('install(): F (full screen) and Z (zoom) belong to the quad page: they call it while it is mounted and are left alone otherwise', () => {
+  const a = appWorld();
+  a.press('f');
+  a.press('z');
+  assert.deepEqual(a.log(), [], 'no quad mounted (no Quad at all): neither key is taken');
+  a.w.run(`globalThis.Quad = { current: null };`);
+  assert.equal(a.press('f').prevented, false, 'Quad exists but no page is mounted');
+  a.w.run(`globalThis.Quad = { current: { toggleFullscreen: () => { __log.push('fullscreen'); return true; }, zoomActive: () => { __log.push('zoom'); return __zoomable; } } }; globalThis.__zoomable = true;`);
+  let e = a.press('f');
+  assert.equal(e.prevented, true, 'the page took F');
+  e = a.press('z');
+  assert.equal(e.prevented, true);
+  assert.deepEqual(a.log(), ['fullscreen', 'zoom']);
+  a.w.run('__zoomable = false');
+  e = a.press('z');
+  assert.equal(e.prevented, false, 'nothing to zoom (one tile): the page says no and the key is left alone');
+  // not the modified forms: Ctrl+Alt+F and Ctrl+Alt+Z are the page's own capture listener's, and a bare Shift+F is not F
+  const before = a.log().length;
+  a.press('f', { ctrlKey: true, altKey: true });
+  a.press('F', { shiftKey: true });
+  a.press('f', { metaKey: true });
+  assert.equal(a.log().length, before, 'only the plain key');
+});
+
+test('install(): F and Z are inert in a field, over a dialog and with a terminal iframe focused', () => {
+  const stub = `globalThis.Quad = { current: { toggleFullscreen: () => { __log.push('fullscreen'); return true; }, zoomActive: () => { __log.push('zoom'); return true; } } };`;
+  let a = appWorld();
+  a.w.run(stub);
+  for (const target of [{ tagName: 'INPUT' }, { tagName: 'TEXTAREA' }, { tagName: 'SELECT' }, { isContentEditable: true }]) { a.w.document.dispatch('keydown', ev('f', { target })); a.w.document.dispatch('keydown', ev('z', { target })); }
+  assert.deepEqual(a.log(), [], 'a field keeps its letters');
+  a = appWorld({ dialogs: [{ id: 'sheet' }] });
+  a.w.run(stub);
+  a.press('f');
+  a.press('z');
+  assert.deepEqual(a.log(), [], 'a dialog (the tile menu sheet, the tune sheet, the palette) is modal');
+  a = appWorld({ activeEl: { tagName: 'IFRAME' } });
+  a.w.run(stub);
+  a.press('f');
+  assert.deepEqual(a.log(), [], 'the terminal owns its keys');
+  a = appWorld();
+  a.w.run(stub);
+  a.w.document.dispatch('keydown', ev('f', { repeat: true }));
+  assert.deepEqual(a.log(), [], 'a held key is one press at most');
+});
+
+test('install(): the help dialog lists F and Z under Quad, once each', () => {
+  const a = appWorld();
+  const help = plain(a.w.run('Keymap.help()')).filter((h) => h.group === 'Quad');
+  assert.deepEqual(help.map((h) => [h.keys[0], h.help]), [['F', 'Quad: full screen on or off'], ['Z', 'Quad: zoom the active tile']]);
+  const specs = plain(a.w.run('Keymap.list.map((b) => b.spec)'));
+  assert.ok(specs.includes('f') && specs.includes('z'));
+  assert.equal(specs.filter((s) => s === 'f').length, 1);
+});
+
 test('the defaults tolerate a partial deploy: no Pages, Palette or Shell, nothing throws', () => {
   const w = kw();
   w.run('Keymap.install()');
   w.ctx.console = { error() {} };
-  for (const [k, mods] of [['k', { ctrlKey: true }], ['?', { shiftKey: true }], ['/', {}], ['[', {}], ['1', { ctrlKey: true }], ['j', {}], ['Enter', {}], ['a', {}], ['c', {}], ['s', {}], ['g', {}], ['q', {}]]) {
+  for (const [k, mods] of [['k', { ctrlKey: true }], ['?', { shiftKey: true }], ['/', {}], ['[', {}], ['1', { ctrlKey: true }], ['j', {}], ['Enter', {}], ['a', {}], ['c', {}], ['s', {}], ['g', {}], ['q', {}], ['f', {}], ['z', {}]]) {
     assert.doesNotThrow(() => w.document.dispatch('keydown', ev(k, mods)), k);
   }
 });

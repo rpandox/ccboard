@@ -1823,3 +1823,1211 @@ test('termPane.focus: the xterm instance when there is one, else the iframe elem
   assert.equal(p.focus(), true);
   assert.equal(focused, 1);
 });
+
+// ---------------------------------------------------------------- v0.5.9c quad v3: tileMenu, composer, tune
+//
+// core.js + components.js + termkit.js on minidom with fake timers. api() is a recorder (`__route(method, path, body)` answers or throws), toast() and poll() record.
+// The tile menu is a popover on a mouse and components.js openSheet's bottom sheet on touch, so the same ctx is opened both ways.
+import fs from 'node:fs';
+
+const KIT = path.join(ROOT, 'app', 'static');
+
+function uiWorld({ extra = {}, storage = {} } = {}) {
+  const k = kitWorld({ dom: true, extra: { innerWidth: 1280, innerHeight: 800, ...extra } });
+  const { w } = k;
+  w.load('components.js');
+  w.ctx.__calls = [];
+  w.ctx.__toasts = [];
+  w.run(`
+    globalThis.__route = null;
+    globalThis.__httpError = (status, message, body) => { const e = new Error(message); e.status = status; e.body = body === undefined ? null : body; return e; };
+    api = async (method, path, body) => { __calls.push({ method, path, body }); return __route ? __route(method, path, body) : { ok: true }; };
+    toast = (text, o) => { __toasts.push({ text, kind: o && o.kind }); };
+    globalThis.poll = async () => { __calls.push({ method: 'poll' }); };
+    globalThis.renderBanner = () => {};
+  `);
+  for (const [key, value] of Object.entries(storage)) w.localStorage.setItem(key, value);
+  return k;
+}
+
+const calls = (w) => plain(w.get('__calls')).filter((c) => c.method !== 'poll');
+const toasts = (w) => plain(w.get('__toasts'));
+const keyOn = (node, key, extra = {}) => node.dispatchEvent({ type: 'keydown', key, preventDefault() {}, stopPropagation() {}, ...extra });
+const names = (root) => root.querySelectorAll('.tk-item').map((n) => n.querySelector('.tk-name').textContent);
+const group = (root, key) => root.querySelector(`[data-group=${key}]`);
+const modeCells = (root) => root.querySelectorAll('.tk-mode').map((n) => n.querySelector('.tk-name').textContent);
+const labels = (root) => root.querySelectorAll('.tk-gl').map((n) => n.textContent);
+const item = (root, id) => root.querySelector(`[data-id="${id}"]`);
+const anchorAt = (w, rect = {}) => {
+  const a = w.document.createElement('button');
+  const r = { left: 100, top: 100, right: 130, bottom: 128, width: 30, height: 28, ...rect };
+  a.getBoundingClientRect = () => r;
+  w.document.body.append(a);
+  return a;
+};
+
+const ALL_ACTIONS = ['setMode', 'zoom', 'fullscreenTile', 'popout', 'openTerm', 'dock', 'reload', 'keysHere', 'allow', 'deny', 'tui', 'composer', 'tune', 'compact', 'context', 'usage', 'rename', 'close', 'kill'];
+/** a tile menu ctx whose actions record their name (and argument) in `log`; `without` leaves actions out (null). */
+function menuCtx(over = {}, without = []) {
+  const log = [];
+  const actions = {};
+  for (const name of ALL_ACTIONS) actions[name] = without.includes(name) ? null : (...a) => { log.push(a.length ? [name, ...a] : name); };
+  return { log, ctx: { tmux: SESS, session: paneRow({ state: 'idle' }), agent: 'claude', mode: 'grid', modes: ['grid', 'full', 'ro', 'tail'], touch: false, actions,
+    perm: { pending: false, summary: '' }, atPrompt: true, why: 'available when the session is at its prompt', ...over } };
+}
+
+test('v0.5.9c: the namespace carries the three components and their pure helpers', () => {
+  const { kit } = uiWorld();
+  for (const name of ['tileMenu', 'composer', 'tune', 'tuneGate', 'tunePlan', 'tuneCurrent', 'tuneRegistry']) assert.equal(typeof kit[name], 'function', `TermKit.${name}`);
+  assert.equal(kit.composer.name, 'makeComposer', 'the inner factory does not shadow components.js composer()');
+});
+
+// ---- tileMenu: the groups
+
+test('tileMenu on a mouse: a popover with the labelled groups VIEW / INPUT / TUNE / SESSION, in that order, every action as a row', () => {
+  const { w, kit } = uiWorld();
+  const { ctx } = menuCtx();
+  const m = kit.tileMenu(ctx);
+  const a = anchorAt(w);
+  m.open(a, false);
+  const pop = m.root;
+  assert.ok(pop.classList.contains('tk-pop') && pop.classList.contains('tk-pop-menu'), 'a popover, not a sheet');
+  assert.equal(pop.parentNode, w.document.body);
+  assert.equal(w.document.querySelector('#sheet').open, false, 'no sheet on a mouse');
+  assert.deepEqual(labels(pop), ['VIEW', 'INPUT', 'TUNE', 'SESSION']);
+  assert.deepEqual(modeCells(pop), ['Grid', 'Full', 'Read only', 'Tail'], 'the four modes are one segmented row');
+  assert.deepEqual(names(group(pop, 'view')), ['Zoom', 'Fullscreen this tile', 'Pop out', 'Open in terminal', 'Add to dock', 'Reload']);
+  assert.deepEqual(names(group(pop, 'input')), ['Send a prompt…', 'Keys here'], 'no permission pending: no Allow / Deny');
+  assert.deepEqual(names(group(pop, 'tune')), ['Tune…', '/compact', '/context'], '/usage and Rename… live inside Tune…');
+  assert.deepEqual(names(group(pop, 'session')), ['Close tile']);
+  const kill = group(pop, 'session').querySelector('.tk-kill');
+  assert.ok(kill, 'Kill session closes the SESSION group');
+  assert.equal(group(pop, 'session').children[group(pop, 'session').children.length - 1], kill, 'Kill is the last row of the menu');
+  assert.ok(kill.querySelector('button').classList.contains('bp5-intent-danger'), 'red-outlined (danger)');
+  assert.equal(pop.querySelectorAll('[data-group]').length, 4);
+  for (const g of pop.querySelectorAll('[data-group]')) assert.ok(g.getAttribute('aria-labelledby'), 'a labelled group');
+});
+
+test('tileMenu height at 1280x800: the item count and the window cap are pinned (13 rows + one mode row + Kill is about 546 px with a mouse, under 560; the popover never exceeds the window)', () => {
+  const { w, kit } = uiWorld();
+  const { ctx } = menuCtx({}, []);
+  ctx.actions.dockComposer = () => {};
+  const m = kit.tileMenu(ctx);
+  m.open(anchorAt(w), false);
+  const rows = m.root.querySelectorAll('.tk-item');
+  assert.equal(rows.length, 13, 'every row of the fullest quiet menu: 6 VIEW + 3 INPUT + 3 TUNE + Close tile');
+  assert.equal(m.root.querySelectorAll('.tk-mode').length, 4, 'and the four modes in ONE row, not four rows');
+  assert.equal(m.root.querySelectorAll('.tk-kill button').length, 1);
+  // 15 stops of 28 px (13 rows, the mode row, Kill) + 4 labels of 18 + group and menu padding and rules = 546: under 560 with room on an 800 px window
+  const stops = rows.length + 1 + 1;
+  const css = fs.readFileSync(path.join(KIT, 'termkit.css'), 'utf8');
+  assert.match(css, /\.tk-menu \{ --tk-h:28px;/, 'a row is 28 px with a mouse');
+  assert.ok(stops * 28 + 4 * 18 + 8 + 4 * 6 + 3 + 13 < 560, 'about 546 px');
+  assert.match(css, /\.tk-pop \{[^}]*max-height:calc\(100vh - 16px\)/, 'the popover is capped to the window and scrolls inside itself');
+  assert.match(css, /\.tk-pop \{[^}]*overflow-y:auto/);
+  assert.doesNotMatch(css, /^\.tk-cell[ :{.]/m, '.tk-cell is the tune panel\'s command button: the menu\'s mode cells are .tk-mode and share no unscoped rule with it');
+  assert.match(css, /^\.tk-mode \{/m);
+});
+
+test('tileMenu: the mode is one segmented row with the current one tinted (aria-checked, .on), and a pick calls setMode(mode) and closes', () => {
+  const { w, kit } = uiWorld();
+  const { ctx, log } = menuCtx({ mode: 'ro' });
+  const m = kit.tileMenu(ctx);
+  m.open(anchorAt(w), false);
+  const row = m.root.querySelector('.tk-modes');
+  assert.equal(row.getAttribute('role'), 'group');
+  assert.ok(row.getAttribute('aria-label'));
+  const radios = m.root.querySelectorAll('[role=menuitemradio]');
+  assert.equal(radios.length, 4);
+  assert.deepEqual(radios.map((n) => n.getAttribute('aria-checked')), ['false', 'false', 'true', 'false']);
+  assert.deepEqual(radios.map((n) => n.classList.contains('on')), [false, false, true, false], 'the tint sits on the current mode only');
+  assert.equal(m.root.querySelectorAll('.tk-modes .bp5-icon-tick').length, 0, 'no tick icon: the segment says it');
+  assert.ok(radios.every((n) => n.parentNode === row), 'all four in the one row');
+  radios[1].click();
+  assert.deepEqual(log, [['setMode', 'full']]);
+  assert.equal(m.isOpen, false);
+  assert.equal(w.document.querySelectorAll('.tk-pop').length, 0);
+});
+
+test('tileMenu: an item whose action is null is left out (Add to dock under 1024 px), and so is an empty group', () => {
+  const { w, kit } = uiWorld();
+  const { ctx } = menuCtx({}, ['dock', 'popout', 'allow', 'deny', 'tui']);
+  const m = kit.tileMenu(ctx);
+  m.open(anchorAt(w), false);
+  assert.deepEqual(names(group(m.root, 'view')), ['Zoom', 'Fullscreen this tile', 'Open in terminal', 'Reload']);
+  assert.equal(m.root.querySelectorAll('.tk-mode').length, 4);
+  m.close();
+  const bare = menuCtx({}, ALL_ACTIONS.filter((n) => n !== 'zoom' && n !== 'close'));
+  const m2 = kit.tileMenu(bare.ctx);
+  m2.open(anchorAt(w), false);
+  assert.deepEqual(labels(m2.root), ['VIEW', 'SESSION'], 'no input, no tune, no kill: those groups are not drawn');
+  assert.equal(m2.root.querySelectorAll('.tk-kill').length, 0);
+  m2.close();
+  const noMode = kit.tileMenu(menuCtx({}, ['setMode']).ctx);
+  noMode.open(anchorAt(w), false);
+  assert.equal(noMode.root.querySelectorAll('.tk-mode').length, 0, 'no setMode: no mode row');
+});
+
+test('tileMenu with a permission pending: Allow, Deny and In terminal join the INPUT group under a note naming the request', () => {
+  const { w, kit } = uiWorld();
+  const { ctx, log } = menuCtx({ perm: { pending: true, summary: 'Bash: npm test' }, session: paneRow({ state: 'waiting' }), atPrompt: false });
+  const m = kit.tileMenu(ctx);
+  m.open(anchorAt(w), false);
+  const input = group(m.root, 'input');
+  assert.deepEqual(names(input), ['Send a prompt…', 'Keys here', 'Allow', 'Deny', 'In terminal']);
+  assert.equal(input.querySelector('.tk-perm').textContent, 'Permission: Bash: npm test');
+  item(m.root, 'deny').click();
+  assert.deepEqual(log, ['deny'], 'the permission rows stay live while the session is not at its prompt');
+});
+
+test('tileMenu: the TUNE items are off with ctx.why while the session is not at its prompt; a tap says why and does nothing', () => {
+  const { w, kit } = uiWorld();
+  const { ctx, log } = menuCtx({ atPrompt: false, why: 'it is working: wait for the prompt', session: paneRow({ state: 'working' }) });
+  const m = kit.tileMenu(ctx);
+  m.open(anchorAt(w), false);
+  const tune = group(m.root, 'tune');
+  const rows = tune.querySelectorAll('.tk-item');
+  assert.equal(rows.length, 3);
+  for (const r of rows) {
+    assert.equal(r.getAttribute('aria-disabled'), 'true');
+    assert.equal(r.getAttribute('title'), 'it is working: wait for the prompt');
+  }
+  assert.equal(tune.querySelector('.tk-note').textContent, 'it is working: wait for the prompt', 'the reason is said once, under the label');
+  assert.equal(group(m.root, 'view').querySelectorAll('[aria-disabled=true]').length, 0, 'only the TUNE group is off');
+  rows[1].click();
+  assert.deepEqual(log, [], 'a disabled row does nothing');
+  assert.equal(m.isOpen, true, 'and the menu stays');
+  assert.deepEqual(toasts(w), [{ text: 'it is working: wait for the prompt', kind: 'info' }]);
+});
+
+test('tileMenu at the prompt: the TUNE rows are live and each calls its action (Tune…, /compact, /context; /usage and Rename… are not rows)', () => {
+  const { w, kit } = uiWorld();
+  const { ctx, log } = menuCtx();
+  const m = kit.tileMenu(ctx);
+  for (const id of ['tune', 'compact', 'context']) {
+    m.open(anchorAt(w), false);
+    assert.equal(item(m.root, id).getAttribute('aria-disabled'), null, `${id} is live`);
+    assert.equal(item(m.root, 'usage'), null, '/usage is inside Tune…, not a row');
+    assert.equal(item(m.root, 'rename'), null, 'and so is Rename…');
+    item(m.root, id).click();
+  }
+  assert.deepEqual(log, ['tune', 'compact', 'context']);
+});
+
+test('tileMenu: the atPrompt flag is derived from the session row when ctx does not give one', () => {
+  const { w, kit } = uiWorld();
+  const { ctx } = menuCtx({ atPrompt: undefined, session: paneRow({ state: 'working' }) });
+  const m = kit.tileMenu(ctx);
+  m.open(anchorAt(w), false);
+  assert.equal(item(m.root, 'compact').getAttribute('aria-disabled'), 'true', 'working: off');
+  m.close();
+  ctx.session = paneRow({ state: 'idle' });
+  m.open(anchorAt(w), false);
+  assert.equal(item(m.root, 'compact').getAttribute('aria-disabled'), null, 'idle: on');
+});
+
+test('tileMenu per agent: a Claude session has Tune…, /compact and /context, a Codex session only Tune…, a shell no TUNE group at all', () => {
+  const { w, kit } = uiWorld();
+  const claude = menuCtx();
+  const m1 = kit.tileMenu(claude.ctx);
+  m1.open(anchorAt(w), false);
+  assert.deepEqual(names(group(m1.root, 'tune')), ['Tune…', '/compact', '/context']);
+  m1.close();
+  const m2 = kit.tileMenu(menuCtx({ agent: 'codex', session: paneRow({ agent: 'codex', state: 'idle' }) }).ctx);
+  m2.open(anchorAt(w), false);
+  assert.deepEqual(names(group(m2.root, 'tune')), ['Tune…'], 'Codex has /model and /reasoning only: the Claude shortcuts are not offered');
+  m2.close();
+  const m3 = kit.tileMenu(menuCtx({ agent: 'shell', session: paneRow({ agent: 'shell', state: 'idle' }) }).ctx);
+  m3.open(anchorAt(w), false);
+  assert.deepEqual(labels(m3.root), ['VIEW', 'INPUT', 'SESSION']);
+  m3.close();
+  const schema = menuCtx({ agent: 'codex', schema: { slash: { model: { cmd: '/model' }, compact: { cmd: '/compact' } } } }).ctx;
+  const m4 = kit.tileMenu(schema);
+  m4.open(anchorAt(w), false);
+  assert.deepEqual(names(group(m4.root, 'tune')), ['Tune…', '/compact'], 'an agent whose registry lists /compact gets the row');
+});
+
+test('tileMenu: the optional rows (Show composer and Keys here as ticks, Back to the grid when zoomed)', () => {
+  const { w, kit } = uiWorld();
+  const { ctx, log } = menuCtx({ zoomed: true, composerDocked: true, keysTarget: true });
+  ctx.actions.dockComposer = () => log.push('dockComposer');
+  const m = kit.tileMenu(ctx);
+  m.open(anchorAt(w), false);
+  assert.equal(names(group(m.root, 'view'))[0], 'Back to the grid');
+  const docked = item(m.root, 'dockcomposer');
+  assert.equal(docked.getAttribute('role'), 'menuitemcheckbox');
+  assert.equal(docked.getAttribute('aria-checked'), 'true');
+  assert.equal(docked.querySelectorAll('.bp5-icon-tick').length, 1);
+  assert.equal(item(m.root, 'keys').getAttribute('aria-checked'), 'true');
+  docked.click();
+  assert.deepEqual(log, ['dockComposer']);
+});
+
+test('tileMenu Kill session: red-outlined and last; the first tap arms it (Confirm Kill session + Cancel), the second kills once, Cancel disarms', async () => {
+  const { w, kit } = uiWorld();
+  const { ctx, log } = menuCtx();
+  const m = kit.tileMenu(ctx);
+  m.open(anchorAt(w), false);
+  let kill = m.root.querySelector('.tk-kill');
+  assert.deepEqual(kill.querySelectorAll('button').map((b) => b.textContent), ['Kill session']);
+  kill.querySelector('button').click();
+  assert.deepEqual(log, [], 'one tap kills nothing');
+  assert.equal(m.isOpen, true);
+  kill = m.root.querySelector('.tk-kill');
+  assert.deepEqual(kill.querySelectorAll('button').map((b) => b.textContent), ['Confirm Kill session', 'Cancel'], 'the popover itself shows the arm: confirmButton repaints the page, not this');
+  kill.querySelectorAll('button')[1].click();
+  assert.deepEqual(m.root.querySelector('.tk-kill').querySelectorAll('button').map((b) => b.textContent), ['Kill session'], 'Cancel: back to rest');
+  assert.equal(w.get('ui.confirm'), null);
+  m.root.querySelector('.tk-kill button').click();
+  m.root.querySelector('.tk-kill button').click();           // Confirm Kill session
+  await settle();
+  assert.deepEqual(log, ['kill'], 'the second tap kills once');
+  assert.equal(m.isOpen, false, 'and the menu goes');
+});
+
+test('tileMenu: closing the menu while Kill is armed disarms it (the next open starts at rest)', () => {
+  const { w, kit } = uiWorld();
+  const { ctx } = menuCtx();
+  const m = kit.tileMenu(ctx);
+  m.open(anchorAt(w), false);
+  m.root.querySelector('.tk-kill button').click();
+  assert.equal(w.get('ui.confirm'), 'tile-kill:' + SESS);
+  m.close();
+  assert.equal(w.get('ui.confirm'), null);
+  m.open(anchorAt(w), false);
+  assert.deepEqual(m.root.querySelector('.tk-kill').querySelectorAll('button').map((b) => b.textContent), ['Kill session']);
+});
+
+// ---- tileMenu: mouse popover vs touch sheet, focus, keys, placement
+
+test('tileMenu on touch: a bottom sheet (openSheet) with the same groups as labelled sections and 44 px rows, no popover', () => {
+  const { w, kit } = uiWorld();
+  const { ctx, log } = menuCtx({ touch: true, perm: { pending: true, summary: 'Bash: ls' } });
+  const m = kit.tileMenu(ctx);
+  m.open(anchorAt(w), false);
+  const dlg = w.document.querySelector('#sheet');
+  assert.equal(dlg.open, true);
+  assert.ok(dlg.classList.contains('bottom') && !dlg.classList.contains('right'), 'a bottom sheet, also on a wide screen');
+  assert.equal(dlg.querySelector('.sheet-title').textContent, 'Tile menu · shop/api · s1');
+  const menu = dlg.querySelector('.tk-menu');
+  assert.ok(menu.classList.contains('tk-touch'), 'tk-touch: 44 px rows (termkit.css)');
+  assert.deepEqual(labels(menu), ['VIEW', 'INPUT', 'TUNE', 'SESSION']);
+  assert.equal(menu.querySelectorAll('[data-group]').length, 4);
+  assert.equal(w.document.querySelectorAll('.tk-pop').length, 0);
+  assert.equal(menu.querySelectorAll('.tk-mode').length, 4, 'the same segmented mode row');
+  assert.equal(menu.querySelector('.tk-modenote').textContent, 'Grid: a small tile that does not size the session', 'touch has no tooltips: the current mode is described under the row');
+  item(menu, 'reload').click();
+  assert.deepEqual(log, ['reload']);
+  assert.equal(dlg.open, false, 'a pick closes the sheet');
+  assert.equal(m.isOpen, false);
+});
+
+test('tileMenu on touch: an action that opens another sheet swaps it in place; the menu\'s sheet is not closed over it', () => {
+  const { w, kit } = uiWorld();
+  const { ctx } = menuCtx({ touch: true });
+  let sheet = null;
+  ctx.actions.composer = () => { sheet = w.get('openSheet')({ title: 'Next', body: 'x', placement: 'bottom' }); };
+  const m = kit.tileMenu(ctx);
+  m.open(anchorAt(w), false);
+  item(m.root || w.document.querySelector('#sheet'), 'composer').click();
+  const dlg = w.document.querySelector('#sheet');
+  assert.equal(dlg.open, true, 'still open: it shows the next sheet');
+  assert.equal(dlg.querySelector('.sheet-title').textContent, 'Next');
+  assert.equal(m.isOpen, false, 'the menu let go');
+  assert.ok(sheet);
+});
+
+test('tileMenu: opened by a pointer nothing is highlighted (the popover has the focus), by the keyboard the first item is focused', () => {
+  const { w, kit } = uiWorld();
+  const { ctx } = menuCtx();
+  const m = kit.tileMenu(ctx);
+  m.open(anchorAt(w), false);
+  assert.equal(w.document.activeElement, m.root, 'pointer: the popover, no row');
+  m.close();
+  m.open(anchorAt(w), true);
+  assert.equal(w.document.activeElement, m.root.querySelector('.tk-mode.on'), 'keyboard: the first row of the menu, the current mode');
+  m.close();
+  const t = kit.tileMenu(menuCtx({ touch: true }).ctx);
+  t.open(anchorAt(w), true);
+  assert.equal(w.document.activeElement, w.document.querySelector('#sheet .tk-mode.on'), 'keyboard on a sheet: the first row too');
+  t.close();
+  t.open(anchorAt(w), false);
+  assert.notEqual(w.document.activeElement.className.includes('tk-item'), true, 'a pointer on a sheet: no row focused');
+});
+
+test('tileMenu keys: arrows, Home and End move between rows (the mode row is one stop; Left and Right move inside it), Enter and Space pick, Esc closes and gives the focus back, Tab closes', () => {
+  const { w, kit } = uiWorld();
+  const { ctx, log } = menuCtx();
+  const m = kit.tileMenu(ctx);
+  const a = anchorAt(w);
+  m.open(a, true);
+  const cells = m.root.querySelectorAll('.tk-mode');
+  const rows = m.root.querySelectorAll('.tk-item, .tk-kill button');
+  const doc = w.document;
+  const key = (k) => doc.dispatch('keydown', { key: k, preventDefault() {}, stopPropagation() {} });
+  assert.equal(doc.activeElement, cells[0], 'the keyboard starts on the current mode (Grid)');
+  key('ArrowRight');
+  assert.equal(doc.activeElement, cells[1], 'Right: the next mode');
+  key('ArrowLeft');
+  key('ArrowLeft');
+  assert.equal(doc.activeElement, cells[3], 'Left wraps inside the row');
+  key('ArrowDown');
+  assert.equal(doc.activeElement, rows[0], 'Down leaves the mode row for the next row (Zoom)');
+  key('ArrowUp');
+  assert.equal(doc.activeElement, cells[0], 'Up comes back to the current mode');
+  key('End');
+  assert.equal(doc.activeElement, rows[rows.length - 1], 'End: the Kill button');
+  key('ArrowDown');
+  assert.equal(doc.activeElement, cells[0], 'wraps to the mode row');
+  key('ArrowUp');
+  assert.equal(doc.activeElement, rows[rows.length - 1]);
+  key('Home');
+  assert.equal(doc.activeElement, cells[0]);
+  keyOn(doc.activeElement, ' ');
+  assert.deepEqual(log, [['setMode', 'grid']], 'Space on the mode picks it');
+  m.open(a, true);
+  key('Escape');
+  assert.equal(m.isOpen, false);
+  assert.equal(doc.activeElement, a, 'Esc: focus goes back to the ▾');
+  m.open(a, true);
+  key('Tab');
+  assert.equal(m.isOpen, false, 'Tab closes it like components.menu');
+});
+
+test('tileMenu: a pointerdown outside closes it, one on the anchor does not (the anchor\'s own click toggles), a route change closes it, a resize keeps it under its anchor', () => {
+  const { w, kit } = uiWorld();
+  const m = kit.tileMenu(menuCtx().ctx);
+  const a = anchorAt(w);
+  m.open(a, false);
+  w.document.dispatch('pointerdown', { target: m.root.querySelector('.tk-item') });
+  assert.equal(m.isOpen, true, 'inside: stays');
+  w.document.dispatch('pointerdown', { target: a });
+  assert.equal(m.isOpen, true, 'the anchor: left to its click');
+  m.open(a, false);
+  assert.equal(m.isOpen, false, 'open() on an open menu is the second tap on the ▾: it closes');
+  m.open(a, false);
+  w.document.dispatch('pointerdown', { target: w.document.body });
+  assert.equal(m.isOpen, false, 'outside: closes');
+  m.open(a, false);
+  w.fire('hashchange');
+  assert.equal(m.isOpen, false);
+  m.open(a, false);
+  a.getBoundingClientRect = () => ({ left: 300, top: 40, right: 330, bottom: 68, width: 30, height: 28 });
+  w.fire('resize');
+  assert.equal(m.isOpen, true, 'a resize does not close it (a screenshot, a keyboard, a devtools pane fire them)');
+  assert.equal(m.root.style.left, '300px', 'it is put under its anchor again');
+  a.remove();
+  w.fire('resize');
+  assert.equal(m.isOpen, false, 'with the anchor gone it goes');
+  const a2 = anchorAt(w);
+  m.open(a2, false);
+  m.close();
+  assert.equal(w.document.querySelectorAll('.tk-pop').length, 0);
+  assert.deepEqual(w.window.listeners.hashchange || [], [], 'every listener is released');
+  assert.deepEqual(w.document.listeners.pointerdown || [], []);
+  assert.deepEqual(w.document.listeners.keydown || [], []);
+});
+
+test('tileMenu popover placement: under the anchor, kept inside the window, above it when it does not fit below, scrolling in its own max-height', () => {
+  const { w, kit, dom } = uiWorld();
+  Object.defineProperty(dom.El.prototype, 'offsetHeight', { configurable: true, get() { return this.classList && this.classList.contains('tk-pop') ? 600 : 0; } });
+  const m = kit.tileMenu(menuCtx().ctx);
+  m.open(anchorAt(w, { left: 100, top: 40, bottom: 68, right: 130 }), false);
+  assert.equal(m.root.style.top, '72px', 'under the anchor');
+  assert.equal(m.root.style.left, '100px');
+  assert.equal(m.root.style.maxHeight, '720px', 'the room under it');
+  m.close();
+  m.open(anchorAt(w, { left: 1250, top: 700, bottom: 728, right: 1280 }), false);
+  assert.equal(m.root.style.left, '1012px', 'pulled back inside the window (1280 - 260 - 8)');
+  assert.equal(m.root.style.top, '96px', 'flipped above the anchor');
+  assert.equal(m.root.style.maxHeight, '688px');
+  m.close();
+  const noRect = kit.tileMenu(menuCtx().ctx);
+  noRect.open(null, false);
+  assert.ok(noRect.root, 'no anchor: still opens (the CSS default place)');
+  noRect.close();
+  delete dom.El.prototype.offsetHeight;
+});
+
+test('tileMenu in fullscreen: the popover goes into the fullscreen element (a fixed node outside it would be invisible)', () => {
+  const { w, kit } = uiWorld();
+  const root = w.document.createElement('div');
+  w.document.body.append(root);
+  const a = w.document.createElement('button');
+  root.append(a);
+  a.getBoundingClientRect = () => ({ left: 0, top: 0, right: 30, bottom: 28, width: 30, height: 28 });
+  w.document.fullscreenElement = root;
+  const m = kit.tileMenu(menuCtx().ctx);
+  m.open(a, false);
+  assert.equal(m.root.parentNode, root);
+  m.close();
+  w.document.fullscreenElement = null;
+  m.open(a, false);
+  assert.equal(m.root.parentNode, w.document.body);
+  w.document.dispatch('fullscreenchange', {});
+  assert.equal(m.isOpen, false, 'a fullscreen change closes it (the node would be in the wrong tree)');
+});
+
+test('popovers in page fullscreen: with <html> fullscreen (the quad does that) the menu, the composer and the tune panel go into <body>, where the theme is; only another fullscreen element takes them in', () => {
+  const { w, kit } = uiWorld();
+  const html = w.document.documentElement;
+  const a = anchorAt(w);                                                       // in <body>, inside <html>
+  const host = (open) => { const c = open(); const r = c.root; const parent = r && r.parentNode; c.close(); return parent; };
+  const surfaces = {
+    menu: () => { const m = kit.tileMenu(menuCtx().ctx); m.open(a, false); return m; },
+    composer: () => { const c = kit.composer({ tmux: SESS, session: paneRow({ state: 'idle' }), agent: 'claude', touch: false }); c.open(a); return c; },
+    tune: () => { const t = kit.tune(tuneCtx()); t.open(a, false); return t; },
+  };
+  for (const [name, open] of Object.entries(surfaces)) {
+    w.document.fullscreenElement = null;
+    assert.equal(host(open), w.document.body, `${name}: no fullscreen: the body`);
+    w.document.fullscreenElement = html;
+    assert.equal(host(open), w.document.body, `${name}: <html> is the fullscreen element: still the body (outside it nothing is themed: Times, a filled white Send, a filled red Kill)`);
+    w.document.webkitFullscreenElement = html;
+    w.document.fullscreenElement = null;
+    assert.equal(host(open), w.document.body, `${name}: the webkit prefix too`);
+    w.document.webkitFullscreenElement = null;
+  }
+  const tile = w.document.createElement('div');
+  const inner = w.document.createElement('button');
+  inner.getBoundingClientRect = () => ({ left: 0, top: 0, right: 30, bottom: 28, width: 30, height: 28 });
+  tile.append(inner);
+  w.document.body.append(tile);
+  w.document.fullscreenElement = tile;
+  assert.equal(host(() => { const m = kit.tileMenu(menuCtx().ctx); m.open(inner, false); return m; }), tile, 'a fullscreen element of its own that holds the anchor takes the popover in');
+  assert.equal(host(() => { const m = kit.tileMenu(menuCtx().ctx); m.open(a, false); return m; }), w.document.body, 'an anchor outside that element: the body');
+  w.document.fullscreenElement = null;
+});
+
+test('tileMenu placement: below the anchor, above it when only there it fits whole, and slid up over the anchor (whole, no scroll) when neither side has the room', () => {
+  const { w, kit, dom } = uiWorld();
+  Object.defineProperty(dom.El.prototype, 'offsetHeight', { configurable: true, get() { return this.classList && this.classList.contains('tk-pop') ? 540 : 0; } });
+  const m = kit.tileMenu(menuCtx().ctx);
+  const vh = 800;                                                              // the harness window (the placement test above reads 720 px of room under a 72 px top)
+  const at = (top) => anchorAt(w, { top, bottom: top + 28 });
+  m.open(at(100), false);
+  assert.equal(m.root.style.top, '132px', 'room below: under the anchor');
+  m.close();
+  m.open(at(vh - 200), false);
+  assert.equal(m.root.style.top, String(vh - 200 - 4 - 540) + 'px', 'no room below, room above: flipped above');
+  m.close();
+  m.open(at(vh / 2 + 20), false);                                              // 540 px fits neither under (about 340) nor above (about 400): slide up
+  assert.equal(m.root.style.top, String(vh - 540 - 8) + 'px', 'slid up so its bottom edge is 8 px above the window\'s');
+  assert.equal(m.root.style.maxHeight, String(vh - 16) + 'px', 'the most the window can give');
+  m.close();
+  delete dom.El.prototype.offsetHeight;
+});
+
+test('tileMenu Kill session at rest is red-OUTLINED (class danger, the outlined Blueprint intent), never the filled one; only the armed Confirm carries `confirm` (the filled red)', () => {
+  const { w, kit } = uiWorld();
+  const m = kit.tileMenu(menuCtx().ctx);
+  m.open(anchorAt(w), false);
+  let btns = m.root.querySelectorAll('.tk-kill button');
+  assert.equal(btns.length, 1);
+  assert.ok(btns[0].classList.contains('bp5-intent-danger'), 'danger: the outline on a faint red tint (style.css)');
+  assert.equal(btns[0].classList.contains('confirm'), false, 'not the filled variant at rest');
+  assert.equal(btns[0].classList.contains('bp5-minimal'), false);
+  btns[0].click();
+  btns = m.root.querySelectorAll('.tk-kill button');
+  assert.deepEqual(btns.map((b) => [b.textContent, b.classList.contains('confirm')]), [['Confirm Kill session', true], ['Cancel', false]], 'only the armed second tap is filled');
+  const css = fs.readFileSync(path.join(KIT, 'termkit.css'), 'utf8');
+  const killRules = css.split('\n').filter((l) => /\.tk-kill/.test(l)).join('\n');
+  assert.doesNotMatch(killRules, /background|\bborder:|bad-solid|#fff/, 'termkit.css adds no fill or border to Kill: the outline is style.css danger');
+});
+
+test('tileMenu.update(patch): an open menu repaints in place with the new state (a permission arrives, the mode changes)', () => {
+  const { w, kit } = uiWorld();
+  const { ctx } = menuCtx();
+  const m = kit.tileMenu(ctx);
+  m.open(anchorAt(w), true);
+  const pop = m.root;
+  assert.equal(item(pop, 'allow'), null);
+  m.update({ perm: { pending: true, summary: 'Bash: ls' }, mode: 'tail' });
+  assert.equal(m.root, pop, 'the same popover');
+  assert.ok(item(pop, 'allow'));
+  assert.equal(pop.querySelector('[role=menuitemradio][aria-checked=true] .tk-name').textContent, 'Tail');
+  assert.equal(pop.querySelector('.tk-mode.on').textContent, 'Tail');
+  m.close();
+  assert.doesNotThrow(() => m.update({ mode: 'full' }), 'a closed menu just takes the state');
+});
+
+test('tileMenu: ctx.touch decides, not the pointer; without a #sheet on the page a touch menu falls back to the popover', () => {
+  const { w, kit } = uiWorld();
+  w.document.querySelector('#sheet').remove();
+  const m = kit.tileMenu(menuCtx({ touch: true }).ctx);
+  m.open(anchorAt(w), false);
+  assert.ok(m.root && m.root.classList.contains('tk-pop'), 'term.html has no #sheet: the popover');
+  assert.ok(m.root.querySelector('.tk-menu').classList.contains('tk-touch'), 'with the touch sizes');
+});
+
+// ---- composer
+
+test('composer on a mouse: a popover under the anchor with a two-row box, the quick replies, a bordered Send and the key hint; the box has the focus', () => {
+  const { w, kit } = uiWorld();
+  const c = kit.composer({ tmux: SESS, session: paneRow({ state: 'idle' }), agent: 'claude', touch: false });
+  const a = anchorAt(w);
+  c.open(a);
+  const pop = c.root;
+  assert.ok(pop.classList.contains('tk-pop') && pop.classList.contains('tk-pop-composer'));
+  const ta = pop.querySelector('textarea');
+  assert.equal(ta.getAttribute('rows'), '2');
+  assert.equal(w.document.activeElement, ta, 'a mouse: the box has the focus');
+  assert.deepEqual(pop.querySelectorAll('.tk-chip').map((b) => b.textContent), ['continue', 'merge', 'push', 'pr', 'add commit push', 'do it'], 'the agent defaults when nothing was saved');
+  const send = pop.querySelector('.tk-send');
+  assert.equal(send.textContent, 'Send');
+  assert.ok(!send.classList.contains('bp5-intent-primary') && !send.classList.contains('primary'), 'bordered, never a filled primary');
+  assert.equal(pop.querySelector('.tk-hint').textContent, 'Enter sends · Shift+Enter adds a line');
+  assert.equal(pop.querySelector('.tk-gl').textContent, 'SEND A PROMPT');
+});
+
+test('composer: the chips are the person\'s own list (ccboard:quick:<tmux>) when there is one', () => {
+  const { w, kit } = uiWorld({ storage: { ['ccboard:quick:' + SESS]: JSON.stringify(['ship it', 'rebase']) } });
+  const c = kit.composer({ tmux: SESS, session: paneRow(), agent: 'claude' });
+  c.open(anchorAt(w));
+  assert.deepEqual(c.root.querySelectorAll('.tk-chip').map((b) => b.textContent), ['ship it', 'rebase']);
+});
+
+test('composer: Enter sends POST /prompt {text, enter, queue:false} at the prompt, toasts "sent", reports onSent, clears the box and closes', async () => {
+  const { w, kit } = uiWorld();
+  const seen = [];
+  const c = kit.composer({ tmux: SESS, session: paneRow({ state: 'idle' }), agent: 'claude', onSent: (k) => seen.push(k) });
+  c.open(anchorAt(w));
+  const ta = c.root.querySelector('textarea');
+  ta.value = 'fix the login bug';
+  keyOn(ta, 'Enter');
+  await settle();
+  assert.deepEqual(calls(w), [{ method: 'POST', path: `/api/sessions/${SESS}/prompt`, body: { text: 'fix the login bug', enter: true, queue: false } }]);
+  assert.deepEqual(toasts(w), [{ text: 'sent', kind: 'ok' }]);
+  assert.deepEqual(seen, ['sent']);
+  assert.equal(ta.value, '');
+  assert.equal(c.isOpen, false, 'the composer closes after a send');
+  assert.equal(plain(w.get('__calls')).filter((x) => x.method === 'poll').length, 1, 'the board repolls');
+});
+
+test('composer: a working Claude session queues (queue:true, toast "queued"); a working Codex session and a shell never do', async () => {
+  const { w, kit } = uiWorld();
+  w.run('__route = (m, p) => (p.endsWith("/prompt") ? { ok: true, pasted: true, queued: true } : { ok: true })');
+  const seen = [];
+  const c = kit.composer({ tmux: SESS, session: paneRow({ state: 'working' }), agent: 'claude', onSent: (k) => seen.push(k) });
+  c.open(anchorAt(w));
+  assert.equal(c.root.querySelector('.tk-hint').textContent, 'Working now: your prompt goes in the queue');
+  const ta = c.root.querySelector('textarea');
+  ta.value = 'and then add tests';
+  c.root.querySelector('.tk-send').click();
+  await settle();
+  assert.deepEqual(calls(w).map((x) => x.body), [{ text: 'and then add tests', enter: true, queue: true }]);
+  assert.deepEqual(toasts(w), [{ text: 'queued', kind: 'ok' }]);
+  assert.deepEqual(seen, ['queued']);
+
+  w.run('__calls.length = 0; __toasts.length = 0; __route = (m, p) => { throw __httpError(409, "the session is working", { error: "working", message: "the session is working", retry: 5 }); }');
+  const cx = kit.composer({ tmux: SESS, session: paneRow({ state: 'working', agent: 'codex' }), agent: 'codex' });
+  cx.open(anchorAt(w));
+  const tx = cx.root.querySelector('textarea');
+  tx.value = 'next';
+  cx.root.querySelector('.tk-send').click();
+  await settle();
+  assert.deepEqual(calls(w).map((x) => x.body), [{ text: 'next', enter: true, queue: false }], 'Codex never queues, and the refusal is not retried as a queue');
+  assert.deepEqual(toasts(w), [{ text: 'the session is working · try again in 5 s', kind: 'warn' }]);
+  assert.equal(cx.isOpen, true, 'a refusal keeps the composer open');
+  assert.equal(tx.value, 'next', 'and the text');
+  assert.equal(cx.root.querySelector('.tk-send').disabled, false, 'Send is free again');
+});
+
+test('composer: a shell has no agent row to paste into, so its text goes to /keys {text, enter}', async () => {
+  const { w, kit } = uiWorld();
+  const c = kit.composer({ tmux: SESS, session: paneRow({ agent: 'shell', state: 'idle' }), agent: 'shell' });
+  c.open(anchorAt(w));
+  const ta = c.root.querySelector('textarea');
+  ta.value = 'ls -la';
+  c.root.querySelector('.tk-send').click();
+  await settle();
+  assert.deepEqual(calls(w), [{ method: 'POST', path: `/api/sessions/${SESS}/keys`, body: { text: 'ls -la', enter: true } }]);
+  assert.deepEqual(toasts(w), [{ text: 'sent', kind: 'ok' }]);
+});
+
+test('composer: a Claude session that started a turn since the last poll answers 409 "working" once: the text is queued instead, and an old server\'s 404 falls back to /keys', async () => {
+  const { w, kit } = uiWorld();
+  let n = 0;
+  w.ctx.__n = () => ++n;
+  w.run('__route = (m, p, b) => { if (b && b.queue === false && p.endsWith("/prompt")) throw __httpError(409, "working", { error: "working", message: "the session is working", retry: 5 }); return { ok: true, queued: true }; }');
+  const c = kit.composer({ tmux: SESS, session: paneRow({ state: 'idle' }), agent: 'claude' });
+  c.open(anchorAt(w));
+  c.root.querySelector('textarea').value = 'go on';
+  c.root.querySelector('.tk-send').click();
+  await settle();
+  assert.deepEqual(calls(w).map((x) => x.body.queue), [false, true], 'asked at the prompt, then queued');
+  assert.deepEqual(toasts(w), [{ text: 'queued', kind: 'ok' }]);
+
+  w.run('__calls.length = 0; __toasts.length = 0; __route = (m, p) => { if (p.endsWith("/prompt")) throw __httpError(404, "Not Found"); return { ok: true }; }');
+  const old = kit.composer({ tmux: SESS, session: paneRow({ state: 'idle' }), agent: 'claude' });
+  old.open(anchorAt(w));
+  old.root.querySelector('textarea').value = 'hello';
+  old.root.querySelector('.tk-send').click();
+  await settle();
+  assert.deepEqual(calls(w).map((x) => x.path.split('/').pop()), ['prompt', 'keys']);
+  assert.deepEqual(toasts(w), [{ text: 'sent', kind: 'ok' }]);
+});
+
+test('composer: Shift+Enter adds a line and sends nothing, an empty box sends nothing, Esc closes and gives the focus back, a chip sends at once', async () => {
+  const { w, kit } = uiWorld();
+  const c = kit.composer({ tmux: SESS, session: paneRow({ state: 'idle' }), agent: 'claude' });
+  const a = anchorAt(w);
+  c.open(a);
+  const ta = c.root.querySelector('textarea');
+  ta.value = 'line one';
+  keyOn(ta, 'Enter', { shiftKey: true });
+  assert.equal(ta.value, 'line one\n', 'Shift+Enter inserts a newline');
+  assert.deepEqual(calls(w), []);
+  ta.value = '   ';
+  keyOn(ta, 'Enter');
+  await settle();
+  assert.deepEqual(calls(w), [], 'a blank prompt is not sent');
+  w.document.dispatch('keydown', { key: 'Escape', preventDefault() {}, stopPropagation() {} });
+  assert.equal(c.isOpen, false);
+  assert.equal(w.document.activeElement, a);
+  assert.equal(ta.value, '   ', 'the draft survives a close');
+  c.open(a);
+  c.root.querySelectorAll('.tk-chip')[1].click();                              // merge
+  await settle();
+  assert.deepEqual(calls(w).map((x) => x.body.text), ['merge']);
+  assert.equal(c.isOpen, false, 'a chip send closes it too');
+});
+
+test('composer: a second tap while a send is in flight sends nothing, and the buttons are off meanwhile', async () => {
+  const { w, kit } = uiWorld();
+  w.run('__route = () => new Promise((res) => { globalThis.__done = () => res({ ok: true }); })');
+  const c = kit.composer({ tmux: SESS, session: paneRow({ state: 'idle' }), agent: 'claude' });
+  c.open(anchorAt(w));
+  c.root.querySelector('textarea').value = 'once';
+  const send = c.root.querySelector('.tk-send');
+  send.click();
+  await settle();
+  assert.equal(send.disabled, true);
+  assert.equal(c.root.querySelectorAll('.tk-chip').filter((b) => !b.disabled).length, 0, 'chips are off too');
+  send.click();
+  keyOn(c.root.querySelector('textarea'), 'Enter');
+  await settle();
+  assert.equal(calls(w).length, 1);
+  w.run('__done()');
+  await settle();
+  assert.equal(c.isOpen, false);
+});
+
+test('composer on touch: a bottom sheet with a newline key, no keyboard hint, and the box is not focused (the soft keyboard stays down)', () => {
+  const { w, kit } = uiWorld();
+  const c = kit.composer({ tmux: SESS, session: paneRow({ state: 'idle' }), agent: 'claude', touch: true });
+  c.open(anchorAt(w));
+  const dlg = w.document.querySelector('#sheet');
+  assert.equal(dlg.open, true);
+  assert.equal(dlg.querySelector('.sheet-title').textContent, 'Send a prompt · shop/api · s1');
+  const box = dlg.querySelector('.tk-composer');
+  assert.ok(box.classList.contains('tk-touch'));
+  assert.equal(box.querySelector('.tk-hint').textContent, '');
+  assert.ok(box.querySelector('.nl'), 'touch keyboards have no Shift+Enter: a newline button');
+  assert.notEqual(w.document.activeElement, box.querySelector('textarea'));
+  assert.equal(w.document.querySelectorAll('.tk-pop').length, 0);
+  c.close();
+  assert.equal(dlg.open, false);
+});
+
+test('composer.el: the docked one-line box stays after a send, and it is the same send (queue rule, toast, onSent)', async () => {
+  const { w, kit } = uiWorld();
+  w.run('__route = () => ({ ok: true, queued: true })');
+  const seen = [];
+  const c = kit.composer({ tmux: SESS, session: paneRow({ state: 'working' }), agent: 'claude', onSent: (k) => seen.push(k) });
+  const docked = c.el;
+  assert.ok(docked.classList.contains('tk-docked'));
+  const ta = docked.querySelector('textarea');
+  assert.equal(ta.getAttribute('rows'), '1');
+  assert.ok(docked.querySelector('.tk-send') && !docked.querySelector('.tk-chip'), 'a box and a Send, nothing else');
+  w.document.body.append(docked);
+  ta.value = 'queue me';
+  keyOn(ta, 'Enter');
+  await settle();
+  assert.deepEqual(calls(w).map((x) => x.body), [{ text: 'queue me', enter: true, queue: true }]);
+  assert.deepEqual(seen, ['queued']);
+  assert.equal(ta.value, '');
+  assert.equal(docked.parentNode, w.document.body, 'it stays where it is mounted');
+  c.update({ session: paneRow({ state: 'idle' }) });
+  ta.value = 'now';
+  keyOn(ta, 'Enter');
+  await settle();
+  assert.equal(calls(w)[1].body.queue, false, 'update(): the next send sees the new state');
+});
+
+test('composer.el is ONE row: .tk-docked is a flex row (no column), a one-row box that does not auto-grow, no chips, a small … button that opens the roomy box, a bordered Send', async () => {
+  const { w, kit } = uiWorld();
+  const c = kit.composer({ tmux: SESS, session: paneRow({ state: 'idle' }), agent: 'claude', touch: false });
+  const docked = c.el;
+  assert.ok(docked.classList.contains('tk-composer') && docked.classList.contains('tk-docked'));
+  assert.deepEqual(docked.children.map((n) => (n.tagName || '').toLowerCase()), ['textarea', 'button', 'button'], 'the box, the … button, Send: one row of three');
+  assert.equal(docked.querySelectorAll('.tk-chip, .tk-chips, .tk-gl, .tk-hint').length, 0, 'no chips, no label, no hint on the line');
+  const ta = docked.querySelector('textarea');
+  assert.equal(ta.getAttribute('rows'), '1');
+  assert.ok(ta.classList.contains('composer'), 'style.css\'s box');
+  assert.equal(ta._maxRows, undefined, 'composerBind is not used: nothing grows it (composerGrow would)');
+  ta.value = 'a\nb\nc';
+  ta.dispatchEvent({ type: 'input' });
+  assert.equal(ta.style.height || '', '', 'typing sets no height: the row stays one row');
+  const more = docked.querySelector('.tk-more');
+  const send = docked.querySelector('.tk-send');
+  assert.equal(more.textContent, '…');
+  assert.ok(more.getAttribute('aria-label'));
+  assert.equal(send.textContent, 'Send');
+  w.document.body.append(docked);
+  assert.equal(c.isOpen, false);
+  more.click();
+  assert.equal(c.isOpen, true, 'the … button opens the popover variant (two rows, the quick replies)');
+  assert.ok(c.root.classList.contains('tk-pop-composer'));
+  assert.ok(c.root.querySelector('.tk-chips'), 'with the chips');
+  c.close();
+  const css = fs.readFileSync(path.join(KIT, 'termkit.css'), 'utf8');
+  const rule = css.match(/\.tk-docked \{[^}]*\}/)[0];
+  assert.match(rule, /flex-direction:\s*row/, 'a row: .tk-composer is a column and this must override it');
+  assert.match(rule, /flex-wrap:\s*nowrap/);
+  assert.match(rule, /align-items:\s*center/);
+  const box = css.match(/\.tk-docked textarea\.composer\.tk-ta \{[^}]*\}/)[0];
+  assert.match(box, /height:\s*var\(--tk-h\)/);
+  assert.match(box, /max-height:\s*var\(--tk-h\)/, 'one row, never taller');
+  assert.match(box, /resize:\s*none/);
+  assert.ok(css.indexOf('.tk-docked {') > css.indexOf('.tk-composer {'), 'declared after .tk-composer, so its row wins');
+  assert.match(css, /\.tk-docked \{ --tk-h:28px;/, '28 px with a mouse');
+  assert.match(css, /@media \(pointer:coarse\) \{ \.tk-docked \{ --tk-h:44px;/, '44 px on touch');
+  assert.match(css, /html\.force-coarse \.tk-docked \{ --tk-h:44px; \}/);
+  assert.match(css, /\.bp5-dark \.bp5-button\.tk-send:not\(\[class\*=bp5-intent-\]\) \{[^}]*min-height:var\(--tk-h\)/, 'Send is a bordered button as tall as the row');
+  assert.match(css, /\.bp5-dark \.bp5-button\.tk-more:not\(\[class\*=bp5-intent-\]\) \{[^}]*min-height:var\(--tk-h\)/);
+});
+
+// ---- tune
+
+const TUNE_REG = {
+  claude: { compact: { cmd: '/compact', read: false, arg: false }, context: { cmd: '/context', read: true, arg: false }, usage: { cmd: '/usage', read: true, arg: false }, cost: { cmd: '/cost', read: true, arg: false },
+    status: { cmd: '/status', read: true, arg: false }, rename: { cmd: '/rename', read: false, arg: true }, model: { cmd: '/model', read: false, arg: true }, effort: { cmd: '/effort', read: false, arg: true }, fast: { cmd: '/fast', read: false, arg: false } },
+  codex: { model: { cmd: '/model', read: false, arg: true }, reasoning: { cmd: '/reasoning', read: false, arg: true } },
+};
+const claudeStats = (over = {}) => ({ model: 'Opus 5', model_id: 'claude-opus-5', effort: 'high', fast: false, context_pct: 42, session_name: 'login work', ...over });
+const tuneCtx = (over = {}) => ({ tmux: SESS, session: paneRow({ state: 'idle', stats: claudeStats() }), agent: 'claude', stats: claudeStats(), touch: false, schema: null, ...over });
+const segTexts = (root, kind) => root.querySelector(`.tk-seg[data-kind=${kind}]`).querySelectorAll('button').map((b) => b.textContent);
+const pressed = (root, kind) => root.querySelector(`.tk-seg[data-kind=${kind}]`).querySelectorAll('button').filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.textContent);
+
+test('tune for Claude: MODEL (opus fable sonnet haiku), EFFORT (low medium high xhigh max), OPTIONS (Fast, Ultracode) and an equal-cell COMMANDS grid, with the current values read from stats', () => {
+  const { w, kit } = uiWorld();
+  const t = kit.tune(tuneCtx());
+  t.open(anchorAt(w), false);
+  const pop = t.root;
+  assert.ok(pop.classList.contains('tk-pop-tune'), 'a popover (320 px in termkit.css)');
+  assert.deepEqual(pop.querySelectorAll('.tk-sec').map((s) => s.querySelector('.tk-gl').textContent), ['MODEL', 'EFFORT', 'OPTIONS', 'COMMANDS']);
+  assert.deepEqual(segTexts(pop, 'model'), ['opus', 'fable', 'sonnet', 'haiku']);
+  assert.deepEqual(segTexts(pop, 'effort'), ['low', 'medium', 'high', 'xhigh', 'max']);
+  assert.deepEqual(pressed(pop, 'model'), ['opus'], '"Opus 5" is the opus option');
+  assert.deepEqual(pressed(pop, 'effort'), ['high']);
+  assert.deepEqual(pop.querySelectorAll('.tk-tog').map((b) => b.querySelector('.tk-tn').textContent), ['Fast', 'Ultracode']);
+  assert.deepEqual(pop.querySelectorAll('.tk-tog').map((b) => b.querySelector('.tk-state').textContent), ['off', 'off'], 'the state is said in words');
+  assert.deepEqual(pop.querySelectorAll('.tk-cell').map((b) => b.textContent), ['/compact', '/context', '/usage', '/cost', '/status', '/rename…']);
+  assert.ok(pop.querySelector('.tk-seg[data-kind=model] .tk-opt').classList.contains('hue-blue'), 'the model options wear the hues of the board');
+  assert.ok(!pop.querySelector('.tk-gate') || pop.querySelector('.tk-gate').classList.contains('hidden'), 'at the prompt: no gate note');
+  for (const b of pop.querySelectorAll('button')) assert.equal(b.disabled, false);
+});
+
+test('tune: the current values follow stats (a model name that contains the option, effort, Fast, Ultracode) and update(patch) repaints', () => {
+  const { w, kit } = uiWorld();
+  const t = kit.tune(tuneCtx({ stats: claudeStats({ model: 'Sonnet 4.7', model_id: 'claude-sonnet-4-7', effort: 'xhigh', fast: true }) }));
+  t.open(anchorAt(w), false);
+  assert.deepEqual(pressed(t.root, 'model'), ['sonnet']);
+  assert.deepEqual(pressed(t.root, 'effort'), ['xhigh']);
+  assert.equal(t.root.querySelector('.tk-tog[data-kind=fast]').getAttribute('aria-pressed'), 'true');
+  assert.equal(t.root.querySelector('.tk-tog[data-kind=fast] .tk-state').textContent, 'on');
+  t.update({ stats: claudeStats({ effort: 'ultracode', model: 'Haiku 4', model_id: '' }) });
+  assert.deepEqual(pressed(t.root, 'effort'), [], 'ultracode is the switch, not a segment');
+  assert.equal(t.root.querySelector('.tk-tog[data-kind=ultra]').getAttribute('aria-pressed'), 'true');
+  assert.deepEqual(pressed(t.root, 'model'), ['haiku']);
+});
+
+test('tune: every control posts /command with its own body (model, effort, Fast, Ultracode on and off, the command cells)', async () => {
+  const { w, kit } = uiWorld();
+  const t = kit.tune(tuneCtx());
+  t.open(anchorAt(w), false);
+  const click = async (node) => { node.click(); await settle(); };
+  const seg = (kind, text) => t.root.querySelector(`.tk-seg[data-kind=${kind}]`).querySelectorAll('button').find((b) => b.textContent === text);
+  await click(seg('model', 'sonnet'));
+  await click(seg('effort', 'max'));
+  await click(t.root.querySelector('.tk-tog[data-kind=fast]'));
+  await click(t.root.querySelector('.tk-tog[data-kind=ultra]'));
+  const cell = (key) => t.root.querySelector(`.tk-cell[data-cmd=${key}]`);
+  await click(cell('compact'));
+  assert.deepEqual(calls(w).map((c) => c.body), [{ cmd: 'model', arg: 'sonnet' }, { cmd: 'effort', arg: 'max' }, { cmd: 'fast' }, { cmd: 'effort', arg: 'ultracode on' }, { cmd: 'compact' }]);
+  assert.ok(calls(w).every((c) => c.method === 'POST' && c.path === `/api/sessions/${SESS}/command`));
+  t.update({ stats: claudeStats({ effort: 'ultracode' }) });
+  await click(t.root.querySelector('.tk-tog[data-kind=ultra]'));
+  assert.deepEqual(calls(w).pop().body, { cmd: 'effort', arg: 'high' }, 'Ultracode off goes back to high');
+});
+
+test('tune for Codex: the schema\'s models, /reasoning for the effort (never /effort), no switches and no Claude commands; without a schema the built-in lists', async () => {
+  const { w, kit } = uiWorld();
+  const schema = { models: ['gpt-5.5', 'gpt-5.5-mini', 'gpt-5.4'], efforts: ['low', 'medium', 'high', 'xhigh'], reasoning_by_model: { 'gpt-5.5-mini': ['low', 'medium'] }, slash: TUNE_REG.codex };
+  const t = kit.tune(tuneCtx({ agent: 'codex', schema, stats: { model: 'gpt-5.5-mini', effort: 'medium' }, session: paneRow({ agent: 'codex', state: 'idle', stats: { model: 'gpt-5.5-mini', effort: 'medium' } }) }));
+  t.open(anchorAt(w), false);
+  assert.deepEqual(labels(t.root), ['MODEL', 'REASONING']);
+  assert.deepEqual(segTexts(t.root, 'model'), ['gpt-5.5', 'gpt-5.5-mini', 'gpt-5.4']);
+  assert.deepEqual(pressed(t.root, 'model'), ['gpt-5.5-mini'], 'the longest name wins: gpt-5.5 is inside gpt-5.5-mini');
+  assert.deepEqual(segTexts(t.root, 'effort'), ['low', 'medium'], 'the levels of the current model');
+  assert.deepEqual(pressed(t.root, 'effort'), ['medium']);
+  assert.equal(t.root.querySelectorAll('.tk-tog').length, 0);
+  assert.equal(t.root.querySelectorAll('.tk-cell').length, 0);
+  assert.ok(t.root.querySelector('.tk-seg[data-kind=model]').classList.contains('tk-wrap2'), 'long names take half the track each');
+  t.root.querySelector('.tk-seg[data-kind=effort] button').click();
+  await settle();
+  t.root.querySelector('.tk-seg[data-kind=model] button').click();
+  await settle();
+  assert.deepEqual(calls(w).map((c) => c.body), [{ cmd: 'reasoning', arg: 'low' }, { cmd: 'model', arg: 'gpt-5.5' }]);
+  const bare = kit.tune(tuneCtx({ agent: 'codex', schema: null, stats: {} }));
+  bare.open(anchorAt(w), false);
+  assert.ok(!bare.root.textContent.includes('There is nothing to tune'), 'no schema: a Codex tile still has something to tune');
+  assert.deepEqual(labels(bare.root), ['MODEL', 'REASONING']);
+  assert.deepEqual(segTexts(bare.root, 'model'), ['gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.5', 'codex-auto-review'], 'the built-in list (codex.py FALLBACK_MODELS)');
+  assert.deepEqual(segTexts(bare.root, 'effort'), ['low', 'medium', 'high', 'xhigh', 'max']);
+  bare.root.querySelector('.tk-seg[data-kind=effort] button').click();
+  await settle();
+  assert.deepEqual(calls(w).map((c) => c.body).at(-1), { cmd: 'reasoning', arg: 'low' }, 'and it posts /reasoning, never /effort');
+});
+
+test('the built-in Codex model list is codex.py FALLBACK_MODELS (the two copies must not drift): same slugs, same order; the levels are _ALL_LEVELS', () => {
+  const { kit } = uiWorld();
+  const py = fs.readFileSync(path.join(ROOT, 'app', 'agents', 'codex.py'), 'utf8');
+  const slugs = py.match(/FALLBACK_MODELS = \[[^\]]*for s in \(([^)]*)\)\]/)[1].match(/"([^"]+)"/g).map((x) => x.slice(1, -1));
+  const levels = py.match(/_ALL_LEVELS = \[([^\]]*)\]/)[1].match(/"([^"]+)"/g).map((x) => x.slice(1, -1));
+  const plan = kit.tunePlan('codex', null, {});
+  assert.deepEqual(plain(plan.model.options.map((o) => o.value)), slugs);
+  assert.deepEqual(plain(plan.effort.options.map((o) => o.value)), levels);
+});
+
+test('tune for Codex with a state row\'s agent entry (status_summary: installed, version, loggedIn, hooks; no models, no registry): the built-in lists stand in, never "nothing to tune"', () => {
+  const { w, kit } = uiWorld();
+  const statusSummary = { installed: true, version: '0.145.0', loggedIn: true, authMethod: 'chatgpt', glyph: 'codex', hooks: { trust: 'review' } };
+  const t = kit.tune(tuneCtx({ agent: 'codex', schema: statusSummary, stats: { model: 'gpt-5.6-sol', effort: 'high' }, session: paneRow({ agent: 'codex', state: 'idle', stats: { model: 'gpt-5.6-sol', effort: 'high' } }) }));
+  t.open(anchorAt(w), false);
+  assert.ok(!t.root.textContent.includes('There is nothing to tune'));
+  assert.deepEqual(labels(t.root), ['MODEL', 'REASONING']);
+  assert.equal(segTexts(t.root, 'model').length, 5);
+  assert.deepEqual(pressed(t.root, 'model'), ['gpt-5.6-sol']);
+  assert.deepEqual(pressed(t.root, 'effort'), ['high']);
+  assert.equal(t.root.querySelectorAll('.tk-tog').length, 0, 'no Claude switches');
+  const plan = kit.tunePlan('codex', statusSummary, {});
+  assert.equal(plan.model.cmd, 'model');
+  assert.equal(plan.effort.cmd, 'reasoning');
+  const fromSchema = kit.tunePlan('codex', { models: ['gpt-5.5'], efforts: ['low'] }, {});
+  assert.deepEqual([fromSchema.model.options.map((o) => o.value), fromSchema.effort.options.map((o) => o.value)], [['gpt-5.5'], ['low']], 'a schema that lists them wins over the built-in lists');
+});
+
+test('tune: a 409 shows the server\'s words as a toast and the rows come back; other failures show their message', async () => {
+  const { w, kit } = uiWorld();
+  w.run('__route = () => { throw __httpError(409, "refused", { error: "permission_pending", message: "a permission request is waiting for an answer", retry: 10 }); }');
+  const t = kit.tune(tuneCtx());
+  t.open(anchorAt(w), false);
+  const opus = t.root.querySelector('.tk-seg[data-kind=model] button');
+  opus.click();
+  await settle();
+  assert.deepEqual(toasts(w), [{ text: 'a permission request is waiting for an answer · try again in 10 s', kind: 'warn' }]);
+  assert.equal(opus.disabled, false, 'free again');
+  w.run('__calls.length = 0; __toasts.length = 0; __route = () => { throw __httpError(500, "tmux is down"); }');
+  t.root.querySelector('.tk-cell[data-cmd=compact]').click();
+  await settle();
+  assert.deepEqual(toasts(w), [{ text: 'tmux is down', kind: 'bad' }]);
+});
+
+test('tune while the session is not at its prompt: every row is off, a note says why, and a tap posts nothing', async () => {
+  const { w, kit } = uiWorld();
+  const t = kit.tune(tuneCtx({ session: paneRow({ state: 'working', stats: claudeStats() }) }));
+  t.open(anchorAt(w), false);
+  const gate = t.root.querySelector('.tk-gate');
+  assert.equal(gate.classList.contains('hidden'), false);
+  assert.equal(gate.textContent, 'Available when the session is at its prompt.');
+  const all = t.root.querySelectorAll('.tk-opt, .tk-tog, .tk-cell');
+  assert.ok(all.length >= 15);
+  for (const b of all) { assert.equal(b.disabled, true); assert.equal(b.getAttribute('title'), 'available when the session is at its prompt'); }
+  assert.equal(await t.run('compact', ''), false, 'run() says no too');
+  assert.deepEqual(calls(w), []);
+  t.update({ session: paneRow({ state: 'idle', stats: claudeStats() }) });
+  assert.equal(gate.classList.contains('hidden'), true, 'at the prompt: the note goes');
+  for (const b of all) assert.equal(b.disabled, false);
+  t.update({ atPrompt: false });
+  assert.equal(all[0].disabled, true, 'an explicit atPrompt wins over the row');
+  const waiting = kit.tuneGate(paneRow({ state: 'waiting', flags: { wait_kind: 'idle' } }));
+  assert.equal(waiting.enabled, true, 'waiting on the idle prompt counts as at the prompt');
+  assert.equal(kit.tuneGate(paneRow({ state: 'idle', flags: { compacting: true } })).enabled, false);
+  assert.equal(kit.tuneGate(paneRow({ state: 'idle', pending: [{ id: 1 }] })).enabled, false);
+  assert.equal(kit.tuneGate(paneRow({ agent: 'shell' })).show, false);
+});
+
+test('tune: a read command shows what it printed, Close sends the agent one Escape, and the next command waits for it', async () => {
+  const { w, kit, clock } = uiWorld();
+  w.run('__route = (m, p, b) => (b && b.cmd === "usage" ? { ok: true, screen: "Plan usage\\n  5h: 41%\\n  week: 12%\\n\\n" } : b && b.cmd === "context" ? { ok: true, screen: "ctx 42%" } : { ok: true })');
+  const t = kit.tune(tuneCtx());
+  t.open(anchorAt(w), false);
+  t.root.querySelector('.tk-cell[data-cmd=usage]').click();
+  await settle();
+  const readout = t.root.querySelector('.tk-readout');
+  assert.equal(readout.classList.contains('hidden'), false);
+  assert.equal(readout.querySelector('.tk-gl').textContent, '/USAGE');
+  assert.equal(readout.querySelector('.tk-pre').textContent, 'Plan usage\n  5h: 41%\n  week: 12%');
+  assert.deepEqual(calls(w).map((c) => c.path.split('/').pop()), ['command']);
+  readout.querySelector('.tk-close').click();
+  await settle();
+  assert.deepEqual(calls(w).slice(1).map((c) => [c.path.split('/').pop(), c.body]), [['keys', { keys: ['Escape'] }]], 'closing the readout dismisses the dialog in the pane');
+  assert.equal(readout.classList.contains('hidden'), true);
+  // a second read command, then another command straight away: the Escape goes first, 150 ms before it
+  t.root.querySelector('.tk-cell[data-cmd=context]').click();
+  await settle();
+  w.run('__calls.length = 0');
+  t.root.querySelector('.tk-cell[data-cmd=compact]').click();
+  await settle();
+  assert.deepEqual(calls(w).map((c) => c.path.split('/').pop()), ['keys'], 'Escape first, the command waits the gap');
+  clock.advance(200);
+  await settle();
+  assert.deepEqual(calls(w).map((c) => c.path.split('/').pop()), ['keys', 'command']);
+});
+
+test('tune: closing the panel with a read command\'s output still open sends the Escape; Esc inside it closes the readout first', async () => {
+  const { w, kit } = uiWorld();
+  w.run('__route = (m, p, b) => (b && b.cmd === "cost" ? { ok: true, screen: "$1.20" } : { ok: true })');
+  const t = kit.tune(tuneCtx());
+  t.open(anchorAt(w), false);
+  t.root.querySelector('.tk-cell[data-cmd=cost]').click();
+  await settle();
+  w.document.dispatch('keydown', { key: 'Escape', preventDefault() {}, stopPropagation() {} });
+  await settle();
+  assert.equal(t.isOpen, true, 'the first Esc closes the readout');
+  assert.equal(calls(w).filter((c) => c.path.endsWith('/keys')).length, 1);
+  t.root.querySelector('.tk-cell[data-cmd=cost]').click();
+  await settle();
+  t.close();
+  await settle();
+  assert.equal(calls(w).filter((c) => c.path.endsWith('/keys')).length, 2, 'closing the panel dismisses the dialog too');
+});
+
+test('tune.run(): a command from the tile menu works without a panel; a read command opens the panel at the anchor to show its output', async () => {
+  const { w, kit } = uiWorld();
+  w.run('__route = (m, p, b) => (b && b.cmd === "context" ? { ok: true, screen: "ctx 42%" } : { ok: true })');
+  const t = kit.tune(tuneCtx());
+  assert.equal(await t.run('compact', ''), true);
+  assert.equal(t.isOpen, false, 'a set command needs no panel');
+  const a = anchorAt(w);
+  assert.equal(await t.run('context', '', { anchor: a }), true);
+  assert.equal(t.isOpen, true);
+  assert.equal(t.root.querySelector('.tk-pre').textContent, 'ctx 42%');
+});
+
+test('tune Rename…: an inline form (prefilled with the session name), blank is refused in place, Enter posts /rename, Esc backs out of the form first', async () => {
+  const { w, kit } = uiWorld();
+  const t = kit.tune(tuneCtx());
+  t.open(anchorAt(w), false);
+  const form = t.root.querySelector('.tk-rename');
+  assert.equal(form.classList.contains('hidden'), true);
+  t.root.querySelector('.tk-cell[data-cmd=rename]').click();
+  assert.equal(form.classList.contains('hidden'), false);
+  const input = form.querySelector('input');
+  assert.equal(input.value, 'login work');
+  assert.equal(w.document.activeElement, input);
+  input.value = '   ';
+  form.dispatchEvent({ type: 'submit', preventDefault() {} });
+  assert.equal(form.querySelector('.tk-err').textContent, 'Type a name first.');
+  assert.deepEqual(calls(w), []);
+  w.document.dispatch('keydown', { key: 'Escape', preventDefault() {}, stopPropagation() {} });
+  assert.equal(form.classList.contains('hidden'), true, 'Esc closes the form');
+  assert.equal(t.isOpen, true, 'not the panel');
+  t.root.querySelector('.tk-cell[data-cmd=rename]').click();
+  input.value = 'api cleanup';
+  form.dispatchEvent({ type: 'submit', preventDefault() {} });
+  await settle();
+  assert.deepEqual(calls(w).map((c) => c.body), [{ cmd: 'rename', arg: 'api cleanup' }]);
+  assert.equal(form.classList.contains('hidden'), true);
+  t.close();
+  t.rename(anchorAt(w));
+  assert.equal(t.isOpen, true, 'rename(anchor) opens the panel with the form open');
+  assert.equal(t.root.querySelector('.tk-rename').classList.contains('hidden'), false);
+});
+
+test('tune: a typed setting is pending until the statusline agrees (then it flashes ok); one that never lands says so after 20 s', async () => {
+  const { w, kit, clock } = uiWorld();
+  const t = kit.tune(tuneCtx());
+  t.open(anchorAt(w), false);
+  const sonnet = t.root.querySelector('.tk-seg[data-kind=model]').querySelectorAll('button')[2];
+  sonnet.click();
+  await settle();
+  assert.equal(sonnet.classList.contains('pending'), true);
+  t.update({ stats: claudeStats({ model: 'Sonnet 4.7', model_id: 'claude-sonnet-4-7' }) });
+  assert.equal(sonnet.classList.contains('pending'), false);
+  assert.equal(sonnet.classList.contains('ok'), true, 'landed');
+  clock.advance(1600);
+  assert.equal(sonnet.classList.contains('ok'), false);
+  const fable = t.root.querySelector('.tk-seg[data-kind=model]').querySelectorAll('button')[1];
+  fable.click();
+  await settle();
+  assert.equal(fable.classList.contains('pending'), true);
+  clock.advance(20100);
+  assert.equal(fable.classList.contains('pending'), false);
+  assert.deepEqual(toasts(w), [{ text: '/model fable not confirmed by the statusline', kind: 'warn' }]);
+});
+
+test('tune.mount(targetEl): the same panel inside a page, no popover chrome; update() and destroy() work on it (the terminal page reuses this)', async () => {
+  const { w, kit } = uiWorld();
+  const host = w.document.createElement('div');
+  w.document.body.append(host);
+  const t = kit.tune(tuneCtx());
+  const m = t.mount(host);
+  assert.equal(m.root.parentNode, host);
+  assert.ok(m.root.classList.contains('tk-tune'));
+  assert.equal(w.document.querySelectorAll('.tk-pop').length, 0);
+  assert.equal(t.isOpen, false);
+  assert.deepEqual(pressed(m.root, 'effort'), ['high']);
+  m.update({ stats: claudeStats({ effort: 'max' }) });
+  assert.deepEqual(pressed(m.root, 'effort'), ['max']);
+  m.root.querySelector('.tk-cell[data-cmd=compact]').click();
+  await settle();
+  assert.deepEqual(calls(w).map((c) => c.body), [{ cmd: 'compact' }]);
+  m.destroy();
+  assert.equal(host.children.length, 0);
+  assert.equal(t.mount(null), null);
+});
+
+test('tune on touch: a bottom sheet with 44 px controls (tk-touch), titled with the session; closing it ends the sheet', () => {
+  const { w, kit } = uiWorld();
+  const t = kit.tune(tuneCtx({ touch: true }));
+  t.open(anchorAt(w), false);
+  const dlg = w.document.querySelector('#sheet');
+  assert.equal(dlg.open, true);
+  assert.equal(dlg.querySelector('.sheet-title').textContent, 'Tune · shop/api · s1');
+  assert.ok(dlg.querySelector('.tk-tune').classList.contains('tk-touch'));
+  assert.equal(w.document.querySelectorAll('.tk-pop').length, 0);
+  t.open(anchorAt(w), false);
+  assert.equal(t.isOpen, false, 'open() on an open panel closes it');
+  assert.equal(dlg.open, false);
+});
+
+test('tune and the tile menu share one gate: TermKit.tuneGate decides both, and tunePlan(agent) is what the panel shows', () => {
+  const { kit } = uiWorld();
+  const p = plain(kit.tunePlan('claude', null, {}));
+  assert.deepEqual(p.model.options.map((o) => o.value), ['opus', 'fable', 'sonnet', 'haiku']);
+  assert.deepEqual(p.effort.options.map((o) => o.value), ['low', 'medium', 'high', 'xhigh', 'max']);
+  assert.deepEqual([p.fast, p.ultra, p.cells.map((c) => c.key)], [true, true, ['compact', 'context', 'usage', 'cost', 'status', 'rename']]);
+  assert.deepEqual(p.cells.filter((c) => c.read).map((c) => c.key), ['context', 'usage', 'cost', 'status']);
+  const reg = plain(kit.tuneRegistry('claude', { slash: { effort: { cmd: '/effort' } } }));
+  assert.deepEqual(Object.keys(reg), ['effort'], 'the agent\'s own registry wins');
+  const only = plain(kit.tunePlan('claude', { slash: { effort: { cmd: '/effort' } } }, {}));
+  assert.equal(only.model, null);
+  assert.equal(only.fast, false);
+  assert.deepEqual(plain(kit.tunePlan('shell', null, {})).cells, []);
+});
+
+test('tune keeps the terminal page\'s lists: the same models and efforts as term.js (a drift here would make the two panels disagree)', () => {
+  const src = fs.readFileSync(path.join(KIT, 'term.js'), 'utf8');
+  const list = (name) => JSON.parse(new RegExp(`const ${name} = (\\[[^\\]]*\\])`).exec(src)[1].replace(/'/g, '"'));
+  const { kit } = uiWorld();
+  const p = plain(kit.tunePlan('claude', null, {}));
+  assert.deepEqual(p.model.options.map((o) => o.value), list('MODELS'));
+  assert.deepEqual(p.effort.options.map((o) => o.value), list('EFFORTS').filter((e) => e !== 'ultracode'), 'term.js lists ultracode as a sixth chip; here it is the switch');
+  assert.match(src, /EFFORT_ARG = \{ ultracode: 'ultracode on' \}/, 'the arg of the switch is the one term.js sends');
+  const hues = /const MODEL_HUE = (\{[^}]*\})/.exec(src)[1];
+  for (const [k, v] of Object.entries({ opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', haiku: 'hue-slate' })) assert.ok(hues.includes(`${k}: '${v}'`), `${k} keeps ${v}`);
+});
+
+// ---- destroy(): the tile goes
+
+test('destroy() on each component: the surface closes, nothing fires afterwards (no pending toast about a dead tile, no send), the docked box leaves the page', async () => {
+  const { w, kit, clock } = uiWorld();
+  const m = kit.tileMenu(menuCtx().ctx);
+  m.open(anchorAt(w), false);
+  m.destroy();
+  assert.equal(m.isOpen, false);
+  assert.equal(w.document.querySelectorAll('.tk-pop').length, 0);
+
+  const t = kit.tune(tuneCtx());
+  t.open(anchorAt(w), false);
+  t.root.querySelector('.tk-seg[data-kind=model]').querySelectorAll('button')[1].click();     // /model fable: pending for 20 s
+  await settle();
+  const host = w.document.createElement('div');
+  w.document.body.append(host);
+  t.mount(host);
+  t.destroy();
+  assert.equal(t.isOpen, false);
+  assert.equal(host.children.length, 0, 'a mounted panel leaves too');
+  clock.advance(25000);
+  assert.deepEqual(toasts(w), [], 'the pending setting does not toast about a dead tile');
+  await assert.doesNotReject(() => t.run('compact', ''), 'a late run() does not throw');
+
+  const c = kit.composer({ tmux: SESS, session: paneRow({ state: 'idle' }), agent: 'claude' });
+  w.document.body.append(c.el);
+  c.open(anchorAt(w));
+  c.root.querySelector('textarea').value = 'late';
+  c.destroy();
+  assert.equal(c.isOpen, false);
+  assert.equal(c.el.parentNode, null, 'the docked box is taken out of the page');
+  w.run('__calls.length = 0');
+  c.el.querySelector('.tk-send').click();
+  await settle();
+  assert.deepEqual(calls(w), [], 'a destroyed composer sends nothing');
+});
+
+test('tune.destroy() with a read command\'s output on screen sends the agent its one Escape (the tile closes, the session keeps running)', async () => {
+  const { w, kit } = uiWorld();
+  w.run('__route = (m, p, b) => (b && b.cmd === "usage" ? { ok: true, screen: "x" } : { ok: true })');
+  const t = kit.tune(tuneCtx());
+  t.open(anchorAt(w), false);
+  t.root.querySelector('.tk-cell[data-cmd=usage]').click();
+  await settle();
+  w.run('__calls.length = 0');
+  t.destroy();
+  await settle();
+  assert.deepEqual(calls(w).map((c) => [c.path.split('/').pop(), c.body]), [['keys', { keys: ['Escape'] }]]);
+});
+
+test('tileMenu: while it is open the page\'s single-letter shortcuts (F, Z) do not reach the page; Space and Enter still pick, modified keys pass', () => {
+  const { w, kit } = uiWorld();
+  const m = kit.tileMenu(menuCtx().ctx);
+  m.open(anchorAt(w), true);
+  const ev = (key, extra = {}) => { const e = { type: 'keydown', key, preventDefault() {}, stopPropagation() { e.stopped = true; }, ...extra }; w.document.dispatch('keydown', e); return e; };
+  assert.equal(ev('f').stopped, true);
+  assert.equal(ev('z').stopped, true);
+  assert.equal(ev(' ').stopped, undefined, 'Space is the row\'s own key');
+  assert.equal(ev('f', { ctrlKey: true, altKey: true }).stopped, undefined, 'Ctrl+Alt+F stays the page\'s');
+  assert.equal(ev('ArrowDown').stopped, undefined);
+});
+
+// ---- termkit.css and its links
+
+const termkitCss = fs.readFileSync(path.join(KIT, 'termkit.css'), 'utf8');
+const cssRule = (sel) => { const m = new RegExp('(?:^|\\})\\s*' + sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\{([^}]*)\\}', 'm').exec(termkitCss); return m ? m[1] : null; };
+
+test('termkit.css: the menu is at least 240 px wide, the tune popover 320, touch rows and controls 44 px, mouse 28; nothing is wider than the window', () => {
+  assert.match(cssRule('.tk-pop-menu'), /min-width:\s*(2[4-9]\d|[3-9]\d\d)px/);
+  assert.match(cssRule('.tk-pop-tune'), /width:\s*min\(320px,\s*calc\(100vw - 16px\)\)/);
+  assert.match(cssRule('.tk-pop-composer'), /width:\s*min\(420px,\s*calc\(100vw - 16px\)\)/);
+  assert.match(cssRule('.tk-pop'), /max-width:\s*calc\(100vw - 16px\)/);
+  assert.match(cssRule('.tk-pop'), /overflow-y:\s*auto/);
+  assert.match(cssRule('.tk-touch'), /--tk-h:\s*44px/);
+  assert.match(cssRule('.tk-menu'), /--tk-h:\s*28px/);
+  assert.match(cssRule('.tk-tune'), /--tk-h:\s*28px/);
+  assert.match(cssRule('.tk-composer'), /--tk-h:\s*28px/);
+  assert.match(cssRule('.tk-item'), /min-height:\s*var\(--tk-h\)/);
+  assert.ok(termkitCss.indexOf('.tk-touch { --tk-h:44px; }') > termkitCss.indexOf('.tk-menu { --tk-h:28px'), '.tk-touch comes after .tk-menu: on a touch menu (both classes) the 44 px wins');
+  assert.match(termkitCss, /\.tk-composer\.tk-touch textarea\.composer\.tk-ta \{[^}]*font-size:\s*16px/, 'a 16 px box on touch (iOS does not zoom)');
+  assert.match(termkitCss, /\.tk-docked textarea\.composer\.tk-ta \{[^}]*height:\s*var\(--tk-h\)/);
+  assert.match(termkitCss, /\.tk-gl \{[^}]*text-transform:\s*uppercase/, 'small-caps group labels');
+  for (const sel of ['.tk-opt', '.tk-tog', '.tk-cell', '.tk-send', '.tk-chip']) assert.ok(termkitCss.includes(sel), `${sel} is styled`);
+  assert.doesNotMatch(termkitCss.replace(/\/\*[\s\S]*?\*\//g, ''), /!important|@import|url\(|primary/, 'no filled primary, no import, no urls');
+});
+
+test('termkit.css is linked from both pages right after the stylesheets they already had, and nothing in termkit.js writes a style attribute', () => {
+  const links = (file) => [...fs.readFileSync(path.join(KIT, file), 'utf8').matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map((m) => m[1]);
+  assert.equal(links('index.html').at(-1), '/static/termkit.css');
+  assert.equal(links('index.html').at(-2), '/static/charts.css');
+  assert.equal(links('term.html').at(-1), '/static/termkit.css');
+  assert.equal(links('term.html').at(-2), '/static/term.css');
+  const js = fs.readFileSync(path.join(KIT, 'termkit.js'), 'utf8');
+  assert.doesNotMatch(js.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, ''), /innerHTML|cssText|setAttribute\(\s*['"]style|insertAdjacentHTML/);
+});
+
+test('v0.5.9c: loading termkit.js still defines only (the three factories are not run at load)', () => {
+  const k = kitWorld();
+  assert.equal(k.w.document.body.children.length, 0);
+});

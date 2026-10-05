@@ -1,9 +1,11 @@
-// Contract tests for the v0.5.9 quad page (app/static/pages/quad.js, route #/quad?s=a,b,c,d&l=1|2|4&p=<project>): the pure helpers (layout capping,
-// the query, slot state, auto-fill, the task line, size chip, auto-fit rule, shortcuts), then the page itself on minidom's DOM with the real scripts in
-// index.html order: tiles per slot with the exact grid ttyUrl, iframes that are never re-created or reordered, the teardown order (about:blank before
-// remove), persistence and URL precedence, zoom as an overlay, the mode pill and the tail, the one-up chip switcher under 840 px, the active tile and the
-// host key bar, Allow / Deny / In terminal, auto-fit, the hidden-tab reload and the shortcuts. Timers, Date and ResizeObserver are fakes; api(), toast and
-// Live.subscribe are recorders; every iframe gets a fake contentWindow before its load event.
+// Contract tests for the quad page (app/static/pages/quad.js, v0.5.9 and v3 in v0.5.9c, route #/quad?s=a,b,c,...&l=1|2|4|6|8|10&p=<project>): the pure helpers (layout
+// caps by window width and the 240 px minimum, the query, slot state, auto-fill, the task line, size chip, auto-fit rule, shortcuts), then the page itself on minidom's DOM
+// with the real scripts in index.html order: tiles per slot with the exact grid ttyUrl, up to ten of them, iframes that are never re-created or reordered, the teardown
+// order (about:blank before remove), persistence and URL precedence, zoom as an overlay, fullscreen, the mode picker and the tail, the one-up chip switcher under 840 px,
+// the active tile and the host key bar, Allow / Deny / In terminal, the tile menu's ctx (what TermKit.tileMenu gets) and what its actions do, the docked composer,
+// auto-fit, the hidden-tab reload and the shortcuts. Timers, Date and ResizeObserver are fakes; api(), toast and Live.subscribe are recorders; every iframe gets a fake
+// contentWindow before its load event. TermKit's tileMenu / composer / tune are either removed (kit: 'none', the default: the old title menu) or recorders (kit: 'stub');
+// slice B's real ones have their own tests (termkit.test.mjs).
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -72,7 +74,33 @@ function fakeWin(cols = 80, rows = 24) {
   return win;
 }
 
-function quadWorld({ wide = true, state = fixtureState(), storage = {}, hash = null, withKeymap = true, inbox = false, shell = false } = {}) {
+/** The recorders TermKit.tileMenu / composer / tune are replaced with in kit: 'stub'. Each call is kept in __kit; every controller has the isOpen getter the real ones have. */
+const KIT_STUB = `
+  globalThis.__kit = { menus: [], composers: [], tunes: [] };
+  const ctl = (rec, extra) => Object.assign({ close() { rec.closed += 1; rec.open = false; }, update(p) { rec.updates.push(p); Object.assign(rec.ctx, p); }, get isOpen() { return rec.open; } }, extra);
+  TermKit.tileMenu = (ctx) => {
+    const rec = { ctx, opened: [], closed: 0, open: false, updates: [] };
+    __kit.menus.push(rec);
+    return ctl(rec, { open(anchor, byKeyboard) { if (rec.open) { rec.closed += 1; rec.open = false; return; } rec.opened.push({ anchor, byKeyboard }); rec.open = true; } });
+  };
+  TermKit.composer = (ctx) => {
+    const rec = { ctx, opened: [], closed: 0, destroyed: 0, open: false, updates: [], el: document.createElement('div') };
+    rec.el.className = 'tk-composer tk-docked';
+    __kit.composers.push(rec);
+    return ctl(rec, { el: rec.el, open(anchor) { rec.opened.push(anchor); rec.open = true; }, destroy() { rec.destroyed += 1; rec.open = false; rec.el.remove(); } });
+  };
+  TermKit.tune = (ctx) => {
+    const rec = { ctx, opened: [], closed: 0, destroyed: 0, open: false, updates: [], runs: [], renames: [] };
+    __kit.tunes.push(rec);
+    return ctl(rec, { open(anchor, byKeyboard) { rec.opened.push({ anchor, byKeyboard }); rec.open = true; }, mount() { return null; }, destroy() { rec.destroyed += 1; rec.open = false; },
+      run(cmd, arg, o) { rec.runs.push({ cmd, arg, anchor: o && o.anchor }); return Promise.resolve(true); }, rename(anchor) { rec.renames.push(anchor); rec.open = true; } });
+  };
+`;
+
+/** `n` slots: the names, then empty strings (the saved and the URL state carry ten). */
+const pad = (...names) => [...names, ...Array(10 - names.length).fill('')];
+
+function quadWorld({ wide = true, width = null, state = fixtureState(), storage = {}, hash = null, withKeymap = true, inbox = false, shell = false, kit = 'none', init = '' } = {}) {
   const clock = fakeClock();
   class FakeDate extends Date { static now() { return BASE + clock.now; } }
   const ros = [];
@@ -84,6 +112,7 @@ function quadWorld({ wide = true, state = fixtureState(), storage = {}, hash = n
   const w = makeWorld({
     matchMedia: (q) => ({ matches: wide && /840/.test(q), addEventListener() {}, removeEventListener() {} }),
     setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, setInterval: clock.setInterval, clearInterval: clock.clearInterval, Date: FakeDate, ResizeObserver: FakeRO,
+    ...(width ? { innerWidth: width } : {}),
   });
   installDom(w);
   for (const [k, v] of Object.entries(storage)) w.localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v));
@@ -101,6 +130,8 @@ function quadWorld({ wide = true, state = fixtureState(), storage = {}, hash = n
     Live.subscribe = (tmux, fn) => { __live.sub.push(tmux); __live.fns[tmux] = fn; return () => { __live.unsub.push(tmux); delete __live.fns[tmux]; }; };
     Live.isDemo = () => false;
   `);
+  w.run(kit === 'stub' ? KIT_STUB : (kit === 'none' ? 'TermKit.tileMenu = undefined; TermKit.composer = undefined; TermKit.tune = undefined;' : ''));
+  if (init) w.run(init);
   w.ctx.__st = state;
   w.run('state = __st');
   if (shell) w.run('globalThis.__created = []; globalThis.Shell = { openCreate(kind, ctx) { __created.push({ kind, ctx }); return true; }, syncCrumbs() { __crumbs = (globalThis.__crumbs || 0) + 1; } }; var __crumbs = 0;');
@@ -138,30 +169,68 @@ const key = (over, rec = {}) => ({ type: 'keydown', ctrlKey: true, altKey: true,
 
 // ---------------------------------------------------------------- layout
 
-test('layoutFor: under 840 px (the phone and 600-839) is the one-up chip switcher, from 840 the wanted layout 1, 2 or 4, default 2', () => {
+test('layoutFor: under 840 px one tile with the chips; 840-1199 up to 4, 1200-1599 up to 8, 1600 up 10; the wanted layout stays the wish, default 2', () => {
   const { Q } = quadWorld();
   const f = (...a) => plain(Q.layoutFor(...a));
-  for (const width of [320, 390, 599, 600, 768, 839]) assert.deepEqual(f(width, 4), { n: 1, cols: 1, rows: 1, oneUp: true, forced: true, capped: true }, `${width}: one-up whatever was asked for`);
-  assert.deepEqual(f(840, 2), { n: 2, cols: 2, rows: 1, oneUp: false, forced: false, capped: false });
-  assert.deepEqual(f(1280, 4), { n: 4, cols: 2, rows: 2, oneUp: false, forced: false, capped: false });
-  assert.deepEqual(f(1280, 1), { n: 1, cols: 1, rows: 1, oneUp: true, forced: false, capped: false }, 'a chosen 1 is one tile with the chip switcher, but not forced');
+  for (const width of [320, 390, 599, 600, 768, 839]) {
+    const r = f(width, 4);
+    assert.deepEqual([r.n, r.cols, r.rows, r.oneUp, r.forced, r.capped, r.cap], [1, 1, 1, true, true, true, 1], `${width}: one-up whatever was asked for`);
+  }
+  assert.deepEqual(f(840, 2), { n: 2, cols: 2, rows: 1, oneUp: false, forced: false, capped: false, want: 2, cap: 4, why: '', reason: '' });
+  assert.deepEqual([f(1280, 4).n, f(1280, 4).cols, f(1280, 4).rows], [4, 2, 2]);
+  assert.deepEqual(plain(f(1280, 1)), { n: 1, cols: 1, rows: 1, oneUp: true, forced: false, capped: false, want: 1, cap: 8, why: '', reason: '' }, 'a chosen 1 is one tile with the chip switcher, but not forced');
   assert.equal(f(1280, undefined).n, 2, 'the default is 2-up');
-  assert.equal(f(1280, 3).n, 2, 'only 1, 2 and 4 exist');
-  assert.equal(f(1280, 6).n, 2);
+  assert.equal(f(1280, 3).n, 2, 'a layout that does not exist is the default');
   assert.equal(f(Number.NaN, 4).n, 1, 'an unknown width is one-up');
-  assert.equal(f(1024, 2, 740).n, 2, 'the 260 px sidebar open at 1024: still two tiles');
-  assert.deepEqual([f(1280, 2, 525).n, f(1280, 4, 525).oneUp, f(1280, 4, 525).forced], [1, true, true], 'the dock open leaves a column under 600 px: one-up');
-  assert.equal(f(1280, 1, 525).forced, false, 'one tile needs no columns');
+  // the column map: 1 -> 1, 2 -> 2, 4 -> 2 x 2, 6 -> 3 x 2, 8 -> 4 x 2, 10 -> 5 x 2
+  const map = [1, 2, 4, 6, 8, 10].map((n) => { const r = f(1920, n); return [r.n, r.cols, r.rows]; });
+  assert.deepEqual(map, [[1, 1, 1], [2, 2, 1], [4, 2, 2], [6, 3, 2], [8, 4, 2], [10, 5, 2]]);
+  // the caps by window width
+  assert.deepEqual([839, 840, 1199, 1200, 1599, 1600, 3840].map((w) => Q.capFor(w)), [1, 4, 4, 8, 8, 10, 10]);
+  assert.deepEqual([840, 1024, 1199].map((w) => f(w, 10).n), [4, 4, 4], '840-1199: up to 4');
+  assert.deepEqual([1200, 1440, 1599].map((w) => f(w, 10).n), [8, 8, 8], '1200-1599: up to 8');
+  assert.deepEqual([1600, 1920].map((w) => f(w, 10).n), [10, 10], '1600 and up: 10');
+  assert.deepEqual([1024, 1280].map((w) => f(w, 6).n), [4, 6], 'six needs 1200');
+  const capped = f(1280, 10);
+  assert.deepEqual([capped.n, capped.capped, capped.want, capped.cap, capped.why], [8, true, 10, 8, 'width'], 'a saved layout above the cap shows the cap');
+  assert.equal(capped.reason, '10 tiles need a window 1600 px wide or more: showing 8');
+  assert.equal(f(1920, 10).reason, '', 'nothing to say when it fits');
+});
+
+test('layoutFor: a tile is never narrower than 240 px; a layout that cannot fit gives way to the next one that does, and says why in plain words', () => {
+  const { Q } = quadWorld();
+  const f = (...a) => plain(Q.layoutFor(...a));
+  assert.deepEqual([Q.maxCols(487), Q.maxCols(488), Q.maxCols(736), Q.maxCols(984), Q.maxCols(1232), Q.maxCols(100), Q.maxCols(0)], [1, 2, 3, 4, 5, 1, Infinity], '240 px tiles and 8 px gaps: 488, 736, 984, 1232');
+  assert.deepEqual([1232, 1231].map((a) => f(1920, 10, a).n), [10, 8], 'five columns need 1232 px of column');
+  assert.deepEqual([984, 983].map((a) => f(1920, 8, a).n), [8, 6], 'four columns need 984');
+  assert.deepEqual([736, 735].map((a) => f(1920, 6, a).n), [6, 4], 'three columns need 736; the next layout that fits is the 2 x 2 (two columns)');
+  assert.deepEqual([488, 487].map((a) => f(1920, 4, a).n), [4, 1], 'two columns need 488; under that one tile');
+  const squeezed = f(1920, 10, 900);
+  assert.deepEqual([squeezed.n, squeezed.cols, squeezed.why, squeezed.cap], [6, 3, 'room', 6]);
+  assert.equal(squeezed.reason, '10 tiles would be narrower than 240 px here: showing 6');
+  const one = f(1280, 2, 400);
+  assert.deepEqual([one.n, one.oneUp, one.forced, one.capped], [1, true, true, true], 'a column that holds one 240 px tile is the chip switcher');
+  assert.equal(f(1280, 1, 400).forced, false, 'one tile needs no columns');
+  assert.equal(f(1280, 2, 525).n, 2, 'the 260 px sidebar and a dock open at 1024: 525 px still holds two 240 px tiles');
+  assert.equal(f(1280, 10, 0).n, 8, 'an unknown column skips the rule');
+  assert.equal(Q.fitLayout(10, 3), 6);
+  assert.equal(Q.fitLayout(8, 1), 1);
+  assert.equal(Q.fitLayout(2, 2), 2);
 });
 
 // ---------------------------------------------------------------- the query, the saved state
 
-test('parseQuery keeps only what is valid: names, 1|2|4, a project word; four slots at most, no repeats', () => {
+test('parseQuery keeps only what is valid: names, 1|2|4|6|8|10, a project word; ten slots at most, no repeats', () => {
   const { Q } = quadWorld();
   const p = (q) => plain(Q.parseQuery(q));
-  assert.deepEqual(p({ s: `${CK},${P3},,${P2}`, l: '4', p: 'petroit' }), { slots: [CK, P3, '', P2], layout: 4, project: 'petroit', any: true });
+  assert.deepEqual(p({ s: `${CK},${P3},,${P2}`, l: '4', p: 'petroit' }), { slots: pad(CK, P3, '', P2), layout: 4, project: 'petroit', any: true });
   assert.deepEqual(p({}), { slots: null, layout: null, project: null, any: false });
-  assert.deepEqual(p({ s: `bad name,${CK},${CK},a--b--c,x--y--z,${P1}`, l: '3', p: 'no/pe' }), { slots: ['', CK, '', 'a--b--c'], layout: null, project: null, any: true }, 'garbage and repeats become empty slots, only four are read');
+  assert.deepEqual(p({ s: `bad name,${CK},${CK},a--b--c,x--y--z,${P1}`, l: '3', p: 'no/pe' }), { slots: pad('', CK, '', 'a--b--c', 'x--y--z', P1), layout: null, project: null, any: true }, 'garbage and repeats become empty slots');
+  const twelve = Array.from({ length: 12 }, (_, i) => `a--b--s${i}`);
+  assert.deepEqual(p({ s: twelve.join(',') }).slots, twelve.slice(0, 10), 'only ten are read');
+  for (const l of ['6', '8', '10']) assert.equal(p({ l }).layout, Number(l), `l=${l} is a layout`);
+  assert.equal(p({ l: '12' }).layout, null);
+  assert.equal(p({ l: '5' }).layout, null);
   assert.deepEqual(p({ s: 'nonsense', l: 'x' }), { slots: null, layout: null, project: null, any: false }, 'a list with no valid name is no list');
   assert.equal(p({ l: '1' }).layout, 1);
   assert.equal(p({ l: '2.0' }).layout, 2, 'Number() reads 2.0 as 2');
@@ -181,19 +250,31 @@ test('load and save: a round trip per scope, garbage reads as nothing, modes and
   assert.equal(Q.load(''), null, 'nothing saved');
   Q.save('', { layout: 4, slots: [CK, 'junk', P3], modes: { [CK]: 'full', [P3]: 'bogus', 'x': 'ro' }, zoom: 1 });
   assert.equal(w.localStorage.getItem('ccboard:quad:all') !== null, true);
-  assert.deepEqual(plain(Q.load('')), { layout: 4, slots: [CK, '', P3, ''], modes: { [CK]: 'full' }, zoom: 1 });
+  assert.deepEqual(plain(Q.load('')), { layout: 4, slots: pad(CK, '', P3), modes: { [CK]: 'full' }, zoom: 1, composers: {} });
   assert.equal(Q.load('petroit'), null, 'another scope has its own key');
   Q.save('petroit', { layout: 1, slots: [P3], modes: {}, zoom: null });
   assert.ok(w.localStorage.getItem('ccboard:quad:petroit'));
   w.localStorage.setItem('ccboard:quad:all', '{not json');
   assert.equal(Q.load(''), null);
-  w.localStorage.setItem('ccboard:quad:all', JSON.stringify({ layout: 3, slots: 'x', modes: [], zoom: 9 }));
-  assert.deepEqual(plain(Q.load('')), { layout: 2, slots: ['', '', '', ''], modes: {}, zoom: null });
+  w.localStorage.setItem('ccboard:quad:all', JSON.stringify({ layout: 3, slots: 'x', modes: [], zoom: 10 }));
+  assert.deepEqual(plain(Q.load('')), { layout: 2, slots: pad(), modes: {}, zoom: null, composers: {} }, 'ten slots: zoom 0..9');
+  w.localStorage.setItem('ccboard:quad:all', JSON.stringify({ layout: 10, slots: [], modes: {}, zoom: 9 }));
+  assert.deepEqual([Q.load('').layout, Q.load('').zoom], [10, 9], 'layout 10 and a zoom on the tenth tile are valid');
   const many = {};
   for (let i = 0; i < 40; i++) many[`a--b--s${i}`] = 'ro';
   Q.save('', { layout: 2, slots: [], modes: many, zoom: null });
   assert.equal(Object.keys(Q.load('').modes).length, 24, 'the remembered modes are capped, the newest stay');
   assert.ok(Q.load('').modes['a--b--s39']);
+  // the per-tile docked-composer flag rides with the modes: only true values of valid names, capped the same way
+  Q.save('', { layout: 2, slots: [], modes: {}, zoom: null, composers: { [CK]: true, [P3]: false, 'bad name': true, [P2]: 'yes' } });
+  assert.deepEqual(plain(Q.load('').composers), { [CK]: true });
+  const flags = {};
+  for (let i = 0; i < 40; i++) flags[`a--b--s${i}`] = true;
+  Q.save('', { layout: 2, slots: [], modes: {}, zoom: null, composers: flags });
+  assert.equal(Object.keys(Q.load('').composers).length, 24, 'the flags are capped like the modes, the newest stay');
+  assert.ok(Q.load('').composers['a--b--s39']);
+  Q.save('', { layout: 2, slots: [] });
+  assert.deepEqual(plain(Q.load('').composers), {}, 'a state saved without the field has none');
 });
 
 // ---------------------------------------------------------------- who goes where
@@ -217,22 +298,24 @@ test('slotsState: the URL over the saved state over auto-fill; a vanished saved 
   const st = w.get('state');
   const run = (o) => plain(Q.slotsState({ project: '', ...o }));
   let r = run({ query: {}, saved: null, state: st });
-  assert.deepEqual([r.layout, r.slots], [2, [CK, P3, '', '']], 'nothing saved, no URL: the default 2-up, filled by needs-you');
-  r = run({ query: {}, saved: { layout: 4, slots: [WT, '', '', ''], modes: { [WT]: 'ro' }, zoom: 0 }, state: st });
-  assert.deepEqual([r.layout, r.slots, r.modes, r.zoom], [4, [WT, CK, P3, P2], { [WT]: 'ro' }, 0], 'saved: its layout, modes and zoom; the empty slots fill around the kept one');
+  assert.deepEqual([r.layout, r.slots], [2, pad(CK, P3)], 'nothing saved, no URL: the default 2-up, filled by needs-you');
+  r = run({ query: {}, saved: { layout: 4, slots: [WT, '', '', ''], modes: { [WT]: 'ro' }, zoom: 0, composers: { [WT]: true } }, state: st });
+  assert.deepEqual([r.layout, r.slots, r.modes, r.zoom, r.composers], [4, pad(WT, CK, P3, P2), { [WT]: 'ro' }, 0, { [WT]: true }], 'saved: its layout, modes, zoom and composer flags; the empty slots fill around the kept one');
+  r = run({ query: {}, saved: { layout: 10, slots: [], modes: {}, zoom: null }, state: st });
+  assert.deepEqual(r.slots, [CK, P3, P2, P1, CX, WT, S1, '', '', ''], 'ten visible slots: every one is filled while there are sessions (the ended one never)');
   r = run({ query: { s: `${P1},${S1}`, l: '2' }, saved: { layout: 4, slots: [WT, CK, P3, P2], modes: {}, zoom: null }, state: st });
-  assert.deepEqual([r.layout, r.slots], [2, [P1, S1, '', '']], 'the URL wins; slots 3 and 4 are not visible, so not filled');
+  assert.deepEqual([r.layout, r.slots], [2, pad(P1, S1)], 'the URL wins; slots 3 and 4 are not visible, so not filled');
   assert.deepEqual([r.fromUrl.slots, r.fromUrl.layout], [true, true]);
   r = run({ query: { l: '1' }, saved: { layout: 4, slots: [WT, CK, P3, P2], modes: {}, zoom: 2 }, state: st });
   assert.deepEqual([r.layout, r.slots[0], r.zoom], [1, WT, null], 'only the layout came from the URL; a zoom on a hidden slot is dropped');
   r = run({ query: {}, saved: { layout: 2, slots: ['gone--x--y', S1, '', ''], modes: {}, zoom: null }, state: st });
-  assert.deepEqual(r.slots, [CK, S1, '', ''], 'a session that is no longer there leaves its slot to auto-fill');
+  assert.deepEqual(r.slots, pad(CK, S1), 'a session that is no longer there leaves its slot to auto-fill');
   r = run({ query: { s: 'gone--x--y' }, saved: null, state: st });
   assert.deepEqual(r.slots.slice(0, 2), ['gone--x--y', CK], 'a URL slot is kept even when its session is not running (the tile says so)');
   r = run({ query: {}, saved: null, state: st, project: 'petroit' });
   assert.deepEqual(r.slots.slice(0, 2), [P3, P2], 'inside a project only its sessions fill the slots');
   r = run({ query: { s: CK }, saved: null, state: null });
-  assert.deepEqual(r.slots, [CK, '', '', ''], 'before the first poll nothing is filled or dropped');
+  assert.deepEqual(r.slots, pad(CK), 'before the first poll nothing is filled or dropped');
 });
 
 test('taskLine: the task title, else the last prompt; a waiting session shows what it asks (the tail of its last message)', () => {
@@ -271,7 +354,7 @@ test('sizeInfo and needsFit: the window or "cropped"; resize only for nobody-ful
   assert.equal(nf({ full: 0 }, [100, 30], null), null, 'no terminal yet');
 });
 
-test('shortcutOf: Ctrl+Alt+1..4, Z, K and R by event.code (Option+digit types another character on a Mac); nothing else', () => {
+test('shortcutOf: Ctrl+Alt+1..9 and 0 (the tenth), Z, F, K and R by event.code (Option+digit types another character on a Mac); nothing else', () => {
   const { Q } = quadWorld();
   const s = (e) => plain(Q.shortcutOf({ ctrlKey: true, altKey: true, metaKey: false, shiftKey: false, ...e }));
   assert.deepEqual(s({ code: 'Digit3', key: '£' }), { act: 'focus', n: 3 });
@@ -279,8 +362,13 @@ test('shortcutOf: Ctrl+Alt+1..4, Z, K and R by event.code (Option+digit types an
   assert.deepEqual(s({ code: 'KeyZ', key: 'Ω' }), { act: 'zoom' });
   assert.deepEqual(s({ code: 'KeyK', key: 'z' }), { act: 'attention' }, 'the code decides, not the character');
   assert.deepEqual(s({ key: 'R' }), { act: 'reload' });
-  assert.equal(s({ code: 'Digit5' }), null);
-  assert.equal(s({ code: 'Digit0' }), null);
+  assert.deepEqual(s({ code: 'Digit5' }), { act: 'focus', n: 5 });
+  assert.deepEqual(s({ code: 'Digit9', key: 'ª' }), { act: 'focus', n: 9 });
+  assert.deepEqual(s({ code: 'Digit0', key: 'º' }), { act: 'focus', n: 10 }, '0 is the tenth tile');
+  assert.deepEqual(s({ key: '0' }), { act: 'focus', n: 10 });
+  assert.deepEqual(s({ code: 'Numpad7' }), { act: 'focus', n: 7 });
+  assert.deepEqual(s({ code: 'KeyF', key: 'ƒ' }), { act: 'fullscreen' }, 'Ctrl+Alt+F works inside a terminal, where a plain f is typed');
+  assert.deepEqual(s({ key: 'F' }), { act: 'fullscreen' });
   assert.equal(s({ code: 'KeyZ', ctrlKey: false }), null);
   assert.equal(s({ code: 'KeyZ', altKey: false }), null);
   assert.equal(s({ code: 'KeyZ', metaKey: true }), null);
@@ -666,7 +754,7 @@ test('unmounting (a route change) tears every tile down: iframe.src = about:blan
   for (const t of [CK, P3, P2]) { logs[t] = []; spy(frameOf(w, t), logs[t]); }
   env.w.get('Quad').current.setMode(P2, 'tail');
   const before = w.run('Keymap.list.filter((b) => /^Quad/.test(b.help)).length');
-  assert.equal(before, 4, 'four help-only entries while the page is up');
+  assert.equal(before, 5, 'five help-only entries while the page is up');
   assert.ok(live(w).sub.includes(P2), 'the tail subscribed');
   w.location.hash = '#/memory';
   for (const t of [CK, P3]) assert.deepEqual(logs[t], ['src:about:blank', 'remove'], `${t}: blank first, then remove`);
@@ -694,7 +782,7 @@ test('the first visit saves the resolved state and writes it into the address on
   assert.equal(w.location.hash, `#/quad?s=${CK}%2C${P3}&l=2`, 'then the state is in the address: s up to the last slot, l always');
   const rep = plain(w.history.calls).filter((c) => c.method === 'replaceState');
   assert.equal(rep.length, 1, 'one replaceState, no pushState');
-  assert.deepEqual(savedOf(w), { layout: 2, slots: [CK, P3, '', ''], modes: {}, zoom: null });
+  assert.deepEqual(savedOf(w), { layout: 2, slots: pad(CK, P3), modes: {}, zoom: null, composers: {} });
   assert.equal(tileOf(w, CK).querySelector('iframe') !== null, true);
   assert.equal(w.get('Quad').current !== null, true);
   const mountsBefore = frameOf(w, CK);
@@ -710,7 +798,7 @@ test('the saved state is used when the URL says nothing; the URL wins over it an
   assert.equal(frameOf(a.w, CX).src, GRID(CX), 'the rest default to grid');
   const b = quadWorld({ hash: `#/quad?s=${P3},${P2}&l=2`, storage: { 'ccboard:quad:all': saved } });
   assert.deepEqual(names(b.w), [P3, P2], 'the URL wins over the saved slots and layout');
-  assert.deepEqual(savedOf(b.w).slots, [P3, P2, '', ''], 'and the saved state follows');
+  assert.deepEqual(savedOf(b.w).slots, pad(P3, P2), 'and the saved state follows');
   assert.equal(savedOf(b.w).layout, 2);
   assert.deepEqual(savedOf(b.w).modes, { [WT]: 'ro' }, 'the modes of the saved state are kept');
   const c = quadWorld({ hash: '#/quad?l=1', storage: { 'ccboard:quad:all': saved } });
@@ -886,7 +974,7 @@ test('close empties the slot (an empty tile with a pick list); picking a session
   assert.equal(empty.getAttribute('data-slot'), '1');
   const picks = empty.querySelectorAll('.qe-pick').map((b) => b.getAttribute('data-tmux'));
   assert.deepEqual(picks, [P3, P2, P1, CX, WT, S1], 'the sessions not on screen, in auto-fill order');
-  assert.deepEqual(savedOf(w).slots, [CK, '', '', '']);
+  assert.deepEqual(savedOf(w).slots, pad(CK));
   empty.querySelectorAll('.qe-pick').find((b) => b.getAttribute('data-tmux') === P1).click();
   assert.deepEqual(slotsOf(w), { [CK]: '0', [P1]: '1' });
   assert.equal(page(w).querySelector('.qempty'), null);
@@ -1022,7 +1110,7 @@ test('Ctrl+Alt+K with nothing waiting says so', () => {
 test('the help dialog lists the quad shortcuts while the page is up', () => {
   const { w } = quadWorld({ hash: '#/quad' });
   const help = plain(w.run('Keymap.help()')).filter((h) => h.group === 'Quad');
-  assert.deepEqual(help.map((h) => h.keys[0]), ['Ctrl+Alt+1…4', 'Ctrl+Alt+Z', 'Ctrl+Alt+K', 'Ctrl+Alt+R']);
+  assert.deepEqual(help.map((h) => h.keys[0]), ['Ctrl+Alt+1…0', 'Ctrl+Alt+Z', 'Ctrl+Alt+K', 'Ctrl+Alt+R', 'Ctrl+Alt+F']);
 });
 
 // ---------------------------------------------------------------- fit
@@ -1264,14 +1352,17 @@ test('a window that grows past 840 px turns the chips into the 2-up grid with th
   void f;
 });
 
-test('a quad column under 600 px (the dock open) is one-up even in a wide window', () => {
+test('a quad column that cannot hold two 240 px tiles (under 488 px) is one-up even in a wide window; one that can keeps two', () => {
   const env = quadWorld({ hash: '#/quad' });
   const { w, ros } = env;
   assert.deepEqual(names(w), [CK, P3]);
   const host = page(w).querySelector('.quad');
-  host.clientWidth = 525;
   const rootRO = ros.find((r) => r.nodes.includes(host));
+  host.clientWidth = 525;
   rootRO.cb([{ contentRect: { width: 525, height: 600 } }]);
+  assert.deepEqual(names(w), [CK, P3], '525 px holds two tiles of 258 px: the old 600 px rule is gone');
+  host.clientWidth = 480;
+  rootRO.cb([{ contentRect: { width: 480, height: 600 } }]);
   assert.equal(host.getAttribute('data-oneup'), 'true');
   assert.deepEqual(names(w), [CK]);
   assert.equal(host.getAttribute('data-forced'), 'true');
@@ -1287,22 +1378,41 @@ test('Quad.addToQuad puts a session into the saved slots (growing the layout rat
   w.ctx.__nav = [];
   w.run('navigate = (h) => { __nav.push(h); }');             // the page is not mounted here: only the saved state and the address are looked at
   assert.equal(Q.addToQuad(CK, ''), true);
-  assert.deepEqual(plain(Q.load('')), { layout: 2, slots: [CK, '', '', ''], modes: {}, zoom: null });
+  assert.deepEqual(plain(Q.load('')), { layout: 2, slots: pad(CK), modes: {}, zoom: null, composers: {} });
   assert.deepEqual(plain(w.get('__nav')), ['#/quad']);
   Q.addToQuad(P3, '');
-  assert.deepEqual(plain(Q.load('')).slots, [CK, P3, '', '']);
+  assert.deepEqual(plain(Q.load('')).slots, pad(CK, P3));
   Q.addToQuad(P2, '');
-  assert.deepEqual(plain(Q.load('')), { layout: 4, slots: [CK, P3, P2, ''], modes: {}, zoom: null }, 'two full: 4-up');
+  assert.deepEqual(plain(Q.load('')), { layout: 4, slots: pad(CK, P3, P2), modes: {}, zoom: null, composers: {} }, 'two full: 4-up');
   Q.addToQuad(P2, '');
-  assert.deepEqual(plain(Q.load('')).slots, [CK, P3, P2, ''], 'already there: unchanged');
+  assert.deepEqual(plain(Q.load('')).slots, pad(CK, P3, P2), 'already there: unchanged');
   Q.addToQuad(P1, 'petroit');
-  assert.deepEqual(plain(Q.load('petroit')).slots, [P1, '', '', ''], 'a project has its own slots');
+  assert.deepEqual(plain(Q.load('petroit')).slots, pad(P1), 'a project has its own slots');
   assert.equal(plain(w.get('__nav')).at(-1), '#/quad?p=petroit');
   assert.equal(Q.addToQuad('not a name', ''), false);
   Q.addToQuad(S1, '');
-  assert.deepEqual(plain(Q.load('')).slots, [CK, P3, P2, S1], 'the last free slot');
+  assert.deepEqual(plain(Q.load('')).slots, pad(CK, P3, P2, S1), 'the last free slot');
   Q.addToQuad(WT, '');
-  assert.deepEqual(plain(Q.load('')).slots, [CK, P3, P2, WT], 'every slot taken: the last one is replaced');
+  assert.deepEqual(plain(Q.load('')).slots, pad(CK, P3, P2, WT), 'every slot taken in a window of unknown size (the 4-up it always grew to): the last one is replaced');
+});
+
+test('Quad.addToQuad grows the layout 4 -> 6 -> 8 -> 10 as far as the window takes tiles, and replaces the last visible tile only beyond that', () => {
+  const grow = (width, count) => {
+    const { w, Q } = quadWorld({ width });
+    w.run('navigate = () => {}');
+    const sessions = [CK, P3, P2, P1, CX, WT, S1, 'a--b--s8', 'a--b--s9', 'a--b--s10', 'a--b--s11'];
+    for (const t of sessions.slice(0, count)) Q.addToQuad(t, '');
+    return plain(Q.load(''));
+  };
+  assert.deepEqual([grow(1280, 5).layout, grow(1280, 5).slots.filter(Boolean).length], [6, 5], 'a fifth tile in a 1280 window: 6-up');
+  assert.deepEqual([grow(1280, 7).layout, grow(1280, 7).slots.filter(Boolean).length], [8, 7]);
+  const full = grow(1280, 9);
+  assert.equal(full.layout, 8, '1280 takes 8: the ninth replaces the last visible slot');
+  assert.equal(full.slots[7], 'a--b--s9');
+  assert.equal(full.slots[8], '');
+  assert.deepEqual([grow(1920, 9).layout, grow(1920, 9).slots.filter(Boolean).length], [10, 9]);
+  assert.equal(grow(1920, 11).slots[9], 'a--b--s11', 'ten visible: the eleventh replaces the tenth');
+  assert.equal(grow(1100, 6).layout, 4, '840-1199 takes 4');
 });
 
 test('Quad.addToQuad while the quad is up shows the session at once (a free slot, else the active tile\'s); one already shown is just made active', () => {
@@ -1385,10 +1495,10 @@ test('slotsState in a project scope drops the slots of other projects, from the 
   const { Q } = quadWorld();
   const st = fixtureState();
   const saved = { layout: 2, slots: [CK, P3, '', ''], modes: {}, zoom: null };
-  assert.deepEqual(plain(Q.slotsState({ saved, state: st, project: 'petroit', n: 2 })).slots, [P2, P3, '', ''], 'CK is phasezero: gone; the empty slot is auto-filled with petroit\'s first');
-  assert.deepEqual(plain(Q.slotsState({ saved, state: st, project: '', n: 2 })).slots, [CK, P3, '', ''], 'all projects: nothing is dropped');
-  assert.deepEqual(plain(Q.slotsState({ query: { s: `${CK},${P3}` }, state: st, project: 'petroit', n: 2 })).slots, [P2, P3, '', ''], 'the address is held to the scope too');
-  assert.deepEqual(plain(Q.slotsState({ query: { s: `${CK},${P3}` }, state: null, project: 'petroit', n: 2 })).slots, ['', P3, '', ''], 'before the first poll the name says which project a slot is');
+  assert.deepEqual(plain(Q.slotsState({ saved, state: st, project: 'petroit', n: 2 })).slots, pad(P2, P3), 'CK is phasezero: gone; the empty slot is auto-filled with petroit\'s first');
+  assert.deepEqual(plain(Q.slotsState({ saved, state: st, project: '', n: 2 })).slots, pad(CK, P3), 'all projects: nothing is dropped');
+  assert.deepEqual(plain(Q.slotsState({ query: { s: `${CK},${P3}` }, state: st, project: 'petroit', n: 2 })).slots, pad(P2, P3), 'the address is held to the scope too');
+  assert.deepEqual(plain(Q.slotsState({ query: { s: `${CK},${P3}` }, state: null, project: 'petroit', n: 2 })).slots, pad('', P3), 'before the first poll the name says which project a slot is');
   assert.equal(Q.inProject(st, CK, 'phasezero'), true);
   assert.equal(Q.inProject(st, CK, 'petroit'), false);
   assert.equal(Q.inProject(st, 'phasezero--website--gone', 'phasezero'), true, 'a session that has gone is told by its name');
@@ -1406,7 +1516,7 @@ test('storage: a project called all, scope or keys saves under ccboard:quad:p:<n
   Q.save('keys', { layout: 4, slots: [P2, '', '', ''], modes: {}, zoom: null });
   assert.equal(w.localStorage.getItem('ccboard:quad:scope'), 'petroit', 'the last-scope pref is untouched');
   assert.equal(w.localStorage.getItem('ccboard:quad:keys'), '1');
-  assert.deepEqual(plain(Q.load('scope')).slots, [P1, '', '', '']);
+  assert.deepEqual(plain(Q.load('scope')).slots, pad(P1));
 });
 
 test('a project scope fills the tiles, the needs-you order, what an empty tile offers and the tile menu\'s swaps from that project\'s live sessions only', () => {
@@ -1504,7 +1614,7 @@ test('a scope change keeps the tiles of the chosen project (not one iframe is to
   assert.equal(tileOf(w, P3).getAttribute('data-mode'), 'tail', 'a mode chosen on a tile that stays stays');
   assert.ok(page(w).querySelector('.qempty[data-slot="3"]'), 'the fourth slot is an empty tile');
   env.clock.advance(5);
-  assert.deepEqual(plain(savedOf(w, 'petroit').slots), [P1, P3, P2, ''], 'the project\'s own saved state');
+  assert.deepEqual(plain(savedOf(w, 'petroit').slots), pad(P1, P3, P2), 'the project\'s own saved state');
   assert.equal(savedOf(w, 'petroit').modes[P3], 'tail');
   pickScope(w, '');
   assert.deepEqual(names(w), [P3, P2, P1, CK], 'all projects keeps all three and fills the free slot with whatever needs you most');
@@ -1634,6 +1744,1083 @@ test('the scoped page and the empty-project page build no inline style either', 
     walk(page(w));
     assert.deepEqual(withStyle, [], hash);
   }
+});
+
+// ---------------------------------------------------------------- v0.5.9c: up to ten tiles
+
+/** n idle Claude sessions in one repo (big--api--s01 ..): they tie on state and age, so the quad's order is their name order. */
+function bigState(n = 12, over = {}) {
+  const list = Array.from({ length: n }, (_, i) => sess('big', 'api', `s${String(i + 1).padStart(2, '0')}`, { state_at: ISO(30), ...(over[i] || {}) }));
+  return fakeState({ projects: projectsOf({ big: { api: list } }) });
+}
+const BIG = (i) => `big--api--s${String(i).padStart(2, '0')}`;
+const bigNames = (from, to) => Array.from({ length: to - from + 1 }, (_, i) => BIG(from + i));
+const cells = (w) => page(w).querySelectorAll('.q-layout .seg-btn');
+const cell = (w, n) => cells(w).find((b) => text(b) === String(n));
+const kitOf = (w) => w.get('__kit');
+const order = (w) => page(w).querySelector('.qgrid').children.map((n) => n.getAttribute('data-tmux') || 'empty');
+
+test('the layout control is one number per cell: 1 2 4 6 8 10, 28 px with a mouse (--row-btn), each with a title; the layout that shows is pressed', () => {
+  const { w } = quadWorld({ width: 1920, state: bigState(), hash: '#/quad' });
+  assert.deepEqual(cells(w).map(text), ['1', '2', '4', '6', '8', '10']);
+  assert.deepEqual(cells(w).map((b) => b.getAttribute('aria-pressed')), ['false', 'true', 'false', 'false', 'false', 'false'], 'the default 2 is pressed');
+  assert.deepEqual(cells(w).map((b) => b.disabled), [false, false, false, false, false, false], 'a 1920 window takes every layout');
+  assert.equal(cell(w, 6).getAttribute('title'), '6 terminals, 3 by 2');
+  assert.equal(cell(w, 10).getAttribute('title'), '10 terminals, 5 by 2');
+  assert.equal(cell(w, 2).getAttribute('title'), 'Two side by side');
+  assert.equal(page(w).querySelector('.q-layout').getAttribute('role'), 'group');
+  assert.match(page(w).querySelector('.q-layout').getAttribute('aria-label'), /Tiles on screen/);
+  assert.equal(page(w).querySelector('.q-cap').classList.contains('hidden'), true, 'nothing to say while the layout fits');
+  cell(w, 10).click();
+  assert.deepEqual(cells(w).map((b) => b.getAttribute('aria-pressed')), ['false', 'false', 'false', 'false', 'false', 'true']);
+  assert.equal(savedOf(w).layout, 10);
+});
+
+test('10-up: ten tiles in five columns, one iframe each, placed by data-slot and never reordered; 10 -> 6 -> 10 keeps the surviving iframes and tears the rest down in order', () => {
+  const { w } = quadWorld({ width: 1920, state: bigState(), hash: '#/quad?l=10' });
+  assert.deepEqual(names(w), bigNames(1, 10));
+  assert.deepEqual(slotsOf(w), Object.fromEntries(bigNames(1, 10).map((t, i) => [t, String(i)])));
+  assert.equal(page(w).querySelectorAll('iframe').length, 10, 'one iframe per tile');
+  assert.equal(page(w).querySelector('.qgrid').getAttribute('data-layout'), '10');
+  assert.equal(page(w).querySelector('.quad').getAttribute('data-layout'), '10');
+  assert.deepEqual(order(w), bigNames(1, 10));
+  const frames = Object.fromEntries(bigNames(1, 10).map((t) => [t, frameOf(w, t)]));
+  const logs = Object.fromEntries(bigNames(1, 10).map((t) => [t, []]));
+  for (const t of bigNames(1, 10)) spy(frames[t], logs[t]);
+  cell(w, 6).click();
+  assert.deepEqual(names(w), bigNames(1, 6));
+  for (const t of bigNames(7, 10)) assert.deepEqual(logs[t], ['src:about:blank', 'remove'], `${t}: the blank page first, then the node`);
+  for (const t of bigNames(1, 6)) { assert.equal(frameOf(w, t), frames[t], `${t}: the same iframe`); assert.deepEqual(logs[t], [], `${t}: not touched`); }
+  assert.equal(page(w).querySelector('.qgrid').getAttribute('data-layout'), '6');
+  cell(w, 10).click();
+  assert.deepEqual(names(w), bigNames(1, 10), 'growth remounts the same sessions in the same slots');
+  assert.deepEqual(order(w), [...bigNames(1, 6), ...bigNames(7, 10)], 'the first six never moved; the new ones were appended');
+  for (const t of bigNames(1, 6)) assert.equal(frameOf(w, t), frames[t]);
+  assert.equal(page(w).querySelectorAll('iframe').length, 10);
+});
+
+test('the caps by window width: 1280 takes 8, 1100 takes 4, 1920 takes 10; a saved layout above the cap shows the cap with a quiet caption, the cells above it are off with the reason in their title', () => {
+  const env = quadWorld({ width: 1280, state: bigState(), hash: '#/quad?l=10' });
+  const { w } = env;
+  assert.deepEqual(names(w), bigNames(1, 8), 'a saved 10 in a 1280 window shows 8');
+  assert.equal(page(w).querySelector('.qgrid').getAttribute('data-layout'), '8');
+  assert.deepEqual(cells(w).map((b) => b.getAttribute('aria-pressed')), ['false', 'false', 'false', 'false', 'true', 'false'], 'the 8 that shows is pressed, not the 10 that was asked for');
+  assert.deepEqual(cells(w).map((b) => b.disabled), [false, false, false, false, false, true], 'only the 10 is off');
+  assert.equal(cell(w, 10).getAttribute('title'), '10 terminals need a window 1600 px wide or more');
+  const cap = page(w).querySelector('.q-cap');
+  assert.equal(text(cap), '10 tiles need a window 1600 px wide or more: showing 8');
+  assert.equal(cap.classList.contains('hidden'), false);
+  assert.equal(page(w).querySelector('.q-layout').getAttribute('title'), '10 tiles need a window 1600 px wide or more: showing 8', 'and in the control\'s title');
+  assert.equal(savedOf(w).layout, 10, 'the wish is what is saved');
+  // the window shrinks: 8 -> 4, the tiles beyond unmount
+  const logs = Object.fromEntries(bigNames(1, 8).map((t) => [t, []]));
+  for (const t of bigNames(1, 8)) spy(frameOf(w, t), logs[t]);
+  w.run('innerWidth = 1100');
+  w.fire('resize');
+  assert.deepEqual(names(w), bigNames(1, 4));
+  for (const t of bigNames(5, 8)) assert.deepEqual(logs[t], ['src:about:blank', 'remove']);
+  for (const t of bigNames(1, 4)) assert.deepEqual(logs[t], [], 'the survivors are not touched');
+  assert.deepEqual(cells(w).map((b) => b.disabled), [false, false, false, true, true, true], '840-1199: up to 4');
+  assert.deepEqual(cells(w).map((b) => b.getAttribute('aria-pressed')), ['false', 'false', 'true', 'false', 'false', 'false']);
+  assert.equal(text(page(w).querySelector('.q-cap')), '10 tiles need a window 1600 px wide or more: showing 4');
+  assert.equal(cell(w, 6).getAttribute('title'), '6 terminals need a window 1200 px wide or more');
+  // and the window grows: the saved 10 comes back
+  w.run('innerWidth = 1920');
+  w.fire('resize');
+  assert.deepEqual(names(w), bigNames(1, 10));
+  assert.equal(page(w).querySelector('.q-cap').classList.contains('hidden'), true);
+  assert.deepEqual(cells(w).map((b) => b.disabled), [false, false, false, false, false, false]);
+});
+
+test('the control follows the window even when the tile count does not change (a cap that moves but not under the wish)', () => {
+  const { w } = quadWorld({ width: 1280, state: bigState(), hash: '#/quad?l=4' });
+  assert.deepEqual(cells(w).map((b) => b.disabled), [false, false, false, false, false, true], '1280: up to 8');
+  w.run('innerWidth = 1700');
+  w.fire('resize');
+  assert.deepEqual(names(w), bigNames(1, 4), 'the same four tiles');
+  assert.deepEqual(cells(w).map((b) => b.disabled), [false, false, false, false, false, false], 'but 10 is on now');
+});
+
+test('a tile is never narrower than 240 px: a column that holds five tiles keeps 10, one of 1231 px gives way to 8 and says so; the quiet caption names the room', () => {
+  const env = quadWorld({ width: 1920, state: bigState(), hash: '#/quad?l=10' });
+  const { w, ros } = env;
+  const host = page(w).querySelector('.quad');
+  const rootRO = ros.find((r) => r.nodes.includes(host));
+  host.clientWidth = 1232;
+  rootRO.cb([{ contentRect: { width: 1232, height: 800 } }]);
+  assert.deepEqual(names(w), bigNames(1, 10), 'five columns of 240 px and four gaps of 8');
+  host.clientWidth = 1231;
+  rootRO.cb([{ contentRect: { width: 1231, height: 800 } }]);
+  assert.deepEqual(names(w), bigNames(1, 8), 'one px short: 8 tiles in four columns');
+  assert.equal(cell(w, 10).disabled, true);
+  assert.equal(cell(w, 10).getAttribute('title'), '10 terminals would be narrower than 240 px here');
+  assert.equal(text(page(w).querySelector('.q-cap')), '10 tiles would be narrower than 240 px here: showing 8');
+  assert.equal(cell(w, 8).getAttribute('aria-pressed'), 'true');
+  host.clientWidth = 900;
+  rootRO.cb([{ contentRect: { width: 900, height: 800 } }]);
+  assert.deepEqual(names(w), bigNames(1, 6), '900 px holds three columns');
+  host.clientWidth = 600;
+  rootRO.cb([{ contentRect: { width: 600, height: 800 } }]);
+  assert.deepEqual(names(w), bigNames(1, 4), 'two columns');
+  host.clientWidth = 1400;
+  rootRO.cb([{ contentRect: { width: 1400, height: 800 } }]);
+  assert.deepEqual(names(w), bigNames(1, 10), 'the room came back, so did the wish');
+});
+
+test('Auto-fill fills every slot of the layout from the scope, needs-you first, then working, then the most recent; with fewer sessions than tiles the rest are empty tiles', () => {
+  const { w } = quadWorld({ width: 1920, hash: '#/quad?l=10' });
+  assert.deepEqual(names(w), [CK, P3, P2, P1, CX, WT, S1], 'the seven live sessions of the fixture, in the board\'s order (the ended one never)');
+  assert.equal(page(w).querySelectorAll('.qempty').length, 3, 'three slots have nobody to show');
+  assert.deepEqual(page(w).querySelectorAll('.qempty').map((e) => e.getAttribute('data-slot')), ['7', '8', '9']);
+  const big = quadWorld({ width: 1920, state: bigState(), hash: '#/quad?l=10' });
+  for (const t of [BIG(2), BIG(5), BIG(7), BIG(10)]) tileOf(big.w, t).querySelector('.qt-close').click();
+  assert.equal(page(big.w).querySelectorAll('.qempty').length, 4);
+  button(page(big.w), /^Auto-fill$/).click();
+  assert.equal(page(big.w).querySelectorAll('.qempty').length, 0, 'every slot is a tile again');
+  assert.equal(new Set(names(big.w)).size, 10, 'ten different sessions');
+  assert.deepEqual(names(big.w).slice(0, 1), [BIG(1)]);
+  assert.equal(savedOf(big.w).slots.filter(Boolean).length, 10, 'and saved');
+  // needs you first: a session that waits on a question is the first one the page fills
+  const st = bigState(12, { 11: { state: 'waiting', needs_attention: true, last_message: 'which one?' } });
+  const need = quadWorld({ width: 1920, state: st, hash: '#/quad?l=10' });
+  assert.equal(names(need.w)[0], BIG(12), 'the session that needs you is the first tile');
+});
+
+test('the one-up chip switcher lists up to ten sessions, only one iframe is live', () => {
+  const { w } = quadWorld({ wide: false, state: bigState(), hash: '#/quad' });
+  const chips = page(w).querySelectorAll('.q-chip');
+  assert.equal(chips.length, 10, 'twelve sessions, ten chips');
+  assert.equal(page(w).querySelectorAll('iframe').length, 1);
+  assert.equal(page(w).querySelector('.quad').getAttribute('data-forced'), 'true');
+});
+
+test('a saved layout above what a phone shows is kept as the wish: 10 is saved, one tile shows, the caption stays hidden (the chips are the switcher)', () => {
+  const { w } = quadWorld({ wide: false, state: bigState(), hash: '#/quad?l=10' });
+  assert.deepEqual(names(w), [BIG(1)]);
+  assert.equal(page(w).querySelector('.q-cap').classList.contains('hidden'), true);
+  assert.equal(savedOf(w).layout, 10);
+});
+
+test('Ctrl+Alt+1..9 and Ctrl+Alt+0 focus tiles 1 to 10; a tile that is not there takes nothing; the key also works inside a terminal document', () => {
+  const env = quadWorld({ width: 1920, state: bigState(), hash: '#/quad?l=10' });
+  const { w } = env;
+  const wins = {};
+  for (const t of bigNames(1, 10)) wins[t] = load(w, t).contentWindow;
+  const Q = w.get('Quad').current;
+  for (const [code, n] of [['Digit1', 1], ['Digit5', 5], ['Digit9', 9], ['Digit0', 10]]) {
+    const rec = {};
+    w.document.dispatch('keydown', key({ code }, rec));
+    assert.equal(rec.prevented, true, `${code}: the page takes the key`);
+    assert.equal(Q.active, BIG(n), `${code} is tile ${n}`);
+    assert.equal(wins[BIG(n)].focused >= 1, true, 'the terminal inside has the focus');
+  }
+  const frameKey = wins[BIG(3)].listeners.keydown.filter((x) => x.opts === true || (x.opts && x.opts.capture));
+  const rec = {};
+  frameKey.at(-1).fn(key({ code: 'Digit5' }, rec));
+  assert.equal(rec.prevented, true);
+  assert.equal(Q.active, BIG(5), 'also from inside a terminal');
+  cell(w, 4).click();
+  assert.equal(Q.active, BIG(1), 'the active tile went with its slot: the first one is active again');
+  w.document.dispatch('keydown', key({ code: 'Digit7' }));
+  assert.equal(Q.active, BIG(1), 'there is no tile 7 in a 4-up: nothing moves');
+  assert.deepEqual(names(w), bigNames(1, 4));
+});
+
+test('zoom works with ten tiles: the overlay covers the grid, the others stay mounted and inert, no iframe is touched, nothing is refitted', () => {
+  const env = quadWorld({ width: 1920, state: bigState(), hash: '#/quad?l=10' });
+  const { w } = env;
+  const logs = [];
+  const wins = {};
+  for (const t of bigNames(1, 10)) { wins[t] = load(w, t).contentWindow; spy(frameOf(w, t), logs); }
+  const Q = w.get('Quad').current;
+  assert.equal(Q.zoomSlot(9), true, 'the tenth tile can be zoomed');
+  assert.equal(page(w).querySelector('.qgrid').getAttribute('data-zoom'), '9');
+  assert.ok(tileOf(w, BIG(10)).classList.contains('zoomed'));
+  assert.equal(tileOf(w, BIG(1)).getAttribute('inert'), '');
+  assert.deepEqual(logs, []);
+  env.clock.advance(1000);
+  assert.deepEqual(bigNames(1, 9).map((t) => wins[t].fits), Array(9).fill(0), 'the covered tiles were not refitted');
+  assert.equal(savedOf(w).zoom, 9);
+  assert.equal(Q.zoomSlot(9), true);
+  assert.equal(page(w).querySelector('.qgrid').getAttribute('data-zoom'), null);
+});
+
+test('pages.css (quad block, v3): the grid has the layouts\' columns, tiles are placed by `order` per slot 0 to 9 (no grid-area per slot), the layout cells are 28 px / 44 px, a tile of 300 px or less keeps glyphs, name and the menu only', () => {
+  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const quad = css.slice(css.indexOf('/* ---------- quad (v0.5.9'));
+  const cols = { 2: 2, 4: 2, 6: 3, 8: 4, 10: 5 };
+  for (const [n, c] of Object.entries(cols)) assert.match(quad, new RegExp(`\\.qgrid\\[data-layout="${n}"\\] \\{ grid-template-columns:repeat\\(${c}, minmax\\(0, 1fr\\)\\);`), `${n}-up has ${c} columns`);
+  for (const n of [4, 6, 8, 10]) assert.match(quad, new RegExp(`\\.qgrid\\[data-layout="${n}"\\] \\{[^}]*grid-template-rows:repeat\\(2, minmax\\(0, 1fr\\)\\)`), `${n}-up has two rows`);
+  for (let i = 0; i < 10; i++) assert.match(quad, new RegExp(`\\.qgrid \\.qtile\\[data-slot="${i}"\\] \\{ order:${i}; \\}`), `slot ${i} is placed by order`);
+  assert.doesNotMatch(quad, /\[data-slot="\d"\] \{ grid-area/, 'no grid-area per slot any more');
+  assert.match(quad, /\.qgrid \.qtile\.zoomed \{ position:absolute; inset:0; grid-area:1 \/ 1 \/ -1 \/ -1;/, 'the zoomed tile still covers the whole grid');
+  assert.match(quad, /\.q-layout \.seg-btn \{[^}]*min-width:var\(--row-btn\); min-height:var\(--row-btn\)/, 'a cell is 28 px with a mouse and 44 px on touch');
+  assert.doesNotMatch(quad, /\.q-layout[^{]*\{[^}]*var\(--tap\)/);
+  assert.match(quad, /\.q-layout \.seg-btn:disabled \{ opacity:/);
+  const small = quad.match(/@container \(max-width: 300px\) \{([\s\S]*?)\n\}/)[1];
+  for (const sel of ['.qt-modes', '.qt-modemenu', '.qt-ctx', '.qt-size', '.qt-zoom', '.qt-open', '.qt-reconnect', '.qt-close']) assert.ok(small.includes(`#page .quad ${sel}`), `${sel} goes at 300 px`);
+  assert.ok(small.includes('[data-touch] .qt-modemenu') && small.includes('[data-touch] .qt-modes'), 'the touch rules that show the menu button give way too');
+  assert.doesNotMatch(small, /\.qt-title \{ display|\.qt-glyphs/, 'the glyphs and the name stay');
+  assert.match(quad, /\.q-fs\.on/, 'the fullscreen button when on');
+});
+
+// ---------------------------------------------------------------- v0.5.9c: fullscreen
+
+const htmlOf = (w) => w.document.documentElement;
+const inFs = (w) => htmlOf(w).classList.contains('quad-fs');
+const fsBtn = (w) => page(w).querySelector('.q-fs');
+/** The browser's Fullscreen API on the document element, as a recorder: request puts the element in fullscreenElement, exit takes it out. */
+function fsApi(w, { refuse = false } = {}) {
+  const rec = { requests: [], exits: 0 };
+  const root = htmlOf(w);
+  root.requestFullscreen = (opts) => {
+    rec.requests.push(opts);
+    if (refuse) return Promise.reject(new Error('not allowed'));
+    w.document.fullscreenElement = root;
+    return Promise.resolve();
+  };
+  w.document.exitFullscreen = () => { rec.exits += 1; w.document.fullscreenElement = null; return Promise.resolve(); };
+  return rec;
+}
+/** A plain key (no modifiers) as Keymap.handle sees it; `rec.prevented` says whether a binding took it. */
+const plainKey = (k, over = {}, rec = {}) => ({ type: 'keydown', key: k, ctrlKey: false, altKey: false, metaKey: false, shiftKey: false, target: null, defaultPrevented: false, preventDefault() { rec.prevented = true; }, stopPropagation() {}, ...over });
+const esc = (w, over = {}) => { const rec = {}; w.document.dispatch('keydown', plainKey('Escape', over, rec)); return rec; };
+const nextTicks = async () => { for (let i = 0; i < 4; i++) await Promise.resolve(); };
+
+test('Fullscreen: the header button puts html.quad-fs on the page and asks the browser for full screen on the document element; the same button says Exit fullscreen and leaves', () => {
+  const { w } = quadWorld({ hash: '#/quad' });
+  const api = fsApi(w);
+  assert.equal(inFs(w), false, 'never entered by itself');
+  assert.equal(text(fsBtn(w)), 'Fullscreen');
+  assert.equal(fsBtn(w).classList.contains('on'), false);
+  assert.equal(fsBtn(w).getAttribute('aria-pressed'), null, 'the label says which way it goes: no pressed state on top of it');
+  assert.match(fsBtn(w).getAttribute('title'), /\(F\)/);
+  assert.ok(fsBtn(w).querySelector('.bp5-icon-fullscreen'), 'the icon says fullscreen');
+  fsBtn(w).click();
+  assert.equal(inFs(w), true);
+  assert.equal(api.requests.length, 1, 'one request to the Fullscreen API');
+  assert.equal(w.document.fullscreenElement, htmlOf(w), 'on the document element, so a popover mounted outside the quad (the topbar\'s) still paints');
+  assert.equal(text(fsBtn(w)), 'Exit fullscreen');
+  assert.equal(fsBtn(w).classList.contains('on'), true);
+  assert.ok(fsBtn(w).querySelector('.bp5-icon-minimize'));
+  assert.equal(w.get('Quad').current.fs, true);
+  fsBtn(w).click();
+  assert.equal(inFs(w), false);
+  assert.equal(api.exits, 1, 'and out through the API');
+  assert.equal(text(fsBtn(w)), 'Fullscreen');
+  assert.equal(fsBtn(w).classList.contains('on'), false);
+});
+
+test('Fullscreen is never remembered: nothing about it is saved, a fresh page starts without it', () => {
+  const env = quadWorld({ hash: '#/quad' });
+  const { w } = env;
+  fsApi(w);
+  w.get('Quad').current.toggleFullscreen();
+  env.clock.advance(10);
+  assert.equal(inFs(w), true);
+  const keys = [];
+  for (let i = 0; i < w.localStorage.length; i++) keys.push(w.localStorage.key(i));
+  for (const k of keys) assert.doesNotMatch(String(w.localStorage.getItem(k)), /fullscreen|quad-fs|"fs"/i, `${k} says nothing about fullscreen`);
+  const saved = Object.fromEntries(keys.map((k) => [k, w.localStorage.getItem(k)]));
+  const again = quadWorld({ hash: '#/quad', storage: saved });
+  assert.equal(inFs(again.w), false, 'a new page with the same storage is not in fullscreen');
+  assert.equal(again.w.get('Quad').current.fs, false);
+});
+
+test('Fullscreen: when the browser leaves it (Esc, a gesture) the class goes with it; no second exit call', () => {
+  const { w } = quadWorld({ hash: '#/quad' });
+  const api = fsApi(w);
+  w.get('Quad').current.toggleFullscreen();
+  assert.equal(inFs(w), true);
+  w.document.fullscreenElement = null;
+  w.document.dispatch('fullscreenchange');
+  assert.equal(inFs(w), false);
+  assert.equal(api.exits, 0, 'the browser had already left');
+  assert.equal(text(fsBtn(w)), 'Fullscreen');
+  assert.equal(w.get('Quad').current.fs, false);
+  w.document.dispatch('fullscreenchange');
+  assert.equal(inFs(w), false, 'a change event with nothing to leave is nothing');
+  w.get('Quad').current.toggleFullscreen();
+  assert.equal(inFs(w), true, 'and it can be entered again');
+});
+
+test('Fullscreen without the API (iOS Safari): the class alone does it inside the page; Esc or the button leaves; a refused request keeps the class too', async () => {
+  const a = quadWorld({ hash: '#/quad' });
+  assert.equal(typeof htmlOf(a.w).requestFullscreen, 'undefined', 'minidom has no Fullscreen API');
+  fsBtn(a.w).click();
+  assert.equal(inFs(a.w), true, 'the class alone');
+  assert.equal(text(fsBtn(a.w)), 'Exit fullscreen');
+  const rec = esc(a.w);
+  assert.equal(inFs(a.w), false, 'Esc leaves');
+  assert.equal(rec.prevented, true);
+  fsBtn(a.w).click();
+  assert.equal(inFs(a.w), true);
+  fsBtn(a.w).click();
+  assert.equal(inFs(a.w), false, 'and the button');
+  // the browser refuses (no gesture, a policy): the class stays and a later change event does not take it away
+  const b = quadWorld({ hash: '#/quad' });
+  const api = fsApi(b.w, { refuse: true });
+  b.w.get('Quad').current.toggleFullscreen();
+  await nextTicks();
+  assert.equal(api.requests.length, 1);
+  assert.equal(inFs(b.w), true, 'refused: the class alone stands');
+  b.w.document.dispatch('fullscreenchange');
+  assert.equal(inFs(b.w), true, 'no fullscreen element was ever there to leave');
+  esc(b.w);
+  assert.equal(inFs(b.w), false);
+});
+
+test('Esc leaves fullscreen only when nobody else needs it: not with a dialog, a menu or a tile popover open, not in a field, not when something already took it', () => {
+  const { w } = quadWorld({ hash: '#/quad', kit: 'stub' });
+  const Q = w.get('Quad').current;
+  Q.toggleFullscreen();
+  titleBtn(w, CK).click();
+  assert.equal(lastMenu(w).open, true);
+  esc(w);
+  assert.equal(inFs(w), true, 'a tile menu (TermKit.tileMenu) is open: its Esc closes it, the page stays in fullscreen');
+  Q.openComposer(CK);
+  esc(w);
+  assert.equal(inFs(w), true, 'a composer popover too');
+  Q.openTune(CK);
+  esc(w);
+  assert.equal(inFs(w), true, 'and the tune panel');
+  Q.closePop();
+  w.document.querySelector('#sheet').showModal();
+  esc(w);
+  assert.equal(inFs(w), true, 'a sheet is open: its Esc closes it');
+  w.document.querySelector('#sheet').close();
+  esc(w, { target: { tagName: 'INPUT' } });
+  esc(w, { target: { tagName: 'TEXTAREA' } });
+  assert.equal(inFs(w), true, 'a field keeps its Esc');
+  esc(w, { defaultPrevented: true });
+  assert.equal(inFs(w), true, 'an Esc somebody already handled');
+  const pop = w.document.createElement('div');
+  pop.className = 'menu-pop';
+  w.document.querySelector('#topbar').append(pop);
+  esc(w);
+  assert.equal(inFs(w), true, 'a menu is open');
+  pop.remove();
+  esc(w);
+  assert.equal(inFs(w), false);
+  esc(w);
+  assert.equal(inFs(w), false, 'out of fullscreen an Esc is nobody\'s');
+});
+
+test('leaving the page leaves fullscreen: the class goes, the browser is told, no listener is left', () => {
+  const { w } = quadWorld({ hash: '#/quad' });
+  const api = fsApi(w);
+  w.get('Quad').current.toggleFullscreen();
+  assert.equal(inFs(w), true);
+  w.location.hash = '#/memory';
+  assert.equal(inFs(w), false);
+  assert.equal(api.exits, 1);
+  assert.equal(w.document.listeners.fullscreenchange ? w.document.listeners.fullscreenchange.length : 0, 0, 'no fullscreenchange listener is left behind');
+  assert.equal(w.document.listeners.keydown ? w.document.listeners.keydown.length : 0, 0);
+});
+
+test('F is full screen and Z zooms the active tile (the keymap), Ctrl+Alt+F works from inside a terminal; all inert in a field', () => {
+  const env = quadWorld({ hash: `#/quad?s=${CK},${P3},${P2},${P1}&l=4` });
+  const { w } = env;
+  w.run('Keymap.bindDefaults(); Keymap.listen();');
+  for (const t of [CK, P3, P2, P1]) load(w, t);
+  const press = (k, over = {}) => { const rec = {}; w.document.dispatch('keydown', plainKey(k, over, rec)); return rec; };
+  assert.equal(press('f').prevented, true);
+  assert.equal(inFs(w), true, 'F goes full screen');
+  assert.equal(press('f').prevented, true);
+  assert.equal(inFs(w), false, 'and back');
+  w.get('Quad').current.setActive(P3);
+  assert.equal(press('z').prevented, true);
+  assert.ok(tileOf(w, P3).classList.contains('zoomed'), 'Z zooms the active tile');
+  assert.equal(press('z').prevented, true);
+  assert.equal(tiles(w).some((t) => t.classList.contains('zoomed')), false);
+  assert.equal(press('f', { target: { tagName: 'INPUT' } }).prevented, undefined, 'a field keeps its f');
+  assert.equal(inFs(w), false);
+  w.document.querySelector('#sheet').showModal();
+  assert.equal(press('f').prevented, undefined, 'a dialog is modal');
+  w.document.querySelector('#sheet').close();
+  const rec = {};
+  w.document.dispatch('keydown', key({ code: 'KeyF' }, rec));
+  assert.equal(rec.prevented, true, 'Ctrl+Alt+F is the page\'s own capture listener');
+  assert.equal(inFs(w), true);
+  const frameKey = frameOf(w, CK).contentWindow.listeners.keydown.filter((x) => x.opts === true || (x.opts && x.opts.capture));
+  const rec2 = {};
+  frameKey.at(-1).fn(key({ code: 'KeyF' }, rec2));
+  assert.equal(rec2.prevented, true, 'also from inside a terminal document, where a plain f is typed');
+  assert.equal(inFs(w), false);
+  const one = quadWorld({ wide: false, hash: '#/quad' });
+  one.w.run('Keymap.bindDefaults(); Keymap.listen();');
+  const r1 = {};
+  one.w.document.dispatch('keydown', plainKey('z', {}, r1));
+  assert.equal(r1.prevented, undefined, 'one tile: nothing to zoom, the key is left alone');
+});
+
+test('Zoom works inside fullscreen: one terminal can take the whole screen; the grid comes back with Back to the grid', () => {
+  const env = quadWorld({ hash: `#/quad?s=${CK},${P3},${P2},${P1}&l=4` });
+  const { w } = env;
+  const logs = [];
+  for (const t of [CK, P3, P2, P1]) { load(w, t); spy(frameOf(w, t), logs); }
+  const Q = w.get('Quad').current;
+  Q.toggleFullscreen();
+  assert.equal(Q.zoomSlot(2), true);
+  assert.ok(tileOf(w, P2).classList.contains('zoomed'));
+  assert.equal(inFs(w), true, 'still in fullscreen');
+  assert.equal(tileOf(w, P2).querySelector('.qt-zoom').getAttribute('aria-pressed'), 'true');
+  tileOf(w, P2).querySelector('.qt-zoom').click();
+  assert.equal(tiles(w).some((t) => t.classList.contains('zoomed')), false);
+  assert.deepEqual(logs, [], 'not one iframe was touched');
+});
+
+test('Fullscreen this tile = zoom + page fullscreen; leaving it puts the grid back when this call zoomed it, and keeps a zoom the person made first', () => {
+  const env = quadWorld({ hash: `#/quad?s=${CK},${P3},${P2},${P1}&l=4` });
+  const { w } = env;
+  const Q = w.get('Quad').current;
+  const api = fsApi(w);
+  Q.menuCtx(P3).actions.fullscreenTile();
+  assert.ok(tileOf(w, P3).classList.contains('zoomed'));
+  assert.equal(inFs(w), true);
+  assert.equal(api.requests.length, 1);
+  assert.equal(Q.active, P3);
+  Q.leaveFullscreen();
+  assert.equal(inFs(w), false);
+  assert.equal(tiles(w).some((t) => t.classList.contains('zoomed')), false, 'the grid is back');
+  assert.equal(savedOf(w).zoom, null, 'and nothing of it is saved');
+  Q.zoomSlot(0);
+  Q.menuCtx(CK).actions.fullscreenTile();
+  Q.leaveFullscreen();
+  assert.ok(tileOf(w, CK).classList.contains('zoomed'), 'a zoom made before stays');
+  Q.zoomSlot(0);
+  const one = quadWorld({ wide: false, hash: '#/quad' });
+  fsApi(one.w);
+  one.w.get('Quad').current.menuCtx(CK).actions.fullscreenTile();
+  assert.equal(inFs(one.w), true, 'one tile: just the page fullscreen');
+  assert.equal(page(one.w).querySelector('.qgrid').getAttribute('data-zoom'), null);
+});
+
+test('leaving the page in "Fullscreen this tile" does not save the zoom it made', () => {
+  const env = quadWorld({ hash: `#/quad?s=${CK},${P3}&l=2` });
+  const { w } = env;
+  w.get('Quad').current.menuCtx(CK).actions.fullscreenTile();
+  assert.equal(savedOf(w).zoom, 0, 'while it is up the zoom is the page\'s state');
+  w.location.hash = '#/memory';
+  assert.equal(savedOf(w).zoom, null, 'gone with the page');
+});
+
+test('a project that has nothing left to show cannot enter fullscreen, and leaves it when the last session goes (its header, with the Exit button, is hidden)', () => {
+  const solo = (list) => fakeState({ projects: projectsOf({ solo: { r: list } }) });
+  const env = quadWorld({ hash: '#/quad?p=solo', state: solo([sess('solo', 'r', 's1')]) });
+  const { w } = env;
+  const Q = w.get('Quad').current;
+  assert.equal(Q.toggleFullscreen(), true);
+  assert.equal(inFs(w), true);
+  tileOf(w, 'solo--r--s1').querySelector('.qt-close').click();
+  assert.equal(inFs(w), true, 'the session is still there to pick');
+  setState(env, solo([]));
+  assert.equal(inFs(w), false, 'nothing left: the page is out of fullscreen');
+  assert.equal(page(w).querySelector('.q-none').classList.contains('hidden'), false);
+  assert.equal(Q.toggleFullscreen(), false, 'and it will not go in again: the key is left alone');
+  assert.equal(inFs(w), false);
+});
+
+test('pages.css (quad block, fullscreen): chrome hidden through html.quad-fs, the head one row (32 px with a mouse, the 44 px target on touch), the tiles take the viewport', () => {
+  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const quad = css.slice(css.indexOf('/* ---------- quad (v0.5.9'));
+  assert.match(quad, /html\.quad-fs #app \{ grid-template-columns:0 minmax\(0, 1fr\) 0; grid-template-rows:0 minmax\(0, 1fr\); \}/);
+  assert.match(quad, /html\.quad-fs #topbar \{ min-height:0; height:0; padding:0; border:0; overflow:visible; \}/, 'the topbar keeps a zero-height box: components.menu() mounts its popovers there');
+  assert.match(quad, /html\.quad-fs #topbar > :not\(\.menu-pop\) \{ display:none; \}/, 'only its own children go');
+  const hidden = quad.match(/html\.quad-fs #sidebar, html\.quad-fs #dock, html\.quad-fs #bnav, html\.quad-fs #banner[^{]*\{ display:none !important; \}/);
+  assert.ok(hidden, 'the sidebar, dock, bottom nav and banner are hidden');
+  assert.match(quad, /html\.quad-fs body\[data-shell\] #main \{ padding:0; overflow:hidden; \}/);
+  assert.match(quad, /html\.quad-fs body\[data-page=quad\] #page \{ min-height:0; padding:0; \}/, 'the page\'s own bottom padding goes too: the tiles end at the screen\'s edge');
+  assert.match(quad, /html\.quad-fs #page > \.quad \{ max-width:none; \}/, '`#page > * { max-width:1400px }` must not cap the grid in fullscreen: above 1400 px the tiles take the whole screen');
+  assert.match(css, /#page > \* \{ max-width:1400px;/, 'the page cap that rule beats (1,2,1 over 1,0,0)');
+  assert.ok(css.indexOf('html.quad-fs #page > .quad') > css.indexOf('#page > * { max-width:1400px'), 'and comes after it');
+  const head = quad.match(/html\.quad-fs #page \.quad \.q-head \{([^}]*)\}/)[1];
+  assert.match(head, /flex-wrap:nowrap/, 'one row');
+  assert.match(head, /min-height:max\(32px, var\(--row-btn\)\)/, '32 px with a mouse, 44 px (--row-btn) with a finger');
+  assert.match(quad, /html\.quad-fs #page \.quad \.q-head h1, html\.quad-fs #page \.quad \.q-reload, html\.quad-fs #page \.quad \.q-cap/, 'the title, Reload all and the caption go');
+  assert.match(quad, /html\.quad-fs #page \.quad\[data-forced\] \.q-fill \{ display:none; \}/, 'a phone has nothing to auto-fill');
+  assert.match(quad, /html\.quad-fs #page \.quad \.qgrid \{ gap:4px; \}/);
+  assert.doesNotMatch(quad, /html\.quad-fs[^{]*\{[^}]*(position:fixed|100vh)/, 'no fixed overlay: the document is the full screen');
+});
+
+// ---------------------------------------------------------------- v0.5.9c: the tile menu (TermKit.tileMenu) and what its actions do
+
+const titleBtn = (w, tmux) => tileOf(w, tmux).querySelector('.qt-title');
+const lastMenu = (w) => kitOf(w).menus.at(-1);
+const openMenu = (w, tmux) => { const n = kitOf(w).menus.length; titleBtn(w, tmux).click(); return kitOf(w).menus.length > n ? lastMenu(w) : null; };
+const GATE = 'Available when the session is at its prompt';
+const acts = (ctx) => Object.keys(ctx.actions).filter((k) => typeof ctx.actions[k] === 'function');
+const SHELL = 'ops--box--sh1';
+const withShell = () => fakeState({ projects: projectsOf({ ops: { box: [sess('ops', 'box', 'sh1', { launcher: 'shell', agent: 'shell', command: 'bash', state: 'idle' }), sess('ops', 'box', 'c1', { state: 'idle' })] } }) });
+
+test('the name and its ▾ open TermKit.tileMenu anchored on that button: a pointer opens it highlighting nothing, the keyboard focuses the first item; a second tap closes; one menu at a time', () => {
+  const { w } = quadWorld({ hash: '#/quad', kit: 'stub' });
+  const t = titleBtn(w, CK);
+  assert.equal(t.getAttribute('aria-haspopup'), 'menu');
+  assert.equal(t.getAttribute('aria-expanded'), null, 'not components.menu(): the kit menu owns the popover');
+  assert.equal(t.getAttribute('title'), `${CK}: view, input and tune options`);
+  assert.ok(t.querySelector('.qt-caret'), 'the ▾');
+  t.click();
+  const first = lastMenu(w);
+  assert.deepEqual([first.opened.length, first.opened[0].anchor === t, first.opened[0].byKeyboard], [1, true, false], 'a pointer: nothing highlighted');
+  t.click();
+  assert.equal(first.open, false, 'a second tap closes it');
+  assert.equal(kitOf(w).menus.length, 1, 'and does not build another');
+  t.dispatchEvent({ type: 'click', detail: 0, isTrusted: true, preventDefault() {}, stopPropagation() {} });
+  assert.equal(kitOf(w).menus.length, 2);
+  assert.equal(lastMenu(w).opened[0].byKeyboard, true, 'Enter or Space on the button: the first item takes the focus');
+  const open2 = lastMenu(w);
+  titleBtn(w, P3).click();
+  assert.equal(open2.open, false, 'opening the menu of another tile closes this one');
+  assert.equal(lastMenu(w).ctx.tmux, P3);
+  assert.equal(tileOf(w, CK).querySelectorAll('.menu-pop').length, 0);
+});
+
+test('without TermKit.tileMenu the old title menu stays (open the terminal page, reconnect, zoom, close, swap in)', () => {
+  const { w } = quadWorld({ hash: '#/quad', kit: 'none' });
+  assert.equal(titleBtn(w, CK).getAttribute('title'), `${CK}: swap, reconnect, close`);
+  assert.equal(titleBtn(w, CK).getAttribute('aria-expanded'), 'false', 'components.menu() owns it');
+  titleBtn(w, CK).click();
+  assert.deepEqual(w.document.querySelectorAll('.menuitem').slice(0, 4).map((i) => i.textContent.trim()), ['Open terminal page', 'Reconnect', 'Zoom this tile', 'Close tile']);
+});
+
+test('the menu\'s ctx for a session with a pending permission: Allow, Deny and In terminal act on it; the prompt is not free, with the reason', () => {
+  const { w } = quadWorld({ hash: '#/quad', kit: 'stub' });
+  const c = openMenu(w, CK).ctx;
+  assert.equal(c.tmux, CK);
+  assert.equal(c.agent, 'claude');
+  assert.equal(c.session.tmux, CK);
+  assert.equal(c.mode, 'grid');
+  assert.deepEqual(plain(c.modes), ['grid', 'full', 'ro', 'tail']);
+  assert.equal(c.touch, false);
+  assert.deepEqual(plain(c.perm), { pending: true, summary: 'Bash: npm test' });
+  assert.equal(c.atPrompt, false, 'a permission is open: the prompt is not free');
+  assert.equal(c.why, GATE);
+  assert.deepEqual(acts(c), ['setMode', 'zoom', 'fullscreenTile', 'popout', 'openTerm', 'reload', 'keysHere', 'allow', 'deny', 'tui', 'composer', 'dockComposer', 'tune', 'compact', 'context', 'usage', 'rename', 'close', 'kill'],
+    'everything the contract names, minus dock (the window has none)');
+  assert.equal(c.actions.dock, null);
+  assert.equal(c.zoomed, false);
+  assert.equal(c.composerDocked, false);
+  assert.equal(c.schema, null, 'no agents entry in this state');
+});
+
+test('the menu\'s ctx without a pending permission: no Allow / Deny / In terminal, a free prompt says nothing', () => {
+  const { w } = quadWorld({ hash: `#/quad?s=${S1},${CK}`, kit: 'stub' });
+  const c = openMenu(w, S1).ctx;
+  assert.deepEqual(plain(c.perm), { pending: false, summary: '' });
+  assert.equal(c.actions.allow, null);
+  assert.equal(c.actions.deny, null);
+  assert.equal(c.actions.tui, null);
+  assert.equal(c.atPrompt, true);
+  assert.equal(c.why, '');
+  assert.equal(typeof c.actions.tune, 'function');
+});
+
+test('a working session is not at its prompt: atPrompt is false with the reason, and the tune actions stay (the menu shows them off); done and idle are free; waiting is free only on the idle prompt; compaction is not', () => {
+  const st = fakeState({ projects: projectsOf({ a: { b: [
+    sess('a', 'b', 'work', { state: 'working' }), sess('a', 'b', 'done', { state: 'done' }), sess('a', 'b', 'err', { state: 'errored' }), sess('a', 'b', 'ask', { state: 'waiting' }),
+    sess('a', 'b', 'idlew', { state: 'waiting', flags: { wait_kind: 'idle' } }), sess('a', 'b', 'comp', { state: 'idle', flags: { compacting: true } }), sess('a', 'b', 'cx', { state: 'working', agent: 'codex', launcher: 'codex', command: 'codex' }),
+  ] } }) });
+  const { w } = quadWorld({ state: st, width: 1920, hash: '#/quad?l=8', kit: 'stub' });
+  const gate = (name) => { const c = openMenu(w, `a--b--${name}`).ctx; return [c.atPrompt, c.why]; };
+  assert.deepEqual(gate('work'), [false, GATE]);
+  assert.deepEqual(gate('cx'), [false, GATE], 'a working Codex session too');
+  assert.deepEqual(gate('done'), [true, '']);
+  assert.deepEqual(gate('err'), [true, '']);
+  assert.deepEqual(gate('ask'), [false, GATE], 'a question is not the prompt');
+  assert.deepEqual(gate('idlew'), [true, ''], 'waiting on the idle prompt is');
+  assert.deepEqual(gate('comp'), [false, GATE]);
+  const c = lastMenu(w).ctx;
+  for (const k of ['tune', 'compact', 'context', 'usage', 'rename']) assert.equal(typeof c.actions[k], 'function', `${k} is still offered (the menu shows it off)`);
+  const Q = w.get('Quad');
+  assert.deepEqual(plain(Q.atPrompt(Q.roster(w.get('state')).find((s) => s.tmux === 'a--b--work'), w.get('state'))), { show: true, ok: false, why: GATE }, 'the pure rule the ctx comes from');
+  assert.deepEqual(plain(Q.atPrompt(null, null)), { show: false, ok: false, why: '' });
+});
+
+test('Claude, Codex and a plain shell: the agent and the schema ride in the ctx; a shell has no tune items at all', () => {
+  const st = fakeState({ agents: { codex: { name: 'codex', models: ['gpt-5.5'] } }, projects: projectsOf({ ops: { box: [sess('ops', 'box', 'sh1', { launcher: 'shell', agent: 'shell', command: 'bash' }), sess('ops', 'box', 'c1'), sess('ops', 'box', 'x1', { agent: 'codex', launcher: 'codex', command: 'codex' })] } }) });
+  const { w } = quadWorld({ state: st, width: 1920, hash: '#/quad?l=4', kit: 'stub' });
+  const claude = openMenu(w, 'ops--box--c1').ctx;
+  assert.deepEqual([claude.agent, claude.schema], ['claude', null], 'no Claude entry in state.agents');
+  const codex = openMenu(w, 'ops--box--x1').ctx;
+  assert.equal(codex.agent, 'codex');
+  assert.deepEqual(plain(codex.schema), { name: 'codex', models: ['gpt-5.5'] }, 'state.agents[agent] is the schema');
+  assert.equal(typeof codex.actions.tune, 'function');
+  const sh = openMenu(w, SHELL).ctx;
+  assert.equal(sh.agent, 'shell');
+  for (const k of ['tune', 'compact', 'context', 'usage', 'rename']) assert.equal(sh.actions[k], null, `a shell has no ${k}`);
+  assert.equal(sh.why, '', 'nothing to explain: there is nothing to tune');
+  for (const k of ['setMode', 'keysHere', 'composer', 'close', 'kill', 'reload']) assert.equal(typeof sh.actions[k], 'function', `${k} works on a shell`);
+});
+
+test('a touch window says so: ctx.touch follows the coarse pointer (html.force-coarse), so the menu is a sheet there', () => {
+  const { w } = quadWorld({ hash: '#/quad', kit: 'stub' });
+  assert.equal(openMenu(w, CK).ctx.touch, false);
+  htmlOf(w).classList.add('force-coarse');
+  w.get('Quad').current.closePop();
+  assert.equal(openMenu(w, CK).ctx.touch, true);
+});
+
+test('the actions that need room: Zoom only with two tiles or more (and the ctx knows when it is zoomed); Add to dock only where the dock exists (1024 px and up)', () => {
+  const one = quadWorld({ wide: false, hash: '#/quad', kit: 'stub' });
+  assert.equal(openMenu(one.w, CK).ctx.actions.zoom, null, 'one tile: nothing to zoom');
+  const { w } = quadWorld({ hash: '#/quad', kit: 'stub' });
+  const Q = w.get('Quad').current;
+  assert.equal(typeof Q.menuCtx(CK).actions.zoom, 'function');
+  assert.equal(Q.menuCtx(CK).zoomed, false);
+  Q.menuCtx(CK).actions.zoom();
+  assert.equal(Q.menuCtx(CK).zoomed, true);
+  assert.equal(Q.menuCtx(P3).zoomed, false);
+  assert.equal(Q.menuCtx(CK).actions.dock, null, 'no Shell');
+  w.run(`globalThis.Shell = { dockOn: () => false, dock: { wanted: '' }, dockStore: { set(k, v) { __dockset.push([k, v]); } }, syncCrumbs() {} }; globalThis.__dockset = [];`);
+  assert.equal(Q.menuCtx(CK).actions.dock, null, 'a window under 1024 px (the dock is off)');
+  w.run('Shell.dockOn = () => true');
+  const dock = Q.menuCtx(CK).actions.dock;
+  assert.equal(typeof dock, 'function');
+  dock();
+  assert.equal(w.run('Shell.dock.wanted'), CK, 'the dock opens it when the Quad is left (the two share the window)');
+  assert.deepEqual(plain(w.get('__dockset')), [['ccboard:dock', CK]]);
+  assert.match(toasts(w).at(-1).text, /opens in the dock when you leave the Quad/);
+});
+
+test('the actions: a mode, close, reload, Allow / Deny / In terminal, the keys, kill', async () => {
+  const env = quadWorld({ hash: `#/quad?s=${CK},${S1}`, kit: 'stub' });
+  const { w } = env;
+  const Q = w.get('Quad').current;
+  const a = (tmux) => Q.menuCtx(tmux).actions;
+  const ck = a(CK);                                                    // taken while the permission is pending: a decided one is gone from the next ctx
+  a(S1).setMode('ro');
+  assert.equal(tileOf(w, S1).getAttribute('data-mode'), 'ro');
+  assert.equal(Q.menuCtx(S1).mode, 'ro', 'the next menu says so');
+  assert.deepEqual(savedOf(w).modes, { [S1]: 'ro' });
+  const win = load(w, CK).contentWindow;
+  a(CK).reload();
+  assert.equal(win.reloads, 1, 'Reload is the tile\'s reconnect');
+  await ck.allow();
+  assert.equal(posts(w, '/api/permission/12/allow').length, 1);
+  assert.equal(Q.menuCtx(CK).actions.allow, null, 'decided: the line is gone and so are the items');
+  await ck.deny();
+  await ck.tui();
+  assert.deepEqual(plain(calls(w)).filter((c) => /permission/.test(c.path)).map((c) => c.path), ['/api/permission/12/allow', '/api/permission/12/deny', '/api/permission/12/tui']);
+  a(S1).close();
+  assert.deepEqual(names(w), [CK], 'Close tile empties the slot (the session keeps running)');
+  assert.equal(calls(w).some((c) => c.method === 'DELETE'), false);
+});
+
+test('Keys here: the key bar shows and aims at this tile (a tick in the menu); a second pick hides it', () => {
+  const { w } = quadWorld({ hash: `#/quad?s=${CK},${P3},${P2},${P1}&l=4`, kit: 'stub' });
+  const Q = w.get('Quad').current;
+  assert.equal(Q.menuCtx(P3).keysTarget, false, 'the bar is hidden in 4-up until used');
+  assert.equal(Q.menuCtx(P3).actions.keysHere(), true);
+  assert.equal(Q.active, P3);
+  assert.equal(w.localStorage.getItem('ccboard:quad:keys'), '1');
+  assert.equal(page(w).querySelector('.q-keys').classList.contains('hidden'), false);
+  assert.match(text(page(w).querySelector('.q-keys-to')), new RegExp(`keys to .*s3`));
+  assert.equal(Q.menuCtx(P3).keysTarget, true);
+  assert.equal(Q.menuCtx(CK).keysTarget, false, 'another tile is not the target');
+  assert.equal(Q.menuCtx(CK).actions.keysHere(), true, 'aimed at another tile');
+  assert.equal(Q.active, CK);
+  assert.equal(page(w).querySelector('.q-keys').classList.contains('hidden'), false);
+  assert.equal(Q.menuCtx(CK).actions.keysHere(), false, 'the target again: the bar goes');
+  assert.equal(w.localStorage.getItem('ccboard:quad:keys'), '0');
+  assert.equal(page(w).querySelector('.q-keys').classList.contains('hidden'), true);
+});
+
+test('Kill session: DELETE /api/sessions/<name>, the tile is emptied; a refusal says why and the tile stays', async () => {
+  const env = quadWorld({ hash: `#/quad?s=${S1},${CK}`, kit: 'stub' });
+  const { w } = env;
+  const Q = w.get('Quad').current;
+  w.ctx.__fail['/api/sessions/' + S1] = { status: 500, message: 'tmux said no' };
+  assert.equal(await Q.menuCtx(S1).actions.kill(), false);
+  assert.equal(toasts(w).at(-1).text, 'tmux said no');
+  assert.deepEqual(names(w), [S1, CK], 'the tile stays');
+  w.ctx.__fail = {};
+  assert.equal(await Q.menuCtx(S1).actions.kill(), true);
+  assert.deepEqual(plain(calls(w)).filter((c) => c.method === 'DELETE').map((c) => c.path), ['/api/sessions/' + S1, '/api/sessions/' + S1]);
+  assert.deepEqual(names(w), [CK], 'the tile is emptied');
+  assert.match(toasts(w).at(-1).text, /ended/);
+});
+
+test('Pop out is a window of its own (a tab when the browser blocks it); Open in terminal is the board\'s own way (the dock when it is on, else the page)', () => {
+  const { w } = quadWorld({ hash: '#/quad', kit: 'stub' });
+  const Q = w.get('Quad').current;
+  w.run('globalThis.__open = []; window.open = (u, n, f) => { __open.push({ u, n, f }); return __opensNull ? null : {}; }; globalThis.__opensNull = false;');
+  Q.menuCtx(CK).actions.popout();
+  const first = plain(w.get('__open'));
+  assert.equal(first.length, 1);
+  assert.equal(first[0].u, `/term/${CK}`);
+  assert.match(first[0].f, /popup=yes/);
+  assert.match(first[0].f, /width=\d+,height=\d+/);
+  w.run('__opensNull = true');
+  Q.menuCtx(CK).actions.popout();
+  const again = plain(w.get('__open'));
+  assert.equal(again.length, 3, 'blocked: the same page in a tab');
+  assert.deepEqual([again[2].u, again[2].n, again[2].f], [`/term/${CK}`, '_blank', 'noopener']);
+  // Open in terminal: Shell.openTerm when there is one
+  w.run('globalThis.__term = []; globalThis.Shell = { openTerm: (t) => { __term.push(t); return true; }, syncCrumbs() {} };');
+  Q.menuCtx(P3).actions.openTerm();
+  assert.deepEqual(plain(w.get('__term')), [P3]);
+});
+
+test('Send a prompt…: TermKit.composer is built once per tile with its row, opened under the tile header; Tune…: TermKit.tune with the stats and the schema; one popover at a time', () => {
+  const st = fixtureState({ agents: { claude: { name: 'claude', models: ['opus'] } } });
+  const { w } = quadWorld({ state: st, hash: `#/quad?s=${S1},${CK}`, kit: 'stub' });
+  const Q = w.get('Quad').current;
+  const head = tileOf(w, S1).querySelector('.qt-head');
+  assert.equal(Q.menuCtx(S1).actions.composer(), true);
+  const kit = kitOf(w);
+  assert.equal(kit.composers.length, 1);
+  const c = kit.composers[0];
+  assert.deepEqual([c.ctx.tmux, c.ctx.agent, c.ctx.touch, c.ctx.session.tmux], [S1, 'claude', false, S1]);
+  assert.equal(c.opened[0], head, 'under the tile header');
+  assert.deepEqual([c.updates.at(-1).touch, c.updates.at(-1).session.tmux], [false, S1], 'handed the row and the pointer as of the open');
+  assert.equal(typeof c.ctx.onSent, 'function');
+  Q.setActive(CK);
+  c.ctx.onSent('sent');
+  assert.equal(Q.active, S1, 'a prompt sent from a tile makes it the active one (the key bar follows)');
+  c.open = false;
+  Q.menuCtx(S1).actions.composer();
+  assert.equal(kit.composers.length, 1, 'the same controller again: a draft survives a close');
+  assert.equal(c.opened.length, 2);
+  // tune
+  assert.equal(Q.menuCtx(S1).actions.tune(), true);
+  assert.equal(kit.tunes.length, 1);
+  assert.equal(c.closed >= 1, true, 'the composer popover closed when the tune panel opened');
+  const t = kit.tunes[0];
+  assert.deepEqual([t.ctx.tmux, t.ctx.agent, t.ctx.touch, t.ctx.atPrompt], [S1, 'claude', false, true]);
+  assert.equal(t.ctx.stats.model, 'Opus 5', 'the current values are read from the session\'s stats');
+  assert.deepEqual(plain(t.ctx.schema), { name: 'claude', models: ['opus'] });
+  assert.equal(t.opened[0].anchor, head);
+  Q.menuCtx(S1).actions.tune();
+  assert.equal(kit.tunes.length, 1, 'one controller per tile');
+  assert.equal(t.updates.length >= 1, true, 'and kept current: its row, stats and prompt gate are handed over at each open');
+});
+
+test('an item picked from the open menu leaves the menu to the kit: the page never closes it first (on touch the kit closes its sheet after the action, so a sheet the action opens is swapped in place, not wiped by the close event of the one before)', () => {
+  const { w } = quadWorld({ hash: `#/quad?s=${S1},${CK}`, kit: 'stub' });
+  const Q = w.get('Quad').current;
+  const m = openMenu(w, S1);
+  assert.equal(m.open, true);
+  for (const act of ['composer', 'tune', 'compact', 'context', 'usage', 'rename', 'dockComposer', 'keysHere', 'setMode']) {
+    m.ctx.actions[act](act === 'setMode' ? 'ro' : undefined);
+    assert.equal(m.closed, 0, `${act}: the menu was not closed by the page`);
+    assert.equal(m.open, true);
+  }
+  assert.equal(kitOf(w).composers[0].opened.length, 1, 'the composer opened');
+  assert.equal(kitOf(w).tunes[0].opened.length >= 1, true);
+  // what the page does close: a menu it opens another menu over, the page's own fullscreen, its own teardown
+  m.ctx.actions.fullscreenTile();
+  assert.equal(m.closed >= 1, true, 'going fullscreen closes every surface');
+  Q.leaveFullscreen();
+  const again = openMenu(w, CK);
+  Q.closePop();
+  assert.equal(again.open, false, 'closePop() closes the menu and the panels');
+});
+
+test('/compact, /context and /usage are the tune panel\'s run(); Rename… is its rename row, both under the tile header; a kit without them opens the panel', () => {
+  const { w } = quadWorld({ hash: `#/quad?s=${S1},${CK}`, kit: 'stub' });
+  const Q = w.get('Quad').current;
+  const head = tileOf(w, S1).querySelector('.qt-head');
+  const a = Q.menuCtx(S1).actions;
+  a.compact();
+  a.context();
+  a.usage();
+  const t = kitOf(w).tunes[0];
+  assert.deepEqual(plain(t.runs.map((r) => [r.cmd, r.arg])), [['compact', ''], ['context', ''], ['usage', '']]);
+  assert.ok(t.runs.every((r) => r.anchor === head), 'a read command\'s output opens at the tile header');
+  a.rename();
+  assert.equal(t.renames.length, 1);
+  assert.equal(t.renames[0], head);
+  assert.equal(calls(w).some((c) => /\/command$/.test(c.path)), false, 'the page itself posts nothing: the tune panel owns the command route');
+  // a kit whose tune has no run() / rename(): the plain panel
+  const bare = quadWorld({ hash: `#/quad?s=${S1}`, kit: 'stub', init: `TermKit.tune = (ctx) => { const rec = { ctx, opened: [], updates: [], closed: 0, open: false }; __kit.tunes.push(rec); return { open(a) { rec.opened.push(a); }, close() { rec.closed += 1; }, update(p) { rec.updates.push(p); }, get isOpen() { return false; } }; };` });
+  const b = bare.w.get('Quad').current.menuCtx(S1).actions;
+  b.compact();
+  b.rename();
+  assert.equal(kitOf(bare.w).tunes[0].opened.length, 2, 'no run(), no rename(): Tune… opens instead');
+});
+
+test('the tune actions are left out where there is nothing to tune or no kit: a shell, a gone session, a kit without TermKit.tune or TermKit.composer', () => {
+  const sh = quadWorld({ state: withShell(), hash: `#/quad?s=${SHELL}`, kit: 'stub' });
+  assert.equal(sh.w.get('Quad').current.menuCtx(SHELL).actions.tune, null);
+  const noTune = quadWorld({ hash: `#/quad?s=${S1}`, kit: 'stub', init: 'TermKit.tune = undefined; TermKit.composer = undefined;' });
+  const c = noTune.w.get('Quad').current.menuCtx(S1);
+  for (const k of ['tune', 'compact', 'context', 'usage', 'rename', 'composer', 'dockComposer']) assert.equal(c.actions[k], null, `${k} needs the kit`);
+  assert.equal(typeof c.actions.setMode, 'function');
+  const gone = quadWorld({ hash: '#/quad?s=old--x--y', kit: 'stub' });
+  const g = gone.w.get('Quad').current.menuCtx('old--x--y');
+  assert.deepEqual(acts(g), ['setMode', 'zoom', 'fullscreenTile', 'popout', 'reload', 'close'], 'a session that is not running: view and close only');
+  assert.equal(g.atPrompt, false);
+});
+
+test('the menu\'s ctx is built at each open: the session\'s state changing between two opens changes atPrompt; the menu of a tile that goes is closed with it', () => {
+  const env = quadWorld({ hash: `#/quad?s=${S1},${CK}`, kit: 'stub' });
+  const { w } = env;
+  assert.equal(openMenu(w, S1).ctx.atPrompt, true);
+  w.get('Quad').current.closePop();
+  const busy = fixtureState();
+  for (const p of busy.projects) for (const r of [p.root, ...p.repos]) for (const s of (r && r.sessions) || []) if (s.tmux === S1) s.state = 'working';
+  setState(env, busy);
+  const second = openMenu(w, S1);
+  assert.equal(second.ctx.atPrompt, false, 'a fresh ctx: the session is working now');
+  assert.equal(second.ctx.why, GATE);
+  assert.equal(second.open, true);
+  tileOf(w, S1).querySelector('.qt-close').click();
+  assert.equal(second.open, false, 'the tile left: its menu went with it');
+});
+
+// ---------------------------------------------------------------- v0.5.9c: the docked composer (Show composer)
+
+const dockOf = (w, tmux) => tileOf(w, tmux).querySelector('.qt-dock');
+
+test('Show composer: TermKit.composer\'s one-line box is docked at the bottom of the tile, per tile, remembered with the modes and back on the next visit; a second pick takes it away', () => {
+  const env = quadWorld({ hash: `#/quad?s=${S1},${CK}`, kit: 'stub' });
+  const { w } = env;
+  const Q = w.get('Quad').current;
+  assert.equal(dockOf(w, S1).classList.contains('hidden'), true, 'off by default');
+  assert.equal(dockOf(w, S1).children.length, 0);
+  assert.equal(Q.menuCtx(S1).composerDocked, false);
+  assert.equal(kitOf(w).composers.length, 0, 'nothing is built until it is wanted');
+  assert.equal(Q.menuCtx(S1).actions.dockComposer(), true);
+  const comp = kitOf(w).composers[0];
+  assert.equal(dockOf(w, S1).children[0], comp.el, 'the composer\'s own el is mounted in the tile');
+  assert.equal(dockOf(w, S1).classList.contains('hidden'), false);
+  assert.equal(tileOf(w, S1).children.at(-1), dockOf(w, S1), 'at the tile\'s bottom, after the terminal');
+  assert.equal(dockOf(w, CK).children.length, 0, 'per tile');
+  assert.equal(Q.menuCtx(S1).composerDocked, true, 'the menu\'s tick');
+  assert.deepEqual(savedOf(w).composers, { [S1]: true }, 'remembered with the tile\'s mode');
+  assert.deepEqual(savedOf(w).modes, {}, 'and the mode is its own');
+  Q.menuCtx(S1).actions.composer();
+  assert.equal(kitOf(w).composers.length, 1, 'Send a prompt… is the same controller: one draft');
+  // a poll hands the new row over (the queue note says working)
+  const busy = fixtureState();
+  for (const p of busy.projects) for (const r of [p.root, ...p.repos]) for (const s of (r && r.sessions) || []) if (s.tmux === S1) s.state = 'working';
+  setState(env, busy);
+  assert.equal(comp.updates.at(-1).session.state, 'working');
+  assert.equal(comp.ctx.session.state, 'working', 'so it queues, as the inbox composer does');
+  // the next visit
+  const again = quadWorld({ hash: `#/quad?s=${S1},${CK}`, kit: 'stub', storage: { 'ccboard:quad:all': savedOf(w) } });
+  assert.equal(kitOf(again.w).composers.length, 1);
+  assert.equal(dockOf(again.w, S1).children[0], kitOf(again.w).composers[0].el, 'restored');
+  assert.equal(dockOf(again.w, CK).children.length, 0);
+  // off again
+  assert.equal(Q.menuCtx(S1).actions.dockComposer(), false);
+  assert.equal(comp.el.parentNode, null, 'the box is taken out');
+  assert.equal(dockOf(w, S1).classList.contains('hidden'), true);
+  assert.deepEqual(savedOf(w).composers, {});
+});
+
+test('the docked composer follows the tile: a session that has gone drops it, closing the tile closes its controllers, the flag stays for the session', () => {
+  const env = quadWorld({ hash: `#/quad?s=${S1},${CK}`, kit: 'stub' });
+  const { w } = env;
+  const Q = w.get('Quad').current;
+  Q.menuCtx(S1).actions.dockComposer();
+  Q.menuCtx(S1).actions.tune();
+  const comp = kitOf(w).composers[0];
+  const tune = kitOf(w).tunes[0];
+  const without = fixtureState();
+  for (const p of without.projects) for (const r of [p.root, ...p.repos]) if (r && r.sessions) r.sessions = r.sessions.filter((s) => s.tmux !== S1);
+  setState(env, without);
+  setState(env, without);
+  assert.equal(tileOf(w, S1).classList.contains('gone'), true);
+  assert.equal(dockOf(w, S1).classList.contains('hidden'), true, 'a dead session has nothing to send to');
+  assert.equal(comp.el.parentNode, null);
+  setState(env, fixtureState());
+  assert.equal(dockOf(w, S1).classList.contains('hidden'), false, 'and it comes back with the session');
+  tileOf(w, S1).querySelector('.qt-close').click();
+  assert.equal(comp.destroyed, 1, 'the composer is destroyed, not just closed: nothing it holds can fire for a tile that is gone');
+  assert.equal(tune.destroyed, 1, 'and so is the tune panel (its pending-setting timer would toast about a dead tile)');
+  assert.deepEqual(savedOf(w).composers, { [S1]: true }, 'the flag is the session\'s: it is docked again if it comes back to a tile');
+});
+
+test('no composer kit, no docked composer: the action is not offered and a saved flag shows nothing', () => {
+  const { w } = quadWorld({ hash: `#/quad?s=${S1}`, kit: 'none', storage: { 'ccboard:quad:all': { layout: 2, slots: [S1], modes: {}, zoom: null, composers: { [S1]: true } } } });
+  assert.equal(dockOf(w, S1).classList.contains('hidden'), true);
+  assert.equal(dockOf(w, S1).children.length, 0);
+});
+
+test('pages.css (quad block): the docked composer is there from 520 px (the tile is the size container); its box brings its own padding and hairline', () => {
+  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const quad = css.slice(css.indexOf('/* ---------- quad (v0.5.9'));
+  assert.match(quad, /@container \(max-width: 519px\) \{ #page \.quad \.qt-dock \{ display:none; \} \}/);
+  assert.match(quad, /#page \.quad \.qt-dock \{ flex:none; min-width:0; \}/);
+  assert.doesNotMatch(quad.match(/#page \.quad \.qt-dock \{[^}]*\}/)[0], /padding|border|background/, 'no second padding or hairline around TermKit.composer\'s own');
+});
+
+test('closing a tile destroys its composer and tune panel; a controller without destroy() is closed instead', () => {
+  const env = quadWorld({ hash: `#/quad?s=${S1},${CK}`, kit: 'stub' });
+  const { w } = env;
+  const Q = w.get('Quad').current;
+  Q.menuCtx(S1).actions.composer();
+  Q.menuCtx(S1).actions.tune();
+  const comp = kitOf(w).composers[0];
+  const tune = kitOf(w).tunes[0];
+  tileOf(w, S1).querySelector('.qt-close').click();
+  assert.equal(tileOf(w, S1), null);
+  assert.deepEqual([comp.destroyed, tune.destroyed], [1, 1], 'destroy(), once each (close() alone would leave the pending-setting timers running)');
+  const old = quadWorld({ hash: `#/quad?s=${S1},${CK}`, kit: 'stub', init: 'for (const k of ["composer", "tune"]) { const f = TermKit[k]; TermKit[k] = (ctx) => { const c = f(ctx); delete c.destroy; return c; }; }' });
+  old.w.get('Quad').current.menuCtx(S1).actions.composer();
+  old.w.get('Quad').current.menuCtx(S1).actions.tune();
+  tileOf(old.w, S1).querySelector('.qt-close').click();
+  assert.equal(kitOf(old.w).tunes[0].closed, 1, 'an older kit without destroy(): close()');
+  assert.equal(kitOf(old.w).composers[0].closed >= 2, true, 'the composer: closed when the tune panel took over, and again with the tile');
+});
+
+test('a tile that is gone cannot toast: with the real tune panel, a setting typed just before the tile was closed never reports "not confirmed" 20 s later', async () => {
+  const env = quadWorld({ hash: `#/quad?s=${S1}`, kit: 'real' });
+  const { w, clock } = env;
+  const Q = w.get('Quad').current;
+  const wait = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+  assert.equal(Q.menuCtx(S1).actions.tune(), true);
+  const btn = w.document.querySelector('.tk-pop-tune .tk-seg[data-kind=effort] button[data-arg=max]');
+  assert.ok(btn, 'the real panel is on the page');
+  btn.click();
+  await wait();
+  assert.equal(calls(w).some((c) => /\/command$/.test(c.path) && c.body.cmd === 'effort' && c.body.arg === 'max'), true, '/effort max was typed');
+  tileOf(w, S1).querySelector('.qt-close').click();
+  clock.advance(25000);
+  await wait();
+  assert.deepEqual(w.get('__toasts').filter((t) => /not confirmed/.test(t.text)), [], 'nothing toasts about a tile that was closed');
+});
+
+test('Show composer is offered only where the docked box shows: a tile narrower than 520 px has no such row (its tick would show nothing); an unmeasured tile keeps it', () => {
+  const { w } = quadWorld({ hash: `#/quad?s=${S1},${CK}`, kit: 'stub' });
+  const Q = w.get('Quad').current;
+  assert.equal(w.get('Quad').DOCK_MIN, 520, 'the same 520 px as pages.css');
+  const widthOf = (tmux, n) => Object.defineProperty(tileOf(w, tmux), 'offsetWidth', { configurable: true, get: () => n });
+  assert.equal(typeof Q.menuCtx(S1).actions.dockComposer, 'function', 'unmeasured: kept');
+  widthOf(S1, 494);
+  assert.equal(Q.menuCtx(S1).actions.dockComposer, null, '494 px (a 2-up or 4-up tile at 1280): no docked composer, so no row');
+  widthOf(S1, 519);
+  assert.equal(Q.menuCtx(S1).actions.dockComposer, null);
+  widthOf(S1, 520);
+  assert.equal(typeof Q.menuCtx(S1).actions.dockComposer, 'function', '520 px: it shows');
+  widthOf(S1, 696);
+  assert.equal(typeof Q.menuCtx(S1).actions.dockComposer, 'function');
+  widthOf(CK, 300);
+  assert.equal(Q.menuCtx(CK).actions.dockComposer, null, 'per tile');
+  assert.equal(typeof Q.menuCtx(CK).actions.composer, 'function', 'Send a prompt… is still there: the popover does not need the room');
+  const real = quadWorld({ hash: `#/quad?s=${S1}`, kit: 'real' });
+  Object.defineProperty(tileOf(real.w, S1), 'offsetWidth', { configurable: true, get: () => 300 });
+  tileOf(real.w, S1).querySelector('.qt-title').click();
+  assert.equal(real.w.document.querySelector('.tk-menu [data-id=dockcomposer]'), null, 'the real menu leaves the row out');
+  assert.ok(real.w.document.querySelector('.tk-menu [data-id=composer]'));
+});
+
+// ---- hidden slots: a smaller layout leaves live sessions in slots no tile shows; empty visible tiles take them first
+
+const TEN = Array.from({ length: 10 }, (_, i) => `ten--box--s${i}`);
+const tenState = (alive = TEN) => fakeState({ projects: projectsOf({ ten: { box: alive.map((t) => sess('ten', 'box', t.split('--')[2])) } }) });
+
+test('Quad.fillSlots: an empty visible slot takes the live sessions of the hidden slots first, in slot order, and that hidden slot is cleared; auto-fill only comes after; a dead hidden slot stays', () => {
+  const { Q } = quadWorld();
+  const fill = (slots, alive, n, o = {}) => plain(Q.fillSlots(slots, tenState(alive), n, o));
+  const [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9] = TEN;
+  const alive = [s0, s3, s4, s5, s6, s7, s8, s9];
+  assert.deepEqual(fill([s0, '', '', s3, s4, s5, s6, s7, s8, s9], alive, 4), [s0, s4, s5, s3, '', '', s6, s7, s8, s9], '10 slots shrunk to 4: slots 1 and 2 take s4 and s5, and their old slots are empty');
+  assert.deepEqual(fill([s0, '', '', s3, s4, s5, s6, s7, s8, s9], alive, 4, { only: [2] }), [s0, '', s4, s3, '', s5, s6, s7, s8, s9], 'only the slots asked for');
+  assert.deepEqual(fill([s0, '', '', '', '', '', '', '', '', s9], [s0, s9, s1, s2], 4), [s0, s9, s1, s2, '', '', '', '', '', ''], 'the hidden one first (s9), then auto-fill (s1, s2)');
+  assert.deepEqual(fill([s0, '', '', s3, 'gone--x--y', s5, '', '', '', ''], [s0, s3, s5], 4), [s0, s5, '', s3, 'gone--x--y', '', '', '', '', ''], 'a hidden slot whose session is gone is not moved');
+  assert.deepEqual(fill([s0, s1, s2, s3, s4, s5, '', '', '', ''], TEN, 6), [s0, s1, s2, s3, s4, s5, '', '', '', ''], 'a full layout changes nothing');
+  assert.deepEqual(fill([s0, '', '', '', s1, '', '', '', '', ''], [s0, s1], 4), [s0, s1, '', '', '', '', '', '', '', ''], 'nothing else to take: the rest stays empty');
+  const two = fakeState({ projects: projectsOf({ ten: { box: [sess('ten', 'box', 's0'), sess('ten', 'box', 's5')] }, other: { box: [sess('other', 'box', 'x')] } }) });
+  assert.deepEqual(plain(Q.fillSlots(['', '', '', '', '', 'other--box--x', '', '', '', ''], two, 4, { project: 'ten' })).slice(0, 6), ['ten--box--s0', 'ten--box--s5', '', '', '', 'other--box--x'], 'a project scope never pulls another project\'s session in');
+});
+
+test('shrinking 10 slots to 4 on the page: the empty visible tiles take the live sessions that sat in hidden slots, the surviving iframes are the same nodes, no tile says "No other session is running"', () => {
+  const [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9] = TEN;
+  const alive = [s0, s3, s4, s5, s6, s7, s8, s9];
+  const { w } = quadWorld({ width: 1920, hash: '#/quad', state: tenState(alive), storage: { 'ccboard:quad:all': { layout: 10, slots: [s0, '', '', s3, s4, s5, s6, s7, s8, s9], modes: {}, zoom: null } } });
+  const Q = w.get('Quad').current;
+  assert.deepEqual(plain(Q.slots).slice(0, 4), [s0, '', '', s3], '10-up: slots 1 and 2 are empty, every live session is placed');
+  assert.equal(page(w).querySelectorAll('.qempty').length, 2);
+  const keep = [tileOf(w, s0), tileOf(w, s3)];
+  const frames = keep.map((t) => t.querySelector('iframe'));
+  const moved = [tileOf(w, s4), tileOf(w, s5)];                                 // these two change slot (4, 5 -> 1, 2)
+  const movedFrames = moved.map((t) => t.querySelector('iframe'));
+  Q.setLayout(4);
+  assert.deepEqual(plain(Q.slots), [s0, s4, s5, s3, '', '', s6, s7, s8, s9]);
+  assert.deepEqual(names(w).sort(), [s0, s3, s4, s5].sort(), 'four tiles, all of them sessions');
+  assert.equal(page(w).querySelectorAll('.qempty').length, 0, 'no empty tile while live sessions wait in hidden slots');
+  assert.equal(tileOf(w, s0), keep[0]);
+  assert.equal(tileOf(w, s3), keep[1]);
+  assert.deepEqual([tileOf(w, s0).querySelector('iframe'), tileOf(w, s3).querySelector('iframe')], frames, 'the iframes that stayed are the same nodes: nothing was moved in the DOM');
+  const order = tiles(w).map((t) => t.getAttribute('data-tmux'));
+  assert.deepEqual(order.filter((t) => t === s0 || t === s3), [s0, s3], 'and in the same DOM order');
+  assert.deepEqual([tileOf(w, s4), tileOf(w, s5)], moved, 'the sessions that moved slots keep their tile nodes too: only data-slot changed');
+  assert.deepEqual([tileOf(w, s4).querySelector('iframe'), tileOf(w, s5).querySelector('iframe')], movedFrames, 'and their iframes (a moved iframe would reload)');
+  assert.deepEqual([tileOf(w, s4).getAttribute('data-slot'), tileOf(w, s5).getAttribute('data-slot')], ['1', '2']);
+  assert.deepEqual(plain(savedOf(w).slots), [s0, s4, s5, s3, '', '', s6, s7, s8, s9], 'saved');
+  Q.setLayout(10);
+  assert.deepEqual(plain(Q.slots), [s0, s4, s5, s3, '', '', s6, s7, s8, s9], 'growing back puts the rest where it was');
+});
+
+test('Auto-fill on the page also pulls the live sessions of hidden slots into empty visible ones; an empty tile offers them too', () => {
+  const [s0, , , s3, s4, s5, s6, s7, s8, s9] = TEN;
+  const alive = [s0, s3, s4, s5, s6, s7, s8, s9];
+  const { w } = quadWorld({ width: 1920, hash: '#/quad', state: tenState(alive), storage: { 'ccboard:quad:all': { layout: 10, slots: [s0, '', '', s3, s4, s5, s6, s7, s8, s9], modes: {}, zoom: null } } });
+  const Q = w.get('Quad').current;
+  Q.assign(1, '');                                                              // the person empties slot 1 on purpose, in the 10-up
+  Q.setLayout(4);
+  assert.deepEqual(plain(Q.slots).slice(0, 4), [s0, '', s4, s3], 'a slot the person emptied is not filled by the shrink');
+  const offered = page(w).querySelectorAll('.qempty .qe-pick').map((b) => b.getAttribute('data-tmux'));
+  assert.ok(offered.includes(s5), 'but its empty tile offers a session that sits in a hidden slot');
+  page(w).querySelector('.q-fill').click();
+  assert.deepEqual(plain(Q.slots).slice(0, 4), [s0, s5, s4, s3], 'Auto-fill fills it from the hidden slots');
+});
+
+// ---------------------------------------------------------------- v0.5.9c: the real TermKit.tileMenu with this page's ctx
+
+test('with the real TermKit.tileMenu: the dropdown has VIEW, INPUT, TUNE and SESSION from this page\'s ctx; a pending permission adds Allow / Deny / In terminal; a working session shows the tune items off', () => {
+  const { w } = quadWorld({ hash: `#/quad?s=${CK},${WT},${SHELL}&l=4`, state: fakeState({ projects: projectsOf({ phasezero: { website: [sess('phasezero', 'website', 't-checkout-redesign', { state: 'waiting' })], 'NestJs-Ecommerce-Backend': [sess('phasezero', 'NestJs-Ecommerce-Backend', 't-stock-sync', { state: 'working' })] }, ops: { box: [sess('ops', 'box', 'sh1', { launcher: 'shell', agent: 'shell', command: 'bash' })] } }),
+    pending_permissions: [{ id: 12, tmux_name: CK, tool_name: 'Bash', summary: 'Bash: npm test', created_at: ISO(3) }] }), kit: 'real' });
+  const open = (tmux) => { titleBtn(w, tmux).click(); const root = w.document.querySelector('.tk-menu'); return root; };
+  const groups = (root) => root.querySelectorAll('.tk-group').map((g) => [g.getAttribute('data-group'), g.querySelectorAll('.tk-item').map((i) => text(i.querySelector('.tk-name')))]);
+  const modes = (root) => root.querySelectorAll('.tk-mode').map((c) => text(c.querySelector('.tk-name')));
+  let root = open(CK);
+  assert.ok(root, 'the kit\'s menu is on the page');
+  const g = Object.fromEntries(groups(root));
+  assert.deepEqual(Object.keys(g), ['view', 'input', 'tune', 'session']);
+  assert.deepEqual(modes(root), ['Grid', 'Full', 'Read only', 'Tail'], 'the mode as one segmented row');
+  assert.ok(g.view.includes('Zoom') && g.view.includes('Fullscreen this tile') && g.view.includes('Pop out') && g.view.includes('Open in terminal') && g.view.includes('Reload'));
+  assert.equal(g.view.includes('Add to dock'), false, 'no dock here');
+  assert.deepEqual(g.input.filter((n) => ['Send a prompt…', 'Show composer', 'Keys here', 'Allow', 'Deny', 'In terminal'].includes(n)), ['Send a prompt…', 'Show composer', 'Keys here', 'Allow', 'Deny', 'In terminal']);
+  assert.deepEqual(g.tune, ['Tune…', '/compact', '/context']);
+  assert.equal(root.querySelectorAll('.tk-group').find((x) => x.getAttribute('data-group') === 'tune').querySelectorAll('.tk-off').length, 3, 'a permission is open: every tune item is off');
+  assert.ok(root.querySelector('.tk-kill'), 'Kill session, last, behind confirmButton');
+  w.get('Quad').current.closePop();
+  root = open(WT);
+  const g2 = Object.fromEntries(groups(root));
+  assert.deepEqual(g2.input.filter((n) => ['Allow', 'Deny', 'In terminal'].includes(n)), [], 'no permission, no Allow');
+  assert.equal(root.querySelectorAll('.tk-group').find((x) => x.getAttribute('data-group') === 'tune').querySelectorAll('.tk-off').length, 3, 'working: off, with the reason');
+  assert.match(text(root.querySelector('.tk-note')), /at its prompt/i);
+  w.get('Quad').current.closePop();
+  root = open(SHELL);
+  const g3 = Object.fromEntries(groups(root));
+  assert.equal(g3.tune, undefined, 'a shell has no TUNE group');
+});
+
+// ---------------------------------------------------------------- v0.5.9c: the static scan
+
+test('quad.js builds nothing through innerHTML, insertAdjacentHTML, cssText or a style attribute, and sets text with textContent', () => {
+  const src = fs.readFileSync(path.join(STATIC, 'pages', 'quad.js'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  assert.doesNotMatch(src, /\.innerHTML\b|\binnerHTML\s*[=+]/, 'no innerHTML');
+  assert.doesNotMatch(src, /\binsertAdjacentHTML\b/);
+  assert.doesNotMatch(src, /\bcssText\b/);
+  assert.doesNotMatch(src, /setAttribute\(\s*['"`]style['"`]/);
+  assert.doesNotMatch(src, /\bstyle\s*:/, 'no style key in an el() attribute list');
+  assert.doesNotMatch(src, /\.style\./, 'not even through the CSSOM: the page has no inline style at all');
+  assert.doesNotMatch(src, /document\.write|\beval\(|new Function/);
+});
+
+test('the quad keeps no filled primary: its buttons are bordered, tinted or minimal, the permission row\'s Allow is the tinted one, Kill is the menu\'s red outline', () => {
+  const src = fs.readFileSync(path.join(STATIC, 'pages', 'quad.js'), 'utf8');
+  const classes = [...src.matchAll(/class: '([^']*)'/g)].map((m) => m[1]);
+  for (const c of classes) if (/\bprimary\b/.test(c)) assert.match(c, /\btinted\b/, `${c}: a primary in the quad is the outlined tint`);
+  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const quad = css.slice(css.indexOf('/* ---------- quad (v0.5.9'), css.indexOf('/* ---------- quad (v0.5.9') + 30000);
+  assert.doesNotMatch(quad.match(/#page \.quad \.q-layout[^\n]*/g).join('\n'), /background:var\(--sig\)/, 'no filled cyan on the layout control');
+  assert.doesNotMatch(quad.match(/#page \.quad \.q-fs[^\n]*/g).join('\n'), /background:var\(--sig\)[^-]/);
 });
 
 // ---------------------------------------------------------------- the CSP and the registration

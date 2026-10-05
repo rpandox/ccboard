@@ -16,7 +16,12 @@
      TermKit.termPane(tmux, {mode, header, drop, modes, onClose, onPopOut, onAddToQuad, ...}) -> {root, update(row, st), setMode(m), reload(), fit(), focus(), destroy()}
                                                                (v0.5.9) one session's terminal with its header, task line and permission line: the dock
                                                                (shell.js) mounts it in full mode; the pure helpers paneLabel / paneParts / paneLine / panePending /
-                                                               sizeChip / typingTarget / ctxInfo (the context chip's one reading, dock and quad) are exported */
+                                                               sizeChip / typingTarget / ctxInfo (the context chip's one reading, dock and quad) are exported
+     TermKit.tileMenu(ctx) -> {open(anchorEl, byKeyboard), close(), toggle, update(patch), destroy(), isOpen}      (v0.5.9c) the view dropdown of a quad tile: VIEW / INPUT / TUNE / SESSION
+     TermKit.composer(ctx) -> {open(anchorEl), close(), el, update(patch), destroy(), isOpen}                       send a prompt: a popover or sheet, and `el` the docked one-line box
+     TermKit.tune(ctx) -> {open(anchorEl, byKeyboard), close(), mount(targetEl), run(cmd, arg), rename(anchorEl), update(patch), destroy(), isOpen}   model, effort, switches, commands
+       destroy() on each: the tile is going (close the surface, no timer or send afterwards)
+     TermKit.tuneGate / tunePlan / tuneCurrent / tuneRegistry                                                          their pure helpers (the terminal page's gate and chips, for any agent) */
 'use strict';
 
 const TermKit = (() => {
@@ -1025,9 +1030,875 @@ const TermKit = (() => {
     return h;
   }
 
+  /* ---- v0.5.9c quad v3: the tile menu, the prompt composer and the tune panel ---------------------------------------------------------
+     Three components a quad tile (or any page) opens from its header: tileMenu(ctx) (the view dropdown: VIEW / INPUT / TUNE / SESSION), composer(ctx) (send a
+     prompt) and tune(ctx) (model, effort, switches and commands). On a mouse each is a popover under its anchor, on touch a bottom sheet (components.js
+     openSheet); the caller says which with ctx.touch. All CSS is termkit.css (classes tk-*). Everything here is built when a factory runs or a surface opens,
+     never at load. */
+
+  const TK_MODE_INFO = {
+    grid: ['Grid', 'a small tile that does not size the session'],
+    full: ['Full', 'a writable terminal that sizes the session'],
+    ro: ['Read only', 'watch it, nothing you type reaches the session'],
+    tail: ['Tail', 'the last lines of the pane, no terminal'],
+  };
+  const TK_MODES = ['grid', 'full', 'ro', 'tail'];
+  const TK_GATE = 'available when the session is at its prompt';
+  const TK_MODELS = ['opus', 'fable', 'sonnet', 'haiku'];                       // Claude's model names; Codex's come from the agent's schema
+  const TK_MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', haiku: 'hue-slate' };
+  const TK_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+  const TK_CODEX_MODELS = ['gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.5', 'codex-auto-review'];   // codex.py FALLBACK_MODELS: what a Codex tile offers until GET /api/agents lists the box's own
+  const TK_CODEX_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+  const TK_ULTRA_ON = 'ultracode on';                                           // claude.py V19: until `--effort ultracode` is proven, the switch is `/effort ultracode on`
+  const TK_ULTRA_OFF = 'high';                                                  // leaving Ultracode goes back to the launcher's default level
+  const TK_PENDING_MS = 20000;                                                  // how long a typed setting waits for the statusline that confirms it
+  const TK_ESC_GAP_MS = 150;                                                    // Escape and the next keys must not arrive together (a TUI reads ESC + key as Alt + key)
+  const TK_CELLS = ['compact', 'context', 'usage', 'cost', 'status', 'rename']; // the command cells, in this order
+  const TK_CELL_TITLE = {
+    compact: 'Summarise the conversation to free up context', context: 'Show how the context window is used', usage: 'Show plan usage',
+    cost: 'Show what this session has cost', status: 'Show the session status', rename: 'Give the session a new name',
+  };
+  const tkSlash = (cmd, label, arg, read) => ({ cmd: '/' + cmd, label, arg, read, destructive: false });
+  const TK_SLASH = {                                                            // the registry until GET /api/agents says otherwise (SlashSpec rows of claude.py / codex.py)
+    claude: {
+      compact: tkSlash('compact', 'Compact', false, false), context: tkSlash('context', 'Context', false, true), usage: tkSlash('usage', 'Usage', false, true),
+      cost: tkSlash('cost', 'Cost', false, true), status: tkSlash('status', 'Status', false, true), rename: tkSlash('rename', 'Rename', true, false),
+      model: tkSlash('model', 'Model', true, false), effort: tkSlash('effort', 'Effort', true, false), fast: tkSlash('fast', 'Fast', false, false),
+    },
+    codex: { model: tkSlash('model', 'Model', true, false), reasoning: tkSlash('reasoning', 'Reasoning', true, false) },
+  };
+
+  const tkPlain = (v) => (v && typeof v === 'object' ? v : null);
+  const tkAgent = (c) => {
+    const a = c.agent || (c.session && (typeof sessionAgent === 'function' ? sessionAgent(c.session) : c.session.agent)) || 'claude';
+    return String(a);
+  };
+  const tkStats = (c) => tkPlain(c.stats) || (c.session && tkPlain(c.session.stats)) || {};
+  const tkLabel = (c) => paneLabel(c.tmux);
+  const tkSession = (c) => '/api/sessions/' + encodeURIComponent(c.tmux);
+
+  /* {show, enabled, title} for a session row (the terminal page's gate): nothing to tune on a shell or an unknown row; enabled only when the prompt is free: idle,
+     done, errored or waiting on the idle prompt, no compaction and no permission request open. An explicit ctx.atPrompt (true | false) wins over the row. */
+  function tuneGate(row, atPrompt) {
+    const r = tkPlain(row);
+    const shown = !!(r && r.agent && r.agent !== 'shell');
+    if (typeof atPrompt === 'boolean') return { show: shown || !!r, enabled: atPrompt, title: atPrompt ? '' : TK_GATE };
+    if (!shown) return { show: false, enabled: false, title: '' };
+    const flags = tkPlain(r.flags) || {};
+    const idle = r.state === 'idle' || r.state === 'done' || r.state === 'errored' || (r.state === 'waiting' && flags.wait_kind === 'idle');
+    const ok = idle && !flags.compacting && !(Array.isArray(r.pending) && r.pending.length);
+    return { show: true, enabled: ok, title: ok ? '' : TK_GATE };
+  }
+
+  /* The slash registry for an agent: the schema's (GET /api/agents) when it has one, else the built-in rows. Shell: none. */
+  function tuneRegistry(agent, schema) {
+    const s = tkPlain(schema) && tkPlain(schema.slash);
+    if (s && Object.keys(s).length) return s;
+    return ownKey(TK_SLASH, agent) ? TK_SLASH[agent] : {};
+  }
+
+  /* What the tune panel offers one agent: {model: {cmd, options}, effort: {cmd, options}, fast, ultra, cells}. Claude: opus fable sonnet haiku, low..max, the Fast
+     and Ultracode switches (when /fast and /effort exist) and the command cells; Codex: the schema's models and its reasoning levels, else the built-in lists (the state's agent entry has neither; the command is /reasoning there,
+     not /effort), no switches. An option is {value, label, arg}. */
+  function tunePlan(agent, schema, stats) {
+    const reg = tuneRegistry(agent, schema);
+    const sc = tkPlain(schema) || {};
+    const has = (k) => ownKey(reg, k);
+    const opt = (v) => ({ value: String(v), label: String(v), arg: String(v) });
+    const plan = { model: null, effort: null, fast: false, ultra: false, cells: [] };
+    if (agent === 'claude') {
+      if (has('model')) plan.model = { cmd: 'model', options: TK_MODELS.map(opt) };
+      if (has('effort')) { plan.effort = { cmd: 'effort', options: TK_EFFORTS.map(opt) }; plan.ultra = true; }
+      plan.fast = has('fast');
+    } else if (agent === 'codex') {
+      const listed = Array.isArray(sc.models) ? sc.models.filter((m) => typeof m === 'string' && m) : [];
+      const models = (listed.length ? listed : TK_CODEX_MODELS).slice(0, 12);       // a state row's agent entry (status_summary) has no models: the built-in list stands in
+      if (has('model') && models.length) plan.model = { cmd: 'model', options: models.map(opt) };
+      const by = tkPlain(sc.reasoning_by_model) || {};
+      const cur = tuneModel(stats, plan.model);
+      const named = Array.isArray(sc.efforts) ? sc.efforts.filter((e) => typeof e === 'string' && e) : [];
+      const levels = (cur && Array.isArray(by[cur]) && by[cur].length ? by[cur] : (named.length ? named : TK_CODEX_EFFORTS)).filter((e) => typeof e === 'string' && e);
+      if (has('reasoning') && levels.length) plan.effort = { cmd: 'reasoning', options: levels.map(opt) };
+    }
+    for (const k of TK_CELLS) if (has(k)) plan.cells.push({ key: k, cmd: String((reg[k] && reg[k].cmd) || '/' + k), read: !!(reg[k] && reg[k].read), arg: !!(reg[k] && reg[k].arg) });
+    return plan;
+  }
+
+  /* The current model option's value: the longest option name the statusline's model (display name or id) contains ('Opus 5' -> opus, 'gpt-5.5-mini' beats 'gpt-5.5'). */
+  function tuneModel(stats, group) {
+    const st = tkPlain(stats) || {};
+    const hay = [st.model, st.model_id].filter(Boolean).join(' ').toLowerCase();
+    if (!hay || !group) return '';
+    let best = '';
+    for (const o of group.options) { const v = o.value.toLowerCase(); if (hay.includes(v) && v.length > best.length) best = o.value; }
+    return best;
+  }
+
+  /* One reading of the session's stats for the panel: {model, effort, fast}. effort also reads Codex's `reasoning`. */
+  function tuneCurrent(stats, plan) {
+    const st = tkPlain(stats) || {};
+    const eff = String(st.effort || st.reasoning || '').toLowerCase();
+    return { model: tuneModel(st, plan.model), effort: eff, fast: st.fast === true };
+  }
+
+  /* 409 {error, message, state, wait_kind, retry}: the board will not type into the pane right now; anything else says what it says. */
+  const tkLast = { text: '', at: 0 };
+  function tkSay(text, kind) {                                                // the same words at the speed of a held key: once per 3 s
+    const now = Date.now();
+    if (text === tkLast.text && now - tkLast.at < 3000) return;
+    tkLast.text = text;
+    tkLast.at = now;
+    if (typeof toast === 'function') toast(text, { kind: kind || 'bad' });
+  }
+  function tkRefused(e, what) {
+    const b = tkPlain(e && e.body);
+    if (e && e.status === 409 && b) tkSay((b.message || b.error || 'refused') + (typeof b.retry === 'number' ? ' · try again in ' + b.retry + ' s' : ''), 'warn');
+    else if (e && e.status === 404 && !(b && b.error)) tkSay('This board is too old for ' + what + ': update ccboard');
+    else tkSay((e && e.message) || 'Failed');
+  }
+  const tkKeys = (c, keys) => api('POST', tkSession(c) + '/keys', { keys }).catch(() => null);
+  const tkPoll = () => { try { if (typeof poll === 'function') poll(true); } catch (_) { /* no board poll on this page */ } };
+  const tkSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  /* ---- surface: a popover under an anchor (mouse) or a bottom sheet (touch) ------------------------------------------------------------
+     surface({onClose, onKey(e), escape(e) -> true when it used the Esc, closeOnTab}) -> {open(anchor, build, {touch, title, width, cls, bare}), close(refocus), isOpen, root, body}.
+     The popover goes into the anchor's own fullscreen element when it is not <html> (the page's fullscreen is: its body is inside it), else into the anchor's dialog, else the body.
+     It flips above the anchor when it does not fit below, slides up over it when neither side has the room, and takes the room it has (max-height, scrolling inside) so nothing is cut off. Outside pointerdown, Esc, a route change and a
+     fullscreen change close it; a window resize puts it under its anchor again (and closes it when the anchor is gone). A sheet is components.js openSheet (placement bottom); when there is no #sheet on the page it falls back to the popover. */
+  function surface(opts) {
+    const o = opts || {};
+    let pop = null;
+    let sheetBody = null;
+    let anchor = null;
+    let live = false;
+    let unlisten = null;
+    let width = 0;
+    const ctl = {};
+
+    /* The page goes fullscreen on <html> (quad.js): the body is inside it, themed (.bp5-dark), so a popover goes there. Only a fullscreen element of its own (a tile, a
+       dialog) takes it in: outside <body> nothing is themed (Times, a filled white Send, a filled red Kill). */
+    const hostFor = (a) => {
+      const fs = document.fullscreenElement || document.webkitFullscreenElement || null;
+      if (fs && fs !== document.documentElement && a && typeof fs.contains === 'function' && fs.contains(a)) return fs;
+      return (a && typeof a.closest === 'function' && a.closest('dialog')) || document.body;
+    };
+
+    function place(node, a, width) {
+      const r = a && typeof a.getBoundingClientRect === 'function' ? a.getBoundingClientRect() : null;
+      if (!r) return;
+      const vw = Number(window.innerWidth) || 0;
+      const vh = Number(window.innerHeight) || 0;
+      const w = Number(node.offsetWidth) || width || 0;
+      let left = Math.round(r.left);
+      if (vw && w) left = Math.min(left, vw - w - 8);
+      node.style.left = Math.max(8, left) + 'px';
+      const h = Number(node.offsetHeight) || 0;
+      let top = Math.round(r.bottom + 4);
+      let max = 0;
+      if (vh) {
+        const below = vh - top - 8;
+        const above = Math.round(r.top - 4 - 8);
+        if (!h || h <= below) max = below;                                       // it fits under the anchor
+        else if (h <= above) { top = Math.round(r.top - 4 - h); max = above; }   // no room below: above the anchor
+        else { top = Math.max(8, vh - h - 8); max = vh - 16; }                   // neither side has it: slide up until it is whole (over the anchor), and scroll only when the window itself is too short
+      }
+      node.style.top = top + 'px';
+      if (max > 0) node.style.maxHeight = max + 'px';
+    }
+
+    function listen() {
+      const onDoc = (e) => {
+        const t = e && e.target;
+        if (pop && typeof pop.contains === 'function' && pop.contains(t)) return;
+        if (anchor && typeof anchor.contains === 'function' && anchor.contains(t)) return;     // the anchor's own click toggles
+        ctl.close(false);
+      };
+      const onKey = (e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          if (typeof o.escape === 'function' && o.escape(e)) return;             // the content used it (a rename form, a readout)
+          ctl.close(true);
+        } else if (e.key === 'Tab' && o.closeOnTab) ctl.close(false);
+        else if (typeof o.onKey === 'function') o.onKey(e);
+      };
+      const shut = () => ctl.close(false);
+      const again = () => {                                                       // the window changed size: stay under the anchor, or go when the anchor is gone
+        if (!pop) return;
+        if (anchor && anchor.isConnected === false) { ctl.close(false); return; }
+        pop.style.maxHeight = '';
+        place(pop, anchor, width);
+      };
+      document.addEventListener('pointerdown', onDoc, true);
+      document.addEventListener('keydown', onKey, true);
+      document.addEventListener('fullscreenchange', shut);
+      window.addEventListener('hashchange', shut);
+      window.addEventListener('resize', again);
+      unlisten = () => {
+        document.removeEventListener('pointerdown', onDoc, true);
+        document.removeEventListener('keydown', onKey, true);
+        document.removeEventListener('fullscreenchange', shut);
+        window.removeEventListener('hashchange', shut);
+        window.removeEventListener('resize', again);
+      };
+    }
+
+    ctl.open = (anchorEl, build, p) => {
+      const x = p || {};
+      if (live) return false;
+      anchor = anchorEl || null;
+      const body = build();
+      if (x.touch && typeof openSheet === 'function') {
+        const sh = openSheet({ title: x.title || '', body, placement: 'bottom', onClose: () => { if (live) ctl.close(false); } });
+        if (sh) { sheetBody = body; live = true; return true; }
+      }
+      pop = el('div', { class: 'tk-pop' + (x.cls ? ' ' + x.cls : ''), tabindex: '-1', role: x.bare ? 'presentation' : 'dialog', 'aria-label': x.bare ? null : (x.title || null) }, body);
+      hostFor(anchor).append(pop);
+      width = x.width || 0;
+      place(pop, anchor, width);
+      listen();
+      live = true;
+      return true;
+    };
+
+    ctl.close = (refocus) => {
+      if (!live) return;
+      live = false;
+      if (unlisten) { unlisten(); unlisten = null; }
+      const a = anchor;
+      const p = pop;
+      const s = sheetBody;
+      pop = null;
+      sheetBody = null;
+      anchor = null;
+      if (p) p.remove();
+      if (s) {                                                                    // close the sheet only while it still shows this body (a later openSheet swapped it in place)
+        const dlg = document.getElementById('sheet');
+        if (dlg && typeof dlg.contains === 'function' && dlg.contains(s) && typeof closeSheet === 'function') closeSheet();
+      }
+      if (typeof o.onClose === 'function') o.onClose();
+      if (refocus && a && typeof a.focus === 'function') { try { a.focus(); } catch (_) { /* nothing to focus */ } }
+    };
+    Object.defineProperties(ctl, {
+      isOpen: { get: () => live },
+      root: { get: () => pop },
+      body: { get: () => sheetBody },
+    });
+    return ctl;
+  }
+
+  /* ---- tileMenu ---------------------------------------------------------------------------------------------------------------------- */
+
+  /* tileMenu(ctx) -> {open(anchorEl, byKeyboard), close(), toggle, isOpen, update(patch), root}
+     ctx = {tmux, session, agent, mode, modes, touch, actions: {setMode(m), zoom, fullscreenTile, popout, openTerm, dock | null, reload, keysHere, allow, deny, tui, composer,
+     tune, compact, context, usage, rename, close, kill, dockComposer?}, perm: {pending, summary}, atPrompt, why, zoomed?, composerDocked?, keysTarget?}.
+     Four labelled groups: VIEW (the four modes as one segmented row with the current one tinted, Zoom, Fullscreen this tile, Pop out, Open in terminal, Add to dock, Reload),
+     INPUT (Send a prompt…, Show composer, Keys here, and Allow / Deny / In terminal while a permission is pending), TUNE (Tune…, /compact, /context: off with `why` while the
+     session is not at its prompt; /usage, /cost and Rename… live inside Tune…; a shell has no TUNE group; a Codex session only Tune…), SESSION (Close tile, then Kill session,
+     red-outlined, filled only when armed, two taps through confirmButton). The whole menu is about 540 px tall with a mouse (it fits 1280x800 with room), and is capped to the window.
+     An item whose action is null is left out, an empty group too. open() on an open menu closes it (a second tap on the ▾). Opened by a pointer nothing is highlighted; by
+     the keyboard the first item has the focus. update(patch) merges into ctx and repaints an open menu in place. */
+  function makeTileMenu(ctx) {
+    const c = ctx || {};
+    const killKey = () => 'tile-kill:' + c.tmux;
+    let body = null;
+    let touchNow = false;
+    const disarm = () => { if (typeof ui !== 'undefined' && ui && ui.confirm === killKey()) ui.confirm = null; };
+    const S = surface({
+      closeOnTab: true,
+      onClose: () => { disarm(); body = null; },
+      onKey: (e) => {
+        const root = body;
+        if (!root) return;
+        const cells = Array.from(root.querySelectorAll('.tk-mode'));                  // the mode row is one stop for Up / Down (the current mode), Left / Right move inside it
+        const stop = cells.find((n) => n.classList.contains('on')) || cells[0] || null;
+        const rows = Array.from(root.querySelectorAll('.tk-item, .tk-mode, .tk-kill button')).filter((n) => !n.classList.contains('tk-mode') || n === stop);
+        if (!rows.length) return;
+        const at = document.activeElement;
+        const ci = cells.indexOf(at);
+        if (ci >= 0 && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) { e.preventDefault(); cells[(ci + (e.key === 'ArrowRight' ? 1 : -1) + cells.length) % cells.length].focus(); return; }
+        const i = ci >= 0 ? rows.indexOf(stop) : rows.indexOf(at);
+        const go = (n) => { e.preventDefault(); rows[(n + rows.length) % rows.length].focus(); };
+        if (e.key === 'ArrowDown') go(i + 1);
+        else if (e.key === 'ArrowUp') go(i < 0 ? rows.length - 1 : i - 1);
+        else if (e.key === 'Home') go(0);
+        else if (e.key === 'End') go(rows.length - 1);
+        else if (typeof e.key === 'string' && e.key.length === 1 && e.key !== ' ' && !e.ctrlKey && !e.metaKey && !e.altKey) e.stopPropagation();   // an open menu keeps the page's letter shortcuts (F, Z ...) to itself
+      },
+    });
+
+    /* what the menu says for the current ctx: [{key, label, note?, items: [{id, kind, label, title?, sub?, checked?, off?, act}]}] */
+    function groups() {
+      const a = tkPlain(c.actions) || {};
+      const agent = tkAgent(c);
+      const gate = tuneGate(c.session, c.atPrompt);
+      const atPrompt = typeof c.atPrompt === 'boolean' ? c.atPrompt : gate.enabled;
+      const why = c.why || TK_GATE;
+      const add = (list, id, label, act, x) => { if (typeof act === 'function') list.push(Object.assign({ id, kind: 'item', label, act }, x || {})); };
+
+      const view = [];
+      const modes = (Array.isArray(c.modes) && c.modes.length ? c.modes : TK_MODES).filter((m) => ownKey(TK_MODE_INFO, m));
+      if (typeof a.setMode === 'function' && modes.length) {                       // one segmented row: Grid | Full | Read only | Tail
+        view.push({ id: 'modes', kind: 'segment', label: 'View mode', cells: modes.map((m) => ({ id: 'mode:' + m, label: TK_MODE_INFO[m][0], checked: c.mode === m, title: TK_MODE_INFO[m][0] + ': ' + TK_MODE_INFO[m][1], sub: TK_MODE_INFO[m][1], act: () => a.setMode(m) })) });
+      }
+      add(view, 'zoom', c.zoomed ? 'Back to the grid' : 'Zoom', a.zoom, { title: c.zoomed ? 'Show every tile again' : 'Let this tile fill the whole grid' });
+      add(view, 'fullscreen', 'Fullscreen this tile', a.fullscreenTile, { title: 'Zoom this tile and fill the screen' });
+      add(view, 'popout', 'Pop out', a.popout, { title: 'Open the terminal in its own window' });
+      add(view, 'term', 'Open in terminal', a.openTerm, { title: 'Open the terminal page' });
+      add(view, 'dock', 'Add to dock', a.dock, { title: 'Keep this session in the dock beside the board' });
+      add(view, 'reload', 'Reload', a.reload, { title: 'Connect the terminal again' });
+
+      const input = [];
+      add(input, 'composer', 'Send a prompt…', a.composer, { title: 'Type a prompt and send it to this session' });
+      add(input, 'dockcomposer', 'Show composer', a.dockComposer, { kind: 'check', checked: !!c.composerDocked, title: 'A one-line prompt box at the bottom of this tile' });
+      add(input, 'keys', 'Keys here', a.keysHere, { kind: typeof c.keysTarget === 'boolean' ? 'check' : 'item', checked: !!c.keysTarget, title: 'The key bar types into this tile' });
+      const perm = tkPlain(c.perm);
+      if (perm && perm.pending) {
+        if (typeof a.allow === 'function' || typeof a.deny === 'function' || typeof a.tui === 'function') input.push({ id: 'permnote', kind: 'note', label: 'Permission: ' + String(perm.summary || 'permission request') });
+        add(input, 'allow', 'Allow', a.allow);
+        add(input, 'deny', 'Deny', a.deny);
+        add(input, 'tui', 'In terminal', a.tui, { title: 'Let the agent show its own prompt in the terminal' });
+      }
+
+      const tune = [];
+      if (agent !== 'shell') {
+        const reg = tuneRegistry(agent, c.schema);
+        const off = atPrompt ? {} : { off: true };
+        add(tune, 'tune', 'Tune…', a.tune, Object.assign({ title: 'Model, effort and commands' }, off));
+        for (const [k, label, act] of [['compact', '/compact', a.compact], ['context', '/context', a.context]]) {          // /usage, /cost and Rename… are one tap further, inside Tune…
+          if (ownKey(reg, k)) add(tune, k, label, act, Object.assign({ title: TK_CELL_TITLE[k] }, off));
+        }
+        for (const it of tune) if (it.off) { it.why = why; it.title = why; }
+      }
+
+      const session = [];
+      add(session, 'close', 'Close tile', a.close, { title: 'Take this session out of the quad (it keeps running)' });
+      const out = [
+        { key: 'view', label: 'VIEW', items: view },
+        { key: 'input', label: 'INPUT', items: input },
+        { key: 'tune', label: 'TUNE', items: tune, note: tune.length && !atPrompt ? why : '' },
+        { key: 'session', label: 'SESSION', items: session, kill: typeof a.kill === 'function' },
+      ];
+      return out.filter((g) => g.items.some((it) => it.kind !== 'note') || g.kill);
+    }
+
+    function pick(it) {
+      if (it.off) { if (typeof toast === 'function') toast(it.why, { kind: 'info' }); return; }
+      choose(it.act);
+    }
+    /* A popover goes first, then the action (it may open a popover of its own); a sheet goes after it: an action that opens another sheet swaps this one in place, and
+       closing first would let the close event of this one wipe the new one. */
+    function choose(act) {
+      if (touchNow) { try { act(); } finally { S.close(false); } return; }
+      S.close(false);
+      act();
+    }
+
+    function killRow(kill) {
+      const wrap = el('div', { class: 'tk-kill' });
+      const fill = () => {
+        wrap.textContent = '';
+        wrap.append(confirmButton(killKey(), 'Kill session', async () => { S.close(false); await kill(); }));
+      };
+      wrap.addEventListener('click', (e) => {                                     // confirmButton repaints the page, not this popover: the arm / cancel shows here
+        fill();
+        const b = e && e.detail === 0 ? wrap.querySelector('button') : null;
+        if (b) b.focus();
+      });
+      fill();
+      return wrap;
+    }
+
+    /* the four modes: one row of equal cells, the current one tinted (no tick: the tint and aria-checked say it); on touch the current one is described below, where a mouse has tooltips */
+    function modeRow(it, touch) {
+      const row = el('div', { class: 'tk-modes', role: 'group', 'aria-label': it.label, 'data-id': it.id });
+      const cur = it.cells.find((x) => x.checked);
+      for (const x of it.cells) {
+        row.append(el('div', { class: 'tk-mode' + (x.checked ? ' on' : ''), role: 'menuitemradio', tabindex: '-1', 'data-id': x.id, title: x.title || null, 'aria-checked': x.checked ? 'true' : 'false',
+          onclick: () => pick(x), onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(x); } } },
+          el('span', { class: 'tk-name', text: x.label })));
+      }
+      if (!touch || !cur) return row;
+      return el('div', { class: 'tk-modewrap' }, row, el('div', { class: 'tk-note tk-modenote', text: cur.label + ': ' + cur.sub }));
+    }
+
+    function itemRow(it, touch) {
+      if (it.kind === 'segment') return modeRow(it, touch);
+      const role = it.kind === 'radio' ? 'menuitemradio' : it.kind === 'check' ? 'menuitemcheckbox' : 'menuitem';
+      const attrs = { class: 'menuitem tk-item' + (it.off ? ' tk-off' : '') + (it.checked ? ' on' : ''), role, tabindex: '-1', 'data-id': it.id,
+        title: it.title || null, 'aria-disabled': it.off ? 'true' : null, 'aria-checked': it.kind === 'item' ? null : (it.checked ? 'true' : 'false'),
+        onclick: () => pick(it), onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(it); } } };
+      return el('div', attrs,
+        el('span', { class: 'tk-tick', 'aria-hidden': 'true' }, it.checked ? ic('tick') : null),
+        el('span', { class: 'mi-text tk-label' }, el('span', { class: 'tk-name', text: it.label }), touch && it.sub ? el('span', { class: 'tk-sub', text: it.sub }) : null));
+    }
+
+    function build() {
+      touchNow = !!c.touch;
+      const root = el('div', { class: 'tk-menu' + (touchNow ? ' tk-touch' : ''), role: 'menu', 'aria-label': 'Tile menu: ' + tkLabel(c) });
+      for (const g of groups()) {
+        const id = 'tk-g-' + g.key + '-' + (Math.random().toString(36).slice(2, 7));
+        const sec = el('div', { class: 'tk-group', role: 'group', 'aria-labelledby': id, 'data-group': g.key },
+          el('div', { class: 'tk-gl', id, text: g.label }));
+        if (g.key === 'tune' && g.note) sec.append(el('div', { class: 'tk-note', text: g.note }));
+        for (const it of g.items) sec.append(it.kind === 'note' ? el('div', { class: 'tk-note tk-perm', text: it.label, title: it.label }) : itemRow(it, touchNow));
+        if (g.kill) sec.append(killRow(tkPlain(c.actions).kill));
+        root.append(sec);
+      }
+      body = root;
+      return root;
+    }
+
+    function open(anchorEl, byKeyboard) {
+      if (S.isOpen) { S.close(false); return; }
+      disarm();
+      const touch = !!c.touch;
+      S.open(anchorEl, build, { touch, title: 'Tile menu · ' + tkLabel(c), cls: 'tk-pop-menu', width: 260, bare: true });
+      const first = body && (body.querySelector('.tk-mode.on') || body.querySelector('.tk-item, .tk-mode'));       // the keyboard starts on the current mode, the first row of the menu
+      if (byKeyboard && first) first.focus();
+      else if (S.root && typeof S.root.focus === 'function') S.root.focus();      // a pointer highlights nothing: the popover itself holds the focus
+    }
+
+    /* an open menu repaints in place; focus stays on the same row when it was on one */
+    function update(patch) {
+      Object.assign(c, patch || {});
+      if (!S.isOpen || !body) return;
+      const rows = Array.from(body.querySelectorAll('.tk-item, .tk-mode'));
+      const at = rows.indexOf(document.activeElement);
+      const old = body;
+      const fresh = build();
+      while (old.firstChild) old.removeChild(old.firstChild);
+      for (const k of Array.from(fresh.children)) old.append(k);
+      body = old;
+      if (at >= 0) { const next = old.querySelectorAll('.tk-item, .tk-mode')[at]; if (next) next.focus(); }
+    }
+
+    return { open, close: (refocus) => S.close(!!refocus), toggle: open, update, destroy: () => S.close(false), get isOpen() { return S.isOpen; }, get root() { return S.root || S.body; } };
+  }
+
+  /* ---- composer ---------------------------------------------------------------------------------------------------------------------- */
+
+  /* composer(ctx) -> {open(anchorEl), close(), el, update(patch), isOpen, root}
+     ctx = {tmux, session, agent, touch, onSent(kind)}: the prompt box of one session. open() shows it under the anchor (a popover) or as a bottom sheet (touch): a
+     two-row box (16 px on touch), the quick replies of ccboard:quick:<tmux> (the agent's defaults when the person has not edited them), a bordered Send, Enter sends,
+     Shift+Enter adds a line, Esc closes. `el` is the one-line variant for docking at the bottom of a tile (a row: a one-row box that does not grow, a … button that opens the popover above, and a bordered Send; no chips; it stays after a send). A send goes to
+     POST /api/sessions/<tmux>/prompt {text, enter: true, queue}: queue is true only for a Claude session that is working (Codex and a shell never queue); a shell, which has
+     no agent row to paste into, gets POST /keys {text, enter: true} instead (as the terminal page does). The toast says "sent" or "queued", onSent(kind) hears the same,
+     and the popover or sheet closes. A refusal (409) toasts the server's own words and keeps the text. */
+  function makeComposer(ctx) {
+    const c = ctx || {};
+    let busy = false;
+    const parts = [];                                                           // the boxes built: the popover body (kept, so a draft survives a close) and the docked one
+    let boxPart = null;
+    let dead = false;
+    const S = surface({});
+    const queueing = () => tkAgent(c) === 'claude' && !!c.session && c.session.state === 'working';
+
+    async function deliver(text) {
+      const enc = tkSession(c);
+      if (tkAgent(c) === 'shell') { await api('POST', enc + '/keys', { text, enter: true }); return 'sent'; }
+      const once = async (queue, retried) => {
+        try {
+          const r = await api('POST', enc + '/prompt', { text, enter: true, queue });
+          return r && r.queued ? 'queued' : 'sent';
+        } catch (e) {
+          if (e && e.status === 404 && !(e.body && e.body.error)) { await api('POST', enc + '/keys', { text, enter: true }); return 'sent'; }   // an older server has no /prompt
+          if (e && e.status === 409 && e.body && e.body.error === 'working' && !queue && !retried && tkAgent(c) === 'claude') return once(true, true);   // a turn began since the last poll
+          throw e;
+        }
+      };
+      return once(queueing(), false);
+    }
+
+    function syncBusy() {
+      for (const p of parts) {
+        p.send.disabled = busy;
+        for (const b of p.chips.querySelectorAll('button')) b.disabled = busy;
+        p.root.classList.toggle('busy', busy);
+      }
+    }
+
+    /* the text goes out; true when it did (the caller clears its box and closes) */
+    async function send(text) {
+      const body = String(text === null || text === undefined ? '' : text).replace(/\s+$/, '');
+      if (!body.trim() || busy || dead) return false;
+      busy = true;
+      syncBusy();
+      let kind = null;
+      try { kind = await deliver(body); } catch (e) { tkRefused(e, 'sending'); }
+      busy = false;
+      syncBusy();
+      if (!kind) return false;
+      if (typeof toast === 'function') toast(kind, { kind: 'ok' });
+      if (typeof c.onSent === 'function') { try { c.onSent(kind); } catch (e) { console.error('ccboard composer onSent', e); } }
+      tkPoll();
+      return true;
+    }
+
+    function chipsFor(p) {
+      p.chips.textContent = '';
+      let list = [];
+      try { list = typeof quickLoad === 'function' ? quickLoad(c.tmux) : []; } catch (_) { list = []; }
+      for (const text of list) {
+        const go = () => send(text).then((ok) => { if (ok && !p.docked) S.close(false); });
+        const edit = () => {
+          S.close(false);
+          if (typeof quickReplyEditor === 'function') quickReplyEditor({ items: typeof quickLoad === 'function' ? quickLoad(c.tmux) : [], onSave: (items) => { if (typeof quickSave === 'function') quickSave(c.tmux, items); } });
+        };
+        const chip = typeof quickChip === 'function' ? quickChip(text, { cls: 'tk-chip', onSend: go, onEdit: edit })
+          : el('button', { type: 'button', class: 'tk-chip', title: 'tap to send', text, onclick: go });
+        chip.disabled = busy;
+        p.chips.append(chip);
+      }
+    }
+
+    function build(docked) {
+      const ta = el('textarea', { class: 'tk-ta', rows: docked ? '1' : '2', placeholder: docked ? 'Send a prompt…' : 'Type a prompt', 'aria-label': 'Prompt for ' + tkLabel(c),
+        autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'send' });
+      const sendBtn = el('button', { type: 'button', class: 'tk-send', title: 'Send (Enter)', text: 'Send' });
+      const p = { ta, send: sendBtn, chips: el('div', { class: 'tk-chips' }), hint: el('span', { class: 'tk-hint' }), root: null, docked };
+      const go = () => send(ta.value).then((ok) => {
+        if (!ok) return;
+        ta.value = '';
+        if (typeof composerGrow === 'function') composerGrow(ta);
+        if (!docked) S.close(false);
+      });
+      sendBtn.addEventListener('click', go);
+      if (docked) {                                                               // one row that never grows (composerBind would): Enter sends, the … button opens the roomy box
+        ta.classList.add('composer');
+        ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !e.isComposing) { e.preventDefault(); go(); } });
+      } else if (typeof composerBind === 'function') composerBind(ta, { onSend: go, maxRows: 6 });
+      else ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); go(); } });
+      if (docked) {
+        const more = el('button', { type: 'button', class: 'tk-more', title: 'More: quick replies and a bigger box', 'aria-label': 'More prompt options', text: '…', onclick: () => open(more) });
+        p.root = el('div', { class: 'tk-composer tk-docked', role: 'group', 'aria-label': 'Prompt box' }, ta, more, sendBtn);
+      } else {
+        const nl = c.touch && typeof newlineButton === 'function' ? newlineButton(ta) : null;
+        p.root = el('div', { class: 'tk-composer' + (c.touch ? ' tk-touch' : ''), role: 'group', 'aria-label': 'Send a prompt' },
+          el('div', { class: 'tk-gl', text: 'SEND A PROMPT' }), ta, p.chips,
+          el('div', { class: 'tk-actions' }, p.hint, nl, sendBtn));
+      }
+      parts.push(p);
+      return p;
+    }
+
+    function hintFor(p) { setText(p.hint, queueing() ? 'Working now: your prompt goes in the queue' : (c.touch ? '' : 'Enter sends · Shift+Enter adds a line')); }
+
+    const docked = build(true);
+    hintFor(docked);
+
+    function open(anchorEl) {
+      if (S.isOpen) { S.close(false); return; }
+      const p = boxPart || (boxPart = build(false));
+      chipsFor(p);
+      hintFor(p);
+      S.open(anchorEl, () => p.root, { touch: !!c.touch, title: 'Send a prompt · ' + tkLabel(c), cls: 'tk-pop-composer', width: 420 });
+      if (!c.touch) { try { p.ta.focus(); } catch (_) { /* nothing to focus */ } }              // a phone never opens its soft keyboard by itself
+    }
+
+    function update(patch) {
+      Object.assign(c, patch || {});
+      for (const p of parts) hintFor(p);
+    }
+
+    /* the tile is going: close the popover or sheet, take the docked box out of the page, and send nothing from now on */
+    function destroy() {
+      dead = true;
+      S.close(false);
+      docked.root.remove();
+      parts.length = 0;
+      boxPart = null;
+    }
+
+    return { open, close: (refocus) => S.close(!!refocus), el: docked.root, update, destroy, get isOpen() { return S.isOpen; }, get root() { return S.root || S.body; } };
+  }
+
+  /* ---- tune -------------------------------------------------------------------------------------------------------------------------- */
+
+  /* tune(ctx) -> {open(anchorEl, byKeyboard), close(), mount(targetEl), run(cmd, arg, {anchor}), rename(anchorEl), update(patch), isOpen}
+     ctx = {tmux, session, agent, stats, touch, schema}: schema is the agent's GET /api/agents entry (state.agents[agent]) when the page has one. The panel has five parts:
+     MODEL (a segmented control: opus fable sonnet haiku for Claude, the schema's models for Codex), EFFORT (low medium high xhigh max; Codex's reasoning levels),
+     OPTIONS (Fast and Ultracode, toggles: Ultracode is `/effort ultracode on`, and off goes back to high), COMMANDS (an equal-cell grid: /compact /context /usage /cost
+     /status /rename…) and a readout for what a read command printed. The current values come from ctx.stats. Every change is POST /api/sessions/<tmux>/command {cmd, arg?};
+     a 409 shows as a toast with the server's words and every row is off while the session is not at its prompt (a note says so). A read command leaves the agent's own
+     dialog open in the pane: the readout's Close (or closing the panel) sends it one Escape. open() shows the panel under the anchor (a 320 px popover) or as a bottom
+     sheet (touch); mount(targetEl) puts the same panel into a page (the terminal page) -> {root, update(patch), destroy()}. run() is the same call without a panel: a
+     tile menu's /compact, /context and /usage items use it; a read command's output opens the panel at `anchor`. */
+  function makeTune(ctx) {
+    const c = ctx || {};
+    const T = { busy: false, pend: null, pendTimer: 0, ok: null, readout: null, dialog: false, renaming: false, anchor: null, dead: false };
+    const panels = new Set();
+    const S = surface({
+      escape: () => {
+        if (T.renaming) { T.renaming = false; syncAll(); return true; }
+        if (T.readout) { closeReadout(); return true; }
+        return false;
+      },
+      onClose: () => { for (const p of Array.from(panels)) if (p.owned) { panels.delete(p); } T.renaming = false; closeReadout(); },
+    });
+    const gateNow = () => tuneGate(c.session, c.atPrompt);
+    const planNow = () => tunePlan(tkAgent(c), c.schema, tkStats(c));
+
+    /* a read command (/usage, /context, /status, /cost) leaves the agent's dialog in the pane: one Escape closes it (two would open the rewind menu) */
+    function settleEscape() {
+      if (!T.dialog) return Promise.resolve();
+      T.dialog = false;
+      return tkKeys(c, ['Escape']).then(() => tkSleep(TK_ESC_GAP_MS));
+    }
+
+    function closeReadout() {
+      if (!T.readout) return;
+      T.readout = null;
+      syncAll();
+      settleEscape();
+    }
+
+    function clearPending(ok) {
+      const p = T.pend;
+      if (!p) return;
+      T.pend = null;
+      clearTimeout(T.pendTimer);
+      T.pendTimer = 0;
+      if (ok) { T.ok = p.key; setTimeout(() => { if (T.ok === p.key) { T.ok = null; syncAll(); } }, 1500); }
+      else tkSay('/' + p.cmd + (p.arg ? ' ' + p.arg : '') + ' not confirmed by the statusline', 'warn');
+    }
+
+    /* the typed setting waits for the statusline: pending until the stats agree, an ok flash then; 20 s without that says so once */
+    function startPending(cmd, arg, key, satisfied) {
+      if (T.dead) return;
+      clearTimeout(T.pendTimer);
+      T.pend = { cmd, arg, key, satisfied };
+      T.pendTimer = setTimeout(() => { T.pendTimer = 0; clearPending(false); syncAll(); }, TK_PENDING_MS);
+    }
+
+    async function run(cmd, arg, o) {
+      const x = o || {};
+      const gate = gateNow();
+      if (!gate.show) return false;
+      if (!gate.enabled) { if (typeof toast === 'function') toast(TK_GATE.charAt(0).toUpperCase() + TK_GATE.slice(1), { kind: 'info' }); return false; }
+      if (T.busy) return false;
+      if (x.anchor) T.anchor = x.anchor;
+      T.busy = true;
+      syncAll();
+      try {
+        await settleEscape();
+        const body = { cmd };
+        if (arg) body.arg = arg;
+        let res = null;
+        try { res = await api('POST', tkSession(c) + '/command', body); } catch (e) { tkRefused(e, 'tuning'); tkPoll(); return false; }
+        if (res && typeof res.screen === 'string') {
+          T.dialog = true;
+          T.readout = { cmd: '/' + cmd, text: String(res.screen).replace(/\s+$/, '') || '(nothing printed)' };
+          if (!S.isOpen && !panels.size && !T.dead) openPanel(T.anchor, false);
+        } else if (x.pend) startPending(cmd, arg || '', x.pend.key, x.pend.satisfied);
+        if (typeof c.onCommand === 'function') { try { c.onCommand(cmd, arg || '', res); } catch (e) { console.error('ccboard tune onCommand', e); } }
+        tkPoll();
+        return true;
+      } finally {
+        T.busy = false;
+        syncAll();
+      }
+    }
+
+    /* ---- one panel ---- */
+    function newPanel(variant) {
+      const touch = !!c.touch;
+      const p = { variant, sig: '', root: el('div', { class: 'tk-tune' + (touch ? ' tk-touch' : ''), 'data-agent': tkAgent(c) }), nodes: [], owned: variant !== 'mount' };
+      p.gate = el('p', { class: 'tk-gate hidden', role: 'note' });
+      p.readout = el('section', { class: 'tk-readout hidden', 'aria-label': 'Command output' });
+      p.rename = null;
+      return p;
+    }
+
+    const sec = (label, ...kids) => el('section', { class: 'tk-sec' }, el('div', { class: 'tk-gl', text: label }), ...kids);
+
+    function seg(p, label, group, kind) {
+      const long = group.options.some((o) => o.label.length > 8);                // a long name (a Codex model) gets half the track, many short ones a third
+      const wrap = el('div', { class: 'tk-seg' + (long ? ' tk-wrap2' : group.options.length > 5 ? ' tk-wrap3' : ''), role: 'group', 'aria-label': label, 'data-kind': kind });
+      for (const op of group.options) {
+        const b = el('button', { type: 'button', class: 'tk-opt' + (kind === 'model' && ownKey(TK_MODEL_HUE, op.value) ? ' tk-model ' + TK_MODEL_HUE[op.value] : ''), 'data-cmd': group.cmd, 'data-arg': op.arg,
+          'aria-pressed': 'false', title: '/' + group.cmd + ' ' + op.arg, text: op.label,
+          onclick: () => run(group.cmd, op.arg, { pend: { key: kind + ':' + op.value, satisfied: (cur) => (kind === 'model' ? cur.model === op.value : cur.effort === op.value.toLowerCase()) } }) });
+        p.nodes.push({ node: b, kind, value: op.value });
+        wrap.append(b);
+      }
+      return wrap;
+    }
+
+    function toggle(p, kind, label, title) {
+      const state = el('span', { class: 'tk-state', text: 'off' });
+      const b = el('button', { type: 'button', class: 'tk-tog', 'data-kind': kind, 'aria-pressed': 'false', title, onclick: () => {
+        const cur = tuneCurrent(tkStats(c), planNow());
+        if (kind === 'fast') run('fast', '', { pend: { key: 'fast', satisfied: (now) => now.fast === !cur.fast } });
+        else if (cur.effort === 'ultracode') run('effort', TK_ULTRA_OFF, { pend: { key: 'ultra', satisfied: (now) => now.effort === TK_ULTRA_OFF } });
+        else run('effort', TK_ULTRA_ON, { pend: { key: 'ultra', satisfied: (now) => now.effort === 'ultracode' } });
+      } }, el('span', { class: 'tk-tn', text: label }), state);
+      p.nodes.push({ node: b, kind, state });
+      return b;
+    }
+
+    function cell(p, spec) {
+      const isRename = spec.key === 'rename';
+      const b = el('button', { type: 'button', class: 'tk-cell', 'data-cmd': spec.key, title: TK_CELL_TITLE[spec.key] + (spec.read ? ' (shows what it prints)' : ''),
+        text: isRename ? spec.cmd + '…' : spec.cmd,
+        onclick: () => { if (isRename) openRename(); else run(spec.key, '', {}); } });
+      p.nodes.push({ node: b, kind: 'cell', value: spec.key });
+      return b;
+    }
+
+    function renameForm(p) {
+      const input = el('input', { type: 'text', class: 'tk-input', maxlength: '120', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'done', 'aria-label': 'New session name', placeholder: 'session name' });
+      const err = el('p', { class: 'tk-err bad', role: 'alert' });
+      const form = el('form', { class: 'tk-rename hidden', onsubmit: (e) => {
+        e.preventDefault();
+        const v = input.value.trim();
+        if (!v) { err.textContent = 'Type a name first.'; input.setAttribute('aria-invalid', 'true'); try { input.focus(); } catch (_) { /* no focus */ } return; }
+        T.renaming = false;
+        syncAll();
+        run('rename', v, {});
+      } },
+        el('div', { class: 'tk-gl', text: 'RENAME THE SESSION' }), input, err,
+        el('div', { class: 'tk-actions' },
+          el('button', { type: 'button', class: 'tk-cancel minimal', text: 'Cancel', onclick: () => { T.renaming = false; syncAll(); } }),
+          el('button', { type: 'submit', class: 'tk-send', text: 'Rename' })));
+      input.addEventListener('input', () => { err.textContent = ''; input.removeAttribute('aria-invalid'); });
+      p.rename = { form, input, err };
+      return form;
+    }
+
+    function fill(p, plan) {
+      p.root.textContent = '';
+      p.nodes = [];
+      p.rename = null;
+      p.root.append(p.gate);
+      if (plan.model) p.root.append(sec('MODEL', seg(p, 'Model', plan.model, 'model')));
+      if (plan.effort) p.root.append(sec(tkAgent(c) === 'codex' ? 'REASONING' : 'EFFORT', seg(p, tkAgent(c) === 'codex' ? 'Reasoning' : 'Effort', plan.effort, 'effort')));
+      if (plan.fast || plan.ultra) {
+        const row = el('div', { class: 'tk-toggles' });
+        if (plan.fast) row.append(toggle(p, 'fast', 'Fast', 'Fast mode: quicker answers, a higher price'));
+        if (plan.ultra) row.append(toggle(p, 'ultra', 'Ultracode', 'Ultracode on sets the effort to ultracode; off goes back to high'));
+        p.root.append(sec('OPTIONS', row));
+      }
+      if (plan.cells.length) {
+        p.root.append(sec('COMMANDS', el('div', { class: 'tk-grid' }, ...plan.cells.map((s) => cell(p, s)))));
+        if (plan.cells.some((s) => s.key === 'rename')) p.root.append(renameForm(p));
+      }
+      if (!plan.model && !plan.effort && !plan.fast && !plan.cells.length) p.root.append(el('p', { class: 'tk-gate', role: 'note', text: 'There is nothing to tune on this session.' }));
+      p.root.append(p.readout);
+    }
+
+    function sync(p) {
+      const plan = planNow();
+      const gate = gateNow();
+      const sig = tkAgent(c) + JSON.stringify([plan.model && plan.model.options.map((o) => o.value), plan.effort && [plan.effort.cmd, plan.effort.options.map((o) => o.value)], plan.fast, plan.ultra, plan.cells.map((s) => s.key)]);
+      if (sig !== p.sig) { p.sig = sig; fill(p, plan); }
+      const cur = tuneCurrent(tkStats(c), plan);
+      if (T.pend && T.pend.satisfied(cur)) clearPending(true);
+      const off = !gate.enabled || T.busy;
+      p.gate.classList.toggle('hidden', gate.enabled || !gate.show);
+      setText(p.gate, gate.title ? gate.title.charAt(0).toUpperCase() + gate.title.slice(1) + '.' : '');
+      for (const n of p.nodes) {
+        const b = n.node;
+        b.disabled = off;
+        if (!gate.enabled && gate.show) b.setAttribute('title', gate.title);
+        let on = false;
+        if (n.kind === 'model') on = cur.model === n.value;
+        else if (n.kind === 'effort') on = cur.effort === n.value.toLowerCase();
+        else if (n.kind === 'fast') on = cur.fast;
+        else if (n.kind === 'ultra') on = cur.effort === 'ultracode';
+        if (n.kind !== 'cell') { b.setAttribute('aria-pressed', on ? 'true' : 'false'); b.classList.toggle('on', on); }
+        if (n.state) setText(n.state, on ? 'on' : 'off');
+        const key = n.kind === 'cell' ? '' : (n.kind === 'model' || n.kind === 'effort' ? n.kind + ':' + n.value : n.kind);
+        b.classList.toggle('pending', !!T.pend && T.pend.key === key);
+        b.classList.toggle('ok', !!T.ok && T.ok === key);
+      }
+      if (p.rename) {
+        p.rename.form.classList.toggle('hidden', !T.renaming);
+        for (const b of p.rename.form.querySelectorAll('button')) b.disabled = T.busy;
+      }
+      p.readout.classList.toggle('hidden', !T.readout);
+      if (T.readout && p.readout.getAttribute('data-cmd') !== T.readout.cmd + '|' + T.readout.text.length) {
+        p.readout.setAttribute('data-cmd', T.readout.cmd + '|' + T.readout.text.length);
+        p.readout.textContent = '';
+        p.readout.append(el('div', { class: 'tk-gl', text: T.readout.cmd.toUpperCase() }), el('pre', { class: 'tk-pre', text: T.readout.text }),
+          el('div', { class: 'tk-actions' }, el('button', { type: 'button', class: 'tk-send tk-close', text: 'Close', onclick: () => closeReadout() })));
+      }
+    }
+    function syncAll() { for (const p of panels) sync(p); }
+
+    function openRename() {
+      T.renaming = true;
+      syncAll();
+      for (const p of panels) if (p.rename) {
+        if (!p.rename.input.value) p.rename.input.value = String(tkStats(c).session_name || '');
+        try { p.rename.input.focus(); if (typeof p.rename.input.select === 'function') p.rename.input.select(); } catch (_) { /* no focus */ }
+      }
+    }
+
+    function openPanel(anchorEl, byKeyboard) {
+      const p = newPanel(c.touch ? 'sheet' : 'pop');
+      panels.add(p);
+      sync(p);
+      T.anchor = anchorEl || T.anchor;
+      S.open(anchorEl, () => p.root, { touch: !!c.touch, title: 'Tune · ' + tkLabel(c), cls: 'tk-pop-tune', width: 320 });
+      if (byKeyboard) { const first = p.root.querySelector('button:not([disabled])'); if (first) first.focus(); }
+      else if (S.root && typeof S.root.focus === 'function') S.root.focus();
+      return p;
+    }
+
+    function open(anchorEl, byKeyboard) {
+      if (S.isOpen) { S.close(false); return; }
+      openPanel(anchorEl, !!byKeyboard);
+    }
+
+    function mount(target) {
+      if (!target || typeof target.append !== 'function') return null;
+      const p = newPanel('mount');
+      panels.add(p);
+      sync(p);
+      target.append(p.root);
+      return {
+        root: p.root,
+        update(patch) { Object.assign(c, patch || {}); syncAll(); },
+        destroy() { panels.delete(p); p.root.remove(); },
+      };
+    }
+
+    function update(patch) {
+      Object.assign(c, patch || {});
+      syncAll();
+    }
+
+    function rename(anchorEl) {
+      if (!S.isOpen) openPanel(anchorEl, false);
+      openRename();
+    }
+
+    /* the tile is going: no pending-setting timer may toast about it later, the panels leave the page, and the agent's own dialog (a read command's output) is
+       dismissed with the one Escape it needs */
+    function destroy() {
+      T.dead = true;
+      clearTimeout(T.pendTimer);
+      T.pendTimer = 0;
+      T.pend = null;
+      T.ok = null;
+      T.renaming = false;
+      const wasOpen = T.readout !== null || T.dialog;
+      T.readout = null;
+      S.close(false);
+      for (const p of Array.from(panels)) p.root.remove();
+      panels.clear();
+      if (wasOpen) settleEscape();
+    }
+
+    return { open, close: (refocus) => S.close(!!refocus), mount, run, rename, update, destroy, get isOpen() { return S.isOpen; }, get root() { return S.root || S.body; } };
+  }
+
   return {
     ttyUrl, bind, touchScroller, fitSoon, fitNow, viewportFit, keyBar, pressable, repeater, compactKeys, backTarget, contextParts, clampFont, FONT_MIN, FONT_MAX,
     termPane, paneLabel, paneParts, paneLine, panePending, sizeChip, typingTarget, ctxInfo, fitName,
+    /* v0.5.9c quad v3: the tile menu, the prompt composer and the tune panel (termkit.css), with the pure helpers they and the tests share */
+    tileMenu: makeTileMenu, composer: makeComposer, tune: makeTune, tuneGate, tunePlan, tuneCurrent, tuneRegistry,
     /* the font spike's outcome ('off' until a bind asked for it) and a promise of the final state; it never rejects */
     get fontState() { return fontState; },
     get fontReady() { return fontPromise || Promise.resolve(fontState); },

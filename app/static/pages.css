@@ -791,9 +791,9 @@ html.force-coarse .tm-actions .bp5-button, html.force-coarse .tm-merge .bp5-butt
 #page .pblock .pb-add-task { margin-left:0; }
 #page .pblock .pb-add.hidden + .pb-add-task { margin-left:auto; }                    /* a project that can take a task but no session: the lone button keeps the right edge */
 
-/* ---------- quad (v0.5.9: pages/quad.js, route #/quad) ----------
+/* ---------- quad (v0.5.9, v3 in v0.5.9c: pages/quad.js, route #/quad) ----------
    The page fills #main (the shell scrolls #main, the body never does): head, the one-up chip strip, the tile grid, the host key bar. A tile is placed by its data-slot
-   (grid-area per slot, so a zoomed tile can leave the flow without moving the others) and is never reordered in the DOM: an iframe that moves reloads.
+   (CSS `order` into the layout's columns, 1 to 5 of them and two rows: a zoomed tile leaves the flow, the tracks keep their size) and is never reordered in the DOM: an iframe that moves reloads.
    Zoom is an overlay over the unchanged grid: the other tiles keep their pixel size, so their terminals are not refitted and no /resize is sent.
    Each tile is a size container: the header sheds its pieces as the tile narrows (see 'header: one row'), the mode picker is a segmented control that becomes one
    menu button under 354 px (358 on touch). Header row: --row-btn (28 px with a mouse, 44 px on touch). Hover only under (hover:hover). */
@@ -816,7 +816,13 @@ html.force-coarse #page .quad .q-scope-sel { font-size:16px; }
 #page .quad .q-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; }
 #page .quad[data-forced] .q-layout { display:none; }                         /* the window or the column is too narrow for tiles: the chips are the switcher */
 #page .quad .q-actions .bp5-button { white-space:nowrap; }
-#page .quad .q-keys-toggle[aria-pressed=true] { color:var(--sig); border-color:var(--sig-bd); background:var(--sig-bg); }
+#page .quad .q-keys-toggle[aria-pressed=true], #page .quad .q-fs.on { color:var(--sig); border-color:var(--sig-bd); background:var(--sig-bg); }
+/* the layout control (v0.5.9c): 1 2 4 6 8 10, one number per cell, 28 px with a mouse and 44 px on touch (--row-btn); the cells this window cannot take are off, with the reason in their title */
+#page .quad .q-layout .seg-btn { min-width:var(--row-btn); min-height:var(--row-btn); padding:0 6px; }
+#page .quad .q-layout .seg-btn:disabled { opacity:.4; cursor:default; }
+#page .quad .q-cap { flex:none; margin:0; font-size:11px; line-height:1.4; }
+#page .quad .q-fs { display:inline-flex; align-items:center; gap:6px; }
+#page .quad .q-fs-ic { display:inline-flex; align-items:center; }
 
 /* the one-up chip switcher: a scroll-snap strip of 44 px chips, state and agent glyph, the name and the last line of the pane */
 #page .quad .q-chips { flex:none; display:none; gap:6px; margin:0 -2px; padding:2px 2px 6px; overflow-x:auto; overscroll-behavior-x:contain; scroll-snap-type:x proximity; scrollbar-width:none; -webkit-overflow-scrolling:touch; }
@@ -839,10 +845,19 @@ html.force-coarse #page .quad .q-scope-sel { font-size:16px; }
 #page .quad .qgrid { position:relative; flex:1 1 0; min-height:0; display:grid; gap:8px; grid-template-columns:minmax(0, 1fr); grid-template-rows:minmax(0, 1fr); }
 #page .quad .qgrid[data-layout="2"] { grid-template-columns:repeat(2, minmax(0, 1fr)); }
 #page .quad .qgrid[data-layout="4"] { grid-template-columns:repeat(2, minmax(0, 1fr)); grid-template-rows:repeat(2, minmax(0, 1fr)); }
-#page .quad .qgrid .qtile[data-slot="0"] { grid-area:1 / 1; }
-#page .quad .qgrid .qtile[data-slot="1"] { grid-area:1 / 2; }
-#page .quad .qgrid .qtile[data-slot="2"] { grid-area:2 / 1; }
-#page .quad .qgrid .qtile[data-slot="3"] { grid-area:2 / 2; }
+#page .quad .qgrid[data-layout="6"] { grid-template-columns:repeat(3, minmax(0, 1fr)); grid-template-rows:repeat(2, minmax(0, 1fr)); }
+#page .quad .qgrid[data-layout="8"] { grid-template-columns:repeat(4, minmax(0, 1fr)); grid-template-rows:repeat(2, minmax(0, 1fr)); }
+#page .quad .qgrid[data-layout="10"] { grid-template-columns:repeat(5, minmax(0, 1fr)); grid-template-rows:repeat(2, minmax(0, 1fr)); }
+#page .quad .qgrid .qtile[data-slot="0"] { order:0; }
+#page .quad .qgrid .qtile[data-slot="1"] { order:1; }
+#page .quad .qgrid .qtile[data-slot="2"] { order:2; }
+#page .quad .qgrid .qtile[data-slot="3"] { order:3; }
+#page .quad .qgrid .qtile[data-slot="4"] { order:4; }
+#page .quad .qgrid .qtile[data-slot="5"] { order:5; }
+#page .quad .qgrid .qtile[data-slot="6"] { order:6; }
+#page .quad .qgrid .qtile[data-slot="7"] { order:7; }
+#page .quad .qgrid .qtile[data-slot="8"] { order:8; }
+#page .quad .qgrid .qtile[data-slot="9"] { order:9; }
 #page .quad .qgrid .qtile.zoomed { position:absolute; inset:0; grid-area:1 / 1 / -1 / -1; z-index:4; background:var(--bg-0); }
 #page .quad .qgrid[data-zoom] .qtile:not(.zoomed) { visibility:hidden; pointer-events:none; }      /* still laid out at their own size (no refit), just not painted over the overlay's edge */
 
@@ -907,6 +922,17 @@ html.force-coarse #page .quad .q-scope-sel { font-size:16px; }
   #page .quad[data-touch] .qt-title { min-width:0; padding:0 3px; gap:2px; }
 }
 
+/* a tile of 300 px or less (the 10-up on a 1600 px window, five columns): glyphs, the name and the ▾ menu only; the menu has the mode, zoom, open, reload and close */
+@container (max-width: 300px) {
+  #page .quad .qt-modes, #page .quad .qt-modemenu, #page .quad .qt-ctx, #page .quad .qt-size, #page .quad .qt-zoom, #page .quad .qt-open, #page .quad .qt-reconnect, #page .quad .qt-close,
+  #page .quad[data-touch] .qt-modes, #page .quad[data-touch] .qt-modemenu { display:none; }
+  #page .quad .qt-title { min-width:0; }
+}
+
+/* the docked composer (the tile menu's Show composer; TermKit.composer's one-line box, styled by termkit.css) from 520 px up */
+#page .quad .qt-dock { flex:none; min-width:0; }                                      /* the box carries its own padding and hairline (.tk-docked) */
+@container (max-width: 519px) { #page .quad .qt-dock { display:none; } }
+
 /* the task line, and what the session is waiting on */
 #page .quad .qt-task { flex:none; padding:3px 8px; border-bottom:1px solid var(--line-soft); font-size:12px; line-height:1.4; color:var(--fg-2); display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1; overflow:hidden; overflow-wrap:anywhere; }
 #page .quad .qt-task[data-kind=ask] { -webkit-line-clamp:2; color:var(--warn-fg); }
@@ -926,10 +952,6 @@ html.force-coarse #page .quad .q-scope-sel { font-size:16px; }
 
 /* an empty slot: what could go there */
 #page .quad .qempty { align-items:center; justify-content:center; gap:10px; padding:14px; background:transparent; border-style:dashed; color:var(--dim); }
-#page .quad .qgrid .qempty[data-slot="0"] { grid-area:1 / 1; }
-#page .quad .qgrid .qempty[data-slot="1"] { grid-area:1 / 2; }
-#page .quad .qgrid .qempty[data-slot="2"] { grid-area:2 / 1; }
-#page .quad .qgrid .qempty[data-slot="3"] { grid-area:2 / 2; }
 #page .quad .qe-title { font-size:13px; }
 #page .quad .qe-list { display:flex; flex-direction:column; align-items:stretch; gap:4px; width:min(100%, 320px); }
 #page .quad .qe-pick { justify-content:flex-start; gap:6px; min-width:0; }
@@ -1006,3 +1028,22 @@ html.force-coarse .lx-form .checks label { min-height:var(--tap); }
 .lx-form .lx-acct-t { min-width:0; overflow-wrap:anywhere; }
 .lx-form .lx-acct .lx-switch { margin-left:auto; }
 .lx-form .lx-custom { margin:0; }
+/* fullscreen (v0.5.9c): the Fullscreen button, F or Ctrl+Alt+F put html.quad-fs on the page (and ask the browser for real fullscreen on the document element; without the
+   API, iOS Safari, the class alone does this inside the page). The topbar, sidebar, banner, dock and bottom nav go, the quad head is ONE row (32 px with a mouse, the 44 px
+   target on touch), the tiles take the rest of the viewport. The topbar keeps a zero-height box because components.menu() mounts its popovers there; only its own children go. */
+html.quad-fs #app { grid-template-columns:0 minmax(0, 1fr) 0; grid-template-rows:0 minmax(0, 1fr); }
+html.quad-fs #topbar { min-height:0; height:0; padding:0; border:0; overflow:visible; }
+html.quad-fs #topbar > :not(.menu-pop) { display:none; }
+html.quad-fs #sidebar, html.quad-fs #dock, html.quad-fs #bnav, html.quad-fs #banner, html.quad-fs .skip { display:none !important; }
+html.quad-fs body[data-shell] #main { padding:0; overflow:hidden; }
+html.quad-fs body[data-page=quad] #page { min-height:0; padding:0; }
+html.quad-fs #page > .quad { max-width:none; }                                       /* `#page > * { max-width:1400px }` stops at the page: fullscreen takes the whole screen, also above 1400 px */
+html.quad-fs #page .quad { gap:0; }
+html.quad-fs #page .quad .q-head { flex-wrap:nowrap; align-items:center; gap:6px; min-height:max(32px, var(--row-btn)); padding:0 6px; border-bottom:1px solid var(--line-soft); background:var(--bg-0); }
+html.quad-fs #page .quad .q-head h1, html.quad-fs #page .quad .q-reload, html.quad-fs #page .quad .q-cap, html.quad-fs #page .quad .q-scope .q-all { display:none; }
+html.quad-fs #page .quad .q-scope { flex-wrap:nowrap; flex:0 1 auto; margin-right:auto; }
+html.quad-fs #page .quad .q-actions { flex-wrap:nowrap; flex:none; margin-left:0; }
+html.quad-fs #page .quad[data-forced] .q-fill { display:none; }
+html.quad-fs #page .quad .qgrid { gap:4px; }
+html.quad-fs #page .quad .q-chips { padding-bottom:4px; }
+@media (max-width:599px) { html.quad-fs #page .quad .q-scope-sel { max-width:34vw; } }

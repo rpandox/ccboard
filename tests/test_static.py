@@ -532,7 +532,7 @@ SCRIPT_ORDER = ["/static/" + n for n in (            # v0.5.3 contract plus keym
     "pages/home.js", "pages/inbox.js", "pages/widgets.js", "pages/tasks.js", "pages/project.js", "pages/agents.js", "pages/settings.js", "pages/search.js",
     "pages/session.js", "pages/usage.js", "pages/quad.js", "pages/placeholders.js", "main.js")]
 STYLE_ORDER = ["/static/vendor/blueprint/blueprint.css", "/static/vendor/blueprint/blueprint-icons.css", "/static/tokens.css",
-               "/static/style.css", "/static/shell.css", "/static/pages.css", "/static/charts.css"]
+               "/static/style.css", "/static/shell.css", "/static/pages.css", "/static/charts.css", "/static/termkit.css"]
 VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 
 
