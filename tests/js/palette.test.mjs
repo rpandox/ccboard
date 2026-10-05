@@ -140,7 +140,7 @@ test('open(): one modal dialog#helpdlg with class palette, the box focused, Sess
   assert.deepEqual(groups(w), ['Sessions', 'Routes']);
   const l = labels(w);
   assert.deepEqual(l.slice(0, 4), ['s2', 's1', 's3', 'sh'], 'the Agents order: needs-you first');
-  assert.deepEqual(l.slice(4), ['Home', 'Needs you', 'Agents', 'Tasks', 'Usage', 'Memory', 'Settings', 'Search']);
+  assert.deepEqual(l.slice(4), ['Home', 'Needs you', 'Agents', 'Tasks', 'Quad', 'Usage', 'Memory', 'Settings', 'Search'], 'Quad sits after Tasks, as in the nav (g q)');
   assert.deepEqual(selected(w), ['s2'], 'the first row is highlighted');
   assert.equal(box(w).getAttribute('role'), 'combobox');
   assert.ok(box(w).getAttribute('aria-activedescendant'), 'the highlighted row is announced');
@@ -167,7 +167,7 @@ test('an empty search shows nine sessions at most; a search finds the rest', () 
   const { w } = world({ state: st });
   mounted(w, '#/');
   w.run('Palette.open()');
-  assert.equal(items(w).filter((n) => n.id.startsWith('pal-o-')).length - 8, 9, 'nine session rows plus the eight routes');
+  assert.equal(items(w).filter((n) => n.id.startsWith('pal-o-')).length - 9, 9, 'nine session rows plus the nine routes');
   typeInto(w, 'x12');
   assert.deepEqual(labels(w).slice(0, 1), ['x12']);
 });
@@ -316,7 +316,7 @@ test('nudges POST {text, enter: true} through /keys and controls POST {cmd} thro
   w.run('Palette.open()');
   assert.deepEqual(groups(w), ['Sessions', 'Routes', 'Nudge · s1', 'Controls · s1', 'Modes', 'More']);
   const nudge = (label) => items(w).find((n) => n.querySelector('.pal-label').textContent === label);
-  assert.deepEqual(items(w).filter((n) => n.id).slice(12, 18).map((n) => n.querySelector('.pal-label').textContent), ['continue', 'merge', 'push', 'pr', 'add commit push', 'do it']);
+  assert.deepEqual(items(w).filter((n) => n.id).slice(13, 19).map((n) => n.querySelector('.pal-label').textContent), ['continue', 'merge', 'push', 'pr', 'add commit push', 'do it']);
   typeInto(w, 'add commit');
   assert.equal(labels(w)[0], 'add commit push');
   keyInBox(w, 'Enter');

@@ -580,7 +580,7 @@ function sessionCard(s, opts) {
     badges = el('span', { class: 'rr-badges' }, b.model, b.acct, b.ctx, b.compact, b.worktree, b.pr, b.sub, b.cost, b.limit, b.blocked);
   }
   if (!o.peek) {
-    moreBtn = el('button', { class: 'icon minimal rr-more', type: 'button', 'aria-label': 'More actions', title: 'More: acknowledge, reply, tail, kill' }, ic('more'));
+    moreBtn = el('button', { class: 'icon minimal rr-more', type: 'button', 'aria-label': 'More actions', title: 'More: acknowledge, reply, tail, add to quad, kill' }, ic('more'));
     moreBtn.addEventListener('click', (e) => e.stopPropagation());
     if (typeof menu === 'function') menu(moreBtn, () => moreItems());
   }
@@ -597,6 +597,10 @@ function sessionCard(s, opts) {
     if (s2.needs_attention) items.push({ label: 'Acknowledge', icon: 'tick', onClick: () => sessionAck(cur.s) });
     if (rich && sessionNudgeable(s2)) items.push({ label: node.classList.contains('open') ? 'Hide reply box' : 'Reply', icon: 'comment', onClick: toggleReply });
     if (wantTail) items.push({ label: cur.tailFn ? 'Hide tail' : 'Tail', icon: 'console', onClick: () => { if (cur.tailFn) tailOff(); else tailOn(); } });
+    // the Quad view (v0.5.9) needs 840 px: the row offers it where tiles fit (Shell.quadAdd -> Quad.addToQuad: the session joins the saved slots and #/quad opens)
+    if (s2.state !== 'ended' && typeof Shell !== 'undefined' && Shell && typeof Shell.wide === 'function' && Shell.wide() && typeof Shell.quadAdd === 'function') {
+      items.push({ label: 'Add to quad', icon: 'layout-grid', onClick: () => Shell.quadAdd(tmux) });
+    }
     items.push({ label: 'Kill', icon: 'trash', onClick: () => { ui.confirm = killKey; if (typeof repaintPage === 'function') repaintPage(); } });
     return items;
   }

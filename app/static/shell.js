@@ -1,7 +1,9 @@
 /* ccboard shell (v0.5.3): the topbar, the sidebar tree (the 48 px rail on medium widths), the drawer, the bottom nav, the width-driven shell modes, the
    keyboard shortcuts and the state consumers renderHeader() / renderUsage() / renderShell() / render() that core.js's poll() calls.
    Everything is built once by installShell() (main.js calls it) and patched in place on every poll: nothing here is re-created per poll, and the
-   project tree is a keyed reconcile, so a focused row survives a state refresh. Classic script; one namespace (Shell) plus the contract functions. */
+   project tree is a keyed reconcile, so a focused row survives a state refresh. Classic script; one namespace (Shell) plus the contract functions.
+   v0.5.9: the terminal dock (Shell.openDock / closeDock / toggleDock, section 'the terminal dock'): the live terminal of one session in #dock from
+   1024 px up, built from TermKit.termPane (termkit.js), with a drag handle, the sidebar folding to the rail below 1440 px, and a row's Open link opening it. */
 'use strict';
 
 const Shell = {
@@ -24,7 +26,7 @@ const Shell = {
   SB_DEFAULT: 260,
   OLDER_DAYS: 14,
   NAV: [['home', 'Home', 'home', '#/'], ['inbox', 'Needs you', 'notifications', '#/inbox'], ['agents', 'Agents', 'console', '#/agents'],
-        ['tasks', 'Tasks', 'git-branch', '#/tasks'], ['usage', 'Usage', 'chart', '#/usage'], ['memory', 'Memory', 'database', '#/memory'],
+        ['tasks', 'Tasks', 'git-branch', '#/tasks'], ['quad', 'Quad', 'layout-grid', '#/quad'], ['usage', 'Usage', 'chart', '#/usage'], ['memory', 'Memory', 'database', '#/memory'],
         ['settings', 'Settings', 'cog', '#/settings']],
   CRUMB_NAMES: { inbox: 'Needs you', agents: 'Agents', tasks: 'Tasks', usage: 'Usage', memory: 'Memory', settings: 'Settings', search: 'Search', quad: 'Quad', onboarding: 'Onboarding' },
 };
@@ -43,6 +45,7 @@ Shell.setVar = function (node, name, value) { try { node.style.setProperty(name,
 Shell.load = function () {
   try { Shell.sbOpen = localStorage.getItem('ccboard:sb') !== '0'; } catch (_) { Shell.sbOpen = true; }
   try { Shell.sbW = Shell.clampSbW(parseInt(localStorage.getItem('ccboard:sb:w'), 10)); } catch (_) { Shell.sbW = Shell.SB_DEFAULT; }
+  try { Shell.dock.w = Shell.clampDockW(parseInt(localStorage.getItem('ccboard:dock:w'), 10)); } catch (_) { Shell.dock.w = 0; }
   try {
     const a = JSON.parse(localStorage.getItem('ccboard:sb:open') || '[]');
     Shell.open = new Set(Array.isArray(a) ? a.filter((x) => typeof x === 'string').slice(0, 300) : []);
@@ -775,9 +778,11 @@ Shell.applyMode = function () {
   const mode = mq.l.matches ? 'large' : mq.e.matches ? 'expanded' : mq.m.matches ? 'medium' : 'compact';
   Shell.mode = mode;
   const wide = Shell.wide();
-  const sb = mode === 'compact' ? 'none' : (mode === 'medium' || !Shell.sbOpen) ? 'rail' : 'full';
+  Shell.dockSync();                                               // a window that shrank below 1024 px takes the dock's terminal down; one that grew puts it back
+  const sb = mode === 'compact' ? 'none' : (mode === 'medium' || !Shell.sbOpen || Shell.dockForcesRail()) ? 'rail' : 'full';    // an open dock folds the sidebar below 1440 px
   document.body.setAttribute('data-shell', mode);
   document.body.setAttribute('data-sb', sb);
+  document.body.setAttribute('data-dock', Shell.dock.pane ? 'open' : 'closed');
   const side = $('#sidebar');
   if (side) side.classList.toggle('rail', sb === 'rail');
   const R = Shell.refs;
@@ -791,7 +796,7 @@ Shell.applyMode = function () {
 
 Shell.watchMode = function () {
   const q = (s) => (window.matchMedia ? window.matchMedia(s) : { matches: false });
-  Shell.mq = { l: q('(min-width: 1200px)'), e: q('(min-width: 840px)'), m: q('(min-width: 600px)') };
+  Shell.mq = { l: q('(min-width: 1200px)'), e: q('(min-width: 840px)'), m: q('(min-width: 600px)'), d: q('(min-width: 1024px)'), x: q('(min-width: 1440px)') };   // d: the dock exists, x: sidebar and dock fit together
   for (const m of Object.values(Shell.mq)) {
     if (m.addEventListener) m.addEventListener('change', () => Shell.applyMode());
     else if (m.addListener) m.addListener(() => Shell.applyMode());
@@ -802,19 +807,17 @@ Shell.watchMode = function () {
 Shell.setSidebar = function (open) {
   Shell.sbOpen = !!open;
   try { localStorage.setItem('ccboard:sb', open ? '1' : '0'); } catch (_) { /* storage may be unavailable */ }
+  Shell.dock.keep = !!open && !!Shell.dock.pane && !Shell.dockRoomy();       // the full sidebar asked for beside an open dock below 1440 px stays until the dock closes
   Shell.applyMode();
 };
 
 Shell.navToggle = function () { if (Shell.wide()) Shell.setSidebar(true); else Shell.openDrawer(); };
 
 Shell.toggleSidebar = function () {
-  if (Shell.wide()) { Shell.setSidebar(!Shell.sbOpen); return; }
+  if (Shell.wide()) { Shell.setSidebar(document.body.getAttribute('data-sb') !== 'full'); return; }      // what is on screen decides (an open dock may be holding the rail)
   const dlg = $('#drawer');
   if (dlg && dlg.open) dlg.close(); else Shell.openDrawer();
 };
-
-/* The terminal dock arrives with the quad view (v0.5.9); the keyboard layer already binds mod+j to this, so the binding needs no change then. */
-Shell.toggleDock = function () { /* no dock yet */ };
 
 /* ---------- resizable sidebar: a drag handle over the right edge of the expanded sidebar ---------- */
 
@@ -876,6 +879,362 @@ Shell.buildResizer = function (app) {
   });
   app.append(h);
   return h;
+};
+
+/* ---------- the terminal dock (v0.5.9): the live terminal of one session beside any page, from 1024 px up ----------
+   One TermKit.termPane (full mode: it sizes the session like /term does) in #dock, with a drag handle on its left edge. The pane is created when the dock opens and destroyed
+   when it closes or stops being allowed (a window under 1024 px, ccboard:dock:off): a mounted full-mode client sizes the tmux session even when it is hidden, so a hidden dock
+   must not exist. localStorage: ccboard:dock = the session shown (restored on load), ccboard:dock:w = the width in px (absent = the CSS default min(44vw, 640px)),
+   ccboard:dock:off = '1' turns the dock off in this browser (a row's Open then opens /term/<name> in its own tab as before). Below 1440 px an open dock folds the sidebar to
+   the rail (body[data-sb=rail]) without writing ccboard:sb; asking for the full sidebar while the dock is open keeps it until the dock closes. The session peek (session.js)
+   goes to the sheet while the dock is on, so the two never share #dock.
+   The quad page (#/quad) and the dock are exclusive: the quad owns the window (its tiles are the terminals, and a tile's width must not change under it), so the dock is
+   suspended while the quad is the page (Shell.dockSuspend, called by Quad.mount; Shell.dockResume by its destroy; mountedId === 'quad' is the same test the router makes):
+   the pane goes (D.wanted keeps the session, ccboard:dock stays), no Open link opens it (they open a tab), and it comes back when the person leaves the quad. */
+
+Shell.DOCK_MIN = 320;
+Shell.DOCK_MAX = 960;
+Shell.DOCK_AT = 1024;                    // the dock exists from this window width
+Shell.DOCK_ROOM = 1440;                  // from this width the sidebar and the dock fit side by side
+Shell.LONG_PRESS = 500;
+Shell.TERM_HREF = /^\/term\/([^/?#]+)\/?$/;
+Shell.dock = { tmux: '', pane: null, last: '', wanted: '', w: 0, keep: false, restored: false, resizer: null, press: null, held: false };
+
+Shell.mqNow = function (query) {
+  try { return !!(window.matchMedia && window.matchMedia(query).matches); } catch (_) { return false; }
+};
+
+Shell.dockStore = {
+  get(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
+  set(k, v) { try { if (v === null || v === undefined) localStorage.removeItem(k); else localStorage.setItem(k, String(v)); } catch (_) { /* storage may be unavailable */ } },
+};
+
+Shell.dockOff = function () { return Shell.dockStore.get('ccboard:dock:off') === '1'; };
+
+/* Wide enough for a dock (1024 px up); the media query the shell already watches, else asked now. */
+Shell.dockWide = function () { return Shell.mq && Shell.mq.d ? !!Shell.mq.d.matches : Shell.mqNow('(min-width: 1024px)'); };
+
+/* Does this window have room for the sidebar and the dock together (1440 px up)? */
+Shell.dockRoomy = function () { return Shell.mq && Shell.mq.x ? !!Shell.mq.x.matches : Shell.mqNow('(min-width: 1440px)'); };
+
+/* The dock exists in this window and this browser: wide enough, not switched off, and the terminal kit is loaded. session.js asks this to send the peek elsewhere. */
+Shell.dockOn = function () { return !Shell.dockOff() && Shell.dockWide() && typeof TermKit !== 'undefined' && !!TermKit && typeof TermKit.termPane === 'function'; };
+
+Shell.dockOpen = function () { return !!Shell.dock.pane; };
+
+/* Does the quad page own the window? Then the dock is suspended. D.held is the quad's own say (Shell.dockSuspend); mountedId === 'quad' is the router's (the session peek is an
+   overlay: it never changes mountedId, so a peek over the quad is still the quad). During the quad's unmount mountedId is still 'quad': Shell.dockResume reconciles after it. */
+Shell.dockHeld = function () { return !!Shell.dock.held || (typeof mountedId !== 'undefined' && mountedId === 'quad'); };
+
+/* Quad.mount, before it measures its column: the dock lets go of the window (its pane is taken down at once, the sidebar goes back to its own rule). */
+Shell.dockSuspend = function () {
+  Shell.dock.held = true;
+  if (Shell.mq) Shell.applyMode(); else Shell.dockSync();
+  return true;
+};
+
+/* The quad is gone: the dock comes back (the saved session, when there is room). The router moves mountedId after the old page's unmount, so the mode pass is deferred one tick. */
+Shell.dockResume = function () {
+  Shell.dock.held = false;
+  setTimeout(() => { if (!Shell.dockHeld() && Shell.mq) Shell.applyMode(); }, 0);
+  return true;
+};
+
+/* Why the dock will not open, as a sentence (a toast on mod+j; the Open links simply navigate). */
+Shell.dockWhy = function () {
+  const say = (t) => { if (typeof toast === 'function') toast(t, { kind: 'info' }); };
+  if (typeof TermKit === 'undefined' || !TermKit || typeof TermKit.termPane !== 'function') say('The terminal kit is not loaded: reload the board');
+  else if (Shell.dockOff()) say('The terminal dock is off in this browser (localStorage ccboard:dock:off)');
+  else if (!Shell.dockWide()) say('The terminal dock needs a window 1024 px wide or more');
+  else if (Shell.dockHeld()) say('The Quad page shows the terminals itself: the dock is back when you leave it');
+};
+
+Shell.clampDockW = function (n) {
+  const v = Number(n);
+  if (n === null || n === undefined || n === '' || !Number.isFinite(v) || v <= 0) return 0;
+  const room = Math.floor((Number(window.innerWidth) || 1600) * 0.6);
+  const max = Math.max(Shell.DOCK_MIN, Math.min(Shell.DOCK_MAX, room));
+  return Math.round(Math.min(max, Math.max(Shell.DOCK_MIN, v)));
+};
+
+/* --dock-w lives on #app (shell.css reads it on #dock), set through the CSSOM: never a style attribute. 0 = back to the CSS default. */
+Shell.setDockWidth = function (w, persist) {
+  const app = $('#app');
+  const px = Shell.clampDockW(w);
+  Shell.dock.w = px;
+  if (app) {
+    if (px) Shell.setVar(app, '--dock-w', px + 'px');
+    else { try { app.style.removeProperty('--dock-w'); } catch (_) { /* no CSSOM */ } }
+  }
+  const r = Shell.dock.resizer;
+  if (r) {
+    if (px) r.setAttribute('aria-valuenow', String(px)); else r.removeAttribute('aria-valuenow');
+  }
+  if (persist) Shell.dockStore.set('ccboard:dock:w', px ? px : null);
+  return px;
+};
+
+/* Back to the default width: the saved value is removed (not overwritten), so the viewport-relative default applies again. */
+Shell.resetDockWidth = function () { return Shell.setDockWidth(0, true); };
+
+Shell.buildDockResizer = function () {
+  const app = $('#app');
+  const h = el('div', { class: 'dock-resize', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Resize the terminal dock', tabindex: '0',
+    'aria-valuemin': String(Shell.DOCK_MIN), 'aria-valuemax': String(Shell.DOCK_MAX), title: 'Drag to resize the dock (double-click resets)' });
+  let drag = null;
+  const end = () => {
+    if (!drag) return;
+    drag = null;
+    if (app) app.classList.remove('dock-dragging');
+    if (Shell.dock.w) Shell.setDockWidth(Shell.dock.w, true);
+  };
+  h.addEventListener('pointerdown', (e) => {
+    if (e.button) return;
+    e.preventDefault();
+    const dock = $('#dock');
+    drag = { grab: (dock ? dock.getBoundingClientRect().left : e.clientX) - e.clientX };     // where on the strip it was taken
+    try { h.setPointerCapture(e.pointerId); } catch (_) { /* no pointer capture: the move events still arrive over the strip */ }
+    if (app) app.classList.add('dock-dragging');
+  });
+  h.addEventListener('pointermove', (e) => {
+    if (!drag || !app) return;
+    Shell.setDockWidth(app.getBoundingClientRect().right - (e.clientX + drag.grab), false);
+  });
+  for (const t of ['pointerup', 'pointercancel', 'lostpointercapture']) h.addEventListener(t, end);
+  h.addEventListener('dblclick', () => Shell.resetDockWidth());
+  h.addEventListener('keydown', (e) => {
+    const step = e.shiftKey ? 48 : 16;
+    const cur = Shell.dock.w || (() => { const d = $('#dock'); const r = d ? d.getBoundingClientRect() : null; return r && r.width > 0 ? Math.round(r.width) : 450; })();
+    let w = null;
+    if (e.key === 'ArrowLeft') w = cur + step;                       // the dock is on the right: left grows it
+    else if (e.key === 'ArrowRight') w = cur - step;
+    else if (e.key === 'Home') w = Shell.DOCK_MIN;
+    else if (e.key === 'End') w = Shell.DOCK_MAX;
+    else if (e.key === 'Enter') { e.preventDefault(); Shell.resetDockWidth(); return; }
+    if (w === null) return;
+    e.preventDefault();
+    Shell.setDockWidth(w, true);
+  });
+  return h;
+};
+
+/* The session the dock offers when nothing was asked for (mod+j with nothing open and nothing remembered): the one that needs you, else an errored, working, idle one,
+   the latest first (the sidebar's order); '' when there is no live session. */
+Shell.dockPick = function (st) {
+  if (!st) return '';
+  const m = Shell.model(st);
+  const all = [];
+  for (const p of [...m.main, ...m.older]) for (const k of p.kids) if (k.kind === 'sess' && k.state !== 'ended') all.push(k);
+  all.sort((a, b) => ((a.needs ? 0 : 1) - (b.needs ? 0 : 1)) || ((SHELL_STATE_RANK[a.state] ?? 5) - (SHELL_STATE_RANK[b.state] ?? 5)) || (b.at - a.at) || a.tmux.localeCompare(b.tmux));
+  return all.length ? all[0].tmux : '';
+};
+
+/* The session's row in a state payload, or null. */
+Shell.dockRow = function (st, tmux) {
+  if (!st || typeof rosterSessions !== 'function') return null;
+  return rosterSessions(st).find((s) => s.tmux === tmux) || null;
+};
+
+/* Paint the open pane from the state (called by renderShell on every render). */
+Shell.patchDock = function (st) {
+  const D = Shell.dock;
+  if (!D.pane || !st) return;
+  try { D.pane.update(Shell.dockRow(st, D.tmux), st); } catch (e) { console.error('ccboard dock', e); }
+};
+
+/* DOM only (no mode pass): put a pane for `tmux` into #dock, replacing the one there. */
+Shell.dockMount = function (tmux, o) {
+  const D = Shell.dock;
+  const host = $('#dock');
+  if (!host) return false;
+  const typing = TermKit.typingTarget();                              // a composer that has the keyboard keeps it, however the dock was opened
+  let pane = null;
+  try {                                                               // built detached first: a name that cannot be shown leaves the dock as it was
+    pane = TermKit.termPane(tmux, {
+      mode: 'full',
+      restoreFocus: typing,
+      holdFocus: !o.focus || !!typing,                                // opened by a restore, a route or a key: nothing may land in the terminal unasked
+      onClose: () => Shell.closeDock(),
+      onPopOut: (t) => Shell.popOutDock(t),
+      onAddToQuad: (t) => Shell.quadAdd(t),
+    });
+  } catch (e) {
+    if (typeof toast === 'function') toast('Not a terminal session name', { kind: 'bad' });
+    return false;
+  }
+  Shell.dockUnmount(true);
+  if (!D.resizer) D.resizer = Shell.buildDockResizer();
+  host.textContent = '';
+  host.append(D.resizer, pane.root);
+  host.classList.add('has-term');
+  host.classList.remove('hidden');
+  D.pane = pane;
+  D.tmux = tmux;
+  D.last = tmux;
+  if (D.w) D.resizer.setAttribute('aria-valuenow', String(D.w));
+  if (typeof state !== 'undefined' && state) Shell.patchDock(state);
+  return true;
+};
+
+/* DOM only: take the pane down (the iframe goes to about:blank first, see termPane.destroy) and hide #dock. */
+Shell.dockUnmount = function (keepHost) {
+  const D = Shell.dock;
+  if (D.pane) { try { D.pane.destroy(); } catch (e) { console.error('ccboard dock', e); } }
+  D.pane = null;
+  D.tmux = '';
+  const host = $('#dock');
+  if (!host) return;
+  host.textContent = '';
+  host.classList.remove('has-term');
+  if (!keepHost) host.classList.add('hidden');
+};
+
+/* Show `tmux` in the dock. opts.focus: the person asked (a click on Open, mod+j): the terminal takes the keyboard unless a text field has it; without it (a restore) the
+   terminal never takes focus by itself. opts.quiet: no toast when the dock is not available. true when the dock shows the session. */
+Shell.openDock = function (tmux, opts) {
+  const o = opts || {};
+  const D = Shell.dock;
+  if (typeof tmux !== 'string' || !tmux) return false;
+  if (!Shell.dockOn() || Shell.dockHeld()) { if (!o.quiet) Shell.dockWhy(); return false; }          // the quad owns the window: no dock over it
+  if (!$('#dock')) return false;
+  if (D.pane && D.tmux === tmux) {
+    if (o.focus && !TermKit.typingTarget()) D.pane.focus();
+    return true;
+  }
+  if (!Shell.dockMount(tmux, o)) return false;
+  Shell.dockStore.set('ccboard:dock', tmux);
+  if (Shell.mq) Shell.applyMode();
+  if (o.focus && !TermKit.typingTarget()) D.pane.focus();
+  return true;
+};
+
+/* The one call for "open this session's terminal": the dock when it is on (true), else its own page through openPage (false). For the keys and the palette. */
+Shell.openTerm = function (tmux) {
+  if (Shell.openDock(tmux, { focus: true, quiet: true })) return true;
+  if (typeof tmux === 'string' && tmux) { const url = '/term/' + encodeURIComponent(tmux); if (typeof openPage === 'function') openPage(url); else window.open(url, '_blank', 'noopener'); }
+  return false;
+};
+
+/* Close the dock and forget it (the saved session goes too, the full sidebar the person asked for goes back to the rule); mod+j brings back the one that was shown. */
+Shell.closeDock = function () {
+  const D = Shell.dock;
+  Shell.dockUnmount(false);
+  D.keep = false;
+  D.wanted = '';
+  Shell.dockStore.set('ccboard:dock', null);
+  if (Shell.mq) Shell.applyMode();
+  return true;
+};
+
+/* mod+j: close the dock when it is open; else open the last one shown, else the one that needs you most. */
+Shell.toggleDock = function () {
+  const D = Shell.dock;
+  if (D.pane) { Shell.closeDock(); return true; }
+  if (!Shell.dockOn() || Shell.dockHeld()) { Shell.dockWhy(); return false; }
+  const t = D.last || Shell.dockPick(typeof state === 'undefined' ? null : state);
+  if (!t) { if (typeof toast === 'function') toast('No live session to show', { kind: 'info' }); return false; }
+  return Shell.openDock(t, { focus: true });
+};
+
+/* The window crossed 1024 px or the dock was switched off: the pane goes (it must not hold a hidden full-mode client) and comes back with the room. Runs inside applyMode. */
+Shell.dockSync = function () {
+  const D = Shell.dock;
+  const on = Shell.dockOn();
+  const held = Shell.dockHeld();
+  if (D.pane && (!on || held)) { D.wanted = D.tmux; Shell.dockUnmount(false); }              // below 1024 px, switched off, or the quad page: the pane goes, ccboard:dock stays
+  else if (!D.pane && D.wanted && on && !held) { const t = D.wanted; D.wanted = ''; Shell.dockMount(t, {}); }
+};
+
+/* ccboard:dock:off from outside (a setting, a test): true turns the dock off and closes it. */
+Shell.setDockOff = function (off) {
+  Shell.dockStore.set('ccboard:dock:off', off ? '1' : null);
+  if (off && Shell.dock.pane) Shell.closeDock();
+  else if (Shell.mq) Shell.applyMode();
+};
+
+/* Does the open dock hold the sidebar at the rail? (below 1440 px, unless the person asked for the full sidebar while it is open) */
+Shell.dockForcesRail = function () { const D = Shell.dock; return !!D.pane && !D.keep && !Shell.dockRoomy(); };
+
+/* First state after load: the session the dock showed last time comes back, when it is still alive. */
+Shell.restoreDock = function (st) {
+  const D = Shell.dock;
+  const t = Shell.dockStore.get('ccboard:dock');
+  if (!t) return false;
+  const row = Shell.dockRow(st, t);
+  if (!row || row.state === 'ended') { Shell.dockStore.set('ccboard:dock', null); return false; }
+  if (Shell.dockHeld()) { D.wanted = Shell.dockOff() ? '' : t; return false; }                          // a load straight onto the quad: the dock comes back when it is left
+  if (!Shell.dockOn()) { D.wanted = !Shell.dockOff() && !Shell.dockWide() ? t : ''; return false; }       // a narrow window keeps it for the width that fits
+  return Shell.openDock(t, { quiet: true });
+};
+
+/* Pop out: the session in its own window (/term/), and the dock lets go of it: two full clients on one session would fight over its size. */
+Shell.popOutDock = function (tmux) {
+  const t = tmux || Shell.dock.tmux;
+  if (!t) return false;
+  const url = '/term/' + encodeURIComponent(t);
+  if (typeof openPage === 'function') openPage(url); else window.open(url, '_blank', 'noopener');
+  Shell.closeDock();
+  return true;
+};
+
+/* The quad's saved slots (ccboard:quad:all = {layout, slots[], ...}), as far as they can be read: [] when there are none. */
+Shell.quadSlots = function () {
+  try {
+    const v = JSON.parse(Shell.dockStore.get('ccboard:quad:all') || 'null');
+    if (v && Array.isArray(v.slots)) return v.slots.filter((x) => typeof x === 'string' && x).slice(0, 4);
+  } catch (_) { /* an unreadable entry is no slots */ }
+  return [];
+};
+
+/* Add a session to the quad view and go there; the dock lets go of the session (the quad shows it). The quad page owns its saved slots, so when pages/quad.js is
+   loaded this is Quad.addToQuad(tmux, project) (the project scope of the quad that is up, else the board-wide one). Without it (a partial deploy) the session is handed
+   over as ?s= instead: the saved slots plus this one (a full quad gives up its last slot), with l=4 once there are more than two; the address wins over what is
+   saved and the page writes it back. */
+Shell.quadAdd = function (tmux) {
+  if (typeof tmux !== 'string' || !tmux) return false;
+  if (typeof Quad !== 'undefined' && Quad && typeof Quad.addToQuad === 'function') {
+    if (Shell.dock.pane && Shell.dock.tmux === tmux) Shell.closeDock();
+    return !!Quad.addToQuad(tmux, Quad.current && Quad.current.project ? Quad.current.project : '');
+  }
+  const slots = Shell.quadSlots();
+  if (!slots.includes(tmux)) { if (slots.length >= 4) slots.pop(); slots.push(tmux); }
+  const query = { s: slots.join(',') };
+  if (slots.length > 2) query.l = '4';
+  if (Shell.dock.pane && Shell.dock.tmux === tmux) Shell.closeDock();
+  Shell.go(Shell.hash('quad', {}, query));
+  return true;
+};
+
+/* A click on a link to /term/<session>, from 1024 px up and with the dock on, opens the dock instead of a new tab. Left button, no modifier (those keep the browser's own
+   behaviour), not held for LONG_PRESS ms (a long press navigates, as it always did), not the dock's own pop-out link. Without the dock the click is left alone.
+   Registered on <body> in the capture phase, so it also runs before core.js's installed-app handler, which would navigate this window to /term/ instead. */
+Shell.onTermPress = function (e) {
+  const a = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('a[href]') : null;
+  Shell.dock.press = a && Shell.TERM_HREF.test(a.getAttribute('href') || '') ? { a, t: Date.now() } : null;
+};
+
+Shell.onTermLink = function (e) {
+  if (!e || e.defaultPrevented) return false;
+  if (e.button !== undefined && e.button !== 0) return false;
+  if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return false;
+  const a = e.target && typeof e.target.closest === 'function' ? e.target.closest('a[href]') : null;
+  if (!a) return false;
+  const m = Shell.TERM_HREF.exec(a.getAttribute('href') || '');
+  if (!m) return false;
+  const press = Shell.dock.press;
+  Shell.dock.press = null;
+  if (a.closest('#dock')) return false;
+  if (press && press.a === a && Date.now() - press.t >= Shell.LONG_PRESS) return false;
+  if (a.getAttribute('data-dock') === 'skip') return false;             // a link that pops out on purpose (the quad tile's open link)
+  if (!Shell.dockOn() || Shell.dockHeld()) return false;               // on the quad the link opens its own tab
+  let tmux = '';
+  try { tmux = decodeURIComponent(m[1]); } catch (_) { return false; }
+  if (!Shell.openDock(tmux, { focus: true, quiet: true })) return false;
+  if (typeof e.preventDefault === 'function') e.preventDefault();
+  try { if (typeof isStandalone === 'function' && isStandalone() && typeof e.stopPropagation === 'function') e.stopPropagation(); } catch (_) { /* no navigator */ }
+  const sheet = a.closest('#sheet');
+  if (sheet && typeof closeSheet === 'function') closeSheet();         // the peek sheet this link sat in would cover the dock
+  return true;
 };
 
 /* ---------- create menu: repo picker sheet, then the existing launcher forms ---------- */
@@ -1100,6 +1459,10 @@ Shell.listen = function () {
     Shell.installChanged();
     if (typeof toast === 'function') toast('ccboard is installed', { kind: 'ok' });
   });
+  if (document.body) {                                              // a row's Open link opens the dock from 1024 px up (capture: before core.js's installed-app handler)
+    document.body.addEventListener('pointerdown', Shell.onTermPress, true);
+    document.body.addEventListener('click', Shell.onTermLink, true);
+  }
   window.addEventListener('hashchange', () => { Shell.syncNav(); Shell.syncCrumbs(); Shell.syncSearchBox(); Shell.closeDrawer(); Shell.openCurrent(); });
   document.addEventListener('keydown', (e) => {
     if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -1136,7 +1499,7 @@ function installShell() {
   Shell.buildDrawer(drawer);
   Shell.buildBnav(bnav);
   const app = $('#app');
-  if (app) { Shell.refs.resizer = Shell.buildResizer(app); Shell.setSbWidth(Shell.sbW, false); }
+  if (app) { Shell.refs.resizer = Shell.buildResizer(app); Shell.setSbWidth(Shell.sbW, false); if (Shell.dock.w) Shell.setDockWidth(Shell.dock.w, false); }
   Shell.watchMode();
   Shell.listen();
   if (typeof state !== 'undefined' && state) renderShell(state);
@@ -1161,6 +1524,8 @@ function renderShell(st) {
   Shell.syncNav();
   Shell.syncCrumbs();
   Shell.syncSearchBox();
+  if (!Shell.dock.restored) { Shell.dock.restored = true; Shell.restoreDock(st); }       // once: the session the dock showed last time
+  Shell.patchDock(st);
 }
 
 function render(force) {

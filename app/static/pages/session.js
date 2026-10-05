@@ -1,7 +1,8 @@
 /* ccboard session peek (#/s/<tmux>): one session at a glance with its state, age, model and context, last prompt and message, a
    pending permission (Allow / Deny), Open terminal / Ack / Kill, the nudge chips and a box that sends text to the session.
-   Where it shows is decided on mount (and again on every update, so a resize switches it): the dock (#dock) from 1024 px up,
-   the sheet (dialog#sheet through openSheet) below, and #page itself when neither exists. It is an ordinary routed page (the
+   Where it shows is decided on mount (and again on every update, so a resize switches it): the dock (#dock) from 1024 px up unless the terminal
+   dock is on (v0.5.9, shell.js Shell.dockOn: that dock shows the live terminal and the peek moves to the sheet), the sheet (dialog#sheet through
+   openSheet) below, and #page itself when neither exists. It is an ordinary routed page (the
    router mounts it into #page, unmounts it on the next route); #/s/<a> to #/s/<b> swaps the panel through onRoute. The card
    is the shared sessionCard from pages/agents.js. Closing goes back in history when the app itself opened the peek, else home. */
 'use strict';
@@ -16,7 +17,8 @@ function peekLabel(tmux) {
 function peekSurface() {
   let wide = false;
   try { wide = !!(window.matchMedia && window.matchMedia('(min-width: 1024px)').matches); } catch (_) { /* no matchMedia */ }
-  if (wide && $('#dock')) return 'dock';
+  const termDock = typeof Shell !== 'undefined' && Shell && typeof Shell.dockOn === 'function' && Shell.dockOn();       // the terminal dock (shell.js) owns #dock: the peek is a sheet then
+  if (wide && $('#dock') && !termDock) return 'dock';
   const dlg = $('#sheet');
   if (typeof openSheet === 'function' && dlg && typeof dlg.showModal === 'function') return 'sheet';
   return 'page';

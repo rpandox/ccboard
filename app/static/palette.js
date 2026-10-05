@@ -19,7 +19,7 @@
 const Palette = {
   ui: null,                 // { dlg, view: 'palette' | 'help', mode, input, list, foot, ctx, shown, nodes, sel, selId, moreOpen, timer, sig } while open
   ROUTES: [['Home', '#/', 'g h'], ['Needs you', '#/inbox', 'g i'], ['Agents', '#/agents', 'g a'], ['Tasks', '#/tasks', 'g t'],
-    ['Usage', '#/usage', 'g u'], ['Memory', '#/memory', 'g m'], ['Settings', '#/settings', 'g s'], ['Search', '#/search', '/']],
+    ['Quad', '#/quad', 'g q'], ['Usage', '#/usage', 'g u'], ['Memory', '#/memory', 'g m'], ['Settings', '#/settings', 'g s'], ['Search', '#/search', '/']],
   NUDGES: ['continue', 'merge', 'push', 'pr', 'add commit push', 'do it'],            // the same six as the session cards (SESSION_NUDGES in pages/agents.js)
   CONTROLS: ['/compact', '/context', '/cost', '/usage', '/status'],                    // read-only or harmless: no argument, nothing destructive
   AGENTS_KEY: 'ccboard:agents',                                                          // sessionStorage: the GET /api/agents answer, cached by the terminal page's tuning strip

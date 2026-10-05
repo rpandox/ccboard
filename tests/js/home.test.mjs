@@ -877,6 +877,19 @@ test('on Home j and k walk the inbox cards first, then the rows of the open bloc
   assert.deepEqual(items(), [WT, CX], 'with a filter on the inbox is not part of the walk');
 });
 
+test('the o key (Pages.act("term")) opens the selected session through Shell.openTerm: the same surface as a click on its Open link (the dock from 1024 px, else the page)', async () => {
+  const { w, mount } = home();
+  mount();
+  w.run('Pages.select(1)');
+  w.run('globalThis.__opened = []; globalThis.__terms = []; openPage = (u) => __opened.push(u);');
+  assert.equal(await w.run('Pages.act("term")'), true);
+  assert.deepEqual(plain(w.get('__opened')), [`/term/${CK}`], 'without a Shell (or an older one) it is the terminal page as before');
+  w.run('globalThis.Shell = { openTerm: (t) => { __terms.push(t); return true; } }');
+  assert.equal(await w.run('Pages.act("term")'), true);
+  assert.deepEqual(plain(w.get('__terms')), [CK]);
+  assert.deepEqual(plain(w.get('__opened')), [`/term/${CK}`], 'no second tab: the dock took it');
+});
+
 test('on Home a collapsed block is skipped by the walk, and a click on a row selects it', () => {
   const { w, mount } = home();
   mount();

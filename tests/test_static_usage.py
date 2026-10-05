@@ -126,11 +126,13 @@ def test_index_never_loads_uplot_eagerly():
 
 # ---------------------------------------------------------------- the route
 
-def test_placeholders_no_longer_register_usage_and_keep_the_other_three():
+def test_placeholders_no_longer_register_usage_or_quad_and_keep_the_other_two():
     code = blank_js(text_of("pages/placeholders.js"))
     assert not re.search(r"""registerPage\(\s*['"]usage['"]""", code), "pages/placeholders.js must not register 'usage' any more (pages/usage.js does)"
     assert not re.search(r"^\s*usage\s*:", code, re.M), "the usage entry of PLACEHOLDER_INFO is dead once the page is real: remove it"
-    for rest in ("quad", "memory", "onboarding"):
+    assert not re.search(r"""registerPage\(\s*['"]quad['"]""", code), "pages/placeholders.js must not register 'quad' any more (pages/quad.js does, v0.5.9)"
+    assert not re.search(r"^\s*quad\s*:", code, re.M), "the quad entry of PLACEHOLDER_INFO is dead once the page is real: remove it"
+    for rest in ("memory", "onboarding"):
         assert re.search(rf"""registerPage\(\s*['"]{rest}['"]""", code), f"the {rest} placeholder is still owed to a later phase"
 
 

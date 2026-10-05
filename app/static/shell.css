@@ -5,7 +5,7 @@
    Hover styles live only under @media (hover:hover) so a touch screen never keeps a hover state; keyboard focus is shown by :focus-visible alone.
    The installed-app rules (html.pwa: window-controls-overlay title bar, drag regions) are at the end of the file. */
 
-:root { --topbar-h:48px; --sb-full:260px; --sb-rail:48px; --dock-w:clamp(320px, 34vw, 560px); --bnav-h:56px; }
+:root { --topbar-h:48px; --sb-full:260px; --sb-rail:48px; --dock-w:min(44vw, 640px); --bnav-h:56px; }          /* --dock-w: shell.js overrides it on #app after a drag (ccboard:dock:w) */
 @media (pointer:coarse) { :root { --topbar-h:54px; } }
 html.force-coarse { --topbar-h:54px; }
 
@@ -31,9 +31,59 @@ body[data-shell] #main { min-width:0; min-height:0; max-width:none; margin:0; ov
 body[data-shell=compact] #main { padding-left:max(10px, var(--sal)); padding-right:max(10px, var(--sar)); }
 #page { min-width:0; }
 #banner:empty { display:none; }
-#dock { min-width:0; min-height:0; overflow:auto; background:var(--bg); }
-#dock:not(.hidden) { display:block; width:var(--dock-w); border-left:1px solid var(--line); }
+#dock { position:relative; min-width:0; min-height:0; overflow:auto; background:var(--bg); }
+#dock:not(.hidden) { display:block; width:var(--dock-w); min-width:320px; max-width:70vw; border-left:1px solid var(--line); }
+#dock.has-term:not(.hidden) { display:flex; flex-direction:column; overflow:hidden; }          /* the terminal dock (shell.js): one pane filling the column */
 @media (max-width:1023px) { #dock { display:none !important; } }
+
+/* ---------- the terminal pane (termkit.js TermKit.termPane): the dock, and any tile that wants the same header ----------
+   One header row (28 px with a mouse, 44 px on touch: --row-btn), an optional task line and permission line, then the terminal filling the rest. The iframe is absolute
+   inside .tp-body, so the pane never grows with the terminal; classes only, no inline styles. */
+.tpane { flex:1 1 auto; display:flex; flex-direction:column; min-width:0; min-height:0; height:100%; background:var(--bg-0); }
+.tp-head { flex:0 0 auto; display:flex; align-items:center; gap:6px; min-width:0; min-height:var(--row-btn); padding:0 2px 0 8px; background:var(--bg); border-bottom:1px solid var(--line); font-size:12px; }
+.tp-g { flex:0 0 auto; display:inline-flex; align-items:center; }
+.tp-name { flex:0 1 auto; min-width:0; display:flex; overflow:hidden; white-space:nowrap; font:600 12px/1.2 var(--font-mono); color:var(--fg); }
+.tp-name > .tp-where { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:pre; color:var(--fg-2); font-weight:500; }      /* project/repo gives way first ... */
+.tp-name > .tp-where.off { display:none; }                                                                                                       /* TermKit.fitName: no sliver of it either */
+.tp-name > .tp-sess { flex:0 0 auto; max-width:100%; min-width:2ch; overflow:hidden; text-overflow:ellipsis; }                                          /* ... and the session name stays whole */
+.tp-ctx, .tp-size { flex:0 0 auto; font:11px/1 var(--font-mono); color:var(--dim); white-space:nowrap; }
+.tp-ctx.warn, .tp-size.cropped { color:var(--warn-fg); }
+.tp-ctx.bad { color:var(--bad-fg); }
+.tp-spacer { flex:1 1 0; min-width:0; }
+.tp-btns, .tp-modes { flex:0 0 auto; display:flex; align-items:center; }
+.tp-head .bp5-button.tp-btn:not([class*=bp5-intent-]) { min-width:var(--row-btn); width:var(--row-btn); min-height:var(--row-btn); height:var(--row-btn); padding:0; justify-content:center; }
+.tp-head .tp-btn.hidden { display:none; }
+/* the mode control: one segmented track, the current mode tinted (the accent tint, never a second filled primary) */
+.tp-modes .bp5-button.tp-mode { min-height:var(--row-btn); border-radius:0; margin-left:-1px; padding:0 8px; font-size:11px; }
+.tp-modes .bp5-button.tp-mode:first-child { margin-left:0; border-radius:3px 0 0 3px; }
+.tp-modes .bp5-button.tp-mode:last-child { border-radius:0 3px 3px 0; }
+.bp5-dark .tp-modes .bp5-button.tp-mode[aria-pressed=true]:not([class*=bp5-intent-]) { position:relative; z-index:1; color:var(--sig); background:var(--sig-bg); border-color:var(--sig-bd); }
+/* the task line: what the session is doing (the question while it waits) */
+.tp-task { flex:0 0 auto; display:flex; align-items:baseline; gap:8px; min-width:0; padding:4px 10px; background:var(--bg); border-bottom:1px solid var(--line-soft); font-size:12px; line-height:1.4; color:var(--fg-2); }
+.tp-task.hidden, .tp-perm.hidden { display:none; }
+.tp-task-text { flex:1 1 auto; min-width:0; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; }
+.tp-task[data-kind=ask] .tp-task-text { color:var(--warn-fg); }
+.tp-task[data-kind=prompt] .tp-task-text, .tp-task[data-kind=gone] .tp-task-text { color:var(--dim); }
+.tp-phase { flex:0 0 auto; font-size:11px; color:var(--dim); }
+/* the permission line: what is asked, then Allow (tinted primary), Deny (red outline), In terminal (quiet) */
+.tp-perm { flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; min-width:0; padding:6px 10px; background:var(--warn-bg); border-bottom:1px solid var(--warn); }
+.tp-perm-text { flex:1 1 140px; min-width:0; overflow-wrap:anywhere; font:12px/1.4 var(--font-mono); color:var(--warn-fg); }
+.tp-perm-btns { flex:0 0 auto; display:flex; gap:6px; }
+.tp-perm .bp5-button { min-height:var(--row-btn); }
+.tp-body { position:relative; flex:1 1 auto; min-height:0; overflow:hidden; background:var(--bg-0); }
+.tp-frame { position:absolute; inset:0; width:100%; height:100%; display:block; border:0; background:var(--bg-0); }
+.tp-body pre.tail { position:absolute; inset:0; margin:0; padding:8px 10px; overflow:auto; white-space:pre; font:12px/1.35 var(--font-mono); font-variant-ligatures:none; color:var(--fg-2); }
+.tpane.gone .tp-body { opacity:.55; }
+
+/* the drag handle on the dock's left edge (shell.js buildDockResizer): a mouse only, like the sidebar's */
+.dock-resize { display:none; position:absolute; z-index:3; top:0; bottom:0; left:0; width:6px; touch-action:none; cursor:col-resize; }
+.dock-resize::after { content:""; position:absolute; top:0; bottom:0; left:0; width:2px; background:transparent; }
+@media (any-pointer:fine) { #dock.has-term .dock-resize { display:block; } }
+@media (hover:hover) { .dock-resize:hover::after { background:var(--line); } }
+.dock-resize:focus-visible::after, #app.dock-dragging .dock-resize::after { background:var(--sig); }
+.dock-resize:focus-visible { outline:none; }
+#app.dock-dragging { cursor:col-resize; user-select:none; -webkit-user-select:none; }
+#app.dock-dragging iframe { pointer-events:none; }                   /* the terminal must not swallow the drag */
 
 /* ---------- topbar ---------- */
 #topbar { position:relative; z-index:20; display:flex; align-items:center; gap:6px; min-width:0;

@@ -745,3 +745,161 @@ html.force-coarse #page .settings-page .add-url { font-size:16px; }
 
 /* search: Peek and Attach sit at the right of the result's head, beside the role chip, the place and the time */
 #page .res-actions { margin-left:auto; display:inline-flex; align-items:center; gap:6px; }
+
+/* ---------- quad (v0.5.9: pages/quad.js, route #/quad) ----------
+   The page fills #main (the shell scrolls #main, the body never does): head, the one-up chip strip, the tile grid, the host key bar. A tile is placed by its data-slot
+   (grid-area per slot, so a zoomed tile can leave the flow without moving the others) and is never reordered in the DOM: an iframe that moves reloads.
+   Zoom is an overlay over the unchanged grid: the other tiles keep their pixel size, so their terminals are not refitted and no /resize is sent.
+   Each tile is a size container: the header sheds its pieces as the tile narrows (see 'header: one row'), the mode picker is a segmented control that becomes one
+   menu button under 354 px (358 on touch). Header row: --row-btn (28 px with a mouse, 44 px on touch). Hover only under (hover:hover). */
+body[data-page=quad] #main { display:flex; flex-direction:column; padding-bottom:8px; }
+body[data-page=quad] #banner { flex:none; }
+body[data-page=quad] #page { flex:1 1 0; min-height:420px; display:flex; flex-direction:column; }
+#page .quad { flex:1 1 0; width:100%; min-height:0; display:flex; flex-direction:column; gap:6px; }
+#page .quad .q-head { flex:none; padding:10px 0 2px; align-items:center; }
+#page .quad .q-scope { display:inline-flex; align-items:baseline; gap:6px; margin-right:auto; font-size:12px; }
+#page .quad .q-scope .q-all { color:var(--fg-2); }
+#page .quad .q-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; }
+#page .quad[data-forced] .q-layout { display:none; }                         /* the window or the column is too narrow for tiles: the chips are the switcher */
+#page .quad .q-actions .bp5-button { white-space:nowrap; }
+#page .quad .q-keys-toggle[aria-pressed=true] { color:var(--sig); border-color:var(--sig-bd); background:var(--sig-bg); }
+
+/* the one-up chip switcher: a scroll-snap strip of 44 px chips, state and agent glyph, the name and the last line of the pane */
+#page .quad .q-chips { flex:none; display:none; gap:6px; margin:0 -2px; padding:2px 2px 6px; overflow-x:auto; overscroll-behavior-x:contain; scroll-snap-type:x proximity; scrollbar-width:none; -webkit-overflow-scrolling:touch; }
+#page .quad .q-chips::-webkit-scrollbar { display:none; }
+#page .quad[data-oneup] .q-chips:not(.hidden) { display:flex; }
+#page .quad .q-chip { flex:none; scroll-snap-align:start; display:inline-flex; align-items:center; gap:6px; min-width:96px; max-width:min(240px, 62vw); min-height:var(--row-btn); padding:0 12px 0 8px;
+                      border:1px solid var(--line-strong); border-radius:18px; background:var(--panel); color:var(--fg-2); font:12px/1.25 var(--font-ui); text-align:left; cursor:pointer; }
+#page .quad .q-chip.needs { border-color:var(--warn); }
+#page .quad .q-chip[aria-selected=true] { border-color:var(--sig); background:var(--sig-bg); color:var(--fg); }
+#page .quad .q-chip-glyphs { flex:none; display:inline-flex; align-items:center; }
+#page .quad .q-chip-glyphs .glyph { width:1.1em; }
+#page .quad .q-chip-text { display:flex; flex-direction:column; min-width:0; }
+#page .quad .q-chip-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+#page .quad .q-chip-tail { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:10px/1.3 var(--font-mono); color:var(--dim); }
+#page .quad .q-chip-tail:empty { display:none; }
+#page .quad .q-chip:focus-visible { outline:2px solid var(--sig); outline-offset:1px; }
+@media (hover:hover) { #page .quad .q-chip:hover { color:var(--fg); border-color:var(--dim-2); } #page .quad .q-chip[aria-selected=true]:hover { border-color:var(--sig); } }
+
+/* the grid: explicit tracks per layout, explicit cell per slot */
+#page .quad .qgrid { position:relative; flex:1 1 0; min-height:0; display:grid; gap:8px; grid-template-columns:minmax(0, 1fr); grid-template-rows:minmax(0, 1fr); }
+#page .quad .qgrid[data-layout="2"] { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+#page .quad .qgrid[data-layout="4"] { grid-template-columns:repeat(2, minmax(0, 1fr)); grid-template-rows:repeat(2, minmax(0, 1fr)); }
+#page .quad .qgrid .qtile[data-slot="0"] { grid-area:1 / 1; }
+#page .quad .qgrid .qtile[data-slot="1"] { grid-area:1 / 2; }
+#page .quad .qgrid .qtile[data-slot="2"] { grid-area:2 / 1; }
+#page .quad .qgrid .qtile[data-slot="3"] { grid-area:2 / 2; }
+#page .quad .qgrid .qtile.zoomed { position:absolute; inset:0; grid-area:1 / 1 / -1 / -1; z-index:4; background:var(--bg-0); }
+#page .quad .qgrid[data-zoom] .qtile:not(.zoomed) { visibility:hidden; pointer-events:none; }      /* still laid out at their own size (no refit), just not painted over the overlay's edge */
+
+#page .quad .qtile { container-type:inline-size; display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--card); border:1px solid var(--line); border-radius:2px; overflow:hidden; }
+#page .quad .qtile.needs { border-color:var(--warn); }
+#page .quad .qtile.active { outline:2px solid var(--sig); outline-offset:-1px; }
+#page .quad .qtile:focus { outline:none; }
+#page .quad .qtile.active:focus { outline:2px solid var(--sig); outline-offset:-1px; }
+#page .quad .qtile.gone { opacity:.85; }
+
+/* header: one row, --row-btn tall (28 px with a mouse, 44 px on touch). The title keeps at least 40 % of the row (40cqi: the tile is the size container); the other pieces
+   are there only while they fit beside it, so nothing is ever clipped. Thresholds are container widths (the tile's width minus its 2 px border), measured in a browser:
+   a piece fits once the title floor plus every piece to its left (glyphs 30, modes 124 or the menu button 61, 28 per icon, ctx 60, size 47, 4 px gaps) is under the row.
+   With a mouse, from the narrowest up: Close always; Open from 393 px, Zoom 446, the ctx chip 553, Reconnect 607, the size chip 691; the four-way mode control from 354 px,
+   one menu button under that (measured with a 20-character session name: it stays whole). Touch (.quad[data-touch]: 44 px per control, the mode control alone is 176) sheds earlier: Open from 450 px, Close 530, Zoom 610, the ctx
+   chip 718, Reconnect 798, the size chip 883; the title floor gives way under 380 px so the four 44 px options fit at 366, and under 358 px (they cannot) the mode control is the menu
+   button too. The title menu always has all of them. */
+#page .quad .qt-head { flex:none; display:flex; align-items:center; gap:4px; min-height:var(--row-btn); padding:0 2px 0 6px; background:var(--bg); border-bottom:1px solid var(--line-soft); }
+#page .quad .qt-glyphs { flex:none; display:inline-flex; align-items:center; }
+#page .quad .qt-glyphs .glyph { width:1.15em; }
+#page .quad .qt-title { flex:1 1 auto; min-width:40cqi; min-height:var(--row-btn); justify-content:flex-start; gap:4px; padding:0 6px; border:0; color:var(--fg); font:600 12px/1 var(--font-ui); text-align:left; }
+#page .quad .qt-title > .qt-name { flex:0 1 auto; display:flex; min-width:0; overflow:hidden; white-space:nowrap; }      /* Blueprint's .bp5-button > * is flex-shrink 0 */
+#page .quad .qt-name > .qt-where { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:pre; color:var(--fg-2); font-weight:500; }      /* the project/repo gives way first ... */
+#page .quad .qt-name > .qt-where.off { display:none; }                                          /* TermKit.fitName: what is left of it would be a sliver ('p'), so the session name stands alone */
+#page .quad .qt-name > .qt-sess { flex:0 0 auto; max-width:100%; min-width:2ch; overflow:hidden; text-overflow:ellipsis; }      /* ... and the session name stays whole (it only gets an ellipsis when it alone is wider than the title) */
+#page .quad .qt-title > .qt-caret { flex:none; color:var(--dim); font-size:10px; }
+#page .quad .qt-modes { flex:none; }
+#page .quad .qt-modes .seg-btn { min-height:var(--row-btn); padding:0 6px; font-size:11px; }
+#page .quad .qt-modemenu { display:none; flex:none; min-height:var(--row-btn); padding:0 8px; gap:4px; font:11px/1 var(--font-mono); color:var(--sig); border-color:var(--sig-bd); background:var(--sig-bg); }
+#page .quad .qt-modemenu .qt-caret { color:var(--sig); font-size:10px; }
+#page .quad .qt-ctx { flex:none; padding:0 6px; border:1px solid var(--line); border-radius:9px; font:11px/16px var(--font-mono); color:var(--dim); white-space:nowrap; }
+#page .quad .qt-ctx.hi { color:var(--warn-fg); border-color:var(--warn); }
+#page .quad .qt-ctx.crit { color:var(--bad-fg); border-color:var(--bad); background:var(--bad-bg); }
+#page .quad .qt-size { flex:none; padding:0 6px; border:1px solid var(--line); border-radius:9px; font:11px/16px var(--font-mono); color:var(--dim); white-space:nowrap; }
+#page .quad .qt-size.cropped { color:var(--warn-fg); border-color:var(--warn); background:var(--warn-bg); }
+#page .quad .qt-head .icon { flex:none; min-width:var(--row-btn); width:var(--row-btn); min-height:var(--row-btn); height:var(--row-btn); padding:0; justify-content:center; color:var(--fg-2); }
+#page .quad .qt-zoom[aria-pressed=true] { color:var(--sig); }
+#page .quad .qt-zoom.hidden { display:none; }
+@container (max-width: 688px) { #page .quad .qt-size { display:none; } }
+@container (max-width: 604px) { #page .quad .qt-reconnect { display:none; } }
+@container (max-width: 550px) { #page .quad .qt-ctx { display:none; } }
+@container (max-width: 443px) { #page .quad .qt-zoom { display:none; } }
+@container (max-width: 390px) { #page .quad .qt-open { display:none; } }                 /* the tile menu opens the terminal page too */
+@container (max-width: 351px) {                                                                /* the four-way control and a title that holds a 20-character session name do not fit */
+  #page .quad .qt-modes { display:none; }
+  #page .quad .qt-modemenu { display:inline-flex; }
+}
+/* touch: 44 px controls, so every piece goes earlier; the four-way mode control keeps 44 px per option */
+#page .quad[data-touch] .qt-modes .seg-btn { min-width:var(--row-btn); }
+@container (max-width: 881px) { #page .quad[data-touch] .qt-size { display:none; } }
+@container (max-width: 797px) { #page .quad[data-touch] .qt-reconnect { display:none; } }
+@container (max-width: 717px) { #page .quad[data-touch] .qt-ctx { display:none; } }
+@container (max-width: 609px) { #page .quad[data-touch] .qt-zoom { display:none; } }
+@container (max-width: 529px) { #page .quad[data-touch] .qt-close { display:none; } }
+@container (max-width: 449px) { #page .quad[data-touch] .qt-open { display:none; } }
+@container (max-width: 355px) {                                                                /* four 44 px options plus a readable title do not fit: the mode control is the menu button */
+  #page .quad[data-touch] .qt-modes { display:none; }
+  #page .quad[data-touch] .qt-modemenu { display:inline-flex; }
+}
+@container (max-width: 379px) {                                                                /* the 176 px mode control comes before the 40 % floor, and the title gives up its padding */
+  #page .quad[data-touch] .qt-head { gap:2px; padding-left:4px; }
+  #page .quad[data-touch] .qt-title { min-width:0; padding:0 3px; gap:2px; }
+}
+
+/* the task line, and what the session is waiting on */
+#page .quad .qt-task { flex:none; padding:3px 8px; border-bottom:1px solid var(--line-soft); font-size:12px; line-height:1.4; color:var(--fg-2); display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1; overflow:hidden; overflow-wrap:anywhere; }
+#page .quad .qt-task[data-kind=ask] { -webkit-line-clamp:2; color:var(--warn-fg); }
+#page .quad .qt-perm { flex:none; display:flex; align-items:center; gap:4px 8px; padding:4px 8px; background:var(--warn-bg); border-bottom:1px solid var(--warn); }
+#page .quad .qt-perm-text { flex:1 1 0; min-width:0; display:flex; align-items:baseline; gap:8px; overflow:hidden; white-space:nowrap; font:12px/1.4 var(--font-mono); color:var(--fg); }
+#page .quad .qt-perm-sum { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }      /* the whole summary is the tooltip */
+#page .quad .qt-perm-note { flex:none; font:11px/1.4 var(--font-ui); }
+#page .quad .qt-perm-btns { flex:none; display:flex; align-items:center; gap:6px; }
+@container (max-width: 477px) { #page .quad .qt-perm-note { display:none; } }
+@container (max-width: 357px) { #page .quad .qt-perm { flex-wrap:wrap; } #page .quad .qt-perm-text { flex:1 1 100%; } }      /* too narrow for the text and three buttons on one row */
+
+/* the body: a black box the terminal fills (the iframe is absolute: the tile, not the page inside it, decides the size) */
+#page .quad .qt-body { position:relative; flex:1 1 0; min-height:0; background:#000; }
+#page .quad .qt-frame { position:absolute; inset:0; width:100%; height:100%; border:0; background:#000; }
+#page .quad .qt-tail { position:absolute; inset:0; max-height:none; margin:0; border:0; border-radius:0; padding:8px 10px; background:#000; color:var(--fg-2); font-size:11px; line-height:1.35; }
+#page .quad .qt-note { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; padding:12px; text-align:center; color:var(--dim); font-size:12px; }
+
+/* an empty slot: what could go there */
+#page .quad .qempty { align-items:center; justify-content:center; gap:10px; padding:14px; background:transparent; border-style:dashed; color:var(--dim); }
+#page .quad .qgrid .qempty[data-slot="0"] { grid-area:1 / 1; }
+#page .quad .qgrid .qempty[data-slot="1"] { grid-area:1 / 2; }
+#page .quad .qgrid .qempty[data-slot="2"] { grid-area:2 / 1; }
+#page .quad .qgrid .qempty[data-slot="3"] { grid-area:2 / 2; }
+#page .quad .qe-title { font-size:13px; }
+#page .quad .qe-list { display:flex; flex-direction:column; align-items:stretch; gap:4px; width:min(100%, 320px); }
+#page .quad .qe-pick { justify-content:flex-start; gap:6px; min-width:0; }
+#page .quad .qe-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* the host key bar (compact preset: TermKit.keyBar without term.css, which the board does not load) and the scroll keys; on touch and in one-up by default */
+#page .quad .q-keys { flex:none; padding:6px 0 0; border-top:1px solid var(--line-soft); }
+#page .quad .q-keys.off { opacity:.5; }
+#page .quad .q-keys-to { display:block; margin-bottom:4px; font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#page .quad .q-keys-row { display:flex; align-items:stretch; gap:8px; }
+#page .quad .kb { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:4px; }
+#page .quad .kb-row { display:grid; grid-template-columns:repeat(6, minmax(0, 1fr)); gap:4px; }
+#page .quad .kb-key { min-width:0; min-height:var(--row-btn); padding:0 2px; justify-content:center; font-size:12px; font-weight:500; white-space:nowrap; touch-action:manipulation; }
+#page .quad .kb-key.down { background:var(--sig); border-color:var(--sig); color:var(--on-sig); }
+#page .quad .kb-more { display:none; }
+#page .quad .kb.compact .kb-more { display:inline-flex; }
+#page .quad .kb.compact:not(.more) .kb-r2 { display:none; }
+#page .quad .kb-ask-row { display:none; }
+#page .quad .q-scroll { flex:none; display:grid; grid-template-columns:repeat(2, var(--row-btn)); gap:4px; align-content:start; }
+#page .quad .q-scroll-btn { min-width:var(--row-btn); min-height:var(--row-btn); padding:0; justify-content:center; touch-action:manipulation; }
+#page .quad .q-scroll-btn.down { background:var(--sig); border-color:var(--sig); color:var(--on-sig); }
+
+/* a phone: the head wraps (the layout control is gone), the tile takes the rest of the screen */
+@media (max-width:599px) {
+  body[data-page=quad] #page { min-height:360px; }
+  #page .quad .q-head h1 { font-size:16px; }
+}

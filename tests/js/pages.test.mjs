@@ -190,13 +190,13 @@ function fakeState(over = {}) {
   };
 }
 
-const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'project', 'agents', 'settings', 'search', 'session', 'usage', 'placeholders'];       // widgets.js (Widgets, no route) loads right after inbox.js, project.js right after tasks.js
+const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'project', 'agents', 'settings', 'search', 'session', 'usage', 'quad', 'placeholders'];       // widgets.js (Widgets, no route) loads right after inbox.js, project.js right after tasks.js
 
 /** A world with the DOM, the real scripts in index.html order (shell.js left out), and recorders for api, toast and registerPage. */
 function pagesWorld({ wide = false, extra = {}, state = fakeState(), realPoll = false } = {}) {
   const w = makeWorld({ matchMedia: (q) => ({ matches: wide && /1024/.test(q), addEventListener() {}, removeEventListener() {} }), ...extra });
   const dom = installDom(w);
-  for (const f of ['core.js', 'components.js', 'live.js', 'launcher.js', 'tree.js', 'router.js']) w.load(f);       // tree.js (Tree, definition-only) follows launcher.js in index.html
+  for (const f of ['core.js', 'components.js', 'live.js', 'termkit.js', 'launcher.js', 'tree.js', 'router.js']) w.load(f);       // tree.js (Tree, definition-only) follows launcher.js in index.html
   w.ctx.__calls = []; w.ctx.__toasts = []; w.ctx.__registered = []; w.ctx.__mounts = {}; w.ctx.__searchHits = [];
   w.run(`
     api = async (method, path, body) => {
@@ -313,6 +313,20 @@ test('a row shows glyphs, name, repo, age, model chip and context meter, last pr
   assert.deepEqual(rowMenuLabels(w, idle), ['Reply', 'Tail', 'Kill'], 'no Acknowledge when nothing needs attention');
   assert.equal(row.classList.contains('open'), true, 'a waiting row keeps its chips and send box open');
   assert.equal(idle.classList.contains('open'), false, 'an idle one folds them behind Reply');
+});
+
+test('a row\'s ... menu offers Add to quad from 840 px up (Shell.quadAdd), just before Kill; not on a narrow window, not without the quad, not for the Open-only peek', () => {
+  const { w } = pagesWorld();
+  w.run('globalThis.__quadAdds = []; globalThis.Shell = { mode: "expanded", wide() { return this.mode === "expanded" || this.mode === "large"; }, quadAdd(t) { __quadAdds.push(t); return true; } }');
+  w.location.hash = '#/agents';
+  const row = page(w).querySelector('.rrow[data-tmux=shop--api--s2]');
+  assert.deepEqual(rowMenuLabels(w, row), ['Acknowledge', 'Hide reply box', 'Tail', 'Add to quad', 'Kill'], 'before Kill, the destructive one stays last');
+  assert.equal(rowMenu(w, row, 'Add to quad'), true);
+  assert.deepEqual(plain(w.get('__quadAdds')), ['shop--api--s2'], 'the row\'s own session');
+  w.run('Shell.mode = "medium"');
+  assert.equal(rowMenuLabels(w, row).includes('Add to quad'), false, 'under 840 px the quad is the phone chip switcher: no tile to add to');
+  w.run('Shell.mode = "large"; delete Shell.quadAdd');
+  assert.equal(rowMenuLabels(w, row).includes('Add to quad'), false, 'without Shell.quadAdd (a partial deploy) there is nothing to call');
 });
 
 test('a plain shell session shows no nudge chips (typing "push" into bash would run it)', () => {
@@ -583,11 +597,16 @@ test('placeholder pages take onRoute: #/memory to #/memory/shop?tab=x redraws wi
 
 test('every later-phase route has a placeholder that names its phase; the project route has its real page', () => {
   const { w } = pagesWorld();
-  const cases = { '#/quad': 'v0.5.9', '#/memory/shop': 'v0.5.20', '#/onboarding/project': 'v0.5.19' };
+  const cases = { '#/memory/shop': 'v0.5.20', '#/onboarding/project': 'v0.5.19' };
   for (const [hash, version] of Object.entries(cases)) {
     w.location.hash = hash;
     assert.match(text(page(w)), new RegExp(`arrives in ${version.replace(/\./g, '\\.')}`), hash);
   }
+  w.location.hash = '#/quad';
+  assert.equal(mounts(w, 'quad'), 1, 'v0.5.9: the quad route is its real page (pages/quad.js), not a placeholder');
+  assert.doesNotMatch(text(page(w)), /arrives in/);
+  assert.ok(page(w).querySelector('.quad'));
+  assert.equal(w.get("typeof PLACEHOLDER_INFO === 'object' && 'quad' in PLACEHOLDER_INFO"), false, 'placeholders.js no longer lists the quad route');
   w.location.hash = '#/p/shop';
   assert.equal(mounts(w, 'project'), 1);
   assert.doesNotMatch(text(page(w)), /arrives in/, 'v0.5.6 replaced the project placeholder');

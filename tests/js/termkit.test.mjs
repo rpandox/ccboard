@@ -1299,3 +1299,527 @@ test('fake tty soft keyboard: off by default, and a bad value, a page without a 
   assert.equal(blocked.viewport.height, 500);
   assert.doesNotThrow(() => { const w = makeWorld(); installDom(w); w.load(path.join(ROOT, 'scripts', 'dev', 'fake_tty', 'fake_tty.js')); });   // no parent at all (the fake opened on its own)
 });
+
+// ---------------------------------------------------------------- termPane (v0.5.9: the dock and the quad tiles)
+
+/** core.js + termkit.js on minidom, fake timers, recorders for api(), toast and Live; `Dnd` is a recorder when `dnd` is true. */
+function paneWorld({ dnd = false, live = true, extra = {} } = {}) {
+  const k = kitWorld({ dom: true, extra });
+  k.w.ctx.__calls = [];
+  k.w.ctx.__toasts = [];
+  k.w.ctx.__live = { subscribed: [], unsubscribed: [], fns: {} };
+  k.w.ctx.__dnd = [];
+  k.w.run(`
+    api = async (method, path, body) => { __calls.push({ method, path, body }); return { ok: true }; };
+    toast = (text, o) => { __toasts.push({ text, kind: o && o.kind }); };
+    globalThis.poll = () => { __calls.push({ method: 'poll' }); };
+    ${live ? `globalThis.Live = { subscribe(tmux, fn) { __live.subscribed.push(tmux); __live.fns[tmux] = fn; return () => { __live.unsubscribed.push(tmux); delete __live.fns[tmux]; }; } };` : ''}
+    ${dnd ? 'globalThis.Dnd = { bind(node) { __dnd.push(node); return node; } };' : ''}
+  `);
+  return k;
+}
+
+const SESS = 'shop--api--s1';
+const PANE_GRID = '/tty/?arg=shop--api--s1&arg=grid&fontSize=11&rendererType=canvas&disableResizeOverlay=true&disableReconnect=true';
+const srcOf = (p) => p.iframe.src;
+const paneBtn = (p, act) => p.root.querySelector(`[data-act=${act}]`);
+const paneRow = (over = {}) => ({ tmux: SESS, name: 's1', state: 'working', agent: 'claude', stats: { context_pct: 42 }, last_prompt: 'fix the login bug', last_message: 'done', task: null, flags: {}, ...over });
+
+test('termPane: the namespace carries the pane and its pure helpers', () => {
+  const { kit } = kitWorld();
+  for (const name of ['termPane', 'paneLabel', 'paneParts', 'paneLine', 'panePending', 'sizeChip', 'typingTarget', 'ctxInfo']) assert.equal(typeof kit[name], 'function', `TermKit.${name}`);
+});
+
+test('paneLabel: project/repo · name, the project folder spelled out, anything else as it is', () => {
+  const { kit } = kitWorld();
+  assert.equal(kit.paneLabel('shop--api--s1'), 'shop/api · s1');
+  assert.equal(kit.paneLabel('shop--root--s1'), 'shop/project folder · s1');
+  assert.equal(kit.paneLabel('weird'), 'weird');
+  assert.equal(kit.paneLabel(null), '');
+});
+
+test('paneParts: the two halves of paneLabel (project/repo · , the session name), so a narrow header can cut the first and keep the second', () => {
+  const { kit } = kitWorld();
+  assert.deepEqual(plain(kit.paneParts('shop--api--s1')), ['shop/api · ', 's1']);
+  assert.deepEqual(plain(kit.paneParts('shop--root--s1')), ['shop/project folder · ', 's1']);
+  assert.deepEqual(plain(kit.paneParts('weird')), ['', 'weird']);
+  assert.deepEqual(plain(kit.paneParts(null)), ['', '']);
+  for (const t of ['shop--api--s1', 'phasezero--website--t-checkout-redesign', 'a--b', 'x']) assert.equal(kit.paneParts(t).join(''), kit.paneLabel(t), t);
+});
+
+test('fitName: a project/repo cut to a sliver is dropped (.off), a whole one or one with room is kept, and the class comes off first so the room measured is the real one', () => {
+  const { kit, w } = kitWorld();
+  const mk = (box, scroll) => { const n = w.document.createElement('span'); n.getBoundingClientRect = () => ({ width: box.width }); Object.defineProperty(n, 'scrollWidth', { get: () => scroll }); return n; };
+  const box = { width: 9 };
+  const where = mk(box, 119);
+  assert.equal(kit.fitName(where), true, 'cut to 9 of 119 px: a sliver');
+  assert.ok(where.classList.contains('off'));
+  box.width = 44;
+  assert.equal(kit.fitName(where), false, 'room again: back on');
+  assert.equal(where.classList.contains('off'), false);
+  box.width = 20;
+  assert.equal(kit.fitName(where, 16), false, 'the minimum is the caller\'s');
+  assert.equal(kit.fitName(mk({ width: 12 }, 12)), false, 'a whole project/repo is never dropped, however short');
+  assert.equal(kit.fitName(mk({ width: 0 }, 119)), false, 'a hidden node (no layout) says nothing');
+  assert.equal(kit.fitName(null), false);
+  assert.equal(kit.fitName({}), false);
+});
+
+test('ctxInfo: one reading of the context chip for the dock and the quad: "ctx N%", tinted from 80 and again from 90, null without a number', () => {
+  const { kit } = kitWorld();
+  assert.deepEqual(plain(kit.ctxInfo(42.4)), { pct: 42, text: 'ctx 42%', level: '', title: 'context window used: 42%' });
+  assert.deepEqual([79, 79.4, 79.5, 80, 89, 89.4, 89.5, 90, 100].map((n) => kit.ctxInfo(n).level), ['', '', 'hi', 'hi', 'hi', 'hi', 'crit', 'crit', 'crit'], 'rounded first, then compared');
+  for (const bad of [null, undefined, '42', NaN, Infinity, {}]) assert.equal(kit.ctxInfo(bad), null, String(bad));
+});
+
+test('paneLine: the question while waiting, else the task title, else the last prompt; nothing when there is none', () => {
+  const { kit } = kitWorld();
+  const line = (r) => plain(kit.paneLine(r));
+  assert.deepEqual(line({ state: 'waiting', last_message: 'Which one?', task: { title: 'T', phase: 'running' } }), { text: 'Which one?', kind: 'ask', phase: 'running' });
+  assert.deepEqual(line({ state: 'working', task: { title: 'Fix the cart', phase: 'in_progress' }, last_prompt: 'p' }), { text: 'Fix the cart', kind: 'task', phase: 'in_progress' });
+  assert.deepEqual(line({ state: 'idle', last_prompt: '  fix\n the   login  ' }), { text: 'fix the login', kind: 'prompt', phase: '' });
+  assert.deepEqual(line({ state: 'idle' }), { text: '', kind: '', phase: '' });
+  assert.deepEqual(line(null), { text: '', kind: '', phase: '' });
+  assert.ok(line({ state: 'idle', last_prompt: 'x'.repeat(500) }).text.length <= 240, 'a long prompt is cut');
+  assert.equal(line({ state: 'waiting', last_message: '', task: { title: 'T' } }).kind, 'task', 'waiting without a message falls back to the task');
+});
+
+test('panePending: the row\'s own pending list, else state.pending_permissions of this session', () => {
+  const { kit } = kitWorld();
+  const st = { pending_permissions: [{ id: 3, tmux_name: 'other--x--y', summary: 'Bash: rm' }, { id: 12, tmux_name: SESS, summary: 'Bash: npm test', tool_name: 'Bash' }] };
+  assert.deepEqual(plain(kit.panePending(st, SESS, paneRow())), { id: 12, summary: 'Bash: npm test' });
+  assert.deepEqual(plain(kit.panePending(null, SESS, paneRow({ pending: [{ id: 7, summary: 'Edit: a.py' }] }))), { id: 7, summary: 'Edit: a.py' });
+  assert.equal(kit.panePending(st, 'nobody--x--y', paneRow()), null);
+  assert.equal(kit.panePending(null, SESS, null), null);
+  assert.equal(plain(kit.panePending({ pending_permissions: [{ id: 1, tmux_name: SESS, tool_name: 'Bash' }] }, SESS, null)).summary, 'Bash', 'no summary: the tool name');
+});
+
+test('sizeChip: NxM, or cropped when the window is more than two columns or rows bigger than the pane', () => {
+  const { kit } = kitWorld();
+  assert.deepEqual(plain(kit.sizeChip(45, 30, [46, 31])).text, '45x30');
+  assert.equal(plain(kit.sizeChip(45, 30, [47, 30])).text, '45x30', 'two columns more is still the same view');
+  const c = plain(kit.sizeChip(45, 30, [120, 40]));
+  assert.equal(c.text, 'cropped');
+  assert.equal(c.cropped, true);
+  assert.match(c.title, /45x30 of the 120x40 window/);
+  assert.equal(plain(kit.sizeChip(45, 30, [80, 33])).cropped, true, 'rows count too');
+  assert.equal(plain(kit.sizeChip(45, 30, null)).text, '45x30');
+  assert.equal(kit.sizeChip(0, 30, [80, 24]), null);
+  assert.equal(kit.sizeChip(undefined, undefined, null), null);
+});
+
+test('typingTarget: the focused input, textarea, select or contenteditable; nothing for the body, a link or a button', () => {
+  const { w, kit } = kitWorld({ dom: true });
+  const d = w.document;
+  assert.equal(kit.typingTarget(d), null);
+  const make = (tag) => { const n = d.createElement(tag); d.body.append(n); n.focus(); return n; };
+  for (const tag of ['input', 'textarea', 'select']) { const n = make(tag); assert.equal(kit.typingTarget(d), n, tag); n.blur(); }
+  const ce = d.createElement('div'); ce.isContentEditable = true; d.body.append(ce); ce.focus();
+  assert.equal(kit.typingTarget(d), ce);
+  ce.blur();
+  for (const tag of ['a', 'button', 'div']) { make(tag); assert.equal(kit.typingTarget(d), null, tag); }
+});
+
+test('termPane: article.tpane[data-tmux][data-mode] with a header, a body and one iframe whose src is exactly ttyUrl', () => {
+  const { w, kit } = paneWorld();
+  const p = kit.termPane(SESS, { mode: 'full' });
+  assert.equal(p.root.tagName, 'ARTICLE');
+  assert.ok(p.root.classList.contains('tpane'));
+  assert.equal(p.root.getAttribute('data-tmux'), SESS);
+  assert.equal(p.root.getAttribute('data-mode'), 'full');
+  assert.equal(p.name, SESS);
+  assert.ok(p.head.classList.contains('tp-head') && p.body.classList.contains('tp-body'));
+  assert.equal(p.root.querySelectorAll('iframe').length, 1);
+  assert.equal(p.iframe.parentNode, p.body);
+  assert.equal(srcOf(p), `/tty/?arg=${SESS}`);
+  assert.equal(p.root.querySelector('.tp-name').textContent, 'shop/api · s1');
+  assert.equal(p.root.querySelector('.tp-name').getAttribute('title'), SESS);
+  assert.equal(p.root.querySelector('.tp-where').textContent, 'shop/api · ', 'two spans: the project/repo gives way first in a narrow dock ...');
+  assert.equal(p.root.querySelector('.tp-sess').textContent, 's1', '... and the session name stays whole');
+  assert.equal(p.iframe.getAttribute('allow'), 'clipboard-write');
+  assert.equal(p.mode, 'full');
+  assert.equal(w.document.querySelectorAll('.tpane').length, 0, 'the pane is built detached: the owner mounts it');
+});
+
+test('termPane: grid is the exact grid contract string; ro adds the second argument; renderer, font and quiet pass through', () => {
+  const { kit } = paneWorld();
+  assert.equal(srcOf(kit.termPane(SESS, { mode: 'grid' })), PANE_GRID);
+  const ro = new URLSearchParams(srcOf(kit.termPane(SESS, { mode: 'ro' })).slice('/tty/?'.length));
+  assert.deepEqual(ro.getAll('arg'), [SESS, 'ro']);
+  assert.equal(srcOf(kit.termPane(SESS, { fontSize: 15 })), `/tty/?arg=${SESS}&fontSize=15`);
+  assert.match(srcOf(kit.termPane(SESS, { mode: 'full', renderer: 'dom', quiet: true })), /rendererType=dom&disableResizeOverlay=true&disableReconnect=true$/);
+});
+
+test('termPane: a full pane starts at the terminal page\'s text size (ccboard:term:fs); a grid pane keeps its own 11', () => {
+  const { w, kit } = paneWorld();
+  w.localStorage.setItem('ccboard:term:fs', '16');
+  assert.equal(srcOf(kit.termPane(SESS, { mode: 'full' })), `/tty/?arg=${SESS}&fontSize=16`);
+  assert.equal(srcOf(kit.termPane(SESS, { mode: 'full', fontSize: 12 })), `/tty/?arg=${SESS}&fontSize=12`, 'an explicit size wins');
+  assert.equal(srcOf(kit.termPane(SESS, { mode: 'grid' })), PANE_GRID);
+  w.localStorage.setItem('ccboard:term:fs', 'huge');
+  assert.equal(srcOf(kit.termPane(SESS, { mode: 'full' })), `/tty/?arg=${SESS}`, 'a bad stored size is ignored');
+});
+
+test('termPane: a bad session name or mode throws, and nothing is built', () => {
+  const { kit } = paneWorld();
+  for (const bad of ['', null, undefined, 7]) assert.throws(() => kit.termPane(bad), /bad session name/);
+  for (const mode of ['', 'GRID', 'rw', '-f', 'full;ls']) assert.throws(() => kit.termPane(SESS, { mode }), /bad pane mode/, mode);
+});
+
+test('termPane: header:false is the body alone (the quad draws its own header, task and permission lines)', () => {
+  const { kit } = paneWorld();
+  const p = kit.termPane(SESS, { mode: 'grid', header: false });
+  assert.equal(p.head, null);
+  assert.equal(p.root.querySelector('.tp-head'), null);
+  assert.equal(p.root.querySelector('.tp-task'), null);
+  assert.equal(p.root.querySelector('.tp-perm'), null);
+  assert.equal(p.root.children.length, 1);
+  assert.doesNotThrow(() => p.update(paneRow(), {}));
+  assert.equal(srcOf(p), PANE_GRID);
+});
+
+test('termPane: a button exists only for a callback; each one calls it with the session name', () => {
+  const { kit } = paneWorld();
+  const none = kit.termPane(SESS);
+  assert.deepEqual(none.root.querySelectorAll('.tp-btn').map((b) => b.getAttribute('data-act')), ['reconnect', 'popout'], 'reconnect and the link to /term/ are always there');
+  const calls = [];
+  const p = kit.termPane(SESS, { onClose: (t) => calls.push(['close', t]), onAddToQuad: (t) => calls.push(['quad', t]), onPopOut: (t) => calls.push(['pop', t]) });
+  assert.deepEqual(p.root.querySelectorAll('.tp-btn').map((b) => b.getAttribute('data-act')), ['reconnect', 'quad', 'popout', 'close']);
+  paneBtn(p, 'close').click();
+  paneBtn(p, 'quad').click();
+  assert.deepEqual(calls, [['close', SESS], ['quad', SESS]]);
+  for (const b of p.root.querySelectorAll('.tp-btn')) assert.ok(b.getAttribute('aria-label') && b.getAttribute('title'), 'every button is named');
+  for (const b of p.root.querySelectorAll('button')) assert.equal(b.getAttribute('type'), 'button');
+});
+
+test('termPane: pop out is a link to /term/<name> in a new tab; a plain click calls onPopOut and keeps the page, a modified click is the browser\'s', () => {
+  const { kit } = paneWorld();
+  const calls = [];
+  const p = kit.termPane(SESS, { onPopOut: (t) => calls.push(t) });
+  const a = paneBtn(p, 'popout');
+  assert.equal(a.tagName, 'A');
+  assert.equal(a.getAttribute('href'), `/term/${SESS}`);
+  assert.equal(a.getAttribute('target'), '_blank');
+  assert.equal(a.getAttribute('rel'), 'noopener');
+  const click = (extra = {}) => { const e = { type: 'click', button: 0, prevented: 0, preventDefault() { this.prevented += 1; }, ...extra }; a.dispatchEvent(e); return e; };
+  assert.equal(click().prevented, 1);
+  assert.deepEqual(calls, [SESS]);
+  for (const mod of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }]) assert.equal(click(mod).prevented, 0, JSON.stringify(mod));
+  assert.equal(calls.length, 1);
+  const plainLink = kit.termPane(SESS);                                         // no callback: the link is just a link
+  const e = { type: 'click', button: 0, prevented: 0, preventDefault() { this.prevented += 1; } };
+  paneBtn(plainLink, 'popout').dispatchEvent(e);
+  assert.equal(e.prevented, 0);
+});
+
+test('termPane: the header carries data-drop=session and data-tmux and is bound for dnd.js; drop:false leaves it out', () => {
+  const { kit, w } = paneWorld({ dnd: true });
+  const p = kit.termPane(SESS);
+  assert.equal(p.head.getAttribute('data-drop'), 'session');
+  assert.equal(p.head.getAttribute('data-tmux'), SESS);
+  assert.deepEqual(plain(w.get('__dnd.length')), 1);
+  assert.equal(w.get('__dnd[0]'), p.head);
+  const q = kit.termPane(SESS, { drop: false });
+  assert.equal(q.head.getAttribute('data-drop'), null);
+  assert.equal(q.head.getAttribute('data-tmux'), null);
+  assert.doesNotThrow(() => paneWorld().kit.termPane(SESS), 'without Dnd (a page that does not load dnd.js) the attributes are still set');
+});
+
+test('termPane.update: state and agent glyphs, context %, task line, and nothing is rewritten when nothing changed', () => {
+  const { kit } = paneWorld();
+  const p = kit.termPane(SESS);
+  p.update(paneRow({ state: 'working', agent: 'codex', stats: { context_pct: 42.4 } }), {});
+  const g = p.root.querySelector('.tp-g');
+  assert.deepEqual(g.querySelectorAll('.glyph').map((n) => n.getAttribute('aria-label')), ['working', 'codex']);
+  const ctx = p.root.querySelector('.tp-ctx');
+  assert.equal(ctx.textContent, 'ctx 42%');
+  assert.equal(ctx.classList.contains('hidden'), false);
+  const first = g.firstChild;
+  const task = p.root.querySelector('.tp-task');
+  assert.equal(task.classList.contains('hidden'), false);
+  assert.equal(task.querySelector('.tp-task-text').textContent, '› fix the login bug');
+  assert.equal(task.getAttribute('data-kind'), 'prompt');
+  p.update(paneRow({ state: 'working', agent: 'codex', stats: { context_pct: 42.1 } }), {});
+  assert.equal(g.firstChild, first, 'the same glyph nodes: a repaint with the same state touches nothing');
+  p.update(paneRow({ state: 'waiting', stats: { context_pct: 85 }, task: { title: 'Fix the cart', phase: 'needs_you' }, last_message: 'Which cart?' }), {});
+  assert.equal(ctx.classList.contains('warn'), true);
+  assert.equal(task.getAttribute('data-kind'), 'ask');
+  assert.equal(task.querySelector('.tp-task-text').textContent, 'Which cart?');
+  assert.equal(task.querySelector('.tp-phase').textContent, 'needs you');
+  p.update(paneRow({ state: 'idle', stats: { context_pct: 95 }, task: { title: 'Fix the cart', phase: 'running' } }), {});
+  assert.equal(ctx.classList.contains('bad'), true);
+  assert.equal(ctx.classList.contains('warn'), false);
+  assert.equal(task.getAttribute('data-kind'), 'task');
+  p.update(paneRow({ stats: {}, last_prompt: '', task: null }), {});
+  assert.equal(ctx.classList.contains('hidden'), true);
+  assert.equal(task.classList.contains('hidden'), true, 'no task, no prompt: no line');
+});
+
+test('termPane.update(null): a session that is gone shows as ended with a line that says so', () => {
+  const { kit } = paneWorld();
+  const p = kit.termPane(SESS);
+  p.update(paneRow(), {});
+  p.update(null, {});
+  assert.equal(p.root.classList.contains('gone'), true);
+  assert.deepEqual(p.root.querySelector('.tp-g').querySelectorAll('.glyph').map((n) => n.getAttribute('aria-label')), ['ended', 'shell']);
+  assert.match(p.root.querySelector('.tp-task-text').textContent, /not running any more/);
+  p.update(paneRow(), {});
+  assert.equal(p.root.classList.contains('gone'), false);
+});
+
+test('termPane permission line: Allow (tinted primary), Deny (danger) and In terminal post the three decisions', async () => {
+  const { w, kit } = paneWorld();
+  const p = kit.termPane(SESS);
+  const st = { pending_permissions: [{ id: 12, tmux_name: SESS, summary: 'Bash: npm test' }] };
+  const line = p.root.querySelector('.tp-perm');
+  assert.equal(line.classList.contains('hidden'), true, 'nothing pending: hidden');
+  p.update(paneRow({ state: 'waiting' }), st);
+  assert.equal(line.classList.contains('hidden'), false);
+  assert.equal(line.querySelector('.tp-perm-text').textContent, 'Bash: npm test');
+  const [allow, deny, tui] = line.querySelectorAll('button');
+  assert.deepEqual([allow.textContent, deny.textContent, tui.textContent], ['Allow', 'Deny', 'In terminal']);
+  assert.ok(allow.classList.contains('bp5-intent-primary') && allow.classList.contains('tinted'), 'Allow: primary, tinted');
+  assert.ok(deny.classList.contains('bp5-intent-danger'), 'Deny: danger (red outline)');
+  assert.ok(!tui.classList.contains('bp5-intent-primary') && !tui.classList.contains('bp5-intent-danger'), 'In terminal: quiet');
+  for (const b of [allow, deny, tui]) { b.click(); await settle(); }
+  const posts = plain(w.get('__calls')).filter((c) => c.method === 'POST');
+  assert.deepEqual(posts.map((c) => c.path), ['/api/permission/12/allow', '/api/permission/12/deny', '/api/permission/12/tui']);
+  assert.equal(plain(w.get('__calls')).filter((c) => c.method === 'poll').length, 3, 'the board repolls after a decision');
+  p.update(paneRow({ state: 'working' }), { pending_permissions: [] });
+  assert.equal(line.classList.contains('hidden'), true, 'answered: the line goes');
+});
+
+test('termPane permission line: the buttons are off while a decision is in flight, a refusal toasts, and a custom decide() replaces the POST', async () => {
+  const { w, kit } = paneWorld();
+  w.run(`api = (method, path) => { __calls.push({ method, path }); return new Promise((res, rej) => { globalThis.__settle = { res, rej }; }); };`);
+  const p = kit.termPane(SESS);
+  p.update(paneRow(), { pending_permissions: [{ id: 5, tmux_name: SESS, summary: 'Bash: ls' }] });
+  const [allow, deny] = p.root.querySelectorAll('.tp-perm button');
+  allow.click();
+  await settle();
+  assert.equal(allow.disabled && deny.disabled, true, 'busy: both are off');
+  deny.click();
+  await settle();
+  assert.equal(plain(w.get('__calls')).filter((c) => c.method === 'POST').length, 1, 'a second tap while one is in flight sends nothing');
+  w.run('__settle.rej(new Error("already decided: allow"))');
+  await settle();
+  assert.deepEqual(plain(w.get('__toasts')), [{ text: 'already decided: allow', kind: 'bad' }]);
+  assert.equal(allow.disabled, false, 'free again');
+  const seen = [];
+  const q = kit.termPane(SESS, { decide: (id, d) => { seen.push([id, d]); return Promise.resolve(); } });
+  q.update(paneRow(), { pending_permissions: [{ id: 9, tmux_name: SESS, summary: 'x' }] });
+  q.root.querySelector('.tp-allow').click();
+  await settle();
+  assert.deepEqual(seen, [[9, 'allow']]);
+  assert.equal(plain(w.get('__calls')).filter((c) => c.method === 'POST').length, 1, 'decide() replaced the POST');
+});
+
+test('termPane: the size chip of a grid pane reads the pane\'s own cols x rows against the window; full and tail panes show none', () => {
+  const { kit, clock } = paneWorld();
+  const p = kit.termPane(SESS, { mode: 'grid' });
+  const f = ttydFrame({ clock });
+  f.term.cols = 45; f.term.rows = 30;
+  p.iframe.contentWindow = f.win;
+  p.update(paneRow({ win: [46, 31] }), {});
+  const chip = p.root.querySelector('.tp-size');
+  assert.equal(chip.classList.contains('hidden'), false);
+  assert.equal(chip.textContent, '45x30');
+  p.update(paneRow({ win: [120, 40] }), {});
+  assert.equal(chip.textContent, 'cropped');
+  assert.equal(chip.classList.contains('cropped'), true);
+  p.setMode('full');
+  assert.equal(chip.classList.contains('hidden'), true, 'a full pane sizes the session: nothing to report');
+  p.update(paneRow({ win: [120, 40] }), {});
+  assert.equal(chip.classList.contains('hidden'), true);
+});
+
+test('termPane.setMode: full, grid and ro swap the src of the same iframe node (never moved); tail drops it and back makes a new one', () => {
+  const { w, kit } = paneWorld();
+  const calls = [];
+  const p = kit.termPane(SESS, { mode: 'full', modes: ['grid', 'full', 'ro', 'tail'], onMode: (m) => calls.push(m) });
+  const body = p.body;
+  const frame = p.iframe;
+  assert.equal(p.setMode('grid'), true);
+  assert.equal(p.iframe, frame, 'the node is the same');
+  assert.equal(srcOf(p), PANE_GRID);
+  assert.equal(p.root.getAttribute('data-mode'), 'grid');
+  assert.equal(p.mode, 'grid');
+  p.setMode('ro');
+  assert.equal(p.iframe, frame);
+  assert.match(srcOf(p), /&arg=ro/);
+  assert.equal(p.setMode('ro'), true, 'the same mode again changes nothing');
+  assert.equal(p.setMode('nope'), false);
+  assert.equal(p.mode, 'ro');
+  assert.deepEqual(p.root.querySelectorAll('.tp-mode').map((b) => b.getAttribute('aria-pressed')), ['false', 'false', 'true', 'false']);
+  const seenSrc = [];
+  const realRemove = frame.remove.bind(frame);
+  frame.remove = () => { seenSrc.push(frame.src); realRemove(); };
+  p.setMode('tail');
+  assert.equal(p.iframe, null);
+  assert.deepEqual(seenSrc, ['about:blank'], 'leaving the iframe: about:blank, then it goes');
+  assert.equal(body.querySelectorAll('iframe').length, 0);
+  assert.ok(body.querySelector('pre.tail'));
+  p.setMode('full');
+  assert.ok(p.iframe && p.iframe !== frame, 'a new iframe');
+  assert.equal(srcOf(p), `/tty/?arg=${SESS}`);
+  assert.equal(body.querySelector('pre.tail'), null);
+  assert.deepEqual(calls, ['grid', 'ro', 'tail', 'full']);
+  assert.equal(w.document.querySelectorAll('iframe').length, 0, 'still detached');
+});
+
+test('termPane.reload: the same address again (a grid pane never reconnects by itself); in tail mode it subscribes again', () => {
+  const { w, kit } = paneWorld();
+  const p = kit.termPane(SESS, { mode: 'grid' });
+  const sets = [];
+  let cur = p.iframe.src;
+  Object.defineProperty(p.iframe, 'src', { get: () => cur, set: (v) => { sets.push(v); cur = v; } });
+  assert.equal(p.reload(), true);
+  assert.deepEqual(sets, [PANE_GRID]);
+  paneBtn(p, 'reconnect').click();
+  assert.deepEqual(sets, [PANE_GRID, PANE_GRID], 'the header button does the same');
+  const t = kit.termPane(SESS, { mode: 'tail' });
+  assert.deepEqual(plain(w.get('__live.subscribed')), [SESS]);
+  assert.equal(t.reload(), true);
+  assert.deepEqual(plain(w.get('__live.subscribed')), [SESS, SESS]);
+  assert.deepEqual(plain(w.get('__live.unsubscribed')), [SESS], 'the old subscription went first');
+});
+
+test('termPane tail mode: Live.subscribe(name, fn) for this one session only; the lines fill pre.tail; destroy unsubscribes', () => {
+  const { w, kit } = paneWorld();
+  const p = kit.termPane(SESS, { mode: 'tail' });
+  assert.equal(p.iframe, null);
+  assert.equal(p.root.querySelectorAll('iframe').length, 0);
+  assert.deepEqual(plain(w.get('__live.subscribed')), [SESS], 'one name, never the whole board');
+  const pre = p.root.querySelector('pre.tail');
+  assert.equal(pre.textContent, 'waiting for output…');
+  w.run(`__live.fns[${JSON.stringify(SESS)}](['a', 'b', 'c'])`);
+  assert.equal(pre.textContent, 'a\nb\nc');
+  w.run(`__live.fns[${JSON.stringify(SESS)}](Array.from({length: 30}, (_, i) => 'l' + i))`);
+  assert.equal(pre.textContent.split('\n').length, 14, 'the last 14 lines');
+  assert.ok(pre.textContent.endsWith('l29'));
+  w.run(`__live.fns[${JSON.stringify(SESS)}]([])`);
+  assert.equal(pre.textContent, '(no output yet)');
+  p.destroy();
+  assert.deepEqual(plain(w.get('__live.unsubscribed')), [SESS]);
+  assert.equal(pre.parentNode, null);
+});
+
+test('termPane tail mode without Live (a page that does not load live.js): a note, no throw', () => {
+  const { kit } = paneWorld({ live: false });
+  const p = kit.termPane(SESS, { mode: 'tail' });
+  assert.match(p.root.querySelector('pre.tail').textContent, /not available/);
+  assert.doesNotThrow(() => p.destroy());
+});
+
+test('termPane.destroy: the bound handle goes first, the iframe is blanked and THEN removed, then the pane; observers, listeners and timers are released', () => {
+  class FakeRO { constructor(fn) { this.fn = fn; this.observed = []; this.disconnected = 0; FakeRO.all.push(this); } observe(n) { this.observed.push(n); } disconnect() { this.disconnected += 1; } }
+  FakeRO.all = [];
+  const { w, kit, clock, dom } = paneWorld({ extra: { ResizeObserver: FakeRO } });
+  const host = w.document.createElement('div');
+  dom.body.append(host);
+  const p = kit.termPane(SESS, { mode: 'grid', restoreFocus: null, holdFocus: true });
+  host.append(p.root);
+  const frame = p.iframe;
+  assert.equal(FakeRO.all.length, 1);
+  assert.deepEqual(FakeRO.all[0].observed, [p.body]);
+  assert.equal((frame._on.load || []).length >= 2, true, 'bind() and the focus guard listen for load');
+  frame.dispatchEvent({ type: 'load' });                                        // arms the three focus timers
+  assert.ok(clock.pending > 0);
+  const order = [];
+  const realRemove = frame.remove.bind(frame);
+  frame.remove = () => { order.push('iframe.remove src=' + frame.src); realRemove(); };
+  const realRoot = p.root.remove.bind(p.root);
+  p.root.remove = () => { order.push('root.remove iframe-gone=' + (frame.parentNode === null)); realRoot(); };
+  const listeners = () => [...(w.window.listeners.resize || []), ...(w.window.listeners.orientationchange || []), ...(w.document.listeners.visibilitychange || [])].length;
+  assert.equal(listeners(), 3);
+  p.destroy();
+  assert.deepEqual(order, ['iframe.remove src=about:blank', 'root.remove iframe-gone=true']);
+  assert.equal((frame._on.load || []).length, 0, 'no load listener is left: the blank page starts no poll');
+  assert.equal(FakeRO.all[0].disconnected, 1);
+  assert.equal(listeners(), 0);
+  assert.equal(clock.pending, 0, 'no timer survives');
+  assert.equal(p.iframe, null);
+  assert.equal(host.children.length, 0);
+  assert.doesNotThrow(() => { p.destroy(); p.update(paneRow(), {}); p.reload(); p.fit(); p.focus(); p.setMode('grid'); });
+  assert.equal(p.setMode('grid'), false);
+});
+
+test('termPane.fit: a burst of resizes (ResizeObserver, window) is one term.fit() after 250 ms of quiet; nothing after destroy', () => {
+  class FakeRO { constructor(fn) { this.fn = fn; FakeRO.last = this; } observe() {} disconnect() {} }
+  const { w, kit, clock } = paneWorld({ extra: { ResizeObserver: FakeRO } });
+  const p = kit.termPane(SESS, { mode: 'full' });
+  const f = ttydFrame({ clock });
+  p.iframe.contentWindow = f.win;
+  for (let i = 0; i < 6; i += 1) { FakeRO.last.fn(); clock.advance(50); }
+  w.fire('resize');
+  assert.equal(f.term.fits, 0);
+  clock.advance(249);
+  assert.equal(f.term.fits, 0);
+  clock.advance(2);
+  assert.equal(f.term.fits, 1, 'one fit for the whole burst');
+  FakeRO.last.fn();
+  p.destroy();
+  clock.advance(500);
+  assert.equal(f.term.fits, 1, 'a destroyed pane never fits');
+});
+
+test('termPane focus: a composer that had the keyboard gets it back when ttyd focuses its terminal on load, until the terminal is used', () => {
+  const { w, kit, clock, dom } = paneWorld();
+  const d = w.document;
+  const box = d.createElement('textarea');
+  dom.body.append(box);
+  box.focus();
+  const p = kit.termPane(SESS, { restoreFocus: box });
+  dom.body.append(p.root);
+  const f = ttydFrame({ clock });
+  p.iframe.contentWindow = f.win;
+  p.iframe.focus();                                                              // what ttyd does on load: its terminal takes the focus
+  assert.equal(d.activeElement, p.iframe);
+  p.iframe.dispatchEvent({ type: 'load' });
+  clock.advance(1);
+  assert.equal(d.activeElement, box, 'back in the composer');
+  p.iframe.focus();                                                              // a later focus (ttyd opening its socket)
+  clock.advance(300);
+  assert.equal(d.activeElement, box);
+  box.blur();
+  const q = kit.termPane(SESS, { restoreFocus: box });
+  dom.body.append(q.root);
+  const g = ttydFrame({ clock });
+  q.iframe.contentWindow = g.win;
+  q.iframe.dispatchEvent({ type: 'load' });
+  clock.advance(5);                                                              // bind() has found window.term: it listens for the person
+  for (const l of g.doc.listeners.mousedown || []) l.fn({ type: 'mousedown' });  // the person clicked the terminal
+  q.iframe.focus();
+  clock.advance(2000);
+  assert.equal(d.activeElement, q.iframe, 'once the terminal is used, focus is its own');
+});
+
+test('termPane focus: holdFocus without a node releases a focus the terminal was not asked for; without either, nothing is touched', () => {
+  const { w, kit, clock, dom } = paneWorld();
+  const d = w.document;
+  const held = kit.termPane(SESS, { holdFocus: true });
+  dom.body.append(held.root);
+  held.iframe.focus();
+  held.iframe.dispatchEvent({ type: 'load' });
+  clock.advance(1);
+  assert.notEqual(d.activeElement, held.iframe, 'blurred');
+  const free = kit.termPane(SESS);
+  dom.body.append(free.root);
+  free.iframe.focus();
+  free.iframe.dispatchEvent({ type: 'load' });
+  clock.advance(2000);
+  assert.equal(d.activeElement, free.iframe, 'a pane that was asked to take focus keeps it');
+});
+
+test('termPane.focus: the xterm instance when there is one, else the iframe element', () => {
+  const { w, kit, clock } = paneWorld();
+  const p = kit.termPane(SESS);
+  assert.equal(p.focus(), true);
+  assert.equal(w.document.activeElement, p.iframe);
+  const f = ttydFrame({ clock });
+  let focused = 0;
+  f.term.focus = () => { focused += 1; };
+  p.iframe.contentWindow = f.win;
+  assert.equal(p.focus(), true);
+  assert.equal(focused, 1);
+});

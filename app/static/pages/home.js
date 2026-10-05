@@ -380,7 +380,11 @@ Pages.act = async function (what) {
   if (!tmux) return false;
   const s = Pages.session(tmux);
   const name = (s && s.name) || tmux;
-  if (what === 'term') { openPage(`/term/${encodeURIComponent(tmux)}`); return true; }
+  if (what === 'term') {                                       // the same surface as a click on the row's Open link: the dock from 1024 px up, else the terminal page
+    if (typeof Shell !== 'undefined' && Shell && typeof Shell.openTerm === 'function') Shell.openTerm(tmux);
+    else openPage(`/term/${encodeURIComponent(tmux)}`);
+    return true;
+  }
   if (what === 'reply') {
     if (!Pages.peekTmux() || Pages.peekTmux() !== tmux) { const h = sessionHash(tmux); Pages.selHash = h; navigate(h); }
     return Pages.withSendBox((box) => box.focus());

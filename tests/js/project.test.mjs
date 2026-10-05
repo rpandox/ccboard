@@ -10,7 +10,7 @@ import { STATIC, plain } from './harness.mjs';
 import { EPOCH, ISO, fixtureState } from './world.mjs';
 import { byPath, focused, key, labelOf, makeNetworkWorld, pathOf, settle, treeItems, visibleItems, TREE_FIXTURE } from './treekit.mjs';
 
-const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'project', 'agents', 'settings', 'search', 'session', 'usage', 'placeholders'];       // widgets.js is also loaded earlier when the shell is (shell.js reads Widgets)
+const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'project', 'agents', 'settings', 'search', 'session', 'usage', 'quad', 'placeholders'];       // widgets.js is also loaded earlier when the shell is (shell.js reads Widgets)
 
 const SUMMARY = { windows: { '7d': { total: 171.4, by_project: [{ project: 'phasezero', total: 171.4, hours: 12.5 }, { project: 'ccboard', total: 58.1, hours: 8.6 }] } } };
 

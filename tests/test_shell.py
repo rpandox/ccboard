@@ -161,8 +161,8 @@ def test_script_order_core_first_main_last():
         "pages/project.js loads right after pages/tasks.js"
     assert len(idx) == len(set(idx)), f"duplicate script tag: {idx}"
     assert idx == SCRIPT_ORDER, "index.html script order differs from the contract:\n  got      " + "\n  ".join(map(str, idx)) + "\n  expected " + "\n  ".join(SCRIPT_ORDER)
-    assert "/static/termkit.js" not in idx, "index.html is not changed in the terminal phase: termkit.js is loaded by term.html only (the dock and quad load it in v0.5.9)"
-    assert "termkit" not in (STATIC_ROOT / "index.html").read_text()
+    assert idx.index("/static/live.js") + 1 == idx.index("/static/termkit.js") < idx.index("/static/shell.js"), \
+        "termkit.js (TermKit, definition-only) loads right after live.js: the terminal dock (shell.js) and the quad page mount TermKit.termPane (v0.5.9)"
     assert _scripts("term.html") == TERM_SCRIPTS, _scripts("term.html")
 
 
