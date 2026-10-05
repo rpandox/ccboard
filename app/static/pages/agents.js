@@ -109,7 +109,7 @@ function agentsAcctUsedNow(st, a, win, now) {
               It ends with the request (the server's accounts replace the local ones); only the demo board keeps it, its fixtures never change
      want     {email}: set by accountLogin(), taken by Settings > Accounts, which then starts the add flow
      err      the reason of the last refused switch / forget, shown in the Accounts panel's error line
-     demo     the demo board's make-believe login ({login, accounts}), laid over the poll's answer like hold */
+     demo     the demo board's make-believe login ({login, accounts, forgot, renewed, problemOff}), laid over the poll's answer like hold */
 const acctFlow = { busy: null, hold: null, want: null, err: '', demo: null, cont: null };
 const ACCT_CONTINUE_KEY = 'ccboard:acct:continue';
 
@@ -129,10 +129,78 @@ function acctStore(st) {
   return { supported: !!(s && s.supported), reason: (s && typeof s.reason === 'string' && s.reason) || '' };
 }
 
-/* The demo board's make-believe account actions (no box behind it): a login in flight, accounts it "added", logins it "forgot". Created on first use. */
+/* The demo board's make-believe account actions (no box behind it): a login in flight, accounts it "added", logins it "forgot", logins it "renewed" ({key: ISO time}, a
+   log-in-again) and whether the made-up login problem (?problem=1) was dismissed or fixed. Created on first use. */
 function acctDemo() {
-  if (!acctFlow.demo) acctFlow.demo = { login: null, accounts: [], forgot: [] };
+  if (!acctFlow.demo) acctFlow.demo = { login: null, accounts: [], forgot: [], renewed: {}, problemOff: false };
   return acctFlow.demo;
+}
+
+/* ---------- a login the box was told is no good (v0.5.17g) ----------
+   state.accounts.problem = {at, agent, account, label, session, message, back} or null: a session reported an authentication failure (the box never reads a credentials
+   file; it learns this from the failure). `account` is the account key (null when the box could not tell), `label` what it is called, `back` {key, label} of the account to
+   switch back to when the failure came within ten minutes of a switch to this one. It ends by itself when that account shows a sign of life, when a login for it finishes,
+   or with dismiss (DELETE /api/accounts/problem). The Home banner, the topbar chip, the flagged Settings row and the notification all read it. */
+function acctProblem(st) {
+  const p = st && st.accounts && st.accounts.problem;
+  return p && typeof p === 'object' && p.at ? p : null;
+}
+
+/* Is this row (a: a Claude row, or a Codex row with agent 'codex') the account the problem is about? A problem without an account is the account in use. */
+function acctProblemHit(st, a, agent) {
+  const p = acctProblem(st);
+  if (!p || !a || (p.agent || 'claude') !== (agent || 'claude')) return false;
+  return p.account ? p.account === a.key : !!a.current;
+}
+
+function acctProblemText(p) {
+  const who = p && p.agent === 'codex' ? 'Codex' : 'Claude';
+  const label = p && typeof p.label === 'string' ? p.label.trim() : '';
+  return `${who}'s login${label ? ` (${label})` : ''} is not valid any more`;
+}
+
+function acctProblemHash(p) {
+  try { return buildHash('settings', {}, p && p.account ? { sec: 'accounts', acct: p.account } : { sec: 'accounts' }); } catch (_) { return '#/settings?sec=accounts'; }
+}
+
+function acctProblemOpen(p) { if (typeof navigate === 'function') navigate(acctProblemHash(p)); }
+
+/* 'Switch back to <label>': the one-tap switch to the account that was in use before the failing switch. */
+async function acctProblemBack(p) {
+  const to = p && p.back ? agentsAccounts(state).find((x) => x.key === p.back.key) : null;
+  return to ? accountSwitch(to) : false;
+}
+
+/* 'dismiss': the box forgets the notice (a false alarm, or the login was fixed in a terminal). */
+async function acctProblemDismiss() {
+  try {
+    await api('DELETE', '/api/accounts/problem');
+  } catch (e) {
+    if (typeof setError === 'function') setError(acctReason(e));
+    return false;
+  }
+  if (state && state.accounts) state.accounts.problem = null;
+  if (typeof demoOn === 'function' && demoOn()) acctDemo().problemOff = true;
+  accountsRepaint();
+  if (typeof renderBanner === 'function') renderBanner();
+  if (typeof poll === 'function') poll(true);
+  return true;
+}
+
+/* The demo board's login problem (?problem=1): the person "switched" to the second saved account and its login turned out dead, so the board says so and offers the way
+   back. Laid over the poll like the rest of the demo's account state; a switch made on the demo board moves it along, dismiss or a log-in-again of the account ends it. */
+function acctDemoProblem(a) {
+  let on = false;
+  try { on = typeof demoOn === 'function' && demoOn() && /[?&]problem=1/.test(location.search); } catch (_) { on = false; }
+  const d = acctFlow.demo;
+  if (!on || (d && d.problemOff)) return;
+  const saved = a.list.filter((x) => x && x.saved);
+  if (saved.length < 2) return;
+  const [first, flagged] = saved;
+  if (!acctFlow.hold) { for (const x of a.list) if (x) x.current = x.key === flagged.key; a.current = flagged.key; }
+  const live = a.current === flagged.key;
+  a.problem = { at: new Date(Date.now() - 3 * 60000).toISOString(), agent: 'claude', account: flagged.key, label: agentsAcctName(flagged), session: 'shop--api--s1',
+    message: 'Invalid API key · Please run /login', back: live ? { key: first.key, label: agentsAcctName(first) } : null };
 }
 
 /* The server's reason for a refusal ({detail, error} body), else the error's message. */
@@ -149,13 +217,15 @@ function accountOverlay(s) {
     const d = typeof demoOn === 'function' && demoOn() ? acctFlow.demo : null;
     if (d) {
       for (const x of d.accounts) if (!a.list.some((y) => y && y.key === x.key)) a.list.push({ ...x });
-      for (const x of a.list) if (x && d.forgot.includes(x.key)) x.saved = false;
+      for (const x of a.list) if (x && d.forgot.includes(x.key)) { x.saved = false; x.saved_at = null; }
+      for (const x of a.list) if (x && x.saved && d.renewed[x.key]) x.saved_at = d.renewed[x.key];
     }
     const h = acctFlow.hold;
     if (h && a.list.some((x) => x && x.key === h.key)) {
       for (const x of a.list) if (x) x.current = x.key === h.key;
       a.current = h.key;
     }
+    acctDemoProblem(a);
   }
   if (typeof demoOn === 'function' && demoOn() && acctFlow.demo && acctFlow.demo.login) s.login = { ...(s.login || {}), ...acctFlow.demo.login };
   if (typeof cxOverlay === 'function') cxOverlay(s);
@@ -226,8 +296,8 @@ function accountLogin(email) {
 }
 
 /* ---------- saved Codex logins (v0.5.17e): the twin of the Claude flow above, on state.codex_accounts ----------
-   state.codex_accounts = {current, list: [{key, label, account_id, plan, saved, current, added_at, last_seen}], store: {supported, add, reason, count}, login: {running, adding, label,
-   started_at, url, code, result}} (older boxes and fixtures have none: the Codex section of Settings > Accounts is then not shown). An account is named by its label alone: Codex
+   state.codex_accounts = {current, list: [{key, label, account_id, plan, saved, saved_at, current, added_at, last_seen}], store: {supported, add, reason, count}, login: {running, adding,
+   label, replace_key, started_at, url, code, result}} (older boxes and fixtures have none: the Codex section of Settings > Accounts is then not shown). An account is named by its label alone: Codex
    gives no email at login. cxFlow is its page-side state, separate from acctFlow so a Claude switch and a Codex switch never block each other:
      busy   the key being switched to while POST /api/codex-accounts/<key>/switch runs
      hold   {key}: the switch is painted as done and laid over the poll until the request ends (the demo board keeps it)
@@ -256,7 +326,7 @@ function cxName(a) {
 }
 
 function cxDemo() {
-  if (!cxFlow.demo) cxFlow.demo = { login: null, accounts: [], forgot: [], current: null };
+  if (!cxFlow.demo) cxFlow.demo = { login: null, accounts: [], forgot: [], renewed: {}, current: null };
   return cxFlow.demo;
 }
 
@@ -267,7 +337,8 @@ function cxOverlay(s) {
   const d = typeof demoOn === 'function' && demoOn() ? cxFlow.demo : null;
   if (d) {
     for (const x of d.accounts) if (!c.list.some((y) => y && y.key === x.key)) c.list.push({ ...x });
-    for (const x of c.list) if (x && d.forgot.includes(x.key)) x.saved = false;
+    for (const x of c.list) if (x && d.forgot.includes(x.key)) { x.saved = false; x.saved_at = null; }
+    for (const x of c.list) if (x && x.saved && d.renewed[x.key]) x.saved_at = d.renewed[x.key];
     if (d.login) c.login = { ...(c.login || {}), ...d.login };
   }
   const h = cxFlow.hold;

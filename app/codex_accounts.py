@@ -20,7 +20,7 @@ under a temporary dir, and the login runs with a CODEX_HOME in here):
 
     <slot>/auth.json         a byte copy of Codex's login file
     <slot>/auth.json.prev    the generation before it (one), for recovery
-    <slot>/meta.json         {label, added_at, account_id?, user_id?, plan?, last_seen?}: what the board knows about the account
+    <slot>/meta.json         {label, added_at, saved_at?, account_id?, user_id?, plan?, last_seen?}: what the board knows about the account
     .pending/                the CODEX_HOME of the one login in flight, seeded with a copy of the live config.toml and nothing else
 
 Rules this module keeps (tests pin them):
@@ -53,7 +53,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import accounts, claude_auth, tmux
+from . import accounts, claude_auth, login_problem, tmux
 from .account_store import _read_plain, _read_stable, _secure_dir, _stamp, _Unstable, _write_atomic
 from .agents import codex as codex_agent
 from .agents import get as get_agent
@@ -87,10 +87,12 @@ AUTH = "auth.json"
 PREV = "auth.json.prev"
 META = "meta.json"
 CONFIG = "config.toml"
-KV_ACCOUNTS = "codex_accounts"        # {key: {key, label, added_at, account_id, user_id, plan, last_seen, saved}}
+KV_ACCOUNTS = "codex_accounts"        # {key: {key, label, added_at, saved_at, account_id, user_id, plan, last_seen, saved}}
 KV_CURRENT = "codex_account_current"  # {key, since}
 KV_SWITCH = "codex_account_switch"    # {from, to, at, repairs, last_repair?}
-SERIES = "cacct"                      # event sample: key = the account that became current, meta {from, to}
+KV_RELOGIN = "codex_relogin_waiting"  # {key, at, applied}: a fresh login saved for the live account that could not go live yet (a board session was open)
+RELOGIN_TTL = 86400                   # a waiting fresh login is given up on after this long
+SERIES = "cacct"                      # event sample: key = the account that became current, meta {from, to}; or the account logged in again, meta {to, relogin: true}
 SLOT_RE = re.compile(r"^[0-9a-f]{24}$")
 REASON_NOT_INSTALLED = "codex is not installed"
 REASON_UPDATE = "update Codex to 0.157 or newer: npm install -g @openai/codex"
@@ -106,7 +108,7 @@ ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,120}$")
 
 _lock = threading.RLock()
 _vlock = threading.Lock()          # guards _login / _result only (the views)
-_login: dict = {"adding": False, "label": None, "started_at": None, "ended_seen": None}
+_login: dict = {"adding": False, "label": None, "replace_key": None, "started_at": None, "ended_seen": None}
 _result: dict | None = None
 _result_at = 0.0
 _watch_gen = 0
@@ -240,6 +242,16 @@ def _matching_slot(data: bytes) -> str | None:
     return None
 
 
+def _is_prev(key: str, data: bytes) -> bool:
+    """Is `data` byte-identical to the generation before the key's saved login (`.prev`)? A live file that is, is NOT that account's refreshed
+    token (a refresh makes a new login, never an old one): it is the older login an older Codex process wrote back, or the dead login a
+    log-in-again replaced while a board session kept the live file. Bytes compared, nothing read out of them."""
+    try:
+        return _read_plain(slot_dir(key) / PREV) == data
+    except ValueError:
+        return False
+
+
 # ------------------------------------------------------------------ the kv records and the slot's meta.json
 def _kv(db, key: str):
     rec = db.kv_get(key)
@@ -273,7 +285,7 @@ def _text(v, n: int = 120) -> str | None:
 
 def _meta_of(rec: dict) -> dict:
     out = {"label": rec.get("label"), "added_at": rec.get("added_at")}
-    for k in ("account_id", "user_id", "plan", "last_seen"):
+    for k in ("saved_at", "account_id", "user_id", "plan", "last_seen"):
         if rec.get(k):
             out[k] = rec[k]
     return out
@@ -297,8 +309,8 @@ def _put_record(db, key: str, **fields) -> dict:
     """Merge `fields` into the account's kv record (a new one when there is none) and its slot's meta.json. Returns the record."""
     with _lock:
         accts = _load(db)
-        rec = dict(accts.get(key) or {"key": key, "label": None, "added_at": iso(None), "account_id": None, "user_id": None,
-                                      "plan": None, "last_seen": None, "saved": True})
+        rec = dict(accts.get(key) or {"key": key, "label": None, "added_at": iso(None), "saved_at": None, "account_id": None,
+                                      "user_id": None, "plan": None, "last_seen": None, "saved": True})
         rec.update(fields)
         accts[key] = rec
         _save(db, accts)
@@ -372,7 +384,7 @@ def _new_account(db, data: bytes, label: str, now) -> str:
     slot = _slot_ready(key)
     try:
         _store_auth(slot, data)
-        _put_record(db, key, label=label, added_at=iso(now), saved=True)
+        _put_record(db, key, label=label, added_at=iso(now), saved_at=iso(now), saved=True)
     except BaseException:
         shutil.rmtree(slot, ignore_errors=True)
         raise
@@ -396,7 +408,7 @@ def _reindex(db) -> None:
             continue
         meta = _read_meta(slot_dir(k)) or {}
         _put_record(db, k, label=_text(meta.get("label"), LABEL_MAX) or f"codex login {k[:6]}",
-                    added_at=_text(meta.get("added_at"), 40) or iso(None), account_id=_text(meta.get("account_id")),
+                    added_at=_text(meta.get("added_at"), 40) or iso(None), saved_at=_text(meta.get("saved_at"), 40), account_id=_text(meta.get("account_id")),
                     user_id=_text(meta.get("user_id")), plan=_text(meta.get("plan"), 32), last_seen=_text(meta.get("last_seen"), 40), saved=True)
 
 
@@ -441,11 +453,13 @@ def _sync_live(db, now, *, quiet: float = SYNC_SETTLE) -> str | None:
         return match
     if sw:
         return cur                                               # nothing says whose refresh this is: left alone until the window is over
+    if cur and has_saved(cur) and _is_prev(cur, data):
+        return cur                                               # the older generation, not a refresh: the saved login is the newer one (never saved over it)
     if cur and has_saved(cur):
         if _file_age(now, stamp) < quiet:
             return cur
         _store_auth(slot_dir(cur), data)
-        _put_record(db, cur, last_seen=iso(now))
+        _put_record(db, cur, last_seen=iso(now), saved_at=iso(now))
         log.info("saved the refreshed login of %s", label_of(db, cur))
         return cur
     if _file_age(now, stamp) < min(quiet, SETTLE):
@@ -521,8 +535,22 @@ def _confirm_current(db, got, now) -> tuple[str | None, bool]:
         _set_current(db, match, now)
         return match, False
     if cur and has_saved(cur):
-        return cur, True                                         # its refreshed token: saved below, before anything is overwritten
+        return cur, not _is_prev(cur, data)                      # its refreshed token (saved below, before anything is overwritten), unless the older generation
     return _adopt_unknown(db, data, now), False
+
+
+def _put_live(db, key: str, data: bytes | None) -> None:
+    """The saved login of the CURRENT account `key` becomes the live file (one atomic replace; the account does not change, so no switch
+    record and no repair window). SwitchRefused when it cannot be written: the previous file is then still in place."""
+    if not data:
+        raise NoSavedLogin("the saved login is incomplete; log in to the account again from Settings")
+    try:
+        _live_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
+        _write_atomic(_live_auth(), data, 0o600)
+    except OSError as e:
+        log.warning("saved Codex login not put in place (%s): the previous login is still in place", e.__class__.__name__)
+        raise SwitchRefused("could not apply the saved login; the previous login is still in place") from None
+    _touch_seen(db, key, iso(None))
 
 
 def _apply(db, key: str, frm: str | None, now) -> None:
@@ -562,6 +590,11 @@ def switch(db, key: str, *, now=None) -> dict:
         except _Unstable:
             raise SwitchRefused("the login file is being rewritten right now; nothing was changed") from None
         cur, refreshed = _confirm_current(db, got, now)
+        if cur == key and not refreshed and got is not None and _slot_bytes(key) != got[0]:
+            # the saved login is a fresh one the live file never got (a log-in-again made while a board session was open): this is it
+            _put_live(db, key, _slot_bytes(key))
+            db.kv_del(KV_RELOGIN)
+            return {"ok": True, "already": False, "from": cur, "to": key, "warnings": _warnings()}
         if cur == key and not refreshed:
             return {"ok": True, "already": True, "from": cur, "to": key, "warnings": []}
         if refreshed and _in_window(db, now):
@@ -570,7 +603,7 @@ def switch(db, key: str, *, now=None) -> dict:
         if cur == key:
             _store_auth(slot_dir(cur), got[0])                   # the live account's refreshed token is its saved login: nothing to switch
             return {"ok": True, "already": True, "from": cur, "to": key, "warnings": []}
-        if cur is not None and got is not None:
+        if cur is not None and got is not None and not _is_prev(cur, got[0]):
             for _ in range(3):                                   # the live file may be rewritten between the save and the overwrite
                 try:
                     _store_auth(slot_dir(cur), got[0])
@@ -610,7 +643,7 @@ def forget(db, key: str) -> dict:
 # ------------------------------------------------------------------ adding a login (codex login --device-auth in .pending)
 def _reset_login() -> None:
     with _vlock:
-        _login.update(adding=False, label=None, started_at=None, ended_seen=None)
+        _login.update(adding=False, label=None, replace_key=None, started_at=None, ended_seen=None)
 
 
 def _set_result(result: dict | None, at: float) -> None:
@@ -630,14 +663,22 @@ def _seed_config(pend: Path) -> None:
         log.info("config.toml not copied into the pending login: %s", e.__class__.__name__)
 
 
-def start_login(db, label, *, restart: bool = False) -> None:
+def start_login(db, label, *, restart: bool = False, replace_key: str | None = None) -> None:
     """Start `codex login --device-auth` for a NEW account in the internal tmux session, with CODEX_HOME set to an empty `.pending` (seeded with
     the live config.toml): the live login is not touched. `label` names the account (required, accounts.clean_label's rules): ValueError
     for none. One at a time: Busy while any login session is running, unless `restart`. Unsupported without a codex that has
-    --device-auth."""
+    --device-auth.
+
+    `replace_key` is a log-in-again: the login that finishes REPLACES that account's saved login (same key, same label, same place in the list;
+    see _replace) instead of making a second account. The account keeps its own name, `label` is not asked for then (UnknownAccount for a key
+    the board never saw)."""
     global _watch_gen
     _require()
-    label = clean_label(label)
+    if replace_key is not None:
+        _known(db, replace_key)
+        label = label_of(db, replace_key)
+    else:
+        label = clean_label(label)
     if not _agent().device_auth(fetch=True):
         raise Unsupported(REASON_UPDATE)
     with _lock:
@@ -659,7 +700,7 @@ def start_login(db, label, *, restart: bool = False) -> None:
         _set_result(None, 0.0)
         _watch_gen += 1                                          # a watcher of an earlier login stops: this one has its own
         with _vlock:
-            _login.update(adding=True, label=label, started_at=_wall(), ended_seen=None)
+            _login.update(adding=True, label=label, replace_key=replace_key, started_at=_wall(), ended_seen=None)
     watch_login(db)
 
 
@@ -697,10 +738,61 @@ def _fail(pend: Path, t: float) -> dict:
     return _decide({"ok": False, "error": ERR_DID_NOT_COMPLETE, "at": iso(t)})
 
 
-def _complete(db, pend: Path, label: str | None, t: float, now) -> dict | None:
+def _replace(db, pend: Path, key: str, got, live, t: float, now) -> dict | None:
+    """A log-in-again finished: the fresh login replaces account `key`'s saved one (the generation it replaces becomes `.prev`; the key, the
+    label and which account is current stay; meta.json and the record get a new saved_at). When `key` is the live account (its login is the
+    dead one) the fresh login goes live at once, the live bytes it replaces kept in `.prev`, unless one of the board's own Codex sessions is
+    open: a running Codex keeps its login and would write the dead one back, so the fresh one stays saved and the result says why
+    ({"live": False, "why": ...}). Nobody logged in live: it goes live like a new account's would. None when it could not be saved yet."""
+    _kill_login_session()                                        # nothing writes into .pending any more
+    try:
+        was_current = current(db) == key or (live is not None and _slot_bytes(key) == live[0])
+        slot = _slot_ready(key)
+        _store_auth(slot, got[0])
+        if was_current and live is not None and live[0] != got[0]:
+            _write_atomic(slot / PREV, live[0], 0o600)           # the live login (refreshed since the slot was written, or dead) is the generation before
+        _put_record(db, key, saved=True, saved_at=iso(now))
+    except OSError as e:
+        log.warning("a finished login could not be saved yet: %s", e.__class__.__name__)
+        return None                                              # .pending stays: the next call tries again (or abandons it after an hour)
+    shutil.rmtree(pend, ignore_errors=True)
+    try:
+        from . import samples                                    # late: samples registers this module's tick at import
+        samples.record(db, SERIES, key, 1, {"to": key, "relogin": True}, at=iso(now), force=True)   # the login was renewed; the account in use did not change
+    except Exception as e:
+        log.warning("relogin event not written: %s", e.__class__.__name__)
+    live_ok, why, warnings = False, None, []
+    try:
+        if live is None:
+            _apply(db, key, current(db), now)
+            live_ok = True
+        elif was_current:
+            if _board_sessions(db):
+                why = BUSY_SESSIONS
+                db.kv_set(KV_RELOGIN, {"key": key, "at": iso(now), "applied": 0})      # the tick puts it in once the sessions are closed
+            else:
+                _put_live(db, key, got[0])                       # the account does not change: no switch record, no repair window
+                _set_current(db, key, now)
+                live_ok = True
+        if live_ok:
+            warnings = _warnings()
+            if (_kv(db, KV_RELOGIN) or {}).get("key") == key:
+                db.kv_del(KV_RELOGIN)
+    except (StoreError, OSError) as e:
+        why = "the fresh login is saved but could not be put in place"
+        log.warning("the new login is saved but was not put in place: %s", e.__class__.__name__)
+    login_problem.clear(db, "codex", key)
+    out = {"ok": True, "key": key, "label": label_of(db, key), "live": live_ok, "replaced": True, "why": why, "at": iso(t)}
+    if warnings:
+        out["warnings"] = warnings
+    return _decide(out)
+
+
+def _complete(db, pend: Path, label: str | None, t: float, now, replace_key: str | None = None) -> dict | None:
     """The pending login has its file: move it into a new slot, register the account (not as the current one), close the login and, when no
     Codex login is live (no file, or a login nobody saved and no account yet), put it in place at once; a login nobody saved is kept as an
-    unlabelled account first, never replaced without a copy."""
+    unlabelled account first, never replaced without a copy. With `replace_key` (a log-in-again of a known account) it goes into THAT
+    account's slot instead (_replace); an account that has vanished since (merged away) gets the login as a new one under `label`."""
     got = _read_stable(pend / AUTH)
     try:
         live = _live_bytes()
@@ -708,6 +800,8 @@ def _complete(db, pend: Path, label: str | None, t: float, now) -> dict | None:
         return None                                              # the live file is being rewritten: the next call tries again
     if got is None:
         return None                                              # still being written
+    if replace_key and replace_key in _load(db):
+        return _replace(db, pend, replace_key, got, live, t, now)
     _kill_login_session()                                        # nothing writes into .pending any more
     label = label or f"codex login {iso(now if now is not None else t)[:10]}"
     try:
@@ -741,7 +835,7 @@ def finalize(db, now=None) -> dict | None:
     with _lock:
         pend = pending_dir()
         with _vlock:
-            adding, started, label = bool(_login["adding"]), _login["started_at"], _login["label"]
+            adding, started, label, replace_key = bool(_login["adding"]), _login["started_at"], _login["label"], _login["replace_key"]
         if not pend.is_dir():
             if adding:
                 _reset_login()
@@ -753,7 +847,7 @@ def finalize(db, now=None) -> dict | None:
             ast = None
         have = bool(ast and ast.st_size > 0)
         if have and t - ast.st_mtime >= PENDING_MIN_AGE:
-            res = _complete(db, pend, label, t, now)
+            res = _complete(db, pend, label, t, now, replace_key)
             if res is not None:
                 return res
         if started is None:
@@ -859,13 +953,14 @@ def parse_login_text(text: str) -> dict:
 
 
 def login_view() -> dict:
-    """{running, adding, label, started_at, url, code, tail, result} for the Settings page: what is being added, the link and the one-time code
+    """{running, adding, label, replace_key, started_at, url, code, tail, result} for the Settings page: what is being added (`replace_key`: the
+    account being logged in again, None for a new one), the link and the one-time code
     the login printed, and how the last login ended (None once older than RESULT_TTL). Looks at the login pane only while a login is being
     added."""
     with _vlock:
         res = dict(_result) if _result is not None and _wall() - _result_at <= RESULT_TTL else None
-        adding, label, started = bool(_login["adding"]), _login["label"], _login["started_at"]
-    out = {"running": False, "adding": adding, "label": label, "started_at": iso(started) if started else None,
+        adding, label, started, rk = bool(_login["adding"]), _login["label"], _login["started_at"], _login["replace_key"]
+    out = {"running": False, "adding": adding, "label": label, "replace_key": rk if adding else None, "started_at": iso(started) if started else None,
            "url": None, "code": None, "tail": [], "result": res}
     if adding:
         try:
@@ -1028,6 +1123,39 @@ def _repair(db, now) -> None:
         log.info("an older Codex process wrote the previous login back; the new one was put in place again (%d of %d)", repairs + 1, MAX_REPAIRS)
 
 
+def _finish_relogin(db, now) -> None:
+    """A log-in-again of the live account that stayed saved because one of the board's Codex sessions was open (kv KV_RELOGIN): once none is
+    open, and the live file is still the older generation (or gone), the fresh login goes live (at most MAX_REPAIRS times: an older Codex
+    that keeps writing its login back is not fought for ever). Dropped when it is live, when the account is no longer the current one, when
+    something else is live, or after RELOGIN_TTL."""
+    with _lock:
+        w = _kv(db, KV_RELOGIN)
+        if not isinstance(w, dict) or not isinstance(w.get("key"), str):
+            return
+        key = w["key"]
+        try:
+            expired = accounts._to_epoch(now) - accounts._to_epoch(w.get("at")) > RELOGIN_TTL
+        except (ValueError, TypeError):
+            expired = True
+        to = _slot_bytes(key) if SLOT_RE.match(key) else None
+        if expired or to is None or current(db) != key:
+            db.kv_del(KV_RELOGIN)
+            return
+        got = _live_bytes()
+        if got is not None and got[0] == to:
+            db.kv_del(KV_RELOGIN)                                # it is live
+            return
+        if got is not None and not _is_prev(key, got[0]):
+            db.kv_del(KV_RELOGIN)                                # something else is live now: not ours to replace
+            return
+        applied = w.get("applied") if isinstance(w.get("applied"), int) else 0
+        if applied >= MAX_REPAIRS or _board_sessions(db):
+            return
+        _put_live(db, key, to)
+        db.kv_set(KV_RELOGIN, {**w, "applied": applied + 1})
+        log.info("the fresh login of %s went live now that no board Codex session is open", label_of(db, key))
+
+
 def _sync(db, now) -> None:
     with _lock:
         _sync_live(db, now)
@@ -1039,11 +1167,11 @@ def _learn_step(db, now) -> None:
 
 
 def tick(db, now=None) -> None:
-    """The Sampler's 15 s tick: (a) finish a login that has its file, (b) undo a stale write-back after a switch, (c) keep the live account's
-    saved copy fresh, (d) learn who the account is. Never raises (class names only in the log); nothing at all without a codex binary."""
+    """The Sampler's 15 s tick: (a) finish a login that has its file, (b) undo a stale write-back after a switch, (b') put a waiting fresh
+    login in place, (c) keep the live account's saved copy fresh, (d) learn who the account is. Never raises (class names only in the log); nothing at all without a codex binary."""
     if not supported():
         return
-    for step in (finalize, _repair, _sync, _learn_step):
+    for step in (finalize, _repair, _finish_relogin, _sync, _learn_step):
         try:
             step(db, now)
         except Exception as e:
@@ -1051,11 +1179,31 @@ def tick(db, now=None) -> None:
 
 
 # ------------------------------------------------------------------ views
+def _saved_at(key: str, rec: dict) -> str | None:
+    """When the key's saved login was last written: the record's saved_at, else its slot's meta.json, else the login file's own mtime (a slot
+    written before saved_at existed). Only times: the login file's content is never read."""
+    t = _text(rec.get("saved_at"), 40)
+    if t:
+        return t
+    try:
+        t = _text((_read_meta(slot_dir(key)) or {}).get("saved_at"), 40)
+    except ValueError:
+        t = None
+    if t:
+        return t
+    try:
+        return iso(_slot_auth(key).stat().st_mtime)
+    except (OSError, ValueError):
+        return None
+
+
 def _row(db, rec: dict, cur, sup: bool | None = None) -> dict:
     key = rec["key"]
     sup = supported() if sup is None else sup
+    saved = bool(sup and has_saved(key))
     return {"key": key, "label": rec.get("label"), "account_id": rec.get("account_id"), "plan": rec.get("plan"),
-            "saved": bool(sup and has_saved(key)), "current": key == cur, "added_at": rec.get("added_at"), "last_seen": rec.get("last_seen")}
+            "saved": saved, "saved_at": _saved_at(key, rec) if saved else None, "current": key == cur, "added_at": rec.get("added_at"),
+            "last_seen": rec.get("last_seen")}
 
 
 def store_view(count: int) -> dict:
@@ -1076,8 +1224,8 @@ def store_view(count: int) -> dict:
 
 
 def view(db, *, tail: bool = True) -> dict:
-    """The GET /api/codex-accounts body: {current, list: [{key, label, account_id, plan, saved, current, added_at, last_seen}], store: {supported,
-    add, reason, count}, login: {running, adding, label, started_at, url, code, tail, result}}. The current account first, then by when it
+    """The GET /api/codex-accounts body: {current, list: [{key, label, account_id, plan, saved, saved_at, current, added_at, last_seen}], store:
+    {supported, add, reason, count}, login: {running, adding, label, replace_key, started_at, url, code, tail, result}}. The current account first, then by when it
     was added. `tail=False` leaves the login's terminal output out (what /api/state carries). Stats a file per account; never raises."""
     try:
         accts, cur = _load(db), current(db)
@@ -1093,7 +1241,8 @@ def view(db, *, tail: bool = True) -> dict:
     try:
         login = login_view()
     except Exception:
-        login = {"running": False, "adding": False, "label": None, "started_at": None, "url": None, "code": None, "tail": [], "result": None}
+        login = {"running": False, "adding": False, "label": None, "replace_key": None, "started_at": None, "url": None, "code": None, "tail": [],
+                 "result": None}
     if not tail:
         login = {k: v for k, v in login.items() if k != "tail"}
     return {"current": cur, "list": rows, "store": store_view(sum(1 for r in rows if r["saved"])), "login": login}

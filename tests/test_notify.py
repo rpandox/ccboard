@@ -40,6 +40,7 @@ def capture(monkeypatch):
     monkeypatch.setattr(notify, "_db", None)             # a stale DB from an earlier test must not leak in
     notify._last.clear()
     notify._rl_mem.clear()
+    notify._login_told.clear()
     clock = [1000.0]
     monkeypatch.setattr(notify, "_clock", lambda: clock[0])
     sent.clock = clock
@@ -437,3 +438,34 @@ def test_hook_triggers_push(client, projects_dir, fake_tmux, capture):
     assert err["title"] == "▸ shop/api · " + name.split("--")[2] + ": error"                # a shell row: the ▸ glyph
     assert client.post("/api/notify/test", headers=H).json()["ok"] is True
     assert capture[-1][1]["title"] == "ccboard test"
+
+
+# --- v0.5.17g: the account-level "login not valid" notice ---
+
+def test_login_problem_notice_names_the_account_links_to_its_settings_row_and_goes_once_per_account_per_15_minutes(db, capture):
+    assert notify.notify_login_problem("acct-1", "Ann", TMUX, "Invalid API key · Please run /login") is True
+    url, body = capture[-1]
+    assert body["title"] == "Claude login not valid: Ann" and body["priority"] == 4 and "key" in body["tags"]
+    assert body["click"] == f"{PUB}/#/settings?sec=accounts&acct=acct-1"
+    assert "shop/api · s1" in body["message"] and "Invalid API key" in body["message"] and "Log in again in Settings" in body["message"]
+    assert [a["label"] for a in body["actions"]] == ["Log in again"]
+    n = len(capture)
+    assert notify.notify_login_problem("acct-1", "Ann", "shop--api--s2", "Invalid API key") is False and len(capture) == n, "another session, same account: told once"
+    assert notify.notify_login_problem("acct-2", "Bob", TMUX, "Invalid API key") is True and len(capture) == n + 1, "another account has its own window"
+    capture.clock[0] += notify.LOGIN_EVERY - 1
+    assert notify.notify_login_problem("acct-1", "Ann", TMUX, "x") is False
+    capture.clock[0] += 2
+    assert notify.notify_login_problem("acct-1", "Ann", TMUX, "x") is True and len(capture) == n + 2
+
+
+def test_login_problem_notice_without_a_channel_does_not_use_up_the_window(db, capture, monkeypatch):
+    monkeypatch.setattr(settings, "ntfy_url", "")
+    assert notify.notify_login_problem("acct-1", "Ann", TMUX, "x") is False and notify._login_told == {}
+    monkeypatch.setattr(settings, "ntfy_url", "http://127.0.0.1:2586")
+    assert notify.notify_login_problem("acct-1", "Ann", TMUX, "x") is True
+
+
+def test_login_problem_notice_without_an_account_or_a_message_still_reads_well(db, capture):
+    assert notify.notify_login_problem(None, None, TMUX, None) is True
+    _url, body = capture[-1]
+    assert body["title"] == "Claude login not valid" and body["click"] == f"{PUB}/#/settings?sec=accounts" and "Log in again in Settings" in body["message"]

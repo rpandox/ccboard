@@ -229,7 +229,8 @@ Shell.claudeWindow = function (st, key, now) {
 
 /* The account chip of the topbar (v0.5.17b), or null with fewer than two accounts or no current one. {key, name, text, hue, title, amber}:
    text = the first two letters of the label (else the name, else the email), hue = chipHue('account', key) (one subscription, one hue everywhere).
-   The chip is the amber tint, and its title names the better account and the window, when the current account is at 85 % or more of a window and another
+   A login problem on the account in use (state.accounts.problem, pages/agents.js) wins: the chip is amber, its title says "Claude's login (<label>) is not valid any more · Log in again"
+   and a tap goes to that account's row in Settings. Otherwise the chip is the amber tint, and its title names the better account and the window, when the current account is at 85 % or more of a window and another
    account has strictly more of THAT window left: the same rule as the Usage page's 'most room' line (Usage.room): the 7-day window is checked first, then the
    5-hour one, and the first that trips decides: '<label> has 80 % of the 5-hour window left'. A window that has reset since its last reading counts as
    empty (0 % used), an account with no reading of the window is not offered. The current account's own numbers are the pills' (state.usage), the others'
@@ -243,6 +244,7 @@ Shell.accountChip = function (st, now) {
   const cur = list.find((a) => a.current) || list.find((a) => a.key === curKey) || null;
   if (!cur) return null;
   const name = agentsAcctName(cur);
+  const problem = typeof acctProblemHit === 'function' && acctProblemHit(st, cur, 'claude') ? acctProblem(st) : null;      // the box was told this login does not work: that outranks "more room elsewhere"
   let move = null;                                                   // {who, left, win}: where to go instead
   for (const [win, nm] of [['7d', '7-day'], ['5h', '5-hour']]) {
     const used = agentsAcctUsedNow(st, cur, win, t);
@@ -257,10 +259,12 @@ Shell.accountChip = function (st, now) {
   }
   const letters = Array.from(name.replace(/\s+/g, '')).slice(0, 2).join('');
   return {
-    key: cur.key, name, amber: !!move,
+    key: cur.key, name, amber: !!move || !!problem,
     text: letters.charAt(0).toUpperCase() + letters.slice(1),
-    hue: move ? 'hue-amber' : chipHue('account', cur.key),
-    title: move ? `${move.who} has ${Math.round(move.left)} % of the ${move.win} window left` : `Account: ${name}${cur.plan ? ' (' + cur.plan + ')' : ''} · usage per account`,
+    hue: move || problem ? 'hue-amber' : chipHue('account', cur.key),
+    title: problem ? `${acctProblemText(problem)} · Log in again`
+      : move ? `${move.who} has ${Math.round(move.left)} % of the ${move.win} window left` : `Account: ${name}${cur.plan ? ' (' + cur.plan + ')' : ''} · usage per account`,
+    href: problem ? acctProblemHash(problem) : '#/usage',            // a tap on the amber chip goes to the account's row, where Log in again is the lead action
   };
 };
 
@@ -276,6 +280,7 @@ Shell.patchAccount = function (st) {
   setText(R.acctT, c.text);
   if (typeof chipHueSet === 'function') chipHueSet(R.acct, c.hue);
   R.acct.setAttribute('title', c.title);
+  R.acct.setAttribute('href', c.href || '#/usage');
   R.acct.setAttribute('aria-label', c.amber ? `${c.name}: ${c.title}` : c.title);      // the amber title alone would not say whose numbers the pills show
   return c;
 };

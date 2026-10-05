@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Callable, NamedTuple
 from urllib.parse import urlsplit
 
-from . import claude_auth, memory, projects, push, tmux
+from . import claude_auth, login_problem, memory, projects, push, tmux
 from .config import settings
 
 GROUPS = ["box", "claude", "notify", "terminal"]   # register()/register_provider() append the others (memory, codex)
@@ -509,6 +509,14 @@ def _c_claude_auth(db) -> Outcome:
     if st.get("error"):
         return _warn(str(st["error"]), fix("Run claude auth status on the box", "claude auth status"))
     if st.get("loggedIn"):
+        try:
+            prob = login_problem.get(db) if db is not None else None
+        except Exception:                                      # a check never fails because the kv could not be read
+            prob = None
+        if prob and prob.get("agent") == "claude":             # `auth status` only sees that a file exists: a session's own failure is the word that counts
+            when = str(prob.get("at") or "")[:16].replace("T", " ")
+            return _warn(f"Claude reported its login invalid at {when + ' UTC' if when else 'some time ago'}: log in again in Settings",
+                         fix("Log in again in Settings > Accounts", None, "claude_login"))
         bits = [b for b in (st.get("authMethod"), st.get("subscriptionType")) if isinstance(b, str) and b]
         return _pass("logged in" + (f" ({', '.join(bits)})" if bits else ""))
     return _fail("claude is not logged in", fix("Log in from the board, or run claude auth login on the box", "claude auth login", "claude_login"))

@@ -9,7 +9,7 @@ import re
 import secrets
 from pathlib import Path
 
-from . import accounts, agents, notify, permissions, projects, samples, tmux
+from . import accounts, agents, login_problem, notify, permissions, projects, samples, tmux
 from .agents.claude import ELICITATION_DONE, SESSION_ID_RE, WAIT_KIND, WAITING_NOTIFICATIONS, parse_limit_message, statusline_stats
 from .config import settings
 from .db import SKIP_EVENTS, now as db_now
@@ -243,6 +243,31 @@ def _rate_limited(db, name: str, limit: dict, message: str) -> None:
     _sample(_record_limit, db, name, {**limit, "kind": kind, "message": message[:500]})
 
 
+def _login_failed(db, name: str, row: dict | None, message: str) -> None:
+    """A turn failed because the LOGIN is no good (StopFailure with an authentication error): kv login_problem for the account the session
+    runs on (its row's account, else the current one), a LoginProblem event on the session, and one notice per account per 15 minutes.
+    Never raises: a failure here must not break the hook. Nothing reads a credentials file: the failure is the only signal."""
+    try:
+        acct = (row or {}).get("account") or accounts.current(db)
+        rec = login_problem.raise_(db, agent="claude", account=acct, session=name, message=message)
+        db.add_event(name, "LoginProblem", "auth", rec["message"], {"account": acct, "agent": "claude"})
+        label = accounts.label(db, acct) if acct else None
+        notify.notify_login_problem(acct, label, name, rec["message"])
+    except Exception as e:
+        log.warning("login problem not recorded: %s", e.__class__.__name__)
+
+
+def _login_fine(db, agent: str | None, acct: str | None) -> None:
+    """A sign of life from a Claude session on `acct` (a statusline reading with rate limits, or a successful Stop): a login problem
+    reported for that account is over. A Codex session says nothing about Claude's login (a shell row, where somebody ran `claude`, does)."""
+    if agent == "codex":
+        return
+    try:
+        login_problem.clear(db, "claude", acct or accounts.current(db))
+    except Exception as e:
+        log.warning("login problem not cleared: %s", e.__class__.__name__)
+
+
 def _limit_account(db, limit: dict) -> str | None:
     """The subscription account that hit this limit: the one whose remembered 5 h / 7 d reset the episode's reset time matches, else the
     current account. None when no account is known (and never an error: the episode is recorded either way)."""
@@ -455,6 +480,8 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None, ch
             acct, is_current = _attribute_reading(db, name, row, stats["rate_limits"])
             if is_current:
                 db.kv_set("rate_limits", stats["rate_limits"])
+            if (row or {}).get("state") != "errored":            # Claude Code keeps drawing its LAST rate limits on the statusline of a session that has just failed
+                _login_fine(db, agent, acct)                     # a reading with rate limits came from a request that worked: the login is good
         _sample(db.kv_set, "statusline_sample", _statusline_sample(p))
         # the statusline is Claude Code's own: the rate-limit series are keyed 'claude' whatever the row's agent says
         _sample(samples.record_statusline, db, name, stats, "claude", account=acct, current=is_current)
@@ -476,6 +503,7 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None, ch
     state, kind, message, prompt, attention = n.state, n.kind, n.message, n.prompt, n.attention
     flags, now = dict(n.flags), db_now()
     old_flags = (row or {}).get("flags") or {}
+    auth_failure = False
 
     if event == "SessionStart":
         if sid:
@@ -497,6 +525,7 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None, ch
         # the turn's own closing words when the payload has them, else the last line of the screen as before
         message = " ".join(n.message.split())[:STOP_HEAD] if n.message else ""
         message = message or _last_screen_line(name)
+        _login_fine(db, agent, (row or {}).get("account"))       # a turn that finished: the login works
     elif event == "StopFailure":
         # The live payload carries the error TYPE in `error` ("rate_limit") and the text in last_assistant_message; older shapes
         # carry error_type / error_category / matcher with `error` as the text. The adapter reads both.
@@ -508,6 +537,9 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None, ch
             limit = {**parse_limit_message(message), "message": message}
         if limit is not None:
             _rate_limited(db, name, limit, message)
+        elif agent != "codex" and login_problem.is_auth_failure(kind, message):
+            kind, auth_failure = "auth", True                     # the login is no good: the account-level notice below replaces the session's own
+            _login_failed(db, name, row, message)
 
     if event == "Interrupt" and n.kind == "interrupt":
         _expire_permissions(db, name, "interrupt")            # the turn was cancelled: a prompt still on the board has nothing to answer
@@ -521,7 +553,7 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None, ch
             project = None
         if project:
             _sample(samples.bump_event, db, project)
-    if attention and state:
+    if attention and state and not auth_failure:
         notify.notify_session(name, state, message, str(kind) if kind else None)
     _turn_hooks(db, name, event, n, row)
     return {"session": name, "event": event, "state": state, "kind": kind}

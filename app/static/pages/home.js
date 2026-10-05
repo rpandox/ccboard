@@ -8,7 +8,7 @@
    The header, usage pills, nav and the render() state consumer are in shell.js; the notify panel and nodes strip in pages/settings.js. */
 'use strict';
 
-/* The banner: one message at a time (a notice, offline, an error, a recovery, a rate limit, tmux down, not logged in). renderBanner only
+/* The banner: one message at a time (a notice, offline, an error, a login that does not work, a recovery, a rate limit, tmux down, not logged in). renderBanner only
    removes what it put there itself and stray text, so a callout another file keeps in #banner (Widgets.limitBanner) survives a repaint. */
 const bannerOwn = [];
 
@@ -20,7 +20,7 @@ function renderBanner() {
     if (typeof b.removeChild === 'function') b.removeChild(n);
   }
   bannerOwn.length = 0;
-  b.classList.remove('warn', 'info');                                        // only the classes this function owns: Widgets.limitBanner keeps its own
+  b.classList.remove('warn', 'info', 'login');                               // only the classes this function owns: Widgets.limitBanner keeps its own
   const own = (...nodes) => { for (const n of nodes) { bannerOwn.push(n); b.append(n); } };
   const limitWidget = typeof Widgets !== 'undefined' && Widgets && typeof Widgets.limitBanner === 'function';
   const rl = limitWidget ? null : rateLimitOf(state);                      // the limit callout is Widgets' job once it exists
@@ -32,6 +32,15 @@ function renderBanner() {
     own(el('span', { text: `Offline: showing the last known state from ${new Date(ui.offline).toLocaleTimeString()}. Retrying…` }));
   } else if (ui.error) {
     own(el('span', { text: ui.error }), el('button', { class: 'minimal small', type: 'button', onclick: () => setError(null), text: 'dismiss' }));
+  } else if (acctProblem(state)) {
+    // a session stopped on an authentication error (state.accounts.problem): the login of that account does not work. Bordered actions only: Log in again goes to that
+    // account's row in Settings (where it is the row's lead action), Switch back is offered right after a switch, dismiss is for a false alarm
+    const p = acctProblem(state);
+    b.classList.add('warn', 'login');
+    const acts = el('div', { class: 'banner-acts' }, el('button', { class: 'small', type: 'button', onclick: () => acctProblemOpen(p), text: 'Log in again' }));
+    if (p.back && p.back.key) acts.append(el('button', { class: 'small', type: 'button', title: `Make ${p.back.label || 'the other account'} the account in use again`, onclick: () => acctProblemBack(p), text: `Switch back to ${p.back.label || 'the other account'}` }));
+    const x = el('button', { class: 'minimal small bn-x', type: 'button', 'aria-label': 'dismiss', title: 'Dismiss this notice: a false alarm, or the login was fixed in a terminal', onclick: () => acctProblemDismiss(), text: '×' });   // a corner ×, like the limit callout's
+    own(el('span', { text: acctProblemText(p) }), acts, x);                 // on a phone the × shares the text line and the two real actions keep one line below
   } else if (state && state.deploy && state.deploy.pending) {
     const d = state.deploy;
     b.classList.add('info');                                                 // an update is news, not an error: the red bar is for ui.error and tmux_down

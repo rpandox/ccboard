@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import accounts, claude_auth, cost, db as dbmod, hooks, samples
+from app import accounts, claude_auth, cost, db as dbmod, hooks, login_problem, notify, samples
 from app.config import settings
 from app.db import DB, SCHEMA, iso
 
@@ -1090,3 +1090,144 @@ def test_for_reading_honours_the_hold_too(env):
     accounts.hold(to=UUID_B, frm=UUID_A)
     assert accounts.for_reading(env.db, rl(T0 + 3000, T0 + 200000), T0 + 2) == UUID_B
     assert accounts.current(env.db) == UUID_B and kv(env.db, "accounts")[UUID_B]["resets_7d"] == T0 + 200000
+
+
+# ================================================================== v0.5.17g: a login the board was told is no good (hooks -> kv login_problem)
+AUTH_FAIL = {"hook_event_name": "StopFailure", "error": "authentication_failed", "last_assistant_message": "Invalid API key · Please run /login"}
+STOP = {"hook_event_name": "Stop", "last_assistant_message": "All done."}
+
+
+@pytest.fixture
+def told(monkeypatch):
+    """Notifications on, every notice captured, a clock the test moves; the session-level notice is captured too."""
+    t = SimpleNamespace(login=[], session=[], clock=[1000.0])
+    monkeypatch.setattr(notify, "any_channel", lambda: True)
+    monkeypatch.setattr(notify, "send", lambda n: t.login.append(n) or True)
+    monkeypatch.setattr(notify, "notify_session", lambda *a, **k: t.session.append(a) or True)
+    monkeypatch.setattr(notify, "_clock", lambda: t.clock[0])
+    notify._login_told.clear()
+    yield t
+    notify._login_told.clear()
+
+
+@pytest.mark.parametrize("text", ["authentication_error", "API Error: 401 Unauthorized", "OAuth token has expired", "Not logged in · Please run /login",
+                                  "Invalid API key · Please run /login", "token has expired", "The token was revoked", "authentication_failed",
+                                  "INVALID API KEY", "oauth TOKEN expired"])
+def test_these_failures_say_the_login_is_no_good(text):
+    assert login_problem.is_auth_failure(text) is True and login_problem.is_auth_failure("server_error", text) is True
+
+
+@pytest.mark.parametrize("text", ["server_error", "API Error: 500 Internal server error", "You've hit your session limit · resets 10:05pm", "overloaded_error",
+                                  "invalid_request", "max_output_tokens", "", None, 401, "wrote 4012 lines"])
+def test_these_failures_do_not(text):
+    assert login_problem.is_auth_failure(text) is False
+
+
+def test_an_authentication_failure_raises_the_problem_for_the_sessions_account_and_tells_once_per_account(board, told):
+    db = board.db
+    state_file(board.cfg)
+    accounts.observe(db, T0)
+    statusline(db, NAME, T0 + 3000, T0 + 200000)                           # the session's row learns its account
+    assert db.open_row(NAME)["account"] == UUID_A
+    out = hooks.apply(db, NAME, "StopFailure", AUTH_FAIL)
+    assert out["kind"] == "auth" and out["state"] == "errored"
+    v = kv(db, "login_problem")
+    assert v == {"at": v["at"], "agent": "claude", "account": UUID_A, "session": NAME, "message": "Invalid API key · Please run /login"}
+    ev = [e for e in db.recent_events(20) if e["event"] == "LoginProblem"]
+    assert len(ev) == 1 and ev[0]["tmux_name"] == NAME and ev[0]["kind"] == "auth"
+    assert [n.title for n in told.login] == ["Claude login not valid: Ann"] and told.login[0].path == f"/#/settings?sec=accounts&acct={UUID_A}"
+    assert told.session == [], "the account-level notice stands in for the session's own"
+    hooks.apply(db, "shop--api--s2", "StopFailure", AUTH_FAIL)             # another session, same account (its row has none: the current one): told once
+    assert len(told.login) == 1 and kv(db, "login_problem")["session"] == "shop--api--s2", "the newest failure is the one shown"
+    told.clock[0] += notify.LOGIN_EVERY + 1
+    hooks.apply(db, NAME, "StopFailure", AUTH_FAIL)
+    assert len(told.login) == 2
+
+
+def test_a_session_without_an_account_row_falls_back_to_the_current_account_and_the_message_is_capped(board, told):
+    db = board.db
+    state_file(board.cfg)
+    accounts.observe(db, T0)
+    assert db.open_row(NAME).get("account") is None
+    hooks.apply(db, NAME, "StopFailure", {**AUTH_FAIL, "last_assistant_message": "OAuth token has expired " + "x" * 600})
+    v = kv(db, "login_problem")
+    assert v["account"] == UUID_A and len(v["message"]) == login_problem.MESSAGE_MAX and v["message"].startswith("OAuth token has expired")
+
+
+def test_no_account_known_still_records_the_problem(board, told):
+    hooks.apply(board.db, NAME, "StopFailure", AUTH_FAIL)
+    v = kv(board.db, "login_problem")
+    assert v["account"] is None and v["agent"] == "claude" and len(told.login) == 1 and told.login[0].title == "Claude login not valid"
+
+
+def test_limits_and_other_errors_are_never_a_login_problem(board, told):
+    db = board.db
+    hooks.apply(db, NAME, "StopFailure", {"hook_event_name": "StopFailure", "error": "rate_limit",
+                                          "last_assistant_message": "You've hit your session limit · resets 10:05pm (Asia/Kathmandu). Use /login to switch account"})
+    hooks.apply(db, NAME, "StopFailure", {"hook_event_name": "StopFailure", "error": "server_error", "last_assistant_message": "API Error: 500"})
+    assert kv(db, "login_problem") is None and [n for n in told.login if n.kind == "login"] == [], "(the limit's own account-level notice is another kind)"
+    assert [n.kind for n in told.login] == ["rate_limit"] and len(told.session) == 2, "their own notices still go"
+
+
+def test_a_codex_failure_is_not_claudes_login_problem(board, told):
+    hooks.apply(board.db, NAME, "StopFailure", AUTH_FAIL, agent="codex")
+    assert kv(board.db, "login_problem") is None and told.login == []
+
+
+def test_a_reading_with_rate_limits_from_a_working_session_on_that_account_ends_the_problem(board, told):
+    db = board.db
+    w = two(board)                                                         # B is current; A has its fingerprint
+    statusline(db, "shop--api--s2", w.r5b, w.r7b, 5, 6)
+    statusline(db, NAME, w.r5a, w.r7a, 7, 8)                               # NAME's row is on A
+    assert db.open_row(NAME)["account"] == UUID_A
+    hooks.apply(db, NAME, "StopFailure", AUTH_FAIL)
+    assert kv(db, "login_problem")["account"] == UUID_A
+    statusline(db, "shop--api--s2", w.r5b, w.r7b, 6, 7)                    # a reading from B's session says nothing about A's login
+    assert kv(db, "login_problem") is not None
+    hooks.apply(db, "shop--api--s2", "Stop", STOP)                         # nor does B's successful turn
+    assert kv(db, "login_problem") is not None
+    statusline(db, NAME, w.r5a, w.r7a, 9, 10)                              # the failing session redraws the LAST limits it knew: no sign of life
+    assert db.open_row(NAME)["state"] == "errored" and kv(db, "login_problem") is not None, "the banner must not flicker off while the login is still dead"
+    hooks.apply(db, NAME, "UserPromptSubmit", {"hook_event_name": "UserPromptSubmit", "prompt": "try again"})
+    statusline(db, NAME, w.r5a, w.r7a, 9, 10)                              # working again, a reading arrives: its requests work (a known limit: a retry that will fail again re-raises it)
+    assert kv(db, "login_problem") is None
+
+
+def test_a_shell_row_running_claude_by_hand_counts_as_claude(board, told):
+    hooks.apply(board.db, NAME, "StopFailure", AUTH_FAIL, agent="shell")
+    assert kv(board.db, "login_problem")["agent"] == "claude"
+    hooks.apply(board.db, NAME, "Stop", STOP, agent="shell")
+    assert kv(board.db, "login_problem") is None
+
+
+def test_a_successful_stop_of_a_session_on_that_account_ends_the_problem_but_a_codex_one_does_not(board, told):
+    db = board.db
+    state_file(board.cfg)
+    accounts.observe(db, T0)
+    statusline(db, NAME, T0 + 3000, T0 + 200000)
+    hooks.apply(db, NAME, "StopFailure", AUTH_FAIL)
+    hooks.apply(db, NAME, "Stop", STOP, agent="codex")
+    assert kv(db, "login_problem") is not None
+    hooks.apply(db, NAME, "StopFailure", {"hook_event_name": "StopFailure", "error": "server_error", "last_assistant_message": "API Error: 500"})
+    assert kv(db, "login_problem") is not None, "a failure of another kind is no sign of life"
+    hooks.apply(db, NAME, "Stop", STOP)
+    assert kv(db, "login_problem") is None
+
+
+def test_the_state_carries_the_problem_and_delete_dismisses_it(env, lite_client):
+    from app import main
+    state_file(env.cfg)
+    accounts.observe(main.db, T0)
+    st = lite_client.get("/api/state", headers=H).json()
+    assert st["accounts"]["problem"] is None
+    login_problem.raise_(main.db, agent="claude", account=UUID_A, session=NAME, message="Invalid API key · Please run /login", now=T0)
+    st = lite_client.get("/api/state", headers=H).json()
+    assert st["accounts"]["problem"] == {"at": iso(T0), "agent": "claude", "account": UUID_A, "session": NAME, "message": "Invalid API key · Please run /login",
+                                         "label": "Ann", "back": None}
+    assert lite_client.get("/api/accounts", headers=H).json()["problem"]["account"] == UUID_A
+    assert set(st) - {"accounts"} >= {"login", "claude"} and "login_problem" not in st, "no new top-level state key"
+    r = lite_client.delete("/api/accounts/problem", headers=H)
+    assert r.status_code == 200 and r.json() == {"ok": True, "cleared": True}
+    assert lite_client.delete("/api/accounts/problem", headers=H).json() == {"ok": True, "cleared": False}
+    assert lite_client.get("/api/state", headers=H).json()["accounts"]["problem"] is None
+    assert lite_client.delete("/api/accounts/problem").status_code in (401, 403), "the same guard as every other write"

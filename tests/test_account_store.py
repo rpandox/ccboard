@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import account_store, accounts, autoresume, claude_auth, tmux
+from app import account_store, accounts, autoresume, claude_auth, login_problem, tmux
 from app.config import settings
 from app.db import DB, iso
 
@@ -925,6 +925,127 @@ def test_every_file_the_store_writes_is_private(box, fake_tmux):
     account_store.switch(box.db, UA)
     for p in box.store.rglob("*"):
         assert mode(p) == (0o700 if p.is_dir() else 0o600), p
+
+
+# ---------------------------------------------------------------- v0.5.17g: logging a saved account in again
+
+FRESH_A = b'{"claudeAiOauth":{"accessToken":"SECRET-A-fresh"}}'
+
+
+def relogin(box, who="A", asked="a@example.com", creds=None):
+    """What `Log in again` does: the add-account login for the account, finished with the given credentials and the identity of `who`."""
+    account_store.start_login(box.db, asked)
+    p = account_store.pending_dir()
+    put_creds(p, creds or CRED.get(who + "2", CRED[who]))
+    put_state(p / ".claude.json", who)
+    return account_store.finalize(box.db)
+
+
+def test_logging_a_saved_account_in_again_lands_in_its_own_slot_and_makes_no_second_row(box, fake_tmux):
+    two_accounts(box)                                           # A saved, B live
+    rows_before = set(box.kv("accounts"))
+    res = relogin(box, "A")
+    assert res["ok"] is True and res["key"] == UA and res["replaced"] is True and res["live"] is False and "different_account" not in res
+    assert set(box.kv("accounts")) == rows_before == {UA, UB}, "a re-login is not a new account"
+    s = box.slot("A")
+    assert (s / ".credentials.json").read_bytes() == CRED["A2"] and (s / ".credentials.json.prev").read_bytes() == CRED["A"]
+    assert box.creds.read_bytes() == CRED["B"] and accounts.current(box.db) == UB, "B stays live"
+    assert [d.name for d in box.store.iterdir() if d.is_dir() and d.name != ".pending"].__len__() == 2
+
+
+def test_logging_the_live_account_in_again_puts_the_fresh_login_live_and_keeps_the_dead_one_as_prev_not_in_the_slot(box, fake_tmux):
+    box.onboard("A")
+    put_creds(box.state.parent, CRED["A2"], age=100.0)           # the live file moved on (a refresh the board has not saved): this is the dead one
+    accounts.invalidate()
+    account_store.start_login(box.db, "a@example.com")
+    p = account_store.pending_dir()
+    put_creds(p, FRESH_A)
+    put_state(p / ".claude.json", "A")
+    res = account_store.finalize(box.db)
+    assert res["ok"] and res["live"] is True and res["replaced"] is True and res["key"] == UA
+    assert box.creds.read_bytes() == FRESH_A, "the live login is the fresh one"
+    s = box.slot("A")
+    assert (s / ".credentials.json").read_bytes() == FRESH_A, "the dead live bytes did not overwrite the fresh slot"
+    assert (s / ".credentials.json.prev").read_bytes() == CRED["A2"], "the generation before it is the one that was live"
+    assert box.live_oauth() == oauth("A") and accounts.current(box.db) == UA and accounts.held() is None
+    account_store.tick(box.db, T0 + 500)                         # the tick keeps the live account's copy current: it must not undo the fresh login
+    assert (s / ".credentials.json").read_bytes() == FRESH_A and box.creds.read_bytes() == FRESH_A
+    for q in box.store.rglob("*"):
+        assert mode(q) == (0o700 if q.is_dir() else 0o600), q
+
+
+def test_a_login_as_somebody_else_is_saved_as_its_own_row_and_the_result_says_so(box, fake_tmux):
+    box.onboard("A")
+    account_store.start_login(box.db, "a@example.com")
+    p = account_store.pending_dir()
+    put_creds(p, CRED["C"])
+    put_state(p / ".claude.json", "C")
+    live_before = box.creds.read_bytes()
+    res = account_store.finalize(box.db)
+    assert res["ok"] and res["key"] == UC and res["different_account"] == "c@example.com" and res["live"] is False and "replaced" not in res
+    assert box.creds.read_bytes() == live_before and account_store.has_saved(UC) and (box.slot("A") / ".credentials.json").read_bytes() == CRED["A"]
+    assert account_store.login_view()["result"] == res
+
+
+def test_the_asked_email_is_compared_without_case_and_no_email_asks_nothing(box, fake_tmux):
+    box.onboard("A")
+    res = relogin(box, "A", asked="A@Example.COM")
+    assert "different_account" not in res
+    account_store.start_login(box.db)                            # no email asked: nothing to compare with
+    p = account_store.pending_dir()
+    put_creds(p, CRED["C"])
+    put_state(p / ".claude.json", "C")
+    assert "different_account" not in account_store.finalize(box.db)
+
+
+def test_saved_at_is_the_age_of_the_saved_copy_and_a_relogin_renews_it(box, fake_tmux):
+    from datetime import datetime
+
+    def age(text):
+        return time.time() - datetime.fromisoformat(text).timestamp()
+    two_accounts(box)                                           # both credentials files were 100 s old when they were copied
+    v = account_store.decorate(accounts.view(box.db, full=True), box.db)
+    rows = {r["key"]: r for r in v["list"]}
+    for k in (UA, UB):
+        assert rows[k]["saved"] is True and 90 < age(rows[k]["saved_at"]) < 400, "the copy is as old as the file it was taken from"
+    res = relogin(box, "A")
+    assert res["replaced"] is True
+    v = account_store.decorate(accounts.view(box.db, full=True), box.db)
+    assert age({r["key"]: r for r in v["list"]}[UA]["saved_at"]) < 30, "a login written just now reads as just now"
+    # without the kv (a caller that has no db) the slot file's own mtime answers
+    bare = {r["key"]: r for r in account_store.decorate(accounts.view(box.db, full=True))["list"]}
+    assert bare[UA]["saved_at"] and bare[UB]["saved_at"] and account_store.decorate(accounts.view(box.db, full=True))["problem"] is None
+    box.db.kv_set("accounts", {**box.kv("accounts"), "x": {"key": "x", "email": None, "label": None}})
+    assert {r["key"]: r for r in account_store.decorate(accounts.view(box.db, full=True), box.db)["list"]}["x"]["saved_at"] is None, "no saved login, no age"
+
+
+def test_a_finished_login_for_the_account_clears_its_login_problem_and_others_leave_it(box, fake_tmux):
+    two_accounts(box)
+    login_problem.raise_(box.db, agent="claude", account=UC, session="shop--api--s1", message="Invalid API key")
+    assert relogin(box, "A")["ok"] and login_problem.get(box.db)["account"] == UC, "another account's login finishing says nothing about C"
+    login_problem.raise_(box.db, agent="claude", account=UA, session="shop--api--s1", message="Invalid API key")
+    assert relogin(box, "A")["ok"] and login_problem.get(box.db) is None
+
+
+def test_the_problem_view_names_the_account_and_offers_switch_back_only_right_after_a_switch(box, fake_tmux):
+    two_accounts(box)                                           # B live
+    account_store.switch(box.db, UA, now=T0 + 10)               # ... then A, which turns out to be dead
+    login_problem.raise_(box.db, agent="claude", account=UA, session="shop--api--s1", message="Invalid API key · Please run /login", now=T0 + 100)
+
+    def view():
+        return account_store.decorate(accounts.view(box.db, full=True), box.db)["problem"]
+    p = view()
+    assert p == {"at": iso(T0 + 100), "agent": "claude", "account": UA, "session": "shop--api--s1", "message": "Invalid API key · Please run /login",
+                 "label": "Ann", "back": {"key": UB, "label": "Bob"}}
+    login_problem.raise_(box.db, agent="claude", account=UA, session="s", message="x", now=T0 + 10 + login_problem.SWITCH_WINDOW + 1)
+    assert view()["back"] is None, "a failure long after the switch is not blamed on it"
+    login_problem.raise_(box.db, agent="claude", account=UB, session="s", message="x", now=T0 + 100)
+    assert view()["back"] is None and view()["label"] == "Bob", "the failing account is not the live one"
+    login_problem.raise_(box.db, agent="claude", account=UA, session="s", message="x", now=T0 + 100)
+    account_store.forget(box.db, UB)
+    assert view()["back"] is None, "nothing saved to switch back to"
+    login_problem.raise_(box.db, agent="claude", account=None, session="s", message="x")
+    assert view()["label"] is None and view()["account"] is None
 
 
 # ---------------------------------------------------------------- the API

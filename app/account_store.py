@@ -46,7 +46,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import accounts, claude_auth, tmux
+from . import accounts, claude_auth, login_problem, tmux
 from .config import settings
 from .db import iso
 
@@ -723,13 +723,19 @@ def _fail(pend: Path, t: float) -> dict:
     return _decide({"ok": False, "error": ERR_DID_NOT_COMPLETE, "at": iso(t)})
 
 
-def _complete(db, pend: Path, ident: dict, t: float, now) -> dict | None:
+def _complete(db, pend: Path, ident: dict, t: float, now, asked: str | None = None) -> dict | None:
     """The pending login named an account: move its two files into the account's slot, register the account (not as the current one),
-    close the login and, when nothing else is logged in live or the live account is this very account, put it in place."""
+    close the login and, when nothing else is logged in live or the live account is this very account, put it in place.
+
+    A re-login (the account already had a slot): the fresh login replaces the saved one (the generation it replaces becomes `.prev`) and
+    the result says `replaced`. When the live account IS this account (its login is the dead one) the fresh login goes live at once, and
+    the live bytes it replaces are kept in the slot's `.prev` rather than first saved over the fresh slot. `asked` is the email the login
+    was started for: when the person signed in as somebody else the result says `different_account` (that account got a row of its own)."""
     key = accounts.remember(db, {**ident, "config_dir": None}, now)
     _kill_login_session()                                        # nothing writes into .pending any more
     slot = _slot_ready(key)
     snap = _snapshot(slot)
+    replaced = has_saved(key)
     try:
         got = _read_stable(pend / CREDS)
         claude_json = _read_plain(pend / STATE)
@@ -742,17 +748,29 @@ def _complete(db, pend: Path, ident: dict, t: float, now) -> dict | None:
         log.warning("a finished login could not be saved yet: %s", e.__class__.__name__)
         return None                                              # .pending stays: the next call tries again (or abandons it after an hour)
     shutil.rmtree(pend, ignore_errors=True)
+    with contextlib.suppress(OSError):
+        _note_saved(db, key, _stamp(slot / CREDS))               # "login saved <age> ago" counts from now
     live_ok = False
     try:
         cur, _i = _live_account(db)
         live_bytes = _read_plain(_live_creds())
         nobody = cur is None and not live_bytes
         if nobody or cur == key:
+            if cur == key and live_bytes and live_bytes != got[0]:
+                with contextlib.suppress(OSError):               # the live (dead) login is the generation just before the fresh one
+                    _write_atomic(slot / PREV, live_bytes, 0o600)
             _apply(db, key, _slot_oauth(db, key), None, now)
             live_ok = True
     except (StoreError, OSError) as e:
         log.warning("the new login is saved but was not put in place: %s", e.__class__.__name__)
-    return _decide({"ok": True, "key": key, "name": accounts.label(db, key), "live": live_ok, "at": iso(t)})
+    login_problem.clear(db, "claude", key)                       # a login for this account finished: whatever was reported about it is over
+    out = {"ok": True, "key": key, "name": accounts.label(db, key), "live": live_ok, "at": iso(t)}
+    if replaced:
+        out["replaced"] = True
+    got_email = ident.get("email")
+    if asked and got_email and got_email.strip().lower() != asked.strip().lower():
+        out["different_account"] = got_email
+    return _decide(out)
 
 
 def finalize(db, now=None) -> dict | None:
@@ -765,7 +783,7 @@ def finalize(db, now=None) -> dict | None:
     with _lock:
         pend = pending_dir()
         with _vlock:
-            adding, started = bool(_login["adding"]), _login["started_at"]
+            adding, started, asked = bool(_login["adding"]), _login["started_at"], _login["email"]
         if not pend.is_dir():
             if adding:
                 _reset_login()
@@ -779,7 +797,7 @@ def finalize(db, now=None) -> dict | None:
         if have_creds and t - cst.st_mtime >= PENDING_MIN_AGE:
             ident = accounts.read_identity(config_dir=pend, auth=False, force=True)
             if ident:
-                return _complete(db, pend, ident, t, now)
+                return _complete(db, pend, ident, t, now, asked)
         if started is None:
             with contextlib.suppress(OSError):
                 started = pend.stat().st_mtime
@@ -914,10 +932,59 @@ def tick(db, now=None) -> None:
 
 
 # ------------------------------------------------------------------ views
-def decorate(view: dict) -> dict:
-    """accounts.view() with `saved` on every list row and a top-level `store: {supported, reason, count}` (count = accounts with a
-    saved login). Stats a file per account, nothing more; never raises."""
+def _saved_at(key: str, stamps) -> str | None:
+    """When the key's saved login was last written, as an ISO time: the mtime of the credentials file at the moment its copy was taken
+    (the `_note_saved` stamp, kv account_saved), else the slot's own file mtime. Only a stamp is looked at, never a file's content."""
+    st = stamps.get(key) if isinstance(stamps, dict) else None
+    ns = st[0] if isinstance(st, list) and st and isinstance(st[0], (int, float)) and not isinstance(st[0], bool) else None
+    if not ns:
+        try:
+            ns = os.stat(_slot_creds(key)).st_mtime_ns
+        except OSError:
+            return None
+    try:
+        return iso(ns / 1e9)
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _problem_view(db, current: str | None) -> dict | None:
+    """state.accounts.problem: the kv login_problem record ({at, agent, account, session, message}) plus `label` (what the account is
+    called) and `back` ({key, label} of the account to switch back to) when the failing account is the live one and the failure came
+    within login_problem.SWITCH_WINDOW of a switch to it from an account that still has its saved login. None when there is no problem."""
+    rec = login_problem.get(db)
+    if rec is None:
+        return None
+    key = rec.get("account")
+    out = {**rec, "label": None, "back": None}
+    if rec.get("agent") == "claude":
+        out["label"] = accounts.label(db, key) if key else None
+        sw = _kv(db, KV_SWITCH)
+        if key and key == current and isinstance(sw, dict) and sw.get("to") == key and sw.get("from") not in (None, key):
+            try:
+                gap = accounts._to_epoch(rec.get("at")) - accounts._to_epoch(sw.get("at"))
+            except (ValueError, TypeError):
+                gap = None
+            if gap is not None and 0 <= gap <= login_problem.SWITCH_WINDOW and sw["from"] in accounts._load(db) and has_saved(sw["from"]):
+                out["back"] = {"key": sw["from"], "label": accounts.label(db, sw["from"])}
+    else:
+        accts = db.kv_get("codex_accounts")
+        row = ((accts or {}).get("value") or {}).get(key) if key else None
+        out["label"] = row.get("label") if isinstance(row, dict) else None
+    return out
+
+
+def decorate(view: dict, db=None) -> dict:
+    """accounts.view() with `saved` and `saved_at` (when the saved login was last written; None without one) on every list row, a top-level
+    `store: {supported, reason, count}` (count = accounts with a saved login) and `problem` (see _problem_view; given a `db`, else None).
+    Stats a file per account, nothing more; never raises."""
     sup = supported()
+    stamps = None
+    if db is not None:
+        try:
+            stamps = _kv(db, KV_SAVED)
+        except Exception:
+            stamps = None
     rows, n = [], 0
     for r in (view.get("list") if isinstance(view, dict) else None) or []:
         try:
@@ -925,8 +992,13 @@ def decorate(view: dict) -> dict:
         except Exception:
             saved = False
         n += 1 if saved else 0
-        rows.append({**r, "saved": bool(saved)})
+        rows.append({**r, "saved": bool(saved), "saved_at": _saved_at(r.get("key"), stamps) if saved else None})
     out = dict(view) if isinstance(view, dict) else {"current": None}
     out["list"] = rows
     out["store"] = {"supported": sup, "reason": None if sup else REASON, "count": n}
+    try:
+        out["problem"] = _problem_view(db, out.get("current")) if db is not None else None
+    except Exception as e:
+        log.warning("login problem view failed: %s", e.__class__.__name__)
+        out["problem"] = None
     return out

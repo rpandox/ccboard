@@ -20,7 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import account_store, accounts, codex_accounts as cx, samples, tmux
+from app import account_store, accounts, codex_accounts as cx, login_problem, samples, tmux
 from app.agents import codex as codex_agent
 from app.config import settings
 from app.db import DB, iso
@@ -298,9 +298,12 @@ def test_seed_saves_a_refreshed_token_into_the_current_slot_only_once_the_file_i
     s = cx.slot_dir(key)
     assert (s / "auth.json").read_bytes() == AUTH["A2"] and (s / "auth.json.prev").read_bytes() == AUTH["A"] and mode(s / "auth.json.prev") == 0o600
     assert len(box.kv("codex_accounts")) == 1, "the refresh is not a second account"
-    box.log_in("A")                                              # a third generation: .prev holds exactly one generation
+    box.log_in("B2")                                             # a third generation (a new login: a refresh never goes back to an older one): .prev holds exactly one generation
     cx.seed_current(box.db)
-    assert (s / "auth.json.prev").read_bytes() == AUTH["A2"]
+    assert (s / "auth.json").read_bytes() == AUTH["B2"] and (s / "auth.json.prev").read_bytes() == AUTH["A2"]
+    box.log_in("A2")                                             # the older generation written back by an older process: not a refresh, the saved login stays
+    cx.seed_current(box.db)
+    assert (s / "auth.json").read_bytes() == AUTH["B2"] and (s / "auth.json.prev").read_bytes() == AUTH["A2"]
 
 
 def test_a_young_unknown_login_is_not_adopted_until_it_has_settled(box):
@@ -817,7 +820,8 @@ def test_parse_login_text_reads_the_link_and_the_code_after_it():
 
 def test_login_view_shows_the_link_the_code_and_the_tail_only_while_adding(box):
     box.tmux["screen"] = DEVICE_PANE
-    assert cx.login_view() == {"running": False, "adding": False, "label": None, "started_at": None, "url": None, "code": None, "tail": [], "result": None}
+    assert cx.login_view() == {"running": False, "adding": False, "label": None, "replace_key": None, "started_at": None, "url": None, "code": None,
+                               "tail": [], "result": None}
     cx.start_login(box.db, "Work")
     v = cx.login_view()
     assert (v["url"], v["code"], v["running"], v["adding"]) == ("https://auth.openai.com/codex/device", "ABCD-12345", True, True)
@@ -998,11 +1002,11 @@ def test_view_shape_order_and_the_store_summary(box):
     assert set(v) == {"current", "list", "store", "login"} and v["current"] == ka
     assert [r["key"] for r in v["list"]][0] == ka and {r["key"] for r in v["list"]} == {ka, kb, kc}
     row = v["list"][0]
-    assert set(row) == {"key", "label", "account_id", "plan", "saved", "current", "added_at", "last_seen"}
+    assert set(row) == {"key", "label", "account_id", "plan", "saved", "saved_at", "current", "added_at", "last_seen"}
     assert (row["label"], row["plan"], row["account_id"], row["saved"], row["current"]) == ("Work", "pro", ACCT_A, True, True)
     assert {r["key"]: r["saved"] for r in v["list"]} == {ka: True, kb: True, kc: False}
     assert v["store"] == {"supported": True, "add": True, "reason": None, "count": 2}
-    assert set(v["login"]) == {"running", "adding", "label", "started_at", "url", "code", "tail", "result"}
+    assert set(v["login"]) == {"running", "adding", "label", "replace_key", "started_at", "url", "code", "tail", "result"}
     assert "tail" not in cx.view(box.db, tail=False)["login"]
 
 
@@ -1110,6 +1114,160 @@ def test_every_file_the_store_writes_is_private(box):
     assert mode(box.auth) == 0o600
 
 
+# ---------------------------------------------------------------- v0.5.17g: logging a saved account in again
+
+def relogin_cx(box, key, who="C", **kw):
+    """What `Log in again` does: the device login for the account, finished with the given login file."""
+    cx.start_login(box.db, None, replace_key=key, **kw)
+    box.pending(who)
+    return cx.finalize(box.db)
+
+
+def test_logging_a_saved_account_in_again_replaces_its_login_and_makes_no_second_account(box):
+    ka, kb = box.two()                                          # A live and current, B saved ("Home")
+    accounts_before = set(cx._load(box.db))
+    cx.start_login(box.db, None, replace_key=kb)
+    v = cx.login_view()
+    assert v["adding"] is True and v["label"] == "Home" and v["replace_key"] == kb, "the page can say who is being logged in again"
+    box.pending("C")
+    res = cx.finalize(box.db)
+    assert res == {"ok": True, "key": kb, "label": "Home", "live": False, "replaced": True, "why": None, "at": res["at"]}
+    assert set(cx._load(box.db)) == accounts_before and cx.label_of(box.db, kb) == "Home", "same key, same label, no second account"
+    s = cx.slot_dir(kb)
+    assert (s / "auth.json").read_bytes() == AUTH["C"] and (s / "auth.json.prev").read_bytes() == AUTH["B"], "the old login becomes .prev"
+    assert box.auth.read_bytes() == AUTH["A"] and cx.current(box.db) == ka, "the live login and the current account do not move"
+    assert mode(s / "auth.json") == 0o600 and mode(s / "auth.json.prev") == 0o600 and tree_has_no_temp_files(box.store)
+    meta = json.loads((s / "meta.json").read_text())
+    assert meta["label"] == "Home" and meta["saved_at"]
+    row = {r["key"]: r for r in cx.view(box.db)["list"]}[kb]
+    assert row["saved_at"] == meta["saved_at"] and row["saved"] is True
+    assert not cx.pending_dir().exists() and cx.login_view()["replace_key"] is None and cx.login_view()["result"] == res
+    assert cx.finalize(box.db) is None, "decided once"
+
+
+def test_logging_the_live_account_in_again_puts_the_fresh_login_live_at_once(box):
+    ka, kb = box.two()
+    put_auth(box.live, AUTH["A2"])                              # the live file moved on (a refresh the board has not saved): the dead one
+    events_before = box.events()
+    res = relogin_cx(box, ka)
+    assert res["ok"] and res["live"] is True and res["replaced"] is True and res["why"] is None and res["key"] == ka
+    assert box.auth.read_bytes() == AUTH["C"], "the live file is the fresh login"
+    s = cx.slot_dir(ka)
+    assert (s / "auth.json").read_bytes() == AUTH["C"], "the dead live bytes did not overwrite the fresh slot"
+    assert (s / "auth.json.prev").read_bytes() == AUTH["A2"], "the generation before it is the one that was live"
+    assert cx.current(box.db) == ka and box.events() == events_before + [(ka, {"to": ka, "relogin": True})], "an event says the login was renewed; the account in use did not change"
+    assert box.kv("codex_account_switch") is None, "and no switch, no repair window"
+    cx.tick(box.db, T0 + 500)                                   # the tick keeps the live account's copy current: it must not undo the fresh login
+    assert box.auth.read_bytes() == AUTH["C"] and (s / "auth.json").read_bytes() == AUTH["C"]
+    assert mode(box.auth) == 0o600
+
+
+def test_the_fresh_login_of_the_live_account_stays_saved_while_a_board_codex_session_is_open(box):
+    ka, kb = box.two()
+    put_auth(box.live, AUTH["A2"])
+    add_codex_row(box.db)
+    alive(box, "shop--api--s1")
+    res = relogin_cx(box, ka)
+    assert res["ok"] and res["live"] is False and res["replaced"] is True and res["why"] == cx.BUSY_SESSIONS
+    assert box.auth.read_bytes() == AUTH["A2"], "a running Codex keeps its login and would write the dead one back: the live file is left alone"
+    assert (cx.slot_dir(ka) / "auth.json").read_bytes() == AUTH["C"] and (cx.slot_dir(ka) / "auth.json.prev").read_bytes() == AUTH["A2"]
+    assert cx.login_view()["result"] == res and box.kv("codex_relogin_waiting")["key"] == ka
+    for t in (T0 + 100, T0 + 200):                               # the tick keeps the live account's copy current, but the live file is not that account's refresh
+        cx.tick(box.db, t)
+    assert (cx.slot_dir(ka) / "auth.json").read_bytes() == AUTH["C"] and box.auth.read_bytes() == AUTH["A2"], "the dead login never overwrites the fresh one, and waits for the sessions"
+    box.tmux["sessions"].clear()                                # closed: the next tick puts the fresh login in
+    cx.tick(box.db, T0 + 300)
+    assert box.auth.read_bytes() == AUTH["C"] and (cx.slot_dir(ka) / "auth.json").read_bytes() == AUTH["C"] and cx.current(box.db) == ka
+    cx.tick(box.db, T0 + 400)
+    assert box.kv("codex_relogin_waiting") is None, "live now: nothing waits"
+
+
+def test_a_waiting_fresh_login_is_not_saved_over_by_a_switch_away_and_comes_back_with_a_switch_to_it(box):
+    ka, kb = box.two()
+    put_auth(box.live, AUTH["A2"])
+    add_codex_row(box.db)
+    alive(box, "shop--api--s1")
+    relogin_cx(box, ka)
+    box.tmux["sessions"].clear()
+    assert cx.switch(box.db, kb)["to"] == kb
+    assert (cx.slot_dir(ka) / "auth.json").read_bytes() == AUTH["C"], "A's slot kept the fresh login: the dead live bytes were not saved over it"
+    assert box.auth.read_bytes() == AUTH["B"]
+    assert cx.switch(box.db, ka)["to"] == ka and box.auth.read_bytes() == AUTH["C"]
+
+
+def test_a_waiting_fresh_login_goes_live_with_a_switch_to_the_current_account_too(box):
+    ka, kb = box.two()
+    put_auth(box.live, AUTH["A2"])
+    add_codex_row(box.db)
+    alive(box, "shop--api--s1")
+    relogin_cx(box, ka)
+    box.tmux["sessions"].clear()
+    r = cx.switch(box.db, ka)
+    assert r["ok"] and r["already"] is False and r["to"] == ka and box.auth.read_bytes() == AUTH["C"] and box.kv("codex_relogin_waiting") is None
+
+
+def test_a_waiting_fresh_login_is_given_up_when_the_account_is_no_longer_current_or_another_login_is_live(box):
+    ka, kb = box.two()
+    put_auth(box.live, AUTH["A2"])
+    add_codex_row(box.db)
+    alive(box, "shop--api--s1")
+    relogin_cx(box, ka)
+    box.tmux["sessions"].clear()
+    put_auth(box.live, AUTH["C"][:-3] + b"xx}")                  # somebody logged in by hand: not the dead login, not ours to replace
+    cx.tick(box.db, T0 + 100)
+    assert box.kv("codex_relogin_waiting") is None and box.auth.read_bytes() != AUTH["C"]
+
+
+def test_a_relogin_with_nobody_logged_in_live_goes_live_like_a_new_account(box):
+    ka, kb = box.two()
+    box.auth.unlink()
+    res = relogin_cx(box, kb)
+    assert res["live"] is True and box.auth.read_bytes() == AUTH["C"] and cx.current(box.db) == kb
+
+
+def test_a_forgotten_account_can_be_logged_in_again_into_the_same_key(box):
+    ka, kb = box.two()
+    kc = box.add("C", "Spare")
+    cx.forget(box.db, kc)
+    assert not cx.has_saved(kc)
+    accounts_before = set(cx._load(box.db))
+    res = relogin_cx(box, kc, who="B2")
+    assert res["ok"] and res["key"] == kc and res["live"] is False and cx.has_saved(kc)
+    assert set(cx._load(box.db)) == accounts_before and cx._load(box.db)[kc]["saved"] is True and cx.label_of(box.db, kc) == "Spare"
+    assert {r["key"]: r for r in cx.view(box.db)["list"]}[kc]["saved"] is True and box.auth.read_bytes() == AUTH["A"]
+
+
+def test_an_unknown_key_starts_nothing_and_a_given_label_does_not_rename(box):
+    box.two()
+    for bad in ("0" * 24, "../escape", "", "A" * 24):
+        with pytest.raises(cx.UnknownAccount):
+            cx.start_login(box.db, None, replace_key=bad)
+    assert not cx.pending_dir().exists() and [c for c in box.tmux["created"] if c[0] == tmux.LOGIN_SESSION] == []
+    ka, kb = [r["key"] for r in cx.view(box.db)["list"]]
+    cx.start_login(box.db, "Other name", replace_key=kb)
+    assert cx.login_view()["label"] == "Home" and cx.label_of(box.db, kb) == "Home"
+
+
+def test_an_account_that_vanished_while_the_login_ran_gets_the_login_as_a_new_account(box):
+    ka, kb = box.two()
+    cx.start_login(box.db, None, replace_key=kb)
+    accts = cx._load(box.db)                                    # merged away meanwhile
+    accts.pop(kb)
+    cx._save(box.db, accts)
+    box.pending("C")
+    res = cx.finalize(box.db)
+    assert res["ok"] and res["key"] != kb and res["label"] == "Home" and "replaced" not in res and cx.has_saved(res["key"])
+
+
+def test_a_finished_login_clears_the_codex_login_problem_of_that_account_only(box):
+    ka, kb = box.two()
+    login_problem.raise_(box.db, agent="codex", account=ka, session=None, message="x")
+    relogin_cx(box, kb)
+    assert login_problem.get(box.db)["account"] == ka
+    relogin_cx(box, ka, who="B2")
+    assert login_problem.get(box.db) is None
+
+
 # ---------------------------------------------------------------- the API
 
 @pytest.fixture
@@ -1128,7 +1286,8 @@ def test_get_codex_accounts_carries_rows_store_and_the_login_view(box, api):
     body = api.get("/api/codex-accounts", headers=H).json()
     assert body["current"] == ka and body["list"][0]["saved"] is True and body["list"][0]["label"].startswith("codex login ")
     assert body["store"] == {"supported": True, "add": True, "reason": None, "count": 1}
-    assert body["login"] == {"running": False, "adding": False, "label": None, "started_at": None, "url": None, "code": None, "tail": [], "result": None}
+    assert body["login"] == {"running": False, "adding": False, "label": None, "replace_key": None, "started_at": None, "url": None, "code": None,
+                             "tail": [], "result": None}
     assert api.get("/api/codex-accounts").status_code == 403
 
 
@@ -1136,7 +1295,7 @@ def test_state_carries_one_new_top_level_key_the_get_body_without_the_tail(box, 
     ka = box.onboard("A")
     st = api.get("/api/state", headers=H).json()
     assert st["codex_accounts"]["current"] == ka and st["codex_accounts"]["store"]["count"] == 1
-    assert "tail" not in st["codex_accounts"]["login"] and set(st["codex_accounts"]["login"]) == {"running", "adding", "label", "started_at", "url", "code", "result"}
+    assert "tail" not in st["codex_accounts"]["login"] and set(st["codex_accounts"]["login"]) == {"running", "adding", "label", "replace_key", "started_at", "url", "code", "result"}
     get = api.get("/api/codex-accounts", headers=H).json()
     assert {k: v for k, v in get["login"].items() if k != "tail"} == st["codex_accounts"]["login"] and get["list"] == st["codex_accounts"]["list"]
     assert set(st["login"]) == {"running", "url", "tail", "adding", "email", "started_at", "result"}, "the Claude login payload is unchanged"
@@ -1278,9 +1437,9 @@ def test_the_demo_state_carries_two_codex_accounts_one_current():
     demo = json.loads((Path(__file__).resolve().parent.parent / "app" / "static" / "demo" / "state.json").read_text(encoding="utf-8"))
     ca = demo["codex_accounts"]
     assert len(ca["list"]) == 2 and sum(1 for r in ca["list"] if r["current"]) == 1 and ca["current"] in {r["key"] for r in ca["list"]}
-    assert all(set(r) == {"key", "label", "account_id", "plan", "saved", "current", "added_at", "last_seen"} and r["saved"] is True for r in ca["list"])
+    assert all(set(r) == {"key", "label", "account_id", "plan", "saved", "current", "added_at", "last_seen", "saved_at"} and r["saved"] is True for r in ca["list"])
     assert ca["store"] == {"supported": True, "add": True, "reason": None, "count": 2}
-    assert set(ca["login"]) == {"running", "adding", "label", "started_at", "url", "code", "result"} and ca["login"]["adding"] is False
+    assert set(ca["login"]) == {"running", "adding", "label", "started_at", "url", "code", "result", "replace_key"} and ca["login"]["adding"] is False
 
 
 # ---------------------------------------------------------------- startup
@@ -1328,3 +1487,23 @@ def test_the_fake_codex_prints_the_link_and_the_code_and_writes_a_login_into_cod
     lh = subprocess.run([str(box.fake), "login", "--help"], capture_output=True, text=True).stdout
     assert "--device-auth" in lh
     assert subprocess.run([str(box.fake), "--version"], capture_output=True, text=True).stdout.strip() == "codex-cli 0.160.0"
+
+
+def test_the_login_endpoint_takes_replace_key_without_a_label_and_answers_404_for_an_unknown_key(box, api):
+    ka, kb = box.two()
+    assert post(api, "/api/codex-accounts/login", json={}).status_code == 400, "a new account still needs a name"
+    r = post(api, "/api/codex-accounts/login", json={"replace_key": "0" * 24})
+    assert r.status_code == 404 and r.json()["detail"] == "no such account"
+    assert not cx.pending_dir().exists()
+    r = post(api, "/api/codex-accounts/login", json={"replace_key": kb})
+    assert r.status_code == 202 and r.json() == {"ok": True}
+    login = api.get("/api/codex-accounts", headers=H).json()["login"]
+    assert login["adding"] is True and login["label"] == "Home" and login["replace_key"] == kb
+    box.pending("C")
+    res = cx.finalize(box.db)
+    assert res["replaced"] is True and res["key"] == kb
+    body = api.get("/api/codex-accounts", headers=H).json()
+    assert [r["key"] for r in body["list"]].count(kb) == 1 and len(body["list"]) == 2 and body["login"]["result"]["replaced"] is True
+    assert {r["key"]: r for r in body["list"]}[kb]["saved_at"]
+    st = api.get("/api/state", headers=H).json()["codex_accounts"]
+    assert "tail" not in st["login"] and st["login"]["replace_key"] is None

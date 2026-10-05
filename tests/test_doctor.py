@@ -423,7 +423,7 @@ def test_samples_heartbeat_by_age(clocks, age, status):
     db = HbDB(age_s=age)
     c = heartbeat(db)
     assert c["status"] == status, (age, c)
-    assert db.asked == ["samples_heartbeat"]
+    assert [k for k in db.asked if k != "login_problem"] == ["samples_heartbeat"], "the heartbeat check reads its one kv (the claude-auth check reads login_problem)"
     assert c["group"] == "box" and "sampler" in c["detail"]
     if status == "pass":
         assert c["fix"] is None and f"{age} s ago" in c["detail"]
@@ -587,6 +587,28 @@ def test_claude_auth(world):
     assert c["status"] == "warn" and "TimeoutExpired" in c["detail"]
     world.auth = {"installed": False, "version": None, "loggedIn": False}
     assert one("claude-auth")["status"] == "skip"
+
+
+class ProblemDB:
+    """Only what the claude-auth check reads: kv_get('login_problem') -> {value, at} | None."""
+
+    def __init__(self, value=None):
+        self.value = value
+        self.asked = []
+
+    def kv_get(self, key):
+        self.asked.append(key)
+        return {"value": self.value, "at": "2026-10-05T09:00:00+00:00"} if key == "login_problem" and self.value else None
+
+
+def test_claude_auth_warns_while_the_board_has_been_told_the_login_is_invalid():
+    prob = {"at": "2026-10-05T09:41:12+00:00", "agent": "claude", "account": "k", "session": "shop--api--s1", "message": "Invalid API key · Please run /login"}
+    c = one("claude-auth", db=ProblemDB(prob))
+    assert c["status"] == "warn" and c["detail"] == "Claude reported its login invalid at 2026-10-05 09:41 UTC: log in again in Settings"
+    assert c["fix"]["action"] == "claude_login" and "Settings" in c["fix"]["text"]
+    assert "Invalid API key" not in json.dumps(c), "the failure text itself is not quoted"
+    assert one("claude-auth", db=ProblemDB(None))["status"] == "pass" and one("claude-auth", db=ProblemDB({**prob, "agent": "codex"}))["status"] == "pass"
+    assert one("claude-auth")["status"] == "pass", "no db to ask: the plain verdict"
 
 
 def test_claude_hooks_states():

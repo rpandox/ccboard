@@ -1709,7 +1709,8 @@
         "rl_7d_at": "2026-10-03T02:59:40+00:00",
         "source": "statusline",
         "current": true,
-        "saved": true
+        "saved": true,
+        "saved_at": "2026-10-03T01:00:00+00:00"
       },
       {
         "key": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a002",
@@ -1725,14 +1726,16 @@
         "rl_7d_at": "2026-10-02T23:10:00+00:00",
         "source": "cache",
         "current": false,
-        "saved": true
+        "saved": true,
+        "saved_at": "2026-08-23T03:00:00+00:00"
       }
     ],
     "store": {
       "supported": true,
       "reason": null,
       "count": 2
-    }
+    },
+    "problem": null
   },
   "codex_accounts": {
     "current": "3b9f1c2a7d4e5f6a8b0c1d2e",
@@ -1745,7 +1748,8 @@
         "saved": true,
         "current": true,
         "added_at": "2026-10-01T09:00:00+00:00",
-        "last_seen": "2026-10-04T10:00:00+00:00"
+        "last_seen": "2026-10-04T10:00:00+00:00",
+        "saved_at": "2026-10-03T00:00:00+00:00"
       },
       {
         "key": "7c8d9e0f1a2b3c4d5e6f7a8b",
@@ -1755,7 +1759,8 @@
         "saved": true,
         "current": false,
         "added_at": "2026-10-02T09:00:00+00:00",
-        "last_seen": "2026-10-03T18:00:00+00:00"
+        "last_seen": "2026-10-03T18:00:00+00:00",
+        "saved_at": "2026-09-21T03:00:00+00:00"
       }
     ],
     "store": {
@@ -1771,7 +1776,8 @@
       "started_at": null,
       "url": null,
       "code": null,
-      "result": null
+      "result": null,
+      "replace_key": null
     }
   },
   "usage_codex": {

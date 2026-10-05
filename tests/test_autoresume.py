@@ -246,3 +246,27 @@ def test_continue_parked_defaults_use_tmux(world, monkeypatch):
     monkeypatch.setattr(autoresume.tmux, "real_clients", lambda n: 0)
     monkeypatch.setattr(autoresume.tmux, "send_text", lambda n, t, enter=False: calls.append((n, t, enter)))
     assert autoresume.continue_parked(db, T) == ["shop--api--s1"] and calls == [("shop--api--s1", "continue", True)]
+
+
+# --- v0.5.17g: an authentication failure is not a limit: `continue` is never typed into a session that stopped on a dead login ---
+
+AUTH_FAILURES = ["Invalid API key · Please run /login", "OAuth token has expired. Please run /login", "API Error: 401 authentication_error",
+                 "Not logged in · Please run /login", "authentication_failed", "token revoked"]
+
+
+@pytest.mark.parametrize("message", AUTH_FAILURES)
+def test_an_authentication_failure_is_not_a_limit_message(message):
+    from app.agents.claude import LIMIT_MSG_RE
+    assert LIMIT_MSG_RE.search(message) is None, "autoresume keys on LIMIT_MSG_RE: these must never match it"
+
+
+def test_nothing_is_typed_into_a_session_that_stopped_on_an_authentication_failure(world):
+    db, T = world["db"], 1_800_000_000
+    for i, msg in enumerate(AUTH_FAILURES):
+        seed(db, f"shop--api--a{i}", hit_at=T - 3600, resets_at=T + 7200, message=msg)      # parked on the failure; a limit episode exists for it too
+    seed(db, "shop--api--lim", hit_at=T - 3600, resets_at=T + 7200)                          # the control: a real limit does get `continue`
+    assert cp(world, T) == ["shop--api--lim"] and world["sent"] == [("shop--api--lim", "continue")], "after a switch"
+    assert world["tick"](T + 7200 + 60) == [] and len(world["sent"]) == 1, "and after the reset"
+    from app import login_problem
+    login_problem.raise_(db, agent="claude", account="k", session="shop--api--a0", message="Invalid API key · Please run /login")
+    assert cp(world, T + 1) == [] and world["tick"](T + 7200 + 120) == [] and len(world["sent"]) == 1

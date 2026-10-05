@@ -327,10 +327,11 @@ def test_state_legacy_keys_are_unchanged(board):
     assert st["login"] == {**claude_auth.login_state(), **account_store.login_view()}, "v0.5.17c: the login view adds adding/email/started_at/result"
     assert set(st["login"]) == {"running", "url", "tail", "adding", "email", "started_at", "result"}
     assert st["usage"] == db().kv_get("rate_limits") and st["usage"]["value"]["five_hour"]["used_percentage"] == 42
-    assert st["accounts"] == {"current": None, "list": [], "store": {"supported": False, "reason": account_store.REASON, "count": 0}}, \
-        "v0.5.17b: the account list is always present, empty until an identity is read (v0.5.17c: plus the saved-login store summary)"
+    assert st["accounts"] == {"current": None, "list": [], "store": {"supported": False, "reason": account_store.REASON, "count": 0}, "problem": None}, \
+        "v0.5.17b: the account list is always present, empty until an identity is read (v0.5.17c: plus the saved-login store summary; v0.5.17g: plus the login problem)"
     assert st["codex_accounts"] == {"current": None, "list": [], "store": {"supported": False, "add": False, "reason": "codex is not installed", "count": 0},
-                                    "login": {"running": False, "adding": False, "label": None, "started_at": None, "url": None, "code": None, "result": None}}, \
+                                    "login": {"running": False, "adding": False, "label": None, "replace_key": None, "started_at": None, "url": None, "code": None,
+                                              "result": None}}, \
         "v0.5.17e: the one new top-level key, the saved Codex accounts (the GET body without login.tail); unsupported without a codex binary"
 
 

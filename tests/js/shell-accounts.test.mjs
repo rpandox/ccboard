@@ -186,7 +186,7 @@ test('Shell.accountChip is pure: it answers null for fewer than two accounts and
   assert.equal(w.run('Shell.accountChip(__st)'), null);
   w.ctx.__st = stateOf([acct(A1, { current: true, name: 'Demo' }), acct(A2)]);
   const c = plain(w.run('Shell.accountChip(__st)'));
-  assert.deepEqual(Object.keys(c).sort(), ['amber', 'hue', 'key', 'name', 'text', 'title']);
+  assert.deepEqual(Object.keys(c).sort(), ['amber', 'href', 'hue', 'key', 'name', 'text', 'title']);
   assert.ok(POOL.includes(c.hue));
 });
 

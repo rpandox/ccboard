@@ -720,6 +720,7 @@ html.force-coarse #page a.gauge { min-height:var(--tap); }
 #page .settings-page a.btn.is-off { opacity:.5; pointer-events:none; }
 @media (max-width:599px) {
   #page .settings-page .set-acct > .kv-act { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:8px; justify-content:stretch; }          /* three equal cells whatever the row has: Rename is as wide on every row */
+  #page .settings-page .set-acct.acts-4 > .kv-act, #page .settings-page .set-cx.acts-4 > .kv-act { grid-template-columns:repeat(2, minmax(0, 1fr)); }                                        /* four actions: two rows of two, never one orphan under three */
   #page .settings-page .set-acct > .kv-act > .row { grid-column:1 / -1; display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px; }          /* the armed Forget: Confirm and Cancel share the row */
   #page .settings-page .add-btns { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(0, 1fr); gap:8px; }
   #page .settings-page .add-btns > .bp5-button { min-width:0; }
@@ -742,6 +743,20 @@ html.force-coarse #page .settings-page .add-url { font-size:16px; }
   #page .settings-page .set-cx > .kv-act > .row { grid-column:1 / -1; display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px; }
   #page .settings-page .cx-code { font-size:24px; letter-spacing:.1em; }
 }
+
+/* v0.5.17g login expiry. The Home banner for a login that does not work: the message, then bordered actions (Log in again, Switch back to <name>, dismiss) that wrap under it
+   on a phone instead of squeezing it. A row of Settings > Accounts that the box was told about wears the amber chip and a hairline of the same hue on its left (amber = attention);
+   'login saved 3d ago' is a quiet line under the readings; 'Log in again as <name>' heads the add block while one is in flight; the note after a login (a different account,
+   a fresh Codex login that is not in use yet) is amber text, not a toast that is gone before it is read. */
+#banner.login { flex-wrap:wrap; }
+#banner.login > span { flex:1 1 16em; }
+#banner .banner-acts { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+#banner.login > .bn-x { flex:0 0 auto; order:3; margin-left:auto; min-width:var(--row-btn,28px); padding:0 6px; font-size:16px; line-height:1; }        /* dismiss is a corner ×, last on a wide screen */
+@media (max-width:599px) { #banner.login > .bn-x { order:1; } #banner.login .banner-acts { order:2; flex:1 1 100%; } }                                   /* phone: the × shares the text line, the actions take the next */
+#page .settings-page .kv.is-flagged { box-shadow:inset 3px 0 0 var(--warn); padding-left:10px; }
+#page .settings-page .set-saved { font-size:12px; }
+#page .settings-page .add-title { font-size:14px; font-weight:600; line-height:1.4; color:var(--fg); overflow-wrap:anywhere; }
+#page .settings-page .add-note { margin:6px 0 0; color:var(--warn-fg, var(--warn)); }
 
 /* search: Peek and Attach sit at the right of the result's head, beside the role chip, the place and the time */
 #page .res-actions { margin-left:auto; display:inline-flex; align-items:center; gap:6px; }

@@ -57,11 +57,11 @@ const inFlight = (w, over = {}) => withLogin(w, { running: true, adding: true, u
 
 // ---------------------------------------------------------------- the rows
 
-test('row actions per state: the account in use has Rename only; a saved one has Switch (primary tinted), Rename and a two-tap Forget login; an unsaved one has Log in again', () => {
+test('row actions per state (v0.5.17g: Log in again on every row): the account in use has Log in again and Rename; a saved one has Switch (primary tinted), Log in again, Rename and a two-tap Forget login; an unsaved one has Log in again', () => {
   const w = acctWorld();
   const [cur, work, old] = [rowOf(w, A1), rowOf(w, A2), rowOf(w, A3)];
-  assert.deepEqual(labels(cur), ['Rename'], 'no Switch and no Forget for the account in use');
-  assert.deepEqual(labels(work), ['Switch', 'Rename', 'Forget login']);
+  assert.deepEqual(labels(cur), ['Log in again', 'Rename'], 'no Switch and no Forget for the account in use, but it can be logged in again');
+  assert.deepEqual(labels(work), ['Switch', 'Log in again', 'Rename', 'Forget login']);
   assert.deepEqual(labels(old), ['Log in again', 'Rename']);
   const sw = btn(work, 'Switch');
   assert.ok(hasCls(sw, 'primary') && hasCls(sw, 'tinted'), 'the repeated-row primary is the tinted one');
@@ -70,6 +70,7 @@ test('row actions per state: the account in use has Rename only; a saved one has
   assert.ok(hasCls(forget, 'danger'), 'destructive: red-outlined, never filled at rest');
   assert.equal(isFilled(forget), false);
   assert.equal(isFilled(btn(old, 'Log in again')), false, 'a quiet bordered button');
+  for (const r of [cur, work]) assert.ok(!hasCls(btn(r, 'Log in again'), 'primary'), 'only a row the box was told about leads with it');
   assert.equal(isFilled(btn(work, 'Rename')), false);
   assert.deepEqual(cur.querySelectorAll('.badge').map(text), ['max', 'current', 'saved login']);
   assert.deepEqual(work.querySelectorAll('.badge').map(text), ['pro', 'saved login']);
@@ -119,7 +120,7 @@ test('Switch is one tap: the row is painted as in use at once with every button 
   btn(rowOf(w, A2), 'Switch').click();
   assert.deepEqual(rows(w).map((r) => !!r.querySelector('.badge.cur')), [false, true, false], 'painted before the answer');
   assert.equal(w.get('state').accounts.current, A2);
-  assert.deepEqual(rows(w).flatMap((r) => r.querySelectorAll('button')).filter((b) => /Switch|Log in again|Forget/.test(text(b))).map(off), [true, true, true], 'buttons are disabled while the request runs');
+  assert.deepEqual(rows(w).flatMap((r) => r.querySelectorAll('button')).filter((b) => /Switch|Log in again|Forget/.test(text(b))).map(off), [true, true, true, true, true], 'buttons are disabled while the request runs');
   assert.deepEqual(apiCalls(w).filter((c) => c.method === 'POST'), [{ method: 'POST', path: `/api/accounts/${A2}/switch`, body: { continue_parked: true } }]);
   assert.ok(w.get('__paints') >= 1, 'the topbar chip repaints at once');
   btn(rowOf(w, A1), 'Switch').click();
@@ -131,7 +132,7 @@ test('Switch is one tap: the row is painted as in use at once with every button 
   assert.deepEqual(plain(w.get('state').accounts), plain(after), 'the server\'s accounts are the state now');
   assert.deepEqual(rows(w).map((r) => !!r.querySelector('.badge.cur')), [false, true, false]);
   assert.deepEqual(toasts(w).pop(), { text: 'Switched to Work · running sessions follow within seconds', kind: 'ok' });
-  assert.deepEqual(labels(rowOf(w, A1)), ['Switch', 'Rename', 'Forget login'], 'the old account is switchable now, enabled again');
+  assert.deepEqual(labels(rowOf(w, A1)), ['Switch', 'Log in again', 'Rename', 'Forget login'], 'the old account is switchable now, enabled again');
   assert.equal(off(btn(rowOf(w, A1), 'Switch')), false);
   assert.ok(polls(w) >= 1, 'a fresh state is asked for');
 });
@@ -224,7 +225,7 @@ test('Forget login takes two taps (Confirm + Cancel appear first), then DELETEs 
   assert.equal(apiCalls(w).filter((c) => c.method === 'DELETE').length, 0, 'the first tap only arms it');
   assert.deepEqual(labels(rowOf(w, A2)).filter((l) => /Confirm|Cancel/.test(l)), ['Confirm Forget login', 'Cancel']);
   btn(rowOf(w, A2), 'Cancel').click();
-  assert.deepEqual(labels(rowOf(w, A2)), ['Switch', 'Rename', 'Forget login'], 'Cancel disarms');
+  assert.deepEqual(labels(rowOf(w, A2)), ['Switch', 'Log in again', 'Rename', 'Forget login'], 'Cancel disarms');
   btn(rowOf(w, A2), 'Forget login').click();
   btn(rowOf(w, A2), 'Confirm Forget login').click();
   await tick(); await tick();
@@ -240,7 +241,7 @@ test('a refused Forget (409, the account in use) says why in the panel and chang
   btn(rowOf(w, A2), 'Confirm Forget login').click();
   await tick(); await tick();
   assert.match(text(panel(w).querySelector('.set-err')), /that login is the one in use/);
-  assert.deepEqual(labels(rowOf(w, A2)), ['Switch', 'Rename', 'Forget login']);
+  assert.deepEqual(labels(rowOf(w, A2)), ['Switch', 'Log in again', 'Rename', 'Forget login']);
 });
 
 // ---------------------------------------------------------------- the add-account block
@@ -478,7 +479,7 @@ test('a result nobody here waited for is not announced (a reload within its ten 
 
 test('a failed login shows the reason in the block with Try again (the one filled primary), which restarts it with {restart: true, email}; Dismiss goes back to idle', async () => {
   const w = acctWorld({ answers: { '/api/accounts/login/code': { ok: true } } });
-  btn(panel(w), 'Log in again').click();
+  btn(rowOf(w, A3), 'Log in again').click();
   await tick();
   assert.deepEqual(apiCalls(w).filter((c) => c.method === 'POST').pop(), { method: 'POST', path: '/api/accounts/login', body: { email: 'old@example.com' } });
   inFlight(w, { email: 'old@example.com' });
@@ -701,17 +702,17 @@ const cxStart = (w, label = 'Home') => { cxName(w).value = label; cxName(w).disp
 test('codex: without state.codex_accounts the section is not there at all (an older box); the Claude panel is as it was', () => {
   const w = acctWorld();
   assert.equal(hidden(cxSec(w)), true);
-  assert.deepEqual(visibleButtons(panel(w)).map(text).sort(), ['Add account', 'Forget login', 'Log in again', 'Rename', 'Rename', 'Rename', 'Switch'].sort());
+  assert.deepEqual(visibleButtons(panel(w)).map(text).sort(), ['Add account', 'Forget login', 'Log in again', 'Log in again', 'Log in again', 'Rename', 'Rename', 'Rename', 'Switch'].sort());
 });
 
-test('codex rows: the account in use has Rename only; a saved one has Switch (primary tinted), Rename and a two-tap Forget login; an unsaved one has Log in again; the name wears the teal of its agent', () => {
+test('codex rows (v0.5.17g: Log in again on every row): the account in use has Log in again and Rename; a saved one has Switch (primary tinted), Log in again, Rename and a two-tap Forget login; an unsaved one has Log in again; the name wears the teal of its agent', () => {
   const w = cxWorld();
   assert.equal(hidden(cxSec(w)), false);
   assert.deepEqual(panel(w).querySelectorAll('.set-h').filter((h) => !hidden(h)).map(text), ['Subscription accounts', 'When you switch', 'Add another subscription', 'Codex accounts', 'Add a Codex account']);
   assert.equal(cxRows(w).length, 3);
   const [main, work, old] = [cxRow(w, K1), cxRow(w, K2), cxRow(w, K3)];
-  assert.deepEqual(labels(main), ['Rename']);
-  assert.deepEqual(labels(work), ['Switch', 'Rename', 'Forget login']);
+  assert.deepEqual(labels(main), ['Log in again', 'Rename']);
+  assert.deepEqual(labels(work), ['Switch', 'Log in again', 'Rename', 'Forget login']);
   assert.deepEqual(labels(old), ['Log in again', 'Rename']);
   const sw = btn(work, 'Switch');
   assert.ok(hasCls(sw, 'primary') && hasCls(sw, 'tinted'));
@@ -782,7 +783,7 @@ test('codex switch is one tap: painted at once, POST /api/codex-accounts/<key>/s
   btn(cxRow(w, K2), 'Switch').click();
   assert.deepEqual(cxRows(w).map((r) => !!r.querySelector('.badge.cur')), [false, true, false], 'painted before the answer');
   assert.equal(w.get('state').codex_accounts.current, K2);
-  assert.deepEqual(cxRows(w).flatMap((r) => r.querySelectorAll('button')).filter((b) => /Switch|Log in again|Forget/.test(text(b))).map(off), [true, true, true]);
+  assert.deepEqual(cxRows(w).flatMap((r) => r.querySelectorAll('button')).filter((b) => /Switch|Log in again|Forget/.test(text(b))).map(off), [true, true, true, true, true]);
   assert.deepEqual(apiCalls(w, '/api/codex-accounts').filter((c) => c.method === 'POST'), [{ method: 'POST', path: `/api/codex-accounts/${K2}/switch` }]);
   assert.equal(w.get('state').accounts.current, A1, 'the Claude account in use is untouched');
   assert.equal(w.run('acctFlow.busy'), null, 'and a Claude switch is not blocked by it');
@@ -793,7 +794,7 @@ test('codex switch is one tap: painted at once, POST /api/codex-accounts/<key>/s
   await tick(); await tick();
   assert.deepEqual(plain(w.get('state').codex_accounts), plain(after));
   assert.deepEqual(toasts(w).pop(), { text: 'Switched to Work · Codex sessions started from now on use it', kind: 'ok' });
-  assert.deepEqual(labels(cxRow(w, K1)), ['Switch', 'Rename', 'Forget login']);
+  assert.deepEqual(labels(cxRow(w, K1)), ['Switch', 'Log in again', 'Rename', 'Forget login']);
   assert.equal(hidden(cxSec(w).querySelector('.cx-warn')), true);
   assert.ok(polls(w) >= 1);
 });
@@ -849,7 +850,7 @@ test('codex Forget login takes two taps, DELETEs /api/codex-accounts/<key>/saved
   assert.equal(apiCalls(w, '/api/codex-accounts').filter((c) => c.method === 'DELETE').length, 0, 'the first tap only arms it');
   assert.deepEqual(labels(cxRow(w, K2)).filter((l) => /Confirm|Cancel/.test(l)), ['Confirm Forget login', 'Cancel']);
   btn(cxRow(w, K2), 'Cancel').click();
-  assert.deepEqual(labels(cxRow(w, K2)), ['Switch', 'Rename', 'Forget login']);
+  assert.deepEqual(labels(cxRow(w, K2)), ['Switch', 'Log in again', 'Rename', 'Forget login']);
   btn(cxRow(w, K2), 'Forget login').click();
   btn(cxRow(w, K2), 'Confirm Forget login').click();
   await tick(); await tick();
@@ -862,7 +863,7 @@ test('codex Forget login takes two taps, DELETEs /api/codex-accounts/<key>/saved
   btn(cxRow(w2, K2), 'Confirm Forget login').click();
   await tick(); await tick();
   assert.match(text(cxSec(w2).querySelector('.set-err')), /Could not forget the login of Work: this account is the live login/);
-  assert.deepEqual(labels(cxRow(w2, K2)), ['Switch', 'Rename', 'Forget login']);
+  assert.deepEqual(labels(cxRow(w2, K2)), ['Switch', 'Log in again', 'Rename', 'Forget login']);
 });
 
 test('codex Rename: its own sheet (PATCH /api/codex-accounts/<key>), the name is required, painted at once, a refusal puts the old name back', async () => {
@@ -1096,11 +1097,11 @@ test('codex add: a refused start (409, a login already running) shows the reason
   assert.equal(w.run('settingsPage.cx.timers'), 0);
 });
 
-test('codex Log in again on an unsaved row starts the flow with the account\'s name', async () => {
+test('codex Log in again on a row logs THAT account in again (v0.5.17g): {replace_key}, no name asked for, no second account', async () => {
   const w = cxWorld();
   btn(cxRow(w, K3), 'Log in again').click();
   await tick();
-  assert.deepEqual(apiCalls(w, '/api/codex-accounts/login'), [{ method: 'POST', path: '/api/codex-accounts/login', body: { label: 'Old' } }]);
+  assert.deepEqual(apiCalls(w, '/api/codex-accounts/login'), [{ method: 'POST', path: '/api/codex-accounts/login', body: { replace_key: K3 } }]);
 });
 
 test('codex: the add block\'s name field is the same node across updates and keeps what was typed', () => {

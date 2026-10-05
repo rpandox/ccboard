@@ -33,7 +33,7 @@ log = logging.getLogger("ccboard.samples")
 #              call writes (ev counts per event, state and lim are written by their own change/dedupe rules).
 #   key        (documentation) rl_*: agent ('claude' / 'codex' = the CURRENT account) or 'acct:<account key>' (one Claude subscription account, see
 #              app/accounts.py) or 'cacct:<account key>' (one Codex account, app/codex_accounts.py; written by agents/codex_rollout.py); ctx, ctx_tok, scost, stok, state: tmux session; ev: project; cost: '<agent>:<uuid>';
-#              h_*: node; n_*: ''; lim: 5h | 7d | other; acct: the account key that became current; cacct: the Codex account key that became current.
+#              h_*: node; n_*: ''; lim: 5h | 7d | other; acct: the account key that became current; cacct: the Codex account key that became current (meta {from, to}), or that was logged in again (meta {to, relogin: true}).
 #   meta       state, cost and lim carry `acct` (the subscription account key) when it is known; acct events carry {from, to}; rl_* carry {resets_at} and, for a
 #              reading that came from Claude Code's usage cache (accounts.poll_usage_cache) rather than a statusline, source: 'cache'.
 CATALOGUE: dict[str, dict] = {

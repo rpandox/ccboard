@@ -10,6 +10,7 @@ import logging
 import threading
 import time
 import urllib.request
+from urllib.parse import quote
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
@@ -52,6 +53,8 @@ THROTTLE_SECONDS = 60
 STATE_COOLDOWN = {"waiting": 30, "done": 120, "errored": 60}      # per (session, state); the longer of this and THROTTLE_SECONDS wins
 _last: dict[tuple[str, str], float] = {}                        # (tmux name, state) -> clock of the last notice sent
 _rl_mem: set[str] = set()                                       # rate-limit windows told while there is no DB to remember them
+LOGIN_EVERY = 15 * 60                                           # one "login not valid" notice per account per this long
+_login_told: dict[str, float] = {}                              # '<agent>:<account>' -> clock of the last such notice
 _lock = threading.Lock()
 
 TITLES = {"waiting": "needs you", "done": "done", "errored": "error"}
@@ -400,4 +403,33 @@ def notify_rate_limit(name: str, message: str | None, agent: str | None = None, 
     # the title names the account, so the first body line names the session that hit it
     n = replace(n, title=f"{AGENT_LABELS.get(agent, str(agent).title())} rate limited", tag="rate-limit",
                 body=f"{_where(row, _agent_of(row), name)}\n{n.body}")
+    return send(n)
+
+
+def notify_login_problem(account: str | None, label: str | None, name: str, message: str | None, agent: str = "claude") -> bool:
+    """The account-level 'login not valid' notice (a session reported an authentication failure), at most once per account per LOGIN_EVERY
+    seconds whichever session reports it. Taps open Settings > Accounts on that account's row."""
+    if not any_channel():
+        return False
+    k = f"{agent}:{account or '-'}"
+    now = _clock()
+    with _lock:
+        prev = _login_told.get(k)
+        if prev is not None and now - prev < LOGIN_EVERY:
+            return False
+        _login_told[k] = now
+        if len(_login_told) > 64:
+            for old in [o for o, t in _login_told.items() if now - t > 2 * LOGIN_EVERY]:
+                del _login_told[old]
+    row, _task = context(name)
+    who = AGENT_LABELS.get(agent, str(agent).title())
+    path = "/#/settings?sec=accounts" + (f"&acct={quote(account, safe='')}" if account else "")
+    pub = (settings.public_url or "").rstrip("/")
+    link = f"{pub}{path}" if pub else None
+    where = _where(row or {}, _agent_of(row or {}), name)
+    body = f"{where}\n{_one_line(message, ASKED_CHARS)}\nLog in again in Settings > Accounts." if message else f"{where}\nLog in again in Settings > Accounts."
+    actions = [{"action": "view", "label": "Log in again", "url": link}] if link else []
+    n = Notice(title=f"{who} login not valid" + (f": {_one_line(label, 60)}" if label else ""), body=body, click=link, url=link or path,
+               tag="login-problem", priority=4, tags=["warning", "key"], actions=actions, web_actions=[], kind="login", state="errored",
+               tmux=name, agent=agent, path=path)
     return send(n)

@@ -11,7 +11,7 @@
 const SETTINGS_SECTIONS = [
   { id: 'notify', label: 'Notifications' }, { id: 'nodes', label: 'Nodes' }, { id: 'box', label: 'Box' }, { id: 'agents', label: 'Agents' }, { id: 'accounts', label: 'Accounts' }, { id: 'app', label: 'App' },
 ];
-const settingsPage = { refs: null, active: 'notify', acct: { at: 0, full: null }, add: null, seenAt: null, cx: null, cxSeenAt: null };         // acct: when GET /api/accounts last ran, and its rows by key (for 'seen 3h ago'); add: the add-account block of this mount; seenAt: the login result already announced; cx / cxSeenAt: the same for the Codex add block (v0.5.17e)
+const settingsPage = { refs: null, active: 'notify', acct: { at: 0, full: null }, add: null, seenAt: null, cx: null, cxSeenAt: null, focus: null };         // acct: when GET /api/accounts last ran, and its rows by key (for 'seen 3h ago'); add: the add-account block of this mount; seenAt: the login result already announced; cx / cxSeenAt: the same for the Codex add block (v0.5.17e)
 
 /* One setting as the shared .kv row (v0.5.6d): the label in a 120 px column, the value in mono with its helper text under it, the actions at the right
    (under the value on a phone). Buttons, link-buttons and the two-tap pair go to the actions, everything else to the value. row.add() files late
@@ -166,8 +166,11 @@ function settingsAgents(p) {
    state.accounts.list gives the rows (label, email, plan, the two window readings, `saved`: a login is saved on the box); GET /api/accounts adds last_seen, asked once when
    the panel opens and then at most every 5 minutes (the panel rebuilds each minute so the ages move: that is no polling of its own). Rename opens a small sheet: one field,
    Save is the one primary; the label is painted at once and PATCH /api/accounts/<key> follows (a refusal puts the old label back).
-   Where the box keeps saved logins (state.accounts.store.supported) a row also has Switch (accountSwitch, pages/agents.js: one tap), Log in again and Forget login, and
-   the panel carries the add-account block: the sign-in link to copy, the code to paste, both without leaving Settings.
+   Where the box keeps saved logins (state.accounts.store.supported) a row also has Switch (accountSwitch, pages/agents.js: one tap), Log in again (v0.5.17g: on every row, the
+   account in use included: signing the same account in again replaces its saved login) and Forget login, a quiet "login saved 3d ago" line, and the panel carries the
+   add-account block: the sign-in link to copy, the code to paste, both without leaving Settings. When the box was told a login does not work (state.accounts.problem, a
+   session stopped on an authentication error) that account's row wears an amber 'login not valid any more' chip and its Log in again is the row's `primary tinted`
+   action; #/settings?sec=accounts&acct=<key> (the Home banner, the topbar chip, the notification) scrolls to the row.
    The panel is built once (settingsAcctSkeleton): a poll rebuilds only the list of rows, never the add block, so a code being typed keeps its node and its focus. */
 const SETTINGS_RECOVERY = 'If anything looks wrong, run /login in any terminal; the board records it.';
 const SETTINGS_LOGIN_HOWTO = 'Sign in with another subscription from here: open the link, sign in, paste the code. Running /login in any terminal works too; the board notices within a minute and starts a new row for it.';
@@ -201,12 +204,20 @@ function settingsAcctLoad() {
   }).catch(() => { /* the rows still show; only 'seen' is missing */ });
 }
 
+/* 'login saved 3d ago': when the box last wrote this account's saved login (a.saved_at; for Claude the age of the credentials file at the moment it was copied), '' without one. */
+function settingsSavedLine(a) {
+  const t = a && a.saved && a.saved_at ? Date.parse(a.saved_at) / 1000 : 0;
+  return t > 0 ? `login saved ${fmtAge(t)} ago` : '';
+}
+
 function settingsAcctRow(a) {
   const name = agentsAcctName(a);
   const now = Date.now() / 1000;
   const store = acctStore(state);
   const busy = !!acctFlow.busy;                                       // a switch is running: no second action on any row
+  const flagged = acctProblemHit(state, a, 'claude');                 // the box was told this account's login does not work
   const chips = el('span', { class: 'set-chips' });
+  if (flagged) chips.append(el('span', { class: 'badge warn', title: 'A session stopped on an authentication error: this login does not work any more. Log in again to fix it.', text: 'login not valid any more' }));
   if (a.plan) chips.append(el('span', { class: 'badge ' + chipHue('account', a.key), text: String(a.plan) }));
   if (a.current) chips.append(el('span', { class: 'badge cur', title: 'the account signed in on this box right now', text: 'current' }));
   if (store.supported) {
@@ -222,12 +233,14 @@ function settingsAcctRow(a) {
   const newest = [w5, w7].filter((w) => w && w.at).sort((x, y) => y.at - x.at)[0];
   const usageTitle = !w5 && !w7 ? 'no reading yet' : [w5 && w5.rolled ? '5H: no usage recorded since the window reset' : '', w7 && w7.rolled ? '7D: no usage recorded since the window reset' : '',
     newest ? limitFreshness(newest.at, newest.source) : ''].filter(Boolean).join(' · ');
+  const kept = settingsSavedLine(a);
   const acts = [];
   if (store.supported && !a.current && a.saved) {
-    acts.push(el('button', { class: 'primary tinted', type: 'button', disabled: busy, 'aria-label': `Switch to ${name}`, title: 'Make this the account signed in on this box', onclick: () => accountSwitch(a), text: 'Switch' }));
+    acts.push(el('button', { class: flagged ? '' : 'primary tinted', type: 'button', disabled: busy, 'aria-label': `Switch to ${name}`, title: 'Make this the account signed in on this box', onclick: () => accountSwitch(a), text: 'Switch' }));   // the flagged row's one lead action is Log in again (el() maps the classes at creation: not classList.add)
   }
-  if (store.supported && !a.current && !a.saved) {
-    acts.push(el('button', { type: 'button', disabled: busy, 'aria-label': `Log in again as ${name}`, title: 'Sign in with this account again to save its login', onclick: () => settingsAddStart(a.email), text: 'Log in again' }));
+  if (store.supported) {                                              // every row: a dead login is a saved one, and the account in use is the one that needs it most
+    acts.push(el('button', { class: flagged ? 'primary tinted' : '', type: 'button', disabled: busy, 'aria-label': `Log in again as ${name}`,
+      title: flagged ? 'Sign in with this account again: its saved login does not work any more' : 'Sign in with this account again to renew its saved login', onclick: () => settingsAddStart(a.email, name), text: 'Log in again' }));
   }
   acts.push(el('button', { type: 'button', 'aria-label': `Rename ${name}`, title: 'Rename this account', onclick: () => settingsRenameAccount(a), text: 'Rename' }));
   if (store.supported && !a.current && a.saved) {
@@ -235,9 +248,11 @@ function settingsAcctRow(a) {
       : confirmButton(`acct-forget:${a.key}`, 'Forget login', () => settingsForgetLogin(a), false));
   }
   const row = settingsKv(name, chips.firstChild ? chips : null, a.email && a.email !== name ? el('span', { class: 'v', text: a.email }) : null,
-    el('span', { class: 'dim', text: usage, title: usageTitle || null }), ...acts);
+    el('span', { class: 'dim', text: usage, title: usageTitle || null }), kept ? el('span', { class: 'dim set-saved', text: kept }) : null, ...acts);
   row.classList.add('set-acct');
+  if (acts.length >= 4) row.classList.add('acts-4');                   // four actions on a phone: two rows of two, the destructive one last
   row.setAttribute('data-account', a.key);
+  if (flagged) row.classList.add('is-flagged');
   const k = row.querySelector('.k');
   if (k) k.classList.add(chipHue('account', a.key));
   return row;
@@ -270,8 +285,10 @@ async function settingsForgetLogin(a) {
    asks for the result every second for a minute), a failed login (the reason, Try again) and, where saved logins are not supported, the reason and the /login how-to.
    The two inputs are never rebuilt. A login result is announced once per `result.at` (settingsPage.seenAt). */
 function settingsAddBlock() {
-  const m = { starting: false, sending: false, checking: false, slow: false, ticks: 0, timer: null, demoTimer: null, err: '', email: null, sawAdding: false, hide: false };
+  const m = { starting: false, sending: false, checking: false, slow: false, ticks: 0, timer: null, demoTimer: null, err: '', email: null, sawAdding: false, hide: false, again: null, note: '' };   // again: the name of the account being logged in again; note: what the last login said that is worth keeping on screen
   const root = el('div', { class: 'set-add' });
+  const title = el('div', { class: 'add-title hidden', role: 'status' });                       // 'Log in again as <name>' while one is in flight
+  const note = el('div', { class: 'warn set-note add-note hidden', role: 'status' });
 
   const urlInput = el('input', { type: 'text', class: 'add-url', readonly: true, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'aria-label': 'Sign-in link', placeholder: 'the link appears here' });
   urlInput.addEventListener('focus', () => { if (typeof urlInput.select === 'function') urlInput.select(); });
@@ -293,20 +310,20 @@ function settingsAddBlock() {
   const tail = el('pre', { class: 'tail add-tail' });
   const details = el('details', { class: 'dim add-out' }, el('summary', { text: 'terminal output' }), tail,
     el('a', { class: 'add-term', href: '/term/_ccboard-login', target: '_blank', rel: 'noopener', text: 'Open the login terminal' }));
-  const flight = el('div', { class: 'add-flight hidden' }, wait, step1, step2, details);
+  const flight = el('div', { class: 'add-flight hidden' }, title, wait, step1, step2, details);
 
   const addIdle = el('button', { type: 'button', onclick: () => start(null), text: 'Add account' });
   const logIn = el('button', { class: 'primary hidden', type: 'button', onclick: () => start(null), text: 'Log in' });
   const idle = el('div', { class: 'add-idle' }, el('div', { class: 'dim set-note', text: SETTINGS_LOGIN_HOWTO }), el('div', { class: 'add-btns' }, addIdle, logIn));
 
   const errText = el('div', { class: 'bad add-err', role: 'alert' });
-  const retry = el('button', { class: 'primary', type: 'button', onclick: () => start(m.email || (state && state.login && state.login.email) || null, true), text: 'Try again' });
+  const retry = el('button', { class: 'primary', type: 'button', onclick: () => start(m.email || (state && state.login && state.login.email) || null, true, m.again), text: 'Try again' });
   const dismiss = el('button', { type: 'button', onclick: () => { m.err = ''; patch(); }, text: 'Dismiss' });
   const failed = el('div', { class: 'add-error hidden' }, errText, el('div', { class: 'add-btns' }, retry, dismiss));
 
   const reason = el('div', { class: 'dim set-note add-reason' });
   const off = el('div', { class: 'add-off hidden' }, reason, el('div', { class: 'dim set-note', text: SETTINGS_LOGIN_TERMINAL }));
-  root.append(idle, flight, failed, off);
+  root.append(note, idle, flight, failed, off);
 
   const show = (node, on) => node.classList.toggle('hidden', !on);
   const stopWatch = () => { if (m.timer) { clearInterval(m.timer); m.timer = null; } };
@@ -325,9 +342,13 @@ function settingsAddBlock() {
     m.starting = m.sending = m.checking = m.sawAdding = m.slow = false;
     code.value = '';
     fieldError(codeField, '');
+    if (res.ok) m.again = null;                                           // a failed one keeps whose it is: Try again repeats it
     if (res.ok) {
       m.err = '';
-      pageToast(`Added ${res.name || 'the account'}${res.live ? ' · it is the account in use now' : ''}`, 'ok');
+      const who = res.name || 'the account';
+      m.note = res.different_account ? `That login was a different account (${res.different_account}); it was saved as its own row.` : '';
+      if (m.note) pageToast(m.note, 'warn');                              // asked for one account, signed in as another: nothing was lost, and it says so
+      else pageToast(`${res.replaced ? 'Logged in again as' : 'Added'} ${who}${res.live ? ' · it is the account in use now' : ''}`, 'ok');
       if (typeof poll === 'function') poll(true);                        // the new row is in the next state
     } else m.err = res.error || 'the login did not complete';
   }
@@ -350,6 +371,12 @@ function settingsAddBlock() {
     const needLogin = !list.length || !(st.accounts && st.accounts.current) || !!(st.claude && st.claude.installed && st.claude.loggedIn === false);
     const inFlight = m.starting || m.sending || m.checking || adding;
     const mode = !store.supported ? 'off' : m.err ? 'error' : inFlight ? 'flight' : 'idle';
+    const known = adding && l.email ? list.find((x) => x.email === l.email) : null;                // a page opened in the middle of a log-in-again knows whose it is from the state
+    const again = m.again || (known ? agentsAcctName(known) : '');
+    setText(title, again ? `Log in again as ${again}` : '');
+    show(title, mode === 'flight' && !!again);
+    setText(note, m.note);
+    show(note, !!m.note && mode !== 'flight');
     show(idle, mode === 'idle');
     show(flight, mode === 'flight');
     show(failed, mode === 'error');
@@ -383,9 +410,11 @@ function settingsAddBlock() {
     if (ok) pageToast('Link copied', 'ok'); else pageToast('Copy failed: select the link and copy it', 'warn');
   }
 
-  async function start(email, restart) {
+  async function start(email, restart, again) {
     if (m.starting || m.sending || m.checking) return;
     m.err = '';
+    m.note = '';
+    m.again = again || null;
     m.email = email || null;
     m.starting = true;
     m.hide = false;
@@ -437,6 +466,7 @@ function settingsAddBlock() {
     clearTimeout(m.demoTimer);
     m.starting = m.sending = m.checking = m.sawAdding = m.slow = false;
     m.err = '';
+    m.again = null;
     m.hide = true;                                                       // until the poll says the login is gone: the stale `adding` must not bring the steps back
     code.value = '';
     fieldError(codeField, '');
@@ -462,13 +492,13 @@ function settingsAddBlock() {
       const d = acctDemo();
       const old = agentsAccounts(state).find((x) => m.email && x.email === m.email);
       let key, name;
-      if (old) { key = old.key; name = agentsAcctName(old); d.forgot = d.forgot.filter((k) => k !== key); }
+      if (old) { key = old.key; name = agentsAcctName(old); d.forgot = d.forgot.filter((k) => k !== key); d.renewed[key] = new Date().toISOString(); if (acctProblemHit(state, old, 'claude')) d.problemOff = true; }
       else {
         key = `demo-added-${d.accounts.length + 1}`;
         name = 'New account';
         d.accounts.push({ key, email: m.email || 'new@example.com', name, label: null, plan: 'pro', rl_5h: null, rl_7d: null, resets_5h: null, resets_7d: null, current: false, saved: true });
       }
-      d.login = { running: false, adding: false, url: null, tail: [], email: null, started_at: null, result: { ok: true, key, name, live: false, at: new Date().toISOString() } };
+      d.login = { running: false, adding: false, url: null, tail: [], email: null, started_at: null, result: { ok: true, key, name, live: !!(old && old.current), ...(old ? { replaced: true } : {}), at: new Date().toISOString() } };
       if (typeof poll === 'function') poll(true);
     }, 2500);
   }
@@ -481,10 +511,11 @@ function settingsAddBlock() {
   };
 }
 
-/* 'Log in again' on a row, and the Log in buttons of Agents and Home (through acctFlow.want): start the add flow in the block, if there is one. */
-function settingsAddStart(email) {
+/* 'Log in again' on a row, and the Log in buttons of Agents and Home (through acctFlow.want): start the add flow in the block, if there is one. `name` is the row's
+   account: the block then says 'Log in again as <name>' and the finished login replaces that account's saved one. */
+function settingsAddStart(email, name) {
   const b = settingsPage.add;
-  if (b && acctStore(state).supported) b.start(email || null);
+  if (b && acctStore(state).supported) b.start(email || null, false, name || null);
 }
 
 function settingsAcctWant() {
@@ -502,7 +533,9 @@ function settingsCxRow(a) {
   const name = cxName(a);
   const store = cxStore(state);
   const busy = !!cxFlow.busy;
+  const flagged = acctProblemHit(state, a, 'codex');                  // (nothing raises a Codex problem yet: a dead Codex login shows in the terminal; kept so a later signal needs no new UI)
   const chips = el('span', { class: 'set-chips' });
+  if (flagged) chips.append(el('span', { class: 'badge warn', title: 'This login does not work any more. Log in again to fix it.', text: 'login not valid any more' }));
   if (a.plan) chips.append(el('span', { class: 'badge hue-teal', text: String(a.plan) }));
   if (a.current) chips.append(el('span', { class: 'badge cur', title: 'the Codex login in use on this box right now', text: 'current' }));
   if (store.supported) {
@@ -512,21 +545,25 @@ function settingsCxRow(a) {
   const ago = (iso) => { const t = iso ? Date.parse(iso) / 1000 : 0; return t > 0 ? fmtAge(t) : ''; };
   const seen = ago(a.last_seen), added = ago(a.added_at);
   const dim = [added ? `added ${added} ago` : '', seen ? `seen ${seen} ago` : ''].filter(Boolean).join(' · ');
+  const kept = settingsSavedLine(a);
   const acts = [];
   if (store.supported && !a.current && a.saved) {
-    acts.push(el('button', { class: 'primary tinted', type: 'button', disabled: busy, 'aria-label': `Switch to ${name}`, title: 'Make this the Codex account in use on this box', onclick: () => cxSwitch(a), text: 'Switch' }));
+    acts.push(el('button', { class: flagged ? '' : 'primary tinted', type: 'button', disabled: busy, 'aria-label': `Switch to ${name}`, title: 'Make this the Codex account in use on this box', onclick: () => cxSwitch(a), text: 'Switch' }));
   }
-  if (store.supported && store.add && !a.current && !a.saved) {
-    acts.push(el('button', { type: 'button', disabled: busy, 'aria-label': `Log in again as ${name}`, title: 'Sign in with this account again to save its login', onclick: () => settingsCxAddStart(name), text: 'Log in again' }));
+  if (store.supported && store.add) {                                 // every row: the live account's login is replaced in place, a saved one's is renewed, a forgotten one's comes back
+    acts.push(el('button', { class: flagged ? 'primary tinted' : '', type: 'button', disabled: busy, 'aria-label': `Log in again as ${name}`,
+      title: 'Sign in with this account again: its saved login is replaced, the account stays one row', onclick: () => settingsCxAddStart(a), text: 'Log in again' }));
   }
   acts.push(el('button', { type: 'button', 'aria-label': `Rename ${name}`, title: 'Rename this account', onclick: () => settingsRenameAccount(a, { codex: true }), text: 'Rename' }));
   if (store.supported && !a.current && a.saved) {
     acts.push(busy ? el('button', { class: 'danger', type: 'button', disabled: true, text: 'Forget login' })
       : confirmButton(`cx-forget:${a.key}`, 'Forget login', () => settingsCxForget(a), false));
   }
-  const row = settingsKv(name, chips.firstChild ? chips : null, dim ? el('span', { class: 'dim', text: dim }) : null, ...acts);
+  const row = settingsKv(name, chips.firstChild ? chips : null, dim ? el('span', { class: 'dim', text: dim }) : null, kept ? el('span', { class: 'dim set-saved', text: kept }) : null, ...acts);
   row.classList.add('set-cx');
+  if (acts.length >= 4) row.classList.add('acts-4');
   row.setAttribute('data-cx-account', a.key);
+  if (flagged) row.classList.add('is-flagged');
   const k = row.querySelector('.k');
   if (k) k.classList.add('hue-teal');
   return row;
@@ -554,8 +591,10 @@ async function settingsCxForget(a) {
 }
 
 function settingsCxAddBlock() {
-  const m = { starting: false, timer: null, demoTimer: null, ticks: 0, slow: false, err: '', label: '', sawAdding: false, hide: false, tail: [] };      // tail: the login's terminal output, asked for only while the disclosure is open (/api/state leaves it out)
+  const m = { starting: false, timer: null, demoTimer: null, ticks: 0, slow: false, err: '', label: '', sawAdding: false, hide: false, tail: [], replace: null, note: '' };      // tail: the login's terminal output, asked for only while the disclosure is open (/api/state leaves it out); replace: {key, label} of the account being logged in again; note: what the last login said that is worth keeping on screen
   const root = el('div', { class: 'set-add cx-add' });
+  const title = el('div', { class: 'add-title hidden', role: 'status' });                       // 'Log in again as <name>' while one is in flight
+  const note = el('div', { class: 'warn set-note add-note hidden', role: 'status' });
 
   const name = el('input', { type: 'text', class: 'cx-name', maxlength: 60, autocomplete: 'off', autocapitalize: 'words', placeholder: 'work, personal, a client' });
   const nameField = field('Account name', name, 'Required. Codex gives no email at sign-in, so this name is how the account is listed.');
@@ -583,17 +622,17 @@ function settingsCxAddBlock() {
   const tail = el('pre', { class: 'tail add-tail' });
   const details = el('details', { class: 'dim add-out' }, el('summary', { text: 'terminal output' }), tail,
     el('a', { class: 'add-term', href: '/term/_ccboard-login', target: '_blank', rel: 'noopener', text: 'Open the login terminal' }));
-  const flight = el('div', { class: 'add-flight hidden' }, wait, step1, step2, el('div', { class: 'add-step' }, status, el('div', { class: 'add-btns' }, cancelBtn)), details);
+  const flight = el('div', { class: 'add-flight hidden' }, title, wait, step1, step2, el('div', { class: 'add-step' }, status, el('div', { class: 'add-btns' }, cancelBtn)), details);
 
   const errText = el('div', { class: 'bad add-err', role: 'alert' });
-  const retry = el('button', { type: 'button', onclick: () => start(m.label || name.value, true), text: 'Try again' });
+  const retry = el('button', { type: 'button', onclick: () => start(m.label || name.value, true, m.replace), text: 'Try again' });
   const dismiss = el('button', { type: 'button', onclick: () => { m.err = ''; patch(); }, text: 'Dismiss' });
   const failed = el('div', { class: 'add-error hidden' }, errText, el('div', { class: 'add-btns' }, retry, dismiss));
 
   const reason = el('div', { class: 'dim set-note add-reason' });
   const cmd = el('code', { class: 'cx-cmd hidden' });
   const off = el('div', { class: 'add-off hidden' }, reason, cmd);
-  root.append(idle, flight, failed, off);
+  root.append(note, idle, flight, failed, off);
 
   const show = (node, on) => node.classList.toggle('hidden', !on);
   const stopWatch = () => { if (m.timer) { clearInterval(m.timer); m.timer = null; } };
@@ -620,11 +659,20 @@ function settingsCxAddBlock() {
     stopWatch();
     m.starting = m.sawAdding = m.slow = false;
     m.tail = [];
+    if (res.ok) m.replace = null;                                        // a failed one keeps whose it is: Try again repeats it
     if (res.ok) {
       m.err = '';
-      name.value = '';
-      startBtn.disabled = true;
-      pageToast(`Added ${res.label || 'the account'}${res.live ? ' · it is the Codex account in use now' : ''}`, 'ok');
+      const who = res.label || 'the account';
+      const warns = Array.isArray(res.warnings) ? res.warnings.filter((w) => typeof w === 'string' && w) : [];
+      if (res.replaced) {
+        m.note = res.why ? `Logged in again as ${who}, but the fresh login is not in use yet: ${res.why}. It goes in by itself once none is open.` : '';
+        pageToast(res.why ? m.note : `Logged in again as ${who}${res.live ? ' · it is the Codex account in use now' : ''}${warns.length ? ` · ${warns.join(' · ')}` : ''}`, res.why || warns.length ? 'warn' : 'ok');
+      } else {
+        m.note = '';
+        name.value = '';
+        startBtn.disabled = true;
+        pageToast(`Added ${who}${res.live ? ' · it is the Codex account in use now' : ''}`, 'ok');
+      }
       if (typeof poll === 'function') poll(true);                        // the new row is in the next state
     } else m.err = res.error || 'the login did not complete';
   }
@@ -645,6 +693,11 @@ function settingsCxAddBlock() {
     if (adding) { m.sawAdding = true; m.starting = false; if (!m.timer && !m.slow) watch(); }   // a page opened in the middle of a login keeps asking too
     const inFlight = m.starting || adding;
     const mode = !store.supported || !store.add ? 'off' : m.err ? 'error' : inFlight ? 'flight' : 'idle';
+    const again = m.replace ? m.replace.label : (adding && l.replace_key ? (typeof l.label === 'string' && l.label) || cxName(cxAccounts(st).find((x) => x.key === l.replace_key)) : '');   // a page opened mid-login knows whose it is from the state
+    setText(title, again ? `Log in again as ${again}` : '');
+    show(title, mode === 'flight' && !!again);
+    setText(note, m.note);
+    show(note, !!m.note && mode !== 'flight');
     show(idle, mode === 'idle');
     show(flight, mode === 'flight');
     show(failed, mode === 'error');
@@ -683,13 +736,18 @@ function settingsCxAddBlock() {
     if (ok) pageToast(`${what} copied`, 'ok'); else pageToast(`Copy failed: select the ${what.toLowerCase()} and copy it`, 'warn');
   }
 
-  async function start(raw, restart) {
+  async function start(raw, restart, replace) {                         // replace: the account being logged in again ({key, label}): no name asked for, its login is replaced
     if (m.starting) return;
-    const label = String(raw || '').trim().replace(/\s+/g, ' ');
-    if (!label) { fieldError(nameField, 'Give the account a name.', true); return; }
-    if (label.length > 60) { fieldError(nameField, 'At most 60 characters.', true); return; }
-    fieldError(nameField, '');
+    const again = replace && replace.key ? { key: replace.key, label: cxName(replace) } : null;
+    const label = again ? again.label : String(raw || '').trim().replace(/\s+/g, ' ');
+    if (!again) {
+      if (!label) { fieldError(nameField, 'Give the account a name.', true); return; }
+      if (label.length > 60) { fieldError(nameField, 'At most 60 characters.', true); return; }
+      fieldError(nameField, '');
+    }
     m.err = '';
+    m.note = '';
+    m.replace = again;
     m.label = label;
     m.starting = true;
     m.hide = false;
@@ -697,7 +755,7 @@ function settingsCxAddBlock() {
     patch();
     if (root.scrollIntoView) { try { root.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) { /* no scrolling here */ } }
     try {
-      await api('POST', '/api/codex-accounts/login', restart ? { label, restart: true } : { label });
+      await api('POST', '/api/codex-accounts/login', { ...(again ? { replace_key: again.key } : { label }), ...(restart ? { restart: true } : {}) });
     } catch (e) {
       m.starting = false;
       m.err = acctReason(e);
@@ -715,6 +773,7 @@ function settingsCxAddBlock() {
     m.starting = m.sawAdding = m.slow = false;
     m.tail = [];
     m.err = '';
+    m.replace = null;
     m.hide = true;                                                       // until the poll says the login is gone: the stale `adding` must not bring the steps back
     if (typeof demoOn === 'function' && demoOn()) cxDemo().login = null;
     patch();
@@ -727,7 +786,7 @@ function settingsCxAddBlock() {
   function demoStart() {
     clearTimeout(m.demoTimer);
     m.demoTimer = setTimeout(() => {
-      cxDemo().login = { running: true, adding: true, label: m.label, started_at: new Date().toISOString(), result: null, url: SETTINGS_CX_DEMO_LINK, code: 'DEMO-4821',
+      cxDemo().login = { running: true, adding: true, label: m.label, replace_key: m.replace ? m.replace.key : null, started_at: new Date().toISOString(), result: null, url: SETTINGS_CX_DEMO_LINK, code: 'DEMO-4821',
         tail: ['Follow these steps to sign in with ChatGPT using device code authorization:', `1. Open this link in your browser and sign in to your account: ${SETTINGS_CX_DEMO_LINK}`, '2. Enter this one-time code: DEMO-4821'] };
       if (typeof poll === 'function') poll(true);
       m.demoTimer = setTimeout(demoFinish, 6000);
@@ -735,9 +794,17 @@ function settingsCxAddBlock() {
   }
   function demoFinish() {
     const d = cxDemo();
+    if (m.replace) {                                                     // a log-in-again: the same row, its saved login renewed
+      const old = cxAccounts(state).find((x) => x.key === m.replace.key);
+      d.forgot = d.forgot.filter((k) => k !== m.replace.key);
+      d.renewed[m.replace.key] = new Date().toISOString();
+      d.login = { running: false, adding: false, label: null, replace_key: null, started_at: null, url: null, code: null, tail: [], result: { ok: true, key: m.replace.key, label: m.replace.label, live: !!(old && old.current), replaced: true, why: null, at: new Date().toISOString() } };
+      if (typeof poll === 'function') poll(true);
+      return;
+    }
     const key = `demo-cx-added-${d.accounts.length + 1}`;
-    d.accounts.push({ key, label: m.label || 'New Codex account', account_id: null, plan: null, saved: true, current: false, added_at: new Date().toISOString(), last_seen: null });
-    d.login = { running: false, adding: false, label: null, started_at: null, url: null, code: null, tail: [], result: { ok: true, key, label: m.label || 'New Codex account', live: false, at: new Date().toISOString() } };
+    d.accounts.push({ key, label: m.label || 'New Codex account', account_id: null, plan: null, saved: true, saved_at: new Date().toISOString(), current: false, added_at: new Date().toISOString(), last_seen: null });
+    d.login = { running: false, adding: false, label: null, replace_key: null, started_at: null, url: null, code: null, tail: [], result: { ok: true, key, label: m.label || 'New Codex account', live: false, at: new Date().toISOString() } };
     if (typeof poll === 'function') poll(true);
   }
 
@@ -749,10 +816,10 @@ function settingsCxAddBlock() {
   };
 }
 
-/* 'Log in again' on a Codex row: start the add flow in the block with the account's name. */
-function settingsCxAddStart(label) {
+/* 'Log in again' on a Codex row: start the add flow in the block for that account (a: the row's account): the login that finishes replaces its saved one. */
+function settingsCxAddStart(a) {
   const b = settingsPage.cx;
-  if (b && cxStore(state).add) b.start(label || null);
+  if (b && cxStore(state).add && a && a.key) b.start(null, false, a);
 }
 
 /* The panel's skeleton, built the first time the Accounts section is filled and kept: the error line, the rows' host, the recovery line, the switch choice and the add block. */
@@ -805,6 +872,17 @@ function settingsAcctPatch() {
   settingsAcctWant();
 }
 
+/* #/settings?sec=accounts&acct=<key> (the Home banner, the topbar chip, the notification of a login that does not work): scroll to that account's row, once. */
+function settingsAcctFocus(s) {
+  const key = settingsPage.focus;
+  if (!key) return;
+  const rows = [...Array.from(s.list.children || []), ...Array.from(s.cxList.children || [])];
+  const row = rows.find((r) => r.getAttribute && (r.getAttribute('data-account') === key || r.getAttribute('data-cx-account') === key));
+  if (!row) return;
+  settingsPage.focus = null;
+  if (typeof row.scrollIntoView === 'function') { try { row.scrollIntoView({ block: 'center' }); } catch (_) { /* no scrolling here */ } }
+}
+
 function settingsAccounts(p) {
   const s = p.ccAcct || (p.ccAcct = settingsAcctSkeleton(p));
   const list = agentsAccounts(state);
@@ -817,6 +895,7 @@ function settingsAccounts(p) {
   for (const a of cl) s.cxList.append(settingsCxRow(a));
   settingsAcctPatch();
   settingsAcctLoad();
+  settingsAcctFocus(s);
 }
 
 /* THE rename sheet of an account: the Settings row and the Usage pencil both open it, so the title, the hint, the 60 characters, Save as the one primary and
@@ -945,7 +1024,8 @@ function settingsSig(id, st) {
   if (id === 'accounts') {                                             // identity and labels, not the readings: those move with every statusline and would rebuild the Rename button under a finger (they refresh with the minute)
     const forget = /^(acct|cx)-forget:/.test(String(ui.confirm || '')) ? ui.confirm : null;      // the two-tap Forget login repaints the row
     return JSON.stringify([st.accounts && st.accounts.current, agentsAccounts(st).map((a) => [a.key, a.label, a.name, a.email, a.plan, !!a.current, !!a.saved]), acctStore(st), acctFlow.busy, forget, minute,
-      cxState(st) ? [st.codex_accounts.current, cxAccounts(st).map((a) => [a.key, a.label, a.plan, !!a.current, !!a.saved]), cxStore(st), cxFlow.busy] : null]);
+      cxState(st) ? [st.codex_accounts.current, cxAccounts(st).map((a) => [a.key, a.label, a.plan, !!a.current, !!a.saved]), cxStore(st), cxFlow.busy] : null,
+      (acctProblem(st) || {}).account || (acctProblem(st) ? '*' : null)]);                  // the amber chip and the lead action follow the problem at once
   }
   if (id === 'app') return JSON.stringify([st.version, settingsAppMode().note, !!settingsInstallPrompt(), settingsHelpAvailable()]);
   return JSON.stringify([st.claude, st.agents, ui.confirm === 'logout']);     // the two-tap Log out repaints the panel
@@ -999,6 +1079,7 @@ registerPage('settings', {
   title: 'Settings',
   mount(root, route) {
     const active = settingsSecOf(route);
+    settingsPage.focus = (route && route.query && route.query.acct) || null;                    // ?acct=<key>: the account row to scroll to (the Accounts panel takes it once)
     const tabCtl = settingsTabs(active, (id) => navigate(buildHash('settings', {}, { sec: id }), { replace: true }));
     const panels = {};
     const wrap = el('div', { class: 'settings-page' }, el('div', { class: 'page-head' }, el('h1', { text: 'Settings' })), tabCtl.root);
@@ -1015,7 +1096,11 @@ registerPage('settings', {
     settingsShow(active);
   },
   update() { settingsFill(settingsPage.active, false); settingsAcctPatch(); },     // the add block follows the login state on every poll, not only when the rows change
-  onRoute(route) { settingsShow(settingsSecOf(route)); },
+  onRoute(route) {
+    settingsPage.focus = (route && route.query && route.query.acct) || null;
+    settingsShow(settingsSecOf(route));
+    if (settingsPage.focus && settingsPage.active === 'accounts') settingsFill('accounts', true);           // already on the page: the rows are rebuilt so the focus finds its row
+  },
   unmount() {
     if (settingsPage.add) settingsPage.add.dispose();                   // its one-second timer must not outlive the page
     settingsPage.add = null;
