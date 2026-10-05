@@ -24,7 +24,7 @@ function hostileWorld() {
   });
 }
 
-for (const file of ['core.js', 'components.js', 'termkit.js', 'pages/widgets.js']) {
+for (const file of ['core.js', 'components.js', 'termkit.js', 'pages/widgets.js', 'dnd.js']) {
   test(`${file} defines only: no DOM, storage, network, listener or timer access at load`, (t) => {
     const abs = path.join(STATIC, file);
     if (!fs.existsSync(abs)) {
@@ -33,7 +33,7 @@ for (const file of ['core.js', 'components.js', 'termkit.js', 'pages/widgets.js'
     }
     const w = hostileWorld();
     w.load('core.js');                                       // components.js and termkit.js build on core.js
-    if (file === 'pages/widgets.js') w.load('components.js');   // loaded after both in index.html (and after Live, Shell, Inbox, which it only reaches at call time)
+    if (file === 'pages/widgets.js' || file === 'dnd.js') w.load('components.js');   // loaded after both in index.html (and after Live, Shell, Inbox, which it only reaches at call time)
     if (file !== 'core.js') w.load(file);
   });
 }

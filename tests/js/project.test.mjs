@@ -381,7 +381,7 @@ test('the tasks tab draws the kanban columns with an empty Backlog first, only t
   assert.equal(created(env).at(-1).pre.project, 'phasezero');
 });
 
-test('a backlog task is a card in the Backlog column of its own project, counted on the tab, with Start, Send to session, Edit and Delete', async () => {
+test('a backlog task is a card in the Backlog column of its own project, counted on the tab, with Start, Move…, Edit and Delete', async () => {
   const st = projectState();
   const row = { ci: null, pr: null, id: 30, project: 'phasezero', repo: 'website', slug: 'alt-text', title: 'Add alt text to the gallery', branch: '', base: 'main', worktree: '', tmux: '', claude_session_id: null,
     pr_url: null, pr_number: null, pr_state: null, cost_usd: null, overlap: [], preview_port: null, preview_https: null, preview_url: null, created_at: ISO(20), column: 'backlog', session: null,
@@ -392,7 +392,7 @@ test('a backlog task is a card in the Backlog column of its own project, counted
   const backlog = all(page, '.col').find((c) => /^Backlog/.test(c.querySelector('h3').textContent));
   assert.deepEqual(all(backlog, '.task').map((t) => t.getAttribute('data-task')), ['30'], 'only this project\'s backlog card');
   const card = all(backlog, '.task')[0];
-  assert.deepEqual(all(card, 'button').map((b) => b.textContent.trim()).filter((l) => /^(Start|Send to session|Edit|Delete)$/.test(l)), ['Start', 'Send to session', 'Edit', 'Delete']);
+  assert.deepEqual(all(card, 'button').map((b) => b.textContent.trim()).filter((l) => /^(Start|Move…|Edit|Delete)$/.test(l)), ['Start', 'Move…', 'Edit', 'Delete']);
   assert.match(card.textContent, /Add alt text to the gallery/);
   assert.match(card.textContent, /phasezero\/website/);
   const count = all(page, '[role=tab]').find((t) => t.getAttribute('data-tab') === 'tasks').querySelector('.tab-count');

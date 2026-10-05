@@ -258,37 +258,26 @@ function pjSessionsView(P, route) {
 
 function pjTasksView(P, route) {
   const scopeNote = pjScopeNote(P, route);
-  const grid = el('div', { class: 'kanban pj-kanban' });
+  let scope = '';                                                    // the project the tab shows: the dispatch bar lists its sessions
+  const board = makeTaskBoard({ cls: 'pj-kanban', project: () => scope, empty: 'nothing queued' });
   // nothing yet: only the empty state, with the tab's one primary (the toolbar and the columns would just be headings above it)
   const none = pageEmpty('git-branch', 'No tasks in this project yet', 'A task is one worktree and branch per piece of work: + task starts one now, parks it in the Backlog, or schedules it.');
   none.append(el('button', { class: 'primary', type: 'button', text: '+ task', onclick: () => pjCreate('task') }));
   none.classList.add('hidden');
   const bar = pjToolbar(el('button', { class: 'small primary', type: 'button', text: '+ task', onclick: () => pjCreate('task') }),
     el('span', { class: 'dim', text: 'one worktree and branch per task; the columns follow the session state' }));
-  let sig = null;
-  const node = el('div', { class: 'pj-tasks' }, bar, scopeNote, grid, none);
+  const node = el('div', { class: 'pj-tasks' }, bar, scopeNote, board.node, none);
   return {
     node,
     update(st, rt) {
       const cur = pjParse(rt, st);
       scopeNote.ccPatch(cur);
+      scope = cur.project;
       const tasks = boardTasks(st).filter((t) => t.project === cur.project && (!cur.repo || t.repo === cur.repo));       // the poll's rows with the optimistic Start / add / edit / delete laid over them
       none.classList.toggle('hidden', !!tasks.length);
       bar.classList.toggle('hidden', !tasks.length);
-      grid.classList.toggle('hidden', !tasks.length);
-      const ready = tasks.filter(taskIsBacklog).map((t) => taskSessionTargets(t, st).filter((x) => x.ok && x.same).map((x) => x.s.tmux));      // a backlog card's quick send follows the sessions
-      const next = pjSig([tasks, ui.confirm, ready]);
-      if (sig === next) return;
-      sig = next;
-      grid.textContent = '';
-      for (const [key, label] of BOARD_COLUMNS) {
-        const items = tasks.filter((t) => t.column === key);
-        if (!items.length && key !== 'backlog') continue;            // a column is drawn when it has a card; Backlog stays, it is where a task starts
-        const col = el('div', { class: 'col', 'data-col': key }, el('h3', { text: `${label} (${items.length})` }));
-        if (!items.length && key === 'backlog') col.append(el('div', { class: 'dim', text: 'nothing queued' }));
-        for (const t of items) col.append(taskCard(t));
-        grid.append(col);
-      }
+      board.node.classList.toggle('hidden', !tasks.length);
+      board.update(tasks, st);          // the dispatch bar, the chains and the columns; it repaints only when something it shows changed, and never mid-drag
     },
     onRoute(rt) { this.update(pjState(), rt); },
     destroy() { /* nothing is subscribed */ },

@@ -699,7 +699,7 @@ test('on #/tasks the first tap of Archive swaps in its Confirm (the kanban repai
   const task = { id: 1, title: 'Fix the cart', project: 'shop', repo: 'api', branch: 'worktree-fix', column: 'in_progress', tmux: 'shop--api--t-fix', session: sess('t-fix', { state: 'working' }), ci: null, overlap: [] };
   const { w } = pagesWorld({ state: fakeState({ tasks: [task] }) });
   w.location.hash = '#/tasks';
-  const archive = () => page(w).querySelector('#tasks .task .actions').querySelectorAll('button').find((b) => /Archive/.test(text(b)));
+  const archive = () => page(w).querySelector('#tasks .task .tk-acts').querySelectorAll('button').find((b) => /Archive/.test(text(b)));
   assert.equal(text(archive()), 'Archive');
   archive().click();
   assert.match(text(page(w).querySelector('#tasks')), /Confirm Archive/, 'the tasks section repainted, not just the page behind it');
@@ -739,7 +739,7 @@ test('#/tasks with no task at all shows the empty state with a + task button, ne
   assert.match(text(none), /Backlog|schedule/i, 'and it says what a task can be: now, later, scheduled');
 });
 
-test('#/tasks: a backlog card has Start, Send to session, Edit and Delete and no terminal; a started card keeps its Terminal and Archive', () => {
+test('#/tasks: a backlog card has Start, Move…, Edit and Delete and no terminal; a started card keeps its Terminal and Archive', () => {
   const backlog = taskRow(2, { title: 'Park this for later', prompt: 'refactor the cart reducer\nkeep the tests green' });
   const running = taskRow(1, { title: 'Fix the cart', branch: 'worktree-fix', column: 'in_progress', phase: 'running', tmux: 'shop--api--t-fix', prompt: null, session: sess('t-fix', { state: 'working' }) });
   const { w } = pagesWorld({ state: fakeState({ tasks: [backlog, running] }) });
@@ -747,7 +747,7 @@ test('#/tasks: a backlog card has Start, Send to session, Edit and Delete and no
   w.location.hash = '#/tasks';
   const cardOf = (id) => page(w).querySelector(`#tasks .task[data-task="${id}"]`);
   const labels = (n) => n.querySelectorAll('button').map((b) => text(b).trim());
-  assert.deepEqual(labels(cardOf(2)).filter((l) => /^(Start|Send to session|Edit|Delete)$/.test(l)), ['Start', 'Send to session', 'Edit', 'Delete']);
+  assert.deepEqual(labels(cardOf(2)).filter((l) => /^(Start|Move…|Edit|Delete)$/.test(l)), ['Start', 'Move…', 'Edit', 'Delete']);
   assert.equal(cardOf(2).querySelectorAll('a').filter((a) => /\/term\//.test(a.getAttribute('href') || '')).length, 0, 'no terminal before there is a session');
   assert.match(text(cardOf(2)), /refactor the cart reducer/, 'the prompt head');
   assert.ok(labels(cardOf(1)).includes('Archive') && !labels(cardOf(1)).includes('Start'), 'a started card has the old actions');

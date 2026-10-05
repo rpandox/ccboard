@@ -22,7 +22,7 @@ def test_protocol_handshake_and_tools(monkeypatch):
     assert m.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
     assert m.handle({"jsonrpc": "2.0", "id": 2, "method": "ping"})["result"] == {}
     tools = m.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})["result"]["tools"]
-    assert [t["name"] for t in tools] == ["list_projects", "create_task", "list_tasks", "get_task_status"]
+    assert [t["name"] for t in tools] == ["list_projects", "create_task", "list_tasks", "get_task_status", "dispatch_task", "get_task_result"]
     assert m.handle({"jsonrpc": "2.0", "id": 4, "method": "nope"})["error"]["code"] == -32601
     # tool calls go through call_api; fake it
     calls = []
@@ -54,7 +54,7 @@ def test_stdio_roundtrip():
     cp = subprocess.run([sys.executable, str(ROOT / "scripts" / "ccboard_mcp.py")], input=lines, capture_output=True, text=True, timeout=20)
     out = [json.loads(l) for l in cp.stdout.splitlines() if l.strip()]
     assert out[0]["id"] == 1 and out[0]["result"]["protocolVersion"] == "2025-03-26"
-    assert out[1]["id"] == 2 and len(out[1]["result"]["tools"]) == 4
+    assert out[1]["id"] == 2 and len(out[1]["result"]["tools"]) == 6
     assert any(o.get("error", {}).get("code") == -32700 for o in out)
 
 
@@ -73,7 +73,7 @@ def test_create_task_dispatch_flag(monkeypatch):
     m = load_shim()
     schema = next(t for t in m.TOOLS if t["name"] == "create_task")["inputSchema"]
     assert schema["properties"]["dispatch"]["type"] == "boolean" and schema["properties"]["dispatch"]["default"] is True
-    assert "dispatch" not in schema["required"] and len(m.TOOLS) == 4
+    assert "dispatch" not in schema["required"] and len(m.TOOLS) == 6
     calls = []
 
     def fake_api(method, path, body=None):
@@ -115,7 +115,7 @@ def test_create_task_agent_passthrough(monkeypatch):
     m = load_shim()
     schema = next(t for t in m.TOOLS if t["name"] == "create_task")["inputSchema"]
     assert schema["properties"]["agent"]["enum"] == ["claude", "codex"] and schema["properties"]["agent"]["default"] == "claude"
-    assert "agent" not in schema["required"] and len(m.TOOLS) == 4
+    assert "agent" not in schema["required"] and len(m.TOOLS) == 6
     calls = []
     monkeypatch.setattr(m, "call_api", lambda method, path, body=None: calls.append((method, path, body)) or {"id": 5, "slug": "x"})
     base = {"project": "shop", "repo": "api", "title": "X", "prompt": "do"}
@@ -173,3 +173,105 @@ def test_create_task_agent_codex_through_a_real_board(lite_client, projects_dir,
     assert _json.loads(r["result"]["content"][0]["text"])["phase"] == "backlog"
     # bypass is not something a tool call can ask for: create_task's schema carries no permission fields
     assert "permission_mode" not in next(t for t in m.TOOLS if t["name"] == "create_task")["inputSchema"]["properties"]
+
+
+# ---------------------------------------------------------------- dispatch_task, get_task_result, create_task after_task_id / auto_close (v0.5.14b)
+
+def _call(m, name, **args):
+    r = m.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args}})["result"]
+    return r["isError"], (json.loads(r["content"][0]["text"]) if not r["isError"] else r["content"][0]["text"])
+
+
+def test_the_new_tools_and_fields_are_in_the_schemas():
+    m = load_shim()
+    by = {t["name"]: t["inputSchema"] for t in m.TOOLS}
+    assert by["dispatch_task"]["required"] == ["task_id"]
+    assert set(by["dispatch_task"]["properties"]) == {"task_id", "session", "force", "queue", "auto_close", "agent"}
+    assert by["get_task_result"]["required"] == ["task_id"] and set(by["get_task_result"]["properties"]) == {"task_id"}
+    create = by["create_task"]
+    assert create["properties"]["after_task_id"]["type"] == "integer" and create["properties"]["auto_close"]["type"] == "boolean"
+    assert "after_task_id" not in create["required"] and "auto_close" not in create["required"]
+    assert all(t["additionalProperties"] is False for t in by.values())
+
+
+def test_create_task_after_task_id_and_auto_close_reach_the_board_only_when_given(monkeypatch):
+    m = load_shim()
+    calls = []
+    monkeypatch.setattr(m, "call_api", lambda method, path, body=None: calls.append((method, path, body)) or {"id": 5, "slug": "x"})
+    base = {"project": "shop", "repo": "api", "title": "X", "prompt": "do"}
+    assert _call(m, "create_task", **base)[0] is False
+    assert calls[-1] == ("POST", "/api/projects/shop/repos/api/tasks", {"title": "X", "prompt": "do"}), "the legacy body, byte for byte"
+    _call(m, "create_task", **base, after_task_id=7)
+    assert calls[-1] == ("POST", "/api/tasks", {**base, "when": "later", "after_task_id": 7}), "queued behind task 7: never started now"
+    _call(m, "create_task", **base, after_task_id=7, dispatch=True, auto_close=False, agent="codex")
+    assert calls[-1] == ("POST", "/api/tasks", {**base, "when": "later", "agent": "codex", "after_task_id": 7, "auto_close": False})
+    _call(m, "create_task", **base, auto_close=True)
+    assert calls[-1] == ("POST", "/api/tasks", {**base, "when": "now", "auto_close": True}), "the legacy route takes no auto_close: the general one does"
+    _call(m, "create_task", **base, dispatch=False, auto_close=True)
+    assert calls[-1] == ("POST", "/api/tasks", {**base, "when": "later", "auto_close": True})
+    n = len(calls)
+    for bad in ({"after_task_id": "7"}, {"after_task_id": True}, {"after_task_id": 1.5}, {"auto_close": "yes"}, {"auto_close": 1}):
+        isError, text = _call(m, "create_task", **base, **bad)
+        assert isError and ("after_task_id" in text or "auto_close" in text), bad
+    assert len(calls) == n
+
+
+def test_dispatch_task_and_get_task_result_calls(monkeypatch):
+    m = load_shim()
+    calls = []
+    answers = {"GET": {"id": 3, "title": "T", "phase": "done", "column": "done", "result": "All good.", "result_at": "r", "done_at": "d",
+                       "closed_at": "c", "parent_id": None, "chain": {"i": 1, "n": 2}, "prompt": "secret prompt", "spec": {}}}
+    monkeypatch.setattr(m, "call_api", lambda method, path, body=None: calls.append((method, path, body)) or answers.get(method, {"id": 3, "phase": "running", "tmux": "shop--api--t-x"}))
+    assert _call(m, "dispatch_task", task_id=3)[1]["tmux"] == "shop--api--t-x"
+    assert calls[-1] == ("POST", "/api/tasks/3/dispatch", {"mode": "lane"})
+    _call(m, "dispatch_task", task_id=3, auto_close=False, agent="codex")
+    assert calls[-1] == ("POST", "/api/tasks/3/dispatch", {"mode": "lane", "auto_close": False, "agent": "codex"})
+    _call(m, "dispatch_task", task_id=3, session=" shop--api--s1 ", force=True, queue=True, agent="codex")
+    assert calls[-1] == ("POST", "/api/tasks/3/dispatch", {"session": "shop--api--s1", "force": True, "queue": True}), "a session drop keeps the session's own agent"
+    isError, out = _call(m, "get_task_result", task_id=3)
+    assert not isError and calls[-1] == ("GET", "/api/tasks/3", None)
+    assert out == {"id": 3, "title": "T", "phase": "done", "column": "done", "result": "All good.", "result_at": "r", "done_at": "d",
+                   "closed_at": "c", "parent_id": None, "chain": {"i": 1, "n": 2}}, "the result and its times, not the prompt"
+    n = len(calls)
+    for tool, args in (("dispatch_task", {}), ("dispatch_task", {"task_id": "3"}), ("dispatch_task", {"task_id": True}), ("dispatch_task", {"task_id": 3, "session": "  "}),
+                       ("dispatch_task", {"task_id": 3, "agent": "gemini"}), ("dispatch_task", {"task_id": 3, "force": "yes"}),
+                       ("get_task_result", {}), ("get_task_result", {"task_id": "3"})):
+        assert _call(m, tool, **args)[0] is True, (tool, args)
+    assert len(calls) == n, "a bad call never reaches the board"
+
+
+def test_the_new_tools_through_a_real_board(lite_client, projects_dir, fake_tmux, monkeypatch):
+    """create_task (a chain step), dispatch_task and get_task_result routed into the board with token auth, as over loopback."""
+    from app import claude_auth, hooks, main
+    from app.config import settings
+    m = load_shim()
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(claude_auth, "status", lambda: {"installed": True, "loggedIn": True, "version": "2.1.287"})
+    repo = projects_dir / "shop" / "api"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True)
+    T = {"X-CCBoard-Token": hooks.ensure_token()}
+
+    def via_board(method, path, body=None):
+        r = lite_client.request(method, path, headers=T, json=body)
+        if r.status_code >= 400:
+            raise RuntimeError(f"ccboard {r.status_code}: {r.json().get('error')}")
+        return r.json()
+    monkeypatch.setattr(m, "call_api", via_board)
+    isError, first = _call(m, "create_task", project="shop", repo="api", title="First", prompt="one", dispatch=False)
+    assert not isError and first["phase"] == "backlog"
+    isError, second = _call(m, "create_task", project="shop", repo="api", title="Second", prompt="two {{result}}", after_task_id=first["id"], auto_close=False)
+    assert not isError and second["phase"] == "queued"
+    row = main.db.task_get(second["id"])
+    assert row["parent_id"] == first["id"] and row["chain_id"] == main.db.task_get(first["id"])["chain_id"] and row["auto_close"] == 0
+    assert _call(m, "dispatch_task", task_id=second["id"])[0] is True, "a queued step cannot be started before its parent is done"
+    isError, out = _call(m, "dispatch_task", task_id=first["id"])
+    assert not isError and out["phase"] == "running" and out["tmux"] == "shop--api--t-first" and "limit_warning" not in out
+    assert main.db.task_get(first["id"])["auto_close"] == 1
+    isError, res = _call(m, "get_task_result", task_id=first["id"])
+    assert not isError and res["phase"] == "running" and res["result"] is None
+    main.db.task_update(first["id"], phase="done", result="the first result")
+    isError, res = _call(m, "get_task_result", task_id=first["id"])
+    assert res["result"] == "the first result" and res["column"] in ("done", "needs_you", "in_progress")
+    isError, text = _call(m, "get_task_result", task_id=999)
+    assert isError and "404" in text

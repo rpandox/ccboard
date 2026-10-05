@@ -301,3 +301,62 @@ html.pwa #topbar :is(a, button, input, select, textarea, summary, label, [tabind
   .bp5-menu-item:hover:not(:active), .bp5-dark .bp5-menu-item:hover:not(:active) { background-color:transparent; }
   .bp5-dark .bp5-card.bp5-interactive:hover { box-shadow:none; }
 }
+
+/* ---------- drag-and-drop dispatch (dnd.js, v0.5.15): a Backlog card dragged onto a lane or a session ----------
+   A held card sets body.dnd-task: iframes (the dock, quad tiles) stop catching the pointer so a drop over them reaches the page. Every [data-drop]
+   target is then .drop-ok (a ring in --sig) or .drop-no (dimmed); the one under the pointer is also .drop-over. */
+body.dnd-task iframe { pointer-events:none; }
+.drop-ok { outline:2px solid var(--sig); outline-offset:-2px; }
+.drop-ok.drop-over { background:var(--sig-bg); }
+.drop-no { opacity:.45; }
+.dnd-src { opacity:.5; }
+.dnd-hint { position:fixed; z-index:70; max-width:320px; padding:4px 8px; border:1px solid var(--sig-bd); border-radius:2px; background:var(--panel); color:var(--fg);
+            font-size:12px; line-height:1.35; pointer-events:none; box-shadow:0 4px 14px rgba(0,0,0,.45); }
+.dnd-hint.no { border-color:var(--warn); color:var(--warn-fg); }
+
+/* the grip: six dots in the left padding of a Backlog card, under a mouse only (a touch screen has the Move sheet instead) */
+@media (pointer:fine) {
+  html:not(.force-coarse) .task[data-phase="backlog"], html:not(.force-coarse) .task[data-dnd="1"] { position:relative; cursor:grab; }
+  html:not(.force-coarse) .task[data-phase="backlog"]::before, html:not(.force-coarse) .task[data-dnd="1"]::before {
+    content:""; position:absolute; left:2px; top:10px; width:6px; height:15px; opacity:.7; pointer-events:none;
+    background:radial-gradient(circle at 1.5px 1.5px, var(--dim-2) 1.1px, transparent 1.6px) 0 0 / 3px 5px; }
+  html:not(.force-coarse) .task[data-phase="backlog"]:hover::before, html:not(.force-coarse) .task[data-dnd="1"]:hover::before { opacity:1; }
+  html:not(.force-coarse) .task[data-phase="backlog"] .bp5-button, html:not(.force-coarse) .task[data-dnd="1"] .bp5-button { cursor:pointer; }
+}
+
+/* the dispatch bar above the board: two equal lanes (◆ Claude, ◇ Codex once installed), each with a chip per running session of that agent */
+.dnd-bar { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:8px; margin:8px 0 10px; }
+.dnd-lane { display:flex; align-items:center; gap:10px; min-width:0; min-height:40px; padding:4px 10px; border:1px dashed var(--line-strong); border-radius:2px; background:var(--bg); }
+.dnd-lane.hidden { display:none; }
+.dnd-lane-head { display:inline-flex; align-items:center; gap:6px; flex:0 0 auto; white-space:nowrap; }
+.dnd-lane-hint { font-size:11px; }
+.dnd-chips { display:flex; align-items:center; gap:6px; flex:1 1 auto; min-width:0; overflow-x:auto; scrollbar-width:thin; }
+.dnd-chip { display:inline-flex; align-items:center; gap:4px; flex:0 0 auto; height:var(--row-btn); padding:0 8px; border:1px solid var(--line-strong); border-radius:2px;
+            background:var(--btn-bg); color:var(--fg-2); font-size:12px; text-decoration:none; white-space:nowrap; }
+.dnd-chip:focus-visible { outline:2px solid var(--sig); outline-offset:1px; }
+@media (hover:hover) { .dnd-chip:hover { background:var(--btn-bg-hover); color:var(--fg); text-decoration:none; } }
+.dnd-lane.drop-ok.drop-over, .dnd-chip.drop-ok.drop-over { border-style:solid; }
+@media (pointer:coarse) { .dnd-bar { display:none; } }
+html.force-coarse .dnd-bar { display:none; }
+
+/* the confirm popover after a drop: a compact non-modal dialog next to the drop point */
+dialog.dnd-pop { position:fixed; inset:auto; margin:0; z-index:60; width:min(360px, calc(100vw - 16px)); max-width:none; max-height:calc(100vh - 16px); overflow:auto;
+                 padding:10px 12px; border:1px solid var(--line-strong); border-radius:2px; background:var(--card); color:var(--fg); box-shadow:0 10px 28px rgba(0,0,0,.55); }
+.dnd-pop-head { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.dnd-pop-facts { display:grid; gap:4px; margin-bottom:8px; font-size:12px; }
+.dnd-pop-row { display:grid; grid-template-columns:64px minmax(0, 1fr); gap:8px; align-items:baseline; }
+.dnd-pop-k { font-size:11px; letter-spacing:.04em; text-transform:uppercase; color:var(--dim); }
+.dnd-pop-v { min-width:0; overflow-wrap:anywhere; color:var(--fg-2); }
+.dnd-pop-note { margin:0 0 8px; font-size:12px; color:var(--fg-2); }
+.dnd-switch { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:var(--tap); margin-bottom:8px; font-size:12px; color:var(--fg-2); cursor:pointer; }
+.dnd-switch input { appearance:none; -webkit-appearance:none; position:relative; flex:0 0 auto; width:30px; height:16px; margin:0; border:1px solid var(--line-strong);
+                    border-radius:8px; background:var(--btn-bg); cursor:pointer; }
+.dnd-switch input::after { content:""; position:absolute; top:1px; left:1px; width:12px; height:12px; border-radius:50%; background:var(--dim); transition:transform .12s; }
+.dnd-switch input:checked { border-color:var(--sig-bd); background:var(--sig-bg); }
+.dnd-switch input:checked::after { transform:translateX(14px); background:var(--sig); }
+.dnd-switch input:focus-visible { outline:2px solid var(--sig); outline-offset:2px; }
+.dnd-opts { margin-bottom:8px; }
+.dnd-opts .grid { grid-template-columns:1fr; }
+.dnd-pop-actions { display:grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:8px; }
+.dnd-pop-actions .bp5-button { min-height:var(--tap); justify-content:center; }
+@media (prefers-reduced-motion:reduce) { .dnd-switch input::after { transition:none; } }

@@ -3,7 +3,8 @@
 with the local hook token. Register once with:
     claude mcp add --scope user ccboard -- /path/to/ccboard/.venv/bin/python /path/to/ccboard/scripts/ccboard_mcp.py
     codex mcp add ccboard --env CCBOARD_URL=http://127.0.0.1:8000 -- /path/to/ccboard/.venv/bin/python /path/to/ccboard/scripts/ccboard_mcp.py
-Tools: list_projects, create_task (dispatch false = a Backlog card), list_tasks, get_task_status.
+Tools: list_projects, create_task (dispatch false = a Backlog card; after_task_id = a chain step), list_tasks, get_task_status,
+dispatch_task (start a Backlog task in a new session or a running one), get_task_result (what a finished task said).
 """
 from __future__ import annotations
 
@@ -30,11 +31,28 @@ TOOLS = [
          "dispatch": {"type": "boolean", "default": True,
                       "description": "true (default): start a session now; false: add to the Backlog without starting anything"},
          "agent": {"type": "string", "enum": ["claude", "codex"], "default": "claude",
-                   "description": "which coding agent runs the task: claude (default) or codex (it gets a git worktree under .ccboard/worktrees)"}},
+                   "description": "which coding agent runs the task: claude (default) or codex (it gets a git worktree under .ccboard/worktrees)"},
+         "after_task_id": {"type": "integer",
+                           "description": "queue this task behind another: when that task is done it starts in a new session of its own with the other task's result appended to its prompt (or put where {{result}} stands); the agent defaults to the other task's. Ignores dispatch."},
+         "auto_close": {"type": "boolean",
+                        "description": "close the agent's session when this task's turn ends (after a short grace period); not sent = the board's default"}},
          "required": ["project", "repo", "title", "prompt"], "additionalProperties": False}},
     {"name": "list_tasks", "description": "List ccboard tasks (optionally for one project) with their board column and PR state.",
      "inputSchema": {"type": "object", "properties": {"project": {"type": "string"}}, "additionalProperties": False}},
     {"name": "get_task_status", "description": "Status of one ccboard task: column, session state, last message, PR/CI, cost.",
+     "inputSchema": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"], "additionalProperties": False}},
+    {"name": "dispatch_task",
+     "description": "Start a Backlog task. By default it gets a new session of its own (its agent, in a fresh git worktree); with session (a tmux name from list_projects) its prompt is pasted into that running session instead, which must be idle or done. Returns the tmux session; limit_warning is set when the Claude usage window is nearly full (the task starts anyway).",
+     "inputSchema": {"type": "object", "properties": {
+         "task_id": {"type": "integer"},
+         "session": {"type": "string", "description": "tmux name of a running session to hand the task to; omit for a new session"},
+         "force": {"type": "boolean", "description": "with session: send it even when that session works in another repo (the prompt then names the task's repo)"},
+         "queue": {"type": "boolean", "description": "with session: also accept a Claude session that is working (the text is queued behind its current turn)"},
+         "auto_close": {"type": "boolean", "description": "close the session when the task's turn ends; not sent = on for a new session, off for a running one"},
+         "agent": {"type": "string", "enum": ["claude", "codex"], "description": "new session only: override the agent the task was created for"}},
+         "required": ["task_id"], "additionalProperties": False}},
+    {"name": "get_task_result",
+     "description": "What a finished ccboard task said: its phase (backlog, queued, running, done, failed, cancelled), the full final message of its last turn (result), when it finished, and whether its session was closed after the stop. result is null until the task is done.",
      "inputSchema": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"], "additionalProperties": False}},
 ]
 
@@ -77,12 +95,21 @@ def tool_call(name: str, args: dict) -> dict:
         if agent not in (None, "claude", "codex"):
             raise RuntimeError("agent must be claude or codex")
         named = {"agent": agent} if agent else {}         # sent only when the caller names one: the default bodies are unchanged
+        after, auto = args.get("after_task_id"), args.get("auto_close")
+        if after is not None and (not isinstance(after, int) or isinstance(after, bool)):
+            raise RuntimeError("after_task_id must be a task id")
+        if auto is not None and not isinstance(auto, bool):
+            raise RuntimeError("auto_close must be true or false")
+        more = {**({"after_task_id": after} if after is not None else {}), **({"auto_close": auto} if auto is not None else {})}
+        if after is not None:                            # a chain step: it waits for that task, whatever dispatch says
+            return call_api("POST", "/api/tasks", {"project": args["project"], "repo": args["repo"], "title": args["title"],
+                                                   "prompt": args["prompt"], "when": "later", **named, **more})
         if args.get("dispatch", True) is False:          # a backlog card: nothing starts until someone dispatches it
             return call_api("POST", "/api/tasks", {"project": args["project"], "repo": args["repo"], "title": args["title"],
-                                                   "prompt": args["prompt"], "when": "later", **named})
-        if agent == "codex":                             # the legacy start-now route is Claude's; Codex starts through the general one
+                                                   "prompt": args["prompt"], "when": "later", **named, **more})
+        if agent == "codex" or auto is not None:         # the legacy start-now route is Claude's and takes no auto_close; the general one does
             return call_api("POST", "/api/tasks", {"project": args["project"], "repo": args["repo"], "title": args["title"],
-                                                   "prompt": args["prompt"], "when": "now", "agent": "codex"})
+                                                   "prompt": args["prompt"], "when": "now", **named, **more})
         return call_api("POST", f"/api/projects/{args['project']}/repos/{args['repo']}/tasks",
                         {"title": args["title"], "prompt": args["prompt"]})
     if name == "list_tasks":
@@ -101,6 +128,30 @@ def tool_call(name: str, args: dict) -> dict:
         return {"id": t["id"], "title": t["title"], "column": t["column"], "phase": t.get("phase"), "branch": t["branch"], "worktree": t["worktree"],
                 "session": t.get("session"), "pr_url": t.get("pr_url"), "pr_state": t.get("pr_state"), "ci": t.get("ci"),
                 "cost_usd": t.get("cost_usd"), "overlap": t.get("overlap")}
+    if name == "dispatch_task":
+        tid = args.get("task_id")
+        if not isinstance(tid, int) or isinstance(tid, bool):
+            raise RuntimeError("task_id is required")
+        session = args.get("session")
+        if session is not None and (not isinstance(session, str) or not session.strip()):
+            raise RuntimeError("session must be a tmux session name")
+        agent = args.get("agent")
+        if agent not in (None, "claude", "codex"):
+            raise RuntimeError("agent must be claude or codex")
+        for k in ("force", "queue", "auto_close"):
+            if args.get(k) is not None and not isinstance(args[k], bool):
+                raise RuntimeError(f"{k} must be true or false")
+        body = {"session": session.strip()} if session else {"mode": "lane"}
+        body.update({k: args[k] for k in ("force", "queue", "auto_close") if args.get(k) is not None})
+        if agent and not session:
+            body["agent"] = agent
+        return call_api("POST", f"/api/tasks/{tid}/dispatch", body)
+    if name == "get_task_result":
+        tid = args.get("task_id")
+        if not isinstance(tid, int) or isinstance(tid, bool):
+            raise RuntimeError("task_id is required")
+        t = call_api("GET", f"/api/tasks/{tid}")
+        return {k: t.get(k) for k in ("id", "title", "phase", "column", "result", "result_at", "done_at", "closed_at", "parent_id", "chain")}
     raise RuntimeError(f"unknown tool {name}")
 
 

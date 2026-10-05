@@ -511,8 +511,9 @@ Shell.kidNode = function (k) {
   const slot = el('span', { class: 'tn-g' });
   const name = el('span', { class: 'tn-name' });
   const sub = el('span', { class: 'tn-sub mono' });
-  const node = el('a', { class: 'tn-row s-row', role: 'treeitem', tabindex: '-1', 'aria-level': '2' }, slot, name, sub);
+  const node = el('a', { class: 'tn-row s-row', role: 'treeitem', tabindex: '-1', 'aria-level': '2', 'data-drop': 'session' }, slot, name, sub);
   node._k = { slot, name, sub, state: null, agent: null };
+  if (typeof Dnd !== 'undefined') Dnd.bind(node);                                  // a backlog card dropped on the row is handed to this session (dnd.js)
   return node;
 };
 
@@ -524,6 +525,7 @@ Shell.patchKid = function (node, k) {
   setText(r.name, k.name);
   if (k.kind === 'repo') { node.setAttribute('href', Shell.hash('project', { project: k.project, repo: k.name })); return; }
   node.setAttribute('href', Shell.hash('session', { tmux: k.tmux }));
+  node.setAttribute('data-tmux', k.tmux);                                          // the drop target's session (dnd.js)
   node.classList.toggle('attn', k.needs);
   if (r.state !== k.state || r.agent !== k.agent) {
     r.state = k.state; r.agent = k.agent;

@@ -68,6 +68,14 @@ class Settings:
             self.approve_timeout = float(env.get("CCBOARD_APPROVE_TIMEOUT") or 90)
         except ValueError:
             self.approve_timeout = 90.0
+        # Auto-close (app/taskflow.py): seconds between a task's Stop and the graceful close of its session, so a person can still say
+        # "keep open" (the countdown is flags.autoclose.due). Not a positive number: the default.
+        try:
+            self.autoclose_grace = float(env.get("CCBOARD_AUTOCLOSE_GRACE") or 45)
+        except ValueError:
+            self.autoclose_grace = 45.0
+        if not 0 <= self.autoclose_grace < 24 * 3600:
+            self.autoclose_grace = 45.0
         self.claude_config_dir = Path(env.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
         # Codex (app/agents/codex.py): its home (hooks.json, config.toml, sessions/ and state_*.sqlite live there; auth.json is never
         # read by the board) and how its hooks are trusted. `review` (default) relies on the one-time /hooks review in the TUI;

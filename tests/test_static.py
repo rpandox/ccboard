@@ -528,7 +528,7 @@ from collections import Counter  # noqa: E402
 INDEX = STATIC / "index.html"
 SKELETON_IDS = ("topbar", "sidebar", "main", "banner", "page", "dock", "bnav", "drawer", "sheet", "helpdlg", "modal", "toasts")
 SCRIPT_ORDER = ["/static/" + n for n in (            # v0.5.3 contract plus keymap.js and palette.js (v0.5.3b), pages/widgets.js (v0.5.5), tree.js and pages/project.js (v0.5.6)
-    "core.js", "components.js", "keymap.js", "live.js", "launcher.js", "tree.js", "charts.js", "palette.js", "shell.js", "router.js",
+    "core.js", "components.js", "keymap.js", "live.js", "launcher.js", "tree.js", "charts.js", "dnd.js", "palette.js", "shell.js", "router.js",
     "pages/home.js", "pages/inbox.js", "pages/widgets.js", "pages/tasks.js", "pages/project.js", "pages/agents.js", "pages/settings.js", "pages/search.js",
     "pages/session.js", "pages/usage.js", "pages/placeholders.js", "main.js")]
 STYLE_ORDER = ["/static/vendor/blueprint/blueprint.css", "/static/vendor/blueprint/blueprint-icons.css", "/static/tokens.css",
@@ -804,7 +804,7 @@ def test_demo_state_tasks_fill_every_kanban_column_consistently():
     listed = state["tasks"]
     cols = Counter(t["column"] for t in listed)
     assert set(cols) == set(KANBAN), [t["column"] for t in listed]
-    assert cols == Counter({"backlog": 2, "in_progress": 2, "needs_you": 1, "done": 1, "pr": 1, "merged": 1}), cols
+    assert cols == Counter({"backlog": 4, "in_progress": 2, "needs_you": 3, "done": 3, "pr": 1, "merged": 1}), cols     # v0.5.15 added a chain of three, a failed task, a held question and a pending close
     assert [t["id"] for t in listed] == sorted((t["id"] for t in listed), reverse=True), "db.tasks() lists newest id first"
     for t in listed:
         started = t["phase"] not in ("backlog", "queued")
@@ -844,7 +844,7 @@ def test_demo_state_has_a_backlog_task_and_a_task_handed_to_a_running_session():
     assert {(b["project"], b["repo"]) for b in backlog} == {("phasezero", "website"), ("ccboard", "ccboard")}
     assert ("ccboard", "ccboard") in ready and ("phasezero", "website") not in ready, "the demo shows both a one-tap send and a sheet of sessions that are all busy"
     assert all(t["prompt"] is None and t["prompt_len"] > 0 for t in state["tasks"] if t["phase"] not in ("backlog", "queued")), "started rows carry no prompt, only its length"
-    handed = [t for t in state["tasks"] if t["mode"] == "session"]
+    handed = [t for t in state["tasks"] if t["mode"] == "session" and t["phase"] == "running"]          # v0.5.15 also hands two finished tasks to s1 / s3 (a pending close, a question)
     assert len(handed) == 1
     s = handed[0]
     assert s["phase"] == "running" and s["column"] == "in_progress" and s["session"]["state"] == "working"
@@ -1287,7 +1287,7 @@ def test_demo_files_are_absent_from_the_sw_shell_and_the_asset_version(lite_clie
 # ---------- terminal page on mobile: definition-only kit, no ES modules, the term.css scroll-fix set, the dev tty fake ----------
 
 REPO = STATIC.parent.parent
-DEFINE_ONLY = ("core.js", "components.js", "termkit.js", "pages/widgets.js", "tree.js")
+DEFINE_ONLY = ("core.js", "components.js", "termkit.js", "pages/widgets.js", "tree.js", "dnd.js")
 # a declaration, a string (a directive), or a function / literal assigned to a property of a declared namespace (`Widgets.usageCard = function ...`):
 # none of them runs anything at load. A call, an `if`, a bare `document.x = ...` or `Name.start();` is not in the list.
 DEFINE_ONLY_START = re.compile(

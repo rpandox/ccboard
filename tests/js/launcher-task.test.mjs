@@ -119,7 +119,7 @@ test('the task form: title, a prompt box, the Run control (Now | Later | Schedul
   assert.deepEqual(segs(f).map((b) => text(b).trim()), ['Now', 'Later', 'Schedule']);
   assert.deepEqual(pressed(f), ['Now'], 'exactly one is pressed, Now by default');
   assert.equal(label(f), 'Start task');
-  const opts = f.querySelector('details');
+  const opts = f.querySelectorAll('details').find((d) => /options/i.test(text(d.querySelector('summary'))));
   assert.ok(opts, 'the Claude options sit in a <details>');
   assert.ok(/options/i.test(text(opts.querySelector('summary'))), 'whose summary says Options');
   assert.ok(!opts.getAttribute('open') && !opts.open, 'collapsed: a task needs a title and a prompt, nothing else');
@@ -659,4 +659,233 @@ test('with a project in the context the picker is narrowed to it and still offer
   const rows = sheet(w).querySelectorAll('.pick-row');
   assert.equal(rows.length, 2, 'the folder and the one repo');
   assert.ok(rows.every((r) => /blog/.test(text(r))));
+});
+
+// ================================================================ v0.5.15: the switch that closes the session, and 'Then…' (a chain of steps)
+
+const thenBox = (f) => f.querySelectorAll('details').find((d) => /^Then…/.test(text(d.querySelector('summary')).trim()));
+const openThen = (f) => { const d = thenBox(f); d.open = true; d.dispatchEvent({ type: 'toggle' }); return d; };
+const stepsOf = (f) => f.querySelectorAll('.tf-step');
+const stepPrompt = (s) => s.querySelector('textarea');
+const stepTitle = (s) => s.querySelector('input');
+const closeSwitch = (f) => fieldOf(f, /When it finishes/).querySelector('input[type=checkbox]');
+const CHAIN = { chain_id: 'c7', ids: [71, 72, 73] };
+const overrides = (w) => plain(w.get('Object.values(store.tasksOverride)'));
+const withCodex = (w) => w.run('state.agents = { claude: { installed: true }, codex: { installed: true } }');
+
+test('Options holds a "Close the session" switch, on by default: only an OFF switch is sent (auto_close false) and it is remembered per repo', async () => {
+  const w = tWorld({ answers: { '/api/tasks': STARTED } });
+  openTask(w, { project: 'shop', repo: 'api' });
+  let f = form(w);
+  assert.equal(closeSwitch(f).checked, true, 'a new session closes itself by default');
+  assert.ok(f.querySelector('details.tf-options').contains(fieldOf(f, /When it finishes/)), 'under Options');
+  type(f, 'Fix login', 'go');
+  submit(f);
+  await tick();
+  assert.ok(!('auto_close' in posts(w, '/api/tasks')[0].body), 'on is the server\'s default: nothing is sent');
+  openTask(w, { project: 'shop', repo: 'api' });
+  f = form(w);
+  closeSwitch(f).checked = false;
+  type(f, 'Fix login again', 'go');
+  submit(f);
+  await tick();
+  assert.equal(posts(w, '/api/tasks')[1].body.auto_close, false);
+  assert.equal(JSON.parse(w.localStorage.getItem('ccboard:task:shop/api')).auto_close, false, 'remembered');
+  openTask(w, { project: 'shop', repo: 'api' });
+  assert.equal(closeSwitch(form(w)).checked, false, 'the next task for this repo opens with it off');
+  openTask(w, { project: 'shop', repo: 'web' });
+  assert.equal(closeSwitch(form(w)).checked, true, 'another repo has its own');
+});
+
+test('Then… is a collapsed disclosure under the prompt; opening it adds a first step with a prompt, a title and an agent (Codex off until installed), and the summary counts the steps', () => {
+  const w = tWorld();
+  openTask(w, { project: 'shop', repo: 'api' });
+  const f = form(w);
+  const d = thenBox(f);
+  assert.ok(d, 'a Then… disclosure');
+  assert.ok(!d.open && !d.getAttribute('open'), 'closed: a single task never shows it');
+  assert.equal(stepsOf(f).length, 0);
+  openThen(f);
+  assert.equal(stepsOf(f).length, 1, 'opening it starts the first step');
+  const s = stepsOf(f)[0];
+  assert.match(text(s.querySelector('.tf-step-k')), /^Step 2$/, 'the form\'s own prompt is step 1');
+  assert.ok(stepPrompt(s) && stepTitle(s));
+  assert.deepEqual(s.querySelectorAll('.seg-btn').map((b) => text(b).trim()), ['◆ Claude', '◇ Codex']);
+  assert.notEqual(s.querySelectorAll('.seg-btn')[1].getAttribute('disabled'), null, 'Codex is not installed on this box');
+  assert.match(text(d.querySelector('summary')), /2 steps/);
+  button3(d, /^\+ Add a step$/).click();
+  assert.equal(stepsOf(f).length, 2);
+  assert.match(text(stepsOf(f)[1].querySelector('.tf-step-k')), /^Step 3$/);
+  assert.match(text(d.querySelector('summary')), /3 steps/);
+  stepsOf(f)[0].querySelector('.tf-step-rm').click();
+  assert.equal(stepsOf(f).length, 1);
+  assert.match(text(stepsOf(f)[0].querySelector('.tf-step-k')), /^Step 2$/, 'the numbers close up');
+  assert.match(text(d.querySelector('summary')), /2 steps/);
+  assert.match(text(d), /\{\{result\}\}/, 'and it says where the previous result goes');
+});
+const button3 = (root, re) => root.querySelectorAll('button').find((b) => re.test(text(b).trim()));
+
+test('Now with steps posts ONE chain: step 1 is the form\'s prompt with its launch options, dispatch true; no plain task is created; the cards appear at once, step 1 running and the rest queued behind it', async () => {
+  const w = tWorld({ answers: { '/api/projects/shop/repos/api/chains': CHAIN } });
+  withCodex(w);
+  openTask(w, { project: 'shop', repo: 'api' });
+  const f = form(w);
+  type(f, 'Audit the cache rules', 'Audit the service worker cache rules and list the findings');
+  selectOf(f, /model/i).value = 'opus';
+  openThen(f);
+  stepPrompt(stepsOf(f)[0]).value = 'Fix each finding below.\n\n{{result}}';
+  stepsOf(f)[0].querySelectorAll('.seg-btn')[1].click();                                   // Codex
+  button3(thenBox(f), /^\+ Add a step$/).click();
+  stepTitle(stepsOf(f)[1]).value = 'Review';
+  stepPrompt(stepsOf(f)[1]).value = 'Review the diff and list anything risky.';
+  submit(f);
+  await tick();
+  assert.equal(posts(w, '/api/tasks').length, 0, 'not a plain task');
+  const p = posts(w, '/api/projects/shop/repos/api/chains');
+  assert.equal(p.length, 1);
+  assert.deepEqual(p[0].body, {
+    steps: [
+      { title: 'Audit the cache rules', prompt: 'Audit the service worker cache rules and list the findings', agent: 'claude', model: 'opus' },
+      { title: 'Fix each finding below', prompt: 'Fix each finding below.\n\n{{result}}', agent: 'codex' },
+      { title: 'Review', prompt: 'Review the diff and list anything risky.', agent: 'claude' }],
+    dispatch: true,
+  });
+  assert.equal(sheet(w).open, false, 'the sheet closes');
+  assert.match(toasts(w).pop().text, /started a chain of 3 steps/);
+  const rows = overrides(w);
+  assert.deepEqual(rows.map((r) => [r.id, r.phase, r.parent_id, r.chain_id, r.agent]).sort((a, b) => a[0] - b[0]),
+    [[71, 'running', null, 'c7', 'claude'], [72, 'queued', 71, 'c7', 'codex'], [73, 'queued', 72, 'c7', 'claude']], 'step 1 runs, each later step waits for the one before');
+  assert.ok(rows.every((r) => r._new), 'all three are new cards');
+});
+
+test('the server\'s answer is {chain_id, ids, tasks, started}: step 1 takes its tmux from `started`, every card takes the server\'s own row,', async () => {
+  const REAL = { chain_id: 'c9', ids: [91, 92],
+    started: { id: 91, phase: 'running', tmux: 'shop--api--t-audit', session_row: 14, slug: 'audit', branch: 'worktree-audit', attach_url: '/term/shop--api--t-audit', task: { id: 91, slug: 'audit', branch: 'worktree-audit', tmux: 'shop--api--t-audit', session_row: 14, phase: 'running', column: 'in_progress', chain: { i: 1, n: 2 } } },
+    tasks: [{ id: 91, slug: 'audit', phase: 'running', column: 'in_progress', chain: { i: 1, n: 2 }, tmux: 'shop--api--t-audit' }, { id: 92, slug: 'then-fix', phase: 'queued', column: 'backlog', chain: { i: 2, n: 2 }, limit_hold: { kind: '5h', resets_at: 1790000000, pct: 91 } }] };
+  const w = tWorld({ answers: { '/api/projects/shop/repos/api/chains': REAL } });
+  openTask(w, { project: 'shop', repo: 'api' });
+  const f = form(w);
+  type(f, 'Audit it', 'Audit the thing');
+  openThen(f);
+  stepPrompt(stepsOf(f)[0]).value = 'Then fix it.';
+  submit(f);
+  await tick();
+  const rows = overrides(w);
+  const one = rows.find((r) => r.id === 91);
+  const two = rows.find((r) => r.id === 92);
+  assert.equal(one.tmux, 'shop--api--t-audit');
+  assert.equal(one.session_row, 14);
+  assert.equal(one.slug, 'audit');
+  assert.equal(one.phase, 'running');
+  assert.deepEqual(two.chain, { i: 2, n: 2 }, 'the server\'s row rides along');
+  assert.equal(two.phase, 'queued');
+  assert.equal(two.limit_hold.kind, '5h');
+});
+
+test('Now with steps inside the limit window goes ahead and warns: the chain answer\'s limit_warning becomes a warning toast', async () => {
+  const w = tWorld({ answers: { '/api/projects/shop/repos/api/chains': { ...CHAIN, started: { tmux: 'shop--api--t-a', session_row: 3, slug: 'a' }, limit_warning: { kind: '5h', resets_at: 1790000000, pct: 91 } } } });
+  openTask(w, { project: 'shop', repo: 'api' });
+  const f = form(w);
+  type(f, 'Do a', 'Do a');
+  openThen(f);
+  stepPrompt(stepsOf(f)[0]).value = 'Then b';
+  submit(f);
+  await tick();
+  const t = toasts(w);
+  assert.ok(t.some((x) => /Started anyway/.test(x.text) && /5h/.test(x.text)), 'a warning toast names the window');
+});
+
+test('Later with steps posts dispatch false and paints step 1 in the Backlog, the others queued; auto-close OFF is sent', async () => {
+  const w = tWorld({ answers: { '/api/projects/shop/repos/api/chains': CHAIN } });
+  openTask(w, { project: 'shop', repo: 'api' });
+  seg(form(w), 'Later').click();
+  const f = form(w);
+  type(f, 'One', 'first');
+  closeSwitch(f).checked = false;
+  openThen(f);
+  stepPrompt(stepsOf(f)[0]).value = 'second';
+  button3(thenBox(f), /^\+ Add a step$/).click();
+  stepPrompt(stepsOf(f)[1]).value = 'third';
+  submit(f);
+  await tick();
+  const b = posts(w, '/api/projects/shop/repos/api/chains')[0].body;
+  assert.equal(b.dispatch, false);
+  assert.equal(b.auto_close, false);
+  assert.deepEqual(b.steps.map((s) => s.title), ['One', 'second', 'third'], 'a step without a title takes its prompt\'s first line');
+  assert.deepEqual(overrides(w).map((r) => [r.id, r.phase]).sort((a, b2) => a[0] - b2[0]), [[71, 'backlog'], [72, 'queued'], [73, 'queued']]);
+  assert.match(toasts(w).pop().text, /added a chain of 3 steps to the backlog/);
+  assert.deepEqual(navs(w), [], 'nothing opens: no session yet');
+});
+
+test('a step with a title and no prompt is said next to it and nothing is posted; a fully blank step is not a step', async () => {
+  const w = tWorld({ answers: { '/api/projects/shop/repos/api/chains': CHAIN, '/api/tasks': STARTED } });
+  openTask(w, { project: 'shop', repo: 'api' });
+  const f = form(w);
+  type(f, 'Solo', 'just this');
+  openThen(f);
+  stepTitle(stepsOf(f)[0]).value = 'Review';
+  submit(f);
+  await tick();
+  assert.equal(posts(w, '/api/').length, 0, 'nothing posted');
+  const say = stepsOf(f)[0].querySelectorAll('.field-err').find((n) => /what this step should do/i.test(text(n)));
+  assert.ok(say, 'the inline error is next to the step\'s prompt');
+  assert.equal(say.getAttribute('role'), 'alert');
+  assert.ok(thenBox(f).open || thenBox(f).getAttribute('open') !== null, 'and the disclosure is open on it');
+  stepTitle(stepsOf(f)[0]).value = '';
+  submit(f);
+  await tick();
+  assert.equal(posts(w, '/api/projects/').length, 0, 'an empty step is dropped: this is a plain task again');
+  assert.equal(posts(w, '/api/tasks').length, 1);
+});
+
+test('Schedule hides Then… and the steps; a schedule is never a chain', async () => {
+  const w = tWorld({ answers: { '/api/projects/shop/repos/api/jobs': { id: 3 } } });
+  openTask(w, { project: 'shop', repo: 'api' });
+  const f = form(w);
+  openThen(f);
+  stepPrompt(stepsOf(f)[0]).value = 'never sent';
+  seg(f, 'Schedule').click();
+  assert.ok(thenBox(f).classList.contains('hidden'), 'hidden in Schedule');
+  assert.ok(fieldOf(f, /When it finishes/).classList.contains('hidden'), 'and so is the switch: a job is not a session');
+  type(f, 'Nightly', 'run the audit');
+  submit(f);
+  await tick();
+  assert.equal(posts(w, '/api/projects/shop/repos/api/jobs').length, 1);
+  assert.equal(posts(w, '/api/projects/shop/repos/api/chains').length, 0);
+});
+
+test('a refused chain says why inline and keeps what was typed, then the next try works', async () => {
+  let n = 0;
+  const w = tWorld({ answers: { '/api/projects/shop/repos/api/chains': () => (++n === 1 ? { __error: 'a chain needs at least two steps', status: 400 } : CHAIN) } });
+  openTask(w, { project: 'shop', repo: 'api' });
+  const f = form(w);
+  type(f, 'A', 'first');
+  openThen(f);
+  stepPrompt(stepsOf(f)[0]).value = 'second';
+  submit(f);
+  await tick();
+  assert.match(text(f.querySelector('.form-status')), /a chain needs at least two steps/);
+  assert.equal(sheet(w).open, true, 'the sheet stays');
+  assert.equal(stepPrompt(stepsOf(f)[0]).value, 'second', 'with the step as typed');
+  submit(f);
+  await tick();
+  assert.equal(sheet(w).open, false);
+  assert.equal(posts(w, '/api/projects/shop/repos/api/chains').length, 2);
+});
+
+test('demo mode (the answer is {ok: true}): the chain still paints its cards, with made-up ids', async () => {
+  const w = tWorld();
+  w.localStorage.setItem('ccboard:demo', '1');
+  openTask(w, { project: 'shop', repo: 'api' });
+  seg(form(w), 'Later').click();
+  const f = form(w);
+  type(f, 'A', 'first');
+  openThen(f);
+  stepPrompt(stepsOf(f)[0]).value = 'second';
+  submit(f);
+  await tick();
+  const rows = overrides(w);
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every((r) => typeof r.id === 'number' && r.id < 0 && r.chain_id), 'negative ids, one chain');
+  assert.deepEqual(rows.map((r) => r.phase).sort(), ['backlog', 'queued']);
 });

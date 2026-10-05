@@ -129,9 +129,12 @@ function openTaskModal(t) {
   load();
 }
 
+let homeLaneBar = null;                                            // the dispatch bar of #/tasks (dnd.js): one node kept across repaints
+
 function renderTasks() {
   const sec = $('#tasks');
   if (!sec) return;
+  if (typeof Dnd !== 'undefined' && Dnd.afterDrag(renderTasks)) return;      // a card is being dragged: the board repaints once it is dropped, never under the pointer
   sec.textContent = '';
   const list = boardTasks(state);                                  // the poll's rows with the optimistic Start / add / edit / delete laid over them
   if (!list.length) { sec.classList.add('hidden'); return; }
@@ -141,6 +144,11 @@ function renderTasks() {
     el('h1', { text: `Tasks (${list.length})` }),
     el('span', { class: 'summary', text: 'one worktree + branch per task; columns follow the session state' }),
     el('div', { class: 'actions' }, el('button', { class: 'small primary', type: 'button', text: '+ task', title: 'new task: now, later (backlog) or scheduled', onclick: () => homeCreate('task') }))));
+  if (typeof Dnd !== 'undefined' && typeof Dnd.laneBar === 'function') {       // lanes above the board (dnd.js): drop a Backlog card on ◆ Claude / ◇ Codex, or on a running session's chip
+    if (!homeLaneBar) homeLaneBar = Dnd.laneBar({});
+    homeLaneBar.ccPatch(state);
+    sec.append(homeLaneBar);
+  }
   const grid = el('div', { class: 'kanban' });
   for (const [key, label] of BOARD_COLUMNS) {
     const items = list.filter(t => t.column === key);

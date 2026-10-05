@@ -655,6 +655,57 @@ class DB:
         with self.lock:
             self.conn.execute(f"UPDATE tasks SET {sets} WHERE id=?", (*fields.values(), now(), tid))
 
+    def tasks_by_phase(self, phases, include_archived: bool = False) -> list[dict]:
+        """Task rows (oldest first) whose phase is one of `phases`: the runtime's sweep and chain advance read these every tick."""
+        phases = tuple(phases)
+        if not phases:
+            return []
+        marks = ",".join("?" * len(phases))
+        q = f"SELECT * FROM tasks WHERE phase IN ({marks})" + ("" if include_archived else " AND archived_at IS NULL") + " ORDER BY id ASC"
+        with self.lock:
+            rows = self.conn.execute(q, phases).fetchall()
+        return [dict(r) for r in rows]
+
+    def children_of(self, parent_id: int) -> list[dict]:
+        """The unarchived tasks queued behind `parent_id` (tasks.parent_id), oldest first: a chain step has one, fan-out has several."""
+        with self.lock:
+            rows = self.conn.execute("SELECT * FROM tasks WHERE parent_id=? AND archived_at IS NULL ORDER BY id ASC", (parent_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def tasks_for_session(self, row_id: int, phases=None) -> list[dict]:
+        """The unarchived tasks bound to one session row (tasks.session_row), newest first, optionally only those in `phases`."""
+        q, args = "SELECT * FROM tasks WHERE session_row=? AND archived_at IS NULL", [row_id]
+        if phases:
+            q += f" AND phase IN ({','.join('?' * len(tuple(phases)))})"
+            args += list(phases)
+        with self.lock:
+            rows = self.conn.execute(q + " ORDER BY id DESC", args).fetchall()
+        return [dict(r) for r in rows]
+
+    def tasks_in_chains(self, chain_ids) -> list[dict]:
+        """Every task (archived too: a step's place in its chain must not move when a sibling is archived) of the given chains, with
+        just the columns a position needs: id, chain_id, parent_id, phase, title."""
+        ids = sorted({c for c in chain_ids if c})
+        if not ids:
+            return []
+        with self.lock:
+            rows = self.conn.execute(f"SELECT id, chain_id, parent_id, phase, title FROM tasks WHERE chain_id IN ({','.join('?' * len(ids))})"
+                                     " ORDER BY id ASC", ids).fetchall()
+        return [dict(r) for r in rows]
+
+    def sessions_ended(self, ids) -> dict[int, dict]:
+        """{sessions.id: {ended_at, ended_reason}} for the rows of `ids` (open rows too: ended_at None), one query. The merged tmux
+        scan only knows live sessions, so a task card's 'closed after stop' (ended_reason auto_close) comes from here."""
+        ids = sorted({int(i) for i in ids if i is not None})
+        out: dict[int, dict] = {}
+        for i in range(0, len(ids), 500):                      # under SQLite's variable limit however many tasks there are
+            chunk = ids[i:i + 500]
+            with self.lock:
+                rows = self.conn.execute(f"SELECT id, ended_at, ended_reason FROM sessions WHERE id IN ({','.join('?' * len(chunk))})",
+                                         chunk).fetchall()
+            out.update({int(r["id"]): {"ended_at": r["ended_at"], "ended_reason": r["ended_reason"]} for r in rows})
+        return out
+
     def task_delete(self, tid: int) -> bool:
         """Remove a task row (a backlog, queued or cancelled one: the caller decides). Returns whether a row went."""
         with self.lock:

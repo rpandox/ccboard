@@ -85,7 +85,9 @@ const colOf = (n) => { const c = n && n.closest('.col'); return c ? c.querySelec
 const colTitles = (env) => all(env.page(), '.col h3').map((h) => h.textContent.replace(/\s*\(\d+\)\s*$/, ''));
 const cardsIn = (env, label) => { const c = all(env.page(), '.col').find((x) => x.querySelector('h3').textContent.startsWith(label)); return c ? all(c, '.task').map((t) => Number(t.getAttribute('data-task'))) : []; };
 const startBtn = (n) => button(n, /^Start$/);
-const sendBtn = (n) => button(n, /^Send to/i);
+const sendBtn = (n) => button(n, /^Move/i);
+const ownerChip = (n) => n.querySelector('.tk-owner');
+const laneBtn = (sh, agent) => all(sh, 'button').find((b) => b.getAttribute('data-agent') === agent);
 const editBtn = (n) => button(n, /^Edit/i);
 const deleteBtn = (n) => button(n, /^Delete$/);
 const setState = (env, st) => { env.w.ctx.__st = st; env.w.run('state = __st; updateCurrentPage(state)'); };
@@ -215,8 +217,8 @@ test('picking a ready session POSTs dispatch {session}, closes the sheet, toasts
   assert.deepEqual(navs(env), [], 'no navigation: the session was already running and the user stays on the board (the chip opens it)');
   const c = card(env, 20);
   assert.equal(colOf(c), 'In progress');
-  const chip = all(c, 'a').find((a) => /^in\s/.test(textOf(a).trim()));
-  assert.ok(chip, 'the in <session> chip');
+  const chip = ownerChip(c);
+  assert.ok(chip, 'the owner chip');
   assert.equal(chip.getAttribute('href'), '#/s/petroit--api--s1');
   assert.match(textOf(chip), /s1/);
 });
@@ -228,8 +230,9 @@ test('busy sessions are listed but cannot be picked, with the reason; ready ones
   const sh = env.sheet();
   const off = (n) => rowFor(sh, n).getAttribute('disabled') !== null;
   assert.deepEqual(['s1', 's3'].map(off), [false, false], 'done and waiting-for-an-answer are ready');
-  assert.deepEqual(['s2', 's4', 's5'].map(off), [true, true, true], 'errored, working and waiting-on-a-permission are not');
-  assert.match(textOf(rowFor(sh, 's4')), /working/i);
+  assert.deepEqual(['s2', 's5'].map(off), [true, true], 'errored and waiting-on-a-permission are not');
+  assert.equal(off('s4'), false, 'a working Claude session takes the prompt into its queue (the same rule as a drop on its row)');
+  assert.match(textOf(rowFor(sh, 's4')), /will be queued after the current turn/i);
   assert.match(textOf(rowFor(sh, 's5')), /permission/i);
 });
 
@@ -258,10 +261,10 @@ test('a waiting session is sendable only at its idle prompt: a permission prompt
   assert.ok(!button(card(env2, 20), /^→/), 'no one-tap button to a session that sits in a dialog');
 });
 
-test('Send to session is never a dead end: with no ready session the sheet offers Start in a new session; a session that has just started is listed as "starting…"', async () => {
+test('the Move sheet is never a dead end: with no ready session it still starts a new Claude session; a session that has just started is listed as "starting…"', async () => {
   const st = stateWith([BACKLOG()]);
   const api = st.projects.find((p) => p.name === 'petroit').repos.find((r) => r.name === 'api');
-  for (const x of api.sessions) x.state = 'working';
+  for (const x of api.sessions) x.state = 'errored';                 // every one busy for real (a working Claude session would take a queued prompt)
   api.sessions.push(sess('petroit', 'api', 's6', { state: 'unknown' }));
   const env = tasksWorld({ state: st, answers: { '/api/tasks/20/dispatch': { id: 20, phase: 'running', tmux: 'petroit--api--t-unify', session_row: 9, attach_url: '/term/petroit--api--t-unify' } } });
   await go(env, PETROIT);
@@ -270,17 +273,13 @@ test('Send to session is never a dead end: with no ready session the sheet offer
   const rows = all(sh, '[data-tmux]');
   assert.ok(rows.length >= 6 && rows.every((r) => r.getAttribute('disabled') !== null), 'every session is listed and off: all are busy');
   assert.match(textOf(rowFor(sh, 's6')), /starting…/, 'a session whose first hook has not arrived is shown, not dropped');
-  const start = button(sh, /Start in a new session/);
-  assert.ok(start, 'the way out: start the task in a session of its own');
-  start.click();
+  assert.match(textOf(sh), /None of these can take it right now/, 'and the sheet says so');
+  const claude = laneBtn(sh, 'claude');
+  assert.ok(claude, 'the way out is always there: a new Claude session of its own');
+  claude.click();
   await settle();
   assert.deepEqual(posts(env, /dispatch$/).map((c) => c.body), [{ mode: 'lane' }]);
   assert.equal(env.sheet().open, false, 'the sheet closes');
-  // with a ready session in the list the sheet stays a plain list: the card's own Start is the other way
-  const env2 = tasksWorld();
-  await go(env2, PETROIT);
-  sendBtn(card(env2, 20)).click();
-  assert.ok(!button(env2.sheet(), /Start in a new session/), 'no second Start when a session can take it');
 });
 
 test('with exactly one ready session in the task\'s own repo the card has a one-tap button that sends the prompt there', async () => {
@@ -486,11 +485,11 @@ test('a task that runs in an existing session shows in In progress with an "in <
   const env = tasksWorld({ state: stateWith([own, handed]) });
   await go(env, PETROIT);
   assert.deepEqual(cardsIn(env, 'In progress').sort(), [24, 25]);
-  const chip = all(card(env, 24), 'a').find((a) => /^in\s/.test(textOf(a).trim()));
-  assert.ok(chip, 'the chip is on the handed card');
+  const chip = ownerChip(card(env, 24));
+  assert.ok(chip, 'the owner chip is on the handed card');
   assert.equal(chip.getAttribute('href'), '#/s/petroit--api--s4');
   assert.match(textOf(chip), /s4/);
-  assert.ok(!all(card(env, 25), 'a').some((a) => /^in\s/.test(textOf(a).trim())), 'a task with its own worktree has no chip');
+  assert.match(textOf(ownerChip(card(env, 25))), /t-own/, 'a task with its own worktree names its own session in the chip');
   assert.doesNotMatch(textOf(card(env, 24)), /undefined|null|worktree-/, 'a session-mode task has no branch to show');
   assert.ok(!startBtn(card(env, 24)) && !sendBtn(card(env, 24)), 'a started task has no backlog actions');
 });
@@ -502,7 +501,7 @@ test('the same task in the needs-you and done columns keeps its chip (the sessio
   await go(env, PETROIT);
   assert.equal(colOf(card(env, 26)), 'Needs you');
   assert.equal(colOf(card(env, 27)), 'Done');
-  for (const id of [26, 27]) assert.ok(all(card(env, id), 'a').some((a) => /^in\s/.test(textOf(a).trim())), `task ${id} has the chip`);
+  for (const id of [26, 27]) assert.ok(ownerChip(card(env, id)), `task ${id} has the owner chip`);
 });
 
 // ---------------------------------------------------------------- the project page and the demo fixture
@@ -517,10 +516,10 @@ test('the demo fixture: the Tasks tab of phasezero shows its backlog card and it
   assert.deepEqual(cardsIn(env, 'Backlog'), [7], 'the demo backlog card');
   assert.deepEqual(cardsIn(env, 'In progress').sort(), [5, 6]);
   assert.ok(startBtn(card(env, 7)) && sendBtn(card(env, 7)));
-  const chip = all(card(env, 6), 'a').find((a) => /^in\s/.test(textOf(a).trim()));
-  assert.ok(chip, 'the session-mode demo task has the chip');
+  const chip = ownerChip(card(env, 6));
+  assert.ok(chip, 'the session-mode demo task has the owner chip');
   assert.equal(chip.getAttribute('href'), '#/s/phasezero--NestJs-Ecommerce-Backend--t-stock-sync');
-  assert.ok(!all(card(env, 5), 'a').some((a) => /^in\s/.test(textOf(a).trim())), 'the worktree task has none');
+  assert.match(textOf(ownerChip(card(env, 5))), /t-stock-sync/, 'the worktree task names its own session');
 });
 
 /** The demo world: the fixture rebased the way api() does in demo mode, and the demo flag on (nothing answers a write, so nothing can confirm an optimistic one). */
@@ -549,23 +548,24 @@ test('demo mode: Start moves the demo backlog card to In progress and it stays t
 test('demo mode: the ccboard backlog card sends to its one ready session in one tap and stays In progress with the chip; the phasezero card\'s sheet shows only busy sessions, each with its reason', async () => {
   const env = demoTasksWorld();
   await go(env, '#/p/ccboard?tab=tasks');
-  assert.deepEqual(cardsIn(env, 'Backlog'), [8]);
+  assert.ok(cardsIn(env, 'Backlog').includes(8), 'the demo backlog card (chain steps waiting in the Backlog may sit beside it)');
   const quick = button(card(env, 8), /^→\s*s1$/);
   assert.ok(quick, 'ccboard/s1 is idle: the only ready Claude session of the repo (cx1 is Codex)');
   quick.click();
   await settle();
   assert.equal(colOf(card(env, 8)), 'In progress');
-  const chip = all(card(env, 8), 'a').find((a) => /^in\s/.test(textOf(a).trim()));
-  assert.ok(chip && chip.getAttribute('href') === '#/s/ccboard--ccboard--s1', 'with the chip');
+  const chip = ownerChip(card(env, 8));
+  assert.ok(chip && chip.getAttribute('href') === '#/s/ccboard--ccboard--s1', 'with the owner chip');
   await env.clock.advance(120000);
   env.w.run('state = demoRebase(JSON.parse(__demo)); __st = state; updateCurrentPage(state)');
   assert.equal(colOf(card(env, 8)), 'In progress', 'and it stays');
   await go(env, '#/p/phasezero?tab=tasks');
   sendBtn(card(env, 7)).click();
   const rows = all(env.sheet(), '[data-tmux]');
-  assert.ok(rows.length >= 2 && rows.every((r) => r.getAttribute('disabled') !== null), 'every phasezero session is busy: working, or waiting on the permission');
-  assert.ok(rows.every((r) => /working|permission/i.test(textOf(r))), 'and each says why');
-  assert.ok(!button(card(env, 7), /^→/), 'so there is no one-tap button');
+  assert.ok(rows.length >= 2, 'every phasezero session is listed');
+  assert.ok(rows.every((r) => (r.getAttribute('disabled') !== null) === /permission/i.test(textOf(r))), 'the one waiting on a permission is off; a working one is a queued hand-over');
+  assert.ok(rows.every((r) => /queued|permission/i.test(textOf(r))), 'and each says what would happen');
+  assert.ok(!button(card(env, 7), /^→/), 'so there is no one-tap button: a queue is never one tap');
 });
 
 test('the Tasks tab + task opens the form for the repo the Files tab shows, else the first repo', async () => {
@@ -751,10 +751,10 @@ test('under 600 px a backlog card keeps Start and folds Send to session, Edit an
   const more = all(c, 'button').find((b) => b.getAttribute('aria-label') === 'More actions');
   assert.ok(more, 'one icon button with a name');
   assert.equal(more.getAttribute('title'), 'More actions');
-  assert.equal(all(c, '.actions button').length, 2, 'Start and the menu: two controls, not five');
+  assert.equal(all(c, '.tk-acts button').length, 2, 'Start and the menu: two controls, not five');
   more.click();
   const items = () => env.w.document.querySelectorAll('.menuitem');
-  assert.deepEqual(items().map((i) => i.textContent.trim()), ['Send to session', 'Edit', 'Delete']);
+  assert.deepEqual(items().map((i) => i.textContent.trim()), ['Move…', 'Edit', 'Delete']);
   items().find((i) => /^Edit$/.test(i.textContent.trim())).click();
   assert.equal(env.sheet().open, true, 'Edit opens the edit sheet');
   assert.match(textOf(env.sheet().querySelector('.sheet-title')), /Edit task/);
@@ -772,12 +772,13 @@ test('under 600 px a backlog card keeps Start and folds Send to session, Edit an
   assert.equal(card(env, 20), undefined, 'gone at once');
 });
 
-test('under 600 px a queued card (no Start, no Send) still folds Edit and Delete into the menu, and the one-tap session target stays on the card', async () => {
+test('under 600 px a queued card (no Start, no Move) keeps Edit on the card and folds Delete into the menu (never a lone ... cell), and the one-tap session target stays on a backlog card', async () => {
   const env = tasksWorld({ state: stateWith([BACKLOG({ phase: 'queued' })]) });
   narrow(env);
   await go(env, PETROIT);
+  assert.deepEqual(labelsIn(R1(card(env, 20))), ['Edit'], 'one visible action');
   all(card(env, 20), 'button').find((b) => b.getAttribute('aria-label') === 'More actions').click();
-  assert.deepEqual(env.w.document.querySelectorAll('.menuitem').map((i) => i.textContent.trim()), ['Edit', 'Delete']);
+  assert.deepEqual(env.w.document.querySelectorAll('.menuitem').map((i) => i.textContent.trim()), ['Delete']);
   const solo = tasksWorld({ state: stateWith([BACKLOG({ id: 21, repo: 'api' })]) });          // petroit/api has two ready sessions: no guess
   narrow(solo);
   await go(solo, PETROIT);
@@ -798,7 +799,7 @@ test('a started task: the Terminal link is a tinted primary only on the card tha
   assert.ok(fix, 'Fix CI shows on a failing PR');
   assert.ok(!hasCls(fix, 'bp5-intent-danger'), 'it is not a destructive action: no danger style');
   assert.ok(hasCls(fix, 'tk-fixci'), 'it carries its own hook for the warn colour');
-  assert.equal(all(env.page(), '.task .actions .bp5-intent-primary').filter((n) => !hasCls(n, 'tinted')).length, 0, 'no card carries a filled primary: the cards repeat the action, tinted');
+  assert.equal(all(env.page(), '.task .tk-acts .bp5-intent-primary').filter((n) => !hasCls(n, 'tinted')).length, 0, 'no card carries a filled primary: the cards repeat the action, tinted');
 });
 
 test('Preview asks for a port in a labelled sheet, never window.prompt(): empty says so next to the field, a port posts {port}, the sheet closes', async () => {
@@ -830,4 +831,518 @@ test('Preview asks for a port in a labelled sheet, never window.prompt(): empty 
   assert.deepEqual(posted.map((c) => c.body), [{}, { port: 3000 }], 'the blind try, then the port');
   assert.equal(sh.open, false, 'the sheet closes');
   assert.match(toasts(env).map((t) => t.text).join(' | '), /preview at https:\/\/box\.example:9443/);
+});
+
+// ================================================================ v0.5.14b / v0.5.15: the two-row card, owner / auto-close / result / chain / limit chips,
+// the Move sheet, the long press and the m key, the board that waits for a drag
+
+const iso = (offsetMs) => new Date(T0 + offsetMs).toISOString();
+const rowsOf = (c) => all(c, '.tk-r');
+const labelsIn = (n) => all(n, 'button, a').map((b) => textOf(b).trim()).filter(Boolean);
+const R1 = (c) => c.querySelector('.tk-r1');
+const R2 = (c) => c.querySelector('.tk-r2');
+const withAgents = (tasks, over = {}) => stateWith(tasks, { agents: { claude: { installed: true }, codex: { installed: true } }, ...over });
+const live = (id, over = {}) => STARTED_ROW(id, { tmux: `petroit--api--s2`, session: { state: 'working', state_at: agoIso(3), last_message: 'reading the handlers', needs_attention: false, command: 'claude' }, ...over });
+const asTouch = (env) => { env.w.document.documentElement.classList.add('force-coarse'); };
+const down = (n, extra = {}) => n.dispatchEvent({ type: 'pointerdown', pointerType: 'touch', clientX: 20, clientY: 20, button: 0, ...extra });
+const MOVE_SHEET_TITLE = /^Move/;
+const fieldOf = (f, re) => all(f, '.field').find((x) => re.test(textOf(x.querySelector('label'))));
+const selectOf = (f, re) => fieldOf(f, re).querySelector('select');
+
+test('a backlog card is two rows on one grid: Start and the quick target above, Move…, Edit and Delete (the destructive one last) below', async () => {
+  const task = row(28, { project: 'phasezero', repo: 'NestJs-Ecommerce-Backend', title: 'Add an index on stock.variant_id' });
+  const env = tasksWorld({ state: stateWith([task]) });
+  await go(env, '#/p/phasezero?tab=tasks');
+  const c = card(env, 28);
+  assert.equal(rowsOf(c).length, 2, 'two rows, no wrapping flex row');
+  assert.deepEqual(labelsIn(R1(c)), ['Start', '→ s9'], 'the primary and the owner / quick target');
+  assert.deepEqual(labelsIn(R2(c)), ['Move…', 'Edit', 'Delete'], 'the quiet actions, Delete last');
+  assert.ok(rowsOf(c).every((r) => r.children.length <= 3), 'at most three equal cells per row');
+  assert.ok(hasCls(button(R2(c), /^Delete$/), 'bp5-intent-danger'));
+  assert.ok(hasCls(startBtn(c), 'tinted') && !all(R2(c), 'button').some((b) => hasCls(b, 'bp5-intent-primary')), 'one tinted primary per card');
+  assert.equal(c.getAttribute('tabindex'), '0', 'a card is a tab stop (the m key)');
+  assert.equal(c.getAttribute('aria-keyshortcuts'), 'm');
+  assert.equal(all(c, '.actions').length, 0, 'no ragged .actions wrap any more');
+});
+
+test('a started card: Terminal and Fix CI on row 1, the quiet actions on row 2 with Archive last, the rest in a ... cell; every row on the same 3-column grid', async () => {
+  const t = live(31, { pr_url: 'https://example.invalid/pr/7', pr_number: 7, pr_state: 'OPEN', ci: { bucket: 'fail', checks: [{ name: 'unit', bucket: 'fail' }] } });
+  const env = tasksWorld({ state: stateWith([t]) });
+  await go(env, PETROIT);
+  const c = card(env, 31);
+  assert.deepEqual(labelsIn(R1(c)), ['Terminal', 'Fix CI'], 'row 1 (the ... cell has no text)');
+  assert.deepEqual(labelsIn(R2(c)), ['PR #7', 'Preview', 'Archive']);
+  assert.ok(rowsOf(c).every((r) => r.children.length <= 3));
+  const more = all(R1(c), 'button').find((b) => b.getAttribute('aria-label') === 'More actions');
+  assert.ok(more, 'what does not fit is one tap away');
+  more.click();
+  assert.deepEqual(env.w.document.querySelectorAll('.menuitem').map((i) => i.textContent.trim()), ['Diff', 'Refresh PR status']);
+  assert.ok(hasCls(button(R2(c), /^Archive$/), 'bp5-intent-danger'), 'Archive is the red-outlined last cell');
+});
+
+test('the owner chip says who runs the task: agent glyph, session name, state glyph, state and age; it opens the session', async () => {
+  const env = tasksWorld({ state: stateWith([live(32)]) });
+  await go(env, PETROIT);
+  const chip = ownerChip(card(env, 32));
+  assert.equal(textOf(chip).replace(/\s+/g, ' ').trim(), '◆ s2 ✽ working · 3m');
+  assert.equal(chip.getAttribute('href'), '#/s/petroit--api--s2');
+  const cx = tasksWorld({ state: withAgents([live(33, { agent: 'codex', tmux: 'petroit--api--cx1' })]) });
+  await go(cx, PETROIT);
+  assert.match(textOf(ownerChip(card(cx, 33))), /^◇ cx1/, 'a Codex task wears the Codex glyph');
+});
+
+test('auto-close: a pending close shows the countdown and Keep open; the countdown ticks every second; Keep open posts, paints at once and stops the ticker', async () => {
+  const t = live(34, { phase: 'done', title: 'Pending close', branch: '', session: { state: 'done', state_at: agoIso(1), last_message: 'done', needs_attention: false, command: 'claude' },
+    auto_close: true, autoclose: { task: 34, due: iso(45000) }, result: 'All done.', result_at: agoIso(1), done_at: agoIso(1) });
+  const env = tasksWorld({ state: stateWith([t]), answers: { '/api/tasks/34/keep-open': { ok: true, kept: true } } });
+  await go(env, PETROIT);
+  const c = card(env, 34);
+  const strip = c.querySelector('.tk-ac');
+  assert.ok(strip, 'the strip is there');
+  assert.match(textOf(strip), /auto-close\s*0:45/);
+  const keep = button(strip, /^Keep open$/);
+  assert.ok(keep, 'with Keep open');
+  const pendingBefore = env.clock.pending;
+  await env.clock.advance(1000);
+  assert.match(textOf(c.querySelector('.tk-count')), /^0:44$/, 'one second later');
+  await env.clock.advance(44000);
+  assert.match(textOf(c.querySelector('.tk-count')), /closing…/, 'at the deadline');
+  keep.click();
+  await settle();
+  assert.deepEqual(posts(env, /keep-open$/).map((p) => p.path), ['/api/tasks/34/keep-open']);
+  assert.equal(card(env, 34).querySelector('.tk-ac'), null, 'the strip is gone before any poll');
+  assert.match(toasts(env).pop().text, /kept open/);
+  await env.clock.advance(1000);
+  assert.ok(env.clock.pending < pendingBefore + 1, 'nothing is left to tick: the interval stops itself when no countdown is on the page');
+});
+
+test('auto-close: {closing: true} says so without a button, {waiting} says why the close was postponed, and a held question marks the card needs-you with no countdown', async () => {
+  const base = { phase: 'done', branch: '', session: { state: 'done', state_at: agoIso(1), last_message: 'done', needs_attention: false, command: 'claude' }, auto_close: true, result: 'ok' };
+  const closing = live(35, { ...base, title: 'Closing', autoclose: { task: 35, closing: true } });
+  const waiting = live(36, { ...base, title: 'Waiting', tmux: 'petroit--api--s3', autoclose: { task: 36, due: iso(15000), waiting: 'someone is attached' } });
+  const asked = live(37, { ...base, title: 'Asked', tmux: 'petroit--api--s1', column: 'needs_you', result: 'Done. Should I also translate it?', autoclose: { task: 37, held: 'question' },
+    session: { ...base.session, needs_attention: true } });
+  const env = tasksWorld({ state: stateWith([closing, waiting, asked]) });
+  await go(env, PETROIT);
+  assert.match(textOf(card(env, 35).querySelector('.tk-ac')), /closing…/);
+  assert.equal(button(card(env, 35), /^Keep open$/), undefined, 'too late to keep it open');
+  assert.match(textOf(card(env, 36).querySelector('.tk-ac')), /someone is attached/);
+  assert.ok(button(card(env, 36), /^Keep open$/));
+  const c = card(env, 37);
+  assert.equal(c.querySelector('.tk-ac'), null, 'a held card has no countdown');
+  assert.match(textOf(c.querySelector('.tk-asked')), /needs you/, 'it says it wants an answer');
+  assert.ok(c.classList.contains('attn'), 'and wears the attention border');
+  assert.equal(colOf(c), 'Needs you');
+});
+
+test('a task whose session closed after the stop: "closed after stop", the result under a Result summary, New PR… and Reopen on row 1, no Terminal', async () => {
+  const t = STARTED_ROW(38, { title: 'Closed one', phase: 'done', column: 'done', session: null, closed_at: agoIso(2), auto_close: true, branch: 'worktree-closed',
+    result: 'Added the cursor to every list endpoint.\nTests are green.', result_at: agoIso(3), done_at: agoIso(3), tmux: 'petroit--api--t-r38' });
+  const env = tasksWorld({ state: stateWith([t]) });
+  await go(env, PETROIT);
+  const c = card(env, 38);
+  assert.match(textOf(c.querySelector('.tk-closed')), /closed after stop · 2m/);
+  assert.deepEqual(labelsIn(R1(c)), ['New PR…', 'Reopen'], 'the PR action before Reopen');
+  assert.ok(hasCls(button(R1(c), /^New PR/), 'tinted') && !hasCls(button(R1(c), /^Reopen$/), 'bp5-intent-primary'));
+  assert.equal(all(c, 'a').filter((a) => /\/term\//.test(a.getAttribute('href') || '')).length, 0, 'no terminal for a session that is gone');
+  assert.equal(ownerChip(c), null, 'and no owner chip');
+  const d = c.querySelector('details.tk-result');
+  assert.ok(d, 'the result is an expandable excerpt');
+  assert.equal(textOf(d.querySelector('.tk-result-first')), 'Added the cursor to every list endpoint.', 'its first line while closed');
+  assert.match(textOf(d.querySelector('.tk-result-body')), /Tests are green/, 'the excerpt inside');
+});
+
+test('Reopen posts, paints the card into In progress at once and opens the new session; a refusal puts it back and says why', async () => {
+  const t = STARTED_ROW(39, { title: 'Reopen me', phase: 'done', column: 'done', session: null, closed_at: agoIso(2), branch: '', tmux: 'petroit--api--t-r39', slug: 'r39' });
+  const env = tasksWorld({ state: stateWith([t]), answers: { '/api/tasks/39/reopen': { id: 39, phase: 'running', tmux: 'petroit--api--t-r39', session_row: 120, attach_url: '/term/x' } } });
+  await go(env, PETROIT);
+  assert.deepEqual(labelsIn(R1(card(env, 39))), ['Reopen'], 'nothing to push: Reopen leads');
+  assert.ok(hasCls(button(R1(card(env, 39)), /^Reopen$/), 'tinted'));
+  button(card(env, 39), /^Reopen$/).click();
+  await settle();
+  assert.deepEqual(posts(env, /reopen$/).map((p) => p.path), ['/api/tasks/39/reopen']);
+  assert.equal(colOf(card(env, 39)), 'In progress', 'no waiting for the poll');
+  assert.ok(ownerChip(card(env, 39)), 'it has an owner again');
+  assert.deepEqual(navs(env), ['#/s/petroit--api--t-r39'], 'and its session opens');
+  const bad = tasksWorld({ state: stateWith([t]), answers: { '/api/tasks/39/reopen': () => { throw bad.w.get('mkErr')('already running', 409); } } });
+  await go(bad, PETROIT);
+  button(card(bad, 39), /^Reopen$/).click();
+  await settle();
+  assert.equal(colOf(card(bad, 39)), 'Done', 'back where it was');
+  assert.match(toasts(bad).pop().text, /already running/);
+});
+
+test('a finished task with a pull request: PR and Merge… come before Reopen; a failed one leads with Reopen', async () => {
+  const done = STARTED_ROW(40, { title: 'With a PR', phase: 'done', column: 'pr', session: null, closed_at: agoIso(5), branch: 'worktree-pr', pr_url: 'https://example.invalid/pr/9', pr_number: 9, pr_state: 'OPEN', tmux: 'petroit--api--t-r40' });
+  const failed = STARTED_ROW(41, { title: 'Failed one', phase: 'failed', column: 'needs_you', session: null, branch: 'worktree-f', tmux: 'petroit--api--t-r41', result: 'rate limited' });
+  const env = tasksWorld({ state: stateWith([done, failed]) });
+  await go(env, PETROIT);
+  assert.deepEqual(labelsIn(R1(card(env, 40))), ['PR #9', 'Merge…']);
+  assert.deepEqual(labelsIn(R2(card(env, 40))), ['Reopen', 'Diff', 'Archive'], 'Reopen follows the PR actions');
+  assert.match(textOf(card(env, 41)), /failed/);
+  assert.deepEqual(labelsIn(R1(card(env, 41))), ['Reopen', 'New PR…'], 'a failed task is retried first');
+});
+
+test('a long result shows its first 300 characters and loads the rest on request; the expanded state survives a repaint', async () => {
+  const full = 'First line.\n' + 'x'.repeat(500) + '\nTHE END';
+  const t = STARTED_ROW(42, { title: 'Long result', phase: 'done', column: 'done', session: null, closed_at: agoIso(1), branch: '', tmux: 'petroit--api--t-r42', result: full.slice(0, 300) });
+  const env = tasksWorld({ state: stateWith([t]), answers: { '/api/tasks/42': (req) => (req.method === 'GET' ? { id: 42, result: full } : { ok: true }) } });
+  await go(env, PETROIT);
+  const more = button(card(env, 42), /^Show the whole result$/);
+  assert.ok(more, 'the poll carries only the head');
+  more.click();
+  await settle();
+  assert.ok(calls(env).some((c) => c.method === 'GET' && c.path === '/api/tasks/42'));
+  assert.match(textOf(card(env, 42).querySelector('.tk-result-body')), /THE END$/, 'all of it');
+  assert.equal(button(card(env, 42), /^Show the whole result$/), undefined);
+  const d = card(env, 42).querySelector('details.tk-result');
+  d.open = true;
+  d.dispatchEvent({ type: 'toggle' });
+  setState(env, stateWith([{ ...t }]));
+  assert.ok(card(env, 42).querySelector('details.tk-result').getAttribute('open') !== null, 'still open after the poll rebuilt the card');
+});
+
+test('chains: "step 2 of 3" from the server position or from the parent links, and a strip of connected steps with a status each', async () => {
+  const mk = (id, over) => row(id, { chain_id: 'c1', title: `Step ${id}`, ...over });
+  const s1 = mk(50, { phase: 'done', column: 'done', prompt: null, session: null, closed_at: agoIso(5), tmux: 'petroit--api--t-s50', result: 'one', chain: { i: 1, n: 3 } });
+  const s2 = mk(51, { phase: 'running', column: 'in_progress', prompt: null, parent_id: 50, tmux: 'petroit--api--s4', session: { state: 'working', state_at: agoIso(1), last_message: '', needs_attention: false, command: 'claude' }, chain: { i: 2, n: 3 } });
+  const s3 = mk(52, { phase: 'queued', parent_id: 51, chain: { i: 3, n: 3 } });
+  const env = tasksWorld({ state: stateWith([s1, s2, s3]) });
+  await go(env, PETROIT);
+  assert.match(textOf(card(env, 51).querySelector('.tk-chain-badge')), /^step 2 of 3$/);
+  assert.match(textOf(card(env, 52).querySelector('.tk-chain-badge')), /^step 3 of 3$/);
+  const strip = env.page().querySelector('.tk-chain');
+  assert.ok(strip, 'the chain is drawn above the columns');
+  const steps = all(strip, '.tk-step');
+  assert.deepEqual(steps.map((s) => s.getAttribute('data-step')), ['50', '51', '52']);
+  assert.deepEqual(steps.map((s) => textOf(s.querySelector('.tk-step-st')).replace(/[^a-z ]/g, '').trim()), ['done', 'working', 'waiting'], 'a status per step');
+  assert.equal(all(strip, '.tk-link').length, 2, 'connected');
+  assert.match(textOf(env.page().querySelector('.tk-chains')), /Chains/, 'a labelled section');
+  steps[2].click();
+  assert.equal(env.w.document.activeElement, card(env, 52), 'a step takes you to its card');
+  const noServer = tasksWorld({ state: stateWith([{ ...s1, chain: null }, { ...s2, chain: null }, { ...s3, chain: null }]) });
+  await go(noServer, PETROIT);
+  assert.match(textOf(card(noServer, 51).querySelector('.tk-chain-badge')), /^step 2 of 3$/, 'worked out from parent_id when the server sends no position');
+});
+
+test('the Tasks page draws the chain between the head and the columns too', async () => {
+  const a = row(60, { chain_id: 'c9', phase: 'done', column: 'done', prompt: null, session: null, closed_at: agoIso(2), tmux: 'petroit--api--t-s60', result: 'r' });
+  const b = row(61, { chain_id: 'c9', phase: 'queued', parent_id: 60 });
+  const env = tasksWorld({ state: stateWith([a, b]) });
+  await go(env, '#/tasks');
+  const sec = env.page().querySelector('#tasks');
+  const strip = sec.querySelector('.tk-chains');
+  assert.ok(strip && all(strip, '.tk-step').length === 2);
+  assert.ok(strip.nextElementSibling && strip.nextElementSibling.classList.contains('kanban'), 'right above the columns');
+  assert.match(textOf(card(env, 61).querySelector('.tk-chain-badge')), /step 2 of 2/, 'the card knows its place even though home.js draws it');
+  setState(env, stateWith([a, b]));
+  assert.equal(sec.querySelectorAll('.tk-chains').length, 1, 'repainting never stacks a second strip');
+});
+
+test('a step the limit gate holds says when the window resets; one the gate does not hold says nothing', async () => {
+  const resets = Math.floor(T0 / 1000) + 3 * 3600;
+  const held = row(70, { phase: 'queued', chain_id: 'c2', parent_id: 69, limit_hold: { kind: '5h', resets_at: resets, pct: 91 } });
+  const free = row(71, { phase: 'queued', chain_id: 'c2', parent_id: 70 });
+  const env = tasksWorld({ state: stateWith([held, free]) });
+  await go(env, PETROIT);
+  assert.match(textOf(card(env, 70).querySelector('.tk-hold')), /^\s*waiting for the limit window \(resets \d\d:\d\d\)\s*$/);
+  assert.equal(card(env, 71).querySelector('.tk-hold'), null);
+  const stripSt = all(env.page(), '.tk-step').map((s) => textOf(s.querySelector('.tk-step-st')).replace(/[^a-z ]/g, '').trim());
+  assert.ok(stripSt.includes('held'), 'the chain strip marks the held step');
+});
+
+test('a hand start inside the limit window goes ahead and warns: the limit_warning of the answer becomes a warning toast', async () => {
+  const env = tasksWorld({ answers: { '/api/tasks/20/dispatch': { ...DISPATCHED(20, 'petroit--api--t-x'), limit_warning: { kind: '5h', resets_at: Math.floor(T0 / 1000) + 7200, pct: 91.4 } } } });
+  await go(env, PETROIT);
+  startBtn(card(env, 20)).click();
+  await settle();
+  assert.equal(colOf(card(env, 20)), 'In progress', 'never blocked');
+  const warn = toasts(env).find((t) => t.kind === 'warn');
+  assert.ok(warn, 'a warning');
+  assert.match(warn.text, /5h usage window is at 91%/);
+  assert.match(warn.text, /resets \d\d:\d\d/);
+});
+
+// ---------------------------------------------------------------- the Move sheet
+
+test('Move… opens a bottom sheet in labelled sections: two 52 px lane buttons (Codex off until installed) and the running sessions', async () => {
+  const env = tasksWorld();
+  await go(env, PETROIT);
+  sendBtn(card(env, 20)).click();
+  const sh = env.sheet();
+  assert.equal(sh.open, true);
+  assert.ok(sh.classList.contains('bottom'), 'a bottom sheet, wherever the window is wide');
+  assert.match(textOf(sh.querySelector('.sheet-title')), /^Move “Unify the devices pagination”$/);
+  assert.deepEqual(all(sh, '.tk-sec').map(textOf), ['Start in a new session', 'Hand to a running session']);
+  const claude = laneBtn(sh, 'claude');
+  const codex = laneBtn(sh, 'codex');
+  assert.ok(claude && codex);
+  assert.equal(claude.getAttribute('disabled'), null);
+  assert.notEqual(codex.getAttribute('disabled'), null, 'Codex is not installed on this box');
+  assert.match(codex.getAttribute('title'), /not installed/);
+  assert.ok(hasCls(claude, 'tinted'), 'the task\'s own agent leads');
+  assert.match(textOf(claude), /Claude/);
+  assert.match(textOf(claude.querySelector('.tk-lane-sub')), /repo defaults/, 'nothing saved yet');
+  assert.ok(button(sh, /^Options…$/) && button(sh, /^Cancel$/));
+  button(sh, /^Cancel$/).click();
+  assert.equal(env.sheet().open, false);
+});
+
+test('the lane buttons show the repo\'s saved launch defaults; Codex starts the card in a Codex session, Claude in a Claude one', async () => {
+  const env = tasksWorld({ state: withAgents([BACKLOG()]), answers: { '/api/tasks/20/dispatch': DISPATCHED(20, 'petroit--api--t-x') } });
+  env.w.localStorage.setItem('ccboard:task:petroit/api', JSON.stringify({ model: 'opus', effort: 'high', permission_mode: 'acceptEdits' }));
+  env.w.localStorage.setItem('ccboard:task:petroit/api:codex', JSON.stringify({ reasoning_effort: 'medium', sandbox: 'workspace-write' }));
+  await go(env, PETROIT);
+  sendBtn(card(env, 20)).click();
+  assert.equal(textOf(laneBtn(env.sheet(), 'claude').querySelector('.tk-lane-sub')), 'opus · high · acceptEdits');
+  assert.equal(textOf(laneBtn(env.sheet(), 'codex').querySelector('.tk-lane-sub')), 'medium · workspace-write');
+  assert.equal(laneBtn(env.sheet(), 'codex').getAttribute('disabled'), null, 'installed');
+  laneBtn(env.sheet(), 'codex').click();
+  await settle();
+  assert.deepEqual(posts(env, /dispatch$/).map((c) => c.body), [{ mode: 'lane', agent: 'codex' }]);
+  assert.equal(colOf(card(env, 20)), 'In progress');
+  assert.equal(env.sheet().open, false);
+});
+
+test('the running-session list names the state and the task a session already carries, and says why a row is off (busy, a prompt, the other agent)', async () => {
+  const handedTask = row(44, { title: 'Already here', phase: 'running', column: 'in_progress', tmux: 'petroit--api--s4', prompt: null, session: { state: 'working', state_at: agoIso(1), last_message: '', needs_attention: false, command: 'claude' } });
+  const st = withAgents([BACKLOG(), handedTask]);
+  st.projects.find((p) => p.name === 'petroit').repos.find((r) => r.name === 'api').sessions.push(sess('petroit', 'api', 'cx1', { state: 'idle', agent: 'codex', launcher: 'codex', command: 'codex' }));
+  const env = tasksWorld({ state: st });
+  await go(env, PETROIT);
+  sendBtn(card(env, 20)).click();
+  const sh = env.sheet();
+  const off = (n) => rowFor(sh, n).getAttribute('disabled') !== null;
+  assert.equal(off('s1'), false);
+  assert.match(textOf(rowFor(sh, 's1')), /done/, 'its state');
+  assert.match(textOf(rowFor(sh, 's4')), /task: Already here/, 'the task it carries, not only its last prompt');
+  assert.equal(off('cx1'), true);
+  assert.match(textOf(rowFor(sh, 'cx1')), /a Codex session: this task is for Claude/);
+  assert.ok(sessionRows(sh).indexOf(rowFor(sh, 's1')) < sessionRows(sh).indexOf(rowFor(sh, 'cx1')), 'ready first');
+});
+
+test('Options… opens the launcher in dispatch mode: a new session of either agent with its launch choices, or a running session; only what differs from the defaults is posted', async () => {
+  const env = tasksWorld({ state: withAgents([BACKLOG()]), answers: { '/api/tasks/20/dispatch': DISPATCHED(20, 'petroit--api--t-x') } });
+  await go(env, PETROIT);
+  sendBtn(card(env, 20)).click();
+  button(env.sheet(), /^Options…$/).click();
+  let f = env.sheet().querySelector('form.tk-dispatch');
+  assert.ok(f, 'the dispatch form');
+  assert.deepEqual(all(f, '.seg-btn').map((b) => textOf(b).trim()), ['New session', 'Running session', '◆ Claude', '◇ Codex']);
+  assert.deepEqual(all(f, '.seg-btn').filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => textOf(b).trim()), ['New session', '◆ Claude']);
+  const close = f.querySelector('input[type=checkbox]');
+  assert.equal(close.checked, true, 'a new session closes itself by default');
+  const model = fieldOf(f, /^Model$/).querySelector('select');
+  model.value = 'opus';
+  f.dispatchEvent({ type: 'submit', preventDefault() {} });
+  await settle();
+  assert.deepEqual(posts(env, /dispatch$/).map((c) => c.body), [{ mode: 'lane', model: 'opus' }], 'Claude, auto-close on: neither is sent, the changed model is');
+  // a Codex session with the switch off
+  const env2 = tasksWorld({ state: withAgents([BACKLOG()]), answers: { '/api/tasks/20/dispatch': DISPATCHED(20, 'petroit--api--t-x') } });
+  await go(env2, PETROIT);
+  sendBtn(card(env2, 20)).click();
+  button(env2.sheet(), /^Options…$/).click();
+  f = env2.sheet().querySelector('form.tk-dispatch');
+  all(f, '.seg-btn').find((b) => /Codex/.test(textOf(b))).click();
+  const sw = f.querySelector('input[type=checkbox]');
+  sw.checked = false;
+  sw.dispatchEvent({ type: 'change' });
+  selectOf(f, /Reasoning effort/).value = 'high';
+  f.dispatchEvent({ type: 'submit', preventDefault() {} });
+  await settle();
+  assert.deepEqual(posts(env2, /dispatch$/).map((c) => c.body), [{ mode: 'lane', agent: 'codex', auto_close: false, reasoning_effort: 'high' }]);
+  // a running session: auto-close is off by default, and sent only when turned on
+  const env3 = tasksWorld({ state: withAgents([BACKLOG()]), answers: { '/api/tasks/20/dispatch': { id: 20, phase: 'running', tmux: 'petroit--api--s1', session_row: 4, pasted: true } } });
+  await go(env3, PETROIT);
+  sendBtn(card(env3, 20)).click();
+  button(env3.sheet(), /^Options…$/).click();
+  f = env3.sheet().querySelector('form.tk-dispatch');
+  all(f, '.seg-btn').find((b) => /Running session/.test(textOf(b))).click();
+  assert.equal(f.querySelector('input[type=checkbox]').checked, false);
+  selectOf(f, /^Session$/).value = 'petroit--api--s1';
+  f.dispatchEvent({ type: 'submit', preventDefault() {} });
+  await settle();
+  assert.deepEqual(posts(env3, /dispatch$/).map((c) => c.body), [{ session: 'petroit--api--s1' }]);
+});
+
+// ---------------------------------------------------------------- the long press and the m key
+
+test('a held touch (450 ms) on a Backlog card opens the Move sheet; 449 ms does not', async () => {
+  const env = tasksWorld();
+  asTouch(env);
+  await go(env, PETROIT);
+  const c = card(env, 20);
+  down(c);
+  await env.clock.advance(449);
+  assert.equal(env.sheet().open, false, 'not yet');
+  await env.clock.advance(1);
+  assert.equal(env.sheet().open, true);
+  assert.match(textOf(env.sheet().querySelector('.sheet-title')), MOVE_SHEET_TITLE);
+});
+
+test('a long press is cancelled by a move of more than 8 px, a scroll, a lift and a cancel; 8 px is still a hold', async () => {
+  const env = tasksWorld();
+  asTouch(env);
+  await go(env, PETROIT);
+  const c = card(env, 20);
+  const press = async (cancel) => {
+    env.sheet().close();
+    down(c);
+    await env.clock.advance(200);
+    cancel();
+    await env.clock.advance(400);
+    return env.sheet().open;
+  };
+  assert.equal(await press(() => c.dispatchEvent({ type: 'pointermove', clientX: 29, clientY: 20 })), false, '9 px: a swipe');
+  assert.equal(await press(() => env.w.fire('scroll', {})), false, 'a scroll');
+  assert.equal(await press(() => c.dispatchEvent({ type: 'pointerup' })), false, 'a lift');
+  assert.equal(await press(() => c.dispatchEvent({ type: 'pointercancel' })), false, 'the browser took the touch for a scroll');
+  assert.equal(await press(() => c.dispatchEvent({ type: 'pointermove', clientX: 28, clientY: 20 })), true, '8 px of finger wobble is still a hold');
+});
+
+test('a mouse on a fine pointer never long-presses; a press that starts on a button is left to the button; the click after a fired press is swallowed', async () => {
+  const env = tasksWorld();
+  await go(env, PETROIT);
+  const c = card(env, 20);
+  down(c, { pointerType: 'mouse' });
+  await env.clock.advance(800);
+  assert.equal(env.sheet().open, false, 'desktop has the Move button and drag and drop');
+  asTouch(env);
+  down(startBtn(c));
+  await env.clock.advance(800);
+  assert.equal(env.sheet().open, false, 'a long press on Start is Start\'s business');
+  down(c);
+  await env.clock.advance(450);
+  assert.equal(env.sheet().open, true);
+  env.sheet().close();
+  const click = { type: 'click', defaultPrevented: false, preventDefault() { click.defaultPrevented = true; }, stopPropagation() {} };
+  c.dispatchEvent(click);
+  assert.equal(click.defaultPrevented, true, 'the lift that ends the press must not also tap whatever is under it');
+  const ctx = { type: 'contextmenu', defaultPrevented: false, preventDefault() { ctx.defaultPrevented = true; } };
+  c.dispatchEvent(ctx);
+  assert.equal(ctx.defaultPrevented, true, 'and the browser\'s own long-press menu stays away on a touch screen');
+});
+
+test('longPress is a plain helper any node can use, with its own timing', async () => {
+  const env = tasksWorld();
+  asTouch(env);
+  const n = env.w.document.createElement('div');
+  env.w.document.body.append(n);
+  env.w.ctx.__fired = [];
+  env.w.ctx.__node = n;
+  env.w.run('globalThis.__lp = longPress(__node, (e) => __fired.push(e.type), { ms: 100, slop: 4 })');
+  n.dispatchEvent({ type: 'pointerdown', pointerType: 'touch', clientX: 0, clientY: 0, button: 0 });
+  await env.clock.advance(99);
+  assert.deepEqual(plain(env.w.get('__fired')), []);
+  await env.clock.advance(1);
+  assert.deepEqual(plain(env.w.get('__fired')), ['pointerdown']);
+  n.dispatchEvent({ type: 'pointerdown', pointerType: 'touch', clientX: 0, clientY: 0, button: 0 });
+  await env.clock.advance(50);
+  env.w.run('__lp.cancel()');
+  await env.clock.advance(100);
+  assert.equal(plain(env.w.get('__fired')).length, 1, 'cancel() stops one in flight');
+});
+
+test('the m key opens the Move sheet from a focused Backlog card; typing in a field, a modifier or a queued card do not', async () => {
+  const queued = row(21, { phase: 'queued', title: 'Queued one' });
+  const env = tasksWorld({ state: stateWith([BACKLOG(), queued]) });
+  await go(env, PETROIT);
+  const key = (n, k, extra = {}) => { const e = { type: 'keydown', key: k, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, isComposing: false, defaultPrevented: false, preventDefault() { e.defaultPrevented = true; }, stopPropagation() {}, target: n, ...extra }; n.dispatchEvent(e); return e; };
+  const c = card(env, 20);
+  key(c, 'm', { ctrlKey: true });
+  key(c, 'x');
+  assert.equal(env.sheet().open, false, 'a modifier and another key do nothing');
+  key(startBtn(c), 'm');
+  assert.equal(env.sheet().open, true, 'from a button inside the card the key bubbles to it');
+  env.sheet().close();
+  const input = env.w.document.createElement('input');
+  c.append(input);
+  key(input, 'm');
+  assert.equal(env.sheet().open, false, 'a field keeps its m');
+  const e = key(c, 'm');
+  assert.equal(env.sheet().open, true);
+  assert.equal(e.defaultPrevented, true);
+  env.sheet().close();
+  key(card(env, 21), 'm');
+  assert.equal(env.sheet().open, false, 'a queued card cannot be moved: the server would answer 409');
+});
+
+test('a started task has no Move: no m key, no long press', async () => {
+  const env = tasksWorld({ state: stateWith([live(45)]) });
+  asTouch(env);
+  await go(env, PETROIT);
+  down(card(env, 45));
+  await env.clock.advance(600);
+  assert.equal(env.sheet().open, false);
+  assert.equal(card(env, 45).getAttribute('data-movable'), null);
+});
+
+test('the stylesheet takes the iOS callout and the text selection away from a movable card, and the touch rules have their force-coarse twins', () => {
+  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  assert.match(css, /\.task\[data-movable\]\s*\{[^}]*-webkit-touch-callout:\s*none/);
+  assert.match(css, /html\.force-coarse \.task\[data-movable\]\s*\{[^}]*user-select:\s*none/);
+  assert.match(css, /\.tk-lane-btn\.bp5-button\s*\{[^}]*min-height:\s*52px/, 'the 52 px lane buttons');
+  assert.match(css, /\.task \.tk-r\s*\{[^}]*grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)/, 'one 3-column grid for both rows');
+});
+
+// ---------------------------------------------------------------- the board waits for a drag
+
+/** A Dnd stand-in with the three things the board uses: dragging, afterDrag (queue the repaint while a card is held) and laneBar (one node with ccPatch). */
+function withDnd(env) {
+  env.w.run(`globalThis.Dnd = { dragging: null, held: [], bars: 0, afterDrag(fn) { if (!Dnd.dragging) return false; if (!Dnd.held.includes(fn)) Dnd.held.push(fn); return true; },
+    laneBar(o) { Dnd.bars++; const n = document.createElement('div'); n.setAttribute('class', 'dnd-bar'); n.setAttribute('data-project', (o && o.project) || ''); n.ccPatch = (st) => { n.setAttribute('data-patched', String(((st && st.tasks) || []).length)); }; return n; } };`);
+}
+
+test('the project Tasks tab mounts the lane bar for its project once and keeps patching it; the cards are not rebuilt while one is dragged and repaint at the end', async () => {
+  const env = tasksWorld();
+  withDnd(env);
+  await go(env, PETROIT);
+  const bar = env.page().querySelector('.dnd-bar');
+  assert.ok(bar, 'the dispatch bar sits above the columns');
+  assert.equal(bar.getAttribute('data-project'), 'petroit', 'it lists this project\'s sessions');
+  const dragged = card(env, 20);
+  env.w.run('Dnd.dragging = { id: 20 }');
+  setState(env, stateWith([BACKLOG(), row(21, { title: 'Arrived mid-drag' })]));
+  assert.equal(card(env, 20), dragged, 'the dragged node is still the one in the page');
+  assert.equal(card(env, 21), undefined, 'and nothing is rebuilt under the pointer');
+  env.w.run('Dnd.dragging = null; Dnd.held.splice(0).forEach((fn) => fn())');
+  assert.ok(card(env, 21), 'the repaint that waited runs when the drag ends');
+  assert.equal(env.page().querySelector('.dnd-bar'), bar, 'the bar is one node across repaints');
+  assert.equal(env.w.get('Dnd.bars'), 1);
+  assert.equal(bar.getAttribute('data-patched'), '2', 'and it was patched with the new state');
+});
+
+test('without dnd.js the board still draws (no lane bar, no drag to wait for)', async () => {
+  const env = tasksWorld();
+  await go(env, PETROIT);
+  assert.ok(card(env, 20));
+  assert.equal(env.page().querySelector('.dnd-bar'), null);
+});
+
+test('a board repaints at most when what it shows changed: the same state twice keeps the very same card nodes', async () => {
+  const env = tasksWorld();
+  await go(env, PETROIT);
+  const c = card(env, 20);
+  setState(env, stateWith([BACKLOG()]));
+  assert.equal(card(env, 20), c, 'a poll that changes nothing leaves the cards alone (a focused button keeps its focus)');
+  setState(env, stateWith([BACKLOG({ title: 'Renamed' })]));
+  assert.notEqual(card(env, 20), c);
+  assert.match(textOf(card(env, 20)), /Renamed/);
+});
+
+test('the Move sheet offers a working Claude session as a queued hand-over (the drop popover does the same), never as the one-tap target', async () => {
+  const st = stateWith([BACKLOG()]);
+  const api = st.projects.find((p) => p.name === 'petroit').repos.find((r) => r.name === 'api');
+  api.sessions = [sess('petroit', 'api', 'w1', { state: 'working', agent: 'claude' }), sess('petroit', 'api', 'i1', { state: 'idle', agent: 'claude' })];
+  const env = tasksWorld({ state: st });
+  await go(env, PETROIT);
+  env.w.ctx.__t = { id: 20, project: 'petroit', repo: 'api', agent: 'claude', title: 'x', prompt: 'p', phase: 'backlog' };
+  const rows = plain(env.w.run('taskSessionTargets(__t, state)'));
+  const byName = Object.fromEntries(rows.map((r) => [r.s.name, r]));
+  assert.equal(byName.w1.ok, true, 'a working Claude session can take the prompt');
+  assert.equal(byName.w1.queue, true);
+  assert.equal(byName.w1.note, 'will be queued after the current turn');
+  assert.equal(byName.i1.queue, false);
+  assert.deepEqual(rows.map((r) => r.s.name), ['i1', 'w1'], 'the session at its prompt ranks first');
+  assert.ok(!button(card(env, 20), /^→ w1/), 'the one-tap target is never the queue');
 });

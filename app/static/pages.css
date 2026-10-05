@@ -517,18 +517,106 @@ html.force-coarse #sheet .seg-btn { min-height:var(--tap); }
 /* backlog cards: dashed until a session exists; the prompt head clamps at two lines */
 .task.backlog { border-style:dashed; }
 .task .tk-prompt { margin:2px 0 4px; font-size:12px; color:var(--fg-2); display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; }
-.task.backlog .actions { display:flex; flex-wrap:wrap; align-items:center; }
-.task .tk-start { min-width:var(--tap); }
 #page .tasks-board { margin:12px auto; }
 #page .tk-head .summary { flex:1 1 220px; }
 #page .tk-head .actions { margin-left:auto; }
 /* a phone: the title and + task share the first line, the summary takes its own line under them (not a button stranded under a two-line sentence) */
 @media (max-width:599px) { #page .tk-head .summary { order:3; flex:1 1 100%; } #page .tk-head .actions { order:2; } }
-#page .task .tk-chip { display:inline-flex; align-items:center; min-height:22px; padding:0 8px; text-decoration:none; }
-@media (pointer:coarse) { #page .task .tk-chip { min-height:var(--tap); } }
-html.force-coarse #page .task .tk-chip { min-height:var(--tap); }
 
-/* the session picker behind Send to session */
+/* ---------- tasks v2, second half (v0.5.14b / v0.5.15): the two-row card, chips, the result, the Move sheet, chains ---------- */
+
+/* a card is a tab stop (the m key opens its Move sheet) and a press that is held is a long press: no iOS callout, no text selection under a finger */
+#page .task:focus-visible { outline:2px solid var(--sig); outline-offset:1px; }
+.task[data-movable] { -webkit-touch-callout:none; }
+@media (pointer:coarse) { .task[data-movable] { -webkit-user-select:none; user-select:none; } }
+html.force-coarse .task[data-movable] { -webkit-user-select:none; user-select:none; }
+.task .tk-title-row { align-items:center; }
+.task.finished .title { color:var(--fg-2); }
+
+/* the chips under the meta line: who runs it, what happens next */
+.task .tk-chips { display:flex; flex-wrap:wrap; align-items:center; gap:4px 6px; margin:0 0 6px; }
+.task .tk-chips .badge, .task .tk-chips .state { max-width:100%; }
+.task .tk-chips .badge .bp5-icon { margin-right:2px; vertical-align:-2px; }
+#page .task .tk-owner { display:inline-flex; align-items:center; gap:4px; max-width:100%; min-height:22px; padding:0 8px; text-decoration:none; }
+#page .task .tk-owner .tk-owner-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#page .task .tk-owner .tk-owner-state { color:var(--dim); white-space:nowrap; }
+#page .task { container-type:inline-size; }                                  /* a narrow kanban column drops the state word of the owner chip (its glyph says it), so the session name stays whole */
+@container (max-width: 300px) { .task .tk-owner-state { display:none; } }
+@media (pointer:coarse) { #page .task .tk-owner { min-height:var(--tap); } }
+html.force-coarse #page .task .tk-owner { min-height:var(--tap); }
+.task .tk-ac-tag, .task .tk-closed, .task .tk-hold, .task .tk-chain-badge { display:inline-flex; align-items:center; gap:4px; }              /* an icon, a word and a countdown: spaced by the gap, not by text spaces a flex row trims */
+.task .tk-asked, .task .tk-hold { white-space:normal; border-radius:10px; }                                                                  /* these two may take two lines on a narrow card: a pill that is not a stadium */
+.task .tk-ac-why { font-weight:400; }
+
+/* the pending close: '⏻ auto-close 0:32' and Keep open */
+.task .tk-ac { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px; margin:0 0 6px; }
+.task .tk-keep.bp5-button { min-height:var(--row-btn); }
+.task .tk-count { font-variant-numeric:tabular-nums; }
+
+/* the result of a finished task: its first line, opened the excerpt */
+.task .tk-result { margin:0 0 6px; border:1px solid var(--line); border-radius:2px; background:var(--bg); }
+.task .tk-result > summary { display:flex; align-items:center; gap:8px; min-height:var(--row-btn); padding:2px 8px; cursor:pointer; font-size:12px; list-style:none; }
+.task .tk-result > summary::-webkit-details-marker { display:none; }
+.task .tk-result > summary::before { content:"▸"; flex:none; color:var(--dim); }
+.task .tk-result[open] > summary::before { content:"▾"; }
+.task .tk-result-k { flex:none; font-size:11px; letter-spacing:.04em; text-transform:uppercase; color:var(--dim); }
+.task .tk-result-first { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--fg-2); }
+.task .tk-result[open] .tk-result-first { display:none; }
+.task .tk-result-body { padding:6px 8px; border-top:1px solid var(--line-soft); font-size:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; max-height:240px; overflow:auto; }
+.task .tk-result-more.bp5-button { margin:0 8px 8px; min-height:var(--row-btn); }
+@media (pointer:coarse) { .task .tk-result > summary { min-height:var(--tap); } }
+html.force-coarse .task .tk-result > summary { min-height:var(--tap); }
+
+/* the action rows: two rows on one 3-column grid, every cell the same width and height (28 px with a mouse, 44 px on touch); a phone keeps row 1 and a ... cell */
+.task .tk-acts { display:grid; gap:6px; margin-top:6px; }
+.task .tk-r { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:6px; align-items:stretch; }
+.task .tk-r > .bp5-button, .task .tk-confirm > .row > .bp5-button { width:100%; min-width:0; min-height:var(--row-btn); padding:0 4px; justify-content:center; font-size:12px; }
+.task .tk-r .bp5-button-text { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.task .tk-confirm { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+.task .tk-confirm > .row { display:contents; }
+#page .task .tk-r > .tk-more.bp5-button.bp5-minimal { border:1px solid var(--line); }                    /* an icon-only minimal button is borderless elsewhere; here it is a cell of the grid */
+
+/* the Move sheet (long press, the card's Move… or the m key): labelled sections, the two lanes on 52 px buttons, the sessions that can take it */
+.tk-move .tk-sec, .tk-dispatch .tk-sec, .tk-chains .tk-sec { margin:14px 0 6px; font-size:12px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+.tk-move .tk-sec:first-child { margin-top:0; }
+.tk-lane-btns { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px; }
+#sheet .tk-lane-btn.bp5-button { min-height:52px; height:auto; flex-direction:column; align-items:flex-start; justify-content:center; gap:2px; padding:6px 12px; text-align:left; }
+.tk-lane-top { display:inline-flex; align-items:center; gap:6px; font-size:14px; font-weight:600; }
+.tk-lane-sub { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; font-weight:400; color:var(--dim); }
+#sheet .tk-lane-btn.primary.tinted .tk-lane-sub { color:var(--fg-2); }
+.tk-move .tk-st { font-size:12px; }
+.tk-foot { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(0, 1fr); gap:8px; margin-top:16px; }
+#sheet .tk-foot .bp5-button { width:100%; min-height:var(--tap); justify-content:center; }
+
+/* chains: connected steps, each with its status; scrolls sideways when they do not fit */
+.tk-chains { margin:0 0 10px; }
+.tk-chains .tk-sec { margin-top:0; }
+.tk-chain { display:flex; align-items:stretch; gap:6px; padding:2px 0 6px; overflow-x:auto; scrollbar-width:thin; }
+.tk-link { flex:0 0 auto; align-self:center; color:var(--dim); }
+#page .tk-step { flex:0 0 auto; display:grid; grid-template-columns:auto minmax(0, 1fr); grid-template-areas:"n t" "n s"; column-gap:8px; align-items:center; min-width:150px; max-width:240px; min-height:var(--row-btn); padding:6px 10px;
+                 border:1px solid var(--line); border-radius:2px; background:var(--panel); color:var(--fg); font:12px/1.3 var(--font-ui); text-align:left; cursor:pointer; }
+#page .tk-step[data-phase=running] { border-color:var(--sig-bd); }
+#page .tk-step[data-phase=failed] { border-color:var(--bad); }
+#page .tk-step[data-phase=queued], #page .tk-step[data-phase=backlog] { border-style:dashed; }
+#page .tk-step:focus-visible { outline:2px solid var(--sig); outline-offset:1px; }
+@media (hover:hover) { #page .tk-step:hover { border-color:var(--sig); } }
+.tk-step-n { grid-area:n; display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border:1px solid var(--line-strong); border-radius:50%; font:600 11px/1 var(--font-mono); color:var(--fg-2); }
+.tk-step-title { grid-area:t; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+.tk-step-st { grid-area:s; color:var(--dim); white-space:nowrap; }
+@media (pointer:coarse) { #page .tk-step { min-height:var(--tap); } }
+html.force-coarse #page .tk-step { min-height:var(--tap); }
+
+/* the 'Then…' builder in the task form, and the dispatch-mode form behind Options… */
+.task-form .tf-then { margin:4px 0 8px; }
+.task-form .tf-steps { display:flex; flex-direction:column; gap:10px; margin:6px 0; }
+.task-form .tf-step { padding:8px 10px; border:1px solid var(--line); border-radius:2px; background:var(--bg); }
+.task-form .tf-step .field { margin-bottom:6px; }
+.task-form .tf-step-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:4px; }
+.task-form .tf-step-k { font-size:12px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+.task-form .tf-step-add.bp5-button { min-height:var(--row-btn); }
+.tk-dispatch .field { margin-bottom:8px; }
+
+/* the session picker behind the Move sheet's running-session list (and Send to session) */
 .tk-pick.bp5-button { flex-wrap:wrap; gap:2px 10px; height:auto; min-height:var(--tap); padding:6px 10px; }
 .tk-pick.off { opacity:.55; }
 .tk-pick .tk-last { flex:1 1 100%; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

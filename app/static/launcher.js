@@ -149,7 +149,9 @@ function addRepoForm(p) {
    per repo (ccboard:task:<project>/<repo>), the last repo per project (ccboard:task:last:<project>) and the last {project, repo} anywhere
    (ccboard:task:last: where + task opens when the page names no project, Shell.routeCtx). taskForm(p, r, opts):
    opts.when forces a mode, opts.carry {title, prompt, when, name, cron} refills the form after a repo switch, opts.targets [{p, r, label}] adds a
-   "where" select that calls opts.onTarget(entry, carry), opts.onDone(res, when) runs once the call worked (the sheet closes), opts.onCancel. */
+   "where" select that calls opts.onTarget(entry, carry), opts.onDone(res, when) runs once the call worked (the sheet closes), opts.onCancel.
+   v0.5.15: 'Then…' adds steps that run one after another (a chain: POST /api/projects/{p}/repos/{r}/chains), and Options holds the switch that closes the
+   session when the task finishes (kept per repo; only an OFF switch is sent, as auto_close false: on is the server's default for a new session). */
 
 const TASK_WHEN = [['now', 'Now'], ['later', 'Later'], ['schedule', 'Schedule']];
 const TASK_SUBMIT = { now: 'Start task', later: 'Add to backlog', schedule: 'Schedule' };
@@ -214,6 +216,57 @@ function segControl(items, initial, onChange, label) {
   }
   paint();
   return { node, get value() { return cur; }, set };
+}
+
+const TASK_AGENTS = [['claude', '◆ Claude'], ['codex', '◇ Codex']];
+
+/* The 'Then…' builder of the task form (v0.5.15): steps that start one after another, each in a session of its own once the one before has finished. A step is
+   a prompt (and an optional title) and the agent that runs it. chainBuilder() -> {node, read(), problem(), count()}: node is a <details> that adds its first
+   step when it opens; read() the filled steps [{title, prompt, agent}] (a blank step is not a step); problem() says so next to a step that has a title and no
+   prompt and answers true. The first step of a chain is the form's own prompt. */
+function chainBuilder() {
+  const list = el('div', { class: 'tf-steps' });
+  const count = el('span', { class: 'dim tf-optnote' });
+  const rows = [];
+  const sync = () => {
+    rows.forEach((r, i) => { r.head.textContent = `Step ${i + 2}`; });
+    count.textContent = rows.length ? ` · ${rows.length + 1} steps` : '';
+  };
+  const addRow = () => {
+    const title = el('input', { type: 'text', maxlength: 120, placeholder: 'e.g. Review the change', autocomplete: 'off' });
+    const prompt = el('textarea', { class: 'composer task-prompt', rows: '3', autocomplete: 'off', spellcheck: 'true', 'aria-label': 'What this step does',
+      placeholder: 'What should this step do?' });
+    const agent = segControl(TASK_AGENTS, 'claude', (v) => { if (v === 'codex' && !taskAgentInstalled('codex')) agent.set('claude'); }, 'Agent for this step');   // an arrow key must not land on the disabled Codex
+    const cx = agent.node.querySelector('[data-when=codex]');
+    if (cx && !taskAgentInstalled('codex')) { cx.setAttribute('disabled', ''); cx.setAttribute('title', 'Codex is not installed on this box'); }
+    const head = el('span', { class: 'tf-step-k' });
+    const promptField = field('Prompt', prompt);
+    prompt.addEventListener('input', () => { composerGrow(prompt); fieldError(promptField, ''); });
+    const row = { head, title, prompt, agent, promptField, node: null };
+    row.node = el('div', { class: 'tf-step' },
+      el('div', { class: 'tf-step-head' }, head,
+        el('button', { class: 'icon minimal tf-step-rm', type: 'button', 'aria-label': 'Remove this step', title: 'Remove this step', onclick: () => { rows.splice(rows.indexOf(row), 1); row.node.remove(); sync(); } }, ic('cross'))),
+      promptField, field('Title', title, 'Optional: the first line of the prompt is used.'), field('Agent', agent.node));
+    rows.push(row);
+    list.append(row.node);
+    sync();
+    return row;
+  };
+  const addBtn = el('button', { class: 'minimal small tf-step-add', type: 'button', text: '+ Add a step', onclick: () => { const r = addRow(); focusFine(r.prompt); } });
+  const node = el('details', { class: 'tf-then' }, el('summary', {}, 'Then…', count),
+    el('p', { class: 'dim tf-lede', text: 'Each step starts in a new session once the one before has finished. Write {{result}} in a prompt where the previous result should go; without it the result is added under the prompt.' }),
+    list, addBtn);
+  node.addEventListener('toggle', () => { if (node.open && !rows.length) { const r = addRow(); focusFine(r.prompt); } });
+  return {
+    node,
+    read: () => rows.map((r) => ({ title: r.title.value.trim(), prompt: r.prompt.value.trim(), agent: r.agent.value })).filter((s) => s.title || s.prompt),
+    problem: () => {
+      const r = rows.find((x) => x.title.value.trim() && !x.prompt.value.trim());
+      if (r) fieldError(r.promptField, 'Write what this step should do.', true);
+      return !!r;
+    },
+    count: () => rows.length,
+  };
 }
 
 function taskForm(p, r, opts) {
@@ -294,6 +347,11 @@ function taskForm(p, r, opts) {
   const titleField = field('Title', title, 'Optional: the first line of the prompt is used.');
   const promptField = field('Prompt', promptEl, coarsePointer() ? null : 'Enter adds a line · Cmd/Ctrl+Enter submits.');
   const argsField = field('Extra args', args);
+  const autoClose = el('input', { type: 'checkbox' });
+  autoClose.checked = prefs.auto_close !== false;                                // on unless the person turned it off for this repo
+  const autoField = field('When it finishes', el('div', { class: 'checks' }, el('label', {}, autoClose, 'Close the session')),
+    'The session closes itself about a minute after the task stops, unless it asked you something. Keep it open from the card.');
+  const chain = chainBuilder();
   const optNoteSync = () => {
     const v = lc.read();
     const bits = [v.model, v.effort, v.permission_mode].filter(Boolean);
@@ -326,10 +384,10 @@ function taskForm(p, r, opts) {
   const jobOpts = el('div', { class: 'grid' }, field('Permission mode', jobMode), field('Max turns', turns), field('Max $', budget, 'Optional.'));
   const nameField = field('Name', nameEl, 'Shown on the task card.');
   const schedBox = el('div', { class: 'tf-schedule' }, nameField, field('Cron', cron), presets, cronNote);
-  upperOnly.push(titleField, issueField, lcBox);
+  upperOnly.push(titleField, issueField, lcBox, autoField, chain.node);
   if (sibField) upperOnly.push(sibField);
   lowerOnly.push(schedBox, jobOpts);
-  const options = el('details', { class: 'tf-options' }, el('summary', {}, 'Options', optNote), issueField, lcBox, jobOpts, argsField, sibField);
+  const options = el('details', { class: 'tf-options' }, el('summary', {}, 'Options', optNote), issueField, lcBox, jobOpts, argsField, autoField, sibField);
 
   const targets = Array.isArray(o.targets) ? o.targets : [];
   const here = Math.max(0, targets.findIndex((x) => x.p === p && x.r === r));
@@ -350,6 +408,7 @@ function taskForm(p, r, opts) {
     const v = lc.read();
     savePrefs(TASK_KEY(p, r), { ...lc.prefs(), model: v.model, effort: v.effort, permission_mode: v.permission_mode, args: args.value.trim(),
       when: when === 'schedule' ? saved.when : when,                                  // a schedule run never becomes the next task's mode
+      auto_close: autoClose.checked,
       cron: cron.value.trim(), job_mode: jobMode.value, max_turns: parseInt(turns.value, 10) || 30 });
     taskSaveLastRepo(p.name, r.name);
   };
@@ -363,6 +422,7 @@ function taskForm(p, r, opts) {
   const submitTask = async (when, prompt, titleText) => {
     const body = { project: p.name, repo: r.name, title: titleText, prompt, when, agent: 'claude', add_dirs: boxes.filter((b) => b.checked).map((b) => b.value), ...lc.read() };
     if (args.value.trim()) body.args = args.value.trim();
+    if (!autoClose.checked) body.auto_close = false;
     for (const k of Object.keys(body)) if (body[k] === '' || body[k] === null) delete body[k];
     remember(when);
     const res = (await api('POST', '/api/tasks', body)) || {};
@@ -386,6 +446,45 @@ function taskForm(p, r, opts) {
       taskRepaint();
       finish(res, when);
     }
+  };
+
+  /* A chain: this form's prompt is step 1 (its launch options travel with it), the 'Then…' steps follow. dispatch true starts step 1 now; later steps wait
+     queued behind their parent. The answer {chain_id, ids[]} paints the cards at once (step 1 running or in the Backlog, the others queued). */
+  const submitChain = async (when, prompt, titleText, more) => {
+    const lcv = lc.read();
+    const first = {};
+    for (const [k, v] of Object.entries({ ...lcv, args: args.value.trim(), add_dirs: boxes.filter((b) => b.checked).map((b) => b.value) })) if (v && !(Array.isArray(v) && !v.length)) first[k] = v;
+    const steps = [{ title: titleText, prompt, agent: 'claude', ...first },                     // flat, as POST /chains reads them (model, effort, permission_mode, args, add_dirs)
+      ...more.map((s) => ({ title: s.title || taskTitleFrom(s.prompt), prompt: s.prompt, agent: s.agent }))];
+    const body = { steps, dispatch: when === 'now' };
+    if (!autoClose.checked) body.auto_close = false;
+    remember(when);
+    const res = (await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/chains`, body)) || {};
+    const demo = typeof demoOn === 'function' && demoOn();
+    const chainId = res.chain_id !== undefined && res.chain_id !== null ? res.chain_id : (demo ? `demo-${Date.now()}` : null);
+    const ids = Array.isArray(res.ids) && res.ids.length === steps.length ? res.ids : (demo ? steps.map((_, i) => -(Date.now() + i)) : null);
+    let opened = '';
+    const started = res.started && typeof res.started === 'object' ? res.started : res;          // POST /chains answers {chain_id, ids, tasks, started: step 1's dispatch}
+    const given = Array.isArray(res.tasks) && res.tasks.length === steps.length ? res.tasks : [];     // the server's own rows when it sends them
+    if (ids) {
+      steps.forEach((s, i) => {
+        const base = { id: ids[i], project: p.name, repo: r.name, slug: '', title: s.title, branch: '', base: '', worktree: '', tmux: '', created_at: new Date().toISOString(), column: 'backlog',
+          phase: i ? 'queued' : 'backlog', mode: 'worktree', agent: s.agent, auto_close: autoClose.checked, parent_id: i ? ids[i - 1] : null, chain_id: chainId, session_row: null, session: null, result: null,
+          prompt: s.prompt.slice(0, 600), prompt_len: s.prompt.length, claude_session_id: null, pr_url: null, pr_number: null, pr_state: null, cost_usd: null, overlap: [], ci: null, pr: null,
+          ...(given[i] && typeof given[i] === 'object' ? given[i] : {}) };
+        if (i === 0 && when === 'now') {
+          const row = taskRowFromResponse(base, { tmux: started.tmux, session_row: started.session_row, slug: started.slug, branch: started.branch, task: started.task }, { mode: 'worktree' });
+          if (!row.tmux && demo) row.tmux = `${p.name}--${r.name}--t-chain-${Math.abs(ids[0])}`;
+          opened = row.tmux || '';
+          taskOverrideSet(row, null, { _new: true });
+        } else taskOverrideSet(base, null, { _new: true });
+      });
+    }
+    toast(when === 'now' ? `started a chain of ${steps.length} steps` : `added a chain of ${steps.length} steps to the backlog`, { kind: 'ok' });
+    taskWarn(res);                                                                                  // a hand start inside the limit window goes ahead and says so
+    taskRepaint();
+    finish(res, when);
+    if (opened) taskOpenPeek(opened);
   };
 
   const submitJob = async (prompt, titleText) => {
@@ -413,10 +512,14 @@ function taskForm(p, r, opts) {
       fieldError(argsField, 'bypassPermissions is not allowed for tasks or schedules; start a session and choose bypass there if you really want it.', true);
       return;
     }
+    const steps = when === 'schedule' ? [] : chain.read();
+    if (when !== 'schedule' && chain.problem()) { chain.node.setAttribute('open', ''); return; }              // a step with a title and no prompt: said next to it
     setBusy(true);
     formStatus(status, '');
     try {
-      if (when === 'schedule') await submitJob(prompt, titleText); else await submitTask(when, prompt, titleText);
+      if (when === 'schedule') await submitJob(prompt, titleText);
+      else if (steps.length) await submitChain(when, prompt, titleText, steps);
+      else await submitTask(when, prompt, titleText);
     } catch (err) { formStatus(status, err.message, true); setError(err.message); }
     setBusy(false);
   };
@@ -431,6 +534,7 @@ function taskForm(p, r, opts) {
     lede,
     promptField,
     titleField,
+    chain.node,
     schedBox,
     options,
     status,
@@ -442,6 +546,67 @@ function taskForm(p, r, opts) {
   syncMode();
   if (carry.prompt) composerGrow(promptEl);
   return form;
+}
+
+/* ---------- the launcher in dispatch mode (v0.5.15): where a Backlog card goes, and how ----------
+   Opened by Options… in the Move sheet. Where: a new session (which agent, its launch options) or a running one that is ready; the switch that closes the
+   session when the task finishes (on for a new session, off for a running one, until it is touched); one POST /api/tasks/{id}/dispatch through taskStart or
+   taskSend, so the card moves at once and the usual toasts, conflicts and limit warnings apply. preset {agent, session, auto_close} fills it in. */
+function taskDispatchSheet(t, preset) {
+  const pre = preset || {};
+  const saved = loadPrefs(TASK_KEY({ name: t.project }, { name: t.repo }));
+  const ready = taskSessionTargets(t).filter((x) => x.ok);
+  const own = t.agent || 'claude';
+  const agent0 = pre.agent === 'claude' || (pre.agent === 'codex' && taskAgentInstalled('codex')) ? pre.agent : own;
+  const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
+  const lc = launchControls({ ...saved }, PERMS);
+  const effort = selectEl([['', 'default'], ['low', 'low'], ['medium', 'medium'], ['high', 'high']], '');
+  const sess = selectEl(ready.length ? ready.map((x) => [x.s.tmux, `${x.s.name} · ${x.repo === 'root' ? 'project folder' : x.repo}${x.same ? '' : ' (other repo)'}`]) : [['', '(no session is ready)']], pre.session || '');
+  const auto = el('input', { type: 'checkbox' });
+  let touched = false;
+  auto.addEventListener('change', () => { touched = true; });
+  const go = el('button', { class: 'primary', type: 'submit' });
+  const claudeBox = el('div', {}, lc.grid);
+  const codexBox = el('div', {}, field('Reasoning effort', effort));
+  const laneBox = el('div', {});
+  const sessBox = el('div', {}, field('Session', sess, ready.length ? 'The prompt is pasted into it; a session in another repo asks first.' : 'Every session of this project is busy or waiting on a prompt.'));
+  const where = segControl([['lane', 'New session'], ['session', 'Running session']], pre.session ? 'session' : 'lane', () => sync(), 'Where');
+  const agent = segControl(TASK_AGENTS, agent0, () => sync(), 'Agent');
+  const cx = agent.node.querySelector('[data-when=codex]');
+  if (cx && !taskAgentInstalled('codex')) { cx.setAttribute('disabled', ''); cx.setAttribute('title', 'Codex is not installed on this box'); }
+  laneBox.append(field('Agent', agent.node), claudeBox, codexBox);
+  function sync() {
+    if (agent.value === 'codex' && !taskAgentInstalled('codex')) { agent.set('claude'); return; }             // an arrow key must not land on the disabled Codex
+    const lane = where.value === 'lane';
+    laneBox.classList.toggle('hidden', !lane);
+    sessBox.classList.toggle('hidden', lane);
+    claudeBox.classList.toggle('hidden', agent.value !== 'claude');
+    codexBox.classList.toggle('hidden', agent.value !== 'codex');
+    if (!touched) auto.checked = typeof pre.auto_close === 'boolean' ? pre.auto_close : lane;
+    go.disabled = !lane && !ready.length;
+    go.textContent = lane ? `Start in ${AGENT_NAME[agent.value] || 'a new session'}` : 'Send to the session';
+  }
+  const submit = () => {
+    if (where.value === 'session') {
+      const x = ready.find((r) => r.s.tmux === sess.value);
+      if (!x) { formStatus(status, 'Pick a session that is ready.', true); return; }
+      closeSheet();
+      taskSend(t, x, false, auto.checked ? { auto_close: true } : undefined);
+      return;
+    }
+    const extra = {};
+    if (agent.value === 'claude') { const v = lc.read(); for (const k of ['model', 'effort', 'permission_mode']) if (v[k]) extra[k] = v[k]; }
+    else if (effort.value) extra.reasoning_effort = effort.value;
+    closeSheet();
+    taskStart(t, { agent: agent.value, auto_close: auto.checked ? undefined : false, extra });
+  };
+  const form = el('form', { class: 'form task-form tk-dispatch', onsubmit: (e) => { e.preventDefault(); submit(); } },
+    field('Where', where.node), laneBox, sessBox,
+    field('When it finishes', el('div', { class: 'checks' }, el('label', {}, auto, 'Close the session')), 'The session closes itself about a minute after the task stops, unless it asked you something.'),
+    status,
+    el('div', { class: 'submit' }, go, el('button', { type: 'button', onclick: () => closeSheet(), text: 'Cancel' })));
+  sync();
+  openSheet({ title: `Start “${String(t.title).slice(0, 60)}”`, body: form });
 }
 
 /* The schedule form's cron presets (chips that fill the cron field; a blank cron runs once now): [label, cron]. */

@@ -37,6 +37,14 @@ STATUSLINE_SAMPLE_MAX = 8 * 1024                 # kv statusline_sample (the box
 # main.py appends its passive /command confirmation here at import time.
 STATS_HOOKS: list = []
 
+# Called as fn(db, session name, event, norm, row) at the end of apply() for every event that was applied (not for an ignored, foreign,
+# child or sub-thread one): `norm` is the adapter's HookNorm (None for PostToolBatch), `row` the session's open row as it was BEFORE the
+# event (its row_id names the session row). The task runtime rides here (Stop / StopFailure end a turn; a new prompt, a permission, a
+# subagent, a tool batch or an interrupt cancel a pending auto-close). Runs on the hook thread: no sleeps of its own, but a Stop that
+# finishes a chain parent starts the next step's tmux session right there (the hook is async, so the TUI is not held). main.py appends
+# its entry at import time; a failing one is logged and dropped.
+TURN_HOOKS: list = []
+
 _token: str | None = None
 
 
@@ -368,6 +376,14 @@ def _stats_hooks(db, name: str, stats: dict) -> None:
         _sample(fn, db, name, stats)
 
 
+def _turn_hooks(db, name: str, event: str, norm, row: dict | None) -> None:
+    for fn in TURN_HOOKS:
+        try:
+            fn(db, name, event, norm, row)
+        except Exception as e:
+            log.warning("turn hook %s failed on %s for %s: %s", getattr(fn, "__name__", "hook"), event, name, e)
+
+
 def _tool_batch(db, name: str, event: str, sid: str | None, row: dict | None) -> dict:
     """PostToolBatch: never an event row and never a last_event stamp, but a liveness signal (flags.last_tool_at) and the proof that a
     permission prompt was answered in the TUI: a row waiting on a permission goes back to working. An idle wait is left alone."""
@@ -380,6 +396,7 @@ def _tool_batch(db, name: str, event: str, sid: str | None, row: dict | None) ->
     if flip:
         db.set_state(name, "working", event, claude_session_id=sid)
         out["state"] = "working"
+    _turn_hooks(db, name, event, None, row)
     return out
 
 
@@ -506,4 +523,5 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None, ch
             _sample(samples.bump_event, db, project)
     if attention and state:
         notify.notify_session(name, state, message, str(kind) if kind else None)
+    _turn_hooks(db, name, event, n, row)
     return {"session": name, "event": event, "state": state, "kind": kind}
