@@ -65,7 +65,7 @@ function fakeWin(cols = 80, rows = 24) {
   return win;
 }
 
-function quadWorld({ wide = true, state = fixtureState(), storage = {}, hash = null, withKeymap = true, inbox = false } = {}) {
+function quadWorld({ wide = true, state = fixtureState(), storage = {}, hash = null, withKeymap = true, inbox = false, shell = false } = {}) {
   const clock = fakeClock();
   class FakeDate extends Date { static now() { return BASE + clock.now; } }
   const ros = [];
@@ -96,6 +96,7 @@ function quadWorld({ wide = true, state = fixtureState(), storage = {}, hash = n
   `);
   w.ctx.__st = state;
   w.run('state = __st');
+  if (shell) w.run('globalThis.__created = []; globalThis.Shell = { openCreate(kind, ctx) { __created.push({ kind, ctx }); return true; }, syncCrumbs() { __crumbs = (globalThis.__crumbs || 0) + 1; } }; var __crumbs = 0;');
   const env = { w, clock, ros, Q: w.get('Quad') };
   if (hash !== null) w.location.hash = hash;
   return env;
@@ -729,7 +730,7 @@ test('?p=<project> keeps its own saved scope and only its sessions fill the slot
   assert.equal(savedOf(env.w, 'all'), null, 'the all-projects scope is untouched');
   assert.match(text(page(env.w).querySelector('.q-scope')), /petroit/);
   assert.equal(page(env.w).querySelector('.q-scope a').getAttribute('href'), '#/quad', 'a way back to all projects');
-  assert.equal(env.w.document.title, 'Quad petroit · ccboard');
+  assert.equal(env.w.document.title, 'Quad · petroit · ccboard', 'v0.5.9b: the title reads "Quad · <project>"');
 });
 
 test('a new address under the mounted page (a pasted link, another layout) is applied in place: kept tiles keep their iframes', () => {
@@ -751,7 +752,8 @@ test('a new address under the mounted page (a pasted link, another layout) is ap
   assert.equal(page(w).querySelectorAll('iframe').length, 2);
   w.location.hash = '#/quad';
   assert.deepEqual(names(w).length, 2, 'back to the all-projects scope');
-  assert.equal(page(w).querySelector('.q-scope').textContent, '');
+  assert.equal(page(w).querySelector('.q-scope-sel').value, '', 'v0.5.9b: the scope select is always there and says all projects');
+  assert.equal(page(w).querySelector('.q-scope .q-all').classList.contains('hidden'), true, 'the way back to all projects is hidden while it is all projects');
 });
 
 // ---------------------------------------------------------------- zoom, modes, closing, picking
@@ -1346,6 +1348,285 @@ test('pages.css (quad block): one row for the permission line from 358 px, 28 px
   assert.doesNotMatch(quad, /var\(--tap\)/, 'the quad block sizes with --row-btn (28 px with a mouse, 44 px on touch)');
   assert.match(quad, /\.qt-name > \.qt-sess \{ flex:0 0 auto; max-width:100%;/, 'the session name does not shrink: the project/repo gives way first');
   assert.match(quad, /\.qt-name > \.qt-where \{ flex:0 1 auto; min-width:0;/);
+});
+
+// ---------------------------------------------------------------- the quad for one project (v0.5.9b)
+
+const scopeSel = (w) => page(w).querySelector('.q-scope-sel');
+const optionsOf = (w) => scopeSel(w).querySelectorAll('option').map((o) => [o.getAttribute('value'), text(o)]);
+const pickScope = (w, value) => { const sel = scopeSel(w); sel.value = value; sel.dispatchEvent({ type: 'change' }); };
+const scopeNow = (w) => w.localStorage.getItem('ccboard:quad:scope');
+/** The demo-like state with every session of `names` ended (the project has nothing live), and, for `drop`, the named sessions ended too. */
+function quiet(names, drop = []) {
+  const st = fixtureState();
+  for (const p of st.projects) for (const r of [p.root, ...p.repos]) for (const x of (r && r.sessions) || []) if (names.includes(p.name) || drop.includes(x.tmux)) x.state = 'ended';
+  return st;
+}
+
+test('scopeOptions: All projects first, then every project with a live session by name, a count in each label; ended sessions are not counted; the current scope is always listed', () => {
+  const { Q } = quadWorld();
+  const o = (st, cur) => plain(Q.scopeOptions(st, cur)).map((x) => [x.project, x.label]);
+  assert.deepEqual(o(fixtureState()), [['', 'All projects (7)'], ['ccboard', 'ccboard (2)'], ['petroit', 'petroit (3)'], ['phasezero', 'phasezero (2)']], 'phasezero has an ended session: 2, not 3');
+  assert.deepEqual(o(quiet(['phasezero'])), [['', 'All projects (5)'], ['ccboard', 'ccboard (2)'], ['petroit', 'petroit (3)']], 'a project with nothing live is not offered');
+  assert.deepEqual(o(quiet(['phasezero']), 'phasezero').map((x) => x[1]), ['All projects (5)', 'ccboard (2)', 'petroit (3)', 'phasezero (0)'], 'but the scope the page is in always is, so the select never lies');
+  assert.deepEqual(o(null), [['', 'All projects (0)']]);
+  assert.deepEqual(o(null, 'mailgate'), [['', 'All projects (0)'], ['mailgate', 'mailgate (0)']]);
+  assert.deepEqual(o(fixtureState(), 'bad name!').map((x) => x[0]), ['', 'ccboard', 'petroit', 'phasezero'], 'a scope that is not a project word is not listed');
+});
+
+test('slotsState in a project scope drops the slots of other projects, from the saved state and from the address, and auto-fills from that project only', () => {
+  const { Q } = quadWorld();
+  const st = fixtureState();
+  const saved = { layout: 2, slots: [CK, P3, '', ''], modes: {}, zoom: null };
+  assert.deepEqual(plain(Q.slotsState({ saved, state: st, project: 'petroit', n: 2 })).slots, [P2, P3, '', ''], 'CK is phasezero: gone; the empty slot is auto-filled with petroit\'s first');
+  assert.deepEqual(plain(Q.slotsState({ saved, state: st, project: '', n: 2 })).slots, [CK, P3, '', ''], 'all projects: nothing is dropped');
+  assert.deepEqual(plain(Q.slotsState({ query: { s: `${CK},${P3}` }, state: st, project: 'petroit', n: 2 })).slots, [P2, P3, '', ''], 'the address is held to the scope too');
+  assert.deepEqual(plain(Q.slotsState({ query: { s: `${CK},${P3}` }, state: null, project: 'petroit', n: 2 })).slots, ['', P3, '', ''], 'before the first poll the name says which project a slot is');
+  assert.equal(Q.inProject(st, CK, 'phasezero'), true);
+  assert.equal(Q.inProject(st, CK, 'petroit'), false);
+  assert.equal(Q.inProject(st, 'phasezero--website--gone', 'phasezero'), true, 'a session that has gone is told by its name');
+  assert.equal(Q.inProject(st, CK, ''), true);
+});
+
+test('storage: a project called all, scope or keys saves under ccboard:quad:p:<name>, so it cannot clobber the all-projects state, the last-scope pref or the key-bar pref', () => {
+  const { w, Q } = quadWorld();
+  assert.equal(Q.storageKey(''), 'ccboard:quad:all');
+  assert.equal(Q.storageKey('petroit'), 'ccboard:quad:petroit');
+  for (const name of ['all', 'scope', 'keys']) assert.equal(Q.storageKey(name), `ccboard:quad:p:${name}`, name);
+  w.localStorage.setItem('ccboard:quad:scope', 'petroit');
+  w.localStorage.setItem('ccboard:quad:keys', '1');
+  Q.save('scope', { layout: 4, slots: [P1, '', '', ''], modes: {}, zoom: null });
+  Q.save('keys', { layout: 4, slots: [P2, '', '', ''], modes: {}, zoom: null });
+  assert.equal(w.localStorage.getItem('ccboard:quad:scope'), 'petroit', 'the last-scope pref is untouched');
+  assert.equal(w.localStorage.getItem('ccboard:quad:keys'), '1');
+  assert.deepEqual(plain(Q.load('scope')).slots, [P1, '', '', '']);
+});
+
+test('a project scope fills the tiles, the needs-you order, what an empty tile offers and the tile menu\'s swaps from that project\'s live sessions only', () => {
+  const env = quadWorld({ hash: '#/quad?p=petroit&l=4' });
+  const { w } = env;
+  assert.deepEqual(names(w), [P3, P2, P1], 'petroit\'s three, the one that waits first; phasezero\'s and ccboard\'s are not offered');
+  assert.deepEqual(plain(w.get('Quad').autoFill(fixtureState(), 4, { project: 'petroit' })), [P3, P2, P1]);
+  assert.match(text(page(w).querySelector('.qempty .qe-title')), /No other session in petroit/, 'the empty fourth tile says whose sessions it looked through');
+  tileOf(w, P2).querySelector('.qt-close').click();
+  const offered = new Set(page(w).querySelectorAll('.qempty .qe-pick').map((b) => b.getAttribute('data-tmux')));
+  assert.deepEqual([...offered], [P2], 'the empty tiles offer petroit\'s one free session, nobody else\'s (all projects would add four more)');
+  assert.deepEqual(plain(w.get('Quad').candidates(fixtureState(), 'petroit').map((s) => s.tmux)), [P3, P2, P1]);
+  assert.equal(plain(w.get('Quad').candidates(fixtureState(), '').length), 7);
+});
+
+test('the phone chips of a project scope are that project\'s sessions only', () => {
+  const env = quadWorld({ wide: false, hash: '#/quad?p=petroit' });
+  const chips = page(env.w).querySelectorAll('.q-chip').map((c) => c.getAttribute('data-tmux'));
+  assert.deepEqual(chips, [P3, P2, P1]);
+  assert.equal(page(env.w).querySelector('.q-chips').classList.contains('hidden'), false);
+  assert.deepEqual(names(env.w), [P3], 'one tile: the first');
+});
+
+test('the scope select: a native select on every width, All projects first, the counts in the labels, the value is the scope', () => {
+  for (const wide of [true, false]) {
+    const env = quadWorld({ wide, hash: '#/quad?p=petroit' });
+    const sel = scopeSel(env.w);
+    assert.equal(sel.tagName.toLowerCase(), 'select', 'native: more than four options is no segmented control');
+    assert.deepEqual(optionsOf(env.w), [['', 'All projects (7)'], ['ccboard', 'ccboard (2)'], ['petroit', 'petroit (3)'], ['phasezero', 'phasezero (2)']]);
+    assert.equal(sel.value, 'petroit');
+    assert.equal(sel.getAttribute('aria-label'), 'Project');
+    assert.equal(page(env.w).querySelector('.q-scope .q-all').classList.contains('hidden'), false, 'one tap back to all projects while one is chosen');
+  }
+  const all = quadWorld({ hash: '#/quad' });
+  assert.equal(scopeSel(all.w).value, '');
+});
+
+test('the select\'s counts follow the poll in place (the option nodes stay); a new project is added once the picker is not in use; the scope stays listed at 0', () => {
+  const env = quadWorld({ hash: '#/quad?p=ccboard' });
+  const { w } = env;
+  const before = scopeSel(w).querySelectorAll('option');
+  const st = fixtureState();
+  st.projects.find((p) => p.name === 'petroit').repos[0].sessions.pop();
+  setState(env, st);
+  assert.deepEqual(optionsOf(w).map((o) => o[1]), ['All projects (6)', 'ccboard (2)', 'petroit (2)', 'phasezero (2)']);
+  assert.deepEqual(scopeSel(w).querySelectorAll('option'), before, 'the same option nodes: only their text changed');
+  setState(env, quiet(['ccboard']));
+  assert.deepEqual(optionsOf(w).map((o) => o[1]), ['All projects (5)', 'ccboard (0)', 'petroit (3)', 'phasezero (2)'], 'the scope the page is in stays in the list');
+  assert.equal(scopeSel(w).value, 'ccboard');
+});
+
+test('choosing a project writes ?p= (a new history entry, so Back returns to the scope before); choosing All projects drops it; the choice is remembered as ccboard:quad:scope', () => {
+  const env = quadWorld({ hash: `#/quad?s=${CK},${P3}&l=2` });
+  const { w } = env;
+  env.clock.advance(5);
+  assert.equal(scopeNow(w), 'all');
+  const before = w.history.calls.length;
+  pickScope(w, 'petroit');
+  assert.match(w.location.hash, /^#\/quad\?/);
+  assert.equal(new URLSearchParams(w.location.hash.split('?')[1]).get('p'), 'petroit');
+  assert.equal(w.history.calls.slice(before).filter((c) => c.method === 'pushState').length, 0, 'the push is the location.hash assignment itself (a hashchange), not a replaceState of it');
+  assert.equal(scopeNow(w), 'petroit');
+  env.clock.advance(5);
+  assert.equal(new URLSearchParams(w.location.hash.split('?')[1]).get('p'), 'petroit', 'and it stays');
+  assert.equal(scopeSel(w).value, 'petroit');
+  assert.equal(w.document.title, 'Quad · petroit · ccboard');
+  pickScope(w, '');
+  assert.equal(new URLSearchParams(w.location.hash.split('?')[1]).get('p'), null, 'All projects: no ?p=');
+  assert.equal(scopeNow(w), 'all');
+  assert.equal(w.document.title, 'Quad · ccboard');
+  assert.equal(page(w).querySelector('.q-scope .q-all').classList.contains('hidden'), true);
+  pickScope(w, 'petroit');
+  const hist = w.history.calls.filter((c) => c.method === 'replaceState').length;
+  pickScope(w, 'petroit');
+  assert.equal(w.history.calls.filter((c) => c.method === 'replaceState').length, hist, 'choosing the scope the page is in does nothing');
+});
+
+test('a scope change keeps the tiles of the chosen project (not one iframe is touched), drops the others and auto-fills the gaps; the DOM order never changes', () => {
+  const env = quadWorld({ hash: `#/quad?s=${CK},${P3},${P2},${WT}&l=4` });
+  const { w } = env;
+  env.clock.advance(5);
+  env.w.get('Quad').current.setMode(P3, 'tail');
+  const f2 = frameOf(w, P2);
+  const log = [];
+  spy(f2, log);
+  const ckFrame = frameOf(w, CK);
+  const dropped = [];
+  spy(ckFrame, dropped);
+  pickScope(w, 'petroit');
+  assert.deepEqual(names(w), [P3, P2, P1], 'CK and WT are gone; P1 is new and was appended, nothing was reordered');
+  assert.deepEqual(slotsOf(w), { [P1]: '0', [P3]: '1', [P2]: '2' }, 'the kept ones stay where they were, the gap at 0 is auto-filled, slot 3 has nobody left to show');
+  assert.equal(frameOf(w, P2), f2, 'the same iframe node');
+  assert.deepEqual(log, [], 'no src assignment and no remove on a tile that stays');
+  assert.deepEqual(dropped, ['src:about:blank', 'remove'], 'a tile that goes: the blank page first, then the node');
+  assert.equal(tileOf(w, P3).getAttribute('data-mode'), 'tail', 'a mode chosen on a tile that stays stays');
+  assert.ok(page(w).querySelector('.qempty[data-slot="3"]'), 'the fourth slot is an empty tile');
+  env.clock.advance(5);
+  assert.deepEqual(plain(savedOf(w, 'petroit').slots), [P1, P3, P2, ''], 'the project\'s own saved state');
+  assert.equal(savedOf(w, 'petroit').modes[P3], 'tail');
+  pickScope(w, '');
+  assert.deepEqual(names(w), [P3, P2, P1, CK], 'all projects keeps all three and fills the free slot with whatever needs you most');
+  assert.equal(frameOf(w, P2), f2, 'still the same iframe');
+  assert.deepEqual(log, []);
+  assert.deepEqual(slotsOf(w), { [P1]: '0', [P3]: '1', [P2]: '2', [CK]: '3' });
+});
+
+test('a zoomed tile that stays is still zoomed after a scope change; one that goes drops the zoom', () => {
+  const env = quadWorld({ hash: `#/quad?s=${CK},${P3},${P2},${WT}&l=4` });
+  const { w } = env;
+  env.clock.advance(5);
+  env.w.get('Quad').current.zoomSlot(1);
+  assert.ok(tileOf(w, P3).classList.contains('zoomed'));
+  pickScope(w, 'petroit');
+  assert.ok(tileOf(w, P3).classList.contains('zoomed'), 'P3 stayed, in the same slot');
+  pickScope(w, 'phasezero');
+  assert.equal(page(w).querySelectorAll('.qtile.zoomed').length, 0, 'P3 left with petroit');
+  assert.equal(page(w).querySelector('.qgrid').getAttribute('data-zoom'), null);
+});
+
+test('a paste of another scope\'s link (no slots in it) opens that scope\'s own saved tiles; one with ?s= wins; Back to an earlier scope restores it', () => {
+  const env = quadWorld({ hash: '#/quad?p=petroit&l=2', storage: { 'ccboard:quad:phasezero': { layout: 2, slots: [WT, CK, '', ''], modes: {}, zoom: null } } });
+  const { w } = env;
+  env.clock.advance(5);
+  assert.deepEqual(names(w), [P3, P2]);
+  w.location.hash = '#/quad?p=phasezero';
+  assert.deepEqual(slotsOf(w), { [WT]: '0', [CK]: '1' }, 'phasezero\'s saved arrangement');
+  w.location.hash = '#/quad?p=petroit';
+  assert.deepEqual(slotsOf(w), { [P3]: '0', [P2]: '1' }, 'back: petroit\'s');
+  w.location.hash = `#/quad?s=${CK}&l=2&p=phasezero`;
+  assert.deepEqual(slotsOf(w), { [CK]: '0', [WT]: '1' }, 'the address wins over what phasezero saved; the gap is auto-filled');
+});
+
+test('a bare #/quad is always all projects, whatever scope was last used (the last scope rides in the links\' ?p=); the page records the scope it is in', () => {
+  const at = (pref, hash = '#/quad') => { const e = quadWorld({ hash, storage: pref === null ? {} : { 'ccboard:quad:scope': pref } }); e.clock.advance(5); return e; };
+  const e1 = at('petroit');
+  assert.equal(scopeSel(e1.w).value, '', 'a bare address is all projects: the dock\'s add-to-quad, the manifest shortcut and the All projects links depend on it');
+  assert.equal(new URLSearchParams(e1.w.location.hash.split('?')[1]).get('p'), null);
+  assert.equal(scopeNow(e1.w), 'all', 'and that is now the scope last used');
+  const e2 = at('petroit', '#/quad?p=phasezero');
+  assert.equal(scopeSel(e2.w).value, 'phasezero');
+  assert.equal(scopeNow(e2.w), 'phasezero');
+  for (const pref of [null, 'all', 'bad name!', '']) assert.equal(scopeSel(at(pref).w).value, '', `pref ${JSON.stringify(pref)}: all projects`);
+});
+
+test('the all-projects link beside the select is the way back, and a link to a scope while another is mounted is a scope change', () => {
+  const env = quadWorld({ hash: '#/quad?p=petroit' });
+  const { w } = env;
+  assert.equal(page(w).querySelector('.q-scope .q-all').getAttribute('href'), '#/quad');
+  w.location.hash = '#/quad';
+  assert.equal(scopeSel(w).value, '', 'a bare address while a scope is mounted is all projects (the last-scope links carry ?p=)');
+  assert.equal(scopeNow(w), 'all');
+});
+
+test('a project with no live session shows one plain line, a bordered New session and a quiet All projects link instead of the grid; it fills as soon as a session starts', () => {
+  const env = quadWorld({ state: quiet(['phasezero']), shell: true, hash: '#/quad?p=phasezero' });
+  const { w } = env;
+  env.clock.advance(5);
+  const none = page(w).querySelector('.q-none');
+  assert.equal(none.classList.contains('hidden'), false);
+  assert.equal(text(none.querySelector('.q-none-line')), 'no live session in phasezero');
+  assert.equal(page(w).querySelector('.qgrid').classList.contains('hidden'), true, 'no grid');
+  assert.equal(page(w).querySelectorAll('.qtile').length, 0, 'no tile, no empty tile, no iframe');
+  assert.equal(page(w).querySelectorAll('iframe').length, 0);
+  assert.equal(page(w).querySelector('.q-chips').classList.contains('hidden'), true);
+  assert.equal(page(w).querySelector('.q-actions').classList.contains('hidden'), true, 'no layout, auto-fill, reload or key buttons for nothing');
+  const make = none.querySelector('.q-none-new');
+  assert.equal(make.classList.contains('hidden'), false);
+  assert.equal(text(make), 'New session');
+  assert.equal(make.classList.contains('bp5-intent-primary'), false, 'bordered, not the filled primary: the quad has none');
+  make.click();
+  assert.deepEqual(plain(w.get('__created')), [{ kind: 'session', ctx: { project: 'phasezero' } }], 'the launcher opens with the project chosen');
+  const link = none.querySelector('.q-none-all');
+  assert.equal(link.getAttribute('href'), '#/quad');
+  assert.equal(text(link), 'All projects');
+  assert.ok(link.classList.contains('bp5-minimal') && !link.classList.contains('bp5-intent-primary'), 'quiet');
+  assert.equal(scopeSel(w).value, 'phasezero', 'the header still says where you are');
+  assert.equal(page(w).querySelector('.q-scope .q-all').classList.contains('hidden'), true, 'and does not repeat the All projects link the block has');
+  assert.equal(page(w).querySelector('.q-keys').classList.contains('hidden'), true);
+  setState(env, fixtureState());
+  assert.equal(none.classList.contains('hidden'), true);
+  assert.equal(page(w).querySelector('.q-scope .q-all').classList.contains('hidden'), false, 'the header link is back with the tiles');
+  assert.deepEqual(names(w), [CK, WT]);
+  assert.equal(page(w).querySelector('.qgrid').classList.contains('hidden'), false);
+  assert.equal(page(w).querySelector('.q-actions').classList.contains('hidden'), false);
+});
+
+test('the empty-project line is only said when the board knows: a project the board does not have gets no New session; tmux down says nothing', () => {
+  const unknown = quadWorld({ shell: true, hash: '#/quad?p=nothere' });
+  assert.equal(text(page(unknown.w).querySelector('.q-none-line')), 'no live session in nothere');
+  assert.equal(page(unknown.w).querySelector('.q-none-new').classList.contains('hidden'), true, 'there is no such project to start a session in');
+  assert.equal(page(unknown.w).querySelector('.q-none-all').getAttribute('href'), '#/quad');
+  const down = quiet(['phasezero']);
+  down.tmux_down = true;
+  const e = quadWorld({ state: down, shell: true, hash: '#/quad?p=phasezero' });
+  assert.equal(page(e.w).querySelector('.q-none').classList.contains('hidden'), true, 'tmux is down: the board does not know that nothing runs');
+  const noShell = quadWorld({ state: quiet(['phasezero']), hash: '#/quad?p=phasezero' });
+  assert.equal(page(noShell.w).querySelector('.q-none-new').classList.contains('hidden'), true, 'without the shell there is no launcher to open');
+});
+
+test('the crumb is asked to follow a write-back of the address (a replace fires no hashchange)', () => {
+  const env = quadWorld({ shell: true, hash: '#/quad' });
+  env.clock.advance(5);
+  assert.ok(Number(env.w.get('__crumbs')) >= 1, 'Shell.syncCrumbs after the page wrote ?s=&l= into the address');
+});
+
+test('pages.css (quad block, v0.5.9b): the scope select is 28 px with a mouse and 44 px on touch (--row-btn), 16 px there, cut by its own max-width; the empty-project block is centred', () => {
+  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const quad = css.slice(css.indexOf('/* ---------- quad (v0.5.9'));
+  const sel = quad.match(/#page \.quad \.q-scope-sel \{[^}]*\}/)[0];
+  assert.match(sel, /height:var\(--row-btn\)/);
+  assert.match(sel, /min-height:var\(--row-btn\)/);
+  assert.match(sel, /max-width:min\(220px, 48vw\)/, 'a long project name cannot push the header past 390 px');
+  assert.doesNotMatch(sel, /var\(--tap\)/);
+  assert.match(quad, /@media \(pointer:coarse\) \{ #page \.quad \.q-scope-sel \{ font-size:16px; \} \}/, '16 px on touch: iOS does not zoom on focus');
+  assert.match(quad, /html\.force-coarse #page \.quad \.q-scope-sel \{ font-size:16px; \}/, 'and for the QA switch');
+  assert.match(quad, /\.q-scope \.q-all \{[^}]*min-height:var\(--row-btn\)/, 'the link back is a 44 px target on touch');
+  assert.match(quad, /\.q-none \{[^}]*align-items:center; justify-content:center/);
+});
+
+test('the scoped page and the empty-project page build no inline style either', () => {
+  for (const [state, hash] of [[fixtureState(), '#/quad?p=petroit&l=4'], [quiet(['phasezero']), '#/quad?p=phasezero'], [fixtureState(), '#/quad?p=mailgate']]) {
+    const { w } = quadWorld({ state, shell: true, hash });
+    const withStyle = [];
+    const walk = (n) => { if (n.nodeType !== 1) return; if (n.getAttribute('style') !== null) withStyle.push(n.className); for (const c of n.children) walk(c); };
+    walk(page(w));
+    assert.deepEqual(withStyle, [], hash);
+  }
 });
 
 // ---------------------------------------------------------------- the CSP and the registration

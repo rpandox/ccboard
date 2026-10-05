@@ -745,9 +745,30 @@ Shell.patchCounts = function (model) {
   }
 };
 
+/* Where a Quad link goes: #/quad?p=<project> for the project the quad was last used on (ccboard:quad:scope, written by pages/quad.js), else #/quad (every project; also
+   when that project is gone from the board: a project the state does not list is not offered). A bare #/quad that is not one of these links is always all projects. */
+Shell.quadHref = function () {
+  let p = '';
+  try { p = localStorage.getItem('ccboard:quad:scope') || ''; } catch (_) { p = ''; }
+  if (p === 'all' || !/^[A-Za-z0-9_-]+$/.test(p)) return '#/quad';
+  const st = typeof state === 'undefined' ? null : state;
+  if (st && Array.isArray(st.projects) && !st.projects.some((x) => x && x.name === p)) return '#/quad';
+  return Shell.hash('quad', {}, { p });
+};
+
+/* The sidebar's and the drawer's Quad entries open the scope last used. */
+Shell.syncQuadLinks = function () {
+  const href = Shell.quadHref();
+  for (const root of [$('#sidebar'), $('#drawer'), $('#bnav')]) {
+    if (!root) continue;
+    for (const a of root.querySelectorAll('[data-nav=quad]')) if (a.getAttribute('href') !== href) a.setAttribute('href', href);
+  }
+};
+
 Shell.syncNav = function () {
   const r = typeof currentRoute === 'function' ? currentRoute() : null;
   const id = r ? r.id : 'home';
+  Shell.syncQuadLinks();
   for (const root of [$('#sidebar'), $('#drawer'), $('#bnav')]) {
     if (!root) continue;
     for (const a of root.querySelectorAll('[data-nav]')) {
@@ -765,6 +786,7 @@ Shell.crumbList = function (r) {
     return parts.length === 3 ? [{ text: parts[0], href: Shell.hash('project', { project: parts[0] }) }, { text: parts[1] }, { text: parts[2] }] : [{ text: p.tmux }];
   }
   if (r.id === 'memory' && p.project) return [{ text: 'Memory', href: '#/memory' }, { text: p.project }];
+  if (r.id === 'quad' && r.query && typeof r.query.p === 'string' && /^[A-Za-z0-9_-]+$/.test(r.query.p)) return [{ text: 'Quad · ' + r.query.p }];
   return [{ text: Shell.CRUMB_NAMES[r.id] || r.id }];
 };
 

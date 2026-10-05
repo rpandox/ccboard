@@ -405,7 +405,7 @@ html.force-coarse #page .pblock .pb-toggle { min-width:var(--tap); }
 #page .pj-title .spacer { flex:1 1 0; min-width:0; }
 #page .pj-name { margin:0; font-size:18px; font-weight:600; overflow-wrap:anywhere; }
 #page .pj-path { font:12px/1.4 var(--font-mono); overflow-wrap:anywhere; }
-#page .pj-more { align-self:center; }
+#page .pj-more, #page .pj-quad { align-self:center; }
 /* the repos are one row that scrolls sideways (two chips used to take a row each); from 840 px they wrap again */
 #page .pj-repos { display:flex; flex-wrap:nowrap; gap:6px 10px; min-width:0; overflow-x:auto; overscroll-behavior-x:contain; scrollbar-width:none; -webkit-overflow-scrolling:touch; }
 #page .pj-repos::-webkit-scrollbar { display:none; }
@@ -505,7 +505,7 @@ html.force-coarse #page .pblock .pb-toggle { min-width:var(--tap); }
 html.force-coarse #sidebar .tn-row.d-row .tw, html.force-coarse #drawer .tn-row.d-row .tw { width:var(--tap); min-height:var(--tap); margin:0 -14px 0 -15px; }
 @media (max-width:599px) {
   #page .pj-title .spacer { order:1; }
-  #page .pj-more { order:2; }
+  #page .pj-more, #page .pj-quad { order:2; }
   #page .pj-path { order:3; flex:1 1 100%; }
 }
 
@@ -772,8 +772,17 @@ body[data-page=quad] #banner { flex:none; }
 body[data-page=quad] #page { flex:1 1 0; min-height:420px; display:flex; flex-direction:column; }
 #page .quad { flex:1 1 0; width:100%; min-height:0; display:flex; flex-direction:column; gap:6px; }
 #page .quad .q-head { flex:none; padding:10px 0 2px; align-items:center; }
-#page .quad .q-scope { display:inline-flex; align-items:baseline; gap:6px; margin-right:auto; font-size:12px; }
-#page .quad .q-scope .q-all { color:var(--fg-2); }
+#page .quad .q-scope { display:inline-flex; align-items:center; flex-wrap:wrap; gap:2px 10px; min-width:0; margin-right:auto; font-size:12px; }
+/* the scope control (v0.5.9b): one native select on every width, 28 px with a mouse and 44 px on touch (--row-btn), 16 px there so iOS does not zoom on focus (the paired rules: this
+   selector outranks the global select rule, so the touch font has to be set here too); a long project name is cut by the select, never by the header */
+#page .quad .q-scope-sel { height:var(--row-btn); min-height:var(--row-btn); max-width:min(220px, 48vw); padding:0 6px; font-size:12px; text-overflow:ellipsis; }
+@media (pointer:coarse) { #page .quad .q-scope-sel { font-size:16px; } }
+html.force-coarse #page .quad .q-scope-sel { font-size:16px; }
+#page .quad .q-scope .q-all { display:inline-flex; align-items:center; min-height:var(--row-btn); color:var(--fg-2); }
+/* a project with no live session: one line and what to do next, in place of the grid */
+#page .quad .q-none { flex:1 1 0; min-height:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:24px 12px; text-align:center; color:var(--dim); }
+#page .quad .q-none-line { margin:0; font-size:14px; overflow-wrap:anywhere; }
+#page .quad .q-none-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:8px; }
 #page .quad .q-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; }
 #page .quad[data-forced] .q-layout { display:none; }                         /* the window or the column is too narrow for tiles: the chips are the switcher */
 #page .quad .q-actions .bp5-button { white-space:nowrap; }

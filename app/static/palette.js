@@ -260,8 +260,20 @@ Palette.catalog = function (ctx, query) {
 
   // With nothing typed, Search is a plain route. With a query it moves to a group of its own at the very end (never filtered out, never ranked above
   // a real match): Enter on the best match then runs that match, and "search transcripts for ..." is the last row.
-  const routes = Palette.ROUTES.filter((r) => r[1] !== '#/search' || !query).map(([label, hash, kbd]) => ({ id: 'r:' + hash, label, hint: hash === '#/search' ? 'transcripts' : '', kbd, run: () => { close(); Palette.go(hash); } }));
+  const routes = Palette.ROUTES.filter((r) => r[1] !== '#/search' || !query).map(([label, hash, kbd]) => ({ id: 'r:' + hash, label, hint: hash === '#/search' ? 'transcripts' : '', kbd,
+    run: () => { close(); Palette.go(hash === '#/quad' && typeof Shell !== 'undefined' && Shell && typeof Shell.quadHref === 'function' ? Shell.quadHref() : hash); } }));      // the quad opens the scope last used
   groups.push({ id: 'routes', title: 'Routes', items: routes });
+
+  // Quad: <project> for every project with a live session: only for a search that starts like the word ("qu", "quad", "quad pet"), so a project name alone still finds its
+  // sessions first and the empty palette keeps its short list
+  const first = String(query || '').trim().toLowerCase().split(/[\s:]+/)[0];
+  if (first.length >= 2 && 'quad'.startsWith(first)) {
+    const live = new Map();
+    for (const s of ctx.sessions) if (s.project && s.state !== 'ended' && /^[A-Za-z0-9_-]+$/.test(s.project)) live.set(s.project, (live.get(s.project) || 0) + 1);
+    const quads = Array.from(live).sort((a, b) => a[0].localeCompare(b[0])).map(([project, n]) => ({ id: 'q:' + project, label: `Quad: ${project}`, hint: `${n} live session${n === 1 ? '' : 's'}`, keywords: 'terminals side by side',
+      run: () => { close(); Palette.go(typeof buildHash === 'function' ? buildHash('quad', {}, { p: project }) : '#/quad?p=' + project); } }));
+    groups.push({ id: 'quads', title: 'Quad', items: quads });
+  }
 
   const t = ctx.target;
   if (t && Palette.nudgeable(t)) {

@@ -278,6 +278,43 @@ test('a route row navigates; the search row carries what was typed', () => {
   assert.equal(w.location.hash, '#/search?q=stack%20trace');
 });
 
+test('typing "quad" offers Quad: <project> for every project with a live session (v0.5.9b); a project name alone, or the empty palette, does not', () => {
+  const { w } = world();
+  mounted(w, '#/');
+  w.run('Palette.open()');
+  assert.ok(!labels(w).some((l) => l.startsWith('Quad:')), 'the empty palette keeps its short list');
+  typeInto(w, 'quad');
+  assert.deepEqual(groups(w).filter((g) => g === 'Quad' || g === 'Routes'), ['Routes', 'Quad'], 'the Quad route first, the projects after it');
+  assert.deepEqual(labels(w).filter((l) => l.startsWith('Quad')), ['Quad', 'Quad: blog', 'Quad: shop']);
+  const hints = items(w).filter((n) => n.querySelector('.pal-label').textContent.startsWith('Quad:')).map((n) => n.textContent);
+  assert.match(hints[0], /2 live sessions/);
+  typeInto(w, 'qu');
+  assert.ok(labels(w).includes('Quad: shop'), 'a start of the word is enough');
+  typeInto(w, 'quad sh');
+  assert.deepEqual(labels(w).filter((l) => l.startsWith('Quad:')), ['Quad: shop'], 'and the rest of the query narrows it');
+  keyInBox(w, 'Enter');
+  assert.equal(w.location.hash, '#/quad?p=shop');
+  assert.equal(dlg(w).open, false);
+  w.run('Palette.open()');
+  typeInto(w, 'blog');
+  assert.ok(!labels(w).some((l) => l.startsWith('Quad:')), 'a project name finds its sessions, not its quad');
+  typeInto(w, 'q');
+  assert.ok(!labels(w).some((l) => l.startsWith('Quad:')), 'one letter is not enough');
+});
+
+test('a project with only ended sessions gets no Quad: entry; the Quad route follows the last scope when the shell has one', () => {
+  const st = fakeState();
+  st.projects[1].repos[0].sessions.forEach((x) => { x.state = 'ended'; });
+  const { w } = world({ state: st });
+  mounted(w, '#/');
+  w.run('Palette.open()');
+  typeInto(w, 'quad');
+  assert.deepEqual(labels(w).filter((l) => l.startsWith('Quad')), ['Quad', 'Quad: shop'], 'blog has nothing live');
+  w.run("globalThis.Shell = { quadHref: () => '#/quad?p=shop' }");
+  items(w).find((n) => n.querySelector('.pal-label').textContent === 'Quad').click();
+  assert.equal(w.location.hash, '#/quad?p=shop', 'the plain Quad route opens the scope last used');
+});
+
 test('clicking a row runs it; a click on the backdrop closes', () => {
   const { w } = world();
   mounted(w, '#/');

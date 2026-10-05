@@ -23,6 +23,12 @@ function pjHash(project, repo, query) {
   try { return buildHash('project', repo ? { project, repo } : { project }, query || {}); } catch (_) { return '#/'; }
 }
 
+/* The project's own quad: #/quad?p=<project> (the header's Quad button). */
+function pjQuadHash(project) {
+  if (!/^[A-Za-z0-9_-]+$/.test(String(project || ''))) return '#/quad';
+  try { return buildHash('quad', {}, { p: project }); } catch (_) { return '#/quad'; }
+}
+
 function pjGo(hash, replace) {
   if (typeof navigate === 'function') navigate(hash, replace ? { replace: true } : undefined);
   else if (typeof location !== 'undefined') location.hash = hash;
@@ -116,12 +122,14 @@ function pjHeader(P) {
   const path = el('span', { class: 'pj-path mono dim' });
   const more = el('button', { class: 'icon minimal pj-more', type: 'button', 'aria-label': 'More actions', title: 'More: add repo, code-server, repos, delete project' }, ic('more'));
   menu(more, () => pjMoreItems(P));
+  // the project's live sessions side by side (the quad scoped to it): a quiet bordered link beside the ... menu, on every width and on every tab
+  const quad = el('a', { class: 'btn minimal small pj-quad', href: '#/quad', title: "This project's live sessions side by side (the quad)" }, ic('layout-grid'), 'Quad');
   const repos = el('div', { class: 'pj-repos', role: 'group', 'aria-label': 'Repos' });
   const stats = el('div', { class: 'pj-stats mono' });
   const actions = el('div', { class: 'pj-actions' });                 // pjPatchActions fills it: the filled primary follows the tab
   const manage = el('div', { class: 'pj-manage hidden', role: 'region', 'aria-label': 'Repos and danger zone' });
-  const node = el('header', { class: 'pj-head' }, el('div', { class: 'pj-title' }, name, path, el('span', { class: 'spacer' }), more), repos, stats, actions, manage);
-  return { node, name, path, repos, stats, actions, manage, sig: { repos: null, tab: null, manage: null } };
+  const node = el('header', { class: 'pj-head' }, el('div', { class: 'pj-title' }, name, path, el('span', { class: 'spacer' }), quad, more), repos, stats, actions, manage);
+  return { node, name, path, quad, repos, stats, actions, manage, sig: { repos: null, tab: null, manage: null } };
 }
 
 /* + session / + task / + schedule, built per tab (v0.5.6d): the Sessions tab's primary is + session; on Tasks and Schedules the tab's own button is the one
@@ -172,6 +180,7 @@ function pjPatchHeader(P, st, p) {
   const h = P.head;
   setText(h.name, p.name);
   setText(h.path, p.path || '');
+  h.quad.setAttribute('href', pjQuadHash(p.name));
   const sig = pjSig([p.name, (p.repos || []).map((r) => [r.name, r.path, r.state, r.branch, r.dirty, typeof repoCost === 'function' ? repoCost(p, r) : '']), pjCodePort(st)]);
   if (h.sig.repos !== sig) {
     h.sig.repos = sig;

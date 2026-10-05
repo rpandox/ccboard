@@ -241,7 +241,7 @@ Keymap.bindDefaults = function () {
 
   for (const [k, hash, text] of [['h', '#/', 'Home'], ['i', '#/inbox', 'Needs you'], ['a', '#/agents', 'Agents'], ['t', '#/tasks', 'Tasks'],
     ['q', '#/quad', 'Quad (terminals side by side)'], ['u', '#/usage', 'Usage'], ['m', '#/memory', 'Memory'], ['s', '#/settings', 'Settings']]) {
-    B('g ' + k, () => { Keymap.go(hash); return true; }, { help: 'Go to ' + text, group: 'Go to' });
+    B('g ' + k, () => { Keymap.go(hash === '#/quad' && typeof Shell !== 'undefined' && Shell && typeof Shell.quadHref === 'function' ? Shell.quadHref() : hash); return true; }, { help: 'Go to ' + text, group: 'Go to' });      // the quad opens the scope last used
   }
 
   // c then s / t / p / r: the + menu's sheets (Shell.openCreate). A chord, so a lone c in a form still types a c. m (move) stays unbound until v0.5.15.

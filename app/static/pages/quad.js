@@ -12,6 +12,14 @@
    Zoom is an overlay over an unchanged grid, so the other tiles keep their pixel size (no refit, no /resize POST). Tiles beyond the layout are torn
    down: iframe.src = 'about:blank', then remove(), observers off, Live.unsubscribe.
 
+   The scope (v0.5.9b): #/quad is every project, #/quad?p=<project> is one project's quad. The scope picks the sessions: auto-fill, the needs-you order, the sessions an
+   empty tile offers, the tile menu's swaps and the phone chips all read Quad.candidates(st, project). A native select in the header (Quad.scopeOptions: All projects,
+   then every project with a live session, a count in each label) changes it: the page pushes #/quad?s=<the slots that belong to the new project>&l=..&p=<project> (p
+   dropped for All) and the route change keeps those tiles (not one reloads), drops the others and auto-fills the gaps. The last scope is remembered as
+   ccboard:quad:scope ('all' or a project name): the sidebar's and drawer's Quad link, g q and the palette's Quad open it (Shell.quadHref puts ?p= in their address).
+   A bare #/quad is always all projects (the dock's add-to-quad, the manifest shortcut and the page's own All projects links rely on that). A project with no
+   live session shows one line and a New session button instead of the grid.
+
    State, per scope (all projects or one): ccboard:quad:<project|all> = {layout, slots[4], modes{tmux: mode}, zoom}. The URL (?s= ?l= ?p=) wins over the
    saved state and is written back with navigate(..., {replace: true}) once the page has settled (never inside mount). Sessions fill the empty slots
    by (needs you, working, recent). The default mode of a tile is grid, and full where the window forces one tile (a phone, a narrow column): only that
@@ -33,6 +41,8 @@ const Quad = {
   WIDE_MIN: 840,                   // under this window width the quad is the one-up chip switcher
   COLS_MIN: 600,                   // two columns need 300 px each: a quad column narrower than this is one-up as well (the dock open at 1024)
   STORE: 'ccboard:quad:',
+  SCOPE_KEY: 'ccboard:quad:scope', // the scope last used: 'all' or a project name (a raw string, read by shell.js for the nav link)
+  RESERVED: ['all', 'scope', 'keys'], // project names that would share a storage key with the all-projects scope, the scope pref and the key-bar pref: they save under ccboard:quad:p:<name>
   KEYS_PREF: 'ccboard:quad:keys',  // '1' shows the host key bar, '0' hides it; unset: shown on touch and in one-up
   MODES_MAX: 24,                   // remembered modes per scope
   HIDDEN_MS: 60000,                // a tab hidden longer than this reloads its live tiles when it comes back
@@ -114,7 +124,19 @@ Quad.buildQuery = function (st) {
 
 Quad.hashFor = function (st) { return buildHash('quad', {}, Quad.buildQuery(st)); };
 
-Quad.storageKey = function (project) { return Quad.STORE + (project && Quad.WORD_RE.test(project) ? project : 'all'); };
+Quad.storageKey = function (project) {
+  if (!(project && Quad.WORD_RE.test(project))) return Quad.STORE + 'all';
+  return Quad.STORE + (Quad.RESERVED.includes(project) ? 'p:' : '') + project;
+};
+
+/* Remember the scope and let the sidebar's Quad link follow it (Shell.syncQuadLinks, when shell.js is there). */
+Quad.rememberScope = function (project) {
+  const v = project && Quad.WORD_RE.test(project) ? project : 'all';
+  let was = null;
+  try { was = localStorage.getItem(Quad.SCOPE_KEY); } catch (_) { was = null; }
+  if (was !== v) { try { localStorage.setItem(Quad.SCOPE_KEY, v); } catch (_) { /* storage may be unavailable */ } }
+  try { if (typeof Shell !== 'undefined' && Shell && typeof Shell.syncQuadLinks === 'function') Shell.syncQuadLinks(); } catch (e) { console.error('ccboard quad link', e); }
+};
 
 /* The saved {layout, slots, modes, zoom} of a scope, or null when nothing (usable) was saved. */
 Quad.load = function (project) {
@@ -218,6 +240,25 @@ Quad.candidates = function (st, project) {
   return Quad.roster(st).filter((s) => s.tmux && s.state !== 'ended' && (!project || s.project === project)).sort((a, b) => Quad.compare(a, b, st));
 };
 
+/* The scope select's options: [{project: '' (all) | name, count, label}]: All projects first, then every project with a live session (the sessions a tile can show,
+   not ended) by name, a count in each label. `current` is always listed (with 0 when it has none): a select that did not could not show where the page is. */
+Quad.scopeOptions = function (st, current) {
+  const counts = new Map();
+  for (const s of Quad.roster(st)) if (s.tmux && s.state !== 'ended' && Quad.WORD_RE.test(String(s.project))) counts.set(s.project, (counts.get(s.project) || 0) + 1);
+  if (current && Quad.WORD_RE.test(current) && !counts.has(current)) counts.set(current, 0);
+  const total = Array.from(counts.values()).reduce((a, b) => a + b, 0);
+  const out = [{ project: '', count: total, label: `All projects (${total})` }];
+  for (const name of Array.from(counts.keys()).sort((a, b) => a.localeCompare(b))) out.push({ project: name, count: counts.get(name), label: `${name} (${counts.get(name)})` });
+  return out;
+};
+
+/* Does this session belong to `project`? ('' is every project.) The roster knows; a session that has gone is told by the project of its name. */
+Quad.inProject = function (st, tmux, project) {
+  if (!project) return true;
+  for (const s of Quad.roster(st)) if (s.tmux === tmux) return s.project === project;
+  return Quad.parts(tmux)[0] === project;
+};
+
 /* The tmux names that auto-fill picks for `n` tiles: opts {project, exclude: names already placed}. */
 Quad.autoFill = function (st, n, opts) {
   const o = opts || {};
@@ -246,6 +287,7 @@ Quad.slotsState = function (o) {
   const n = Math.min(Quad.SLOTS, Math.max(1, o.n || layout));
   const st = o.state || null;
   let slots = parsed.slots ? parsed.slots.slice() : (saved ? saved.slots.slice() : ['', '', '', '']);
+  if (o.project) slots = slots.map((t) => (t && !Quad.inProject(st, t, o.project) ? '' : t));         // a project's quad shows that project's sessions only
   const modes = saved ? { ...saved.modes } : {};
   let zoom = saved && saved.zoom !== null && saved.zoom < n ? saved.zoom : null;
   if (st) {
@@ -356,7 +398,7 @@ Quad.mount = function (root, route) {
   try { if (typeof Shell !== 'undefined' && Shell && typeof Shell.dockSuspend === 'function') Shell.dockSuspend(); } catch (e) { console.error('ccboard quad dock', e); }
   const parsed0 = Quad.parseQuery(route && route.query);
   const I = {
-    root, host: null, project: parsed0.project || '', query: route && route.query ? route.query : {},
+    root, host: null, project: parsed0.project || '', query: route && route.query ? route.query : {}, carry: null, noScope: false, scopeSig: null,
     layout: parsed0.layout || Quad.DEFAULT_LAYOUT, slots: ['', '', '', ''], modes: {}, zoom: null,
     n: 1, oneUp: true, forced: true, reMode: false, focused: false, touch: false, resolved: false, st: null, roster: [], index: new Map(),
     active: '', tiles: new Map(), empties: new Map(), manualEmpty: new Set(),
@@ -386,6 +428,8 @@ Quad.mount = function (root, route) {
 
   const known = () => !!(I.st && !I.st.tmux_down);                 // a poll that failed leaves the old state; tmux down is the one 'I do not know' the server sends
   const sessionOf = (tmux) => I.index.get(tmux) || null;
+  /* A project's quad with nothing to show: no live session in it and no tile on screen (the board knows: tmux is up). */
+  const emptyScope = () => !!(I.project && known() && !Quad.candidates(I.st, I.project).length && !I.slots.slice(0, I.n).some(Boolean));
   const visibleSlots = () => I.slots.slice(0, I.n);
   const tileAt = (slot) => { for (const t of I.tiles.values()) if (t.slot === slot) return t; return null; };
   const modeFor = (tmux) => Quad.modeOf(I.modes, tmux, I.forced);
@@ -400,6 +444,7 @@ Quad.mount = function (root, route) {
     if (location.hash === h) return false;
     I.writing = true;
     try { navigate(h, { replace: true }); } finally { I.writing = false; }
+    try { if (typeof Shell !== 'undefined' && Shell && typeof Shell.syncCrumbs === 'function') Shell.syncCrumbs(); } catch (e) { console.error('ccboard quad crumb', e); }      // a replace fires no hashchange
     return true;
   }
 
@@ -643,7 +688,7 @@ Quad.mount = function (root, route) {
 
   function patchKeys() {
     if (!I.keysHost) return;
-    const on = keysWanted();
+    const on = keysWanted() && !I.noScope;
     I.keysHost.classList.toggle('hidden', !on);
     I.keysBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
     const t = I.tiles.get(I.active) || null;
@@ -895,7 +940,7 @@ Quad.mount = function (root, route) {
     if (e.sig === sig) return;
     e.sig = sig;
     e.node.textContent = '';
-    e.node.append(el('div', { class: 'qe-title', text: !I.st ? 'Loading sessions…' : (free.length ? 'Pick a session for this tile' : 'No other session is running') }));
+    e.node.append(el('div', { class: 'qe-title', text: !I.st ? 'Loading sessions…' : (free.length ? 'Pick a session for this tile' : (I.project ? `No other session in ${I.project}` : 'No other session is running')) }));
     if (!I.st) return;
     const list = el('div', { class: 'qe-list' });
     for (const s of free) {
@@ -962,8 +1007,8 @@ Quad.mount = function (root, route) {
 
   function renderChips() {
     if (!I.chipsHost) return;
-    I.chipsHost.classList.toggle('hidden', !I.oneUp);
-    if (!I.oneUp || !I.st) { chipTailsOff(); return; }
+    I.chipsHost.classList.toggle('hidden', !I.oneUp || I.noScope);
+    if (!I.oneUp || !I.st || I.noScope) { chipTailsOff(); return; }
     const list = Quad.candidates(I.st, I.project);
     const cur = I.slots[0] ? sessionOf(I.slots[0]) : null;
     if (cur && !list.some((s) => s.tmux === cur.tmux)) list.unshift(cur);          // an ended session that is on screen stays a chip
@@ -1014,6 +1059,10 @@ Quad.mount = function (root, route) {
     if (I.zoom !== null) I.grid.setAttribute('data-zoom', String(I.zoom)); else I.grid.removeAttribute('data-zoom');
     for (const b of I.layoutBtns) b.setAttribute('aria-pressed', Number(b.getAttribute('data-layout')) === I.layout ? 'true' : 'false');
     I.fillBtn.disabled = !I.st;
+    I.grid.classList.toggle('hidden', I.noScope);
+    I.actions.classList.toggle('hidden', I.noScope);
+    patchScope();
+    patchNone();
   }
 
   function sync() {
@@ -1027,12 +1076,13 @@ Quad.mount = function (root, route) {
       if (I.reMode) { const m = modeFor(tmux); if (t.mode !== m) { t.mode = m; mountBody(t); } }      // a chosen mode is in I.modes and never changes here; a layout change never gets this far
     }
     I.reMode = false;
+    I.noScope = emptyScope();
     for (const [slot, e] of Array.from(I.empties)) {
-      if (slot < I.n && !I.slots[slot]) continue;
+      if (!I.noScope && slot < I.n && !I.slots[slot]) continue;
       e.node.remove();
       I.empties.delete(slot);
     }
-    for (let i = 0; i < I.n; i++) if (!I.slots[i]) patchEmpty(ensureEmpty(i));
+    if (!I.noScope) for (let i = 0; i < I.n; i++) if (!I.slots[i]) patchEmpty(ensureEmpty(i));
     for (const t of I.tiles.values()) {
       const z = I.zoom !== null && t.slot === I.zoom;
       t.node.classList.toggle('zoomed', z);
@@ -1060,8 +1110,10 @@ Quad.mount = function (root, route) {
   }
 
   /* ----- the first state, the polls ----- */
-  function resolveInitial() {
-    const saved = Quad.load(I.project);
+  /* `carry` ({slots, zoom}) is a scope change made with the select: those slots (already only the new project's) stand in for the saved ones, so the tiles that stay stay. */
+  function resolveInitial(carry) {
+    const stored = Quad.load(I.project);
+    const saved = carry ? { layout: I.layout, slots: carry.slots, modes: stored ? stored.modes : {}, zoom: carry.zoom } : stored;
     const parsed = Quad.parseQuery(I.query);
     I.layout = parsed.layout || (saved && saved.layout) || Quad.DEFAULT_LAYOUT;
     relayout(true);
@@ -1080,11 +1132,17 @@ Quad.mount = function (root, route) {
     if (first) resolveInitial();
     if (!I.resolved) return;
     for (const t of I.tiles.values()) patchGone(t);
+    let started = false;
+    if (I.noScope && known() && Quad.candidates(I.st, I.project).length) {                // the project had nothing running and now does (the New session button): its tiles fill at once
+      I.manualEmpty.clear();
+      I.slots = Quad.fillSlots(I.slots, I.st, I.n, { project: I.project });
+      started = true;
+    }
     sync();
     for (const t of I.tiles.values()) { const s = sessionOf(t.tmux); if (s) { patchTile(t, s); autoFit(t); } }
     for (const e of I.empties.values()) patchEmpty(e);
     renderChips();
-    if (first) persist();
+    if (first || started) persist();
   }
 
   /* The address changed under the page: a pasted link, the sidebar's Quad link, our own write-back (ignored). */
@@ -1102,25 +1160,71 @@ Quad.mount = function (root, route) {
     if (diff) changed();
   }
 
+  /* The scope changed under the page (the select, a pasted link, Back): the tiles whose session is still wanted are kept as they are (sync() only removes what is not
+     wanted and only moves data-slot, so not one iframe reloads); the others go, and the gaps are filled by auto-fill. The slots come from the URL's ?s=, else from the select's
+     carry, else from what the new scope saved. */
   function switchScope(project) {
+    const carry = I.carry && I.carry.project === project ? I.carry : null;
+    I.carry = null;
+    const before = I.modes;
     if (I.resolved) Quad.save(I.project, snapshot());
-    for (const t of Array.from(I.tiles.values())) teardownTile(t);
-    for (const e of I.empties.values()) e.node.remove();
-    I.empties.clear();
-    chipTailsOff();
-    I.chipOrder = [];
     I.project = project;
     I.resolved = false;
-    I.active = '';
     I.manualEmpty.clear();
-    scopeHead();
-    if (I.st) { resolveInitial(); sync(); for (const t of I.tiles.values()) { const s = sessionOf(t.tmux); if (s) patchTile(t, s); } persist(); }
+    Quad.rememberScope(project);
+    if (I.st) {
+      resolveInitial(carry);
+      const here = new Set(I.slots.filter(Boolean));
+      for (const [tmux, mode] of Object.entries(before)) if (here.has(tmux) && !I.modes[tmux]) I.modes[tmux] = mode;         // a mode that was chosen on a tile that stays stays
+      sync();
+      for (const t of I.tiles.values()) { const s = sessionOf(t.tmux); if (s) patchTile(t, s); }
+      persist();
+    } else patchHead();
     if (typeof document !== 'undefined' && typeof refreshTitle === 'function') refreshTitle();
   }
 
-  function scopeHead() {
-    I.scope.textContent = '';
-    if (I.project) I.scope.append(el('span', { class: 'dim', text: I.project }), ' ', el('a', { class: 'q-all', href: '#/quad', text: 'all projects' }));
+  /* The select: changing it pushes the new address (Back returns to the scope before). The slots that belong to the chosen project ride in it; sessions of other projects are
+     left out, and switchScope fills what is empty. */
+  function pickScope(value) {
+    const project = value && Quad.WORD_RE.test(value) ? value : '';
+    if (project === I.project) return;
+    const kept = I.slots.map((t) => (t && Quad.inProject(I.st, t, project) ? t : ''));
+    I.carry = { project, slots: kept, zoom: I.zoom !== null && kept[I.zoom] ? I.zoom : null };
+    const h = Quad.hashFor({ layout: I.layout, slots: kept, project });
+    if (typeof navigate === 'function') navigate(h); else if (typeof location !== 'undefined') location.hash = h;
+  }
+
+  /* The select's options follow the sessions (counts in place; a new set of projects is built when the picker is not in use) and its value is the scope. */
+  function patchScope() {
+    const sel = I.scopeSel;
+    if (!sel) return;
+    const opts = Quad.scopeOptions(I.st, I.project);
+    const sig = opts.map((o) => o.project).join('|');
+    let focused = false;
+    try { focused = typeof document !== 'undefined' && document.activeElement === sel; } catch (_) { focused = false; }
+    const busy = focused && I.scopeSig !== null;                      // the picker may be open: a different set of projects waits for blur
+    if (sig !== I.scopeSig && !busy) {
+      I.scopeSig = sig;
+      sel.textContent = '';
+      for (const o of opts) sel.append(el('option', { value: o.project, text: o.label }));
+    }
+    if (sig === I.scopeSig) opts.forEach((o, i) => { if (sel.children[i]) setTextIfChanged(sel.children[i], o.label); });      // the counts follow the poll in place
+    if (!busy) sel.value = I.project;
+    I.scopeAll.classList.toggle('hidden', !I.project || I.noScope);                 // the empty-project block has its own All projects link: not two of them on one screen
+  }
+
+  /* One plain line for a project with nothing running, and what to do next. */
+  function patchNone() {
+    const on = I.noScope;
+    I.none.classList.toggle('hidden', !on);
+    if (!on) return;
+    setTextIfChanged(I.noneLine, `no live session in ${I.project}`);
+    const p = I.st && (I.st.projects || []).some((x) => x.name === I.project);
+    I.noneNew.classList.toggle('hidden', !p || typeof Shell === 'undefined' || !Shell || typeof Shell.openCreate !== 'function');
+  }
+
+  function newSession() {
+    if (typeof Shell !== 'undefined' && Shell && typeof Shell.openCreate === 'function' && I.project) Shell.openCreate('session', { project: I.project });
   }
 
   /* ----- keys and the window ----- */
@@ -1157,9 +1261,17 @@ Quad.mount = function (root, route) {
   I.reloadBtn = el('button', { class: 'small q-reload', type: 'button', title: 'Reload every terminal (Ctrl+Alt+R)', onclick: () => reloadAll() }, ic('refresh'), 'Reload all');
   I.keysBtn = el('button', { class: 'small q-keys-toggle', type: 'button', 'aria-pressed': 'false', title: 'Show or hide the key bar',
     onclick: () => { try { localStorage.setItem(Quad.KEYS_PREF, keysWanted() ? '0' : '1'); } catch (_) { /* storage may be unavailable */ } patchKeys(); fitAll(); }, text: 'Keys' });
-  I.scope = el('span', { class: 'q-scope' });
-  const head = el('div', { class: 'page-head q-head' }, el('h1', { text: 'Quad' }), I.scope,
-    el('div', { class: 'actions q-actions' }, I.layoutCtl, I.fillBtn, I.reloadBtn, I.keysBtn));
+  // the scope: a native select on every width (more than four options), and a quiet way back to all projects while one is chosen
+  I.scopeSel = el('select', { class: 'q-scope-sel', 'aria-label': 'Project', title: 'Which project the tiles come from' });
+  I.scopeSel.addEventListener('change', () => pickScope(I.scopeSel.value));
+  I.scopeSel.addEventListener('blur', () => patchScope());                   // an option list that grew while the picker was open is built now
+  I.scopeAll = el('a', { class: 'q-all hidden', href: '#/quad', text: 'all projects' });
+  I.scope = el('span', { class: 'q-scope' }, I.scopeSel, I.scopeAll);
+  I.actions = el('div', { class: 'actions q-actions' }, I.layoutCtl, I.fillBtn, I.reloadBtn, I.keysBtn);
+  const head = el('div', { class: 'page-head q-head' }, el('h1', { text: 'Quad' }), I.scope, I.actions);
+  I.noneLine = el('p', { class: 'q-none-line' });
+  I.noneNew = el('button', { class: 'small q-none-new hidden', type: 'button', text: 'New session', onclick: () => newSession() });
+  I.none = el('div', { class: 'q-none hidden', role: 'status' }, I.noneLine, el('div', { class: 'q-none-actions' }, I.noneNew, el('a', { class: 'btn minimal small q-none-all', href: '#/quad', text: 'All projects' })));
   I.chipsHost = el('div', { class: 'q-chips hidden', role: 'tablist', 'aria-label': 'Sessions' });
   I.chipList = makeKeyedList(I.chipsHost, { key: (s) => s.tmux, create: chipNode, patch: patchChip });
   I.grid = el('div', { class: 'qgrid', 'data-layout': '1' });
@@ -1176,9 +1288,9 @@ Quad.mount = function (root, route) {
     }
     I.keysHost.append(el('div', { class: 'q-keys-row' }, kb.root, rail));
   }
-  I.host = el('div', { class: 'quad', 'data-layout': '1' }, head, I.chipsHost, I.grid, I.keysHost);
+  I.host = el('div', { class: 'quad', 'data-layout': '1' }, head, I.chipsHost, I.none, I.grid, I.keysHost);
   root.append(I.host);
-  scopeHead();
+  Quad.rememberScope(I.project);
 
   if (typeof document !== 'undefined') listen(document, 'keydown', onKey, true);
   if (typeof document !== 'undefined') listen(document, 'visibilitychange', onVisibility);
@@ -1242,7 +1354,7 @@ Quad.mount = function (root, route) {
 registerPage('quad', {
   title: (route) => {
     const p = Quad.parseQuery(route && route.query).project;
-    return 'Quad' + (p ? ' ' + p : '');
+    return 'Quad' + (p ? ' · ' + p : '');
   },
   mount(root, route) {
     if (Quad.current) { Quad.current.destroy(); Quad.current = null; }

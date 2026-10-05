@@ -894,4 +894,75 @@ test('sidebar: arrow keys and Enter work on directory nodes (Enter follows the l
   assert.deepEqual(env.server.treePaths(), ['website|']);
 });
 
+// ---------------------------------------------------------------- the quad for this project (v0.5.9b): the header's Quad link, the sidebar's last-scope link, the crumb
+
+test('the header has a quiet Quad link to #/quad?p=<project>, on every tab and every width, beside the ... menu (not among the create buttons), and it follows another project', async () => {
+  const env = projectWorld();
+  let page = await go(env, '#/p/phasezero');
+  const link = () => all(env.page(), '.pj-title a.pj-quad')[0];
+  assert.ok(link(), 'a Quad link in the header');
+  assert.equal(link().getAttribute('href'), '#/quad?p=phasezero');
+  assert.equal(link().textContent.trim(), 'Quad');
+  assert.ok(link().classList.contains('bp5-minimal') && link().classList.contains('bp5-small'), 'quiet: the bordered minimal button, not a primary');
+  assert.equal(link().classList.contains('bp5-intent-primary'), false);
+  assert.equal(all(page, '.pj-actions a').length, 0, 'the create buttons stay the only things in their row');
+  assert.deepEqual(shownButtons(page, /^\+ (session|task|schedule)$/).filter((b) => b.classList.contains('bp5-intent-primary')).map((b) => b.textContent.trim()), ['+ session'], 'the one filled primary is still + session');
+  for (const tab of ['tasks', 'schedules', 'files']) {
+    page = await go(env, `#/p/phasezero?tab=${tab}`);
+    assert.equal(link().getAttribute('href'), '#/quad?p=phasezero', `visible on the ${tab} tab`);
+    assert.equal(shownNode(link()), true);
+  }
+  page = await go(env, '#/p/phasezero/website');
+  assert.equal(link().getAttribute('href'), '#/quad?p=phasezero', 'a repo route is still the project\'s quad');
+  page = await go(env, '#/p/petroit');
+  assert.equal(link().getAttribute('href'), '#/quad?p=petroit', 'another project, the same page: the link follows');
+  assert.equal(all(page, '.pj-title a.pj-quad').length, 1, 'built once');
+});
+
+test('pages.css: the project header\'s Quad link sits beside the ... menu, also on a phone (order, not hidden)', () => {
+  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  assert.match(css, /#page \.pj-more, #page \.pj-quad \{ align-self:center; \}/);
+  assert.match(css, /@media \(max-width:599px\) \{[\s\S]*?#page \.pj-more, #page \.pj-quad \{ order:2; \}/);
+  assert.doesNotMatch(css, /\.pj-quad[^{]*\{[^}]*display:none/, 'no width hides it: the quad has a one-up mode under 840 px');
+});
+
+test('Shell.quadHref: the sidebar\'s Quad entry opens the scope last used (ccboard:quad:scope); a project the board no longer lists, "all", nothing or junk is plain #/quad', async () => {
+  const env = projectWorld({ shell: true });
+  const { w } = env;
+  await go(env, '#/p/phasezero');
+  const anchors = () => ['#sidebar', '#drawer'].flatMap((id) => w.document.querySelector(id).querySelectorAll('a').filter((a) => a.getAttribute('data-nav') === 'quad'));
+  assert.equal(anchors().length, 2, 'the sidebar and the drawer both have a Quad entry');
+  assert.deepEqual(anchors().map((a) => a.getAttribute('href')), ['#/quad', '#/quad']);
+  const href = (pref) => { if (pref === null) w.localStorage.removeItem('ccboard:quad:scope'); else w.localStorage.setItem('ccboard:quad:scope', pref); w.run('Shell.syncNav()'); return anchors().map((a) => a.getAttribute('href')); };
+  assert.deepEqual(href('petroit'), ['#/quad?p=petroit', '#/quad?p=petroit']);
+  assert.deepEqual(href('all'), ['#/quad', '#/quad']);
+  assert.deepEqual(href('nothere'), ['#/quad', '#/quad'], 'a project that is not on the board is not offered');
+  assert.deepEqual(href('bad name!'), ['#/quad', '#/quad']);
+  assert.deepEqual(href(null), ['#/quad', '#/quad']);
+  assert.equal(w.run('Shell.quadHref()'), '#/quad');
+  w.localStorage.setItem('ccboard:quad:scope', 'phasezero');
+  assert.equal(w.run('Shell.quadHref()'), '#/quad?p=phasezero');
+});
+
+test('visiting a project\'s quad moves the sidebar\'s Quad entry to it at once, and leaving it for all projects moves it back; the crumb reads "Quad · <project>"', async () => {
+  const env = projectWorld({ shell: true });
+  const { w } = env;
+  const anchor = () => w.document.querySelector('#sidebar').querySelectorAll('a').find((a) => a.getAttribute('data-nav') === 'quad');
+  const crumbs = () => w.document.querySelector('#topbar').querySelectorAll('.crumb').map((c) => c.textContent);
+  await go(env, '#/quad?p=petroit');
+  assert.equal(w.localStorage.getItem('ccboard:quad:scope'), 'petroit');
+  assert.equal(anchor().getAttribute('href'), '#/quad?p=petroit');
+  assert.deepEqual(crumbs(), ['Quad · petroit']);
+  assert.match(w.document.title, /^Quad · petroit/);
+  const sel = env.page().querySelector('.q-scope-sel');
+  sel.value = '';
+  sel.dispatchEvent({ type: 'change' });
+  await settle();
+  assert.equal(w.localStorage.getItem('ccboard:quad:scope'), 'all');
+  assert.equal(anchor().getAttribute('href'), '#/quad');
+  assert.deepEqual(crumbs(), ['Quad']);
+  assert.deepEqual(plain(w.run("Shell.crumbList({ id: 'quad', params: {}, query: { p: 'x y' } })")), [{ text: 'Quad' }], 'a scope that is not a project word is just Quad');
+  assert.deepEqual(plain(w.run("Shell.crumbList({ id: 'quad', params: {}, query: { p: 'ccboard', l: '2' } })")), [{ text: 'Quad · ccboard' }]);
+});
+
 void EPOCH; void TREE_FIXTURE; void focused; void pathOf;

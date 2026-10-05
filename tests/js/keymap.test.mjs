@@ -372,6 +372,19 @@ test('install(): g q goes to the quad view', () => {
   assert.ok(help.some((h) => h.text === 'g then q' && /Quad/i.test(h.help) && h.group === 'Go to'), 'g q is in the help list under Go to');
 });
 
+test('install(): g q opens the scope the quad was last used on when the shell knows one (Shell.quadHref), else all projects', () => {
+  const a = appWorld();
+  a.w.run("Shell.quadHref = () => '#/quad?p=ccboard'");
+  a.press('g'); a.press('q');
+  assert.deepEqual(a.log(), ['go #/quad?p=ccboard']);
+  const b = appWorld();
+  b.press('g'); b.press('q');
+  assert.deepEqual(b.log(), ['go #/quad'], 'a shell without quadHref (a partial deploy): the plain route');
+  const c = appWorld();
+  c.press('g'); c.press('h');
+  assert.deepEqual(c.log(), ['go #/'], 'other chords are untouched');
+});
+
 test('install(): c then s / t / p / r open the create sheets (session, task, project, import) through Shell.openCreate', () => {
   const { log, press, w } = appWorld();
   for (const k of ['s', 't', 'p', 'r']) { press('c'); press(k); }
