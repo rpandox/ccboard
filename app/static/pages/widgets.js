@@ -113,9 +113,16 @@ Widgets.gauge = function (label) {
     const eta = w.resets_at ? fmtIn(w.resets_at) : '';
     setTextIfChanged(reset, eta ? `resets in ${eta}` : '');
     bar.setAttribute('aria-label', `${label} ${Math.round(pct)}% used`);
-    root.setAttribute('title', `${label} window: ${Math.round(pct)}% used` + (w.resets_at ? ` · resets ${Widgets.clock(w.resets_at)}` : ''));
+    root.setAttribute('title', `${label} window: ${Math.round(pct)}% used` + (w.resets_at ? ` · resets ${Widgets.clock(w.resets_at)}` : '') + (w.note ? ` · ${w.note}` : ''));
   };
   return root;
+};
+
+/* One Claude window ('5h' | '7d') of state.usage for Widgets.gauge.set, time-aware like the topbar pills (core.js limitUsageWindow): a window whose reset has passed with no
+   newer reading shows 0 % and counts down to the next reset, and the title (`note`) says when and where the last reading came from. */
+Widgets.claudeWindow = function (st, win) {
+  const x = limitUsageWindow(st, win);
+  return x ? { used_percentage: x.pct, resets_at: x.resets_at, note: limitCaption(x) } : null;
 };
 
 /* The text alternative of the 5H sparkline: '5-hour window, last 24 hours: now 42%, peak 100%'. */
@@ -258,9 +265,8 @@ Widgets.usageCard = function (host) {
 
   const paintState = (st) => {
     if (!st) return;
-    const rl = (st.usage && st.usage.value) || {};
-    g5.set(rl.five_hour);
-    g7.set(rl.seven_day);
+    g5.set(Widgets.claudeWindow(st, '5h'));
+    g7.set(Widgets.claudeWindow(st, '7d'));
     const b = st.block && st.block.value;
     const live = !!(b && b.available && b.active);
     burn.classList.toggle('hidden', !live);

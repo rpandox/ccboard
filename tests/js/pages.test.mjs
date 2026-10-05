@@ -1086,7 +1086,8 @@ test('Settings > Accounts: one row per account with its name in the account\'s h
   assert.ok(rows[0].querySelector('.badge').classList.contains(hueOf(A1)), 'the plan chip wears the hue');
   assert.match(text(rows[0].querySelector('.kv-main')), /demo@example\.com/);
   assert.match(text(rows[0].querySelector('.kv-main')), /5H 42% · 7D 71%/);
-  assert.match(text(rows[1].querySelector('.kv-main')), /5H 0% · 7D 83%/, 'a window that reset since the last reading counts as empty');
+  assert.match(text(rows[1].querySelector('.kv-main')), /5H 0% \(resets in \d+h\d+m\) · 7D 83%/, 'a window that reset since the last reading counts as empty and counts down to the next reset');
+  assert.doesNotMatch(text(rows[1].querySelector('.kv-main')), /rolled over/);
   for (const r of rows) {
     const b = renameBtn(r);
     assert.ok(b && b.closest('.kv-act'), 'Rename lives in the action cell');
@@ -1102,7 +1103,27 @@ test('Settings > Accounts: the account in use shows the topbar pills\' numbers (
   w.location.hash = '#/settings?sec=accounts';
   const rows = acctRows(w);
   assert.match(text(rows[0].querySelector('.kv-main')), /5H 55% · 7D 72%/, 'one figure for the account in use on every screen');
-  assert.match(text(rows[1].querySelector('.kv-main')), /5H 0% · 7D 83%/, 'a quiet account: its own reading, its reset window counted as open');
+  assert.match(text(rows[1].querySelector('.kv-main')), /5H 0% \(resets in \d+h\d+m\) · 7D 83%/, 'a quiet account: its own reading, its reset window counted as open');
+});
+
+test('Settings > Accounts: a rolled window counts down to the next reset in the row, its title says nothing was recorded since and when and where the reading came from; a missed-windows account and a no-reading one read plainly', () => {
+  const ago = (s) => new Date((Date.now() - s * 1000) * 1).toISOString();
+  const accounts = { current: A1, list: [
+    { key: A1, email: 'demo@example.com', name: 'Demo', label: null, plan: 'max', rl_5h: 42, rl_7d: 71, resets_5h: secs(7200), resets_7d: secs(200000), rl_5h_at: ago(300), rl_7d_at: ago(300), source: 'statusline', current: true },
+    { key: A2, email: 'work@example.com', name: 'Work', label: 'Work', plan: 'pro', rl_5h: 100, rl_7d: 83, resets_5h: secs(-3600), resets_7d: secs(-3 * 604800 - 3600), rl_5h_at: ago(7200), rl_7d_at: ago(7200), source: 'cache', current: false },
+    { key: 'k3', email: 'new@example.com', name: 'New', label: null, plan: 'pro', rl_5h: null, rl_7d: null, resets_5h: null, resets_7d: null, rl_5h_at: null, rl_7d_at: null, source: 'statusline', current: false },
+  ] };
+  const { w } = pagesWorld({ state: fakeState({ accounts }) });
+  w.location.hash = '#/settings?sec=accounts';
+  const rows = acctRows(w);
+  const use = (r) => r.querySelector('.kv-main .dim');
+  assert.match(text(use(rows[0])), /^5H 42% · 7D 71%/, 'a window not yet reset keeps its percentage and adds no countdown to the row');
+  assert.equal(use(rows[0]).getAttribute('title'), 'updated 5m ago · from the last session');
+  assert.match(text(use(rows[1])), /^5H 0% \(resets in [34]h\d+m\) · 7D 0% \(resets in 6d2[23]h\)/, 'one window and several missed ones');
+  assert.equal(use(rows[1]).getAttribute('title'), "5H: no usage recorded since the window reset · 7D: no usage recorded since the window reset · updated 2h ago · from Claude Code's cache");
+  assert.match(text(use(rows[2])), /^no usage reading yet/);
+  assert.equal(use(rows[2]).getAttribute('title'), 'no reading yet');
+  assert.doesNotMatch(text(acctPanel(w)), /rolled over|undefined|NaN/);
 });
 
 test('Settings > Accounts empty state: says what is missing and still shows how to add a subscription', () => {

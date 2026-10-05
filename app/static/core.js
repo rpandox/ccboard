@@ -250,6 +250,63 @@ function fmtIn(epochSeconds) {
   return `${Math.floor(s / 86400)}d${Math.floor((s % 86400) / 3600)}h`;
 }
 
+/* ---------- the windows of a subscription at a given moment (v0.5.17f) ----------
+   Every surface that shows a 5-hour or 7-day window (the topbar pills, the Usage gauges and account rows, Settings > Accounts, the Home card) goes through
+   limitWindowNow, so they all say the same thing, and the server's accounts.window_now / headroom is its twin (tests/fixtures/window_now.json drives both):
+     a reading whose reset time is still ahead keeps its percentage and counts down to it;
+     a reading whose reset time has passed with no newer one is a window that rolled over, and nothing has been counted in the new one yet: 0 % used and the
+     NEXT reset, resets_at + n x period for the first n that puts it past now (the windows nobody read in between are assumed to follow each other).
+   The 5-hour window really starts with the first message after the last one ran out, so the next 5H reset of a quiet account is a projection: its title says so
+   ('no usage recorded since the window reset'). */
+const LIMIT_PERIOD = { '5h': 18000, '7d': 604800 };       // seconds
+
+/* An epoch in seconds from a number (seconds, or milliseconds above 1e11) or an ISO text; 0 for anything else. */
+function limitEpoch(v) {
+  if (typeof v === 'number' && Number.isFinite(v)) return v > 1e11 ? v / 1000 : v;
+  if (typeof v === 'string' && v) { const t = Date.parse(v); return Number.isNaN(t) ? 0 : t / 1000; }
+  return 0;
+}
+
+/* One window of a reading {pct, resets_at (epoch s), at (epoch s), source} at `now` (epoch s, default the clock), with `period` seconds between its resets, as
+   {pct: what to show (0 once rolled over), last: the reading's own percentage, resets_at: the reset to count down to (the next one once rolled; 0 unknown),
+   rolled, missed: whole windows skipped, at, source: 'cache' | 'statusline'}; null without a numeric reading. */
+function limitWindowNow(reading, period, now) {
+  if (!reading || typeof reading.pct !== 'number' || !Number.isFinite(reading.pct)) return null;
+  const t = typeof now === 'number' ? now : Date.now() / 1000;
+  const r = typeof reading.resets_at === 'number' && reading.resets_at > 0 ? reading.resets_at : 0;
+  const last = Math.max(0, Math.min(100, reading.pct));
+  const rolled = r > 0 && r <= t;
+  const missed = rolled && period > 0 ? Math.floor((t - r) / period) : 0;
+  return { pct: rolled ? 0 : last, last, resets_at: !r ? 0 : !rolled ? r : (period > 0 ? r + (missed + 1) * period : 0), rolled, missed,
+    at: limitEpoch(reading.at), source: reading.source === 'cache' ? 'cache' : 'statusline' };
+}
+
+/* 'updated 5m ago · from the last session' (a statusline reading), 'updated 5m ago · from Claude Code's cache' (the cache source), 'no reading yet' without a time. */
+function limitFreshness(at, source) {
+  const t = limitEpoch(at);
+  if (!t) return 'no reading yet';
+  return `updated ${fmtAge(t)} ago · from ${source === 'cache' ? "Claude Code's cache" : 'the last session'}`;
+}
+
+/* The caption of a window (a limitWindowNow answer) for a title: its freshness, led by 'no usage recorded since the window reset' once it rolled over. '' for a
+   window that carries no reading time and has not rolled. */
+function limitCaption(w) {
+  if (!w) return '';
+  const fresh = w.at ? limitFreshness(w.at, w.source) : '';
+  return w.rolled ? ['no usage recorded since the window reset', fresh].filter(Boolean).join(' · ') : fresh;
+}
+
+/* One Claude window ('5h' | '7d') of state.usage, the record the topbar pills read (a session's statusline, or Claude Code's cache): a limitWindowNow answer, null when
+   the record has no such window. The reading's time is the window's own `at` (a window the server filled in from an older reading), else the record's. */
+function limitUsageWindow(st, win, now) {
+  const u = st && st.usage;
+  const rl = (u && u.value) || {};
+  const w = win === '5h' ? rl.five_hour : rl.seven_day;
+  if (!w || typeof w.used_percentage !== 'number' || !Number.isFinite(w.used_percentage)) return null;
+  return limitWindowNow({ pct: w.used_percentage, resets_at: w.resets_at, at: w.at || (u && u.at), source: w.source || rl.source }, LIMIT_PERIOD[win], now);
+}
+
+
 function fmtTs(s) { return s ? s.replace('T', ' ').slice(0, 16) : ''; }
 
 const LAST_KEY = 'ccboard:last-state';

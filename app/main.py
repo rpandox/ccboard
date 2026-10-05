@@ -473,7 +473,7 @@ def build_state(user: str) -> dict:
     st["last_recovery"] = db.kv_get("last_recovery")
     st["deploy"] = deploy.view(db)                        # an update waiting for the terminals to close (None when nothing is pending)
     st["memory"] = memory.state_view(db)                  # claude-mem worker health as the monitor last saw it (None: off, or not sampled yet)
-    st["usage"] = db.kv_get("rate_limits")
+    st["usage"] = _usage_view()                           # the kv rate_limits record; a window it lacks comes from the account's last reading (usage.rate_limits_view)
     st["usage_codex"] = db.kv_get("rate_limits_codex")     # the Codex account's windows (agents/codex_rollout.py): {value{limit_id, plan_type, primary, secondary, credits, reached, observed_at, account}, at} | None
     st["accounts"] = account_store.decorate(_accounts_view())
     st["codex_accounts"] = _codex_accounts_view(tail=False)
@@ -506,6 +506,15 @@ def _codex_accounts_view(tail: bool = True) -> dict:
         return {"current": None, "list": [], "store": {"supported": False, "add": False, "reason": codex_accounts.REASON_NOT_INSTALLED, "count": 0},
                 "login": {"running": False, "adding": False, "label": None, "started_at": None, "url": None, "code": None, "result": None,
                           **({"tail": []} if tail else {})}}
+
+
+def _usage_view():
+    """state.usage (see usage.rate_limits_view); a failure answers the plain kv record, never an error."""
+    try:
+        return usage.rate_limits_view(db)
+    except Exception as e:
+        log.warning("usage view failed: %s", e.__class__.__name__)
+        return db.kv_get("rate_limits")
 
 
 def _accounts_view(full: bool = False) -> dict:

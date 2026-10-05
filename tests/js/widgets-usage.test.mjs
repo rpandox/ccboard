@@ -528,3 +528,33 @@ test('a total without today still says how many accounts there are (0 tokens), a
   assert.equal(acctLine(root).classList.contains('hidden'), true);
   c.destroy();
 });
+
+// ---------------------------------------------------------------- time-aware gauges (v0.5.17f)
+
+test('a window whose reset has passed with no newer reading stays on the card: 0 %, counting down to the next reset, the title says nothing was recorded since; one not yet reset keeps its number', async () => {
+  const w = wWorld();
+  const st = { usage: { value: { five_hour: { used_percentage: 91, resets_at: EPOCH(60) }, seven_day: { used_percentage: 59, resets_at: EPOCH(-3 * 1440) } }, at: ISO(180) } };
+  const { root, card: c } = card(w, { st });
+  await c.refresh();
+  const g = root.querySelectorAll('.gauge');
+  assert.deepEqual(g.map((x) => text(x.querySelector('.g-val'))), ['0%', '59%']);
+  assert.ok(!g[0].classList.contains('hidden') && g[0].classList.contains('ok'), 'never a missing gauge, and not red with the old 91 %');
+  assert.match(text(g[0].querySelector('.g-reset')), /^resets in [34]h\d+m$/, 'the 5-hour window one window after the reset that passed');
+  assert.match(g[0].getAttribute('title'), /^5H window: 0% used · resets .* · no usage recorded since the window reset · updated 3h ago · from the last session$/);
+  assert.match(text(g[1].querySelector('.g-reset')), /^resets in [23]d\d+h$/);
+  assert.match(g[1].getAttribute('title'), /^7D window: 59% used · resets .* · updated 3h ago · from the last session$/);
+  c.destroy();
+});
+
+test('the card\'s gauge titles name where the reading came from; a record with no time adds nothing', async () => {
+  const w = wWorld();
+  const { root, card: c } = card(w, { st: { usage: { value: { five_hour: { used_percentage: 30, resets_at: EPOCH(-120) }, seven_day: { used_percentage: 10, resets_at: EPOCH(-3000) }, source: 'cache' }, at: ISO(2) } } });
+  await c.refresh();
+  const g = root.querySelectorAll('.gauge');
+  assert.match(g[0].getAttribute('title'), /^5H window: 30% used · resets .* · updated 2m ago · from Claude Code's cache$/);
+  assert.match(g[1].getAttribute('title'), /^7D window: 10% used · resets .* · updated 2m ago · from Claude Code's cache$/);
+  w.ctx.__st = { usage: { value: { five_hour: { used_percentage: 30, resets_at: EPOCH(-120) } } } };
+  w.run('__card.update(__st)');
+  assert.doesNotMatch(g[0].getAttribute('title'), /updated|no usage/);
+  c.destroy();
+});

@@ -919,10 +919,10 @@ def test_view_lists_the_current_account_first_with_its_windows(env):
     assert v["current"] == UUID_B and [a["key"] for a in v["list"]] == [UUID_B, UUID_A]
     b, a = v["list"]
     assert b == {"key": UUID_B, "email": "b@example.com", "name": "Bob", "label": None, "plan": "max", "rl_5h": 20.0, "rl_7d": 60.0,
-                 "resets_5h": w.r5b, "resets_7d": w.r7b, "current": True}
+                 "resets_5h": w.r5b, "resets_7d": w.r7b, "rl_5h_at": iso(T0 + 11), "rl_7d_at": iso(T0 + 11), "source": "statusline", "current": True}
     assert a["rl_5h"] == 80.0 and a["rl_7d"] == 40.0 and a["current"] is False
     full = accounts.view(env.db, full=True)["list"][0]
-    assert {"org", "org_id", "tier", "config_dir", "first_seen", "last_seen", "rl_5h_at", "rl_7d_at"} <= set(full)
+    assert {"org", "org_id", "tier", "config_dir", "first_seen", "last_seen", "rl_5h_at", "rl_7d_at", "source"} <= set(full)
     assert accounts.view(DB(env.tmp / "empty.db")) == {"current": None, "list": []}
 
 
@@ -939,7 +939,7 @@ def test_headroom_is_per_account_and_a_passed_reset_is_fully_open(env):
     assert h["5h"] == [{"key": UUID_B, "left_pct": 80.0, "resets_at": w.r5b}, {"key": UUID_A, "left_pct": 20.0, "resets_at": w.r5a}]
     assert [(r["key"], r["left_pct"]) for r in h["7d"]] == [(UUID_A, 60.0), (UUID_B, 40.0)]
     later = accounts.headroom(env.db, w.r5a + 1)
-    assert later["5h"][0] == {"key": UUID_A, "left_pct": 100.0, "resets_at": w.r5a}, "A's 5 h window has reset: wide open"
+    assert later["5h"][0] == {"key": UUID_A, "left_pct": 100.0, "resets_at": w.r5a + W5}, "A's 5 h window has reset: wide open, counting down to the next one"
     assert [r["key"] for r in later["7d"]] == [UUID_A, UUID_B]
     empty = DB(env.tmp / "e2.db")
     assert accounts.headroom(empty, T0) == {"5h": [], "7d": []}

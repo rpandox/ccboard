@@ -499,9 +499,11 @@ class DB:
         """The newest stored event of one session, {event, kind, at}, or None when it has none."""
         return self.last_events([tmux_name]).get(tmux_name)
 
-    def kv_set(self, key: str, value) -> None:
+    def kv_set(self, key: str, value, at=None) -> None:
+        """Store a kv value stamped `at` (per iso(); default now). A caller whose value was read earlier than it is written (the usage
+        cache, accounts.poll_usage_cache) passes the reading's own time, so `at` stays "when this was true"."""
         with self.lock:
-            self.conn.execute("INSERT OR REPLACE INTO kv(key, value, at) VALUES (?,?,?)", (key, json.dumps(value), now()))
+            self.conn.execute("INSERT OR REPLACE INTO kv(key, value, at) VALUES (?,?,?)", (key, json.dumps(value), iso(at)))
 
     def push_sub_add(self, sub: dict) -> None:
         with self.lock:

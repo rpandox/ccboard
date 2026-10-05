@@ -243,6 +243,17 @@ Usage.reading = function (w) {
   return { pct, resets_at: Usage.epoch(w.resets_at) };
 };
 
+/* {pct, resets_at, at, source, rolled, last, title} of one window ('5h' | '7d') for Usage.gauge.set, null without a numeric reading. Time-aware like every other surface
+   (core.js limitWindowNow): a window whose reset has passed with no newer reading reads 0 % and counts down to the next reset, and its title says that no usage
+   was recorded since the reset; every title ends with when the reading was taken and where it came from. `who` leads the title ('5H window', 'Work 5H'). */
+Usage.windowReading = function (win, pct, resets, at, source, who) {
+  const x = limitWindowNow({ pct, resets_at: resets, at, source }, LIMIT_PERIOD[win], Date.now() / 1000);
+  if (!x) return null;
+  const caption = limitCaption(x);
+  return { pct: x.pct, resets_at: x.resets_at, at: x.at, source: x.source, rolled: x.rolled, last: x.last,
+    title: `${who}: ${Math.round(x.pct)}% used${x.resets_at ? ' · resets ' + Usage.clock(x.resets_at) : ''}${caption ? ' · ' + caption : ''}` };
+};
+
 /* ---------- page state ---------- */
 
 Usage.alive = function (P) { return !!P && !P.dead && Usage.cur === P; };
@@ -323,6 +334,7 @@ Usage.build = function (root, route) {
   R.g5 = Usage.gauge('5H');
   R.g7 = Usage.gauge('7D');
   R.gnote = el('p', { class: 'dim unote hidden' });
+  R.gfresh = el('p', { class: 'dim ufresh hidden', 'data-fresh': '' });        // v0.5.17f: when the gauges were last read and where from, right under the Limits title
   R.limAcct = el('div', { class: 'ua-picks pj-switch hidden', role: 'group', 'aria-label': 'Account shown in the limits' });
   R.limSlot = el('div', { class: 'uslot hidden' });
   R.limHost = el('div', { class: 'chart lim-chart loading', 'aria-busy': 'true' });
@@ -343,7 +355,7 @@ Usage.build = function (root, route) {
     if (id === 'limits') kids.push(R.agentSeg);
     const body = el('div', { class: 'ubody', 'data-body': id });
     R.body[id] = body;
-    if (id === 'limits') body.append(R.limAcct, el('div', { class: 'uc-gauges' }, R.g5, R.g7), R.gnote, R.limSlot, R.limHost, R.limCap);
+    if (id === 'limits') body.append(R.gfresh, R.limAcct, el('div', { class: 'uc-gauges' }, R.g5, R.g7), R.gnote, R.limSlot, R.limHost, R.limCap);
     else body.append(Usage.skeleton());
     sections.push(el('section', { class: 'usec', 'data-sec': id }, el('div', { class: 'usec-head' }, ...kids), body));
   }
@@ -544,6 +556,19 @@ Usage.paintAlert = function (P) {
     el('button', { class: 'small', type: 'button', text: 'Retry', onclick: () => Usage.retry(P) }));
 };
 
+/* The freshness caption under the Limits title: when the gauges were last read and where from ('updated 5m ago · from the last session', '... · from Claude Code's
+   cache'), or 'no reading yet'. The newest of the two readings speaks; a reading that carries no time says nothing. null (the Codex tab, whose note gives the age) hides it. */
+Usage.paintFresh = function (P, readings) {
+  const node = P.refs.gfresh;
+  if (!node) return;
+  const rs = readings ? readings.filter(Boolean) : null;
+  let text = '';
+  if (rs && !rs.length) text = limitFreshness(0);
+  else if (rs) { const best = rs.reduce((a, b) => ((b.at || 0) > (a.at || 0) ? b : a)); text = best.at ? limitFreshness(best.at, best.source) : ''; }
+  node.classList.toggle('hidden', !text);
+  setText(node, text);
+};
+
 /* The two gauges follow the state on every update(); with no live reading they fall back to the summary's last statusline sample. */
 Usage.paintGauges = function (P) {
   const R = P.refs;
@@ -552,16 +577,21 @@ Usage.paintGauges = function (P) {
   if (Usage.agent(P) === 'codex') { Usage.paintCodexGauges(P); return; }
   const chosen = P.limAcct ? Usage.accounts(P).find((a) => a.key === P.limAcct) : null;
   if (chosen) { Usage.paintAccountGauges(P, chosen); return; }
-  const rl = (P.st && P.st.usage && P.st.usage.value) || {};
-  let five = Usage.reading(rl.five_hour);
-  let seven = Usage.reading(rl.seven_day);
+  const u = P.st && P.st.usage;
+  const rl = (u && u.value) || {};
+  const live = (raw, win) => {                                                   // the pills' own record: a window whose reset has passed rolls over instead of going missing
+    const r = Usage.reading(raw);
+    return r ? Usage.windowReading(win, r.pct, r.resets_at, Usage.epoch(raw.at) || Usage.epoch(u && u.at), raw.source || rl.source, `${win === '5h' ? '5H' : '7D'} window`) : null;
+  };
+  let five = live(rl.five_hour, '5h');
+  let seven = live(rl.seven_day, '7d');
   let note = '';
   const sum = Usage.summaryOf(P);
   const lim = sum && sum.rate_limits && sum.rate_limits.claude;
   if ((!five || !seven) && lim) {
-    const from = (r) => (r && typeof r.value === 'number' ? { pct: r.value, resets_at: Usage.epoch(r.meta && r.meta.resets_at), at: r.at } : null);
-    const f5 = from(lim.rl_5h);
-    const f7 = from(lim.rl_7d);
+    const from = (r, win) => (r && typeof r.value === 'number' ? Usage.windowReading(win, r.value, Usage.epoch(r.meta && r.meta.resets_at), Usage.epoch(r.at), r.meta && r.meta.source, `${win === '5h' ? '5H' : '7D'} window`) : null);
+    const f5 = from(lim.rl_5h, '5h');
+    const f7 = from(lim.rl_7d, '7d');
     const used = [];
     if (!five && f5) { five = f5; used.push(f5.at); }
     if (!seven && f7) { seven = f7; used.push(f7.at); }
@@ -572,6 +602,7 @@ Usage.paintGauges = function (P) {
   }
   R.g5.set(five);
   R.g7.set(seven);
+  Usage.paintFresh(P, [five, seven]);
   const none = !five && !seven;
   const text = none ? 'No 5H / 7D reading yet: the statusline reports them from the first Claude session. Start one with + session.' : note;
   R.gnote.classList.toggle('hidden', !text);
@@ -732,10 +763,12 @@ Usage.accounts = function (P) {
 
 Usage.realAccounts = function (list) { return list.filter((a) => a.key !== Usage.UNKNOWN); };
 
-/* {pct, resets_at, at, reset_text?, title} of an account reading {value, resets_at, at}, or null without one. A reading whose reset instant has
-   passed is a window that rolled over: nothing is counted in the new one yet, so it reads 0 % (the server's headroom says 100 % left for it too). */
-Usage.accReading = function (r, who) {
+/* {pct, resets_at, at, source, rolled, title} of an account reading {value, resets_at, at, source}, or null without one. With `win` ('5h' | '7d': a Claude account) it is
+   time-aware like every surface (Usage.windowReading): a reading whose reset has passed with no newer one reads 0 % and counts down to the next reset. Without it (the
+   Codex block, whose windows come from a rollout) a passed reset reads 0 % 'window rolled over' with no countdown, as before. */
+Usage.accReading = function (r, who, win) {
   if (!r || typeof r !== 'object' || typeof r.value !== 'number' || !Number.isFinite(r.value)) return null;
+  if (win) return Usage.windowReading(win, r.value, Usage.epoch(r.resets_at), Usage.epoch(r.at), r.source, who);
   const resets = Usage.epoch(r.resets_at);
   const at = Usage.epoch(r.at);
   const rolled = resets > 0 && resets <= Date.now() / 1000;
@@ -750,10 +783,11 @@ Usage.accReading = function (r, who) {
 Usage.paintAccountGauges = function (P, a) {
   const R = P.refs;
   const name = Usage.accName(a);
-  const five = Usage.accReading(a.rl_5h, `${name} 5H`);
-  const seven = Usage.accReading(a.rl_7d, `${name} 7D`);
+  const five = Usage.accReading(a.rl_5h, `${name} 5H`, '5h');
+  const seven = Usage.accReading(a.rl_7d, `${name} 7D`, '7d');
   R.g5.set(five);
   R.g7.set(seven);
+  Usage.paintFresh(P, [five, seven]);
   const at = Math.max(five ? five.at : 0, seven ? seven.at : 0);
   const text = !five && !seven ? `No 5H / 7D reading for ${name} yet: it appears once a session runs on that account.`
     : `Gauges show ${name}'s last statusline readings${at ? ', ' + fmtAge(at) + ' ago' : ''}: it is not the account in use.`;
@@ -935,6 +969,7 @@ Usage.paintCodexGauges = function (P) {
   const seven = Usage.accReading(rd.seven, `${name} 7D`);
   R.g5.set(five);
   R.g7.set(seven);
+  Usage.paintFresh(P, null);                                                     // Claude's wording ('from the last session'): the Codex note below gives the age
   const at = Math.max(five ? five.at : 0, seven ? seven.at : 0);
   let text = '';
   if (!five && !seven) {
@@ -1020,8 +1055,8 @@ Usage.statCell = function (col, label, value, dim, title) {
     el('span', { class: 'ua-k dim', text: label }), el('span', { class: 'ua-v mono', text: value }));
 };
 
-Usage.accGauge = function (label, reading, who) {
-  const r = Usage.accReading(reading, `${who} ${label}`);
+Usage.accGauge = function (label, reading, who, win) {
+  const r = Usage.accReading(reading, `${who} ${label}`, win);
   if (!r) return el('div', { class: 'ua-win', role: 'cell', 'data-win': label }, el('span', { class: 'ua-wl mono', text: label }), el('span', { class: 'dim ua-none', text: 'no reading yet' }));
   const g = Usage.gauge(label);
   g.set(r);
@@ -1049,7 +1084,7 @@ Usage.accRow = function (a, w, hits) {
   const id = [el('span', { class: 'ua-who' }, ...who)];
   if (!unknown) id.push(el('button', { class: 'icon minimal small ua-edit', type: 'button', title: 'Rename this account', 'aria-label': `Rename ${name}`, onclick: () => settingsRenameAccount(a) }, ic('edit')));   // the one rename sheet, settings.js
   const wins = unknown ? [el('div', { class: 'ua-win ua-blank', role: 'cell' }), el('div', { class: 'ua-win ua-blank', role: 'cell' })]
-    : [Usage.accGauge('5H', a.rl_5h, name), Usage.accGauge('7D', a.rl_7d, name)];
+    : [Usage.accGauge('5H', a.rl_5h, name, '5h'), Usage.accGauge('7D', a.rl_7d, name, '7d')];
   return el('div', { class: 'ua-row' + (unknown ? ' unknown' : ''), role: 'row', 'data-account': a.key, 'data-current': a.current ? true : null },
     el('div', { class: 'ua-id', role: 'cell' }, ...id), ...wins, ...Usage.accStats(Usage.accStat(a, w), hits, 'Limit hits in this range'));
 };
@@ -1076,13 +1111,18 @@ Usage.room = function (sum, real) {
   const tot = sum.total && typeof sum.total === 'object' ? sum.total : {};
   if (real.length < 2) return null;
   const by = new Map(real.map((a) => [a.key, a]));
-  const ranked = (list) => (Array.isArray(list) ? list.filter((x) => x && by.has(x.key) && typeof x.left_pct === 'number' && Number.isFinite(x.left_pct)) : []);
-  const wins = [['7-day', ranked(tot.headroom_7d), 'rl_7d'], ['5-hour', ranked(tot.headroom_5h), 'rl_5h']];
+  // the server's ranking was made when the summary was fetched: a window whose reset has passed since then is wide open now (the same rule as the rows' gauges)
+  const ranked = (list, field) => {
+    const out = (Array.isArray(list) ? list.filter((x) => x && by.has(x.key) && typeof x.left_pct === 'number' && Number.isFinite(x.left_pct)) : [])
+      .map((x) => { const r = Usage.accReading(by.get(x.key)[field], '', field === 'rl_5h' ? '5h' : '7d'); return r && r.rolled ? { ...x, left_pct: 100 } : x; });
+    return out.sort((a, b) => (b.left_pct - a.left_pct) || ((by.get(b.key).current ? 1 : 0) - (by.get(a.key).current ? 1 : 0)));
+  };
+  const wins = [['7-day', ranked(tot.headroom_7d, 'rl_7d'), 'rl_7d'], ['5-hour', ranked(tot.headroom_5h, 'rl_5h'), 'rl_5h']];
   const clause = (e, nm) => `${Usage.accName(by.get(e.key))}, ${Math.round(e.left_pct)} % of the ${nm} window left`;
   const cur = real.find((a) => a.current);
   if (cur) {
     for (const [nm, list, field] of wins) {
-      const r = Usage.accReading(cur[field], nm);
+      const r = Usage.accReading(cur[field], nm, field === 'rl_5h' ? '5h' : '7d');
       if (!r || r.pct < Usage.HOT_PCT) continue;
       const other = list.find((x) => x.key !== cur.key);
       if (other && other.left_pct > 100 - r.pct) return { attn: true, to: other.key, text: `${Usage.accName(cur)} is at ${Math.round(r.pct)} % of the ${nm} window. most room: ${clause(other, nm)}` };

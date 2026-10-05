@@ -133,6 +133,7 @@ html.force-coarse #page .usec .btn, html.force-coarse #page .usec button { min-h
 #page .ubody { min-width:0; }
 #page .usk { min-height:120px; }
 #page .unote { margin:6px 0 0; }
+#page .ufresh { margin:2px 0 8px; font-size:13px; }          /* v0.5.17f: the freshness caption right under the Limits title ('updated 5m ago · from the last session'); wraps, never clipped */
 #page .unote.warn { color:var(--warn); }
 #page .utotals { margin:0 0 8px; font-size:12px; color:var(--fg-2); }
 #page .uslot .nonideal.empty, #page .ubody > .nonideal.empty { min-height:140px; }

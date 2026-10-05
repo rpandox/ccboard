@@ -68,24 +68,38 @@ function agentsAcctName(a) {
   return n ? n.trim() : (a.key ? String(a.key).slice(0, 6) : 'account');
 }
 
-/* The used percentage of one of an account's windows ('5h' | '7d') at `now` (epoch s): its last reading, 0 once that window has reset since (the reading is then
-   from the window before, and a quiet account has not been read again), null without a reading. */
-function agentsAcctUsed(a, win, now) {
+/* ---------- the windows of an account at a given moment (v0.5.17f) ----------
+   The arithmetic behind every 5-hour / 7-day figure (limitWindowNow, limitFreshness, limitCaption, limitUsageWindow) lives in core.js, so the topbar pills, the Usage
+   gauges and rows, Settings > Accounts and the Home card all say the same thing; what follows reads an account's state row (or the live record of the account in use). */
+
+/* One of an account's windows ('5h' | '7d') from its state row (rl_5h, resets_5h, rl_5h_at, source) at `now`: a limitWindowNow answer, null without a reading. */
+function agentsRowWindow(a, win, now) {
   const v = a ? a['rl_' + win] : null;
   if (typeof v !== 'number' || !Number.isFinite(v)) return null;
-  const r = a['resets_' + win];
-  if (typeof r === 'number' && r > 0 && r <= (typeof now === 'number' ? now : Date.now() / 1000)) return 0;
-  return Math.max(0, Math.min(100, v));
+  return limitWindowNow({ pct: v, resets_at: a['resets_' + win], at: a['rl_' + win + '_at'], source: a.source }, LIMIT_PERIOD[win], now);
 }
 
-/* Same, but the account in use answers with the numbers the topbar pills show (state.usage, the freshest statusline) so no screen shows two figures for it. */
-function agentsAcctUsedNow(st, a, win, now) {
+/* The used percentage of one of an account's windows at `now`: its last reading, 0 once that window has reset since (the reading is then from the window before,
+   and a quiet account has not been read again), null without a reading. */
+function agentsAcctUsed(a, win, now) {
+  const w = agentsRowWindow(a, win, now);
+  return w ? w.pct : null;
+}
+
+/* One of an account's windows, as the account in use answers it: with the numbers the topbar pills show (state.usage, the freshest reading: a session's statusline or
+   Claude Code's cache), so no screen shows two figures for it; any other account from its row. A limitWindowNow answer, null without a reading. */
+function agentsAcctWindow(st, a, win, now) {
   if (a && (a.current || (st && st.accounts && st.accounts.current === a.key))) {
-    const rl = (st && st.usage && st.usage.value) || {};
-    const w = win === '5h' ? rl.five_hour : rl.seven_day;
-    if (w && typeof w.used_percentage === 'number' && Number.isFinite(w.used_percentage)) return Math.max(0, Math.min(100, w.used_percentage));
+    const live = limitUsageWindow(st, win, now);
+    if (live) return live;
   }
-  return agentsAcctUsed(a, win, now);
+  return agentsRowWindow(a, win, now);
+}
+
+/* Same, but only the percentage. */
+function agentsAcctUsedNow(st, a, win, now) {
+  const w = agentsAcctWindow(st, a, win, now);
+  return w ? w.pct : null;
 }
 
 /* ---------- saved logins and the one-tap switch (v0.5.17c UI) ----------

@@ -215,3 +215,80 @@ test('css: with the chip shown the compact shell drops the brand text so the + b
   assert.ok(tabs && /flex-wrap:\s*nowrap/.test(tabs[1]) && /overflow-x:\s*auto/.test(tabs[1]), 'the tab bar is one row that scrolls sideways (six Settings tabs wrapped at 390 px)');
   assert.match(css, /\.bp5-dark \.tab\s*\{[^}]*flex:none;[^}]*white-space:nowrap/, 'and a tab never shrinks or wraps its label');
 });
+
+// ---------------------------------------------------------------- time-aware pills (v0.5.17f)
+
+const ago = (s) => new Date((NOW - s) * 1000).toISOString();
+const usageOf = (five, seven, at, source) => ({ value: { ...(five ? { five_hour: five } : {}), ...(seven ? { seven_day: seven } : {}), ...(source ? { source } : {}) }, at });
+
+test('a window whose reset has passed with no newer reading keeps its pill: 0 %, counting down to the next reset, the title says nothing was recorded since and how old the reading is', () => {
+  const w = sWorld();
+  paint(w, { usage: usageOf({ used_percentage: 91, resets_at: NOW - 3600 }, { used_percentage: 71, resets_at: NOW + 200000 }, ago(3 * 3600)) });
+  const p = pill(w, '5h');
+  assert.ok(shown(p), 'never a missing pill');
+  assert.equal(text(p.pv), '0%');
+  assert.match(text(p.pr), /^[34]h\d+m$/, 'the next reset: the one that passed + a whole 5-hour window');
+  assert.ok(p.classList.contains('ok') && !p.classList.contains('bad'), 'the old 91 % does not paint it red');
+  assert.match(p.getAttribute('title'), /^5-hour window: 0% used · resets in [34]h\d+m · no usage recorded since the window reset · updated 3h ago · from the last session$/);
+  assert.equal(text(pill(w, '7d').pv), '71%', 'the weekly window has not reset: its last reading stands');
+  assert.match(pill(w, '7d').getAttribute('title'), /^weekly window: 71% used · resets in 2d\d+h · updated 3h ago · from the last session$/);
+});
+
+test('several missed windows: the next reset is the first one ahead, for the 5-hour and the weekly pill', () => {
+  const w = sWorld();
+  paint(w, { usage: usageOf({ used_percentage: 100, resets_at: NOW - 5 * 18000 - 100 }, { used_percentage: 100, resets_at: NOW - 3 * 604800 - 3600 }, ago(30 * 86400)) });
+  assert.equal(text(pill(w, '5h').pv), '0%');
+  assert.match(text(pill(w, '5h').pr), /^4h5\dm$/);
+  assert.equal(text(pill(w, '7d').pv), '0%');
+  assert.match(text(pill(w, '7d').pr), /^6d2[23]h$/);
+  assert.match(pill(w, '7d').getAttribute('title'), /no usage recorded since the window reset · updated 30d ago · from the last session$/);
+});
+
+test('a reading not yet reset keeps its percentage and its own reset; the title ends with when it was read and where it came from (the last session, or Claude Code\'s cache)', () => {
+  const w = sWorld();
+  paint(w, { usage: usageOf({ used_percentage: 42, resets_at: NOW + 7200 }, { used_percentage: 71, resets_at: NOW + 200000 }, ago(300)) });
+  assert.equal(text(pill(w, '5h').pv), '42%');
+  assert.match(pill(w, '5h').getAttribute('title'), /^5-hour window: 42% used · resets in 1h5\dm · updated 5m ago · from the last session$|^5-hour window: 42% used · resets in 2h0m · updated 5m ago · from the last session$/);
+  assert.doesNotMatch(pill(w, '5h').getAttribute('title'), /no usage recorded/);
+  paint(w, { usage: usageOf({ used_percentage: 42, resets_at: NOW + 7200 }, { used_percentage: 71, resets_at: NOW + 200000 }, ago(120), 'cache') });
+  assert.match(pill(w, '5h').getAttribute('title'), /· updated 2m ago · from Claude Code's cache$/);
+  assert.match(pill(w, '7d').getAttribute('title'), /· updated 2m ago · from Claude Code's cache$/);
+});
+
+test('a window the server filled in from an older reading carries its own time and source into the title', () => {
+  const w = sWorld();
+  paint(w, { usage: usageOf({ used_percentage: 12, resets_at: NOW + 3600 }, { used_percentage: 64, resets_at: NOW - 600, at: ago(8 * 3600), source: 'cache' }, ago(60)) });
+  assert.match(pill(w, '5h').getAttribute('title'), /updated 1m ago · from the last session$/);
+  assert.equal(text(pill(w, '7d').pv), '0%');
+  assert.match(pill(w, '7d').getAttribute('title'), /no usage recorded since the window reset · updated 8h ago · from Claude Code's cache$/);
+});
+
+test('an older record with no time or source adds no caption (the pills read as before), and a missing window still hides its pill', () => {
+  const w = sWorld();
+  paint(w, { usage: { value: { five_hour: { used_percentage: 42, resets_at: NOW + 3600 } } } });
+  assert.match(pill(w, '5h').getAttribute('title'), /^5-hour window: 42% used · resets in \d+[hm]/);
+  assert.doesNotMatch(pill(w, '5h').getAttribute('title'), /updated|no reading/);
+  assert.equal(shown(pill(w, '7d')), false, 'no weekly window in the record at all: nothing to show');
+  paint(w, {});
+  assert.equal(shown(pill(w, '5h')), false);
+});
+
+test('the pills are time-aware without pages/agents.js too (the arithmetic is core.js\'s)', () => {
+  const w = sWorld({ agents: false });
+  paint(w, { usage: usageOf({ used_percentage: 91, resets_at: NOW - 3600 }, null, ago(7200)) });
+  assert.equal(text(pill(w, '5h').pv), '0%');
+  assert.match(pill(w, '5h').getAttribute('title'), /no usage recorded since the window reset · updated 2h ago/);
+});
+
+test('the account chip does not turn amber for a window that has reset since its 91 % reading', () => {
+  const w = sWorld();
+  const st = { usage: usageOf({ used_percentage: 91, resets_at: NOW - 3600 }, { used_percentage: 20, resets_at: NOW + 200000 }, ago(3 * 3600)),
+    ...stateOf([acct(A1, { current: true, label: 'Personal', rl_5h: 91, resets_5h: NOW - 3600 }), acct(A2, { label: 'Work', rl_5h: 10 })]) };
+  paint(w, st);
+  assert.equal(chip(w).classList.contains('hue-amber'), false);
+  assert.equal(chip(w).getAttribute('title'), 'Account: Personal (max) · usage per account');
+  const hot = { usage: usageOf({ used_percentage: 91, resets_at: NOW + 3600 }, { used_percentage: 20, resets_at: NOW + 200000 }, ago(60)),
+    ...stateOf([acct(A1, { current: true, label: 'Personal' }), acct(A2, { label: 'Work', rl_5h: 10 })]) };
+  paint(w, hot);
+  assert.ok(chip(w).classList.contains('hue-amber'), 'a window that is still running at 91 % does');
+});

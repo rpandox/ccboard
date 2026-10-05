@@ -853,10 +853,10 @@ test('accounts: the gauges of a row are the Limits classes (warn from 60, bad fr
   await go(w2);
   const rolled = row(w2, AK2).querySelector('.gauge[data-gauge="5H"]');
   assert.equal(text(rolled.querySelector('.g-val')), '0%', 'reset since the reading: the new window has nothing counted');
-  assert.equal(text(rolled.querySelector('.g-reset')), 'window rolled over');
+  assert.match(text(rolled.querySelector('.g-reset')), /^resets in 3h5\dm · \d\d:\d\d$/, 'the NEXT reset (the old one + a whole window), never the words "window rolled over"');
   assert.ok(rolled.classList.contains('ok'));
-  assert.match(rolled.getAttribute('title'), /Work 5H: the window reset .*last reading was 100%, read 2h ago/);
-  assert.doesNotMatch(text(q(w2, '[data-sec="accounts"]')), /resets in now/);
+  assert.match(rolled.getAttribute('title'), /^Work 5H: 0% used · resets .* · no usage recorded since the window reset · updated 2h ago · from the last session$/);
+  assert.doesNotMatch(text(q(w2, '[data-sec="accounts"]')), /resets in now|rolled over/);
 });
 
 test('accounts: the range switches the numbers (today / 7 days / 30 days), the limit hits count the range\'s episodes, and the totals add up', async () => {
@@ -907,7 +907,8 @@ test('accounts: the account in use at 85 % or more with room on another account 
   await go(w2);
   assert.equal(text(q(w2, '.ua-room')), 'Demo is at 88 % of the 7-day window. most room: Work, 40 % of the 7-day window left');
   // the other account has no more room than the one in use: nothing to switch to, the plain line
-  const { w: w3 } = accWorld({ over: { '/api/usage/summary?days=7': ACC_SUMMARY({ accounts: hot, total: TOTALS({ headroom_5h: [{ key: AK1, left_pct: 9 }, { key: AK2, left_pct: 4 }] }) }) } });
+  const busy = ACCOUNTS({ rl_5h: { value: 91, resets_at: NOW + 600, at: ISO(30) } }, { rl_5h: { value: 96, resets_at: NOW + 3600, at: ISO(60) } });      // its window has NOT reset
+  const { w: w3 } = accWorld({ over: { '/api/usage/summary?days=7': ACC_SUMMARY({ accounts: busy, total: TOTALS({ headroom_5h: [{ key: AK1, left_pct: 9 }, { key: AK2, left_pct: 4 }] }) }) } });
   await go(w3);
   assert.equal(q(w3, '.ua-room').getAttribute('data-room'), 'info');
   assert.match(text(q(w3, '.ua-room')), /^most room: Demo, 9 % of the 5-hour window left/);
@@ -1384,4 +1385,95 @@ test('against the real charts.js (stub uPlot): the account chips rebuild the lim
   assert.equal(qa(w, '[data-sec="accounts"] .ua-row').length, 3);
   clean(w, 'real charts, accounts');
   w.run('pages.usage.unmount()');
+});
+
+// ---------------------------------------------------------------- time-aware windows and the freshness caption (v0.5.17f)
+
+const fresh = (w) => q(w, '[data-sec="limits"] [data-fresh]');
+const gaugeOf = (w, label) => q(w, `.uc-gauges .gauge[data-gauge="${label}"]`);
+const usageAt = (five, seven, at, source) => ({ value: { five_hour: five, seven_day: seven, ...(source ? { source } : {}) }, at });
+
+test('limits: the freshness caption sits right under the Limits title and says how old the reading is and where it came from (a session, Claude Code\'s cache, or none yet)', async () => {
+  const st = (over) => STATE({ usage: usageAt({ used_percentage: 42, resets_at: NOW + 3600 }, { used_percentage: 59, resets_at: NOW + 3 * 86400 }, ISO(300), over) });
+  const { w } = usageWorld({ st: st() });
+  await go(w);
+  const sec = q(w, '[data-sec="limits"]');
+  assert.equal(sec.querySelector('.ubody').children[0], fresh(w), 'the first thing under the title, above the account chips and the gauges');
+  assert.equal(text(fresh(w)), 'updated 5m ago · from the last session');
+  assert.ok(!fresh(w).classList.contains('hidden'));
+  const { w: w2 } = usageWorld({ st: st('cache') });
+  await go(w2);
+  assert.equal(text(fresh(w2)), "updated 5m ago · from Claude Code's cache");
+  // the newer of the two readings speaks: the 5-hour window was read later than the weekly one
+  const { w: w3 } = usageWorld({ st: STATE({ usage: usageAt({ used_percentage: 42, resets_at: NOW + 3600, at: ISO(120), source: 'cache' }, { used_percentage: 59, resets_at: NOW + 3 * 86400 }, ISO(3600)) }) });
+  await go(w3);
+  assert.equal(text(fresh(w3)), "updated 2m ago · from Claude Code's cache");
+  const { w: w4 } = usageWorld({ st: { projects: [] }, over: { '/api/usage/summary?days=7': SUMMARY(DAILY7, { rate_limits: {} }) } });
+  await go(w4);
+  assert.equal(text(fresh(w4)), 'no reading yet');
+  assert.ok(!fresh(w4).classList.contains('hidden'));
+});
+
+test('limits: the caption follows the account a chip picked, and the age ticks with the poll (no refetch)', async () => {
+  const { w } = accWorld();
+  await go(w);
+  assert.match(text(fresh(w)), /^updated \d+s ago · from the last session$/, 'the live reading of the state (read a second ago)');
+  qa(w, '.ua-pick')[1].click();
+  await loading(w);
+  assert.equal(text(fresh(w)), 'updated 2h ago · from the last session', 'Work was read two hours ago');
+  const before = calls(w).length;
+  w.get('pages').usage.update(STATE());
+  assert.equal(calls(w).length, before, 'the poll never fetches');
+});
+
+test('limits: a window whose reset has passed with no newer reading reads 0 %, counts down to the NEXT reset and says nothing was recorded; a window not yet reset keeps its percentage', async () => {
+  const st = STATE({ usage: usageAt({ used_percentage: 91, resets_at: NOW - 3600 }, { used_percentage: 59, resets_at: NOW + 3 * 86400 }, ISO(3 * 3600)) });
+  const { w } = usageWorld({ st });
+  await go(w);
+  const g5 = gaugeOf(w, '5H');
+  assert.ok(!g5.classList.contains('hidden'), 'a rolled window is a gauge, not a missing one');
+  assert.equal(text(g5.querySelector('.g-val')), '0%');
+  assert.ok(g5.classList.contains('ok'));
+  assert.equal(g5.querySelector('.g-bar i').style.width, '0%');
+  assert.match(text(g5.querySelector('.g-reset')), /^resets in [34]h\d+m · \d\d:\d\d$/, 'one window after the reset that passed: 5 h - 1 h');
+  assert.match(g5.getAttribute('title'), /^5H window: 0% used · resets .* · no usage recorded since the window reset · updated 3h ago · from the last session$/);
+  assert.equal(text(gaugeOf(w, '7D').querySelector('.g-val')), '59%', 'the weekly window has not reset: its last reading stands');
+  assert.match(text(gaugeOf(w, '7D').querySelector('.g-reset')), /^resets in 2d\d+h/);
+  assert.doesNotMatch(text(root(w)), /rolled over/);
+  clean(w, 'rolled gauge');
+});
+
+test('limits: several missed windows are skipped (the next reset is the first one ahead), for the 5-hour and the weekly window', async () => {
+  const st = STATE({ usage: usageAt({ used_percentage: 100, resets_at: NOW - 5 * 18000 - 100 }, { used_percentage: 71, resets_at: NOW - 3 * 604800 - 3600 }, ISO(30 * 86400)) });
+  const { w } = usageWorld({ st });
+  await go(w);
+  assert.equal(text(gaugeOf(w, '5H').querySelector('.g-val')), '0%');
+  assert.match(text(gaugeOf(w, '5H').querySelector('.g-reset')), /^resets in 4h5\dm/, '5 h x 6 - (5 h x 5 + 100 s) = 4 h 58 m');
+  assert.equal(text(gaugeOf(w, '7D').querySelector('.g-val')), '0%');
+  assert.match(text(gaugeOf(w, '7D').querySelector('.g-reset')), /^resets in 6d2[23]h/, '4 weeks - (3 weeks + 1 h) = 6 d 23 h (a few ms of the clock may tip it to 22 h)');
+  assert.match(text(fresh(w)), /^updated 30d ago · /);
+});
+
+test('limits: with the weekly window missing from the record the gauge keeps the reading the server filled in (and rolls it over when its reset has passed)', async () => {
+  const st = STATE({ usage: usageAt({ used_percentage: 12, resets_at: NOW + 3600 }, { used_percentage: 64, resets_at: NOW - 600, at: ISO(8 * 3600), source: 'cache' }, ISO(60)) });
+  const { w } = usageWorld({ st });
+  await go(w);
+  assert.equal(text(gaugeOf(w, '7D').querySelector('.g-val')), '0%');
+  assert.match(gaugeOf(w, '7D').getAttribute('title'), /no usage recorded since the window reset · updated 8h ago · from Claude Code's cache$/, 'the window\'s own time and source, not the record\'s');
+  assert.equal(text(gaugeOf(w, '5H').querySelector('.g-val')), '12%');
+  assert.match(gaugeOf(w, '5H').getAttribute('title'), /updated 1m ago · from the last session$/);
+});
+
+test('accounts: the gauge titles say when and where each account was read, a rolled window counts down to the next reset, and the room line counts it as open', async () => {
+  const cache = (r) => ({ ...r, source: 'cache' });
+  const accounts = ACCOUNTS({}, { rl_5h: cache({ value: 100, resets_at: NOW - 3600, at: ISO(7200) }), rl_7d: cache({ value: 83, resets_at: NOW + 2 * 86400, at: ISO(7200) }) });
+  const stale = TOTALS({ headroom_5h: [{ key: AK1, left_pct: 58 }, { key: AK2, left_pct: 0 }] });          // the ranking of a summary fetched before the window reset
+  const { w } = accWorld({ over: { '/api/usage/summary?days=7': ACC_SUMMARY({ accounts, total: stale }) } });
+  await go(w);
+  const g = (key, label) => row(w, key).querySelector(`.gauge[data-gauge="${label}"]`);
+  assert.match(g(AK2, '5H').getAttribute('title'), /^Work 5H: 0% used · resets .* · no usage recorded since the window reset · updated 2h ago · from Claude Code's cache$/);
+  assert.match(g(AK2, '7D').getAttribute('title'), /^Work 7D: 83% used · resets .* · updated 2h ago · from Claude Code's cache$/);
+  assert.match(g(AK1, '5H').getAttribute('title'), /^Demo 5H: 42% used · resets .* · updated 1m ago · from the last session$/);
+  assert.equal(text(q(w, '.ua-room')), 'most room: Work, 100 % of the 5-hour window left · Demo, 29 % of the 7-day window left');
+  assert.doesNotMatch(text(q(w, '[data-sec="accounts"]')), /rolled over/);
 });

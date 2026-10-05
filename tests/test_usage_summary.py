@@ -628,8 +628,8 @@ def test_per_account_windows_headroom_and_by_account_rate_limits(sdb):
     s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
     assert [a["key"] for a in s["accounts"]] == [A, B, C, "acc-d-0000"]
     a, b, c, d = s["accounts"]
-    assert a["rl_5h"] == {"value": 42.0, "resets_at": NOW_TS + 3600, "at": "2026-10-03T05:00:00+00:00"}
-    assert a["rl_7d"] == {"value": 71.0, "resets_at": NOW_TS + 86400, "at": "2026-10-03T05:30:00+00:00"}
+    assert a["rl_5h"] == {"value": 42.0, "resets_at": NOW_TS + 3600, "at": "2026-10-03T05:00:00+00:00", "source": "statusline"}
+    assert a["rl_7d"] == {"value": 71.0, "resets_at": NOW_TS + 86400, "at": "2026-10-03T05:30:00+00:00", "source": "statusline"}
     assert b["rl_5h"]["value"] == 12.0 and b["rl_5h"]["resets_at"] == NOW_TS + 7200, "the newest reading"
     assert d["rl_5h"] is None and d["rl_7d"] is None and d["email"] == "acc-d-0000@example.com"
     assert s["total"]["headroom_5h"] == [{"key": C, "left_pct": 100.0}, {"key": B, "left_pct": 88.0}, {"key": A, "left_pct": 58.0}]
@@ -661,7 +661,7 @@ def test_a_window_with_a_just_passed_reset_reads_as_full_headroom_and_a_full_win
     s = usage_summary.build(sdb, days=30, tz_min=0, now=NOW)
     assert s["total"]["headroom_5h"] == [{"key": B, "left_pct": 100.0}, {"key": A, "left_pct": 0.0}]
     assert s["total"]["headroom_7d"] == [{"key": B, "left_pct": 0.0}]
-    assert by_key(s)[B]["rl_7d"] == {"value": 130.0, "resets_at": None, "at": "2026-10-03T01:00:00+00:00"}
+    assert by_key(s)[B]["rl_7d"] == {"value": 130.0, "resets_at": None, "at": "2026-10-03T01:00:00+00:00", "source": "statusline"}
 
 
 # ---------- episodes per account ----------

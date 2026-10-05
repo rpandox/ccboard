@@ -205,7 +205,8 @@ Shell.windowName = function (m) {
   return `${m}-minute`;
 };
 
-Shell.patchPill = function (node, w, what) {
+/* One pill: w = {used_percentage, resets_at}, `what` the window's name for the title, `note` what the title adds after the reset (the freshness caption). */
+Shell.patchPill = function (node, w, what, note) {
   if (!w || typeof w.used_percentage !== 'number') { node.classList.add('hidden'); return; }
   const pct = Math.max(0, Math.min(100, w.used_percentage));
   node.classList.remove('hidden');
@@ -214,8 +215,16 @@ Shell.patchPill = function (node, w, what) {
   node.classList.toggle('bad', pct >= 85);
   setText(node.pv, `${Math.round(pct)}%`);
   setText(node.pr, w.resets_at ? fmtIn(w.resets_at) : '');
-  node.setAttribute('title', `${what}: ${Math.round(pct)}% used` + (w.resets_at ? ` · resets in ${fmtIn(w.resets_at)}` : ''));
+  node.setAttribute('title', `${what}: ${Math.round(pct)}% used` + (w.resets_at ? ` · resets in ${fmtIn(w.resets_at)}` : '') + (note ? ` · ${note}` : ''));
   Shell.setVar(node, '--pct', String(Math.round(pct)));
+};
+
+/* The pill of one Claude window of state.usage ('five_hour' | 'seven_day') at `now`: {w: {used_percentage, resets_at}, note} for Shell.patchPill, null when the
+   record has no such window. Time-aware (core.js limitUsageWindow): a window whose reset has passed with no newer reading shows 0 % and counts down to the next
+   reset instead of vanishing, and the title carries 'no usage recorded since the window reset' and when and where the reading came from. */
+Shell.claudeWindow = function (st, key, now) {
+  const x = limitUsageWindow(st, key === 'five_hour' ? '5h' : '7d', now);
+  return x ? { w: { used_percentage: x.pct, resets_at: x.resets_at }, note: limitCaption(x) } : null;
 };
 
 /* The account chip of the topbar (v0.5.17b), or null with fewer than two accounts or no current one. {key, name, text, hue, title, amber}:
@@ -277,8 +286,11 @@ Shell.patchUsage = function (st) {
   const rl = (st.usage && st.usage.value) || {};
   const who = Shell.patchAccount(st);
   const pre = who ? who.name + ' · ' : '';                       // with several accounts the pill title names the one whose numbers it shows
-  Shell.patchPill(R.p5, rl.five_hour, pre + '5-hour window');
-  Shell.patchPill(R.p7, rl.seven_day, pre + 'weekly window');
+  const t = Date.now() / 1000;
+  const five = Shell.claudeWindow(st, 'five_hour', t);
+  const seven = Shell.claudeWindow(st, 'seven_day', t);
+  Shell.patchPill(R.p5, five && five.w, pre + '5-hour window', five && five.note);
+  Shell.patchPill(R.p7, seven && seven.w, pre + 'weekly window', seven && seven.note);
   Shell.patchPill(R.pSpend, rl.spend_limit, 'spend limit');
   Shell.patchCodex(st);
 };

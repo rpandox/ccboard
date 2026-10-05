@@ -1,0 +1,185 @@
+{
+ "now": 1790000000,
+ "periods": {
+  "5h": 18000,
+  "7d": 604800
+ },
+ "cases": [
+  {
+   "name": "5h not reset yet keeps its percentage",
+   "win": "5h",
+   "used": 42,
+   "resets_at": 1790003600,
+   "now": 1790000000,
+   "expect": {
+    "pct": 42,
+    "next": 1790003600,
+    "rolled": false
+   }
+  },
+  {
+   "name": "5h reset one second ahead of now keeps it",
+   "win": "5h",
+   "used": 42,
+   "resets_at": 1790000001,
+   "now": 1790000000,
+   "expect": {
+    "pct": 42,
+    "next": 1790000001,
+    "rolled": false
+   }
+  },
+  {
+   "name": "5h reset exactly now has rolled: the next reset is a whole window later, never now",
+   "win": "5h",
+   "used": 42,
+   "resets_at": 1790000000,
+   "now": 1790000000,
+   "expect": {
+    "pct": 0,
+    "next": 1790018000,
+    "rolled": true
+   }
+  },
+  {
+   "name": "5h reset one second ago",
+   "win": "5h",
+   "used": 87,
+   "resets_at": 1789999999,
+   "now": 1790000000,
+   "expect": {
+    "pct": 0,
+    "next": 1790017999,
+    "rolled": true
+   }
+  },
+  {
+   "name": "5h one window and a minute missed",
+   "win": "5h",
+   "used": 87,
+   "resets_at": 1789981940,
+   "now": 1790000000,
+   "expect": {
+    "pct": 0,
+    "next": 1790017940,
+    "rolled": true
+   }
+  },
+  {
+   "name": "5h five windows and 100 s missed",
+   "win": "5h",
+   "used": 100,
+   "resets_at": 1789909900,
+   "now": 1790000000,
+   "expect": {
+    "pct": 0,
+    "next": 1790017900,
+    "rolled": true
+   }
+  },
+  {
+   "name": "5h used above 100 is clamped",
+   "win": "5h",
+   "used": 130,
+   "resets_at": 1790000060,
+   "now": 1790000000,
+   "expect": {
+    "pct": 100,
+    "next": 1790000060,
+    "rolled": false
+   }
+  },
+  {
+   "name": "5h used below 0 is clamped",
+   "win": "5h",
+   "used": -4,
+   "resets_at": 1790000060,
+   "now": 1790000000,
+   "expect": {
+    "pct": 0,
+    "next": 1790000060,
+    "rolled": false
+   }
+  },
+  {
+   "name": "5h reset time unknown keeps the reading and has nothing to count down to",
+   "win": "5h",
+   "used": 55,
+   "resets_at": null,
+   "now": 1790000000,
+   "expect": {
+    "pct": 55,
+    "next": null,
+    "rolled": false
+   }
+  },
+  {
+   "name": "5h no reading",
+   "win": "5h",
+   "used": null,
+   "resets_at": 1789999900,
+   "now": 1790000000,
+   "expect": null
+  },
+  {
+   "name": "7d not reset yet keeps its percentage",
+   "win": "7d",
+   "used": 71,
+   "resets_at": 1790200000,
+   "now": 1790000000,
+   "expect": {
+    "pct": 71,
+    "next": 1790200000,
+    "rolled": false
+   }
+  },
+  {
+   "name": "7d reset three days ago",
+   "win": "7d",
+   "used": 71,
+   "resets_at": 1789740800,
+   "now": 1790000000,
+   "expect": {
+    "pct": 0,
+    "next": 1790345600,
+    "rolled": true
+   }
+  },
+  {
+   "name": "7d three weeks and an hour missed",
+   "win": "7d",
+   "used": 71,
+   "resets_at": 1788182000,
+   "now": 1790000000,
+   "expect": {
+    "pct": 0,
+    "next": 1790601200,
+    "rolled": true
+   }
+  },
+  {
+   "name": "7d reset exactly now",
+   "win": "7d",
+   "used": 100,
+   "resets_at": 1790000000,
+   "now": 1790000000,
+   "expect": {
+    "pct": 0,
+    "next": 1790604800,
+    "rolled": true
+   }
+  },
+  {
+   "name": "7d reset time unknown",
+   "win": "7d",
+   "used": 9,
+   "resets_at": null,
+   "now": 1790000000,
+   "expect": {
+    "pct": 9,
+    "next": null,
+    "rolled": false
+   }
+  }
+ ]
+}

@@ -213,11 +213,15 @@ function settingsAcctRow(a) {
     chips.append(a.saved ? el('span', { class: 'badge hue-slate', title: 'a login for this account is saved on the box: it can be switched to', text: 'saved login' })
       : el('span', { class: 'dim', text: 'no saved login' }));
   }
-  const u5 = agentsAcctUsedNow(state, a, '5h', now);                 // the account in use shows the pills' numbers
-  const u7 = agentsAcctUsedNow(state, a, '7d', now);
-  const pct = (v) => (v === null ? 'no reading' : `${Math.round(v)}%`);
+  const w5 = agentsAcctWindow(state, a, '5h', now);                 // the account in use shows the pills' numbers
+  const w7 = agentsAcctWindow(state, a, '7d', now);
+  // a window that reset with nothing recorded since reads 0 % and counts down to the next reset (core.js limitWindowNow, the rule every surface shares)
+  const part = (label, w) => (w ? `${label} ${Math.round(w.pct)}%${w.rolled && w.resets_at ? ` (resets in ${fmtIn(w.resets_at)})` : ''}` : `${label} no reading`);
   const seen = settingsAcctSeen(a);
-  const usage = (u5 === null && u7 === null ? 'no usage reading yet' : `5H ${pct(u5)} · 7D ${pct(u7)}`) + (seen ? ` · ${seen}` : '');
+  const usage = (!w5 && !w7 ? 'no usage reading yet' : `${part('5H', w5)} · ${part('7D', w7)}`) + (seen ? ` · ${seen}` : '');
+  const newest = [w5, w7].filter((w) => w && w.at).sort((x, y) => y.at - x.at)[0];
+  const usageTitle = !w5 && !w7 ? 'no reading yet' : [w5 && w5.rolled ? '5H: no usage recorded since the window reset' : '', w7 && w7.rolled ? '7D: no usage recorded since the window reset' : '',
+    newest ? limitFreshness(newest.at, newest.source) : ''].filter(Boolean).join(' · ');
   const acts = [];
   if (store.supported && !a.current && a.saved) {
     acts.push(el('button', { class: 'primary tinted', type: 'button', disabled: busy, 'aria-label': `Switch to ${name}`, title: 'Make this the account signed in on this box', onclick: () => accountSwitch(a), text: 'Switch' }));
@@ -231,7 +235,7 @@ function settingsAcctRow(a) {
       : confirmButton(`acct-forget:${a.key}`, 'Forget login', () => settingsForgetLogin(a), false));
   }
   const row = settingsKv(name, chips.firstChild ? chips : null, a.email && a.email !== name ? el('span', { class: 'v', text: a.email }) : null,
-    el('span', { class: 'dim', text: usage }), ...acts);
+    el('span', { class: 'dim', text: usage, title: usageTitle || null }), ...acts);
   row.classList.add('set-acct');
   row.setAttribute('data-account', a.key);
   const k = row.querySelector('.k');

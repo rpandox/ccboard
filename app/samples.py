@@ -34,7 +34,8 @@ log = logging.getLogger("ccboard.samples")
 #   key        (documentation) rl_*: agent ('claude' / 'codex' = the CURRENT account) or 'acct:<account key>' (one Claude subscription account, see
 #              app/accounts.py) or 'cacct:<account key>' (one Codex account, app/codex_accounts.py; written by agents/codex_rollout.py); ctx, ctx_tok, scost, stok, state: tmux session; ev: project; cost: '<agent>:<uuid>';
 #              h_*: node; n_*: ''; lim: 5h | 7d | other; acct: the account key that became current; cacct: the Codex account key that became current.
-#   meta       state, cost and lim carry `acct` (the subscription account key) when it is known; acct events carry {from, to}.
+#   meta       state, cost and lim carry `acct` (the subscription account key) when it is known; acct events carry {from, to}; rl_* carry {resets_at} and, for a
+#              reading that came from Claude Code's usage cache (accounts.poll_usage_cache) rather than a statusline, source: 'cache'.
 CATALOGUE: dict[str, dict] = {
     "rl_5h":   {"agg": "avg",    "throttle": {"delta": 1,     "seconds": 300},  "retention_days": 90},
     "rl_7d":   {"agg": "avg",    "throttle": {"delta": 1,     "seconds": 300},  "retention_days": 90},
@@ -141,13 +142,15 @@ def _record_rl(db, series: str, key: str, used, meta, at) -> bool:
 
 
 def record_statusline(db, tmux: str, stats: dict, agent: str = "claude", *, at=None, account: str | None = None,
-                      current: bool = True) -> list[str]:
+                      current: bool = True, source: str | None = None) -> list[str]:
     """The samples one statusline event yields (stats is the dict hooks.apply builds): ctx (context %, meta model/window) and, when
     the window size is known, ctx_tok (used % x window; written together with ctx, so it follows ctx's throttle), scost (session USD)
     and, from stats['rate_limits'], rl_5h / rl_7d keyed by `agent` (value used %, meta resets_at). With `account` (the subscription
     account key accounts.for_reading attributed the reading to) the same reading also goes to key 'acct:<account>', each key with its
     own throttle and stale guard; and with current=False (the reading is another account's, from a session still on its token) the
-    `agent` key, which stands for the CURRENT account, is left alone. Returns the series written (a series once per name)."""
+    `agent` key, which stands for the CURRENT account, is left alone. `source` (None for a real statusline) names another origin of the
+    same reading, 'cache' for Claude Code's usage cache (accounts.poll_usage_cache): it goes into the rl_* samples' meta. Returns
+    the series written (a series once per name)."""
     st = stats if isinstance(stats, dict) else {}
     wrote: list[str] = []
     pct, size = _num(st.get("context_pct")), _num(st.get("context_size"))
@@ -172,7 +175,7 @@ def record_statusline(db, tmux: str, stats: dict, agent: str = "claude", *, at=N
             used = w.get("used_percent") if _num(used) is None else used
             if _num(used) is None:
                 continue
-            meta = _clean({"resets_at": w.get("resets_at")})
+            meta = _clean({"resets_at": w.get("resets_at"), "source": source})
             if any([_record_rl(db, series, k, used, meta, at) for k in keys]):
                 wrote.append(series)
     return wrote
@@ -308,7 +311,7 @@ def record_counts(db, counts: dict, *, at=None) -> list[str]:
     return out
 
 
-TICK_HOOKS: list = []          # fn(db, now_epoch); autoresume.tick, accounts.observe and account_store.tick are registered below
+TICK_HOOKS: list = []          # fn(db, now_epoch); autoresume.tick, accounts.observe, accounts.poll_usage_cache and account_store.tick are registered below
 
 
 class Sampler(threading.Thread):
@@ -525,7 +528,7 @@ def events_payload(db, series: str, since, key: str | None = None) -> dict:
 def _register_hooks() -> None:
     from . import account_store, accounts, autoresume, codex_accounts   # imported late: autoresume imports tmux/notify and accounts imports samples lazily
     from .agents import codex_rollout
-    for fn in (autoresume.tick, accounts.observe, account_store.tick, codex_accounts.tick, codex_rollout.tick):   # observe: who is logged in (kv accounts / account_current, 'acct' events); account_store.tick: saved logins; codex_accounts.tick: the same for Codex; codex_rollout.tick: Codex rollout stats and rate limits (after codex_accounts: it reads the account the tick above just learned)
+    for fn in (autoresume.tick, accounts.observe, accounts.poll_usage_cache, account_store.tick, codex_accounts.tick, codex_rollout.tick):   # observe: who is logged in (kv accounts / account_current, 'acct' events); poll_usage_cache: Claude Code's own usage reading, after observe (it needs the current account); account_store.tick: saved logins; codex_accounts.tick: the same for Codex; codex_rollout.tick: Codex rollout stats and rate limits (after codex_accounts: it reads the account the tick above just learned)
         if fn not in TICK_HOOKS:
             TICK_HOOKS.append(fn)
 

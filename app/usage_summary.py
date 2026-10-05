@@ -53,7 +53,7 @@ API-equivalent figure and stay secondary):
     closing sample's account; a mid-day /login splits the day instead of giving all of it to the later account.
   * hours: the 15-minute rule over 'state' events, attributed to the account of the earlier event of each gap. sessions: distinct cost
     keys with spend or tokens in the window (a key that straddled a switch counts once per account and once in total.sessions).
-  * accounts[].rl_5h / rl_7d are the newest 'acct:<key>' readings ({value, resets_at, at}); None until the account has one.
+  * accounts[].rl_5h / rl_7d are the newest 'acct:<key>' readings ({value, resets_at, at, source: 'statusline' | 'cache'}); None until the account has one.
     headroom_*: real accounts with a reading, most room first (the current account first among equals; same rule as accounts.headroom); left_pct = 100 - value, and 100 once the reading's resets_at has passed
     (the window rolled over; nothing has been counted in the new one yet). An account without a reading is left out (unknown, not full).
   * `current` is the kv 'account_current' key (else the newest 'acct' event's key); rows sort current first, then by the 7d total.
@@ -64,6 +64,8 @@ from __future__ import annotations
 import json
 from bisect import bisect_right
 from datetime import date, datetime, timedelta, timezone
+
+from .accounts import PERIOD_5H, PERIOD_7D, SOURCE_CACHE, SOURCE_STATUSLINE, window_now
 
 SOURCE = "samples"
 DEFAULT_TZ_MIN = 345
@@ -371,23 +373,26 @@ def _kv_dict(db, key: str) -> dict:
 
 
 def _reading(db, series: str, key: str) -> dict | None:
-    """{value, resets_at, at}: the newest 'acct:<key>' reading of one window, None until the account has a numeric one."""
+    """{value, resets_at, at, source}: the newest 'acct:<key>' reading of one window, None until the account has a numeric one.
+    source is 'cache' when Claude Code's usage cache was the reading's origin (sample meta), else 'statusline'."""
     last = db.sample_last(series, f"acct:{key}")
     value = _num(last.get("value")) if last else None
     if value is None:
         return None
-    ra = _num(_meta(last.get("meta")).get("resets_at"))
-    return {"value": value, "resets_at": int(ra) if ra is not None else None, "at": last.get("at")}
+    meta = _meta(last.get("meta"))
+    ra = _num(meta.get("resets_at"))
+    return {"value": value, "resets_at": int(ra) if ra is not None else None, "at": last.get("at"),
+            "source": SOURCE_CACHE if meta.get("source") == SOURCE_CACHE else SOURCE_STATUSLINE}
 
 
-def _left_pct(reading: dict | None, now_ts: float) -> float | None:
+def _left_pct(reading: dict | None, now_ts: float, period: int) -> float | None:
     """What is left of a window: 100 - used %, and all of it once the reading's reset instant has passed (a new window, nothing
-    counted yet). None without a reading: unknown is not the same as empty."""
+    counted yet: accounts.window_now, the rule the pills and gauges and accounts.headroom share). None without a reading: unknown is
+    not the same as empty."""
     if reading is None:
         return None
-    if reading["resets_at"] is not None and reading["resets_at"] <= now_ts:
-        return 100.0
-    return round(max(0.0, min(100.0, 100.0 - reading["value"])), 1)
+    pct, _next, _rolled = window_now(reading["value"], reading["resets_at"], period, now_ts)
+    return round(100.0 - pct, 1)
 
 
 def _add(table: dict, account: str, day: int, amount: float) -> None:
@@ -441,8 +446,8 @@ def _accounts_section(db, timeline: _Timeline, now_ts: float, today: int, episod
                        "tokens": sum(r["windows"][name]["tokens"] for r in rows),
                        "hours": round(sum(r["windows"][name]["hours"] for r in rows), 2), "sessions": len(sessions[name])}
     total["accounts"] = len(real)
-    for field, series in (("headroom_5h", "rl_5h"), ("headroom_7d", "rl_7d")):
-        left = [(r["key"], r["current"], _left_pct(r[series], now_ts)) for r in real]
+    for field, series, period in (("headroom_5h", "rl_5h", PERIOD_5H), ("headroom_7d", "rl_7d", PERIOD_7D)):
+        left = [(r["key"], r["current"], _left_pct(r[series], now_ts, period)) for r in real]
         total[field] = [{"key": k, "left_pct": v} for k, cur, v in sorted(((k, cur, v) for k, cur, v in left if v is not None),
                                                                          key=lambda t: (-t[2], not t[1], t[0]))]
     by_account = {r["key"]: {"rl_5h": _rate_limit(db, "rl_5h", f"acct:{r['key']}"), "rl_7d": _rate_limit(db, "rl_7d", f"acct:{r['key']}")}
