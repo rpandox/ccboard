@@ -3,13 +3,18 @@ branch main, needs credentials' under the URL field. `git ls-remote --symref <ur
 ssh in batch mode) and is cut off after TIMEOUT seconds. preflight_clone() validates with projects.check_url (the same rule a clone obeys: https, ssh and git@host:
 only, never an IP literal, localhost or a private, link-local or tailnet name, unless CCBOARD_CLONE_ALLOWED_HOSTS lists the host); ls_remote() is the probe alone.
 The probe only speaks https and ssh (GIT_ALLOW_PROTOCOL) and does not follow an https redirect, so a public host cannot bounce it to an internal one; git runs in its
-own process group and the whole group is killed at the timeout, so no git-remote-https or ssh child outlives the call."""
+own process group and the whole group is killed at the timeout, so no git-remote-https or ssh child outlives the call.
+check_url also resolves the host and refuses an internal answer (projects.resolve_public); for https the probe is then pinned to the addresses that were
+checked (`-c http.curloptResolve=<host>:<port>:<addresses>`), so git cannot look the name up again and be sent elsewhere (DNS rebinding), on a git that has
+the option (PIN_MIN_GIT); an older git gets no pin and the probe relies on the check alone (the doctor's git check says which case applies)."""
 from __future__ import annotations
 
+import functools
 import os
 import re
 import signal
 import subprocess
+import time
 
 from . import projects
 
@@ -22,6 +27,44 @@ _AUTH_RE = re.compile(
     r"host key verification failed|no supported authentication", re.I)
 _SYMREF_RE = re.compile(r"^ref:\s+refs/heads/(\S+)\s+HEAD\s*$")
 _HEAD_RE = re.compile(r"^[0-9a-f]{7,64}\s+refs/heads/(\S+)\s*$")
+# http.curloptResolve came with git 2.37.0. Support is read from `git --version`, not from `git help config | grep curloptResolve`: the
+# container's git (2.43) has the option but no man pages, so the help text would say no. A git that lacks it gets no pin.
+PIN_MIN_GIT = (2, 37, 0)
+_GIT_VER_RE = re.compile(r"git version (\d+)\.(\d+)(?:\.(\d+))?")
+
+
+def parse_git_version(text: str) -> tuple[int, int, int] | None:
+    m = _GIT_VER_RE.search(text or "")
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)) if m else None
+
+
+@functools.lru_cache(maxsize=1)
+def git_version() -> tuple[int, int, int] | None:
+    """The box's git version, read once per process; None when git is missing or says something else."""
+    try:
+        cp = subprocess.run(["git", "--version"], capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return parse_git_version(cp.stdout) if cp.returncode == 0 else None
+
+
+def pin_supported(version: tuple[int, int, int] | None = None) -> bool:
+    v = version if version is not None else git_version()
+    return v is not None and tuple(v) >= PIN_MIN_GIT
+
+
+def pin_note(version: tuple[int, int, int] | None) -> str:
+    """The doctor's sentence about the clone probe's address pin for this git version."""
+    if pin_supported(version):
+        return "the clone probe pins the checked address (http.curloptResolve)"
+    return ("no http.curloptResolve (it needs git 2.37), so the clone probe is not pinned to the checked address and relies on the check alone")
+
+
+def pin_option(pin: tuple[str, int, tuple[str, ...]]) -> str:
+    """`http.curloptResolve=<host>:<port>:<addr>[,<addr>...]` (curl's CURLOPT_RESOLVE syntax; an IPv6 address goes in brackets). Every checked
+    address is listed, so one that does not answer from the box does not fail the probe."""
+    host, port, addrs = pin
+    return "http.curloptResolve=" + f"{host}:{port}:" + ",".join(f"[{a}]" if ":" in a else a for a in addrs)
 
 
 def _env() -> dict:
@@ -67,11 +110,13 @@ def _short(text: str) -> str:
     return ""
 
 
-def ls_remote(url: str, timeout: float = TIMEOUT) -> dict:
-    """{reachable, default_branch, needs_auth, heads, error} for one remote. Never raises for a remote that is merely down."""
+def ls_remote(url: str, timeout: float = TIMEOUT, pin: tuple[str, int, tuple[str, ...]] | None = None) -> dict:
+    """{reachable, default_branch, needs_auth, heads, error} for one remote. Never raises for a remote that is merely down. `pin` (host, port,
+    addresses) adds `-c http.curloptResolve=...` so git connects to those addresses only."""
     out = {"reachable": False, "default_branch": None, "needs_auth": False, "heads": [], "error": None}
+    argv = ["git", "-c", "http.followRedirects=false"] + (["-c", pin_option(pin)] if pin else []) + ["ls-remote", "--symref", "--", url]
     try:
-        cp = _run(["git", "-c", "http.followRedirects=false", "ls-remote", "--symref", "--", url], env=_env(), timeout=timeout)
+        cp = _run(argv, env=_env(), timeout=timeout)
     except subprocess.TimeoutExpired:
         out["error"] = f"no answer within {int(timeout)} seconds"
         return out
@@ -105,7 +150,10 @@ def ls_remote(url: str, timeout: float = TIMEOUT) -> dict:
 def preflight_clone(url: str) -> dict:
     """POST /api/preflight/clone {url}: {reachable, default_branch, needs_auth, heads, name, error}. BadRequest for a URL a clone would refuse
     (so the wizard's field says the same thing the clone would); `name` is the repo name a clone would derive, or None."""
-    url = projects.check_url(url)
-    res = ls_remote(url)
+    t0 = time.monotonic()
+    url = projects.check_url(url)                                   # the rule and the DNS check (an answer is cached for the clone that follows)
+    pin = projects.clone_pin(url) if pin_supported() else None      # https only, from that cached answer
+    left = max(1.0, TIMEOUT - (time.monotonic() - t0))              # the lookup's time comes off git's share: the probe stays in its 12 s
+    res = ls_remote(url, timeout=left, pin=pin) if pin else ls_remote(url, timeout=left)
     res["name"] = projects.derive_repo_name(url)
     return res

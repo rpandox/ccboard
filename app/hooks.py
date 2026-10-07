@@ -438,6 +438,28 @@ def _subthread(adapter, row: dict | None, sid: str | None, event: str, payload: 
     return rel(event, payload, row["claude_session_id"], row.get("state")) == "subthread"
 
 
+def _valid_sid(payload: dict) -> str | None:
+    raw = payload.get("session_id")
+    return raw if isinstance(raw, str) and SESSION_ID_RE.match(raw) else None
+
+
+def ignore_reason(db, name: str, event: str, payload: dict, row: dict | None, child: bool = False, agent: str | None = None) -> str | None:
+    """Is this hook somebody else's? 'foreign' (claude-mem's observer, or a conversation another open row owns), 'child' (a nested
+    claude, CLAUDE_CODE_CHILD_SESSION=1, whose session_id is not the row's own: it inherits the parent's CCBOARD_SESSION and TMUX_PANE),
+    'subthread' (another thread of the row's Codex process, as the adapter's thread_relation says), or None: the row's own event.
+    The one guard behind apply() (/api/hook) and /api/permission; it writes nothing, the caller decides what an ignored event leaves
+    behind. statusline and PostToolBatch are never sub-thread events (apply has always handled them before that rule)."""
+    p = payload if isinstance(payload, dict) else {}
+    sid = _valid_sid(p)
+    if _foreign(db, name, p, sid, row):
+        return "foreign"
+    if child and not (sid and row and sid == row.get("claude_session_id")):
+        return "child"
+    if event not in SKIP_EVENTS and _subthread(_adapter(agent), row, sid, event, p):
+        return "subthread"
+    return None
+
+
 def _expire_permissions(db, name: str, decision: str) -> int:
     """Close every pending permission request of a session (an Interrupt answered them: Codex dropped the prompt) and wake each long
     poll so the hook script returns at once. Returns how many."""
@@ -458,15 +480,13 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None, ch
     -> one flags write -> state -> event row -> notification. Flags and state are on disk before the notification is built."""
     event = _event_name(event)
     p = payload if isinstance(payload, dict) else {}
-    raw_sid = p.get("session_id")
-    sid = raw_sid if isinstance(raw_sid, str) and SESSION_ID_RE.match(raw_sid) else None
+    sid = _valid_sid(p)
     row = db.open_row(name)
-    if _foreign(db, name, p, sid, row):
-        return {"session": name, "event": event, "ignored": "foreign"}
-    if child and not (sid and row and sid == row.get("claude_session_id")):
+    why = ignore_reason(db, name, event, p, row, child=child, agent=agent)
+    if why in ("foreign", "child"):
         # a nested claude (CLAUDE_CODE_CHILD_SESSION=1: claude-mem's observer, a workflow or SDK subagent) inherits the parent's
         # CCBOARD_SESSION and TMUX_PANE; its hooks are not this row's unless it is the row's own conversation
-        return {"session": name, "event": event, "ignored": "child"}
+        return {"session": name, "event": event, "ignored": why}
 
     if event == "statusline":
         stats = statusline_stats(p)
@@ -493,7 +513,7 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None, ch
         return {"session": name, "event": event, "skipped": True}
 
     adapter = _adapter(agent)
-    if _subthread(adapter, row, sid, event, p):
+    if why == "subthread":
         db.update_flags(name, None, {"subthreads": 1})
         db.add_event(name, event, "subthread", None, p, agent=agent)           # recorded and counted, never a state change
         return {"session": name, "event": event, "ignored": "subthread"}

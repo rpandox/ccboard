@@ -303,3 +303,119 @@ def test_push_request_obeys_the_needs_you_switch(ntfy, tmp_path, monkeypatch):
     notify.set_prefs({"needs": True})
     permissions.push_request(3, "shop--api--s1", "Bash: ls")
     assert len(ntfy) == 1 and len(web) == 1
+
+
+# --- the permission path has the hook guards: child and foreign (issue #62) ---
+
+OTHER = "11111111-1111-4111-8111-111111111111"
+
+
+def _claude_row(lite_client, projects_dir, monkeypatch, repo="api"):
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")        # CI has no claude: a session create needs one
+    subprocess.run(["git", "-C", str(projects_dir), "init", "-q", "-b", "main", f"shop/{repo}"], check=True)
+    r = lite_client.post(f"/api/projects/shop/repos/{repo}/sessions", headers=H, json={"launcher": "claude"}).json()
+    return r["tmux"], r["claude_session_id"]
+
+
+def _ask_as(lite_client, name, payload, extra=None):
+    hdr = {"X-CCBoard-Token": hooks.ensure_token(), "X-CCBoard-Session": name, **(extra or {})}
+    return lite_client.post("/api/permission", headers=hdr,
+                            content=json.dumps({"hook_event_name": "PermissionRequest", "tool_name": "Bash",
+                                                "tool_input": {"command": "rm -rf build"}, **payload}))
+
+
+@pytest.fixture
+def untouched(monkeypatch):
+    """Fail the test if an ignored request notifies, or cancels a pending auto-close; and make a wait obvious (10 s)."""
+    from app import main
+    monkeypatch.setattr(settings, "approve_timeout", 10.0)
+    monkeypatch.setattr(permissions, "push_request", lambda *a, **k: (_ for _ in ()).throw(AssertionError("a notification was sent")))
+    seen = []
+
+    class RT:
+        db = main.db
+        def on_activity(self, *a):
+            seen.append(a)
+
+    monkeypatch.setattr(main, "taskflow_rt", RT())
+    return seen
+
+
+def _row(name):
+    from app import main
+    return main.db.open_rows()[name]
+
+
+def test_a_child_request_that_is_not_the_rows_conversation_is_ignored_at_once(lite_client, projects_dir, fake_tmux, monkeypatch, untouched):
+    from app import main
+    name, own = _claude_row(lite_client, projects_dir, monkeypatch)
+    before = _row(name)
+    t0 = time.monotonic()
+    r = _ask_as(lite_client, name, {"session_id": OTHER}, {"X-CCBoard-Child": "1"}).json()
+    assert time.monotonic() - t0 < 2.0, "an ignored request never waits"
+    assert r == {"behavior": None, "reason": "child", "ignored": "child", "session": name}
+    after = _row(name)
+    assert after["state"] == before["state"] and after["last_message"] == before["last_message"]
+    assert not (after.get("flags") or {}).get("wait_kind") and main.db.perm_pending() == [] and untouched == []
+    # no session_id at all from a child is not the row's own conversation either
+    r = _ask_as(lite_client, name, {}, {"X-CCBoard-Child": "1"}).json()
+    assert r["ignored"] == "child" and main.db.perm_pending() == []
+
+
+def test_the_rows_own_conversation_is_asked_as_before_even_with_the_child_flag(lite_client, projects_dir, fake_tmux, monkeypatch):
+    from app import main
+    monkeypatch.setattr(settings, "approve_timeout", 1.0)
+    sent = []
+    monkeypatch.setattr(permissions, "push_request", lambda pid, name, summary: sent.append((pid, name, summary)))
+    name, own = _claude_row(lite_client, projects_dir, monkeypatch)
+    for extra in ({"X-CCBoard-Child": "1"}, {"X-CCBoard-Child": ""}, {}):
+        r = _ask_as(lite_client, name, {"session_id": own}, extra).json()
+        assert r["behavior"] is None and r["reason"] == "timeout" and "ignored" not in r, (extra, r)
+    assert _row(name)["state"] == "waiting" and _row(name)["last_message"] == "permission: Bash: rm -rf build"
+    assert len(sent) == 3 and all(s[1] == name for s in sent)
+    # an empty child header (CLAUDE_CODE_CHILD_SESSION unset) never blocks a request whatever its session_id
+    r = _ask_as(lite_client, name, {"session_id": OTHER}, {"X-CCBoard-Child": ""}).json()
+    assert r["reason"] == "timeout" and main.db.perm_get(r["id"])["tmux_name"] == name
+
+
+def test_foreign_requests_are_ignored_like_the_hook(lite_client, projects_dir, fake_tmux, monkeypatch, untouched):
+    from app import main
+    name, own = _claude_row(lite_client, projects_dir, monkeypatch)
+    other, other_sid = _claude_row(lite_client, projects_dir, monkeypatch, repo="web")
+    # claude-mem's observer (its transcript lives under observer-sessions)
+    r = _ask_as(lite_client, name, {"session_id": OTHER,
+                                    "transcript_path": "/home/x/.claude/projects/-home-x--claude-mem-observer-sessions-270/abc.jsonl"}).json()
+    assert r == {"behavior": None, "reason": "foreign", "ignored": "foreign", "session": name}
+    # a conversation another open row owns
+    r = _ask_as(lite_client, name, {"session_id": other_sid}).json()
+    assert r["ignored"] == "foreign" and r["behavior"] is None
+    assert main.db.perm_pending() == [] and untouched == []
+    assert _row(name)["state"] != "waiting" and _row(other)["state"] != "waiting"
+
+
+def test_the_permission_script_sends_the_child_header(tmp_path):
+    """bin/ccboard-permission with a fake curl on PATH: X-CCBoard-Child carries CLAUDE_CODE_CHILD_SESSION, like bin/ccboard-hook."""
+    import os
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "curl.args"
+    curl = bin_dir / "curl"
+    curl.write_text('#!/bin/sh\nfor a in "$@"; do printf \'%s\\n\' "$a"; done > "$FAKE_CURL_LOG"\ncat >/dev/null\n'
+                    'printf \'{"behavior":null,"reason":"child","ignored":"child"}\'\n')
+    curl.chmod(0o755)
+    tok = tmp_path / "hook-token"
+    tok.write_text("tok\n")
+    for child, want in (("1", "X-CCBoard-Child: 1"), (None, "X-CCBoard-Child: ")):
+        env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "FAKE_CURL_LOG": str(log),
+               "CCBOARD_HOOK_TOKEN_FILE": str(tok), "CCBOARD_SESSION": "shop--api--s1", "TMUX_PANE": "%3"}
+        env.pop("CLAUDE_CODE_CHILD_SESSION", None)
+        if child is not None:
+            env["CLAUDE_CODE_CHILD_SESSION"] = child
+        cp = subprocess.run(["sh", str(root / "bin" / "ccboard-permission")], input='{"tool_name":"Bash"}', capture_output=True, text=True,
+                            env=env, timeout=20)
+        args = log.read_text().splitlines()
+        assert cp.returncode == 0 and cp.stdout == "", "an ignored answer prints nothing: the TUI asks"
+        assert want in args and "X-CCBoard-Session: shop--api--s1" in args and "X-CCBoard-Pane: %3" in args
+        assert args.index(want) > 0 and args[args.index(want) - 1] == "-H"

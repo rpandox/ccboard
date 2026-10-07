@@ -257,10 +257,8 @@ html.force-coarse #page .uc-backup { min-height:var(--tap); }
 #banner:has(.limit-callout):not(.limit-only) { flex-wrap:wrap; }
 #banner:not(.limit-only) .limit-callout { padding:8px 0 0; background:none; border:0; border-top:1px solid var(--line-soft); border-radius:0; }
 
-/* the + menu's sheet forms: project (with the clone queue), GitHub import, batch prompt */
-.sheet-links { margin:8px 0 0; }
+/* the + menu's sheet forms: GitHub import, batch prompt (New project is the onboarding wizard's page) */
 .sheet-body .form .row > input[type=text] { flex:1 1 140px; min-width:0; }
-.sheet-body .clone-queue { margin-top:10px; }
 .form-status:empty { display:none; }
 .form .checks.import-repos, .form .checks.batch-repos { flex-direction:column; flex-wrap:nowrap; max-height:40vh; overflow-y:auto; gap:2px; }
 .form .checks.import-repos label { flex-wrap:wrap; gap:2px 8px; }

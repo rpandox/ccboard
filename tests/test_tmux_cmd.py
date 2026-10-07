@@ -45,7 +45,8 @@ def test_session_launch_builds_claude_argv(lite_client, projects_dir, fake_tmux,
 def test_clone_and_delete_flow(lite_client, projects_dir, fake_tmux):
     r = lite_client.post("/api/projects", headers=H, json={"name": "shop", "url": "https://github.com/o/web.git"})
     assert r.status_code == 201 and r.json()["clone_session"] == "shop--web--clone"
-    assert fake_tmux["sent"][0][1] == "git clone --progress -- https://github.com/o/web.git . && exit"
+    assert fake_tmux["sent"][0][1].startswith("git -c http.followRedirects=false ")      # the pin that may follow is tests/test_clone_url_guard.py's
+    assert fake_tmux["sent"][0][1].endswith(" clone --progress -- https://github.com/o/web.git . && exit")
     st = lite_client.get("/api/state", headers=H).json()
     assert st["projects"][0]["repos"][0]["state"] == "clone-failed"  # fake pane runs the shell, not git
     assert lite_client.post("/api/projects/shop/repos", headers=H, json={"url": "https://github.com/o/web.git"}).status_code == 409

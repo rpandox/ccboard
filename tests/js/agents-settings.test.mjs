@@ -234,3 +234,31 @@ test('no outside threads says so; a failed read says why; a failed Open says why
   assert.match(plain(w.get('__toasts')).pop().text, /Could not open it: the thread is gone/);
   assert.equal(panel(w).querySelectorAll('.xrow').length, 2);
 });
+
+// ---------------------------------------------------------------- Codex Log out (v0.5.19, issue 3)
+
+const CX_LOGGED_IN = () => ({ current: 'k1', list: [{ key: 'k1', label: 'Work', plan: 'pro', current: true, saved: true }], store: { supported: true, add: true, reason: null, count: 1 }, login: { running: false } });
+
+test('Codex card: a two-tap Log out (red-outlined, quiet) sits beside Add account while logged in; one tap calls nothing, the second POSTs /api/codex-accounts/logout once and the card reads not logged in with Log in', async () => {
+  const w = await mount(agWorld({ state: stateOf({ codex_accounts: CX_LOGGED_IN() }) }));
+  w.run(`__answers['/api/codex-accounts/logout'] = () => ({ ok: true, was: 'k1', warnings: [], accounts: { current: null, list: [{ key: 'k1', label: 'Work', plan: 'pro', current: false, saved: true }], store: { supported: true, add: true, reason: null, count: 1 }, login: { running: false } } });`);
+  const row = () => kv(under(w, 'Codex'), 'Codex');
+  const posts = () => calls(w).filter((c) => c.method === 'POST' && c.path.startsWith('/api/codex-accounts'));
+  const out = btn(row(), 'Log out');
+  assert.ok(out && out.classList.contains('danger') && out.classList.contains('minimal') && !isFilled(out));
+  assert.match(text(row()), /keeps its saved copy/);
+  out.click();
+  assert.ok(btn(row(), 'Confirm Log out') && btn(row(), 'Cancel'));
+  assert.deepEqual(posts(), [], 'the first tap calls nothing');
+  btn(row(), 'Confirm Log out').click();
+  await tick(); await tick();
+  assert.deepEqual(posts(), [{ method: 'POST', path: '/api/codex-accounts/logout' }]);
+  assert.match(val(row()), /Codex: not logged in/);
+  assert.ok(btn(row(), 'Log in') && !btn(row(), 'Log out'));
+});
+
+test('Codex card: no Log out while Codex is logged out; the Claude Log out is unchanged', async () => {
+  const w = await mount(agWorld({ state: stateOf({ agents: { claude: CLAUDE, codex: { ...CODEX, loggedIn: false } }, codex_accounts: CX_LOGGED_IN() }) }));
+  assert.equal(btn(kv(under(w, 'Codex'), 'Codex'), 'Log out'), undefined);
+  assert.ok(btn(kv(under(w, 'Claude'), 'Claude'), 'Log out'));
+});

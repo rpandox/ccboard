@@ -1338,7 +1338,7 @@ Shell.createItems = function () {
 };
 
 /* Shell.openCreate(kind, ctx): the one entry for everything the + menu, the c-chords (keymap.js) and the page buttons create. kind is
-   session | task | schedule (a repo picker, then the launcher sheet), project (the new-project form and the clone queue), import (GitHub
+   session | task | schedule (a repo picker, then the launcher sheet), project (no sheet: it goes to the onboarding wizard, #/onboarding/project, where the name rules and the clone check live), import (GitHub
    repos into a project) or batch (one headless prompt over many repos). ctx = {project, repo?} (the project page's buttons) skips the picker
    when the place is clear: the form opens for that repo ('root' is the project folder: a session always, a task or schedule when it is itself
    a git repo), or for the project's only place; a session in a project with several places and no repo in ctx opens where the project worked last (launchPlace), a project with
@@ -1508,22 +1508,6 @@ Shell.formSheet = function (title, build, done) {
   const form = build({ onDone: () => { closeSheet(); toast(done, { kind: 'ok' }); }, onCancel: () => closeSheet() });
   openSheet({ title, body: form, onClose: Shell.sheetClosed });
   if (typeof form.focusFirst === 'function') form.focusFirst();
-};
-
-/* The new-project sheet: the two bulk entries the v0.4 board had beside the form, the clone queue line, then the form (its footer is the last row) (st.clone_queue, patched on every
-   render through Shell.formWatch). A project created with a clone URL keeps the sheet open so the queue shows the clone; a blank one closes it. */
-Shell.projectSheet = function () {
-  const queue = cloneQueueView();
-  const form = projectForm({
-    onDone: (body) => { toast(`Project ${body.name} created`, { kind: 'ok' }); if (!body.url) closeSheet(); },
-    onCancel: () => closeSheet(),
-  });
-  const bulk = el('div', { class: 'row sheet-links' },
-    el('button', { class: 'small', type: 'button', onclick: () => Shell.openCreate('import') }, ic('download'), 'Import from GitHub…'),
-    el('button', { class: 'small', type: 'button', onclick: () => Shell.openCreate('batch') }, ic('layers'), 'Batch prompt…'));
-  Shell.formWatch = () => queue.update(typeof state === 'undefined' ? null : state);
-  openSheet({ title: 'New project', body: [bulk, queue.node, form], onClose: Shell.sheetClosed });       // the two bulk entries and the clone queue above the form: its sticky footer (Create project / Cancel) is the last row
-  form.focusFirst();
 };
 
 Shell.newProject = function () { return Shell.openCreate('project'); };

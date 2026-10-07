@@ -990,6 +990,20 @@ def api_codex_account_login_cancel():
     return {"ok": True}
 
 
+@app.post("/api/codex-accounts/logout")
+def api_codex_account_logout():
+    """Log the box out of Codex: the live login is saved into its slot first (an unknown login is kept as a new account), then auth.json is removed and
+    the current account cleared, so the account can be switched back to. 200 {ok, was, warnings: [text], accounts}; `was` is the account's key, null when
+    nobody was logged in (not an error). 409 {detail} while a login from Settings is in flight or one of the board's own Codex sessions is open (close
+    them first), or when the login could not be saved first; nothing changes then."""
+    try:
+        res = codex_accounts.logout(db)
+    except codex_accounts.StoreError as e:
+        return _refuse(409, str(e))
+    _invalidate_scan()
+    return {**res, "accounts": _codex_accounts_view(tail=False)}
+
+
 @app.patch("/api/codex-accounts/{key}")
 def api_codex_account_patch(key: str, body: CodexAccountPatchIn):
     """Rename a Codex account: {label} (1..60 characters; an account has no other name, so an empty label is a 400). Answers the account's row."""
@@ -1045,13 +1059,17 @@ class RepoIn(BaseModel):
 def _launch_clone(project: str, repo: str, path: Path, url: str, cleanup: list[Path]) -> str:
     """Start the clone session; on any failure remove the freshly created dirs in `cleanup`."""
     name = tmux.tmux_name(project, repo, "clone")
-    cmd = ["git", "clone", "--progress", "--", url, "."]
-    line = shlex.join(cmd) + " && exit"
     try:
+        # No redirects: a public host must not bounce the clone to an internal one (a renamed repo already fails the wizard's probe, which shows
+        # the new URL). On a git that has it, https is pinned to the addresses check_url accepted (cached), so git cannot resolve the name again.
+        pin = projects.clone_pin(url) if preflight.pin_supported() else None
+        cmd = (["git", "-c", "http.followRedirects=false"] + (["-c", preflight.pin_option(pin)] if pin else [])
+               + ["clone", "--progress", "--", url, "."])
+        line = shlex.join(cmd) + " && exit"
         if tmux.has_session(name):
             raise projects.Conflict("a clone is already running for this repo")
         _start_session(name, project, repo, "clone", "clone", str(path), cmd_line=line, claude_session_id=None,
-                       add_dirs=[], agent="shell", env_extra={"GIT_ALLOW_PROTOCOL": preflight.ALLOW_PROTOCOL})      # https and ssh only; redirects stay on so a renamed repo still clones
+                       add_dirs=[], agent="shell", env_extra={"GIT_ALLOW_PROTOCOL": preflight.ALLOW_PROTOCOL})      # https and ssh only
     except Exception:
         for d in cleanup:
             try:
@@ -3515,6 +3533,14 @@ async def api_permission(request: Request):
     if hooks.agent_mismatch(rows[name].get("agent"), request.headers.get("x-ccboard-agent")):
         # another agent's process (a Hermes or `codex exec` run in this row's cwd): never a request on the row, never a wait, never a deny
         return {"behavior": None, "reason": "foreign", "ignored": "foreign", "session": name}
+    # the guards of /api/hook (hooks.ignore_reason): claude-mem's observer or another row's conversation, a nested claude
+    # (X-CCBoard-Child) that is not the row's own conversation, a Codex sub-thread. Answered at once: no pending permission, no
+    # notification, no state change, no cancelled auto-close, no wait; behavior null so the asking process uses its own prompt.
+    why = await asyncio.to_thread(hooks.ignore_reason, db, name, "PermissionRequest", payload, rows[name],
+                                  request.headers.get("x-ccboard-child", "").strip() == "1",
+                                  hooks.hook_agent(rows[name].get("agent"), request.headers.get("x-ccboard-agent")))
+    if why:
+        return {"behavior": None, "reason": why, "ignored": why, "session": name}
     tool = str(payload.get("tool_name") or "tool")
     summary = permissions.summarize(tool, payload.get("tool_input"))
 

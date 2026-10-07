@@ -4,7 +4,9 @@ import pathlib
 import subprocess
 import sys
 
-H = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
+import pytest
+
+H ={"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
@@ -275,3 +277,90 @@ def test_the_new_tools_through_a_real_board(lite_client, projects_dir, fake_tmux
     assert res["result"] == "the first result" and res["column"] in ("done", "needs_you", "in_progress")
     isError, text = _call(m, "get_task_result", task_id=999)
     assert isError and "404" in text
+
+
+# --- the shim is box-only: loopback http and no redirects (issue #21) ---
+
+def _shim_at(monkeypatch, url, tmp_path):
+    tok = tmp_path / "hook-token"
+    tok.write_text("tok-123\n")
+    monkeypatch.setenv("CCBOARD_URL", url)
+    monkeypatch.setenv("CCBOARD_HOOK_TOKEN_FILE", str(tok))
+    return load_shim()
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8000", "http://localhost:8000", "http://[::1]:8000",
+                                 "http://127.0.0.2:8000/", "http://LOCALHOST:8000"])
+def test_loopback_board_urls_reach_the_network(monkeypatch, tmp_path, url):
+    m = _shim_at(monkeypatch, url, tmp_path)
+    seen = []
+
+    class Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b'{"ok": true}'
+
+    monkeypatch.setattr(m._OPENER, "open", lambda req, timeout=None: seen.append(req) or Resp())
+    assert m.call_api("GET", "/api/state") == {"ok": True}
+    assert seen[0].full_url == url.rstrip("/") + "/api/state" and seen[0].get_header("X-ccboard-token") == "tok-123"
+
+
+@pytest.mark.parametrize("url", ["https://127.0.0.1:8000", "http://192.168.1.5:8000", "https://box.example.ts.net",
+                                 "http://box.example.ts.net:8000", "http://localhost.example.com:8000",
+                                 "http://127.0.0.1@evil.example.com:8000", "http://127.0.0.1:8000@evil.example.com",
+                                 "http://user@127.0.0.1:8000", "http://100.100.1.2:8000", "http://[::ffff:10.0.0.1]:8000", "http://[::ffff:127.0.0.1]:8000",
+                                 "ftp://127.0.0.1/", "http://127.0.0.1:notaport", "not a url"])
+def test_non_loopback_board_urls_fail_before_any_network_call(monkeypatch, tmp_path, url):
+    import urllib.request
+    m = _shim_at(monkeypatch, url, tmp_path)
+
+    def boom(*a, **k):
+        raise AssertionError("the network was reached")
+
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    monkeypatch.setattr(m._OPENER, "open", boom)
+    monkeypatch.setattr(m, "token", boom)                 # not even the token file is read
+    with pytest.raises(RuntimeError) as e:
+        m.call_api("GET", "/api/state")
+    msg = str(e.value)
+    assert "remote MCP endpoint" in msg and "stays on the box" in msg
+    assert "evil" not in msg and "tok-123" not in msg and "192.168" not in msg
+    # through the MCP surface it is a tool error, not a crash
+    r = m.handle({"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "list_projects", "arguments": {}}})
+    assert r["result"]["isError"] is True and "remote MCP endpoint" in r["result"]["content"][0]["text"]
+
+
+def test_a_redirect_is_not_followed_and_the_token_is_sent_once(monkeypatch, tmp_path):
+    import http.server
+    import threading
+    hits = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append((self.path, self.headers.get("X-CCBoard-Token")))
+            if self.path == "/api/state":
+                self.send_response(302)
+                self.send_header("Location", "/elsewhere")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            else:
+                body = b'{"leaked": true}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        m = _shim_at(monkeypatch, f"http://127.0.0.1:{srv.server_address[1]}", tmp_path)
+        with pytest.raises(RuntimeError) as e:
+            m.call_api("GET", "/api/state")
+        assert "302" in str(e.value) and "not followed" in str(e.value)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert hits == [("/api/state", "tok-123")]

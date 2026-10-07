@@ -1,5 +1,5 @@
-// Contract tests for Shell.openCreate(kind) (shell.js) and the forms behind it (launcher.js): the + menu entries, the project sheet with its clone
-// queue, the GitHub import and the batch prompt moved out of the v0.4 board into the sheet with the same API calls, and the rate-limit callout
+// Contract tests for Shell.openCreate(kind) (shell.js) and the forms behind it (launcher.js): the + menu entries, the New project entry that goes to the wizard,
+// the GitHub import and the batch prompt moved out of the v0.4 board into the sheet with the same API calls, and the rate-limit callout
 // that render() puts back after renderBanner(). Real core.js, components.js, launcher.js, router.js, widgets.js and shell.js on minidom's DOM.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -50,7 +50,6 @@ const title = (w) => text(sheet(w).querySelector('.sheet-title'));
 const field = (n, label) => n.querySelectorAll('.field').find((f) => text(f.querySelector('label')) === label);
 const submit = (form) => form.dispatchEvent({ type: 'submit', preventDefault() {} });
 const open = (w, kind) => w.run(`Shell.openCreate(${JSON.stringify(kind)})`);
-const openProjectSheet = (w) => w.run('Shell.projectSheet()');         // v0.5.19: the + menu's project entry goes to the wizard; the old sheet stays for the callers that ask for it by name
 const closed = (w) => { sheet(w).close(); };
 
 // ---------------------------------------------------------------- the entry point
@@ -101,82 +100,31 @@ test('session, task and schedule go through the repo picker, then the launcher f
   assert.equal(title(w), 'Schedule a run');
 });
 
-// ---------------------------------------------------------------- the project sheet
+// ---------------------------------------------------------------- New project is the wizard (v0.5.19, issue 18)
 
-test('the project sheet: POST /api/projects {name}, a toast, and the sheet closes for a blank project', async () => {
+test('every way to start a project reaches the wizard at #/onboarding/project and opens no sheet: openCreate, the + menu entry, Shell.newProject; none of them creates a project by itself', () => {
   const w = sWorld();
-  openProjectSheet(w);
-  const form = sheet(w).querySelector('form.form');
-  assert.match(text(sheet(w).querySelector('.sheet-body')), /A folder per project under \/srv\/projects/);
-  field(form, 'Name').querySelector('input').value = ' shop2 ';
-  submit(form);
-  await tick();
-  assert.deepEqual(calls(w).pop(), { method: 'POST', path: '/api/projects', body: { name: 'shop2' } });
-  assert.deepEqual(toasts(w).pop(), { text: 'Project shop2 created', kind: 'ok' });
-  assert.equal(sheet(w).open, false);
-  assert.equal(w.get('__polls'), 1, 'the board refreshes');
+  const via = {
+    openCreate: () => w.run("Shell.openCreate('project')"),
+    'the + menu entry': () => w.run("Shell.createItems().find((i) => i.label === 'New project').onClick()"),
+    'Shell.newProject (the Home empty state)': () => w.run('Shell.newProject()'),
+  };
+  for (const [name, go] of Object.entries(via)) {
+    w.location.hash = '#/';
+    go();
+    assert.equal(w.location.hash, '#/onboarding/project', name);
+    assert.equal(sheet(w).open, false, `${name}: no sheet`);
+  }
+  assert.deepEqual(calls(w).filter((c) => c.method === 'POST'), [], 'the wizard creates the project, not the entry');
 });
 
-test('a project with a clone URL keeps the sheet open so the queue shows the clone', async () => {
+test('the other + menu sheets still open (task, session, schedule, import, batch), so removing the old project sheet took nothing else with it', () => {
   const w = sWorld();
-  openProjectSheet(w);
-  const form = sheet(w).querySelector('form.form');
-  field(form, 'Name').querySelector('input').value = 'blog';
-  field(form, 'Clone URL').querySelector('input').value = 'https://example.invalid/blog.git';
-  submit(form);
-  await tick();
-  assert.deepEqual(calls(w).pop(), { method: 'POST', path: '/api/projects', body: { name: 'blog', url: 'https://example.invalid/blog.git' } });
-  assert.equal(sheet(w).open, true);
-  assert.equal(field(form, 'Name').querySelector('input').value, '', 'the form is ready for the next one');
-});
-
-test('a failed create stays open and says why, inline and as a toast through setError', async () => {
-  const w = sWorld({ answers: { '/api/projects': { __error: 'project name already exists' } } });
-  w.run('globalThis.__errors = []; setError = (m) => { __errors.push(m); };');
-  openProjectSheet(w);
-  const form = sheet(w).querySelector('form.form');
-  field(form, 'Name').querySelector('input').value = 'shop';
-  submit(form);
-  await tick();
-  assert.equal(sheet(w).open, true);
-  assert.equal(text(form.querySelector('.form-status')), 'project name already exists');
-  assert.ok(form.querySelector('.form-status').classList.contains('bad'));
-  assert.deepEqual(plain(w.get('__errors')), ['project name already exists']);
-});
-
-test('the clone queue line follows st.clone_queue through the sheet watch: queued clones, failures with Clear', async () => {
-  const w = sWorld();
-  openProjectSheet(w);
-  const line = () => sheet(w).querySelector('.clone-queue');
-  assert.equal(text(line()), '', 'nothing queued');
-  assert.equal(typeof w.get('Shell.formWatch'), 'function', 'render() calls the watch');
-  w.ctx.__st.clone_queue = { queued: [{ project: 'blog', repo: 'web' }, { project: 'blog', repo: 'api' }], done: [], cap: 3 };
-  w.run('Shell.formWatch()');
-  assert.equal(text(line()), '2 clones queued (max 3 at once) ');
-  w.ctx.__st.clone_queue = { queued: [{ project: 'blog', repo: 'web' }], done: [{ status: 'failed', repo: 'blog/api', error: 'auth failed' }, { status: 'ok', repo: 'blog/web' }], cap: 3 };
-  w.run('Shell.formWatch()');
-  assert.match(text(line()), /^1 clone queued \(max 3 at once\) 1 failed: blog\/api \(auth failed\) Clear$/);
-  const keep = line().querySelector('.bad');
-  w.run('Shell.formWatch()');
-  assert.equal(line().querySelector('.bad'), keep, 'unchanged: not rebuilt');
-  line().querySelector('button').click();
-  await tick();
-  assert.deepEqual(calls(w).pop(), { method: 'POST', path: '/api/clone-queue/clear' });
-  closed(w);
-  assert.equal(w.get('Shell.formWatch'), null, 'the watch goes with the sheet');
-});
-
-test('the project sheet offers the two bulk entries the v0.4 board had beside its form', () => {
-  const w = sWorld();
-  openProjectSheet(w);
-  const links = sheet(w).querySelectorAll('.sheet-links button');
-  assert.deepEqual(links.map(text), ['Import from GitHub…', 'Batch prompt…']);
-  const kids = sheet(w).querySelector('.sheet-body').children;
-  assert.ok(kids[kids.length - 1].classList.contains('form'), 'the form (with its sticky Create project / Cancel footer) is the last row: the bulk entries sit above it');
-  assert.ok(kids.findIndex((k) => k.classList.contains('sheet-links')) < kids.length - 1);
-  links[0].click();
-  assert.equal(title(w), 'Import repos from GitHub', 'the same sheet is swapped in place');
-  assert.equal(w.get('Shell.formWatch'), null, 'and the project sheet\'s watch is dropped');
+  for (const kind of ['session', 'task', 'schedule', 'import', 'batch']) {
+    assert.equal(open(w, kind), true, kind);
+    assert.equal(sheet(w).open, true, kind);
+    closed(w);
+  }
 });
 
 // ---------------------------------------------------------------- GitHub import
@@ -304,8 +252,8 @@ test('the v0.4 entry points openImport() and openBatch() open the same sheets', 
 
 test('Cancel closes the sheet from every form', () => {
   const w = sWorld();
-  for (const kind of ['project', 'import', 'batch']) {
-    if (kind === 'project') openProjectSheet(w); else open(w, kind);
+  for (const kind of ['import', 'batch']) {
+    open(w, kind);
     sheet(w).querySelectorAll('button').find((b) => text(b) === 'Cancel').click();
     assert.equal(sheet(w).open, false, kind);
   }

@@ -6,6 +6,8 @@ import re
 import shutil
 import socket
 import subprocess
+import threading
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -17,6 +19,12 @@ URL_MAX = 512                                                                  #
 URL_SHAPE_MSG = "clone URL must start with https://, ssh:// or git@host:"
 URL_ODD_MSG = "that is not a clone URL the board can use: write it as https://host/owner/repo.git, ssh://git@host/owner/repo.git or git@host:owner/repo.git"
 URL_HOST_MSG = "that host is not allowed for clones (a local, private or tailnet address); to allow it, add it to CCBOARD_CLONE_ALLOWED_HOSTS"
+URL_DNS_INTERNAL_MSG = ("that host name points at a local, private or tailnet address, so it is not allowed for clones; to allow it, "
+                        "add it to CCBOARD_CLONE_ALLOWED_HOSTS")
+URL_DNS_NONE_MSG = "the host name does not resolve"
+URL_DNS_SLOW_MSG = "the host name did not resolve within 2 seconds; try again"
+RESOLVE_TIMEOUT = 2.0              # seconds a clone host's lookup may take (getaddrinfo has no timeout of its own: it runs in a worker thread)
+RESOLVE_CACHE_S = 10.0             # a good answer is kept this long, so the wizard's probe and the clone right after it resolve once
 GIT_TIMEOUT = 2
 ROOT = "root"   # reserved repo name: "the project folder itself" (a session there sees every repo below it)
 
@@ -116,7 +124,8 @@ def clone_host_allowed(host: str) -> bool:
     return host in entries or any(e.startswith("*.") and host.endswith(e[1:]) for e in entries)
 
 
-def _check_host(host: str) -> None:
+def _check_host(host: str) -> tuple[str, bool]:
+    """The host rules. Returns (host lower-cased without its one trailing dot, listed on CCBOARD_CLONE_ALLOWED_HOSTS); BadRequest otherwise."""
     host = host.lower()
     if host.endswith("."):
         host = host[:-1]                                                       # one trailing dot (a fully qualified name)
@@ -124,21 +133,74 @@ def _check_host(host: str) -> None:
         raise BadRequest(URL_ODD_MSG)
     if _is_ip_literal(host):
         if clone_host_allowed(host):
-            return
+            return host, True
         raise BadRequest(URL_HOST_MSG)
     if not all(_LABEL.match(label) for label in host.split(".")):              # empty labels, percent escapes, spaces, underscores
         raise BadRequest(URL_ODD_MSG)
     if clone_host_allowed(host):
-        return
+        return host, True
     if "." not in host or any(host == n or host.endswith("." + n) for n in _INTERNAL_NAMES):
         raise BadRequest(URL_HOST_MSG)
+    return host, False
 
 
-def check_clone_url(url: str) -> str:
-    """The clone URL rule (it serves the clone routes and the preflight probe alike): only `https://[user[:token]@]host[:port]/path`, `ssh://[user@]host[:port]/path`
-    and `git@host:path`. The host comes from a real parse, never from the regex: it must be a public-looking name (no IP literal in any spelling, no localhost, no
-    single-label name, none of .local .lan .internal .home.arpa .ts.net) unless CCBOARD_CLONE_ALLOWED_HOSTS lists it. A listed host never brings back a refused scheme.
-    Returns the stripped URL; BadRequest with one sentence otherwise. (A name that resolves to a private address is not caught here: that needs DNS.)"""
+# ---------------------------------------------------------------- what a clone host name resolves to (issue #22)
+
+getaddrinfo = socket.getaddrinfo   # the resolver; a module attribute so tests swap in a table (the real one is never used in tests)
+_dns_lock = threading.Lock()
+_dns_cache: dict[str, tuple[float, tuple[str, ...]]] = {}                   # host -> (expires at, monotonic; the public addresses it resolved to)
+
+
+def dns_cache_clear() -> None:
+    with _dns_lock:
+        _dns_cache.clear()
+
+
+def resolve_public(host: str) -> tuple[str, ...]:
+    """Every address `host` resolves to (A and AAAA; the resolver follows CNAMEs), when all of them are public; BadRequest with one sentence (never an
+    address) when one answer is internal (is_internal_address), when the name does not resolve, or when the lookup takes longer than RESOLVE_TIMEOUT.
+    getaddrinfo has no timeout parameter, so it runs in a daemon thread that the caller stops waiting for at the cap: a hung resolver never holds a
+    request thread (or the interpreter's exit) past it. Public answers are cached for RESOLVE_CACHE_S; refusals are not cached."""
+    now = time.monotonic()
+    with _dns_lock:
+        hit = _dns_cache.get(host)
+        if hit and hit[0] > now:
+            return hit[1]
+    box: dict = {}
+
+    def work():
+        try:
+            box["answers"] = getaddrinfo(host, None, 0, socket.SOCK_STREAM)
+        except BaseException as e:                                             # gaierror, UnicodeError, anything: the name does not resolve
+            box["error"] = e
+
+    t = threading.Thread(target=work, name="clone-dns", daemon=True)
+    t.start()
+    t.join(RESOLVE_TIMEOUT)
+    if t.is_alive():
+        raise BadRequest(URL_DNS_SLOW_MSG)
+    addrs: list[str] = []
+    for ai in box.get("answers") or ():
+        try:
+            a = ai[4][0]
+        except (IndexError, TypeError):
+            continue
+        if isinstance(a, str) and a not in addrs:
+            addrs.append(a)
+    if "error" in box or not addrs:
+        raise BadRequest(URL_DNS_NONE_MSG)
+    if any(is_internal_address(a) for a in addrs):                             # one internal answer among public ones is enough
+        raise BadRequest(URL_DNS_INTERNAL_MSG)
+    out = tuple(addrs)
+    with _dns_lock:
+        for k in [k for k, (exp, _) in _dns_cache.items() if exp <= now]:
+            del _dns_cache[k]
+        _dns_cache[host] = (now + RESOLVE_CACHE_S, out)
+    return out
+
+
+def _parse_clone_url(url: str) -> tuple[str, str, str, int | None, bool]:
+    """The clone URL rule without DNS: (stripped url, scheme 'https' or 'ssh', host as _check_host normalised it, port or None, listed)."""
     if not isinstance(url, str):
         raise BadRequest(URL_SHAPE_MSG)
     u = url.strip()
@@ -150,8 +212,8 @@ def check_clone_url(url: str) -> str:
         host, _, path = u[4:].partition(":")
         if not path:
             raise BadRequest(URL_ODD_MSG)
-        _check_host(host)
-        return u
+        host, listed = _check_host(host)
+        return u, "ssh", host, None, listed
     try:
         parts = urlsplit(u)
     except ValueError:
@@ -171,8 +233,32 @@ def check_clone_url(url: str) -> str:
         host, _, port = hostport.partition(":")
     if port and not (port.isascii() and port.isdigit() and 0 < int(port) < 65536):
         raise BadRequest(URL_ODD_MSG)
-    _check_host(host)
+    host, listed = _check_host(host)
+    return u, parts.scheme, host, int(port) if port else None, listed
+
+
+def check_clone_url(url: str) -> str:
+    """The clone URL rule (it serves the clone routes and the preflight probe alike): only `https://[user[:token]@]host[:port]/path`, `ssh://[user@]host[:port]/path`
+    and `git@host:path`. The host comes from a real parse, never from the regex: it must be a public-looking name (no IP literal in any spelling, no localhost, no
+    single-label name, none of .local .lan .internal .home.arpa .ts.net) unless CCBOARD_CLONE_ALLOWED_HOSTS lists it. A listed host never brings back a refused scheme.
+    Then the name is resolved (resolve_public): one loopback, private, link-local, CGNAT or unique-local answer refuses it, and so do a name that does not resolve
+    and a lookup over RESOLVE_TIMEOUT. A listed host is not resolved. Returns the stripped URL; BadRequest with one sentence otherwise.
+    What this cannot close: git does its own lookup when it connects, later, so a record that changes in between (DNS rebinding) can still win. The https
+    preflight and the https clone pin git to the checked addresses (clone_pin) and follow no redirects; an ssh connection is not pinned (it cannot be without giving up host key
+    checking). Only an egress policy for the box user or the container removes that race (README, Security model)."""
+    u, _scheme, host, _port, listed = _parse_clone_url(url)
+    if not listed:
+        resolve_public(host)
     return u
+
+
+def clone_pin(url: str) -> tuple[str, int, tuple[str, ...]] | None:
+    """(host, port, addresses) to pin an https probe to with `http.curloptResolve`: the answer check_clone_url accepted (cached, so normally no second
+    lookup). None for ssh and for a listed host (it is never resolved). BadRequest like check_clone_url."""
+    _u, scheme, host, port, listed = _parse_clone_url(url)
+    if scheme != "https" or listed:
+        return None
+    return host, port or 443, resolve_public(host)
 
 
 def check_url(url: str) -> str:

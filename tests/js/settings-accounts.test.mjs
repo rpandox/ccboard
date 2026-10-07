@@ -711,7 +711,7 @@ test('codex rows (v0.5.17g: Log in again on every row): the account in use has L
   assert.deepEqual(panel(w).querySelectorAll('.set-h').filter((h) => !hidden(h)).map(text), ['Subscription accounts', 'When you switch', 'Add another subscription', 'Codex accounts', 'Add a Codex account']);
   assert.equal(cxRows(w).length, 3);
   const [main, work, old] = [cxRow(w, K1), cxRow(w, K2), cxRow(w, K3)];
-  assert.deepEqual(labels(main), ['Log in again', 'Rename']);
+  assert.deepEqual(labels(main), ['Log in again', 'Rename', 'Log out']);
   assert.deepEqual(labels(work), ['Switch', 'Log in again', 'Rename', 'Forget login']);
   assert.deepEqual(labels(old), ['Log in again', 'Rename']);
   const sw = btn(work, 'Switch');
@@ -1181,4 +1181,62 @@ test('codex add: the terminal output is asked for (GET /api/codex-accounts) only
     cxFlight(w, { tail: undefined, running: true });                       // another poll without a tail does not blank it
     assert.equal(cxBlock(w).querySelector('.add-tail').textContent, 'Welcome to Codex\n' + CX_URL + '\nABCD-12345');
   } finally { fake(false); }
+});
+
+// ---------------------------------------------------------------- Codex Log out (v0.5.19, issue 3): two taps, one POST, the saved copy stays
+
+test('codex log out (Accounts): only the account in use has it; the first tap arms Confirm + Cancel and calls nothing; Cancel puts it back', () => {
+  const w = cxWorld();
+  assert.deepEqual(cxRows(w).map((r) => labels(r).includes('Log out')), [true, false, false], 'only the account in use');
+  const first = btn(cxRow(w, K1), 'Log out');
+  assert.ok(hasCls(first, 'danger') && !isFilled(first), 'red-outlined, not filled');
+  first.click();
+  assert.deepEqual(labels(cxRow(w, K1)).filter((l) => /Confirm|Cancel/.test(l)), ['Confirm Log out', 'Cancel']);
+  assert.deepEqual(apiCalls(w, '/api/codex-accounts').filter((c) => c.method === 'POST'), [], 'one tap calls nothing');
+  btn(cxRow(w, K1), 'Cancel').click();
+  assert.ok(btn(cxRow(w, K1), 'Log out'));
+  assert.deepEqual(apiCalls(w, '/api/codex-accounts').filter((c) => c.method === 'POST'), []);
+});
+
+test('codex log out: the second tap POSTs /api/codex-accounts/logout once with no body; the server accounts replace the state and the saved login stays on the row', async () => {
+  const d = defer();
+  const w = cxWorld({ answers: { '/api/codex-accounts/logout': () => d.p } });
+  btn(cxRow(w, K1), 'Log out').click();
+  btn(cxRow(w, K1), 'Confirm Log out').click();
+  assert.deepEqual(apiCalls(w, '/api/codex-accounts').filter((c) => c.method === 'POST'), [{ method: 'POST', path: '/api/codex-accounts/logout' }]);
+  const after = cxOf([cxAcct(K1, { label: 'Main', plan: 'plus' }), cxAcct(K2, { label: 'Work', plan: 'pro' }), cxAcct(K3, { label: 'Old', saved: false })]);
+  d.resolve({ ok: true, was: K1, warnings: [], accounts: after });
+  await tick(); await tick();
+  assert.deepEqual(plain(w.get('state').codex_accounts), plain(after));
+  assert.equal(w.get('state').codex_accounts.current, null);
+  assert.deepEqual(cxRows(w).map((r) => !!r.querySelector('.badge.cur')), [false, false, false]);
+  assert.deepEqual(cxRows(w).map((r) => labels(r).includes('Log out')), [false, false, false]);
+  assert.ok(cxRow(w, K1).querySelector('.badge.hue-slate'), 'the saved login is still there');
+  assert.ok(labels(cxRow(w, K1)).includes('Switch'), 'and can be switched back to');
+  assert.deepEqual(toasts(w).pop(), { text: 'Logged out of Codex · the login of Main stays saved', kind: 'ok' });
+  assert.equal(apiCalls(w, '/api/codex-accounts').filter((c) => c.method === 'POST').length, 1);
+});
+
+test('codex log out refused (409: a board Codex session is open): nothing changes, the reason and a hint to close the sessions show in the error line and a toast', async () => {
+  const why = "close the board's Codex sessions first; a running Codex keeps its login and would write it back";
+  const w = cxWorld({ answers: { '/api/codex-accounts/logout': () => { const e = new Error(why); e.status = 409; e.body = { detail: why, error: why }; throw e; } } });
+  const before = plain(w.get('state').codex_accounts);
+  btn(cxRow(w, K1), 'Log out').click();
+  btn(cxRow(w, K1), 'Confirm Log out').click();
+  await tick(); await tick();
+  assert.deepEqual(plain(w.get('state').codex_accounts), before);
+  const msg = `Log out failed: ${why}. Close the Codex sessions of the board, then try again.`;
+  assert.equal(text(cxSec(w).querySelector('.set-err')), msg);
+  assert.deepEqual(toasts(w).pop(), { text: msg, kind: 'bad' });
+  assert.ok(btn(cxRow(w, K1), 'Log out'), 'the button is back; it is not replayed by itself');
+  assert.equal(apiCalls(w, '/api/codex-accounts').filter((c) => c.method === 'POST').length, 1);
+});
+
+test('codex log out with nobody logged in ({ok: true, was: null}) is a harmless notice, not an error', async () => {
+  const w = cxWorld({ answers: { '/api/codex-accounts/logout': { ok: true, was: null, warnings: [], accounts: cxOf(CX_THREE().map((a) => ({ ...a, current: false }))) } } });
+  btn(cxRow(w, K1), 'Log out').click();
+  btn(cxRow(w, K1), 'Confirm Log out').click();
+  await tick(); await tick();
+  assert.deepEqual(toasts(w).pop(), { text: 'Codex was not logged in', kind: 'ok' });
+  assert.equal(hidden(cxSec(w).querySelector('.set-err')), true);
 });

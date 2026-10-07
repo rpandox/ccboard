@@ -303,7 +303,7 @@ function accountLogin(email) {
      hold   {key}: the switch is painted as done and laid over the poll until the request ends (the demo board keeps it)
      err    the reason of the last refused switch / forget; note: the warnings of the last switch (other Codex processes keep the previous login)
      demo   the demo board's make-believe login, accounts it "added" and logins it "forgot" */
-const cxFlow = { busy: null, hold: null, err: '', note: '', demo: null };
+const cxFlow = { busy: null, hold: null, err: '', note: '', loggingOut: false, demo: null };
 
 function cxState(st) {
   const c = st && st.codex_accounts;
@@ -351,7 +351,10 @@ function cxOverlay(s) {
 
 /* Every surface that shows the Codex accounts, repainted from `state` (the Accounts panel is the only one). */
 function cxRepaint() {
-  if (typeof settingsPage !== 'undefined' && settingsPage.refs && typeof settingsFill === 'function') settingsFill('accounts', true);
+  if (typeof settingsPage !== 'undefined' && settingsPage.refs && typeof settingsFill === 'function') {
+    settingsFill('accounts', true);
+    if (settingsPage.active === 'agents') settingsFill('agents', true);                // the Codex card has the Log out too
+  }
 }
 
 /* THE Codex switch (the Settings rows call it): the tapped row becomes the one in use at once, POST /api/codex-accounts/<key>/switch follows, success takes the server's
@@ -399,6 +402,46 @@ async function cxSwitch(a) {
   cxFlow.note = warns.join(' · ');
   cxRepaint();
   const text = r && r.already ? `${name} is already in use` : `Switched to ${name} · Codex sessions started from now on use it${warns.length ? ` · ${warns.join(' · ')}` : ''}`;
+  if (typeof pageToast === 'function') pageToast(text, warns.length ? 'warn' : 'ok');
+  if (typeof poll === 'function') poll(true);
+  return true;
+}
+
+/* THE Codex log out (Settings > Agents and Settings > Accounts call it from a confirmButton, so the first tap has already been confirmed): POST /api/codex-accounts/logout. The box
+   saves the live login into its slot first, then drops it, so the account stays in the list with its saved login and can be switched back to. Success takes the server's
+   accounts and paints the card as logged out at once (the next poll only confirms); a refusal (409: a Codex session of the board is open, or a login is in progress) changes
+   nothing and says why with a hint to close the sessions. One call at a time and never replayed. Resolves true when the box is logged out of Codex. */
+async function cxLogout() {
+  if (cxFlow.loggingOut) return false;
+  cxFlow.loggingOut = true;
+  cxFlow.err = '';
+  cxFlow.note = '';
+  const before = cxAccounts(state).find((x) => x.current);
+  const name = before ? cxName(before) : 'Codex';
+  let r = null;
+  try {
+    r = await api('POST', '/api/codex-accounts/logout');
+  } catch (e) {
+    cxFlow.loggingOut = false;
+    const why = acctReason(e);
+    const hint = e && e.status === 409 ? ' Close the Codex sessions of the board, then try again.' : '';
+    cxFlow.err = `Log out failed: ${why}.${hint}`;
+    cxRepaint();
+    if (typeof pageToast === 'function') pageToast(cxFlow.err, 'bad');
+    return false;
+  }
+  cxFlow.loggingOut = false;
+  if (r && r.accounts && Array.isArray(r.accounts.list)) state.codex_accounts = r.accounts;
+  else {                                                               // an answer without accounts (the demo's {ok: true}): the local rows say it
+    const c = cxState(state);
+    if (c) { for (const x of c.list) if (x) x.current = false; c.current = null; }
+  }
+  const cdx = state && state.agents && state.agents.codex;
+  if (cdx && typeof cdx === 'object') cdx.loggedIn = false;
+  const warns = r && Array.isArray(r.warnings) ? r.warnings.filter((w) => typeof w === 'string' && w) : [];
+  cxRepaint();
+  const was = r && ('was' in r ? r.was : before);                       // the demo answers {ok: true} without `was`: the row that was current says it
+  const text = was ? `Logged out of Codex · the login of ${name} stays saved${warns.length ? ` · ${warns.join(' · ')}` : ''}` : 'Codex was not logged in';
   if (typeof pageToast === 'function') pageToast(text, warns.length ? 'warn' : 'ok');
   if (typeof poll === 'function') poll(true);
   return true;
