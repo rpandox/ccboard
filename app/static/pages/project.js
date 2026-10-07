@@ -136,8 +136,9 @@ function pjHeader(P) {
   const stats = el('div', { class: 'pj-stats mono' });
   const actions = el('div', { class: 'pj-actions' });                 // pjPatchActions fills it: the filled primary follows the tab
   const manage = el('div', { class: 'pj-manage hidden', role: 'region', 'aria-label': 'Repos and danger zone' });
-  const node = el('header', { class: 'pj-head' }, el('div', { class: 'pj-title' }, name, path, el('span', { class: 'spacer' }), quad, more), repos, stats, actions, manage);
-  return { node, name, path, quad, repos, stats, actions, manage, sig: { repos: null, tab: null, manage: null } };
+  const gotchas = el('div', { class: 'pj-gotchas hidden' });           // the newest claude-mem gotchas (pjGotchas fills it; it stays hidden unless there are some)
+  const node = el('header', { class: 'pj-head' }, el('div', { class: 'pj-title' }, name, path, el('span', { class: 'spacer' }), quad, more), repos, stats, gotchas, actions, manage);
+  return { node, name, path, quad, repos, stats, gotchas, actions, manage, sig: { repos: null, tab: null, manage: null } };
 }
 
 /* + session / + task / + schedule, built per tab (v0.5.6d): the Sessions tab's primary is + session; on Tasks and Schedules the tab's own button is the one
@@ -410,10 +411,29 @@ function pjSchedulesView(P, route) {
   };
 }
 
+/* The Memory tab (v0.5.20): the palace of this project, the same renderer, filters (the repo kept by the Memory page) and states as #/memory (pages/memory.js). */
 function pjMemoryView(P) {
-  const node = el('div', { class: 'pj-memory' }, pageEmpty('database', 'Project memory', 'The memory palace of this project: observations, timeline and summaries.'),
-    el('a', { class: 'btn primary', href: `#/memory/${encodeURIComponent(P.project)}`, text: 'Open memory' }));
-  return { node, update() { /* static */ }, onRoute() { /* static */ }, destroy() { /* nothing */ } };
+  const project = P.project;
+  const palace = typeof memoryPalaceView === 'function' ? memoryPalaceView(project, { repo: typeof memStoredFilters === 'function' ? memStoredFilters(project).repo : '' }) : null;
+  const node = el('div', { class: 'pj-memory' },
+    el('div', { class: 'pj-memory-head' }, el('a', { class: 'btn small', href: `#/memory/${encodeURIComponent(project)}`, text: 'Open in Memory' }),
+      el('span', { class: 'dim', text: 'What claude-mem kept from past sessions here.' })),
+    palace ? palace.node : pageEmpty('database', 'Project memory', 'The memory palace of this project: observations, timeline and summaries.'));
+  if (palace) palace.load();
+  return { node, update() { /* the palace is fetched once per visit; Retry and the Memory page refresh it */ }, onRoute() { /* static */ }, destroy() { if (palace) palace.destroy(); } };
+}
+
+/* The newest gotchas in the header (v0.5.20): fetched once per project and visit, only while state.memory exists, and never a toast, a banner or a wait: a stopped worker,
+   a slow one or a project without gotchas leaves the strip hidden. */
+function pjGotchas(P, st) {
+  const h = P.head.gotchas;
+  if (!st || !st.memory || typeof memoryGotchasMount !== 'function') { if (P.gotchFor) { P.gotchFor = null; h.textContent = ''; h.classList.add('hidden'); } return; }
+  if (P.gotchFor === P.project) return;
+  P.gotchFor = P.project;
+  h.textContent = '';
+  h.classList.add('hidden');
+  const project = P.project;
+  memoryGotchasMount(h, project, { isCurrent: () => projectPage.cur === P && P.project === project });
 }
 
 /* The Files tab: a repo switcher and the toggles, the tree on the left (full width on a phone), the preview beside it (below it on a phone). */
@@ -612,7 +632,7 @@ function pjUpdate(routed) {
   const st = pjState();
   const route = P.route;
   const cur = pjParse(route, st);
-  if (cur.project !== P.project) { P.project = cur.project; P.viewKey = null; P.tabSig = null; P.manage = false; P.head.sig = { repos: null, tab: null, manage: null }; if (P.view) { P.view.destroy(); P.view.node.remove(); P.view = null; } }
+  if (cur.project !== P.project) { P.project = cur.project; P.viewKey = null; P.tabSig = null; P.manage = false; P.gotchFor = null; P.head.sig = { repos: null, tab: null, manage: null }; if (P.view) { P.view.destroy(); P.view.node.remove(); P.view = null; } }
   P.loading = !st;
   const p = pjFind(st, cur.project);
   if (typeof Pages !== 'undefined' && Pages && typeof Pages.dropSkeleton === 'function' && st) Pages.dropSkeleton();
@@ -622,6 +642,7 @@ function pjUpdate(routed) {
     return;
   }
   pjPatchHeader(P, st, p);
+  pjGotchas(P, st);
   pjSetTabs(P, st, cur);
   pjSyncView(P, st, route, !!routed);
   const counts = pjCounts(P, st, cur);

@@ -25,6 +25,7 @@ HOME_USE_ALLOWED = {
     "app/codex_accounts.py": "the cwd of the login tmux session (the login itself runs under a temp CODEX_HOME)",
     "app/doctor.py": "looks for code-server settings and the bun binary in their usual home locations (stat only)",
     "app/agents/claude.py": "expands ~ in a path the user typed",
+    "app/memory_proxy.py": "expands ~ in CLAUDE_MEM_PROJECT_ENVIRONMENTS patterns the user wrote (matching only, reads nothing)",
     "app/agents/codex.py": "the test guard: refuses to run when codex_home is the real ~/.codex under pytest",
     "scripts/claude_settings.py": "the CLI default for CLAUDE_CONFIG_DIR (tests pass the dir explicitly)",
     "scripts/codex_hooks.py": "the CLI default for CODEX_HOME (tests pass the dir explicitly)",

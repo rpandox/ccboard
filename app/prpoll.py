@@ -79,26 +79,50 @@ def origin_owner(cwd: Path) -> str | None:
     return issues_mod.origin_owner(cp.stdout.strip()) if cp.returncode == 0 else None
 
 
-def _issue_row(i: dict, owner: str | None) -> dict:
+GH_LOGIN_TTL = 600.0
+_gh_login: tuple[float, str | None] | None = None
+_gh_login_lock = threading.Lock()
+
+
+def gh_login(cwd: Path) -> str | None:
+    """The GitHub login gh is authenticated as on this box (`gh api user`), cached for GH_LOGIN_TTL; None when gh cannot say."""
+    global _gh_login
+    import time
+    now = time.monotonic()
+    with _gh_login_lock:
+        if _gh_login and _gh_login[0] > now:
+            return _gh_login[1]
+    try:
+        data = _gh_json(["api", "user"], cwd, timeout=20)
+        login = data.get("login") if isinstance(data, dict) else None
+        login = login if isinstance(login, str) and login.strip() else None
+    except gitops.GitError:
+        login = None
+    with _gh_login_lock:
+        _gh_login = (now + (GH_LOGIN_TTL if login else 30.0), login)          # a failure is retried soon, a login kept for 10 min
+    return login
+
+
+def _issue_row(i: dict, owner: str | None, me: str | None = None) -> dict:
     a = i.get("author")
     login = (a.get("login") if isinstance(a, dict) else a) or None
     return {"number": i.get("number"), "title": i.get("title"), "body": (i.get("body") or "")[:8000], "url": i.get("url"),
             "labels": [lb.get("name") for lb in (i.get("labels") or []) if isinstance(lb, dict)],
-            "author": login, "trusted": issues_mod.trusted(login, owner)}
+            "author": login, "trusted": issues_mod.trusted(login, owner, me)}
 
 
 def list_issues(cwd: Path, limit: int = 50) -> list[dict]:
     data = _gh_json(["issue", "list", "--state", "open", "--limit", str(limit), "--json", ISSUE_FIELDS], cwd)
-    owner = origin_owner(cwd)
-    return [_issue_row(i, owner) for i in data or [] if isinstance(i, dict)]
+    owner, me = origin_owner(cwd), gh_login(cwd)
+    return [_issue_row(i, owner, me) for i in data or [] if isinstance(i, dict)]
 
 
 def view_issue(cwd: Path, number: int) -> dict:
-    """One issue plus the parsed `who` block. An author who is not the origin's owner is untrusted: `who` stays empty."""
+    """One issue plus the parsed `who` block. An author who is neither the origin's owner nor gh's own login is untrusted: `who` stays empty."""
     data = _gh_json(["issue", "view", str(int(number)), "--json", ISSUE_FIELDS], cwd)
     if not isinstance(data, dict):
         raise gitops.GitError("gh returned no issue")
-    row = _issue_row(data, origin_owner(cwd))
+    row = _issue_row(data, origin_owner(cwd), gh_login(cwd))
     row["who"] = issues_mod.parse_who(data.get("body")) if row["trusted"] else issues_mod.empty_who()
     return row
 

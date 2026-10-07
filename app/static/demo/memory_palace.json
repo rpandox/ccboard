@@ -1,0 +1,530 @@
+{
+  "project": "phasezero",
+  "keys": [
+    "NestJs-Ecommerce-Backend",
+    "website",
+    "website/sticky-summary",
+    "phasezero"
+  ],
+  "keys_checked": true,
+  "state": "ok",
+  "up": true,
+  "stale": false,
+  "stale_at": null,
+  "reason": null,
+  "reason_code": null,
+  "partial": [],
+  "ambiguous": [],
+  "ambiguous_filter": null,
+  "shape_error": false,
+  "compat": "ok",
+  "worker_version": "13.31.0",
+  "tested_worker": "13.31.0",
+  "at": "2026-10-03T09:00:00+00:00",
+  "wings": [
+    {
+      "name": "NestJs-Ecommerce-Backend",
+      "keys": [
+        "NestJs-Ecommerce-Backend"
+      ],
+      "total": 5,
+      "types": {
+        "bugfix": 1,
+        "feature": 1,
+        "decision": 1,
+        "discovery": 1,
+        "refactor": 1
+      },
+      "rooms": [
+        {
+          "name": "gotcha",
+          "kind": "concept",
+          "count": 1
+        },
+        {
+          "name": "problem-solution",
+          "kind": "concept",
+          "count": 1
+        },
+        {
+          "name": "pattern",
+          "kind": "concept",
+          "count": 3
+        },
+        {
+          "name": "how-it-works",
+          "kind": "concept",
+          "count": 1
+        },
+        {
+          "name": "trade-off",
+          "kind": "concept",
+          "count": 1
+        },
+        {
+          "name": "bugfix",
+          "kind": "type",
+          "count": 1
+        },
+        {
+          "name": "feature",
+          "kind": "type",
+          "count": 1
+        },
+        {
+          "name": "decision",
+          "kind": "type",
+          "count": 1
+        },
+        {
+          "name": "discovery",
+          "kind": "type",
+          "count": 1
+        },
+        {
+          "name": "refactor",
+          "kind": "type",
+          "count": 1
+        }
+      ],
+      "drawers": [
+        {
+          "id": 19612,
+          "title": "Order service split into read and write sides",
+          "subtitle": "queries no longer load aggregates",
+          "type": "refactor",
+          "concepts": [
+            "pattern"
+          ],
+          "files": [
+            "src/orders/orders.query.ts",
+            "src/orders/orders.command.ts"
+          ],
+          "created_at": "2026-10-03T13:13:20Z",
+          "created_at_epoch": 1791033200000,
+          "key": "NestJs-Ecommerce-Backend",
+          "narrative": "Order service split into read and write sides. queries no longer load aggregates. Reads use plain SQL views",
+          "facts": [
+            "Reads use plain SQL views"
+          ],
+          "agent_type": null
+        },
+        {
+          "id": 19604,
+          "title": "Prices stay integers in whole rupees",
+          "subtitle": "no float math anywhere in checkout",
+          "type": "decision",
+          "concepts": [
+            "pattern",
+            "trade-off"
+          ],
+          "files": [
+            "src/payments/price.ts"
+          ],
+          "created_at": "2026-10-03T09:13:20Z",
+          "created_at_epoch": 1791018800000,
+          "key": "NestJs-Ecommerce-Backend",
+          "narrative": "Prices stay integers in whole rupees. no float math anywhere in checkout. NPR 4,500 is stored as 4500",
+          "facts": [
+            "NPR 4,500 is stored as 4500"
+          ],
+          "agent_type": null
+        },
+        {
+          "id": 19603,
+          "title": "Cursor pagination for /v1/products",
+          "subtitle": "opaque base64 cursor over (updated_at, id)",
+          "type": "feature",
+          "concepts": [
+            "pattern"
+          ],
+          "files": [
+            "src/products/products.controller.ts",
+            "src/common/cursor.ts"
+          ],
+          "created_at": "2026-10-03T06:13:20Z",
+          "created_at_epoch": 1791008000000,
+          "key": "NestJs-Ecommerce-Backend",
+          "narrative": "Cursor pagination for /v1/products. opaque base64 cursor over (updated_at, id). Cursor is (updated_at, id) so ties never skip",
+          "facts": [
+            "Cursor is (updated_at, id) so ties never skip"
+          ],
+          "agent_type": null
+        },
+        {
+          "id": 19602,
+          "title": "Stock reconcile runs on order.cancelled and order.refunded",
+          "subtitle": "both events share one handler",
+          "type": "discovery",
+          "concepts": [
+            "how-it-works"
+          ],
+          "files": [
+            "src/stock/stock-sync.service.ts"
+          ],
+          "created_at": "2026-10-03T04:13:20Z",
+          "created_at_epoch": 1791000800000,
+          "key": "NestJs-Ecommerce-Backend",
+          "narrative": "Stock reconcile runs on order.cancelled and order.refunded. both events share one handler. One handler, two subscriptions",
+          "facts": [
+            "One handler, two subscriptions"
+          ],
+          "agent_type": null
+        },
+        {
+          "id": 19601,
+          "title": "Stock reconcile ran twice on a refund",
+          "subtitle": "order.refunded and order.cancelled both fired the handler",
+          "type": "bugfix",
+          "concepts": [
+            "gotcha",
+            "problem-solution"
+          ],
+          "files": [
+            "src/stock/stock-sync.service.ts",
+            "src/orders/orders.events.ts"
+          ],
+          "created_at": "2026-10-03T02:13:20Z",
+          "created_at_epoch": 1790993600000,
+          "key": "NestJs-Ecommerce-Backend",
+          "narrative": "Stock reconcile ran twice on a refund. order.refunded and order.cancelled both fired the handler. The refund event also emits cancelled A processed-event table now dedupes by event id",
+          "facts": [
+            "The refund event also emits cancelled",
+            "A processed-event table now dedupes by event id"
+          ],
+          "agent_type": null
+        }
+      ]
+    },
+    {
+      "name": "website",
+      "keys": [
+        "website",
+        "website/sticky-summary"
+      ],
+      "total": 5,
+      "types": {
+        "bugfix": 2,
+        "feature": 1,
+        "change": 1,
+        "discovery": 1
+      },
+      "rooms": [
+        {
+          "name": "gotcha",
+          "kind": "concept",
+          "count": 2
+        },
+        {
+          "name": "problem-solution",
+          "kind": "concept",
+          "count": 2
+        },
+        {
+          "name": "how-it-works",
+          "kind": "concept",
+          "count": 2
+        },
+        {
+          "name": "bugfix",
+          "kind": "type",
+          "count": 2
+        },
+        {
+          "name": "feature",
+          "kind": "type",
+          "count": 1
+        },
+        {
+          "name": "change",
+          "kind": "type",
+          "count": 1
+        },
+        {
+          "name": "discovery",
+          "kind": "type",
+          "count": 1
+        }
+      ],
+      "drawers": [
+        {
+          "id": 19611,
+          "title": "Cart badge counted removed lines",
+          "subtitle": "the reducer kept zero-quantity lines",
+          "type": "bugfix",
+          "concepts": [
+            "gotcha",
+            "problem-solution"
+          ],
+          "files": [
+            "src/store/cart.ts"
+          ],
+          "created_at": "2026-10-03T12:13:20Z",
+          "created_at_epoch": 1791029600000,
+          "key": "website",
+          "narrative": "Cart badge counted removed lines. the reducer kept zero-quantity lines. Filter quantity > 0 before counting",
+          "facts": [
+            "Filter quantity > 0 before counting"
+          ],
+          "agent_type": null
+        },
+        {
+          "id": 19609,
+          "title": "Images are served through the CDN resizer",
+          "subtitle": "width is chosen from the card's srcset",
+          "type": "discovery",
+          "concepts": [
+            "how-it-works"
+          ],
+          "files": [
+            "src/lib/image.ts"
+          ],
+          "created_at": "2026-10-03T08:13:20Z",
+          "created_at_epoch": 1791015200000,
+          "key": "website",
+          "narrative": "Images are served through the CDN resizer. width is chosen from the card's srcset. srcset widths 320, 640, 960",
+          "facts": [
+            "srcset widths 320, 640, 960"
+          ],
+          "agent_type": null
+        },
+        {
+          "id": 19608,
+          "title": "Nepali product names with English fallback",
+          "subtitle": "nameNe || name on every card",
+          "type": "feature",
+          "concepts": [
+            "how-it-works"
+          ],
+          "files": [
+            "src/components/ProductCard.tsx"
+          ],
+          "created_at": "2026-10-03T07:13:20Z",
+          "created_at_epoch": 1791011600000,
+          "key": "website",
+          "narrative": "Nepali product names with English fallback. nameNe || name on every card. Fallback happens in one helper",
+          "facts": [
+            "Fallback happens in one helper"
+          ],
+          "agent_type": null
+        },
+        {
+          "id": 19607,
+          "title": "Sticky summary hid the pay button on iOS",
+          "subtitle": "the safe-area inset was not subtracted",
+          "type": "bugfix",
+          "concepts": [
+            "gotcha"
+          ],
+          "files": [
+            "src/styles/checkout.css"
+          ],
+          "created_at": "2026-10-03T05:13:20Z",
+          "created_at_epoch": 1791004400000,
+          "key": "website/sticky-summary",
+          "narrative": "Sticky summary hid the pay button on iOS. the safe-area inset was not subtracted. env(safe-area-inset-bottom) must be in the offset",
+          "facts": [
+            "env(safe-area-inset-bottom) must be in the offset"
+          ],
+          "agent_type": null
+        },
+        {
+          "id": 19606,
+          "title": "Checkout summary becomes sticky below 600 px",
+          "subtitle": "order summary pins above the pay button",
+          "type": "change",
+          "concepts": [
+            "problem-solution"
+          ],
+          "files": [
+            "src/pages/checkout.tsx",
+            "src/styles/checkout.css"
+          ],
+          "created_at": "2026-10-03T03:13:20Z",
+          "created_at_epoch": 1790997200000,
+          "key": "website",
+          "narrative": "Checkout summary becomes sticky below 600 px. order summary pins above the pay button. position: sticky inside the scroll container",
+          "facts": [
+            "position: sticky inside the scroll container"
+          ],
+          "agent_type": null
+        }
+      ]
+    },
+    {
+      "name": "root",
+      "keys": [
+        "phasezero"
+      ],
+      "total": 1,
+      "types": {
+        "decision": 1
+      },
+      "rooms": [
+        {
+          "name": "pattern",
+          "kind": "concept",
+          "count": 1
+        },
+        {
+          "name": "decision",
+          "kind": "type",
+          "count": 1
+        }
+      ],
+      "drawers": [
+        {
+          "id": 19610,
+          "title": "One repo per service, one project folder",
+          "subtitle": "sessions in the folder see both repos",
+          "type": "decision",
+          "concepts": [
+            "pattern"
+          ],
+          "files": [],
+          "created_at": "2026-10-03T11:13:20Z",
+          "created_at_epoch": 1791026000000,
+          "key": "phasezero",
+          "narrative": "One repo per service, one project folder. sessions in the folder see both repos. The project folder is not a git repo",
+          "facts": [
+            "The project folder is not a git repo"
+          ],
+          "agent_type": null
+        }
+      ]
+    }
+  ],
+  "rooms": [
+    {
+      "name": "gotcha",
+      "kind": "concept",
+      "count": 3
+    },
+    {
+      "name": "problem-solution",
+      "kind": "concept",
+      "count": 3
+    },
+    {
+      "name": "pattern",
+      "kind": "concept",
+      "count": 4
+    },
+    {
+      "name": "how-it-works",
+      "kind": "concept",
+      "count": 3
+    },
+    {
+      "name": "trade-off",
+      "kind": "concept",
+      "count": 1
+    },
+    {
+      "name": "bugfix",
+      "kind": "type",
+      "count": 3
+    },
+    {
+      "name": "feature",
+      "kind": "type",
+      "count": 2
+    },
+    {
+      "name": "change",
+      "kind": "type",
+      "count": 1
+    },
+    {
+      "name": "decision",
+      "kind": "type",
+      "count": 2
+    },
+    {
+      "name": "discovery",
+      "kind": "type",
+      "count": 2
+    },
+    {
+      "name": "refactor",
+      "kind": "type",
+      "count": 1
+    }
+  ],
+  "gotchas": [
+    {
+      "id": 19611,
+      "title": "Cart badge counted removed lines",
+      "subtitle": "the reducer kept zero-quantity lines",
+      "type": "bugfix",
+      "concepts": [
+        "gotcha",
+        "problem-solution"
+      ],
+      "files": [
+        "src/store/cart.ts"
+      ],
+      "created_at": "2026-10-03T12:13:20Z",
+      "created_at_epoch": 1791029600000,
+      "key": "website",
+      "narrative": "Cart badge counted removed lines. the reducer kept zero-quantity lines. Filter quantity > 0 before counting",
+      "facts": [
+        "Filter quantity > 0 before counting"
+      ],
+      "agent_type": null
+    },
+    {
+      "id": 19607,
+      "title": "Sticky summary hid the pay button on iOS",
+      "subtitle": "the safe-area inset was not subtracted",
+      "type": "bugfix",
+      "concepts": [
+        "gotcha"
+      ],
+      "files": [
+        "src/styles/checkout.css"
+      ],
+      "created_at": "2026-10-03T05:13:20Z",
+      "created_at_epoch": 1791004400000,
+      "key": "website/sticky-summary",
+      "narrative": "Sticky summary hid the pay button on iOS. the safe-area inset was not subtracted. env(safe-area-inset-bottom) must be in the offset",
+      "facts": [
+        "env(safe-area-inset-bottom) must be in the offset"
+      ],
+      "agent_type": null
+    },
+    {
+      "id": 19601,
+      "title": "Stock reconcile ran twice on a refund",
+      "subtitle": "order.refunded and order.cancelled both fired the handler",
+      "type": "bugfix",
+      "concepts": [
+        "gotcha",
+        "problem-solution"
+      ],
+      "files": [
+        "src/stock/stock-sync.service.ts",
+        "src/orders/orders.events.ts"
+      ],
+      "created_at": "2026-10-03T02:13:20Z",
+      "created_at_epoch": 1790993600000,
+      "key": "NestJs-Ecommerce-Backend",
+      "narrative": "Stock reconcile ran twice on a refund. order.refunded and order.cancelled both fired the handler. The refund event also emits cancelled A processed-event table now dedupes by event id",
+      "facts": [
+        "The refund event also emits cancelled",
+        "A processed-event table now dedupes by event id"
+      ],
+      "agent_type": null
+    }
+  ],
+  "total": 11,
+  "scanned": 12,
+  "truncated": false,
+  "summaries": 187,
+  "summaries_scope": "worker",
+  "tokens_saved": null,
+  "subagents": false,
+  "subagent_filter": "applied",
+  "excluded_subagents": 1,
+  "cached": false
+}

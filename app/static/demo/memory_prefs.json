@@ -1,0 +1,20 @@
+{
+  "prefs": {
+    "writeback": false
+  },
+  "available": true,
+  "reason": null,
+  "writeback_sends": {
+    "title": "Task: <title>",
+    "text": "the task's result, at most 8 KB, cut at a line break and marked",
+    "project": "the repo's claude-mem key (<repo>, or <repo>/<worktree> for a task in a worktree)",
+    "metadata": [
+      "source",
+      "task_id",
+      "agent"
+    ],
+    "never": [
+      "the prompt"
+    ]
+  }
+}

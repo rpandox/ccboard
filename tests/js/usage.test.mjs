@@ -1478,3 +1478,24 @@ test('accounts: the gauge titles say when and where each account was read, a rol
   assert.equal(text(q(w, '.ua-room')), 'most room: Work, 100 % of the 5-hour window left · Demo, 29 % of the 7-day window left');
   assert.doesNotMatch(text(q(w, '[data-sec="accounts"]')), /rolled over/);
 });
+
+
+// ---------------------------------------------------------------- the claude-mem health tile (v0.5.20, issue #8)
+
+test('the Usage page ends with the compact claude-mem tile when state.memory exists, outside the seven sections, and has none without it', async () => {
+  const { w } = usageWorld({ st: STATE({ memory: { state: 'up', version: '13.31.0', observations: 11836, queue_depth: 12, processing: true, active_sessions: 2, last_error: null, rates: { obs: { d1: 61.5, d7: 74.2 }, sum: { d1: 4, d7: 5.1 } } } }) });
+  w.load('pages/memory.js');
+  await go(w);
+  const tile = q(w, '.mem-usage .mem-tile');
+  assert.ok(tile, 'the tile is on the page');
+  assert.equal(q(w, '.mem-usage').classList.contains('hidden'), false);
+  assert.match(text(tile), /Observations11,836 61\.5 per day over 24 h/);
+  assert.doesNotMatch(text(tile), /Summaries|Active sessions/, 'the small tile');
+  assert.equal(tile.querySelector('a').getAttribute('href'), '#/memory');
+  assert.deepEqual(qa(w, 'section.usec').map((s) => s.getAttribute('data-sec')), ['accounts', 'limits', 'cost', 'sessions', 'projects', 'activity', 'timeline'], 'the tile is no eighth section');
+  const none = usageWorld();
+  none.w.load('pages/memory.js');
+  await go(none.w);
+  assert.equal(q(none.w, '.mem-usage .mem-tile'), null);
+  assert.ok(q(none.w, '.mem-usage').classList.contains('hidden'), 'hidden without state.memory');
+});

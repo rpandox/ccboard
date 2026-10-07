@@ -2468,8 +2468,10 @@ function launcherForm(o) {
   promptEl.addEventListener('keyup', syncPrompt);
   nlBtn.addEventListener('click', syncPrompt);
 
+  const memHost = mode === 'session' ? el('div', { class: 'lx-mem hidden' }) : null;          // the project's newest claude-mem gotchas (v0.5.20): openLauncher fills it after the sheet has painted
   const form = el('form', { class: 'form lx-form' + (mode === 'session' ? '' : ' task-form'), onsubmit: (e) => { e.preventDefault(); submit(); } },
     whereRepo ? field('Repo', whereRepo) : null,
+    memHost,
     mode === 'task' ? [whenField, lede] : null,
     mode === 'dispatch' ? whereField : null,
     mode === 'dispatch' ? sessField : null,
@@ -2497,7 +2499,7 @@ function launcherForm(o) {
     paintModelOptions(); paintEffortItems(); paintPermOptions(); paintCxModels(); paintModeItems();
     paintModel(); reasoningFix(); paint();
   };
-  const ctl = { form, V, view, schema, refreshSchema, paint, submit, go, status, acct: () => acct,
+  const ctl = { form, V, view, schema, refreshSchema, paint, submit, go, status, acct: () => acct, memHost,
     preview: () => cmdText, payload: () => launcherPayload(view(), ctx()), T, D, busy: () => busy };
   form._launcher = ctl;
   return ctl;
@@ -2559,5 +2561,17 @@ function openLauncher(o) {
   if (typeof Shell !== 'undefined' && Shell) Shell.formWatch = () => { if (ui.openForm !== 'sheet') { Shell.formWatch = null; closeSheet(); } };
   if (typeof ctl.form.focusFirst === 'function') ctl.form.focusFirst();
   launcherSchemaLoad().then((m) => { if (m) ctl.refreshSchema(); });
+  launcherGotchas(ctl, rp.p, mode);
   return ctl;
+}
+
+/* The newest claude-mem gotchas of the project under the repo field (v0.5.20): one fetch per sheet open, started after the sheet has painted, only while the board
+   has claude-mem. The answer is dropped when the sheet closed or was swapped meanwhile; a stopped or slow worker, or no gotchas, shows nothing and never takes the focus
+   or touches what was typed. */
+function launcherGotchas(ctl, p, mode) {
+  if (mode !== 'session' || !ctl.memHost || typeof memoryGotchasMount !== 'function' || !(state && state.memory)) return;
+  const host = ctl.memHost;
+  setTimeout(() => {
+    memoryGotchasMount(host, p.name, { isCurrent: () => ui.openForm === 'sheet' && host.isConnected !== false && ctl.form._launcher === ctl });
+  }, 0);
 }

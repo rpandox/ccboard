@@ -1,8 +1,8 @@
 """app/memory.py (claude-mem worker health), app/agents/monitor.py (the 20 s kv writer) and their wiring: state.memory and the doctor group.
 
-Nothing here touches the real ~/.claude-mem or ~/.claude: the autouse `mem_home` fixture points settings at temp dirs, and every worker
-is `mem_worker`, a tiny HTTP server on a loopback port that answers the four endpoints the way the worker on ubu2 does (probe of
-2026-10-04: /health, /api/readiness, /api/stats, /api/processing-status; the port lives in worker.pid, 37700 there).
+Nothing here touches the real ~/.claude-mem or ~/.claude: the `mem_home` fixture (tests/conftest.py, autouse in this module) points
+settings at temp dirs, and every worker is `mem_worker`, the fake worker of tests/mem_fake.py on a loopback port that answers the way
+the box's worker does (/health, /api/readiness, /api/stats, /api/processing-status here; the port lives in worker.pid).
 """
 import http.client
 import http.server
@@ -23,107 +23,15 @@ from app import doctor, memory
 from app.agents import monitor
 from app.config import Settings, settings
 from app.db import DB
+from tests.mem_fake import PROCESSING, STATS, MemWorker, closed_port   # noqa: F401  (the fake worker, shared with the proxy tests)
 
 H = {"Tailscale-User-Login": "alice@example.com"}
 
-STATS = {"worker": {"version": "13.29.0", "uptime": 5321, "activeSessions": 2, "sseClients": 0, "port": 37700},
-         "database": {"path": "/data/claude-mem.db", "size": 123456789, "observations": 9684, "sessions": 270, "summaries": 170,
-                      "firstObservationAt": "2026-07-21T04:12:00Z"}}
-PROCESSING = {"isProcessing": True, "queueDepth": 435, "parkedSessions": 1}
-
-
-# ------------------------------------------------------------------ the fake worker
-
-class _Handler(http.server.BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.0"
-
-    def log_message(self, *a):
-        pass
-
-    def _serve(self):
-        w = self.server.worker
-        w.requests.append((self.command, self.path))
-        if self.command != "GET":
-            self.send_response(405)
-            self.end_headers()
-            return
-        delay = w.delay.get(self.path, w.delay.get("*", 0))
-        if delay:
-            time.sleep(delay)
-        code, body = w.answer(self.path)
-        raw = body if isinstance(body, bytes) else json.dumps(body).encode()
-        try:
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
-        except OSError:                       # the client gave up (a timeout is the point of some tests)
-            pass
-
-    do_GET = do_POST = do_PUT = do_DELETE = do_HEAD = do_PATCH = _serve
-
-
-class MemWorker:
-    """Healthy by default. Per-path knobs: `delay` (seconds, '*' = every path), `status`, `body` (dict or raw bytes)."""
-
-    def __init__(self):
-        self.requests: list[tuple[str, str]] = []
-        self.delay: dict[str, float] = {}
-        self.status: dict[str, int] = {}
-        self.body: dict[str, object] = {
-            "/health": {"status": "ok", "activeSessions": 2, "pid": 4242},
-            "/api/readiness": {"status": "ready", "mcpReady": True},
-            "/api/stats": STATS,
-            "/api/processing-status": PROCESSING,
-        }
-        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        self.server.daemon_threads = True
-        self.server.worker = self
-        self.port = self.server.server_address[1]
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
-
-    def answer(self, path):
-        return self.status.get(path, 200), self.body.get(path, {"error": "not found"})
-
-    def paths(self):
-        return [p for _, p in self.requests]
-
-    def stop(self):
-        self.server.shutdown()
-        self.server.server_close()
-
-
-def closed_port() -> int:
-    """A loopback port that nothing listens on (bound, then released)."""
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
 
 @pytest.fixture(autouse=True)
-def mem_home(tmp_path, monkeypatch):
-    """claude-mem's data dir, Claude's config dir and /proc all point at temp dirs; no CCBOARD_MEM_PORT; the default port is a dead one."""
-    d = tmp_path / "claude-mem"
-    d.mkdir()
-    monkeypatch.setattr(settings, "claude_mem_dir", d)
-    monkeypatch.setattr(settings, "mem_port", None)
-    monkeypatch.setattr(settings, "claude_mem", True)
-    monkeypatch.setattr(settings, "claude_config_dir", tmp_path / "claude")
-    monkeypatch.setattr(memory, "PROC_ROOT", tmp_path / "proc")
-    monkeypatch.setattr(memory, "DEFAULT_PORT", closed_port())     # a dev box may run a real worker on 37701
-    return d
-
-
-@pytest.fixture
-def mem_worker(mem_home):
-    w = MemWorker()
-    (mem_home / "worker.pid").write_text(json.dumps({"pid": os.getpid(), "port": w.port, "startedAt": "2026-10-04T00:00:00Z", "startToken": "t"}))
-    yield w
-    w.stop()
+def _mem_home_everywhere(mem_home):
+    """Every test here runs in the temp claude-mem home (tests/conftest.py mem_home)."""
+    return mem_home
 
 
 def write_pid(mem_home, **kw):
@@ -672,9 +580,22 @@ def test_state_carries_memory(lite_client, monkeypatch):
     value = {"state": "degraded", "version": None, "port": 37700, "reason": "the port is open but /health did not answer within 2 s"}
     main.db.kv_set("mem_health", value)
     st = lite_client.get("/api/state", headers=H).json()
-    assert st["memory"] == value
+    assert st["memory"] == {**value, "stale_sessions": None}            # the record as stored, plus the stale-session estimate
+    main.db.kv_set("mem_health", {**value, "state": "up", "active_sessions": 3})
+    assert lite_client.get("/api/state", headers=H).json()["memory"]["stale_sessions"] == 3   # no live Claude session on the board
+    main.db.kv_set("mem_health", {**value, "active_sessions": 0})
+    assert lite_client.get("/api/state", headers=H).json()["memory"]["stale_sessions"] == 0
     monkeypatch.setattr(settings, "claude_mem", False)
     assert lite_client.get("/api/state", headers=H).json()["memory"] is None
+
+
+def test_the_stale_session_estimate_never_goes_below_zero():
+    from app import main
+    projs = [{"repos": [{"sessions": [{"agent": "claude", "state": "working"}, {"agent": "codex", "state": "idle"},
+                                      {"agent": "claude", "state": "ended"}]}],
+              "root": {"sessions": [{"state": "idle"}]}, "orphan_sessions": [{"agent": "claude", "state": "done"}]}]
+    assert main._live_claude_sessions(projs) == 3
+    assert main._live_claude_sessions([]) == 0
 
 
 def test_the_full_lifespan_runs_the_monitor_into_the_state(projects_dir, monkeypatch):
@@ -730,3 +651,22 @@ def test_doctor_memory_group_with_a_dead_worker_is_warn_not_fail(mem_home):
     by = {c["id"]: c for c in out["checks"]}
     assert by["memory-worker"]["status"] == "warn" and "refused" in by["memory-worker"]["detail"]
     assert out["ok"] is True and out["summary"]["fail"] == 0
+
+
+# ---------- the optional viewer link (v0.5.20, issue #9: settings and link only) ----------
+
+def test_mem_viewer_url_is_none_unless_a_port_and_a_public_url_are_set():
+    assert Settings(env={}).mem_https_port is None
+    assert Settings(env={}).mem_viewer_url() is None
+    assert Settings(env={"CCBOARD_MEM_HTTPS_PORT": "10443"}).mem_viewer_url() is None, "no public URL to take the host from"
+    s = Settings(env={"CCBOARD_MEM_HTTPS_PORT": " 10443 ", "CCBOARD_PUBLIC_URL": "https://box.example.ts.net:8443/path?x=1"})
+    assert s.mem_https_port == 10443
+    assert s.mem_viewer_url() == "https://box.example.ts.net:10443/", "host and port only: no path, query or token"
+
+
+@pytest.mark.parametrize("raw", ["443", "0", "65536", "-1", "abc", "8443", "8444", "10000", "1.5"])
+def test_mem_https_port_refuses_443_the_board_ports_and_junk(raw):
+    env = {"CCBOARD_MEM_HTTPS_PORT": raw, "CCBOARD_PUBLIC_URL": "https://box.example.ts.net", "CCBOARD_HTTPS_PORT": "8443", "CODE_HTTPS_PORT": "10000"}
+    s = Settings(env=env)
+    assert s.mem_https_port is None
+    assert s.mem_viewer_url() is None

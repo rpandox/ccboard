@@ -1,0 +1,47 @@
+{
+  "items": [
+    {
+      "id": 9526,
+      "memory_session_id": "00000000-0000-4000-8000-000000000001",
+      "content_session_id": "00000000-0000-4000-8000-000000000001",
+      "project": "<repo>",
+      "merged_into_project": null,
+      "platform_source": "claude",
+      "type": "discovery",
+      "title": "<title>",
+      "subtitle": "<subtitle>",
+      "narrative": "<narrative>",
+      "text": null,
+      "facts": "[\"<fact>\", \"<fact>\"]",
+      "concepts": "[\"<concept>\", \"<concept>\"]",
+      "files_read": "[]",
+      "files_modified": "[]",
+      "prompt_number": 2,
+      "created_at": "2026-10-03T15:58:58.470Z",
+      "created_at_epoch": 1791043138470
+    },
+    {
+      "id": 9509,
+      "memory_session_id": "00000000-0000-4000-8000-000000000002",
+      "content_session_id": "00000000-0000-4000-8000-000000000002",
+      "project": "<repo>",
+      "merged_into_project": null,
+      "platform_source": "claude",
+      "type": "feature",
+      "title": "<title>",
+      "subtitle": "<subtitle>",
+      "narrative": "<narrative>",
+      "text": null,
+      "facts": "[\"<fact>\", \"<fact>\"]",
+      "concepts": "[\"<concept>\", \"<concept>\"]",
+      "files_read": "[]",
+      "files_modified": "[]",
+      "prompt_number": 1,
+      "created_at": "2026-10-03T15:50:41.834Z",
+      "created_at_epoch": 1791042641834
+    }
+  ],
+  "hasMore": true,
+  "offset": 0,
+  "limit": 2
+}

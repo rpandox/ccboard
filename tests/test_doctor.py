@@ -1055,6 +1055,8 @@ def mem(world, monkeypatch, tmp_path):
     monkeypatch.setattr(doctor, "PROVIDERS", [("memory", "memory", doctor.memory_checks)])
     monkeypatch.setattr(doctor, "GROUPS", BUILTIN_GROUPS + ["memory"])
     monkeypatch.setattr(doctor, "_utcnow", lambda: MEM_NOW)
+    m.sample = (200, json.loads((Path(__file__).parent / "fixtures" / "claude_mem_observations.json").read_text()))
+    monkeypatch.setattr(doctor, "_mem_api_sample", lambda: m.sample if not isinstance(m.sample, Exception) else (_ for _ in ()).throw(m.sample))
     m.plugin()
     m.environ(4242, b"PATH=/usr/bin\0HOME=/home/u\0")
     return m
@@ -1074,15 +1076,15 @@ def mc(check_id):
 def test_memory_group_is_registered_at_import():
     assert "memory" in IMPORT_PROVIDERS and "memory" in IMPORT_GROUPS
     assert [i for i, _ in doctor.MEM_IDS] == ["memory-plugin", "memory-worker", "memory-queue", "memory-error", "memory-projects",
-                                              "memory-env", "memory-bun"]
+                                              "memory-env", "memory-bun", "memory-api"]          # memory-api (issue #20) appended last
 
 
 def test_memory_healthy_box_passes_every_check_off_one_probe(mem):
     out, by = mem_report()
     assert list(by) == [i for i, _ in doctor.MEM_IDS]
-    assert {c["status"] for c in out["checks"]} == {"pass"} and out["summary"] == {"pass": 7, "warn": 0, "fail": 0, "skip": 0}
+    assert {c["status"] for c in out["checks"]} == {"pass"} and out["summary"] == {"pass": 8, "warn": 0, "fail": 0, "skip": 0}
     assert out["ok"] is True and {c["group"] for c in out["checks"]} == {"memory"}
-    assert mem.calls == 1, "seven checks, one probe of the worker"
+    assert mem.calls == 1, "eight checks, one probe of the worker (memory-api adds one limit=1 read)"
     assert by["memory-worker"]["detail"] == "claude-mem 13.29.0 is up on 127.0.0.1:37700 (worker.pid), 9,684 observations"
     assert by["memory-plugin"]["detail"] == "claude-mem 13.29.0 installed and enabled"
     for c in out["checks"]:
@@ -1099,7 +1101,7 @@ def test_memory_group_is_not_part_of_the_builtin_groups(mem, monkeypatch):
 def test_memory_off_skips_every_check_and_never_probes(mem, monkeypatch):
     monkeypatch.setattr(settings, "claude_mem", False)
     out, by = mem_report()
-    assert {c["status"] for c in out["checks"]} == {"skip"} and len(by) == 7
+    assert {c["status"] for c in out["checks"]} == {"skip"} and len(by) == 8
     assert all("CCBOARD_CLAUDE_MEM=0" in c["detail"] for c in out["checks"]) and mem.calls == 0 and out["ok"] is True
 
 
@@ -1281,6 +1283,42 @@ def test_memory_projects_a_single_repo_project_collides_with_a_repo_elsewhere(me
     assert c["status"] == "warn" and "'shop' = acme/shop and shop" in c["detail"]
 
 
+def test_memory_projects_hint_carries_the_project_environments_snippet(mem, projects_dir):
+    make_repos(projects_dir, {"acme": ["api"], "petroit": ["api"]})
+    c = mc("memory-projects")
+    cmd = c["fix"]["cmd"]
+    assert cmd.startswith('"CLAUDE_MEM_PROJECT_ENVIRONMENTS": ')
+    entries = json.loads(cmd.split(": ", 1)[1])
+    assert entries == [{"name": "acme-api", "patterns": [f"{projects_dir}/acme/api/**"]},
+                       {"name": "petroit-api", "patterns": [f"{projects_dir}/petroit/api/**"]}]
+    shape = json.loads((Path(__file__).parent / "fixtures" / "claude_mem_project_environments.json").read_text())["value"][0]
+    assert all(set(e) == set(shape) for e in entries), "the plugin's own shape (box check V11 row 13)"
+    assert "ccboard" not in cmd and "settings.json" in c["fix"]["text"]
+
+
+def test_memory_api_pass_untested_unknown_and_drift(mem):
+    c = mc("memory-api")
+    assert c["status"] == "pass" and "13.31.0" in c["detail"]
+    mem.health["version"] = "13.34.2"
+    c = mc("memory-api")
+    assert c["status"] == "warn" and "newer than 13.31.0" in c["detail"]
+    assert c["fix"]["text"] == "the Memory page may be wrong until the board is updated; report it"
+    mem.health["version"] = "14.0.0"
+    assert mc("memory-api")["status"] == "warn" and "13.x line" in mc("memory-api")["detail"]
+    mem.health["version"] = None
+    assert mc("memory-api")["status"] == "warn"
+    mem.health["version"] = "13.31.0"
+    mem.sample = (200, {"items": [{"id": 1, "createdAt": 5}]})
+    c = mc("memory-api")
+    assert c["status"] == "warn" and "shape" in c["detail"] and "created_at_epoch" in c["detail"]
+    mem.sample = (500, None)
+    assert "HTTP 500" in mc("memory-api")["detail"]
+    mem.sample = OSError("boom")
+    assert mc("memory-api")["status"] == "warn"
+    mem.health["state"] = "down"
+    assert mc("memory-api")["status"] == "skip"
+
+
 def test_memory_projects_more_than_two_collisions_are_counted(mem, projects_dir):
     make_repos(projects_dir, {"a": ["x", "y", "z"], "b": ["x", "y", "z"]})
     c = mc("memory-projects")
@@ -1438,7 +1476,7 @@ def test_memory_a_check_that_raises_does_not_take_the_group_down(mem, monkeypatc
     monkeypatch.setitem(doctor._MEM_FNS, "memory-queue", boom)
     out, by = mem_report()
     assert by["memory-queue"]["status"] == "warn" and by["memory-queue"]["detail"] == "check error: RuntimeError"
-    assert by["memory-worker"]["status"] == "pass" and by["memory-bun"]["status"] == "pass" and len(by) == 7
+    assert by["memory-worker"]["status"] == "pass" and by["memory-bun"]["status"] == "pass" and len(by) == 8
 
 
 def test_memory_group_filter_and_caching(mem):

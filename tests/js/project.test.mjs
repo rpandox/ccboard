@@ -10,7 +10,7 @@ import { STATIC, plain } from './harness.mjs';
 import { EPOCH, ISO, fixtureState } from './world.mjs';
 import { byPath, focused, key, labelOf, makeNetworkWorld, pathOf, settle, treeItems, visibleItems, TREE_FIXTURE } from './treekit.mjs';
 
-const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'project', 'agents', 'doctor', 'settings', 'search', 'session', 'usage', 'quad', 'onboarding', 'placeholders'];       // widgets.js is also loaded earlier when the shell is (shell.js reads Widgets)
+const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'project', 'agents', 'doctor', 'settings', 'search', 'session', 'usage', 'quad', 'onboarding', 'memory', 'placeholders'];       // widgets.js is also loaded earlier when the shell is (shell.js reads Widgets)
 
 const SUMMARY = { windows: { '7d': { total: 171.4, by_project: [{ project: 'phasezero', total: 171.4, hours: 12.5 }, { project: 'ccboard', total: 58.1, hours: 8.6 }] } } };
 
@@ -1072,4 +1072,94 @@ test('the schedules tab has no chain section while no chain exists', async () =>
   const page = await go(env, '#/p/phasezero?tab=schedules');
   assert.equal(all(page, '.pj-chain').length, 0);
   assert.equal(page.querySelector('.pj-chains').classList.contains('hidden'), true);
+});
+
+
+// ---------------------------------------------------------------- the Memory tab and the gotchas strip (v0.5.20, pages/memory.js)
+
+const PALACE = JSON.parse(fs.readFileSync(path.join(STATIC, 'demo', 'memory_palace.json'), 'utf8'));
+const memEnv = (answer, over = {}) => projectWorld({ state: projectState({ memory: { state: 'up', version: '13.31.0', observations: 10 } }), answers: { '/api/memory/phasezero/palace': answer }, ...over });
+const memCalls = (env) => plain(env.w.get('__calls')).filter((c) => c.path.startsWith('/api/memory/'));
+const stripOf = (env) => env.page().querySelector('.pj-gotchas');
+
+test('the Memory tab renders the palace of the project with the same renderer, and keeps the Open in Memory link', async () => {
+  const env = memEnv(PALACE);
+  const page = await go(env, '#/p/phasezero?tab=memory');
+  assert.deepEqual(selectedTab(page), ['memory']);
+  assert.equal(all(page, '.pj-memory .mem-wing').length, PALACE.wings.length);
+  assert.ok(all(page, 'a').some((a) => a.getAttribute('href') === '#/memory/phasezero' && /Open in Memory/.test(textOf(a))));
+  assert.equal(memCalls(env).filter((c) => c.path === '/api/memory/phasezero/palace').length >= 1, true);
+  assert.equal(shownButtons(page, /^Retry$/).length, 0);
+});
+
+test('the Memory tab shows the worker\'s real reason with Retry when the worker is down, and the rest of the page still works', async () => {
+  const env = memEnv(() => { throw Object.assign(new Error('connection refused'), { status: 503, body: { state: 'down', up: false, reason: 'connection refused: the claude-mem worker is not running' } }); });
+  const page = await go(env, '#/p/phasezero?tab=memory');
+  assert.match(textOf(page.querySelector('.pj-memory .mem-degraded')), /connection refused: the claude-mem worker is not running/);
+  assert.equal(shownButtons(page, /^Retry$/).length, 1);
+  assert.deepEqual(tabIds(page), ['sessions', 'tasks', 'schedules', 'files', 'memory']);
+});
+
+test('a project without claude-mem in the state has neither the Memory tab nor the strip, and nothing is asked', async () => {
+  const env = projectWorld({ answers: { '/api/memory/phasezero/palace': PALACE } });
+  const page = await go(env, '#/p/phasezero');
+  assert.equal(tabIds(page).includes('memory'), false);
+  assert.equal(stripOf(env).classList.contains('hidden'), true);
+  assert.equal(memCalls(env).length, 0);
+});
+
+test('the header strip shows the newest gotchas with their age: three, one and none', async () => {
+  const three = memEnv(PALACE);
+  await go(three, '#/p/phasezero');
+  const strip = stripOf(three);
+  assert.equal(strip.classList.contains('hidden'), false);
+  assert.equal(all(strip, '.mem-gotcha').length, 3);
+  assert.match(textOf(strip), /Newest gotchas in this project, from claude-mem/);
+  assert.match(textOf(all(strip, '.mem-gotcha')[0]), /Cart badge counted removed lines/);
+  assert.match(textOf(all(strip, '.mem-gotcha')[0]), /\d+[smhd] ago/);
+  const one = memEnv({ ...PALACE, gotchas: PALACE.gotchas.slice(0, 1) });
+  await go(one, '#/p/phasezero');
+  assert.equal(all(stripOf(one), '.mem-gotcha').length, 1);
+  const none = memEnv({ ...PALACE, gotchas: [] });
+  await go(none, '#/p/phasezero');
+  assert.equal(stripOf(none).classList.contains('hidden'), true);
+  assert.equal(textOf(stripOf(none)), '');
+});
+
+test('the strip: a stopped worker, a worker that never answers and a stale answer all show nothing and raise no toast', async () => {
+  const down = memEnv(() => { throw Object.assign(new Error('x'), { status: 503, body: { state: 'down', up: false } }); });
+  await go(down, '#/p/phasezero');
+  assert.equal(stripOf(down).classList.contains('hidden'), true);
+  assert.deepEqual(plain(down.w.get('__toasts')), []);
+  const slow = memEnv(() => new Promise(() => {}));
+  const page = await go(slow, '#/p/phasezero');
+  assert.equal(stripOf(slow).classList.contains('hidden'), true);
+  assert.ok(page.querySelector('.pj-head'), 'the page is up while the worker is silent');
+  assert.deepEqual(plain(slow.w.get('__toasts')), []);
+  const stale = memEnv({ ...PALACE, stale: true, stale_at: '2026-10-03T08:52:10+00:00' });
+  await go(stale, '#/p/phasezero');
+  assert.equal(stripOf(stale).classList.contains('hidden'), true, 'an old answer is never shown as fresh');
+});
+
+test('the strip is asked once per project visit, not on every poll', async () => {
+  const env = memEnv(PALACE);
+  await go(env, '#/p/phasezero');
+  const n = () => memCalls(env).filter((c) => c.path === '/api/memory/phasezero/palace').length;
+  const first = n();
+  env.w.run('updateCurrentPage(state)');
+  env.w.run('updateCurrentPage(state)');
+  await settle();
+  assert.equal(n(), first, 'a state poll asks nothing');
+});
+
+test('a gotcha opens its drawer in place on a mouse screen and markup in its title stays text', async () => {
+  const env = memEnv({ ...PALACE, gotchas: [{ ...PALACE.gotchas[0], title: '<b>bold</b>', narrative: '<script>x</script>' }] });
+  await go(env, '#/p/phasezero');
+  const strip = stripOf(env);
+  assert.equal(textOf(strip.querySelector('.mem-gotcha-t')), '<b>bold</b>');
+  strip.querySelector('.mem-gotcha').click();
+  assert.equal(strip.querySelector('.mem-gotcha-panel').classList.contains('hidden'), false);
+  assert.equal(textOf(strip.querySelector('.mem-gotcha-panel .mem-narr')), '<script>x</script>');
+  assert.equal(all(strip, 'script').length, 0);
+  assert.equal(all(strip, 'b').length, 0);
 });

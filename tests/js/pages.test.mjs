@@ -190,7 +190,7 @@ function fakeState(over = {}) {
   };
 }
 
-const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'project', 'agents', 'doctor', 'settings', 'search', 'session', 'usage', 'quad', 'onboarding', 'placeholders'];       // widgets.js (Widgets, no route) loads right after inbox.js, project.js right after tasks.js
+const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'project', 'agents', 'doctor', 'settings', 'search', 'session', 'usage', 'quad', 'onboarding', 'memory', 'placeholders'];       // widgets.js (Widgets, no route) loads right after inbox.js, project.js right after tasks.js
 
 /** A world with the DOM, the real scripts in index.html order (shell.js left out), and recorders for api, toast and registerPage. */
 function pagesWorld({ wide = false, extra = {}, state = fakeState(), realPoll = false } = {}) {
@@ -573,46 +573,34 @@ test('a session that is gone says so instead of failing', () => {
 
 // ---------------------------------------------------------------- placeholders and onRoute
 
-test('placeholder pages take onRoute: #/memory to #/memory/shop?tab=x redraws without a remount', () => {
+test('the memory route is its real page since v0.5.20 (pages/memory.js): a project in the address redraws through onRoute, not a remount', async () => {
   const { w } = pagesWorld();
+  w.run(`api = async (method, path) => { if (path.startsWith('/api/memory/')) throw Object.assign(new Error('x'), { status: 503, body: { state: 'down', up: false, reason: 'connection refused' } }); return { ok: true }; }`);
   w.location.hash = '#/memory';
   assert.equal(mounts(w, 'memory'), 1);
   assert.match(text(page(w)), /Memory/);
-  assert.match(text(page(w)), /arrives in v0\.5\.20/);
-  assert.equal(w.document.title, 'Memory · ccboard');
-  w.location.hash = '#/memory/shop';
-  assert.equal(mounts(w, 'memory'), 1, 'params changing on the same id go through onRoute, not mount');
-  assert.match(text(page(w)), /Memory shop/);
-  assert.equal(w.document.title, 'Memory shop · ccboard');
-  w.location.hash = '#/memory/shop?tab=x';
-  assert.equal(mounts(w, 'memory'), 1, 'a query change too');
-  assert.match(text(page(w)), /Memory shop · x/);
-  assert.equal(w.document.title, 'Memory shop · x · ccboard');
+  assert.doesNotMatch(text(page(w)), /arrives in/, 'v0.5.20 replaced the memory placeholder');
+  assert.equal(w.document.title, 'Memory shop · ccboard', 'the first project of the board opens when the address names none');
+  w.location.hash = '#/memory/shop?tab=timeline';
+  assert.equal(mounts(w, 'memory'), 1, 'the same project and a new tab go through onRoute, not mount');
+  await tick();
   w.location.hash = '#/usage';
   assert.equal(mounts(w, 'usage'), 1);
-  assert.match(text(page(w)), /Usage/);
-  assert.doesNotMatch(text(page(w)), /arrives in/, 'v0.5.17 replaced the usage placeholder');
   assert.doesNotMatch(text(page(w)), /Memory/);
 });
 
-test('every later-phase route has a placeholder that names its phase; the project route has its real page', () => {
+test('no route is a placeholder any more; the project and quad routes have their real pages', () => {
   const { w } = pagesWorld();
-  const cases = { '#/memory/shop': 'v0.5.20' };
-  for (const [hash, version] of Object.entries(cases)) {
-    w.location.hash = hash;
-    assert.match(text(page(w)), new RegExp(`arrives in ${version.replace(/\./g, '\\.')}`), hash);
-  }
   w.location.hash = '#/quad';
   assert.equal(mounts(w, 'quad'), 1, 'v0.5.9: the quad route is its real page (pages/quad.js), not a placeholder');
   assert.doesNotMatch(text(page(w)), /arrives in/);
   assert.ok(page(w).querySelector('.quad'));
-  assert.equal(w.get("typeof PLACEHOLDER_INFO === 'object' && 'quad' in PLACEHOLDER_INFO"), false, 'placeholders.js no longer lists the quad route');
+  assert.equal(w.get("typeof PLACEHOLDER_INFO === 'object' && Object.keys(PLACEHOLDER_INFO).length"), 0, 'placeholders.js lists no route');
   w.location.hash = '#/p/shop';
   assert.equal(mounts(w, 'project'), 1);
   assert.doesNotMatch(text(page(w)), /arrives in/, 'v0.5.6 replaced the project placeholder');
   assert.match(text(page(w)), /shop/);
   assert.match(w.document.title, /shop/, 'the title names the project');
-  assert.equal(w.get("typeof PLACEHOLDER_INFO === 'object' && 'project' in PLACEHOLDER_INFO"), false, 'placeholders.js no longer lists the project route');
 });
 
 // ---------------------------------------------------------------- inbox, tasks, home

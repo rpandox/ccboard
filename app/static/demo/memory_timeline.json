@@ -1,0 +1,81 @@
+{
+  "project": "phasezero",
+  "keys": [
+    "NestJs-Ecommerce-Backend",
+    "website",
+    "website/sticky-summary",
+    "phasezero"
+  ],
+  "keys_checked": true,
+  "state": "ok",
+  "up": true,
+  "stale": false,
+  "stale_at": null,
+  "reason": null,
+  "reason_code": null,
+  "partial": [],
+  "ambiguous": [],
+  "ambiguous_filter": null,
+  "shape_error": false,
+  "compat": "ok",
+  "worker_version": "13.31.0",
+  "tested_worker": "13.31.0",
+  "at": "2026-10-03T09:00:00+00:00",
+  "anchor": {
+    "id": 19608,
+    "type": "feature",
+    "title": "Nepali product names with English fallback",
+    "subtitle": "nameNe || name on every card",
+    "narrative": "Nepali product names with English fallback. nameNe || name on every card. Fallback happens in one helper",
+    "facts": [
+      "Fallback happens in one helper"
+    ],
+    "concepts": [
+      "how-it-works"
+    ],
+    "files_read": [
+      "src/components/ProductCard.tsx"
+    ],
+    "files_modified": [],
+    "created_at": "2026-10-03T07:13:20Z",
+    "created_at_epoch": 1791011600000,
+    "project": "website",
+    "merged_into_project": null,
+    "platform_source": "claude",
+    "memory_session_id": "00000000-0000-4000-8000-000000000001",
+    "content_session_id": "00000000-0000-4000-8000-000000000001",
+    "prompt_number": 1,
+    "discovery_tokens": 108,
+    "agent_type": null,
+    "agent_id": null,
+    "key": "website",
+    "repo": "website"
+  },
+  "items": [
+    {
+      "id": 19606,
+      "day": "Sep 27, 2026",
+      "time": "1:23 PM",
+      "glyph": "○",
+      "title": "Checkout summary becomes sticky below 600 px",
+      "tokens": 106
+    },
+    {
+      "id": 19608,
+      "day": "Sep 27, 2026",
+      "time": "1:23 PM",
+      "glyph": "○",
+      "title": "Nepali product names with English fallback",
+      "tokens": 108
+    },
+    {
+      "id": 19609,
+      "day": "Sep 27, 2026",
+      "time": "1:23 PM",
+      "glyph": "○",
+      "title": "Images are served through the CDN resizer",
+      "tokens": 109
+    }
+  ],
+  "key": "website"
+}

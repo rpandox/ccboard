@@ -1,0 +1,33 @@
+{
+  "items": [
+    {
+      "id": 166,
+      "session_id": "00000000-0000-4000-8000-000000000005",
+      "platform_source": "claude",
+      "request": "<request>",
+      "investigated": "<investigated>",
+      "learned": "<learned>",
+      "completed": "<completed>",
+      "next_steps": "<next_steps>",
+      "project": "<repo>",
+      "created_at": "2026-10-03T15:59:00.311Z",
+      "created_at_epoch": 1791043140311
+    },
+    {
+      "id": 164,
+      "session_id": "00000000-0000-4000-8000-000000000006",
+      "platform_source": "claude",
+      "request": "<request>",
+      "investigated": "<investigated>",
+      "learned": "<learned>",
+      "completed": "<completed>",
+      "next_steps": "<next_steps>",
+      "project": "<repo>",
+      "created_at": "2026-10-03T15:50:45.332Z",
+      "created_at_epoch": 1791042645332
+    }
+  ],
+  "hasMore": true,
+  "offset": 0,
+  "limit": 2
+}
