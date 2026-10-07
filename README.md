@@ -309,6 +309,23 @@ The answer is `{tmux, attach_url, agent, agent_session_id, claude_session_id, cm
 
 **Ultracode.** `--effort ultracode` is accepted only where the box's `claude` takes it: its `--help` names it on the `--effort` option (read once per binary), or `CCBOARD_CLAUDE_ULTRACODE_FLAG=1` records that `claude --effort ultracode -p 'say ok'` worked on the box (`0` records that it did not). Then `ultracode` is one of the efforts of `GET /api/agents` and of the launch request; until then it is not, and the *ultracode* preset starts the session and sends `/effort ultracode on` through `POST /api/sessions/<tmux>/command` once the session is at its prompt. `GET /api/agents` shows which one this box is on as `claude.capabilities.ultracode_flag`.
 
+### Work from GitHub issues (v0.5.20)
+
+In the launcher's task mode, *From a GitHub issue* lists the repo's open issues (`gh issue list`, so `gh` must be installed and logged in on the box). Picking one fills the title and the prompt (with `Closes #N`) and, when the issue has a model line, preselects the agent, model, effort and permissions. Nothing starts until you press Start.
+
+The model line is a block in the issue body. It is read from the first `## Who should do it` heading (HTML comments are ignored) and only from lines that start `- Claude:`, `- Claude Code:` or `- Codex:`, using the first backticked command on the line:
+
+    ## Who should do it
+
+    - Claude: `claude --model sonnet --effort medium --permission-mode acceptEdits`
+    - Codex: `codex -m gpt-6.1-sol -c model_reasoning_effort="medium" -s workspace-write -a on-request`
+
+Only `--model`, `--effort` and `--permission-mode` (Claude) and `-m`, `-c model_reasoning_effort=...`, `-s` and `-a` (Codex) are read, as `--flag value` or `--flag=value`, quoted or not. Every other flag is ignored. A bypass (`bypassPermissions`, `--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`, `--yolo`, `danger-full-access`) is dropped and the note says "ignored a bypass setting". What is left is checked against the installed agent (`GET /api/agents`): an unknown model, effort or mode is skipped, the note names it, and your own default stays. A quiet line under the select reads "from the issue: opus, high, acceptEdits" with *Reset to my defaults*. What an issue sets is never remembered as your default for the repo.
+
+Issue text becomes an agent prompt, so an issue by anyone but the owner of the repo's `origin` (compared with the remote URL, case-insensitive) is untrusted: its model line is not read (`GET /api/projects/<p>/repos/<r>/issues/<n>` answers an empty `who`), a callout says "Issue by <login>: its text becomes the agent's prompt", and Start waits for a tick.
+
+A task made from an issue stores `issue_number` and `issue_url` (additive columns, also accepted by `POST /api/tasks`); its card shows `#N` linking to the issue. When the task is done with a result, *Comment on the issue* (two taps, the body shown while it is armed) runs `gh issue comment <n> --body-file -` with the first 800 characters of the result, the branch, the PR link and "Posted from ccboard": `POST /api/tasks/<id>/issue-comment`, once per task (409 when there is no issue, the task is not done, or it was posted); `GET` on the same path returns the body without posting. A failure shows `gh`'s message and the button stays. Not covered: chains created from the launcher do not carry the issue link.
+
 ### Hooks v2, notifications with context, /command /prompt /resize (v0.5.7)
 
 ### Notifications (v0.5.7, v0.5.18)
@@ -698,9 +715,13 @@ Kept deliberately small; each is the simplest safe option.
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt pytest httpx
 .venv/bin/pytest -q
 TMUX_TMPDIR=/tmp tmux -L ccboard -f tmux.conf start-server
-PROJECTS_DIR=$PWD/tmp-projects CCBOARD_DATA_DIR=$PWD/tmp-data CCBOARD_DEV_BYPASS_USER=dev \
-  .venv/bin/uvicorn app.main:app --port 8000
+T=$(mktemp -d)   # a dev board must not reach your real home: all four directories on temp paths, stand-in agents first on PATH
+PATH=$PWD/scripts/dev/fake_agents:$PATH PROJECTS_DIR=$T/projects CCBOARD_DATA_DIR=$T/data CLAUDE_CONFIG_DIR=$T/claude CODEX_HOME=$T/codex \
+  CCBOARD_DEV_BYPASS_USER=dev .venv/bin/uvicorn app.main:app --port 8000
 ```
+Under the dev bypass the routes that start a real agent (new session, external open, task dispatch and reopen, fix-ci, run resume, job run, Claude and Codex logins, headless job runs) answer 409 "dev mode: set the four directories to temp paths" unless `PROJECTS_DIR`, `CCBOARD_DATA_DIR`, `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are absolute and resolve outside your home (`settings.dev_sandboxed()`; `/api/state` carries `dev.sandboxed`, only under the bypass). `scripts/dev/fake_agents/claude` and `codex` are harmless stand-ins (a banner, `--version`, `--help`, `login status`, exit on `/exit` or `/quit`); `scripts/qa-ui.sh` and `scripts/qa_terminal.sh` refuse a board whose `dev.sandboxed` is not true (`QA_REAL_TTYD=1`, which drives the box itself, is not checked). Production, with no bypass, is unchanged.
+The suite cannot reach your real home. Every test runs with `HOME` and `USERPROFILE` pointed at a fresh temp directory, so a stray `Path.home()` or `~` lands in the sandbox (a test that must read the real one is marked `@pytest.mark.real_home("reason")`). A session-wide canary in `tests/conftest.py` also records the existence, size and mtime of the real `~/.claude/settings.json`, `settings.local.json`, `.credentials.json` and `~/.codex/config.toml`, `hooks.json`, `auth.json` (stat only, never read) and fails the run, naming the file relative to home, if any changed; `~/.claude.json` and `~/.claude-mem` are compared by existence only because a running Claude Code session rewrites them. `tests/test_home_guard.py` proves the canary with a fake home and requires every direct home access in `app/`, `scripts/` and `bin/` to be in `app/config.py` or on its allowlist with a reason. Demo mode (`?demo=1`) renders from `app/static/demo/*.json`; `tests/test_api_v054.py` fails when `demo/state.json` lacks a key of the real `/api/state`.
+
 How to take an issue from pick-up to a merged phase (worktrees, model lines, the two suites, one pull request per phase) is in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 `CCBOARD_DEV_BYPASS_USER` skips the identity check for local development only; it is honoured only when the board runs directly on a host, and ignored under systemd and in the container (`CCBOARD_RUNTIME`, `INVOCATION_ID`).

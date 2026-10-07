@@ -1,0 +1,8 @@
+{
+ "number": 47,
+ "title": "Dispatch from issues",
+ "url": "https://github.com/acme/board/issues/47",
+ "labels": [{"name": "feature"}],
+ "author": {"login": "Acme"},
+ "body": "Let the board fill in a task.\n\n## Goal\n\nDo the thing.\n\n<!-- - Claude: `claude --model haiku` is a comment and must not count -->\n\n## Who should do it\n\n**Tier B**\n\n- Claude: `claude --model sonnet --effort medium --permission-mode acceptEdits`\n- Codex: `codex -m gpt-6.1-sol -c model_reasoning_effort=\"medium\" -s workspace-write -a on-request`\n- Why this tier: because\n\n## Rules\n\n- Claude: `claude --model opus`\n"
+}

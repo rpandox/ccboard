@@ -1,0 +1,3 @@
+Usage: codex [options] [prompt]
+
+This is the dev stand-in (scripts/dev/fake_agents), not the real Codex CLI.

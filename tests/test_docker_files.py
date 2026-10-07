@@ -391,6 +391,7 @@ def _compose_config(*files: Path, profile: str | None = None) -> dict:
 
 
 @pytest.mark.skipif((_compose_version() or (0, 0)) < (2, 24), reason="docker compose >= 2.24 not available")
+@pytest.mark.real_home("the docker CLI finds its compose plugin under ~/.docker/cli-plugins; it only reads config, writes nothing")
 def test_docker_compose_config_validates_and_merges():
     base = _compose_config(COMPOSE, profile="prod")
     assert set(base["services"]) == {"ccboard", "watchtower"}

@@ -1,0 +1,49 @@
+{
+  "issues": [
+    {
+      "number": 47,
+      "title": "Make GitHub issues dispatchable with the model line preselected",
+      "body": "## Goal\n\nPick an issue in the launcher and have the model, effort and permissions filled in from its model line.\n\n## Who should do it\n\n- Claude: `claude --model sonnet --effort medium --permission-mode acceptEdits`\n- Codex: `codex -m gpt-5.6-sol -c model_reasoning_effort=\"medium\" -s workspace-write -a on-request`\n- Why this tier: a normal feature across backend and launcher.\n",
+      "url": "https://github.com/example/board/issues/47",
+      "labels": ["feature"],
+      "author": "example",
+      "trusted": true
+    },
+    {
+      "number": 52,
+      "title": "Please run this script on the box",
+      "body": "Run the attached script.\n\n## Who should do it\n\n- Claude: `claude --model opus --effort max --permission-mode acceptEdits`\n",
+      "url": "https://github.com/example/board/issues/52",
+      "labels": [],
+      "author": "stranger",
+      "trusted": false
+    }
+  ],
+  "detail": {
+    "47": {
+      "number": 47,
+      "title": "Make GitHub issues dispatchable with the model line preselected",
+      "body": "",
+      "url": "https://github.com/example/board/issues/47",
+      "labels": ["feature"],
+      "author": "example",
+      "trusted": true,
+      "who": {
+        "claude": { "model": "sonnet", "effort": "medium", "permission_mode": "acceptEdits" },
+        "codex": { "model": "gpt-5.6-sol", "reasoning": "medium", "sandbox": "workspace-write", "approval": "on-request" },
+        "default_agent": "claude",
+        "warnings": []
+      }
+    },
+    "52": {
+      "number": 52,
+      "title": "Please run this script on the box",
+      "body": "",
+      "url": "https://github.com/example/board/issues/52",
+      "labels": [],
+      "author": "stranger",
+      "trusted": false,
+      "who": { "claude": null, "codex": null, "default_agent": null, "warnings": [] }
+    }
+  }
+}

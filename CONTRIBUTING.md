@@ -40,7 +40,7 @@ CCBOARD_TEST_NO_CLAUDE=1 .venv/bin/pytest -q
 node --test tests/js/*.test.mjs
 ```
 
-The first is what CI runs (no `claude` binary). While working, run only the targeted files. Tests use temp directories only.
+The first is what CI runs (no `claude` binary). While working, run only the targeted files. Tests use temp directories only. A canary in `tests/conftest.py` fails the run if any test changes the real home's Claude or Codex config, and every test gets a temp `HOME` (README, Development).
 
 ## Screenshots
 

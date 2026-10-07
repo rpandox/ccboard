@@ -230,4 +230,4 @@ def test_launch_options(client, projects_dir, fake_tmux, monkeypatch):
 def test_state_carries_shell_version(client, projects_dir):
     from app import main
     v = client.get("/api/state", headers=H).json()["version"]
-    assert isinstance(v, str) and len(v) == 12 and v == main.ASSET_VERSION == main.asset_version()
+    assert isinstance(v, str) and len(v) == 12 and v == main.ASSET_VERSION     # the version computed at start, not a re-read of the tree

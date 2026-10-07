@@ -119,6 +119,15 @@ case "$code" in
   403) echo "qa_terminal: $BASE answered 403: start the board with CCBOARD_DEV_BYPASS_USER=<user> or pass QA_HEADER" >&2; exit 2 ;;
   *) echo "qa_terminal: warning: GET $BASE/ answered $code" >&2 ;;
 esac
+# issue #100: the fake-tty (dev bypass) mode refuses a board that does not report dev.sandboxed=true in /api/state, so a QA click can never
+# start a real agent against the real home. QA_REAL_TTYD=1 drives the box itself (no dev bypass) and is not subject to it.
+if [ "$REAL" != 1 ]; then
+  sandboxed="$(curl -s ${CURL_H[@]+"${CURL_H[@]}"} "$BASE/api/state" 2>/dev/null | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin).get("dev",{}).get("sandboxed") is True else "no")' 2>/dev/null || true)"
+  if [ "$sandboxed" != yes ]; then
+    echo "qa_terminal: $BASE does not report dev.sandboxed=true in /api/state: refusing to run against it. Start the dev board with PROJECTS_DIR, CCBOARD_DATA_DIR, CLAUDE_CONFIG_DIR and CODEX_HOME on temp paths and scripts/dev/fake_agents first on PATH (README, Development)" >&2
+    exit 2
+  fi
+fi
 tty_body="$(curl -s ${CURL_H[@]+"${CURL_H[@]}"} "$BASE/tty/" 2>/dev/null || true)"
 tty_code="$(http_code "$BASE/tty/")"
 if [ "$REAL" = 1 ]; then

@@ -152,7 +152,7 @@ def dump(db):
 
 NEW_SESSION_COLS = {"agent", "cwd", "opts", "flags", "ended_reason"}
 NEW_TASK_COLS = {"agent", "mode", "phase", "session_row", "auto_close", "parent_id", "chain_id", "spec", "result",
-                 "result_at", "assigned_at", "done_at"}
+                 "result_at", "assigned_at", "done_at", "issue_number", "issue_url", "issue_commented_at"}
 
 
 @pytest.fixture
@@ -194,7 +194,8 @@ def test_old_db_is_upgraded_in_place(tmp_path, with_migrations):
         task = db.task_get(1)
         assert task["worktree"] == "/p/shop/api/.claude/worktrees/fix" and task["tmux_name"] == "shop--api--t-fix"
         assert (task["agent"], task["mode"], task["phase"], task["auto_close"]) == ("claude", "worktree", "running", 0)
-        for k in ("session_row", "parent_id", "chain_id", "spec", "result", "result_at", "assigned_at", "done_at"):
+        for k in ("session_row", "parent_id", "chain_id", "spec", "result", "result_at", "assigned_at", "done_at",
+                  "issue_number", "issue_url", "issue_commented_at"):
             assert task[k] is None, k
         assert db.jobs()[0]["agent"] == "claude"
         assert db.conn.execute("SELECT agent FROM events").fetchone()["agent"] is None

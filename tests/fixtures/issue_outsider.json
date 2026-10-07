@@ -1,0 +1,8 @@
+{
+ "number": 48,
+ "title": "Please run this",
+ "url": "https://github.com/acme/board/issues/48",
+ "labels": [],
+ "author": {"login": "mallory"},
+ "body": "Do it.\n\n## Who should do it\n\n- Claude: `claude --model opus --effort max --permission-mode acceptEdits`\n"
+}

@@ -1,0 +1,20 @@
+#!/bin/sh
+# A harmless stand-in for `codex` (issue #100); see claude. `login status` answers from a fixture, nothing else touches the home.
+here=$(cd "$(dirname "$0")" && pwd)
+fx="$here/fixtures"
+case "$1" in
+  --version|-V) cat "$fx/codex.version"; exit 0 ;;
+  --help|-h) cat "$fx/codex.help"; exit 0 ;;
+  login)
+    if [ "$2" = status ]; then cat "$fx/codex.login-status"; exit 0; fi
+    echo "fake codex: login $2 is not available in the dev stand-in" >&2; exit 1 ;;
+esac
+echo "fake codex (dev stand-in, not a real agent). Type /exit or /quit to leave."
+while printf '> ' && IFS= read -r line; do
+  case "$line" in
+    /exit|/quit) echo "bye"; exit 0 ;;
+    "") ;;
+    *) echo "fake codex: got ${#line} characters" ;;
+  esac
+done
+exit 0

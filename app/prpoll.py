@@ -7,7 +7,7 @@ import subprocess
 import threading
 from pathlib import Path
 
-from . import gitops, overlap, tasks as tasks_mod
+from . import gitops, issues as issues_mod, overlap, tasks as tasks_mod
 
 log = logging.getLogger("ccboard.prpoll")
 POLL_SECONDS = 60
@@ -67,10 +67,51 @@ def fix_ci_prompt(branch: str, run_name: str, log_text: str) -> str:
             "Find the cause, fix it, run the relevant checks locally, commit, and push to update the PR.")
 
 
+ISSUE_FIELDS = "number,title,body,url,labels,author"
+
+
+def origin_owner(cwd: Path) -> str | None:
+    """The owner of the repo's `origin` remote (lower case), or None when there is none or it cannot be read."""
+    try:
+        cp = gitops.run(["git", "remote", "get-url", "origin"], cwd, timeout=10, check=False)
+    except gitops.GitError:
+        return None
+    return issues_mod.origin_owner(cp.stdout.strip()) if cp.returncode == 0 else None
+
+
+def _issue_row(i: dict, owner: str | None) -> dict:
+    a = i.get("author")
+    login = (a.get("login") if isinstance(a, dict) else a) or None
+    return {"number": i.get("number"), "title": i.get("title"), "body": (i.get("body") or "")[:8000], "url": i.get("url"),
+            "labels": [lb.get("name") for lb in (i.get("labels") or []) if isinstance(lb, dict)],
+            "author": login, "trusted": issues_mod.trusted(login, owner)}
+
+
 def list_issues(cwd: Path, limit: int = 50) -> list[dict]:
-    data = _gh_json(["issue", "list", "--state", "open", "--limit", str(limit), "--json", "number,title,body,url,labels"], cwd)
-    return [{"number": i.get("number"), "title": i.get("title"), "body": (i.get("body") or "")[:8000], "url": i.get("url"),
-             "labels": [lb.get("name") for lb in (i.get("labels") or []) if isinstance(lb, dict)]} for i in data or []]
+    data = _gh_json(["issue", "list", "--state", "open", "--limit", str(limit), "--json", ISSUE_FIELDS], cwd)
+    owner = origin_owner(cwd)
+    return [_issue_row(i, owner) for i in data or [] if isinstance(i, dict)]
+
+
+def view_issue(cwd: Path, number: int) -> dict:
+    """One issue plus the parsed `who` block. An author who is not the origin's owner is untrusted: `who` stays empty."""
+    data = _gh_json(["issue", "view", str(int(number)), "--json", ISSUE_FIELDS], cwd)
+    if not isinstance(data, dict):
+        raise gitops.GitError("gh returned no issue")
+    row = _issue_row(data, origin_owner(cwd))
+    row["who"] = issues_mod.parse_who(data.get("body")) if row["trusted"] else issues_mod.empty_who()
+    return row
+
+
+def comment_issue(cwd: Path, number: int, body: str) -> None:
+    """gh issue comment <n> --body-file - with the body on stdin. Raises GitError with gh's message on failure."""
+    try:
+        cp = subprocess.run(["gh", "issue", "comment", str(int(number)), "--body-file", "-"], cwd=str(cwd), input=body,
+                            capture_output=True, text=True, timeout=60)
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        raise gitops.GitError(f"gh failed: {e.__class__.__name__}")
+    if cp.returncode != 0:
+        raise gitops.GitError((cp.stderr or cp.stdout).strip()[-300:] or "gh failed")
 
 
 class Poller(threading.Thread):

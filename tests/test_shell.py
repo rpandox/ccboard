@@ -35,8 +35,10 @@ def test_sw_is_generated_from_the_shell(lite_client):
     assert r.headers["cache-control"] == "no-cache"
     assert "__" not in r.text                       # no placeholder survives the substitution
     assert "'ccboard-shell-" + main.ASSET_VERSION + "'" in r.text and len(main.ASSET_VERSION) == 12
-    assert shell_in(r.text) == main.shell_paths()
-    assert r.content == main.SW_JS == main.render_sw()
+    # the board serves what it computed at start: compare with the import-time constants only (a static file edited
+    # mid-run must not fail this; the hashing and rendering rules are covered on frozen copies below)
+    assert shell_in(r.text) == shell_in(main.SW_JS.decode())
+    assert r.content == main.SW_JS
     assert "addEventListener('push'" in r.text and "addEventListener('notificationclick'" in r.text
 
 
@@ -106,11 +108,12 @@ def test_asset_version_follows_every_static_file(tmp_path, monkeypatch):
     assert main.asset_version() == before
 
 
-def test_rendered_sw_is_valid_javascript(tmp_path):
+def test_rendered_sw_is_valid_javascript(tmp_path, monkeypatch):
     node = shutil.which("node")
     if not node:
         pytest.skip("node not installed")
     from app import main
+    static_copy(tmp_path, monkeypatch)                                       # frozen tree: a concurrent edit cannot change the render
     out = tmp_path / "sw.js"
     out.write_bytes(main.render_sw())
     r = subprocess.run([node, "--check", str(out)], capture_output=True, text=True)
@@ -405,7 +408,7 @@ def test_terminal_assets_are_in_the_generated_shell_and_the_build_id(lite_client
     """termkit.js is a new static file: it must be precached (offline terminal shell) and hashed into the build id, both from the glob."""
     from app import main
     for path in TERM_ASSETS:
-        assert path in main.shell_paths(), f"{path} is not in the generated service-worker shell"
+        assert path in shell_in(main.SW_JS.decode()), f"{path} is not in the generated service-worker shell"
     served = shell_in(lite_client.get("/sw.js", headers=H).text)
     for path in TERM_ASSETS:
         assert path in served, path
@@ -421,7 +424,7 @@ def test_widgets_js_is_a_shell_asset_a_build_id_input_and_no_route(lite_client, 
     """pages/widgets.js (v0.5.5) is a library file in pages/: precached for the offline shell, hashed into the build id, and it
     registers no route (Home and Settings call Widgets.usageCard / Widgets.limitBanner)."""
     from app import main
-    assert "/static/pages/widgets.js" in main.shell_paths(), "widgets.js is not in the generated service-worker shell"
+    assert "/static/pages/widgets.js" in shell_in(main.SW_JS.decode()), "widgets.js is not in the generated service-worker shell"
     assert "/static/pages/widgets.js" in shell_in(lite_client.get("/sw.js", headers=H).text)
     src = (STATIC_ROOT / "pages" / "widgets.js").read_text()
     assert not re.search(r"registerPage\s*\(", _blank_js(src)), "widgets.js is not a page"

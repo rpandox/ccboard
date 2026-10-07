@@ -1,0 +1,22 @@
+#!/bin/sh
+# A harmless stand-in for `claude` (issue #100): the dev harness puts this directory first on PATH, so a QA click launches this banner
+# instead of a real agent. It prints fixtures, reads lines until /exit or /quit, and never reads or writes the home directory.
+here=$(cd "$(dirname "$0")" && pwd)
+fx="$here/fixtures"
+case "$1" in
+  --version|-v) cat "$fx/claude.version"; exit 0 ;;
+  --help|-h) cat "$fx/claude.help"; exit 0 ;;
+  auth)
+    if [ "$2" = status ]; then cat "$fx/claude.auth-status.json"; exit 0; fi
+    echo "fake claude: auth $2 is not available in the dev stand-in" >&2; exit 1 ;;
+  login) echo "fake claude: login is not available in the dev stand-in" >&2; exit 1 ;;
+esac
+echo "fake claude (dev stand-in, not a real agent). Type /exit or /quit to leave."
+while printf '> ' && IFS= read -r line; do
+  case "$line" in
+    /exit|/quit) echo "bye"; exit 0 ;;
+    "") ;;
+    *) echo "fake claude: got ${#line} characters" ;;
+  esac
+done
+exit 0
