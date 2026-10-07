@@ -10,6 +10,62 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 
+# ---- the real-home canary (issue #101) --------------------------------------------------------------------------------------------
+# The real home is taken once, at import, before any fixture moves HOME. CCBOARD_GUARD_REAL_HOME lets tests/test_home_guard.py run this
+# very file against a fake "real" home in a subprocess.
+REAL_HOME = pathlib.Path(os.environ.get("CCBOARD_GUARD_REAL_HOME") or os.path.expanduser("~"))
+GUARDED = (".claude/settings.json", ".claude/settings.local.json", ".claude/.credentials.json", ".codex/config.toml",
+           ".codex/hooks.json", ".codex/auth.json")
+# Written all the time by the owner's own running tools (a live Claude Code session rewrites ~/.claude.json, the claude-mem worker
+# touches ~/.claude-mem), so size/mtime would fail every run made beside them: only their existence is compared.
+LIVE = (".claude.json", ".claude-mem")
+
+
+def home_snapshot(home=None):
+    """(exists, size, mtime_ns) of each guarded path under the real home. Stat only: no file is ever opened or read."""
+    snap = {}
+    for rel in GUARDED + LIVE:
+        try:
+            st = os.stat(pathlib.Path(home or REAL_HOME) / rel)
+            snap[rel] = (True, 0, 0) if rel in LIVE else (True, st.st_size, st.st_mtime_ns)
+        except OSError:
+            snap[rel] = (False, 0, 0)
+    return snap
+
+
+def home_changes(before, after):
+    """The guarded paths (relative to home, never absolute) whose stat differs."""
+    return [rel for rel in GUARDED + LIVE if before[rel] != after[rel]]
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "real_home(reason): the test legitimately reads the real home, so it keeps HOME; give the reason")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _real_home_canary():
+    """Fail the run, naming the file, if any test or code under test changed the real home's Claude or Codex configuration."""
+    before = home_snapshot()
+    yield
+    changed = home_changes(before, home_snapshot())
+    if changed:
+        pytest.fail("a test touched the real home: " + ", ".join(f"~/{rel}" for rel in changed)
+                    + " changed during the run (stat size/mtime; the content was never read)", pytrace=False)
+
+
+@pytest.fixture(autouse=True)
+def _sandbox_home(request, tmp_path_factory, monkeypatch):
+    """HOME and USERPROFILE point at a fresh temp directory, so a stray Path.home() or ~ lands in the sandbox. Opt out with
+    @pytest.mark.real_home("reason")."""
+    if request.node.get_closest_marker("real_home"):
+        yield
+        return
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    yield
+
+
 @pytest.fixture
 def projects_dir(tmp_path, monkeypatch):
     """Point settings at a temp PROJECTS_DIR and data dir; no dev bypass unless a test sets it."""

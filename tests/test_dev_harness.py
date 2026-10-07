@@ -226,11 +226,14 @@ console.log('SNIPPETS ' + snippets.length + ' BAD ' + bad);
 class _StubBoard(http.server.BaseHTTPRequestHandler):
     """/ answers 200, /tty/ is the fake tty's page or a ttyd-looking one (class attribute), /api/ is a 404 (no session on this board)."""
     tty_is_fake = True
+    sandboxed = True            # /api/state's dev.sandboxed (issue #100): the QA scripts refuse a board that does not say true
 
     def do_GET(self):
         if self.path.startswith("/tty/"):
             body = b'<script src="fake_tty.js"></script>' if self.tty_is_fake else b"<html>ttyd</html>"
             code = 200
+        elif self.path.startswith("/api/state"):
+            body, code = (b'{"dev": {"sandboxed": true}}' if self.sandboxed else b"{}"), 200
         elif self.path.startswith("/api/"):
             body, code = b"{}", 404
         else:
@@ -244,14 +247,14 @@ class _StubBoard(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def run_qa(tmp_path, fake_tty, env_extra=None, width="390"):
+def run_qa(tmp_path, fake_tty, env_extra=None, width="390", sandboxed=True):
     """Run the script once against a stub board and the blind browser: (CompletedProcess, [snippets]). Not a verdict about the page (that
     is the reviewer's browser run); it proves every JS snippet the script sends parses, that no branch dies on `set -u` or a typo, and
     which checks each mode runs."""
     for tool in ("bash", "curl", "python3", "node"):
         if not shutil.which(tool):
             pytest.skip(f"{tool} is not installed")
-    handler = type("Board", (_StubBoard,), {"tty_is_fake": fake_tty})
+    handler = type("Board", (_StubBoard,), {"tty_is_fake": fake_tty, "sandboxed": sandboxed})
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
@@ -348,3 +351,214 @@ def test_qa_terminal_real_mode_refuses_the_fake_tty_and_fake_mode_refuses_a_real
     second.mkdir()
     r2, _ = run_qa(second, fake_tty=False)
     assert r2.returncode == 2 and "QA_REAL_TTYD=1" in r2.stderr, (r2.returncode, r2.stderr)
+
+
+# ---------- issue #100: launch routes are inert on a dev board whose directories could reach the real home ----------
+
+import ast
+
+from app import claude_auth, devguard
+from app.config import settings
+
+H = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
+FAKE_AGENTS = ROOT / "scripts" / "dev" / "fake_agents"
+UUID1 = "11111111-1111-4111-8111-111111111111"
+
+#: every route that can start a process, by function name: (method, path, json body). The guard answers before anything else is looked up.
+LAUNCH_ROUTES = {
+    "api_create_session": ("POST", "/api/projects/shop/repos/api/sessions", {"launcher": "shell"}),
+    "api_external_open": ("POST", f"/api/external/codex/{UUID1}/open", None),
+    "api_task_dispatch": ("POST", "/api/tasks/1/dispatch", {"mode": "lane"}),
+    "api_task_reopen": ("POST", "/api/tasks/1/reopen", {}),
+    "api_task_fix_ci": ("POST", "/api/tasks/1/fix-ci", None),
+    "api_run_resume": ("POST", "/api/runs/1/resume", None),
+    "api_job_run": ("POST", "/api/jobs/1/run", None),
+    "api_account_login": ("POST", "/api/accounts/login", {}),
+    "api_codex_account_login": ("POST", "/api/codex-accounts/login", {"label": "qa"}),
+    "api_login": ("POST", "/api/claude/login", None),
+}
+#: routes that reach a launch primitive but are exempt, each with its reason (none today)
+LAUNCH_EXEMPT: dict[str, str] = {
+    "api_create_project": "clones with `git clone` in a tmux session, never an agent; the launch point still refuses and _launch_clone cleans up",
+    "api_add_repo": "same: `git clone` only, refused at the launch point on an unsandboxed dev board",
+}
+#: routes that reach the guard through a helper which calls it first thing
+GUARDED_HELPERS = {"_task_launch"}
+#: routes that start a session only on some bodies, with the body that makes them do so
+LAUNCH_ROUTES.update({"api_create_task": ("POST", "/api/projects/shop/repos/api/tasks", {"title": "t", "prompt": "p", "dispatch": True}),
+                      "api_tasks_create": ("POST", "/api/tasks", {"project": "shop", "repo": "api", "title": "t", "prompt": "p", "dispatch": True}),
+                      "api_create_chain": ("POST", "/api/projects/shop/repos/api/chains", {"dispatch": True, "steps": [{"title": "t", "prompt": "p"}]})})
+
+
+@pytest.fixture
+def devboard(lite_client, projects_dir, fake_tmux, monkeypatch):
+    """A board under the dev bypass whose four directories are the conftest temp ones (sandboxed), with tmux, claude auth and the claude
+    binary faked. `unsandbox()` moves the Claude config dir under the (temp) home, the way the documented dev run without CLAUDE_CONFIG_DIR does."""
+    repo = projects_dir / "shop" / "api"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    monkeypatch.setattr(settings, "dev_bypass_user", "dev")
+    monkeypatch.setattr(settings, "claude_bin", lambda: str(FAKE_AGENTS / "claude"))
+    monkeypatch.setattr(claude_auth, "status", lambda: {"installed": True, "version": "2.1.0", "loggedIn": True, "authMethod": "claude.ai"})
+    monkeypatch.setattr(claude_auth, "version", lambda: "2.1.0")
+    started = []
+    monkeypatch.setattr(claude_auth, "start_login", lambda *a, **k: started.append("claude"))
+    from app import main
+    main._invalidate_scan()
+
+    def unsandbox():
+        monkeypatch.setattr(settings, "claude_config_dir", pathlib.Path.home() / ".claude")
+
+    return type("Dev", (), {"client": lite_client, "tmux": fake_tmux, "started": started, "unsandbox": staticmethod(unsandbox)})
+
+
+def test_dev_sandboxed_needs_the_bypass_and_all_four_directories_outside_the_home(devboard, monkeypatch, tmp_path):
+    assert settings.dev_sandboxed() is True
+    assert devguard.launch_ok() is True
+    home = pathlib.Path.home()
+    for attr in ("data_dir", "projects_dir", "claude_config_dir", "codex_home"):
+        keep = getattr(settings, attr)
+        monkeypatch.setattr(settings, attr, home / "inside")
+        assert settings.dev_sandboxed() is False, f"{attr} under the home"
+        monkeypatch.setattr(settings, attr, pathlib.Path("relative/dir"))
+        assert settings.dev_sandboxed() is False, f"{attr} relative"
+        link = tmp_path / f"link-{attr}"
+        link.symlink_to(home)
+        monkeypatch.setattr(settings, attr, link)
+        assert settings.dev_sandboxed() is False, f"{attr} a symlink back into the home"
+        monkeypatch.setattr(settings, attr, keep)
+    assert settings.dev_sandboxed() is True
+    monkeypatch.setattr(settings, "dev_bypass_user", None)
+    assert settings.dev_sandboxed() is False, "no bypass: not a sandboxed dev board"
+    assert devguard.launch_ok() is True, "no bypass: production is never blocked"
+
+
+def test_every_launch_route_answers_409_on_an_unsandboxed_dev_board_and_starts_nothing(devboard):
+    devboard.unsandbox()
+    for name, (method, path, body) in LAUNCH_ROUTES.items():
+        r = devboard.client.request(method, path, headers=H, json=body)
+        assert r.status_code == 409, (name, r.status_code, r.text)
+        assert "dev mode: set the four directories to temp paths" in r.json()["error"], name
+        assert str(pathlib.Path.home()) not in r.text, "the refusal names the settings, never a path"
+    assert devboard.tmux["created"] == [] and devboard.started == [], "nothing was launched"
+
+
+def test_a_launch_works_on_a_sandboxed_dev_board_with_the_fake_agent(devboard):
+    r = devboard.client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude"})
+    assert r.status_code == 201, r.text
+    assert len(devboard.tmux["created"]) == 1
+    assert devboard.client.post("/api/claude/login", headers=H).status_code == 200 and devboard.started == ["claude"]
+
+
+def test_state_reports_dev_sandboxed_only_under_the_bypass(devboard, monkeypatch):
+    assert devboard.client.get("/api/state", headers=H).json()["dev"] == {"sandboxed": True}
+    devboard.unsandbox()
+    assert devboard.client.get("/api/state", headers=H).json()["dev"] == {"sandboxed": False}
+    monkeypatch.setattr(settings, "dev_bypass_user", None)
+    assert "dev" not in devboard.client.get("/api/state", headers=H).json()
+
+
+def test_production_without_the_bypass_is_unchanged(devboard, monkeypatch):
+    monkeypatch.setattr(settings, "dev_bypass_user", None)
+    devboard.unsandbox()                         # even with the config dir under the home, production launches as before
+    r = devboard.client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude"})
+    assert r.status_code == 201, r.text
+    devguard.require_real_launch_ok()            # a no-op
+
+
+def test_a_headless_job_run_is_refused_on_an_unsandboxed_dev_board(devboard, monkeypatch):
+    """The scheduler's own worker starts `claude -p` / `codex exec` without a route: run_job refuses there too."""
+    from app import scheduler
+    devboard.unsandbox()
+    monkeypatch.setattr(scheduler, "_finish", lambda db, job, run_id, summary, *a: summary)
+    monkeypatch.setattr(scheduler.subprocess, "run", lambda *a, **k: pytest.fail("a headless agent was started"))
+    monkeypatch.setattr(scheduler.projects, "repo_path", lambda p, r: pathlib.Path("/nonexistent"))
+    monkeypatch.setattr(scheduler.tasks, "unique_slug", lambda *a, **k: "s")
+    fake_db = type("D", (), {"task_slugs": lambda self, p, r: []})()
+    out = scheduler.run_job(fake_db, {"id": 1, "name": "n", "project": "p", "repo": "r", "agent": "claude", "prompt": "x"}, 1)
+    assert out["status"] == "error" and "dev mode" in out["error"]
+
+
+def _route_functions(tree):
+    out = {}
+    for n in tree.body:
+        if isinstance(n, ast.FunctionDef) and any(isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) and d.func.attr in
+                                                  ("post", "put", "patch", "delete") for d in n.decorator_list):
+            out[n.name] = n
+    return out
+
+
+def _called(fn):
+    return {c.func.id if isinstance(c.func, ast.Name) else c.func.attr for c in ast.walk(fn)
+            if isinstance(c, ast.Call) and isinstance(c.func, (ast.Name, ast.Attribute))}
+
+
+def test_every_route_that_can_start_a_process_calls_the_guard():
+    """By name: the listed routes call require_real_launch_ok() themselves, and no other route reaches a launch primitive (through any
+    helper in main.py) without being listed or exempted with a reason. A new launch route cannot skip the guard silently."""
+    tree = ast.parse((ROOT / "app" / "main.py").read_text(encoding="utf-8"))
+    fns = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    calls = {name: _called(fn) for name, fn in fns.items()}
+    prims = {"start_login", "_start_session_row"}            # tmux.new_session is reached only through _start_session_row in main.py
+    reach = {n for n, c in calls.items() if c & prims}
+    while True:
+        more = {n for n, c in calls.items() if c & reach} - reach
+        if not more:
+            break
+        reach |= more
+    routes = _route_functions(tree)
+    unlisted = sorted(n for n in set(routes) & reach if n not in LAUNCH_ROUTES and n not in LAUNCH_EXEMPT)
+    assert not unlisted, f"routes that can start a process but are neither guarded nor exempted: {unlisted}"
+    for name in LAUNCH_ROUTES:
+        assert name in routes, f"{name} is not a route any more"
+        assert "require_real_launch_ok" in calls[name] or calls[name] & GUARDED_HELPERS, f"{name} does not call the guard"
+    for h in GUARDED_HELPERS:
+        assert "require_real_launch_ok" in calls[h], f"{h} is listed as a guarded helper but does not call the guard"
+    assert "require_real_launch_ok" in calls["_start_session_row"], "the one tmux launch point is guarded too"
+
+
+def test_the_fake_agents_are_harmless_and_answer_the_probes(tmp_path):
+    home = tmp_path / "fakehome"
+    home.mkdir()
+    env = {"PATH": os.environ["PATH"], "HOME": str(home)}
+    for name in ("claude", "codex"):
+        exe = FAKE_AGENTS / name
+        assert os.access(exe, os.X_OK), f"{name} must be executable"
+        v = subprocess.run([str(exe), "--version"], capture_output=True, text=True, env=env, timeout=10)
+        assert v.returncode == 0 and "dev stand-in" in v.stdout
+        h = subprocess.run([str(exe), "--help"], capture_output=True, text=True, env=env, timeout=10)
+        assert h.returncode == 0 and "dev stand-in" in h.stdout
+        for quit_word in ("/exit", "/quit"):
+            r = subprocess.run([str(exe)], input=f"hello\n{quit_word}\n", capture_output=True, text=True, env=env, timeout=10)
+            assert r.returncode == 0 and "not a real agent" in r.stdout and "bye" in r.stdout
+    st = subprocess.run([str(FAKE_AGENTS / "claude"), "auth", "status", "--json"], capture_output=True, text=True, env=env, timeout=10)
+    assert json.loads(st.stdout)["loggedIn"] is False
+    ls = subprocess.run([str(FAKE_AGENTS / "codex"), "login", "status"], capture_output=True, text=True, env=env, timeout=10)
+    assert ls.returncode == 0 and ls.stdout.strip()
+    assert list(home.iterdir()) == [], "the stand-ins never write to the home"
+
+
+def test_qa_terminal_refuses_a_board_that_is_not_sandboxed(tmp_path):
+    r, snippets = run_qa(tmp_path, fake_tty=True, sandboxed=False)
+    assert r.returncode == 2 and "dev.sandboxed" in r.stderr, r.stderr[-1500:]
+    assert snippets == [], "the browser was never driven"
+
+
+def test_qa_ui_refuses_a_board_that_is_not_sandboxed(tmp_path):
+    for tool in ("bash", "curl", "python3"):
+        if not shutil.which(tool):
+            pytest.skip(f"{tool} is not installed")
+    handler = type("Board", (_StubBoard,), {"tty_is_fake": True, "sandboxed": False})
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        browse = tmp_path / "fakebrowse"
+        browse.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        browse.chmod(0o755)
+        env = dict(os.environ, B=str(browse))
+        env.pop("QA_HEADER", None)
+        r = subprocess.run(["bash", str(ROOT / "scripts" / "qa-ui.sh"), f"http://127.0.0.1:{srv.server_address[1]}", str(tmp_path / "out")],
+                           cwd=ROOT, env=env, capture_output=True, text=True, timeout=60)
+    finally:
+        srv.shutdown()
+    assert r.returncode == 2 and "dev.sandboxed" in r.stderr, r.stderr[-1500:]

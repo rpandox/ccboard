@@ -270,6 +270,160 @@ function chainBuilder() {
   };
 }
 
+/* ---------- from a GitHub issue (v0.5.20) ----------
+   An issue of this repository carries a "## Who should do it" block; GET .../issues/{n} parses it (app/issues.py: bypass spellings are already dropped there, an author who is not the owner of
+   `origin` gets an empty block). launcherIssueChoices(who, {agents, installed}) turns that block into what the launcher may preselect, checked against the installed agents' schemas
+   (launcherSchema): {agent, claude: {model, effort, permission_mode} | null, codex: {model, reasoning, cx_mode, sandbox, approval} | null, parts: [words for the note], skipped: [what is not
+   offered here]}. Nothing unknown, nothing dangerous and nothing for an agent that is not installed gets through; a value the schema does not list is skipped and the person's own default stays. */
+function lxKnownModel(agent, m) {
+  if (agent === 'claude') return LX_CLAUDE_CHIPS.includes(m) || LX_CLAUDE_MORE.includes(m) || launcherSchema('claude').models.includes(m);
+  return launcherSchema('codex').models.includes(m);
+}
+
+function launcherIssueChoices(who, o) {
+  const opt = o || {};
+  const out = { agent: '', claude: null, codex: null, parts: {}, skipped: [] };
+  if (!who || typeof who !== 'object') return out;
+  const usable = (a) => (!Array.isArray(opt.agents) || opt.agents.includes(a)) && (typeof opt.installed !== 'function' || opt.installed(a));
+  const c = who.claude && typeof who.claude === 'object' ? who.claude : null;
+  if (c && usable('claude')) {
+    const sch = launcherSchema('claude');
+    const pick = {};
+    const parts = [];
+    if (c.model) { if (lxKnownModel('claude', c.model)) { pick.model = c.model; parts.push(c.model); } else out.skipped.push(`model ${c.model}`); }
+    if (c.effort) { if (sch.efforts.includes(c.effort) && c.effort !== 'ultracode') { pick.effort = c.effort; parts.push(c.effort); } else out.skipped.push(`effort ${c.effort}`); }
+    if (c.permission_mode) {
+      const m = c.permission_mode;
+      if (m === 'default' || m === 'manual') { pick.permission_mode = ''; parts.push('ask'); }
+      else if (m !== 'bypassPermissions' && sch.permission_modes.includes(m)) { pick.permission_mode = m; parts.push(m); }
+      else out.skipped.push(`permissions ${m}`);
+    }
+    if (Object.keys(pick).length) { out.claude = pick; out.parts.claude = parts; }
+  }
+  const x = who.codex && typeof who.codex === 'object' ? who.codex : null;
+  if (x && usable('codex')) {
+    const sch = launcherSchema('codex');
+    const pick = {};
+    const parts = [];
+    if (x.model) { if (lxKnownModel('codex', x.model)) { pick.model = x.model; parts.push(x.model); } else out.skipped.push(`model ${x.model}`); }
+    if (x.reasoning) {
+      if (launcherReasoning(sch, pick.model || '').allowed.includes(x.reasoning)) { pick.reasoning = x.reasoning; parts.push(x.reasoning); } else out.skipped.push(`reasoning ${x.reasoning}`);
+    }
+    if (x.sandbox || x.approval) {
+      const sb = x.sandbox || 'workspace-write';
+      const ap = x.approval || 'on-request';
+      const apv = sch.options.find((q) => q.key === 'approval');
+      const approvals = (apv && apv.choices) || LX_APPROVALS;
+      if (sb === 'workspace-write' && ap === 'on-request') { pick.cx_mode = 'default'; parts.push('default mode'); }
+      else if (sb === 'read-only' && ap === 'on-request') { pick.cx_mode = 'read-only'; parts.push('read-only'); }
+      else if (LX_SANDBOXES.includes(sb) && sb !== 'danger-full-access' && approvals.includes(ap)) { Object.assign(pick, { cx_mode: 'custom', sandbox: sb, approval: ap }); parts.push(`${sb}, ${ap}`); }
+      else out.skipped.push(`sandbox ${sb} / approval ${ap}`);
+    }
+    if (Object.keys(pick).length) { out.codex = pick; out.parts.codex = parts; }
+  }
+  const want = who.default_agent === 'codex' ? ['codex', 'claude'] : ['claude', 'codex'];
+  out.agent = want.find((a) => out[a]) || '';
+  return out;
+}
+
+/* The picker both task forms share: the select (the open issues of the repo, loaded on focus), the quiet "#N by login · open on GitHub" line, the note "from the issue: opus, high,
+   acceptEdits" with Reset to my defaults, and the callout + tick for an issue by someone who is not the owner of origin. Picking never starts anything and never grabs the focus.
+   hooks: fill(issue) puts the title and the prompt in; apply(choices) preselects (and remembers what it replaced); restore() puts that back; changed() re-checks the Start button;
+   scope {agents, installed} limits launcherIssueChoices. -> {node, select, link(), blocked(), applied(), clear()}. */
+function launcherIssuePicker(p, r, hooks) {
+  const base = `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/issues`;
+  const sel = selectEl([['', 'from a GitHub issue…']]);
+  const hint = (msg) => (/\bgh\b|auth|login|not found|command/i.test(msg) ? `${msg} (is gh installed and logged in? run gh auth login on the box)` : msg);
+  let issues = [];
+  let cur = null;
+  let applied = false;
+  let seq = 0;
+  const hide = (n, on) => n.classList.toggle('hidden', !!on);
+  const meta = el('p', { class: 'dim lx-hint lx-issue-meta hidden' });
+  const noteText = el('span', { class: 'lx-issue-note-t' });
+  const resetBtn = el('button', { class: 'minimal small lx-issue-reset hidden', type: 'button', text: 'Reset to my defaults', onclick: () => reset() });
+  const note = el('p', { class: 'dim lx-hint lx-issue-note hidden' }, noteText, ' ', resetBtn);
+  const ack = el('input', { type: 'checkbox' });
+  const callText = el('span', { class: 'lx-danger-t' });
+  const callout = el('div', { class: 'lx-danger lx-issue-warn hidden', role: 'alert' }, ic('warning-sign'),
+    el('div', { class: 'lx-danger-b' }, callText, el('div', { class: 'checks' }, el('label', {}, ack, 'I have read it'))));
+  ack.addEventListener('change', () => hooks.changed());
+  const node = el('div', { class: 'lx-issue' }, sel, meta, note, callout);
+
+  const setNote = (text, withReset) => {
+    noteText.textContent = text || '';
+    hide(resetBtn, !withReset);
+    hide(note, !text);
+  };
+  const paintMeta = () => {
+    meta.textContent = '';
+    hide(meta, !cur);
+    hide(callout, !cur || cur.trusted);
+    if (!cur) return;
+    meta.append(`#${cur.number}${cur.author ? ' by ' + cur.author : ''}`);
+    if (/^https:\/\//.test(String(cur.url || ''))) meta.append(' · ', el('a', { href: cur.url, target: '_blank', rel: 'noopener noreferrer', text: 'open on GitHub' }));
+    callText.textContent = `Issue by ${cur.author || 'an unknown author'}: its text becomes the agent's prompt`;
+  };
+  const unapply = () => { if (applied) { applied = false; hooks.restore(); } };
+  function reset() {
+    unapply();
+    setNote('Back to your defaults.', false);
+    hooks.changed();
+  }
+  const clear = () => {
+    seq++;
+    unapply();
+    cur = null;
+    ack.checked = false;
+    setNote('', false);
+    paintMeta();
+    hooks.changed();
+  };
+
+  sel.addEventListener('focus', async () => {
+    if (issues.length) return;
+    try {
+      const res = await api('GET', base);
+      issues = (res && res.issues) || [];
+      for (const i of issues) sel.append(el('option', { value: String(i.number), text: `#${i.number} ${i.title}`.slice(0, 90) }));
+      if (!issues.length) sel.append(el('option', { value: '', text: '(no open issues)' }));
+    } catch (e) { sel.append(el('option', { value: '', text: hint(String((e && e.message) || e)).slice(0, 120) })); }
+  }, { once: true });
+
+  sel.addEventListener('change', async () => {
+    const i = issues.find((x) => String(x.number) === sel.value);
+    if (!i) { clear(); return; }
+    const my = ++seq;
+    unapply();
+    ack.checked = false;
+    cur = { number: i.number, url: i.url, author: i.author || '', trusted: i.trusted === true };
+    setNote('', false);
+    paintMeta();
+    hooks.fill(i);
+    hooks.changed();
+    if (!cur.trusted) { setNote("Model and permissions are not taken from someone else's issue.", false); return; }
+    try {
+      const d = await api('GET', `${base}/${encodeURIComponent(i.number)}`);
+      if (my !== seq) return;
+      if (!d || d.trusted !== true) { cur.trusted = false; paintMeta(); hooks.changed(); setNote("Model and permissions are not taken from someone else's issue.", false); return; }
+      const ch = launcherIssueChoices(d.who, hooks.scope);
+      const warns = (d.who && Array.isArray(d.who.warnings) ? d.who.warnings : []).join('; ');
+      const tail = (ch.skipped.length ? `; not offered here: ${ch.skipped.join(', ')}, your default stays` : '') + (warns ? `; ${warns}` : '');
+      if (!ch.agent) { setNote(ch.skipped.length || warns ? `The issue's model line was not used${tail}.` : 'This issue has no model line; your defaults stay.', false); return; }
+      hooks.apply(ch);
+      applied = true;
+      setNote(`from the issue: ${ch.parts[ch.agent].join(', ')}${tail}`, true);
+      hooks.changed();
+    } catch (e) {
+      if (my !== seq) return;
+      setNote(`Could not read the issue's model line: ${hint(String((e && e.message) || e))}. Your defaults stay.`, false);
+    }
+  });
+
+  return { node, select: sel, link: () => (cur ? { issue_number: cur.number, issue_url: cur.url } : {}),
+    blocked: () => !!cur && !cur.trusted && !ack.checked, applied: () => applied, clear };
+}
+
 function taskForm(p, r, opts) {
   const o = opts || {};
   const carry = o.carry || {};
@@ -292,24 +446,36 @@ function taskForm(p, r, opts) {
   const title = el('input', { type: 'text', maxlength: 120, placeholder: 'e.g. Fix the login redirect', autocomplete: 'off', value: carry.title || '' });
   const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
 
-  const issueSel = selectEl([['', 'from a GitHub issue…']]);
-  let issues = [];
-  issueSel.addEventListener('focus', async () => {
-    if (issues.length) return;
-    try {
-      const res = await api('GET', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/issues`);
-      issues = res.issues;
-      for (const i of issues) issueSel.append(el('option', { value: String(i.number), text: `#${i.number} ${i.title}`.slice(0, 90) }));
-      if (!issues.length) issueSel.append(el('option', { value: '', text: '(no open issues)' }));
-    } catch (e) { issueSel.append(el('option', { value: '', text: e.message.slice(0, 80) })); }
-  }, { once: true });
-  issueSel.addEventListener('change', () => {
-    const i = issues.find((x) => String(x.number) === issueSel.value);
-    if (!i) return;
-    title.value = `#${i.number} ${i.title}`.slice(0, 120);
-    promptEl.value = `${i.title}\n\n${i.body || ''}\n\nGitHub issue: ${i.url}\nWhen done, commit with a message that includes "Closes #${i.number}".`;
-    composerGrow(promptEl);
+  let oldSnap = null;                                                                 // what the issue's model line replaced, for Reset to my defaults
+  const setSel = (sel, v) => { sel.value = v; try { sel.dispatchEvent(new Event('change')); } catch (_) { /* no Event constructor */ } };
+  const issueKit = launcherIssuePicker(p, r, {
+    scope: { agents: ['claude'], installed: lxInstalled },
+    fill: (i) => {
+      title.value = `#${i.number} ${i.title}`.slice(0, 120);
+      promptEl.value = `${i.title}\n\n${i.body || ''}\n\nGitHub issue: ${i.url}\nWhen done, commit with a message that includes "Closes #${i.number}".`;
+      composerGrow(promptEl);
+    },
+    apply: (ch) => {
+      oldSnap = lc.prefs();
+      const c = ch.claude || {};
+      if (c.model) {
+        if (MODELS.some(([v]) => v === c.model && v !== 'custom')) setSel(lc.model, c.model);
+        else { setSel(lc.model, 'custom'); lc.modelId.value = c.model; lc.modelId.classList.remove('hidden'); }
+      }
+      if (c.effort) setSel(lc.effort, c.effort);
+      if ('permission_mode' in c) setSel(lc.perm, c.permission_mode);
+      optNoteSync();
+    },
+    restore: () => {
+      if (!oldSnap) return;
+      lc.model.value = oldSnap.model_sel; lc.modelId.value = oldSnap.model_id; lc.modelId.classList.toggle('hidden', lc.model.value !== 'custom');
+      lc.effort.value = oldSnap.effort; lc.perm.value = oldSnap.permission_mode;
+      oldSnap = null;
+      optNoteSync();
+    },
+    changed: () => { go.disabled = busy || issueKit.blocked(); },
   });
+  const issueSel = issueKit.select;
 
   const lc = launchControls(prefs, PERMS);
   const args = el('input', { type: 'text', placeholder: 'extra claude args (optional)', autocomplete: 'off', autocapitalize: 'off', value: prefs.args || '' });
@@ -379,7 +545,8 @@ function taskForm(p, r, opts) {
   };
   seg = segControl(TASK_WHEN, when0, syncMode, 'When');
 
-  const issueField = field('From a GitHub issue', issueSel);
+  issueKit.node._labelFor = issueSel;
+  const issueField = field('From a GitHub issue', issueKit.node);
   const lcBox = el('div', {}, lc.grid);
   const sibField = siblings.length ? field('Also give access to', checks, '--add-dir') : null;
   const jobOpts = el('div', { class: 'grid' }, field('Permission mode', jobMode), field('Max turns', turns), field('Max $', budget, 'Optional.'));
@@ -401,13 +568,14 @@ function taskForm(p, r, opts) {
   let busy = false;
   const setBusy = (on) => {
     busy = on;
-    go.disabled = on;
+    go.disabled = on || issueKit.blocked();
     goText.textContent = on ? TASK_BUSY[seg.value] : TASK_SUBMIT[seg.value];
   };
 
   const remember = (when) => {
-    const v = lc.read();
-    savePrefs(TASK_KEY(p, r), { ...lc.prefs(), model: v.model, effort: v.effort, permission_mode: v.permission_mode, args: args.value.trim(),
+    const mine = issueKit.applied() && oldSnap;                                      // a model line read from an issue is never remembered as the person's default
+    const v = mine ? { model: oldSnap.model_sel === 'custom' ? oldSnap.model_id : oldSnap.model_sel, effort: oldSnap.effort, permission_mode: oldSnap.permission_mode } : lc.read();
+    savePrefs(TASK_KEY(p, r), { ...(mine ? oldSnap : lc.prefs()), model: v.model, effort: v.effort, permission_mode: v.permission_mode, args: args.value.trim(),
       when: when === 'schedule' ? saved.when : when,                                  // a schedule run never becomes the next task's mode
       auto_close: autoClose.checked,
       cron: cron.value.trim(), job_mode: jobMode.value, max_turns: parseInt(turns.value, 10) || 30 });
@@ -421,7 +589,7 @@ function taskForm(p, r, opts) {
   };
 
   const submitTask = async (when, prompt, titleText) => {
-    const body = { project: p.name, repo: r.name, title: titleText, prompt, when, agent: 'claude', add_dirs: boxes.filter((b) => b.checked).map((b) => b.value), ...lc.read() };
+    const body = { project: p.name, repo: r.name, title: titleText, prompt, when, agent: 'claude', add_dirs: boxes.filter((b) => b.checked).map((b) => b.value), ...lc.read(), ...issueKit.link() };
     if (args.value.trim()) body.args = args.value.trim();
     if (!autoClose.checked) body.auto_close = false;
     for (const k of Object.keys(body)) if (body[k] === '' || body[k] === null) delete body[k];
@@ -507,6 +675,8 @@ function taskForm(p, r, opts) {
     const prompt = promptEl.value.trim();
     fieldError(promptField, ''); fieldError(argsField, '');
     if (!prompt) { fieldError(promptField, 'Write what Claude should do.', true); return; }
+    if (issueKit.blocked()) { options.setAttribute('open', ''); fieldError(issueField, 'Tick I have read it to start from this issue.', true); return; }
+    fieldError(issueField, '');
     const titleText = title.value.trim() || taskTitleFrom(prompt);
     if (/bypassPermissions|dangerously-skip-permissions/i.test(args.value)) {                // the server refuses it as well: say so before the round trip
       options.setAttribute('open', '');                                                       // the field sits under Options: show it before pointing at it
@@ -1926,28 +2096,41 @@ function launcherForm(o) {
   const lede = el('p', { class: 'dim tf-lede' });
   const titleIn = text(() => T.title, (x) => { T.title = x; if (T.when === 'schedule' && !nameTyped) autoName(); }, { maxlength: 120, placeholder: 'e.g. Fix the login redirect' });
   const titleField = field('Title', titleIn, 'Optional: the first line of the prompt is used.');
-  const issueSel = selectEl([['', 'from a GitHub issue…']]);
-  let issues = [];
-  issueSel.addEventListener('focus', async () => {
-    if (issues.length) return;
-    try {
-      const res = await api('GET', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/issues`);
-      issues = res.issues || [];
-      for (const i of issues) issueSel.append(el('option', { value: String(i.number), text: `#${i.number} ${i.title}`.slice(0, 90) }));
-      if (!issues.length) issueSel.append(el('option', { value: '', text: '(no open issues)' }));
-    } catch (e) { issueSel.append(el('option', { value: '', text: String(e.message).slice(0, 80) })); }
-  }, { once: true });
-  issueSel.addEventListener('change', () => {
-    const i = issues.find((x) => String(x.number) === issueSel.value);
-    if (!i) return;
-    T.title = `#${i.number} ${i.title}`.slice(0, 120);
-    V.common.prompt = `${i.title}\n\n${i.body || ''}\n\nGitHub issue: ${i.url}\nWhen done, commit with a message that includes "Closes #${i.number}".`;
-    titleIn.value = T.title;
-    promptEl.value = V.common.prompt;
-    composerGrow(promptEl);
-    update();
+  const ISSUE_KEYS = { claude: ['model', 'model_custom', 'effort', 'permission_mode'], codex: ['model', 'model_custom', 'reasoning', 'cx_mode', 'sandbox', 'approval'] };
+  let issueSnap = null;                                                              // what the issue's model line replaced, for Reset to my defaults and for what is remembered
+  const issueKit = launcherIssuePicker(p, r, {
+    scope: { agents: agentsHere, installed: lxInstalled },
+    fill: (i) => {
+      T.title = `#${i.number} ${i.title}`.slice(0, 120);
+      V.common.prompt = `${i.title}\n\n${i.body || ''}\n\nGitHub issue: ${i.url}\nWhen done, commit with a message that includes "Closes #${i.number}".`;
+      titleIn.value = T.title;
+      promptEl.value = V.common.prompt;
+      composerGrow(promptEl);
+      update();
+    },
+    apply: (ch) => {
+      issueSnap = { agent: V.agent, claude: {}, codex: {} };
+      for (const ag of ['claude', 'codex']) for (const k of ISSUE_KEYS[ag]) issueSnap[ag][k] = V[ag][k];
+      if (ch.claude) { Object.assign(C, ch.claude); if (ch.claude.model) C.model_custom = ''; }
+      if (ch.codex) { Object.assign(X, ch.codex); if (ch.codex.model) X.model_custom = ''; }
+      V.agent = ch.agent;
+      reasoningFix();
+      paint();
+    },
+    restore: () => {
+      const snap = issueSnap;
+      issueSnap = null;
+      if (!snap) return;
+      for (const ag of ['claude', 'codex']) for (const k of ISSUE_KEYS[ag]) { if (snap[ag][k] === undefined) delete V[ag][k]; else V[ag][k] = snap[ag][k]; }
+      V.agent = snap.agent;
+      reasoningFix();
+      paint();
+    },
+    changed: () => update(),
   });
-  const issueField = field('From a GitHub issue', issueSel);
+  const issueSel = issueKit.select;
+  issueKit.node._labelFor = issueSel;
+  const issueField = field('From a GitHub issue', issueKit.node);
   const chain = mode === 'task' ? chainBuilder() : null;
   const autoChk = check('Close the session', () => autoValue(), (x) => { if (mode === 'dispatch') D.autoClose = x; else T.autoClose = x; });
   const autoField = field('When it finishes', checksRow(autoChk),
@@ -2045,7 +2228,8 @@ function launcherForm(o) {
     hide(dangerBox, !d);
     dangerText.textContent = v.agent === 'codex' ? BYPASS_WARNING_CODEX : BYPASS_WARNING;
     hide(ackRow, !d || acked());
-    const gated = d && !acked() && !ack.checked;
+    const issueHeld = mode === 'task' && issueKit.blocked();
+    const gated = (d && !acked() && !ack.checked) || issueHeld;
     const w = when();
     if (mode === 'session') { goText.textContent = busy ? 'Starting…' : 'Start & open'; }
     else if (mode === 'task') goText.textContent = busy ? TASK_BUSY[w] : TASK_SUBMIT[w];
@@ -2053,7 +2237,7 @@ function launcherForm(o) {
     goIcon.textContent = '';
     goIcon.append(ic(mode === 'task' ? LX_TASK_ICON[w] : 'play'));
     lxDisable(go, busy || gated || (mode === 'dispatch' && D.where === 'session' && !ready.length));
-    go.setAttribute('title', gated ? 'Tick I understand to go on' : 'Enter in the prompt starts it');
+    go.setAttribute('title', issueHeld ? 'Tick I have read it, under the issue, to go on' : gated ? 'Tick I understand to go on' : 'Enter in the prompt starts it');
     if (mode !== 'session') autoChk.input.checked = autoValue();
     paintAccount();
   };
@@ -2082,11 +2266,12 @@ function launcherForm(o) {
 
   let busy = false;
   const setBusy = (on) => { busy = on; update(); };
-  const wipe = () => { for (const f of [promptField, nameField, resumeField, prField, argsC, cfgF, ackRow, modelField, effortField]) fieldError(f, ''); formStatus(status, ''); };
+  const wipe = () => { for (const f of [promptField, nameField, resumeField, prField, argsC, cfgF, ackRow, modelField, effortField, issueField]) fieldError(f, ''); formStatus(status, ''); };
   const failAt = (f, msg) => { const d = f && f.closest ? f.closest('details') : null; if (d) d.setAttribute('open', ''); fieldError(f, msg, true); };
 
   /* ---- submit ---- */
-  const remember = (v, w) => {
+  const remember = (v0, w) => {
+    const v = issueSnap && issueKit.applied() && issueSnap[v0.agent] ? { ...v0, ...issueSnap[v0.agent] } : v0;      // a model line read from an issue is never remembered as the person's default
     const keep = launcherRemember(v);
     if (session) {
       launcherSaveAll(p.name, r.name, v.agent, keep);
@@ -2141,7 +2326,7 @@ function launcherForm(o) {
 
   const taskBase = (v) => ({ project: p.name, repo: r.name, agent: v.agent, ...launcherTaskOpts(v), add_dirs: v.add_dirs });
   const submitTaskNow = async (v, w, prompt, title) => {
-    const body = { ...taskBase(v), title, prompt, when: w };
+    const body = { ...taskBase(v), title, prompt, when: w, ...issueKit.link() };
     if (!T.autoClose) body.auto_close = false;
     for (const k of Object.keys(body)) if (body[k] === '' || body[k] === null || (Array.isArray(body[k]) && !body[k].length)) delete body[k];
     remember(v, w); taskSaveLastRepo(p.name, r.name);
@@ -2253,6 +2438,7 @@ function launcherForm(o) {
       if (bad) return errs(cfgF, `"${bad}" is not key=value (letters, digits, _ and . before the =).`);
     }
     if (launcherDanger(v, mode) && !acked() && !ack.checked) return errs(ackRow, 'Tick I understand to start without approvals.');
+    if (mode === 'task' && issueKit.blocked()) return errs(issueField, 'Tick I have read it to start from this issue.');
     if (mode === 'dispatch') { submitDispatch(v); return; }
     if (mode === 'task') {
       const prompt = V.common.prompt.trim();

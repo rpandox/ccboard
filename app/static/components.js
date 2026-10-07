@@ -1148,6 +1148,43 @@ async function taskArchive(t) {
   }
 }
 
+/* The GitHub issue a task came from (v0.5.20). taskIssueLink(t) -> "#N" linking to the issue (https only), or plain text when the URL is missing.
+   taskIssueNode(t) -> the card's "Comment on the issue" row once the task is done with a result: a two-tap confirmButton, the body to be posted shown while it is armed
+   (GET /api/tasks/{id}/issue-comment), POST once; "Posted on #N" afterwards. A failure shows its error and keeps the button; nothing posts without the second tap. */
+const TASK_ISSUE = { body: {}, posted: {} };
+
+function taskIssueLink(t) {
+  if (!t || !t.issue_number) return null;
+  const label = `#${t.issue_number}`;
+  const url = String(t.issue_url || '');
+  if (/^https:\/\//.test(url)) return el('a', { class: 'tk-issue-link', href: url, target: '_blank', rel: 'noopener noreferrer', title: 'open the GitHub issue', text: label });
+  return el('span', { class: 'tk-issue-link', text: label });
+}
+
+function taskIssueNode(t) {
+  if (!t || !t.issue_number || taskPhase(t) !== 'done' || !String(t.result || '').trim()) return null;
+  const n = t.issue_number;
+  if (t.issue_commented_at || TASK_ISSUE.posted[t.id]) return el('div', { class: 'tk-issue dim', text: `Posted on #${n}` });
+  const key = 'issue:' + t.id;
+  const btn = confirmButton(key, 'Comment on the issue', async () => {
+    const r = await api('POST', `/api/tasks/${t.id}/issue-comment`);
+    TASK_ISSUE.posted[t.id] = true;
+    delete TASK_ISSUE.body[t.id];
+    toast(`posted on #${n}`, { kind: 'ok' });
+    return r;
+  }, true);
+  if (ui.confirm !== key) {
+    btn.addEventListener('click', async () => {                                    // the first tap arms it; the body to be posted follows as soon as the board has built it
+      try { const r = await api('GET', `/api/tasks/${t.id}/issue-comment`); TASK_ISSUE.body[t.id] = String((r && r.body) || ''); }
+      catch (e) { TASK_ISSUE.body[t.id] = `Could not build the comment: ${e.message}`; }
+      if (ui.confirm === key && typeof repaintPage === 'function') repaintPage();
+    });
+  }
+  return el('div', { class: 'tk-issue' },
+    el('div', { class: 'row' }, btn),
+    ui.confirm === key ? el('pre', { class: 'tk-issue-body', 'aria-label': 'The comment to be posted', text: TASK_ISSUE.body[t.id] || 'Building the comment…' }) : null);
+}
+
 /* A started task's card. Chips under the meta line: the owner (◆ s2 ✽ working · 3m, opens the session), the chain step, a limit hold, 'closed after stop', 'needs you'.
    A pending close shows its countdown and Keep open; a finished task shows its result (expandable) and the PR actions before Reopen.
    Row 1: the one primary, then the next most useful (Terminal and Fix CI while it runs; New PR…, Merge… and Reopen once it is done). Row 2: the quiet ones, Archive last. */
@@ -1219,12 +1256,13 @@ function startedCard(t, ctx) {
   });
   return taskCardShell(t, (s && s.needs_attention || asked ? ' attn' : '') + (handed ? ' handed' : '') + (finished && !live ? ' finished' : ''), false,
     el('div', { class: 'row tk-title-row' }, el('span', { class: 'title', text: t.title }), badge, ciBadge(t)),
-    el('div', { class: 'meta' }, starting ? `${taskWhere(t)} · starting…` : (t.branch ? `${t.project}/${t.repo} · ${t.branch}` : taskWhere(t) + (t.mode === 'attached' ? ' · in place' : '')), t.pr_url ? ' · PR #' + t.pr_number : null,
+    el('div', { class: 'meta' }, starting ? `${taskWhere(t)} · starting…` : (t.branch ? `${t.project}/${t.repo} · ${t.branch}` : taskWhere(t) + (t.mode === 'attached' ? ' · in place' : '')), t.pr_url ? ' · PR #' + t.pr_number : null, t.issue_number ? [' · ', taskIssueLink(t)] : null,
       typeof t.cost_usd === 'number' ? [' · ', el('span', { class: 'mono', text: '$' + t.cost_usd.toFixed(2) })] : null),
     chips.length ? el('div', { class: 'tk-chips' }, ...chips) : null,
     pending && live ? taskAutoCloseStrip(t, ac) : null,
     s && s.last_message && !(finished && t.result) ? el('div', { class: 'last', text: s.last_message.slice(0, 160) }) : null,
     finished ? taskResultNode(t) : null,
+    taskIssueNode(t),
     (t.overlap && t.overlap.length) ? el('div', { class: 'last bad', title: t.overlap.map(o => `${o.title}: ${o.files.join(', ')}`).join('\n'),
       text: '⚠ overlaps ' + t.overlap.map(o => `"${o.title}" (${o.files.length} file${o.files.length === 1 ? '' : 's'}: ${o.files.slice(0, 3).join(', ')}${o.files.length > 3 ? '…' : ''})`).join('; ') }) : null,
     acts);

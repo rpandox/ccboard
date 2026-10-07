@@ -1161,3 +1161,11 @@ html.quad-fs #page .quad[data-forced] .q-fill { display:none; }
 html.quad-fs #page .quad .qgrid { gap:4px; }
 html.quad-fs #page .quad .q-chips { padding-bottom:4px; }
 @media (max-width:599px) { html.quad-fs #page .quad .q-scope-sel { max-width:34vw; } }
+
+/* v0.5.20: work from a GitHub issue. The launcher's quiet note under the issue select, the untrusted-author callout, and the task card's comment row. */
+.lx-form .lx-issue { display:flex; flex-direction:column; gap:6px; min-width:0; }
+.lx-form .lx-issue-meta, .lx-form .lx-issue-note { margin:0; overflow-wrap:anywhere; }
+.lx-form .lx-issue-reset { vertical-align:baseline; }
+.task .tk-issue { margin-top:8px; display:flex; flex-direction:column; gap:6px; }
+.task .tk-issue-body { margin:0; padding:6px 8px; border:1px solid var(--line-soft); font-size:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; max-height:200px; overflow:auto; }
+.task .tk-issue-link { font-variant-numeric:tabular-nums; }

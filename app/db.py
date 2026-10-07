@@ -161,6 +161,9 @@ MIGRATIONS = [
     "ALTER TABLE tasks ADD COLUMN result_at TEXT",
     "ALTER TABLE tasks ADD COLUMN assigned_at TEXT",
     "ALTER TABLE tasks ADD COLUMN done_at TEXT",
+    "ALTER TABLE tasks ADD COLUMN issue_number INTEGER",        # the GitHub issue the task was made from
+    "ALTER TABLE tasks ADD COLUMN issue_url TEXT",
+    "ALTER TABLE tasks ADD COLUMN issue_commented_at TEXT",     # set once the result was posted on the issue
     "CREATE INDEX IF NOT EXISTS tasks_by_session ON tasks(session_row)",
     "CREATE INDEX IF NOT EXISTS tasks_by_parent ON tasks(parent_id)",
     "ALTER TABLE jobs ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'",
@@ -185,7 +188,7 @@ TASK_COLS = ("project", "repo", "slug", "title", "prompt", "branch", "base", "wo
              "status", "pr_number", "pr_url", "pr_state", "pr_json", "ci", "cost_usd", "overlap", "archived_at",
              "preview_port", "preview_https",
              "agent", "mode", "phase", "session_row", "auto_close", "parent_id", "chain_id", "spec", "result",
-             "result_at", "assigned_at", "done_at")
+             "result_at", "assigned_at", "done_at", "issue_number", "issue_url", "issue_commented_at")
 TASK_REQUIRED = ("project", "repo", "slug", "title", "prompt")
 TASK_UNASSIGNED = ("tmux_name", "worktree", "branch")     # NOT NULL without a default: '' when there is none yet
 JOB_COLS = ("project", "repo", "name", "prompt", "cron", "permission_mode", "max_turns", "max_budget_usd", "args",

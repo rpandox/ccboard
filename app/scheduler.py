@@ -12,7 +12,7 @@ from pathlib import Path
 
 from croniter import croniter
 
-from . import agents, claude_auth, notify, projects, tasks
+from . import agents, claude_auth, devguard, notify, projects, tasks
 from .agents import codex as codex_agent
 from .agents.claude import FORBIDDEN_ARG_PARTS, HEADLESS_MODES, LIMIT_MSG_RE, RATE_RE, parse_result   # noqa: F401 (re-exported: they live in the adapter now)
 from .config import settings
@@ -256,6 +256,9 @@ def run_job(db, job: dict, run_id: int) -> dict:
         extra = []
     summary: dict = {"status": "error", "error": None}
     timeout = int(job.get("timeout_s") or RUN_TIMEOUT)
+    if not devguard.launch_ok():              # issue #100: a dev board that could reach the real home starts no agent, not even a headless run
+        summary.update(status="error", error=devguard.REFUSAL, result="")
+        return _finish(db, job, run_id, summary, rpath, slug, stamp, None, agent)
     if agent == "codex":
         ag = agents.get("codex")
         wt = None

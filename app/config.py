@@ -143,6 +143,25 @@ class Settings:
         local = Path.home() / ".local" / "bin" / "codex"
         return str(local) if local.exists() else None
 
+    def dev_sandboxed(self) -> bool:
+        """Dev bypass on AND the data, projects, Claude config and Codex home directories are all absolute and resolve (symlinks followed)
+        outside the real home. The defaults live under the home, so a default or a missing value counts as not sandboxed (issue #100).
+        Both $HOME and the account's passwd home count as the real home, so pointing HOME at a temp dir does not fake a sandbox."""
+        if not self.dev_bypass_user:
+            return False
+        homes = {Path.home().resolve()}
+        try:
+            homes.add(Path(pwd.getpwuid(os.getuid()).pw_dir).resolve())
+        except (KeyError, OSError):
+            pass
+        for d in (self.data_dir, self.projects_dir, self.claude_config_dir, self.codex_home):
+            if not Path(d).is_absolute():
+                return False
+            real = Path(d).resolve()
+            if any(real == h or h in real.parents for h in homes):
+                return False
+        return True
+
     def loopback_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 

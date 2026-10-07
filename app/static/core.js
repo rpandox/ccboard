@@ -218,6 +218,7 @@ function demoMadeState(st) {
   return { ...st, projects: merged };
 }
 
+// demo/state.json must carry every key of the real /api/state: tests/test_api_v054.py (the demo state test) fails when build_state() gains one.
 async function demoApi(method, path, body) {
   if (method !== 'GET') {
     await new Promise((resolve) => setTimeout(resolve, 150));
@@ -242,10 +243,17 @@ async function demoApi(method, path, body) {
   else if (bare === '/api/usage/summary') name = 'usage_summary';
   else if (bare.startsWith('/api/memory/')) name = 'memory';
   else if (bare === '/api/doctor') name = 'doctor';       // the Settings > Doctor checklist (v0.5.19)
+  else if (/^\/api\/projects\/[^/]+\/repos\/[^/]+\/issues(\/\d+)?$/.test(bare)) name = 'issues';   // the launcher's "from a GitHub issue" (v0.5.20): one made-up list and its details
   if (!name) return {};
   const r = await fetch(`/static/demo/${name}.json`);
   if (!r.ok) throw new Error(`demo fixture ${name}.json: ${r.status} ${r.statusText}`);
   const data = await r.json();
+  if (name === 'issues') {
+    const one = /\/issues\/(\d+)$/.exec(bare);
+    if (!one) return { issues: data.issues };
+    if (!ownKey(data.detail, one[1])) throw demoError(404, 'not found');
+    return data.detail[one[1]];
+  }
   if (name === 'tree' || name === 'file') return demoPick(name, bare, path.slice(bare.length + 1), data);
   if (name === 'series_events' && data && data.demo && data.demo.epoch && Array.isArray(data.events)) {   // keep the fixture's 24 h alive, like state.json
     const dt = Math.floor(Date.now() / 1000 - data.demo.epoch);

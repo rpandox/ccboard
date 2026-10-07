@@ -892,3 +892,68 @@ test('demo mode (the answer is {ok: true}): the chain still paints its cards, wi
   assert.ok(rows.every((r) => typeof r.id === 'number' && r.id < 0 && r.chain_id), 'negative ids, one chain');
   assert.deepEqual(rows.map((r) => r.phase).sort(), ['backlog', 'queued']);
 });
+
+// ---------------------------------------------------------------- v0.5.20: from an issue (old form)
+
+const issueAnswers = () => ({
+  '/api/projects/shop/repos/api/issues': ({ path }) => {
+    const m = /issues\/(\d+)$/.exec(path);
+    const mine = { number: 47, title: 'Dispatch', body: 'b', url: 'https://github.com/acme/board/issues/47', labels: [], author: 'acme', trusted: true };
+    const other = { number: 48, title: 'Outsider', body: 'b', url: 'https://github.com/acme/board/issues/48', labels: [], author: 'mallory', trusted: false };
+    if (!m) return { issues: [mine, other] };
+    return m[1] === '47' ? { ...mine, who: { claude: { model: 'opus', effort: 'high', permission_mode: 'acceptEdits' }, codex: null, default_agent: 'claude', warnings: [] } }
+      : { ...other, who: { claude: null, codex: null, default_agent: null, warnings: [] } };
+  },
+  '/api/tasks': STARTED,
+});
+const pickOld = async (f, n) => {
+  const sel = f.querySelector('.lx-issue select');
+  sel.dispatchEvent({ type: 'focus' });
+  await tick();
+  sel.value = String(n);
+  sel.dispatchEvent({ type: 'change' });
+  await tick(); await tick();
+};
+
+test('v0.5.20: the old task form takes the issue model line, sends the issue link and does not remember the issue model', async () => {
+  const w = tWorld({ answers: issueAnswers() });
+  w.localStorage.setItem('ccboard:task:shop/api', JSON.stringify({ model_sel: 'haiku', effort: 'low' }));
+  openTask(w, { project: 'shop', repo: 'api' });
+  const f = form(w);
+  await pickOld(f, 47);
+  assert.equal(selectOf(f, /^model/i).value, 'opus');
+  assert.equal(selectOf(f, /effort/i).value, 'high');
+  assert.equal(selectOf(f, /permission/i).value, 'acceptEdits');
+  assert.match(text(f.querySelector('.lx-issue-note-t')), /from the issue: opus, high, acceptEdits/);
+  assert.equal(posts(w, '/api/tasks').length, 0, 'picking starts nothing');
+  f.querySelector('.lx-issue-reset').click();
+  assert.equal(selectOf(f, /^model/i).value, 'haiku');
+  assert.equal(selectOf(f, /effort/i).value, 'low');
+  await pickOld(f, 47);
+  submit(f);
+  await tick(); await tick();
+  const body = posts(w, '/api/tasks')[0].body;
+  has(body, { issue_number: 47, issue_url: 'https://github.com/acme/board/issues/47', model: 'opus', effort: 'high', permission_mode: 'acceptEdits' });
+  const kept = JSON.parse(w.localStorage.getItem('ccboard:task:shop/api'));
+  assert.equal(kept.model_sel, 'haiku');
+  assert.equal(kept.effort, 'low');
+});
+
+test('v0.5.20: in the old form an outsider issue needs the tick before Start and preselects nothing', async () => {
+  const w = tWorld({ answers: issueAnswers() });
+  openTask(w, { project: 'shop', repo: 'api' });
+  const f = form(w);
+  await pickOld(f, 48);
+  assert.match(text(f.querySelector('.lx-issue-warn')), /Issue by mallory: its text becomes the agent's prompt/);
+  assert.ok(submitBtn(f).disabled || submitBtn(f).hasAttribute('disabled'));
+  submit(f);
+  await tick();
+  assert.equal(posts(w, '/api/tasks').length, 0);
+  const box = f.querySelector('.lx-issue-warn input[type=checkbox]');
+  box.checked = true;
+  box.dispatchEvent({ type: 'change' });
+  assert.ok(!submitBtn(f).disabled);
+  submit(f);
+  await tick(); await tick();
+  assert.equal(posts(w, '/api/tasks')[0].body.issue_number, 48);
+});

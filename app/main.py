@@ -32,8 +32,10 @@ from .agents import registry
 from .agents.base import LaunchReq
 from .agents.claude import BYPASS_PARTS, OVERRIDE_PARTS, WORKTREE_RE
 from .agents.codex import NAME_RE as CODEX_NAME_RE
+from . import issues as issues_mod
 from .auth import csrf_ok, identify
 from .config import settings
+from .devguard import require_real_launch_ok
 from .db import DB, now as db_now
 
 log = logging.getLogger("ccboard")
@@ -490,6 +492,9 @@ def build_state(user: str) -> dict:
     st["rate_limited"] = _rate_limited_view()
     st["scheduler"] = {**scheduler.quota_state(db), "codex": scheduler.quota_state(db, "codex")}      # Codex's own window and back-off ride along: a Codex job never waits on Claude's
     st["version"] = ASSET_VERSION
+    st.pop("dev", None)                           # the scan cache hands back the dict a previous call filled in
+    if settings.dev_bypass_user:                  # present only under the dev bypass (issue #100): scripts/qa-ui.sh refuses a board that says false
+        st["dev"] = {"sandboxed": settings.dev_sandboxed()}
     st["setup"] = _setup_state(st)
     return st
 
@@ -669,6 +674,7 @@ def api_external_open(agent: str, sid: str):
     """Open an external session on the board: a new board session in its directory that resumes it (`codex resume <id>` or
     `claude --resume <id>`, built by the adapter). Only sessions the last scan lists and whose directory is under PROJECTS_DIR; the
     resumed conversation is then the board's own (its id is bound to the new row, so it leaves the external list)."""
+    require_real_launch_ok()   # issue #100: refuses (409) on a dev board whose directories could reach the real home
     if agent not in ("claude", "codex"):
         raise projects.BadRequest("agent must be claude or codex")
     if not UUID_RE.match(sid or ""):
@@ -859,6 +865,7 @@ def api_account_login(body: AccountLoginIn | None = None):
     """Add an account: `claude auth login` runs in the login tmux session against an empty config dir of its own, so the live login is
     untouched. {email?: str | null, restart?: bool}. 202 {ok}; 400 for a bad email; 409 when saved logins are not supported (macOS) or a
     login is already running (restart: true replaces it). The sign-in link is state.login.url; the code goes to /api/accounts/login/code."""
+    require_real_launch_ok()   # issue #100: refuses (409) on a dev board whose directories could reach the real home
     body = body or AccountLoginIn()
     if not account_store.supported():
         return _refuse(409, account_store.REASON)
@@ -966,6 +973,7 @@ def api_codex_account_login(body: CodexAccountLoginIn | None = None):
     `replace_key` is a log-in-again of that saved account: the login that finishes replaces ITS saved login (same key and label, no second
     account; `label` is not needed then) and, when it is the live account, goes live at once unless one of the board's own Codex sessions is
     open (state.codex_accounts.login.result says: {replaced, live, why}). 404 for a key the board never saw."""
+    require_real_launch_ok()   # issue #100: refuses (409) on a dev board whose directories could reach the real home
     body = body or CodexAccountLoginIn()
     key = body.replace_key or None
     label = None
@@ -1248,6 +1256,8 @@ def _tasks_view(rows: list[dict] | None = None) -> list[dict]:
             "result_at": t.get("result_at"), "done_at": t.get("done_at"),
             "closed_at": end.get("ended_at") if end.get("ended_reason") == "auto_close" else None,
             "autoclose": ac, "chain": chains.get(t["id"]),
+            "issue_number": t.get("issue_number"), "issue_url": t.get("issue_url"),
+            "issue_commented_at": t.get("issue_commented_at"),
             "limit_hold": held,
             "prompt": (t.get("prompt") or "")[:TASK_PROMPT_HEAD] if (t.get("phase") or "running") in ("backlog", "queued") else None,
             "prompt_len": len(t.get("prompt") or ""),
@@ -1389,6 +1399,7 @@ def _task_launch(project: str, repo: str, body, *, task_id: int | None = None) -
     worktree). With task_id that backlog row is UPDATED instead (slug from its current title, tmux_name, branch, worktree, base,
     claude_session_id, session_row, assigned_at, phase running), so an edited title names the branch. Returns {id, slug, tmux, branch,
     attach_url}."""
+    require_real_launch_ok()   # issue #100: before any worktree is made
     with _task_lock:
         c = _task_check(project, repo, body, launching=True)
         agent = c["agent"]
@@ -1424,7 +1435,7 @@ def _task_launch(project: str, repo: str, body, *, task_id: int | None = None) -
         if task_id is None:
             tid = db.task_add(project=project, repo=repo, slug=slug, title=title, prompt=prompt, branch=branch, base=base,
                               worktree=worktree, tmux_name=real, claude_session_id=sid, agent=agent, session_row=row_id, mode=mode,
-                              assigned_at=db_now(), auto_close=1 if getattr(body, "auto_close", False) else None)
+                              assigned_at=db_now(), auto_close=1 if getattr(body, "auto_close", False) else None, **_issue_link(body))
         else:
             tid = task_id
             db.task_update(tid, slug=slug, tmux_name=real, branch=branch, base=base, worktree=worktree, claude_session_id=sid,
@@ -1507,6 +1518,20 @@ class TaskCreateIn(LaunchOpts):
     add_dirs: list[str] | None = None
     auto_close: bool | None = None       # close the session when the task's turn ends; unset = off here (a lane dispatch later defaults to on)
     after_task_id: int | None = None     # queue behind that task: it starts in a lane of its own when that one is done (a chain step)
+    issue_number: int | None = None      # the GitHub issue the task was made from (the card links to it, the result can be posted there)
+    issue_url: str | None = None
+
+
+def _issue_link(body) -> dict:
+    """{issue_number, issue_url} to store on a task (empty when none): a positive integer, and an https URL without whitespace."""
+    n, url = getattr(body, "issue_number", None), (getattr(body, "issue_url", None) or "").strip()
+    if n is None:
+        return {}
+    if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+        raise projects.BadRequest("issue_number must be a positive integer")
+    if url and not re.fullmatch(r"https://\S{1,300}", url):
+        raise projects.BadRequest("issue_url must be an https link")
+    return {"issue_number": n, "issue_url": url or None}
 
 
 @app.post("/api/tasks", status_code=201)
@@ -1553,7 +1578,7 @@ def api_tasks_create(body: TaskCreateIn):
                           branch="", base="" if c.get("inplace") else tasks.default_branch(c["rpath"]), agent=agent,
                           mode="attached" if c.get("inplace") else "worktree", phase="queued" if parent else "backlog",
                           auto_close=1 if body.auto_close else None, spec=spec, parent_id=parent["id"] if parent else None,
-                          chain_id=chain_id)
+                          chain_id=chain_id, **_issue_link(body))
     _invalidate_scan()
     return {"id": tid, "slug": slug, "phase": "queued" if parent else "backlog", "tmux": None, "task": _task_row(tid)}
 
@@ -1723,6 +1748,7 @@ def api_task_dispatch(tid: int, body: DispatchIn | None = None):
     overridable in the body) or in a running session ({session: '<tmux>', force?}). Answers {id, phase 'running', tmux,
     session_row, attach_url (lane) | pasted + queued (session), task, limit_warning when the Claude window is at 85 % or a limit
     episode is active: {kind, resets_at, pct}); the client navigates to the tmux session from this response."""
+    require_real_launch_ok()   # issue #100: refuses (409) on a dev board whose directories could reach the real home
     body = body or DispatchIn()
     if body.mode not in (None, "lane", "session"):
         raise projects.BadRequest("mode must be 'lane' or 'session'")
@@ -1834,6 +1860,7 @@ def api_task_reopen(tid: int, body: ReopenIn | None = None):
     existing worktree when it is still on disk (the work so far is there), else in a fresh one. 409 while its old session is still open
     (open the terminal, or close it first). Answers {id, phase 'running', tmux, session_row, attach_url, slug, branch, reopened:
     'worktree' | 'fresh', task, limit_warning?}. The old result is cleared; auto_close follows the request, else the card, else on."""
+    require_real_launch_ok()   # issue #100: refuses (409) on a dev board whose directories could reach the real home
     body = body or ReopenIn()
     with _task_lock:
         t = db.task_get(tid)
@@ -1953,6 +1980,8 @@ def api_create_chain(project: str, repo: str, body: ChainIn):
     the one before it (parent_id) with its launch choices in `spec`; the runtime starts each in a new lane session once its parent is
     done and hands it the parent's result. Answers {chain_id, ids, tasks, started?, limit_warning?}; nothing is created when any step
     is invalid."""
+    if body.dispatch:
+        require_real_launch_ok()   # issue #100: step 1 starts a session now
     steps = body.steps
     if not steps:
         raise projects.BadRequest("a chain needs at least one step")
@@ -2076,6 +2105,7 @@ def api_task_merge(tid: int, body: MergeIn | None = None):
 @app.post("/api/tasks/{tid}/fix-ci")
 def api_task_fix_ci(tid: int):
     """Fetch the failing CI logs and hand them to the task's Claude session (relaunched if gone)."""
+    require_real_launch_ok()   # issue #100: refuses (409) on a dev board whose directories could reach the real home
     t, wt = _task_in_worktree(tid)
     rpath = projects.repo_path(t["project"], t["repo"])
     cwd = wt if wt.is_dir() else rpath
@@ -2118,6 +2148,56 @@ def api_issues(project: str, repo: str):
     if not projects.is_repo(rpath):
         raise projects.NotFound("not a git repo")
     return {"issues": prpoll.list_issues(rpath)}
+
+
+@app.get("/api/projects/{project}/repos/{repo}/issues/{n:int}")
+def api_issue(project: str, repo: str, n: int):
+    """One issue (gh issue view) with `author`, `trusted` (the author is the owner of the repo's origin) and the parsed `who`
+    block of its "Who should do it" section: empty (claude, codex null, no warnings) for an author who is not trusted."""
+    rpath = projects.repo_path(project, repo)
+    if not projects.is_repo(rpath):
+        raise projects.NotFound("not a git repo")
+    if n < 1:
+        raise projects.BadRequest("issue number must be positive")
+    return prpoll.view_issue(rpath, n)
+
+
+_issue_comment_lock = threading.Lock()
+
+
+def _issue_comment_ctx(tid: int) -> tuple[dict, Path, str]:
+    t = db.task_get(tid)
+    if not t:
+        raise projects.NotFound("no such task")
+    if not t.get("issue_number"):
+        raise projects.Conflict("this task has no GitHub issue")
+    if (t.get("phase") or "running") != "done":
+        raise projects.Conflict("the task is not done yet")
+    if t.get("issue_commented_at"):
+        raise projects.Conflict("the result was already posted on the issue")
+    wt = tasks.task_worktree(t)
+    cwd = wt if wt is not None and wt.is_dir() else projects.repo_path(t["project"], t["repo"])
+    pr_url = t.get("pr_url")
+    return t, cwd, issues_mod.comment_body(t, pr_url)
+
+
+@app.get("/api/tasks/{tid}/issue-comment")
+def api_task_issue_comment_preview(tid: int):
+    """The comment body a POST would post (nothing is sent)."""
+    t, _, body = _issue_comment_ctx(tid)
+    return {"issue_number": t["issue_number"], "issue_url": t.get("issue_url"), "body": body}
+
+
+@app.post("/api/tasks/{tid}/issue-comment")
+def api_task_issue_comment(tid: int):
+    """Post the task's result on its issue with gh (body on stdin). 409 when the task has no issue, is not done, or already posted;
+    a gh failure is a 422 with its message and the task stays postable. Never replayed on its own."""
+    with _issue_comment_lock:
+        t, cwd, body = _issue_comment_ctx(tid)
+        prpoll.comment_issue(cwd, int(t["issue_number"]), body)
+        db.task_update(tid, issue_commented_at=db_now())
+    _invalidate_scan()
+    return {"ok": True, "issue_number": t["issue_number"], "body": body, "task": _task_row(tid)}
 
 
 @app.get("/api/projects/{project}/repos/{repo}/tree")
@@ -2362,6 +2442,7 @@ def api_batch(body: BatchIn):
 
 @app.post("/api/jobs/{jid}/run")
 def api_job_run(jid: int):
+    require_real_launch_ok()   # issue #100: refuses (409) on a dev board whose directories could reach the real home
     if not db.job_get(jid):
         raise projects.NotFound("no such job")
     db.job_update(jid, next_run_at=db_now(), enabled=1)
@@ -2411,6 +2492,7 @@ def api_run_get(rid: int):
 def api_run_resume(rid: int):
     """Open the run's worktree in a terminal session, resuming its conversation: `claude --resume <id>`, or `codex resume <thread id>`
     for a Codex run (the headless run's rollout stays on disk, it is never --ephemeral)."""
+    require_real_launch_ok()   # issue #100: refuses (409) on a dev board whose directories could reach the real home
     r = db.run_get(rid)
     if not r or not r.get("task_id"):
         raise projects.NotFound("no worktree for this run")
@@ -2540,6 +2622,7 @@ def _start_session_row(name: str, project: str, repo: str, session: str, launche
     """Create the tmux session and its row (agent, launch cwd and the validated opts stored on it), then type the command.
     Returns (real tmux name, sessions.id). With task_id the task's session_row is pointed at the new row, which is how a
     relaunched task session (fix-ci, run resume, reboot recovery) stays the task's live session."""
+    require_real_launch_ok()   # issue #100: refuses (409) on a dev board whose directories could reach the real home
     env = {"CCBOARD_SESSION": name, "CCBOARD_URL": settings.loopback_url(),
            "CCBOARD_APPROVE_TIMEOUT": str(int(settings.approve_timeout)), "CCBOARD_AGENT": agent, **(env_extra or {})}
     real = tmux.new_session(name, cwd, env=env)
@@ -2678,6 +2761,7 @@ def _codex_session_opts(body, extra: list[str]) -> dict:
 
 @app.post("/api/projects/{project}/repos/{repo}/sessions", status_code=201)
 def api_create_session(project: str, repo: str, body: SessionIn):
+    require_real_launch_ok()   # issue #100: refuses (409) on a dev board whose directories could reach the real home
     agent, launcher, kind = _launch_kind(body)
     rpath = projects.repo_path(project, repo)
     if not rpath.is_dir():
@@ -3626,6 +3710,7 @@ class CodeIn(BaseModel):
 
 @app.post("/api/claude/login")
 def api_login():
+    require_real_launch_ok()   # issue #100: refuses (409) on a dev board whose directories could reach the real home
     claude_auth.start_login()
     return {"ok": True}
 

@@ -62,6 +62,14 @@ def test_config_and_pr_template():
         assert needle in pr
 
 
+def test_who_block_parses_with_the_board_parser():
+    from app import issues
+    who = issues.parse_who(_body())            # the template's own comments (tier table) must not leak in
+    assert who["claude"] == {"model": "sonnet", "effort": "medium", "permission_mode": "acceptEdits"}
+    assert who["codex"] == {"model": "gpt-6.1-sol", "reasoning": "medium", "sandbox": "workspace-write", "approval": "on-request"}
+    assert who["default_agent"] == "claude" and who["warnings"] == []
+
+
 def test_tier_table_matches_contributing():
     rows = [l for l in (ROOT / "CONTRIBUTING.md").read_text().splitlines() if l.startswith("| ")]
     assert len(rows) == 5

@@ -336,6 +336,51 @@ def test_state_legacy_keys_are_unchanged(board):
         "v0.5.17e: the one new top-level key, the saved Codex accounts (the GET body without login.tail); unsupported without a codex binary"
 
 
+# Keys the real state carries only conditionally; a demo fixture need not list them. One reason each. Paths are "top.key".
+DEMO_SHAPE_ALLOW = {
+    "config.backup.repo": "only present once a backup repo is configured",
+}
+DEMO_ONLY_TOP = {"demo", "external"}        # the rebase epoch and the external threads route's data; the real state has neither
+
+
+def _json_kind(v):
+    return "bool" if isinstance(v, bool) else "number" if isinstance(v, (int, float)) else "string" if isinstance(v, str) else None
+
+
+def demo_state_gaps(real, demo):
+    """Every way the demo fixture drifts from the real /api/state: missing keys (top level and one level down) and scalar type clashes."""
+    gaps = []
+    if set(real) - set(demo):
+        gaps.append(f"demo/state.json lacks the top-level keys {sorted(set(real) - set(demo))}")
+    if set(demo) - set(real) - DEMO_ONLY_TOP:
+        gaps.append(f"demo/state.json has top-level keys the real state does not: {sorted(set(demo) - set(real) - DEMO_ONLY_TOP)}")
+    for k in sorted(set(real) & set(demo)):
+        r, d = real[k], demo[k]
+        if isinstance(r, dict) and r and isinstance(d, dict) and d:
+            lack = sorted(x for x in set(r) - set(d) if f"{k}.{x}" not in DEMO_SHAPE_ALLOW)
+            if lack:
+                gaps.append(f"demo state.{k} lacks {lack}")
+            pairs = [(f"{k}.{x}", r[x], d[x]) for x in sorted(set(r) & set(d))]
+        else:
+            pairs = [(k, r, d)]
+        for path, rv, dv in pairs:
+            if _json_kind(rv) and dv is not None and _json_kind(rv) != _json_kind(dv):
+                gaps.append(f"demo state.{path}: the real value is a {_json_kind(rv)}, the demo's is not")
+    return gaps
+
+
+def test_the_demo_state_has_every_key_of_the_real_state(board):
+    """Issue #54. Demo mode (?demo=1) renders from app/static/demo/state.json; a key added to build_state() must be added there too."""
+    real = board.client.get("/api/state", headers=H).json()
+    demo = json.loads((Path(__file__).parent.parent / "app" / "static" / "demo" / "state.json").read_text())
+    assert demo_state_gaps(real, demo) == []
+    # negative checks, so the comparison cannot pass vacuously: a deleted top key, a deleted nested key, a changed scalar type
+    assert any("memory" in g for g in demo_state_gaps(real, {k: v for k, v in demo.items() if k != "memory"}))
+    inner = next(x for x in real["config"] if x in demo["config"])
+    assert any(inner in g for g in demo_state_gaps(real, {**demo, "config": {k: v for k, v in demo["config"].items() if k != inner}}))
+    assert any("node_name" in g for g in demo_state_gaps({**real, "node_name": "x"}, {**demo, "node_name": 3}))
+
+
 def test_state_agents_and_setup(board):
     st = board.client.get("/api/state", headers=H).json()
     assert list(st["agents"]) == ["claude", "codex"]
