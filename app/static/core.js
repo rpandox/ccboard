@@ -185,9 +185,43 @@ function demoUsageRefresh(st) {
   return { ...st, usage, projects };
 }
 
-async function demoApi(method, path) {
+/* The demo's make-believe projects (v0.5.19, the new-project wizard): in demo mode a POST never reaches a box, so a project, a blank repo, a clone or a bulk import made in the wizard
+   is remembered here for the life of the page and laid over the fixture's state, so the project page the wizard ends on has what was just made (a cloned repo reads as cloned, on main). */
+const demoMade = { projects: [] };
+function demoRepoName(url) {
+  const tail = String(url || '').trim().replace(/\/+$/, '').split(/[/:]/).pop().replace(/\.git$/, '');
+  return tail.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^[-_]+|[-_]+$/g, '').slice(0, 64);
+}
+function demoMakeRepo(project, name) {
+  let p = demoMade.projects.find((x) => x.name === project);
+  if (!p) { p = { name: project, path: `/home/demo/projects/${project}`, root: null, orphan_sessions: [], repos: [] }; demoMade.projects.push(p); }
+  if (name && !p.repos.some((r) => r.name === name)) p.repos.push({ name, path: `${p.path}/${name}`, state: 'ok', branch: 'main', dirty: false, devcontainer: false, sessions: [] });
+}
+function demoMake(method, path, body) {
+  const b = body && typeof body === 'object' ? body : {};
+  let m = null;
+  if (method === 'POST' && path === '/api/projects' && typeof b.name === 'string' && b.name) {
+    demoMakeRepo(b.name, '');
+    if (b.url) demoMakeRepo(b.name, demoRepoName(b.url));
+  } else if (method === 'POST' && (m = /^\/api\/projects\/([^/]+)\/repos(\/bulk)?$/.exec(path))) {
+    const project = decodeURIComponent(m[1]);
+    demoMakeRepo(project, '');
+    if (m[2]) for (const r of Array.isArray(b.repos) ? b.repos : []) demoMakeRepo(project, (r && (r.name || demoRepoName(r.url))) || '');
+    else demoMakeRepo(project, b.name || demoRepoName(b.url));
+  }
+}
+function demoMadeState(st) {
+  if (!demoMade.projects.length || !st || !Array.isArray(st.projects)) return st;
+  const made = new Map(demoMade.projects.map((p) => [p.name, p]));
+  const merged = st.projects.map((p) => (made.has(p.name) ? { ...p, repos: [...p.repos, ...made.get(p.name).repos.filter((r) => !p.repos.some((x) => x.name === r.name))] } : p));
+  for (const p of demoMade.projects) if (!st.projects.some((x) => x.name === p.name)) merged.push(p);
+  return { ...st, projects: merged };
+}
+
+async function demoApi(method, path, body) {
   if (method !== 'GET') {
     await new Promise((resolve) => setTimeout(resolve, 150));
+    demoMake(method, path, body);
     if (path === '/api/usage/refresh') {
       if (demoRefreshFlag() === 'none') throw demoError(409, 'no Claude session is at its prompt; start one to refresh');
       demoRefresh.tap = Date.now() / 1000;
@@ -207,6 +241,7 @@ async function demoApi(method, path) {
   else if (bare.startsWith('/api/series')) name = 'series';
   else if (bare === '/api/usage/summary') name = 'usage_summary';
   else if (bare.startsWith('/api/memory/')) name = 'memory';
+  else if (bare === '/api/doctor') name = 'doctor';       // the Settings > Doctor checklist (v0.5.19)
   if (!name) return {};
   const r = await fetch(`/static/demo/${name}.json`);
   if (!r.ok) throw new Error(`demo fixture ${name}.json: ${r.status} ${r.statusText}`);
@@ -222,12 +257,12 @@ async function demoApi(method, path) {
     for (const [k, m] of Object.entries(data.meta)) meta[k] = m && typeof m.resets_at === 'number' ? { ...m, resets_at: m.resets_at + dt } : m;
     return { ...data, meta };
   }
-  if (name === 'state') return demoUsageRefresh(demoRebase(data));                 // the usage reading's own time follows the make-believe refresh above
+  if (name === 'state') return demoMadeState(demoUsageRefresh(demoRebase(data)));                 // the usage reading's own time follows the make-believe refresh above
   return name === 'usage_summary' ? demoRebase(data) : data;                         // both carry demo.epoch: the summary's reset times and ISO stamps ride along with the state's
 }
 
 async function api(method, path, body) {
-  if (demoOn()) return demoApi(method, path);
+  if (demoOn()) return demoApi(method, path, body);
   const headers = { 'X-CCBoard': '1' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   const r = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });

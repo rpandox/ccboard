@@ -25,7 +25,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, notify, permissions, previews, projects, prpoll, push, recover, samples, scheduler, search, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import codex_discovery
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -576,6 +576,20 @@ def api_doctor(group: str | None = None, refresh: str | None = None):
         raise projects.BadRequest(str(e))
 
 
+class PreflightIn(BaseModel):
+    url: str
+
+
+@app.post("/api/preflight/clone")
+def api_preflight_clone(body: PreflightIn):
+    """What a clone URL would meet, before it is queued (the new-project wizard's chips): `git ls-remote --symref` that never prompts, speaks only https and ssh,
+    follows no redirect and is killed (its whole process group) after 12 s. {reachable, default_branch, needs_auth, heads: [branch], name: the repo name a clone would
+    derive | null, error: one line | null}. 400 for a URL a clone would refuse (projects.check_url: https, ssh and git@host: only, never an IP literal, localhost or a
+    local, private or tailnet name unless CCBOARD_CLONE_ALLOWED_HOSTS lists it); a remote that is down or private is a 200 with reachable false. A plain `def`: it blocks
+    for up to 12 s."""
+    return preflight.preflight_clone(body.url)
+
+
 @app.get("/api/sessions/{name}")
 def api_session(name: str):
     try:
@@ -1037,7 +1051,7 @@ def _launch_clone(project: str, repo: str, path: Path, url: str, cleanup: list[P
         if tmux.has_session(name):
             raise projects.Conflict("a clone is already running for this repo")
         _start_session(name, project, repo, "clone", "clone", str(path), cmd_line=line, claude_session_id=None,
-                       add_dirs=[], agent="shell")
+                       add_dirs=[], agent="shell", env_extra={"GIT_ALLOW_PROTOCOL": preflight.ALLOW_PROTOCOL})      # https and ssh only; redirects stay on so a renamed repo still clones
     except Exception:
         for d in cleanup:
             try:
@@ -2504,12 +2518,12 @@ def _free_session_name(project: str, repo: str) -> str:
 
 def _start_session_row(name: str, project: str, repo: str, session: str, launcher: str, cwd: str, *,
                        cmd_line: str | None = None, claude_session_id: str | None = None, add_dirs: list[str] | None = None,
-                       agent: str = "claude", opts: dict | None = None, task_id: int | None = None) -> tuple[str, int]:
+                       agent: str = "claude", opts: dict | None = None, task_id: int | None = None, env_extra: dict | None = None) -> tuple[str, int]:
     """Create the tmux session and its row (agent, launch cwd and the validated opts stored on it), then type the command.
     Returns (real tmux name, sessions.id). With task_id the task's session_row is pointed at the new row, which is how a
     relaunched task session (fix-ci, run resume, reboot recovery) stays the task's live session."""
     env = {"CCBOARD_SESSION": name, "CCBOARD_URL": settings.loopback_url(),
-           "CCBOARD_APPROVE_TIMEOUT": str(int(settings.approve_timeout)), "CCBOARD_AGENT": agent}
+           "CCBOARD_APPROVE_TIMEOUT": str(int(settings.approve_timeout)), "CCBOARD_AGENT": agent, **(env_extra or {})}
     real = tmux.new_session(name, cwd, env=env)
     try:                                                      # the account the session starts under (None: unknown, the column stays NULL)
         account = accounts.current(db) if agent == "claude" else None
@@ -2533,10 +2547,10 @@ def _start_session_row(name: str, project: str, repo: str, session: str, launche
 
 def _start_session(name: str, project: str, repo: str, session: str, launcher: str, cwd: str, *,
                    cmd_line: str | None = None, claude_session_id: str | None = None, add_dirs: list[str] | None = None,
-                   agent: str = "claude", opts: dict | None = None, task_id: int | None = None) -> str:
+                   agent: str = "claude", opts: dict | None = None, task_id: int | None = None, env_extra: dict | None = None) -> str:
     """_start_session_row for callers that only need the tmux name (reboot recovery calls it positionally)."""
     return _start_session_row(name, project, repo, session, launcher, cwd, cmd_line=cmd_line, claude_session_id=claude_session_id,
-                              add_dirs=add_dirs, agent=agent, opts=opts, task_id=task_id)[0]
+                              add_dirs=add_dirs, agent=agent, opts=opts, task_id=task_id, env_extra=env_extra)[0]
 
 
 def _end_session(name: str, reason: str = "killed") -> bool:

@@ -44,6 +44,27 @@ function confirmButton(key, label, action, quiet) {
   return el('button', { class: 'danger' + (quiet ? ' minimal' : ''), title: `${label} (tap again to confirm)`, onclick: () => confirmArm(key), text: label });
 }
 
+/* A small "Copy" button for a command or a link (v0.5.19, the Doctor's fixes and the wizard's commands): copies `text` to the clipboard, says so in a toast and
+   reads "Copied" for a moment. Without a clipboard (an insecure origin) it says to select the text instead. `what` names the thing for the screen reader and the toast. */
+function copyButton(text, what) {
+  const name = what ? String(what) : 'text';
+  const btn = el('button', { class: 'small copy-btn', type: 'button', 'aria-label': `Copy ${name}`, title: `Copy ${name}`, text: 'Copy' });
+  let timer = null;
+  btn.addEventListener('click', async () => {
+    let ok = false;
+    try { await navigator.clipboard.writeText(String(text)); ok = true; } catch (_) { ok = false; }
+    const msg = ok ? `${name.charAt(0).toUpperCase()}${name.slice(1)} copied` : `Copy failed: select the ${name} and copy it`;
+    if (typeof pageToast === 'function') pageToast(msg, ok ? 'ok' : 'warn');
+    else if (typeof toast === 'function') toast(msg, { kind: ok ? 'ok' : 'warn' });
+    if (!ok) return;
+    btn.textContent = 'Copied';
+    clearTimeout(timer);
+    timer = setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+  });
+  return btn;
+}
+
 function repoGroups(p) { return p.root ? [p.root, ...p.repos] : p.repos; }   // the project folder row first, then the repos
 
 function allRepos() {

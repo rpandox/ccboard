@@ -703,7 +703,9 @@ Shell.buildSide = function (container, withFoot) {
   }
   const tree = el('div', { class: 'tree', role: 'tree', 'aria-label': 'Projects' });
   tree._empty = el('div', { class: 'sb-empty dim hidden', text: 'No projects yet' });   // hidden until the first state says so (never a false empty state while loading)
-  const inner = el('div', { class: 'sb-inner' }, nav, el('div', { class: 'sb-h', text: 'Projects' }), tree, tree._empty);
+  const head = el('div', { class: 'sb-h' }, el('span', { text: 'Projects' }),
+    el('a', { class: 'sb-add', href: Shell.hash('onboarding', { step: 'project' }), title: 'New project', 'aria-label': 'New project', text: '+ project' }));        // v0.5.19: the wizard
+  const inner = el('div', { class: 'sb-inner' }, nav, head, tree, tree._empty);
   if (withFoot) {
     inner.append(el('div', { class: 'sb-foot' },
       el('button', { class: 'minimal small collapse', type: 'button', title: 'Collapse sidebar  [', 'aria-label': 'Collapse sidebar', onclick: () => Shell.setSidebar(false) }, ic('double-chevron-left'), 'Collapse')));
@@ -1355,7 +1357,7 @@ Shell.openCreate = function (kind, ctx) {
   if (!pre && (kind === 'session' || kind === 'task' || kind === 'schedule' || kind === 'job')) pre = Shell.routeCtx(kind);
   if (kind === 'session' || kind === 'task') { if (!(pre && Shell.createFor(kind, pre))) Shell.pickRepo(kind, pre); }
   else if (kind === 'schedule' || kind === 'job') { if (!(pre && Shell.createFor('job', pre))) Shell.pickRepo('job', pre); }
-  else if (kind === 'project') Shell.projectSheet();
+  else if (kind === 'project') Shell.go(Shell.hash('onboarding', { step: 'project' }));          // v0.5.19: the wizard (pages/onboarding.js) replaced the new-project sheet
   else if (kind === 'import') Shell.formSheet('Import repos from GitHub', importForm, 'Import queued');
   else if (kind === 'batch') Shell.formSheet('Batch prompt across repos', batchForm, 'Batch queued');
   else return false;

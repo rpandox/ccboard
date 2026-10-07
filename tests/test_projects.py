@@ -88,7 +88,7 @@ def test_root_project_folder(projects_dir):
     with pytest.raises(projects.BadRequest):
         projects.add_repo_blank("multi", "root")
     with pytest.raises(projects.BadRequest):
-        projects.prepare_repo_clone("multi", "root", "https://x/y.git")
+        projects.prepare_repo_clone("multi", "root", "https://example.com/y.git")
     sess = {"multi--root--s1": {"created": 1, "attached": 0, "windows": 1, "pane_id": "%1", "command": "claude", "path": str(projects_dir / "multi"), "pid": 1}}
     out = {p["name"]: p for p in projects.scan(sess)}
     root = out["multi"]["root"]

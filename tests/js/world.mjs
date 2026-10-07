@@ -88,7 +88,7 @@ export function fakeState(over = {}) {
   };
 }
 
-const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'agents', 'settings', 'search', 'session', 'placeholders'];
+const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'agents', 'doctor', 'settings', 'search', 'session', 'onboarding', 'placeholders'];
 
 /**
  * A world with the DOM, the real scripts (core, components, live, launcher, router, the pages in index.html order) and recorders:

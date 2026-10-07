@@ -1,6 +1,7 @@
 """Settings from the environment. Read once at import, validated at startup."""
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import pwd
@@ -20,6 +21,25 @@ def parse_allowlist(raw: str) -> set[str]:
     return out
 
 
+def parse_clone_hosts(raw: str) -> tuple[str, ...]:
+    """CCBOARD_CLONE_ALLOWED_HOSTS: comma list of exact host names or IP literals, plus `*.example.com` for the names below example.com. Lower-cased, one trailing dot and
+    the brackets round an IPv6 literal dropped, an address written in its plain form (so a URL's host compares equal). Empty entries are dropped."""
+    out: list[str] = []
+    for part in (raw or "").split(","):
+        h = part.strip().lower().strip("[]")
+        if h.endswith("."):
+            h = h[:-1]
+        if not h or not h.isascii():
+            continue
+        try:
+            h = str(ipaddress.ip_address(h))
+        except ValueError:
+            pass
+        if h not in out:
+            out.append(h)
+    return tuple(out)
+
+
 class Settings:
     def __init__(self, env=None):
         env = os.environ if env is None else env
@@ -30,6 +50,7 @@ class Settings:
         self.ccboard_https_port = int(env.get("CCBOARD_HTTPS_PORT", "443"))
         self.code_https_port = int(env.get("CODE_HTTPS_PORT", "8443"))
         self.allowed_users = parse_allowlist(env.get("CCBOARD_ALLOWED_USERS", ""))
+        self.clone_allowed_hosts = parse_clone_hosts(env.get("CCBOARD_CLONE_ALLOWED_HOSTS", ""))     # hosts a clone may name although they look local or private (app/projects.py check_clone_url)
         data_dir = env.get("CCBOARD_DATA_DIR") or str(Path.home() / ".local" / "share" / "ccboard")
         self.data_dir = Path(data_dir)
         self.db_path = self.data_dir / "ccboard.db"

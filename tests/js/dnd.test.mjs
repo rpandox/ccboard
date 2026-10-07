@@ -12,7 +12,7 @@ import { STATIC, plain } from './harness.mjs';
 import { fixtureState, sess } from './world.mjs';
 import { makeNetworkWorld, settle } from './treekit.mjs';
 
-const PAGE_FILES = ['home', 'inbox', 'tasks', 'agents', 'settings', 'search', 'session', 'placeholders'];
+const PAGE_FILES = ['home', 'inbox', 'tasks', 'agents', 'doctor', 'settings', 'search', 'session', 'onboarding', 'placeholders'];
 const T0 = 1790000000000;
 const agoIso = (min) => new Date(T0 - min * 60000).toISOString();
 const all = (root, sel) => root.querySelectorAll(sel);

@@ -1,15 +1,22 @@
 """Projects are folders under PROJECTS_DIR; repos are git repos inside them."""
 from __future__ import annotations
 
+import ipaddress
 import re
 import shutil
+import socket
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .config import settings
 from .tmux import NAME_RE, SEP, valid_name
 
-URL_RE = re.compile(r"^(https?://|ssh://|git://|git@[A-Za-z0-9._-]+:)[^\s]{1,512}$")
+URL_RE = re.compile(r"^(https://|ssh://|git@[A-Za-z0-9._-]+:)[^\s]{1,512}$")     # the cheap shape check (the wizard's WIZ_URL_RE is this pattern); check_clone_url does the real parse
+URL_MAX = 512                                                                  # characters in a whole clone URL
+URL_SHAPE_MSG = "clone URL must start with https://, ssh:// or git@host:"
+URL_ODD_MSG = "that is not a clone URL the board can use: write it as https://host/owner/repo.git, ssh://git@host/owner/repo.git or git@host:owner/repo.git"
+URL_HOST_MSG = "that host is not allowed for clones (a local, private or tailnet address); to allow it, add it to CCBOARD_CLONE_ALLOWED_HOSTS"
 GIT_TIMEOUT = 2
 ROOT = "root"   # reserved repo name: "the project folder itself" (a session there sees every repo below it)
 
@@ -54,10 +61,123 @@ def derive_repo_name(url: str) -> str | None:
     return s if valid_name(s) else None
 
 
+# Names that only mean something on this box, its LAN or the tailnet (the host rules of check_clone_url).
+_INTERNAL_NAMES = ("localhost", "local", "lan", "internal", "home.arpa", "ts.net")
+_NUMERIC_LABEL = re.compile(r"^(?:0x[0-9a-f]*|[0-9]+)$")                       # an all-digit or 0x last label: an address in some spelling (2130706433, 0x7f.0.0.1, 0177.0.0.1, 127.1)
+_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")                                 # what Tailscale hands out (100.100.100.100 is its resolver)
+
+
+def is_internal_address(ip) -> bool:
+    """True for an address that is the box itself, its LAN or its tailnet: loopback, RFC 1918, link-local (169.254.169.254 included), the CGNAT range
+    100.64.0.0/10, unique-local IPv6 (fc00::/7, Tailscale's fd7a:115c:a1e0::/48 included), unspecified, multicast, broadcast and anything else that is not
+    globally routable; an IPv4-mapped IPv6 address counts as its IPv4 address. `ip` is a string or an ipaddress object; one that does not parse counts as
+    internal (fail closed)."""
+    try:
+        a = ipaddress.ip_address(ip.strip().strip("[]") if isinstance(ip, str) else ip)
+    except ValueError:
+        return True
+    if isinstance(a, ipaddress.IPv6Address) and a.ipv4_mapped is not None:
+        a = a.ipv4_mapped
+    if isinstance(a, ipaddress.IPv4Address) and (a in _CGNAT or a == ipaddress.IPv4Address("255.255.255.255")):
+        return True
+    return (not a.is_global) or a.is_loopback or a.is_private or a.is_link_local or a.is_unspecified or a.is_multicast or a.is_reserved
+
+
+def _canonical_ip(host: str):
+    """The address `host` is, when it is one written the plain way (dotted quad, or IPv6 without a zone), else None."""
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        return None
+
+
+def _is_ip_literal(host: str) -> bool:
+    """An address in any spelling: IPv6 (a colon), an all-digit or 0x last label (decimal, octal, hex, short forms), or anything socket.inet_aton reads."""
+    if ":" in host or _NUMERIC_LABEL.match(host.rsplit(".", 1)[-1]) or _canonical_ip(host) is not None:
+        return True
+    try:
+        socket.inet_aton(host)
+        return True
+    except (OSError, ValueError, UnicodeError):
+        return False
+
+
+def clone_host_allowed(host: str) -> bool:
+    """Is `host` (lower-case, no trailing dot) on CCBOARD_CLONE_ALLOWED_HOSTS? Exact names and IP literals, or `*.example.com` for the names below example.com."""
+    entries = settings.clone_allowed_hosts
+    if not entries:
+        return False
+    ip = _canonical_ip(host)
+    if ip is not None:
+        return str(ip) in entries
+    if _is_ip_literal(host):
+        return False                                                           # a spelling of an address that is not the plain one never matches a listed name or address
+    return host in entries or any(e.startswith("*.") and host.endswith(e[1:]) for e in entries)
+
+
+def _check_host(host: str) -> None:
+    host = host.lower()
+    if host.endswith("."):
+        host = host[:-1]                                                       # one trailing dot (a fully qualified name)
+    if not host or not host.isascii() or len(host) > 253:
+        raise BadRequest(URL_ODD_MSG)
+    if _is_ip_literal(host):
+        if clone_host_allowed(host):
+            return
+        raise BadRequest(URL_HOST_MSG)
+    if not all(_LABEL.match(label) for label in host.split(".")):              # empty labels, percent escapes, spaces, underscores
+        raise BadRequest(URL_ODD_MSG)
+    if clone_host_allowed(host):
+        return
+    if "." not in host or any(host == n or host.endswith("." + n) for n in _INTERNAL_NAMES):
+        raise BadRequest(URL_HOST_MSG)
+
+
+def check_clone_url(url: str) -> str:
+    """The clone URL rule (it serves the clone routes and the preflight probe alike): only `https://[user[:token]@]host[:port]/path`, `ssh://[user@]host[:port]/path`
+    and `git@host:path`. The host comes from a real parse, never from the regex: it must be a public-looking name (no IP literal in any spelling, no localhost, no
+    single-label name, none of .local .lan .internal .home.arpa .ts.net) unless CCBOARD_CLONE_ALLOWED_HOSTS lists it. A listed host never brings back a refused scheme.
+    Returns the stripped URL; BadRequest with one sentence otherwise. (A name that resolves to a private address is not caught here: that needs DNS.)"""
+    if not isinstance(url, str):
+        raise BadRequest(URL_SHAPE_MSG)
+    u = url.strip()
+    if not u or len(u) > URL_MAX or u.startswith("-") or not URL_RE.match(u):
+        raise BadRequest(URL_SHAPE_MSG)
+    if any(ord(c) < 33 or ord(c) == 127 for c in u) or "\\" in u:
+        raise BadRequest(URL_ODD_MSG)
+    if u.startswith("git@"):
+        host, _, path = u[4:].partition(":")
+        if not path:
+            raise BadRequest(URL_ODD_MSG)
+        _check_host(host)
+        return u
+    try:
+        parts = urlsplit(u)
+    except ValueError:
+        raise BadRequest(URL_ODD_MSG) from None
+    netloc = parts.netloc
+    if parts.scheme not in ("https", "ssh") or not netloc or netloc.count("@") > 1 or len(parts.path) < 2 or not parts.path.startswith("/"):
+        raise BadRequest(URL_ODD_MSG)
+    user, _, hostport = netloc.rpartition("@")
+    if user.startswith("-") or (parts.scheme == "ssh" and ":" in user):
+        raise BadRequest(URL_ODD_MSG)
+    if hostport.startswith("["):                                               # an IPv6 literal: refused below unless it is listed
+        host, _, rest = hostport[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else rest
+        if rest and not rest.startswith(":"):
+            raise BadRequest(URL_ODD_MSG)
+    else:
+        host, _, port = hostport.partition(":")
+    if port and not (port.isascii() and port.isdigit() and 0 < int(port) < 65536):
+        raise BadRequest(URL_ODD_MSG)
+    _check_host(host)
+    return u
+
+
 def check_url(url: str) -> str:
-    if not isinstance(url, str) or not URL_RE.match(url.strip()) or url.strip().startswith("-"):
-        raise BadRequest("clone URL must start with https://, http://, ssh://, git:// or git@host:")
-    return url.strip()
+    """The clone URL, stripped, or BadRequest (check_clone_url holds the rules)."""
+    return check_clone_url(url)
 
 
 def project_path(project: str) -> Path:

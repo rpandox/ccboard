@@ -190,7 +190,7 @@ function fakeState(over = {}) {
   };
 }
 
-const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'project', 'agents', 'settings', 'search', 'session', 'usage', 'quad', 'placeholders'];       // widgets.js (Widgets, no route) loads right after inbox.js, project.js right after tasks.js
+const PAGE_FILES = ['home', 'inbox', 'widgets', 'tasks', 'project', 'agents', 'doctor', 'settings', 'search', 'session', 'usage', 'quad', 'onboarding', 'placeholders'];       // widgets.js (Widgets, no route) loads right after inbox.js, project.js right after tasks.js
 
 /** A world with the DOM, the real scripts in index.html order (shell.js left out), and recorders for api, toast and registerPage. */
 function pagesWorld({ wide = false, extra = {}, state = fakeState(), realPoll = false } = {}) {
@@ -597,7 +597,7 @@ test('placeholder pages take onRoute: #/memory to #/memory/shop?tab=x redraws wi
 
 test('every later-phase route has a placeholder that names its phase; the project route has its real page', () => {
   const { w } = pagesWorld();
-  const cases = { '#/memory/shop': 'v0.5.20', '#/onboarding/project': 'v0.5.19' };
+  const cases = { '#/memory/shop': 'v0.5.20' };
   for (const [hash, version] of Object.entries(cases)) {
     w.location.hash = hash;
     assert.match(text(page(w)), new RegExp(`arrives in ${version.replace(/\./g, '\\.')}`), hash);
@@ -1090,9 +1090,9 @@ const renameBtn = (row) => row.querySelectorAll('button').find((b) => text(b) ==
 const openRename = (w, i = 0) => { renameBtn(acctRows(w)[i]).click(); return sheet(w); };
 const submitSheet = (w) => sheet(w).querySelector('form').dispatchEvent({ type: 'submit', preventDefault() {} });
 
-test('settings tabs: Accounts sits after Agents and before App', () => {
+test('settings tabs: Doctor sits after Box, Accounts after Agents and before App', () => {
   const w = acctWorld();
-  assert.deepEqual(page(w).querySelectorAll('.tab').map((t) => t.getAttribute('data-tab')), ['notify', 'nodes', 'box', 'agents', 'accounts', 'app']);
+  assert.deepEqual(page(w).querySelectorAll('.tab').map((t) => t.getAttribute('data-tab')), ['notify', 'nodes', 'box', 'doctor', 'agents', 'accounts', 'app']);
   assert.equal(page(w).querySelector('.tab[data-tab=accounts]').getAttribute('aria-selected'), 'true');
   assert.equal(acctPanel(w).classList.contains('hidden'), false);
 });

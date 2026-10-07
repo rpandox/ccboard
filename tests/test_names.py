@@ -38,12 +38,12 @@ def test_derive_repo_name(url, expected):
     assert projects.derive_repo_name(url) == expected
 
 
-@pytest.mark.parametrize("url", ["https://github.com/o/r", "git@github.com:o/r.git", "ssh://git@h/o/r", "git://h/o/r"])
+@pytest.mark.parametrize("url", ["https://github.com/o/r", "git@github.com:o/r.git", "ssh://git@github.com/o/r", "https://user@gitlab.com/o/r"])
 def test_check_url_ok(url):
     assert projects.check_url(url) == url
 
 
-@pytest.mark.parametrize("url", ["--upload-pack=/tmp/x", "-c", "file:///etc", "ext::sh -c id", "https://h/a b", "ftp://h/x", ""])
+@pytest.mark.parametrize("url", ["--upload-pack=/tmp/x", "-c", "file:///etc", "ext::sh -c id", "https://h.example.com/a b", "ftp://h.example.com/x", "git://github.com/o/r", "http://github.com/o/r", ""])
 def test_check_url_rejects(url):
     with pytest.raises(projects.BadRequest):
         projects.check_url(url)

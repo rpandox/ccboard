@@ -1100,7 +1100,7 @@ registerPage('home', {
       blocks: makeKeyedList(blocksHost, { key: (b) => b.key, create: (b) => (b.kind === 'older' ? homeOlderNode(b) : homeBlockNode(b)), patch: (n, b) => n.ccPatch(b) }) };
     startAgeTicker();
   },
-  update(st) { homeRender(st); },
+  update(st) { homeRender(st); if (typeof onboardingMaybeRedirect === 'function') onboardingMaybeRedirect(st); },        // a board never used, with no project: the wizard once (pages/onboarding.js)
   onRoute(route) {                                                                    // #/ <-> #/?f=waiting: the same page, a different filter (no remount, no lost subscriptions)
     homePage.filter = homeFilterOf(route);
     homePage.cache = null;

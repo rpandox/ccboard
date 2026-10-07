@@ -529,8 +529,8 @@ INDEX = STATIC / "index.html"
 SKELETON_IDS = ("topbar", "sidebar", "main", "banner", "page", "dock", "bnav", "drawer", "sheet", "helpdlg", "toasts")
 SCRIPT_ORDER = ["/static/" + n for n in (            # v0.5.3 contract plus keymap.js and palette.js (v0.5.3b), pages/widgets.js (v0.5.5), tree.js and pages/project.js (v0.5.6), termkit.js (v0.5.9: the dock), pages/quad.js (v0.5.9)
     "core.js", "components.js", "keymap.js", "live.js", "termkit.js", "launcher.js", "tree.js", "charts.js", "dnd.js", "palette.js", "shell.js", "router.js",
-    "pages/home.js", "pages/inbox.js", "pages/widgets.js", "pages/tasks.js", "pages/project.js", "pages/agents.js", "pages/settings.js", "pages/search.js",
-    "pages/session.js", "pages/usage.js", "pages/quad.js", "pages/placeholders.js", "main.js")]
+    "pages/home.js", "pages/inbox.js", "pages/widgets.js", "pages/tasks.js", "pages/project.js", "pages/agents.js", "pages/doctor.js", "pages/settings.js", "pages/search.js",
+    "pages/session.js", "pages/usage.js", "pages/quad.js", "pages/onboarding.js", "pages/placeholders.js", "main.js")]
 STYLE_ORDER = ["/static/vendor/blueprint/blueprint.css", "/static/vendor/blueprint/blueprint-icons.css", "/static/tokens.css",
                "/static/style.css", "/static/shell.css", "/static/pages.css", "/static/charts.css", "/static/termkit.css"]
 VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
@@ -676,7 +676,7 @@ def test_index_dialogs_are_empty_in_the_html():
 
 DEMO_DIR = STATIC / "demo"
 DEMO_FILES = ("state.json", "search.json", "tree.json", "file.json", "series.json", "series_events.json", "usage_summary.json", "memory.json",
-              "agents.json")
+              "agents.json", "doctor.json")
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+--[A-Za-z0-9_-]+--[A-Za-z0-9_-]+$")
 KANBAN = ("backlog", "in_progress", "needs_you", "done", "pr", "merged")
 DEMO_HEADERS = {"Tailscale-User-Login": "alice@example.com"}

@@ -391,6 +391,38 @@ test('demo refresh: ?refresh=stale makes the newest reading 10 minutes old; ?ref
   assert.equal(b.usage.value.source, undefined);
 });
 
+// ---------------------------------------------------------------- demo mode: the new-project wizard's make-believe project (v0.5.19)
+
+test('demo: a project made in the wizard (with a cloned repo, a blank repo or a bulk import) is laid over the fixture state, so the project page it ends on has it', async () => {
+  const w = demoWorld();
+  const fixture = plain(await w.run("api('GET', '/api/state')"));
+  assert.ok(!fixture.projects.some((p) => p.name === 'shop'));
+  await w.run("api('POST', '/api/projects', { name: 'shop' })");
+  await w.run("api('POST', '/api/projects/shop/repos', { url: 'https://github.com/octo/shop-api.git', name: 'shop-api' })");
+  await w.run("api('POST', '/api/projects/shop/repos', { name: 'docs' })");
+  await w.run("api('POST', '/api/projects/shop/repos/bulk', { repos: [{ name: 'web', url: 'https://github.com/octo/web.git' }, { url: 'git@github.com:octo/ops.git' }] })");
+  const st = plain(await w.run("api('GET', '/api/state')"));
+  const shop = st.projects.find((p) => p.name === 'shop');
+  assert.deepEqual(shop.repos.map((r) => r.name), ['shop-api', 'docs', 'web', 'ops']);
+  assert.ok(shop.repos.every((r) => r.state === 'ok' && r.branch === 'main' && Array.isArray(r.sessions)), 'cloned, not stuck cloning');
+  assert.equal(st.projects.length, fixture.projects.length + 1, 'the fixture\'s own projects stay');
+  await w.run("api('POST', '/api/projects', { name: 'quick', url: 'git@github.com:octo/tool.git' })");
+  const again = plain(await w.run("api('GET', '/api/state')"));
+  assert.deepEqual(again.projects.find((p) => p.name === 'quick').repos.map((r) => r.name), ['tool']);
+  assert.equal(again.projects.find((p) => p.name === 'shop').repos.length, 4, 'asking again does not add twice');
+});
+
+test('demo: a repo added to a project the fixture already has joins its repos; a plain POST that is not a project or repo changes nothing', async () => {
+  const w = demoWorld();
+  const fixture = plain(await w.run("api('GET', '/api/state')"));
+  const first = fixture.projects[0];
+  await w.run(`api('POST', '/api/projects/${first.name}/repos', { name: 'extra' })`);
+  await w.run("api('POST', '/api/usage/refresh', {})");
+  const st = plain(await w.run("api('GET', '/api/state')"));
+  assert.deepEqual(st.projects.find((p) => p.name === first.name).repos.map((r) => r.name), [...first.repos.map((r) => r.name), 'extra']);
+  assert.equal(st.projects.length, fixture.projects.length);
+});
+
 // ---------------------------------------------------------------- tabs(): the tab list scrolls sideways, the selected tab is brought into view
 
 test('tabs(): once the page lays the list out the selected tab is scrolled into its sideways-scrolling list (six Settings tabs at 390 px); without requestAnimationFrame or layout nothing happens and nothing throws', () => {

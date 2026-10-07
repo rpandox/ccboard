@@ -1049,6 +1049,7 @@ def test_doctor_on_the_0145_box_before_install(ag, fake, _codex_sandbox):
     assert c["codex-bin"].status == "pass" and c["codex-bin"].fix is None
     assert "0.145.0" in c["codex-bin"].detail and "works; 0.157+ adds --approve-for-me and --no-daemon" in c["codex-bin"].detail
     assert (c["codex-auth"].status, c["codex-auth"].fix["cmd"]) == ("fail", "codex login --device-auth")
+    assert c["codex-auth"].fix["action"] == "codex_login", "v0.5.19: the Doctor's button opens the Codex login in Settings > Agents"
     assert c["codex-hooks"].status == "fail" and "codex_hooks.py install" in c["codex-hooks"].fix["cmd"]
     assert c["codex-trust"].status == "skip"
     assert c["codex-alt-screen"].status == "pass" and "--no-daemon" not in c["codex-alt-screen"].detail

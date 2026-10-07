@@ -1454,7 +1454,8 @@ class CodexAgent(Agent):
                              {"text": "The login state could not be read; run `codex login status` on the box.", "cmd": "codex login status"}))
         else:
             out.append(Check("codex-auth", "codex", "Codex login", "fail", "not logged in",
-                             {"text": "Log in on the box (device flow works over ssh).", "cmd": "codex login --device-auth"}))
+                             {"text": "Log in from Settings > Agents, or on the box (device flow works over ssh).", "cmd": "codex login --device-auth",
+                              "action": "codex_login"}))
         # hooks
         hs = self.hooks_status()
         required = self._required_events()

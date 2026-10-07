@@ -803,6 +803,77 @@ html.force-coarse #page .settings-page .add-url { font-size:16px; }
 #page .settings-page .add-title { font-size:14px; font-weight:600; line-height:1.4; color:var(--fg); overflow-wrap:anywhere; }
 #page .settings-page .add-note { margin:6px 0 0; color:var(--warn-fg, var(--warn)); }
 
+/* ---------- v0.5.19 onboarding: Settings > Doctor, the cards of Settings > Agents, the new-project wizard ----------
+   A check is a row: the status glyph (always with its word in aria-label and title, never colour alone), the name, one line of detail and, when something is wrong, what to do (plain
+   words, a command in a box with Copy, or a button). Buttons are 28 px with a mouse and 44 px on touch (--tap, from the global rules); under 600 px the button drops under the text. The wizard
+   is a vertical stepper: a numbered rail (outlined, never filled: the filled button is the active step's own), the step's title, then its summary (done) or its form (active). */
+#page .settings-page .settings-doc-line { margin:6px 0 0; font-size:12px; }
+#page .settings-page .settings-doc-line a { display:inline-flex; align-items:center; min-height:var(--row-btn,28px); color:var(--bad-fg, var(--bad)); }
+#page .doc-bar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px 10px; margin:0 0 4px; }
+#page .doc-stamp { font-size:12px; }
+#page .doc-lede { margin:4px 0 0; }
+#page .doc-sec { margin-top:6px; }
+#page .doc-sec-head { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:0 10px; }
+#page .doc-count { font-size:12px; }
+#page .doc-list { display:flex; flex-direction:column; }
+#page .doc-row { display:grid; grid-template-columns:20px minmax(0, 1fr) auto; gap:10px; align-items:start; padding:8px 0; border-bottom:1px solid var(--line-soft); }
+#page .doc-glyph { width:20px; font-size:14px; line-height:1.4; }
+#page .doc-g-pass { color:var(--mute-green); }
+#page .doc-g-warn { color:var(--warn); }
+#page .doc-g-fail { color:var(--bad); }
+#page .doc-g-skip { color:var(--dim); }
+#page .doc-main { display:flex; flex-direction:column; gap:3px; min-width:0; }
+#page .doc-label { font-size:13px; font-weight:500; color:var(--fg); overflow-wrap:anywhere; }
+#page .doc-skip .doc-label { color:var(--dim); }
+#page .doc-detail { font-size:12px; line-height:1.45; color:var(--fg-2); overflow-wrap:anywhere; }
+#page .doc-fix { font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+#page .doc-cmdline { display:flex; align-items:center; flex-wrap:wrap; gap:6px 8px; min-width:0; }
+#page .doc-cmd { flex:1 1 12em; min-width:0; padding:6px 8px; border:1px solid var(--line-soft); border-radius:2px; background:var(--bg-0); font-family:var(--font-mono); font-size:12px; overflow-wrap:anywhere; user-select:all; }
+#page .doc-side { display:flex; align-items:center; }
+#page .doc-inline { margin-top:2px; }
+@media (max-width:599px) {
+  #page .doc-row { grid-template-columns:20px minmax(0, 1fr); }
+  #page .doc-side { grid-column:2; }
+  #page .doc-side:empty { display:none; }
+}
+#page .set-ext { margin-top:4px; }
+
+#page .wiz { max-width:640px; }
+#page .wiz .wiz-lede { margin:0 0 14px; font-size:13px; line-height:1.5; }
+#page .wiz .wiz-steps { list-style:none; margin:0; padding:0; }
+#page .wiz .wiz-step { display:grid; grid-template-columns:28px minmax(0, 1fr); gap:0 12px; }
+#page .wiz .wiz-rail { display:flex; flex-direction:column; align-items:center; }
+#page .wiz .wiz-rail::after { content:''; flex:1 1 auto; width:1px; min-height:12px; margin:4px 0; background:var(--line); }
+#page .wiz .wiz-step:last-child .wiz-rail::after { display:none; }
+#page .wiz .wiz-n { flex:none; display:flex; align-items:center; justify-content:center; box-sizing:border-box; width:26px; height:26px; border:1px solid var(--line-strong, var(--line)); border-radius:50%; font:600 12px/1 var(--font-mono); color:var(--dim); background:var(--bg); }
+#page .wiz .wiz-step[data-state=active] .wiz-n { border-color:var(--sig); color:var(--fg); }
+#page .wiz .wiz-step[data-state=done] .wiz-n { border-color:var(--mute-green-bd); color:var(--mute-green); }
+#page .wiz .wiz-body { min-width:0; padding:0 0 18px; }
+#page .wiz .wiz-title { margin:0; font-size:14px; font-weight:600; line-height:26px; color:var(--fg); }
+#page .wiz .wiz-step[data-state=todo] .wiz-title { color:var(--dim); font-weight:500; }
+#page .wiz .wiz-sum { margin:2px 0 0; font-size:13px; line-height:1.5; color:var(--fg-2); overflow-wrap:anywhere; }
+#page .wiz .wiz-sum.warn { color:var(--warn); }
+#page .wiz .wiz-sum.bad { color:var(--bad-fg, var(--bad)); }
+#page .wiz .wiz-form { margin:8px 0 0; padding:0; border:0; background:none; }
+#page .wiz .wiz-form > * + * { margin-top:12px; }
+#page .wiz .wiz-note { margin:0; font-size:13px; line-height:1.5; }
+#page .wiz .wiz-mode { display:flex; flex-direction:column; gap:10px; min-width:0; }
+#page .wiz .wiz-mode.hidden { display:none; }
+#page .wiz .wiz-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px; }
+#page .wiz .wiz-chips { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; min-height:0; }
+#page .wiz .wiz-chips:empty { display:none; }
+#page .wiz .wiz-hint { flex:1 1 100%; font-size:12px; line-height:1.5; }
+#page .wiz .wiz-seg { max-width:100%; flex-wrap:nowrap; }
+#page .wiz .wiz-seg .seg-btn { flex:0 1 auto; min-width:0; padding:0 12px; }
+#page .wiz .wiz-list { max-height:36vh; }
+#page .wiz .wiz-prompt { display:block; width:100%; box-sizing:border-box; height:auto; min-height:120px; line-height:1.45; resize:vertical; }
+#page .wiz .submit { flex-wrap:wrap; }
+@media (max-width:599px) {
+  #page .wiz .wiz-seg .seg-btn { padding:0 8px; }
+  #page .wiz .wiz-step { gap:0 10px; }
+  #page .wiz .submit .bp5-button { flex:1 1 auto; }
+}
+
 /* search: Peek and Attach sit at the right of the result's head, beside the role chip, the place and the time */
 #page .res-actions { margin-left:auto; display:inline-flex; align-items:center; gap:6px; }
 
