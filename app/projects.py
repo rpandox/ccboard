@@ -244,7 +244,7 @@ def check_clone_url(url: str) -> str:
     Then the name is resolved (resolve_public): one loopback, private, link-local, CGNAT or unique-local answer refuses it, and so do a name that does not resolve
     and a lookup over RESOLVE_TIMEOUT. A listed host is not resolved. Returns the stripped URL; BadRequest with one sentence otherwise.
     What this cannot close: git does its own lookup when it connects, later, so a record that changes in between (DNS rebinding) can still win. The https
-    preflight pins git to the checked addresses (clone_pin); a clone and any ssh connection are not pinned (ssh cannot be without giving up host key
+    preflight and the https clone pin git to the checked addresses (clone_pin) and follow no redirects; an ssh connection is not pinned (it cannot be without giving up host key
     checking). Only an egress policy for the box user or the container removes that race (README, Security model)."""
     u, _scheme, host, _port, listed = _parse_clone_url(url)
     if not listed:

@@ -1059,13 +1059,17 @@ class RepoIn(BaseModel):
 def _launch_clone(project: str, repo: str, path: Path, url: str, cleanup: list[Path]) -> str:
     """Start the clone session; on any failure remove the freshly created dirs in `cleanup`."""
     name = tmux.tmux_name(project, repo, "clone")
-    cmd = ["git", "clone", "--progress", "--", url, "."]
-    line = shlex.join(cmd) + " && exit"
     try:
+        # No redirects: a public host must not bounce the clone to an internal one (a renamed repo already fails the wizard's probe, which shows
+        # the new URL). On a git that has it, https is pinned to the addresses check_url accepted (cached), so git cannot resolve the name again.
+        pin = projects.clone_pin(url) if preflight.pin_supported() else None
+        cmd = (["git", "-c", "http.followRedirects=false"] + (["-c", preflight.pin_option(pin)] if pin else [])
+               + ["clone", "--progress", "--", url, "."])
+        line = shlex.join(cmd) + " && exit"
         if tmux.has_session(name):
             raise projects.Conflict("a clone is already running for this repo")
         _start_session(name, project, repo, "clone", "clone", str(path), cmd_line=line, claude_session_id=None,
-                       add_dirs=[], agent="shell", env_extra={"GIT_ALLOW_PROTOCOL": preflight.ALLOW_PROTOCOL})      # https and ssh only; redirects stay on so a renamed repo still clones
+                       add_dirs=[], agent="shell", env_extra={"GIT_ALLOW_PROTOCOL": preflight.ALLOW_PROTOCOL})      # https and ssh only
     except Exception:
         for d in cleanup:
             try:

@@ -255,16 +255,24 @@ def test_the_bulk_route_refuses_the_whole_batch_when_one_url_is_refused(lite_cli
     assert nothing_starts["created"] == [] and nothing_starts["sent"] == []
 
 
-def test_public_urls_still_clone_and_the_clone_session_carries_the_protocol_allow_list_without_disabling_redirects(lite_client, projects_dir, fake_tmux):
+def test_public_urls_still_clone_with_the_protocol_allow_list_no_redirects_and_the_checked_address_pinned(lite_client, projects_dir, fake_tmux, monkeypatch):
+    monkeypatch.setattr(preflight, "pin_supported", lambda *a: True)
     r = lite_client.post("/api/projects", json={"name": "shop", "url": "https://github.com/o/web.git"}, headers=H)
     assert r.status_code == 201 and r.json()["clone_session"] == "shop--web--clone"
     name, cwd, env = fake_tmux["created"][0]
     assert name == "shop--web--clone" and env["GIT_ALLOW_PROTOCOL"] == "https:ssh"
     line = fake_tmux["sent"][0][1]
-    assert line == "git clone --progress -- https://github.com/o/web.git . && exit"
-    assert "followRedirects" not in line, "a renamed repository still clones"
+    assert line == ("git -c http.followRedirects=false -c http.curloptResolve=github.com:443:93.184.215.14 "
+                    "clone --progress -- https://github.com/o/web.git . && exit"), "a public host must not bounce the clone, nor a second lookup move it"
     r = lite_client.post("/api/projects/shop/repos", json={"url": "git@github.com:o/api.git"}, headers=H)
     assert r.status_code == 201 and fake_tmux["created"][1][2]["GIT_ALLOW_PROTOCOL"] == "https:ssh"
+    assert fake_tmux["sent"][1][1] == "git -c http.followRedirects=false clone --progress -- git@github.com:o/api.git . && exit", "ssh is never pinned"
+
+
+def test_an_old_git_clones_without_the_pin_but_still_without_redirects(lite_client, fake_tmux, monkeypatch):
+    monkeypatch.setattr(preflight, "pin_supported", lambda *a: False)
+    assert lite_client.post("/api/projects", json={"name": "shop", "url": "https://github.com/o/web.git"}, headers=H).status_code == 201
+    assert fake_tmux["sent"][0][1] == "git -c http.followRedirects=false clone --progress -- https://github.com/o/web.git . && exit"
 
 
 def test_a_listed_private_host_clones_through_the_route(lite_client, fake_tmux, monkeypatch):
