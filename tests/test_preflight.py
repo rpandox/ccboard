@@ -150,7 +150,7 @@ def test_preflight_reuses_check_url_so_the_field_says_what_a_clone_would(monkeyp
     seen = []
     real = projects.check_url
     monkeypatch.setattr(projects, "check_url", lambda u: seen.append(u) or real(u))
-    monkeypatch.setattr(preflight, "ls_remote", lambda url, timeout=0: {"reachable": True, "default_branch": "main", "needs_auth": False, "heads": ["main"], "error": None})
+    monkeypatch.setattr(preflight, "ls_remote", lambda url, timeout=0, **k: {"reachable": True, "default_branch": "main", "needs_auth": False, "heads": ["main"], "error": None})
     r = preflight.preflight_clone("  https://github.com/octo/Hello.World.git ")
     assert seen == ["  https://github.com/octo/Hello.World.git "]
     assert r["name"] == "Hello-World" and r["reachable"] is True
@@ -164,14 +164,14 @@ def test_preflight_refuses_what_a_clone_refuses_without_running_git(monkeypatch,
 
 
 def test_a_name_that_cannot_be_derived_is_null_not_an_error(monkeypatch):
-    monkeypatch.setattr(preflight, "ls_remote", lambda url, timeout=0: {"reachable": True, "default_branch": "main", "needs_auth": False, "heads": [], "error": None})
+    monkeypatch.setattr(preflight, "ls_remote", lambda url, timeout=0, **k: {"reachable": True, "default_branch": "main", "needs_auth": False, "heads": [], "error": None})
     assert preflight.preflight_clone("https://x.test/%%%.git")["name"] is None
 
 
 # ---------------------------------------------------------------- the route
 
 def test_route_answers_the_documented_shape(lite_client, monkeypatch):
-    monkeypatch.setattr(preflight, "ls_remote", lambda url, timeout=0: {"reachable": True, "default_branch": "trunk", "needs_auth": False, "heads": ["trunk", "dev"], "error": None})
+    monkeypatch.setattr(preflight, "ls_remote", lambda url, timeout=0, **k: {"reachable": True, "default_branch": "trunk", "needs_auth": False, "heads": ["trunk", "dev"], "error": None})
     r = lite_client.post("/api/preflight/clone", json={"url": "https://github.com/octo/shop.git"}, headers=H)
     assert r.status_code == 200
     assert r.json() == {"reachable": True, "default_branch": "trunk", "needs_auth": False, "heads": ["trunk", "dev"], "name": "shop", "error": None}

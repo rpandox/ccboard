@@ -60,7 +60,7 @@ const sheet = (w) => w.document.getElementById('sheet');
 const form = (w) => sheet(w).querySelector('form.form');
 const submit = (f) => f.dispatchEvent({ type: 'submit', preventDefault() {} });
 const fieldOf = (n, re) => n.querySelectorAll('.field').find((f) => re.test(text(f.querySelector('label'))));
-const open = (w, kind, ctx) => (kind === 'project' ? w.run('Shell.projectSheet()') : w.run(`Shell.openCreate(${JSON.stringify(kind)}, ${JSON.stringify(ctx || null)})`));     // v0.5.19: the + menu's project entry is the wizard page; the sheet stays reachable by name
+const open = (w, kind, ctx) => w.run(`Shell.openCreate(${JSON.stringify(kind)}, ${JSON.stringify(ctx || null)})`);
 const SHOP_API = { project: 'shop', repo: 'api' };
 
 // ---------------------------------------------------------------- field()
@@ -140,7 +140,7 @@ test('a phone: nothing is focused when a sheet opens (no soft keyboard, no ring)
       assert.equal(sheet(world).style.outline, 'none', 'and the dialog itself draws no focus ring');
       sheet(world).close();
     }
-    for (const kind of ['project', 'import', 'batch']) {
+    for (const kind of ['import', 'batch']) {
       open(world, kind);
       assert.equal(world.document.activeElement, sheet(world), `${kind}: the dialog has the focus`);
       sheet(world).close();
@@ -304,7 +304,7 @@ test('a failed schedule: a message about the cron goes under Cron, the rest unde
   assert.equal(text(f.querySelector('.form-status')), 'too many jobs');
 });
 
-// ---------------------------------------------------------------- add repo, project, import, batch
+// ---------------------------------------------------------------- add repo, import, batch
 
 test('addRepoForm: two labelled fields with helper text, an empty submit says what to give, a failed clone lands under Clone URL', async () => {
   const w = fWorld({ answers: { '/api/projects/shop/repos': { __error: 'clone failed: could not resolve host' } } });
@@ -322,24 +322,9 @@ test('addRepoForm: two labelled fields with helper text, an empty submit says wh
   assert.match(text(fieldOf(f, /^Clone URL$/).querySelector('.field-err')), /could not resolve host/);
 });
 
-test('the project form: a blank name is said next to the field instead of a browser bubble (novalidate), typing clears it', async () => {
-  const w = fWorld();
-  open(w, 'project');
-  const f = form(w);
-  assert.equal(f.getAttribute('novalidate'), '', 'our message, not the browser\'s');
-  submit(f);
-  await tick();
-  const name = fieldOf(f, /^Name$/);
-  assert.match(text(name.querySelector('.field-err')), /name the project/i);
-  assert.equal(calls(w).length, 0);
-  name.querySelector('input').dispatchEvent({ type: 'input' });
-  assert.equal(text(name.querySelector('.field-err')), '');
-  assert.match(text(fieldOf(f, /^Clone URL$/).querySelector('.field-hint')), /optional/i);
-});
-
 test('the footer of every sheet form is the primary and Cancel, nothing else (list tools sit in the list header)', () => {
   const w = fWorld();
-  for (const [kind, ctx, want] of [['project', null, ['Create project', 'Cancel']], ['import', null, ['Import selected', 'Cancel']], ['batch', null, ['Run on selected repos', 'Cancel']],
+  for (const [kind, ctx, want] of [['import', null, ['Import selected', 'Cancel']], ['batch', null, ['Run on selected repos', 'Cancel']],
     ['session', SHOP_API, ['Start & open terminal', 'Cancel']], ['task', SHOP_API, ['Start task', 'Cancel']], ['schedule', SHOP_API, ['Schedule / run', 'Cancel']]]) {
     open(w, kind, ctx);
     const foot = form(w).querySelector('.submit');
@@ -365,7 +350,7 @@ test('the task form puts the keyboard hint under the prompt on a desktop and dro
 
 test('Cancel stays a type=button with the exact text the sheet looks for, in every form', () => {
   const w = fWorld();
-  for (const [kind, ctx] of [['project', null], ['import', null], ['batch', null], ['session', SHOP_API], ['task', SHOP_API], ['schedule', SHOP_API]]) {
+  for (const [kind, ctx] of [['import', null], ['batch', null], ['session', SHOP_API], ['task', SHOP_API], ['schedule', SHOP_API]]) {
     open(w, kind, ctx);
     const cancel = form(w).querySelector('.submit').querySelectorAll('button').find((b) => text(b) === 'Cancel');
     assert.ok(cancel && cancel.getAttribute('type') === 'button', kind);

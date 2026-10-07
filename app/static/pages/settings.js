@@ -245,7 +245,7 @@ function backupPushText(bk) {
 
 /* ---------- Agents (v0.5.19): a section each for Claude and Codex ----------
    Claude: who is logged in (the chip, Log in / the two-tap Log out), the version, the hooks, how many models the launcher offers. Codex: the same, plus the account in use (state.codex_accounts)
-   and a Log in that leads to the Codex add block of Settings > Accounts (it asks for a name first; Codex has no log-out route on the board). Under each, the doctor's checks for that agent
+   and a Log in that leads to the Codex add block of Settings > Accounts (it asks for a name first) and a two-tap Log out (POST /api/codex-accounts/logout: the saved copy stays). Under each, the doctor's checks for that agent
    (pages/doctor.js: the same rows as the Doctor tab, minus the login button, which the card already has). Last, the Codex threads started outside the board, each with Open
    (pages/agents.js: agentsExtRows / agentsExtNode / agentsExtOpen). Nothing here is filled but Claude's Log in while Claude is logged out. */
 const SETTINGS_EXT_NOTE = 'Codex threads of the last 14 days that were not started here. Open resumes one in a board session, in its folder.';
@@ -323,7 +323,12 @@ function settingsAgents(p) {
   else { cbadge.classList.add('warn'); cbadge.textContent = 'Codex: not logged in'; }
   const crow = settingsKv('Codex', cbadge);
   if (codex.installed) crow.add(el('button', { type: 'button', title: 'Sign in from Settings > Accounts', onclick: () => settingsCodexLogin(), text: codex.loggedIn ? 'Add account' : 'Log in' }));
+  if (codex.installed && codex.loggedIn && cxStore(state).supported) {   // red-outlined, two taps; the saved copy stays (Forget login in Accounts is the one that removes a copy)
+    crow.add(confirmButton('cx-logout', 'Log out', () => cxLogout(), true));
+    crow.add(el('span', { class: 'dim', text: 'Log out clears the current Codex login on this box and keeps its saved copy, so you can switch back. Forget login (in Accounts) removes a copy.' }));
+  }
   p.append(crow);
+  if (cxFlow.err && cxFlow.err.startsWith('Log out failed')) p.append(el('div', { class: 'warn set-note', role: 'status', text: cxFlow.err }));
   if (codex.installed) settingsAgentFacts(p, 'codex', codex);
   settingsAgentChecks(p, 'codex');
 
@@ -738,6 +743,10 @@ function settingsCxRow(a) {
       title: 'Sign in with this account again: its saved login is replaced, the account stays one row', onclick: () => settingsCxAddStart(a), text: 'Log in again' }));
   }
   acts.push(el('button', { type: 'button', 'aria-label': `Rename ${name}`, title: 'Rename this account', onclick: () => settingsRenameAccount(a, { codex: true }), text: 'Rename' }));
+  if (store.supported && a.current) {                                 // the live login: Log out keeps its saved copy; Forget login is for the others
+    acts.push(busy ? el('button', { class: 'danger', type: 'button', disabled: true, text: 'Log out' })
+      : confirmButton('cx-logout', 'Log out', () => cxLogout(), false));
+  }
   if (store.supported && !a.current && a.saved) {
     acts.push(busy ? el('button', { class: 'danger', type: 'button', disabled: true, text: 'Forget login' })
       : confirmButton(`cx-forget:${a.key}`, 'Forget login', () => settingsCxForget(a), false));
@@ -1211,14 +1220,14 @@ function settingsSig(id, st) {
   if (id === 'nodes') return JSON.stringify(st.nodes);
   if (id === 'box') return JSON.stringify([st.health, st.backup, st.node_name, st.user, minute]);
   if (id === 'accounts') {                                             // identity and labels, not the readings: those move with every statusline and would rebuild the Rename button under a finger (they refresh with the minute)
-    const forget = /^(acct|cx)-forget:/.test(String(ui.confirm || '')) ? ui.confirm : null;      // the two-tap Forget login repaints the row
+    const forget = /^((acct|cx)-forget:|cx-logout)/.test(String(ui.confirm || '')) ? ui.confirm : null;      // the two-tap Forget login repaints the row
     return JSON.stringify([st.accounts && st.accounts.current, agentsAccounts(st).map((a) => [a.key, a.label, a.name, a.email, a.plan, !!a.current, !!a.saved]), acctStore(st), acctFlow.busy, forget, minute,
       cxState(st) ? [st.codex_accounts.current, cxAccounts(st).map((a) => [a.key, a.label, a.plan, !!a.current, !!a.saved]), cxStore(st), cxFlow.busy] : null,
       (acctProblem(st) || {}).account || (acctProblem(st) ? '*' : null)]);                  // the amber chip and the lead action follow the problem at once
   }
   if (id === 'app') return JSON.stringify([st.version, settingsAppMode().note, !!settingsInstallPrompt(), settingsHelpAvailable()]);
   if (id === 'doctor') return JSON.stringify(doctorSig());
-  return JSON.stringify([st.claude, st.agents, ui.confirm === 'logout', doctorSig(), cxState(st) ? (cxAccounts(st).find((a) => a.current) || {}).key || null : null]);     // the two-tap Log out repaints the panel; the doctor's answer repaints the checks under each card
+  return JSON.stringify([st.claude, st.agents, ui.confirm === 'logout', ui.confirm === 'cx-logout', cxFlow.err, doctorSig(), cxState(st) ? (cxAccounts(st).find((a) => a.current) || {}).key || null : null]);     // the two-tap Log out repaints the panel; the doctor's answer repaints the checks under each card
 }
 
 function settingsSecOf(r) {

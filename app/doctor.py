@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Callable, NamedTuple
 from urllib.parse import urlsplit
 
-from . import claude_auth, login_problem, memory, projects, push, tmux
+from . import claude_auth, login_problem, memory, preflight, projects, push, tmux
 from .config import settings
 
 GROUPS = ["box", "claude", "notify", "terminal"]   # register()/register_provider() append the others (memory, codex)
@@ -351,7 +351,8 @@ def _c_git(db) -> Outcome:
         return _warn("could not read the git version", fix("Run git --version on the box", "git --version"))
     if v < MIN_GIT:
         return _fail(f"git {_vs(v)} is older than {_vs(MIN_GIT)}", fix(f"Upgrade git to {_vs(MIN_GIT)} or newer", "sudo apt-get install -y --only-upgrade git"))
-    return _pass(f"git {_vstr(p.out) or _vs(v)}")
+    # the clone probe's address pin (http.curloptResolve, git 2.37+) is read from the version, not from `git help config` (no man pages in the container)
+    return _pass(f"git {_vstr(p.out) or _vs(v)}; {preflight.pin_note(preflight.parse_git_version(p.out) or (v[0], v[1], 0))}")
 
 
 def _c_gh(db) -> Outcome:

@@ -197,6 +197,11 @@ def reset_caches() -> None:
     _AGENT_AUTH.clear()
 
 
+def forget_auth() -> None:
+    """Drop the cached `codex login status` verdict (60 s): the login just changed on disk, so the next state must ask again."""
+    _AGENT_AUTH.clear()
+
+
 def _ppid(pid: int) -> int | None:
     """Parent pid from /proc/<pid>/stat ('pid (comm) S ppid ...'; comm may contain spaces and parentheses)."""
     try:

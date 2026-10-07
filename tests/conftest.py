@@ -33,6 +33,17 @@ def _stub_ccusage(monkeypatch):
     monkeypatch.setattr(cost, "fetch_sessions", lambda: None)
 
 
+@pytest.fixture(autouse=True)
+def _stub_clone_dns(monkeypatch):
+    """The real resolver is never used: every clone host name 'resolves' to one public address (the clone URL guard resolves names,
+    issue #22), and the answer cache starts empty. tests/test_clone_url_guard.py patches projects.getaddrinfo with its own tables."""
+    import socket
+    from app import projects
+    monkeypatch.setattr(projects, "getaddrinfo",
+                        lambda host, port=None, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.14", port or 0))])
+    projects.dns_cache_clear()
+
+
 @pytest.fixture
 def client(projects_dir, monkeypatch):
     """The board with its full lifespan (pollers, indexer, scheduler worker, recovery). Slow: use lite_client unless a test needs them."""

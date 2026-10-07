@@ -1170,6 +1170,46 @@ def test_an_interrupt_wakes_the_permission_long_poll_at_once(cxs, monkeypatch):
     assert row_of(cxs.name)["state"] == "idle" and main.db.perm_pending() == []
 
 
+def test_a_codex_sub_thread_permission_request_is_answered_at_once_and_parks_nothing(cxs, monkeypatch):
+    """/api/permission runs hooks.ignore_reason too: a guardian or subagent thread's PermissionRequest (another session_id in the same
+    pane, thread_relation says subthread) gets behavior null at once, so Codex asks in its own TUI; the main row's own request still waits."""
+    import time
+    from app import permissions
+    from app.config import settings
+    monkeypatch.setattr(settings, "approve_timeout", 1)
+    sent = []
+    monkeypatch.setattr(permissions, "push_request", lambda pid, name, summary: sent.append(pid))
+    cx_hook(cxs, "SessionStart", source="startup")
+    cx_hook(cxs, "UserPromptSubmit", prompt="review the diff")
+    before = row_of(cxs.name)
+    t0 = time.monotonic()
+    r = _hook_perm(cxs.client, cxs.name, {"session_id": CXB, "tool_name": "Bash", "tool_input": {"command": "ls"}},
+                   {"X-CCBoard-Agent": "codex"}).json()
+    assert time.monotonic() - t0 < 1.0
+    assert r == {"behavior": None, "reason": "subthread", "ignored": "subthread", "session": cxs.name}
+    assert main.db.perm_pending() == [] and sent == [] and row_of(cxs.name)["state"] == before["state"] == "working"
+    r = _hook_perm(cxs.client, cxs.name, {"session_id": CXA, "tool_name": "Bash", "tool_input": {"command": "ls"}},
+                   {"X-CCBoard-Agent": "codex"}).json()
+    assert r["reason"] == "timeout" and len(sent) == 1 and row_of(cxs.name)["state"] == "waiting", "the row's own thread is asked as before"
+
+
+def test_ignore_reason_is_the_one_guard(lite_client, projects_dir, fake_tmux, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")
+    git_init(projects_dir / "shop" / "api")
+    r = lite_client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude"}).json()
+    name, own = r["tmux"], r["claude_session_id"]
+    row = main.db.open_rows()[name]
+    other = "11111111-1111-4111-8111-111111111111"
+    ir = hooks.ignore_reason
+    assert ir(main.db, name, "Stop", {"session_id": own}, row) is None
+    assert ir(main.db, name, "Stop", {"session_id": own}, row, child=True) is None
+    assert ir(main.db, name, "Stop", {"session_id": other}, row, child=True) == "child"
+    assert ir(main.db, name, "Stop", {"session_id": other}, row) is None, "a new id on the same row is a resume, not foreign"
+    assert ir(main.db, name, "Stop", {"session_id": other, "transcript_path": "/h/.claude-mem/observer-sessions/x.jsonl"}, row) == "foreign"
+    assert ir(main.db, name, "PermissionRequest", "not a dict", row) is None
+
+
 def test_events_of_another_codex_thread_are_counted_and_never_change_the_state(cxs):
     cx_hook(cxs, "SessionStart", source="startup")
     cx_hook(cxs, "UserPromptSubmit", prompt="review the diff")

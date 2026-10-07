@@ -45,6 +45,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets
 import shutil
@@ -638,6 +639,73 @@ def forget(db, key: str) -> dict:
         shutil.rmtree(slot, ignore_errors=True)
         _put_record(db, key, saved=False)
         return {"ok": True, "forgotten": existed}
+
+
+def _drop_live() -> None:
+    """Remove the live login file (the store's byte-level equivalent of `codex logout`, which this module never runs). Absent is fine."""
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(_live_auth())
+
+
+def logout(db, *, now=None) -> dict:
+    """Log the box out of Codex without losing the login: its bytes are kept in a slot first, then the live auth.json is removed and the current
+    account is cleared. Busy (a login from Settings is in flight, or one of the board's own Codex sessions is open: a running Codex keeps its
+    login in memory and would write it back), SwitchRefused (the login file kept changing, or its bytes could not be copied: nothing is removed
+    then). Returns {ok, was, warnings}: `was` is the key of the account that was logged out, None when nobody was logged in (a harmless no-op).
+
+    Decision for the unknown login (a live file that is no slot's copy and has no current account to belong to): it is adopted as a new account
+    labelled "codex login <date>" (_confirm_current -> _adopt_unknown, the same path a switch uses) BEFORE the file is removed, so the person can switch
+    back to it. Refusing would leave a logged-in box that cannot log out; deleting would lose a login. A live file that is the current account's
+    refreshed token is saved over its slot (the old generation becomes .prev). The file is removed only after its exact bytes are found in a slot (or
+    in a slot's .prev, the older generation) and are still what the file holds: bytes with no copy are never deleted."""
+    _require()
+    with _lock:
+        if _login_in_flight():
+            raise Busy("a login is in progress; finish or cancel it first")
+        if _board_sessions(db):
+            raise Busy(BUSY_SESSIONS)
+        try:
+            got = _live_bytes()
+        except _Unstable:
+            raise SwitchRefused("the login file is being rewritten right now; nothing was changed") from None
+        if got is None:
+            if current(db):
+                db.kv_del(KV_CURRENT)                            # the file is gone already (a hand logout): the board stops naming an account
+            db.kv_del(KV_SWITCH)
+            db.kv_del(KV_RELOGIN)
+            codex_agent.forget_auth()
+            return {"ok": True, "was": None, "warnings": []}
+        cur, refreshed = _confirm_current(db, got, now)
+        if refreshed and _in_window(db, now):
+            raise SwitchRefused("the login file changed right after the last switch and cannot be told from an older Codex's write-back; "
+                                "wait a few minutes and try again")
+        if refreshed:
+            try:
+                _store_auth(slot_dir(cur), got[0])
+            except (OSError, ValueError) as e:
+                log.info("current Codex login not saved: %s", e.__class__.__name__)
+                raise SwitchRefused("could not save the current login first; nothing was changed") from None
+        kept = _matching_slot(got[0]) or (cur if cur and _is_prev(cur, got[0]) else None)
+        if kept is None:
+            raise SwitchRefused("could not save the current login first; nothing was changed")
+        try:
+            again = _live_bytes()
+        except _Unstable:
+            again = None
+        if again is None or again[1] != got[1] or again[0] != got[0]:
+            raise SwitchRefused("the login file changed while it was being saved; nothing was changed")
+        try:
+            _drop_live()
+        except OSError as e:
+            log.warning("Codex login not removed (%s)", e.__class__.__name__)
+            raise SwitchRefused("could not remove the login file; the login is still in place") from None
+        was = cur or kept
+        db.kv_del(KV_CURRENT)
+        db.kv_del(KV_SWITCH)                                     # no repair window: nothing may put the dropped login back
+        db.kv_del(KV_RELOGIN)
+        codex_agent.forget_auth()                                # the 60 s `codex login status` verdict must not say "logged in" any more
+        log.info("logged out of Codex; the login of %s stays saved", label_of(db, was))
+        return {"ok": True, "was": was, "warnings": _warnings()}
 
 
 # ------------------------------------------------------------------ adding a login (codex login --device-auth in .pending)

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """ccboard as an MCP server (stdio). A dependency-free JSON-RPC shim that calls the board over loopback
-with the local hook token. Register once with:
+with the local hook token. It is box-only: the hook token opens the whole /api surface, so the shim refuses any
+CCBOARD_URL that is not plain http to a loopback address (127.0.0.0/8, ::1 or the name localhost) and never follows
+a redirect. Another device needs the board's remote MCP endpoint with a token of its own, not a copy of this shim.
+Register once (on the box) with:
     claude mcp add --scope user ccboard -- /path/to/ccboard/.venv/bin/python /path/to/ccboard/scripts/ccboard_mcp.py
     codex mcp add ccboard --env CCBOARD_URL=http://127.0.0.1:8000 -- /path/to/ccboard/.venv/bin/python /path/to/ccboard/scripts/ccboard_mcp.py
 Tools: list_projects, create_task (dispatch false = a Backlog card; after_task_id = a chain step), list_tasks, get_task_status,
@@ -8,10 +11,12 @@ dispatch_task (start a Backlog task in a new session or a running one), get_task
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -57,6 +62,41 @@ TOOLS = [
 ]
 
 
+REFUSED = ("ccboard: this MCP shim only talks to the board on this machine (http to 127.0.0.1, ::1 or localhost); "
+           "the hook token stays on the box. To reach the board from another device, use the board's remote MCP endpoint "
+           "with a token of its own instead of this shim.")
+
+
+def loopback_url(url: str) -> bool:
+    """True only for http://<loopback>[:port][/path]: scheme http, no userinfo, host 127.0.0.0/8, ::1 or 'localhost'."""
+    try:
+        u = urllib.parse.urlsplit(url)
+        host, _port = u.hostname, u.port              # .port raises on a malformed port
+    except ValueError:
+        return False
+    if u.scheme != "http" or not host or "@" in u.netloc:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        a = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return a.is_loopback and (a.version == 4 or a == ipaddress.IPv6Address("::1"))     # 127.0.0.0/8 or ::1 exactly (not ::ffff:127.0.0.1)
+
+
+BOARD_OK = loopback_url(BOARD)                         # parsed once: CCBOARD_URL is read at start-up only
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A 3xx is an error, never a second request carrying the hook token somewhere else."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def token() -> str:
     try:
         return Path(TOKEN_FILE).read_text().strip()
@@ -65,13 +105,17 @@ def token() -> str:
 
 
 def call_api(method: str, path: str, body: dict | None = None) -> dict:
+    if not BOARD_OK:                                   # before reading the token or opening a socket
+        raise RuntimeError(REFUSED)
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(BOARD + path, data=data, method=method,
                                  headers={"X-CCBoard-Token": token(), "X-CCBoard": "1", "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with _OPENER.open(req, timeout=30) as r:
             return json.loads(r.read() or b"{}")
     except urllib.error.HTTPError as e:
+        if 300 <= e.code < 400:
+            raise RuntimeError(f"ccboard {e.code}: the board answered with a redirect; it is not followed (the hook token is never re-sent)")
         try:
             msg = json.loads(e.read()).get("error")
         except Exception:

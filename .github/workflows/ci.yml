@@ -17,9 +17,17 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    # A stuck Ubuntu mirror once held this job for 20 minutes before any test ran: fail fast instead.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - run: sudo apt-get update -qq && sudo apt-get install -y tmux
+      - timeout-minutes: 6
+        run: |
+          for i in 1 2 3; do
+            sudo timeout 120 apt-get update -qq -o Acquire::Retries=2 && sudo timeout 120 apt-get install -y tmux && exit 0
+            sleep 10
+          done
+          exit 1
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -75,3 +83,24 @@ jobs:
             CCBOARD_REVISION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Pull requests build the image without pushing it; only a merge to main publishes.
+  image-check:
+    needs: test
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: false
+          provenance: false
+          build-args: |
+            CCBOARD_VERSION=sha-${{ github.sha }}
+            CCBOARD_REVISION=${{ github.sha }}
+          cache-from: type=gha

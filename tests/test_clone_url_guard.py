@@ -341,3 +341,208 @@ def test_the_probe_never_sees_the_terminal(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
     preflight.ls_remote("https://github.com/o/r.git")
     assert Path(out).read_text().strip() == "eof"
+
+
+# ---------------------------------------------------------------- what the name resolves to (issue #22); projects.getaddrinfo is a table, never the real resolver
+
+import socket  # noqa: E402
+import threading  # noqa: E402
+
+PUBLIC4, PUBLIC6 = "140.82.112.3", "2606:50c0:8000::153"
+DNS_INTERNAL = "points at a local, private or tailnet address"
+
+
+def _ai(addr):
+    fam = socket.AF_INET6 if ":" in addr else socket.AF_INET
+    return (fam, socket.SOCK_STREAM, 6, "", (addr, 0, 0, 0) if fam == socket.AF_INET6 else (addr, 0))
+
+
+@pytest.fixture
+def dns(monkeypatch):
+    """projects.getaddrinfo answers from `table` (host -> list of addresses, or an exception to raise); every lookup is counted."""
+    table, calls = {}, []
+
+    def fake(host, port=None, *a, **k):
+        calls.append(host)
+        ans = table.get(host, socket.gaierror(socket.EAI_NONAME, "Name or service not known"))
+        if isinstance(ans, BaseException):
+            raise ans
+        if callable(ans):
+            return ans()
+        return [_ai(a) for a in ans]
+
+    monkeypatch.setattr(projects, "getaddrinfo", fake)
+    projects.dns_cache_clear()
+    return type("DNS", (), {"table": table, "calls": calls})
+
+
+@pytest.mark.parametrize("addrs", [["127.0.0.1"], ["10.0.0.5"], ["172.16.3.4"], ["192.168.1.20"], ["169.254.169.254"], ["100.64.0.7"],
+                                   ["100.100.100.100"], ["fd7a:115c:a1e0::1"], ["fc00::5"], ["fe80::1"], ["::1"], ["::ffff:10.0.0.1"], ["0.0.0.0"],
+                                   [PUBLIC4, "10.0.0.5"], [PUBLIC6, PUBLIC4, "127.0.0.1"], ["192.168.0.1", PUBLIC4]])
+def test_a_name_with_any_internal_answer_is_refused(dns, addrs):
+    dns.table["git.example.com"] = addrs
+    for url in ("https://git.example.com/o/r.git", "ssh://git@git.example.com/o/r.git", "git@git.example.com:o/r.git"):
+        projects.dns_cache_clear()
+        with pytest.raises(projects.BadRequest) as e:
+            projects.check_url(url)
+        msg = str(e.value)
+        assert DNS_INTERNAL in msg and "CCBOARD_CLONE_ALLOWED_HOSTS" in msg
+        assert not any(a in msg for a in addrs), "the sentence never echoes an address"
+
+
+def test_only_public_answers_pass(dns):
+    dns.table["github.com"] = [PUBLIC4, PUBLIC6]
+    for url in ("https://github.com/o/r.git", "ssh://git@github.com/o/r.git", "git@github.com:o/r.git", "https://GitHub.com./o/r"):
+        assert projects.check_url(url) == url
+    assert set(dns.calls) == {"github.com"}, "the host is resolved lower-cased and without its trailing dot"
+
+
+def test_an_allow_listed_name_is_never_resolved(dns, monkeypatch):
+    allow(monkeypatch, "gitea.lan,git.corp.example.com")
+    dns.table["git.corp.example.com"] = ["10.1.2.3"]
+    assert projects.check_url("https://gitea.lan/o/r") and projects.check_url("https://git.corp.example.com/o/r")
+    assert projects.check_url("git@git.corp.example.com:o/r") and dns.calls == []
+    assert projects.clone_pin("https://git.corp.example.com/o/r") is None
+
+
+def test_a_name_that_does_not_resolve_is_refused_with_its_own_sentence(dns):
+    with pytest.raises(projects.BadRequest, match="^the host name does not resolve$"):
+        projects.check_url("https://nowhere.example.com/o/r")
+    dns.table["empty.example.com"] = []
+    with pytest.raises(projects.BadRequest, match="does not resolve"):
+        projects.check_url("https://empty.example.com/o/r")
+    dns.table["odd.example.com"] = UnicodeError("label too long")
+    with pytest.raises(projects.BadRequest, match="does not resolve"):
+        projects.check_url("https://odd.example.com/o/r")
+
+
+def test_a_resolver_that_hangs_is_cut_off_at_the_cap(dns, monkeypatch):
+    monkeypatch.setattr(projects, "RESOLVE_TIMEOUT", 0.3)
+    release = threading.Event()
+    dns.table["slow.example.com"] = lambda: release.wait(5) and [_ai(PUBLIC4)]
+    t0 = time.monotonic()
+    try:
+        with pytest.raises(projects.BadRequest) as e:
+            projects.check_url("https://slow.example.com/o/r")
+        assert time.monotonic() - t0 < 1.5, "the request thread stops waiting at the cap"
+        assert "did not resolve within 2 seconds" in str(e.value) and "does not resolve" not in str(e.value)
+    finally:
+        release.set()
+    assert projects.RESOLVE_TIMEOUT == 0.3 and projects.RESOLVE_CACHE_S >= 5
+
+
+def test_a_good_answer_is_cached_for_a_few_seconds_and_a_refusal_is_not(dns, monkeypatch):
+    dns.table["github.com"] = [PUBLIC4]
+    projects.check_url("https://github.com/o/a.git")
+    projects.check_url("git@github.com:o/b.git")
+    assert projects.clone_pin("https://github.com/o/a.git") == ("github.com", 443, (PUBLIC4,))
+    assert dns.calls == ["github.com"], "the probe, the pin and the clone that follows resolve once"
+    now = [time.monotonic()]
+    monkeypatch.setattr(projects.time, "monotonic", lambda: now[0])
+    now[0] += projects.RESOLVE_CACHE_S + 1
+    projects.check_url("https://github.com/o/a.git")
+    assert dns.calls == ["github.com", "github.com"], "after the window it is resolved again"
+    dns.table["flip.example.com"] = ["10.0.0.1"]
+    for _ in range(2):
+        with pytest.raises(projects.BadRequest):
+            projects.check_url("https://flip.example.com/o/r")
+    assert dns.calls.count("flip.example.com") == 2
+
+
+def _probe(monkeypatch, version):
+    seen = {}
+
+    def fake(argv, *, env, timeout):
+        seen.update(argv=argv, timeout=timeout)
+        return subprocess.CompletedProcess(argv, 0, "ref: refs/heads/main\tHEAD\n" + "a" * 40 + "\trefs/heads/main\n", "")
+    monkeypatch.setattr(preflight, "_run", fake)
+    monkeypatch.setattr(preflight, "git_version", lambda: version)
+    return seen
+
+
+def test_the_https_probe_is_pinned_to_the_checked_addresses(dns, monkeypatch):
+    dns.table["github.com"] = [PUBLIC4, PUBLIC6]
+    dns.table["gitlab.example.com"] = [PUBLIC4]
+    seen = _probe(monkeypatch, (2, 43, 0))
+    assert preflight.preflight_clone("https://github.com/o/r.git")["reachable"] is True
+    a = seen["argv"]
+    assert a[:3] == ["git", "-c", "http.followRedirects=false"] and a[-2:] == ["--", "https://github.com/o/r.git"]
+    assert f"http.curloptResolve=github.com:443:{PUBLIC4},[{PUBLIC6}]" in a and a[a.index(f"http.curloptResolve=github.com:443:{PUBLIC4},[{PUBLIC6}]") - 1] == "-c"
+    assert dns.calls == ["github.com"]
+    preflight.preflight_clone("https://user:tok@gitlab.example.com:8443/o/r.git")
+    assert f"http.curloptResolve=gitlab.example.com:8443:{PUBLIC4}" in seen["argv"]
+    preflight.preflight_clone("git@github.com:o/r.git")
+    assert not any("curloptResolve" in x for x in seen["argv"]), "ssh is never pinned (host key checking stays intact)"
+
+
+def test_a_git_without_the_option_gets_no_pin_and_the_doctor_says_so(dns, monkeypatch):
+    from app import doctor
+    dns.table["github.com"] = [PUBLIC4]
+    seen = _probe(monkeypatch, (2, 36, 9))
+    assert preflight.preflight_clone("https://github.com/o/r.git")["reachable"] is True
+    assert not any("curloptResolve" in x for x in seen["argv"]) and dns.calls == ["github.com"], "still checked, just not pinned"
+    assert preflight.pin_supported((2, 37, 0)) and not preflight.pin_supported((2, 36, 9)) and not preflight.pin_supported(None)
+    monkeypatch.setattr(doctor, "_run", lambda argv, timeout=None: doctor.Proc(0, "git version 2.36.6\n", ""))
+    out = doctor._c_git(None)
+    assert out.status == "pass" and "no http.curloptResolve" in out.detail and "relies on the check alone" in out.detail
+    monkeypatch.setattr(doctor, "_run", lambda argv, timeout=None: doctor.Proc(0, "git version 2.43.0\n", ""))
+    out = doctor._c_git(None)
+    assert out.status == "pass" and out.detail.startswith("git 2.43.0") and "pins the checked address" in out.detail
+
+
+def test_the_git_version_is_read_from_the_version_line():
+    assert preflight.parse_git_version("git version 2.43.0") == (2, 43, 0)
+    assert preflight.parse_git_version("git version 2.39.3 (Apple Git-146)") == (2, 39, 3)
+    assert preflight.parse_git_version("git version 2.37") == (2, 37, 0)
+    assert preflight.parse_git_version("nope") is None
+
+
+def test_the_lookup_comes_off_the_probes_12_seconds(dns, monkeypatch):
+    dns.table["github.com"] = [PUBLIC4]
+    seen = _probe(monkeypatch, (2, 43, 0))
+    real = projects.resolve_public
+
+    def slow(host):
+        time.sleep(0.4)
+        return real(host)
+    monkeypatch.setattr(projects, "resolve_public", slow)
+    preflight.preflight_clone("https://github.com/o/r.git")
+    assert seen["timeout"] <= preflight.TIMEOUT - 0.4
+
+
+@pytest.mark.parametrize("route", ["preflight", "project", "repo", "bulk"])
+def test_every_route_refuses_a_name_that_resolves_inside(lite_client, projects_dir, nothing_starts, dns, route):
+    dns.table["github.com"] = [PUBLIC4]
+    dns.table["evil.example.com"] = [PUBLIC4, "127.0.0.1"]
+    url = "https://evil.example.com/o/r.git"
+    if route == "preflight":
+        r = lite_client.post("/api/preflight/clone", json={"url": url}, headers=H)
+    elif route == "project":
+        r = lite_client.post("/api/projects", json={"name": "shop", "url": url}, headers=H)
+    elif route == "repo":
+        assert lite_client.post("/api/projects", json={"name": "shop"}, headers=H).status_code == 201
+        r = lite_client.post("/api/projects/shop/repos", json={"url": url, "name": "x"}, headers=H)
+    else:
+        r = lite_client.post("/api/projects/shop/repos/bulk", json={"repos": [{"name": "ok", "url": "https://github.com/o/ok.git"},
+                                                                              {"name": "bad", "url": url}]}, headers=H)
+    assert r.status_code == 400 and DNS_INTERNAL in r.json()["error"] and "127.0.0.1" not in r.json()["error"]
+    assert nothing_starts["created"] == [] and nothing_starts["sent"] == []
+    assert not (projects_dir / "shop" / "x").exists() and not (projects_dir / "shop" / "r").exists()
+
+
+def test_a_queued_bulk_clone_is_checked_again_when_it_starts(projects_dir, dns):
+    from app import clonequeue
+    (projects_dir / "shop").mkdir()
+    dns.table["git.example.com"] = ["10.0.0.9"]                          # the record changed after the item was queued
+    clonequeue.clear_done()
+    clonequeue.enqueue([{"project": "shop", "repo": "r", "url": "https://git.example.com/o/r.git"}])
+    launched = []
+    orig = clonequeue.running_clones
+    try:
+        clonequeue.running_clones = lambda: 0
+        assert clonequeue.step(lambda *a: launched.append(a)) == 0
+    finally:
+        clonequeue.running_clones = orig
+    done = clonequeue.status()["done"][-1]
+    assert launched == [] and done["status"] == "failed" and DNS_INTERNAL in done["error"]
+    assert not (projects_dir / "shop" / "r").exists()

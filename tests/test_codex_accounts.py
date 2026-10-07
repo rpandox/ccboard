@@ -1507,3 +1507,149 @@ def test_the_login_endpoint_takes_replace_key_without_a_label_and_answers_404_fo
     assert {r["key"]: r for r in body["list"]}[kb]["saved_at"]
     st = api.get("/api/state", headers=H).json()["codex_accounts"]
     assert "tail" not in st["login"] and st["login"]["replace_key"] is None
+
+
+# ---------------------------------------------------------------- logout (v0.5.19, issue 3): POST /api/codex-accounts/logout
+
+def test_logout_keeps_the_saved_copy_removes_the_live_file_and_clears_the_current_account(box):
+    ka, kb = box.two()
+    r = cx.logout(box.db)
+    assert r == {"ok": True, "was": ka, "warnings": []}
+    assert not box.auth.exists(), "the live login is gone"
+    assert (cx.slot_dir(ka) / "auth.json").read_bytes() == AUTH["A"], "the slot still holds the login"
+    assert cx.current(box.db) is None and box.kv("codex_account_current") is None
+    assert box.kv("codex_account_switch") is None
+    assert cx.view(box.db)["current"] is None and [x["current"] for x in cx.view(box.db)["list"]] == [False, False]
+    cx.tick(box.db)                                              # nothing brings the dropped login back or adopts anything
+    assert not box.auth.exists() and cx.current(box.db) is None and len(box.kv("codex_accounts")) == 2
+    assert cx.switch(box.db, ka)["to"] == ka and box.auth.read_bytes() == AUTH["A"], "and the old account can be switched back to"
+
+
+def test_logout_saves_a_refreshed_token_into_the_current_slot_before_removing_it(box):
+    ka, kb = box.two()
+    box.log_in("A2")                                             # a running Codex refreshed the token; the tick has not saved it yet
+    cx.logout(box.db)
+    assert not box.auth.exists()
+    assert (cx.slot_dir(ka) / "auth.json").read_bytes() == AUTH["A2"] and (cx.slot_dir(ka) / "auth.json.prev").read_bytes() == AUTH["A"]
+
+
+def test_logout_of_a_live_login_that_matches_no_slot_keeps_a_copy_as_an_adopted_account_first(box):
+    # decision: an unknown login (no slot holds it, no current account owns it) is adopted like _adopt_unknown does, then removed; never deleted without a copy
+    ka = box.onboard("A")
+    box.db.kv_set("codex_account_current", {})                   # the board lost track of who is live
+    box.log_in("C")
+    assert cx._matching_slot(AUTH["C"]) is None
+    r = cx.logout(box.db)
+    assert r["ok"] and r["was"] and r["was"] != ka
+    assert not box.auth.exists()
+    assert (cx.slot_dir(r["was"]) / "auth.json").read_bytes() == AUTH["C"]
+    assert box.kv("codex_accounts")[r["was"]]["label"].startswith("codex login ")
+    assert (cx.slot_dir(ka) / "auth.json").read_bytes() == AUTH["A"], "A's saved login was not touched"
+    assert cx.switch(box.db, r["was"])["to"] == r["was"] and box.auth.read_bytes() == AUTH["C"]
+
+
+def test_logout_never_removes_bytes_it_could_not_copy(box, monkeypatch):
+    ka, kb = box.two()
+    box.log_in("A2")
+    monkeypatch.setattr(cx, "_store_auth", lambda slot, data: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(cx.SwitchRefused, match="could not save the current login first; nothing was changed"):
+        cx.logout(box.db)
+    assert box.auth.read_bytes() == AUTH["A2"] and cx.current(box.db) == ka
+
+
+def test_logout_refuses_when_the_file_changes_while_it_is_saved(box, monkeypatch):
+    ka, kb = box.two()
+    box.log_in("A2")
+    real = cx._store_auth
+
+    def store_then_rewrite(slot, data):
+        real(slot, data)
+        put_auth(box.live, AUTH["B2"], age=0.0)                  # another Codex rewrote the file in between
+    monkeypatch.setattr(cx, "_store_auth", store_then_rewrite)
+    with pytest.raises(cx.SwitchRefused, match="changed while it was being saved"):
+        cx.logout(box.db)
+    assert box.auth.read_bytes() == AUTH["B2"] and cx.current(box.db) == ka
+
+
+def test_logout_is_busy_while_a_board_codex_session_is_open_or_a_login_is_in_flight_and_changes_nothing(box):
+    ka, kb = box.two()
+    add_codex_row(box.db)
+    alive(box, "shop--api--s1")
+    with pytest.raises(cx.Busy, match=r"close the board's Codex sessions first; a running Codex keeps its login and would write it back"):
+        cx.logout(box.db)
+    assert box.auth.read_bytes() == AUTH["A"] and cx.current(box.db) == ka
+    box.tmux["sessions"].clear()
+    cx.start_login(box.db, "Third")
+    with pytest.raises(cx.Busy, match="a login is in progress"):
+        cx.logout(box.db)
+    assert box.auth.read_bytes() == AUTH["A"] and cx.current(box.db) == ka and not (cx.slot_dir(ka) / "auth.json.prev").exists()
+    cx.cancel_login()
+    assert cx.logout(box.db)["was"] == ka
+
+
+def test_logout_with_nobody_logged_in_is_a_harmless_noop(box):
+    assert cx.logout(box.db) == {"ok": True, "was": None, "warnings": []}
+    ka, kb = box.two()
+    box.auth.unlink()                                            # a hand logout: the kv still names A
+    assert cx.logout(box.db) == {"ok": True, "was": None, "warnings": []}
+    assert cx.current(box.db) is None and cx.has_saved(ka), "the stale current record is cleared, the slot is kept"
+
+
+def test_logout_refuses_a_live_file_it_cannot_explain_right_after_a_switch(box):
+    ka, kb = box.two()
+    cx.switch(box.db, kb)
+    box.log_in("A2")
+    with pytest.raises(cx.SwitchRefused, match="cannot be told from an older Codex's write-back"):
+        cx.logout(box.db)
+    assert box.auth.read_bytes() == AUTH["A2"]
+
+
+def test_logout_warns_when_other_codex_processes_exist(box):
+    box.two()
+    fake_proc(box.proc, 100, "codex", ppid=1)
+    assert cx.logout(box.db)["warnings"] == ["other Codex processes on this box keep the previous login until they restart"]
+
+
+def test_logout_drops_the_cached_login_verdict(box, monkeypatch):
+    box.two()
+    cleared = []
+    monkeypatch.setattr(codex_agent, "forget_auth", lambda: cleared.append(1))
+    cx.logout(box.db)
+    assert cleared == [1]
+
+
+def test_logout_needs_a_codex_binary(box, monkeypatch):
+    monkeypatch.setattr(settings, "codex_bin", lambda: None)
+    with pytest.raises(cx.Unsupported):
+        cx.logout(box.db)
+
+
+def test_the_logout_route_answers_ok_was_warnings_accounts_and_refuses_with_409(box, api):
+    ka, kb = box.two()
+    assert api.post("/api/codex-accounts/logout").status_code == 403, "X-CCBoard is needed"
+    add_codex_row(box.db)
+    alive(box, "shop--api--s1")
+    r = post(api, "/api/codex-accounts/logout")
+    assert r.status_code == 409 and r.json()["detail"] == r.json()["error"] and "close the board's Codex sessions first" in r.json()["detail"]
+    assert box.auth.read_bytes() == AUTH["A"]
+    box.tmux["sessions"].clear()
+    r = post(api, "/api/codex-accounts/logout")
+    body = r.json()
+    assert r.status_code == 200 and body["ok"] is True and body["was"] == ka and body["warnings"] == []
+    assert body["accounts"]["current"] is None and {x["key"]: x["saved"] for x in body["accounts"]["list"]} == {ka: True, kb: True}
+    assert api.get("/api/state", headers=H).json()["codex_accounts"]["current"] is None
+    again = post(api, "/api/codex-accounts/logout")
+    assert again.status_code == 200 and again.json()["was"] is None and again.json()["ok"] is True
+
+
+def test_the_logout_bytes_never_appear_in_the_answer_the_log_the_kv_or_the_events(box, api, caplog):
+    caplog.set_level(logging.DEBUG)
+    ka, kb = box.two()
+    box.log_in("A2")
+    seen = [post(api, "/api/codex-accounts/logout").text, post(api, "/api/codex-accounts/logout").text, api.get("/api/state", headers=H).text]
+    dump = []
+    for (name,) in box.db.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+        dump += [repr(tuple(row)) for row in box.db.conn.execute(f'SELECT * FROM "{name}"').fetchall()]
+    blob = "\n".join(seen + dump + [caplog.text] + [(cx.slot_dir(k) / "meta.json").read_text() for k in cx._slot_keys()])
+    assert "SECRET" not in blob, [ln for ln in blob.splitlines() if "SECRET" in ln][:3]
+    assert "logged out of Codex" in caplog.text

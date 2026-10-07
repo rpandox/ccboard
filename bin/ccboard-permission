@@ -4,12 +4,15 @@
 # down, the session is attached, or nobody answers in time, prints nothing so the normal TUI
 # prompt appears. X-CCBoard-Agent names the agent that is asking (Codex's hook command sets CCBOARD_AGENT=codex): the board ignores
 # a request whose agent is not the one that owns the row it resolved to, so a foreign run never parks a prompt on someone else's row.
+# X-CCBoard-Child carries CLAUDE_CODE_CHILD_SESSION (as bin/ccboard-hook does): a nested claude's request is not the row's unless it is
+# the row's own conversation, and the board then answers at once with no decision.
 url="${CCBOARD_URL:-http://127.0.0.1:8000}"
 tokfile="${CCBOARD_HOOK_TOKEN_FILE:-$HOME/.local/share/ccboard/hook-token}"
 tok=$(cat "$tokfile" 2>/dev/null) || exit 0
 [ -n "$tok" ] || exit 0
 resp=$(curl -s -m "${CCBOARD_APPROVE_TIMEOUT:-90}" -X POST "$url/api/permission" \
   -H "Content-Type: application/json" -H "X-CCBoard-Token: $tok" -H "X-CCBoard-Agent: ${CCBOARD_AGENT:-claude}" \
+  -H "X-CCBoard-Child: ${CLAUDE_CODE_CHILD_SESSION:-}" \
   -H "X-CCBoard-Session: ${CCBOARD_SESSION:-}" -H "X-CCBoard-Pane: ${TMUX_PANE:-}" -H "X-CCBoard-Tmux: ${TMUX:-}" \
   --data-binary @- 2>/dev/null) || exit 0
 printf '%s' "$resp" | python3 -c '

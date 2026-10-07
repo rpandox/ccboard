@@ -774,66 +774,10 @@ function formStatus(node, text, bad) {
   node.setAttribute('role', bad ? 'alert' : 'status');
 }
 
-/* The clone queue line: queued clones and failed ones with a Clear button, rebuilt only when what it says changes (st.clone_queue). */
-function cloneQueueView() {
-  const node = el('div', { class: 'clone-queue dim', 'aria-live': 'polite' });
-  let sig = null;
-  const update = (st) => {
-    const cq = st && st.clone_queue;
-    if (!cq) { if (sig !== '') { sig = ''; node.textContent = ''; } return; }
-    const queued = (cq.queued || []).length;
-    const failed = (cq.done || []).filter((d) => d.status === 'failed');
-    const next = JSON.stringify([queued, cq.cap, failed.map((f) => [f.repo, f.error])]);
-    if (next === sig) return;
-    sig = next;
-    node.textContent = '';
-    if (queued) node.append(el('span', { text: `${queued} clone${queued === 1 ? '' : 's'} queued (max ${cq.cap} at once) ` }));
-    if (failed.length) {
-      node.append(el('span', { class: 'bad', text: `${failed.length} failed: ${failed.map((f) => f.repo + ' (' + (f.error || '') + ')').join('; ').slice(0, 300)} ` }),
-        el('button', { type: 'button', class: 'small', onclick: async () => { try { await api('POST', '/api/clone-queue/clear'); } catch (e) { setError(e.message); } await poll(true); }, text: 'Clear' }));
-    }
-  };
-  update(typeof state !== 'undefined' ? state : null);
-  return { node, update };
-}
-
 /* The header of a list in a form (repos to pick): a title, an optional count, and the list's own tools (Load, Invert) as quiet small buttons,
    so the footer carries the primary and Cancel and nothing else. */
 function listHead(title, ...tools) {
   return el('div', { class: 'row list-head' }, el('span', { class: 'dim list-title', text: title }), ...tools);
-}
-
-function projectForm(opts) {
-  const o = opts || {};
-  const name = el('input', { type: 'text', placeholder: 'e.g. shop', required: true, maxlength: 64, autocomplete: 'off', autocapitalize: 'off' });
-  const url = el('input', { type: 'text', placeholder: 'https://github.com/you/repo.git', autocomplete: 'off', autocapitalize: 'off' });
-  const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
-  const where = typeof state !== 'undefined' && state && state.config ? state.config.projects_dir : '';
-  const nameField = field('Name', name, 'A folder in the projects directory: letters, digits, - and _ (start and end with a letter or digit).');
-  const urlField = field('Clone URL', url, 'Optional: the first repo, cloned into the project.');
-  name.addEventListener('input', () => fieldError(nameField, ''));
-  const form = el('form', { class: 'form', novalidate: true, onsubmit: async (e) => {
-    e.preventDefault();
-    fieldError(nameField, '');
-    const body = { name: name.value.trim() };
-    if (!body.name) { fieldError(nameField, 'Name the project.', true); return; }
-    if (url.value.trim()) body.url = url.value.trim();
-    try {
-      const res = await api('POST', '/api/projects', body);
-      name.value = ''; url.value = '';
-      formStatus(status, '');
-      setError(null);
-      if (typeof o.onDone === 'function') o.onDone(body, res);
-      await poll(true);
-      if (body.name && typeof navigate === 'function') navigate('#/p/' + encodeURIComponent(body.name));   // a new project has no sessions: Home keeps it under 'older', its page shows it
-    } catch (err) { formStatus(status, err.message, true); setError(err.message); }
-  } },
-  where ? el('div', { class: 'dim', text: `A folder per project under ${where}; each repo is a subfolder and sessions run inside a repo.` }) : null,
-  nameField, urlField, status,
-  el('div', { class: 'submit' }, el('button', { class: 'primary', type: 'submit', text: 'Create project' }),
-    el('button', { type: 'button', onclick: () => { if (typeof o.onCancel === 'function') o.onCancel(); }, text: 'Cancel' })));
-  form.focusFirst = () => focusFine(name);
-  return form;
 }
 
 /* Run one headless prompt in every picked repo: POST /api/batch, with Claude or Codex (v0.5.16: the agent picker; every job of the batch runs with it). */
