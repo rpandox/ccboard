@@ -157,6 +157,10 @@ body[data-sb="none"] #sidebar { display:none; }
 .cnt:empty { display:none; }
 .cnt.attn, .nav-item.attn .cnt { color:var(--warn); }
 .sb-h { margin:14px 14px 4px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+.sb-h { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.sb-add { display:inline-flex; align-items:center; min-height:var(--row-btn,28px); padding:0 6px; margin-right:-6px; border-radius:2px; font-size:11px; font-weight:600; letter-spacing:.02em; text-transform:none; color:var(--dim); text-decoration:none; }       /* '+ project': the wizard (v0.5.19) */
+.sb-add:focus-visible { outline:2px solid var(--sig); outline-offset:1px; }
+@media (hover:hover) { .sb-add:hover { color:var(--fg); } }
 .sb-empty { margin:4px 14px; }
 .sb-foot { margin-top:auto; padding:10px 8px 0; }
 .sb-foot .collapse { color:var(--dim); }

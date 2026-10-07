@@ -1,13 +1,12 @@
-/* ccboard placeholder pages: routes whose page arrives in a later phase (memory, onboarding). Each one
+/* ccboard placeholder pages: routes whose page arrives in a later phase (memory). Each one
    registers now so the route exists, the title and breadcrumbs work and a deep link shows what is coming instead of a blank page.
    They take onRoute, so changing only the params or the query (#/memory to #/memory/shop) redraws in place without a remount.
    The project route left this file with v0.5.6: pages/project.js is its real page; the usage route left with v0.5.17 (pages/usage.js); the quad route
-   left with v0.5.9 (pages/quad.js). */
+   left with v0.5.9 (pages/quad.js); the onboarding route left with v0.5.19 (pages/onboarding.js). */
 'use strict';
 
 const PLACEHOLDER_INFO = {
   memory: { icon: 'database', name: 'Memory', version: 'v0.5.20' },
-  onboarding: { icon: 'build', name: 'Onboarding', version: 'v0.5.19' },
 };
 
 /* What the route names, for the title: the project (and repo) or step, then the tab, if any. */
@@ -16,7 +15,6 @@ function placeholderDetail(id, route) {
   const q = (route && route.query) || {};
   const parts = [];
   if (id === 'memory' && p.project) parts.push(p.project);
-  else if (id === 'onboarding' && p.step) parts.push('new project');
   if (q.tab) parts.push(q.tab);
   return parts.join(' · ');
 }
@@ -48,4 +46,3 @@ function placeholderPage(id) {
 }
 
 registerPage('memory', placeholderPage('memory'));
-registerPage('onboarding', placeholderPage('onboarding'));

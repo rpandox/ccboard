@@ -13,7 +13,7 @@ import { STATIC, makeWorld, plain } from './harness.mjs';
 import { fixtureState, sess } from './world.mjs';
 import { makeNetworkWorld, settle } from './treekit.mjs';
 
-const PAGE_FILES = ['home', 'inbox', 'tasks', 'project', 'agents', 'settings', 'search', 'session', 'placeholders'];
+const PAGE_FILES = ['home', 'inbox', 'tasks', 'project', 'agents', 'doctor', 'settings', 'search', 'session', 'onboarding', 'placeholders'];
 
 /** makeNetworkWorld's FakeDate starts here (treekit.mjs): ages in the page are measured from it, not from the host clock. */
 const T0 = 1790000000000;

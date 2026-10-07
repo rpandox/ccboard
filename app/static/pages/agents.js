@@ -1102,6 +1102,7 @@ function agentsExtEnsure(st) {
 
 function agentsExtRepaint() {
   if (agentsPage.refs && agentsPage.refs.ext) agentsPatchExt(agentsPage.refs, currentState());
+  if (typeof settingsExtRepaint === 'function') settingsExtRepaint();      // Settings > Agents lists the same outside threads (v0.5.19)
 }
 
 async function agentsExtLoad() {

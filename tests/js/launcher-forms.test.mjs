@@ -60,7 +60,7 @@ const sheet = (w) => w.document.getElementById('sheet');
 const form = (w) => sheet(w).querySelector('form.form');
 const submit = (f) => f.dispatchEvent({ type: 'submit', preventDefault() {} });
 const fieldOf = (n, re) => n.querySelectorAll('.field').find((f) => re.test(text(f.querySelector('label'))));
-const open = (w, kind, ctx) => w.run(`Shell.openCreate(${JSON.stringify(kind)}, ${JSON.stringify(ctx || null)})`);
+const open = (w, kind, ctx) => (kind === 'project' ? w.run('Shell.projectSheet()') : w.run(`Shell.openCreate(${JSON.stringify(kind)}, ${JSON.stringify(ctx || null)})`));     // v0.5.19: the + menu's project entry is the wizard page; the sheet stays reachable by name
 const SHOP_API = { project: 'shop', repo: 'api' };
 
 // ---------------------------------------------------------------- field()

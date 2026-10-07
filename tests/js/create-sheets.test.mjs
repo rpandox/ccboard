@@ -50,19 +50,23 @@ const title = (w) => text(sheet(w).querySelector('.sheet-title'));
 const field = (n, label) => n.querySelectorAll('.field').find((f) => text(f.querySelector('label')) === label);
 const submit = (form) => form.dispatchEvent({ type: 'submit', preventDefault() {} });
 const open = (w, kind) => w.run(`Shell.openCreate(${JSON.stringify(kind)})`);
+const openProjectSheet = (w) => w.run('Shell.projectSheet()');         // v0.5.19: the + menu's project entry goes to the wizard; the old sheet stays for the callers that ask for it by name
 const closed = (w) => { sheet(w).close(); };
 
 // ---------------------------------------------------------------- the entry point
 
 test('openCreate opens the sheet for every kind and says so; an unknown kind, no state or no sheet answers false', () => {
   const w = sWorld();
-  const titles = { session: 'New session', task: 'New task', schedule: 'Schedule a run', project: 'New project', import: 'Import repos from GitHub', batch: 'Batch prompt across repos' };
+  const titles = { session: 'New session', task: 'New task', schedule: 'Schedule a run', import: 'Import repos from GitHub', batch: 'Batch prompt across repos' };
   for (const [kind, want] of Object.entries(titles)) {
     assert.equal(open(w, kind), true, kind);
     assert.equal(sheet(w).open, true, kind);
     assert.equal(title(w), want, kind);
     closed(w);
   }
+  assert.equal(open(w, 'project'), true, 'v0.5.19: the project entry opens the wizard page, not a sheet');
+  assert.equal(sheet(w).open, false, 'no sheet for it');
+  assert.equal(w.location.hash, '#/onboarding/project');
   assert.equal(open(w, 'nonsense'), false);
   assert.equal(sheet(w).open, false, 'nothing opened');
   w.run('state = null');
@@ -101,7 +105,7 @@ test('session, task and schedule go through the repo picker, then the launcher f
 
 test('the project sheet: POST /api/projects {name}, a toast, and the sheet closes for a blank project', async () => {
   const w = sWorld();
-  open(w, 'project');
+  openProjectSheet(w);
   const form = sheet(w).querySelector('form.form');
   assert.match(text(sheet(w).querySelector('.sheet-body')), /A folder per project under \/srv\/projects/);
   field(form, 'Name').querySelector('input').value = ' shop2 ';
@@ -115,7 +119,7 @@ test('the project sheet: POST /api/projects {name}, a toast, and the sheet close
 
 test('a project with a clone URL keeps the sheet open so the queue shows the clone', async () => {
   const w = sWorld();
-  open(w, 'project');
+  openProjectSheet(w);
   const form = sheet(w).querySelector('form.form');
   field(form, 'Name').querySelector('input').value = 'blog';
   field(form, 'Clone URL').querySelector('input').value = 'https://example.invalid/blog.git';
@@ -129,7 +133,7 @@ test('a project with a clone URL keeps the sheet open so the queue shows the clo
 test('a failed create stays open and says why, inline and as a toast through setError', async () => {
   const w = sWorld({ answers: { '/api/projects': { __error: 'project name already exists' } } });
   w.run('globalThis.__errors = []; setError = (m) => { __errors.push(m); };');
-  open(w, 'project');
+  openProjectSheet(w);
   const form = sheet(w).querySelector('form.form');
   field(form, 'Name').querySelector('input').value = 'shop';
   submit(form);
@@ -142,7 +146,7 @@ test('a failed create stays open and says why, inline and as a toast through set
 
 test('the clone queue line follows st.clone_queue through the sheet watch: queued clones, failures with Clear', async () => {
   const w = sWorld();
-  open(w, 'project');
+  openProjectSheet(w);
   const line = () => sheet(w).querySelector('.clone-queue');
   assert.equal(text(line()), '', 'nothing queued');
   assert.equal(typeof w.get('Shell.formWatch'), 'function', 'render() calls the watch');
@@ -164,7 +168,7 @@ test('the clone queue line follows st.clone_queue through the sheet watch: queue
 
 test('the project sheet offers the two bulk entries the v0.4 board had beside its form', () => {
   const w = sWorld();
-  open(w, 'project');
+  openProjectSheet(w);
   const links = sheet(w).querySelectorAll('.sheet-links button');
   assert.deepEqual(links.map(text), ['Import from GitHub…', 'Batch prompt…']);
   const kids = sheet(w).querySelector('.sheet-body').children;
@@ -301,7 +305,7 @@ test('the v0.4 entry points openImport() and openBatch() open the same sheets', 
 test('Cancel closes the sheet from every form', () => {
   const w = sWorld();
   for (const kind of ['project', 'import', 'batch']) {
-    open(w, kind);
+    if (kind === 'project') openProjectSheet(w); else open(w, kind);
     sheet(w).querySelectorAll('button').find((b) => text(b) === 'Cancel').click();
     assert.equal(sheet(w).open, false, kind);
   }

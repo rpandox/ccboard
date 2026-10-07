@@ -1449,3 +1449,71 @@ def test_memory_group_filter_and_caching(mem):
     with pytest.raises(ValueError):
         doctor.run("nope")
     doctor.invalidate()
+
+
+# ------------------------------------------------------------------ v0.5.19: every failing check says what to do; the fix kinds the Doctor page draws
+
+import builtins as _builtins  # noqa: E402
+open_real = _builtins.open
+FIX_ACTIONS = {"claude_login", "codex_login", "notify_test"}      # what fix.action may be: the page maps each to a button (a hyphenated spelling is accepted there)
+
+
+def test_a_broken_box_gives_every_warning_and_failure_a_fix_with_words(world, monkeypatch, tmp_path):
+    world.cmds[("tmux", "-V")] = doctor.Proc(0, "tmux 3.0\n", "")
+    world.cmds[("git", "--version")] = doctor.ToolMissing("git")
+    world.cmds[("gh", "--version")] = doctor.ToolMissing("gh")
+    world.cmds[("ccusage", "--version")] = doctor.ToolMissing("ccusage")
+    world.ports = {7681: False, 8080: False}
+    world.tmux_up = False
+    world.auth = {"installed": True, "loggedIn": False}
+    world.http = OSError("refused")
+    monkeypatch.setattr(settings, "projects_dir", tmp_path / "gone")
+    monkeypatch.setattr(settings, "allowed_users", set())
+    (Path(settings.claude_config_dir) / "settings.json").unlink()
+    out = doctor.run(refresh=True, db=DB(0))
+    bad = [c for c in out["checks"] if c["status"] in ("warn", "fail")]
+    assert len(bad) >= 12, [c["id"] for c in bad]
+    for c in bad:
+        assert c["fix"] and c["fix"]["text"], f"{c['id']} ({c['status']}) has no fix text"
+        assert set(c["fix"]) <= {"text", "cmd", "action"}
+        assert c["fix"].get("action", "claude_login") in FIX_ACTIONS
+    assert all(c["fix"] is None for c in out["checks"] if c["status"] == "pass")
+
+
+def test_unreadable_wrapper_and_unreadable_subscriptions_carry_a_fix(world, monkeypatch):
+    monkeypatch.setattr(doctor.os, "access", lambda p, mode: False if str(p).endswith("ccboard-attach") and mode == os.R_OK else True)
+
+    def unreadable(*a, **k):
+        raise OSError("denied")
+    monkeypatch.setattr("builtins.open", lambda p, *a, **k: unreadable() if str(p).endswith("ccboard-attach") else open_real(p, *a, **k))
+    c = one("attach-wrapper")
+    assert c["status"] == "warn" and "not readable" in c["detail"] and "chmod" in c["fix"]["cmd"]
+
+    class Broken:
+        def push_subs(self):
+            raise RuntimeError("db closed")
+    c = one("push", db=Broken())
+    assert c["status"] == "warn" and c["fix"]["text"]
+
+
+def test_the_notify_test_action_sits_on_the_ntfy_warnings_only(world, monkeypatch):
+    world.http = (200, '{"healthy": false}')
+    c = one("ntfy")
+    assert c["status"] == "warn" and c["fix"]["action"] == "notify_test" and "journalctl" in c["fix"]["cmd"]
+    monkeypatch.setattr(settings, "ntfy_url", "https://ntfy.sh")
+    c = one("ntfy")
+    assert c["status"] == "warn" and "loopback" in c["detail"] and c["fix"]["action"] == "notify_test"
+    world.http = (200, '{"healthy": true}')
+    monkeypatch.setattr(settings, "ntfy_url", "http://127.0.0.1:2586")
+    assert one("ntfy")["fix"] is None                                       # a pass has nothing to fix
+
+
+def test_the_claude_login_action_is_on_both_login_failures(world):
+    world.auth = {"installed": True, "loggedIn": False}
+    c = one("claude-auth")
+    assert c["status"] == "fail" and c["fix"]["action"] == "claude_login" and c["fix"]["cmd"] == "claude auth login"
+
+
+def test_tmux_conf_stays_a_skip_with_no_fix_to_offer():
+    c = one("tmux-conf")
+    assert c["status"] == "skip" and c["fix"] is None

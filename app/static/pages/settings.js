@@ -1,5 +1,6 @@
-/* ccboard settings page (#/settings[?sec=notify|nodes|box|agents|accounts|app]): the Notify panel (Web Push, ntfy, backup), the Nodes strip, the
-   box health, the agents (Claude login), the subscription Accounts (v0.5.17b: label, email, plan, windows, last seen, Rename, and how to add another)
+/* ccboard settings page (#/settings[?sec=notify|nodes|box|doctor|agents|accounts|app]): the Notify panel (Web Push, ntfy, backup), the Nodes strip, the
+   box health, the Doctor (v0.5.19: the checklist, pages/doctor.js), the agents (v0.5.19: a card each for Claude and Codex with version, login, hooks, the models the launcher offers,
+   the doctor's checks and the sessions started outside the board; Log in leads to the Accounts add blocks), the subscription Accounts (v0.5.17b: label, email, plan, windows, last seen, Rename, and how to add another)
    and the App panel (installed or browser, Install, Safari steps, build id, Reload app, shortcuts).
    The section is picked with ?sec= and tabs(); each panel is rebuilt only when the
    state it shows changed, so a poll never recreates a button under a finger. renderNotifyPanel() and renderNodes() stay global:
@@ -9,9 +10,9 @@
 'use strict';
 
 const SETTINGS_SECTIONS = [
-  { id: 'notify', label: 'Notifications' }, { id: 'nodes', label: 'Nodes' }, { id: 'box', label: 'Box' }, { id: 'agents', label: 'Agents' }, { id: 'accounts', label: 'Accounts' }, { id: 'app', label: 'App' },
+  { id: 'notify', label: 'Notifications' }, { id: 'nodes', label: 'Nodes' }, { id: 'box', label: 'Box' }, { id: 'doctor', label: 'Doctor' }, { id: 'agents', label: 'Agents' }, { id: 'accounts', label: 'Accounts' }, { id: 'app', label: 'App' },
 ];
-const settingsPage = { refs: null, active: 'notify', acct: { at: 0, full: null }, add: null, seenAt: null, cx: null, cxSeenAt: null, focus: null };         // acct: when GET /api/accounts last ran, and its rows by key (for 'seen 3h ago'); add: the add-account block of this mount; seenAt: the login result already announced; cx / cxSeenAt: the same for the Codex add block (v0.5.17e)
+const settingsPage = { refs: null, active: 'notify', acct: { at: 0, full: null }, add: null, seenAt: null, cx: null, cxSeenAt: null, focus: null, wantCx: false, vis: null, ext: null, extAsked: false };         // acct: when GET /api/accounts last ran, and its rows by key (for 'seen 3h ago'); add: the add-account block of this mount; seenAt: the login result already announced; cx / cxSeenAt: the same for the Codex add block (v0.5.17e)
 
 /* One setting as the shared .kv row (v0.5.6d): the label in a 120 px column, the value in mono with its helper text under it, the actions at the right
    (under the value on a phone). Buttons, link-buttons and the two-tap pair go to the actions, everything else to the value. row.add() files late
@@ -146,9 +147,64 @@ function backupPushText(bk) {
   return ` · ${n} branch${n === 1 ? '' : 'es'} copied to ${bk.push_ns}/ in ${repos} of ${list.length} repo(s)`;
 }
 
+/* ---------- Agents (v0.5.19): a section each for Claude and Codex ----------
+   Claude: who is logged in (the chip, Log in / the two-tap Log out), the version, the hooks, how many models the launcher offers. Codex: the same, plus the account in use (state.codex_accounts)
+   and a Log in that leads to the Codex add block of Settings > Accounts (it asks for a name first; Codex has no log-out route on the board). Under each, the doctor's checks for that agent
+   (pages/doctor.js: the same rows as the Doctor tab, minus the login button, which the card already has). Last, the Codex threads started outside the board, each with Open
+   (pages/agents.js: agentsExtRows / agentsExtNode / agentsExtOpen). Nothing here is filled but Claude's Log in while Claude is logged out. */
+const SETTINGS_EXT_NOTE = 'Codex threads of the last 14 days that were not started here. Open resumes one in a board session, in its folder.';
+
+function settingsModelCount(agent) {
+  if (typeof launcherSchema !== 'function') return 0;
+  const m = launcherSchema(agent).models;
+  return Array.isArray(m) ? m.length : 0;
+}
+
+/* The version / hooks / models rows of one agent. info: {version, hooks: {installed, trust?}}. */
+function settingsAgentFacts(p, agent, info) {
+  const ver = typeof info.version === 'string' && info.version.trim() ? info.version.trim() : '';
+  p.append(settingsKv('Version', el('span', { class: ver ? 'v' : 'v dim', text: ver || 'unknown' })));
+  const hooks = info.hooks && typeof info.hooks === 'object' ? info.hooks : null;
+  if (hooks) {
+    const trust = typeof hooks.trust === 'string' && hooks.trust ? ` · trust: ${hooks.trust}` : '';
+    p.append(settingsKv('Hooks', el('span', { class: hooks.installed ? 'v' : 'v warn', text: (hooks.installed ? 'installed' : 'not installed') + trust }),
+      el('span', { class: 'dim', text: hooks.installed ? 'the board hears about state changes from the agent itself' : 'without them the board only guesses a session\'s state from its screen' })));
+  }
+  const n = settingsModelCount(agent);
+  if (n) p.append(settingsKv('Models', el('span', { class: 'v', text: `${n} in the catalogue` }), el('span', { class: 'dim', text: 'what the launcher offers for this agent on this box' })));
+}
+
+/* The doctor's checks for one agent, in place under its card. No data yet: one dim line (the first answer repaints the panel). */
+function settingsAgentChecks(p, agent) {
+  const list = doctorAgentChecks(agent);
+  if (!list.length) {
+    if (doctorStore.err) p.append(el('div', { class: 'dim set-note', text: `Checks could not run: ${doctorStore.err}` }));
+    else if (doctorStore.busy || !doctorStore.data) p.append(el('div', { class: 'dim set-note', role: 'status', text: 'Checking…' }));
+    return;
+  }
+  p.append(el('div', { class: 'doc-list doc-inline' }, list.map((c) => doctorRow(c, { noLogin: true }))));
+}
+
+function settingsExtPaint() {
+  const x = settingsPage.ext;
+  if (!x || !x.host || !settingsPage.refs) return;
+  const rows = agentsExtRows(state);
+  x.host.textContent = '';
+  for (const r of rows) x.host.append(agentsExtNode(r));
+  const err = rows.length ? '' : agentsExt.err;
+  if (!rows.length) x.host.append(el('div', { class: 'dim set-note', text: err ? `Could not read the outside threads: ${err}` : 'No outside Codex threads found.' }));
+  setText(x.count, `${rows.length} thread${rows.length === 1 ? '' : 's'}`);
+}
+
+/* agents.js calls this after the outside threads were (re)loaded or an Open started: repaint just the list. */
+function settingsExtRepaint() { if (settingsPage.refs && settingsPage.active === 'agents') settingsExtPaint(); }
+
 function settingsAgents(p) {
   p.textContent = '';
+  settingsPage.ext = null;
   const c = state.claude || {};
+  const ac = (state.agents && state.agents.claude) || {};
+  p.append(settingsHead('Claude'));
   const badge = el('span', { class: 'badge' });
   // who is logged in is an identity, not a verdict: the agent's own hue (violet for Claude, teal for Codex), never the green that means ok
   if (!c.installed) { badge.classList.add('bad'); badge.textContent = 'claude not installed'; }
@@ -158,8 +214,39 @@ function settingsAgents(p) {
   if (c.installed && !c.loggedIn) row.add(el('button', { class: 'primary', type: 'button', title: 'Sign in from Settings > Accounts', onclick: () => accountLogin(), text: 'Log in' }));
   if (c.installed && c.loggedIn) row.add(confirmButton('logout', 'Log out', logout, true));          // red-outlined, two taps: the login is not one tap to lose
   p.append(row);
+  if (c.installed) settingsAgentFacts(p, 'claude', { version: ac.version || c.version, hooks: ac.hooks });
+  settingsAgentChecks(p, 'claude');
+
   const codex = state.agents && state.agents.codex;
-  if (codex) p.append(settingsKv('Codex', el('span', { class: codex.installed ? 'badge hue-teal' : 'v dim', text: codex.installed ? 'installed' : 'not installed' })));
+  if (!codex) return;
+  p.append(settingsHead('Codex'));
+  const cbadge = codex.installed ? el('span', { class: 'badge' }) : el('span', { class: 'v dim', text: 'not installed' });
+  const cur = cxAccounts(state).find((a) => a.current);
+  if (!codex.installed) { /* the dim words above */ }
+  else if (codex.loggedIn) { cbadge.classList.add('hue-teal'); cbadge.textContent = `Codex: ${cur ? cxName(cur) + (cur.plan ? ' (' + cur.plan + ')' : '') : (codex.email || 'logged in')}`; }
+  else { cbadge.classList.add('warn'); cbadge.textContent = 'Codex: not logged in'; }
+  const crow = settingsKv('Codex', cbadge);
+  if (codex.installed) crow.add(el('button', { type: 'button', title: 'Sign in from Settings > Accounts', onclick: () => settingsCodexLogin(), text: codex.loggedIn ? 'Add account' : 'Log in' }));
+  p.append(crow);
+  if (codex.installed) settingsAgentFacts(p, 'codex', codex);
+  settingsAgentChecks(p, 'codex');
+
+  if (!agentsExtWanted(state)) return;
+  p.append(settingsHead('Import external sessions'));
+  const count = el('span', { class: 'v' });
+  const host = el('div', { class: 'xlist set-ext' });
+  settingsPage.ext = { host, count };
+  p.append(settingsKv('Outside threads', count, el('span', { class: 'dim', text: SETTINGS_EXT_NOTE }),
+    el('button', { type: 'button', onclick: () => agentsExtLoad(), text: 'Look again' })), host);
+  settingsExtPaint();
+  if (!settingsPage.extAsked && !agentsExt.data) { settingsPage.extAsked = true; agentsExtLoad(); }     // once per visit: the page's own 30 s timer belongs to the Agents page
+}
+
+/* Codex's Log in (Settings > Agents, the Doctor): the add block for a Codex account lives in Settings > Accounts and asks for a name first, so go there and put the cursor in it. */
+function settingsCodexLogin() {
+  settingsPage.wantCx = true;
+  if (typeof navigate === 'function' && typeof buildHash === 'function') navigate(buildHash('settings', {}, { sec: 'accounts' }));
+  if (settingsPage.refs && typeof settingsShow === 'function') settingsShow('accounts');           // already on Settings: the route may not change
 }
 
 /* ---------- Accounts (v0.5.17b rows, v0.5.17c saved logins): the subscription accounts the board has seen ----------
@@ -870,6 +957,12 @@ function settingsAcctPatch() {
   s.cxNote.classList.toggle('hidden', !cxStore(state).supported);
   s.cx.patch();
   settingsAcctWant();
+  if (settingsPage.wantCx && cxState(state)) {                         // the Codex Log in of Agents / the Doctor: show the block and focus its name field
+    settingsPage.wantCx = false;
+    if (s.cx.root.scrollIntoView) { try { s.cx.root.scrollIntoView({ block: 'center' }); } catch (_) { /* no scrolling here */ } }
+    const nm = s.cx.root.querySelector('.cx-name');
+    if (nm && typeof focusFine === 'function') focusFine(nm);
+  }
 }
 
 /* #/settings?sec=accounts&acct=<key> (the Home banner, the topbar chip, the notification of a login that does not work): scroll to that account's row, once. */
@@ -1013,7 +1106,7 @@ function settingsApp(p) {
 /* core.js / shell.js call renderAppPanel() when the browser hands over (or withdraws) the install prompt: rebuild the panel if the page is open. */
 function renderAppPanel() { settingsFill('app', true); }
 
-const SETTINGS_BUILD = { notify: settingsNotify, nodes: settingsNodes, box: settingsBox, agents: settingsAgents, accounts: settingsAccounts, app: settingsApp };
+const SETTINGS_BUILD = { notify: settingsNotify, nodes: settingsNodes, box: settingsBox, doctor: (p) => settingsDoctor(p), agents: settingsAgents, accounts: settingsAccounts, app: settingsApp };
 
 /* What a panel shows, as a string: the panel is rebuilt only when it changes. */
 function settingsSig(id, st) {
@@ -1028,7 +1121,8 @@ function settingsSig(id, st) {
       (acctProblem(st) || {}).account || (acctProblem(st) ? '*' : null)]);                  // the amber chip and the lead action follow the problem at once
   }
   if (id === 'app') return JSON.stringify([st.version, settingsAppMode().note, !!settingsInstallPrompt(), settingsHelpAvailable()]);
-  return JSON.stringify([st.claude, st.agents, ui.confirm === 'logout']);     // the two-tap Log out repaints the panel
+  if (id === 'doctor') return JSON.stringify(doctorSig());
+  return JSON.stringify([st.claude, st.agents, ui.confirm === 'logout', doctorSig(), cxState(st) ? (cxAccounts(st).find((a) => a.current) || {}).key || null : null]);     // the two-tap Log out repaints the panel; the doctor's answer repaints the checks under each card
 }
 
 function settingsSecOf(r) {
@@ -1054,6 +1148,7 @@ function settingsShow(id) {
   r.tabs.set(id);
   settingsFill(id, false);
   if (id === 'accounts') settingsAcctPatch();                         // a Log in tapped on another page starts the add flow here
+  if (typeof doctorLinePaint === 'function') doctorLinePaint();       // the 'Doctor: n checks failing' line is not shown on the Doctor tab itself
 }
 
 /* core.js calls renderNotifyPanel() after push was enabled or disabled: rebuild that panel if the page is open. */
@@ -1082,7 +1177,9 @@ registerPage('settings', {
     settingsPage.focus = (route && route.query && route.query.acct) || null;                    // ?acct=<key>: the account row to scroll to (the Accounts panel takes it once)
     const tabCtl = settingsTabs(active, (id) => navigate(buildHash('settings', {}, { sec: id }), { replace: true }));
     const panels = {};
-    const wrap = el('div', { class: 'settings-page' }, el('div', { class: 'page-head' }, el('h1', { text: 'Settings' })), tabCtl.root);
+    const docLink = el('a', { href: buildHash('settings', {}, { sec: 'doctor' }), text: '' });                  // 'Doctor: 2 checks failing': a quiet line, there only while something fails
+    const docLine = el('div', { class: 'settings-doc-line hidden', role: 'status' }, docLink);
+    const wrap = el('div', { class: 'settings-page' }, el('div', { class: 'page-head' }, el('h1', { text: 'Settings' })), tabCtl.root, docLine);
     for (const sec of SETTINGS_SECTIONS) {
       panels[sec.id] = el('div', { class: 'section settings-panel hidden', role: 'tabpanel', 'data-sec': sec.id });
       wrap.append(panels[sec.id]);
@@ -1092,8 +1189,14 @@ registerPage('settings', {
     settingsPage.add = null;                                          // the add block is built again with the Accounts panel of this mount
     if (settingsPage.cx) settingsPage.cx.dispose();
     settingsPage.cx = null;
-    settingsPage.refs = { tabs: tabCtl, panels };
+    settingsPage.refs = { tabs: tabCtl, panels, docLine, docLink };
     settingsShow(active);
+    if (typeof doctorLoad === 'function') doctorLoad(false);                                        // the checklist is read quietly: it feeds the line under the tabs and Agents
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function' && typeof doctorOnVisible === 'function') {
+      if (settingsPage.vis) document.removeEventListener('visibilitychange', settingsPage.vis);
+      settingsPage.vis = () => doctorOnVisible();                                                    // back on the tab: ask again, so a fix made on the box shows
+      document.addEventListener('visibilitychange', settingsPage.vis);
+    }
   },
   update() { settingsFill(settingsPage.active, false); settingsAcctPatch(); },     // the add block follows the login state on every poll, not only when the rows change
   onRoute(route) {
@@ -1106,6 +1209,10 @@ registerPage('settings', {
     settingsPage.add = null;
     if (settingsPage.cx) settingsPage.cx.dispose();
     settingsPage.cx = null;
+    if (settingsPage.vis && typeof document !== 'undefined' && typeof document.removeEventListener === 'function') document.removeEventListener('visibilitychange', settingsPage.vis);
+    settingsPage.vis = null;
+    settingsPage.ext = null;
+    settingsPage.extAsked = false;
     settingsPage.refs = null;
   },
 });

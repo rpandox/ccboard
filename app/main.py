@@ -25,7 +25,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, notify, permissions, previews, projects, prpoll, push, recover, samples, scheduler, search, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import codex_discovery
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -574,6 +574,18 @@ def api_doctor(group: str | None = None, refresh: str | None = None):
         return doctor.run(group or None, refresh == "1", db=db)
     except ValueError as e:                       # unknown group
         raise projects.BadRequest(str(e))
+
+
+class PreflightIn(BaseModel):
+    url: str
+
+
+@app.post("/api/preflight/clone")
+def api_preflight_clone(body: PreflightIn):
+    """What a clone URL would meet, before it is queued (the new-project wizard's chips): `git ls-remote --symref` that never prompts and gives up after
+    12 s. {reachable, default_branch, needs_auth, heads: [branch], name: the repo name a clone would derive | null, error: one line | null}. 400 for a URL
+    a clone would refuse (projects.check_url); a remote that is down or private is a 200 with reachable false. A plain `def`: it blocks for up to 12 s."""
+    return preflight.preflight_clone(body.url)
 
 
 @app.get("/api/sessions/{name}")

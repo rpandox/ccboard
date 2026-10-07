@@ -302,7 +302,7 @@ def _c_attach_wrapper(db) -> Outcome:
         with open(path, "r", errors="replace") as f:
             head = f.read(4096)
     except OSError:
-        return _warn(f"{path} is not readable")
+        return _warn(f"{path} is not readable", fix("Make it readable by the board's user", f"chmod 0755 {path}"))
     if ATTACH_MARKER not in head:
         return _warn("v1 wrapper", fix("The v2 wrapper (viewer modes, read-only attach) arrives with v0.5.7; nothing to do yet"))
     return _pass(f"v2 wrapper at {path}")
@@ -456,7 +456,8 @@ def _c_ntfy(db) -> Outcome:
         return _skip("NTFY_URL is not set", fix("Set NTFY_URL (loopback) to enable ntfy phone pushes; install.sh sets it up"))
     base = _loopback_base(settings.ntfy_url)
     if base is None:
-        return _warn("NTFY_URL is not a loopback http(s) URL, so it is not probed", fix("Point NTFY_URL at the local ntfy server, e.g. http://127.0.0.1:2586"))
+        return _warn("NTFY_URL is not a loopback http(s) URL, so it is not probed",
+                     fix("Point NTFY_URL at the local ntfy server, e.g. http://127.0.0.1:2586, or send a test to see whether yours delivers", None, "notify_test"))
     try:
         status, body = _http_get(base + "/v1/health", timeout=2.0)
     except OSError:
@@ -467,7 +468,7 @@ def _c_ntfy(db) -> Outcome:
     except (ValueError, AttributeError):
         healthy = None
     if status >= 500 or healthy is False:
-        return _warn(f"ntfy answers at {base} but reports a problem (HTTP {status})", fix("Check the ntfy service", "sudo journalctl -u ntfy -n 30 --no-pager"))
+        return _warn(f"ntfy answers at {base} but reports a problem (HTTP {status})", fix("Check the ntfy service, then send a test", "sudo journalctl -u ntfy -n 30 --no-pager", "notify_test"))
     return _pass(f"ntfy answers at {base}, topic '{settings.ntfy_topic}'")
 
 
@@ -479,7 +480,7 @@ def _c_push(db) -> Outcome:
     try:
         n = len(db.push_subs())
     except Exception as e:
-        return _warn(f"could not read the subscriptions ({e.__class__.__name__})")
+        return _warn(f"could not read the subscriptions ({e.__class__.__name__})", fix("Restart the board and read its log for database errors"))
     keys = push.key_path().exists()
     if n == 0:
         return _warn("no device is subscribed to Web Push", fix("Open the board on your phone or iPad and enable notifications in Settings"))

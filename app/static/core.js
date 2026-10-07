@@ -207,6 +207,7 @@ async function demoApi(method, path) {
   else if (bare.startsWith('/api/series')) name = 'series';
   else if (bare === '/api/usage/summary') name = 'usage_summary';
   else if (bare.startsWith('/api/memory/')) name = 'memory';
+  else if (bare === '/api/doctor') name = 'doctor';       // the Settings > Doctor checklist (v0.5.19)
   if (!name) return {};
   const r = await fetch(`/static/demo/${name}.json`);
   if (!r.ok) throw new Error(`demo fixture ${name}.json: ${r.status} ${r.statusText}`);

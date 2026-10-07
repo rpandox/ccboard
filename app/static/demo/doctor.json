@@ -1,0 +1,208 @@
+{
+  "generated_at": "2026-10-06T08:00:00.000+00:00",
+  "ok": false,
+  "summary": {
+    "pass": 15,
+    "warn": 4,
+    "fail": 2,
+    "skip": 1
+  },
+  "checks": [
+    {
+      "id": "tmux",
+      "group": "terminal",
+      "label": "tmux 3.2 or newer",
+      "status": "pass",
+      "detail": "tmux 3.4",
+      "fix": null
+    },
+    {
+      "id": "tmux-server",
+      "group": "terminal",
+      "label": "tmux server",
+      "status": "pass",
+      "detail": "the tmux server on socket 'ccboard' is running",
+      "fix": null
+    },
+    {
+      "id": "tmux-conf",
+      "group": "terminal",
+      "label": "tmux.conf applied",
+      "status": "skip",
+      "detail": "verified in v0.5.7",
+      "fix": null
+    },
+    {
+      "id": "ttyd",
+      "group": "terminal",
+      "label": "ttyd (web terminal)",
+      "status": "pass",
+      "detail": "listening on 127.0.0.1:7681, ttyd 1.7.7",
+      "fix": null
+    },
+    {
+      "id": "attach-wrapper",
+      "group": "terminal",
+      "label": "ccboard-attach wrapper",
+      "status": "pass",
+      "detail": "v2 wrapper at /home/demo/.local/share/ccboard/app/bin/ccboard-attach",
+      "fix": null
+    },
+    {
+      "id": "code-server",
+      "group": "box",
+      "label": "code-server",
+      "status": "warn",
+      "detail": "listening on 127.0.0.1:8080; no watcher excludes in its user settings (slow to open on a busy box)",
+      "fix": {
+        "text": "Merge ccboard's code-server settings",
+        "cmd": "python3 scripts/code_server_settings.py install"
+      }
+    },
+    {
+      "id": "projects-dir",
+      "group": "box",
+      "label": "Projects directory",
+      "status": "pass",
+      "detail": "/home/demo/projects exists and is writable",
+      "fix": null
+    },
+    {
+      "id": "git",
+      "group": "box",
+      "label": "git 2.15 or newer",
+      "status": "pass",
+      "detail": "git 2.43.0",
+      "fix": null
+    },
+    {
+      "id": "gh",
+      "group": "box",
+      "label": "GitHub CLI",
+      "status": "warn",
+      "detail": "gh 2.40.1, not logged in",
+      "fix": {
+        "text": "Log gh in on the box (PRs and clone-from-GitHub need it)",
+        "cmd": "gh auth login"
+      }
+    },
+    {
+      "id": "ccusage",
+      "group": "box",
+      "label": "ccusage",
+      "status": "fail",
+      "detail": "ccusage is not installed",
+      "fix": {
+        "text": "Install ccusage (needs node and npm)",
+        "cmd": "npm install -g --prefix ~/.local ccusage"
+      }
+    },
+    {
+      "id": "identity",
+      "group": "box",
+      "label": "Identity and access",
+      "status": "pass",
+      "detail": "runtime docker; the Tailscale-User-Login header is expected; 1 allowed user",
+      "fix": null
+    },
+    {
+      "id": "samples-heartbeat",
+      "group": "box",
+      "label": "Usage samples heartbeat",
+      "status": "pass",
+      "detail": "the sampler last ticked 8 s ago",
+      "fix": null
+    },
+    {
+      "id": "ntfy",
+      "group": "notify",
+      "label": "ntfy server",
+      "status": "warn",
+      "detail": "ntfy answers at http://127.0.0.1:2586 but reports a problem (HTTP 503)",
+      "fix": {
+        "text": "Check the ntfy service, then send a test",
+        "cmd": "sudo journalctl -u ntfy -n 30 --no-pager",
+        "action": "notify_test"
+      }
+    },
+    {
+      "id": "push",
+      "group": "notify",
+      "label": "Web Push subscriptions",
+      "status": "pass",
+      "detail": "2 subscriptions",
+      "fix": null
+    },
+    {
+      "id": "claude-bin",
+      "group": "claude",
+      "label": "Claude Code binary",
+      "status": "pass",
+      "detail": "claude 2.1.287 at /usr/local/bin/claude",
+      "fix": null
+    },
+    {
+      "id": "claude-auth",
+      "group": "claude",
+      "label": "Claude login",
+      "status": "pass",
+      "detail": "logged in (claude.ai, max)",
+      "fix": null
+    },
+    {
+      "id": "claude-hooks",
+      "group": "claude",
+      "label": "Claude hooks and statusLine",
+      "status": "pass",
+      "detail": "hooks for 15 events and the statusLine are installed",
+      "fix": null
+    },
+    {
+      "id": "memory-plugin",
+      "group": "memory",
+      "label": "claude-mem plugin",
+      "status": "pass",
+      "detail": "installed and enabled",
+      "fix": null
+    },
+    {
+      "id": "codex-bin",
+      "group": "codex",
+      "label": "Codex CLI",
+      "status": "pass",
+      "detail": "/usr/local/bin/codex (0.58.0)",
+      "fix": null
+    },
+    {
+      "id": "codex-auth",
+      "group": "codex",
+      "label": "Codex login",
+      "status": "fail",
+      "detail": "not logged in",
+      "fix": {
+        "text": "Log in from Settings > Agents, or on the box (device flow works over ssh).",
+        "cmd": "codex login --device-auth",
+        "action": "codex_login"
+      }
+    },
+    {
+      "id": "codex-hooks",
+      "group": "codex",
+      "label": "Codex hooks",
+      "status": "pass",
+      "detail": "11 events registered",
+      "fix": null
+    },
+    {
+      "id": "codex-trust",
+      "group": "codex",
+      "label": "Codex hook trust",
+      "status": "warn",
+      "detail": "review mode: no trust record for ccboard's hooks in config.toml yet, so Codex will not run them until you review them",
+      "fix": {
+        "text": "Start a Codex session, type /hooks (Codex 0.157+ asks at start) and trust the ccboard entries once.",
+        "cmd": "python3 scripts/codex_hooks.py trust-help"
+      }
+    }
+  ]
+}
