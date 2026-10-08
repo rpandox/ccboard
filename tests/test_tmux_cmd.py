@@ -61,11 +61,12 @@ def test_clone_and_delete_flow(lite_client, projects_dir, fake_tmux):
 def test_login_flow(lite_client, fake_tmux, monkeypatch):
     from app import claude_auth
     from app.config import settings
+    from app.platform import browser_stub
     monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")
     assert lite_client.post("/api/claude/login/code", headers=H, json={"code": "abc#def"}).status_code == 409
     assert lite_client.post("/api/claude/login", headers=H).status_code == 200
     assert fake_tmux["sent"][-1] == ("_ccboard-login", "claude auth login")
-    assert fake_tmux["sessions"]["_ccboard-login"]["env"]["BROWSER"] == "/bin/true"
+    assert fake_tmux["sessions"]["_ccboard-login"]["env"]["BROWSER"] == browser_stub()
     fake_tmux["screen"] = "Opening browser...\nIf the browser didn't open, visit: https://platform.claude.com/oauth/authorize?code=1&x=y\nPaste code here if prompted > "
     st = claude_auth.login_state()
     assert st["running"] and st["url"] == "https://platform.claude.com/oauth/authorize?code=1&x=y"

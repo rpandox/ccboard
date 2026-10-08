@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -29,6 +30,12 @@ PERMISSION_MARK = "ccboard-permission"
 STATUS_MARK = "ccboard-statusline"
 HOOK_TIMEOUT = 5
 FAST_TIMEOUT = 3
+
+
+def script_cmd(app_dir: Path, name: str) -> str:
+    """The hook command for bin/<name>: the path through shlex.quote, because Claude Code runs the string through a shell and a
+    checkout path with a space would be split (issue #121). A path of safe characters comes back unchanged."""
+    return shlex.quote(str(app_dir / "bin" / name))
 
 
 def settings_path() -> Path:
@@ -101,8 +108,8 @@ def install(data: dict, app_dir: Path, remote_approve: bool = True, approve_time
     if bad:                                           # never overwrite a value this file does not understand
         raise RuntimeError(f"settings.json hooks.{bad[0]} is not a list; fix it first")
     data = strip_ours(data)
-    hook_cmd = str(app_dir / "bin" / "ccboard-hook")
-    fast_cmd = str(app_dir / "bin" / "ccboard-hook-fast")
+    hook_cmd = script_cmd(app_dir, "ccboard-hook")
+    fast_cmd = script_cmd(app_dir, "ccboard-hook-fast")
     hooks = data.setdefault("hooks", {})
     for ev in EVENTS:
         if ev in FAST_EVENTS:
@@ -112,12 +119,12 @@ def install(data: dict, app_dir: Path, remote_approve: bool = True, approve_time
         hooks.setdefault(ev, []).append(entry)
     if remote_approve:
         # Synchronous on purpose: it waits for a remote allow/deny, up to the timeout, then yields to the TUI prompt.
-        perm_cmd = str(app_dir / "bin" / "ccboard-permission")
+        perm_cmd = script_cmd(app_dir, "ccboard-permission")
         hooks.setdefault("PermissionRequest", []).append(
             {"hooks": [{"type": "command", "command": perm_cmd, "timeout": int(approve_timeout) + 30}]})
     sl = data.get("statusLine")
     if not sl:
-        data["statusLine"] = {"type": "command", "command": str(app_dir / "bin" / "ccboard-statusline"),
+        data["statusLine"] = {"type": "command", "command": script_cmd(app_dir, "ccboard-statusline"),
                               "refreshInterval": 30}
     else:
         print(f"note: keeping your existing statusLine ({sl.get('command', sl.get('type')) if isinstance(sl, dict) else sl}); "

@@ -16,11 +16,13 @@ import contextlib
 import functools
 import logging
 import os
+import re
 import secrets
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -80,6 +82,18 @@ def passwd_home() -> Path | None:
     """The account's home from passwd (not $HOME), or None when it cannot be read."""
     pw = _passwd()
     return Path(pw.pw_dir) if pw is not None and pw.pw_dir else None
+
+
+def whoami() -> str:
+    """The name of the user the process runs as (effective uid): the passwd name, else "uid N", else "unknown" where there is no uid."""
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None:
+        return "unknown"
+    try:
+        import pwd
+        return pwd.getpwuid(geteuid()).pw_name
+    except (ImportError, KeyError, OSError):
+        return f"uid {geteuid()}"
 
 
 def owned_by_me(path) -> bool | None:
@@ -251,75 +265,374 @@ def dev_bypass_allowed(env, runtime: str) -> bool:
     return not (env.get("XPC_SERVICE_NAME") or "").startswith("dev.ccboard")
 
 
-# ---------------------------------------------------------------- processes (implemented in the Phase H workflow, see #116 slice 5)
+# ---------------------------------------------------------------- processes (#116 slice 5)
 
 PROC_ROOT = Path("/proc")     # the one test seam for every /proc reader
+SS_RE = re.compile(r"pid=(\d+)")
+LISTEN_TIMEOUT = 5            # seconds for `ss` and for `lsof`
+
+
+def _psutil():
+    """The psutil module, imported on first use (it is only installed off Linux), or None when it is missing."""
+    try:
+        import psutil
+    except ImportError:
+        return None
+    return psutil
 
 
 def ppid(pid: int) -> int | None:
     """Parent pid. Linux: /proc/<pid>/stat ('pid (comm) S ppid ...'; comm may hold spaces and parentheses). Else psutil. None if gone."""
-    raise NotImplementedError
+    if IS_LINUX:
+        try:
+            raw = (PROC_ROOT / str(pid) / "stat").read_text(errors="replace")
+            return int(raw.rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            return None
+    ps = _psutil()
+    if ps is None:
+        return None
+    try:
+        return int(ps.Process(pid).ppid())
+    except Exception:                         # NoSuchProcess, AccessDenied, ZombieProcess, a pid out of range: gone or unreadable
+        return None
 
 
 def ancestors(pid: int, hops: int) -> list[int]:
     """The parent chain of `pid`, nearest first, at most `hops` long, stopping at pid 1 or an unreadable parent."""
-    raise NotImplementedError
+    chain: list[int] = []
+    cur = pid
+    seen = {pid}
+    for _ in range(hops):
+        nxt = ppid(cur)
+        if not nxt or nxt <= 1 or nxt in seen:
+            break
+        chain.append(nxt)
+        seen.add(nxt)
+        cur = nxt
+    return chain
 
 
 def children(pid: int) -> list[int]:
     """Direct children. Linux: /proc/<pid>/task/*/children. Else psutil. [] when unknown."""
-    raise NotImplementedError
+    if IS_LINUX:
+        out: list[int] = []
+        task_dir = PROC_ROOT / str(pid) / "task"
+        try:
+            for t in task_dir.iterdir():
+                try:
+                    out += [int(x) for x in (t / "children").read_text().split()]
+                except (OSError, ValueError):
+                    continue
+        except OSError:
+            pass
+        return out
+    ps = _psutil()
+    if ps is None:
+        return []
+    try:
+        return [int(c.pid) for c in ps.Process(pid).children(recursive=False)]
+    except Exception:
+        return []
 
 
 def comm(pid: int) -> str | None:
     """The process name (Linux: /proc/<pid>/comm stripped). Else psutil name(). None if gone or unreadable."""
-    raise NotImplementedError
+    if IS_LINUX:
+        try:
+            return (PROC_ROOT / str(pid) / "comm").read_text(errors="replace").strip()
+        except OSError:
+            return None
+    ps = _psutil()
+    if ps is None:
+        return None
+    try:
+        return str(ps.Process(pid).name()).strip()
+    except Exception:
+        return None
 
 
 def iter_processes() -> list[int] | None:
     """Every visible pid, or None when the process list cannot be read (callers must then say "unknown", never "none")."""
-    raise NotImplementedError
+    if IS_LINUX:
+        try:
+            return [int(n) for n in os.listdir(PROC_ROOT) if n.isdigit()]
+        except OSError:
+            return None
+    ps = _psutil()
+    if ps is None:
+        return None
+    try:
+        return [int(p) for p in ps.pids()]
+    except Exception:
+        return None
 
 
 def environ_names(pid: int) -> list[str] | None:
-    """The NAMES (never the values) of process `pid`'s environment, or None when it cannot be read."""
-    raise NotImplementedError
+    """The NAMES (never the values) of process `pid`'s environment, or None when it cannot be read. Linux: /proc/<pid>/environ, the first
+    MiB; an empty file (a zombie, a kernel thread) reads as unreadable. Else psutil Process.environ() keys; macOS lets a process read
+    its own user's processes only."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None
+    if IS_LINUX:
+        try:
+            with open(PROC_ROOT / str(pid) / "environ", "rb") as f:
+                raw = f.read(1 << 20)
+        except OSError:
+            return None
+        if not raw:
+            return None
+        return sorted({chunk.split(b"=", 1)[0].decode("ascii", "replace") for chunk in raw.split(b"\0") if chunk} - {""})
+    ps = _psutil()
+    if ps is None:
+        return None
+    try:
+        env = ps.Process(pid).environ()
+        names = sorted(str(k) for k in env)
+    except Exception:                         # AccessDenied (another user's process), NoSuchProcess, an unsupported system
+        return None
+    return names or None
+
+
+def _ss_ports() -> dict[int, set[int]]:
+    exe = shutil.which("ss")
+    if not exe:
+        return {}
+    try:
+        cp = subprocess.run([exe, "-ltnpH"], capture_output=True, text=True, timeout=LISTEN_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError):
+        return {}
+    out: dict[int, set[int]] = {}
+    for line in cp.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        addr = parts[3]
+        try:
+            port = int(addr.rsplit(":", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        for m in SS_RE.finditer(line):
+            out.setdefault(int(m.group(1)), set()).add(port)
+    return out
+
+
+def _psutil_ports(ps, pids) -> dict[int, set[int]]:
+    """Per process, never the system-wide psutil.net_connections() (it needs root on macOS): each pid's own TCP sockets in LISTEN."""
+    if pids is None:
+        pids = iter_processes() or []
+    listen = getattr(ps, "CONN_LISTEN", "LISTEN")
+    out: dict[int, set[int]] = {}
+    for pid in pids:
+        try:
+            conns = ps.Process(pid).net_connections(kind="tcp")
+        except Exception:                     # gone, or another user's process
+            continue
+        for c in conns:
+            try:
+                if c.status == listen and c.laddr:
+                    out.setdefault(int(pid), set()).add(int(c.laddr.port))
+            except (AttributeError, TypeError, ValueError):
+                continue
+    return out
+
+
+def _lsof_ports() -> dict[int, set[int]]:
+    exe = shutil.which("lsof")
+    if not exe:
+        return {}
+    try:
+        cp = subprocess.run([exe, "-nP", "-iTCP", "-sTCP:LISTEN"], capture_output=True, text=True, timeout=LISTEN_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError):
+        return {}
+    out: dict[int, set[int]] = {}
+    for line in cp.stdout.splitlines():
+        parts = line.split()                  # COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME (LISTEN)
+        if len(parts) < 10 or not parts[1].isdigit() or parts[-1] != "(LISTEN)":
+            continue
+        try:
+            port = int(parts[-2].rsplit(":", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        out.setdefault(int(parts[1]), set()).add(port)
+    return out
 
 
 def listening_ports(pids) -> dict[int, set[int]]:
-    """{pid: {tcp ports in LISTEN}} for the given pids. Linux: `ss -ltnpH` parsed as before. Else per-process psutil net_connections,
-    then `lsof -nP -iTCP -sTCP:LISTEN` when psutil is missing; {} when neither works. Never raises."""
-    raise NotImplementedError
+    """{pid: {tcp ports in LISTEN}} for the given pids (None: every process that can be seen). Linux: `ss -ltnpH` parsed as before. Else
+    per-process psutil net_connections, then `lsof -nP -iTCP -sTCP:LISTEN` when psutil is missing; {} when neither works. Never raises."""
+    want = None if pids is None else {int(p) for p in pids if isinstance(p, int) and not isinstance(p, bool)}
+    try:
+        if IS_LINUX:
+            found = _ss_ports()
+        else:
+            ps = _psutil()
+            found = _psutil_ports(ps, None if want is None else sorted(want)) if ps is not None else _lsof_ports()
+    except Exception:
+        return {}
+    if want is None:
+        return found
+    return {pid: ports for pid, ports in found.items() if pid in want}
 
 
 # ---------------------------------------------------------------- host numbers (#116 slice 6)
 
+_cpu_prev: dict[str, tuple[int, int]] = {}      # consumer -> the previous (idle, total) reading
+_cpu_lock = threading.Lock()
 
-def cpu_pct(consumer: str) -> float | None:
-    """CPU busy % since this consumer's previous reading (None on its first reading or when it cannot be read)."""
-    raise NotImplementedError
+
+def _cpu_reading() -> tuple[int, int] | None:
+    """(idle, total) cpu time now: /proc/stat's first line on Linux, psutil.cpu_times() elsewhere; None when unreadable."""
+    if IS_LINUX:
+        try:
+            with open(PROC_ROOT / "stat") as f:
+                fields = f.readline().split()[1:]
+            vals = [int(x) for x in fields]
+            return vals[3] + (vals[4] if len(vals) > 4 else 0), sum(vals)
+        except (OSError, ValueError, IndexError):
+            return None
+    ps = _psutil()
+    if ps is None:
+        return None
+    try:
+        t = ps.cpu_times()
+        idle = float(getattr(t, "idle", 0)) + float(getattr(t, "iowait", 0))
+        total = sum(float(getattr(t, f, 0)) for f in getattr(t, "_fields", ()) if f not in ("guest", "guest_nice"))
+        return int(idle * 100), int(total * 100)
+    except Exception:
+        return None
+
+
+def cpu_pct(consumer: str = "default") -> float | None:
+    """CPU busy % since this consumer's previous reading (None on its first reading or when it cannot be read). Every consumer
+    keeps its own previous reading, so the Sampler (60 s) and the /api/state poll (3 s) never steal each other's delta. Elsewhere
+    psutil.cpu_times() feeds the same per-consumer arithmetic (psutil.cpu_percent(interval=None) keeps ONE shared baseline)."""
+    reading = _cpu_reading()
+    if reading is None:
+        return None
+    idle, total = reading
+    with _cpu_lock:
+        prev = _cpu_prev.get(consumer)
+        _cpu_prev[consumer] = (idle, total)
+    if not prev or total == prev[1]:
+        return None
+    return round(100.0 * (1 - (idle - prev[0]) / (total - prev[1])), 1)
 
 
 def mem() -> dict | None:
-    """The memory figures in exactly the shape app/health.py returns today, or None."""
-    raise NotImplementedError
+    """The memory figures in exactly the shape app/health.py returns today ({total, used, pct}, bytes), or None."""
+    if IS_LINUX:
+        try:
+            info = {}
+            with open(PROC_ROOT / "meminfo") as f:
+                for line in f:
+                    k, v = line.split(":", 1)
+                    info[k] = int(v.strip().split()[0]) * 1024
+            total, avail = info["MemTotal"], info.get("MemAvailable", info.get("MemFree", 0))
+            return {"total": total, "used": total - avail, "pct": round(100.0 * (total - avail) / total, 1)}
+        except (OSError, KeyError, ValueError):
+            return None
+    ps = _psutil()
+    if ps is None:
+        return None
+    try:
+        vm = ps.virtual_memory()
+        total, avail = int(vm.total), int(vm.available)
+        return {"total": total, "used": total - avail, "pct": round(100.0 * (total - avail) / total, 1)}
+    except Exception:
+        return None
 
 
 def uptime() -> float | None:
     """Seconds since boot, or None."""
-    raise NotImplementedError
+    if IS_LINUX:
+        try:
+            with open(PROC_ROOT / "uptime") as f:
+                return float(f.read().split()[0])
+        except (OSError, ValueError):
+            return None
+    ps = _psutil()
+    if ps is None:
+        return None
+    try:
+        return max(0.0, time.time() - float(ps.boot_time()))
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------- hints (#116 slice 7)
 
 
+OS_RELEASE = Path("/etc/os-release")        # the one test seam for the distribution check
+
+
 def service_manager() -> str:
-    """'docker' | 'systemd' | 'launchd' | 'none' for the running board."""
-    raise NotImplementedError
+    """'docker' | 'systemd' | 'launchd' | 'none' for the running board: its runtime (resolve_runtime), where a hand-started board ('host') has none."""
+    runtime = resolve_runtime(os.environ)[0]
+    return runtime if runtime in ("docker", "systemd", "launchd") else "none"
 
 
-def hint(kind: str, name: str) -> str:
-    """The sentence for `kind` in ('start', 'restart', 'logs', 'install') of `name` on this system. Linux strings are the literals the
-    call sites used before, byte for byte (apt-get on Debian/Ubuntu, systemctl, journalctl); brew and launchctl on macOS; a plain
-    "install <name>" elsewhere."""
-    raise NotImplementedError
+def _apt_system() -> bool:
+    """Debian family, where `sudo apt-get install` is the right hint. /etc/os-release naming another family says no; an unreadable file
+    says yes (the box and its image are Ubuntu, so the hints stay as they were)."""
+    try:
+        text = OS_RELEASE.read_text(errors="replace")
+    except OSError:
+        return True
+    ids: set[str] = set()
+    for line in text.splitlines():
+        key, _, value = line.partition("=")
+        if key in ("ID", "ID_LIKE"):
+            ids.update(value.strip().strip("\"'").lower().split())
+    return not ids or bool(ids & {"debian", "ubuntu"})
+
+
+def _hint_family() -> str:
+    """'linux' | 'macos' | 'other': whose tools the hints name (a seam: tests that assert the Linux words on any host patch this)."""
+    return "linux" if IS_LINUX else "macos" if IS_MACOS else "other"
+
+
+_HINT_KINDS = ("start", "restart", "status", "timers", "logs", "install", "upgrade", "reinstall")
+
+
+def hint(kind: str, name: str, *, sudo: bool = True, flags: str = "") -> str:
+    """The sentence for `kind` of `name` on this system. Kinds: start, restart, status, timers, logs (a service) and install, upgrade,
+    reinstall (a package). `sudo=False` drops the sudo of the systemd forms; `flags` is appended to the systemctl and journalctl forms.
+    Linux strings are the literals the call sites used before, byte for byte (apt-get on Debian/Ubuntu, systemctl, journalctl); macOS
+    names brew (packages, and brew services for ntfy and code-server) and launchctl (the ccboard-* agents, label dev.ccboard.<name>);
+    any other system gets a plain "install <name>". A ValueError for an unknown kind."""
+    if kind not in _HINT_KINDS:
+        raise ValueError(f"unknown hint kind {kind!r}")
+    extra = f" {flags}" if flags else ""
+    family = _hint_family()
+    if family == "linux":
+        pre = "sudo " if sudo else ""
+        if kind in ("install", "upgrade", "reinstall"):
+            if not _apt_system():
+                return f"{kind} {name}"
+            opt = {"install": "", "upgrade": "--only-upgrade ", "reinstall": "--reinstall "}[kind]
+            return f"sudo apt-get install -y {opt}{name}"
+        if kind == "timers":
+            return f"systemctl list-timers {name} --no-pager"
+        if kind == "logs":
+            return f"{pre}journalctl -u {name}{extra}"
+        return f"{pre}systemctl {kind} {name}{extra}"
+    if family == "macos":
+        pkg = name.split("@")[0]
+        if kind in ("install", "upgrade", "reinstall"):
+            return f"brew {kind} {pkg}"
+        unit = pkg.removesuffix(".timer").removesuffix(".service")
+        agent = unit.removeprefix("ccboard-") if unit.startswith("ccboard-") else None
+        if agent is not None:
+            label = f"gui/$(id -u)/dev.ccboard.{agent}"
+            if kind == "start":
+                return f"launchctl kickstart {label}"
+            if kind == "restart":
+                return f"launchctl kickstart -k {label}"
+            if kind == "logs":
+                return f"tail -n 30 ~/Library/Logs/ccboard/{agent}.log"        # to verify against the agent's plist (issue #117)
+            return f"launchctl print {label}"
+        if kind == "logs":
+            return f"tail -n 30 $(brew --prefix)/var/log/{unit}.log"          # to verify per formula
+        return f"brew services {'info' if kind in ('status', 'timers') else kind} {unit}"
+    return f"{kind} {name}"

@@ -21,6 +21,7 @@ import pytest
 
 from app import doctor, hooks
 from app.config import settings
+from tests.proc_fake import use_fake_proc
 
 REAL_RUN = doctor._run          # captured before any fixture patches it
 REAL_HTTP_GET = doctor._http_get
@@ -105,6 +106,7 @@ def world(projects_dir, monkeypatch, tmp_path):
     monkeypatch.setattr(doctor.tmux, "server_up", lambda: w.tmux_up)
     monkeypatch.setattr(settings, "claude_bin", lambda: w.claude_exe)
     monkeypatch.setattr(settings, "runtime", "docker")
+    monkeypatch.setattr(doctor.plat, "_hint_family", lambda: "linux")      # the fix commands asserted below are the Linux ones on any host
     monkeypatch.setattr(settings, "ttyd_port", 7681)
     monkeypatch.setattr(settings, "code_server_port", 8080)
     monkeypatch.setattr(settings, "ntfy_url", "http://127.0.0.1:2586")
@@ -1048,7 +1050,7 @@ def mem(world, monkeypatch, tmp_path):
         m.calls += 1
         return deepcopy(m.health)
     monkeypatch.setattr(doctor.memory, "health", fake_health)
-    monkeypatch.setattr(doctor.memory, "PROC_ROOT", m.proc)
+    use_fake_proc(monkeypatch, m.proc)
     monkeypatch.setattr(settings, "claude_mem", True)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     for var in ("CCBOARD_MEM_BUN", "BUN", "BUN_PATH", "BUN_INSTALL"):

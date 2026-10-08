@@ -171,6 +171,7 @@ def test_cli_default_path_follows_claude_config_dir(tmp_path):
 
 # ---------- the wrappers ----------
 
+@pytest.mark.posix_sh
 @pytest.mark.parametrize("script", ["ccboard-hook", "ccboard-hook-fast"])
 def test_wrapper_is_valid_executable_sh(script):
     p = ROOT / "bin" / script
@@ -214,6 +215,7 @@ def _serve_once(tmp_path):
     return srv, got
 
 
+@pytest.mark.posix_sh
 @pytest.mark.parametrize("script", ["ccboard-hook", "ccboard-hook-fast"])
 def test_wrapper_posts_the_payload_with_token_session_and_agent(tmp_path, script):
     import os
@@ -230,6 +232,7 @@ def test_wrapper_posts_the_payload_with_token_session_and_agent(tmp_path, script
     assert h["x-ccboard-token"] == "sekret" and h["x-ccboard-session"] == "shop--api--x" and h["x-ccboard-agent"] == "codex"
 
 
+@pytest.mark.posix_sh
 @pytest.mark.parametrize("script", ["ccboard-hook", "ccboard-hook-fast"])
 def test_wrapper_defaults_the_agent_and_is_silent_when_the_board_is_down_or_the_token_is_missing(tmp_path, script):
     import os

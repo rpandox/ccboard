@@ -20,6 +20,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -34,6 +35,7 @@ from typing import Callable, NamedTuple
 from urllib.parse import urlsplit
 
 from . import backup, claude_auth, login_problem, memory, preflight, projects, push, tmux
+from . import platform as plat
 from .config import settings
 
 GROUPS = ["box", "claude", "notify", "terminal"]   # register()/register_provider() append the others (memory, codex)
@@ -219,18 +221,20 @@ def _vstr(text: str) -> str | None:
     return m.group(0) if m else None
 
 
-_INSTALL = {
-    "tmux": ("Install tmux 3.2 or newer", "sudo apt-get install -y tmux"),
-    "git": ("Install git 2.15 or newer", "sudo apt-get install -y git"),
-    "gh": ("Install the GitHub CLI, then log in", "sudo apt-get install -y gh && gh auth login"),
-    "ccusage": ("Install ccusage (needs node and npm)", "npm install -g --prefix ~/.local ccusage"),
-    "claude": ("Install Claude Code on the box", "curl -fsSL https://claude.ai/install.sh | bash"),
-    "ttyd": ("Re-run the installer: it installs ttyd", "./install.sh"),
-}
+def _install(tool: str) -> tuple[str, str | None]:
+    """(text, command) for installing `tool`; the package commands name this system's package manager (platform.hint)."""
+    return {
+        "tmux": ("Install tmux 3.2 or newer", plat.hint("install", "tmux")),
+        "git": ("Install git 2.15 or newer", plat.hint("install", "git")),
+        "gh": ("Install the GitHub CLI, then log in", plat.hint("install", "gh") + " && gh auth login"),
+        "ccusage": ("Install ccusage (needs node and npm)", "npm install -g --prefix ~/.local ccusage"),
+        "claude": ("Install Claude Code on the box", "curl -fsSL https://claude.ai/install.sh | bash"),
+        "ttyd": ("Re-run the installer: it installs ttyd", "./install.sh"),
+    }.get(tool, (f"Install {tool}", None))
 
 
 def _missing(tool: str) -> Outcome:
-    text, cmd = _INSTALL.get(tool, (f"Install {tool}", None))
+    text, cmd = _install(tool)
     return _fail(f"{tool} is not installed", fix(text, cmd))
 
 
@@ -245,7 +249,7 @@ def _c_tmux(db) -> Outcome:
     if p.rc != 0 or v is None:
         return _warn("could not read the tmux version", fix("Run tmux -V on the box", "tmux -V"))
     if v < MIN_TMUX:
-        return _fail(f"tmux {_vs(v)} is older than {_vs(MIN_TMUX)}", fix(f"Upgrade tmux to {_vs(MIN_TMUX)} or newer", "sudo apt-get install -y --only-upgrade tmux"))
+        return _fail(f"tmux {_vs(v)} is older than {_vs(MIN_TMUX)}", fix(f"Upgrade tmux to {_vs(MIN_TMUX)} or newer", plat.hint("upgrade", "tmux")))
     return _pass(f"tmux {_vstr(p.out or p.err) or _vs(v)}")
 
 
@@ -253,11 +257,68 @@ def _c_tmux_server(db) -> Outcome:
     if tmux.server_up():
         return _pass(f"the tmux server on socket '{settings.tmux_socket}' is running")
     return _fail(f"no tmux server on socket '{settings.tmux_socket}'",
-                 fix("Start the tmux service that owns the sessions (never restart it while sessions run)", "sudo systemctl start ccboard-tmux"))
+                 fix("Start the tmux service that owns the sessions (never restart it while sessions run)", plat.hint("start", "ccboard-tmux")))
 
 
 def _c_tmux_conf(db) -> Outcome:
     return _skip("verified in v0.5.7")
+
+
+SOCKET_PATH_MAX = 100     # bytes; a unix socket path holds 104 on macOS and 108 on Linux (sun_path), 100 leaves a margin
+
+
+def _tmux_server_sockets() -> list[tuple[int, str]] | None:
+    """(pid, socket path) of every live tmux server on the board's socket name, read from the process titles ('tmux: server (<path>)')
+    that `ps` shows; None when the process list cannot be read. Tests patch this."""
+    try:
+        p = _run(["ps", "-axo", "pid=,command="])
+    except (ToolMissing, ToolTimeout):
+        return None
+    if p.rc != 0:
+        return None
+    return _parse_server_titles(p.out, settings.tmux_socket)
+
+
+def _parse_server_titles(text: str, name: str) -> list[tuple[int, str]]:
+    found = []
+    for line in text.splitlines():
+        m = re.match(r"\s*(\d+)\s+tmux: server \((/[^)]*)\)", line)
+        if m and m.group(2).rsplit("/", 1)[-1] == name:
+            found.append((int(m.group(1)), m.group(2)))
+    return found
+
+
+def _c_tmux_socket(db) -> Outcome:
+    """Where the board's tmux socket is and whether it is safe: path from tmux itself, directory mode, length, and a server that is
+    alive while its socket file is gone. Sends no signal and reads no session content; a down server is tmux-server's case."""
+    path = tmux.socket_path(fresh=True)
+    if path is None:
+        alive = _tmux_server_sockets()
+        if not alive:
+            return _skip("no tmux server to ask (the tmux server check says why)")
+        pid, where = alive[0]
+        if os.path.exists(where):
+            return _warn(f"a tmux server (pid {pid}) is running but does not answer on {where}",
+                         fix("Look at the socket directory permissions and at the tmux service log", f"ls -ld {shlex.quote(os.path.dirname(where))}"))
+        return _warn(f"the tmux server (pid {pid}) is running but its socket file {where} is gone",
+                     fix("tmux recreates its socket when the server process gets SIGUSR1 (tmux manual); the board never sends it, run it yourself "
+                         "and never restart the tmux service while sessions run", f"kill -USR1 {pid}"))
+    folder = os.path.dirname(path)
+    try:
+        mode = os.stat(folder).st_mode & 0o777
+    except OSError:
+        return _warn(f"socket {path}: its directory cannot be read")
+    n = len(path.encode("utf-8", "replace"))
+    if mode & 0o022:
+        return _warn(f"socket {path}: the directory is writable by group or others (mode {mode:04o})",
+                     fix("The socket directory must be private to its owner", f"chmod 700 {shlex.quote(folder)}"))
+    if n > SOCKET_PATH_MAX:
+        return _warn(f"socket {path}: the path is {n} bytes, over the {SOCKET_PATH_MAX} byte limit",
+                     fix("Use a shorter TMUX_TMPDIR for the tmux service (a unix socket path holds 104 bytes on macOS and 108 on Linux)"))
+    if not os.path.exists(path):
+        return _warn(f"socket {path}: tmux reports it but the file is missing",
+                     fix("tmux recreates its socket when the server process gets SIGUSR1 (tmux manual); the board never sends it"))
+    return _pass(f"socket {path}, directory mode {mode:04o}, {n} of {SOCKET_PATH_MAX} bytes")
 
 
 def _c_ttyd(db) -> Outcome:
@@ -274,8 +335,8 @@ def _c_ttyd(db) -> Outcome:
         return _pass(f"listening on 127.0.0.1:{port}" + (f", ttyd {ver}" if ver else ""))
     if exe:
         return _fail(f"ttyd is installed but nothing listens on 127.0.0.1:{port}",
-                     fix("Restart the ttyd service", "sudo systemctl restart ccboard-ttyd"))
-    return _fail("ttyd is not installed and nothing listens on its port", fix(*_INSTALL["ttyd"]))
+                     fix("Restart the ttyd service", plat.hint("restart", "ccboard-ttyd")))
+    return _fail("ttyd is not installed and nothing listens on its port", fix(*_install("ttyd")))
 
 
 CHECKOUT = Path(__file__).resolve().parent.parent
@@ -332,7 +393,7 @@ def _c_code_server(db) -> Outcome:
             return _warn(f"listening on 127.0.0.1:{port}; no watcher excludes in its user settings (slow to open on a busy box)",
                          fix("Merge ccboard's code-server settings", "python3 scripts/code_server_settings.py install"))
         return _pass(f"listening on 127.0.0.1:{port}")
-    return _fail(f"nothing listens on 127.0.0.1:{port}", fix("Start code-server", "sudo systemctl restart code-server@$USER"))
+    return _fail(f"nothing listens on 127.0.0.1:{port}", fix("Start code-server", plat.hint("restart", "code-server@$USER")))
 
 
 def _c_projects_dir(db) -> Outcome:
@@ -344,6 +405,26 @@ def _c_projects_dir(db) -> Outcome:
     return _pass(f"{p} exists and is writable")
 
 
+PROC_VERSION = Path("/proc/version")      # tests point this at a temp file
+CONTAINER_LINUX_ONLY = "Container mode is Linux only: it needs a Linux host with Docker Engine"    # the README says the same
+
+
+def _c_runtime_host(db) -> Outcome:
+    """Runtime docker on a Docker Desktop virtual machine (its kernel names linuxkit) cannot reach the host's tmux, processes or
+    programs. Reads /proc/version only; never calls the Docker socket. The linuxkit signal is to verify on a Mac and on Windows."""
+    if settings.runtime != "docker":
+        return _skip("the board is not running as a container")
+    try:
+        kernel = PROC_VERSION.read_text(errors="replace").lower()
+    except OSError:
+        return _skip("the kernel version could not be read")
+    if "linuxkit" in kernel:
+        return _fail("this container runs inside Docker Desktop's virtual machine (the kernel names linuxkit), not on a Linux host: "
+                     "the host's tmux sockets, processes and programs are out of reach",
+                     fix("Run the board on a Linux host with Docker Engine (docker-ce inside WSL2 on Windows), or use the systemd runtime"))
+    return _pass(f"{CONTAINER_LINUX_ONLY}, and this kernel is Linux")
+
+
 def _c_git(db) -> Outcome:
     try:
         p = _run(["git", "--version"])
@@ -353,7 +434,7 @@ def _c_git(db) -> Outcome:
     if p.rc != 0 or v is None:
         return _warn("could not read the git version", fix("Run git --version on the box", "git --version"))
     if v < MIN_GIT:
-        return _fail(f"git {_vs(v)} is older than {_vs(MIN_GIT)}", fix(f"Upgrade git to {_vs(MIN_GIT)} or newer", "sudo apt-get install -y --only-upgrade git"))
+        return _fail(f"git {_vs(v)} is older than {_vs(MIN_GIT)}", fix(f"Upgrade git to {_vs(MIN_GIT)} or newer", plat.hint("upgrade", "git")))
     # the clone probe's address pin (http.curloptResolve, git 2.37+) is read from the version, not from `git help config` (no man pages in the container)
     return _pass(f"git {_vstr(p.out) or _vs(v)}; {preflight.pin_note(preflight.parse_git_version(p.out) or (v[0], v[1], 0))}")
 
@@ -458,7 +539,7 @@ def _c_gh(db) -> Outcome:
             raise rv[1]                                     # type: ignore[misc]
     proc = rv[1] if rv and rv[0] == "ok" else None
     if proc is not None and proc.rc != 0:
-        return _warn("gh --version failed", fix("Reinstall the GitHub CLI", "sudo apt-get install -y --reinstall gh"))
+        return _warn("gh --version failed", fix("Reinstall the GitHub CLI", plat.hint("reinstall", "gh")))
     seen = proc.out if proc is not None else (pv.last[1].out if pv.last else "")      # type: ignore[union-attr]
     where = f"gh {_vstr(seen)}" if _ver(seen) else "gh"
     ra = _probe_wait(pa, deadline)
@@ -632,14 +713,14 @@ def _c_ntfy(db) -> Outcome:
     try:
         status, body = _http_get(base + "/v1/health", timeout=2.0)
     except OSError:
-        return _fail(f"ntfy does not answer at {base}", fix("Start the ntfy server", "sudo systemctl start ntfy"))
+        return _fail(f"ntfy does not answer at {base}", fix("Start the ntfy server", plat.hint("start", "ntfy")))
     healthy = None
     try:
         healthy = json.loads(body).get("healthy") if body else None
     except (ValueError, AttributeError):
         healthy = None
     if status >= 500 or healthy is False:
-        return _warn(f"ntfy answers at {base} but reports a problem (HTTP {status})", fix("Check the ntfy service, then send a test", "sudo journalctl -u ntfy -n 30 --no-pager", "notify_test"))
+        return _warn(f"ntfy answers at {base} but reports a problem (HTTP {status})", fix("Check the ntfy service, then send a test", plat.hint("logs", "ntfy", flags="-n 30 --no-pager"), "notify_test"))
     return _pass(f"ntfy answers at {base}, topic '{settings.ntfy_topic}'")
 
 
@@ -735,6 +816,94 @@ def _c_claude_hooks(db) -> Outcome:
     return _pass(f"hooks for {len(ours)} events and the statusLine are installed")
 
 
+HELPER_TIMEOUT = 3.0          # per probe of the hook helpers (curl --version, python3 -c pass)
+LOGIN_PATH_TIMEOUT = 1.5      # reading the login shell's PATH; below CHECK_TIMEOUT together with the probes (they run side by side)
+HELPER_EFFECT = "the permission hook falls back to the terminal prompt and the statusline shows nothing"
+
+
+def _login_path() -> str:
+    """PATH of the account's login shell, or '' when it cannot be read in LOGIN_PATH_TIMEOUT. A hook started from a login shell sees it; one
+    started by the service sees only the board's own. Only the last line counts: a profile may print a banner. Tests patch this."""
+    try:
+        p = _run([plat.login_shell(), "-lc", 'printf "\\n%s" "$PATH"'], timeout=LOGIN_PATH_TIMEOUT)
+    except (ToolMissing, ToolTimeout):
+        return ""
+    last = p.out.rstrip("\n").rsplit("\n", 1)[-1] if p.rc == 0 else ""
+    return last if "/" in last else ""
+
+
+def _hook_path() -> str:
+    """The directories a hook may find curl and python3 in: the board's own PATH, then the login shell's, each directory once."""
+    seen: list[str] = []
+    for d in (os.environ.get("PATH", "") + os.pathsep + _login_path()).split(os.pathsep):
+        if d and d not in seen:
+            seen.append(d)
+    return os.pathsep.join(seen)
+
+
+def _probe_helper(name: str, tail: list[str], path: str) -> str:
+    """'ok' | 'missing' | 'broken' (ran, exited non-zero) | 'timeout' for `name` looked up on `path` and run with `tail`."""
+    exe = shutil.which(name, path=path)
+    if not exe:
+        return "missing"
+    try:
+        p = _run([exe, *tail], timeout=HELPER_TIMEOUT)
+    except ToolMissing:
+        return "missing"
+    except ToolTimeout:
+        return "timeout"
+    return "ok" if p.rc == 0 else "broken"
+
+
+def _helper_install(tool: str) -> dict:
+    """The fix for a missing helper, through the platform hint (apt-get on Debian and Ubuntu, brew on a Mac); the Homebrew formula for
+    python3 is `python`."""
+    pkg = "python" if tool == "python3" and plat.IS_MACOS else tool
+    return fix(f"Install {tool}", plat.hint("install", pkg))
+
+
+def _c_hook_helpers(db) -> Outcome:
+    """Issue #121: bin/ccboard-hook, -permission and -statusline call `curl`, the last two also `python3 -c`, and all of them fail soft, so a
+    missing helper is silent. Runs both under the PATH a hook would see, each with a 3 s limit (side by side, inside the check's 5 s cap)."""
+    from concurrent.futures import ThreadPoolExecutor
+    path = _hook_path()
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_curl = ex.submit(_probe_helper, "curl", ["--version"], path)
+        f_py = ex.submit(_probe_helper, "python3", ["-c", "pass"], path)
+        curl, py = f_curl.result(), f_py.result()
+    if curl == py == "ok":
+        return _pass("curl and python3 both run under the PATH the hooks see")
+    if plat.IS_MACOS and py in ("broken", "timeout") and _xcode_stub():      # the stub fails, or stalls on its install dialog
+        py = "stub"
+    bad_curl, bad_py = curl in ("missing", "broken"), py in ("missing", "broken", "stub")
+    if bad_curl or bad_py:
+        reasons, fixes = [], []
+        if bad_curl:
+            reasons.append("curl is not found" if curl == "missing" else "curl does not run")
+            fixes.append(_helper_install("curl"))
+        if bad_py:
+            if py == "stub":
+                reasons.append("python3 is the Command Line Tools stub, not a real Python")
+                fixes.append(fix(f"Install the Command Line Tools, or Homebrew Python ({plat.hint('install', 'python')})",
+                                 "xcode-select --install"))
+            else:
+                reasons.append("python3 is not found" if py == "missing" else "python3 does not run")
+                fixes.append(_helper_install("python3"))
+        effect = ("no hook can reach the board, and " if bad_curl else "") + HELPER_EFFECT
+        return Outcome("fail" if bad_curl else "warn", f"{' and '.join(reasons)}: {effect}", fixes[0])
+    slow = [n for n, r in (("curl --version", curl), ("python3 -c pass", py)) if r == "timeout"]
+    return _warn(f"unknown: {' and '.join(slow)} did not answer within {int(HELPER_TIMEOUT)} s, so the hook helpers could not be judged",
+                 fix("Run curl --version and python3 -c pass in a terminal"))
+
+
+def _xcode_stub() -> bool:
+    """macOS: `xcode-select -p` fails, so /usr/bin/python3 is the Command Line Tools stub and no real developer directory exists."""
+    try:
+        return _run(["xcode-select", "-p"], timeout=HELPER_TIMEOUT).rc != 0
+    except (ToolMissing, ToolTimeout):
+        return False
+
+
 # ------------------------------------------------------------------ memory checks (claude-mem)
 
 MEM_GROUP = "memory"
@@ -788,7 +957,7 @@ def _mem_worker(db, ctx: dict) -> Outcome:
                      fix("Give it a minute; if it stays stuck, stop the worker (its pid is in ~/.claude-mem/worker.pid) and start any Claude session"))
     return _warn(f"no worker on {where}: {h.get('reason') or 'connection refused'}",
                  fix("Start any Claude session: the plugin's hooks start the worker. With CLAUDE_MEM_WORKER_AUTOSTART=false only ccboard-mem.service "
-                     "does: systemctl status ccboard-mem"))
+                     f"does: {plat.hint('status', 'ccboard-mem', sudo=False)}"))
 
 
 def _mem_queue(db, ctx: dict) -> Outcome:
@@ -950,12 +1119,14 @@ def _mem_env(db, ctx: dict) -> Outcome:
                              fix("The host-side script scripts/ccboard-mem-env runs from the watchdog's crontab line (every 2 minutes) and "
                                  "reports the worker's variable names, never values. Check the line is there, then run it once",
                                  "crontab -l | grep ccboard-watchdog"))
+            if not plat.IS_LINUX:
+                return _skip("could not read the worker's environment (another user's process, or psutil is not installed)")
             return _skip("could not read the worker's environment (another user's process, or no /proc here)")
         note = f" (reported by the host watchdog {why})"
     if leaks:
         return _warn(f"the memory worker inherited a session's environment; install ccboard-mem.service (it holds {', '.join(leaks)})",
-                     fix("Install the unit, then hand over: the plugin's `worker-service.cjs stop`, then `sudo systemctl start ccboard-mem`. "
-                         "An update undoes it unless CLAUDE_MEM_WORKER_AUTOSTART=false (README, claude-mem)",
+                     fix("Install the unit, then hand over: the plugin's `worker-service.cjs stop`, then "
+                         f"`{plat.hint('start', 'ccboard-mem')}`. An update undoes it unless CLAUDE_MEM_WORKER_AUTOSTART=false (README, claude-mem)",
                          "CCBOARD_MEM_SERVICE=1 ./install.sh"))
     return _pass("the worker's environment holds no ccboard session variables" + note)
 
@@ -1123,11 +1294,13 @@ for _id, _group, _label, _fn in (
     ("tmux", "terminal", "tmux 3.2 or newer", _c_tmux),
     ("tmux-server", "terminal", "tmux server", _c_tmux_server),
     ("tmux-conf", "terminal", "tmux.conf applied", _c_tmux_conf),
+    ("tmux-socket", "terminal", "tmux socket", _c_tmux_socket),
     ("ttyd", "terminal", "ttyd (web terminal)", _c_ttyd),
     ("attach-wrapper", "terminal", "ccboard-attach wrapper", _c_attach_wrapper),
     ("code-server", "box", "code-server", _c_code_server),
     ("projects-dir", "box", "Projects directory", _c_projects_dir),
     ("git", "box", "git 2.15 or newer", _c_git),
+    ("runtime-host", "box", "Container host", _c_runtime_host),
     ("gh", "box", "GitHub CLI", _c_gh),
     ("ccusage", "box", "ccusage", _c_ccusage),
     ("identity", "box", "Identity and access", _c_identity),
@@ -1141,6 +1314,7 @@ for _id, _group, _label, _fn in (
 ):
     register(_id, _group, _label, _fn)
 del _id, _group, _label, _fn
+register("hook-helpers", "claude", "Hook helpers (curl, python3)", _c_hook_helpers)   # issue #121
 register_provider("memory", MEM_GROUP, memory_checks)       # claude-mem (v0.5.10): one probe, seven checks
 register_provider("codex", CODEX_GROUP, codex_checks)       # the Codex adapter's checks (v0.5.11)
 
@@ -1191,8 +1365,15 @@ FIRST_DAY = 86400.0                      # a board younger than this has had no 
 UNCOMMITTED_AGE = 86400.0                # changed files older than this are worth a warning
 UNCOMMITTED_FILES = 200                  # files stat'ed per repo
 UNCOMMITTED_BUDGET = 3.0                 # seconds for the whole uncommitted-work check
-BACKUP_TIMER_FIX = fix("Check that the nightly timer is running", "systemctl list-timers ccboard-backup.timer --no-pager")
-BACKUP_NOW = "Run one now (Back up now in the bell panel, or sudo systemctl start ccboard-backup), then read journalctl -u ccboard-backup"
+
+
+def _backup_timer_fix() -> dict:
+    return fix("Check that the nightly timer is running", plat.hint("timers", "ccboard-backup.timer"))
+
+
+def _backup_now() -> str:
+    return (f"Run one now (Back up now in the bell panel, or {plat.hint('start', 'ccboard-backup')}), "
+            f"then read {plat.hint('logs', 'ccboard-backup', sudo=False)}")
 
 
 def _st_dev(path) -> int:
@@ -1234,7 +1415,7 @@ def _c_backup_last(db) -> Outcome:
     except FileNotFoundError:
         if _uptime() < FIRST_DAY:
             return _skip("no backup has run yet; the first nightly run comes with the timer (02:30 by default)")
-        return _warn("no backup has ever run on this box", fix(BACKUP_NOW, "systemctl status ccboard-backup.timer --no-pager"))
+        return _warn("no backup has ever run on this box", fix(_backup_now(), plat.hint("status", "ccboard-backup.timer", sudo=False, flags="--no-pager")))
     except (OSError, ValueError):
         return _skip("the backup status file could not be read")
     try:
@@ -1248,16 +1429,16 @@ def _c_backup_last(db) -> Outcome:
     status = st.get("status")
     first = lambda key: next((str(x) for x in (st.get(key) or []) if x), "")        # noqa: E731
     if status == "failed":
-        return _fail(f"the last backup failed ({when}): {first('errors') or 'no message'}", fix("Fix what it names, then " + BACKUP_NOW[0].lower() + BACKUP_NOW[1:]))
+        return _fail(f"the last backup failed ({when}): {first('errors') or 'no message'}", fix("Fix what it names, then " + _backup_now()[0].lower() + _backup_now()[1:]))
     if age > BACKUP_FAIL_AGE:
-        return _fail(f"the last backup is {_age_words(age)} old ({when}); the nightly timer is not running it", BACKUP_TIMER_FIX)
+        return _fail(f"the last backup is {_age_words(age)} old ({when}); the nightly timer is not running it", _backup_timer_fix())
     if status == "partial":
         return _warn(f"the last backup was partial ({when}): {first('warnings') or 'a backup branch was not written'}",
                      fix("The snapshot is fine; read the warning in Settings > Box > Backup"))
     if status != "ok":
         return _warn(f"the last backup reports status {str(status)[:20]!r} ({when})", fix("Run a backup now", None))
     if age > BACKUP_WARN_AGE:
-        return _warn(f"the last backup is {_age_words(age)} old ({when}); it should run every night", BACKUP_TIMER_FIX)
+        return _warn(f"the last backup is {_age_words(age)} old ({when}); it should run every night", _backup_timer_fix())
     return _pass(f"the last backup was ok ({when})")
 
 
@@ -1486,7 +1667,7 @@ def _c_ci_status(db) -> Outcome:
     if got is not None and got[0] == "ok":
         return _ci_verdict(got[1], revision, "")                  # type: ignore[arg-type]
     if got is not None and isinstance(got[1], ToolMissing):
-        return _skip("gh is not installed, so the build cannot be read", fix(*_INSTALL["gh"]))
+        return _skip("gh is not installed, so the build cannot be read", fix(*_install("gh")))
     if got is not None and not isinstance(got[1], ToolTimeout):
         return _skip(f"could not read the build ({type(got[1]).__name__})")
     if rec:                                                       # slow: the older answer, with its age, never a warning about the slowness

@@ -9,7 +9,7 @@ import re
 import secrets
 from pathlib import Path
 
-from . import accounts, agents, login_problem, notify, permissions, projects, samples, skills, tmux
+from . import accounts, agents, login_problem, notify, permissions, platform, projects, samples, skills, tmux
 from .agents.claude import ELICITATION_DONE, SESSION_ID_RE, WAIT_KIND, WAITING_NOTIFICATIONS, parse_limit_message, statusline_stats
 from .config import settings
 from .db import SKIP_EVENTS, now as db_now
@@ -80,10 +80,19 @@ def check_token(given: str | None) -> bool:
 
 
 def _our_socket(tmux_env: str | None) -> bool:
-    # $TMUX looks like /tmp/tmux-1000/ccboard,12345,0
+    """Did this hook come from the board's own tmux server? $TMUX looks like /tmp/tmux-1000/ccboard,12345,0: its first field is the
+    socket path, compared with what the server itself reports (tmux.socket_path) after realpath on both, so /tmp and /private/tmp
+    are one place. Only while that is unknown (tmux down, or too old to say) the old uid-directory rule decides; no uid, no match."""
     if not tmux_env:
         return False
-    return f"/tmux-{os.getuid()}/{settings.tmux_socket}," in tmux_env
+    ours = tmux.socket_path()
+    if ours is not None:
+        theirs = tmux_env.split(",", 1)[0]
+        return bool(theirs) and os.path.realpath(theirs) == os.path.realpath(ours)
+    uid = platform.current_uid()
+    if uid is None:
+        return False
+    return f"/tmux-{uid}/{settings.tmux_socket}," in tmux_env
 
 
 def _valid(name: str | None) -> str | None:

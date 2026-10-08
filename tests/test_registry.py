@@ -12,7 +12,10 @@ from pathlib import Path
 
 import pytest
 
+from tests.proc_fake import use_fake_proc
+
 registry = importlib.import_module("app.agents.registry")
+REAL_PPID = registry.plat.ppid          # captured before the autouse fixture stubs it
 
 FIX = Path(__file__).parent / "fixtures" / "claude_registry"
 CWD = "/srv/projects/demo/repo"
@@ -54,7 +57,7 @@ def write(path: Path, data) -> None:
 @pytest.fixture(autouse=True)
 def _clean_registry(monkeypatch):
     registry.invalidate()
-    monkeypatch.setattr(registry, "_IS_LINUX", False)    # no real /proc in any test unless it asks for it
+    monkeypatch.setattr(registry.plat, "ppid", lambda pid: None)    # no real /proc in any test unless it asks for it
     yield
     registry.invalidate()
 
@@ -184,12 +187,11 @@ def test_ours_by_pane_pid():
 
 def test_ours_by_pid_descendant_on_linux(monkeypatch, tmp_path):
     parents = {10004: 777, 777: 500, 500: 1}             # claude 10004 <- zsh 777 <- tmux pane shell 500
-    monkeypatch.setattr(registry, "_IS_LINUX", True)
-    monkeypatch.setattr(registry, "_ppid", lambda pid: parents.get(pid))
+    monkeypatch.setattr(registry.plat, "ppid", lambda pid: parents.get(pid))
     snap = registry.scan(FIX, [row("demo--repo--a", cwd="/elsewhere")], pane_pids={"demo--repo--a": 500}, now=NOW)
     assert snap["ours"]["demo--repo--a"]["session_id"] == S10004
-    # off Linux the ancestry is not consulted
-    monkeypatch.setattr(registry, "_IS_LINUX", False)
+    # where no parent can be read (no /proc, no psutil) the ancestry finds nothing
+    monkeypatch.setattr(registry.plat, "ppid", lambda pid: None)
     assert registry.scan(FIX, [row("demo--repo--a", cwd="/elsewhere")], pane_pids={"demo--repo--a": 500}, now=NOW)["ours"] == {}
 
 
@@ -198,15 +200,15 @@ def test_ppid_reads_proc_stat_and_never_raises(monkeypatch, tmp_path):
     (tmp_path / "123" / "stat").write_text("123 (claude (v2) x) S 456 123 123 0 -1 4194560\n")   # comm with spaces and parens
     (tmp_path / "124").mkdir()
     (tmp_path / "124" / "stat").write_text("garbage")
-    monkeypatch.setattr(registry, "PROC", tmp_path)
-    assert registry._ppid(123) == 456
-    assert registry._ppid(124) is None and registry._ppid(999) is None
+    use_fake_proc(monkeypatch, tmp_path)
+    assert REAL_PPID(123) == 456
+    assert REAL_PPID(124) is None and REAL_PPID(999) is None
 
 
 def test_pid_ancestry_is_bounded_and_survives_loops(monkeypatch):
-    monkeypatch.setattr(registry, "_ppid", lambda pid: pid + 1)            # never reaches 1
+    monkeypatch.setattr(registry.plat, "ppid", lambda pid: pid + 1)            # never reaches 1
     assert len(registry._ancestors(10, {})) == registry.MAX_ANCESTOR_HOPS
-    monkeypatch.setattr(registry, "_ppid", lambda pid: {10: 11, 11: 10}.get(pid))
+    monkeypatch.setattr(registry.plat, "ppid", lambda pid: {10: 11, 11: 10}.get(pid))
     assert registry._ancestors(10, {}) == [11]
 
 
@@ -433,6 +435,9 @@ def test_registry_imports_only_the_standard_library():
         if isinstance(n, ast.Import):
             mods |= {a.name.split(".")[0] for a in n.names}
         elif isinstance(n, ast.ImportFrom):
+            if n.level == 2 and not n.module and [a.name for a in n.names] == ["platform"]:
+                mods.add("app.platform")                  # stdlib only itself (tests/test_platform_proc.py), so still acyclic
+                continue
             assert n.level == 0, "relative import"
             mods.add((n.module or "").split(".")[0])
-    assert mods == {"__future__", "json", "os", "sys", "threading", "time", "dataclasses", "datetime", "pathlib"}
+    assert mods == {"__future__", "json", "os", "app.platform", "threading", "time", "dataclasses", "datetime", "pathlib"}

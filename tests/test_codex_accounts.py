@@ -22,9 +22,11 @@ import pytest
 
 from app import account_store, accounts, codex_accounts as cx, login_problem, samples, tmux
 from app.agents import codex as codex_agent
+from app.platform import browser_stub
 from app.config import settings
 from app.db import DB, iso
 from tests.conftest import FAKE_AUTH_BLOB, write_fake_codex
+from tests.proc_fake import use_fake_proc
 
 H = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
 T0 = int(time.time()) + 1000     # after every real-clock event the fixtures write (seeds), so event order is the order of the calls
@@ -89,7 +91,7 @@ def box(projects_dir, tmp_path, monkeypatch, fake_tmux):
     codex_agent.reset_caches()
     proc = tmp_path / "proc"
     proc.mkdir()
-    monkeypatch.setattr(codex_agent, "PROC", proc)
+    use_fake_proc(monkeypatch, proc)
     monkeypatch.setattr(account_store, "_sleep", lambda s: None)
     monkeypatch.setattr(cx, "watch_login", lambda db: None)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -223,7 +225,7 @@ def test_foreign_processes_counts_codex_processes_the_board_did_not_start(box):
 
 
 def test_foreign_processes_without_proc_is_zero_and_never_matches_by_command_line(box, monkeypatch):
-    monkeypatch.setattr(codex_agent, "PROC", box.tmp / "no-such-proc")
+    use_fake_proc(monkeypatch, box.tmp / "no-such-proc")
     assert codex_agent.foreign_processes([]) == 0
     d = box.proc / "7"                                             # a process whose command line mentions codex is not a codex process
     d.mkdir()
@@ -868,7 +870,7 @@ def test_start_login_runs_the_device_login_in_pending_under_the_data_dir_with_a_
     assert sorted(p.name for p in pend.iterdir()) == ["config.toml"], "the live login and the hooks are not copied"
     assert (pend / "config.toml").read_text() == 'model = "gpt-5.6-sol"\n' and mode(pend / "config.toml") == 0o600
     name, cwd, env = box.tmux["created"][-1]
-    assert name == tmux.LOGIN_SESSION and env["CODEX_HOME"] == str(pend) and env["BROWSER"] == "/bin/true"
+    assert name == tmux.LOGIN_SESSION and env["CODEX_HOME"] == str(pend) and env["BROWSER"] == browser_stub()
     assert box.tmux["sent"][-1] == (tmux.LOGIN_SESSION, "codex login --device-auth") == (tmux.LOGIN_SESSION, codex_agent.DEVICE_LOGIN_CMD)
     v = cx.login_view()
     assert v["adding"] is True and v["label"] == "My work account" and v["running"] is True and v["started_at"]

@@ -72,6 +72,7 @@ def test_gate_route_needs_the_hook_token_and_reads_tmux_viewers(lite_client, fak
     assert lite_client.get("/api/state", headers=H).json()["deploy"] is None
 
 
+@pytest.mark.posix_sh
 def test_gate_script_exit_codes(tmp_path):
     """scripts/ccboard-deploy-gate: 75 on hold, 0 on go, 0 when the board does not answer or the token is missing."""
     script = ROOT / "scripts" / "ccboard-deploy-gate"

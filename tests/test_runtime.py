@@ -20,6 +20,11 @@ def test_runtime_detection():
     assert Settings({"CCBOARD_RUNTIME": "docker", "INVOCATION_ID": "abc"}).runtime == "docker"
     assert Settings({"CCBOARD_RUNTIME": "podman"}).runtime == "host"
     assert Settings({"CCBOARD_RUNTIME": "podman", "INVOCATION_ID": "abc"}).runtime == "systemd"
+    # launchd is the fourth runtime: explicit, or detected from a ccboard LaunchAgent's XPC_SERVICE_NAME (a Terminal's own name is not one)
+    assert Settings({"CCBOARD_RUNTIME": "launchd"}).runtime == "launchd"
+    assert Settings({"XPC_SERVICE_NAME": "dev.ccboard.web"}).runtime == "launchd"
+    assert Settings({"XPC_SERVICE_NAME": "com.apple.Terminal"}).runtime == "host"
+    assert Settings({"CCBOARD_RUNTIME": "docker", "XPC_SERVICE_NAME": "dev.ccboard.web"}).runtime == "docker"
 
 
 def test_dev_bypass_only_on_a_dev_host():
@@ -28,6 +33,10 @@ def test_dev_bypass_only_on_a_dev_host():
     assert Settings({"CCBOARD_RUNTIME": "host", "INVOCATION_ID": "abc", "CCBOARD_DEV_BYPASS_USER": "x"}).dev_bypass_user is None
     assert Settings({"CCBOARD_DEV_BYPASS_USER": "x"}).dev_bypass_user == "x"
     assert Settings({"CCBOARD_RUNTIME": "host", "CCBOARD_DEV_BYPASS_USER": "x"}).dev_bypass_user == "x"
+    # never under launchd, however it was chosen
+    assert Settings({"CCBOARD_RUNTIME": "launchd", "CCBOARD_DEV_BYPASS_USER": "x"}).dev_bypass_user is None
+    assert Settings({"XPC_SERVICE_NAME": "dev.ccboard.web", "CCBOARD_DEV_BYPASS_USER": "x"}).dev_bypass_user is None
+    assert Settings({"CCBOARD_RUNTIME": "host", "XPC_SERVICE_NAME": "dev.ccboard.web", "CCBOARD_DEV_BYPASS_USER": "x"}).dev_bypass_user is None
 
 
 def test_image_version():
@@ -99,7 +108,13 @@ def test_docker_serve_without_socket(docker_serve, tmp_path, monkeypatch):
     assert calls == []
 
 
-@pytest.mark.parametrize("runtime", ["host", "systemd"])
+def test_dev_bypass_refusal_is_logged(caplog):
+    caplog.set_level(logging.WARNING, logger="ccboard")
+    Settings({"CCBOARD_RUNTIME": "launchd", "CCBOARD_DEV_BYPASS_USER": "x"})
+    assert "ignoring CCBOARD_DEV_BYPASS_USER (runtime launchd)" in caplog.text
+
+
+@pytest.mark.parametrize("runtime", ["host", "systemd", "launchd"])
 def test_serve_keeps_the_sudo_fallback_outside_docker(monkeypatch, runtime):
     monkeypatch.setattr(settings, "runtime", runtime)
     monkeypatch.setattr(previews.shutil, "which", lambda x: f"/usr/bin/{x}")

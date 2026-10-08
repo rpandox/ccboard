@@ -2,6 +2,22 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.23 - 2026-10-09
+
+### Added
+- One platform module (`app/platform.py`) answers every operating-system question: uid, locks, file writes, default paths, the runtime, process lists, host numbers and fix hints. On a Mac the Box panel shows CPU, memory and uptime, preview ports and the Codex foreign-process warning work (through psutil), and no doctor fix names apt-get, systemctl or journalctl.
+- `launchd` is accepted as a runtime and never honours the dev bypass; a refused bypass is logged.
+- Doctor checks: `tmux-socket` (path, mode, length, a missing socket file), `runtime-host` (the container runtime on Docker Desktop) and `hook-helpers` (curl and python3 under the hooks' PATH).
+- CI runs the suite on macOS as an advisory job that never gates the image; pytest markers for platform tests.
+
+### Fixed
+- The board finds its tmux socket by asking tmux, not by guessing from the uid and /tmp.
+- Claude hook commands are quoted, so an install path with a space works; the installer refuses such an APP_DIR for the systemd units.
+- The installer refuses `CCBOARD_RUNTIME=docker` under Docker Desktop in WSL2.
+- With no uid the claude-mem worker port is 37777, as claude-mem 13.34.2 computes it.
+
+Upgrade: nothing to do.
+
 ## v0.5.22 - 2026-10-08
 
 ### Added

@@ -11,7 +11,7 @@ Where the worker is (first match wins):
     2. <claude-mem dir>/worker.pid   JSON {pid, port, startedAt, startToken}
     3. <claude-mem dir>/settings.json   CLAUDE_MEM_WORKER_PORT
     4. 37700 + (uid % 100): the plugin's own default for CLAUDE_MEM_WORKER_PORT (37700 with uid 1000, 37701 on a Mac with uid 501;
-       37701 when there is no uid)
+       37777 when there is no uid, the plugin's `?? 77`)
 `<claude-mem dir>` is ~/.claude-mem (settings.claude_mem_dir). CLAUDE_MEM_WORKER_HOST in that settings.json is honoured only when it
 is a loopback address; anything else is refused before a socket is opened.
 
@@ -28,7 +28,7 @@ health() answers one dict, never raises, and never takes longer than BUDGET seco
 last_error comes from <claude-mem dir>/observer-health.json on disk (never fails the probe). The monitor (app/agents/monitor.py) stores
 health() under kv `mem_health` every 20 s and /api/state's `memory` is that value, so the state poll never waits on the worker.
 
-Import rule: this module imports config only (doctor, main and the monitor import it, never the other way round).
+Import rule: this module imports config and app.platform only (doctor, main and the monitor import it, never the other way round).
 """
 from __future__ import annotations
 
@@ -36,12 +36,12 @@ import http.client
 import ipaddress
 import json
 import logging
-import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import platform as plat
 from .config import settings
 
 log = logging.getLogger("ccboard.memory")
@@ -51,13 +51,12 @@ PLUGIN_KEY = "claude-mem@thedotmack"
 
 
 def default_port(uid: int | None = None) -> int:
-    """The plugin's default worker port, 37700 + (uid % 100) (`37700+(process.getuid?.()??77)%100` in its 13.29.0 worker-service.cjs).
-    Without a uid (a platform that has none) 37701, the documented port."""
+    """The plugin's default worker port, 37700 + (uid % 100): `String(37700+(process.getuid?.()??77)%100)` in its worker-service.cjs
+    (checked in 13.29.0 and 13.34.2). Without a uid (a platform that has none) the plugin falls back to 77, so 37777."""
     if uid is None:
-        getuid = getattr(os, "getuid", None)
-        if getuid is None:
-            return 37701
-        uid = getuid()
+        uid = plat.current_uid()
+        if uid is None:
+            return 37777
     return 37700 + uid % 100
 
 
@@ -68,7 +67,6 @@ BODY_CAP = 256 * 1024          # bytes read from any response
 FILE_CAP = 64 * 1024           # bytes read from any file on disk
 MESSAGE_MAX = 300              # the observer's last error message as it travels in the state (polled every 3 s)
 ENV_LEAK_VARS = ("CCBOARD_SESSION", "TMUX_PANE")     # a worker that holds either was started from inside a ccboard session
-PROC_ROOT = Path("/proc")      # patched by tests
 LOOPBACK_NAMES = ("localhost",)
 
 now = time.time                # patched by tests
@@ -471,16 +469,10 @@ def plugin_status() -> dict:
 
 
 def env_leaks(pid) -> list[str] | None:
-    """The NAMES (never the values) of the ccboard-session variables process `pid` holds, from /proc/<pid>/environ: [] is clean.
-    None when the environment cannot be read (no /proc, another user's process, a process that is gone)."""
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+    """The NAMES (never the values) of the ccboard-session variables process `pid` holds (app.platform.environ_names: /proc/<pid>/environ
+    on Linux, psutil elsewhere): [] is clean. None when the environment cannot be read (no /proc or psutil, another user's process, a
+    process that is gone)."""
+    names = plat.environ_names(pid)
+    if names is None:
         return None
-    try:
-        with open(PROC_ROOT / str(pid) / "environ", "rb") as f:
-            raw = f.read(1 << 20)
-    except OSError:
-        return None
-    if not raw:
-        return None
-    names = {chunk.split(b"=", 1)[0].decode("ascii", "replace") for chunk in raw.split(b"\0") if chunk}
     return [n for n in ENV_LEAK_VARS if n in names]

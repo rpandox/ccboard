@@ -4,6 +4,10 @@ import stat
 import subprocess
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.posix_sh      # runs the shell scripts under sh
+
 ROOT = Path(__file__).resolve().parents[1]
 WD = ROOT / "scripts" / "ccboard-watchdog.sh"
 FAKE = """#!/bin/sh

@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.posix_sh      # runs the shell scripts under sh
+
 ROOT = Path(__file__).resolve().parent.parent
 DEPLOY = ROOT / "scripts" / "deploy.sh"
 SMOKE = ROOT / "scripts" / "ci-smoke.sh"
