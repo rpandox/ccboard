@@ -50,7 +50,7 @@ def test_every_lock_entry_has_an_exact_version_and_hashes():
             assert re.fullmatch(r"\d+(\.\d+)*([.-]?\w+)*", version), (lock, name, version)
             assert hashes >= 1, f"{lock}: {name} has no --hash entry"
         text = (ROOT / lock).read_text()
-        assert "--universal" in text and "--python-version 3.12" in text and "--generate-hashes" in text, f"{lock}: generated on 3.12 with hashes"
+        assert "--universal" in text and "--python-version 3.14" in text and "--generate-hashes" in text, f"{lock}: generated on 3.14 (the image's Python) with hashes"
 
 
 def test_dev_lock_extends_the_runtime_lock_without_changing_it():

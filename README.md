@@ -819,7 +819,7 @@ Kept deliberately small; each is the simplest safe option.
 ## Development
 
 ```sh
-python3.12 -m venv .venv && .venv/bin/pip install --require-hashes -r requirements-dev.lock   # the CI set: exact versions with hashes
+python3.14 -m venv .venv && .venv/bin/pip install --require-hashes -r requirements-dev.lock   # the CI set: exact versions with hashes
 .venv/bin/pytest -q
 TMUX_TMPDIR=/tmp tmux -L ccboard -f tmux.conf start-server
 T=$(mktemp -d)   # a dev board must not reach your real home: all four directories on temp paths, stand-in agents first on PATH
@@ -832,8 +832,8 @@ The suite cannot reach your real home. Every test runs with `HOME` and `USERPROF
 **Reproducible builds.** The Python dependencies are locked: `requirements.in` holds the ranges, `requirements.lock` the exact versions with `--hash` entries for the image and the board, and `requirements-dev.lock` the same set plus `pytest` and `httpx` for CI. They are generated for Python 3.12 (the CI and image interpreter), for every platform (`--universal`, so amd64 and arm64 wheels are covered), with [uv](https://github.com/astral-sh/uv) 0.12.5:
 
 ```sh
-uv pip compile --generate-hashes --universal --python-version 3.12 -o requirements.lock requirements.in
-uv pip compile --generate-hashes --universal --python-version 3.12 -c requirements.lock -o requirements-dev.lock requirements-dev.in requirements.in
+uv pip compile --generate-hashes --universal --python-version 3.14 -o requirements.lock requirements.in
+uv pip compile --generate-hashes --universal --python-version 3.14 -c requirements.lock -o requirements-dev.lock requirements-dev.in requirements.in
 ```
 
 The Dockerfile and CI install with `pip install --require-hashes -r requirements.lock` (CI: `requirements-dev.lock`), and `tests/test_requirements_lock.py` fails when the lock stops satisfying `requirements.in`. Change a range in `requirements.in`, regenerate, and keep `requirements.txt` (the unlocked file `install.sh` uses for the systemd venv) identical to `requirements.in`; a test checks that too. Every action in `.github/workflows/ci.yml` is pinned to a full commit sha with its version in a trailing comment, and `ccusage` in the Dockerfile to an exact version. CI also runs `pip-audit` on the runtime lock as a non-blocking step (the run recorded when the lock was made: no known vulnerabilities). Dependabot (`.github/dependabot.yml`) opens one grouped weekly pull request each for pip, GitHub Actions and Docker. **Merge those pull requests together once a week, never one by one:** every merge to `main` rebuilds the image and swaps the box's container (about 70 s of board outage). After merging the pip one, regenerate the lock files with the commands above.
