@@ -587,6 +587,28 @@ def _apt_system() -> bool:
     return not ids or bool(ids & {"debian", "ubuntu"})
 
 
+LAUNCHD_PREFIX = "dev.ccboard"                                  # every launchd job's label is <prefix>.<job> (issue #117)
+LAUNCHD_JOBS = ("board", "tmux", "ttyd", "awake", "code-server", "mem")
+MACOS_LOG_DIR = "~/Library/Logs/ccboard"                         # <job>.log, stdout and stderr of each job (expanded by the installer)
+
+
+def launchd_label(job: str) -> str:
+    """dev.ccboard.<job> for one of LAUNCHD_JOBS."""
+    return f"{LAUNCHD_PREFIX}.{job}"
+
+
+def launchd_job(unit: str) -> str | None:
+    """The launchd job that stands in for a systemd unit name on a Mac: ccboard -> board, ccboard-<x> -> <x>, code-server -> code-server;
+    None for anything else (a Homebrew service)."""
+    if unit == "ccboard":
+        return "board"
+    if unit.startswith("ccboard-") and unit.removeprefix("ccboard-") in LAUNCHD_JOBS:
+        return unit.removeprefix("ccboard-")
+    if unit == "code-server":
+        return "code-server"
+    return None
+
+
 def _hint_family() -> str:
     """'linux' | 'macos' | 'other': whose tools the hints name (a seam: tests that assert the Linux words on any host patch this)."""
     return "linux" if IS_LINUX else "macos" if IS_MACOS else "other"
@@ -622,15 +644,15 @@ def hint(kind: str, name: str, *, sudo: bool = True, flags: str = "") -> str:
         if kind in ("install", "upgrade", "reinstall"):
             return f"brew {kind} {pkg}"
         unit = pkg.removesuffix(".timer").removesuffix(".service")
-        agent = unit.removeprefix("ccboard-") if unit.startswith("ccboard-") else None
+        agent = launchd_job(unit)
         if agent is not None:
-            label = f"gui/$(id -u)/dev.ccboard.{agent}"
+            label = f"gui/$(id -u)/{launchd_label(agent)}"
             if kind == "start":
                 return f"launchctl kickstart {label}"
             if kind == "restart":
                 return f"launchctl kickstart -k {label}"
             if kind == "logs":
-                return f"tail -n 30 ~/Library/Logs/ccboard/{agent}.log"        # to verify against the agent's plist (issue #117)
+                return f"tail -n 30 ~/Library/Logs/ccboard/{agent}.log"
             return f"launchctl print {label}"
         if kind == "logs":
             return f"tail -n 30 $(brew --prefix)/var/log/{unit}.log"          # to verify per formula
