@@ -49,6 +49,7 @@ def backup_env(projects_dir, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "backup_push", True)
     monkeypatch.setattr(settings, "node_name", "testbox")
     monkeypatch.setattr(settings, "backup_extra", [])
+    monkeypatch.setattr(settings, "claude_mem_dir", tmp_path / "claude-mem")      # never the real ~/.claude-mem; absent until a test makes it
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     DB(settings.db_path).kv_set("hello", {"x": 1})
     tr = settings.claude_config_dir / "projects" / "-srv-projects-shop-api"; tr.mkdir(parents=True)
@@ -444,3 +445,112 @@ def test_holds_saved_logins_names_both_store_dirs_and_nothing_else(backup_env, t
     assert backup._holds_saved_logins(settings.data_dir / "accounts") is True
     assert backup._holds_saved_logins(settings.data_dir / "codex-accounts-notes") is False
     assert backup._holds_saved_logins(tmp_path / "elsewhere") is False
+
+
+# ---------------------------------------------------------------- claude-mem snapshot (#24)
+
+def make_mem_db(d, rows=3, wal=False):
+    """A claude-mem.db stand-in: a real SQLite file with `rows` observations; wal=True also leaves a writer connection open on it
+    with an uncommitted row (what the worker looks like mid-write). Returns the open connection (or None)."""
+    import sqlite3
+    d.mkdir(parents=True, exist_ok=True)
+    c = sqlite3.connect(str(d / "claude-mem.db"), isolation_level=None)
+    if wal:
+        c.execute("PRAGMA journal_mode=WAL")
+    c.execute("CREATE TABLE observations (id INTEGER PRIMARY KEY, title TEXT)")
+    c.executemany("INSERT INTO observations (title) VALUES (?)", [(f"o{i}",) for i in range(rows)])
+    if wal:
+        c.execute("BEGIN")
+        c.execute("INSERT INTO observations (title) VALUES ('uncommitted')")
+        return c
+    c.close()
+    return None
+
+
+def rows_of(path):
+    import sqlite3
+    c = sqlite3.connect(str(path))
+    try:
+        return [r[0] for r in c.execute("SELECT title FROM observations ORDER BY id")]
+    finally:
+        c.close()
+
+
+def test_the_run_stages_a_claude_mem_snapshot_and_lists_it(backup_env, monkeypatch):
+    from app.config import settings
+    make_mem_db(settings.claude_mem_dir, rows=3)
+    seen = []
+    real = backup.restic_backup
+
+    def spy(paths):                       # read the staged file while the stage dir still exists
+        seen.extend(rows_of(p) for p in paths if p.name == "claude-mem.db")
+        return real(paths)
+    monkeypatch.setattr(backup, "restic_backup", spy)
+    st = backup.run(push=False)
+    assert st["status"] == "ok" and st["errors"] == []
+    assert [p for p in st["paths"] if p.endswith("claude-mem.db")] == [str(settings.data_dir / "backup-stage" / "claude-mem.db")]
+    assert seen == [["o0", "o1", "o2"]]                                   # the staged file opened and had the same rows
+    assert not (settings.data_dir / "backup-stage").exists()
+
+
+def test_nothing_else_from_the_claude_mem_directory_is_in_paths(backup_env):
+    from app.config import settings
+    make_mem_db(settings.claude_mem_dir)
+    for name in ("settings.json", "worker.pid", "supervisor.json"):
+        (settings.claude_mem_dir / name).write_text("{}")
+    (settings.claude_mem_dir / "logs").mkdir()
+    st = backup.run(push=False)
+    stage = str(settings.data_dir / "backup-stage")
+    assert st["paths"] == [stage + "/ccboard.db", stage + "/claude-mem.db", str(settings.claude_config_dir / "projects")]     # the exact list
+    assert not any(str(settings.claude_mem_dir) in p for p in st["paths"])
+    assert backup._holds_saved_logins(settings.claude_mem_dir) is False                       # no credentials there; the guard is unchanged
+    assert backup._holds_saved_logins(settings.data_dir) is True
+
+
+def test_a_wal_claude_mem_db_with_an_open_writer_still_snapshots_and_is_not_written(backup_env, tmp_path):
+    from app.config import settings
+    writer = make_mem_db(settings.claude_mem_dir, rows=2, wal=True)
+    try:
+        src = settings.claude_mem_dir / "claude-mem.db"
+        st = backup.run(push=False)
+        assert st["status"] == "ok" and st["errors"] == []
+        before = (src.stat().st_size, src.stat().st_mtime_ns)
+        snap = backup.snapshot_db(src, tmp_path / "copy" / "claude-mem.db", readonly=True)
+        assert rows_of(snap) == ["o0", "o1"]                                  # a standalone file: committed rows only
+        assert not snap.with_name(snap.name + "-wal").exists()
+        assert (src.stat().st_size, src.stat().st_mtime_ns) == before          # the source database file was not written
+    finally:
+        writer.close()
+
+
+def test_the_claude_mem_source_is_opened_read_only_and_never_created(tmp_path):
+    import sqlite3
+    make_mem_db(tmp_path / "d")
+    backup.snapshot_db(tmp_path / "d" / "claude-mem.db", tmp_path / "o" / "c.db", readonly=True)
+    assert rows_of(tmp_path / "o" / "c.db") == ["o0", "o1", "o2"]
+    with pytest.raises(sqlite3.OperationalError):                             # mode=ro on a missing file is an error, not a new empty database
+        backup.snapshot_db(tmp_path / "nope.db", tmp_path / "o" / "n.db", readonly=True)
+    assert not (tmp_path / "nope.db").exists()
+
+
+def test_a_missing_claude_mem_db_adds_nothing_and_is_not_an_error(backup_env):
+    from app.config import settings
+    assert not settings.claude_mem_dir.exists()
+    st = backup.run(push=False)
+    assert st["status"] == "ok" and st["errors"] == [] and not any("claude-mem" in p for p in st["paths"])
+
+
+def test_a_corrupt_claude_mem_db_fails_the_run_but_the_rest_completes_and_notifies(backup_env, monkeypatch):
+    from app import notify
+    from app.config import settings
+    sent = []
+    monkeypatch.setattr(notify, "publish", lambda title, message, **kw: sent.append((title, message)) or True)
+    settings.claude_mem_dir.mkdir(parents=True)
+    (settings.claude_mem_dir / "claude-mem.db").write_bytes(b"this is not a sqlite file " * 400)
+    st = backup.run()
+    assert st["status"] == "failed" and len(st["errors"]) == 1 and st["errors"][0].startswith("claude-mem db snapshot: ")
+    assert st["restic"]["snapshot_id"].startswith("abcdef")                   # restic still ran with the other paths
+    assert any(p.endswith("ccboard.db") for p in st["paths"]) and not any(p.endswith("claude-mem.db") for p in st["paths"])
+    assert len(st["push"]) == 2                                               # and so did the branch copies
+    assert sent and sent[0][0] == "ccboard backup failed" and "claude-mem db snapshot" in sent[0][1]
+    assert json.loads(backup.status_path().read_text())["status"] == "failed"

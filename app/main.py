@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import hashlib
 import json
 import logging
@@ -20,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
@@ -504,6 +506,15 @@ def _stale_estimate(m: dict, projs: list[dict] | None) -> int | None:
     return max(0, act - _live_claude_sessions(projs))
 
 
+def _cached_projects() -> list[dict] | None:
+    """The project scan the state last built (None before the first one): the doctor's uncommitted-work check reads it, so it never scans."""
+    with _scan_lock:
+        return _scan_cache[1].get("projects") if _scan_cache else None
+
+
+doctor.set_projects_source(_cached_projects)
+
+
 def build_state(user: str) -> dict:
     global _scan_cache
     with _scan_lock:
@@ -511,7 +522,11 @@ def build_state(user: str) -> dict:
             st = dict(_scan_cache[1])
         else:
             sessions, down = _merged_sessions(rich=True)
-            st = {"tmux_down": down, "projects": projects.scan(sessions)}
+            # #31: on a busy box the scan reuses each repo's git answer for up to 10 s (branch and dirty may be that old) and says so
+            # in state.scan_slow; sessions, hooks and user actions are never slowed (_invalidate_scan drops the reused answers too)
+            slow = health.under_load()
+            st = {"tmux_down": down, "projects": projects.scan(sessions, git_max_age=projects.GIT_TTL_LOADED if slow else 0.0),
+                  "scan_slow": slow}
             _scan_cache = (time.monotonic(), st)
     st["user"] = user
     st["config"] = {"code_https_port": settings.code_https_port, "projects_dir": str(settings.projects_dir),
@@ -612,11 +627,23 @@ def _invalidate_scan() -> None:
     global _scan_cache
     with _scan_lock:
         _scan_cache = None
+    projects.git_cache_clear()                    # a user action shows its repo change at once, busy box or not
+
+
+STATE_GZIP_MIN = 1024                             # bytes; a smaller answer is sent as is
 
 
 @app.get("/api/state")
 def api_state(request: Request):
-    return build_state(request.state.user)
+    """The 3 s poll. Gzipped here (not by an app-wide middleware: the live tail is a server-sent event stream) when the client
+    accepts it: on the box the answer shrinks about 3.7x for about 0.3 ms of CPU (#46). Headers otherwise as JSONResponse."""
+    st = build_state(request.state.user)
+    if "gzip" not in (request.headers.get("accept-encoding") or "").lower():
+        return st
+    body = json.dumps(jsonable_encoder(st), ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")   # what JSONResponse sends
+    if len(body) < STATE_GZIP_MIN:
+        return Response(body, media_type="application/json")
+    return Response(gzip.compress(body, 6), media_type="application/json", headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
 
 
 # ---------- agents, doctor, session detail, external sessions (read only) ----------

@@ -57,17 +57,32 @@ ccboard is a *status-and-attention layer*. It launches the real `claude` TUI ins
 - **MCP server**: `scripts/ccboard_mcp.py` is registered at user scope by `install.sh`, so any Claude session on the box can call `list_projects`, `create_task`, `list_tasks` and `get_task_status`. The shim is box-only: it sends the box's hook token, so it talks only to plain `http` on a loopback address (`127.0.0.0/8`, `::1` or `localhost`) and never follows a redirect. Pointed anywhere else (`https://`, a LAN address, a tailnet name, any other name) it answers every tool call with an error and sends nothing. Another device needs the board's remote MCP endpoint with a token of its own, not a copy of the shim and the token file.
 - **Preview links**: "Preview" on a task card publishes the dev server the task started on its own tailnet HTTPS port (`tailscale serve`, never Funnel). The board's own services (the board, the terminal, code-server, ntfy, the claude-mem worker) are never published as a preview, and a preview never takes port 443, the board's, code-server's, ntfy's or the claude-mem viewer's HTTPS port.
 - **Devcontainer**: repos with `.devcontainer/devcontainer.json` can run sessions inside the container. Bypass permissions is an explicit per-session choice (host or container); tasks, scheduled and batch runs cannot use it, and settings overrides in extra args (`--settings`, `--setting-sources`, `--permission-prompt`) are rejected everywhere.
-- **Backup**: `ccboard-backup.timer` runs nightly (02:30 by default): a consistent snapshot of the board's SQLite DB and your `~/.claude/projects` transcripts go into a restic repository, then every repo under `PROJECTS_DIR` gets its unpushed work copied to backup branches on its `origin` (`ccboard-backup/<node>/<branch>`), so WIP from tasks survives the box. The backup never pushes to `main` or to any branch you work on. The strip shows the last result and the 🔔 panel has "Back up now"; a failed run pushes an ntfy warning.
+- **Backup**: `ccboard-backup.timer` runs nightly (02:30 by default): a consistent snapshot of the board's SQLite DB, your `~/.claude/projects` transcripts, the Codex rollouts (`~/.codex/sessions`) and a consistent snapshot of claude-mem's `claude-mem.db` (`<claude-mem dir>`, taken through SQLite's backup API from a read-only connection, so claude-mem's database is never written; only that one file, never the directory) go into a restic repository (plus anything in `CCBOARD_BACKUP_EXTRA`; the saved logins are never in it, and neither is a laptop's claude-mem database, which is a different file on a different machine), then every repo under `PROJECTS_DIR` gets its unpushed work copied to backup branches on its `origin` (`ccboard-backup/<node>/<branch>`), so WIP from tasks survives the box. The backup never pushes to `main` or to any branch you work on. The strip shows the last result and the 🔔 panel has "Back up now"; a failed run pushes an ntfy warning.
 - **Fleet**: every box shows its own cpu / ram / disk / uptime in the usage strip. Install ccboard on a second box with the same `CCBOARD_HUB_TOKEN`, set `CCBOARD_NODES=name=https://box.tailnet.ts.net:8443,…` on the one you look at, and it polls the others every minute into a Nodes strip (online, sessions, needs-you, health, 5h usage) that links to each board. Any box can be the hub; they are the same app.
 
 See [ROADMAP.md](ROADMAP.md) for how each item was built and what comes next.
+
+## What v0.5 adds: the dashboard redesign
+
+- **Shell**: hash routes, a topbar, a sidebar tree, a bottom nav with a drawer on the phone, and the same app installed as a PWA on an iPad or a laptop ([Install as an app](#install-as-an-app)).
+- **Home and inbox**: a summary line whose states are filters, an away strip, and one block per project ([Home and the inbox](#home-and-the-inbox)).
+- **Project page**: a lazy directory tree, file preview, code-server links and tabs ([The project page](#the-project-page)).
+- **Terminal page v2**: a tuning strip, quick replies and a queue; it works from a phone too ([The terminal page](#the-terminal-page-tuning-strip-quick-replies-queue), [The terminal on a phone](#the-terminal-on-a-phone)).
+- **Quad and dock**: one to ten live terminals side by side, for one project or all of them, and the terminal dock on wide screens ([Using it](#using-it); the release notes are in [ROADMAP.md](ROADMAP.md)).
+- **Codex as a second agent**: launch, resume, usage and cost for Codex next to Claude ([Codex](#codex)).
+- **Tasks v2**: Now, Later and Schedule columns, drag and drop, results captured on Stop, and chains ([Using it](#using-it)).
+- **Usage page and accounts**: usage per subscription, several saved logins with one-tap switching ([The Usage page](#the-usage-page), [Accounts and subscription usage](#accounts-and-subscription-usage)).
+- **Notifications v2**: contextual bodies with actions, per-kind toggles and rate-limit notices ([Notifications](#notifications-v057-v0518)).
+- **Launcher v2**: one sheet for every entry point, with the agent picker and remembered defaults ([The launcher](#the-launcher-v0513)).
+- **claude-mem**: memory health on the board and the Memory page ([claude-mem](#claude-mem)).
+- **Deploy gate and container**: a Watchtower swap waits while a terminal is open, and the board can run as a container ([Run the board as a container](#run-the-board-as-a-container-optional)).
 
 ## What it is not
 
 - Not a chat UI. The Claude TUI is the interface; the board is around it.
 - Not multi-user. One Unix user, one Tailscale identity allowlist.
 - Never exposed publicly. No Funnel, everything binds to loopback.
-- Not a transcript parser. State comes from tmux (and, from v0.2, Claude Code hooks).
+- Not a transcript parser. State comes from tmux and the agents' hooks. Transcripts and Codex rollouts are read for display, discovery, usage and cost only, never as the state source.
 
 ## Install
 
@@ -98,6 +113,10 @@ Every setting is an environment variable. Values are remembered in `/etc/ccboard
 | `CCBOARD_DATA_DIR` | `~/.local/share/ccboard` | SQLite database |
 | `CODE_SERVER_VERSION` | `4.139.1` | Version installed when code-server is absent |
 | `NTFY_HTTPS_PORT` | `8444` | Tailscale HTTPS port for the ntfy server (`CCBOARD_NTFY=0` skips ntfy) |
+| `NTFY_PORT` | `2586` | Loopback port the ntfy server listens on |
+| `NTFY_URL` | empty | Set by `install.sh` to the loopback address of the ntfy server (empty when ntfy is skipped) |
+| `NTFY_PUBLIC_URL` | empty | Set by `install.sh` to the tailnet HTTPS address of ntfy, the one the phone subscribes to (empty when ntfy is skipped) |
+| `CCBOARD_PUBLIC_URL` | set by `install.sh` | The board's tailnet HTTPS address, `https://<tailnet name>:<CCBOARD_HTTPS_PORT>`, used in links the board sends out |
 | `NTFY_TOPIC` | `ccboard` | ntfy topic the board publishes to |
 | `CCBOARD_APPROVE_TIMEOUT` | `90` | Seconds a permission prompt waits for a remote answer (`CCBOARD_REMOTE_APPROVE=0` disables the hook) |
 | `CCBOARD_RECOVER` | `1` | Relaunch Claude sessions after a reboot |
@@ -131,6 +150,27 @@ Example for a box where 443 and 8080 are already taken:
 ```sh
 CCBOARD_HTTPS_PORT=8443 CODE_HTTPS_PORT=10000 CODE_SERVER_PORT=8081 ./install.sh
 ```
+
+### Advanced and testing variables
+
+`install.sh` remembers only the names in its `ENV_KEYS` list, and the settings table above is that list. The variables below are read by the app, the hook scripts or the container entrypoint and are not in that list; set them in the environment of the process that reads them. Three names from the settings table are left out of `ENV_KEYS` on purpose: `CCBOARD_DEVCONTAINER` is a one-time install step, `CCBOARD_RECOVER` is read at each start, and `CCBOARD_IMAGE_TAG` is kept in the compose `.env`, not in the env file.
+
+| Variable | Default | Meaning | Read by |
+|---|---|---|---|
+| `CCBOARD_AUTOCLOSE_GRACE` | `45` | Seconds after a task session's Stop before the board closes that session itself | `app/config.py`, `app/taskflow.py` |
+| `CCBOARD_REMOTE_APPROVE` | `1` | `0` leaves the permission hook out of Codex and the container entrypoint, so permission prompts are answered in the terminal only | `scripts/docker-entrypoint.sh`, `app/agents/codex.py` |
+| `CCBOARD_CODEX_HOOKS_ASYNC` | `1` | `0` writes every Codex hook synchronous, for a Codex build that skips async hooks | `scripts/codex_hooks.py` |
+| `CCBOARD_TMUX_SOCKET` | `ccboard` | Name of the tmux socket the board's sessions live on | `app/config.py`, `bin/ccboard-attach`, `scripts/docker-entrypoint.sh` |
+| `CCBOARD_URL` | `http://127.0.0.1:8000` | Where the hook scripts, the statusline and the MCP shim send their requests | `bin/ccboard-hook`, `bin/ccboard-hook-fast`, `bin/ccboard-statusline`, `bin/ccboard-permission`, `scripts/ccboard_mcp.py` |
+| `CCBOARD_HOOK_TOKEN_FILE` | `~/.local/share/ccboard/hook-token` | The token file the hook scripts and the MCP shim send with each request | `bin/ccboard-hook`, `bin/ccboard-hook-fast`, `bin/ccboard-statusline`, `bin/ccboard-permission`, `scripts/ccboard_mcp.py` |
+| `CCBOARD_AGENT` | `claude` | Name of the agent whose hook this is; Codex's hook commands set `codex` | `bin/ccboard-hook`, `bin/ccboard-permission`, `scripts/codex_hooks.py` |
+| `CCBOARD_CLAUDE_ULTRACODE_FLAG` | unset | `1` or `0` records the result of the check whether `claude --effort ultracode` works on this box | `app/agents/claude.py` |
+| `CCBOARD_MEM_BUN` | empty | Path to `bun` for the claude-mem worker; tried first | `bin/ccboard-mem-run`, `app/doctor.py` |
+| `CCBOARD_MEM_BUN_DIRS` | `/usr/local/bin /opt/homebrew/bin /home/linuxbrew/.linuxbrew/bin /usr/bin /snap/bin` | Space-separated directories searched for `bun`; setting it, even empty, replaces the list | `bin/ccboard-mem-run` |
+| `CCBOARD_MEM_PLUGIN_DIR` | newest cached plugin version | The claude-mem plugin folder the worker runs from | `bin/ccboard-mem-run` |
+| `CCBOARD_CONTAINER` | `ccboard` | Container name the watchdog checks | `scripts/ccboard-watchdog.sh` |
+| `CCBOARD_SHADOW` | `0` | `1` runs the container entrypoint side by side with a live board: hooks, tmux and MCP registration are left alone | `scripts/docker-entrypoint.sh` |
+| `CCBOARD_APP_ROOT` | `/opt/ccboard` | Where the container keeps the app; tests point it elsewhere | `scripts/docker-entrypoint.sh` |
 
 ### What install.sh sets up
 
@@ -211,6 +251,8 @@ In this order, with nothing on the running system changed until the image is on 
 `CCBOARD_RUNTIME=docker` is remembered in `/etc/ccboard/env`, so a plain `./install.sh` rerun stays in docker mode. Afterwards check `docker compose -f ~/.local/share/ccboard/compose/docker-compose.yml --profile prod ps`, open the board from another tailnet device, start a Claude session and see its events arrive, and compare `tmux -L ccboard list-sessions` with what it was before.
 
 **Updating.** Watchtower runs as `ccboard-watchtower` with `--interval 300 --cleanup --label-enable --scope ccboard --include-restarting`. It only touches containers labelled `com.centurylinklabs.watchtower.enable=true` **and** `com.centurylinklabs.watchtower.scope=ccboard`, which only the ccboard container carries, so the other containers on the box are never updated, restarted or removed. `scripts/deploy.sh <host>` detects docker mode on the box (a running container named `ccboard`), pushes, waits for `ghcr.io/rpandox/ccboard:sha-<7>`, pulls and recreates the container instead of waiting for Watchtower, and keeps the checkout pulled so the rollback stays current. Rerun `./install.sh` when `install.sh`, `deploy/`, the units or `tmux.conf` change. After editing `/etc/ccboard/env` by hand: `docker compose -f ~/.local/share/ccboard/compose/docker-compose.yml up -d --force-recreate ccboard` (Watchtower recreates a container from its existing configuration and would not see the edit).
+
+**The outage per push.** Each push to `main` swaps the container once, and the board is unreachable for that long. What happens, in order: Watchtower finds and pulls the new image first (the board keeps running; pre-pulling would save nothing), runs the deploy gate inside the old container (`scripts/ccboard-deploy-gate`: exit 75 holds the swap while someone is at a terminal, a permission is pending or a clone runs, for at most 30 minutes, and Watchtower asks again every 5 minutes), sends SIGTERM (the compose `stop_grace_period: 6s` is the limit; it overrides Watchtower's own 30 s default), removes the old container, creates and starts the new one, and the entrypoint syncs the host-run scripts and starts the board. Measured on the box: about 10 s on an idle box (stop and remove 3 s, create and start 2 s, entrypoint 4 s, app start 0.4 s), of which 3.4 s were the host steps (hooks merge, tmux.conf, `claude mcp get`, Codex) that now run beside the board instead of before it; under heavy disk pressure docker's own remove, create and start took 100 s once, which the board cannot shorten. To measure a swap, run `scripts/swap-probe.sh 300` on the box in a second shell just before a push you were going to make anyway: it prints one line per half second and the longest gap between two `/healthz` 200 answers; join it with `docker events --since 10m --filter container=ccboard` and `docker logs ccboard-watchtower --since 10m`. Changes to `deploy/` or `install.sh` reach the box only when you rerun `./install.sh`; try them in the shadow compose (step B) first.
 
 **Rollback.** Sessions are never affected:
 
@@ -395,6 +437,36 @@ What the board now does with them:
 - Stop uses Claude's own closing message for the row text (first 300 characters) and keeps the full text in `flags.last_result`. A resume records how long it sat and how big it is in `flags.resumed`. /clear and /resume no longer flash the session as ended. A compaction restart no longer flips a working turn to idle.
 - The statusline adds effort, fast mode, thinking, session name, prompt-cache state, PR, worktree, repo and the over-200k flag to each session's stats. The newest raw statusline payload is kept in kv `statusline_sample` (at most 8 KB) so the doctor can show the real shape on the box.
 
+### Which hooks the board ignores
+
+Four guards decide whether a hook may change a session's row. They run in this order, and the first one that matches stops the event.
+
+| Guard | What it catches | How it knows | Response |
+|---|---|---|---|
+| 1. Agent | A hook from another agent's process in the same folder (a `codex exec` run inside a Claude row) | The script sends `X-CCBoard-Agent` (`CCBOARD_AGENT`, default `claude`); a row of another agent does not take it | `ignored: foreign` |
+| 2. Foreign session | claude-mem's observer (a folder under `~/.claude-mem`, or a transcript in `observer-sessions/`), or a conversation another open row already owns | The working folder, the transcript path and the session id, checked against the open rows | `ignored: foreign` |
+| 3. Child session | A nested Claude (a workflow agent, an SDK subagent, the observer), which inherits the parent's `CCBOARD_SESSION` and `TMUX_PANE` | `X-CCBoard-Child` carries `CLAUDE_CODE_CHILD_SESSION`; the hook is ignored unless its session id is the row's own conversation | `ignored: child` |
+| 4. Sub-thread (Codex) | Another thread of the same Codex process, which Codex reports under its own session id | The adapter's `thread_relation()` says own, rebind or sub-thread; a sub-thread event is counted in `flags.subthreads` and stored as kind `subthread` | `ignored: subthread`; the state does not change |
+
+The permission hook (`POST /api/permission`, `bin/ccboard-permission`) runs the same four guards in the same order, so a nested Claude's permission request never shows as a wait on the parent's row. An ignored permission request is answered at once and leaves no pending prompt.
+
+The hook scripts send these headers, one for each piece of information the board needs:
+
+- `X-CCBoard-Token`: the token from the 0600 token file.
+- `X-CCBoard-Agent`: the agent name, from `CCBOARD_AGENT`.
+- `X-CCBoard-Child`: `CLAUDE_CODE_CHILD_SESSION`, empty for an ordinary session.
+- `X-CCBoard-Session`: `CCBOARD_SESSION`. The board resolves the session from this first, then from the pane, then from the folder.
+- `X-CCBoard-Pane`: `TMUX_PANE`.
+- `X-CCBoard-Tmux`: `TMUX`.
+
+How to see it: `POST /api/hook` answers an ignored event with `{"ignored": "<guard>"}`. Ignored sub-thread events are stored as events of kind `subthread`, which you can list with:
+
+```sh
+sqlite3 <data dir>/ccboard.db "select tmux_name, event, kind from events order by id desc limit 20"
+```
+
+There is nothing to configure. To test the child guard, run a nested `claude -p` inside a scratch board session and watch its hooks answer `ignored: child`. Do not do it against the live box.
+
 ### Doctor and the agents API
 
 `GET /api/doctor` (optional `?group=box|terminal|claude|notify|memory|codex` and `&refresh=1`) runs the box checks (tmux, ttyd, code-server, git, gh, ccusage, ntfy, push, identity, Claude binary / login / hooks) with a 5 s cap each and a 20 s cache; every failing check carries a fix text and, where it makes sense, the command to run. `GET /api/agents` describes the installed agents (Claude and Codex: identity, install, login and hooks state, the launcher's option schema, permission modes, efforts, models, the reasoning levels per Codex model, what this box's binary can do as `capabilities`, and the slash commands the board knows; [The launcher](#the-launcher-v0513) says how it is used; the Codex catalogue and the flag sets of both binaries are cached per binary, so only the first request after a start, or after the binary changes, runs a probe), `GET /api/sessions/<tmux>` returns one session with its task and flags, and `GET /api/external?agent=claude` lists Claude Code sessions and background jobs the board did not start (read from `~/.claude/sessions` and `~/.claude/jobs`, display only). All four are read-only and sit behind the same identity check as the rest of the API.
@@ -406,6 +478,49 @@ What the board now does with them:
 The box checklist from `GET /api/doctor`, in four labelled sections: **Box** (the terminal checks fold in), **Claude** (the claude-mem checks fold in), **Codex** and **Notifications**. Inside a section the failing checks come first, then warnings, passes and skipped ones. A row has a glyph that does not rely on colour (`✕` failing, `!` warning, `✓` passing, `–` skipped), the check's name and one line of detail, and for anything that is not passing the fix: a sentence; a command with a **Copy** button; or a button when the board can start the fix itself (`claude_login` and `codex_login` say **Log in** and lead to Settings > Accounts, `notify_test` says **Send test** and posts to ntfy or Web Push, then asks again; a hyphenated spelling such as `codex-login` is read the same, any other action name is ignored). **Re-check** asks `GET /api/doctor?refresh=1` (without it the server answers from its 20 s cache); coming back to the tab asks again, at most once per 5 s. A failed ask keeps the last answer on screen and says so.
 
 Doctor never opens by itself: no redirect, no banner. The only trace elsewhere is one quiet line under the Settings tabs, `Doctor: 2 checks failing`, which links to the tab and shows only while a check fails. The old bare `#/onboarding` address now lands here.
+
+#### Backup, CI and version checks (v0.5.21)
+
+All of these read files or the project scan the board already holds, call a tool only with a timeout, and sit in the doctor's 20 s cache; none runs `restic`.
+
+- **Backup repository** (`backup-repo`, Box): restic off on purpose (`CCBOARD_RESTIC_REPO=off`) is a skip, not a pass; a remote repository (`sftp:`, `rclone:`, `s3:`, `rest:`...) passes; a local path on the same filesystem as the data directory warns, because that default only protects against deletion and corruption, not against losing the disk. It turns green when `CCBOARD_RESTIC_REPO` points at another disk or a remote and the board is restarted.
+- **Last backup** (`backup-last`, Box): reads `<data dir>/backup-status.json`. `ok` and under 36 hours old passes; `partial` (the first warning is shown) or older than 36 hours warns; `failed` or older than 72 hours fails; no file on a board under a day old is a skip. It turns green with the next good run (`sudo systemctl start ccboard-backup`).
+- **Uncommitted work** (`backup-uncommitted`, Box): the nightly run copies only committed work, so a dirty working tree is in no backup. From the project scan's `dirty` flag, the check lists the changed files of the dirty repos only (`git status --porcelain`, at most 200 files per repo and 3 seconds overall) and warns when one has changes older than 24 hours, naming up to five repos and the count. Commit or push to turn it green; a missing path, a failing or slow git skips that repo only.
+- **CI on backup branches** (`backup-branch-ci`, Box): the repos under `PROJECTS_DIR` that have an `origin` and whose workflows would start on a push to `ccboard-backup/<node>/<branch>` (`on: push` without a branch filter that excludes it). It is a read-only text scan of `.github/workflows/*.y*ml` (20 repos, 10 files each, 64 KB per file; `app/workflows.py`), makes no GitHub call, and anything it cannot understand counts as unknown, never as a hit. The fix, which belongs in that repo's workflow and not in ccboard, is `branches-ignore: ['ccboard-backup/**']` under `push:` (the row has a Copy button for the line). Skipped while `CCBOARD_BACKUP_PUSH=0`.
+- **GitHub Actions** (`ci-status`, Box): needs `gh` logged in and an image built by this repository's CI (CI passes `CCBOARD_SOURCE_REPO` and `CCBOARD_IMAGE_REVISION` as build arguments; a local build leaves them empty and the check skips). It asks `gh run list` for the last five runs on `main`, at most once per five minutes (cached in the board's kv, so opening Doctor or pressing Re-check inside the window shows the cached answer with its age). Warn: the newest completed run ended `failure`, `timed_out`, `cancelled` or `startup_failure` (the fix is the run's link), or a run has been queued, waiting or in progress for more than 30 minutes (stuck). Pass: anything else; if the box runs a commit other than the newest green one the detail adds "the box is behind the last green commit", which is information (Watchtower scans every 5 minutes and the deploy gate may be holding a swap). A GitHub or network failure is a skip with its reason, never red.
+- **A slow tool is not a broken tool.** `gh auth status` contacts GitHub, so on a loaded box it can take longer than the doctor's 5 second cap. The two `gh` commands run side by side on background threads (`gh auth status` gets 15 seconds), one probe per check at a time. While the answer is not in, the row shows the last good answer with its age ("gh 2.45.0, logged in, checked 3 min ago; the latest re-check is still running"), or a skip that says the box is busy; a last good answer more than a day old warns. A missing binary and a logged-out `gh` still warn with their fix. Every other shell-out check (git, tmux, ccusage, ttyd, claude) words a timeout the same way through one helper, "<tool> did not answer in N s (the box is busy; this is not a failure)", instead of a bare "timed out".
+- **Claude Code version gates** (`claude-features`, Claude): lists the board features the installed Claude Code is too old for, from the table below, with the fix "update Claude Code". It makes no network call. The launcher uses the same table: a permission mode behind an unmet gate is shown under its older name or refused with the reason, never sent as an argument the CLI rejects.
+
+| Feature | Needs Claude Code | If older | Docs page (read 2026-10-07) |
+|---|---|---|---|
+| `--effort ultracode` | 2.1.203 | the flag is rejected; the launcher applies it after start with `/effort ultracode on` | Model configuration |
+| `/effort ultracode off` | 2.1.284 | ultracode cannot be switched off in a session | Model configuration |
+| `--permission-prompts none` | 2.1.259 | headless runs cannot turn prompts off | CLI reference |
+| `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` | 2.1.257 | the variable is ignored | Sub-agents |
+| the `manual` permission mode name | 2.1.200 | the board sends `default` instead | Permission modes |
+| `/model opusplan[1m]` | 2.1.265 | the alias is unknown | Model configuration |
+| SSE fallback for HTTP MCP servers | 2.1.265 | an SSE-only HTTP MCP server fails to connect | CLI reference |
+| `auto` as the starting permission mode | 2.1.283 | `--permission-mode auto` is refused for an interactive session | Permission modes |
+
+The table is dated evidence from the documentation, not a measurement: none of the versions was run against an old binary, and Claude Code updates itself. Rule: the board prefers a probe of `--help` over a version number where one exists (the ultracode flag: a `--help` that lists it, or `CCBOARD_CLAUDE_ULTRACODE_FLAG`, wins). The table lives in `app/agents/claude.py` (`FEATURE_GATES`); an unreadable version hides nothing.
+
+#### CI in your repos (backup branches)
+
+The nightly backup pushes unpushed work to `origin` under `ccboard-backup/<node>/<branch>`. Any workflow in that repository with a `push` trigger runs for those pushes. A backup branch never has a pull request, so `pull_request:` stays as it is.
+
+The fix belongs in the other repository's workflow file, not in ccboard. Add a branch filter to the `push` trigger:
+
+```yaml
+on:
+  push:
+    branches-ignore:
+      - 'ccboard-backup/**'
+  pull_request:
+```
+
+A workflow that says `on: [push, pull_request]` is rewritten into the mapping form above. `branches-ignore` is GitHub Actions workflow syntax; check the [workflow syntax page](https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions) before you rely on it.
+
+The other choice is `CCBOARD_BACKUP_PUSH=0` (settings table above). It turns the branch copies off on this box, so unpushed work then has no copy outside the box.
 
 #### The new-project wizard (v0.5.19)
 
@@ -516,6 +631,10 @@ Each chip is one `POST /api/sessions/<name>/command`.
 **Registry.** The strip reads `GET /api/agents` once per page load. It keeps the answer in sessionStorage under `ccboard:agents` for 10 minutes. The command palette reads the same entry. If the fetch fails, an embedded copy of Claude's registry is used.
 
 **Send box.** The send box posts `POST /api/sessions/<name>/prompt`. While the session is working the button reads "queue" and posts with `queue:true`, so Claude queues the text. A shell row, a permission or question dialog, a row that has not reported a state yet, and an older server without `/prompt` still use the raw key path (`/keys`). A refused send puts the text back in the box.
+
+**Terminal font (v0.5.21).** The terminal keeps ttyd's own fonts. The board vendors JetBrains Mono, and `TermKit.bind` can load it into the terminal frame, but that is an opt-in per browser (`?font=1` on the terminal page URL, or `ccboard:term:font` = `1` in localStorage; `?font=0` clears it), because nobody has measured it on an iPhone, an Android phone or a laptop against the real ttyd yet. With it on, `TermKit.fontState` says `on`, `loading`, `failed` or `off`, and a font that fails to load leaves ttyd's fonts alone. `QA_REAL_TTYD=1 QA_FONT=1 scripts/qa_terminal.sh <board-url> <out-dir>` prints the numbers a verdict needs; making it the default waits for those results.
+
+**Dock on tablets (v0.5.21).** The terminal dock exists from a 1024 px window. On a touch screen (a coarse primary pointer) under 1180 px, such as an iPad in portrait, an Open link opens the terminal page and not the dock, because the dock would leave the page about 525 px. The dock still opens on purpose (`Ctrl/Cmd+J`, or Add to dock in a session's menu) and then comes back on the next load. On touch its default width is 38 vw (560 px at most). To resize it by touch, drag the 44 px grabber on the dock's left edge (a pill in the middle of the edge); a double tap resets the width, and the width is kept in `ccboard:dock:w`. To switch the dock off in a browser, set `ccboard:dock:off` to `1` in localStorage. A mouse and any window of 1180 px or more behave as before.
 
 ### The Usage page
 
@@ -772,7 +891,7 @@ If the login expires or you log out, the header shows *Claude: not logged in*, t
 - The MCP shim (`scripts/ccboard_mcp.py`) carries the same hook token, which opens the whole `/api` surface. It refuses any board URL that is not `http` to `127.0.0.0/8`, `::1` or `localhost` (a `user@` prefix in front of the host is refused too) before it reads the token or opens a socket, and it treats an HTTP redirect as an error instead of re-sending the token to the new address. There is no override. Use the remote MCP endpoint, with a per-device token, from any other device.
 - The remote MCP endpoint `/mcp` is off by default and needs an allowed identity AND a device token (shown once, stored as a SHA-256 digest, scoped, expiring, revocable, rate limited); a device token opens nothing under `/api/` and the hook token opens nothing at `/mcp`. Its tools take no permission, sandbox, bypass or model argument. See [MCP from other devices](#mcp-from-other-devices).
 - `install.sh` writes `/etc/sudoers.d/ccboard` so your user can run `systemctl restart ccboard` and `ccboard-ttyd` without a password (deploys), and `gh auth setup-git` so git uses gh's token for https clones.
-- The nightly backup copies **unpushed work of every repo** under `PROJECTS_DIR` to its `origin`, into branches of its own: `ccboard-backup/<node>/<branch>` (`<node>` is `CCBOARD_NODE_NAME`). It runs `git fetch --prune origin` first, then pushes each local branch that has commits which are on no real branch of the remote. It **never writes `main` or any branch under its own name**, so nothing is published, no PR is updated and nothing can be rejected because the remote moved; a branch that is merely behind is simply up to date. The push into `ccboard-backup/<node>/` is forced (the namespace belongs to that box, and WIP gets rebased). A backup branch is deleted again once its commits are on a real branch (pushed or merged); one whose local branch was deleted on the box stays until then. Restore with `git fetch origin && git switch -c <branch> origin/ccboard-backup/<node>/<branch>`. Two things to know: the backup branches are visible to everyone with access to the repo, and a repository whose CI runs on every pushed branch (`on: push` without a branch filter) runs it for them too; add `branches-ignore: ['ccboard-backup/**']` to the `push` trigger there. If a repo has work that must not reach GitHub, set `CCBOARD_BACKUP_PUSH=0` or keep that repo outside `PROJECTS_DIR`. A branch rule on the remote that also matches `ccboard-backup/*` makes the run `partial` (the refusal is listed in Settings). The restic snapshots hold your transcripts; they are encrypted with the password file above.
+- The nightly backup copies **unpushed work of every repo** under `PROJECTS_DIR` to its `origin`, into branches of its own: `ccboard-backup/<node>/<branch>` (`<node>` is `CCBOARD_NODE_NAME`). It runs `git fetch --prune origin` first, then pushes each local branch that has commits which are on no real branch of the remote. It **never writes `main` or any branch under its own name**, so nothing is published, no PR is updated and nothing can be rejected because the remote moved; a branch that is merely behind is simply up to date. The push into `ccboard-backup/<node>/` is forced (the namespace belongs to that box, and WIP gets rebased). A backup branch is deleted again once its commits are on a real branch (pushed or merged); one whose local branch was deleted on the box stays until then. Restore with `git fetch origin && git switch -c <branch> origin/ccboard-backup/<node>/<branch>`. Two things to know: the backup branches are visible to everyone with access to the repo, and a repository whose CI runs on every pushed branch (`on: push` without a branch filter) runs it for them too; see [CI in your repos](#ci-in-your-repos-backup-branches) for the fix (Settings > Doctor > "CI on backup branches" names the repos that need it). If a repo has work that must not reach GitHub, set `CCBOARD_BACKUP_PUSH=0` or keep that repo outside `PROJECTS_DIR`. A branch rule on the remote that also matches `ccboard-backup/*` makes the run `partial` (the refusal is listed in Settings). The restic snapshots hold your transcripts; they are encrypted with the password file above.
 - Tasks run `git`, `gh` and `claude -p` on your behalf with your credentials: "Describe" sends the branch diff to Claude, "Create PR"/"Merge" push and merge on GitHub, and "Fix CI" pastes CI log text into a Claude session as a prompt. Web Push subscriptions are accepted only for known browser push services.
 - A task preview publishes one loopback port on the tailnet (`tailscale serve`, the tailnet ACL decides who reaches it, not the allowlist). It refuses the board's own services (the board, ttyd, code-server, ntfy, the claude-mem worker) and never allocates 443 or another of the box's HTTPS ports. The startup log counts the allowed logins and never names them, and the nightly backup never takes a saved or live login (`<data dir>/accounts`, `<data dir>/codex-accounts`, Claude's `.credentials.json`, Codex's `auth.json`), whatever `CCBOARD_BACKUP_EXTRA` names. The 2026-10 review of this surface, with what was fixed and what is accepted, is `docs/security-audit-2026-10.md`; `tests/test_security_surface.py` pins the route table and fails when a new route is added without its auth.
 - Clone URLs: the board refuses internal hosts by name and by what the name resolves to (see [Clone preflight and the clone URL rule](#clone-preflight-and-the-clone-url-rule-v0519)), but it is not proof against DNS rebinding. git does its own lookup when it clones, after the board's check, so a record that changes between the two can still point the clone at the box, the LAN or the tailnet; the https preflight probe and the https clone are pinned to the checked addresses (git 2.37+) and follow no redirects, but a clone that starts after the 10 s answer cache resolves again (a queued bulk clone is checked again when it starts), and ssh cannot be pinned without giving up host key checking. The only complete remedy is an egress policy outside the board, which is your choice as the operator: restrict the outbound traffic of whatever runs git to the places clones should come from. The preflight probe runs in the board's process (the container, in the docker runtime) and the clone runs in a tmux session as the box user, so the policy has to cover both. Either allow only your git hosts on ports 443 and 22, or drop new connections to `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `100.64.0.0/10`, `fc00::/7` and `fe80::/10`. Keep loopback open for the box user: the hooks, the statusline and the MCP shim reach the board over `127.0.0.1`.
@@ -788,6 +907,7 @@ If the login expires or you log out, the header shows *Claude: not logged in*, t
 - *Login link never appears*: open `/tty/?arg=_ccboard-login` and finish the login in the terminal. The pasted value must be the whole `code#state` string; codes expire quickly.
 - *Ubuntu 22.04*: tmux 3.2a lacks `allow-passthrough` (Shift+Enter / notifications inside the TUI degrade); `tmux.conf` uses `-q` so it still loads.
 - Logs: `journalctl -u ccboard -u ccboard-ttyd -u ccboard-tmux -f`; in docker mode the board's log is `docker logs -f ccboard` (the startup line shows the runtime and image version) and Watchtower's is `docker logs ccboard-watchtower`.
+- *A busy box*: the board keeps its own load down. A hidden tab polls every 15 s instead of 3 s and polls at once when it is shown again. While the 1-minute load average is above the CPU count, the project scan reuses each repo's branch and dirty flag for up to 10 s (Home says "scan slowed (box is busy)" above the project list), and the cost refresh and the transcript indexer skip their pass and catch up once the box is quiet (at most an hour later). Sessions, hooks, permission answers and anything you start are never slowed. `/api/state` is gzipped for a browser (about 11 KB to 3 KB on the box).
 - *Docker mode, board not answering*: `docker compose -f ~/.local/share/ccboard/compose/docker-compose.yml --profile prod ps`, then `docker logs --tail 50 ccboard`; roll back as described in [Run the board as a container](#run-the-board-as-a-container-optional).
 
 ### Uninstall
@@ -855,6 +975,18 @@ TMUX_TMPDIR=/tmp CCBOARD_TMUX_SOCKET=ccboard-qa PROJECTS_DIR=/tmp/ccb-qa/project
 TMUX_TMPDIR=/tmp CCBOARD_TMUX_SOCKET=ccboard-qa QA_TMUX_CREATE=1 QA_SERVER_LOG=/tmp/ccb-qa/server.log \
   scripts/qa_terminal.sh http://127.0.0.1:8777 /tmp/ccb-qa/shots
 ```
+
+### Changelog
+
+`CHANGELOG.md` has one entry per shipped phase, newest first. The commit that ships a phase adds its entry in the same commit (CONTRIBUTING.md says how). `tests/test_changelog.py` checks the heading, the date order and the `Upgrade:` line, which says whether `./install.sh` has to be rerun on the box.
+
+### Demo mode
+
+`?demo=1` on any board URL (or `localStorage.setItem('ccboard:demo', '1')`) turns on demo mode: the page reads `app/static/demo/*.json` instead of the API, so every screen draws with realistic data and no tmux, agent or box. It is the board's screenshot and QA harness: `scripts/qa-ui.sh` opens every route with `?demo=1` at the phone, tablet and desktop widths, and the node tests load the same fixtures. v0.5.21 decided to keep it; every fixture is read by a route in `demoApi()` (`core.js`), so none was trimmed.
+
+- **What is faked.** Every GET maps to one fixture (state, agents, doctor, search, tree, file, series, series events, usage summary, issues, the Memory routes, and the task diff). Timestamps are shifted from the fixture's `demo.epoch` so ages and countdowns stay live. Every write waits 150 ms and answers `{"ok": true}`; a few (new project, new repo, refresh usage) also update the in-page state so the next draw shows them. `?mem=down|degraded|stale|partial|ambiguous|incompatible|untested` lays a degraded Memory state over the fixtures. A GET that has no fixture answers `{}`.
+- **Refreshing a fixture.** Edit the JSON by hand, keeping the shape of the real answer: `tests/test_launcher_api.py` holds `agents.json` to `GET /api/agents`, and `tests/test_static.py` fails when `state.json` lacks a key the real `/api/state` has. Fixtures carry made-up names only (`box`, `/home/demo/...`, `demo@example.com`); never paste real host names, paths or emails.
+- **Served as static files.** The fixtures stay out of the asset version and the service-worker shell, and are served no-cache.
 
 ## License
 

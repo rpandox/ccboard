@@ -412,3 +412,14 @@ test('backupPushText: says how many branches went to the backup namespace, or th
   assert.equal(say({ push: [], push_skipped: 'CCBOARD_BACKUP_PUSH=0' }), '');
   assert.equal(say({}), '');
 });
+
+test('backupContainsText: names what the nightly run staged from bk.paths, says when no restic snapshot was recorded, and always says saved logins stay out', () => {
+  const { w } = homeWorld();
+  const say = (bk) => { w.ctx.__bk = bk; return w.run('backupContainsText(__bk)'); };
+  const paths = ['/d/backup-stage/ccboard.db', '/d/backup-stage/claude-mem.db', '/h/.claude/projects', '/h/.codex/sessions', '/notes'];
+  assert.equal(say({ paths, restic: { snapshot_id: 'abcd1234' } }),
+    'board database, claude-mem snapshot, Claude transcripts, Codex rollouts, extra path · saved logins are never backed up');
+  assert.match(say({ paths: paths.slice(0, 2), restic: {} }), /^board database, claude-mem snapshot \(staged, no restic snapshot recorded\)/);
+  assert.match(say({ restic: { skipped: 'CCBOARD_RESTIC_REPO is off' } }), /^restic is off, so nothing is in a snapshot/);
+  assert.match(say({ paths: [], restic: { snapshot_id: 'x' } }), /^nothing · /);
+});

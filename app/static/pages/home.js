@@ -98,10 +98,11 @@ function openTaskModal(t) {
     try {
       diff = await api('GET', `/api/tasks/${t.id}/diff`);
       status.textContent = diff.truncated ? 'diff truncated for display' : '';
-      commits.textContent = diff.commits.length ? `Commits (${diff.commits.length}): ` + diff.commits.slice(0, 20).join(' · ') : 'No commits on the branch yet.';
-      files.textContent = (diff.files.length ? `Files: ${diff.files.join(', ')}` : '') + (diff.files_uncommitted.length ? `  ·  uncommitted: ${diff.files_uncommitted.join(', ')}` : '');
+      const dCommits = Array.isArray(diff.commits) ? diff.commits : [], dFiles = Array.isArray(diff.files) ? diff.files : [], dUnc = Array.isArray(diff.files_uncommitted) ? diff.files_uncommitted : [];   // a malformed answer reads as empty
+      commits.textContent = dCommits.length ? `Commits (${dCommits.length}): ` + dCommits.slice(0, 20).join(' · ') : 'No commits on the branch yet.';
+      files.textContent = (dFiles.length ? `Files: ${dFiles.join(', ')}` : '') + (dUnc.length ? `  ·  uncommitted: ${dUnc.join(', ')}` : '');
       tabs.textContent = '';
-      tabs.append(diffSideControl([['committed', `Committed vs ${diff.base}`], ['uncommitted', `Uncommitted (${diff.files_uncommitted.length})`]], 'committed', show));
+      tabs.append(diffSideControl([['committed', `Committed vs ${diff.base || 'base'}`], ['uncommitted', `Uncommitted (${dUnc.length})`]], 'committed', show));
       show('committed');
     } catch (e) { status.textContent = e.message; }
   };
@@ -1046,11 +1047,21 @@ function homeRender(st) {
   const noProjects = !(s.projects || []).length;
   r.empty.classList.toggle('hidden', !noProjects);
   r.blocksHost.classList.toggle('hidden', noProjects);
+  if (r.scanSlow) r.scanSlow.classList.toggle('hidden', !(s.scan_slow === true && !noProjects && !ui.offline));   // offline cached values have their own banner
+  // Nothing live and no filter: say so and offer the next step. Idle projects fold into 'older', which is still a block, so this
+  // cannot hang off "no blocks" (that left Home with only zero chips and a closed 'older' line).
+  const live = HOME_FILTERS.reduce((a, [k]) => a + (model.counts[k] || 0), 0);
+  const idleEmpty = !noProjects && !model.filter && live === 0;
+  if (idleEmpty) {
+    const n = (s.projects || []).length;
+    setTextIfChanged(r.idleHint, `${n} project${n === 1 ? '' : 's'}, none with a session running. Start a session in a repo, or add a task to run now or later.`);
+  }
+  r.idle.classList.toggle('hidden', !idleEmpty);
   let note = '';
-  if (!noProjects && !model.blocks.length) {
+  if (!noProjects && !model.blocks.length && model.filter) {
     const f = HOME_FILTERS.find((x) => x[0] === model.filter);
     const EMPTY_WORD = { waiting: 'waiting for you', working: 'working', idle: 'idle', done: 'finished', errored: 'failing' };
-    note = f ? `Nothing is ${EMPTY_WORD[f[0]] || f[1]} right now.` : 'No live sessions yet. Start one from the + menu.';
+    note = `Nothing is ${(f && EMPTY_WORD[f[0]]) || (f && f[1]) || model.filter} right now.`;
   }
   setTextIfChanged(r.note, note);
   r.note.classList.toggle('hidden', !note);
@@ -1076,17 +1087,28 @@ registerPage('home', {
     const inboxHost = el('section', { id: 'inbox-home', class: 'home-inbox hidden' });          // Inbox.section builds its head and cards in here
     const sched = homeSchedNode();
     const blocksHost = el('div', { class: 'pblocks' });
+    // #31: a quiet caption above the project list while the server backs off its scan on a busy box (state.scan_slow): branch and
+    // dirty may be up to 10 s old. Not a banner, not a toast, and it never says failed.
+    const scanSlow = el('p', { class: 'home-scan-slow dim hidden', text: 'scan slowed (box is busy)' });
     const note = el('p', { class: 'home-note dim hidden' });
     const clear = el('a', { class: 'btn small hidden', href: '#/', text: 'Clear filter' });
     const empty = pageEmpty('folder-close', 'No projects yet', 'A project is a folder of repos; sessions run inside a repo.');
     empty.append(el('button', { class: 'primary', type: 'button', onclick: () => homeCreate('project'), text: 'Add project' }));
     empty.classList.add('hidden');
+    // projects but nothing live: the same empty-state look, with the two ways to start (one filled primary)
+    const idle = pageEmpty('console', 'No sessions running', '');
+    const idleHint = idle.querySelector('.empty-hint') || el('div', { class: 'empty-hint dim' });
+    if (!idleHint.parentNode) idle.append(idleHint);
+    idle.append(el('div', { class: 'home-idle-actions' },
+      el('button', { class: 'primary', type: 'button', onclick: () => Shell.openCreate('session'), text: 'New session' }),
+      el('button', { type: 'button', onclick: () => Shell.openCreate('task'), text: 'New task' })));
+    idle.classList.add('home-idle', 'hidden');
     const usageHost = el('div', { id: 'usage-home', class: 'home-usage' });
     root.append(
       el('div', { class: 'page-head' }, el('h1', { text: 'Home' }), el('div', { class: 'actions' }, group)),
       summary, homeInstallHint(),
       ...(currentState() ? [] : [Pages.skeleton(3)]),                                    // first paint: rows until /api/state arrives
-      away, inboxHost, sched, blocksHost, note, clear, empty, usageHost);
+      away, inboxHost, sched, scanSlow, idle, blocksHost, note, clear, empty, usageHost);
     // a click on a row or card selects it, so the mouse and j / k share one selection
     root.addEventListener('click', (e) => {
       const row = e.target && typeof e.target.closest === 'function' ? e.target.closest('.rrow, .inbox-card, .inbox-item') : null;
@@ -1096,7 +1118,7 @@ registerPage('home', {
     });
     let usage = null;
     if (typeof Widgets !== 'undefined' && Widgets && typeof Widgets.usageCard === 'function') { try { usage = Widgets.usageCard(usageHost); } catch (e) { console.error('ccboard usage card', e); } }
-    homePage.refs = { summary, group, away, awaySig: null, inboxHost, inboxList: null, sched, schedSig: null, blocksHost, note, clear, empty, usage,
+    homePage.refs = { summary, group, away, awaySig: null, inboxHost, inboxList: null, sched, schedSig: null, scanSlow, idle, idleHint, blocksHost, note, clear, empty, usage,
       blocks: makeKeyedList(blocksHost, { key: (b) => b.key, create: (b) => (b.kind === 'older' ? homeOlderNode(b) : homeBlockNode(b)), patch: (n, b) => n.ccPatch(b) }) };
     startAgeTicker();
   },

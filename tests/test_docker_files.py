@@ -291,6 +291,26 @@ def test_entrypoint_failures_never_block_the_board(tmp_path):
     assert [c for c in box.calls() if c.startswith("uvicorn ")]
 
 
+def test_entrypoint_starts_the_board_before_the_slow_host_steps_finish(tmp_path):
+    """#39: the host steps (hooks merge, tmux.conf, `claude mcp get/add`, Codex) run beside the board, so a swap's outage does not
+    wait on a Node CLI start under disk pressure. The board execs first; the steps still run to the end and log when done."""
+    box = Box(tmp_path)
+    q = shlex.quote(str(box.log))
+    _exe(box.fakes / "claude", f'echo "claude $* (start)" >> {q}\nsleep 1\necho "claude $* (end)" >> {q}\n'
+                               f'[ "$1 $2" = "mcp get" ] && exit 1\nexit 0\n')
+    r = box.run()
+    assert r.returncode == 0, r.stderr
+    calls = box.calls()
+    uv = next(i for i, c in enumerate(calls) if c.startswith("uvicorn "))
+    get_end = calls.index("claude mcp get ccboard (end)")
+    assert uv < get_end, f"uvicorn is started before the 1 s `claude mcp get` ends: {calls}"
+    assert any(c.startswith("claude mcp add --scope user ccboard") and c.endswith("(end)") for c in calls), "and the registration still completes"
+    assert "host steps done" in r.stdout
+    assert str(box.data / "app" / "bin" / "ccboard-hook") in hook_commands(box.settings()), "the hooks merge still lands"
+    sync = r.stdout.index("synced bin, scripts and tmux.conf")
+    assert sync < r.stdout.index("host steps done"), "step 1 (the sync the host's hooks run from) still comes first"
+
+
 def test_entrypoint_refuses_root(tmp_path):
     box = Box(tmp_path, uid="0")
     r = box.run()

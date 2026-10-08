@@ -82,6 +82,11 @@ COPY --chown=1000:1000 tmux.conf ./
 ARG CCBOARD_VERSION=dev
 ARG CCBOARD_REVISION=unknown
 ENV CCBOARD_IMAGE_VERSION=${CCBOARD_VERSION}
+# Which repository's CI built this image and at which commit: the doctor's GitHub Actions check (empty in a local build, which skips it).
+ARG CCBOARD_SOURCE_REPO=
+ARG CCBOARD_IMAGE_REVISION=
+ENV CCBOARD_SOURCE_REPO=${CCBOARD_SOURCE_REPO} \
+    CCBOARD_IMAGE_REVISION=${CCBOARD_IMAGE_REVISION}
 LABEL org.opencontainers.image.title="ccboard" \
       org.opencontainers.image.description="ccboard: a phone-first board for Claude Code and Codex sessions in tmux" \
       org.opencontainers.image.source="https://github.com/rpandox/ccboard" \

@@ -456,3 +456,29 @@ test('tabs(): once the page lays the list out the selected tab is scrolled into 
   w.document.createElement = made;
   assert.doesNotThrow(() => w.get('tabs')(items, 'app', () => {}));
 });
+
+test('demoApi answers GET /api/tasks/<id>/diff from demo/diff.json, in the shape gitops.task_diff returns', async () => {
+  const w = demoWorld();
+  const d = plain(await w.run('demoApi("GET", "/api/tasks/7/diff")'));
+  assert.deepEqual(Object.keys(d).sort(), ['base', 'branch', 'commits', 'committed', 'files', 'files_uncommitted', 'truncated', 'uncommitted']);
+  assert.equal(d.commits.length, 2);
+  assert.equal(d.files.length, 3);
+  assert.deepEqual(plain(await w.run('demoApi("GET", "/api/tasks/7/describe")')), {}, 'a route with no fixture still answers {}');
+});
+
+test('a click on a link marked data-standalone="skip" is left to the browser in an installed app; other /term/ links navigate in place', () => {
+  const w = coreWorld();
+  w.run('globalThis.__on = {}; globalThis.__assigned = []; document.addEventListener = (t, f) => { (__on[t] ||= []).push(f); }; location.assign = (u) => { __assigned.push(u); }; navigator.standalone = true; window.addEventListener = () => {}; installLifecycleListeners();');
+  const mk = (skip) => {
+    const a = { getAttribute: (k) => ({ href: '/term/x--y--z', 'data-standalone': skip ? 'skip' : null })[k] ?? null };
+    return { target: { closest: () => a }, prevented: 0, preventDefault() { this.prevented += 1; } };
+  };
+  const skipped = mk(true);
+  for (const f of w.get('__on').click) f(skipped);
+  assert.equal(skipped.prevented, 0);
+  assert.deepEqual(plain(w.get('__assigned')), []);
+  const plainLink = mk(false);
+  for (const f of w.get('__on').click) f(plainLink);
+  assert.equal(plainLink.prevented, 1);
+  assert.deepEqual(plain(w.get('__assigned')), ['/term/x--y--z']);
+});

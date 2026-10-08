@@ -954,6 +954,7 @@ Shell.buildResizer = function (app) {
 Shell.DOCK_MIN = 320;
 Shell.DOCK_MAX = 960;
 Shell.DOCK_AT = 1024;                    // the dock exists from this window width
+Shell.DOCK_COMPACT = 1180;               // a touch window under this width keeps the page to itself: an Open link opens the terminal page (v0.5.21, #56)
 Shell.DOCK_ROOM = 1440;                  // from this width the sidebar and the dock fit side by side
 Shell.LONG_PRESS = 500;
 Shell.TERM_HREF = /^\/term\/([^/?#]+)\/?$/;
@@ -980,6 +981,15 @@ Shell.dockRoomy = function () { return Shell.mq && Shell.mq.x ? !!Shell.mq.x.mat
 Shell.dockOn = function () { return !Shell.dockOff() && Shell.dockWide() && typeof TermKit !== 'undefined' && !!TermKit && typeof TermKit.termPane === 'function'; };
 
 Shell.dockOpen = function () { return !!Shell.dock.pane; };
+
+/* Should an Open link or button open the dock? Not on a coarse primary pointer in a window under 1180 px (an iPad in portrait, a small tablet): the dock would leave the
+   page about 525 px at 1024, and the pages are laid out for 840 and more. There an Open link opens the terminal page as before; mod+j and "Add to dock" still open the dock
+   on purpose (and a dock opened that way comes back on the next load), with its width capped at 38 vw by default (shell.css) and a 44 px grabber to change it. */
+Shell.dockAuto = function () {
+  let coarse = false;
+  try { coarse = typeof coarsePointer === 'function' ? !!coarsePointer() : false; } catch (_) { coarse = false; }
+  return !(coarse && (Number(window.innerWidth) || 0) < Shell.DOCK_COMPACT);
+};
 
 /* Does the quad page own the window? Then the dock is suspended. D.held is the quad's own say (Shell.dockSuspend); mountedId === 'quad' is the router's (the session peek is an
    overlay: it never changes mountedId, so a peek over the quad is still the quad). During the quad's unmount mountedId is still 'quad': Shell.dockResume reconciles after it. */
@@ -1039,7 +1049,7 @@ Shell.resetDockWidth = function () { return Shell.setDockWidth(0, true); };
 Shell.buildDockResizer = function () {
   const app = $('#app');
   const h = el('div', { class: 'dock-resize', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Resize the terminal dock', tabindex: '0',
-    'aria-valuemin': String(Shell.DOCK_MIN), 'aria-valuemax': String(Shell.DOCK_MAX), title: 'Drag to resize the dock (double-click resets)' });
+    'aria-valuemin': String(Shell.DOCK_MIN), 'aria-valuemax': String(Shell.DOCK_MAX), title: 'Drag to resize the dock (double-click or double-tap resets)' });
   let drag = null;
   const end = () => {
     if (!drag) return;
@@ -1051,13 +1061,21 @@ Shell.buildDockResizer = function () {
     if (e.button) return;
     e.preventDefault();
     const dock = $('#dock');
-    drag = { grab: (dock ? dock.getBoundingClientRect().left : e.clientX) - e.clientX };     // where on the strip it was taken
+    drag = { grab: (dock ? dock.getBoundingClientRect().left : e.clientX) - e.clientX, moved: false };     // where on the strip it was taken
     try { h.setPointerCapture(e.pointerId); } catch (_) { /* no pointer capture: the move events still arrive over the strip */ }
     if (app) app.classList.add('dock-dragging');
   });
   h.addEventListener('pointermove', (e) => {
     if (!drag || !app) return;
+    drag.moved = true;
     Shell.setDockWidth(app.getBoundingClientRect().right - (e.clientX + drag.grab), false);
+  });
+  let lastTap = 0;
+  h.addEventListener('pointerup', (e) => {                              // a double tap on the grabber resets the width (a touch screen sends no dblclick here)
+    if (drag && !drag.moved && e && (e.pointerType === 'touch' || e.pointerType === 'pen')) {
+      const now = Date.now();
+      if (now - lastTap < 350) { lastTap = 0; Shell.resetDockWidth(); } else lastTap = now;
+    }
   });
   for (const t of ['pointerup', 'pointercancel', 'lostpointercapture']) h.addEventListener(t, end);
   h.addEventListener('dblclick', () => Shell.resetDockWidth());
@@ -1197,7 +1215,7 @@ Shell.openDock = function (tmux, opts) {
 
 /* The one call for "open this session's terminal": the dock when it is on (true), else its own page through openPage (false). For the keys and the palette. */
 Shell.openTerm = function (tmux) {
-  if (Shell.openDock(tmux, { focus: true, quiet: true })) return true;
+  if (Shell.dockAuto() && Shell.openDock(tmux, { focus: true, quiet: true })) return true;
   if (typeof tmux === 'string' && tmux) { const url = '/term/' + encodeURIComponent(tmux); if (typeof openPage === 'function') openPage(url); else window.open(url, '_blank', 'noopener'); }
   return false;
 };
@@ -1313,7 +1331,7 @@ Shell.onTermLink = function (e) {
   if (a.closest('#dock')) return false;
   if (press && press.a === a && Date.now() - press.t >= Shell.LONG_PRESS) return false;
   if (a.getAttribute('data-dock') === 'skip') return false;             // a link that pops out on purpose (the quad tile's open link)
-  if (!Shell.dockOn() || Shell.dockHeld()) return false;               // on the quad the link opens its own tab
+  if (!Shell.dockOn() || Shell.dockHeld() || !Shell.dockAuto()) return false;               // on the quad the link opens its own tab; so it does on a touch window under 1180 px
   let tmux = '';
   try { tmux = decodeURIComponent(m[1]); } catch (_) { return false; }
   if (!Shell.openDock(tmux, { focus: true, quiet: true })) return false;

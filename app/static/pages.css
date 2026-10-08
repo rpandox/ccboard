@@ -334,6 +334,11 @@ html.force-coarse #page .sched .sched-item { min-height:var(--tap); }
 #page .pblock.older > .pb-body { display:flex; flex-direction:column; gap:14px; padding-top:10px; }
 #page .pblock.older .pblock { margin-left:8px; }
 #page .home-note { margin:14px 0; }
+#page .home-idle { margin:14px 0 6px; }                            /* "No sessions running": projects exist, nothing is live */
+#page .home-idle.hidden { display:none; }
+#page .home-idle .home-idle-actions { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin-top:12px; }
+#page .home-idle .home-idle-actions button { min-height:var(--tap); }
+#page .home-scan-slow { margin:10px 0 0; }                     /* #31: "scan slowed (box is busy)" above the project list, only while state.scan_slow */
 
 /* the rich row (sessionCard rich:true): the state label, then the chips, in one wrapping line */
 #page .rrow .rr-metaline { grid-area:meta; display:flex; flex-wrap:wrap; align-items:center; gap:3px 8px; min-width:0; }
@@ -1024,6 +1029,7 @@ html.force-coarse #page .quad .q-scope-sel { font-size:16px; }
 #page .quad .qt-title { flex:1 1 auto; min-width:40cqi; min-height:var(--row-btn); justify-content:flex-start; gap:4px; padding:0 6px; border:0; color:var(--fg); font:600 12px/1 var(--font-ui); text-align:left; }
 #page .quad .qt-title > .qt-name { flex:0 1 auto; display:flex; min-width:0; overflow:hidden; white-space:nowrap; }      /* Blueprint's .bp5-button > * is flex-shrink 0 */
 #page .quad .qt-name > .qt-where { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:pre; color:var(--fg-2); font-weight:500; }      /* the project/repo gives way first ... */
+#page .quad .qt-name > .qt-where.pend { visibility:hidden; }                                    /* until TermKit.fitName has run once: a sliver of project/repo never flashes at first paint */
 #page .quad .qt-name > .qt-where.off { display:none; }                                          /* TermKit.fitName: what is left of it would be a sliver ('p'), so the session name stands alone */
 #page .quad .qt-name > .qt-sess { flex:0 0 auto; max-width:100%; min-width:2ch; overflow:hidden; text-overflow:ellipsis; }      /* ... and the session name stays whole (it only gets an ellipsis when it alone is wider than the title) */
 #page .quad .qt-title > .qt-caret { flex:none; color:var(--dim); font-size:10px; }
@@ -1097,7 +1103,7 @@ html.force-coarse #page .quad .q-scope-sel { font-size:16px; }
 #page .quad .qempty { align-items:center; justify-content:center; gap:10px; padding:14px; background:transparent; border-style:dashed; color:var(--dim); }
 #page .quad .qe-title { font-size:13px; }
 #page .quad .qe-list { display:flex; flex-direction:column; align-items:stretch; gap:4px; width:min(100%, 320px); }
-#page .quad .qe-pick { justify-content:flex-start; gap:6px; min-width:0; }
+#page .quad .qe-pick { justify-content:flex-start; gap:6px; min-width:0; max-width:100%; overflow:hidden; }
 #page .quad .qe-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 #page .quad .qe-new { align-self:center; gap:6px; }                                  /* + New session (v0.5.13): the launcher sheet for this tile */
 

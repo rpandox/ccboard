@@ -112,6 +112,9 @@ function svg(tag, attrs, ...children) {
 /* Demo mode (?demo=1 or localStorage ccboard:demo=1): GETs read fixtures under /static/demo, writes resolve {ok:true}. The fixtures are
    excluded from the service-worker shell and the asset version. The try/catch keeps this definition-only: a missing location or
    storage reads as "not demo". */
+/* Demo mode (?demo=1, or localStorage ccboard:demo = 1) is the board's QA harness: demoApi() below answers GETs from app/static/demo/*.json and
+   every write with {ok:true}, so each screen renders with realistic data and no tmux. Decision v0.5.21: kept (scripts/qa-ui.sh and the
+   screenshot rule depend on it). README, "Demo mode" says what is faked and how the fixtures are refreshed. */
 let demoFlag = null;
 function demoOn() {
   if (demoFlag === null) { try { demoFlag = /[?&]demo=1/.test(location.search) || localStorage.getItem('ccboard:demo') === '1'; } catch (_) { demoFlag = false; } }
@@ -270,6 +273,7 @@ async function demoApi(method, path, body) {
   else if (/^\/api\/memory\/[^/]+\/timeline$/.test(bare)) name = 'memory_timeline';
   else if (/^\/api\/memory\/[^/]+\/palace$/.test(bare)) name = 'memory_palace';
   else if (bare.startsWith('/api/memory/')) name = 'memory';
+  else if (/^\/api\/tasks\/[^/]+\/diff$/.test(bare)) name = 'diff';   // the Tasks card's Diff/PR sheet (v0.5.21): one made-up branch, two commits, three files
   else if (bare === '/api/doctor') name = 'doctor';       // the Settings > Doctor checklist (v0.5.19)
   else if (/^\/api\/projects\/[^/]+\/repos\/[^/]+\/issues(\/\d+)?$/.test(bare)) name = 'issues';   // the launcher's "from a GitHub issue" (v0.5.20): one made-up list and its details
   if (!name) return {};
@@ -432,7 +436,24 @@ function fmtTs(s) { return s ? s.replace('T', ' ').slice(0, 16) : ''; }
 
 const LAST_KEY = 'ccboard:last-state';
 
-function rememberState(json) { try { localStorage.setItem(LAST_KEY, JSON.stringify({ at: Date.now(), state: json })); } catch (_) { /* storage may be unavailable */ } }
+/* The offline snapshot (#46): the poll used to write the whole state to localStorage on every answer. Now it is written at most once per
+   SNAPSHOT_EVERY ms, only when the state changed since the last write (a change is kept and saved at the next allowed time), and never
+   above SNAPSHOT_MAX characters of JSON (one console warning; the older snapshot stays). `json` is the text poll() already made for its
+   change check, so nothing is stringified twice. A full or blocked storage never breaks the poll. Returns true when it wrote. */
+const SNAPSHOT_EVERY = 30000;
+const SNAPSHOT_MAX = 200 * 1024;
+const offlineSnap = { at: 0, dirty: false, warned: false };
+function rememberState(json, changed) {
+  if (changed) offlineSnap.dirty = true;
+  const now = Date.now();
+  if (!offlineSnap.dirty || (offlineSnap.at && now - offlineSnap.at < SNAPSHOT_EVERY)) return false;
+  if (typeof json !== 'string' || json.length > SNAPSHOT_MAX) {
+    if (!offlineSnap.warned) { offlineSnap.warned = true; try { console.warn(`ccboard: the state is ${json && json.length} characters, over the offline snapshot's ${SNAPSHOT_MAX}; not saved`); } catch (_) { /* ignore */ } }
+    return false;
+  }
+  offlineSnap.at = now;                                     // a failed write waits its turn too: no retry on every poll
+  try { localStorage.setItem(LAST_KEY, '{"at":' + now + ',"state":' + json + '}'); offlineSnap.dirty = false; return true; } catch (_) { return false; }
+}
 function recallState() { try { const v = JSON.parse(localStorage.getItem(LAST_KEY) || 'null'); return v && v.state ? v : null; } catch (_) { return null; } }
 
 function registerServiceWorker() {
@@ -510,6 +531,7 @@ function installLifecycleListeners() {
 document.addEventListener('click', (e) => {
   const a = e.target.closest && e.target.closest('a[target=_blank]');
   if (!a || !isStandalone()) return;
+  if (a.getAttribute('data-standalone') === 'skip') return;      // a quad tile's Open: leave the click to the browser so the other tiles' iframes stay
   const href = a.getAttribute('href') || '';
   if (href.startsWith('/term/') || href.startsWith('/tty/')) { e.preventDefault(); location.assign(href); }
 });
@@ -519,8 +541,23 @@ window.addEventListener('focus', () => refreshNow());
 window.addEventListener('online', () => refreshNow());
 }
 
+/* The poll cadence (#31): every 3 s while the tab is visible, every 15 s while it is hidden (the tab title and badge may lag that much; the
+   server's own notifications do not). Becoming visible, focus, pageshow and online poll at once through refreshNow(). A 5-minute idle
+   stretch for a visible tab was considered and dropped: on the box a scan costs about 0.1 s and the server already backs off when busy. */
+const POLL_VISIBLE = 3000;
+const POLL_HIDDEN = 15000;
+function pollDelay() { return document.hidden ? POLL_HIDDEN : POLL_VISIBLE; }
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  ui.pollDelayArmed = pollDelay();
+  pollTimer = setTimeout(() => poll(false), ui.pollDelayArmed);
+}
+
 function refreshNow() {
-  if (Date.now() - (ui.lastPollAt || 0) < 500) return;   // several lifecycle events fire together
+  if (Date.now() - (ui.lastPollAt || 0) < 500) {          // several lifecycle events fire together: poll once
+    if ((ui.pollDelayArmed || 0) > pollDelay()) schedulePoll();   // but a hidden-tab timer armed just now must not hold a visible tab for 15 s
+    return;
+  }
   clearTimeout(pollTimer);
   if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => { /* ignore */ });
   poll(true);
@@ -528,8 +565,11 @@ function refreshNow() {
 
 async function poll(force) {
   ui.lastPollAt = Date.now();
+  const seq = ui.pollSeq = (ui.pollSeq || 0) + 1;         // two polls in flight: the older answer never paints over the newer one
   try {
     const s = await api('GET', '/api/state');
+    if (seq < (ui.pollApplied || 0)) return;
+    ui.pollApplied = seq;
     if (s.version && ui.version && s.version !== ui.version) {
       // the box was updated while this page stayed open (an installed PWA restored from memory never navigates)
       try { sessionStorage.setItem('ccboard:reloaded', '1'); } catch (_) { /* ignore */ }
@@ -545,16 +585,16 @@ async function poll(force) {
     ui.offline = false;
     if (changed || force) render(force);
     else { renderHeader(); renderUsage(); }
-    rememberState(s);
+    rememberState(j, changed);
   } catch (e) {
+    if (seq < (ui.pollApplied || 0)) return;               // a newer poll already answered
     if (!state) {
       const last = recallState();
       if (last) { state = last.state; ui.offline = last.at; render(true); }
       else { $('#banner').textContent = 'Cannot reach ccboard: ' + e.message; }
     } else { ui.offline = ui.offline || Date.now(); renderBanner(); }
   }
-  clearTimeout(pollTimer);
-  pollTimer = setTimeout(() => poll(false), 3000);
+  if (seq === ui.pollSeq) schedulePoll();                  // only the newest poll arms the next one
 }
 
 function startStatePolling() { return poll(true); }

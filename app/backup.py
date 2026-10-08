@@ -44,12 +44,13 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def snapshot_db(src: Path, dest: Path) -> Path:
-    """Consistent copy of a live (WAL) SQLite file via the backup API; copying the raw file could tear."""
+def snapshot_db(src: Path, dest: Path, readonly: bool = False) -> Path:
+    """Consistent copy of a live (WAL) SQLite file via the backup API; copying the raw file could tear.
+    readonly=True opens the source `mode=ro`, for a database that belongs to someone else (claude-mem's): the backup never writes it."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         dest.unlink()
-    s = sqlite3.connect(str(src))
+    s = sqlite3.connect(f"file:{urllib.parse.quote(str(src))}?mode=ro", uri=True) if readonly else sqlite3.connect(str(src))
     d = sqlite3.connect(str(dest))
     try:
         with d:
@@ -58,6 +59,11 @@ def snapshot_db(src: Path, dest: Path) -> Path:
         s.close()
         d.close()
     return dest
+
+
+def claude_mem_db() -> Path:
+    """claude-mem's database: <claude-mem dir>/claude-mem.db (CLAUDE_MEM_DATA_DIR, else ~/.claude-mem; the same dir app/memory.py reads)."""
+    return Path(settings.claude_mem_dir) / "claude-mem.db"
 
 
 # ---------------------------------------------------------------- restic
@@ -307,7 +313,7 @@ def _login_paths() -> list[Path]:
 
 def _holds_saved_logins(p: Path) -> bool:
     """Would backing up `p` take a login (_login_paths)? True for any of them, anything inside the store dirs, and any directory above one (the
-    data dir, the Claude config dir, CODEX_HOME, the home dir). The nightly paths are the DB snapshot, the transcripts (<Claude config dir>/projects),
+    data dir, the Claude config dir, CODEX_HOME, the home dir). The nightly paths are the DB snapshot, claude-mem's snapshot file, the transcripts (<Claude config dir>/projects),
     the Codex rollouts (<CODEX_HOME>/sessions) and CCBOARD_BACKUP_EXTRA: credentials are in none of them, whatever CCBOARD_BACKUP_EXTRA says
     (#44 F-05: it used to guard only the saved stores, so an extra path of the Claude config dir took the live login)."""
     try:
@@ -344,6 +350,12 @@ def run(push: bool | None = None, restic: bool | None = None) -> dict:
                     paths.append(snapshot_db(settings.db_path, stage / "ccboard.db"))
             except sqlite3.Error as e:
                 st["errors"].append(f"db snapshot: {e}")
+            mem = claude_mem_db()                      # one file only, never the directory: a snapshot through the backup API, source opened read-only
+            if mem.is_file():
+                try:
+                    paths.append(snapshot_db(mem, stage / "claude-mem.db", readonly=True))
+                except (sqlite3.Error, OSError) as e:
+                    st["errors"].append(f"claude-mem db snapshot: {e}")
             transcripts = settings.claude_config_dir / "projects"
             if transcripts.is_dir():
                 paths.append(transcripts)

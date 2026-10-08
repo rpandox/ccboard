@@ -1115,3 +1115,69 @@ test('tap count (real launcher): a new session from the dock is 2 taps with the 
   assert.deepEqual(posts.map((c) => c.path), ['/api/projects/shop/repos/web/sessions']);
   assert.equal(taps, 2);
 });
+
+// ---------------------------------------------------------------- touch windows under 1180 px (v0.5.21, #56)
+
+const coarsen = (d, on = true) => d.w.document.documentElement.classList[on ? 'add' : 'remove']('force-coarse');
+
+test('touch under 1180 px: an Open link and openTerm open the terminal page, not the dock; the dock still opens on purpose (mod+j, Add to dock)', () => {
+  const d = dWorld({ width: 1024 });
+  coarsen(d);
+  assert.equal(d.Shell.dockAuto(), false);
+  const e = click(openLink(d));
+  assert.equal(e.prevented, 0, 'the link keeps its own behaviour');
+  assert.equal(d.Shell.dockOpen(), false);
+  assert.equal(d.Shell.openTerm(S1), false);
+  assert.deepEqual(plain(d.w.get('__opened')), ['/term/' + S1], 'openTerm went to the terminal page');
+  assert.equal(d.Shell.openDock(S1, { focus: true }), true, 'on purpose it still opens');
+  assert.equal(tmuxOf(d), S1);
+  assert.equal(stored(d.w, 'ccboard:dock'), S1, 'and comes back on the next load');
+});
+
+test('touch at 1180 px and up, and a mouse at any width, keep the dock as before', () => {
+  const wide = dWorld({ width: 1180 });
+  coarsen(wide);
+  assert.equal(wide.Shell.dockAuto(), true);
+  assert.equal(click(openLink(wide)).prevented, 1);
+  assert.equal(tmuxOf(wide), S1);
+  const mouse = dWorld({ width: 1024 });
+  assert.equal(mouse.Shell.dockAuto(), true);
+  assert.equal(click(openLink(mouse)).prevented, 1);
+  const big = dWorld({ width: 1440 });
+  coarsen(big);
+  assert.equal(click(openLink(big)).prevented, 1, 'a touch screen at 1440 behaves as before');
+});
+
+test('the touch grabber: a double tap resets the width, a drag does not count as a tap', () => {
+  const d = dWorld();
+  const h = resizer(d);
+  const tap = (x) => { h.dispatchEvent(ptr('pointerdown', x, { pointerType: 'touch' })); h.dispatchEvent(ptr('pointerup', x, { pointerType: 'touch' })); };
+  d.Shell.setDockWidth(600, true);
+  tap(830);
+  assert.equal(d.app.props['--dock-w'], '600px', 'one tap changes nothing');
+  d.clock.advance(100);
+  tap(830);
+  assert.equal(d.app.props['--dock-w'], undefined, 'the second tap within 350 ms resets');
+  assert.equal(stored(d.w, 'ccboard:dock:w'), null);
+  d.Shell.setDockWidth(600, true);
+  tap(830);
+  d.clock.advance(100);
+  h.dispatchEvent(ptr('pointerdown', 830, { pointerType: 'touch' }));
+  h.dispatchEvent(ptr('pointermove', 780, { pointerType: 'touch' }));
+  h.dispatchEvent(ptr('pointerup', 780, { pointerType: 'touch' }));
+  assert.equal(stored(d.w, 'ccboard:dock:w'), '500', 'a drag sizes it and is no tap');
+});
+
+test('touch geometry in the CSS: a 44 px grabber on a coarse pointer and under html.force-coarse, a 38 vw default, and the header controls on the touch tokens', () => {
+  const css = fs.readFileSync(path.join(STATIC, 'shell.css'), 'utf8');
+  const tokens = fs.readFileSync(path.join(STATIC, 'tokens.css'), 'utf8');
+  assert.match(css, /@media \(pointer:coarse\) \{\s*#dock\.has-term \.dock-resize \{ display:block;[^}]*width:var\(--tap\); height:var\(--tap\);/, 'touch grabber, 44 px by the token');
+  assert.match(css, /html\.force-coarse #dock\.has-term \.dock-resize \{ display:block;[^}]*width:var\(--tap\); height:var\(--tap\);/, 'and for the QA switch');
+  assert.match(css, /@media \(pointer:coarse\) \{ :root \{[^}]*--dock-w:min\(38vw, 560px\);/, 'default width on touch');
+  assert.match(css, /html\.force-coarse \{[^}]*--dock-w:min\(38vw, 560px\);/);
+  assert.match(css, /\.tp-head \.bp5-button\.tp-btn:not\(\[class\*=bp5-intent-\]\) \{ min-width:var\(--row-btn\); width:var\(--row-btn\); min-height:var\(--row-btn\); height:var\(--row-btn\);/, 'the header buttons follow --row-btn');
+  assert.match(css, /\.tp-modes \.bp5-button\.tp-mode \{ min-height:var\(--row-btn\);/);
+  assert.match(css, /\.tp-perm \.bp5-button \{ min-height:var\(--row-btn\); \}/);
+  assert.match(tokens, /html\.force-coarse \{ --tap:44px; --row-h:44px; --row-btn:44px; \}/, '--row-btn is 44 px under force-coarse');
+  assert.match(tokens, /@media \(pointer:coarse\) \{ :root \{ --tap:44px; --row-h:44px; --row-btn:44px; \} \}/);
+});

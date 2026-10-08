@@ -162,9 +162,12 @@ def test_immutable_policy_covers_an_extra_woff2_outside_vendor(lite_client, tmp_
 
 
 def test_no_gzip_middleware_and_no_content_encoding(lite_client):
-    """GZipMiddleware buffers streaming bodies and would stall the SSE stream: nothing here may compress."""
+    """GZipMiddleware buffers streaming bodies and would stall the SSE stream: no middleware compresses. The one exception is
+    /api/state, which gzips its own answer inside the route (#46: the 3 s poll, about 3.7x smaller on the box)."""
     from app import main
     assert not [m for m in main.app.user_middleware if "gzip" in repr(m).lower()], main.app.user_middleware
-    for url in ("/", "/static/core.js", "/static/vendor/blueprint/blueprint.css", "/api/state"):
+    for url in ("/", "/static/core.js", "/static/vendor/blueprint/blueprint.css"):
         r = lite_client.get(url, headers={**H, "Accept-Encoding": "gzip, br"})
         assert r.status_code == 200 and "content-encoding" not in r.headers, url
+    r = lite_client.get("/api/state", headers={**H, "Accept-Encoding": "gzip, br"})
+    assert r.status_code == 200 and r.headers.get("content-encoding") == "gzip" and r.json()["projects"] is not None

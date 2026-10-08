@@ -1684,3 +1684,18 @@ def test_fake_tty_has_no_external_url_and_no_network_call(name):
     if name.endswith(".js"):
         for what in ("fetch", "XMLHttpRequest", "WebSocket", "EventSource", "sendBeacon", "importScripts", "Worker", "innerHTML", "eval"):
             assert not re.search(rf"\b{what}\b", code), f"{name}: {what} (the fake tty is a static page with a counter)"
+
+
+def test_every_demo_fixture_is_read_by_a_route_and_none_names_a_host():
+    """v0.5.21 (#29): demo mode is the QA harness, so a fixture no code reads is dead weight, and a kept one never names the box."""
+    core = (STATIC / "core.js").read_text(encoding="utf-8")
+    names = sorted(p.stem for p in DEMO_DIR.glob("*.json"))
+    assert "diff" in names and "state" in names
+    for name in names:
+        assert re.search(r"['\"`/]" + re.escape(name) + r"(\.json|['\"`])", core), f"demo/{name}.json is read by no route of demoApi() in core.js"
+        text = (DEMO_DIR / f"{name}.json").read_text(encoding="utf-8")
+        assert "ubu2" not in text, f"demo/{name}.json names the box's host"
+        assert not re.search(r"/home/(?!demo/|ccboard/)", text), f"demo/{name}.json holds a home path of a person"
+    diff = demo_json("diff.json")
+    assert set(diff) == {"base", "branch", "commits", "files", "files_uncommitted", "committed", "uncommitted", "truncated"}, "the shape gitops.task_diff returns"
+    assert len(diff["commits"]) == 2 and len(diff["files"]) == 3 and len(diff["files_uncommitted"]) == 1

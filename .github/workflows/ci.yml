@@ -98,6 +98,8 @@ jobs:
           build-args: |
             CCBOARD_VERSION=${{ steps.ver.outputs.ver || format('sha-{0}', steps.ver.outputs.short) }}
             CCBOARD_REVISION=${{ github.sha }}
+            CCBOARD_SOURCE_REPO=${{ github.repository }}
+            CCBOARD_IMAGE_REVISION=${{ github.sha }}
           cache-from: |
             type=gha,scope=amd64
             type=gha,scope=arm64
@@ -118,6 +120,8 @@ jobs:
           build-args: |
             CCBOARD_VERSION=${{ steps.ver.outputs.ver || format('sha-{0}', steps.ver.outputs.short) }}
             CCBOARD_REVISION=${{ github.sha }}
+            CCBOARD_SOURCE_REPO=${{ github.repository }}
+            CCBOARD_IMAGE_REVISION=${{ github.sha }}
           cache-from: |
             type=gha,scope=amd64
             type=gha,scope=arm64

@@ -3103,3 +3103,67 @@ test('v0.5.9c: loading termkit.js still defines only (the three factories are no
   const k = kitWorld();
   assert.equal(k.w.document.body.children.length, 0);
 });
+
+// ---------------------------------------------------------------- v0.5.21 quad leftovers (#34)
+
+test('tileMenu: the TUNE caption says where Usage and Rename went, only for an agent whose Tune… really has them, and the not-at-prompt reason still wins', () => {
+  const { w, kit } = uiWorld();
+  const claude = kit.tileMenu(menuCtx().ctx);
+  claude.open(anchorAt(w), false);
+  assert.equal(group(claude.root, 'tune').querySelector('.tk-note').textContent, 'Usage and rename are inside Tune…');
+  assert.deepEqual(names(group(claude.root, 'tune')), ['Tune…', '/compact', '/context'], 'and they stay out of the rows');
+  claude.close();
+  const busy = kit.tileMenu(menuCtx({ atPrompt: false, why: 'it is working: wait for the prompt' }).ctx);
+  busy.open(anchorAt(w), false);
+  assert.equal(group(busy.root, 'tune').querySelector('.tk-note').textContent, 'it is working: wait for the prompt');
+  busy.close();
+  const codex = kit.tileMenu(menuCtx({ agent: 'codex' }).ctx);
+  codex.open(anchorAt(w), false);
+  const plan = kit.tunePlan('codex', undefined);
+  const hasMoved = plan.cells.some((c) => c.key === 'usage' || c.key === 'rename');
+  const note = group(codex.root, 'tune').querySelector('.tk-note');
+  assert.equal(!!note, hasMoved, 'Codex claims the rows only when its Tune… has them');
+});
+
+test('composer.el: Shift+Enter in the docked one-line box neither sends nor inserts a hidden newline; Enter sends; Enter during IME composition is left alone; the title says so', async () => {
+  const { w, kit } = uiWorld();
+  w.run('__route = () => ({ ok: true })');
+  const c = kit.composer({ tmux: SESS, session: paneRow({ state: 'idle' }), agent: 'claude' });
+  const ta = c.el.querySelector('textarea');
+  assert.match(ta.getAttribute('title'), /Enter sends.*no new line/);
+  w.document.body.append(c.el);
+  ta.value = 'hello';
+  const rec = (extra) => { const r = { prevented: 0 }; keyOn(ta, 'Enter', { preventDefault() { r.prevented += 1; }, ...extra }); return r; };
+  const shift = rec({ shiftKey: true });
+  await settle();
+  assert.equal(shift.prevented, 1, 'the newline is cancelled');
+  assert.equal(calls(w).length, 0, 'and nothing is sent');
+  assert.equal(ta.value, 'hello', 'the draft is kept');
+  const ime = rec({ isComposing: true });
+  await settle();
+  assert.equal(ime.prevented, 0, 'the Enter that confirms an IME candidate is not touched');
+  assert.equal(calls(w).length, 0);
+  const plain1 = rec({});
+  await settle();
+  assert.equal(plain1.prevented, 1);
+  assert.deepEqual(calls(w).map((x) => x.body), [{ text: 'hello', enter: true, queue: false }]);
+});
+
+test('fitName: the first measurement lifts .pend (a tile header keeps project/repo hidden until then) whether it keeps the text or drops it', () => {
+  const { w, kit } = uiWorld();
+  const mk = (width, scroll) => {
+    const n = w.document.createElement('span');
+    n.setAttribute('class', 'qt-where pend');
+    n.getBoundingClientRect = () => ({ width });
+    Object.defineProperty(n, 'scrollWidth', { get: () => scroll, configurable: true });
+    return n;
+  };
+  const keep = mk(120, 120);
+  assert.equal(kit.fitName(keep), false);
+  assert.equal(keep.classList.contains('pend'), false);
+  assert.equal(keep.classList.contains('off'), false);
+  const sliver = mk(10, 120);
+  assert.equal(kit.fitName(sliver), true);
+  assert.equal(sliver.classList.contains('pend'), false);
+  assert.equal(sliver.classList.contains('off'), true, 'a sliver goes, and never shows first');
+});

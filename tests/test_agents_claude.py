@@ -1068,3 +1068,97 @@ def test_help_lists_ultracode_reads_only_the_effort_option():
     assert claude.help_lists_ultracode(wrapped) is True
     assert claude.help_lists_ultracode("  --effort <level>   Effort\n  --other <x>   mentions ultracode\n") is False
     assert claude.help_lists_ultracode("") is False and claude.help_lists_ultracode(None) is False
+
+
+# ---------- version gates (issue #113) ----------
+
+@pytest.mark.parametrize("text,want", [
+    ("2.1.288", (2, 1, 288)), ("2.1.288 (Claude Code)", (2, 1, 288)), ("claude 2.1.288\n", (2, 1, 288)), ("v2.1.9", (2, 1, 9)),
+    ("2.1", (2, 1, 0)), ("10.20.300-beta", (10, 20, 300)), ("", None), (None, None), ("Claude Code", None), ("2", None), (288, None),
+])
+def test_parse_version(text, want):
+    assert claude.parse_version(text) == want
+
+
+def test_every_gate_row_has_its_evidence_and_the_expected_versions():
+    rows = {g.key: g.min_version for g in claude.FEATURE_GATES}
+    assert rows == {"ultracode_effort": "2.1.203", "ultracode_off": "2.1.284", "permission_prompts_none": "2.1.259",
+                    "subagent_model_force": "2.1.257", "manual_mode": "2.1.200", "opusplan_1m": "2.1.265", "mcp_sse_fallback": "2.1.265",
+                    "auto_start_mode": "2.1.283"}
+    for g in claude.FEATURE_GATES:
+        assert g.docs and g.read == "2026-10-07" and g.feature and g.what_breaks and claude.parse_version(g.min_version)
+
+
+@pytest.mark.parametrize("key,min_ok", [(g.key, g.min_version) for g in claude.FEATURE_GATES])
+def test_each_gate_both_sides(key, min_ok):
+    major, minor, patch = claude.parse_version(min_ok)
+    assert claude.gate_met(key, min_ok) is True
+    assert claude.gate_met(key, f"{major}.{minor}.{patch + 5} (Claude Code)") is True
+    assert claude.gate_met(key, f"{major}.{minor + 1}.0") is True
+    assert claude.gate_met(key, f"{major}.{minor}.{patch - 1}") is False
+    assert claude.gate_met(key, "1.99.999") is False
+    assert claude.gate_met(key, "unreadable") is None and claude.gate_met(key, None) is None      # unknown never blocks
+
+
+def test_unmet_gates_lists_what_a_version_is_too_old_for():
+    assert claude.unmet_gates("2.1.288") == [] and claude.unmet_gates(None) == []
+    assert [g.key for g in claude.unmet_gates("2.1.260")] == ["ultracode_off", "opusplan_1m", "mcp_sse_fallback", "auto_start_mode"]
+    assert {g.key for g in claude.unmet_gates("2.1.200")} == {g.key for g in claude.FEATURE_GATES} - {"manual_mode"}
+
+
+def at_version(monkeypatch, v):
+    monkeypatch.setattr(claude_auth, "version", lambda: v)
+
+
+def test_a_new_enough_claude_changes_nothing(ag, monkeypatch):
+    base_schema = [f.__dict__ for f in ag.option_schema()]
+    at_version(monkeypatch, "2.1.288 (Claude Code)")
+    assert [f.__dict__ for f in ag.option_schema()] == base_schema                       # the version is unknown here (no binary): same as met
+    pm = next(f for f in ag.option_schema() if f.key == "permission_mode")
+    assert pm.choices == list(claude.PERMISSION_MODES)
+    assert ag.launch_opt_args({"permission_mode": "manual"}) == ["--permission-mode", "manual"]
+    assert ag.launch_opt_args({"permission_mode": "auto"}) == ["--permission-mode", "auto"]
+    assert ag.launch_opt_args({"mode": "default"}) == ["--permission-mode", "manual"]
+
+
+def test_below_2_1_200_manual_is_sent_and_shown_as_default(ag, monkeypatch):
+    at_version(monkeypatch, "2.1.150 (Claude Code)")
+    pm = next(f for f in ag.option_schema() if f.key == "permission_mode")
+    assert "manual" not in pm.choices and "default" in pm.choices and "auto" not in pm.choices
+    assert "the manual permission mode name needs Claude Code 2.1.200" in pm.help
+    assert ag.launch_opt_args({"permission_mode": "manual"}) == ["--permission-mode", "default"]          # never an argv the CLI rejects
+    assert ag.launch_opt_args({"mode": "default"}) == ["--permission-mode", "default"]
+    assert ag.launch_opt_args({"permission_mode": "default"}) == ["--permission-mode", "default"]          # the older name is accepted back
+    assert ag.launch_opt_args({"permission_mode": "plan"}) == ["--permission-mode", "plan"]
+    assert ag.validate_opts({"permission_mode": "manual"}) == {"permission_mode": "manual"}               # what is stored keeps the one name
+
+
+def test_auto_is_refused_below_2_1_283_with_the_reason_and_a_way_out(ag, monkeypatch):
+    at_version(monkeypatch, "2.1.270")
+    with pytest.raises(projects.BadRequest) as e:
+        ag.launch_opt_args({"permission_mode": "auto"})
+    msg = str(e.value.args[0] if e.value.args else e.value)
+    assert "needs Claude Code 2.1.283" in msg and "2.1.270" in msg and "plan or acceptEdits" in msg
+    with pytest.raises(projects.BadRequest):
+        ag.launch_opt_args({"mode": "auto"})
+    assert ag.launch_opt_args({"permission_mode": "auto"}, interactive=False) == ["--permission-mode", "auto"]   # headless -p is not the starting mode
+    at_version(monkeypatch, "2.1.283")
+    assert ag.launch_opt_args({"permission_mode": "auto"}) == ["--permission-mode", "auto"]
+
+
+def test_an_unreadable_version_hides_nothing(ag, monkeypatch):
+    at_version(monkeypatch, None)
+    assert ag.permission_modes() == list(claude.PERMISSION_MODES)
+    at_version(monkeypatch, "no version here")
+    assert ag.gate_unmet("manual_mode") is None and ag.launch_opt_args({"permission_mode": "manual"}) == ["--permission-mode", "manual"]
+
+
+def test_peek_capabilities_never_starts_a_process(ag, monkeypatch):
+    claude.reset_caches()
+    monkeypatch.delenv(claude.ULTRACODE_ENV, raising=False)
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/no/such/claude")
+    boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError("peek must not spawn"))       # noqa: E731
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert ag.peek_capabilities() is None
+    monkeypatch.setenv(claude.ULTRACODE_ENV, "1")
+    assert ag.peek_capabilities() == {"ultracode_flag": True}
