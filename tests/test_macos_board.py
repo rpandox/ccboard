@@ -431,6 +431,7 @@ def mac(tmp_path, monkeypatch):
     """A Mac as far as the doctor can tell: macOS hints, launchd runtime, uid 501, and fake launchctl, fdesetup, defaults and pmset first on PATH.
     Each fake answers from files/variables a test sets: STATES/<label> (the job state), FDESETUP, AUTOLOGIN, PMSET."""
     monkeypatch.setattr(plat, "IS_MACOS", True)
+    monkeypatch.setattr(plat, "IS_LINUX", False)
     monkeypatch.setattr(plat, "_hint_family", lambda: "macos")
     monkeypatch.setattr(plat, "current_uid", lambda: 501)
     monkeypatch.setattr(settings, "runtime", "launchd")
