@@ -7,7 +7,7 @@ import time
 
 from .config import settings
 
-NAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,62}[A-Za-z0-9])?$")
+NAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,62}[A-Za-z0-9])?$")     # the wizard's WIZ_NAME_RE is this pattern (JS has no \Z)
 SEP = "--"
 INTERNAL_PREFIX = "_ccboard"
 LOGIN_SESSION = "_ccboard-login"
@@ -22,7 +22,8 @@ class TmuxError(Exception):
 
 
 def valid_name(s: str) -> bool:
-    return bool(s) and bool(NAME_RE.match(s)) and SEP not in s
+    # fullmatch, not match: "$" also matches before a trailing newline, so match() took "shop\n" (#44 F-03)
+    return isinstance(s, str) and bool(s) and bool(NAME_RE.fullmatch(s)) and SEP not in s
 
 
 def tmux_name(project: str, repo: str, session: str) -> str:

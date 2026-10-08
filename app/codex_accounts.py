@@ -97,7 +97,7 @@ KV_SPLIT = "codex_account_split"      # {key, from, at}: a hand login to another
 SPLIT_LABEL = "Codex account (unlabelled)"
 SPLIT_NOTICE = "A different Codex login was detected and saved as a new account. Rename it."
 SERIES = "cacct"                      # event sample: key = the account that became current, meta {from, to}; or the account logged in again, meta {to, relogin: true}
-SLOT_RE = re.compile(r"^[0-9a-f]{24}$")
+SLOT_RE = re.compile(r"^[0-9a-f]{24}\Z")             # \Z: names a directory, so no trailing newline (#44 F-03)
 REASON_NOT_INSTALLED = "codex is not installed"
 REASON_UPDATE = "update Codex to 0.157 or newer: npm install -g --prefix ~/.local @openai/codex@latest"   # the safe update (#97): never the bare global npm install, never Codex's own prompt
 WARN_OTHER = "other Codex processes on this box keep the previous login until they restart"

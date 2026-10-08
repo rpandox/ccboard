@@ -20,7 +20,7 @@ jobs:
     # A stuck Ubuntu mirror once held this job for 20 minutes before any test ran: fail fast instead.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - timeout-minutes: 6
         run: |
           for i in 1 2 3; do
@@ -28,27 +28,42 @@ jobs:
             sleep 10
           done
           exit 1
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
-      - uses: actions/setup-node@v7
+          cache-dependency-path: requirements-dev.lock
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
-      - run: pip install -r requirements.txt pytest httpx
+      - run: pip install --require-hashes -r requirements-dev.lock
       - run: python -m pytest -q
+      # Advisory: a new advisory against a pinned package must not block a fix, but it shows in the run.
+      - name: pip-audit (non-blocking)
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          pip install pip-audit==2.10.1
+          pip-audit --require-hashes --disable-pip -r requirements.lock
 
+  # Push to main (or a v* tag): build the amd64 image and load it, smoke-test it, and only then build-and-push the
+  # multi-arch manifest (amd64 + arm64) with every tag. A failed smoke step or a failed arm64 leg fails the job before any
+  # tag moves, so `latest` never moves to an untested image and never silently becomes amd64-only.
   image:
     needs: test
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -62,7 +77,7 @@ jobs:
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
           echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/rpandox/ccboard
           tags: |
@@ -70,10 +85,32 @@ jobs:
             type=sha,prefix=sha-,format=short
             type=raw,value=${{ steps.ver.outputs.ver || 'unversioned' }},enable=${{ steps.ver.outputs.ver != '' }}
             type=ref,event=tag
-      - uses: docker/build-push-action@v7
+      # 1. Build the amd64 image into the local daemon (nothing is pushed), tagged ccboard:ci for the smoke step.
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64
+          load: true
+          push: false
+          provenance: false
+          tags: ccboard:ci
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CCBOARD_VERSION=${{ steps.ver.outputs.ver || format('sha-{0}', steps.ver.outputs.short) }}
+            CCBOARD_REVISION=${{ github.sha }}
+          cache-from: |
+            type=gha,scope=amd64
+            type=gha,scope=arm64
+          cache-to: type=gha,scope=amd64,mode=max
+      # 2. Run it: starts as the non-root user, answers /healthz, carries the CLIs. A failure stops the job here.
+      - name: Smoke-test the image
+        timeout-minutes: 5
+        run: scripts/ci-smoke.sh ccboard:ci
+      # 3. Same build (the amd64 layers come from the cache), now for both platforms, pushed with every tag.
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
           push: true
           provenance: false
           tags: ${{ steps.meta.outputs.tags }}
@@ -81,8 +118,10 @@ jobs:
           build-args: |
             CCBOARD_VERSION=${{ steps.ver.outputs.ver || format('sha-{0}', steps.ver.outputs.short) }}
             CCBOARD_REVISION=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha,scope=amd64
+            type=gha,scope=arm64
+          cache-to: type=gha,scope=arm64,mode=max
 
   # Pull requests build the image without pushing it; only a merge to main publishes.
   image-check:
@@ -91,9 +130,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/build-push-action@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64
@@ -103,4 +142,4 @@ jobs:
           build-args: |
             CCBOARD_VERSION=sha-${{ github.sha }}
             CCBOARD_REVISION=${{ github.sha }}
-          cache-from: type=gha
+          cache-from: type=gha,scope=amd64

@@ -33,6 +33,7 @@ from .agents.base import LaunchReq
 from .agents.claude import BYPASS_PARTS, OVERRIDE_PARTS, WORKTREE_RE
 from .agents.codex import NAME_RE as CODEX_NAME_RE
 from . import issues as issues_mod
+from . import mcp, mcp_remote, mcp_tokens
 from .auth import csrf_ok, identify
 from .config import settings
 from .devguard import require_real_launch_ok
@@ -104,6 +105,14 @@ def _sampler_counts() -> dict:
             "attn": sum(1 for s in vals if s["needs_attention"])}
 
 
+def startup_line() -> str:
+    """The startup log line. It counts the allowed logins and never names them: a login is usually an email, and the journal or
+    `docker logs` gets pasted into bug reports (#44 F-06)."""
+    n = len(settings.allowed_users)
+    who = (f"{n} allowed login{'s' if n != 1 else ''}" if n else ("DEV BYPASS" if settings.dev_bypass_user else "EMPTY allowlist"))
+    return f"ccboard on {settings.loopback_url()}, projects in {settings.projects_dir}, {who}"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global db, sampler
@@ -166,8 +175,7 @@ async def lifespan(app: FastAPI):
     global taskflow_rt
     taskflow_rt = taskflow.Runtime(db, start_session=_taskflow_start, end_session=_end_session, perm_pending=_permission_pending)
     taskflow_rt.start()                                   # after the recovery: its sweep must not see a session the reboot has not relaunched yet
-    log.info("ccboard on %s, projects in %s, allowlist=%s", settings.loopback_url(), settings.projects_dir,
-             sorted(settings.allowed_users) or ("DEV BYPASS" if settings.dev_bypass_user else "EMPTY"))
+    log.info("%s", startup_line())
     log.info("runtime %s, image %s", settings.runtime, settings.image_version or "-")
     yield
     taskflow_rt.stop()
@@ -264,6 +272,13 @@ def is_immutable_static(path: str) -> bool:
 async def auth_middleware(request: Request, call_next):
     if request.url.path == "/healthz":
         return PlainTextResponse("ok")
+    if request.url.path == mcp_remote.PATH:
+        # The remote MCP endpoint (issue #13): 404 while off, then identity AND a device token, never the hook token (app/mcp_remote.py).
+        refused = mcp_remote.gate(request)
+        return refused if refused is not None else await call_next(request)
+    if request.url.path.startswith("/api/") and mcp_tokens.bearer(request.headers.get("authorization")) is not None:
+        # A device token opens /mcp and nothing else: a bearer is refused on every /api route, whatever else the request carries.
+        return JSONResponse({"error": "device tokens open /mcp only"}, status_code=403)
     if request.url.path == "/api/node/summary" and request.headers.get(health.HUB_HEADER):
         if not health.check_hub_token(request.headers.get(health.HUB_HEADER)):
             return JSONResponse({"error": "bad hub token"}, status_code=403)
@@ -2400,6 +2415,10 @@ def api_task_preview(tid: int, body: PreviewIn | None = None):
         port = found[0]
     if not (1 <= port <= 65535):
         raise projects.BadRequest("bad port")
+    try:                                   # never the board's own services (ttyd, code-server, ntfy, claude-mem, the board): #44 F-01
+        previews.check_port(port)
+    except previews.PreviewError as e:
+        raise projects.BadRequest(str(e))
     with _preview_lock:
         # allocate and reserve under one lock: `tailscale serve` takes seconds, and two concurrent requests
         # reading preview_ports_in_use() before either wrote would get the same port
@@ -3037,7 +3056,8 @@ def api_send_keys(name: str, body: KeysIn):
         raise projects.NotFound(f"session {name} not found")
     if body.text is not None:
         text = body.text.replace("\r\n", "\n").replace("\r", "\n")       # the composer's newlines; multi-line goes through bracketed paste
-        if len(text) > 8000 or any(ord(c) < 32 and c not in "\t\n" for c in text):
+        # every Cc character but tab and newline (DEL and the C1 range too), the rule /prompt uses: #44 F-04
+        if len(text) > 8000 or any(unicodedata.category(c) == "Cc" and c not in "\t\n" for c in text):
             raise projects.BadRequest("text too long or contains control characters")
         tmux.send_text(name, text, enter=body.enter)
     if body.keys:
@@ -3687,6 +3707,82 @@ def api_notify_test():
         raise projects.BadRequest("ntfy is not configured (NTFY_URL is empty)")
     ok = notify.publish("ccboard test", "Notifications work.", click=(settings.public_url or None), tags=["tada"])
     return {"ok": ok}
+
+
+# ---------- MCP from other devices (issue #13): the /mcp endpoint and its device tokens (app/mcp_remote.py, app/mcp_tokens.py) ----------
+
+@app.post(mcp_remote.PATH)
+async def mcp_endpoint(request: Request):
+    """Reached only through auth_middleware's /mcp gate (on, identity, a live device token, POST, a known protocol version)."""
+    return await mcp_remote.endpoint(request)
+
+
+class McpTokenIn(BaseModel):
+    name: str = ""
+    scopes: list[str] | None = None
+    expires_days: int | None = None
+
+
+class McpRemoteIn(BaseModel):
+    enabled: bool
+
+
+def _mcp_manager(request: Request) -> None:
+    """Device tokens are managed by a person in Settings: the hook token (local automation) and the hub may not mint or revoke them."""
+    if getattr(request.state, "user", None) in ("local-token", "hub"):
+        raise projects.Forbidden("device tokens are managed from Settings > Agents")
+
+
+def _mcp_view(changed: bool = False) -> dict:
+    if changed:
+        doctor.invalidate()                      # the doctor's mcp-remote check reads the switch and the tokens: no 20 s old answer after a change
+    return {"enabled": mcp_tokens.enabled(), "env_default": mcp_tokens.env_default(), "tokens": mcp_tokens.listing(),
+            "recent": mcp_tokens.recent(), "max_tokens": mcp_tokens.MAX_TOKENS, "scopes": list(mcp.SCOPES),
+            "default_scopes": list(mcp.DEFAULT_SCOPES), "default_days": mcp_tokens.DEFAULT_DAYS, "path": mcp_remote.PATH}
+
+
+def _mcp_refused(e: "mcp_tokens.Refused") -> JSONResponse:
+    return JSONResponse({"error": str(e)}, status_code=e.status)
+
+
+@app.get("/api/mcp/tokens")
+def api_mcp_tokens(request: Request):
+    """{enabled, env_default, tokens: [{id, name, scopes, created_at, last_used_at, last_user, last_tool, expires_at, expired}], recent: the
+    last tool calls (token, tool, task id, outcome), limits}. Never a token or a digest."""
+    _mcp_manager(request)
+    return JSONResponse(_mcp_view(), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/mcp/tokens", status_code=201)
+def api_mcp_token_mint(body: McpTokenIn, request: Request):
+    """Mint a device token: {token (the only time it is ever shown), record, ...the listing}. 400 bad name, scope or expiry; 409 a
+    duplicate name or the 10-token limit."""
+    _mcp_manager(request)
+    try:
+        token, record = mcp_tokens.mint(body.name, body.scopes, body.expires_days)
+    except mcp_tokens.Refused as e:
+        return _mcp_refused(e)
+    return JSONResponse({**_mcp_view(True), "token": token, "record": record}, status_code=201, headers={"Cache-Control": "no-store"})
+
+
+@app.delete("/api/mcp/tokens/{token_id}")
+def api_mcp_token_revoke(token_id: str, request: Request):
+    """Revoke: the token fails on its very next request. 404 when there is no such token."""
+    _mcp_manager(request)
+    if not mcp_tokens.revoke(token_id):
+        raise projects.NotFound("no such device token")
+    return JSONResponse(_mcp_view(True), headers={"Cache-Control": "no-store"})
+
+
+@app.put("/api/mcp/remote")
+def api_mcp_remote(body: McpRemoteIn, request: Request):
+    """Turn the /mcp endpoint on or off (stored; wins over CCBOARD_MCP_REMOTE). Tokens stay when it is turned off."""
+    _mcp_manager(request)
+    try:
+        mcp_tokens.set_enabled(body.enabled)
+    except mcp_tokens.Refused as e:
+        return _mcp_refused(e)
+    return JSONResponse(_mcp_view(True), headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/deploy/gate")

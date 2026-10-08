@@ -55,7 +55,7 @@ MAX_MCP_PATH = 400
 HEADLESS_MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk")   # bypassPermissions only inside a devcontainer (v0.4.5)
 TOOL_RE = re.compile(r"^[A-Za-z0-9_*.:/ ()\-]{1,120}$")
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-WORKTREE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+WORKTREE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")              # \Z: names a directory, so no trailing newline (#44 F-03)
 MAX_APPEND = 4000
 MAX_PROMPT = 8000                                 # a first prompt is typed into the pane with the command: longer ones belong in a task
 WORKTREE_DIR = ".claude/worktrees"                # where `claude --worktree <name>` puts its worktrees (tasks.WORKTREES is the same)
@@ -446,6 +446,8 @@ class ClaudeAgent(Agent):
         """The first offending token, or None. interactive: settings overrides only. task (interactive too): overrides, then bypass
         spellings (--permission-mode itself stays allowed). Not interactive (scheduled runs): FORBIDDEN_ARG_PARTS."""
         extra = [str(a) for a in (extra or [])]
+        if "--" in extra:                    # a bare `--` turns the board's own --session-id / --name / --worktree into positionals (#44 F-07)
+            return "--"
         if not interactive:
             return _arg_matching(extra, FORBIDDEN_ARG_PARTS)
         bad = _arg_matching(extra, OVERRIDE_PARTS)
@@ -648,7 +650,8 @@ class ClaudeAgent(Agent):
             raise projects.BadRequest("fork_session: only a resume or continue launch can fork")
         if req.task:
             first = req.prompt.split(None, 1)[0] if req.prompt and req.prompt.strip() else ""
-            bad = self.forbidden_extra([first], interactive=True, task=True) if first.startswith("-") else None
+            # a prompt word `--` is text (argv puts the prompt after its own `--`), as in the Codex adapter; only extra args refuse it (#44 F-07)
+            bad = self.forbidden_extra([first], interactive=True, task=True) if first.startswith("-") and first != "--" else None
             if req.bypass or bad:                              # a prompt that would parse as a flag must not smuggle one in
                 raise projects.BadRequest(f"{bad or 'bypassPermissions'}: {TASK_REFUSAL}")
         devc = bool(clean.get("devcontainer"))

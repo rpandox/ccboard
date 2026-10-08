@@ -67,7 +67,7 @@ const filled = (root) => root.querySelectorAll('button, a.btn').filter((b) => !h
 
 test('a section each for Claude and Codex, in that order; the outside threads come last under their own label', async () => {
   const w = await mount(agWorld());
-  assert.deepEqual(heads(w), ['Claude', 'Codex', 'Import external sessions']);
+  assert.deepEqual(heads(w), ['Claude', 'Codex', 'Connect from another device', 'Import external sessions']);
   assert.match(val(kv(under(w, 'Claude'), 'Claude')), /Claude: a@example\.com \(max\)/);
   assert.match(val(kv(under(w, 'Codex'), 'Codex')), /Codex: logged in/);
 });
@@ -105,7 +105,7 @@ test('hooks that are not installed are said as a warning with the reason; an unk
 
 test('Claude not installed: the red badge and no facts; no Codex on the box: no Codex section and no outside threads asked for', async () => {
   const w = await mount(agWorld({ state: stateOf({ claude: { installed: false, loggedIn: false }, agents: {} }) }));
-  assert.deepEqual(heads(w), ['Claude']);
+  assert.deepEqual(heads(w), ['Claude', 'Connect from another device']);
   const badge = kv(under(w, 'Claude'), 'Claude').querySelector('.badge');
   assert.equal(text(badge), 'claude not installed');
   assert.ok(badge.classList.contains('bad'));
@@ -115,7 +115,7 @@ test('Claude not installed: the red badge and no facts; no Codex on the box: no 
 
 test('Codex installed false: "not installed" in plain words, no facts, no Log in, no outside threads', async () => {
   const w = await mount(agWorld({ state: stateOf({ agents: { claude: CLAUDE, codex: { installed: false } } }) }));
-  assert.deepEqual(heads(w), ['Claude', 'Codex']);
+  assert.deepEqual(heads(w), ['Claude', 'Codex', 'Connect from another device']);
   const x = under(w, 'Codex');
   assert.equal(val(kv(x, 'Codex')), 'not installed');
   assert.equal(kv(x, 'Version'), undefined);

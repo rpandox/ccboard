@@ -88,17 +88,17 @@ def test_dockerfile_packages_and_users():
                 "iproute2", "procps", "restic", "sqlite3", "less"):
         assert re.search(rf"(\s){re.escape(pkg)}(\s|$)", runs), pkg
     assert "https://cli.github.com/packages" in runs and "githubcli-archive-keyring" in runs
-    assert "deb.nodesource.com/node_22.x" in runs and re.search(r"ccusage@20\b", runs)
+    assert "deb.nodesource.com/node_22.x" in runs and re.search(r"ccusage@20\.\d+\.\d+(\s|$)", runs)
     assert "pkgs.tailscale.com/stable/ubuntu/noble" in runs and "install -y --no-install-recommends tailscale" in runs
     assert "userdel" in runs and "groupadd -g 1000 ccboard" in runs
     assert re.search(r"useradd -M -u 1000 -g 1000 -s /bin/bash -d /home/rpandox ccboard", runs)
-    assert "python3 -m venv .venv" in runs and "pip install" in runs and "-r requirements.txt" in runs
+    assert "python3 -m venv .venv" in runs and "pip install" in runs and "--require-hashes -r requirements.lock" in runs
 
 
 def test_dockerfile_copies_and_cache_order():
     ins = instructions()
     copies = [r for w, r in ins if w == "COPY"]
-    for src in ("requirements.txt", "app", "bin", "scripts", "tmux.conf"):
+    for src in ("requirements.lock", "app", "bin", "scripts", "tmux.conf"):
         assert any(c.startswith("--chown=1000:1000 ") and c.split()[1] == src for c in copies), src
     pip = next(i for i, (w, r) in enumerate(ins) if w == "RUN" and "pip install" in r)
     first_app = next(i for i, (w, r) in enumerate(ins) if w == "COPY" and r.split()[1] in ("app", "bin", "scripts", "tmux.conf"))
@@ -113,8 +113,19 @@ def test_dockerignore():
     for want in (".git", ".venv", "tests", ".gstack", ".claude", ".pytest_cache", "__pycache__", "**/__pycache__", "*.tar.gz",
                  "deploy", ".github", "ccboard.tar.gz"):
         assert want in lines, want
-    for needed in ("app", "bin", "scripts", "tmux.conf", "requirements.txt", "scripts/docker-entrypoint.sh"):
+    for needed in ("app", "bin", "scripts", "tmux.conf", "requirements.lock", "scripts/docker-entrypoint.sh"):
         assert needed not in lines, f"{needed} is copied into the image and must not be ignored"
+    assert "scripts/ci-smoke.sh" in lines, "the CI smoke script is a dev helper: it must not be synced to the host with scripts/"
+
+
+def test_dockerfile_installs_are_pinned():
+    """No unpinned install line: pip uses the hashed lock, npm an exact version."""
+    runs = "\n".join(of("RUN"))
+    for m in re.finditer(r"pip install[^&]*", runs):
+        assert "--require-hashes" in m.group(0) and "-r requirements.lock" in m.group(0), m.group(0)
+    for m in re.finditer(r"npm install[^&]*", runs):
+        pkgs = [w for w in m.group(0).split()[2:] if not w.startswith("-")]
+        assert pkgs and all(re.search(r"@\d+\.\d+\.\d+$", w) for w in pkgs), m.group(0)
 
 
 # ---------------------------------------------------------------- entrypoint (static)

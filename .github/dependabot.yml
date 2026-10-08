@@ -1,0 +1,28 @@
+# Weekly, one grouped PR per ecosystem. Every merge to main deploys the box (about 70 s of outage), so these PRs are
+# merged together once a week, never one by one. Regenerate the lock files after merging a pip PR (README, Development).
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [dependencies]
+    groups:
+      python:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [dependencies]
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [dependencies]
+    groups:
+      docker:
+        patterns: ["*"]

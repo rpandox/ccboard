@@ -1,31 +1,28 @@
-#!/usr/bin/env python3
-"""ccboard as an MCP server (stdio). A dependency-free JSON-RPC shim that calls the board over loopback
-with the local hook token. It is box-only: the hook token opens the whole /api surface, so the shim refuses any
-CCBOARD_URL that is not plain http to a loopback address (127.0.0.0/8, ::1 or the name localhost) and never follows
-a redirect. Another device needs the board's remote MCP endpoint with a token of its own, not a copy of this shim.
-Register once (on the box) with:
-    claude mcp add --scope user ccboard -- /path/to/ccboard/.venv/bin/python /path/to/ccboard/scripts/ccboard_mcp.py
-    codex mcp add ccboard --env CCBOARD_URL=http://127.0.0.1:8000 -- /path/to/ccboard/.venv/bin/python /path/to/ccboard/scripts/ccboard_mcp.py
-Tools: list_projects, create_task (dispatch false = a Backlog card; after_task_id = a chain step), list_tasks, get_task_status,
-dispatch_task (start a Backlog task in a new session or a running one), get_task_result (what a finished task said).
+"""The board's MCP tools: their schemas, the argument checks and the calls they make (issue #13).
+
+The source of the six tools both MCP servers offer: the remote streamable-HTTP endpoint at /mcp (app/mcp_remote.py, a device token per
+client, the calls made in-process) and the box's stdio shim scripts/ccboard_mcp.py. The shim keeps a copy of TOOLS and of tool_call,
+because on a docker box it runs from a folder that holds scripts/ but not app/; tests/test_mcp_remote.py pins both copies equal.
+
+tool_call(name, args, api) takes `api(method, path, body=None) -> dict`, which raises RuntimeError("ccboard <status>: <message>") for a
+refused call: the shim's is HTTP over loopback with the hook token, the remote endpoint's calls the board's route functions directly.
+Nothing here imports the web app, so this module is as plain as the shim.
+
+What the tools can never do: set a permission mode, a sandbox, a bypass or a model. The schemas name no such argument and
+check_args() refuses any argument a schema does not list (additionalProperties false), so a client cannot slip one in.
 """
 from __future__ import annotations
 
-import ipaddress
 import json
-import os
-import sys
-import urllib.error
-import urllib.parse
-import urllib.request
-from pathlib import Path
 
-BOARD = os.environ.get("CCBOARD_URL", "http://127.0.0.1:8000").rstrip("/")
-TOKEN_FILE = os.environ.get("CCBOARD_HOOK_TOKEN_FILE") or str(Path.home() / ".local" / "share" / "ccboard" / "hook-token")
 PROTOCOL = "2025-06-18"
+SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26")
+SERVER_VERSION = "0.5"
 
-# A copy of app/mcp.py's TOOLS and tool_call (the remote /mcp endpoint's): on a docker box this file runs from a folder without app/.
-# tests/test_mcp_remote.py fails when the two drift apart; change both together.
+# The longest value each string argument may have. The board cuts a title at 120 and refuses a prompt over 20000; here both are refused
+# outright, so a client learns its title was too long instead of seeing it cut.
+MAX_LEN = {"project": 64, "repo": 64, "title": 120, "prompt": 20000, "session": 200}
+
 TOOLS = [
     {"name": "list_projects", "description": "List ccboard projects with their repos, branches and live sessions.",
      "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
@@ -62,74 +59,72 @@ TOOLS = [
      "description": "What a finished ccboard task said: its phase (backlog, queued, running, done, failed, cancelled), the full final message of its last turn (result), when it finished, and whether its session was closed after the stop. result is null until the task is done.",
      "inputSchema": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"], "additionalProperties": False}},
 ]
+TOOL_NAMES = tuple(t["name"] for t in TOOLS)
+_SCHEMAS = {t["name"]: t["inputSchema"] for t in TOOLS}
+
+# Device-token scopes (the remote endpoint): read = the four readers, tasks = create a task or start one in a new session, sessions = hand a
+# task to a session that is already running (its prompt is typed into it). A new token gets read and tasks; sessions is an explicit choice.
+SCOPES = ("read", "tasks", "sessions")
+DEFAULT_SCOPES = ("read", "tasks")
 
 
-REFUSED = ("ccboard: this MCP shim only talks to the board on this machine (http to 127.0.0.1, ::1 or localhost); "
-           "the hook token stays on the box. To reach the board from another device, use the board's remote MCP endpoint "
-           "with a token of its own instead of this shim.")
+def required_scope(name: str, args: dict | None) -> str | None:
+    """The scope a call needs, or None for a tool that does not exist (tool_call refuses it)."""
+    if name in ("list_projects", "list_tasks", "get_task_status", "get_task_result"):
+        return "read"
+    if name == "create_task":
+        return "tasks"
+    if name == "dispatch_task":
+        return "sessions" if isinstance(args, dict) and args.get("session") not in (None, "") else "tasks"
+    return None
 
 
-def loopback_url(url: str) -> bool:
-    """True only for http://<loopback>[:port][/path]: scheme http, no userinfo, host 127.0.0.0/8, ::1 or 'localhost'."""
-    try:
-        u = urllib.parse.urlsplit(url)
-        host, _port = u.hostname, u.port              # .port raises on a malformed port
-    except ValueError:
-        return False
-    if u.scheme != "http" or not host or "@" in u.netloc:
-        return False
-    if host == "localhost":
-        return True
-    try:
-        a = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return a.is_loopback and (a.version == 4 or a == ipaddress.IPv6Address("::1"))     # 127.0.0.0/8 or ::1 exactly (not ::ffff:127.0.0.1)
+def _type_ok(spec: dict, v) -> bool:
+    t = spec.get("type")
+    if t == "string":
+        return isinstance(v, str)
+    if t == "integer":
+        return isinstance(v, int) and not isinstance(v, bool)
+    if t == "boolean":
+        return isinstance(v, bool)
+    return True
 
 
-BOARD_OK = loopback_url(BOARD)                         # parsed once: CCBOARD_URL is read at start-up only
+def check_args(name: str, args) -> dict:
+    """The arguments of one call, checked against the tool's schema: an object, no argument the schema does not list (so no permission
+    mode, sandbox, bypass or model can be passed), each value of its type and enum, strings within MAX_LEN. A null counts as not given.
+    Raises RuntimeError with a message for the client; returns the arguments."""
+    schema = _SCHEMAS.get(name)
+    if schema is None:
+        raise RuntimeError(f"unknown tool {name}")
+    if args is None:
+        args = {}
+    if not isinstance(args, dict):
+        raise RuntimeError("arguments must be an object")
+    props = schema["properties"]
+    unknown = sorted(k for k in args if k not in props)
+    if unknown:
+        allowed = ", ".join(props) or "none"
+        raise RuntimeError(f"unknown argument{'s' if len(unknown) > 1 else ''} {', '.join(unknown)}; {name} takes only: {allowed}")
+    for k, v in args.items():
+        if v is None:
+            continue
+        spec = props[k]
+        if not _type_ok(spec, v):
+            want = {"string": "a string", "integer": "an integer", "boolean": "true or false"}.get(spec.get("type"), spec.get("type"))
+            raise RuntimeError(f"{k} must be {want}")
+        if "enum" in spec and v not in spec["enum"]:
+            raise RuntimeError(f"{k} must be {' or '.join(spec['enum'])}")
+        if isinstance(v, str) and len(v) > MAX_LEN.get(k, 2000):
+            raise RuntimeError(f"{k} is too long (at most {MAX_LEN.get(k, 2000)} characters)")
+    return args
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """A 3xx is an error, never a second request carrying the hook token somewhere else."""
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-_OPENER = urllib.request.build_opener(_NoRedirect)
-
-
-def token() -> str:
-    try:
-        return Path(TOKEN_FILE).read_text().strip()
-    except OSError:
-        return ""
-
-
-def call_api(method: str, path: str, body: dict | None = None) -> dict:
-    if not BOARD_OK:                                   # before reading the token or opening a socket
-        raise RuntimeError(REFUSED)
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(BOARD + path, data=data, method=method,
-                                 headers={"X-CCBoard-Token": token(), "X-CCBoard": "1", "Content-Type": "application/json"})
-    try:
-        with _OPENER.open(req, timeout=30) as r:
-            return json.loads(r.read() or b"{}")
-    except urllib.error.HTTPError as e:
-        if 300 <= e.code < 400:
-            raise RuntimeError(f"ccboard {e.code}: the board answered with a redirect; it is not followed (the hook token is never re-sent)")
-        try:
-            msg = json.loads(e.read()).get("error")
-        except Exception:
-            msg = str(e)
-        raise RuntimeError(f"ccboard {e.code}: {msg}")
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"ccboard unreachable at {BOARD}: {e.reason}")
-
-
-def tool_call(name: str, args: dict) -> dict:
+def tool_call(name: str, args: dict, api) -> dict:
+    """Run one tool through `api`. The same calls, in the same order and with the same bodies, as the stdio shim's tool_call."""
+    args = check_args(name, args)
     if name == "list_projects":
-        st = call_api("GET", "/api/state")
+        st = api("GET", "/api/state")
         return {"projects": [{"name": p["name"], "repos": [{"name": r["name"], "branch": r.get("branch"), "state": r.get("state"),
                              "sessions": [{"name": s["name"], "state": s.get("state"), "launcher": s.get("launcher")} for s in r["sessions"]]}
                              for r in p["repos"]]} for p in st["projects"]]}
@@ -140,26 +135,26 @@ def tool_call(name: str, args: dict) -> dict:
         agent = args.get("agent")
         if agent not in (None, "claude", "codex"):
             raise RuntimeError("agent must be claude or codex")
-        named = {"agent": agent} if agent else {}         # sent only when the caller names one: the default bodies are unchanged
+        named = {"agent": agent} if agent else {}
         after, auto = args.get("after_task_id"), args.get("auto_close")
         if after is not None and (not isinstance(after, int) or isinstance(after, bool)):
             raise RuntimeError("after_task_id must be a task id")
         if auto is not None and not isinstance(auto, bool):
             raise RuntimeError("auto_close must be true or false")
         more = {**({"after_task_id": after} if after is not None else {}), **({"auto_close": auto} if auto is not None else {})}
-        if after is not None:                            # a chain step: it waits for that task, whatever dispatch says
-            return call_api("POST", "/api/tasks", {"project": args["project"], "repo": args["repo"], "title": args["title"],
-                                                   "prompt": args["prompt"], "when": "later", **named, **more})
-        if args.get("dispatch", True) is False:          # a backlog card: nothing starts until someone dispatches it
-            return call_api("POST", "/api/tasks", {"project": args["project"], "repo": args["repo"], "title": args["title"],
-                                                   "prompt": args["prompt"], "when": "later", **named, **more})
-        if agent == "codex" or auto is not None:         # the legacy start-now route is Claude's and takes no auto_close; the general one does
-            return call_api("POST", "/api/tasks", {"project": args["project"], "repo": args["repo"], "title": args["title"],
-                                                   "prompt": args["prompt"], "when": "now", **named, **more})
-        return call_api("POST", f"/api/projects/{args['project']}/repos/{args['repo']}/tasks",
-                        {"title": args["title"], "prompt": args["prompt"]})
+        if after is not None:
+            return api("POST", "/api/tasks", {"project": args["project"], "repo": args["repo"], "title": args["title"],
+                                              "prompt": args["prompt"], "when": "later", **named, **more})
+        if args.get("dispatch", True) is False:
+            return api("POST", "/api/tasks", {"project": args["project"], "repo": args["repo"], "title": args["title"],
+                                              "prompt": args["prompt"], "when": "later", **named, **more})
+        if agent == "codex" or auto is not None:
+            return api("POST", "/api/tasks", {"project": args["project"], "repo": args["repo"], "title": args["title"],
+                                              "prompt": args["prompt"], "when": "now", **named, **more})
+        return api("POST", f"/api/projects/{args['project']}/repos/{args['repo']}/tasks",
+                   {"title": args["title"], "prompt": args["prompt"]})
     if name == "list_tasks":
-        st = call_api("GET", "/api/state")
+        st = api("GET", "/api/state")
         out = [{"id": t["id"], "project": t["project"], "repo": t["repo"], "title": t["title"], "column": t["column"],
                 "phase": t.get("phase"), "branch": t["branch"], "pr_url": t.get("pr_url"),
                 "session_state": (t.get("session") or {}).get("state")}
@@ -167,7 +162,7 @@ def tool_call(name: str, args: dict) -> dict:
         return {"tasks": out}
     if name == "get_task_status":
         tid = args.get("task_id")
-        st = call_api("GET", "/api/state")
+        st = api("GET", "/api/state")
         t = next((t for t in st["tasks"] if t["id"] == tid), None)
         if not t:
             raise RuntimeError(f"no task {tid}")
@@ -191,55 +186,50 @@ def tool_call(name: str, args: dict) -> dict:
         body.update({k: args[k] for k in ("force", "queue", "auto_close") if args.get(k) is not None})
         if agent and not session:
             body["agent"] = agent
-        return call_api("POST", f"/api/tasks/{tid}/dispatch", body)
+        return api("POST", f"/api/tasks/{tid}/dispatch", body)
     if name == "get_task_result":
         tid = args.get("task_id")
         if not isinstance(tid, int) or isinstance(tid, bool):
             raise RuntimeError("task_id is required")
-        t = call_api("GET", f"/api/tasks/{tid}")
+        t = api("GET", f"/api/tasks/{tid}")
         return {k: t.get(k) for k in ("id", "title", "phase", "column", "result", "result_at", "done_at", "closed_at", "parent_id", "chain")}
     raise RuntimeError(f"unknown tool {name}")
 
 
-def handle(msg: dict) -> dict | None:
-    """One JSON-RPC message -> response (None for notifications)."""
+class Denied(Exception):
+    """A tools/call the caller may not make (a scope it lacks): answered as a JSON-RPC error, never run."""
+
+
+DENIED_CODE = -32001
+
+
+def negotiate(requested) -> str:
+    """The protocol version initialize answers: the client's when this server speaks it, else the newest one it does."""
+    return requested if requested in SUPPORTED_PROTOCOLS else PROTOCOL
+
+
+def rpc(msg: dict, call) -> dict | None:
+    """One JSON-RPC request -> its response (None for a notification). `call(name, arguments) -> dict` runs a tool; it raises Denied
+    for a refused call (a JSON-RPC error) and any other exception for a failed one (a tool result with isError, the message as text)."""
     method = msg.get("method")
     mid = msg.get("id")
-    if method == "initialize":
-        return {"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": msg.get("params", {}).get("protocolVersion") or PROTOCOL,
-                "capabilities": {"tools": {}}, "serverInfo": {"name": "ccboard", "version": "0.4"}}}
-    if method == "notifications/initialized" or mid is None:
+    if mid is None:
         return None
+    if method == "initialize":
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+        return {"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": negotiate(params.get("protocolVersion")),
+                "capabilities": {"tools": {}}, "serverInfo": {"name": "ccboard", "version": SERVER_VERSION}}}
     if method == "ping":
         return {"jsonrpc": "2.0", "id": mid, "result": {}}
     if method == "tools/list":
         return {"jsonrpc": "2.0", "id": mid, "result": {"tools": TOOLS}}
     if method == "tools/call":
-        params = msg.get("params") or {}
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
         try:
-            out = tool_call(params.get("name", ""), params.get("arguments") or {})
-            return {"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": json.dumps(out, indent=2)}], "isError": False}}
+            out = call(str(params.get("name") or ""), params.get("arguments"))
+        except Denied as e:
+            return {"jsonrpc": "2.0", "id": mid, "error": {"code": DENIED_CODE, "message": str(e)}}
         except Exception as e:
             return {"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": str(e)}], "isError": True}}
+        return {"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": json.dumps(out, indent=2)}], "isError": False}}
     return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"method not found: {method}"}}
-
-
-def main() -> None:
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-        except ValueError:
-            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}) + "\n")
-            sys.stdout.flush()
-            continue
-        resp = handle(msg) if isinstance(msg, dict) else None
-        if resp is not None:
-            sys.stdout.write(json.dumps(resp) + "\n")
-            sys.stdout.flush()
-
-
-if __name__ == "__main__":
-    main()

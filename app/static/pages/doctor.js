@@ -15,7 +15,7 @@ const DOCTOR_SECTIONS = [
 const DOCTOR_GLYPH = { pass: '✓', warn: '!', fail: '✕', skip: '–' };
 const DOCTOR_WORD = { pass: 'passing', warn: 'warning', fail: 'failing', skip: 'skipped' };
 const DOCTOR_ORDER = { fail: 0, warn: 1, pass: 2, skip: 3 };
-const DOCTOR_ACTIONS = { claude_login: 'Log in', codex_login: 'Log in', notify_test: 'Send test' };      // what fix.action may be, and the button's words
+const DOCTOR_ACTIONS = { claude_login: 'Log in', codex_login: 'Log in', notify_test: 'Send test', mcp_settings: 'Open' };      // what fix.action may be, and the button's words (mcp_settings: Settings > Agents, issue #14)
 const DOCTOR_RECENT_MS = 5000;                                                                      // a refresh asked for within this of the last answer is not repeated
 const doctorStore = { data: null, at: 0, busy: false, err: '', seq: 0, acting: null };
 
@@ -101,6 +101,11 @@ async function doctorRun(c, action) {
   if (doctorStore.acting) return false;
   if (action === 'claude_login') { if (typeof accountLogin === 'function') accountLogin(); return true; }
   if (action === 'codex_login') { if (typeof settingsCodexLogin === 'function') settingsCodexLogin(); return true; }
+  if (action === 'mcp_settings') {                                     // the device tokens live in Settings > Agents > Connect from another device
+    if (typeof navigate === 'function' && typeof buildHash === 'function') navigate(buildHash('settings', {}, { sec: 'agents' }));
+    if (typeof settingsPage !== 'undefined' && settingsPage.refs && typeof settingsShow === 'function') settingsShow('agents');
+    return true;
+  }
   if (action !== 'notify_test') return false;
   doctorStore.acting = c.id;
   doctorPaint();

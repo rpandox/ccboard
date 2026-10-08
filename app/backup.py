@@ -298,17 +298,27 @@ def running() -> bool:
     return False
 
 
+def _login_paths() -> list[Path]:
+    """Every place a login lives: the saved logins (<data dir>/accounts: Claude's, app/account_store.py; <data dir>/codex-accounts: Codex's,
+    app/codex_accounts.py) and the live ones (Claude's .credentials.json in its config dir, Codex's auth.json in CODEX_HOME)."""
+    return [settings.data_dir / "accounts", settings.data_dir / "codex-accounts",
+            Path(settings.claude_config_dir) / ".credentials.json", Path(settings.codex_home) / "auth.json"]
+
+
 def _holds_saved_logins(p: Path) -> bool:
-    """Would backing up `p` take the saved logins (<data dir>/accounts: Claude's, app/account_store.py; <data dir>/codex-accounts: Codex's,
-    app/codex_accounts.py)? True for the data dir itself, either store dir, anything inside them, and any directory above them (a snapshot of
-    the home dir contains them too). The nightly paths are the DB snapshot, the transcripts, the Codex rollouts and CCBOARD_BACKUP_EXTRA: credentials are in none
-    of them, whatever CCBOARD_BACKUP_EXTRA says."""
+    """Would backing up `p` take a login (_login_paths)? True for any of them, anything inside the store dirs, and any directory above one (the
+    data dir, the Claude config dir, CODEX_HOME, the home dir). The nightly paths are the DB snapshot, the transcripts (<Claude config dir>/projects),
+    the Codex rollouts (<CODEX_HOME>/sessions) and CCBOARD_BACKUP_EXTRA: credentials are in none of them, whatever CCBOARD_BACKUP_EXTRA says
+    (#44 F-05: it used to guard only the saved stores, so an extra path of the Claude config dir took the live login)."""
     try:
         target = p.expanduser().resolve()
     except (OSError, RuntimeError):
         return False
-    for name in ("accounts", "codex-accounts"):
-        store = (settings.data_dir / name).resolve()
+    for login in _login_paths():
+        try:
+            store = login.expanduser().resolve()
+        except (OSError, RuntimeError):
+            continue
         if target == store or store.is_relative_to(target) or target.is_relative_to(store):
             return True
     return False
