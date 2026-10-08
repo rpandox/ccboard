@@ -2,6 +2,18 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.24 - 2026-10-08
+
+### Added
+- One Tailscale module (`app/tailscale.py`) finds the CLI on Linux, macOS (open-source, App Store and standalone builds) and WSL2, reads serve status and turns serve on and off; previews use it. `scripts/tailscale_serve.py` checks and applies the board's serve mapping and never touches another port's handler or port 443 unless it is the board's own. A `tailscale` doctor check says what is missing and how to fix it.
+- The board's macOS side: it reads its settings from `<data dir>/env` when launchd starts it (a private file, `KEY=value` lines, only the installer's keys), finds claude and codex through the login shell and the Homebrew folders, and refuses a project or repo name that differs from an existing one only by letter case on a case-insensitive disk. Seven macOS doctor checks (jobs, survival, PATH, privacy folders, case, sleep, logs) appear on a Mac only.
+- launchd job templates for the board, tmux, ttyd, keep-awake, code-server and claude-mem with a renderer that checks every value, and a macOS Brewfile with ttyd and prebuilt-package checks. The macOS installer that uses them comes next.
+
+### Changed
+- Off Linux the doctor finds tools the LaunchAgent PATH cannot see. Linux answers are unchanged: no login shell is started and no case probe runs there.
+
+Upgrade: nothing to do.
+
 ## v0.5.23 - 2026-10-08
 
 ### Added

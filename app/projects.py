@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import platform as plat
 from .config import settings
 from .tmux import NAME_RE, SEP, valid_name
 
@@ -79,10 +80,37 @@ class Forbidden(Exception):
     """Mapped to 403 by main.py (a file the board will not show without an explicit reveal)."""
 
 
+def case_collision(parent: Path, name: str) -> str | None:
+    """The entry of `parent` whose name equals `name` ignoring case but is not `name` itself, or None. Only asked when the file system
+    folds case (APFS and NTFS by default: platform.fs_case_insensitive), where `Foo` and `foo` are one folder to the disk and two names to the
+    board; a case-sensitive file system, a missing folder or a folder that cannot be listed answer None (issue #117)."""
+    parent = Path(parent)
+    if not plat.fs_case_insensitive(str(parent)):
+        return None
+    try:
+        names = sorted(e.name for e in parent.iterdir())
+    except OSError:
+        return None
+    folded = name.casefold()
+    return next((n for n in names if n != name and n.casefold() == folded), None)
+
+
+def check_case_free(kind: str, parent: Path, name: str) -> str:
+    """BadRequest, in plain words and naming the existing entry, when `name` differs from an entry of `parent` only by letter case on a
+    file system that folds case (case_collision); else `name`."""
+    other = case_collision(parent, name)
+    if other is not None:
+        raise BadRequest(f"{kind} name {name!r} is the same as the existing {other!r} apart from letter case, and this disk treats them as one folder: "
+                         f"use {other!r} or pick another name")
+    return name
+
+
 def check_name(kind: str, name: str) -> str:
     if not isinstance(name, str) or not valid_name(name):
         raise BadRequest(f"invalid {kind} name {name!r}: use letters, digits, '-' or '_', "
                          f"start and end with a letter or digit, no '--'")
+    if kind == "project":
+        check_case_free("project", settings.projects_dir, name)
     return name
 
 
@@ -469,6 +497,7 @@ def add_repo_blank(project: str, repo: str) -> Path:
     if is_repo(p):
         raise Conflict("this project folder is itself a git repo; it cannot hold more repos")
     r = p / check_new_repo_name(repo)
+    check_case_free("repo", p, repo)
     if r.exists():
         raise Conflict(f"repo {repo} already exists")
     r.mkdir(mode=0o755)
@@ -491,6 +520,7 @@ def prepare_repo_clone(project: str, repo: str | None, url: str) -> tuple[str, P
     if not name:
         raise BadRequest("could not derive a repo name from the URL; give one")
     r = p / check_new_repo_name(name)
+    check_case_free("repo", p, name)
     if r.exists():
         raise Conflict(f"repo {name} already exists")
     r.mkdir(mode=0o755)

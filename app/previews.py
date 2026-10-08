@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import logging
-import shutil
-import subprocess
-from pathlib import Path
+import shutil      # noqa: F401  (tests patch previews.shutil.which and previews.subprocess.run: the stdlib modules, shared with app.tailscale)
+import subprocess  # noqa: F401
 from urllib.parse import urlsplit
 
 from . import platform as plat
+from . import tailscale as ts
 from .config import settings
 
 log = logging.getLogger("ccboard.previews")
-TAILSCALE_SOCK = Path("/var/run/tailscale/tailscaled.sock")   # mounted into the container by compose
+TAILSCALE_SOCK = ts.TAILSCALE_SOCK   # mounted into the container by compose; the socket check below reads THIS name (tests patch it here)
 
 
 class PreviewError(Exception):
@@ -91,47 +91,34 @@ def public_host() -> str:
 
 
 def serve_cmd(*args: str) -> list[str]:
-    """tailscale as the operator if allowed (always so in the container), else through the sudoers rule installed by install.sh."""
-    exe = shutil.which("tailscale") or "/usr/bin/tailscale"
-    return [exe, "serve", *args]
+    """tailscale as the operator if allowed (always so in the container), else through the sudoers rule installed by install.sh (app/tailscale.py)."""
+    return ts.serve_cmd(*args)
 
 
-def _denied(cp: subprocess.CompletedProcess) -> bool:
-    text = (cp.stderr + cp.stdout).lower()
-    return "denied" in text or "permission" in text or "operator" in text
+def _denied(cp) -> bool:
+    return ts._denied(cp)
 
 
 def _operator_hint() -> str:
-    # In the container the uid-1000 user is named differently than on the box; the host home is mounted at its own path.
-    user = Path.home().name or "<user>"
-    return f"tailscale serve failed; on the box run: sudo tailscale set --operator={user}"
+    return ts.operator_hint()
 
 
 def _run_serve(args: list[str]) -> None:
-    cmd = serve_cmd(*args)
-    docker = settings.runtime == "docker"
-    if docker and not TAILSCALE_SOCK.exists():
-        raise PreviewError(f"tailscaled socket {TAILSCALE_SOCK} is not mounted; is tailscale running on the box?")
+    """app.tailscale.run_serve with this module's socket constant; its sentences become PreviewError."""
     try:
-        cp = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        if cp.returncode != 0 and not docker and "denied" in (cp.stderr + cp.stdout).lower():
-            cp = subprocess.run(["sudo", "-n", *cmd], capture_output=True, text=True, timeout=60)
-    except (subprocess.TimeoutExpired, OSError) as e:
-        raise PreviewError(f"tailscale serve failed: {e.__class__.__name__}")
-    if cp.returncode != 0:
-        if docker and _denied(cp):      # no sudo inside the container: the operator flag, set once on the box, is the way
-            raise PreviewError(_operator_hint())
-        raise PreviewError((cp.stderr or cp.stdout).strip()[-300:] or "tailscale serve failed")
+        ts.run_serve(args, sock=TAILSCALE_SOCK)
+    except ts.TailscaleError as e:
+        raise PreviewError(str(e)) from None
 
 
 def serve_on(https_port: int, local_port: int) -> str:
-    _run_serve(["--bg", f"--https={https_port}", f"http://127.0.0.1:{local_port}"])
+    _run_serve(ts.serve_on_args(https_port, local_port))
     return f"https://{public_host()}:{https_port}/"
 
 
 def serve_off(https_port: int) -> None:
     try:
-        _run_serve([f"--https={https_port}", "--yes", "off"])
+        _run_serve(ts.serve_off_args(https_port))
     except PreviewError as e:
         log.info("serve off %s: %s", https_port, e)
 

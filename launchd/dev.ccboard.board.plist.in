@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- ccboard dashboard (uvicorn on loopback). Rendered by scripts/launchd_render.py; the counterpart of systemd/ccboard.service.in. Settings come from the env file, not from this plist. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.ccboard.board</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__APP_DIR__/.venv/bin/uvicorn</string>
+		<string>app.main:app</string>
+		<string>--host</string>
+		<string>127.0.0.1</string>
+		<string>--port</string>
+		<string>__CCBOARD_PORT__</string>
+		<string>--timeout-graceful-shutdown</string>
+		<string>3</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__APP_DIR__</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>__HOME__</string>
+		<key>LANG</key>
+		<string>en_US.UTF-8</string>
+		<key>PATH</key>
+		<string>__PATH__</string>
+		<key>SHELL</key>
+		<string>__SHELL__</string>
+		<key>TMUX_TMPDIR</key>
+		<string>__TMUX_TMPDIR__</string>
+		<key>CCBOARD_TMUX_SOCKET</key>
+		<string>__TMUX_SOCKET__</string>
+		<key>CCBOARD_RUNTIME</key>
+		<string>launchd</string>
+		<key>CCBOARD_ENV_FILE</key>
+		<string>__ENV_FILE__</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>5</integer>
+	<key>StandardOutPath</key>
+	<string>__LOG_DIR__/board.log</string>
+	<key>StandardErrorPath</key>
+	<string>__LOG_DIR__/board.log</string>
+</dict>
+</plist>

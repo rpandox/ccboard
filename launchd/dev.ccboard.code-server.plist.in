@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- code-server on loopback. Its port and auth come from its config.yaml (managed by ccboard, the same text install.sh writes on Linux), so there is no argument here. No Nice tuning on macOS. Rendered by scripts/launchd_render.py; used instead of brew services so restart and the doctor use one label scheme. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.ccboard.code-server</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__CODE_SERVER_BIN__</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__HOME__</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>__HOME__</string>
+		<key>LANG</key>
+		<string>en_US.UTF-8</string>
+		<key>PATH</key>
+		<string>__PATH__</string>
+		<key>SHELL</key>
+		<string>__SHELL__</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>5</integer>
+	<key>StandardOutPath</key>
+	<string>__LOG_DIR__/code-server.log</string>
+	<key>StandardErrorPath</key>
+	<string>__LOG_DIR__/code-server.log</string>
+</dict>
+</plist>

@@ -20,7 +20,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 HOME_USE_ALLOWED = {
     "app/platform.py": "owns the per-system path defaults (default_projects_dir, default_data_dir) that app/config.py reads; nothing is read or written here",
     "app/backup.py": "expands a user-given backup path (~/x) typed into the settings form",
-    "app/previews.py": "shows the user's name in a path hint only",
+    "app/tailscale.py": "shows the user's name in a `tailscale set --operator` hint only (it moved here from app/previews.py)",
     "app/hooks.py": "lists claude-mem's data dirs to skip in hook payloads; reads nothing",
     "app/accounts.py": "tells the default ~/.claude apart from a custom config dir by comparison",
     "app/codex_accounts.py": "the cwd of the login tmux session (the login itself runs under a temp CODEX_HOME)",

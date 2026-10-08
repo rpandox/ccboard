@@ -198,7 +198,7 @@ def test_hint_macos_never_names_a_linux_tool(mac):
     assert plat.hint("start", "ccboard-tmux") == "launchctl kickstart gui/$(id -u)/dev.ccboard.tmux"
     assert plat.hint("restart", "ccboard-ttyd") == "launchctl kickstart -k gui/$(id -u)/dev.ccboard.ttyd"
     assert plat.hint("start", "ntfy") == "brew services start ntfy"
-    assert plat.hint("restart", "code-server@$USER") == "brew services restart code-server"
+    assert plat.hint("restart", "code-server@$USER") == "launchctl kickstart -k gui/$(id -u)/dev.ccboard.code-server"
 
 
 def test_hint_elsewhere_is_a_plain_sentence(elsewhere):
@@ -226,7 +226,7 @@ def test_macos_doctor_fixes_say_brew_and_launchctl(mac, doc):
     assert doctor._missing("tmux").fix["cmd"] == "brew install tmux"
     assert doctor._missing("gh").fix["cmd"] == "brew install gh && gh auth login"
     assert doctor._c_tmux_server(None).fix["cmd"] == "launchctl kickstart gui/$(id -u)/dev.ccboard.tmux"
-    assert doctor._c_code_server(None).fix["cmd"] == "brew services restart code-server"
+    assert doctor._c_code_server(None).fix["cmd"] == "launchctl kickstart -k gui/$(id -u)/dev.ccboard.code-server"
     doc["cmds"]["tmux"] = doctor.Proc(0, "tmux 3.0\n", "")
     assert doctor._c_tmux(None).fix["cmd"] == "brew upgrade tmux"
 

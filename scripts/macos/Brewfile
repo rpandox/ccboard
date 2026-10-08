@@ -1,0 +1,9 @@
+# ccboard on macOS: the tools the board needs. Install what is missing with `brew bundle --file=scripts/macos/Brewfile`
+# (the macOS installer asks once before it does). Optional tools are in Brewfile.optional. No casks. The README table "macOS tools"
+# lists the same names; tests/test_brewfile.py keeps them equal.
+brew "git"
+brew "tmux"
+brew "python@3.12"
+brew "node"
+brew "gh"
+brew "ttyd"

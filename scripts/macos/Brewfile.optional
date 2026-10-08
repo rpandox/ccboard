@@ -1,0 +1,8 @@
+# ccboard on macOS: optional tools. The installer installs the ones named in CCBOARD_MACOS_OPTIONAL (default: code-server,restic,bun);
+# shellcheck is for people who change the scripts. Install by hand with `brew bundle --file=scripts/macos/Brewfile.optional`.
+# No casks. The README table "macOS tools" lists the same names; tests/test_brewfile.py keeps them equal.
+brew "code-server"
+brew "restic"
+tap "oven-sh/bun"
+brew "oven-sh/bun/bun"
+brew "shellcheck"
