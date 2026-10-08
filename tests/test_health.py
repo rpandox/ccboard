@@ -18,14 +18,14 @@ def test_node_summary_and_hub(lite_client, projects_dir, fake_tmux, monkeypatch)
     from app import main
     from app.config import settings
     monkeypatch.setattr(settings, "hub_token", "secret-token")
-    monkeypatch.setattr(settings, "node_name", "ubu2")
+    monkeypatch.setattr(settings, "node_name", "box1")
     assert lite_client.get("/api/node/summary").status_code == 403
     assert lite_client.get("/api/node/summary", headers={"X-CCBoard-Hub": "wrong"}).status_code == 403
     s = lite_client.get("/api/node/summary", headers={"X-CCBoard-Hub": "secret-token"}).json()
-    assert s["node"] == "ubu2" and "health" in s and s["sessions"] == 0
-    assert lite_client.get("/api/health", headers=H).json()["node"] == "ubu2"
+    assert s["node"] == "box1" and "health" in s and s["sessions"] == 0
+    assert lite_client.get("/api/health", headers=H).json()["node"] == "box1"
     st = lite_client.get("/api/state", headers=H).json()
-    assert st["node_name"] == "ubu2" and st["health"]["host"]
+    assert st["node_name"] == "box1" and st["health"]["host"]
     # hub poller with a fake fetch
     fetched = []
     def fake_fetch(url):

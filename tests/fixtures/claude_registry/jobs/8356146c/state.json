@@ -37,7 +37,7 @@
   "CLAUDE_CODE_SUBAGENT_MODEL": "claude-haiku-4-5-20251001"
  },
  "intent": "Fix the flaky CI test and open a PR",
- "name": "deploy logs ubu2",
+ "name": "deploy logs box",
  "nameSource": "auto",
  "sessionId": "8356146c-1b32-440e-a3e9-67ce77029888",
  "resumeSessionId": "8356146c-1b32-440e-a3e9-67ce77029888",

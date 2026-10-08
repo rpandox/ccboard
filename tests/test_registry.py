@@ -107,7 +107,7 @@ def test_orphan_jobs_are_listed_as_jobs_sources():
     ext = by_session(registry.scan(FIX, [], now=NOW)["external"])
     done = ext["8356146c-1b32-440e-a3e9-67ce77029888"]
     assert done["source"] == "jobs" and done["pid"] is None and done["kind"] == "bg"
-    assert done["status"] == "done" and done["name"] == "deploy logs ubu2" and done["bridge"] is True
+    assert done["status"] == "done" and done["name"] == "deploy logs box" and done["bridge"] is True
     assert done["job"]["id"] == "8356146c" and done["job"]["children_count"] == 1
     assert done["job"]["tempo"] == "idle" and done["updated_at"] == "2026-10-02T20:27:10+00:00"
     stopped = ext["9e79c54b-60fe-42ed-acb4-2e942a76aa35"]

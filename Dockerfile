@@ -50,11 +50,13 @@ RUN . /etc/os-release \
 
 # The base image's 'ubuntu' user holds uid/gid 1000: drop it and take its place with the board user. Its home is the
 # host's home mounted at runtime, so no directory is created here (-M); the passwd entry still gives the right shell
-# and home to anything that looks the user up (config.py reads the login shell from it).
+# and home to anything that looks the user up (config.py reads the login shell from it). compose sets HOME to the host's
+# real path, so CCBOARD_HOME here is only the neutral passwd default.
+ARG CCBOARD_HOME=/home/ccboard
 RUN if getent passwd 1000 >/dev/null; then userdel -r "$(getent passwd 1000 | cut -d: -f1)"; fi \
  && if getent group 1000 >/dev/null; then groupdel "$(getent group 1000 | cut -d: -f1)"; fi \
  && groupadd -g 1000 ccboard \
- && useradd -M -u 1000 -g 1000 -s /bin/bash -d /home/rpandox ccboard \
+ && useradd -M -u 1000 -g 1000 -s /bin/bash -d "${CCBOARD_HOME}" ccboard \
  && install -d -o 1000 -g 1000 /opt/ccboard
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

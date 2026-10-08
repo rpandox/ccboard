@@ -5,6 +5,7 @@ import ipaddress
 import logging
 import os
 import pwd
+import re
 import shutil
 from pathlib import Path
 
@@ -105,6 +106,24 @@ class Settings:
         if not 0 <= self.autoclose_grace < 24 * 3600:
             self.autoclose_grace = 45.0
         self.claude_config_dir = Path(env.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
+        # The model Claude's subagents use on sessions, tasks and headless runs the board starts (CLAUDE_CODE_SUBAGENT_MODEL in their
+        # environment, issue #106). Empty or `inherit` = the main model, the behaviour before this setting. An alias (haiku, sonnet, opus) or a
+        # full model id; anything else is ignored, never passed on.
+        raw_sub = (env.get("CCBOARD_SUBAGENT_MODEL") or "").strip()
+        if raw_sub.lower() == "inherit":
+            raw_sub = ""
+        if raw_sub and not re.match(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}(\[1m\])?$", raw_sub):
+            log.warning("ignoring CCBOARD_SUBAGENT_MODEL=%r (use haiku, sonnet, opus or a full model id)", raw_sub)
+            raw_sub = ""
+        self.subagent_model = raw_sub
+        # The most a scheduled or batch Claude run that resolves to Fable may be capped at (its Max $); a Fable job also needs its own
+        # acknowledgement (issue #108). A ceiling, not a default budget: a cap is not consent.
+        try:
+            self.headless_fable_cap = float(env.get("CCBOARD_HEADLESS_FABLE_CAP") or 25)
+        except ValueError:
+            self.headless_fable_cap = 25.0
+        if not 0 < self.headless_fable_cap <= 1000:
+            self.headless_fable_cap = 25.0
         # Codex (app/agents/codex.py): its home (hooks.json, config.toml, sessions/ and state_*.sqlite live there; auth.json is never
         # read by the board) and how its hooks are trusted. `review` (default) relies on the one-time /hooks review in the TUI;
         # `bypass` adds --dangerously-bypass-hook-trust to every interactive launch line (and also skips the review of repo-level
@@ -129,6 +148,8 @@ class Settings:
                 self.mem_port = p
             else:
                 log.warning("ignoring CCBOARD_MEM_PORT=%r (not a port number)", raw_mem_port)
+        # An optional JSON file that adds to or replaces the built-in list prices behind the Usage page's estimates (app/pricing.py, issue #95). Server side only.
+        self.price_table = (env.get("CCBOARD_PRICE_TABLE") or "").strip()
         self.claude_mem_dir = Path(env.get("CLAUDE_MEM_DATA_DIR") or (Path.home() / ".claude-mem"))   # claude-mem's own override
         # The optional claude-mem viewer link (v0.5.20, issue #9): CCBOARD_MEM_HTTPS_PORT is the tailnet HTTPS port the installer would map to the worker.
         # Empty (the default) exposes nothing and hides the Memory page's link. A value that is not 1-65535, or that is a port the board already uses

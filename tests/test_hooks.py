@@ -655,10 +655,54 @@ def test_a_resumed_conversation_under_a_new_id_on_the_same_row_still_updates_it(
     # SID is nobody's now: the row hears it as the unknown id it is, without rebinding
     out = hk(session, "prompt", prompt="old id", session_id=SID)
     assert out["state"] == "working" and row_of(session.name)["claude_session_id"] == SID2
-    # every SessionStart source rebinds
-    for source, sid in (("clear", SID3), ("compact", SID), ("fork", SID2), ("startup", SID3)):
+    # the sources that start a conversation rebind (a compact start does not: tests below)
+    for source, sid in (("clear", SID3), ("fork", SID2), ("startup", SID3), ("resume", SID)):
         hk(session, "session_start", source=source, session_id=sid)
         assert row_of(session.name)["claude_session_id"] == sid, source
+
+
+def _shape_from_fixture(agent, source, sid):
+    """A SessionStart payload with exactly the keys the box sent for this source (fixtures/session_start_sources.json), placeholder values."""
+    keys = json.loads((Path(__file__).parent / "fixtures" / "session_start_sources.json").read_text())[agent][source]
+    vals = {"hook_event_name": "SessionStart", "source": source, "session_id": sid, "cwd": "/srv/projects/shop/api", "model": "m",
+            "transcript_path": "/x/t.jsonl", "scratchpad_dir": "/x/s", "session_title": "t", "permission_mode": "default",
+            "prompt_id": "p1", "context_tokens": 10, "seconds_since_last_response": 5, "prompt_cache_likely_expired": False,
+            "estimated_cache_write_usd": 0.1}
+    return {k: vals[k] for k in keys}
+
+
+@pytest.mark.parametrize("source,moves", [("startup", True), ("resume", True), ("clear", True), ("fork", True), ("compact", False)])
+def test_session_start_rebinds_only_for_the_sources_that_start_a_conversation(session, source, moves):
+    hk(session, "session_start")                                                  # the row follows SID
+    payload = {**SHAPES["session_start"], "source": source, "session_id": SID2} if source == "fork" else _shape_from_fixture("claude", source, SID2)
+    out = hk(session, payload)
+    assert "ignored" not in out
+    assert row_of(session.name)["claude_session_id"] == (SID2 if moves else SID), source
+
+
+def test_session_start_without_a_source_still_rebinds(session):
+    hk(session, "session_start")
+    hk(session, {"hook_event_name": "SessionStart", "session_id": SID2})
+    assert row_of(session.name)["claude_session_id"] == SID2
+
+
+def test_a_session_start_never_rebinds_onto_an_id_another_open_row_holds(session):
+    """db.rebind_session_id is the second line of defence behind the foreign guard: it refuses an id another open row owns."""
+    other = second_row(session.client)
+    hk(session, "session_start")
+    assert main.db.rebind_session_id(other, SID) is False and row_of(other)["claude_session_id"] != SID
+    assert main.db.rebind_session_id(other, SID3) is True and row_of(other)["claude_session_id"] == SID3
+    # through the hook path the foreign guard answers first and nothing moves
+    out = _hook(session.client, {**SHAPES["session_start"], "source": "clear", "session_id": SID3}, session=session.name).json()
+    assert out["ignored"] == "foreign" and row_of(session.name)["claude_session_id"] == SID
+    assert hooks._rebind_session_id(main.db, other, SID2) is None and row_of(other)["claude_session_id"] == SID2     # the thin re-export
+
+
+def test_a_child_sessions_session_start_never_rebinds(session):
+    hk(session, "session_start")
+    r = _hook(session.client, {**SHAPES["session_start"], "source": "clear", "session_id": SID3}, session=session.name,
+              extra={"X-CCBoard-Child": "1"})
+    assert r.json().get("ignored") == "child" and row_of(session.name)["claude_session_id"] == SID
 
 
 def test_other_events_only_fill_a_missing_id(session):
@@ -692,8 +736,8 @@ STATUSLINE_V2 = {
     "prompt_cache": {"warm": True, "caching_observed": True, "ttl": "5m", "expires_at": 1738426200, "requests": 12, "misses": 1,
                      "hit_ratio": 0.92, "cache_write_tokens": 4000},
     "workspace": {"current_dir": "/srv/projects/shop/api", "project_dir": "/srv/projects/shop/api", "git_worktree": "login-fix",
-                  "repo": {"host": "github.com", "owner": "rpandox", "name": "api"}},
-    "pr": {"number": 42, "url": "https://github.com/rpandox/api/pull/42", "review_state": "approved", "kind": "pr"},
+                  "repo": {"host": "github.com", "owner": "octo", "name": "api"}},
+    "pr": {"number": 42, "url": "https://github.com/octo/api/pull/42", "review_state": "approved", "kind": "pr"},
 }
 
 
@@ -706,7 +750,7 @@ def test_statusline_extras_land_in_stats(session):
     st = stats_of(session, STATUSLINE_V2)
     assert (st["effort"], st["fast"], st["thinking"], st["session_name"], st["exceeds_200k"]) == ("high", False, True, "login-fix", False)
     assert st["prompt_cache"] == {"warm": True, "hit_ratio": 0.92, "expires_at": 1738426200, "ttl": "5m"}
-    assert st["pr"] == {"number": 42, "url": "https://github.com/rpandox/api/pull/42", "review_state": "approved"}
+    assert st["pr"] == {"number": 42, "url": "https://github.com/octo/api/pull/42", "review_state": "approved"}
     assert (st["worktree"], st["repo"]) == ("login-fix", "api")
     # everything that was there before is still there, under the same names
     assert (st["model"], st["model_id"], st["context_pct"], st["context_size"], st["cost_usd"]) == ("Opus", "claude-opus-5-5", 41.2, 200000, 1.25)
@@ -1011,7 +1055,7 @@ def test_child_sessions_are_not_the_row(lite_client, projects_dir, fake_tmux, mo
     from app.config import settings
     monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")        # CI has no claude: a session create needs one
     """A nested claude (CLAUDE_CODE_CHILD_SESSION=1: claude-mem's observer, a workflow or SDK subagent) inherits CCBOARD_SESSION and
-    TMUX_PANE from the parent; on ubu2 the observer's SessionStart/Stop landed on the user's row. X-CCBoard-Child: 1 makes apply
+    TMUX_PANE from the parent; on the box the observer's SessionStart/Stop landed on the user's row. X-CCBoard-Child: 1 makes apply
     ignore the event unless the session_id is the row's own."""
     git_init(projects_dir / "shop" / "api")
     r = lite_client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude"}).json()

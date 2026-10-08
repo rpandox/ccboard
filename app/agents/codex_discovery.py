@@ -180,26 +180,8 @@ def source_name(source) -> str | None:
 
 
 def project_repo(cwd, projects_dir: Path | None = None) -> tuple[str, str] | None:
-    """(project, repo) for a directory under PROJECTS_DIR, else None. The project folder itself is repo `root`; anything deeper than the
-    repo level (a subdirectory, a worktree) belongs to its repo. Names the board would refuse are not projects."""
-    if not isinstance(cwd, str) or not cwd:
-        return None
-    root = Path(projects_dir if projects_dir is not None else settings.projects_dir)
-    for r in dict.fromkeys((os.path.normpath(root), os.path.realpath(root))):
-        for c in dict.fromkeys((os.path.normpath(cwd), os.path.realpath(cwd))):
-            try:
-                parts = Path(c).relative_to(r).parts
-            except ValueError:
-                continue
-            if not parts or any(p in ("", ".", "..") for p in parts):
-                continue
-            try:
-                project = projects.check_name("project", parts[0])
-                repo = projects.check_name("repo", parts[1]) if len(parts) > 1 else projects.ROOT
-            except projects.BadRequest:
-                continue
-            return project, repo
-    return None
+    """(project, repo) for a directory under PROJECTS_DIR, else None: a thin alias of projects.repo_for_cwd (issue #57), kept for its callers."""
+    return projects.repo_for_cwd(cwd, projects_dir)
 
 
 def _imported_ids(codex_home: Path) -> set[str]:
@@ -477,12 +459,3 @@ def find(db, tid: str, *, ttl: float = SNAPSHOT_TTL, codex_home: Path | None = N
     tid = str(tid or "").lower()
     items, _ = external(db, ttl=ttl, codex_home=codex_home, projects_dir=projects_dir)
     return next((e for e in items if e["id"] == tid), None)
-
-
-def tick(db, now: float | None = None) -> None:
-    """A Sampler-style hook (fn(db, now_epoch)): keep the kv record `external_sessions` fresh without anybody polling the endpoint. The scan
-    is cached for SNAPSHOT_TTL, so a 15 s tick costs one scan per 30 s. Not registered anywhere by this module. Never raises."""
-    try:
-        snapshot(db)
-    except Exception as e:
-        log.debug("external_sessions tick failed: %s", e.__class__.__name__)

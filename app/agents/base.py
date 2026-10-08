@@ -213,6 +213,10 @@ class Agent(ABC):
     @abstractmethod
     def normalise_hook(self, event: str, payload: dict) -> HookNorm: ...
 
+    def rebinds(self, payload: dict, row: dict | None = None) -> bool:
+        """Does this SessionStart move the row to the payload's session id? Default yes; an adapter narrows it (Claude: not `compact`)."""
+        return True
+
     # ---- data sources ----
     @abstractmethod
     def transcript_path(self, row_or_payload: dict | None) -> Path | None: ...

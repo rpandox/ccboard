@@ -133,6 +133,14 @@ html.force-coarse #page .usec .btn, html.force-coarse #page .usec button { min-h
 #page .ubody { min-width:0; }
 #page .usk { min-height:120px; }
 #page .unote { margin:6px 0 0; }
+#page .usage-page .page-head .actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:6px 12px; }     /* the dollar basis and the range side by side, wrapping at 390 px */
+#page .ufoot { margin:14px 0 0; font-size:12px; line-height:1.45; }
+#page .uest { margin:8px 0 0; font-size:12px; line-height:1.5; color:var(--fg-2); }
+#page .uest summary { cursor:pointer; color:var(--fg); }
+#page .uest p, #page .uest ul { margin:6px 0 0; }
+#page .uest ul { padding-left:18px; }
+#page .srow-via { font-size:11px; }
+#page .prow .p-joined { color:var(--fg-2); }
 #page .ufresh { margin:2px 0 8px; font-size:13px; }          /* v0.5.17f: the freshness caption right under the Limits title ('updated 5m ago · from the last session'); wraps, never clipped */
 /* v0.5.17f part 2: the caption and its Refresh button (a quiet bordered one, never a filled primary) share a row that wraps at 390 instead of clipping; the button
    stays when the caption is hidden (no reading yet), the whole row goes on the Codex tab. 44 px on touch comes from the section's own button rule above. */

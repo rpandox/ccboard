@@ -77,7 +77,6 @@ WATCH_DEAD_CHECK = 5        # ... and checks the pane (a process call) only ever
 SEEN_EVERY = 300            # last_seen is rewritten at most this often
 LEARN_EVERY = 60            # the rollouts are looked at this often while an account has no id or plan yet
 MAX_ROLLOUTS = 40
-META_LINE_MAX = 64 * 1024   # the first line of a rollout (its session_meta) is read up to this
 TAIL_BYTES = 128 * 1024     # the end of a rollout, where the rate-limit events are
 CONFIG_MAX = 1024 * 1024    # the live config.toml is copied into .pending up to this size
 LABEL_MAX = accounts.LABEL_MAX
@@ -1066,33 +1065,14 @@ def login_view() -> dict:
 
 
 # ------------------------------------------------------------------ learning who an account is, from the rollouts
-def _utc(ts) -> float | None:
-    if not isinstance(ts, str):
-        return None
-    try:
-        d = datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).timestamp()
-
-
 def _rollout_meta(path: Path) -> dict | None:
-    """{account_id, user_id, created} from the first line of a rollout (its session_meta payload: the two creator keys and the time only),
-    None for a file that is not one."""
-    try:
-        with open(path, "rb") as f:
-            line = f.readline(META_LINE_MAX)
-        data = json.loads(line)
-    except (OSError, ValueError, RecursionError, MemoryError):
+    """{account_id, user_id, created} from the first line of a rollout, None for a file that is not one. The one first-line parser is
+    agents.codex_rollout.session_meta (whitelisted keys only, never base_instructions); this keeps the three keys this module uses."""
+    from .agents import codex_rollout           # late: that module imports the agents package, this one is imported by it
+    m = codex_rollout.session_meta(path)
+    if m is None:
         return None
-    payload = data.get("payload") if isinstance(data, dict) and data.get("type") == "session_meta" else None
-    if not isinstance(payload, dict):
-        return None
-    aid = payload.get("creator_account_id")
-    created = _utc(payload.get("timestamp")) or _utc(data.get("timestamp"))
-    uid = payload.get("creator_user_id")
-    return {"account_id": aid if isinstance(aid, str) and ID_RE.match(aid) else None,
-            "user_id": uid if isinstance(uid, str) and ID_RE.match(uid) else None, "created": created}
+    return {"account_id": m["account_id"], "user_id": m["user_id"], "created": m["created"]}
 
 
 def _rollout_plan(path: Path) -> str | None:

@@ -28,6 +28,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import shlex
 import stat
 import subprocess
 import threading
@@ -41,6 +42,8 @@ MAX_ENTRIES = 1500                 # per level; tests patch it
 FILE_CAP = 200 * 1024              # bytes of a file the preview returns
 SNIFF = 8192                       # a NUL within this many leading bytes means binary
 LS_TTL = 5.0
+SLOW_SCAN = 0.4                    # seconds: a cold `git ls-files` slower than this makes the untracked-cache hint (issue #112)
+HINT_EVERY = 3600.0                # at most one hint per repo per hour
 STATUS_TTL = 2.0
 STATUS_FAIL_TTL = 10.0
 STATUS_TIMEOUT = 4.0
@@ -51,6 +54,7 @@ SKIP_DIRS = frozenset({".git", "node_modules", ".venv", "venv", "__pycache__", "
 SECRET_PATTERNS = (".env*", "*.pem", "id_rsa*", "id_ed25519*", "id_ecdsa*", "id_dsa*", "*credentials*", "*.key", "*secret*", ".npmrc", ".netrc", ".pgpass", "*.p12", "*.pfx", "*.keystore")
 
 _now = time.monotonic
+_timer = time.monotonic            # times the cold scan; tests patch it
 
 
 class Unsupported(Exception):
@@ -89,6 +93,7 @@ _guard = threading.Lock()
 _locks: dict[str, threading.RLock] = {}
 _LS: dict[tuple[str, bool], "_Listing"] = {}
 _STATUS: dict[str, "_Status"] = {}
+_HINTED: dict[str, float] = {}      # repo -> when the untracked-cache hint was last given
 
 
 def _lock(repo: Path) -> threading.RLock:
@@ -153,6 +158,7 @@ class _Listing:
     ignored: frozenset   # the paths among them that git ignores (only filled when the ignored run was made)
     stamp: tuple
     at: float
+    cold_s: float = 0.0  # how long the `git ls-files` that made this listing took (the ignored run adds its own)
 
 
 def _split(out: bytes) -> list[str]:
@@ -172,15 +178,45 @@ def _listing(root: Path, with_ignored: bool, refresh: bool) -> _Listing | None:
                 base = _listing(root, False, refresh)
                 if base is None:
                     return None
+                t0 = _timer()
                 ign = _split(_run(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], root, LS_TIMEOUT))
-                rec = _Listing(sorted(set(base.files) | set(ign)), frozenset(ign), stamp, _now())
+                rec = _Listing(sorted(set(base.files) | set(ign)), frozenset(ign), stamp, _now(), base.cold_s + (_timer() - t0))
             else:
+                t0 = _timer()
                 out = _run(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], root, LS_TIMEOUT)
-                rec = _Listing(sorted(set(_split(out))), frozenset(), stamp, _now())
+                rec = _Listing(sorted(set(_split(out))), frozenset(), stamp, _now(), _timer() - t0)
         except _GIT_ERRORS:
             return None
         _store(_LS, key, rec)
         return rec
+
+
+def _untracked_cache_on(root: Path) -> bool:
+    """Is core.untrackedCache already switched on for this repo? Unset, false or unreadable all mean no. Read only."""
+    try:
+        v = _run(["config", "--get", "core.untrackedCache"], root, STATUS_TIMEOUT).decode("utf-8", "replace").strip().lower()
+    except _GIT_ERRORS:
+        return False
+    return v in ("true", "yes", "on", "1", "keep")
+
+
+def _untracked_hint(root: Path, listing: "_Listing") -> dict | None:
+    """The one-line hint for a repo whose cold scan was slow (issue #112): {kind, cmd}. Given at most once per repo per hour, never for a fast
+    repo or one that has the cache on. The board only SAYS the command: it never runs it and never writes the repo's git config."""
+    if listing.cold_s <= SLOW_SCAN:
+        return None
+    key = str(root)
+    with _guard:
+        last = _HINTED.get(key)
+        if last is not None and _now() - last < HINT_EVERY:
+            return None
+    if _untracked_cache_on(root):
+        return None
+    with _guard:
+        _HINTED[key] = _now()
+        while len(_HINTED) > CACHE_REPOS:
+            _HINTED.pop(min(_HINTED, key=_HINTED.get))
+    return {"kind": "untracked_cache", "cmd": f"git -C {shlex.quote(key)} config core.untrackedCache true"}
 
 
 def _children(files: list, prefix: str):
@@ -489,6 +525,10 @@ def list_dir(project: str, repo: str, path: str = "", *, hidden: bool = False, i
         "hidden": bool(hidden), "ignored": bool(ignored), "status_stale": stale,
     }
     body["etag"] = hashlib.sha1(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
+    if is_git and listing is not None:            # after the etag: a hint appearing or leaving must not change what a 304 means
+        hint = _untracked_hint(eff, listing)
+        if hint:
+            body["hint"] = hint
     return body
 
 

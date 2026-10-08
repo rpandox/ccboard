@@ -326,7 +326,7 @@ test('cost: stacked bars over the daily series, the window totals line, the unat
   assert.equal(text(q(w, '.utotals')), 'Last 7 days: $44.56 · 48.7M tokens · 0.4 h');
   const note = q(w, '[data-note="unattributed"]');
   assert.ok(note, 'a visible line, because a phone has no hover');
-  assert.equal(note.getAttribute('title'), 'sessions the board did not start');
+  assert.equal(note.getAttribute('title'), 'sessions the board did not start, with no folder on record');
   assert.match(text(note), /\(unattributed\) \$24\.81 in this window: sessions the board did not start/);
   assert.match(text(q(w, '[data-note="unpriced"]')), /^1 session has tokens but no price \(hatched\)/);
   assert.equal(q(w, '[data-note="unpriced"]').getAttribute('title'), 'projects: Phasezero');
@@ -499,8 +499,8 @@ test('projects: cost, active hours and $/h side by side; (unattributed) is its o
   const rows = qa(w, 'tr.prow');
   assert.deepEqual(rows.map((r) => r.getAttribute('data-project')), ['useRAIDfun', 'Phasezero', 'cts_nepal', '(unattributed)'], 'by cost, unattributed last whatever it spent');
   const un = rows[3];
-  assert.equal(un.getAttribute('title'), 'sessions the board did not start');
-  assert.equal(un.querySelector('[data-unattributed]').getAttribute('title'), 'sessions the board did not start');
+  assert.equal(un.getAttribute('title'), 'sessions the board did not start, with no folder on record');
+  assert.equal(un.querySelector('[data-unattributed]').getAttribute('title'), 'sessions the board did not start, with no folder on record');
   assert.equal(un.querySelector('a'), null, 'no project to link to');
   assert.equal(text(un.querySelector('.p-name')), '(unattributed)', 'its own row, not merged into a project');
   assert.deepEqual(un.querySelectorAll('td').map(text).slice(1), ['$24.81', '0.0 h', '–'], 'no hours, so no rate');
@@ -1498,4 +1498,252 @@ test('the Usage page ends with the compact claude-mem tile when state.memory exi
   await go(none.w);
   assert.equal(q(none.w, '.mem-usage .mem-tile'), null);
   assert.ok(q(none.w, '.mem-usage').classList.contains('hidden'), 'hidden without state.memory');
+});
+
+
+// ---------------------------------------------------------------- sessions started outside the board, matched by folder (issue #57)
+
+const JOINED_SUMMARY = () => SUMMARY(DAILY7, {
+  windows: { today: WINDOW(44.56), '30d': WINDOW(300),
+    '7d': { total: 70, by_agent: { claude: { total: 70, tokens: 1 } }, by_project: [
+      { project: '(unattributed)', total: 5, hours: 0 }, { project: '(outside projects)', total: 7.25, hours: 0 },
+      { project: 'ccboard', total: 40, hours: 2, joined: 12.5 }, { project: 'Phasezero', total: 17.75, hours: 1 }] } },
+  top_sessions: [
+    { key: `claude:${UUID1}`, project: 'ccboard', repo: 'api', agent: 'claude', total: 12.5, hours: 1.2, tokens: 1800, models: ['claude-sonnet-5-5'], via: 'folder' },
+    { key: `claude:${UUID2}`, project: 'Phasezero', repo: 'root', agent: 'claude', total: 5, hours: 0, tokens: 900, models: [] },
+    { key: `claude:${UUID3}`, project: '(outside projects)', repo: null, agent: 'claude', total: 7.25, hours: 0.4, tokens: 500, models: [], via: 'folder' },
+  ] });
+
+test('projects: the two labels without a project are their own last rows with a one-line meaning each, and a project says how much was joined by folder', async () => {
+  const { w } = usageWorld({ over: { '/api/usage/summary?days=7': JOINED_SUMMARY() } });
+  await go(w);
+  const rows = qa(w, 'tr.prow');
+  assert.deepEqual(rows.map((r) => r.getAttribute('data-project')), ['ccboard', 'Phasezero', '(outside projects)', '(unattributed)'], 'named by cost, then the two labels, never ranked against projects');
+  const out = rows[2];
+  assert.equal(out.getAttribute('title'), 'sessions that ran in a folder outside the projects folder');
+  assert.equal(out.querySelector('[data-outside]').getAttribute('title'), 'sessions that ran in a folder outside the projects folder');
+  assert.equal(text(out.querySelector('.p-tip')), 'sessions that ran in a folder outside the projects folder', 'the meaning is text, not only a tooltip');
+  assert.equal(out.querySelector('a'), null, 'no project to link to');
+  assert.equal(text(rows[3].querySelector('.p-tip')), 'sessions the board did not start, with no folder on record');
+  const joined = rows[0].querySelector('[data-joined]');
+  assert.equal(text(joined), '$12.50 joined by folder', 'readable without hovering');
+  assert.match(joined.getAttribute('title'), /the folder the session ran in/);
+  assert.equal(rows[1].querySelector('[data-joined]'), null, 'a project with nothing joined says nothing');
+  assert.equal(rows[0].querySelector('a').getAttribute('href'), '#/p/ccboard');
+  assert.match(text(q(w, '[data-note="joined"]')), /never counted in a task/);
+  clean(w);
+});
+
+test('projects: without any joined cost there is no joined caption or note', async () => {
+  const { w } = usageWorld();
+  await go(w);
+  assert.equal(q(w, '[data-joined]'), null);
+  assert.equal(q(w, '[data-note="joined"]'), null);
+  clean(w);
+});
+
+test('sessions: a session matched by its folder says so in text, the others do not, and (outside projects) has no project link', async () => {
+  const { w } = usageWorld({ over: { '/api/usage/summary?days=7': JOINED_SUMMARY() } });
+  await go(w);
+  const rows = qa(w, 'tr.srow');
+  assert.equal(rows.length, 3);
+  assert.equal(text(rows[0].querySelector('[data-via="folder"]')), 'joined by folder');
+  assert.match(rows[0].querySelector('[data-via="folder"]').getAttribute('title'), /the board did not start these/);
+  assert.equal(rows[1].querySelector('[data-via]'), null);
+  assert.equal(text(rows[2].querySelector('[data-via="folder"]')), 'joined by folder');
+  assert.equal(rows[2].querySelector('.srow-proj'), null, 'the outside label is not a project');
+  assert.ok(rows[0].querySelector('.srow-proj'), 'a joined session still links to its project');
+  clean(w);
+});
+
+test('cost: the outside label gets its own note under the bars with its meaning', async () => {
+  const { w } = usageWorld({ over: { '/api/usage/summary?days=7': JOINED_SUMMARY() } });
+  await go(w);
+  const note = q(w, '[data-note="outside"]');
+  assert.ok(note, 'a note for the outside bucket');
+  assert.equal(note.getAttribute('title'), 'sessions that ran in a folder outside the projects folder');
+  assert.match(text(note), /^\(outside projects\) \$7\.25 in this window: sessions that ran in a folder outside the projects folder\.$/);
+  clean(w);
+});
+
+test('the unassigned helpers: both labels are recognised, and neither is a route', () => {
+  const { w } = usageWorld();
+  const U = w.get('Usage');
+  assert.equal(U.isUnassigned('(outside projects)'), true);
+  assert.equal(U.isUnassigned('(unattributed)'), true);
+  assert.equal(U.isUnassigned('ccboard'), false);
+  assert.equal(U.projectHash('(outside projects)'), null);
+  assert.equal(U.projectHash('(unattributed)'), null);
+  assert.equal(U.unassignedTip('ccboard'), '');
+});
+
+
+// ---------------------------------------------------------------- the Reported / Estimated basis (issue #95)
+
+const EST_BLOCK = { date: '2026-10-07', source: 'Anthropic pricing page (list prices per million tokens)', sessions: 3, usd: 51.2, bases: { list: 2, sibling: 1 }, cache_write_assumed: true, cache_write_x: 1.25 };
+const EST_SUMMARY = () => SUMMARY(DAILY7, {
+  basis: 'est', estimate: EST_BLOCK,
+  windows: { today: WINDOW(44.56), '30d': WINDOW(300),
+    '7d': { total: 95.76, by_agent: { claude: { total: 95.76, tokens: 1 } }, by_project: [{ project: 'ccboard', total: 80.5, hours: 2 }, { project: 'Phasezero', total: 15.26, hours: 1 }] } },
+  top_sessions: [
+    { key: `claude:${UUID1}`, project: 'ccboard', repo: 'ccboard', agent: 'claude', total: 120.3, hours: 1.2, tokens: 180382285, models: ['claude-sonnet-5-5'], est_basis: 'list' },
+    { key: `claude:${UUID2}`, project: 'SD-Law-website', repo: 'root', agent: 'claude', total: 40, hours: 0, tokens: 90000000, models: [] },
+  ],
+  unpriced: [],
+});
+const REPORTED_WITH_EST = () => SUMMARY(DAILY7, { basis: 'reported', estimate: EST_BLOCK });
+// answers are matched by path prefix, first match wins: one function answers both bases
+const estOver = (failEst = false) => ({ '/api/usage/summary?days=7': (path) => {
+  if (!path.includes('basis=est')) return REPORTED_WITH_EST();
+  if (failEst) throw new Error('boom');
+  return EST_SUMMARY();
+} });
+const pressed = (w, sel) => q(w, sel).getAttribute('aria-pressed');
+
+// the page asks in the runner's own zone (Usage.tzMin): CI runs in UTC, a laptop in Asia/Kathmandu
+const HOST_TZ_MIN = Math.max(-720, Math.min(840, -new Date().getTimezoneOffset()));
+
+test('basis: a segmented Reported | Estimated control sits in the toolbar, defaults to Reported, and the first load asks for no basis', async () => {
+  const { w } = usageWorld({ over: estOver() });
+  await go(w);
+  const seg = q(w, '[data-seg="basis"]');
+  assert.ok(seg, 'the control');
+  assert.equal(seg.getAttribute('role'), 'group');
+  assert.deepEqual(seg.querySelectorAll('button').map(text), ['Reported', 'Estimated']);
+  assert.equal(pressed(w, '[data-basis="reported"]'), 'true');
+  assert.equal(pressed(w, '[data-basis="est"]'), 'false');
+  const sums = plain(w.get('__calls')).filter((c) => c.path.startsWith('/api/usage/summary'));
+  assert.equal(sums.length, 1);
+  assert.equal(sums[0].path, `/api/usage/summary?days=7&tz_min=${HOST_TZ_MIN}`, 'the reported path is the one it always was');
+  assert.ok(!qa(w, 'td.c-num').some((n) => text(n).startsWith('~')), 'no ~ on the reported basis');
+  clean(w);
+});
+
+test('basis: switching to Estimated fetches ?basis=est once, repaints the figures with a ~, remembers the choice, and keeps the range and the scroll', async () => {
+  const { w } = usageWorld({ over: estOver() });
+  await go(w);
+  q(w, 'button[data-range="30d"]').click();
+  await loading(w);
+  q(w, 'button[data-range="7d"]').click();
+  await loading(w);
+  const before = plain(w.get('__calls')).length;
+  q(w, '[data-basis="est"]').click();
+  await loading(w);
+  const calls = plain(w.get('__calls')).slice(before).filter((c) => c.path.startsWith('/api/usage/summary'));
+  assert.deepEqual(calls.map((c) => c.path), [`/api/usage/summary?days=7&tz_min=${HOST_TZ_MIN}&basis=est`], 'only the summary of the other basis, once');
+  assert.equal(pressed(w, '[data-basis="est"]'), 'true');
+  assert.equal(pressed(w, '[data-basis="reported"]'), 'false');
+  assert.equal(w.localStorage.getItem('ccboard:usage:basis'), 'est');
+  assert.equal(pressed(w, 'button[data-range="7d"]'), 'true', 'the range stays');
+  const prow = qa(w, 'tr.prow');
+  assert.deepEqual(prow.map((r) => r.getAttribute('data-project')), ['ccboard', 'Phasezero']);
+  assert.equal(text(prow[0].querySelectorAll('td')[1]), '~$80.50', 'every dollar of the Estimated basis carries a ~');
+  assert.match(text(q(w, '.utotals')), /~\$95\.76/);
+  const srow = qa(w, 'tr.srow');
+  assert.equal(text(srow[0].querySelectorAll('td')[2]), '~$120.30');
+  assert.equal(text(srow[0].querySelector('[data-est]')), 'estimated · list price', 'a session with an estimate says which basis it used');
+  assert.equal(srow[1].querySelector('[data-est]'), null);
+  q(w, '[data-basis="reported"]').click();
+  await loading(w);
+  assert.equal(text(qa(w, 'tr.prow')[0].querySelectorAll('td')[1]).startsWith('~'), false, 'and back: no ~');
+  const again = plain(w.get('__calls')).filter((c) => c.path.startsWith('/api/usage/summary'));
+  assert.equal(again.filter((c) => c.path.includes('basis=est')).length, 1, 'the Estimated summary is cached for the next switch');
+  clean(w);
+});
+
+test('basis: the choice is remembered in ccboard:usage:basis and a new page opens on it', async () => {
+  const first = usageWorld({ over: estOver() });
+  first.w.localStorage.setItem('ccboard:usage:basis', 'est');
+  await go(first.w);
+  assert.equal(pressed(first.w, '[data-basis="est"]'), 'true');
+  const sums = plain(first.w.get('__calls')).filter((c) => c.path.startsWith('/api/usage/summary')).map((c) => c.path);
+  assert.deepEqual(sums, [`/api/usage/summary?days=7&tz_min=${HOST_TZ_MIN}&basis=est`], 'it asked for the Estimated summary straight away');
+  assert.match(text(q(first.w, '.utotals')), /^Last 7 days: ~\$95\.76/);
+  clean(first.w);
+  const junk = usageWorld({ over: estOver() });
+  junk.w.localStorage.setItem('ccboard:usage:basis', 'nonsense');
+  await go(junk.w);
+  assert.equal(pressed(junk.w, '[data-basis="reported"]'), 'true', 'an unknown stored word is Reported');
+  clean(junk.w);
+});
+
+test('basis: arrow keys move the selection and keep focus on the selected button', async () => {
+  const { w } = usageWorld({ over: estOver() });
+  await go(w);
+  const seg = q(w, '[data-seg="basis"]');
+  let prevented = 0;
+  seg.dispatchEvent({ type: 'keydown', key: 'ArrowRight', preventDefault() { prevented++; } });
+  await loading(w);
+  assert.equal(pressed(w, '[data-basis="est"]'), 'true');
+  assert.equal(prevented, 1);
+  seg.dispatchEvent({ type: 'keydown', key: 'ArrowLeft', preventDefault() {} });
+  await loading(w);
+  assert.equal(pressed(w, '[data-basis="reported"]'), 'true');
+  seg.dispatchEvent({ type: 'keydown', key: 'Tab', preventDefault() { prevented++; } });
+  assert.equal(prevented, 1, 'other keys are left alone');
+  clean(w);
+});
+
+test('basis: Estimated explains itself in a disclosure a keyboard can open: the price date, the sources of each basis, the assumed cache-write price, not an invoice', async () => {
+  const { w } = usageWorld({ over: estOver() });
+  w.localStorage.setItem('ccboard:usage:basis', 'est');
+  await go(w);
+  const d = q(w, 'details[data-note="estimate"]');
+  assert.ok(d, 'a <details>, not a hover tooltip');
+  assert.equal(text(d.querySelector('summary')), 'How these estimates are made');
+  const body = text(d);
+  assert.match(body, /3 sessions on models ccusage prices at zero add ~\$51\.20/);
+  assert.match(body, /list prices of 2026-10-07 \(Anthropic pricing page/);
+  assert.match(body, /2 sessions priced from the list price of the model itself/);
+  assert.match(body, /1 session priced at the rate of a sibling model/);
+  assert.match(body, /cache-write price of these models is not known: cache writes are priced at 1\.25 times the input price/);
+  assert.match(body, /not a subscription invoice/);
+  clean(w);
+});
+
+test('basis: on Reported a quiet caption says how many sessions are left out and what Estimated would add; with none estimated there is none', async () => {
+  const { w } = usageWorld({ over: estOver() });
+  await go(w);
+  const note = q(w, '[data-note="est-available"]');
+  assert.ok(note);
+  assert.match(text(note), /^3 sessions on models ccusage prices at zero are not in these dollars\. Estimated adds about ~\$51\.20\.$/);
+  assert.equal(q(w, 'details[data-note="estimate"]'), null, 'the disclosure is for the Estimated basis');
+  clean(w);
+  const none = usageWorld({ over: { '/api/usage/summary?days=7': SUMMARY(DAILY7, { estimate: { ...EST_BLOCK, sessions: 0, usd: 0, bases: {} } }) } });
+  await go(none.w);
+  assert.equal(q(none.w, '[data-note="est-available"]'), null);
+  clean(none.w);
+});
+
+test('basis: the page footer says the dollars are API-equivalent, not an invoice, and shows the price date', async () => {
+  const { w } = usageWorld({ over: estOver() });
+  await go(w);
+  const foot = q(w, '[data-foot]');
+  assert.match(text(foot), /API-equivalent: what the tokens would cost at API list prices, not a subscription invoice\./);
+  assert.match(text(foot), /Estimates use the list prices of 2026-10-07\./);
+  clean(w);
+});
+
+test('basis: the Estimated hatch stays for sessions with no estimate and a failed Estimated fetch shows its own error while Reported stays', async () => {
+  const { w } = usageWorld({ over: estOver(true) });
+  await go(w);
+  const reportedRows = qa(w, 'tr.prow').length;
+  q(w, '[data-basis="est"]').click();
+  await loading(w);
+  assert.match(text(q(w, '[data-body="projects"]')), /Could not load the usage summary: boom/);
+  q(w, '[data-basis="reported"]').click();
+  await loading(w);
+  assert.equal(qa(w, 'tr.prow').length, reportedRows, 'Reported is back, untouched');
+  clean(w);
+});
+
+test('basis: the stacked bars get approx on the Estimated basis and not on Reported', async () => {
+  const { w } = usageWorld({ over: estOver() });
+  await go(w);
+  const approxOf = () => { const l = w.get('__charts').calls.filter((c) => c.fn === 'stackedBars'); return l[l.length - 1].opts.approx; };
+  assert.equal(approxOf(), false);
+  q(w, '[data-basis="est"]').click();
+  await loading(w);
+  assert.equal(approxOf(), true);
+  clean(w);
 });

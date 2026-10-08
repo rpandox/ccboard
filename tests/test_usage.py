@@ -24,3 +24,19 @@ def test_state_exposes_block_and_clear(lite_client, fake_tmux):
     assert st["block"]["value"]["burn_cost_per_hour"] == 30.98 and st["rate_limited"]["value"]["session"] == "a--b--c"
     assert lite_client.post("/api/usage/rate-limit/clear", headers=H).status_code == 200
     assert lite_client.get("/api/state", headers=H).json()["rate_limited"] is None
+
+
+def test_clearing_the_banner_also_re_arms_the_codex_notice_gate(lite_client, fake_tmux):
+    """Issue #32 (b): the Claude gate (rl_notified:) and the Codex gate (codex_rl_notified_<resets_at>) are both once-per-window; a cleared
+    banner re-arms both, and keys of other families stay."""
+    from app import main
+    from app.agents import codex_rollout
+    H = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
+    main.db.kv_set(codex_rollout.NOTIFIED + "1790000000", True)
+    main.db.kv_set(codex_rollout.NOTIFIED + "x491000", True)
+    main.db.kv_set("rl_notified:claude:1790000000", True)
+    main.db.kv_set("rate_limits_codex", {"reached": True})                      # a measured window is not a gate: clearing changes no reading
+    assert lite_client.post("/api/usage/rate-limit/clear", headers=H).status_code == 200
+    assert main.db.kv_get(codex_rollout.NOTIFIED + "1790000000") is None and main.db.kv_get(codex_rollout.NOTIFIED + "x491000") is None
+    assert main.db.kv_get("rl_notified:claude:1790000000") is None
+    assert main.db.kv_get("rate_limits_codex")["value"] == {"reached": True}

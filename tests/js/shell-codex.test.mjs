@@ -4,7 +4,9 @@
 // widgets.js, pages/agents.js and shell.js on minidom's DOM (the same world as shell-accounts.test.mjs).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { makeWorld } from './harness.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
+import { makeWorld, STATIC } from './harness.mjs';
 import { installDom } from './minidom.mjs';
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -57,14 +59,47 @@ test('a window of 300 minutes reads CX 5H; an odd window is named from its minut
   assert.match(pill(w).getAttribute('title'), /^Codex 90-minute window: /);
 });
 
-test('with a 5-hour and a weekly window the pill shows the longest, whichever of primary / secondary it is', () => {
+test('with a 5-hour and a weekly window the pill shows the fullest by percentage, whichever of primary / secondary it is; a tie goes to the longer', () => {
   const w = sWorld();
   paint(w, cx({ primary: win(80, 300, NOW + 3600), secondary: win(23, 10080) }));
-  assert.equal(text(pill(w).pl), 'CX 7D');
-  assert.equal(text(pill(w).pv), '23%');
+  assert.equal(text(pill(w).pl), 'CX 5H');
+  assert.equal(text(pill(w).pv), '80%');
   paint(w, cx({ primary: win(23, 10080), secondary: win(80, 300, NOW + 3600) }));
+  assert.equal(text(pill(w).pl), 'CX 5H');
+  assert.equal(text(pill(w).pv), '80%');
+  paint(w, cx({ primary: win(10, 300, NOW + 3600), secondary: win(40, 10080) }));
   assert.equal(text(pill(w).pl), 'CX 7D');
-  assert.equal(text(pill(w).pv), '23%');
+  assert.equal(text(pill(w).pv), '40%');
+  paint(w, cx({ primary: win(30, 300, NOW + 3600), secondary: win(30, 10080) }));
+  assert.equal(text(pill(w).pl), 'CX 7D', 'equal percentages: the longer window');
+  paint(w, cx({ primary: win(90, 300, NOW - 60), secondary: win(20, 10080) }));
+  assert.equal(text(pill(w).pl), 'CX 7D', 'a 5-hour window whose reset has passed counts as 0 %');
+});
+
+test('a reached 5-hour window shows CX 5H, red, with the glyph; it is never shown as the weekly percentage (#32 e)', () => {
+  const w = sWorld();
+  paint(w, cx({ primary: win(100, 300, NOW + 1800), secondary: win(41, 10080), reached: true }));
+  assert.equal(text(pill(w).pl), 'CX 5H');
+  assert.equal(text(pill(w).pv), '100%');
+  assert.ok(pill(w).classList.contains('bad') && pill(w).classList.contains('reached'));
+  assert.equal(pill(w).gl.classList.contains('hidden'), false, 'the glyph says limit reached, not red alone');
+  assert.match(pill(w).getAttribute('title'), /^Codex 5-hour window: 100% used .*limit reached$/);
+  paint(w, cx({ primary: win(60, 300, NOW + 1800), secondary: win(100, 10080), reached: true }));
+  assert.equal(text(pill(w).pl), 'CX 7D');
+  paint(w, cx({ primary: win(100, 300, NOW + 1800), secondary: win(100, 10080), reached: true }));
+  assert.equal(text(pill(w).pl), 'CX 7D', 'both windows reached: the longer one blocks longer');
+  paint(w, cx({ primary: win(99, 300, NOW + 1800), secondary: win(41, 10080), reached: true }));
+  assert.equal(text(pill(w).pl), 'CX 5H', 'reached with no window at 100 %: the fullest');
+  paint(w, cx({ primary: win(30, 10080) }));
+  assert.equal(pill(w).classList.contains('reached'), false);
+  assert.ok(pill(w).gl.classList.contains('hidden'));
+});
+
+test('the compact shell hides the CX pill only while no limit is reached', () => {
+  const css = fs.readFileSync(path.join(STATIC, 'shell.css'), 'utf8');
+  assert.match(css, /body\[data-shell=compact\] #pills \[data-pill=codex\]:not\(\.reached\) \{ display:none; \}/);
+  assert.doesNotMatch(css, /\[data-pill=codex\] \{ display:none; \}/, 'no unconditional hide of the CX pill');
+  assert.match(css, /\.pill \.pg\.hidden \{ display:none; \}/);
 });
 
 test('no reading, a null record or a window without a number: the pill stays hidden and nothing throws', () => {

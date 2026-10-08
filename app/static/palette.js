@@ -9,6 +9,9 @@
                 a toast; a read command (/usage ...) shows the captured screen in the sheet and presses Escape when it closes; a 409 toasts the
                 reason; an older server without the endpoint (404) gets the text through /keys. Labelled from the registry that the terminal
                 page cached (GET /api/agents, sessionStorage) when there is one. /clear, /effort and /model stay in the terminal's tuning strip.
+     Backlog    Move: <card>, the keyboard route of the drag (the Move sheet, as the m key on a card opens it); three cards with nothing typed
+     Skills     (Claude sessions only) the skills installed on the box from GET /api/skills, most used first; the top five, "All skills…" opens the rest;
+                Enter puts `/<name> ` into the composer you came from or the peek's send box and never sends
      Modes      ultracode / plan, inserted into the peek's send box
      More       collapsed; the fun commands (/color /copy /rewind /radio /stickers /tui /passes) as plain inserts into that box
    mode 'send' is the share target: the box holds the shared text (editable) and the list is "send to session"; Enter sends it with Enter,
@@ -29,6 +32,10 @@ const Palette = {
   SESSIONS_SHOWN: 9,        // the Sessions group of an empty search: the nine mod+1..9 reach
   PER_GROUP: 12,            // most rows of one group while searching
   TICK_MS: 1500,
+  SKILLS_TOP: 5,            // the Skills group of an empty search: this many rows, then "All skills…"
+  SKILLS_OPEN_MAX: 60,      // rows of the opened list
+  SKILLS_TTL: 60 * 1000,    // the client keeps GET /api/skills this long (the server caches 60 s as well)
+  skills: { list: null, at: 0, pending: null },
 };
 
 /* ---------- small helpers ---------- */
@@ -127,7 +134,35 @@ Palette.context = function () {
   const P = Palette.pages();
   const sessions = P ? P.order() : [];
   const t = P ? P.target() : null;
-  return { sessions, target: t ? (sessions.find((x) => x.tmux === t) || null) : null, targetTmux: t || null, box: P && typeof P.sendBox === 'function' ? P.sendBox() : null };
+  return { sessions, target: t ? (sessions.find((x) => x.tmux === t) || null) : null, targetTmux: t || null, box: P && typeof P.sendBox === 'function' ? P.sendBox() : null,
+    skills: Palette.skills.list, composer: Palette.composer() };
+};
+
+/* The skills of the box (GET /api/skills), once per palette open and at most every SKILLS_TTL: a failed or empty answer leaves the group out (no toast on every open).
+   `after` runs when an answer lands, to redraw the open palette. */
+Palette.loadSkills = function (after) {
+  const k = Palette.skills;
+  if (k.list !== null && Date.now() - k.at < Palette.SKILLS_TTL) return Promise.resolve(k.list);
+  if (k.pending) return k.pending;
+  if (typeof api !== 'function') return Promise.resolve(k.list);
+  k.pending = Promise.resolve(api('GET', '/api/skills')).then((r) => {
+    const list = r && Array.isArray(r.skills) ? r.skills.filter((x) => x && typeof x.name === 'string' && /^[a-z0-9][a-z0-9:_-]{0,63}$/.test(x.name)).map((x) => ({
+      name: x.name, description: typeof x.description === 'string' ? x.description : '', source: typeof x.source === 'string' ? x.source : '', uses: typeof x.uses === 'number' && x.uses > 0 ? x.uses : 0 }))
+      .sort((a, b) => b.uses - a.uses || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) : [];                  // most used first, then by name, whatever order the server sent
+    k.list = list;
+    k.at = Date.now();
+    return list;
+  }).catch(() => k.list).then((list) => { k.pending = null; if (typeof after === 'function') after(list); return list; });
+  return k.pending;
+};
+
+/* The composer the person came from: the field that had the focus when the palette opened, when it is a text box (the peek's send box, a terminal composer); else null. */
+Palette.composer = function () {
+  const u = Palette.ui;
+  const n = u && u.from;
+  if (!n || n.isConnected === false || !/^(?:TEXTAREA|INPUT)$/.test(String(n.tagName || '').toUpperCase())) return null;
+  if (u.input && n === u.input) return null;
+  return n;
 };
 
 /* POST the text into the session's terminal (enter: true presses Enter), then say so. */
@@ -215,25 +250,28 @@ Palette.command = async function (tmux, cmd, name) {
 
 /* Put text into the peek's send box: modes go in front, a command goes in at the caret (or alone in an empty box). With no peek open the
    selected session's peek is opened first; with neither there is no box to fill. */
-Palette.insert = function (text, how) {
+Palette.fillBox = function (box, text, how) {
+  const v = box.value || '';
+  let next;
+  let caret;
+  if (how === 'prefix') { next = v.startsWith(text) ? v : text + v; caret = next.length; }
+  else if (!v) { next = text; caret = text.length; }
+  else {
+    const a = typeof box.selectionStart === 'number' ? box.selectionStart : v.length;
+    const b = typeof box.selectionEnd === 'number' ? box.selectionEnd : a;
+    next = v.slice(0, a) + text + v.slice(b);
+    caret = a + text.length;
+  }
+  box.value = next;
+  box.focus();
+  try { box.setSelectionRange(caret, caret); } catch (_) { /* not a text input */ }
+  try { box.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) { /* no Event constructor */ }
+};
+
+Palette.insert = function (text, how, into) {
   const P = Palette.pages();
-  const fill = (box) => {
-    const v = box.value || '';
-    let next;
-    let caret;
-    if (how === 'prefix') { next = v.startsWith(text) ? v : text + v; caret = next.length; }
-    else if (!v) { next = text; caret = text.length; }
-    else {
-      const a = typeof box.selectionStart === 'number' ? box.selectionStart : v.length;
-      const b = typeof box.selectionEnd === 'number' ? box.selectionEnd : a;
-      next = v.slice(0, a) + text + v.slice(b);
-      caret = a + text.length;
-    }
-    box.value = next;
-    box.focus();
-    try { box.setSelectionRange(caret, caret); } catch (_) { /* not a text input */ }
-    try { box.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) { /* no Event constructor */ }
-  };
+  const fill = (box) => Palette.fillBox(box, text, how);
+  if (into) { fill(into); return true; }                          // the composer the palette was opened from
   if (!P || typeof P.withSendBox !== 'function') return false;
   if (!P.sendBox()) {
     const t = P.target();
@@ -274,6 +312,14 @@ Palette.catalog = function (ctx, query) {
     groups.push({ id: 'quads', title: 'Quad', items: quads });
   }
 
+  // Backlog cards: Move… is the keyboard route of the drag (the card's m key opens the same sheet). Three with nothing typed.
+  if (typeof boardTasks === 'function' && typeof taskMoveable === 'function' && typeof taskMoveSheet === 'function' && typeof state !== 'undefined' && state) {
+    let cards = [];
+    try { cards = boardTasks(state).filter((x) => taskMoveable(x)); } catch (_) { cards = []; }
+    if (cards.length) groups.push({ id: 'backlog', title: 'Backlog', limit: query ? Palette.PER_GROUP : 3, items: cards.map((x) => ({ id: 'k:' + x.id, label: `Move: ${x.title}`, hint: `${x.project}/${x.repo}`,
+      keywords: 'task backlog start dispatch hand', run: () => { close(); taskMoveSheet(x); } })) });
+  }
+
   const t = ctx.target;
   if (t && Palette.nudgeable(t)) {
     const name = t.name || t.tmux;
@@ -281,6 +327,23 @@ Palette.catalog = function (ctx, query) {
     groups.push({ id: 'nudges', title: `Nudge · ${name}`, items: nudges.map((text) => ({ id: 'n:' + text, label: text, hint: 'typed into ' + name, run: () => { close(); Palette.send(t.tmux, text, name); } })) });
     groups.push({ id: 'controls', title: `Controls · ${name}`, items: Palette.controlsFor(t).map((c) => ({ id: 'c:' + c.text, label: c.label, hint: c.label === c.text ? 'typed into ' + name : `${c.text} · typed into ${name}`, keywords: c.text,
       run: () => { close(); Palette.command(t.tmux, c.key, name); } })) });
+  }
+
+  // Skills (Claude sessions only: a Codex or shell session has no list of its own that is verified). Insert, never send; a row says why it cannot when there is no composer.
+  const agentOf = t ? (typeof sessionAgent === 'function' ? sessionAgent(t) : (t.agent || 'claude')) : null;
+  if (Array.isArray(ctx.skills) && ctx.skills.length && (!t || agentOf === 'claude')) {
+    const canInsert = !!(ctx.composer || ctx.box || ctx.targetTmux);
+    const open = !!ctx.skillsOpen;
+    const rows = ctx.skills.map((sk) => ({ id: 'sk:' + sk.name, label: sk.name, hint: sk.description, act: 'Insert', note: sk.uses ? `seen ${sk.uses}×` : '', keywords: `skill ${sk.source}`,
+      off: canInsert ? '' : 'Open a Claude session first: the command goes into its send box.',
+      run: () => {
+        if (!canInsert) { Palette.say('Open a Claude session first: the command goes into its send box.', 'warn'); return; }
+        const into = ctx.composer;
+        close();
+        Palette.insert(`/${sk.name} `, 'command', into);
+      } }));
+    groups.push({ id: 'skills', title: t ? `Skills · ${t.name || t.tmux}` : 'Skills', items: rows, limit: query ? (open ? Palette.SKILLS_OPEN_MAX : Palette.PER_GROUP) : (open ? Palette.SKILLS_OPEN_MAX : Palette.SKILLS_TOP),
+      toggle: !query && ctx.skills.length > Palette.SKILLS_TOP ? { open, count: ctx.skills.length } : null });
   }
 
   if (ctx.box || ctx.targetTmux) {
@@ -297,10 +360,10 @@ Palette.catalog = function (ctx, query) {
 };
 
 /* The shown groups for `query`: fuzzy-filtered and ranked, empty groups dropped, More collapsed to one row until opened or searched. */
-Palette.groups = function (ctx, query, moreOpen) {
+Palette.groups = function (ctx, query, moreOpen, skillsOpen) {
   const q = String(query || '').trim();
   const out = [];
-  for (const g of Palette.catalog(ctx, q)) {
+  for (const g of Palette.catalog({ ...ctx, skillsOpen: !!skillsOpen }, q)) {
     let items = g.items;
     let best = 0;
     if (q) {
@@ -315,6 +378,10 @@ Palette.groups = function (ctx, query, moreOpen) {
     } else if (g.collapsed && !moreOpen) {
       items = [{ id: 'more:toggle', label: 'More commands…', hint: `${g.items.length} commands`, keep: true, run: () => { const u = Palette.ui; if (u) { u.moreOpen = true; u.selId = 'x:' + Palette.MORE[0]; Palette.render(); } } }];
     } else if (g.limit) items = items.slice(0, g.limit);
+    if (g.toggle && items.length) {                                             // "All skills…" opens the rest (and the search box filters them); "Fewer skills" closes it again
+      items = [...items, { id: 'skills:toggle', label: g.toggle.open ? 'Fewer skills' : 'All skills…', hint: g.toggle.open ? `top ${Palette.SKILLS_TOP}` : `${g.toggle.count} installed on the box`, keep: true,
+        run: () => { const u = Palette.ui; if (u) { u.skillsOpen = !g.toggle.open; u.selId = g.toggle.open ? 'skills:toggle' : items[Palette.SKILLS_TOP] && items[Palette.SKILLS_TOP].id; Palette.render(); } } }];
+    }
     if (items.length) out.push({ id: g.id, title: g.title, items, best });
   }
   if (q) out.sort((a, b) => b.best - a.best);       // searching: the group that holds the best match leads, so Enter runs the best match
@@ -411,8 +478,10 @@ Palette.open = function (opts) {
   dlg.className = 'palette';
   dlg.setAttribute('aria-label', mode === 'send' ? 'Send to a session' : 'Command palette');
   dlg.append(el('div', { class: 'pal-head' }, input), list, foot);
-  const u = { dlg, view: 'palette', mode, input, list, foot, ctx: Palette.context(), shown: [], nodes: [], sel: 0, selId: null, moreOpen: false, timer: null, sig: typeof ui !== 'undefined' ? ui.lastJson : null };
+  const from = typeof document !== 'undefined' ? document.activeElement : null;
+  const u = { dlg, view: 'palette', mode, input, list, foot, from, ctx: null, shown: [], nodes: [], sel: 0, selId: null, moreOpen: false, skillsOpen: false, timer: null, sig: typeof ui !== 'undefined' ? ui.lastJson : null };
   Palette.ui = u;
+  u.ctx = Palette.context();
   input.addEventListener('keydown', Palette.key);
   input.addEventListener('input', () => { if (u.mode === 'default') { u.selId = null; Palette.render(); } });
   list.addEventListener('mousedown', (e) => e.preventDefault());                       // a click on a row must not take the focus from the box
@@ -424,6 +493,7 @@ Palette.open = function (opts) {
   Palette.render();
   Palette.show(dlg);
   input.focus();
+  if (mode === 'default') Palette.loadSkills(() => { if (Palette.ui === u && u.view === 'palette') { u.ctx = Palette.context(); Palette.render(); } });
   try { input.setSelectionRange(input.value.length, input.value.length); } catch (_) { /* not a text input */ }
   if (typeof setInterval === 'function') {
     u.timer = setInterval(Palette.tick, Palette.TICK_MS);
@@ -444,10 +514,12 @@ Palette.tick = function () {
 };
 
 Palette.itemNode = function (it, id) {
-  return el('div', { class: 'pal-item', role: 'option', id, 'aria-selected': 'false' },
+  return el('div', { class: 'pal-item' + (it.off ? ' off' : ''), role: 'option', id, 'aria-selected': 'false', 'aria-disabled': it.off ? 'true' : null },
     it.glyph || null,
     el('span', { class: 'pal-label' }, ...Palette.highlight(it.label, it.hits)),
-    it.hint ? el('span', { class: 'pal-hint', text: it.hint }) : null,
+    it.off ? el('span', { class: 'pal-hint', text: it.off }) : (it.hint ? el('span', { class: 'pal-hint', text: it.hint }) : null),
+    it.note ? el('span', { class: 'pal-note', text: it.note }) : null,
+    it.act ? el('span', { class: 'pal-act', text: it.act }) : null,
     it.kbd ? el('kbd', { class: 'pal-kbd', text: it.kbd }) : null);
 };
 
@@ -459,7 +531,7 @@ Palette.render = function () {
   const u = Palette.ui;
   if (!u || u.view !== 'palette') return;
   const q = u.mode === 'send' ? '' : u.input.value.trim();
-  const groups = u.mode === 'send' ? Palette.sendGroups(u.ctx) : Palette.groups(u.ctx, q, u.moreOpen);
+  const groups = u.mode === 'send' ? Palette.sendGroups(u.ctx) : Palette.groups(u.ctx, q, u.moreOpen, u.skillsOpen);
   u.list.textContent = '';
   u.shown = [];
   u.nodes = [];

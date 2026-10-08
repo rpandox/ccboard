@@ -37,6 +37,8 @@ HOME_USE_ALLOWED = {
     "scripts/docker-entrypoint.sh": "shell: container entrypoint; derives HOME and the default data dir inside the image",
     "scripts/qa-ui.sh": "shell: default path of the gstack browse binary (QA tooling, not the board)",
     "scripts/qa_terminal.sh": "shell: default path of the gstack browse binary (QA tooling, not the board)",
+    "scripts/ccboard-mem-env": "shell: default claude-mem data dir and board data dir, overridden by CLAUDE_MEM_DATA_DIR / CCBOARD_DATA_DIR (test seams); reads names only",
+    "scripts/dev/axe-run.sh": "shell: default path of the gstack browse binary (dev QA tooling, overridden by BROWSE; not the board)",
     "bin/ccboard-mem-run": "shell wrapper: claude-mem cache and data dir defaults, overridden by CLAUDE_CONFIG_DIR / CLAUDE_MEM_DATA_DIR",
     "bin/ccboard-hook-fast": "hook token default path, overridden by CCBOARD_HOOK_TOKEN_FILE",
     "bin/ccboard-statusline": "hook token default path, overridden by CCBOARD_HOOK_TOKEN_FILE",

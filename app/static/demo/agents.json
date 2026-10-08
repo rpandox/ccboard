@@ -85,12 +85,10 @@
       "sonnet",
       "haiku",
       "opusplan",
-      "best",
-      "opus[1m]",
-      "sonnet[1m]"
+      "best"
      ],
      "default": "opus",
-     "help": "An alias or a full model id; add [1m] for the 1M-context variant. opus, fable, sonnet and haiku lead; opusplan, best and the [1m] variants follow.",
+     "help": "An alias or a full model id. opus, fable, sonnet and haiku lead; opusplan (Opus while planning, Sonnet for execution) and best (the strongest available, which may be Fable and bill as Fable) follow. A typed [1m] suffix is still accepted, but only matters for a model without a 1M window by default (Opus 4.6, Sonnet 4.6; Claude Code docs read 2026-10-07).",
      "group": "basic",
      "danger": false,
      "when": null
@@ -234,6 +232,33 @@
      "when": null
     },
     {
+     "key": "subagent_model",
+     "label": "Subagent model",
+     "kind": "combo",
+     "choices": [
+      "inherit",
+      "haiku",
+      "sonnet",
+      "opus"
+     ],
+     "default": "inherit",
+     "help": "The default model for the subagents this session starts after launch (CLAUDE_CODE_SUBAGENT_MODEL in its environment): inherit uses the main model, and a subagent that names its own model still gets it. An alias or a full model id. The default comes from the board setting CCBOARD_SUBAGENT_MODEL.",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    },
+    {
+     "key": "subagent_force",
+     "label": "Force the subagent model",
+     "kind": "bool",
+     "choices": null,
+     "default": false,
+     "help": "Also sets CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1: every subagent uses that one model, which overrides definitions that ask for a stronger one. Off unless you switch it on here.",
+     "group": "advanced",
+     "danger": false,
+     "when": null
+    },
+    {
      "key": "autocompact",
      "label": "Auto-compact",
      "kind": "combo",
@@ -358,13 +383,12 @@
     "sonnet",
     "haiku",
     "opusplan",
-    "best",
-    "opus[1m]",
-    "sonnet[1m]"
+    "best"
    ],
    "reasoning_by_model": {},
    "capabilities": {
-    "ultracode_flag": false
+    "ultracode_flag": false,
+    "permission_prompts_none": false
    },
    "slash": {
     "clear": {

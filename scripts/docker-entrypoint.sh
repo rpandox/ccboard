@@ -29,7 +29,12 @@ fi
 
 if [ -z "${HOME:-}" ]; then
   HOME=$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6 || true)
-  [ -n "$HOME" ] || HOME=/home/rpandox
+  [ -n "$HOME" ] || { echo "docker-entrypoint: HOME is not set and the passwd entry of uid $(id -u) has no home; set HOME (compose does)" >&2; exit 1; }
+fi
+# ssh reads ~/.ssh from the passwd home, not $HOME: an image built without the box's CCBOARD_HOME breaks git over ssh.
+pw_home=$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6 || true)
+if [ -n "$pw_home" ] && [ "$pw_home" != "$HOME" ]; then
+  echo "docker-entrypoint: warning: the image's passwd home is $pw_home but HOME is $HOME; ssh will not find ~/.ssh (build with --build-arg CCBOARD_HOME=$HOME, or set the CCBOARD_HOME repository variable for CI)" >&2
 fi
 : "${CCBOARD_PORT:=8000}"
 : "${CCBOARD_DATA_DIR:=$HOME/.local/share/ccboard}"

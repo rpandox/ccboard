@@ -1206,7 +1206,7 @@ def test_no_json_load_is_ever_applied_to_a_login_path():
         strings = [n.value for n in nodes if isinstance(n, ast.Constant) and isinstance(n.value, str)]
         assert not (names & forbidden_names), f"{fn.name} parses JSON and touches a login path"
         assert not any("auth" in s.lower() for s in strings), f"{fn.name} parses JSON next to a login-file string"
-    assert checked >= 2, "the check found nothing to check: the meta and rollout readers moved"
+    assert checked >= 1, "the check found nothing to check: the rollout readers moved"      # _rollout_meta now delegates to codex_rollout.session_meta (issue #32 f)
 
 
 def test_the_module_never_runs_a_process_and_never_names_the_codex_binary():

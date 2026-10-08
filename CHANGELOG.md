@@ -2,6 +2,19 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.22 - 2026-10-08
+
+### Added
+- Usage has a Reported / Estimated switch that prices the models ccusage leaves at zero, and sessions started outside the board are counted by their folder.
+- The command palette lists the box's skills, most used first, and headless Claude runs get a subagent model default, no permission prompts and a Fable guard that needs a per-run acknowledgement.
+- The claude-mem viewer can be opened over tailscale serve on a port you choose, and the Files tab hints at core.untrackedCache when a repo scan is slow.
+- Accessibility checks: vendored axe-core, focus rings, aria labels and a Lighthouse strict mode in scripts/qa-ui.sh.
+
+### Fixed
+- A context-compacting SessionStart no longer moves a session's id, the done notice says when the session will close, the memory-env doctor check works in the container, and the scheduler cap test is no longer flaky.
+
+Upgrade: rerun ./install.sh.
+
 ## v0.5.18 - 2026-10-06
 
 ### Added

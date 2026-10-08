@@ -60,7 +60,7 @@ def test_settings_ignore_a_bad_mem_port(raw):
 
 
 def test_default_port_is_the_plugins_own_37700_plus_uid_modulo_100():
-    """13.29.0 worker-service.cjs: CLAUDE_MEM_WORKER_PORT default `37700+(process.getuid?.()??77)%100` (ubu2 uid 1000, a Mac uid 501)."""
+    """13.29.0 worker-service.cjs: CLAUDE_MEM_WORKER_PORT default `37700+(process.getuid?.()??77)%100` (uid 1000, a Mac uid 501)."""
     assert memory.default_port(1000) == 37700 and memory.default_port(501) == 37701
     assert memory.default_port(0) == 37700 and memory.default_port(1099) == 37799 and memory.default_port(1100) == 37700
     assert memory.default_port() == 37700 + os.getuid() % 100

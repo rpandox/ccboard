@@ -551,7 +551,20 @@ function jobLimitText(j) {
     const o = j.opts && typeof j.opts === 'object' ? j.opts : {};
     return ` · ${o.model || 'default model'}${o.reasoning_effort ? ' · ' + o.reasoning_effort + ' reasoning' : ''}`;
   }
-  return ` · ≤${j.max_turns} turns${j.max_budget_usd ? ' · ≤$' + j.max_budget_usd : ''}`;
+  return ` · ≤${j.max_turns} turns${j.max_budget_usd ? ' · ≤$' + j.max_budget_usd : ''}${jobFableText(j)}`;
+}
+
+/* A Claude job whose model resolves to Fable (state.jobs[].fable, issue #108): ' · Fable acknowledged' with its cap, or ' · held: needs a Fable acknowledgement and a Max $' (it does not run until the owner gives both). */
+function jobFableText(j) {
+  const f = j && j.fable;
+  if (!f) return '';
+  return f.state === 'held' ? ' · held: waiting for a Fable acknowledgement and a Max $' : ` · Fable acknowledged${f.cap ? ' (≤$' + f.cap + ')' : ''}`;
+}
+
+/* The button of a held Fable job: opens the acknowledgement sheet (launcher.js jobFableSheet). null for every other job. */
+function jobFableButton(j) {
+  if (!j || !j.fable || j.fable.state !== 'held' || typeof jobFableSheet !== 'function') return null;
+  return el('button', { type: 'button', class: 'primary tinted', onclick: () => jobFableSheet(j), text: 'Acknowledge Fable' });
 }
 
 /* One run as a line: 'run #12 12:30 · ok · $0.42 · 7 turns'. A Codex run reports no dollar cost (tokens only) and its turn count says nothing, so it shows neither. */
@@ -830,7 +843,7 @@ function taskActions(acts) {
 /* ---- the card itself: wired for the long press and the m key (the Move sheet); dnd.js makes a Backlog card draggable on a fine pointer, by the [data-task] it carries ---- */
 
 function taskCardShell(t, cls, move, ...kids) {
-  const card = el('div', { class: 'task' + cls, 'data-task': t.id, 'data-phase': taskPhase(t), tabindex: '0' }, ...kids);
+  const card = el('div', { class: 'task' + cls, 'data-task': t.id, 'data-phase': taskPhase(t), tabindex: '0', role: 'group', 'aria-label': `Task: ${String(t.title || '').slice(0, 120)}` }, ...kids);
   if (move) {
     card.setAttribute('data-movable', '1');
     card.setAttribute('aria-keyshortcuts', 'm');
@@ -950,7 +963,7 @@ function taskStepStatus(t) {
 function taskScrollTo(id) {
   const n = document.querySelector(`.task[data-task="${id}"]`);
   if (!n) return;
-  if (typeof n.scrollIntoView === 'function') { try { n.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) { /* old browsers */ } }
+  if (typeof n.scrollIntoView === 'function') { try { n.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() }); } catch (_) { /* old browsers */ } }
   if (typeof n.focus === 'function') n.focus();
 }
 
@@ -1021,7 +1034,7 @@ function makeTaskBoard(opts) {
       for (const [key, label] of BOARD_COLUMNS) {
         const items = tasks.filter((t) => t.column === key);
         if (!items.length && key !== 'backlog') continue;            // a column is drawn when it has a card; Backlog stays, it is where a task starts
-        const col = el('div', { class: 'col', 'data-col': key }, el('h3', { text: `${label} (${items.length})` }));
+        const col = el('div', { class: 'col', 'data-col': key, role: 'group', 'aria-label': label }, el('h3', { text: `${label} (${items.length})` }));
         if (!items.length && key === 'backlog') col.append(el('div', { class: 'dim', text: o.empty || 'nothing queued: + task, then Later' }));
         for (const t of items) col.append(taskCard(t, ctx));
         grid.append(col);
@@ -1293,7 +1306,10 @@ function taskCard(t, ctx) {
 
 /* tabs(items:[{id,label,count?}], activeId, onChange) -> { root, set(id), setCount(id, n), value }. Only the tab list: the page renders the panel.
    set() repaints without calling onChange (so a route change cannot loop); a click or an arrow key calls onChange(id). */
+let tabsSeq = 0;
 function tabs(items, activeId, onChange) {
+  const seq = ++tabsSeq;
+  let shared = null;                                                       // link(node): ONE panel whose content follows the selected tab
   const list = el('div', { class: 'tablist', role: 'tablist' });
   const root = el('div', { class: 'tabs' }, list);
   const nodes = new Map();
@@ -1318,6 +1334,7 @@ function tabs(items, activeId, onChange) {
       n.setAttribute('aria-selected', tid === id ? 'true' : 'false');
       n.setAttribute('tabindex', tid === id ? '0' : '-1');
     }
+    if (shared && nodes.has(id)) shared.setAttribute('aria-labelledby', nodes.get(id).getAttribute('id'));
     if (nodes.has(id)) reveal(nodes.get(id));
   };
   const pick = (id, focus) => {
@@ -1327,7 +1344,7 @@ function tabs(items, activeId, onChange) {
   for (const it of items) {
     const count = it.count === undefined || it.count === null ? null : el('span', { class: 'tab-count', text: String(it.count) });
     if (count) counts.set(it.id, count);
-    const n = el('div', { class: 'tab', role: 'tab', 'data-tab': it.id, onclick: () => pick(it.id, false), onkeydown: (e) => {
+    const n = el('div', { class: 'tab', role: 'tab', id: `tab${seq}-${it.id}`, 'data-tab': it.id, onclick: () => pick(it.id, false), onkeydown: (e) => {
       const i = ids.indexOf(it.id);
       let to = null;
       if (e.key === 'ArrowRight') to = ids[(i + 1) % ids.length];
@@ -1348,6 +1365,20 @@ function tabs(items, activeId, onChange) {
     set(id) { if (nodes.has(id)) paint(id); },
     setCount(id, n) { const c = counts.get(id); if (c) setText(c, n); },
     get value() { return current; },
+    /* Tie the tabs to their panels for assistive tech: link({tabId: panelNode}) gives every tab aria-controls and every panel an id and aria-labelledby; link(node) does it for ONE panel
+       that shows whichever tab is selected (its aria-labelledby follows). Only panels that exist are referenced: an aria-controls to nothing is an error. */
+    link(panels) {
+      const one = panels && panels.nodeType === 1 ? panels : null;
+      for (const [tid, n] of nodes) {
+        const panel = one || (panels && panels[tid]);
+        if (!panel || typeof panel.setAttribute !== 'function') continue;
+        if (!panel.getAttribute('id')) panel.setAttribute('id', one ? `tabpanel${seq}` : `tabpanel${seq}-${tid}`);
+        panel.setAttribute('role', 'tabpanel');
+        n.setAttribute('aria-controls', panel.getAttribute('id'));
+        if (!one) panel.setAttribute('aria-labelledby', n.getAttribute('id'));
+      }
+      if (one) { shared = one; one.setAttribute('aria-labelledby', nodes.get(current).getAttribute('id')); }
+    },
   };
 }
 

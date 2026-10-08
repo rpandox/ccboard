@@ -22,7 +22,7 @@ the same nesting as Claude's settings.json. What was observed on Codex, and why 
   TUI); a SessionEnd hook marked async is run synchronously with the warning "running async SessionEnd hook synchronously", and
   Interrupt and SessionEnd timeouts above 3 s are clamped with the warning "clamping ... hook timeout to 3s". So those two are
   written synchronous with timeout 3 (bin/ccboard-hook-fast, a 2 s request cap), and the file parses with no warnings. Not
-  observed: whether codex 0.145 (the ubu2 build) honours `async`; if its events never arrive, set CCBOARD_CODEX_HOOKS_ASYNC=0 (or
+  observed: whether codex 0.145 (the box's build) honours `async`; if its events never arrive, set CCBOARD_CODEX_HOOKS_ASYNC=0 (or
   pass --no-async) and every hook is written synchronous, at the cost of the board's 3 s request cap holding the TUI up on a slow hook.
 * Codex runs a hook only after you have reviewed it once, and records that per hook under
   [hooks.state."<file>:<event in snake_case>:<group index>:<hook index>"] trusted_hash in config.toml; the hash covers the

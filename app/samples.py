@@ -270,8 +270,16 @@ def record_cost(db, cost_result: dict, now=None) -> int:
         models = [m for m in (e.get("models") or []) if isinstance(m, str)][:COST_META_MODELS]
         acct = e.get("acct")
         meta = _clean({"p": e.get("project"), "r": e.get("repo"), "a": agent, "tok": tok, "m": models or None,
-                       "acct": acct if isinstance(acct, str) and acct else None})
+                       "acct": acct if isinstance(acct, str) and acct else None,
+                       "j": 1 if e.get("via") == "folder" else None})        # j: the project was joined by the session's folder, not by a board row (issue #57)
         last = db.sample_last("cost", key)
+        # est / eb: the cumulative USD with list-price estimates for the parts ccusage prices at zero, and the weakest basis used (issue #95). Written when
+        # the session has an estimate, and on every row after one has been written (a later row without it would read as "estimate gone")
+        est, eb = _num(e.get("est")), e.get("est_basis")
+        if eb and est is not None:
+            meta = dict(meta or {}, est=round(est, 6), eb=eb)
+        elif last is not None and (last["meta"] or {}).get("est") is not None:
+            meta = dict(meta or {}, est=round(v, 6))
         if last is None:
             try:
                 at = iso(e.get("last")) if e.get("last") else stamp
@@ -284,7 +292,10 @@ def record_cost(db, cost_result: dict, now=None) -> int:
             # compare what would be stored (6 dp) with what was stored: ccusage reports 7-8 dp, and an unrounded compare
             # would see every idle session as changed on every refresh
             same = abs(round(v, 6) - round(last["value"] or 0.0, 6)) <= _EPS and tok == int((last["meta"] or {}).get("tok") or 0)
-            if same or _epoch(stamp) - _epoch(last["at"]) < wait:
+            lm = last["meta"] or {}
+            moved = bool(meta.get("p")) and (lm.get("p"), lm.get("r")) != (meta.get("p"), meta.get("r"))    # newly attributed (issue #57): one row carries the project
+            moved = moved or (same and (meta or {}).get("est") != lm.get("est"))                            # a changed price table alone (no new tokens): one row carries it
+            if (same and not moved) or (not moved and _epoch(stamp) - _epoch(last["at"]) < wait):
                 continue
             at = stamp
         rows.append(("cost", key, round(v, 6), meta, at))

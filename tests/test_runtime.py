@@ -59,7 +59,7 @@ def docker_serve(tmp_path, monkeypatch):
     sock.touch()
     monkeypatch.setattr(previews, "TAILSCALE_SOCK", sock)
     monkeypatch.setattr(settings, "runtime", "docker")
-    monkeypatch.setenv("HOME", "/home/rpandox")
+    monkeypatch.setenv("HOME", "/home/example")
     monkeypatch.setattr(previews.shutil, "which", lambda x: f"/usr/bin/{x}")
     calls, result = [], {"cp": SimpleNamespace(returncode=0, stdout="", stderr="")}
     monkeypatch.setattr(previews.subprocess, "run", lambda argv, **kw: calls.append(argv) or result["cp"])
@@ -74,11 +74,11 @@ def test_docker_serve_never_uses_sudo(docker_serve):
     calls.clear()
     with pytest.raises(previews.PreviewError) as ei:
         previews.serve_on(9100, 5173)
-    assert str(ei.value) == "tailscale serve failed; on the box run: sudo tailscale set --operator=rpandox"
+    assert str(ei.value) == "tailscale serve failed; on the box run: sudo tailscale set --operator=example"
     assert len(calls) == 1 and "sudo" not in calls[0]        # one attempt as the operator, no sudo fallback
     calls.clear()
     result["cp"] = SimpleNamespace(returncode=1, stdout="", stderr="open /var/run/tailscale/tailscaled.sock: permission denied")
-    with pytest.raises(previews.PreviewError, match="--operator=rpandox"):
+    with pytest.raises(previews.PreviewError, match="--operator=example"):
         previews._run_serve(["--https=9100", "--yes", "off"])
     assert all("sudo" not in c for c in calls)
 

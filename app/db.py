@@ -171,6 +171,9 @@ MIGRATIONS = [
     "ALTER TABLE jobs ADD COLUMN opts TEXT",
     # ---- v0.5.17b (usage per subscription account): the account key (app/accounts.py) the session last ran under; NULL = unknown
     "ALTER TABLE sessions ADD COLUMN account TEXT",
+    # ---- v0.5.21 (issue #57, usage by folder): session id -> the folder a session ran in, learned from Claude's registry and the first lines of its transcript
+    #      ('' = looked and found none). Additive: the previous image ignores the table.
+    "CREATE TABLE IF NOT EXISTS session_cwd (session_id TEXT PRIMARY KEY, cwd TEXT NOT NULL DEFAULT '', first_seen TEXT NOT NULL)",
     # permissions.decision takes allow|deny|tui|interrupt (plus timeout from perm_expire). It has no CHECK constraint,
     # so nothing to migrate: the new values are plain TEXT.
 ]
@@ -377,6 +380,18 @@ class DB:
             rows = self.conn.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
 
+    def rebind_session_id(self, name: str, sid: str) -> bool:
+        """SessionStart: the conversation in this tmux session is `sid` now (set_state only fills a NULL id; a /resume or /clear starts a
+        new conversation under a new id on the same row). Refused (False) when another open row already holds `sid`: one conversation
+        belongs to one row."""
+        with self.lock:
+            if self.conn.execute("SELECT 1 FROM sessions WHERE ended_at IS NULL AND claude_session_id=? AND tmux_name<>? LIMIT 1",
+                                 (sid, name)).fetchone():
+                return False
+            self.conn.execute("UPDATE sessions SET claude_session_id=? WHERE id=(SELECT id FROM sessions WHERE tmux_name=? AND"
+                              " ended_at IS NULL ORDER BY id DESC LIMIT 1)", (sid, name))
+        return True
+
     def open_row(self, tmux_name: str) -> dict | None:
         with self.lock:
             r = self.conn.execute(
@@ -454,6 +469,26 @@ class DB:
                 "UPDATE sessions SET account=? WHERE id=(SELECT id FROM sessions WHERE tmux_name=? AND ended_at IS NULL"
                 " ORDER BY id DESC LIMIT 1) AND COALESCE(account, '')<>?", (account, tmux_name, account))
             return cur.rowcount > 0
+
+    def session_cwds(self) -> dict[str, tuple[str, str]]:
+        """{agent session id (lower case): (cwd, first_seen)} for every folder learned so far; cwd '' means a transcript was read and named none."""
+        with self.lock:
+            rows = self.conn.execute("SELECT session_id, cwd, first_seen FROM session_cwd").fetchall()
+        return {str(r[0]).lower(): (r[1], r[2]) for r in rows}
+
+    def session_cwd_put(self, rows: list[tuple[str, str]], at=None) -> int:
+        """Remember (session id, cwd) pairs. A known folder is never overwritten by another one (the first sighting stands); a '' (looked, found none)
+        is replaced by a real folder. Returns the rows written."""
+        stamp = iso(at)
+        n = 0
+        with self.lock:
+            for sid, cwd in rows:
+                sid = str(sid).lower()
+                cur = self.conn.execute("INSERT OR IGNORE INTO session_cwd(session_id, cwd, first_seen) VALUES (?,?,?)", (sid, cwd, stamp))
+                if cur.rowcount == 0 and cwd:
+                    cur = self.conn.execute("UPDATE session_cwd SET cwd=?, first_seen=? WHERE session_id=? AND cwd=''", (cwd, stamp, sid))
+                n += cur.rowcount
+        return n
 
     def session_accounts(self) -> dict[str, str]:
         """{agent session id (lower case): account key} for every session row that has both (open or ended): which subscription

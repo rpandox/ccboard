@@ -40,6 +40,9 @@ html.force-coarse { --tap:44px; --row-h:44px; --row-btn:44px; }
 @keyframes glyph-breathe { from { opacity:.55; } to { opacity:1; } }
 .glyph.working, .glyph.waiting { animation:glyph-breathe 1.6s ease-in-out infinite alternate; }
 @media (prefers-reduced-motion:reduce) { .glyph.working, .glyph.waiting { animation:none; } }
+/* prefers-reduced-motion: reduce is honoured for EVERY transition, animation and smooth scroll, also for the ones a stylesheet adds later (tests/test_static.py pins this rule next to the
+   specific ones above). A tenth of a millisecond keeps transitionend / animationend firing for code that waits for them. */
+@media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation-duration:.01ms !important; animation-iteration-count:1 !important; transition-duration:.01ms !important; scroll-behavior:auto !important; } }
 
 /* ===== v0.5.6d muted category hues =====
    text colour = --mute-<h>; 12 % tint = --mute-<h>-bg; 32 % edge = --mute-<h>-bd.

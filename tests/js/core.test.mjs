@@ -337,6 +337,17 @@ test('demoApi rebases the usage summary with the state\'s own epoch: the account
   assert.deepEqual(sum.total, fx.total);
 });
 
+test('demoApi rebases the Estimated-basis summary too: switching the Usage basis must not turn the windows into "rolled over" (issue #95)', async () => {
+  const w = demoWorld();
+  const rep = plain(await w.run("api('GET', '/api/usage/summary?days=7')"));
+  const est = plain(await w.run("api('GET', '/api/usage/summary?days=7&basis=est')"));
+  assert.equal(est.basis, 'est');
+  const now = Date.now() / 1000;
+  assert.ok(est.accounts[0].rl_5h.resets_at > now && est.accounts[0].rl_7d.resets_at > now, 'the 5H and 7D windows are still ahead');
+  assert.ok(Math.abs(est.accounts[0].rl_5h.resets_at - rep.accounts[0].rl_5h.resets_at) <= 2, 'same reset as the Reported basis');
+  assert.deepEqual(est.episodes.map((e) => e.kind), rep.episodes.map((e) => e.kind), 'the same limit episodes');
+});
+
 // ---------------------------------------------------------------- demo mode: the make-believe usage refresh (v0.5.17f, part 2)
 
 function demoSessions(st) {

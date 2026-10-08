@@ -51,10 +51,10 @@ FILES = {
 
 @pytest.fixture(autouse=True)
 def _clean_caches():
-    for cache in (tree._LS, tree._STATUS):
+    for cache in (tree._LS, tree._STATUS, tree._HINTED):
         cache.clear()
     yield
-    for cache in (tree._LS, tree._STATUS):
+    for cache in (tree._LS, tree._STATUS, tree._HINTED):
         cache.clear()
 
 
@@ -759,3 +759,107 @@ def test_secret_names_cover_keys_and_rc_files():
         assert tree.is_secret_name(n), n
     for n in ("identity.txt", "README.md", "keyboard.js", "secrets_doc.md.bak"[:0] or "index.html", "env.example"):
         assert not tree.is_secret_name(n), n
+
+
+# ------------------------------------------------------------------ the untracked-cache hint (issue #112)
+
+class SlowTimer:
+    """tree._timer: each reading moves on by `step` seconds, so a listing (two readings) took `step`."""
+    def __init__(self, step):
+        self.step, self.t = step, 0.0
+
+    def __call__(self):
+        self.t += self.step
+        return self.t
+
+
+@pytest.fixture
+def slow(monkeypatch):
+    timer = SlowTimer(0.9)
+    monkeypatch.setattr(tree, "_timer", timer)
+    return timer
+
+
+def test_a_slow_cold_scan_adds_the_hint_naming_this_repo_only(world, slow):
+    got = ls()
+    assert got["hint"] == {"kind": "untracked_cache", "cmd": f"git -C {world} config core.untrackedCache true"}
+
+
+def test_the_command_quotes_a_path_with_spaces_and_quotes(monkeypatch):
+    import shlex
+    from pathlib import Path
+    monkeypatch.setattr(tree, "_untracked_cache_on", lambda root: False)
+    odd = Path("/srv/my projects/it's; rm -rf x/api")
+    h = tree._untracked_hint(odd, tree._Listing([], frozenset(), (0, 0), 0.0, cold_s=2.0))
+    assert shlex.split(h["cmd"]) == ["git", "-C", str(odd), "config", "core.untrackedCache", "true"], "one argument, whatever the path holds"
+
+
+def test_a_fast_scan_and_a_repo_with_the_cache_on_show_nothing(world, monkeypatch):
+    monkeypatch.setattr(tree, "_timer", SlowTimer(0.39))
+    assert "hint" not in ls()
+    tree._LS.clear(); tree._HINTED.clear()
+    monkeypatch.setattr(tree, "_timer", SlowTimer(0.9))
+    git(world, "config", "core.untrackedCache", "true")
+    assert "hint" not in ls(), "already set: nothing to suggest"
+    for v in ("keep", "yes", "on"):
+        tree._LS.clear(); tree._HINTED.clear()
+        git(world, "config", "core.untrackedCache", v)
+        assert "hint" not in ls(), v
+    tree._LS.clear(); tree._HINTED.clear()
+    git(world, "config", "core.untrackedCache", "false")
+    assert ls()["hint"]["kind"] == "untracked_cache", "false is not on"
+
+
+def test_the_hint_comes_once_per_repo_per_hour(world, slow, clock):
+    assert ls()["hint"]["kind"] == "untracked_cache"
+    assert "hint" not in ls(), "same answer again: given already"
+    clock["now"] += 3599
+    assert "hint" not in ls(refresh=True) and "hint" not in ls(path="src", refresh=True)
+    clock["now"] += 2
+    assert ls(refresh=True)["hint"]["kind"] == "untracked_cache", "an hour later"
+    assert "hint" not in ls(refresh=True)
+
+
+def test_each_repo_has_its_own_hour(projects_dir, slow):
+    a = init_repo(projects_dir / "shop" / "a", FILES)
+    b = init_repo(projects_dir / "shop" / "b", FILES)
+    assert ls(repo="a")["hint"]["cmd"] == f"git -C {a} config core.untrackedCache true"
+    assert "hint" not in ls(repo="a", refresh=True)
+    assert ls(repo="b")["hint"]["cmd"] == f"git -C {b} config core.untrackedCache true", "a's hint does not use up b's"
+
+
+def test_the_board_never_writes_the_repos_git_config(world, slow):
+    before = (world / ".git" / "config").read_text()
+    assert ls()["hint"]
+    assert (world / ".git" / "config").read_text() == before
+    cp = subprocess.run(["git", "config", "--get", "core.untrackedCache"], cwd=world, capture_output=True, text=True)
+    assert cp.returncode != 0 and cp.stdout == ""
+
+
+def test_no_hint_for_a_folder_that_is_not_a_repo_or_when_git_fails(projects_dir, slow, monkeypatch):
+    plain = projects_dir / "shop" / "notes"
+    write(plain, "a.txt", "x")
+    assert "hint" not in ls(repo="notes")
+    repo = init_repo(projects_dir / "shop" / "api", FILES)
+    real = tree._run
+
+    def broken(args, cwd, timeout):
+        if args[:1] == ["config"]:
+            raise tree._GitFailed("no")
+        return real(args, cwd, timeout)
+    monkeypatch.setattr(tree, "_run", broken)
+    assert ls()["hint"]["kind"] == "untracked_cache", "an unreadable config counts as not set"
+    assert repo.exists()
+
+
+def test_http_the_hint_is_in_the_answer_and_is_never_lost_to_a_304(world, slow, lite_client, monkeypatch):
+    monkeypatch.setattr(tree, "_timer", SlowTimer(0.01))
+    first = get(lite_client, URL.format(repo="api"))
+    assert "hint" not in first.json()
+    tag = first.headers["etag"]
+    tree._LS.clear()
+    monkeypatch.setattr(tree, "_timer", SlowTimer(0.9))
+    slow_one = lite_client.get(URL.format(repo="api"), headers=H | {"If-None-Match": tag})
+    assert slow_one.status_code == 200 and slow_one.json()["hint"]["kind"] == "untracked_cache" and slow_one.headers["etag"] == tag
+    again = lite_client.get(URL.format(repo="api"), headers=H | {"If-None-Match": tag})
+    assert again.status_code == 304, "given already: the next revalidation is the usual bare 304"

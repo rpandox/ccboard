@@ -627,3 +627,32 @@ test('demoApi answers the tree and file endpoints from the fixtures by repo and 
   assert.equal(revealed.path, 'config/credentials.example.json');
   await assert.rejects(() => api('/api/projects/phasezero/repos/website/file?path=missing.txt'), (e) => e.status === 404);
 });
+
+// ---------------------------------------------------------------- the untracked-cache hint (issue #112)
+
+test('onHint receives the hint from whichever level carried it (not only the top), and a level without one calls nothing', async () => {
+  const hint = { kind: 'untracked_cache', cmd: "git -C '/srv/p/api' config core.untrackedCache true" };
+  const lv = levels();
+  lv['api|src'] = { ...SRC(), hint };
+  const b = backend(lv);
+  const { w, host } = treeWorld(b);
+  const got = [];
+  mount(w, host, { onHint: (h, rec) => got.push([h.kind, h.cmd, rec.path]) });
+  await tick();
+  assert.deepEqual(got, [], 'the top level carried no hint');
+  key(w, item(host, 'src'), 'ArrowRight');
+  await tick(5);
+  assert.deepEqual(got, [['untracked_cache', hint.cmd, 'src']]);
+});
+
+test('a throwing onHint never breaks the tree', async () => {
+  const lv = levels();
+  lv['api|'] = { ...TOP(), hint: { kind: 'untracked_cache', cmd: 'x' } };
+  const { w, host } = treeWorld(backend(lv));
+  const quiet = console.error; console.error = () => {};
+  try {
+    mount(w, host, { onHint: () => { throw new Error('boom'); } });
+    await tick();
+  } finally { console.error = quiet; }
+  assert.equal(items(host).length, 6, 'the rows are drawn');
+});

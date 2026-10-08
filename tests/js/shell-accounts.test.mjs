@@ -70,8 +70,8 @@ test('two accounts: the chip shows the first two letters of the label, in the ac
 test('the letters come from the label, else the name, else the email, else the key; an emoji is not cut in half', () => {
   const w = sWorld();
   const letters = (over) => { paint(w, { usage: usage(10, 10), ...stateOf([acct(A1, { current: true, name: null, email: null, ...over }), acct(A2, { label: 'Work' })]) }); return text(chip(w)); };
-  assert.equal(letters({ label: 'work', name: 'Roshan' }), 'Wo');
-  assert.equal(letters({ name: 'roshan' }), 'Ro');
+  assert.equal(letters({ label: 'work', name: 'Sam' }), 'Wo');
+  assert.equal(letters({ name: 'sam' }), 'Sa');
   assert.equal(letters({ email: 'zed@example.com' }), 'Ze');
   assert.equal(letters({}), '7d', 'the first characters of the key');
   assert.equal(letters({ label: '\u{1F642}Home' }), '\u{1F642}H');

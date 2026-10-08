@@ -71,7 +71,7 @@ def test_preview_route_docker_without_operator(lite_client, projects_dir, fake_t
     sock = tmp_path / "tailscaled.sock"
     sock.touch()
     monkeypatch.setattr(previews, "TAILSCALE_SOCK", sock)
-    monkeypatch.setenv("HOME", "/home/rpandox")
+    monkeypatch.setenv("HOME", "/home/example")
     calls, real_run = [], subprocess.run
 
     def fake_run(argv, **kw):       # previews shares the subprocess module with git: only tailscale/sudo are faked
@@ -84,5 +84,5 @@ def test_preview_route_docker_without_operator(lite_client, projects_dir, fake_t
     t = lite_client.post("/api/projects/shop/repos/api/tasks", headers=H, json={"title": "ui", "prompt": "p"}).json()
     r = lite_client.post(f"/api/tasks/{t['id']}/preview", headers=H, json={"port": 5173})
     assert r.status_code == 422
-    assert r.json()["error"] == "tailscale serve failed; on the box run: sudo tailscale set --operator=rpandox"
+    assert r.json()["error"] == "tailscale serve failed; on the box run: sudo tailscale set --operator=example"
     assert len(calls) == 1 and "sudo" not in calls[0]

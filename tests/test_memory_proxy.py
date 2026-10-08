@@ -75,7 +75,7 @@ def worker_queries(w: MemWorker, path: str) -> list[dict]:
 # ------------------------------------------------------------------ constants pinned to the box check
 
 def test_the_worker_names_are_the_ones_the_box_check_verified():
-    assert mp.TESTED_WORKER == "13.31.0"
+    assert mp.TESTED_WORKER == "13.34.2"
     assert mp.P_QUERY == "query", "q= is silently ignored by /api/search (box check V11 row 4)"
     assert (mp.P_PROJECT, mp.P_PROJECTS, mp.P_FORMAT, mp.FORMAT_JSON) == ("project", "projects", "format", "json")
     assert (mp.P_ANCHOR, mp.P_DEPTH_BEFORE, mp.P_DEPTH_AFTER) == ("anchor", "depth_before", "depth_after")
@@ -339,7 +339,7 @@ def test_parse_timeline_reads_the_fixture_rows():
 
 # ------------------------------------------------------------------ compat
 
-@pytest.mark.parametrize("ver,want", [("13.31.0", "ok"), ("13.30.9", "ok"), ("13.31.1", "untested"), ("13.34.2", "untested"),
+@pytest.mark.parametrize("ver,want", [("13.34.2", "ok"), ("13.31.0", "ok"), ("13.34.3", "untested"), ("13.35.0", "untested"),
                                       ("14.0.0", "unknown"), ("12.9.0", "unknown"), (None, "unknown"), ("garbage", "unknown")])
 def test_compat(ver, want):
     assert mp.compat(ver) == want

@@ -9,7 +9,7 @@ import re
 import secrets
 from pathlib import Path
 
-from . import accounts, agents, login_problem, notify, permissions, projects, samples, tmux
+from . import accounts, agents, login_problem, notify, permissions, projects, samples, skills, tmux
 from .agents.claude import ELICITATION_DONE, SESSION_ID_RE, WAIT_KIND, WAITING_NOTIFICATIONS, parse_limit_message, statusline_stats
 from .config import settings
 from .db import SKIP_EVENTS, now as db_now
@@ -208,10 +208,11 @@ def agent_mismatch(row_agent: str | None, header_agent: str | None) -> bool:
 
 
 def bind_unbound_rows(db) -> int:
-    """Identity step 3 for Codex (plan v0.5.11 'Identity join order'), a seam until v0.5.12: bind open codex rows that have no
-    conversation id yet to their rollout (cwd + start time, FIFO, ambiguity left unbound). The rollout Tailer lands in v0.5.12 with
-    `agents.codex.bind_unbound_rows(db)`; until that function exists this returns 0 and binds nothing. Steps 1 (the CCBOARD_SESSION
-    env header), 2 (the payload session_id, resolve_session) and 4 (the cwd match) are live. Never raises."""
+    """Identity step 3 for Codex (plan v0.5.11 'Identity join order'): bind open codex rows that have no conversation id yet to their
+    rollout (cwd + originator + start time, FIFO, ambiguity left unbound) through `agents.codex.bind_unbound_rows(db)`, which hands over to
+    the rollout Tailer's codex_rollout.bind_unbound_rows (v0.5.12). The join order is: 1 the CCBOARD_SESSION env header, 2 the payload
+    session_id (resolve_session), 3 this rollout bind, 4 the cwd match. Returns how many rows it bound (0 when the agent has no such
+    function). Never raises."""
     fn = getattr(getattr(agents, "codex", None), "bind_unbound_rows", None)
     if not callable(fn):
         return 0
@@ -369,11 +370,8 @@ def _foreign(db, name: str, payload: dict, sid: str | None, row: dict | None) ->
 
 
 def _rebind_session_id(db, name: str, sid: str) -> None:
-    """SessionStart: the conversation in this tmux session is `sid` now (db.set_state only fills a NULL id; a /resume or /clear starts a
-    new conversation under a new id on the same row). Belongs in db.py; kept here because the hook slice owns only hooks.py."""
-    with db.lock:
-        db.conn.execute("UPDATE sessions SET claude_session_id=? WHERE id=(SELECT id FROM sessions WHERE tmux_name=? AND"
-                        " ended_at IS NULL ORDER BY id DESC LIMIT 1)", (sid, name))
+    """Thin re-export of db.rebind_session_id for one release (tests and callers that imported the old helper)."""
+    db.rebind_session_id(name, sid)
 
 
 def _statusline_sample(payload: dict) -> dict:
@@ -484,7 +482,8 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None, ch
     recorded on the stored event: the row's own agent, or for a shell row the X-CCBoard-Agent the hook script sent (hook_agent).
 
     Order: guard (foreign sessions write nothing) -> statusline -> PostToolBatch -> the adapter reads the payload (every other event)
-    -> one flags write -> state -> event row -> notification. Flags and state are on disk before the notification is built."""
+    -> one flags write -> state -> event row -> turn hooks (taskflow ends the task's turn and stamps flags.autoclose) -> notification.
+    Flags, state and the planned close are on disk before the notification is built."""
     event = _event_name(event)
     p = payload if isinstance(payload, dict) else {}
     sid = _valid_sid(p)
@@ -533,12 +532,15 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None, ch
     auth_failure = False
 
     if event == "SessionStart":
-        if sid:
-            _rebind_session_id(db, name, sid)
+        if sid and adapter.rebinds(p, row):            # the adapter says which SessionStart sources start a conversation (compact does not)
+            if not db.rebind_session_id(name, sid):
+                log.info("SessionStart on %s carries a conversation another open row holds; the row keeps its own", name)
         if isinstance(flags.get("resumed"), dict):
             flags["resumed"] = {"at": now, **flags["resumed"]}
     elif event == "UserPromptSubmit":
         sys_kind = is_system_turn(prompt)
+        if not sys_kind and agent != "codex":                  # a Codex prompt is not a Claude skill; a shell row hears Claude run by hand in it
+            _sample(skills.bump_use, db, prompt)                # a typed `/<skill>` of a skill installed on the box counts one use (kv skill_uses; the palette orders by it)
         if sys_kind:
             flags["last_system_turn"] = {"kind": sys_kind, "head": prompt.strip()[:SYSTEM_HEAD], "at": now}
             prompt = None                                       # still working, but last_prompt stays the person's own words
@@ -580,7 +582,7 @@ def apply(db, name: str, event: str, payload: dict, agent: str | None = None, ch
             project = None
         if project:
             _sample(samples.bump_event, db, project)
+    _turn_hooks(db, name, event, n, row)                          # taskflow stamps its planned close (flags.autoclose.due) here ...
     if attention and state and not auth_failure:
-        notify.notify_session(name, state, message, str(kind) if kind else None)
-    _turn_hooks(db, name, event, n, row)
+        notify.notify_session(name, state, message, str(kind) if kind else None)      # ... so the done notice can tell the truth about it
     return {"session": name, "event": event, "state": state, "kind": kind}

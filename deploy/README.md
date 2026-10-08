@@ -15,7 +15,7 @@ Container delivery (v0.5.1-docker). GitHub Actions builds `ghcr.io/rpandox/ccboa
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CCBOARD_HOME` | `/home/rpandox` | Host home, mounted at the same path inside |
+| `CCBOARD_HOME` | required, no default | Host home, mounted at the same path inside (`install.sh` writes it; `docker compose config` stops with a message when it is missing) |
 | `CCBOARD_UID`, `CCBOARD_GID` | `1000` | Run as this user; the tmux socket directory is `/tmp/tmux-<uid>` |
 | `PROJECTS_DIR` | `/srv/projects` | Mounted at the same path |
 | `CCBOARD_IMAGE_TAG` | `latest` | `sha-<7>` or `vX.Y.Z` pins a build |

@@ -33,7 +33,7 @@
   "rates_since": "2026-09-26T09:00:00+00:00",
   "plugin_version": "13.34.2",
   "compat": "ok",
-  "tested_worker": "13.31.0",
+  "tested_worker": "13.34.2",
   "up": true,
   "stale_sessions": 1,
   "worker_version": "13.31.0"

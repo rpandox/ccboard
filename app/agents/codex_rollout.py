@@ -815,12 +815,16 @@ def _accounts(db) -> tuple[dict, str | None]:
 
 
 def _owner(accts: dict, current: str | None, account_id: str | None) -> str | None:
-    """The account key a reading belongs to: the record whose account_id the rollout's creator_account_id equals, else the current account
-    (None when none is known: the reading then only feeds key `codex` and the kv)."""
+    """The account key a reading belongs to: the record whose account_id the rollout's creator_account_id equals. A rollout whose id matches
+    NO saved account belongs to no known account (None: the reading then only feeds key `codex` and the kv) as soon as at least one saved
+    account has an id; usage from an unknown login is never credited to whichever account is current. Only while no saved account carries
+    an id yet (nothing to tell them apart by) does the current account stand in, and a rollout with no id at all is the current account's."""
     if account_id:
         for key, rec in accts.items():
             if rec.get("account_id") == account_id:
                 return key
+        if any(rec.get("account_id") for rec in accts.values()):
+            return None
     return current
 
 

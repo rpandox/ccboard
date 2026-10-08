@@ -1471,6 +1471,13 @@ class CodexAgent(Agent):
             return "rebind"
         return "subthread"
 
+    def rebinds(self, payload: dict, row: dict | None = None) -> bool:
+        """Does this SessionStart move the row to the payload's thread id? Same rule as the guard in hooks.apply: thread_relation says
+        `rebind` (clear / resume / fork, or any new id while the row is at rest, so the /new `startup` case) or `own` (no bound id yet, or the
+        same id); a `subthread` never reaches here and never rebinds."""
+        bound = (row or {}).get("claude_session_id")
+        return self.thread_relation("SessionStart", payload, bound, (row or {}).get("state")) != "subthread"
+
     def normalise_hook(self, event: str, payload: dict) -> HookNorm:
         """One Codex hook payload in the board's terms (same contract as ClaudeAgent.normalise_hook; pure, never raises).
         Codex-only: Interrupt -> state idle, kind 'interrupt' (hooks.apply expires the row's pending permissions with decision

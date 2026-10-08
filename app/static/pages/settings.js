@@ -230,6 +230,14 @@ function settingsBox(p) {
       text: `${failed ? 'failed' : partial ? 'ok, backup branch refused' : 'ok'} ${fmtAge(Date.parse(bk.at) / 1000)} ago` })));
   } else p.append(settingsKv('Last run', el('span', { class: 'dim', text: 'no backup has run yet' })));
   if (bk && bk.at) p.append(settingsKv('Contains', el('span', { class: 'dim', text: backupContainsText(bk) })));
+  const cd = state.claude_defaults;
+  if (cd) {
+    p.append(settingsHead('Claude defaults'));
+    p.append(settingsKv('Subagent model', el('span', { class: 'v', text: cd.subagent_model === 'inherit' ? 'inherit: subagents use the main model' : cd.subagent_model }),
+      el('span', { class: 'dim', text: 'CCBOARD_SUBAGENT_MODEL: the default model for subagents of the sessions, tasks and scheduled runs the board starts; the launcher can override it per launch.' })));
+    p.append(settingsKv('Fable runs', el('span', { class: 'v', text: `Max $ ${cd.fable_cap}` }),
+      el('span', { class: 'dim', text: 'CCBOARD_HEADLESS_FABLE_CAP: the most a scheduled or batch run that uses Fable may be capped at. Each such job also needs its own acknowledgement.' })));
+  }
   p.append(settingsHead('claude-mem'));
   p.append(settingsMemBlock());
 }
@@ -324,7 +332,7 @@ function backupContainsText(bk) {
   return `${names.length ? names.join(', ') : 'nothing'}${r.snapshot_id ? '' : ' (staged, no restic snapshot recorded)'} · saved logins are never backed up`;
 }
 
-/* What the git step of the last backup did: ' · 2 branches copied to ccboard-backup/ubu2/ in 1 of 9 repos', or that every repo was
+/* What the git step of the last backup did: ' · 2 branches copied to ccboard-backup/<node>/ in 1 of 9 repos', or that every repo was
    already on the remote. Runs older than the backup branches (no push_ns) keep their old wording. */
 function backupPushText(bk) {
   const list = bk.push || [];
@@ -925,7 +933,7 @@ function settingsAddBlock() {
     m.hide = false;
     m.slow = false;
     patch();
-    if (root.scrollIntoView) { try { root.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) { /* no scrolling here */ } }
+    if (root.scrollIntoView) { try { root.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() }); } catch (_) { /* no scrolling here */ } }
     const body = {};
     if (m.email) body.email = m.email;
     if (restart) body.restart = true;
@@ -1287,7 +1295,7 @@ function settingsCxAddBlock() {
     m.hide = false;
     m.slow = false;
     patch();
-    if (root.scrollIntoView) { try { root.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) { /* no scrolling here */ } }
+    if (root.scrollIntoView) { try { root.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() }); } catch (_) { /* no scrolling here */ } }
     try {
       await api('POST', '/api/codex-accounts/login', { ...(again ? { replace_key: again.key } : { label }), ...(restart ? { restart: true } : {}) });
     } catch (e) {
@@ -1569,7 +1577,7 @@ function settingsSig(id, st) {
   const minute = Math.floor(Date.now() / 60000);                       // ages ("3h ago") move on, so the minute is part of the key
   if (id === 'notify') return JSON.stringify([st.config && st.config.ntfy, st.config && st.config.backup, st.backup, minute]);
   if (id === 'nodes') return JSON.stringify(st.nodes);
-  if (id === 'box') return JSON.stringify([st.health, st.backup, st.node_name, st.user, minute]);
+  if (id === 'box') return JSON.stringify([st.health, st.backup, st.node_name, st.user, st.claude_defaults, minute]);
   if (id === 'accounts') {                                             // identity and labels, not the readings: those move with every statusline and would rebuild the Rename button under a finger (they refresh with the minute)
     const forget = /^((acct|cx)-forget:|cx-logout)/.test(String(ui.confirm || '')) ? ui.confirm : null;      // the two-tap Forget login repaints the row
     return JSON.stringify([st.accounts && st.accounts.current, agentsAccounts(st).map((a) => [a.key, a.label, a.name, a.email, a.plan, !!a.current, !!a.saved]), acctStore(st), acctFlow.busy, forget, minute,
@@ -1641,6 +1649,7 @@ registerPage('settings', {
       panels[sec.id] = el('div', { class: 'section settings-panel hidden', role: 'tabpanel', 'data-sec': sec.id });
       wrap.append(panels[sec.id]);
     }
+    if (typeof tabCtl.link === 'function') tabCtl.link(panels);                                     // aria-controls / aria-labelledby between each tab and its panel
     root.append(wrap);
     if (settingsPage.add) settingsPage.add.dispose();
     settingsPage.add = null;                                          // the add block is built again with the Accounts panel of this mount

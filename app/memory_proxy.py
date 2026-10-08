@@ -44,10 +44,11 @@ from .config import settings
 log = logging.getLogger("ccboard.memory")
 
 # ------------------------------------------------------------------ the worker's names (pinned)
-# Verified live against claude-mem worker 13.31.0 on the box (box check V11, issue #12, 2026-10-08); route and parameter names also read
-# from the 13.34.2 plugin source already on disk (the worker moves to it at its next restart; its changelog lists no change to these).
-# tests/test_memory_contract.py pins every one of them; a rename in a plugin update shows there and as state 'incompatible' at runtime.
-TESTED_WORKER = "13.31.0"
+# Verified live against claude-mem worker 13.31.0 on the box (box check V11, issue #12, 2026-10-08) and again against the running 13.34.2
+# worker (2026-10-08, GET only: /api/stats, /api/projects, /api/observations, /api/summaries, /api/search with format=json, each answer
+# passed check_shape with no drift), so TESTED_WORKER is 13.34.2. The scrubbed fixtures in tests/fixtures are still the 13.31.0 answers.
+# tests/test_memory_contract.py pins every name below; a rename in a plugin update shows there and as state 'incompatible' at runtime.
+TESTED_WORKER = "13.34.2"
 ENDPOINTS = {
     "projects": "/api/projects",           # {projects: [str], sources, projectsBySource}; never empty while the worker is up
     "observations": "/api/observations",   # {items, hasMore, offset, limit}, newest first, limit <= 100

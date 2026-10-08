@@ -38,6 +38,7 @@ EXPECTED = {
     ("GET", "/api/state"): "identity",
     ("GET", "/api/agents"): "identity",
     ("GET", "/api/doctor"): "identity",
+    ("GET", "/api/skills"): "identity",     # read-only listing of installed skills (front matter only); behind the same identity middleware as every /api read
     ("GET", "/api/memory/health"): "identity",
     ("GET", "/api/memory/{project}/observations"): "identity",
     ("GET", "/api/memory/{project}/summaries"): "identity",
@@ -108,6 +109,7 @@ EXPECTED = {
     ("POST", "/api/batch"): "identity+csrf",
     ("POST", "/api/jobs/{jid}/run"): "identity+csrf",
     ("POST", "/api/jobs/{jid}/toggle"): "identity+csrf",
+    ("POST", "/api/jobs/{jid}/acknowledge-fable"): "identity+csrf",
     ("DELETE", "/api/jobs/{jid}"): "identity+csrf",
     ("GET", "/api/runs/{rid}"): "identity",
     ("POST", "/api/runs/{rid}/resume"): "identity+csrf",

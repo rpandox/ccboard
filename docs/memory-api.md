@@ -368,7 +368,7 @@ The board sends these names to the worker:
 | `type`, `obs_type`, `orderBy` | Search filters and order. |
 | `anchor`, `depth_before`, `depth_after` | The timeline window. |
 
-They are pinned in `memory_proxy` (`TESTED_WORKER = "13.31.0"`) and in `tests/test_memory_contract.py`.
+They are pinned in `memory_proxy` (`TESTED_WORKER = "13.34.2"`) and in `tests/test_memory_contract.py`.
 
 After a plugin update, run this on the box:
 

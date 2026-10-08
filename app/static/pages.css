@@ -62,6 +62,8 @@
 #page .xr-title { overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow-wrap:anywhere; font-weight:600; }
 #page .xr-meta { display:flex; flex-wrap:wrap; align-items:center; gap:3px 6px; min-width:0; font:12px/1.4 var(--font-mono); color:var(--dim); }
 #page .xr-where { min-width:0; overflow-wrap:anywhere; color:var(--hue, var(--dim)); }
+#page .xr-why { font-size:12px; line-height:1.4; }
+#page .xr-why.hidden { display:none; }
 #page .xr-origin { color:var(--fg-2); }                                  /* who drove the thread when it was not a Codex terminal: a plain badge, not an alert */
 #page .xr-act { grid-area:act; display:flex; align-items:center; gap:8px; }
 #page .xr-age { font:12px/1.3 var(--font-mono); color:var(--dim); }
@@ -138,6 +140,9 @@ dialog#helpdlg.palette::backdrop { background:rgba(0,0,0,.55); }
 .palette .pal-hint { flex:1 1 0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:12px/1.3 var(--font-mono); color:var(--dim); }
 .palette .pal-kbd { flex:none; margin-left:auto; padding:1px 6px; border:1px solid var(--line); border-radius:3px; background:var(--bg); color:var(--dim); font:11px/1.5 var(--font-mono); }
 .palette .pal-hint + .pal-kbd { margin-left:0; }
+.palette .pal-note { flex:none; font:11px/1.3 var(--font-mono); color:var(--dim); white-space:nowrap; }
+.palette .pal-act { flex:none; padding:1px 6px; border:1px solid var(--line); border-radius:3px; font:11px/1.5 var(--font-ui); color:var(--fg-2); }
+.palette .pal-item.off .pal-label, .palette .pal-item.off .pal-act { color:var(--dim); }
 .palette .pal-empty { padding:16px 14px; color:var(--dim); }
 .palette .pal-foot { flex:none; padding:7px 14px calc(7px + var(--sab)); border-top:1px solid var(--line); font:11px/1.4 var(--font-mono); color:var(--dim); }
 @media (hover:hover) { .palette .pal-item:hover:not(.sel) { background:var(--card); } }
@@ -451,6 +456,9 @@ html.force-coarse #page .pblock .pb-toggle { min-width:var(--tap); }
 #page .pj-previewbar { display:flex; justify-content:flex-end; }
 #page .pj-previewbar:has(.hidden:only-child) { display:none; }
 #page .pj-hint { margin:0; padding:20px 14px; }
+#page .pj-uchint { display:flex; flex-direction:column; gap:6px; padding:8px 12px; border-bottom:1px solid var(--line-soft); font-size:12px; line-height:1.45; min-width:0; }
+#page .pj-uchint .doc-cmdline { align-items:center; }
+html.force-coarse #page .pj-uchint button { min-height:var(--tap); min-width:var(--tap); }
 @media (max-width:839px) { #page .pj-previewbox:not(.open) { display:none; } }
 
 /* the tree: Blueprint's bp5-tree markup (semantic classes in core.js), restyled to the app's rows */
@@ -813,7 +821,7 @@ html.force-coarse #page .settings-page .cx-split button { min-height:var(--tap, 
 @media (pointer: coarse) { #page .settings-page .cx-split button { min-height:var(--tap, 44px); } }
 #page .settings-page .cx-form { display:flex; flex-direction:column; gap:8px; }
 #page .settings-page .cx-code { font-family:var(--font-mono); font-size:28px; font-weight:600; line-height:1.2; letter-spacing:.14em; text-align:center; padding:12px; border:1px solid var(--line); border-radius:2px; background:var(--bg-0); color:var(--fg); user-select:all; overflow-wrap:anywhere; }
-#page .settings-page .cx-code.is-empty { color:var(--dim-2); letter-spacing:0; }
+#page .settings-page .cx-code.is-empty { color:var(--dim); letter-spacing:0; }          /* text: --dim (AA); --dim-2 is decoration only */
 #page .settings-page .cx-cmd { display:block; padding:8px 10px; border:1px solid var(--line-soft); border-radius:2px; background:var(--bg-0); font-family:var(--font-mono); font-size:13px; overflow-wrap:anywhere; user-select:all; }
 @media (max-width:599px) {
   #page .settings-page .set-cx > .kv-act { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:8px; justify-content:stretch; }
@@ -1014,6 +1022,7 @@ html.force-coarse #page .quad .q-scope-sel { font-size:16px; }
 #page .quad .qtile.active { outline:2px solid var(--sig); outline-offset:-1px; }
 #page .quad .qtile:focus { outline:none; }
 #page .quad .qtile.active:focus { outline:2px solid var(--sig); outline-offset:-1px; }
+#page .quad .qtile:focus-visible { outline:2px solid var(--sig); outline-offset:-1px; }                       /* a keyboard focus is always visible, active tile or not */
 #page .quad .qtile.gone { opacity:.85; }
 
 /* header: one row, --row-btn tall (28 px with a mouse, 44 px on touch). The title keeps at least 40 % of the row (40cqi: the tile is the size container); the other pieces
@@ -1172,6 +1181,10 @@ html.force-coarse .lx-form .checks label { min-height:var(--tap); }
 .lx-form .lx-danger-t { color:var(--fg); font-size:13px; line-height:1.45; }
 .lx-form .lx-ack { display:flex; flex-direction:column; gap:2px; }
 .lx-form .lx-ack .checks label { color:var(--fg); font-weight:600; }
+.job-fable { display:flex; flex-direction:column; gap:2px; }
+.job-fable .checks label { color:var(--fg); font-weight:600; }
+@media (pointer:coarse) { .job-fable .checks label { min-height:var(--tap); } }
+html.force-coarse .job-fable .checks label { min-height:var(--tap); }
 .lx-form .lx-foot { align-items:center; }
 .lx-form .lx-acct { flex:1 1 100%; display:flex; align-items:center; flex-wrap:wrap; gap:4px 10px; min-width:0; font-size:12px; }
 .lx-form .lx-acct-t { min-width:0; overflow-wrap:anywhere; }

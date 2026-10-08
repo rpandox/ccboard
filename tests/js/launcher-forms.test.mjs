@@ -235,7 +235,7 @@ test('the schedule form: every control has its label above it, the options are u
   open(w, 'schedule', SHOP_API);
   const f = form(w);
   const labels = f.querySelectorAll('.field-label').map(text);
-  assert.deepEqual(labels, ['Agent', 'Model', 'Reasoning', 'Name', 'Prompt', 'Cron', 'Permission mode', 'Max turns', 'Max $', 'Extra args'], 'v0.5.16: the agent picker leads, and Codex\'s model and reasoning follow it');
+  assert.deepEqual(labels, ['Agent', 'Model', 'Reasoning', 'Name', 'Prompt', 'Cron', 'Allowed tools', 'Permission mode', 'Max turns', 'Max $', 'Extra args'], 'v0.5.16: the agent picker leads, and Codex\'s model and reasoning follow it');
   assert.equal(f.querySelector('.lx-agentbox[data-agent=codex]').classList.contains('hidden'), true, 'Codex\'s options stay hidden while Claude is picked');
   const adv = f.querySelector('details');
   assert.equal(text(adv.querySelector('summary')), 'Advanced');
@@ -524,4 +524,193 @@ test('the batch form with Codex: every job runs with it, no turn or budget is se
   f = form(w);
   assert.deepEqual(segOn(f, 'Agent'), ['◇ Codex']);
   assert.equal(fieldOf(f, /^Model$/).querySelector('select').value, 'gpt-6-sol');
+});
+
+// ---------------------------------------------------------------- #107 / #108: pre-approved tools and the Fable acknowledgement on the headless job forms
+
+const fableRow = (f) => f.querySelector('.job-fable');
+const shown = (n) => { for (let x = n; x && x.nodeType === 1; x = x.parentNode) if (x.classList.contains('hidden')) return false; return true; };
+const tickBox = (cb, on = true) => { cb.checked = on; cb.dispatchEvent({ type: 'change' }); };
+const typeIn = (n, v) => { n.value = v; n.dispatchEvent({ type: 'input' }); };
+const fillSchedule = (f, args) => {
+  typeIn(fieldOf(f, /^Name$/).querySelector('input'), 'nightly-fable');
+  typeIn(fieldOf(f, /^Prompt$/).querySelector('textarea'), 'audit it');
+  if (args !== undefined) typeIn(fieldOf(f, /^Extra args$/).querySelector('input'), args);
+};
+
+test('Allowed tools sit on the schedule form for Claude only, with the dontAsk hint, and travel as allowed_tools', async () => {
+  const w = fWorld({ answers: { '/api/projects/shop/repos/api/jobs': { id: 7 } } });
+  open(w, 'schedule', SHOP_API);
+  const f = form(w);
+  const tools = fieldOf(f, /^Allowed tools$/);
+  assert.ok(shown(tools) && /dontAsk permission mode plus allowed tools is the safest unattended pair/.test(text(tools.querySelector('.field-hint'))));
+  fillSchedule(f);
+  typeIn(tools.querySelector('input'), 'Bash(git diff *), Read');
+  submit(f);
+  await tick();
+  const body = calls(w).find((c) => c.method === 'POST').body;
+  assert.equal(body.allowed_tools, 'Bash(git diff *), Read');
+  assert.ok(!('acknowledge_fable' in body), 'no Fable, no acknowledgement');
+});
+
+test('a tool the server refuses is shown beside Allowed tools with the typed value kept', async () => {
+  const w = fWorld({ answers: { '/api/projects/shop/repos/api/jobs': { __error: 'tool pattern not allowed: \'Bash(ls; rm)\'' } } });
+  open(w, 'schedule', SHOP_API);
+  const f = form(w);
+  fillSchedule(f);
+  typeIn(fieldOf(f, /^Allowed tools$/).querySelector('input'), 'Bash(ls; rm)');
+  submit(f);
+  await tick();
+  assert.match(text(fieldOf(f, /^Allowed tools$/).querySelector('.field-err')), /tool pattern not allowed/);
+  assert.equal(fieldOf(f, /^Allowed tools$/).querySelector('input').value, 'Bash(ls; rm)');
+  assert.equal(sheet(w).open, true);
+});
+
+test('a model that resolves to Fable shows the unticked acknowledgement above the button and makes Max $ required; other models and Codex do not', () => {
+  const w = fWorld();
+  open(w, 'schedule', SHOP_API);
+  const f = form(w);
+  const row = fableRow(f);
+  assert.equal(shown(row), false);
+  const args = fieldOf(f, /^Extra args$/).querySelector('input');
+  const budget = fieldOf(f, /^Max \$$/).querySelector('input');
+  for (const [model, want] of [['--model fable', true], ['--model best', true], ['--model=claude-fable-5-1', true], ['--model FABLE[1m]', true], ['--model sonnet --fallback-model haiku,fable', true],
+    ['--model opus', false], ['--model sonnet', false], ['--verbose', false], ['--model opus[1m]', false]]) {
+    typeIn(args, model);
+    assert.equal(shown(row), want, model);
+    assert.equal(!!budget.required, want, `${model}: Max $ is required only for Fable`);
+  }
+  typeIn(args, '--model fable');
+  assert.equal(text(row.querySelector('label')).trim(), 'This run bills Fable usage credits without asking');
+  assert.equal(row.querySelector('input').checked, false, 'never pre-ticked');
+  assert.match(text(fieldOf(f, /^Max \$$/).querySelector('.field-hint')), /^Required for Fable, at most \$25\./);
+  assert.match(text(row), /client-side estimate that counts subagent spend: it is not a billing ceiling set by the provider/);
+  assert.ok(!/protected|hard cap/i.test(text(row)), 'no claim of a hard cap');
+  const foot = f.querySelector('.submit');
+  const kids = [...f.children];
+  assert.ok(kids.indexOf(row) < kids.indexOf(foot) && kids.indexOf(row) >= kids.indexOf(foot) - 2, 'directly above the buttons (the status line may sit between)');
+  typeIn(args, '');
+  assert.match(text(fieldOf(f, /^Max \$$/).querySelector('.field-hint')), /^Optional\.$/);
+});
+
+test('a Fable schedule posts nothing without the tick and the cap, says what to do beside each, then sends acknowledge_fable with Max $', async () => {
+  const w = fWorld({ answers: { '/api/projects/shop/repos/api/jobs': { id: 9 } } });
+  open(w, 'schedule', SHOP_API);
+  const f = form(w);
+  fillSchedule(f, '--model fable');
+  submit(f);
+  await tick();
+  assert.equal(calls(w).length, 0);
+  assert.match(text(fableRow(f).querySelector('.field-err')), /bills Fable usage credits without asking.*Tick the box/);
+  tickBox(fableRow(f).querySelector('input'));
+  submit(f);
+  await tick();
+  assert.equal(calls(w).length, 0, 'ticked but no cap');
+  assert.match(text(fieldOf(f, /^Max \$$/).querySelector('.field-err')), /Set Max \$ for this Fable run \(at most \$25\)/);
+  typeIn(fieldOf(f, /^Max \$$/).querySelector('input'), '30');
+  submit(f);
+  await tick();
+  assert.equal(calls(w).length, 0, 'over the ceiling');
+  typeIn(fieldOf(f, /^Max \$$/).querySelector('input'), '5');
+  assert.equal(fableRow(f).querySelector('input').checked, false, 'editing the cap clears the acknowledgement');
+  tickBox(fableRow(f).querySelector('input'));
+  submit(f);
+  await tick();
+  const body = calls(w).find((c) => c.method === 'POST').body;
+  assert.equal(body.acknowledge_fable, true);
+  assert.equal(body.max_budget_usd, 5);
+  assert.equal(body.args, '--model fable');
+  const kept = JSON.parse(w.localStorage.getItem('ccboard:job:shop/api'));
+  assert.ok(!JSON.stringify(kept).includes('fable') && !('acknowledge_fable' in kept), 'the acknowledgement is never remembered with the form');
+});
+
+test('editing the model text after the tick clears it; the 422 from the server lands beside the checkbox and keeps every typed value', async () => {
+  const msg = 'This run bills Fable usage credits without asking (claude -p never asks first). Tick the box to acknowledge it for this job and set Max $ (at most $25); nothing was saved.';
+  const w = fWorld({ answers: { '/api/projects/shop/repos/api/jobs': { __error: msg } } });
+  open(w, 'schedule', SHOP_API);
+  const f = form(w);
+  fillSchedule(f, '--model fable');
+  typeIn(fieldOf(f, /^Max \$$/).querySelector('input'), '3');
+  tickBox(fableRow(f).querySelector('input'));
+  typeIn(fieldOf(f, /^Extra args$/).querySelector('input'), '--model best');
+  assert.equal(fableRow(f).querySelector('input').checked, false, 'a new model text needs its own acknowledgement');
+  tickBox(fableRow(f).querySelector('input'));
+  submit(f);
+  await tick();
+  assert.match(text(fableRow(f).querySelector('.field-err')), /bills Fable usage credits without asking/);
+  assert.equal(fieldOf(f, /^Name$/).querySelector('input').value, 'nightly-fable');
+  assert.equal(fieldOf(f, /^Max \$$/).querySelector('input').value, '3');
+  assert.equal(sheet(w).open, true, 'the form stays open');
+});
+
+test('a Codex schedule shows neither Allowed tools nor the Fable box', () => {
+  const w = fWorld();
+  w.ctx.__st.agents = { claude: { installed: true, loggedIn: true }, codex: { installed: true, loggedIn: true } };
+  open(w, 'schedule', SHOP_API);
+  const f = form(w);
+  typeIn(fieldOf(f, /^Extra args$/).querySelector('input'), '--model fable');
+  assert.equal(shown(fableRow(f)), true);
+  const seg = f.querySelectorAll('.seg-ctl').find((n) => n.getAttribute('aria-label') === 'Agent');
+  const codex = seg.querySelectorAll('button').find((b) => /Codex/.test(text(b)));
+  assert.ok(!codex.hasAttribute('disabled'), 'Codex is installed in this world');
+  codex.click();
+  assert.equal(shown(fableRow(f)), false);
+  assert.equal(shown(fieldOf(f, /^Allowed tools$/)), false);
+});
+
+test('the batch form takes Extra args, Allowed tools and the same Fable acknowledgement, one per submission', async () => {
+  const w = fWorld({ answers: { '/api/batch': { batch_id: 'b1', jobs: [1, 2], started: [] } } });
+  const f = w.run('batchForm({})');
+  const labels = f.querySelectorAll('.field-label').map(text);
+  assert.ok(labels.includes('Allowed tools') && labels.includes('Extra args'), labels.join(','));
+  const boxes = f.querySelectorAll('input').filter((i) => i.getAttribute('type') === 'checkbox' && !i.closest('.job-fable'));
+  boxes[0].checked = true;
+  typeIn(f.querySelector('textarea'), 'update deps');
+  typeIn(fieldOf(f, /^Extra args$/).querySelector('input'), '--model best');
+  assert.equal(shown(fableRow(f)), true);
+  const go = f.querySelectorAll('button').find((b) => /Run on selected repos/.test(text(b)));
+  go.click();
+  await tick();
+  assert.equal(calls(w).length, 0, 'nothing is posted without the tick');
+  tickBox(fableRow(f).querySelector('input'));
+  typeIn(fieldOf(f, /^Max \$ per repo$/).querySelector('input'), '2');
+  tickBox(fableRow(f).querySelector('input'));
+  typeIn(fieldOf(f, /^Allowed tools$/).querySelector('input'), 'Read');
+  go.click();
+  await tick();
+  const body = calls(w).find((c) => c.method === 'POST').body;
+  assert.deepEqual([body.args, body.max_budget_usd, body.acknowledge_fable, body.allowed_tools], ['--model best', 2, true, 'Read']);
+});
+
+test('the schedule row says a Fable job is held or acknowledged, with its cap, and a held one has an Acknowledge button that posts the edit', async () => {
+  const w = fWorld({ answers: { '/api/jobs/5/acknowledge-fable': { id: 5 } } });
+  const held = { id: 5, name: 'old fable job', max_turns: 30, max_budget_usd: null, agent: 'claude', fable: { state: 'held', reason: 'held: ...', max: 25 } };
+  const ok = { id: 6, name: 'new', max_turns: 30, max_budget_usd: 4, agent: 'claude', fable: { state: 'acknowledged', cap: 4, at: '2026-10-08T00:00:00+00:00', max: 25 } };
+  const plainJob = { id: 7, name: 'plain', max_turns: 30, max_budget_usd: 2, agent: 'claude', fable: null };
+  assert.equal(w.run(`jobLimitText(${JSON.stringify(held)})`), ' · ≤30 turns · held: waiting for a Fable acknowledgement and a Max $');
+  assert.equal(w.run(`jobLimitText(${JSON.stringify(ok)})`), ' · ≤30 turns · ≤$4 · Fable acknowledged (≤$4)');
+  assert.equal(w.run(`jobLimitText(${JSON.stringify(plainJob)})`), ' · ≤30 turns · ≤$2');
+  assert.equal(w.run(`jobFableButton(${JSON.stringify(ok)})`), null);
+  assert.equal(w.run(`jobFableButton(${JSON.stringify(plainJob)})`), null);
+  const b = w.run(`jobFableButton(${JSON.stringify(held)})`);
+  assert.equal(text(b), 'Acknowledge Fable');
+  b.click();
+  const f = form(w);
+  assert.match(text(f), /old fable job uses Fable.*never asks before billing/);
+  assert.match(text(fieldOf(f, /^Max \$$/).querySelector('.field-hint')), /at most \$25.*not a billing ceiling set by the provider/);
+  submit(f);
+  await tick();
+  assert.equal(calls(w).length, 0);
+  assert.match(text(f.querySelector('.job-fable .field-err')), /Tick the box/);
+  tickBox(f.querySelector('.job-fable input'));
+  submit(f);
+  await tick();
+  assert.match(text(fieldOf(f, /^Max \$$/).querySelector('.field-err')), /Set Max \$/);
+  typeIn(fieldOf(f, /^Max \$$/).querySelector('input'), '4');
+  tickBox(f.querySelector('.job-fable input'));
+  submit(f);
+  await tick();
+  const post = calls(w).find((c) => c.method === 'POST');
+  assert.equal(post.path, '/api/jobs/5/acknowledge-fable');
+  assert.deepEqual(post.body, { acknowledge_fable: true, max_budget_usd: 4 });
 });

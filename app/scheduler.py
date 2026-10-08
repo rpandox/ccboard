@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shlex
 import subprocess
 import threading
@@ -14,7 +15,7 @@ from croniter import croniter
 
 from . import agents, claude_auth, devguard, notify, projects, tasks
 from .agents import codex as codex_agent
-from .agents.claude import FORBIDDEN_ARG_PARTS, HEADLESS_MODES, LIMIT_MSG_RE, RATE_RE, parse_result   # noqa: F401 (re-exported: they live in the adapter now)
+from .agents.claude import FORBIDDEN_ARG_PARTS, HEADLESS_MODES, LIMIT_MSG_RE, RATE_RE, SUBAGENT_ENV, fable_models, parse_result   # noqa: F401 (re-exported: they live in the adapter now)
 from .config import settings
 from .db import now as db_now
 
@@ -181,9 +182,49 @@ def set_backoff(db, resets_at=None, agent: str = "claude") -> str:
     return s
 
 
-def build_command(prompt: str, slug: str, mode: str, max_turns: int, budget: float | None, extra: list[str]) -> list[str]:
-    return agents.get("claude").headless_argv(prompt, mode=mode, max_turns=max_turns, budget=budget, extra=extra, cwd=None,
-                                              slug=slug, last_message_file=None)
+def build_command(prompt: str, slug: str, mode: str, max_turns: int, budget: float | None, extra: list[str], allowed_tools: list[str] | None = None) -> list[str]:
+    """The `claude -p` argv. --permission-prompts none goes in wherever this box's claude lists it (capabilities(), read from `claude --help`
+    once per binary): a tool that is not pre-approved is then denied at once instead of waiting for an answer nobody can give. Where it does
+    not, the argv is as it always was and the Doctor says unattended runs may stall."""
+    ag = agents.get("claude")
+    return ag.headless_argv(prompt, mode=mode, max_turns=max_turns, budget=budget, extra=extra, cwd=None, slug=slug, last_message_file=None,
+                            prompts_none=bool(ag.capabilities().get("permission_prompts_none")), allowed_tools=allowed_tools or None)
+
+
+FABLE_HELD = "held: this run bills Fable usage credits without asking; acknowledge it and set Max $ on the schedule"
+
+
+def fable_hold(job: dict, env=None) -> str | None:
+    """Why a stored Claude job may not run: its model resolves to Fable (`claude -p` never asks before billing Fable usage credits) and the
+    job has no acknowledgement of its own, or the acknowledgement no longer matches (the model text or the cap changed since), or its Max $ is
+    missing or over CCBOARD_HEADLESS_FABLE_CAP. A default cap is not consent: such a job is held, never run under a cap of ours. None when the
+    job is fine (Codex jobs and non-Fable jobs always are)."""
+    if (job.get("agent") or "claude") != "claude":
+        return None
+    try:
+        parts = shlex.split(job.get("args") or "")
+    except ValueError:
+        return None
+    models = fable_models(parts, os.environ if env is None else env)
+    if not models:
+        return None
+    ack = job_opts(job).get("fable_ack")
+    cap = job.get("max_budget_usd")
+    ok = (isinstance(ack, dict) and ack.get("at") and cap and ack.get("cap") == cap and ack.get("models") == models
+          and 0 < float(cap) <= settings.headless_fable_cap)
+    return None if ok else FABLE_HELD
+
+
+def run_env(job: dict) -> dict | None:
+    """The environment of a headless Claude run when the board sets one (CLAUDE_CODE_SUBAGENT_MODEL from CCBOARD_SUBAGENT_MODEL, issue #106);
+    None = inherit the board's own, as before. CLAUDE_CODE_SUBAGENT_MODEL_FORCE is never set here."""
+    sub = settings.subagent_model
+    if not sub or sub == "inherit":
+        return None
+    env = dict(os.environ)
+    env.pop("CLAUDE_CODE_SUBAGENT_MODEL_FORCE", None)
+    env[SUBAGENT_ENV] = sub
+    return env
 
 
 def job_opts(job: dict) -> dict:
@@ -295,14 +336,19 @@ def run_job(db, job: dict, run_id: int) -> dict:
                 tasks.discard_managed_worktree(rpath, slug, wt)
                 wt = None
         return _finish(db, job, run_id, summary, rpath, slug, stamp, wt, "codex")
+    held = fable_hold(job)
+    if held:                                  # a run started by hand ("Run now") does not get round the acknowledgement either
+        summary.update(status="error", error=held[:300], result="")
+        return _finish(db, job, run_id, summary, rpath, slug, stamp, None, agent)
     exe = settings.claude_bin()
     cmd = build_command(job["prompt"], slug, job.get("permission_mode") or "acceptEdits", int(job.get("max_turns") or 30),
-                        job.get("max_budget_usd"), extra)
+                        job.get("max_budget_usd"), extra, allowed_tools=job_opts(job).get("allowed_tools"))
     if exe:
         cmd[0] = exe
+    env = run_env(job)
     try:
         tasks.ensure_excluded(rpath)
-        cp = subprocess.run(cmd, cwd=str(rpath), capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+        cp = subprocess.run(cmd, cwd=str(rpath), capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, **({"env": env} if env else {}))
         res = agents.get("claude").parse_headless(cp.stdout, cp.stderr, cp.returncode)
         status = "rate_limited" if res["rate_limited"] else ("error" if res["is_error"] or cp.returncode != 0 else "ok")
         if status == "rate_limited":
@@ -352,6 +398,10 @@ class Worker(threading.Thread):
             self._login_alert(blocked_for(agent), sum(1 for j in due if (j.get("agent") or "claude") == agent), agent)
         started = []
         for job in due:
+            held = fable_hold(job)
+            if held:                       # not run, not retried every tick: a cron job waits for its next fire, a one-off stays parked until acknowledged
+                self.db.job_update(job["id"], next_run_at=next_fire(job["cron"]) if job.get("cron") else None, last_status=held)
+                continue
             blocked = blocked_for(job.get("agent") or "claude")
             if blocked:
                 self.db.job_update(job["id"], next_run_at=(datetime.now(timezone.utc) + timedelta(minutes=DEFER_MINUTES)).isoformat(timespec="seconds"),

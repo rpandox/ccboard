@@ -51,7 +51,7 @@ def day_of(summary, day):
 def test_empty_db_is_an_all_zero_payload_with_the_full_shape(sdb):
     s = usage_summary.build(sdb, days=30, tz_min=KTM, now=NOW)
     assert set(s) == {"generated_at", "tz_min", "windows", "daily", "hourly_profile", "heatmap", "top_sessions", "active_hours",
-                      "rate_limits", "episodes", "unpriced", "source", "accounts", "total"}
+                      "rate_limits", "episodes", "unpriced", "source", "accounts", "total", "basis", "estimate"}
     assert s["source"] == "samples" and s["tz_min"] == 345 and s["generated_at"] == "2026-10-03T06:00:00+00:00"
     assert set(s["windows"]) == {"today", "7d", "30d"}
     for w in s["windows"].values():

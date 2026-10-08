@@ -135,7 +135,7 @@ Tree.save = function (key, list) {
 /* ---------- the tree ---------- */
 
 Tree.mount = function (host, opts) {
-  const o = Object.assign({ project: '', repo: '', path: '', hidden: false, ignored: false, repos: true, onOpen: null, onSelect: null, onLoad: null, storageKey: null }, opts || {});
+  const o = Object.assign({ project: '', repo: '', path: '', hidden: false, ignored: false, repos: true, onOpen: null, onSelect: null, onLoad: null, onHint: null, storageKey: null }, opts || {});
   const project = o.project;
   const storageKey = o.storageKey || `ccboard:tree:${project}/${o.repo}`;
   const inst = { destroyed: false, timer: null, ticking: false, lastTick: Date.now(), typed: '', typedAt: 0, focusRec: null, selected: null, recs: new Map(),
@@ -341,6 +341,7 @@ Tree.mount = function (host, opts) {
   const listing = (rec, extra) => Tree.url(project, rec.repo, rec.rel, Object.assign({ hidden: o.hidden, ignored: o.ignored, repos: o.repos }, extra || {}));
 
   const notify = (rec, data) => {
+    if (data && data.hint && typeof o.onHint === 'function') { try { o.onHint(data.hint, rec); } catch (e) { console.error('ccboard tree onHint', e); } }   // any level can be the slow one
     if (rec.isRoot && typeof o.onLoad === 'function') { try { o.onLoad(data, rec); } catch (e) { console.error('ccboard tree onLoad', e); } }
   };
 

@@ -542,6 +542,7 @@ function taskForm(p, r, opts) {
     goIcon.textContent = '';
     goIcon.append(ic(TASK_ICON[w]));
     if (w === 'schedule') { autoName(); syncCron(); }
+    jx.sync();
   };
   seg = segControl(TASK_WHEN, when0, syncMode, 'When');
 
@@ -549,13 +550,17 @@ function taskForm(p, r, opts) {
   const issueField = field('From a GitHub issue', issueKit.node);
   const lcBox = el('div', {}, lc.grid);
   const sibField = siblings.length ? field('Also give access to', checks, '--add-dir') : null;
-  const jobOpts = el('div', { class: 'grid' }, field('Permission mode', jobMode), field('Max turns', turns), field('Max $', budget, 'Optional.'));
+  const budgetFld = field('Max $', budget, 'Optional.');
+  const jobOpts = el('div', { class: 'grid' }, field('Permission mode', jobMode), field('Max turns', turns), budgetFld);
+  const jx = jobExtras({ args: () => args.value, budget, budgetField: budgetFld, claude: () => true, active: () => (seg ? seg.value : when0) === 'schedule' });
+  args.addEventListener('input', jx.clear);
+  budget.addEventListener('input', jx.clear);
   const nameField = field('Name', nameEl, 'Shown on the task card.');
   const schedBox = el('div', { class: 'tf-schedule' }, nameField, field('Cron', cron), presets, cronNote);
   upperOnly.push(titleField, issueField, lcBox, autoField, chain.node);
   if (sibField) upperOnly.push(sibField);
-  lowerOnly.push(schedBox, jobOpts);
-  const options = el('details', { class: 'tf-options' }, el('summary', {}, 'Options', optNote), issueField, lcBox, jobOpts, argsField, autoField, sibField);
+  lowerOnly.push(schedBox, jobOpts, jx.toolsField);
+  const options = el('details', { class: 'tf-options' }, el('summary', {}, 'Options', optNote), issueField, lcBox, jobOpts, jx.toolsField, argsField, autoField, sibField);
 
   const targets = Array.isArray(o.targets) ? o.targets : [];
   const here = Math.max(0, targets.findIndex((x) => x.p === p && x.r === r));
@@ -663,8 +668,12 @@ function taskForm(p, r, opts) {
     if (c) body.cron = c;
     if (budget.value) body.max_budget_usd = parseFloat(budget.value);
     if (args.value.trim()) body.args = args.value.trim();
+    if (!jx.check()) { options.setAttribute('open', ''); return; }
+    Object.assign(body, jx.body());
     remember('schedule');
-    const res = await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/jobs`, body);
+    let res;
+    try { res = await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/jobs`, body); }
+    catch (err) { jobFail(jx, err); throw err; }
     toast(c ? `scheduled ${name}` : `running ${name} once`, { kind: 'ok' });
     finish(res, 'schedule');
   };
@@ -708,6 +717,7 @@ function taskForm(p, r, opts) {
     chain.node,
     schedBox,
     options,
+    jx.fableRow,
     status,
     el('div', { class: 'submit' }, go,
       el('button', { type: 'button', onclick: () => { if (typeof o.onCancel === 'function') o.onCancel(); else { ui.openForm = null; if (typeof renderProjects === 'function') renderProjects(); } }, text: 'Cancel' })));
@@ -785,6 +795,116 @@ const CRON_PRESETS = [['nightly 02:30', '30 2 * * *'], ['weekdays 09:00', '0 9 *
 
 const JOB_KEY = (p, r) => `ccboard:job:${p.name}/${r.name}`;               // the schedule form's own memory per repo: cron, mode, turns, budget
 const BATCH_KEY = 'ccboard:batch';                                        // the batch form's: mode, turns, budget (it spans repos, so one key)
+
+/* ---------- the extras of every headless Claude job form (issues #107 and #108): pre-approved tools and the Fable acknowledgement ----------
+   Allowed tools: optional, Claude only, passed as --allowedTools; the hint says dontAsk plus allowed tools is the safest unattended pair.
+   Fable: when the model text (the extra args: `--model fable`, `--model best`, any id with fable in it, a --fallback-model that does) resolves to Fable, the checkbox "This run
+   bills Fable usage credits without asking" shows directly above the button and Max $ becomes required. The acknowledgement is for THIS job: never pre-ticked, never saved with the
+   remembered form values, and cleared whenever the model text or the cap is edited. The server decides (422 without both); this is the same test, said before the round trip. */
+const LX_FABLE_LABEL = 'This run bills Fable usage credits without asking';
+const LX_TOOLS_HINT = 'Optional: tools this run may use without asking, comma separated, at most 20. The dontAsk permission mode plus allowed tools is the safest unattended pair: anything else is denied.';
+
+function lxResolvesFable(text) {
+  const t = lxSplit(String(text || ''));
+  const vals = [];
+  for (let i = 0; i < t.length; i++) {
+    for (const flag of ['--model', '--fallback-model']) {
+      let val = null;
+      if (t[i] === flag && i + 1 < t.length) { val = t[i + 1]; i += 1; } else if (t[i].startsWith(flag + '=')) val = t[i].slice(flag.length + 1); else continue;
+      vals.push(...(flag === '--fallback-model' ? val.split(',') : [val]).map((x) => x.trim()).filter(Boolean));
+      break;
+    }
+  }
+  return vals.some((v) => { const low = v.toLowerCase().replace('[1m]', ''); return low.includes('fable') || low === 'best'; });
+}
+
+/* o: {args: () => text, budget: <input>, budgetField: <field>, budgetHint: text, claude: () => bool, active?: () => bool}. Returns {toolsField, fableRow, sync(), clear(), fable(), check(), body()}. */
+/* The edit that lets a held Fable job run (issue #108): its own acknowledgement and a Max $ within the box's ceiling. POST /api/jobs/<id>/acknowledge-fable; the typed Max $ stays on a refusal. */
+function jobFableSheet(j) {
+  const d = typeof state !== 'undefined' && state && state.claude_defaults;
+  const cap = d && d.fable_cap ? d.fable_cap : 25;
+  const cb = el('input', { type: 'checkbox' });
+  const err = el('span', { class: 'field-err bad', role: 'alert' });
+  const row = el('div', { class: 'lx-fable job-fable' }, el('div', { class: 'checks' }, el('label', {}, cb, LX_FABLE_LABEL)), err);
+  row.errNode = err;
+  row.target = cb;
+  const budget = el('input', { type: 'number', step: '0.5', min: '0', inputmode: 'decimal', placeholder: `at most ${cap}`, value: j.max_budget_usd ? String(j.max_budget_usd) : '' });
+  const budgetField = field('Max $', budget, `Required, at most $${cap}. Claude Code's own client-side estimate: it counts subagent spend and is not a billing ceiling set by the provider.`);
+  const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
+  const go = el('button', { class: 'primary', type: 'submit', text: 'Acknowledge' });
+  budget.addEventListener('input', () => { cb.checked = false; fieldError(budgetField, ''); });
+  cb.addEventListener('change', () => fieldError(row, ''));
+  const form = el('form', { class: 'form task-form', novalidate: true, onsubmit: async (e) => {
+    e.preventDefault();
+    fieldError(row, ''); fieldError(budgetField, ''); formStatus(status, '');
+    if (!cb.checked) { fieldError(row, 'Tick the box to acknowledge it for this job.', true); return; }
+    const b = parseFloat(budget.value);
+    if (!(b > 0) || b > cap) { fieldError(budgetField, `Set Max $ for this Fable run (at most $${cap}).`, true); return; }
+    try {
+      await api('POST', `/api/jobs/${j.id}/acknowledge-fable`, { acknowledge_fable: true, max_budget_usd: b });
+      closeSheet();
+      if (typeof poll === 'function') await poll(true);
+    } catch (err) { if (/Max \$|at most/i.test(err.message) && !/Tick the box/i.test(err.message)) fieldError(budgetField, err.message, true); else if (/Fable|acknowledge/i.test(err.message)) fieldError(row, err.message, true); else formStatus(status, err.message, true); }
+  } },
+    el('p', { class: 'dim', text: `${j.name} uses Fable. claude -p never asks before billing Fable usage credits, so this job is held until you acknowledge it here and give it a Max $. A scheduled run cannot ask when it fires.` }),
+    budgetField, row, status,
+    el('div', { class: 'submit' }, go, el('button', { type: 'button', onclick: () => closeSheet(), text: 'Cancel' })));
+  openSheet({ title: `Acknowledge Fable for “${String(j.name).slice(0, 60)}”`, body: form });
+  return form;
+}
+
+function jobFail(jx, err) {
+  const m = String((err && err.message) || '');
+  if (/Fable|acknowledge/i.test(m)) fieldError(jx.fableRow, m, true);
+  else if (/tool pattern|allowed tools/i.test(m)) fieldError(jx.toolsField, m, true);
+}
+
+function jobExtras(o) {
+  const cap = () => { const d = typeof state !== 'undefined' && state && state.claude_defaults; return d && d.fable_cap ? d.fable_cap : 25; };
+  const tools = el('input', { type: 'text', placeholder: 'e.g. Bash(git diff *), Read', autocomplete: 'off', autocapitalize: 'off' });
+  const toolsField = field('Allowed tools', tools, LX_TOOLS_HINT);
+  const cb = el('input', { type: 'checkbox' });
+  const err = el('span', { class: 'field-err bad', role: 'alert' });
+  const note = el('p', { class: 'dim lx-hint' });
+  const fableRow = el('div', { class: 'lx-fable job-fable hidden' }, el('div', { class: 'checks' }, el('label', {}, cb, LX_FABLE_LABEL)), err, note);
+  fableRow.errNode = err;
+  fableRow.target = cb;
+  const hintNode = () => (o.budgetField && typeof o.budgetField.querySelector === 'function' ? o.budgetField.querySelector('.field-hint') : null);
+  const on = () => (!o.claude || o.claude()) && (!o.active || o.active());
+  const fable = () => on() && lxResolvesFable(o.args());
+  const sync = () => {
+    const f = fable();
+    toolsField.classList.toggle('hidden', !(!o.claude || o.claude()));
+    fableRow.classList.toggle('hidden', !f);
+    if (!f) cb.checked = false;
+    note.textContent = f ? `Claude Code's own limit, Max $, is a client-side estimate that counts subagent spend: it is not a billing ceiling set by the provider. This box accepts at most $${cap()} for a Fable run.` : '';
+    if (o.budget) { o.budget.required = !!f; if (f) o.budget.setAttribute('aria-required', 'true'); else o.budget.removeAttribute('aria-required'); }
+    const h = hintNode();
+    if (h) h.textContent = f ? `Required for Fable, at most $${cap()}.` : (o.budgetHint || 'Optional.');
+  };
+  const clear = () => { cb.checked = false; fieldError(fableRow, ''); sync(); };
+  cb.addEventListener('change', () => fieldError(fableRow, ''));
+  sync();
+  return {
+    toolsField, fableRow, tools, sync, clear, fable,
+    /* the same refusal the server gives, before the round trip: false (and the message beside the field) when a Fable run lacks its box or its cap */
+    check() {
+      if (!fable()) return true;
+      if (!cb.checked) { fieldError(fableRow, 'This run bills Fable usage credits without asking. Tick the box to acknowledge it for this job.', true); return false; }
+      const b = o.budget ? parseFloat(o.budget.value) : NaN;
+      if (!(b > 0) || b > cap()) { fieldError(o.budgetField, `Set Max $ for this Fable run (at most $${cap()}).`, true); return false; }
+      return true;
+    },
+    body() {
+      const out = {};
+      if (!o.claude || o.claude()) {
+        if (tools.value.trim()) out.allowed_tools = tools.value.trim();
+        if (fable() && cb.checked) out.acknowledge_fable = true;
+      }
+      return out;
+    },
+  };
+}
 
 /* The line under a cron field: what it will do, or what is off about it. */
 function cronNoteText(v) {
@@ -885,7 +1005,11 @@ function jobForm(p, r) {
   const argsField = field('Extra args', args);
   const turnsField = field('Max turns', turns);
   const budgetField = field('Max $', budget, 'Optional.');
+  const jx = jobExtras({ args: () => args.value, budget, budgetField, claude: () => ag.agent !== 'codex' });
+  args.addEventListener('input', jx.clear);
+  budget.addEventListener('input', jx.clear);
   const paintAgent = () => {
+    jx.sync();
     const codex = ag.agent === 'codex';
     lede.textContent = codex ? 'A headless run (codex exec) in its own worktree; the result becomes a task card. Codex has no turn or budget limit: a run ends when the task does.'
       : 'A headless run (claude -p) in a fresh worktree; the result becomes a task card.';
@@ -898,7 +1022,7 @@ function jobForm(p, r) {
   prompt.addEventListener('input', () => fieldError(promptField, ''));
   const form = el('form', { class: 'form task-form job-form', novalidate: true, onsubmit: async (e) => {
     e.preventDefault();
-    for (const f of [nameField, promptField, cronField, argsField, ag.modelField, ag.reasoningField]) fieldError(f, '');
+    for (const f of [nameField, promptField, cronField, argsField, ag.modelField, ag.reasoningField, jx.fableRow, jx.toolsField, budgetField]) fieldError(f, '');
     formStatus(status, '');
     if (!name.value.trim()) { fieldError(nameField, 'Give the schedule a name.', true); return; }
     if (!prompt.value.trim()) { fieldError(promptField, 'Write the prompt for the run.', true); return; }
@@ -908,10 +1032,12 @@ function jobForm(p, r) {
     if (cron.value.trim()) body.cron = cron.value.trim();
     if (!codex && budget.value) body.max_budget_usd = parseFloat(budget.value);
     if (args.value.trim()) body.args = args.value.trim();
+    if (!codex && !jx.check()) return;
+    Object.assign(body, jx.body());
     savePrefs(JOB_KEY(p, r), { cron: cron.value.trim(), mode: mode.value, turns: parseInt(turns.value, 10) || 30, budget: budget.value, ...(codex ? { agent: 'codex' } : {}) });
     ag.remember();
     try { await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/jobs`, body); ui.openForm = null; setError(null); await poll(true); }
-    catch (err) { formFail(status, [[/cron/i, cronField], [/name/i, nameField], [/extra args|args|argument/i, argsField], [/reasoning/i, ag.reasoningField], [/model/i, ag.modelField]], err.message); }
+    catch (err) { formFail(status, [[/Tick the box|Fable/i, jx.fableRow], [/tool pattern|allowed tools/i, jx.toolsField], [/Max \$/i, budgetField], [/cron/i, cronField], [/name/i, nameField], [/extra args|args|argument/i, argsField], [/reasoning/i, ag.reasoningField], [/model/i, ag.modelField]], err.message); }
   } },
     lede,
     ag.field,
@@ -921,9 +1047,11 @@ function jobForm(p, r) {
     cronField,
     presets,
     cronNote,
+    jx.toolsField,
     el('details', { class: 'tf-options' }, el('summary', { text: 'Advanced' }),
       el('div', { class: 'grid' }, field('Permission mode', mode), turnsField, budgetField),
       argsField),
+    jx.fableRow,
     status,
     el('div', { class: 'submit' },
       go,
@@ -964,7 +1092,14 @@ function batchForm(opts) {
   const lede = el('div', { class: 'dim' });
   const turnsField = field('Max turns', turns);
   const budgetField = field('Max $ per repo', budget, 'Optional.');
+  const args = el('input', { type: 'text', placeholder: 'extra claude args (optional), e.g. --model sonnet', autocomplete: 'off', autocapitalize: 'off' });
+  const argsField = field('Extra args', args, 'Claude: the model goes here.');
+  const jx = jobExtras({ args: () => args.value, budget, budgetField, budgetHint: 'Optional.', claude: () => ag.agent !== 'codex' });
+  args.addEventListener('input', jx.clear);
+  budget.addEventListener('input', jx.clear);
   const paintAgent = () => {
+    jx.sync();
+    argsField.classList.toggle('hidden', ag.agent === 'codex');
     const codex = ag.agent === 'codex';
     lede.textContent = codex ? 'Runs are headless (codex exec) in its own worktree per repo, at most 2 at once, paused while the Codex usage window is above 85%. Each result becomes a task card.'
       : 'Runs are headless (claude -p) in a fresh worktree per repo, at most 2 at once, paused while the 5-hour window is above 85%. Each result becomes a task card.';
@@ -988,19 +1123,21 @@ function batchForm(opts) {
   list.addEventListener('change', () => fieldError(reposField, ''));
   const go = el('button', { class: 'primary', type: 'button', onclick: async () => {
     const repos = boxes.filter((b) => b.checked).map((b) => b.getAttribute('value'));
-    fieldError(promptField, ''); fieldError(reposField, ''); fieldError(ag.modelField, ''); fieldError(ag.reasoningField, ''); formStatus(status, '');
+    fieldError(promptField, ''); fieldError(reposField, ''); fieldError(ag.modelField, ''); fieldError(ag.reasoningField, ''); fieldError(jx.fableRow, ''); fieldError(jx.toolsField, ''); fieldError(budgetField, ''); formStatus(status, '');
     if (!prompt.value.trim()) { fieldError(promptField, 'Write the prompt to run.', true); if (!repos.length) fieldError(reposField, 'Pick at least one repo.'); return; }
     if (!repos.length) { fieldError(reposField, 'Pick at least one repo.', true); return; }
     const codex = ag.agent === 'codex';
+    if (!codex && !jx.check()) return;
     savePrefs(BATCH_KEY, { mode: mode.value, turns: parseInt(turns.value, 10) || 30, budget: budget.value, ...(codex ? { agent: 'codex', cx_model: ag.model, cx_reasoning: ag.reasoning } : {}) });
     try {
       const body = { prompt: prompt.value.trim(), repos, name: name.value.trim() || undefined, permission_mode: mode.value, ...ag.body() };
-      if (!codex) { body.max_turns = parseInt(turns.value, 10) || 30; body.max_budget_usd = budget.value ? parseFloat(budget.value) : undefined; }
+      if (!codex) { body.max_turns = parseInt(turns.value, 10) || 30; body.max_budget_usd = budget.value ? parseFloat(budget.value) : undefined; if (args.value.trim()) body.args = args.value.trim(); }
+      Object.assign(body, jx.body());
       const r = await api('POST', '/api/batch', body);
       formStatus(status, `queued ${r.jobs.length} runs (batch ${r.batch_id}); ${r.started.length} started, the rest wait for a free slot`);
       if (typeof o.onDone === 'function') o.onDone(r);
       await poll(true);
-    } catch (e) { formStatus(status, e.message, true); }
+    } catch (e) { formStatus(status, e.message, true); jobFail(jx, e); }
   }, text: 'Run on selected repos' });
   const form = el('form', { class: 'form batch-form', novalidate: true, onsubmit: (e) => { e.preventDefault(); go.click(); } },
     lede,
@@ -1008,8 +1145,10 @@ function batchForm(opts) {
     ag.box,
     promptField,
     reposField,
+    jx.toolsField,
     el('details', { class: 'tf-options' }, el('summary', { text: 'Options' }),
-      el('div', { class: 'grid' }, field('Name', name, 'Optional label for the batch.'), field('Permission mode', mode), turnsField, budgetField)),
+      el('div', { class: 'grid' }, field('Name', name, 'Optional label for the batch.'), field('Permission mode', mode), turnsField, budgetField), argsField),
+    jx.fableRow,
     status,
     el('div', { class: 'submit' }, go,
       el('button', { type: 'button', onclick: () => { if (typeof o.onCancel === 'function') o.onCancel(); }, text: 'Cancel' })));
@@ -1103,7 +1242,10 @@ function openImport() { return typeof Shell !== 'undefined' && Shell.openCreate 
 
 const LX_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const LX_CLAUDE_CHIPS = ['opus', 'fable', 'sonnet', 'haiku'];                  // the model chips, in this order (the brief's F7: opus first)
-const LX_CLAUDE_MORE = ['opusplan', 'best', 'opus[1m]', 'sonnet[1m]'];         // under 'More models' with default and a custom id
+const LX_CLAUDE_MORE = ['opusplan', 'best'];                                   // under 'More models' with default and a custom id; the [1m] variants are gone (no effect on Opus 5.5 / Sonnet 5.5, docs read 2026-10-07): a typed or remembered one still works as a custom id
+const LX_MODEL_LABEL = { opusplan: 'opusplan: Opus to plan, Sonnet to build', best: 'best: strongest available (may be Fable)' };   // the words in More models; the value stays the alias
+const LX_BEST_NOTE = 'best resolves to Fable where it is available, and Fable bills usage credits. A scheduled or batch run needs an explicit acknowledgement for it.';
+const LX_1M_HINT = 'A full id. Add [1m] only for a model without a 1M window by default (Opus 4.6, Sonnet 4.6; Claude Code docs read 2026-10-07).';
 const LX_MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', haiku: 'hue-slate' };   // tokens.css .hue-*, the same four as the terminal's tuning strip
 const LX_CX_MODES = [['default', 'default'], ['auto', 'auto'], ['read-only', 'read-only'], ['bypass', 'bypass'], ['custom', 'custom']];
 const LX_CX_MODE_PERM = { default: 'default', auto: 'auto', 'read-only': 'plan' };   // the adapter's permission_mode behind each picker entry (custom sends sandbox + approval instead)
@@ -1132,7 +1274,7 @@ const AGENT_SCHEMAS = {
       lxOpt('resume_id', 'Session to resume', 'text', null, null, '', 'basic', false, { launcher: ['resume'] }),
       lxOpt('from_pr', 'Pull request', 'text', null, null, '', 'basic', false, { launcher: ['from_pr'] }),
       lxOpt('name', 'Session name', 'text', null, null),
-      lxOpt('model', 'Model', 'combo', ['opus', 'fable', 'sonnet', 'haiku', 'opusplan', 'best', 'opus[1m]', 'sonnet[1m]'], 'opus'),
+      lxOpt('model', 'Model', 'combo', ['opus', 'fable', 'sonnet', 'haiku', 'opusplan', 'best'], 'opus'),
       lxOpt('effort', 'Effort', 'select', LX_EFFORTS, 'high'),
       lxOpt('permission_mode', 'Permission mode', 'select', ['manual', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'], null),
       lxOpt('prompt', 'First prompt', 'textarea', null, null, '', 'basic', false, { launcher: ['new'] }),
@@ -1144,6 +1286,8 @@ const AGENT_SCHEMAS = {
       lxOpt('append_system_prompt', 'Append to system prompt', 'textarea', null, null, '', 'advanced'),
       lxOpt('agent_name', 'Agent', 'text', null, null, '', 'advanced'),
       lxOpt('fallback_model', 'Fallback model', 'text', null, null, '', 'advanced'),
+      lxOpt('subagent_model', 'Subagent model', 'combo', ['inherit', 'haiku', 'sonnet', 'opus'], 'inherit', '', 'advanced'),
+      lxOpt('subagent_force', 'Force the subagent model', 'bool', null, false, '', 'advanced'),
       lxOpt('autocompact', 'Auto-compact', 'combo', ['auto'], null, '', 'advanced'),
       lxOpt('worktree', 'Start in a new git worktree', 'bool', null, false, '', 'advanced', false, { launcher: ['new'] }),
       lxOpt('worktree_name', 'Worktree name', 'text', null, null, '', 'advanced', false, { worktree: true }),
@@ -1154,7 +1298,7 @@ const AGENT_SCHEMAS = {
       lxOpt('extra', 'Extra arguments', 'args', null, null, '', 'advanced'),
     ],
     permission_modes: ['manual', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'], efforts: LX_EFFORTS,
-    models: ['opus', 'fable', 'sonnet', 'haiku', 'opusplan', 'best', 'opus[1m]', 'sonnet[1m]'], reasoning_by_model: {}, capabilities: { ultracode_flag: false },
+    models: ['opus', 'fable', 'sonnet', 'haiku', 'opusplan', 'best'], reasoning_by_model: {}, capabilities: { ultracode_flag: false, permission_prompts_none: false },
   },
   codex: {
     name: 'codex', label: 'Codex', glyph: '◇', installed: false,
@@ -1315,7 +1459,7 @@ function launcherPresetDrop(p, r, agent, name) {
 /* The values a form starts from, per agent. Claude: model opus, effort high (the brief's F7); everything else empty until remembered. */
 function launcherDefaults(agent) {
   if (agent === 'claude') return { model: 'opus', model_custom: '', effort: 'high', ultracode: false, fast: false, permission_mode: '', tools: '', allowed_tools: '', disallowed_tools: '', append_system_prompt: '',
-    agent_name: '', fallback_model: '', autocompact: '', mcp_config: '', devcontainer: false };
+    agent_name: '', fallback_model: '', subagent_model: '', subagent_custom: '', subagent_force: false, autocompact: '', mcp_config: '', devcontainer: false };
   if (agent === 'codex') return { model: '', model_custom: '', reasoning: '', cx_mode: 'default', sandbox: 'workspace-write', approval: 'on-request', search: false, config: '', profile: '', no_scrollback: false };
   return {};
 }
@@ -1335,7 +1479,7 @@ function launcherDanger(v, mode) { return (mode || 'session') === 'session' && l
    are the defaults), except an empty model or effort: 'default (settings)' is a choice next to opus and high. Codex's sandbox and approval only count in its custom mode. */
 function launcherRemember(v) {
   const keep = v.agent === 'claude'
-    ? ['model', 'model_custom', 'effort', 'ultracode', 'fast', 'permission_mode', 'tools', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'agent_name', 'fallback_model', 'autocompact', 'mcp_config', 'devcontainer', 'args']
+    ? ['model', 'model_custom', 'effort', 'ultracode', 'fast', 'permission_mode', 'tools', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'agent_name', 'fallback_model', 'subagent_model', 'subagent_custom', 'autocompact', 'mcp_config', 'devcontainer', 'args']
     : v.agent === 'codex' ? ['model', 'model_custom', 'reasoning', 'cx_mode', 'sandbox', 'approval', 'search', 'config', 'profile', 'no_scrollback', 'args'] : [];
   const out = {};
   for (const k of keep) {
@@ -1400,6 +1544,18 @@ function lxCmdNodes(text) {
 function lxList(text) { return String(text || '').split(/[,\n]+/).map((x) => x.trim()).filter(Boolean); }
 function lxShort(text, n) { const t = String(text || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n - 1) + '…' : t; }
 function lxModelOf(v) { return v.model === 'custom' ? String(v.model_custom || '').trim() : String(v.model || ''); }
+/* The subagent model (CLAUDE_CODE_SUBAGENT_MODEL, issue #106). subagentChoice: what the form holds ('' = the board default, an alias, or 'custom' with subagent_custom); the effective value
+   is that choice, else the board default the schema carries (CCBOARD_SUBAGENT_MODEL, 'inherit' when unset). Aliases are lower-cased as the adapter does; 'inherit' sets no variable. */
+function lxSubagentChoice(v) { return v.subagent_model === 'custom' ? String(v.subagent_custom || '').trim() : String(v.subagent_model || '').trim(); }
+function lxSubagentValue(v, c) {
+  const raw = lxSubagentChoice(v) || String((c && c.subagentDefault) || '').trim();
+  return /^(inherit|haiku|sonnet|opus)$/i.test(raw) ? raw.toLowerCase() : raw;
+}
+function lxSubagentEnv(v, c) {
+  const eff = lxSubagentValue(v, c);
+  if (!eff || eff === 'inherit') return [];
+  return ['env', `CLAUDE_CODE_SUBAGENT_MODEL=${eff}`, ...(v.subagent_force ? ['CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1'] : [])];
+}
 
 /* The command a launch starts, as the adapter would build it (app/agents/claude.py and codex.py launch_plan: the same flags in the same order). APPROXIMATE: the session id, a cut
    copy of the prompt and the paths are placeholders, and Codex's hook-trust flags depend on the box; the response's cmd is the truth and replaces this line after Start.
@@ -1446,6 +1602,7 @@ function commandPreview(v, ctx) {
     else if (wt) argv = ['claude', ...flags, ...more, '--worktree', wtClaude, '--session-id', '<uuid>', ...(lane ? [] : ['--name', sname]), ...(prompt ? ['--', lxShort(prompt, 60)] : [])];   // a task has no session name of its own
     else if (prompt) argv = ['claude', ...flags, ...more, '--session-id', '<uuid>', '--name', sname, '--', lxShort(prompt, 60)];
     else argv = ['claude', '--session-id', '<uuid>', '--name', sname, ...flags, ...more];
+    argv = [...lxSubagentEnv(v, c), ...argv];                                                                                  // env CLAUDE_CODE_SUBAGENT_MODEL=<v> claude ...: only when the choice is not inherit
     if (v.ultracode && !c.ultraNative) then.push('/effort ultracode on');
     if (v.fast) then.push('/fast on');
   } else {
@@ -1576,6 +1733,11 @@ function launcherPayload(v, ctx) {
     put('fast', !!v.fast && has('fast'));
     for (const k of ['allowed_tools', 'disallowed_tools', 'append_system_prompt']) put(k, t(v[k]));
     for (const k of ['tools', 'agent_name', 'fallback_model', 'autocompact', 'mcp_config']) if (has(k)) put(k, t(v[k]));
+    if (has('subagent_model')) {                                                                 // the explicit choice only: blank leaves the board default to the server, which applies it to the launch line the preview shows
+      put('subagent_model', lxSubagentChoice(v));
+      const eff = lxSubagentValue(v, c);
+      if (v.subagent_force && eff && eff !== 'inherit' && has('subagent_force')) body.subagent_force = true;     // never implicit: only the ticked switch
+    }
     if (v.fork_session && (kind === 'resume' || kind === 'continue') && has('fork_session')) body.fork_session = true;
     put('devcontainer', !!v.devcontainer);
   } else {
@@ -1608,6 +1770,7 @@ function launcherTaskOpts(v) {
     put('effort', v.effort);
     if (v.permission_mode && v.permission_mode !== 'manual' && v.permission_mode !== 'bypassPermissions') out.permission_mode = v.permission_mode;
     for (const k of ['allowed_tools', 'disallowed_tools', 'append_system_prompt']) put(k, t(v[k]));
+    put('subagent_model', lxSubagentChoice(v));
   } else {
     put('reasoning_effort', v.reasoning);
     const perm = lxCodexPerm({ ...v, cx_mode: v.cx_mode === 'bypass' ? 'default' : v.cx_mode, sandbox: v.sandbox === 'danger-full-access' ? 'workspace-write' : v.sandbox });
@@ -1711,6 +1874,8 @@ function launcherForm(o) {
     if (agent === 'codex' && !saved.reasoning && saved.reasoning_effort) v.reasoning = saved.reasoning_effort;
     if (typeof v.model === 'string' && v.model && v.model !== 'custom' && !known(agent, v.model)) { v.model_custom = v.model; v.model = 'custom'; }
     if (agent === 'claude') {
+      const sc = (lxHas('claude', 'subagent_model') ? (launcherSchema('claude').options.find((x) => x.key === 'subagent_model').choices || []) : ['inherit', 'haiku', 'sonnet', 'opus']);
+      if (typeof v.subagent_model === 'string' && v.subagent_model && v.subagent_model !== 'custom' && !sc.includes(v.subagent_model)) { v.subagent_custom = v.subagent_model; v.subagent_model = 'custom'; }
       if (v.permission_mode === 'manual') v.permission_mode = '';
       if (!session && v.permission_mode === 'bypassPermissions') v.permission_mode = '';
     } else if (agent === 'codex' && !session) {
@@ -1726,8 +1891,10 @@ function launcherForm(o) {
   const view = () => ({ ...V.common, ...V[V.agent], agent: V.agent });
   const schema = () => launcherSchema(V.agent);
   const ctx = () => ({ mode, caps: launcherSchema('codex').capabilities, cwd: r.path || '', nextName: lxNextName(r), dirs: dirPath, slug: (mode === 'dispatch' && task.slug) || taskTitleFrom(V.common.prompt).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || '<task>',
-    devcontainer: !!V.shell.devcontainer, has: (k) => lxHas(V.agent, k), cwd_rel: opt.cwd_rel || '', ultraNative: ultraNative() });
+    devcontainer: !!V.shell.devcontainer, has: (k) => lxHas(V.agent, k), cwd_rel: opt.cwd_rel || '', ultraNative: ultraNative(), subagentDefault: subDefault() });
   const ultraNative = () => launcherSchema('claude').efforts.includes('ultracode');
+  const subOpt = () => launcherSchema('claude').options.find((x) => x.key === 'subagent_model') || null;
+  const subDefault = () => { const o = subOpt(); return o && o.default ? String(o.default) : ''; };           // the board setting CCBOARD_SUBAGENT_MODEL, 'inherit' when unset
 
   /* ---- small builders: a control reads its value from V and writes it back; paint() puts V into the controls (a preset, an agent switch, a model change) ---- */
   let update = () => {};
@@ -1888,17 +2055,21 @@ function launcherForm(o) {
     const chips = claudeChips();
     for (const m of LX_CLAUDE_CHIPS) lxDisable(modelChips.btn(m), !chips.includes(m), chips.includes(m) ? '' : `${m} is not offered by this build of Claude Code`);
     moreSel.textContent = '';
-    for (const [v, t] of [['__', 'More models…'], ['', 'default (settings)'], ...claudeMore().map((m) => [m, m]), ['custom', 'custom id…']]) moreSel.append(el('option', { value: v, text: t }));
+    for (const [v, t] of [['__', 'More models…'], ['', 'default (settings)'], ...claudeMore().map((m) => [m, LX_MODEL_LABEL[m] || m]), ['custom', 'custom id…']]) moreSel.append(el('option', { value: v, text: t }));
   };
   const paintModel = () => {
     const chips = claudeChips();
     modelChips.set(chips.includes(C.model) ? C.model : null);
     moreSel.value = chips.includes(C.model) ? '__' : C.model;
     hide(modelId, C.model !== 'custom');
+    paintBestNote();
   };
   painters.push(paintModel);
+  const bestNote = el('p', { class: 'dim lx-hint lx-why', text: LX_BEST_NOTE });
+  const paintBestNote = () => hide(bestNote, C.model !== 'best');
+  painters.push(paintBestNote);
   const modelBox = el('div', { class: 'lx-model' }, modelChips.node, moreSel, modelId);
-  const modelField = field('Model', modelBox);
+  const modelField = field('Model', modelBox, LX_1M_HINT);
   let effortSeg = null;
   const effortHost = el('div', { class: 'lx-effhost' });
   const paintEffortItems = () => {
@@ -2027,6 +2198,30 @@ function launcherForm(o) {
   const sysF = field('Append to system prompt', area(() => C.append_system_prompt, (x) => { C.append_system_prompt = x; }, { placeholder: 'text appended to the system prompt (optional)' }));
   const agentF = textField('Agent', 'agent_name', C, '--agent: a subagent definition to run as.', { placeholder: 'e.g. reviewer' });
   const fallbackF = textField('Fallback model', 'fallback_model', C, '--fallback-model: used when the first is overloaded.', { placeholder: 'e.g. sonnet' });
+  const subSel = selectEl([['', 'default']], '');
+  subSel.setAttribute('aria-label', 'Subagent model');
+  const subCustom = text(() => C.subagent_custom, (x) => { C.subagent_custom = x.trim(); }, { placeholder: 'full model id, e.g. claude-haiku-4-5', 'aria-label': 'Custom subagent model id' });
+  subSel.addEventListener('change', () => { C.subagent_model = subSel.value; edit(); if (C.subagent_model === 'custom') focusFine(subCustom); });
+  const paintSubagentOptions = () => {
+    const o = subOpt();
+    const choices = o && Array.isArray(o.choices) && o.choices.length ? o.choices : ['inherit', 'haiku', 'sonnet', 'opus'];
+    subSel.textContent = '';
+    for (const [v, t] of [['', `default (${subDefault() || 'inherit'})`], ...choices.map((m) => [m, m === 'inherit' ? 'inherit: the main model' : m]), ['custom', 'custom id…']]) subSel.append(el('option', { value: v, text: t }));
+    subSel.value = C.subagent_model;
+  };
+  const subF = field('Subagent model', el('div', { class: 'lx-model' }, subSel, subCustom),
+    'The default model for the subagents this session starts after launch. A subagent that names its own model still gets it; inherit uses the main model. The board has no readout of the model a subagent used.');
+  const forceChk = check('Force the subagent model', () => C.subagent_force, (x) => { C.subagent_force = x; });
+  const forceBox = el('div', {}, checksRow(forceChk), el('p', { class: 'dim lx-hint', text: 'Also sets CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1: every subagent uses that one model, which overrides definitions that ask for a stronger one. Off unless you tick it.' }));
+  const paintSubagent = () => {
+    subSel.value = C.subagent_model;
+    hide(subCustom, C.subagent_model !== 'custom');
+    const eff = lxSubagentValue(view(), ctx());
+    const inherit = !eff || eff === 'inherit';
+    lxDisable(forceChk.input, inherit, inherit ? 'Choose a subagent model first' : '');
+    if (inherit && C.subagent_force) { C.subagent_force = false; forceChk.input.checked = false; }
+  };
+  painters.push(paintSubagent);
   const compactF = textField('Auto-compact', 'autocompact', C, '--autocompact: auto, or the context size to compact at (a number such as 150000).', { placeholder: 'auto or 150000' });
   const mcpF = textField('MCP config file', 'mcp_config', C, '--mcp-config: the absolute path of a JSON file.', { placeholder: '/srv/projects/…/mcp.json' });
   const argsC = textField('Extra args', 'args', C, null, { placeholder: 'anything else, e.g. --verbose' });
@@ -2049,6 +2244,7 @@ function launcherForm(o) {
     el('div', { class: 'grid' }, gate(allowedF, 'claude', 'allowed_tools'), gate(disallowedF, 'claude', 'disallowed_tools')),
     gate(toolsF, 'claude', 'tools', true), gate(sysF, 'claude', 'append_system_prompt'),
     gate(el('div', { class: 'grid' }, gate(agentF, 'claude', 'agent_name'), gate(fallbackF, 'claude', 'fallback_model')), 'claude', null, true),      // pairs, so no field is left alone on a row of the 2-column grid
+    gate(subF, 'claude', 'subagent_model'), gate(forceBox, 'claude', 'subagent_force'),
     gate(el('div', { class: 'grid' }, gate(compactF, 'claude', 'autocompact'), gate(mcpF, 'claude', 'mcp_config')), 'claude', null, true),
     gate(cWt.wrap, 'claude', 'worktree', true), gate(forkRow, 'claude', 'fork_session'),
     sibF, otherF, gate(devRow, 'claude', 'devcontainer', true),
@@ -2064,7 +2260,7 @@ function launcherForm(o) {
   const shellBox = el('div', { class: 'lx-agentbox', 'data-agent': 'shell' }, el('p', { class: 'dim lx-lede', text: `A plain shell in ${r.root ? 'the project folder' : r.name}: no agent, just a terminal.` }), r.devcontainer ? checksRow(shellDev) : null);
 
   /* ---- the panels ---- */
-  const claudeBasic = el('div', { class: 'lx-agentbox', 'data-agent': 'claude' }, modelField, effortField, switchRow, permField);
+  const claudeBasic = el('div', { class: 'lx-agentbox', 'data-agent': 'claude' }, modelField, bestNote, effortField, switchRow, permField);
   const codexBasic = el('div', { class: 'lx-agentbox', 'data-agent': 'codex' }, cxModelField, reasoningField, modeField, customRow);
 
   /* ---- the danger gate ---- */
@@ -2162,9 +2358,11 @@ function launcherForm(o) {
   const budgetIn = text(() => T.budget, (x) => { T.budget = x; }, { type: 'number', step: '0.5', min: '0', inputmode: 'decimal', placeholder: 'optional' });
   const turnsF = field('Max turns', turnsIn);
   const budgetF = field('Max $', budgetIn, 'Optional.');
+  const jx = jobExtras({ args: () => String(C.args || ''), budget: budgetIn, budgetField: budgetF, claude: () => V.agent !== 'codex', active: () => mode === 'task' && T.when === 'schedule' });
+  budgetIn.addEventListener('input', jx.clear);
   const codexSchedNote = el('p', { class: 'dim lx-hint hidden', text: 'Codex runs in a workspace-write sandbox (plan: read-only) and never stops to ask. It has no turn or budget limit: a run ends when the task does.' });
   const schedBox = el('div', { class: 'tf-schedule' }, field('Name', nameEl, 'Shown on the task card.'), field('Cron', cronEl), el('div', { class: 'chips cron-presets', role: 'group', 'aria-label': 'Cron presets' }, presetCron), cronNote,
-    el('div', { class: 'grid' }, field('Permission mode', jobModeSel), turnsF, budgetF), codexSchedNote);
+    el('div', { class: 'grid' }, field('Permission mode', jobModeSel), turnsF, budgetF), jx.toolsField, codexSchedNote);
   const when = () => (mode === 'task' ? T.when : 'now');
 
   /* ---- targets (the repo select of the task form) ---- */
@@ -2212,6 +2410,7 @@ function launcherForm(o) {
     hide(shellBox, a !== 'shell');
     hide(modeField, sch); hide(customRow, sch || X.cx_mode !== 'custom');                  // a schedule's permission mode is the schedule's own (Codex: plan = read-only, else workspace-write)
     hide(turnsF, a === 'codex'); hide(budgetF, a === 'codex'); hide(codexSchedNote, a !== 'codex');
+    jx.sync();
     hide(presetField, a === 'shell' || sch || (mode === 'dispatch' && D.where !== 'lane'));
     hide(launchField, !session || a === 'shell');
     hide(resumeField, !session || a === 'shell' || launch !== 'resume' && !(a === 'codex' && launch === 'fork'));
@@ -2219,6 +2418,7 @@ function launcherForm(o) {
     hide(nameField, !session);
     hide(switchRow, !session);
     for (const [n, ag, key, so] of gated) hide(n, (key !== null && !lxHas(ag, key)) || (so && !session));
+    paintSubagent();
     /* the launch kind decides these two, after the schema gate above (which would show them again): a fork copies a conversation that resume or continue picks up, a worktree is a new session's */
     if (!(launch === 'resume' || launch === 'continue') || a !== 'claude') hide(forkRow, true);
     if (launch !== 'new') { hide(cWt.wrap, true); hide(xWtBox, true); }
@@ -2415,10 +2615,14 @@ function launcherForm(o) {
       body.max_turns = parseInt(T.turns, 10) || 30;
       if (T.budget) body.max_budget_usd = parseFloat(T.budget);
       if (String(C.args || '').trim()) body.args = String(C.args).trim();
+      if (!jx.check()) return;
+      Object.assign(body, jx.body());
     }
     if (codex) remember(v, 'schedule');                                // the model, reasoning, cron and mode go under the Codex task key, as a Codex task's do
     else lxPut(LX_TASK_KEY(p.name, r.name, 'claude'), JSON.stringify({ ...taskSaved, cron: c, job_mode: T.jobMode, max_turns: parseInt(T.turns, 10) || 30 }));
-    const res = await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/jobs`, body);
+    let res;
+    try { res = await api('POST', `/api/projects/${encodeURIComponent(p.name)}/repos/${encodeURIComponent(r.name)}/jobs`, body); }
+    catch (err) { jobFail(jx, err); throw err; }
     toast(c ? `scheduled ${name}` : `running ${name} once`, { kind: 'ok' });
     finish(res, 'schedule');
   };
@@ -2501,18 +2705,19 @@ function launcherForm(o) {
     claudeAdv, codexAdv,
     autoField,
     cmdBox,
+    jx.fableRow,
     status,
     foot);
   form.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); if (typeof e.stopPropagation === 'function') e.stopPropagation(); cancel.click(); } });
   form.focusFirst = () => focusFine(promptEl);
 
-  paintModelOptions(); paintEffortItems(); paintPermOptions(); paintCxModels(); paintModeItems();
+  paintModelOptions(); paintEffortItems(); paintPermOptions(); paintCxModels(); paintModeItems(); paintSubagentOptions();
   paint();
   if (mode === 'task') syncCron();
 
   /* the schema may arrive after the sheet opened: the model lists, the efforts, the permission modes and the reasoning levels follow it */
   const refreshSchema = () => {
-    paintModelOptions(); paintEffortItems(); paintPermOptions(); paintCxModels(); paintModeItems();
+    paintModelOptions(); paintEffortItems(); paintPermOptions(); paintCxModels(); paintModeItems(); paintSubagentOptions();
     paintModel(); reasoningFix(); paint();
   };
   const ctl = { form, V, view, schema, refreshSchema, paint, submit, go, status, acct: () => acct, memHost,

@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -619,23 +620,56 @@ def test_a_chain_hand_over_is_only_quiet_for_done(capture, db):
     assert notify.build(row, task, "errored", "server_error", "boom").priority == 4
 
 
-def test_an_auto_close_done_notice_says_when_the_session_closes(capture, db, monkeypatch):
-    monkeypatch.setattr(settings, "autoclose_grace", 45.0)
-    _task(db, auto_close=1)
+def _planned(due_in, now, **extra):
+    """A ROW whose flags.autoclose holds a close planned `due_in` seconds after `now` (what taskflow stamps before the notice is built)."""
+    from datetime import timedelta
+    due = (now + timedelta(seconds=due_in)).isoformat(timespec="seconds")
+    return {**ROW, "flags": {"autoclose": {"task": 3, "due": due, **extra}}}
+
+
+NOW = datetime(2026, 10, 8, 12, 0, 0, tzinfo=timezone.utc)
+PLANNED_TASK = {"id": 3, "title": "T", "auto_close": True}
+
+
+def test_an_auto_close_done_notice_says_when_the_planned_close_is_due(capture, db, monkeypatch):
+    monkeypatch.setattr(settings, "autoclose_grace", 600.0)                              # the setting is not consulted
+    for due_in, said in ((45, 45), (47, 45), (43, 45), (2, 5)):                          # rounded to 5 s
+        body = notify.build(_planned(due_in, NOW), PLANNED_TASK, "done", None, "ok", now=NOW).body
+        assert body.endswith(f"\n(session closes in {said}s)"), (due_in, body)
+
+
+def test_no_close_promise_unless_taskflow_planned_one(capture, db):
+    def body(row, t=PLANNED_TASK, msg="ok"):
+        return notify.build(row, t, "done", None, msg, now=NOW).body
+    assert "session closes" not in body(ROW)                                              # auto_close set but nothing planned (another task keeps the session)
+    assert "session closes" not in body(_planned(45, NOW, held="question"))                # a question hold
+    assert "session closes" not in body(_planned(45, NOW, waiting="viewer attached"))      # postponed
+    assert "session closes" not in body(_planned(45, NOW, closing=True))
+    assert "session closes" not in body({**ROW, "flags": {"autoclose": {"task": 9, "due": "2026-10-08T12:00:45+00:00"}}})   # another task's stamp
+    assert "session closes" not in body(_planned(-30, NOW))                                # a due already past
+    assert "session closes" not in body({**ROW, "flags": {"autoclose": {"task": 3, "due": "soon"}}})
+    assert "session closes" not in body(_planned(45, NOW), msg="Shall I also update the docs?")
+    assert "session closes" not in body(_planned(45, NOW), t={"id": 3, "title": "T", "auto_close": False})
+    assert "session closes" not in body(_planned(45, NOW), t=None)
+    assert "session closes" not in notify.build(_planned(45, NOW), PLANNED_TASK, "waiting", "idle_prompt", "waiting", now=NOW).body
+    assert "session closes" not in notify.build(_planned(45, NOW), PLANNED_TASK, "errored", "server_error", "boom", now=NOW).body
+
+
+def test_the_ntfy_and_web_push_bodies_agree_on_the_planned_close(capture, db, monkeypatch):
+    web = _web(monkeypatch)
+    tid = _task(db, auto_close=1)
+    due = (datetime.now(timezone.utc) + timedelta(seconds=45)).isoformat(timespec="seconds")
+    db.update_flags(TMUX, {"autoclose": {"task": tid, "due": due}})
     assert notify.notify_session(TMUX, "done", "Fixed the redirect.", None)
-    assert capture[-1][1]["message"].splitlines()[-2:] == ["? Fixed the redirect.", "(session closes in 45s)"]
-    monkeypatch.setattr(settings, "autoclose_grace", 12.5)
-    n = notify.build(ROW, {"title": "T", "auto_close": True}, "done", None, "ok")
-    assert n.body.endswith("\n(session closes in 12.5s)")
-
-
-def test_no_close_promise_without_auto_close_or_when_the_message_asks_something(capture, db):
-    assert not notify.build(ROW, {"title": "T", "auto_close": False}, "done", None, "ok").body.endswith("s)")
-    assert not notify.build(ROW, None, "done", None, "ok").body.endswith("s)")
-    held = notify.build(ROW, {"title": "T", "auto_close": True}, "done", None, "Shall I also update the docs?")
-    assert "session closes" not in held.body                                             # a question holds the close (taskflow)
-    assert "session closes" not in notify.build(ROW, {"title": "T", "auto_close": True}, "waiting", "idle_prompt", "waiting").body
-    assert "session closes" not in notify.build(ROW, {"title": "T", "auto_close": True}, "errored", "server_error", "boom").body
+    ntfy_lines = capture[-1][1]["message"].splitlines()
+    assert ntfy_lines[-2] == "? Fixed the redirect." and ntfy_lines[-1].startswith("(session closes in ") and ntfy_lines[-1].endswith("s)")
+    assert len(web) == 1 and ntfy_lines[-1] in web[0]["body"]
+    # no stamp (another task holds the session): neither carries the line
+    db.update_flags(TMUX, {"autoclose": None})
+    db.set_state(TMUX, "working", "UserPromptSubmit", prompt="again")
+    capture.clock[0] += 3600
+    assert notify.notify_session(TMUX, "done", "Fixed it again.", None)
+    assert "session closes" not in capture[-1][1]["message"] and "session closes" not in web[-1]["body"]
 
 
 def test_web_extras_carry_renotify_a_timestamp_and_the_attention_count(capture, db, monkeypatch):

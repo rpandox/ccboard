@@ -42,6 +42,10 @@ node --test tests/js/*.test.mjs
 
 The first is what CI runs (no `claude` binary). While working, run only the targeted files. Tests use temp directories only. A canary in `tests/conftest.py` fails the run if any test changes the real home's Claude or Codex config, and every test gets a temp `HOME` (README, Development).
 
+## A new setting
+
+A new environment variable touches four places: the reader (`app/config.py` or the script that reads it), the `ENV_KEYS` line and a bound default in `install.sh`, a row in the README settings table, and, when the installer should not remember it, one line with a reason in `NOT_REMEMBERED` or `INTERNAL` in `tests/test_env_keys.py`. That test fails with the setting's name when one of them is missing.
+
 ## Screenshots
 
 Every UI change needs screenshots at 1280 and at 390 (with `html.force-coarse`), judged by a person; a green suite says nothing about how a screen looks. Use `scripts/qa-ui.sh` in demo mode (README, Development).

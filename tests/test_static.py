@@ -675,7 +675,7 @@ def test_index_dialogs_are_empty_in_the_html():
 # ---------- demo fixtures (app/static/demo/*.json, read by api() when ?demo=1 or ccboard:demo=1) ----------
 
 DEMO_DIR = STATIC / "demo"
-DEMO_FILES = ("state.json", "search.json", "tree.json", "file.json", "series.json", "series_events.json", "usage_summary.json", "memory.json",
+DEMO_FILES = ("state.json", "skills.json", "search.json", "tree.json", "file.json", "series.json", "series_events.json", "usage_summary.json", "memory.json",
               "agents.json", "doctor.json", "memory_health.json", "memory_prefs.json", "memory_observations.json", "memory_summaries.json",
               "memory_search.json", "memory_timeline.json", "memory_palace.json", "memory_states.json")
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+--[A-Za-z0-9_-]+--[A-Za-z0-9_-]+$")
@@ -718,7 +718,7 @@ def test_demo_fixtures_carry_no_host_specific_data():
     bad = []
     for name in DEMO_FILES:
         text = (DEMO_DIR / name).read_text(encoding="utf-8")
-        for needle in ("/Users/", "/tmp/", "/private/", "gmail.com", "rpandox", "ccb-fix"):
+        for needle in ("/Users/", "/tmp/", "/private/", "gmail.com", "rpan" + "dox", "ccb-fix"):
             if needle in text:
                 bad.append(f"app/static/demo/{name}: contains {needle!r}")
     assert not bad, "fixtures must be anonymous:\n" + "\n".join(bad)
@@ -1694,7 +1694,7 @@ def test_every_demo_fixture_is_read_by_a_route_and_none_names_a_host():
     for name in names:
         assert re.search(r"['\"`/]" + re.escape(name) + r"(\.json|['\"`])", core), f"demo/{name}.json is read by no route of demoApi() in core.js"
         text = (DEMO_DIR / f"{name}.json").read_text(encoding="utf-8")
-        assert "ubu2" not in text, f"demo/{name}.json names the box's host"
+        assert "ub" + "u2" not in text, f"demo/{name}.json names the box's host"
         assert not re.search(r"/home/(?!demo/|ccboard/)", text), f"demo/{name}.json holds a home path of a person"
     diff = demo_json("diff.json")
     assert set(diff) == {"base", "branch", "commits", "files", "files_uncommitted", "committed", "uncommitted", "truncated"}, "the shape gitops.task_diff returns"

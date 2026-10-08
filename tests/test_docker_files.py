@@ -91,7 +91,7 @@ def test_dockerfile_packages_and_users():
     assert "deb.nodesource.com/node_22.x" in runs and re.search(r"ccusage@20\.\d+\.\d+(\s|$)", runs)
     assert "pkgs.tailscale.com/stable/ubuntu/${VERSION_CODENAME}" in runs and ". /etc/os-release" in runs and "install -y --no-install-recommends tailscale" in runs
     assert "userdel" in runs and "groupadd -g 1000 ccboard" in runs
-    assert re.search(r"useradd -M -u 1000 -g 1000 -s /bin/bash -d /home/rpandox ccboard", runs)
+    assert re.search(r"useradd -M -u 1000 -g 1000 -s /bin/bash -d \"\$\{CCBOARD_HOME\}\" ccboard", runs)
     assert "python3 -m venv .venv" in runs and "pip install" in runs and "--require-hashes -r requirements.lock" in runs
 
 
@@ -126,6 +126,17 @@ def test_dockerfile_installs_are_pinned():
     for m in re.finditer(r"npm install[^&]*", runs):
         pkgs = [w for w in m.group(0).split()[2:] if not w.startswith("-")]
         assert pkgs and all(re.search(r"@\d+\.\d+\.\d+$", w) for w in pkgs), m.group(0)
+
+
+# ---------------------------------------------------------------- the host-side memory-env script (issue #38)
+def test_mem_env_script_ships_executable_and_the_watchdog_runs_it():
+    script = ROOT / "scripts" / "ccboard-mem-env"
+    assert script.read_text().startswith("#!/bin/sh\n")
+    assert os.access(script, os.X_OK), "chmod +x scripts/ccboard-mem-env (git update-index --chmod=+x)"
+    assert "COPY --chown=1000:1000 scripts ./scripts" in DOCKERFILE.read_text(), "the image carries scripts/"
+    assert "scripts/ccboard-mem-env" not in (ROOT / ".dockerignore").read_text(), "the host runs it: it must not be ignored"
+    assert 'sync_dir "$APP_ROOT/scripts" "$APP_DST/scripts"' in ENTRYPOINT.read_text(), "the entrypoint syncs the whole scripts directory to the host"
+    assert "ccboard-mem-env" in (ROOT / "scripts" / "ccboard-watchdog.sh").read_text()
 
 
 # ---------------------------------------------------------------- entrypoint (static)
@@ -360,8 +371,8 @@ def test_compose_ccboard_service_text():
     assert "image: ghcr.io/rpandox/ccboard:${CCBOARD_IMAGE_TAG:-latest}" in text
     assert 'user: "${CCBOARD_UID:-1000}:${CCBOARD_GID:-1000}"' in text
     assert "CCBOARD_RUNTIME: docker" in text and "TMUX_TMPDIR: /tmp" in text
-    for var in ("CCBOARD_HOME:-/home/rpandox", "PROJECTS_DIR:-/srv/projects"):
-        assert "${" + var + "}" in text, var
+    assert "${CCBOARD_HOME:?set CCBOARD_HOME (install.sh writes it to the compose .env)}" in text and "CCBOARD_HOME:-" not in text
+    assert "${PROJECTS_DIR:-/srv/projects}" in text
     for target in ("/tmp/tmux-${CCBOARD_UID:-1000}", "/var/run/tailscale", "/etc/ccboard"):
         assert f"target: {target}" in text, target
     assert re.search(r"target: /etc/ccboard\n\s+read_only: true", text)
@@ -389,7 +400,7 @@ def test_shadow_override_text():
     assert "container_name: ccboard-shadow" in text
     assert "CCBOARD_PORT: ${CCBOARD_SHADOW_PORT:-8010}" in text
     assert 'CCBOARD_SHADOW: "1"' in text
-    assert "CCBOARD_DATA_DIR: ${CCBOARD_HOME:-/home/rpandox}/.local/share/ccboard-shadow" in text
+    assert "CCBOARD_DATA_DIR: ${CCBOARD_HOME:?set CCBOARD_HOME (install.sh writes it to the compose .env)}/.local/share/ccboard-shadow" in text
     assert re.search(r"target: \$\{PROJECTS_DIR:-/srv/projects\}\n\s+read_only: true", text)
     assert 'com.centurylinklabs.watchtower.enable: "false"' in text
     assert not re.search(r"^  watchtower:", text, re.M), "no watchtower service in the shadow"
@@ -459,3 +470,45 @@ def test_compose_deploy_gate_and_fast_stop():
     assert "--timeout-graceful-shutdown 2" in ep
     gate = ROOT / "scripts" / "ccboard-deploy-gate"
     assert gate.exists() and "exit 75" in gate.read_text()
+
+
+# ------------------------------------------------------------------ public hygiene (#60): no person's home in the image or the compose defaults
+def test_the_dockerfile_home_is_a_build_argument_with_a_neutral_default():
+    args = of("ARG")
+    assert "CCBOARD_HOME=/home/ccboard" in args, "the passwd home is a build argument; CI passes nothing"
+    ins = instructions()
+    assert [w for w, _ in ins].index("ARG") < next(i for i, (w, r) in enumerate(ins) if w == "RUN" and "useradd" in r), "declared before the RUN that reads it"
+    assert not re.search(r"/home/(?!ccboard\b)\w", DOCKERFILE.read_text()), "no other home path in the Dockerfile"
+
+
+def test_compose_files_have_no_home_default_and_say_what_to_set():
+    for f in (COMPOSE, SHADOW):
+        text = f.read_text()
+        assert "CCBOARD_HOME:-" not in text, f"{f.name}: a default home would name somebody's machine"
+        assert "${CCBOARD_HOME:?set CCBOARD_HOME (install.sh writes it to the compose .env)}" in text
+        assert not re.search(r"/home/\w", text), f"{f.name} names a home path"
+    assert "CCBOARD_HOME" in DEPLOY_README.read_text() and not re.search(r"/home/\w", DEPLOY_README.read_text())
+
+
+def test_install_sh_writes_the_home_the_compose_files_require():
+    t = (ROOT / "install.sh").read_text()
+    i = t.index("CCBOARD_HOME=%s")
+    assert "$HOME_DIR" in t[i:i + 250], "the compose .env carries the real home"
+
+
+def test_entrypoint_refuses_instead_of_guessing_a_home():
+    ep = (ROOT / "scripts" / "docker-entrypoint.sh").read_text()
+    assert 'getent passwd "$(id -u)"' in ep and "HOME is not set" in ep and "exit 1" in ep
+    assert not re.search(r"HOME=/home/\w", ep)
+
+
+@pytest.mark.skipif((_compose_version() or (0, 0)) < (2, 24), reason="docker compose >= 2.24 not available")
+@pytest.mark.real_home("the docker CLI finds its compose plugin under ~/.docker/cli-plugins; it only reads config, writes nothing")
+def test_docker_compose_config_without_a_home_fails_with_a_readable_message():
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("COMPOSE_", "CCBOARD_")) and k != "PROJECTS_DIR"}
+    for files in ((COMPOSE,), (COMPOSE, SHADOW)):
+        cmd = ["docker", "compose"]
+        for f in files:
+            cmd += ["-f", str(f)]
+        r = subprocess.run(cmd + ["config", "--format", "json"], capture_output=True, text=True, env=env, timeout=60)
+        assert r.returncode != 0 and "set CCBOARD_HOME (install.sh writes it to the compose .env)" in r.stderr

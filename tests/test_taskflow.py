@@ -814,6 +814,23 @@ def test_the_whole_lane_path_prompt_stop_result_countdown_exit_close_and_closed_
     assert v["closed_at"] == ended["ended_at"] and v["autoclose"] is None and v["column"] == "done" and v["phase"] == "done"
 
 
+def test_taskflow_stamps_the_planned_close_before_the_done_notice_is_built(flow, monkeypatch):
+    """Issue #37: the notice reads flags.autoclose, so the Stop path must stamp it first (a spy records what the row held when the push went out)."""
+    from app import notify
+    seen = []
+    monkeypatch.setattr(notify, "notify_session", lambda name, state, message, kind=None: seen.append((state, db().open_row(name)["flags"].get("autoclose"))) or True)
+    tid = backlog(flow)
+    name = dispatch(flow, tid)["tmux"]
+    hook(flow, name, "Stop", last_assistant_message="All done.")
+    assert seen and seen[-1][0] == "done"
+    assert seen[-1][1] == {"task": tid, "due": iso(flow.clock() + 45)}, "the close was planned before the notice was built"
+    # a question holds the close: the notice sees the hold, not a due
+    tid2 = backlog(flow, title="Second")
+    name2 = dispatch(flow, tid2)["tmux"]
+    hook(flow, name2, "Stop", last_assistant_message="Shall I also update the docs?")
+    assert seen[-1][1] == {"task": tid2, "held": "question"}
+
+
 def test_a_prompt_typed_during_the_countdown_cancels_it_through_the_hook(flow):
     tid = backlog(flow)
     name = dispatch(flow, tid)["tmux"]

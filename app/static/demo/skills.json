@@ -1,0 +1,18 @@
+{
+  "agent": "claude",
+  "skills": [
+    {"name": "browse", "description": "Drive a real browser: open a page, read it, click through a flow, take screenshots, check console errors.", "source": "user", "uses": 98},
+    {"name": "loop", "description": "Run a prompt or slash command on a recurring interval, or let the model pace itself.", "source": "user", "uses": 20},
+    {"name": "phase-kickoff", "description": "Start a phase of the plan: read its issues, set up the worktree, list the tests to write first.", "source": "user", "uses": 12},
+    {"name": "artifact-design", "description": "Design guidance for pages that are published as artifacts.", "source": "user", "uses": 11},
+    {"name": "phase-review", "description": "Review a finished phase against its acceptance list before it is committed.", "source": "user", "uses": 11},
+    {"name": "review", "description": "Pre-landing review of the diff on the current branch.", "source": "user", "uses": 4},
+    {"name": "ship", "description": "Run the tests, bump the version, update the changelog, commit, push and open the pull request.", "source": "user", "uses": 2},
+    {"name": "claude-mem:mem-search", "description": "Search the persistent cross-session memory: did we already solve this, how did we do X last time.", "source": "plugin:claude-mem", "uses": 1},
+    {"name": "claude-mem:make-plan", "description": "Create a detailed, phased implementation plan with documentation discovery.", "source": "plugin:claude-mem"},
+    {"name": "claude-mem:do", "description": "Execute a phased implementation plan using subagents.", "source": "plugin:claude-mem"},
+    {"name": "claude-mem:smart-explore", "description": "Token-optimized structural code search using tree-sitter AST parsing.", "source": "plugin:claude-mem"},
+    {"name": "investigate", "description": "Systematic debugging with root cause investigation.", "source": "user"},
+    {"name": "qa", "description": "Test a web application systematically and fix the bugs found.", "source": "user"}
+  ]
+}

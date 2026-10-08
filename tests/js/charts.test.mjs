@@ -645,7 +645,7 @@ test('stackedBars: rects with titles, (unattributed) its own segment with its to
   const unattr = rects.filter((r) => r.classList.contains('seg-unattributed'));
   assert.equal(unattr.length, 2, 'one per day that has it');
   assert.ok(unattr.every((r) => /sessions the board did not start/.test(text(r.querySelector('title')))));
-  assert.match(text(unattr[0].querySelector('title')), /^2026-10-02 · \(unattributed\) \$3\.00 \(sessions the board did not start\) · day \$30\.00 · 3k tok$/);
+  assert.match(text(unattr[0].querySelector('title')), /^2026-10-02 · \(unattributed\) \$3\.00 \(sessions the board did not start, with no folder on record\) · day \$30\.00 · 3k tok$/);
   const a = rects.find((r) => r.classList.contains('seg-0'));
   assert.match(text(a.querySelector('title')), /^2026-10-02 · A \$10\.00 · day \$30\.00 · 3k tok$/);
   const zero = rects.filter((r) => r.classList.contains('bar-zero'));
@@ -657,7 +657,7 @@ test('stackedBars: rects with titles, (unattributed) its own segment with its to
   assert.deepEqual(chips.map((c) => text(c.querySelector('.lg-l'))), ['A', 'B', 'other', '(unattributed)']);
   assert.deepEqual(chips.map((c) => text(c.querySelector('.lg-v'))), ['$12.00', '$8.00', '$10.00', '$12.00']);
   assert.ok(chips[3].querySelector('.sw').classList.contains('seg-unattributed'), 'the swatch carries the segment class');
-  assert.equal(chips[3].getAttribute('title'), 'sessions the board did not start');
+  assert.equal(chips[3].getAttribute('title'), 'sessions the board did not start, with no folder on record');
   assert.match(chips[2].getAttribute('title'), /^3 more: C, D, E$/);
   assert.match(svgEl.getAttribute('aria-label'), /Cost per day over the last 3 days, by project: \$42\.00 API-equivalent/);
   assert.ok(h.classList.contains('chart'));
@@ -1009,4 +1009,25 @@ test('heatmap: a tap beside a cell (the gap, a label) picks the nearest one; the
   assert.equal(text(read), 'Thu 00:00 · 0 events');
   tapAt(node, { clientX: 30 + 21 * 10 + 3, clientY: 20 + 14 * 7 + 10 });                         // under the grid: the hour profile
   assert.equal(text(read), '21:00 · 14 events');
+});
+
+test('geom.stack: (outside projects) is its own dashed segment before (unattributed): never ranked, never folded into other, with its own tooltip', () => {
+  const w = cWorld();
+  w.ctx.__days = [{ day: '2026-10-02', total: 24, zero: false, tokens: 1, by_project: { A: 10, B: 6, '(outside projects)': 5, '(unattributed)': 3 }, by_agent: { claude: 24 } }];
+  const keys = plain(w.run('Charts.geom.rank(__days, "project", 0)'));
+  assert.deepEqual(keys.map((k) => [k.key, k.cls]), [['other', 'seg-other'], ['(outside projects)', 'seg-unattributed'], ['(unattributed)', 'seg-unattributed']]);
+  assert.equal(keys[0].total, 16, 'only real projects fold into other');
+  const rows = plain(w.run('Charts.geom.stack(__days, "project", 99)'));
+  assert.deepEqual(rows[0].segs.map((s) => [s.key, s.v]), [['A', 10], ['B', 6], ['(outside projects)', 5], ['(unattributed)', 3]]);
+  assert.match(w.run('Charts.barTitle({ day: "d", total: 24 }, { key: "(outside projects)", v: 5 }, null)'), /\(outside projects\) \$5\.00 \(sessions that ran in a folder outside the projects folder\)/);
+});
+
+test('approx puts a ~ in front of every dollar of the bar readouts and nothing changes without it', () => {
+  const w = cWorld();
+  const row = { day: '2026-10-02', total: 30, zero: false, segs: [{ key: 'A', v: 10 }, { key: 'B', v: 20 }] };
+  w.ctx.__row = row;
+  assert.equal(w.run('Charts.barTitle(__row, __row.segs[0], { tokens: 3000 }, true)'), '2026-10-02 · A ~$10.00 · day ~$30.00 · 3k tok');
+  assert.equal(w.run('Charts.barTitle(__row, __row.segs[0], { tokens: 3000 })'), '2026-10-02 · A $10.00 · day $30.00 · 3k tok');
+  assert.equal(w.run('Charts.dayTitle(__row, { tokens: 0 }, true)'), '2026-10-02 · day ~$30.00 · A ~$10.00, B ~$20.00');
+  assert.equal(w.run('Charts.dayTitle(__row, { tokens: 0 })'), '2026-10-02 · day $30.00 · A $10.00, B $20.00');
 });

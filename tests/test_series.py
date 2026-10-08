@@ -585,9 +585,9 @@ def test_record_health_cadence_and_key(db, monkeypatch):
     assert samples.record_health(db, snap(), at=T(60)) == ["h_cpu", "h_mem", "h_load"], "disk waits 15 minutes"
     assert samples.record_health(db, snap(), at=T(899)) == ["h_cpu", "h_mem", "h_load"]
     assert samples.record_health(db, snap(), at=T(900)) == ["h_disk"], "the 15 minutes are counted from the first disk sample"
-    monkeypatch.setattr(settings, "node_name", "ubu2")      # a container's host name changes with every image: the node name is the key
+    monkeypatch.setattr(settings, "node_name", "box1")      # a container's host name changes with every image: the node name is the key
     samples.record_health(db, snap(), at=T(1000))
-    assert db.sample_last("h_cpu", "ubu2") is not None
+    assert db.sample_last("h_cpu", "box1") is not None
     assert samples.record_health(db, snap(cpu=None, mem=None, disk=None, load=None), at=T(2000)) == [], "what the box cannot report is skipped"
     assert samples.record_health(db, None, at=T(2000)) == []
 
@@ -959,9 +959,9 @@ def test_monitor_enrich_writes_the_series_and_adds_rates_and_compat(db, monkeypa
     from app import memory
     from app.agents import monitor
     monkeypatch.setattr(memory, "plugin_status", lambda: {"installed": True, "version": "13.34.2", "enabled": True})
-    h = monitor.enrich(db, {"state": "up", "version": "13.31.0", "observations": 10, "summaries": 2})
+    h = monitor.enrich(db, {"state": "up", "version": "13.34.2", "observations": 10, "summaries": 2})
     assert db.sample_last("mem_obs", "")["value"] == 10 and db.sample_last("mem_sum", "")["value"] == 2
     assert h["rates"] == {"obs": {"d1": None, "d7": None}, "sum": {"d1": None, "d7": None}}
-    assert h["plugin_version"] == "13.34.2" and h["compat"] == "ok" and h["tested_worker"] == "13.31.0"
+    assert h["plugin_version"] == "13.34.2" and h["compat"] == "ok" and h["tested_worker"] == "13.34.2"
     down = monitor.enrich(db, {"state": "down", "version": None, "observations": None, "summaries": None})
     assert down["compat"] == "unknown" and db.sample_last("mem_obs", "")["value"] == 10, "a down worker writes no zero"

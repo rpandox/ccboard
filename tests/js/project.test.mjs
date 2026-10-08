@@ -1163,3 +1163,81 @@ test('a gotcha opens its drawer in place on a mouse screen and markup in its tit
   assert.equal(all(strip, 'script').length, 0);
   assert.equal(all(strip, 'b').length, 0);
 });
+
+// ------------------------------------------------------------------ the untracked-cache hint (issue #112)
+
+const UC_CMD = "git -C '/srv/projects/phasezero/website' config core.untrackedCache true";
+const jclone = (v) => JSON.parse(JSON.stringify(v));
+const withHint = (env, hint = { kind: 'untracked_cache', cmd: UC_CMD }) => {
+  env.server.overrides.set('website|', { ...jclone(TREE_FIXTURE['website|']), hint });
+  env.w.ctx.__copied = [];
+  env.w.ctx.navigator.clipboard = { writeText: async (t) => { env.w.ctx.__copied.push(t); } };
+};
+
+test('a slow-scan hint shows one quiet line under the toolbar with the command, Copy and Dismiss; the board runs nothing', async () => {
+  const env = projectWorld();
+  withHint(env);
+  const page = await go(env, '#/p/phasezero/website?tab=files');
+  const line = page.querySelector('.pj-uchint');
+  assert.ok(line, 'the hint line');
+  assert.match(textOf(line), /Scans of this repo are slow\. This may help/);
+  assert.match(textOf(line), /never changes your git config/);
+  assert.equal(textOf(line.querySelector('code')), UC_CMD);
+  const copy = all(line, 'button').find((b) => textOf(b) === 'Copy');
+  const dismiss = all(line, 'button').find((b) => textOf(b) === 'Dismiss');
+  assert.ok(copy && dismiss, 'Copy and Dismiss are buttons (keyboard reachable)');
+  copy.click();
+  await settle();
+  assert.deepEqual(plain(env.w.ctx.__copied), [UC_CMD], 'Copy copies exactly the command');
+  assert.ok(byPath(page, 'package.json'), 'the tree is there, unmoved by the hint');
+  assert.equal(page.querySelectorAll('.pj-uchint').length, 1, 'once, however many levels load');
+});
+
+test('Dismiss hides the hint for good: stored per repo, and a remount of the same repo shows nothing', async () => {
+  const env = projectWorld();
+  withHint(env);
+  const page = await go(env, '#/p/phasezero/website?tab=files');
+  all(page, '.pj-uchint button').find((b) => textOf(b) === 'Dismiss').click();
+  assert.equal(page.querySelector('.pj-uchint'), null);
+  assert.equal(env.w.localStorage.getItem('ccboard:hint:uc:phasezero/website'), '1');
+  await go(env, '#/p/phasezero/NestJs-Ecommerce-Backend?tab=files');
+  await go(env, '#/p/phasezero/website?tab=files');
+  assert.equal(env.page().querySelector('.pj-uchint'), null, 'stays gone');
+  const env2 = projectWorld();
+  withHint(env2);
+  env2.w.localStorage.setItem('ccboard:hint:uc:phasezero/website', '1');
+  assert.equal((await go(env2, '#/p/phasezero/website?tab=files')).querySelector('.pj-uchint'), null, 'already dismissed in an earlier visit');
+});
+
+test('with storage blocked the dismissal still holds for the session', async () => {
+  const env = projectWorld();
+  withHint(env);
+  env.w.localStorage.getItem = () => { throw new Error('blocked'); };
+  env.w.localStorage.setItem = () => { throw new Error('blocked'); };
+  const page = await go(env, '#/p/phasezero/website?tab=files');
+  assert.ok(page.querySelector('.pj-uchint'), 'a blocked read means not dismissed');
+  all(page, '.pj-uchint button').find((b) => textOf(b) === 'Dismiss').click();
+  assert.equal(page.querySelector('.pj-uchint'), null);
+  await go(env, '#/p/phasezero/NestJs-Ecommerce-Backend?tab=files');
+  await go(env, '#/p/phasezero/website?tab=files');
+  assert.equal(env.page().querySelector('.pj-uchint'), null);
+});
+
+test('no hint in the answer, an older server, or an unknown or empty hint draws nothing', async () => {
+  const env = projectWorld();
+  assert.equal((await go(env, '#/p/phasezero/website?tab=files')).querySelector('.pj-uchint'), null, 'an older answer has no hint');
+  for (const bad of [{ kind: 'other', cmd: 'x' }, { kind: 'untracked_cache' }, { kind: 'untracked_cache', cmd: '' }, null]) {
+    const e = projectWorld();
+    withHint(e, bad);
+    assert.equal((await go(e, '#/p/phasezero/website?tab=files')).querySelector('.pj-uchint'), null, JSON.stringify(bad));
+  }
+});
+
+test('the hint is text only: the command goes through textContent and the tree stays usable', async () => {
+  const env = projectWorld();
+  withHint(env, { kind: 'untracked_cache', cmd: "git -C '/x/<b>y</b>' config core.untrackedCache true" });
+  const page = await go(env, '#/p/phasezero/website?tab=files');
+  assert.equal(textOf(page.querySelector('.pj-uchint code')), "git -C '/x/<b>y</b>' config core.untrackedCache true");
+  assert.equal(page.querySelector('.pj-uchint b'), null, 'no markup was made from the path');
+  assert.ok(byPath(page, 'package.json'));
+});

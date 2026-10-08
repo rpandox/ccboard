@@ -18,8 +18,8 @@
   "ambiguous_filter": null,
   "shape_error": false,
   "compat": "ok",
-  "worker_version": "13.31.0",
-  "tested_worker": "13.31.0",
+  "worker_version": "13.34.2",
+  "tested_worker": "13.34.2",
   "at": "2026-10-03T09:00:00+00:00",
   "anchor": {
     "id": 19608,
