@@ -96,10 +96,10 @@ def box(codex_home, projects_dir, monkeypatch):
     conn.executescript(THREADS_DDL)
     cwd = str(shop)
     ra = rollout(codex_home, A, at=NOW - 3 * 3600, cwd=cwd)
-    rh = rollout(codex_home, H1, at=NOW - 3600, originator="hermes", source="vscode", cwd="/home/rpandox/brain")
+    rh = rollout(codex_home, H1, at=NOW - 3600, originator="hermes", source="vscode", cwd="/home/user/brain")
     add_thread(conn, A, cwd=cwd, rollout_path=str(ra), title="Fix the checkout", tokens_used=12345, reasoning_effort="high",
                git_branch="feat/x", updated_at=int(NOW - 3600), created_at=int(NOW - 3 * 3600))
-    add_thread(conn, H1, cwd="/home/rpandox/brain", rollout_path=str(rh), source="vscode", tokens_used=500, model="gpt-5.5",
+    add_thread(conn, H1, cwd="/home/user/brain", rollout_path=str(rh), source="vscode", tokens_used=500, model="gpt-5.5",
                updated_at=int(NOW - 60), title="hermes errand")
     add_thread(conn, IMP1, source="vscode", tokens_used=0, model=None, updated_at=int(NOW - 10), title="imported from Claude")
     add_thread(conn, IMP2, source="vscode", tokens_used=100, model="gpt-5.5", updated_at=int(NOW - 20), title="named in the imports file")
@@ -375,15 +375,11 @@ def test_snapshot_caches_for_the_ttl_and_writes_the_kv_record(box, monkeypatch, 
     assert {e["id"] for e in db.kv_get(cd.KV_KEY)["value"]["codex"]} == {H1, BH, B, A}
 
 
-def test_tick_keeps_the_kv_record_fresh_and_never_raises(box, monkeypatch, tmp_path):
-    db = DB(tmp_path / "tick.db")
-    monkeypatch.setattr(settings, "codex_home", box.home)
-    monkeypatch.setattr(settings, "projects_dir", box.projects)
-    cd.tick(db, NOW)
-    assert [e["id"] for e in db.kv_get(cd.KV_KEY)["value"]["codex"]][:2] == [H1, BH]
-    monkeypatch.setattr(cd, "discover", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
-    cd.reset_caches()
-    cd.tick(db, NOW)                                              # a failing scan is swallowed
+def test_discovery_has_no_tick_hook_nobody_reads_the_kv_record_between_polls(box):
+    """Issue #32 (f): codex_discovery.tick was never registered and no page reads the kv record `external_sessions` without calling the
+    endpoint (which refreshes it), so the hook was removed instead of adding a scan to the 15 s tick of a loaded box."""
+    from app import samples
+    assert not hasattr(cd, "tick") and all(getattr(f, "__module__", "") != cd.__name__ for f in samples.TICK_HOOKS)
 
 
 def test_external_leaves_out_the_boards_own_threads_and_narrows_by_project(box, tmp_path):

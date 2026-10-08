@@ -1098,6 +1098,7 @@ MemoryPage.build = function (root, route) {
   P.newPill = el('div', { class: 'mem-new hidden', role: 'status' }, P.newBtn);
   P.notes = el('div', { class: 'mem-notes-host' });
   P.panel = el('div', { class: 'mem-panel', role: 'tabpanel' });
+  P.tabs.link(P.panel);
   const head = el('div', { class: 'page-head mem-pagehead' }, el('h1', { text: 'Memory' }), P.pill);
   const controls = el('div', { class: 'mem-controls' }, el('label', { class: 'mem-fcell mem-proj' }, el('span', { class: 'mem-k', text: 'Project' }), P.select),
     el('label', { class: 'mem-fcell mem-q' }, el('span', { class: 'mem-k', text: 'Search' }), P.search));

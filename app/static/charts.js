@@ -30,7 +30,9 @@ const Charts = {
   MAX_RECTS: 240,                   // the stacked bars never draw more rects than this (30 days x (6 + other + unattributed) = 240)
   LINE_COLORS: ['--sig', '--seg-1', '--seg-2', '--seg-3', '--seg-4', '--seg-5'],   // a line's colour when opts.colors names none
   UNATTRIBUTED: '(unattributed)',
-  UNATTRIBUTED_TIP: 'sessions the board did not start',
+  UNATTRIBUTED_TIP: 'sessions the board did not start, with no folder on record',
+  OUTSIDE: '(outside projects)',
+  OUTSIDE_TIP: 'sessions that ran in a folder outside the projects folder',
   STATES: ['idle', 'working', 'waiting', 'done', 'errored', 'ended'],     // /api/series/events state v: 0..5
   WEEKDAYS: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],             // the heatmap's rows (weekday Mon=0)
   MONTHS: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
@@ -612,7 +614,7 @@ Charts.geom.rank = function (days, by, top, hueOf) {
     resid += m.resid;
     for (const [k, v] of m.map) tot.set(k, (tot.get(k) || 0) + v);
   }
-  const named = [...tot.entries()].filter(([k]) => k !== Charts.UNATTRIBUTED).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+  const named = [...tot.entries()].filter(([k]) => k !== Charts.UNATTRIBUTED && k !== Charts.OUTSIDE).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
   const cut = top === undefined || top === null ? 6 : Math.max(0, Math.floor(Number(top)) || 0);
   const head = named.slice(0, cut);
   const segs = by !== 'agent' && typeof hueOf === 'function' ? Charts.geom.segsFor(head.map(([k]) => k), hueOf) : null;
@@ -620,6 +622,7 @@ Charts.geom.rank = function (days, by, top, hueOf) {
   const rest = named.slice(cut);
   const restTotal = rest.reduce((a, [, v]) => a + v, 0) + resid;
   if (rest.length || resid > 0) keys.push({ key: 'other', total: restTotal, cls: 'seg-other', members: rest.map(([k]) => k) });
+  if (by !== 'agent' && tot.has(Charts.OUTSIDE)) keys.push({ key: Charts.OUTSIDE, total: tot.get(Charts.OUTSIDE), cls: 'seg-unattributed' });     // two labels with no project of their own: dashed, never ranked
   if (tot.has(Charts.UNATTRIBUTED)) keys.push({ key: Charts.UNATTRIBUTED, total: tot.get(Charts.UNATTRIBUTED), cls: 'seg-unattributed' });
   return keys;
 };
@@ -663,17 +666,21 @@ Charts.geom.scale = function (max, H) {
 };
 
 /* The readout of a whole day (a tap beside the drawn bars, on a phone where a 30-day bar is 7 px wide): the day, its total and every segment. */
-Charts.dayTitle = function (row, day) {
+/* `approx` (the Usage page's Estimated basis, issue #95) puts a `~` in front of every dollar of the readout: they include list-price estimates. */
+Charts.dayTitle = function (row, day, approx) {
+  const u = (v) => (approx ? '~' : '') + Charts.fmtUsd(v);
   if (!row || row.zero || !row.segs.length) return `${row && row.day} · no spend`;
   const tok = day && Number(day.tokens) > 0 ? ` · ${Charts.fmtTok(day.tokens)} tok` : '';
-  return `${row.day} · day ${Charts.fmtUsd(row.total)}${tok} · ${row.segs.map((s) => `${s.key} ${Charts.fmtUsd(s.v)}`).join(', ')}`;
+  return `${row.day} · day ${u(row.total)}${tok} · ${row.segs.map((s) => `${s.key} ${u(s.v)}`).join(', ')}`;
 };
 
-Charts.barTitle = function (row, seg, day) {
+Charts.barTitle = function (row, seg, day, approx) {
+  const u = (v) => (approx ? '~' : '') + Charts.fmtUsd(v);
   if (!seg) return `${row.day} · no spend`;
   const tok = day && Number(day.tokens) > 0 ? ` · ${Charts.fmtTok(day.tokens)} tok` : '';
-  const who = seg.key === Charts.UNATTRIBUTED ? `${seg.key} ${Charts.fmtUsd(seg.v)} (${Charts.UNATTRIBUTED_TIP})` : `${seg.key} ${Charts.fmtUsd(seg.v)}`;
-  return `${row.day} · ${who} · day ${Charts.fmtUsd(row.total)}${tok}`;
+  const unTip = seg.key === Charts.UNATTRIBUTED ? Charts.UNATTRIBUTED_TIP : seg.key === Charts.OUTSIDE ? Charts.OUTSIDE_TIP : '';
+  const who = unTip ? `${seg.key} ${u(seg.v)} (${unTip})` : `${seg.key} ${u(seg.v)}`;
+  return `${row.day} · ${who} · day ${u(row.total)}${tok}`;
 };
 
 /* Pattern defs: the zero-day hatch and, per unpriced segment class, the segment colour with dark diagonals over it. */
@@ -740,7 +747,7 @@ Charts._paintBars = function (host, st) {
     }
     if (row.zero) {
       if (o.hatchZero === false) return;
-      kids.push(svg('rect', { class: 'bar-zero', fill: 'url(#ch-hz)', x: x.toFixed(1), y: base - 8, width: bw.toFixed(1), height: 8, 'data-i': i }, svg('title', { text: Charts.barTitle(row, null, days[i]) })));
+      kids.push(svg('rect', { class: 'bar-zero', fill: 'url(#ch-hz)', x: x.toFixed(1), y: base - 8, width: bw.toFixed(1), height: 8, 'data-i': i }, svg('title', { text: Charts.barTitle(row, null, days[i], o.approx) })));
       return;
     }
     row.segs.forEach((seg, s) => {
@@ -750,15 +757,15 @@ Charts._paintBars = function (host, st) {
       const h = Math.max(1, seg.v * sc.k);
       const a = { x: x.toFixed(1), y: y.toFixed(1), width: bw.toFixed(1), height: h.toFixed(1), 'data-i': i, 'data-s': s };
       if (flagged) { hatched.add(c); Object.assign(a, { class: 'seg-hx ' + c, fill: 'url(#ch-hx-' + c + ')' }); } else a.class = 'seg ' + c;
-      kids.push(svg('rect', a, svg('title', { text: Charts.barTitle(row, seg, days[i]) + (flagged ? ' · some sessions have tokens but no price' : '') })));
+      kids.push(svg('rect', a, svg('title', { text: Charts.barTitle(row, seg, days[i], o.approx) + (flagged ? ' · some sessions have tokens but no price' : '') })));
     });
   });
   const sum = rows.reduce((a, r) => a + r.total, 0);
-  const desc = `Cost per day over the last ${n} days, by ${by}: ${Charts.fmtUsd(sum)} API-equivalent`;
+  const desc = `Cost per day over the last ${n} days, by ${by}: ${o.approx ? '~' : ''}${Charts.fmtUsd(sum)} API-equivalent${o.approx ? ' (estimated)' : ''}`;
   const node = svg('svg', { class: 'bars', viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': desc }, svg('title', { text: desc }), Charts._barDefs(hatched), ...kids);
   const legend = Charts.legendNode(keys.map((k) => ({
-    cls: k.cls, label: k.key, v: Charts.fmtUsd(k.total), hatch: unpriced.has(k.key),
-    tip: k.key === Charts.UNATTRIBUTED ? Charts.UNATTRIBUTED_TIP : (k.members && k.members.length ? `${k.members.length} more: ${k.members.slice(0, 8).join(', ')}` : k.key),
+    cls: k.cls, label: k.key, v: (o.approx ? '~' : '') + Charts.fmtUsd(k.total), hatch: unpriced.has(k.key),
+    tip: k.key === Charts.UNATTRIBUTED ? Charts.UNATTRIBUTED_TIP : k.key === Charts.OUTSIDE ? Charts.OUTSIDE_TIP : (k.members && k.members.length ? `${k.members.length} more: ${k.members.slice(0, 8).join(', ')}` : k.key),
   })));
   const read = el('p', { class: 'chart-read dim', 'aria-live': 'polite', text: o.hint || 'Hover or tap a day for its numbers.' });
   /* A tap or a hover that misses every drawn segment still picks the day under it (the whole column answers, a 30-day bar is 7 px wide): the pointer's
@@ -779,7 +786,7 @@ Charts._paintBars = function (host, st) {
     const s = t ? t.getAttribute('data-s') : null;
     const seg = s === null ? null : row.segs[Number(s)];
     const day = days[i] || {};
-    const text = t ? Charts.barTitle(row, seg, day) : Charts.dayTitle(row, day);
+    const text = t ? Charts.barTitle(row, seg, day, o.approx) : Charts.dayTitle(row, day, o.approx);
     mark(i);
     read.textContent = text;
     if (typeof o.onHover === 'function') {

@@ -134,6 +134,8 @@ Shell.buildTopbar = function (bar) {
   R.p5 = Shell.pill('5h', '5H');
   R.p7 = Shell.pill('7d', '7D');
   R.pCodex = Shell.pill('codex', 'CX');
+  R.pCodex.gl = el('span', { class: 'pg hidden', 'aria-hidden': 'true' }, ic('warning-sign'));          // shown only while the Codex limit is reached
+  R.pCodex.insertBefore(R.pCodex.gl, R.pCodex.pl);
   R.pSpend = Shell.pill('spend', 'SPEND');
   R.acctT = el('b', { class: 'pl' });
   R.acct = el('a', { class: 'pill acct hidden', 'data-pill': 'acct', href: '#/usage' }, R.acctT);       // v0.5.17b: which subscription account the pills below belong to (only with more than one)
@@ -171,9 +173,11 @@ Shell.focusSearch = function () {
 };
 
 /* Codex rate limits: state.usage_codex = {value: {limit_id, plan_type, primary, secondary, credits, reached, observed_at, account}, at}, a window being
-   {used_percent, window_minutes, resets_at}. Also accepts a bare window, a list of them or an object of them. The pill shows ONE window, the longest one the plan
-   reports (weekly: 10080 minutes; a plan with a 5-hour window as well still shows the weekly one), labelled from its window_minutes. */
-Shell.codexWindow = function (u) {
+   {used_percent, window_minutes, resets_at}. Also accepts a bare window, a list of them or an object of them. The pill shows ONE window, labelled from its
+   window_minutes. Which one (#32 e): when the record says `reached`, the REACHED window (a window at 100 %; the longest of several, else the fullest), so a reached
+   5-hour limit is never shown as the weekly percentage; otherwise, with two windows, the fullest by percentage (a window whose reset has passed counts as 0 %; a tie
+   goes to the longer); with one window, that one. */
+Shell.codexWindow = function (u, now) {
   if (!u) return null;
   const v = u.value !== undefined ? u.value : u;
   const cand = [];
@@ -182,11 +186,18 @@ Shell.codexWindow = function (u) {
   if (Array.isArray(v)) v.forEach(add);
   else { add(v); if (v && typeof v === 'object') Object.values(v).forEach(add); }
   if (!cand.length) return null;
-  cand.sort((a, b) => (b.window_minutes || 0) - (a.window_minutes || 0));
-  const w = cand[0];
   const rec = v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  const t = typeof now === 'number' ? now : Date.now() / 1000;
+  const rolled = (w) => typeof w.resets_at === 'number' && w.resets_at > 0 && w.resets_at <= t;
+  const eff = (w) => (rolled(w) ? 0 : pct(w));
+  const longer = (a, b) => (b.window_minutes || 0) - (a.window_minutes || 0);
+  const fullest = (a, b) => eff(b) - eff(a) || longer(a, b);
+  const reached = rec.reached === true;
+  let pool = cand;
+  if (reached) { const full = cand.filter((w) => eff(w) >= 100); if (full.length) pool = full; }
+  const w = pool.slice().sort(reached && pool !== cand ? longer : (cand.length > 1 ? fullest : longer))[0];
   return { used_percentage: pct(w), resets_at: w.resets_at, minutes: w.window_minutes, plan: typeof rec.plan_type === 'string' ? rec.plan_type : '',
-    reached: rec.reached === true, account: typeof rec.account === 'string' ? rec.account : '' };
+    reached, account: typeof rec.account === 'string' ? rec.account : '' };
 };
 
 Shell.windowLabel = function (m) {
@@ -308,7 +319,7 @@ Shell.patchUsage = function (st) {
 Shell.patchCodex = function (st) {
   const R = Shell.refs;
   const cx = Shell.codexWindow(st.usage_codex);
-  if (!cx) { Shell.patchPill(R.pCodex, null, ''); return; }
+  if (!cx) { R.pCodex.classList.remove('reached'); Shell.patchPill(R.pCodex, null, ''); return; }
   const rolled = typeof cx.resets_at === 'number' && cx.resets_at > 0 && cx.resets_at <= Date.now() / 1000;
   let who = '';
   try {
@@ -322,6 +333,8 @@ Shell.patchCodex = function (st) {
   setText(R.pCodex.pl, `CX ${Shell.windowLabel(cx.minutes)}`.trim());
   const extra = [cx.plan ? `${cx.plan} plan` : '', rolled ? 'the window rolled over since the last reading' : '', cx.reached ? 'limit reached' : ''].filter(Boolean);
   if (cx.reached) { R.pCodex.classList.remove('ok', 'warn'); R.pCodex.classList.add('bad'); }
+  R.pCodex.classList.toggle('reached', cx.reached);                          // shell.css keeps a reached limit visible in the compact shell (#32 e)
+  if (R.pCodex.gl) R.pCodex.gl.classList.toggle('hidden', !cx.reached);       // a glyph, so a reached limit is not told by red alone
   if (extra.length) R.pCodex.setAttribute('title', `${R.pCodex.getAttribute('title')} · ${extra.join(' · ')}`);
 };
 

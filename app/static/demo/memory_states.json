@@ -9,8 +9,8 @@
       "reason": "connection refused: the claude-mem worker is not running",
       "reason_code": "refused",
       "compat": "ok",
-      "worker_version": "13.31.0",
-      "tested_worker": "13.31.0"
+      "worker_version": "13.34.2",
+      "tested_worker": "13.34.2"
     }
   },
   "degraded": {
@@ -22,8 +22,8 @@
       "reason": "the worker is slow: no answer within 2.0 s",
       "reason_code": "timeout",
       "compat": "ok",
-      "worker_version": "13.31.0",
-      "tested_worker": "13.31.0"
+      "worker_version": "13.34.2",
+      "tested_worker": "13.34.2"
     }
   },
   "stale": {
@@ -77,7 +77,7 @@
     "status": 200,
     "body": {
       "compat": "untested",
-      "worker_version": "13.34.2"
+      "worker_version": "13.35.0"
     }
   }
 }

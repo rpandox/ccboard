@@ -812,12 +812,25 @@ def test_a_reading_goes_to_the_account_its_creator_id_names_and_only_the_current
     assert set(out) == {KA, KB} and out[KB]["primary"]["used_percent"] == 60.0 and out[KB]["account"] is None
 
 
-def test_a_reading_of_an_account_the_board_does_not_know_belongs_to_the_current_one(db, home):
+def test_a_reading_of_an_account_the_board_does_not_know_belongs_to_no_account(db, home):
+    """Issue #32 (c): saved accounts carry ids and the rollout's creator id matches none of them: the reading feeds only the `codex` series
+    and the kv, never the current account."""
     accounts_kv(db, current=KB)
     write_rl(home, at=NOW - 20, rate_limits=limits(win(33)), account="acct-someone-else")
     poll(db)
-    assert series_last(db, "rl_7d", "cacct:" + KB)["value"] == 33.0 and series_last(db, "rl_7d", "codex")["value"] == 33.0
-    assert series_last(db, "rl_7d", "cacct:" + KA) is None and kv(db)["account"] == KB
+    assert series_last(db, "rl_7d", "codex")["value"] == 33.0 and kv(db)["account"] is None
+    assert series_last(db, "rl_7d", "cacct:" + KB) is None and series_last(db, "rl_7d", "cacct:" + KA) is None
+
+
+def test_an_unknown_creator_id_stands_in_for_the_current_account_while_no_saved_account_has_an_id(db, home):
+    db.kv_set("codex_accounts", {KA: {"key": KA, "label": "Work", "account_id": None, "plan": "plus"},
+                                 KB: {"key": KB, "label": "Home", "plan": "plus"}})
+    db.kv_set("codex_account_current", {"key": KB, "since": iso(NOW - 86400)})
+    write_rl(home, at=NOW - 20, rate_limits=limits(win(33)), account="acct-someone-else")
+    poll(db)
+    assert series_last(db, "rl_7d", "cacct:" + KB)["value"] == 33.0 and kv(db)["account"] == KB
+    assert cr._owner({}, "k", "x") == "k" and cr._owner({"a": {"account_id": "i"}}, "k", "x") is None
+    assert cr._owner({"a": {"account_id": "i"}}, "k", "i") == "a" and cr._owner({"a": {"account_id": "i"}}, "k", None) == "k"
 
 
 def test_a_rollout_without_a_creator_id_belongs_to_the_current_account(db, home):

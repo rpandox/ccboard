@@ -10,7 +10,7 @@ Where the worker is (first match wins):
     1. CCBOARD_MEM_PORT                                        (settings.mem_port)
     2. <claude-mem dir>/worker.pid   JSON {pid, port, startedAt, startToken}
     3. <claude-mem dir>/settings.json   CLAUDE_MEM_WORKER_PORT
-    4. 37700 + (uid % 100): the plugin's own default for CLAUDE_MEM_WORKER_PORT (37700 on ubu2 with uid 1000, 37701 on a Mac with uid 501;
+    4. 37700 + (uid % 100): the plugin's own default for CLAUDE_MEM_WORKER_PORT (37700 with uid 1000, 37701 on a Mac with uid 501;
        37701 when there is no uid)
 `<claude-mem dir>` is ~/.claude-mem (settings.claude_mem_dir). CLAUDE_MEM_WORKER_HOST in that settings.json is honoured only when it
 is a loopback address; anything else is refused before a socket is opened.

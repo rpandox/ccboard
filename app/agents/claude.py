@@ -104,6 +104,11 @@ PR_RE = re.compile(r"^(#?\d{1,7}|https://[A-Za-z0-9.-]{1,100}(:\d{1,5})?/[A-Za-z
 AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,79}$")      # --agent <name> (a subagent definition)
 AUTOCOMPACT_RE = re.compile(r"^(auto|\d{4,9})$")                         # --autocompact auto | <tokens>
 MAX_FALLBACKS = 3                                 # --fallback-model takes a chain, capped at three
+SUBAGENT_ENV = "CLAUDE_CODE_SUBAGENT_MODEL"       # the default model of subagents, teammates and workflow agents (docs read 2026-10-07): per-call model, definition model, this, then the main model
+SUBAGENT_FORCE_ENV = "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"   # 2.1.257+: every subagent uses that one model, whatever a definition asks for. Only ever set by its own explicit switch
+SUBAGENT_CHOICES = ("inherit", "haiku", "sonnet", "opus")
+MAX_ALLOWED_TOOLS = 20                            # a headless job's pre-approved tool rules
+FABLE_ENV = "ANTHROPIC_DEFAULT_FABLE_MODEL"       # remaps what the fable alias means
 MAX_MCP_PATH = 400
 HEADLESS_MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk")   # bypassPermissions only inside a devcontainer (v0.4.5)
 TOOL_RE = re.compile(r"^[A-Za-z0-9_*.:/ ()\-]{1,120}$")
@@ -164,7 +169,8 @@ def _arg_matching(extra: list[str], parts: tuple[str, ...]) -> str | None:
 
 _clock = time.monotonic                           # patched by tests (failure retry age)
 _caps_lock = threading.Lock()
-_caps_items: dict = {}                            # (exe, mtime_ns) -> (at, {ultracode_flag}, ok)
+_caps_items: dict = {}                            # (exe, mtime_ns) -> (at, {ultracode_flag, permission_prompts_none}, ok)
+NO_CAPS = {"ultracode_flag": False, "permission_prompts_none": False}
 
 
 def reset_caches() -> None:
@@ -187,6 +193,64 @@ def help_lists_ultracode(text: str) -> bool:
                 break
             block.append(ln)
     return ULTRACODE in " ".join(block).lower()
+
+
+def help_lists_permission_prompts_none(text: str) -> bool:
+    """Does `claude --help` describe `--permission-prompts` with a `none` choice (2.1.259 and newer: "host" or "none", anything that would prompt
+    is denied automatically)? The option's own lines only; `--permission-prompt-tool` is a different option and does not count."""
+    block: list[str] = []
+    inside, indent = False, 0
+    for ln in (text or "").splitlines():
+        stripped = ln.strip()
+        if re.match(r"^--permission-prompts(?![A-Za-z0-9-])", stripped):
+            inside, indent, block = True, len(ln) - len(ln.lstrip()), [stripped]
+            continue
+        if inside:
+            if not stripped or len(ln) - len(ln.lstrip()) <= indent:      # the next option (or a blank line); a wrapped line is indented deeper and may itself start with "--print:"
+                break
+            block.append(stripped)
+    return bool(re.search(r"\bnone\b", " ".join(block)))
+
+
+def model_values(extra_args) -> list[str]:
+    """The model names an argument list asks for: `--model X`, `--model=X` and each name of `--fallback-model a,b` / `--fallback-model=a,b`
+    (a fallback bills as well). Order kept, duplicates kept."""
+    toks = [str(a) for a in (extra_args or [])]
+    out: list[str] = []
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        for flag in ("--model", "--fallback-model"):
+            if t == flag and i + 1 < len(toks):
+                val = toks[i + 1]
+                i += 1
+            elif t.startswith(flag + "="):
+                val = t[len(flag) + 1:]
+            else:
+                continue
+            out += [v.strip() for v in val.split(",") if v.strip()] if flag == "--fallback-model" else ([val.strip()] if val.strip() else [])
+            break
+        i += 1
+    return out
+
+
+def fable_models(extra_args, env=None, *, fable_available=None) -> list[str]:
+    """The lower-cased model names of `extra_args` that resolve to Fable: `fable`, any id containing `fable`, `best` (it resolves to Fable
+    where Fable is available: assumed yes unless `fable_available` is False), and the id `ANTHROPIC_DEFAULT_FABLE_MODEL` in `env` remaps the
+    fable alias to. A trailing [1m] does not change the answer. A run with no model of its own resolves to whatever Claude's settings say,
+    which the board does not read: that is not counted."""
+    remap = str((env or {}).get(FABLE_ENV) or "").strip().lower().replace("[1m]", "")
+    out = []
+    for m in model_values(extra_args):
+        low = m.lower().replace("[1m]", "")
+        if "fable" in low or (low == "best" and fable_available is not False) or (remap and low == remap):
+            out.append(m.lower())
+    return out
+
+
+def resolves_to_fable(extra_args, env=None, *, fable_available=None) -> bool:
+    """True when the run would use Fable (see fable_models): `claude -p` never asks before billing Fable usage credits."""
+    return bool(fable_models(extra_args, env, fable_available=fable_available))
 
 
 def _bin_key(exe: str) -> tuple:
@@ -366,7 +430,7 @@ class ClaudeAgent(Agent):
     label = "Claude"
     glyph = "◆"
     PERMISSION_MODES = PERMISSION_MODES
-    MODELS = ("opus", "fable", "sonnet", "haiku", "opusplan", "best", "opus[1m]", "sonnet[1m]")
+    MODELS = ("opus", "fable", "sonnet", "haiku", "opusplan", "best")
 
     # ---- detection and auth: thin over claude_auth (it owns the 60 s cache, so no extra binary calls) ----
     def bin(self) -> str | None:
@@ -391,18 +455,9 @@ class ClaudeAgent(Agent):
         return claude_auth.logout()
 
     # ---- capabilities: what this box's claude takes ----
-    def capabilities(self) -> dict:
-        """{ultracode_flag}: does `claude --effort ultracode` work here? CCBOARD_CLAUDE_ULTRACODE_FLAG=1|0 records the V19 box check and
-        wins; otherwise the --effort option of `claude --help` (read once per binary mtime, a failed probe retried after a minute, no
-        binary or an unreadable help = False). Never raises."""
-        env = os.environ.get(ULTRACODE_ENV, "").strip().lower()
-        if env in ("1", "true", "yes", "on"):
-            return {"ultracode_flag": True}
-        if env in ("0", "false", "no", "off"):
-            return {"ultracode_flag": False}
-        exe = self.bin()
-        if not exe:
-            return {"ultracode_flag": False}
+    def _help_caps(self, exe: str) -> dict:
+        """The flags `claude --help` names, read once per binary mtime (a failed probe is retried after a minute): {ultracode_flag,
+        permission_prompts_none}. An unreadable help = all False. Never raises."""
         key = _bin_key(exe)
         with _caps_lock:
             hit = _caps_items.get(key)
@@ -411,12 +466,30 @@ class ClaudeAgent(Agent):
         try:
             cp = subprocess.run([exe, "--help"], capture_output=True, text=True, timeout=CAPS_TIMEOUT)
             ok = cp.returncode == 0 and "--effort" in (cp.stdout or "")
-            caps = {"ultracode_flag": help_lists_ultracode(cp.stdout) if ok else False}
+            caps = ({"ultracode_flag": help_lists_ultracode(cp.stdout), "permission_prompts_none": help_lists_permission_prompts_none(cp.stdout)}
+                    if ok else dict(NO_CAPS))
         except (subprocess.SubprocessError, OSError, ValueError):
-            ok, caps = False, {"ultracode_flag": False}
+            ok, caps = False, dict(NO_CAPS)
         with _caps_lock:
             _caps_items[key] = (_clock(), caps, ok)
         return dict(caps)
+
+    @staticmethod
+    def _ultracode_env() -> bool | None:
+        env = os.environ.get(ULTRACODE_ENV, "").strip().lower()
+        return True if env in ("1", "true", "yes", "on") else False if env in ("0", "false", "no", "off") else None
+
+    def capabilities(self) -> dict:
+        """{ultracode_flag, permission_prompts_none}. ultracode_flag: does `claude --effort ultracode` work here? CCBOARD_CLAUDE_ULTRACODE_FLAG=1|0
+        records the V19 box check and wins; otherwise the --effort option of `claude --help`. permission_prompts_none: does `claude --help` name
+        `--permission-prompts` with a `none` choice (issue #107)? Read once per binary mtime, a failed probe retried after a minute, no binary or
+        an unreadable help = False. Never raises."""
+        exe = self.bin()
+        caps = self._help_caps(exe) if exe else dict(NO_CAPS)
+        forced = self._ultracode_env()
+        if forced is not None:
+            caps["ultracode_flag"] = forced
+        return caps
 
     def launch_caps(self) -> dict:
         return self.capabilities()
@@ -424,17 +497,14 @@ class ClaudeAgent(Agent):
     def peek_capabilities(self) -> dict | None:
         """capabilities() without a probe: the recorded answer (env switch, or the cached `--help` of this binary), None when none exists yet.
         The doctor uses it so a version check never starts a process."""
-        env = os.environ.get(ULTRACODE_ENV, "").strip().lower()
-        if env in ("1", "true", "yes", "on"):
-            return {"ultracode_flag": True}
-        if env in ("0", "false", "no", "off"):
-            return {"ultracode_flag": False}
         exe = self.bin()
-        if not exe:
-            return None
         with _caps_lock:
-            hit = _caps_items.get(_bin_key(exe))
-        return dict(hit[1]) if hit and hit[2] else None
+            hit = _caps_items.get(_bin_key(exe)) if exe else None
+        caps = dict(hit[1]) if hit and hit[2] else None
+        forced = self._ultracode_env()
+        if forced is not None:
+            caps = {**(caps or NO_CAPS), "ultracode_flag": forced}
+        return caps
 
     def gate_unmet(self, key: str) -> str | None:
         """The plain reason when the installed claude is too old for FEATURE_GATES[key]; None when the gate is met or the version cannot be read
@@ -479,8 +549,9 @@ class ClaudeAgent(Agent):
             OptField("name", "Session name", "text", None, None,
                      "--name, and the board's own label. Blank takes the next free one (s1, s2...).", "basic"),
             OptField("model", "Model", "combo", list(self.MODELS), "opus",
-                     "An alias or a full model id; add [1m] for the 1M-context variant. opus, fable, sonnet and haiku lead; opusplan, best and "
-                     "the [1m] variants follow.", "basic"),
+                     "An alias or a full model id. opus, fable, sonnet and haiku lead; opusplan (Opus while planning, Sonnet for execution) and best "
+                     "(the strongest available, which may be Fable and bill as Fable) follow. A typed [1m] suffix is still accepted, but only matters "
+                     "for a model without a 1M window by default (Opus 4.6, Sonnet 4.6; Claude Code docs read 2026-10-07).", "basic"),
             OptField("effort", "Effort", "select", efforts, "high",
                      "--effort." + (" ultracode is accepted by this box's claude." if ultra else
                                     " ultracode is not a flag on this box (V19): it is applied after start with /effort ultracode on."),
@@ -505,6 +576,14 @@ class ClaudeAgent(Agent):
             OptField("agent_name", "Agent", "text", None, None, "--agent: run as one of your subagent definitions.", "advanced"),
             OptField("fallback_model", "Fallback model", "text", None, None,
                      f"--fallback-model: up to {MAX_FALLBACKS} models, comma separated, tried when the main one is overloaded.", "advanced"),
+            OptField("subagent_model", "Subagent model", "combo", list(SUBAGENT_CHOICES), settings.subagent_model or "inherit",
+                     "The default model for the subagents this session starts after launch (CLAUDE_CODE_SUBAGENT_MODEL in its environment): inherit uses "
+                     "the main model, and a subagent that names its own model still gets it. An alias or a full model id. The default comes from the "
+                     "board setting CCBOARD_SUBAGENT_MODEL.", "advanced"),
+            OptField("subagent_force", "Force the subagent model", "bool", None, False,
+                     "Also sets CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1: every subagent uses that one model, which overrides definitions that ask for a "
+                     "stronger one. Off unless you switch it on here." + ("" if not self.gate_unmet("subagent_model_force") else " " + self.gate_unmet("subagent_model_force") + "."),
+                     "advanced"),
             OptField("autocompact", "Auto-compact", "combo", ["auto"], None,
                      "--autocompact: auto, or the context size (a number such as 150000) at which the conversation is compacted. Blank = Claude's own setting.",
                      "advanced"),
@@ -599,7 +678,30 @@ class ClaudeAgent(Agent):
             raise projects.BadRequest("mcp_config: no such file")
         return str(path)
 
-    def _validate(self, raw: dict | None, *, interactive: bool, tasks_or_headless: bool, files: bool = True) -> tuple[dict, dict, list[str]]:
+    @staticmethod
+    def _subagent_model(raw) -> str:
+        """inherit | haiku | sonnet | opus (any case) or a full model id (MODEL_RE)."""
+        what = "subagent_model: use inherit, haiku, sonnet, opus or a full model id"
+        if not isinstance(raw, str):
+            raise projects.BadRequest(what)
+        v = raw.strip()
+        if v.lower() in SUBAGENT_CHOICES:
+            return v.lower()
+        if not MODEL_RE.match(v):
+            raise projects.BadRequest(what)
+        return v
+
+    @staticmethod
+    def env_prefix(opts: dict | None) -> list[str]:
+        """The environment prefix of a launch line, from validated options: [] unless a subagent model other than inherit is set. The force
+        variable is added only by its own switch (subagent_force), never because a model is set."""
+        sub = (opts or {}).get("subagent_model")
+        if not sub or sub == "inherit":
+            return []
+        return ["env", f"{SUBAGENT_ENV}={sub}", *([f"{SUBAGENT_FORCE_ENV}=1"] if (opts or {}).get("subagent_force") else [])]
+
+    def _validate(self, raw: dict | None, *, interactive: bool, tasks_or_headless: bool, files: bool = True,
+                  defaults: bool = True) -> tuple[dict, dict, list[str]]:
         """-> (full, clean, extra). `full` drives argv (it keeps permission_mode=bypassPermissions and the one-launch from_pr /
         fork_session); `clean` is what may be stored and re-passed on resume (never a bypass, never the one-off extra args, never a
         from_pr or fork_session). `files` False skips the existence check of an MCP config file (a stored option on resume)."""
@@ -672,6 +774,20 @@ class ClaudeAgent(Agent):
             if not ac or not AUTOCOMPACT_RE.match(ac):
                 raise projects.BadRequest("autocompact: use auto or a number of tokens (4 to 9 digits)")
             full["autocompact"] = ac
+        # the subagent model: an explicit choice, else the board default (CCBOARD_SUBAGENT_MODEL) for a launch; a restore (defaults False) takes the
+        # stored value only. An explicit `inherit` is kept only where it overrides a board default, so a plain launch stores nothing.
+        sub = raw.get("subagent_model")
+        sub = self._subagent_model(sub) if sub not in (None, "") else (settings.subagent_model or None) if defaults else None
+        if sub == "inherit" and defaults and not settings.subagent_model:
+            sub = None
+        if sub:
+            full["subagent_model"] = sub
+        if _truthy(raw.get("subagent_force")):
+            if not sub or sub == "inherit":
+                raise projects.BadRequest("subagent_force: choose a subagent model first")
+            if self.gate_unmet("subagent_model_force"):
+                raise projects.BadRequest(f"subagent_force: {self.gate_unmet('subagent_model_force')}")
+            full["subagent_force"] = True
         if raw.get("mcp_config") not in (None, ""):
             full["mcp_config"] = self._mcp_config(raw["mcp_config"], must_exist=files)
         if _truthy(raw.get("fast")):
@@ -791,6 +907,7 @@ class ClaudeAgent(Agent):
                 argv = ["claude", "--from-pr", full["from_pr"], *bypass, *tail, *more]
             else:
                 argv = ["claude", "--continue", *fork, *bypass, *tail, *more]
+        argv = [*self.env_prefix(full), *argv]               # env CLAUDE_CODE_SUBAGENT_MODEL=<v> claude ...: Claude does not restore it on --resume, so recover passes it again
         cmd_line = shlex.join(argv)
         if devc:
             # devcontainer CLI: build/start the container, then run claude inside it (its own ~/.claude; log in once there)
@@ -801,22 +918,38 @@ class ClaudeAgent(Agent):
     def resume_argv(self, session_id: str | None = None, *, name: str | None = None, opts: dict | None = None, add_dirs=()) -> list[str]:
         if session_id and not UUID_RE.match(session_id):
             raise projects.BadRequest("resume id must be a UUID")
-        full = self._validate(opts, interactive=True, tasks_or_headless=False, files=False)[0]
+        full = self._validate(opts, interactive=True, tasks_or_headless=False, files=False, defaults=False)[0]
         target = session_id or name
-        argv = ["claude", "--resume", *([target] if target else []), *self._opt_args(full)]
+        argv = [*self.env_prefix(full), "claude", "--resume", *([target] if target else []), *self._opt_args(full)]
         dirs = [str(d) for d in (add_dirs or ())]
         return argv + (["--add-dir", *dirs] if dirs else [])
 
     def continue_argv(self, cwd: str, opts: dict | None = None, add_dirs=()) -> list[str]:
-        full = self._validate(opts, interactive=True, tasks_or_headless=False, files=False)[0]
+        full = self._validate(opts, interactive=True, tasks_or_headless=False, files=False, defaults=False)[0]
         dirs = [str(d) for d in (add_dirs or ())]
-        return ["claude", "--continue", *self._opt_args(full), *(["--add-dir", *dirs] if dirs else [])]
+        return [*self.env_prefix(full), "claude", "--continue", *self._opt_args(full), *(["--add-dir", *dirs] if dirs else [])]
+
+    @classmethod
+    def allowed_tool_rules(cls, raw) -> list[str]:
+        """A job's pre-approved tools (the CLI's permission rules, e.g. `Bash(git diff *)`, `Read`): a list or text split on commas and
+        newlines, each rule checked against TOOL_RE (no shell metacharacters), at most MAX_ALLOWED_TOOLS."""
+        tools = cls._tools(raw)
+        if len(tools) > MAX_ALLOWED_TOOLS:
+            raise projects.BadRequest(f"allowed tools: at most {MAX_ALLOWED_TOOLS} rules")
+        return list(dict.fromkeys(tools))
 
     def headless_argv(self, prompt: str, *, mode: str, max_turns: int, budget: float | None, extra: list[str], cwd: str | None,
-                      slug: str, last_message_file: str | None) -> list[str]:
-        # cwd and last_message_file are Codex's: claude -p runs in the process cwd and prints its result as JSON
-        cmd = ["claude", "-p", prompt, "--worktree", slug, "--output-format", "json", "--permission-mode", mode,
-               "--max-turns", str(max_turns)]
+                      slug: str, last_message_file: str | None, prompts_none: bool = False, allowed_tools=None) -> list[str]:
+        # cwd and last_message_file are Codex's: claude -p runs in the process cwd and prints its result as JSON.
+        # prompts_none: this binary takes --permission-prompts (capabilities()), so a tool that is not pre-approved is denied at once instead of
+        # waiting for an answer nobody can give. allowed_tools: the job's pre-approved rules, before --max-turns so the variadic flag cannot take
+        # a following argument.
+        cmd = ["claude", "-p", prompt, "--worktree", slug, "--output-format", "json", "--permission-mode", mode]
+        if prompts_none:
+            cmd += ["--permission-prompts", "none"]
+        if allowed_tools:
+            cmd += ["--allowedTools", *allowed_tools]
+        cmd += ["--max-turns", str(max_turns)]
         if budget:
             cmd += ["--max-budget-usd", f"{budget:.2f}"]
         return cmd + list(extra)
@@ -887,6 +1020,14 @@ class ClaudeAgent(Agent):
         if not self._settings_file().exists():
             return
         mod.save(self._settings_file(), mod.strip_ours(self._read_settings(strict=True)))
+
+    def rebinds(self, payload: dict, row: dict | None = None) -> bool:
+        """Does this SessionStart move the row to the payload's session id? Only a source that starts a conversation does (FRESH_SOURCES);
+        `compact` keeps the session, so an id it carried (unverified that Claude ever sends one) must not move the row. A payload with no
+        source at all (an older build) is read as a start."""
+        p = payload if isinstance(payload, dict) else {}
+        kind = _kind(p.get("source"), p.get("matcher"))
+        return kind is None or kind in FRESH_SOURCES
 
     def normalise_hook(self, event: str, payload: dict) -> HookNorm:
         """One hook payload in the board's terms; hooks.apply feeds EVERY event through it (Stop's screen-line fallback, the

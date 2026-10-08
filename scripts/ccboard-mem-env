@@ -1,0 +1,40 @@
+#!/bin/sh
+# ccboard-mem-env: tell the board which ccboard/tmux variables the claude-mem worker's environment holds.
+# The board in its container cannot read the host worker's /proc/<pid>/environ (Docker's default confinement); this script runs on the
+# host (from ccboard-watchdog.sh, i.e. the same crontab line every 2 minutes) and leaves the answer in $CCBOARD_DATA_DIR/mem-env.json:
+#   {"at": "<UTC time>", "pid": <worker pid>, "names": ["CCBOARD_SESSION", "TMUX_PANE", ...]}
+# NAMES ONLY, and only these: CCBOARD_*, TMUX, TMUX_PANE, CLAUDECODE, CLAUDE_CODE_*. A value is never read into a variable, a file or
+# a log. The file is mode 0600 and replaced atomically. Nothing to report (no worker.pid, no such process, an unreadable environment)
+# writes nothing and exits 0: the board then sees the old file go stale, which it says out loud.
+# Test seams: CCBOARD_PROC_ROOT (default /proc), CLAUDE_MEM_DATA_DIR (default ~/.claude-mem), CCBOARD_DATA_DIR.
+set -u
+PROC=${CCBOARD_PROC_ROOT:-/proc}
+MEMDIR=${CLAUDE_MEM_DATA_DIR:-$HOME/.claude-mem}
+STATE_DIR=${CCBOARD_DATA_DIR:-$HOME/.local/share/ccboard}
+OUT=$STATE_DIR/mem-env.json
+
+[ -r "$MEMDIR/worker.pid" ] || exit 0
+# worker.pid is JSON {"pid": N, ...}; a bare number is accepted too
+pid=$(head -c 4096 "$MEMDIR/worker.pid" 2>/dev/null | tr -d '\n' | sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')
+if [ -z "$pid" ]; then
+  pid=$(head -c 64 "$MEMDIR/worker.pid" 2>/dev/null | tr -d ' \n\r\t')
+fi
+case "$pid" in ''|*[!0-9]*) exit 0 ;; esac
+[ "$pid" -gt 0 ] 2>/dev/null || exit 0
+[ -r "$PROC/$pid/environ" ] || exit 0
+
+# names only: keep lines that look like NAME=..., cut at the first '=', then keep the allowed names
+names=$(head -c 1048576 "$PROC/$pid/environ" 2>/dev/null | tr '\0' '\n' | grep '=' | sed 's/=.*//' \
+  | grep -E '^(CCBOARD_[A-Za-z0-9_]*|TMUX|TMUX_PANE|CLAUDECODE|CLAUDE_CODE_[A-Za-z0-9_]*)$' | sort -u) || names=""
+list=""
+for n in $names; do
+  list="$list${list:+, }\"$n\""
+done
+
+umask 077
+mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
+tmp=$OUT.tmp.$$
+printf '{"at": "%s", "pid": %s, "names": [%s]}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pid" "$list" > "$tmp" 2>/dev/null || { rm -f "$tmp"; exit 0; }
+chmod 600 "$tmp" 2>/dev/null
+mv -f "$tmp" "$OUT" 2>/dev/null || rm -f "$tmp"
+exit 0

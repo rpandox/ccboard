@@ -403,10 +403,10 @@ test('css pins: the palette input has one focus ring (no Blueprint inset shadow)
 test('backupPushText: says how many branches went to the backup namespace, or that nothing was unpushed; old runs keep their wording', () => {
   const { w } = homeWorld();
   const say = (bk) => { w.ctx.__bk = bk; return w.run('backupPushText(__bk)'); };
-  const ns = 'ccboard-backup/ubu2';
+  const ns = 'ccboard-backup/box1';
   assert.equal(say({ push_ns: ns, push: [{ repo: 'a/b', pushed: ['main', 'fix/x'] }, { repo: 'c/d', pushed: [] }, { repo: 'e/f', skipped: 'no origin' }] }),
-    ' · 2 branches copied to ccboard-backup/ubu2/ in 1 of 3 repo(s)');
-  assert.equal(say({ push_ns: ns, push: [{ repo: 'a/b', pushed: ['main'] }] }), ' · 1 branch copied to ccboard-backup/ubu2/ in 1 of 1 repo(s)');
+    ' · 2 branches copied to ccboard-backup/box1/ in 1 of 3 repo(s)');
+  assert.equal(say({ push_ns: ns, push: [{ repo: 'a/b', pushed: ['main'] }] }), ' · 1 branch copied to ccboard-backup/box1/ in 1 of 1 repo(s)');
   assert.equal(say({ push_ns: ns, push: [{ repo: 'a/b', pushed: [] }, { repo: 'c/d', pushed: [] }] }), ' · 2 repo(s) checked, nothing unpushed');
   assert.equal(say({ push: [{ repo: 'a/b', pushed: ['main'] }] }), ' · 1 branch(es) pushed across 1 repo(s)', 'a status file written before the backup branches');
   assert.equal(say({ push: [], push_skipped: 'CCBOARD_BACKUP_PUSH=0' }), '');

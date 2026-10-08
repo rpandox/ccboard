@@ -37,7 +37,7 @@ BUILTIN_GROUPS = ["box", "claude", "notify", "terminal"]
 
 
 class World:
-    """A healthy ubu2, mutable. Commands are keyed by (basename, *args)."""
+    """A healthy box, mutable. Commands are keyed by (basename, *args)."""
 
     def __init__(self, root: Path):
         self.root = root
@@ -1078,15 +1078,16 @@ def mc(check_id):
 def test_memory_group_is_registered_at_import():
     assert "memory" in IMPORT_PROVIDERS and "memory" in IMPORT_GROUPS
     assert [i for i, _ in doctor.MEM_IDS] == ["memory-plugin", "memory-worker", "memory-queue", "memory-error", "memory-projects",
-                                              "memory-env", "memory-bun", "memory-api"]          # memory-api (issue #20) appended last
+                                              "memory-env", "memory-bun", "memory-api", "memory-viewer"]    # memory-api (issue #20), memory-viewer (issue #9) appended last
 
 
 def test_memory_healthy_box_passes_every_check_off_one_probe(mem):
     out, by = mem_report()
     assert list(by) == [i for i, _ in doctor.MEM_IDS]
-    assert {c["status"] for c in out["checks"]} == {"pass"} and out["summary"] == {"pass": 8, "warn": 0, "fail": 0, "skip": 0}
+    assert by["memory-viewer"]["status"] == "skip", "the viewer is off by default: nothing exposed, nothing to check"
+    assert {c["status"] for c in out["checks"]} == {"pass", "skip"} and out["summary"] == {"pass": 8, "warn": 0, "fail": 0, "skip": 1}
     assert out["ok"] is True and {c["group"] for c in out["checks"]} == {"memory"}
-    assert mem.calls == 1, "eight checks, one probe of the worker (memory-api adds one limit=1 read)"
+    assert mem.calls == 1, "nine checks, one probe of the worker (memory-api adds one limit=1 read)"
     assert by["memory-worker"]["detail"] == "claude-mem 13.29.0 is up on 127.0.0.1:37700 (worker.pid), 9,684 observations"
     assert by["memory-plugin"]["detail"] == "claude-mem 13.29.0 installed and enabled"
     for c in out["checks"]:
@@ -1103,7 +1104,7 @@ def test_memory_group_is_not_part_of_the_builtin_groups(mem, monkeypatch):
 def test_memory_off_skips_every_check_and_never_probes(mem, monkeypatch):
     monkeypatch.setattr(settings, "claude_mem", False)
     out, by = mem_report()
-    assert {c["status"] for c in out["checks"]} == {"skip"} and len(by) == 8
+    assert {c["status"] for c in out["checks"]} == {"skip"} and len(by) == 9
     assert all("CCBOARD_CLAUDE_MEM=0" in c["detail"] for c in out["checks"]) and mem.calls == 0 and out["ok"] is True
 
 
@@ -1300,10 +1301,10 @@ def test_memory_projects_hint_carries_the_project_environments_snippet(mem, proj
 
 def test_memory_api_pass_untested_unknown_and_drift(mem):
     c = mc("memory-api")
-    assert c["status"] == "pass" and "13.31.0" in c["detail"]
-    mem.health["version"] = "13.34.2"
+    assert c["status"] == "pass" and "13.34.2" in c["detail"]
+    mem.health["version"] = "13.35.0"
     c = mc("memory-api")
-    assert c["status"] == "warn" and "newer than 13.31.0" in c["detail"]
+    assert c["status"] == "warn" and "newer than 13.34.2" in c["detail"]
     assert c["fix"]["text"] == "the Memory page may be wrong until the board is updated; report it"
     mem.health["version"] = "14.0.0"
     assert mc("memory-api")["status"] == "warn" and "13.x line" in mc("memory-api")["detail"]
@@ -1373,6 +1374,65 @@ def test_memory_env_is_checked_for_a_degraded_worker_too(mem):
     mem.health.update(state="degraded")
     mem.environ(4242, b"TMUX_PANE=%1\0")
     assert mc("memory-env")["status"] == "warn"
+
+
+def host_report(names, pid=4242, age_s=60, **extra):
+    """What scripts/ccboard-mem-env leaves in <data dir>/mem-env.json (names only), `age_s` seconds before MEM_NOW."""
+    at = (MEM_NOW - timedelta(seconds=age_s)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    (Path(settings.data_dir) / "mem-env.json").write_text(json.dumps({"at": at, "pid": pid, "names": names, **extra}))
+
+
+@pytest.fixture
+def in_container(mem, monkeypatch):
+    """The container case: the host worker's /proc/<pid>/environ is not readable here (pid 4242 has no entry), the data dir is the host's."""
+    monkeypatch.setattr(settings, "runtime", "docker")
+    Path(settings.data_dir).mkdir(parents=True, exist_ok=True)
+    (mem.proc / "4242" / "environ").unlink()
+    return mem
+
+
+def test_memory_env_container_fresh_report_with_a_leak_warns_naming_the_variable(in_container):
+    host_report(["CCBOARD_SESSION", "CLAUDECODE", "TMUX_PANE"])
+    out, by = mem_report()
+    c = by["memory-env"]
+    assert c["status"] == "warn" and "CCBOARD_SESSION, TMUX_PANE" in c["detail"] and c["fix"]["cmd"] == "CCBOARD_MEM_SERVICE=1 ./install.sh"
+    host_report(["TMUX_PANE"])
+    assert mc("memory-env")["detail"].endswith("(it holds TMUX_PANE)")
+
+
+def test_memory_env_container_fresh_clean_report_passes(in_container):
+    host_report([])
+    c = mc("memory-env")
+    assert c["status"] == "pass" and "reported by the host watchdog 1 min ago" in c["detail"]
+    host_report(["CLAUDECODE", "CCBOARD_URL"])                       # not the two variables that mark a session's environment
+    assert mc("memory-env")["status"] == "pass"
+
+
+def test_memory_env_container_stale_missing_or_other_pid_report_is_a_skip_that_says_why(in_container):
+    for write in (lambda: None, lambda: host_report([], age_s=601), lambda: host_report(["TMUX_PANE"], pid=999)):
+        write()
+        c = mc("memory-env")
+        assert c["status"] == "skip" and "the host watchdog has not reported (" in c["detail"] and "is the crontab line installed?" in c["detail"], c
+        assert c["fix"]["cmd"] == "crontab -l | grep ccboard-watchdog" and "never values" in c["fix"]["text"]
+    (Path(settings.data_dir) / "mem-env.json").write_text("not json")
+    assert mc("memory-env")["status"] == "skip"
+
+
+def test_memory_env_systemd_runtime_keeps_the_live_read_and_ignores_the_file(mem, monkeypatch):
+    monkeypatch.setattr(settings, "runtime", "systemd")
+    Path(settings.data_dir).mkdir(parents=True, exist_ok=True)
+    host_report(["CCBOARD_SESSION"])                                 # a file is there, but the live read wins
+    assert mc("memory-env")["status"] == "pass"
+    mem.environ(4242, b"TMUX_PANE=%0\0")
+    assert mc("memory-env")["status"] == "warn"
+    (mem.proc / "4242" / "environ").unlink()
+    c = mc("memory-env")                                             # unreadable outside a container: the file may still speak
+    assert c["status"] == "warn" and "CCBOARD_SESSION" in c["detail"]
+
+
+def test_memory_env_container_with_no_report_and_an_unreadable_environment_is_not_healthy(in_container):
+    c = mc("memory-env")
+    assert c["status"] == "skip" and "a container cannot see the host's /proc" in c["detail"]
 
 
 def make_bun(path):
@@ -1478,7 +1538,7 @@ def test_memory_a_check_that_raises_does_not_take_the_group_down(mem, monkeypatc
     monkeypatch.setitem(doctor._MEM_FNS, "memory-queue", boom)
     out, by = mem_report()
     assert by["memory-queue"]["status"] == "warn" and by["memory-queue"]["detail"] == "check error: RuntimeError"
-    assert by["memory-worker"]["status"] == "pass" and by["memory-bun"]["status"] == "pass" and len(by) == 8
+    assert by["memory-worker"]["status"] == "pass" and by["memory-bun"]["status"] == "pass" and len(by) == 9
 
 
 def test_memory_group_filter_and_caching(mem):
@@ -1662,7 +1722,7 @@ def test_mcp_remote_probe_through_the_real_middleware(lite_client, monkeypatch):
 # ------------------------------------------------------------------ v0.5.21 doctor checks: backup (#49), backup-branch CI (#51), GitHub Actions (#50),
 # slow versus broken gh (#99), Claude Code version gates (#113). The autouse fixture pins the baseline checks, so these are selected by id.
 
-NEW_IDS = ("backup-repo", "backup-last", "backup-uncommitted", "backup-branch-ci", "ci-status", "claude-features")
+NEW_IDS = ("backup-repo", "backup-last", "backup-uncommitted", "backup-branch-ci", "ci-status", "claude-features", "claude-unattended", "fable-jobs")
 NEW_CHECKS = {c[0]: c for c in doctor.CHECKS if c[0] in NEW_IDS}
 NOW = datetime(2026, 10, 8, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -1684,7 +1744,8 @@ def newc(monkeypatch):
 def test_the_new_checks_are_registered_in_their_groups():
     assert set(NEW_CHECKS) == set(NEW_IDS)
     assert {i: NEW_CHECKS[i][1] for i in NEW_IDS} == {"backup-repo": "box", "backup-last": "box", "backup-uncommitted": "box",
-                                                     "backup-branch-ci": "box", "ci-status": "box", "claude-features": "claude"}
+                                                     "backup-branch-ci": "box", "ci-status": "box", "claude-features": "claude",
+                                                     "claude-unattended": "claude", "fable-jobs": "claude"}
 
 
 # ---- #49 backup-repo
@@ -1817,6 +1878,8 @@ def test_uncommitted_a_missing_path_skips_that_repo_only(newc, world, monkeypatc
 
 
 def test_uncommitted_degrades_to_a_skip_never_raises(newc, world, monkeypatch, tmp_path):
+    # importing app.main registers its own source at module level, so pin "none registered" instead of relying on test order
+    monkeypatch.setattr(doctor, "_projects_source", None)
     assert newc("backup-uncommitted")["status"] == "skip"                                    # no scan source registered in this test
     monkeypatch.setattr(doctor, "_projects_source", lambda: None)
     assert newc("backup-uncommitted")["status"] == "skip"
@@ -2283,3 +2346,91 @@ def test_claude_features_uses_the_adapters_table(newc, world):
     c = newc("claude-features")
     assert c["status"] == "warn" and "and 4 more" in c["detail"]
     assert c["detail"].count("(2.1.") == 4 and len(cl.FEATURE_GATES) == 8             # four named, the rest counted
+
+
+# ------------------------------------------------------------------ memory-viewer (issue #9): the optional claude-mem viewer on the tailnet
+
+def _serve_web(port, target):
+    return {f"box.example.ts.net:{port}": {"Handlers": {"/": {"Proxy": target}}}}
+
+
+def test_memory_viewer_is_skipped_when_unset_and_never_reads_tailscale(mem, monkeypatch):
+    monkeypatch.setattr(settings, "mem_https_port", None)
+    monkeypatch.setattr(doctor, "_mem_serve_web", lambda: (_ for _ in ()).throw(AssertionError("must not read the mapping")))
+    c = mc("memory-viewer")
+    assert c["status"] == "skip" and "not exposed" in c["detail"] and c["fix"] is None
+
+
+def test_memory_viewer_mapped_to_the_current_worker_warns_who_can_reach_it(mem, monkeypatch):
+    monkeypatch.setattr(settings, "mem_https_port", 10443)
+    monkeypatch.setattr(doctor.memory, "discover", lambda: {"host": None, "port": 37700, "source": "worker.pid", "pid": 4242})
+    monkeypatch.setattr(doctor, "_mem_serve_web", lambda: _serve_web(10443, "http://127.0.0.1:37700"))
+    c = mc("memory-viewer")
+    assert c["status"] == "warn" and "every device on your tailnet can open and change the claude-mem worker" in c["detail"]
+    assert "ACL" in c["fix"]["text"] and c["fix"]["cmd"] == "CCBOARD_MEM_HTTPS_PORT=off ./install.sh"
+
+
+def test_memory_viewer_missing_or_stale_mapping_points_at_the_installer(mem, monkeypatch):
+    monkeypatch.setattr(settings, "mem_https_port", 10443)
+    monkeypatch.setattr(doctor.memory, "discover", lambda: {"host": None, "port": 37700, "source": "worker.pid", "pid": 4242})
+    monkeypatch.setattr(doctor, "_mem_serve_web", lambda: {})
+    c = mc("memory-viewer")
+    assert c["status"] == "warn" and "nothing is served on that port" in c["detail"] and c["fix"]["cmd"] == "./install.sh"
+    monkeypatch.setattr(doctor, "_mem_serve_web", lambda: _serve_web(10444, "http://127.0.0.1:37700"))
+    assert "nothing is served" in mc("memory-viewer")["detail"], "another port's mapping is not ours"
+    monkeypatch.setattr(doctor, "_mem_serve_web", lambda: _serve_web(10443, "http://127.0.0.1:37123"))
+    c = mc("memory-viewer")
+    assert c["status"] == "warn" and "37123" in c["detail"] and "37700" in c["detail"] and c["fix"]["cmd"] == "./install.sh"
+    assert "open and change" not in c["detail"]
+
+
+def test_memory_viewer_an_unreadable_mapping_is_unknown_not_healthy(mem, monkeypatch):
+    monkeypatch.setattr(settings, "mem_https_port", 10443)
+    monkeypatch.setattr(doctor, "_mem_serve_web", lambda: None)
+    c = mc("memory-viewer")
+    assert c["status"] == "warn" and c["detail"].startswith("unknown") and "open and change" in c["detail"]
+
+
+def test_memory_serve_web_reads_status_json_only(monkeypatch):
+    calls = []
+
+    def run(argv, timeout=doctor.CMD_TIMEOUT):
+        calls.append(argv)
+        return doctor.Proc(0, json.dumps({"Web": _serve_web(10443, "http://127.0.0.1:37700")}), "")
+    monkeypatch.setattr(doctor, "_run", run)
+    assert doctor._mem_serve_web() == _serve_web(10443, "http://127.0.0.1:37700")
+    assert calls[0][-2:] == ["status", "--json"] and "serve" in calls[0] and not any(a in ("off", "reset", "funnel") for a in calls[0])
+    monkeypatch.setattr(doctor, "_run", lambda argv, timeout=1: doctor.Proc(0, "null", ""))
+    assert doctor._mem_serve_web() == {}
+    monkeypatch.setattr(doctor, "_run", lambda argv, timeout=1: doctor.Proc(1, "", "no socket"))
+    assert doctor._mem_serve_web() is None
+    monkeypatch.setattr(doctor, "_run", lambda argv, timeout=1: doctor.Proc(0, "not json", ""))
+    assert doctor._mem_serve_web() is None
+
+    def missing(argv, timeout=1):
+        raise doctor.ToolMissing("tailscale")
+    monkeypatch.setattr(doctor, "_run", missing)
+    assert doctor._mem_serve_web() is None
+
+
+def test_claude_features_help_probe_wins_for_permission_prompts_none(newc, world, monkeypatch):
+    from app import agents
+    at_claude(world, "2.1.200")
+    assert "--permission-prompts none (2.1.259)" in newc("claude-features")["detail"]
+    monkeypatch.setattr(agents.get("claude"), "peek_capabilities", lambda: {"ultracode_flag": False, "permission_prompts_none": True})
+    assert "--permission-prompts none" not in newc("claude-features")["detail"]
+
+
+def test_claude_unattended_reads_the_cached_probe_and_never_starts_a_process(newc, world, monkeypatch):
+    from app import agents
+    ag = agents.get("claude")
+    monkeypatch.setattr(ag, "peek_capabilities", lambda: None)
+    assert newc("claude-unattended")["status"] == "skip"
+    monkeypatch.setattr(ag, "peek_capabilities", lambda: {"ultracode_flag": False, "permission_prompts_none": True})
+    c = newc("claude-unattended")
+    assert c["status"] == "pass" and "--permission-prompts none" in c["detail"]
+    monkeypatch.setattr(ag, "peek_capabilities", lambda: {"ultracode_flag": False, "permission_prompts_none": False})
+    c = newc("claude-unattended")
+    assert c["status"] == "warn" and "may stall" in c["detail"] and "Allowed tools" in c["fix"]["text"] and c["fix"]["cmd"] == "claude update"
+    world.claude_exe = None
+    assert newc("claude-unattended")["status"] == "skip"

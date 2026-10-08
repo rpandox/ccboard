@@ -315,6 +315,7 @@ function pjJobRow(j, runs) {
       el('span', { class: j.enabled && j.next_run_at ? 'state' : 'state ended', text: j.enabled && j.next_run_at ? 'next ' + fmtTs(j.next_run_at) : 'disabled' }),
       el('span', { class: 'meta', text: `${j.project}/${j.repo} · ${j.cron ? 'cron ' + j.cron : 'one-off'} · ${j.permission_mode}${jobLimitText(j)}${j.last_status ? ' · last: ' + j.last_status + (j.last_run_at ? ' ' + fmtTs(j.last_run_at) : '') : ''}` })),
     el('div', { class: 'actions' },
+      jobFableButton(j),
       el('button', { type: 'button', onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/run`); } catch (e) { setError(e.message); } await poll(true); } }, ic('play'), 'Run now'),
       el('button', { class: 'minimal', type: 'button', onclick: async () => { try { await api('POST', `/api/jobs/${j.id}/toggle`); } catch (e) { setError(e.message); } await poll(true); }, text: j.enabled ? 'Disable' : 'Enable' }),
       confirmButton('job:' + j.id, 'Delete', () => api('DELETE', `/api/jobs/${j.id}`), true)));       // quiet: red-outlined until the second tap, then filled
@@ -437,6 +438,8 @@ function pjGotchas(P, st) {
 }
 
 /* The Files tab: a repo switcher and the toggles, the tree on the left (full width on a phone), the preview beside it (below it on a phone). */
+const pjHintGone = new Set();       // untracked-cache hints dismissed in this tab, for a browser that blocks storage
+
 function pjFilesView(P, route) {
   const st0 = pjState();
   const p0 = pjFind(st0, P.project);
@@ -462,7 +465,8 @@ function pjFilesView(P, route) {
   };
   const refreshBtn = el('button', { class: 'minimal small', type: 'button', title: 'Reload the tree and the open file', onclick: () => { if (fl.tree) fl.tree.refresh(); if (fl.preview) fl.preview.reload(); } }, ic('refresh'), 'Refresh');
   const bar = pjToolbar(switcher, branch, el('span', { class: 'spacer' }), flagBtn('hidden', 'hidden', 'show dotfiles'), flagBtn('ignored', 'ignored', 'show git-ignored files'), refreshBtn);
-  const node = el('div', { class: 'pj-files' }, bar, el('div', { class: 'pj-split' }, el('div', { class: 'pj-treebox' }, treeHost), previewBox));
+  const ucHost = el('div', { class: 'pj-uc-host' });
+  const node = el('div', { class: 'pj-files' }, bar, el('div', { class: 'pj-split' }, el('div', { class: 'pj-treebox' }, ucHost, treeHost), previewBox));
   let swSig = null;
 
   const paintSwitcher = (st) => {
@@ -476,6 +480,26 @@ function pjFilesView(P, route) {
       switcher.append(el('button', { class: 'small pj-repo-btn', type: 'button', 'aria-pressed': r.name === fl.repo ? 'true' : 'false', text: r.label,
         onclick: () => { if (r.name !== fl.repo) pjGo(pjHash(project, r.name, { tab: 'files' })); } }));
     }
+  };
+
+  /* The slow-scan hint (issue #112): one quiet line with the command to try and a Copy button. The board only says it: nothing runs here, and the
+     owner's Dismiss is remembered per repo (blocked storage still hides it for this session). */
+  const ucKey = () => `ccboard:hint:uc:${project}/${fl.repo}`;
+  const ucGone = () => {
+    if (pjHintGone.has(ucKey())) return true;
+    try { return localStorage.getItem(ucKey()) === '1'; } catch (_) { return false; }
+  };
+  const paintHint = (h) => {
+    if (!h || h.kind !== 'untracked_cache' || typeof h.cmd !== 'string' || !h.cmd || ucGone() || ucHost.firstChild) return;
+    const dismiss = el('button', { class: 'minimal small', type: 'button', 'aria-label': 'Dismiss this hint', title: 'Do not show this hint for this repo again', text: 'Dismiss' });
+    dismiss.addEventListener('click', () => {
+      pjHintGone.add(ucKey());
+      try { localStorage.setItem(ucKey(), '1'); } catch (_) { /* blocked storage: gone for this session only */ }
+      ucHost.textContent = '';
+    });
+    ucHost.append(el('div', { class: 'pj-uchint dim', role: 'note' },
+      el('span', { class: 'pj-uc-text', text: 'Scans of this repo are slow. This may help (run it yourself; the board never changes your git config):' }),
+      el('span', { class: 'doc-cmdline' }, el('code', { class: 'doc-cmd', text: h.cmd }), copyButton(h.cmd, 'the command'), dismiss)));
   };
 
   const paintBranch = (data) => {
@@ -529,10 +553,11 @@ function pjFilesView(P, route) {
   function mountTree() {
     if (fl.tree) { fl.tree.destroy(); fl.tree = null; }
     treeHost.textContent = '';
+    ucHost.textContent = '';
     if (typeof Tree === 'undefined') { treeHost.append(el('p', { class: 'bad', text: 'tree.js did not load' })); return; }
     const sel = fl.shown;
     fl.tree = Tree.mount(treeHost, { project, repo: fl.repo, hidden: fl.flags.hidden, ignored: fl.flags.ignored, repos: true,
-      storageKey: `ccboard:tree:${project}/${fl.repo}`, onOpen: openFile, onLoad: paintBranch,
+      storageKey: `ccboard:tree:${project}/${fl.repo}`, onOpen: openFile, onLoad: paintBranch, onHint: paintHint,
       onSelect: (entry) => {                                               // a symlink is never followed: say so instead of leaving the previous file up
         if (!entry || entry.type !== 'symlink') return;
         if (fl.preview && typeof fl.preview.destroy === 'function') { try { fl.preview.destroy(); } catch (_) { /* already gone */ } }
@@ -595,6 +620,7 @@ function pjSetTabs(P, st, cur) {
     });
     if (P.tabs) P.tabs.root.remove();
     P.tabs = t;
+    t.link(P.panel);                                                    // one panel, labelled by whichever tab is selected
     P.body.insertBefore(t.root, P.panel);
   }
   P.tabs.set(cur.tab);

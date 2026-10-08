@@ -1,6 +1,7 @@
 // Contract tests for app/static/palette.js (the command palette, the shortcut help, the share prefill) and for the keyboard layer wired to the real
 // pages (j / k / Enter / mod+1 / a / y / d / r through keymap.js and pages/*.js). A small DOM (tests/js/minidom.mjs) stands in for the browser.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { makeWorld, plain } from './harness.mjs';
 import { installDom } from './minidom.mjs';
@@ -48,9 +49,12 @@ function world({ state = fakeState(), platform = 'Linux x86_64', search = '', wi
   const dom = installDom(w);
   w.location.search = search;
   for (const f of ['core.js', 'components.js', 'keymap.js', 'live.js', 'launcher.js', 'palette.js', 'router.js']) w.load(f);
-  w.ctx.__calls = []; w.ctx.__toasts = []; w.ctx.__opened = [];
+  w.ctx.__calls = []; w.ctx.__toasts = []; w.ctx.__opened = []; w.ctx.__skills = { agent: 'claude', skills: [] }; w.ctx.__skillCalls = [];
   w.run(`
-    api = async (method, path, body) => { __calls.push({ method, path, body }); return { ok: true }; };
+    api = async (method, path, body) => {
+      if (method === 'GET' && path === '/api/skills') { __skillCalls.push(1); if (__skills.__error) throw new Error(__skills.__error); return __skills; }       // the Skills group's read: kept out of the recorded calls
+      __calls.push({ method, path, body }); return { ok: true };
+    };
     toast = (text, o) => { __toasts.push({ text, kind: o && o.kind }); };
     poll = async () => {};
     window.open = (url) => { __opened.push(url); };
@@ -387,7 +391,7 @@ const httpError = (status, message, body) => Object.assign(new Error(message), {
 /** api answers through fn(method, path, body) (return a value or throw), recording every call. */
 function replying(w, fn) {
   w.ctx.__reply = fn;
-  w.run('api = async (method, path, body) => { __calls.push({ method, path, body }); return __reply(method, path, body); }');
+  w.run("api = async (method, path, body) => { if (method === 'GET' && path === '/api/skills') return __skills; __calls.push({ method, path, body }); return __reply(method, path, body); }");
 }
 const kind = (c) => c.path.split('/').pop();
 /** The world with s1 selected and the palette open (the roster order is s2, s1). */
@@ -1111,4 +1115,187 @@ test('main.js: no share, no palette; html.pwa follows display-mode and navigator
     world2.load('main.js');
     assert.equal(world2.document.documentElement.classList.contains('pwa'), true, name);
   }
+});
+
+// ---------------------------------------------------------------- #102: the Skills group and Backlog moves
+
+const SKILLS = (extra = []) => ({
+  agent: 'claude',
+  skills: [
+    { name: 'browse', description: 'Drive a real browser through Aside.', source: 'user', uses: 98 },
+    { name: 'loop', description: 'Run a prompt on an interval.', source: 'user', uses: 20 },
+    { name: 'phase-kickoff', description: 'Start a phase.', source: 'user', uses: 12 },
+    { name: 'phase-review', description: 'Review a phase.', source: 'user', uses: 11 },
+    { name: 'artifact-design', description: 'Design guidance for artifacts.', source: 'user', uses: 11 },
+    { name: 'claude-mem:mem-search', description: 'Search the memory.', source: 'plugin:claude-mem', uses: 1 },
+    { name: 'investigate', description: 'Systematic debugging.', source: 'user' },
+    { name: 'qa', description: 'Test a web app.', source: 'user' },
+    ...extra,
+  ],
+});
+const openSkills = async (w) => { w.run('Palette.open()'); await tick(); await tick(); };
+
+test('Skills sit under the nudges and controls: the top five by use, then "All skills…", each row with its name, one line of description and Insert; a count only where one was seen', async () => {
+  const { w } = world();
+  w.ctx.__skills = SKILLS();
+  mounted(w, `#/s/${S1}`);
+  await openSkills(w);
+  assert.deepEqual(groups(w).slice(-4), ['Controls · s1', 'Skills · s1', 'Modes', 'More']);
+  const rows = items(w).filter((n) => n.querySelector('.pal-act'));
+  assert.deepEqual(rows.map((n) => n.querySelector('.pal-label').textContent), ['browse', 'loop', 'phase-kickoff', 'artifact-design', 'phase-review'], 'most used first (a tie by name), five of them');
+  assert.equal(rows[0].querySelector('.pal-hint').textContent, 'Drive a real browser through Aside.');
+  assert.equal(rows[0].querySelector('.pal-act').textContent, 'Insert');
+  assert.equal(rows[0].querySelector('.pal-note').textContent, 'seen 98×');
+  const all = labels(w);
+  assert.equal(all[all.indexOf('phase-review') + 1], 'All skills…');
+  assert.ok(!all.includes('qa') && !all.includes('claude-mem:mem-search'));
+  assert.ok(!items(w).some((n) => /seen 0/.test(n.textContent)), 'never "0 uses"');
+});
+
+test('the order is by observed uses then name whatever order the server sent', async () => {
+  const { w } = world();
+  w.ctx.__skills = { agent: 'claude', skills: [{ name: 'zeta', description: '', source: 'user' }, { name: 'beta', description: '', source: 'user', uses: 2 }, { name: 'alpha', description: '', source: 'user' }, { name: 'gamma', description: '', source: 'user', uses: 2 }, { name: 'used0', description: '', source: 'user', uses: 0 }] };
+  mounted(w, `#/s/${S1}`);
+  await openSkills(w);
+  assert.deepEqual(items(w).filter((n) => n.querySelector('.pal-act')).map((n) => n.querySelector('.pal-label').textContent), ['beta', 'gamma', 'alpha', 'used0', 'zeta']);
+  assert.ok(!items(w).some((n) => n.querySelector('.pal-note') && /×/.test(n.querySelector('.pal-note').textContent) && /used0|alpha|zeta/.test(n.textContent)), 'a skill never seen used has no count');
+});
+
+test('All skills… opens the rest, the box filters them, Fewer skills closes it again', async () => {
+  const { w } = world();
+  w.ctx.__skills = SKILLS();
+  mounted(w, `#/s/${S1}`);
+  await openSkills(w);
+  const toggle = items(w).find((n) => n.querySelector('.pal-label').textContent === 'All skills…');
+  assert.match(toggle.querySelector('.pal-hint').textContent, /8 installed on the box/);
+  toggle.dispatchEvent({ type: 'click', target: toggle });
+  const open = labels(w);
+  for (const n of ['browse', 'qa', 'investigate', 'claude-mem:mem-search']) assert.ok(open.includes(n), n);
+  assert.ok(open.includes('Fewer skills'));
+  typeInto(w, 'mem');
+  assert.ok(labels(w).includes('claude-mem:mem-search'));
+  assert.ok(!labels(w).includes('qa'));
+  typeInto(w, '');
+  items(w).find((n) => n.querySelector('.pal-label').textContent === 'Fewer skills').dispatchEvent({ type: 'click', target: items(w).find((n) => n.querySelector('.pal-label').textContent === 'Fewer skills') });
+  assert.ok(!labels(w).includes('qa'));
+  assert.ok(labels(w).includes('All skills…'));
+});
+
+test('Enter on a skill puts /<name> and a space into the peek send box and never sends; focus lands in the box', async () => {
+  const { w } = world();
+  w.ctx.__skills = SKILLS();
+  mounted(w, `#/s/${S1}`);
+  const send = sheet(w).querySelector('.peek-send textarea');
+  await openSkills(w);
+  typeInto(w, 'loop');
+  assert.equal(selected(w)[0], 'loop');
+  keyInBox(w, 'Enter');
+  assert.equal(send.value, '/loop ');
+  assert.equal(active(w), send);
+  assert.equal(dlg(w).open, false);
+  assert.deepEqual(calls(w), [], 'nothing was sent anywhere');
+  send.value = 'later';
+  await openSkills(w);
+  typeInto(w, 'browse');
+  keyInBox(w, 'Enter');
+  assert.ok(send.value.includes('/browse ') && send.value.includes('later'), 'a skill goes in at the caret like the other commands, the rest of the text stays');
+  assert.deepEqual(calls(w), []);
+});
+
+test('the skill goes into the composer the palette was opened from when it is a text box', async () => {
+  const { w } = world();
+  w.ctx.__skills = SKILLS();
+  mounted(w, `#/s/${S1}`);
+  const other = w.document.createElement('textarea');
+  w.document.body.append(other);
+  other.focus();
+  assert.equal(active(w), other);
+  await openSkills(w);
+  typeInto(w, 'qa');
+  keyInBox(w, 'Enter');
+  assert.equal(other.value, '/qa ');
+  assert.equal(sheet(w).querySelector('.peek-send textarea').value, '', 'the peek box is left alone');
+});
+
+test('no Skills group for a Codex or shell session, and none when the list is empty or the read failed (no toast either)', async () => {
+  const codexState = fakeState();
+  codexState.projects[0].repos[0].sessions[0] = { ...codexState.projects[0].repos[0].sessions[0], launcher: 'codex', command: 'codex', agent: 'codex' };
+  const a = world({ state: codexState });
+  a.w.ctx.__skills = SKILLS();
+  mounted(a.w, `#/s/${S1}`);
+  await openSkills(a.w);
+  assert.ok(!groups(a.w).some((g) => /^Skills/.test(g)), 'Codex: hidden until a Codex list is verified');
+  const b = world();
+  b.w.ctx.__skills = SKILLS();
+  mounted(b.w, '#/s/blog--web--sh');
+  await openSkills(b.w);
+  assert.ok(!groups(b.w).some((g) => /^Skills/.test(g)), 'shell: hidden');
+  const c = world();
+  c.w.ctx.__skills = { agent: 'claude', skills: [] };
+  mounted(c.w, `#/s/${S1}`);
+  await openSkills(c.w);
+  assert.ok(!groups(c.w).some((g) => /^Skills/.test(g)));
+  const d = world();
+  d.w.ctx.__skills = { __error: 'boom' };
+  mounted(d.w, `#/s/${S1}`);
+  await openSkills(d.w);
+  assert.ok(!groups(d.w).some((g) => /^Skills/.test(g)));
+  assert.deepEqual(toasts(d.w), [], 'a failed scan is quiet');
+});
+
+test('with no session and no composer the rows are there but say why they cannot be used, and Enter only warns', async () => {
+  const { w } = world();
+  w.ctx.__skills = SKILLS();
+  mounted(w, '#/');
+  w.run('Pages.selHash = null');
+  await openSkills(w);
+  const rows = items(w).filter((n) => n.querySelector('.pal-act'));
+  assert.ok(rows.length, 'listed');
+  assert.equal(rows[0].getAttribute('aria-disabled'), 'true');
+  assert.match(rows[0].querySelector('.pal-hint').textContent, /Open a Claude session first/);
+  typeInto(w, 'browse');
+  keyInBox(w, 'Enter');
+  assert.match(toasts(w).pop().text, /Open a Claude session first/);
+  assert.equal(toasts(w).pop().kind, 'warn');
+});
+
+test('the descriptions are drawn as text, never as markup, and the list is re-read at most once a minute', async () => {
+  const { w } = world();
+  w.ctx.__skills = { agent: 'claude', skills: [{ name: 'evil', description: '<img src=x onerror=alert(1)> **bold**', source: 'user' }, { name: 'Bad Name', description: 'x' }, { name: '../x', description: 'y' }] };
+  mounted(w, `#/s/${S1}`);
+  await openSkills(w);
+  const row = items(w).find((n) => n.querySelector('.pal-label').textContent === 'evil');
+  assert.equal(row.querySelector('.pal-hint').textContent, '<img src=x onerror=alert(1)> **bold**');
+  assert.equal(row.querySelectorAll('img').length, 0);
+  assert.ok(!labels(w).includes('Bad Name') && !labels(w).includes('../x'), 'names outside the pattern never reach the page');
+  w.run('Palette.close()');
+  await openSkills(w);
+  assert.equal(w.get('__skillCalls').length, 1, 'one read for two opens');
+});
+
+test('Backlog cards are in the palette as Move: <card>: the keyboard route of the drag, the Move sheet', async () => {
+  const task = { id: 7, title: 'Fix the login redirect', prompt: 'p', project: 'shop', repo: 'api', agent: 'claude', phase: 'backlog', column: 'backlog', slug: '', branch: '', worktree: '', tmux: '' };
+  const { w } = world({ state: fakeState({ tasks: [task] }) });
+  mounted(w, '#/tasks');
+  w.run('Palette.open()');
+  assert.ok(groups(w).includes('Backlog'));
+  assert.ok(labels(w).includes('Move: Fix the login redirect'));
+  typeInto(w, 'move login');
+  keyInBox(w, 'Enter');
+  assert.equal(dlg(w).open, false);
+  assert.match(text(sheet(w).querySelector('h2, .sheet-title, header') || sheet(w)), /Move “Fix the login redirect”/);
+});
+
+const text = (n) => (n ? n.textContent : '');
+
+test('the demo fixture (demo/skills.json) is what GET /api/skills answers: the palette renders it, most used first', async () => {
+  const demo = JSON.parse(readFileSync(new URL('../../app/static/demo/skills.json', import.meta.url), 'utf8'));
+  assert.equal(demo.agent, 'claude');
+  assert.ok(demo.skills.length > 5 && demo.skills.every((x) => typeof x.name === 'string' && typeof x.description === 'string' && x.source));
+  const { w } = world();
+  w.ctx.__skills = demo;
+  mounted(w, `#/s/${S1}`);
+  await openSkills(w);
+  const rows = items(w).filter((n) => n.querySelector('.pal-act')).map((n) => n.querySelector('.pal-label').textContent);
+  assert.deepEqual(rows, ['browse', 'loop', 'phase-kickoff', 'artifact-design', 'phase-review']);
 });

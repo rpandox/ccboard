@@ -14,6 +14,7 @@ FAKE_CLAUDE = r'''#!/bin/sh
 case "$1" in
   auth) echo '{"loggedIn": true, "email": "t@x", "subscriptionType": "max", "authMethod": "oauth"}'; exit 0;;
   --version) echo "9.9.9 (Claude Code)"; exit 0;;
+  --help) printf '%s\n' "  --effort <level>  Effort level (low, medium, high)" "  --permission-prompts <target>  Who answers permission prompts with" '                                 --print: "host" or "none" (nobody: denied)' "  -h, --help  Display help"; exit 0;;
 esac
 slug=""; prev=""
 for a in "$@"; do [ "$prev" = "--worktree" ] && slug="$a"; prev="$a"; done
@@ -106,7 +107,26 @@ def test_quota_defers(client, projects_dir, fake_tmux, tmp_path, monkeypatch):
     assert job["last_status"].startswith("deferred") and job["next_run_at"] > main.db_now() and job["enabled"] == 1
 
 
-def test_batch_respects_cap(client, projects_dir, fake_tmux, tmp_path, monkeypatch):
+def _runs_report(db, rids):
+    """One line per run (id, status, error, result tail): an assertion that prints this says why a run ended as it did."""
+    out = []
+    for x in rids:
+        r = db.run_get(x) or {}
+        out.append(f"run {x}: status={r.get('status')!r} error={r.get('error')!r} result={(r.get('result') or '')[-200:]!r}")
+    return "\n".join(out)
+
+
+def _join_all(w, timeout=60):
+    """Wait for every run thread the worker started; fail loudly if one is still alive (a slow runner is not a pass)."""
+    for t in list(w.running.values()):
+        t.join(timeout=timeout)
+        assert not t.is_alive(), f"{t.name} still running after {timeout}s"
+
+
+def test_batch_respects_cap(lite_client, projects_dir, fake_tmux, tmp_path, monkeypatch):
+    # lite_client, not client: the full lifespan starts its own scheduler Worker, whose 30 s tick can pick up the same due jobs while
+    # this test drives its own Worker (two workers, one job twice: the second run collides on the worktree and ends as 'error').
+    client = lite_client
     from app import main
     make_repo(projects_dir)
     for name in ("web", "infra", "docs"):
@@ -125,14 +145,14 @@ def test_batch_respects_cap(client, projects_dir, fake_tmux, tmp_path, monkeypat
     w = scheduler.Worker(main.db)
     first = w.tick()
     assert len(first) == scheduler.CAP                            # only 2 run at once
-    for t in list(w.running.values()):
-        t.join(timeout=30)
+    _join_all(w)
     second = w.tick()
     assert len(second) == 2
-    for t in list(w.running.values()):
-        t.join(timeout=30)
+    _join_all(w)
     assert w.tick() == []
-    assert sorted(main.db.run_get(x)["status"] for x in first + second) == ["ok"] * 4
+    report = _runs_report(main.db, first + second)
+    assert sorted(main.db.run_get(x)["status"] for x in first + second) == ["ok"] * 4, report
+    assert len(main.db.runs()) == 4, report                       # no stray second run of one job
     assert all(j["enabled"] == 0 for j in main.db.jobs()[:4])
 
 
@@ -451,3 +471,184 @@ def test_a_codex_job_needs_codex_installed_and_the_jobs_table_defaults_to_claude
     legacy = main.db.job_add(project="shop", repo="api", name="old", prompt="p")            # a row written without the new columns
     assert main.db.job_get(legacy)["agent"] == "claude" and main.db.job_get(legacy)["opts"] is None
     assert client.get("/api/state", headers=H).json()["jobs"][0]["agent"] == "claude"
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# #107: --permission-prompts none and pre-approved tools. #108: Fable needs its own acknowledgement. #106: the subagent model in the run's env.
+# ---------------------------------------------------------------------------------------------------------------------------------
+
+def _post_job(client, **body):
+    return client.post("/api/projects/shop/repos/api/jobs", headers=H, json={"name": "nightly", "prompt": "p", "cron": "0 3 * * *", **body})
+
+
+def test_a_headless_run_passes_permission_prompts_none_only_where_this_claude_lists_it(projects_dir, tmp_path, monkeypatch):
+    from app import main
+    from app.agents import claude as claude_adapter
+    make_repo(projects_dir)
+    monkeypatch.setattr(main.settings, "claude_bin", lambda: None)
+    claude_adapter.reset_caches()
+    plain = scheduler.build_command("do it", "j-1", "dontAsk", 20, None, [])
+    assert "--permission-prompts" not in plain, "no binary, no probe: the argv is as it always was"
+    exe = fake_claude(tmp_path)
+    monkeypatch.setattr(main.settings, "claude_bin", lambda: str(exe))
+    claude_adapter.reset_caches()
+    with_flag = scheduler.build_command("do it", "j-1", "dontAsk", 20, 2.5, ["--model", "opus"], allowed_tools=["Bash(git diff *)", "Read"])
+    assert with_flag == ["claude", "-p", "do it", "--worktree", "j-1", "--output-format", "json", "--permission-mode", "dontAsk",
+                         "--permission-prompts", "none", "--allowedTools", "Bash(git diff *)", "Read", "--max-turns", "20", "--max-budget-usd", "2.50",
+                         "--model", "opus"]
+    claude_adapter.reset_caches()
+
+
+def test_a_job_carries_validated_pre_approved_tools_and_the_run_passes_them(lite_client, projects_dir, fake_tmux, tmp_path, monkeypatch):
+    from app import main
+    make_repo(projects_dir)
+    monkeypatch.setattr(main.settings, "claude_bin", lambda: str(fake_claude(tmp_path)))
+    monkeypatch.setattr(main, "sched", None)
+    for bad in ("Bash(ls; rm -rf /)", "Bash(`id`)", "Read $(id)", ",".join(f"T{i}" for i in range(21))):
+        assert _post_job(lite_client, allowed_tools=bad).status_code == 400, bad
+    for bad in ("--permission-prompt-tool x", "--permission-prompts none", "--dangerously-skip-permissions"):
+        assert _post_job(lite_client, args=bad).status_code == 400, bad
+    r = _post_job(lite_client, cron=None, permission_mode="dontAsk", allowed_tools="Bash(git diff *), Read")
+    assert r.status_code == 201
+    job = main.db.job_get(r.json()["id"])
+    assert scheduler.job_opts(job) == {"allowed_tools": ["Bash(git diff *)", "Read"]} and job["permission_mode"] == "dontAsk"
+    w = scheduler.Worker(main.db)
+    rids = w.tick()
+    _join_all(w)
+    assert main.db.run_get(rids[0])["status"] == "ok", _runs_report(main.db, rids)
+    task = main.db.task_get(main.db.run_get(rids[0])["task_id"])
+    args = (projects_dir / "shop" / "api" / ".claude" / "worktrees" / task["slug"] / "ARGS").read_text()
+    assert "--permission-mode dontAsk --permission-prompts none --allowedTools Bash(git diff *) Read --max-turns 30" in args
+    shown = next(j for j in main.build_state("alice@example.com")["jobs"] if j["id"] == job["id"])
+    assert shown["opts"] == {"allowed_tools": ["Bash(git diff *)", "Read"]} and shown["fable"] is None
+
+
+def test_a_headless_claude_run_gets_the_board_subagent_model_and_never_the_force_switch(projects_dir, monkeypatch):
+    from app import main
+    monkeypatch.setattr(main.settings, "subagent_model", "")
+    assert scheduler.run_env({}) is None, "no board default: the run inherits the board's own environment, as before"
+    monkeypatch.setenv("CLAUDE_CODE_SUBAGENT_MODEL_FORCE", "1")
+    monkeypatch.setattr(main.settings, "subagent_model", "haiku")
+    env = scheduler.run_env({})
+    assert env["CLAUDE_CODE_SUBAGENT_MODEL"] == "haiku" and "CLAUDE_CODE_SUBAGENT_MODEL_FORCE" not in env, "FORCE is never carried into a run"
+    assert env["PATH"] == os.environ["PATH"]
+
+
+def test_run_job_hands_the_subagent_env_to_the_subprocess_only_when_set(client, projects_dir, fake_tmux, tmp_path, monkeypatch):
+    from app import main
+    make_repo(projects_dir)
+    monkeypatch.setattr(main.settings, "claude_bin", lambda: str(fake_claude(tmp_path)))
+    seen = []
+    real = scheduler.subprocess.run
+
+    def spy(cmd, *a, **k):
+        if "-p" in cmd:
+            seen.append(k.get("env"))
+        return real(cmd, *a, **k)
+    monkeypatch.setattr(scheduler.subprocess, "run", spy)
+    job = {"id": 1, "name": "n", "project": "shop", "repo": "api", "agent": "claude", "prompt": "x", "permission_mode": "acceptEdits"}
+    monkeypatch.setattr(main.settings, "subagent_model", "")
+    scheduler.run_job(main.db, {**job, "id": main.db.job_add(project="shop", repo="api", name="n", prompt="x")}, main.db.run_start(1))
+    monkeypatch.setattr(main.settings, "subagent_model", "haiku")
+    jid = main.db.job_add(project="shop", repo="api", name="m", prompt="x")
+    scheduler.run_job(main.db, {**job, "id": jid, "name": "m"}, main.db.run_start(jid))
+    assert seen[0] is None and seen[1]["CLAUDE_CODE_SUBAGENT_MODEL"] == "haiku" and "CLAUDE_CODE_SUBAGENT_MODEL_FORCE" not in seen[1]
+
+
+# ---- #108
+
+def test_a_fable_job_needs_the_acknowledgement_and_a_cap_on_every_route(lite_client, projects_dir, fake_tmux, tmp_path, monkeypatch):
+    from app import main
+    make_repo(projects_dir)
+    for name in ("web",):
+        r = projects_dir / "shop" / name
+        r.mkdir()
+        subprocess.run(["git", "-C", str(r), "init", "-q", "-b", "main"], check=True)
+    monkeypatch.setattr(main.settings, "claude_bin", lambda: str(fake_claude(tmp_path)))
+    monkeypatch.setattr(main, "sched", None)
+    monkeypatch.setattr(main.settings, "headless_fable_cap", 10.0)
+    for model in ("fable", "best", "claude-fable-5-1", "FABLE"):
+        body = {"args": f"--model {model}"}
+        r = _post_job(lite_client, **body)
+        assert r.status_code == 422 and "bills Fable usage credits without asking" in r.json()["error"] and "nothing was saved" in r.json()["error"], model
+        assert _post_job(lite_client, acknowledge_fable=True, **body).status_code == 422, "an acknowledgement without a cap"
+        assert _post_job(lite_client, max_budget_usd=5, **body).status_code == 422, "a cap without an acknowledgement is not consent"
+        over = _post_job(lite_client, acknowledge_fable=True, max_budget_usd=11, **body)
+        assert over.status_code == 422 and "at most $10" in over.json()["error"]
+    assert main.db.jobs() == [], "nothing was stored by a refusal"
+    ok = _post_job(lite_client, args="--model fable", acknowledge_fable=True, max_budget_usd=5)
+    assert ok.status_code == 201
+    job = main.db.job_get(ok.json()["id"])
+    ack = scheduler.job_opts(job)["fable_ack"]
+    assert ack["cap"] == 5 and ack["models"] == ["fable"] and ack["at"] and scheduler.fable_hold(job) is None
+    shown = next(j for j in main.build_state("alice@example.com")["jobs"] if j["id"] == job["id"])
+    assert shown["fable"]["state"] == "acknowledged" and shown["fable"]["cap"] == 5
+    # the batch route is the same gate, and one acknowledgement is recorded on every job it makes
+    assert lite_client.post("/api/batch", headers=H, json={"prompt": "p", "repos": ["shop/api", "shop/web"], "args": "--model best"}).status_code == 422
+    b = lite_client.post("/api/batch", headers=H, json={"prompt": "p", "repos": ["shop/api", "shop/web"], "args": "--model best",
+                                                         "acknowledge_fable": True, "max_budget_usd": 3})
+    assert b.status_code == 201 and len(b.json()["jobs"]) == 2
+    assert all(scheduler.job_opts(main.db.job_get(i))["fable_ack"]["cap"] == 3 for i in b.json()["jobs"])
+
+
+def test_non_fable_and_codex_jobs_are_untouched_by_the_guard(lite_client, projects_dir, fake_tmux, tmp_path, monkeypatch):
+    from app import main
+    make_repo(projects_dir)
+    monkeypatch.setattr(main.settings, "claude_bin", lambda: str(fake_claude(tmp_path)))
+    monkeypatch.setattr(main, "sched", None)
+    for args in ("--model opus", "--model sonnet", "--model haiku", "--verbose", None, "--model opus[1m]"):
+        r = _post_job(lite_client, **({"args": args} if args else {}))
+        assert r.status_code == 201, args
+        assert "fable_ack" not in scheduler.job_opts(main.db.job_get(r.json()["id"]))
+    assert all(j["fable"] is None for j in main.build_state("alice@example.com")["jobs"])
+
+
+def test_a_stored_fable_job_without_consent_is_held_not_run_under_a_default_cap(lite_client, projects_dir, fake_tmux, tmp_path, monkeypatch):
+    from app import doctor, main
+    make_repo(projects_dir)
+    monkeypatch.setattr(main.settings, "claude_bin", lambda: str(fake_claude(tmp_path)))
+    monkeypatch.setattr(main, "sched", None)
+    monkeypatch.setattr(main.settings, "headless_fable_cap", 10.0)
+    jid = main.db.job_add(project="shop", repo="api", name="old fable job", prompt="p", args="--model fable", next_run_at=main.db_now(), enabled=1)
+    cron_id = main.db.job_add(project="shop", repo="api", name="old cron job", prompt="p", args="--model best", max_budget_usd=2.0, cron="0 3 * * *",
+                              next_run_at=main.db_now(), enabled=1)
+    w = scheduler.Worker(main.db)
+    assert w.tick() == [], "held: nothing started"
+    assert main.db.runs() == []
+    one, cron = main.db.job_get(jid), main.db.job_get(cron_id)
+    assert one["last_status"] == scheduler.FABLE_HELD and one["next_run_at"] is None and one["enabled"] == 1, "parked until acknowledged"
+    assert cron["last_status"] == scheduler.FABLE_HELD and cron["next_run_at"] > main.db_now(), "a cap alone is not consent: it waits for its next fire"
+    shown = {j["id"]: j for j in main.build_state("alice@example.com")["jobs"]}
+    assert shown[jid]["fable"]["state"] == "held" and "acknowledge" in shown[jid]["fable"]["reason"]
+    c = next(c for c in doctor.run("claude", db=main.db)["checks"] if c["id"] == "fable-jobs")
+    assert c["status"] == "warn" and "2 Claude jobs bill Fable usage credits without asking" in c["detail"] and "old fable job" in c["detail"]
+    # "Run now" does not get round it either: the run is recorded as an error and nothing starts
+    lite_client.post(f"/api/jobs/{jid}/run", headers=H)
+    rids = w.tick()
+    _join_all(w)
+    assert [main.db.run_get(r)["status"] for r in rids] == [] or all(main.db.run_get(r)["status"] == "error" for r in rids)
+    # the edit that makes it run: an acknowledgement and a Max $ within the ceiling
+    assert lite_client.post(f"/api/jobs/{jid}/acknowledge-fable", headers=H, json={"max_budget_usd": 4}).status_code == 422
+    assert lite_client.post(f"/api/jobs/{jid}/acknowledge-fable", headers=H, json={"acknowledge_fable": True, "max_budget_usd": 40}).status_code == 422
+    assert lite_client.post(f"/api/jobs/{jid}/acknowledge-fable", headers=H, json={"acknowledge_fable": True}).status_code == 422
+    assert lite_client.post(f"/api/jobs/{jid}/acknowledge-fable", headers=H, json={"acknowledge_fable": True, "max_budget_usd": 4}).status_code == 200
+    job = main.db.job_get(jid)
+    assert scheduler.fable_hold(job) is None and job["max_budget_usd"] == 4 and scheduler.job_opts(job)["fable_ack"]["cap"] == 4
+    other = main.db.job_add(project="shop", repo="api", name="plain", prompt="p", args="--model opus")
+    assert lite_client.post(f"/api/jobs/{other}/acknowledge-fable", headers=H, json={"acknowledge_fable": True, "max_budget_usd": 4}).status_code == 400
+
+
+def test_changing_the_model_or_the_cap_makes_the_acknowledgement_stale(projects_dir, monkeypatch):
+    from app import main
+    monkeypatch.setattr(main.settings, "headless_fable_cap", 10.0)
+    ack = {"at": "2026-10-08T00:00:00+00:00", "cap": 5.0, "models": ["fable"]}
+    job = {"agent": "claude", "args": "--model fable", "max_budget_usd": 5.0, "opts": json.dumps({"fable_ack": ack})}
+    assert scheduler.fable_hold(job) is None
+    assert scheduler.fable_hold({**job, "max_budget_usd": 6.0}) == scheduler.FABLE_HELD, "the cap changed"
+    assert scheduler.fable_hold({**job, "args": "--model best"}) == scheduler.FABLE_HELD, "the model text changed"
+    assert scheduler.fable_hold({**job, "max_budget_usd": None}) == scheduler.FABLE_HELD
+    monkeypatch.setattr(main.settings, "headless_fable_cap", 4.0)
+    assert scheduler.fable_hold(job) == scheduler.FABLE_HELD, "the ceiling was lowered below the stored cap"
+    assert scheduler.fable_hold({**job, "args": "--model sonnet", "opts": None}) is None
+    assert scheduler.fable_hold({**job, "agent": "codex", "args": "--model fable", "opts": None}) is None
+    assert scheduler.fable_hold({**job, "args": "--model opus", "opts": None}, env={"ANTHROPIC_DEFAULT_FABLE_MODEL": "opus"}) == scheduler.FABLE_HELD

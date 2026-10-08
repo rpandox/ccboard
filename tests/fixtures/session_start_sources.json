@@ -1,0 +1,15 @@
+{
+  "_note": "SessionStart payload shapes seen in the box's events table (2026-10-08): the keys and the source value only, every other value is a placeholder. 'compact' arrived 2 times for Claude and 9 times for Codex, always with the id the row already had (never a different one); whether a future build sends a compact start with a new id stays unverified.",
+  "claude": {
+    "startup": ["cwd", "hook_event_name", "model", "scratchpad_dir", "session_id", "session_title", "source", "transcript_path"],
+    "resume": ["context_tokens", "cwd", "estimated_cache_write_usd", "hook_event_name", "prompt_cache_likely_expired", "scratchpad_dir", "seconds_since_last_response", "session_id", "session_title", "source", "transcript_path"],
+    "clear": ["cwd", "hook_event_name", "scratchpad_dir", "session_id", "session_title", "source", "transcript_path"],
+    "compact": ["cwd", "hook_event_name", "model", "prompt_id", "scratchpad_dir", "session_id", "session_title", "source", "transcript_path"]
+  },
+  "codex": {
+    "startup": ["cwd", "hook_event_name", "model", "permission_mode", "session_id", "source", "transcript_path"],
+    "resume": ["cwd", "hook_event_name", "model", "permission_mode", "session_id", "source", "transcript_path"],
+    "clear": ["cwd", "hook_event_name", "model", "permission_mode", "session_id", "source", "transcript_path"],
+    "compact": ["cwd", "hook_event_name", "model", "permission_mode", "session_id", "source", "transcript_path"]
+  }
+}

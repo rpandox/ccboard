@@ -5,7 +5,7 @@ Nothing here runs a real codex: an autouse fixture hides the binary, points sett
 
 The help fixtures are all real captures: codex_help_0157.txt / codex_exec_help_0157.txt are `--help` of codex-cli 0.157.1 (`--no-daemon`,
 `--approve-for-me`, `--worktree`); codex_help_0145_real.txt / codex_exec_help_0145_real.txt / codex_resume_help_0145_real.txt are
-`codex --help`, `codex exec --help` and `codex resume --help` of the ubu2 box (0.145.0, captured 2026-10-04): its `-a` offers
+`codex --help`, `codex exec --help` and `codex resume --help` of the box (0.145.0, captured 2026-10-04): its `-a` offers
 untrusted | on-request | never (there is NO on-failure), and `codex exec` has neither -a nor --search.
 """
 import itertools
@@ -1586,3 +1586,12 @@ def test_the_0145_help_still_lists_what_that_binary_lists(ag, fake):
     fake.use(help_text=HELP_0145, exec_text=EXEC_0145)
     assert ag._approvals() == ("on-request", "never", "untrusted")      # the old binary's own list, current values first
     assert plan(ag, opts={"mode": "custom", "approval": "untrusted"}).argv[-2:] == ["-a", "untrusted"]
+
+
+def test_rebinds_wraps_thread_relation(ag):
+    """ag.rebinds(payload, row): the Codex counterpart of the Claude rule; /new (a second `startup` start on an idle row) rebinds."""
+    row = {"claude_session_id": SID, "state": "idle"}
+    assert ag.rebinds({"session_id": OTHER, "source": "startup"}, row) is True                       # /new on an idle row
+    assert ag.rebinds({"session_id": OTHER, "source": "startup"}, {**row, "state": "working"}) is False   # a guardian thread, mid-turn
+    assert ag.rebinds({"session_id": OTHER, "source": "clear"}, {**row, "state": "working"}) is True
+    assert ag.rebinds({"session_id": SID, "source": "startup"}, row) is True and ag.rebinds({"session_id": OTHER}, None) is True

@@ -596,3 +596,26 @@ def test_a_codex_task_on_a_project_folder_that_is_not_a_repo_runs_in_place(cx):
     t = cx.db().task_get(body["id"])
     assert t["mode"] == "attached" and t["worktree"] == "" and t["agent"] == "codex"
     assert shlex.split(dict(cx.tmux["sent"])[name])[0] == "codex"
+
+
+def test_a_recovered_session_gets_its_subagent_model_again(client, projects_dir, fake_tmux, monkeypatch):
+    """#106: Claude does not restore CLAUDE_CODE_SUBAGENT_MODEL on --resume, so the board stores it with the session and types it again."""
+    from app import main
+    from app.config import settings
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(settings, "subagent_model", "")
+    subprocess.run(["git", "-C", str(projects_dir), "init", "-q", "-b", "main", "shop/api"], check=True)
+    a = client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude", "subagent_model": "haiku"}).json()
+    assert a["cmd"].startswith("env CLAUDE_CODE_SUBAGENT_MODEL=haiku claude "), a["cmd"]
+    row = main.db.open_rows()[a["tmux"]]
+    assert row["opts"]["subagent_model"] == "haiku" and "_FORCE" not in str(row["opts"])
+    b = client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude"}).json()
+    assert not b["cmd"].startswith("env "), "inherit by default"
+    monkeypatch.setattr(settings, "subagent_model", "sonnet")          # the board default changed after both were launched
+    fake_tmux["sessions"].clear()
+    fake_tmux["created"].clear()
+    by = {t["name"]: t for t in recover.plan(main.db.open_rows(), set())}
+    assert by[a["tmux"]]["cmd"][:4] == ["env", "CLAUDE_CODE_SUBAGENT_MODEL=haiku", "claude", "--resume"]
+    assert by[b["tmux"]]["cmd"][0] == "claude", "a session launched without it is not given the new default on recovery"
+    recover.run(main.db, main._start_session)
+    assert dict(fake_tmux["sent"])[a["tmux"]].startswith("env CLAUDE_CODE_SUBAGENT_MODEL=haiku claude --resume " + a["claude_session_id"])

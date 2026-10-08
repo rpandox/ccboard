@@ -103,8 +103,8 @@ def test_the_sync_fallback_writes_no_async_key_anywhere():
 
 def test_command_strings_are_byte_stable():
     """Codex trusts a hook by a hash of its definition: these definitions may only change on purpose (and then every box re-reviews)."""
-    base = "/home/rpandox/.local/share/ccboard/app/bin"
-    assert cx.wanted_hooks(Path("/home/rpandox/.local/share/ccboard/app")) == {
+    base = "/home/user/.local/share/ccboard/app/bin"
+    assert cx.wanted_hooks(Path("/home/user/.local/share/ccboard/app")) == {
         **{ev: {"type": "command", "command": f"env CCBOARD_AGENT=codex {base}/ccboard-hook", "async": True, "timeout": 5} for ev in STANDARD},
         "Interrupt": {"type": "command", "command": f"env CCBOARD_AGENT=codex {base}/ccboard-hook-fast", "timeout": 3},
         "SessionEnd": {"type": "command", "command": f"env CCBOARD_AGENT=codex {base}/ccboard-hook-fast", "timeout": 3},
@@ -428,7 +428,7 @@ def test_install_sh_remembers_the_two_new_env_keys_binds_and_validates_them():
     assert ': "${CCBOARD_CODEX_HOOK_TRUST:=review}"' in t and ': "${CODEX_HOME:=}"' in t, "an unbound ENV_KEYS name dies under set -u"
     assert 'case "$CCBOARD_CODEX_HOOK_TRUST" in review|bypass) ;;' in t
     assert '[[ "$CODEX_HOME" = /* ]]' in t
-    assert re.search(r"for k in PROJECTS_DIR [^\n]*CODEX_HOME; do", t), "CODEX_HOME goes through the no-whitespace/quotes check: the env file is data"
+    assert re.search(r"for k in PROJECTS_DIR [^\n]*\bCODEX_HOME\b[^\n]*; do", t), "CODEX_HOME goes through the no-whitespace/quotes check: the env file is data"
     assert re.search(r'warn "CCBOARD_CODEX_HOOK_TRUST=bypass', t), "bypass is announced at install time"
 
 

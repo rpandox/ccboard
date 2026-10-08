@@ -35,7 +35,7 @@ def test_the_fixtures_still_say_what_the_proxy_relies_on():
         assert isinstance(o["items"][0][f], str) and isinstance(json.loads(o["items"][0][f]), list), f"{f} is a JSON-encoded string"
     assert "agent_type" not in o["items"][0], "the list rows carry no subagent marker"
     assert fx("observation")["agent_type"] == mp.SUBAGENT_TYPE and fx("search")["observations"][0]["agent_type"] == mp.SUBAGENT_TYPE
-    assert fx("stats")["worker"]["version"] == mp.TESTED_WORKER
+    assert fx("stats")["worker"]["version"] == "13.31.0"      # the fixtures are the 13.31.0 answers; TESTED_WORKER moved to 13.34.2 after a live GET check
     assert mp.compat(fx("stats")["worker"]["version"]) == "ok"
     s = fx("search")
     assert set(s) >= {"observations", "sessions", "prompts", "totalResults", "query"}

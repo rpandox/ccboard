@@ -1091,14 +1091,17 @@ function agentsExtWhere(x) {
   return parts.length ? (parts.length > 2 ? '…/' : '/') + parts.slice(-2).join('/') : '';
 }
 
+const XR_OUTSIDE_WHY = 'Open is off: its folder is outside the projects directory (or gone).';
+
 function agentsExtNode(x0) {
   const cur = { x: x0, sig: '' };
   const title = el('span', { class: 'xr-title' });
   const meta = el('span', { class: 'xr-meta' });
   const age = el('time', { class: 'age xr-age', title: 'last activity' });
   const open = el('button', { class: 'small xr-open', type: 'button', onclick: () => agentsExtOpen(cur.x) });
+  const why = el('span', { class: 'xr-why dim hidden', text: XR_OUTSIDE_WHY });           // one line under the title: why Open is disabled, readable without a hover (#32 d)
   const node = el('div', { class: 'xrow', 'data-ext': x0.id, 'data-agent': x0.agent },
-    el('div', { class: 'xr-main' }, title, meta), el('div', { class: 'xr-act' }, age, open));
+    el('div', { class: 'xr-main' }, title, meta, why), el('div', { class: 'xr-act' }, age, open));
   node.ccPatch = (x) => {
     cur.x = x;
     setTextIfChanged(title, x.title || `thread ${x.id.slice(0, 8)}`);
@@ -1109,12 +1112,14 @@ function agentsExtNode(x0) {
     setTextIfChanged(open, busy ? 'Opening…' : 'Open');
     open.disabled = busy || !!agentsExt.busy || outside;
     open.setAttribute('title', outside ? 'Its folder is outside the projects directory, or gone: the board only opens threads that live in a project' : 'Resume this thread in a board session');
+    why.classList.toggle('hidden', !outside);
     open.setAttribute('aria-label', `Open ${x.title || 'thread ' + x.id.slice(0, 8)} in a board session`);
-    const sig = JSON.stringify([x.project, x.repo, x.cwd, x.model, x.effort, x.tokens, x.branch, x.badge]);
+    const sig = JSON.stringify([x.project, x.repo, x.cwd, x.model, x.effort, x.tokens, x.branch, x.badge, outside]);
     if (sig === cur.sig) return;
     cur.sig = sig;
     meta.textContent = '';
     meta.append(el('span', { class: ['bdg', chipHue('agent', x.agent)].join(' '), title: 'Codex thread', text: `${AGENT_GLYPH.codex} Codex` }));
+    if (outside) meta.append(el('span', { class: 'bdg dim xr-outside', title: XR_OUTSIDE_WHY, text: 'outside projects' }));
     if (x.badge) meta.append(el('span', { class: 'bdg mono xr-origin', title: `Started by ${x.badge}, not from a Codex terminal`, text: x.badge }));
     const where = agentsExtWhere(x);
     if (where) meta.append(el('span', { class: ['xr-where', x.project ? chipHue('project', x.project) : ''].filter(Boolean).join(' '), title: x.cwd, text: where }));

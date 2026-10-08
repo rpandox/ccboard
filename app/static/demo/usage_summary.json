@@ -952,6 +952,16 @@
       }
     ]
   },
+  "basis": "reported",
+  "estimate": {
+    "date": "2026-10-07",
+    "source": "Anthropic pricing page (list prices per million tokens)",
+    "sessions": 0,
+    "usd": 0,
+    "bases": {},
+    "cache_write_assumed": false,
+    "cache_write_x": 1.25
+  },
   "source": "samples",
   "demo": {
     "epoch": 1790996400

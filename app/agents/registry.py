@@ -425,6 +425,18 @@ def scan(config_dir: Path, open_rows: list[dict], *, projects_dir: Path | None =
                      now=_wall() if now is None else now)
 
 
+def session_cwds(config_dir: Path) -> dict[str, str]:
+    """{session id: cwd} for every non-observer entry of the registry (a running Claude process or a background job), for the usage join by folder
+    (issue #57). Display and usage only; the ids a job also answers to (resumeSessionId) point at the same folder."""
+    out: dict[str, str] = {}
+    for e in _parse(Path(config_dir)).entries:
+        if e.observer or not e.info.cwd:
+            continue
+        for sid in e.ids:
+            out.setdefault(sid.lower(), e.info.cwd)
+    return out
+
+
 _lock = threading.Lock()
 _cache: dict | None = None   # {'dir': str, 'at': monotonic, 'parsed': _Parsed}
 

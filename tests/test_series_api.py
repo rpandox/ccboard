@@ -189,8 +189,8 @@ def test_series_events_rejects_bad_requests(board, params):
 def built(board, monkeypatch):
     calls = []
 
-    def fake_build(db, days=30, tz_min=345, now=None):
-        calls.append({"db": db, "days": days, "tz_min": tz_min, "now": now})
+    def fake_build(db, days=30, tz_min=345, now=None, basis="reported"):
+        calls.append({"db": db, "days": days, "tz_min": tz_min, "now": now, "basis": basis})
         return {"source": "samples", "days": days, "tz_min": tz_min, "marker": "from-usage_summary"}
 
     monkeypatch.setattr(usage_summary, "build", fake_build)
@@ -203,7 +203,7 @@ def test_usage_summary_delegates_with_the_plan_defaults(built):
     assert r.status_code == 200 and r.json() == {"source": "samples", "days": 30, "tz_min": 345, "marker": "from-usage_summary"}
     assert len(calls) == 1
     assert calls[0]["db"] is main.db and (calls[0]["days"], calls[0]["tz_min"]) == (30, 345)
-    assert calls[0]["now"] == NOW
+    assert calls[0]["now"] == NOW and calls[0]["basis"] == "reported", "the reported basis is the default"
 
 
 def test_usage_summary_passes_days_and_zone_through(built):
@@ -212,6 +212,17 @@ def test_usage_summary_passes_days_and_zone_through(built):
     assert (calls[-1]["days"], calls[-1]["tz_min"]) == (7, -300)
     assert get(board, "/api/usage/summary", days="90", tz_min="0").status_code == 200
     assert (calls[-1]["days"], calls[-1]["tz_min"]) == (90, 0)
+
+
+def test_usage_summary_basis_est_is_passed_through_and_cached_apart_from_reported(built):
+    board, calls = built
+    get(board, "/api/usage/summary", days="7")
+    get(board, "/api/usage/summary", days="7", basis="est")
+    get(board, "/api/usage/summary", days="7", basis="EST")
+    get(board, "/api/usage/summary", days="7", basis="whatever")
+    assert [c["basis"] for c in calls] == ["reported", "est"], "est is its own cache entry; EST is the same entry; an unknown word is the reported basis (a cache hit)"
+    get(board, "/api/usage/summary", days="7", basis="est")
+    assert len(calls) == 2, "cached"
 
 
 @pytest.mark.parametrize("params", [
@@ -350,13 +361,13 @@ def test_sampler_tick_with_the_boards_sources(wired, fake_tmux, monkeypatch):
     a = _new_session(wired)
     _hook(wired, a, {"hook_event_name": "UserPromptSubmit", "prompt": "go"})
     monkeypatch.setattr(health, "snapshot", lambda extra=None, consumer="default": {
-        "host": "ubu2", "cpu_pct": 12.5, "load1": 0.4, "mem": {"pct": 55.0}, "disk": {"pct": 61.0}})
+        "host": "box1", "cpu_pct": 12.5, "load1": 0.4, "mem": {"pct": 55.0}, "disk": {"pct": 61.0}})
     clock = Clock(1_790_000_000.0)
     sm = samples.Sampler(main.db, health_fn=main._sampler_health, counts_fn=main._sampler_counts, clock=clock)
     out = sm.sample_once()
     assert set(out["wrote"]) == {"h_cpu", "h_mem", "h_load", "h_disk", "n_live", "n_work", "n_attn"}
     assert [r[2] for r in _rows("n_live", "")] == [1] and [r[2] for r in _rows("n_work", "")] == [1]
-    assert [r[2] for r in _rows("h_cpu", "ubu2")] == [12.5]
+    assert [r[2] for r in _rows("h_cpu", "box1")] == [12.5]
     assert main.db.kv_get("samples_heartbeat")["value"]["ts"] == clock.t
     clock.t += 15                                                            # next tick: every throttle still holds
     assert sm.sample_once()["wrote"] == []

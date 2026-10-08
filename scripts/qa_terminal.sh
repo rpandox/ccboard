@@ -68,7 +68,7 @@
 #   console   `console --errors` is empty after the run (CSP violations, failed fetches); when the session is absent on the board the
 #             expected 404/503 resource failures of /api/sessions/<name> are ignored and the table says so
 #
-# QA_REAL_TTYD=1 aims the script at a real board with a real ttyd (BASE_URL e.g. the tailnet URL of ubu2, no dev bypass; QA_TMUX must name a
+# QA_REAL_TTYD=1 aims the script at a real board with a real ttyd (BASE_URL e.g. the tailnet URL of the box, no dev bypass; QA_TMUX must name a
 # session that exists THERE, the script cannot create one on a remote tmux). It skips what only the fake tty can answer (the touch counter,
 # the faked strip, the font stand-ins) and keeps wrap, bounce, overflow, keys, targets, composer, layout, scroll, history, compact,
 # quick, the font-off check and console, which read the page and the real iframe.

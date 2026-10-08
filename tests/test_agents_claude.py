@@ -415,10 +415,11 @@ def test_option_schema(ag):
     assert all(isinstance(f, OptField) for f in s)
     assert [f.key for f in s] == ["launcher", "resume_id", "from_pr", "name", "model", "effort", "fast", "permission_mode", "prompt", "bypass",
                                   "allowed_tools", "disallowed_tools", "tools", "append_system_prompt", "agent_name", "fallback_model",
-                                  "autocompact", "worktree", "worktree_name", "fork_session", "add_dirs", "devcontainer", "mcp_config", "extra"]
+                                  "subagent_model", "subagent_force", "autocompact", "worktree", "worktree_name", "fork_session", "add_dirs", "devcontainer", "mcp_config", "extra"]
     by = {f.key: f for f in s}
     assert by["model"].choices[:4] == ["opus", "fable", "sonnet", "haiku"] and by["model"].kind == "combo"
-    assert by["model"].choices[4:] == ["opusplan", "best", "opus[1m]", "sonnet[1m]"], "the [1m] variants follow the aliases"
+    assert by["model"].choices[4:] == ["opusplan", "best"], "no [1m] variant is offered (#109); a typed one still validates"
+    assert "Fable" in by["model"].help and "Opus 4.6" in by["model"].help
     assert by["effort"].choices == list(claude.EFFORTS) == ["low", "medium", "high", "xhigh", "max"]
     assert "ultracode" not in by["effort"].choices and "V19" in by["effort"].help
     assert by["permission_mode"].choices == list(claude.PERMISSION_MODES)
@@ -438,7 +439,8 @@ def test_option_schema(ag):
     assert json.dumps([f.__dict__ for f in s])                                              # JSON-serialisable for GET /api/agents
     # every key the schema offers is accepted by validate_opts (or handled by the launch request), none is silently dropped
     accepted = {"model", "effort", "permission_mode", "fast", "allowed_tools", "disallowed_tools", "append_system_prompt", "devcontainer",
-                "extra", "tools", "agent_name", "fallback_model", "autocompact", "mcp_config", "from_pr", "fork_session"}
+                "extra", "tools", "agent_name", "fallback_model", "autocompact", "mcp_config", "from_pr", "fork_session",
+                    "subagent_model", "subagent_force"}
     carried = {"launcher", "resume_id", "name", "prompt", "bypass", "add_dirs", "worktree", "worktree_name"}   # LaunchReq.kind/resume_id/session_name/prompt/bypass/add_dirs/worktree
     assert {f.key for f in s} - accepted == carried
 
@@ -773,7 +775,7 @@ def test_describe_is_the_api_agents_entry(ag, monkeypatch):
     assert [o["key"] for o in d["options"]][:8] == ["launcher", "resume_id", "from_pr", "name", "model", "effort", "fast", "permission_mode"]
     assert d["permission_modes"] == list(claude.PERMISSION_MODES) and d["efforts"] == list(claude.EFFORTS) and "ultracode" not in d["efforts"]
     assert d["models"][:4] == ["opus", "fable", "sonnet", "haiku"] and d["reasoning_by_model"] == {}
-    assert d["capabilities"] == {"ultracode_flag": False}
+    assert d["capabilities"] == {"ultracode_flag": False, "permission_prompts_none": False}
     assert d["slash"]["clear"] == {"cmd": "/clear", "label": "Clear", "arg": False, "read": False, "verified": True, "weight": 155,
                                    "destructive": True, "drive": "inline", "tune": "", "saves_default": False, "choices": None, "dialog": False,
                                    "tune_verified": None}
@@ -1003,20 +1005,20 @@ def probe(monkeypatch, tmp_path):
 
 
 def test_ultracode_is_an_effort_only_where_the_box_takes_it(ag, monkeypatch, probe):
-    assert ag.capabilities() == {"ultracode_flag": False} and ag.efforts() == claude.EFFORTS, "no binary: not offered"
+    assert ag.capabilities() == {"ultracode_flag": False, "permission_prompts_none": False} and ag.efforts() == claude.EFFORTS, "no binary: not offered"
     exe = fake_claude(probe)
     monkeypatch.setattr(settings, "claude_bin", lambda: str(exe))
-    assert ag.capabilities() == {"ultracode_flag": False}
+    assert ag.capabilities() == {"ultracode_flag": False, "permission_prompts_none": False}
     assert "ultracode" not in ag.EFFORTS and "ultracode" not in {f.key: f for f in ag.option_schema()}["effort"].choices
     with pytest.raises(projects.BadRequest, match="^effort must be one of low, medium, high, xhigh, max$"):
         v(ag, {"effort": "ultracode"})
     # the box's claude learns it: a new binary (mtime) is probed again, and everything follows: the list, the schema, the validation, argv
     fake_claude(exe, more=", ultracode")
     os.utime(exe, (5, 5))
-    assert ag.capabilities() == {"ultracode_flag": True} and ag.efforts()[-1] == "ultracode"
+    assert ag.capabilities() == {"ultracode_flag": True, "permission_prompts_none": False} and ag.efforts()[-1] == "ultracode"
     by = {f.key: f for f in ag.option_schema()}
     assert by["effort"].choices == list(ag.efforts()) == ag.describe()["efforts"] and "accepted" in by["effort"].help
-    assert ag.describe()["capabilities"] == {"ultracode_flag": True}
+    assert ag.describe()["capabilities"] == {"ultracode_flag": True, "permission_prompts_none": False}
     assert v(ag, {"effort": "ultracode"}) == {"effort": "ultracode"}
     assert plan(ag, opts={"effort": "ultracode"}).argv[-2:] == ["--effort", "ultracode"]
 
@@ -1029,26 +1031,26 @@ def test_the_ultracode_probe_runs_once_per_binary_and_failures_retry_later(ag, m
     calls = []
     real = claude.subprocess.run
     monkeypatch.setattr(claude.subprocess, "run", lambda *a, **k: calls.append(a[0]) or real(*a, **k))
-    assert ag.capabilities() == {"ultracode_flag": False} and ag.capabilities() == {"ultracode_flag": False}
+    assert ag.capabilities() == {"ultracode_flag": False, "permission_prompts_none": False} and ag.capabilities() == {"ultracode_flag": False, "permission_prompts_none": False}
     assert calls == [[str(exe), "--help"]], "one probe, a failed one cached for a minute"
     now["t"] += 61
     fake_claude(exe, more=", ultracode")
-    assert ag.capabilities() == {"ultracode_flag": True} and len(calls) == 2
-    assert ag.capabilities() == {"ultracode_flag": True} and len(calls) == 2, "a good answer is kept for this binary"
+    assert ag.capabilities() == {"ultracode_flag": True, "permission_prompts_none": False} and len(calls) == 2
+    assert ag.capabilities() == {"ultracode_flag": True, "permission_prompts_none": False} and len(calls) == 2, "a good answer is kept for this binary"
     # a binary that cannot be run is a plain False, never an error
     claude.reset_caches()
     monkeypatch.setattr(settings, "claude_bin", lambda: str(probe.parent / "missing"))
-    assert ag.capabilities() == {"ultracode_flag": False}
+    assert ag.capabilities() == {"ultracode_flag": False, "permission_prompts_none": False}
 
 
 def test_the_ultracode_env_records_the_v19_box_check(ag, monkeypatch, probe):
     exe = fake_claude(probe, more=", ultracode")
     monkeypatch.setattr(settings, "claude_bin", lambda: str(exe))
     monkeypatch.setenv(claude.ULTRACODE_ENV, "0")
-    assert ag.capabilities() == {"ultracode_flag": False}, "0 says V19 failed, whatever the help says"
+    assert ag.capabilities() == {"ultracode_flag": False, "permission_prompts_none": False}, "0 says V19 failed, whatever the help says"
     monkeypatch.setenv(claude.ULTRACODE_ENV, "1")
     monkeypatch.setattr(settings, "claude_bin", lambda: None)
-    assert ag.capabilities() == {"ultracode_flag": True} and "ultracode" in ag.efforts()
+    assert ag.capabilities() == {"ultracode_flag": True, "permission_prompts_none": False} and "ultracode" in ag.efforts()
 
 
 def test_ultracode_is_never_a_scheduled_or_headless_effort(ag, monkeypatch, probe):
@@ -1161,4 +1163,167 @@ def test_peek_capabilities_never_starts_a_process(ag, monkeypatch):
     monkeypatch.setattr(subprocess, "run", boom)
     assert ag.peek_capabilities() is None
     monkeypatch.setenv(claude.ULTRACODE_ENV, "1")
-    assert ag.peek_capabilities() == {"ultracode_flag": True}
+    assert ag.peek_capabilities() == {"ultracode_flag": True, "permission_prompts_none": False}
+
+
+def test_rebinds_only_for_the_sources_that_start_a_conversation():
+    ag = agents.get("claude")
+    for src in ("startup", "resume", "clear", "fork"):
+        assert ag.rebinds({"source": src, "session_id": SID}) is True, src
+    assert ag.rebinds({"source": "compact", "session_id": SID}) is False
+    assert ag.rebinds({"matcher": "compact"}) is False                      # the matcher form of the source
+    assert ag.rebinds({"session_id": SID}) is True and ag.rebinds(None) is True       # no source at all: an older build, read as a start
+
+
+# ---------- #106: the subagent model default (CLAUDE_CODE_SUBAGENT_MODEL) ----------
+
+def test_a_launch_has_no_environment_prefix_until_a_subagent_model_is_chosen(ag, monkeypatch):
+    monkeypatch.setattr(settings, "subagent_model", "")
+    p = plan(ag)
+    assert p.argv[0] == "claude" and "CLAUDE_CODE_SUBAGENT_MODEL" not in p.cmd_line and p.opts_clean == {}
+    assert plan(ag, opts={"subagent_model": "inherit"}).argv[0] == "claude", "inherit is the absence of the variable"
+    assert plan(ag, opts={"subagent_model": "inherit"}).opts_clean == {}, "an explicit inherit with no board default stores nothing"
+
+
+def test_the_subagent_model_is_an_env_prefix_stored_and_passed_again_on_resume_and_continue(ag, monkeypatch):
+    monkeypatch.setattr(settings, "subagent_model", "")
+    p = plan(ag, opts={"subagent_model": "Haiku", "model": "opus"})
+    assert p.argv[:3] == ["env", "CLAUDE_CODE_SUBAGENT_MODEL=haiku", "claude"]
+    assert p.cmd_line.startswith("env CLAUDE_CODE_SUBAGENT_MODEL=haiku claude ") and "_FORCE" not in p.cmd_line
+    assert p.opts_clean == {"model": "opus", "subagent_model": "haiku"}
+    assert ag.resume_argv(SID, opts=p.opts_clean)[:3] == ["env", "CLAUDE_CODE_SUBAGENT_MODEL=haiku", "claude"]
+    assert ag.continue_argv("/p/shop/api", p.opts_clean)[:3] == ["env", "CLAUDE_CODE_SUBAGENT_MODEL=haiku", "claude"]
+    assert ag.resume_argv(SID, opts={"model": "opus"})[0] == "claude", "a session launched without it resumes without it"
+    full = plan(ag, kind="resume", resume_id=RID, opts={"subagent_model": "claude-haiku-4-5"})
+    assert full.cmd_line.startswith("env CLAUDE_CODE_SUBAGENT_MODEL=claude-haiku-4-5 claude --resume ")
+
+
+@pytest.mark.parametrize("bad", ["bad model!", "-rf", "haiku;ls", "x" * 90, 5])
+def test_a_bad_subagent_model_is_refused(ag, bad):
+    with pytest.raises(projects.BadRequest, match="^subagent_model: use inherit, haiku, sonnet, opus or a full model id$"):
+        v(ag, {"subagent_model": bad})
+
+
+def test_the_board_default_applies_to_a_launch_but_not_to_a_restore(ag, monkeypatch):
+    monkeypatch.setattr(settings, "subagent_model", "haiku")
+    p = plan(ag)
+    assert p.cmd_line.startswith("env CLAUDE_CODE_SUBAGENT_MODEL=haiku claude ") and p.opts_clean == {"subagent_model": "haiku"}
+    assert plan(ag, opts={"subagent_model": "sonnet"}).opts_clean == {"subagent_model": "sonnet"}, "the launcher's choice wins"
+    off = plan(ag, opts={"subagent_model": "inherit"})
+    assert off.argv[0] == "claude" and off.opts_clean == {"subagent_model": "inherit"}, "an explicit inherit overrides the default and is remembered"
+    assert ag.resume_argv(SID, opts=off.opts_clean)[0] == "claude"
+    assert ag.resume_argv(SID, opts={"model": "opus"})[0] == "claude", "a row stored before the default existed is not given one on resume"
+    assert ag.launch_opt_args({"model": "opus"}) == ["--model", "opus"], "the env is not an argv flag"
+
+
+def test_the_force_switch_is_its_own_choice_and_needs_a_model(ag, monkeypatch):
+    monkeypatch.setattr(settings, "subagent_model", "haiku")
+    assert "_FORCE" not in plan(ag).cmd_line and "subagent_force" not in plan(ag).opts_clean, "never implicit, not even with a board default"
+    assert "_FORCE" not in plan(ag, opts={"subagent_model": "haiku"}).cmd_line
+    p = plan(ag, opts={"subagent_model": "haiku", "subagent_force": True})
+    assert p.cmd_line.startswith("env CLAUDE_CODE_SUBAGENT_MODEL=haiku CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1 claude ")
+    assert p.opts_clean == {"subagent_model": "haiku", "subagent_force": True}
+    assert ag.continue_argv("/p", p.opts_clean)[:4] == ["env", "CLAUDE_CODE_SUBAGENT_MODEL=haiku", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1", "claude"]
+    with pytest.raises(projects.BadRequest, match="^subagent_force: choose a subagent model first$"):
+        plan(ag, opts={"subagent_model": "inherit", "subagent_force": True})
+    monkeypatch.setattr(claude_auth, "version", lambda: "2.1.256")
+    with pytest.raises(projects.BadRequest, match="CLAUDE_CODE_SUBAGENT_MODEL_FORCE needs Claude Code 2.1.257"):
+        plan(ag, opts={"subagent_model": "haiku", "subagent_force": True})
+
+
+def test_the_subagent_field_carries_the_board_default_and_the_force_warning(ag, monkeypatch):
+    monkeypatch.setattr(settings, "subagent_model", "")
+    by = {f.key: f for f in ag.option_schema()}
+    assert by["subagent_model"].choices == ["inherit", "haiku", "sonnet", "opus"] and by["subagent_model"].default == "inherit"
+    assert by["subagent_model"].group == by["subagent_force"].group == "advanced" and by["subagent_force"].default is False
+    assert "overrides definitions that ask for a stronger one" in by["subagent_force"].help
+    monkeypatch.setattr(settings, "subagent_model", "haiku")
+    assert {f.key: f for f in ag.option_schema()}["subagent_model"].default == "haiku"
+
+
+def test_the_settings_read_the_board_default_and_ignore_a_bad_one():
+    from app.config import Settings
+    assert Settings({"CCBOARD_SUBAGENT_MODEL": "haiku"}).subagent_model == "haiku"
+    assert Settings({"CCBOARD_SUBAGENT_MODEL": "INHERIT"}).subagent_model == "" and Settings({}).subagent_model == ""
+    assert Settings({"CCBOARD_SUBAGENT_MODEL": "haiku; rm -rf"}).subagent_model == ""
+    assert Settings({}).headless_fable_cap == 25.0 and Settings({"CCBOARD_HEADLESS_FABLE_CAP": "5"}).headless_fable_cap == 5.0
+    assert Settings({"CCBOARD_HEADLESS_FABLE_CAP": "-1"}).headless_fable_cap == 25.0 and Settings({"CCBOARD_HEADLESS_FABLE_CAP": "x"}).headless_fable_cap == 25.0
+
+
+# ---------- #107: --permission-prompts none and a job's pre-approved tools ----------
+
+HELP_PROMPTS = """  --permission-mode <mode>              Permission mode to use for the session
+                                        (choices: "acceptEdits", "dontAsk", "plan")
+  --permission-prompt-tool <tool>       MCP tool that answers permission prompts. none of this counts
+  --permission-prompts <target>         Who answers permission prompts with
+                                        --print: "host" (the SDK host or
+                                        --permission-prompt-tool) or "none"
+                                        (nobody: anything that would prompt is
+                                        denied automatically)
+  --plugin-dir <path>                   none here
+"""
+
+
+def test_the_help_probe_reads_permission_prompts_none_from_its_own_option_only():
+    assert claude.help_lists_permission_prompts_none(HELP_PROMPTS) is True
+    assert claude.help_lists_permission_prompts_none(HELP_PROMPTS.replace('or "none"', 'or "other"')) is False
+    assert claude.help_lists_permission_prompts_none("  --permission-prompt-tool <tool>  none of this counts\n") is False
+    assert claude.help_lists_permission_prompts_none("") is False and claude.help_lists_permission_prompts_none(None) is False
+
+
+def test_capabilities_name_permission_prompts_none_per_binary(ag, monkeypatch, probe):
+    exe = fake_claude(probe)
+    monkeypatch.setattr(settings, "claude_bin", lambda: str(exe))
+    assert ag.capabilities() == {"ultracode_flag": False, "permission_prompts_none": False}
+    exe.write_text(exe.read_text().replace("  -h, --help ", HELP_PROMPTS + "  -h, --help ", 1))
+    os.utime(exe, (7, 7))
+    assert ag.capabilities() == {"ultracode_flag": False, "permission_prompts_none": True}
+    assert ag.peek_capabilities() == {"ultracode_flag": False, "permission_prompts_none": True}
+    monkeypatch.setenv(claude.ULTRACODE_ENV, "1")
+    assert ag.capabilities() == {"ultracode_flag": True, "permission_prompts_none": True}, "the ultracode env switch does not touch the other flag"
+
+
+def test_the_headless_argv_gains_the_prompt_switch_and_pre_approved_tools_only_when_asked(ag):
+    base_argv = ag.headless_argv("do it", mode="dontAsk", max_turns=5, budget=None, extra=[], cwd=None, slug="j-1", last_message_file=None)
+    assert base_argv == ["claude", "-p", "do it", "--worktree", "j-1", "--output-format", "json", "--permission-mode", "dontAsk", "--max-turns", "5"]
+    argv = ag.headless_argv("do it", mode="dontAsk", max_turns=5, budget=2.5, extra=["--verbose"], cwd=None, slug="j-1", last_message_file=None,
+                            prompts_none=True, allowed_tools=["Bash(git diff *)", "Read"])
+    assert argv == ["claude", "-p", "do it", "--worktree", "j-1", "--output-format", "json", "--permission-mode", "dontAsk",
+                    "--permission-prompts", "none", "--allowedTools", "Bash(git diff *)", "Read", "--max-turns", "5", "--max-budget-usd", "2.50", "--verbose"]
+    assert "--permission-prompt-tool" not in argv and not any("bypass" in a.lower() for a in argv)
+
+
+def test_allowed_tool_rules_are_validated(ag):
+    assert ag.allowed_tool_rules("Bash(git diff *), Read\nEdit") == ["Bash(git diff *)", "Read", "Edit"]
+    assert ag.allowed_tool_rules(["Read", "Read"]) == ["Read"] and ag.allowed_tool_rules("") == [] and ag.allowed_tool_rules(None) == []
+    for bad in ("Bash(ls; rm -rf /)", "Bash(`id`)", "Read $(id)", "Read|Edit", "Bash(a) > /x"):
+        with pytest.raises(projects.BadRequest, match="tool pattern not allowed"):
+            ag.allowed_tool_rules(bad)
+    assert len(ag.allowed_tool_rules(",".join(f"Tool{i}" for i in range(20)))) == 20
+    with pytest.raises(projects.BadRequest, match="at most 20 rules"):
+        ag.allowed_tool_rules(",".join(f"Tool{i}" for i in range(21)))
+    for bad in ("--permission-prompts", "--permission-prompt-tool", "--dangerously-skip-permissions", "--permission-mode=bypassPermissions"):
+        assert ag.forbidden_extra(["--model", "opus", bad], interactive=False) == bad, "extras still refuse prompts, the prompt tool and bypass"
+
+
+# ---------- #108: does the run resolve to Fable? ----------
+
+@pytest.mark.parametrize("args,env,want", [
+    (["--model", "fable"], None, True), (["--model=fable"], None, True), (["--model", "FABLE"], None, True),
+    (["--model", "claude-fable-5-1"], None, True), (["--model", "fable[1m]"], None, True), (["--model", "best"], None, True),
+    (["--model", "Best"], None, True), (["--model", "sonnet", "--fallback-model", "haiku,fable"], None, True),
+    (["--fallback-model=opus,claude-fable-5-1"], None, True),
+    (["--model", "claude-opus-5-1"], {"ANTHROPIC_DEFAULT_FABLE_MODEL": "claude-opus-5-1"}, True),
+    (["--model", "opus"], {"ANTHROPIC_DEFAULT_FABLE_MODEL": "claude-opus-5-1"}, False),
+    (["--model", "sonnet"], None, False), (["--model", "haiku"], None, False), (["--model", "opus"], None, False), (["--model", "opus[1m]"], None, False),
+    (["--verbose"], None, False), ([], None, False), (None, None, False), (["--model"], None, False),
+    (["--append-system-prompt", "use fable"], None, False),
+])
+def test_resolves_to_fable(args, env, want):
+    assert claude.resolves_to_fable(args, env) is want
+
+
+def test_best_is_not_fable_when_the_catalogue_says_there_is_none():
+    assert claude.resolves_to_fable(["--model", "best"], None, fable_available=False) is False
+    assert claude.resolves_to_fable(["--model", "best"], None, fable_available=True) is True
+    assert claude.fable_models(["--model", "Best", "--fallback-model", "FABLE,haiku"]) == ["best", "fable"]

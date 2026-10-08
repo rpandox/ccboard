@@ -336,7 +336,7 @@ test('Claude defaults: model opus and effort high, chips ordered opus, fable, so
   assert.deepEqual(pressed(f, 'Effort'), ['high']);
   assert.deepEqual(labels(f, 'Effort'), ['default', 'low', 'medium', 'high', 'xhigh', 'max']);
   const more = f.querySelectorAll('select').find((x) => x.getAttribute('aria-label') === 'More models');
-  assert.deepEqual(more.children.map((o) => o.getAttribute('value')), ['__', '', 'opusplan', 'best', 'opus[1m]', 'sonnet[1m]', 'custom']);
+  assert.deepEqual(more.children.map((o) => o.getAttribute('value')), ['__', '', 'opusplan', 'best', 'custom']);
   btn(f, 'Model', 'sonnet').click();
   assert.deepEqual(pressed(f, 'Model'), ['sonnet']);
   assert.match(previewOf(f), /--model sonnet --effort high/);
@@ -1503,4 +1503,123 @@ test('on a Claude sheet the Codex Advanced box (Profile, Keep scrollback) is hid
   const f = form(w);
   assert.equal(hidden(f.querySelector('details[data-agent=codex]')), true);
   assert.equal(hidden(f.querySelector('details[data-agent=claude]')), false);
+});
+
+// ---------------------------------------------------------------- #109: no [1m] variants, best carries its caveat
+
+test('More models offers opusplan and best with their meaning, no [1m] entry; a typed or remembered opus[1m] is a custom id with the suffix help', () => {
+  const w = lWorld();
+  open(w, {});
+  const f = form(w);
+  const more = f.querySelectorAll('select').find((x) => x.getAttribute('aria-label') === 'More models');
+  assert.deepEqual(more.children.map((o) => text(o)), ['More models…', 'default (settings)', 'opusplan: Opus to plan, Sonnet to build', 'best: strongest available (may be Fable)', 'custom id…']);
+  assert.ok(!more.children.some((o) => /1m/.test(o.getAttribute('value'))), 'no [1m] variant');
+  assert.match(text(fieldOf(f, /^Model$/).querySelector('.field-hint')), /Add \[1m\] only for a model without a 1M window by default \(Opus 4\.6, Sonnet 4\.6; Claude Code docs read 2026-10-07\)/);
+  const note = f.querySelectorAll('p').find((p) => /best resolves to Fable/.test(text(p)));
+  assert.equal(hidden(note), true, 'quiet until best is chosen');
+  choose(more, 'best');
+  assert.equal(hidden(note), false);
+  assert.match(text(note), /Fable bills usage credits.*explicit acknowledgement/);
+  choose(more, 'opusplan');
+  assert.equal(hidden(note), true);
+  choose(more, 'custom');
+  typeInto(inputWith(f, /full model id/), 'opus[1m]');
+  assert.match(previewOf(f), /--model 'opus\[1m\]'/, 'a typed suffix still reaches the command');
+  assert.equal(pay(w, CLAUDE({ model: 'custom', model_custom: 'opus[1m]' })).model, 'opus[1m]');
+});
+
+test('a remembered opus[1m] or sonnet[1m] loads as a custom id, is not dropped, and the other values stay', () => {
+  const w = lWorld();
+  w.localStorage.setItem('ccboard:launch:shop/api:claude', JSON.stringify({ model: 'sonnet[1m]', effort: 'max', permission_mode: 'plan' }));
+  open(w, {});
+  const f = form(w);
+  const more = f.querySelectorAll('select').find((x) => x.getAttribute('aria-label') === 'More models');
+  assert.equal(more.value, 'custom');
+  assert.equal(inputWith(f, /full model id/).value, 'sonnet[1m]');
+  assert.deepEqual(pressed(f, 'Effort'), ['max']);
+  assert.match(previewOf(f), /--model 'sonnet\[1m\]' --effort max --permission-mode plan/);
+});
+
+// ---------------------------------------------------------------- #106: the subagent model
+
+const withSubagentSchema = (def = 'inherit') => ({ '/api/agents': { agents: { claude: { name: 'claude', installed: true, models: ['opus', 'fable', 'sonnet', 'haiku', 'opusplan', 'best'], efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+  permission_modes: ['manual', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'], capabilities: { ultracode_flag: false, permission_prompts_none: true },
+  options: [{ key: 'model', label: 'Model', kind: 'combo', choices: ['opus'], default: 'opus', group: 'basic', danger: false, when: null },
+    { key: 'subagent_model', label: 'Subagent model', kind: 'combo', choices: ['inherit', 'haiku', 'sonnet', 'opus'], default: def, group: 'advanced', danger: false, when: null },
+    { key: 'subagent_force', label: 'Force the subagent model', kind: 'bool', choices: null, default: false, group: 'advanced', danger: false, when: null }] } } } });
+
+test('the subagent model: the preview shows the env prefix only when the choice is not inherit, the body carries the explicit choice, FORCE is its own tick', () => {
+  const w = lWorld();
+  assert.equal(prev(w, CLAUDE({ name: 'a' })), "claude --session-id '<uuid>' --name a --model opus --effort high", 'inherit by default: nothing in front');
+  assert.equal(prev(w, CLAUDE({ name: 'a', subagent_model: 'inherit' })), "claude --session-id '<uuid>' --name a --model opus --effort high");
+  assert.equal(prev(w, CLAUDE({ name: 'a', subagent_model: 'Haiku' })), "env CLAUDE_CODE_SUBAGENT_MODEL=haiku claude --session-id '<uuid>' --name a --model opus --effort high");
+  assert.equal(prev(w, CLAUDE({ name: 'a', subagent_model: 'haiku', subagent_force: true })).split(' claude ')[0], 'env CLAUDE_CODE_SUBAGENT_MODEL=haiku CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1');
+  assert.ok(!/FORCE/.test(prev(w, CLAUDE({ name: 'a', subagent_model: 'haiku' }))), 'never implicit');
+  assert.ok(!/FORCE/.test(prev(w, CLAUDE({ name: 'a', subagent_model: 'inherit', subagent_force: true }))), 'force with inherit sets nothing');
+  assert.equal(prev(w, CLAUDE({ name: 'a' }), { subagentDefault: 'haiku' }).split(' claude ')[0], 'env CLAUDE_CODE_SUBAGENT_MODEL=haiku', 'the board default shows in the line the server will build');
+  assert.ok(!/^env/.test(prev(w, CLAUDE({ name: 'a', subagent_model: 'inherit' }), { subagentDefault: 'haiku' })), 'an explicit inherit overrides the board default');
+  assert.equal(pay(w, CLAUDE({ subagent_model: 'haiku' })).subagent_model, 'haiku');
+  assert.ok(!('subagent_model' in pay(w, CLAUDE())), 'blank: the board default is the server\'s to apply');
+  assert.ok(!('subagent_force' in pay(w, CLAUDE({ subagent_model: 'haiku' }))));
+  assert.equal(pay(w, CLAUDE({ subagent_model: 'haiku', subagent_force: true })).subagent_force, true);
+  assert.ok(!('subagent_force' in pay(w, CLAUDE({ subagent_model: 'inherit', subagent_force: true }))));
+  assert.equal(plain(w.run(`launcherTaskOpts(${JSON.stringify(CLAUDE({ subagent_model: 'sonnet' }))})`)).subagent_model, 'sonnet', 'a task carries it too');
+});
+
+test('the Subagent model field sits under Advanced, takes its choices from the schema, explains itself in text, and the preview and the body follow it', async () => {
+  const w = lWorld({ answers: { ...withSubagentSchema('inherit'), '/api/projects/shop/repos/api/sessions': { tmux: 'shop--api--s2', cmd: 'x' } } });
+  await w.run('launcherSchemaLoad()');
+  open(w, {});
+  const f = form(w);
+  const fld = fieldOf(f, /^Subagent model$/);
+  const adv = f.querySelector('details.lx-adv[data-agent=claude]');
+  assert.ok(adv.contains(fld), 'under Advanced');
+  const sel = fld.querySelector('select');
+  assert.deepEqual(sel.children.map((o) => o.getAttribute('value')), ['', 'inherit', 'haiku', 'sonnet', 'opus', 'custom']);
+  assert.equal(text(sel.children[0]), 'default (inherit)');
+  assert.match(text(fld.querySelector('.field-hint')), /subagent that names its own model still gets it.*inherit uses the main model.*no readout/);
+  const force = f.querySelectorAll('label').find((l) => /Force the subagent model/.test(text(l))).querySelector('input');
+  assert.equal(off(force), true, 'force needs a model first');
+  assert.match(text(f.querySelectorAll('p').find((p) => /CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1/.test(text(p)))), /overrides definitions that ask for a stronger one.*Off unless you tick it/);
+  choose(sel, 'haiku');
+  assert.match(previewOf(f), /^env CLAUDE_CODE_SUBAGENT_MODEL=haiku claude /);
+  assert.equal(off(force), false);
+  tickBox(force);
+  assert.match(previewOf(f), /^env CLAUDE_CODE_SUBAGENT_MODEL=haiku CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1 claude /);
+  choose(sel, 'custom');
+  const id = inputWith(f, /Custom subagent model id|full model id, e.g. claude-haiku/);
+  assert.equal(force.checked, false, 'a custom id not typed yet is no model: force goes off');
+  typeInto(id, 'claude-haiku-4-5');
+  assert.match(previewOf(f), /^env CLAUDE_CODE_SUBAGENT_MODEL=claude-haiku-4-5 claude /);
+  tickBox(force);
+  assert.match(previewOf(f), /^env CLAUDE_CODE_SUBAGENT_MODEL=claude-haiku-4-5 CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1 claude /);
+  choose(sel, 'inherit');
+  assert.ok(!/^env/.test(previewOf(f)));
+  assert.equal(force.checked, false, 'inherit switches force off');
+  assert.equal(off(force), true);
+  choose(sel, 'sonnet');
+  submit(f);
+  await tick();
+  const body = posts(w, /sessions$/)[0].body;
+  assert.equal(body.subagent_model, 'sonnet');
+  assert.ok(!('subagent_force' in body));
+  const kept = store(w, 'ccboard:launch:shop/api:claude');
+  assert.equal(kept.subagent_model, 'sonnet', 'remembered per repo');
+  assert.ok(!('subagent_force' in kept), 'force is never remembered');
+});
+
+test('the board default from the schema shows as the default entry and in the preview; choosing inherit overrides it; a remembered choice the schema lacks loads as a custom id', async () => {
+  const w = lWorld({ answers: withSubagentSchema('haiku') });
+  await w.run('launcherSchemaLoad()');
+  w.localStorage.setItem('ccboard:launch:shop/api:claude', JSON.stringify({ subagent_model: 'claude-haiku-4-5' }));
+  open(w, {});
+  const f = form(w);
+  const sel = fieldOf(f, /^Subagent model$/).querySelector('select');
+  assert.equal(text(sel.children[0]), 'default (haiku)');
+  assert.equal(sel.value, 'custom');
+  assert.match(previewOf(f), /^env CLAUDE_CODE_SUBAGENT_MODEL=claude-haiku-4-5 claude /);
+  choose(sel, '');
+  assert.match(previewOf(f), /^env CLAUDE_CODE_SUBAGENT_MODEL=haiku claude /, 'untouched: the board default');
+  choose(sel, 'inherit');
+  assert.ok(!/^env/.test(previewOf(f)));
 });

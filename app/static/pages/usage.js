@@ -43,6 +43,9 @@ const Usage = {
   RANGES: ['24h', '7d', '30d'],
   RANGE_KEY: 'ccboard:charts:range',               // localStorage: the last range (a ?range= in the address wins and is written back)
   STACK_KEY: 'ccboard:charts:stack',               // localStorage: the cost bars' stack (project | agent)
+  BASIS_KEY: 'ccboard:usage:basis',                // localStorage: the dollar basis (reported | est), issue #95
+  BASES: ['reported', 'est'],
+  BASIS_NAME: { reported: 'Reported', est: 'Estimated' },
   AGENT_KEY: 'ccboard:usage:agent',                // localStorage: the provider tab of the Limits section (claude | codex)
   AGENTS: ['claude', 'codex'],
   CX_WIN: { five: 360, seven: 7200 },              // a Codex window of at most 360 minutes is the 5H slot, one of at least 7200 the 7D slot, anything between none
@@ -58,7 +61,10 @@ const Usage = {
   GANTT_ROWS: 30,
   PROJECT_ROWS: 12,
   UNATTRIBUTED: '(unattributed)',
-  UNATTRIBUTED_TIP: 'sessions the board did not start',
+  UNATTRIBUTED_TIP: 'sessions the board did not start, with no folder on record',
+  OUTSIDE: '(outside projects)',
+  OUTSIDE_TIP: 'sessions that ran in a folder outside the projects folder',
+  JOINED_TIP: 'matched to this project by the folder the session ran in (Claude Code\'s own session files); the board did not start these',
   UNKNOWN: 'unknown',                              // the summary's row for history from before the board tracked accounts
   HOT_PCT: 85,                                     // an account window at or above this is 'in trouble' (the bad tone, and the cue to use another account)
   REFRESH_WAIT_MS: 20000,                          // a tap on Refresh waits this long for a newer reading before it says 'no new reading yet'
@@ -90,6 +96,11 @@ Usage.storedRange = function () {
 };
 Usage.saveRange = function (r) { try { localStorage.setItem(Usage.RANGE_KEY, r); } catch (_) { /* storage may be unavailable */ } };
 Usage.routeRange = function (route) { const r = route && route.query ? route.query.range : null; return Usage.isRange(r) ? r : null; };
+Usage.storedBasis = function () {
+  try { const b = localStorage.getItem(Usage.BASIS_KEY); if (b === 'reported' || b === 'est') return b; } catch (_) { /* storage may be unavailable */ }
+  return 'reported';
+};
+Usage.saveBasis = function (b) { try { localStorage.setItem(Usage.BASIS_KEY, b); } catch (_) { /* storage may be unavailable */ } };
 Usage.storedStack = function () {
   try { const s = localStorage.getItem(Usage.STACK_KEY); if (s === 'project' || s === 'agent') return s; } catch (_) { /* storage may be unavailable */ }
   return 'project';
@@ -152,7 +163,12 @@ Usage.need = function (name) {
   return f;
 };
 
-Usage.usd = function (v) { const f = Usage.charts('fmtUsd'); const n = Usage.num(v); return f ? String(f(n)) : '$' + (n >= 100 ? String(Math.round(n)) : n.toFixed(2)); };
+Usage.approx = false;     // true while an Estimated-basis section is painted (Usage.safe sets it): every dollar then carries a `~`, because it includes list-price estimates
+Usage.usd = function (v) {
+  const f = Usage.charts('fmtUsd');
+  const n = Usage.num(v);
+  return (Usage.approx ? '~' : '') + (f ? String(f(n)) : '$' + (n >= 100 ? String(Math.round(n)) : n.toFixed(2)));
+};
 Usage.tok = function (v) {
   const f = Usage.charts('fmtTok');
   const n = Usage.num(v);
@@ -172,9 +188,13 @@ Usage.sig = function (v) { try { return JSON.stringify(v); } catch (_) { return 
 
 Usage.go = function (hash) { if (typeof navigate === 'function') navigate(hash); else if (typeof location !== 'undefined') location.hash = hash; };
 
+/* The two labels that are not projects: no folder on record, or a folder outside the projects folder. Each has its one-line meaning. */
+Usage.isUnassigned = function (project) { return project === Usage.UNATTRIBUTED || project === Usage.OUTSIDE; };
+Usage.unassignedTip = function (project) { return project === Usage.OUTSIDE ? Usage.OUTSIDE_TIP : project === Usage.UNATTRIBUTED ? Usage.UNATTRIBUTED_TIP : ''; };
+
 /* #/p/<project>, or null when the name is not a route param ('(unattributed)', a dot or a space in it: buildHash throws). */
 Usage.projectHash = function (project) {
-  if (!project || project === Usage.UNATTRIBUTED) return null;
+  if (!project || project === Usage.UNATTRIBUTED || project === Usage.OUTSIDE) return null;
   try { return buildHash('project', { project }); } catch (_) { return null; }
 };
 Usage.sessionHash = function (tmux) {
@@ -401,7 +421,11 @@ Usage.refreshAuto = function (P) {
 
 Usage.alive = function (P) { return !!P && !P.dead && Usage.cur === P; };
 Usage.entry = function (P) { return P.cache[P.range] || null; };
-Usage.summaryOf = function (P) { const c = Usage.entry(P); return c && c.summary && Array.isArray(c.summary.daily) ? c.summary : null; };
+/* The summary of the page's basis: c.summary (reported) or c.summaryEst (estimated, ?basis=est); each is fetched when first wanted. */
+Usage.rawSummary = function (P) { const c = Usage.entry(P); return c ? (P.basis === 'est' ? c.summaryEst : c.summary) : null; };
+Usage.summaryOf = function (P) { const s = Usage.rawSummary(P); return s && Array.isArray(s.daily) ? s : null; };
+Usage.errKey = function (P) { return P.basis === 'est' ? 'summaryEst' : 'summary'; };
+Usage.sumDone = function (P) { const c = Usage.entry(P); return !!c && (P.basis === 'est' ? c.sumEstDone : c.sumDone); };
 
 Usage.skeleton = function () { return el('div', { class: 'usk skeleton', 'aria-hidden': 'true', text: 'Loading usage' }); };
 
@@ -430,6 +454,7 @@ Usage.errorBlock = function (P, text) {
 
 /* Run one section's painter: an exception becomes that section's error block, the others keep their paint. */
 Usage.safe = function (P, id, fn) {
+  Usage.approx = P.basis === 'est';
   try { fn(); } catch (e) {
     console.error('ccboard usage', id, e);
     P.sigs[id] = '';
@@ -444,8 +469,8 @@ Usage.build = function (root, route) {
   const fromRoute = Usage.routeRange(route);
   const range = fromRoute || Usage.storedRange();
   if (fromRoute) Usage.saveRange(fromRoute);
-  const P = { range, token: 0, dead: false, route, st: null, cache: {}, open: new Set(), details: new Map(), stack: Usage.storedStack(), sigs: {},
-    refs: { body: {}, prov: {}, toggle: {}, stackBtn: {} }, timer: null, onVisible: null, unbind: null, stale: false, liveSig: '', showAll: false,
+  const P = { range, token: 0, dead: false, route, st: null, cache: {}, open: new Set(), details: new Map(), stack: Usage.storedStack(), sigs: {}, basis: Usage.storedBasis(),
+    refs: { body: {}, prov: {}, toggle: {}, stackBtn: {}, basisBtn: {} }, timer: null, onVisible: null, unbind: null, stale: false, liveSig: '', showAll: false,
     events: null, evErr: '', evDone: false, loading: Promise.resolve(), ready: null, rows: new Map(), limDrawn: false,
     limAcct: null, accSeq: 0,                                 // limAcct: the account the Limits section shows (null = the current one, via key=claude)
     rf: Usage.refreshFresh(), autoDone: false,                // v0.5.17f: the Refresh button's wait, and the once-per-open automatic ask
@@ -472,7 +497,22 @@ Usage.build = function (root, route) {
       title: `Show the ${a === 'codex' ? 'Codex' : 'Claude'} limits`, text: a === 'codex' ? 'Codex' : 'Claude', onclick: () => Usage.setAgent(P, a) });
     R.agentSeg.append(R.agentBtn[a]);
   }
-  const head = el('div', { class: 'page-head' }, el('h1', { text: 'Usage' }), el('div', { class: 'actions' }, seg));
+  // the dollar basis (issue #95): Reported (ccusage's own dollars) or Estimated (the same plus list-price estimates for models it prices at zero). A segmented control
+  // with the other filters; arrow keys move it, and it never remounts the page: the range, the provider tab and the scroll stay where they are.
+  const bseg = el('div', { class: 'useg pj-switch', role: 'group', 'aria-label': 'Dollar basis', 'data-seg': 'basis' });
+  for (const b of Usage.BASES) {
+    R.basisBtn[b] = el('button', { class: 'small useg-btn pj-repo-btn', type: 'button', 'data-basis': b, 'aria-pressed': b === P.basis ? 'true' : 'false',
+      title: b === 'est' ? 'Reported dollars plus list-price estimates for models ccusage prices at zero' : 'The dollars ccusage reports', text: Usage.BASIS_NAME[b], onclick: () => Usage.setBasis(P, b) });
+    bseg.append(R.basisBtn[b]);
+  }
+  bseg.addEventListener('keydown', (e) => {
+    if (!e || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
+    if (typeof e.preventDefault === 'function') e.preventDefault();
+    const next = e.key === 'ArrowRight' ? 'est' : 'reported';
+    Usage.setBasis(P, next);
+    if (R.basisBtn[next] && typeof R.basisBtn[next].focus === 'function') R.basisBtn[next].focus();
+  });
+  const head = el('div', { class: 'page-head' }, el('h1', { text: 'Usage' }), el('div', { class: 'actions' }, bseg, seg));
 
   // Limits: the gauges and their note, the slot for an empty or error block, the chart host Charts.line owns (kept, never rebuilt)
   R.g5 = Usage.gauge('5H');
@@ -506,8 +546,9 @@ Usage.build = function (root, route) {
     else body.append(Usage.skeleton());
     sections.push(el('section', { class: 'usec', 'data-sec': id }, el('div', { class: 'usec-head' }, ...kids), body));
   }
+  R.foot = el('p', { class: 'dim unote ufoot', 'data-foot': '' });              // API-equivalent, not an invoice, and the price table's date (issue #95)
   R.mem = el('div', { class: 'mem-usage hidden' });                              // the claude-mem health tile (pages/memory.js), after the work sections; hidden without state.memory
-  root.append(el('div', { class: 'usage-page', 'data-usage': '' }, head, R.alert, el('div', { class: 'ugrid' }, ...sections), R.mem));   // not 'usage': style.css owns that legacy strip rule
+  root.append(el('div', { class: 'usage-page', 'data-usage': '' }, head, R.alert, el('div', { class: 'ugrid' }, ...sections), R.foot, R.mem));   // not 'usage': style.css owns that legacy strip rule
   return P;
 };
 
@@ -528,6 +569,38 @@ Usage.paintMem = function (P) {
 };
 
 /* ---------- range and stack ---------- */
+
+Usage.syncBasis = function (P) {
+  for (const b of Usage.BASES) if (P.refs.basisBtn[b]) P.refs.basisBtn[b].setAttribute('aria-pressed', b === P.basis ? 'true' : 'false');
+};
+
+/* The dollar basis changes at once: remember it, repaint the summary sections from that basis's summary (or a skeleton while it loads). Nothing else moves. */
+Usage.setBasis = function (P, basis) {
+  if (!Usage.alive(P) || (basis !== 'reported' && basis !== 'est') || basis === P.basis) return;
+  P.basis = basis;
+  Usage.saveBasis(basis);
+  Usage.syncBasis(P);
+  for (const id of ['accounts', 'cost', 'sessions', 'projects']) P.sigs[id] = '';
+  const c = Usage.entry(P);
+  if (!c) return;                                                               // the first load is still on its way and paints the basis the page holds by then
+  if (Usage.rawSummary(P)) {
+    Usage.paintSummary(P);
+    if (Date.now() - (basis === 'est' ? c.atEst || 0 : c.at) > Usage.STALE_MS) Usage.fetchBasis(P);
+  } else {
+    for (const id of ['accounts', 'cost', 'sessions', 'projects']) Usage.setBody(P, id, Usage.skeleton());
+    Usage.fetchBasis(P);
+  }
+};
+
+/* Only the summary of the current basis (a switch to a basis not fetched yet, or one gone stale): it paints when it arrives if the page still holds that basis. */
+Usage.fetchBasis = function (P) {
+  const c = Usage.entry(P);
+  if (!c) return Promise.resolve();
+  const basis = P.basis;
+  const p = Usage.fetchSummary(P, c, basis, false).then(() => { if (Usage.alive(P) && P.basis === basis) Usage.paintSummary(P); });
+  P.loading = p;
+  return p;
+};
 
 Usage.syncToggle = function (P) {
   for (const r of Usage.RANGES) P.refs.toggle[r].setAttribute('aria-pressed', r === P.range ? 'true' : 'false');
@@ -599,15 +672,9 @@ Usage.load = function (P, opts) {
   const hours = Usage.wide() ? 48 : 24;
   c.hours = hours;
   const get = (path) => Usage.get(path, o.fresh);
-  const sum = get(`/api/usage/summary?days=${Usage.days(range)}&tz_min=${Usage.tzMin()}`);
   const evs = get(`/api/series/events?series=state&since=${hours}h`);
 
-  const sSum = sum.then((v) => {
-    if (v && typeof v === 'object') { c.summary = v; c.at = Date.now(); delete c.err.summary; } else c.err.summary = 'empty answer';
-  }, (e) => { c.err.summary = Usage.errText(e); }).then(() => {
-    c.sumDone = true;
-    if (current()) Usage.paintSummary(P);
-  });
+  const sSum = Usage.fetchSummary(P, c, P.basis, o.fresh).then(() => { if (current()) Usage.paintSummary(P); });
   const sSer = Usage.fetchSeries(P, c, o.fresh);
   const sEv = evs.then((v) => {
     P.events = v && typeof v === 'object' ? v : { events: [] };
@@ -625,6 +692,16 @@ Usage.load = function (P, opts) {
   });
   P.loading = done;
   return done;
+};
+
+/* The usage summary of one basis into its slot of the range's cache entry (c.summary / c.summaryEst), with its own done flag and error. Never paints. */
+Usage.summaryPath = function (P, basis) { return `/api/usage/summary?days=${Usage.days(P.range)}&tz_min=${Usage.tzMin()}${basis === 'est' ? '&basis=est' : ''}`; };
+Usage.fetchSummary = function (P, c, basis, fresh) {
+  const est = basis === 'est';
+  const slot = est ? 'summaryEst' : 'summary';
+  return Usage.get(Usage.summaryPath(P, basis), fresh).then((v) => {
+    if (v && typeof v === 'object') { c[slot] = v; if (est) c.atEst = Date.now(); else c.at = Date.now(); delete c.err[slot]; } else c.err[slot] = 'empty answer';
+  }, (e) => { c.err[slot] = Usage.errText(e); }).then(() => { if (est) c.sumEstDone = true; else c.sumDone = true; });
 };
 
 /* The limit series of the page's account for c's range (key=claude follows the current account; acct:<key> is one account's own windows). It
@@ -662,7 +739,7 @@ Usage.retry = function (P) {
   if (!Usage.alive(P)) return;
   P.ready = Usage.ready();
   const c = Usage.entry(P);
-  if (c) { c.err = {}; c.sumDone = !!c.summary; c.serDone = !!c.series; }
+  if (c) { c.err = {}; c.sumDone = !!c.summary; c.sumEstDone = !!c.summaryEst; c.serDone = !!c.series; }
   P.evErr = '';
   P.sigs = {};
   Usage.paintSkeleton(P);
@@ -688,6 +765,7 @@ Usage.paintAll = function (P) {
 
 Usage.paintSummary = function (P) {
   Usage.checkAccount(P);
+  Usage.paintFoot(P);
   Usage.paintGauges(P);
   Usage.safe(P, 'accounts', () => Usage.paintAccounts(P));
   Usage.safe(P, 'cost', () => Usage.paintCost(P));
@@ -700,8 +778,8 @@ Usage.paintSummary = function (P) {
 Usage.noSummary = function (P, id, title, hint) {
   const c = Usage.entry(P);
   P.sigs[id] = '';
-  if (!c || !c.sumDone) { Usage.setBody(P, id, Usage.skeleton()); return; }
-  if (c.err.summary) { Usage.setBody(P, id, Usage.errorBlock(P, `Could not load the usage summary: ${c.err.summary}`)); return; }
+  if (!c || !Usage.sumDone(P)) { Usage.setBody(P, id, Usage.skeleton()); return; }
+  if (c.err[Usage.errKey(P)]) { Usage.setBody(P, id, Usage.errorBlock(P, `Could not load the usage summary: ${c.err[Usage.errKey(P)]}`)); return; }
   Usage.setBody(P, id, Usage.empty(title, hint, id === 'cost' || id === 'accounts'));
 };
 
@@ -709,7 +787,7 @@ Usage.paintAlert = function (P) {
   const c = Usage.entry(P);
   const parts = [];
   const msgs = [];
-  if (c && c.err.summary && c.summary) { parts.push('the usage summary'); msgs.push(c.err.summary); }
+  if (c && c.err[Usage.errKey(P)] && Usage.rawSummary(P)) { parts.push('the usage summary'); msgs.push(c.err[Usage.errKey(P)]); }
   if (c && c.err.series && c.series) { parts.push('the limit series'); msgs.push(c.err.series); }
   if (P.evErr && P.events) { parts.push('the timeline'); msgs.push(P.evErr); }
   const a = P.refs.alert;
@@ -880,7 +958,7 @@ Usage.paintCost = function (P) {
     Usage.setBody(P, 'cost', Usage.empty(`No spend in the last ${daily.length} days`, 'Cost samples arrive with the first session the board sees. Start one, or pick a longer range.', true));
     return;
   }
-  const sig = Usage.sig([P.range, P.stack, daily, sum.unpriced, sum.windows]);
+  const sig = Usage.sig([P.range, P.stack, daily, sum.unpriced, sum.windows, P.basis, sum.estimate]);
   if (P.sigs.cost === sig) return;
   P.sigs.cost = sig;
   const totals = el('p', { class: 'utotals mono', 'data-totals': '', title: Usage.CAPTION_TIP[P.range], text: Usage.caption(sum, P.range) });
@@ -893,14 +971,61 @@ Usage.paintCost = function (P) {
     kids.push(el('p', { class: 'dim unote', 'data-note': 'unattributed', title: Usage.UNATTRIBUTED_TIP,
       text: `${Usage.UNATTRIBUTED} ${Usage.usd(un.total)} in this window: ${Usage.UNATTRIBUTED_TIP} (started by hand, workflow subagent runs, history from before the board).` }));
   }
+  const out = Usage.windowRows(sum, P.range).find((r) => r.project === Usage.OUTSIDE);
+  if (P.stack === 'project' && out && Usage.num(out.total) > 0) {
+    kids.push(el('p', { class: 'dim unote', 'data-note': 'outside', title: Usage.OUTSIDE_TIP,
+      text: `${Usage.OUTSIDE} ${Usage.usd(out.total)} in this window: ${Usage.OUTSIDE_TIP}.` }));
+  }
   const n = Array.isArray(sum.unpriced) ? sum.unpriced.length : 0;
   if (n) {
     const names = [...new Set(sum.unpriced.map((u) => u && u.project).filter(Boolean))].join(', ');
     kids.push(el('p', { class: 'warn unote', 'data-note': 'unpriced', title: names ? `projects: ${names}` : null,
-      text: `${n} session${n === 1 ? ' has' : 's have'} tokens but no price (hatched): the cost shown is a floor.` }));
+      text: P.basis === 'est' ? `${n} session${n === 1 ? ' has' : 's have'} tokens but no price, even as an estimate (hatched): the cost shown is a floor.`
+        : `${n} session${n === 1 ? ' has' : 's have'} tokens but no price (hatched): the cost shown is a floor.` }));
+  }
+  const est = Usage.estimateInfo(sum);
+  if (P.basis === 'est') kids.push(Usage.estimateDetails(est));
+  else if (est.sessions > 0) {
+    kids.push(el('p', { class: 'dim unote', 'data-note': 'est-available', title: `Estimated from the list prices of ${est.date}`,
+      text: `${Usage.plural(est.sessions, 'session')} on models ccusage prices at zero ${est.sessions === 1 ? 'is' : 'are'} not in these dollars. Estimated adds about ${Usage.usdOf(est.usd, true)}.` }));
   }
   Usage.setBody(P, 'cost', ...kids);
-  Usage.need('stackedBars')(host, daily, { by: P.stack, top: 6, unpriced, hatchZero: true, hueOf: (name) => Usage.hue('project', name) });   // a project keeps the hue it has everywhere else (chipHue)   // Charts adds the legend and the tap-a-bar readout
+  Usage.need('stackedBars')(host, daily, { by: P.stack, top: 6, unpriced, hatchZero: true, approx: P.basis === 'est', hueOf: (name) => Usage.hue('project', name) });   // a project keeps the hue it has everywhere else (chipHue)   // Charts adds the legend and the tap-a-bar readout
+};
+
+/* ---------- the Estimated basis (issue #95) ---------- */
+
+/* The summary's estimate block with its defaults: {date, source, sessions, usd, bases, cache_write_assumed, cache_write_x}. */
+Usage.estimateInfo = function (sum) {
+  const e = sum && sum.estimate && typeof sum.estimate === 'object' ? sum.estimate : {};
+  return { date: Usage.str(e.date), source: Usage.str(e.source), sessions: Math.round(Usage.num(e.sessions)), usd: Usage.num(e.usd),
+    bases: e.bases && typeof e.bases === 'object' ? e.bases : {}, cwa: !!e.cache_write_assumed, cwx: Usage.num(e.cache_write_x) || 1.25 };
+};
+
+/* A dollar figure with or without the `~`, whatever the page's basis (Usage.usd follows the basis). */
+Usage.usdOf = function (v, approx) { const was = Usage.approx; Usage.approx = !!approx; try { return Usage.usd(v); } finally { Usage.approx = was; } };
+
+Usage.BASIS_WORDS = { list: 'priced from the list price of the model itself', sibling: 'priced at the rate of a sibling model (the newest of its family in the table)', rough: 'priced roughly: several models and no per-model split of the tokens' };
+
+/* The disclosure under the Estimated cost chart: what an estimate is, which prices, which basis each session used. A <details>, so it opens by touch and by keyboard. */
+Usage.estimateDetails = function (est) {
+  const lines = [
+    el('p', { text: `${Usage.plural(est.sessions, 'session')} on models ccusage prices at zero ${est.sessions === 1 ? 'adds' : 'add'} ${Usage.usdOf(est.usd, true)} to the reported dollars. Each of those numbers is an estimate from the token counts at the list prices of ${est.date || 'the price table'}${est.source ? ` (${est.source})` : ''}.` }),
+  ];
+  const bases = Object.keys(Usage.BASIS_WORDS).filter((k) => Usage.num(est.bases[k]) > 0);
+  if (bases.length) lines.push(el('ul', { class: 'uest-bases' }, ...bases.map((k) => el('li', { 'data-basis': k, text: `${Usage.plural(Usage.num(est.bases[k]), 'session')} ${Usage.BASIS_WORDS[k]}` }))));
+  if (est.cwa) lines.push(el('p', { text: `The cache-write price of these models is not known: cache writes are priced at ${est.cwx} times the input price, an assumption.` }));
+  lines.push(el('p', { text: 'A session whose model has no price in the table is not guessed: it stays hatched. These are API-equivalent dollars, what the same tokens would cost at API list prices, not a subscription invoice.' }));
+  return el('details', { class: 'uest', 'data-note': 'estimate' }, el('summary', { text: 'How these estimates are made' }), ...lines);
+};
+
+Usage.paintFoot = function (P) {
+  const foot = P.refs.foot;
+  if (!foot) return;
+  const c = Usage.entry(P);
+  const sum = Usage.rawSummary(P) || (c && (c.summary || c.summaryEst));
+  const est = Usage.estimateInfo(sum);
+  setText(foot, `Dollars are API-equivalent: what the tokens would cost at API list prices, not a subscription invoice.${est.date ? ` Estimates use the list prices of ${est.date}.` : ''}`);
 };
 
 /* ---------- accounts (v0.5.17b): the subscription is the unit, so the windows lead and the dollars come last and dim ---------- */
@@ -1426,9 +1551,9 @@ Usage.breakable = function (text) {
 
 Usage.projectLink = function (project, text, cls) {
   const hash = Usage.projectHash(project);
-  const klass = [cls, project === Usage.UNATTRIBUTED ? '' : Usage.hue('project', project)].filter(Boolean).join(' ') || null;
+  const klass = [cls, Usage.isUnassigned(project) ? '' : Usage.hue('project', project)].filter(Boolean).join(' ') || null;
   if (hash) return el('a', { class: klass, href: hash, title: `Open the ${project} project`, text: text || project });
-  return el('span', { class: klass, title: project === Usage.UNATTRIBUTED ? Usage.UNATTRIBUTED_TIP : null, text: text || project });
+  return el('span', { class: klass, title: Usage.unassignedTip(project) || null, text: text || project });
 };
 
 Usage.sessionMeta = function (s) {
@@ -1458,6 +1583,9 @@ Usage.paintSessions = function (P) {
     // the name toggles the detail (the whole row does); the project has its own small link in the last cell
     const name = el('div', { class: 'srow-name' }, el('span', { class: ['srow-link', Usage.hue('project', s.project)].filter(Boolean).join(' ') }, ...Usage.breakable(Usage.sessionLabel(s))),
       el('span', { class: 'srow-models' }, ...(Array.isArray(s.models) ? s.models : []).map((m) => el('span', { class: ['bdg bdg-model mono', Usage.hue('model', m)].filter(Boolean).join(' '), title: String(m), text: Usage.model(m) }))));
+    if (s.est_basis) name.append(el('span', { class: 'dim srow-via', 'data-est': s.est_basis, title: Usage.BASIS_WORDS[s.est_basis] || 'estimated from list prices',
+      text: `estimated · ${s.est_basis === 'list' ? 'list price' : s.est_basis === 'sibling' ? 'sibling model rate' : 'rough'}` }));
+    if (s.via === 'folder') name.append(el('span', { class: 'dim srow-via', 'data-via': 'folder', title: Usage.JOINED_TIP, text: 'joined by folder' }));
     const projHash = Usage.projectHash(s.project);
     const tr = el('tr', { class: 'srow' + (open ? ' open' : ''), 'data-key': s.key, 'data-agent': s.agent || null },
       el('td', { class: 'c-chev' }, chev),
@@ -1591,28 +1719,35 @@ Usage.paintProjects = function (P) {
   P.sigs.projects = sig;
   const active = sum.active_hours && typeof sum.active_hours === 'object' ? sum.active_hours : {};
   const un = rows.find((r) => r.project === Usage.UNATTRIBUTED);
-  const named = rows.filter((r) => r.project !== Usage.UNATTRIBUTED).sort((a, b) => Usage.num(b.total) - Usage.num(a.total));
+  const outside = rows.find((r) => r.project === Usage.OUTSIDE);
+  const named = rows.filter((r) => !Usage.isUnassigned(r.project)).sort((a, b) => Usage.num(b.total) - Usage.num(a.total));
   const shown = P.showAll ? named : named.slice(0, Usage.PROJECT_ROWS);
   const tbody = el('tbody');
   const hrsOf = (r) => (typeof r.hours === 'number' ? r.hours : Usage.num(active[r.project]));
   const row = (r, isUn) => {
     const hrs = hrsOf(r);
     const rate = hrs >= 0.05 ? Usage.usd(Usage.num(r.total) / hrs) + '/h' : '–';
-    const label = isUn ? el('span', { class: 'p-name', 'data-unattributed': '', title: Usage.UNATTRIBUTED_TIP, text: Usage.UNATTRIBUTED }) : Usage.projectLink(r.project, null, 'p-name');
-    return el('tr', { class: 'prow' + (isUn ? ' unattributed' : ''), 'data-project': r.project, title: isUn ? Usage.UNATTRIBUTED_TIP : null },
-      el('td', { class: 'c-name' }, label, isUn ? el('span', { class: 'dim p-tip', text: Usage.UNATTRIBUTED_TIP }) : null),
+    const tip = Usage.unassignedTip(r.project);
+    const label = isUn ? el('span', Object.assign({ class: 'p-name', title: tip, text: r.project }, r.project === Usage.OUTSIDE ? { 'data-outside': '' } : { 'data-unattributed': '' }))
+      : Usage.projectLink(r.project, null, 'p-name');
+    const joined = !isUn && Usage.num(r.joined) > 0 ? el('span', { class: 'dim p-tip p-joined', 'data-joined': '', title: Usage.JOINED_TIP, text: `${Usage.usd(r.joined)} joined by folder` }) : null;
+    return el('tr', { class: 'prow' + (isUn ? ' unattributed' : ''), 'data-project': r.project, title: isUn ? tip : null },
+      el('td', { class: 'c-name' }, label, isUn ? el('span', { class: 'dim p-tip', text: tip }) : joined),
       el('td', { class: 'c-num mono', text: Usage.usd(r.total) }),
       el('td', { class: 'c-num c-hrs mono', text: Usage.hours(hrs) }),
       el('td', { class: 'c-num c-rate mono', text: rate }));
   };
   for (const r of shown) tbody.append(row(r, false));
+  if (outside) tbody.append(row(outside, true));
   if (un) tbody.append(row(un, true));
+  const anyJoined = named.some((r) => Usage.num(r.joined) > 0);
   const head = el('tr', {}, el('th', { scope: 'col', text: 'Project' }), el('th', { scope: 'col', class: 'c-num', text: '$' }),
     el('th', { scope: 'col', class: 'c-num c-hrs', text: 'Active' }), el('th', { scope: 'col', class: 'c-num c-rate', text: '$/h' }));
   const more = named.length - Usage.PROJECT_ROWS;
   Usage.setBody(P, 'projects', el('div', { class: 'utable' }, el('table', { class: 'table uprojects' }, el('thead', {}, head), tbody)),
     more > 0 ? el('button', { class: 'small', type: 'button', text: P.showAll ? 'Show fewer' : `Show ${more} more`, onclick: () => { P.showAll = !P.showAll; P.sigs.projects = ''; Usage.safe(P, 'projects', () => Usage.paintProjects(P)); } }) : null,
-    el('p', { class: 'dim unote', text: `${Usage.WINDOW_NAME[P.range]}. Active hours count agent time from state events, not wall clock: $/h differs a lot between projects.` }));
+    el('p', { class: 'dim unote', text: `${Usage.WINDOW_NAME[P.range]}. Active hours count agent time from state events, not wall clock: $/h differs a lot between projects.` }),
+    anyJoined ? el('p', { class: 'dim unote', 'data-note': 'joined', text: 'Rows that say "joined by folder" include sessions started outside the board. They are matched to a project by the folder they ran in, from Claude Code\'s own session files, and are never counted in a task\'s cost.' }) : null);
 };
 
 /* ---------- activity and timeline ---------- */

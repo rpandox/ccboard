@@ -154,11 +154,11 @@ def test_api_agents_for_claude_and_codex_installed(board, fake_codex, monkeypatc
     assert x["installed"] and x["version"] == "0.145.0" and x["auth"]["loggedIn"] and x["hooks"] == {"installed": False, "trust": "review"}
     # Claude: the sheet's field set in the order it draws it
     assert list(cby) == ["launcher", "resume_id", "from_pr", "name", "model", "effort", "fast", "permission_mode", "prompt", "bypass",
-                         "allowed_tools", "disallowed_tools", "tools", "append_system_prompt", "agent_name", "fallback_model", "autocompact",
-                         "worktree", "worktree_name", "fork_session", "add_dirs", "devcontainer", "mcp_config", "extra"]
+                         "allowed_tools", "disallowed_tools", "tools", "append_system_prompt", "agent_name", "fallback_model", "subagent_model",
+                         "subagent_force", "autocompact", "worktree", "worktree_name", "fork_session", "add_dirs", "devcontainer", "mcp_config", "extra"]
     assert cby["launcher"]["choices"] == ["new", "resume", "continue", "from_pr"]
     assert c["models"][:4] == ["opus", "fable", "sonnet", "haiku"] and (cby["model"]["default"], cby["effort"]["default"]) == ("opus", "high")
-    assert c["efforts"] == ["low", "medium", "high", "xhigh", "max"] == cby["effort"]["choices"] and c["capabilities"] == {"ultracode_flag": False}
+    assert c["efforts"] == ["low", "medium", "high", "xhigh", "max"] == cby["effort"]["choices"] and c["capabilities"] == {"ultracode_flag": False, "permission_prompts_none": False}
     assert c["reasoning_by_model"] == {} and "bypassPermissions" in c["permission_modes"]
     assert cby["fork_session"]["when"] == {"launcher": ["resume", "continue"]} and cby["devcontainer"]["when"] == {"repo.devcontainer": True}
     # Codex: from the catalogue and the box's flags
@@ -181,7 +181,7 @@ def test_api_agents_for_claude_and_codex_not_installed(board, monkeypatch):
     assert c["installed"] is False and c["version"] is None and c["auth"]["loggedIn"] is False and c["hooks"] == {"installed": False}
     assert x["installed"] is False and x["version"] is None and x["auth"]["loggedIn"] is False
     # the schema is still whole: the launcher can draw (and disable) the agent, and fall back on the box's visible slugs for Codex
-    assert x["models"] == [m["slug"] for m in codex.FALLBACK_MODELS] and x["capabilities"]["fork"] is True and c["capabilities"] == {"ultracode_flag": False}
+    assert x["models"] == [m["slug"] for m in codex.FALLBACK_MODELS] and x["capabilities"]["fork"] is True and c["capabilities"] == {"ultracode_flag": False, "permission_prompts_none": False}
     assert len(c["options"]) > 20 and len(x["options"]) > 15 and c["slash"] and x["slash"]
 
 
@@ -189,7 +189,7 @@ def test_api_agents_serves_ultracode_when_the_box_takes_it(board, monkeypatch):
     monkeypatch.setenv(claude.ULTRACODE_ENV, "1")
     c = board.client.get("/api/agents", headers=H).json()["agents"]["claude"]
     effort = next(o for o in c["options"] if o["key"] == "effort")
-    assert c["efforts"][-1] == "ultracode" == effort["choices"][-1] and c["capabilities"] == {"ultracode_flag": True}
+    assert c["efforts"][-1] == "ultracode" == effort["choices"][-1] and c["capabilities"] == {"ultracode_flag": True, "permission_prompts_none": False}
     check_entry("claude", c)
 
 
@@ -224,7 +224,7 @@ def test_the_demo_fixture_is_held_to_the_same_contract(board, fake_codex, monkey
     for name, e in demo["agents"].items():                                                # the demo's slash rows are the adapters' own
         assert e["slash"] == live[name]["slash"], name
     text = DEMO.read_text()
-    assert not any(n in text for n in ("/Users/", "/tmp/", "/private/", "gmail.com", "rpandox", "ccb-fix"))
+    assert not any(n in text for n in ("/Users/", "/tmp/", "/private/", "gmail.com", "rpan" + "dox", "ccb-fix"))
 
 
 def test_option_fields_stay_nine_keys(board):

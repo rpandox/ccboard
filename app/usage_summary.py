@@ -4,11 +4,12 @@ from a `tz_min` offset (default 345 = Asia/Kathmandu, +5:45), never from the sys
 
     build(db, days=30, tz_min=345, now=None) -> {
       generated_at: ISO UTC, tz_min: int, source: 'samples',
-      windows: {today|7d|30d: {total, by_agent: {agent: {total, tokens}}, by_project: [{project, total, hours}]}},
+      windows: {today|7d|30d: {total, by_agent: {agent: {total, tokens}}, by_project: [{project, total, hours, joined?}]}},   # joined (only when above 0): USD of the
+                                            # project's total attributed by the folder a session ran in (issue #57), 0 when none
       daily: [{day: 'YYYY-MM-DD' (local), total, by_agent: {agent: usd}, by_project: {project: usd}, tokens, hours, zero}],
       hourly_profile: [24 ints],            # 'ev' hook events per local hour of day over the last `days` days
       heatmap: [[24 ints] x 7],             # heatmap[weekday][hour], weekday = Python weekday() (Mon=0 .. Sun=6)
-      top_sessions: [{key, project, repo, agent, total, hours, tokens, models}],   # at most 10, by cumulative USD (last value)
+      top_sessions: [{key, project, repo, agent, total, hours, tokens, models, via?}],   # at most 10, by cumulative USD (last value); via: 'folder' only when joined by folder
       active_hours: {project: hours},       # over the last `days` days
       rate_limits: {claude: {rl_5h: {at, value, meta}|None, rl_7d: ...},   # sample_last, meta parsed to a dict
                     by_account: {key: {rl_5h: {at, value, meta}|None, rl_7d: ...}}},   # series key 'acct:<key>'; real accounts only
@@ -75,7 +76,9 @@ EPISODE_DAYS = 30
 EPISODE_CAP = 200
 TOP_SESSIONS = 10
 UNPRICED_CAP = 50
-UNATTRIBUTED = "(unattributed)"
+BASIS_REPORTED, BASIS_EST = "reported", "est"
+UNATTRIBUTED = "(unattributed)"             # no known folder
+OUTSIDE = "(outside projects)"              # a known folder that is not under the projects directory (issue #57; = cost.OUTSIDE)
 UNKNOWN_ACCOUNT = "unknown"                 # the bucket for history from before account tracking (and an unreadable identity)
 UNKNOWN_ACCOUNT_NAME = "(before account tracking)"
 ACCOUNT_SERIES = "acct"
@@ -214,11 +217,31 @@ def _acct_of(meta: dict, ts: float, timeline: _Timeline) -> str:
 
 # ---------- cost series: cumulative USD per key -> per-day spend ----------
 
-def _cost_keys(rows, clock: _Clock, today: int, timeline: _Timeline) -> dict[str, dict]:
+def _est_ratios(rows) -> dict[str, float]:
+    """{key: USD the estimate adds per token}, read from the first sample of each key that carries an estimate (meta `est`, cumulative, with the key's tokens):
+    the earlier samples of that key have no estimate of their own (they were taken before the estimate existed), so they are valued at their reported cost
+    plus this rate times their tokens. A rough spread over the history, never negative."""
+    out: dict[str, float] = {}
+    for _at, key, value, meta_json in rows:
+        if key in out or not isinstance(key, str):
+            continue
+        m = _meta(meta_json)
+        e, v, tok = _num(m.get("est")), _num(value), _num(m.get("tok"))
+        if e is not None and v is not None:
+            out[key] = max(0.0, e - v) / tok if tok and tok > 0 else 0.0
+    return out
+
+
+def _cost_keys(rows, clock: _Clock, today: int, timeline: _Timeline, est: bool = False) -> dict[str, dict]:
     """{key: {days: {day: (last value, last tokens)}, meta: merged newest meta, points: [(ts, value)],
     split: {day: {account: [usd step, token step]}}}} for rows up to today. `split` sums, per day, each sample's step over the key's
-    previous sample (any earlier day included) under that sample's account, so a day's steps add up to its raw delta."""
+    previous sample (any earlier day included) under that sample's account, so a day's steps add up to its raw delta.
+    est=True values every sample at its estimated cumulative cost (meta `est`; a sample after the first estimate that lacks it is reported cost; a sample
+    before it takes the key's per-token rate, see _est_ratios) instead of the reported one: the Estimated basis of the Usage page (issue #95)."""
     keys: dict[str, dict] = {}
+    rows = list(rows)
+    ratios = _est_ratios(rows) if est else {}
+    started: set[str] = set()
     for at, key, value, meta_json in rows:
         ts, v = _epoch(at), _num(value)
         if ts is None or v is None or not isinstance(key, str):
@@ -227,6 +250,13 @@ def _cost_keys(rows, clock: _Clock, today: int, timeline: _Timeline) -> dict[str
         if d > today:
             continue
         m = _meta(meta_json)
+        if est:
+            e = _num(m.get("est"))
+            if e is not None:
+                started.add(key)
+                v = max(v, e)
+            elif key not in started and ratios.get(key):
+                v = v + ratios[key] * (_num(m.get("tok")) or 0.0)
         k = keys.setdefault(key, {"days": {}, "meta": {}, "points": [], "tok": 0.0, "last": 0.0, "split": {}})
         prev_v, prev_t = k["last"], k["tok"]
         tok = _num(m.get("tok"))
@@ -332,8 +362,25 @@ def _episodes(db, since_iso: str, timeline: _Timeline) -> list[dict]:
     return out[-EPISODE_CAP:]
 
 
-def _unpriced(db) -> list[dict]:
-    """Sessions that have tokens but price 0, as the kv 'cost' record names them (unpriced={sessions, tokens, top[]} or a bare list)."""
+def _estimate_info(db) -> dict:
+    """The kv 'cost' record's `estimate` block ({date, source, sessions, usd, bases, cache_write_assumed, cache_write_x}) for the Usage page's caption and footer;
+    the price table's own date and source when no refresh has written one yet."""
+    from . import pricing
+    rec = db.kv_get("cost")
+    value = rec.get("value") if isinstance(rec, dict) else None
+    est = value.get("estimate") if isinstance(value, dict) and isinstance(value.get("estimate"), dict) else {}
+    info = pricing.info()
+    bases = est.get("bases") if isinstance(est.get("bases"), dict) else {}
+    return {"date": est.get("date") if isinstance(est.get("date"), str) else info["date"],
+            "source": est.get("source") if isinstance(est.get("source"), str) else info["source"],
+            "sessions": int(_num(est.get("sessions")) or 0), "usd": round(_num(est.get("usd")) or 0.0, 2),
+            "bases": {k: int(v) for k, v in bases.items() if isinstance(k, str) and isinstance(v, (int, float))},
+            "cache_write_assumed": bool(est.get("cache_write_assumed")), "cache_write_x": _num(est.get("cache_write_x")) or pricing.CACHE_WRITE_FALLBACK_X}
+
+
+def _unpriced(db, basis: str = BASIS_REPORTED) -> list[dict]:
+    """Sessions that have tokens but price 0, as the kv 'cost' record names them (unpriced={sessions, tokens, top[]} or a bare list). On the Estimated basis a
+    session that has an estimate is no longer unpriced (the hatch stays for rows with none)."""
     rec = db.kv_get("cost")
     value = rec.get("value") if isinstance(rec, dict) else None
     raw = value.get("unpriced") if isinstance(value, dict) else None
@@ -346,6 +393,8 @@ def _unpriced(db) -> list[dict]:
             continue
         ident = it.get("id") or it.get("key") or it.get("session")
         if not isinstance(ident, str) or not ident:
+            continue
+        if basis == BASIS_EST and it.get("est_basis"):
             continue
         agent = it.get("agent") if isinstance(it.get("agent"), str) and it.get("agent") else (ident.split(":", 1)[0] if ":" in ident else "claude")
         models = it.get("models") if isinstance(it.get("models"), list) else ([it["model"]] if isinstance(it.get("model"), str) else [])
@@ -457,8 +506,11 @@ def _accounts_section(db, timeline: _Timeline, now_ts: float, today: int, episod
 
 # ---------- the payload ----------
 
-def build(db, days: int = 30, tz_min: int = DEFAULT_TZ_MIN, now: datetime | None = None) -> dict:
-    """The usage summary (module docstring has the shape). `now` is injected by tests; naive = UTC. Never reads the system zone."""
+def build(db, days: int = 30, tz_min: int = DEFAULT_TZ_MIN, now: datetime | None = None, basis: str = BASIS_REPORTED) -> dict:
+    """The usage summary (module docstring has the shape). `now` is injected by tests; naive = UTC. Never reads the system zone. `basis` is 'reported' (ccusage's
+    own dollars, the default) or 'est' (the same plus list-price estimates for models ccusage prices at zero, issue #95); every dollar figure of one answer is
+    on one basis, which the answer names."""
+    basis = BASIS_EST if basis == BASIS_EST else BASIS_REPORTED
     days = _int(days, 30, 1, 365)
     tz_min = _int(tz_min, DEFAULT_TZ_MIN, -720, 840)
     now = now or datetime.now(timezone.utc)
@@ -472,13 +524,14 @@ def build(db, days: int = 30, tz_min: int = DEFAULT_TZ_MIN, now: datetime | None
     since_ts = clock.day_start_utc(first_day)
 
     timeline = _Timeline(db)
-    cost = _cost_keys(db.samples_query("cost", None, _iso(since_ts - COST_LOOKBACK_DAYS * 86400), None), clock, today, timeline)
+    cost = _cost_keys(db.samples_query("cost", None, _iso(since_ts - COST_LOOKBACK_DAYS * 86400), None), clock, today, timeline, est=basis == BASIS_EST)
     active, active_acct = _active_pieces(db.samples_query("state", None, _iso(since_ts), None), clock, timeline)
 
     # per-day spend
     day_usd: dict[int, dict[str, float]] = {}        # day -> agent -> usd
     day_tok: dict[int, dict[str, float]] = {}
     day_proj: dict[int, dict[str, float]] = {}       # day -> project -> usd
+    day_join: dict[int, dict[str, float]] = {}       # day -> project -> usd of it joined by folder (a part of day_proj, never added to it)
     agents = set(ALWAYS_AGENTS)
     for key, k in cost.items():
         meta = k["meta"]
@@ -492,6 +545,8 @@ def build(db, days: int = 30, tz_min: int = DEFAULT_TZ_MIN, now: datetime | None
             day_tok.setdefault(d, {})[agent] = day_tok.get(d, {}).get(agent, 0.0) + tok
             if usd > 0:
                 day_proj.setdefault(d, {})[project] = day_proj.get(d, {}).get(project, 0.0) + usd
+                if meta.get("j") and project != UNATTRIBUTED:
+                    day_join.setdefault(d, {})[project] = day_join.get(d, {}).get(project, 0.0) + usd
     agent_list = sorted(agents, key=lambda a: (a not in ALWAYS_AGENTS, a))
 
     # the same deltas per Claude subscription account (account -> day -> usd / tokens / cost keys / active seconds)
@@ -531,14 +586,17 @@ def build(db, days: int = 30, tz_min: int = DEFAULT_TZ_MIN, now: datetime | None
         by_agent = {a: {"total": round(sum(day_usd.get(d, {}).get(a, 0.0) for d in rng), 4),
                         "tokens": int(round(sum(day_tok.get(d, {}).get(a, 0.0) for d in rng)))} for a in agent_list}
         proj_usd: dict[str, float] = {}
+        proj_join: dict[str, float] = {}
         proj_secs: dict[str, float] = {}
         for d in rng:
             for p, v in day_proj.get(d, {}).items():
                 proj_usd[p] = proj_usd.get(p, 0.0) + v
+            for p, v in day_join.get(d, {}).items():
+                proj_join[p] = proj_join.get(p, 0.0) + v
             for p, v in active.get(d, {}).items():
                 proj_secs[p] = proj_secs.get(p, 0.0) + v
-        by_project = [{"project": p, "total": round(proj_usd.get(p, 0.0), 4), "hours": _hours(proj_secs.get(p, 0.0))}
-                      for p in set(proj_usd) | set(proj_secs)]
+        by_project = [{"project": p, "total": round(proj_usd.get(p, 0.0), 4), "hours": _hours(proj_secs.get(p, 0.0)),
+                       **({"joined": round(proj_join[p], 4)} if proj_join.get(p, 0.0) > 0 else {})} for p in set(proj_usd) | set(proj_secs)]
         by_project.sort(key=lambda r: (-r["total"], -r["hours"], r["project"]))
         windows[name] = {"total": round(sum(sum(day_usd.get(d, {}).values()) for d in rng), 4),
                          "by_agent": by_agent, "by_project": by_project}
@@ -567,6 +625,8 @@ def build(db, days: int = 30, tz_min: int = DEFAULT_TZ_MIN, now: datetime | None
         meta = k["meta"]
         top.append({"key": key, "project": meta.get("p") if isinstance(meta.get("p"), str) and meta.get("p") else UNATTRIBUTED,
                     "repo": meta.get("r") if isinstance(meta.get("r"), str) else None, "agent": _agent_of(key, meta),
+                    **({"via": "folder"} if meta.get("j") and meta.get("p") else {}),
+                    **({"est_basis": meta["eb"]} if basis == BASIS_EST and isinstance(meta.get("eb"), str) else {}),
                     "total": round(total, 4), "hours": _rise_hours(k["points"]), "tokens": int(k["days"][max(k["days"])][1]),
                     "models": [m for m in meta.get("m") or [] if isinstance(m, str)] if isinstance(meta.get("m"), list) else []})
     top.sort(key=lambda r: (-r["total"], r["key"]))
@@ -593,6 +653,8 @@ def build(db, days: int = 30, tz_min: int = DEFAULT_TZ_MIN, now: datetime | None
         "episodes": episodes,
         "accounts": accounts,
         "total": total,
-        "unpriced": _unpriced(db),
+        "unpriced": _unpriced(db, basis),
+        "basis": basis,
+        "estimate": _estimate_info(db),
         "source": SOURCE,
     }

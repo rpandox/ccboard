@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import json
 import logging
+import os
 import re
 import shlex
 import shutil
@@ -27,11 +28,12 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import codex_discovery
 from .agents import monitor as mem_monitor
 from .agents import registry
 from .agents.base import LaunchReq
+from .agents import claude as claude_adapter
 from .agents.claude import BYPASS_PARTS, OVERRIDE_PARTS, WORKTREE_RE
 from .agents.codex import NAME_RE as CODEX_NAME_RE
 from . import issues as issues_mod
@@ -325,6 +327,11 @@ async def _bad(_, e):
     return JSONResponse({"error": str(e)}, status_code=400)
 
 
+@app.exception_handler(projects.Unprocessable)
+async def _unprocessable(request, e):
+    return JSONResponse({"error": str(e)}, status_code=422)
+
+
 @app.exception_handler(projects.Conflict)
 async def _conflict(_, e):
     return JSONResponse({"error": str(e)}, status_code=409)
@@ -559,6 +566,7 @@ def build_state(user: str) -> dict:
     st["nodes"] = db.kv_get(health.KV_NODES)
     st["backup"] = health.backup_status()
     st["node_name"] = settings.node_name or st["health"]["host"]
+    st["claude_defaults"] = {"subagent_model": settings.subagent_model or "inherit", "fable_cap": settings.headless_fable_cap}     # CCBOARD_SUBAGENT_MODEL, CCBOARD_HEADLESS_FABLE_CAP: shown in Settings > Box
     st["rate_limited"] = _rate_limited_view()
     st["scheduler"] = {**scheduler.quota_state(db), "codex": scheduler.quota_state(db, "codex")}      # Codex's own window and back-off ride along: a Codex job never waits on Claude's
     st["version"] = ASSET_VERSION
@@ -569,12 +577,28 @@ def build_state(user: str) -> dict:
     return st
 
 
+def _fable_view(j: dict) -> dict | None:
+    """A Claude job that resolves to Fable: {state: 'held' | 'acknowledged', at, cap, reason}; None for every other job."""
+    if (j.get("agent") or "claude") != "claude":
+        return None
+    try:
+        parts = shlex.split(j.get("args") or "")
+    except ValueError:
+        return None
+    if not claude_adapter.resolves_to_fable(parts, os.environ):
+        return None
+    held = scheduler.fable_hold(j)
+    ack = scheduler.job_opts(j).get("fable_ack") or {}
+    return {"state": "held" if held else "acknowledged", "at": None if held else ack.get("at"), "cap": None if held else ack.get("cap"),
+            "reason": held, "max": settings.headless_fable_cap}
+
+
 def _jobs_view() -> list[dict]:
     """db.jobs() for the board: `agent` always set and `opts` (stored as JSON text) as an object, so the page reads a Codex job's model and
     reasoning without parsing."""
     out = []
     for j in db.jobs():
-        out.append({**j, "agent": j.get("agent") or "claude", "opts": scheduler.job_opts(j) or None})
+        out.append({**j, "agent": j.get("agent") or "claude", "opts": scheduler.job_opts(j) or None, "fable": _fable_view(j)})
     return out
 
 
@@ -652,6 +676,13 @@ def api_state(request: Request):
 def api_agents():
     """Every agent the board can launch: identity, install/auth/hooks state, the launcher's option schema, the slash registry."""
     return {"agents": {a.name: a.describe() for a in agents.all()}}
+
+
+@app.get("/api/skills")
+def api_skills():
+    """The skills installed on the box (the user's own and the installed plugins'), most used first: {agent, skills: [{name, description, source, uses?}]}.
+    Front matter only, cached 60 s (app/skills.py). `uses` is what this board saw typed, absent for a skill never seen used."""
+    return skills.listing(db)
 
 
 @app.get("/api/doctor")
@@ -975,23 +1006,25 @@ def api_series_events(series: str = "state", since: str = "24h", key: str | None
 
 
 USAGE_SUMMARY_TTL = 30.0                              # seconds; the Usage page polls every 60 s and the payload is a full rebuild
-_usage_summary_cache: dict[tuple[int, int, int], tuple[float, dict]] = {}
+_usage_summary_cache: dict[tuple[int, int, int, str], tuple[float, dict]] = {}
 _usage_summary_lock = threading.Lock()
 
 
 @app.get("/api/usage/summary")
-def api_usage_summary(days: str | None = None, tz_min: str | None = None):
-    """Cost, hours and limit episodes bucketed from the samples table in the viewer's zone (tz_min, default 345 = Asia/Kathmandu)."""
+def api_usage_summary(days: str | None = None, tz_min: str | None = None, basis: str | None = None):
+    """Cost, hours and limit episodes bucketed from the samples table in the viewer's zone (tz_min, default 345 = Asia/Kathmandu). basis=est values every
+    dollar at ccusage's reported cost plus a list-price estimate for models it prices at zero (issue #95); anything else is the reported basis."""
     d = _int_param("days", days, 1, 365, 30)
     tz = _int_param("tz_min", tz_min, -720, 840, 345)
+    bs = usage_summary.BASIS_EST if (basis or "").strip().lower() == usage_summary.BASIS_EST else usage_summary.BASIS_REPORTED
     now = time.monotonic()
     with _usage_summary_lock:
-        hit = _usage_summary_cache.get((id(db), d, tz))
+        hit = _usage_summary_cache.get((id(db), d, tz, bs))
         if hit and now - hit[0] < USAGE_SUMMARY_TTL:
             return hit[1]
-    out = usage_summary.build(db, d, tz, _utcnow())
+    out = usage_summary.build(db, d, tz, _utcnow(), bs)
     with _usage_summary_lock:
-        _usage_summary_cache[(id(db), d, tz)] = (now, out)
+        _usage_summary_cache[(id(db), d, tz, bs)] = (now, out)
         for k in [k for k in _usage_summary_cache if k[0] != id(db)]:   # a previous app's entries (tests) never linger
             _usage_summary_cache.pop(k, None)
     return out
@@ -1466,6 +1499,8 @@ class LaunchOpts(BaseModel):
     allowed_tools: str | None = None         # --allowedTools, comma/newline separated patterns
     disallowed_tools: str | None = None      # --disallowedTools
     append_system_prompt: str | None = None  # --append-system-prompt
+    subagent_model: str | None = None        # Claude: CLAUDE_CODE_SUBAGENT_MODEL for the session (inherit | haiku | sonnet | opus | a model id); None = the board default
+    subagent_force: bool | None = None       # Claude: also CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1; only ever by this explicit switch
     reasoning_effort: str | None = None      # codex: model_reasoning_effort (a Claude `effort` is read as this when a codex launch has none)
     opts: dict | None = None                 # the agent's own options, as its option_schema names them (codex: sandbox, approval, search,
                                              # profile, ...); wins over the flat fields. Claude ignores it.
@@ -2397,7 +2432,7 @@ def api_tree(project: str, repo: str, request: Request, path: str = "", hidden: 
     payload = tree.list_dir(project, repo, path, hidden=tree.flag(hidden), ignored=tree.flag(ignored),
                             repos=tree.flag(repos), refresh=tree.flag(refresh))
     headers = {"ETag": tree.etag_header(payload), "Cache-Control": "private, no-cache"}
-    if tree.not_modified(request.headers.get("if-none-match"), payload["etag"]):
+    if "hint" not in payload and tree.not_modified(request.headers.get("if-none-match"), payload["etag"]):    # a hint is given once an hour: never lose it to a 304
         return Response(status_code=304, headers=headers)
     return JSONResponse(payload, headers=headers)
 
@@ -2527,6 +2562,8 @@ class JobIn(BaseModel):
     model: str | None = None                 # Codex: -m (Claude's model travels in args, as it always did)
     reasoning_effort: str | None = None      # Codex: -c model_reasoning_effort=
     opts: dict | None = None                 # the agent's own options by name (Codex: model, reasoning_effort); wins over the flat fields
+    allowed_tools: str | list[str] | None = None      # Claude: pre-approved tool rules (--allowedTools), at most 20 (issue #107)
+    acknowledge_fable: bool = False          # Claude: this run bills Fable usage credits without asking; needs max_budget_usd (issue #108)
 
 
 def _job_agent(agent: str | None) -> str:
@@ -2539,6 +2576,36 @@ def _job_agent(agent: str | None) -> str:
 def _job_installed(agent: str) -> None:
     if not (settings.claude_bin() if agent == "claude" else agents.get(agent).bin()):
         raise projects.BadRequest(f"{agent} is not installed on this box")
+
+
+FABLE_REFUSAL = "This run bills Fable usage credits without asking (claude -p never asks first)"
+
+
+def _claude_job_opts(body, parts: list[str]) -> dict:
+    """What a Claude job stores in jobs.opts: its pre-approved tools and, when its model resolves to Fable, the acknowledgement given for THIS
+    job (the time, the cap and the models acknowledged; editing the model text or the cap makes it stale). 422 for a Fable job without the
+    acknowledgement and a Max $ within CCBOARD_HEADLESS_FABLE_CAP: a cap is not consent, and neither is consent without a cap."""
+    claude = agents.get("claude")
+    out: dict = {}
+    tools = claude.allowed_tool_rules(body.allowed_tools)
+    if tools:
+        out["allowed_tools"] = tools
+    models = claude_adapter.fable_models(parts, os.environ)
+    if models:
+        out["fable_ack"] = _fable_ack(body.acknowledge_fable, body.max_budget_usd, models)
+    return out
+
+
+def _fable_ack(acknowledged: bool, budget: float | None, models: list[str]) -> dict:
+    """The acknowledgement stored on a Fable job: {at, cap, models}, or a 422 that says what happened, what it touches and what to do."""
+    cap = settings.headless_fable_cap
+    if not acknowledged:
+        raise projects.Unprocessable(f"{FABLE_REFUSAL}. Tick the box to acknowledge it for this job and set Max $ (at most ${cap:g}); nothing was saved.")
+    if budget is None:
+        raise projects.Unprocessable(f"{FABLE_REFUSAL}. Set Max $ for this job (at most ${cap:g}); nothing was saved.")
+    if budget > cap:
+        raise projects.Unprocessable(f"{FABLE_REFUSAL}. Max $ may be at most ${cap:g} for a Fable job (CCBOARD_HEADLESS_FABLE_CAP); nothing was saved.")
+    return {"at": db_now(), "cap": budget, "models": models}
 
 
 def _validate_job(body) -> dict:
@@ -2556,11 +2623,11 @@ def _validate_job(body) -> dict:
     if body.max_budget_usd is not None and not (0 < body.max_budget_usd <= 1000):
         raise projects.BadRequest("max_budget_usd must be 0..1000")
     try:
-        scheduler.check_extra_args(body.args, agent)
+        parts = scheduler.check_extra_args(body.args, agent)
     except ValueError as e:
         raise projects.BadRequest(str(e))
     if agent == "claude":
-        return {}
+        return _claude_job_opts(body, parts)
     flat = {k: v for k, v in (("model", body.model), ("reasoning_effort", body.reasoning_effort),
                               ("max_turns", body.max_turns), ("max_budget_usd", body.max_budget_usd)) if v not in (None, "")}
     own = body.opts if isinstance(body.opts, dict) else {}
@@ -2598,6 +2665,8 @@ class BatchIn(BaseModel):
     model: str | None = None
     reasoning_effort: str | None = None
     opts: dict | None = None
+    allowed_tools: str | list[str] | None = None
+    acknowledge_fable: bool = False  # one acknowledgement per batch submission: it is recorded on every job the batch makes
 
 
 @app.post("/api/batch", status_code=201)
@@ -2610,7 +2679,8 @@ def api_batch(body: BatchIn):
     agent = _job_agent(body.agent)
     opts = _validate_job(JobIn(name=body.name or "batch", prompt=body.prompt, permission_mode=body.permission_mode,
                                max_turns=body.max_turns, max_budget_usd=body.max_budget_usd, args=body.args, agent=agent,
-                               model=body.model, reasoning_effort=body.reasoning_effort, opts=body.opts))
+                               model=body.model, reasoning_effort=body.reasoning_effort, opts=body.opts,
+                               allowed_tools=body.allowed_tools, acknowledge_fable=body.acknowledge_fable))
     _job_installed(agent)
     targets = []
     for ident in body.repos:
@@ -2632,6 +2702,39 @@ def api_batch(body: BatchIn):
     started = sched.tick() if sched else []
     _invalidate_scan()
     return {"batch_id": batch_id, "jobs": ids, "started": started, "agent": agent}
+
+
+class FableAckIn(BaseModel):
+    acknowledge_fable: bool = False
+    max_budget_usd: float | None = None
+
+
+@app.post("/api/jobs/{jid}/acknowledge-fable")
+def api_job_acknowledge_fable(jid: int, body: FableAckIn):
+    """Edit a held Fable job: record the acknowledgement and the Max $ for it (the only way a stored Fable job without one ever runs).
+    422 as on creation; the job is re-armed (a cron job for its next fire, a one-off now)."""
+    j = db.job_get(jid)
+    if not j:
+        raise projects.NotFound("no such job")
+    if (j.get("agent") or "claude") != "claude":
+        raise projects.BadRequest("only a Claude job bills Fable")
+    try:
+        parts = shlex.split(j.get("args") or "")
+    except ValueError:
+        parts = []
+    models = claude_adapter.fable_models(parts, os.environ)
+    if not models:
+        raise projects.BadRequest("this job does not resolve to Fable: nothing to acknowledge")
+    if body.max_budget_usd is not None and not (0 < body.max_budget_usd <= 1000):
+        raise projects.BadRequest("max_budget_usd must be 0..1000")
+    ack = _fable_ack(body.acknowledge_fable, body.max_budget_usd, models)
+    opts = {**scheduler.job_opts(j), "fable_ack": ack}
+    fields = {"opts": json.dumps(opts), "max_budget_usd": body.max_budget_usd, "last_status": "acknowledged"}
+    if j["enabled"] and j.get("last_status") == scheduler.FABLE_HELD:
+        fields["next_run_at"] = scheduler.next_fire(j["cron"]) if j.get("cron") else db_now()
+    db.job_update(jid, **fields)
+    _invalidate_scan()
+    return {"id": jid, "fable_ack": ack}                # the scheduler's own tick (every 30 s) starts a re-armed one-off; no run is started from this route
 
 
 @app.post("/api/jobs/{jid}/run")
@@ -3905,6 +4008,8 @@ def api_cost_refresh():
 def api_clear_rate_limit():
     db.kv_del("rate_limited")
     db.kv_del_prefix("rl_notified:")                     # the once-per-window notice gate: a cleared banner may announce again
+    from .agents import codex_rollout                    # late: that module imports the agents package
+    db.kv_del_prefix(codex_rollout.NOTIFIED)             # the Codex gate (codex_rl_notified_<resets_at>) too: the next reached window can announce once
     _invalidate_scan()
     return {"ok": True}
 

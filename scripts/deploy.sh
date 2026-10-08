@@ -9,7 +9,7 @@
 #    checkout (ccboard-local:<sha>) and run it through a compose override that turns Watchtower off for the container.
 #    The open-terminal deploy gate is asked first (exit 75 = hold; --force goes on anyway). Running this script again
 #    WITHOUT the flag removes the override and returns to the registry image (README, "When GitHub Actions is down").
-# Usage: scripts/deploy.sh [--local-build] [--force] <ssh-host> [remote-dir]     e.g. scripts/deploy.sh ubu2
+# Usage: scripts/deploy.sh [--local-build] [--force] <ssh-host> [remote-dir]     e.g. scripts/deploy.sh my-box
 set -euo pipefail
 localbuild=0; force=0; pos=()
 for a in "$@"; do
@@ -62,7 +62,7 @@ if [ "$mode" = docker ] && [ "$localbuild" = 1 ]; then
   echo "local build ccboard-local:$sha: this can take many minutes on a loaded box (Ctrl-C is safe, nothing is swapped yet)"
   wrap=(); command -v nice >/dev/null 2>&1 && wrap+=(nice -n 19); command -v ionice >/dev/null 2>&1 && wrap+=(ionice -c3)
   SECONDS=0
-  ${wrap[@]+"${wrap[@]}"} docker build --build-arg "CCBOARD_VERSION=local-$sha" --build-arg "CCBOARD_REVISION=$head" -t "ccboard-local:$sha" . \
+  ${wrap[@]+"${wrap[@]}"} docker build --build-arg "CCBOARD_VERSION=local-$sha" --build-arg "CCBOARD_REVISION=$head" --build-arg "CCBOARD_HOME=$HOME" -t "ccboard-local:$sha" . \
     || { echo "FAILED: docker build (the board keeps running its current image)" >&2; exit 1; }
   echo "built ccboard-local:$sha in ${SECONDS}s"
   # 3. Run it through an override: Watchtower leaves a container whose enable label is false, so it cannot pull `latest` over it.

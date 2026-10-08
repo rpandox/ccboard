@@ -33,4 +33,8 @@ case "$run" in
     docker start "$NAME" >/dev/null 2>&1 || log "docker start $NAME failed" ;;
   *) ;;   # restarting, paused, removing: docker or the person is on it
 esac
+# the board in the container cannot read the host worker's environment: leave it the variable NAMES (never values) in
+# $STATE_DIR/mem-env.json for the Doctor's memory-env check (issue #38). Quick, silent, never fails the run.
+here=$(dirname "$0")
+[ -x "$here/ccboard-mem-env" ] && CCBOARD_DATA_DIR="$STATE_DIR" "$here/ccboard-mem-env" >/dev/null 2>&1
 exit 0

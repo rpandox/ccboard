@@ -261,9 +261,23 @@ def _where(row: dict, agent: str, tmux_name: str) -> str:
     return f"{GLYPHS.get(agent, '▸')} {place} · {session}"
 
 
-def _grace() -> str:
-    g = float(getattr(settings, "autoclose_grace", 45) or 0)
-    return f"{g:g}"
+def _close_in(row: dict, task: dict, now: datetime | None = None) -> int | None:
+    """Seconds until the close taskflow has PLANNED for this task, from the row's flags.autoclose = {task, due}, rounded to 5 s; None when
+    no close is planned (no stamp, another task's stamp, a question hold, a postponed close, one already closing, a due that cannot be
+    read). The settings' grace is not consulted: the promise is the stamped due, or nothing."""
+    af = (row.get("flags") or {}).get("autoclose") if isinstance(row.get("flags"), dict) else None
+    if not isinstance(af, dict) or not af.get("due") or af.get("held") or af.get("waiting") or af.get("closing"):
+        return None
+    if af.get("task") is not None and task.get("id") is not None and af.get("task") != task.get("id"):
+        return None
+    try:
+        due = datetime.fromisoformat(str(af["due"]))
+        if due.tzinfo is None:
+            due = due.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    left = (due - (now or datetime.now(timezone.utc))).total_seconds()
+    return max(5, int(5 * round(left / 5))) if left > 0 else None
 
 
 def _asks_back(message) -> bool:
@@ -276,9 +290,10 @@ def _asks_back(message) -> bool:
 
 
 def build(row: dict | None, task: dict | None, state: str, kind: str | None, message: str | None,
-          perm: dict | None = None) -> Notice:
+          perm: dict | None = None, now: datetime | None = None) -> Notice:
     """The Notice for a session entering `state`. `row` is a session_view dict, `task` {title, phase} or None, `perm` {id, summary}
-    for a permission waiting on an answer. Pure: nothing here reads the DB or the clock."""
+    for a permission waiting on an answer, `now` the clock for the '(session closes in Ns)' line (default: the wall clock). Reads no
+    DB: the close line comes from the row's flags.autoclose, which taskflow stamps before the notice is built."""
     row = row if isinstance(row, dict) else {}
     perm = perm if isinstance(perm, dict) else None
     tmux_name = str(row.get("tmux_name") or "")
@@ -301,7 +316,9 @@ def build(row: dict | None, task: dict | None, state: str, kind: str | None, mes
     if asked:
         lines.append("? " + asked)
     if cat == "done" and isinstance(task, dict) and task.get("auto_close") and not _asks_back(message):
-        lines.append(f"(session closes in {_grace()}s)")             # taskflow closes the session after the grace unless the person keeps it open
+        left = _close_in(row, task, now)                           # only a close taskflow has planned (flags.autoclose.due), never the setting
+        if left is not None:
+            lines.append(f"(session closes in {left}s)")
     body = "\n".join(lines) or str(kind or "") or TITLES.get(state, state)       # ntfy shows "triggered" for an empty message
 
     pid = perm.get("id") if perm else None

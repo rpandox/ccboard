@@ -24,6 +24,30 @@
       "notes": []
     },
     {
+      "id": "claude-subagent-haiku",
+      "v": {"agent": "claude", "launch": "new", "name": "sa", "model": "opus", "effort": "high", "subagent_model": "haiku"},
+      "ctx": {},
+      "body": {"launcher": "claude", "agent": "claude", "name": "sa", "model": "opus", "effort": "high", "subagent_model": "haiku"},
+      "tokens": ["env", "CLAUDE_CODE_SUBAGENT_MODEL=haiku", "claude", "--session-id", "<uuid>", "--name", "sa", "--model", "opus", "--effort", "high"],
+      "notes": []
+    },
+    {
+      "id": "claude-subagent-custom-id-forced",
+      "v": {"agent": "claude", "launch": "new", "name": "sb", "model": "opus", "effort": "high", "subagent_model": "custom", "subagent_custom": "claude-haiku-4-5", "subagent_force": true},
+      "ctx": {},
+      "body": {"launcher": "claude", "agent": "claude", "name": "sb", "model": "opus", "effort": "high", "subagent_model": "claude-haiku-4-5", "subagent_force": true},
+      "tokens": ["env", "CLAUDE_CODE_SUBAGENT_MODEL=claude-haiku-4-5", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1", "claude", "--session-id", "<uuid>", "--name", "sb", "--model", "opus", "--effort", "high"],
+      "notes": []
+    },
+    {
+      "id": "claude-subagent-inherit-is-no-prefix",
+      "v": {"agent": "claude", "launch": "new", "name": "sc", "model": "opus", "effort": "high", "subagent_model": "inherit", "subagent_force": true},
+      "ctx": {},
+      "body": {"launcher": "claude", "agent": "claude", "name": "sc", "model": "opus", "effort": "high", "subagent_model": "inherit"},
+      "tokens": ["claude", "--session-id", "<uuid>", "--name", "sc", "--model", "opus", "--effort", "high"],
+      "notes": []
+    },
+    {
       "id": "claude-resume-fork",
       "v": {"agent": "claude", "launch": "resume", "resume_id": "11111111-1111-4111-8111-111111111111", "fork_session": true, "model": "opus", "effort": "high"},
       "ctx": {},

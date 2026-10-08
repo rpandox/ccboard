@@ -14,7 +14,7 @@ const thread = (id, over = {}) => ({ agent: 'codex', source: 'rollout', id, sess
 const ANSWER = (codex) => ({ claude: [], codex, at: ISO(0) });
 const THREADS = () => [
   thread(ID1),
-  thread(ID2, { title: 'Summarise last night\'s inbox', name: 'Summarise last night\'s inbox', cwd: '/home/rpandox/brain', originator: 'hermes', badge: 'hermes', client: 'vscode', project: null, repo: null, openable: false, updated_at: ISO(150), branch: null, tokens: 310000, effort: 'medium' }),
+  thread(ID2, { title: 'Summarise last night\'s inbox', name: 'Summarise last night\'s inbox', cwd: '/home/user/brain', originator: 'hermes', badge: 'hermes', client: 'vscode', project: null, repo: null, openable: false, updated_at: ISO(150), branch: null, tokens: 310000, effort: 'medium' }),
   thread(ID3, { title: 'Refactor the checkout step 2 layout so the order summary stays above the fold on a phone', cwd: `${BASE}/phasezero/website`, project: 'phasezero', repo: 'website', updated_at: ISO(300), branch: 'feat/checkout', tokens: 640000, effort: 'medium' }),
 ];
 
@@ -73,7 +73,7 @@ test('a row: the title (or the id head), a Codex badge, project/repo in the proj
   const hermes = rows(w)[1];
   assert.equal(text(hermes.querySelector('.xr-origin')), 'hermes');
   assert.match(hermes.querySelector('.xr-origin').getAttribute('title'), /Started by hermes, not from a Codex terminal/);
-  assert.match(text(hermes.querySelector('.xr-where')), /^…\/rpandox\/brain$/, 'outside the projects: the last two path segments');
+  assert.match(text(hermes.querySelector('.xr-where')), /^…\/user\/brain$/, 'outside the projects: the last two path segments');
   assert.equal(rows(w)[2].querySelector('.xr-where').textContent, 'phasezero/website');
   assert.doesNotMatch(text(sec(w)), /undefined|NaN|null|\[object/);
 });
@@ -154,6 +154,22 @@ test('a thread whose folder is outside the projects directory has Open disabled,
   await tick();
   assert.equal(posts(w).length, 0, 'a disabled button posts nothing');
   assert.match(open(w, ID1).getAttribute('aria-label'), /^Open Wire the push test in a board session$/);
+});
+
+test('an outside thread shows the chip and a one-line caption (no hover needed); a thread inside shows neither (#32 d)', async () => {
+  const { w } = world();
+  await mount(w);
+  const row = (id) => w.document.querySelector(`.xrow[data-ext="${id}"]`);
+  const outside = row(ID2);
+  assert.equal(text(outside.querySelector('.xr-outside')), 'outside projects');
+  assert.ok(outside.querySelector('.xr-outside').classList.contains('bdg'));
+  const why = outside.querySelector('.xr-why');
+  assert.equal(why.classList.contains('hidden'), false);
+  assert.match(text(why), /^Open is off: its folder is outside the projects directory \(or gone\)\.$/);
+  assert.match(open(w, ID2).getAttribute('title'), /outside the projects directory/, 'the tooltip stays');
+  const inside = row(ID1);
+  assert.equal(inside.querySelector('.xr-outside'), null);
+  assert.ok(inside.querySelector('.xr-why').classList.contains('hidden'));
 });
 
 test('the list refreshes every 30 s while the page is open and stops at unmount; a thread that left the answer leaves the page', async () => {

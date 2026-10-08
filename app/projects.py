@@ -29,12 +29,46 @@ GIT_TIMEOUT = 2
 ROOT = "root"   # reserved repo name: "the project folder itself" (a session there sees every repo below it)
 
 
+def repo_for_cwd(cwd, projects_dir=None) -> tuple[str, str] | None:
+    """(project, repo) for a directory under PROJECTS_DIR, else None. One helper for Claude and Codex (issue #57). The project folder itself is
+    repo `root`; anything deeper than the repo level (a subdirectory, a worktree under `<repo>/.claude/worktrees/<slug>` or
+    `<repo>/.ccboard/worktrees/<slug>`) belongs to its repo; a worktree folder directly under the project (`<project>/.claude/...`) belongs to
+    the project folder (`root`). Names the board would refuse are not projects. Pure path arithmetic: nothing is read from the disk
+    except realpath."""
+    import os
+    if not isinstance(cwd, str) or not cwd:
+        return None
+    root = Path(projects_dir if projects_dir is not None else settings.projects_dir)
+    for r in dict.fromkeys((os.path.normpath(root), os.path.realpath(root))):
+        for c in dict.fromkeys((os.path.normpath(cwd), os.path.realpath(cwd))):
+            try:
+                parts = Path(c).relative_to(r).parts
+            except ValueError:
+                continue
+            if not parts or any(p in ("", ".", "..") for p in parts):
+                continue
+            try:
+                project = check_name("project", parts[0])
+                if len(parts) > 1 and parts[1] in (".claude", ".ccboard"):      # a worktree folder of the project folder itself
+                    repo = ROOT
+                else:
+                    repo = check_name("repo", parts[1]) if len(parts) > 1 else ROOT
+            except BadRequest:
+                continue
+            return project, repo
+    return None
+
+
 class BadRequest(Exception):
     pass
 
 
 class Conflict(Exception):
     pass
+
+
+class Unprocessable(Exception):
+    """A well-formed request the board will not act on without something more from the caller (422): the Fable acknowledgement, issue #108."""
 
 
 class NotFound(Exception):

@@ -78,6 +78,11 @@ const STATE_GLYPH = { working: '✽', waiting: '✻', idle: '∙', done: '✓', 
 const AGENT_GLYPH = { claude: '◆', codex: '◇', shell: '▸' };
 const GLYPH_LABEL = { working: 'working', waiting: 'needs you', idle: 'idle', done: 'done', errored: 'error', ended: 'ended', unknown: 'unknown' };
 
+/* The scroll behaviour for scrollIntoView / scrollTo: 'smooth' unless the person asked for reduced motion (prefers-reduced-motion: reduce), then 'auto' (an instant jump). */
+function scrollBehavior() {
+  try { return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'; } catch (_) { return 'auto'; }
+}
+
 function ownKey(map, key) { return Object.prototype.hasOwnProperty.call(map, key); }
 
 function stateGlyph(state) {
@@ -258,6 +263,7 @@ async function demoApi(method, path, body) {
   let name = null;
   if (bare === '/api/state') name = 'state';
   else if (/^\/api\/sessions\/[^/]+$/.test(bare)) name = 'session';    // the terminal page's own read: the row of state.json with that tmux name (its agent drives Tune and the quick replies)
+  else if (bare === '/api/skills') name = 'skills';   // the palette's Skills group (issue #102): the same shape GET /api/skills answers
   else if (bare === '/api/agents') name = 'agents';   // the launcher's option schemas (v0.5.13); the same shape GET /api/agents answers
   else if (bare.startsWith('/api/search')) name = 'search';
   else if (/^\/api\/projects\/[^/]+\/repos\/[^/]+\/tree$/.test(bare)) name = 'tree';
@@ -295,6 +301,7 @@ async function demoApi(method, path, body) {
     if (!ownKey(data.detail, one[1])) throw demoError(404, 'not found');
     return data.detail[one[1]];
   }
+  if (name === 'usage_summary' && /[?&]basis=est(&|$)/.test(path)) return { ...demoRebase(data), basis: 'est' };   // the Estimated basis (issue #95): the demo has nothing to estimate, so the same numbers under the other name (rebased like the reported one, or the windows read as rolled over)
   if (name === 'tree' || name === 'file') return demoPick(name, bare, path.slice(bare.length + 1), data);
   if (/^memory_(observations|summaries|search|timeline|palace)$/.test(name)) return demoMemVariant(data, bare);
   if (name === 'series_events' && data && data.demo && data.demo.epoch && Array.isArray(data.events)) {   // keep the fixture's 24 h alive, like state.json

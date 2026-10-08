@@ -1,6 +1,6 @@
 """Deploy gate: a container swap never interrupts someone at a terminal.
 
-On ubu2 a deploy is Watchtower stopping the board's container and starting the new image, which under the box's disk load takes
+On the box a deploy is Watchtower stopping the board's container and starting the new image, which under the box's disk load takes
 about a minute (the app itself exits within a few seconds; docker's remove/create/start is the rest). Watchtower runs the
 pre-update lifecycle hook `scripts/ccboard-deploy-gate` inside the container before every swap; that script asks
 POST /api/deploy/gate (hook token, loopback) and exits 75 when the answer is `hold`, which makes Watchtower skip the update

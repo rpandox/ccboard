@@ -29,15 +29,15 @@ services:
         required: false
     environment:
       CCBOARD_RUNTIME: docker
-      HOME: ${CCBOARD_HOME:-/home/rpandox}
+      HOME: ${CCBOARD_HOME:?set CCBOARD_HOME (install.sh writes it to the compose .env)}
       TMUX_TMPDIR: /tmp
       # The host's claude, codex and ccusage first, then the image's venv, then the system (also for `docker exec`).
-      PATH: ${CCBOARD_HOME:-/home/rpandox}/.local/bin:/opt/ccboard/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      PATH: ${CCBOARD_HOME:?set CCBOARD_HOME (install.sh writes it to the compose .env)}/.local/bin:/opt/ccboard/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     volumes:
       # create_host_path: false everywhere: a missing source must fail the start, never become a root-owned directory.
       - type: bind
-        source: ${CCBOARD_HOME:-/home/rpandox}
-        target: ${CCBOARD_HOME:-/home/rpandox}
+        source: ${CCBOARD_HOME:?set CCBOARD_HOME (install.sh writes it to the compose .env)}
+        target: ${CCBOARD_HOME:?set CCBOARD_HOME (install.sh writes it to the compose .env)}
         bind:
           create_host_path: false
       - type: bind
@@ -100,9 +100,9 @@ services:
     command: --interval 300 --cleanup --label-enable --scope ccboard --include-restarting --enable-lifecycle-hooks
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      # Registry login for a private package (gh auth token | docker login ghcr.io -u rpandox --password-stdin).
+      # Registry login for a private package (gh auth token | docker login ghcr.io -u <github-user> --password-stdin).
       - type: bind
-        source: ${CCBOARD_HOME:-/home/rpandox}/.docker/config.json
+        source: ${CCBOARD_HOME:?set CCBOARD_HOME (install.sh writes it to the compose .env)}/.docker/config.json
         target: /config.json
         read_only: true
         bind:

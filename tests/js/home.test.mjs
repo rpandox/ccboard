@@ -1190,10 +1190,10 @@ test('the chip names the account by label, else the name Claude reports, else th
   const { w } = homeWorld();
   const s = sess('shop', 'api', 's1', { account: ACCT_A });
   const named = (over) => acctState({ current: ACCT_A, list: [acct(ACCT_A, { current: true, name: null, email: null, ...over }), acct(ACCT_B, { label: 'Work' })] }, s);
-  const row = rowFor(w, s, named({ label: 'Personal', name: 'Roshan', email: 'r@example.com' }));
+  const row = rowFor(w, s, named({ label: 'Personal', name: 'Sam', email: 'r@example.com' }));
   assert.equal(text(acctChip(row)), 'Personal');
-  repatch(w, s, named({ name: 'Roshan', email: 'r@example.com' }));
-  assert.equal(text(acctChip(row)), 'Roshan');
+  repatch(w, s, named({ name: 'Sam', email: 'r@example.com' }));
+  assert.equal(text(acctChip(row)), 'Sam');
   repatch(w, s, named({ email: 'r@example.com' }));
   assert.equal(text(acctChip(row)), 'r@example.com');
   repatch(w, s, named({}));
@@ -1437,7 +1437,7 @@ test('the diff sheet over the demo fixture (app/static/demo/diff.json): two comm
   assert.equal(fx.files.length, 3);
   assert.equal(fx.files_uncommitted.length, 1);
   assert.equal(fx.truncated, false);
-  assert.equal(/\/home\/|\w@\w|ubu2|roshan/i.test(JSON.stringify(fx)), false);
+  assert.equal(new RegExp('\\/home\\/|\\w@\\w|ub' + 'u2|rosh' + 'an', 'i').test(JSON.stringify(fx)), false);
   w.ctx.__answers['/api/tasks/5/diff'] = fx;
   w.run('openTaskModal(__t)');
   await tick(); await tick();

@@ -16,8 +16,12 @@
 #   base  390 compact, 768 medium, 1024x768 expanded, 1280 large
 #   pwa   1440x900 large with html.pwa injected (the installed-app class main.js sets in standalone mode)
 #   ipad  1024x1366 expanded and 834x1194 medium (iPad Pro 12.9 / 11 inch portrait, also the Split View widths)
-#   Lighthouse (optional, after the passes): when `npx --no-install lighthouse --version` works, performance / pwa / accessibility
-#   scores for '/?demo=1#/agents' with --preset=desktop and with the mobile default are printed (advisory unless QA_LIGHTHOUSE_STRICT=1).
+#   Lighthouse (optional, after the passes): when a Lighthouse is available (LIGHTHOUSE_BIN, else `npx --no-install lighthouse`),
+#   performance / pwa / accessibility scores for Home, Agents, Usage, a project page, Settings and the terminal page, each with
+#   --preset=desktop and with the mobile default, as median/worst of QA_LIGHTHOUSE_RUNS runs (default 3 in strict mode, else 1), are
+#   printed and written to $OUT/lighthouse-summary.tsv. Advisory unless QA_LIGHTHOUSE_STRICT=1, which makes a median under target (performance
+#   90, pwa 95 where the category exists, accessibility 95 on desktop; performance 90 on mobile), a run that writes no report and a missing
+#   Lighthouse each a FAIL: strict mode never passes without a measurement.
 #
 # Assertions per route and viewport (gstack path):
 #   shell    body[data-shell] is compact / medium / expanded / large (390 / 768 / 834 / 1024 / 1280 / 1440 px)
@@ -38,7 +42,10 @@
 # Environment: B (browse binary), CHROME (Chrome binary), QA_TMUX (session for #/s/<tmux>, default: the first session in
 # app/static/demo/state.json), QA_HEADER (e.g. 'Tailscale-User-Login: demo@example.com' when the board is not in dev bypass),
 # QA_SETTLE (seconds to let a page settle after it mounts, default 0.6), QA_WIDTHS (space-separated widths to run, e.g. "390 1280"; default all),
-# QA_LIGHTHOUSE (0 = skip the Lighthouse step; default: run it when lighthouse is available), QA_LIGHTHOUSE_STRICT (1 = a score under target is a FAIL),
+# QA_LIGHTHOUSE (0 = skip the Lighthouse step; default: run it when lighthouse is available), QA_LIGHTHOUSE_STRICT (1 = a score under target is a FAIL,
+# and so is a Lighthouse that is not there), LIGHTHOUSE_BIN (the lighthouse executable, installed outside the repo, e.g.
+# `npm i --prefix /tmp/lh lighthouse@<version>` then LIGHTHOUSE_BIN=/tmp/lh/node_modules/.bin/lighthouse), QA_LIGHTHOUSE_RUNS (runs per page and preset),
+# QA_LIGHTHOUSE_PAGES ("label|url label|url ...", default home agents usage project settings terminal),
 # QA_SHARED_BROWSER (1 = drive the shared per-repo browse server instead of a private one that is stopped at the end),
 # QA_MANIFEST_SHOTS (1 = also capture the two manifest screenshots, agents-390.png at 390x844 and agents-1280.png at 1280x800,
 # into $QA_SHOTS_DIR, default app/static/screenshots/: viewport-only shots of '#/agents' in demo mode, sizes verified).
@@ -290,15 +297,32 @@ if [ "${QA_MANIFEST_SHOTS:-0}" = 1 ]; then
   fi
 fi
 
-# ---- Lighthouse (optional): performance / pwa / accessibility for the demo Agents page, desktop preset and mobile default
-LH_URL="$BASE/?demo=1#/agents"
+# ---- Lighthouse (optional; strict with QA_LIGHTHOUSE_STRICT=1): performance / pwa / accessibility per page, desktop preset and mobile default
+# LIGHTHOUSE_BIN points at a Lighthouse installed outside the repo (npm i --prefix /tmp/lh lighthouse@<version>; then LIGHTHOUSE_BIN=/tmp/lh/node_modules/.bin/lighthouse);
+# without it `npx --no-install lighthouse` is tried. Pages: QA_LIGHTHOUSE_PAGES="label|url ..." (default Home, Agents, Usage, a project page, Settings, the terminal page).
+# Each page and preset runs QA_LIGHTHOUSE_RUNS times (default 3 in strict mode, else 1); the median and the worst are printed and the MEDIAN is held to the target.
+# Targets: performance >= 90, pwa >= 95 (where this Lighthouse still has the category), accessibility >= 95 on desktop; performance >= 90 on mobile.
+# Strict mode: a score under target is a FAIL, and so is a run that cannot find Lighthouse or that writes no report (it says it did not measure, it never passes silently).
 LH_LOW=""
+LH_BIN="${LIGHTHOUSE_BIN:-}"
+LH_STRICT="${QA_LIGHTHOUSE_STRICT:-0}"
+LH_RUNS="${QA_LIGHTHOUSE_RUNS:-}"
+[ -n "$LH_RUNS" ] || { [ "$LH_STRICT" = 1 ] && LH_RUNS=3 || LH_RUNS=1; }
+LH_PAGES="${QA_LIGHTHOUSE_PAGES:-home|$BASE/?demo=1#/ agents|$BASE/?demo=1#/agents usage|$BASE/?demo=1#/usage project|$BASE/?demo=1#/p/phasezero settings|$BASE/?demo=1#/settings terminal|$BASE/term/$TMUX_NAME?demo=1}"
+LH_TABLE="$OUT/lighthouse-summary.tsv"
 
-lh_run() {   # json-path log-path categories [lighthouse flags...]: true when a report was written
-  local json="$1" log="$2" cats="$3" cp="${CHROME_PATH:-}"; shift 3
+lh() { if [ -n "$LH_BIN" ]; then "$LH_BIN" "$@"; else npx --no-install lighthouse "$@"; fi; }
+
+lh_available() {   # true when a Lighthouse can be run: LIGHTHOUSE_BIN executable and answering --version, else npx --no-install
+  if [ -n "$LH_BIN" ]; then [ -x "$LH_BIN" ] && "$LH_BIN" --version </dev/null >/dev/null 2>&1
+  else command -v npx >/dev/null 2>&1 && npx --no-install lighthouse --version </dev/null >/dev/null 2>&1; fi
+}
+
+lh_run() {   # url json-path log-path categories [lighthouse flags...]: true when a report was written
+  local url="$1" json="$2" log="$3" cats="$4" cp="${CHROME_PATH:-}"; shift 4
   [ -z "$cp" ] && [ -x "$CHROME" ] && cp="$CHROME"
   rm -f "$json"
-  CHROME_PATH="$cp" npx --no-install lighthouse "$LH_URL" "$@" --only-categories="$cats" --chrome-flags='--headless=new' \
+  CHROME_PATH="$cp" lh "$url" "$@" --only-categories="$cats" --chrome-flags='--headless=new' \
     --output=json --output-path="$json" --quiet ${LH_ARGS[@]+"${LH_ARGS[@]}"} </dev/null >"$log" 2>&1
   [ -s "$json" ]
 }
@@ -313,39 +337,70 @@ def sc(k):
 print(sc("performance"), sc("pwa"), sc("accessibility"))' "$1" 2>/dev/null
 }
 
-lh_below() {   # label metric value target: remember a score under its target (n/a and no target never count)
-  [ -z "$4" ] || [ "$3" = n/a ] && return 0
-  [ "$3" -lt "$4" ] 2>/dev/null && LH_LOW="$LH_LOW $1:$2=$3<$4"
+lh_stat() {   # "81 90 n/a 88" -> "median/worst" of the numbers ("n/a" when there are none): the worst is the lowest
+  python3 -c '
+import statistics, sys
+v = [int(x) for x in sys.argv[1:] if x.lstrip("-").isdigit()]
+print("n/a" if not v else "%d/%d" % (round(statistics.median(v)), min(v)))' "$@" 2>/dev/null
+}
+
+lh_below() {   # label metric median target: remember a median under its target (n/a and no target never count)
+  local med="${3%%/*}"
+  [ -z "$4" ] || [ "$med" = n/a ] || [ -z "$med" ] && return 0
+  [ "$med" -lt "$4" ] 2>/dev/null && LH_LOW="$LH_LOW $1:$2=$med<$4"
   return 0
 }
 
-if [ "${QA_LIGHTHOUSE:-auto}" != 0 ] && command -v npx >/dev/null 2>&1 \
-   && npx --no-install lighthouse --version </dev/null >/dev/null 2>&1; then
+lh_page() {   # label url: every preset, QA_LIGHTHOUSE_RUNS runs each
+  local label="$1" url="$2" form json log perf pwa a11y i ok lp lw la
+  for form in desktop mobile; do
+    local preset=(); [ "$form" = desktop ] && preset=(--preset=desktop)
+    lp=""; lw=""; la=""; ok=0
+    for i in $(seq 1 "$LH_RUNS"); do
+      json="$OUT/lighthouse-$label-$form-$i.json"; log="$OUT/lighthouse-$label-$form-$i.log"
+      # Lighthouse 12 dropped the pwa category: if the three-category run is refused, ask for the other two
+      if lh_run "$url" "$json" "$log" performance,pwa,accessibility ${preset[@]+"${preset[@]}"} || lh_run "$url" "$json" "$log" performance,accessibility ${preset[@]+"${preset[@]}"}; then
+        read -r perf pwa a11y <<< "$(lh_scores "$json")"
+        lp="$lp ${perf:-n/a}"; lw="$lw ${pwa:-n/a}"; la="$la ${a11y:-n/a}"; ok=$((ok + 1))
+      else
+        echo "lighthouse $label $form run $i: no report written (see $log)"
+      fi
+    done
+    if [ "$ok" -eq 0 ]; then
+      [ "$LH_STRICT" = 1 ] && fail "lighthouse $label $form: no report was written, nothing was measured"
+      continue
+    fi
+    perf="$(lh_stat $lp)"; pwa="$(lh_stat $lw)"; a11y="$(lh_stat $la)"
+    printf 'lighthouse %-9s %-8s performance %-7s pwa %-7s accessibility %-7s (median/worst of %d)\n' "$label" "$form" "$perf" "$pwa" "$a11y" "$ok"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%d\n' "$label" "$form" "$perf" "$pwa" "$a11y" "$url" "$ok" >> "$LH_TABLE"
+    if [ "$form" = desktop ]; then lh_below "$label/desktop" performance "$perf" 90; lh_below "$label/desktop" pwa "$pwa" 95; lh_below "$label/desktop" accessibility "$a11y" 95
+    else lh_below "$label/mobile" performance "$perf" 90; fi
+  done
+}
+
+if [ "${QA_LIGHTHOUSE:-auto}" = 0 ]; then
+  :
+elif lh_available; then
   LH_ARGS=()
   if [ -n "${QA_HEADER:-}" ]; then
     LH_ARGS=(--extra-headers="$(python3 -c 'import json, sys; k, v = sys.argv[1].split(":", 1); print(json.dumps({k.strip(): v.strip()}))' "$QA_HEADER")")
   fi
+  printf 'page\tpreset\tperformance (median/worst)\tpwa\taccessibility\turl\truns\n' > "$LH_TABLE"
   echo
-  echo "lighthouse $(npx --no-install lighthouse --version </dev/null 2>/dev/null | tail -n 1) on $LH_URL (targets: performance >= 90, pwa >= 95, accessibility >= 95 on desktop; performance >= 90 on mobile)"
-  for form in desktop mobile; do
-    json="$OUT/lighthouse-$form.json"; log="$OUT/lighthouse-$form.log"
-    preset=(); [ "$form" = desktop ] && preset=(--preset=desktop)
-    # Lighthouse 12 dropped the pwa category: if the three-category run is refused, ask for the other two
-    if lh_run "$json" "$log" performance,pwa,accessibility ${preset[@]+"${preset[@]}"} || lh_run "$json" "$log" performance,accessibility ${preset[@]+"${preset[@]}"}; then
-      read -r perf pwa a11y <<< "$(lh_scores "$json")"
-      printf 'lighthouse %-8s performance %-4s pwa %-4s accessibility %-4s (%s)\n' "$form" "${perf:-n/a}" "${pwa:-n/a}" "${a11y:-n/a}" "$json"
-      if [ "$form" = desktop ]; then lh_below desktop performance "${perf:-n/a}" 90; lh_below desktop pwa "${pwa:-n/a}" 95; lh_below desktop accessibility "${a11y:-n/a}" 95
-      else lh_below mobile performance "${perf:-n/a}" 90; fi
-    else
-      echo "lighthouse $form: no report written (see $log)"
-    fi
-  done
+  echo "lighthouse $(lh --version </dev/null 2>/dev/null | tail -n 1) (targets: performance >= 90, pwa >= 95, accessibility >= 95 on desktop; performance >= 90 on mobile; $LH_RUNS run(s) per page and preset)"
+  for pg in $LH_PAGES; do lh_page "${pg%%|*}" "${pg#*|}"; done
+  echo "lighthouse table: $LH_TABLE"
   if [ -n "$LH_LOW" ]; then
     echo "lighthouse below target:$LH_LOW"
-    [ "${QA_LIGHTHOUSE_STRICT:-0}" = 1 ] && fail "lighthouse scores under target:$LH_LOW"
+    [ "$LH_STRICT" = 1 ] && fail "lighthouse scores under target:$LH_LOW"
   fi
 else
-  [ "${QA_LIGHTHOUSE:-auto}" = 0 ] || echo "lighthouse: not available (npx --no-install lighthouse --version fails), skipped"
+  if [ "$LH_STRICT" = 1 ]; then
+    echo "lighthouse: NOT FOUND (${LH_BIN:-npx --no-install lighthouse}); strict mode cannot pass without a measurement"
+    fail "lighthouse strict mode: Lighthouse was not found (set LIGHTHOUSE_BIN or install it outside the repo); nothing was measured"
+  else
+    echo "lighthouse: not available (${LH_BIN:-npx --no-install lighthouse} fails), skipped"
+  fi
 fi
 
 echo

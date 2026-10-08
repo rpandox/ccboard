@@ -100,6 +100,7 @@ jobs:
             CCBOARD_REVISION=${{ github.sha }}
             CCBOARD_SOURCE_REPO=${{ github.repository }}
             CCBOARD_IMAGE_REVISION=${{ github.sha }}
+            CCBOARD_HOME=${{ vars.CCBOARD_HOME || '/home/ccboard' }}
           cache-from: |
             type=gha,scope=amd64
             type=gha,scope=arm64
@@ -122,6 +123,7 @@ jobs:
             CCBOARD_REVISION=${{ github.sha }}
             CCBOARD_SOURCE_REPO=${{ github.repository }}
             CCBOARD_IMAGE_REVISION=${{ github.sha }}
+            CCBOARD_HOME=${{ vars.CCBOARD_HOME || '/home/ccboard' }}
           cache-from: |
             type=gha,scope=amd64
             type=gha,scope=arm64

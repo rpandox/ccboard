@@ -11,7 +11,7 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE=/etc/ccboard/env
-ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT PREVIEW_HTTPS_BASE CCBOARD_NODE_NAME CCBOARD_HUB_TOKEN CCBOARD_NODES CCBOARD_RESTIC_REPO CCBOARD_RESTIC_PASSWORD_FILE CCBOARD_BACKUP_PUSH CCBOARD_BACKUP_ONCALENDAR CCBOARD_BACKUP_EXTRA CCBOARD_RUNTIME CCBOARD_AUTO_CONTINUE CCBOARD_CLAUDE_MEM CCBOARD_MEM_PORT CCBOARD_MEM_HTTPS_PORT CCBOARD_MEM_SERVICE CCBOARD_CODEX_HOOK_TRUST CCBOARD_CLONE_ALLOWED_HOSTS CCBOARD_MCP_REMOTE CODEX_HOME)
+ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT PREVIEW_HTTPS_BASE CCBOARD_NODE_NAME CCBOARD_HUB_TOKEN CCBOARD_NODES CCBOARD_RESTIC_REPO CCBOARD_RESTIC_PASSWORD_FILE CCBOARD_BACKUP_PUSH CCBOARD_BACKUP_ONCALENDAR CCBOARD_BACKUP_EXTRA CCBOARD_RUNTIME CCBOARD_AUTO_CONTINUE CCBOARD_CLAUDE_MEM CCBOARD_MEM_PORT CCBOARD_MEM_HTTPS_PORT CCBOARD_MEM_SERVICE CCBOARD_CODEX_HOOK_TRUST CCBOARD_CLONE_ALLOWED_HOSTS CCBOARD_MCP_REMOTE CODEX_HOME CCBOARD_AUTOCLOSE_GRACE CCBOARD_CODEX_HOOKS_ASYNC CCBOARD_CLAUDE_ULTRACODE_FLAG CCBOARD_SUBAGENT_MODEL CCBOARD_HEADLESS_FABLE_CAP CCBOARD_PRICE_TABLE)
 TTYD_VERSION=1.7.7
 TTYD_SHA_amd64=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
 TTYD_SHA_arm64=b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165
@@ -23,6 +23,72 @@ warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }
+
+# >>> serve and claude-mem viewer helpers
+# serve_check needs $TS_FQDN and $CCBOARD_HTTPS_PORT at call time. The viewer helpers are exercised on their own by tests/test_install_mem.py.
+serve_check() { # port path target -> prints ours|missing|foreign:<why>|funnel
+  tailscale serve status --json 2>/dev/null | python3 -c '
+import json,sys
+raw=sys.stdin.read().strip(); d=json.loads(raw) if raw and raw!="null" else {}
+fqdn,port,path,target=sys.argv[1:5]; key=f"{fqdn}:{port}"
+if (d.get("AllowFunnel") or {}).get(key): print("funnel"); sys.exit()
+tcp=(d.get("TCP") or {}).get(port) or {}
+if tcp and not tcp.get("HTTPS"): print("foreign:port is used for TCP forwarding"); sys.exit()
+handlers=(((d.get("Web") or {}).get(key) or {}).get("Handlers") or {})
+ours={"/":None,"/tty":None} if port==sys.argv[5] else {"/":None}
+for p,h in handlers.items():
+    if p not in ours: print(f"foreign:handler {p} -> {h}"); sys.exit()
+h=handlers.get(path)
+if h is None: print("missing")
+elif h.get("Proxy")==target: print("ours")
+elif str(h.get("Proxy","")).startswith("http://127.0.0.1:"): print("stale")   # ccboard handler with an old backend port
+else: print(f"foreign:handler {path} -> {h}")
+' "$TS_FQDN" "$1" "$2" "$3" "$CCBOARD_HTTPS_PORT"
+}
+mem_viewer_port_check() { # port board-https code-https ntfy-https: empty = nothing exposed; else refuse 443 and the ports the board serves, before any change
+  [ -n "$1" ] || return 0
+  if ! { [[ "$1" =~ ^[0-9]{1,5}$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }; then
+    die "CCBOARD_MEM_HTTPS_PORT must be empty, off, or a port from 1 to 65535 (got '$1')"
+  fi
+  case "$1" in 443|"$2"|"$3"|"$4") die "CCBOARD_MEM_HTTPS_PORT $1 is taken: it must not be 443 or the board's, code-server's or ntfy's HTTPS port";; esac
+}
+mem_worker_port() { # the claude-mem worker's loopback port, in the order of app/memory.py: CCBOARD_MEM_PORT, worker.pid, settings.json, 37700 + uid % 100
+  python3 - "${CCBOARD_MEM_PORT:-}" "${CLAUDE_MEM_DATA_DIR:-$HOME_DIR/.claude-mem}" "$(id -u)" <<'PY'
+import json, os, sys
+env, data, uid = sys.argv[1:4]
+def port(v):
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, str):
+        v = v.strip()
+        v = int(v) if v.isascii() and v.isdigit() and len(v) <= 6 else None
+    return v if isinstance(v, int) and 0 < v < 65536 else None
+def load(name):
+    try:
+        with open(os.path.join(data, name), "rb") as f:
+            return json.loads(f.read(65537).decode("utf-8", "replace"))
+    except Exception:
+        return None
+pid = load("worker.pid")
+cfg = load("settings.json")
+for p in (port(env), port(pid.get("port")) if isinstance(pid, dict) else None,
+          port(cfg.get("CLAUDE_MEM_WORKER_PORT")) if isinstance(cfg, dict) else None):
+    if p:
+        print(p)
+        break
+else:
+    print(37700 + int(uid) % 100)
+PY
+}
+mem_viewer_precheck() { # before any change: a viewer port some other handler already serves stops the install (CCBOARD_REPLACE_SERVE=1 allows replacing it)
+  local st
+  [ -n "${CCBOARD_MEM_HTTPS_PORT:-}" ] || return 0
+  st=$(serve_check "$CCBOARD_MEM_HTTPS_PORT" / "http://127.0.0.1:$(mem_worker_port)")
+  case "$st" in
+    funnel|foreign:*) [ "${CCBOARD_REPLACE_SERVE:-}" = 1 ] || die "CCBOARD_MEM_HTTPS_PORT $CCBOARD_MEM_HTTPS_PORT is already served by something else ($st). Pick another port, or rerun with CCBOARD_REPLACE_SERVE=1 to replace it.";;
+  esac
+}
+# <<< serve and claude-mem viewer helpers
 
 # ---------------------------------------------------------------- guards
 [ "$(id -u)" -ne 0 ] || die "run as the user who will own the sessions, not as root (sudo is used where needed)"
@@ -50,13 +116,14 @@ trap 'kill "$SUDO_KEEPALIVE" 2>/dev/null || true' EXIT
 declare -A CALLER
 for k in "${ENV_KEYS[@]}"; do CALLER[$k]="${!k:-}"; done
 EXTRA_ENV=()
+PREV_MEM_HTTPS_PORT=   # the viewer port the previous run remembered (issue #9): the mapping to turn off when it is cleared or changed
 if [ -f "$ENV_FILE" ]; then
   # Never source it: values are data, not shell. Whitelisted keys are read; other KEY=value lines you added by hand
   # (e.g. AWS_* for an s3: restic repo) are kept as they are and written back.
   while IFS='=' read -r k v; do
     case "$k" in ''|'#'*) continue;; esac
     case " ${ENV_KEYS[*]} " in
-      *" $k "*) printf -v "$k" '%s' "$v";;
+      *" $k "*) printf -v "$k" '%s' "$v"; if [ "$k" = CCBOARD_MEM_HTTPS_PORT ]; then PREV_MEM_HTTPS_PORT=$v; fi;;
       *) [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && EXTRA_ENV+=("$k=$v");;
     esac
   done < "$ENV_FILE"
@@ -91,12 +158,19 @@ if [ -z "${CCBOARD_HUB_TOKEN:-}" ]; then CCBOARD_HUB_TOKEN=$(python3 -c 'import 
 : "${CCBOARD_AUTO_CONTINUE:=1}"         # the app reads an empty value as 1; the env file below needs every ENV_KEYS name bound (set -u)
 : "${CCBOARD_CLAUDE_MEM:=1}"           # 1 = verify/install the claude-mem plugin and let the board watch its worker; 0 = neither
 : "${CCBOARD_MEM_PORT:=}"              # empty = the board finds the worker's port itself (worker.pid, then claude-mem's settings)
-: "${CCBOARD_MEM_HTTPS_PORT:=}"        # empty = no claude-mem viewer link (issue #9); only the board's state.config.mem_viewer_url reads it, no tailscale serve mapping is made yet
+: "${CCBOARD_MEM_HTTPS_PORT:=}"        # empty = no claude-mem viewer (issue #9); a port maps the worker on the tailnet (anyone on it can open AND change the worker); off = turn the mapping off
+[ "$CCBOARD_MEM_HTTPS_PORT" != off ] || CCBOARD_MEM_HTTPS_PORT=
 : "${CCBOARD_MEM_SERVICE:=0}"          # 1 = run the worker as ccboard-mem.service from a clean environment (off until verified on the box)
 : "${CCBOARD_CODEX_HOOK_TRUST:=review}"  # review = trust ccboard's Codex hooks once in Codex (/hooks); bypass = start Codex with --dangerously-bypass-hook-trust
 : "${CCBOARD_CLONE_ALLOWED_HOSTS:=}"      # empty = clones may only name public hosts; a private git server (gitea.lan, 192.168.1.5) is listed here, comma separated
 : "${CCBOARD_MCP_REMOTE:=0}"            # 1 = the remote MCP endpoint /mcp starts on (Settings > Agents can still turn it off); 0 = off until switched on there
 : "${CODEX_HOME:=}"                    # empty = Codex's own default (~/.codex); the hooks.json and the MCP entry go where Codex reads them
+: "${CCBOARD_AUTOCLOSE_GRACE:=45}"     # seconds between a task session's Stop and the board closing it (the app reads an empty value as 45)
+: "${CCBOARD_CODEX_HOOKS_ASYNC:=1}"    # 0 = write every Codex hook synchronous, for a Codex build that skips async hooks (scripts/codex_hooks.py reads it below)
+: "${CCBOARD_CLAUDE_ULTRACODE_FLAG:=}" # empty = ask `claude --help`; 1 or 0 records the box check whether `claude --effort ultracode` works
+: "${CCBOARD_PRICE_TABLE:=}"           # empty = the built-in list prices behind the Usage page's estimates; a JSON file adds to or replaces them (README, Cost)
+: "${CCBOARD_SUBAGENT_MODEL:=}"        # empty = subagents use the main model; haiku, sonnet, opus or a full model id sets CLAUDE_CODE_SUBAGENT_MODEL on sessions and runs the board starts
+: "${CCBOARD_HEADLESS_FABLE_CAP:=}"    # empty = 25; the most Max $ a scheduled or batch Claude run that resolves to Fable may carry (it also needs an acknowledgement)
 systemd-analyze calendar "$CCBOARD_BACKUP_ONCALENDAR" >/dev/null 2>&1 || die "CCBOARD_BACKUP_ONCALENDAR is not a systemd calendar spec: $CCBOARD_BACKUP_ONCALENDAR"
 [[ "$PREVIEW_HTTPS_BASE" =~ ^[0-9]{1,5}$ ]] || die "PREVIEW_HTTPS_BASE must be a port number"
 [[ "$CCBOARD_APPROVE_TIMEOUT" =~ ^[0-9]{1,4}$ ]] || die "CCBOARD_APPROVE_TIMEOUT must be seconds"
@@ -112,19 +186,23 @@ done
 case "$CCBOARD_RUNTIME" in systemd|docker) ;; *) die "CCBOARD_RUNTIME must be systemd or docker (got '$CCBOARD_RUNTIME')";; esac
 case "$CCBOARD_CLAUDE_MEM" in 0|1) ;; *) die "CCBOARD_CLAUDE_MEM must be 0 or 1 (got '$CCBOARD_CLAUDE_MEM')";; esac
 case "$CCBOARD_MEM_SERVICE" in 0|1) ;; *) die "CCBOARD_MEM_SERVICE must be 0 or 1 (got '$CCBOARD_MEM_SERVICE')";; esac
-if [ -n "$CCBOARD_MEM_HTTPS_PORT" ]; then   # the viewer port: never 443 (another service's Funnel), never one the board already serves; refused before any change
-  [[ "$CCBOARD_MEM_HTTPS_PORT" =~ ^[0-9]{1,5}$ ]] && [ "$CCBOARD_MEM_HTTPS_PORT" -ge 1 ] && [ "$CCBOARD_MEM_HTTPS_PORT" -le 65535 ] || die "CCBOARD_MEM_HTTPS_PORT must be empty or a port from 1 to 65535 (got '$CCBOARD_MEM_HTTPS_PORT')"
-  case "$CCBOARD_MEM_HTTPS_PORT" in 443|"$CCBOARD_HTTPS_PORT"|"$CODE_HTTPS_PORT"|"$NTFY_HTTPS_PORT") die "CCBOARD_MEM_HTTPS_PORT $CCBOARD_MEM_HTTPS_PORT is taken: it must not be 443 or the board's, code-server's or ntfy's HTTPS port";; esac
-fi
+mem_viewer_port_check "$CCBOARD_MEM_HTTPS_PORT" "$CCBOARD_HTTPS_PORT" "$CODE_HTTPS_PORT" "$NTFY_HTTPS_PORT"   # refused before any change
 [ -z "$CCBOARD_MEM_PORT" ] || [[ "$CCBOARD_MEM_PORT" =~ ^[0-9]{1,5}$ ]] || die "CCBOARD_MEM_PORT must be empty or a port number (got '$CCBOARD_MEM_PORT')"
+[[ "$CCBOARD_AUTOCLOSE_GRACE" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "CCBOARD_AUTOCLOSE_GRACE must be a number of seconds (got '$CCBOARD_AUTOCLOSE_GRACE')"
+case "$CCBOARD_CODEX_HOOKS_ASYNC" in 0|1) ;; *) die "CCBOARD_CODEX_HOOKS_ASYNC must be 0 or 1 (got '$CCBOARD_CODEX_HOOKS_ASYNC')";; esac
+[[ -z "$CCBOARD_SUBAGENT_MODEL" || "$CCBOARD_SUBAGENT_MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}(\[1m\])?$ ]] || die "CCBOARD_SUBAGENT_MODEL must be empty, inherit, haiku, sonnet, opus or a full model id (got '$CCBOARD_SUBAGENT_MODEL')"
+[[ -z "$CCBOARD_HEADLESS_FABLE_CAP" || "$CCBOARD_HEADLESS_FABLE_CAP" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "CCBOARD_HEADLESS_FABLE_CAP must be a number of dollars (got '$CCBOARD_HEADLESS_FABLE_CAP')"
+case "$CCBOARD_CLAUDE_ULTRACODE_FLAG" in ''|0|1) ;; *) die "CCBOARD_CLAUDE_ULTRACODE_FLAG must be empty, 0 or 1 (got '$CCBOARD_CLAUDE_ULTRACODE_FLAG')";; esac
 case "$CCBOARD_CODEX_HOOK_TRUST" in review|bypass) ;; *) die "CCBOARD_CODEX_HOOK_TRUST must be review or bypass (got '$CCBOARD_CODEX_HOOK_TRUST')";; esac
+[ -z "$CCBOARD_PRICE_TABLE" ] || [[ "$CCBOARD_PRICE_TABLE" = /* ]] || die "CCBOARD_PRICE_TABLE must be empty or an absolute path (got '$CCBOARD_PRICE_TABLE')"
 [ -z "$CODEX_HOME" ] || [[ "$CODEX_HOME" = /* ]] || die "CODEX_HOME must be empty or an absolute path (got '$CODEX_HOME')"
 [ "$CCBOARD_CODEX_HOOK_TRUST" != bypass ] || warn "CCBOARD_CODEX_HOOK_TRUST=bypass: every Codex session the board starts skips the hook review, including a .codex/hooks.json inside a repository you cloned (the same risk class as bypassPermissions)"
 CCBOARD_ALLOWED_USERS=$(printf '%s' "$CCBOARD_ALLOWED_USERS" | tr -d '[:space:]')
-for k in PROJECTS_DIR CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_ALLOWED_USERS CODEX_HOME; do
+for k in PROJECTS_DIR CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_ALLOWED_USERS CODEX_HOME CCBOARD_PRICE_TABLE; do
   case "${!k}" in *[[:space:]\"\$\\]*) die "$k must not contain whitespace, quotes, \$ or backslashes (got '${!k}')";; esac
 done
 [ -z "$CODEX_HOME" ] || export CODEX_HOME   # codex_hooks.py and the codex CLI below read it
+export CCBOARD_CODEX_HOOKS_ASYNC            # codex_hooks.py reads it: the hooks written now match what the board is remembered to use
 for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN; do
   [ -z "${!v:-}" ] || warn "$v is set in your environment; it outranks the Claude login. It is NOT written to $ENV_FILE."
 done
@@ -148,6 +226,7 @@ if [ -z "$CCBOARD_ALLOWED_USERS" ]; then
 fi
 CCBOARD_PUBLIC_URL="https://$TS_FQDN:$CCBOARD_HTTPS_PORT"
 note "tailnet node $TS_FQDN, allowed users: $CCBOARD_ALLOWED_USERS"
+mem_viewer_precheck
 
 # ---------------------------------------------------------------- docker runtime (CCBOARD_RUNTIME=docker)
 # Function definitions only; nothing here runs in systemd mode. The board becomes a container (ghcr.io/rpandox/ccboard,
@@ -655,7 +734,7 @@ if [ "$CCBOARD_RUNTIME" = docker ]; then   # hooks, statusline and ttyd run from
   else
     python3 "$APP_DIR/scripts/claude_settings.py" install --app-dir "$DOCKER_APP" --approve-timeout "${CCBOARD_APPROVE_TIMEOUT:-90}"
   fi
-  # watchdog: on a busy box Watchtower can create the new container without its start taking (seen on ubu2: state 'Created',
+  # watchdog: on a busy box Watchtower can create the new container without its start taking (seen on the box: state 'Created',
   # a 502 until someone ran docker start). Every 2 minutes from the user's crontab (no sudo): start it when it is not running,
   # restart it when it stays unhealthy. Marked so a rerun replaces the line.
   if have crontab; then
@@ -822,25 +901,6 @@ fi
 
 # ---------------------------------------------------------------- tailscale serve
 log "tailscale serve"
-serve_check() { # port path target -> prints ours|missing|foreign:<why>|funnel
-  tailscale serve status --json 2>/dev/null | python3 -c '
-import json,sys
-raw=sys.stdin.read().strip(); d=json.loads(raw) if raw and raw!="null" else {}
-fqdn,port,path,target=sys.argv[1:5]; key=f"{fqdn}:{port}"
-if (d.get("AllowFunnel") or {}).get(key): print("funnel"); sys.exit()
-tcp=(d.get("TCP") or {}).get(port) or {}
-if tcp and not tcp.get("HTTPS"): print("foreign:port is used for TCP forwarding"); sys.exit()
-handlers=(((d.get("Web") or {}).get(key) or {}).get("Handlers") or {})
-ours={"/":None,"/tty":None} if port==sys.argv[5] else {"/":None}
-for p,h in handlers.items():
-    if p not in ours: print(f"foreign:handler {p} -> {h}"); sys.exit()
-h=handlers.get(path)
-if h is None: print("missing")
-elif h.get("Proxy")==target: print("ours")
-elif str(h.get("Proxy","")).startswith("http://127.0.0.1:"): print("stale")   # ccboard handler with an old backend port
-else: print(f"foreign:handler {path} -> {h}")
-' "$TS_FQDN" "$1" "$2" "$3" "$CCBOARD_HTTPS_PORT"
-}
 serve_apply() { # port path target
   st=$(serve_check "$1" "$2" "$3")
   case "$st" in
@@ -864,10 +924,28 @@ serve_apply() { # port path target
     *) die "unexpected serve state '$st'";;
   esac
 }
+# >>> claude-mem viewer step
+mem_viewer_step() { # after the other mappings: map the worker on CCBOARD_MEM_HTTPS_PORT, and turn off only the port a previous run set (never 443, never funnel, never serve reset)
+  local prev=${PREV_MEM_HTTPS_PORT:-} cur=${CCBOARD_MEM_HTTPS_PORT:-} wp st
+  wp=$(mem_worker_port)
+  if [ -n "$prev" ] && [ "$prev" != "$cur" ] && [[ "$prev" =~ ^[0-9]{1,5}$ ]] && [ "$prev" != 443 ]; then
+    st=$(serve_check "$prev" / "http://127.0.0.1:$wp")
+    case "$st" in
+      ours|stale) sudo tailscale serve --https="$prev" off >/dev/null 2>&1 || warn "could not turn off the claude-mem viewer on port $prev"
+                  note "claude-mem viewer on https://$TS_FQDN:$prev turned off";;
+      *) note "claude-mem viewer port $prev is not a ccboard mapping ($st); left alone";;
+    esac
+  fi
+  [ -n "$cur" ] || return 0
+  serve_apply "$cur" / "http://127.0.0.1:$wp"
+  warn "claude-mem viewer: every device on your tailnet can open and change the claude-mem worker (it has no sign-in of its own). Clear it with CCBOARD_MEM_HTTPS_PORT=off ./install.sh"
+}
+# <<< claude-mem viewer step
 serve_apply "$CCBOARD_HTTPS_PORT" / "http://127.0.0.1:$CCBOARD_PORT"
 serve_apply "$CCBOARD_HTTPS_PORT" /tty "http://127.0.0.1:$TTYD_PORT"
 serve_apply "$CODE_HTTPS_PORT" / "http://127.0.0.1:$CODE_SERVER_PORT"
 [ -z "$NTFY_URL" ] || serve_apply "$NTFY_HTTPS_PORT" / "$NTFY_URL"
+mem_viewer_step
 for spec in "$CCBOARD_HTTPS_PORT / http://127.0.0.1:$CCBOARD_PORT" "$CCBOARD_HTTPS_PORT /tty http://127.0.0.1:$TTYD_PORT" "$CODE_HTTPS_PORT / http://127.0.0.1:$CODE_SERVER_PORT"; do
   # shellcheck disable=SC2086
   [ "$(serve_check $spec)" = ours ] || die "tailscale serve did not apply ($spec). Is HTTPS enabled for the tailnet?"
@@ -887,6 +965,7 @@ note "restarted: ${restarted[*]}"
 printf '\n\033[1;32mccboard is installed.\033[0m\n'
 printf '  Dashboard:   https://%s:%s/\n' "$TS_FQDN" "$CCBOARD_HTTPS_PORT"
 printf '  code-server: https://%s:%s/\n' "$TS_FQDN" "$CODE_HTTPS_PORT"
+[ -z "$CCBOARD_MEM_HTTPS_PORT" ] || printf '  claude-mem:  https://%s:%s/   (viewer; every device on your tailnet can open and change the worker)\n' "$TS_FQDN" "$CCBOARD_MEM_HTTPS_PORT"
 [ -z "$NTFY_URL" ] || printf '  ntfy topic:  %s/%s   (subscribe in the ntfy app; iOS needs the app to reach ntfy.sh for wake-ups)\n' "$NTFY_PUBLIC_URL" "$NTFY_TOPIC"
 printf '  Open them from another device on your tailnet (requests from this box carry no Tailscale identity).\n'
 printf '  Then click "Log in" on the dashboard to sign in to Claude Code.\n'

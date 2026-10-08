@@ -15,7 +15,7 @@ services:
     restart: "no"
     environment:
       CCBOARD_PORT: ${CCBOARD_SHADOW_PORT:-8010}
-      CCBOARD_DATA_DIR: ${CCBOARD_HOME:-/home/rpandox}/.local/share/ccboard-shadow
+      CCBOARD_DATA_DIR: ${CCBOARD_HOME:?set CCBOARD_HOME (install.sh writes it to the compose .env)}/.local/share/ccboard-shadow
       CCBOARD_SHADOW: "1"
       CCBOARD_RECOVER: "0"
       NTFY_URL: ""

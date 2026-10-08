@@ -745,7 +745,7 @@ MEM_PLUGIN_ADD = "claude plugin marketplace add thedotmack/claude-mem && claude 
 MEM_BEHIND = "the observer is behind: it shares your Claude subscription window"
 MEM_IDS = (("memory-plugin", "claude-mem plugin"), ("memory-worker", "claude-mem worker"), ("memory-queue", "Observer queue"),
            ("memory-error", "Observer provider errors"), ("memory-projects", "Project keys"), ("memory-env", "Worker environment"),
-           ("memory-bun", "bun runtime"), ("memory-api", "Memory page API"))
+           ("memory-bun", "bun runtime"), ("memory-api", "Memory page API"), ("memory-viewer", "claude-mem viewer"))
 _MEM_PORT_SOURCE = {"env": "CCBOARD_MEM_PORT", "worker.pid": "worker.pid", "settings": "settings.json", "default": "default"}
 
 
@@ -903,20 +903,61 @@ def _mem_api(db, ctx: dict) -> Outcome:
     return _pass(f"claude-mem {ver} answers in the shapes this board was tested with ({tested})")
 
 
+MEM_ENV_FILE = "mem-env.json"              # <data dir>/mem-env.json, written by scripts/ccboard-mem-env on the host (names only)
+MEM_ENV_FRESH_S = 600                      # the host watchdog runs every 2 minutes; ten minutes without a report is stale
+
+
+def _mem_env_report(pid) -> tuple[list[str] | None, str]:
+    """(names, note) from the host's <data dir>/mem-env.json for worker `pid`: the variable NAMES the host watchdog saw in the worker's
+    environment. names is None when the file is missing, malformed, older than 10 minutes or about another pid; `note` then says which."""
+    try:
+        with open(Path(settings.data_dir) / MEM_ENV_FILE, "rb") as f:
+            raw = f.read(65537)
+        d = json.loads(raw[:65536].decode("utf-8", "replace")) if len(raw) <= 65536 else None
+    except (OSError, ValueError):
+        d = None
+    if not isinstance(d, dict) or not isinstance(d.get("names"), list):
+        return None, "none yet"
+    if d.get("pid") != pid:
+        return None, "other worker pid"
+    try:
+        at = datetime.fromisoformat(str(d.get("at")).replace("Z", "+00:00"))
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        age = (_utcnow() - at).total_seconds()
+    except ValueError:
+        return None, "no readable time"
+    if age > MEM_ENV_FRESH_S or age < -60:
+        return None, "stale"
+    return [n for n in memory.ENV_LEAK_VARS if n in {x for x in d["names"] if isinstance(x, str)}], f"{max(0, int(age // 60))} min ago"
+
+
 def _mem_env(db, ctx: dict) -> Outcome:
     h = _mem_health(ctx)
     pid = h.get("pid")
     if not pid:
         return _skip("no worker process to inspect")
     leaks = memory.env_leaks(pid)
+    note = ""
     if leaks is None:
-        return _skip("could not read the worker's environment (another user's process, or no /proc here)")
+        # The board in a container cannot read the host worker's /proc/<pid>/environ; the host watchdog does and leaves the NAMES in
+        # <data dir>/mem-env.json (scripts/ccboard-mem-env). Under systemd the live read above is the one that counts.
+        leaks, why = _mem_env_report(pid)
+        if leaks is None:
+            if settings.runtime == "docker":
+                return _skip(f"could not read the worker's environment: a container cannot see the host's /proc; the host watchdog has not "
+                             f"reported (is the crontab line installed?) - {why}",
+                             fix("The host-side script scripts/ccboard-mem-env runs from the watchdog's crontab line (every 2 minutes) and "
+                                 "reports the worker's variable names, never values. Check the line is there, then run it once",
+                                 "crontab -l | grep ccboard-watchdog"))
+            return _skip("could not read the worker's environment (another user's process, or no /proc here)")
+        note = f" (reported by the host watchdog {why})"
     if leaks:
         return _warn(f"the memory worker inherited a session's environment; install ccboard-mem.service (it holds {', '.join(leaks)})",
                      fix("Install the unit, then hand over: the plugin's `worker-service.cjs stop`, then `sudo systemctl start ccboard-mem`. "
                          "An update undoes it unless CLAUDE_MEM_WORKER_AUTOSTART=false (README, claude-mem)",
                          "CCBOARD_MEM_SERVICE=1 ./install.sh"))
-    return _pass("the worker's environment holds no ccboard session variables")
+    return _pass("the worker's environment holds no ccboard session variables" + note)
 
 
 def _executable(p) -> bool:      # patched by tests (a dev box has a real bun in /usr/local/bin)
@@ -957,8 +998,62 @@ def _mem_bun(db, ctx: dict) -> Outcome:
                      "and CCBOARD_MEM_BUN for ccboard-mem.service"))
 
 
+MEM_VIEWER_OPEN = "every device on your tailnet can open and change the claude-mem worker"
+
+
+def _mem_serve_web() -> dict | None:
+    """`tailscale serve status --json` -> its Web map, {} when nothing is served, None when it cannot be read (no tailscale, no socket,
+    not JSON). Read only; the doctor never changes a mapping. Tests patch this."""
+    from . import previews
+    try:
+        p = _run(previews.serve_cmd("status", "--json"))
+    except (ToolMissing, ToolTimeout):
+        return None
+    if p.rc != 0:
+        return None
+    try:
+        d = json.loads(p.out.strip() or "null")
+    except ValueError:
+        return None
+    if d is None:
+        return {}
+    if not isinstance(d, dict):
+        return None
+    web = d.get("Web")
+    return web if isinstance(web, dict) else {}
+
+
+def _mem_viewer(db, ctx: dict) -> Outcome:
+    """The optional claude-mem viewer on the tailnet (CCBOARD_MEM_HTTPS_PORT, issue #9). Not set: skip. Set: the worker has no sign-in of its
+    own and its API can write, so a mapping that points at the current worker port is a warning that says who can reach it; a missing or
+    stale mapping is a warning with the installer as the fix; a mapping that cannot be read is reported as unknown, never as healthy."""
+    port = settings.mem_https_port
+    if not port:
+        return _skip("not set: the claude-mem worker is not exposed on the tailnet (CCBOARD_MEM_HTTPS_PORT is empty)")
+    web = _mem_serve_web()
+    if web is None:
+        return _warn(f"unknown: could not read the tailscale serve mapping for port {port}; if it exists, {MEM_VIEWER_OPEN}",
+                     fix("Check that tailscale is running; to remove the viewer, clear the setting", "CCBOARD_MEM_HTTPS_PORT=off ./install.sh"))
+    want = f"http://127.0.0.1:{memory.discover()['port']}"
+    handlers = None
+    for key, val in web.items():
+        if str(key).rsplit(":", 1)[-1] == str(port) and isinstance(val, dict):
+            handlers = val.get("Handlers") or {}
+    root = handlers.get("/") if isinstance(handlers, dict) else None
+    proxy = root.get("Proxy") if isinstance(root, dict) else None
+    if not proxy:
+        return _warn(f"CCBOARD_MEM_HTTPS_PORT={port} is set but nothing is served on that port",
+                     fix("Run the installer to add the mapping, or clear the setting", "./install.sh"))
+    if proxy != want:
+        return _warn(f"the viewer mapping on port {port} points at {proxy}, not the worker at {want}",
+                     fix("Run the installer to point it at the current worker", "./install.sh"))
+    return _warn(f"claude-mem's viewer is open on tailnet port {port}: {MEM_VIEWER_OPEN}",
+                 fix("Clear the setting to close it, or restrict the port with a Tailscale ACL", "CCBOARD_MEM_HTTPS_PORT=off ./install.sh"))
+
+
 _MEM_FNS = {"memory-plugin": _mem_plugin, "memory-worker": _mem_worker, "memory-queue": _mem_queue, "memory-error": _mem_error,
-            "memory-projects": _mem_projects, "memory-env": _mem_env, "memory-bun": _mem_bun, "memory-api": _mem_api}
+            "memory-projects": _mem_projects, "memory-env": _mem_env, "memory-bun": _mem_bun, "memory-api": _mem_api,
+            "memory-viewer": _mem_viewer}
 
 
 def memory_checks(db) -> list[Check]:
@@ -1427,14 +1522,50 @@ def _c_claude_features(db) -> Outcome:
         caps = None
     if caps and caps.get("ultracode_flag"):
         unmet = [g for g in unmet if g.key != "ultracode_effort"]
-    ver = ".".join(map(str, v))
+    if caps and caps.get("permission_prompts_none"):
+        unmet = [g for g in unmet if g.key != "permission_prompts_none"]          # `claude --help` lists it: the probe wins over the number
+    ver =".".join(map(str, v))
     if not unmet:
         return _pass(f"Claude Code {ver} meets all {len(cl.FEATURE_GATES)} version gates the board uses")
     shown = ", ".join(f"{g.feature} ({g.min_version})" for g in unmet[:4]) + (f" and {len(unmet) - 4} more" if len(unmet) > 4 else "")
     return _warn(f"Claude Code {ver} is too old for: {shown}", fix("Update Claude Code (README, Updating); the launcher hides or refuses the options meanwhile", "claude update"))
 
 
+def _c_claude_unattended(db) -> Outcome:
+    """Does this box's claude take `--permission-prompts none` (issue #107)? Read from the cached `claude --help` probe, never a new process:
+    where it does, every scheduled and batch Claude run passes it, so a tool that is not pre-approved is denied at once. Where it does not,
+    an unattended run may stall on a prompt nobody can answer."""
+    if not settings.claude_bin():
+        return _skip("claude is not installed")
+    try:
+        from . import agents
+        caps = agents.get("claude").peek_capabilities()
+    except Exception:
+        caps = None
+    if caps is None:
+        return _skip("claude --help has not been read yet (the launcher reads it once per binary)")
+    if caps.get("permission_prompts_none"):
+        return _pass("scheduled and batch Claude runs pass --permission-prompts none: a tool that is not pre-approved is denied at once")
+    return _warn("this Claude Code has no --permission-prompts none: an unattended run may stall on a permission prompt nobody can answer",
+                 fix("Update Claude Code (the flag needs 2.1.259); until then pick dontAsk and list the Allowed tools of each schedule", "claude update"))
+
+
+def _c_fable_jobs(db) -> Outcome:
+    """Stored Claude jobs that resolve to Fable and have no acknowledgement and Max $ of their own (issue #108). They are held, not run: a
+    default cap is not consent, and `claude -p` never asks before billing Fable usage credits."""
+    from . import scheduler
+    held = [j for j in (db.jobs() if db is not None else []) if (j.get("agent") or "claude") == "claude" and scheduler.fable_hold(j)]
+    if not held:
+        return _pass("no scheduled or batch Claude job is waiting for a Fable acknowledgement")
+    names = ", ".join(f"{j['project']}/{j['repo']}: {j['name']}" for j in held[:4]) + (f" and {len(held) - 4} more" if len(held) > 4 else "")
+    one = len(held) == 1
+    return _warn(f"{len(held)} Claude job{'' if one else 's'} bill{'s' if one else ''} Fable usage credits without asking and {'is' if one else 'are'} held: {names}",
+                 fix("Open Schedules, press Acknowledge on each job and set its Max $, or change its model; a held job never runs under a default cap"))
+
+
 for _id, _group, _label, _fn in (
+    ("claude-unattended", "claude", "Unattended Claude runs", _c_claude_unattended),
+    ("fable-jobs", "claude", "Fable jobs waiting", _c_fable_jobs),
     ("backup-repo", "box", "Backup repository", _c_backup_repo),
     ("backup-last", "box", "Last backup", _c_backup_last),
     ("backup-uncommitted", "box", "Uncommitted work", _c_backup_uncommitted),
