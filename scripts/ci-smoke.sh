@@ -36,6 +36,10 @@ trap cleanup EXIT
 docker rm -f "$name" >/dev/null 2>&1 || true
 mkdir -p "$work/home" "$work/data" "$work/projects" "$work/tmux"
 chmod 0777 "$work" "$work/home" "$work/data" "$work/projects" "$work/tmux"
+# The board refuses directories it does not own (PROJECTS_DIR must be owned by the ccboard user), and the runner's own uid is not
+# 1000: hand the four mounts to 1000:1000 through a throwaway root container of the same image. tmux wants its socket dir 0700.
+docker run --rm --user 0 --entrypoint sh -v "$work:/w" "$image" \
+  -c 'chown -R 1000:1000 /w/home /w/data /w/projects /w/tmux && chmod 0700 /w/tmux' >/dev/null
 
 echo "smoke: starting $image as 1000:1000 on 127.0.0.1:$port"
 docker run -d --name "$name" --network host --user 1000:1000 \

@@ -108,6 +108,9 @@ def test_pull_requests_build_without_pushing_and_stay_amd64():
     assert "github.event_name == 'pull_request'" in check
     assert "push: false" in check and "push: true" not in check and "packages: write" not in check
     assert "platforms: linux/amd64\n" in check and "arm64" not in check and "login-action" not in check
+    # a PR proves the image starts: loaded locally and smoke-tested, as the push job does before its tags move
+    assert "load: true" in check and "tags: ccboard:ci" in check
+    assert check.index("tags: ccboard:ci") < check.index("run: scripts/ci-smoke.sh ccboard:ci")
     image = _job(text, "image")
     assert "github.event_name == 'push'" in image
     assert "packages: write" not in _job(text, "image-check") and "packages: write" not in _job(text, "test")

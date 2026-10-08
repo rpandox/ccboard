@@ -228,15 +228,18 @@ def smoke(tmp_path):
 def test_smoke_passes_runs_the_four_checks_and_cleans_up(smoke):
     r, calls, left = smoke()
     assert r.returncode == 0, r.stdout + r.stderr
-    run = calls[_first(calls, "docker run")]
+    run = calls[_first(calls, "docker run -d")]
     assert "--user 1000:1000" in run and "CCBOARD_PORT=18999" in run and "--network host" in run and run.rstrip().endswith("ccboard:ci")
     assert "443" not in run
     # every directory the board validates at startup points at a mount (the first main run failed: PROJECTS_DIR stayed /srv/projects)
     for env, mount in (("HOME", "/work/home"), ("CCBOARD_DATA_DIR", "/work/data"), ("PROJECTS_DIR", "/work/projects")):
         assert f"{env}={mount}" in run and f":{mount} " in run, env
+    # the mounts belong to uid 1000 before the board starts (it refuses a PROJECTS_DIR it does not own; a CI runner is not uid 1000)
+    own = _first(calls, "docker run --rm --user 0")
+    assert own < _first(calls, "docker run -d") and "chown -R 1000:1000" in calls[own] and "chmod 0700 /w/tmux" in calls[own]
     execs = [c for c in calls if c.startswith("docker exec")]
     assert [e.split(" ", 3)[3] for e in execs] == ["python -c import app.main", "ccusage --version", "tmux -V", "gh --version"]
-    assert any(c.startswith("docker rm -f ccboard-smoke") for c in calls[_first(calls, "docker run"):])
+    assert any(c.startswith("docker rm -f ccboard-smoke") for c in calls[_first(calls, "docker run -d"):])
     assert not any(c.startswith("docker logs") for c in calls), "logs are for failures only"
     assert left == [], "the temp directories are removed"
 
@@ -245,7 +248,7 @@ def test_smoke_fails_with_logs_when_healthz_never_answers(smoke):
     r, calls, left = smoke(CURL_RC="22")
     assert r.returncode != 0 and "did not answer" in r.stderr
     assert "container log line" in r.stdout
-    assert any(c.startswith("docker rm -f ccboard-smoke") for c in calls[_first(calls, "docker run"):]) and left == []
+    assert any(c.startswith("docker rm -f ccboard-smoke") for c in calls[_first(calls, "docker run -d"):]) and left == []
 
 
 def test_smoke_fails_with_logs_when_the_container_exits(smoke):
