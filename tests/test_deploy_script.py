@@ -231,6 +231,9 @@ def test_smoke_passes_runs_the_four_checks_and_cleans_up(smoke):
     run = calls[_first(calls, "docker run")]
     assert "--user 1000:1000" in run and "CCBOARD_PORT=18999" in run and "--network host" in run and run.rstrip().endswith("ccboard:ci")
     assert "443" not in run
+    # every directory the board validates at startup points at a mount (the first main run failed: PROJECTS_DIR stayed /srv/projects)
+    for env, mount in (("HOME", "/work/home"), ("CCBOARD_DATA_DIR", "/work/data"), ("PROJECTS_DIR", "/work/projects")):
+        assert f"{env}={mount}" in run and f":{mount} " in run, env
     execs = [c for c in calls if c.startswith("docker exec")]
     assert [e.split(" ", 3)[3] for e in execs] == ["python -c import app.main", "ccusage --version", "tmux -V", "gh --version"]
     assert any(c.startswith("docker rm -f ccboard-smoke") for c in calls[_first(calls, "docker run"):])
