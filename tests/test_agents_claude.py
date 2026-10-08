@@ -1327,3 +1327,11 @@ def test_best_is_not_fable_when_the_catalogue_says_there_is_none():
     assert claude.resolves_to_fable(["--model", "best"], None, fable_available=False) is False
     assert claude.resolves_to_fable(["--model", "best"], None, fable_available=True) is True
     assert claude.fable_models(["--model", "Best", "--fallback-model", "FABLE,haiku"]) == ["best", "fable"]
+
+
+def test_a_tool_rule_that_looks_like_a_flag_is_refused():
+    # --allowedTools is variadic: a rule starting with - would be read by claude as its own flag (argument injection)
+    for bad in ("--dangerously-skip-permissions", "-p", "--permission-mode", "*", "Read\n--verbose"):
+        with pytest.raises(projects.BadRequest):
+            claude.ClaudeAgent.allowed_tool_rules([bad])
+    assert claude.ClaudeAgent.allowed_tool_rules(["Bash(git diff *)", "Read", "mcp__srv__tool"]) == ["Bash(git diff *)", "Read", "mcp__srv__tool"]
