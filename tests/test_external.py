@@ -404,7 +404,7 @@ def board(lite_client, box, fake_tmux, fake_codex, monkeypatch):
     monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")
     monkeypatch.setattr(claude_auth, "status", lambda: dict(AUTH))
     monkeypatch.setattr(claude_auth, "version", lambda: AUTH["version"])
-    monkeypatch.setattr(registry, "_IS_LINUX", False)
+    monkeypatch.setattr(registry.plat, "ppid", lambda pid: None)     # no real pid walk
     monkeypatch.setattr(registry, "_wall", lambda: NOW)
     registry.invalidate()
     git_init(box.projects / "shop" / "web")

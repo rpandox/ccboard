@@ -18,6 +18,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 # file -> why it may touch the home directly. app/config.py is allowed without an entry (it owns the path defaults).
 HOME_USE_ALLOWED = {
+    "app/platform.py": "owns the per-system path defaults (default_projects_dir, default_data_dir) that app/config.py reads; nothing is read or written here",
     "app/backup.py": "expands a user-given backup path (~/x) typed into the settings form",
     "app/previews.py": "shows the user's name in a path hint only",
     "app/hooks.py": "lists claude-mem's data dirs to skip in hook payloads; reads nothing",

@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from app import account_store, accounts, autoresume, claude_auth, login_problem, tmux
+from app.platform import browser_stub
 from app.config import settings
 from app.db import DB, iso
 
@@ -606,7 +607,7 @@ def test_start_login_runs_in_pending_with_the_quoted_email(box, fake_tmux):
     pend = account_store.pending_dir()
     assert pend.is_dir() and mode(pend) == 0o700 and mode(box.store) == 0o700 and not list(pend.iterdir())
     name, cwd, env = fake_tmux["created"][-1]
-    assert name == tmux.LOGIN_SESSION and env == {"BROWSER": "/bin/true", "CLAUDE_CONFIG_DIR": str(pend)}
+    assert name == tmux.LOGIN_SESSION and env == {"BROWSER": browser_stub(), "CLAUDE_CONFIG_DIR": str(pend)}
     assert fake_tmux["sent"][-1] == (tmux.LOGIN_SESSION, "claude auth login --email me+tag@example.org")
     v = account_store.login_view()
     assert v["adding"] is True and v["email"] == "me+tag@example.org" and v["started_at"] and v["result"] is None
@@ -644,7 +645,7 @@ def test_hostile_emails_are_rejected_before_anything_starts(box, fake_tmux, bad)
 
 def test_the_plain_login_for_the_live_config_dir_is_byte_identical(box, fake_tmux):
     claude_auth.start_login()
-    assert fake_tmux["created"][-1] == (tmux.LOGIN_SESSION, str(settings.claude_config_dir.parent), {"BROWSER": "/bin/true"})
+    assert fake_tmux["created"][-1] == (tmux.LOGIN_SESSION, str(settings.claude_config_dir.parent), {"BROWSER": browser_stub()})
     assert fake_tmux["sent"][-1] == (tmux.LOGIN_SESSION, "claude auth login")
 
 

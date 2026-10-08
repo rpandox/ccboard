@@ -7,7 +7,6 @@ Run by ccboard-backup.timer (`python -m app.backup`) or by "Back up now" on the 
 to <data dir>/backup-status.json, which the board shows in the usage strip and the 🔔 panel."""
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import os
@@ -23,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import notify
+from . import platform as plat
 from .config import settings
 
 log = logging.getLogger("ccboard.backup")
@@ -281,7 +281,7 @@ def write_status(st: dict) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(st, indent=1))
-    os.replace(tmp, p)
+    plat.atomic_replace(tmp, p)
 
 
 def try_lock():
@@ -289,8 +289,8 @@ def try_lock():
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     f = open(settings.data_dir / LOCK_FILE, "w")
     try:
-        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+        plat.lock_nb(f)
+    except (BlockingIOError, PermissionError):               # PermissionError: msvcrt's answer for a held lock
         f.close()
         return None
     return f
@@ -423,8 +423,7 @@ def start_detached() -> str:
             log.warning("systemctl start ccboard-backup failed (%s); running in-process instead", (r.stderr or "").strip()[-200:])
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     with open(settings.data_dir / LOG_FILE, "ab") as logf:
-        subprocess.Popen([sys.executable, "-m", "app.backup"], cwd=str(Path(__file__).resolve().parent.parent),
-                         stdin=subprocess.DEVNULL, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
+        plat.spawn_detached([sys.executable, "-m", "app.backup"], logf, cwd=str(Path(__file__).resolve().parent.parent))
     return "process"
 
 

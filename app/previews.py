@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import logging
-import re
 import shutil
 import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import platform as plat
 from .config import settings
 
 log = logging.getLogger("ccboard.previews")
-SS_RE = re.compile(r"pid=(\d+)")
 TAILSCALE_SOCK = Path("/var/run/tailscale/tailscaled.sock")   # mounted into the container by compose
 
 
@@ -21,18 +20,8 @@ class PreviewError(Exception):
 
 
 def children_of(pid: int) -> list[int]:
-    """Direct children from /proc (Linux); empty elsewhere."""
-    out: list[int] = []
-    task_dir = Path(f"/proc/{pid}/task")
-    try:
-        for t in task_dir.iterdir():
-            try:
-                out += [int(x) for x in (t / "children").read_text().split()]
-            except (OSError, ValueError):
-                continue
-    except OSError:
-        pass
-    return out
+    """Direct children (app.platform.children: /proc on Linux, psutil elsewhere)."""
+    return plat.children(pid)
 
 
 def descendants(pid: int, limit: int = 500) -> set[int]:
@@ -46,28 +35,9 @@ def descendants(pid: int, limit: int = 500) -> set[int]:
     return seen
 
 
-def listening() -> dict[int, set[int]]:
-    """pid -> {ports} for TCP listeners on loopback/any address (ss -ltnpH)."""
-    exe = shutil.which("ss")
-    if not exe:
-        return {}
-    try:
-        cp = subprocess.run([exe, "-ltnpH"], capture_output=True, text=True, timeout=5)
-    except (subprocess.TimeoutExpired, OSError):
-        return {}
-    out: dict[int, set[int]] = {}
-    for line in cp.stdout.splitlines():
-        parts = line.split()
-        if len(parts) < 4:
-            continue
-        addr = parts[3]
-        try:
-            port = int(addr.rsplit(":", 1)[1])
-        except (IndexError, ValueError):
-            continue
-        for m in SS_RE.finditer(line):
-            out.setdefault(int(m.group(1)), set()).add(port)
-    return out
+def listening(pids=None) -> dict[int, set[int]]:
+    """pid -> {ports} for TCP listeners on loopback/any address (app.platform.listening_ports: ss -ltnpH on Linux), of `pids` or of all."""
+    return plat.listening_ports(pids)
 
 
 def _url_port(url: str) -> int | None:
@@ -109,7 +79,7 @@ def ports_under(pane_pid: int) -> list[int]:
         return []
     tree = descendants(pane_pid)
     ports: set[int] = set()
-    for pid, ps in listening().items():
+    for pid, ps in listening(tree).items():
         if pid in tree:
             ports |= ps
     infra = infra_ports()

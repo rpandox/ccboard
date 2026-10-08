@@ -24,6 +24,24 @@ die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }
 
+# >>> docker host guard
+# The container runtime is a Linux-host feature (issue #120). The text lives in one function so the macOS installer can reuse it.
+docker_host_refusal() { # what: "Docker Desktop" or "macOS" -> refuse with the reason and the right alternative
+  local alt="install docker-ce inside this distro, or use the default systemd runtime"
+  [ "$1" != macOS ] || alt="use the launchd runtime"
+  die "CCBOARD_RUNTIME=docker is not supported with $1: the board's container reaches the host's tmux socket, tailscale socket, process list and claude and codex programs, and none of those cross the virtual machine that Docker Desktop runs containers in. Instead: $alt"
+}
+docker_host_guard() { # $1 = the text of /proc/version. Only WSL (Microsoft in /proc/version) is looked at; a plain Linux host is untouched
+  [ "$CCBOARD_RUNTIME" = docker ] || return 0
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in *microsoft*) ;; *) return 0;; esac
+  have docker || return 0   # docker_preflight says what to install
+  local engine; engine=$(docker info --format '{{.OperatingSystem}}' 2>/dev/null || true)
+  case "$engine" in *"Docker Desktop"*) docker_host_refusal "Docker Desktop";; esac
+  [ -n "$engine" ] || warn "could not tell which Docker engine this is: 'docker info --format {{.OperatingSystem}}' printed nothing; continuing as on Linux. Docker Desktop is not supported, use docker-ce inside this distro"
+  return 0
+}
+# <<< docker host guard
+
 # >>> serve and claude-mem viewer helpers
 # serve_check needs $TS_FQDN and $CCBOARD_HTTPS_PORT at call time. The viewer helpers are exercised on their own by tests/test_install_mem.py.
 serve_check() { # port path target -> prints ours|missing|foreign:<why>|funnel
@@ -184,6 +202,7 @@ done
   || die "CCBOARD_PORT, TTYD_PORT and CODE_SERVER_PORT must all differ"
 [[ "$PROJECTS_DIR" = /* ]] || die "PROJECTS_DIR must be an absolute path"
 case "$CCBOARD_RUNTIME" in systemd|docker) ;; *) die "CCBOARD_RUNTIME must be systemd or docker (got '$CCBOARD_RUNTIME')";; esac
+docker_host_guard "$(cat /proc/version 2>/dev/null || true)"   # refused before any change when the engine is Docker Desktop (WSL)
 case "$CCBOARD_CLAUDE_MEM" in 0|1) ;; *) die "CCBOARD_CLAUDE_MEM must be 0 or 1 (got '$CCBOARD_CLAUDE_MEM')";; esac
 case "$CCBOARD_MEM_SERVICE" in 0|1) ;; *) die "CCBOARD_MEM_SERVICE must be 0 or 1 (got '$CCBOARD_MEM_SERVICE')";; esac
 mem_viewer_port_check "$CCBOARD_MEM_HTTPS_PORT" "$CCBOARD_HTTPS_PORT" "$CODE_HTTPS_PORT" "$NTFY_HTTPS_PORT"   # refused before any change
@@ -198,7 +217,7 @@ case "$CCBOARD_CODEX_HOOK_TRUST" in review|bypass) ;; *) die "CCBOARD_CODEX_HOOK
 [ -z "$CODEX_HOME" ] || [[ "$CODEX_HOME" = /* ]] || die "CODEX_HOME must be empty or an absolute path (got '$CODEX_HOME')"
 [ "$CCBOARD_CODEX_HOOK_TRUST" != bypass ] || warn "CCBOARD_CODEX_HOOK_TRUST=bypass: every Codex session the board starts skips the hook review, including a .codex/hooks.json inside a repository you cloned (the same risk class as bypassPermissions)"
 CCBOARD_ALLOWED_USERS=$(printf '%s' "$CCBOARD_ALLOWED_USERS" | tr -d '[:space:]')
-for k in PROJECTS_DIR CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_ALLOWED_USERS CODEX_HOME CCBOARD_PRICE_TABLE; do
+for k in PROJECTS_DIR CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_ALLOWED_USERS CODEX_HOME CCBOARD_PRICE_TABLE APP_DIR; do
   case "${!k}" in *[[:space:]\"\$\\]*) die "$k must not contain whitespace, quotes, \$ or backslashes (got '${!k}')";; esac
 done
 [ -z "$CODEX_HOME" ] || export CODEX_HOME   # codex_hooks.py and the codex CLI below read it

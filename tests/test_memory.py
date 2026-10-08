@@ -12,14 +12,13 @@ import socket
 import subprocess
 import sys
 import threading
-import types
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-from app import doctor, memory
+from app import doctor, memory, platform
 from app.agents import monitor
 from app.config import Settings, settings
 from app.db import DB
@@ -60,17 +59,26 @@ def test_settings_ignore_a_bad_mem_port(raw):
 
 
 def test_default_port_is_the_plugins_own_37700_plus_uid_modulo_100():
-    """13.29.0 worker-service.cjs: CLAUDE_MEM_WORKER_PORT default `37700+(process.getuid?.()??77)%100` (uid 1000, a Mac uid 501)."""
+    """worker-service.cjs: CLAUDE_MEM_WORKER_PORT default `37700+(process.getuid?.()??77)%100` (uid 1000, a Mac uid 501)."""
     assert memory.default_port(1000) == 37700 and memory.default_port(501) == 37701
     assert memory.default_port(0) == 37700 and memory.default_port(1099) == 37799 and memory.default_port(1100) == 37700
     assert memory.default_port() == 37700 + os.getuid() % 100
     assert 37700 <= memory.default_port() <= 37799
 
 
-def test_default_port_without_a_uid_is_the_documented_37701(monkeypatch):
-    monkeypatch.setattr(memory, "os", types.SimpleNamespace())                 # no getuid on this platform
-    assert memory.default_port() == 37701
+def test_default_port_without_a_uid_is_37777(monkeypatch):
+    """The plugin's `?? 77` fallback (13.34.2 on a Mac and 13.29.0 on a Linux box both read `String(37700+(process.getuid?.()??77)%100)`)."""
+    monkeypatch.setattr(memory.plat, "current_uid", lambda: None)             # no getuid on this platform
+    assert memory.default_port() == 37777 and memory.default_port(None) == 37777
     assert memory.default_port(1000) == 37700, "a uid that is given is used as is"
+
+
+def test_default_port_is_pinned_for_the_uids_that_matter(monkeypatch):
+    monkeypatch.setattr(memory.plat, "current_uid", lambda: None)
+    assert [memory.default_port(u) for u in (0, 501, 1000, 1099)] == [37700, 37701, 37700, 37799]
+    assert memory.default_port(None) == 37777
+    monkeypatch.setattr(memory.plat, "current_uid", lambda: 501)
+    assert memory.default_port() == 37701, "a Mac's first account"
 
 
 def test_the_module_constant_is_computed_at_import_not_hardcoded(tmp_path):
@@ -222,6 +230,27 @@ def test_up_reads_every_number(mem_worker):
     json.dumps(h)                                                  # it goes into the kv and the state
     assert set(mem_worker.paths()) == {"/health", "/api/readiness", "/api/stats", "/api/processing-status"}
     assert {m for m, _ in mem_worker.requests} == {"GET"}
+
+
+def test_a_macs_health_answer_is_parsed(mem_worker):
+    """tests/fixtures/claude_mem_health_darwin.json is a real worker 13.34.2 answer from a Mac (platform darwin, managed false, a pid, no
+    activeSessions, many extra keys); the parser takes the pid and ignores the rest, and the missing session count falls back to /api/stats."""
+    from tests.mem_fake import fixture
+    mac = fixture("health_darwin")
+    assert (mac["platform"], mac["managed"], mac["version"], mac["status"]) == ("darwin", False, "13.34.2", "ok")
+    mem_worker.body["/health"] = mac
+    h = memory.health()
+    assert h["state"] == "up" and h["pid"] == mac["pid"] == 2216 and h["active_sessions"] == 2
+    assert "darwin" not in json.dumps(h), "nothing of the worker's own answer is passed on"
+    assert mac["workerPath"].startswith("/home/<user>/"), "the fixture holds no real account name"
+
+
+def test_the_default_port_on_a_mac_is_found_before_the_first_start(mem_home, monkeypatch):
+    monkeypatch.setattr(memory, "DEFAULT_PORT", memory.default_port(501))
+    d = memory.discover()
+    assert (d["port"], d["source"], d["pid"]) == (37701, "default", None)
+    write_pid(mem_home, pid=2216, port=37702, startedAt="x", startToken="y")
+    assert memory.discover()["port"] == 37702, "a running worker is found by its own file, not by the uid rule"
 
 
 def test_up_through_the_env_port_without_a_worker_pid(mem_worker, mem_home, monkeypatch):
@@ -463,7 +492,7 @@ def test_plugin_status_other_shapes():
 
 
 def write_environ(pid, text: bytes):
-    d = memory.PROC_ROOT / str(pid)
+    d = platform.PROC_ROOT / str(pid)
     d.mkdir(parents=True, exist_ok=True)
     (d / "environ").write_bytes(text)
 

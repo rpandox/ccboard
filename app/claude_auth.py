@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 
-from . import tmux
+from . import platform, tmux
 from .config import settings
 
 CODE_RE = re.compile(r"^[A-Za-z0-9._~-]{1,256}#[A-Za-z0-9._~-]{1,256}$")
@@ -104,7 +104,7 @@ def start_login(config_dir=None, email: str | None = None) -> None:
     if not exe:
         raise tmux.TmuxError("claude is not installed")
     tmux.kill_session(tmux.LOGIN_SESSION)
-    env = {"BROWSER": "/bin/true"}
+    env = {"BROWSER": platform.browser_stub()}
     if config_dir is not None:
         env["CLAUDE_CONFIG_DIR"] = str(config_dir)
     tmux.new_session(tmux.LOGIN_SESSION, str(settings.claude_config_dir.parent),

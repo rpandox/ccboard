@@ -63,7 +63,11 @@ def test_dev_lock_extends_the_runtime_lock_without_changing_it():
 
 
 def test_requirements_txt_mirrors_requirements_in():
-    """requirements.txt (ranges) stays for install.sh's systemd venv; it must not drift from requirements.in."""
+    """requirements.txt (ranges) stays for install.sh's systemd venv; it must not drift from requirements.in. The one allowed extra is a
+    requirement that never applies on Linux (psutil for macOS and Windows, issue #116): the Linux venv and the image (requirements.lock)
+    stay exactly as they were."""
     def norm(p):
         return [ln.strip() for ln in p.read_text().splitlines() if ln.strip() and not ln.strip().startswith("#")]
-    assert norm(ROOT / "requirements.txt") == norm(ROOT / "requirements.in")
+    off_linux = [ln for ln in norm(ROOT / "requirements.txt") if Requirement(ln).marker is not None]
+    assert [Requirement(ln).name for ln in off_linux] == ["psutil"] and not any(Requirement(ln).marker.evaluate({"sys_platform": "linux"}) for ln in off_linux)
+    assert [ln for ln in norm(ROOT / "requirements.txt") if ln not in off_linux] == norm(ROOT / "requirements.in")

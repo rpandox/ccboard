@@ -221,6 +221,7 @@ function settingsBox(p) {
     if (h.mem) gauge('RAM', h.mem.pct, `${h.mem.pct}%`);
     if (h.disk) gauge('Disk', h.disk.pct, `${h.disk.pct}%`);
   } else p.append(el('div', { class: 'dim', text: 'No health data yet.' }));
+  if (h && h.host_note === 'wsl2') p.append(el('div', { class: 'dim', text: 'WSL2: these numbers are for the Linux VM, not for Windows.' }));
   const bk = state.backup;
   p.append(settingsHead('Backup'));
   if (bk && bk.at) {

@@ -98,6 +98,8 @@ Working rules: one phase at a time; each item is one commit; tick items as they 
   - *as built:* the Sampler tick also reads Claude Code's cached usage from its state file, so the 5-hour and 7-day percentages stay current when no session is running. The Usage page computes the reset times and shows how old the figures are.
 - [x] v0.5.17h Refresh usage on demand: one tap asks an idle Claude session for `/usage` and the board reads the fresh numbers from Claude Code's state file
   - *as built:* `POST /api/usage/refresh` picks one idle Claude session and asks it for `/usage`; the Usage page's Limits title has a quiet Refresh button beside the freshness caption.
+- [x] v0.5.23 Portability foundation (#116 slices 1-7, #120, #121, #122, #123, #125 without the launchd parts)
+  - *as built:* `app/platform.py` is the only module that knows the operating system (a grep of `app/` for `import pwd`, `import fcntl`, `os.getuid` and `/proc` finds it and the doctor's `PROC_VERSION` seam); Linux paths are moved code with their strings pinned (tests/test_platform_hints.py); psutil only off Linux (`requirements.txt` marker), lsof as the port fallback. Doctor `tmux-socket`, `runtime-host`, `hook-helpers`; `tmux.socket_path()` cached for the hook path; hook commands through `shlex.quote`; `pytest.ini` markers and the advisory `test-macos` CI job. Checked on an Intel Mac with psutil 7.2.2: memory, uptime and CPU fill in, the Doctor's code-server fix reads brew. Not built: slice 8 (process-group kill, changes Linux) and everything that needs the macOS launchd runtime (#117): plists, `install-macos.sh`, the claude-mem launchd job, TMUX_TMPDIR pinning. Not verified: WSL2, the native Windows branches, psutil environ and net_connections on a real pane.
 
 ## Never
 

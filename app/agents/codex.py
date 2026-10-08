@@ -45,6 +45,7 @@ try:
 except ImportError:                                  # Python < 3.11: the trust check falls back to counting records
     tomllib = None
 
+from .. import platform as plat
 from .. import projects
 from ..config import settings
 from .base import Agent, Check, HookNorm, LaunchPlan, LaunchReq, OptField, SlashSpec, TTLCache
@@ -127,8 +128,7 @@ BASELINE_EXEC_CAPS = {"exec_approval": False, "exec_search": False, "exec_cd": T
 # nothing pasted back into the terminal. 0.145 has no such flag: its login wants a browser on the same machine.
 BASELINE_LOGIN_CAPS = {"device_auth": False}
 DEVICE_LOGIN_CMD = "codex login --device-auth"      # what the board types into its login tmux session (CODEX_HOME=<pending dir> is set on the session)
-PROC = Path("/proc")                                # patched by tests (a fake process table)
-PROC_NAME = "codex"                                 # /proc/<pid>/comm of a Codex process: the native binary names itself so, the npm node wrapper is `node`
+PROC_NAME = "codex"                                 # process name (/proc/<pid>/comm) of a Codex process: the native binary names itself so, the npm node wrapper is `node`
 MAX_ANCESTOR_HOPS = 40
 
 # `codex debug models` fallback: the current visible family at 0.160, in the order the TUI's /model picker lists them (V8-Codex box check).
@@ -213,46 +213,28 @@ def forget_auth() -> None:
     _AGENT_AUTH.clear()
 
 
-def _ppid(pid: int) -> int | None:
-    """Parent pid from /proc/<pid>/stat ('pid (comm) S ppid ...'; comm may contain spaces and parentheses)."""
-    try:
-        raw = (PROC / str(pid) / "stat").read_text(errors="replace")
-        return int(raw.rsplit(")", 1)[1].split()[1])
-    except (OSError, ValueError, IndexError):
+def foreign_process_count(board_pids=()) -> int | None:
+    """How many Codex processes run on this box that the board did not start: a process named `codex` (app.platform.comm: /proc/<pid>/comm
+    on Linux) that is not this process and has none of `board_pids` (the panes of the board's own tmux sessions) among its ancestors. Such a
+    process (a Hermes agent's app-server daemon, a Codex in somebody's terminal) keeps the login it read when it started, and may write that
+    login's refreshed token back into auth.json. None when the process list cannot be read: the count is then unknown, not zero. Reads names
+    and parent pids only, never an environment or a command line."""
+    pids = plat.iter_processes()
+    if pids is None:
         return None
+    skip = {int(p) for p in board_pids if isinstance(p, int) and not isinstance(p, bool)} | {os.getpid()}
+    n = 0
+    for pid in pids:
+        if plat.comm(pid) != PROC_NAME:
+            continue
+        if not any(c in skip for c in [pid, *plat.ancestors(pid, MAX_ANCESTOR_HOPS - 1)]):
+            n += 1
+    return n
 
 
 def foreign_processes(board_pids=()) -> int:
-    """How many Codex processes run on this box that the board did not start: a process named `codex` (/proc/<pid>/comm) that is not this
-    process and has none of `board_pids` (the panes of the board's own tmux sessions) among its ancestors. Such a process (a Hermes agent's
-    app-server daemon, a Codex in somebody's terminal) keeps the login it read when it started, and may write that login's refreshed token
-    back into auth.json. Linux only (no /proc elsewhere: 0). Reads names and parent pids only, never an environment or a command line."""
-    try:
-        names = [n for n in os.listdir(PROC) if n.isdigit()]
-    except OSError:
-        return 0
-    skip = {int(p) for p in board_pids if isinstance(p, int) and not isinstance(p, bool)} | {os.getpid()}
-    n = 0
-    for name in names:
-        pid = int(name)
-        try:
-            if (PROC / name / "comm").read_text(errors="replace").strip() != PROC_NAME:
-                continue
-        except OSError:
-            continue
-        cur, seen, mine = pid, {pid}, False
-        for _ in range(MAX_ANCESTOR_HOPS):
-            if cur in skip:
-                mine = True
-                break
-            nxt = _ppid(cur)
-            if not nxt or nxt <= 1 or nxt in seen:
-                break
-            seen.add(nxt)
-            cur = nxt
-        if not mine:
-            n += 1
-    return n
+    """foreign_process_count() with an unreadable process list counted as 0; callers that must tell "none" from "unknown" use the former."""
+    return foreign_process_count(board_pids) or 0
 
 
 # ---------------------------------------------------------------- #97: where Codex is installed and whether its own update can work
@@ -360,11 +342,7 @@ def update_path_check(exe: str | None, *, env: dict | None = None, home: Path | 
 
 def _whoami() -> str:
     """The user the board runs as (writability is judged for it, not for the person's shell): a name, else the uid."""
-    try:
-        import pwd
-        return pwd.getpwuid(os.geteuid()).pw_name
-    except (ImportError, KeyError, AttributeError, OSError):
-        return f"uid {os.geteuid()}" if hasattr(os, "geteuid") else "unknown"
+    return plat.whoami()
 
 
 # ---------------------------------------------------------------- #96: a Codex session that took a prompt but never sent a hook

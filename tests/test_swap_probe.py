@@ -5,6 +5,10 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.posix_sh      # runs the shell scripts under sh
+
 ROOT = Path(__file__).resolve().parent.parent
 PROBE = ROOT / "scripts" / "swap-probe.sh"
 

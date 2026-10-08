@@ -3,7 +3,6 @@ throttles, every writer, the Sampler thread, and the read-side helpers behind /a
 
 Everything time-driven goes through an explicit `at=` or an injected clock and nothing sleeps. The only wall-clock reads are the
 `now` defaults (parse_since, series_payload with until=None) and the one real-thread Sampler test, each with a generous tolerance."""
-import io
 import json
 import logging
 import sqlite3
@@ -13,9 +12,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app import accounts, health, samples
+from app import accounts, health, platform, samples
 from app.config import settings
 from app.db import DB, iso
+from tests.proc_fake import use_fake_proc
 
 UTC = timezone.utc
 T0 = datetime(2026, 10, 3, 6, 0, 0, tzinfo=UTC)          # 11:45 in Asia/Kathmandu
@@ -889,17 +889,12 @@ def test_events_payload_cap_keeps_the_newest_in_order(db):
 
 
 # ================================================================== health._cpu_pct per consumer
-def test_cpu_pct_keeps_one_previous_reading_per_consumer(monkeypatch):
-    stat = {"line": ""}
-    real_open = open
-
-    def fake_open(path, *a, **k):
-        return io.StringIO(stat["line"]) if path == "/proc/stat" else real_open(path, *a, **k)
-    monkeypatch.setattr(health, "open", fake_open, raising=False)
-    monkeypatch.setattr(health, "_cpu_prev", {})
+def test_cpu_pct_keeps_one_previous_reading_per_consumer(monkeypatch, tmp_path):
+    use_fake_proc(monkeypatch, tmp_path)
+    monkeypatch.setattr(platform, "_cpu_prev", {})
 
     def feed(idle, busy):
-        stat["line"] = f"cpu  {busy} 0 0 {idle} 0 0 0 0 0 0\n"
+        (tmp_path / "stat").write_text(f"cpu  {busy} 0 0 {idle} 0 0 0 0 0 0\n")
 
     feed(idle=100, busy=100)
     assert health._cpu_pct("a") is None and health._cpu_pct("b") is None, "each consumer's first reading has nothing to diff"
@@ -912,7 +907,7 @@ def test_cpu_pct_keeps_one_previous_reading_per_consumer(monkeypatch):
     feed(idle=300, busy=200)
     assert health._cpu_pct() == 0.0
     assert health._cpu_pct("a") == 0.0
-    monkeypatch.setattr(health, "open", lambda *a, **k: (_ for _ in ()).throw(OSError("no /proc")), raising=False)
+    (tmp_path / "stat").unlink()                             # no /proc/stat
     assert health._cpu_pct("a") is None
 
 

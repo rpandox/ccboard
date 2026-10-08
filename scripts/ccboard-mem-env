@@ -25,7 +25,7 @@ case "$pid" in ''|*[!0-9]*) exit 0 ;; esac
 
 # names only: keep lines that look like NAME=..., cut at the first '=', then keep the allowed names
 names=$(head -c 1048576 "$PROC/$pid/environ" 2>/dev/null | tr '\0' '\n' | grep '=' | sed 's/=.*//' \
-  | grep -E '^(CCBOARD_[A-Za-z0-9_]*|TMUX|TMUX_PANE|CLAUDECODE|CLAUDE_CODE_[A-Za-z0-9_]*)$' | sort -u) || names=""
+  | grep -E '^(CCBOARD_[A-Za-z0-9_]*|TMUX|TMUX_PANE|CLAUDECODE|CLAUDE_CODE_[A-Za-z0-9_]*)$' | LC_ALL=C sort -u) || names=""
 list=""
 for n in $names; do
   list="$list${list:+, }\"$n\""

@@ -54,7 +54,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import accounts, claude_auth, login_problem, tmux
+from . import accounts, claude_auth, login_problem, platform, tmux
 from .account_store import _read_plain, _read_stable, _secure_dir, _stamp, _Unstable, _write_atomic
 from .agents import codex as codex_agent
 from .agents import get as get_agent
@@ -100,6 +100,7 @@ SLOT_RE = re.compile(r"^[0-9a-f]{24}\Z")             # \Z: names a directory, so
 REASON_NOT_INSTALLED = "codex is not installed"
 REASON_UPDATE = "update Codex to 0.157 or newer: npm install -g --prefix ~/.local @openai/codex@latest"   # the safe update (#97): never the bare global npm install, never Codex's own prompt
 WARN_OTHER = "other Codex processes on this box keep the previous login until they restart"
+WARN_OTHER_UNKNOWN = "could not list this box's processes: any other Codex process keeps the previous login until it restarts"
 BUSY_SESSIONS = "close the board's Codex sessions first; a running Codex keeps its login and would write it back"
 ERR_DID_NOT_COMPLETE = "the login did not complete"
 ERR_NEED_LABEL = "give the account a name"
@@ -537,9 +538,12 @@ def _warnings() -> list[str]:
     except Exception:
         panes = []
     try:
-        return [WARN_OTHER] if codex_agent.foreign_processes(panes) else []
+        n = codex_agent.foreign_process_count(panes)
     except Exception:
         return []
+    if n is None:                                        # the process list could not be read: unknown is never "none"
+        return [WARN_OTHER_UNKNOWN]
+    return [WARN_OTHER] if n else []
 
 
 def _confirm_current(db, got, now) -> tuple[str | None, bool]:
@@ -782,7 +786,7 @@ def start_login(db, label, *, restart: bool = False, replace_key: str | None = N
             _seed_config(pend)
             with contextlib.suppress(tmux.TmuxDown):
                 tmux.kill_session(tmux.LOGIN_SESSION)
-            tmux.new_session(tmux.LOGIN_SESSION, str(Path.home()), env={"CODEX_HOME": str(pend), "BROWSER": "/bin/true"}, width=400, height=50)
+            tmux.new_session(tmux.LOGIN_SESSION, str(Path.home()), env={"CODEX_HOME": str(pend), "BROWSER": platform.browser_stub()}, width=400, height=50)
             tmux.send_line(tmux.LOGIN_SESSION, codex_agent.DEVICE_LOGIN_CMD)
         except BaseException:
             shutil.rmtree(pend, ignore_errors=True)

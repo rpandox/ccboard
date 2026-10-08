@@ -4,10 +4,11 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
-import pwd
 import re
 import shutil
 from pathlib import Path
+
+from . import platform as plat
 
 log = logging.getLogger("ccboard")
 
@@ -44,7 +45,7 @@ def parse_clone_hosts(raw: str) -> tuple[str, ...]:
 class Settings:
     def __init__(self, env=None):
         env = os.environ if env is None else env
-        self.projects_dir = Path(env.get("PROJECTS_DIR", "/srv/projects"))
+        self.projects_dir = Path(env["PROJECTS_DIR"]) if "PROJECTS_DIR" in env else plat.default_projects_dir()
         self.port = int(env.get("CCBOARD_PORT", "8000"))
         self.ttyd_port = int(env.get("TTYD_PORT", "7681"))
         self.code_server_port = int(env.get("CODE_SERVER_PORT", "8080"))
@@ -52,20 +53,19 @@ class Settings:
         self.code_https_port = int(env.get("CODE_HTTPS_PORT", "8443"))
         self.allowed_users = parse_allowlist(env.get("CCBOARD_ALLOWED_USERS", ""))
         self.clone_allowed_hosts = parse_clone_hosts(env.get("CCBOARD_CLONE_ALLOWED_HOSTS", ""))     # hosts a clone may name although they look local or private (app/projects.py check_clone_url)
-        data_dir = env.get("CCBOARD_DATA_DIR") or str(Path.home() / ".local" / "share" / "ccboard")
+        data_dir = env.get("CCBOARD_DATA_DIR") or str(plat.default_data_dir())
         self.data_dir = Path(data_dir)
         self.db_path = self.data_dir / "ccboard.db"
         # Where this process runs: 'docker' (compose sets CCBOARD_RUNTIME=docker), 'systemd' (INVOCATION_ID is always
-        # set by a unit) or 'host' (a dev shell). An unknown CCBOARD_RUNTIME is ignored, never trusted.
-        runtime = (env.get("CCBOARD_RUNTIME") or "").strip().lower()
-        if runtime not in ("docker", "systemd", "host"):
-            if runtime:
-                log.warning("ignoring unknown CCBOARD_RUNTIME=%r", runtime)
-            runtime = "systemd" if env.get("INVOCATION_ID") else "host"
+        # set by a unit), 'launchd' (a macOS LaunchAgent: CCBOARD_RUNTIME=launchd, or an XPC_SERVICE_NAME naming a ccboard label)
+        # or 'host' (a dev shell). An unknown CCBOARD_RUNTIME is ignored, never trusted (app/platform.py resolve_runtime).
+        runtime, _detected = plat.resolve_runtime(env)
         self.runtime = runtime
         self.image_version = (env.get("CCBOARD_IMAGE_VERSION") or "").strip()   # baked into the image by CI
-        # The dev bypass is for a dev shell only: ignored under systemd (INVOCATION_ID) and inside the container.
-        self.dev_bypass_user = env.get("CCBOARD_DEV_BYPASS_USER") if runtime == "host" and not env.get("INVOCATION_ID") else None
+        # The dev bypass is for a dev shell only: ignored under systemd (INVOCATION_ID), launchd and inside the container.
+        self.dev_bypass_user = env.get("CCBOARD_DEV_BYPASS_USER") if plat.dev_bypass_allowed(env, runtime) else None
+        if env.get("CCBOARD_DEV_BYPASS_USER") and self.dev_bypass_user is None:
+            log.warning("ignoring CCBOARD_DEV_BYPASS_USER (runtime %s): the dev bypass is for a dev shell only, never a service or a container", runtime)
         self.tmux_socket = env.get("CCBOARD_TMUX_SOCKET", "ccboard")
         self.public_url = (env.get("CCBOARD_PUBLIC_URL") or "").strip()
         # The remote MCP endpoint /mcp (issue #13): '1' turns it on until someone flips the switch in Settings > Agents (the stored
@@ -172,10 +172,7 @@ class Settings:
                 log.warning("ignoring CCBOARD_MEM_HTTPS_PORT=%d (443 and the board's, code-server's and ntfy's ports are never used for the viewer)", mp)
             else:
                 self.mem_https_port = mp
-        try:
-            self.login_shell = pwd.getpwuid(os.getuid()).pw_shell or "/bin/sh"
-        except KeyError:
-            self.login_shell = "/bin/sh"
+        self.login_shell = plat.login_shell()
 
     def mem_viewer_url(self) -> str | None:
         """https://<the board's public host>:<CCBOARD_MEM_HTTPS_PORT>/ for the Memory page's viewer link, or None: not set, or no public URL to take the host from.
@@ -212,8 +209,10 @@ class Settings:
             return False
         homes = {Path.home().resolve()}
         try:
-            homes.add(Path(pwd.getpwuid(os.getuid()).pw_dir).resolve())
-        except (KeyError, OSError):
+            pw_home = plat.passwd_home()
+            if pw_home is not None:
+                homes.add(pw_home.resolve())
+        except OSError:
             pass
         for d in (self.data_dir, self.projects_dir, self.claude_config_dir, self.codex_home):
             if not Path(d).is_absolute():
@@ -234,8 +233,10 @@ class Settings:
             raise SystemExit(f"PROJECTS_DIR is not a directory: {p}")
         if p.resolve() in (Path("/"), Path.home().resolve()):
             raise SystemExit(f"PROJECTS_DIR must not be / or your home directory: {p}")
-        if p.stat().st_uid != os.getuid():
+        if plat.owned_by_me(p) is False:                 # None (no uid on this system) skips the check
             raise SystemExit(f"PROJECTS_DIR must be owned by the ccboard user: {p}")
+        if plat.under_drvfs(p):
+            log.warning("PROJECTS_DIR %s is on a Windows drive (below /mnt/): file owners and change stamps are weak there and it is slow; keep projects in the WSL home instead", p)
         if not self.allowed_users and not self.dev_bypass_user:
             log.error("CCBOARD_ALLOWED_USERS is empty: every request will be denied (fail closed)")
         self.data_dir.mkdir(parents=True, exist_ok=True)

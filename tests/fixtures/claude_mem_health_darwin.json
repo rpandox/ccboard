@@ -1,0 +1,32 @@
+{
+  "status": "ok",
+  "version": "13.34.2",
+  "workerPath": "/home/<user>/.claude/plugins/cache/thedotmack/claude-mem/13.34.2/scripts/worker-service.cjs",
+  "uptime": 6158,
+  "managed": false,
+  "hasIpc": false,
+  "platform": "darwin",
+  "pid": 2216,
+  "initialized": true,
+  "mcpReady": true,
+  "ai": {
+    "provider": "claude",
+    "authMethod": "Claude Code OAuth token (read from the Claude Code credential store at spawn) profile=default",
+    "lastInteraction": {
+      "timestamp": 1791486532359,
+      "success": true
+    }
+  },
+  "dependencies": {
+    "degraded": true,
+    "statuses": [
+      {
+        "dependency": "uvx",
+        "kind": "vector_search_unavailable",
+        "message": "chroma-mcp prewarm paused after 8 consecutive failures; retrying in 3515s",
+        "remediation": "Install uv/uvx and make uvx visible to the worker PATH, then restart claude-mem. Try `curl -LsSf https://astral.sh/uv/install.sh | sh` or `brew install uv`.",
+        "recordedAtMs": 1791486532714
+      }
+    ]
+  }
+}

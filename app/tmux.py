@@ -64,9 +64,43 @@ def server_up() -> bool:
     try:
         run("list-sessions", check=False)
         cp = run("display-message", "-p", "ok", check=False)
-        return "no server running" not in (cp.stderr or "") and "error connecting" not in (cp.stderr or "")
+        up = "no server running" not in (cp.stderr or "") and "error connecting" not in (cp.stderr or "")
     except TmuxError:
-        return False
+        up = False
+    _note_up(up)
+    return up
+
+
+# socket_path(): the answer is kept until server_up() sees the server go down or come back (a hook calls it for every pane id,
+# so a steady state must not start a tmux process per hook); a "no answer" is kept for a few seconds only.
+_SOCK_MISS_TTL = 5.0
+_sock: dict = {"key": None, "path": None, "at": 0.0, "up": None}
+
+
+def _note_up(up: bool) -> None:
+    if _sock["up"] != up or not up or not _sock["path"]:     # first sight, a flip, down, or up with no answer kept: ask again
+        _sock["key"] = None
+    _sock["up"] = up
+
+
+def socket_path(fresh: bool = False) -> str | None:
+    """Where the board's tmux server keeps its socket, asked of tmux itself (`display-message -p '#{socket_path}'` on the board's
+    -N -L base). None when tmux is down, is not installed, or answers without an absolute path (a tmux that lacks the format). Cached
+    until server_up() sees the server flip (`fresh` asks again, for the doctor); an unanswered question is asked again after a few
+    seconds. Never starts a server."""
+    key = tuple(_base())
+    if not fresh and _sock["key"] == key and (_sock["path"] or time.monotonic() - _sock["at"] < _SOCK_MISS_TTL):
+        return _sock["path"]
+    path = None
+    try:
+        cp = run("display-message", "-p", "#{socket_path}", check=False)
+        out = (cp.stdout or "").strip()
+        if cp.returncode == 0 and out.startswith("/"):
+            path = out
+    except TmuxError:
+        pass
+    _sock.update(key=key, path=path, at=time.monotonic())
+    return path
 
 
 def list_sessions() -> dict[str, dict]:

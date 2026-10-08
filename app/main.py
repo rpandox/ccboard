@@ -37,6 +37,7 @@ from .agents import claude as claude_adapter
 from .agents.claude import BYPASS_PARTS, OVERRIDE_PARTS, WORKTREE_RE
 from .agents.codex import NAME_RE as CODEX_NAME_RE
 from . import issues as issues_mod
+from . import platform as plat
 from . import mcp, mcp_remote, mcp_tokens
 from .auth import csrf_ok, identify
 from .config import settings
@@ -364,7 +365,7 @@ async def _giterr(_, e):
 
 @app.exception_handler(tmux.TmuxDown)
 async def _down(_, e):
-    return JSONResponse({"error": "ccboard-tmux is not running (sudo systemctl start ccboard-tmux)"}, status_code=503)
+    return JSONResponse({"error": f"ccboard-tmux is not running ({plat.hint('start', 'ccboard-tmux')})"}, status_code=503)
 
 
 @app.exception_handler(tmux.TmuxError)
@@ -3953,7 +3954,7 @@ def api_backup_run():
         raise HTTPException(409, "a backup is already running")
     via = backup.start_detached()
     return {"started": True, "via": via,
-            "log": "journalctl -u ccboard-backup" if via == "systemd" else str(settings.data_dir / backup.LOG_FILE)}
+            "log": plat.hint("logs", "ccboard-backup", sudo=False) if via == "systemd" else str(settings.data_dir / backup.LOG_FILE)}
 
 
 def _node_summary() -> dict:

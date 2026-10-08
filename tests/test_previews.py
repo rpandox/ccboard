@@ -8,7 +8,7 @@ H = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
 def test_ports_under_tree(monkeypatch):
     tree = {100: [200], 200: [300, 301], 300: [], 301: []}
     monkeypatch.setattr(previews, "children_of", lambda pid: tree.get(pid, []))
-    monkeypatch.setattr(previews, "listening", lambda: {301: {5173, 8000}, 999: {3000}})
+    monkeypatch.setattr(previews, "listening", lambda pids=None: {301: {5173, 8000}, 999: {3000}})
     assert previews.ports_under(100) == [5173]      # 8000 is the board's own port, 999 is not in the tree
     assert previews.ports_under(0) == []
 
@@ -18,6 +18,7 @@ def test_ss_parse(monkeypatch):
               'LISTEN 0 4096 *:3000 *:* users:(("python3",pid=77,fd=5),("python3",pid=78,fd=5))\n')
     class CP:
         stdout = sample
+    monkeypatch.setattr(previews.plat, "IS_LINUX", True)
     monkeypatch.setattr(previews.shutil, "which", lambda _: "/usr/bin/ss")
     monkeypatch.setattr(previews.subprocess, "run", lambda *a, **k: CP())
     assert previews.listening() == {4242: {5173}, 77: {3000}, 78: {3000}}

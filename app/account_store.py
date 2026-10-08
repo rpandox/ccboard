@@ -38,7 +38,6 @@ import hashlib
 import json
 import logging
 import os
-import secrets
 import shutil
 import stat
 import sys
@@ -47,6 +46,7 @@ import time
 from pathlib import Path
 
 from . import accounts, claude_auth, login_problem, tmux
+from . import platform as plat
 from .config import settings
 from .db import iso
 
@@ -120,8 +120,7 @@ class _StateUnreadable(Exception):
     """A Claude state file that does not parse; the message names the file, never its content."""
 
 
-class _Changed(Exception):
-    """A state file was rewritten between our read and our replace."""
+_Changed = plat.WriteRaced          # a state file was rewritten between our read and our replace
 
 
 _MISSING = object()                # "the file had no oauthAccount key"
@@ -219,23 +218,9 @@ def _read_stable(path: Path) -> tuple[bytes, list] | None:
 
 
 def _write_atomic(dest: Path, data: bytes, mode: int = 0o600, *, still=None) -> None:
-    """Replace `dest` with `data`: a temp file in the same directory (created 0600, then set to `mode`), fsync, os.replace. `still`, when
+    """Replace `dest` with `data` (platform.secure_write: a private temp file in the same directory, fsync, atomic replace). `still`, when
     given, is asked just before the replace and must say the destination is as it was (else _Changed and nothing is replaced)."""
-    tmp = dest.with_name(f".{dest.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(fd, "wb") as f:
-            os.fchmod(f.fileno(), mode)
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        if still is not None and not still():
-            raise _Changed()
-        os.replace(tmp, dest)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
+    plat.secure_write(dest, data, mode, still=still)
 
 
 def _store_creds(slot: Path, data: bytes) -> None:

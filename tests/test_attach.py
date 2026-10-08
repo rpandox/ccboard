@@ -11,6 +11,8 @@ import subprocess
 
 import pytest
 
+pytestmark = pytest.mark.posix_sh      # runs the shell scripts under sh
+
 ATTACH = pathlib.Path(__file__).resolve().parent.parent / "bin" / "ccboard-attach"
 SHELLS = ["/bin/sh"] + ([shutil.which("dash")] if shutil.which("dash") and os.path.realpath(shutil.which("dash")) != os.path.realpath("/bin/sh") else [])
 

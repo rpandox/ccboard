@@ -44,7 +44,7 @@ def board(lite_client, projects_dir, fake_tmux, monkeypatch):
     monkeypatch.setattr(claude_auth, "status", lambda: {"installed": True, "version": "2.1.287 (Claude Code)", "loggedIn": True,
                                                         "authMethod": "claude.ai", "email": "me@example.com"})
     monkeypatch.setattr(claude_auth, "version", lambda: "2.1.287 (Claude Code)")
-    monkeypatch.setattr(registry, "_IS_LINUX", False)
+    monkeypatch.setattr(registry.plat, "ppid", lambda pid: None)     # no real pid walk
     registry.invalidate()
     git_init(projects_dir / "shop" / "api")
     git_init(projects_dir / "shop" / "web")

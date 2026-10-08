@@ -24,7 +24,7 @@ jobs:
       - timeout-minutes: 6
         run: |
           for i in 1 2 3; do
-            sudo timeout 120 apt-get update -qq -o Acquire::Retries=2 && sudo timeout 120 apt-get install -y tmux && exit 0
+            sudo timeout 120 apt-get update -qq -o Acquire::Retries=2 && sudo timeout 120 apt-get install -y tmux shellcheck && exit 0
             sleep 10
           done
           exit 1
@@ -45,6 +45,86 @@ jobs:
         run: |
           pip install pip-audit==2.10.1
           pip-audit --require-hashes --disable-pip -r requirements.lock
+
+  # Issue #123: is this change more than documents? The macOS job below runs only when it is (macOS minutes cost more than Linux ones).
+  # Anything outside *.md and docs/ counts, and a workflow, a script or the installer always counts. Only test-macos needs this job.
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.scope.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          base="$PUSH_BEFORE"
+          if [ "$EVENT" = pull_request ]; then base="$PR_BASE"; fi
+          code=true
+          if [ -n "$base" ] && files=$(git diff --name-only "$base"...HEAD 2>/dev/null || git diff --name-only "$base" HEAD 2>/dev/null) && [ -n "$files" ]; then
+            code=false
+            set -f
+            for f in $files; do
+              case "$f" in
+                .github/*|scripts/*|bin/*|install.sh) code=true ;;
+                *.md|docs/*) ;;
+                *) code=true ;;
+              esac
+            done
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+  # Issue #123: the whole suite on macOS, advisory. It is NOT in the image job's needs and runs with continue-on-error, so a red macOS run can
+  # neither stop nor allow the image the box pulls. Read-only token, no secrets. Promote it (needs + the pin in tests/test_ci_workflow.py)
+  # only after ten green runs in a row, in a commit of its own. HOME, TMUX_TMPDIR and the tmux socket are temp names: no real login or session.
+  test-macos:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - timeout-minutes: 10
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install tmux shellcheck
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - run: pip install --require-hashes -r requirements-dev.lock
+      # app/platform.py answers the process questions through psutil off Linux; drop this line when the lock carries it.
+      - run: pip install psutil==7.2.2
+      # The scripts parse under the real macOS sh (bash 3.2 in POSIX mode) and under bash.
+      - name: Shell syntax
+        run: |
+          for f in bin/* scripts/*.sh; do
+            case "$(head -n 1 "$f")" in
+              *bash*) bash -n "$f" ;;
+              *) sh -n "$f" && bash -n "$f" ;;
+            esac
+          done
+      - name: Tests
+        env:
+          CCBOARD_TEST_NO_CLAUDE: "1"
+          HOME: ${{ runner.temp }}/home
+          TMUX_TMPDIR: ${{ runner.temp }}/tmux
+          CCBOARD_TMUX_SOCKET: ccboard-ci-macos
+        run: |
+          mkdir -p "$HOME" "$TMUX_TMPDIR"
+          python -m pytest -q
 
   # Push to main (or a v* tag): build the amd64 image and load it, smoke-test it, and only then build-and-push the
   # multi-arch manifest (amd64 + arm64) with every tag. A failed smoke step or a failed arm64 leg fails the job before any

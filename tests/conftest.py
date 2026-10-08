@@ -1,6 +1,7 @@
 import contextlib
 import os
 import pathlib
+import shutil
 import sys
 import time
 
@@ -40,6 +41,37 @@ def home_changes(before, after):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "real_home(reason): the test legitimately reads the real home, so it keeps HOME; give the reason")
+
+
+# ---- platform markers (issue #123) --------------------------------------------------------------------------------------------------
+# pytest.ini registers the markers (and --strict-markers makes a typo an error); this hook turns each into a skip with the reason in the
+# report. Flags are read when the hook runs, so a test can patch app.platform and ask platform_skip_reason() again.
+def platform_skip_reason(marks) -> str | None:
+    """Why a test carrying the marker names in `marks` cannot run on this host, or None when it can."""
+    from app import platform
+    if "linux_only" in marks and not platform.IS_LINUX:
+        return f"linux_only: needs a Linux host (this is {sys.platform})"
+    if "needs_macos" in marks and not platform.IS_MACOS:
+        return f"needs_macos: needs a macOS host (this is {sys.platform})"
+    if "needs_systemd" in marks:
+        if not platform.IS_LINUX:
+            return f"needs_systemd: needs a Linux host running systemd (this is {sys.platform})"
+        if not (shutil.which("systemctl") and os.path.isdir("/run/systemd/system")):
+            return "needs_systemd: systemd is not running on this host"
+    if "needs_proc" in marks and not (platform.PROC_ROOT / "self").exists():
+        return f"needs_proc: {platform.PROC_ROOT} is not readable on this host"
+    if "needs_tmux" in marks and not shutil.which("tmux"):
+        return "needs_tmux: tmux is not on PATH"
+    if "posix_sh" in marks and (platform.IS_WINDOWS or not shutil.which("sh")):
+        return "posix_sh: no POSIX sh on this host"
+    return None
+
+
+def pytest_collection_modifyitems(config, items):
+    for item in items:
+        reason = platform_skip_reason({m.name for m in item.iter_markers()})
+        if reason:
+            item.add_marker(pytest.mark.skip(reason=reason))
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -121,7 +153,8 @@ def mem_home(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "mem_port", None)
     monkeypatch.setattr(settings, "claude_mem", True)
     monkeypatch.setattr(settings, "claude_config_dir", tmp_path / "claude")
-    monkeypatch.setattr(memory, "PROC_ROOT", tmp_path / "proc")
+    from tests.proc_fake import use_fake_proc
+    use_fake_proc(monkeypatch, tmp_path / "proc")
     monkeypatch.setattr(memory, "DEFAULT_PORT", closed_port())     # a dev box may run a real worker on 37701
     return d
 

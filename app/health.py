@@ -1,4 +1,4 @@
-"""Box health (cpu / ram / disk / uptime) from /proc and shutil, and the hub/node fleet: a hub polls the
+"""Box health (cpu / ram / disk / uptime) from app.platform (/proc on Linux, psutil elsewhere) and shutil, and the hub/node fleet: a hub polls the
 other boxes' /api/node/summary over MagicDNS with a shared token (tagged nodes send no identity headers)."""
 from __future__ import annotations
 
@@ -14,53 +14,27 @@ import time
 import urllib.request
 from pathlib import Path
 
+from . import platform
 from .config import settings
 
 log = logging.getLogger("ccboard.health")
 POLL_SECONDS = 60
 KV_NODES = "nodes"
 HUB_HEADER = "x-ccboard-hub"
-_cpu_prev: dict[str, tuple[int, int]] = {}      # consumer -> the previous (idle, total) reading
-_cpu_lock = threading.Lock()
 
 
 def _cpu_pct(consumer: str = "default") -> float | None:
-    """CPU busy % since this consumer's previous reading (None on its first reading or without /proc/stat). Every consumer
-    keeps its own previous reading, so the Sampler (60 s) and the /api/state poll (3 s) never steal each other's delta."""
-    try:
-        with open("/proc/stat") as f:
-            fields = f.readline().split()[1:]
-        vals = [int(x) for x in fields]
-        idle, total = vals[3] + (vals[4] if len(vals) > 4 else 0), sum(vals)
-    except (OSError, ValueError, IndexError):
-        return None
-    with _cpu_lock:
-        prev = _cpu_prev.get(consumer)
-        _cpu_prev[consumer] = (idle, total)
-    if not prev or total == prev[1]:
-        return None
-    return round(100.0 * (1 - (idle - prev[0]) / (total - prev[1])), 1)
+    """CPU busy % since this consumer's previous reading (None on its first reading or when the host cannot say; app.platform keeps one
+    previous reading per consumer, so the Sampler (60 s) and the /api/state poll (3 s) never steal each other's delta)."""
+    return platform.cpu_pct(consumer)
 
 
 def _mem() -> dict | None:
-    try:
-        info = {}
-        with open("/proc/meminfo") as f:
-            for line in f:
-                k, v = line.split(":", 1)
-                info[k] = int(v.strip().split()[0]) * 1024
-        total, avail = info["MemTotal"], info.get("MemAvailable", info.get("MemFree", 0))
-        return {"total": total, "used": total - avail, "pct": round(100.0 * (total - avail) / total, 1)}
-    except (OSError, KeyError, ValueError):
-        return None
+    return platform.mem()
 
 
 def _uptime() -> float | None:
-    try:
-        with open("/proc/uptime") as f:
-            return float(f.read().split()[0])
-    except (OSError, ValueError):
-        return None
+    return platform.uptime()
 
 
 LOAD_TTL = 5.0                                      # seconds an under_load() answer is reused
@@ -105,8 +79,11 @@ def snapshot(extra: dict | None = None, consumer: str = "default") -> dict:
         disk = {"total": du.total, "used": du.used, "pct": round(100.0 * du.used / du.total, 1)}
     except OSError:
         disk = None
-    return {"host": socket.gethostname(), "cpu_pct": _cpu_pct(consumer), "load1": load1, "mem": _mem(), "disk": disk,
+    snap = {"host": socket.gethostname(), "cpu_pct": _cpu_pct(consumer), "load1": load1, "mem": _mem(), "disk": disk,
             "uptime_s": _uptime(), "cores": os.cpu_count(), "at": time.time(), **(extra or {})}
+    if platform.is_wsl():                            # the numbers above describe the WSL2 VM, not Windows (the key "host" is the host name)
+        snap["host_note"] = "wsl2"
+    return snap
 
 
 def check_hub_token(given: str | None) -> bool:

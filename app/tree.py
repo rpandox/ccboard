@@ -36,6 +36,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import platform as plat
 from . import projects
 
 MAX_ENTRIES = 1500                 # per level; tests patch it
@@ -620,9 +621,11 @@ def read_file(project: str, repo: str, path: str, *, reveal: bool = False) -> di
     name = loc.parts[-1]
     if is_secret_name(name) and not reveal:
         raise projects.Forbidden(f"{name} may hold secrets: ask for it with reveal=1")
+    nofollow = plat.o_nofollow()
     try:
-        # O_NOFOLLOW: a link swapped in after the checks above is refused by the kernel; O_NONBLOCK: a FIFO cannot hang the worker
-        fd = os.open(loc.target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+        # O_NOFOLLOW: a link swapped in after the checks above is refused by the kernel (where the system has no such flag it is 0 and
+        # the lstat below does the check); O_NONBLOCK: a FIFO cannot hang the worker
+        fd = os.open(loc.target, os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0))
     except FileNotFoundError:
         raise projects.NotFound(f"{name} not found")
     except PermissionError:
@@ -630,6 +633,8 @@ def read_file(project: str, repo: str, path: str, *, reveal: bool = False) -> di
     except OSError as e:                  # ELOOP: it became a symlink
         raise projects.BadRequest(f"{name}: cannot open ({e.strerror or e})")
     try:
+        if not nofollow and stat.S_ISLNK(os.lstat(loc.target).st_mode):
+            raise projects.BadRequest(f"{name}: cannot open (it is a symbolic link)")
         st = os.fstat(fd)
         if stat.S_ISDIR(st.st_mode):
             raise projects.BadRequest(f"{name} is a directory")

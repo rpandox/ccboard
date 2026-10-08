@@ -7,19 +7,20 @@ A job joins its session by sessionId/resumeSessionId (or the session's jobId). E
 one of the board's own tmux sessions) or external (anything else Claude runs on this box, minus claude-mem's observer
 sessions and anything not updated for 14 days).
 
-This module imports only the standard library (config dir, projects dir and pane pids are parameters), so it never
+This module imports only the standard library and app.platform (config dir, projects dir and pane pids are parameters), so it never
 creates an import cycle with app.main, app.db or the rest of app.agents.
 """
 from __future__ import annotations
 
 import json
 import os
-import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
+
+from .. import platform as plat
 
 EXTERNAL_MAX_AGE_S = 14 * 86400   # an entry nobody touched for two weeks is not "running somewhere"
 SNAPSHOT_TTL = 30.0               # how long the parsed files are reused; classification is redone on every call
@@ -29,8 +30,6 @@ MAX_ANCESTOR_HOPS = 20
 INTENT_HEAD = 120
 ROOT_REPO = "root"                # app.projects.ROOT: the reserved repo name for "the project folder itself"
 
-PROC = Path("/proc")
-_IS_LINUX = sys.platform.startswith("linux")   # pid ancestry comes from /proc, which only Linux has
 _wall = time.time                              # patched by tests (epoch seconds)
 _clock = time.monotonic                        # patched by tests (cache age)
 
@@ -287,30 +286,12 @@ def _parse(config_dir: Path) -> _Parsed:
     return _Parsed(entries=entries, ancestors={})
 
 
-# ------------------------------------------------------------------ pid ancestry (Linux only)
-
-def _ppid(pid: int) -> int | None:
-    """Parent pid from /proc/<pid>/stat ('pid (comm) S ppid ...'; comm may contain spaces and parentheses)."""
-    try:
-        raw = (PROC / str(pid) / "stat").read_text(errors="replace")
-        return int(raw.rsplit(")", 1)[1].split()[1])
-    except (OSError, ValueError, IndexError):
-        return None
-
+# ------------------------------------------------------------------ pid ancestry (app.platform: /proc on Linux, psutil elsewhere)
 
 def _ancestors(pid: int, cache: dict) -> list[int]:
     if pid in cache:
         return cache[pid]
-    chain: list[int] = []
-    cur = pid
-    seen = {pid}
-    for _ in range(MAX_ANCESTOR_HOPS):
-        nxt = _ppid(cur)
-        if not nxt or nxt <= 1 or nxt in seen:
-            break
-        chain.append(nxt)
-        seen.add(nxt)
-        cur = nxt
+    chain = plat.ancestors(pid, MAX_ANCESTOR_HOPS)
     cache[pid] = chain
     return chain
 
@@ -373,7 +354,7 @@ def _classify(parsed: _Parsed, open_rows, *, projects_dir, pane_pids, now: float
         if hit:
             claim(hit, e)
 
-    # 2. the process is the pane's pid, or (Linux) a descendant of it
+    # 2. the process is the pane's pid, or a descendant of it
     by_pane: dict[int, list[str]] = {}
     for n in names:
         p = _pid((pane_pids or {}).get(n))
@@ -383,7 +364,7 @@ def _classify(parsed: _Parsed, open_rows, *, projects_dir, pane_pids, now: float
         for e in entries:
             if id(e) in used or not e.info.pid:
                 continue
-            chain = [e.info.pid] + (_ancestors(e.info.pid, parsed.ancestors) if _IS_LINUX else [])
+            chain = [e.info.pid] + _ancestors(e.info.pid, parsed.ancestors)
             hit = next((n for p in chain for n in by_pane.get(p, ()) if n not in claimed), None)
             if hit:
                 claim(hit, e)
