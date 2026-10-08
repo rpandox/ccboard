@@ -222,7 +222,7 @@ def test_summaries_merge_the_same_way(shop, mem_worker):
 
 def test_a_refused_connection_is_503_down_and_a_hang_without_cache_is_degraded(shop, mem_home, mem_worker):
     fill(mem_worker, {"api": 2})
-    mem_worker.delay_match.append(("/api/observations", 5.0))
+    mem_worker.delay_match.append(("/api/observations", mp.BUDGET + 2.0))     # past every cap, whatever the budgets are
     t0 = time.monotonic()
     with pytest.raises(mp.WorkerError) as e:
         mp.observations("shop", repo="api")
@@ -252,7 +252,7 @@ def test_the_last_good_answer_is_served_stale_and_errors_are_never_cached(shop, 
 
 def test_one_hanging_key_is_partial_and_the_rest_is_served(shop, mem_worker):
     fill(mem_worker, {"api": 2, "web": 2})
-    mem_worker.delay_match.append(("project=web", 6.0))
+    mem_worker.delay_match.append(("project=web", mp.BUDGET + 2.0))
     t0 = time.monotonic()
     out = mp.observations("shop")
     assert out["partial"] == ["web"] and {r["key"] for r in out["items"]} == {"api"}
