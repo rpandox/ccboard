@@ -5,7 +5,7 @@ import ipaddress
 import logging
 import os
 import re
-import shutil
+import stat
 from pathlib import Path
 
 from . import platform as plat
@@ -42,9 +42,108 @@ def parse_clone_hosts(raw: str) -> tuple[str, ...]:
     return tuple(out)
 
 
+# The settings a launchd job cannot get from an EnvironmentFile (issue #117): the keys install.sh accepts for /etc/ccboard/env, in its order
+# (tests/test_macos_board.py pins this tuple to install.sh's ENV_KEYS). Any other line in the file is ignored.
+ENV_FILE_KEYS = (
+    "PROJECTS_DIR", "CCBOARD_PORT", "TTYD_PORT", "CODE_SERVER_PORT", "CCBOARD_HTTPS_PORT", "CODE_HTTPS_PORT", "CCBOARD_ALLOWED_USERS",
+    "CCBOARD_DATA_DIR", "CODE_SERVER_VERSION", "CCBOARD_PUBLIC_URL", "NTFY_URL", "NTFY_TOPIC", "NTFY_PUBLIC_URL", "NTFY_HTTPS_PORT", "NTFY_PORT",
+    "CCBOARD_APPROVE_TIMEOUT", "PREVIEW_HTTPS_BASE", "CCBOARD_NODE_NAME", "CCBOARD_HUB_TOKEN", "CCBOARD_NODES", "CCBOARD_RESTIC_REPO",
+    "CCBOARD_RESTIC_PASSWORD_FILE", "CCBOARD_BACKUP_PUSH", "CCBOARD_BACKUP_ONCALENDAR", "CCBOARD_BACKUP_EXTRA", "CCBOARD_RUNTIME",
+    "CCBOARD_AUTO_CONTINUE", "CCBOARD_CLAUDE_MEM", "CCBOARD_MEM_PORT", "CCBOARD_MEM_HTTPS_PORT", "CCBOARD_MEM_SERVICE",
+    "CCBOARD_CODEX_HOOK_TRUST", "CCBOARD_CLONE_ALLOWED_HOSTS", "CCBOARD_MCP_REMOTE", "CODEX_HOME", "CCBOARD_AUTOCLOSE_GRACE",
+    "CCBOARD_CODEX_HOOKS_ASYNC", "CCBOARD_CLAUDE_ULTRACODE_FLAG", "CCBOARD_SUBAGENT_MODEL", "CCBOARD_HEADLESS_FABLE_CAP", "CCBOARD_PRICE_TABLE",
+)
+ENV_FILE_MAX = 1 << 20     # bytes read from the settings file
+
+
+def env_file_problem(path) -> str | None:
+    """Why the settings file at `path` may not be read, or None when it may (or does not exist). It holds the hub token, so it must be a
+    regular file (not a link), owned by this user, with no group or world permission. Where the system has no uid (native Windows) the
+    owner and mode checks are skipped. Never raises."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        return f"cannot be read ({e.strerror or type(e).__name__})"
+    if stat.S_ISLNK(st.st_mode):
+        return "is a symbolic link"
+    if not stat.S_ISREG(st.st_mode):
+        return "is not a regular file"
+    uid = plat.current_uid()
+    if uid is not None:
+        if st.st_uid != uid:
+            return "is not owned by the user the board runs as"
+        if st.st_mode & 0o077:
+            return f"is readable by group or others (mode {st.st_mode & 0o777:04o}); run chmod 600 on it"
+    return None
+
+
+def read_env_file(path, *, missing_ok: bool = True) -> dict[str, str]:
+    """The ENV_FILE_KEYS lines of the settings file as {key: value}. KEY=value lines are DATA, split at the first '=': nothing is expanded,
+    unquoted or run (the same reading as install.sh, which never sources /etc/ccboard/env either). A key outside ENV_FILE_KEYS, a comment, a line
+    without '=' and an empty value are skipped (an empty value reads as unset, as in the installer). {} when the file is absent, or refused:
+    a file that fails env_file_problem is logged with the reason and not read at all. `missing_ok=False` logs an absent file too."""
+    problem = env_file_problem(path)
+    if problem is not None:
+        log.warning("ignoring the settings file %s: it %s", path, problem)
+        return {}
+    try:
+        fd = os.open(path, os.O_RDONLY | plat.o_nofollow())
+    except FileNotFoundError:
+        if not missing_ok:
+            log.warning("the settings file %s named by CCBOARD_ENV_FILE does not exist", path)
+        return {}
+    except OSError as e:
+        log.warning("ignoring the settings file %s: it cannot be opened (%s)", path, e.strerror or type(e).__name__)
+        return {}
+    try:
+        with os.fdopen(fd, "rb") as f:
+            raw = f.read(ENV_FILE_MAX)
+    except OSError as e:
+        log.warning("ignoring the settings file %s: it cannot be read (%s)", path, e.strerror or type(e).__name__)
+        return {}
+    out: dict[str, str] = {}
+    for line in raw.decode("utf-8", "replace").splitlines():
+        key, sep, value = line.partition("=")
+        if not sep or key not in ENV_FILE_KEYS or not value:
+            continue
+        out[key] = value
+    return out
+
+
+def apply_env_file(env) -> dict | os._Environ:
+    """`env` with the settings file's values added for every key the environment does not already set (a non-empty explicit value wins,
+    as in install.sh). The file is CCBOARD_ENV_FILE when that key is present (an empty value switches the file off), else, for the
+    process environment only, <data dir>/env; a mapping a test passes in is never merged with a file unless it names one. For the process
+    environment the values are put into os.environ itself (what a systemd EnvironmentFile does), so a module that reads os.environ sees
+    them too; for any other mapping a merged copy is returned. A system with no such file is left exactly as it was."""
+    process = env is os.environ
+    if "CCBOARD_ENV_FILE" in env:
+        raw = (env.get("CCBOARD_ENV_FILE") or "").strip()
+        path = Path(raw) if raw else None
+        explicit = True
+    elif process:
+        path = Path(env.get("CCBOARD_DATA_DIR") or str(plat.default_data_dir())) / "env"
+        explicit = False
+    else:
+        return env
+    if path is None:
+        return env
+    fresh = {k: v for k, v in read_env_file(path, missing_ok=not explicit).items() if not env.get(k)}
+    if not fresh:
+        return env
+    if process:
+        os.environ.update(fresh)
+        return os.environ
+    merged = dict(env)
+    merged.update(fresh)
+    return merged
+
+
 class Settings:
     def __init__(self, env=None):
-        env = os.environ if env is None else env
+        env = apply_env_file(os.environ if env is None else env)
         self.projects_dir = Path(env["PROJECTS_DIR"]) if "PROJECTS_DIR" in env else plat.default_projects_dir()
         self.port = int(env.get("CCBOARD_PORT", "8000"))
         self.ttyd_port = int(env.get("TTYD_PORT", "7681"))
@@ -187,19 +286,12 @@ class Settings:
         return f"https://{host}:{self.mem_https_port}/" if host else None
 
     def claude_bin(self) -> str | None:
-        found = shutil.which("claude")
-        if found:
-            return found
-        local = Path.home() / ".local" / "bin" / "claude"
-        return str(local) if local.exists() else None
+        """claude on PATH, else ~/.local/bin/claude, else (a LaunchAgent's PATH is bare) the login shell's lookup and the Homebrew folders: platform.resolve_bin."""
+        return plat.resolve_bin("claude")
 
     def codex_bin(self) -> str | None:
-        """codex on PATH, else ~/.local/bin/codex (the box installs it there, and that dir is only on a login shell's PATH)."""
-        found = shutil.which("codex")
-        if found:
-            return found
-        local = Path.home() / ".local" / "bin" / "codex"
-        return str(local) if local.exists() else None
+        """codex on PATH, else ~/.local/bin/codex (the box installs it there, and that dir is only on a login shell's PATH), else the login shell's lookup and the Homebrew folders."""
+        return plat.resolve_bin("codex")
 
     def dev_sandboxed(self) -> bool:
         """Dev bypass on AND the data, projects, Claude config and Codex home directories are all absolute and resolve (symlinks followed)
@@ -243,3 +335,24 @@ class Settings:
 
 
 settings = Settings()
+
+
+def _main(argv: list[str]) -> int:
+    """For installers: `python -m app.config keys` prints the settings-file keys, one per line; `python -m app.config check <file>` prints why
+    the board would refuse that file and exits 1, or exits 0 when it is absent or acceptable."""
+    if argv[:1] == ["keys"]:
+        print("\n".join(ENV_FILE_KEYS))
+        return 0
+    if argv[:1] == ["check"] and len(argv) == 2:
+        problem = env_file_problem(argv[1])
+        if problem is not None:
+            print(f"{argv[1]} {problem}")
+            return 1
+        return 0
+    print("usage: python -m app.config keys | check <settings file>")
+    return 2
+
+
+if __name__ == "__main__":
+    import sys
+    raise SystemExit(_main(sys.argv[1:]))

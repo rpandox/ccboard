@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Optional (installed only with CCBOARD_MEM_SERVICE=1): the claude-mem worker from a clean environment. launchd starts a job with only the variables named below, so no CCBOARD_*, TMUX or CLAUDE* name can reach the worker or the observer sessions it spawns; keep it that way (tests pin the key list). No settings from the board's env file: it holds the hub token. Exit 78 (plugin or bun missing) is a failure, so KeepAlive retries it, no faster than every 60 seconds. Rendered by scripts/launchd_render.py; the counterpart of systemd/ccboard-mem.service.in. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.ccboard.mem</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__APP_BIN__/ccboard-mem-run</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__HOME__</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>__HOME__</string>
+		<key>LANG</key>
+		<string>en_US.UTF-8</string>
+		<key>PATH</key>
+		<string>__PATH__</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>60</integer>
+	<key>StandardOutPath</key>
+	<string>__LOG_DIR__/mem.log</string>
+	<key>StandardErrorPath</key>
+	<string>__LOG_DIR__/mem.log</string>
+</dict>
+</plist>

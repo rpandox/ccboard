@@ -9,6 +9,9 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+# The board reads a settings file at start (app/config.py apply_env_file, issue #117); an empty CCBOARD_ENV_FILE switches that off, so the
+# module-level `settings` of a test run never picks up a real <data dir>/env from the machine the suite runs on.
+os.environ.setdefault("CCBOARD_ENV_FILE", "")
 
 
 # ---- the real-home canary (issue #101) --------------------------------------------------------------------------------------------
@@ -394,6 +397,17 @@ def _ci_like_no_claude(monkeypatch):
         from app.config import settings
         monkeypatch.setattr(settings, "claude_bin", lambda: None)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _no_login_shell_lookup(monkeypatch):
+    """platform.resolve_bin never starts the real login shell (it would run the machine owner's profile and find the owner's real tools):
+    the lookup answers None unless a test patches platform._login_shell_lookup itself (tests/test_macos_board.py does)."""
+    from app import platform
+    monkeypatch.setattr(platform, "_login_shell_lookup", lambda name: None)
+    platform._login_lookups.clear()
+    yield
+    platform._login_lookups.clear()
 
 
 @pytest.fixture(autouse=True)

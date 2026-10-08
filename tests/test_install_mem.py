@@ -361,6 +361,8 @@ def test_launcher_bun_lookup_order(box):
 def test_the_doctor_finds_the_same_bun_as_the_launcher(box, monkeypatch):
     """doctor._mem_find_bun is the launcher's find_bun in Python: same candidates, same order, same answer in every environment."""
     from app import doctor
+    from app import platform as plat
+    monkeypatch.setattr(plat, "resolve_bin", lambda name: None)    # the doctor's macOS fallback (login shell, Homebrew) is out of play: only PATH is compared
     box.plugin("13.29.0")
     b = box.tmp / "bins"
     own, env_bun, bun_path, install_root, install_flat, sysdir = (str(b / n / "bun") for n in

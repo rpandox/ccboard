@@ -220,7 +220,10 @@ def under_drvfs(path) -> bool:
 @functools.lru_cache(maxsize=64)
 def fs_case_insensitive(directory: str) -> bool:
     """Does the file system holding `directory` fold case (APFS's default, NTFS)? A temp-file probe, cached per directory.
-    False when the probe cannot run (the conservative answer for name checks is "they differ")."""
+    False when the probe cannot run (the conservative answer for name checks is "they differ"), and on Linux outside a Windows drive
+    without probing (ext4 and the box's volumes are case-sensitive, so nothing is written there)."""
+    if IS_LINUX and not under_drvfs(directory):
+        return False
     try:
         fd, name = tempfile.mkstemp(prefix=".ccboard-case-", dir=directory)
     except OSError:
@@ -560,6 +563,80 @@ def uptime() -> float | None:
         return None
 
 
+# ---------------------------------------------------------------- binaries (#117)
+
+BREW_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")     # Apple silicon and Intel Homebrew prefixes
+LOGIN_SHELL_TIMEOUT = 3.0                                    # seconds the login-shell lookup may take (an rc file can be slow)
+LOGIN_LOOKUP_HIT_TTL = 600.0                                 # a found path is trusted this long (and re-checked for being executable on every use)
+LOGIN_LOOKUP_MISS_TTL = 300.0                                # a miss is remembered this long, so a missing tool costs one shell start per interval
+_BIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
+_login_lookups: dict[str, tuple[float, str | None]] = {}
+_login_lookups_lock = threading.Lock()
+
+
+def _executable(path: str) -> bool:
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def _login_shell_lookup(name: str) -> str | None:
+    """`$SHELL -lic 'command -v <name>'` through the account's login shell (login_shell()), with LOGIN_SHELL_TIMEOUT: what a terminal would find
+    after the user's profile ran (nvm, asdf, Homebrew's shellenv). Only an absolute path to an executable file counts (an alias or function
+    prints a word, not a path); the last output line is read because a profile may print a banner. None on any failure. Tests patch this."""
+    shell = login_shell()
+    if not os.path.isabs(shell) or not _executable(shell):
+        return None
+    try:
+        cp = subprocess.run([shell, "-lic", f"command -v {name}"], capture_output=True, text=True, timeout=LOGIN_SHELL_TIMEOUT,
+                            stdin=subprocess.DEVNULL, start_new_session=not IS_WINDOWS)
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return None
+    lines = [ln.strip() for ln in (cp.stdout or "").splitlines() if ln.strip()]
+    last = lines[-1] if lines else ""
+    return last if last.startswith("/") and _executable(last) else None
+
+
+def login_shell_bin(name: str) -> str | None:
+    """The login shell's answer for `name`, cached per name (hits LOGIN_LOOKUP_HIT_TTL, misses LOGIN_LOOKUP_MISS_TTL). A cached path that
+    stopped being executable is looked up again."""
+    if not _BIN_NAME_RE.match(name or ""):
+        return None
+    now = time.monotonic()
+    with _login_lookups_lock:
+        hit = _login_lookups.get(name)
+    if hit is not None:
+        at, path = hit
+        if path is None and now - at < LOGIN_LOOKUP_MISS_TTL:
+            return None
+        if path is not None and now - at < LOGIN_LOOKUP_HIT_TTL and _executable(path):
+            return path
+    path = _login_shell_lookup(name)
+    with _login_lookups_lock:
+        _login_lookups[name] = (now, path)
+    return path
+
+
+def resolve_bin(name: str) -> str | None:
+    """Where the board finds the program `name`, in this order: PATH; ~/.local/bin/<name> (these two are the answer Settings.claude_bin() and
+    codex_bin() always gave, so a system that finds the program there sees no change and no shell is started); the login shell's lookup
+    (login_shell_bin: a LaunchAgent has PATH=/usr/bin:/bin:/usr/sbin:/sbin, so nvm, asdf and Homebrew tools are invisible to it); the
+    Homebrew folders (BREW_BIN_DIRS). None when none has it."""
+    found = shutil.which(name)
+    if found:
+        return found
+    local = Path.home() / ".local" / "bin" / name
+    if local.exists():
+        return str(local)
+    via_shell = None if IS_LINUX else login_shell_bin(name)     # Linux keeps its old instant answer: systemd and the image set PATH
+    if via_shell:
+        return via_shell
+    if _BIN_NAME_RE.match(name or ""):
+        for d in BREW_BIN_DIRS:
+            cand = os.path.join(d, name)
+            if _executable(cand):
+                return cand
+    return None
+
+
 # ---------------------------------------------------------------- hints (#116 slice 7)
 
 
@@ -607,6 +684,30 @@ def launchd_job(unit: str) -> str | None:
     if unit == "code-server":
         return "code-server"
     return None
+
+
+def launchd_domain(env=None) -> str:
+    """'gui' (the default: LaunchAgents of the logged-in user) or 'user' (CCBOARD_LAUNCHD_DOMAIN=user: the experimental Background-session layout)."""
+    raw = ((os.environ if env is None else env).get("CCBOARD_LAUNCHD_DOMAIN") or "").strip().lower()
+    return "user" if raw == "user" else "gui"
+
+
+def launchd_target(job: str, env=None) -> str | None:
+    """<domain>/<uid>/dev.ccboard.<job>, the argument of launchctl print and kickstart; None where there is no uid."""
+    uid = current_uid()
+    return None if uid is None else f"{launchd_domain(env)}/{uid}/{launchd_label(job)}"
+
+
+def macos_log_dir() -> Path:
+    """The folder of the launchd jobs' logs (MACOS_LOG_DIR with ~ expanded, from $HOME)."""
+    return Path(os.path.expanduser(MACOS_LOG_DIR))
+
+
+def macos_protected_folders() -> list[tuple[str, Path]]:
+    """(name, path) of the home folders macOS guards with a Files and Folders grant: Desktop, Documents, Downloads and iCloud Drive."""
+    home = Path.home()
+    return [("Desktop", home / "Desktop"), ("Documents", home / "Documents"), ("Downloads", home / "Downloads"),
+            ("iCloud Drive", home / "Library" / "Mobile Documents")]
 
 
 def _hint_family() -> str:

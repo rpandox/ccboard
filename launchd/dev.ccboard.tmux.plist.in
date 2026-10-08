@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- ccboard tmux server (owns every session). -D keeps the server in the foreground (tmux.1: no daemon, exit-empty off, no command allowed), so launchd owns the process. The installer never boots this job out or kickstarts it once it runs. Rendered by scripts/launchd_render.py; the counterpart of systemd/ccboard-tmux.service.in. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.ccboard.tmux</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__TMUX_BIN__</string>
+		<string>-L</string>
+		<string>__TMUX_SOCKET__</string>
+		<string>-f</string>
+		<string>__APP_DIR__/tmux.conf</string>
+		<string>-D</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__HOME__</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>__HOME__</string>
+		<key>LANG</key>
+		<string>en_US.UTF-8</string>
+		<key>PATH</key>
+		<string>__PATH__</string>
+		<key>SHELL</key>
+		<string>__SHELL__</string>
+		<key>TMUX_TMPDIR</key>
+		<string>__TMUX_TMPDIR__</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>5</integer>
+	<key>StandardOutPath</key>
+	<string>__LOG_DIR__/tmux.log</string>
+	<key>StandardErrorPath</key>
+	<string>__LOG_DIR__/tmux.log</string>
+</dict>
+</plist>

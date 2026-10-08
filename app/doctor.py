@@ -36,6 +36,7 @@ from urllib.parse import urlsplit
 
 from . import backup, claude_auth, login_problem, memory, preflight, projects, push, tmux
 from . import platform as plat
+from . import tailscale as ts
 from .config import settings
 
 GROUPS = ["box", "claude", "notify", "terminal"]   # register()/register_provider() append the others (memory, codex)
@@ -158,6 +159,9 @@ def _run(argv: list[str], timeout: float = CMD_TIMEOUT) -> Proc:
     try:
         cp = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
     except FileNotFoundError as e:
+        again = _resolve_missing(argv)
+        if again is not None:
+            return _run(again, timeout)
         raise ToolMissing(Path(argv[0]).name) from e
     except subprocess.TimeoutExpired as e:
         raise ToolTimeout(Path(argv[0]).name, timeout) from e
@@ -166,8 +170,18 @@ def _run(argv: list[str], timeout: float = CMD_TIMEOUT) -> Proc:
     return Proc(cp.returncode, cp.stdout or "", cp.stderr or "")
 
 
+def _resolve_missing(argv: list[str]) -> list[str] | None:
+    """`argv` with its bare program name replaced by where platform.resolve_bin finds it (the login shell's PATH, the Homebrew folders), or
+    None. Off Linux only: a LaunchAgent's PATH is bare, so a tool the owner has would read as "not installed" (issue #117). Linux never retries,
+    so its answers are exactly what the PATH lookup gave."""
+    if plat.IS_LINUX or not argv or os.sep in argv[0]:
+        return None
+    found = plat.resolve_bin(argv[0])
+    return [found, *argv[1:]] if found and found != argv[0] else None
+
+
 def _which(name: str) -> str | None:
-    return shutil.which(name)
+    return shutil.which(name) or (None if plat.IS_LINUX else plat.resolve_bin(name))
 
 
 def _port_open(host: str, port: int, timeout: float = 1.0) -> bool:
@@ -577,6 +591,87 @@ def _c_identity(db) -> Outcome:
         return _fail(f"runtime {rt}; CCBOARD_ALLOWED_USERS is empty, so every request is denied",
                      fix("List the allowed Tailscale logins in /etc/ccboard/env (CCBOARD_ALLOWED_USERS), then restart the board"))
     return _pass(f"runtime {rt}; the Tailscale-User-Login header is expected; {n} allowed user{'s' if n != 1 else ''}")
+
+
+TS_TIMEOUT = 1.5     # seconds per tailscale command: three of them still end inside CHECK_TIMEOUT
+
+
+def _ts_start_fix(v: str) -> dict:
+    """Where Tailscale is not running or not reachable: the fix for this variant."""
+    if v == "linux":
+        return fix("Start the Tailscale daemon on the box (a container reads its mounted socket)", plat.hint("start", "tailscaled"))
+    if v == "macos-opensource":
+        return fix("Start the Tailscale daemon", "sudo brew services start tailscale")
+    if v in ("macos-appstore", "macos-standalone"):
+        return fix("Open the Tailscale app and sign in")
+    return fix("Start Tailscale and sign in (the steps for this system are to verify)")
+
+
+def _ts_serve(cli, v: str) -> tuple[str, str, dict | None]:
+    """Read `tailscale serve status --json` as this user: (state, detail, fix) with state ok | harmless | denied | unreadable. On Linux outside the
+    container a denial is judged by trying the same `sudo -n` retry the board uses (a read of the serve status, which the sudoers rule covers)."""
+    cmd = cli.cmd("serve", "status", "--json")
+    try:
+        p = _run(cmd, timeout=TS_TIMEOUT)
+    except (ToolMissing, ToolTimeout):
+        return "unreadable", "serve status could not be read", fix("Check that Tailscale is running")
+    kind = ts.classify(p.rc, p.out, p.err)
+    if kind == "ok":
+        return "ok", "serve status readable", None
+    if kind != "denied":
+        return "unreadable", "serve status could not be read", fix("Check that Tailscale is running and signed in")
+    user = Path.home().name or "<user>"
+    if ts.sudo_retry_allowed():
+        try:
+            q = _run(["sudo", "-n", *cmd], timeout=TS_TIMEOUT)
+        except (ToolMissing, ToolTimeout):
+            q = Proc(1, "", "")
+        if q.rc == 0:
+            return "harmless", "serve status is denied to this user, which is harmless: previews retry through sudo -n and that works", None
+        return "denied", "serve is denied to this user and the sudo -n retry failed, so previews cannot be opened", fix(
+            "Re-run the installer: it writes the sudoers rule for tailscale serve", "./install.sh")
+    if settings.runtime == "docker":
+        return "denied", "serve is denied to this user and the container has no sudo, so previews cannot be opened", fix(
+            "Allow this user to run serve (once, on the host)", f"sudo tailscale set --operator={user}")
+    return "denied", f"serve is denied to this user: {ts.LABELS.get(v, ts.LABELS['unknown'])} refused it", fix(
+        ts.denial_fix(v), f"sudo tailscale set --operator={user}" if v == "macos-opensource" else None)
+
+
+def _c_tailscale(db) -> Outcome:
+    """Tailscale on this machine, read only: the command found and which, the variant (from file layout), signed in (BackendState Running), a
+    MagicDNS name, HTTPS certificates, and whether `serve status` can be read by this user (the operator state: ok, denied, not running, not
+    signed in, not installed). Every identity the board accepts comes through `tailscale serve`, and previews need serve. On Linux a denial
+    that the sudoers rule makes harmless passes and says so; a refusal that is not harmless is a warning (the board works, previews do not)."""
+    cli = ts.find_cli()
+    v = ts.variant(cli)
+    if cli is None:
+        return _fail(ts.missing_reason(), fix("Install Tailscale, sign in, then check again", None))
+    where = f"{cli.exe} ({v})"
+    try:
+        p = _run(cli.cmd("status", "--json"), timeout=TS_TIMEOUT)
+    except ToolMissing:
+        return _fail(f"{where}: {ts.missing_reason()}", fix("Install Tailscale, sign in, then check again", None))
+    except ToolTimeout:
+        return _warn(f"{where}: tailscale status did not answer in time", fix("Check that Tailscale is running"))
+    d = ts._json(p.out) if p.rc == 0 else None
+    if not isinstance(d, dict) or not d:
+        return _fail(f"{where}: Tailscale is not running or cannot be reached", _ts_start_fix(v))
+    s = ts.summarize_status(d)
+    if s["state"] != "Running":
+        return _fail(f"{where}: Tailscale is not signed in or is stopped (BackendState {s['state'] or 'unknown'})",
+                     fix("Sign in to Tailscale", "sudo tailscale up" if v == "linux" else None))
+    problems = []
+    if not s["fqdn"]:
+        problems.append(("no MagicDNS name", fix("Enable MagicDNS in the Tailscale admin console (DNS page)")))
+    if not s["certs"]:
+        problems.append(("HTTPS certificates are off for the tailnet", fix("Turn on HTTPS Certificates in the Tailscale admin console (DNS page)")))
+    state, note, sfix = _ts_serve(cli, v)
+    if state in ("unreadable", "denied"):
+        problems.append((note, sfix))
+    if problems:
+        return _warn(f"{where}: signed in; " + "; ".join(t for t, _ in problems), problems[0][1])
+    ok = "MagicDNS and HTTPS certificates on"
+    return _pass(f"{where}: signed in, {ok}; {note}")
 
 
 MCP_STALE_DAYS = 90          # a device token not used for this long is worth a look
@@ -1315,8 +1410,11 @@ for _id, _group, _label, _fn in (
     register(_id, _group, _label, _fn)
 del _id, _group, _label, _fn
 register("hook-helpers", "claude", "Hook helpers (curl, python3)", _c_hook_helpers)   # issue #121
+register("tailscale", "box", "Tailscale", _c_tailscale)   # issue #126
 register_provider("memory", MEM_GROUP, memory_checks)       # claude-mem (v0.5.10): one probe, seven checks
 register_provider("codex", CODEX_GROUP, codex_checks)       # the Codex adapter's checks (v0.5.11)
+if plat.IS_MACOS:                                            # issue #117: the macOS checks (app/doctor_macos.py) exist on a Mac only; a Linux board lists none
+    from . import doctor_macos as _doctor_macos              # noqa: F401  (registers its checks when it is imported on a Mac)
 
 
 def _c_codex_saved_models(db) -> Outcome:

@@ -36,6 +36,8 @@ NOT_REMEMBERED = {
     "CCBOARD_SHADOW": "container entrypoint switch for a side-by-side run; never a permanent setting",
     "CCBOARD_APP_ROOT": "where the image keeps the app; tests point it elsewhere",
     "CLAUDE_MEM_PROJECT_ENVIRONMENTS": "claude-mem's own variable, read by the board; not a ccboard setting",
+    "CCBOARD_ENV_FILE": "names the settings file the board reads itself on macOS (launchd has no EnvironmentFile); the installer sets it in each job's plist, not in /etc/ccboard/env",
+    "CCBOARD_LAUNCHD_DOMAIN": "macOS launchd layout (gui or user); an installer-time choice written into the plists, not remembered in /etc/ccboard/env",
 }
 
 # Names the code reads that are neither ENV_KEYS nor a user setting, each with the reason. Everything in NOT_REMEMBERED counts too.
@@ -49,6 +51,7 @@ EXTRA_INTERNAL = {
     "CCBOARD_HOST_PYTHON": "the container entrypoint's choice of a host-valid python for the MCP shim; the default is right on the supported hosts",
     "CCBOARD_SMOKE_PORT": "scripts/ci-smoke.sh only: the port of the CI smoke test",
     "CCBOARD_SMOKE_WAIT": "scripts/ci-smoke.sh only: how long the CI smoke test waits",
+    "CCBOARD_REPLACE_SERVE": "an installer-run switch (install.sh, scripts/tailscale_serve.py) that allows replacing another Tailscale serve handler; never remembered",
     "CODE_SERVER_SETTINGS": "points the code-server settings merge (and its doctor check) at another file; tests and unusual installs only",
 }
 INTERNAL = {**NOT_REMEMBERED, **EXTRA_INTERNAL}

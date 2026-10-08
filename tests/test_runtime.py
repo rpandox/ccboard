@@ -116,6 +116,7 @@ def test_dev_bypass_refusal_is_logged(caplog):
 
 @pytest.mark.parametrize("runtime", ["host", "systemd", "launchd"])
 def test_serve_keeps_the_sudo_fallback_outside_docker(monkeypatch, runtime):
+    monkeypatch.setattr(previews.plat, "IS_LINUX", True)     # the sudoers rule is Linux's; macOS and Windows never retry through sudo (tests/test_tailscale.py)
     monkeypatch.setattr(settings, "runtime", runtime)
     monkeypatch.setattr(previews.shutil, "which", lambda x: f"/usr/bin/{x}")
     calls = []
