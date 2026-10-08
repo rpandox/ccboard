@@ -90,6 +90,14 @@ def _stub_ccusage(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _quiet_box(monkeypatch):
+    """The box is never busy unless a test says so: a loaded CI runner's real load average must not turn on the board's back-off
+    (#31: reused git answers, skipped cost and indexer passes). tests/test_health.py keeps a reference to the real under_load."""
+    from app import health
+    monkeypatch.setattr(health, "under_load", lambda: False)
+
+
+@pytest.fixture(autouse=True)
 def _stub_clone_dns(monkeypatch):
     """The real resolver is never used: every clone host name 'resolves' to one public address (the clone URL guard resolves names,
     issue #22), and the answer cache starts empty. tests/test_clone_url_guard.py patches projects.getaddrinfo with its own tables."""

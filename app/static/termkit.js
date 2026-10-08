@@ -5,7 +5,7 @@
      TermKit.ttyUrl(name, {mode, fontSize, renderer, quiet})   the iframe URL for ttyd (mode whitelisted: full | grid | ro)
      TermKit.bind(iframe, {onActive, touchScroll, fontSize, font})   per iframe load: poll window.term, activity events, font size,
                                                                touch-to-wheel shim, overscroll hardening, and (flag only) the
-                                                               JetBrains Mono spike -> handle
+                                                               opt-in JetBrains Mono font -> handle
      TermKit.fontState / TermKit.fontReady                     'off' | 'loading' | 'on' | 'failed', and a promise of the final one
      TermKit.touchScroller({step, threshold, edge, momentum, onWheel})   the shim's accumulator, testable on its own
      TermKit.fitSoon(iframe)                                   debounced term.fit() (resize event when fit() is missing)
@@ -33,9 +33,10 @@ const TermKit = (() => {
   const BIND_TIMEOUT_MS = 10000;
   const BIND_POLL_MS = 100;
 
-  /* The font spike (v0.5.8, OFF by default): ttyd's own page asks for system fonts, which differ per device (a phone has no Menlo, no
-     Consolas), so cell width, cursor and box drawing vary. bind() can load the vendored JetBrains Mono into the iframe instead. Verdict
-     on real devices first: ccboard:term:font=1 (or bind's `font: true`) turns it on; see TermKit.fontState. */
+  /* The opt-in terminal font (v0.5.8, frozen in v0.5.21: OFF by default, kept as is). ttyd's own page asks for system fonts, which differ
+     per device (a phone has no Menlo, no Consolas), so cell width, cursor and box drawing vary. bind() can load the vendored JetBrains
+     Mono into the iframe instead. No phone or laptop was measured, so the board keeps ttyd's own fonts; ccboard:term:font=1 (or bind's
+     `font: true`, or ?font=1 on the page URL) turns it on per browser; see TermKit.fontState and the README, "The terminal page". */
   const FONT_FLAG = 'ccboard:term:font';
   const FONT_FAMILY = 'JetBrains Mono';
   const FONT_URL = '/static/vendor/fonts/jetbrains-mono-latin-wght-normal.woff2';
@@ -291,7 +292,7 @@ const TermKit = (() => {
     };
   }
 
-  /* ---- font spike state ------------------------------------------------------------------------------------------- */
+  /* ---- opt-in font state ------------------------------------------------------------------------------------------- */
 
   let fontState = 'off';                        // 'off' | 'loading' | 'on' | 'failed'
   let fontPromise = null;                       // created per attempt; null = nothing was asked for (fontReady then resolves with the state)
@@ -340,7 +341,7 @@ const TermKit = (() => {
     return cur.includes(FONT_FAMILY) ? cur : "'" + FONT_FAMILY + "', " + cur;
   }
 
-  /* The spike itself, for one ttyd window (same origin: the caller already read w.document). Order matters: the face is loaded and added
+  /* The font step itself, for one ttyd window (same origin: the caller already read w.document). Order matters: the face is loaded and added
      to the iframe's document.fonts FIRST, so that when term.options.fontFamily changes xterm measures the cell with the real glyphs and
      the fit() after it gets the final cols and rows. Every step is guarded; any failure ends as 'failed' and leaves the terminal as ttyd
      made it. Never throws, never blocks the caller (the rest of bind() does not wait for the download). */
@@ -430,7 +431,7 @@ const TermKit = (() => {
        - applies fontSize (term.options.fontSize, then fit())
        - sets touch-action:none on .xterm and overscroll-behavior:none on the document, through the CSSOM
        - installs the touch -> wheel shim on .xterm-screen (tmux mouse mode turns wheel into history scroll)
-       - the font spike, only when `font` is true (an explicit false wins) or, with `font` left out, ccboard:term:font = '1' in
+       - the opt-in font, only when `font` is true (an explicit false wins) or, with `font` left out, ccboard:term:font = '1' in
          localStorage (or ?font=1 on the page URL, ?font=0 to clear): loads JetBrains Mono into the iframe, THEN sets
          term.options.fontFamily and fits (see startFont). The outcome is TermKit.fontState; without FontFace, or when the load
          fails, the terminal keeps the fonts ttyd chose.
@@ -455,7 +456,7 @@ const TermKit = (() => {
     }
     handle.setFontSize = setFontSize;
     handle.fit = () => fitNow(iframe);
-    let fontTry = null;                       // this binding's current font attempt (null: the spike is off for this load)
+    let fontTry = null;                       // this binding's current font attempt (null: the font is off for this load)
     handle.destroy = () => {
       generation += 1;
       stopPoll();
@@ -654,6 +655,7 @@ const TermKit = (() => {
     const w = where.getBoundingClientRect().width;
     const off = w > 0 && where.scrollWidth > w + 0.5 && w < (typeof min === 'number' ? min : 36);
     where.classList.toggle('off', off);
+    where.classList.remove('pend');                                                  // measured once: a quad tile's header may show it now (or has dropped it)
     return off;
   }
 
@@ -1407,6 +1409,7 @@ const TermKit = (() => {
       }
 
       const tune = [];
+      let tuneHint = '';
       if (agent !== 'shell') {
         const reg = tuneRegistry(agent, c.schema);
         const off = atPrompt ? {} : { off: true };
@@ -1415,6 +1418,11 @@ const TermKit = (() => {
           if (ownKey(reg, k)) add(tune, k, label, act, Object.assign({ title: TK_CELL_TITLE[k] }, off));
         }
         for (const it of tune) if (it.off) { it.why = why; it.title = why; }
+        try {                                                                     // v0.5.21: say where the rows that moved went, and only the ones Tune… really has for this agent
+          const keys = tunePlan(agent, c.schema).cells.map((x) => x.key);
+          const moved = [keys.includes('usage') ? 'Usage' : '', keys.includes('rename') ? 'rename' : ''].filter(Boolean);
+          if (moved.length) tuneHint = moved.join(' and ') + (moved.length > 1 ? ' are' : ' is') + ' inside Tune…';
+        } catch (_) { /* no hint */ }
       }
 
       const session = [];
@@ -1422,7 +1430,7 @@ const TermKit = (() => {
       const out = [
         { key: 'view', label: 'VIEW', items: view },
         { key: 'input', label: 'INPUT', items: input },
-        { key: 'tune', label: 'TUNE', items: tune, note: tune.length && !atPrompt ? why : '' },
+        { key: 'tune', label: 'TUNE', items: tune, note: tune.length && !atPrompt ? why : tuneHint },
         { key: 'session', label: 'SESSION', items: session, kill: typeof a.kill === 'function' },
       ];
       return out.filter((g) => g.items.some((it) => it.kind !== 'note') || g.kill);
@@ -1614,7 +1622,12 @@ const TermKit = (() => {
       sendBtn.addEventListener('click', go);
       if (docked) {                                                               // one row that never grows (composerBind would): Enter sends, the … button opens the roomy box
         ta.classList.add('composer');
-        ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !e.isComposing) { e.preventDefault(); go(); } });
+        ta.setAttribute('title', 'Enter sends. This one-line box has no new line: the … button opens a bigger one.');
+        ta.addEventListener('keydown', (e) => {
+          if (e.key !== 'Enter' || e.isComposing) return;                               // Enter that confirms an IME candidate is not a send
+          e.preventDefault();                                                           // Shift+Enter would add a line this box cannot show
+          if (!e.shiftKey && !e.altKey) go();
+        });
       } else if (typeof composerBind === 'function') composerBind(ta, { onSend: go, maxRows: 6 });
       else ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); go(); } });
       if (docked) {
@@ -1988,7 +2001,7 @@ const TermKit = (() => {
     termPane, paneLabel, paneParts, paneLine, panePending, sizeChip, typingTarget, ctxInfo, fitName,
     /* v0.5.9c quad v3: the tile menu, the prompt composer and the tune panel (termkit.css), with the pure helpers they and the tests share */
     tileMenu: makeTileMenu, composer: makeComposer, tune: makeTune, tuneGate, tunePlan, tuneCurrent, tuneRegistry, tuneRequest,
-    /* the font spike's outcome ('off' until a bind asked for it) and a promise of the final state; it never rejects */
+    /* the opt-in font's outcome ('off' until a bind asked for it) and a promise of the final state; it never rejects */
     get fontState() { return fontState; },
     get fontReady() { return fontPromise || Promise.resolve(fontState); },
   };

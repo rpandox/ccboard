@@ -1,5 +1,6 @@
 {
   "tmux_down": false,
+  "scan_slow": false,
   "projects": [
     {
       "name": "ccboard",
@@ -772,10 +773,10 @@
     "runtime": "host",
     "ntfy": {
       "enabled": true,
-      "subscribe_url": "https://ubu2.example.ts.net:8444/ccboard",
+      "subscribe_url": "https://box.example.ts.net:8444/ccboard",
       "topic": "ccboard"
     },
-    "public_url": "https://ubu2.example.ts.net:8443",
+    "public_url": "https://box.example.ts.net:8443",
     "backup": {
       "restic": true,
       "repo": "/var/backups/ccboard",
@@ -2146,7 +2147,7 @@
     "at": "2026-10-03T02:50:00+00:00"
   },
   "health": {
-    "host": "ubu2",
+    "host": "box",
     "cpu_pct": 18.4,
     "load1": 1.32,
     "mem": {
@@ -2254,7 +2255,7 @@
     ],
     "duration_s": 41.7
   },
-  "node_name": "ubu2",
+  "node_name": "box",
   "rate_limited": {
     "value": {
       "session": "petroit--api--s2",

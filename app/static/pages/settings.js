@@ -229,6 +229,7 @@ function settingsBox(p) {
     p.append(settingsKv('Last run', el('span', { class: failed ? 'v bad' : partial ? 'v warn' : 'v', title: failed ? (bk.errors || []).join('\n') : partial ? (bk.warnings || []).join('\n') : 'last nightly backup',
       text: `${failed ? 'failed' : partial ? 'ok, backup branch refused' : 'ok'} ${fmtAge(Date.parse(bk.at) / 1000)} ago` })));
   } else p.append(settingsKv('Last run', el('span', { class: 'dim', text: 'no backup has run yet' })));
+  if (bk && bk.at) p.append(settingsKv('Contains', el('span', { class: 'dim', text: backupContainsText(bk) })));
   p.append(settingsHead('claude-mem'));
   p.append(settingsMemBlock());
 }
@@ -302,6 +303,25 @@ function settingsMemBlock() {
   paint();
   settingsMemLoad();
   return wrap;
+}
+
+/* What the last nightly run put in the restic set (issue #24), by name, read from bk.paths: the board database, the Claude transcripts, the Codex rollouts, the
+   claude-mem snapshot, extra paths. A staged file is not a backup until restic recorded a snapshot id, so without one the line says so; it never claims an
+   off-box copy (whether the repository shares the disk is the doctor's backup-repo row). Saved logins are never in the set. */
+function backupContainsText(bk) {
+  const r = bk.restic || {};
+  if (r.skipped || !Array.isArray(bk.paths)) return 'restic is off, so nothing is in a snapshot · saved logins are never backed up';
+  const name = (path) => {
+    const s = String(path);
+    if (/\/ccboard\.db$/.test(s)) return 'board database';
+    if (/\/claude-mem\.db$/.test(s)) return 'claude-mem snapshot';
+    if (/\/projects$/.test(s)) return 'Claude transcripts';
+    if (/\/sessions$/.test(s)) return 'Codex rollouts';
+    return 'extra path';
+  };
+  const names = [];
+  for (const path of bk.paths) { const n = name(path); if (!names.includes(n)) names.push(n); }
+  return `${names.length ? names.join(', ') : 'nothing'}${r.snapshot_id ? '' : ' (staged, no restic snapshot recorded)'} · saved logins are never backed up`;
 }
 
 /* What the git step of the last backup did: ' · 2 branches copied to ccboard-backup/ubu2/ in 1 of 9 repos', or that every repo was

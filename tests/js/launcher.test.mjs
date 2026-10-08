@@ -1441,3 +1441,66 @@ test('gotchas strip in the launcher: markup in a gotcha title is shown as text',
   assert.equal(text(f.querySelector('.mem-gotcha-t')), '<img src=x onerror=1>');
   assert.equal(f.querySelectorAll('img').length, 0);
 });
+
+// ---------------------------------------------------------------- v0.5.21: Codex Profile and Keep scrollback (#33)
+
+test('commandPreview, Codex: -p <profile> only when set (after --add-dir, before the extra args), --no-alt-screen goes only when Keep scrollback is unchecked', () => {
+  const w = lWorld();
+  assert.equal(prev(w, CODEX({ profile: 'ci' })), 'codex --no-alt-screen -s workspace-write -a on-request -p ci');
+  assert.equal(prev(w, CODEX({ profile: ' ci ', args: '--foo' })), 'codex --no-alt-screen -s workspace-write -a on-request -p ci --foo', 'trimmed, and before the extra args');
+  assert.equal(prev(w, CODEX({ profile: '' })), 'codex --no-alt-screen -s workspace-write -a on-request');
+  assert.equal(prev(w, CODEX({ no_scrollback: true })), 'codex -s workspace-write -a on-request', 'the opt-out drops the flag');
+  assert.equal(prev(w, CODEX({ no_scrollback: true, profile: 'ci' })), 'codex -s workspace-write -a on-request -p ci');
+  assert.equal(prev(w, CODEX({ profile: 'ci' }), { caps: { profile: false } }), 'codex --no-alt-screen -s workspace-write -a on-request', 'a box whose codex lacks -p does not show it');
+  assert.equal(prev(w, CODEX({ no_scrollback: true }), { caps: { no_alt_screen: false } }), 'codex -s workspace-write -a on-request');
+  assert.equal(prev(w, CODEX({ launch: 'resume', resume_id: 'abc', profile: 'ci' })), 'codex resume --no-alt-screen -s workspace-write -a on-request -p ci abc');
+});
+
+test('launcherPayload, Codex: profile is sent when set, no_alt_screen:false only for the opt-out, neither when the schema lacks the option; a task carries them in opts', () => {
+  const w = lWorld();
+  const b = pay(w, CODEX({ profile: ' ci ', no_scrollback: true }), {});
+  assert.equal(b.profile, 'ci');
+  assert.equal(b.no_alt_screen, false);
+  const plainBody = pay(w, CODEX({}), {});
+  assert.equal('profile' in plainBody, false);
+  assert.equal('no_alt_screen' in plainBody, false, 'on by default: nothing is sent');
+  const none = pay(w, CODEX({ profile: 'ci', no_scrollback: true }), { has: undefined });
+  assert.equal(none.profile, 'ci');
+  const opts = plain(w.run(`launcherTaskOpts(${JSON.stringify({ ...CODEX({ profile: 'ci', no_scrollback: true }) })})`));
+  assert.deepEqual(opts.opts, { profile: 'ci', no_alt_screen: false });
+  assert.equal('opts' in plain(w.run(`launcherTaskOpts(${JSON.stringify(CODEX({}))})`)), false);
+});
+
+test('the Codex sheet draws Profile and Keep scrollback (on) in Advanced above the command; typing and unticking change the preview; a bad profile blocks Start with the server\'s words', async () => {
+  const w = lWorld();
+  open(w, { agent: 'codex' });
+  const f = form(w);
+  const adv = f.querySelector('details[data-agent=codex]');
+  const labelsIn = adv.querySelectorAll('label.field-label').map(text);
+  assert.ok(labelsIn.includes('Profile'), 'a Profile field');
+  const scroll = adv.querySelectorAll('label').find((l) => /Keep scrollback/.test(text(l)));
+  assert.ok(scroll, 'a Keep scrollback box');
+  const cb = scroll.querySelector('input');
+  assert.equal(cb.checked, true, 'on by default');
+  assert.match(previewOf(f), /--no-alt-screen/);
+  const profile = fieldOf(f, /^Profile$/).querySelector('input');
+  typeInto(profile, 'ci');
+  assert.match(previewOf(f), / -p ci/);
+  tickBox(cb, false);
+  assert.doesNotMatch(previewOf(f), /--no-alt-screen/);
+  typeInto(profile, '-bad name');
+  submit(f);
+  assert.match(text(fieldOf(f, /^Profile$/).querySelector('.field-err')), /profile: use letters, digits, '\.', '_' or '-'/);
+  assert.equal(adv.getAttribute('open'), '', 'the Advanced box opens to show the field');
+  await tick();
+  assert.equal(posts(w, /\/sessions$/).length, 0, 'nothing was sent');
+  assert.equal(profile.value, '-bad name', 'every entered value is kept');
+});
+
+test('on a Claude sheet the Codex Advanced box (Profile, Keep scrollback) is hidden', () => {
+  const w = lWorld();
+  open(w, { agent: 'claude' });
+  const f = form(w);
+  assert.equal(hidden(f.querySelector('details[data-agent=codex]')), true);
+  assert.equal(hidden(f.querySelector('details[data-agent=claude]')), false);
+});

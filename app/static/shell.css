@@ -6,8 +6,8 @@
    The installed-app rules (html.pwa: window-controls-overlay title bar, drag regions) are at the end of the file. */
 
 :root { --topbar-h:48px; --sb-full:260px; --sb-rail:48px; --dock-w:min(44vw, 640px); --bnav-h:56px; }          /* --dock-w: shell.js overrides it on #app after a drag (ccboard:dock:w) */
-@media (pointer:coarse) { :root { --topbar-h:54px; } }
-html.force-coarse { --topbar-h:54px; }
+@media (pointer:coarse) { :root { --topbar-h:54px; --dock-w:min(38vw, 560px); } }          /* a touch window leaves the page more room: the dock's default is 38 vw (v0.5.21, #56) */
+html.force-coarse { --topbar-h:54px; --dock-w:min(38vw, 560px); }
 
 html, body { height:100%; }
 body[data-shell] { display:flex; flex-direction:column; height:100vh; height:100dvh; overflow:hidden; }
@@ -75,11 +75,18 @@ body[data-shell=compact] #main { padding-left:max(10px, var(--sal)); padding-rig
 .tp-body pre.tail { position:absolute; inset:0; margin:0; padding:8px 10px; overflow:auto; white-space:pre; font:12px/1.35 var(--font-mono); font-variant-ligatures:none; color:var(--fg-2); }
 .tpane.gone .tp-body { opacity:.55; }
 
-/* the drag handle on the dock's left edge (shell.js buildDockResizer): a mouse only, like the sidebar's */
+/* the drag handle on the dock's left edge (shell.js buildDockResizer): a thin strip for a mouse; on a coarse primary pointer a 44 px grabber (below) */
 .dock-resize { display:none; position:absolute; z-index:3; top:0; bottom:0; left:0; width:6px; touch-action:none; cursor:col-resize; }
 .dock-resize::after { content:""; position:absolute; top:0; bottom:0; left:0; width:2px; background:transparent; }
 @media (any-pointer:fine) { #dock.has-term .dock-resize { display:block; } }
 @media (hover:hover) { .dock-resize:hover::after { background:var(--line); } }
+/* touch (v0.5.21, #56): a 44 x 44 grabber in the middle of the dock's left edge, with a visible pill; it covers a small square of the terminal, not its whole edge */
+@media (pointer:coarse) {
+  #dock.has-term .dock-resize { display:block; top:50%; bottom:auto; width:var(--tap); height:var(--tap); margin-top:calc(var(--tap) / -2); cursor:default; }
+  #dock.has-term .dock-resize::after { top:6px; bottom:6px; left:0; width:5px; border-radius:0 3px 3px 0; background:var(--line-strong); }
+}
+html.force-coarse #dock.has-term .dock-resize { display:block; top:50%; bottom:auto; width:var(--tap); height:var(--tap); margin-top:calc(var(--tap) / -2); cursor:default; }
+html.force-coarse #dock.has-term .dock-resize::after { top:6px; bottom:6px; left:0; width:5px; border-radius:0 3px 3px 0; background:var(--line-strong); }
 .dock-resize:focus-visible::after, #app.dock-dragging .dock-resize::after { background:var(--sig); }
 .dock-resize:focus-visible { outline:none; }
 #app.dock-dragging { cursor:col-resize; user-select:none; -webkit-user-select:none; }

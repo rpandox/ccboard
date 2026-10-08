@@ -100,7 +100,7 @@ const KIT_STUB = `
 /** `n` slots: the names, then empty strings (the saved and the URL state carry ten). */
 const pad = (...names) => [...names, ...Array(10 - names.length).fill('')];
 
-function quadWorld({ wide = true, width = null, state = fixtureState(), storage = {}, hash = null, withKeymap = true, inbox = false, shell = false, kit = 'none', init = '' } = {}) {
+function quadWorld({ wide = true, width = null, state = fixtureState(), storage = {}, hash = null, withKeymap = true, inbox = false, shell = false, kit = 'none', init = '', extra = {} } = {}) {
   const clock = fakeClock();
   class FakeDate extends Date { static now() { return BASE + clock.now; } }
   const ros = [];
@@ -113,6 +113,7 @@ function quadWorld({ wide = true, width = null, state = fixtureState(), storage 
     matchMedia: (q) => ({ matches: wide && /840/.test(q), addEventListener() {}, removeEventListener() {} }),
     setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, setInterval: clock.setInterval, clearInterval: clock.clearInterval, Date: FakeDate, ResizeObserver: FakeRO,
     ...(width ? { innerWidth: width } : {}),
+    ...extra,
   });
   installDom(w);
   for (const [k, v] of Object.entries(storage)) w.localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v));
@@ -664,7 +665,7 @@ test('a tile that is resized (or whose pointer type changed) drops a sliver of i
   w.run('globalThis.__fit = []; TermKit.fitName = (n) => { __fit.push(n.getAttribute("class")); return false; };');
   const ro = ros.find((r) => r.nodes.some((n) => n.classList && n.classList.contains('qt-body')));
   ro.cb([{ contentRect: { width: 300, height: 200 } }]);
-  assert.deepEqual(plain(w.get('__fit')), ['qt-where']);
+  assert.deepEqual(plain(w.get('__fit')), ['qt-where pend']);
   ro.cb([{ contentRect: { width: 0, height: 0 } }]);
   assert.equal(w.get('__fit').length, 1, 'a hidden or collapsed tile says nothing');
   w.document.documentElement.classList.add('force-coarse');
@@ -2918,4 +2919,145 @@ test('tap count (real launcher): a new session from an empty quad tile is 2 taps
   assert.equal(slotsOf(w)['petroit--api--s9'], slot, 'the new session takes the tile it was started for (the launcher\'s onDone)');
   assert.equal(sh.open, false, 'and the sheet is closed');
   assert.deepEqual(plain(w.get('__opened')), [], 'open: false: no terminal page or tab is opened elsewhere, the tile shows it');
+});
+
+// ---------------------------------------------------------------- v0.5.21: the pointer type flips (#52), and the quad leftovers (#34)
+
+/** A world whose matchMedia and MutationObserver are tables the test drives: flip(on) changes (pointer: coarse) and fires 'change' on the queries the page subscribed to. */
+function pointerWorld(opts = {}) {
+  const st = { coarse: false, adds: 0, removes: 0, subs: new Set(), mos: [] };
+  const mm = (q) => {
+    const isPointer = /pointer/.test(q);
+    const m = {
+      media: q,
+      get matches() { return isPointer ? st.coarse : /840/.test(q); },
+      addEventListener(t, fn) { if (t === 'change') { st.adds += 1; st.subs.add(fn); } },
+      removeEventListener(t, fn) { if (t === 'change') { st.removes += 1; st.subs.delete(fn); } },
+    };
+    return m;
+  };
+  class FakeMO {
+    constructor(cb) { this.cb = cb; this.gone = false; this.opts = null; this.target = null; st.mos.push(this); }
+    observe(n, o) { this.target = n; this.opts = o; }
+    disconnect() { this.gone = true; }
+  }
+  const env = quadWorld({ hash: '#/quad', kit: 'stub', extra: { matchMedia: mm, MutationObserver: FakeMO }, ...opts });
+  env.st = st;
+  env.flip = (on) => { st.coarse = on; for (const fn of [...st.subs]) fn({ matches: on }); };
+  return env;
+}
+
+test('a pointer flip sets data-touch and hands every live component update({touch}) before any poll, and flipping back clears it', () => {
+  const env = pointerWorld();
+  const { w } = env;
+  const quad = () => page(w).querySelector('.quad');
+  assert.equal(quad().getAttribute('data-touch'), null);
+  const cur = w.get('Quad').current;
+  const T1 = names(w)[0];
+  cur.openComposer(T1);                                                  // builds a composer controller for that tile
+  assert.equal(w.get('__kit').composers.length >= 1, true);
+  const composer = w.get('__kit').composers[0];
+  composer.updates.length = 0;
+  env.flip(true);
+  assert.equal(quad().getAttribute('data-touch'), 'true', 'no sync pass was needed');
+  assert.deepEqual(plain(composer.updates).filter((u) => 'touch' in u), [{ touch: true }]);
+  env.flip(false);
+  assert.equal(quad().getAttribute('data-touch'), null);
+  assert.equal(composer.updates.filter((u) => u.touch === false).length, 1);
+  env.flip(false);
+  assert.equal(composer.updates.filter((u) => u.touch === false).length, 1, 'a change event that changes nothing does nothing');
+});
+
+test('toggling html.force-coarse does the same through a class-only MutationObserver', () => {
+  const env = pointerWorld();
+  const { w, st } = env;
+  const mo = st.mos[0];
+  assert.ok(mo, 'an observer was made');
+  assert.equal(mo.target, w.document.documentElement);
+  assert.deepEqual(plain(mo.opts), { attributes: true, attributeFilter: ['class'] });
+  w.document.documentElement.classList.add('force-coarse');
+  mo.cb([]);
+  assert.equal(page(w).querySelector('.quad').getAttribute('data-touch'), 'true');
+  w.document.documentElement.classList.remove('force-coarse');
+  mo.cb([]);
+  assert.equal(page(w).querySelector('.quad').getAttribute('data-touch'), null);
+});
+
+test('a flip closes an open tile menu (it was built for the old tier) and re-sources, reorders and restarts nothing', () => {
+  const env = pointerWorld();
+  const { w } = env;
+  const cur = w.get('Quad').current;
+  const before = names(w);
+  const T1 = before[0];
+  const frame = frameOf(w, T1);
+  const log = [];
+  spy(frame, log);
+  assert.equal(cur.openMenu(T1, false), true);
+  const menu = w.get('__kit').menus[0];
+  assert.equal(menu.open, true);
+  env.flip(true);
+  assert.equal(menu.open, false);
+  assert.deepEqual(names(w), before);
+  assert.equal(frameOf(w, T1), frame, 'the same iframe node');
+  assert.deepEqual(log, [], 'never re-sourced or removed');
+  assert.equal(resizes(w).length, 0, 'no process or size was touched');
+});
+
+test('unmount removes the media listener and disconnects the observer; repeated mounts leave nothing behind', () => {
+  const env = pointerWorld();
+  const { w, st } = env;
+  assert.equal(st.subs.size >= 1, true);
+  assert.equal(st.mos.filter((m) => !m.gone).length, 1);
+  w.get('Quad').current.destroy();
+  assert.equal(st.subs.size, 0, 'no listener left');
+  assert.equal(st.mos.every((m) => m.gone), true);
+  assert.equal(st.adds, st.removes, 'every add has its remove');
+  env.flip(true);                                                        // nothing to call any more
+});
+
+test('without matchMedia or MutationObserver the page mounts and behaves as before', () => {
+  const env = quadWorld({ hash: '#/quad', extra: { matchMedia: undefined, MutationObserver: undefined } });
+  assert.equal(page(env.w).querySelector('.quad') !== null, true);
+  env.w.document.documentElement.classList.add('force-coarse');
+  env.w.get('Quad').current.sync();
+  assert.equal(page(env.w).querySelector('.quad').getAttribute('data-touch'), 'true', 'the sync pass still follows the pointer');
+});
+
+test('a tile Open link carries data-standalone="skip" next to data-dock="skip"; the PWA click handler leaves it alone, a /term/ link elsewhere still navigates in place', () => {
+  const env = quadWorld({ hash: '#/quad' });
+  const { w } = env;
+  const T1 = names(w)[0];
+  const open = tileOf(w, T1).querySelector('a.qt-open');
+  assert.equal(open.getAttribute('data-standalone'), 'skip');
+  assert.equal(open.getAttribute('data-dock'), 'skip');
+  assert.equal(open.getAttribute('href'), `/term/${T1}`);
+  w.run('globalThis.__assigned = []; globalThis.__docOn = {}; location.assign = (u) => { __assigned.push(u); }; navigator.standalone = true; document.addEventListener = (t, f) => { (__docOn[t] ||= []).push(f); }; installLifecycleListeners();');
+  const click = (n) => { const e = { type: 'click', target: n, prevented: 0, preventDefault() { this.prevented += 1; } }; for (const f of w.get('__docOn').click) f(e); return e; };
+  const e1 = click(open);
+  assert.equal(e1.prevented, 0, 'the click falls through to target=_blank');
+  assert.deepEqual(plain(w.get('__assigned')), []);
+  const other = w.document.createElement('a');
+  other.setAttribute('href', `/term/${T1}`);
+  other.setAttribute('target', '_blank');
+  page(w).append(other);
+  const e2 = click(other);
+  assert.equal(e2.prevented, 1);
+  assert.deepEqual(plain(w.get('__assigned')), [`/term/${T1}`]);
+});
+
+test('the project/repo of a tile header is .pend (hidden by CSS) until TermKit.fitName has measured it, then the class is gone', () => {
+  const env = quadWorld({ hash: '#/quad' });
+  const { w } = env;
+  const T1 = names(w)[0];
+  const where = tileOf(w, T1).querySelector('.qt-where');
+  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  assert.match(css, /\.qt-where\.pend \{ visibility:hidden; \}/, 'hidden (not removed): no layout jump when it shows');
+  const T = w.get('TermKit');
+  const fresh = w.document.createElement('span');
+  fresh.setAttribute('class', 'qt-where pend');
+  fresh.getBoundingClientRect = () => ({ width: 120 });
+  assert.equal(fresh.classList.contains('pend'), true);
+  T.fitName(fresh);
+  assert.equal(fresh.classList.contains('pend'), false, 'the first measurement shows it');
+  assert.equal(where.classList.contains('pend') || where.classList.contains('qt-where'), true);
 });

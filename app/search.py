@@ -17,6 +17,7 @@ log = logging.getLogger("ccboard.search")
 POLL_SECONDS = 60
 MAX_TEXT = 20_000
 MAX_BYTES_PER_CYCLE = 50_000_000
+MAX_SKIPS = 30                     # passes a busy box may skip in a row (30 x 60 s), then one runs anyway
 ROLLOUT_ID_RE = re.compile(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl$")
 
 SCHEMA = """
@@ -208,14 +209,29 @@ class Indexer(threading.Thread):
             added += len(entries)
         return added
 
+    skips = 0                                        # passes skipped in a row while the box was busy (#31)
+
+    def tick(self) -> int | None:
+        """One pass. While the box is busy (health.under_load) the pass is skipped (None) and nothing is lost: the next pass resumes
+        from the stored offsets, so it catches up by itself. After MAX_SKIPS skipped passes in a row it runs anyway (at most one
+        pass of up to MAX_BYTES_PER_CYCLE), so a box that stays busy still gets new transcripts into search."""
+        from . import health
+        if self.skips < MAX_SKIPS and health.under_load():
+            self.skips += 1
+            return None
+        self.skips = 0
+        try:
+            n = self.index_once()
+            if n:
+                log.info("indexed %d transcript entries", n)
+            return n
+        except Exception as e:
+            log.warning("transcript indexing failed: %s", e)
+            return 0
+
     def run(self) -> None:
         while not self.stop.is_set():
-            try:
-                n = self.index_once()
-                if n:
-                    log.info("indexed %d transcript entries", n)
-            except Exception as e:
-                log.warning("transcript indexing failed: %s", e)
+            self.tick()
             self.stop.wait(POLL_SECONDS)
 
 

@@ -22,6 +22,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 from .. import claude_auth, projects
 from ..config import settings
@@ -45,6 +46,58 @@ PERMISSION_MODES = ("manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassP
 # The launcher's mode names (the same five words the Codex picker uses) as Claude permission modes: `custom` is Codex's sandbox + approval pair.
 MODE_ALIASES = {"default": "manual", "read-only": "plan", "bypass": "bypassPermissions"}
 LAUNCH_KINDS = ("new", "resume", "continue", "from_pr")                  # LaunchReq.kind; from_pr is `claude --from-pr <n|url>`
+
+
+# ---------- version gates (issue #113): what the Claude Code docs say needs a newer Claude Code ----------
+# Dated evidence, not a permanent default: every row was read from the Claude Code documentation on 2026-10-07 and none was run against an old
+# binary. Where a `--help` probe exists (ultracode: capabilities()) the probe wins over the number. Claude Code updates itself, so the answer
+# changes over time. `docs` is the page family the row came from (CLI reference, model configuration, permission modes, sub-agents).
+class Gate(NamedTuple):
+    key: str
+    feature: str            # the short words the doctor and the launcher use
+    min_version: str
+    what_breaks: str        # plain words: what happens on an older Claude Code
+    docs: str
+    read: str = "2026-10-07"
+
+
+FEATURE_GATES: tuple[Gate, ...] = (
+    Gate("ultracode_effort", "--effort ultracode", "2.1.203", "the flag is rejected (the launcher then applies it after start with /effort ultracode on)", "Model configuration"),
+    Gate("ultracode_off", "/effort ultracode off", "2.1.284", "ultracode cannot be switched off inside a session", "Model configuration"),
+    Gate("permission_prompts_none", "--permission-prompts none", "2.1.259", "headless runs cannot turn permission prompts off", "CLI reference"),
+    Gate("subagent_model_force", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE", "2.1.257", "the subagent model variable is ignored", "Sub-agents"),
+    Gate("manual_mode", "the manual permission mode name", "2.1.200", "--permission-mode manual is rejected (the board sends default)", "Permission modes"),
+    Gate("opusplan_1m", "/model opusplan[1m]", "2.1.265", "the opusplan[1m] model alias is unknown", "Model configuration"),
+    Gate("mcp_sse_fallback", "SSE fallback for HTTP MCP servers", "2.1.265", "an HTTP MCP server that only speaks SSE fails to connect", "CLI reference"),
+    Gate("auto_start_mode", "auto as the starting permission mode", "2.1.283", "--permission-mode auto is rejected in an interactive session", "Permission modes"),
+)
+GATES_BY_KEY = {g.key: g for g in FEATURE_GATES}
+_VERSION_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
+
+
+def parse_version(text) -> tuple[int, int, int] | None:
+    """'2.1.288', '2.1.288 (Claude Code)', 'claude 2.1.288' -> (2, 1, 288); '2.1' -> (2, 1, 0); anything without a dotted number -> None."""
+    m = _VERSION_RE.search(text if isinstance(text, str) else "")
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)) if m else None
+
+
+def gate_met(key: str, version) -> bool | None:
+    """Is the gate `key` met by `version` (a string or a parsed tuple)? None when the version cannot be read: an unknown version never blocks."""
+    have = version if isinstance(version, tuple) else parse_version(version)
+    if have is None:
+        return None
+    return have >= parse_version(GATES_BY_KEY[key].min_version)
+
+
+def unmet_gates(version) -> list[Gate]:
+    """The gates an installed `version` is too old for, in table order ([] when it is new enough or unknown)."""
+    return [g for g in FEATURE_GATES if gate_met(g.key, version) is False]
+
+
+def gate_message(key: str, version) -> str:
+    g = GATES_BY_KEY[key]
+    have = ".".join(map(str, parse_version(version) or ())) if not isinstance(version, tuple) else ".".join(map(str, version))
+    return f"{g.feature} needs Claude Code {g.min_version} or newer (this box has {have}): {g.what_breaks}"
 CAPS_TIMEOUT = 5.0                                # `claude --help` is read once per binary; a failed probe is retried after FAIL_TTL
 FAIL_TTL = 60.0
 PR_RE = re.compile(r"^(#?\d{1,7}|https://[A-Za-z0-9.-]{1,100}(:\d{1,5})?/[A-Za-z0-9._~%@:+/-]{1,300})$")   # a PR number or its URL
@@ -368,6 +421,37 @@ class ClaudeAgent(Agent):
     def launch_caps(self) -> dict:
         return self.capabilities()
 
+    def peek_capabilities(self) -> dict | None:
+        """capabilities() without a probe: the recorded answer (env switch, or the cached `--help` of this binary), None when none exists yet.
+        The doctor uses it so a version check never starts a process."""
+        env = os.environ.get(ULTRACODE_ENV, "").strip().lower()
+        if env in ("1", "true", "yes", "on"):
+            return {"ultracode_flag": True}
+        if env in ("0", "false", "no", "off"):
+            return {"ultracode_flag": False}
+        exe = self.bin()
+        if not exe:
+            return None
+        with _caps_lock:
+            hit = _caps_items.get(_bin_key(exe))
+        return dict(hit[1]) if hit and hit[2] else None
+
+    def gate_unmet(self, key: str) -> str | None:
+        """The plain reason when the installed claude is too old for FEATURE_GATES[key]; None when the gate is met or the version cannot be read
+        (an unknown version never hides an option)."""
+        v = self.version()
+        return gate_message(key, v) if gate_met(key, v) is False else None
+
+    def permission_modes(self) -> list[str]:
+        """PERMISSION_MODES as this box's claude takes them: `manual` is shown as its older name `default` below 2.1.200, and `auto` is left
+        out below 2.1.283 (it cannot start an interactive session there)."""
+        modes = list(PERMISSION_MODES)
+        if self.gate_unmet("manual_mode"):
+            modes = ["default" if m == "manual" else m for m in modes]
+        if self.gate_unmet("auto_start_mode"):
+            modes.remove("auto")
+        return modes
+
     def efforts(self) -> tuple:
         """The efforts `--effort` takes on this box: low..max, plus ultracode when the box's claude accepts it."""
         return EFFORTS + ((ULTRACODE,) if self.capabilities()["ultracode_flag"] else ())
@@ -403,8 +487,9 @@ class ClaudeAgent(Agent):
                      "basic"),
             OptField("fast", "Fast mode", "bool", None, False,
                      "There is no CLI flag: the board sends /fast after the session starts.", "basic"),
-            OptField("permission_mode", "Permission mode", "select", list(PERMISSION_MODES), None,
-                     "--permission-mode. bypassPermissions skips every prompt: use the bypass acknowledgement, never for tasks.", "basic"),
+            OptField("permission_mode", "Permission mode", "select", self.permission_modes(), None,
+                     "--permission-mode. bypassPermissions skips every prompt: use the bypass acknowledgement, never for tasks."
+                     + "".join(" " + why + "." for why in filter(None, (self.gate_unmet("manual_mode"), self.gate_unmet("auto_start_mode")))), "basic"),
             OptField("prompt", "First prompt", "textarea", None, None,
                      f"Typed as the first message of a new session ({MAX_PROMPT} characters at most).", "basic", False, launch_when("new")),
             OptField("bypass", "Skip all permission prompts", "bool", None, False,
@@ -555,8 +640,12 @@ class ClaudeAgent(Agent):
                 raise projects.BadRequest(f"effort must be one of {', '.join(EFFORTS)} for a scheduled run: ultracode has no effect under -p")
             full["effort"] = effort
         if pm:
+            if interactive and pm == "default" and self.gate_unmet("manual_mode"):
+                pm = "manual"                                 # the older name, which the launcher offers on a claude below 2.1.200
             if interactive and pm not in PERMISSION_MODES:    # a scheduled run was checked against HEADLESS_MODES above
-                raise projects.BadRequest(f"permission_mode must be one of {', '.join(PERMISSION_MODES)}")
+                raise projects.BadRequest(f"permission_mode must be one of {', '.join(self.permission_modes())}")
+            if interactive and pm == "auto" and self.gate_unmet("auto_start_mode"):
+                raise projects.BadRequest(f"permission_mode auto: {self.gate_unmet('auto_start_mode')}; pick plan or acceptEdits, or update Claude Code")
             full["permission_mode"] = pm
         for key in ("allowed_tools", "disallowed_tools"):
             tools = self._tools(raw.get(key))
@@ -604,16 +693,17 @@ class ClaudeAgent(Agent):
         return self._validate(raw, interactive=interactive, tasks_or_headless=tasks_or_headless)[1]
 
     # ---- launching ----
-    @staticmethod
-    def _opt_args(full: dict) -> list[str]:
-        """The launch controls as argv, in the order main._launch_args always used."""
+    def _opt_args(self, full: dict) -> list[str]:
+        """The launch controls as argv, in the order main._launch_args always used. `manual` goes out as `default` on a claude below 2.1.200
+        (the stored option keeps `manual`: the argv never carries a name the CLI rejects)."""
         out: list[str] = []
         if "model" in full:
             out += ["--model", full["model"]]
         if "effort" in full:
             out += ["--effort", full["effort"]]
         if "permission_mode" in full:
-            out += ["--permission-mode", full["permission_mode"]]
+            pm = full["permission_mode"]
+            out += ["--permission-mode", "default" if pm == "manual" and self.gate_unmet("manual_mode") else pm]
         for key, flag in (("allowed_tools", "--allowedTools"), ("disallowed_tools", "--disallowedTools")):
             if full.get(key):
                 out += [flag, *full[key]]

@@ -219,7 +219,7 @@ def test_tmux_missing_and_timeout_and_error_exit(world):
     assert c["status"] == "fail" and "not installed" in c["detail"] and "apt-get install" in c["fix"]["cmd"]
     world.cmds[("tmux", "-V")] = doctor.ToolTimeout("tmux")
     c = one("tmux")
-    assert c["status"] == "warn" and c["detail"] == "timed out"
+    assert c["status"] == "skip" and c["detail"] == "tmux did not answer in time (the box is busy; this is not a failure)"      # #99: slow, not broken
     world.cmds[("tmux", "-V")] = doctor.Proc(1, "", "boom")
     assert one("tmux")["status"] == "warn"
 
@@ -343,7 +343,7 @@ def test_git_missing(world):
 def test_gh_states_and_auth_uses_the_exit_code_only(world):
     c = one("gh")
     assert c["status"] == "pass" and c["detail"] == "gh 2.40.1, logged in"
-    assert (("gh", "auth", "status"), doctor.CMD_TIMEOUT) in world.run_calls
+    assert (("gh", "auth", "status"), doctor.GH_AUTH_LIMIT) in world.run_calls       # the slow probe has its own, longer limit (#99)
     world.cmds[("gh", "auth", "status")] = doctor.Proc(1, "", f"You are not logged into any GitHub hosts. token {GH_TOKEN}")
     c = one("gh")
     assert c["status"] == "warn" and "not logged in" in c["detail"] and c["fix"]["cmd"] == "gh auth login"
@@ -571,7 +571,8 @@ def test_claude_bin(world):
     assert c["status"] == "fail" and "not installed" in c["detail"] and "claude.ai/install.sh" in c["fix"]["cmd"]
     world.claude_exe = "/usr/local/bin/claude"
     world.cmds[("claude", "--version")] = doctor.ToolTimeout("claude")
-    assert (one("claude-bin")["status"], one("claude-bin")["detail"]) == ("warn", "timed out")
+    c = one("claude-bin")                                  # the first line of this test passed: that is the last good answer, with its age (#99)
+    assert c["status"] == "pass" and c["detail"].startswith("claude 2.1.287 at /usr/local/bin/claude, checked ") and "the box is busy; this is not a failure" in c["detail"]
 
 
 def test_claude_auth(world):
@@ -1656,3 +1657,629 @@ def test_mcp_remote_probe_through_the_real_middleware(lite_client, monkeypatch):
     assert seen == [401] and c["status"] == "pass"
     out = lite_client.get("/api/doctor?group=box&refresh=1", headers={"Tailscale-User-Login": "alice@example.com"}).json()
     assert next(x for x in out["checks"] if x["id"] == "mcp-remote")["status"] == "pass"
+
+
+# ------------------------------------------------------------------ v0.5.21 doctor checks: backup (#49), backup-branch CI (#51), GitHub Actions (#50),
+# slow versus broken gh (#99), Claude Code version gates (#113). The autouse fixture pins the baseline checks, so these are selected by id.
+
+NEW_IDS = ("backup-repo", "backup-last", "backup-uncommitted", "backup-branch-ci", "ci-status", "claude-features")
+NEW_CHECKS = {c[0]: c for c in doctor.CHECKS if c[0] in NEW_IDS}
+NOW = datetime(2026, 10, 8, 12, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def newc(monkeypatch):
+    """run(id) -> the check dict for one of the new checks, with the doctor's clocks frozen at NOW."""
+    monkeypatch.setattr(doctor, "_utcnow", lambda: NOW)
+    monkeypatch.setattr(doctor, "_wall", lambda: NOW.timestamp())
+
+    def run(cid, db=None):
+        monkeypatch.setattr(doctor, "CHECKS", [NEW_CHECKS[cid]])
+        out = doctor.run(NEW_CHECKS[cid][1], refresh=True, db=db)
+        assert [c["id"] for c in out["checks"]] == [cid]
+        return out["checks"][0]
+    return run
+
+
+def test_the_new_checks_are_registered_in_their_groups():
+    assert set(NEW_CHECKS) == set(NEW_IDS)
+    assert {i: NEW_CHECKS[i][1] for i in NEW_IDS} == {"backup-repo": "box", "backup-last": "box", "backup-uncommitted": "box",
+                                                     "backup-branch-ci": "box", "ci-status": "box", "claude-features": "claude"}
+
+
+# ---- #49 backup-repo
+
+def test_backup_repo_off_is_a_skip_remote_passes_same_disk_warns(newc, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "data_dir", tmp_path / "data")
+    (tmp_path / "data").mkdir(exist_ok=True)
+    monkeypatch.setattr(settings, "restic_repo", "off")
+    c = newc("backup-repo")
+    assert c["status"] == "skip" and c["detail"] == "restic backup is off (CCBOARD_RESTIC_REPO=off)"
+    for remote in ("sftp:user@host:/srv/restic", "rclone:remote:path", "s3:s3.example.com/bucket", "rest:https://u:SECRETPW@host:8000/r/"):
+        monkeypatch.setattr(settings, "restic_repo", remote)
+        c = newc("backup-repo")
+        assert c["status"] == "pass" and "remote" in c["detail"] and "SECRETPW" not in json.dumps(c), remote
+    monkeypatch.setattr(settings, "restic_repo", str(tmp_path / "data" / "restic"))       # under the data dir: the default's shape
+    c = newc("backup-repo")
+    assert c["status"] == "warn" and "same disk" in c["detail"] and "deletion and corruption" in c["detail"]
+    assert "CCBOARD_RESTIC_REPO" in c["fix"]["text"] and "README" in c["fix"]["text"]
+    monkeypatch.setattr(settings, "restic_repo", str(tmp_path / "does" / "not" / "exist" / "yet"))      # nearest existing parent decides
+    assert newc("backup-repo")["status"] == "warn"
+
+
+def test_backup_repo_on_another_device_passes_and_unreadable_disks_skip(newc, monkeypatch, tmp_path):
+    (tmp_path / "data").mkdir(exist_ok=True)
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.setattr(settings, "data_dir", tmp_path / "data")
+    monkeypatch.setattr(settings, "restic_repo", str(tmp_path / "elsewhere" / "restic"))
+    monkeypatch.setattr(doctor, "_st_dev", lambda p: 2 if "elsewhere" in str(p) else 1)
+    c = newc("backup-repo")
+    assert c["status"] == "pass" and "different disk" in c["detail"]
+    monkeypatch.setattr(doctor, "_st_dev", lambda p: (_ for _ in ()).throw(PermissionError("denied")))
+    assert newc("backup-repo")["status"] == "skip"
+
+
+# ---- #49 backup-last
+
+def write_status(tmp_path, monkeypatch, *, hours=1.0, status="ok", errors=(), warnings=(), at=None):
+    monkeypatch.setattr(settings, "data_dir", tmp_path / "data")
+    (tmp_path / "data").mkdir(exist_ok=True)
+    when = (NOW - timedelta(hours=hours)).isoformat(timespec="seconds") if at is None else at
+    (tmp_path / "data" / "backup-status.json").write_text(json.dumps({"at": when, "status": status, "errors": list(errors), "warnings": list(warnings)}))
+
+
+@pytest.mark.parametrize("hours,status,errors,warnings,want,needle", [
+    (1, "ok", (), (), "pass", "the last backup was ok (2026-10-08 11:00 UTC, 1 h 0 min ago)"),
+    (35, "ok", (), (), "pass", "35 h 0 min ago"),
+    (37, "ok", (), (), "warn", "37 h 0 min old"),
+    (71, "ok", (), (), "warn", "it should run every night"),
+    (73, "ok", (), (), "fail", "the nightly timer is not running it"),
+    (200, "ok", (), (), "fail", "8 d old"),
+    (1, "partial", (), ("push shop/api: refused", "second"), "warn", "partial"),
+    (1, "failed", ("restic: boom", "other"), (), "fail", "the last backup failed"),
+    (80, "failed", ("restic: boom",), (), "fail", "restic: boom"),
+    (1, "mystery", (), (), "warn", "mystery"),
+])
+def test_backup_last_table(newc, monkeypatch, tmp_path, hours, status, errors, warnings, want, needle):
+    write_status(tmp_path, monkeypatch, hours=hours, status=status, errors=errors, warnings=warnings)
+    c = newc("backup-last")
+    assert c["status"] == want and needle in c["detail"], c
+    if status == "partial":
+        assert "push shop/api: refused" in c["detail"] and "second" not in c["detail"]          # the first warning only
+    if status == "failed":
+        assert "restic: boom" in c["detail"] and "other" not in c["detail"]
+    if want != "pass":
+        assert c["fix"] and c["fix"]["text"]
+
+
+def test_backup_last_without_a_file_and_with_an_unreadable_one(newc, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "data_dir", tmp_path / "data")
+    (tmp_path / "data").mkdir(exist_ok=True)
+    monkeypatch.setattr(doctor, "_uptime", lambda: 3600.0)
+    assert newc("backup-last")["status"] == "skip"                                          # under a day old: no night yet
+    monkeypatch.setattr(doctor, "_uptime", lambda: 3 * 86400.0)
+    c = newc("backup-last")
+    assert c["status"] == "warn" and "ever run" in c["detail"] and "Back up now" in c["fix"]["text"]
+    (tmp_path / "data" / "backup-status.json").write_text("{not json")
+    assert newc("backup-last")["status"] == "skip"
+    (tmp_path / "data" / "backup-status.json").write_text(json.dumps({"status": "ok"}))      # no time in it
+    assert newc("backup-last")["status"] == "skip"
+    (tmp_path / "data" / "backup-status.json").write_text(json.dumps({"at": "2026-10-08T11:00:00", "status": "ok"}))   # naive time = UTC
+    assert newc("backup-last")["status"] == "pass"
+
+
+# ---- #49 backup-uncommitted
+
+def dirty_world(world, monkeypatch, tmp_path, repos):
+    """repos: [(name, files)] with files [(relative path, age in hours)]; each repo gets a dir, the files, and a faked `git status --porcelain`."""
+    projects = [{"name": "shop", "repos": []}]
+    for name, files in repos:
+        d = tmp_path / "shop" / name
+        d.mkdir(parents=True, exist_ok=True)
+        lines = []
+        for rel, hours in files:
+            f = d / rel
+            f.write_text("x")
+            t = NOW.timestamp() - hours * 3600
+            os.utime(f, (t, t))
+            lines.append(f" M {rel}")
+        world.cmds[("git", "-C", str(d), "status", "--porcelain")] = doctor.Proc(0, "\n".join(lines) + "\n", "")
+        projects[0]["repos"].append({"name": name, "path": str(d), "dirty": True, "state": "ok"})
+    projects[0]["repos"].append({"name": "clean", "path": str(tmp_path / "shop" / "clean"), "dirty": False, "state": "ok"})
+    monkeypatch.setattr(doctor, "_projects_source", lambda: projects)
+    return projects
+
+
+def test_uncommitted_old_changes_warn_and_name_the_repo(newc, world, monkeypatch, tmp_path):
+    dirty_world(world, monkeypatch, tmp_path, [("api", [("a.py", 48), ("b.py", 1)]), ("web", [("c.js", 1)])])
+    c = newc("backup-uncommitted")
+    assert c["status"] == "warn" and "shop/api" in c["detail"] and "shop/web" not in c["detail"] and "1 repo with" in c["detail"]
+    assert "commit or push" in c["fix"]["text"].lower() and "only committed work" in c["fix"]["text"]
+    assert "backed up" not in c["detail"].replace("no backup covers", "")                   # uncommitted work is never described as backed up
+    runs = [k for k, _ in world.run_calls if k[:1] == ("git",)]
+    assert runs == [("git", "-C", str(tmp_path / "shop" / "api"), "status", "--porcelain"), ("git", "-C", str(tmp_path / "shop" / "web"), "status", "--porcelain")]   # dirty repos only
+
+
+def test_uncommitted_fresh_changes_pass(newc, world, monkeypatch, tmp_path):
+    dirty_world(world, monkeypatch, tmp_path, [("api", [("a.py", 1)])])
+    c = newc("backup-uncommitted")
+    assert c["status"] == "pass" and "none older than a day" in c["detail"] and "copies only committed work" in c["detail"]
+
+
+def test_uncommitted_a_missing_path_skips_that_repo_only(newc, world, monkeypatch, tmp_path):
+    projects = dirty_world(world, monkeypatch, tmp_path, [("api", [("a.py", 1)]), ("gone", [])])
+    import shutil
+    shutil.rmtree(tmp_path / "shop" / "gone")
+    c = newc("backup-uncommitted")
+    assert c["status"] == "pass" and "1 could not be read" in c["detail"]
+    projects[0]["repos"] = [r for r in projects[0]["repos"] if r["name"] == "gone"]
+    assert newc("backup-uncommitted")["status"] == "skip"                                    # nothing readable at all
+
+
+def test_uncommitted_degrades_to_a_skip_never_raises(newc, world, monkeypatch, tmp_path):
+    assert newc("backup-uncommitted")["status"] == "skip"                                    # no scan source registered in this test
+    monkeypatch.setattr(doctor, "_projects_source", lambda: None)
+    assert newc("backup-uncommitted")["status"] == "skip"
+    monkeypatch.setattr(doctor, "_projects_source", lambda: [{"name": "p", "repos": []}])
+    assert newc("backup-uncommitted")["status"] == "pass"
+    dirty_world(world, monkeypatch, tmp_path, [("api", [("a.py", 48)])])
+    world.cmds[("git", "-C", str(tmp_path / "shop" / "api"), "status", "--porcelain")] = doctor.ToolMissing("git")
+    c = newc("backup-uncommitted")
+    assert c["status"] == "skip" and "git is not installed" in c["detail"]
+    world.cmds[("git", "-C", str(tmp_path / "shop" / "api"), "status", "--porcelain")] = doctor.ToolTimeout("git")
+    assert newc("backup-uncommitted")["status"] == "skip"
+    world.cmds[("git", "-C", str(tmp_path / "shop" / "api"), "status", "--porcelain")] = doctor.Proc(128, "", "fatal")
+    assert newc("backup-uncommitted")["status"] == "skip"
+
+
+def test_uncommitted_names_five_repos_and_counts_the_rest_and_caps_files(newc, world, monkeypatch, tmp_path):
+    dirty_world(world, monkeypatch, tmp_path, [(f"r{i}", [("a.py", 72)]) for i in range(7)])
+    c = newc("backup-uncommitted")
+    assert c["status"] == "warn" and c["detail"].startswith("7 repos with changes older than a day")
+    assert "shop/r0" in c["detail"] and "shop/r4" in c["detail"] and "shop/r5" not in c["detail"] and "and 2 more" in c["detail"]
+    # 250 lines: only the first 200 are looked at (the old file is line 201, so it is never seen)
+    d = tmp_path / "shop" / "big"
+    d.mkdir()
+    lines = []
+    for i in range(250):
+        (d / f"f{i}.txt").write_text("x")
+        t = NOW.timestamp() - (3600 if i < 200 else 5 * 86400)
+        os.utime(d / f"f{i}.txt", (t, t))
+        lines.append(f" M f{i}.txt")
+    world.cmds[("git", "-C", str(d), "status", "--porcelain")] = doctor.Proc(0, "\n".join(lines), "")
+    monkeypatch.setattr(doctor, "_projects_source", lambda: [{"name": "shop", "repos": [{"name": "big", "path": str(d), "dirty": True}]}])
+    assert newc("backup-uncommitted")["status"] == "pass"
+
+
+def test_uncommitted_stops_at_its_time_budget(newc, world, monkeypatch, tmp_path):
+    dirty_world(world, monkeypatch, tmp_path, [(f"r{i}", [("a.py", 72)]) for i in range(5)])
+    monkeypatch.setattr(doctor, "UNCOMMITTED_BUDGET", 0.25)
+    real = world.fake_run
+
+    def slow(argv, timeout=doctor.CMD_TIMEOUT):
+        time.sleep(0.2)
+        return real(argv, timeout)
+    monkeypatch.setattr(doctor, "_run", slow)
+    t0 = time.monotonic()
+    c = newc("backup-uncommitted")
+    assert time.monotonic() - t0 < 1.0 and c["status"] == "warn" and "2 repos" in c["detail"]      # two repos fit the budget, the rest are not asked
+
+
+# ---- #51 backup-branch-ci
+
+def make_repo(projects_dir, name, workflow=None, origin=True, proj="team", files=None):
+    r = projects_dir / proj / name
+    (r / ".git").mkdir(parents=True)
+    (r / ".git" / "config").write_text('[core]\n\tbare = false\n' + ('[remote "origin"]\n\turl = git@example.com:o/r.git\n' if origin else ""))
+    for fname, text in ((files or {}) if files else ({"ci.yml": workflow} if workflow is not None else {})).items():
+        wf = r / ".github" / "workflows"
+        wf.mkdir(parents=True, exist_ok=True)
+        (wf / fname).write_text(text)
+    return r
+
+
+BAD = "name: ci\non: [push, pull_request]\njobs:\n  a:\n    runs-on: x\n"
+GOOD = "name: ci\non:\n  push:\n    branches-ignore: ['ccboard-backup/**']\n  pull_request:\n"
+
+
+def test_backup_branch_ci_names_the_repos_whose_workflows_would_run(newc, projects_dir, monkeypatch):
+    monkeypatch.setattr(settings, "backup_push", True)
+    make_repo(projects_dir, "bad", BAD)
+    make_repo(projects_dir, "good", GOOD)
+    make_repo(projects_dir, "multi", files={"ci.yml": BAD, "release.yml": "on:\n  push:\n    tags: ['v*']\n", "lint.yaml": "on: push\n"})
+    make_repo(projects_dir, "noremote", BAD, origin=False)
+    make_repo(projects_dir, "nowf")
+    make_repo(projects_dir, "exotic", "on:\n  push: &p\n    branches: ['${{ vars.B }}']\n")
+    make_repo(projects_dir, "unreadable", files={"ci.yml": "\x00\x01 not yaml ::: ["})
+    c = newc("backup-branch-ci")
+    assert c["status"] == "warn" and c["detail"].startswith("2 repos would run CI on every backup branch")
+    assert "team/bad (ci.yml)" in c["detail"] and "team/multi (ci.yml, lint.yaml)" in c["detail"]
+    for ok in ("good", "noremote", "nowf", "exotic", "unreadable"):
+        assert f"team/{ok}" not in c["detail"], ok
+    assert "branches-ignore: ['ccboard-backup/**']" in c["fix"]["text"] and c["fix"]["cmd"] == "branches-ignore: ['ccboard-backup/**']"
+    assert "belongs in that repo" in c["fix"]["text"]
+
+
+def test_backup_branch_ci_passes_when_none_and_skips_when_nothing_is_pushed(newc, projects_dir, monkeypatch):
+    monkeypatch.setattr(settings, "backup_push", True)
+    make_repo(projects_dir, "good", GOOD)
+    assert newc("backup-branch-ci")["status"] == "pass"
+    make_repo(projects_dir, "bad", BAD)
+    assert newc("backup-branch-ci")["status"] == "warn"
+    monkeypatch.setattr(settings, "backup_push", False)
+    c = newc("backup-branch-ci")
+    assert c["status"] == "skip" and "CCBOARD_BACKUP_PUSH=0" in c["detail"]
+
+
+def test_backup_branch_ci_caps_repos_files_and_bytes_and_names_five(newc, projects_dir, monkeypatch):
+    monkeypatch.setattr(settings, "backup_push", True)
+    for i in range(7):
+        make_repo(projects_dir, f"r{i:02d}", BAD)
+    c = newc("backup-branch-ci")
+    assert c["detail"].startswith("7 repos") and "and 2 more" in c["detail"] and c["detail"].count("(ci.yml)") == 5
+    # only the first 10 files of a repo are read: the bad one is the 11th by name
+    many = {f"a{i:02d}.yml": "on: pull_request\n" for i in range(10)}
+    many["z-last.yml"] = BAD
+    make_repo(projects_dir, "many", files=many, proj="zz")
+    assert "zz/many" not in newc("backup-branch-ci")["detail"]
+    # a workflow larger than 64 KB is read up to 64 KB: an `on:` block at the top is still understood
+    make_repo(projects_dir, "huge", files={"ci.yml": BAD + "# pad\n" * 40000}, proj="zz")
+    assert newc("backup-branch-ci")["detail"].startswith("8 repos")                  # team/r00..r06 and zz/huge; zz/many stays out
+
+
+# ---- #50 ci-status
+
+GH_KEY = ("gh", "run", "list", "--repo", "owner/name", "--branch", "main", "--limit", "5", "--json", doctor.CI_FIELDS)
+
+
+def iso(minutes_ago):
+    return (NOW - timedelta(minutes=minutes_ago)).isoformat().replace("+00:00", "Z")
+
+
+def run_row(name="CI", status="completed", conclusion="success", created=30, updated=None, sha="a" * 40, url="https://example.com/runs/1"):
+    return {"name": name, "status": status, "conclusion": conclusion, "createdAt": iso(created), "updatedAt": iso(created if updated is None else updated),
+            "headSha": sha, "url": url}
+
+
+def ci_env(monkeypatch, world, runs, repo="owner/name", revision="a" * 40):
+    monkeypatch.setenv("CCBOARD_SOURCE_REPO", repo)
+    monkeypatch.setenv("CCBOARD_IMAGE_REVISION", revision)
+    world.cmds[GH_KEY] = doctor.Proc(0, json.dumps(runs), "")
+
+
+def gh_calls(world):
+    return [k for k, _ in world.run_calls if k[:3] == ("gh", "run", "list")]
+
+
+def test_ci_status_green_and_matching_revision_passes(newc, world, monkeypatch):
+    ci_env(monkeypatch, world, [run_row(created=40, updated=30)])
+    c = newc("ci-status")
+    assert c["status"] == "pass" and "CI" in c["detail"] and "success" in c["detail"] and "30 min ago" in c["detail"] and "behind" not in c["detail"]
+    assert GH_KEY in [k for k, _ in world.run_calls]
+
+
+def test_ci_status_behind_the_last_green_commit_is_information_not_a_warning(newc, world, monkeypatch):
+    ci_env(monkeypatch, world, [run_row(sha="b" * 40)], revision="a" * 40)
+    c = newc("ci-status")
+    assert c["status"] == "pass" and "the box is behind the last green commit" in c["detail"] and "aaaaaaa" in c["detail"] and "bbbbbbb" in c["detail"]
+    assert "failed" not in c["detail"] and "deploy" not in c["detail"]
+
+
+@pytest.mark.parametrize("conclusion", ["failure", "timed_out", "cancelled", "startup_failure"])
+def test_ci_status_a_red_newest_run_warns_with_the_url(newc, world, monkeypatch, conclusion):
+    ci_env(monkeypatch, world, [run_row(name="Build and test", conclusion=conclusion, created=100, updated=95, url="https://example.com/runs/77"),
+                                run_row(created=500, sha="c" * 40)])
+    c = newc("ci-status")
+    assert c["status"] == "warn" and "Build and test ended " + conclusion in c["detail"] and "1 h 35 min ago" in c["detail"]
+    assert c["fix"]["text"] == "Open the run: https://example.com/runs/77"
+
+
+def test_ci_status_other_conclusions_do_not_warn(newc, world, monkeypatch):
+    for concl in ("skipped", "neutral", "action_required"):
+        ci_env(monkeypatch, world, [run_row(conclusion=concl)])
+        assert newc("ci-status")["status"] == "pass", concl
+        doctor.invalidate()
+
+
+def test_ci_status_stuck_runs_warn_and_a_fresh_one_passes(newc, world, monkeypatch):
+    ci_env(monkeypatch, world, [run_row(status="queued", conclusion="", created=120, url="https://example.com/runs/5"), run_row(created=300)])
+    c = newc("ci-status")
+    assert c["status"] == "warn" and "queued for 2 h 0 min (stuck)" in c["detail"] and "https://example.com/runs/5" in c["fix"]["text"]
+    doctor.invalidate()
+    ci_env(monkeypatch, world, [run_row(status="in_progress", conclusion="", created=5), run_row(created=300)])
+    c = newc("ci-status")
+    assert c["status"] == "pass" and "in progress" in c["detail"]
+    doctor.invalidate()
+    ci_env(monkeypatch, world, [run_row(status="in_progress", conclusion="", created=45), run_row(created=300)])
+    assert newc("ci-status")["status"] == "warn"
+    doctor.invalidate()
+    ci_env(monkeypatch, world, [run_row(status="waiting", conclusion="", created=31)])
+    assert newc("ci-status")["status"] == "warn"
+
+
+def test_ci_status_skips_never_red(newc, world, monkeypatch):
+    monkeypatch.delenv("CCBOARD_SOURCE_REPO", raising=False)
+    c = newc("ci-status")
+    assert c["status"] == "skip" and "CCBOARD_SOURCE_REPO is empty" in c["detail"]
+    ci_env(monkeypatch, world, [], repo="not a repo")
+    assert newc("ci-status")["status"] == "skip"
+    ci_env(monkeypatch, world, [])
+    assert newc("ci-status")["status"] == "skip"                                      # no runs at all
+    doctor.invalidate()
+    del world.cmds[GH_KEY]                                                            # gh is not installed
+    c = newc("ci-status")
+    assert c["status"] == "skip" and "gh is not installed" in c["detail"]
+    for rc, out in ((1, ""), (4, "gh: To use GitHub CLI, run: gh auth login"), (0, "<html>rate limited</html>")):
+        doctor.invalidate()
+        world.cmds[GH_KEY] = doctor.Proc(rc, out, "HTTP 502 token " + GH_TOKEN)
+        c = newc("ci-status")
+        assert c["status"] == "skip" and GH_TOKEN not in json.dumps(c), (rc, c)
+
+
+def test_ci_status_is_asked_once_per_five_minutes_and_shows_the_age(newc, world, monkeypatch, tmp_path):
+    from app.db import DB
+    db = DB(tmp_path / "ci.db")
+    ci_env(monkeypatch, world, [run_row()])
+    clock = {"t": NOW.timestamp()}
+    monkeypatch.setattr(doctor, "_wall", lambda: clock["t"])
+    first = newc("ci-status", db=db)
+    assert first["status"] == "pass" and "checked" not in first["detail"] and len(gh_calls(world)) == 1
+    clock["t"] += 120
+    second = newc("ci-status", db=db)                                               # a Re-check inside the window
+    assert second["status"] == "pass" and "(checked 2 min ago)" in second["detail"] and len(gh_calls(world)) == 1
+    doctor.invalidate()                                                             # even a restart of the board (memory gone, kv stays)
+    third = newc("ci-status", db=db)
+    assert "(checked 2 min ago)" in third["detail"] and len(gh_calls(world)) == 1
+    clock["t"] += 200                                                               # 5 min 20 s after the reading
+    fourth = newc("ci-status", db=db)
+    assert "checked" not in fourth["detail"] and len(gh_calls(world)) == 2
+    # a failed answer is cached too: nothing hammers GitHub while it is down
+    doctor.invalidate()
+    clock["t"] += 400
+    world.cmds[GH_KEY] = doctor.Proc(1, "", "boom")
+    newc("ci-status", db=DB(tmp_path / "ci2.db"))
+    newc("ci-status", db=DB(tmp_path / "ci2.db"))
+    assert len(gh_calls(world)) == 3
+
+
+def test_ci_status_without_a_database_still_caches_in_memory(newc, world, monkeypatch):
+    ci_env(monkeypatch, world, [run_row()])
+    newc("ci-status")
+    newc("ci-status")
+    assert len(gh_calls(world)) == 1
+
+
+def test_ci_status_slow_github_gives_the_cached_answer_or_an_explained_skip(newc, world, monkeypatch, tmp_path):
+    from app.db import DB
+    db = DB(tmp_path / "slow.db")
+    monkeypatch.setattr(doctor, "GH_WAIT", 0.1)
+    ci_env(monkeypatch, world, [run_row()])
+    real = world.fake_run
+    gate = threading.Event()
+
+    def slow(argv, timeout=doctor.CMD_TIMEOUT):
+        if argv[:3] == ["gh", "run", "list"]:
+            gate.wait(2.0)
+        return real(argv, timeout)
+    monkeypatch.setattr(doctor, "_run", slow)
+    t0 = time.monotonic()
+    c = newc("ci-status", db=db)
+    assert time.monotonic() - t0 < 1.0 and c["status"] == "skip" and "did not answer yet" in c["detail"] and "not a failure" in c["detail"]
+    gate.set()
+    time.sleep(0.3)                                                                 # the background probe landed and filled the cache
+    c = newc("ci-status", db=db)
+    assert c["status"] == "pass" and len(gh_calls(world)) == 1
+    # an old cached answer plus a slow GitHub: the old answer, labelled
+    clock = {"t": NOW.timestamp() + 1000}
+    monkeypatch.setattr(doctor, "_wall", lambda: clock["t"])
+    gate.clear()
+    c = newc("ci-status", db=db)
+    assert c["status"] == "pass" and "GitHub is slow to answer" in c["detail"] and "checked 16 min ago" in c["detail"]
+    gate.set()
+
+
+# ---- #99 a slow gh is not a broken gh
+
+def pump(monkeypatch, world, auth=None, version=None, log=None):
+    """_run replaced by a function whose gh commands take their time: auth/version are (seconds, result-or-exception) pairs."""
+    real = world.fake_run
+
+    def fake(argv, timeout=doctor.CMD_TIMEOUT):
+        spec = auth if argv[:3] == ["gh", "auth", "status"] else version if argv[:2] == ["gh", "--version"] else None
+        if log is not None and argv[0] == "gh":
+            log.append((time.monotonic(), tuple(argv), timeout))
+        if spec is not None:
+            time.sleep(spec[0])
+            if isinstance(spec[1], Exception):
+                raise spec[1]
+            return spec[1]
+        return real(argv, timeout)
+    monkeypatch.setattr(doctor, "_run", fake)
+
+
+def gh_check():
+    return one("gh")
+
+
+def test_slow_gh_auth_without_an_earlier_answer_is_an_explained_skip(world, monkeypatch):
+    monkeypatch.setattr(doctor, "GH_WAIT", 0.1)
+    pump(monkeypatch, world, auth=(0.6, doctor.Proc(0, "", "")))
+    t0 = time.monotonic()
+    c = gh_check()
+    assert time.monotonic() - t0 < 0.5
+    assert c["status"] == "skip" and c["detail"] == "gh is still answering (the box is busy; this is not a failure)"
+    assert c["fix"]["text"].startswith("Press Re-check")
+    assert c["status"] != "warn" and "timed out" not in c["detail"]
+
+
+def test_slow_gh_auth_after_a_good_answer_shows_it_with_its_age(world, monkeypatch):
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr(doctor, "_wall", lambda: clock["t"])
+    assert gh_check()["detail"] == "gh 2.40.1, logged in"
+    clock["t"] += 180
+    monkeypatch.setattr(doctor, "GH_WAIT", 0.1)
+    pump(monkeypatch, world, auth=(0.6, doctor.Proc(0, "", "")))
+    c = gh_check()
+    assert c["status"] == "pass" and c["detail"] == "gh 2.40.1, logged in, checked 3 min ago; the latest re-check is still running"
+    time.sleep(0.7)                                                                  # the probe finishes in the background and becomes the new last answer
+    clock["t"] += 10
+    pump(monkeypatch, world, auth=(0.6, doctor.Proc(0, "", "")))
+    c = gh_check()
+    assert c["status"] == "pass" and "checked 10 s ago" in c["detail"]               # the age is the age of the real reading
+
+
+def test_a_true_gh_timeout_says_the_limit_and_the_box_is_busy(world, monkeypatch):
+    pump(monkeypatch, world, auth=(0, doctor.ToolTimeout("gh", 15.0)))
+    c = gh_check()
+    assert c["status"] == "skip" and c["detail"] == "gh did not answer in 15 s (the box is busy; this is not a failure)"
+    monkeypatch.setattr(doctor, "_run", world.fake_run)
+    doctor.invalidate()
+    c = gh_check()
+    assert c["status"] == "pass"
+    clock_before = doctor._wall
+    pump(monkeypatch, world, auth=(0, doctor.ToolTimeout("gh", 15.0)))
+    c = gh_check()
+    assert c["status"] == "pass" and "gh 2.40.1, logged in, checked" in c["detail"] and "gh did not answer in 15 s (the box is busy; this is not a failure)" in c["detail"]
+    assert doctor._wall is clock_before
+
+
+def test_a_last_good_answer_over_a_day_old_warns_again(world, monkeypatch):
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr(doctor, "_wall", lambda: clock["t"])
+    assert gh_check()["status"] == "pass"
+    clock["t"] += 3 * 86400
+    pump(monkeypatch, world, auth=(0, doctor.ToolTimeout("gh", 15.0)))
+    c = gh_check()
+    assert c["status"] == "warn" and "the last good answer from gh is 3 d old" in c["detail"]
+
+
+def test_real_gh_failures_still_warn_with_their_fix_even_after_a_slow_run(world, monkeypatch):
+    world.cmds[("gh", "auth", "status")] = doctor.Proc(1, "", "not logged in")
+    c = gh_check()
+    assert c["status"] == "warn" and c["fix"]["cmd"] == "gh auth login" and "not logged in" in c["detail"]
+    doctor.invalidate()
+    world.cmds[("gh", "--version")] = doctor.ToolMissing("gh")
+    c = gh_check()
+    assert c["status"] == "fail" and "not installed" in c["detail"]
+    # a logged-out answer is a real reading: while the re-check is slow it still warns (the slowness does not cure it)
+    doctor.invalidate()
+    world.cmds[("gh", "--version")] = doctor.Proc(0, "gh version 2.40.1\n", "")
+    assert gh_check()["status"] == "warn"
+    monkeypatch.setattr(doctor, "GH_WAIT", 0.1)
+    pump(monkeypatch, world, auth=(0.6, doctor.Proc(0, "", "")))
+    c = gh_check()
+    assert c["status"] == "warn" and "not logged in, checked" in c["detail"] and c["fix"]["cmd"] == "gh auth login"
+
+
+def test_a_slow_auth_does_not_hide_a_missing_binary(world, monkeypatch):
+    pump(monkeypatch, world, auth=(1.0, doctor.Proc(0, "", "")), version=(0, doctor.ToolMissing("gh")))
+    t0 = time.monotonic()
+    c = gh_check()
+    assert time.monotonic() - t0 < 0.8 and c["status"] == "fail" and "not installed" in c["detail"]
+
+
+def test_the_two_gh_commands_run_in_parallel_and_auth_gets_the_long_limit(world, monkeypatch):
+    log = []
+    pump(monkeypatch, world, auth=(0.3, doctor.Proc(0, "", "")), version=(0.3, doctor.Proc(0, "gh version 2.40.1\n", "")), log=log)
+    t0 = time.monotonic()
+    c = gh_check()
+    assert time.monotonic() - t0 < 0.55 and c["status"] == "pass"
+    assert {a[1]: a[2] for a in log} == {("gh", "--version"): doctor.CMD_TIMEOUT, ("gh", "auth", "status"): doctor.GH_AUTH_LIMIT}
+    assert abs(log[0][0] - log[1][0]) < 0.1                                           # both started together
+    assert doctor.GH_AUTH_LIMIT == 15.0 and doctor.GH_AUTH_LIMIT > doctor.CHECK_TIMEOUT
+
+
+def test_only_one_gh_probe_is_in_flight_and_the_cache_still_applies(world, monkeypatch):
+    monkeypatch.setattr(doctor, "GH_WAIT", 0.05)
+    log = []
+    pump(monkeypatch, world, auth=(0.5, doctor.Proc(0, "", "")), log=log)
+    for _ in range(4):
+        doctor.run("box", refresh=True)                                               # four Re-checks while the first auth probe still runs
+    assert [a[1] for a in log].count(("gh", "auth", "status")) == 1
+    time.sleep(0.6)
+    doctor.invalidate()
+    log.clear()
+    pump(monkeypatch, world, auth=(0, doctor.Proc(0, "", "")), log=log)
+    doctor.run("box")
+    doctor.run("box")                                                                 # the 20 s cache answers the second
+    assert [a[1] for a in log].count(("gh", "auth", "status")) == 1
+
+
+def test_gh_never_uses_the_commands_that_can_expose_a_secret(world, monkeypatch):
+    log = []
+    pump(monkeypatch, world, log=log)
+    gh_check()
+    assert all(a[1] in {("gh", "--version"), ("gh", "auth", "status")} for a in log)
+    assert not any("token" in " ".join(a[1]) for a in log)
+
+
+def test_any_shell_out_check_shares_the_wording_through_one_helper(world, monkeypatch):
+    clock = {"t": 5_000_000.0}
+    monkeypatch.setattr(doctor, "_wall", lambda: clock["t"])
+    assert one("ccusage")["status"] == "pass"
+    world.cmds[("ccusage", "--version")] = doctor.ToolTimeout("ccusage", 4.0)
+    clock["t"] += 600
+    c = one("ccusage")
+    assert c["status"] == "pass" and c["detail"] == "ccusage 20.0.24, checked 10 min ago; ccusage did not answer in 4 s (the box is busy; this is not a failure)"
+    world.cmds[("git", "--version")] = doctor.ToolTimeout("git", 4.0)
+    doctor.invalidate()
+    c = one("git")
+    assert c["status"] == "skip" and c["detail"] == "git did not answer in 4 s (the box is busy; this is not a failure)"
+    assert doctor._busy_words("x", None) == "x did not answer in time (the box is busy; this is not a failure)"
+
+
+# ---- #113 claude-features
+
+def at_claude(world, version):
+    world.cmds[("claude", "--version")] = doctor.Proc(0, version + "\n", "")
+
+
+@pytest.mark.parametrize("version,status,needles", [
+    ("2.1.288 (Claude Code)", "pass", ["Claude Code 2.1.288 meets all 8 version gates"]),
+    ("2.1.284", "pass", ["meets all 8"]),
+    ("2.1.283", "warn", ["/effort ultracode off (2.1.284)"]),
+    ("2.1.260", "warn", ["too old for", "/effort ultracode off (2.1.284)", "/model opusplan[1m] (2.1.265)", "auto as the starting permission mode (2.1.283)"]),
+    ("2.1.200", "warn", ["--permission-prompts none (2.1.259)", "and 3 more"]),
+    ("2.1.150", "warn", ["--effort ultracode (2.1.203)", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE (2.1.257)", "and 4 more"]),
+])
+def test_claude_features_by_version(newc, world, version, status, needles):
+    at_claude(world, version)
+    c = newc("claude-features")
+    assert c["status"] == status, c
+    for n in needles:
+        assert n in c["detail"], (n, c["detail"])
+    if status == "warn":
+        assert "README, Updating" in c["fix"]["text"] and c["fix"]["cmd"] == "claude update"
+    assert len(c["detail"]) <= doctor.DETAIL_MAX
+
+
+def test_claude_features_skips_when_the_version_is_unknown_and_makes_no_network_call(newc, world, monkeypatch):
+    at_claude(world, "garbage")
+    assert newc("claude-features")["status"] == "skip"
+    world.cmds[("claude", "--version")] = doctor.Proc(1, "", "")
+    assert newc("claude-features")["status"] == "skip"
+    world.claude_exe = None
+    assert newc("claude-features")["status"] == "skip"
+    world.claude_exe = "/usr/local/bin/claude"
+    at_claude(world, "2.1.200")
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no network")))
+    monkeypatch.setattr(doctor, "_http_get", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no network")))
+    assert newc("claude-features")["status"] == "warn"
+
+
+def test_claude_features_help_probe_wins_for_ultracode(newc, world, monkeypatch):
+    at_claude(world, "2.1.150")
+    monkeypatch.setenv("CCBOARD_CLAUDE_ULTRACODE_FLAG", "1")                          # the recorded V19 answer: this box's claude takes the flag
+    c = newc("claude-features")
+    assert c["status"] == "warn" and "--effort ultracode" not in c["detail"] and "the manual permission mode name (2.1.200)" in c["detail"]
+    monkeypatch.delenv("CCBOARD_CLAUDE_ULTRACODE_FLAG")
+    c = newc("claude-features")
+    assert "--effort ultracode (2.1.203)" in c["detail"]                              # no probe answer: the number decides
+
+
+def test_claude_features_uses_the_adapters_table(newc, world):
+    from app.agents import claude as cl
+    at_claude(world, "2.1.0")
+    c = newc("claude-features")
+    assert c["status"] == "warn" and "and 4 more" in c["detail"]
+    assert c["detail"].count("(2.1.") == 4 and len(cl.FEATURE_GATES) == 8             # four named, the rest counted

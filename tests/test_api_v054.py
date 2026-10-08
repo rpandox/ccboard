@@ -34,7 +34,8 @@ SESSION_KEYS = {"tmux", "project", "repo", "name", "agent", "state", "state_at",
 
 @pytest.fixture(autouse=True)
 def _fresh_scan():
-    """/api/state caches its project scan for 2 s in a module global; an earlier test's scan must not leak into this one."""
+    """/api/state caches its project scan for 2 s in a module global; an earlier test's scan must not leak into this one (nor a
+    reused git answer: _invalidate_scan drops those too). conftest's _quiet_box keeps the box un-busy unless a test patches it."""
     from app import main
     main._invalidate_scan()
     yield
@@ -322,7 +323,9 @@ LEGACY_TOP = {"tmux_down", "projects", "user", "config", "claude", "login", "pen
 def test_state_legacy_keys_are_unchanged(board):
     db().kv_set("rate_limits", {"five_hour": {"used_percentage": 42, "resets_at": 1791349200}})
     st = board.client.get("/api/state", headers=H).json()
-    assert LEGACY_TOP <= set(st) and set(st) - LEGACY_TOP == {"agents", "setup", "deploy", "memory", "accounts", "codex_accounts", "usage_codex", "usage_refresh"}
+    assert LEGACY_TOP <= set(st) and set(st) - LEGACY_TOP == {"agents", "setup", "deploy", "memory", "accounts", "codex_accounts", "usage_codex", "usage_refresh",
+                                                               "scan_slow"}
+    assert st["scan_slow"] is False, "#31: false while the box is not busy"
     assert st["usage_refresh"] == {"running": False, "last": None}, "v0.5.17f: the Usage page's Refresh: a /usage ask in flight, and the newest one"
     assert st["usage_codex"] is None, "v0.5.12: the Codex account's windows (kv rate_limits_codex), null until a rollout reported them"
     assert st["claude"] == AUTH, "state.claude keeps its shape (the claude_auth.status() dict, as is)"
@@ -872,3 +875,104 @@ def test_recover_run_passes_agent_opts_and_rebinds_the_task(board, monkeypatch):
     st = board.client.get("/api/state", headers=H).json()
     assert next(x for x in st["tasks"] if x["id"] == t["id"])["session"] is not None
     assert recover.run(db(), main._start_session) == {"recovered": [], "closed": [], "skipped": [], "continue": []}
+
+
+# ---------------------------------------------------------------- #31: a busy box backs off the scan; #46: the answer's size and encoding
+
+def _count_git(monkeypatch):
+    calls = []
+    real = projects._git
+
+    def counting(path, *args):
+        calls.append((str(path), args[0]))
+        return real(path, *args)
+    monkeypatch.setattr(projects, "_git", counting)
+    return calls
+
+
+def test_state_reuses_git_answers_while_the_box_is_busy(board, monkeypatch):
+    from app import health, main
+    git_init(board.projects / "shop" / "web")
+    calls = _count_git(monkeypatch)
+    monkeypatch.setattr(health, "under_load", lambda: True)
+    st = board.client.get("/api/state", headers=H).json()
+    assert st["scan_slow"] is True, "the state says the board is backing off"
+    first = len(calls)
+    assert {p for p, _ in calls} == {str(board.projects / "shop" / "api"), str(board.projects / "shop" / "web")}, calls
+    main._scan_cache = None                                   # a second scan inside 10 s (past the 2 s scan cache)
+    st2 = board.client.get("/api/state", headers=H).json()
+    assert len(calls) == first, "two scans within 10 s run git once per repo"
+    assert [r["state"] for p in st2["projects"] for r in p["repos"]] == ["ok", "ok"], "the reused answer is the same answer"
+    main._invalidate_scan()                                   # a user action: its repo change shows at once, busy box or not
+    board.client.get("/api/state", headers=H)
+    assert len(calls) == 2 * first
+    monkeypatch.setattr(health, "under_load", lambda: False)  # a quiet box runs git on every scan, as before
+    main._scan_cache = None
+    st3 = board.client.get("/api/state", headers=H).json()
+    main._scan_cache = None
+    board.client.get("/api/state", headers=H)
+    assert len(calls) == 4 * first and st3["scan_slow"] is False
+
+
+def test_a_hook_still_lands_while_the_box_is_busy(board, monkeypatch):
+    from app import health
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(health, "under_load", lambda: True)
+    s = new_session(board, "claude", name="busy")
+    hdr = {"X-CCBoard-Token": hooks.ensure_token(), "X-CCBoard-Session": s["tmux"], "X-CCBoard-Event": "UserPromptSubmit"}
+    r = board.client.post("/api/hook", headers=hdr, content=json.dumps({"session_id": s["agent_session_id"], "prompt": "go"}))
+    assert r.status_code == 200 and r.json()["state"] == "working"
+    assert db().open_rows()[s["tmux"]]["state"] == "working", "hook ingestion never looks at the load"
+
+
+def test_state_is_gzipped_only_for_a_client_that_accepts_it(board):
+    board.client.get("/api/state", headers=H)
+    plain_r = board.client.get("/api/state", headers={**H, "Accept-Encoding": "identity"})
+    gz = board.client.get("/api/state", headers={**H, "Accept-Encoding": "gzip, deflate"})
+    assert "content-encoding" not in plain_r.headers
+    assert gz.headers["content-encoding"] == "gzip" and gz.headers["vary"] == "Accept-Encoding"
+    assert gz.headers["content-type"] == "application/json"
+    assert int(gz.headers["content-length"]) < len(plain_r.content), "smaller on the wire"
+    a, b = plain_r.json(), gz.json()
+    for st in (a, b):
+        st.pop("health")                                      # cpu_pct and at move between two reads
+    assert a == b, "the same state either way"
+    for k in ("content-security-policy", "x-content-type-options", "referrer-policy", "cache-control"):
+        assert plain_r.headers.get(k) == gz.headers.get(k), f"{k}: compression changes no security or caching header"
+
+
+STATE_BUDGET = 150 * 1024        # the plan's target for one /api/state answer (#46)
+
+
+def test_a_large_board_state_stays_under_the_budget(board, monkeypatch):
+    """A generated board of 30 repos (6 projects of 5) and 20 live sessions with full-length prompts and messages (the DB keeps 500
+    characters of each), statusline stats and flags, 20 tasks and 10 jobs: the JSON answer stays under 150 KB."""
+    monkeypatch.setattr(projects, "git_info", lambda path: {"branch": "feature/some-long-branch-name", "dirty": True, "state": "ok"})
+    for p in range(6):
+        for r in range(5):
+            (board.projects / f"project-{p}" / f"repo-number-{r}" / ".git").mkdir(parents=True)
+    words = ("lorem ipsum dolor sit amet " * 40)[:500]
+    stats = {"model": "Opus 5", "model_id": "claude-opus-5", "context_pct": 61, "context_size": 200000, "context_tokens": 122000,
+             "cost_usd": 12.345, "duration_ms": 1234567, "api_duration_ms": 345678, "lines_added": 1234, "lines_removed": 567,
+             "rl_5h": 42.0, "rl_7d": 17.0, "resets_5h": 1791349200, "resets_7d": 1791849200, "version": "2.1.293", "effort": "high"}
+    for i in range(20):
+        p, r = f"project-{i % 6}", f"repo-number-{i % 5}"
+        name = f"{p}--{r}--session-{i}"
+        board.tmux["sessions"][name] = {"created": 1791000000 + i, "attached": i % 2, "windows": 1, "pane_id": f"%{i}", "command": "claude",
+                                        "path": str(board.projects / p / r), "pid": 1000 + i, "env": {}, "win": [220, 50]}
+        db().add_session(tmux_name=name, project=p, repo=r, name=f"session-{i}", launcher="claude", cmd="claude --model opus",
+                         claude_session_id=f"00000000-0000-4000-8000-{i:012d}", cwd=board.projects / p / r,
+                         flags={"subagents": 2, "model_pref": "opus", "effort": "high", "permission_mode": "acceptEdits"})
+        db().set_state(name, "waiting" if i % 3 == 0 else "working", "Stop", message=words, prompt=words, attention=True)
+        db().set_stats(name, dict(stats))
+    for i in range(20):                                       # backlog cards with a spec (they start no session)
+        db().task_add(project=f"project-{i % 6}", repo=f"repo-number-{i % 5}", slug=f"task-{i}", title=f"Task {i}: " + words[:80],
+                      prompt=words, spec=words)
+    for i in range(10):
+        db().job_add(project="project-0", repo="repo-number-0", name=f"Nightly job {i}", prompt=words, cron="0 2 * * *")
+    raw = board.client.get("/api/state", headers={**H, "Accept-Encoding": "identity"}).content
+    st = json.loads(raw)
+    assert sum(1 for _ in all_sessions(st)) == 20 and len(st["tasks"]) >= 20 and len(st["jobs"]) == 10
+    sizes = sorted(((len(json.dumps(v)), k) for k, v in st.items()), reverse=True)
+    print(f"generated board: {len(raw)} bytes; heaviest keys: {sizes[:6]}")
+    assert len(raw) < STATE_BUDGET, f"/api/state is {len(raw)} bytes; heaviest keys: {sizes[:5]}"

@@ -63,6 +63,37 @@ def _uptime() -> float | None:
         return None
 
 
+LOAD_TTL = 5.0                                      # seconds an under_load() answer is reused
+_load_cache: tuple[float, bool] | None = None        # (monotonic time read, answer)
+_load_lock = threading.Lock()
+
+
+def under_load() -> bool:
+    """True while the box is busy: the 1-minute load average is above the CPU count. Read at most once per LOAD_TTL seconds; an
+    unreadable load (no getloadavg, no cpu_count) counts as not busy, and it never raises. The board backs off its own background
+    work with it (#31): the project scan reuses git answers for longer, the cost refresh and the transcript indexer skip a pass.
+    User actions and hook ingestion never look at it."""
+    global _load_cache
+    now = time.monotonic()
+    with _load_lock:
+        if _load_cache is not None and now - _load_cache[0] < LOAD_TTL:
+            return _load_cache[1]
+    try:
+        cores = os.cpu_count() or 0
+        busy = bool(cores) and float(os.getloadavg()[0]) > cores
+    except Exception:                                # OSError, AttributeError (no getloadavg), odd values: not busy
+        busy = False
+    with _load_lock:
+        _load_cache = (now, busy)
+    return busy
+
+
+def load_cache_clear() -> None:
+    global _load_cache
+    with _load_lock:
+        _load_cache = None
+
+
 def snapshot(extra: dict | None = None, consumer: str = "default") -> dict:
     """Box health. `consumer` names who is asking, for the cpu delta (see _cpu_pct)."""
     try:

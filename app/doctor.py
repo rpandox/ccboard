@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Callable, NamedTuple
 from urllib.parse import urlsplit
 
-from . import claude_auth, login_problem, memory, preflight, projects, push, tmux
+from . import backup, claude_auth, login_problem, memory, preflight, projects, push, tmux
 from .config import settings
 
 GROUPS = ["box", "claude", "notify", "terminal"]   # register()/register_provider() append the others (memory, codex)
@@ -139,7 +139,10 @@ class ToolMissing(Exception):
 
 
 class ToolTimeout(Exception):
-    pass
+    def __init__(self, name: str = "", limit: float | None = None):
+        super().__init__(name)
+        self.name = name
+        self.limit = limit              # the seconds the command was given (None: not known)
 
 
 class Proc(NamedTuple):
@@ -155,7 +158,7 @@ def _run(argv: list[str], timeout: float = CMD_TIMEOUT) -> Proc:
     except FileNotFoundError as e:
         raise ToolMissing(Path(argv[0]).name) from e
     except subprocess.TimeoutExpired as e:
-        raise ToolTimeout(Path(argv[0]).name) from e
+        raise ToolTimeout(Path(argv[0]).name, timeout) from e
     except PermissionError as e:       # present but not executable: the same remedy as missing
         raise ToolMissing(Path(argv[0]).name) from e
     return Proc(cp.returncode, cp.stdout or "", cp.stderr or "")
@@ -355,22 +358,121 @@ def _c_git(db) -> Outcome:
     return _pass(f"git {_vstr(p.out) or _vs(v)}; {preflight.pin_note(preflight.parse_git_version(p.out) or (v[0], v[1], 0))}")
 
 
-def _c_gh(db) -> Outcome:
-    try:
-        p = _run(["gh", "--version"])
-    except ToolMissing:
-        return _missing("gh")
-    v = _ver(p.out)
-    if p.rc != 0:
-        return _warn("gh --version failed", fix("Reinstall the GitHub CLI", "sudo apt-get install -y --reinstall gh"))
-    try:
-        auth = _run(["gh", "auth", "status"])   # exit code only: its output can mention the account and token source
-    except ToolMissing:
-        return _missing("gh")
-    where = f"gh {_vstr(p.out)}" if v else "gh"
-    if auth.rc == 0:
+# ------------------------------------------------------------------ a slow tool is not a broken tool (issue #99)
+
+BUSY_NOTE = "the box is busy; this is not a failure"
+STALE_AFTER = 86400.0                  # a last good answer older than this is a warning again
+GH_AUTH_LIMIT = 15.0                   # `gh auth status` contacts GitHub: it gets its own, longer limit on a background thread
+GH_WAIT = 3.5                          # how long the gh check itself waits for its probes (the cap is CHECK_TIMEOUT)
+RECHECK_FIX = "Press Re-check in a minute; if it stays, the box is loaded (see Home > Box)"
+_wall = time.time                      # patched by tests (the age of a last good answer)
+_last_good: dict[str, tuple[float, Outcome]] = {}      # check id -> (when, the last `pass` it gave): what a timeout falls back to
+
+
+def _age_words(seconds: float) -> str:
+    s = int(max(0.0, seconds))
+    return f"{s // 86400} d" if s >= 2 * 86400 else _ago(seconds)
+
+
+def _busy_words(tool: str, limit: float | None) -> str:
+    return f"{tool} did not answer in {limit:g} s ({BUSY_NOTE})" if limit else f"{tool} did not answer in time ({BUSY_NOTE})"
+
+
+def _stale(tool: str, last: tuple[float, Outcome] | None, limit: float | None = None, running: bool = False) -> Outcome:
+    """The one wording for a tool that is slow, not broken. With a last good answer: that answer, its age, and why it is not fresh
+    ('logged in, checked 3 min ago; the latest re-check is still running'), still a pass (a warning that was real stays a warning),
+    unless the answer is over a day old. Without one: a skip, never a warn, with the cause. `running`: the probe has not finished yet."""
+    why = "the latest re-check is still running" if running else _busy_words(tool, limit)
+    if last is None:
+        return _skip(f"{tool} is still answering ({BUSY_NOTE})" if running else _busy_words(tool, limit), fix(RECHECK_FIX))
+    at, out = last
+    age = max(0.0, _wall() - at)
+    if age > STALE_AFTER:
+        return _warn(f"the last good answer from {tool} is {_age_words(age)} old; {why}", fix(RECHECK_FIX))
+    return Outcome(out.status, f"{out.detail}, checked {_age_words(age)} ago; {why}", out.fix if out.status != "pass" else None)
+
+
+class _Probe:
+    """One slow command per key, run on a daemon thread, at most one in flight. `last` is the newest real answer (when, value)."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.thread: threading.Thread | None = None
+        self.done = threading.Event()
+        self.result: tuple[str, object] | None = None      # ("ok", value) | ("err", exception)
+        self.last: tuple[float, object] | None = None
+
+
+_probes: dict[str, _Probe] = {}
+
+
+def _probe_start(key: str, fn: Callable) -> _Probe:
+    """Start fn() on a daemon thread unless this key's probe is still running (a re-check never piles up probes)."""
+    with _lock:
+        pr = _probes.setdefault(key, _Probe())
+    with pr.lock:
+        if pr.thread is None or not pr.thread.is_alive():
+            done = pr.done = threading.Event()
+            pr.result = None
+
+            def work():
+                try:
+                    r: tuple[str, object] = ("ok", fn())
+                except Exception as e:                      # handed to the check, which decides what it means
+                    r = ("err", e)
+                with pr.lock:
+                    pr.result = r
+                    if r[0] == "ok":
+                        pr.last = (_wall(), r[1])
+                done.set()
+            pr.thread = threading.Thread(target=work, name=f"doctor-probe-{key}", daemon=True)
+            pr.thread.start()
+    return pr
+
+
+def _probe_wait(pr: _Probe, deadline: float) -> tuple[str, object] | None:
+    """The probe's answer if it arrives before the monotonic `deadline`, else None (it keeps running and fills `last`)."""
+    done = pr.done
+    done.wait(max(0.0, deadline - time.monotonic()))
+    with pr.lock:
+        return pr.result if done.is_set() else None
+
+
+def _gh_answer(where: str, proc: Proc) -> Outcome:
+    if proc.rc == 0:
         return _pass(f"{where}, logged in")
     return _warn(f"{where}, not logged in", fix("Log gh in on the box (PRs and clone-from-GitHub need it)", "gh auth login"))
+
+
+def _c_gh(db) -> Outcome:
+    """gh --version and gh auth status run side by side on background probes, so a slow auth check (it contacts GitHub; the auth probe gets
+    GH_AUTH_LIMIT) never hides a missing binary and never turns into a bare 'timed out': a probe that has not answered gives the last good
+    answer with its age, or a skip that says the box is busy. A missing binary and a logged-out gh still warn with their fix."""
+    pv = _probe_start("gh-version", lambda: _run(["gh", "--version"]))
+    pa = _probe_start("gh-auth", lambda: _run(["gh", "auth", "status"], GH_AUTH_LIMIT))   # exit code only: its output can mention the account and token source
+    deadline = time.monotonic() + GH_WAIT
+    rv = _probe_wait(pv, deadline)
+    if rv and rv[0] == "err":
+        if isinstance(rv[1], ToolMissing):
+            return _missing("gh")
+        if not isinstance(rv[1], ToolTimeout):
+            raise rv[1]                                     # type: ignore[misc]
+    proc = rv[1] if rv and rv[0] == "ok" else None
+    if proc is not None and proc.rc != 0:
+        return _warn("gh --version failed", fix("Reinstall the GitHub CLI", "sudo apt-get install -y --reinstall gh"))
+    seen = proc.out if proc is not None else (pv.last[1].out if pv.last else "")      # type: ignore[union-attr]
+    where = f"gh {_vstr(seen)}" if _ver(seen) else "gh"
+    ra = _probe_wait(pa, deadline)
+    limit, running = GH_AUTH_LIMIT, ra is None
+    if ra is not None:
+        if ra[0] == "ok":
+            return _gh_answer(where, ra[1])                 # type: ignore[arg-type]
+        if isinstance(ra[1], ToolMissing):
+            return _missing("gh")
+        if not isinstance(ra[1], ToolTimeout):
+            raise ra[1]                                     # type: ignore[misc]
+        limit = getattr(ra[1], "limit", None) or GH_AUTH_LIMIT
+    last = (pa.last[0], _gh_answer(where, pa.last[1])) if pa.last else None       # type: ignore[arg-type]
+    return _stale("gh", last, limit, running)
 
 
 def _c_ccusage(db) -> Outcome:
@@ -974,6 +1076,376 @@ def _c_codex_saved_models(db) -> Outcome:
 register("codex-saved-models", CODEX_GROUP, "Saved Codex models", _c_codex_saved_models)
 
 
+# ------------------------------------------------------------------ backup, CI and version-gate checks (issues #49, #50, #51, #113)
+# All cheap: they read files and the project scan the board already holds, call a tool only through _run() under a timeout, never run restic,
+# and the GitHub question is cached for five minutes and asked on a background probe (the doctor page never waits on GitHub).
+
+_projects_source: Callable[[], list | None] | None = None
+
+
+def set_projects_source(fn: Callable[[], list | None] | None) -> None:
+    """The board registers where the doctor reads its project scan from (main._cached_projects): the scan the state already carries, so
+    the doctor never runs `git status` over every repo itself. fn() -> the list of projects, or None when no scan exists yet."""
+    global _projects_source
+    _projects_source = fn
+
+
+BACKUP_WARN_AGE = 36 * 3600.0            # an `ok` run older than this warns (the timer runs nightly)
+BACKUP_FAIL_AGE = 72 * 3600.0            # older than this fails
+FIRST_DAY = 86400.0                      # a board younger than this has had no night to run its first backup
+UNCOMMITTED_AGE = 86400.0                # changed files older than this are worth a warning
+UNCOMMITTED_FILES = 200                  # files stat'ed per repo
+UNCOMMITTED_BUDGET = 3.0                 # seconds for the whole uncommitted-work check
+BACKUP_TIMER_FIX = fix("Check that the nightly timer is running", "systemctl list-timers ccboard-backup.timer --no-pager")
+BACKUP_NOW = "Run one now (Back up now in the bell panel, or sudo systemctl start ccboard-backup), then read journalctl -u ccboard-backup"
+
+
+def _st_dev(path) -> int:
+    return os.stat(path).st_dev                       # patched by tests (a second device)
+
+
+def _nearest_existing(p: Path) -> Path | None:
+    p = p.expanduser()
+    return next((c for c in (p, *p.parents) if c.exists()), None)
+
+
+def _c_backup_repo(db) -> Outcome:
+    """Is the restic repository somewhere the data is not? Off is a skip (not a pass); a remote repository passes; a local path on the same
+    filesystem as the data directory warns: it survives a deleted file or a corrupt database, not a lost disk."""
+    if not backup.restic_enabled():
+        return _skip("restic backup is off (CCBOARD_RESTIC_REPO=off)")
+    repo = settings.restic_repo
+    if re.match(r"^[A-Za-z][A-Za-z0-9+.-]+:", repo):                      # sftp: rclone: s3: rest: b2: azure: gs: swift:
+        return _pass(f"the restic repository is remote ({repo.split(':', 1)[0]}:)")
+    try:
+        a, b = _nearest_existing(Path(repo)), _nearest_existing(Path(settings.data_dir))
+        if a is None or b is None:
+            return _skip("could not tell which disk the restic repository or the data directory is on")
+        same = _st_dev(a) == _st_dev(b)
+    except OSError:
+        return _skip("could not read the disks of the restic repository and the data directory")
+    if same:
+        return _warn("the restic repository is on the same disk as the data: it protects against deletion and corruption, not against losing the disk",
+                     fix("Set CCBOARD_RESTIC_REPO to another disk or a remote (sftp:, rclone:, s3:, rest:) in /etc/ccboard/env, then restart the board "
+                         "(README, Settings table, CCBOARD_RESTIC_REPO)"))
+    return _pass("the restic repository is on a different disk than the data")
+
+
+def _c_backup_last(db) -> Outcome:
+    """The last nightly run, from <data dir>/backup-status.json: ok and under 36 h passes; partial (first warning) or older than 36 h warns;
+    failed or older than 72 h fails; no file on a board under a day old is a skip (it has not had a night yet)."""
+    try:
+        st = json.loads(backup.status_path().read_text())
+    except FileNotFoundError:
+        if _uptime() < FIRST_DAY:
+            return _skip("no backup has run yet; the first nightly run comes with the timer (02:30 by default)")
+        return _warn("no backup has ever run on this box", fix(BACKUP_NOW, "systemctl status ccboard-backup.timer --no-pager"))
+    except (OSError, ValueError):
+        return _skip("the backup status file could not be read")
+    try:
+        at = datetime.fromisoformat(str(st.get("at")).replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return _skip("the backup status file has no readable time")
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    age = max(0.0, (_utcnow() - at).total_seconds())
+    when = f"{at:%Y-%m-%d %H:%M} UTC, {_age_words(age)} ago"
+    status = st.get("status")
+    first = lambda key: next((str(x) for x in (st.get(key) or []) if x), "")        # noqa: E731
+    if status == "failed":
+        return _fail(f"the last backup failed ({when}): {first('errors') or 'no message'}", fix("Fix what it names, then " + BACKUP_NOW[0].lower() + BACKUP_NOW[1:]))
+    if age > BACKUP_FAIL_AGE:
+        return _fail(f"the last backup is {_age_words(age)} old ({when}); the nightly timer is not running it", BACKUP_TIMER_FIX)
+    if status == "partial":
+        return _warn(f"the last backup was partial ({when}): {first('warnings') or 'a backup branch was not written'}",
+                     fix("The snapshot is fine; read the warning in Settings > Box > Backup"))
+    if status != "ok":
+        return _warn(f"the last backup reports status {str(status)[:20]!r} ({when})", fix("Run a backup now", None))
+    if age > BACKUP_WARN_AGE:
+        return _warn(f"the last backup is {_age_words(age)} old ({when}); it should run every night", BACKUP_TIMER_FIX)
+    return _pass(f"the last backup was ok ({when})")
+
+
+def _dirty_repos() -> list[tuple[str, str]] | None:
+    """(label, path) of every repo the project scan marks dirty; None when the board has no scan to give."""
+    src = _projects_source
+    projs = src() if callable(src) else None
+    if projs is None:
+        return None
+    out = []
+    for p in projs if isinstance(projs, list) else []:
+        for r in (p.get("repos") or []) if isinstance(p, dict) else []:
+            if isinstance(r, dict) and r.get("dirty") is True and r.get("path"):
+                out.append((f"{p.get('name')}/{r.get('name')}", str(r["path"])))
+    return out
+
+
+def _oldest_change_age(repo: str, porcelain: str) -> float | None:
+    """Age in seconds of the OLDEST changed file in `git status --porcelain` output (first UNCOMMITTED_FILES lines; a deleted or vanished
+    path has no age and is left out); None when no listed path could be read."""
+    now, oldest = _wall(), None
+    for line in porcelain.splitlines()[:UNCOMMITTED_FILES]:
+        xy, rest = line[:2], line[3:]
+        if "D" in xy or not rest or rest.startswith('"'):
+            continue
+        rel = rest.split(" -> ")[-1].rstrip("/")
+        try:
+            age = now - os.stat(os.path.join(repo, rel)).st_mtime
+        except OSError:
+            continue
+        oldest = age if oldest is None else max(oldest, age)
+    return oldest
+
+
+def _c_backup_uncommitted(db) -> Outcome:
+    """Repos with uncommitted work are in no backup (the nightly run copies only committed work). Dirty repos come from the project scan the
+    board already holds; only those are asked for their file list (`git status --porcelain`), within UNCOMMITTED_BUDGET seconds in all.
+    A repo with changed files older than a day warns; a missing path, an unreadable repo or a slow git skips that repo only."""
+    dirty = _dirty_repos()
+    if dirty is None:
+        return _skip("the board has not scanned the projects yet")
+    if not dirty:
+        return _pass("no repo has uncommitted changes")
+    deadline = time.monotonic() + UNCOMMITTED_BUDGET
+    old: list[str] = []
+    checked = skipped = 0
+    for label, path in dirty:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            skipped += len(dirty) - checked - skipped
+            break
+        if not Path(path).is_dir():
+            skipped += 1
+            continue
+        try:
+            p = _run(["git", "-C", path, "status", "--porcelain"], timeout=max(0.5, min(CMD_TIMEOUT, left)))
+        except ToolMissing:
+            return _skip("git is not installed, so uncommitted work cannot be listed")
+        except ToolTimeout:
+            skipped += 1
+            continue
+        if p.rc != 0:
+            skipped += 1
+            continue
+        checked += 1
+        age = _oldest_change_age(path, p.out)
+        if age is not None and age > UNCOMMITTED_AGE:
+            old.append(label)
+    if old:
+        names = ", ".join(old[:5]) + (f" and {len(old) - 5} more" if len(old) > 5 else "")
+        return _warn(f"{len(old)} repo{'s' if len(old) != 1 else ''} with changes older than a day that no backup covers: {names}",
+                     fix("Commit or push them: the nightly run copies only committed work to the backup branches, never a dirty working tree"))
+    if checked == 0:
+        return _skip(f"could not list the changes of {skipped} dirty repo{'s' if skipped != 1 else ''} (path missing, git slow or failing)")
+    more = f"; {skipped} could not be read" if skipped else ""
+    return _pass(f"{checked} repo{'s' if checked != 1 else ''} with uncommitted changes, none older than a day{more} (the nightly backup copies only committed work)")
+
+
+BRANCH_IGNORE = "branches-ignore: ['ccboard-backup/**']"
+CI_MAX_REPOS, CI_MAX_FILES, CI_MAX_BYTES = 20, 10, 65536
+
+
+def _has_origin(repo: Path) -> bool:
+    try:
+        return '[remote "origin"]' in (repo / ".git" / "config").read_text(errors="replace")
+    except OSError:
+        return False
+
+
+def _c_backup_branch_ci(db) -> Outcome:
+    """Repos whose workflows would run on every ccboard-backup/<node>/<branch> push (a team repo with `on: push` and no branch filter starts CI
+    for each backup branch). Read-only text scan of .github/workflows (20 repos, 10 files each, 64 KB each); unknown is never a hit."""
+    from . import workflows
+    if not settings.backup_push:
+        return _skip("CCBOARD_BACKUP_PUSH=0: nothing is pushed to ccboard-backup branches")
+    deadline = time.monotonic() + 3.0
+    hits: list[tuple[str, list[str]]] = []
+    for repo in backup.repos()[:CI_MAX_REPOS]:
+        if time.monotonic() > deadline:
+            break
+        wf = repo / ".github" / "workflows"
+        if not wf.is_dir() or not _has_origin(repo):
+            continue
+        try:
+            files = sorted(f for f in wf.iterdir() if f.suffix in (".yml", ".yaml") and f.is_file())[:CI_MAX_FILES]
+        except OSError:
+            continue
+        runs = []
+        for f in files:
+            try:
+                with open(f, "r", errors="replace") as fh:
+                    text = fh.read(CI_MAX_BYTES)
+            except OSError:
+                continue
+            if workflows.push_runs_on_backup_branches(text) is True:
+                runs.append(f.name)
+        if runs:
+            hits.append((str(repo.relative_to(settings.projects_dir)), runs))
+    if not hits:
+        return _pass("no repo's CI runs on the backup branches")
+    shown = "; ".join(f"{r} ({', '.join(fs[:3])})" for r, fs in hits[:5]) + (f"; and {len(hits) - 5} more" if len(hits) > 5 else "")
+    return _warn(f"{len(hits)} repo{'s' if len(hits) != 1 else ''} would run CI on every backup branch: {shown}",
+                 fix(f"In that repo's workflow add {BRANCH_IGNORE} under push: (the change belongs in that repo, not in ccboard)", BRANCH_IGNORE))
+
+
+# ---- GitHub Actions (issue #50)
+
+CI_TTL = 300.0                    # GitHub is asked at most once per five minutes, across Doctor opens, Re-checks and board restarts
+CI_KV = "doctor_ci_runs"
+CI_STUCK = 1800.0                 # queued, waiting or in progress for longer than this is stuck
+CI_BAD = ("failure", "timed_out", "cancelled", "startup_failure")
+CI_PENDING = ("queued", "waiting", "requested", "pending")
+CI_LIMIT = 15.0
+CI_FIELDS = "status,conclusion,createdAt,updatedAt,headSha,url,name"
+_mem_cache: dict[str, dict] = {}
+
+
+def _cache_get(db, key: str) -> dict | None:
+    try:
+        row = db.kv_get(key) if callable(getattr(db, "kv_get", None)) else None
+        val = row.get("value") if isinstance(row, dict) else None
+    except Exception:
+        val = None
+    val = val if isinstance(val, dict) else _mem_cache.get(key)
+    return val if isinstance(val, dict) else None
+
+
+def _cache_set(db, key: str, val: dict) -> None:
+    _mem_cache[key] = val
+    try:
+        if callable(getattr(db, "kv_set", None)):
+            db.kv_set(key, val)
+    except Exception:
+        pass                                           # a cache that cannot be written only costs a second call
+
+
+def _ci_fetch(db, repo: str) -> dict:
+    """One `gh run list` for the repository's main branch, stored (success or failure) so nothing asks again for CI_TTL. Raises ToolMissing."""
+    p = _run(["gh", "run", "list", "--repo", repo, "--branch", "main", "--limit", "5", "--json", CI_FIELDS], CI_LIMIT)
+    rec: dict = {"at": _wall(), "repo": repo}
+    try:
+        runs = json.loads(p.out) if p.rc == 0 else None
+    except ValueError:
+        runs = None
+    if isinstance(runs, list):
+        rec["runs"] = [{k: r.get(k) for k in ("status", "conclusion", "createdAt", "updatedAt", "headSha", "url", "name")} for r in runs if isinstance(r, dict)][:5]
+    else:
+        rec["error"] = f"gh exited {p.rc}" if p.rc != 0 else "gh printed no run list"
+    _cache_set(db, CI_KV, rec)
+    return rec
+
+
+def _iso_age(text) -> float | None:
+    try:
+        t = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return max(0.0, (_utcnow() - (t if t.tzinfo else t.replace(tzinfo=timezone.utc))).total_seconds())
+
+
+def _ci_verdict(rec: dict, revision: str, note: str) -> Outcome:
+    runs = rec.get("runs") or []
+    if "error" in rec and not runs:
+        return _skip(f"GitHub did not give the run list ({rec['error']}); that says nothing about the build{note}", fix("Check that gh is logged in on the box", "gh auth status"))
+    if not runs:
+        return _skip(f"GitHub lists no runs on main{note}")
+    problems: list[str] = []
+    done = next((r for r in runs if r.get("status") == "completed"), None)
+    bad_url = None
+    if done and done.get("conclusion") in CI_BAD:
+        age = _iso_age(done.get("updatedAt") or done.get("createdAt"))
+        problems.append(f"{done.get('name') or 'a workflow'} ended {done.get('conclusion')}" + (f" {_age_words(age)} ago" if age is not None else ""))
+        bad_url = done.get("url")
+    stuck = [r for r in runs if r.get("status") in CI_PENDING + ("in_progress",) and (_iso_age(r.get("createdAt")) or 0) > CI_STUCK]
+    for r in stuck[:2]:
+        problems.append(f"{r.get('name') or 'a workflow'} has been {str(r.get('status')).replace('_', ' ')} for {_age_words(_iso_age(r.get('createdAt')) or 0)} (stuck)")
+        bad_url = bad_url or r.get("url")
+    green = next((r for r in runs if r.get("status") == "completed" and r.get("conclusion") == "success"), None)
+    behind = ""
+    if revision and green and green.get("headSha") and green["headSha"] != revision:
+        behind = f"; the box is behind the last green commit (it runs {revision[:7]}, the last green is {str(green['headSha'])[:7]})"
+    if problems:
+        return _warn("GitHub Actions: " + "; ".join(problems) + behind + note, fix(f"Open the run: {bad_url}" if bad_url else "Open the Actions tab of the repository"))
+    newest = runs[0]
+    age = _iso_age(newest.get("updatedAt") or newest.get("createdAt"))
+    state = str(newest.get("conclusion") or newest.get("status") or "unknown").replace("_", " ")
+    return _pass(f"the latest run on main ({newest.get('name') or 'workflow'}) is {state}" + (f", {_age_words(age)} ago" if age is not None else "") + behind + note)
+
+
+def _c_ci_status(db) -> Outcome:
+    """Is the build that deploys the board red or stuck? Needs the repository the image was built from (CCBOARD_SOURCE_REPO) and a logged-in gh.
+    The answer is cached for five minutes in the board's kv; the call runs on a background probe, so a slow GitHub or a loaded box gives the
+    cached answer with its age (or a skip), and a network failure is never red."""
+    repo = os.environ.get("CCBOARD_SOURCE_REPO", "").strip()
+    if not repo:
+        return _skip("this image does not know which repository built it (CCBOARD_SOURCE_REPO is empty: a local build)")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+        return _skip("CCBOARD_SOURCE_REPO is not an owner/name pair")
+    revision = os.environ.get("CCBOARD_IMAGE_REVISION", "").strip()
+    rec = _cache_get(db, CI_KV)
+    rec = rec if rec and rec.get("repo") == repo else None
+    if rec and 0 <= _wall() - float(rec.get("at") or 0) < CI_TTL:
+        return _ci_verdict(rec, revision, f" (checked {_age_words(_wall() - float(rec['at']))} ago)")
+    pr = _probe_start("ci-status", lambda: _ci_fetch(db, repo))
+    got = _probe_wait(pr, time.monotonic() + GH_WAIT)
+    if got is not None and got[0] == "ok":
+        return _ci_verdict(got[1], revision, "")                  # type: ignore[arg-type]
+    if got is not None and isinstance(got[1], ToolMissing):
+        return _skip("gh is not installed, so the build cannot be read", fix(*_INSTALL["gh"]))
+    if got is not None and not isinstance(got[1], ToolTimeout):
+        return _skip(f"could not read the build ({type(got[1]).__name__})")
+    if rec:                                                       # slow: the older answer, with its age, never a warning about the slowness
+        return _ci_verdict(rec, revision, f" (checked {_age_words(_wall() - float(rec.get('at') or 0))} ago; GitHub is slow to answer, {BUSY_NOTE})")
+    return _skip(f"GitHub did not answer yet ({BUSY_NOTE})", fix(RECHECK_FIX))
+
+
+# ---- Claude Code version gates (issue #113)
+
+def _claude_version_text() -> str | None:
+    """`claude --version` output (one process per doctor run; ToolMissing and ToolTimeout reach _execute, which words them)."""
+    exe = settings.claude_bin()
+    if not exe:
+        return None
+    p = _run([exe, "--version"])
+    return p.out if p.rc == 0 else None
+
+
+def _c_claude_features(db) -> Outcome:
+    """Which board features need a newer Claude Code than the one installed (agents/claude.py FEATURE_GATES, from the docs read on 2026-10-07).
+    No network call. Where a `--help` probe has already answered (ultracode), the probe wins over the number."""
+    from .agents import claude as cl
+    if not settings.claude_bin():
+        return _skip("claude is not installed")
+    v = cl.parse_version(_claude_version_text())
+    if v is None:
+        return _skip("the Claude Code version could not be read")
+    unmet = cl.unmet_gates(v)
+    try:
+        from . import agents
+        caps = agents.get("claude").peek_capabilities()
+    except Exception:
+        caps = None
+    if caps and caps.get("ultracode_flag"):
+        unmet = [g for g in unmet if g.key != "ultracode_effort"]
+    ver = ".".join(map(str, v))
+    if not unmet:
+        return _pass(f"Claude Code {ver} meets all {len(cl.FEATURE_GATES)} version gates the board uses")
+    shown = ", ".join(f"{g.feature} ({g.min_version})" for g in unmet[:4]) + (f" and {len(unmet) - 4} more" if len(unmet) > 4 else "")
+    return _warn(f"Claude Code {ver} is too old for: {shown}", fix("Update Claude Code (README, Updating); the launcher hides or refuses the options meanwhile", "claude update"))
+
+
+for _id, _group, _label, _fn in (
+    ("backup-repo", "box", "Backup repository", _c_backup_repo),
+    ("backup-last", "box", "Last backup", _c_backup_last),
+    ("backup-uncommitted", "box", "Uncommitted work", _c_backup_uncommitted),
+    ("backup-branch-ci", "box", "CI on backup branches", _c_backup_branch_ci),
+    ("ci-status", "box", "GitHub Actions", _c_ci_status),
+    ("claude-features", "claude", "Claude Code version gates", _c_claude_features),
+):
+    register(_id, _group, _label, _fn)
+del _id, _group, _label, _fn
+
+
 def _finish(cid: str, group: str, label: str, status: str, detail, f) -> Check:
     if status not in STATUSES:
         status, detail, f = "warn", f"unknown status {status!r}", None
@@ -987,10 +1459,12 @@ def _execute(spec: tuple, db) -> Check:
         if not isinstance(out, Outcome):
             out = Outcome(*out)
         status, detail, f = out
+        if status == "pass":
+            _last_good[cid] = (_wall(), Outcome(status, detail, f))
     except ToolMissing as e:
         status, detail, f = _missing(e.name)
-    except ToolTimeout:
-        status, detail, f = "warn", "timed out", None
+    except ToolTimeout as e:             # a slow tool is not a broken one (#99): the last good answer with its age, or a skip that says the box is busy
+        status, detail, f = _stale(e.name or cid, _last_good.get(cid), e.limit)
     except Exception as e:     # a bug in a check must not take the page down
         status, detail, f = "warn", f"check error: {e.__class__.__name__}", None
     return _finish(cid, group, label, status, detail, f)
@@ -1086,3 +1560,6 @@ def _assemble(key: tuple, merged: list[Check]) -> dict:
 def invalidate() -> None:
     with _lock:
         _cache.clear()
+        _probes.clear()
+        _last_good.clear()
+        _mem_cache.clear()

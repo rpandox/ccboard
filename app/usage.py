@@ -14,6 +14,7 @@ from . import cost
 log = logging.getLogger("ccboard.usage")
 POLL_SECONDS = 120
 COST_EVERY = 5  # polls -> every 10 minutes
+COST_MAX_SKIPS = 30  # ticks a busy box may defer the cost pass in a row (30 x 2 min = 1 hour), then it runs anyway
 KV_BLOCK = "ccusage_block"
 
 
@@ -99,18 +100,34 @@ class Poller(threading.Thread):
         super().__init__(name="ccusage-poller", daemon=True)
         self.db = db
         self.stop = threading.Event()
+        self.n = 0
+        self.cost_owed = 0          # cost passes skipped while the box was busy (#31); the next quiet tick catches up
+        self.cost_skips = 0         # passes skipped in a row: after COST_MAX_SKIPS the pass runs anyway
+
+    def tick(self) -> None:
+        """One poll: the ccusage block, and every COST_EVERY polls the cost refresh (transcript reads). While the box is busy
+        (health.under_load) the cost pass is skipped and owed; the first tick with a quiet box runs it, and after COST_MAX_SKIPS
+        skipped passes in a row it runs anyway, so a box that stays busy still gets a cost figure every hour or so."""
+        from . import health
+        try:
+            self.db.kv_set(KV_BLOCK, fetch_block())
+        except Exception as e:  # never die
+            log.warning("ccusage poll failed: %s", e)
+        due = self.n % COST_EVERY == 0 or self.cost_owed
+        self.n += 1
+        if not due:
+            return
+        if self.cost_skips < COST_MAX_SKIPS and health.under_load():
+            self.cost_owed, self.cost_skips = 1, self.cost_skips + 1
+            log.debug("cost refresh skipped: the box is busy")
+            return
+        self.cost_owed = self.cost_skips = 0
+        try:
+            cost.refresh(self.db)
+        except Exception as e:
+            log.warning("cost refresh failed: %s", e)
 
     def run(self) -> None:
-        n = 0
         while not self.stop.is_set():
-            try:
-                self.db.kv_set(KV_BLOCK, fetch_block())
-            except Exception as e:  # never die
-                log.warning("ccusage poll failed: %s", e)
-            if n % COST_EVERY == 0:
-                try:
-                    cost.refresh(self.db)
-                except Exception as e:
-                    log.warning("cost refresh failed: %s", e)
-            n += 1
+            self.tick()
             self.stop.wait(POLL_SECONDS)
