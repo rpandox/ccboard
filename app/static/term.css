@@ -79,6 +79,7 @@ body.term input, body.term textarea { -webkit-user-select:text; user-select:text
 #tune.more-l::before, #tune.more-r::after { opacity:1; }
 .tune-seg { flex:0 0 auto; display:flex; align-items:center; gap:3px; }
 .tune-lbl { flex:0 0 auto; padding:0 3px; font-size:11px; color:var(--dim); }
+.tune-note { display:none; }                                         /* the phone strip is one scrolling row: the note is the chip's title there */
 /* a chip is the default bordered button (style.css: --btn-bg, 1 px --line-strong): no ring of its own on top. Sizes only here. */
 .bp5-dark #tune .bp5-button.tune-chip:not([class*=bp5-intent-]) { flex:0 0 auto; min-height:var(--tap); min-width:var(--tap); padding:0 10px; justify-content:center; white-space:nowrap; font-size:13px; touch-action:manipulation; }
 .bp5-dark #tune .bp5-button.tune-opt:not([class*=bp5-intent-]) { padding:0 8px; font-size:12px; }
@@ -216,6 +217,8 @@ body.term.kbd #rail .rail-btn:nth-child(n+3), body.term.short #rail .rail-btn:nt
   .tune-row { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:6px; overflow:visible; padding-left:0; }
   .tune-row::after, #tune::before, #tune::after { display:none; }
   .tune-row::before { content:'commands'; grid-column:1 / -1; order:0; margin:2px 0 -2px; }
+  .tune-row:not(:has(> .tune-chip))::before { content:none; }                 /* a Codex session has no command chips: no empty heading */
+  .tune-seg .tune-note { display:block; flex:0 0 100%; margin:3px 0 0; font-size:11.5px; color:var(--dim); }
   .bp5-dark #tune .tune-row > .bp5-button.tune-chip:not([class*=bp5-intent-]) { order:1; min-width:0; padding:0 4px; font-size:12.5px; }
   .bp5-dark #tune .tune-row > .bp5-button.tune-chip.destructive:not([class*=bp5-intent-]) { order:2; }      /* Clear closes the grid: the red one is never the first thing under the thumb */
   .tune-seg { grid-column:1 / -1; order:-1; display:flex; flex-wrap:wrap; gap:0; min-width:0; max-width:100%; }

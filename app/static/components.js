@@ -121,6 +121,22 @@ function selectEl(options, value) {
 
 const STATE_LABEL = { idle: 'idle', working: 'working', waiting: 'needs you', done: 'done', errored: 'error', ended: 'ended', unknown: '' };
 
+/* #96: a Codex session that took a prompt 30 s ago and sent the board no hook (s.hooks_missing from the state builder: 'untrusted' | 'bypass' | null; one
+   rule, agents/codex.hooks_missing, so every surface agrees). The chip is a link to Settings > Doctor (the Codex checks), muted amber, with text and a
+   glyph; its explanation is the title here and visible text where there is room (the peek). Never a state: the row's state stays hook-driven. */
+const HOOKS_MISSING_LABEL = 'no hooks (untrusted?)';
+const HOOKS_MISSING_HREF = '/#/settings?sec=doctor';
+function hooksMissingWhy(kind) {
+  return kind === 'bypass'
+    ? 'No hook event since your first prompt, although CCBOARD_CODEX_HOOK_TRUST=bypass is set and hooks should be running. Check the Codex rows in Settings > Doctor (hooks installed, hooks feature on).'
+    : 'No hook event since your first prompt. Trust the ccboard hooks once: type /hooks in a Codex terminal. See Settings > Doctor.';
+}
+function hooksMissingChip(kind, cls) {
+  const why = hooksMissingWhy(kind);
+  return el('a', { class: 'bdg bdg-hooks' + (cls ? ' ' + cls : ''), href: HOOKS_MISSING_HREF, title: why, 'aria-label': `${HOOKS_MISSING_LABEL}. ${why}`,
+    onclick: (e) => e.stopPropagation() }, el('span', { class: 'bdg-hooks-g', 'aria-hidden': 'true', text: '◇' }), ' ' + HOOKS_MISSING_LABEL);
+}
+
 function stateBadge(s) {
   const st = s.state || 'unknown';
   if (!STATE_LABEL[st]) return null;
@@ -1612,10 +1628,24 @@ function modalShell(cls, label, onClose) {
   return { dlg, close, show };
 }
 
-/* ---- quick replies: one list per session in localStorage `ccboard:quick:<tmux>`, shared by the terminal page and the peek ---------
-   Stored as a JSON array of lines; no key (or a list equal to the defaults) means the agent defaults. quickClean trims, drops empty and
-   duplicate lines and keeps at most QUICK_MAX. */
-const QUICK_DEFAULTS = ['continue', 'merge', 'push', 'pr', 'add commit push', 'do it'];   // the agent nudges (SESSION_NUDGES in pages/agents.js)
+/* ---- quick replies: one list per session in localStorage `ccboard:quick:<tmux>`, shared by the terminal page, the peek, the Agents rows, the inbox
+   cards, the quad composer and the palette ---------
+   Stored as a JSON array of lines; no key (or a list equal to THAT AGENT's defaults) means the agent's defaults. quickClean trims, drops empty and
+   duplicate lines and keeps at most QUICK_MAX. QUICK_DEFAULTS_BY_AGENT is the one source of the words (#69):
+     claude  the six most typed replies of the usage analysis (continue 128, merge 31, add commit push 19, push 18, pr 13, do it 10)
+     codex   `continue` and the argument-free Codex TUI commands a chip can finish by itself (/status prints inline, verified on the box;
+             /compact and /new run at once). Never `/model X` (Codex sends an inline argument to the model as a prompt), no picker command
+             (/model, /permissions open a dialog a chip cannot answer: the Tune strip drives those), no y/yes/no (a typed yes is a new
+             message in Codex, not an approval; permissions stay on the hook-backed Allow / Deny)
+     shell   none (the owner may add some) */
+const QUICK_DEFAULTS_BY_AGENT = Object.freeze({
+  claude: Object.freeze(['continue', 'merge', 'push', 'pr', 'add commit push', 'do it']),
+  codex: Object.freeze(['continue', '/status', '/compact', '/new']),
+  shell: Object.freeze([]),
+});
+const QUICK_DEFAULTS = QUICK_DEFAULTS_BY_AGENT.claude;              // the Claude list under its old name (callers that know no agent)
+function quickAgent(agent) { return agent === 'codex' || agent === 'shell' ? agent : 'claude'; }     // unknown (an external session): Claude's, as before
+function quickDefaults(agent) { return QUICK_DEFAULTS_BY_AGENT[quickAgent(agent)].slice(); }
 const QUICK_MAX = 12;
 const QUICK_LINE_MAX = 200;
 const QUICK_HOLD_MS = 500;
@@ -1633,18 +1663,19 @@ function quickClean(list) {
   return out;
 }
 
-function quickLoad(tmux) {
+function quickLoad(tmux, agent) {
   try {
     const raw = localStorage.getItem(quickKey(tmux));
     if (raw) { const v = JSON.parse(raw); if (Array.isArray(v)) return quickClean(v); }
   } catch (_) { /* no storage, or not JSON: the defaults */ }
-  return QUICK_DEFAULTS.slice();
+  return quickDefaults(agent);
 }
 
-/* Save the cleaned list; null (or a list equal to the defaults) removes the key. Returns the list that is in effect. */
-function quickSave(tmux, items) {
-  const list = items === null ? QUICK_DEFAULTS.slice() : quickClean(items);
-  const same = list.length === QUICK_DEFAULTS.length && list.every((x, i) => x === QUICK_DEFAULTS[i]);
+/* Save the cleaned list; null (or a list equal to the agent's defaults) removes the key. Returns the list that is in effect. */
+function quickSave(tmux, items, agent) {
+  const defs = quickDefaults(agent);
+  const list = items === null ? defs : quickClean(items);
+  const same = list.length === defs.length && list.every((x, i) => x === defs[i]);
   try {
     if (same) localStorage.removeItem(quickKey(tmux)); else localStorage.setItem(quickKey(tmux), JSON.stringify(list));
   } catch (_) { /* storage may be unavailable: the list lasts until the page closes */ }
@@ -1735,7 +1766,7 @@ function quickChip(text, opts) {
   let held = false;
   const stop = () => { if (timer !== null) { clearTimeout(timer); timer = null; } };
   const edit = () => { stop(); held = true; if (typeof o.onEdit === 'function') o.onEdit(); };
-  const b = el('button', { type: 'button', class: o.cls || '', title: 'tap to send · hold to edit', text });
+  const b = el('button', { type: 'button', class: o.cls || '', title: 'types this text as a prompt: tap to send · hold to edit', text });
   b.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse' && e.button) return;
     held = false;

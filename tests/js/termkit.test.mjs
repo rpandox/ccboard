@@ -2603,7 +2603,16 @@ test('composer.el is ONE row: .tk-docked is a flex row (no column), a one-row bo
 const TUNE_REG = {
   claude: { compact: { cmd: '/compact', read: false, arg: false }, context: { cmd: '/context', read: true, arg: false }, usage: { cmd: '/usage', read: true, arg: false }, cost: { cmd: '/cost', read: true, arg: false },
     status: { cmd: '/status', read: true, arg: false }, rename: { cmd: '/rename', read: false, arg: true }, model: { cmd: '/model', read: false, arg: true }, effort: { cmd: '/effort', read: false, arg: true }, fast: { cmd: '/fast', read: false, arg: false } },
-  codex: { model: { cmd: '/model', read: false, arg: true }, reasoning: { cmd: '/reasoning', read: false, arg: true } },
+  codex: { model: { cmd: '/model', read: false, arg: true }, reasoning: { cmd: '/reasoning', read: false, arg: true } },   // an older server: Codex's /model typed inline
+};
+// v0.5.21 (box checks V8 / V8-Codex): the registry rows of claude.py / codex.py today
+const TUNE_REG_NOW = {
+  claude: { ...TUNE_REG.claude, effort: { cmd: '/effort', read: false, arg: true, tune: 'effort', saves_default: true, verified: true },
+    model: { cmd: '/model', read: false, arg: true, saves_default: true, verified: true }, fast: { cmd: '/fast', read: false, arg: true, choices: ['on', 'off'] } },
+  codex: { model: { cmd: '/model', arg: false, read: false, drive: 'picker', tune: 'model', verified: true },
+    reasoning: { cmd: '/model', arg: false, read: false, drive: 'picker', tune: 'reasoning', verified: false },
+    permissions: { cmd: '/permissions', arg: false, read: false, drive: 'picker', tune: 'permissions', verified: false },
+    status: { cmd: '/status', arg: false, read: true, dialog: false, verified: true } },
 };
 const claudeStats = (over = {}) => ({ model: 'Opus 5', model_id: 'claude-opus-5', effort: 'high', fast: false, context_pct: 42, session_name: 'login work', ...over });
 const tuneCtx = (over = {}) => ({ tmux: SESS, session: paneRow({ state: 'idle', stats: claudeStats() }), agent: 'claude', stats: claudeStats(), touch: false, schema: null, ...over });
@@ -2622,7 +2631,13 @@ test('tune for Claude: MODEL (opus fable sonnet haiku), EFFORT (low medium high 
   assert.deepEqual(pressed(pop, 'model'), ['opus'], '"Opus 5" is the opus option');
   assert.deepEqual(pressed(pop, 'effort'), ['high']);
   assert.deepEqual(pop.querySelectorAll('.tk-tog').map((b) => b.querySelector('.tk-tn').textContent), ['Fast', 'Ultracode']);
-  assert.deepEqual(pop.querySelectorAll('.tk-tog').map((b) => b.querySelector('.tk-state').textContent), ['off', 'off'], 'the state is said in words');
+  assert.deepEqual(pop.querySelectorAll('.tk-tog').map((b) => b.querySelector('.tk-state').textContent), ['off', 'unknown'],
+    'the state is said in words; Ultracode has no reading yet (no statusline field carries it), so neither on nor off');
+  const notes = pop.querySelectorAll('.tk-note').map((n) => n.textContent);
+  assert.ok(notes.includes('Also saves your default for new sessions'), 'Model is typed inline (/model <name>), which saves the default: said under MODEL');
+  assert.ok(notes.includes('Ultracode sets xhigh and turns workflows on'));
+  assert.deepEqual(pop.querySelectorAll('.tk-unverified').map((n) => n.parentNode.querySelector('.tk-gl').textContent), ['EFFORT'],
+    'the /effort slider with `s` did not run end to end on the box: said, not hidden; Model, Fast and Ultracode did');
   assert.deepEqual(pop.querySelectorAll('.tk-cell').map((b) => b.textContent), ['/compact', '/context', '/usage', '/cost', '/status', '/rename…']);
   assert.ok(pop.querySelector('.tk-seg[data-kind=model] .tk-opt').classList.contains('hue-blue'), 'the model options wear the hues of the board');
   assert.ok(!pop.querySelector('.tk-gate') || pop.querySelector('.tk-gate').classList.contains('hidden'), 'at the prompt: no gate note');
@@ -2637,13 +2652,17 @@ test('tune: the current values follow stats (a model name that contains the opti
   assert.deepEqual(pressed(t.root, 'effort'), ['xhigh']);
   assert.equal(t.root.querySelector('.tk-tog[data-kind=fast]').getAttribute('aria-pressed'), 'true');
   assert.equal(t.root.querySelector('.tk-tog[data-kind=fast] .tk-state').textContent, 'on');
-  t.update({ stats: claudeStats({ effort: 'ultracode', model: 'Haiku 4', model_id: '' }) });
-  assert.deepEqual(pressed(t.root, 'effort'), [], 'ultracode is the switch, not a segment');
-  assert.equal(t.root.querySelector('.tk-tog[data-kind=ultra]').getAttribute('aria-pressed'), 'true');
+  t.update({ stats: claudeStats({ effort: 'xhigh', model: 'Haiku 4', model_id: '' }), session: paneRow({ state: 'idle', flags: { tuned: { ultracode: { value: 'on', at: 'x' } } } }) });
+  assert.deepEqual(pressed(t.root, 'effort'), ['xhigh'], 'ultracode is the switch, not a segment: the level stays');
+  assert.equal(t.root.querySelector('.tk-tog[data-kind=ultra]').getAttribute('aria-pressed'), 'true', 'what the board last read back from the pane');
+  assert.equal(t.root.querySelector('.tk-tog[data-kind=ultra] .tk-state').textContent, 'on');
   assert.deepEqual(pressed(t.root, 'model'), ['haiku']);
+  t.update({ stats: claudeStats({ fast: null }) });
+  assert.equal(t.root.querySelector('.tk-tog[data-kind=fast] .tk-state').textContent, 'unknown', 'no fast reading: no guessed Off');
+  assert.equal(t.root.querySelector('.tk-tog[data-kind=fast]').getAttribute('aria-pressed'), 'false');
 });
 
-test('tune: every control posts /command with its own body (model, effort, Fast, Ultracode on and off, the command cells)', async () => {
+test('tune: every control posts its own body: Effort and Ultracode through POST /tune (session only), Model, Fast and the cells through /command', async () => {
   const { w, kit } = uiWorld();
   const t = kit.tune(tuneCtx());
   t.open(anchorAt(w), false);
@@ -2655,68 +2674,122 @@ test('tune: every control posts /command with its own body (model, effort, Fast,
   await click(t.root.querySelector('.tk-tog[data-kind=ultra]'));
   const cell = (key) => t.root.querySelector(`.tk-cell[data-cmd=${key}]`);
   await click(cell('compact'));
-  assert.deepEqual(calls(w).map((c) => c.body), [{ cmd: 'model', arg: 'sonnet' }, { cmd: 'effort', arg: 'max' }, { cmd: 'fast' }, { cmd: 'effort', arg: 'ultracode on' }, { cmd: 'compact' }]);
-  assert.ok(calls(w).every((c) => c.method === 'POST' && c.path === `/api/sessions/${SESS}/command`));
-  t.update({ stats: claudeStats({ effort: 'ultracode' }) });
+  assert.deepEqual(calls(w).map((c) => [c.path.split('/').pop(), c.body]), [['command', { cmd: 'model', arg: 'sonnet' }], ['tune', { setting: 'effort', value: 'max' }],
+    ['command', { cmd: 'fast', arg: 'on' }], ['tune', { setting: 'ultracode', value: 'on' }], ['command', { cmd: 'compact' }]],
+    'effort never typed inline (that saves the default); bare /fast never (it opens a dialog that swallows keys)');
+  assert.ok(calls(w).every((c) => c.method === 'POST' && c.path.startsWith(`/api/sessions/${SESS}/`)));
+  t.update({ session: paneRow({ state: 'idle', flags: { tuned: { ultracode: { value: 'on' } } } }), stats: claudeStats({ fast: true }) });
   await click(t.root.querySelector('.tk-tog[data-kind=ultra]'));
-  assert.deepEqual(calls(w).pop().body, { cmd: 'effort', arg: 'high' }, 'Ultracode off goes back to high');
+  assert.deepEqual(calls(w).pop().body, { setting: 'ultracode', value: 'off' }, 'Ultracode off is /effort ultracode off, never /effort high');
+  await click(t.root.querySelector('.tk-tog[data-kind=fast]'));
+  assert.deepEqual(calls(w).pop().body, { cmd: 'fast', arg: 'off' });
+  // an older server (its registry has no `tune`): the inline commands, with the documented ultracode spellings
+  const old = kit.tune(tuneCtx({ schema: { slash: TUNE_REG.claude } }));
+  old.open(anchorAt(w), false);
+  old.root.querySelector('.tk-seg[data-kind=effort]').querySelectorAll('button').find((b) => b.textContent === 'low').click();
+  await settle();
+  assert.deepEqual(calls(w).pop().body, { cmd: 'effort', arg: 'low' });
+  old.root.querySelector('.tk-tog[data-kind=ultra]').click();
+  await settle();
+  assert.deepEqual(calls(w).pop().body, { cmd: 'effort', arg: 'ultracode on' });
 });
 
-test('tune for Codex: the schema\'s models, /reasoning for the effort (never /effort), no switches and no Claude commands; without a schema the built-in lists', async () => {
+test('tune: a /tune answer settles the row at once: confirmed flashes ok, a contradiction toasts the server\'s words and keeps the old value', async () => {
   const { w, kit } = uiWorld();
-  const schema = { models: ['gpt-5.5', 'gpt-5.5-mini', 'gpt-5.4'], efforts: ['low', 'medium', 'high', 'xhigh'], reasoning_by_model: { 'gpt-5.5-mini': ['low', 'medium'] }, slash: TUNE_REG.codex };
-  const t = kit.tune(tuneCtx({ agent: 'codex', schema, stats: { model: 'gpt-5.5-mini', effort: 'medium' }, session: paneRow({ agent: 'codex', state: 'idle', stats: { model: 'gpt-5.5-mini', effort: 'medium' } }) }));
+  const answers = [];
+  w.ctx.__answers = answers;
+  w.run('__route = async (m, p, b) => (p.endsWith("/tune") ? __answers.shift() : { ok: true });');
+  const schema = { models: ['gpt-6.1-sol', 'gpt-6-luna'], reasoning_by_model: { 'gpt-6.1-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], 'gpt-6-luna': ['low', 'medium', 'high', 'xhigh', 'max'] }, slash: TUNE_REG_NOW.codex };
+  const st = { model: 'gpt-6.1-sol', effort: 'low' };
+  const t = kit.tune(tuneCtx({ agent: 'codex', schema, stats: st, session: paneRow({ agent: 'codex', state: 'idle', stats: st }) }));
   t.open(anchorAt(w), false);
-  assert.deepEqual(labels(t.root), ['MODEL', 'REASONING']);
-  assert.deepEqual(segTexts(t.root, 'model'), ['gpt-5.5', 'gpt-5.5-mini', 'gpt-5.4']);
-  assert.deepEqual(pressed(t.root, 'model'), ['gpt-5.5-mini'], 'the longest name wins: gpt-5.5 is inside gpt-5.5-mini');
+  const luna = t.root.querySelector('.tk-seg[data-kind=model]').querySelectorAll('button').find((b) => b.textContent === 'gpt-6-luna');
+  answers.push({ ok: true, confirmed: true, observed: 'gpt-6-luna medium', verified: true });
+  luna.click();
+  await settle();
+  assert.deepEqual(pressed(t.root, 'model'), ['gpt-6-luna'], 'read back from the pane: shown before the rollout reports it');
+  assert.ok(luna.classList.contains('ok') && !luna.classList.contains('pending'));
+  t.update({ stats: { model: 'gpt-6-luna', effort: 'medium' } });
+  assert.deepEqual(pressed(t.root, 'model'), ['gpt-6-luna']);
+  const ask = t.root.querySelector('.tk-seg[data-kind=perms]').querySelectorAll('button')[0];
+  answers.push({ ok: true, confirmed: false, observed: 'Approve for me', message: 'permissions not applied: the session shows Approve for me' });
+  ask.click();
+  await settle();
+  assert.deepEqual(toasts(w).at(-1), { text: 'permissions not applied: the session shows Approve for me', kind: 'warn' });
+  assert.equal(ask.getAttribute('aria-pressed'), 'false', 'not applied: not selected');
+});
+
+test('tune for Codex: MODEL, REASONING and PERMISSIONS through POST /tune (the TUI pickers, never `/model <slug>` typed inline), /status as a cell, no switches', async () => {
+  const { w, kit } = uiWorld();
+  const schema = { models: ['gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-luna-mini'], efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+    reasoning_by_model: { 'gpt-6.1-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], 'gpt-6-luna': ['low', 'medium', 'high', 'xhigh', 'max'], 'gpt-6-luna-mini': ['low', 'medium'] },
+    slash: TUNE_REG_NOW.codex };
+  const st = { model: 'gpt-6-luna-mini', effort: 'medium' };
+  const t = kit.tune(tuneCtx({ agent: 'codex', schema, stats: st, session: paneRow({ agent: 'codex', state: 'idle', stats: st }) }));
+  t.open(anchorAt(w), false);
+  assert.deepEqual(labels(t.root), ['MODEL', 'REASONING', 'PERMISSIONS', 'COMMANDS']);
+  assert.deepEqual(segTexts(t.root, 'model'), ['gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-luna-mini']);
+  assert.deepEqual(pressed(t.root, 'model'), ['gpt-6-luna-mini'], 'the longest name wins: gpt-6-luna is inside gpt-6-luna-mini');
   assert.deepEqual(segTexts(t.root, 'effort'), ['low', 'medium'], 'the levels of the current model');
   assert.deepEqual(pressed(t.root, 'effort'), ['medium']);
-  assert.equal(t.root.querySelectorAll('.tk-tog').length, 0);
-  assert.equal(t.root.querySelectorAll('.tk-cell').length, 0);
-  assert.ok(t.root.querySelector('.tk-seg[data-kind=model]').classList.contains('tk-wrap2'), 'long names take half the track each');
+  assert.deepEqual(segTexts(t.root, 'perms'), ['Ask for approval', 'Approve for me'], 'no Full Access, no untrusted, no on-failure');
+  assert.deepEqual(pressed(t.root, 'perms'), [], 'unknown until the board reads it back: nothing selected on a guess');
+  assert.equal(t.root.querySelectorAll('.tk-tog').length, 0, 'no Fast (bare /fast toggles and writes config.toml)');
+  assert.deepEqual(t.root.querySelectorAll('.tk-cell').map((b) => b.textContent), ['/status']);
+  assert.equal(t.root.querySelectorAll('.tk-unverified').length, 2, 'reasoning and permissions: the key path was not run end to end on the box');
   t.root.querySelector('.tk-seg[data-kind=effort] button').click();
   await settle();
   t.root.querySelector('.tk-seg[data-kind=model] button').click();
   await settle();
-  assert.deepEqual(calls(w).map((c) => c.body), [{ cmd: 'reasoning', arg: 'low' }, { cmd: 'model', arg: 'gpt-5.5' }]);
+  t.root.querySelector('.tk-seg[data-kind=perms] button').click();
+  await settle();
+  assert.deepEqual(calls(w).map((c) => [c.path.split('/').pop(), c.body]), [['tune', { setting: 'reasoning', value: 'low' }], ['tune', { setting: 'model', value: 'gpt-6.1-sol' }],
+    ['tune', { setting: 'permissions', value: 'ask' }]]);
+  const sol = kit.tune(tuneCtx({ agent: 'codex', schema, stats: { model: 'gpt-6.1-sol' } }));
+  sol.open(anchorAt(w), false);
+  assert.deepEqual(segTexts(sol.root, 'effort'), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], 'ultra where the model lists it');
+  const luna = kit.tune(tuneCtx({ agent: 'codex', schema, stats: { model: 'gpt-6-luna' } }));
+  luna.open(anchorAt(w), false);
+  assert.ok(!segTexts(luna.root, 'effort').includes('ultra'), 'never where it does not');
   const bare = kit.tune(tuneCtx({ agent: 'codex', schema: null, stats: {} }));
   bare.open(anchorAt(w), false);
   assert.ok(!bare.root.textContent.includes('There is nothing to tune'), 'no schema: a Codex tile still has something to tune');
-  assert.deepEqual(labels(bare.root), ['MODEL', 'REASONING']);
-  assert.deepEqual(segTexts(bare.root, 'model'), ['gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.5', 'codex-auto-review'], 'the built-in list (codex.py FALLBACK_MODELS)');
+  assert.deepEqual(labels(bare.root), ['MODEL', 'REASONING', 'PERMISSIONS', 'COMMANDS']);
+  assert.deepEqual(segTexts(bare.root, 'model'), ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'], 'the built-in list (codex.py FALLBACK_MODELS)');
   assert.deepEqual(segTexts(bare.root, 'effort'), ['low', 'medium', 'high', 'xhigh', 'max']);
-  bare.root.querySelector('.tk-seg[data-kind=effort] button').click();
-  await settle();
-  assert.deepEqual(calls(w).map((c) => c.body).at(-1), { cmd: 'reasoning', arg: 'low' }, 'and it posts /reasoning, never /effort');
+  // an older server's registry types /model <slug> inline, which Codex sends to the model as a prompt: no model or reasoning row then
+  const old = kit.tunePlan('codex', { models: ['gpt-6-sol'], slash: TUNE_REG.codex }, {});
+  assert.deepEqual([old.model, old.effort], [null, null]);
 });
 
-test('the built-in Codex model list is codex.py FALLBACK_MODELS (the two copies must not drift): same slugs, same order; the levels are _ALL_LEVELS', () => {
+test('the built-in Codex model list is codex.py FALLBACK_MODELS (the copies must not drift): same slugs, same order; ultra only on gpt-6.1-sol', () => {
   const { kit } = uiWorld();
   const py = fs.readFileSync(path.join(ROOT, 'app', 'agents', 'codex.py'), 'utf8');
-  const slugs = py.match(/FALLBACK_MODELS = \[[^\]]*for s in \(([^)]*)\)\]/)[1].match(/"([^"]+)"/g).map((x) => x.slice(1, -1));
-  const levels = py.match(/_ALL_LEVELS = \[([^\]]*)\]/)[1].match(/"([^"]+)"/g).map((x) => x.slice(1, -1));
-  const plan = kit.tunePlan('codex', null, {});
-  assert.deepEqual(plain(plan.model.options.map((o) => o.value)), slugs);
-  assert.deepEqual(plain(plan.effort.options.map((o) => o.value)), levels);
+  const block = py.slice(py.indexOf('FALLBACK_MODELS = ['), py.indexOf(']\n\n', py.indexOf('FALLBACK_MODELS = [')));
+  const slugs = [...block.matchAll(/"slug": "([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(slugs, ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna']);
+  assert.deepEqual(plain(kit.tunePlan('codex', null, {}).model.options.map((o) => o.value)), slugs);
+  assert.deepEqual(plain(kit.tunePlan('codex', null, { model: 'gpt-6.1-sol' }).effort.options.map((o) => o.value)), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+  assert.deepEqual(plain(kit.tunePlan('codex', null, { model: 'gpt-6-luna' }).effort.options.map((o) => o.value)), ['low', 'medium', 'high', 'xhigh', 'max']);
 });
 
 test('tune for Codex with a state row\'s agent entry (status_summary: installed, version, loggedIn, hooks; no models, no registry): the built-in lists stand in, never "nothing to tune"', () => {
   const { w, kit } = uiWorld();
-  const statusSummary = { installed: true, version: '0.145.0', loggedIn: true, authMethod: 'chatgpt', glyph: 'codex', hooks: { trust: 'review' } };
-  const t = kit.tune(tuneCtx({ agent: 'codex', schema: statusSummary, stats: { model: 'gpt-5.6-sol', effort: 'high' }, session: paneRow({ agent: 'codex', state: 'idle', stats: { model: 'gpt-5.6-sol', effort: 'high' } }) }));
+  const statusSummary = { installed: true, version: '0.160.1', loggedIn: true, authMethod: 'chatgpt', glyph: 'codex', hooks: { trust: 'review' } };
+  const t = kit.tune(tuneCtx({ agent: 'codex', schema: statusSummary, stats: { model: 'gpt-6-sol', effort: 'high' }, session: paneRow({ agent: 'codex', state: 'idle', stats: { model: 'gpt-6-sol', effort: 'high' } }) }));
   t.open(anchorAt(w), false);
   assert.ok(!t.root.textContent.includes('There is nothing to tune'));
-  assert.deepEqual(labels(t.root), ['MODEL', 'REASONING']);
-  assert.equal(segTexts(t.root, 'model').length, 5);
-  assert.deepEqual(pressed(t.root, 'model'), ['gpt-5.6-sol']);
+  assert.deepEqual(labels(t.root), ['MODEL', 'REASONING', 'PERMISSIONS', 'COMMANDS']);
+  assert.equal(segTexts(t.root, 'model').length, 4);
+  assert.deepEqual(pressed(t.root, 'model'), ['gpt-6-sol']);
   assert.deepEqual(pressed(t.root, 'effort'), ['high']);
   assert.equal(t.root.querySelectorAll('.tk-tog').length, 0, 'no Claude switches');
   const plan = kit.tunePlan('codex', statusSummary, {});
   assert.equal(plan.model.cmd, 'model');
   assert.equal(plan.effort.cmd, 'reasoning');
-  const fromSchema = kit.tunePlan('codex', { models: ['gpt-5.5'], efforts: ['low'] }, {});
-  assert.deepEqual([fromSchema.model.options.map((o) => o.value), fromSchema.effort.options.map((o) => o.value)], [['gpt-5.5'], ['low']], 'a schema that lists them wins over the built-in lists');
+  assert.deepEqual([plan.model.via, plan.effort.via, plan.perms.via], ['tune', 'tune', 'tune']);
+  const fromSchema = kit.tunePlan('codex', { models: ['gpt-6-sol'], efforts: ['low'], slash: TUNE_REG_NOW.codex }, {});
+  assert.deepEqual([fromSchema.model.options.map((o) => o.value), fromSchema.effort.options.map((o) => o.value)], [['gpt-6-sol'], ['low']], 'a schema that lists them wins over the built-in lists');
 });
 
 test('tune: a 409 shows the server\'s words as a toast and the rows come back; other failures show their message', async () => {
@@ -2866,7 +2939,7 @@ test('tune: a typed setting is pending until the statusline agrees (then it flas
   assert.equal(fable.classList.contains('pending'), true);
   clock.advance(20100);
   assert.equal(fable.classList.contains('pending'), false);
-  assert.deepEqual(toasts(w), [{ text: '/model fable not confirmed by the statusline', kind: 'warn' }]);
+  assert.deepEqual(toasts(w), [{ text: '/model fable not confirmed by the session', kind: 'warn' }]);
 });
 
 test('tune.mount(targetEl): the same panel inside a page, no popover chrome; update() and destroy() work on it (the terminal page reuses this)', async () => {
@@ -2919,16 +2992,15 @@ test('tune and the tile menu share one gate: TermKit.tuneGate decides both, and 
   assert.deepEqual(plain(kit.tunePlan('shell', null, {})).cells, []);
 });
 
-test('tune keeps the terminal page\'s lists: the same models and efforts as term.js (a drift here would make the two panels disagree)', () => {
+test('#42: term.js keeps no lists of its own: its strip is drawn from TermKit.tunePlan and its requests come from TermKit.tuneRequest', () => {
   const src = fs.readFileSync(path.join(KIT, 'term.js'), 'utf8');
-  const list = (name) => JSON.parse(new RegExp(`const ${name} = (\\[[^\\]]*\\])`).exec(src)[1].replace(/'/g, '"'));
-  const { kit } = uiWorld();
-  const p = plain(kit.tunePlan('claude', null, {}));
-  assert.deepEqual(p.model.options.map((o) => o.value), list('MODELS'));
-  assert.deepEqual(p.effort.options.map((o) => o.value), list('EFFORTS').filter((e) => e !== 'ultracode'), 'term.js lists ultracode as a sixth chip; here it is the switch');
-  assert.match(src, /EFFORT_ARG = \{ ultracode: 'ultracode on' \}/, 'the arg of the switch is the one term.js sends');
+  for (const gone of ['const EFFORTS', 'const MODELS', 'EFFORT_ARG', 'FALLBACK_SLASH', 'slashRow']) assert.ok(!src.includes(gone), `term.js no longer defines ${gone}`);
+  for (const used of ['TermKit.tunePlan', 'TermKit.tuneCurrent', 'TermKit.tuneRequest', 'TermKit.tuneRegistry', 'TermKit.tuneGate']) assert.ok(src.includes(used), `term.js uses ${used}`);
   const hues = /const MODEL_HUE = (\{[^}]*\})/.exec(src)[1];
   for (const [k, v] of Object.entries({ opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', haiku: 'hue-slate' })) assert.ok(hues.includes(`${k}: '${v}'`), `${k} keeps ${v}`);
+  const { kit } = uiWorld();
+  assert.deepEqual(plain(kit.tuneRequest({ via: 'tune', setting: 'effort', cmd: 'effort' }, 'high')), { path: '/tune', body: { setting: 'effort', value: 'high' } });
+  assert.deepEqual(plain(kit.tuneRequest({ via: 'command', cmd: 'model' }, 'opus')), { path: '/command', body: { cmd: 'model', arg: 'opus' } });
 });
 
 // ---- destroy(): the tile goes

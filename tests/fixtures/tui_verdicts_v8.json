@@ -1,0 +1,33 @@
+{
+ "_source": "Transcribed by hand from the box check comments of issues #16 (V8-Codex, codex-cli 0.160.1) and #28 (V8, Claude Code 2.1.290), run on the box on a private tmux server and a scratch folder. Not a pane capture: no capture files were saved by that check.",
+ "codex": {
+  "version": "0.160.1",
+  "absent": ["/approvals", "/reasoning", "/sandbox", "/effort"],
+  "commands": {
+   "/model": {"inline_arg": false, "inline_arg_note": "`/model gpt-6-luna` was sent to the model as a prompt", "picker": ["Select Model and Effort", "Select Reasoning Level for <model>"], "cursor_start": "current model (step 1); not recorded (step 2)", "session_key": "s", "default_key": "Enter", "ran_end_to_end": "pick a model, Enter, then s on the reasoning step"},
+   "/model > More reasoning...": {"picker": ["Advanced Reasoning"], "entries": {"gpt-6.1-sol": ["Max", "Ultra"], "gpt-6-luna": ["Max"]}, "ran_end_to_end": false},
+   "/permissions": {"picker": ["Update Model Permissions"], "entries": ["Ask for approval", "Approve for me", "Full Access"], "cursor_start": "not recorded", "applies_now": true, "writes_config": false, "ran_end_to_end": "entry 2 picked, from an unrecorded cursor"},
+   "/fast": {"bare": "toggles the service tier and writes config.toml", "inline_arg": "`/fast status` was sent to the model as a prompt"},
+   "/status": {"prints_inline": true, "shows": ["model with reasoning", "permissions", "session id"]}
+  },
+  "messages": {"model_session_only": "Model changed to gpt-6-luna medium for this session only", "permissions": "Permission selection requested: Approve for me", "status_permissions": "Workspace (Approve for me)"}
+ },
+ "claude": {
+  "version": "2.1.290",
+  "commands": {
+   "/effort <level>": {"inline": true, "saves_default": true},
+   "/effort": {"picker": "slider low..max, marker on the current level, Left/Right, s = this session only, Enter = default, Esc = cancel", "ran_end_to_end": "opened, read, cancelled; s seen in /model"},
+   "/effort ultracode [on]": {"inline": true, "session_only": true, "message": "Ultracode on (this session only): dynamic workflows on every task. Effort stays high."},
+   "/effort ultracode off": {"inline": true, "message": "Ultracode off. Effort stays xhigh."},
+   "/model <alias>": {"inline": true, "saves_default": true},
+   "/model": {"picker": "numbered list that depends on the version", "session_key": "s"},
+   "/fast": {"bare": "opens a dialog that swallows keys"},
+   "/fast off": {"inline": true},
+   "/fast on": {"inline": "parsed, refused without usage credits"},
+   "/context": {"prints_inline": true},
+   "/usage": {"dialog": true, "escape": 1},
+   "/cost": {"dialog": true, "escape": 1},
+   "/status": {"dialog": true, "escape": 1}
+  }
+ }
+}

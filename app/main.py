@@ -378,6 +378,18 @@ def _wait_kinds(rows: dict[str, dict]) -> dict[str, str | None]:
     return {n: _wait_kind_of(last.get(n)) for n in names}
 
 
+def _hooks_missing(row: dict) -> str | None:
+    """agents/codex.hooks_missing for a session row; None for anything else, and never an exception on the 3 s poll."""
+    if (row or {}).get("agent") != "codex":
+        return None
+    try:
+        from .agents import codex as codex_agent
+        return codex_agent.hooks_missing(row)
+    except Exception as e:
+        log.debug("hooks_missing failed: %s", e.__class__.__name__)
+        return None
+
+
 def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
     """tmux sessions (non-internal) merged with DB rows. Returns (sessions, tmux_down).
 
@@ -418,6 +430,8 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
             "state": row.get("state") or "unknown", "state_at": row.get("state_at"), "last_event": row.get("last_event"),
             "last_message": row.get("last_message"), "last_prompt": row.get("last_prompt"), "stats": row.get("stats"),
             "needs_attention": bool(row.get("state") in hooks.ATTENTION_STATES and not row.get("acked_at")),
+            # #96: 'untrusted' | 'bypass' for a Codex session that took a prompt 30 s ago and sent no hook (agents/codex.hooks_missing), else None
+            "hooks_missing": _hooks_missing(row),
             # None for a tmux session the board has no row for (the UI guesses from the launcher and the pane command)
             "agent": row.get("agent"), "agent_session_id": row.get("agent_session_id"), "row_id": row.get("row_id"),
             "account": row.get("account"),           # the subscription account key the session last ran under (accounts.py), None = unknown
@@ -736,6 +750,7 @@ def api_session(name: str):
     return {"tmux": name, "project": project, "repo": repo, "name": session, "agent": s["agent"], "state": s["state"],
             "state_at": s["state_at"], "last_prompt": s["last_prompt"], "last_message": s["last_message"], "stats": s["stats"],
             "flags": s["flags"], "agent_session_id": s["agent_session_id"], "account": s["account"], "task": s["task"],
+            "hooks_missing": s.get("hooks_missing"),
             "pending": [p for p in db.perm_pending() if p["tmux_name"] == name],
             # viewers and win come from tmux (list-clients, the session window's size); shell_version (the attach wrapper's) is
             # still unset
@@ -1122,6 +1137,13 @@ def api_codex_account_login_cancel():
     """Give up the login that was started from Settings: its session and its pending directory go."""
     codex_accounts.cancel_login()
     return {"ok": True}
+
+
+@app.delete("/api/codex-accounts/notice")
+def api_codex_account_notice_dismiss():
+    """Drop the one-time notice of a split-off Codex account (#36: "A different Codex login was detected and saved as a new account"); a rename
+    of that account drops it too. 200 {ok, dismissed}."""
+    return {"ok": True, "dismissed": codex_accounts.dismiss_notice(db)}
 
 
 @app.post("/api/codex-accounts/logout")
@@ -3296,12 +3318,17 @@ def api_command(name: str, request: Request, body: CommandIn | None = None):
     key = (raw[1:] if raw.startswith("/") else raw).lower()
     spec = allow.get(key)
     if spec is None:
-        raise projects.BadRequest("unknown command; allowed: " + ", ".join(s.cmd for s in allow.values()))
+        raise projects.BadRequest("unknown command; allowed: " + ", ".join(dict.fromkeys(s.cmd for s in allow.values())))
+    if getattr(spec, "drive", "inline") != "inline":     # v0.5.21: a picker is driven by POST /tune, never typed with an argument
+        raise projects.BadRequest(f"{spec.cmd} opens a picker in this agent: set {spec.label.lower()} with POST /api/sessions/{name}/tune")
     arg = _clean_line(b.arg, "arg", CMD_ARG_MAX) if b.arg is not None else ""
     if spec.arg and not arg:
         raise projects.BadRequest(f"{spec.cmd} needs an argument")
     if not spec.arg and arg:
         raise projects.BadRequest(f"{spec.cmd} takes no argument")
+    if getattr(spec, "choices", None) and arg.lower() not in spec.choices:
+        raise projects.BadRequest(f"{spec.cmd} takes one of: {', '.join(spec.choices)}")
+    arg = arg.lower() if getattr(spec, "choices", None) else arg
     wait = CMD_WAIT_DEFAULT if b.wait_ms is None else b.wait_ms
     if isinstance(wait, bool) or not isinstance(wait, int) or not 0 <= wait <= CMD_WAIT_MAX:
         raise projects.BadRequest(f"wait_ms must be an integer from 0 to {CMD_WAIT_MAX}")
@@ -3316,11 +3343,120 @@ def api_command(name: str, request: Request, body: CommandIn | None = None):
                             status_code=409)
 
     sent = _type_command(name, row, spec, arg, request.state.user)
-    out = {"ok": True, "sent": sent, "verified": spec.verified}
+    out = {"ok": True, "sent": sent, "verified": spec.verified, "saves_default": bool(getattr(spec, "saves_default", False) and arg
+                                                                                       and not arg.startswith("ultracode"))}
     if spec.read:
         time.sleep(wait / 1000)
         out["screen"] = tmux.capture(name, lines=40)
+        out["dialog"] = bool(getattr(spec, "dialog", False))     # True: the output sits in a dialog one Escape closes
     return out
+
+
+# ---------- v0.5.21: session-only tuning through the agent's own pickers (app/agents/pickers.py) ----------
+
+class TuneIn(BaseModel):
+    setting: object = None
+    value: object = None
+
+
+TUNE_SETTINGS = {"claude": ("effort", "ultracode"), "codex": ("model", "reasoning", "permissions")}
+TUNE_PANE_ONLY = ("ultracode", "permissions")          # settings no statusline / rollout field reports: the pane read is the only answer
+
+
+def _tune_plan(agent_name: str, adapter, setting: str, value: str, stats: dict):
+    from .agents import pickers
+    if agent_name == "claude":
+        if setting == "effort":
+            return pickers.claude_effort(value, stats.get("effort"))
+        return pickers.claude_ultracode(value)
+    models = adapter.models(fetch=False)
+    if setting == "model":
+        return pickers.codex_model(value, models, stats.get("model"), stats.get("effort"))
+    if setting == "reasoning":
+        return pickers.codex_reasoning(value, models, stats.get("model"), stats.get("effort"))
+    return pickers.codex_permissions(value)
+
+
+@app.post("/api/sessions/{name}/tune")
+def api_tune(name: str, request: Request, body: TuneIn | None = None):
+    """Change one setting of a running session FOR THIS SESSION ONLY through the agent's own picker: Claude's effort (bare /effort,
+    Left/Right, `s`) and ultracode (/effort ultracode on|off); Codex's model, reasoning (the /model picker, `s`) and permissions (the
+    /permissions picker, Ask for approval or Approve for me; Full Access is never a target). Keys come from the fixed tables of
+    app/agents/pickers.py, with the guards of /command (409 unless the composer is free; one drive per session at a time). A picker
+    that does not look as the box check showed is backed out of with Escape and nothing is chosen (409 picker). The answer says
+    whether the pane showed the change: confirmed true (read back), false (the pane shows another value), null (not shown yet: a
+    statusline or the rollout may still confirm it through flags.pending_cmd). `verified` = the box check ran this exact path."""
+    from .agents import pickers
+    _terminal_session(name)
+    b = body or TuneIn()
+    row, adapter, refusal = _agent_row(name)
+    if refusal:
+        return refusal
+    agent_name = row.get("agent") or "claude"
+    setting = b.setting.strip().lower() if isinstance(b.setting, str) else ""
+    allowed = TUNE_SETTINGS.get(agent_name, ())
+    if setting not in allowed:
+        raise projects.BadRequest(f"setting must be one of {', '.join(allowed) or '(none for this agent)'}")
+    value = _clean_line(b.value, "value", 80).lower() if b.value is not None else ""
+    if not value:
+        raise projects.BadRequest("value is required")
+    stats = row.get("stats") if isinstance(row.get("stats"), dict) else {}
+    try:
+        plan = _tune_plan(agent_name, adapter, setting, value, stats)
+    except pickers.Refused as e:
+        return _terminal_refusal("cannot_place", str(e), row, None, setting=setting)
+    refusal = _typing_refusal(name, row)
+    if refusal:
+        return refusal
+    lock = pickers.session_lock(name)
+    if not lock.acquire(blocking=False):
+        return _terminal_refusal("busy", "another change is being typed into this session", row, 3, setting=setting)
+    try:
+        prior = (row.get("flags") or {}).get("pending_cmd")
+        pend = {"cmd": plan.cmd, "arg": plan.arg, "at": _cmd_now(), "before": {**_stat_snapshot(stats),
+                **{k: stats.get(k) for k in ("approval", "sandbox")}}, "via": "tune"}
+        patch: dict = {"pending_cmd": pend}
+        if isinstance(prior, dict):
+            patch["last_cmd"] = {"cmd": prior.get("cmd"), "arg": prior.get("arg"), "at": prior.get("at"), "confirmed": False}
+        db.update_flags(name, patch)
+        io = pickers.IO(send_keys=lambda keys: tmux.send_keys(name, keys), send_text=lambda t, enter: tmux.send_text(name, t, enter=enter),
+                        capture=lambda: tmux.capture(name, lines=60), sleep=_tune_sleep)
+        try:
+            screen = pickers.drive(plan, io)
+        except pickers.PickerError as e:
+            db.update_flags(name, {"pending_cmd": None})
+            return _terminal_refusal("picker", str(e), row, None, setting=setting)
+        except Exception:
+            db.update_flags(name, {"pending_cmd": None})
+            raise
+    finally:
+        lock.release()
+    confirmed = plan.confirm(screen) if plan.confirm else None
+    observed = plan.observe(screen) if plan.observe else None
+    if confirmed is None and plan.cmd in TUNE_PANE_ONLY:
+        confirmed = False                              # only the pane can show these: no statusline or rollout field would ever settle it
+    if confirmed is not None:                          # read back from the pane: settled now, not by the next statusline
+        settle = {"last_cmd": {"cmd": plan.cmd, "arg": plan.arg, "at": pend["at"], "confirmed": confirmed}, "pending_cmd": None}
+        if confirmed:
+            settle["tuned"] = {**(((row.get("flags") or {}).get("tuned")) or {}), setting: {"value": plan.value, "at": pend["at"]}}
+        db.update_flags(name, settle)
+    db.add_event(name, "BoardCommand", plan.cmd, f"tune {setting} {plan.value}",
+                 {"cmd": plan.cmd, "arg": plan.arg, "by": request.state.user, "via": "picker", "confirmed": confirmed},
+                 agent=row.get("agent"))
+    _invalidate_scan()
+    out = {"ok": True, "setting": setting, "value": plan.value, "confirmed": confirmed, "observed": observed, "verified": plan.verified,
+           "session_only": True}
+    if confirmed is False:
+        out["message"] = (f"{setting} not applied: the session shows {observed}" if observed else
+                          f"{setting} {plan.value} not confirmed: the session did not show the change")
+    elif confirmed is None:
+        out["message"] = f"{setting} {plan.value} sent; waiting for the session to show it"
+    return out
+
+
+def _tune_sleep(seconds: float) -> None:
+    """The picker driver's pause between keys (tests replace it)."""
+    time.sleep(seconds)
 
 
 class PromptIn(BaseModel):
@@ -3357,6 +3493,8 @@ def api_prompt(name: str, request: Request, body: PromptIn | None = None):
     tmux.paste_text(name, text, enter=b.enter)
     db.add_event(name, "BoardPrompt", None, text[:200], {"chars": len(text), "enter": b.enter, "queued": queued,
                                                          "by": request.state.user}, agent=row.get("agent"))
+    if row.get("agent") == "codex" and b.enter and not (row.get("flags") or {}).get("turn_seen_at"):
+        db.update_flags(name, {"turn_seen_at": db_now()})   # #96: the first turn the board knows of arms hooks_missing
     _invalidate_scan()
     return {"ok": True, "pasted": True, "queued": queued}
 

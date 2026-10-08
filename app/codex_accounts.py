@@ -93,10 +93,13 @@ KV_CURRENT = "codex_account_current"  # {key, since}
 KV_SWITCH = "codex_account_switch"    # {from, to, at, repairs, last_repair?}
 KV_RELOGIN = "codex_relogin_waiting"  # {key, at, applied}: a fresh login saved for the live account that could not go live yet (a board session was open)
 RELOGIN_TTL = 86400                   # a waiting fresh login is given up on after this long
+KV_SPLIT = "codex_account_split"      # {key, from, at}: a hand login to another account was split off into `key` (#36); the one notice, dropped on rename or dismiss
+SPLIT_LABEL = "Codex account (unlabelled)"
+SPLIT_NOTICE = "A different Codex login was detected and saved as a new account. Rename it."
 SERIES = "cacct"                      # event sample: key = the account that became current, meta {from, to}; or the account logged in again, meta {to, relogin: true}
 SLOT_RE = re.compile(r"^[0-9a-f]{24}$")
 REASON_NOT_INSTALLED = "codex is not installed"
-REASON_UPDATE = "update Codex to 0.157 or newer: npm install -g @openai/codex"
+REASON_UPDATE = "update Codex to 0.157 or newer: npm install -g --prefix ~/.local @openai/codex@latest"   # the safe update (#97): never the bare global npm install, never Codex's own prompt
 WARN_OTHER = "other Codex processes on this box keep the previous login until they restart"
 BUSY_SESSIONS = "close the board's Codex sessions first; a running Codex keeps its login and would write it back"
 ERR_DID_NOT_COMPLETE = "the login did not complete"
@@ -115,6 +118,7 @@ _result_at = 0.0
 _watch_gen = 0
 _watchers: list[threading.Thread] = []
 _learn_at = 0.0
+_split_at = 0.0
 _wall = time.time                  # patched by tests (file ages are wall-clock mtime comparisons)
 _WATCH_SLEEP = time.sleep
 
@@ -347,7 +351,25 @@ def set_label(db, key: str, raw) -> dict:
     label = clean_label(raw)
     with _lock:
         _known(db, key)
+        if (_kv(db, KV_SPLIT) or {}).get("key") == key:
+            db.kv_del(KV_SPLIT)                                  # the split-off account was named: its notice has done its job
         return _row(db, _put_record(db, key, label=label), current(db))
+
+
+def dismiss_notice(db) -> bool:
+    """Drop the split notice (kv codex_account_split) without renaming. Returns whether there was one."""
+    if _kv(db, KV_SPLIT) is None:
+        return False
+    db.kv_del(KV_SPLIT)
+    return True
+
+
+def _notice(db, accts: dict) -> dict | None:
+    """The one-time split notice {key, label, text, at} while its account exists, else None."""
+    v = _kv(db, KV_SPLIT)
+    if not isinstance(v, dict) or v.get("key") not in accts:
+        return None
+    return {"key": v["key"], "label": accts[v["key"]].get("label"), "text": SPLIT_NOTICE, "at": v.get("at")}
 
 
 def _set_current(db, key: str | None, now, *, event: bool = True) -> None:
@@ -595,6 +617,7 @@ def switch(db, key: str, *, now=None) -> dict:
             # the saved login is a fresh one the live file never got (a log-in-again made while a board session was open): this is it
             _put_live(db, key, _slot_bytes(key))
             db.kv_del(KV_RELOGIN)
+            _relogin_record(db, key, now)
             return {"ok": True, "already": False, "from": cur, "to": key, "warnings": _warnings()}
         if cur == key and not refreshed:
             return {"ok": True, "already": True, "from": cur, "to": key, "warnings": []}
@@ -839,8 +862,9 @@ def _replace(db, pend: Path, key: str, got, live, t: float, now) -> dict | None:
                 why = BUSY_SESSIONS
                 db.kv_set(KV_RELOGIN, {"key": key, "at": iso(now), "applied": 0})      # the tick puts it in once the sessions are closed
             else:
-                _put_live(db, key, got[0])                       # the account does not change: no switch record, no repair window
+                _put_live(db, key, got[0])                       # the account does not change ...
                 _set_current(db, key, now)
+                _relogin_record(db, key, now)                    # ... but the dead login an older Codex holds must not come back (#35)
                 live_ok = True
         if live_ok:
             warnings = _warnings()
@@ -1171,10 +1195,17 @@ def _merge(db, a: str, b: str, now) -> None:
 
 
 # ------------------------------------------------------------------ the tick
+def _relogin_record(db, key: str, now) -> None:
+    """A log-in-again of the live account went live (#35): a switch-like record with `from` == `to` == key, so the repair window applies to
+    it. Its "previous login" is the slot's `.prev` (the dead login _replace kept there), not another slot: see _repair."""
+    db.kv_set(KV_SWITCH, {"from": key, "to": key, "at": iso(now), "repairs": 0, "relogin": True})
+
+
 def _repair(db, now) -> None:
     """A Codex process that was running before the switch wrote the previous login back: for REPAIR_WINDOW after the switch, while the live file
-    is byte-identical to the previous account's slot, put the new login in again (at most MAX_REPAIRS times). Bytes that match no slot are
-    never touched."""
+    is byte-identical to the previous account's slot, put the new login in again (at most MAX_REPAIRS times). After a log-in-again of the
+    live account (from == to, _relogin_record) the previous login is that slot's `.prev` (the dead one). Bytes that match neither are never
+    touched."""
     with _lock:
         sw = _in_window(db, now)
         if not sw or not sw.get("from") or not has_saved(sw["to"]):
@@ -1183,7 +1214,14 @@ def _repair(db, now) -> None:
         if repairs >= MAX_REPAIRS:
             return
         got = _live_bytes()
-        frm, to = _slot_bytes(sw["from"]), _slot_bytes(sw["to"])
+        if sw["from"] == sw["to"]:
+            try:
+                frm = _read_plain(slot_dir(sw["from"]) / PREV) or None
+            except ValueError:
+                frm = None
+        else:
+            frm = _slot_bytes(sw["from"])
+        to = _slot_bytes(sw["to"])
         if got is None or frm is None or to is None or got[0] != frm or got[0] == to:
             return
         _write_atomic(_live_auth(), to, 0o600)
@@ -1221,6 +1259,7 @@ def _finish_relogin(db, now) -> None:
             return
         _put_live(db, key, to)
         db.kv_set(KV_RELOGIN, {**w, "applied": applied + 1})
+        _relogin_record(db, key, now)
         log.info("the fresh login of %s went live now that no board Codex session is open", label_of(db, key))
 
 
@@ -1232,11 +1271,93 @@ def _sync(db, now) -> None:
 def _learn_step(db, now) -> None:
     with _lock:
         _learn(db, now)
+        _split(db, now)
+
+
+def _since_change(db, cur: str, rec: dict) -> float:
+    """When the current account's live login last changed hands as far as the board knows: the later of when it became current and when its
+    slot last took the live bytes (saved_at: a refresh, or a hand login the tick took for one). Sessions created after it ran on those bytes."""
+    cv = _kv(db, KV_CURRENT)
+    marks = [cv.get("since") if isinstance(cv, dict) else None, rec.get("saved_at")]
+    out = 0.0
+    for m in marks:
+        with contextlib.suppress(ValueError, TypeError):
+            out = max(out, accounts._to_epoch(m)) if m else out
+    return out
+
+
+def _split(db, now, *, force: bool = False) -> str | None:
+    """#36: a hand `codex login` to a DIFFERENT account while one is current looks like a token refresh (the tick saves the new bytes into
+    the current slot, the old login going to `.prev`). Once the current account has an id, the rollouts of sessions created since its login
+    last changed (_since_change) tell: when they ALL name one creator_account_id that is not the slot's, and the live bytes are not the old
+    account's login (the slot's copy when the tick has not saved the new bytes yet, else `.prev`), the live login is another account's:
+      that id belongs to a known account   its slot takes the live bytes and it becomes current (a hand switch to it)
+      else                                 a new account "Codex account (unlabelled)" holds the live bytes and the id, and becomes current
+    Either way the old slot gets its own login back (from `.prev` when the new bytes went over it; `.prev` itself is kept, nothing is
+    deleted), a switch record opens the repair window for the new current account, and kv codex_account_split carries the one notice.
+    Two ids, no rollout since, no id yet, an open repair window, or no old login to give back: nothing. Returns the new current key."""
+    global _split_at
+    cur = current(db)
+    rec = _load(db).get(cur) if cur else None
+    if not rec or not rec.get("account_id") or not has_saved(cur) or _in_window(db, now):
+        return None
+    t = _wall()
+    if not force and t - _split_at < LEARN_EVERY:
+        return None
+    _split_at = t
+    since = _since_change(db, cur, rec)
+    ids, users = set(), set()
+    for path in _recent_rollouts():
+        meta = _rollout_meta(path)
+        if not meta or meta["created"] is None or meta["created"] < since or not meta["account_id"]:
+            continue
+        ids.add(meta["account_id"])
+        if meta["user_id"]:
+            users.add(meta["user_id"])
+    if len(ids) != 1 or rec["account_id"] in ids:
+        return None
+    new_id = next(iter(ids))
+    got = _live_bytes()
+    if got is None:
+        return None
+    live, slot = got[0], _slot_bytes(cur)
+    try:
+        prev = _read_plain(slot_dir(cur) / PREV) or None
+    except ValueError:
+        prev = None
+    if slot is not None and slot != live:
+        old, restore = slot, False                               # the tick has not taken the new bytes yet: the slot still holds the old login
+    else:
+        old, restore = prev, True                                # it has: the old login is the generation before
+    if not old or old == live or (not restore and prev == live):
+        log.info("a Codex login for another account is live but the previous login cannot be told apart: not split")
+        return None
+    other = [k for k, r in _load(db).items() if k != cur and r.get("account_id") == new_id]
+    if other:
+        key, made = other[0], False
+        _store_auth(_slot_ready(key), live)
+        _put_record(db, key, saved=True, saved_at=iso(now))
+    else:
+        key = _new_account(db, live, SPLIT_LABEL, now)
+        made = True
+        fields = {"account_id": new_id}
+        if len(users) == 1:
+            fields["user_id"] = next(iter(users))
+        _put_record(db, key, **fields)
+    if restore:
+        _write_atomic(_slot_auth(cur), old, 0o600)               # the old account's own login back; .prev stays as it was
+    db.kv_set(KV_SWITCH, {"from": cur, "to": key, "at": iso(now), "repairs": 0})
+    _set_current(db, key, now)
+    if made:
+        db.kv_set(KV_SPLIT, {"key": key, "from": cur, "at": iso(now)})
+    log.info("a hand Codex login to another account was split off %s into %s", label_of(db, cur), key[:6])
+    return key
 
 
 def tick(db, now=None) -> None:
     """The Sampler's 15 s tick: (a) finish a login that has its file, (b) undo a stale write-back after a switch, (b') put a waiting fresh
-    login in place, (c) keep the live account's saved copy fresh, (d) learn who the account is. Never raises (class names only in the log); nothing at all without a codex binary."""
+    login in place, (c) keep the live account's saved copy fresh, (d) learn who the account is and split off a hand login to another
+    account (_split, #36). Never raises (class names only in the log); nothing at all without a codex binary."""
     if not supported():
         return
     for step in (finalize, _repair, _finish_relogin, _sync, _learn_step):
@@ -1313,4 +1434,8 @@ def view(db, *, tail: bool = True) -> dict:
                  "result": None}
     if not tail:
         login = {k: v for k, v in login.items() if k != "tail"}
-    return {"current": cur, "list": rows, "store": store_view(sum(1 for r in rows if r["saved"])), "login": login}
+    try:
+        notice = _notice(db, accts)
+    except Exception:
+        notice = None
+    return {"current": cur, "list": rows, "store": store_view(sum(1 for r in rows if r["saved"])), "login": login, "notice": notice}

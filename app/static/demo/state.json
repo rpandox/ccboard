@@ -83,7 +83,8 @@
                 "ro": 0
               },
               "win": null,
-              "wait_kind": null
+              "wait_kind": null,
+              "hooks_missing": null
             },
             {
               "created": 1790961840,
@@ -95,9 +96,9 @@
               "cmd": "codex --no-alt-screen",
               "claude_session_id": "019a2b4c-8d1e-7f30-b5a6-3c9d0e1f2a04",
               "add_dirs": [],
-              "state": "working",
+              "state": "idle",
               "state_at": "2026-10-03T02:59:48+00:00",
-              "last_event": "UserPromptSubmit",
+              "last_event": "BoardPrompt",
               "last_message": "Reading app/static/shell.js (lines 1-220)",
               "last_prompt": "review the shell.js diff for CSP violations and focus-handling bugs",
               "stats": {
@@ -132,7 +133,7 @@
               "agent_session_id": "019a2b4c-8d1e-7f30-b5a6-3c9d0e1f2a04",
               "row_id": 2,
               "flags": {
-                "hook_seen": true
+                "turn_seen_at": "2026-10-02T21:58:00+00:00"
               },
               "task": null,
               "viewers": {
@@ -141,7 +142,8 @@
                 "ro": 0
               },
               "win": null,
-              "wait_kind": null
+              "wait_kind": null,
+              "hooks_missing": "untrusted"
             }
           ],
           "devcontainer": false,
@@ -331,7 +333,8 @@
                 "ro": 0
               },
               "win": null,
-              "wait_kind": null
+              "wait_kind": null,
+              "hooks_missing": null
             },
             {
               "created": 1790901360,
@@ -394,7 +397,8 @@
                 "ro": 0
               },
               "win": null,
-              "wait_kind": null
+              "wait_kind": null,
+              "hooks_missing": null
             },
             {
               "created": 1790930000,
@@ -457,7 +461,8 @@
                 "ro": 0
               },
               "win": null,
-              "wait_kind": "idle_prompt"
+              "wait_kind": "idle_prompt",
+              "hooks_missing": null
             }
           ],
           "devcontainer": false,
@@ -548,7 +553,8 @@
                 "ro": 0
               },
               "win": null,
-              "wait_kind": null
+              "wait_kind": null,
+              "hooks_missing": null
             }
           ],
           "devcontainer": true,
@@ -622,7 +628,8 @@
                 "ro": 0
               },
               "win": null,
-              "wait_kind": "permission_prompt"
+              "wait_kind": "permission_prompt",
+              "hooks_missing": null
             }
           ],
           "devcontainer": false,
@@ -692,7 +699,8 @@
               "ro": 0
             },
             "win": null,
-            "wait_kind": null
+            "wait_kind": null,
+            "hooks_missing": null
           }
         ],
         "root": true,
@@ -1949,7 +1957,8 @@
       "code": null,
       "result": null,
       "replace_key": null
-    }
+    },
+    "notice": null
   },
   "usage_refresh": {
     "running": false,

@@ -1108,7 +1108,10 @@ const LX_MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green
 const LX_CX_MODES = [['default', 'default'], ['auto', 'auto'], ['read-only', 'read-only'], ['bypass', 'bypass'], ['custom', 'custom']];
 const LX_CX_MODE_PERM = { default: 'default', auto: 'auto', 'read-only': 'plan' };   // the adapter's permission_mode behind each picker entry (custom sends sandbox + approval instead)
 const LX_SANDBOXES = ['read-only', 'workspace-write', 'danger-full-access'];
-const LX_APPROVALS = ['untrusted', 'on-failure', 'on-request', 'never'];
+const LX_APPROVALS = ['on-request', 'never'];                                 // codex 0.160's -a; untrusted is retired, on-failure deprecated (the box's own list comes from GET /api/agents)
+/* The Codex models before GET /api/agents answers: codex.py FALLBACK_MODELS (the current family, in the order the TUI's /model picker lists them), the same
+   slugs as termkit.js TK_CODEX_MODELS (tests/test_static_codex.py compares all three). ultra only where the fallback lists it (gpt-6.1-sol). */
+const LX_CODEX_MODELS = ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'];
 const LX_CONFIG_RE = /^[A-Za-z0-9_.]+=.+$/;                                  // one -c line; the server's blocklist still wins
 const LX_PERM_LABEL = { manual: 'ask (default)', acceptEdits: 'accept edits', plan: 'plan', auto: 'auto', dontAsk: "don't ask: deny prompts", bypassPermissions: 'bypass: never ask (dangerous)' };
 const BYPASS_WARNING_CODEX = 'Codex runs every command and edit without asking and without its sandbox, as your user, on this box.';
@@ -1119,7 +1122,7 @@ function lxOpt(key, label, kind, choices, def, help, group, danger, when) {
 }
 
 /* The embedded fallback: the shape GET /api/agents answers per agent (app/agents/base.py Agent.describe): options [{key, label, kind, choices, default, help, group, danger, when}],
-   permission_modes, efforts, models, reasoning_by_model, capabilities (Codex). Codex's models are the box's visible slugs at codex 0.145. */
+   permission_modes, efforts, models, reasoning_by_model, capabilities (Codex). Codex's models and flags are codex 0.160's (codex.py FALLBACK_MODELS, BASELINE_CAPS). */
 const AGENT_SCHEMAS = {
   claude: {
     name: 'claude', label: 'Claude', glyph: '◆', installed: true,
@@ -1158,11 +1161,11 @@ const AGENT_SCHEMAS = {
       lxOpt('launcher', 'Start', 'select', ['new', 'resume', 'continue', 'fork'], 'new'),
       lxOpt('resume_id', 'Session to resume or fork', 'text', null, null, '', 'basic', false, { launcher: ['resume', 'fork'] }),
       lxOpt('name', 'Session name', 'text', null, null),
-      lxOpt('model', 'Model', 'combo', ['gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.5', 'codex-auto-review'], null),
+      lxOpt('model', 'Model', 'combo', LX_CODEX_MODELS, null),
       lxOpt('reasoning_effort', 'Reasoning', 'select', LX_EFFORTS, null),
       lxOpt('mode', 'Mode', 'select', ['default', 'auto', 'read-only', 'bypass', 'custom'], 'default'),
       lxOpt('sandbox', 'Sandbox', 'select', LX_SANDBOXES, null, '', 'basic', false, { mode: ['custom'] }),
-      lxOpt('approval', 'Approval policy', 'select', ['untrusted', 'on-request', 'never'], null, '', 'basic', false, { mode: ['custom'] }),
+      lxOpt('approval', 'Approval policy', 'select', LX_APPROVALS, null, '', 'basic', false, { mode: ['custom'] }),
       lxOpt('prompt', 'First prompt', 'textarea', null, null, '', 'basic', false, { launcher: ['new'] }),
       lxOpt('search', 'Live web search', 'bool', null, false, '', 'advanced'),
       lxOpt('bypass', 'Skip approvals and the sandbox', 'bool', null, false, '', 'advanced', true),
@@ -1174,9 +1177,9 @@ const AGENT_SCHEMAS = {
       lxOpt('extra', 'Extra arguments', 'args', null, null, '', 'advanced'),
     ],
     permission_modes: ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'], efforts: LX_EFFORTS,
-    models: ['gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.5', 'codex-auto-review'],
-    reasoning_by_model: { 'gpt-5.6-terra': LX_EFFORTS, 'gpt-5.6-sol': LX_EFFORTS, 'gpt-5.6-luna': LX_EFFORTS, 'gpt-5.5': LX_EFFORTS, 'codex-auto-review': LX_EFFORTS },
-    capabilities: { fork: true, approve_for_me: false, bypass_approvals: true, yolo: false, search: true, add_dir: true, no_alt_screen: true, approval_on_failure: false, approval_untrusted: true },
+    models: LX_CODEX_MODELS,
+    reasoning_by_model: { 'gpt-6.1-sol': LX_EFFORTS.concat(['ultra']), 'gpt-6-astra': LX_EFFORTS, 'gpt-6-sol': LX_EFFORTS, 'gpt-6-luna': LX_EFFORTS },
+    capabilities: { fork: true, approve_for_me: true, bypass_approvals: true, yolo: false, search: true, add_dir: true, no_alt_screen: true, approval_on_failure: false, approval_untrusted: false },
   },
 };
 const LX_SHELL = { name: 'shell', label: 'Shell', glyph: '▸', installed: true, options: [], permission_modes: [], efforts: [], models: [], reasoning_by_model: {}, capabilities: {} };
@@ -1441,7 +1444,7 @@ function commandPreview(v, ctx) {
     else if (prompt) argv = ['claude', ...flags, ...more, '--session-id', '<uuid>', '--name', sname, '--', lxShort(prompt, 60)];
     else argv = ['claude', '--session-id', '<uuid>', '--name', sname, ...flags, ...more];
     if (v.ultracode && !c.ultraNative) then.push('/effort ultracode on');
-    if (v.fast) then.push('/fast');
+    if (v.fast) then.push('/fast on');
   } else {
     const caps = { approve_for_me: false, bypass_approvals: true, yolo: false, no_alt_screen: true, search: true, add_dir: true, ...(c.caps || {}) };
     if (caps.no_alt_screen) flags.push('--no-alt-screen');
@@ -1471,6 +1474,7 @@ function commandPreview(v, ctx) {
   const notes = [];
   if (v.agent === 'codex' && wt) notes.push(`# in a new worktree: .ccboard/worktrees/${wtName}`);
   if (then.length) notes.push(`# then ${then.join(' · ')}`);
+  if (v.agent === 'claude' && v.ultracode && c.ultraNative) notes.push('# --effort ultracode implies xhigh and turns ultracode on');   // #78: the help text lists low..max only
   return [line, ...notes].join('\n');
 }
 
@@ -1899,8 +1903,8 @@ function launcherForm(o) {
   };
   painters.push(() => { if (effortSeg) effortSeg.set(C.effort || ''); });
   const effortField = field('Effort', effortHost);
-  const fast = check('Fast mode', () => C.fast, (x) => { C.fast = x; }, 'The board types /fast once the session is up. /fast switches fast mode on or off, so if your settings already turn it on, this turns it off.');
-  const ultra = check('Ultracode', () => C.ultracode, (x) => { C.ultracode = x; }, 'The board types /effort ultracode on once the session is up');
+  const fast = check('Fast mode', () => C.fast, (x) => { C.fast = x; }, 'The board types /fast on once the session is up (it needs usage credits on the account).');
+  const ultra = check('Ultracode', () => C.ultracode, (x) => { C.ultracode = x; }, 'Ultracode sets xhigh and turns workflows on, for this session only. The board types /effort ultracode on once the session is up (or starts it with --effort ultracode where this box takes the flag). It has no effect under -p.');
   const switchRow = checksRow(fast, ultra);
   const permSel = selectEl([['', 'ask (default)']], '');
   const paintPermOptions = () => {
@@ -2319,7 +2323,7 @@ function launcherForm(o) {
     if (res && res.tmux && !quiet) openIt(res.tmux, tab); else if (tab) tab.close();
     if (res && res.tmux && v.agent === 'claude') {                      // what has no flag is typed once the session is at its prompt
       if (v.ultracode && !ultraNative()) launcherAfterStart(res.tmux, 'effort', 'ultracode on');
-      if (v.fast && lxHas('claude', 'fast')) launcherAfterStart(res.tmux, 'fast');
+      if (v.fast && lxHas('claude', 'fast')) launcherAfterStart(res.tmux, 'fast', 'on');      // bare /fast opens a dialog that swallows keys (V8): always the explicit on
     }
     finish(res, 'now');
   };
@@ -2521,7 +2525,7 @@ function launcherSaveAll(pname, rname, agent, keep) {
 
 /* A slash command typed once the new session is at its prompt (POST /api/sessions/{tmux}/command; the board's /command refuses with 409 until then): `/effort ultracode on` and `/fast`
    have no flag to carry them. Tried for about 20 seconds, then said. Two of them for one session go one after the other (the second starts when the first has landed or given up), so
-   they never type over each other. cmd is the command's name (effort, fast), arg its argument or nothing (the /fast SlashSpec takes none). */
+   they never type over each other. cmd is the command's name (effort, fast), arg its argument (`ultracode on`, `on`: both typed inline and verified on the box, V8). */
 const LX_AFTER = new Map();
 function launcherAfterStart(tmux, cmd, arg) {
   const typed = `/${cmd}${arg ? ' ' + arg : ''}`;

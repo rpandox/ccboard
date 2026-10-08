@@ -1047,10 +1047,17 @@ const TermKit = (() => {
   const TK_MODELS = ['opus', 'fable', 'sonnet', 'haiku'];                       // Claude's model names; Codex's come from the agent's schema
   const TK_MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', haiku: 'hue-slate' };
   const TK_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
-  const TK_CODEX_MODELS = ['gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.5', 'codex-auto-review'];   // codex.py FALLBACK_MODELS: what a Codex tile offers until GET /api/agents lists the box's own
+  const TK_CODEX_MODELS = ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'];   // codex.py FALLBACK_MODELS (launcher.js LX_CODEX_MODELS too): what a Codex tile offers until GET /api/agents lists the box's own
   const TK_CODEX_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
-  const TK_ULTRA_ON = 'ultracode on';                                           // claude.py V19: until `--effort ultracode` is proven, the switch is `/effort ultracode on`
-  const TK_ULTRA_OFF = 'high';                                                  // leaving Ultracode goes back to the launcher's default level
+  const TK_CODEX_REASONING = { 'gpt-6.1-sol': TK_CODEX_EFFORTS.concat(['ultra']) };   // the fallback's per-model extras: ultra only on 6.1-Sol (the box's picker)
+  /* Codex's /permissions presets the Tune may pick (Full Access is never offered here: it drops the sandbox and has no gate in this panel) */
+  const TK_CODEX_PERMS = [['ask', 'Ask for approval'], ['auto', 'Approve for me']];
+  /* Ultracode is a setting, not an effort level (Claude Code docs; V8 on 2.1.290): /effort ultracode on and /effort ultracode off, session only, through POST /tune
+     with the setting `ultracode` (the pane's "Ultracode on" / "Ultracode off" line is the read-back) */
+  const TK_ULTRA_ON = 'on';
+  const TK_ULTRA_OFF = 'off';
+  const TK_SAVES_DEFAULT = 'Also saves your default for new sessions';         // Claude's /model <name> typed inline (V8): the picker's list is version-specific, so Model stays inline and says so
+  const TK_UNVERIFIED = 'Unverified key path: the board reads the result back from the screen';
   const TK_PENDING_MS = 20000;                                                  // how long a typed setting waits for the statusline that confirms it
   const TK_ESC_GAP_MS = 150;                                                    // Escape and the next keys must not arrive together (a TUI reads ESC + key as Alt + key)
   const TK_CELLS = ['compact', 'context', 'usage', 'cost', 'status', 'rename']; // the command cells, in this order
@@ -1058,14 +1065,24 @@ const TermKit = (() => {
     compact: 'Summarise the conversation to free up context', context: 'Show how the context window is used', usage: 'Show plan usage',
     cost: 'Show what this session has cost', status: 'Show the session status', rename: 'Give the session a new name',
   };
-  const tkSlash = (cmd, label, arg, read) => ({ cmd: '/' + cmd, label, arg, read, destructive: false });
-  const TK_SLASH = {                                                            // the registry until GET /api/agents says otherwise (SlashSpec rows of claude.py / codex.py)
+  const tkSlash = (cmd, label, arg, read, more) => ({ cmd: '/' + cmd, label, arg, read, destructive: false, verified: true, weight: 0, drive: 'inline', tune: '',
+    saves_default: false, choices: null, dialog: false, ...(more || {}) });
+  /* The registry until GET /api/agents says otherwise: the SlashSpec rows of claude.py / codex.py (the terminal page's strip reads the same rows, weights included) */
+  const TK_SLASH = {
     claude: {
-      compact: tkSlash('compact', 'Compact', false, false), context: tkSlash('context', 'Context', false, true), usage: tkSlash('usage', 'Usage', false, true),
-      cost: tkSlash('cost', 'Cost', false, true), status: tkSlash('status', 'Status', false, true), rename: tkSlash('rename', 'Rename', true, false),
-      model: tkSlash('model', 'Model', true, false), effort: tkSlash('effort', 'Effort', true, false), fast: tkSlash('fast', 'Fast', false, false),
+      clear: tkSlash('clear', 'Clear', false, false, { weight: 155, destructive: true }), compact: tkSlash('compact', 'Compact', false, false, { weight: 120 }),
+      usage: tkSlash('usage', 'Usage', false, true, { weight: 100, dialog: true }),
+      effort: tkSlash('effort', 'Effort', true, false, { weight: 58, tune: 'effort', saves_default: true, tune_verified: false }),
+      model: tkSlash('model', 'Model', true, false, { weight: 39, saves_default: true }), rename: tkSlash('rename', 'Rename', true, false, { weight: 10 }),
+      context: tkSlash('context', 'Context', false, true, { weight: 9 }), status: tkSlash('status', 'Status', false, true, { weight: 3, dialog: true }),
+      cost: tkSlash('cost', 'Cost', false, true, { dialog: true }), fast: tkSlash('fast', 'Fast', true, false, { choices: ['on', 'off'] }),
     },
-    codex: { model: tkSlash('model', 'Model', true, false), reasoning: tkSlash('reasoning', 'Reasoning', true, false) },
+    codex: {
+      model: tkSlash('model', 'Model', false, false, { drive: 'picker', tune: 'model' }),
+      reasoning: tkSlash('model', 'Reasoning', false, false, { drive: 'picker', tune: 'reasoning', verified: false }),
+      permissions: tkSlash('permissions', 'Permissions', false, false, { drive: 'picker', tune: 'permissions', verified: false }),
+      status: tkSlash('status', 'Status', false, true),
+    },
   };
 
   const tkPlain = (v) => (v && typeof v === 'object' ? v : null);
@@ -1100,27 +1117,45 @@ const TermKit = (() => {
   /* What the tune panel offers one agent: {model: {cmd, options}, effort: {cmd, options}, fast, ultra, cells}. Claude: opus fable sonnet haiku, low..max, the Fast
      and Ultracode switches (when /fast and /effort exist) and the command cells; Codex: the schema's models and its reasoning levels, else the built-in lists (the state's agent entry has neither; the command is /reasoning there,
      not /effort), no switches. An option is {value, label, arg}. */
+  /* A group is {cmd, options, via, setting, note, unverified}: `via` 'tune' = POST /tune {setting, value} (the agent's picker, this session only), 'command' = POST
+     /command {cmd, arg} (typed inline). A registry row with `tune` (v0.5.21) goes through /tune; an older server's row (no `tune`) keeps the inline path. `note`:
+     what the person must know (Claude's /model typed inline also saves the default). `unverified`: the box check did not run that exact key path. */
   function tunePlan(agent, schema, stats) {
     const reg = tuneRegistry(agent, schema);
     const sc = tkPlain(schema) || {};
     const has = (k) => ownKey(reg, k);
+    const row = (k) => tkPlain(reg[k]) || {};
     const opt = (v) => ({ value: String(v), label: String(v), arg: String(v) });
-    const plan = { model: null, effort: null, fast: false, ultra: false, cells: [] };
+    const group = (k, cmd, options) => {
+      const r = row(k);
+      const tune = typeof r.tune === 'string' && r.tune ? r.tune : '';
+      const proven = r.tune_verified === undefined || r.tune_verified === null ? r.verified : r.tune_verified;   // the picker path's own box check (pickers.py PROVEN)
+      return { cmd, options, via: tune ? 'tune' : 'command', setting: tune, note: !tune && r.saves_default ? TK_SAVES_DEFAULT : '', unverified: proven === false && !!tune };
+    };
+    const plan = { model: null, effort: null, perms: null, fast: false, ultra: false, cells: [] };
     if (agent === 'claude') {
-      if (has('model')) plan.model = { cmd: 'model', options: TK_MODELS.map(opt) };
-      if (has('effort')) { plan.effort = { cmd: 'effort', options: TK_EFFORTS.map(opt) }; plan.ultra = true; }
+      if (has('model')) plan.model = group('model', 'model', TK_MODELS.map(opt));
+      if (has('effort')) {
+        plan.effort = group('effort', 'effort', TK_EFFORTS.map(opt));
+        plan.ultra = true;
+      }
       plan.fast = has('fast');
     } else if (agent === 'codex') {
       const listed = Array.isArray(sc.models) ? sc.models.filter((m) => typeof m === 'string' && m) : [];
       const models = (listed.length ? listed : TK_CODEX_MODELS).slice(0, 12);       // a state row's agent entry (status_summary) has no models: the built-in list stands in
-      if (has('model') && models.length) plan.model = { cmd: 'model', options: models.map(opt) };
-      const by = tkPlain(sc.reasoning_by_model) || {};
-      const cur = tuneModel(stats, plan.model);
+      const pickers = row('model').drive === 'picker';                              // an older server typed /model <slug> inline, which Codex sends to the model: no row then
+      if (has('model') && pickers && models.length) plan.model = group('model', 'model', models.map(opt));
+      const by = tkPlain(sc.reasoning_by_model) || (listed.length ? {} : TK_CODEX_REASONING);
+      const cur = tuneModel(stats, plan.model || { options: models.map(opt) });
       const named = Array.isArray(sc.efforts) ? sc.efforts.filter((e) => typeof e === 'string' && e) : [];
-      const levels = (cur && Array.isArray(by[cur]) && by[cur].length ? by[cur] : (named.length ? named : TK_CODEX_EFFORTS)).filter((e) => typeof e === 'string' && e);
-      if (has('reasoning') && levels.length) plan.effort = { cmd: 'reasoning', options: levels.map(opt) };
+      const levels = (cur && Array.isArray(by[cur]) && by[cur].length ? by[cur] : (cur ? TK_CODEX_EFFORTS : (named.length ? named : TK_CODEX_EFFORTS))).filter((e) => typeof e === 'string' && e);
+      if (has('reasoning') && row('reasoning').drive === 'picker' && levels.length) plan.effort = group('reasoning', 'reasoning', levels.map(opt));
+      if (has('permissions') && row('permissions').drive === 'picker') plan.perms = group('permissions', 'permissions', TK_CODEX_PERMS.map(([value, label]) => ({ value, label, arg: value })));
     }
-    for (const k of TK_CELLS) if (has(k)) plan.cells.push({ key: k, cmd: String((reg[k] && reg[k].cmd) || '/' + k), read: !!(reg[k] && reg[k].read), arg: !!(reg[k] && reg[k].arg) });
+    for (const k of TK_CELLS) {
+      if (!has(k) || row(k).drive === 'picker') continue;
+      plan.cells.push({ key: k, cmd: String(row(k).cmd || '/' + k), read: !!row(k).read, arg: !!row(k).arg, dialog: row(k).dialog === undefined ? !!row(k).read : !!row(k).dialog });
+    }
     return plan;
   }
 
@@ -1134,11 +1169,22 @@ const TermKit = (() => {
     return best;
   }
 
-  /* One reading of the session's stats for the panel: {model, effort, fast}. effort also reads Codex's `reasoning`. */
-  function tuneCurrent(stats, plan) {
+  /* One reading of the session for the panel: {model, effort, fast, ultra, perms}. effort also reads Codex's `reasoning`. Nothing is guessed: fast is true | false only
+     when the statusline reported it (null = unknown, no settled On or Off); ultra ('on' | 'off') and perms ('ask' | 'auto') come from what the board last read back
+     from the pane after a /tune (flags.tuned: no statusline or rollout field carries them), else '' (unknown, nothing selected). */
+  function tuneCurrent(stats, plan, flags) {
     const st = tkPlain(stats) || {};
+    const tuned = tkPlain(tkPlain(flags) && flags.tuned) || {};
+    const seen = (k) => { const t = tkPlain(tuned[k]); return t && typeof t.value === 'string' ? t.value : ''; };
     const eff = String(st.effort || st.reasoning || '').toLowerCase();
-    return { model: tuneModel(st, plan.model), effort: eff, fast: st.fast === true };
+    return { model: tuneModel(st, plan && plan.model), effort: eff, fast: typeof st.fast === 'boolean' ? st.fast : null, ultra: seen('ultracode'), perms: seen('permissions') };
+  }
+
+  /* What one change sends: {path, body} under /api/sessions/<tmux>. A /tune group sends {setting, value}; an inline one {cmd, arg}. The terminal page's strip and this
+     panel both build their requests here, so a fix to one reaches both. */
+  function tuneRequest(group, value) {
+    if (group && group.via === 'tune') return { path: '/tune', body: { setting: group.setting, value: String(value) } };
+    return { path: '/command', body: { cmd: group && group.cmd, arg: String(value) } };
   }
 
   /* 409 {error, message, state, wait_kind, retry}: the board will not type into the pane right now; anything else says what it says. */
@@ -1538,12 +1584,14 @@ const TermKit = (() => {
     function chipsFor(p) {
       p.chips.textContent = '';
       let list = [];
-      try { list = typeof quickLoad === 'function' ? quickLoad(c.tmux) : []; } catch (_) { list = []; }
+      try { list = typeof quickLoad === 'function' ? quickLoad(c.tmux, tkAgent(c)) : []; } catch (_) { list = []; }     // #69: the agent's own defaults
       for (const text of list) {
         const go = () => send(text).then((ok) => { if (ok && !p.docked) S.close(false); });
         const edit = () => {
           S.close(false);
-          if (typeof quickReplyEditor === 'function') quickReplyEditor({ items: typeof quickLoad === 'function' ? quickLoad(c.tmux) : [], onSave: (items) => { if (typeof quickSave === 'function') quickSave(c.tmux, items); } });
+          if (typeof quickReplyEditor === 'function') quickReplyEditor({ items: typeof quickLoad === 'function' ? quickLoad(c.tmux, tkAgent(c)) : [],
+            defaults: typeof quickDefaults === 'function' ? quickDefaults(tkAgent(c)) : undefined,
+            onSave: (items) => { if (typeof quickSave === 'function') quickSave(c.tmux, items, tkAgent(c)); } });
         };
         const chip = typeof quickChip === 'function' ? quickChip(text, { cls: 'tk-chip', onSend: go, onEdit: edit })
           : el('button', { type: 'button', class: 'tk-chip', title: 'tap to send', text, onclick: go });
@@ -1626,7 +1674,7 @@ const TermKit = (() => {
      tile menu's /compact, /context and /usage items use it; a read command's output opens the panel at `anchor`. */
   function makeTune(ctx) {
     const c = ctx || {};
-    const T = { busy: false, pend: null, pendTimer: 0, ok: null, readout: null, dialog: false, renaming: false, anchor: null, dead: false };
+    const T = { busy: false, pend: null, pendTimer: 0, ok: null, readout: null, dialog: false, renaming: false, anchor: null, dead: false, seen: {} };
     const panels = new Set();
     const S = surface({
       escape: () => {
@@ -1638,6 +1686,19 @@ const TermKit = (() => {
     });
     const gateNow = () => tuneGate(c.session, c.atPrompt);
     const planNow = () => tunePlan(tkAgent(c), c.schema, tkStats(c));
+    const tkFlags = () => tkPlain(c.flags) || (c.session && tkPlain(c.session.flags)) || {};
+    /* the reading, with what a /tune just read back from the pane standing in until the session's own reading moves (Codex's rollout reports a model change at the
+       next turn; flags.tuned arrives with the next poll) */
+    function currentNow(plan) {
+      const cur = tuneCurrent(tkStats(c), plan, tkFlags());
+      for (const k of Object.keys(T.seen)) {
+        const s = T.seen[k];
+        if (cur[k] !== s.before) delete T.seen[k];
+        else cur[k] = s.value;
+      }
+      return cur;
+    }
+    function flashOk(key) { T.ok = key; setTimeout(() => { if (T.ok === key) { T.ok = null; syncAll(); } }, 1500); }
 
     /* a read command (/usage, /context, /status, /cost) leaves the agent's dialog in the pane: one Escape closes it (two would open the rewind menu) */
     function settleEscape() {
@@ -1659,8 +1720,8 @@ const TermKit = (() => {
       T.pend = null;
       clearTimeout(T.pendTimer);
       T.pendTimer = 0;
-      if (ok) { T.ok = p.key; setTimeout(() => { if (T.ok === p.key) { T.ok = null; syncAll(); } }, 1500); }
-      else tkSay('/' + p.cmd + (p.arg ? ' ' + p.arg : '') + ' not confirmed by the statusline', 'warn');
+      if (ok) flashOk(p.key);
+      else tkSay('/' + p.cmd + (p.arg ? ' ' + p.arg : '') + ' not confirmed by the session', 'warn');
     }
 
     /* the typed setting waits for the statusline: pending until the stats agree, an ok flash then; 20 s without that says so once */
@@ -1684,13 +1745,18 @@ const TermKit = (() => {
         await settleEscape();
         const body = { cmd };
         if (arg) body.arg = arg;
+        const req = x.tune ? { path: '/tune', body: x.tune } : { path: '/command', body };
         let res = null;
-        try { res = await api('POST', tkSession(c) + '/command', body); } catch (e) { tkRefused(e, 'tuning'); tkPoll(); return false; }
+        try { res = await api('POST', tkSession(c) + req.path, req.body); } catch (e) { tkRefused(e, 'tuning'); tkPoll(); return false; }
         if (res && typeof res.screen === 'string') {
-          T.dialog = true;
+          T.dialog = res.dialog !== false;                                         // a read command printed inline (Codex /status, Claude /context) leaves nothing to Escape
           T.readout = { cmd: '/' + cmd, text: String(res.screen).replace(/\s+$/, '') || '(nothing printed)' };
           if (!S.isOpen && !panels.size && !T.dead) openPanel(T.anchor, false);
-        } else if (x.pend) startPending(cmd, arg || '', x.pend.key, x.pend.satisfied);
+        } else if (x.tune && res && res.confirmed === true) {                      // read back from the pane: applied, not merely typed
+          if (x.pend) { T.seen[x.pend.kind] = { value: x.pend.value, before: currentNow(planNow())[x.pend.kind] }; flashOk(x.pend.key); }
+        } else if (x.tune && res && res.confirmed === false) {
+          tkSay(res.message || (x.tune.setting + ' not confirmed by the session'), 'warn');
+        } else if (x.pend) startPending(x.tune ? x.tune.setting : cmd, x.tune ? x.tune.value : (arg || ''), x.pend.key, x.pend.satisfied);
         if (typeof c.onCommand === 'function') { try { c.onCommand(cmd, arg || '', res); } catch (e) { console.error('ccboard tune onCommand', e); } }
         tkPoll();
         return true;
@@ -1716,22 +1782,35 @@ const TermKit = (() => {
       const long = group.options.some((o) => o.label.length > 8);                // a long name (a Codex model) gets half the track, many short ones a third
       const wrap = el('div', { class: 'tk-seg' + (long ? ' tk-wrap2' : group.options.length > 5 ? ' tk-wrap3' : ''), role: 'group', 'aria-label': label, 'data-kind': kind });
       for (const op of group.options) {
+        const want = kind === 'effort' ? op.value.toLowerCase() : op.value;
+        const pend = { key: kind + ':' + op.value, kind, value: want, satisfied: (cur) => cur[kind] === want };
+        const req = tuneRequest(group, op.arg);
         const b = el('button', { type: 'button', class: 'tk-opt' + (kind === 'model' && ownKey(TK_MODEL_HUE, op.value) ? ' tk-model ' + TK_MODEL_HUE[op.value] : ''), 'data-cmd': group.cmd, 'data-arg': op.arg,
-          'aria-pressed': 'false', title: '/' + group.cmd + ' ' + op.arg, text: op.label,
-          onclick: () => run(group.cmd, op.arg, { pend: { key: kind + ':' + op.value, satisfied: (cur) => (kind === 'model' ? cur.model === op.value : cur.effort === op.value.toLowerCase()) } }) });
+          'data-via': group.via, 'aria-pressed': 'false',
+          title: (group.via === 'tune' ? label + ' ' + op.label + ' for this session only' : '/' + group.cmd + ' ' + op.arg) + (group.note ? ' (' + group.note.toLowerCase() + ')' : ''), text: op.label,
+          onclick: () => (req.path === '/tune' ? run(group.cmd, '', { tune: req.body, pend }) : run(group.cmd, op.arg, { pend })) });
         p.nodes.push({ node: b, kind, value: op.value });
         wrap.append(b);
       }
       return wrap;
     }
 
+    /* Fast: `/fast on` or `/fast off` (bare /fast opens a dialog that swallows keys); an unknown state sends on. Ultracode: /tune ultracode on | off (an older
+       server: /effort ultracode on | off typed inline); the pane's read-back, not a guess, settles it. */
     function toggle(p, kind, label, title) {
-      const state = el('span', { class: 'tk-state', text: 'off' });
+      const state = el('span', { class: 'tk-state', text: 'unknown' });
       const b = el('button', { type: 'button', class: 'tk-tog', 'data-kind': kind, 'aria-pressed': 'false', title, onclick: () => {
-        const cur = tuneCurrent(tkStats(c), planNow());
-        if (kind === 'fast') run('fast', '', { pend: { key: 'fast', satisfied: (now) => now.fast === !cur.fast } });
-        else if (cur.effort === 'ultracode') run('effort', TK_ULTRA_OFF, { pend: { key: 'ultra', satisfied: (now) => now.effort === TK_ULTRA_OFF } });
-        else run('effort', TK_ULTRA_ON, { pend: { key: 'ultra', satisfied: (now) => now.effort === 'ultracode' } });
+        const plan = planNow();
+        const cur = currentNow(plan);
+        if (kind === 'fast') {
+          const want = cur.fast === true ? 'off' : 'on';
+          run('fast', want, { pend: { key: 'fast', kind: 'fast', value: want === 'on', satisfied: (now) => now.fast === (want === 'on') } });
+          return;
+        }
+        const want = cur.ultra === TK_ULTRA_ON ? TK_ULTRA_OFF : TK_ULTRA_ON;
+        const pend = { key: 'ultra', kind: 'ultra', value: want, satisfied: (now) => now.ultra === want };
+        if (plan.effort && plan.effort.via === 'tune') run('effort', '', { tune: { setting: 'ultracode', value: want }, pend });
+        else run('effort', 'ultracode ' + want, { pend });
       } }, el('span', { class: 'tk-tn', text: label }), state);
       p.nodes.push({ node: b, kind, state });
       return b;
@@ -1771,13 +1850,20 @@ const TermKit = (() => {
       p.nodes = [];
       p.rename = null;
       p.root.append(p.gate);
-      if (plan.model) p.root.append(sec('MODEL', seg(p, 'Model', plan.model, 'model')));
-      if (plan.effort) p.root.append(sec(tkAgent(c) === 'codex' ? 'REASONING' : 'EFFORT', seg(p, tkAgent(c) === 'codex' ? 'Reasoning' : 'Effort', plan.effort, 'effort')));
+      const notes = (g) => [g.note ? el('p', { class: 'tk-note', text: g.note }) : null, g.unverified ? el('p', { class: 'tk-note tk-unverified', text: TK_UNVERIFIED }) : null].filter(Boolean);
+      const codex = tkAgent(c) === 'codex';
+      if (plan.model) p.root.append(sec('MODEL', seg(p, 'Model', plan.model, 'model'), ...notes(plan.model)));
+      if (plan.effort) p.root.append(sec(codex ? 'REASONING' : 'EFFORT', seg(p, codex ? 'Reasoning' : 'Effort', plan.effort, 'effort'), ...notes(plan.effort)));
+      if (plan.perms) {
+        p.root.append(sec('PERMISSIONS', seg(p, 'Permissions', plan.perms, 'perms'),
+          el('p', { class: 'tk-note', text: 'Ask for approval: Codex asks before it acts outside the workspace. Approve for me: an automatic reviewer answers instead. Full Access is not offered here.' }),
+          ...notes(plan.perms)));
+      }
       if (plan.fast || plan.ultra) {
         const row = el('div', { class: 'tk-toggles' });
-        if (plan.fast) row.append(toggle(p, 'fast', 'Fast', 'Fast mode: quicker answers, a higher price'));
-        if (plan.ultra) row.append(toggle(p, 'ultra', 'Ultracode', 'Ultracode on sets the effort to ultracode; off goes back to high'));
-        p.root.append(sec('OPTIONS', row));
+        if (plan.fast) row.append(toggle(p, 'fast', 'Fast', 'Fast mode: quicker answers, a higher price (/fast on or /fast off)'));
+        if (plan.ultra) row.append(toggle(p, 'ultra', 'Ultracode', 'Ultracode sets xhigh and turns workflows on, for this session only; it has no effect under -p'));
+        p.root.append(sec('OPTIONS', row, plan.ultra ? el('p', { class: 'tk-note', text: 'Ultracode sets xhigh and turns workflows on' }) : null));
       }
       if (plan.cells.length) {
         p.root.append(sec('COMMANDS', el('div', { class: 'tk-grid' }, ...plan.cells.map((s) => cell(p, s)))));
@@ -1790,9 +1876,10 @@ const TermKit = (() => {
     function sync(p) {
       const plan = planNow();
       const gate = gateNow();
-      const sig = tkAgent(c) + JSON.stringify([plan.model && plan.model.options.map((o) => o.value), plan.effort && [plan.effort.cmd, plan.effort.options.map((o) => o.value)], plan.fast, plan.ultra, plan.cells.map((s) => s.key)]);
+      const sig = tkAgent(c) + JSON.stringify([plan.model && [plan.model.via, plan.model.options.map((o) => o.value)], plan.effort && [plan.effort.cmd, plan.effort.via, plan.effort.options.map((o) => o.value)],
+        plan.perms && plan.perms.options.map((o) => o.value), plan.fast, plan.ultra, plan.cells.map((s) => s.key)]);
       if (sig !== p.sig) { p.sig = sig; fill(p, plan); }
-      const cur = tuneCurrent(tkStats(c), plan);
+      const cur = currentNow(plan);
       if (T.pend && T.pend.satisfied(cur)) clearPending(true);
       const off = !gate.enabled || T.busy;
       p.gate.classList.toggle('hidden', gate.enabled || !gate.show);
@@ -1802,13 +1889,15 @@ const TermKit = (() => {
         b.disabled = off;
         if (!gate.enabled && gate.show) b.setAttribute('title', gate.title);
         let on = false;
+        let known = true;
         if (n.kind === 'model') on = cur.model === n.value;
         else if (n.kind === 'effort') on = cur.effort === n.value.toLowerCase();
-        else if (n.kind === 'fast') on = cur.fast;
-        else if (n.kind === 'ultra') on = cur.effort === 'ultracode';
+        else if (n.kind === 'perms') on = cur.perms === n.value;
+        else if (n.kind === 'fast') { on = cur.fast === true; known = cur.fast !== null; }
+        else if (n.kind === 'ultra') { on = cur.ultra === TK_ULTRA_ON; known = !!cur.ultra; }
         if (n.kind !== 'cell') { b.setAttribute('aria-pressed', on ? 'true' : 'false'); b.classList.toggle('on', on); }
-        if (n.state) setText(n.state, on ? 'on' : 'off');
-        const key = n.kind === 'cell' ? '' : (n.kind === 'model' || n.kind === 'effort' ? n.kind + ':' + n.value : n.kind);
+        if (n.state) { setText(n.state, known ? (on ? 'on' : 'off') : 'unknown'); b.classList.toggle('tk-unknown', !known); }
+        const key = n.kind === 'cell' ? '' : (n.kind === 'model' || n.kind === 'effort' || n.kind === 'perms' ? n.kind + ':' + n.value : n.kind);
         b.classList.toggle('pending', !!T.pend && T.pend.key === key);
         b.classList.toggle('ok', !!T.ok && T.ok === key);
       }
@@ -1898,7 +1987,7 @@ const TermKit = (() => {
     ttyUrl, bind, touchScroller, fitSoon, fitNow, viewportFit, keyBar, pressable, repeater, compactKeys, backTarget, contextParts, clampFont, FONT_MIN, FONT_MAX,
     termPane, paneLabel, paneParts, paneLine, panePending, sizeChip, typingTarget, ctxInfo, fitName,
     /* v0.5.9c quad v3: the tile menu, the prompt composer and the tune panel (termkit.css), with the pure helpers they and the tests share */
-    tileMenu: makeTileMenu, composer: makeComposer, tune: makeTune, tuneGate, tunePlan, tuneCurrent, tuneRegistry,
+    tileMenu: makeTileMenu, composer: makeComposer, tune: makeTune, tuneGate, tunePlan, tuneCurrent, tuneRegistry, tuneRequest,
     /* the font spike's outcome ('off' until a bind asked for it) and a promise of the final state; it never rejects */
     get fontState() { return fontState; },
     get fontReady() { return fontPromise || Promise.resolve(fontState); },

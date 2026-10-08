@@ -868,7 +868,8 @@ Quad.mount = function (root, route) {
     const open = el('a', { class: 'btn icon minimal small qt-open', href: `/term/${enc(tmux)}`, target: '_blank', rel: 'noopener', 'data-dock': 'skip', 'aria-label': 'Open the terminal page', title: 'Open the terminal page' }, ic('share'));
     const again = el('button', { class: 'icon minimal small qt-reconnect', type: 'button', 'aria-label': 'Reconnect', title: 'Reconnect this tile', onclick: () => reconnect(tile) }, ic('refresh'));
     const shut = el('button', { class: 'icon minimal small qt-close', type: 'button', 'aria-label': 'Close this tile', title: 'Close this tile', onclick: () => close(tile) }, ic('cross'));
-    const head = el('header', { class: 'qt-head' }, tile.glyphs, tile.title, tile.modes, tile.modeMenu, tile.ctx, tile.size, tile.zoomBtn, open, again, shut);
+    tile.hooks = el('span', { class: 'qt-hooks hidden' });       // #96: 'no hooks (untrusted?)' while hooks_missing (patchTile)
+    const head = el('header', { class: 'qt-head' }, tile.glyphs, tile.title, tile.hooks, tile.modes, tile.modeMenu, tile.ctx, tile.size, tile.zoomBtn, open, again, shut);
     tile.head = head;
     tile.task = el('div', { class: 'qt-task hidden' });
     tile.permText = el('span', { class: 'qt-perm-text' });
@@ -1321,6 +1322,13 @@ Quad.mount = function (root, route) {
     tile.ctx.classList.toggle('hi', !!ci && ci.level === 'hi');
     tile.ctx.classList.toggle('crit', !!ci && ci.level === 'crit');
     if (ci) tile.ctx.setAttribute('title', ci.title);
+    const hm = (s && s.hooks_missing) || '';                  // #96: the same chip as the Agents row, after the glyphs
+    if (tile.hm !== hm && typeof hooksMissingChip === 'function') {
+      tile.hm = hm;
+      tile.hooks.textContent = '';
+      if (hm) tile.hooks.append(hooksMissingChip(hm));
+      tile.hooks.classList.toggle('hidden', !hm);
+    }
     const line = Quad.taskLine(s);
     setTextIfChanged(tile.task, line.text);
     tile.task.classList.toggle('hidden', !line.text);

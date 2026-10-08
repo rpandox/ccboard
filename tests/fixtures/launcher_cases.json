@@ -13,7 +13,7 @@
       "tokens": ["claude", "--model", "opus", "--effort", "high", "--permission-mode", "acceptEdits", "--allowedTools", "Bash(npm test)", "Read", "--disallowedTools", "WebFetch",
                  "--append-system-prompt", "be brief", "--tools", "Bash,Edit", "--agent", "reviewer", "--fallback-model", "sonnet,haiku", "--autocompact", "150000", "--verbose",
                  "--session-id", "<uuid>", "--name", "fix", "--", "fix the login redirect"],
-      "notes": ["# then /fast"]
+      "notes": ["# then /fast on"]
     },
     {
       "id": "claude-new-no-prompt",

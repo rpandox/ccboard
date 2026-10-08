@@ -730,7 +730,7 @@ def test_demo_state_has_the_eight_sessions_in_the_stated_states():
     sessions = fleet_sessions(state)
     assert len(sessions) == 8, f"expected 8 live sessions, found {len(sessions)}"
     assert Counter(s["state"] for _, _, s in sessions) == Counter(
-        {"waiting": 2, "working": 2, "idle": 1, "done": 1, "errored": 1, "ended": 1})
+        {"waiting": 2, "working": 1, "idle": 2, "done": 1, "errored": 1, "ended": 1})
     names = [s["tmux"] for _, _, s in sessions]
     assert len(set(names)) == 8 and all(SESSION_NAME_RE.match(n) for n in names), names
     assert len({s["row_id"] for _, _, s in sessions}) == 8 and len({s["pane_id"] for _, _, s in sessions}) == 8, "row ids and panes are unique"
@@ -739,7 +739,9 @@ def test_demo_state_has_the_eight_sessions_in_the_stated_states():
     attn = {s["state"] for _, _, s in sessions if s["needs_attention"]}
     assert attn == {"waiting", "done", "errored"} and sum(1 for _, _, s in sessions if s["needs_attention"]) == 4
     codex = [s for _, _, s in sessions if s["agent"] == "codex"]
-    assert len(codex) == 1 and codex[0]["launcher"] == "codex" and codex[0]["state"] == "working"
+    # #96: the Codex session took a prompt and sent no hook: idle (no hook ever moved it) with 'no hooks (untrusted?)'
+    assert len(codex) == 1 and codex[0]["launcher"] == "codex" and codex[0]["state"] == "idle" and codex[0]["hooks_missing"] == "untrusted"
+    assert not codex[0]["flags"].get("hook_seen") and codex[0]["flags"]["turn_seen_at"]
     assert codex[0]["stats"]["model"] == "gpt-5.5"
     for _, _, s in sessions:
         assert {"model", "model_id", "context_pct", "cost_usd"} <= set(s["stats"]), s["tmux"]

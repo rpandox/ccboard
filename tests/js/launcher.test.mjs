@@ -143,8 +143,8 @@ test('commandPreview, Claude resume / continue / from PR: no prompt, --fork-sess
 
 test('commandPreview, Claude: ultracode is a second line (/effort ultracode on) until this box takes --effort ultracode; fast is /fast; the devcontainer wraps the line', () => {
   const w = lWorld();
-  assert.equal(prev(w, CLAUDE({ ultracode: true, fast: true })), "claude --session-id '<uuid>' --name s1 --model opus --effort high\n# then /effort ultracode on · /fast");
-  assert.equal(prev(w, CLAUDE({ ultracode: true }), { ultraNative: true }), "claude --session-id '<uuid>' --name s1 --model opus --effort ultracode");
+  assert.equal(prev(w, CLAUDE({ ultracode: true, fast: true })), "claude --session-id '<uuid>' --name s1 --model opus --effort high\n# then /effort ultracode on · /fast on");
+  assert.equal(prev(w, CLAUDE({ ultracode: true }), { ultraNative: true }), "claude --session-id '<uuid>' --name s1 --model opus --effort ultracode\n# --effort ultracode implies xhigh and turns ultracode on", '#78: the preview says what the flag implies');
   assert.equal(prev(w, CLAUDE({ devcontainer: true }), { cwd: '/srv/projects/shop/web' }),
     "devcontainer up --workspace-folder /srv/projects/shop/web && devcontainer exec --workspace-folder /srv/projects/shop/web -- claude --session-id '<uuid>' --name s1 --model opus --effort high");
 });
@@ -213,10 +213,10 @@ test('the preview is one nowrap span per token (a flag is never cut after its --
   assert.ok(spans.some((x) => text(x) === '--effort') && spans.some((x) => text(x) === 'low'), '--effort and its value are separate tokens, each whole');
   assert.ok(spans.some((x) => text(x) === "'fix the login redirect'"), 'a quoted prompt is ONE token');
   assert.ok(!spans.some((x) => /^#/.test(text(x))), 'the note line stays plain text');
-  assert.match(plainLine, /\n# then \/fast$/);
+  assert.match(plainLine, /\n# then \/fast on$/);
   // the nodes in between are single spaces: the only places a line may break
   const between = pre.childNodes.filter((n) => n.nodeType === 3).map((n) => n.textContent);
-  assert.ok(between.every((t) => /^( |\n|# then \/fast)$/.test(t) || t === ' '), `only spaces between tokens, got ${JSON.stringify(between)}`);
+  assert.ok(between.every((t) => /^( |\n|# then \/fast on)$/.test(t) || t === ' '), `only spaces between tokens, got ${JSON.stringify(between)}`);
   // a long path is plain text: it may break anywhere rather than overflow
   const long = w.run(`lxCmdNodes(${JSON.stringify('claude --mcp-config /srv/projects/a-very-long-folder-name/another-long-folder-name/mcp.json')})`);
   assert.equal(long.filter((n) => n && n.classList && n.classList.contains('lx-t')).length, 2, 'claude and --mcp-config are spans; the 50-character path is not');
@@ -445,13 +445,13 @@ test('Codex: ONE mode picker (default, auto, read-only, bypass, custom) as a seg
   const sandbox = fieldOf(f, /^Sandbox$/).querySelector('select');
   const approval = fieldOf(f, /^Approval policy$/).querySelector('select');
   assert.deepEqual(sandbox.children.map((o) => o.getAttribute('value')), ['read-only', 'workspace-write', 'danger-full-access']);
-  assert.deepEqual(approval.children.map((o) => o.getAttribute('value')), ['untrusted', 'on-request', 'never']);
+  assert.deepEqual(approval.children.map((o) => o.getAttribute('value')), ['on-request', 'never'], 'codex 0.160: untrusted is retired (#17)');
   choose(sandbox, 'read-only'); choose(approval, 'never');
   assert.match(previewOf(f), /-s read-only -a never/);
   const model = fieldOf(f, /^Model$/).querySelector('select');
-  assert.deepEqual(model.children.map((o) => o.getAttribute('value')), ['', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.5', 'codex-auto-review', 'custom']);
-  choose(model, 'gpt-5.5');
-  assert.match(previewOf(f), / -m gpt-5\.5/);
+  assert.deepEqual(model.children.map((o) => o.getAttribute('value')), ['', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'custom'], 'the current family, no hidden model');
+  choose(model, 'gpt-6-sol');
+  assert.match(previewOf(f), / -m gpt-6-sol/);
   const adv = f.querySelector('details[data-agent=codex]');
   assert.ok(adv.querySelectorAll('label').some((l) => /Live web search/.test(text(l))));
   assert.ok(adv.querySelectorAll('label.field-label').map(text).includes('Config overrides'));
@@ -932,7 +932,7 @@ test('fast mode is applied after the start: /fast through POST /command with no 
   assert.equal(w.get('__timers').length, 1, 'the follow-up waits a moment for the TUI');
   const run = async () => { const t = w.get('__timers').shift(); if (t) { await t.fn(); await tick(); } return !!t; };
   while (await run()) { /* each 409 queues the next try */ }
-  assert.deepEqual(posts(w, /\/command$/).map((c) => c.body), [{ cmd: 'fast' }, { cmd: 'fast' }, { cmd: 'fast' }], '/fast takes no argument: three tries, the third landed');
+  assert.deepEqual(posts(w, /\/command$/).map((c) => c.body), [{ cmd: 'fast', arg: 'on' }, { cmd: 'fast', arg: 'on' }, { cmd: 'fast', arg: 'on' }], '/fast on (bare /fast opens a dialog): three tries, the third landed');
   assert.equal(n, 3);
 
   // ultracode and fast for one session: the second command is not typed until the first has landed
@@ -949,7 +949,7 @@ test('fast mode is applied after the start: /fast through POST /command with no 
   assert.deepEqual(plain(sent), [{ cmd: 'effort', arg: 'ultracode on' }], 'the second has not been typed yet');
   assert.equal(w2.get('__timers').length, 1, 'it starts once the first has landed');
   await w2.get('__timers').shift().fn(); await tick();
-  assert.deepEqual(plain(sent), [{ cmd: 'effort', arg: 'ultracode on' }, { cmd: 'fast' }]);
+  assert.deepEqual(plain(sent), [{ cmd: 'effort', arg: 'ultracode on' }, { cmd: 'fast', arg: 'on' }]);
   // a box whose schema has no fast option never types it
   const w3 = lWorld({ answers: { '/api/agents': { agents: { claude: { name: 'claude', options: [{ key: 'model' }], models: ['opus'], efforts: ['low', 'high'], permission_modes: ['manual'], capabilities: {} } } },
     '/api/projects/shop/repos/api/sessions': { tmux: 'shop--api--s2' } } });
@@ -1200,16 +1200,16 @@ test('task mode, Schedule with Codex: model and reasoning only, no turns or budg
   assert.equal(hidden(fieldOf(f, /^Max turns$/)), true);
   assert.equal(hidden(fieldOf(f, /^Max \$$/)), true);
   assert.match(text(f.querySelector('.tf-lede')), /codex exec/);
-  choose(fieldOf(f, /^Model$/).querySelector('select'), 'gpt-5.5');
+  choose(fieldOf(f, /^Model$/).querySelector('select'), 'gpt-6-sol');
   btn(f, 'Reasoning', 'high').click();
   typeInto(f.querySelector('textarea.lx-prompt'), 'Review main');
   f.querySelectorAll('button.chip-btn').find((b) => text(b) === 'weekdays 09:00').click();
   submit(f);
   await tick(); await tick();
   const body = posts(w, /\/jobs$/)[0].body;
-  assert.deepEqual(body, { name: 'Review main', prompt: 'Review main', permission_mode: 'acceptEdits', run_now: false, cron: '0 9 * * 1-5', agent: 'codex', model: 'gpt-5.5', reasoning_effort: 'high' });
+  assert.deepEqual(body, { name: 'Review main', prompt: 'Review main', permission_mode: 'acceptEdits', run_now: false, cron: '0 9 * * 1-5', agent: 'codex', model: 'gpt-6-sol', reasoning_effort: 'high' });
   const kept = store(w, 'ccboard:task:shop/api:codex');
-  assert.equal(kept.model, 'gpt-5.5');
+  assert.equal(kept.model, 'gpt-6-sol');
   assert.equal(kept.reasoning_effort, 'high');
   assert.equal(kept.cron, '0 9 * * 1-5');
   assert.equal(kept.when, undefined, 'a schedule is never the next task\'s mode');
@@ -1226,17 +1226,17 @@ test('task mode, Codex: the same sheet with Codex\'s fields; the body names the 
   const w = lWorld({ answers: { '/api/tasks': TASK_OK } });
   open(w, { mode: 'task', agent: 'codex' });
   const f = form(w);
-  choose(fieldOf(f, /^Model$/).querySelector('select'), 'gpt-5.5');
+  choose(fieldOf(f, /^Model$/).querySelector('select'), 'gpt-6-sol');
   btn(f, 'Reasoning', 'high').click();
   btn(f, 'Codex mode', 'read-only').click();
   typeInto(f.querySelector('textarea.lx-prompt'), 'review the diff');
   submit(f);
   await tick(); await tick();
   const b = posts(w, /\/api\/tasks$/)[0].body;
-  assert.deepEqual([b.agent, b.model, b.reasoning_effort, b.permission_mode, b.when], ['codex', 'gpt-5.5', 'high', 'plan', 'now']);
+  assert.deepEqual([b.agent, b.model, b.reasoning_effort, b.permission_mode, b.when], ['codex', 'gpt-6-sol', 'high', 'plan', 'now']);
   assert.ok(!('bypass' in b) && !('worktree' in b));
   const saved = store(w, 'ccboard:task:shop/api:codex');
-  assert.deepEqual([saved.model, saved.reasoning_effort, saved.cx_mode], ['gpt-5.5', 'high', 'read-only']);
+  assert.deepEqual([saved.model, saved.reasoning_effort, saved.cx_mode], ['gpt-6-sol', 'high', 'read-only']);
 });
 
 test('task mode, Then…: a chain posts POST /chains with step 1\'s choices on the first step, and the repo select re-opens the sheet for another place with the text carried', async () => {

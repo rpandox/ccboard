@@ -41,6 +41,14 @@ LOGIN_0145, LOGIN_0160 = fixture_text("codex_login_help_0145.txt"), fixture_text
 EXEC_0145, EXEC_0157 = fixture_text("codex_exec_help_0145_real.txt"), fixture_text("codex_exec_help_0157.txt")
 RESUME_0145 = fixture_text("codex_resume_help_0145_real.txt")
 MODELS_JSON = fixture_text("codex_models_small.json")
+# #17: the baseline (what is assumed when `codex --help` cannot be probed) is now codex 0.160's flag set. codex_help_0160.txt is NOT a new
+# capture: it is the 0.157.1 capture, whose option list the V8-Codex box check (issue #16) found unchanged on the box's 0.160.1 (-s
+# read-only | workspace-write | danger-full-access, -a on-request | never, --approve-for-me). The argv-shape tests below were written
+# against the 0.145 baseline; the sandbox pins that one for them (CAPS_0145) so they keep checking the argv logic, and the tests that take
+# the `real_baseline` fixture check the 0.160 baseline itself.
+HELP_0160 = fixture_text("codex_help_0160.txt")
+REAL_BASELINE = dict(codex.BASELINE_CAPS)
+CAPS_0145 = codex.parse_help(HELP_0145)
 
 
 @pytest.fixture(autouse=True)
@@ -56,6 +64,7 @@ def _codex_sandbox(tmp_path, monkeypatch):
     def refuse(argv, timeout=0):
         raise AssertionError(f"unexpected subprocess: {argv}")
     monkeypatch.setattr(codex, "_run", refuse)
+    monkeypatch.setattr(codex, "BASELINE_CAPS", dict(CAPS_0145))
     codex.reset_caches()
     assert str(home).startswith(str(tmp_path)) and Path.home() not in home.parents
     yield home
@@ -65,6 +74,13 @@ def _codex_sandbox(tmp_path, monkeypatch):
 @pytest.fixture
 def ag():
     return agents.get("codex")
+
+
+@pytest.fixture
+def real_baseline(monkeypatch):
+    """The module's own (0.160) baseline instead of the sandbox's 0.145 one."""
+    monkeypatch.setattr(codex, "BASELINE_CAPS", dict(REAL_BASELINE))
+    codex.reset_caches()
 
 
 class FakeCodex:
@@ -276,7 +292,7 @@ def test_a_missing_flag_is_skipped_not_emitted(ag, monkeypatch):
     caps3 = {**codex.BASELINE_CAPS}                                                      # neither flag (the 0.145 box): plain on-request
     monkeypatch.setattr(ag, "_probe_caps", lambda: (caps3, True))
     assert plan(ag, opts={"permission_mode": "auto"}).argv[-4:] == ["-s", "workspace-write", "-a", "on-request"]
-    with pytest.raises(projects.BadRequest, match="approval must be one of untrusted, on-request, never"):
+    with pytest.raises(projects.BadRequest, match="approval must be one of on-request, never, untrusted"):
         plan(ag, opts={"approval": "on-failure"})
 
 
@@ -476,7 +492,8 @@ def test_unsupported_options_are_rejected(ag):
 
 
 def test_option_validation_messages(ag):
-    bad = [{"model": 5}, {"model": "bad model!"}, {"model": "-x"}, {"reasoning_effort": "ultracode"}, {"reasoning_effort": "ultra"},
+    bad = [{"model": 5}, {"model": "bad model!"}, {"model": "-x"}, {"reasoning_effort": "ultracode"},
+           {"model": "gpt-6-luna", "reasoning_effort": "ultra"},                       # the fallback's Luna has no ultra (the picker showed Max only)
            {"reasoning_effort": ["high"]}, {"permission_mode": "yolo"}, {"permission_mode": 3}, {"profile": "../x"}, {"profile": "a b"},
            {"extra": "unterminated 'quote"}, {"extra": 5}]
     for opts in bad:
@@ -641,7 +658,7 @@ JSONL = "\n".join(json.dumps(e) for e in [
 def test_parse_headless_success(ag):
     r = ag.parse_headless("Reading prompt from stdin...\n" + JSONL + "\n", "", 0)
     assert r == {"text": "All done: 3 files changed", "session_id": SID, "cost": None, "turns": 1, "is_error": False, "subtype": "success",
-                 "rate_limited": False, "usage": {"input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 7}}
+                 "rate_limited": False, "usage": {"input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 7}, "auth_failure": False}
     assert set(r) >= {"text", "session_id", "cost", "turns", "is_error", "subtype", "rate_limited"}        # the scheduler's keys
 
 
@@ -680,9 +697,16 @@ def test_parse_models_keeps_visible_models_in_priority_order():
     assert set(rows[0]) == {"slug", "name", "reasoning", "default_reasoning"}                   # nothing else of the 240 KB is kept
 
 
-def test_fallback_models_are_the_boxs_visible_slugs(ag):
-    assert [m["slug"] for m in codex.FALLBACK_MODELS] == ["gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5", "codex-auto-review"]
-    assert not any(m["slug"].startswith("gpt-6") for m in codex.FALLBACK_MODELS)
+def test_fallback_models_are_the_current_family_in_picker_order(ag):
+    """#17: the four current visible slugs, in the order the TUI's /model picker lists them; no hidden model; ultra only on 6.1-Sol."""
+    assert [m["slug"] for m in codex.FALLBACK_MODELS] == ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]
+    assert not any(m["slug"] in ("codex-auto-review", "gpt-5.5") or m["slug"].startswith("gpt-5") for m in codex.FALLBACK_MODELS)
+    by = {m["slug"]: m["reasoning"] for m in codex.FALLBACK_MODELS}
+    assert by["gpt-6.1-sol"] == ["low", "medium", "high", "xhigh", "max", "ultra"]
+    assert "ultra" not in by["gpt-6-luna"] and by["gpt-6-luna"][-1] == "max"
+    assert all("max" in levels for levels in by.values())
+    assert ag._allowed_efforts("gpt-6-luna") == ("low", "medium", "high", "xhigh", "max")
+    assert "ultra" in ag._allowed_efforts("gpt-6.1-sol") and "ultra" in ag.EFFORTS          # the union lists it: some model has it
     assert [m["slug"] for m in ag.models()] == [m["slug"] for m in codex.FALLBACK_MODELS]          # no binary: the fallback, no subprocess
     assert ag.MODELS == tuple(m["slug"] for m in codex.FALLBACK_MODELS)
 
@@ -712,7 +736,7 @@ def test_models_failure_keeps_the_fallback_and_retries_after_a_minute(ag, fake, 
     assert ag.models()[0]["slug"] == "gpt-5.6-sol" and fake.count("debug", "models") == 2
     codex.reset_caches()
     fake.answers[("debug", "models")] = subprocess.TimeoutExpired("codex", 8)
-    assert ag.models()[0]["slug"] == "gpt-5.6-terra"                                           # never raises
+    assert ag.models()[0]["slug"] == "gpt-6.1-sol"                                             # never raises
 
 
 def test_models_fetch_false_never_runs_a_subprocess(ag, fake):
@@ -737,7 +761,7 @@ def test_option_schema_and_describe(ag, fake, monkeypatch):
     assert fields["model"].kind == "combo" and fields["model"].choices == ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"]
     assert fields["reasoning_effort"].choices == ["low", "medium", "high", "xhigh", "max"]
     assert fields["permission_mode"].choices == list(codex.PERMISSION_MODES) and fields["permission_mode"].group == "advanced"
-    assert fields["approval"].choices == ["untrusted", "on-request", "never"]                         # 0.145's -a: no on-failure
+    assert fields["approval"].choices == ["on-request", "never", "untrusted"]                         # 0.145's -a: no on-failure, current values first
     assert fields["bypass"].danger is True and fields["bypass"].group == "advanced"
     assert fields["config"].kind == "textarea" and fields["config"].group == "advanced" and fields["search"].group == "advanced"
     assert fields["no_alt_screen"].default is True
@@ -747,7 +771,7 @@ def test_option_schema_and_describe(ag, fake, monkeypatch):
     json.dumps(d)                                                                            # JSON-serialisable
     assert (d["name"], d["glyph"], d["installed"], d["version"]) == ("codex", "◇", True, "0.145.0")
     assert d["models"] == ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"] and d["reasoning_by_model"]["gpt-5.6-sol"][-1] == "max"
-    assert set(d["slash"]) == {"model", "reasoning"} and d["auth"]["loggedIn"] is True
+    assert set(d["slash"]) == {"model", "reasoning", "permissions", "status"} and d["auth"]["loggedIn"] is True
     caps = d["capabilities"]
     assert caps["fork"] is True and caps["approve_for_me"] is False and caps["device_auth"] is False and caps["no_alt_screen"] is True
     codex.reset_caches()
@@ -995,10 +1019,17 @@ def test_cost_join_key_and_usage_sources(ag):
 
 
 def test_control_surface(ag):
+    """V8-Codex (codex 0.160.1, issue #16): nothing takes an argument inline; model and reasoning are the /model picker, approvals and the
+    sandbox are the /permissions picker, /status prints inline. No /reasoning, /approvals, /sandbox; no /fast (bare /fast toggles and
+    writes config.toml)."""
     slash = ag.slash_commands()
-    assert set(slash) == {"model", "reasoning"}
-    for k, spec in slash.items():
-        assert (spec.cmd, spec.arg, spec.read, spec.verified, spec.weight, spec.hidden) == ("/" + k, True, False, False, 0, True)
+    got = {k: (s.cmd, s.arg, s.read, s.drive, s.tune, s.verified, s.dialog) for k, s in slash.items()}
+    assert got == {"model": ("/model", False, False, "picker", "model", True, False),
+                   "reasoning": ("/model", False, False, "picker", "reasoning", False, False),
+                   "permissions": ("/permissions", False, False, "picker", "permissions", False, False),
+                   "status": ("/status", False, True, "inline", "", True, False)}
+    assert all(s.hidden for s in slash.values()) and not any(s.saves_default for s in slash.values())
+    assert not {"/reasoning", "/approvals", "/sandbox", "/fast", "/effort"} & {s.cmd for s in slash.values()}
     assert ag.exit_command() == "/quit" and ag.worktree_strategy() == "managed"
     assert ag.mcp_register_cmd("/v/python", "/a/ccboard_mcp.py", {"CCBOARD_URL": "http://127.0.0.1:8000", "A": "1"}) == \
         ["codex", "mcp", "add", "ccboard", "--env", "A=1", "--env", "CCBOARD_URL=http://127.0.0.1:8000", "--", "/v/python", "/a/ccboard_mcp.py"]
@@ -1016,7 +1047,7 @@ def by_id(checks):
 
 
 IDS = ["codex-bin", "codex-auth", "codex-hooks", "codex-trust", "codex-alt-screen", "codex-features", "codex-sessions", "codex-mcp",
-       "codex-repo-hooks"]
+       "codex-repo-hooks", "codex-update-path"]
 
 
 def test_doctor_without_codex_skips_everything(ag):
@@ -1025,8 +1056,9 @@ def test_doctor_without_codex_skips_everything(ag):
     assert "optional" in checks[0].detail and checks[0].fix["text"]
 
 
-def test_doctor_all_green_on_a_current_codex(ag, fake, _codex_sandbox):
+def test_doctor_all_green_on_a_current_codex(ag, fake, _codex_sandbox, monkeypatch):
     home = _codex_sandbox
+    monkeypatch.setenv("NPM_CONFIG_PREFIX", str(fake.path.parent.parent))      # #97: npm's prefix is where this (writable) Codex lives
     fake.use(version="0.157.1", help_text=HELP_0157, exec_text=EXEC_0157)
     ag.install_hooks(ROOT)
     (home / "sessions" / "2026" / "10" / "04").mkdir(parents=True)
@@ -1173,7 +1205,7 @@ def test_auto_on_the_real_0145_is_on_request_with_a_workspace_sandbox(ag, fake):
     argv = plan(ag, opts={"permission_mode": "auto"}).argv
     assert argv == ["codex", "--no-alt-screen", "-s", "workspace-write", "-a", "on-request"]
     assert plan(ag, kind="continue", opts={"permission_mode": "auto"}).argv[-5:] == ["-s", "workspace-write", "-a", "on-request", "--last"]
-    assert ag._approvals() == ("untrusted", "on-request", "never")
+    assert ag._approvals() == ("on-request", "never", "untrusted")
 
 
 def test_no_argv_for_the_real_0145_carries_a_flag_it_lacks(ag, fake):
@@ -1501,3 +1533,56 @@ def test_a_session_prompt_is_capped_but_a_task_prompt_is_not(ag):
     with pytest.raises(projects.BadRequest, match="^prompt is too long"):
         plan(ag, prompt="x" * (codex.MAX_PROMPT + 1))
     assert plan(ag, prompt="x" * 20000, task=True, opts={"permission_mode": "default"}).argv[-1] == "x" * 20000
+
+
+# ---------- #17: the tables against codex 0.160 ----------
+
+def test_the_0160_help_lists_on_request_and_never_only(ag, fake):
+    caps = codex.parse_help(HELP_0160)
+    assert caps["approval_untrusted"] is False and caps["approval_on_failure"] is False
+    assert caps["approve_for_me"] and caps["no_daemon"] and caps["sandbox"] and caps["ask_for_approval"]
+    fake.use(version="0.160.1", help_text=HELP_0160, exec_text=EXEC_0157)
+    assert ag._approvals() == ("on-request", "never")
+    fields = {f.key: f for f in ag.option_schema()}
+    assert fields["approval"].choices == ["on-request", "never"]
+    for bad in ("untrusted", "on-failure"):
+        with pytest.raises(projects.BadRequest, match=r"^approval must be one of on-request, never \(this codex supports no other\)$"):
+            plan(ag, opts={"mode": "custom", "approval": bad})
+        for task in (True, False):                                    # a task and a scheduled run go through the same check
+            with pytest.raises(projects.BadRequest, match="approval must be one of on-request, never"):
+                ag.validate_opts({"approval": bad}, interactive=not task, tasks_or_headless=task)
+    for good in ("on-request", "never"):
+        argv = plan(ag, opts={"mode": "custom", "approval": good}).argv
+        assert argv[argv.index("-a") + 1] == good
+
+
+def test_the_real_baseline_is_0160_and_never_offers_untrusted(ag, real_baseline):
+    """No binary to probe: the 0.160 flag set (the baseline) is assumed, so nothing can build `-a untrusted`."""
+    assert REAL_BASELINE == codex.parse_help(HELP_0160)
+    assert ag._approvals() == ("on-request", "never")
+    assert plan(ag).argv == ["codex", "--no-daemon", "--no-alt-screen"]
+    assert plan(ag, opts={"permission_mode": "auto"}).argv[-3:] == ["--approve-for-me", "-s", "workspace-write"]
+    for mode in ("default", "auto", "read-only", "custom"):
+        opts = {"mode": mode, **({"approval": "never"} if mode == "custom" else {})}
+        assert "untrusted" not in plan(ag, opts=opts).argv and "on-failure" not in plan(ag, opts=opts).argv
+    with pytest.raises(projects.BadRequest, match="approval must be one of on-request, never"):
+        plan(ag, opts={"mode": "custom", "approval": "untrusted"})
+
+
+def test_live_models_is_only_what_codex_answered(ag, fake, clock):
+    """The doctor's codex-saved-models judges against this: never the fallback, never a subprocess of its own."""
+    assert ag.live_models() is None                                                 # no binary
+    fake.use(models=MODELS_JSON)
+    assert ag.live_models() is None and fake.count("debug", "models") == 0         # not read yet
+    ag.models()
+    assert [m["slug"] for m in ag.live_models()] == ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"]
+    codex.reset_caches()
+    fake.answers[("debug", "models")] = (1, "", "no network")
+    ag.models()
+    assert ag.live_models() is None, "a failed read leaves only the fallback, which is not a reading"
+
+
+def test_the_0145_help_still_lists_what_that_binary_lists(ag, fake):
+    fake.use(help_text=HELP_0145, exec_text=EXEC_0145)
+    assert ag._approvals() == ("on-request", "never", "untrusted")      # the old binary's own list, current values first
+    assert plan(ag, opts={"mode": "custom", "approval": "untrusted"}).argv[-2:] == ["-a", "untrusted"]

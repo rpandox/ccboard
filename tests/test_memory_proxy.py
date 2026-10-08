@@ -82,7 +82,7 @@ def test_the_worker_names_are_the_ones_the_box_check_verified():
     assert mp.ENDPOINTS == {"projects": "/api/projects", "observations": "/api/observations", "summaries": "/api/summaries",
                             "search": "/api/search", "timeline": "/api/timeline", "observation": "/api/observation/", "stats": "/api/stats"}
     assert mp.WORKER_PAGE == 100 and mp.PROXY_CAP == 2 * 1024 * 1024 and memory.BODY_CAP == 256 * 1024
-    assert mp.FANOUT == 4 and mp.SCAN_CAP == 300 and mp.BUDGET <= 3.0
+    assert mp.FANOUT == 4 and mp.SCAN_CAP == 300 and mp.FETCH_TIMEOUT <= mp.BUDGET <= mp.SEARCH_BUDGET    # a cold read on the box took > 2 s
 
 
 # ------------------------------------------------------------------ fetch cap

@@ -522,11 +522,12 @@ test('the cached registry is read as the bare answer too, ignored when older tha
 
 const DEFAULT_CHIPS = ['continue', 'merge', 'push', 'pr', 'add commit push', 'do it'];
 
-test('the quick-reply defaults (components.js) are the nudges of the session cards and the palette: one list, three places', () => {
+test('the quick-reply defaults (components.js) are the nudges of the session cards and the palette: one list per agent, no second copy (#69)', () => {
   const { w } = world();
   assert.deepEqual(plain(w.get('QUICK_DEFAULTS')), DEFAULT_CHIPS);
-  assert.deepEqual(plain(w.get('SESSION_NUDGES')), DEFAULT_CHIPS);
-  assert.deepEqual(plain(w.run('Palette.NUDGES')), DEFAULT_CHIPS);
+  assert.deepEqual(plain(w.run('quickDefaults("claude")')), DEFAULT_CHIPS);
+  assert.equal(w.run('typeof SESSION_NUDGES'), 'undefined', 'agents.js keeps no copy of the words');
+  assert.equal(w.run('Palette.NUDGES'), undefined, 'nor does the palette');
 });
 
 test('the peek: chips are ccboard:quick:<tmux> (the agent defaults until edited), the pencil opens the dialog editor, Save re-renders them and stores the list', async () => {

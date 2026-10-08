@@ -217,7 +217,7 @@ def test_a_partial_first_line_is_dropped_and_the_rest_still_read():
 
 def test_nothing_to_find_is_all_none_never_an_error():
     empty = {"last_token_usage": None, "total_token_usage": None, "model_context_window": None, "token_at": None, "rate_limits": None,
-             "rate_limits_at": None, "config": None}
+             "rate_limits_at": None, "config": None, "error": None, "turn_at": None}
     for text in ("", "\n\n", "not json\n{{{\n", '{"type":"event_msg","payload":"token_count"}\n', "[1,2]\n", None, 5, b"token_count"):
         assert cr.parse_tail(text) == empty
     assert cr.parse_tail('{"payload": {"type": "token_count", "info": {"last_token_usage": "x"}, "rate_limits": 3}}\n') == empty
@@ -362,7 +362,8 @@ def test_the_tailer_puts_the_rollout_stats_on_the_row_and_samples_the_context(db
     assert row["stats"]["model"] == "gpt-5.5" and row["stats"]["effort"] == "high" and row["stats"]["context_pct"] == 10.0
     assert row["stats"]["tokens"]["total"] == 54600 and row["stats"]["version"] == "0.160.0" and row["stats"]["cost_usd"] is None
     assert row["state"] == before["state"] and row["state_at"] == before["state_at"] and row["last_event"] == before["last_event"]
-    assert row["flags"] == before["flags"]                                                 # display only: nothing else of the row moves
+    # display only: nothing else of the row moves, except turn_seen_at (#96: the first turn the rollout shows, for hooks_missing)
+    assert {k: v for k, v in row["flags"].items() if k != "turn_seen_at"} == before["flags"]
     assert row["agent_session_id"] == meta_id(p)                                           # but a row whose hook named its rollout takes its id
     ctx, tok, stok = (series_last(db, s, "shop--api--s1") for s in ("ctx", "ctx_tok", "stok"))
     assert ctx["value"] == 10.0 and ctx["meta"] == {"model": "gpt-5.5", "window": 258400}

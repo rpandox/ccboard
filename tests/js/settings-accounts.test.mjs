@@ -745,7 +745,7 @@ test('codex: no filled primary anywhere in the Codex section in any state; the p
   cxLogin(w, { running: false, adding: false, url: null, code: null, result: { ok: false, error: 'the login did not complete', at: 'x1' } });
   assert.deepEqual(inCx(), [], 'a failed login: Try again is bordered');
   assert.deepEqual(visibleButtons(cxBlock(w)).map(text), ['Try again', 'Dismiss']);
-  const none = cxWorld({ state: cxStateOf({ codex_accounts: cxOf(CX_THREE(), { supported: true, add: false, reason: 'update Codex to 0.157 or newer: npm install -g @openai/codex', count: 2 }) }) });
+  const none = cxWorld({ state: cxStateOf({ codex_accounts: cxOf(CX_THREE(), { supported: true, add: false, reason: 'update Codex to 0.157 or newer: npm install -g --prefix ~/.local @openai/codex@latest', count: 2 }) }) });
   assert.deepEqual(visibleButtons(cxSec(none)).filter(isFilled), []);
   const w2 = acctWorld({ state: cxStateOf({ accounts: accountsOf([]) }) });
   assert.deepEqual(filled(panel(w2)), ['Log in'], 'the Claude Log in is the one primary and the Codex section adds none');
@@ -765,12 +765,12 @@ test('codex: where codex is not installed the section says so and offers nothing
 });
 
 test('codex: a Codex that is too old shows the reason and the npm command in a code line, no name field; Switch still works', () => {
-  const store = { supported: true, add: false, reason: 'update Codex to 0.157 or newer: npm install -g @openai/codex', count: 2 };
+  const store = { supported: true, add: false, reason: 'update Codex to 0.157 or newer: npm install -g --prefix ~/.local @openai/codex@latest', count: 2 };
   const w = cxWorld({ state: cxStateOf({ codex_accounts: cxOf(CX_THREE(), store) }) });
   const off = cxBlock(w).querySelector('.add-off');
   assert.equal(hidden(off), false);
   assert.equal(text(off.querySelector('.add-reason')), 'Update Codex to 0.157 or newer:');
-  assert.equal(text(off.querySelector('.cx-cmd')), 'npm install -g @openai/codex');
+  assert.equal(text(off.querySelector('.cx-cmd')), 'npm install -g --prefix ~/.local @openai/codex@latest');
   assert.equal(off.querySelector('.cx-cmd').tagName.toLowerCase(), 'code');
   assert.equal(hidden(cxBlock(w).querySelector('.add-idle')), true);
   assert.deepEqual(labels(cxRow(w, K2)), ['Switch', 'Rename', 'Forget login']);
@@ -797,6 +797,25 @@ test('codex switch is one tap: painted at once, POST /api/codex-accounts/<key>/s
   assert.deepEqual(labels(cxRow(w, K1)), ['Switch', 'Log in again', 'Rename', 'Forget login']);
   assert.equal(hidden(cxSec(w).querySelector('.cx-warn')), true);
   assert.ok(polls(w) >= 1);
+});
+
+test('#36 split notice: the one notice above the Codex rows with Rename (primary tinted) and Dismiss; Dismiss hides it at once and asks DELETE /api/codex-accounts/notice', async () => {
+  const NOTE = 'A different Codex login was detected and saved as a new account. Rename it.';
+  const list = [cxAcct(K1, { label: 'Main' }), cxAcct(K2, { label: 'Codex account (unlabelled)', current: true }), cxAcct(K3, { label: 'Old', saved: false })];
+  const w = acctWorld({ state: cxStateOf({ codex_accounts: { ...cxOf(list), notice: { key: K2, label: 'Codex account (unlabelled)', text: NOTE, at: '2026-10-08T10:00:00+00:00' } } }),
+    answers: { '/api/codex-accounts/notice': { ok: true, dismissed: true } } });
+  const box = cxSec(w).querySelector('.cx-split');
+  assert.equal(hidden(box), false);
+  assert.equal(text(box.querySelector('.cx-split-text')), NOTE);
+  const ren = btn(box, 'Rename');
+  assert.ok(hasCls(ren, 'primary') && hasCls(ren, 'tinted'), 'tinted, never the screen\'s filled primary');
+  assert.equal(visibleButtons(panel(w)).filter(isFilled).length, 0);
+  btn(box, 'Dismiss').click();
+  assert.equal(hidden(cxSec(w).querySelector('.cx-split')), true, 'hidden before the answer');
+  await tick();
+  assert.deepEqual(apiCalls(w, '/api/codex-accounts/notice'), [{ method: 'DELETE', path: '/api/codex-accounts/notice' }]);
+  const plainW = cxWorld();
+  assert.equal(hidden(cxSec(plainW).querySelector('.cx-split')), true, 'no notice, nothing shown');
 });
 
 test('codex switch warnings: other Codex processes keep the previous login: a warn toast and the panel\'s note line', async () => {

@@ -2677,7 +2677,7 @@ test('a tile that is gone cannot toast: with the real tune panel, a setting type
   assert.ok(btn, 'the real panel is on the page');
   btn.click();
   await wait();
-  assert.equal(calls(w).some((c) => /\/command$/.test(c.path) && c.body.cmd === 'effort' && c.body.arg === 'max'), true, '/effort max was typed');
+  assert.equal(calls(w).some((c) => /\/tune$/.test(c.path) && c.body.setting === 'effort' && c.body.value === 'max'), true, 'effort max was sent (the /effort picker, this session only)');
   tileOf(w, S1).querySelector('.qt-close').click();
   clock.advance(25000);
   await wait();

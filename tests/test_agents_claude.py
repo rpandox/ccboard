@@ -446,21 +446,32 @@ def test_option_schema(ag):
 # ---------- slash commands ----------
 
 def test_slash_commands(ag):
+    """V8 (Claude Code 2.1.290, issue #28) typed each of these the way the board does: all verified. /effort and /model typed with an
+    argument save the person's default (saves_default), so the Tune's session-only effort goes through the picker (tune='effort').
+    Bare /fast opens a dialog that swallows keys: it takes on|off. /usage, /cost and /status leave a dialog one Escape closes; /context
+    prints inline."""
     sc = ag.slash_commands()
     assert all(isinstance(x, SlashSpec) for x in sc.values())
     got = {k: (x.cmd, x.weight, x.arg, x.read, x.destructive, x.verified) for k, x in sc.items()}
     assert got == {
-        "clear": ("/clear", 155, False, False, True, False),
-        "compact": ("/compact", 120, False, False, False, False),
-        "usage": ("/usage", 100, False, True, False, False),
-        "effort": ("/effort", 58, True, False, False, False),
-        "model": ("/model", 39, True, False, False, False),
-        "rename": ("/rename", 10, True, False, False, False),
-        "context": ("/context", 9, False, True, False, False),
-        "status": ("/status", 3, False, True, False, False),
-        "cost": ("/cost", 0, False, True, False, False),
-        "fast": ("/fast", 0, False, False, False, False),
+        "clear": ("/clear", 155, False, False, True, True),
+        "compact": ("/compact", 120, False, False, False, True),
+        "usage": ("/usage", 100, False, True, False, True),
+        "effort": ("/effort", 58, True, False, False, True),
+        "model": ("/model", 39, True, False, False, True),
+        "rename": ("/rename", 10, True, False, False, True),
+        "context": ("/context", 9, False, True, False, True),
+        "status": ("/status", 3, False, True, False, True),
+        "cost": ("/cost", 0, False, True, False, True),
+        "fast": ("/fast", 0, True, False, False, True),
     }
+    assert all(x.drive == "inline" for x in sc.values())
+    assert [k for k, x in sc.items() if x.saves_default] == ["effort", "model"] and sc["effort"].tune == "effort"
+    assert [k for k, x in sc.items() if x.dialog] == ["usage", "status", "cost"]
+    assert sc["fast"].choices == ["on", "off"]
+    assert sc["effort"].choices == ["low", "medium", "high", "xhigh", "max", "auto", "ultracode", "ultracode on", "ultracode off"]
+    assert "ultracode" not in claude.EFFORTS, "ultracode is a setting, not a level"
+    assert sc["effort"].tune_verified is False, "the /effort slider's `s` was not pressed on the box (pickers.PROVEN): the UI says unverified"
     assert [k for k, x in sc.items() if x.hidden] == ["cost", "fast"]
     assert list(sc)[:3] == ["clear", "compact", "usage"], "ordered by weight"
     assert ag.exit_command() == "/exit"
@@ -763,8 +774,9 @@ def test_describe_is_the_api_agents_entry(ag, monkeypatch):
     assert d["permission_modes"] == list(claude.PERMISSION_MODES) and d["efforts"] == list(claude.EFFORTS) and "ultracode" not in d["efforts"]
     assert d["models"][:4] == ["opus", "fable", "sonnet", "haiku"] and d["reasoning_by_model"] == {}
     assert d["capabilities"] == {"ultracode_flag": False}
-    assert d["slash"]["clear"] == {"cmd": "/clear", "label": "Clear", "arg": False, "read": False, "verified": False, "weight": 155,
-                                   "destructive": True}
+    assert d["slash"]["clear"] == {"cmd": "/clear", "label": "Clear", "arg": False, "read": False, "verified": True, "weight": 155,
+                                   "destructive": True, "drive": "inline", "tune": "", "saves_default": False, "choices": None, "dialog": False,
+                                   "tune_verified": None}
     assert "token" not in json.dumps(d).lower() and "password" not in json.dumps(d).lower()
 
 
@@ -1037,6 +1049,16 @@ def test_the_ultracode_env_records_the_v19_box_check(ag, monkeypatch, probe):
     monkeypatch.setenv(claude.ULTRACODE_ENV, "1")
     monkeypatch.setattr(settings, "claude_bin", lambda: None)
     assert ag.capabilities() == {"ultracode_flag": True} and "ultracode" in ag.efforts()
+
+
+def test_ultracode_is_never_a_scheduled_or_headless_effort(ag, monkeypatch, probe):
+    """#78: ultracode has no effect under -p, so a scheduled / headless run never takes it, even where the box's claude does."""
+    monkeypatch.setenv(claude.ULTRACODE_ENV, "1")
+    monkeypatch.setattr(settings, "claude_bin", lambda: None)
+    assert ag.validate_opts({"effort": "ultracode"}, interactive=True, tasks_or_headless=False) == {"effort": "ultracode"}
+    with pytest.raises(projects.BadRequest, match="ultracode has no effect under -p"):
+        ag.validate_opts({"effort": "ultracode"}, interactive=False, tasks_or_headless=True)
+    assert ag.validate_opts({"effort": "xhigh"}, interactive=False, tasks_or_headless=True) == {"effort": "xhigh"}
 
 
 def test_help_lists_ultracode_reads_only_the_effort_option():

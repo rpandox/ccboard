@@ -733,6 +733,127 @@ def test_a_forgotten_record_that_is_logged_into_again_gets_its_slot_back(box):
     assert (cx.slot_dir(kb) / "auth.json").read_bytes() == AUTH["C"] == box.auth.read_bytes() and box.kv("codex_account_current")["key"] == kb
 
 
+# ---------------------------------------------------------------- #36: a hand login to another account is split off
+ACCT_C = "acct-cccccccc-0000-4000-8000-000000000003"
+
+
+def split_box(box, *, synced=True):
+    """A (id ACCT_A, plan pro) live and current, B (id ACCT_B) saved; then somebody runs `codex login` by hand to another account: the live
+    file becomes C's bytes and, with `synced`, the tick has taken them for A's refresh (A's slot holds C, A's own login is `.prev`)."""
+    ka, kb = box.two()
+    cx._put_record(box.db, ka, account_id=ACCT_A, plan="pro")
+    cx._put_record(box.db, kb, account_id=ACCT_B, plan="plus")
+    box.log_in("C", age=cx.SYNC_SETTLE + 5 if synced else 1)
+    if synced:
+        cx.tick(box.db)
+        assert (cx.slot_dir(ka) / "auth.json").read_bytes() == AUTH["C"] and (cx.slot_dir(ka) / "auth.json.prev").read_bytes() == AUTH["A"]
+    cx._split_at = 0.0
+    return ka, kb
+
+
+def split_now(box):
+    cx._split_at = 0.0
+    cx.tick(box.db)
+
+
+def test_split_same_id_does_nothing(box):
+    ka, kb = split_box(box)
+    write_rollout(box.live, "same", account=ACCT_A, created=time.time() + 5)
+    split_now(box)
+    assert set(box.kv("codex_accounts")) == {ka, kb} and cx.current(box.db) == ka and box.kv("codex_account_split") is None
+
+
+def test_split_a_single_new_id_since_the_login_makes_a_new_current_account_and_gives_the_old_one_its_login_back(box):
+    ka, kb = split_box(box)
+    write_rollout(box.live, "hand", account=ACCT_C, user="user-ccc", created=time.time() + 5)
+    split_now(box)
+    accts = box.kv("codex_accounts")
+    (kc,) = set(accts) - {ka, kb}
+    assert accts[kc]["label"] == cx.SPLIT_LABEL and accts[kc]["account_id"] == ACCT_C and accts[kc]["user_id"] == "user-ccc"
+    assert cx.current(box.db) == kc and box.auth.read_bytes() == AUTH["C"], "the live file is untouched"
+    assert (cx.slot_dir(kc) / "auth.json").read_bytes() == AUTH["C"]
+    assert (cx.slot_dir(ka) / "auth.json").read_bytes() == AUTH["A"], "the old account has its own login again"
+    assert (cx.slot_dir(ka) / "auth.json.prev").read_bytes() == AUTH["A"], ".prev is kept, nothing deleted"
+    assert accts[ka]["account_id"] == ACCT_A and accts[ka]["label"] == "Work"
+    sw = box.kv("codex_account_switch")
+    assert (sw["from"], sw["to"], sw["repairs"]) == (ka, kc, 0), "the repair window protects the new current account"
+    v = cx.view(box.db)
+    assert v["notice"] == {"key": kc, "label": cx.SPLIT_LABEL, "text": "A different Codex login was detected and saved as a new account. Rename it.",
+                           "at": box.kv("codex_account_split")["at"]}
+    assert all(cx.has_saved(k) for k in (ka, kb, kc)), "no slot is left without a login"
+    box.log_in("A")                                              # an older Codex process writes A's login back: repaired
+    cx.tick(box.db)
+    assert box.auth.read_bytes() == AUTH["C"]
+    cx.set_label(box.db, kc, "Partner")
+    assert cx.view(box.db)["notice"] is None, "the rename ends the notice"
+
+
+def test_split_before_the_tick_took_the_new_bytes_leaves_the_old_slot_alone(box):
+    ka, kb = split_box(box, synced=False)
+    write_rollout(box.live, "hand", account=ACCT_C, created=time.time() + 5)
+    split_now(box)
+    kc = cx.current(box.db)
+    assert kc not in (ka, kb) and (cx.slot_dir(kc) / "auth.json").read_bytes() == AUTH["C"]
+    assert (cx.slot_dir(ka) / "auth.json").read_bytes() == AUTH["A"] and not (cx.slot_dir(ka) / "auth.json.prev").exists()
+
+
+def test_split_two_ids_is_ambiguous_and_does_nothing(box):
+    ka, kb = split_box(box)
+    write_rollout(box.live, "hand", account=ACCT_C, created=time.time() + 5)
+    write_rollout(box.live, "daemon", account=ACCT_A, created=time.time() + 6)      # an older process still runs on A's login
+    split_now(box)
+    assert set(box.kv("codex_accounts")) == {ka, kb} and cx.current(box.db) == ka
+    assert (cx.slot_dir(ka) / "auth.json").read_bytes() == AUTH["C"], "nothing moved"
+
+
+def test_split_no_rollout_yet_does_nothing(box):
+    ka, kb = split_box(box)
+    write_rollout(box.live, "before", account=ACCT_C, created=time.time() - 3600)  # older than the login change: says nothing
+    split_now(box)
+    assert set(box.kv("codex_accounts")) == {ka, kb} and cx.current(box.db) == ka and cx.view(box.db)["notice"] is None
+
+
+def test_split_a_repeated_tick_after_a_split_does_nothing(box):
+    ka, kb = split_box(box)
+    write_rollout(box.live, "hand", account=ACCT_C, created=time.time() + 5)
+    split_now(box)
+    def snap():
+        accts = box.kv("codex_accounts")
+        slots = {k: (cx.slot_dir(k) / "auth.json").read_bytes() for k in accts}
+        return ({k: (r["label"], r["account_id"]) for k, r in accts.items()}, slots, cx.current(box.db), box.kv("codex_account_split"),
+                box.kv("codex_account_switch")["to"])
+    after = snap()
+    for _ in range(2):
+        split_now(box)
+    assert snap() == after
+
+
+def test_split_to_a_known_accounts_id_is_a_hand_switch_to_it_not_a_new_account(box):
+    ka, kb = split_box(box)
+    write_rollout(box.live, "hand", account=ACCT_B, created=time.time() + 5)
+    split_now(box)
+    assert set(box.kv("codex_accounts")) == {ka, kb} and cx.current(box.db) == kb
+    assert (cx.slot_dir(kb) / "auth.json").read_bytes() == AUTH["C"] and (cx.slot_dir(kb) / "auth.json.prev").read_bytes() == AUTH["B"]
+    assert (cx.slot_dir(ka) / "auth.json").read_bytes() == AUTH["A"] and box.kv("codex_account_split") is None
+    assert box.kv("codex_accounts")[kb]["label"] == "Home", "the known account keeps its name"
+
+
+def test_split_never_happens_without_the_old_login_to_give_back(box):
+    ka, kb = split_box(box)
+    (cx.slot_dir(ka) / "auth.json.prev").unlink()                 # nothing to restore the old account from
+    write_rollout(box.live, "hand", account=ACCT_C, created=time.time() + 5)
+    split_now(box)
+    assert set(box.kv("codex_accounts")) == {ka, kb} and cx.has_saved(ka)
+
+
+def test_split_notice_can_be_dismissed(box):
+    ka, kb = split_box(box)
+    write_rollout(box.live, "hand", account=ACCT_C, created=time.time() + 5)
+    split_now(box)
+    assert cx.view(box.db)["notice"] and cx.dismiss_notice(box.db) is True
+    assert cx.view(box.db)["notice"] is None and cx.dismiss_notice(box.db) is False
+
+
 # ---------------------------------------------------------------- adding a login: codex login --device-auth in .pending
 
 def test_start_login_runs_the_device_login_in_pending_under_the_data_dir_with_a_copy_of_config_and_nothing_else(box):
@@ -778,7 +899,7 @@ def test_adding_needs_a_codex_with_device_auth(box, monkeypatch):
     write_fake_codex(box.fake, device_auth=False)
     os.utime(box.fake, (2, 2))
     codex_agent.reset_caches()
-    with pytest.raises(cx.Unsupported, match=r"update Codex to 0\.157 or newer: npm install -g @openai/codex"):
+    with pytest.raises(cx.Unsupported, match=r"update Codex to 0\.157 or newer: npm install -g --prefix ~/\.local @openai/codex@latest"):
         cx.start_login(box.db, "x")
     assert not box.tmux["created"] and not cx.pending_dir().exists()
     assert cx.view(box.db)["store"] == {"supported": True, "add": False, "reason": cx.REASON_UPDATE, "count": 0}
@@ -999,7 +1120,7 @@ def test_view_shape_order_and_the_store_summary(box):
     cx._put_record(box.db, ka, plan="pro", account_id=ACCT_A)
     cx.forget(box.db, kc)
     v = cx.view(box.db)
-    assert set(v) == {"current", "list", "store", "login"} and v["current"] == ka
+    assert set(v) == {"current", "list", "store", "login", "notice"} and v["current"] == ka and v["notice"] is None
     assert [r["key"] for r in v["list"]][0] == ka and {r["key"] for r in v["list"]} == {ka, kb, kc}
     row = v["list"][0]
     assert set(row) == {"key", "label", "account_id", "plan", "saved", "saved_at", "current", "added_at", "last_seen"}
@@ -1156,10 +1277,45 @@ def test_logging_the_live_account_in_again_puts_the_fresh_login_live_at_once(box
     assert (s / "auth.json").read_bytes() == AUTH["C"], "the dead live bytes did not overwrite the fresh slot"
     assert (s / "auth.json.prev").read_bytes() == AUTH["A2"], "the generation before it is the one that was live"
     assert cx.current(box.db) == ka and box.events() == events_before + [(ka, {"to": ka, "relogin": True})], "an event says the login was renewed; the account in use did not change"
-    assert box.kv("codex_account_switch") is None, "and no switch, no repair window"
+    sw = box.kv("codex_account_switch")                          # #35: a switch-like record (from == to) opens the repair window
+    assert (sw["from"], sw["to"], sw["repairs"], sw["relogin"]) == (ka, ka, 0, True)
     cx.tick(box.db, T0 + 500)                                   # the tick keeps the live account's copy current: it must not undo the fresh login
     assert box.auth.read_bytes() == AUTH["C"] and (s / "auth.json").read_bytes() == AUTH["C"]
     assert mode(box.auth) == 0o600
+
+
+def test_a_stale_writer_of_the_dead_login_is_repaired_inside_the_window_after_logging_the_live_account_in_again(box):
+    """#35: an older Codex process that still holds the dead login writes it back after "Log in again": inside REPAIR_WINDOW the fresh login
+    is put back (at most MAX_REPAIRS times); bytes that are neither the dead login nor a slot's are left alone; after the window nothing is
+    repaired, and the dead bytes are still never saved over the fresh slot."""
+    ka, kb = box.two()
+    put_auth(box.live, AUTH["A2"])                              # the dead login is live
+    relogin_cx(box, ka)
+    t = time.time()
+    for n in range(1, cx.MAX_REPAIRS + 1):
+        box.log_in("A2")                                         # the older process writes the dead login back
+        cx.tick(box.db, t + 30)
+        assert box.auth.read_bytes() == AUTH["C"] and box.kv("codex_account_switch")["repairs"] == n
+    box.log_in("A2")
+    cx.tick(box.db, t + 30)
+    assert box.auth.read_bytes() == AUTH["A2"], "the sixth is left alone"
+    assert (cx.slot_dir(ka) / "auth.json").read_bytes() == AUTH["C"], "and the fresh slot was never overwritten"
+    assert cx.current(box.db) == ka and len(cx._load(box.db)) == 2
+
+
+def test_after_a_relogin_unknown_bytes_and_late_writes_are_not_repaired(box):
+    ka, kb = box.two()
+    put_auth(box.live, AUTH["A2"])
+    relogin_cx(box, ka)
+    t = time.time()
+    box.log_in("B2", age=cx.SYNC_SETTLE + 60)                    # matches neither the dead login nor a slot: nothing says whose it is
+    cx.tick(box.db, t + 30)
+    assert box.auth.read_bytes() == AUTH["B2"] and box.kv("codex_account_switch")["repairs"] == 0
+    assert (cx.slot_dir(ka) / "auth.json").read_bytes() == AUTH["C"], "not saved inside the window"
+    box.log_in("A2")
+    cx.tick(box.db, t + cx.REPAIR_WINDOW + 30)
+    assert box.auth.read_bytes() == AUTH["A2"] and box.kv("codex_account_switch")["repairs"] == 0, "no repair after the window"
+    assert (cx.slot_dir(ka) / "auth.json").read_bytes() == AUTH["C"], "the dead login (.prev) is still never saved over the fresh one"
 
 
 def test_the_fresh_login_of_the_live_account_stays_saved_while_a_board_codex_session_is_open(box):
@@ -1653,3 +1809,14 @@ def test_the_logout_bytes_never_appear_in_the_answer_the_log_the_kv_or_the_event
     blob = "\n".join(seen + dump + [caplog.text] + [(cx.slot_dir(k) / "meta.json").read_text() for k in cx._slot_keys()])
     assert "SECRET" not in blob, [ln for ln in blob.splitlines() if "SECRET" in ln][:3]
     assert "logged out of Codex" in caplog.text
+
+
+def test_split_notice_rides_on_state_and_the_dismiss_endpoint_drops_it(box, api):
+    ka, kb = split_box(box)
+    write_rollout(box.live, "hand", account=ACCT_C, created=time.time() + 5)
+    split_now(box)
+    note = api.get("/api/state", headers=H).json()["codex_accounts"]["notice"]
+    assert note["text"] == cx.SPLIT_NOTICE and note["key"] == cx.current(box.db) and note["label"] == cx.SPLIT_LABEL
+    assert api.delete("/api/codex-accounts/notice", headers=H).json() == {"ok": True, "dismissed": True}
+    assert api.get("/api/state", headers=H).json()["codex_accounts"]["notice"] is None
+    assert api.delete("/api/codex-accounts/notice", headers=H).json() == {"ok": True, "dismissed": False}

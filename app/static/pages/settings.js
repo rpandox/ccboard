@@ -794,7 +794,7 @@ function settingsCxRow(a) {
   const name = cxName(a);
   const store = cxStore(state);
   const busy = !!cxFlow.busy;
-  const flagged = acctProblemHit(state, a, 'codex');                  // (nothing raises a Codex problem yet: a dead Codex login shows in the terminal; kept so a later signal needs no new UI)
+  const flagged = acctProblemHit(state, a, 'codex');                  // the rollout Tailer raises a Codex problem from an auth-looking error item (#35)
   const chips = el('span', { class: 'set-chips' });
   if (flagged) chips.append(el('span', { class: 'badge warn', title: 'This login does not work any more. Log in again to fix it.', text: 'login not valid any more' }));
   if (a.plan) chips.append(el('span', { class: 'badge hue-teal', text: String(a.plan) }));
@@ -832,6 +832,31 @@ function settingsCxRow(a) {
   const k = row.querySelector('.k');
   if (k) k.classList.add('hue-teal');
   return row;
+}
+
+/* #36: the one-time notice of a split-off account (state.codex_accounts.notice {key, label, text, at}: a hand `codex login` to another account was saved as a
+   new one). Rename opens the shared rename sheet on that account (a rename drops the notice on the box); Dismiss hides it at once and tells the box. */
+function settingsCxSplitNotice() {
+  const cs = cxState(state);
+  const n = cs && cs.notice;
+  return n && typeof n === 'object' && n.key && cxAccounts(state).some((a) => a.key === n.key) ? n : null;
+}
+
+function settingsCxSplitRename() {
+  const n = settingsCxSplitNotice();
+  const a = n && cxAccounts(state).find((x) => x.key === n.key);
+  if (a) settingsRenameAccount(a, { codex: true });
+}
+
+async function settingsCxSplitDismiss() {
+  const cs = cxState(state);
+  if (cs) cs.notice = null;
+  cxRepaint();
+  try {
+    await api('DELETE', '/api/codex-accounts/notice');
+  } catch (e) {
+    pageToast(`Could not hide the notice: ${acctReason(e)}`, 'bad');
+  }
 }
 
 /* Forget login: DELETE /api/codex-accounts/<key>/saved (the second tap of the red button); the row then shows 'no saved login'. */
@@ -1107,9 +1132,14 @@ function settingsAcctSkeleton(p) {
   const cxList = el('div', { class: 'set-acct-list cx-list' });
   const cxNote = el('div', { class: 'dim set-note cx-note', text: SETTINGS_CX_NOTE });
   const cxWarn = el('div', { class: 'warn set-note cx-warn hidden', role: 'status' });
-  const cxSec = el('div', { class: 'cx-section hidden' }, settingsHead('Codex accounts'), cxErr, cxList, cxNote, cxWarn, settingsHead('Add a Codex account'), cx.root);
+  const cxSplitText = el('span', { class: 'cx-split-text' });
+  const cxSplit = el('div', { class: 'warn set-note cx-split hidden', role: 'status' }, cxSplitText,
+    el('span', { class: 'set-acts' },
+      el('button', { class: 'primary tinted', type: 'button', title: 'Name the new Codex account', onclick: () => settingsCxSplitRename(), text: 'Rename' }),
+      el('button', { type: 'button', title: 'Hide this notice', onclick: () => settingsCxSplitDismiss(), text: 'Dismiss' })));
+  const cxSec = el('div', { class: 'cx-section hidden' }, settingsHead('Codex accounts'), cxErr, cxSplit, cxList, cxNote, cxWarn, settingsHead('Add a Codex account'), cx.root);
   p.append(err, settingsHead('Subscription accounts'), list, el('div', { class: 'dim set-note', text: SETTINGS_RECOVERY }), sw, settingsHead('Add another subscription'), add.root, cxSec);
-  return { err, list, sw, cont, add, cxSec, cxErr, cxList, cxNote, cxWarn, cx };
+  return { err, list, sw, cont, add, cxSec, cxErr, cxList, cxNote, cxWarn, cxSplit, cxSplitText, cx };
 }
 
 /* Everything of the panel that is not the rows, repainted on every update: the error line, the switch choice, the add block, a Log in tapped elsewhere. */
@@ -1132,6 +1162,10 @@ function settingsAcctPatch() {
   const warn = cxFlow.note ? `Switched, but ${cxFlow.note}.` : '';
   if (s.cxWarn.textContent !== warn) s.cxWarn.textContent = warn;
   s.cxWarn.classList.toggle('hidden', !warn);
+  const split = settingsCxSplitNotice();
+  const stext = split ? String(split.text || '') : '';
+  if (s.cxSplitText.textContent !== stext) s.cxSplitText.textContent = stext;
+  s.cxSplit.classList.toggle('hidden', !split);
   s.cxNote.classList.toggle('hidden', !cxStore(state).supported);
   s.cx.patch();
   settingsAcctWant();

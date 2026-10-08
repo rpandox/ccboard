@@ -46,10 +46,11 @@ function peekChips(card, tmux) {
   const chips = card && typeof card.querySelector === 'function' ? card.querySelector('.chips') : null;
   if (!chips || typeof quickLoad !== 'function') return;
   const target = () => sessionPeek.row || { tmux, name: typeof sessionNameOf === 'function' ? sessionNameOf(tmux) : tmux };
-  const edit = () => quickReplyEditor({ items: quickLoad(tmux), defaults: QUICK_DEFAULTS, onSave: (items) => { quickSave(tmux, items); fill(); } });
+  const ag = () => sessionAgent(target());                            // #69: the session's agent picks the default list
+  const edit = () => quickReplyEditor({ items: quickLoad(tmux, ag()), defaults: quickDefaults(ag()), onSave: (items) => { quickSave(tmux, items, ag()); fill(); } });
   function fill() {
     chips.textContent = '';
-    for (const text of quickLoad(tmux)) chips.append(quickChip(text, { cls: 'chip-btn', onSend: (b) => sessionNudge(target(), text, b), onEdit: edit }));
+    for (const text of quickLoad(tmux, ag())) chips.append(quickChip(text, { cls: 'chip-btn', onSend: (b) => sessionNudge(target(), text, b), onEdit: edit }));
     chips.append(el('button', { class: 'icon minimal qr-edit', type: 'button', title: 'Edit quick replies', 'aria-label': 'Edit quick replies', onclick: edit }, ic('edit')));
   }
   fill();

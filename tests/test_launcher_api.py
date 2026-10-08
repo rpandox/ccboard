@@ -165,7 +165,7 @@ def test_api_agents_for_claude_and_codex_installed(board, fake_codex, monkeypatc
     assert list(xby) == ["launcher", "resume_id", "name", "model", "reasoning_effort", "mode", "sandbox", "approval", "prompt", "search",
                          "bypass", "permission_mode", "add_dirs", "worktree", "worktree_name", "config", "profile", "no_alt_screen", "extra"]
     assert xby["launcher"]["choices"] == ["new", "resume", "continue", "fork"] and xby["mode"]["choices"] == ["default", "auto", "read-only", "bypass", "custom"]
-    assert xby["sandbox"]["when"] == {"mode": ["custom"]} and xby["approval"]["choices"] == ["untrusted", "on-request", "never"]
+    assert xby["sandbox"]["when"] == {"mode": ["custom"]} and xby["approval"]["choices"] == ["on-request", "never", "untrusted"]   # the fake is 0.145
     assert x["models"] == xby["model"]["choices"] and x["models"], "the catalogue, or the box's visible slugs until it has been read"
     assert set(x["reasoning_by_model"]) <= set(x["models"]) and x["capabilities"]["fork"] is True
     assert x["capabilities"]["approve_for_me"] is False and x["capabilities"]["no_alt_screen"] is True
@@ -219,7 +219,10 @@ def test_the_demo_fixture_is_held_to_the_same_contract(board, fake_codex, monkey
             assert {f: o[f] for f in ("kind", "group", "danger", "when")} == {f: lo[f] for f in ("kind", "group", "danger", "when")}, (name, k)
         assert set(e["slash"]) == set(live[name]["slash"]) and set(e["capabilities"]) == set(live[name]["capabilities"])
     assert demo["agents"]["claude"]["models"][:4] == ["opus", "fable", "sonnet", "haiku"]
-    assert demo["agents"]["codex"]["reasoning_by_model"]["gpt-5.5"][-1] == "xhigh" and "ultracode" not in demo["agents"]["claude"]["efforts"]
+    assert demo["agents"]["codex"]["reasoning_by_model"]["gpt-6.1-sol"][-1] == "ultra" and "ultracode" not in demo["agents"]["claude"]["efforts"]
+    assert "ultra" not in demo["agents"]["codex"]["reasoning_by_model"]["gpt-6-luna"] and "codex-auto-review" not in demo["agents"]["codex"]["models"]
+    for name, e in demo["agents"].items():                                                # the demo's slash rows are the adapters' own
+        assert e["slash"] == live[name]["slash"], name
     text = DEMO.read_text()
     assert not any(n in text for n in ("/Users/", "/tmp/", "/private/", "gmail.com", "rpandox", "ccb-fix"))
 
@@ -487,7 +490,7 @@ def test_codex_without_fork_refuses_it_with_a_reason(cx, fake_codex):
     ({"mcp_config": "/x.json"}, "mcp_config: not supported by codex"),
     ({"allowed_tools": "Bash"}, "allowed_tools: not supported by codex"),
     ({"append_system_prompt": "x"}, "append_system_prompt: not supported by codex"),
-    ({"reasoning": "ultra"}, re.compile(r"^reasoning_effort must be one of")),
+    ({"model": "gpt-6-luna", "reasoning": "ultra"}, re.compile(r"^reasoning_effort must be one of")),     # Luna has no ultra (#17)
     ({"devcontainer": True}, "this repo has no .devcontainer/devcontainer.json"),
     ({"args": "-c model=x"}, re.compile(r"^-c: settings overrides are not allowed in extra args")),
     ({"args": "--yolo"}, re.compile(r"^--yolo: ")),
@@ -496,6 +499,23 @@ def test_codex_without_fork_refuses_it_with_a_reason(cx, fake_codex):
 ])
 def test_codex_rejections(cx, body, message):
     refused(cx, {"launcher": "new", "agent": "codex", **body}, message)
+
+
+def test_a_saved_untrusted_is_a_plain_400_on_a_0160_codex_and_builds_nothing(cx, fake_codex):
+    """#17: a launch (the same validate_opts serves tasks and schedules) naming an approval the probed codex does not list is refused
+    with the value and the allowed ones; on-request and never still build their -a flag."""
+    import tests.conftest as c
+    fixtures = Path(c.__file__).parent / "fixtures"
+    fake_codex.write_text(fake_codex.read_text().replace(str(fixtures / "codex_help_0145_real.txt"), str(fixtures / "codex_help_0160.txt")))
+    codex.reset_caches()
+    before = len(cx.tmux["created"])
+    refused(cx, {"launcher": "new", "agent": "codex", "mode": "custom", "approval": "untrusted"},
+            "approval must be one of on-request, never (this codex supports no other)")
+    refused(cx, {"launcher": "new", "agent": "codex", "mode": "custom", "approval": "on-failure"}, re.compile(r"^approval must be one of on-request, never"))
+    assert len(cx.tmux["created"]) == before, "no session, no argv"
+    for value in ("on-request", "never"):
+        argv = argv_of(post(cx, {"launcher": "new", "agent": "codex", "mode": "custom", "approval": value}))
+        assert argv[argv.index("-a") + 1] == value and "untrusted" not in argv
 
 
 def test_codex_config_lines_arrive_as_text_too(cx):

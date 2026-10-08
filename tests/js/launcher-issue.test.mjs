@@ -38,13 +38,13 @@ const LIST = [
 ];
 const WHO = (claude, codex, extra = {}) => ({ claude: claude || null, codex: codex || null, default_agent: claude ? 'claude' : codex ? 'codex' : null, warnings: [], ...extra });
 const DETAIL = {
-  47: { ...LIST[0], who: WHO({ model: 'opus', effort: 'high', permission_mode: 'acceptEdits' }, { model: 'gpt-5.6-sol', reasoning: 'low', sandbox: 'workspace-write', approval: 'on-request' }) },
+  47: { ...LIST[0], who: WHO({ model: 'opus', effort: 'high', permission_mode: 'acceptEdits' }, { model: 'gpt-6.1-sol', reasoning: 'low', sandbox: 'workspace-write', approval: 'on-request' }) },
   48: { ...LIST[1], who: WHO() },
   49: { ...LIST[2], who: WHO() },
   50: { number: 50, title: 'Odd', body: '', url: 'https://github.com/acme/board/issues/50', labels: [], author: 'acme', trusted: true,
     who: WHO({ model: 'claude-future-9', effort: 'turbo', permission_mode: 'bypassPermissions' }, null, { warnings: ['ignored a bypass setting'] }) },
   51: { number: 51, title: 'Codex only', body: '', url: 'https://github.com/acme/board/issues/51', labels: [], author: 'acme', trusted: true,
-    who: WHO(null, { model: 'gpt-5.6-luna', reasoning: 'high', sandbox: 'read-only', approval: 'on-request' }) },
+    who: WHO(null, { model: 'gpt-6-luna', reasoning: 'high', sandbox: 'read-only', approval: 'on-request' }) },
 };
 
 function lWorld({ state = STATE(), answers = {} } = {}) {
@@ -118,7 +118,7 @@ test('launcherIssueChoices checks every value against the installed schema and n
   assert.equal(full.agent, 'claude');
   assert.deepEqual(full.claude, { model: 'opus', effort: 'high', permission_mode: 'acceptEdits' });
   assert.deepEqual(full.parts.claude, ['opus', 'high', 'acceptEdits']);
-  assert.deepEqual(full.codex, { model: 'gpt-5.6-sol', reasoning: 'low', cx_mode: 'default' });
+  assert.deepEqual(full.codex, { model: 'gpt-6.1-sol', reasoning: 'low', cx_mode: 'default' });
   const odd = run(DETAIL[50].who);
   assert.equal(odd.agent, '', 'an unknown model, an unknown effort and a bypass leave nothing to preselect');
   assert.deepEqual(odd.skipped, ['model claude-future-9', 'effort turbo', 'permissions bypassPermissions']);
@@ -126,7 +126,7 @@ test('launcherIssueChoices checks every value against the installed schema and n
   assert.equal(run(DETAIL[51].who).codex.cx_mode, 'read-only');
   assert.equal(run(DETAIL[47].who, { agents: ['codex'] }).agent, 'codex', 'only the agents the form offers');
   assert.equal(run(DETAIL[47].who, { agents: ['claude', 'codex'], installed: undefined }).agent, 'claude');
-  const dangerous = run({ claude: null, codex: { model: 'gpt-5.6-sol', sandbox: 'danger-full-access', approval: 'never' }, default_agent: 'codex' });
+  const dangerous = run({ claude: null, codex: { model: 'gpt-6.1-sol', sandbox: 'danger-full-access', approval: 'never' }, default_agent: 'codex' });
   assert.equal(dangerous.codex.cx_mode, undefined, 'danger-full-access is never a mode');
   assert.ok(dangerous.skipped.length);
   assert.equal(run(null).agent, '');
@@ -233,7 +233,7 @@ test('a Codex-only block switches to Codex (one tap back), and an issue without 
   const f = form(w);
   await pickIssue(w, f, 51);
   assert.deepEqual(pressed(f, 'Agent'), ['◇ Codex']);
-  assert.match(note(f), /from the issue: gpt-5.6-luna, high, read-only/);
+  assert.match(note(f), /from the issue: gpt-6-luna, high, read-only/);
   btn(f, 'Agent', '◆ Claude').click();
   assert.deepEqual(pressed(f, 'Agent'), ['◆ Claude']);
   await pickIssue(w, f, 49);

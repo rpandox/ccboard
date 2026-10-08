@@ -13,7 +13,8 @@ decides a session's state (the hooks do), and nothing opens `auth.json` or any o
     Tailer / tick(db, now) the Sampler's hook (samples.TICK_HOOKS, so every 15 s tick; the Tailer keeps its own 5 s / 60 s gaps): per open
                            codex row stats / ctx / ctx_tok / stok / confirmation of a typed /model or /reasoning, and every minute the
                            account rate limits (kv rate_limits_codex, series rl_5h / rl_7d keys `codex` and `cacct:<account key>`, one notice
-                           per reached window through kv codex_rl_notified_<resets_at>)
+                           per reached window through kv codex_rl_notified_<resets_at>); flags.turn_seen_at (the first turn, #96) and
+                           kv login_problem from an auth-looking error item with no token usage after it (#35; cleared by a later one)
 
 Rate limits (plan v0.5.12, F10). A rollout's token_count events carry the account-wide windows; which rollout is newest says nothing about
 which limit it reports (a second metered limit such as `codex_bengalfox` sits at 0 and would flip the pill between about 17 % and 0 %). So:
@@ -221,6 +222,9 @@ def _config(p: dict) -> dict:
 
 
 CONFIG_KINDS = ("turn_context", "thread_settings_applied")
+TURN_KINDS = ("user_message", "task_started")      # event_msg types that say a turn began (a prompt reached Codex)
+ERROR_MAX = 300
+AUTH_FRESH = 900                     # an auth-looking error item older than this (seconds) raises nothing: a restart must not replay old ones
 
 
 def parse_tail(text: str) -> dict:
@@ -231,19 +235,27 @@ def parse_tail(text: str) -> dict:
         {last_token_usage: {input, cached, output, reasoning, total} | None,      # the newest call, NOT cumulative
          total_token_usage: {...} | None, model_context_window: int | None, token_at: ISO | None,
          rate_limits: {limit_id, plan_type, primary, secondary, credits, reached} | None, rate_limits_at: ISO | None,
-         config: {model, effort, approval, sandbox, at} | None}                    # fields filled newest-first across the config events
+         config: {model, effort, approval, sandbox, at} | None,                   # fields filled newest-first across the config events
+         error: {message, kind, at} | None,     # the newest error item NEWER than the newest token usage (a turn that failed and none after it)
+         turn_at: ISO | None}                   # the newest user_message / task_started (a turn began), else token_at
+
+    An error item is an `event_msg` whose payload type is `error` with a text `message` (kind: its `codex_error_info`, when there is one;
+    UNVERIFIED on a real dead login: the shape is Codex's protocol ErrorEvent, the box never showed one). Its message is cut to 300 characters
+    and goes no further than the caller's auth check (codex_auth_failure) and kv login_problem.
 
     A token_count may keep its numbers under `info` (a real rollout) or beside `rate_limits` (flat); `info` is null before the first model
     call, and such an event still carries rate_limits, so the usage and the rate limits come from the newest event that has each. Pure."""
     out: dict = {"last_token_usage": None, "total_token_usage": None, "model_context_window": None, "token_at": None,
-                 "rate_limits": None, "rate_limits_at": None, "config": None}
+                 "rate_limits": None, "rate_limits_at": None, "config": None, "error": None, "turn_at": None}
     if not isinstance(text, str) or not text:
         return out
     cfg: dict | None = None
     for line in reversed(text.split("\n")):
         counts = "token_count" in line
         cfgline = any(k in line for k in CONFIG_KINDS)
-        if not (counts or cfgline):
+        errline = '"error"' in line and out["error"] is None and out["last_token_usage"] is None
+        turnline = out["turn_at"] is None and any(k in line for k in TURN_KINDS)
+        if not (counts or cfgline or errline or turnline):
             continue
         try:
             obj = json.loads(line)
@@ -268,6 +280,13 @@ def parse_tail(text: str) -> dict:
                 rl = _rate_limits(payload.get("rate_limits") or info.get("rate_limits"), _epoch(at))
                 if rl:
                     out["rate_limits"], out["rate_limits_at"] = rl, at
+        elif kind == "error" and obj.get("type") == "event_msg":
+            msg = payload.get("message")
+            if errline and isinstance(msg, str) and msg.strip():
+                out["error"] = {"message": " ".join(msg.split())[:ERROR_MAX], "kind": _word(payload.get("codex_error_info"), 60), "at": at}
+        elif kind in TURN_KINDS and obj.get("type") == "event_msg":
+            if out["turn_at"] is None and isinstance(at, str):
+                out["turn_at"] = at
         elif kind in CONFIG_KINDS or obj.get("type") in CONFIG_KINDS:
             got = _config(payload)
             if cfg is None:
@@ -280,6 +299,8 @@ def parse_tail(text: str) -> dict:
                 and all(cfg.get(k) is not None for k in ("model", "effort", "approval", "sandbox")):
             break
     out["config"] = cfg
+    if out["turn_at"] is None and out["token_at"] is not None:
+        out["turn_at"] = out["token_at"]
     return out
 
 
@@ -521,6 +542,43 @@ def bind_unbound_rows(db) -> int:
         return 0
 
 
+# ------------------------------------------------------------------ the free login signal (#68)
+AUTH_LOOKBACK = 6 * 3600             # evidence about the login older than this says nothing about it now
+AUTH_ROLLOUTS = 12                   # rollouts read per auth_signal call (newest first by mtime)
+
+
+def tail_auth_evidence(parsed: dict) -> dict | None:
+    """What one parsed tail says about the login: {kind: 'rejected', at, message} for an auth-looking error item with no token usage after
+    it, {kind: 'ok', at} for token usage newer than any error (a model call worked), None otherwise (no turn, or a failure that is not about
+    the login: a usage limit, a full context, a network error). Pure."""
+    from ..login_problem import codex_auth_failure
+    err = parsed.get("error") if isinstance(parsed, dict) else None
+    if err:
+        if codex_auth_failure(err.get("message"), err.get("kind")):
+            return {"kind": "rejected", "at": _epoch(err.get("at")), "message": err.get("message")}
+        return None
+    tok = _epoch((parsed or {}).get("token_at")) if isinstance(parsed, dict) else None
+    return {"kind": "ok", "at": tok} if tok is not None else None
+
+
+def auth_signal(now: float | None = None, since: float | None = None) -> dict | None:
+    """The newest free evidence about the live Codex login in the rollouts (tail reads only, never a model request, never auth.json): the
+    newest of tail_auth_evidence over the AUTH_ROLLOUTS newest rollouts modified within AUTH_LOOKBACK and, with `since` (when the current
+    account became live), stamped at or after it. None when there is none."""
+    now = time.time() if now is None else float(now)
+    floor = now - AUTH_LOOKBACK
+    if since is not None:
+        floor = max(floor, float(since))
+    best = None
+    for _mtime, _size, path in recent_rollouts(floor)[:AUTH_ROLLOUTS]:
+        ev = tail_auth_evidence(parse_tail(read_tail(path)))
+        if ev is None or ev["at"] is None or ev["at"] < floor or ev["at"] > now + BIND_SLACK:
+            continue
+        if best is None or ev["at"] > best["at"]:
+            best = ev
+    return best
+
+
 # ------------------------------------------------------------------ the row stats
 def build_stats(meta: dict | None, parsed: dict, known: dict | None = None) -> dict:
     """A codex row's `stats` (the keys the statusline gives a Claude row, the ones Codex has): model, model_id, context_pct (100 x the LAST
@@ -654,7 +712,52 @@ class Tailer:
             wrote = True
         self._samples(db, name, stats)
         self._confirm(db, name, row, stats, parsed, now)
+        self._turn(db, name, row, parsed)
+        self._auth(db, name, st, parsed, now)
         return wrote
+
+    @staticmethod
+    def _turn(db, name: str, row: dict, parsed: dict) -> None:
+        """flags.turn_seen_at (#96): the first time the row's rollout shows a turn that began after the row was created (a resumed thread's
+        older turns do not count). Written once; agents/codex.hooks_missing reads it."""
+        flags = row.get("flags") or {}
+        if flags.get("turn_seen_at"):
+            return
+        at, born = _epoch(parsed.get("turn_at")), _epoch(row.get("created_at"))
+        if at is None or (born is not None and at < born - BIND_SLACK):
+            return
+        db.update_flags(name, {"turn_seen_at": _iso(at)})
+
+    @staticmethod
+    def _auth(db, name: str, st: dict, parsed: dict, now: float) -> None:
+        """A dead Codex login, seen the only way the board can (#35, #68): the rollout's newest error item, with no token usage after it, reads
+        as an authentication failure (login_problem.codex_auth_failure) -> kv login_problem {agent: codex, account: the rollout's owner, session}
+        plus the LoginProblem event and the account-level notice, once per error item and only while it is AUTH_FRESH old. A token usage newer
+        than the problem (a turn that worked) clears it for that account. Nothing here opens auth.json."""
+        from .. import login_problem
+        err = parsed.get("error")
+        accts, current = _accounts(db)
+        key = _owner(accts, current, (st.get("meta") or {}).get("account_id"))
+        if err:
+            if st.get("login_err") == err.get("at"):
+                return
+            st["login_err"] = err.get("at")
+            at = _epoch(err.get("at"))
+            if at is None or now - at > AUTH_FRESH or not login_problem.codex_auth_failure(err.get("message"), err.get("kind")):
+                return
+            rec = login_problem.raise_(db, agent="codex", account=key, session=name, message=err.get("message"), now=min(at, now))
+            db.add_event(name, "LoginProblem", login_problem.EVENT_KIND, rec["message"], {"account": key, "agent": "codex"})
+            try:
+                from .. import notify
+                label = (accts.get(key) or {}).get("label") if key else None
+                notify.notify_login_problem(key, label if isinstance(label, str) else None, name, rec["message"], agent="codex")
+            except Exception as e:
+                log.warning("codex login notice not sent: %s", e.__class__.__name__)
+            return
+        prob = login_problem.get(db)
+        tok = _epoch(parsed.get("token_at"))
+        if prob and prob.get("agent") == "codex" and tok is not None and tok > (_epoch(prob.get("at")) or float("inf")):
+            login_problem.clear(db, "codex", key)
 
     @staticmethod
     def _samples(db, name: str, stats: dict) -> None:

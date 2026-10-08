@@ -28,7 +28,8 @@ UUID1 = "11111111-1111-4111-8111-111111111111"
 AUTH = {"installed": True, "version": "2.1.287 (Claude Code)", "loggedIn": True, "authMethod": "claude.ai",
         "email": "me@example.com", "subscriptionType": "max"}
 SESSION_KEYS = {"tmux", "project", "repo", "name", "agent", "state", "state_at", "last_prompt", "last_message", "stats", "flags",
-                "agent_session_id", "account", "task", "pending", "viewers", "win", "shell_version"}      # the plan's GET /api/sessions/{name}
+                "agent_session_id", "account", "task", "pending", "viewers", "win", "shell_version",
+                "hooks_missing"}      # the plan's GET /api/sessions/{name}; hooks_missing: #96 (the terminal header's chip)
 
 
 @pytest.fixture(autouse=True)
@@ -332,7 +333,7 @@ def test_state_legacy_keys_are_unchanged(board):
         "v0.5.17b: the account list is always present, empty until an identity is read (v0.5.17c: plus the saved-login store summary; v0.5.17g: plus the login problem)"
     assert st["codex_accounts"] == {"current": None, "list": [], "store": {"supported": False, "add": False, "reason": "codex is not installed", "count": 0},
                                     "login": {"running": False, "adding": False, "label": None, "replace_key": None, "started_at": None, "url": None, "code": None,
-                                              "result": None}}, \
+                                              "result": None}, "notice": None}, \
         "v0.5.17e: the one new top-level key, the saved Codex accounts (the GET body without login.tail); unsupported without a codex binary"
 
 

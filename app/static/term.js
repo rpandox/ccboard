@@ -62,11 +62,11 @@
      project / model / context text (the badge used to share line 1 and cut the name to 't-chec…'). */
   const head = {
     sess: el('span', { class: 'name', text: INTERNAL ? 'login' : (PARTS.length === 3 ? PARTS[2] : NAME) }),
-    glyph: el('span'), state: el('span'), meta: el('span', { class: 'l2-text' }),
-    agent: null, stateSig: '', metaSig: '',
+    glyph: el('span'), state: el('span'), meta: el('span', { class: 'l2-text' }), hooks: el('span', { class: 'l2-hooks hidden' }),
+    agent: null, stateSig: '', metaSig: '', hm: '',
   };
   head.meta.textContent = INTERNAL ? 'terminal' : (PARTS.length === 3 ? projectLabel(PARTS[0], PARTS[1]) : '');
-  $('#headid').append(el('div', { class: 'l1' }, head.sess), el('div', { class: 'l2' }, head.glyph, head.state, head.meta));
+  $('#headid').append(el('div', { class: 'l1' }, head.sess), el('div', { class: 'l2' }, head.glyph, head.state, head.hooks, head.meta));
 
   function projectLabel(project, repo) { return repo === 'root' ? project : project + '/' + repo; }
 
@@ -79,9 +79,17 @@
     setText(head.sess, s.name || (PARTS.length === 3 ? PARTS[2] : NAME));
     const agent = s.agent || 'shell';
     if (head.agent !== agent) { head.agent = agent; head.glyph.textContent = ''; head.glyph.append(agentGlyph(agent)); }
+    if ((s.agent || null) !== quickAg) { quickAg = s.agent || null; renderQuick(); }     // #69: Codex chips for a Codex session, none for a shell
     const badge = stateBadge(s);
     const sig = badge ? badge.textContent + '|' + (s.state || '') : '';
     if (sig !== head.stateSig) { head.stateSig = sig; setState(badge); }
+    const hm = s.hooks_missing || '';                              // #96: 'no hooks (untrusted?)', a link to the board's Doctor
+    if (hm !== head.hm) {
+      head.hm = hm;
+      head.hooks.textContent = '';
+      if (hm) head.hooks.append(hooksMissingChip(hm));
+      head.hooks.classList.toggle('hidden', !hm);
+    }
     const stats = s.stats || {};
     const pct = typeof stats.context_pct === 'number' ? Math.round(stats.context_pct) : null;
     const metaSig = [s.project, s.repo, stats.model, pct].join('|');
@@ -173,9 +181,11 @@
   /* ---------- the tuning strip: Compact, Clear, Usage, effort, model, Rename, Context, Status ---------- */
 
   /* What the strip offers comes from the agent's slash registry (GET /api/agents -> agents.<agent>.slash, once per page load, kept 10 min in
-     sessionStorage under AGENTS_KEY as {at, agents}: palette.js reads the same entry). Until it arrives (or when the fetch fails) the embedded
-     list below stands: it mirrors app/agents/claude.py slash_commands(). Chips follow the registry weight (most used first); weight 0 stays out
-     unless localStorage ccboard:term:allchips = 1. A chip is a POST /command; the strip is only enabled while the session sits at its prompt. */
+     sessionStorage under AGENTS_KEY as {at, agents}: palette.js reads the same entry). Until it arrives (or when the fetch fails) TermKit's built-in
+     registry stands (TermKit.tuneRegistry: the rows of claude.py / codex.py). The command chips follow the registry weight (most used first); weight 0
+     stays out unless localStorage ccboard:term:allchips = 1. The settings (effort or reasoning, model, Codex's permissions, Claude's Ultracode switch) come
+     from TermKit.tunePlan, the plan the Quad tile's Tune panel draws, and each change is built by TermKit.tuneRequest: POST /tune (the agent's own picker,
+     this session only) or POST /command. The strip is only enabled while the session sits at its prompt (TermKit.tuneGate). */
   const AGENTS_KEY = 'ccboard:agents';
   const AGENTS_TTL = 10 * 60 * 1000;
   const KEY_ALLCHIPS = 'ccboard:term:allchips';
@@ -184,18 +194,8 @@
   const FLASH_MS = 1500;
   const ARM_MS = 4000;                                         // the second tap on Clear must come within this
   const ESC_GAP_MS = 150;                                      // Escape and the next keys must not arrive together (a TUI reads ESC + key as Alt + key)
-  const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
-  const EFFORT_ARG = { ultracode: 'ultracode on' };            // claude.py V19: until `--effort ultracode` is proven on the box the switch is `/effort ultracode on`
-  const MODELS = ['opus', 'fable', 'sonnet', 'haiku'];
-const MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', haiku: 'hue-slate' };   // tokens.css .hue-*: the same four as pages/agents.js chipHue('model', ...), which this page does not load
-  const slashRow = (cmd, label, arg, read, weight, destructive) => ({ cmd: '/' + cmd, label, arg, read, verified: false, weight, destructive });
-  const FALLBACK_SLASH = {
-    clear: slashRow('clear', 'Clear', false, false, 155, true), compact: slashRow('compact', 'Compact', false, false, 120, false),
-    usage: slashRow('usage', 'Usage', false, true, 100, false), effort: slashRow('effort', 'Effort', true, false, 58, false),
-    model: slashRow('model', 'Model', true, false, 39, false), rename: slashRow('rename', 'Rename', true, false, 10, false),
-    context: slashRow('context', 'Context', false, true, 9, false), status: slashRow('status', 'Status', false, true, 3, false),
-    cost: slashRow('cost', 'Cost', false, true, 0, false), fast: slashRow('fast', 'Fast', false, false, 0, false),
-  };
+  const MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', haiku: 'hue-slate' };   // tokens.css .hue-*: the same four as pages/agents.js chipHue('model', ...), which this page does not load
+  const PLAN_KEYS = ['effort', 'model', 'reasoning', 'permissions'];   // registry rows the plan draws as segments, never as command chips
 
   /* -- pure helpers (window.TermPage, for the tests) -- */
 
@@ -213,28 +213,17 @@ const MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', 
     return out.filter((s) => all || s.weight > 0).sort((a, b) => (b.weight - a.weight) || (a.i - b.i)).map((s) => { delete s.i; return s; });
   }
 
-  /* {show, enabled, title} for a GET /api/sessions/<name> body: no strip for a shell (or a row without an agent); enabled only when the prompt is
-     free: idle, done, errored (the server's TYPEABLE_STATES: the pane sits at its prompt, /clear or /compact help there) or waiting on the idle
-     prompt, with no compaction and no permission request open. */
-  function tuneGate(row) {
-    const r = row && typeof row === 'object' ? row : null;
-    if (!r || !r.agent || r.agent === 'shell') return { show: false, enabled: false, title: '' };
-    const flags = r.flags && typeof r.flags === 'object' ? r.flags : {};
-    const atPrompt = r.state === 'idle' || r.state === 'done' || r.state === 'errored' || (r.state === 'waiting' && flags.wait_kind === 'idle');
-    const ok = atPrompt && !flags.compacting && !(Array.isArray(r.pending) && r.pending.length);
-    return { show: true, enabled: ok, title: ok ? '' : GATE_TITLE };
-  }
+  /* {show, enabled, title} for a GET /api/sessions/<name> body: TermKit.tuneGate (no strip for a shell or a row without an agent; enabled at the prompt). */
+  function tuneGate(row) { return TermKit.tuneGate(row); }
 
-  function effortOptions(stats) {
-    const cur = stats && stats.effort ? String(stats.effort).toLowerCase() : '';
-    return EFFORTS.map((v) => ({ value: v, label: v, arg: EFFORT_ARG[v] || v, current: v === cur }));
+  /* The plan's options with the current one marked: TermKit.tunePlan + TermKit.tuneCurrent (Claude's effort is low..max: ultracode is a switch, not a level). */
+  function planOptions(kind, stats) {
+    const plan = TermKit.tunePlan('claude', null, stats || {});
+    const cur = TermKit.tuneCurrent(stats || {}, plan, null);
+    return (plan[kind] ? plan[kind].options : []).map((o) => ({ value: o.value, label: o.label, arg: o.arg, current: !!cur[kind] && cur[kind] === (kind === 'effort' ? o.value.toLowerCase() : o.value) }));
   }
-
-  /* The current model is the chip whose name the statusline's model (display name or id) contains: 'Opus 5' -> opus. */
-  function modelOptions(stats) {
-    const hay = [stats && stats.model, stats && stats.model_id].filter(Boolean).join(' ').toLowerCase();
-    return MODELS.map((v) => ({ value: v, label: v, arg: v, current: !!hay && hay.includes(v) }));
-  }
+  const effortOptions = (stats) => planOptions('effort', stats);
+  const modelOptions = (stats) => planOptions('model', stats);
 
   /* How the send box talks to the session: 'queue' while a turn runs (/prompt with queue:true: Claude queues the text), 'prompt' at the prompt,
      'keys' (the raw /keys path of old) for a shell, a row that has not reported yet and every dialog (a permission, a question), where typed text
@@ -280,10 +269,13 @@ const MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', 
     }, () => { /* the embedded list stands */ });
   }
 
-  function slashFor(agent) {
+  function schemaFor(agent) {
     const a = agentsMap && agentsMap[agent];
-    if (a && a.slash && typeof a.slash === 'object' && Object.keys(a.slash).length) return a.slash;
-    return agent === 'claude' ? FALLBACK_SLASH : null;
+    return a && typeof a === 'object' ? a : null;
+  }
+  function slashFor(agent) {
+    const reg = TermKit.tuneRegistry(agent, schemaFor(agent));
+    return reg && Object.keys(reg).length ? reg : null;
   }
 
   /* -- commands -- */
@@ -362,12 +354,19 @@ const MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', 
     disarm();
     try {
       await settleEscape();
-      const body = { cmd: spec.key };
-      if (opts.arg) body.arg = opts.arg;
-      if (spec.destructive && opts.confirm) body.confirm = true;
+      let req;
+      if (opts.group) req = TermKit.tuneRequest(opts.group, opts.arg);                       // a setting: the shared request (POST /tune or /command)
+      else {
+        const body = { cmd: spec.key };
+        if (opts.arg) body.arg = opts.arg;
+        if (spec.destructive && opts.confirm) body.confirm = true;
+        req = { path: '/command', body };
+      }
       let res = null;
-      try { res = await api('POST', API + '/command', body); } catch (e) { refused(e, 'tuning'); return; }
-      if (res && typeof res.screen === 'string') { claudeDialog = true; openReadout(spec, res.screen); }
+      try { res = await api('POST', API + req.path, req.body); } catch (e) { refused(e, 'tuning'); return; }
+      if (res && typeof res.screen === 'string') { claudeDialog = res.dialog !== false; openReadout(spec, res.screen); }   // printed inline (Codex /status, Claude /context): nothing to Escape
+      else if (req.path === '/tune' && res && res.confirmed === true) { startPending(spec, opts.arg); finishPending(true); }
+      else if (req.path === '/tune' && res && res.confirmed === false) note(res.message || (spec.key + ' not confirmed by the session'), 'warn');
       else if (!spec.read) startPending(spec, opts.arg);
       pollSoon(500);
     } finally { tuneBusy = false; }
@@ -519,28 +518,39 @@ const MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', 
 
   const tuneChip = (spec, label, onTap) => keep(el('button', { type: 'button', class: 'tune-chip', 'data-cmd': spec.key, text: label, onclick: onTap }));
 
-  function buildTune(specs) {
+  function buildTune(specs, plan) {
     tuneEl.textContent = '';
     tuneItems = [];
     tuneSeen = false;
     armed = false;
     const row = el('div', { class: 'tune-row' });
-    const segs = {};                                           // effort and model go after the command chips, always in that order
-    const seg = (spec, title, options) => {
+    const segs = {};                                           // effort and model go after the command chips, always in that order (then Codex's permissions)
+    /* one segment per plan group: kind effort | model | perms; every tap is TermKit.tuneRequest's request */
+    const seg = (kind, title, group) => {
+      const spec = { key: group.cmd, cmd: '/' + group.cmd, label: title, read: false };
       const g = el('div', { class: 'tune-seg', role: 'group', 'aria-label': title }, el('span', { class: 'tune-lbl', text: title.toLowerCase() }));
-      for (const op of options) {
-        const node = tuneChip(spec, op.label, () => runTune(spec, { arg: op.arg }));
+      for (const op of group.options) {
+        const node = tuneChip(spec, op.label, () => runTune(spec, { arg: op.arg, group }));
         node.classList.add('tune-opt');
-        if (spec.key === 'model' && ownKey(MODEL_HUE, op.value)) node.classList.add('tune-model', MODEL_HUE[op.value]);
-        tuneItems.push({ node, kind: spec.key, cmd: spec.key, arg: op.arg, value: op.value, label: op.label, title: '/' + spec.key + ' ' + op.arg });
+        node.setAttribute('data-via', group.via);
+        if (kind === 'model' && ownKey(MODEL_HUE, op.value)) node.classList.add('tune-model', MODEL_HUE[op.value]);
+        const title2 = (group.via === 'tune' ? title + ' ' + op.label + ' for this session only' : '/' + group.cmd + ' ' + op.arg) + (group.note ? ' (' + group.note.toLowerCase() + ')' : '')
+          + (group.unverified ? ' · unverified key path: the result is read back from the screen' : '');
+        tuneItems.push({ node, kind, cmd: group.cmd, arg: op.arg, value: op.value, label: op.label, title: title2 });
         g.append(node);
       }
+      // said in words under the group in the wide column (term.css shows .tune-note there only): a hover title alone never reaches a touch screen
+      if (group.note) g.append(el('p', { class: 'tune-note', text: group.note }));
+      if (group.unverified) g.append(el('p', { class: 'tune-note', text: 'Unverified key path: the board reads the result back from the screen' }));
       return g;
     };
+    const codex = lastRow && lastRow.agent === 'codex';
+    if (plan.effort) segs.effort = seg('effort', codex ? 'Reasoning' : 'Effort', plan.effort);
+    if (plan.model) segs.model = seg('model', 'Model', plan.model);
+    if (plan.perms) segs.perms = seg('perms', 'Permissions', plan.perms);
     for (const s of specs) {
-      if (s.key === 'effort') segs.effort = seg(s, 'Effort', effortOptions(null));
-      else if (s.key === 'model') segs.model = seg(s, 'Model', modelOptions(null));
-      else if (s.key === 'rename') {
+      if (PLAN_KEYS.includes(s.key)) continue;                 // drawn as segments from the plan
+      if (s.key === 'rename') {
         const node = tuneChip(s, s.label, () => { disarm(); openRename(s); });
         tuneItems.push({ node, kind: 'rename', cmd: s.key, label: s.label });
         row.append(node);
@@ -559,14 +569,35 @@ const MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', 
         node.classList.add('destructive');                     // red-outlined at rest; the armed 'Confirm clear' is the solid fill (term.css)
         tuneItems.push({ node, kind: 'clear', cmd: s.key, label: s.label });
         row.append(node);
+      } else if (s.key === 'fast') {                           // `/fast on` or `/fast off`: bare /fast opens a dialog that swallows keys
+        const node = tuneChip(s, s.label, () => {
+          disarm();
+          const on = !!(lastRow && lastRow.stats && lastRow.stats.fast === true);
+          runTune(s, { arg: on ? 'off' : 'on' });
+        });
+        tuneItems.push({ node, kind: 'fast', cmd: s.key, label: s.label, title: '/fast on or /fast off' });
+        row.append(node);
       } else {
         const node = tuneChip(s, s.label, () => { disarm(); runTune(s, {}); });
-        tuneItems.push({ node, kind: s.key === 'fast' ? 'fast' : 'cmd', cmd: s.key, label: s.label, title: s.cmd + (s.read ? ' (shows what it prints)' : '') });
+        tuneItems.push({ node, kind: 'cmd', cmd: s.key, label: s.label, title: s.cmd + (s.read ? ' (shows what it prints)' : '') });
         row.append(node);
       }
     }
+    if (plan.ultra && plan.effort) {                           // Claude's Ultracode switch: a setting, not an effort level (/effort ultracode on | off)
+      const group = { ...plan.effort, setting: 'ultracode' };
+      const spec = { key: plan.effort.via === 'tune' ? 'ultracode' : 'effort', cmd: '/effort', label: 'Ultracode', read: false };
+      const node = tuneChip(spec, 'Ultracode', () => {
+        disarm();
+        const on = TermKit.tuneCurrent(lastRow && lastRow.stats, plan, lastRow && lastRow.flags).ultra === 'on';
+        const want = on ? 'off' : 'on';
+        runTune(spec, group.via === 'tune' ? { arg: want, group } : { arg: 'ultracode ' + want, group: { ...group, via: 'command' } });
+      });
+      tuneItems.push({ node, kind: 'ultra', cmd: spec.key, arg: group.via === 'tune' ? undefined : null, label: 'Ultracode', title: 'Ultracode sets xhigh and turns workflows on, for this session only' });   // an older server's inline form never marks the effort chips pending
+      row.append(node);
+    }
     if (segs.effort) row.append(segs.effort);
     if (segs.model) row.append(segs.model);
+    if (segs.perms) row.append(segs.perms);
     row.addEventListener('scroll', tuneFade);
     tuneRow = row;
     tuneEl.append(row);
@@ -585,17 +616,19 @@ const MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', 
     const gate = tuneGate(s);
     const slash = gate.show ? slashFor(s.agent) : null;
     const specs = slash ? tuneOrder(slash, { all: store.get(KEY_ALLCHIPS) === '1' }) : [];
-    if (!gate.show || !specs.length || INTERNAL) { tuneEl.classList.add('hidden'); tuneApplicable = false; syncTune(); return; }
+    const plan = gate.show ? TermKit.tunePlan(s.agent, schemaFor(s.agent) || (slash ? { slash } : null), s.stats || {}) : null;
+    const groups = plan ? [plan.effort, plan.model, plan.perms].filter(Boolean) : [];
+    if (!gate.show || (!specs.length && !groups.length) || INTERNAL) { tuneEl.classList.add('hidden'); tuneApplicable = false; syncTune(); return; }
     loadAgents();
-    const sig = s.agent + JSON.stringify(specs);
-    if (sig !== tuneSig) { tuneSig = sig; buildTune(specs); }
+    const sig = s.agent + JSON.stringify([specs, groups.map((g) => [g.cmd, g.via, g.options.map((o) => o.value)]), plan.ultra]);
+    if (sig !== tuneSig) { tuneSig = sig; buildTune(specs, plan); }
     tuneEl.classList.remove('hidden');
     tuneApplicable = true;
     const flags = s.flags && typeof s.flags === 'object' ? s.flags : {};
     const stats = s.stats && typeof s.stats === 'object' ? s.stats : {};
     const pc = flags.pending_cmd && typeof flags.pending_cmd === 'object' ? flags.pending_cmd : null;
     const live = !!pc && pendingFresh(pc);
-    const cur = { effort: effortOptions(stats), model: modelOptions(stats) };
+    const now = TermKit.tuneCurrent(stats, plan, flags);
     tuneGated = !gate.enabled;
     if (tuneGated) disarm();
     for (const it of tuneItems) {
@@ -604,10 +637,12 @@ const MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', 
       const title = gate.enabled ? (it.title || '') : gate.title;
       if (title) n.setAttribute('title', title); else n.removeAttribute('title');
       let on = false;
-      if (cur[it.kind]) { const op = cur[it.kind].find((o) => o.value === it.value); on = !!(op && op.current); }
-      else if (it.kind === 'fast') on = stats.fast === true;
+      const seg = it.kind === 'effort' || it.kind === 'model' || it.kind === 'perms';
+      if (seg) on = !!now[it.kind] && now[it.kind] === (it.kind === 'effort' ? String(it.value).toLowerCase() : it.value);
+      else if (it.kind === 'fast') on = now.fast === true;
+      else if (it.kind === 'ultra') on = now.ultra === 'on';
       n.classList.toggle('on', on);
-      if (cur[it.kind] || it.kind === 'fast') n.setAttribute('aria-pressed', on ? 'true' : 'false');
+      if (seg || it.kind === 'fast' || it.kind === 'ultra') n.setAttribute('aria-pressed', on ? 'true' : 'false');
       const mine = !!(pendLocal && pendLocal.cmd === it.cmd && (it.arg === undefined || it.arg === pendLocal.arg));
       const theirs = live && pc.cmd === it.cmd && (it.arg === undefined || it.arg === String(pc.arg || ''));
       n.classList.toggle('pending', mine || theirs);
@@ -714,6 +749,7 @@ const MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', 
   /* While a permission waits the amber 'y ⏎ / n ⏎' row already answers it: the quick row does not offer y / yes / n a second time. */
   let approvalOn = false;
   const APPROVE_WORDS = ['y', 'yes', 'n', 'no'];
+  let quickAg = null;                                               // the session's agent (renderHeader): the chips are that agent's defaults (#69)
 
   /* A chip cut off at the right edge fades out, so it reads as 'more this way'; the fade goes when the row fits or is scrolled to its end. */
   function syncQuickFade() {
@@ -724,7 +760,7 @@ const MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', 
   function renderQuick() {
     const q = $('#quick');
     q.textContent = '';
-    for (const t of quickLoad(NAME)) {
+    for (const t of quickLoad(NAME, quickAg)) {
       if (approvalOn && APPROVE_WORDS.includes(String(t).trim().toLowerCase())) continue;
       q.append(keep(quickChip(t, { onSend: () => sendText(t, true), onEdit: editQuick })));
     }
@@ -734,7 +770,7 @@ const MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', 
   window.addEventListener('resize', syncQuickFade);
 
   function editQuick() {
-    quickReplyEditor({ items: quickLoad(NAME), defaults: QUICK_DEFAULTS, onSave: (items) => { quickSave(NAME, items); renderQuick(); } });
+    quickReplyEditor({ items: quickLoad(NAME, quickAg), defaults: quickDefaults(quickAg), onSave: (items) => { quickSave(NAME, items, quickAg); renderQuick(); } });
   }
 
   function setApproval(on) {

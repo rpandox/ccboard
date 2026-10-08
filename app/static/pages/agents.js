@@ -8,7 +8,7 @@
    blocked chips and a tail expander (the last 12 pane lines through Live.subscribe); the plain row (Agents, Inbox) is unchanged. */
 'use strict';
 
-const SESSION_NUDGES = ['continue', 'merge', 'push', 'pr', 'add commit push', 'do it'];   // the replies typed most often, in order
+// the nudge chips are the session's quick replies (components.js quickLoad: the edited list, else QUICK_DEFAULTS_BY_AGENT[its agent]; #69)
 const SESSION_RANK = { waiting: 0, errored: 1, working: 2, idle: 3, done: 3, ended: 4, unknown: 5 };
 const SESSION_NUDGE_STATES = ['waiting', 'idle', 'done', 'working', 'errored'];            // an ended pane is a shell prompt: never type into it
 const agentsTicker = { n: 0, timer: null };
@@ -673,8 +673,8 @@ function sessionCard(s, opts) {
   const openLink = o.peek ? null : el('a', { class: 'btn small', href: openHref, target: '_blank', rel: 'noopener', text: 'Open' });
   if (o.peek) { openSlot.append(openNode(true)); cur.openP = true; }
   const chips = el('div', { class: 'chips' + (o.peek ? '' : ' rr-chips'), role: 'group', 'aria-label': 'Quick replies' });
-  for (const text of SESSION_NUDGES) {
-    const b = el('button', { class: 'chip-btn', type: 'button', text });
+  for (const text of quickLoad(tmux, sessionAgent(s))) {
+    const b = el('button', { class: 'chip-btn', type: 'button', title: `types "${text}" into this session as a prompt`, text });
     b.addEventListener('click', (e) => { e.stopPropagation(); sessionNudge(cur.s, text, b); });
     chips.append(b);
   }
@@ -706,8 +706,11 @@ function sessionCard(s, opts) {
     b.cost = el('span', { class: 'bdg bdg-cost mono hidden', title: 'session cost (API-equivalent)' });
     b.limit = el('span', { class: 'bdg bdg-limit hidden', text: 'limit' });
     b.blocked = el('span', { class: 'bdg bdg-blocked hidden', text: 'blocked' });
-    badges = el('span', { class: 'rr-badges' }, b.model, b.acct, b.ctx, b.compact, b.worktree, b.pr, b.sub, b.cost, b.limit, b.blocked);
+    b.hooks = el('span', { class: 'rr-hooks hidden' });                     // #96: 'no hooks (untrusted?)' (hooksMissingChip), a link to the Doctor
+    badges = el('span', { class: 'rr-badges' }, b.model, b.acct, b.ctx, b.compact, b.worktree, b.pr, b.sub, b.cost, b.limit, b.blocked, b.hooks);
   }
+  // the peek says it in words too (a title is no help on touch): the chip and its explanation, only while hooks_missing
+  const hooksNote = o.peek ? el('div', { class: 'peek-hooks hidden', role: 'status' }) : null;
   if (!o.peek) {
     moreBtn = el('button', { class: 'icon minimal rr-more', type: 'button', 'aria-label': 'More actions', title: 'More: acknowledge, reply, tail, add to quad, kill' }, ic('more'));
     moreBtn.addEventListener('click', (e) => e.stopPropagation());
@@ -775,7 +778,7 @@ function sessionCard(s, opts) {
     msgHost = block('Last message', msgNode);
     permHost = o.perm ? block('Needs permission', [permNote, permBtns], ' peek-perm') : null;
     node = el('div', { class: 'peek-card', 'data-tmux': tmux },
-      el('div', { class: 'peek-sub' }, glyphs, where, age, meta),
+      el('div', { class: 'peek-sub' }, glyphs, where, age, meta), hooksNote,
       taskHost, promptHost, msgHost, permHost,
       el('div', { class: 'peek-actions' }, openSlot, ackSlot, killSlot), chips);
   } else {
@@ -857,7 +860,7 @@ function sessionCard(s, opts) {
     const accts = rich && s2.account ? agentsAccounts(st) : [];
     const ac = accts.length > 1 ? (accts.find((x) => x.key === s2.account) || null) : null;
     return JSON.stringify([s2.state, s2.state_at, s2.name, s2.last_prompt, s2.last_message, s2.needs_attention, s2.agent, s2.launcher, s2.created,
-      s2.project, s2.repo, s2.folder, s2.stats, s2.path, s2.flags, s2.task,
+      s2.project, s2.repo, s2.folder, s2.stats, s2.path, s2.flags, s2.task, s2.hooks_missing || null,
       pr ? pr.id + ':' + pr.summary : '', ui.confirm === killKey,
       t ? [t.id, t.pr_number, t.pr_url, t.pr_state, t.mode, t.ci && t.ci.bucket] : null, rl && rl.session === s2.tmux ? [rl.message, rl.resets_at] : null,
       rich ? [s2.account || '', accts.length > 1, ac ? [ac.label, ac.name, ac.email] : null] : null]);
@@ -897,6 +900,16 @@ function sessionCard(s, opts) {
     promptHost.classList.toggle('hidden', !pt);
     msgHost.classList.toggle('hidden', !mt);
     node.classList.toggle('attn', !!s2.needs_attention);
+    const hm = s2.hooks_missing || '';
+    if (cur.hm !== hm) {                                       // #96: the chip (rich row) and the worded note (peek), rebuilt only when the kind flips
+      cur.hm = hm;
+      for (const host of [b.hooks, hooksNote]) {
+        if (!host) continue;
+        host.textContent = '';
+        if (hm) host.append(hooksMissingChip(hm), host === hooksNote ? el('span', { class: 'peek-hooks-why', text: hooksMissingWhy(hm) }) : '');
+        host.classList.toggle('hidden', !hm);
+      }
+    }
     if (o.perm) patchPerm(sessionPerm(s2.tmux));
     if (o.peek) {
       const wantPrimary = !cur.pr;                            // Open terminal leads only while nothing waits on an Allow
