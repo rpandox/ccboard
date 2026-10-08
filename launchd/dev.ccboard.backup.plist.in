@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The nightly backup (installed unless CCBOARD_BACKUP=0): one pass of `python -m app.backup` at the time the installer took from CCBOARD_BACKUP_ONCALENDAR. A calendar job is not kept alive and does not run when loaded (RunAtLoad false). launchd.plist(5) says a run missed while the Mac slept happens when it wakes (to verify on a Mac). Nice, LowPriorityIO and ProcessType mirror Nice=10 and IOSchedulingClass=idle of systemd/ccboard-backup.service.in. GIT_TERMINAL_PROMPT=0 so the push never waits for a credential. The settings come from the env file, as for the board. Rendered by scripts/launchd_render.py; the counterpart of systemd/ccboard-backup.timer.in and .service.in. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.ccboard.backup</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__APP_DIR__/.venv/bin/python</string>
+		<string>-m</string>
+		<string>app.backup</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__APP_DIR__</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>__HOME__</string>
+		<key>LANG</key>
+		<string>en_US.UTF-8</string>
+		<key>PATH</key>
+		<string>__PATH__</string>
+		<key>GIT_TERMINAL_PROMPT</key>
+		<string>0</string>
+		<key>CCBOARD_ENV_FILE</key>
+		<string>__ENV_FILE__</string>
+	</dict>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>__BACKUP_HOUR__</integer>
+		<key>Minute</key>
+		<integer>__BACKUP_MINUTE__</integer>
+	</dict>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>Nice</key>
+	<integer>10</integer>
+	<key>LowPriorityIO</key>
+	<true/>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardOutPath</key>
+	<string>__LOG_DIR__/backup.log</string>
+	<key>StandardErrorPath</key>
+	<string>__LOG_DIR__/backup.log</string>
+</dict>
+</plist>

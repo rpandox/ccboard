@@ -14,13 +14,14 @@ on stderr when a value is missing or refused. Importable: render(template_text, 
 
 Tokens (a value given with --set always wins over a default):
   HOME             the account's home (absolute). Required by every template.
-  APP_DIR          the checkout. Required by board, tmux. APP_BIN defaults to <APP_DIR>/bin (ttyd, mem).
+  APP_DIR          the checkout. Required by board, tmux, backup. APP_BIN defaults to <APP_DIR>/bin (ttyd, mem).
   SHELL            the account's login shell (absolute). Required by board, tmux, ttyd, code-server.
-  CCBOARD_PORT, TTYD_PORT  loopback ports (1..65535). ENV_FILE  the settings file the board reads (board only; the installer passes <data dir>/env).
+  CCBOARD_PORT, TTYD_PORT  loopback ports (1..65535). ENV_FILE  the settings file the board reads (board and backup; the installer passes <data dir>/env).
   TMUX_BIN, TTYD_BIN, CODE_SERVER_BIN  absolute paths of the tools (from `command -v` or `brew --prefix`).
   TMUX_SOCKET      defaults to ccboard. TMUX_TMPDIR defaults to /tmp and is the same value in the board, tmux and ttyd jobs (issue #125);
                    a value that makes <realpath(TMUX_TMPDIR)>/tmux-<uid>/<TMUX_SOCKET> longer than 100 bytes is refused (UID defaults to this
                    process's uid). TTYD_IFACE defaults to lo0 (the macOS loopback interface; `lo` does not exist there).
+  BACKUP_HOUR, BACKUP_MINUTE  the backup job's daily time: whole numbers, 0 to 23 and 0 to 59 (backup only; `macos_tools.py backup-schedule` makes them).
   LOG_DIR          defaults to <HOME>/Library/Logs/ccboard (create it first: launchd does not).
   PATH             defaults to <HOME>/.local/bin, <BREW_PREFIX>/bin, /opt/homebrew/bin, /usr/local/bin, /usr/bin, /bin, /usr/sbin, /sbin
                    (duplicates dropped; BREW_PREFIX is optional) and, for the mem job, <HOME>/.bun/bin first: expanded, never a `~`.
@@ -39,6 +40,7 @@ MAX_SOCKET_PATH = 100               # bytes; sun_path holds 104 on macOS and 108
 SESSION_TYPES = ("Aqua", "Background", "LoginWindow", "System")
 ABSOLUTE = {"HOME", "SHELL", "APP_DIR", "APP_BIN", "LOG_DIR", "ENV_FILE", "TMUX_BIN", "TTYD_BIN", "CODE_SERVER_BIN", "TMUX_TMPDIR", "BREW_PREFIX"}
 PORTS = {"CCBOARD_PORT", "TTYD_PORT"}
+CLOCK_FIELDS = {"BACKUP_HOUR": (0, 23), "BACKUP_MINUTE": (0, 59)}      # whole numbers in range, written without a leading zero
 
 
 class RenderError(ValueError):
@@ -88,6 +90,10 @@ def _check_value(name: str, value: str) -> None:
         raise RenderError(f"{name}={value!r} is not an absolute path")
     if name in PORTS and not (value.isdigit() and 1 <= int(value) <= 65535):
         raise RenderError(f"{name}={value!r} is not a port number (1 to 65535)")
+    if name in CLOCK_FIELDS:
+        lo, hi = CLOCK_FIELDS[name]
+        if not (value.isascii() and value.isdigit() and str(int(value)) == value and lo <= int(value) <= hi):
+            raise RenderError(f"{name}={value!r} is not a whole number from {lo} to {hi} (no leading zero)")
     if name == "PATH":
         for part in value.split(":"):
             if not part.startswith("/"):

@@ -109,6 +109,7 @@ mem_viewer_precheck() { # before any change: a viewer port some other handler al
 # <<< serve and claude-mem viewer helpers
 
 # ---------------------------------------------------------------- guards
+case "$(uname -s)" in Darwin) exec "$APP_DIR/scripts/install-macos.sh" "$@";; esac   # a Mac gets its own installer (launchd, Homebrew, no sudo)
 [ "$(id -u)" -ne 0 ] || die "run as the user who will own the sessions, not as root (sudo is used where needed)"
 [ -t 0 ] || die "run interactively (e.g. ssh -t host 'cd ccboard && ./install.sh'): sudo needs a terminal"
 have sudo || die "sudo is required"

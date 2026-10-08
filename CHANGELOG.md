@@ -2,6 +2,18 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.25 - 2026-10-08
+
+### Added
+- A macOS installer: `./install.sh` on a Mac hands over to `scripts/install-macos.sh` (stock bash 3.2, no sudo), which installs the Homebrew tools, writes the settings file, maps the board through Tailscale serve, renders and loads the launchd jobs, sets up the Claude and Codex hooks and the MCP server (with the board's own venv python), and checks `/healthz`. A rerun changes nothing that is already right, and the tmux job is never restarted once it runs. `scripts/uninstall-macos.sh` removes the jobs and keeps your data.
+- The nightly backup runs on a Mac as a launchd job at the same schedule, and "Back up now" starts it through launchd without sudo. A new `backup-job` doctor check says whether the job or timer is installed, how old the last run is and whether restic is on the job's PATH.
+
+### Fixed
+- A restic repository that is neither an absolute path nor a known remote (`sftp:`, `s3:`, `rclone:` and the others) is refused with a clear message instead of being handed to restic.
+- `CCBOARD_RUNTIME=docker` on a Mac is refused with the same reason the Linux installer gives.
+
+Upgrade: nothing to do.
+
 ## v0.5.24 - 2026-10-08
 
 ### Added

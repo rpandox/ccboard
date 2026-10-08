@@ -52,6 +52,14 @@ EXTRA_INTERNAL = {
     "CCBOARD_SMOKE_PORT": "scripts/ci-smoke.sh only: the port of the CI smoke test",
     "CCBOARD_SMOKE_WAIT": "scripts/ci-smoke.sh only: how long the CI smoke test waits",
     "CCBOARD_REPLACE_SERVE": "an installer-run switch (install.sh, scripts/tailscale_serve.py) that allows replacing another Tailscale serve handler; never remembered",
+    "CCBOARD_BACKUP": "an installer switch (0 = no nightly backup job; install.sh and scripts/install-macos.sh); the job's absence is the record, nothing to remember",
+    "CCBOARD_KEEP_AWAKE": "macOS installer switch: 1 adds the dev.ccboard.awake job (caffeinate); the job's presence is the record, nothing to remember",
+    "CCBOARD_MACOS_OPTIONAL": "macOS installer: which optional Homebrew tools to install (default code-server,restic,bun; none skips them); installer-time only",
+    "CCBOARD_MACOS_INSTALL_TOOLS": "macOS installer: 1 installs missing Homebrew tools without asking, 0 never; installer-time only",
+    "CCBOARD_MACOS_VENV_READY": "macOS installer test seam: the venv is already built, so pip is never run; documented in the script header",
+    "CCBOARD_MACOS_HEALTH_TRIES": "macOS installer: seconds to wait for /healthz after the jobs start (default 30); installer-time only",
+    "CCBOARD_REPLACE_CODE_SERVER_CONFIG": "an installer-run switch (install.sh, scripts/install-macos.sh) that backs up and replaces a code-server config ccboard did not write; never remembered",
+    "CCBOARD_TMUX_TMPDIR": "macOS installer: the TMUX_TMPDIR written into every launchd job (default /tmp); it lives in the plists, not in the settings file",
     "CODE_SERVER_SETTINGS": "points the code-server settings merge (and its doctor check) at another file; tests and unusual installs only",
 }
 INTERNAL = {**NOT_REMEMBERED, **EXTRA_INTERNAL}
