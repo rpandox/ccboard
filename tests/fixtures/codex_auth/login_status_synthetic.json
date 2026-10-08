@@ -1,0 +1,6 @@
+{
+  "_note": "SYNTHETIC (#68): `codex login status` in three states of a scratch CODEX_HOME, written from the adapter's known verdicts, NOT captured on the box. The unreadable-file text is a guess; the box capture is still to do.",
+  "missing": {"rc": 1, "stdout": "", "stderr": "Not logged in\n"},
+  "unreadable": {"rc": 1, "stdout": "", "stderr": "Error: failed to read the login file\n"},
+  "present": {"rc": 0, "stdout": "Logged in using ChatGPT\n", "stderr": ""}
+}

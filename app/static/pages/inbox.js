@@ -193,8 +193,8 @@ function inboxCard(s, st, opts) {
   const openSlot = el('span', { class: 'slot-open' });
   const ackSlot = el('span', { class: 'slot-ack' });
   const chips = el('div', { class: 'chips ib-chips', role: 'group', 'aria-label': 'Quick replies' });
-  SESSION_NUDGES.forEach((text, i) => {
-    const b = el('button', { class: 'chip-btn' + (i >= Inbox.CHIPS_SHOWN ? ' chip-extra' : ''), type: 'button', text });
+  quickLoad(tmux, sessionAgent(s)).forEach((text, i) => {                // #69: the session's quick replies, its agent's defaults until edited
+    const b = el('button', { class: 'chip-btn' + (i >= Inbox.CHIPS_SHOWN ? ' chip-extra' : ''), type: 'button', title: `types "${text}" into this session as a prompt`, text });
     b.addEventListener('click', (e) => { e.stopPropagation(); sessionNudge(cur.s, text, b); });
     chips.append(b);
   });

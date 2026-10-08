@@ -48,18 +48,21 @@ const row = (over = {}) => ({
   flags: {}, pending: [], task: null, shell_version: 'v1', ...over,
 });
 
+// claude.py slash_commands() as GET /api/agents serves it (v0.5.21: the box check V8 verified each row; effort's session-only change is POST /tune)
 const REGISTRY = {
-  clear: { cmd: '/clear', label: 'Clear', arg: false, read: false, verified: false, weight: 155, destructive: true },
-  compact: { cmd: '/compact', label: 'Compact', arg: false, read: false, verified: false, weight: 120, destructive: false },
-  usage: { cmd: '/usage', label: 'Usage', arg: false, read: true, verified: false, weight: 100, destructive: false },
-  effort: { cmd: '/effort', label: 'Effort', arg: true, read: false, verified: false, weight: 58, destructive: false },
-  model: { cmd: '/model', label: 'Model', arg: true, read: false, verified: false, weight: 39, destructive: false },
-  rename: { cmd: '/rename', label: 'Rename', arg: true, read: false, verified: false, weight: 10, destructive: false },
-  context: { cmd: '/context', label: 'Context', arg: false, read: true, verified: false, weight: 9, destructive: false },
-  status: { cmd: '/status', label: 'Status', arg: false, read: true, verified: false, weight: 3, destructive: false },
-  cost: { cmd: '/cost', label: 'Cost', arg: false, read: true, verified: false, weight: 0, destructive: false },
-  fast: { cmd: '/fast', label: 'Fast', arg: false, read: false, verified: false, weight: 0, destructive: false },
+  clear: { cmd: '/clear', label: 'Clear', arg: false, read: false, verified: true, weight: 155, destructive: true },
+  compact: { cmd: '/compact', label: 'Compact', arg: false, read: false, verified: true, weight: 120, destructive: false },
+  usage: { cmd: '/usage', label: 'Usage', arg: false, read: true, verified: true, weight: 100, destructive: false, dialog: true },
+  effort: { cmd: '/effort', label: 'Effort', arg: true, read: false, verified: true, weight: 58, destructive: false, tune: 'effort', saves_default: true },
+  model: { cmd: '/model', label: 'Model', arg: true, read: false, verified: true, weight: 39, destructive: false, saves_default: true },
+  rename: { cmd: '/rename', label: 'Rename', arg: true, read: false, verified: true, weight: 10, destructive: false },
+  context: { cmd: '/context', label: 'Context', arg: false, read: true, verified: true, weight: 9, destructive: false },
+  status: { cmd: '/status', label: 'Status', arg: false, read: true, verified: true, weight: 3, destructive: false, dialog: true },
+  cost: { cmd: '/cost', label: 'Cost', arg: false, read: true, verified: true, weight: 0, destructive: false, dialog: true },
+  fast: { cmd: '/fast', label: 'Fast', arg: true, read: false, verified: true, weight: 0, destructive: false, choices: ['on', 'off'] },
 };
+// an older server's rows (before v0.5.21): no `tune`, effort typed inline
+const OLD_REGISTRY = Object.fromEntries(Object.entries(REGISTRY).map(([k, v]) => { const o = { ...v, verified: false }; delete o.tune; delete o.saves_default; return [k, o]; }));
 
 function httpError(status, message, body) {
   const e = new Error(message);
@@ -111,6 +114,7 @@ async function page({ session = row(), agents = { claude: { slash: REGISTRY } },
     if (key === 'GET /pane') return { in_mode: false };
     if (key === 'GET /api/agents') { if (fake.agentsError) throw fake.agentsError; return { agents: fake.agents }; }
     if (key === 'POST /command') return { ok: true, sent: '/' + bodyIn.cmd, verified: false };
+    if (key === 'POST /tune') return { ok: true, setting: bodyIn.setting, value: bodyIn.value, confirmed: null, verified: true, session_only: true };
     if (key === 'POST /prompt') return { ok: true, pasted: true, queued: fake.row.state === 'working' };
     if (key === 'POST /keys') return { ok: true };
     throw httpError(404, '404 Not Found', { detail: 'Not Found' });
@@ -130,6 +134,7 @@ async function page({ session = row(), agents = { claude: { slash: REGISTRY } },
   };
   fake.chips = () => termmain.querySelectorAll('#tune button').map((n) => n.getAttribute('data-cmd'));
   fake.commands = () => fake.calls.filter((c) => c.method === 'POST' && c.path === API + '/command').map((c) => c.body);
+  fake.tunes = () => fake.calls.filter((c) => c.method === 'POST' && c.path === API + '/tune').map((c) => c.body);
   fake.posts = (suffix) => fake.calls.filter((c) => c.method === 'POST' && c.path === API + suffix).map((c) => c.body);
   fake.dialog = (cls) => w.document.querySelector('dialog.' + cls);
   fake.quickChips = () => termmain.querySelectorAll('#quick button').map((n) => n.textContent);
@@ -176,9 +181,8 @@ test('tuneGate matrix: idle, done, errored and idle-waiting are open; working, a
 test('effortOptions and modelOptions mark the current one from the statusline stats', async () => {
   const { TermPage: T } = await page();
   const eff = plain(T.effortOptions({ effort: 'XHigh' }));
-  assert.deepEqual(eff.map((o) => o.value), ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
+  assert.deepEqual(eff.map((o) => o.value), ['low', 'medium', 'high', 'xhigh', 'max'], 'ultracode is a setting with its own switch, never a level (#78)');
   assert.deepEqual(eff.filter((o) => o.current).map((o) => o.value), ['xhigh']);
-  assert.equal(eff.find((o) => o.value === 'ultracode').arg, 'ultracode on', 'claude.py V19: /effort ultracode on');
   assert.equal(eff.find((o) => o.value === 'high').arg, 'high');
   assert.deepEqual(plain(T.effortOptions(null)).filter((o) => o.current), []);
   const mod = plain(T.modelOptions({ model: 'Opus 5', model_id: 'claude-opus-5' }));
@@ -222,11 +226,14 @@ test('the strip sits between the context strip and the terminal as ONE row: the 
   assert.equal(tune.children.length, 1, 'the row is the only child of #tune');
   assert.equal(tune.querySelectorAll('.tune-cmds').length + tune.querySelectorAll('.tune-set').length, 0, 'no second row');
   const kids = rows[0].children;
-  assert.deepEqual(kids.map((n) => n.textContent), ['Clear', 'Compact', 'Usage', 'Rename', 'Context', 'Status', 'effortlowmediumhighxhighmaxultracode', 'modelopusfablesonnethaiku']);
-  assert.deepEqual(kids.slice(0, 6).map((n) => n.tagName), Array(6).fill('BUTTON'), 'six command chips first');
-  assert.deepEqual(kids.slice(6).map((n) => n.getAttribute('aria-label')), ['Effort', 'Model'], 'then the Effort segment, then the Model segment');
+  const NOTE = /(Also saves your default.*|Unverified key path.*)$/;          // the wide column's notes under a group (term.css hides them on a phone)
+  assert.deepEqual(kids.map((n) => n.textContent.replace(NOTE, '')), ['Clear', 'Compact', 'Usage', 'Rename', 'Context', 'Status', 'Ultracode', 'effortlowmediumhighxhighmax', 'modelopusfablesonnethaiku']);
+  assert.match(kids[7].textContent, /Unverified key path/, 'Claude Effort goes through the slider, a key path the box has not run');
+  assert.match(kids[8].textContent, /Also saves your default/, 'Claude Model typed inline also saves the default: said in words');
+  assert.deepEqual(kids.slice(0, 7).map((n) => n.tagName), Array(7).fill('BUTTON'), 'six command chips and the Ultracode switch first');
+  assert.deepEqual(kids.slice(7).map((n) => n.getAttribute('aria-label')), ['Effort', 'Model'], 'then the Effort segment, then the Model segment');
   const segs = rows[0].querySelectorAll('.tune-seg');
-  assert.deepEqual(segs[0].querySelectorAll('button').map((n) => n.textContent), ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
+  assert.deepEqual(segs[0].querySelectorAll('button').map((n) => n.textContent), ['low', 'medium', 'high', 'xhigh', 'max'], 'no ultracode level (#78)');
   assert.deepEqual(segs[1].querySelectorAll('button').map((n) => n.textContent), ['opus', 'fable', 'sonnet', 'haiku']);
   assert.equal(segs[1].querySelector('.tune-lbl').textContent, 'model', 'the label that says what the four chips are');
   assert.ok(!p.chips().includes('cost') && !p.chips().includes('fast'), 'weight 0 stays out');
@@ -243,7 +250,7 @@ test('Effort comes before Model in the row whatever their registry weights are',
 test('ccboard:term:allchips=1 adds the weight-0 chips (Cost and Fast) at the end; Fast shows its state', async () => {
   const p = await page({ allchips: true, session: row({ stats: { fast: true, effort: 'high' } }) });
   const cmds = p.cmdChips();
-  assert.deepEqual(cmds, ['Clear', 'Compact', 'Usage', 'Rename', 'Context', 'Status', 'Cost', 'Fast'], 'Cost and Fast end the command chips, before the segments');
+  assert.deepEqual(cmds, ['Clear', 'Compact', 'Usage', 'Rename', 'Context', 'Status', 'Cost', 'Fast', 'Ultracode'], 'Cost and Fast end the command chips, before the switch and the segments');
   assert.deepEqual(p.tune().querySelector('.tune-row').children.slice(-2).map((n) => n.getAttribute('aria-label')), ['Effort', 'Model']);
   assert.ok(p.chip('fast').classList.contains('on'));
   assert.equal(p.chip('fast').getAttribute('aria-pressed'), 'true');
@@ -306,8 +313,66 @@ test('a tap on the dimmed strip says why instead of doing nothing; an enabled st
 test('a shell row never shows the strip, and an unknown agent without a registry hides it too', async () => {
   const shell = await page({ session: row({ agent: 'shell' }) });
   assert.ok(shell.tune().classList.contains('hidden'));
-  const codex = await page({ session: row({ agent: 'codex' }), agents: { codex: { slash: {} } } });
-  assert.ok(codex.tune().classList.contains('hidden'), 'codex has no slash registry yet');
+  const other = await page({ session: row({ agent: 'gemini' }), agents: { gemini: { slash: {} } } });
+  assert.ok(other.tune().classList.contains('hidden'), 'an agent with no registry (and no built-in one) has no strip');
+});
+
+test('a Codex session gets the shared plan: Reasoning, Model and Permissions through POST /tune (the TUI pickers), /status as a chip, no Fast and no Ultracode', async () => {
+  const CODEX = {
+    model: { cmd: '/model', label: 'Model', arg: false, read: false, verified: true, weight: 0, destructive: false, drive: 'picker', tune: 'model' },
+    reasoning: { cmd: '/model', label: 'Reasoning', arg: false, read: false, verified: false, weight: 0, destructive: false, drive: 'picker', tune: 'reasoning' },
+    permissions: { cmd: '/permissions', label: 'Permissions', arg: false, read: false, verified: false, weight: 0, destructive: false, drive: 'picker', tune: 'permissions' },
+    status: { cmd: '/status', label: 'Status', arg: false, read: true, verified: true, weight: 0, destructive: false, dialog: false },
+  };
+  const st = { model: 'gpt-6.1-sol', effort: 'low' };
+  const p = await page({ session: row({ agent: 'codex', stats: st }), allchips: true,
+    agents: { codex: { slash: CODEX, models: ['gpt-6.1-sol', 'gpt-6-luna'], reasoning_by_model: { 'gpt-6.1-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] } } } });
+  const kids = p.tune().querySelector('.tune-row').children;
+  assert.deepEqual(kids.map((n) => n.getAttribute('aria-label') || n.textContent), ['Status', 'Reasoning', 'Model', 'Permissions']);
+  assert.deepEqual(p.tune().querySelectorAll('.tune-seg')[0].querySelectorAll('button').map((n) => n.textContent), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+  assert.deepEqual(p.tune().querySelectorAll('.tune-seg')[2].querySelectorAll('button').map((n) => n.textContent), ['Ask for approval', 'Approve for me'], 'never Full Access, untrusted or on-failure');
+  assert.ok(p.chip('model', 'gpt-6.1-sol').classList.contains('on') && p.chip('reasoning', 'low').classList.contains('on'));
+  assert.equal(p.tune().querySelectorAll('.tune-seg')[2].querySelectorAll('.on').length, 0, 'permissions unknown: nothing selected on a guess');
+  assert.match(p.chip('reasoning', 'high').getAttribute('title'), /unverified key path/);
+  await p.click(p.chip('model', 'gpt-6-luna'));
+  await p.click(p.chip('reasoning', 'high'));
+  await p.click(p.chip('permissions', 'Approve for me'));
+  assert.deepEqual(p.tunes(), [{ setting: 'model', value: 'gpt-6-luna' }, { setting: 'reasoning', value: 'high' }, { setting: 'permissions', value: 'auto' }]);
+  assert.deepEqual(p.commands(), [], 'nothing typed inline: Codex would send `/model gpt-6-luna` to the model as a prompt');
+});
+
+test('#42: the terminal page and the Quad tile build the same plan for the same row (one fixture, two callers)', async () => {
+  for (const [agent, stats] of [['claude', { model: 'Opus 5', effort: 'high', fast: false }], ['codex', { model: 'gpt-6-luna', effort: 'medium' }]]) {
+    const p = await page({ session: row({ agent, stats }), agents: {} });
+    const kit = p.w.get('TermKit');
+    const plan = plain(kit.tunePlan(agent, null, stats));                 // what the Quad tile's TermKit.tune draws for this row
+    const segs = p.tune().querySelectorAll('.tune-seg');
+    const groups = [plan.effort, plan.model, plan.perms].filter(Boolean);
+    assert.deepEqual(segs.map((g) => g.querySelectorAll('button').map((b) => b.textContent)), groups.map((g) => g.options.map((o) => o.label)), agent);
+    assert.deepEqual(segs.map((g) => g.querySelector('button').getAttribute('data-via')), groups.map((g) => g.via), agent + ': the same request route');
+    const cur = plain(kit.tuneCurrent(stats, kit.tunePlan(agent, null, stats), {}));
+    const on = segs.map((g) => g.querySelectorAll('button.on').map((b) => b.textContent)).flat();
+    assert.deepEqual(on, [cur.effort, cur.model].filter(Boolean), agent + ': the same current values');
+  }
+});
+
+test('a /tune answer settles the chip: confirmed flashes ok at once, a contradiction toasts the server\'s words', async () => {
+  const p = await page();
+  p.routes['POST /tune'] = (b) => ({ ok: true, setting: b.setting, value: b.value, confirmed: b.value === 'max', message: 'effort low not confirmed: the session did not show the change' });
+  await p.click(p.chip('effort', 'max'));
+  assert.ok(p.chip('effort', 'max').classList.contains('ok') && !p.chip('effort', 'max').classList.contains('pending'));
+  p.clock.advance(3100);
+  await p.click(p.chip('effort', 'low'));
+  assert.equal(p.toasts.at(-1).text, 'effort low not confirmed: the session did not show the change');
+  assert.ok(!p.chip('effort', 'low').classList.contains('pending'));
+});
+
+test('an older server (no `tune` in its registry): Effort and Ultracode are typed inline with the documented spellings', async () => {
+  const p = await page({ agents: { claude: { slash: OLD_REGISTRY } } });
+  await p.click(p.chip('effort', 'high'));
+  await p.click(p.chip('effort', 'Ultracode'));
+  assert.deepEqual(p.commands(), [{ cmd: 'effort', arg: 'high' }, { cmd: 'effort', arg: 'ultracode on' }]);
+  assert.deepEqual(p.tunes(), []);
 });
 
 test('a disabled chip sends nothing', async () => {
@@ -360,11 +425,29 @@ test('a poll while Clear waits for its second tap keeps the ask (the strip is pa
   assert.equal(clear.textContent, 'Clear', 'the session left its prompt: the ask is dropped');
 });
 
-test('Effort posts {cmd:"effort", arg:"high"} in one tap; ultracode sends the V19 argument', async () => {
+test('Effort goes through POST /tune in one tap (the /effort picker and `s`: never the inline form that saves the default); the Ultracode switch sends on, then off', async () => {
   const p = await page();
   await p.click(p.chip('effort', 'high'));
-  await p.click(p.chip('effort', 'ultracode'));
-  assert.deepEqual(p.commands(), [{ cmd: 'effort', arg: 'high' }, { cmd: 'effort', arg: 'ultracode on' }]);
+  assert.deepEqual(p.tunes(), [{ setting: 'effort', value: 'high' }]);
+  assert.deepEqual(p.commands(), []);
+  const ultra = p.chip('ultracode');
+  assert.equal(ultra.textContent, 'Ultracode');
+  assert.equal(ultra.getAttribute('aria-pressed'), 'false', 'no reading yet: not on');
+  p.clock.advance(25000);
+  await p.click(ultra);
+  assert.deepEqual(p.tunes().at(-1), { setting: 'ultracode', value: 'on' });
+  p.row = row({ flags: { tuned: { ultracode: { value: 'on', at: 't' } } } });
+  await p.tick();
+  assert.equal(p.chip('ultracode').getAttribute('aria-pressed'), 'true', 'the pane read back says on');
+  p.clock.advance(25000);
+  await p.click(p.chip('ultracode'));
+  assert.deepEqual(p.tunes().at(-1), { setting: 'ultracode', value: 'off' }, '/effort ultracode off, never /effort high');
+});
+
+test('Fast sends /fast on or /fast off, never the bare /fast (it opens a dialog that swallows keys)', async () => {
+  const p = await page({ allchips: true, session: row({ stats: { fast: true, effort: 'high' } }) });
+  await p.click(p.chip('fast'));
+  assert.deepEqual(p.commands(), [{ cmd: 'fast', arg: 'off' }]);
 });
 
 test('Model chips post {cmd:"model", arg:<name>}', async () => {
@@ -893,8 +976,8 @@ test('a registry that arrives after the first paint replaces the embedded list; 
   const p = await page({ agents: { claude: { slash: { compact: REGISTRY.compact, usage: REGISTRY.usage } } } });
   assert.deepEqual(p.cmdChips(), ['Compact', 'Usage']);
   const down = await page({ agentsError: httpError(500, 'boom') });
-  assert.equal(down.cmdChips().length, 6, 'the embedded list: Clear Compact Usage Rename Context Status');
-  assert.deepEqual(down.cmdChips(), ['Clear', 'Compact', 'Usage', 'Rename', 'Context', 'Status']);
+  assert.equal(down.cmdChips().length, 7, 'the built-in list (TermKit): Clear Compact Usage Rename Context Status, and the Ultracode switch');
+  assert.deepEqual(down.cmdChips(), ['Clear', 'Compact', 'Usage', 'Rename', 'Context', 'Status', 'Ultracode']);
   assert.equal(down.toasts.length, 0, 'a failed registry fetch is silent');
 });
 

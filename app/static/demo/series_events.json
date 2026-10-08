@@ -203,6 +203,12 @@
       "key": "ccboard--ccboard--s1",
       "v": 0.0,
       "m": {"p": "ccboard", "r": "ccboard", "s": "s1", "a": "claude"}
+    },
+    {
+      "t": 1790996388,
+      "key": "ccboard--ccboard--cx1",
+      "v": 0.0,
+      "m": {"p": "ccboard", "r": "ccboard", "s": "cx1", "a": "codex"}
     }
   ],
   "truncated": false,

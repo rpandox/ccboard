@@ -1112,7 +1112,9 @@ test('?demo=1: the fixture shows every inbox kind, every chip and the limit bann
   assert.ok(on(chip(P2, 'bdg-limit')), 'the limit chip sits on the rate-limited session');
   assert.equal(qa(w, '.pblocks .bdg-limit').filter(on).length, 1);
   assert.equal(qa(w, '.sched-item').length, 3, 'the schedules strip has its three runs');
-  assert.deepEqual(['waiting', 'working', 'idle', 'done', 'errored'].map((f) => text(seg(w, f).querySelector('.sum-n'))), ['2', '2', '1', '1', '1']);
+  // working 1, idle 2: the Codex demo session is idle with 'no hooks (untrusted?)' (#96)
+  assert.deepEqual(['waiting', 'working', 'idle', 'done', 'errored'].map((f) => text(seg(w, f).querySelector('.sum-n'))), ['2', '1', '2', '1', '1']);
+  assert.equal(qa(w, `[data-tmux="${CX}"] a.bdg-hooks`).length >= 1, true, 'the demo shows the chip on the Codex row');
   assert.equal(text(q(w, '.pb-older-toggle')), '▸ older (6)', 'six quiet projects');
   w.run('Widgets.limitBanner(state)');
   assert.match(text(w.document.querySelector('#banner')), /Claude rate limit \(5h\) · resets \d{2}:\d{2} · s2/);

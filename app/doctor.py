@@ -879,6 +879,32 @@ register_provider("memory", MEM_GROUP, memory_checks)       # claude-mem (v0.5.1
 register_provider("codex", CODEX_GROUP, codex_checks)       # the Codex adapter's checks (v0.5.11)
 
 
+def _c_codex_saved_models(db) -> Outcome:
+    """#17: a Codex schedule whose saved model the live catalogue (`codex debug models`) no longer lists as visible (gpt-5.5 leaves Codex on
+    2026-10-14). Judged only against a catalogue Codex actually answered: the built-in fallback is not a reading, so an unknown catalogue
+    is a skip, never a failure. Launcher defaults live in the browser and tasks carry no model, so schedules are what the board can see."""
+    from . import agents
+    try:
+        live = agents.get("codex").live_models()
+    except (KeyError, AttributeError):
+        return _skip("no Codex adapter")
+    if live is None:
+        return _skip("the Codex model list has not been read yet (it is read in the background once Codex is installed)")
+    visible = {str(m.get("slug")) for m in live}
+    stale = []
+    for j in (db.jobs() if db is not None else []):
+        model = (j.get("opts") or {}).get("model") if isinstance(j.get("opts"), dict) else None
+        if j.get("agent") == "codex" and isinstance(model, str) and model and model not in visible:
+            stale.append(f"{j.get('name') or 'schedule ' + str(j.get('id'))} ({model})")
+    if stale:
+        return _warn(f"{len(stale)} Codex schedule{'s' if len(stale) != 1 else ''} name{'' if len(stale) != 1 else 's'} a model Codex no longer "
+                     f"lists: {', '.join(stale[:5])}", fix("pick another model"))
+    return _pass(f"every Codex schedule names a listed model ({len(visible)} listed)")
+
+
+register("codex-saved-models", CODEX_GROUP, "Saved Codex models", _c_codex_saved_models)
+
+
 def _finish(cid: str, group: str, label: str, status: str, detail, f) -> Check:
     if status not in STATUSES:
         status, detail, f = "warn", f"unknown status {status!r}", None

@@ -1,10 +1,10 @@
 """Codex CLI adapter (v0.5.11): launch argv, option validation, headless runs, hooks, identity helpers, doctor checks.
 
-Built against codex-cli 0.145.0 (what ubu2 runs) and tolerant of newer releases: `codex --help` is probed once per binary
-(cached per path + mtime) into a capability set, and the adapter emits only flags that set contains. A newer Codex that has
+First built against codex-cli 0.145.0, now current with 0.160 (the box) and tolerant of other releases: `codex --help` is probed once
+per binary (cached per path + mtime) into a capability set, and the adapter emits only flags that set contains. A Codex that has
 --no-daemon / --approve-for-me gets them; 0.145 (whose -a offers untrusted | on-request | never, no on-failure) gets `-a on-request`
-instead. When no binary can be probed (not installed, timeout, garbage output) the 0.145 baseline is assumed, so argv can always be
-built (tests, previews, a box without codex).
+instead. When no binary can be probed (not installed, timeout, garbage output) the 0.160 baseline is assumed (BASELINE_CAPS: -a
+on-request | never only, `untrusted` retired), so argv can always be built (tests, previews, a box without codex).
 
 Rules this module keeps (plan v0.5.11, hard rules):
   * the interactive argv is built here and only here; user `extra` args never carry a flag the adapter owns (-c, -p, -s, -a, -m,
@@ -90,8 +90,10 @@ CONFIG_BLOCKED_PREFIX = ("features.hooks", "features.codex_hooks", "features.app
                          "model_providers.", "mcp_servers.", "projects.", "sandbox_workspace_write.", "permissions.")
 HEADLESS_MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk")      # a headless run never bypasses
 SANDBOXES = ("read-only", "workspace-write", "danger-full-access")
-APPROVALS = ("untrusted", "on-failure", "on-request", "never")
-EFFORTS = ("low", "medium", "high", "xhigh")    # the catalogue may add more per model (the box lists `max` too)
+# -a values, current first (codex 0.160: on-request and never). `untrusted` is retired (the docs: it "can prevent either client from starting")
+# and `on-failure` is deprecated: both stay here only as values an older binary's `--help` may still list, never as a default (_approvals).
+APPROVALS = ("on-request", "never", "on-failure", "untrusted")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")   # the catalogue adds more per model (`ultra` on gpt-6.1-sol)
 UNSUPPORTED = ("allowed_tools", "disallowed_tools", "tools", "append_system_prompt", "fallback_model", "fork_session", "from_pr",
                "max_turns", "max_budget_usd", "devcontainer", "agent_name", "autocompact", "mcp_config")
 TASK_REFUSAL = ("bypassPermissions, danger-full-access or a flag override is not allowed for tasks; start a session and choose bypass "
@@ -110,12 +112,13 @@ FORBIDDEN_STRICT_LONG = frozenset({"--add-dir"})        # unattended runs and ta
 FORBIDDEN_ARG_PARTS = ("dangerously", "yolo", "bypass")  # substrings, any case (scheduler.FORBIDDEN_ARG_PARTS mirrors them)
 FORBIDDEN_ARG_TOKENS = tuple(sorted(FORBIDDEN_SHORT | FORBIDDEN_LONG))
 
-# Codex's own flag set at 0.145.0 (the box, from its real `codex --help`, tests/fixtures/codex_help_0145_real.txt): used when `codex --help`
-# cannot be probed. Its -a offers untrusted | on-request | never: there is no on-failure.
-BASELINE_CAPS = {"fork": True, "no_daemon": False, "approve_for_me": False, "worktree": False, "yolo": False, "bypass_approvals": True,
+# Codex's own flag set at 0.160 (tests/fixtures/codex_help_0160.txt: the 0.157.1 capture, whose option list the box's 0.160.1 `--help`
+# matches per the V8-Codex box check): used when `codex --help` cannot be probed. -a offers on-request | never only (`untrusted` is
+# retired, `on-failure` deprecated); --no-daemon and --approve-for-me exist. A live probe of an older binary still reports what it lists.
+BASELINE_CAPS = {"fork": True, "no_daemon": True, "approve_for_me": True, "worktree": True, "yolo": False, "bypass_approvals": True,
                  "hook_trust_flag": True, "no_alt_screen": True, "search": True, "add_dir": True, "cd": True, "profile": True,
                  "config": True, "model": True, "sandbox": True, "ask_for_approval": True, "approval_on_failure": False,
-                 "approval_untrusted": True}
+                 "approval_untrusted": False}
 # `codex exec` at 0.145.0 has no -a/--ask-for-approval (it never prompts) and no --search; --skip-git-repo-check, -o, -C, --json do exist.
 BASELINE_EXEC_CAPS = {"exec_approval": False, "exec_search": False, "exec_cd": True, "exec_output_file": True, "exec_skip_git": True,
                       "exec_json": True}
@@ -128,10 +131,18 @@ PROC = Path("/proc")                                # patched by tests (a fake p
 PROC_NAME = "codex"                                 # /proc/<pid>/comm of a Codex process: the native binary names itself so, the npm node wrapper is `node`
 MAX_ANCESTOR_HOPS = 40
 
-# `codex debug models` fallback: the visible slugs on ubu2 at 0.145.0 (reasoning levels as that catalogue lists them).
-_ALL_LEVELS = ["low", "medium", "high", "xhigh", "max"]
-FALLBACK_MODELS = [{"slug": s, "name": s, "reasoning": list(_ALL_LEVELS), "default_reasoning": "medium"}
-                   for s in ("gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5", "codex-auto-review")]
+# `codex debug models` fallback: the current visible family at 0.160, in the order the TUI's /model picker lists them (V8-Codex box check).
+# Levels: low..max everywhere, `ultra` only where the picker's "More reasoning..." offered it (GPT-6.1-Sol; GPT-6-Luna showed Max only).
+# GPT-6-Astra and GPT-6-Sol were not opened on the box: they get low..max, no ultra (a level offered by the live catalogue still wins).
+# No hidden model (codex-auto-review is internal); the older gpt-5.6-* models come back through the live catalogue when it lists them.
+# app/static/termkit.js TK_CODEX_MODELS and app/static/launcher.js LX_CODEX_MODELS carry the same slugs (tests/test_static_codex.py).
+_LEVELS = ["low", "medium", "high", "xhigh", "max"]
+FALLBACK_MODELS = [
+    {"slug": "gpt-6.1-sol", "name": "gpt-6.1-sol", "reasoning": _LEVELS + ["ultra"], "default_reasoning": "low"},
+    {"slug": "gpt-6-astra", "name": "gpt-6-astra", "reasoning": list(_LEVELS), "default_reasoning": None},
+    {"slug": "gpt-6-sol", "name": "gpt-6-sol", "reasoning": list(_LEVELS), "default_reasoning": None},
+    {"slug": "gpt-6-luna", "name": "gpt-6-luna", "reasoning": list(_LEVELS), "default_reasoning": "medium"},
+]
 
 # Hook events the board needs registered (scripts/codex_hooks.py EVENTS is the source; this list is used when that file is missing).
 FALLBACK_EVENTS = ["SessionStart", "UserPromptSubmit", "Stop", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact",
@@ -242,6 +253,166 @@ def foreign_processes(board_pids=()) -> int:
         if not mine:
             n += 1
     return n
+
+
+# ---------------------------------------------------------------- #97: where Codex is installed and whether its own update can work
+SAFE_UPDATE_CMD = "npm install -g --prefix ~/.local @openai/codex@latest"
+SAFE_UPDATE_TEXT = f"Update Codex with `{SAFE_UPDATE_CMD}`. Do not accept Codex's own update prompt."
+_NPMRC_PREFIX = re.compile(r"^\s*prefix\s*=\s*(.*?)\s*$")
+
+
+def _npmrc_prefix(path: Path, home: Path) -> str | None:
+    """The `prefix` key of one npmrc file, nothing else: every other line (an npmrc can hold auth tokens) is skipped unread past its key and
+    never kept, logged or returned. `~/` and ${HOME} expand; quotes are dropped. None when the file or the key is missing."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in itertools.islice(f, 2000):
+                m = _NPMRC_PREFIX.match(line)
+                if not m:
+                    continue
+                val = m.group(1).strip().strip('"').strip("'")
+                if not val:
+                    return None
+                val = val.replace("${HOME}", str(home)).replace("$HOME", str(home))
+                return str(home / val[2:]) if val.startswith("~/") else (str(home) if val == "~" else val)
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _install_prefix(exe: str) -> tuple[Path, bool]:
+    """(the prefix Codex is installed under, whether it is an npm global install): the real path of the binary walked up to
+    `<prefix>/lib/node_modules`; a binary that is not under one (a standalone build) gives the parent of its bin directory."""
+    real = Path(os.path.realpath(exe))
+    for p in real.parents:
+        if p.name == "node_modules" and p.parent.name == "lib":
+            return p.parent.parent, True
+    return Path(exe).parent.parent, False
+
+
+def _npm_prefix(env: dict, home: Path, node: str | None) -> tuple[str | None, str]:
+    """(npm's global prefix, where it was learned) WITHOUT running npm: NPM_CONFIG_PREFIX / npm_config_prefix in the board's environment, the
+    `prefix` key of the user npmrc ($NPM_CONFIG_USERCONFIG or ~/.npmrc), of the global npmrc beside node, else npm's built-in default (the
+    directory above node's bin). (None, 'unknown') when node is not found either."""
+    for k in ("NPM_CONFIG_PREFIX", "npm_config_prefix"):
+        if env.get(k):
+            return env[k], k
+    userrc = Path(env.get("NPM_CONFIG_USERCONFIG") or env.get("npm_config_userconfig") or home / ".npmrc")
+    got = _npmrc_prefix(userrc, home)
+    if got:
+        return got, str(userrc)
+    if node:
+        nprefix = Path(os.path.realpath(node)).parent.parent
+        got = _npmrc_prefix(nprefix / "etc" / "npmrc", home)
+        if got:
+            return got, str(nprefix / "etc" / "npmrc")
+        return str(nprefix), "the default beside node"
+    return None, "unknown"
+
+
+def _writable(prefix: Path) -> bool:
+    """Can this user write where `npm install -g --prefix <prefix>` writes (lib/node_modules and bin, or the prefix itself)?"""
+    dirs = [d for d in (prefix / "lib" / "node_modules", prefix / "bin") if d.is_dir()] or [prefix]
+    return all(os.access(d, os.W_OK) for d in dirs)
+
+
+def update_path_check(exe: str | None, *, env: dict | None = None, home: Path | None = None, node: str | None | bool = True) -> Check:
+    """Doctor `codex-update-path` (#97): where Codex lives and whether its own update prompt (which runs `npm install -g` against npm's global
+    prefix) can work. Filesystem only: never runs npm or any process, never touches the network, reads only the `prefix` key of npmrc files.
+      pass  the install prefix is writable and npm's global prefix is the same place
+      warn  the install prefix is not writable, or npm's global prefix is not writable, or it is somewhere else (an update lands elsewhere)
+      skip  no binary, or npm's prefix cannot be learned offline (unknown: not healthy, not failed)"""
+    label = "Codex update path"
+    if not exe:
+        return Check("codex-update-path", "codex", label, "skip", "codex is not installed")
+    env = dict(os.environ) if env is None else env
+    home = Path.home() if home is None else Path(home)
+    if node is True:
+        import shutil
+        node = shutil.which("node", path=env.get("PATH"))
+    fix = {"text": SAFE_UPDATE_TEXT, "cmd": SAFE_UPDATE_CMD}
+    try:
+        prefix, managed = _install_prefix(exe)
+        inst_ok = _writable(prefix)
+        npm, where = _npm_prefix(env, home, node or None)
+    except (OSError, ValueError, RuntimeError) as e:
+        return Check("codex-update-path", "codex", label, "skip", f"unknown: the install could not be read ({e.__class__.__name__})", fix)
+    where_bin = f"{exe} (installed under {prefix}{'' if managed else ', not an npm install'}; {'writable' if inst_ok else 'not writable'})"
+    if not inst_ok:
+        return Check("codex-update-path", "codex", label, "warn",
+                     f"{where_bin}: Codex's own update prompt runs npm install -g there and will fail, which can leave Codex without its native "
+                     "binary", fix)
+    if npm is None:
+        return Check("codex-update-path", "codex", label, "skip", f"{where_bin}; npm's global prefix: unknown (no npm setting and no node found)",
+                     fix)
+    npm_path = Path(os.path.expanduser(npm))
+    npm_ok = _writable(npm_path)
+    same = os.path.realpath(npm_path) == os.path.realpath(prefix)
+    npm_txt = f"npm's global prefix {npm} ({where}; {'writable' if npm_ok else 'not writable'})"
+    if not npm_ok:
+        return Check("codex-update-path", "codex", label, "warn",
+                     f"{where_bin}; {npm_txt}: Codex's own update prompt installs there and will fail", fix)
+    if not same:
+        return Check("codex-update-path", "codex", label, "warn",
+                     f"{where_bin}; {npm_txt}: Codex's own update prompt would install a second copy there, not update this one", fix)
+    return Check("codex-update-path", "codex", label, "pass", f"{where_bin}; {npm_txt}; writable as the board's user ({_whoami()})")
+
+
+def _whoami() -> str:
+    """The user the board runs as (writability is judged for it, not for the person's shell): a name, else the uid."""
+    try:
+        import pwd
+        return pwd.getpwuid(os.geteuid()).pw_name
+    except (ImportError, KeyError, AttributeError, OSError):
+        return f"uid {os.geteuid()}" if hasattr(os, "geteuid") else "unknown"
+
+
+# ---------------------------------------------------------------- #96: a Codex session that took a prompt but never sent a hook
+HOOKS_GRACE = 30.0          # seconds after the first turn a Codex session may go without any hook before the row says so
+
+
+def hooks_missing(row: dict | None, now: float | None = None) -> str | None:
+    """The one rule every surface reads (the state builder puts it on the row as `hooks_missing`): 'untrusted' (review mode) or 'bypass'
+    (CCBOARD_CODEX_HOOK_TRUST=bypass, where hooks should be running) for a Codex row that has sent the board no hook (flags.hook_seen unset)
+    HOOKS_GRACE seconds after its first turn (flags.turn_seen_at: a prompt the board sent, or a user message in its rollout), else None.
+    Codex sends its first hook only when the first turn starts, so a fresh launch with no prompt yet never qualifies; an ended row and every
+    Claude or shell row never do. The caller lists only live tmux sessions, so 'alive' holds there. Pure apart from the setting."""
+    if not isinstance(row, dict) or row.get("agent") != "codex" or row.get("state") == "ended":
+        return None
+    flags = row.get("flags") if isinstance(row.get("flags"), dict) else {}
+    if flags.get("hook_seen"):
+        return None
+    at = flags.get("turn_seen_at")
+    from datetime import datetime, timezone
+    try:
+        d = datetime.fromisoformat(at[:-1] + "+00:00" if at.endswith(("Z", "z")) else at) if isinstance(at, str) and at else None
+        t = (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).timestamp() if d else None
+    except ValueError:
+        t = None
+    if t is None:
+        return None
+    if (time.time() if now is None else float(now)) - t < HOOKS_GRACE:
+        return None
+    return "bypass" if settings.codex_hook_trust == "bypass" else "untrusted"
+
+
+def auth_verdict(login: dict | None, evidence: dict | None) -> dict:
+    """The auth_probe rule, pure. `login` is auth_status()'s verdict ({loggedIn, error?}), `evidence` codex_rollout.auth_signal's newest
+    ({kind: ok|rejected, at, message?} or None).
+      not logged in (`codex login status` says so)      missing   (source login_status)
+      login status could not be read or exited oddly     unknown   (login_status): an unreadable file is not told from a broken binary
+      logged in, newest rollout evidence an auth error   rejected  (rollout)
+      logged in, newest rollout evidence a model call    ok        (rollout)
+      logged in, no evidence                             unknown   (login_status): the file exists; nothing says it still works"""
+    login = login if isinstance(login, dict) else {}
+    if not login.get("loggedIn"):
+        return {"state": "unknown" if login.get("error") else "missing", "source": "login_status"}
+    if isinstance(evidence, dict) and evidence.get("kind") in ("ok", "rejected"):
+        out = {"state": evidence["kind"], "source": "rollout", "at": evidence.get("at")}
+        if evidence["kind"] == "rejected" and isinstance(evidence.get("message"), str):
+            out["message"] = evidence["message"][:300]
+        return out
+    return {"state": "unknown", "source": "login_status"}
 
 
 def _bin_key(exe: str) -> tuple:
@@ -501,6 +672,29 @@ class CodexAgent(Agent):
             out["error"] = f"codex login status exited {rc}"
         return out
 
+    def auth_probe(self, db=None, now: float | None = None) -> dict:
+        """{state: ok|missing|rejected|unknown, source: login_status|rollout|none, at?, message?}: what the board can tell about the live
+        Codex login from FREE signals only (#68): the cached `codex login status` verdict (it reports that a login file exists, not that it
+        works) and the newest rollout tails (codex_rollout.auth_signal; with `db`, only evidence stamped after the current account became
+        live). Never reads auth.json, never starts a model request (`codex exec` is a paid probe and belongs behind a button, not here).
+        `unknown` is not healthy: a login file alone is never reported as ok. See auth_verdict."""
+        if not self.bin():
+            return {"state": "unknown", "source": "none"}
+        login = self.auth_status()
+        evidence = None
+        if login.get("loggedIn"):
+            from . import codex_rollout
+            since = None
+            if db is not None:
+                rec = db.kv_get(codex_rollout.KV_CURRENT)
+                cur = rec.get("value") if isinstance(rec, dict) else None
+                since = codex_rollout._epoch(cur.get("since")) if isinstance(cur, dict) else None
+            try:
+                evidence = codex_rollout.auth_signal(now, since)
+            except Exception:
+                evidence = None
+        return auth_verdict(login, evidence)
+
     def login_start(self) -> None:
         raise projects.BadRequest("Codex login from the board arrives with onboarding (v0.5.19); run `codex login --device-auth` on the box")
 
@@ -621,6 +815,16 @@ class CodexAgent(Agent):
             return (rows, True) if rows else ([dict(m) for m in FALLBACK_MODELS], False)
         return [dict(m) for m in _memo(key, MODELS_TTL, probe)]
 
+    def live_models(self) -> list[dict] | None:
+        """The catalogue as `codex debug models` last answered it (cached, never a subprocess), or None while it has not answered: the
+        fallback list is not a reading, so nothing may be judged stale against it (doctor's codex-saved-models)."""
+        exe = self.bin()
+        if not exe:
+            return None
+        with _memo_lock:
+            hit = _memo_items.get(("models", _bin_key(exe)))
+        return [dict(m) for m in hit[1]] if hit and hit[2] else None
+
     def _warm_models(self, exe: str) -> None:
         """Start a background refresh of the catalogue when it is missing or stale (one at a time), so describe() / option_schema()
         never wait on `codex debug models`: the first GET /api/agents after a cold start shows the fallback, the next one the real list."""
@@ -700,7 +904,7 @@ class CodexAgent(Agent):
                      "-s. danger-full-access skips the sandbox like bypass: it needs the bypass acknowledgement and is interactive only.",
                      "basic", False, {"mode": ["custom"]}),
             OptField("approval", "Approval policy", "select", list(self._approvals()), None,
-                     "-a. on-failure and untrusted only where this Codex has them.", "basic", False, {"mode": ["custom"]}),
+                     "-a. on-request or never; untrusted is retired and on-failure deprecated (offered only where this Codex still lists them).", "basic", False, {"mode": ["custom"]}),
             OptField("prompt", "First prompt", "textarea", None, None,
                      f"Typed as the first message of a new session ({MAX_PROMPT} characters at most).", "basic", False, {"launcher": ["new"]}),
             OptField("search", "Live web search", "bool", None, False, "--search.", "advanced"),
@@ -842,11 +1046,11 @@ class CodexAgent(Agent):
         full: dict = {}
         model = raw.get("model")
         if model is not None and not isinstance(model, str):
-            raise projects.BadRequest("model: use a model slug such as gpt-5.5")
+            raise projects.BadRequest("model: use a model slug such as gpt-6-sol")
         if model and model.strip():
             m = model.strip()
             if not MODEL_RE.match(m):
-                raise projects.BadRequest("model: use a model slug such as gpt-5.5")
+                raise projects.BadRequest("model: use a model slug such as gpt-6-sol")
             full["model"] = m
         effort = raw.get("reasoning_effort") or raw.get("reasoning") or raw.get("effort")
         if effort:
@@ -1147,8 +1351,11 @@ class CodexAgent(Agent):
             text = "\n".join(errors) or (stderr or "").strip()[-4000:] or (stdout or "").strip()[-4000:]
         blob = "\n".join(errors) + (f"\n{stderr}" if rc != 0 else "")
         rate_limited = is_error and bool(RATE_RE.search(blob) or LIMIT_MSG_RE.search(blob[-500:]) or "usage_limit" in blob.lower())
+        # #68: a run that already happened says for free whether the login was refused (its turn.failed / error text); never a rate limit
+        from ..login_problem import codex_auth_failure
+        auth_failure = is_error and not rate_limited and any(codex_auth_failure(e) for e in errors)
         return {"text": (text or "")[:20000], "session_id": sid, "cost": None, "turns": turns or None, "is_error": is_error,
-                "subtype": subtype, "rate_limited": rate_limited, "usage": usage}
+                "subtype": subtype, "rate_limited": rate_limited, "usage": usage, "auth_failure": auth_failure}
 
     # ---- hooks ----
     @staticmethod
@@ -1360,9 +1567,16 @@ class CodexAgent(Agent):
 
     # ---- control surface ----
     def slash_commands(self) -> dict[str, SlashSpec]:
-        # unverified until V8 shows the TUI accepts them typed inline; weight 0 keeps them out of the default tuning strip
-        return {"model": SlashSpec(cmd="/model", label="Model", arg=True, read=False, verified=False, weight=0),
-                "reasoning": SlashSpec(cmd="/reasoning", label="Reasoning", arg=True, read=False, verified=False, weight=0)}
+        # The V8-Codex box check (codex 0.160.1, issue #16): no TUI command takes an argument inline (`/model gpt-6-luna` went to the model
+        # as a prompt), there is no /reasoning, /approvals or /sandbox, and bare /fast toggles and writes config.toml (never offered).
+        # Model and reasoning are the two steps of the /model picker, approvals plus sandbox are the /permissions picker's presets: POST
+        # /tune drives them with keys from app/agents/pickers.py and `s` (this session only) where the picker has it. `verified`: the box
+        # ran that exact path (picking a model and `s`; /status printing inline). Reasoning (the cursor's start in step 2 was not seen)
+        # and /permissions (picked from an unrecorded cursor) read the cursor off the screen instead and stay unverified.
+        return {"model": SlashSpec(cmd="/model", label="Model", drive="picker", tune="model", verified=True),
+                "reasoning": SlashSpec(cmd="/model", label="Reasoning", drive="picker", tune="reasoning", verified=False),
+                "permissions": SlashSpec(cmd="/permissions", label="Permissions", drive="picker", tune="permissions", verified=False),
+                "status": SlashSpec(cmd="/status", label="Status", read=True, verified=True, dialog=False)}
 
     def exit_command(self) -> str:
         return "/quit"                                   # VERIFY V17
@@ -1423,7 +1637,7 @@ class CodexAgent(Agent):
             for cid, label in (("codex-auth", "Codex login"), ("codex-hooks", "Codex hooks"), ("codex-trust", "Codex hook trust"),
                                ("codex-alt-screen", "Codex --no-alt-screen"), ("codex-features", "Codex hooks feature"),
                                ("codex-sessions", "Codex sessions folder"), ("codex-mcp", "ccboard MCP server in Codex"),
-                               ("codex-repo-hooks", "Repo-level Codex hooks")):
+                               ("codex-repo-hooks", "Repo-level Codex hooks"), ("codex-update-path", "Codex update path")):
                 out.append(Check(cid, "codex", label, "skip", "codex is not installed"))
             return out
         # the probes are independent and each has its own subprocess timeout: run them side by side so the group fits the 5 s cap.
@@ -1439,8 +1653,8 @@ class CodexAgent(Agent):
         st = st or {}
         # version
         vt = _version_tuple(ver)
-        upd = {"text": "Update Codex (`codex update`, or reinstall it the way you installed it): newer releases add flags the board uses when "
-                       "present (--approve-for-me, --no-daemon).", "cmd": "codex update"}
+        upd = {"text": "Update Codex: newer releases add flags the board uses when present (--approve-for-me, --no-daemon). " + SAFE_UPDATE_TEXT,
+               "cmd": SAFE_UPDATE_CMD}
         if not ver:
             out.append(Check("codex-bin", "codex", "Codex CLI", "warn", f"{exe} (version unknown)",
                              {"text": "`codex --version` printed nothing; run codex once in a shell to see why."}))
@@ -1548,4 +1762,9 @@ class CodexAgent(Agent):
         else:
             out.append(Check("codex-repo-hooks", "codex", "Repo-level Codex hooks", "pass",
                              f"{len(repo_hooks)} file(s); Codex asks you to review each before it runs: " + ", ".join(repo_hooks[:3])))
+        # where Codex lives and whether its own update prompt can work (#97): files only, never npm
+        up = update_path_check(exe)
+        if ver:
+            up.detail = f"codex {ver}: {up.detail}"
+        out.append(up)
         return out

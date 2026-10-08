@@ -457,8 +457,8 @@ test('the schedule form with Codex: model and reasoning, no turn or budget limit
   assert.match(fieldOf(f, /^Prompt$/).querySelector('textarea').getAttribute('placeholder'), /codex exec/);
   assert.match(fieldOf(f, /^Extra args$/).querySelector('input').getAttribute('placeholder'), /codex/);
   const model = fieldOf(f, /^Model$/).querySelector('select');
-  assert.ok(model.querySelectorAll('option').map((o) => o.getAttribute('value')).includes('gpt-5.5'), 'the models of the Codex schema');
-  model.value = 'gpt-5.5';
+  assert.ok(model.querySelectorAll('option').map((o) => o.getAttribute('value')).includes('gpt-6-sol'), 'the models of the Codex schema');
+  model.value = 'gpt-6-sol';
   model.dispatchEvent({ type: 'change' });
   segBtn(f, 'Reasoning', 'high').click();
   fieldOf(f, /^Name$/).querySelector('input').value = 'nightly-review';
@@ -468,14 +468,14 @@ test('the schedule form with Codex: model and reasoning, no turn or budget limit
   submit(f);
   await tick();
   const body = calls(w).filter((c) => c.method === 'POST')[0].body;
-  assert.deepEqual(body, { name: 'nightly-review', prompt: 'review main', permission_mode: 'plan', run_now: false, cron: '30 2 * * *', agent: 'codex', model: 'gpt-5.5', reasoning_effort: 'high' });
-  assert.deepEqual(JSON.parse(w.localStorage.getItem('ccboard:task:shop/api:codex')), { model: 'gpt-5.5', reasoning_effort: 'high' }, 'the sheet\'s own key for Codex');
+  assert.deepEqual(body, { name: 'nightly-review', prompt: 'review main', permission_mode: 'plan', run_now: false, cron: '30 2 * * *', agent: 'codex', model: 'gpt-6-sol', reasoning_effort: 'high' });
+  assert.deepEqual(JSON.parse(w.localStorage.getItem('ccboard:task:shop/api:codex')), { model: 'gpt-6-sol', reasoning_effort: 'high' }, 'the sheet\'s own key for Codex');
   assert.equal(JSON.parse(w.localStorage.getItem('ccboard:job:shop/api')).agent, 'codex');
   w.run('closeSheet()');
   open(w, 'schedule', SHOP_API);
   const g = form(w);
   assert.deepEqual(segOn(g, 'Agent'), ['◇ Codex'], 'the next schedule for this repo starts with Codex');
-  assert.equal(fieldOf(g, /^Model$/).querySelector('select').value, 'gpt-5.5');
+  assert.equal(fieldOf(g, /^Model$/).querySelector('select').value, 'gpt-6-sol');
   assert.deepEqual(segOn(g, 'Reasoning'), ['high']);
 });
 
@@ -491,7 +491,7 @@ test('the schedule form with Codex: a refused argument lands under Extra args, a
   submit(f);
   await tick();
   assert.match(text(fieldOf(f, /^Extra args$/).querySelector('.field-err')), /not allowed for unattended runs/);
-  w.ctx.__answers['/api/projects/shop/repos/api/jobs'] = { __error: 'model: use a model slug such as gpt-5.5' };
+  w.ctx.__answers['/api/projects/shop/repos/api/jobs'] = { __error: 'model: use a model slug such as gpt-6-sol' };
   submit(f);
   await tick();
   assert.match(text(fieldOf(f, /^Model$/).querySelector('.field-err')), /model slug/);
@@ -508,7 +508,7 @@ test('the batch form with Codex: every job runs with it, no turn or budget is se
   assert.match(text(f.querySelector('.dim')), /codex exec/);
   assert.equal(hiddenIn(fieldOf(f, /^Max turns$/)), true);
   assert.equal(hiddenIn(fieldOf(f, /^Max \$ per repo$/)), true);
-  fieldOf(f, /^Model$/).querySelector('select').value = 'gpt-5.5';
+  fieldOf(f, /^Model$/).querySelector('select').value = 'gpt-6-sol';
   fieldOf(f, /^Model$/).querySelector('select').dispatchEvent({ type: 'change' });
   f.querySelector('textarea').value = 'update the changelog';
   f.querySelectorAll('.batch-repos input[type=checkbox]')[0].checked = true;
@@ -516,12 +516,12 @@ test('the batch form with Codex: every job runs with it, no turn or budget is se
   await tick();
   const body = calls(w).filter((c) => c.method === 'POST' && c.path === '/api/batch')[0].body;
   assert.equal(body.agent, 'codex');
-  assert.equal(body.model, 'gpt-5.5');
+  assert.equal(body.model, 'gpt-6-sol');
   assert.ok(!('max_turns' in body) && !('max_budget_usd' in body), 'Codex has neither');
-  assert.deepEqual(JSON.parse(w.localStorage.getItem('ccboard:batch')), { mode: 'acceptEdits', turns: 30, budget: '', agent: 'codex', cx_model: 'gpt-5.5', cx_reasoning: '' });
+  assert.deepEqual(JSON.parse(w.localStorage.getItem('ccboard:batch')), { mode: 'acceptEdits', turns: 30, budget: '', agent: 'codex', cx_model: 'gpt-6-sol', cx_reasoning: '' });
   w.run('closeSheet()');
   open(w, 'batch');
   f = form(w);
   assert.deepEqual(segOn(f, 'Agent'), ['◇ Codex']);
-  assert.equal(fieldOf(f, /^Model$/).querySelector('select').value, 'gpt-5.5');
+  assert.equal(fieldOf(f, /^Model$/).querySelector('select').value, 'gpt-6-sol');
 });

@@ -145,8 +145,8 @@ Every project route answers these fields next to its own data:
 | `off` | claude-mem is turned off. |
 
 `reason` is always one line of plain text, and the proxy never makes up a generic "worker stopped". A `timeout` reads as slow, not
-down: the box saw a broad text search take 15.7 s. Search and palace get 6 s; the other routes get about 3 s for the whole fan-out and
-2 s per worker request. With the worker stopped, every route answers within its budget: stale data when it has some, otherwise a 503.
+down: the box saw a broad text search take 15.7 s. Every route gets 6 s for the whole fan-out and
+5 s per worker request (a cold first read on the box's spinning disk took over 2 s; a warm one takes a few ms). With the worker stopped, every route answers within its budget: stale data when it has some, otherwise a 503.
 
 The 503 body is `{error, state, up: false, reason, reason_code, compat, worker_version, tested_worker}`.
 

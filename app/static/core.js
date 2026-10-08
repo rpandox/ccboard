@@ -254,6 +254,7 @@ async function demoApi(method, path, body) {
   const bare = path.split('?')[0];
   let name = null;
   if (bare === '/api/state') name = 'state';
+  else if (/^\/api\/sessions\/[^/]+$/.test(bare)) name = 'session';    // the terminal page's own read: the row of state.json with that tmux name (its agent drives Tune and the quick replies)
   else if (bare === '/api/agents') name = 'agents';   // the launcher's option schemas (v0.5.13); the same shape GET /api/agents answers
   else if (bare.startsWith('/api/search')) name = 'search';
   else if (/^\/api\/projects\/[^/]+\/repos\/[^/]+\/tree$/.test(bare)) name = 'tree';
@@ -272,6 +273,15 @@ async function demoApi(method, path, body) {
   else if (bare === '/api/doctor') name = 'doctor';       // the Settings > Doctor checklist (v0.5.19)
   else if (/^\/api\/projects\/[^/]+\/repos\/[^/]+\/issues(\/\d+)?$/.test(bare)) name = 'issues';   // the launcher's "from a GitHub issue" (v0.5.20): one made-up list and its details
   if (!name) return {};
+  if (name === 'session') {
+    let tmuxName = '';
+    try { tmuxName = decodeURIComponent(bare.slice('/api/sessions/'.length)); } catch (_) { tmuxName = ''; }
+    const rs = await fetch('/static/demo/state.json');
+    if (!rs.ok) throw new Error(`demo fixture state.json: ${rs.status} ${rs.statusText}`);
+    const st = demoRebase(await rs.json());
+    for (const p of st.projects || []) for (const r of p.repos || []) for (const s of r.sessions || []) if (s && s.tmux === tmuxName) return { ...s, project: p.name, repo: r.name };
+    throw demoError(404, 'no such session');
+  }
   const r = await fetch(`/static/demo/${name}.json`);
   if (!r.ok) throw new Error(`demo fixture ${name}.json: ${r.status} ${r.statusText}`);
   const data = await r.json();

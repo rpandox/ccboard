@@ -91,3 +91,29 @@ def test_demo_external_threads_cover_every_row_the_agents_page_draws():
     assert all(r["project"] in names for r in rows if r["project"]), "the projects the rows name exist in the fixture"
     live = [s["claude_session_id"] for p in st["projects"] for g in [*[x["sessions"] for x in p["repos"]], p["orphan_sessions"]] for s in g]
     assert not {r["id"] for r in rows} & set(live), "an external thread is not one of the live sessions"
+
+
+def _js_list(text, name):
+    m = re.search(rf"const {name} = \[([^\]]*)\]", text)
+    assert m, name
+    return re.findall(r"'([^']+)'", m.group(1))
+
+
+def test_the_browser_codex_fallback_is_the_servers_fallback():
+    """#17: one agreed list. termkit.js (the Tune panel) and launcher.js (the launcher sheet) carry codex.py FALLBACK_MODELS' slugs in the same
+    order, for the first paint before GET /api/agents answers; no hidden model, no retired approval, no browser-side approval_untrusted: true."""
+    from app.agents import codex
+    slugs = [m["slug"] for m in codex.FALLBACK_MODELS]
+    termkit, launcher = (STATIC / "termkit.js").read_text(encoding="utf-8"), (STATIC / "launcher.js").read_text(encoding="utf-8")
+    assert _js_list(termkit, "TK_CODEX_MODELS") == slugs
+    assert _js_list(launcher, "LX_CODEX_MODELS") == slugs
+    assert _js_list(launcher, "LX_APPROVALS") == ["on-request", "never"]
+    ultra = [m["slug"] for m in codex.FALLBACK_MODELS if "ultra" in m["reasoning"]]
+    assert re.findall(r"'([^']+)': TK_CODEX_EFFORTS\.concat\(\['ultra'\]\)", termkit) == ultra
+    assert re.findall(r"'([^']+)': LX_EFFORTS\.concat\(\['ultra'\]\)", launcher) == ultra
+    for path in STATIC.rglob("*.js"):
+        text = blank_js(path.read_text(encoding="utf-8"))
+        assert "codex-auto-review" not in text and "approval_untrusted: true" not in text, path
+        assert not re.search(r"'gpt-5\.5'", text), f"{path}: gpt-5.5 leaves Codex on 2026-10-14"
+    agents = demo("agents.json")["agents"]["codex"]
+    assert agents["models"][:4] == slugs and next(o for o in agents["options"] if o["key"] == "approval")["choices"] == ["on-request", "never"]

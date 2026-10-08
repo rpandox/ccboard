@@ -1555,3 +1555,27 @@ def test_the_claude_login_action_is_on_both_login_failures(world):
 def test_tmux_conf_stays_a_skip_with_no_fix_to_offer():
     c = one("tmux-conf")
     assert c["status"] == "skip" and c["fix"] is None
+
+
+def test_codex_saved_models_warns_only_against_a_catalogue_codex_answered(monkeypatch):
+    """#17: a Codex schedule naming a model the live catalogue no longer lists is a warning with the fix "pick another model"; an unread
+    catalogue (only the built-in fallback) is a skip, never a failure; Claude schedules are not judged."""
+    from app import agents
+
+    class Jobs:
+        def jobs(self):
+            return [{"id": 1, "name": "nightly", "agent": "codex", "opts": {"model": "gpt-5.5"}},
+                    {"id": 2, "name": "review", "agent": "codex", "opts": {"model": "gpt-6-sol"}},
+                    {"id": 3, "name": "claude one", "agent": "claude", "opts": {"model": "opus"}},
+                    {"id": 4, "name": "default", "agent": "codex", "opts": {}}]
+
+    ag = agents.get("codex")
+    monkeypatch.setattr(type(ag), "live_models", lambda self: None)
+    st, detail, f = doctor._c_codex_saved_models(Jobs())
+    assert st == "skip" and "not been read" in detail and f is None
+    monkeypatch.setattr(type(ag), "live_models", lambda self: [{"slug": "gpt-6.1-sol"}, {"slug": "gpt-6-sol"}])
+    st, detail, f = doctor._c_codex_saved_models(Jobs())
+    assert st == "warn" and "nightly (gpt-5.5)" in detail and "review" not in detail and "claude" not in detail
+    assert f["text"] == "pick another model"
+    monkeypatch.setattr(type(ag), "live_models", lambda self: [{"slug": "gpt-5.5"}, {"slug": "gpt-6-sol"}])
+    assert doctor._c_codex_saved_models(Jobs())[0] == "pass"

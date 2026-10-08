@@ -253,7 +253,7 @@ def test_a_codex_job_runs_in_a_managed_worktree_and_resumes_by_thread_id(client,
         assert post_job(client, agent="codex", args=bad).status_code == 400, bad
     assert post_job(client, agent="codex", permission_mode="bypassPermissions").status_code == 400
     assert post_job(client, agent="codex", model="x y").status_code == 400
-    assert post_job(client, agent="codex", reasoning_effort="ultra").status_code == 400
+    assert post_job(client, agent="codex", reasoning_effort="extreme").status_code == 400     # (ultra is a real level since codex 0.160, on gpt-6.1-sol)
     assert post_job(client, agent="gemini").status_code == 400
     j = post_job(client, agent="codex", model="gpt-5.5", reasoning_effort="high", args="--oss", permission_mode="plan")
     assert j.status_code == 201 and j.json()["agent"] == "codex", j.text

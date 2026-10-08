@@ -89,8 +89,11 @@ def test_the_command_name_is_normalised(lite_client, agent_row, fake_tmux, cmd):
 
 
 def test_hidden_commands_are_still_allowed(lite_client, agent_row, fake_tmux):
-    """weight 0 only hides a command from the default strip: cost and fast are on the allowlist."""
-    assert command(lite_client, agent_row, {"cmd": "fast"}).json()["sent"] == "/fast"
+    """weight 0 only hides a command from the default strip: cost and fast are on the allowlist. Bare /fast opens a dialog that swallows
+    keys (V8, 2.1.290): the board only sends `/fast on` or `/fast off`."""
+    assert command(lite_client, agent_row, {"cmd": "fast", "arg": "off"}).json()["sent"] == "/fast off"
+    r = command(lite_client, agent_row, {"cmd": "fast"})
+    assert r.status_code == 400 and "needs an argument" in r.json()["error"]
     r = command(lite_client, agent_row, {"cmd": "cost", "wait_ms": 0})
     assert r.status_code == 200 and r.json()["sent"] == "/cost"
 
@@ -104,7 +107,7 @@ def test_a_command_that_takes_an_argument_needs_one(lite_client, agent_row, fake
     assert untouched(fake_tmux)
 
 
-@pytest.mark.parametrize("cmd", ["compact", "usage", "context", "status", "cost", "fast"])
+@pytest.mark.parametrize("cmd", ["compact", "usage", "context", "status", "cost"])
 def test_a_command_without_an_argument_refuses_one(lite_client, agent_row, fake_tmux, cmd):
     r = command(lite_client, agent_row, {"cmd": cmd, "arg": "now"})
     assert r.status_code == 400 and "takes no argument" in r.json()["error"]
@@ -294,7 +297,8 @@ def test_a_busy_session_is_asked_before_the_confirm_question(lite_client, agent_
 def test_command_clears_the_composer_then_types_the_line(lite_client, agent_row, fake_tmux):
     r = command(lite_client, agent_row, {"cmd": "model", "arg": "opus"})
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "sent": "/model opus", "verified": False}                # no `screen`: /model is not a read command
+    # no `screen`: /model is not a read command; V8 typed it this way (verified) and saw it save the default for new sessions
+    assert r.json() == {"ok": True, "sent": "/model opus", "verified": True, "saves_default": True}
     assert fake_tmux["keys"] == [(NAME, ["C-u"])]
     assert fake_tmux["texts"] == [(NAME, "/model opus", True)]
     sends = [a for a in fake_tmux["run"] if a and a[0] == "send-keys"]
@@ -313,7 +317,7 @@ def test_command_records_the_board_command_event_and_pending_cmd(lite_client, ag
 
 
 def test_command_with_no_argument(lite_client, agent_row, fake_tmux):
-    assert command(lite_client, agent_row, {"cmd": "compact"}).json() == {"ok": True, "sent": "/compact", "verified": False}
+    assert command(lite_client, agent_row, {"cmd": "compact"}).json() == {"ok": True, "sent": "/compact", "verified": True, "saves_default": False}
     assert fake_tmux["texts"] == [(NAME, "/compact", True)]
     assert row()["flags"]["pending_cmd"]["arg"] is None
 
@@ -467,7 +471,7 @@ def test_effort_is_confirmed_by_the_statusline_effort_level(lite_client, agent_r
 
 
 def test_fast_is_confirmed_by_the_statusline_fast_mode(lite_client, agent_row, fake_tmux, clock):
-    command(lite_client, agent_row, {"cmd": "fast"})                                   # baseline: off
+    command(lite_client, agent_row, {"cmd": "fast", "arg": "on"})                      # baseline: off
     statusline(lite_client, agent_row, fast_mode=False)
     assert "pending_cmd" in row()["flags"]
     statusline(lite_client, agent_row, fast_mode=True)
@@ -492,7 +496,7 @@ def test_pending_cmd_keeps_the_baseline_for_effort_and_fast(lite_client, agent_r
     command(lite_client, agent_row, {"cmd": "effort", "arg": "high"})
     assert row()["flags"]["pending_cmd"]["before"] == {"model": "Sonnet 4.5", "model_id": "claude-sonnet-4-5", "effort": "medium",
                                                        "fast": False}
-    command(lite_client, agent_row, {"cmd": "fast"})
+    command(lite_client, agent_row, {"cmd": "fast", "arg": "on"})
     assert row()["flags"]["pending_cmd"]["cmd"] == "fast" and row()["flags"]["pending_cmd"]["before"]["fast"] is False
 
 

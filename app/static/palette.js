@@ -20,7 +20,6 @@ const Palette = {
   ui: null,                 // { dlg, view: 'palette' | 'help', mode, input, list, foot, ctx, shown, nodes, sel, selId, moreOpen, timer, sig } while open
   ROUTES: [['Home', '#/', 'g h'], ['Needs you', '#/inbox', 'g i'], ['Agents', '#/agents', 'g a'], ['Tasks', '#/tasks', 'g t'],
     ['Quad', '#/quad', 'g q'], ['Usage', '#/usage', 'g u'], ['Memory', '#/memory', 'g m'], ['Settings', '#/settings', 'g s'], ['Search', '#/search', '/']],
-  NUDGES: ['continue', 'merge', 'push', 'pr', 'add commit push', 'do it'],            // the same six as the session cards (SESSION_NUDGES in pages/agents.js)
   CONTROLS: ['/compact', '/context', '/cost', '/usage', '/status'],                    // read-only or harmless: no argument, nothing destructive
   AGENTS_KEY: 'ccboard:agents',                                                          // sessionStorage: the GET /api/agents answer, cached by the terminal page's tuning strip
   AGENTS_TTL: 10 * 60 * 1000,
@@ -278,14 +277,16 @@ Palette.catalog = function (ctx, query) {
   const t = ctx.target;
   if (t && Palette.nudgeable(t)) {
     const name = t.name || t.tmux;
-    const nudges = typeof SESSION_NUDGES !== 'undefined' ? SESSION_NUDGES : Palette.NUDGES;
+    const nudges = quickLoad(t.tmux, sessionAgent(t));                  // #69: the session's quick replies (components.js), its agent's defaults until edited
     groups.push({ id: 'nudges', title: `Nudge · ${name}`, items: nudges.map((text) => ({ id: 'n:' + text, label: text, hint: 'typed into ' + name, run: () => { close(); Palette.send(t.tmux, text, name); } })) });
     groups.push({ id: 'controls', title: `Controls · ${name}`, items: Palette.controlsFor(t).map((c) => ({ id: 'c:' + c.text, label: c.label, hint: c.label === c.text ? 'typed into ' + name : `${c.text} · typed into ${name}`, keywords: c.text,
       run: () => { close(); Palette.command(t.tmux, c.key, name); } })) });
   }
 
   if (ctx.box || ctx.targetTmux) {
-    groups.push({ id: 'modes', title: 'Modes', items: Palette.MODES.map((text) => ({ id: 'm:' + text, label: text.trim(), hint: 'insert into the send box', run: () => { close(); Palette.insert(text, 'prefix'); } })) });
+    // #78: the typed word `ultracode` starts a workflow for that one prompt; the session setting is Tune's Ultracode switch (/effort ultracode on | off)
+    const modeHint = (text) => (text.trim() === 'ultracode' ? 'insert: a workflow for this one prompt (the setting is in Tune)' : 'insert into the send box');
+    groups.push({ id: 'modes', title: 'Modes', items: Palette.MODES.map((text) => ({ id: 'm:' + text, label: text.trim(), hint: modeHint(text), run: () => { close(); Palette.insert(text, 'prefix'); } })) });
     groups.push({ id: 'more', title: 'More', collapsed: true, items: Palette.MORE.map((text) => ({ id: 'x:' + text, label: text, hint: 'insert into the send box', run: () => { close(); Palette.insert(text, 'command'); } })) });
   }
   if (query) {

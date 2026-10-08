@@ -325,3 +325,15 @@ dialog.qr-editor.readout { width:min(640px, calc(100vw - 24px)); }
 #quick .bp5-button, .chips .chip-btn { -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; touch-action:manipulation; }   /* a long press edits: no iOS callout or text selection */
 pre.cmd-readout { margin:0; padding:8px; background:var(--bg); border:1px solid var(--line); border-radius:2px; font:12px/1.35 var(--font-mono); font-variant-ligatures:none;
   max-height:60vh; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+/* #96: 'no hooks (untrusted?)' (components.js hooksMissingChip): muted amber, text and a glyph, a link to Settings > Doctor; the same on every surface
+   (Agents row, peek, terminal header, quad tile header). It shrinks with an ellipsis before the session name does. */
+a.bdg-hooks { display:inline-flex; align-items:center; gap:2px; min-height:18px; max-width:100%; min-width:0; padding:0 7px; border:1px solid var(--mute-amber-bd);
+  border-radius:9px; background:var(--mute-amber-bg); color:var(--mute-amber); font-size:11px; line-height:16px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  text-decoration:none; }
+a.bdg-hooks:hover, a.bdg-hooks:focus-visible { text-decoration:underline; }
+.bdg-hooks-g { font-family:var(--font-glyph, inherit); }
+.rr-hooks, .qt-hooks, .l2-hooks { display:inline-flex; min-width:0; flex:0 1 auto; overflow:hidden; }
+.peek-hooks { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:6px 0 0; padding:6px 8px; border:1px solid var(--mute-amber-bd); border-radius:2px;
+  background:var(--mute-amber-bg); font-size:13px; line-height:1.45; }
+.peek-hooks-why { flex:1 1 24ch; min-width:0; overflow-wrap:anywhere; }
+html.force-coarse a.bdg-hooks { min-height:28px; }

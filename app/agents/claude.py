@@ -26,6 +26,7 @@ from pathlib import Path
 from .. import claude_auth, projects
 from ..config import settings
 from .base import Agent, Check, HookNorm, LaunchPlan, LaunchReq, OptField, SlashSpec
+from .pickers import PROVEN
 
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}(\[1m\])?$")           # an alias or id, optionally the 1M-context variant (opus[1m])
 # V19 (box check): `claude --effort ultracode -p 'say ok'`. The installed binary's --help lists low..max only, so ultracode joins
@@ -34,6 +35,11 @@ MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}(\[1m\])?$")           
 # POST /command right after SessionStart, never through --settings (the board's own override rule blocks that).
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 ULTRACODE = "ultracode"
+# What `/effort` accepts typed inline (2.1.290: "Valid options are: low, medium, high, xhigh, max, auto, ultracode [on|off]"). Ultracode is
+# a setting, not a level: `/effort ultracode` (or `... on`) turns it on and `/effort ultracode off` off, both for this session only and
+# without touching the effort level (the docs: needs v2.1.284 or newer). The levels typed inline also save the default (see slash_commands).
+ULTRACODE_ON, ULTRACODE_OFF = "ultracode on", "ultracode off"
+EFFORT_ARGS = EFFORTS + ("auto", ULTRACODE, ULTRACODE_ON, ULTRACODE_OFF)
 ULTRACODE_ENV = "CCBOARD_CLAUDE_ULTRACODE_FLAG"
 PERMISSION_MODES = ("manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions")   # the CLI's own names
 # The launcher's mode names (the same five words the Codex picker uses) as Claude permission modes: `custom` is Codex's sandbox + approval pair.
@@ -543,6 +549,8 @@ class ClaudeAgent(Agent):
             allowed = self.efforts()
             if effort not in allowed:
                 raise projects.BadRequest(f"effort must be one of {', '.join(allowed)}")
+            if effort == ULTRACODE and not interactive:          # #78: the docs: ultracode has no effect under -p (a scheduled or headless run)
+                raise projects.BadRequest(f"effort must be one of {', '.join(EFFORTS)} for a scheduled run: ultracode has no effect under -p")
             full["effort"] = effort
         if pm:
             if interactive and pm not in PERMISSION_MODES:    # a scheduled run was checked against HEADLESS_MODES above
@@ -901,14 +909,21 @@ class ClaudeAgent(Agent):
 
     # ---- control surface ----
     def slash_commands(self) -> dict[str, SlashSpec]:
-        # weights are measured use counts from 8,605 prompts (plan, usage analysis F6); verified flips per command after V8
-        rows = [("clear", "Clear", False, False, 155, True), ("compact", "Compact", False, False, 120, False),
-                ("usage", "Usage", False, True, 100, False), ("effort", "Effort", True, False, 58, False),
-                ("model", "Model", True, False, 39, False), ("rename", "Rename", True, False, 10, False),
-                ("context", "Context", False, True, 9, False), ("status", "Status", False, True, 3, False),
-                ("cost", "Cost", False, True, 0, False), ("fast", "Fast", False, False, 0, False)]
-        return {k: SlashSpec(cmd="/" + k, label=label, arg=arg, read=read, verified=False, weight=w, destructive=d)
-                for k, label, arg, read, w, d in rows}
+        # weights are measured use counts from 8,605 prompts (plan, usage analysis F6). `verified` per the V8 box check (Claude Code
+        # 2.1.290, issue #28): every row below was typed the way the board types it. /effort <level> and /model <name> typed inline also
+        # SAVE the person's default for new sessions (saves_default): the Tune's Effort goes through the /effort picker and `s` (POST
+        # /tune, session only); the model picker's list is version-specific, so Model stays inline and says that it saves the default.
+        # Bare /fast opens a dialog that swallows keys: the board sends `/fast on` or `/fast off`. /context prints inline; /usage, /cost
+        # and /status open a dialog one Escape closes. /effort ultracode [on|off] is session-only.
+        rows = [("clear", "Clear", False, False, 155, True, {}), ("compact", "Compact", False, False, 120, False, {}),
+                ("usage", "Usage", False, True, 100, False, {"dialog": True}),
+                ("effort", "Effort", True, False, 58, False, {"tune": "effort", "saves_default": True, "choices": list(EFFORT_ARGS),
+                                                             "tune_verified": PROVEN[("claude", "effort")]}),
+                ("model", "Model", True, False, 39, False, {"saves_default": True}), ("rename", "Rename", True, False, 10, False, {}),
+                ("context", "Context", False, True, 9, False, {}), ("status", "Status", False, True, 3, False, {"dialog": True}),
+                ("cost", "Cost", False, True, 0, False, {"dialog": True}), ("fast", "Fast", True, False, 0, False, {"choices": ["on", "off"]})]
+        return {k: SlashSpec(cmd="/" + k, label=label, arg=arg, read=read, verified=True, weight=w, destructive=d, **more)
+                for k, label, arg, read, w, d, more in rows}
 
     def exit_command(self) -> str:
         return "/exit"

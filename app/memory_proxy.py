@@ -76,8 +76,8 @@ INVALID_PROJECTS = "INVALID_PROJECTS"      # the 400 code of a projects= value t
 
 # ------------------------------------------------------------------ budgets and caps
 PROXY_CAP = 2 * 1024 * 1024       # bytes of one worker answer; more is an error (memory.TooLarge), never a silently empty list
-FETCH_TIMEOUT = 2.0               # one worker request
-BUDGET = 3.0                      # one board request (a fan-out included)
+FETCH_TIMEOUT = 5.0               # one worker request: a cold read on the box's spinning disk took over 2 s (warm ones take ms)
+BUDGET = 6.0                      # one board request (a fan-out included)
 SEARCH_BUDGET = 6.0               # a text search: the box saw a broad one take 15.7 s; past this it reads 'slow', never 'down'
 FANOUT = 4                        # worker requests in flight for one board request
 SCAN_CAP = 300                    # rows read per key for one page (the `before` cursor over-fetches up to here)

@@ -96,14 +96,28 @@ class OptField:
 @dataclass
 class SlashSpec:
     """A slash command the board may type into a session. weight = measured use count (orders the tuning strip and the palette);
-    weight 0 means hidden from the default strip. read = it only prints something (the board captures the pane afterwards)."""
+    weight 0 means hidden from the default strip. read = it only prints something (the board captures the pane afterwards).
+
+    How it is driven (v0.5.21, box check V8 / V8-Codex): `drive` "inline" = POST /command types `cmd [arg]` and Enter; "picker" = the
+    command opens a picker that only POST /tune drives, with keys from a fixed table (POST /command refuses it: Codex sends `/model x`
+    to the model as a prompt). `tune` names the /tune setting that changes this value for the session only. `saves_default`: typed
+    inline with an argument it also writes the person's default for new sessions (Claude's /model and /effort). `choices`: the only
+    arguments /command accepts (None = any one-line text). `dialog`: a read command whose output stays in a dialog that one Escape
+    closes (Claude's /usage); False = printed inline, nothing to dismiss. `verified`: the box check ran this exact path (for a row with
+    `tune`, `tune_verified` says the same of the picker path, app/agents/pickers.py PROVEN)."""
     cmd: str
     label: str
     arg: bool = False
     read: bool = False
-    verified: bool = False                             # flips to True per V8 on the box
+    verified: bool = False
     weight: int = 0
     destructive: bool = False
+    drive: str = "inline"                              # inline | picker
+    tune: str = ""
+    saves_default: bool = False
+    choices: list | None = None
+    dialog: bool = False
+    tune_verified: bool | None = None                  # the /tune path's own box check (None: the same as `verified`)
 
     @property
     def hidden(self) -> bool:
