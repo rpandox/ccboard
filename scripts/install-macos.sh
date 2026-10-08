@@ -78,7 +78,7 @@ PY3=$(command -v python3 2>/dev/null || true)
 [ -n "$PY3" ] || die "python3 is required (brew install python@3.12)"
 UID_N=$(id -u)
 HOME_DIR=$HOME
-[ -n "$HOME_DIR" ] && [ -d "$HOME_DIR" ] || die "HOME is not a directory"
+if [ -z "$HOME_DIR" ] || [ ! -d "$HOME_DIR" ]; then die "HOME is not a directory"; fi
 LA_DIR=$HOME_DIR/Library/LaunchAgents
 LOG_DIR=$HOME_DIR/Library/Logs/ccboard
 cd "$APP_DIR"
@@ -180,8 +180,9 @@ for k in CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_P
 done
 [ "$CCBOARD_HTTPS_PORT" != "$CODE_HTTPS_PORT" ] || die "CCBOARD_HTTPS_PORT and CODE_HTTPS_PORT must differ"
 [ "$CODE_HTTPS_PORT" != 443 ] || die "CODE_HTTPS_PORT must not be 443: another service may use it, and only the board's own HTTPS port may be 443"
-[ "$CCBOARD_PORT" != "$TTYD_PORT" ] && [ "$CCBOARD_PORT" != "$CODE_SERVER_PORT" ] && [ "$TTYD_PORT" != "$CODE_SERVER_PORT" ] \
-  || die "CCBOARD_PORT, TTYD_PORT and CODE_SERVER_PORT must all differ"
+if [ "$CCBOARD_PORT" = "$TTYD_PORT" ] || [ "$CCBOARD_PORT" = "$CODE_SERVER_PORT" ] || [ "$TTYD_PORT" = "$CODE_SERVER_PORT" ]; then
+  die "CCBOARD_PORT, TTYD_PORT and CODE_SERVER_PORT must all differ"
+fi
 [[ "$NTFY_TOPIC" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || die "NTFY_TOPIC must be letters, digits, - or _"
 [[ "$PROJECTS_DIR" = /* ]] || die "PROJECTS_DIR must be an absolute path"
 case "$CCBOARD_CLAUDE_MEM" in 0|1) ;; *) die "CCBOARD_CLAUDE_MEM must be 0 or 1 (got '$CCBOARD_CLAUDE_MEM')";; esac
@@ -625,7 +626,7 @@ fi
 
 # ---------------------------------------------------------------- small extras
 if have gh && gh auth status >/dev/null 2>&1; then
-  gh auth setup-git >/dev/null 2>&1 && note "gh credential helper configured for git (private https clones)" || true
+  if gh auth setup-git >/dev/null 2>&1; then note "gh credential helper configured for git (private https clones)"; fi
 fi
 log "ccusage"
 if have ccusage || [ -x "$HOME_DIR/.local/bin/ccusage" ]; then
