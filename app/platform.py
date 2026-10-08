@@ -665,7 +665,7 @@ def _apt_system() -> bool:
 
 
 LAUNCHD_PREFIX = "dev.ccboard"                                  # every launchd job's label is <prefix>.<job> (issue #117)
-LAUNCHD_JOBS = ("board", "tmux", "ttyd", "awake", "code-server", "mem")
+LAUNCHD_JOBS = ("board", "tmux", "ttyd", "awake", "code-server", "mem", "backup")
 MACOS_LOG_DIR = "~/Library/Logs/ccboard"                         # <job>.log, stdout and stderr of each job (expanded by the installer)
 
 
@@ -696,6 +696,19 @@ def launchd_target(job: str, env=None) -> str | None:
     """<domain>/<uid>/dev.ccboard.<job>, the argument of launchctl print and kickstart; None where there is no uid."""
     uid = current_uid()
     return None if uid is None else f"{launchd_domain(env)}/{uid}/{launchd_label(job)}"
+
+
+def launchd_loaded(job: str, env=None) -> bool | None:
+    """Is dev.ccboard.<job> loaded in its domain (`launchctl print <target>` exits 0)? None where that cannot be asked: no launchctl, no uid, or no
+    answer in 10 seconds. Read only; a loaded job that is not running (a calendar job between runs) is loaded."""
+    target = launchd_target(job, env)
+    if target is None or shutil.which("launchctl") is None:
+        return None
+    try:
+        r = subprocess.run(["launchctl", "print", target], capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.returncode == 0
 
 
 def macos_log_dir() -> Path:

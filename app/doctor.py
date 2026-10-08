@@ -1540,6 +1540,119 @@ def _c_backup_last(db) -> Outcome:
     return _pass(f"the last backup was ok ({when})")
 
 
+def _backup_record() -> dict | None:
+    """The board's own backup record (<data dir>/backup-status.json, the one the Backup status line shows); None when absent or unreadable."""
+    try:
+        st = json.loads(backup.status_path().read_text())
+    except (OSError, ValueError):
+        return None
+    return st if isinstance(st, dict) else None
+
+
+def _backup_job_path() -> list[str] | None:
+    """The PATH directories the installed backup job runs with: `EnvironmentVariables.PATH` of ~/Library/LaunchAgents/dev.ccboard.backup.plist
+    under launchd, `Environment=PATH=` of the installed service unit under systemd. None when the file cannot be read (shown as unknown)."""
+    try:
+        if settings.runtime == "launchd":
+            import plistlib
+            plist = Path.home() / "Library" / "LaunchAgents" / f"{plat.launchd_label('backup')}.plist"
+            raw = plistlib.loads(plist.read_bytes())["EnvironmentVariables"]["PATH"]
+        else:
+            raw = re.search(r"(?m)^Environment=PATH=(\S+)", backup.SYSTEMD_UNIT.read_text()).group(1)
+        return [x for x in str(raw).split(":") if x]
+    except Exception:                    # no file, no key, not a plist: the PATH is unknown, never a failure of the check
+        return None
+
+
+def _on_path(name: str, dirs: list[str]) -> bool:
+    return any(os.path.isfile(os.path.join(p, name)) and os.access(os.path.join(p, name), os.X_OK) for p in dirs)
+
+
+def _c_backup_job(db) -> Outcome:
+    """The job that runs the nightly backup: installed and loaded (a launchd label on a Mac, the systemd timer on Linux), the last run's age
+    from the board's own record, restic on the job's PATH, a local repository on a Windows drive under WSL, and on a Mac the ssh-agent note
+    after a push failure. Where this board is not run by that job manager (a container, a hand-started board) the check skips with the reason:
+    under docker the timer belongs to the host. A job that is not loaded warns (CCBOARD_BACKUP=0 leaves it out on purpose); a repository
+    setting restic would be handed wrongly fails."""
+    rt = settings.runtime
+    if rt == "docker":
+        return _skip(f"the board runs in a container; the nightly timer belongs to the host ({plat.hint('timers', 'ccboard-backup.timer')} there)")
+    if not ((rt == "launchd" and plat.IS_MACOS) or (rt == "systemd" and plat.IS_LINUX)):
+        return _skip(f"the board is not run by systemd or launchd here (runtime {rt}), so there is no backup job to look at")
+    launchd = rt == "launchd"
+    if launchd and plat.current_uid() is None:
+        return _skip("this system has no user id to name the launchd domain with")
+    what = plat.launchd_label("backup") if launchd else "ccboard-backup.timer"
+    try:
+        if launchd:
+            loaded = _run(["launchctl", "print", plat.launchd_target("backup")]).rc == 0
+        else:
+            p = _run(["systemctl", "is-active", "ccboard-backup.timer"])
+            loaded = p.rc == 0 and p.out.strip() == "active"
+    except ToolMissing as e:
+        return _skip(f"{e.name} is not available, so the backup job cannot be looked at")
+    except ToolTimeout as e:
+        return _warn(f"{e.name or 'the service manager'} did not answer in time")
+
+    bad: list[tuple[str, str, dict | None]] = []          # (level, text, fix), worst first at the end
+    notes: list[str] = []
+    if not loaded:
+        text = f"{what} is not loaded" if launchd else f"{what} is not active"
+        fx = fix("Load the nightly job again (rerun the installer; CCBOARD_BACKUP=0 leaves it out on purpose)",
+                 f"launchctl bootstrap {plat.launchd_domain()}/$(id -u) ~/Library/LaunchAgents/{what}.plist" if launchd else plat.hint("start", "ccboard-backup.timer"))
+        bad.append(("warn", text, fx))
+    else:
+        notes.append(f"{what} is loaded" if launchd else f"{what} is active")
+
+    st = _backup_record()
+    at = None
+    if st is not None:
+        try:
+            at = datetime.fromisoformat(str(st.get("at")).replace("Z", "+00:00"))
+            at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+        except (ValueError, AttributeError):
+            at = None
+    if at is None:
+        notes.append("last run unknown (no readable record yet)")
+    else:
+        age = max(0.0, (_utcnow() - at).total_seconds())
+        notes.append(f"last run {st.get('status')} {_age_words(age)} ago")
+        if loaded and age > BACKUP_FAIL_AGE:
+            sleepy = " (a Mac that sleeps or is off at the set time runs it on the next wake, to verify)" if launchd else ""
+            bad.append(("warn", f"the job is loaded but the last run is {_age_words(age)} old{sleepy}",
+                        fix("Run one now, then read the log", plat.hint("start", "ccboard-backup"))))
+
+    if backup.restic_enabled():
+        repo = settings.restic_repo
+        try:
+            local = backup.restic_is_local(repo)
+        except ValueError as e:
+            bad.append(("fail", str(e), fix("Set CCBOARD_RESTIC_REPO to an absolute path or a remote in the settings file, then restart the board")))
+            local = False
+        dirs = _backup_job_path()
+        if dirs is None:
+            notes.append("restic on the job's PATH unknown (the job file could not be read)")
+        elif _on_path("restic", dirs):
+            notes.append("restic is on the job's PATH")
+        else:
+            bad.append(("warn", "restic is not on the job's PATH, so the nightly snapshot fails",
+                        fix("Install restic" + (" and rerun the installer, which writes the job's PATH" if launchd else ""), plat.hint("install", "restic"))))
+        if local and plat.under_drvfs(repo):
+            bad.append(("warn", "the restic repository is under /mnt/ (a Windows drive): it is slow there and file modes are ignored",
+                        fix("Keep the repository on the WSL file system (ext4) or a remote (sftp:, rclone:, s3:, rest:); wsl --export of the distro is a second copy")))
+    pushes = (st or {}).get("push")
+    push_failed = any(isinstance(x, dict) and x.get("error") for x in (pushes if isinstance(pushes, list) else []))
+    if push_failed and launchd and plat.IS_MACOS:
+        bad.append(("warn", "the last run could not push the backup branches; a launchd job may not see your ssh-agent or the Keychain key (UNVERIFIED)",
+                    fix("Load the key without a prompt (ssh-add --apple-use-keychain on the key file), or use an https remote with `gh auth setup-git`; "
+                        "the job runs ssh with BatchMode, so it never asks")))
+    if not bad:
+        return _pass("; ".join(notes))
+    worst = "fail" if any(b[0] == "fail" for b in bad) else "warn"
+    first = next(b for b in bad if b[0] == worst)
+    return Outcome(worst, "; ".join([b[1] for b in bad] + notes), first[2])
+
+
 def _dirty_repos() -> list[tuple[str, str]] | None:
     """(label, path) of every repo the project scan marks dirty; None when the board has no scan to give."""
     src = _projects_source
@@ -1847,6 +1960,7 @@ for _id, _group, _label, _fn in (
     ("fable-jobs", "claude", "Fable jobs waiting", _c_fable_jobs),
     ("backup-repo", "box", "Backup repository", _c_backup_repo),
     ("backup-last", "box", "Last backup", _c_backup_last),
+    ("backup-job", "box", "Backup job", _c_backup_job),
     ("backup-uncommitted", "box", "Uncommitted work", _c_backup_uncommitted),
     ("backup-branch-ci", "box", "CI on backup branches", _c_backup_branch_ci),
     ("ci-status", "box", "GitHub Actions", _c_ci_status),

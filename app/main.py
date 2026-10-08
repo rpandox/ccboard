@@ -3954,7 +3954,8 @@ def api_backup_run():
         raise HTTPException(409, "a backup is already running")
     via = backup.start_detached()
     return {"started": True, "via": via,
-            "log": plat.hint("logs", "ccboard-backup", sudo=False) if via == "systemd" else str(settings.data_dir / backup.LOG_FILE)}
+            "log": plat.hint("logs", "ccboard-backup", sudo=False) if via == "systemd"
+            else str(plat.macos_log_dir() / "backup.log") if via == "launchd" else str(settings.data_dir / backup.LOG_FILE)}
 
 
 def _node_summary() -> dict:

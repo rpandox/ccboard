@@ -29,10 +29,14 @@ APP = "/srv/app dir & 1"
 VALUES = {
     "HOME": HOME, "APP_DIR": APP, "SHELL": "/bin/zsh", "CCBOARD_PORT": "8000", "TTYD_PORT": "7681", "ENV_FILE": HOME + "/.local/share/ccboard/env",
     "TMUX_BIN": "/opt/homebrew/bin/tmux", "TTYD_BIN": "/opt/homebrew/bin/ttyd", "CODE_SERVER_BIN": "/opt/homebrew/bin/code-server",
+    "BACKUP_HOUR": "2", "BACKUP_MINUTE": "30",
 }
 JOBS = list(plat.LAUNCHD_JOBS)
+SCHEDULED = ("backup",)                          # calendar jobs: run at a time, not kept alive, not started at load
 REQUIRED = ["Label", "ProgramArguments", "WorkingDirectory", "EnvironmentVariables", "RunAtLoad", "KeepAlive", "ThrottleInterval",
             "StandardOutPath", "StandardErrorPath"]
+REQUIRED_SCHEDULED = ["Label", "ProgramArguments", "WorkingDirectory", "EnvironmentVariables", "RunAtLoad", "StartCalendarInterval",
+                      "StandardOutPath", "StandardErrorPath"]
 
 
 def template(job: str) -> Path:
@@ -63,15 +67,18 @@ def test_one_template_per_job_and_the_label_is_the_platform_label():
 @pytest.mark.parametrize("job", JOBS)
 def test_every_job_has_the_required_keys_and_absolute_arguments(job):
     p = render(job)
-    for key in REQUIRED:
+    for key in (REQUIRED_SCHEDULED if job in SCHEDULED else REQUIRED):
         assert key in p, f"{job}: {key} missing"
     args = p["ProgramArguments"]
     assert isinstance(args, list) and args and all(isinstance(a, str) and a for a in args)
     assert args[0].startswith("/"), "the program is an absolute path (a job has no useful PATH to find it on)"
     assert p["WorkingDirectory"].startswith("/")
-    assert p["RunAtLoad"] is True
-    assert p["KeepAlive"] in (True, {"SuccessfulExit": False})
-    assert isinstance(p["ThrottleInterval"], int) and p["ThrottleInterval"] >= 2
+    if job in SCHEDULED:
+        assert p["RunAtLoad"] is False and "KeepAlive" not in p, "a calendar job runs at its time, not at load and not forever"
+    else:
+        assert p["RunAtLoad"] is True
+        assert p["KeepAlive"] in (True, {"SuccessfulExit": False})
+        assert isinstance(p["ThrottleInterval"], int) and p["ThrottleInterval"] >= 2
     env = p["EnvironmentVariables"]
     assert env["HOME"] == HOME, "an explicit HOME (launchd's own is not the user's in every session), and a path with a space, & and < survives"
     assert env["LANG"] and env["PATH"]
@@ -85,7 +92,7 @@ def test_no_tilde_and_no_token_left_and_logs_are_absolute_under_library_logs(job
     p = plistlib.loads(text.encode("utf-8"))
     log = f"{HOME}/Library/Logs/ccboard/{job}.log"
     assert p["StandardOutPath"] == log and p["StandardErrorPath"] == log, "stdout and stderr share one log per job"
-    assert p["WorkingDirectory"] == (APP if job == "board" else HOME)
+    assert p["WorkingDirectory"] == (APP if job in ("board", "backup") else HOME)
     for k, v in p["EnvironmentVariables"].items():
         assert "~" not in v, k
 
@@ -181,6 +188,56 @@ def test_the_mem_template_never_grows_a_session_key():
     """A key added to the template's EnvironmentVariables by hand fails here, whatever its value."""
     for key in plistlib.loads(lr.render(template("mem").read_text(encoding="utf-8"), VALUES).encode())["EnvironmentVariables"]:
         assert key in ("HOME", "LANG", "PATH"), key
+
+
+# ---------------------------------------------------------------- the backup job (issue #129)
+
+
+def test_backup_runs_the_systemd_command_at_the_given_time_and_not_at_load():
+    p = render("backup")
+    assert p["Label"] == "dev.ccboard.backup" and p["ProgramArguments"] == [f"{APP}/.venv/bin/python", "-m", "app.backup"]
+    assert 'BACKUP_EXEC="$APP_DIR/.venv/bin/python -m app.backup"' in (ROOT / "install.sh").read_text(), "the Linux unit runs the same command"
+    assert p["WorkingDirectory"] == APP
+    assert p["StartCalendarInterval"] == {"Hour": 2, "Minute": 30}
+    assert render("backup", BACKUP_HOUR="0", BACKUP_MINUTE="0")["StartCalendarInterval"] == {"Hour": 0, "Minute": 0}
+    assert render("backup", BACKUP_HOUR="23", BACKUP_MINUTE="59")["StartCalendarInterval"] == {"Hour": 23, "Minute": 59}
+    assert p["RunAtLoad"] is False and "KeepAlive" not in p and "ThrottleInterval" not in p
+
+
+def test_backup_mirrors_the_systemd_priority_and_never_waits_for_a_credential():
+    p = render("backup")
+    unit = (SYSTEMD / "ccboard-backup.service.in").read_text()
+    assert "Nice=10" in unit and "IOSchedulingClass=idle" in unit
+    assert p["Nice"] == 10 and p["LowPriorityIO"] is True and p["ProcessType"] == "Background"
+    env = p["EnvironmentVariables"]
+    assert set(env) == {"HOME", "LANG", "PATH", "GIT_TERMINAL_PROMPT", "CCBOARD_ENV_FILE"}
+    assert env["GIT_TERMINAL_PROMPT"] == "0" and env["CCBOARD_ENV_FILE"] == VALUES["ENV_FILE"]
+    assert "/opt/homebrew/bin" in env["PATH"].split(":") and f"{HOME}/.local/bin" in env["PATH"].split(":"), "restic, git and gh are Homebrew tools"
+    assert "~" not in lr.render(template("backup").read_text(encoding="utf-8"), VALUES)
+
+
+def test_backup_template_takes_only_the_agreed_tokens():
+    assert set(lr.tokens(template("backup").read_text(encoding="utf-8"))) == {
+        "APP_DIR", "HOME", "PATH", "LOG_DIR", "ENV_FILE", "BACKUP_HOUR", "BACKUP_MINUTE"}
+
+
+@pytest.mark.parametrize("name,value", [("BACKUP_HOUR", "24"), ("BACKUP_HOUR", "-1"), ("BACKUP_HOUR", "02"), ("BACKUP_HOUR", "x"),
+                                        ("BACKUP_HOUR", "2.5"), ("BACKUP_MINUTE", "60"), ("BACKUP_MINUTE", "05"), ("BACKUP_MINUTE", " 5"),
+                                        ("BACKUP_MINUTE", ""), ("BACKUP_HOUR", "\u0662")])
+def test_backup_hour_and_minute_must_be_whole_numbers_in_range(name, value):
+    with pytest.raises(lr.RenderError, match=name):
+        render("backup", **{name: value})
+
+
+def test_backup_without_a_time_is_an_error_and_the_cli_renders_it(tmp_path):
+    text = template("backup").read_text(encoding="utf-8")
+    with pytest.raises(lr.RenderError, match="BACKUP_HOUR"):
+        lr.render(text, {k: v for k, v in VALUES.items() if k != "BACKUP_HOUR"})
+    out = tmp_path / "dev.ccboard.backup.plist"
+    r = cli("--template", str(template("backup")), "--out", str(out), *_sets(BACKUP_HOUR="3", BACKUP_MINUTE="5"))
+    assert r.returncode == 0 and plistlib.loads(out.read_bytes())["StartCalendarInterval"] == {"Hour": 3, "Minute": 5}
+    r = cli("--template", str(template("backup")), "--out", str(out), *_sets(BACKUP_HOUR="25"))
+    assert r.returncode == 2 and "BACKUP_HOUR" in r.stderr and r.stderr.count("\n") == 1
 
 
 # ---------------------------------------------------------------- one TMUX_TMPDIR (issue #125)

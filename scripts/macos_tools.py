@@ -12,6 +12,10 @@
     macos_tools.py optional-bundle [--pick code-server,restic,bun]
         The Brewfile.optional lines (and the tap they need) for the picked tools, for `brew bundle --file=-`. Without --pick, every one.
 
+    macos_tools.py backup-schedule "<spec>"
+        The nightly backup's time on a Mac, from CCBOARD_BACKUP_ONCALENDAR: `*-*-* HH:MM[:SS]` or `HH:MM` (daily). Prints "HOUR MINUTE" (whole numbers,
+        no leading zero) and exits 0; anything else exits 2 with one line on stderr naming the accepted forms. The installer asks this before it changes anything.
+
 Everything here only reads; nothing installs.
 """
 from __future__ import annotations
@@ -165,6 +169,27 @@ def optional_bundle(pick: list[str] | None, text: str | None = None) -> str:
     return "\n".join(out) + ("\n" if out else "")
 
 
+# ---------------------------------------------------------------- backup schedule
+
+BACKUP_SCHEDULE_DEFAULT = "*-*-* 02:30:00"
+BACKUP_FORMS = "*-*-* HH:MM[:SS] or HH:MM (every day)"
+_CLOCK_RE = re.compile(r"(?:\*-\*-\*\s+)?(\d{1,2}):(\d{2})(?::(\d{2}))?")
+
+
+def backup_schedule(spec: str) -> tuple[int, int]:
+    """(hour, minute) of a daily CCBOARD_BACKUP_ONCALENDAR spec: `*-*-* HH:MM[:SS]` or `HH:MM`. launchd has no systemd calendar language, so
+    nothing else is understood (`Mon *-*-* 02:30`, `hourly`, `*:0/15`, empty): ValueError names the accepted forms. Seconds are accepted and
+    dropped (a calendar job fires on the minute); hour 0 to 23, minute 0 to 59, seconds 0 to 59."""
+    text = (spec or "").strip()
+    m = _CLOCK_RE.fullmatch(text)
+    if not m or not text.isascii():
+        raise ValueError(f"CCBOARD_BACKUP_ONCALENDAR={text!r} is not supported on macOS: use {BACKUP_FORMS}")
+    hour, minute = int(m.group(1)), int(m.group(2))
+    if hour > 23 or minute > 59 or (m.group(3) is not None and int(m.group(3)) > 59):
+        raise ValueError(f"CCBOARD_BACKUP_ONCALENDAR={text!r} is not a time of day: use {BACKUP_FORMS} with hour 0 to 23 and minute 0 to 59")
+    return hour, minute
+
+
 # ---------------------------------------------------------------- command line
 
 
@@ -186,8 +211,18 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--port", required=True, type=int)
     o = sub.add_parser("optional-bundle")
     o.add_argument("--pick", help="comma list, e.g. code-server,restic,bun")
+    k = sub.add_parser("backup-schedule")
+    k.add_argument("spec", help="the CCBOARD_BACKUP_ONCALENDAR value")
     a = ap.parse_args(argv)
 
+    if a.cmd == "backup-schedule":
+        try:
+            hour, minute = backup_schedule(a.spec)
+        except ValueError as e:
+            print(f"macos_tools: {e}", file=sys.stderr)
+            return 2
+        print(f"{hour} {minute}")
+        return 0
     if a.cmd == "bottle":
         try:
             raw = Path(a.file).read_text(encoding="utf-8") if a.file else sys.stdin.read()

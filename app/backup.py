@@ -3,7 +3,7 @@ every repo under PROJECTS_DIR gets its unpushed work copied to backup branches o
 (`ccboard-backup/<node>/<branch>`) so WIP survives the box. The backup never pushes to `main` or to any other
 branch people work on.
 
-Run by ccboard-backup.timer (`python -m app.backup`) or by "Back up now" on the board. The outcome is written
+Run by ccboard-backup.timer (systemd) or the dev.ccboard.backup launchd job (macOS), both `python -m app.backup`, or by "Back up now" on the board. The outcome is written
 to <data dir>/backup-status.json, which the board shows in the usage strip and the 🔔 panel."""
 from __future__ import annotations
 
@@ -70,6 +70,34 @@ def claude_mem_db() -> Path:
 
 def restic_enabled() -> bool:
     return settings.restic_repo.lower() not in ("", "off", "none", "0")
+
+
+REMOTE_PREFIXES = ("sftp:", "rclone:", "s3:", "b2:", "azure:", "gs:", "rest:", "swift:")   # restic backends a repository spec may name
+_DRIVE_RE = re.compile(r"^[A-Za-z]:")                                                       # C:\backups, C:/backups, C:backups
+
+
+def restic_is_local(spec: str) -> bool:
+    """Is the repository setting a directory on this machine (True) or a restic remote (False)? Decides whether the run creates the folder.
+    An absolute path is local (a Windows drive form only where the Windows flag is set), a spec with a known remote prefix (REMOTE_PREFIXES) is
+    remote, empty keeps the default (a folder under the data dir: local), and `off` / `none` / `0` is not a directory (False). A relative path,
+    `~/x`, a Windows path off Windows and any other string raise ValueError with the reason: they used to be handed to restic as if remote.
+    The message never repeats the setting (a URL can carry a password)."""
+    spec = (spec or "").strip()
+    if not spec:
+        return True
+    if spec.lower() in ("off", "none", "0"):
+        return False
+    if spec.startswith(REMOTE_PREFIXES):
+        return False
+    if _DRIVE_RE.match(spec):
+        if plat.IS_WINDOWS:
+            return True
+        raise ValueError(f"the restic repository setting is a Windows path ({spec[0]}:...): native Windows is not supported (issue #124). "
+                         "Under WSL2 use a Linux path such as /home/<user>/restic, or a remote (sftp:, rclone:, s3:, rest:)")
+    if os.path.isabs(spec):
+        return True
+    raise ValueError("the restic repository setting is neither an absolute path nor a remote repository: use a full path such as "
+                     "/var/backups/ccboard, or a remote starting with sftp:, rclone:, s3:, b2:, azure:, gs: or rest:, or off")
 
 
 def restic_env() -> dict:
@@ -140,6 +168,10 @@ def parse_summary(stdout: str) -> dict:
 
 
 def restic_backup(paths: list[Path]) -> dict:
+    try:
+        local = restic_is_local(settings.restic_repo)      # a setting that is no path and no remote stops here, before restic sees it
+    except ValueError as e:
+        raise RuntimeError(str(e)) from None
     if not shutil.which("restic"):
         raise RuntimeError("restic is not installed (rerun install.sh)")
     if not settings.restic_password_file.exists():
@@ -147,7 +179,7 @@ def restic_backup(paths: list[Path]) -> dict:
     if not paths:
         raise RuntimeError("nothing to back up")
     env = restic_env()
-    if settings.restic_repo.startswith("/"):
+    if local and settings.restic_repo:
         Path(settings.restic_repo).mkdir(parents=True, exist_ok=True)
     if _restic(["cat", "config", "-q"], env, timeout=120).returncode != 0:
         r = _restic(["init", "-q"], env, timeout=300)
@@ -409,7 +441,10 @@ def run(push: bool | None = None, restic: bool | None = None) -> dict:
 def start_detached() -> str:
     """Start a backup pass outside the request. Through the systemd unit when installed (its own cgroup: a ccboard
     restart cannot kill it mid-run; log in the journal), else a detached process logging to <data dir>/backup.log.
-    Inside the container there is no systemd to ask: always the detached process."""
+    Inside the container there is no systemd to ask: always the detached process. On a Mac, for a board that launchd runs
+    (CCBOARD_RUNTIME launchd; a board started by hand never touches the owner's jobs) with the backup job loaded (dev.ccboard.backup,
+    made by the macOS installer): `launchctl kickstart gui/<uid>/dev.ccboard.backup`, no sudo and no -k, so a run already going keeps
+    going and the lock answers a second start; "launchd" is returned. Anything else falls back to the detached process."""
     if settings.runtime != "docker" and SYSTEMD_UNIT.exists() and shutil.which("systemctl") and shutil.which("sudo"):
         try:
             r = subprocess.run(["sudo", "-n", "systemctl", "start", "--no-block", "ccboard-backup.service"],
@@ -421,6 +456,17 @@ def start_detached() -> str:
             return "systemd"
         if r is not None:
             log.warning("systemctl start ccboard-backup failed (%s); running in-process instead", (r.stderr or "").strip()[-200:])
+    if settings.runtime == "launchd" and plat.IS_MACOS and plat.launchd_loaded("backup"):
+        target = plat.launchd_target("backup")
+        try:
+            r = subprocess.run(["launchctl", "kickstart", target], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            r = None
+            log.warning("launchctl kickstart %s failed: %s", target, e)
+        if r is not None and r.returncode == 0:
+            return "launchd"
+        if r is not None:
+            log.warning("launchctl kickstart %s failed (%s); running in-process instead", target, (r.stderr or "").strip()[-200:])
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     with open(settings.data_dir / LOG_FILE, "ab") as logf:
         plat.spawn_detached([sys.executable, "-m", "app.backup"], logf, cwd=str(Path(__file__).resolve().parent.parent))

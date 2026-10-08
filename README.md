@@ -58,7 +58,7 @@ ccboard is a *status-and-attention layer*. It launches the real `claude` TUI ins
 - **MCP server**: `scripts/ccboard_mcp.py` is registered at user scope by `install.sh`, so any Claude session on the box can call `list_projects`, `create_task`, `list_tasks` and `get_task_status`. The shim is box-only: it sends the box's hook token, so it talks only to plain `http` on a loopback address (`127.0.0.0/8`, `::1` or `localhost`) and never follows a redirect. Pointed anywhere else (`https://`, a LAN address, a tailnet name, any other name) it answers every tool call with an error and sends nothing. Another device needs the board's remote MCP endpoint with a token of its own, not a copy of the shim and the token file.
 - **Preview links**: "Preview" on a task card publishes the dev server the task started on its own tailnet HTTPS port (`tailscale serve`, never Funnel). The board's own services (the board, the terminal, code-server, ntfy, the claude-mem worker) are never published as a preview, and a preview never takes port 443, the board's, code-server's, ntfy's or the claude-mem viewer's HTTPS port.
 - **Devcontainer**: repos with `.devcontainer/devcontainer.json` can run sessions inside the container. Bypass permissions is an explicit per-session choice (host or container); tasks, scheduled and batch runs cannot use it, and settings overrides in extra args (`--settings`, `--setting-sources`, `--permission-prompt`) are rejected everywhere.
-- **Backup**: `ccboard-backup.timer` runs nightly (02:30 by default): a consistent snapshot of the board's SQLite DB, your `~/.claude/projects` transcripts, the Codex rollouts (`~/.codex/sessions`) and a consistent snapshot of claude-mem's `claude-mem.db` (`<claude-mem dir>`, taken through SQLite's backup API from a read-only connection, so claude-mem's database is never written; only that one file, never the directory) go into a restic repository (plus anything in `CCBOARD_BACKUP_EXTRA`; the saved logins are never in it, and neither is a laptop's claude-mem database, which is a different file on a different machine), then every repo under `PROJECTS_DIR` gets its unpushed work copied to backup branches on its `origin` (`ccboard-backup/<node>/<branch>`), so WIP from tasks survives the box. The backup never pushes to `main` or to any branch you work on. The strip shows the last result and the 🔔 panel has "Back up now"; a failed run pushes an ntfy warning.
+- **Backup**: `ccboard-backup.timer` runs nightly (02:30 by default; on a Mac the launchd job `dev.ccboard.backup`, see [Backup on each system](#backup-on-each-system-issue-129)): a consistent snapshot of the board's SQLite DB, your `~/.claude/projects` transcripts, the Codex rollouts (`~/.codex/sessions`) and a consistent snapshot of claude-mem's `claude-mem.db` (`<claude-mem dir>`, taken through SQLite's backup API from a read-only connection, so claude-mem's database is never written; only that one file, never the directory) go into a restic repository (plus anything in `CCBOARD_BACKUP_EXTRA`; the saved logins are never in it, and neither is a laptop's claude-mem database, which is a different file on a different machine), then every repo under `PROJECTS_DIR` gets its unpushed work copied to backup branches on its `origin` (`ccboard-backup/<node>/<branch>`), so WIP from tasks survives the box. The backup never pushes to `main` or to any branch you work on. The strip shows the last result and the 🔔 panel has "Back up now"; a failed run pushes an ntfy warning.
 - **Fleet**: every box shows its own cpu / ram / disk / uptime in the usage strip. Install ccboard on a second box with the same `CCBOARD_HUB_TOKEN`, set `CCBOARD_NODES=name=https://box.tailnet.ts.net:8443,…` on the one you look at, and it polls the others every minute into a Nodes strip (online, sessions, needs-you, health, 5h usage) that links to each board. Any box can be the hub; they are the same app.
 
 See [ROADMAP.md](ROADMAP.md) for how each item was built and what comes next.
@@ -96,7 +96,7 @@ tar xzf ccboard.tar.gz && cd ccboard      # or: git clone https://github.com/rpa
 
 The script prints the dashboard URL when it is done. Open it **from another device on your tailnet** (requests from the box itself carry no Tailscale identity and are rejected), then click *Log in* to sign in to Claude Code.
 
-Requirements: Ubuntu 22.04 or 24.04 for this installer (macOS 13 or newer is covered in [macOS](#macos-issue-117); its installer is coming), Tailscale installed and logged in, MagicDNS and **HTTPS certificates** enabled for your tailnet (admin console → DNS), `sudo` rights.
+Requirements: Ubuntu 22.04 or 24.04 for this installer (macOS 13 or newer has its own installer, see [macOS](#macos-issue-117); `./install.sh` hands over to it on a Mac), Tailscale installed and logged in, MagicDNS and **HTTPS certificates** enabled for your tailnet (admin console → DNS), `sudo` rights.
 
 ### Settings
 
@@ -129,7 +129,7 @@ Every setting is an environment variable. Values are remembered in `/etc/ccboard
 | `CCBOARD_NODES` | empty | `name=https://host.tailnet.ts.net:port,…` of the other boxes this one polls |
 | `CCBOARD_RESTIC_REPO` | `<data dir>/restic` | restic repository for the nightly backup (`sftp:user@host:/path`, `rclone:remote:path`, `s3:…`, or `off`). The default is on the same disk: fine against deletion and corruption, useless against disk loss |
 | `CCBOARD_BACKUP_PUSH` | `1` | `0` skips the nightly copy of unpushed work to `ccboard-backup/<node>/<branch>` on every repo's `origin` |
-| `CCBOARD_BACKUP_ONCALENDAR` | `*-*-* 02:30:00` | systemd calendar spec of the backup timer (`CCBOARD_BACKUP=0` at install time leaves the timer disabled) |
+| `CCBOARD_BACKUP_ONCALENDAR` | `*-*-* 02:30:00` | systemd calendar spec of the backup timer (`CCBOARD_BACKUP=0` at install time leaves the timer disabled). On a Mac only `*-*-* HH:MM[:SS]` and `HH:MM` (every day) are understood; see [Backup on each system](#backup-on-each-system-issue-129) |
 | `CCBOARD_BACKUP_EXTRA` | empty | Colon-separated extra paths to include in the restic snapshot |
 | `CCBOARD_RESTIC_PASSWORD_FILE` | `<data dir>/restic-password` | Where the restic password lives |
 | `CCBOARD_RUNTIME` | `systemd` | `systemd` runs the board as `ccboard.service`; `docker` runs it as the `ccboard` container ([below](#run-the-board-as-a-container-optional)). Remembered in `/etc/ccboard/env`; go back with `CCBOARD_RUNTIME=systemd ./install.sh` |
@@ -197,7 +197,7 @@ Update: pull or extract the new version into the same directory and rerun `./ins
 
 ### macOS tools (issue #128)
 
-On a Mac the tools come from Homebrew, listed in two files under `scripts/macos/`: `Brewfile` (required) and `Brewfile.optional`. Neither holds a cask, and nothing here runs `sudo`. The macOS installer (a later step of the macOS work) asks once before it runs `brew bundle`, then installs the optional tools named in `CCBOARD_MACOS_OPTIONAL` (default `code-server,restic,bun`); until it lands, `brew bundle --file=scripts/macos/Brewfile` installs the required set by hand. The table is the same list as the files (a test keeps them equal).
+On a Mac the tools come from Homebrew, listed in two files under `scripts/macos/`: `Brewfile` (required) and `Brewfile.optional`. Neither holds a cask, and nothing here runs `sudo`. The macOS installer asks once before it runs `brew bundle --no-upgrade` (without a terminal it stops and says what is missing, unless `CCBOARD_MACOS_INSTALL_TOOLS=1`), then installs the optional tools named in `CCBOARD_MACOS_OPTIONAL` (default `code-server,restic,bun`; `none` skips them); `brew bundle --file=scripts/macos/Brewfile` installs the required set by hand. The table is the same list as the files (a test keeps them equal).
 
 | Tool | Homebrew formula | Needed | Intel Mac | Apple silicon | If it is missing (the Doctor says) |
 |---|---|---|---|---|---|
@@ -240,9 +240,23 @@ Everything the board knows about the `tailscale` command lives in `app/tailscale
 
 ## macOS (issue #117)
 
-The board runs natively on a Mac as per-user launchd jobs, for a person who is logged in. The installer for it is **coming with the macOS installer** (the next step of the macOS work); until it lands, the pieces below exist and the README says plainly which are not wired up yet. Linux behaves exactly as before.
+The board runs natively on a Mac as per-user launchd jobs, for a person who is logged in. `./install.sh` on a Mac hands over to `scripts/install-macos.sh`; Linux behaves exactly as before (the dispatch is one line in `install.sh`).
 
-**Requirements:** macOS 13 or newer, [Homebrew](https://brew.sh), and Tailscale with MagicDNS and HTTPS certificates enabled (see [Tailscale on each system](#tailscale-on-each-system-issue-126) for the three variants). The tools come from Homebrew ([macOS tools](#macos-tools-issue-128)). Install: `./install.sh` on a Mac will hand over to the macOS installer once it exists; nothing in this section is installed by hand.
+**Requirements:** macOS 13 or newer, [Homebrew](https://brew.sh), and Tailscale with MagicDNS and HTTPS certificates enabled (see [Tailscale on each system](#tailscale-on-each-system-issue-126) for the three variants). The tools come from Homebrew ([macOS tools](#macos-tools-issue-128)). 
+
+**Install.** From a terminal, as yourself (the installer never uses `sudo` and refuses to run as root):
+
+```sh
+git clone https://github.com/rpandox/ccboard && cd ccboard
+./install.sh                        # or: CCBOARD_RUNTIME=launchd ./install.sh, or ./install.sh --runtime launchd
+CCBOARD_HTTPS_PORT=8443 CODE_HTTPS_PORT=10000 ./install.sh      # settings are environment variables, as on Linux
+```
+
+It runs under the stock bash 3.2 of macOS and, in order: checks the Mac (not root, macOS 13+, Homebrew) and every setting; checks Tailscale and the `tailscale serve` ports before changing anything; installs missing Homebrew tools (it asks once, or set `CCBOARD_MACOS_INSTALL_TOOLS=1`; `CCBOARD_MACOS_OPTIONAL=none` skips the optional ones); builds `.venv` from `requirements.txt`; writes `<data dir>/env` (mode 0600, previous values remembered, a value you pass wins); renders and loads the launchd jobs; merges the Claude and Codex hooks; registers the MCP server with Claude under the board's own venv python (`.venv/bin/python`, never the system `python3`); maps the board, `/tty` and code-server with `tailscale serve`; waits for `/healthz`; and prints the URLs, the restart command, the log folder and the update command. `CCBOARD_RUNTIME=docker` and `systemd` are refused on a Mac, with the reason. Switches that apply to the jobs: `CCBOARD_KEEP_AWAKE=1` (`dev.ccboard.awake`), `CCBOARD_MEM_SERVICE=1` (`dev.ccboard.mem`), `CCBOARD_BACKUP=0` (no `dev.ccboard.backup`; otherwise it runs at `CCBOARD_BACKUP_ONCALENDAR`, as `*-*-* HH:MM[:SS]` or `HH:MM`), `CCBOARD_LAUNCHD_DOMAIN=user` (experimental).
+
+**A rerun** changes nothing it should not: a plist that renders the same is neither rewritten nor reloaded, the board restarts (`kickstart -k`) only when the checkout, the requirements or the settings file changed, a changed plist of the board, ttyd or an optional job is booted out and in again, and `dev.ccboard.tmux` is never booted out or kickstarted once it runs (a changed tmux plist only prints a warning, because reloading it would end every session). A job you switched off is booted out and its plist removed.
+
+**What the macOS installer leaves to you:** installing Claude Code and Codex (it prints how when one is missing), the claude-mem plugin (it prints the two `claude plugin` commands), ntfy (see the tools section), and the claude-mem viewer mapping on the tailnet (`CCBOARD_MEM_HTTPS_PORT` is remembered but not mapped yet).
 
 **The jobs.** Three always (`dev.ccboard.board`, `dev.ccboard.tmux`, `dev.ccboard.ttyd`), three optional (`awake`, `code-server`, `mem`). They are LaunchAgents of the `gui/<uid>` domain, so they belong to the logged-in user's session and can reach that user's Keychain, Homebrew tools and `~/.local/bin`. `CCBOARD_LAUNCHD_DOMAIN=user` selects the experimental Background-session layout (`user/<uid>`); it is labelled experimental until a Mac proves it, see the table. Logs: `~/Library/Logs/ccboard/<job>.log` (stdout and stderr; launchd never rotates them, so the Doctor warns over 50 MB).
 
@@ -255,8 +269,8 @@ The board runs natively on a Mac as per-user launchd jobs, for a person who is l
 | read a log | `tail -n 30 ~/Library/Logs/ccboard/board.log` (also `tmux.log`, `ttyd.log`) |
 | stop the board, keep the sessions | `launchctl bootout gui/$(id -u)/dev.ccboard.board` |
 | start it again | `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.ccboard.board.plist` |
-| update | `git pull`, then rerun the installer (coming with the macOS installer) |
-| uninstall | `scripts/uninstall-macos.sh` (coming with the macOS installer; it keeps the data directory) |
+| update | `git pull`, then rerun `./install.sh` |
+| uninstall | `scripts/uninstall-macos.sh` (asks first; `--yes` skips the question, `--keep-tmux` leaves the sessions running). It boots out and removes every `dev.ccboard.*` job, the tmux job last, and keeps the data folder, the settings file, the logs, the hook registrations and the `tailscale serve` mappings, saying how to remove each |
 
 Never restart or boot out `dev.ccboard.tmux` while sessions run: it is the tmux server that owns them, the same rule as `ccboard-tmux.service` on Linux.
 
@@ -290,6 +304,31 @@ Never restart or boot out `dev.ccboard.tmux` while sessions run: it is the tmux 
 **Doctor checks on a Mac** (group box; they exist only on macOS): launchd jobs loaded and running; logout and reboot (FileVault, automatic login, the job domain); the tools the board finds (`claude`, `codex`, `tmux`, `git`, `gh`); the privacy folders; name case; sleep (`pmset -g assertions`); the log folder size. Off a Mac, and where the board is not a launchd job, a check says so and skips.
 
 **Not supported on a Mac:** the container runtime (Docker Desktop runs containers in a virtual machine that cannot reach the Mac's tmux and processes, see the support table in [the container section](#where-the-container-runtime-works)), saved Claude logins (account switching) until issue #119 lands, and native Windows (issue #124).
+
+### Backup on each system (issue #129)
+
+What is backed up does not change (the DB snapshot, claude-mem's snapshot, the transcripts, the Codex rollouts, `CCBOARD_BACKUP_EXTRA`, and the unpushed work copied to `ccboard-backup/<node>/<branch>`); only the job that runs it differs. Linux keeps its timer, unit and wording exactly as they were.
+
+| | Linux (systemd) | Mac (launchd) | WSL2 |
+|---|---|---|---|
+| The job | `ccboard-backup.timer` and `.service` | LaunchAgent `dev.ccboard.backup`, installed unless `CCBOARD_BACKUP=0` | the systemd timer, when systemd is on in the distribution |
+| Schedule (`CCBOARD_BACKUP_ONCALENDAR`) | any systemd calendar spec, default `*-*-* 02:30:00`, plus up to 15 minutes of random delay | the same setting, only `*-*-* HH:MM[:SS]` or `HH:MM` (every day); any other form stops the installer and names these two | as Linux |
+| A run missed while the machine was off or asleep | `Persistent=true`: it runs at the next start | launchd runs a calendar job missed during sleep when the Mac wakes (launchd.plist(5)); **to verify on a Mac**. A Mac that is switched off at the set time runs nothing until the next calendar time | as Linux; `Persistent=true` covers a VM that was stopped at 02:30 |
+| Priority | `Nice=10`, idle I/O | `Nice` 10, `LowPriorityIO`, `ProcessType` Background | as Linux |
+| **Back up now** | `sudo -n systemctl start --no-block ccboard-backup.service`; the log is `journalctl -u ccboard-backup` | `launchctl kickstart gui/$(id -u)/dev.ccboard.backup` (no sudo, no `-k`); the log is `~/Library/Logs/ccboard/backup.log` | as Linux |
+| Where there is no job | a detached process, log `<data dir>/backup.log` | the same, when the job is not loaded | the same |
+
+Either way a second start while a run holds the lock answers 409 ("a backup is already running"), and "Backup started" means started: the result shows in the Backup status line from the board's own record.
+
+**A sleeping laptop.** A job set for 02:30 on a Mac that sleeps runs on the next wake, which can be mid-morning while you work. That is fine for a backup, but the "last backup" time will not read 02:30. The launchd catch-up is **UNVERIFIED** until the device check (issue #130) measures it.
+
+**Pushing needs a key that works without a prompt.** The branch pushes run `ssh -oBatchMode=yes`, so a passphrase prompt is a failure, not a question. Whether a launchd job in your login session sees your ssh-agent and the Keychain-backed key is **UNVERIFIED**. If the last run could not push, the Doctor's `backup-job` row says so and names the fix: load the key without a prompt (`ssh-add --apple-use-keychain <key file>`) or use an https remote (`gh auth setup-git`). The snapshot is not affected.
+
+**The repository setting.** `CCBOARD_RESTIC_REPO` is a folder on this machine (an absolute path), one of the restic remotes (`sftp:`, `rclone:`, `s3:`, `b2:`, `azure:`, `gs:`, `rest:`, `swift:`), or `off`; empty keeps the default under the data dir. A relative path, `~/x` or any other string is refused: the run stops before `restic` is started, and the Backup status line shows the reason. A Windows path such as `C:\backups` is refused the same way, because native Windows is not supported (issue #124). Under WSL2 a drive is a Linux path (`/mnt/c/...`), and that is where the next paragraph applies.
+
+**WSL2.** A repository under `/mnt/` sits on the Windows file system through drvfs: it is slow and ignores file modes, so the Doctor warns. Keep the repository on the WSL file system (ext4) or on a remote. As a second layer for the whole distribution, `wsl --export <distro> <file>.vhd --format vhd` writes a copy of it from Windows.
+
+**Restoring.** The restore runbook (issue #111) is not written yet. A backup branch comes back with the `git fetch` and `git switch -c` lines in [the security notes](#security-model).
 
 ## Run the board as a container (optional)
 
@@ -617,6 +656,7 @@ All of these read files or the project scan the board already holds, call a tool
 
 - **Backup repository** (`backup-repo`, Box): restic off on purpose (`CCBOARD_RESTIC_REPO=off`) is a skip, not a pass; a remote repository (`sftp:`, `rclone:`, `s3:`, `rest:`...) passes; a local path on the same filesystem as the data directory warns, because that default only protects against deletion and corruption, not against losing the disk. It turns green when `CCBOARD_RESTIC_REPO` points at another disk or a remote and the board is restarted.
 - **Last backup** (`backup-last`, Box): reads `<data dir>/backup-status.json`. `ok` and under 36 hours old passes; `partial` (the first warning is shown) or older than 36 hours warns; `failed` or older than 72 hours fails; no file on a board under a day old is a skip. It turns green with the next good run (`sudo systemctl start ccboard-backup`).
+- **Backup job** (`backup-job`, Box): the job that runs the nightly pass is installed and loaded (the launchd label `dev.ccboard.backup` on a Mac, the active `ccboard-backup.timer` under systemd); the last run's age from the same record as the line above; `restic` on the job's own PATH (read from the plist or the unit; unreadable shows as unknown); a local repository under `/mnt/` on WSL2 (slow, modes ignored); and, on a Mac, a note about the ssh-agent only after the last run reported a push failure. A job that is not loaded warns (`CCBOARD_BACKUP=0` leaves it out on purpose); a repository setting that is no path and no remote fails and says why. It skips where the board is not run by systemd or launchd, and in the container, where the timer belongs to the host. Nothing is run: it reads `launchctl print` or `systemctl is-active` and two files.
 - **Uncommitted work** (`backup-uncommitted`, Box): the nightly run copies only committed work, so a dirty working tree is in no backup. From the project scan's `dirty` flag, the check lists the changed files of the dirty repos only (`git status --porcelain`, at most 200 files per repo and 3 seconds overall) and warns when one has changes older than 24 hours, naming up to five repos and the count. Commit or push to turn it green; a missing path, a failing or slow git skips that repo only.
 - **CI on backup branches** (`backup-branch-ci`, Box): the repos under `PROJECTS_DIR` that have an `origin` and whose workflows would start on a push to `ccboard-backup/<node>/<branch>` (`on: push` without a branch filter that excludes it). It is a read-only text scan of `.github/workflows/*.y*ml` (20 repos, 10 files each, 64 KB per file; `app/workflows.py`), makes no GitHub call, and anything it cannot understand counts as unknown, never as a hit. The fix, which belongs in that repo's workflow and not in ccboard, is `branches-ignore: ['ccboard-backup/**']` under `push:` (the row has a Copy button for the line). Skipped while `CCBOARD_BACKUP_PUSH=0`.
 - **GitHub Actions** (`ci-status`, Box): needs `gh` logged in and an image built by this repository's CI (CI passes `CCBOARD_SOURCE_REPO` and `CCBOARD_IMAGE_REVISION` as build arguments; a local build leaves them empty and the check skips). It asks `gh run list` for the last five runs on `main`, at most once per five minutes (cached in the board's kv, so opening Doctor or pressing Re-check inside the window shows the cached answer with its age). Warn: the newest completed run ended `failure`, `timed_out`, `cancelled` or `startup_failure` (the fix is the run's link), or a run has been queued, waiting or in progress for more than 30 minutes (stuck). Pass: anything else; if the box runs a commit other than the newest green one the detail adds "the box is behind the last green commit", which is information (Watchtower scans every 5 minutes and the deploy gate may be holding a swap). A GitHub or network failure is a skip with its reason, never red.
