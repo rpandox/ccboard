@@ -2,7 +2,7 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
-## v0.5.23 - 2026-10-09
+## v0.5.23 - 2026-10-08
 
 ### Added
 - One platform module (`app/platform.py`) answers every operating-system question: uid, locks, file writes, default paths, the runtime, process lists, host numbers and fix hints. On a Mac the Box panel shows CPU, memory and uptime, preview ports and the Codex foreign-process warning work (through psutil), and no doctor fix names apt-get, systemctl or journalctl.
