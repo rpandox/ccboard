@@ -4,7 +4,7 @@ Container delivery (v0.5.1-docker). GitHub Actions builds `ghcr.io/rpandox/ccboa
 
 | File | What it is |
 |---|---|
-| `../Dockerfile` | The image: Ubuntu 24.04 (same tmux 3.4 as the box), Python venv with the app at `/opt/ccboard`, gh, restic, Node 22 + ccusage, the Tailscale CLI, runs as uid/gid 1000. Claude Code and Codex are **not** in it: the host's `~/.local/bin` binaries run, through the host home mounted at the same path. |
+| `../Dockerfile` | The image: Ubuntu 26.04 (tmux 3.6 client; checked against the box's tmux 3.4 server: list, send-keys, capture, new-window, resize and kill all work), Python venv with the app at `/opt/ccboard`, gh, restic, Node 22 + ccusage, the Tailscale CLI, runs as uid/gid 1000. Claude Code and Codex are **not** in it: the host's `~/.local/bin` binaries run, through the host home mounted at the same path. |
 | `../.dockerignore` | Keeps the repo's dev files, caches and this directory out of the build context. |
 | `../scripts/docker-entrypoint.sh` | Container start: refuses root, syncs `bin/`, `scripts/` and `tmux.conf` into `$CCBOARD_DATA_DIR/app/` (what the host's hooks, ttyd and MCP run), re-merges the Claude hooks, re-applies `tmux.conf` to the running tmux server, registers the MCP server if missing, then execs uvicorn. `CCBOARD_SHADOW=1` skips every host mutation. |
 | `docker-compose.yml` | The production template: `ccboard` (host network, host pid, uid 1000, label-scoped for Watchtower, healthcheck on `/healthz`) and `watchtower` (profile `prod`, only `ccboard`-scoped containers). Installed as `~/.local/share/ccboard/compose/docker-compose.yml` with a `.env` next to it. |
