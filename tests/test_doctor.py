@@ -1927,7 +1927,8 @@ def test_uncommitted_stops_at_its_time_budget(newc, world, monkeypatch, tmp_path
     monkeypatch.setattr(doctor, "_run", slow)
     t0 = time.monotonic()
     c = newc("backup-uncommitted")
-    assert time.monotonic() - t0 < 1.0 and c["status"] == "warn" and "2 repos" in c["detail"]      # two repos fit the budget, the rest are not asked
+    # one or two repos fit the budget (a slow runner overshoots the 0.2 s sleep), the rest are not asked
+    assert time.monotonic() - t0 < 1.0 and c["status"] == "warn" and ("1 repo " in c["detail"] or "2 repos" in c["detail"])
 
 
 # ---- #51 backup-branch-ci
