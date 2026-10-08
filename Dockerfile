@@ -6,7 +6,7 @@
 # sessions, ttyd, code-server, tailscale serve) stays on the host. See deploy/docker-compose.yml.
 #
 # Layer order is cache order: apt, third-party repos, user, python deps, then the app and the per-build metadata.
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -40,8 +40,10 @@ RUN install -d -m 0755 /etc/apt/keyrings \
  && rm -rf /var/lib/apt/lists/*
 
 # Tailscale CLI only, for `tailscale serve` (previews) through the host daemon's socket mounted from /var/run/tailscale.
-RUN curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg -o /usr/share/keyrings/tailscale-archive-keyring.gpg \
- && curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list -o /etc/apt/sources.list.d/tailscale.list \
+# The repo follows the base image's codename (resolute for 26.04), so the next base bump needs no edit here.
+RUN . /etc/os-release \
+ && curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/${VERSION_CODENAME}.noarmor.gpg" -o /usr/share/keyrings/tailscale-archive-keyring.gpg \
+ && curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/${VERSION_CODENAME}.tailscale-keyring.list" -o /etc/apt/sources.list.d/tailscale.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends tailscale \
  && rm -rf /var/lib/apt/lists/*

@@ -53,7 +53,7 @@ def of(kind: str) -> list[str]:
 
 def test_dockerfile_base_and_final_user():
     ins = instructions()
-    assert [r for w, r in ins if w == "FROM"] == ["ubuntu:24.04"]
+    assert [r for w, r in ins if w == "FROM"] == ["ubuntu:26.04"]
     users = of("USER")
     assert users and users[-1] == "1000:1000"
     last_user = max(i for i, (w, _) in enumerate(ins) if w == "USER")
@@ -89,7 +89,7 @@ def test_dockerfile_packages_and_users():
         assert re.search(rf"(\s){re.escape(pkg)}(\s|$)", runs), pkg
     assert "https://cli.github.com/packages" in runs and "githubcli-archive-keyring" in runs
     assert "deb.nodesource.com/node_22.x" in runs and re.search(r"ccusage@20\.\d+\.\d+(\s|$)", runs)
-    assert "pkgs.tailscale.com/stable/ubuntu/noble" in runs and "install -y --no-install-recommends tailscale" in runs
+    assert "pkgs.tailscale.com/stable/ubuntu/${VERSION_CODENAME}" in runs and ". /etc/os-release" in runs and "install -y --no-install-recommends tailscale" in runs
     assert "userdel" in runs and "groupadd -g 1000 ccboard" in runs
     assert re.search(r"useradd -M -u 1000 -g 1000 -s /bin/bash -d /home/rpandox ccboard", runs)
     assert "python3 -m venv .venv" in runs and "pip install" in runs and "--require-hashes -r requirements.lock" in runs

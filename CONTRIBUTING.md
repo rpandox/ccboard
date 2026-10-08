@@ -22,7 +22,7 @@ Tier A uses `--effort xhigh` (Claude) or `model_reasoning_effort="xhigh"` (Codex
 ## Set up
 
 ```sh
-python3.12 -m venv .venv && .venv/bin/pip install --require-hashes -r requirements-dev.lock
+python3.14 -m venv .venv && .venv/bin/pip install --require-hashes -r requirements-dev.lock
 ```
 
 See README, Development, for running the board locally and for how the lock files are regenerated. Dependabot opens one grouped pull request per ecosystem each week; they are merged together once a week, never one by one, because every merge to `main` deploys the box.
