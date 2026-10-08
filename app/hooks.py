@@ -347,6 +347,7 @@ def _observer_transcript(tp: str) -> bool:
     return any(seg == "observer-sessions" or "claude-mem-observer-sessions" in seg for seg in tp.split("/"))
 
 
+# Guard 2 of the four in README "Which hooks the board ignores": claude-mem's observer and conversations another open row owns.
 def _foreign(db, name: str, payload: dict, sid: str | None, row: dict | None) -> bool:
     """Is this hook from a session that is not the one in `name`'s row: claude-mem's observer (cwd under ~/.claude-mem or a transcript
     in observer-sessions/), or a conversation another open row already owns. A new id on the SAME row is fine (a resumed conversation:
@@ -427,6 +428,7 @@ def _tool_batch(db, name: str, event: str, sid: str | None, row: dict | None) ->
     return out
 
 
+# Guard 4 (Codex sub-threads) of the README subsection "Which hooks the board ignores".
 def _subthread(adapter, row: dict | None, sid: str | None, event: str, payload: dict) -> bool:
     """Is this event from another thread than the one the row follows? Codex runs the hooks for every thread of the process (a
     guardian reviewer, a thread_spawn subagent), each under its own session_id and in the same pane with the same env, so such an
@@ -445,6 +447,8 @@ def _valid_sid(payload: dict) -> str | None:
     return raw if isinstance(raw, str) and SESSION_ID_RE.match(raw) else None
 
 
+# The guards behind POST /api/hook and POST /api/permission, in the order they run: agent (in the caller, api_hook and api_permission),
+# foreign (guard 2), child (guard 3), sub-thread (guard 4). Headers, responses and examples: README, "Which hooks the board ignores".
 def ignore_reason(db, name: str, event: str, payload: dict, row: dict | None, child: bool = False, agent: str | None = None) -> str | None:
     """Is this hook somebody else's? 'foreign' (claude-mem's observer, or a conversation another open row owns), 'child' (a nested
     claude, CLAUDE_CODE_CHILD_SESSION=1, whose session_id is not the row's own: it inherits the parent's CCBOARD_SESSION and TMUX_PANE),
@@ -474,6 +478,7 @@ def _expire_permissions(db, name: str, decision: str) -> int:
     return n
 
 
+# Entry point of POST /api/hook. The guards run here first; see README, "Which hooks the board ignores", for the four guards and their responses.
 def apply(db, name: str, event: str, payload: dict, agent: str | None = None, child: bool = False) -> dict:
     """Update the session row for one hook event. Returns what changed. `agent` is the agent whose adapter reads the payload and is
     recorded on the stored event: the row's own agent, or for a shell row the X-CCBoard-Agent the hook script sent (hook_agent).

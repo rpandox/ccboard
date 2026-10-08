@@ -481,7 +481,7 @@ Quad.mount = function (root, route) {
     fs: false, fsApi: false, fsZoom: false, pop: null, menu: null, menuTile: null,
     active: '', tiles: new Map(), empties: new Map(), manualEmpty: new Set(),
     chipTails: new Map(), chipLines: new Map(), chipList: null,
-    hiddenAt: 0, writeTimer: null, writing: false, disposed: false, listeners: [], offs: [], chipOrder: [], chipSel: '',
+    hiddenAt: 0, writeTimer: null, writing: false, disposed: false, listeners: [], offs: [], pointerOff: [], chipOrder: [], chipSel: '',
   };
   const enc = encodeURIComponent;
 
@@ -848,7 +848,7 @@ Quad.mount = function (root, route) {
     tile.glyphs = el('span', { class: 'qt-glyphs' });
     const [proj, repo, sname] = Quad.parts(tmux);
     // two spans so a narrow header drops the project/repo first and keeps the session name: 'phasezero/website · ' shrinks, 't-checkout-redesign' stays
-    tile.where = el('span', { class: 'qt-where', text: repo ? `${proj}${repo === 'root' ? '' : '/' + repo} · ` : '' });
+    tile.where = el('span', { class: 'qt-where' + (repo ? ' pend' : ''), text: repo ? `${proj}${repo === 'root' ? '' : '/' + repo} · ` : '' });      // .pend: hidden until TermKit.fitName has measured it, so no sliver flashes at first paint
     tile.name = el('span', { class: 'qt-name' }, tile.where, el('span', { class: 'qt-sess', text: repo ? sname : tmux }));
     // the name and its ▾ open the tile's view dropdown (TermKit.tileMenu: view, input, tune, session); a kit without it (slice B not loaded) keeps the old title menu
     tile.title = el('button', { class: 'minimal small qt-title', type: 'button', title: tile.kit ? `${tmux}: view, input and tune options` : `${tmux}: swap, reconnect, close`, 'aria-label': `${label}: tile menu`, 'aria-haspopup': 'menu' },
@@ -865,7 +865,7 @@ Quad.mount = function (root, route) {
     tile.size = el('span', { class: 'qt-size hidden' });
     tile.zoomBtn = el('button', { class: 'icon minimal small qt-zoom', type: 'button', 'aria-label': 'Zoom this tile', title: 'Zoom this tile (Ctrl+Alt+Z)', 'aria-pressed': 'false', onclick: () => zoomSlot(tile.slot) }, ic('maximize'));
     // the link pops the terminal out into its own window: the dock never takes it (data-dock=skip; the dock is suspended on this page anyway)
-    const open = el('a', { class: 'btn icon minimal small qt-open', href: `/term/${enc(tmux)}`, target: '_blank', rel: 'noopener', 'data-dock': 'skip', 'aria-label': 'Open the terminal page', title: 'Open the terminal page' }, ic('share'));
+    const open = el('a', { class: 'btn icon minimal small qt-open', href: `/term/${enc(tmux)}`, target: '_blank', rel: 'noopener', 'data-dock': 'skip', 'data-standalone': 'skip', 'aria-label': 'Open the terminal page', title: 'Open the terminal page' }, ic('share'));
     const again = el('button', { class: 'icon minimal small qt-reconnect', type: 'button', 'aria-label': 'Reconnect', title: 'Reconnect this tile', onclick: () => reconnect(tile) }, ic('refresh'));
     const shut = el('button', { class: 'icon minimal small qt-close', type: 'button', 'aria-label': 'Close this tile', title: 'Close this tile', onclick: () => close(tile) }, ic('cross'));
     tile.hooks = el('span', { class: 'qt-hooks hidden' });       // #96: 'no hooks (untrusted?)' while hooks_missing (patchTile)
@@ -1255,6 +1255,8 @@ Quad.mount = function (root, route) {
     if (I.n >= 2) items.push({ label: tile.slot === I.zoom ? 'Back to the grid' : 'Zoom this tile', icon: tile.slot === I.zoom ? 'minimize' : 'maximize', onClick: () => zoomSlot(tile.slot) });
     items.push({ label: 'Close tile', icon: 'cross', onClick: () => close(tile) });
     const here = new Set(visibleSlots().filter(Boolean));
+    /* Swap decision (v0.5.21): this fallback menu (no TermKit kit) keeps its swap rows; the kit menu does not list them, because an empty tile's pick rows and Close tile already
+       move a session between tiles in two taps. A "Swap in..." row comes back only if those prove too little. */
     for (const s of Quad.candidates(I.st, I.project).filter((x) => !here.has(x.tmux)).slice(0, 10)) {
       items.push({ label: `Swap in ${Quad.label(s.tmux)}`, onClick: () => assign(tile.slot, s.tmux) });
     }
@@ -1384,8 +1386,8 @@ Quad.mount = function (root, route) {
     if (!I.st) return;
     const list = el('div', { class: 'qe-list' });
     for (const s of free) {
-      list.append(el('button', { class: 'small qe-pick', type: 'button', 'data-tmux': s.tmux, onclick: () => assign(e.slot, s.tmux) },
-        stateGlyph(s.state), el('span', { class: 'qe-name', text: Quad.label(s.tmux) })));
+      list.append(el('button', { class: 'small qe-pick', type: 'button', 'data-tmux': s.tmux, title: Quad.label(s.tmux), onclick: () => assign(e.slot, s.tmux) },
+        stateGlyph(s.state), el('span', { class: 'qe-name', text: Quad.label(s.tmux) })));      // the full name stays in the title: the row cuts it with an ellipsis
     }
     e.node.append(list, el('button', { class: 'small qe-new', type: 'button', title: 'start a new session for this tile', onclick: () => newSessionHere(e.slot) }, ic('plus'), 'New session'));
   }
@@ -1486,18 +1488,31 @@ Quad.mount = function (root, route) {
     return true;
   }
 
+  /* The pointer type, as of now: data-touch on the grid (pages.css: the touch tiers of the tile header, 44 px controls need more room) and, when it changed, every tile's
+     components (v0.5.21, #52). The sync pass calls it, and so do the media-query and html.force-coarse watchers below, so a flip lands within a frame instead of at the next
+     poll. A flip re-sources, reorders and restarts nothing; an open tile menu or panel was built for the old tier, so it closes (the person taps again). */
+  function applyTouch() {
+    if (I.disposed || !I.host) return;
+    const touch = coarse();
+    if (touch) I.host.setAttribute('data-touch', 'true'); else I.host.removeAttribute('data-touch');
+    if (touch === I.touch) return;
+    I.touch = touch;
+    closeAll();
+    for (const t of I.tiles.values()) {
+      for (const c of [t.menuCtl, t.composerCtl, t.tuneCtl]) {
+        if (c && typeof c.update === 'function') { try { c.update({ touch }); } catch (e) { console.error('ccboard quad touch', e); } }
+      }
+    }
+    if (typeof TermKit !== 'undefined' && TermKit && typeof TermKit.fitName === 'function') for (const t of I.tiles.values()) TermKit.fitName(t.where);      // the header's pieces changed size: no tile body resized, so look at the titles again
+  }
+
   function patchHead() {
     const h = I.host;
     h.setAttribute('data-layout', String(I.n));
     if (I.oneUp) h.setAttribute('data-oneup', 'true'); else h.removeAttribute('data-oneup');
     if (I.forced) h.setAttribute('data-forced', 'true'); else h.removeAttribute('data-forced');
     I.grid.setAttribute('data-layout', String(I.n));
-    const touch = coarse();
-    if (touch) h.setAttribute('data-touch', 'true'); else h.removeAttribute('data-touch');         // pages.css: the touch tiers of the tile header (44 px controls need more room)
-    if (touch !== I.touch) {                                                                       // the header's pieces changed size: no tile body resized, so look at the titles again
-      I.touch = touch;
-      if (typeof TermKit !== 'undefined' && TermKit && typeof TermKit.fitName === 'function') for (const t of I.tiles.values()) TermKit.fitName(t.where);
-    }
+    applyTouch();
     if (I.zoom !== null) I.grid.setAttribute('data-zoom', String(I.zoom)); else I.grid.removeAttribute('data-zoom');
     for (const b of I.layoutBtns) {                                      // the one that shows is pressed (a saved layout above the cap shows the cap); the ones the window cannot take are off
       const n = Number(b.getAttribute('data-layout'));
@@ -1774,6 +1789,18 @@ Quad.mount = function (root, route) {
   if (typeof document !== 'undefined') listen(document, 'visibilitychange', onVisibility);
   listen(window, 'resize', onWindowSize);
   listen(window, 'orientationchange', onWindowSize);
+  try {                                                                                    // a pointer flip (a mouse on an iPad) and the QA switch html.force-coarse both repaint the touch tiers at once
+    const mq = typeof window.matchMedia === 'function' ? window.matchMedia('(pointer: coarse)') : null;
+    if (mq && typeof mq.addEventListener === 'function') { mq.addEventListener('change', applyTouch); I.pointerOff.push(() => mq.removeEventListener('change', applyTouch)); }
+    else if (mq && typeof mq.addListener === 'function') { mq.addListener(applyTouch); I.pointerOff.push(() => mq.removeListener(applyTouch)); }
+  } catch (_) { /* no matchMedia: the sync pass still follows the pointer */ }
+  try {
+    if (typeof MutationObserver === 'function' && document.documentElement) {
+      const mo = new MutationObserver(() => applyTouch());
+      mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+      I.pointerOff.push(() => mo.disconnect());
+    }
+  } catch (_) { /* no MutationObserver */ }
   if (typeof ResizeObserver === 'function') {
     I.rootRO = new ResizeObserver(() => onWindowSize());
     I.rootRO.observe(I.host);
@@ -1822,6 +1849,8 @@ Quad.mount = function (root, route) {
     if (I.disposed) return;
     I.disposed = true;
     if (I.writeTimer !== null) { clearTimeout(I.writeTimer); I.writeTimer = null; }
+    for (const off of I.pointerOff) { try { off(); } catch (_) { /* gone */ } }      // unsubscribe before the nodes go
+    I.pointerOff.length = 0;
     if (I.fsZoom) { I.fsZoom = false; I.zoom = null; }               // the zoom that Fullscreen this tile made is not kept
     if (I.resolved) Quad.save(I.project, snapshot());
     closeAll();

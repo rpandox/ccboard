@@ -1427,3 +1427,35 @@ test('tap count (real launcher): a new session from a Home project block is 2 ta
   assert.equal(posts[0].path, '/api/projects/phasezero/repos/NestJs-Ecommerce-Backend/sessions');
   assert.equal(taps, 2, 'two taps, nothing typed');
 });
+
+// ---------------------------------------------------------------- v0.5.21: the demo diff fixture and a malformed answer (#33)
+
+test('the diff sheet over the demo fixture (app/static/demo/diff.json): two commits, three files, the uncommitted one apart, no personal names or paths', async () => {
+  const { w } = diffWorld();
+  const fx = JSON.parse(fs.readFileSync(path.join(STATIC, 'demo', 'diff.json'), 'utf8'));
+  assert.equal(fx.commits.length, 2);
+  assert.equal(fx.files.length, 3);
+  assert.equal(fx.files_uncommitted.length, 1);
+  assert.equal(fx.truncated, false);
+  assert.equal(/\/home\/|\w@\w|ubu2|roshan/i.test(JSON.stringify(fx)), false);
+  w.ctx.__answers['/api/tasks/5/diff'] = fx;
+  w.run('openTaskModal(__t)');
+  await tick(); await tick();
+  const sh = sheetOf(w);
+  assert.match(text(sh), /Commits \(2\): c3a91f2 Group digits in money\(\) · 7be40d8 Label the cart drawer/);
+  assert.match(text(sh), /Files: src\/lib\/format\.ts, src\/components\/CartDrawer\.tsx, src\/components\/CartDrawer\.test\.tsx {2}· {2}uncommitted: src\/lib\/format\.test\.ts/);
+  assert.equal(plain(w.get('__drawn')).length, 1);
+});
+
+test('a {} or malformed diff answer reads as no commits and no files instead of throwing', async () => {
+  for (const bad of [{}, { commits: null, files: 'x', files_uncommitted: 7 }]) {
+    const { w } = diffWorld();
+    w.ctx.__answers['/api/tasks/5/diff'] = bad;
+    w.run('openTaskModal(__t)');
+    await tick(); await tick();
+    const sh = sheetOf(w);
+    assert.match(text(sh), /No commits on the branch yet\./);
+    assert.doesNotMatch(text(sh.querySelector('.tm-status')), /length|undefined|Cannot read/);
+    assert.ok(sh.querySelector('.tm-seg'), 'the side control still draws');
+  }
+});

@@ -52,7 +52,12 @@ Work lands through a pull request, never by a direct push to main.
 
 - One branch and one pull request per phase. The owner or orchestrator commits once per phase, with a subject that starts `vX.Y.Z ...` (CI tags the image from it), and keeps the agent's `Co-Authored-By` trailer on that commit.
 - Pull request CI runs the full test suite and a docker build that does not push.
+- The phase's commit also adds its entry to `CHANGELOG.md`: a `## vX.Y.Z - YYYY-MM-DD` heading, newest first, up to five bullets under Added, Changed or Fixed, and one `Upgrade:` line that says `rerun ./install.sh` only when the phase changed `install.sh`, a systemd unit, `tmux.conf` or the Claude settings. `tests/test_changelog.py` checks the shape. The agent drafts the entry; the owner or orchestrator includes it in that one commit.
 - Only a merge to main builds and publishes the image, which Watchtower then deploys to the box. A deploy is a short board outage, so merge one phase at a time. The deploy gate holds while a terminal is open.
+
+## Not now
+
+An idea that is on the list of things not to build (ROADMAP, "Not now") needs new evidence before an issue is filed for it. Each entry there names the number that rules it out and the signal that would reopen it.
 
 ## Never
 

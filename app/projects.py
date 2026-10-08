@@ -330,6 +330,37 @@ def git_info(path: Path) -> dict:
     return {"branch": branch, "dirty": bool(cp3.stdout.strip()), "state": "ok"}
 
 
+GIT_TTL_LOADED = 10.0                              # seconds a repo's git answer is reused while the box is busy (#31)
+_git_cache: dict[str, tuple[float, dict]] = {}       # repo path -> (monotonic time, git_info answer)
+_git_cache_lock = threading.Lock()
+
+
+def git_cache_clear() -> None:
+    """Forget every reused git answer (a user action that changes a repo calls it through main._invalidate_scan)."""
+    with _git_cache_lock:
+        _git_cache.clear()
+
+
+def git_info_reused(path: Path, max_age: float) -> dict:
+    """git_info(path), or the answer it gave less than `max_age` seconds ago. With max_age 0 (the box is not busy) git runs every
+    time, as before. While the box is busy the scan passes GIT_TTL_LOADED, so a repo's branch and dirty flag may be up to 10 s
+    old: two git processes per repo per scan are the scan's main cost on a loaded box, and the board says it is backing off
+    (state.scan_slow)."""
+    key = str(path)
+    now = time.monotonic()
+    if max_age > 0:
+        with _git_cache_lock:
+            hit = _git_cache.get(key)
+        if hit and now - hit[0] < max_age:
+            return dict(hit[1])
+    info = git_info(path)
+    with _git_cache_lock:
+        if len(_git_cache) > 512:                     # repos come and go; never let the map grow without bound
+            _git_cache.clear()
+        _git_cache[key] = (now, dict(info))
+    return info
+
+
 def _subdirs(path: Path) -> list[Path]:
     out = []
     try:
@@ -344,8 +375,9 @@ def _subdirs(path: Path) -> list[Path]:
     return out
 
 
-def scan(sessions: dict[str, dict]) -> list[dict]:
-    """Full project tree. `sessions` is tmux name -> session dict (already merged with DB rows)."""
+def scan(sessions: dict[str, dict], git_max_age: float = 0.0) -> list[dict]:
+    """Full project tree. `sessions` is tmux name -> session dict (already merged with DB rows). `git_max_age` > 0 reuses a repo's
+    git answer younger than that many seconds (git_info_reused; the state poll passes GIT_TTL_LOADED while the box is busy)."""
     grouped: dict[tuple[str, str], list[dict]] = {}
     for name, s in sessions.items():
         parts = name.split(SEP)
@@ -366,7 +398,7 @@ def scan(sessions: dict[str, dict]) -> list[dict]:
             if clone is not None and (clone.get("command") or "") == "git":
                 info = {"branch": None, "dirty": None, "state": "cloning"}
             elif is_repo(rdir):
-                info = git_info(rdir)
+                info = git_info_reused(rdir, git_max_age)
             elif clone is not None:
                 info = {"branch": None, "dirty": None, "state": "clone-failed"}  # the shell shows the error
             else:

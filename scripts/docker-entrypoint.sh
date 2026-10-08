@@ -1,7 +1,7 @@
 #!/bin/sh
 # ccboard container entrypoint (v0.5.1-docker). POSIX sh (dash on Ubuntu): no bashisms.
 #
-# The container shares the host's home, tmux socket and tailscale socket (deploy/docker-compose.yml), so before the
+# The container shares the host's home, tmux socket and tailscale socket (deploy/docker-compose.yml), so as the
 # board starts it brings the HOST-side pieces up to date with this image, idempotently:
 #   1. sync bin/, scripts/ and tmux.conf into $CCBOARD_DATA_DIR/app/ (host-mounted): the hook scripts, the statusline,
 #      the ttyd attach wrapper and the MCP shim that the HOST runs come from there, so a new image updates them with
@@ -12,7 +12,8 @@
 #   5. when the host has codex, the same two things for Codex: merge the hooks into $CODEX_HOME/hooks.json
 #      (scripts/codex_hooks.py) and register the MCP server (`codex mcp add`), both skipped without the binary.
 # Steps 2-5 touch the host and are skipped when CCBOARD_SHADOW=1 (a side-by-side test run). Every step is best effort:
-# a failure is a warning, never a reason to keep the board down. Then it execs uvicorn.
+# a failure is a warning, never a reason to keep the board down. Step 1 runs first; steps 2-5 run in the background while
+# it execs uvicorn, so a swap's outage does not wait on them (#39; they log "host steps done" when finished).
 set -eu
 
 APP_ROOT=${CCBOARD_APP_ROOT:-/opt/ccboard}   # where the image keeps the app; only tests point it elsewhere
@@ -159,14 +160,22 @@ host_codex() {
   host_codex_hooks || warn "could not merge the Codex hooks into hooks.json; Codex sessions keep the hooks they have"
   host_codex_mcp || warn "codex mcp add failed; register by hand: codex mcp add ccboard --env CCBOARD_URL=http://127.0.0.1:$CCBOARD_PORT -- $HOST_PYTHON $APP_DST/scripts/ccboard_mcp.py"
 }
-if [ "$SHADOW" = 1 ]; then
-  log "CCBOARD_SHADOW=1: Claude and Codex hooks, tmux server and MCP registration are left alone"
-else
+host_steps() {
   host_hooks || warn "could not merge the Claude hooks and statusline into settings.json; hooks keep pointing where they pointed"
   host_code_server || true
   host_tmux
   host_mcp || warn "claude mcp add failed; register by hand: claude mcp add --scope user ccboard -- $HOST_PYTHON $APP_DST/scripts/ccboard_mcp.py"
   host_codex
+  log "host steps done"
+}
+if [ "$SHADOW" = 1 ]; then
+  log "CCBOARD_SHADOW=1: Claude and Codex hooks, tmux server and MCP registration are left alone"
+else
+  # Steps 2-5 run beside the board, not before it (#39): on the box they took 3.4 s of a 10 s idle swap (`claude mcp get` alone
+  # 1.5 s, a Node start that grows with disk pressure), and the board needs none of them to answer. Every step is idempotent and
+  # best effort, so a container stopped halfway redoes them on its next start. The double fork hands the job to the container's
+  # reaper instead of leaving it a child of uvicorn (no zombie); its output still goes to the container log.
+  ( host_steps & )
 fi
 
 # ---------------------------------------------------------------- the board

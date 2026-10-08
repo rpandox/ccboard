@@ -1108,6 +1108,7 @@ const LX_MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green
 const LX_CX_MODES = [['default', 'default'], ['auto', 'auto'], ['read-only', 'read-only'], ['bypass', 'bypass'], ['custom', 'custom']];
 const LX_CX_MODE_PERM = { default: 'default', auto: 'auto', 'read-only': 'plan' };   // the adapter's permission_mode behind each picker entry (custom sends sandbox + approval instead)
 const LX_SANDBOXES = ['read-only', 'workspace-write', 'danger-full-access'];
+const LX_PROFILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;              // codex.py PROFILE_RE
 const LX_APPROVALS = ['on-request', 'never'];                                 // codex 0.160's -a; untrusted is retired, on-failure deprecated (the box's own list comes from GET /api/agents)
 /* The Codex models before GET /api/agents answers: codex.py FALLBACK_MODELS (the current family, in the order the TUI's /model picker lists them), the same
    slugs as termkit.js TK_CODEX_MODELS (tests/test_static_codex.py compares all three). ultra only where the fallback lists it (gpt-6.1-sol). */
@@ -1174,6 +1175,8 @@ const AGENT_SCHEMAS = {
       lxOpt('worktree', 'Start in a new git worktree', 'bool', null, false, '', 'advanced', false, { launcher: ['new'] }),
       lxOpt('worktree_name', 'Worktree name', 'text', null, null, '', 'advanced', false, { worktree: true }),
       lxOpt('config', 'Config overrides', 'textarea', null, null, '', 'advanced'),
+      lxOpt('profile', 'Profile', 'text', null, null, '', 'advanced'),
+      lxOpt('no_alt_screen', 'Keep scrollback (no alternate screen)', 'bool', null, true, '', 'advanced'),
       lxOpt('extra', 'Extra arguments', 'args', null, null, '', 'advanced'),
     ],
     permission_modes: ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'], efforts: LX_EFFORTS,
@@ -1313,7 +1316,7 @@ function launcherPresetDrop(p, r, agent, name) {
 function launcherDefaults(agent) {
   if (agent === 'claude') return { model: 'opus', model_custom: '', effort: 'high', ultracode: false, fast: false, permission_mode: '', tools: '', allowed_tools: '', disallowed_tools: '', append_system_prompt: '',
     agent_name: '', fallback_model: '', autocompact: '', mcp_config: '', devcontainer: false };
-  if (agent === 'codex') return { model: '', model_custom: '', reasoning: '', cx_mode: 'default', sandbox: 'workspace-write', approval: 'on-request', search: false, config: '' };
+  if (agent === 'codex') return { model: '', model_custom: '', reasoning: '', cx_mode: 'default', sandbox: 'workspace-write', approval: 'on-request', search: false, config: '', profile: '', no_scrollback: false };
   return {};
 }
 
@@ -1333,7 +1336,7 @@ function launcherDanger(v, mode) { return (mode || 'session') === 'session' && l
 function launcherRemember(v) {
   const keep = v.agent === 'claude'
     ? ['model', 'model_custom', 'effort', 'ultracode', 'fast', 'permission_mode', 'tools', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'agent_name', 'fallback_model', 'autocompact', 'mcp_config', 'devcontainer', 'args']
-    : v.agent === 'codex' ? ['model', 'model_custom', 'reasoning', 'cx_mode', 'sandbox', 'approval', 'search', 'config', 'args'] : [];
+    : v.agent === 'codex' ? ['model', 'model_custom', 'reasoning', 'cx_mode', 'sandbox', 'approval', 'search', 'config', 'profile', 'no_scrollback', 'args'] : [];
   const out = {};
   for (const k of keep) {
     const x = v[k];
@@ -1447,7 +1450,7 @@ function commandPreview(v, ctx) {
     if (v.fast) then.push('/fast on');
   } else {
     const caps = { approve_for_me: false, bypass_approvals: true, yolo: false, no_alt_screen: true, search: true, add_dir: true, ...(c.caps || {}) };
-    if (caps.no_alt_screen) flags.push('--no-alt-screen');
+    if (caps.no_alt_screen && !v.no_scrollback) flags.push('--no-alt-screen');            // on by default: only the opt-out (Keep scrollback unchecked) drops it
     const md = v.cx_mode || 'default';
     const danger = md === 'bypass' || (md === 'custom' && v.sandbox === 'danger-full-access');         // the sheet sends bypass: true for both, and the adapter then builds the one bypass flag
     if (danger && !lane) flags.push(caps.bypass_approvals || !caps.yolo ? '--dangerously-bypass-approvals-and-sandbox' : '--yolo');
@@ -1461,6 +1464,7 @@ function commandPreview(v, ctx) {
     for (const line of String(v.config || '').split('\n').map((x) => x.trim()).filter(Boolean)) flags.push('-c', line);
     if (v.search && caps.search) flags.push('--search');
     if (caps.add_dir) for (const d of dirs) flags.push('--add-dir', d);
+    if (String(v.profile || '').trim() && caps.profile !== false) flags.push('-p', String(v.profile).trim());
     flags.push(...lxSplit(v.args));
     const kind = lane ? 'new' : v.launch;
     const target = String(v.resume_id || '').trim();
@@ -1583,6 +1587,8 @@ function launcherPayload(v, ctx) {
     if (v.search && has('search')) body.search = true;
     const cfg = String(v.config || '').split('\n').map((x) => x.trim()).filter(Boolean);
     if (has('config')) put('config', cfg);
+    if (has('profile')) put('profile', t(v.profile));
+    if (v.no_scrollback && has('no_alt_screen')) body.no_alt_screen = false;        // on by default: only the opt-out is sent, as the server stores it
   }
   if (v.worktree && has('worktree') && kind === 'new') { body.worktree = true; put('worktree_name', t(v.worktree_name)); }
   put('args', t(v.args));
@@ -1608,6 +1614,8 @@ function launcherTaskOpts(v) {
     put('permission_mode', perm.permission_mode);
     const opts = { ...perm.opts };
     if (v.search) opts.search = true;
+    if (String(v.profile || '').trim()) opts.profile = String(v.profile).trim();
+    if (v.no_scrollback) opts.no_alt_screen = false;
     if (Object.keys(opts).length) out.opts = opts;
   }
   return out;
@@ -2029,6 +2037,9 @@ function launcherForm(o) {
   const cfgArea = area(() => X.config, (x) => { X.config = x; fieldError(cfgF, ''); }, { rows: '3', placeholder: 'one key=value per line, e.g. model_verbosity=low' });
   const cfgF = field('Config overrides', cfgArea, '-c key=value, one per line. Keys the board manages are refused.');
   const searchChk = check('Live web search', () => X.search, (x) => { X.search = x; }, '--search');
+  const profileIn = text(() => X.profile, (x) => { X.profile = x; fieldError(profileF, ''); }, { placeholder: 'blank: none', 'aria-label': 'Profile', maxlength: 64 });
+  const profileF = field('Profile', profileIn, '-p: a profile in the box\'s Codex config. Blank means none; an unknown name only warns.');
+  const scrollChk = check('Keep scrollback (no alternate screen)', () => !X.no_scrollback, (x) => { X.no_scrollback = !x; }, '--no-alt-screen: the terminal keeps its history. Untick to run Codex on its alternate screen.');
   /* An advanced field exists while the agent's schema lists its key (the answer of GET /api/agents may arrive after the sheet opened: visible() follows it); a task or a dispatch takes the tools,
      the system prompt, the directories and the extra args, the rest (a worktree flag, a fork, a devcontainer, --agent ...) is a session's. gate(node, agent, key, sessionOnly) -> node. */
   const gated = [];
@@ -2047,7 +2058,7 @@ function launcherForm(o) {
   const searchRow = checksRow(searchChk);
   const codexAdv = el('details', { class: 'tf-options lx-adv', 'data-agent': 'codex' }, el('summary', { text: 'Advanced' }),
     gate(searchRow, 'codex', 'search'), gate(xWtBox, 'codex', 'worktree', true),
-    sibX, gate(cfgF, 'codex', 'config', true), argsX);
+    sibX, gate(cfgF, 'codex', 'config', true), gate(profileF, 'codex', 'profile'), gate(checksRow(scrollChk), 'codex', 'no_alt_screen'), argsX);
   gate(fast.node, 'claude', 'fast');
   const shellDev = check('Run in the devcontainer', () => V.shell.devcontainer, (x) => { V.shell.devcontainer = x; }, 'devcontainer up + devcontainer exec');
   const shellBox = el('div', { class: 'lx-agentbox', 'data-agent': 'shell' }, el('p', { class: 'dim lx-lede', text: `A plain shell in ${r.root ? 'the project folder' : r.name}: no agent, just a terminal.` }), r.devcontainer ? checksRow(shellDev) : null);
@@ -2270,7 +2281,7 @@ function launcherForm(o) {
 
   let busy = false;
   const setBusy = (on) => { busy = on; update(); };
-  const wipe = () => { for (const f of [promptField, nameField, resumeField, prField, argsC, cfgF, ackRow, modelField, effortField, issueField]) fieldError(f, ''); formStatus(status, ''); };
+  const wipe = () => { for (const f of [promptField, nameField, resumeField, prField, argsC, cfgF, profileF, ackRow, modelField, effortField, issueField]) fieldError(f, ''); formStatus(status, ''); };
   const failAt = (f, msg) => { const d = f && f.closest ? f.closest('details') : null; if (d) d.setAttribute('open', ''); fieldError(f, msg, true); };
 
   /* ---- submit ---- */
@@ -2316,7 +2327,7 @@ function launcherForm(o) {
     catch (err) {
       if (tab) tab.close();
       formFail(status, [[/resume id|resume/i, resumeField], [/pull request|from.pr/i, prField], [/extra args|settings overrides|argument/i, argsC], [/session .*(exists|name)|name .*(invalid|allowed)|reserved/i, nameField],
-        [/model/i, modelField], [/config|-c /i, cfgF]], err.message);
+        [/profile/i, profileF], [/model/i, modelField], [/config|-c /i, cfgF]], err.message);
       return;
     }
     if (res && typeof res.cmd === 'string' && res.cmd) { truth = res.cmd; cmdText = truth; paintCmd(); }       // the truth replaces the approximation
@@ -2441,6 +2452,7 @@ function launcherForm(o) {
       const bad = String(v.config || '').split('\n').map((x) => x.trim()).filter(Boolean).find((x) => !LX_CONFIG_RE.test(x));
       if (bad) return errs(cfgF, `"${bad}" is not key=value (letters, digits, _ and . before the =).`);
     }
+    if (v.agent === 'codex' && w !== 'schedule' && String(v.profile || '').trim() && !LX_PROFILE_RE.test(String(v.profile).trim())) return errs(profileF, "profile: use letters, digits, '.', '_' or '-'");
     if (launcherDanger(v, mode) && !acked() && !ack.checked) return errs(ackRow, 'Tick I understand to start without approvals.');
     if (mode === 'task' && issueKit.blocked()) return errs(issueField, 'Tick I have read it to start from this issue.');
     if (mode === 'dispatch') { submitDispatch(v); return; }

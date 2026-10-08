@@ -1,0 +1,19 @@
+{
+  "base": "origin/main",
+  "branch": "task/demo-format-money",
+  "commits": [
+    "c3a91f2 Group digits in money()",
+    "7be40d8 Label the cart drawer"
+  ],
+  "files": [
+    "src/lib/format.ts",
+    "src/components/CartDrawer.tsx",
+    "src/components/CartDrawer.test.tsx"
+  ],
+  "files_uncommitted": [
+    "src/lib/format.test.ts"
+  ],
+  "committed": "diff --git a/src/lib/format.ts b/src/lib/format.ts\nindex 3b1c2d4..8e5f6a7 100644\n--- a/src/lib/format.ts\n+++ b/src/lib/format.ts\n@@ -1,6 +1,9 @@\n export function money(n: number): string {\n-  return 'Rs ' + n;\n+  return 'Rs ' + n.toLocaleString('en-IN');\n }\n+\n+export function percent(n: number): string {\n+  return Math.round(n * 100) + '%';\n+}\ndiff --git a/src/components/CartDrawer.tsx b/src/components/CartDrawer.tsx\nindex 5a6b7c8..9d0e1f2 100644\n--- a/src/components/CartDrawer.tsx\n+++ b/src/components/CartDrawer.tsx\n@@ -10,7 +10,7 @@ export function CartDrawer() {\n   const { lines, total } = useCart();\n   return (\n-    <aside className=\"drawer\">\n+    <aside className=\"drawer\" aria-label=\"Cart\">\n       <ul>{lines.map((l) => <li key={l.id}>{l.name}</li>)}</ul>\n       <p>{money(total)}</p>\n     </aside>\ndiff --git a/src/components/CartDrawer.test.tsx b/src/components/CartDrawer.test.tsx\nnew file mode 100644\nindex 0000000..2c3d4e5\n--- /dev/null\n+++ b/src/components/CartDrawer.test.tsx\n@@ -0,0 +1,5 @@\n+import { render, screen } from '@testing-library/react';\n+import { CartDrawer } from './CartDrawer';\n+\n+it('names the drawer', () => {\n+  render(<CartDrawer />);\n+  expect(screen.getByLabelText('Cart')).toBeTruthy();\n+});\n",
+  "uncommitted": "diff --git a/src/lib/format.test.ts b/src/lib/format.test.ts\nindex 1a2b3c4..4d5e6f7 100644\n--- a/src/lib/format.test.ts\n+++ b/src/lib/format.test.ts\n@@ -1,5 +1,9 @@\n import { describe, expect, it } from 'vitest';\n-import { money } from './format';\n+import { money, percent } from './format';\n\n describe('money', () => {\n   it('groups digits', () => expect(money(1200)).toBe('Rs 1,200'));\n });\n+\n+describe('percent', () => {\n+  it('rounds', () => expect(percent(0.256)).toBe('26%'));\n+});\n",
+  "truncated": false
+}

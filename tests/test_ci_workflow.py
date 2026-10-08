@@ -31,6 +31,19 @@ def test_image_build_args_match_the_dockerfile():
         assert arg in text and f"ARG {arg}" in docker, arg
 
 
+def test_the_image_carries_its_source_repository_and_commit_for_the_doctor():
+    """#50: the doctor's GitHub Actions check needs the repository and the commit the image was built from; the image job passes both
+    (never a name written in the source), the Dockerfile turns them into environment variables, and a local build leaves them empty."""
+    text = CI.read_text()
+    docker = (CI.parent.parent.parent / "Dockerfile").read_text()
+    image = _job(text, "image")
+    assert image.count("CCBOARD_SOURCE_REPO=${{ github.repository }}") == 2        # the smoke build and the pushed build
+    assert image.count("CCBOARD_IMAGE_REVISION=${{ github.sha }}") == 2
+    assert "ARG CCBOARD_SOURCE_REPO=\n" in docker and "ARG CCBOARD_IMAGE_REVISION=\n" in docker      # empty by default
+    assert "CCBOARD_SOURCE_REPO=${CCBOARD_SOURCE_REPO}" in docker and "CCBOARD_IMAGE_REVISION=${CCBOARD_IMAGE_REVISION}" in docker
+    assert "ENV CCBOARD_IMAGE_VERSION=${CCBOARD_VERSION}" in docker                  # unchanged
+
+
 # ---------------------------------------------------------------- v0.5.x: pinned actions, smoke before push, arm64
 def _uses(text):
     return re.findall(r"^\s*(?:- )?uses:\s*(\S+)(.*)$", text, re.M)
