@@ -1,0 +1,17 @@
+{
+  "worker": {
+    "version": "13.31.0",
+    "uptime": 68548,
+    "activeSessions": 0,
+    "sseClients": 0,
+    "port": 37700
+  },
+  "database": {
+    "path": "<home>/.claude-mem/claude-mem.db",
+    "size": 148709376,
+    "observations": 11836,
+    "sessions": 282,
+    "summaries": 187,
+    "firstObservationAt": "2026-07-21T16:13:45.492Z"
+  }
+}

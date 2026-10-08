@@ -387,6 +387,12 @@ class Runtime:
             self.advance(t["id"])
         except Exception as e:                                                      # a chain problem must not cost the result its close
             log.warning("chain advance after task %s failed: %s", t["id"], e)
+        if text:
+            try:                                                                    # claude-mem write-back: off by default, a daemon thread, never fails the task
+                from . import memory_proxy
+                memory_proxy.writeback_task(self.db, t, text[:RESULT_MAX])
+            except Exception as e:
+                log.debug("memory write-back not started: %s", e.__class__.__name__)
         out["close"] = self._schedule_close({**t, "phase": "done"}, name, row, text)
         return out
 

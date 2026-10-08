@@ -1,0 +1,32 @@
+{
+  "_note": "From the plugin source (MemoryRoutes.ts, also present in the 13.31.0 worker bundle). Never posted to the real worker.",
+  "request": {
+    "method": "POST",
+    "path": "/api/memory/save",
+    "content_type": "application/json",
+    "body": {
+      "text": "<text>",
+      "title": "<optional title>",
+      "project": "<repo>",
+      "metadata": {
+        "platformSource": "claude"
+      }
+    },
+    "strict": true,
+    "required": [
+      "text"
+    ],
+    "optional": [
+      "title",
+      "project",
+      "metadata"
+    ]
+  },
+  "response": {
+    "success": true,
+    "id": 1,
+    "title": "<title>",
+    "project": "<repo>",
+    "message": "Memory saved as observation #1"
+  }
+}

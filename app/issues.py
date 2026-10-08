@@ -159,10 +159,12 @@ def origin_owner(url: str | None) -> str | None:
     return None
 
 
-def trusted(author: str | None, owner: str | None) -> bool:
-    """An issue is the owner's own when its author is the origin's owner (case-insensitive). Unknown on either side = untrusted."""
-    a, o = (author or "").strip().lower(), (owner or "").strip().lower()
-    return bool(a and o and a == o)
+def trusted(author: str | None, owner: str | None, me: str | None = None) -> bool:
+    """An issue is the owner's own when its author is the origin's owner or the GitHub login gh uses on this box (`me`; an
+    organisation's repo has an org as its owner, so the board's own user is the one that counts there). Case-insensitive;
+    an unknown author is untrusted, and so is everyone when neither the owner nor `me` is known."""
+    a = (author or "").strip().lower()
+    return bool(a) and any(a == (x or "").strip().lower() for x in (owner, me))
 
 
 def comment_body(task: dict, pr_url: str | None = None) -> str:

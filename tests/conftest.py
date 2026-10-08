@@ -101,6 +101,35 @@ def _stub_clone_dns(monkeypatch):
 
 
 @pytest.fixture
+def mem_home(tmp_path, monkeypatch):
+    """claude-mem's data dir, Claude's config dir and /proc all point at temp dirs; no CCBOARD_MEM_PORT; the default port is a dead one.
+    Not autouse: the memory test modules opt in (a module-level autouse wrapper), the rest of the suite is untouched."""
+    from app import memory
+    from app.config import settings
+    from tests.mem_fake import closed_port
+    d = tmp_path / "claude-mem"
+    d.mkdir(exist_ok=True)
+    monkeypatch.setattr(settings, "claude_mem_dir", d)
+    monkeypatch.setattr(settings, "mem_port", None)
+    monkeypatch.setattr(settings, "claude_mem", True)
+    monkeypatch.setattr(settings, "claude_config_dir", tmp_path / "claude")
+    monkeypatch.setattr(memory, "PROC_ROOT", tmp_path / "proc")
+    monkeypatch.setattr(memory, "DEFAULT_PORT", closed_port())     # a dev box may run a real worker on 37701
+    return d
+
+
+@pytest.fixture
+def mem_worker(mem_home):
+    """The fake claude-mem worker (tests/mem_fake.py) on a loopback port, named by worker.pid in the temp claude-mem home."""
+    import json
+    from tests.mem_fake import MemWorker
+    w = MemWorker()
+    (mem_home / "worker.pid").write_text(json.dumps({"pid": os.getpid(), "port": w.port, "startedAt": "2026-10-04T00:00:00Z", "startToken": "t"}))
+    yield w
+    w.stop()
+
+
+@pytest.fixture
 def client(projects_dir, monkeypatch):
     """The board with its full lifespan (pollers, indexer, scheduler worker, recovery). Slow: use lite_client unless a test needs them."""
     from fastapi.testclient import TestClient

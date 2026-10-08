@@ -25,7 +25,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import codex_discovery
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -449,6 +449,32 @@ def _rate_limited_view() -> dict | None:
     return rl
 
 
+def _live_claude_sessions(projs: list[dict]) -> int:
+    """Claude sessions the board has running (any state but ended), over every project's repos, root and orphans."""
+    n = 0
+    for p in projs or []:
+        groups = [r.get("sessions") or [] for r in p.get("repos") or []] + [(p.get("root") or {}).get("sessions") or [], p.get("orphan_sessions") or []]
+        n += sum(1 for ss in groups for s in ss if (s.get("agent") or "claude") == "claude" and s.get("state") != "ended")
+    return n
+
+
+def _mem_state(projs: list[dict]) -> dict | None:
+    """state.memory: the monitor's record (memory.state_view; agents/monitor.enrich adds rates, plugin_version, compat) plus
+    `stale_sessions`, an ESTIMATE of sessions the worker still counts as active that the board no longer runs: the worker's
+    active_sessions minus the board's live Claude sessions, never below zero (None when the worker does not say)."""
+    m = memory.state_view(db)
+    if m is None:
+        return None
+    return {**m, "stale_sessions": _stale_estimate(m, projs)}
+
+
+def _stale_estimate(m: dict, projs: list[dict] | None) -> int | None:
+    act = m.get("active_sessions")
+    if projs is None or not isinstance(act, int) or isinstance(act, bool):
+        return None
+    return max(0, act - _live_claude_sessions(projs))
+
+
 def build_state(user: str) -> dict:
     global _scan_cache
     with _scan_lock:
@@ -462,7 +488,7 @@ def build_state(user: str) -> dict:
     st["config"] = {"code_https_port": settings.code_https_port, "projects_dir": str(settings.projects_dir),
                     "runtime": settings.runtime,
                     "ntfy": {"enabled": notify.enabled(), "subscribe_url": notify.subscribe_url(), "topic": settings.ntfy_topic},
-                    "public_url": settings.public_url,
+                    "public_url": settings.public_url, "mem_viewer_url": settings.mem_viewer_url(),
                     "backup": {"restic": backup.restic_enabled(), "repo": settings.restic_repo if backup.restic_enabled() else None,
                                "restic_installed": shutil.which("restic") is not None, "push": settings.backup_push, "ns": backup.backup_ns()}}
     st["claude"] = claude_auth.status()
@@ -477,7 +503,7 @@ def build_state(user: str) -> dict:
     st["clone_queue"] = clonequeue.status()
     st["last_recovery"] = db.kv_get("last_recovery")
     st["deploy"] = deploy.view(db)                        # an update waiting for the terminals to close (None when nothing is pending)
-    st["memory"] = memory.state_view(db)                  # claude-mem worker health as the monitor last saw it (None: off, or not sampled yet)
+    st["memory"] = _mem_state(st["projects"])            # claude-mem worker health as the monitor last saw it (None: off, or not sampled yet)
     st["usage"] = _usage_view()                           # the kv rate_limits record; a window it lacks comes from the account's last reading (usage.rate_limits_view)
     st["usage_refresh"] = usage_refresh.view(db)          # {running, last}: a /usage refresh in flight (Usage page button) and the newest one asked for
     st["usage_codex"] = db.kv_get("rate_limits_codex")     # the Codex account's windows (agents/codex_rollout.py): {value{limit_id, plan_type, primary, secondary, credits, reached, observed_at, account}, at} | None
@@ -579,6 +605,106 @@ def api_doctor(group: str | None = None, refresh: str | None = None):
         return doctor.run(group or None, refresh == "1", db=db)
     except ValueError as e:                       # unknown group
         raise projects.BadRequest(str(e))
+
+
+# ---------- memory: the claude-mem proxy (v0.5.20, read only; docs/memory-api.md) ----------
+
+def _mem_health_view(h: dict | None) -> dict:
+    """GET /api/memory/health: the monitor's record (memory.health() plus rates, plugin version and compat; agents/monitor.enrich) with
+    `up` and the stale-session estimate of state.memory, or {state: 'off'} when CCBOARD_CLAUDE_MEM=0, or {state: 'unknown'} before the
+    first sample."""
+    if not settings.claude_mem:
+        return {"state": "off", "up": False, "reason": "claude-mem is turned off (CCBOARD_CLAUDE_MEM=0)"}
+    if not isinstance(h, dict):
+        return {"state": "unknown", "up": False, "reason": "not sampled yet: the board probes the worker every 20 s", **memory_proxy.compat_info(None)}
+    projs = _scan_cache[1].get("projects") if _scan_cache else None          # the state poll's last scan; None before the first poll
+    return {**h, "up": h.get("state") == "up", "stale_sessions": _stale_estimate(h, projs), **memory_proxy.compat_info(h)}
+
+
+@app.get("/api/memory/health")
+def api_memory_health(refresh: str | None = None):
+    """The claude-mem worker's health as the monitor last saw it (every 20 s); ?refresh=1 runs one live probe (at most 3.5 s), stores it
+    the way the monitor does and answers it. A plain `def`: the live probe blocks."""
+    if refresh == "1" and settings.claude_mem:
+        return _mem_health_view(mem_monitor.sample(db))
+    return _mem_health_view(memory.state_view(db))
+
+
+def _mem_answer(fn, *args, **kw):
+    """A proxy answer, or its 503 body ({error, state: down|degraded, up: false, reason, reason_code}) when the worker could not answer
+    and nothing was cached. An incompatible shape is a 200 with state 'incompatible' (the page shows one line; the worker is running)."""
+    if not settings.claude_mem:
+        return JSONResponse({"error": "claude-mem is turned off (CCBOARD_CLAUDE_MEM=0)", "state": "off", "up": False,
+                             "reason": "claude-mem is turned off (CCBOARD_CLAUDE_MEM=0)", "reason_code": "off"}, status_code=503)
+    h = memory.state_view(db)
+    try:
+        return fn(*args, health=h, **kw)
+    except memory_proxy.WorkerError as e:
+        return JSONResponse({**e.body(), **memory_proxy.compat_info(h)}, status_code=503)
+
+
+@app.get("/api/memory/{project}/observations")
+def api_memory_observations(project: str, limit: str | None = None, offset: str | None = None, before: str | None = None,
+                            repo: str | None = None, type: str | None = None, agent: str | None = None, session: str | None = None,
+                            since: str | None = None, until: str | None = None):
+    """One project's observations, newest first, merged over its claude-mem keys (docs/memory-api.md). A plain `def`: it blocks."""
+    return _mem_answer(memory_proxy.observations, project, limit=limit, offset=offset, before=before, repo=repo, type_=type, agent=agent,
+                       session=session, since=since, until=until)
+
+
+@app.get("/api/memory/{project}/summaries")
+def api_memory_summaries(project: str, limit: str | None = None, offset: str | None = None, before: str | None = None,
+                         repo: str | None = None, agent: str | None = None, session: str | None = None, since: str | None = None,
+                         until: str | None = None):
+    return _mem_answer(memory_proxy.summaries, project, limit=limit, offset=offset, before=before, repo=repo, agent=agent, session=session,
+                       since=since, until=until)
+
+
+@app.get("/api/memory/{project}/search")
+def api_memory_search(project: str, q: str | None = None, type: str | None = None, obs_type: str | None = None, limit: str | None = None,
+                      offset: str | None = None, agent: str | None = None, order: str | None = None):
+    return _mem_answer(memory_proxy.search, project, q, type_=type, obs_type=obs_type, limit=limit, offset=offset, agent=agent, order=order)
+
+
+@app.get("/api/memory/{project}/timeline")
+def api_memory_timeline(project: str, anchor: str | None = None, depth_before: str | None = None, depth_after: str | None = None):
+    return _mem_answer(memory_proxy.timeline, project, anchor, depth_before=depth_before, depth_after=depth_after)
+
+
+@app.get("/api/memory/{project}/palace")
+def api_memory_palace(project: str, subagents: str | None = None, drawers: str | None = None):
+    """Wings (repos), rooms (concepts, types), drawers and gotchas over the project's newest observations; cached 30 s. The shape is in
+    memory_proxy.palace's docstring and docs/memory-api.md."""
+    return _mem_answer(memory_proxy.palace, project, subagents=subagents == "1", drawers=drawers)
+
+
+class MemoryPrefsIn(BaseModel):
+    writeback: bool | None = None
+
+
+def _mem_prefs() -> dict:
+    pl = memory.plugin_status() if settings.claude_mem else {"installed": False, "enabled": None}
+    reason = ("claude-mem is turned off (CCBOARD_CLAUDE_MEM=0)" if not settings.claude_mem else
+              "the claude-mem plugin is not installed" if not pl["installed"] else
+              "the claude-mem plugin is disabled in Claude's settings" if pl["enabled"] is False else None)
+    return {"prefs": {"writeback": memory.writeback_on(db)}, "available": reason is None, "reason": reason,
+            "writeback_sends": {"title": "Task: <title>",
+                                "text": f"the task's result, at most {memory.SAVE_TEXT_MAX // 1024} KB, cut at a line break and marked",
+                                "project": "the repo's claude-mem key (<repo>, or <repo>/<worktree> for a task in a worktree)",
+                                "metadata": ["source", "task_id", "agent"], "never": ["the prompt"]}}
+
+
+@app.get("/api/memory/prefs")
+def api_memory_prefs():
+    """{prefs: {writeback}, available, reason, writeback_sends}: the write-back switch (off by default) and what it sends."""
+    return _mem_prefs()
+
+
+@app.put("/api/memory/prefs")
+def api_memory_prefs_set(body: MemoryPrefsIn):
+    if body.writeback is not None:
+        memory.set_writeback(db, body.writeback)
+    return _mem_prefs()
 
 
 class PreflightIn(BaseModel):

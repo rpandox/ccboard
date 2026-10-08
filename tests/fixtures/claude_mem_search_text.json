@@ -1,0 +1,8 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Found 7 result(s) matching \"<query>\" (3 obs, 1 sessions, 3 prompts)\n\n### Sep 27, 2026\n\n**<file group>**\n| ID | Time | T | Title | Read |\n|----|------|---|-------|------|\n| #5931 | 1:23 PM | ○ | <title> | ~142 |\n\n### Sep 28, 2026\n\n**<file group>**\n| ID | Time | T | Title | Read |\n|----|------|---|-------|------|\n| #6759 | 12:42 PM | ✓ | <title> | ~217 |\n\n### Oct 3, 2026\n\n**<file group>**\n| ID | Time | T | Title | Read |\n|----|------|---|-------|------|\n| #8577 | 9:59 AM | ◆ | <title> | ~256 |\n"
+    }
+  ]
+}

@@ -11,7 +11,7 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE=/etc/ccboard/env
-ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT PREVIEW_HTTPS_BASE CCBOARD_NODE_NAME CCBOARD_HUB_TOKEN CCBOARD_NODES CCBOARD_RESTIC_REPO CCBOARD_RESTIC_PASSWORD_FILE CCBOARD_BACKUP_PUSH CCBOARD_BACKUP_ONCALENDAR CCBOARD_BACKUP_EXTRA CCBOARD_RUNTIME CCBOARD_AUTO_CONTINUE CCBOARD_CLAUDE_MEM CCBOARD_MEM_PORT CCBOARD_MEM_SERVICE CCBOARD_CODEX_HOOK_TRUST CCBOARD_CLONE_ALLOWED_HOSTS CODEX_HOME)
+ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT PREVIEW_HTTPS_BASE CCBOARD_NODE_NAME CCBOARD_HUB_TOKEN CCBOARD_NODES CCBOARD_RESTIC_REPO CCBOARD_RESTIC_PASSWORD_FILE CCBOARD_BACKUP_PUSH CCBOARD_BACKUP_ONCALENDAR CCBOARD_BACKUP_EXTRA CCBOARD_RUNTIME CCBOARD_AUTO_CONTINUE CCBOARD_CLAUDE_MEM CCBOARD_MEM_PORT CCBOARD_MEM_HTTPS_PORT CCBOARD_MEM_SERVICE CCBOARD_CODEX_HOOK_TRUST CCBOARD_CLONE_ALLOWED_HOSTS CODEX_HOME)
 TTYD_VERSION=1.7.7
 TTYD_SHA_amd64=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
 TTYD_SHA_arm64=b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165
@@ -91,6 +91,7 @@ if [ -z "${CCBOARD_HUB_TOKEN:-}" ]; then CCBOARD_HUB_TOKEN=$(python3 -c 'import 
 : "${CCBOARD_AUTO_CONTINUE:=1}"         # the app reads an empty value as 1; the env file below needs every ENV_KEYS name bound (set -u)
 : "${CCBOARD_CLAUDE_MEM:=1}"           # 1 = verify/install the claude-mem plugin and let the board watch its worker; 0 = neither
 : "${CCBOARD_MEM_PORT:=}"              # empty = the board finds the worker's port itself (worker.pid, then claude-mem's settings)
+: "${CCBOARD_MEM_HTTPS_PORT:=}"        # empty = no claude-mem viewer link (issue #9); only the board's state.config.mem_viewer_url reads it, no tailscale serve mapping is made yet
 : "${CCBOARD_MEM_SERVICE:=0}"          # 1 = run the worker as ccboard-mem.service from a clean environment (off until verified on the box)
 : "${CCBOARD_CODEX_HOOK_TRUST:=review}"  # review = trust ccboard's Codex hooks once in Codex (/hooks); bypass = start Codex with --dangerously-bypass-hook-trust
 : "${CCBOARD_CLONE_ALLOWED_HOSTS:=}"      # empty = clones may only name public hosts; a private git server (gitea.lan, 192.168.1.5) is listed here, comma separated
@@ -110,6 +111,10 @@ done
 case "$CCBOARD_RUNTIME" in systemd|docker) ;; *) die "CCBOARD_RUNTIME must be systemd or docker (got '$CCBOARD_RUNTIME')";; esac
 case "$CCBOARD_CLAUDE_MEM" in 0|1) ;; *) die "CCBOARD_CLAUDE_MEM must be 0 or 1 (got '$CCBOARD_CLAUDE_MEM')";; esac
 case "$CCBOARD_MEM_SERVICE" in 0|1) ;; *) die "CCBOARD_MEM_SERVICE must be 0 or 1 (got '$CCBOARD_MEM_SERVICE')";; esac
+if [ -n "$CCBOARD_MEM_HTTPS_PORT" ]; then   # the viewer port: never 443 (another service's Funnel), never one the board already serves; refused before any change
+  [[ "$CCBOARD_MEM_HTTPS_PORT" =~ ^[0-9]{1,5}$ ]] && [ "$CCBOARD_MEM_HTTPS_PORT" -ge 1 ] && [ "$CCBOARD_MEM_HTTPS_PORT" -le 65535 ] || die "CCBOARD_MEM_HTTPS_PORT must be empty or a port from 1 to 65535 (got '$CCBOARD_MEM_HTTPS_PORT')"
+  case "$CCBOARD_MEM_HTTPS_PORT" in 443|"$CCBOARD_HTTPS_PORT"|"$CODE_HTTPS_PORT"|"$NTFY_HTTPS_PORT") die "CCBOARD_MEM_HTTPS_PORT $CCBOARD_MEM_HTTPS_PORT is taken: it must not be 443 or the board's, code-server's or ntfy's HTTPS port";; esac
+fi
 [ -z "$CCBOARD_MEM_PORT" ] || [[ "$CCBOARD_MEM_PORT" =~ ^[0-9]{1,5}$ ]] || die "CCBOARD_MEM_PORT must be empty or a port number (got '$CCBOARD_MEM_PORT')"
 case "$CCBOARD_CODEX_HOOK_TRUST" in review|bypass) ;; *) die "CCBOARD_CODEX_HOOK_TRUST must be review or bypass (got '$CCBOARD_CODEX_HOOK_TRUST')";; esac
 [ -z "$CODEX_HOME" ] || [[ "$CODEX_HOME" = /* ]] || die "CODEX_HOME must be empty or an absolute path (got '$CODEX_HOME')"

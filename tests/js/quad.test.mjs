@@ -117,6 +117,7 @@ function quadWorld({ wide = true, width = null, state = fixtureState(), storage 
   installDom(w);
   for (const [k, v] of Object.entries(storage)) w.localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v));
   for (const f of ['core.js', 'components.js', ...(withKeymap ? ['keymap.js'] : []), 'live.js', 'termkit.js', 'router.js', 'pages/agents.js', ...(inbox ? ['pages/inbox.js'] : []), 'pages/quad.js', 'pages/placeholders.js']) w.load(f);
+  w.run("registerPage('memory', { mount() {}, update() {}, unmount() {} })");                       // some other page to leave to (the memory route's real page is tested in memory.test.mjs)
   w.ctx.__calls = []; w.ctx.__toasts = []; w.ctx.__fail = {}; w.ctx.__live = { sub: [], unsub: [], fns: {} };
   w.run(`
     api = async (method, path, body) => {

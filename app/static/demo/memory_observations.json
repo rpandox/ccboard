@@ -1,0 +1,395 @@
+{
+  "project": "phasezero",
+  "keys": [
+    "NestJs-Ecommerce-Backend",
+    "website",
+    "website/sticky-summary",
+    "phasezero"
+  ],
+  "keys_checked": true,
+  "state": "ok",
+  "up": true,
+  "stale": false,
+  "stale_at": null,
+  "reason": null,
+  "reason_code": null,
+  "partial": [],
+  "ambiguous": [],
+  "ambiguous_filter": null,
+  "shape_error": false,
+  "compat": "ok",
+  "worker_version": "13.31.0",
+  "tested_worker": "13.31.0",
+  "at": "2026-10-03T09:00:00+00:00",
+  "items": [
+    {
+      "id": 19612,
+      "type": "refactor",
+      "title": "Order service split into read and write sides",
+      "subtitle": "queries no longer load aggregates",
+      "narrative": "Order service split into read and write sides. queries no longer load aggregates. Reads use plain SQL views",
+      "facts": [
+        "Reads use plain SQL views"
+      ],
+      "concepts": [
+        "pattern"
+      ],
+      "files_read": [
+        "src/orders/orders.query.ts",
+        "src/orders/orders.command.ts"
+      ],
+      "files_modified": [],
+      "created_at": "2026-10-03T13:13:20Z",
+      "created_at_epoch": 1791033200000,
+      "project": "NestJs-Ecommerce-Backend",
+      "merged_into_project": null,
+      "platform_source": "claude",
+      "memory_session_id": "00000000-0000-4000-8000-000000000001",
+      "content_session_id": "00000000-0000-4000-8000-000000000001",
+      "prompt_number": 1,
+      "discovery_tokens": null,
+      "agent_type": null,
+      "agent_id": null,
+      "key": "NestJs-Ecommerce-Backend",
+      "repo": "NestJs-Ecommerce-Backend"
+    },
+    {
+      "id": 19611,
+      "type": "bugfix",
+      "title": "Cart badge counted removed lines",
+      "subtitle": "the reducer kept zero-quantity lines",
+      "narrative": "Cart badge counted removed lines. the reducer kept zero-quantity lines. Filter quantity > 0 before counting",
+      "facts": [
+        "Filter quantity > 0 before counting"
+      ],
+      "concepts": [
+        "gotcha",
+        "problem-solution"
+      ],
+      "files_read": [
+        "src/store/cart.ts"
+      ],
+      "files_modified": [],
+      "created_at": "2026-10-03T12:13:20Z",
+      "created_at_epoch": 1791029600000,
+      "project": "website",
+      "merged_into_project": null,
+      "platform_source": "claude",
+      "memory_session_id": "00000000-0000-4000-8000-000000000004",
+      "content_session_id": "00000000-0000-4000-8000-000000000004",
+      "prompt_number": 1,
+      "discovery_tokens": null,
+      "agent_type": null,
+      "agent_id": null,
+      "key": "website",
+      "repo": "website"
+    },
+    {
+      "id": 19610,
+      "type": "decision",
+      "title": "One repo per service, one project folder",
+      "subtitle": "sessions in the folder see both repos",
+      "narrative": "One repo per service, one project folder. sessions in the folder see both repos. The project folder is not a git repo",
+      "facts": [
+        "The project folder is not a git repo"
+      ],
+      "concepts": [
+        "pattern"
+      ],
+      "files_read": [],
+      "files_modified": [],
+      "created_at": "2026-10-03T11:13:20Z",
+      "created_at_epoch": 1791026000000,
+      "project": "phasezero",
+      "merged_into_project": null,
+      "platform_source": "claude",
+      "memory_session_id": "00000000-0000-4000-8000-000000000003",
+      "content_session_id": "00000000-0000-4000-8000-000000000003",
+      "prompt_number": 1,
+      "discovery_tokens": null,
+      "agent_type": null,
+      "agent_id": null,
+      "key": "phasezero",
+      "repo": "root"
+    },
+    {
+      "id": 19605,
+      "type": "change",
+      "title": "Retry the payment webhook three times",
+      "subtitle": "exponential backoff, then park the event",
+      "narrative": "Retry the payment webhook three times. exponential backoff, then park the event. Backoff 2 s, 8 s, 32 s",
+      "facts": [
+        "Backoff 2 s, 8 s, 32 s"
+      ],
+      "concepts": [
+        "problem-solution"
+      ],
+      "files_read": [
+        "src/payments/webhook.controller.ts"
+      ],
+      "files_modified": [],
+      "created_at": "2026-10-03T10:13:20Z",
+      "created_at_epoch": 1791022400000,
+      "project": "NestJs-Ecommerce-Backend",
+      "merged_into_project": null,
+      "platform_source": "claude",
+      "memory_session_id": "00000000-0000-4000-8000-000000000002",
+      "content_session_id": "00000000-0000-4000-8000-000000000002",
+      "prompt_number": 1,
+      "discovery_tokens": null,
+      "agent_type": null,
+      "agent_id": null,
+      "key": "NestJs-Ecommerce-Backend",
+      "repo": "NestJs-Ecommerce-Backend"
+    },
+    {
+      "id": 19604,
+      "type": "decision",
+      "title": "Prices stay integers in whole rupees",
+      "subtitle": "no float math anywhere in checkout",
+      "narrative": "Prices stay integers in whole rupees. no float math anywhere in checkout. NPR 4,500 is stored as 4500",
+      "facts": [
+        "NPR 4,500 is stored as 4500"
+      ],
+      "concepts": [
+        "pattern",
+        "trade-off"
+      ],
+      "files_read": [
+        "src/payments/price.ts"
+      ],
+      "files_modified": [],
+      "created_at": "2026-10-03T09:13:20Z",
+      "created_at_epoch": 1791018800000,
+      "project": "NestJs-Ecommerce-Backend",
+      "merged_into_project": null,
+      "platform_source": "claude",
+      "memory_session_id": "00000000-0000-4000-8000-000000000001",
+      "content_session_id": "00000000-0000-4000-8000-000000000001",
+      "prompt_number": 1,
+      "discovery_tokens": null,
+      "agent_type": null,
+      "agent_id": null,
+      "key": "NestJs-Ecommerce-Backend",
+      "repo": "NestJs-Ecommerce-Backend"
+    },
+    {
+      "id": 19609,
+      "type": "discovery",
+      "title": "Images are served through the CDN resizer",
+      "subtitle": "width is chosen from the card's srcset",
+      "narrative": "Images are served through the CDN resizer. width is chosen from the card's srcset. srcset widths 320, 640, 960",
+      "facts": [
+        "srcset widths 320, 640, 960"
+      ],
+      "concepts": [
+        "how-it-works"
+      ],
+      "files_read": [
+        "src/lib/image.ts"
+      ],
+      "files_modified": [],
+      "created_at": "2026-10-03T08:13:20Z",
+      "created_at_epoch": 1791015200000,
+      "project": "website",
+      "merged_into_project": null,
+      "platform_source": "claude",
+      "memory_session_id": "00000000-0000-4000-8000-000000000002",
+      "content_session_id": "00000000-0000-4000-8000-000000000002",
+      "prompt_number": 1,
+      "discovery_tokens": null,
+      "agent_type": null,
+      "agent_id": null,
+      "key": "website",
+      "repo": "website"
+    },
+    {
+      "id": 19608,
+      "type": "feature",
+      "title": "Nepali product names with English fallback",
+      "subtitle": "nameNe || name on every card",
+      "narrative": "Nepali product names with English fallback. nameNe || name on every card. Fallback happens in one helper",
+      "facts": [
+        "Fallback happens in one helper"
+      ],
+      "concepts": [
+        "how-it-works"
+      ],
+      "files_read": [
+        "src/components/ProductCard.tsx"
+      ],
+      "files_modified": [],
+      "created_at": "2026-10-03T07:13:20Z",
+      "created_at_epoch": 1791011600000,
+      "project": "website",
+      "merged_into_project": null,
+      "platform_source": "claude",
+      "memory_session_id": "00000000-0000-4000-8000-000000000001",
+      "content_session_id": "00000000-0000-4000-8000-000000000001",
+      "prompt_number": 1,
+      "discovery_tokens": null,
+      "agent_type": null,
+      "agent_id": null,
+      "key": "website",
+      "repo": "website"
+    },
+    {
+      "id": 19603,
+      "type": "feature",
+      "title": "Cursor pagination for /v1/products",
+      "subtitle": "opaque base64 cursor over (updated_at, id)",
+      "narrative": "Cursor pagination for /v1/products. opaque base64 cursor over (updated_at, id). Cursor is (updated_at, id) so ties never skip",
+      "facts": [
+        "Cursor is (updated_at, id) so ties never skip"
+      ],
+      "concepts": [
+        "pattern"
+      ],
+      "files_read": [
+        "src/products/products.controller.ts",
+        "src/common/cursor.ts"
+      ],
+      "files_modified": [],
+      "created_at": "2026-10-03T06:13:20Z",
+      "created_at_epoch": 1791008000000,
+      "project": "NestJs-Ecommerce-Backend",
+      "merged_into_project": null,
+      "platform_source": "claude",
+      "memory_session_id": "00000000-0000-4000-8000-000000000004",
+      "content_session_id": "00000000-0000-4000-8000-000000000004",
+      "prompt_number": 1,
+      "discovery_tokens": null,
+      "agent_type": null,
+      "agent_id": null,
+      "key": "NestJs-Ecommerce-Backend",
+      "repo": "NestJs-Ecommerce-Backend"
+    },
+    {
+      "id": 19607,
+      "type": "bugfix",
+      "title": "Sticky summary hid the pay button on iOS",
+      "subtitle": "the safe-area inset was not subtracted",
+      "narrative": "Sticky summary hid the pay button on iOS. the safe-area inset was not subtracted. env(safe-area-inset-bottom) must be in the offset",
+      "facts": [
+        "env(safe-area-inset-bottom) must be in the offset"
+      ],
+      "concepts": [
+        "gotcha"
+      ],
+      "files_read": [
+        "src/styles/checkout.css"
+      ],
+      "files_modified": [],
+      "created_at": "2026-10-03T05:13:20Z",
+      "created_at_epoch": 1791004400000,
+      "project": "website/sticky-summary",
+      "merged_into_project": null,
+      "platform_source": "claude",
+      "memory_session_id": "00000000-0000-4000-8000-000000000004",
+      "content_session_id": "00000000-0000-4000-8000-000000000004",
+      "prompt_number": 1,
+      "discovery_tokens": null,
+      "agent_type": null,
+      "agent_id": null,
+      "key": "website/sticky-summary",
+      "repo": "website"
+    },
+    {
+      "id": 19602,
+      "type": "discovery",
+      "title": "Stock reconcile runs on order.cancelled and order.refunded",
+      "subtitle": "both events share one handler",
+      "narrative": "Stock reconcile runs on order.cancelled and order.refunded. both events share one handler. One handler, two subscriptions",
+      "facts": [
+        "One handler, two subscriptions"
+      ],
+      "concepts": [
+        "how-it-works"
+      ],
+      "files_read": [
+        "src/stock/stock-sync.service.ts"
+      ],
+      "files_modified": [],
+      "created_at": "2026-10-03T04:13:20Z",
+      "created_at_epoch": 1791000800000,
+      "project": "NestJs-Ecommerce-Backend",
+      "merged_into_project": null,
+      "platform_source": "claude",
+      "memory_session_id": "00000000-0000-4000-8000-000000000003",
+      "content_session_id": "00000000-0000-4000-8000-000000000003",
+      "prompt_number": 1,
+      "discovery_tokens": null,
+      "agent_type": null,
+      "agent_id": null,
+      "key": "NestJs-Ecommerce-Backend",
+      "repo": "NestJs-Ecommerce-Backend"
+    },
+    {
+      "id": 19606,
+      "type": "change",
+      "title": "Checkout summary becomes sticky below 600 px",
+      "subtitle": "order summary pins above the pay button",
+      "narrative": "Checkout summary becomes sticky below 600 px. order summary pins above the pay button. position: sticky inside the scroll container",
+      "facts": [
+        "position: sticky inside the scroll container"
+      ],
+      "concepts": [
+        "problem-solution"
+      ],
+      "files_read": [
+        "src/pages/checkout.tsx",
+        "src/styles/checkout.css"
+      ],
+      "files_modified": [],
+      "created_at": "2026-10-03T03:13:20Z",
+      "created_at_epoch": 1790997200000,
+      "project": "website",
+      "merged_into_project": null,
+      "platform_source": "claude",
+      "memory_session_id": "00000000-0000-4000-8000-000000000003",
+      "content_session_id": "00000000-0000-4000-8000-000000000003",
+      "prompt_number": 1,
+      "discovery_tokens": null,
+      "agent_type": null,
+      "agent_id": null,
+      "key": "website",
+      "repo": "website"
+    },
+    {
+      "id": 19601,
+      "type": "bugfix",
+      "title": "Stock reconcile ran twice on a refund",
+      "subtitle": "order.refunded and order.cancelled both fired the handler",
+      "narrative": "Stock reconcile ran twice on a refund. order.refunded and order.cancelled both fired the handler. The refund event also emits cancelled A processed-event table now dedupes by event id",
+      "facts": [
+        "The refund event also emits cancelled",
+        "A processed-event table now dedupes by event id"
+      ],
+      "concepts": [
+        "gotcha",
+        "problem-solution"
+      ],
+      "files_read": [
+        "src/stock/stock-sync.service.ts",
+        "src/orders/orders.events.ts"
+      ],
+      "files_modified": [],
+      "created_at": "2026-10-03T02:13:20Z",
+      "created_at_epoch": 1790993600000,
+      "project": "NestJs-Ecommerce-Backend",
+      "merged_into_project": null,
+      "platform_source": "claude",
+      "memory_session_id": "00000000-0000-4000-8000-000000000002",
+      "content_session_id": "00000000-0000-4000-8000-000000000002",
+      "prompt_number": 1,
+      "discovery_tokens": null,
+      "agent_type": null,
+      "agent_id": null,
+      "key": "NestJs-Ecommerce-Backend",
+      "repo": "NestJs-Ecommerce-Backend"
+    }
+  ],
+  "has_more": false,
+  "next_before": null,
+  "scan_capped": false
+}

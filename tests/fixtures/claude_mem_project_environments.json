@@ -1,0 +1,11 @@
+{
+  "_note": "Setting CLAUDE_MEM_PROJECT_ENVIRONMENTS in ~/.claude-mem/settings.json: a JSON array, as a string or a native array. Default \"[]\". From docs/public/configuration.mdx and utils/project-environments.ts.",
+  "value": [
+    {
+      "name": "<repo>",
+      "patterns": [
+        "~/work/<repo>/**"
+      ]
+    }
+  ]
+}

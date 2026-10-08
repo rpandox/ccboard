@@ -1,7 +1,10 @@
-"""claude-mem on the box: where its worker listens and whether it is healthy (v0.5.10, health only; the Memory page proxy is v0.5.20).
+"""claude-mem on the box: where its worker listens and whether it is healthy (v0.5.10), plus the low-level client the Memory proxy
+(app/memory_proxy.py, v0.5.20) builds on.
 
-The memory plugin (claude-mem@thedotmack) runs one loopback HTTP worker that Claude's hooks start on demand. Nothing here starts,
-stops or writes to it: GET only, loopback only, a 2 s timeout per request, 256 KB per body.
+The memory plugin (claude-mem@thedotmack) runs one loopback HTTP worker that Claude's hooks start on demand. Nothing here starts or
+stops it. GET only, loopback only, a 2 s timeout per request, 256 KB per body for health (the proxy passes its own 2 MB cap). The one
+exception to GET is save_note(): POST /api/memory/save of a finished task's result, sent only when the owner turned the write-back
+setting on (off by default, kv mem_writeback).
 
 Where the worker is (first match wins):
     1. CCBOARD_MEM_PORT                                        (settings.mem_port)
@@ -81,6 +84,10 @@ class Refused(OSError):
 
 class NoAnswer(OSError):
     """The port is open but the worker did not answer in time (or hung up, or the probe budget ran out)."""
+
+
+class TooLarge(OSError):
+    """The answer was bigger than the caller's cap (fetch(..., strict=True) only)."""
 
 
 # ------------------------------------------------------------------ discovery
@@ -170,11 +177,9 @@ def worker_base() -> str:
 
 # ------------------------------------------------------------------ one GET
 
-def fetch(base: str, path: str, timeout: float = TIMEOUT) -> tuple[int, object | None]:
-    """GET base+path -> (status, parsed JSON or None for a body that is not JSON or exceeds BODY_CAP).
-
-    NotLoopback before any socket is opened when base is not a loopback http URL; Refused when nothing accepts the connection;
-    NoAnswer when the connection opened but the worker times out, resets or sends garbage. No proxy, no redirect, GET only."""
+def _conn(base: str, timeout: float) -> http.client.HTTPConnection:
+    """An unopened connection to a loopback http base URL; NotLoopback (before any socket) for anything else. The one loopback guard
+    shared by fetch() and save_note()."""
     u = urlsplit(base)
     try:
         port = u.port
@@ -183,7 +188,12 @@ def fetch(base: str, path: str, timeout: float = TIMEOUT) -> tuple[int, object |
     if u.scheme != "http" or not u.hostname or not _loopback(u.hostname) or not port:
         raise NotLoopback(f"refusing {base[:60]!r}: only http://127.0.0.1:<port> is probed")
     host = "127.0.0.1" if u.hostname.lower() in LOOPBACK_NAMES else u.hostname
-    conn = http.client.HTTPConnection(host, port, timeout=timeout)
+    return http.client.HTTPConnection(host, port, timeout=timeout)
+
+
+def _exchange(base: str, method: str, path: str, timeout: float, cap: int, body: bytes | None = None) -> tuple[int, bytes]:
+    """One request -> (status, raw body, at most cap + 1 bytes). Refused / NoAnswer / NotLoopback as fetch() documents."""
+    conn = _conn(base, timeout)
     try:
         try:
             conn.connect()
@@ -191,10 +201,13 @@ def fetch(base: str, path: str, timeout: float = TIMEOUT) -> tuple[int, object |
             raise NoAnswer("connect timed out") from e
         except OSError as e:
             raise Refused(e.__class__.__name__) from e
+        headers = {"Accept": "application/json", "Connection": "close"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
         try:
-            conn.request("GET", path, headers={"Accept": "application/json", "Connection": "close"})
+            conn.request(method, path, body=body, headers=headers)
             resp = conn.getresponse()
-            raw = resp.read(BODY_CAP + 1)
+            raw = resp.read(cap + 1)
             status = resp.status
         except TimeoutError as e:
             raise NoAnswer(f"no answer within {timeout:g} s") from e
@@ -202,12 +215,75 @@ def fetch(base: str, path: str, timeout: float = TIMEOUT) -> tuple[int, object |
             raise NoAnswer(e.__class__.__name__) from e
     finally:
         conn.close()
-    if len(raw) > BODY_CAP:
+    return status, raw
+
+
+def fetch(base: str, path: str, timeout: float = TIMEOUT, cap: int = BODY_CAP, strict: bool = False) -> tuple[int, object | None]:
+    """GET base+path -> (status, parsed JSON or None for a body that is not JSON or exceeds `cap`).
+
+    NotLoopback before any socket is opened when base is not a loopback http URL; Refused when nothing accepts the connection;
+    NoAnswer when the connection opened but the worker times out, resets or sends garbage. No proxy, no redirect, GET only.
+    `cap` is BODY_CAP (256 KB) for health; the Memory proxy passes PROXY_CAP (2 MB) and strict=True, which turns a body over the cap
+    into TooLarge instead of None (for the proxy an oversized answer is an error, never an empty one)."""
+    status, raw = _exchange(base, "GET", path, timeout, cap)
+    if len(raw) > cap:
+        if strict:
+            raise TooLarge(f"the answer is larger than {cap // 1024} KB")
         return status, None
     try:
         return status, json.loads(raw.decode("utf-8", "replace"))
     except ValueError:
         return status, None
+
+
+# ------------------------------------------------------------------ the one write: a note (POST /api/memory/save), behind the write-back setting
+
+KV_WRITEBACK = "mem_writeback"         # {"on": bool}; absent = off (the default)
+KV_WRITEBACK_DONE = "mem_wb_task:"     # + task id: the note of that task was handed to the worker once (never twice)
+SAVE_PATH = "/api/memory/save"         # plugin source MemoryRoutes.ts, found in the 13.31.0 bundle (box check V11 row 12); never probed live
+SAVE_TEXT_MAX = 8 * 1024               # bytes of the result text in a note
+SAVE_TITLE_MAX = 200
+SAVE_CUT_MARK = "\n[cut by ccboard: the result was longer than 8 KB]"
+
+
+def writeback_on(db) -> bool:
+    """The board preference `memory_writeback` (kv mem_writeback); off unless it was turned on."""
+    rec = db.kv_get(KV_WRITEBACK)
+    v = rec.get("value") if isinstance(rec, dict) else None
+    return isinstance(v, dict) and v.get("on") is True
+
+
+def set_writeback(db, on: bool) -> bool:
+    db.kv_set(KV_WRITEBACK, {"on": bool(on)})
+    return writeback_on(db)
+
+
+def cap_note(text: str, cap: int = SAVE_TEXT_MAX) -> str:
+    """`text` cut to at most `cap` UTF-8 bytes, at the last line break inside the cap when there is one, then marked."""
+    raw = text.encode("utf-8")
+    if len(raw) <= cap:
+        return text
+    room = max(0, cap - len(SAVE_CUT_MARK.encode("utf-8")))
+    head = raw[:room].decode("utf-8", "ignore")
+    nl = head.rfind("\n")
+    if nl > room // 2:
+        head = head[:nl]
+    return head.rstrip() + SAVE_CUT_MARK
+
+
+def save_note(title: str, text: str, project: str | None, metadata: dict | None = None, timeout: float = TIMEOUT) -> int | None:
+    """POST /api/memory/save {text, title, project, metadata} to the loopback worker: the board's single write to claude-mem, made only
+    by the write-back of a finished task (memory_proxy.writeback_task) and never reachable from a browser. The text is capped
+    (cap_note). Returns the worker's HTTP status; raises like fetch() (NotLoopback, Refused, NoAnswer). The answer is never logged."""
+    body = {"text": cap_note(str(text or "").strip()), "title": str(title or "")[:SAVE_TITLE_MAX]}
+    if project:
+        body["project"] = project
+    if metadata:
+        body["metadata"] = metadata
+    if not body["text"]:
+        raise ValueError("an empty note is not saved")
+    status, _ = _exchange(worker_base(), "POST", SAVE_PATH, timeout, BODY_CAP, json.dumps(body).encode("utf-8"))
+    return status
 
 
 # ------------------------------------------------------------------ observer-health.json

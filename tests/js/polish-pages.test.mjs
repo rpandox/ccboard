@@ -270,7 +270,7 @@ test('settings: every tab that has sections titles them with the same .set-h hea
   const { w } = settingsWorld(fixtureState({ claude: { installed: true, loggedIn: true, email: 'demo@example.com', subscriptionType: 'max' } }));
   const heads = async (sec) => { w.location.hash = '#/settings?sec=' + sec; await tick(); return page(w).querySelectorAll('.settings-panel[data-sec=' + sec + '] .set-h').map(text); };
   assert.deepEqual(await heads('notify'), ['Web Push', 'What to notify', 'What it looks like', 'Backup', 'ntfy']);
-  assert.deepEqual(await heads('box'), ['Host', 'Backup']);
+  assert.deepEqual(await heads('box'), ['Host', 'Backup', 'claude-mem']);          // claude-mem: the write-back switch (v0.5.20)
   assert.deepEqual(await heads('app'), ['Install', 'This build', 'Tools']);
   w.location.hash = '#/settings?sec=notify'; await tick();
   const notifyKeys = page(w).querySelectorAll('.settings-panel[data-sec=notify] .kv .k').map(text);

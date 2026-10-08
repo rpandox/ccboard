@@ -322,15 +322,16 @@ def test_session_ids_carry_the_agent(db):
 def test_catalogue_is_the_plan_table_plus_lim_acct_and_cacct():
     c = samples.CATALOGUE
     assert set(c) == {"rl_5h", "rl_7d", "ctx", "ctx_tok", "scost", "stok", "state", "ev", "cost", "h_cpu", "h_mem", "h_load",
-                      "h_disk", "n_live", "n_work", "n_attn", "lim", "acct", "cacct"}
+                      "h_disk", "n_live", "n_work", "n_attn", "lim", "acct", "cacct", "mem_obs", "mem_sum"}   # mem_*: the Memory health tile (v0.5.20)
     assert all(set(v) == {"agg", "throttle", "retention_days"} and set(v["throttle"]) == {"delta", "seconds"} for v in c.values())
     assert {k: v["agg"] for k, v in c.items()} == {
         "rl_5h": "avg", "rl_7d": "avg", "ctx": "avg", "ctx_tok": "avg", "scost": "last", "stok": "last", "state": "events", "ev": "sum",
         "cost": "last", "h_cpu": "avg", "h_mem": "avg", "h_load": "avg", "h_disk": "avg", "n_live": "avg", "n_work": "avg",
-        "n_attn": "avg", "lim": "events", "acct": "events", "cacct": "events"}
+        "n_attn": "avg", "lim": "events", "acct": "events", "cacct": "events", "mem_obs": "last", "mem_sum": "last"}
     assert {k: v["retention_days"] for k, v in c.items()} == {
         "rl_5h": 90, "rl_7d": 90, "ctx": 14, "ctx_tok": 14, "scost": 30, "stok": 30, "state": 90, "ev": 120, "cost": 120, "h_cpu": 14,
-        "h_mem": 14, "h_load": 14, "h_disk": 30, "n_live": 30, "n_work": 30, "n_attn": 30, "lim": 180, "acct": 365, "cacct": 365}
+        "h_mem": 14, "h_load": 14, "h_disk": 30, "n_live": 30, "n_work": 30, "n_attn": 30, "lim": 180, "acct": 365, "cacct": 365,
+        "mem_obs": 30, "mem_sum": 30}
     assert c["rl_5h"]["throttle"] == {"delta": 1, "seconds": 300} and c["ctx"]["throttle"] == {"delta": 0.5, "seconds": 900}
     assert c["scost"]["throttle"] == {"delta": 0.005, "seconds": None} and c["cost"]["throttle"] == {"delta": None, "seconds": 600}
     assert c["h_disk"]["throttle"]["seconds"] == 900 and c["h_cpu"]["throttle"]["seconds"] == 60 == c["n_work"]["throttle"]["seconds"]
@@ -936,3 +937,31 @@ def test_rate_limit_readings_from_two_sessions_do_not_ping_pong(db):
     assert "rl_5h" in samples.record_statusline(db, "shop--api--s1", sl(3, resets_at=1791066600), at=T(50)), "a new window starts low"
     assert "rl_5h" in samples.record_statusline(db, "shop--api--s2", sl(1, resets_at=1791066600), at=T(50 + 301)), "the heartbeat still writes a lower value after 5 min"
     assert [r[2] for r in db.samples_query("rl_5h", None, "2000-01-01T00:00:00+00:00", None)] == [62.0, 63.0, 3.0, 1.0]
+
+
+# ================================================================== claude-mem counters and their per-day rates (agents/monitor.py, v0.5.20)
+def test_mem_rates_from_board_samples_never_negative_and_collecting_until_enough(db):
+    from app.agents import monitor
+    t0 = 1_800_000_000.0
+    assert monitor.rate(db, "mem_obs", 86400, 3600, now=t0) == (None, None), "no samples: collecting"
+    samples.record(db, "mem_obs", "", 1000, at=t0 - 7200, force=True)
+    samples.record(db, "mem_obs", "", 1100, at=t0 - 5400, force=True)
+    assert monitor.rate(db, "mem_obs", 86400, 3600, now=t0 - 5400)[0] is None, "30 min of samples: still collecting"
+    samples.record(db, "mem_obs", "", 5, at=t0 - 3600, force=True)            # the counter reset (a new database)
+    samples.record(db, "mem_obs", "", 105, at=t0, force=True)
+    r, since = monitor.rate(db, "mem_obs", 86400, 3600, now=t0)
+    assert r == round((100 + 100) / 7200 * 86400, 1) and r > 0, "the drop adds nothing, the growth after it counts"
+    assert since is not None
+    assert monitor.rate(db, "mem_obs", 7 * 86400, 86400, now=t0)[0] is None, "two hours of samples do not make a week's rate"
+
+
+def test_monitor_enrich_writes_the_series_and_adds_rates_and_compat(db, monkeypatch):
+    from app import memory
+    from app.agents import monitor
+    monkeypatch.setattr(memory, "plugin_status", lambda: {"installed": True, "version": "13.34.2", "enabled": True})
+    h = monitor.enrich(db, {"state": "up", "version": "13.31.0", "observations": 10, "summaries": 2})
+    assert db.sample_last("mem_obs", "")["value"] == 10 and db.sample_last("mem_sum", "")["value"] == 2
+    assert h["rates"] == {"obs": {"d1": None, "d7": None}, "sum": {"d1": None, "d7": None}}
+    assert h["plugin_version"] == "13.34.2" and h["compat"] == "ok" and h["tested_worker"] == "13.31.0"
+    down = monitor.enrich(db, {"state": "down", "version": None, "observations": None, "summaries": None})
+    assert down["compat"] == "unknown" and db.sample_last("mem_obs", "")["value"] == 10, "a down worker writes no zero"

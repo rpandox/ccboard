@@ -218,6 +218,26 @@ function demoMadeState(st) {
   return { ...st, projects: merged };
 }
 
+/* The Memory page's degraded states in demo mode: ?mem=down|degraded|stale|partial|ambiguous|incompatible|untested picks a variant from
+   demo/memory_states.json for every /api/memory/<project>/* answer. A 503 variant is thrown the way api() throws one (err.status, err.body);
+   the others are laid over the route's own fixture. No flag (or an unknown one) answers the fixture as it is. */
+function demoMemFlag() { try { const m = /[?&]mem=([a-z]+)/.exec(location.search); return m ? m[1] : ''; } catch (_) { return ''; } }
+async function demoMemVariant(data0, bare) {
+  const pm = /^\/api\/memory\/([^/]+)\//.exec(bare || '');
+  let name = null;
+  try { name = pm ? decodeURIComponent(pm[1]) : null; } catch (_) { name = null; }
+  const data = name && data0 && typeof data0 === 'object' && typeof data0.project === 'string' ? { ...data0, project: name } : data0;   // every demo project answers the same rows, under its own name
+  const flag = demoMemFlag();
+  if (!flag) return data;
+  const vname = 'memory_states';
+  const r = await fetch(`/static/demo/${vname}.json`);
+  const states = r.ok ? await r.json() : {};
+  const v = flag !== '_note' && ownKey(states, flag) ? states[flag] : null;
+  if (!v) return data;
+  if (v.status !== 200) { const e = demoError(v.status, v.body && v.body.error); e.body = v.body; throw e; }
+  return { ...data, ...v.body };
+}
+
 // demo/state.json must carry every key of the real /api/state: tests/test_api_v054.py (the demo state test) fails when build_state() gains one.
 async function demoApi(method, path, body) {
   if (method !== 'GET') {
@@ -241,6 +261,13 @@ async function demoApi(method, path, body) {
   else if (bare.startsWith('/api/series/events')) name = 'series_events';   // before the '/api/series' prefix: the Gantt must not draw the limit series as sessions
   else if (bare.startsWith('/api/series')) name = 'series';
   else if (bare === '/api/usage/summary') name = 'usage_summary';
+  else if (bare === '/api/memory/health') name = 'memory_health';   // the Memory proxy (v0.5.20, docs/memory-api.md): one fixture per route, the same for every project
+  else if (bare === '/api/memory/prefs') name = 'memory_prefs';
+  else if (/^\/api\/memory\/[^/]+\/observations$/.test(bare)) name = 'memory_observations';
+  else if (/^\/api\/memory\/[^/]+\/summaries$/.test(bare)) name = 'memory_summaries';
+  else if (/^\/api\/memory\/[^/]+\/search$/.test(bare)) name = 'memory_search';
+  else if (/^\/api\/memory\/[^/]+\/timeline$/.test(bare)) name = 'memory_timeline';
+  else if (/^\/api\/memory\/[^/]+\/palace$/.test(bare)) name = 'memory_palace';
   else if (bare.startsWith('/api/memory/')) name = 'memory';
   else if (bare === '/api/doctor') name = 'doctor';       // the Settings > Doctor checklist (v0.5.19)
   else if (/^\/api\/projects\/[^/]+\/repos\/[^/]+\/issues(\/\d+)?$/.test(bare)) name = 'issues';   // the launcher's "from a GitHub issue" (v0.5.20): one made-up list and its details
@@ -255,6 +282,7 @@ async function demoApi(method, path, body) {
     return data.detail[one[1]];
   }
   if (name === 'tree' || name === 'file') return demoPick(name, bare, path.slice(bare.length + 1), data);
+  if (/^memory_(observations|summaries|search|timeline|palace)$/.test(name)) return demoMemVariant(data, bare);
   if (name === 'series_events' && data && data.demo && data.demo.epoch && Array.isArray(data.events)) {   // keep the fixture's 24 h alive, like state.json
     const dt = Math.floor(Date.now() / 1000 - data.demo.epoch);
     return { ...data, events: data.events.map((e) => ({ ...e, t: e.t + dt })) };

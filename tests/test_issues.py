@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from app import issues
+from app import issues, prpoll
 
 H = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
 FIX = Path(__file__).parent / "fixtures"
@@ -102,6 +102,23 @@ def test_origin_owner_and_trust():
     assert issues.origin_owner("") is None and issues.origin_owner("/local/path/repo") is None and issues.origin_owner(None) is None
     assert issues.trusted("Acme", "acme") and issues.trusted("acme", "ACME")
     assert not issues.trusted("mallory", "acme") and not issues.trusted(None, "acme") and not issues.trusted("acme", None)
+    assert issues.trusted("Me", "some-org", "me"), "an org repo: the board's own gh login is trusted"
+    assert not issues.trusted("mallory", "some-org", "me") and not issues.trusted("", None, "") and not issues.trusted(None, None, None)
+
+
+def test_an_org_repo_trusts_the_boards_own_gh_login_and_nobody_else(lite_client, gh, projects_dir, tmp_path):
+    d = projects_dir / "shop" / "api"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(d)], check=True)
+    subprocess.run(["git", "-C", str(d), "remote", "add", "origin", "git@github.com:Some-Org/board.git"], check=True)
+    rows = lite_client.get("/api/projects/shop/repos/api/issues", headers=H).json()["issues"]
+    assert [r["trusted"] for r in rows] == [False, False], "without gh's login an org repo trusts nobody"
+    (gh / "me").write_text("acme")
+    prpoll._gh_login = None
+    rows = lite_client.get("/api/projects/shop/repos/api/issues", headers=H).json()["issues"]
+    assert [(r["author"], r["trusted"]) for r in rows] == [("Acme", True), ("mallory", False)]
+    r = lite_client.get("/api/projects/shop/repos/api/issues/47", headers=H).json()
+    assert r["trusted"] and r["who"]["claude"]["model"] == "sonnet"
+    assert sum(c == "api user" for c in calls(tmp_path)) == 2, "one lookup per cache fill: the failed one, then the login"
 
 
 def test_comment_body():
@@ -116,6 +133,7 @@ case "$1 $2" in
   "issue list") cat "$GH_FIX/list.json";;
   "issue view") cat "$GH_FIX/view_$3.json" || exit 1;;
   "issue comment") cat > "$GH_FIX/stdin.txt"; if [ -f "$GH_FIX/fail" ]; then echo "HTTP 403: nope" >&2; exit 1; fi;;
+  "api user") if [ -f "$GH_FIX/me" ]; then printf '{"login":"%s"}' "$(cat "$GH_FIX/me")"; else exit 1; fi;;
 esac
 '''
 
@@ -133,6 +151,7 @@ def gh(tmp_path, monkeypatch):
     monkeypatch.setenv("GH_LOG", str(tmp_path / "gh.log"))
     monkeypatch.setenv("PATH", str(d) + os.pathsep + os.environ["PATH"])
     (tmp_path / "gh.log").write_text("")
+    monkeypatch.setattr(prpoll, "_gh_login", None)          # the login cache is per process
     return fx
 
 
@@ -155,7 +174,7 @@ def test_list_has_author_and_trusted(lite_client, gh, repo):
 def test_view_trusted_has_who_untrusted_does_not(lite_client, gh, repo, tmp_path):
     r = lite_client.get("/api/projects/shop/repos/api/issues/47", headers=H).json()
     assert r["trusted"] and r["who"]["claude"]["model"] == "sonnet" and r["who"]["codex"]["reasoning"] == "medium"
-    assert calls(tmp_path)[-1].startswith("issue view 47 --json")
+    assert any(c.startswith("issue view 47 --json") for c in calls(tmp_path))
     r = lite_client.get("/api/projects/shop/repos/api/issues/48", headers=H).json()
     assert not r["trusted"] and r["who"] == issues.empty_who() and r["author"] == "mallory"
 

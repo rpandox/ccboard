@@ -229,6 +229,79 @@ function settingsBox(p) {
     p.append(settingsKv('Last run', el('span', { class: failed ? 'v bad' : partial ? 'v warn' : 'v', title: failed ? (bk.errors || []).join('\n') : partial ? (bk.warnings || []).join('\n') : 'last nightly backup',
       text: `${failed ? 'failed' : partial ? 'ok, backup branch refused' : 'ok'} ${fmtAge(Date.parse(bk.at) / 1000)} ago` })));
   } else p.append(settingsKv('Last run', el('span', { class: 'dim', text: 'no backup has run yet' })));
+  p.append(settingsHead('claude-mem'));
+  p.append(settingsMemBlock());
+}
+
+/* The claude-mem write-back (v0.5.20, issue #10): one switch, off by default, stored on the box (kv mem_writeback through GET / PUT
+   /api/memory/prefs). On, each finished task's result is saved to claude-mem as a note; the switch only says the preference was saved, a note
+   shows up in the Memory timeline. Optimistic: a failed PUT puts the switch back and shows the error beside it. Disabled, with the box's
+   reason, when claude-mem is off or its plugin is missing or disabled. */
+const SETTINGS_MEM_NOTE = "Save each finished task's result to claude-mem. Results can contain anything the agent printed.";
+const settingsMemState = { prefs: { writeback: false }, available: null, reason: null, sends: null, at: 0, err: null, repaint: null };
+
+function settingsMemAdopt(r) {
+  const st = settingsMemState;
+  if (!r || typeof r !== 'object') return;
+  if (r.prefs && typeof r.prefs.writeback === 'boolean') st.prefs.writeback = r.prefs.writeback;
+  if (typeof r.available === 'boolean') { st.available = r.available; st.reason = typeof r.reason === 'string' ? r.reason : null; }
+  if (r.writeback_sends && typeof r.writeback_sends === 'object') st.sends = r.writeback_sends;
+}
+
+async function settingsMemLoad() {
+  const st = settingsMemState;
+  if (st.at && Date.now() - st.at < 20000) return;
+  st.at = Date.now();
+  try { settingsMemAdopt(await api('GET', '/api/memory/prefs')); } catch (e) { st.at = 0; st.err = e.message; }
+  if (st.repaint) st.repaint();
+}
+
+async function settingsMemSet(on) {
+  const st = settingsMemState;
+  const before = st.prefs.writeback;
+  st.prefs.writeback = on;
+  st.err = null;
+  if (st.repaint) st.repaint();
+  try { if (!(typeof demoOn === 'function' && demoOn())) settingsMemAdopt(await api('PUT', '/api/memory/prefs', { writeback: on })); } catch (e) {
+    st.prefs.writeback = before;
+    st.err = `Not saved: ${e.message}`;
+  }
+  if (st.repaint) st.repaint();
+}
+
+function settingsMemBlock() {
+  const st = settingsMemState;
+  const box = el('input', { type: 'checkbox' });
+  box.addEventListener('change', () => settingsMemSet(box.checked));
+  const why = el('span', { class: 'dim' });
+  const err = el('span', { class: 'v bad', role: 'status' });
+  const sends = el('ul', { class: 'set-mem-sends dim' });
+  const tile = typeof memoryHealthTile === 'function' && typeof state !== 'undefined' && state && state.memory ? memoryHealthTile(state.memory, { link: true }) : null;     // v0.5.20 health tile (pages/memory.js)
+  const hasViewer = typeof state !== 'undefined' && state && state.config && typeof state.config.mem_viewer_url === 'string' && /^https:\/\//.test(state.config.mem_viewer_url);
+  const wrap = el('div', { class: 'set-mem' },
+    tile,
+    tile && !hasViewer ? el('p', { class: 'dim set-mem-viewer-hint', text: 'No claude-mem viewer link yet: set CCBOARD_MEM_HTTPS_PORT on the box and rerun ./install.sh to add one (the README says who can reach it).' }) : null,
+    el('label', { class: 'set-check set-pref' }, box,
+      el('span', { class: 'set-pref-t' }, el('b', { text: 'Save finished tasks to claude-mem' }), el('span', { class: 'dim', text: SETTINGS_MEM_NOTE }))),
+    why, err,
+    el('details', { class: 'set-mem-what' }, el('summary', { text: 'What is sent' }), sends));
+  function paint() {
+    box.checked = st.prefs.writeback === true;
+    box.disabled = st.available === false;
+    why.textContent = st.available === false ? `Not available: ${st.reason || 'claude-mem is not set up on this box'}.` : '';
+    err.textContent = st.err || '';
+    const s = st.sends || {};
+    sends.textContent = '';
+    for (const line of [`The title "${s.title || 'Task: <title>'}".`, `The result: ${s.text || "the task's result, at most 8 KB, cut at a line break and marked"}.`,
+      `The project key: ${s.project || "the repo's claude-mem key"}.`, 'The task id and the agent.', 'Never the prompt.',
+      'Saved notes appear in the Memory timeline for anyone who can open the board, and in claude-mem\'s own viewer for whoever can open that.']) {
+      sends.append(el('li', { text: line }));
+    }
+  }
+  st.repaint = paint;
+  paint();
+  settingsMemLoad();
+  return wrap;
 }
 
 /* What the git step of the last backup did: ' · 2 branches copied to ccboard-backup/ubu2/ in 1 of 9 repos', or that every repo was

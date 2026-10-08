@@ -1,0 +1,48 @@
+{
+  "timeline_no_anchor_or_query": {
+    "http_status": 200,
+    "body": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Error: Must provide either \"anchor\" or \"query\" parameter"
+        }
+      ],
+      "isError": true
+    }
+  },
+  "timeline_anchor_and_query": {
+    "http_status": 200,
+    "body": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Error: Cannot provide both \"anchor\" and \"query\" parameters. Use one or the other."
+        }
+      ],
+      "isError": true
+    }
+  },
+  "search_no_query_no_filter": {
+    "http_status": 400,
+    "body": {
+      "error": "Either query or filters required for search",
+      "code": "INVALID_SEARCH_REQUEST"
+    }
+  },
+  "observation_not_found": {
+    "http_status": 404,
+    "body": {
+      "error": "Observation #<id> not found"
+    }
+  },
+  "observations_unknown_project": {
+    "http_status": 200,
+    "body": {
+      "items": [],
+      "hasMore": false,
+      "offset": 0,
+      "limit": 2
+    }
+  }
+}

@@ -123,10 +123,43 @@ class Settings:
             else:
                 log.warning("ignoring CCBOARD_MEM_PORT=%r (not a port number)", raw_mem_port)
         self.claude_mem_dir = Path(env.get("CLAUDE_MEM_DATA_DIR") or (Path.home() / ".claude-mem"))   # claude-mem's own override
+        # The optional claude-mem viewer link (v0.5.20, issue #9): CCBOARD_MEM_HTTPS_PORT is the tailnet HTTPS port the installer would map to the worker.
+        # Empty (the default) exposes nothing and hides the Memory page's link. A value that is not 1-65535, or that is a port the board already uses
+        # (443 carries another service on the owner's box; the board, code-server and ntfy ports), is ignored with a warning, never used.
+        self.mem_https_port = None
+        raw_mem_https = (env.get("CCBOARD_MEM_HTTPS_PORT") or "").strip()
+        if raw_mem_https:
+            try:
+                mp = int(raw_mem_https)
+            except ValueError:
+                mp = 0
+            try:
+                ntfy_port = int(env.get("NTFY_HTTPS_PORT") or 8444)
+            except ValueError:
+                ntfy_port = 8444
+            taken = {443, self.ccboard_https_port, self.code_https_port, ntfy_port}
+            if not 0 < mp < 65536:
+                log.warning("ignoring CCBOARD_MEM_HTTPS_PORT=%r (not a port number)", raw_mem_https)
+            elif mp in taken:
+                log.warning("ignoring CCBOARD_MEM_HTTPS_PORT=%d (443 and the board's, code-server's and ntfy's ports are never used for the viewer)", mp)
+            else:
+                self.mem_https_port = mp
         try:
             self.login_shell = pwd.getpwuid(os.getuid()).pw_shell or "/bin/sh"
         except KeyError:
             self.login_shell = "/bin/sh"
+
+    def mem_viewer_url(self) -> str | None:
+        """https://<the board's public host>:<CCBOARD_MEM_HTTPS_PORT>/ for the Memory page's viewer link, or None: not set, or no public URL to take the host from.
+        No token or path is ever part of it."""
+        if not self.mem_https_port or not self.public_url:
+            return None
+        from urllib.parse import urlsplit
+        try:
+            host = urlsplit(self.public_url).hostname
+        except ValueError:
+            return None
+        return f"https://{host}:{self.mem_https_port}/" if host else None
 
     def claude_bin(self) -> str | None:
         found = shutil.which("claude")

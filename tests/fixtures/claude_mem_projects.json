@@ -1,0 +1,15 @@
+{
+  "projects": [
+    "<repo>",
+    "<repo-2>"
+  ],
+  "sources": [
+    "claude"
+  ],
+  "projectsBySource": {
+    "claude": [
+      "<repo>",
+      "<repo-2>"
+    ]
+  }
+}

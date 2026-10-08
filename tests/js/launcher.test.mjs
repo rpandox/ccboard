@@ -1341,3 +1341,103 @@ test('sessionForm, taskForm, launchControls and the LAUNCH_KEY helpers keep work
   assert.ok(w.get('__t').querySelector('textarea'));
   assert.equal(w.run('LAUNCH_KEY({name: "shop"}, {name: "api"})'), 'ccboard:launch:shop/api');
 });
+
+
+// ---------------------------------------------------------------- the gotchas strip (v0.5.20, pages/memory.js memoryGotchasMount)
+
+const PALACE = JSON.parse(readFileSync(new URL('../../app/static/demo/memory_palace.json', import.meta.url), 'utf8'));
+const memState = () => ({ ...STATE(), memory: { state: 'up', version: '13.31.0', observations: 10 } });
+/** A launcher world that has the Memory page script, claude-mem in its state and a palace answer; the timers (setTimeout 0 after the sheet painted) are run by the test. */
+function gWorld(answer, over = {}) {
+  const w = lWorld({ state: memState(), answers: { '/api/memory/shop/palace': answer }, ...over });
+  w.load('pages/memory.js');
+  return w;
+}
+const memTimers = (w) => w.get('__timers').filter((t) => t.ms === 0);
+const flush = async () => { for (let i = 0; i < 6; i += 1) await tick(); };
+const palaceCalls = (w) => calls(w).filter((c) => c.path.startsWith('/api/memory/shop/palace'));
+
+test('gotchas strip in the launcher: the sheet paints first, the palace is asked once per open from a timer, and the strip lands under the repo field', async () => {
+  const w = gWorld(PALACE);
+  open(w, {});
+  const f = form(w);
+  assert.ok(f, 'the form is in the sheet before anything was asked');
+  assert.equal(palaceCalls(w).length, 0, 'opening the sheet asks nothing');
+  assert.ok(hidden(f.querySelector('.lx-mem')), 'the host is empty and hidden');
+  for (const t of memTimers(w)) t.fn();
+  await flush();
+  assert.equal(palaceCalls(w).length, 1, 'one fetch per open');
+  const strip = f.querySelector('.lx-mem .mem-gotchas');
+  assert.ok(strip);
+  assert.equal(strip.querySelectorAll('.mem-gotcha').length, PALACE.gotchas.length);
+  assert.equal(hidden(f.querySelector('.lx-mem')), false);
+  assert.equal(w.document.activeElement && strip.contains(w.document.activeElement), false, 'the strip never takes the focus');
+});
+
+test('gotchas strip in the launcher: a worker that never answers leaves the sheet usable, with no strip, no toast and no error', async () => {
+  const w = gWorld(() => new Promise(() => {}));
+  open(w, {});
+  const f = form(w);
+  typeInto(f.querySelector('textarea'), 'fix the cart badge');
+  const before = store(w, 'ccboard:agent:shop/api');
+  for (const t of memTimers(w)) t.fn();
+  await flush();
+  assert.equal(f.querySelector('.lx-mem .mem-gotchas'), null);
+  assert.ok(hidden(f.querySelector('.lx-mem')));
+  assert.equal(f.querySelector('textarea').value, 'fix the cart badge', 'what was typed is untouched');
+  assert.equal(off(start(f)), false, 'Start is not held back');
+  assert.deepEqual(plain(w.get('__toasts')), []);
+  assert.deepEqual(plain(w.get('__errors')), []);
+  assert.deepEqual(store(w, 'ccboard:agent:shop/api'), before, 'the remembered agent is not touched');
+});
+
+test('gotchas strip in the launcher: a stopped worker (503) or an answer with no gotchas shows nothing and says nothing', async () => {
+  const down = gWorld({ __error: 'connection refused', status: 503, data: { state: 'down', up: false, reason: 'connection refused' } });
+  open(down, {});
+  for (const t of memTimers(down)) t.fn();
+  await flush();
+  assert.equal(form(down).querySelector('.mem-gotchas'), null);
+  assert.deepEqual(plain(down.get('__toasts')), []);
+  assert.deepEqual(plain(down.get('__errors')), []);
+  const none = gWorld({ ...PALACE, gotchas: [] });
+  open(none, {});
+  for (const t of memTimers(none)) t.fn();
+  await flush();
+  assert.equal(form(none).querySelector('.mem-gotchas'), null);
+  assert.ok(hidden(form(none).querySelector('.lx-mem')));
+});
+
+test('gotchas strip in the launcher: an answer that arrives after the sheet closed is dropped', async () => {
+  const w = gWorld(PALACE);
+  open(w, {});
+  const f = form(w);
+  for (const t of memTimers(w)) t.fn();
+  w.run('closeSheet()');
+  await flush();
+  assert.equal(f.querySelector('.mem-gotchas'), null, 'nothing is painted into a closed sheet');
+});
+
+test('gotchas strip in the launcher: only a new-session sheet with claude-mem in the state asks; a task sheet and a board without claude-mem do not', async () => {
+  const task = gWorld(PALACE);
+  open(task, { mode: 'task' });
+  assert.equal(form(task).querySelector('.lx-mem'), null, 'no host in a task form');
+  for (const t of memTimers(task)) t.fn();
+  await flush();
+  assert.equal(palaceCalls(task).length, 0);
+  const off_ = lWorld({ state: STATE(), answers: { '/api/memory/shop/palace': PALACE } });
+  off_.load('pages/memory.js');
+  open(off_, {});
+  for (const t of memTimers(off_)) t.fn();
+  await flush();
+  assert.equal(palaceCalls(off_).length, 0, 'no state.memory: nothing is asked');
+});
+
+test('gotchas strip in the launcher: markup in a gotcha title is shown as text', async () => {
+  const w = gWorld({ ...PALACE, gotchas: [{ ...PALACE.gotchas[0], title: '<img src=x onerror=1>' }] });
+  open(w, {});
+  for (const t of memTimers(w)) t.fn();
+  await flush();
+  const f = form(w);
+  assert.equal(text(f.querySelector('.mem-gotcha-t')), '<img src=x onerror=1>');
+  assert.equal(f.querySelectorAll('img').length, 0);
+});

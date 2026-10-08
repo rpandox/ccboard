@@ -530,7 +530,7 @@ SKELETON_IDS = ("topbar", "sidebar", "main", "banner", "page", "dock", "bnav", "
 SCRIPT_ORDER = ["/static/" + n for n in (            # v0.5.3 contract plus keymap.js and palette.js (v0.5.3b), pages/widgets.js (v0.5.5), tree.js and pages/project.js (v0.5.6), termkit.js (v0.5.9: the dock), pages/quad.js (v0.5.9)
     "core.js", "components.js", "keymap.js", "live.js", "termkit.js", "launcher.js", "tree.js", "charts.js", "dnd.js", "palette.js", "shell.js", "router.js",
     "pages/home.js", "pages/inbox.js", "pages/widgets.js", "pages/tasks.js", "pages/project.js", "pages/agents.js", "pages/doctor.js", "pages/settings.js", "pages/search.js",
-    "pages/session.js", "pages/usage.js", "pages/quad.js", "pages/onboarding.js", "pages/placeholders.js", "main.js")]
+    "pages/session.js", "pages/usage.js", "pages/quad.js", "pages/onboarding.js", "pages/memory.js", "pages/placeholders.js", "main.js")]
 STYLE_ORDER = ["/static/vendor/blueprint/blueprint.css", "/static/vendor/blueprint/blueprint-icons.css", "/static/tokens.css",
                "/static/style.css", "/static/shell.css", "/static/pages.css", "/static/charts.css", "/static/termkit.css"]
 VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
@@ -676,7 +676,8 @@ def test_index_dialogs_are_empty_in_the_html():
 
 DEMO_DIR = STATIC / "demo"
 DEMO_FILES = ("state.json", "search.json", "tree.json", "file.json", "series.json", "series_events.json", "usage_summary.json", "memory.json",
-              "agents.json", "doctor.json")
+              "agents.json", "doctor.json", "memory_health.json", "memory_prefs.json", "memory_observations.json", "memory_summaries.json",
+              "memory_search.json", "memory_timeline.json", "memory_palace.json", "memory_states.json")
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+--[A-Za-z0-9_-]+--[A-Za-z0-9_-]+$")
 KANBAN = ("backlog", "in_progress", "needs_you", "done", "pr", "merged")
 DEMO_HEADERS = {"Tailscale-User-Login": "alice@example.com"}
@@ -1302,6 +1303,65 @@ def test_demo_files_are_absent_from_the_sw_shell_and_the_asset_version(lite_clie
     sw = lite_client.get("/sw.js", headers=DEMO_HEADERS).text
     m = re.search(r"JSON\.parse\('([^']*)'\)", sw)
     assert m and not any("demo" in p for p in json.loads(m.group(1))), "the served worker precaches a demo fixture"
+
+
+# ---------- the Memory proxy (v0.5.20, issue #4): the browser never talks to the claude-mem worker ----------
+
+WORKER_PORT_RE = re.compile(r"(?<![0-9])377[0-9]{2}(?![0-9])")       # code: any 377xx literal (the worker's default port is 37700 + uid % 100)
+WORKER_URL_RE = re.compile(r":377[0-9]{2}(?![0-9])")                  # demo JSON: only an address (an observation id may be 37712)
+# 127.0.0.1 is allowed in app/static only where it is not the worker: a preview toast naming the dev server's own loopback port, and
+# doctor fixture details about other loopback services. Each entry is (file, a substring of the allowed line).
+LOOPBACK_ALLOWED = {("components.js", "preview at ${r.url}"), ("demo/doctor.json", "ttyd 1.7.7"), ("demo/doctor.json", "listening on 127.0.0.1:8080"),
+                    ("demo/doctor.json", "ntfy answers at http://127.0.0.1:2586")}
+
+
+def test_no_worker_address_in_app_static():
+    """No file under app/static (vendored code aside) names the claude-mem worker: no 377xx port literal anywhere, and 127.0.0.1 only on
+    the allowed lines above. The page reads memory through /api/memory/* only."""
+    bad = []
+    for f in sorted(STATIC.rglob("*")):
+        if not f.is_file() or "vendor" in f.relative_to(STATIC).parts or f.suffix not in (".js", ".html", ".css", ".json", ".webmanifest"):
+            continue
+        rel = f.relative_to(STATIC).as_posix()
+        for i, line in enumerate(f.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            if (WORKER_PORT_RE.search(line) if f.suffix != ".json" else WORKER_URL_RE.search(line)):
+                bad.append(f"{rel}:{i}: a 377xx port")
+            if ("127.0.0.1" in line or "localhost:377" in line) and not any(rel == a and frag in line for a, frag in LOOPBACK_ALLOWED):
+                bad.append(f"{rel}:{i}: 127.0.0.1")
+    assert not bad, "\n".join(bad)
+
+
+MEM_ENVELOPE = {"project", "keys", "keys_checked", "state", "up", "stale", "stale_at", "reason", "reason_code", "partial", "ambiguous",
+                "ambiguous_filter", "shape_error", "compat", "worker_version", "tested_worker", "at"}
+
+
+@pytest.mark.parametrize("name,lists", [("memory_observations.json", ("items",)), ("memory_summaries.json", ("items",)),
+                                        ("memory_search.json", ("observations", "sessions")), ("memory_timeline.json", ("items",)),
+                                        ("memory_palace.json", ("wings", "rooms", "gotchas"))])
+def test_demo_memory_fixtures_carry_the_proxy_envelope(name, lists):
+    m = demo_json(name)
+    assert MEM_ENVELOPE <= set(m), sorted(MEM_ENVELOPE - set(m))
+    assert m["state"] == "ok" and m["up"] is True and m["stale"] is False
+    for k in lists:
+        assert isinstance(m[k], list) and m[k], f"{name}: {k} is empty, so the demo would not draw that part"
+    for o in m.get("items", []) + m.get("observations", []):
+        if "concepts" in o:
+            assert isinstance(o["concepts"], list) and isinstance(o["created_at_epoch"], int) and o["created_at_epoch"] > 1e12
+
+
+def test_demo_memory_states_cover_every_degraded_state():
+    v = demo_json("memory_states.json")
+    assert {"down", "degraded", "stale", "partial", "ambiguous", "incompatible", "untested"} <= set(v)
+    for k in ("down", "degraded"):
+        assert v[k]["status"] == 503 and v[k]["body"]["up"] is False and v[k]["body"]["state"] == k and v[k]["body"]["reason"]
+    assert v["stale"]["body"]["stale"] is True and v["incompatible"]["body"]["state"] == "incompatible"
+    assert "demoMemFlag" in (STATIC / "core.js").read_text(encoding="utf-8")
+
+
+def test_demo_memory_health_has_the_tile_fields():
+    h = demo_json("memory_health.json")
+    assert {"state", "up", "version", "observations", "summaries", "queue_depth", "processing", "active_sessions", "last_error", "rates",
+            "plugin_version", "compat", "tested_worker", "stale_sessions"} <= set(h)
 
 
 # ---------- terminal page on mobile: definition-only kit, no ES modules, the term.css scroll-fix set, the dev tty fake ----------

@@ -506,8 +506,25 @@ Usage.build = function (root, route) {
     else body.append(Usage.skeleton());
     sections.push(el('section', { class: 'usec', 'data-sec': id }, el('div', { class: 'usec-head' }, ...kids), body));
   }
-  root.append(el('div', { class: 'usage-page', 'data-usage': '' }, head, R.alert, el('div', { class: 'ugrid' }, ...sections)));   // not 'usage': style.css owns that legacy strip rule
+  R.mem = el('div', { class: 'mem-usage hidden' });                              // the claude-mem health tile (pages/memory.js), after the work sections; hidden without state.memory
+  root.append(el('div', { class: 'usage-page', 'data-usage': '' }, head, R.alert, el('div', { class: 'ugrid' }, ...sections), R.mem));   // not 'usage': style.css owns that legacy strip rule
   return P;
+};
+
+/* The claude-mem health tile (v0.5.20, pages/memory.js memoryHealthTile, the compact one): state.memory from the 3 s poll, nothing fetched here. Hidden when claude-mem is off
+   or not sampled yet; rebuilt only when what it shows changed. */
+Usage.paintMem = function (P) {
+  const host = P.refs && P.refs.mem;
+  if (!host) return;
+  const st = P.st || (typeof state !== 'undefined' ? state : null);
+  const m = st && st.memory;
+  const sig = m ? JSON.stringify([m.state, m.observations, m.queue_depth, m.processing, m.last_error, m.rates, m.reason, m.version]) : '';
+  if (sig === P.memSig) return;
+  P.memSig = sig;
+  host.textContent = '';
+  const tile = m && typeof memoryHealthTile === 'function' ? memoryHealthTile(m, { compact: true, link: true }) : null;
+  if (tile) host.append(tile);
+  host.classList.toggle('hidden', !tile);
 };
 
 /* ---------- range and stack ---------- */
@@ -1661,6 +1678,7 @@ registerPage('usage', {
     if (Usage.cur) Usage.teardown(Usage.cur);
     const P = Usage.build(root, route);
     Usage.cur = P;
+    Usage.paintMem(P);
     P.ready = Usage.ready();                               // uPlot loads while the fetches run
     Usage.load(P);
     // every minute: refetch while the tab is visible (a hidden tab refetches when it is shown again) and let the countdowns move
@@ -1685,6 +1703,7 @@ registerPage('usage', {
     const P = Usage.cur;
     if (!P || !st) return;
     P.st = st;
+    Usage.paintMem(P);
     if (!Usage.syncAgent(P)) Usage.paintGauges(P);
     Usage.refreshCheck(P);                                                              // a tap waits for a reading newer than the one it found
     Usage.refreshAuto(P);                                                               // the first state of this page open: ask by itself when the numbers are stale

@@ -11,7 +11,7 @@ Rules every check follows: one line of detail, never a secret (versions are pars
 goes through _run() (timeout; a missing binary is a 'fail' with an install fix). Later phases add checks with
 register() (one check) or register_provider() (a function returning several finished checks, which is the shape of
 Agent.doctor_checks() in app/agents/base.py); Check.to_dict() is the record they produce. The `memory` group (claude-mem, v0.5.10)
-is such a provider, memory_checks(): one probe of the worker (app/memory.py) feeds seven checks, and registering it adds the group.
+is such a provider, memory_checks(): one probe of the worker (app/memory.py) feeds eight checks, and registering it adds the group.
 """
 from __future__ import annotations
 
@@ -575,7 +575,7 @@ MEM_PLUGIN_ADD = "claude plugin marketplace add thedotmack/claude-mem && claude 
 MEM_BEHIND = "the observer is behind: it shares your Claude subscription window"
 MEM_IDS = (("memory-plugin", "claude-mem plugin"), ("memory-worker", "claude-mem worker"), ("memory-queue", "Observer queue"),
            ("memory-error", "Observer provider errors"), ("memory-projects", "Project keys"), ("memory-env", "Worker environment"),
-           ("memory-bun", "bun runtime"))
+           ("memory-bun", "bun runtime"), ("memory-api", "Memory page API"))
 _MEM_PORT_SOURCE = {"env": "CCBOARD_MEM_PORT", "worker.pid": "worker.pid", "settings": "settings.json", "default": "default"}
 
 
@@ -675,6 +675,16 @@ def _repo_dirs_by_name() -> dict[str, list[str]]:
     return out
 
 
+def mem_env_snippet(dup: dict[str, list[str]]) -> str:
+    """The opt-in CLAUDE_MEM_PROJECT_ENVIRONMENTS entry for ~/.claude-mem/settings.json that gives each colliding repo its own key:
+    {name: '<project>-<repo>', patterns: ['<PROJECTS_DIR>/<project>/<repo>/**']}. The shape is the plugin's own (project-environments.ts,
+    docs/public/configuration.mdx; box check V11 row 13: a JSON array of {name, patterns[]}, as a string or a native array). ccboard
+    never writes this setting; it only shows it."""
+    entries = [{"name": o.replace("/", "-"), "patterns": [f"{Path(settings.projects_dir) / o}/**"]}
+               for _k, owners in sorted(dup.items()) for o in owners]
+    return '"CLAUDE_MEM_PROJECT_ENVIRONMENTS": ' + json.dumps(entries)
+
+
 def _mem_projects(db, ctx: dict) -> Outcome:
     if not Path(settings.projects_dir).is_dir():
         return _skip("the projects directory does not exist")
@@ -684,7 +694,43 @@ def _mem_projects(db, ctx: dict) -> Outcome:
     shown = "; ".join(f"'{k}' = {' and '.join(v[:3])}" for k, v in sorted(dup.items())[:2])
     more = f" (+{len(dup) - 2} more)" if len(dup) > 2 else ""
     return _warn(f"repos that share a folder name share one claude-mem project, so their memories merge: {shown}{more}",
-                 fix("Rename one folder of each pair (claude-mem keys memories by the folder name)"))
+                 fix("Rename one folder of each pair (claude-mem keys memories by the folder name), or give each its own key: add this "
+                     "entry to ~/.claude-mem/settings.json (new sessions use it; older memories keep the shared key, and the Memory page "
+                     "filters them by file path, best effort)", mem_env_snippet(dup)))
+
+
+MEM_API_FIX = "the Memory page may be wrong until the board is updated; report it"
+
+
+def _mem_api_sample() -> tuple[int, object]:
+    """One cheap live read for the memory-api check: GET /api/observations?limit=1 (the shape only; the body is never logged)."""
+    from . import memory_proxy
+    return memory.fetch(memory.worker_base(), memory_proxy._url("observations", {memory_proxy.P_LIMIT: 1}), timeout=memory.TIMEOUT,
+                        cap=memory_proxy.PROXY_CAP, strict=True)
+
+
+def _mem_api(db, ctx: dict) -> Outcome:
+    """The worker's API against what the Memory proxy was verified with (memory_proxy.TESTED_WORKER, issue #20): the running version
+    and one `limit=1` observations read checked with the proxy's own shape check."""
+    from . import memory_proxy
+    h = _mem_health(ctx)
+    if h["state"] != "up":
+        return _skip("the worker is not up")
+    ver, tested = h.get("version"), memory_proxy.TESTED_WORKER
+    try:
+        status, body = _mem_api_sample()
+    except Exception as e:
+        return _warn(f"could not read a sample from the worker ({e.__class__.__name__}); the Memory page may show it as slow", fix(MEM_API_FIX))
+    problem = f"HTTP {status}" if status != 200 else memory_proxy.check_shape("observations", body)
+    if problem:
+        return _warn(f"claude-mem {ver or '(version unknown)'} answers in a shape this board does not know: {problem}", fix(MEM_API_FIX))
+    c = memory_proxy.compat(ver)
+    if c == "untested":
+        return _warn(f"claude-mem {ver} is newer than {tested}, the version this board was tested with; a sample read fine", fix(MEM_API_FIX))
+    if c == "unknown":
+        return _warn(f"claude-mem {ver or 'of an unknown version'} is not the {tested.split('.')[0]}.x line this board was tested with",
+                     fix(MEM_API_FIX))
+    return _pass(f"claude-mem {ver} answers in the shapes this board was tested with ({tested})")
 
 
 def _mem_env(db, ctx: dict) -> Outcome:
@@ -742,7 +788,7 @@ def _mem_bun(db, ctx: dict) -> Outcome:
 
 
 _MEM_FNS = {"memory-plugin": _mem_plugin, "memory-worker": _mem_worker, "memory-queue": _mem_queue, "memory-error": _mem_error,
-            "memory-projects": _mem_projects, "memory-env": _mem_env, "memory-bun": _mem_bun}
+            "memory-projects": _mem_projects, "memory-env": _mem_env, "memory-bun": _mem_bun, "memory-api": _mem_api}
 
 
 def memory_checks(db) -> list[Check]:

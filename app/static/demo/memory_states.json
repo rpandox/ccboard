@@ -1,0 +1,83 @@
+{
+  "_note": "Demo variants of every /api/memory/<project>/* answer, picked with ?mem=<name> next to ?demo=1. 'status' 503 is thrown like api() throws it (err.status, err.body); 200 is merged over the route's own fixture.",
+  "down": {
+    "status": 503,
+    "body": {
+      "error": "connection refused: the claude-mem worker is not running",
+      "state": "down",
+      "up": false,
+      "reason": "connection refused: the claude-mem worker is not running",
+      "reason_code": "refused",
+      "compat": "ok",
+      "worker_version": "13.31.0",
+      "tested_worker": "13.31.0"
+    }
+  },
+  "degraded": {
+    "status": 503,
+    "body": {
+      "error": "the worker is slow: no answer within 2.0 s",
+      "state": "degraded",
+      "up": false,
+      "reason": "the worker is slow: no answer within 2.0 s",
+      "reason_code": "timeout",
+      "compat": "ok",
+      "worker_version": "13.31.0",
+      "tested_worker": "13.31.0"
+    }
+  },
+  "stale": {
+    "status": 200,
+    "body": {
+      "stale": true,
+      "stale_at": "2026-10-03T08:52:10+00:00",
+      "reason_code": "timeout",
+      "reason": "showing the last good answer: the worker is slow: no answer within 2.0 s"
+    }
+  },
+  "partial": {
+    "status": 200,
+    "body": {
+      "partial": [
+        "website/sticky-summary"
+      ]
+    }
+  },
+  "ambiguous": {
+    "status": 200,
+    "body": {
+      "ambiguous": [
+        {
+          "key": "website",
+          "shared_with": [
+            "reporting_system/website"
+          ]
+        }
+      ],
+      "ambiguous_filter": "files"
+    }
+  },
+  "incompatible": {
+    "status": 200,
+    "body": {
+      "state": "incompatible",
+      "shape_error": true,
+      "reason_code": "shape",
+      "reason": "the worker answered in a shape this board does not know: /api/observations: items[0] has no 'created_at_epoch' field",
+      "items": [],
+      "wings": [],
+      "rooms": [],
+      "gotchas": [],
+      "observations": [],
+      "sessions": [],
+      "prompts": []
+    }
+  },
+  "untested": {
+    "status": 200,
+    "body": {
+      "compat": "untested",
+      "worker_version": "13.34.2"
+    }
+  }
+}

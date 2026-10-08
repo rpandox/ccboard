@@ -56,6 +56,8 @@ CATALOGUE: dict[str, dict] = {
     "lim":     {"agg": "events", "throttle": {"delta": None,  "seconds": None}, "retention_days": 180},
     "acct":    {"agg": "events", "throttle": {"delta": None,  "seconds": None}, "retention_days": 365},   # the current account changed: key = new account, meta {from, to}
     "cacct":   {"agg": "events", "throttle": {"delta": None,  "seconds": None}, "retention_days": 365},   # the Codex login in use changed (app/codex_accounts.py): key = new slot key, meta {from, to}
+    "mem_obs": {"agg": "last",   "throttle": {"delta": None,  "seconds": 300},  "retention_days": 30},    # claude-mem's total observations (agents/monitor.py, every 20 s tick, kept one per 5 min); key ''
+    "mem_sum": {"agg": "last",   "throttle": {"delta": None,  "seconds": 300},  "retention_days": 30},    # claude-mem's total session summaries; the same
 }
 RETENTION = {name: spec["retention_days"] for name, spec in CATALOGUE.items()}
 
