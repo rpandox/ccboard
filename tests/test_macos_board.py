@@ -131,6 +131,7 @@ def test_the_process_environment_reads_the_data_dir_file_and_exports_it(tmp_path
     write_env(tmp_path, "CCBOARD_PORT=9100\nCCBOARD_HUB_TOKEN=tok\nCCBOARD_RUNTIME=launchd\n")
     fake = {"CCBOARD_DATA_DIR": str(tmp_path), "CCBOARD_HUB_TOKEN": "from-env"}
     monkeypatch.setattr(os, "environ", fake)
+    monkeypatch.setattr(plat, "IS_LINUX", False)
     s = Settings()
     assert s.port == 9100 and s.runtime == "launchd" and s.hub_token == "from-env"
     assert fake["CCBOARD_PORT"] == "9100" and fake["CCBOARD_HUB_TOKEN"] == "from-env"      # exported for modules that read os.environ; the environment still wins
@@ -150,6 +151,16 @@ def test_a_mapping_a_test_passes_never_reads_the_default_file(tmp_path):
     env = {"CCBOARD_DATA_DIR": str(tmp_path)}
     assert config.apply_env_file(env) is env
     assert Settings(env).port == 8000
+
+
+def test_linux_never_reads_the_data_dir_file(tmp_path, monkeypatch):
+    """On Linux the data dir is writable by the board's user and its sessions; settings come only from /etc/ccboard/env or the container."""
+    write_env(tmp_path, "CCBOARD_PORT=9100\nCCBOARD_ALLOWED_USERS=someone-else\n")
+    env = {"CCBOARD_DATA_DIR": str(tmp_path)}
+    monkeypatch.setattr(os, "environ", dict(env))
+    monkeypatch.setattr(plat, "IS_LINUX", True)
+    s = Settings()
+    assert os.environ == env and s.port != 9100
 
 
 def test_no_file_changes_nothing(tmp_path, monkeypatch):

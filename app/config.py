@@ -115,7 +115,7 @@ def read_env_file(path, *, missing_ok: bool = True) -> dict[str, str]:
 def apply_env_file(env) -> dict | os._Environ:
     """`env` with the settings file's values added for every key the environment does not already set (a non-empty explicit value wins,
     as in install.sh). The file is CCBOARD_ENV_FILE when that key is present (an empty value switches the file off), else, for the
-    process environment only, <data dir>/env; a mapping a test passes in is never merged with a file unless it names one. For the process
+    process environment and off Linux only, <data dir>/env; a mapping a test passes in is never merged with a file unless it names one. For the process
     environment the values are put into os.environ itself (what a systemd EnvironmentFile does), so a module that reads os.environ sees
     them too; for any other mapping a merged copy is returned. A system with no such file is left exactly as it was."""
     process = env is os.environ
@@ -123,7 +123,9 @@ def apply_env_file(env) -> dict | os._Environ:
         raw = (env.get("CCBOARD_ENV_FILE") or "").strip()
         path = Path(raw) if raw else None
         explicit = True
-    elif process:
+    elif process and not plat.IS_LINUX:
+        # Off Linux only: on Linux the settings live in root-owned /etc/ccboard/env (systemd) or the container's environment, and a file
+        # in the data dir, which the board's own user (and every session it runs) can write, must never become a second source.
         path = Path(env.get("CCBOARD_DATA_DIR") or str(plat.default_data_dir())) / "env"
         explicit = False
     else:
