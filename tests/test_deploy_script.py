@@ -259,3 +259,11 @@ def test_smoke_fails_when_a_cli_is_missing(smoke):
     assert r.returncode != 0 and "FAILED: tmux -V" in r.stderr
     assert "container log line" in r.stdout and left == []
     assert not any("gh --version" in c for c in calls), "stops at the first failed check"
+
+
+def test_ci_and_deploy_scripts_are_executable_in_the_checkout():
+    # CI checks files out with their git mode: a script committed as 100644 fails the workflow with exit 126 (it happened to ci-smoke.sh)
+    for name in ("scripts/ci-smoke.sh", "scripts/deploy.sh", "scripts/docker-entrypoint.sh", "scripts/qa-ui.sh", "scripts/qa_terminal.sh"):
+        p = ROOT / name
+        if p.exists():
+            assert os.access(p, os.X_OK), f"{name} must be executable (git update-index --chmod=+x {name})"
