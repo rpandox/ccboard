@@ -137,9 +137,13 @@ jobs:
           context: .
           platforms: linux/amd64
           push: false
-          load: false
+          load: true
+          tags: ccboard:ci
           provenance: false
           build-args: |
             CCBOARD_VERSION=sha-${{ github.sha }}
             CCBOARD_REVISION=${{ github.sha }}
           cache-from: type=gha,scope=amd64
+      # The same smoke run as the push job, so a PR proves the image starts before the merge (it used to run only after it)
+      - name: Smoke-test the image
+        run: scripts/ci-smoke.sh ccboard:ci
