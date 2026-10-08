@@ -79,7 +79,10 @@ def snapshot(extra: dict | None = None, consumer: str = "default") -> dict:
 
 
 def check_hub_token(given: str | None) -> bool:
-    return bool(settings.hub_token) and bool(given) and hmac.compare_digest(given.strip(), settings.hub_token)
+    """Constant-time, as bytes (a non-ASCII header is a refusal, not a TypeError; issue #44, F-02)."""
+    if not settings.hub_token or not given or not isinstance(given, str):
+        return False
+    return hmac.compare_digest(given.strip().encode("utf-8", "replace"), settings.hub_token.encode("utf-8", "replace"))
 
 
 def parse_nodes(raw: str) -> list[dict]:

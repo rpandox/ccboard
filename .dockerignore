@@ -1,4 +1,4 @@
-# Build context for the ccboard image. The Dockerfile copies only app/, bin/, scripts/, tmux.conf and requirements.txt;
+# Build context for the ccboard image. The Dockerfile copies only app/, bin/, scripts/, tmux.conf and requirements.lock;
 # this keeps everything else (and local caches) out of the context and out of those directories.
 .git
 .venv
@@ -16,3 +16,4 @@ deploy
 # dev-only helpers: the image syncs scripts/ into the host's data dir, keep that directory to what the host runs
 scripts/deploy.sh
 scripts/package.sh
+scripts/ci-smoke.sh

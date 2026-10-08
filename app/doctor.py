@@ -28,7 +28,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, NamedTuple
 from urllib.parse import urlsplit
@@ -394,6 +394,74 @@ def _c_identity(db) -> Outcome:
         return _fail(f"runtime {rt}; CCBOARD_ALLOWED_USERS is empty, so every request is denied",
                      fix("List the allowed Tailscale logins in /etc/ccboard/env (CCBOARD_ALLOWED_USERS), then restart the board"))
     return _pass(f"runtime {rt}; the Tailscale-User-Login header is expected; {n} allowed user{'s' if n != 1 else ''}")
+
+
+MCP_STALE_DAYS = 90          # a device token not used for this long is worth a look
+MCP_EXPIRY_WARN_DAYS = 7     # a device token that expires within this many days is about to stop working
+
+
+def _mcp_probe(url: str, user: str | None) -> int:
+    """POST one initialize to the board's own /mcp the way a device with an allowed identity but no device token would: the HTTP status.
+    OSError when the board could not be reached. No token of any kind is sent. Patched by tests (a fake middleware)."""
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                       "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "ccboard-doctor"}}}).encode()
+    headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+    if user:
+        headers["Tailscale-User-Login"] = user
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+    try:
+        with opener.open(urllib.request.Request(url, data=body, method="POST", headers=headers), timeout=2.0) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except urllib.error.URLError as e:
+        raise OSError(str(e.reason)) from e
+
+
+def _c_mcp_remote(db) -> Outcome:
+    """The remote MCP endpoint (issue #13/#14): off is a skip; on, the board probes its own /mcp with an allowed identity and no device token
+    and fails when that gets in (identity alone must never open it); a probe that could not run is a warning, never a pass. Then: no public
+    URL (Settings cannot offer the client commands), a token unused for 90 days, one expiring within 7 days or already expired."""
+    from . import mcp_tokens
+    to_settings = fix("Open Settings > Agents > Connect from another device to revoke or replace device tokens", action="mcp_settings")
+    if not callable(getattr(db, "kv_get", None)) or not mcp_tokens.enabled(db):     # the board's own DB, as run() was given it
+        return _skip("remote MCP is off: /mcp answers 404", None)
+    user = settings.dev_bypass_user or next(iter(sorted(settings.allowed_users or ())), None)
+    try:
+        code = _mcp_probe(settings.loopback_url() + "/mcp", user)
+    except OSError:
+        return _warn("remote MCP is on, but the board could not probe its own /mcp, so whether identity alone opens it is unknown",
+                     fix("Look again in a minute; if it stays, check that the board answers on its loopback port"))
+    if 200 <= code < 300:
+        return _fail("remote MCP is on and /mcp let in a request with an identity but no device token",
+                     fix("Turn remote MCP off in Settings > Agents now, then update the board", action="mcp_settings"))
+    if code == 404:
+        return _warn("remote MCP was switched off while the doctor probed it; look again")
+    if code != 401:
+        return _warn(f"remote MCP is on; the probe answered {code}, so the token rule could not be proven"
+                     + ("" if user else " (CCBOARD_ALLOWED_USERS is empty: there is no identity to probe with)"), to_settings)
+    if not settings.public_url:
+        return _warn("remote MCP is on, but CCBOARD_PUBLIC_URL is empty: Settings cannot show the client commands",
+                     fix("Set CCBOARD_PUBLIC_URL in /etc/ccboard/env (the board's https address on the tailnet) and rerun ./install.sh"))
+    now = datetime.now(timezone.utc)
+    stale, ending = [], []
+    tokens = mcp_tokens.listing(db)
+    for t in tokens:
+        def when(key):
+            try:
+                return datetime.fromisoformat(str(t.get(key) or "").replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        exp, used, made = when("expires_at"), when("last_used_at"), when("created_at")
+        if t.get("expired") or (exp and exp - now <= timedelta(days=MCP_EXPIRY_WARN_DAYS)):
+            ending.append(t.get("name") or "?")
+        elif (used or made) and now - (used or made) >= timedelta(days=MCP_STALE_DAYS):
+            stale.append(t.get("name") or "?")
+    if ending or stale:
+        parts = ([f"expiring or expired: {', '.join(ending[:5])}"] if ending else []) + ([f"unused for {MCP_STALE_DAYS} days: {', '.join(stale[:5])}"] if stale else [])
+        return _warn(f"remote MCP is on and refuses identity alone; device tokens {'; '.join(parts)}", to_settings)
+    n = len(tokens)
+    return _pass(f"remote MCP is on; identity alone is refused (401); {n} device token{'s' if n != 1 else ''}")
 
 
 def _uptime() -> float:
@@ -867,6 +935,7 @@ for _id, _group, _label, _fn in (
     ("ccusage", "box", "ccusage", _c_ccusage),
     ("identity", "box", "Identity and access", _c_identity),
     ("samples-heartbeat", "box", "Usage samples heartbeat", _c_samples),
+    ("mcp-remote", "box", "MCP from other devices", _c_mcp_remote),
     ("ntfy", "notify", "ntfy server", _c_ntfy),
     ("push", "notify", "Web Push subscriptions", _c_push),
     ("claude-bin", "claude", "Claude Code binary", _c_claude_bin),

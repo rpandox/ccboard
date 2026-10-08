@@ -70,6 +70,39 @@ def listening() -> dict[int, set[int]]:
     return out
 
 
+def _url_port(url: str) -> int | None:
+    try:
+        return urlsplit(url).port if url else None
+    except ValueError:
+        return None
+
+
+def infra_ports() -> set[int]:
+    """The box's own services on loopback, never published as a preview (issue #44, F-01): the board, ttyd (a shell), code-server, the ntfy
+    server and the claude-mem worker (no sign-in, a writable API). Each of them already has its own mapping, or deliberately none."""
+    ports = {settings.port, settings.ttyd_port, settings.code_server_port}
+    p = _url_port(settings.ntfy_url)
+    if p:
+        ports.add(p)
+    try:
+        from . import memory
+        p = memory.discover().get("port")
+    except Exception:                    # a broken claude-mem settings file must not block a preview
+        p = None
+    if isinstance(p, int) and p > 0:
+        ports.add(p)
+    if settings.mem_port:
+        ports.add(settings.mem_port)
+    return ports
+
+
+def check_port(port: int) -> None:
+    """PreviewError(400 in the route) for a port that is one of the box's own services."""
+    if port in infra_ports():
+        raise PreviewError(f"port {port} is one of the board's own services (the board, terminal, code-server, ntfy or claude-mem); "
+                           "a preview publishes a dev server running in the task's session")
+
+
 def ports_under(pane_pid: int) -> list[int]:
     """Listening ports of any process under the session's pane (dev servers Claude started)."""
     if not pane_pid:
@@ -79,7 +112,8 @@ def ports_under(pane_pid: int) -> list[int]:
     for pid, ps in listening().items():
         if pid in tree:
             ports |= ps
-    return sorted(p for p in ports if p not in (settings.port, settings.ttyd_port, settings.code_server_port))
+    infra = infra_ports()
+    return sorted(p for p in ports if p not in infra)
 
 
 def public_host() -> str:
@@ -132,8 +166,17 @@ def serve_off(https_port: int) -> None:
         log.info("serve off %s: %s", https_port, e)
 
 
+def reserved_https_ports() -> set[int]:
+    """Tailnet HTTPS ports a preview never takes: 443 (another service's Funnel on the owner's box; never touched), the board's,
+    code-server's, ntfy's (NTFY_HTTPS_PORT, default 8444) and the claude-mem viewer's (issue #44, F-01)."""
+    out = {443, settings.ccboard_https_port, settings.code_https_port, settings.ntfy_https_port}
+    if settings.mem_https_port:
+        out.add(settings.mem_https_port)
+    return out
+
+
 def allocate_https_port(used: set[int]) -> int:
-    reserved = {settings.ccboard_https_port, settings.code_https_port}
+    reserved = reserved_https_ports()
     p = settings.preview_https_base
     while p in used or p in reserved:
         p += 1

@@ -67,9 +67,16 @@ class Settings:
         self.dev_bypass_user = env.get("CCBOARD_DEV_BYPASS_USER") if runtime == "host" and not env.get("INVOCATION_ID") else None
         self.tmux_socket = env.get("CCBOARD_TMUX_SOCKET", "ccboard")
         self.public_url = (env.get("CCBOARD_PUBLIC_URL") or "").strip()
+        # The remote MCP endpoint /mcp (issue #13): '1' turns it on until someone flips the switch in Settings > Agents (the stored
+        # choice then wins); unset or anything else = off. Off, /mcp answers 404.
+        self.mcp_remote = (env.get("CCBOARD_MCP_REMOTE") or "").strip()
         self.ntfy_url = (env.get("NTFY_URL") or "").strip()            # loopback, e.g. http://127.0.0.1:2586
         self.ntfy_topic = (env.get("NTFY_TOPIC") or "ccboard").strip()
         self.ntfy_public_url = (env.get("NTFY_PUBLIC_URL") or "").strip()  # what the phone subscribes to
+        try:                                                               # ntfy's tailnet HTTPS port: a preview never takes it (#44 F-01)
+            self.ntfy_https_port = int(env.get("NTFY_HTTPS_PORT") or 8444)
+        except ValueError:
+            self.ntfy_https_port = 8444
         self.recover = (env.get("CCBOARD_RECOVER") or "1") != "0"
         self.auto_continue = (env.get("CCBOARD_AUTO_CONTINUE") or "1") != "0"   # type `continue` once a limit window resets (app/autoresume.py)
         self.node_name = (env.get("CCBOARD_NODE_NAME") or "").strip()

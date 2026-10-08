@@ -387,7 +387,7 @@ function settingsAgents(p) {
   settingsAgentChecks(p, 'claude');
 
   const codex = state.agents && state.agents.codex;
-  if (!codex) return;
+  if (!codex) { settingsMcpMount(p); return; }
   p.append(settingsHead('Codex'));
   const cbadge = codex.installed ? el('span', { class: 'badge' }) : el('span', { class: 'v dim', text: 'not installed' });
   const cur = cxAccounts(state).find((a) => a.current);
@@ -405,6 +405,7 @@ function settingsAgents(p) {
   if (codex.installed) settingsAgentFacts(p, 'codex', codex);
   settingsAgentChecks(p, 'codex');
 
+  settingsMcpMount(p);                                                  // Connect from another device (issue #14), below the agent rows
   if (!agentsExtWanted(state)) return;
   p.append(settingsHead('Import external sessions'));
   const count = el('span', { class: 'v' });
@@ -421,6 +422,229 @@ function settingsCodexLogin() {
   settingsPage.wantCx = true;
   if (typeof navigate === 'function' && typeof buildHash === 'function') navigate(buildHash('settings', {}, { sec: 'accounts' }));
   if (settingsPage.refs && typeof settingsShow === 'function') settingsShow('accounts');           // already on Settings: the route may not change
+}
+
+/* ---------- Connect from another device (issue #14): the remote MCP endpoint /mcp, its device tokens and the client commands ----------
+   GET /api/mcp/tokens answers {enabled, tokens: [{id, name, scopes, created_at, last_used_at, last_tool, expires_at, expired}], max_tokens}; PUT /api/mcp/remote {enabled}
+   switches it; POST /api/mcp/tokens {name, scopes, expires_days} mints one and is the only answer that ever carries a token; DELETE /api/mcp/tokens/<id> revokes.
+   The block is built once per visit (settingsMcp.node) and moved into the Agents panel on every rebuild, so a name being typed survives a poll. It shows what the
+   server last answered: the switch and a Revoke stay pending until the answer arrives, and a revoked device leaves the list only then.
+   The token is never kept: it goes from the mint answer straight into the text nodes of a one-time <dialog> (never into settingsMcp, localStorage, sessionStorage, a URL
+   or the state), and closing the dialog empties and removes it. The commands come from MCP_COMMANDS (tests/js/mcp-remote.test.mjs compares them with the README) and
+   are offered only with a board URL (state.config.public_url): no guessed address. */
+const MCP_COMMANDS = Object.freeze({
+  claude: 'claude mcp add --transport http --scope user --header "Authorization: Bearer {token}" ccboard {url}',
+  codex: 'export CCBOARD_MCP_TOKEN={token}\ncodex mcp add ccboard --url {url} --bearer-token-env-var CCBOARD_MCP_TOKEN',
+});
+const MCP_CHECKS = Object.freeze({ claude: 'claude mcp list', codex: 'codex mcp list' });
+const MCP_NOTE = "Lets Claude Code or Codex on another device of your tailnet list, create and start board tasks through /mcp, each device with a token of its own. The box's hook token never leaves the box.";
+const MCP_BOX_NOTE = 'Not needed on the box itself: the stdio ccboard server is registered there already.';
+const MCP_SESSIONS_WARN = 'Sessions lets the device type a task into a session that is already running.';
+const MCP_URL_WARN = 'No board address: set CCBOARD_PUBLIC_URL on the box (the https address of the board on your tailnet) and rerun ./install.sh. Until then no command is shown, so none points at a guessed address.';
+const MCP_SCOPES = [['read', 'Read', 'list projects and tasks, read results'], ['tasks', 'Tasks', 'create tasks and start them in a new session'], ['sessions', 'Sessions', 'hand a task to a running session']];
+const MCP_DAYS = [30, 90, 365];
+const MCP_NAME_MAX = 40;
+const settingsMcp = { data: null, at: 0, err: '', busy: null, node: null, paint: null, dialog: null, addBtn: null };
+
+function mcpCommand(kind, token, url) { return MCP_COMMANDS[kind].split('{token}').join(String(token)).split('{url}').join(String(url)); }
+
+/* The endpoint's address: the board's public URL + /mcp, or '' when there is none (or it is not an http(s) address). */
+function mcpUrl(st) {
+  const raw = st && st.config && typeof st.config.public_url === 'string' ? st.config.public_url.trim() : '';
+  if (!/^https?:\/\/[^\s/]+(\/\S*)?$/.test(raw)) return '';
+  return raw.replace(/\/+$/, '') + '/mcp';
+}
+
+function mcpDate(iso) { return typeof iso === 'string' && iso ? iso.slice(0, 10) : ''; }
+
+/* Only the fields the block shows; a token in an answer is never copied in. */
+function settingsMcpAdopt(r) {
+  if (!r || typeof r !== 'object') return;
+  const str = (v) => (typeof v === 'string' && v ? v : null);
+  const tokens = [];
+  for (const t of Array.isArray(r.tokens) ? r.tokens : []) {
+    if (!t || typeof t.id !== 'string') continue;
+    tokens.push({ id: t.id, name: String(t.name || ''), scopes: Array.isArray(t.scopes) ? t.scopes.filter((s) => typeof s === 'string') : [],
+      created_at: str(t.created_at), last_used_at: str(t.last_used_at), last_tool: str(t.last_tool), expires_at: str(t.expires_at), expired: t.expired === true });
+  }
+  settingsMcp.data = { enabled: r.enabled === true, max: Number.isInteger(r.max_tokens) ? r.max_tokens : 10, tokens };
+}
+
+function settingsMcpRepaint() { if (settingsMcp.paint) settingsMcp.paint(); }
+
+async function settingsMcpLoad(force) {
+  if (!force && settingsMcp.at && Date.now() - settingsMcp.at < 15000) return;
+  settingsMcp.at = Date.now();
+  try { settingsMcpAdopt(await api('GET', '/api/mcp/tokens')); settingsMcp.err = ''; } catch (e) { settingsMcp.at = 0; settingsMcp.err = `Could not read the device tokens: ${e.message}`; }
+  settingsMcpRepaint();
+}
+
+async function settingsMcpSwitch(on) {
+  if (settingsMcp.busy) { settingsMcpRepaint(); return; }
+  settingsMcp.busy = 'switch';
+  settingsMcp.err = '';
+  settingsMcpRepaint();
+  try { settingsMcpAdopt(await api('PUT', '/api/mcp/remote', { enabled: !!on })); } catch (e) { settingsMcp.err = `Not switched: ${e.message}`; }
+  settingsMcp.busy = null;
+  settingsMcpRepaint();
+}
+
+async function settingsMcpRevoke(id) {
+  if (settingsMcp.busy) return;
+  settingsMcp.busy = `revoke:${id}`;
+  settingsMcp.err = '';
+  settingsMcpRepaint();
+  try { settingsMcpAdopt(await api('DELETE', `/api/mcp/tokens/${encodeURIComponent(id)}`)); } catch (e) { settingsMcp.err = `Not revoked: ${e.message}`; }
+  settingsMcp.busy = null;
+  settingsMcpRepaint();
+}
+
+/* The one-time dialog: the token, a Copy button, and the two commands with the token and the URL in them. Closing it (Done, Escape, the backdrop) empties every
+   node, removes the dialog and puts the focus back on Add device. */
+function settingsMcpShowToken(token, name) {
+  if (settingsMcp.dialog) settingsMcp.dialog.close();
+  const url = mcpUrl(typeof state !== 'undefined' ? state : null);
+  let shell = null;
+  shell = modalShell('qr-editor readout mcp-mint', `Token for ${name}`, () => {
+    shell.dlg.textContent = '';
+    if (settingsMcp.dialog === shell) settingsMcp.dialog = null;
+    if (settingsMcp.addBtn && typeof settingsMcp.addBtn.focus === 'function') settingsMcp.addBtn.focus();
+  });
+  const block = (label, kind) => {
+    const cmd = mcpCommand(kind, token, url);
+    return el('div', { class: 'mcp-cmd' }, el('div', { class: 'mcp-cmd-head' }, el('b', { text: label }), copyButton(cmd, `${label} command`)),
+      el('pre', { class: 'cmd-readout', text: cmd }), el('span', { class: 'dim', text: `Check it with: ${MCP_CHECKS[kind]}` }));
+  };
+  const cmds = url ? [block('Claude Code', 'claude'), block('Codex', 'codex')] : [el('p', { class: 'warn qr-hint mcp-nourl', role: 'status', text: MCP_URL_WARN })];
+  shell.dlg.append(el('div', { class: 'qr-box' },
+    el('h2', { class: 'qr-title', text: `Token for ${name}` }),
+    el('p', { class: 'qr-hint warn', text: 'Copy it now: it cannot be shown again. Anyone who has it can do what its scopes allow until it expires or you revoke it.' }),
+    el('div', { class: 'mcp-cmd' }, el('div', { class: 'mcp-cmd-head' }, el('b', { text: 'Token' }), copyButton(token, 'token')), el('pre', { class: 'cmd-readout mcp-token', text: token })),
+    ...cmds,
+    el('div', { class: 'qr-actions' }, el('button', { type: 'button', onclick: () => shell.close(), text: 'Done' }))));
+  settingsMcp.dialog = shell;
+  shell.show();
+}
+
+async function settingsMcpMint(body, onError) {
+  if (settingsMcp.busy) return;
+  settingsMcp.busy = 'mint';
+  settingsMcp.err = '';
+  settingsMcpRepaint();
+  let r = null;
+  try { r = await api('POST', '/api/mcp/tokens', body); } catch (e) { onError(e.message); }
+  settingsMcp.busy = null;
+  if (r && typeof r === 'object') {
+    settingsMcpAdopt(r);
+    const token = typeof r.token === 'string' ? r.token : '';
+    if (token) settingsMcpShowToken(token, (r.record && r.record.name) || body.name);
+    else if (!(typeof demoOn === 'function' && demoOn())) onError('the board answered without a token');
+  }
+  settingsMcpRepaint();
+  return !!(r && typeof r.token === 'string');
+}
+
+function settingsMcpRow(t) {
+  const chips = el('span', { class: 'set-chips' }, t.scopes.map((s) => el('span', { class: 'badge hue-slate', text: s })),
+    t.expired ? el('span', { class: 'badge warn', text: 'expired' }) : null);
+  const used = t.last_used_at ? `last used ${fmtAge(Date.parse(t.last_used_at) / 1000) || '0s'} ago${t.last_tool ? ` (${t.last_tool})` : ''}` : 'never used';
+  const meta = el('span', { class: 'dim', text: [t.created_at ? `added ${mcpDate(t.created_at)}` : '', used, t.expired ? 'expired' : (t.expires_at ? `expires ${mcpDate(t.expires_at)}` : '')].filter(Boolean).join(' · ') });
+  const act = settingsMcp.busy === `revoke:${t.id}` ? el('button', { class: 'danger', type: 'button', disabled: true, text: 'Revoking…' })
+    : confirmButton(`mcp-revoke:${t.id}`, 'Revoke', () => settingsMcpRevoke(t.id), false);
+  const row = settingsKv(t.name, chips, meta, act);
+  row.classList.add('set-mcp-row');
+  row.setAttribute('data-token', t.id);
+  return row;
+}
+
+function settingsMcpBlock() {
+  const box = el('input', { type: 'checkbox', role: 'switch' });
+  box.addEventListener('change', () => settingsMcpSwitch(box.checked));
+  const status = el('span', { class: 'dim', role: 'status' });
+  const sw = el('label', { class: 'set-check set-pref mcp-switch' }, box,
+    el('span', { class: 'set-pref-t' }, el('b', { text: 'Allow other devices' }), el('span', { class: 'dim', text: MCP_NOTE })));
+  const err = el('div', { class: 'bad set-note', role: 'alert' });
+  const urlWarn = el('div', { class: 'warn set-note mcp-nourl', role: 'status', text: MCP_URL_WARN });
+  const count = el('div', { class: 'dim set-note mcp-count' });
+  const list = el('div', { class: 'mcp-list' });
+
+  const name = el('input', { type: 'text', class: 'mcp-name', maxlength: String(MCP_NAME_MAX), autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', placeholder: 'laptop' });
+  const nameField = field('Device name', name, `1 to ${MCP_NAME_MAX} characters; it names the token in this list`);
+  const checks = {};
+  const scopeRows = MCP_SCOPES.map(([id, label, what]) => {
+    const c = el('input', { type: 'checkbox', 'data-scope': id });
+    c.checked = id !== 'sessions';
+    checks[id] = c;
+    return el('label', { class: 'set-check set-pref' }, c, el('span', { class: 'set-pref-t' }, el('b', { text: label }), el('span', { class: 'dim', text: what })));
+  });
+  const warnS = el('div', { class: 'warn set-note mcp-sessions-warn', text: MCP_SESSIONS_WARN });
+  const scopeBox = el('div', { class: 'mcp-scopes' }, scopeRows, warnS);
+  const scopeField = field('Scopes', scopeBox);
+  const days = selectEl(MCP_DAYS.map((d) => [String(d), `${d} days`]), '90');
+  const daysField = field('Expires after', days);
+  const add = el('button', { class: 'primary', type: 'submit', text: 'Add device' });
+  settingsMcp.addBtn = add;
+  const form = el('form', { class: 'add-form mcp-form', novalidate: true, onsubmit: (e) => { e.preventDefault(); submit(); } },
+    nameField, scopeField, daysField, el('div', { class: 'add-btns' }, add));
+  const on = el('div', { class: 'mcp-on hidden' }, urlWarn, count, list, el('h4', { class: 'mcp-add-h', text: 'Add device' }), form);
+  const node = el('div', { class: 'set-mcp' }, sw, status, el('div', { class: 'dim set-note', text: MCP_BOX_NOTE }), err, on);
+
+  async function submit() {
+    if (settingsMcp.busy === 'mint') return;                            // a second tap while minting does nothing
+    const n = String(name.value || '').trim().replace(/\s+/g, ' ');
+    if (!n || n.length > MCP_NAME_MAX) { fieldError(nameField, `Name the device: 1 to ${MCP_NAME_MAX} characters.`, true); return; }
+    const scopes = MCP_SCOPES.map(([id]) => id).filter((id) => checks[id].checked);
+    if (!scopes.length) { fieldError(scopeField, 'Pick at least one scope.'); return; }
+    fieldError(nameField, '');
+    fieldError(scopeField, '');
+    const ok = await settingsMcpMint({ name: n, scopes, expires_days: parseInt(days.value, 10) || 90 }, (msg) => fieldError(nameField, `Not added: ${msg}`));
+    if (ok) {                                                           // a new device starts from the defaults; a refusal keeps what was entered
+      name.value = '';
+      for (const [id] of MCP_SCOPES) checks[id].checked = id !== 'sessions';
+      days.value = '90';
+    }
+  }
+
+  function paint() {
+    const d = settingsMcp.data;
+    const live = !!(d && d.enabled);
+    box.checked = live;                                                 // what the server said, never the tap that is still on its way
+    box.disabled = settingsMcp.busy === 'switch' || !d;
+    box.setAttribute('aria-checked', live ? 'true' : 'false');
+    status.textContent = settingsMcp.busy === 'switch' ? 'Saving…' : (!d && !settingsMcp.err ? 'Checking…' : '');
+    err.textContent = settingsMcp.err || '';
+    on.classList.toggle('hidden', !live);
+    urlWarn.classList.toggle('hidden', !!mcpUrl(typeof state !== 'undefined' ? state : null));
+    warnS.classList.toggle('hidden', !checks.sessions.checked);
+    const toks = d ? d.tokens : [];
+    count.textContent = toks.length ? `${toks.length} of ${d.max} devices` : 'No device has a token yet.';
+    list.textContent = '';
+    for (const t of toks) list.append(settingsMcpRow(t));
+    add.disabled = settingsMcp.busy === 'mint';
+    add.textContent = settingsMcp.busy === 'mint' ? 'Adding…' : 'Add device';
+  }
+  checks.sessions.addEventListener('change', paint);
+  settingsMcp.paint = paint;
+  settingsMcp.node = node;
+  paint();
+  return node;
+}
+
+/* Put the block (built once per visit) at the end of the Agents panel and repaint it from what the server last said. */
+function settingsMcpMount(p) {
+  p.append(settingsHead('Connect from another device'));
+  p.append(settingsMcp.node || settingsMcpBlock());
+  settingsMcpRepaint();
+  settingsMcpLoad(false);
+}
+
+function settingsMcpDispose() {
+  if (settingsMcp.dialog) settingsMcp.dialog.close();
+  settingsMcp.dialog = null;
+  settingsMcp.node = null;
+  settingsMcp.paint = null;
+  settingsMcp.addBtn = null;
+  settingsMcp.at = 0;
 }
 
 /* ---------- Accounts (v0.5.17b rows, v0.5.17c saved logins): the subscription accounts the board has seen ----------
@@ -1334,7 +1558,8 @@ function settingsSig(id, st) {
   }
   if (id === 'app') return JSON.stringify([st.version, settingsAppMode().note, !!settingsInstallPrompt(), settingsHelpAvailable()]);
   if (id === 'doctor') return JSON.stringify(doctorSig());
-  return JSON.stringify([st.claude, st.agents, ui.confirm === 'logout', ui.confirm === 'cx-logout', cxFlow.err, doctorSig(), cxState(st) ? (cxAccounts(st).find((a) => a.current) || {}).key || null : null]);     // the two-tap Log out repaints the panel; the doctor's answer repaints the checks under each card
+  const mcpArmed = /^mcp-revoke:/.test(String(ui.confirm || '')) ? ui.confirm : null;                // the two-tap Revoke of a device token (the block itself repaints in place)
+  return JSON.stringify([st.claude, st.agents, ui.confirm === 'logout', ui.confirm === 'cx-logout', mcpArmed, cxFlow.err, doctorSig(), cxState(st) ? (cxAccounts(st).find((a) => a.current) || {}).key || null : null]);     // the two-tap Log out repaints the panel; the doctor's answer repaints the checks under each card
 }
 
 function settingsSecOf(r) {
@@ -1425,6 +1650,7 @@ registerPage('settings', {
     settingsPage.vis = null;
     settingsPage.ext = null;
     settingsPage.extAsked = false;
+    settingsMcpDispose();                                             // the one-time token dialog never outlives the page
     settingsPage.refs = null;
   },
 });

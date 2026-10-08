@@ -32,7 +32,7 @@ GH_TOKEN = "gho_SENTINEL1234567890abcdefghij"
 ENV_KEY = "SENTINEL-ENV-API-KEY-VALUE"
 ALL_EVENTS = list(doctor.HOOK_EVENTS)
 BUILTIN_IDS = {"tmux", "tmux-server", "tmux-conf", "ttyd", "attach-wrapper", "code-server", "projects-dir", "git", "gh",
-               "ccusage", "identity", "samples-heartbeat", "ntfy", "push", "claude-bin", "claude-auth", "claude-hooks"}
+               "ccusage", "identity", "samples-heartbeat", "mcp-remote", "ntfy", "push", "claude-bin", "claude-auth", "claude-hooks"}
 BUILTIN_GROUPS = ["box", "claude", "notify", "terminal"]
 
 
@@ -162,10 +162,10 @@ def test_healthy_box_report_shape_and_summary():
     assert set(out) == {"generated_at", "ok", "summary", "checks"}
     assert out["ok"] is True
     by = {c["id"]: c for c in out["checks"]}
-    assert set(by) == BUILTIN_IDS and len(by) == len(out["checks"]) == 17      # ids are unique
+    assert set(by) == BUILTIN_IDS and len(by) == len(out["checks"]) == 18      # ids are unique
     assert {c["status"] for c in out["checks"]} == {"pass", "skip"}
-    assert {i for i, c in by.items() if c["status"] == "skip"} == {"tmux-conf", "samples-heartbeat"}
-    assert out["summary"] == {"pass": 15, "warn": 0, "fail": 0, "skip": 2}
+    assert {i for i, c in by.items() if c["status"] == "skip"} == {"tmux-conf", "samples-heartbeat", "mcp-remote"}
+    assert out["summary"] == {"pass": 15, "warn": 0, "fail": 0, "skip": 3}
     for c in out["checks"]:
         assert set(c) == {"id", "group", "label", "status", "detail", "fix"}
         assert c["group"] in ("box", "claude", "notify", "terminal") and c["label"]
@@ -181,7 +181,7 @@ def test_groups_and_unknown_group():
     assert {c["id"] for c in doctor.run("claude", refresh=True)["checks"]} == {"claude-bin", "claude-auth", "claude-hooks"}
     assert {c["id"] for c in doctor.run("notify", refresh=True)["checks"]} == {"ntfy", "push"}
     assert {c["id"] for c in doctor.run("box", refresh=True)["checks"]} == {
-        "code-server", "projects-dir", "git", "gh", "ccusage", "identity", "samples-heartbeat"}
+        "code-server", "projects-dir", "git", "gh", "ccusage", "identity", "samples-heartbeat", "mcp-remote"}
     with pytest.raises(ValueError):
         doctor.run("codex")
     with pytest.raises(ValueError):
@@ -192,7 +192,7 @@ def test_summary_ok_and_fail_semantics(world):
     world.cmds[("ccusage", "--version")] = doctor.ToolMissing("ccusage")          # a fail
     world.cmds[("gh", "auth", "status")] = doctor.Proc(1, "", "not logged in")    # a warn
     out = doctor.run("box", refresh=True)
-    assert out["ok"] is False and out["summary"] == {"pass": 4, "warn": 1, "fail": 1, "skip": 1}
+    assert out["ok"] is False and out["summary"] == {"pass": 4, "warn": 1, "fail": 1, "skip": 2}
     world.cmds[("ccusage", "--version")] = doctor.Proc(0, "20.0.24", "")
     out = doctor.run("box", refresh=True)
     assert out["ok"] is True and out["summary"]["warn"] == 1                      # a warn alone keeps ok
@@ -423,7 +423,8 @@ def test_samples_heartbeat_by_age(clocks, age, status):
     db = HbDB(age_s=age)
     c = heartbeat(db)
     assert c["status"] == status, (age, c)
-    assert [k for k in db.asked if k != "login_problem"] == ["samples_heartbeat"], "the heartbeat check reads its one kv (the claude-auth check reads login_problem)"
+    assert [k for k in db.asked if k not in ("login_problem", "mcp_remote")] == ["samples_heartbeat"], \
+        "the heartbeat check reads its one kv (the claude-auth check reads login_problem, the mcp-remote check its switch)"
     assert c["group"] == "box" and "sampler" in c["detail"]
     if status == "pass":
         assert c["fix"] is None and f"{age} s ago" in c["detail"]
@@ -1579,3 +1580,79 @@ def test_codex_saved_models_warns_only_against_a_catalogue_codex_answered(monkey
     assert f["text"] == "pick another model"
     monkeypatch.setattr(type(ag), "live_models", lambda self: [{"slug": "gpt-5.5"}, {"slug": "gpt-6-sol"}])
     assert doctor._c_codex_saved_models(Jobs())[0] == "pass"
+
+
+# ------------------------------------------------------------------ mcp-remote (issue #14): the remote MCP endpoint
+
+def _mcp_db(path, enabled=True, tokens=()):
+    """A real DB file with the switch and the token rows as app/mcp_tokens.py stores them (made-up digests)."""
+    from app.db import DB as RealDB
+    db = RealDB(path)
+    if enabled is not None:
+        db.kv_set("mcp_remote", {"enabled": enabled})
+    db.kv_set("mcp_tokens", {"tokens": [{"digest": "0" * 64, **t} for t in tokens]})
+    return db
+
+
+def _days(n):
+    return (datetime.now(timezone.utc) + timedelta(days=n)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_mcp_remote_off_is_a_skip_and_never_probes(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "_mcp_probe", lambda *a: pytest.fail("probed while off"))
+    assert one("mcp-remote", db=_mcp_db(tmp_path / "a.db", enabled=False))["status"] == "skip"
+    assert one("mcp-remote", db=_mcp_db(tmp_path / "b.db", enabled=None))["status"] == "skip", "never switched: off (CCBOARD_MCP_REMOTE unset)"
+    assert one("mcp-remote")["status"] == "skip", "no DB: off"
+
+
+def test_mcp_remote_fails_when_identity_alone_opens_mcp(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "public_url", "https://board.example")
+    seen = []
+    monkeypatch.setattr(doctor, "_mcp_probe", lambda url, user: seen.append((url, user)) or 200)      # a broken middleware lets it in
+    c = one("mcp-remote", db=_mcp_db(tmp_path / "a.db"))
+    assert c["status"] == "fail" and c["fix"]["action"] == "mcp_settings"
+    assert seen == [(settings.loopback_url() + "/mcp", "alice@example.com")], "an allowed identity, and no token"
+
+
+def test_mcp_remote_pass_warn_and_unknown(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "public_url", "https://board.example")
+    monkeypatch.setattr(doctor, "_mcp_probe", lambda url, user: 401)
+    fresh = {"id": "a", "name": "laptop", "scopes": ["read"], "created_at": _days(-1), "last_used_at": _days(0), "expires_at": _days(80)}
+    c = one("mcp-remote", db=_mcp_db(tmp_path / "a.db", tokens=[fresh]))
+    assert c["status"] == "pass" and "identity alone is refused" in c["detail"] and "1 device token" in c["detail"]
+    old = {**fresh, "id": "b", "name": "old desk", "created_at": _days(-200), "last_used_at": _days(-120)}
+    never = {**fresh, "id": "d", "name": "spare", "created_at": _days(-95), "last_used_at": None, "expires_at": _days(200)}
+    ending = {**fresh, "id": "c", "name": "tablet", "expires_at": _days(3)}
+    c = one("mcp-remote", db=_mcp_db(tmp_path / "b.db", tokens=[fresh, old, never, ending]))
+    assert c["status"] == "warn" and all(n in c["detail"] for n in ("old desk", "spare", "tablet")) and "laptop" not in c["detail"]
+    assert c["fix"]["action"] == "mcp_settings" and "Settings" in c["fix"]["text"]
+    monkeypatch.setattr(settings, "public_url", "")
+    c = one("mcp-remote", db=_mcp_db(tmp_path / "c.db", tokens=[fresh]))
+    assert c["status"] == "warn" and "CCBOARD_PUBLIC_URL" in c["detail"]
+
+    def down(url, user):
+        raise OSError("refused")
+    monkeypatch.setattr(doctor, "_mcp_probe", down)
+    c = one("mcp-remote", db=_mcp_db(tmp_path / "d.db"))
+    assert c["status"] == "warn" and "unknown" in c["detail"], "a probe that could not run is never a pass"
+    monkeypatch.setattr(doctor, "_mcp_probe", lambda url, user: 403)
+    c = one("mcp-remote", db=_mcp_db(tmp_path / "e.db"))
+    assert c["status"] == "warn" and "403" in c["detail"]
+
+
+def test_mcp_remote_probe_through_the_real_middleware(lite_client, monkeypatch):
+    """The probe's own request, sent through the real board (no socket): /mcp answers 401, so the check passes; the route's own answer is used."""
+    from app import main
+    monkeypatch.setattr(settings, "public_url", "https://board.example")
+    assert lite_client.put("/api/mcp/remote", headers={"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}, json={"enabled": True}).status_code == 200
+    seen = []
+
+    def via_board(url, user):
+        r = lite_client.post("/mcp", headers={"Tailscale-User-Login": user}, json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        seen.append(r.status_code)
+        return r.status_code
+    monkeypatch.setattr(doctor, "_mcp_probe", via_board)
+    c = one("mcp-remote", db=main.db)
+    assert seen == [401] and c["status"] == "pass"
+    out = lite_client.get("/api/doctor?group=box&refresh=1", headers={"Tailscale-User-Login": "alice@example.com"}).json()
+    assert next(x for x in out["checks"] if x["id"] == "mcp-remote")["status"] == "pass"

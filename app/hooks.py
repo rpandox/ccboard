@@ -72,9 +72,11 @@ def ensure_token() -> str:
 
 
 def check_token(given: str | None) -> bool:
-    if not given:
+    """Constant-time check of a presented token. Compared as bytes: hmac.compare_digest raises TypeError on a non-ASCII str, and a header
+    carrying a latin-1 byte must be a plain refusal, never a 500 (issue #44, F-02)."""
+    if not given or not isinstance(given, str):
         return False
-    return hmac.compare_digest(given.strip(), ensure_token())
+    return hmac.compare_digest(given.strip().encode("utf-8", "replace"), ensure_token().encode("utf-8", "replace"))
 
 
 def _our_socket(tmux_env: str | None) -> bool:

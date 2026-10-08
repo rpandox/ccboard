@@ -25,7 +25,7 @@ RUN install -d -m 0755 /etc/apt/keyrings \
  && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
-# Node 22 (NodeSource): the host's ccusage needs node >= 20, and the image's own ccusage (major pinned) is the fallback.
+# Node 22 (NodeSource): the host's ccusage needs node >= 20, and the image's own ccusage (exact version pinned) is the fallback.
 # ccusage 20 ships a native binary without the execute bit and chmods it on first run, which a non-root user cannot do
 # to root-owned files: set the bit here, and run it once so a broken package fails the build instead of the board.
 RUN install -d -m 0755 /etc/apt/keyrings \
@@ -33,7 +33,7 @@ RUN install -d -m 0755 /etc/apt/keyrings \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends nodejs \
- && npm install -g --no-fund --no-audit ccusage@20 \
+ && npm install -g --no-fund --no-audit ccusage@20.0.26 \
  && find /usr/lib/node_modules/ccusage -path '*/bin/ccusage' -type f -exec chmod 0755 {} + \
  && ccusage --version \
  && npm cache clean --force \
@@ -66,10 +66,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /opt/ccboard
 
-# Python dependencies first so a code-only change reuses this layer. The venv is created and chowned in one layer.
-COPY --chown=1000:1000 requirements.txt ./
+# Python dependencies first so a code-only change reuses this layer. requirements.lock pins exact versions with hashes
+# (regenerate from requirements.in, see the README): two builds of one commit install the same packages. The venv is created and chowned in one layer.
+COPY --chown=1000:1000 requirements.lock ./
 RUN python3 -m venv .venv \
- && .venv/bin/pip install --no-cache-dir --disable-pip-version-check -r requirements.txt \
+ && .venv/bin/pip install --no-cache-dir --disable-pip-version-check --require-hashes -r requirements.lock \
  && chown -R 1000:1000 .venv
 
 COPY --chown=1000:1000 app ./app

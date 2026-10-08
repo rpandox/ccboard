@@ -9,6 +9,7 @@ Container delivery (v0.5.1-docker). GitHub Actions builds `ghcr.io/rpandox/ccboa
 | `../scripts/docker-entrypoint.sh` | Container start: refuses root, syncs `bin/`, `scripts/` and `tmux.conf` into `$CCBOARD_DATA_DIR/app/` (what the host's hooks, ttyd and MCP run), re-merges the Claude hooks, re-applies `tmux.conf` to the running tmux server, registers the MCP server if missing, then execs uvicorn. `CCBOARD_SHADOW=1` skips every host mutation. |
 | `docker-compose.yml` | The production template: `ccboard` (host network, host pid, uid 1000, label-scoped for Watchtower, healthcheck on `/healthz`) and `watchtower` (profile `prod`, only `ccboard`-scoped containers). Installed as `~/.local/share/ccboard/compose/docker-compose.yml` with a `.env` next to it. |
 | `docker-compose.shadow.yml` | Override for a side-by-side test run: `ccboard-shadow` on 127.0.0.1:8010 with its own data dir, projects read-only, no hooks, no notifications, no Watchtower. |
+| `docker-compose.local.yml` | Not in the repo: written next to the compose file by `scripts/deploy.sh --local-build` (GitHub Actions down). Runs `ccboard-local:<sha>` with `pull_policy: never` and the Watchtower enable label set to `false`; a plain `scripts/deploy.sh <host>` removes it. README, "When GitHub Actions is down". |
 
 ## `.env` next to the compose file
 
