@@ -40,7 +40,7 @@ chmod 0777 "$work" "$work/home" "$work/data" "$work/projects" "$work/tmux"
 echo "smoke: starting $image as 1000:1000 on 127.0.0.1:$port"
 docker run -d --name "$name" --network host --user 1000:1000 \
   -e "CCBOARD_PORT=$port" -e CCBOARD_ALLOWED_USERS=ci \
-  -e HOME=/work/home -e CCBOARD_DATA_DIR=/work/data -e CCBOARD_RECOVER=0 \
+  -e HOME=/work/home -e CCBOARD_DATA_DIR=/work/data -e PROJECTS_DIR=/work/projects -e CCBOARD_RECOVER=0 \
   -e NTFY_URL= -e NTFY_PUBLIC_URL= -e CCBOARD_NODES= \
   -v "$work/home:/work/home" -v "$work/data:/work/data" -v "$work/projects:/work/projects" \
   -v "$work/tmux:/tmp/tmux-1000" \
