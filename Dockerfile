@@ -6,7 +6,7 @@
 # sessions, ttyd, code-server, tailscale serve) stays on the host. See deploy/docker-compose.yml.
 #
 # Layer order is cache order: apt, third-party repos, user, python deps, then the app and the per-build metadata.
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 
