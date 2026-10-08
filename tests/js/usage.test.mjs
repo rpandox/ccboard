@@ -1600,6 +1600,9 @@ const estOver = (failEst = false) => ({ '/api/usage/summary?days=7': (path) => {
 } });
 const pressed = (w, sel) => q(w, sel).getAttribute('aria-pressed');
 
+// the page asks in the runner's own zone (Usage.tzMin): CI runs in UTC, a laptop in Asia/Kathmandu
+const HOST_TZ_MIN = Math.max(-720, Math.min(840, -new Date().getTimezoneOffset()));
+
 test('basis: a segmented Reported | Estimated control sits in the toolbar, defaults to Reported, and the first load asks for no basis', async () => {
   const { w } = usageWorld({ over: estOver() });
   await go(w);
@@ -1611,7 +1614,7 @@ test('basis: a segmented Reported | Estimated control sits in the toolbar, defau
   assert.equal(pressed(w, '[data-basis="est"]'), 'false');
   const sums = plain(w.get('__calls')).filter((c) => c.path.startsWith('/api/usage/summary'));
   assert.equal(sums.length, 1);
-  assert.equal(sums[0].path, '/api/usage/summary?days=7&tz_min=345', 'the reported path is the one it always was');
+  assert.equal(sums[0].path, `/api/usage/summary?days=7&tz_min=${HOST_TZ_MIN}`, 'the reported path is the one it always was');
   assert.ok(!qa(w, 'td.c-num').some((n) => text(n).startsWith('~')), 'no ~ on the reported basis');
   clean(w);
 });
@@ -1627,7 +1630,7 @@ test('basis: switching to Estimated fetches ?basis=est once, repaints the figure
   q(w, '[data-basis="est"]').click();
   await loading(w);
   const calls = plain(w.get('__calls')).slice(before).filter((c) => c.path.startsWith('/api/usage/summary'));
-  assert.deepEqual(calls.map((c) => c.path), ['/api/usage/summary?days=7&tz_min=345&basis=est'], 'only the summary of the other basis, once');
+  assert.deepEqual(calls.map((c) => c.path), [`/api/usage/summary?days=7&tz_min=${HOST_TZ_MIN}&basis=est`], 'only the summary of the other basis, once');
   assert.equal(pressed(w, '[data-basis="est"]'), 'true');
   assert.equal(pressed(w, '[data-basis="reported"]'), 'false');
   assert.equal(w.localStorage.getItem('ccboard:usage:basis'), 'est');
@@ -1654,7 +1657,7 @@ test('basis: the choice is remembered in ccboard:usage:basis and a new page open
   await go(first.w);
   assert.equal(pressed(first.w, '[data-basis="est"]'), 'true');
   const sums = plain(first.w.get('__calls')).filter((c) => c.path.startsWith('/api/usage/summary')).map((c) => c.path);
-  assert.deepEqual(sums, ['/api/usage/summary?days=7&tz_min=345&basis=est'], 'it asked for the Estimated summary straight away');
+  assert.deepEqual(sums, [`/api/usage/summary?days=7&tz_min=${HOST_TZ_MIN}&basis=est`], 'it asked for the Estimated summary straight away');
   assert.match(text(q(first.w, '.utotals')), /^Last 7 days: ~\$95\.76/);
   clean(first.w);
   const junk = usageWorld({ over: estOver() });
