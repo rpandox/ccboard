@@ -3718,6 +3718,7 @@ def api_restart(name: str, request: Request, body: RestartIn | None = None):
     started without approvals and sandbox (a bypass is never carried over); 409 when the session has no conversation id yet, is not at
     its prompt (a restart ends a running turn) or another change is being made. The old process is closed before the new one starts
     (a thread open twice makes Codex warn), so the terminal page shows 'exited' until it is reloaded."""
+    require_real_launch_ok()   # issue #100: a restart starts Codex again, so a dev board that could reach the real home refuses (409)
     from .agents import pickers
     _terminal_session(name)
     b = body or RestartIn()
