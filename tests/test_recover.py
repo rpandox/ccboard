@@ -103,6 +103,103 @@ def test_working_session_is_marked_to_continue_after_the_relaunch(client, projec
     assert tick(time.time() + 600) == [] and len(sent) == 1
 
 
+def _reboot_world(client, projects_dir, fake_tmux, monkeypatch, n=2):
+    """n claude sessions in one repo, each marked working with a prompt; the caller then "reboots": tmux forgets them, the DB keeps the rows."""
+    from app import main
+    from app.config import settings
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(settings, "auto_continue", True)
+    subprocess.run(["git", "-C", str(projects_dir), "init", "-q", "-b", "main", "shop/api"], check=True)
+    rows = [client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude"}).json() for _ in range(n)]
+    for r in rows:
+        main.db.set_state(r["tmux"], "working", "UserPromptSubmit", prompt="finish the migration")
+    return rows
+
+
+def _settle(main, row, sent, *, when=None):
+    """The relaunched session reports SessionStart and draws its statusline; one autoresume tick afterwards. Returns what the tick typed into."""
+    import time
+    from app import autoresume, hooks
+    hooks.apply(main.db, row["tmux"], "SessionStart", {"source": "resume", "session_id": row["claude_session_id"]})
+    hooks.apply(main.db, row["tmux"], "statusline", {"session_id": row["claude_session_id"], "model": {"display_name": "Opus"},
+                                                     "context_window": {"used_percentage": 2, "context_window_size": 200000}})
+    return autoresume.tick(main.db, (when or time.time()) + autoresume.RESUME_SETTLE + 1, send=lambda n, t: sent.append((n, t)),
+                           clients=lambda n: 0, alive=lambda n: True)
+
+
+def test_power_cut_end_to_end_continue_once_and_never_for_an_opted_out_row(client, projects_dir, fake_tmux, monkeypatch):
+    """#84 and the power-restart path in one run: two sessions are working when the box goes down, one is opted out through the route.
+    Recovery relaunches both with the resume line; only the unflagged one is marked, and it gets `continue` exactly once, not again
+    on a second SessionStart. The opted-out one keeps its opt-out on the new row and is never typed into."""
+    import time
+    from app import hooks, main
+    on, off = _reboot_world(client, projects_dir, fake_tmux, monkeypatch)
+    assert client.post(f"/api/sessions/{off['tmux']}/flags", headers=H, json={"no_autoresume": True}).json()["flags"] == {"no_autoresume": True}
+    fake_tmux["sessions"].clear(); fake_tmux["created"].clear(); fake_tmux["sent"].clear()
+    summary = recover.run(main.db, main._start_session)
+    assert sorted(summary["recovered"]) == sorted([on["tmux"], off["tmux"]]) and summary["continue"] == [on["tmux"]]
+    typed = dict(fake_tmux["sent"])
+    assert typed[on["tmux"]].startswith("claude --resume " + on["claude_session_id"]), "relaunched with the resume line"
+    assert typed[off["tmux"]].startswith("claude --resume " + off["claude_session_id"])
+    rows = main.db.open_rows()
+    assert recover.CONTINUE_FLAG in rows[on["tmux"]]["flags"] and "no_autoresume" not in rows[on["tmux"]]["flags"]
+    assert rows[off["tmux"]]["flags"].get("no_autoresume") is True, "the opt-out is carried to the relaunched row"
+    assert recover.CONTINUE_FLAG not in rows[off["tmux"]]["flags"]
+    sent = []
+    t0 = time.time()
+    assert _settle(main, off, sent, when=t0) == [] and sent == [], "the opted-out row is never typed into"
+    assert _settle(main, on, sent, when=t0) == [on["tmux"]] and sent == [(on["tmux"], "continue")]
+    hooks.apply(main.db, on["tmux"], "SessionStart", {"source": "resume", "session_id": on["claude_session_id"]})    # a second SessionStart
+    assert _settle(main, on, sent, when=t0 + 60) == [] and len(sent) == 1, "exactly once"
+    # a second reboot: the opt-out is still on the row and still blocks the continue
+    main.db.set_state(off["tmux"], "working", "UserPromptSubmit", prompt="again")
+    fake_tmux["sessions"].clear()
+    again = recover.run(main.db, main._start_session)
+    assert off["tmux"] in again["recovered"] and off["tmux"] not in again["continue"]
+    assert main.db.open_rows()[off["tmux"]]["flags"].get("no_autoresume") is True
+
+
+def test_an_idle_row_and_a_stale_working_row_get_no_continue_after_a_reboot(client, projects_dir, fake_tmux, monkeypatch):
+    """The row was idle at shutdown, or `working` for more than RECENT_WORK (a Stop hook that never came): relaunched, never nudged."""
+    import time
+    from datetime import datetime, timezone
+    from app import main
+    idle, stale = _reboot_world(client, projects_dir, fake_tmux, monkeypatch)
+    main.db.set_state(idle["tmux"], "idle", "Stop")
+    old = datetime.fromtimestamp(time.time() - recover.RECENT_WORK - 600, tz=timezone.utc).isoformat(timespec="seconds")
+    main.db.conn.execute("UPDATE sessions SET state_at=? WHERE tmux_name=?", (old, stale["tmux"]))
+    fake_tmux["sessions"].clear()
+    summary = recover.run(main.db, main._start_session)
+    assert sorted(summary["recovered"]) == sorted([idle["tmux"], stale["tmux"]]) and summary["continue"] == []
+    sent = []
+    for r in (idle, stale):
+        assert recover.CONTINUE_FLAG not in main.db.open_rows()[r["tmux"]]["flags"]
+        assert _settle(main, r, sent) == []
+    assert sent == []
+
+
+def test_opting_out_while_the_restart_is_pending_drops_the_continue(client, projects_dir, fake_tmux, monkeypatch):
+    """The person flips the switch between the relaunch and the moment the prompt is up: the pending continue is dropped, nothing typed."""
+    from app import main
+    (row,) = _reboot_world(client, projects_dir, fake_tmux, monkeypatch, n=1)
+    fake_tmux["sessions"].clear()
+    assert recover.run(main.db, main._start_session)["continue"] == [row["tmux"]]
+    assert client.post(f"/api/sessions/{row['tmux']}/flags", headers=H, json={"no_autoresume": True}).status_code == 200
+    sent = []
+    assert _settle(main, row, sent) == [] and sent == []
+    assert recover.CONTINUE_FLAG not in main.db.open_rows()[row["tmux"]]["flags"]
+
+
+def test_switching_it_back_on_makes_the_next_reboot_continue_again(client, projects_dir, fake_tmux, monkeypatch):
+    from app import main
+    (row,) = _reboot_world(client, projects_dir, fake_tmux, monkeypatch, n=1)
+    client.post(f"/api/sessions/{row['tmux']}/flags", headers=H, json={"no_autoresume": True})
+    client.post(f"/api/sessions/{row['tmux']}/flags", headers=H, json={"no_autoresume": False})
+    assert "no_autoresume" not in main.db.open_rows()[row["tmux"]]["flags"], "cleared means the key is gone, not false"
+    fake_tmux["sessions"].clear()
+    assert recover.run(main.db, main._start_session)["continue"] == [row["tmux"]]
+
+
 def test_a_row_working_for_days_is_not_continued(monkeypatch):
     """A Stop hook that never arrived leaves a row 'working' for days; relaunching that is fine, nudging it is not."""
     import time

@@ -361,6 +361,7 @@ html.force-coarse #page .sched .sched-item { min-height:var(--tap); }
 #page .bdg-cost.cost-warn { --bd:var(--warn); color:var(--warn-fg, var(--warn)); }
 #page .bdg-cost.cost-bad, #page .bdg-limit { --bd:var(--bad); --bgc:var(--bad-bg); color:var(--bad-fg, var(--bad)); }
 #page .bdg-blocked { --bd:var(--warn); --bgc:var(--warn-bg); color:var(--warn-fg, var(--warn)); }
+#page .bdg-noauto { color:var(--dim); }                       /* #84: dim but readable (the glyph and the words say it, not the colour) */
 @media (hover:hover) { #page a.bdg:hover { --bd:var(--sig); color:var(--fg); } }
 #page .ctx { display:inline-flex; align-items:center; gap:5px; font:11px/1 var(--font-mono); color:var(--dim); }
 #page .ctx-bar { display:inline-block; width:40px; height:6px; border-radius:3px; background:var(--line-soft); overflow:hidden; }

@@ -107,18 +107,19 @@ html.force-coarse .tk-docked textarea.composer.tk-ta { padding:10px 12px; font-s
 /* a long name (a Codex model) takes half the track, many short ones a third: the options wrap into equal cells */
 .bp5-dark .tk-seg.tk-wrap2 .bp5-button.tk-opt:not([class*=bp5-intent-]) { flex:1 1 50%; border-radius:0; }
 .bp5-dark .tk-seg.tk-wrap3 .bp5-button.tk-opt:not([class*=bp5-intent-]) { flex:1 1 33%; border-radius:0; }
-.bp5-dark .tk-seg .bp5-button.tk-opt.on:not([class*=bp5-intent-]), .bp5-dark .bp5-button.tk-tog.on:not([class*=bp5-intent-]) { position:relative; z-index:1; color:var(--sig); background:var(--sig-bg); border-color:var(--sig-bd); }
+.bp5-dark .tk-seg .bp5-button.tk-opt.on:not([class*=bp5-intent-]), .bp5-dark .bp5-button.tk-tog.on:not([class*=bp5-intent-]), .bp5-dark .bp5-button.tk-auto.on:not([class*=bp5-intent-]) { position:relative; z-index:1; color:var(--sig); background:var(--sig-bg); border-color:var(--sig-bd); }
 .bp5-dark .tk-seg .bp5-button.tk-model.on:not([class*=bp5-intent-]) { color:var(--hue, var(--sig)); background:var(--hue-bg, var(--sig-bg)); border-color:var(--hue-bd, var(--sig-bd)); }
 
 /* the switches: two equal cells, each says its state in words */
 .tk-toggles { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:6px; }
-.bp5-dark .bp5-button.tk-tog:not([class*=bp5-intent-]) { box-sizing:border-box; min-width:0; min-height:var(--tk-h); padding:0 10px; justify-content:space-between; gap:8px; font-size:12.5px; }
-.tk-tog .tk-state { font-size:10.5px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+.tk-toggles.tk-solo { grid-template-columns:minmax(0, 1fr); }                                  /* #84: Auto-continue takes its own full row under Fast / Ultracode */
+.bp5-dark .bp5-button.tk-tog:not([class*=bp5-intent-]), .bp5-dark .bp5-button.tk-auto:not([class*=bp5-intent-]) { box-sizing:border-box; min-width:0; min-height:var(--tk-h); padding:0 10px; justify-content:space-between; gap:8px; font-size:12.5px; }
+.tk-tog .tk-state, .tk-auto .tk-state { font-size:10.5px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
 .tk-tog.tk-unknown .tk-state { font-weight:500; text-transform:none; letter-spacing:0; }                       /* no reading yet: neither On nor Off is shown as settled */
 .tk-note { margin:0; color:var(--dim); font-size:11.5px; line-height:1.35; }                                   /* a plain one-line caption under a row (saves the default, what a preset means) */
 .tk-note.tk-unverified { color:var(--fg-2); }
 .tk-note.tk-unverified::before { content:'○ '; color:var(--warn); }                                            /* the box check did not run this key path: the read-back decides */
-.tk-tog.on .tk-state { color:inherit; }
+.tk-tog.on .tk-state, .tk-auto.on .tk-state { color:inherit; }
 
 /* the commands: an equal-cell grid */
 .tk-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:6px; }

@@ -665,6 +665,40 @@ Charts.geom.scale = function (max, H) {
   return { max: r(nice), ticks: [0, r(nice / 2), r(nice)], k, y: (v) => h - v * k };
 };
 
+/* Keyboard reach for a pointer chart (issue #45). The chart root is the one tab stop (tabindex 0, role application: arrow keys must reach it, and a screen reader in
+   browse mode would keep them). The cursor is a value the chart owns (a day, a row, a [weekday, hour]) rather than a focus per item, so the page keeps one stop per
+   chart however many days, rows or cells it draws. o: {label (the aria-label), start (the first cursor), next(cur, key) -> the new cursor, or null for a key that is
+   not the chart's, show(cur) (the pointer's own readout and mark for that item)}. Focus by keyboard shows the cursor's item; focus by a pointer does not (the click
+   picks its own). The readout <p> is the aria-live region and the root's description, so a screen reader hears each step. Escape leaves (blur). data-kbd="chart" tells
+   the page's key table (Keymap.inChart) and shell.js to leave plain keys alone while the chart has the focus. -> {at(cur)}: a pointer pick calls it to move the cursor. */
+Charts._seq = 0;
+Charts._kbd = function (node, read, o) {
+  Charts._seq += 1;
+  const id = 'chart-read-' + Charts._seq;
+  read.setAttribute('id', id);
+  node.setAttribute('role', 'application');
+  node.setAttribute('aria-roledescription', 'chart');
+  node.setAttribute('aria-label', o.label);
+  node.setAttribute('aria-describedby', id);
+  node.setAttribute('tabindex', '0');
+  node.setAttribute('data-kbd', 'chart');
+  let cur = o.start;
+  let byPointer = false;
+  node.addEventListener('pointerdown', () => { byPointer = true; });
+  node.addEventListener('blur', () => { byPointer = false; });
+  node.addEventListener('focus', () => { if (byPointer) { byPointer = false; return; } o.show(cur); });
+  node.addEventListener('keydown', (e) => {
+    if (!e || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === 'Escape') { if (typeof e.preventDefault === 'function') e.preventDefault(); if (typeof node.blur === 'function') node.blur(); return; }
+    const nx = o.next(cur, e.key);
+    if (nx === null || nx === undefined) return;
+    if (typeof e.preventDefault === 'function') e.preventDefault();
+    cur = nx;
+    o.show(cur);
+  });
+  return { at: (c) => { cur = c; } };
+};
+
 /* The readout of a whole day (a tap beside the drawn bars, on a phone where a 30-day bar is 7 px wide): the day, its total and every segment. */
 /* `approx` (the Usage page's Estimated basis, issue #95) puts a `~` in front of every dollar of the readout: they include list-price estimates. */
 Charts.dayTitle = function (row, day, approx) {
@@ -762,7 +796,7 @@ Charts._paintBars = function (host, st) {
   });
   const sum = rows.reduce((a, r) => a + r.total, 0);
   const desc = `Cost per day over the last ${n} days, by ${by}: ${o.approx ? '~' : ''}${Charts.fmtUsd(sum)} API-equivalent${o.approx ? ' (estimated)' : ''}`;
-  const node = svg('svg', { class: 'bars', viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': desc }, svg('title', { text: desc }), Charts._barDefs(hatched), ...kids);
+  const node = svg('svg', { class: 'bars', viewBox: `0 0 ${W} ${H}` }, svg('title', { text: desc }), Charts._barDefs(hatched), ...kids);
   const legend = Charts.legendNode(keys.map((k) => ({
     cls: k.cls, label: k.key, v: (o.approx ? '~' : '') + Charts.fmtUsd(k.total), hatch: unpriced.has(k.key),
     tip: k.key === Charts.UNATTRIBUTED ? Charts.UNATTRIBUTED_TIP : k.key === Charts.OUTSIDE ? Charts.OUTSIDE_TIP : (k.members && k.members.length ? `${k.members.length} more: ${k.members.slice(0, 8).join(', ')}` : k.key),
@@ -778,11 +812,11 @@ Charts._paintBars = function (host, st) {
     return i >= 0 && i < n ? i : null;
   };
   const mark = (i) => { for (const r of node.querySelectorAll('rect')) r.classList.toggle('day-sel', r.getAttribute('data-i') === String(i)); };
-  const show = (e) => {
-    const t = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-i]') : null;
-    const i = t ? Number(t.getAttribute('data-i')) : dayAt(e);
-    const row = i === null ? null : rows[i];
+  let kb = null;
+  const choose = (i, t) => {
+    const row = rows[i];
     if (!row) return;
+    if (kb) kb.at(i);
     const s = t ? t.getAttribute('data-s') : null;
     const seg = s === null ? null : row.segs[Number(s)];
     const day = days[i] || {};
@@ -793,6 +827,15 @@ Charts._paintBars = function (host, st) {
       try { o.onHover({ day: row.day, key: seg ? seg.key : null, v: seg ? seg.v : 0, total: row.total, zero: row.zero, tokens: Number(day.tokens) || 0, hours: Number(day.hours) || 0, text }); } catch (err) { console.error('ccboard charts onHover', err); }
     }
   };
+  const show = (e) => {
+    const t = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-i]') : null;
+    const i = t ? Number(t.getAttribute('data-i')) : dayAt(e);
+    if (i !== null) choose(i, t);
+  };
+  /* the keyboard walks the days (left and right, Home and End) and reads each one whole, like a tap beside the bars */
+  kb = Charts._kbd(node, read, { label: desc + '. Left and right arrows step through the days.', start: 0,
+    next: (i, key) => (key === 'ArrowRight' ? Math.min(n - 1, i + 1) : key === 'ArrowLeft' ? Math.max(0, i - 1) : key === 'Home' ? 0 : key === 'End' ? n - 1 : null),
+    show: (i) => choose(i, null) });
   node.addEventListener('click', show);
   node.addEventListener('pointerover', show);
   node.addEventListener('pointermove', (e) => { if (e && e.pointerType === 'mouse') show(e); });
@@ -917,7 +960,7 @@ Charts._paintGantt = function (host, st) {
     kids.push(g);
   });
   const desc = `Session timeline: ${model.rows.length} session${model.rows.length === 1 ? '' : 's'} over ${Charts.dur(span)}`;
-  const node = svg('svg', { class: 'gantt', viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': desc }, svg('title', { text: desc }), ...kids);
+  const node = svg('svg', { class: 'gantt', viewBox: `0 0 ${W} ${H}` }, svg('title', { text: desc }), ...kids);
   if (model.rows.some((r) => r.ended)) seen.add(5);
   const glyphs = typeof STATE_GLYPH !== 'undefined' ? STATE_GLYPH : {};
   const legend = Charts.legendNode([...seen].sort().map((v) => ({ cls: 'st-' + v, label: `${glyphs[Charts.STATES[v]] || ''} ${Charts.STATES[v]}`.trim(), tip: v === 5 ? 'ended: the row fades' : Charts.STATES[v] })));
@@ -927,6 +970,19 @@ Charts._paintGantt = function (host, st) {
     const spans = row.spans.map((sp) => `${Charts.when(sp.t0, wide)}–${Charts.when(sp.t1, wide)} ${Charts.STATES[sp.v]}`);
     return `${row.label}${row.ended ? ' · ended' : ''} · ${(spans.length > 6 ? ['…', ...spans.slice(-6)] : spans).join(', ')}`;
   };
+  let kb = null;
+  const choose = (i) => {
+    const row = model.rows[i];
+    if (!row) return;
+    if (kb) kb.at(i);
+    for (const gr of node.querySelectorAll('.g-row')) gr.classList.toggle('sel', gr.getAttribute('data-key') === row.key);
+    read.textContent = rowText(row);
+  };
+  /* the keyboard walks the rows (up and down, Home and End) and reads each like a tap on it */
+  const last = model.rows.length - 1;
+  kb = Charts._kbd(node, read, { label: desc + '. Up and down arrows step through the sessions.', start: 0,
+    next: (i, key) => (key === 'ArrowDown' ? Math.min(last, i + 1) : key === 'ArrowUp' ? Math.max(0, i - 1) : key === 'Home' ? 0 : key === 'End' ? last : null),
+    show: choose });
   const pick = (e) => {
     const g = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-key]') : null;
     let key = g ? g.getAttribute('data-key') : null;
@@ -934,10 +990,7 @@ Charts._paintGantt = function (host, st) {
       const r = node.getBoundingClientRect();
       if (r.height > 0) { const i = Math.floor((((e.clientY - r.top) * (H / r.height)) - top) / rowH); if (i >= 0 && i < model.rows.length) key = model.rows[i].key; }
     }
-    const row = key === null ? null : model.rows.find((x) => x.key === key);
-    if (!row) return;
-    for (const gr of node.querySelectorAll('.g-row')) gr.classList.toggle('sel', gr.getAttribute('data-key') === key);
-    read.textContent = rowText(row);
+    choose(key === null ? -1 : model.rows.findIndex((x) => x.key === key));
   };
   node.addEventListener('click', pick);
   host.append(node, legend, read);
@@ -969,7 +1022,8 @@ Charts.heatmap = function (host, grid, hourly, opts) {
   if (max <= 0 && pmax <= 0) { Charts.empty(host, o.empty || Charts.EMPTY_HEAT); host.classList.add('chart-heat'); return null; }
   const plural = (n) => `${n} event${n === 1 ? '' : 's'}`;
   const hh = (h) => `${Charts.pad2(h)}:00`;
-  const node = el('div', { class: 'heat-grid', role: 'img', 'aria-label': `Hook events by weekday and hour, local time${o.tzLabel ? ' (' + o.tzLabel + ')' : ''}: busiest hour ${hh(prof.indexOf(pmax))}, ${plural(pmax)}` });
+  const desc = `Hook events by weekday and hour, local time${o.tzLabel ? ' (' + o.tzLabel + ')' : ''}: busiest hour ${hh(prof.indexOf(pmax))}, ${plural(pmax)}`;
+  const node = el('div', { class: 'heat-grid' });
   node.append(el('span', { class: 'heat-corner' }));
   for (let h = 0; h < 24; h++) node.append(el('span', { class: 'heat-hr', text: h % 3 === 0 ? Charts.pad2(h) : '' }));
   const cellAt = [];                                                     // [weekday][hour] -> the cell, and the hour profile's bars after the 7 rows (the tap's nearest-cell lookup)
@@ -1006,14 +1060,23 @@ Charts.heatmap = function (host, grid, hourly, opts) {
     const d = e.clientY > bl.bottom ? 7 : Math.max(0, Math.min(6, Math.floor((e.clientY - tl.top) / ((bl.bottom - tl.top) / 7))));
     return cellAt[d][h];
   };
-  const show = (e) => {
-    const t = (e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-tip]') : null) || nearest(e);
-    if (!t) return;
+  let kb = null;
+  const choose = (t) => {
     if (sel && sel !== t) sel.classList.remove('sel');
     t.classList.add('sel');
     sel = t;
     read.textContent = t.getAttribute('data-tip');
+    if (kb) cellAt.forEach((r, d) => { const h = r.indexOf(t); if (h >= 0) kb.at([d, h]); });
   };
+  const show = (e) => {
+    const t = (e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-tip]') : null) || nearest(e);
+    if (t) choose(t);
+  };
+  /* the keyboard moves a cursor over the grid: arrows by weekday and hour, Home and End to the ends of the row; the 8th row is the hour profile under it */
+  kb = Charts._kbd(node, read, { label: desc + '. Arrow keys move between the cells; Home and End go to the ends of the row.', start: [0, 0],
+    next: ([d, h], key) => (key === 'ArrowRight' ? [d, Math.min(23, h + 1)] : key === 'ArrowLeft' ? [d, Math.max(0, h - 1)] : key === 'ArrowDown' ? [Math.min(7, d + 1), h]
+      : key === 'ArrowUp' ? [Math.max(0, d - 1), h] : key === 'Home' ? [d, 0] : key === 'End' ? [d, 23] : null),
+    show: ([d, h]) => choose(cellAt[d][h]) });
   node.addEventListener('click', show);
   node.addEventListener('pointerover', show);
   host.append(node);

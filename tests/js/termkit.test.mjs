@@ -2727,7 +2727,7 @@ test('tune for Codex: MODEL, REASONING and PERMISSIONS through POST /tune (the T
   const st = { model: 'gpt-6-luna-mini', effort: 'medium' };
   const t = kit.tune(tuneCtx({ agent: 'codex', schema, stats: st, session: paneRow({ agent: 'codex', state: 'idle', stats: st }) }));
   t.open(anchorAt(w), false);
-  assert.deepEqual(labels(t.root), ['MODEL', 'REASONING', 'PERMISSIONS', 'COMMANDS']);
+  assert.deepEqual(labels(t.root), ['MODEL', 'REASONING', 'PERMISSIONS', 'OPTIONS', 'COMMANDS']);
   assert.deepEqual(segTexts(t.root, 'model'), ['gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-luna-mini']);
   assert.deepEqual(pressed(t.root, 'model'), ['gpt-6-luna-mini'], 'the longest name wins: gpt-6-luna is inside gpt-6-luna-mini');
   assert.deepEqual(segTexts(t.root, 'effort'), ['low', 'medium'], 'the levels of the current model');
@@ -2754,7 +2754,7 @@ test('tune for Codex: MODEL, REASONING and PERMISSIONS through POST /tune (the T
   const bare = kit.tune(tuneCtx({ agent: 'codex', schema: null, stats: {} }));
   bare.open(anchorAt(w), false);
   assert.ok(!bare.root.textContent.includes('There is nothing to tune'), 'no schema: a Codex tile still has something to tune');
-  assert.deepEqual(labels(bare.root), ['MODEL', 'REASONING', 'PERMISSIONS', 'COMMANDS']);
+  assert.deepEqual(labels(bare.root), ['MODEL', 'REASONING', 'PERMISSIONS', 'OPTIONS', 'COMMANDS']);
   assert.deepEqual(segTexts(bare.root, 'model'), ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'], 'the built-in list (codex.py FALLBACK_MODELS)');
   assert.deepEqual(segTexts(bare.root, 'effort'), ['low', 'medium', 'high', 'xhigh', 'max']);
   // an older server's registry types /model <slug> inline, which Codex sends to the model as a prompt: no model or reasoning row then
@@ -2779,7 +2779,7 @@ test('tune for Codex with a state row\'s agent entry (status_summary: installed,
   const t = kit.tune(tuneCtx({ agent: 'codex', schema: statusSummary, stats: { model: 'gpt-6-sol', effort: 'high' }, session: paneRow({ agent: 'codex', state: 'idle', stats: { model: 'gpt-6-sol', effort: 'high' } }) }));
   t.open(anchorAt(w), false);
   assert.ok(!t.root.textContent.includes('There is nothing to tune'));
-  assert.deepEqual(labels(t.root), ['MODEL', 'REASONING', 'PERMISSIONS', 'COMMANDS']);
+  assert.deepEqual(labels(t.root), ['MODEL', 'REASONING', 'PERMISSIONS', 'OPTIONS', 'COMMANDS']);
   assert.equal(segTexts(t.root, 'model').length, 4);
   assert.deepEqual(pressed(t.root, 'model'), ['gpt-6-sol']);
   assert.deepEqual(pressed(t.root, 'effort'), ['high']);
@@ -3166,4 +3166,87 @@ test('fitName: the first measurement lifts .pend (a tile header keeps project/re
   assert.equal(kit.fitName(sliver), true);
   assert.equal(sliver.classList.contains('pend'), false);
   assert.equal(sliver.classList.contains('off'), true, 'a sliver goes, and never shows first');
+});
+
+// ---- #84: the Auto-continue switch in the tile menu (SESSION) and in Tune (OPTIONS). The write itself is core.js setAutoContinue (tests/js/auto-continue.test.mjs).
+
+test('#84 tileMenu: Auto-continue sits in SESSION before Close tile, says on / off from the row\'s flags, is never held back by the prompt gate, and is left out for a shell or without the action', () => {
+  const { w, kit } = uiWorld();
+  const open = (over, without) => {
+    const { ctx, log } = menuCtx(over);
+    ctx.actions.autoContinue = without ? null : () => log.push('autoContinue');
+    const m = kit.tileMenu(ctx);
+    m.open(anchorAt(w), false);
+    return { m, log, pop: m.root };
+  };
+  const a = open({});
+  assert.deepEqual(names(group(a.pop, 'session')), ['Auto-continue: on', 'Close tile']);
+  const row = item(a.pop, 'autocontinue');
+  assert.equal(row.getAttribute('role'), 'menuitemcheckbox');
+  assert.equal(row.getAttribute('aria-checked'), 'true');
+  assert.match(row.getAttribute('title'), /Types continue once after a limit reset or an account switch, and after a reboot if the session was working\. This session only\./);
+  row.click();
+  assert.deepEqual(a.log, ['autoContinue']);
+  a.m.close();
+  const off = open({ session: paneRow({ state: 'idle', flags: { no_autoresume: true } }) });
+  assert.deepEqual(names(group(off.pop, 'session')), ['Auto-continue: off', 'Close tile']);
+  assert.equal(item(off.pop, 'autocontinue').getAttribute('aria-checked'), 'false');
+  off.m.close();
+  const busy = open({ atPrompt: false, session: paneRow({ state: 'working' }) });
+  assert.equal(item(busy.pop, 'autocontinue').classList.contains('tk-off'), false, 'a board switch, not a typed command: working does not turn it off');
+  item(busy.pop, 'autocontinue').click();
+  assert.deepEqual(busy.log, ['autoContinue']);
+  busy.m.close();
+  const sh = open({ agent: 'shell', session: paneRow({ agent: 'shell' }) });
+  assert.equal(item(sh.pop, 'autocontinue'), null, 'a shell has no turn to continue');
+  sh.m.close();
+  const none = open({}, true);
+  assert.equal(item(none.pop, 'autocontinue'), null, 'no action, no row');
+  none.m.close();
+  w.run('state = { config: { auto_continue: false } }');
+  const boardOff = open({});
+  assert.match(item(boardOff.pop, 'autocontinue').getAttribute('title'), /Off for the whole board \(CCBOARD_AUTO_CONTINUE=0\)/);
+  boardOff.m.close();
+});
+
+test('#84 tune: OPTIONS carries an Auto-continue switch for Claude and Codex (never a shell), enabled while the session is working, optimistic, reverted on a refusal', async () => {
+  const { w, kit } = uiWorld();
+  const btn = (t) => t.root.querySelector('.tk-auto');
+  const t = kit.tune(tuneCtx({ session: paneRow({ state: 'working', stats: claudeStats() }) }));
+  t.open(anchorAt(w), false);
+  const opts = t.root.querySelectorAll('.tk-sec').find((s) => s.querySelector('.tk-gl').textContent === 'OPTIONS');
+  assert.deepEqual(opts.querySelectorAll('.tk-tog').map((b) => b.querySelector('.tk-tn').textContent), ['Fast', 'Ultracode'], 'the typed switches are unchanged');
+  assert.equal(btn(t).querySelector('.tk-tn').textContent, 'Auto-continue');
+  assert.equal(btn(t).querySelector('.tk-state').textContent, 'on');
+  assert.equal(btn(t).getAttribute('aria-pressed'), 'true');
+  assert.equal(btn(t).disabled, false, 'the prompt gate does not apply: it is a board switch');
+  assert.ok(btn(t).parentNode.classList.contains('tk-solo'), 'its own full-width row under Fast and Ultracode');
+  assert.match(opts.textContent, /Types continue once after a limit reset or an account switch/);
+  w.run('__route = (method, path) => (path.endsWith("/flags") ? new Promise((res, rej) => { globalThis.__held = { res, rej }; }) : { ok: true })');
+  btn(t).click();
+  assert.equal(btn(t).querySelector('.tk-state').textContent, 'off', 'optimistic');
+  assert.equal(btn(t).getAttribute('aria-pressed'), 'false');
+  assert.deepEqual(calls(w).map((c) => [c.method, c.path, c.body]), [['POST', `/api/sessions/${SESS}/flags`, { no_autoresume: true }]]);
+  w.run('__held.rej(__httpError(400, "no open row"))');
+  await settle(); await settle();
+  assert.equal(btn(t).querySelector('.tk-state').textContent, 'on', 'refused: back to on');
+  assert.deepEqual(toasts(w).map((x) => x.text), ['Auto-continue not changed: no open row']);
+  // applied: the read-back shows the flag, then the page's row agrees and the local value is dropped
+  btn(t).click();
+  w.run('__held.res({ ok: true, flags: { no_autoresume: true } })');
+  await settle(); await settle();
+  assert.equal(btn(t).querySelector('.tk-state').textContent, 'off');
+  t.update({ session: paneRow({ state: 'working', stats: claudeStats(), flags: { no_autoresume: true } }) });
+  assert.equal(btn(t).querySelector('.tk-state').textContent, 'off', 'the row now says it too');
+  t.update({ session: paneRow({ state: 'working', stats: claudeStats(), flags: {} }) });
+  assert.equal(btn(t).querySelector('.tk-state').textContent, 'on', 'and follows it back (switched on elsewhere)');
+  t.destroy();
+  const cx = kit.tune(tuneCtx({ agent: 'codex', stats: { model: 'gpt-6-sol', effort: 'high' }, session: paneRow({ agent: 'codex', state: 'idle', stats: { model: 'gpt-6-sol', effort: 'high' } }) }));
+  cx.open(anchorAt(w), false);
+  assert.ok(btn(cx), 'Codex has it too');
+  assert.equal(cx.root.querySelectorAll('.tk-tog').length, 0, 'and only it under OPTIONS');
+  cx.destroy();
+  const sh = kit.tune(tuneCtx({ agent: 'shell', session: paneRow({ agent: 'shell' }) }));
+  sh.open(anchorAt(w), false);
+  assert.equal(sh.root.querySelector('.tk-auto'), null, 'a shell has nothing to continue');
 });

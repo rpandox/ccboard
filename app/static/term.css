@@ -222,6 +222,7 @@ body.term.kbd #rail .rail-btn:nth-child(n+3), body.term.short #rail .rail-btn:nt
   .tune-seg .tune-note { display:block; flex:0 0 100%; margin:3px 0 0; font-size:11.5px; color:var(--dim); }
   .bp5-dark #tune .tune-row > .bp5-button.tune-chip:not([class*=bp5-intent-]) { order:1; min-width:0; padding:0 4px; font-size:12.5px; }
   .bp5-dark #tune .tune-row > .bp5-button.tune-chip.destructive:not([class*=bp5-intent-]) { order:2; }      /* Clear closes the grid: the red one is never the first thing under the thumb */
+  .bp5-dark #tune .tune-row > .bp5-button.tune-chip[data-cmd=autocontinue]:not([class*=bp5-intent-]) { grid-column:1 / -1; }      /* #84: 'Auto-continue: off' is wider than a third of the column */
   .tune-seg { grid-column:1 / -1; order:-1; display:flex; flex-wrap:wrap; gap:0; min-width:0; max-width:100%; }
   .tune-seg .tune-lbl { flex:0 0 100%; padding:0 0 2px; }
   /* a segmented control: the options share one track, their borders overlap by a pixel, only the two ends are rounded */

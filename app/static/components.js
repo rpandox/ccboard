@@ -1496,9 +1496,10 @@ function menu(button, items) {
     pop = el('div', { class: 'menu menu-pop', role: 'menu', tabindex: '-1' });
     for (const it of list) {
       const pick = () => { ctl.close(false); if (typeof it.onClick === 'function') it.onClick(); };
-      pop.append(el('div', { class: 'menuitem', role: 'menuitem', tabindex: '-1', onclick: pick,
+      pop.append(el('div', { class: 'menuitem', role: 'menuitem', tabindex: '-1', title: it.title || null, onclick: pick,
         onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } } },
-      it.icon ? ic(it.icon) : null, el('span', { class: 'mi-text', text: it.label })));
+      it.icon ? ic(it.icon) : null,
+      it.sub ? el('span', { class: 'mi-text' }, el('span', { class: 'mi-name', text: it.label }), el('span', { class: 'mi-sub', text: it.sub })) : el('span', { class: 'mi-text', text: it.label })));
     }
     (button.closest('dialog') || document.getElementById('topbar') || document.body).append(pop);
     const r = button.getBoundingClientRect();

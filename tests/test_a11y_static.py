@@ -139,3 +139,22 @@ def test_usage_details_column_header_has_text():
     assert "el('th', { 'aria-label': 'Details' })" not in usage
     assert re.search(r"el\('th',\s*\{\s*scope:\s*'col'\s*\},\s*el\('span',\s*\{\s*class:\s*'sr-only',\s*text:\s*'Details'", usage)
     assert re.search(r"\.sr-only\s*\{[^}]*clip", _css_all())
+
+
+def test_charts_are_keyboard_reachable():
+    """The cost bars, the Gantt and the heat grid are one tab stop each (Charts._kbd), no longer a pointer-only role=img, and their focus ring is drawn."""
+    charts = (STATIC / "charts.js").read_text()
+    assert len(re.findall(r"Charts\._kbd\(node, read,", charts)) == 3, "bars, gantt and heatmap each call Charts._kbd"
+    for name in ("'bars'", "'gantt'", "'heat-grid'"):
+        assert not re.search(r"class:\s*" + name + r"[^}]*role:\s*'img'", charts), f"{name} must not stay a role=img"
+    kbd = charts[charts.index("Charts._kbd = function"):]
+    kbd = kbd[:kbd.index("\n};")]
+    for needle in ("'tabindex', '0'", "'aria-describedby'", "'data-kbd', 'chart'", "'Escape'"):
+        assert needle in kbd, f"Charts._kbd lost {needle}"
+    assert len(re.findall(r"class: 'chart-read dim', 'aria-live': 'polite'", charts)) == 3, "every readout stays the aria-live region"
+    css = (STATIC / "charts.css").read_text()
+    for root in (".bars", ".gantt", ".heat-grid"):
+        assert re.search(re.escape(root) + r":focus-visible[^{]*\{[^}]*outline:\s*2px solid var\(--sig\)", css), f"{root} has no focus ring"
+    # the page's own keys leave a focused chart alone
+    assert "Keymap.inChart(e.target)" in (STATIC / "keymap.js").read_text()
+    assert "[data-kbd=chart]" in (STATIC / "shell.js").read_text()

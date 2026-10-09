@@ -604,6 +604,19 @@
       tuneItems.push({ node, kind: 'ultra', cmd: spec.key, arg: group.via === 'tune' ? undefined : null, label: 'Ultracode', title: 'Ultracode sets xhigh and turns workflows on, for this session only' });   // an older server's inline form never marks the effort chips pending
       row.append(node);
     }
+    if (typeof setAutoContinue === 'function' && lastRow && lastRow.agent !== 'shell') {   // #84: a board switch (POST /flags), not a typed command: the prompt gate does not hold it
+      const node = tuneChip({ key: 'autocontinue' }, 'Auto-continue', () => {
+        disarm();
+        const off = !(lastRow && lastRow.flags && lastRow.flags.no_autoresume);
+        setAutoContinue(NAME, off, { apply: (v) => {          // optimistic on this page's copy of the row; the next poll brings the board's
+          const flags = Object.assign({}, (lastRow && lastRow.flags) || {});
+          if (v) flags.no_autoresume = true; else delete flags.no_autoresume;
+          renderTune(Object.assign({}, lastRow, { flags }));
+        } });
+      });
+      tuneItems.push({ node, kind: 'auto', cmd: 'autocontinue', label: 'Auto-continue', title: AUTO_CONTINUE_WHAT });
+      row.append(node);
+    }
     if (segs.effort) row.append(segs.effort);
     if (segs.model) row.append(segs.model);
     if (segs.perms) row.append(segs.perms);
@@ -642,6 +655,15 @@
     if (tuneGated) disarm();
     for (const it of tuneItems) {
       const n = it.node;
+      if (it.kind === 'auto') {                                // #84: always usable; its words say the state, aria-pressed and the tint repeat it
+        const off = !!flags.no_autoresume;
+        n.disabled = false;
+        setText(n, 'Auto-continue: ' + (off ? 'off' : 'on'));
+        n.classList.toggle('on', !off);
+        n.setAttribute('aria-pressed', off ? 'false' : 'true');
+        n.setAttribute('title', AUTO_CONTINUE_WHAT + (boardAutoContinueOff() ? ' ' + AUTO_CONTINUE_BOARD_OFF : ''));
+        continue;
+      }
       if (n.disabled === gate.enabled) n.disabled = !gate.enabled;
       const title = gate.enabled ? (it.title || '') : gate.title;
       if (title) n.setAttribute('title', title); else n.removeAttribute('title');

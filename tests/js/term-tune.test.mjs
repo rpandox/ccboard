@@ -127,12 +127,13 @@ async function page({ session = row(), agents = { claude: { slash: REGISTRY } },
   fake.TermPage = w.get('window.TermPage');
   fake.tune = () => termmain.querySelector('#tune');
   fake.toggle = () => headtools.querySelector('.tune-toggle');
-  fake.cmdChips = () => termmain.querySelectorAll('#tune button').filter((n) => !n.classList.contains('tune-opt')).map((n) => n.textContent);
+  fake.cmdChips = () => termmain.querySelectorAll('#tune button').filter((n) => !n.classList.contains('tune-opt') && n.getAttribute('data-cmd') !== 'autocontinue').map((n) => n.textContent);   // #84: the Auto-continue chip is a board switch, looked at in its own test
+  fake.autoChip = () => termmain.querySelector('#tune button[data-cmd="autocontinue"]');
   fake.chip = (cmd, arg) => {
     const all = termmain.querySelectorAll(`#tune button[data-cmd="${cmd}"]`);
     return arg === undefined ? all[0] : all.find((n) => n.textContent === arg);
   };
-  fake.chips = () => termmain.querySelectorAll('#tune button').map((n) => n.getAttribute('data-cmd'));
+  fake.chips = () => termmain.querySelectorAll('#tune button').map((n) => n.getAttribute('data-cmd')).filter((c) => c !== 'autocontinue');
   fake.commands = () => fake.calls.filter((c) => c.method === 'POST' && c.path === API + '/command').map((c) => c.body);
   fake.tunes = () => fake.calls.filter((c) => c.method === 'POST' && c.path === API + '/tune').map((c) => c.body);
   fake.posts = (suffix) => fake.calls.filter((c) => c.method === 'POST' && c.path === API + suffix).map((c) => c.body);
@@ -249,11 +250,11 @@ test('the strip sits between the context strip and the terminal as ONE row: the 
   assert.equal(tune.querySelectorAll('.tune-cmds').length + tune.querySelectorAll('.tune-set').length, 0, 'no second row');
   const kids = rows[0].children;
   const NOTE = /(Also saves your default.*|Unverified key path.*)$/;          // the wide column's notes under a group (term.css hides them on a phone)
-  assert.deepEqual(kids.map((n) => n.textContent.replace(NOTE, '')), ['Clear', 'Compact', 'Usage', 'Rename', 'Context', 'Status', 'Ultracode', 'effortlowmediumhighxhighmax', 'modelopusfablesonnethaiku']);
-  assert.match(kids[7].textContent, /Unverified key path/, 'Claude Effort goes through the slider, a key path the box has not run');
-  assert.match(kids[8].textContent, /Also saves your default/, 'Claude Model typed inline also saves the default: said in words');
-  assert.deepEqual(kids.slice(0, 7).map((n) => n.tagName), Array(7).fill('BUTTON'), 'six command chips and the Ultracode switch first');
-  assert.deepEqual(kids.slice(7).map((n) => n.getAttribute('aria-label')), ['Effort', 'Model'], 'then the Effort segment, then the Model segment');
+  assert.deepEqual(kids.map((n) => n.textContent.replace(NOTE, '')), ['Clear', 'Compact', 'Usage', 'Rename', 'Context', 'Status', 'Ultracode', 'Auto-continue: on', 'effortlowmediumhighxhighmax', 'modelopusfablesonnethaiku']);
+  assert.match(kids[8].textContent, /Unverified key path/, 'Claude Effort goes through the slider, a key path the box has not run');
+  assert.match(kids[9].textContent, /Also saves your default/, 'Claude Model typed inline also saves the default: said in words');
+  assert.deepEqual(kids.slice(0, 8).map((n) => n.tagName), Array(8).fill('BUTTON'), 'six command chips, the Ultracode switch and the Auto-continue switch first');
+  assert.deepEqual(kids.slice(8).map((n) => n.getAttribute('aria-label')), ['Effort', 'Model'], 'then the Effort segment, then the Model segment');
   const segs = rows[0].querySelectorAll('.tune-seg');
   assert.deepEqual(segs[0].querySelectorAll('button').map((n) => n.textContent), ['low', 'medium', 'high', 'xhigh', 'max'], 'no ultracode level (#78)');
   assert.deepEqual(segs[1].querySelectorAll('button').map((n) => n.textContent), ['opus', 'fable', 'sonnet', 'haiku']);
@@ -296,18 +297,20 @@ test('current effort and model are marked from the statusline and follow the nex
 test('gate in the DOM: idle enables every chip, working disables them all with the title, a shell hides the strip, compacting and a permission disable', async () => {
   const p = await page();
   const all = () => p.tune().querySelectorAll('button');
+  const typed = (b) => b.getAttribute('data-cmd') !== 'autocontinue';
   assert.ok(all().length >= 16);
   assert.ok(all().every((b) => !b.disabled), 'idle: every chip is enabled');
   p.row = row({ state: 'working' });
   await p.tick();
-  assert.ok(all().every((b) => b.disabled), 'working: every chip is disabled');
-  assert.ok(all().every((b) => b.getAttribute('title') === 'available when the session is at its prompt'));
+  assert.ok(all().filter(typed).every((b) => b.disabled), 'working: every chip is disabled');
+  assert.ok(all().filter(typed).every((b) => b.getAttribute('title') === 'available when the session is at its prompt'));
+  assert.equal(p.autoChip().disabled, false, '#84: the Auto-continue switch is a board setting, not typed into the pane: the gate does not hold it');
   p.row = row({ state: 'waiting', flags: { wait_kind: 'permission' }, pending: [{ id: 1, tool_name: 'Bash' }] });
   await p.tick();
-  assert.ok(all().every((b) => b.disabled), 'waiting on a permission: disabled');
+  assert.ok(all().filter(typed).every((b) => b.disabled), 'waiting on a permission: disabled');
   p.row = row({ state: 'idle', flags: { compacting: true } });
   await p.tick();
-  assert.ok(all().every((b) => b.disabled), 'compacting: disabled');
+  assert.ok(all().filter(typed).every((b) => b.disabled), 'compacting: disabled');
   p.row = row({ state: 'waiting', flags: { wait_kind: 'idle' } });
   await p.tick();
   assert.ok(all().every((b) => !b.disabled), 'waiting on the idle prompt: enabled again');
@@ -350,7 +353,7 @@ test('a Codex session gets the shared plan: Reasoning, Model and Permissions thr
   const p = await page({ session: row({ agent: 'codex', stats: st }), allchips: true,
     agents: { codex: { slash: CODEX, models: ['gpt-6.1-sol', 'gpt-6-luna'], reasoning_by_model: { 'gpt-6.1-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] } } } });
   const kids = p.tune().querySelector('.tune-row').children;
-  assert.deepEqual(kids.map((n) => n.getAttribute('aria-label') || n.textContent), ['Status', 'Reasoning', 'Model', 'Permissions']);
+  assert.deepEqual(kids.map((n) => n.getAttribute('aria-label') || n.textContent), ['Status', 'Auto-continue: on', 'Reasoning', 'Model', 'Permissions']);
   assert.deepEqual(p.tune().querySelectorAll('.tune-seg')[0].querySelectorAll('button').map((n) => n.textContent), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
   assert.deepEqual(p.tune().querySelectorAll('.tune-seg')[2].querySelectorAll('button').map((n) => n.textContent), ['Ask for approval', 'Approve for me'], 'never Full Access, untrusted or on-failure');
   assert.ok(p.chip('model', 'gpt-6.1-sol').classList.contains('on') && p.chip('reasoning', 'low').classList.contains('on'));
@@ -1210,4 +1213,40 @@ test('tuning strip: the current effort is the accent TINT (never a second filled
   assert.ok(p.chip('model', 'opus').classList.contains('on') && p.chip('effort', 'high').classList.contains('on'), 'the statusline marks the current ones');
   const drift = homeWorld().w;                                       // pages/agents.js chipHue is the source of the hue table: the page's own copy must not drift from it
   for (const [model, cls] of Object.entries(plain(p.TermPage.MODEL_HUE))) assert.equal(drift.run(`chipHue('model', ${JSON.stringify(model)})`), cls, model);
+});
+
+// ---------------------------------------------------------------- #84: the Auto-continue chip of the strip
+
+test('#84 the strip has an Auto-continue chip: it says on / off, is usable while the session works, flips at once and POSTs {no_autoresume}, and goes back on a refusal', async () => {
+  const p = await page({ session: row({ state: 'working' }) });
+  const chip = () => p.autoChip();
+  assert.equal(chip().textContent, 'Auto-continue: on');
+  assert.equal(chip().getAttribute('aria-pressed'), 'true');
+  assert.equal(chip().disabled, false, 'working: a board switch, not a typed command');
+  assert.match(chip().getAttribute('title'), /Types continue once after a limit reset or an account switch, and after a reboot if the session was working\. This session only\./);
+  p.routes['POST /flags'] = (b) => ({ ok: true, flags: { no_autoresume: b.no_autoresume } });
+  await p.click(chip());
+  assert.deepEqual(p.posts('/flags'), [{ no_autoresume: true }]);
+  assert.equal(chip().textContent, 'Auto-continue: off');
+  assert.equal(chip().getAttribute('aria-pressed'), 'false');
+  assert.equal(chip().classList.contains('on'), false);
+  p.row = row({ state: 'working', flags: { no_autoresume: true } });                      // the next poll agrees
+  await p.tick();
+  assert.equal(chip().textContent, 'Auto-continue: off');
+  await p.click(chip());
+  assert.deepEqual(p.posts('/flags'), [{ no_autoresume: true }, { no_autoresume: false }]);
+  p.row = row({ state: 'working', flags: {} });
+  await p.tick();
+  assert.equal(chip().textContent, 'Auto-continue: on');
+  p.routes['POST /flags'] = () => httpError(404, 'no open row for session shop--api--s1', null);
+  await p.click(chip());
+  assert.equal(chip().textContent, 'Auto-continue: on', 'refused: back to on');
+  assert.ok(p.toasts.some((t) => t.text === 'Auto-continue not changed: no open row for session shop--api--s1'));
+});
+
+test('#84 a shell row has no strip and so no Auto-continue chip; a Codex row has it', async () => {
+  const sh = await page({ session: row({ agent: 'shell' }) });
+  assert.equal(sh.autoChip(), null);
+  const cx = await page({ session: row({ agent: 'codex', stats: { model: 'gpt-6-sol', effort: 'high' } }), agents: { codex: { slash: { status: { cmd: '/status', label: 'Status', arg: false, read: true, verified: true, weight: 3 } } } } });
+  assert.ok(cx.autoChip());
 });

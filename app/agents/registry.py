@@ -7,6 +7,11 @@ A job joins its session by sessionId/resumeSessionId (or the session's jobId). E
 one of the board's own tmux sessions) or external (anything else Claude runs on this box, minus claude-mem's observer
 sessions and anything not updated for 14 days).
 
+Why files and not `claude agents --json` (issue #27, checked on the box with Claude Code 2.1.294): listing agents does not start the
+supervisor daemon, but the command returns only id, kind, name, sessionId, startedAt, state and cwd for the same entries these files
+hold (its one background agent was the job above, same state), while the files add tempo, needs, the suggested reply, children and
+the worktree. So the files stay the only source and no subprocess runs.
+
 This module imports only the standard library and app.platform (config dir, projects dir and pane pids are parameters), so it never
 creates an import cycle with app.main, app.db or the rest of app.agents.
 """

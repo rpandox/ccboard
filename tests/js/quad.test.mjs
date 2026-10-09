@@ -2298,7 +2298,7 @@ test('the menu\'s ctx for a session with a pending permission: Allow, Deny and I
   assert.deepEqual(plain(c.perm), { pending: true, summary: 'Bash: npm test' });
   assert.equal(c.atPrompt, false, 'a permission is open: the prompt is not free');
   assert.equal(c.why, GATE);
-  assert.deepEqual(acts(c), ['setMode', 'zoom', 'fullscreenTile', 'popout', 'openTerm', 'reload', 'keysHere', 'allow', 'deny', 'tui', 'composer', 'dockComposer', 'tune', 'compact', 'context', 'usage', 'rename', 'close', 'kill'],
+  assert.deepEqual(acts(c), ['setMode', 'zoom', 'fullscreenTile', 'popout', 'openTerm', 'reload', 'keysHere', 'allow', 'deny', 'tui', 'composer', 'dockComposer', 'tune', 'compact', 'context', 'usage', 'rename', 'autoContinue', 'close', 'kill'],
     'everything the contract names, minus dock (the window has none)');
   assert.equal(c.actions.dock, null);
   assert.equal(c.zoomed, false);

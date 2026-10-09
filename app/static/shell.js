@@ -1580,6 +1580,7 @@ Shell.listen = function () {
     if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
     const t = e.target;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (t && typeof t.closest === 'function' && t.closest('[data-kbd=chart]')) return;      // a keyboard chart (charts.js) keeps its keys
     if (document.querySelector('dialog[open]')) return;
     if (e.key === '/') { e.preventDefault(); Shell.focusSearch(); }
     else if (e.key === '[') { e.preventDefault(); Shell.toggleSidebar(); }

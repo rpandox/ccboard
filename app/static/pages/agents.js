@@ -507,6 +507,8 @@ function sessionMetaText(s, st) {
   return parts.join(' · ');
 }
 
+/* #84: auto-continue means something for an agent session that is still open (a shell has no turn to continue, an ended row no prompt) */
+function autoContinueApplies(s) { return sessionAgent(s) !== 'shell' && s.state !== 'ended'; }
 function sessionNudgeable(s) { return sessionAgent(s) !== 'shell' && SESSION_NUDGE_STATES.includes(s.state); }
 
 /* The active rate-limit episode of a state payload, or null. state.rate_limited is the kv record, {value: {session, message, kind, resets_at}, at}
@@ -708,7 +710,9 @@ function sessionCard(s, opts) {
     b.limit = el('span', { class: 'bdg bdg-limit hidden', text: 'limit' });
     b.blocked = el('span', { class: 'bdg bdg-blocked hidden', text: 'blocked' });
     b.hooks = el('span', { class: 'rr-hooks hidden' });                     // #96: 'no hooks (untrusted?)' (hooksMissingChip), a link to the Doctor
-    badges = el('span', { class: 'rr-badges' }, b.model, b.acct, b.ctx, b.compact, b.worktree, b.pr, b.sub, b.cost, b.limit, b.blocked, b.hooks);
+    b.noauto = el('span', { class: 'bdg bdg-noauto hidden', title: 'Auto-continue is off for this session: the board will not type continue after a limit reset or a reboot' },
+      el('span', { class: 'bdg-noauto-g', 'aria-hidden': 'true', text: '⊘' }), ' no auto-continue');       // #84: only while the session is opted out
+    badges = el('span', { class: 'rr-badges' }, b.model, b.acct, b.ctx, b.compact, b.worktree, b.pr, b.sub, b.cost, b.limit, b.blocked, b.noauto, b.hooks);
   }
   // the peek says it in words too (a title is no help on touch): the chip and its explanation, only while hooks_missing
   const hooksNote = o.peek ? el('div', { class: 'peek-hooks hidden', role: 'status' }) : null;
@@ -734,8 +738,25 @@ function sessionCard(s, opts) {
     if (s2.state !== 'ended' && typeof Shell !== 'undefined' && Shell && typeof Shell.wide === 'function' && Shell.wide() && typeof Shell.quadAdd === 'function') {
       items.push({ label: 'Add to quad', icon: 'layout-grid', onClick: () => Shell.quadAdd(tmux) });
     }
+    if (rich && autoContinueApplies(s2)) {                  // #84: one switch per session (the rich rows wear its chip); the label names the current state, a tap flips it
+      const off = sessionAutoContinueOff(s2);
+      const boardOff = boardAutoContinueOff();
+      items.push({ label: autoContinueLabel(off), icon: off ? 'disable' : 'fast-forward', sub: boardOff ? 'off for the whole board (CCBOARD_AUTO_CONTINUE=0)' : AUTO_CONTINUE_SUB,
+        title: AUTO_CONTINUE_WHAT + (boardOff ? ' ' + AUTO_CONTINUE_BOARD_OFF : ''), onClick: () => toggleAutoContinue() });
+    }
     items.push({ label: 'Kill', icon: 'trash', onClick: () => { ui.confirm = killKey; if (typeof repaintPage === 'function') repaintPage(); } });
     return items;
+  }
+
+  /* #84: optimistic flip of flags.no_autoresume on this row's own copy (the next poll replaces it with the server's), put back when the board refuses */
+  function toggleAutoContinue() {
+    const want = !sessionAutoContinueOff(cur.s);
+    return setAutoContinue(tmux, want, { apply: (off) => {
+      const flags = Object.assign({}, cur.s.flags || {});
+      if (off) flags.no_autoresume = true; else delete flags.no_autoresume;
+      cur.s = Object.assign({}, cur.s, { flags });
+      if (rich) patchBadges(cur.s, typeof state !== 'undefined' ? state : null);
+    } });
   }
 
   function toggleReply() { cur.manual = true; node.classList.toggle('open'); syncMore(); }
@@ -826,6 +847,7 @@ function sessionCard(s, opts) {
     if (hasCtx) b.ctx.ccSet(t.context_pct);
     show(b.compact, hasCtx && t.context_pct >= CTX_HI && sessionAgent(s2) === 'claude' && nudge);
     show(b.worktree, sessionWorktree(s2, st));
+    show(b.noauto, autoContinueApplies(s2) && sessionAutoContinueOff(s2));
     const task = sessionTask(s2, st);
     const prNum = task && task.pr_number;
     show(b.pr, !!prNum);
