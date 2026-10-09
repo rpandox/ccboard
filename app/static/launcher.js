@@ -1307,7 +1307,7 @@ const AGENT_SCHEMAS = {
     permission_modes: ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'], efforts: LX_EFFORTS,
     models: LX_CODEX_MODELS,
     reasoning_by_model: { 'gpt-6.1-sol': LX_EFFORTS.concat(['ultra']), 'gpt-6-astra': LX_EFFORTS, 'gpt-6-sol': LX_EFFORTS, 'gpt-6-luna': LX_EFFORTS },
-    capabilities: { fork: true, approve_for_me: true, bypass_approvals: true, yolo: false, search: true, add_dir: true, no_alt_screen: true, approval_on_failure: false, approval_untrusted: false },
+    capabilities: { fork: true, no_daemon: true, approve_for_me: true, bypass_approvals: true, yolo: false, search: true, add_dir: true, no_alt_screen: true, hook_trust_bypass: false, approval_on_failure: false, approval_untrusted: false },
   },
 };
 const LX_SHELL = { name: 'shell', label: 'Shell', glyph: '▸', installed: true, options: [], permission_modes: [], efforts: [], models: [], reasoning_by_model: {}, capabilities: {} };
@@ -1587,7 +1587,9 @@ function commandPreview(v, ctx) {
     if (v.ultracode && !c.ultraNative) then.push('/effort ultracode on');
     if (v.fast) then.push('/fast on');
   } else {
-    const caps = { approve_for_me: false, bypass_approvals: true, yolo: false, no_alt_screen: true, search: true, add_dir: true, ...(c.caps || {}) };
+    const caps = { approve_for_me: false, bypass_approvals: true, yolo: false, no_alt_screen: true, search: true, add_dir: true, no_daemon: false, hook_trust_bypass: false, ...(c.caps || {}) };
+    if (caps.no_daemon) flags.push('--no-daemon', '-c', 'check_for_update_on_startup=false');   // the adapter's first flags (the second skips 0.161's update dialog) when this codex has it (0.157+; the box's 0.161): the preview must say it too (box check #92)
+    if (caps.hook_trust_bypass) flags.push('--dangerously-bypass-hook-trust');            // only with CCBOARD_CODEX_HOOK_TRUST=bypass on the box (the adapter's second flag)
     if (caps.no_alt_screen && !v.no_scrollback) flags.push('--no-alt-screen');            // on by default: only the opt-out (Keep scrollback unchecked) drops it
     const md = v.cx_mode || 'default';
     const danger = md === 'bypass' || (md === 'custom' && v.sandbox === 'danger-full-access');         // the sheet sends bypass: true for both, and the adapter then builds the one bypass flag

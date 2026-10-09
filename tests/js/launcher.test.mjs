@@ -457,6 +457,35 @@ test('Codex: ONE mode picker (default, auto, read-only, bypass, custom) as a seg
   assert.ok(adv.querySelectorAll('label.field-label').map(text).includes('Config overrides'));
 });
 
+test('commandPreview, Codex: --no-daemon right after codex (or codex resume|fork) when this Codex has it, before --no-alt-screen, for every launch kind (box check #92: the preview lacked it)', () => {
+  const w = lWorld();
+  const caps = { no_daemon: true, approve_for_me: true, fork: true };
+  const id = '11111111-1111-4111-8111-111111111111';
+  assert.equal(prev(w, CODEX(), { caps }), 'codex --no-daemon -c check_for_update_on_startup=false --no-alt-screen -s workspace-write -a on-request');
+  assert.equal(prev(w, CODEX({ prompt: 'hi' }), { caps }), 'codex --no-daemon -c check_for_update_on_startup=false --no-alt-screen -s workspace-write -a on-request -- hi');
+  assert.equal(prev(w, CODEX({ cx_mode: 'custom', sandbox: 'read-only', approval: 'never' }), { caps }), 'codex --no-daemon -c check_for_update_on_startup=false --no-alt-screen -s read-only -a never');
+  assert.equal(prev(w, CODEX({ cx_mode: 'auto' }), { caps }), 'codex --no-daemon -c check_for_update_on_startup=false --no-alt-screen --approve-for-me -s workspace-write');
+  assert.equal(prev(w, CODEX({ cx_mode: 'bypass' }), { caps }), 'codex --no-daemon -c check_for_update_on_startup=false --no-alt-screen --dangerously-bypass-approvals-and-sandbox');
+  assert.equal(prev(w, CODEX({ launch: 'resume', resume_id: id }), { caps }), `codex resume --no-daemon -c check_for_update_on_startup=false --no-alt-screen -s workspace-write -a on-request ${id}`);
+  assert.equal(prev(w, CODEX({ launch: 'continue' }), { caps }), 'codex resume --no-daemon -c check_for_update_on_startup=false --no-alt-screen -s workspace-write -a on-request --last');
+  assert.equal(prev(w, CODEX({ launch: 'fork', resume_id: id }), { caps }), `codex fork --no-daemon -c check_for_update_on_startup=false --no-alt-screen -s workspace-write -a on-request ${id}`);
+  assert.equal(prev(w, CODEX(), { caps: { ...caps, hook_trust_bypass: true } }), 'codex --no-daemon -c check_for_update_on_startup=false --dangerously-bypass-hook-trust --no-alt-screen -s workspace-write -a on-request', 'the adapter\'s order: no-daemon, hook trust, no-alt-screen');
+  assert.equal(prev(w, CODEX(), { caps: { no_daemon: false } }), 'codex --no-alt-screen -s workspace-write -a on-request', 'a Codex without the flag: none');
+});
+
+test('the Codex sheet\'s command preview follows the capabilities GET /api/agents answers: --no-daemon on a Codex that has it, and the embedded fallback (the 0.160 baseline) has it too', async () => {
+  const schema = { agents: { codex: { name: 'codex', installed: true, options: [{ key: 'model' }, { key: 'mode' }], models: ['gpt-6-sol'], efforts: ['low'], permission_modes: ['default'],
+    reasoning_by_model: {}, capabilities: { no_daemon: true, approve_for_me: true, fork: true, no_alt_screen: true } } } };
+  const w = lWorld({ answers: { '/api/agents': schema } });
+  open(w, { agent: 'codex' });
+  await tick(); await tick();
+  assert.equal(previewOf(form(w)), 'codex --no-daemon -c check_for_update_on_startup=false --no-alt-screen -s workspace-write -a on-request');
+  const w0 = lWorld({ answers: { '/api/agents': { __error: 'offline' } } });
+  open(w0, { agent: 'codex' });
+  await tick();
+  assert.equal(previewOf(form(w0)), 'codex --no-daemon -c check_for_update_on_startup=false --no-alt-screen -s workspace-write -a on-request', 'before the box answers: the embedded baseline, like the adapter\'s BASELINE_CAPS');
+});
+
 test('Codex reasoning levels are disabled per model from reasoning_by_model (an injected schema), each with its reason, and a level the new model lacks is dropped', async () => {
   const schema = { agents: { codex: { name: 'codex', installed: true, options: [{ key: 'model' }, { key: 'reasoning_effort' }, { key: 'mode' }, { key: 'search' }], models: ['small', 'big'], efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
     permission_modes: ['default'], reasoning_by_model: { small: ['low', 'medium'], big: ['low', 'medium', 'high', 'xhigh', 'max'] }, capabilities: {} } } };

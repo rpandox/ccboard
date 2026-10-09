@@ -941,6 +941,18 @@ def test_parse_login_text_reads_the_link_and_the_code_after_it():
     assert cx.parse_login_text("https://auth.openai.com/codex/device\nWelcome Codex 0.160.0 enter ab-12 and 1234\n")["code"] is None
 
 
+def test_parse_login_text_reads_the_real_codex_0161_device_auth_pane():
+    """OBSERVED on the box (codex-cli 0.161.0, `codex login --device-auth` in a scratch home, cancelled; the one-time code replaced by
+    ABCD-12345): the capture starts at Codex's /tmp warning line, whose wrapped path must not be taken for a link or a code."""
+    text = (Path(__file__).parent / "fixtures" / "codex_login_device_auth_pane_0161.txt").read_text()
+    assert "v0.161.0" in text and "tmp/ccb-check-codexhome" in text
+    p = cx.parse_login_text(text)
+    assert p["url"] == "https://auth.openai.com/codex/device" and p["code"] == "ABCD-12345" and p["line"] == "ABCD-12345"
+    assert cx.CODE_RE.match(p["code"]) and len(p["code"].split("-")[0]) == 4 and len(p["code"].split("-")[1]) == 5
+    p2 = cx.parse_login_text(text + "\n› Use /skills to list available skills\n")           # a noisy prompt line after it changes nothing
+    assert p2 == p
+
+
 def test_login_view_shows_the_link_the_code_and_the_tail_only_while_adding(box):
     box.tmux["screen"] = DEVICE_PANE
     assert cx.login_view() == {"running": False, "adding": False, "label": None, "replace_key": None, "started_at": None, "url": None, "code": None,

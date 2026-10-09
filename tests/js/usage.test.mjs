@@ -1601,7 +1601,7 @@ const EST_SUMMARY = () => SUMMARY(DAILY7, {
     '7d': { total: 95.76, by_agent: { claude: { total: 95.76, tokens: 1 } }, by_project: [{ project: 'ccboard', total: 80.5, hours: 2 }, { project: 'Phasezero', total: 15.26, hours: 1 }] } },
   top_sessions: [
     { key: `claude:${UUID1}`, project: 'ccboard', repo: 'ccboard', agent: 'claude', total: 120.3, hours: 1.2, tokens: 180382285, models: ['claude-sonnet-5-5'], est_basis: 'list' },
-    { key: `claude:${UUID2}`, project: 'SD-Law-website', repo: 'root', agent: 'claude', total: 40, hours: 0, tokens: 90000000, models: [] },
+    { key: `claude:${UUID2}`, project: 'SD-Law-website', repo: 'root', agent: 'claude', total: 40, hours: 0, tokens: 90000000, models: [], est_basis: 'statusline' },
   ],
   unpriced: [],
 });
@@ -1656,7 +1656,7 @@ test('basis: switching to Estimated fetches ?basis=est once, repaints the figure
   const srow = qa(w, 'tr.srow');
   assert.equal(text(srow[0].querySelectorAll('td')[2]), '~$120.30');
   assert.equal(text(srow[0].querySelector('[data-est]')), 'estimated · list price', 'a session with an estimate says which basis it used');
-  assert.equal(srow[1].querySelector('[data-est]'), null);
+  assert.equal(text(srow[1].querySelector('[data-est]')), 'statusline cost · API-equivalent', 'a board session priced from its statusline says so');
   q(w, '[data-basis="reported"]').click();
   await loading(w);
   assert.equal(text(qa(w, 'tr.prow')[0].querySelectorAll('td')[1]).startsWith('~'), false, 'and back: no ~');

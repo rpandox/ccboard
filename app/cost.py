@@ -105,7 +105,8 @@ def _models(r: dict, meta: dict) -> list[str]:
     return [m for m in models if isinstance(m, str)][:6] if isinstance(models, list) else []
 
 
-BASIS_RANK = {None: 0, "list": 1, "sibling": 2, "rough": 3}      # the weakest basis among a session's estimated parts is the one it reports
+BASIS_RANK = {None: 0, "statusline": 1, "list": 1, "sibling": 2, "rough": 3}      # the weakest basis among a session's estimated parts is the one it reports
+STATUSLINE_FLOOR = 0.5     # a statusline cost under this share of a priced ccusage figure is not trusted (a resumed process counts only its own spend)
 
 
 def weaker(a: str | None, b: str | None) -> str | None:
@@ -210,6 +211,35 @@ def parse_sessions(raw: str, default_agent: str | None = None) -> dict[str, dict
     for e in out.values():
         e["unpriced"] = e["tokens"] > 0 and e["cost"] <= 0
     return out
+
+
+def prefer_statusline(db, costs: dict[str, dict]) -> int:
+    """Price the sessions the board launched from Claude Code's own statusline cost where there is one (issue #94, box check 2026-10-09: it reproduced the list
+    price to the 8th decimal for Fable 5.1 and Sonnet 5.5, ccusage ran 2.4 % low on Sonnet 5.5's cache reads and had no rate at all for some models). For each Claude
+    session whose newest board row holds the id, the last non-zero `scost` sample of that tmux name (the first sample of every session is 0.0, before the first API
+    call) replaces the ccusage figure: cost, est and unpriced follow it, est_basis becomes 'statusline', and `ccusage_cost` keeps what ccusage said. Left alone:
+    a session with no sample or a zero one (ccusage and the price table stand, and a session with neither stays hatched), and a statusline figure under
+    STATUSLINE_FLOOR of a priced ccusage figure (a process that was resumed counts only its own spend; ccusage reads the whole transcript). The figure is Claude
+    Code's client-side estimate of API-equivalent cost, not an invoice. Returns how many sessions took it. Never raises."""
+    n = 0
+    try:
+        for row in db.session_tmux_ids("claude"):
+            sid, tmux = str(row.get("claude_session_id") or "").lower(), row.get("tmux_name")
+            c = costs.get(sid)
+            if not c or c.get("agent") != "claude" or not tmux:
+                continue
+            last = db.sample_last("scost", tmux)
+            try:
+                v = float(last["value"]) if last and last.get("value") is not None else 0.0
+            except (TypeError, ValueError):
+                continue
+            if not v > 0 or (c["cost"] > 0 and v < c["cost"] * STATUSLINE_FLOOR):
+                continue
+            c.update(ccusage_cost=c["cost"], cost=v, est=v, est_basis="statusline", est_cwa=False, unpriced=False)
+            n += 1
+    except Exception as e:
+        log.warning("statusline costs failed: %s", e)
+    return n
 
 
 def _run_ccusage(exe: str, args: list[str], env: dict | None = None) -> str | None:
@@ -495,11 +525,13 @@ def unpriced(entries: list[dict]) -> dict:
 def estimate_block(entries: list[dict]) -> dict:
     """What the Usage page says about its estimates (kv 'cost'.estimate): the price table's date and source, how many sessions carry an estimate, the USD
     it adds to the reported figure, the count per basis and whether a cache-write price had to be assumed. Present even when nothing is estimated (the
-    footer shows the date)."""
+    footer shows the date). A session priced from its statusline (est_basis 'statusline') is counted in `bases` only: its figure IS its cost on both bases, so it
+    adds nothing to `usd` and is not one of the `sessions` an estimate fills in."""
     info = pricing.info()
-    est = [e for e in entries if e.get("est_basis")]
+    allest = [e for e in entries if e.get("est_basis")]
+    est = [e for e in allest if e["est_basis"] != "statusline"]
     bases: dict[str, int] = {}
-    for e in est:
+    for e in allest:
         bases[e["est_basis"]] = bases.get(e["est_basis"], 0) + 1
     return {"date": info["date"], "source": info["source"], "sessions": len(est), "usd": round(sum(e["est"] - e["cost"] for e in est), 2),
             "bases": bases, "cache_write_assumed": any(e.get("est_cwa") for e in est), "cache_write_x": pricing.CACHE_WRITE_FALLBACK_X}
@@ -538,6 +570,7 @@ def refresh(db) -> dict | None:
     owned.discard("")
     learn_folders(db, costs, owned, now=now)                      # the folder of sessions started outside the board (issue #57); never raises
     folder, outside = folder_rows(db, costs, owned)
+    prefer_statusline(db, costs)                                  # the board's own sessions: Claude Code's cost, not ccusage's (issue #94); before any total is summed
     result = attribute(costs, rows, tasks, now, folder, outside)
     entries = session_samples(costs, rows, folder, outside)
     _tag_accounts(db, entries)

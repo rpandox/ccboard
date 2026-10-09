@@ -268,13 +268,13 @@ def test_argv_on_0145_never_emits_the_flags_it_lacks(ag, fake):
 
 def test_argv_on_0157_emits_no_daemon_and_approve_for_me(ag, fake):
     fake.use(version="0.157.1", help_text=HELP_0157, exec_text=EXEC_0157)
-    assert plan(ag).argv == ["codex", "--no-daemon", "--no-alt-screen"]
-    assert plan(ag, opts={"permission_mode": "auto"}).argv == ["codex", "--no-daemon", "--no-alt-screen", "--approve-for-me",
+    assert plan(ag).argv == ["codex", "--no-daemon", "-c", "check_for_update_on_startup=false", "--no-alt-screen"]
+    assert plan(ag, opts={"permission_mode": "auto"}).argv == ["codex", "--no-daemon", "-c", "check_for_update_on_startup=false", "--no-alt-screen", "--approve-for-me",
                                                               "-s", "workspace-write"]
-    assert plan(ag, kind="resume", resume_id=SID).argv == ["codex", "resume", "--no-daemon", "--no-alt-screen", SID]
-    assert plan(ag, kind="continue").argv == ["codex", "resume", "--no-daemon", "--no-alt-screen", "--last"]
+    assert plan(ag, kind="resume", resume_id=SID).argv == ["codex", "resume", "--no-daemon", "-c", "check_for_update_on_startup=false", "--no-alt-screen", SID]
+    assert plan(ag, kind="continue").argv == ["codex", "resume", "--no-daemon", "-c", "check_for_update_on_startup=false", "--no-alt-screen", "--last"]
     settings.codex_hook_trust = "bypass"
-    assert plan(ag).argv == ["codex", "--no-daemon", "--dangerously-bypass-hook-trust", "--no-alt-screen"]
+    assert plan(ag).argv == ["codex", "--no-daemon", "-c", "check_for_update_on_startup=false", "--dangerously-bypass-hook-trust", "--no-alt-screen"]
     with pytest.raises(projects.BadRequest, match="approval must be one of"):
         plan(ag, opts={"approval": "on-failure"})               # 0.157's -a has no on-failure
 
@@ -546,7 +546,7 @@ BRIEF_TOKENS = ["-c", "--config", "-p", "--profile", "--enable", "--disable", "-
                                                   "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust",
                                                   "--yolo", "--Bypass-Anything", "--full-auto", "-s", "--sandbox=read-only", "-a",
                                                   "--ask-for-approval", "-m", "--model", "-C", "--cd", "--search", "--no-alt-screen",
-                                                  "--no-daemon", "--worktree", "--"])
+                                                  "--no-daemon", "-c", "--worktree", "--"])
 def test_forbidden_extra_tokens(ag, token):
     for interactive, task in ((True, False), (True, True), (False, False)):
         assert ag.forbidden_extra(["--oss", token, "-i"], interactive=interactive, task=task) == token
@@ -771,7 +771,7 @@ def test_option_schema_and_describe(ag, fake, monkeypatch):
     json.dumps(d)                                                                            # JSON-serialisable
     assert (d["name"], d["glyph"], d["installed"], d["version"]) == ("codex", "◇", True, "0.145.0")
     assert d["models"] == ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"] and d["reasoning_by_model"]["gpt-5.6-sol"][-1] == "max"
-    assert set(d["slash"]) == {"model", "reasoning", "permissions", "status"} and d["auth"]["loggedIn"] is True
+    assert set(d["slash"]) == {"model", "reasoning", "approvals", "sandbox", "status"} and d["auth"]["loggedIn"] is True
     caps = d["capabilities"]
     assert caps["fork"] is True and caps["approve_for_me"] is False and caps["device_auth"] is False and caps["no_alt_screen"] is True
     codex.reset_caches()
@@ -1019,17 +1019,22 @@ def test_cost_join_key_and_usage_sources(ag):
 
 
 def test_control_surface(ag):
-    """V8-Codex (codex 0.160.1, issue #16): nothing takes an argument inline; model and reasoning are the /model picker, approvals and the
-    sandbox are the /permissions picker, /status prints inline. No /reasoning, /approvals, /sandbox; no /fast (bare /fast toggles and
-    writes config.toml)."""
+    """V8-Codex (codex 0.160.1, issue #16): nothing takes an argument inline; /model is a picker the box ran end to end (model: verified);
+    reasoning, approvals and sandbox are launch flags changed by a restart with the conversation resumed (issue #2): the box never
+    recorded the cursor of /model's second step or of /permissions, so no picker is driven for them. /status prints inline. No
+    /reasoning, /approvals, /sandbox, /permissions; no /fast (bare /fast toggles and writes config.toml)."""
     slash = ag.slash_commands()
     got = {k: (s.cmd, s.arg, s.read, s.drive, s.tune, s.verified, s.dialog) for k, s in slash.items()}
     assert got == {"model": ("/model", False, False, "picker", "model", True, False),
-                   "reasoning": ("/model", False, False, "picker", "reasoning", False, False),
-                   "permissions": ("/permissions", False, False, "picker", "permissions", False, False),
+                   "reasoning": ("-c model_reasoning_effort", False, False, "restart", "", True, False),
+                   "approvals": ("-a", False, False, "restart", "", True, False),
+                   "sandbox": ("-s", False, False, "restart", "", True, False),
                    "status": ("/status", False, True, "inline", "", True, False)}
+    assert slash["approvals"].choices == ["on-request", "never"] and slash["sandbox"].choices == ["read-only", "workspace-write"]
+    assert not {"untrusted", "on-failure", "danger-full-access"} & {c for s in slash.values() for c in (s.choices or [])}
+    assert [s.drive for s in slash.values() if not s.verified] == [], "nothing in the Codex panel is unverified"
     assert all(s.hidden for s in slash.values()) and not any(s.saves_default for s in slash.values())
-    assert not {"/reasoning", "/approvals", "/sandbox", "/fast", "/effort"} & {s.cmd for s in slash.values()}
+    assert not {"/reasoning", "/approvals", "/sandbox", "/permissions", "/fast", "/effort"} & {s.cmd for s in slash.values()}
     assert ag.exit_command() == "/quit" and ag.worktree_strategy() == "managed"
     assert ag.mcp_register_cmd("/v/python", "/a/ccboard_mcp.py", {"CCBOARD_URL": "http://127.0.0.1:8000", "A": "1"}) == \
         ["codex", "mcp", "add", "ccboard", "--env", "A=1", "--env", "CCBOARD_URL=http://127.0.0.1:8000", "--", "/v/python", "/a/ccboard_mcp.py"]
@@ -1419,7 +1424,7 @@ def test_the_mode_picker_maps_onto_the_permission_flags(ag, mode, flags):
 
 def test_mode_auto_uses_the_approval_review_where_codex_has_it(ag, fake):
     fake.use(version="0.157.1", help_text=HELP_0157, exec_text=EXEC_0157)
-    assert plan(ag, opts={"mode": "auto"}).argv == ["codex", "--no-daemon", "--no-alt-screen", "--approve-for-me", "-s", "workspace-write"]
+    assert plan(ag, opts={"mode": "auto"}).argv == ["codex", "--no-daemon", "-c", "check_for_update_on_startup=false", "--no-alt-screen", "--approve-for-me", "-s", "workspace-write"]
 
 
 def test_mode_custom_is_the_sandbox_and_approval_picked(ag):
@@ -1560,7 +1565,7 @@ def test_the_real_baseline_is_0160_and_never_offers_untrusted(ag, real_baseline)
     """No binary to probe: the 0.160 flag set (the baseline) is assumed, so nothing can build `-a untrusted`."""
     assert REAL_BASELINE == codex.parse_help(HELP_0160)
     assert ag._approvals() == ("on-request", "never")
-    assert plan(ag).argv == ["codex", "--no-daemon", "--no-alt-screen"]
+    assert plan(ag).argv == ["codex", "--no-daemon", "-c", "check_for_update_on_startup=false", "--no-alt-screen"]
     assert plan(ag, opts={"permission_mode": "auto"}).argv[-3:] == ["--approve-for-me", "-s", "workspace-write"]
     for mode in ("default", "auto", "read-only", "custom"):
         opts = {"mode": mode, **({"approval": "never"} if mode == "custom" else {})}

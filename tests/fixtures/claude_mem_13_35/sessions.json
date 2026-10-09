@@ -1,0 +1,18 @@
+{
+ "_request": "/api/sessions?project=<v>&limit=<v>",
+ "_http": 200,
+ "_seconds": 0.543,
+ "body": {
+  "sessions": [
+   {
+    "content_session_id": "<uuid>",
+    "project": "<repo>",
+    "platform_source": "claude",
+    "custom_title": null,
+    "started_at_epoch": 1786137356552,
+    "item_count": 2
+   }
+  ],
+  "hasMore": true
+ }
+}

@@ -94,6 +94,8 @@ SANDBOXES = ("read-only", "workspace-write", "danger-full-access")
 # -a values, current first (codex 0.160: on-request and never). `untrusted` is retired (the docs: it "can prevent either client from starting")
 # and `on-failure` is deprecated: both stay here only as values an older binary's `--help` may still list, never as a default (_approvals).
 APPROVALS = ("on-request", "never", "on-failure", "untrusted")
+RESTART_APPROVALS = ("on-request", "never")           # what Tune restarts a session with: `untrusted` is retired and `on-failure` deprecated (codex --help 0.160 / 0.161)
+RESTART_SANDBOXES = ("read-only", "workspace-write")  # danger-full-access is a bypass: the launcher's acknowledgement, never Tune
 EFFORTS = ("low", "medium", "high", "xhigh", "max")   # the catalogue adds more per model (`ultra` on gpt-6.1-sol)
 UNSUPPORTED = ("allowed_tools", "disallowed_tools", "tools", "append_system_prompt", "fallback_model", "fork_session", "from_pr",
                "max_turns", "max_budget_usd", "devcontainer", "agent_name", "autocompact", "mcp_config")
@@ -847,6 +849,7 @@ class CodexAgent(Agent):
         probed) plus, from the cached login probe only, device_auth. `fork` is the `codex fork` subcommand."""
         caps = dict(self._probe_caps()[0])
         caps["device_auth"] = bool((self.login_caps(fetch=False) or BASELINE_LOGIN_CAPS).get("device_auth"))
+        caps["hook_trust_bypass"] = bool(caps.get("hook_trust_flag") and settings.codex_hook_trust == "bypass")   # the line carries --dangerously-bypass-hook-trust (the sheet's preview says so)
         return caps
 
     # ---- option schema ----
@@ -1087,13 +1090,10 @@ class CodexAgent(Agent):
         return []
 
     # ---- argv ----
-    def _perm_args(self, full: dict, caps: dict, *, bypass: bool) -> list[str]:
-        if bypass:                                            # the one flag; every other permission flag conflicts with it
-            if caps.get("bypass_approvals"):
-                return ["--dangerously-bypass-approvals-and-sandbox"]
-            if caps.get("yolo"):
-                return ["--yolo"]
-            raise projects.BadRequest("this codex has no bypass flag")
+    @staticmethod
+    def _perm_choice(full: dict, caps: dict | None = None) -> tuple[str | None, str | None, bool, bool]:
+        """(sandbox, approval, approve_for_me, approval_first) the validated options ask for. `auto` is --approve-for-me where `caps`
+        says this codex has it (or caps is None); an older one gets on-failure first or on-request instead."""
         mode = full.get("permission_mode")
         sandbox: str | None = None
         approval: str | None = None
@@ -1107,7 +1107,7 @@ class CodexAgent(Agent):
             sandbox, approval = "workspace-write", "never"
         elif mode == "auto":
             sandbox = "workspace-write"
-            if caps.get("approve_for_me"):
+            if caps is None or caps.get("approve_for_me"):
                 approve_for_me = True
             elif caps.get("approval_on_failure"):
                 approval, approval_first = "on-failure", True
@@ -1117,6 +1117,33 @@ class CodexAgent(Agent):
             sandbox = full["sandbox"]
         if full.get("approval"):
             approval, approve_for_me = full["approval"], False
+        return sandbox, approval, approve_for_me, approval_first
+
+    @classmethod
+    def permissions_of(cls, opts: dict | None, cmd_line: str | None = None) -> dict | None:
+        """What a session launched with `opts` runs under, in the words of -a and -s: {approval, sandbox, reviewer?} or {bypass: True} when
+        its launch line carried a bypass flag (the bypass is never stored in opts). None when nothing is known (no options, no line)."""
+        line = cmd_line or ""
+        if "--dangerously-bypass-approvals-and-sandbox" in line or "--yolo" in line.split():
+            return {"bypass": True}
+        if not isinstance(opts, dict) or not opts:
+            return None
+        sandbox, approval, approve_for_me, _ = cls._perm_choice(opts)
+        if not (sandbox or approval or approve_for_me):
+            return None
+        out = {"approval": approval, "sandbox": sandbox}
+        if approve_for_me:
+            out["reviewer"] = "auto"
+        return out
+
+    def _perm_args(self, full: dict, caps: dict, *, bypass: bool) -> list[str]:
+        if bypass:                                            # the one flag; every other permission flag conflicts with it
+            if caps.get("bypass_approvals"):
+                return ["--dangerously-bypass-approvals-and-sandbox"]
+            if caps.get("yolo"):
+                return ["--yolo"]
+            raise projects.BadRequest("this codex has no bypass flag")
+        sandbox, approval, approve_for_me, approval_first = self._perm_choice(full, caps)
         s = ["-s", sandbox] if sandbox and caps.get("sandbox", True) else []
         a = ["-a", approval] if approval and caps.get("ask_for_approval", True) else []
         return (["--approve-for-me"] if approve_for_me else []) + (a + s if approval_first else s + a)
@@ -1127,6 +1154,9 @@ class CodexAgent(Agent):
         out: list[str] = []
         if caps.get("no_daemon"):
             out.append("--no-daemon")
+            # Codex 0.161 opens an "Update available" dialog at start whose default (Enter) runs `npm install -g`: the board must never land
+            # on it. This key is in the 0.161 binary, and a box check showed it skips the dialog (the trust dialog still shows in a new repo).
+            out += ["-c", "check_for_update_on_startup=false"]
         if settings.codex_hook_trust == "bypass" and caps.get("hook_trust_flag"):
             out.append("--dangerously-bypass-hook-trust")
         if full.get("no_alt_screen", True) and caps.get("no_alt_screen"):
@@ -1232,6 +1262,41 @@ class CodexAgent(Agent):
         full = self._no_bypass(self._validate(self._stored(opts), interactive=True, tasks_or_headless=False)[0])
         flags = self._flags(full, self._probe_caps()[0], bypass=False, add_dirs=[str(d) for d in (add_dirs or ())], extra=[])
         return ["codex", "resume", *flags, "--last"]
+
+    def restart_opts(self, stored: dict | None, stats: dict | None, *, reasoning: str | None = None, approval: str | None = None,
+                     sandbox: str | None = None) -> dict:
+        """The options a running session restarts with (`codex resume <thread> ...`): its stored launch options plus what the statusline
+        shows it running now (a model or reasoning level picked live with /model must not revert), then the changes asked for. Only
+        reasoning, approval (on-request | never) and sandbox (read-only | workspace-write) can be changed; a bypass is never carried
+        over. Returns the storable (validated) options; BadRequest says why a change cannot be made."""
+        if not any((reasoning, approval, sandbox)):
+            raise projects.BadRequest("nothing to change: send reasoning, approval or sandbox")
+        base = dict(self._no_bypass(self._validate(self._stored(stored), interactive=True, tasks_or_headless=False)[0]))
+        st = stats if isinstance(stats, dict) else {}
+        for key, seen in (("model", st.get("model")), ("reasoning_effort", st.get("effort") or st.get("reasoning"))):
+            if isinstance(seen, str) and seen.strip():
+                try:
+                    self._validate({**base, key: seen.strip()}, interactive=True, tasks_or_headless=False)
+                except projects.BadRequest:
+                    continue                                   # a display name or a level this catalogue does not list: keep the stored one
+                base[key] = seen.strip()
+        if approval is not None and approval not in RESTART_APPROVALS:
+            raise projects.BadRequest(f"approval must be one of {', '.join(RESTART_APPROVALS)}")
+        if sandbox is not None and sandbox not in RESTART_SANDBOXES:
+            raise projects.BadRequest(f"sandbox must be one of {', '.join(RESTART_SANDBOXES)}")
+        if sandbox and base.get("permission_mode") == "auto" and not approval:
+            raise projects.BadRequest("this session runs with Approve for me, which uses the workspace-write sandbox: change Approvals "
+                                      "instead (or start a new session with the sandbox you want)")
+        if reasoning:
+            allowed = self._allowed_efforts(base.get("model"))
+            if reasoning not in allowed:
+                raise projects.BadRequest(f"reasoning must be one of {', '.join(allowed)}")
+            base["reasoning_effort"] = reasoning
+        if approval:
+            base["approval"] = approval
+        if sandbox:
+            base["sandbox"] = sandbox
+        return self._validate(base, interactive=True, tasks_or_headless=False)[1]
 
     def headless_argv(self, prompt: str, *, mode: str, max_turns: int = 0, budget: float | None = None, extra: list[str] | None = None,
                       cwd: str | None = None, slug: str = "", last_message_file: str | None = None, opts: dict | None = None) -> list[str]:
@@ -1554,13 +1619,16 @@ class CodexAgent(Agent):
     def slash_commands(self) -> dict[str, SlashSpec]:
         # The V8-Codex box check (codex 0.160.1, issue #16): no TUI command takes an argument inline (`/model gpt-6-luna` went to the model
         # as a prompt), there is no /reasoning, /approvals or /sandbox, and bare /fast toggles and writes config.toml (never offered).
-        # Model and reasoning are the two steps of the /model picker, approvals plus sandbox are the /permissions picker's presets: POST
-        # /tune drives them with keys from app/agents/pickers.py and `s` (this session only) where the picker has it. `verified`: the box
-        # ran that exact path (picking a model and `s`; /status printing inline). Reasoning (the cursor's start in step 2 was not seen)
-        # and /permissions (picked from an unrecorded cursor) read the cursor off the screen instead and stay unverified.
+        # Model is the /model picker: POST /tune drives it with keys from app/agents/pickers.py and `s` (this session only); the box ran
+        # that exact path, so it is verified. Reasoning, approvals and sandbox are not driven through a picker: the box never recorded the
+        # cursor of /model's second step or of /permissions, so those key paths stay unproven and the Tune does not use them. They are
+        # launch flags (-c model_reasoning_effort, -a on-request | never, -s read-only | workspace-write: fixtures/codex_help_0160.txt
+        # and the box's 0.161.0 help) and `codex resume <thread> <flags>` is what the box ran for resume, continue and fork (box check
+        # #92): drive "restart" = POST /api/sessions/<name>/restart. `untrusted` and `on-failure` are never offered.
         return {"model": SlashSpec(cmd="/model", label="Model", drive="picker", tune="model", verified=True),
-                "reasoning": SlashSpec(cmd="/model", label="Reasoning", drive="picker", tune="reasoning", verified=False),
-                "permissions": SlashSpec(cmd="/permissions", label="Permissions", drive="picker", tune="permissions", verified=False),
+                "reasoning": SlashSpec(cmd="-c model_reasoning_effort", label="Reasoning", drive="restart", verified=True),
+                "approvals": SlashSpec(cmd="-a", label="Approvals", drive="restart", verified=True, choices=list(RESTART_APPROVALS)),
+                "sandbox": SlashSpec(cmd="-s", label="Sandbox", drive="restart", verified=True, choices=list(RESTART_SANDBOXES)),
                 "status": SlashSpec(cmd="/status", label="Status", read=True, verified=True, dialog=False)}
 
     def exit_command(self) -> str:

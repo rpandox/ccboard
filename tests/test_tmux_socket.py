@@ -254,7 +254,7 @@ def test_resolve_session_resolves_a_pane_through_a_matching_socket(ftmux):
 def test_resolve_session_refuses_a_pane_id_from_a_foreign_socket(ftmux):
     (ftmux.dir / "session").write_text(NAME + "\n")
     headers = {"x-ccboard-pane": "%3", "x-ccboard-tmux": "/scratch/tmux-1/foreign,12345,0"}
-    assert hooks.resolve_session(headers, {}, {}) == (None, "unresolved")
+    assert hooks.resolve_session(headers, {}, {}) == (None, "foreign_tmux")      # and the folder is not tried either (box check 63)
     assert not ftmux.calls("-t %3")                        # the pane id was never put to our server
 
 

@@ -957,6 +957,6 @@ def test_monitor_enrich_writes_the_series_and_adds_rates_and_compat(db, monkeypa
     h = monitor.enrich(db, {"state": "up", "version": "13.34.2", "observations": 10, "summaries": 2})
     assert db.sample_last("mem_obs", "")["value"] == 10 and db.sample_last("mem_sum", "")["value"] == 2
     assert h["rates"] == {"obs": {"d1": None, "d7": None}, "sum": {"d1": None, "d7": None}}
-    assert h["plugin_version"] == "13.34.2" and h["compat"] == "ok" and h["tested_worker"] == "13.34.2"
+    assert h["plugin_version"] == "13.34.2" and h["compat"] == "ok" and h["tested_worker"] == "13.35.0"
     down = monitor.enrich(db, {"state": "down", "version": None, "observations": None, "summaries": None})
     assert down["compat"] == "unknown" and db.sample_last("mem_obs", "")["value"] == 10, "a down worker writes no zero"

@@ -1,0 +1,3 @@
+$ codex --no-daemon --no-alt-screen -s workspace-write -a on-request
+Error: account/read failed during TUI bootstrap: account/read failed: workspace routing discovery timed out (code -32603)
+$

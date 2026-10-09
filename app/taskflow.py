@@ -2,13 +2,20 @@
 
 A task is backlog -> queued -> running -> done | failed | cancelled. This module owns the transitions that nobody triggers by hand:
 
-  - a turn ends (the Stop hook, through hooks.TURN_HOOKS): the active task of that session row, the newest `running` one bound to it,
-    stores the turn's closing text as its `result`, goes `done`, hands the result to the chain steps queued behind it, and, when it
+  - a turn ends (the Stop hook, through hooks.TURN_HOOKS): the active task of that session row, the newest `running` one bound to it
+    whose own turn has come (queued prompts below), stores the turn's closing text as its `result`, goes `done`, hands the result to the chain steps queued behind it, and, when it
     asked to be closed, starts the auto-close countdown (flags.autoclose = {task, due}); StopFailure sends it to `failed` (a rate limit
     only parks it: the session continues after the reset, autoresume types `continue`) and never closes anything;
+  - queued prompts (#64): a task handed to a WORKING Claude session (dispatch with queue) runs as a second turn with a Stop of its own,
+    but its UserPromptSubmit fires when the text is queued and the first Stop carries its prompt_id, so only the Stop count can say which
+    Stop is whose. The dispatch stores spec.turns_ahead (the Stops that come first: 1 for the turn in flight, one more per task already
+    queued ahead); every Stop of the row skips one: a task with turns_ahead above zero is not credited, gets no countdown, and its card
+    reads Queued; the Stop that brings the counter to zero is the one before its own turn, the next one is its result;
   - auto-close: CCBOARD_AUTOCLOSE_GRACE seconds after the Stop (45), every guard re-checked at the deadline (same row, state done with
     the same state_at, no permission pending, no subagent, not compacting, nobody attached, claude-mem not busy), then the agent's own
-    exit command, 8 s of patience, then main._end_session(name, 'auto_close'). A final message whose last line asks a question never
+    exit command, 8 s of patience (during which Claude's "uncommitted file: keep or remove the worktree" dialog is answered with Keep, so the
+    agent really exits and SessionEnd is recorded), then main._end_session(name, 'auto_close'). The idle-prompt Notification about a
+    minute after the Stop does not cancel a close that is waiting for a client or for claude-mem. A final message whose last line asks a question never
     closes: flags.autoclose = {task, held: 'question'} and the card shows 'needs you'. A new prompt, a permission or a dialog, a subagent,
     a tool batch, a compaction or an interrupt cancels the countdown. Pending closes live in memory and are dropped on restart;
   - chains: a queued step waits for `parent_id` (the plan's after_id); once the parent is done its result goes into the step's prompt
@@ -37,6 +44,8 @@ log = logging.getLogger("ccboard.taskflow")
 TICK = 2.0                      # seconds between run_due calls of the ticker thread
 SWEEP_EVERY = 10.0              # seconds between sweeps of running tasks whose session row ended
 EXIT_WAIT = 8.0                 # seconds the agent gets to quit after its exit command before the session is killed
+EXIT_POLL = 2.0                 # seconds between looks at the pane while the agent quits (its worktree dialog must be answered)
+EXIT_DIALOG_MAX = 2             # answers the exit dialog gets per close (a stuck pane is killed, not fed Enter for ever)
 RECHECK = 15.0                  # seconds between re-checks while a guard defers the close (a person attached, a subagent, a compaction)
 GIVE_UP = 600.0                 # after this long of deferring, the session is kept and the close is dropped
 MEM_RECHECK = 5.0               # seconds between looks at claude-mem's queue
@@ -51,6 +60,8 @@ PLACEHOLDER = "{{result}}"
 ACTIVITY_EVENTS = frozenset({"UserPromptSubmit", "PermissionRequest", "SubagentStart", "PostToolBatch", "Interrupt", "PreCompact"})
 DIALOG_WAITS = ("permission", "elicitation")      # the wait kinds of a Notification that cancel a pending close (idle does not)
 BLOCKED = "blocked: step failed"
+EXIT_DIALOG_KEEP = "keep worktree"       # Claude's /exit dialog for a worktree with changes: "1. Keep worktree" and "2. Remove worktree"
+EXIT_DIALOG_REMOVE = "remove worktree"
 TRANSCRIPT_TAIL = 256 * 1024
 
 
@@ -92,6 +103,44 @@ def ends_with_question(text: str | None) -> bool:
         if line:
             return line.rstrip(" \t*_`\"'’”)]>").endswith("?")
     return False
+
+
+def _spec_of(t: dict | None) -> dict:
+    try:
+        spec = json.loads(t["spec"]) if t and t.get("spec") else {}
+    except (ValueError, TypeError):
+        spec = {}
+    return spec if isinstance(spec, dict) else {}
+
+
+def turns_ahead(t: dict | None) -> int:
+    """How many Stops of the task's session come before the one that ends this task's own turn (spec.turns_ahead; 0 = its turn is the
+    one in flight, or none was queued)."""
+    n = _spec_of(t).get("turns_ahead")
+    return n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else 0
+
+
+def set_turns_ahead(db, tid: int, n: int) -> None:
+    """Store (n > 0) or clear (n <= 0) the task's Stop counter in its spec, leaving the rest of the spec as it was."""
+    t = db.task_get(tid)
+    spec = _spec_of(t)
+    if n > 0:
+        spec["turns_ahead"] = int(n)
+    elif "turns_ahead" in spec:
+        spec.pop("turns_ahead")
+    else:
+        return
+    db.task_update(tid, spec=spec)
+
+
+def next_turns_ahead(db, row_id: int | None) -> int:
+    """The counter for a prompt queued behind a WORKING Claude row now: the turn in flight is one Stop, and every task already queued on
+    the row adds its own (its counter + 1), so the new one waits behind the last of them."""
+    ahead = 1
+    if row_id is not None:
+        for o in db.tasks_for_session(row_id, ("running",)):
+            ahead = max(ahead, turns_ahead(o) + 1)
+    return ahead
 
 
 def compose_prompt(template: str, parent: dict | None) -> str:
@@ -251,11 +300,11 @@ class Runtime:
     """See the module docstring. `start_session(task, *, prompt=None, auto_close=None)` starts a queued task in a new lane session and
     returns its response (None: someone else already did); `end_session(name, reason)` kills a session and closes its row. The rest are
     seams for tests and default to the real thing: send_text(name, text) types a line into the pane, real_clients(name) counts people
-    attached, perm_pending(name) says whether a permission request waits, mem_processing() whether claude-mem is busy, clock() is epoch
-    seconds."""
+    attached, perm_pending(name) says whether a permission request waits, mem_processing() whether claude-mem is busy, capture(name)
+    reads the pane and send_keys(name, keys) presses named keys (the exit dialog), clock() is epoch seconds."""
 
     def __init__(self, db, *, start_session, end_session, send_text=None, real_clients=None, perm_pending=None, mem_processing=None,
-                 clock=time.time, grace: float | None = None, tick: float = TICK):
+                 capture=None, send_keys=None, clock=time.time, grace: float | None = None, tick: float = TICK):
         from . import tmux
         self.db = db
         self.start_session, self.end_session = start_session, end_session
@@ -263,6 +312,8 @@ class Runtime:
         self.real_clients = real_clients or (lambda name: tmux.real_clients(name))
         self.perm_pending = perm_pending or (lambda name: any(p.get("tmux_name") == name for p in db.perm_pending()))
         self.mem_processing = mem_processing or globals()["mem_processing"]
+        self.capture = capture or (lambda name: tmux.capture(name, 40))
+        self.send_keys = send_keys or (lambda name, keys: tmux.send_keys(name, keys))
         self.clock = clock
         self.grace = settings.autoclose_grace if grace is None else float(grace)
         self.tick = tick
@@ -338,21 +389,39 @@ class Runtime:
 
     # ---- a turn ends
     def active_task(self, name: str, row: dict | None) -> dict | None:
-        """The task a Stop of this session row belongs to: the newest `running` task whose session_row is the row. A task whose session
+        """The task a Stop of this session row belongs to: the newest `running` task whose session_row is the row and whose own turn has
+        come (turns_ahead 0; a prompt queued behind a turn in flight waits for the Stop after it). A task whose session
         was relaunched without it (a legacy task with no session_row; a task handed to a session that a reboot recovery resumed in a
         fresh row) is found by its tmux name and bound to the row on the way."""
         row_id = (row or {}).get("row_id")
         if row_id is None:
             return None
         bound = self.db.tasks_for_session(row_id, ("running",))
+        ready = [t for t in bound if not turns_ahead(t)]
+        if ready:
+            return ready[0]
         if bound:
-            return bound[0]
+            return None                                                             # every running task still waits for an earlier turn
         if (row or {}).get("launcher") in ("task", "recovered"):
             for t in reversed(self.db.tasks_by_phase(("running",))):
                 if t.get("tmux_name") == name and self._continues(t, row):
                     self.db.task_update(t["id"], session_row=row_id)
                     return {**t, "session_row": row_id}
         return None
+
+    def _pass_turn(self, row: dict | None) -> list[int]:
+        """A turn of this row ended: every running task queued behind a turn (turns_ahead above zero) has one Stop less to wait for.
+        Returns their ids."""
+        row_id = (row or {}).get("row_id")
+        if row_id is None:
+            return []
+        out = []
+        for t in self.db.tasks_for_session(row_id, ("running",)):
+            n = turns_ahead(t)
+            if n:
+                set_turns_ahead(self.db, t["id"], n - 1)
+                out.append(t["id"])
+        return out
 
     def _continues(self, t: dict, row: dict) -> bool:
         """Is `row` (open, in the task's tmux session) the task's own session carried on? A legacy task (no session_row) of a task
@@ -367,10 +436,13 @@ class Runtime:
     def on_turn_end(self, name: str, row: dict | None, result: str | None, *, failed: bool = False, message: str | None = None,
                     limit: dict | None = None) -> dict | None:
         """Stop (or, with failed, StopFailure) of the session `name` whose open row was `row`. Returns what it did ({task, phase, ...})
-        or None when no task was running on the row."""
+        or None when no task was running on the row. A Stop that belongs to an earlier turn of the row (a task queued behind it, issue
+        #64) credits nobody and starts no countdown: {task: None, skipped: [the queued task ids]}."""
         t = self.active_task(name, row)
+        parked = failed and limit is not None                    # a rate limit does not end the turn: the queue behind it waits on
+        skipped = [] if parked else self._pass_turn(row)
         if t is None:
-            return None
+            return {"task": None, "skipped": skipped} if skipped else None
         now_iso = db_now()
         if failed:
             self.cancel_close(name)
@@ -483,7 +555,7 @@ class Runtime:
         self._send_exit(name, row)
         with self._lock:
             self.pending[name] = {"task": task_id, "row_id": row["row_id"], "state_at": row.get("state_at"), "stage": "exiting",
-                                  "due": now + EXIT_WAIT, "started": now}
+                                  "due": now + EXIT_POLL, "kill_at": now + EXIT_WAIT, "started": now}
         self.db.update_flags(name, {"autoclose": {"task": task_id, "closing": True}})
         return {"name": name, "kill_at": _iso(now + EXIT_WAIT)}
 
@@ -505,6 +577,12 @@ class Runtime:
             self._drop(name, p, out)                                                   # the session ended (or was replaced) on its own
             return
         if p["stage"] == "exiting":
+            if row.get("agent") in (None, "claude") and self._answer_exit_dialog(name, row, p, now):
+                p["kill_at"] = now + EXIT_WAIT                                          # the agent was told to keep the worktree: let it finish quitting
+            kill_at = p.get("kill_at", p["due"])
+            if now < kill_at:
+                p["due"] = min(kill_at, now + EXIT_POLL)
+                return
             task = self.db.task_get(p["task"]) or {}
             self.db.add_event(name, "AutoClose", task.get("title"), "closed after the task's turn ended", {"task": p["task"]},
                               agent=row.get("agent"))
@@ -516,11 +594,17 @@ class Runtime:
         flags = row.get("flags") or {}
         af = flags.get("autoclose")
         t = self.db.task_get(p["task"])
-        if (not isinstance(af, dict) or af.get("task") != p["task"] or t is None or t.get("phase") != "done" or not t.get("auto_close")
-                or t.get("archived_at") or row.get("state") != "done" or row.get("state_at") != p["state_at"]
-                or self.perm_pending(name)):
+        idle_wait = row.get("state") == "waiting" and flags.get("wait_kind") == "idle"      # Claude's idle-prompt Notification, a minute after the Stop
+        if idle_wait and row.get("state_at") != p["state_at"]:
+            p["state_at"] = row.get("state_at")                # not a new turn: anything that is one (a prompt, a dialog) has cancelled the close already
+        gone = ("the close was cancelled" if not isinstance(af, dict) or af.get("task") != p["task"]
+                else "the task changed" if t is None or t.get("phase") != "done" or not t.get("auto_close") or t.get("archived_at")
+                else "the session moved on" if not (row.get("state") == "done" or idle_wait) or row.get("state_at") != p["state_at"]
+                else "a permission request is waiting" if self.perm_pending(name) else None)
+        if gone:
             self._drop(name, p, out)                                                   # the session moved on: it is the person's again
             self.db.update_flags(name, {"autoclose": None})
+            self.db.add_event(name, "AutoCloseSkipped", gone, f"did not close the session: {gone}", {"task": p["task"]}, agent=row.get("agent"))
             return
         why = ("compacting" if flags.get("compacting") else "a subagent is running" if (flags.get("subagents") or 0) > 0
                else "someone is at the terminal" if self.real_clients(name) > 0 else None)
@@ -542,8 +626,32 @@ class Runtime:
             return
         out["exit_sent"].append(name)
         self._send_exit(name, row)
-        p["stage"], p["due"] = "exiting", now + EXIT_WAIT
+        p["stage"], p["due"], p["kill_at"] = "exiting", now + EXIT_POLL, now + EXIT_WAIT
         self.db.update_flags(name, {"autoclose": {"task": p["task"], "closing": True}})
+
+    def _answer_exit_dialog(self, name: str, row: dict, p: dict, now: float) -> bool:
+        """Claude's /exit in a worktree with changes asks "You have N uncommitted files. These will be lost if you remove the worktree",
+        "1. Keep worktree" (preselected) / "2. Remove worktree", and nothing answers it: the board used to kill the session after
+        EXIT_WAIT, with no SessionEnd, so claude-mem never summarised it. Look at the pane while the agent quits; when the dialog is up,
+        pick Keep (the safe choice: the work stays on disk, a Remove is never sent) and let the agent end itself. True when a key was sent."""
+        if p.get("answered", 0) >= EXIT_DIALOG_MAX:
+            return False
+        try:
+            screen = (self.capture(name) or "").lower()
+        except Exception as e:
+            log.debug("could not read the pane of %s: %s", name, e)
+            return False
+        if EXIT_DIALOG_KEEP not in screen or EXIT_DIALOG_REMOVE not in screen:
+            return False
+        keep = next((ln for ln in screen.splitlines() if EXIT_DIALOG_KEEP in ln), "")
+        remove = next((ln for ln in screen.splitlines() if EXIT_DIALOG_REMOVE in ln), "")
+        marks = ("❯", "›", ">", "→")
+        on_remove = remove.lstrip().startswith(marks) and not keep.lstrip().startswith(marks)
+        self.send_keys(name, ["Up", "Enter"] if on_remove else ["Enter"])
+        p["answered"] = p.get("answered", 0) + 1
+        self.db.add_event(name, "AutoCloseDialog", "keep worktree", "the exit dialog was answered: keep the worktree",
+                          {"task": p["task"]}, agent=row.get("agent"))
+        return True
 
     # ---- chains
     def _gate_once(self, now: float):

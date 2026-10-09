@@ -105,9 +105,18 @@ def _valid(name: str | None) -> str | None:
         return None
 
 
+def _other_thread(row: dict, sid) -> bool:
+    """A Codex row already follows a thread and this hook carries a different, valid one, and nothing but the folder tied it to the row: it
+    is another Codex in the same folder (box check: a foreign `codex` SessionStart rebound an idle row and its SessionEnd ended it while the
+    board's Codex was alive). A row's own thread resolves by session_id above; a row with no thread yet is still bound by its first hook."""
+    return (row.get("agent") == "codex" and isinstance(sid, str) and bool(SESSION_ID_RE.match(sid))
+            and bool(row.get("claude_session_id")) and row["claude_session_id"] != sid)
+
+
 def resolve_session(headers, payload: dict, open_rows: dict[str, dict]) -> tuple[str | None, str]:
     """Return (tmux session name, how). Order: CCBOARD_SESSION env, the payload session_id of exactly one open row, $TMUX_PANE on
-    our socket, cwd (the one open row of that repo). The Tailer bind of an unbound Codex row (rollout cwd + time) joins in v0.5.12
+    our socket, cwd (the one open row of that repo; never for a hook that ran under another tmux server, and for a Codex row never for
+    another thread than the one it follows). The Tailer bind of an unbound Codex row (rollout cwd + time) joins in v0.5.12
     (see bind_unbound_rows)."""
     env_name = (headers.get("x-ccboard-session") or "").strip()
     if env_name == "none":
@@ -132,6 +141,10 @@ def resolve_session(headers, payload: dict, open_rows: dict[str, dict]) -> tuple
         except tmux.TmuxError:
             pass
     cwd = payload.get("cwd")
+    tmux_env = (headers.get("x-ccboard-tmux") or "").strip()
+    if tmux_env and not _our_socket(tmux_env):
+        # the hook ran under another tmux server (a person's own `codex` in the same folder): its cwd says nothing about our rows
+        return None, "foreign_tmux"
     if cwd and isinstance(cwd, str):
         try:
             target = Path(cwd).resolve()
@@ -149,6 +162,8 @@ def resolve_session(headers, payload: dict, open_rows: dict[str, dict]) -> tuple
                 except (projects.BadRequest, OSError, ValueError, RuntimeError):
                     continue
             if len(matches) == 1:
+                if (headers.get("x-ccboard-agent") or "codex") == "codex" and _other_thread(open_rows[matches[0]], sid):
+                    return None, "other_thread"
                 return matches[0], "cwd"
     return None, "unresolved"
 

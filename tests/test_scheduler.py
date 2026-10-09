@@ -22,6 +22,7 @@ git worktree add -q -b "worktree-$slug" ".claude/worktrees/$slug" HEAD >/dev/nul
 printf '%s\n' "$*" > ".claude/worktrees/$slug/ARGS"
 case "$*" in
   *ratelimit*) echo '{"type":"result","subtype":"success","is_error":false,"result":"You have hit your usage limit (rate limit)","session_id":"11111111-1111-4111-8111-111111111111","total_cost_usd":0.01,"num_turns":1}';;
+  *denyme*) echo '{"type":"result","subtype":"success","is_error":false,"result":"I could not create the file: permission was denied.","session_id":"33333333-3333-4333-8333-333333333333","total_cost_usd":0.03,"num_turns":4,"permission_denials":[{"tool_name":"Bash","tool_use_id":"t1","tool_input":{"command":"printf hi > note.txt"}},{"tool_name":"Write","tool_use_id":"t2","tool_input":{"file_path":"note.txt"}},{"tool_name":"Bash","tool_use_id":"t3","tool_input":{"command":"ls"}}]}';;
   *) echo '{"type":"result","subtype":"success","is_error":false,"result":"Added tests; all green.","session_id":"22222222-2222-4222-8222-222222222222","total_cost_usd":0.42,"num_turns":7}';;
 esac
 '''
@@ -85,7 +86,7 @@ def test_job_lifecycle(client, projects_dir, fake_tmux, tmp_path, monkeypatch):
     res = client.post(f"/api/runs/{rid}/resume", headers=H).json()
     assert res["tmux"].startswith("shop--api--j-nightly-tests-") and dict(fake_tmux["sent"])[res["tmux"]].startswith("claude --resume 2222")
     # one-off job disables itself after running; rate-limit text is detected
-    j2 = client.post("/api/projects/shop/repos/api/jobs", headers=H, json={"name": "once", "prompt": "please ratelimit me"}).json()
+    j2 = client.post("/api/projects/shop/repos/api/jobs", headers=H, json={"name": "once", "prompt": "please ratelimit me", "run_now": True}).json()
     rid2 = w.tick()[0]
     for t in list(w.running.values()):
         t.join(timeout=30)
@@ -100,7 +101,7 @@ def test_quota_defers(client, projects_dir, fake_tmux, tmp_path, monkeypatch):
     make_repo(projects_dir)
     monkeypatch.setattr(main.settings, "claude_bin", lambda: str(fake_claude(tmp_path)))
     main.db.kv_set("rate_limits", {"five_hour": {"used_percentage": 91, "resets_at": 1}})
-    j = client.post("/api/projects/shop/repos/api/jobs", headers=H, json={"name": "later", "prompt": "p"}).json()
+    j = client.post("/api/projects/shop/repos/api/jobs", headers=H, json={"name": "later", "prompt": "p", "run_now": True}).json()
     w = scheduler.Worker(main.db)
     assert w.tick() == []
     job = main.db.job_get(j["id"])
@@ -228,7 +229,7 @@ def run_all(w):
 
 
 def post_job(client, **body):
-    return client.post("/api/projects/shop/repos/api/jobs", headers=H, json={"name": "review", "prompt": "review the diff", **body})
+    return client.post("/api/projects/shop/repos/api/jobs", headers=H, json={"name": "review", "prompt": "review the diff", "run_now": True, **body})
 
 
 def test_codex_headless_argv_per_permission_mode(codex_box, tmp_path):
@@ -508,7 +509,7 @@ def test_a_job_carries_validated_pre_approved_tools_and_the_run_passes_them(lite
         assert _post_job(lite_client, allowed_tools=bad).status_code == 400, bad
     for bad in ("--permission-prompt-tool x", "--permission-prompts none", "--dangerously-skip-permissions"):
         assert _post_job(lite_client, args=bad).status_code == 400, bad
-    r = _post_job(lite_client, cron=None, permission_mode="dontAsk", allowed_tools="Bash(git diff *), Read")
+    r = _post_job(lite_client, cron=None, run_now=True, permission_mode="dontAsk", allowed_tools="Bash(git diff *), Read")
     assert r.status_code == 201
     job = main.db.job_get(r.json()["id"])
     assert scheduler.job_opts(job) == {"allowed_tools": ["Bash(git diff *)", "Read"]} and job["permission_mode"] == "dontAsk"

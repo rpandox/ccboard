@@ -122,6 +122,7 @@ EXPECTED = {
     ("POST", "/api/sessions/{name}/command"): "identity+csrf",
     ("POST", "/api/sessions/{name}/tune"): "identity+csrf",
     ("POST", "/api/sessions/{name}/flags"): "identity+csrf",
+    ("POST", "/api/sessions/{name}/restart"): "identity+csrf",
     ("POST", "/api/sessions/{name}/prompt"): "identity+csrf",
     ("DELETE", "/api/sessions/{name}"): "identity+csrf",
     ("GET", "/api/stream"): "identity",

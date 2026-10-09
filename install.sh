@@ -369,7 +369,7 @@ docker_preflight() {
   if [ ! -e "$HOME_DIR/.docker/config.json" ]; then   # Watchtower mounts it read-only for registry credentials
     mkdir -p "$HOME_DIR/.docker"; (umask 077; printf '{}\n' > "$HOME_DIR/.docker/config.json"); note "created an empty $HOME_DIR/.docker/config.json"
   fi
-  [ "${CCBOARD_DEVCONTAINER:-0}" != 1 ] || warn "devcontainer sessions need the docker CLI and socket inside the container (not mounted); they stay a systemd-mode feature"
+  [ "${CCBOARD_DEVCONTAINER:-0}" != 1 ] || note "devcontainer sessions work in docker mode: the line the board types runs in the host's tmux, so it needs the host's docker, $USER_NAME in the docker group and the devcontainer CLI (installed below), and the board's container needs none of them (its docker socket stays unmounted)"
   note "docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '?'), $(docker compose version --short 2>/dev/null || echo 'compose ?')"
 }
 
@@ -379,7 +379,7 @@ docker_write_compose() { # the template is variable-driven; the .env carries thi
   if ! cmp -s "$APP_DIR/deploy/docker-compose.yml" "$COMPOSE_FILE"; then
     install -m 0644 "$APP_DIR/deploy/docker-compose.yml" "$COMPOSE_FILE"; note "wrote $COMPOSE_FILE"
   fi
-  # the shadow override (rollout step B) travels with it; compose never loads it unless named with -f
+  # the shadow compose file (rollout step B, a standalone file that shares nothing with the live board) travels with it; compose never loads it unless named with -f
   if [ -f "$APP_DIR/deploy/docker-compose.shadow.yml" ] && ! cmp -s "$APP_DIR/deploy/docker-compose.shadow.yml" "$COMPOSE_DIR/docker-compose.shadow.yml"; then
     install -m 0644 "$APP_DIR/deploy/docker-compose.shadow.yml" "$COMPOSE_DIR/docker-compose.shadow.yml"
   fi

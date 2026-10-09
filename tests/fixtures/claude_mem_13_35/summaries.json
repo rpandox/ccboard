@@ -1,0 +1,26 @@
+{
+ "_request": "/api/summaries?project=<v>&limit=<v>",
+ "_http": 200,
+ "_seconds": 2.809,
+ "body": {
+  "items": [
+   {
+    "id": 52,
+    "session_id": "<uuid>",
+    "platform_source": "claude",
+    "request": "<text>",
+    "investigated": "<text>",
+    "learned": "<text>",
+    "completed": "<text>",
+    "next_steps": "<text>",
+    "notes": "<text>",
+    "project": "<repo>",
+    "created_at": "2026-08-07T19:04:01.027Z",
+    "created_at_epoch": 1786129441027
+   }
+  ],
+  "hasMore": false,
+  "offset": 0,
+  "limit": 2
+ }
+}

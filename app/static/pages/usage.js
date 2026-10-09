@@ -1018,7 +1018,7 @@ Usage.estimateInfo = function (sum) {
 /* A dollar figure with or without the `~`, whatever the page's basis (Usage.usd follows the basis). */
 Usage.usdOf = function (v, approx) { const was = Usage.approx; Usage.approx = !!approx; try { return Usage.usd(v); } finally { Usage.approx = was; } };
 
-Usage.BASIS_WORDS = { list: 'priced from the list price of the model itself', sibling: 'priced at the rate of a sibling model (the newest of its family in the table)', rough: 'priced roughly: several models and no per-model split of the tokens' };
+Usage.BASIS_WORDS = { statusline: "Claude Code's own statusline cost for a session the board launched: API-equivalent, not an invoice, and used in place of ccusage's figure", list:'priced from the list price of the model itself', sibling: 'priced at the rate of a sibling model (the newest of its family in the table)', rough: 'priced roughly: several models and no per-model split of the tokens' };
 
 /* The disclosure under the Estimated cost chart: what an estimate is, which prices, which basis each session used. A <details>, so it opens by touch and by keyboard. */
 Usage.estimateDetails = function (est) {
@@ -1597,7 +1597,7 @@ Usage.paintSessions = function (P) {
     const name = el('div', { class: 'srow-name' }, el('span', { class: ['srow-link', Usage.hue('project', s.project)].filter(Boolean).join(' ') }, ...Usage.breakable(Usage.sessionLabel(s))),
       el('span', { class: 'srow-models' }, ...(Array.isArray(s.models) ? s.models : []).map((m) => el('span', { class: ['bdg bdg-model mono', Usage.hue('model', m)].filter(Boolean).join(' '), title: String(m), text: Usage.model(m) }))));
     if (s.est_basis) name.append(el('span', { class: 'dim srow-via', 'data-est': s.est_basis, title: Usage.BASIS_WORDS[s.est_basis] || 'estimated from list prices',
-      text: `estimated · ${s.est_basis === 'list' ? 'list price' : s.est_basis === 'sibling' ? 'sibling model rate' : 'rough'}` }));
+      text: s.est_basis === 'statusline' ? 'statusline cost · API-equivalent' : `estimated · ${s.est_basis === 'list' ? 'list price' : s.est_basis === 'sibling' ? 'sibling model rate' : 'rough'}` }));
     if (s.via === 'folder') name.append(el('span', { class: 'dim srow-via', 'data-via': 'folder', title: Usage.JOINED_TIP, text: 'joined by folder' }));
     const projHash = Usage.projectHash(s.project);
     const tr = el('tr', { class: 'srow' + (open ? ' open' : ''), 'data-key': s.key, 'data-agent': s.agent || null },

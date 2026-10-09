@@ -2,7 +2,8 @@
 
 Developer notes for the Memory page (#6), the project Memory tab and the gotchas strip (#7), the health tile (#8) and the write-back
 switch (#10). The backend is `app/memory_proxy.py` (routes in `app/main.py`, the low-level client in `app/memory.py`). The worker facts
-come from the box check on issue #12 (claude-mem worker 13.31.0; plugin 13.34.2 on disk).
+come from the box check on issue #12 (first claude-mem worker 13.31.0, then 13.34.2, and last 13.35.0 on 2026-10-09; the shapes did not
+change). The scrubbed answers of 13.35.0 are in `tests/fixtures/claude_mem_13_35/`.
 
 The browser never talks to the claude-mem worker. Every route below is a plain board route behind the normal identity check
 (Tailscale identity, or the local token). The board talks to the worker over loopback only, with GET only, except for the one
@@ -68,8 +69,14 @@ worker.
 ## Project keys
 
 claude-mem files memories under a project key. A session's key is the name of its git top-level folder. In a git worktree the key is
-`<parent repo folder>/<worktree folder>`, and a worktree folder named like its repo collapses to plain `<repo>`. The board's keys for
-one project (`keys_for`) are:
+`<parent repo folder>/<worktree folder>` (a Claude worktree under `.claude/worktrees/<slug>` is stored as `<repo>/<slug>`; the box
+check read real sessions from the worker's database, where `project_key_source` is `path`), and a worktree folder named like its repo
+collapses to plain `<repo>`. A workflow subagent's observation is marked by the column `observations.agent_type` (`workflow-subagent`,
+next to `Explore`, `Plan` and `general-purpose`; an empty value is the main session) with `agent_id`; the session table has no such
+column, and the list route does not carry the field (the search rows and `/api/observation/<id>` do). The worker's projects list is
+`/api/projects`: HTTP 200 with `{projects, sources, projectsBySource}`. An empty body seen once on the box was not reproducible; it was
+the first call after a worker restart, which took 7.4 s. The box's `sources` is `["claude"]` only, so Codex memory capture does not
+exist there. The board's keys for one project (`keys_for`) are:
 
 - each repo folder's name, which becomes that repo's wing;
 - the project folder's own name, for sessions started in the project folder (the `root` wing);
@@ -148,6 +155,15 @@ Every project route answers these fields next to its own data:
 down: the box saw a broad text search take 15.7 s. Every route gets 6 s for the whole fan-out and
 5 s per worker request (a cold first read on the box's spinning disk took over 2 s; a warm one takes a few ms). With the worker stopped, every route answers within its budget: stale data when it has some, otherwise a 503.
 
+**After a worker restart, expect `degraded` with `reason_code: timeout` for a while.** The box check of 2026-10-09 (worker 13.35.0)
+measured the first calls on a freshly started worker with a cold disk and Chroma still starting: `/api/projects` 7.4 s,
+`/api/observations` 2.1 s, `/api/summaries` 2.8 s, a text search 2.8 s, a `format=json` search with one key 26.0 s and with two keys
+9.2 s. The same calls warm take 4 to 20 ms. Against the 6 s budget, the first search after every restart (and every plugin update
+restarts the worker) answers `503 degraded`, "the worker is slow: no answer within 6.0 s", three times in a row on the box, until the
+worker has warmed up. That is the worker being slow, not broken, and it is not a bug in the proxy; routes with a cached answer keep
+serving it as `stale`. The same box check, with the worker stopped, saw the uncached routes answer `503 down` / `refused` in 0.02 to
+0.06 s and `state.memory.state` turn `down` 19.5 s after the stop.
+
 The 503 body is `{error, state, up: false, reason, reason_code, compat, worker_version, tested_worker}`.
 
 ## observations and summaries
@@ -168,7 +184,9 @@ An observation item has these fields: `id`, `type`, `title`, `subtitle`, `narrat
 and `repo` (the wing: the ccboard repo name, or `root`).
 
 The worker's list route leaves out `discovery_tokens`, `agent_type` and `agent_id`, so they are `null` here. Lists that the worker
-stores as JSON text arrive as real arrays.
+stores as JSON text arrive as real arrays. The worker's `/api/observations` answers `{items, hasMore, offset, limit}`, newest first,
+with `limit` 20 by default and **100 at most** (`limit=500` is answered as 100); an unknown project is HTTP 200 with `items: []`, and
+the route has no `type`, `before` or date filter, which is why `before`, `type`, `since` and `until` are applied by the board.
 
 A summary item has these fields: `id`, `session_id`, `request`, `investigated`, `learned`, `completed`, `next_steps`, `project`,
 `platform_source`, `created_at`, `created_at_epoch`, `key` and `repo`. Fields that only search rows carry (`notes`, `files_read`,
@@ -220,8 +238,10 @@ outside the project are dropped.
 }
 ```
 
-The worker answers the timeline as markdown only, and the board parses the table rows. The titles are text and must be set with
-`textContent`.
+The worker answers the timeline as markdown only (there is no JSON mode; `format=json` is ignored), and the board parses the table
+rows. `GET /api/timeline` needs `anchor` (an observation id) **or** `query`, never both. With neither it answers HTTP 200 with
+`{content: [{type: "text", text: "Error: Must provide either \"anchor\" or \"query\" parameter"}], isError: true}`, which the board
+reports as `worker_error`. The titles are text and must be set with `textContent`.
 
 The project's Timeline tab should use `/observations` with the cursor. There is no timeline by query.
 
@@ -267,10 +287,11 @@ The project's Timeline tab should use `/observations` with the cursor. There is 
 - `summaries` is the worker's summary count over every project (`summaries_scope: "worker"`), or `null` when the worker does not
   report it.
 - `tokens_saved` is `null` because worker 13.31.0 does not report it.
-- **UNVERIFIED on the box:** the palace reads one filter-only search (`projects=…&type=observations&orderBy=date_desc&format=json`),
-  because only search rows carry `agent_type`. The box check verified a filter-only search with `type`, `obs_type` and `dateStart`, but
-  not with `projects` alone. If the worker refuses it, the palace falls back to the list route with `subagent_filter: "unavailable"`.
-  In that case subagent rows are included and cannot be told apart. The opt-in live contract test checks this search.
+- The palace reads one filter-only search (`projects=…&type=observations&orderBy=date_desc&format=json`, no `query`), because only
+  search rows carry `agent_type`. The box check of 2026-10-09 (worker 13.35.0) confirmed it: HTTP 200 in 0.018 s, rows with `agent_type`
+  and `discovery_tokens` (`tests/fixtures/claude_mem_13_35/search_filter_only.json`). If a later worker refuses it, the palace falls back
+  to the list route with `subagent_filter: "unavailable"`; subagent rows are then included and cannot be told apart. The opt-in live
+  contract test checks this search.
 - Only a clean answer is cached, meaning one that is not stale and not partial.
 
 ## health (also `state.memory`)
@@ -358,17 +379,19 @@ The board sends these names to the worker:
 
 | Name | Use |
 |---|---|
-| `query` | The search text. Not `q`: the worker ignores `q=`. |
+| `query` | The search text. Not `q`: the worker ignores `q=` and searches for the text "undefined" (the board's own route takes `q` and translates). |
 | `project` | One key. |
-| `projects` | A comma list of keys. |
-| `format=json` | Always sent with a search. |
+| `projects` | A comma list of keys (the union of the keys is returned). `project` and `projects` both work. |
+| `format=json` | Always sent with a search; without it the answer is a markdown table. |
 | `limit` (at most 100), `offset` | Paging. |
 | `platformSource` | The agent. |
 | `contentSessionId` | The session. |
 | `type`, `obs_type`, `orderBy` | Search filters and order. |
-| `anchor`, `depth_before`, `depth_after` | The timeline window. |
+| `anchor`, `depth_before`, `depth_after` | The timeline window (`anchor` or `query`, never both). |
 
-They are pinned in `memory_proxy` (`TESTED_WORKER = "13.34.2"`) and in `tests/test_memory_contract.py`.
+They are pinned in `memory_proxy` (`TESTED_WORKER = "13.35.0"`) and in `tests/test_memory_contract.py`, which also parses the scrubbed
+answers of worker 13.35.0 in `tests/fixtures/claude_mem_13_35/` (each file is `{_request, _http, _seconds, body}`; the markdown
+answers keep only their length).
 
 After a plugin update, run this on the box:
 

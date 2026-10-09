@@ -924,7 +924,8 @@
     "ask_for_approval": true,
     "approval_on_failure": false,
     "approval_untrusted": false,
-    "device_auth": false
+    "device_auth": false,
+    "hook_trust_bypass": false
    },
    "slash": {
     "model": {
@@ -943,32 +944,53 @@
      "tune_verified": null
     },
     "reasoning": {
-     "cmd": "/model",
+     "cmd": "-c model_reasoning_effort",
      "label": "Reasoning",
      "arg": false,
      "read": false,
-     "verified": false,
+     "verified": true,
      "weight": 0,
      "destructive": false,
-     "drive": "picker",
-     "tune": "reasoning",
+     "drive": "restart",
+     "tune": "",
      "saves_default": false,
      "choices": null,
      "dialog": false,
      "tune_verified": null
     },
-    "permissions": {
-     "cmd": "/permissions",
-     "label": "Permissions",
+    "approvals": {
+     "cmd": "-a",
+     "label": "Approvals",
      "arg": false,
      "read": false,
-     "verified": false,
+     "verified": true,
      "weight": 0,
      "destructive": false,
-     "drive": "picker",
-     "tune": "permissions",
+     "drive": "restart",
+     "tune": "",
      "saves_default": false,
-     "choices": null,
+     "choices": [
+      "on-request",
+      "never"
+     ],
+     "dialog": false,
+     "tune_verified": null
+    },
+    "sandbox": {
+     "cmd": "-s",
+     "label": "Sandbox",
+     "arg": false,
+     "read": false,
+     "verified": true,
+     "weight": 0,
+     "destructive": false,
+     "drive": "restart",
+     "tune": "",
+     "saves_default": false,
+     "choices": [
+      "read-only",
+      "workspace-write"
+     ],
      "dialog": false,
      "tune_verified": null
     },

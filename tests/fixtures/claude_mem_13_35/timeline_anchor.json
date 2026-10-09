@@ -1,0 +1,15 @@
+{
+ "_request": "/api/timeline?anchor=<v>&project=<v>&depth_before=<v>&depth_after=<v>",
+ "_http": 200,
+ "_seconds": 0.019,
+ "body": {
+  "content": [
+   {
+    "type": "text",
+    "text": "<markdown, 640 chars>"
+   }
+  ],
+  "isError": false,
+  "_first_line_shape": "# Timeline around an"
+ }
+}

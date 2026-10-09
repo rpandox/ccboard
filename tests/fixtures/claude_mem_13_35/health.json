@@ -1,0 +1,11 @@
+{
+ "_request": "/health",
+ "_http": 200,
+ "_seconds": 0.003,
+ "body": {
+  "status": "ok",
+  "timestamp": 1791569453679,
+  "activeSessions": 1,
+  "pid": 1008660
+ }
+}

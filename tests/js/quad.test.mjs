@@ -2501,6 +2501,20 @@ test('Send a prompt…: TermKit.composer is built once per tile with its row, op
   assert.equal(t.updates.length >= 1, true, 'and kept current: its row, stats and prompt gate are handed over at each open');
 });
 
+test('a Codex restart from a tile\'s Tune (issue #2): the tile attaches to the new tmux session of the same name after a moment, nothing sooner and nothing for the other tiles', () => {
+  const { w, clock } = quadWorld({ hash: `#/quad?s=${S1},${CK}`, kit: 'stub' });
+  const Q = w.get('Quad').current;
+  const wins = {};
+  for (const t of [S1, CK]) wins[t] = load(w, t).contentWindow;
+  assert.equal(Q.menuCtx(S1).actions.tune(), true);
+  const ctx = kitOf(w).tunes[0].ctx;
+  assert.equal(typeof ctx.onRestart, 'function', 'the tile hands the kit its way to attach again');
+  ctx.onRestart({ tmux: S1 });
+  assert.equal(wins[S1].reloads, 0, 'the new session needs a moment to exist');
+  clock.advance(1600);
+  assert.deepEqual([wins[S1].reloads, wins[CK].reloads], [1, 0], 'this tile only');
+});
+
 test('an item picked from the open menu leaves the menu to the kit: the page never closes it first (on touch the kit closes its sheet after the action, so a sheet the action opens is swapped in place, not wiped by the close event of the one before)', () => {
   const { w } = quadWorld({ hash: `#/quad?s=${S1},${CK}`, kit: 'stub' });
   const Q = w.get('Quad').current;
