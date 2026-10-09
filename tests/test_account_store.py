@@ -515,10 +515,13 @@ def test_unsupported_platforms_refuse_every_mutation_and_say_why(box, monkeypatc
 
 
 def test_the_real_supported_is_linux_only(monkeypatch):
-    import sys
+    from app import platform as plat
     monkeypatch.undo()                                          # drops the suite's default (account_store.supported -> False): the real one is back
-    for plat, want in (("linux", True), ("linux2", True), ("darwin", False), ("win32", False)):
-        monkeypatch.setattr(sys, "platform", plat)
+    monkeypatch.setattr(plat, "under_drvfs", lambda p: False)
+    for linux, mac, win, want in ((True, False, False, True), (False, True, False, False), (False, False, True, False), (False, False, False, False)):
+        monkeypatch.setattr(plat, "IS_LINUX", linux)            # (issue #119: the platform module's flags are the one place for OS questions)
+        monkeypatch.setattr(plat, "IS_MACOS", mac)
+        monkeypatch.setattr(plat, "IS_WINDOWS", win)
         assert account_store.supported() is want
 
 

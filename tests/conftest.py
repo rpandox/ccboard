@@ -417,6 +417,7 @@ def _saved_logins_off_by_default(monkeypatch):
     settings.claude_config_dir itself. The module's login state, finalize threads and accounts.hold are reset around every test."""
     from app import account_store, accounts
     monkeypatch.setattr(account_store, "supported", lambda: False)
+    monkeypatch.setattr(account_store, "support_reason", lambda: None)       # issue #119: the refusal text is then the generic REASON on every host, not this host's own
     monkeypatch.setattr(accounts, "_hold", None)
     account_store._reset_login()
     account_store._set_result(None, 0.0)

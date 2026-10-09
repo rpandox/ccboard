@@ -217,6 +217,100 @@ def under_drvfs(path) -> bool:
     return p.parts[:2] == ("/", "mnt")
 
 
+# ---------------------------------------------------------------- WSL2 (issue #118)
+# Everything the board asks about being inside WSL lives here; every function answers "not WSL" (None, False) on a system that is not WSL, and
+# none of them changes anything. The Windows side is reached only by the doctor, through interop (app/doctor_wsl.py).
+
+PROC_MOUNTS = Path("/proc/mounts")                       # test seam: the mount table
+WSL_INTEROP_FILES = (Path("/proc/sys/fs/binfmt_misc/WSLInterop"), Path("/proc/sys/fs/binfmt_misc/WSLInterop-late"))   # exists while Windows interop is on
+WSLINFO_TIMEOUT = 3                                      # seconds for `wslinfo`
+WSL_NETWORKING_MODES = ("nat", "mirrored", "bridged", "virtioproxy", "none")
+WINDOWS_DRIVE_FSTYPES = ("9p", "drvfs", "virtiofs")      # how a Windows drive shows in the mount table (virtiofs: to verify)
+TAILSCALE_PLACEMENTS = ("wsl", "host")                   # CCBOARD_TAILSCALE_PLACEMENT: Tailscale inside the distro, or on the Windows host
+
+
+def wsl_networking_mode() -> str | None:
+    """None off WSL. On WSL the word `wslinfo --networking-mode` prints ('nat', 'mirrored', ...), lower case; 'unknown' when wslinfo is not
+    there (older WSL: whether it exists on the installed version is to verify), fails, times out or prints something else. Not cached."""
+    if not is_wsl():
+        return None
+    exe = shutil.which("wslinfo")
+    if not exe:
+        return "unknown"
+    try:
+        cp = subprocess.run([exe, "--networking-mode"], capture_output=True, text=True, timeout=WSLINFO_TIMEOUT, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    word = (cp.stdout or "").strip().lower().split()[:1]
+    return word[0] if cp.returncode == 0 and word and word[0] in WSL_NETWORKING_MODES else "unknown"
+
+
+def wsl_interop() -> bool:
+    """WSL with Windows interop on (a Windows program such as powershell.exe can be started from here): the WSLInterop entry exists in binfmt_misc."""
+    return is_wsl() and any(p.exists() for p in WSL_INTEROP_FILES)
+
+
+def windows_mount(path) -> str | None:
+    """The mount point of the Windows drive that holds `path`, or None: WSL only; the longest mount point in the mount table that is a drvfs-style
+    file system (9p, drvfs, virtiofs) whose source names a drive (`C:\\`, shown as C:\\134 in /proc/mounts) or whose options say drvfs. A drive mounted
+    outside /mnt/ is found this way; under_drvfs() is the quick look at the path alone."""
+    if not is_wsl():
+        return None
+    try:
+        p = str(Path(path).resolve())
+        rows = PROC_MOUNTS.read_text(errors="replace").splitlines()
+    except OSError:
+        return None
+    best = None
+    for row in rows:
+        f = row.split()
+        if len(f) < 4 or f[2] not in WINDOWS_DRIVE_FSTYPES:
+            continue
+        src, mp, opts = f[0], f[1].replace("\\040", " "), f[3]
+        if not (re.match(r"^[A-Za-z]:(\\|$)", src.replace("\\134", "\\")) or "aname=drvfs" in opts or "drvfs" in src):
+            continue
+        if (p == mp or p.startswith(mp.rstrip("/") + "/")) and (best is None or len(mp) > len(best)):
+            best = mp
+    return best
+
+
+def on_windows_drive(path) -> bool:
+    """WSL and `path` is below /mnt/ or on a Windows drive found in the mount table (callers warn, never refuse)."""
+    return under_drvfs(path) or windows_mount(path) is not None
+
+
+def init_identity() -> tuple[str, float] | None:
+    """(id, started) of PID 1 on Linux, else None. `id` is the first 8 hex digits of the kernel boot id and PID 1's start tick ('1a2b3c4d:1234'):
+    it changes when the virtual machine restarts (new boot id) and when the distro restarts (new init). Neither needs the wall clock, which a WSL2
+    VM can get wrong after Windows sleeps. `started` is the estimated epoch second PID 1 started (now - uptime + its start tick)."""
+    if not IS_LINUX:
+        return None
+    try:
+        boot = (PROC_ROOT / "sys" / "kernel" / "random" / "boot_id").read_text().strip().replace("-", "")[:8]
+        ticks = int((PROC_ROOT / "1" / "stat").read_text(errors="replace").rsplit(")", 1)[1].split()[19])
+        hz = os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError):
+        return None
+    up = uptime()
+    if not boot or not hz or up is None:
+        return None
+    return f"{boot}:{ticks}", time.time() - up + ticks / hz
+
+
+def tailscale_placement(env=None, *, implied: bool = True) -> str | None:
+    """WSL only (else None): where Tailscale runs, 'wsl' (inside the distro: the installer's normal path) or 'host' (on Windows; serve is run there).
+    CCBOARD_TAILSCALE_PLACEMENT decides (install.sh remembers it); unset, it is 'wsl' when the distro has a `tailscale` command, else 'host' (the same
+    default the installer picks); `implied=False` returns None for an unset value instead. A value that is neither is ignored."""
+    if not is_wsl():
+        return None
+    value = ((env if env is not None else os.environ).get("CCBOARD_TAILSCALE_PLACEMENT") or "").strip().lower()
+    if value in TAILSCALE_PLACEMENTS:
+        return value
+    if not implied:
+        return None
+    return "wsl" if shutil.which("tailscale") else "host"
+
+
 @functools.lru_cache(maxsize=64)
 def fs_case_insensitive(directory: str) -> bool:
     """Does the file system holding `directory` fold case (APFS's default, NTFS)? A temp-file probe, cached per directory.

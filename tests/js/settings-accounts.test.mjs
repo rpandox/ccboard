@@ -597,6 +597,29 @@ test('Home\'s "not logged in" banner button does the same: Settings > Accounts, 
   assert.equal(hidden(block(w).querySelector('.add-flight')), false);
 });
 
+test('issue #119: every per-system reason shows as the server gave it, then what is off and what still works; the Codex section is not touched by it', () => {
+  const REASONS = [
+    'Claude Code keeps this login in the macOS Keychain, so the board cannot swap it; Codex logins can still be saved',
+    'Windows is not a supported board host (use WSL2)',
+    'the Claude config folder is on a file system that ignores permissions; move it into the Linux file system',
+  ];
+  for (const reason of REASONS) {
+    const w = acctWorld({ state: stateOf({ accounts: accountsOf(THREE(), { supported: false, reason, count: 0 }) }) });
+    const off = panel(w).querySelector('.add-off');
+    assert.equal(hidden(off), false);
+    assert.equal(text(off.querySelector('.add-reason')), `${reason.charAt(0).toUpperCase()}${reason.slice(1)}. Adding and switching Claude accounts is off on this box.`);
+    assert.ok(!/\.\./.test(text(off)) && !/: adding/.test(text(off)), 'no doubled full stop');
+    const how = text(off.querySelectorAll('.set-note').find((n) => /run \/login in any terminal/.test(text(n))));
+    assert.match(how, /The Usage page keeps its split per account, and saved Codex logins still switch where Codex keeps its login in a file\.$/);
+    assert.ok(!/—/.test(text(off)), 'no em dash in UI text');
+    assert.deepEqual(visibleButtons(panel(w)).map(text).sort(), ['Rename', 'Rename', 'Rename'], 'still nothing to press');
+  }
+  const w2 = acctWorld({ state: stateOf({ accounts: accountsOf(THREE(), { supported: false, reason: 'Claude Code keeps this one.', count: 0 }) }) });
+  assert.equal(text(panel(w2).querySelector('.add-reason')), 'Claude Code keeps this one. Adding and switching Claude accounts is off on this box.', 'a reason that already ends in a full stop gets no second one');
+  const w3 = acctWorld({ state: stateOf({ accounts: accountsOf(THREE(), { supported: false, reason: '', count: 0 }) }) });
+  assert.equal(text(panel(w3).querySelector('.add-reason')), 'Saved logins are not available on this box. Adding and switching Claude accounts is off.');
+});
+
 test('where saved logins are not supported the Log in buttons still lead to the Accounts section (the /login how-to), and start nothing', async () => {
   const reason = "saved logins need Claude's file credentials (Linux)";
   const w = acctWorld({ state: stateOf({ claude: { installed: true, loggedIn: false }, accounts: accountsOf([], { supported: false, reason, count: 0 }) }), route: '#/' });

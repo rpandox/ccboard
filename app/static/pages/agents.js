@@ -123,7 +123,8 @@ function acctContinueSet(on) {
   try { localStorage.setItem(ACCT_CONTINUE_KEY, on ? '1' : '0'); acctFlow.cont = null; } catch (_) { acctFlow.cont = !!on; }
 }
 
-/* Whether this box keeps saved logins (Linux with Claude's file credentials) and, if not, why: a state without `store` (older fixtures) counts as no. */
+/* Whether this box keeps saved logins (Linux with Claude's file credentials) and, if not, why: `reason` is the server's own per-system text (macOS: the
+   Keychain; Windows: use WSL2; a config folder on a mount that ignores permissions), shown as given. A state without `store` (older fixtures) counts as no. */
 function acctStore(st) {
   const s = st && st.accounts && st.accounts.store;
   return { supported: !!(s && s.supported), reason: (s && typeof s.reason === 'string' && s.reason) || '' };

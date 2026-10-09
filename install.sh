@@ -11,7 +11,7 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE=/etc/ccboard/env
-ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT PREVIEW_HTTPS_BASE CCBOARD_NODE_NAME CCBOARD_HUB_TOKEN CCBOARD_NODES CCBOARD_RESTIC_REPO CCBOARD_RESTIC_PASSWORD_FILE CCBOARD_BACKUP_PUSH CCBOARD_BACKUP_ONCALENDAR CCBOARD_BACKUP_EXTRA CCBOARD_RUNTIME CCBOARD_AUTO_CONTINUE CCBOARD_CLAUDE_MEM CCBOARD_MEM_PORT CCBOARD_MEM_HTTPS_PORT CCBOARD_MEM_SERVICE CCBOARD_CODEX_HOOK_TRUST CCBOARD_CLONE_ALLOWED_HOSTS CCBOARD_MCP_REMOTE CODEX_HOME CCBOARD_AUTOCLOSE_GRACE CCBOARD_CODEX_HOOKS_ASYNC CCBOARD_CLAUDE_ULTRACODE_FLAG CCBOARD_SUBAGENT_MODEL CCBOARD_HEADLESS_FABLE_CAP CCBOARD_PRICE_TABLE)
+ENV_KEYS=(PROJECTS_DIR CCBOARD_PORT TTYD_PORT CODE_SERVER_PORT CCBOARD_HTTPS_PORT CODE_HTTPS_PORT CCBOARD_ALLOWED_USERS CCBOARD_DATA_DIR CODE_SERVER_VERSION CCBOARD_PUBLIC_URL NTFY_URL NTFY_TOPIC NTFY_PUBLIC_URL NTFY_HTTPS_PORT NTFY_PORT CCBOARD_APPROVE_TIMEOUT PREVIEW_HTTPS_BASE CCBOARD_NODE_NAME CCBOARD_HUB_TOKEN CCBOARD_NODES CCBOARD_RESTIC_REPO CCBOARD_RESTIC_PASSWORD_FILE CCBOARD_BACKUP_PUSH CCBOARD_BACKUP_ONCALENDAR CCBOARD_BACKUP_EXTRA CCBOARD_RUNTIME CCBOARD_AUTO_CONTINUE CCBOARD_CLAUDE_MEM CCBOARD_MEM_PORT CCBOARD_MEM_HTTPS_PORT CCBOARD_MEM_SERVICE CCBOARD_CODEX_HOOK_TRUST CCBOARD_CLONE_ALLOWED_HOSTS CCBOARD_MCP_REMOTE CODEX_HOME CCBOARD_AUTOCLOSE_GRACE CCBOARD_CODEX_HOOKS_ASYNC CCBOARD_CLAUDE_ULTRACODE_FLAG CCBOARD_SUBAGENT_MODEL CCBOARD_HEADLESS_FABLE_CAP CCBOARD_PRICE_TABLE CCBOARD_TAILSCALE_PLACEMENT)
 TTYD_VERSION=1.7.7
 TTYD_SHA_amd64=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
 TTYD_SHA_arm64=b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165
@@ -41,6 +41,83 @@ docker_host_guard() { # $1 = the text of /proc/version. Only WSL (Microsoft in /
   return 0
 }
 # <<< docker host guard
+
+# >>> wsl branch
+# WSL2 (issue #118). Entered only when /proc/version names Microsoft (wsl_guard's argument is that text, the test seam of the docker host guard
+# above); on any other Linux wsl_guard changes nothing and prints nothing. Needs, at call time: PROJECTS_DIR CCBOARD_DATA_DIR APP_DIR CCBOARD_RUNTIME
+# CCBOARD_ALLOWED_USERS and the ports. Exercised on its own by tests/test_wsl.py.
+wsl_detected() { # $1 = the text of /proc/version
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in *microsoft*) return 0;; esac
+  return 1
+}
+wsl_systemd_guard() { # refuse early: the units, the tmux server and the backup timer all need systemd, and a late systemctl failure is unclear
+  local st; st=$(systemctl is-system-running 2>/dev/null || true)
+  case "$st" in running|degraded) return 0;; esac
+  die "systemd is not running in this WSL distro (systemctl is-system-running says '${st:-nothing}'), and the board's services, its tmux server and the backup timer need it.
+  Put these two lines in /etc/wsl.conf:
+      [boot]
+      systemd=true
+  then run 'wsl --shutdown' in Windows PowerShell, open the distro again and check: systemctl is-system-running
+  (needs WSL 0.67.6 or newer; [boot] is documented for Windows 11 and Server 2022, on Windows 10 it is unverified). See the README, Windows (WSL2)."
+}
+wsl_drive_warn() { # label path -> a warning when the path is below /mnt/ (a Windows drive: no real owners or modes, weak change stamps, slow)
+  case "$2" in /mnt/*) warn "$1 is on a Windows drive ($2): file owners and modes are not real there, change stamps are weak and it is slow. Keep it inside the distro (for example under /home/<user>).";; esac
+}
+wsl_agent_warn() { # claude and codex must run inside the distro: a Windows build under /mnt/ (npm shims, appendWindowsPath) would shadow the Linux one
+  local n p
+  for n in claude codex; do
+    p=$(command -v "$n" 2>/dev/null || true)
+    case "$p" in /mnt/*) warn "$n resolves to $p, a Windows program. Install it inside the distro and set [interop] appendWindowsPath=false in /etc/wsl.conf (then wsl --shutdown).";; esac
+  done
+}
+wsl_resolve_placement() { # sets CCBOARD_TAILSCALE_PLACEMENT (wsl|host) and, for host, TS_FQDN and CCBOARD_PUBLIC_URL from what the owner gave
+  local where url port
+  case "${CCBOARD_TAILSCALE_PLACEMENT:-}" in
+    wsl|host) ;;
+    "") if have tailscale; then CCBOARD_TAILSCALE_PLACEMENT=wsl; else CCBOARD_TAILSCALE_PLACEMENT=host; fi;;
+    *) die "CCBOARD_TAILSCALE_PLACEMENT must be wsl or host (got '$CCBOARD_TAILSCALE_PLACEMENT')";;
+  esac
+  where="inside this distro"; [ "$CCBOARD_TAILSCALE_PLACEMENT" != host ] || where="on the Windows host"
+  note "Tailscale placement: $CCBOARD_TAILSCALE_PLACEMENT ($where)"
+  [ "$CCBOARD_TAILSCALE_PLACEMENT" = host ] || return 0
+  [ "$CCBOARD_RUNTIME" != docker ] || die "CCBOARD_RUNTIME=docker needs the tailscaled socket inside this distro: it cannot be combined with CCBOARD_TAILSCALE_PLACEMENT=host. Use the systemd runtime, or install Tailscale in the distro (CCBOARD_TAILSCALE_PLACEMENT=wsl)."
+  url=${CCBOARD_PUBLIC_URL:-}
+  [ -n "$CCBOARD_ALLOWED_USERS" ] || die "CCBOARD_TAILSCALE_PLACEMENT=host: Tailscale runs on Windows, so this installer cannot read your tailnet login. Set CCBOARD_ALLOWED_USERS=you@provider (the login you use on the tailnet)"
+  [ -n "$url" ] || die "CCBOARD_TAILSCALE_PLACEMENT=host: Tailscale runs on Windows, so this installer cannot read the node's name. Set CCBOARD_PUBLIC_URL=https://<this PC's name>.<your tailnet>.ts.net[:port] (on Windows: tailscale status shows the name)"
+  [[ "$url" =~ ^https://([A-Za-z0-9][A-Za-z0-9.-]*)(:([0-9]{1,5}))?/?$ ]] || die "CCBOARD_PUBLIC_URL must look like https://<name>.<tailnet>.ts.net[:port] (got '$url')"
+  TS_FQDN=${BASH_REMATCH[1]}
+  port=${BASH_REMATCH[3]:-443}
+  CCBOARD_PUBLIC_URL="https://$TS_FQDN"
+  if [ "$port" != 443 ]; then CCBOARD_PUBLIC_URL="$CCBOARD_PUBLIC_URL:$port"; fi
+  [ "$port" = "$CCBOARD_HTTPS_PORT" ] || warn "CCBOARD_PUBLIC_URL names port $port but CCBOARD_HTTPS_PORT is $CCBOARD_HTTPS_PORT: the commands printed for Windows map port $CCBOARD_HTTPS_PORT, so the links the board sends will not open"
+  note "Windows host $TS_FQDN, allowed users: $CCBOARD_ALLOWED_USERS (the tailscale checks and the serve mappings are skipped here)"
+}
+wsl_host_serve_lines() { # the PowerShell command for each mapping, to run on Windows (that the Windows host reaches this distro's loopback ports through WSL's localhost forwarding is to verify)
+  printf '  tailscale serve --bg --https=%s http://127.0.0.1:%s\n' "$CCBOARD_HTTPS_PORT" "$CCBOARD_PORT"
+  printf '  tailscale serve --bg --https=%s --set-path /tty http://127.0.0.1:%s\n' "$CCBOARD_HTTPS_PORT" "$TTYD_PORT"
+  printf '  tailscale serve --bg --https=%s http://127.0.0.1:%s\n' "$CODE_HTTPS_PORT" "$CODE_SERVER_PORT"
+  if [ -n "${NTFY_URL:-}" ]; then printf '  tailscale serve --bg --https=%s %s\n' "$NTFY_HTTPS_PORT" "$NTFY_URL"; fi
+  if [ -n "${CCBOARD_MEM_HTTPS_PORT:-}" ]; then printf '  tailscale serve --bg --https=%s http://127.0.0.1:%s\n' "$CCBOARD_MEM_HTTPS_PORT" "$(mem_worker_port)"; fi
+}
+wsl_host_serve_note() {
+  printf '\n\033[1mTailscale runs on Windows: map the board there\033[0m (run these in PowerShell on Windows; nothing was mapped from this distro; port 443 is yours to check, use it only if it is free):\n'
+  wsl_host_serve_lines
+  printf '  Check them with: tailscale serve status\n'
+}
+wsl_guard() { # $1 = the text of /proc/version
+  if ! wsl_detected "$1"; then
+    if [ -n "${CCBOARD_TAILSCALE_PLACEMENT:-}" ]; then warn "CCBOARD_TAILSCALE_PLACEMENT=$CCBOARD_TAILSCALE_PLACEMENT is for WSL only; ignored here"; CCBOARD_TAILSCALE_PLACEMENT=; fi
+    return 0
+  fi
+  log "WSL2"
+  wsl_systemd_guard
+  wsl_drive_warn PROJECTS_DIR "$PROJECTS_DIR"
+  wsl_drive_warn CCBOARD_DATA_DIR "$CCBOARD_DATA_DIR"
+  wsl_drive_warn "the ccboard checkout" "$APP_DIR"
+  wsl_agent_warn
+  wsl_resolve_placement
+}
+# <<< wsl branch
 
 # >>> serve and claude-mem viewer helpers
 # serve_check needs $TS_FQDN and $CCBOARD_HTTPS_PORT at call time. The viewer helpers are exercised on their own by tests/test_install_mem.py.
@@ -190,6 +267,7 @@ if [ -z "${CCBOARD_HUB_TOKEN:-}" ]; then CCBOARD_HUB_TOKEN=$(python3 -c 'import 
 : "${CCBOARD_PRICE_TABLE:=}"           # empty = the built-in list prices behind the Usage page's estimates; a JSON file adds to or replaces them (README, Cost)
 : "${CCBOARD_SUBAGENT_MODEL:=}"        # empty = subagents use the main model; haiku, sonnet, opus or a full model id sets CLAUDE_CODE_SUBAGENT_MODEL on sessions and runs the board starts
 : "${CCBOARD_HEADLESS_FABLE_CAP:=}"    # empty = 25; the most Max $ a scheduled or batch Claude run that resolves to Fable may carry (it also needs an acknowledgement)
+: "${CCBOARD_TAILSCALE_PLACEMENT:=}"   # WSL only: wsl = Tailscale inside this distro, host = on Windows (empty = wsl when the distro has tailscale, else host); stays empty elsewhere
 systemd-analyze calendar "$CCBOARD_BACKUP_ONCALENDAR" >/dev/null 2>&1 || die "CCBOARD_BACKUP_ONCALENDAR is not a systemd calendar spec: $CCBOARD_BACKUP_ONCALENDAR"
 [[ "$PREVIEW_HTTPS_BASE" =~ ^[0-9]{1,5}$ ]] || die "PREVIEW_HTTPS_BASE must be a port number"
 [[ "$CCBOARD_APPROVE_TIMEOUT" =~ ^[0-9]{1,4}$ ]] || die "CCBOARD_APPROVE_TIMEOUT must be seconds"
@@ -227,7 +305,12 @@ for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN; do
   [ -z "${!v:-}" ] || warn "$v is set in your environment; it outranks the Claude login. It is NOT written to $ENV_FILE."
 done
 
+wsl_guard "$(cat /proc/version 2>/dev/null || true)"   # WSL2 only (issue #118): refuses without systemd, warns about /mnt/ paths, picks the Tailscale placement
+
 # ---------------------------------------------------------------- tailscale checks (before touching anything)
+if [ "${CCBOARD_TAILSCALE_PLACEMENT:-}" = host ]; then
+  note "tailscale checks skipped: Tailscale runs on the Windows host"
+else
 have tailscale || die "tailscale is not installed (https://tailscale.com/download)"
 TS_STATUS=$(tailscale status --json 2>/dev/null || true)
 [ -n "$TS_STATUS" ] || die "tailscale status failed; is tailscaled running and logged in?"
@@ -247,6 +330,7 @@ fi
 CCBOARD_PUBLIC_URL="https://$TS_FQDN:$CCBOARD_HTTPS_PORT"
 note "tailnet node $TS_FQDN, allowed users: $CCBOARD_ALLOWED_USERS"
 mem_viewer_precheck
+fi
 
 # ---------------------------------------------------------------- docker runtime (CCBOARD_RUNTIME=docker)
 # Function definitions only; nothing here runs in systemd mode. The board becomes a container (ghcr.io/rpandox/ccboard,
@@ -844,7 +928,10 @@ fi
 # ---------------------------------------------------------------- env file + units
 log "config and systemd units"
 env_body=""
-for k in "${ENV_KEYS[@]}"; do env_body+="$k=${!k}"$'\n'; done
+for k in "${ENV_KEYS[@]}"; do
+  if [ "$k" = CCBOARD_TAILSCALE_PLACEMENT ] && [ -z "${!k}" ]; then continue; fi   # WSL only: other systems keep the file they always had
+  env_body+="$k=${!k}"$'\n'
+done
 for line in "${EXTRA_ENV[@]:-}"; do [ -n "$line" ] && env_body+="$line"$'\n'; done
 changed_units=()
 if [ ! -f "$ENV_FILE" ] || [ "$(cat "$ENV_FILE")" != "${env_body%$'\n'}" ]; then
@@ -961,6 +1048,9 @@ mem_viewer_step() { # after the other mappings: map the worker on CCBOARD_MEM_HT
   warn "claude-mem viewer: every device on your tailnet can open and change the claude-mem worker (it has no sign-in of its own). Clear it with CCBOARD_MEM_HTTPS_PORT=off ./install.sh"
 }
 # <<< claude-mem viewer step
+if [ "${CCBOARD_TAILSCALE_PLACEMENT:-}" = host ]; then
+  wsl_host_serve_note
+else
 serve_apply "$CCBOARD_HTTPS_PORT" / "http://127.0.0.1:$CCBOARD_PORT"
 serve_apply "$CCBOARD_HTTPS_PORT" /tty "http://127.0.0.1:$TTYD_PORT"
 serve_apply "$CODE_HTTPS_PORT" / "http://127.0.0.1:$CODE_SERVER_PORT"
@@ -970,6 +1060,7 @@ for spec in "$CCBOARD_HTTPS_PORT / http://127.0.0.1:$CCBOARD_PORT" "$CCBOARD_HTT
   # shellcheck disable=SC2086
   [ "$(serve_check $spec)" = ours ] || die "tailscale serve did not apply ($spec). Is HTTPS enabled for the tailnet?"
 done
+fi
 
 # ---------------------------------------------------------------- health
 log "health"
@@ -987,6 +1078,7 @@ printf '  Dashboard:   https://%s:%s/\n' "$TS_FQDN" "$CCBOARD_HTTPS_PORT"
 printf '  code-server: https://%s:%s/\n' "$TS_FQDN" "$CODE_HTTPS_PORT"
 [ -z "$CCBOARD_MEM_HTTPS_PORT" ] || printf '  claude-mem:  https://%s:%s/   (viewer; every device on your tailnet can open and change the worker)\n' "$TS_FQDN" "$CCBOARD_MEM_HTTPS_PORT"
 [ -z "$NTFY_URL" ] || printf '  ntfy topic:  %s/%s   (subscribe in the ntfy app; iOS needs the app to reach ntfy.sh for wake-ups)\n' "$NTFY_PUBLIC_URL" "$NTFY_TOPIC"
+[ "${CCBOARD_TAILSCALE_PLACEMENT:-}" != host ] || { printf '  Tailscale is on Windows: these addresses answer only after you run the tailscale serve commands printed above, in PowerShell on Windows:\n'; wsl_host_serve_lines; }
 printf '  Open them from another device on your tailnet (requests from this box carry no Tailscale identity).\n'
 printf '  Then click "Log in" on the dashboard to sign in to Claude Code.\n'
 [ -z "$CODEX_BIN" ] || printf '  Codex:       trust the board'"'"'s hooks once so Codex sessions report state: run codex on this box, review them (or type /hooks); details: python3 %s/scripts/codex_hooks.py trust-help\n' "$APP_DIR"
