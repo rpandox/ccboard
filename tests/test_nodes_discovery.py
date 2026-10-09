@@ -692,6 +692,30 @@ def test_a_refresh_answers_at_its_deadline_with_unreachable_for_the_rows_still_w
     assert {r["state"] for r in out["rows"] if r["online"] and r["state"] != "invalid"} == {"unreachable"}
 
 
+def test_stragglers_past_the_deadline_keep_the_refresh_lock_so_probes_never_pile_up(world, monkeypatch):
+    """Security review: a refresh that answers at its deadline must not let the next refresh start more probes while its stragglers still run;
+    otherwise pressing Refresh every few seconds against hanging peers grows the probe threads past MAX_IN_FLIGHT."""
+    monkeypatch.setattr(nd, "REFRESH_DEADLINE", 0.2)
+    monkeypatch.setattr(nd, "MIN_REPROBE", 0)
+    world["net"].gate = threading.Event()
+    world["discover"](refresh=True)                              # answers at the deadline; its probes hang on the gate
+    first = len(world["net"].calls)
+    assert first >= 1
+    for _ in range(5):                                           # Refresh pressed again and again while the stragglers hang
+        world["discover"](refresh=True)
+    assert len(world["net"].calls) == first, "no new probe starts while the last refresh still has probes in flight"
+    assert not nd._refresh_lock.acquire(blocking=False), "the lock stays held by the stragglers"
+    assert world["net"].peak <= nd.MAX_IN_FLIGHT
+    world["net"].gate.set()
+    end = time.monotonic() + 10
+    while time.monotonic() < end and not nd._refresh_lock.acquire(blocking=False):
+        time.sleep(0.05)
+    else:
+        nd._refresh_lock.release()
+    world["discover"](refresh=True)                              # the stragglers ended: a refresh probes again
+    assert len(world["net"].calls) > first
+
+
 def test_a_second_refresh_while_one_runs_is_answered_from_the_cache(world):
     assert nd._refresh_lock.acquire(blocking=False)
     try:

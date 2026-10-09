@@ -353,13 +353,32 @@ def _out_row(row: dict, cached: dict | None, now: float, suffix) -> dict:
             "url": url, "node_id": nid, "at": _iso(t), "age": age, "stale": bool(age is not None and age > STALE_AFTER)}
 
 
-def _probe_all(rows: list[dict], ports, suffix, transport, resolver) -> dict[str, dict]:
+def _probe_all(rows: list[dict], ports, suffix, transport, resolver, on_idle: Callable | None = None) -> dict[str, dict]:
     """Probe `rows` with at most MAX_IN_FLIGHT at a time; {ts_id: result}. Waits REFRESH_DEADLINE at most, a row that has not answered by then is
-    `unreachable`. The pool exists for this call only."""
+    `unreachable`. The pool exists for this call only. `on_idle` runs once every probe of this call has finished or been cancelled, which can be
+    after this returns: discover() releases the refresh lock there, so a refresh that gave up never overlaps the next one and the probe threads
+    stay at MAX_IN_FLIGHT however often Refresh is pressed (a straggler past the deadline still holds the lock)."""
     if not rows:
+        if on_idle:
+            on_idle()
         return {}
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_IN_FLIGHT, thread_name_prefix="ccboard-discover")
-    futs = {pool.submit(probe, r, ports, suffix, transport, resolver): r["ts_id"] for r in rows}
+    try:
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_IN_FLIGHT, thread_name_prefix="ccboard-discover")
+        futs = {pool.submit(probe, r, ports, suffix, transport, resolver): r["ts_id"] for r in rows}
+    except BaseException:
+        if on_idle:                                      # nothing is running: the caller's lock must not stay held
+            on_idle()
+        raise
+    left, mu = [len(futs)], threading.Lock()
+
+    def _one_done(_f) -> None:
+        with mu:
+            left[0] -= 1
+            last = left[0] == 0
+        if last and on_idle:
+            on_idle()
+    for f in futs:
+        f.add_done_callback(_one_done)
     try:
         concurrent.futures.wait(list(futs), timeout=REFRESH_DEADLINE)
         return {tid: (f.result() if f.done() and not f.cancelled() else _result("unreachable")) for f, tid in futs.items()}
@@ -381,16 +400,19 @@ def discover(db, *, refresh: bool = False, transport: Callable | None = None, re
         cand = candidates(status, settings.node_tags, self_user(status))[:MAX_ROWS]
         cache = _load(db)
         if refresh and _refresh_lock.acquire(blocking=False):
+            handed = False                                       # True once _probe_all owns the release (it frees the lock when its last probe ends)
             try:
                 todo = [r for r in cand if r["online"] and _syntax_ok(r["dns_name"], suffix)
                         and not (isinstance(cache.get(r["ts_id"]), dict) and now - float(cache[r["ts_id"]].get("t") or 0) < MIN_REPROBE)]
-                for tid, res in _probe_all(todo, settings.node_ports, suffix, transport, resolver).items():
+                handed = True
+                for tid, res in _probe_all(todo, settings.node_ports, suffix, transport, resolver, on_idle=_refresh_lock.release).items():
                     cache[tid] = {**res, "t": now}
                 keep = {r["ts_id"] for r in cand}
                 cache = {k: v for k, v in cache.items() if k in keep}
                 db.kv_set(KV, {"at": now, "rows": cache})
             finally:
-                _refresh_lock.release()
+                if not handed:
+                    _refresh_lock.release()
         return {"at": _iso(now), "tailscale": info, "rows": [_out_row(r, cache.get(r["ts_id"]), now, suffix) for r in cand]}
     except Exception as e:
         log.warning("discovery failed: %s", e.__class__.__name__)
