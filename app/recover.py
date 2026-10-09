@@ -10,7 +10,9 @@ rollout Tailer of v0.5.12 binds the ids and ends the guess).
 
 A row that was `working` when the box went down (a prompt was running, no Stop recorded) is marked with
 flags.continue_after_resume on its relaunched row: once the resumed session reports SessionStart and sits at its prompt,
-app/autoresume types `continue` into it, so a power cut does not leave a half-done task waiting for someone to notice."""
+app/autoresume types `continue` into it, so a power cut does not leave a half-done task waiting for someone to notice. A row the person
+opted out (flags.no_autoresume, #84) gets no such mark, and the opt-out itself is copied to the relaunched row, so the later limit
+resets skip it too."""
 from __future__ import annotations
 
 import logging
@@ -28,6 +30,7 @@ log = logging.getLogger("ccboard.recover")
 RECOVERABLE = {"claude", "resume", "continue", "recovered", "task"}
 RECENT_WORK = 24 * 3600    # a row 'working' for longer than this most likely missed its Stop hook: no continue for it
 CONTINUE_FLAG = "continue_after_resume"
+OPT_OUT_FLAG = "no_autoresume"      # #84: set from the row menu / Tune (POST /api/sessions/<name>/flags); read here and in app/autoresume
 
 
 def _epoch(v) -> float:
@@ -46,7 +49,7 @@ def wants_continue(row: dict, now: float | None = None) -> bool:
     """Was this row in the middle of a turn when the box went down? (state working, recently, an agent row.)"""
     if (row.get("state") or "") != "working" or (row.get("agent") or "claude") == "shell":
         return False
-    if (row.get("flags") or {}).get("no_autoresume"):
+    if (row.get("flags") or {}).get(OPT_OUT_FLAG):
         return False
     at = _epoch(row.get("state_at"))
     now = time.time() if now is None else now
@@ -185,6 +188,8 @@ def run(db, start_session) -> dict:
             if t.get("note"):
                 summary.setdefault("notes", []).append(f"{t['name']}: {t['note']}")
                 log.warning("recover %s: %s", t["name"], t["note"])
+            if (row.get("flags") or {}).get("no_autoresume"):               # #84: the person's opt-out outlives the relaunch (a new row starts with no flags)
+                db.update_flags(real, {OPT_OUT_FLAG: True})
             if wants_continue(row, now) and not t.get("fresh"):          # a fresh codex has no turn to continue: `continue` would be its first prompt
                 # the turn that was running is gone with the process; autoresume types `continue` once the session is back
                 db.update_flags(real, {CONTINUE_FLAG: {"reason": "reboot", "at": now, "prompt": (row.get("last_prompt") or "")[:200],

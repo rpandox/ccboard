@@ -153,6 +153,16 @@ function settingsNotify(p) {
   p.append(settingsNotifyBlock());
   settingsNotifyLoad();
 
+  // #84: the board-wide state, read-only; the per-session switch is in each session's menu and Tune panel
+  const acOff = boardAutoContinueOff(state);
+  p.append(settingsHead('Auto-continue'));
+  p.append(settingsKv('Board-wide').add(
+    el('span', { class: 'v', text: acOff ? 'off' : 'on' }),
+    el('code', { class: 'mono', text: 'CCBOARD_AUTO_CONTINUE' }),
+    el('span', { class: 'dim', text: acOff
+      ? 'Set it to 1 in the board settings file and restart the board to turn it on. A session switch cannot change it.'
+      : 'Types continue once after a limit reset, and after a reboot into a session that was working. Set it to 0 and restart the board to turn it off everywhere. One session opts out from its own menu or Tune panel.' })));
+
   const bc = (state.config && state.config.backup) || {};
   const bk = state.backup;
   p.append(settingsHead('Backup'));
@@ -1576,7 +1586,7 @@ const SETTINGS_BUILD = { notify: settingsNotify, nodes: settingsNodes, box: sett
 /* What a panel shows, as a string: the panel is rebuilt only when it changes. */
 function settingsSig(id, st) {
   const minute = Math.floor(Date.now() / 60000);                       // ages ("3h ago") move on, so the minute is part of the key
-  if (id === 'notify') return JSON.stringify([st.config && st.config.ntfy, st.config && st.config.backup, st.backup, minute]);
+  if (id === 'notify') return JSON.stringify([st.config && st.config.ntfy, st.config && st.config.backup, st.backup, st.config && st.config.auto_continue, minute]);
   if (id === 'nodes') return JSON.stringify(st.nodes);
   if (id === 'box') return JSON.stringify([st.health, st.backup, st.node_name, st.user, st.claude_defaults, minute]);
   if (id === 'accounts') {                                             // identity and labels, not the readings: those move with every statusline and would rebuild the Rename button under a finger (they refresh with the minute)

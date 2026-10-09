@@ -140,7 +140,7 @@ export function rowMenu(w, row, label) {
   const btn = row.querySelector('.rr-more');
   btn.click();
   const want = (t) => (label instanceof RegExp ? label.test(t) : t === label);
-  const hit = w.document.querySelectorAll('.menuitem').find((i) => want(i.textContent.trim()));
+  const hit = w.document.querySelectorAll('.menuitem').find((i) => want((i.querySelector('.mi-name') || i).textContent.trim()));
   if (hit) { hit.click(); return true; }
   btn.click();
   return false;
@@ -150,7 +150,7 @@ export function rowMenu(w, row, label) {
 export function rowMenuLabels(w, row) {
   const btn = row.querySelector('.rr-more');
   btn.click();
-  const labels = w.document.querySelectorAll('.menuitem').map((i) => i.textContent.trim());
+  const labels = w.document.querySelectorAll('.menuitem').map((i) => (i.querySelector('.mi-name') || i).textContent.trim());
   btn.click();
   return labels;
 }

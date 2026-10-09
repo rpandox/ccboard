@@ -540,7 +540,7 @@ def build_state(user: str) -> dict:
             _scan_cache = (time.monotonic(), st)
     st["user"] = user
     st["config"] = {"code_https_port": settings.code_https_port, "projects_dir": str(settings.projects_dir),
-                    "runtime": settings.runtime,
+                    "runtime": settings.runtime, "auto_continue": settings.auto_continue,
                     "ntfy": {"enabled": notify.enabled(), "subscribe_url": notify.subscribe_url(), "topic": settings.ntfy_topic},
                     "public_url": settings.public_url, "mem_viewer_url": settings.mem_viewer_url(),
                     "backup": {"restic": backup.restic_enabled(), "repo": settings.restic_repo if backup.restic_enabled() else None,
@@ -3606,6 +3606,47 @@ def api_tune(name: str, request: Request, body: TuneIn | None = None):
     elif confirmed is None:
         out["message"] = f"{setting} {plan.value} sent; waiting for the session to show it"
     return out
+
+
+# ---------- #84: the per-session writable flags (an allowlist, one entry for now) ----------
+
+class FlagsIn(BaseModel):
+    model_config = {"extra": "allow"}          # an unknown key must answer 400 with the allowlist, not be dropped
+    no_autoresume: object = None
+
+
+SESSION_FLAGS = ("no_autoresume",)             # the flags a person may write: flags.no_autoresume opts one session out of auto-continue
+
+
+@app.post("/api/sessions/{name}/flags")
+def api_session_flags(name: str, request: Request, body: FlagsIn | None = None):
+    """Set or clear a per-session switch on the session's open row. Only `no_autoresume` (bool): true stops the board typing `continue`
+    into this session after a limit reset, after an account switch and after a reboot; false clears the key. The flag lives in the row
+    (sessions.flags), so it survives a board restart, and reboot recovery carries it to the relaunched row. 400 for a name that is not a
+    ccboard session, an internal session, an unknown flag or a non-boolean value; 404 without an open row. Answers {ok, flags: {no_autoresume}}
+    read back from the row, which is what the UI counts as applied."""
+    _check_terminal_name(name)
+    if tmux.is_internal(name):
+        raise projects.BadRequest("internal sessions have no switches")
+    b = body or FlagsIn()
+    given = dict(b.model_extra or {})
+    if "no_autoresume" in b.model_fields_set:
+        given["no_autoresume"] = b.no_autoresume
+    if not given:
+        raise projects.BadRequest("body must set one of: " + ", ".join(SESSION_FLAGS))
+    bad = sorted(k for k in given if k not in SESSION_FLAGS)
+    if bad:
+        raise projects.BadRequest(f"cannot set {', '.join(bad[:3])}: the writable flags are {', '.join(SESSION_FLAGS)}")
+    if any(not isinstance(v, bool) for v in given.values()):
+        raise projects.BadRequest("no_autoresume must be true or false")
+    if db.open_row(name) is None:
+        raise projects.NotFound(f"no open row for session {name}")
+    off = given["no_autoresume"]
+    flags = db.update_flags(name, {"no_autoresume": True if off else None})
+    db.add_event(name, "AutoContinue", "optout" if off else "optin",
+                 "auto-continue off for this session" if off else "auto-continue on for this session", {"by": request.state.user})
+    _invalidate_scan()
+    return {"ok": True, "flags": {"no_autoresume": bool(flags.get("no_autoresume"))}, "auto_continue": settings.auto_continue}
 
 
 def _tune_sleep(seconds: float) -> None:

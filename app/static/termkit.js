@@ -1060,6 +1060,12 @@ const TermKit = (() => {
   const TK_ULTRA_OFF = 'off';
   const TK_SAVES_DEFAULT = 'Also saves your default for new sessions';         // Claude's /model <name> typed inline (V8): the picker's list is version-specific, so Model stays inline and says so
   const TK_UNVERIFIED = 'Unverified key path: the board reads the result back from the screen';
+  /* #84: the words of the auto-continue switch are core.js's (AUTO_CONTINUE_*); these are the fallbacks for a page that loaded the kit without it */
+  const TK_AUTO_WHAT = typeof AUTO_CONTINUE_WHAT === 'string' ? AUTO_CONTINUE_WHAT : 'Types continue once after a limit reset or an account switch, and after a reboot if the session was working. This session only.';
+  const TK_AUTO_SUB = typeof AUTO_CONTINUE_SUB === 'string' ? AUTO_CONTINUE_SUB : 'after a limit reset or a reboot, this session only';
+  const TK_AUTO_BOARD_OFF = typeof AUTO_CONTINUE_BOARD_OFF === 'string' ? AUTO_CONTINUE_BOARD_OFF : 'Off for the whole board (CCBOARD_AUTO_CONTINUE=0), so this switch changes nothing until the board setting is on again.';
+  const tkNoAuto = (c) => { const f = c && c.session && c.session.flags; return !!(f && typeof f === 'object' && f.no_autoresume); };      // the session row's flags.no_autoresume
+  const tkAutoLabel = (off) => 'Auto-continue: ' + (off ? 'off' : 'on');
   const TK_PENDING_MS = 20000;                                                  // how long a typed setting waits for the statusline that confirms it
   const TK_ESC_GAP_MS = 150;                                                    // Escape and the next keys must not arrive together (a TUI reads ESC + key as Alt + key)
   const TK_CELLS = ['compact', 'context', 'usage', 'cost', 'status', 'rename']; // the command cells, in this order
@@ -1426,6 +1432,12 @@ const TermKit = (() => {
       }
 
       const session = [];
+      if (typeof a.autoContinue === 'function' && agent !== 'shell') {          // #84: a board switch, not a typed command: never held back by the prompt gate
+        const off = tkNoAuto(c);
+        const boardOff = typeof boardAutoContinueOff === 'function' && boardAutoContinueOff();
+        add(session, 'autocontinue', tkAutoLabel(off), a.autoContinue, { kind: 'check', checked: !off, sub: boardOff ? 'off for the whole board (CCBOARD_AUTO_CONTINUE=0)' : TK_AUTO_SUB,
+          title: TK_AUTO_WHAT + (boardOff ? ' ' + TK_AUTO_BOARD_OFF : '') });
+      }
       add(session, 'close', 'Close tile', a.close, { title: 'Take this session out of the quad (it keeps running)' });
       const out = [
         { key: 'view', label: 'VIEW', items: view },
@@ -1687,7 +1699,7 @@ const TermKit = (() => {
      tile menu's /compact, /context and /usage items use it; a read command's output opens the panel at `anchor`. */
   function makeTune(ctx) {
     const c = ctx || {};
-    const T = { busy: false, pend: null, pendTimer: 0, ok: null, readout: null, dialog: false, renaming: false, anchor: null, dead: false, seen: {} };
+    const T = { busy: false, pend: null, pendTimer: 0, ok: null, readout: null, dialog: false, renaming: false, anchor: null, dead: false, seen: {}, auto: null };
     const panels = new Set();
     const S = surface({
       escape: () => {
@@ -1829,6 +1841,19 @@ const TermKit = (() => {
       return b;
     }
 
+    /* #84 Auto-continue: a board switch (POST /api/sessions/<tmux>/flags), not a typed command, so the prompt gate and the busy flag of the picker do not hold it
+       back. Optimistic: T.auto holds the value just asked for until the session row the page passes in agrees (sync clears it), a refusal puts the old one back. */
+    const autoOff = () => (T.auto !== null ? T.auto : tkNoAuto(c));
+    function autoToggle(p) {
+      const state = el('span', { class: 'tk-state', text: 'on' });
+      const b = el('button', { type: 'button', class: 'tk-auto', 'data-kind': 'auto', 'aria-pressed': 'true', title: TK_AUTO_WHAT, onclick: () => {
+        if (typeof setAutoContinue !== 'function') return;
+        setAutoContinue(c.tmux, !autoOff(), { apply: (off) => { T.auto = off; syncAll(); } });
+      } }, el('span', { class: 'tk-tn', text: 'Auto-continue' }), state);
+      p.auto = { node: b, state, note: el('p', { class: 'tk-note', text: '' }) };
+      return b;
+    }
+
     function cell(p, spec) {
       const isRename = spec.key === 'rename';
       const b = el('button', { type: 'button', class: 'tk-cell', 'data-cmd': spec.key, title: TK_CELL_TITLE[spec.key] + (spec.read ? ' (shows what it prints)' : ''),
@@ -1858,10 +1883,12 @@ const TermKit = (() => {
       return form;
     }
 
+    const autoShown = () => !!c.tmux && tkAgent(c) !== 'shell' && typeof setAutoContinue === 'function';
     function fill(p, plan) {
       p.root.textContent = '';
       p.nodes = [];
       p.rename = null;
+      p.auto = null;
       p.root.append(p.gate);
       const notes = (g) => [g.note ? el('p', { class: 'tk-note', text: g.note }) : null, g.unverified ? el('p', { class: 'tk-note tk-unverified', text: TK_UNVERIFIED }) : null].filter(Boolean);
       const codex = tkAgent(c) === 'codex';
@@ -1872,11 +1899,13 @@ const TermKit = (() => {
           el('p', { class: 'tk-note', text: 'Ask for approval: Codex asks before it acts outside the workspace. Approve for me: an automatic reviewer answers instead. Full Access is not offered here.' }),
           ...notes(plan.perms)));
       }
-      if (plan.fast || plan.ultra) {
-        const row = el('div', { class: 'tk-toggles' });
+      const auto = autoShown();
+      if (plan.fast || plan.ultra || auto) {
+        const row = plan.fast || plan.ultra ? el('div', { class: 'tk-toggles' }) : null;
         if (plan.fast) row.append(toggle(p, 'fast', 'Fast', 'Fast mode: quicker answers, a higher price (/fast on or /fast off)'));
         if (plan.ultra) row.append(toggle(p, 'ultra', 'Ultracode', 'Ultracode sets xhigh and turns workflows on, for this session only; it has no effect under -p'));
-        p.root.append(sec('OPTIONS', row, plan.ultra ? el('p', { class: 'tk-note', text: 'Ultracode sets xhigh and turns workflows on' }) : null));
+        const autoRow = auto ? el('div', { class: 'tk-toggles tk-solo' }, autoToggle(p)) : null;
+        p.root.append(sec('OPTIONS', row, plan.ultra ? el('p', { class: 'tk-note', text: 'Ultracode sets xhigh and turns workflows on' }) : null, autoRow, auto ? p.auto.note : null));
       }
       if (plan.cells.length) {
         p.root.append(sec('COMMANDS', el('div', { class: 'tk-grid' }, ...plan.cells.map((s) => cell(p, s)))));
@@ -1890,7 +1919,7 @@ const TermKit = (() => {
       const plan = planNow();
       const gate = gateNow();
       const sig = tkAgent(c) + JSON.stringify([plan.model && [plan.model.via, plan.model.options.map((o) => o.value)], plan.effort && [plan.effort.cmd, plan.effort.via, plan.effort.options.map((o) => o.value)],
-        plan.perms && plan.perms.options.map((o) => o.value), plan.fast, plan.ultra, plan.cells.map((s) => s.key)]);
+        plan.perms && plan.perms.options.map((o) => o.value), plan.fast, plan.ultra, plan.cells.map((s) => s.key), autoShown()]);
       if (sig !== p.sig) { p.sig = sig; fill(p, plan); }
       const cur = currentNow(plan);
       if (T.pend && T.pend.satisfied(cur)) clearPending(true);
@@ -1913,6 +1942,14 @@ const TermKit = (() => {
         const key = n.kind === 'cell' ? '' : (n.kind === 'model' || n.kind === 'effort' || n.kind === 'perms' ? n.kind + ':' + n.value : n.kind);
         b.classList.toggle('pending', !!T.pend && T.pend.key === key);
         b.classList.toggle('ok', !!T.ok && T.ok === key);
+      }
+      if (T.auto !== null && tkNoAuto(c) === T.auto) T.auto = null;         // the row the page passed in agrees now
+      if (p.auto) {
+        const off = autoOff();
+        p.auto.node.setAttribute('aria-pressed', off ? 'false' : 'true');
+        p.auto.node.classList.toggle('on', !off);
+        setText(p.auto.state, off ? 'off' : 'on');
+        setText(p.auto.note, boardAutoContinueOff() ? TK_AUTO_BOARD_OFF : TK_AUTO_WHAT);
       }
       if (p.rename) {
         p.rename.form.classList.toggle('hidden', !T.renaming);

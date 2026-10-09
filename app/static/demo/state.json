@@ -325,7 +325,8 @@
               "row_id": 3,
               "account": "7d3e1c52-9a41-4b6f-8a0e-5c2f19d8a001",
               "flags": {
-                "hook_seen": true
+                "hook_seen": true,
+                "no_autoresume": true
               },
               "task": null,
               "viewers": {
@@ -771,6 +772,7 @@
     "mem_viewer_url": null,
     "projects_dir": "/home/ccboard/projects",
     "runtime": "host",
+    "auto_continue": true,
     "ntfy": {
       "enabled": true,
       "subscribe_url": "https://box.example.ts.net:8444/ccboard",

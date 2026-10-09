@@ -260,3 +260,7 @@ html.force-coarse #page .ua-edit { min-width:var(--tap); }
   #page .uacc-head, #page .ua-row { grid-template-columns:minmax(150px, 1.3fr) minmax(176px, 1.25fr) minmax(176px, 1.25fr) minmax(52px, .6fr) minmax(46px, .5fr) minmax(46px, .5fr) minmax(40px, .45fr) minmax(62px, .6fr); }
 }
 
+
+/* ---------- keyboard focus (issue #45): the chart root is the one tab stop; the ring shows for keyboard focus only, the picked day, row or cell is marked as for a tap ---------- */
+.bars:focus-visible, .gantt:focus-visible, .heat-grid:focus-visible { outline:2px solid var(--sig); outline-offset:2px; }
+.heat-grid:focus-visible .cell.sel, .heat-grid:focus-visible .hb.sel { outline:2px solid var(--fg); outline-offset:0; }

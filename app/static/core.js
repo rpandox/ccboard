@@ -205,10 +205,13 @@ function demoMakeRepo(project, name) {
   if (!p) { p = { name: project, path: `/home/demo/projects/${project}`, root: null, orphan_sessions: [], repos: [] }; demoMade.projects.push(p); }
   if (name && !p.repos.some((r) => r.name === name)) p.repos.push({ name, path: `${p.path}/${name}`, state: 'ok', branch: 'main', dirty: false, devcontainer: false, sessions: [] });
 }
+const demoNoAuto = {};                                 // #84: tmux name -> the Auto-continue switch as the visitor left it (the fixture has no board to store it)
 function demoMake(method, path, body) {
   const b = body && typeof body === 'object' ? body : {};
   let m = null;
-  if (method === 'POST' && path === '/api/projects' && typeof b.name === 'string' && b.name) {
+  if (method === 'POST' && (m = /^\/api\/sessions\/([^/]+)\/flags$/.exec(path)) && typeof b.no_autoresume === 'boolean') {
+    demoNoAuto[decodeURIComponent(m[1])] = b.no_autoresume;
+  } else if (method === 'POST' && path === '/api/projects' && typeof b.name === 'string' && b.name) {
     demoMakeRepo(b.name, '');
     if (b.url) demoMakeRepo(b.name, demoRepoName(b.url));
   } else if (method === 'POST' && (m = /^\/api\/projects\/([^/]+)\/repos(\/bulk)?$/.exec(path))) {
@@ -219,6 +222,10 @@ function demoMake(method, path, body) {
   }
 }
 function demoMadeState(st) {
+  if (st && Array.isArray(st.projects) && Object.keys(demoNoAuto).length) {
+    const lay = (list) => (Array.isArray(list) ? list.map((x) => (ownKey(demoNoAuto, x.tmux) ? { ...x, flags: { ...(x.flags || {}), no_autoresume: demoNoAuto[x.tmux] || undefined } } : x)) : list);
+    st = { ...st, projects: st.projects.map((p) => ({ ...p, root: p.root ? { ...p.root, sessions: lay(p.root.sessions) } : p.root, repos: (p.repos || []).map((r) => ({ ...r, sessions: lay(r.sessions) })) })) };
+  }
   if (!demoMade.projects.length || !st || !Array.isArray(st.projects)) return st;
   const made = new Map(demoMade.projects.map((p) => [p.name, p]));
   const merged = st.projects.map((p) => (made.has(p.name) ? { ...p, repos: [...p.repos, ...made.get(p.name).repos.filter((r) => !p.repos.some((x) => x.name === r.name))] } : p));
@@ -344,6 +351,45 @@ let pollTimer = null;
 const store = { tasksOverride: {} };
 
 function setError(msg) { ui.error = msg; renderBanner(); }
+
+/* Auto-continue, per session (#84). The board types `continue` once into a session parked on a limit after its window resets (and after an account switch), and
+   into one that was working before a reboot once its relaunch is back at the prompt. flags.no_autoresume on the session row opts one session out of all three;
+   CCBOARD_AUTO_CONTINUE=0 turns the first and the last off for every session (state.config.auto_continue says which). One writer for every surface (the row
+   menu, the Quad tile menu, Tune): POST /api/sessions/<tmux>/flags {no_autoresume}. The switch is optimistic: `o.apply(off)` paints the new value at once, the
+   answer's own read-back of the row settles it, a refusal puts the old value back with the server's words in a toast. */
+const AUTO_CONTINUE_WHAT = 'Types continue once after a limit reset or an account switch, and after a reboot if the session was working. This session only.';
+const AUTO_CONTINUE_SUB = 'after a limit reset or a reboot, this session only';
+const AUTO_CONTINUE_BOARD_OFF = 'Off for the whole board (CCBOARD_AUTO_CONTINUE=0), so this switch changes nothing until the board setting is on again.';
+const autoContinueBusy = new Set();
+function sessionAutoContinueOff(s) { return !!(s && s.flags && typeof s.flags === 'object' && s.flags.no_autoresume); }
+function boardAutoContinueOff(st) {
+  const c = (st || (typeof state !== 'undefined' ? state : null) || {}).config;
+  return !!c && c.auto_continue === false;
+}
+function autoContinueLabel(off) { return 'Auto-continue: ' + (off ? 'off' : 'on'); }
+/* resolves true when the row now shows the wanted value; false when nothing changed (a second tap while one is in flight, or a refusal) */
+async function setAutoContinue(tmux, off, o) {
+  const x = o || {};
+  if (!tmux || autoContinueBusy.has(tmux)) return false;
+  autoContinueBusy.add(tmux);
+  const apply = typeof x.apply === 'function' ? x.apply : () => {};
+  apply(!!off);
+  try {
+    const res = await api('POST', `/api/sessions/${encodeURIComponent(tmux)}/flags`, { no_autoresume: !!off });
+    const f = res && res.flags && typeof res.flags === 'object' ? res.flags : null;        // no flags in the answer (the demo board): the optimistic value stands
+    const got = f && typeof f.no_autoresume === 'boolean' ? f.no_autoresume : !!off;
+    if (got !== !!off) { apply(got); return false; }
+    try { if (typeof poll === 'function') poll(true); } catch (_) { /* no board poll on this page */ }
+    return true;
+  } catch (e) {
+    apply(!off);
+    const why = (e && e.message) || 'refused';
+    if (typeof toast === 'function') toast('Auto-continue not changed: ' + why, { kind: 'bad' });
+    return false;
+  } finally {
+    autoContinueBusy.delete(tmux);
+  }
+}
 
 function codeServerUrl(path) {
   return `https://${location.hostname}:${state.config.code_https_port}/?folder=${encodeURIComponent(path)}`;

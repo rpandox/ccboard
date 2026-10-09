@@ -225,11 +225,12 @@ const mounts = (w, id) => w.get('__mounts')[id];
 const calls = (w) => plain(w.get('__calls'));
 const text = (n) => n.textContent;
 /** A session row's `...` menu (v0.5.6d: Ack, Reply, Tail and Kill live there): its labels, and a pick by label (the menu closes itself on a pick). */
-const rowMenuLabels = (w, row) => { const b = row.querySelector('.rr-more'); b.click(); const l = w.document.querySelectorAll('.menuitem').map((i) => text(i).trim()); b.click(); return l; };
+const itemLabel = (i) => text(i.querySelector('.mi-name') || i).trim();                 // an item with a caption (Auto-continue) has its name in .mi-name
+const rowMenuLabels = (w, row) => { const b = row.querySelector('.rr-more'); b.click(); const l = w.document.querySelectorAll('.menuitem').map(itemLabel); b.click(); return l; };
 const rowMenu = (w, row, label) => {
   const b = row.querySelector('.rr-more');
   b.click();
-  const hit = w.document.querySelectorAll('.menuitem').find((i) => (label instanceof RegExp ? label.test(text(i).trim()) : text(i).trim() === label));
+  const hit = w.document.querySelectorAll('.menuitem').find((i) => (label instanceof RegExp ? label.test(itemLabel(i)) : itemLabel(i) === label));
   if (hit) { hit.click(); return true; }
   b.click();
   return false;
@@ -306,11 +307,11 @@ test('a row shows glyphs, name, repo, age, model chip and context meter, last pr
   assert.match(text(row.querySelector('.rr-last')), /done, tests pass/);
   const open = row.querySelector('a[href="/term/shop--api--s2"]');
   assert.ok(open && text(open) === 'Open');
-  assert.deepEqual(rowMenuLabels(w, row), ['Acknowledge', 'Hide reply box', 'Tail', 'Kill'], 'Ack only for a session that needs attention; the waiting row\'s reply box is already open');
+  assert.deepEqual(rowMenuLabels(w, row), ['Acknowledge', 'Hide reply box', 'Tail', 'Auto-continue: on', 'Kill'], 'Ack only for a session that needs attention; the waiting row\'s reply box is already open');
   assert.equal(text(row.querySelector('.slot-kill')), '', 'Kill shows inline only for its second tap');
   assert.deepEqual(row.querySelectorAll('.chips .chip-btn').map(text), ['continue', 'merge', 'push', 'pr', 'add commit push', 'do it']);
   const idle = page(w).querySelector('.rrow[data-tmux=blog--web--s3]');
-  assert.deepEqual(rowMenuLabels(w, idle), ['Reply', 'Tail', 'Kill'], 'no Acknowledge when nothing needs attention');
+  assert.deepEqual(rowMenuLabels(w, idle), ['Reply', 'Tail', 'Auto-continue: on', 'Kill'], 'no Acknowledge when nothing needs attention');
   assert.equal(row.classList.contains('open'), true, 'a waiting row keeps its chips and send box open');
   assert.equal(idle.classList.contains('open'), false, 'an idle one folds them behind Reply');
 });
@@ -320,7 +321,7 @@ test('a row\'s ... menu offers Add to quad from 840 px up (Shell.quadAdd), just 
   w.run('globalThis.__quadAdds = []; globalThis.Shell = { mode: "expanded", wide() { return this.mode === "expanded" || this.mode === "large"; }, quadAdd(t) { __quadAdds.push(t); return true; } }');
   w.location.hash = '#/agents';
   const row = page(w).querySelector('.rrow[data-tmux=shop--api--s2]');
-  assert.deepEqual(rowMenuLabels(w, row), ['Acknowledge', 'Hide reply box', 'Tail', 'Add to quad', 'Kill'], 'before Kill, the destructive one stays last');
+  assert.deepEqual(rowMenuLabels(w, row), ['Acknowledge', 'Hide reply box', 'Tail', 'Add to quad', 'Auto-continue: on', 'Kill'], 'before Kill, the destructive one stays last');
   assert.equal(rowMenu(w, row, 'Add to quad'), true);
   assert.deepEqual(plain(w.get('__quadAdds')), ['shop--api--s2'], 'the row\'s own session');
   w.run('Shell.mode = "medium"');

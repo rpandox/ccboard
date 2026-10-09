@@ -983,6 +983,7 @@ Quad.mount = function (root, route) {
       context: tune && hasKit('tune') ? () => tuneRun(tile, 'context') : null,
       usage: tune && hasKit('tune') ? () => tuneRun(tile, 'usage') : null,
       rename: tune && hasKit('tune') ? () => tuneRename(tile) : null,
+      autoContinue: live && agent !== 'shell' && typeof setAutoContinue === 'function' ? () => tileAutoContinue(tile) : null,
       close: () => close(tile),
       kill: live ? () => kill(tile) : null,
     };
@@ -992,6 +993,19 @@ Quad.mount = function (root, route) {
       atPrompt: gate.ok, why: gate.ok ? '' : (gate.show ? gate.why : ''), schema: schemaOf(agent),
       zoomed: I.n >= 2 && I.zoom === tile.slot, composerDocked: !!I.composers[tile.tmux], keysTarget: I.active === tile.tmux && keysShown(),
     };
+  }
+
+  /* #84 Auto-continue: the menu's switch. Optimistic on the tile's own copy of the row (the next poll replaces it), put back when the board refuses; the answer's
+     read-back and the toast are setAutoContinue's (core.js). */
+  function tileAutoContinue(tile) {
+    const s = tile.session || sessionOf(tile.tmux) || null;
+    if (!s) return false;
+    setAutoContinue(tile.tmux, !sessionAutoContinueOff(s), { apply: (off) => {
+      const f = Object.assign({}, s.flags || {});
+      if (off) f.no_autoresume = true; else delete f.no_autoresume;
+      s.flags = f;
+    } });
+    return true;
   }
 
   /* The docked composer is hidden under 520 px (pages.css, a container query): a menu row that ticks and shows nothing would lie, so it is left out there. An unmeasured tile (0) is not narrow. */

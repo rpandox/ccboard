@@ -2,6 +2,18 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.28 - 2026-10-09
+
+### Added
+- Auto-continue can be switched off per session: from the session's menu, the quad tile's menu and Tune panel, and the terminal page's strip. A session switched off shows a `no auto-continue` chip and gets no `continue` after a limit reset or after a power cut; the switch survives a board restart and the relaunch after a reboot. Settings > Notifications shows the board-wide setting.
+- The charts on the Usage page can be read from the keyboard: each is one tab stop, the arrow keys move between days, sessions or heat-map cells, and the readout is announced.
+
+### Changed
+- The power-cut path is pinned end to end: a session that was working when the box went down is relaunched with its resume line and gets one `continue` once it is back at its prompt (checked with a drill on a sandbox board: tmux killed, board restarted).
+- The board reads Claude Code's session registry from its files only; `claude agents --json` was checked on the box and adds nothing.
+
+Upgrade: nothing to do.
+
 ## v0.5.27 - 2026-10-08
 
 ### Fixed

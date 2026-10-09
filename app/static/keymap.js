@@ -88,6 +88,12 @@ Keymap.inEditable = function (t) {
   return !!(t && (t.isContentEditable || /^(?:INPUT|TEXTAREA|SELECT)$/.test(String(t.tagName || ''))));
 };
 
+/* Focus inside a keyboard chart (charts.js Charts._kbd marks its root data-kbd="chart"): the chart answers the arrows, Home, End and Esc itself, so the page's plain
+   keys (j, k, f, g chords, Esc clearing the selection) stay quiet there, as in a field. A binding that says input: true (the palette) still works. */
+Keymap.inChart = function (t) {
+  return !!(t && typeof t.closest === 'function' && t.closest('[data-kbd=chart]'));
+};
+
 Keymap.inIframe = function (e) {
   const a = typeof document !== 'undefined' ? document.activeElement : null;
   return !!((e && e.target && e.target.tagName === 'IFRAME') || (a && a.tagName === 'IFRAME'));
@@ -143,7 +149,7 @@ Keymap.handle = function (e) {
   const prefix = Keymap.pending && now - Keymap.pending.at <= Keymap.CHORD_MS ? Keymap.pending.keys : [];
   Keymap.pending = null;
   const dialogs = Keymap.dialogsOpen();
-  const editable = Keymap.inEditable(e.target);
+  const editable = Keymap.inEditable(e.target) || Keymap.inChart(e.target);
   let eff = prefix;
   let c = Keymap.candidates(e, eff, dialogs, editable);
   if (eff.length && !c.done.length && !c.more.length) { eff = []; c = Keymap.candidates(e, eff, dialogs, editable); }   // a broken chord: this key starts afresh
