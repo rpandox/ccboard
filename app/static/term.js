@@ -176,7 +176,16 @@
     }
     syncCtx();
   }
-  strip.addEventListener('click', () => strip.classList.toggle('open'));
+  // a tap on the strip opens it (the full prompt, and on a phone the links): the strip is a tab stop, Enter or Space on it does the same, and aria-expanded says which
+  const stripToggle = () => { strip.classList.toggle('open'); strip.setAttribute('aria-expanded', strip.classList.contains('open') ? 'true' : 'false'); };
+  strip.setAttribute('tabindex', '0');
+  strip.setAttribute('aria-expanded', 'false');
+  strip.addEventListener('click', stripToggle);
+  strip.addEventListener('keydown', (e) => {
+    if (e.target !== strip || e.isComposing || (e.key !== 'Enter' && e.key !== ' ')) return;          // a link inside keeps its own Enter
+    e.preventDefault();
+    stripToggle();
+  });
 
   /* ---------- the tuning strip: Compact, Clear, Usage, effort, model, Rename, Context, Status ---------- */
 

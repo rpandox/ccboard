@@ -371,14 +371,14 @@ test('a project with no sessions shows an empty state with + session', async () 
 test('the tasks tab draws the kanban columns with an empty Backlog first, only this project\'s tasks, and a + task button', async () => {
   const env = projectWorld();
   const page = await go(env, '#/p/phasezero?tab=tasks');
-  const heads = all(page, '.col h3').map((h) => h.textContent.replace(/\s*\(\d+\)\s*$/, ''));
+  const heads = all(page, '.col h2').map((h) => h.textContent.replace(/\s*\(\d+\)\s*$/, ''));
   assert.deepEqual(heads, ['Backlog', 'In progress', 'Needs you'], 'Backlog always, then only the columns that have a card (no empty Done / PR open / Merged headings)');
   assert.deepEqual(all(page, '.task').map((t) => t.getAttribute('data-task')).sort(), ['4', '5'], 'phasezero\'s two tasks; petroit\'s is not here');
-  const backlog = all(page, '.col').find((c) => /^Backlog/.test(c.querySelector('h3').textContent));
+  const backlog = all(page, '.col').find((c) => /^Backlog/.test(c.querySelector('h2').textContent));
   assert.equal(all(backlog, '.task').length, 0, 'the Backlog is empty when no task is waiting (a task added with Later lands here: tests/js/tasks.test.mjs)');
-  const inProgress = all(page, '.col').find((c) => /^In progress/.test(c.querySelector('h3').textContent));
+  const inProgress = all(page, '.col').find((c) => /^In progress/.test(c.querySelector('h2').textContent));
   assert.deepEqual(all(inProgress, '.task').map((t) => t.getAttribute('data-task')), ['5']);
-  const needs = all(page, '.col').find((c) => /^Needs you/.test(c.querySelector('h3').textContent));
+  const needs = all(page, '.col').find((c) => /^Needs you/.test(c.querySelector('h2').textContent));
   assert.deepEqual(all(needs, '.task').map((t) => t.getAttribute('data-task')), ['4']);
   button(page, /\+\s*task/i).click();
   assert.equal(launched(env).at(-1).mode, 'task');
@@ -393,7 +393,7 @@ test('a backlog task is a card in the Backlog column of its own project, counted
   st.tasks.unshift(row, { ...row, id: 31, project: 'petroit', repo: 'api', title: 'Another project\'s idea' });
   const env = projectWorld({ state: st });
   const page = await go(env, '#/p/phasezero?tab=tasks');
-  const backlog = all(page, '.col').find((c) => /^Backlog/.test(c.querySelector('h3').textContent));
+  const backlog = all(page, '.col').find((c) => /^Backlog/.test(c.querySelector('h2').textContent));
   assert.deepEqual(all(backlog, '.task').map((t) => t.getAttribute('data-task')), ['30'], 'only this project\'s backlog card');
   const card = all(backlog, '.task')[0];
   assert.deepEqual(all(card, 'button').map((b) => b.textContent.trim()).filter((l) => /^(Start|Move…|Edit|Delete)$/.test(l)), ['Start', 'Move…', 'Edit', 'Delete']);

@@ -971,7 +971,7 @@ function agentsSummaryText(list) {
 const AGENTS_SEGS = [['waiting', 'need you'], ['working', 'working'], ['idle', 'idle'], ['done', 'done'], ['errored', 'error'], ['ended', 'ended']];
 
 function agentsSummaryNode() {
-  const node = el('nav', { class: 'summary sumbar sumbar-static', 'aria-label': 'Sessions by state' });
+  const node = el('nav', { class: 'summary sumbar sumbar-static', 'aria-label': 'Sessions by state', tabindex: '0' });
   const segs = {};
   for (const [k, label] of AGENTS_SEGS) {
     const n = el('span', { class: 'sum-n' });

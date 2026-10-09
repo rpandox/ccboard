@@ -413,6 +413,19 @@ test('first paint before the first state: skeleton rows, dropped when the state 
   assert.ok(qa(w, '.rrow').length > 0);
 });
 
+test('the usage card host stays out until the first state, so the skeleton rows are not followed by a card that the arriving cards push a screen down (#103)', () => {
+  const { w, mount } = home({ withState: false });
+  w.run('state = null');
+  mount();
+  assert.equal(q(w, '#usage-home').classList.contains('hidden'), true, 'no state yet: the card host is hidden');
+  assert.equal(qa(w, '.skel-rows').length, 1);
+  setState(w, fixtureState());
+  assert.equal(q(w, '#usage-home').classList.contains('hidden'), false, 'the first state shows it');
+  const again = home();
+  again.mount();
+  assert.equal(q(again.w, '#usage-home').classList.contains('hidden'), false, 'with a state at mount it is never hidden');
+});
+
 // ---------------------------------------------------------------- the summary line and its filters
 
 test('the summary line counts sessions per state, with the glyphs, and the error segment only when there is one', () => {

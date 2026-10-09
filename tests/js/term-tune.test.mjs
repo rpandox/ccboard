@@ -213,6 +213,28 @@ test('queueLabel / sendMode: queue while working, Send at the prompt, raw keys f
 
 // ---------------------------------------------------------------- the strip
 
+test('the context strip is a tab stop that Enter or Space opens (it was click only), and aria-expanded follows; a key inside it is left alone', async () => {
+  const p = await page();
+  const strip = p.termmain.querySelector('#ctxstrip');
+  assert.equal(strip.getAttribute('tabindex'), '0');
+  assert.equal(strip.getAttribute('aria-expanded'), 'false');
+  const key = (k, target) => { const e = { type: 'keydown', key: k, target, isComposing: false, defaultPrevented: false, preventDefault() { e.defaultPrevented = true; } }; strip.dispatchEvent(e); return e; };
+  const e = key('Enter', strip);
+  assert.equal(e.defaultPrevented, true);
+  assert.equal(strip.classList.contains('open'), true);
+  assert.equal(strip.getAttribute('aria-expanded'), 'true');
+  key(' ', strip);
+  assert.equal(strip.classList.contains('open'), false);
+  assert.equal(strip.getAttribute('aria-expanded'), 'false');
+  const other = key('x', strip);
+  assert.equal(other.defaultPrevented, false);
+  const inner = key('Enter', { tagName: 'A' });
+  assert.equal(inner.defaultPrevented, false, 'Enter on a link inside the strip follows the link');
+  assert.equal(strip.classList.contains('open'), false);
+  strip.click();
+  assert.equal(strip.getAttribute('aria-expanded'), 'true');
+});
+
 test('the strip sits between the context strip and the terminal as ONE row: the command chips in weight order, then Effort, then Model', async () => {
   const p = await page();
   const tune = p.tune();

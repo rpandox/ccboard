@@ -1027,14 +1027,14 @@ function makeTaskBoard(opts) {
       sig = next;
       const strips = taskChainStrips(tasks, info);
       chainsHost.textContent = '';
-      if (strips.length) chainsHost.append(el('h3', { class: 'tk-sec', text: 'Chains' }), ...strips);
+      if (strips.length) chainsHost.append(el('h2', { class: 'tk-sec', text: 'Chains' }), ...strips);
       chainsHost.classList.toggle('hidden', !strips.length);
       grid.textContent = '';
       const ctx = { chain: info };
       for (const [key, label] of BOARD_COLUMNS) {
         const items = tasks.filter((t) => t.column === key);
         if (!items.length && key !== 'backlog') continue;            // a column is drawn when it has a card; Backlog stays, it is where a task starts
-        const col = el('div', { class: 'col', 'data-col': key, role: 'group', 'aria-label': label }, el('h3', { text: `${label} (${items.length})` }));
+        const col = el('div', { class: 'col', 'data-col': key, role: 'group', 'aria-label': label }, el('h2', { text: `${label} (${items.length})` }));
         if (!items.length && key === 'backlog') col.append(el('div', { class: 'dim', text: o.empty || 'nothing queued: + task, then Later' }));
         for (const t of items) col.append(taskCard(t, ctx));
         grid.append(col);
@@ -1523,7 +1523,7 @@ function menu(button, items) {
 function emptyState(icon, title, hint) {
   return el('div', { class: 'nonideal empty' },
     el('div', { class: 'empty-visual' }, ic(icon || 'info-sign')),
-    el('h4', { class: 'empty-title', text: title || '' }),
+    el('h2', { class: 'empty-title', text: title || '' }),
     hint ? el('div', { class: 'empty-hint dim', text: hint }) : null);
 }
 

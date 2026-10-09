@@ -85,7 +85,7 @@ section { scroll-margin-top:64px; }
 
 /* tasks */
 .kanban { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:8px; }
-.col h3 { margin:0 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--dim); }
+.col > h2 { margin:0 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--dim); }
 .task { background:var(--panel); border:1px solid var(--line); border-radius:2px; padding:8px 10px; margin-bottom:8px; }
 .task.attn { border-color:var(--warn); }
 .task .title { font-weight:600; }
@@ -101,7 +101,7 @@ section { scroll-margin-top:64px; }
 .state.done { border-color:var(--mute-green-bd); color:var(--mute-green); }
 .state.errored { border-color:var(--bad); color:var(--bad-fg); background:var(--bad-bg); }
 .state.idle { border-color:var(--mute-slate-bd); color:var(--mute-slate); }
-.state.ended { opacity:.6; }
+.state.ended { opacity:.85; }
 /* state chips are Blueprint tags whose intent classes (working = primary blue, waiting, done, errored) colour them at (0,4,0): restated at (0,5,0) from the tokens
    so the accent stays cyan and the rest is the muted set: working sig, waiting amber, done green, errored rose, idle slate, ended dim */
 .bp5-dark .state.bp5-tag.bp5-minimal.working { color:var(--sig); background:var(--sig-bg); }
@@ -133,7 +133,9 @@ textarea.bp5-text-area { min-height:80px; resize:vertical; }
 .bp5-dark .bp5-input:focus { outline:none; box-shadow:inset 0 0 0 1px var(--sig), 0 0 0 1px var(--sig); }
 .bp5-dark .bp5-text-area:focus, .bp5-dark select:focus { outline:none; border-color:var(--sig); box-shadow:0 0 0 1px var(--sig); }
 .state, .badge { white-space:nowrap; }
-.state.ended { opacity:.6; }
+/* text for assistive technology only (an empty column header, v0.5.27): out of the layout, still read */
+.sr-only { position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden; clip:rect(0 0 0 0); clip-path:inset(50%); white-space:nowrap; border:0; }
+.state.ended { opacity:.85; }   /* faded but still 4.5:1 for the --dim text on the card and the panel (axe color-contrast; .6 gave 3.4) */
 .bp5-tag.bp5-minimal:not([class*=intent]) { color:var(--dim); }
 form.inline { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px; }
 form.inline input[type=text] { flex:1 1 160px; min-width:0; }

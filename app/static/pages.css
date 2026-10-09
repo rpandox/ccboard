@@ -1217,6 +1217,7 @@ html.quad-fs #page .quad .q-chips { padding-bottom:4px; }
 .task .tk-issue { margin-top:8px; display:flex; flex-direction:column; gap:6px; }
 .task .tk-issue-body { margin:0; padding:6px 8px; border:1px solid var(--line-soft); font-size:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; max-height:200px; overflow:auto; }
 .task .tk-issue-link { font-variant-numeric:tabular-nums; }
+.task a.tk-issue-link { text-decoration:underline; text-underline-offset:2px; }   /* a link inside running text is told apart by more than its colour (axe link-in-text-block) */
 
 /* ===== v0.5.20 Memory page (pages/memory.js): header, tile, tabs, palace, timeline, summaries, search, gotchas strip. Class ladders only: nothing here is written as a style. ===== */
 .memory-page { display:flex; flex-direction:column; gap:10px; padding-bottom:24px; min-width:0; }

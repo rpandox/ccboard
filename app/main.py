@@ -41,6 +41,7 @@ from . import platform as plat
 from . import mcp, mcp_remote, mcp_tokens
 from .auth import csrf_ok, identify
 from .config import settings
+from .staticgz import GzipStaticFiles
 from .devguard import require_real_launch_ok
 from .db import DB, now as db_now
 
@@ -181,6 +182,7 @@ async def lifespan(app: FastAPI):
     taskflow_rt = taskflow.Runtime(db, start_session=_taskflow_start, end_session=_end_session, perm_pending=_permission_pending)
     taskflow_rt.start()                                   # after the recovery: its sweep must not see a session the reboot has not relaunched yet
     log.info("%s", startup_line())
+    threading.Thread(target=static_mount.warm, name="static-gzip", daemon=True).start()          # the gzip of every script and style, before the first page load asks for it
     log.info("runtime %s, image %s", settings.runtime, settings.image_version or "-")
     yield
     taskflow_rt.stop()
@@ -4265,4 +4267,5 @@ class _DevTty:
 
 
 app.mount("/tty", _DevTty(), name="dev-tty")
-app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+static_mount = GzipStaticFiles(directory=str(STATIC))             # gzip for static text files only (app/staticgz.py); never a middleware, the SSE stream must not be buffered
+app.mount("/static", static_mount, name="static")

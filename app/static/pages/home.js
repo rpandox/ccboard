@@ -196,7 +196,7 @@ function renderTasks() {
   for (const [key, label] of BOARD_COLUMNS) {
     const items = list.filter(t => t.column === key);
     if (!items.length && key !== 'backlog') continue;                // Backlog stays (it is where a task starts); an empty In progress / PR / Merged column is only a heading
-    const col = el('div', { class: 'col', 'data-col': key, role: 'group', 'aria-label': label }, el('h3', { text: `${label} (${items.length})` }));
+    const col = el('div', { class: 'col', 'data-col': key, role: 'group', 'aria-label': label }, el('h2', { text: `${label} (${items.length})` }));
     if (!items.length && key === 'backlog') col.append(el('div', { class: 'dim', text: 'nothing queued: + task, then Later' }));
     for (const t of items) col.append(taskCard(t));
     grid.append(col);
@@ -1035,6 +1035,7 @@ function homeRender(st) {
   const s = st || (typeof state !== 'undefined' ? state : null);
   if (!r || !s) return;
   Pages.dropSkeleton();
+  if (r.usageHost) r.usageHost.classList.remove('hidden');
   homeAwayTouch(s);
   homeAwayFetchLim();
   const model = homeBuildNow(s);
@@ -1104,7 +1105,9 @@ registerPage('home', {
       el('button', { class: 'primary', type: 'button', onclick: () => Shell.openCreate('session'), text: 'New session' }),
       el('button', { type: 'button', onclick: () => Shell.openCreate('task'), text: 'New task' })));
     idle.classList.add('home-idle', 'hidden');
-    const usageHost = el('div', { id: 'usage-home', class: 'home-usage' });
+    // The usage card sits under everything else, so it stays out until the first state: with the skeleton above it, it would be on screen and then pushed a screen down
+    // by the cards and projects that arrive (#103, layout shift 0.8 at 390 px).
+    const usageHost = el('div', { id: 'usage-home', class: currentState() ? 'home-usage' : 'home-usage hidden' });
     root.append(
       el('div', { class: 'page-head' }, el('h1', { text: 'Home' }), el('div', { class: 'actions' }, group)),
       summary, homeInstallHint(),
@@ -1119,7 +1122,7 @@ registerPage('home', {
     });
     let usage = null;
     if (typeof Widgets !== 'undefined' && Widgets && typeof Widgets.usageCard === 'function') { try { usage = Widgets.usageCard(usageHost); } catch (e) { console.error('ccboard usage card', e); } }
-    homePage.refs = { summary, group, away, awaySig: null, inboxHost, inboxList: null, sched, schedSig: null, scanSlow, idle, idleHint, blocksHost, note, clear, empty, usage,
+    homePage.refs = { summary, group, away, awaySig: null, inboxHost, usageHost, inboxList: null, sched, schedSig: null, scanSlow, idle, idleHint, blocksHost, note, clear, empty, usage,
       blocks: makeKeyedList(blocksHost, { key: (b) => b.key, create: (b) => (b.kind === 'older' ? homeOlderNode(b) : homeBlockNode(b)), patch: (n, b) => n.ccPatch(b) }) };
     startAgeTicker();
   },

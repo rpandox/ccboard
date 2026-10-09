@@ -78,3 +78,64 @@ def test_reduced_motion_is_honoured_for_everything():
     tokens = (STATIC / "tokens.css").read_text()
     m = re.search(r"@media \(prefers-reduced-motion:\s*reduce\)\s*\{\s*\*,\s*\*::before,\s*\*::after\s*\{([^}]*)\}", tokens)
     assert m and "animation-duration" in m.group(1) and "transition-duration" in m.group(1), "tokens.css must cut every animation and transition for reduced motion"
+
+
+# ---- the axe-core findings of the #45 pass (scripts/dev/axe-run.sh): what was fixed, pinned in the source so it does not come back ----
+
+SECTION_HEADS = ("set-h", "mem-wing-name", "mem-k", "mem-sec", "mem-day", "empty-title", "pj-sec")
+
+
+def _css_all():
+    return "\n".join(p.read_text() for p in sorted(STATIC.glob("*.css")))
+
+
+def _js_all():
+    return "\n".join(p.read_text() for p in list(STATIC.glob("*.js")) + list(STATIC.glob("pages/*.js")))
+
+
+def test_ended_chip_keeps_its_contrast():
+    """axe color-contrast: the dim text of an ended state chip, faded by opacity .6, measured 3.4:1; .85 keeps it faded and 4.5:1 or better."""
+    ops = [float(m.group(1)) for m in re.finditer(r"\.state\.ended\s*\{\s*opacity:\s*(\.?\d*\.?\d+)", _css_all())]
+    assert ops, "no .state.ended opacity rule: the scan is broken"
+    assert all(o >= 0.8 for o in ops), f".state.ended fades below 0.8: {ops}"
+
+
+def test_issue_link_in_text_is_underlined():
+    """axe link-in-text-block: the #N link on a task card sits in running text and is told apart by more than colour."""
+    assert re.search(r"\.task a\.tk-issue-link\s*\{[^}]*text-decoration:\s*underline", _css_all())
+
+
+def test_section_headings_sit_one_level_under_the_page_h1():
+    """axe heading-order: these headings follow a page h1 (or a sheet's h2) directly, so they are h2; they are styled by class and every rule sets size and margin."""
+    js = _js_all()
+    for cls in SECTION_HEADS:
+        assert not re.search(r"el\('h[3-6]',\s*\{\s*class:\s*'" + cls + r"\b", js), f"{cls} must not be an h3 to h6 under a page h1"
+        assert re.search(r"el\('h2',\s*\{\s*class:\s*'" + cls + r"\b", js), f"{cls} should be built as an h2"
+    # the kanban columns: home.js renderTasks and the shared board in components.js
+    assert len(re.findall(r"class: 'col', 'data-col': key[^\n]*el\('h2'", js)) == 2
+    assert not re.search(r"class: 'col', 'data-col': key[^\n]*el\('h3'", js)
+    rules = _rules(_css_all())
+    assert any(s.strip() == ".col > h2" and "font-size" in b and "margin" in b for s, b in rules)
+    for cls in SECTION_HEADS:
+        hits = [b for s, b in rules if re.search(r"\." + cls + r"\s*$", s.strip())]
+        assert hits, f"no css rule for .{cls}"
+        assert any("font-size" in b and "margin" in b for b in hits), f".{cls} must set its own size and margin (the h2 default would show otherwise)"
+
+
+def test_the_sidebar_resize_strip_is_inside_a_landmark():
+    """axe region: the strip used to be a bare child of #app, outside every landmark."""
+    assert re.search(r"sb-resize-wrap'[^)]*role:\s*'region'[^)]*'aria-label'", (STATIC / "shell.js").read_text())
+    assert ".sb-resize-wrap" in _css_all()
+
+
+def test_agents_summary_strip_scrolls_with_a_focusable_stop():
+    """axe scrollable-region-focusable: the Agents legend scrolls sideways at 390 px and holds no link, so the strip itself takes the focus."""
+    assert re.search(r"'summary sumbar sumbar-static'[^}]*tabindex:\s*'0'", (STATIC / "pages" / "agents.js").read_text())
+
+
+def test_usage_details_column_header_has_text():
+    """axe empty-table-header: a header cell with only an aria-label is empty; the text is visually hidden instead."""
+    usage = (STATIC / "pages" / "usage.js").read_text()
+    assert "el('th', { 'aria-label': 'Details' })" not in usage
+    assert re.search(r"el\('th',\s*\{\s*scope:\s*'col'\s*\},\s*el\('span',\s*\{\s*class:\s*'sr-only',\s*text:\s*'Details'", usage)
+    assert re.search(r"\.sr-only\s*\{[^}]*clip", _css_all())

@@ -85,9 +85,9 @@ const posts = (env, re) => calls(env).filter((c) => c.method === 'POST' && re.te
 const toasts = (env) => plain(env.w.get('__toasts'));
 const navs = (env) => plain(env.w.get('__nav'));
 const card = (env, id) => all(env.page(), '.task').find((t) => t.getAttribute('data-task') === String(id));
-const colOf = (n) => { const c = n && n.closest('.col'); return c ? c.querySelector('h3').textContent.replace(/\s*\(\d+\)\s*$/, '') : null; };
-const colTitles = (env) => all(env.page(), '.col h3').map((h) => h.textContent.replace(/\s*\(\d+\)\s*$/, ''));
-const cardsIn = (env, label) => { const c = all(env.page(), '.col').find((x) => x.querySelector('h3').textContent.startsWith(label)); return c ? all(c, '.task').map((t) => Number(t.getAttribute('data-task'))) : []; };
+const colOf = (n) => { const c = n && n.closest('.col'); return c ? c.querySelector('h2').textContent.replace(/\s*\(\d+\)\s*$/, '') : null; };
+const colTitles = (env) => all(env.page(), '.col h2').map((h) => h.textContent.replace(/\s*\(\d+\)\s*$/, ''));
+const cardsIn = (env, label) => { const c = all(env.page(), '.col').find((x) => x.querySelector('h2').textContent.startsWith(label)); return c ? all(c, '.task').map((t) => Number(t.getAttribute('data-task'))) : []; };
 const startBtn = (n) => button(n, /^Start$/);
 const sendBtn = (n) => button(n, /^Move/i);
 const ownerChip = (n) => n.querySelector('.tk-owner');
@@ -133,7 +133,7 @@ test('the Backlog column comes first and says what to do when it is empty', asyn
   const env = tasksWorld({ state: stateWith([row(5, { phase: 'running', column: 'in_progress', tmux: 'petroit--api--s4', title: 'Running one', prompt: null, session: { state: 'working', state_at: new Date().toISOString(), last_message: '', needs_attention: false, command: 'claude' } })]) });
   await go(env, PETROIT);
   assert.equal(colTitles(env)[0], 'Backlog');
-  assert.match(textOf(all(env.page(), '.col').find((c) => /^Backlog/.test(c.querySelector('h3').textContent))), /nothing queued|\+ task|add/i);
+  assert.match(textOf(all(env.page(), '.col').find((c) => /^Backlog/.test(c.querySelector('h2').textContent))), /nothing queued|\+ task|add/i);
   assert.ok(button(env.page(), /\+\s*task/i), 'with the + task button one tap away');
 });
 

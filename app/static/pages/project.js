@@ -404,7 +404,7 @@ function pjSchedulesView(P, route) {
       for (const j of jobs) list.append(pjJobRow(j, runs));
       const cards = pjChainCards(chained);
       chainsHost.textContent = '';
-      if (cards.length) chainsHost.append(el('h3', { class: 'pj-sec', text: 'Chains' }), ...cards);
+      if (cards.length) chainsHost.append(el('h2', { class: 'pj-sec', text: 'Chains' }), ...cards);
       chainsHost.classList.toggle('hidden', !cards.length);
     },
     onRoute(rt) { this.update(pjState(), rt); },

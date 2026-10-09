@@ -548,7 +548,9 @@ Usage.build = function (root, route) {
   }
   R.foot = el('p', { class: 'dim unote ufoot', 'data-foot': '' });              // API-equivalent, not an invoice, and the price table's date (issue #95)
   R.mem = el('div', { class: 'mem-usage hidden' });                              // the claude-mem health tile (pages/memory.js), after the work sections; hidden without state.memory
-  root.append(el('div', { class: 'usage-page', 'data-usage': '' }, head, R.alert, el('div', { class: 'ugrid' }, ...sections), R.foot, R.mem));   // not 'usage': style.css owns that legacy strip rule
+  // ubooting (charts.css): until the first summary is in, only the Accounts section shows; the sections under it would be on screen as skeletons and then jump down as it grows (#103)
+  R.page = el('div', { class: 'usage-page ubooting', 'data-usage': '' }, head, R.alert, el('div', { class: 'ugrid' }, ...sections), R.foot, R.mem);
+  root.append(R.page);   // not 'usage': style.css owns that legacy strip rule
   return P;
 };
 
@@ -764,6 +766,7 @@ Usage.paintAll = function (P) {
 };
 
 Usage.paintSummary = function (P) {
+  if (P.refs.page && (Usage.summaryOf(P) || Usage.sumDone(P))) P.refs.page.classList.remove('ubooting');          // the first answer (or its error) is in: the rest of the page takes its place at once
   Usage.checkAccount(P);
   Usage.paintFoot(P);
   Usage.paintGauges(P);
@@ -1610,8 +1613,8 @@ Usage.paintSessions = function (P) {
     rec.tr.classList.toggle('hidden', !open);
     if (open) Usage.fillDetail(P, rec);
   }
-  const head = el('tr', {}, el('th', { 'aria-label': 'Details' }), el('th', { scope: 'col', text: 'Session' }), el('th', { scope: 'col', class: 'c-num', text: '$' }),
-    el('th', { scope: 'col', class: 'c-num c-tok', text: 'Tokens' }), el('th', { scope: 'col', class: 'c-num c-hrs', text: 'Hours' }), el('th', { 'aria-label': 'Open' }));
+  const head = el('tr', {}, el('th', { scope: 'col' }, el('span', { class: 'sr-only', text: 'Details' })), el('th', { scope: 'col', text: 'Session' }), el('th', { scope: 'col', class: 'c-num', text: '$' }),
+    el('th', { scope: 'col', class: 'c-num c-tok', text: 'Tokens' }), el('th', { scope: 'col', class: 'c-num c-hrs', text: 'Hours' }), el('th', { scope: 'col' }, el('span', { class: 'sr-only', text: 'Open' })));
   Usage.setBody(P, 'sessions', el('div', { class: 'utable' }, el('table', { class: 'table usessions' }, el('thead', {}, head), tbody)),
     el('p', { class: 'dim unote', text: 'Tap a row for its context and cost over 24 h. Open jumps to the terminal of a session that is still live.' }));
 };

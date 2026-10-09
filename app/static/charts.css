@@ -132,6 +132,9 @@ html.force-coarse #page .usec .btn, html.force-coarse #page .usec button { min-h
 }
 #page .ubody { min-width:0; }
 #page .usk { min-height:120px; }
+/* Until the first summary is in (pages/usage.js drops .ubooting), the sections under Accounts keep their place but stay unpainted: as skeletons they would be on screen and then jump
+   down by the height Accounts gains, which is most of the page's layout shift (Lighthouse CLS 0.7-0.8). visibility, not display: the Limits chart must be able to measure its box. */
+#page .usage-page.ubooting .ugrid > .usec:not([data-sec="accounts"]) { visibility:hidden; }
 #page .unote { margin:6px 0 0; }
 #page .usage-page .page-head .actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:6px 12px; }     /* the dollar basis and the range side by side, wrapping at 390 px */
 #page .ufoot { margin:14px 0 0; font-size:12px; line-height:1.45; }
