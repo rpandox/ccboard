@@ -2,9 +2,11 @@
 tail_auth_evidence / auth_signal, codex.auth_verdict / CodexAgent.auth_probe, parse_headless's auth_failure) and the Tailer raising and
 clearing kv login_problem for the rollout's owner account.
 
-Every fixture here is SYNTHETIC (tests/fixtures/codex_auth/*_synthetic.*, codex_exec/auth_failed_synthetic.jsonl): what a dead login prints on
-codex-cli 0.160 was not captured on the box, so the texts follow Codex's source and docs. Temp CODEX_HOME, a bare DB, no real codex; no test
-opens or parses an auth.json.
+Provenance (codex-cli 0.161.0 on the box, 2026-10-09). OBSERVED: a working turn's token_count event (codex_auth/rollout_ok_token_count_0161.jsonl),
+the TUI bootstrap error "account/read failed ... timed out" and the /tmp PATH-aliases warning (both texts are in the table below as NOT auth
+failures). ASSUMED, never captured: every `codex login status` string and the 401 / revoked refresh token error item
+(codex_auth/*_synthetic.*, codex_exec/auth_failed_synthetic.jsonl): they follow Codex's source and docs. codex_auth/login_states_0161.json
+marks each record observed or not. Temp CODEX_HOME, a bare DB, no real codex; no test opens or parses an auth.json.
 """
 import json
 from pathlib import Path
@@ -39,6 +41,14 @@ REVOKED = ("unexpected status 401 Unauthorized: Your access token could not be r
     ("context window exceeded", False),
     ("stream disconnected before completion: error sending request for url (https://example.invalid/responses)", False),
     ("Reconnecting... 2/5 (timeout)", False),
+    # OBSERVED on codex-cli 0.161.0 (box checks 86, 87): real failures and noise that are not a dead login
+    ("Error: account/read failed during TUI bootstrap: account/read failed: workspace routing discovery timed out (code -32603)", False),
+    ('WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir "/tmp"', False),
+    ("Follow these steps to sign in with ChatGPT using device code authorization:", False),
+    ("Continue only if you started this login in Codex. If a website or another person gave you this code, cancel.", False),
+    # shapes a pane or a Stop payload could carry (ASSUMED): the TUI prefixes an error line with a bullet
+    ("■ unexpected status 401 Unauthorized: Your access token could not be refreshed. Please log out and sign in again.", True),
+    ("Your session has expired. Please log in again.", True),
     ("", False), (None, False),
 ])
 def test_codex_auth_failure_table(text, auth):
@@ -101,6 +111,76 @@ def verdict_of(rc, so, se):
         return codex.CodexAgent._login_verdict("/fake/codex")
     finally:
         codex._run = real
+
+
+def _states():
+    return json.loads((FIX / "codex_auth" / "login_states_0161.json").read_text())
+
+
+def test_the_states_fixture_says_which_text_is_observed_and_which_is_assumed():
+    st = _states()
+    assert "ASSUMED" in st["_note"] and "observed" in st["_note"]
+    # captured on the box (codex-cli 0.161.0, 2026-10-09): logged in (on stderr), logged out and unreadable via a scratch CODEX_HOME;
+    # a revoked login needs a real account the server has revoked, so it stays assumed
+    for name, seen in (("logged_in", True), ("logged_out", True), ("unreadable", True), ("expired_revoked", False)):
+        ls = st[name]["login_status"]
+        assert ls["observed"] is seen and ls["basis"], f"{name}: the fixture must say whether its text was captured on the box"
+        roll = st[name]["rollout"]
+        assert roll is None or (isinstance(roll["observed"], bool) and roll["basis"])
+    assert st["logged_in"]["rollout"]["observed"] is True and st["expired_revoked"]["rollout"]["observed"] is False
+    assert all(t["observed"] is True and t["basis"] for t in st["not_an_auth_failure"])
+    assert not any(login_problem.codex_auth_failure(t["text"]) for t in st["not_an_auth_failure"])
+
+
+def test_the_observed_login_status_texts_reduce_as_expected():
+    """The exact 0.161.0 answers captured on the box: the logged-in line comes on stderr; an empty or garbage auth.json is an error, never ok."""
+    st = _states()
+    li, lo, un = st["logged_in"]["login_status"], st["logged_out"]["login_status"], st["unreadable"]["login_status"]
+    v = verdict_of(li["rc"], li["stdout"], li["stderr"])
+    assert v["loggedIn"] is True and v["authMethod"] == "chatgpt"
+    v = verdict_of(lo["rc"], lo["stdout"], lo["stderr"])
+    assert v["loggedIn"] is False and "error" not in v
+    for key in ("stderr_empty_file", "stderr_garbage_file"):
+        v = verdict_of(un["rc"], un["stdout"], un[key])
+        assert v["loggedIn"] is False and v["error"] == "codex login status exited 1", key
+
+
+@pytest.mark.parametrize("state", ["logged_in", "logged_out", "expired_revoked"])
+def test_auth_probe_rule_over_the_three_states(state):
+    """login status answer + rollout tail, both from fixtures, through the adapter's own reductions (no codex, no auth.json)."""
+    rec = _states()[state]
+    ls = rec["login_status"]
+    login = verdict_of(ls["rc"], ls["stdout"], ls["stderr"])
+    evidence = None
+    if rec["rollout"]:
+        evidence = cr.tail_auth_evidence(cr.parse_tail((FIX / "codex_auth" / rec["rollout"]["file"]).read_text()))
+    got = codex.auth_verdict(login, evidence)
+    assert got["state"] == rec["expect"]
+    assert got["source"] == ("login_status" if rec["expect"] == "missing" else "rollout")
+    if rec["expect"] == "rejected":
+        assert "401" in got["message"]
+    # the login file alone (no rollout evidence) is never ok, in any of the three
+    assert codex.auth_verdict(login, None)["state"] in ("missing", "unknown")
+
+
+def test_the_observed_working_turn_is_read_as_ok_evidence_and_its_stats_survive():
+    parsed = cr.parse_tail((FIX / "codex_auth" / "rollout_ok_token_count_0161.jsonl").read_text())
+    ev = cr.tail_auth_evidence(parsed)
+    assert ev["kind"] == "ok" and ev["at"] == pytest.approx(1791570300, abs=1)
+    assert parsed["error"] is None and parsed["last_token_usage"]["total"] == 17038
+
+
+def test_login_status_with_the_tmp_warning_on_stderr_still_reads_as_logged_in():
+    """A scratch-home probe (CODEX_HOME under /tmp) prints Codex's PATH-aliases WARNING on stderr beside the answer (OBSERVED for `login
+    --device-auth` on 0.161.0, assumed to be the same for `login status`). The warning must neither make a logged-in answer an error nor a
+    logged-out answer look logged in."""
+    warn = 'WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir "/tmp"\n'
+    assert verdict_of(0, "Logged in using ChatGPT\n", warn)["loggedIn"] is True
+    out = verdict_of(1, "", warn + "Not logged in\n")
+    assert out["loggedIn"] is False and "error" not in out
+    odd = verdict_of(1, "", warn)                                    # only the warning, exit 1: unreadable, not "missing"
+    assert odd["loggedIn"] is False and "error" in odd
+    assert codex.auth_verdict(odd, None)["state"] == "unknown"
 
 
 def test_auth_verdict_states_from_the_login_status_fixtures():

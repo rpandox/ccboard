@@ -1785,7 +1785,12 @@
       "worktree": "/home/ccboard/projects/ccboard/ccboard/.ccboard/worktrees/nightly-review-of-main-20261003-0230",
       "branch": "worktree-nightly-review-of-main-20261003-0230",
       "task_id": 27,
-      "agent": "codex"
+      "agent": "codex",
+      "usage": {
+        "input_tokens": 41200,
+        "cached_input_tokens": 30720,
+        "output_tokens": 1830
+      }
     },
     {
       "id": 3,
@@ -1801,7 +1806,8 @@
       "worktree": null,
       "branch": null,
       "task_id": null,
-      "agent": "claude"
+      "agent": "claude",
+      "usage": null
     },
     {
       "id": 2,
@@ -1817,7 +1823,8 @@
       "worktree": null,
       "branch": null,
       "task_id": null,
-      "agent": "claude"
+      "agent": "claude",
+      "usage": null
     },
     {
       "id": 1,
@@ -1833,7 +1840,8 @@
       "worktree": null,
       "branch": null,
       "task_id": null,
-      "agent": "claude"
+      "agent": "claude",
+      "usage": null
     }
   ],
   "clone_queue": {

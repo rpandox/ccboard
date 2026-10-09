@@ -14,6 +14,19 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 - Board-started sessions are priced from Claude Code's own statusline figure; the price table gains Haiku 5.5, prices 1-hour cache writes at 2x input and Sonnet 5.5 cache reads at 0.20.
 - The claude-mem worker 13.35.0 is the tested version; the memory API notes are updated from a box check.
 - README: restoring from a backup (a drill on the box: database and one transcript folder in 3 s, everything in 10 s, a backup branch in 13 s), why the worktree hooks stay unregistered, the permission-hook probe, and what the devcontainer needs on the host. The shadow compose file no longer mounts live data.
+## v0.5.30 - 2026-10-09
+
+### Added
+- Codex tuning from the terminal page and the quad tile: model through Codex's own picker, and reasoning, approvals and sandbox by restarting the session into the same conversation (the board shows the exact command first and runs nothing until you press Restart). `untrusted`, `on-failure` and `danger-full-access` are never offered.
+- A dead Codex login raises the same banner and notification as a dead Claude login, from Codex's own error item in the session log; `codex login status` texts are recorded from the box.
+- Scheduled Codex runs keep their token usage, and a finished run's task card moves to Done.
+
+### Fixed
+- A Codex started by hand in the same folder no longer takes over an idle board session.
+- Settings > Agents lists the Codex sessions started outside the board again (Codex 0.161 changed how it marks them).
+- Board-started Codex sessions skip Codex's update dialog (whose default answer runs a global npm install); a trust or update dialog shows as needs you and is never answered by the board; a prompt is never typed into a pane that went back to the shell, and that session shows as errored.
+- The launch preview for Codex now shows every flag the board passes.
+- Deleting a scheduled job removes its runs, so a new job never shows an old job's history.
 
 Upgrade: nothing to do.
 

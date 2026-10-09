@@ -29,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
-from .agents import codex_discovery
+from .agents import codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
 from .agents.base import LaunchReq
@@ -417,6 +417,27 @@ def _hooks_missing(row: dict) -> str | None:
         return None
 
 
+def _codex_launch_view(name: str, row: dict, command: str | None, view: dict) -> None:
+    """A Codex row that has sent no hook yet (Codex's first hook comes with its first turn) is either still starting, waiting behind a
+    dialog nobody answered (update, trust: view.pane_dialog, shown as needing a person, never answered by the board), or gone back to its
+    login shell (LAUNCH_GRACE s after the row was made: the row becomes errored with the reason, once). Never raises into the 3 s poll."""
+    try:
+        made = _parse_at(row.get("created_at"))
+        if made is not None and (datetime.now(timezone.utc) - made).total_seconds() < LAUNCH_GRACE:
+            return
+        block = _pane_block(name, row, command, invalidate=False)
+        if block is None:
+            return
+        if block[0] == "agent_exited":
+            fresh = db.open_row(name) or {}
+            view.update(state=fresh.get("state") or "errored", state_at=fresh.get("state_at"), last_event=fresh.get("last_event"),
+                        last_message=fresh.get("last_message"), needs_attention=True)
+        else:
+            view.update(pane_dialog=block[1], needs_attention=True, last_message=block[1])
+    except Exception as e:
+        log.debug("codex launch check failed for %s: %s", name, e.__class__.__name__)
+
+
 def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
     """tmux sessions (non-internal) merged with DB rows. Returns (sessions, tmux_down).
 
@@ -467,6 +488,8 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
         }
         if name in waits:                            # only a 'waiting' session has one: what it waits on (see _wait_kind_of)
             out[name]["wait_kind"] = waits[name]
+        if rich and row.get("agent") == "codex" and not row.get("state"):
+            _codex_launch_view(name, row, s["command"], out[name])
     if rich and out:
         snap = _registry_snapshot({n: s["pid"] for n, s in live.items() if s.get("pid")})
         if snap:
@@ -1961,6 +1984,9 @@ def _dispatch_session(t: dict, body: DispatchIn, prompt: str | None = None):
         kind = _wait_kind_of(db.last_event(name))
         if kind != "idle_prompt":
             return _conflict_body("the session is waiting on a prompt (permission or dialog): answer it first", state=state, wait_kind=kind)
+    block = _pane_block(name, row)
+    if block:
+        return _conflict_body(block[1], state=state, pane=block[0])
     task_path = projects.repo_path(t["project"], t["repo"])
     prompt = _clean_paste(t["prompt"] if prompt is None else prompt)
     if projects.repo_path(sproject, srepo) != task_path:
@@ -2386,6 +2412,9 @@ def api_task_fix_ci(tid: int):
                        claude_session_id=t.get("claude_session_id"), add_dirs=[], agent=ag.name, task_id=t["id"])
         relaunched = True
         time.sleep(4)  # let claude come up before pasting
+    block = _pane_block(name, db.open_row(name), shell=not relaunched)
+    if block:
+        raise projects.Conflict(block[1])
     tmux.paste_text(name, prompt, enter=True)
     db.add_event(name, "FixCI", run_name, f"CI logs sent ({len(log_text)} chars)", {"run": run_name}, agent=t.get("agent"))
     db.set_state(name, "working", "FixCI", prompt=prompt[:500])
@@ -2807,7 +2836,11 @@ def api_job_toggle(jid: int):
 def api_job_delete(jid: int):
     if not db.job_get(jid):
         raise projects.NotFound("no such job")
-    db.job_delete(jid)
+    for rid in db.job_delete(jid):                       # its runs go with it (job ids are reused): so do their output files
+        try:
+            (Path(settings.data_dir) / "runs" / f"{rid}.txt").unlink(missing_ok=True)
+        except OSError as e:
+            log.debug("run output %s not removed: %s", rid, e)
     _invalidate_scan()
     return {"deleted": jid}
 
@@ -2971,6 +3004,13 @@ def _start_session_row(name: str, project: str, repo: str, session: str, launche
     row_id = db.add_session(tmux_name=real, project=project, repo=repo, name=session, launcher=launcher, cmd=cmd_line,
                             claude_session_id=claude_session_id, add_dirs=add_dirs, agent=agent, cwd=cwd, opts=opts,
                             account=account)
+    if agent == "codex":                                      # what -a / -s the line runs under, for the Tune's Approvals and Sandbox rows (None: config.toml decides)
+        try:
+            perm = agents.get("codex").permissions_of(opts, cmd_line)
+            if perm:
+                db.update_flags(real, {"perm": perm})
+        except Exception as e:
+            log.debug("permissions of %s unknown: %s", real, e)
     if cmd_line:
         try:
             tmux.send_line(real, cmd_line)
@@ -3348,8 +3388,54 @@ def _agent_row(name: str) -> tuple[dict | None, object | None, JSONResponse | No
         return None, None, _terminal_refusal("not_an_agent", "this is a shell, not an agent session", row, None)
 
 
+LAUNCH_GRACE = 20                                # s after a session row is made in which a login shell in its pane is the launch line being typed
+
+
+def _pane_block(name: str, row: dict | None, command: str | None = None, *, shell: bool = True, invalidate: bool = True) -> tuple[str, str] | None:
+    """(code, message) when the board must not type into this Codex pane, else None (any other agent: None). `agent_exited`: the pane's
+    foreground process is the login shell (codex quit; a prompt typed now would run as a shell command); the row is marked errored with
+    the reason. `dialog`: the screen shows Codex's update dialog (its default, Update now, runs npm install -g) or its trust dialog; the
+    board never answers one. Box checks 86 and 92. A tmux hiccup is no evidence: None. `invalidate` is off inside the state builder,
+    which holds the scan lock."""
+    if (row or {}).get("agent") != "codex":
+        return None
+    try:
+        cmd = command if command is not None else tmux.pane_info(name).get("cmd")
+        if shell and codex_pane.shell_foreground(cmd):
+            reason = codex_pane.exit_reason(tmux.capture(name, lines=codex_pane.TAIL_LINES))
+            _mark_exited(name, row, reason, invalidate)
+            return "agent_exited", reason
+        kind = codex_pane.dialog(tmux.capture(name, lines=codex_pane.TAIL_LINES))
+    except (tmux.TmuxError, tmux.TmuxDown, OSError):
+        return None
+    return ("dialog", codex_pane.NOTES[kind]) if kind else None
+
+
+def _mark_exited(name: str, row: dict, reason: str, invalidate: bool = True) -> None:
+    """The row of a Codex whose pane went back to the login shell becomes errored, once, with the reason (and a notice)."""
+    if row.get("state") in ("ended", "errored") and row.get("last_message") == reason:
+        return
+    try:
+        db.set_state(name, "errored", "AgentExited", message=reason, attention=True)
+        db.add_event(name, "AgentExited", None, reason, {}, agent="codex")
+        notify.notify_session(name, "errored", reason, "agent_exited")
+    except Exception as e:
+        log.warning("marking %s errored after codex left its pane failed: %s", name, e)
+    if invalidate:
+        _invalidate_scan()
+
+
 def _typing_refusal(name: str, row: dict, queue: bool = False) -> JSONResponse | None:
-    """None when typing into the pane is safe, else the 409. compacting and a permission (pending, or the dialog waiting for its
+    """None when typing into the pane is safe, else the 409: the row's state (_state_refusal), then what a Codex pane shows (_pane_block)."""
+    refusal = _state_refusal(name, row, queue)
+    if refusal is not None:
+        return refusal
+    block = _pane_block(name, row)
+    return _terminal_refusal(block[0], block[1], row, None) if block else None
+
+
+def _state_refusal(name: str, row: dict, queue: bool = False) -> JSONResponse | None:
+    """None when the row's state allows typing, else the 409. compacting and a permission (pending, or the dialog waiting for its
     answer) always refuse; `working` refuses unless `queue` (Claude queues what is typed during a turn)."""
     flags = row.get("flags") or {}
     state, kind = row.get("state"), flags.get("wait_kind")
@@ -3509,6 +3595,8 @@ def api_command(name: str, request: Request, body: CommandIn | None = None):
     spec = allow.get(key)
     if spec is None:
         raise projects.BadRequest("unknown command; allowed: " + ", ".join(dict.fromkeys(s.cmd for s in allow.values())))
+    if getattr(spec, "drive", "inline") == "restart":    # issue #2: no live command takes it; the session restarts with the new launch flag
+        raise projects.BadRequest(f"{spec.label.lower()} is a launch flag in this agent: change it with POST /api/sessions/{name}/restart")
     if getattr(spec, "drive", "inline") != "inline":     # v0.5.21: a picker is driven by POST /tune, never typed with an argument
         raise projects.BadRequest(f"{spec.cmd} opens a picker in this agent: set {spec.label.lower()} with POST /api/sessions/{name}/tune")
     arg = _clean_line(b.arg, "arg", CMD_ARG_MAX) if b.arg is not None else ""
@@ -3549,6 +3637,8 @@ class TuneIn(BaseModel):
     value: object = None
 
 
+# Codex's reasoning and permissions stay accepted here for API compatibility, but the Tune no longer sends them (issue #2): their key paths were never
+# recorded on the box (the cursor of /model's second step and of /permissions), so they answer verified false; the Tune restarts the session instead (POST /restart).
 TUNE_SETTINGS = {"claude": ("effort", "ultracode"), "codex": ("model", "reasoning", "permissions")}
 TUNE_PANE_ONLY = ("ultracode", "permissions")          # settings no statusline / rollout field reports: the pane read is the only answer
 
@@ -3644,6 +3734,92 @@ def api_tune(name: str, request: Request, body: TuneIn | None = None):
     return out
 
 
+# ---------- issue #2: Codex reasoning, approvals and sandbox change by restarting with the conversation resumed ----------
+
+class RestartIn(BaseModel):
+    reasoning: object = None
+    approval: object = None
+    sandbox: object = None
+    preview: object = None
+
+
+@app.post("/api/sessions/{name}/restart")
+def api_restart(name: str, request: Request, body: RestartIn | None = None):
+    """Restart a running Codex session with another reasoning level (-c model_reasoning_effort), approval policy (-a on-request | never)
+    or sandbox (-s read-only | workspace-write), the same conversation resumed (`codex resume <thread> <flags>`), in the same tmux name. No
+    live Codex command takes these (box check V8-Codex), and the picker key paths for them were never recorded, so a restart is the
+    path the box has run. The line is built by the adapter (CodexAgent.restart_opts + resume_argv): the stored launch options, the model and
+    reasoning the statusline shows now, then the change. `preview: true` answers {cmd, from, to} and touches nothing. 400 for a value
+    that is not offered (`untrusted`, `on-failure`, `danger-full-access` never are), for a session that is not Codex, a task's or one
+    started without approvals and sandbox (a bypass is never carried over); 409 when the session has no conversation id yet, is not at
+    its prompt (a restart ends a running turn) or another change is being made. The old process is closed before the new one starts
+    (a thread open twice makes Codex warn), so the terminal page shows 'exited' until it is reloaded."""
+    require_real_launch_ok()   # issue #100: a restart starts Codex again, so a dev board that could reach the real home refuses (409)
+    from .agents import pickers
+    _terminal_session(name)
+    b = body or RestartIn()
+    row, adapter, refusal = _agent_row(name)
+    if refusal:
+        return refusal
+    if (row.get("agent") or "claude") != "codex":
+        raise projects.BadRequest("only a Codex session restarts with other launch flags (Claude changes these live)")
+    if row.get("launcher") == "task":
+        raise projects.BadRequest("a task's session keeps the permissions the task was started with")
+    changes = {}
+    for key in ("reasoning", "approval", "sandbox"):
+        v = getattr(b, key)
+        if v not in (None, ""):
+            changes[key] = _clean_line(v, key, 40).lower()
+    if b.preview is not None and not isinstance(b.preview, bool):
+        raise projects.BadRequest("preview must be true or false")
+    if not changes:
+        raise projects.BadRequest("nothing to change: send reasoning, approval or sandbox")
+    sid = str(row.get("agent_session_id") or row.get("claude_session_id") or "").strip()
+    if not sid:
+        return _terminal_refusal("not_ready", "the session has not reported its conversation yet: send it one message, then restart it", row, 3)
+    now_perm = adapter.permissions_of(row.get("opts"), row.get("cmd"))
+    if now_perm and now_perm.get("bypass"):
+        return _terminal_refusal("bypass", "this session runs without approvals and without the sandbox; a restart would not carry that over: "
+                                 "start a new session from the launcher instead", row, None)
+    add_dirs = [d for d in (row.get("add_dirs") or []) if isinstance(d, str)]
+    opts = adapter.restart_opts(row.get("opts") if isinstance(row.get("opts"), dict) else {}, row.get("stats"), **changes)
+    argv = adapter.resume_argv(sid, opts=opts, add_dirs=add_dirs)
+    cmd_line = shlex.join(argv)
+    after = adapter.permissions_of(opts)
+    if b.preview is True:
+        return {"ok": True, "preview": True, "cmd": cmd_line, "changes": changes, "from": now_perm, "to": after}
+    refusal = _typing_refusal(name, row)
+    if refusal:
+        return refusal
+    lock = pickers.session_lock(name)
+    if not lock.acquire(blocking=False):
+        return _terminal_refusal("busy", "another change is being made to this session", row, 3)
+    try:
+        project, repo, session = row["project"], row["repo"], row["name"]
+        rpath = projects.repo_path(project, repo)
+        cwd = row.get("cwd") if row.get("cwd") and Path(str(row.get("cwd"))).is_dir() else str(rpath)
+        keep_flags = {k: True for k in (recover.OPT_OUT_FLAG,) if (row.get("flags") or {}).get(k)}
+        if not _end_session(name, "killed"):
+            raise projects.NotFound(f"session {name} not found")
+        _restart_pause(RESTART_PAUSE)                        # tmux returns when the session is gone, not when Codex has released the thread
+        try:
+            real = _start_session(name, project, repo, session, "recovered", str(cwd), cmd_line=cmd_line, claude_session_id=sid,
+                                  add_dirs=add_dirs, agent="codex", opts=opts or None)
+        except Exception as e:
+            log.warning("restart of %s failed after the old process was closed: %s", name, e)
+            return JSONResponse({"error": "restart_failed", "message": f"the old session was closed but the new one did not start ({e}); "
+                                 f"resume it from the launcher or run: {cmd_line}", "cmd": cmd_line}, status_code=500)
+    finally:
+        lock.release()
+    if keep_flags:
+        db.update_flags(real, keep_flags)                    # the person's auto-continue opt-out outlives the restart, as it does a reboot
+    db.add_event(real, "BoardCommand", "restart", "restart " + " ".join(f"{k}={v}" for k, v in changes.items()),
+                 {"cmd": "restart", "arg": changes, "by": request.state.user, "via": "restart"}, agent="codex")
+    _invalidate_scan()
+    return {"ok": True, "tmux": real, "cmd": cmd_line, "agent_session_id": sid, "changes": changes, "from": now_perm, "to": after,
+            "attach_url": f"/tty/?arg={real}"}
+
+
 # ---------- #84: the per-session writable flags (an allowlist, one entry for now) ----------
 
 class FlagsIn(BaseModel):
@@ -3683,6 +3859,14 @@ def api_session_flags(name: str, request: Request, body: FlagsIn | None = None):
                  "auto-continue off for this session" if off else "auto-continue on for this session", {"by": request.state.user})
     _invalidate_scan()
     return {"ok": True, "flags": {"no_autoresume": bool(flags.get("no_autoresume"))}, "auto_continue": settings.auto_continue}
+
+
+RESTART_PAUSE = 1.0     # s between closing the old Codex and starting `codex resume` (a thread open twice makes Codex ask, box check #92)
+
+
+def _restart_pause(seconds: float) -> None:
+    """Tests replace it."""
+    time.sleep(seconds)
 
 
 def _tune_sleep(seconds: float) -> None:

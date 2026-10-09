@@ -204,7 +204,7 @@
   const ARM_MS = 4000;                                         // the second tap on Clear must come within this
   const ESC_GAP_MS = 150;                                      // Escape and the next keys must not arrive together (a TUI reads ESC + key as Alt + key)
   const MODEL_HUE = { opus: 'hue-blue', fable: 'hue-violet', sonnet: 'hue-green', haiku: 'hue-slate' };   // tokens.css .hue-*: the same four as pages/agents.js chipHue('model', ...), which this page does not load
-  const PLAN_KEYS = ['effort', 'model', 'reasoning', 'permissions'];   // registry rows the plan draws as segments, never as command chips
+  const PLAN_KEYS = ['effort', 'model', 'reasoning', 'permissions', 'approvals', 'sandbox'];   // registry rows the plan draws as segments, never as command chips
 
   /* -- pure helpers (window.TermPage, for the tests) -- */
 
@@ -363,6 +363,11 @@
     disarm();
     try {
       await settleEscape();
+      if (opts.group && opts.group.via === 'restart') {                                       // Codex's reasoning, approvals, sandbox: preview the command, confirm, restart (issue #2)
+        await TermKit.tuneRestart({ tmux: NAME, agent: lastRow && lastRow.agent, touch: isCoarse(), onRestart: reloadFrame }, opts.group, opts.arg, opts.anchor || null);
+        pollSoon(500);
+        return;
+      }
       let req;
       if (opts.group) req = TermKit.tuneRequest(opts.group, opts.arg);                       // a setting: the shared request (POST /tune or /command)
       else {
@@ -379,6 +384,11 @@
       else if (!spec.read) startPending(spec, opts.arg);
       pollSoon(500);
     } finally { tuneBusy = false; }
+  }
+
+  /* a restarted session is a new tmux session of the same name: the terminal frame attaches to it afresh (after a moment, so the new session exists) */
+  function reloadFrame() {
+    setTimeout(() => { try { frame.src = TermKit.ttyUrl(NAME, storedFs === null ? {} : { fontSize: storedFs }); } catch (_) { /* not a terminal name: nothing to attach to */ } }, 1500);
   }
 
   /* -- the readout: a bottom sheet with what a read command printed -- */
@@ -539,11 +549,11 @@
       const spec = { key: group.cmd, cmd: '/' + group.cmd, label: title, read: false };
       const g = el('div', { class: 'tune-seg', role: 'group', 'aria-label': title }, el('span', { class: 'tune-lbl', text: title.toLowerCase() }));
       for (const op of group.options) {
-        const node = tuneChip(spec, op.label, () => runTune(spec, { arg: op.arg, group }));
+        const node = tuneChip(spec, op.label, () => runTune(spec, { arg: op.arg, group, anchor: node }));
         node.classList.add('tune-opt');
         node.setAttribute('data-via', group.via);
         if (kind === 'model' && ownKey(MODEL_HUE, op.value)) node.classList.add('tune-model', MODEL_HUE[op.value]);
-        const title2 = (group.via === 'tune' ? title + ' ' + op.label + ' for this session only' : '/' + group.cmd + ' ' + op.arg) + (group.note ? ' (' + group.note.toLowerCase() + ')' : '')
+        const title2 = (group.via === 'tune' ? title + ' ' + op.label + ' for this session only' : group.via === 'restart' ? 'Restart with ' + title.toLowerCase() + ' ' + op.label : '/' + group.cmd + ' ' + op.arg) + (group.note ? ' (' + group.note.toLowerCase() + ')' : '')
           + (group.unverified ? ' · unverified key path: the result is read back from the screen' : '');
         tuneItems.push({ node, kind, cmd: group.cmd, arg: op.arg, value: op.value, label: op.label, title: title2 });
         g.append(node);
@@ -556,7 +566,8 @@
     const codex = lastRow && lastRow.agent === 'codex';
     if (plan.effort) segs.effort = seg('effort', codex ? 'Reasoning' : 'Effort', plan.effort);
     if (plan.model) segs.model = seg('model', 'Model', plan.model);
-    if (plan.perms) segs.perms = seg('perms', 'Permissions', plan.perms);
+    if (plan.approvals) segs.approvals = seg('approvals', 'Approvals', plan.approvals);
+    if (plan.sandbox) segs.sandbox = seg('sandbox', 'Sandbox', plan.sandbox);
     for (const s of specs) {
       if (PLAN_KEYS.includes(s.key)) continue;                 // drawn as segments from the plan
       if (s.key === 'rename') {
@@ -619,7 +630,8 @@
     }
     if (segs.effort) row.append(segs.effort);
     if (segs.model) row.append(segs.model);
-    if (segs.perms) row.append(segs.perms);
+    if (segs.approvals) row.append(segs.approvals);
+    if (segs.sandbox) row.append(segs.sandbox);
     row.addEventListener('scroll', tuneFade);
     tuneRow = row;
     tuneEl.append(row);
@@ -639,7 +651,7 @@
     const slash = gate.show ? slashFor(s.agent) : null;
     const specs = slash ? tuneOrder(slash, { all: store.get(KEY_ALLCHIPS) === '1' }) : [];
     const plan = gate.show ? TermKit.tunePlan(s.agent, schemaFor(s.agent) || (slash ? { slash } : null), s.stats || {}) : null;
-    const groups = plan ? [plan.effort, plan.model, plan.perms].filter(Boolean) : [];
+    const groups = plan ? [plan.effort, plan.model, plan.approvals, plan.sandbox].filter(Boolean) : [];
     if (!gate.show || (!specs.length && !groups.length) || INTERNAL) { tuneEl.classList.add('hidden'); tuneApplicable = false; syncTune(); return; }
     loadAgents();
     const sig = s.agent + JSON.stringify([specs, groups.map((g) => [g.cmd, g.via, g.options.map((o) => o.value)]), plan.ultra]);
@@ -668,8 +680,9 @@
       const title = gate.enabled ? (it.title || '') : gate.title;
       if (title) n.setAttribute('title', title); else n.removeAttribute('title');
       let on = false;
-      const seg = it.kind === 'effort' || it.kind === 'model' || it.kind === 'perms';
-      if (seg) on = !!now[it.kind] && now[it.kind] === (it.kind === 'effort' ? String(it.value).toLowerCase() : it.value);
+      const seg = it.kind === 'effort' || it.kind === 'model' || it.kind === 'approvals' || it.kind === 'sandbox';
+      const have = it.kind === 'approvals' ? now.approval : now[it.kind];
+      if (seg) on = !!have && have === (it.kind === 'effort' ? String(it.value).toLowerCase() : it.value);
       else if (it.kind === 'fast') on = now.fast === true;
       else if (it.kind === 'ultra') on = now.ultra === 'on';
       n.classList.toggle('on', on);

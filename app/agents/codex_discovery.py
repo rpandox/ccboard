@@ -6,13 +6,14 @@ Two sources under CODEX_HOME, both read-only:
                             through PRAGMA table_info: only the columns that exist are selected.
   sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
                             one per thread. The FIRST line (session_meta) names the thread's originator, source, cwd and id; it is read
-                            for every discovered thread (the DB has no originator) and is the only source for native rollouts the DB
-                            never indexed.
+                            for every discovered thread (Codex 0.161 also keeps the originator in a threads column, which wins when
+                            present) and is the only source for native rollouts the DB never indexed.
 Never opened: auth.json (or any other file in CODEX_HOME beyond the two above and external_agent_session_imports.json).
 
 What is listed: user-initiated, non-archived, non-imported, non-subagent threads updated in the last 14 days (newest first, at most
 100). Dropped: threads Codex Desktop imported from Claude (tokens 0 with no model and source vscode, or ids in
-external_agent_session_imports.json), guardian / thread_spawn children, and threads with no user event. Threads whose originator is not
+external_agent_session_imports.json), guardian / thread_spawn children, and threads with no user event (Codex 0.161 leaves
+`has_user_event` at 0 for every thread, so a thread also counts when it has a `first_user_message` or tokens: see _thread_rows). Threads whose originator is not
 `codex-tui` (a Hermes agent drives Codex on the box) stay in the list with `badge` set to the originator, so the Agents roster can mark
 them. Never a sum of per-thread `tokens_used` (forks inherit the parent's total): `tokens` is shown per thread, totals come from ccusage.
 
@@ -47,7 +48,7 @@ IMPORTS_FILE = "external_agent_session_imports.json"
 IMPORTS_MAX_BYTES = 5_000_000
 META_KEYS = ("id", "cwd", "originator", "source", "cli_version", "creator_account_id", "model_provider", "timestamp", "thread_source")
 THREAD_COLS = ("id", "title", "name", "cwd", "model", "reasoning_effort", "tokens_used", "created_at", "updated_at", "rollout_path",
-               "git_branch", "source", "model_provider", "thread_source")
+               "git_branch", "source", "model_provider", "thread_source", "originator")
 
 _UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 UUID_RE = re.compile(f"^{_UUID}$")
@@ -278,7 +279,14 @@ def _thread_rows(path: Path, cutoff: float, limit: int) -> tuple[list[dict], set
         if "archived" in cols:
             where.append("COALESCE(archived, 0) = 0")
         if "has_user_event" in cols:
-            where.append("COALESCE(has_user_event, 1) <> 0")
+            # Codex 0.161 never sets has_user_event (0 on every row, even threads with a first message and tokens), so a thread that has
+            # evidence of a user turn in the same table counts too; older builds without first_user_message keep the plain flag
+            evidence = ["COALESCE(has_user_event, 1) <> 0"]
+            if "first_user_message" in cols:
+                evidence.append("COALESCE(first_user_message, '') <> ''")
+                if "tokens_used" in cols:
+                    evidence.append("COALESCE(tokens_used, 0) > 0")
+            where.append("(" + " OR ".join(evidence) + ")")
         if {"tokens_used", "model", "source"} <= cols:       # Codex Desktop's imports of Claude sessions: no tokens, no model, source vscode
             where.append("NOT (COALESCE(tokens_used, 0) = 0 AND COALESCE(model, '') = '' AND LOWER(COALESCE(source, '')) = 'vscode')")
         if "source" in cols:
@@ -305,7 +313,7 @@ def _entry(*, source: str, tid: str, meta: dict | None, row: dict | None, rollou
     row = row or {}
     meta = meta or {}
     cwd = _s(row.get("cwd")) or _s(meta.get("cwd"))
-    originator = _s(meta.get("originator"))
+    originator = _s(row.get("originator")) or _s(meta.get("originator"))
     pr = project_repo(cwd, projects_dir)
     title = _s(row.get("title"))
     name = _s(row.get("name"))

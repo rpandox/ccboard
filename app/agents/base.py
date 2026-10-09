@@ -100,7 +100,8 @@ class SlashSpec:
 
     How it is driven (v0.5.21, box check V8 / V8-Codex): `drive` "inline" = POST /command types `cmd [arg]` and Enter; "picker" = the
     command opens a picker that only POST /tune drives, with keys from a fixed table (POST /command refuses it: Codex sends `/model x`
-    to the model as a prompt). `tune` names the /tune setting that changes this value for the session only. `saves_default`: typed
+    to the model as a prompt); "restart" = no live command takes it, so POST /restart relaunches the session with the new launch flag and the same
+    conversation resumed (Codex's reasoning, approvals and sandbox; `cmd` then names the flag it stands for). `tune` names the /tune setting that changes this value for the session only. `saves_default`: typed
     inline with an argument it also writes the person's default for new sessions (Claude's /model and /effort). `choices`: the only
     arguments /command accepts (None = any one-line text). `dialog`: a read command whose output stays in a dialog that one Escape
     closes (Claude's /usage); False = printed inline, nothing to dismiss. `verified`: the box check ran this exact path (for a row with
@@ -112,7 +113,7 @@ class SlashSpec:
     verified: bool = False
     weight: int = 0
     destructive: bool = False
-    drive: str = "inline"                              # inline | picker
+    drive: str = "inline"                              # inline | picker | restart
     tune: str = ""
     saves_default: bool = False
     choices: list | None = None
