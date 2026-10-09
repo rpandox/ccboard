@@ -1,0 +1,22 @@
+{
+ "_request": "/api/stats",
+ "_http": 200,
+ "_seconds": 0.133,
+ "body": {
+  "worker": {
+   "version": "13.35.0",
+   "uptime": 101,
+   "activeSessions": 1,
+   "sseClients": 0,
+   "port": 37700
+  },
+  "database": {
+   "path": "<data dir>/claude-mem.db",
+   "size": 150753280,
+   "observations": 11961,
+   "sessions": 290,
+   "summaries": 191,
+   "firstObservationAt": "<text>"
+  }
+ }
+}

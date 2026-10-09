@@ -1,0 +1,9 @@
+{
+ "_request": "/api/readiness",
+ "_http": 200,
+ "_seconds": 0.002,
+ "body": {
+  "status": "ready",
+  "mcpReady": true
+ }
+}

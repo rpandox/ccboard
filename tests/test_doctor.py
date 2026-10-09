@@ -1303,10 +1303,10 @@ def test_memory_projects_hint_carries_the_project_environments_snippet(mem, proj
 
 def test_memory_api_pass_untested_unknown_and_drift(mem):
     c = mc("memory-api")
-    assert c["status"] == "pass" and "13.34.2" in c["detail"]
-    mem.health["version"] = "13.35.0"
+    assert c["status"] == "pass" and "13.35.0" in c["detail"]
+    mem.health["version"] = "13.35.1"
     c = mc("memory-api")
-    assert c["status"] == "warn" and "newer than 13.34.2" in c["detail"]
+    assert c["status"] == "warn" and "newer than 13.35.0" in c["detail"]
     assert c["fix"]["text"] == "the Memory page may be wrong until the board is updated; report it"
     mem.health["version"] = "14.0.0"
     assert mc("memory-api")["status"] == "warn" and "13.x line" in mc("memory-api")["detail"]
@@ -1766,6 +1766,8 @@ def test_backup_repo_off_is_a_skip_remote_passes_same_disk_warns(newc, monkeypat
     c = newc("backup-repo")
     assert c["status"] == "warn" and "same disk" in c["detail"] and "deletion and corruption" in c["detail"]
     assert "CCBOARD_RESTIC_REPO" in c["fix"]["text"] and "README" in c["fix"]["text"]
+    assert "restic-password" in c["fix"]["text"] and "…" not in c["fix"]["text"], \
+        "issue #111: the password file sits beside the repository, so one lost disk loses both; the fix says to copy it elsewhere"
     monkeypatch.setattr(settings, "restic_repo", str(tmp_path / "does" / "not" / "exist" / "yet"))      # nearest existing parent decides
     assert newc("backup-repo")["status"] == "warn"
 

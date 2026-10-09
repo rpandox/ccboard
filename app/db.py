@@ -389,6 +389,14 @@ class DB:
             rows = self.conn.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
 
+    def session_tmux_ids(self, agent: str = "claude") -> list[dict]:
+        """Newest session row per tmux name that learned an agent session id: [{tmux_name, claude_session_id}], for pricing a session from its statusline
+        samples (series keyed by tmux name). Only the newest row of a name: an older row's id belongs to a conversation the name no longer holds."""
+        with self.lock:
+            rows = self.conn.execute("SELECT tmux_name, claude_session_id FROM sessions WHERE id IN (SELECT MAX(id) FROM sessions GROUP BY tmux_name)"
+                                     " AND claude_session_id IS NOT NULL AND COALESCE(agent, 'claude')=?", (agent,)).fetchall()
+        return [dict(r) for r in rows]
+
     def rebind_session_id(self, name: str, sid: str) -> bool:
         """SessionStart: the conversation in this tmux session is `sid` now (set_state only fills a NULL id; a /resume or /clear starts a
         new conversation under a new id on the same row). Refused (False) when another open row already holds `sid`: one conversation

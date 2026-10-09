@@ -15,7 +15,7 @@ from croniter import croniter
 
 from . import agents, claude_auth, devguard, notify, projects, tasks
 from .agents import codex as codex_agent
-from .agents.claude import FORBIDDEN_ARG_PARTS, HEADLESS_MODES, LIMIT_MSG_RE, RATE_RE, SUBAGENT_ENV, fable_models, parse_result   # noqa: F401 (re-exported: they live in the adapter now)
+from .agents.claude import BARE_REFUSAL, FORBIDDEN_ARG_PARTS, HEADLESS_MODES, LIMIT_MSG_RE, RATE_RE, SUBAGENT_ENV, fable_models, parse_result   # noqa: F401 (re-exported: they live in the adapter now)
 from .config import settings
 from .db import now as db_now
 
@@ -28,6 +28,7 @@ RUN_TIMEOUT = 3600
 MODES = HEADLESS_MODES     # bypassPermissions only inside a devcontainer (v0.4.5); defined in agents/claude.py with the rest of the argv rules
 BACKOFF_MINUTES = 30       # after a run comes back rate-limited, defer everything this long (or until the window resets)
 BACKOFF_MAX_HOURS = 5
+STATUS_DENIED = "denied"   # a run that exited 0 but had tools denied: nothing may have been done (issue #107)
 KV_BACKOFF = "sched_backoff_until"
 KV_LOGIN_ALERT = "sched_login_alerted"
 KV_RATE_CODEX = "rate_limits_codex"                    # agents/codex_rollout.py: {value: {primary: {used_percent, window_minutes, resets_at}, secondary, ...}, at}
@@ -74,6 +75,8 @@ def check_extra_args(args: str | None, agent: str = "claude") -> list[str]:
         raise ValueError(f"args: {e}")
     bad = agents.get(agent).forbidden_extra(parts, interactive=False) or forbidden_arg(parts, agent)
     if bad:
+        if agent == "claude" and str(bad).lower() == "--bare":
+            raise ValueError(f"argument not allowed for unattended runs: {bad}. {BARE_REFUSAL}")
         raise ValueError(f"argument not allowed for unattended runs: {bad}")
     return parts
 
@@ -260,6 +263,16 @@ def _last_message(path: Path) -> str:
         return ""
 
 
+def denied_note(denials) -> str | None:
+    """'denied 3 tool calls: Bash, Write' for the tool names a headless run was refused (each name once, in the order first denied), None when there are none.
+    A run in that state exited 0 and says 'success', yet may have done nothing: pre-approve the tool (Allowed tools) or use a permission mode that allows it."""
+    names = [str(n) for n in (denials or []) if n]
+    if not names:
+        return None
+    uniq = list(dict.fromkeys(names))
+    return f"denied {len(names)} tool call{'s' if len(names) != 1 else ''}: {', '.join(uniq[:6])}{' ...' if len(uniq) > 6 else ''}"
+
+
 def _finish(db, job: dict, run_id: int, summary: dict, rpath: Path, slug: str, stamp: str, wt: Path | None, agent: str) -> dict:
     """The tail every run shares: the worktree it left becomes a task card (agent, branch, worktree, the agent's session id), the run row
     is closed and the job's last status stored."""
@@ -269,7 +282,7 @@ def _finish(db, job: dict, run_id: int, summary: dict, rpath: Path, slug: str, s
             # unlock the worktree -p left locked so archive/merge can remove it later
             subprocess.run(["git", "-C", str(rpath), "worktree", "unlock", str(wt)], capture_output=True, timeout=10)
         tmux_name = f"{job['project']}--{job['repo']}--j-{slug}"
-        title = f"[{job['name']}] {stamp}"
+        title = f"[{job['name']}] {stamp}" + (f" ({summary['error']})" if summary.get("status") == STATUS_DENIED and summary.get("error") else "")
         task_id = db.task_add(project=job["project"], repo=job["repo"], slug=slug, title=title, prompt=job["prompt"],
                               branch=f"worktree-{slug}", base=tasks.default_branch(rpath), worktree=str(wt),
                               tmux_name=tmux_name, claude_session_id=summary.get("session_id"), agent=agent)
@@ -358,8 +371,11 @@ def run_job(db, job: dict, run_id: int) -> dict:
         status = "rate_limited" if res["rate_limited"] else ("error" if res["is_error"] or cp.returncode != 0 else "ok")
         if status == "rate_limited":
             log.warning("job %s hit a rate limit; deferring all runs until %s", job["id"], set_backoff(db, quota_state(db).get("resets_at")))
+        denied = denied_note(res.get("denials")) if status == "ok" else None
+        if denied:                                  # exit 0, is_error false, but the run was refused tools: never a silent ok (issue #107)
+            status = STATUS_DENIED
         summary.update(status=status, result=res["text"], session_id=res["session_id"], cost_usd=res["cost"],
-                       num_turns=res["turns"], error=None if status == "ok" else (res["subtype"] or f"exit {cp.returncode}"))
+                       num_turns=res["turns"], error=denied if denied else None if status == "ok" else (res["subtype"] or f"exit {cp.returncode}"))
     except subprocess.TimeoutExpired:
         summary.update(status="error", error="timed out", result="")
     except (OSError, projects.BadRequest) as e:

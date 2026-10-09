@@ -1,0 +1,15 @@
+{
+ "_request": "/api/search?query=<v>&project=<v>&limit=<v>",
+ "_http": 200,
+ "_seconds": 2.779,
+ "body": {
+  "content": [
+   {
+    "type": "text",
+    "text": "<markdown, 648 chars>"
+   }
+  ],
+  "isError": false,
+  "_first_line_shape": "Found 3 result(s) ma"
+ }
+}

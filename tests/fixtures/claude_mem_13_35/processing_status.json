@@ -1,0 +1,10 @@
+{
+ "_request": "/api/processing-status",
+ "_http": 200,
+ "_seconds": 0.005,
+ "body": {
+  "isProcessing": false,
+  "queueDepth": 0,
+  "parkedSessions": 0
+ }
+}

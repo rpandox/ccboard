@@ -536,6 +536,7 @@ async function taskSend(t, target, force, extra) {
      result     the first 300 characters of the result (GET /api/tasks/{id} has all of it), result_at, done_at
      chain      {i, n} | null    step i of n (taskflow.chain_positions); chain_id and parent_id link the steps, taskChainInfo works the position out from them when chain is absent
      limit_hold {kind: '5h'|'7d'|'limit'|'backoff', resets_at (epoch seconds), pct} | null     a queued step the dispatch gate holds back
+     turns_ahead  integer       a prompt handed to a working Claude session: the Stops that come before its own turn; above 0 the card says 'queued' instead of the session's state
    and from a dispatch answer: limit_warning, the same object, when a hand start went ahead inside the limit window. */
 
 const TASK_HOLD_MS = 450;               // a touch held this long on a card opens the Move sheet
@@ -1258,7 +1259,9 @@ function startedCard(t, ctx) {
   const hold = taskLimitHold(t);
   const doneAt = taskMs(t.done_at || t.result_at);
   const enc = encodeURIComponent(t.tmux || '');
-  const badge = live && s ? stateBadge(s)
+  const queuedTurn = phase === 'running' && Number(t.turns_ahead) > 0;           // a prompt queued behind a turn in flight: its own turn has not begun
+  const badge = queuedTurn ? el('span', { class: 'state idle', title: 'the session is finishing an earlier turn; this task runs next', text: 'queued' })
+    : live && s ? stateBadge(s)
     : phase === 'failed' ? el('span', { class: 'state errored', text: 'failed' })
       : phase === 'cancelled' ? el('span', { class: 'state ended', text: 'cancelled' })
         : phase === 'done' ? el('span', { class: 'state done', text: 'done' + (doneAt ? ` ${fmtAge(doneAt / 1000)}` : '') })

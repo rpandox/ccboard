@@ -106,12 +106,14 @@ def recovered_tick(db, rows: dict[str, dict], now: float, *, send, clients, aliv
             continue
         marked = _epoch(flag.get("at"))
         state, state_at = row.get("state") or "", _epoch(row.get("state_at"))
+        reopen = flag.get("reason") == "reopen"                     # #88: a task reopened into its old conversation (asked for, not a reboot)
+        kind = "reopen" if reopen else "reboot"
 
         def drop(why: str) -> None:
             db.update_flags(name, {RESUME_FLAG: None})
-            db.add_event(name, "AutoContinue", "reboot", f"did not type '{TEXT}' after the restart: {why}", {"skipped": why})
+            db.add_event(name, "AutoContinue", kind, f"did not type '{TEXT}' after the {'reopen' if reopen else 'restart'}: {why}", {"skipped": why})
 
-        if (row.get("flags") or {}).get("no_autoresume"):
+        if not reopen and (row.get("flags") or {}).get("no_autoresume"):   # the opt-out is about unasked continues; a reopen was asked for
             drop("opted out")
             continue
         if not state_at or state_at + 1 < marked:                  # no hook from the resumed session yet (state_at has whole seconds)
@@ -139,7 +141,11 @@ def recovered_tick(db, rows: dict[str, dict], now: float, *, send, clients, aliv
             log.warning("autoresume (reboot) %s: %s", name, e)
             continue
         db.update_flags(name, {RESUME_FLAG: None})
-        db.add_event(name, "AutoContinue", "reboot", f"typed '{TEXT}' after the restart (the session was working before it)",
+        if reopen:
+            db.add_event(name, "AutoContinue", kind, f"typed '{TEXT}' into the reopened task's conversation", {"task": flag.get("task")})
+            done.append(name)
+            continue
+        db.add_event(name, "AutoContinue", kind, f"typed '{TEXT}' after the restart (the session was working before it)",
                      {"prompt": flag.get("prompt"), "was_at": flag.get("was_at")})
         done.append(name)
         _tell(name, "continued after the restart", f"it was working when the box went down; the board typed '{TEXT}' for you")

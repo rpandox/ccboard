@@ -103,6 +103,31 @@ def test_working_session_is_marked_to_continue_after_the_relaunch(client, projec
     assert tick(time.time() + 600) == [] and len(sent) == 1
 
 
+def test_a_reopened_task_gets_one_continue_even_when_it_opted_out_and_no_notification(client, projects_dir, fake_tmux, monkeypatch):
+    """#88: a task reopened into its old conversation carries continue_after_resume {reason: reopen}. The tick types `continue` once
+    the resumed session is at its prompt, the per-session opt-out does not block it (the reopen was asked for), the event is
+    AutoContinue/reopen and no phone notification goes out."""
+    import time
+    from app import autoresume, hooks, main
+    from app.config import settings
+    monkeypatch.setattr(settings, "claude_bin", lambda: "/fake/claude")
+    told = []
+    monkeypatch.setattr(autoresume, "_tell", lambda *a, **k: told.append(a))
+    subprocess.run(["git", "-C", str(projects_dir), "init", "-q", "-b", "main", "shop/api"], check=True)
+    s = client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude"}).json()
+    main.db.update_flags(s["tmux"], {"no_autoresume": True, recover.CONTINUE_FLAG: {"reason": "reopen", "at": time.time(), "task": 7}})
+    sent = []
+    tick = lambda now: autoresume.tick(main.db, now, send=lambda n, t: sent.append((n, t)), clients=lambda n: 0, alive=lambda n: True)
+    hooks.apply(main.db, s["tmux"], "SessionStart", {"source": "resume", "session_id": s["claude_session_id"]})
+    hooks.apply(main.db, s["tmux"], "statusline", {"session_id": s["claude_session_id"], "model": {"display_name": "Opus"},
+                                                   "context_window": {"used_percentage": 2, "context_window_size": 200000}})
+    assert tick(time.time() + autoresume.RESUME_SETTLE + 1) == [s["tmux"]] and sent == [(s["tmux"], "continue")]
+    ev = [e for e in main.db.events(s["tmux"]) if e["event"] == "AutoContinue"] if hasattr(main.db, "events") else []
+    assert not ev or ev[-1]["kind"] == "reopen"
+    assert told == [], "a reopen is asked for: no 'continued after the restart' notification"
+    assert recover.CONTINUE_FLAG not in main.db.open_rows()[s["tmux"]]["flags"]
+
+
 def _reboot_world(client, projects_dir, fake_tmux, monkeypatch, n=2):
     """n claude sessions in one repo, each marked working with a prompt; the caller then "reboots": tmux forgets them, the DB keeps the rows."""
     from app import main

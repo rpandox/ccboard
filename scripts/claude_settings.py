@@ -23,7 +23,13 @@ ASYNC_EVENTS = ["SessionStart", "UserPromptSubmit", "Notification", "Stop", "Sto
 # Registered with bin/ccboard-hook-fast, NOT async (timeout 3): the process is exiting, the event must land first.
 FAST_EVENTS = ["SessionEnd"]
 EVENTS = ASYNC_EVENTS + FAST_EVENTS
-# WorktreeCreate / WorktreeRemove are deliberately not registered (they can replace Claude's own worktree handling; revisit with V9).
+# WorktreeCreate / WorktreeRemove are deliberately NOT registered (box check V9, issue #26, Claude Code 2.1.294, 2026-10-09):
+#   * WorktreeCreate REPLACES Claude's own worktree creation: the hook must create the worktree and print its path. A hook that prints
+#     nothing (an async, no-output one) makes `claude --worktree` fail with "hook succeeded but returned no worktree path" and no
+#     worktree is made. `async: true` does not help: Claude waits for the hook and uses its output. The payload has no worktree path.
+#   * WorktreeRemove alone is harmless, but it never fired for the removals Claude does itself (ExitWorktree remove, print mode).
+# So the board cannot learn about worktrees from these hooks; it adds .claude/worktrees to .git/info/exclude and finds them on disk.
+# tests/test_settings_install.py pins that the events never appear.
 MARK = "ccboard-hook"            # also matches ccboard-hook-fast
 FAST_MARK = "ccboard-hook-fast"
 PERMISSION_MARK = "ccboard-permission"
@@ -141,10 +147,11 @@ def main() -> None:
     ap.add_argument("--no-remote-approve", action="store_true", help="do not register the PermissionRequest hook")
     ap.add_argument("--approve-timeout", type=int, default=90)
     ap.add_argument("--with-worktree-hooks", action="store_true",
-                    help="accepted and ignored: WorktreeCreate/WorktreeRemove stay unregistered until V9")
+                    help="accepted and ignored: WorktreeCreate/WorktreeRemove stay unregistered (WorktreeCreate would replace Claude's worktree creation)")
     a = ap.parse_args()
     if a.with_worktree_hooks:
-        print("note: --with-worktree-hooks is ignored; WorktreeCreate/WorktreeRemove are not registered until V9.", file=sys.stderr)
+        print("note: --with-worktree-hooks is ignored; WorktreeCreate/WorktreeRemove are never registered: a WorktreeCreate hook replaces "
+              "Claude's own worktree creation and must print the path (box check V9).", file=sys.stderr)
     p = a.settings or settings_path()
     data = load(p)
     if a.action == "show":

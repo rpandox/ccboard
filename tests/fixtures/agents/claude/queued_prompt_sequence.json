@@ -1,0 +1,9 @@
+{
+  "_note": "The hook sequence of a prompt queued behind a turn in flight, from the box check of issue #64 (Claude Code 2.1.294). t is seconds from the first prompt. The UserPromptSubmit of B fires when B is QUEUED, before A's Stop; Stop 1 carries B's prompt_id; Stop 2 carries a third id. Long outputs are shortened.",
+  "events": [
+    {"t": 0, "hook_event_name": "UserPromptSubmit", "prompt": "Write the integers 1 to 1500, one per line, then say: A done", "prompt_id": "p-a"},
+    {"t": 4, "hook_event_name": "UserPromptSubmit", "prompt": "Say exactly: B done", "prompt_id": "p-b"},
+    {"t": 12, "hook_event_name": "Stop", "last_assistant_message": "1\n2\n3\n1500\nA done", "prompt_id": "p-b", "stop_hook_active": false, "permission_mode": "acceptEdits"},
+    {"t": 13, "hook_event_name": "Stop", "last_assistant_message": "B done", "prompt_id": "p-c", "stop_hook_active": false, "permission_mode": "acceptEdits"}
+  ]
+}

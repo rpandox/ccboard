@@ -2,6 +2,21 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.31 - 2026-10-09
+
+### Fixed
+- A task handed to a session that is still busy waits for its own turn: it shows `queued`, is not credited with the earlier turn's result, and auto-close never closes the session in the middle of its turn.
+- Closing a task session that left an uncommitted file answers Claude's "keep or remove the worktree" question with Keep instead of killing the session; Claude's idle notice no longer cancels a planned close.
+- Reopen resumes the task's previous conversation when Claude still has it, and keeps the task's model, effort and permission mode.
+- A scheduled run whose tool calls were all denied is shown as `denied`, not `ok`; `--bare` is refused (it cannot log in on a box signed in to claude.ai); a job with no schedule and no "run now" waits until it is started.
+
+### Changed
+- Board-started sessions are priced from Claude Code's own statusline figure; the price table gains Haiku 5.5, prices 1-hour cache writes at 2x input and Sonnet 5.5 cache reads at 0.20.
+- The claude-mem worker 13.35.0 is the tested version; the memory API notes are updated from a box check.
+- README: restoring from a backup (a drill on the box: database and one transcript folder in 3 s, everything in 10 s, a backup branch in 13 s), why the worktree hooks stay unregistered, the permission-hook probe, and what the devcontainer needs on the host. The shadow compose file no longer mounts live data.
+
+Upgrade: nothing to do.
+
 ## v0.5.30 - 2026-10-09
 
 ### Added

@@ -1,0 +1,15 @@
+{
+ "_request": "/api/timeline?project=<v>",
+ "_http": 200,
+ "_seconds": 0.003,
+ "body": {
+  "content": [
+   {
+    "type": "text",
+    "text": "<markdown, 56 chars>"
+   }
+  ],
+  "isError": true,
+  "_first_line_shape": "Error: Must provide either \"anchor\" or \"query\" parameter"
+ }
+}

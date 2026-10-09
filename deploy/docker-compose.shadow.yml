@@ -1,32 +1,68 @@
-# A side-by-side test run of the image next to the live board (rollout step B). Use it WITH the base file:
+# A side-by-side test run of the image next to the live board (rollout step B). A STANDALONE file: use it ALONE, never with the base file.
 #
-#   docker compose -f docker-compose.yml -f docker-compose.shadow.yml up -d ccboard
-#   docker compose -f docker-compose.yml -f docker-compose.shadow.yml down
+#   mkdir -p ~/.local/share/ccboard-shadow/home          # the shadow's only host folder; it must exist and be yours
+#   docker compose -f docker-compose.shadow.yml up -d
+#   docker compose -f docker-compose.shadow.yml down
 #
-# The shadow board listens on 127.0.0.1:8010 with its own data directory (fresh database, its own hook token, no
-# scheduled jobs, no Claude hook ever points at it). It does not recover sessions, does not notify, does not poll the
-# fleet, mounts the projects read-only, is never restarted, never updated by Watchtower, and the entrypoint skips every
-# host mutation (CCBOARD_SHADOW=1). Its own compose project keeps `down` from ever touching the real stack.
+# It is a file of its own, and not an overlay on docker-compose.yml, so that nothing of the live board can leak in through a merge. What the
+# shadow gets, and what it does not (checked on the box, restore drill of 2026-10-09: the old overlay inherited the live home, the tmux and
+# tailscale sockets, the host network and the host pid namespace, so `down` and a bad run could touch live data):
+#   * its own data directory (a fresh database, its own hook token) and a HOME inside it: ~/.local/share/ccboard-shadow, the only writable mount;
+#   * the projects folder, read-only;
+#   * a bridge network with no published port (nothing listens on the host; the board inside binds 127.0.0.1 of the container, so look at it
+#     with `docker exec ccboard-shadow curl ...`), no host pid namespace;
+#   * NO live home, NO tmux socket, NO tailscale socket, NO /etc/ccboard, NO env_file (none of the live settings are inherited), NO docker socket,
+#     NO Watchtower, and the entrypoint skips every host mutation (CCBOARD_SHADOW=1): no hooks, no tmux.conf, no MCP registration;
+#   * no claude-mem worker, no restic repository, no recovery of sessions, no notifications, no scheduled job (the database is new).
+# Restored data is tried here by copying a restored ccboard.db into ~/.local/share/ccboard-shadow (README, "Restoring from a backup").
 name: ccboard-shadow
 
 services:
   ccboard:
+    image: ghcr.io/rpandox/ccboard:${CCBOARD_IMAGE_TAG:-latest}
     container_name: ccboard-shadow
+    user: "${CCBOARD_UID:-1000}:${CCBOARD_GID:-1000}"
+    network_mode: bridge
     restart: "no"
+    stop_grace_period: 6s
     environment:
+      CCBOARD_RUNTIME: docker
+      # No home mount: HOME is a folder inside the shadow's own data directory, so nothing writes to the live home.
+      HOME: ${CCBOARD_HOME:?set CCBOARD_HOME (install.sh writes it to the compose .env)}/.local/share/ccboard-shadow/home
+      PATH: /opt/ccboard/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       CCBOARD_PORT: ${CCBOARD_SHADOW_PORT:-8010}
       CCBOARD_DATA_DIR: ${CCBOARD_HOME:?set CCBOARD_HOME (install.sh writes it to the compose .env)}/.local/share/ccboard-shadow
       CCBOARD_SHADOW: "1"
       CCBOARD_RECOVER: "0"
+      CCBOARD_CLAUDE_MEM: "0"
+      CCBOARD_RESTIC_REPO: "off"
       NTFY_URL: ""
       NTFY_PUBLIC_URL: ""
       CCBOARD_NODES: ""
     labels:
       com.centurylinklabs.watchtower.enable: "false"
     volumes:
+      # create_host_path: false everywhere: a missing source must fail the start, never become a root-owned directory.
+      - type: bind
+        source: ${CCBOARD_HOME:?set CCBOARD_HOME (install.sh writes it to the compose .env)}/.local/share/ccboard-shadow
+        target: ${CCBOARD_HOME:?set CCBOARD_HOME (install.sh writes it to the compose .env)}/.local/share/ccboard-shadow
+        bind:
+          create_host_path: false
       - type: bind
         source: ${PROJECTS_DIR:-/srv/projects}
         target: ${PROJECTS_DIR:-/srv/projects}
         read_only: true
         bind:
           create_host_path: false
+    # $$ so the shell inside the container expands CCBOARD_PORT from the container's own environment, not compose from the host's.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://127.0.0.1:$${CCBOARD_PORT:-8000}/healthz >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

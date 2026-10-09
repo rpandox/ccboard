@@ -495,7 +495,7 @@ def test_limit_regex_matches_live_text():
 def test_parse_result_fixtures_via_the_reexport():
     from app import scheduler
     r = scheduler.parse_result('noise\n{"result":"ok","session_id":"s","total_cost_usd":1,"num_turns":2,"is_error":false,"subtype":"success"}')
-    assert r == {"text": "ok", "session_id": "s", "cost": 1, "turns": 2, "is_error": False, "subtype": "success", "rate_limited": False}
+    assert r == {"text": "ok", "session_id": "s", "cost": 1, "turns": 2, "is_error": False, "subtype": "success", "rate_limited": False, "denials": []}
     assert scheduler.parse_result('{"result":"rate limit hit","is_error":true,"subtype":"error_during_execution"}')["rate_limited"]
     assert scheduler.parse_result("garbage")["is_error"] and scheduler.parse_result("garbage")["subtype"] == "no_json"
     base_ = {"type": "result", "subtype": "success", "is_error": False, "session_id": "s", "total_cost_usd": 1, "num_turns": 9}

@@ -1451,7 +1451,8 @@ def _tasks_view(rows: list[dict] | None = None) -> list[dict]:
     characters), `result_at`, `done_at`, `closed_at` (when its session was closed by auto-close / Close session: sessions.ended_reason
     'auto_close'), `autoclose` (the session's flags.autoclose when it is this task's: {task, due} a countdown, {task, held:
     'question'} a hold that puts the card in needs_you, {task, closing: true}, {task, due, waiting} while a guard defers the close),
-    `chain` ({i, n}: step i of n) and `limit_hold` ({kind, resets_at, pct}: a queued step waiting for the limit window)."""
+    `chain` ({i, n}: step i of n), `limit_hold` ({kind, resets_at, pct}: a queued step waiting for the limit window) and `turns_ahead`
+    (a prompt handed to a working Claude session: the Stops that come before its own turn; above 0 the card reads Queued)."""
     rows = db.tasks() if rows is None else rows
     if any(t.get("session_row") is not None or t.get("tmux_name") for t in rows):
         sessions, _ = _merged_sessions()           # an all-backlog list (a fresh card's 201) needs no tmux scan
@@ -1489,6 +1490,8 @@ def _tasks_view(rows: list[dict] | None = None) -> list[dict]:
             parent = by_id.get(t["parent_id"]) or db.task_get(t["parent_id"])
             held = gate if (parent or {}).get("phase") == "done" else None
         column = tasks.derive_status(t, s)
+        if column == "needs_you" and (t.get("phase") or "running") == "done" and ac and not ac.get("held") and flags.get("wait_kind") == "idle":
+            column = "done"                          # Claude's idle-prompt Notification a minute after the Stop is not a call for you while the close is planned
         if column == "done" and ac and ac.get("held") == "question":
             column = "needs_you"                     # a final message that asks something: the session stays, the card wants an answer
         out.append({
@@ -1509,6 +1512,7 @@ def _tasks_view(rows: list[dict] | None = None) -> list[dict]:
             "issue_number": t.get("issue_number"), "issue_url": t.get("issue_url"),
             "issue_commented_at": t.get("issue_commented_at"),
             "limit_hold": held,
+            "turns_ahead": taskflow.turns_ahead(t),
             "prompt": (t.get("prompt") or "")[:TASK_PROMPT_HEAD] if (t.get("phase") or "running") in ("backlog", "queued") else None,
             "prompt_len": len(t.get("prompt") or ""),
             "session": {"state": s["state"], "state_at": s["state_at"], "last_message": s["last_message"],
@@ -1685,9 +1689,13 @@ def _task_launch(project: str, repo: str, body, *, task_id: int | None = None) -
         else:
             branch, worktree, base, mode = f"worktree-{slug}", wt_path, tasks.default_branch(rpath), "worktree"
         if task_id is None:
+            spec = {k: v for k in TASK_SPEC_KEYS if (v := getattr(body, k, None)) not in (None, "", [])}      # Reopen starts with the same choices
+            if getattr(body, "auto_close", None) is False:
+                spec["auto_close"] = False
             tid = db.task_add(project=project, repo=repo, slug=slug, title=title, prompt=prompt, branch=branch, base=base,
                               worktree=worktree, tmux_name=real, claude_session_id=sid, agent=agent, session_row=row_id, mode=mode,
-                              assigned_at=db_now(), auto_close=1 if getattr(body, "auto_close", False) else None, **_issue_link(body))
+                              assigned_at=db_now(), auto_close=1 if getattr(body, "auto_close", False) else None, spec=spec or None,
+                              **_issue_link(body))
         else:
             tid = task_id
             db.task_update(tid, slug=slug, tmux_name=real, branch=branch, base=base, worktree=worktree, claude_session_id=sid,
@@ -1990,11 +1998,15 @@ def _dispatch_session(t: dict, body: DispatchIn, prompt: str | None = None):
     db.set_state(name, "working", "TaskDispatch", prompt=prompt[:500])
     db.add_event(name, "TaskDispatch", t["title"], f"task {t['id']} sent to the session", {"task": t["id"], "force": bool(body.force), "queued": queued},
                  agent=row.get("agent"))
+    # a prompt queued behind a turn in flight has a Stop of its own AFTER the Stops of the turns ahead of it (issue #64): the runtime skips
+    # that many Stops before it credits this task, and the card reads Queued until then
+    ahead = taskflow.next_turns_ahead(db, row["row_id"]) if queued else 0
     db.task_update(t["id"], tmux_name=name, session_row=row["row_id"], mode="session", phase="running", assigned_at=db_now(),
                    auto_close=int(_effective_auto_close(t, body.auto_close, lane=False)))
+    taskflow.set_turns_ahead(db, t["id"], ahead)
     _invalidate_scan()
     return {"id": t["id"], "phase": "running", "tmux": name, "session_row": row["row_id"], "pasted": True, "queued": queued,
-            "task": _task_row(t["id"])}
+            "turns_ahead": ahead, "task": _task_row(t["id"])}
 
 
 @app.post("/api/tasks/{tid}/dispatch")
@@ -2094,6 +2106,25 @@ def _reopen_in_worktree(t: dict, launch: TaskIn, wt: Path) -> tuple[str, int, st
         raise projects.Conflict(f"session {session} already exists")
     prompt = ("This task is being reopened: its previous session stopped, and the work so far is already in this worktree "
               "(git status and git log show it). Continue the task.\n\n" + c["prompt"])
+    # #88: resume the previous conversation when its transcript is still on disk, so the reopened session has its history; else a new
+    # conversation in the same worktree (the line above tells it where the work is)
+    old_sid = t.get("claude_session_id")
+    resumable = False
+    if isinstance(old_sid, str) and old_sid:
+        try:
+            resumable = agents.get(agent).transcript_path({"session_id": old_sid, "agent_session_id": old_sid, "cwd": str(wt)}) is not None
+        except Exception:      # a lookup problem only means a fresh conversation
+            resumable = False
+    if resumable:
+        # a resume takes no first prompt: the session comes back at its prompt and autoresume types `continue` once it is up
+        plan = agents.get(agent).launch_plan(LaunchReq(kind="resume", resume_id=old_sid, session_name=session, cwd=str(wt), opts=c.get("raw_opts") or c.get("opts_clean") or {},
+                                                       add_dirs=c["add_dirs"], bypass=False, task=True))
+        sid = plan.agent_session_id or old_sid
+        real, row_id = _start_session_row(name, project, repo, session, "task", str(wt), cmd_line=plan.cmd_line, claude_session_id=sid,
+                                          add_dirs=c["add_dirs"], agent=agent, opts=plan.opts_clean or c["opts_clean"], task_id=t["id"])
+        db.task_update(t["id"], tmux_name=real, claude_session_id=sid, session_row=row_id, phase="running", assigned_at=db_now())
+        db.update_flags(real, {recover.CONTINUE_FLAG: {"reason": "reopen", "at": time.time(), "task": t["id"]}})
+        return real, row_id, sid
     if agent == "claude":
         sid: str | None = str(uuid.uuid4())
         real, row_id = _start_session_row(name, project, repo, session, "task", str(wt),
@@ -2136,8 +2167,10 @@ def api_task_reopen(tid: int, body: ReopenIn | None = None):
             raise projects.BadRequest(f"the saved launch options are invalid: {e}")
         wt = tasks.task_worktree(t)
         in_worktree = wt is not None and wt.is_dir() and (t.get("mode") or "worktree") == "worktree"
+        resumed = False
         if in_worktree:
             real, row_id, _sid = _reopen_in_worktree(t, launch, wt)
+            resumed = bool(_sid) and _sid == t.get("claude_session_id")      # #88: the previous conversation was resumed
             slug, branch = t["slug"], t["branch"]
         else:
             out = _task_launch(t["project"], t["repo"], launch, task_id=tid)
@@ -2145,10 +2178,11 @@ def api_task_reopen(tid: int, body: ReopenIn | None = None):
             row_id = (db.task_get(tid) or {}).get("session_row")
         db.task_update(tid, result=None, result_at=None, done_at=None,
                        auto_close=int(_effective_auto_close(t, body.auto_close, lane=True)))
+        taskflow.set_turns_ahead(db, tid, 0)
     _invalidate_scan()
     gate = taskflow.limit_gate(db, agent=_task_agent(t.get("agent")))
     return {"id": tid, "phase": "running", "tmux": real, "session_row": row_id, "attach_url": f"/term/{real}", "slug": slug,
-            "branch": branch, "reopened": "worktree" if in_worktree else "fresh", "task": _task_row(tid),
+            "branch": branch, "reopened": "worktree" if in_worktree else "fresh", "resumed": resumed, "task": _task_row(tid),
             **({"limit_warning": gate} if gate else {})}
 
 
@@ -2173,6 +2207,7 @@ def api_task_detach(tid: int):
         mode = "attached" if t["repo"] == projects.ROOT and not projects.is_repo(rpath) else "worktree"
         db.task_update(tid, tmux_name="", session_row=None, claude_session_id=None, phase="backlog", mode=mode, assigned_at=None,
                        done_at=None, result=None, result_at=None)
+        taskflow.set_turns_ahead(db, tid, 0)
     _invalidate_scan()
     return {"id": tid, "phase": "backlog", "task": _task_row(tid)}
 
@@ -2677,7 +2712,8 @@ def api_create_job(project: str, repo: str, body: JobIn):
     agent = _job_agent(body.agent)
     _job_installed(agent)
     cron = body.cron.strip() if body.cron else None
-    next_at = db_now() if (body.run_now or not cron) else scheduler.next_fire(cron)
+    # run_now starts it at once; a cron waits for its next fire; neither = parked (next_run_at NULL): it runs when "Run now" asks, never before
+    next_at = db_now() if body.run_now else (scheduler.next_fire(cron) if cron else None)
     jid = db.job_add(project=project, repo=repo, name=" ".join(body.name.split())[:80], prompt=body.prompt.strip(), cron=cron,
                      permission_mode=body.permission_mode, max_turns=body.max_turns, max_budget_usd=body.max_budget_usd,
                      args=body.args, timeout_s=body.timeout_s, enabled=1, batch_id=None, next_run_at=next_at, agent=agent,
