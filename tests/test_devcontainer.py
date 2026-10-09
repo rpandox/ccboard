@@ -102,13 +102,26 @@ def test_on_the_host_a_missing_cli_is_a_warning_with_the_install_line(box):
     ("missing", "docker is not installed", "apt-get install -y docker.io"),
     ("denied", "docker did not answer for this user", "usermod -aG docker"),
 ])
-def test_on_the_host_docker_problems_are_named_with_their_fix(box, docker, words, fix_has):
+def test_on_the_host_docker_problems_are_named_with_their_fix(box, docker, words, fix_has, monkeypatch):
+    from app import platform as plat
+    monkeypatch.setattr(plat, "IS_MACOS", False)                     # the Linux box (a Mac gets the Docker Desktop text: below)
+    monkeypatch.setattr(plat, "IS_LINUX", True)
     box["docker"] = docker
     out = run()
     assert out.status == "warn" and words in out.detail and fix_has in out.fix["cmd"]
     box["cli"] = "missing"                                            # both at once: both are named, the docker fix comes first
     out = run()
     assert words in out.detail and "devcontainer CLI is not installed" in out.detail and fix_has in out.fix["cmd"]
+
+
+def test_on_a_mac_a_missing_docker_points_at_docker_desktop_not_a_brew_formula(box, monkeypatch):
+    from app import platform as plat
+    monkeypatch.setattr(plat, "IS_MACOS", True)
+    monkeypatch.setattr(plat, "IS_LINUX", False)
+    box["docker"] = "missing"
+    out = run()
+    assert out.status == "warn" and "docker is not installed" in out.detail
+    assert "Docker Desktop" in out.fix["text"] and "brew" not in str(out.fix) and "docker.io" not in str(out.fix)
 
 
 def test_on_the_host_a_slow_probe_reads_as_unknown_not_as_broken(box):
