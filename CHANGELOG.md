@@ -2,7 +2,7 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
-## v0.5.29 - 2026-10-10
+## v0.5.29 - 2026-10-09
 
 ### Changed
 - Pages load their scripts and styles on first visit: the first paint needs about 520 KB of script instead of 1.1 MB. The Usage, Quad, Memory, Settings, project and wizard pages, the launcher, the palette, drag and drop, the file tree and the terminal kit come in when first used, once; a page that cannot load says so with a Retry button. The service worker still precaches everything, so offline works as before.
