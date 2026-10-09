@@ -25,6 +25,10 @@ cs = _load()
 ASYNC_EVENTS = ["SessionStart", "UserPromptSubmit", "Notification", "Stop", "StopFailure", "SubagentStart", "SubagentStop",
                 "PreCompact", "PostCompact", "PostModelSwitch", "TaskCreated", "TaskCompleted", "PostToolBatch", "ConfigChange"]
 FOREIGN = {"type": "command", "command": "/usr/local/bin/mine"}
+# issue #26, box check V9 (Claude Code 2.1.294): the message of every assertion below that keeps the two events out
+WORKTREE_WHY = ("WorktreeCreate/WorktreeRemove must stay unregistered: a WorktreeCreate hook replaces Claude's own worktree creation and must "
+                "print the path (a no-output hook makes `claude --worktree` fail with 'hook succeeded but returned no worktree path'), and "
+                "WorktreeRemove never fired for the removals Claude does itself")
 
 
 def cmds(data, ev):
@@ -38,7 +42,7 @@ def entries(data, ev, suffix):
 def test_events_are_the_agreed_set_in_order():
     assert cs.EVENTS == ASYNC_EVENTS + ["SessionEnd"]
     assert cs.EVENTS[:2] == ["SessionStart", "UserPromptSubmit"]          # tests/test_agents_claude.py pins the head
-    assert not [e for e in cs.EVENTS if e.startswith("Worktree")]
+    assert not [e for e in cs.EVENTS if e.startswith("Worktree")], WORKTREE_WHY
 
 
 def test_the_adapters_fallback_list_is_the_same_set():
@@ -62,8 +66,19 @@ def test_install_registers_every_event_with_the_right_wrapper():
 
 
 def test_worktree_hooks_are_never_registered():
-    data = cs.install({}, APP)
-    assert not [e for e in data["hooks"] if e.startswith("Worktree")]
+    for remote in (True, False):
+        data = cs.install({}, APP, remote_approve=remote)
+        assert not [e for e in data["hooks"] if e.startswith("Worktree")], WORKTREE_WHY
+    # someone else's hook on one of those events is kept (it is not ours to touch), and none of ours is added beside it
+    merged = cs.install({"hooks": {"WorktreeCreate": [{"hooks": [FOREIGN]}]}}, APP)
+    assert cmds(merged, "WorktreeCreate") == [FOREIGN["command"]] and "WorktreeRemove" not in merged["hooks"], WORKTREE_WHY
+
+
+def test_the_reason_for_leaving_them_out_is_written_in_the_script():
+    """Issue #26: the comment above EVENTS keeps saying why, so the next reader does not 'fix' it."""
+    src = SCRIPT.read_text()
+    for needle in ("REPLACES Claude's own worktree creation", "hook succeeded but returned no worktree path", "never fired"):
+        assert needle in src, needle
 
 
 def test_no_remote_approve_skips_the_permission_hook():
@@ -149,7 +164,7 @@ def test_cli_worktree_flag_is_parsed_and_ignored_with_a_note(tmp_path):
     f = tmp_path / "x.json"
     r = run_script("install", "--settings", str(f), "--app-dir", str(APP), "--with-worktree-hooks")
     assert r.returncode == 0 and "--with-worktree-hooks is ignored" in r.stderr
-    assert not [e for e in json.loads(f.read_text())["hooks"] if e.startswith("Worktree")]
+    assert not [e for e in json.loads(f.read_text())["hooks"] if e.startswith("Worktree")], WORKTREE_WHY
 
 
 def test_cli_refuses_a_settings_file_it_cannot_read(tmp_path):

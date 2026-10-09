@@ -616,6 +616,29 @@ def test_create_session_with_a_devcontainer_stores_it_in_opts(board):
     assert sh["cmd"].endswith("-- bash -l") and sh["agent"] == "shell"
 
 
+def test_the_typed_devcontainer_line_is_exactly_what_the_host_runs(board):
+    """Issue #104: the board runs no docker. It TYPES one line into the session's tmux window, and that tmux is the host's, so the line runs
+    on the host: the prerequisites are the host's docker, docker group and `devcontainer` CLI, not a socket in the board's container."""
+    (board.projects / "shop" / "api" / ".devcontainer").mkdir()
+    (board.projects / "shop" / "api" / ".devcontainer" / "devcontainer.json").write_text("{}")
+    wf = str(board.projects / "shop" / "api")
+    up = f"devcontainer up --workspace-folder {shlex.quote(wf)}"
+    inside = f"devcontainer exec --workspace-folder {shlex.quote(wf)} --"
+    c = new_session(board, "claude", name="dcc", devcontainer=True)
+    assert c["cmd"] == f"{up} && {inside} claude --session-id {c['agent_session_id']} --name dcc"
+    sh = new_session(board, "shell", name="dcs", devcontainer=True)
+    assert sh["cmd"] == f"{up} && {inside} bash -l"
+    for r in (c, sh):                                                  # what reaches the (host) tmux window is that line, nothing wrapped around it
+        assert (r["tmux"], r["cmd"]) in board.tmux["sent"]
+    plain = new_session(board, "claude", name="dcp")                   # without the checkbox nothing is wrapped
+    assert plain["cmd"].startswith("claude ") and "devcontainer" not in plain["cmd"]
+    # docker is never called by the board's own process for this: only the file test runs in-process
+    src = (Path(__file__).resolve().parent.parent / "app")
+    for py in src.rglob("*.py"):
+        text = py.read_text(encoding="utf-8")
+        assert "docker.sock" not in text and "import docker" not in text, py.name
+
+
 def test_launch_args_is_a_delegate_with_the_old_messages():
     from app import main
     assert main._launch_args(main.LaunchOpts(model="opus", effort="low")) == ["--model", "opus", "--effort", "low"]

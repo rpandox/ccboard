@@ -407,6 +407,46 @@ def test_shadow_override_text():
     assert 'restart: "no"' in text and "name: ccboard-shadow" in text
 
 
+def _shadow_body() -> str:
+    """The shadow file without its comment lines (the header explains what it leaves out, and must be allowed to name it)."""
+    return "\n".join(ln for ln in SHADOW.read_text().splitlines() if not ln.lstrip().startswith("#"))
+
+
+def test_shadow_compose_cannot_touch_live_data():
+    """Restore drill 2026-10-09 (issue #111): the old overlay inherited the base file's live-home bind, the tmux socket directory, the
+    tailscale socket directory, the host network and the host pid namespace. It is a file of its own now, and it names none of those."""
+    text = _shadow_body()
+    assert not re.search(r"^\s+pid:", text, re.M), "no host pid namespace (a private one, the default)"
+    assert re.search(r"^\s+network_mode: bridge$", text, re.M) and "host" not in re.findall(r"network_mode: (\S+)", text)
+    assert not re.search(r"^\s+(ports|extra_hosts|privileged|cap_add|devices|ipc|userns_mode|env_file):", text, re.M), \
+        "nothing published, nothing inherited from /etc/ccboard/env, no extra privilege"
+    for live in ("tailscale", "/tmp/tmux", "TMUX_TMPDIR", "docker.sock", "/etc/ccboard", "watchtower.scope", ".claude", ".codex", ".ssh", ".config"):
+        assert live not in text, f"the shadow must not name {live}"
+    sources = re.findall(r"^\s+source: (.+)$", text, re.M)
+    targets = re.findall(r"^\s+target: (.+)$", text, re.M)
+    home = "${CCBOARD_HOME:?set CCBOARD_HOME (install.sh writes it to the compose .env)}"
+    assert sources == [f"{home}/.local/share/ccboard-shadow", "${PROJECTS_DIR:-/srv/projects}"], "its own data directory and the projects, nothing else"
+    assert targets == sources, "mounted at the same path"
+    assert f"HOME: {home}/.local/share/ccboard-shadow/home" in text, "HOME inside the shadow's own directory, not the live home"
+    assert text.count("create_host_path: false") == 2, "a missing folder fails the start, it never becomes a root-owned directory"
+    assert "bind:\n          create_host_path: false" in text and "source: ${PROJECTS_DIR:-/srv/projects}" in text
+    for off in ('CCBOARD_RECOVER: "0"', 'CCBOARD_CLAUDE_MEM: "0"', 'CCBOARD_RESTIC_REPO: "off"', 'NTFY_URL: ""', 'CCBOARD_NODES: ""'):
+        assert off in text, off
+
+
+@pytest.mark.skipif(yaml is None, reason="PyYAML not installed; test_shadow_compose_cannot_touch_live_data covers the same lines as text")
+def test_shadow_compose_parses_and_pins_the_isolation():
+    doc = yaml.safe_load(SHADOW.read_text())          # plain YAML: no !override or !reset tags, because nothing is merged
+    svc = doc["services"]["ccboard"]
+    assert doc["name"] == "ccboard-shadow" and list(doc["services"]) == ["ccboard"]
+    assert svc["network_mode"] == "bridge" and "pid" not in svc and "ports" not in svc and "env_file" not in svc
+    assert svc["restart"] == "no" and svc["container_name"] == "ccboard-shadow"
+    binds = {v["target"]: v for v in svc["volumes"]}
+    assert len(binds) == 2 and all(v["type"] == "bind" and v["bind"]["create_host_path"] is False for v in binds.values())
+    assert [t for t, v in binds.items() if v.get("read_only")] == ["${PROJECTS_DIR:-/srv/projects}"]
+    assert svc["labels"] == {"com.centurylinklabs.watchtower.enable": "false"}
+
+
 def _compose_version() -> tuple[int, int] | None:
     docker = shutil.which("docker")
     if not docker:
@@ -440,15 +480,17 @@ def test_docker_compose_config_validates_and_merges():
     assert base["services"]["ccboard"]["network_mode"] == "host" and base["services"]["ccboard"]["pid"] == "host"
     assert base["services"]["ccboard"]["environment"]["CCBOARD_RUNTIME"] == "docker"
     assert set(_compose_config(COMPOSE)["services"]) == {"ccboard"}, "watchtower only runs with --profile prod"
-    merged = _compose_config(COMPOSE, SHADOW)
-    assert merged["name"] == "ccboard-shadow" and set(merged["services"]) == {"ccboard"}
-    svc = merged["services"]["ccboard"]
+    shadow = _compose_config(SHADOW)               # a file of its own: nothing of the base file is merged in (issue #111)
+    assert shadow["name"] == "ccboard-shadow" and set(shadow["services"]) == {"ccboard"}
+    svc = shadow["services"]["ccboard"]
     assert svc["container_name"] == "ccboard-shadow"
     assert svc["environment"]["CCBOARD_PORT"] == "8010" and svc["environment"]["CCBOARD_SHADOW"] == "1"
     assert svc["environment"]["CCBOARD_DATA_DIR"] == "/tmp/h/.local/share/ccboard-shadow"
+    assert svc["environment"]["HOME"] == "/tmp/h/.local/share/ccboard-shadow/home", "not the live home"
     assert svc["labels"]["com.centurylinklabs.watchtower.enable"] == "false"
-    projects = [v for v in svc["volumes"] if v["target"] == "/srv/projects"]
-    assert len(projects) == 1 and projects[0].get("read_only") is True
+    assert svc["network_mode"] == "bridge" and "pid" not in svc and "ports" not in svc and "env_file" not in svc
+    assert sorted((v["source"], v["target"], bool(v.get("read_only"))) for v in svc["volumes"]) == [
+        ("/srv/projects", "/srv/projects", True), ("/tmp/h/.local/share/ccboard-shadow", "/tmp/h/.local/share/ccboard-shadow", False)]
     assert "$${CCBOARD_PORT" in " ".join(svc["healthcheck"]["test"])
 
 
@@ -506,7 +548,7 @@ def test_entrypoint_refuses_instead_of_guessing_a_home():
 @pytest.mark.real_home("the docker CLI finds its compose plugin under ~/.docker/cli-plugins; it only reads config, writes nothing")
 def test_docker_compose_config_without_a_home_fails_with_a_readable_message():
     env = {k: v for k, v in os.environ.items() if not k.startswith(("COMPOSE_", "CCBOARD_")) and k != "PROJECTS_DIR"}
-    for files in ((COMPOSE,), (COMPOSE, SHADOW)):
+    for files in ((COMPOSE,), (SHADOW,)):
         cmd = ["docker", "compose"]
         for f in files:
             cmd += ["-f", str(f)]

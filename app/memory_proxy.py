@@ -44,13 +44,15 @@ from .config import settings
 log = logging.getLogger("ccboard.memory")
 
 # ------------------------------------------------------------------ the worker's names (pinned)
-# Verified live against claude-mem worker 13.31.0 on the box (box check V11, issue #12, 2026-10-08) and again against the running 13.34.2
-# worker (2026-10-08, GET only: /api/stats, /api/projects, /api/observations, /api/summaries, /api/search with format=json, each answer
-# passed check_shape with no drift), so TESTED_WORKER is 13.34.2. The scrubbed fixtures in tests/fixtures are still the 13.31.0 answers.
-# tests/test_memory_contract.py pins every name below; a rename in a plugin update shows there and as state 'incompatible' at runtime.
-TESTED_WORKER = "13.34.2"
+# Verified live against claude-mem worker 13.31.0 on the box (box check V11, issue #12, 2026-10-08), against the running 13.34.2 worker
+# (2026-10-08) and again against 13.35.0 (2026-10-09, GET only: the plugin had replaced the worker that day; stats, health, readiness,
+# projects, observations, summaries, search with format=json and filter-only, timeline with an anchor, each key set equal to the pinned
+# one, summaries items gained `notes`). So TESTED_WORKER is 13.35.0. The 13.35.0 answers are kept scrubbed in tests/fixtures/claude_mem_13_35/;
+# the older tests/fixtures/claude_mem_*.json are the 13.31.0 ones. tests/test_memory_contract.py pins every name below; a rename in a
+# plugin update shows there and as state 'incompatible' at runtime.
+TESTED_WORKER = "13.35.0"
 ENDPOINTS = {
-    "projects": "/api/projects",           # {projects: [str], sources, projectsBySource}; never empty while the worker is up
+    "projects": "/api/projects",           # {projects: [str], sources, projectsBySource}; never empty while the worker is up (the first call after a worker restart took 7.4 s)
     "observations": "/api/observations",   # {items, hasMore, offset, limit}, newest first, limit <= 100
     "summaries": "/api/summaries",         # the same wrapper
     "search": "/api/search",               # format=json: {observations, sessions, prompts, totalResults, query}
@@ -79,7 +81,7 @@ INVALID_PROJECTS = "INVALID_PROJECTS"      # the 400 code of a projects= value t
 PROXY_CAP = 2 * 1024 * 1024       # bytes of one worker answer; more is an error (memory.TooLarge), never a silently empty list
 FETCH_TIMEOUT = 5.0               # one worker request: a cold read on the box's spinning disk took over 2 s (warm ones take ms)
 BUDGET = 6.0                      # one board request (a fan-out included)
-SEARCH_BUDGET = 6.0               # a text search: the box saw a broad one take 15.7 s; past this it reads 'slow', never 'down'
+SEARCH_BUDGET = 6.0               # a text search: the box saw a broad one take 15.7 s, and 26 s cold right after a worker restart; past this it reads 'slow', never 'down'
 FANOUT = 4                        # worker requests in flight for one board request
 SCAN_CAP = 300                    # rows read per key for one page (the `before` cursor over-fetches up to here)
 PAGE_DEFAULT, PAGE_MAX = 50, 100

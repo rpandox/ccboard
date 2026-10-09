@@ -1,0 +1,20 @@
+{
+ "_request": "/api/projects",
+ "_http": 200,
+ "_seconds": 0.004,
+ "body": {
+  "projects": [
+   "<repo>",
+   "<repo-2>"
+  ],
+  "sources": [
+   "<text>"
+  ],
+  "projectsBySource": {
+   "claude": [
+    "<repo>",
+    "<repo-2>"
+   ]
+  }
+ }
+}

@@ -247,7 +247,7 @@ function renderJobs() {
       el('div', { class: 'main' },
         agentGlyph(j.agent || 'claude'),
         el('span', { class: 'name', text: j.name }),
-        el('span', { class: j.enabled && j.next_run_at ? 'state' : 'state ended', text: j.enabled && j.next_run_at ? 'next ' + fmtTs(j.next_run_at) : 'disabled' }),
+        el('span', { class: j.enabled && j.next_run_at ? 'state' : 'state ended', text: j.enabled && j.next_run_at ? 'next ' + fmtTs(j.next_run_at) : j.enabled ? 'parked: Run now' : 'disabled' }),
         el('span', { class: 'meta', text: `${j.project}/${j.repo} · ${j.cron ? 'cron ' + j.cron : 'one-off'} · ${j.permission_mode}${jobLimitText(j)}${j.last_status ? ' · last: ' + j.last_status : ''}` })),
       el('div', { class: 'actions' },
         jobFableButton(j),

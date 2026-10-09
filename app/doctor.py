@@ -453,6 +453,81 @@ def _c_git(db) -> Outcome:
     return _pass(f"git {_vstr(p.out) or _vs(v)}; {preflight.pin_note(preflight.parse_git_version(p.out) or (v[0], v[1], 0))}")
 
 
+# ------------------------------------------------------------------ devcontainer sessions need the HOST's docker (issue #104)
+
+DEVCONTAINER_INSTALL = "npm install -g --prefix ~/.local @devcontainers/cli"       # what `CCBOARD_DEVCONTAINER=1 ./install.sh` runs
+
+
+def _devcontainer_repos() -> list[str] | None:
+    """`project/repo` of every repo in the project scan that has .devcontainer/devcontainer.json; None when the board has no scan to give."""
+    src = _projects_source
+    projs = src() if callable(src) else None
+    if projs is None:
+        return None
+    return [f"{p.get('name')}/{r.get('name')}" for p in (projs if isinstance(projs, list) else []) if isinstance(p, dict)
+            for r in (p.get("repos") or []) if isinstance(r, dict) and r.get("devcontainer") is True]
+
+
+def _probe_docker() -> str:
+    """'ok' | 'missing' | 'denied' (docker ran and the daemon did not answer this user: it is stopped, or the user is not in the docker group) |
+    'timeout'. `docker info` talks to the daemon, which is the question; `docker --version` would pass for a user without access."""
+    try:
+        p = _run(["docker", "info", "--format", "{{.ServerVersion}}"], timeout=HELPER_TIMEOUT)
+    except ToolMissing:
+        return "missing"
+    except ToolTimeout:
+        return "timeout"
+    return "ok" if p.rc == 0 else "denied"
+
+
+def _c_devcontainer(db) -> Outcome:
+    """What "Run in the devcontainer" needs. The board types `devcontainer up ... && devcontainer exec ... -- claude` into the session's tmux
+    window, and that tmux is the HOST's, so the line runs on the host: the prerequisites are the host's docker, the user in the docker group
+    and the `devcontainer` CLI. The board itself never calls docker (it only tests that .devcontainer/devcontainer.json exists), so a board
+    container needs no docker CLI and no socket. Skips when no repo has a devcontainer. Run by the board on the host (systemd, launchd) it asks
+    docker and the CLI directly. Run by the board in a container it cannot see the host's docker, and says so; the one thing it can see is
+    ~/.local/bin/devcontainer (the host's home is mounted), where install.sh puts the CLI."""
+    repos = _devcontainer_repos()
+    if repos is None:
+        return _skip("the project scan is not ready yet, so it is not known whether a repo has a devcontainer")
+    if not repos:
+        return _skip("no repo has a .devcontainer/devcontainer.json, so nothing asks for the host's docker and devcontainer CLI")
+    n = f"{len(repos)} repo{'s' if len(repos) != 1 else ''} with a devcontainer"
+    install = fix(f"Install the CLI on the host: CCBOARD_DEVCONTAINER=1 ./install.sh, or {DEVCONTAINER_INSTALL}", DEVCONTAINER_INSTALL)
+    local = Path.home() / ".local" / "bin" / "devcontainer"
+    if settings.runtime == "docker":
+        if os.path.isfile(local) and os.access(local, os.X_OK):
+            return _pass(f"{n}: the devcontainer CLI is in ~/.local/bin. Docker and the docker group are the host's and out of sight of this "
+                         f"container; the line the board types runs in the host's tmux")
+        return _warn(f"{n}, but no devcontainer CLI in ~/.local/bin (where install.sh puts it); a copy elsewhere on the host cannot be seen "
+                     f"from the container",
+                     fix(f"On the host: CCBOARD_DEVCONTAINER=1 ./install.sh, or {DEVCONTAINER_INSTALL} (ignore this if it is installed elsewhere there)",
+                         DEVCONTAINER_INSTALL))
+    from concurrent.futures import ThreadPoolExecutor
+    path = _hook_path() + os.pathsep + str(local.parent)
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_docker = ex.submit(_probe_docker)
+        f_cli = ex.submit(_probe_helper, "devcontainer", ["--version"], path)
+        docker, cli = f_docker.result(), f_cli.result()
+    if docker == cli == "ok":
+        return _pass(f"{n}: docker answers for this user and the devcontainer CLI runs")
+    bad: list[tuple[str, dict]] = []
+    if docker == "missing":
+        if plat.IS_MACOS:   # Homebrew has no docker.io: on a Mac docker comes with Docker Desktop
+            bad.append(("docker is not installed", fix("Install Docker Desktop for Mac and start it (https://docs.docker.com/desktop/setup/install/mac-install/)")))
+        else:
+            bad.append(("docker is not installed", fix("Install Docker, then add your user to the docker group", plat.hint("install", "docker.io"))))
+    elif docker == "denied":
+        bad.append(("docker did not answer for this user (stopped, or not in the docker group)",
+                    fix("Start Docker, and add your user to the docker group (log in again afterwards)", "sudo usermod -aG docker $USER")))
+    if cli in ("missing", "broken"):
+        bad.append(("the devcontainer CLI is not installed" if cli == "missing" else "the devcontainer CLI does not run (it needs node)", install))
+    if bad:
+        return _warn(f"{n}, but {' and '.join(b[0] for b in bad)}: 'Run in the devcontainer' would fail", bad[0][1])
+    slow = [n_ for n_, r in (("docker info", docker), ("devcontainer --version", cli)) if r == "timeout"]
+    return _warn(f"unknown: {' and '.join(slow)} did not answer within {int(HELPER_TIMEOUT)} s", fix("Run docker info and devcontainer --version in a terminal"))
+
+
 # ------------------------------------------------------------------ a slow tool is not a broken tool (issue #99)
 
 BUSY_NOTE = "the box is busy; this is not a failure"
@@ -1414,6 +1489,7 @@ for _id, _group, _label, _fn in (
 del _id, _group, _label, _fn
 register("hook-helpers", "claude", "Hook helpers (curl, python3)", _c_hook_helpers)   # issue #121
 register("tailscale", "box", "Tailscale", _c_tailscale)   # issue #126
+register("devcontainer", "box", "Devcontainer prerequisites (host)", _c_devcontainer)   # issue #104
 register_provider("memory", MEM_GROUP, memory_checks)       # claude-mem (v0.5.10): one probe, seven checks
 register_provider("codex", CODEX_GROUP, codex_checks)       # the Codex adapter's checks (v0.5.11)
 if plat.IS_MACOS:                                            # issue #117: the macOS checks (app/doctor_macos.py) exist on a Mac only; a Linux board lists none
@@ -1576,8 +1652,8 @@ def _c_backup_repo(db) -> Outcome:
         return _skip("could not read the disks of the restic repository and the data directory")
     if same:
         return _warn("the restic repository is on the same disk as the data: it protects against deletion and corruption, not against losing the disk",
-                     fix("Set CCBOARD_RESTIC_REPO to another disk or a remote (sftp:, rclone:, s3:, rest:) in /etc/ccboard/env, then restart the board "
-                         "(README, Settings table, CCBOARD_RESTIC_REPO)"))
+                     fix("Set CCBOARD_RESTIC_REPO to another disk or a remote (sftp:, rclone:, s3:, rest:) and restart; restic-password is in the "
+                         "data dir too, copy it elsewhere (README, Restoring from a backup)"))
     return _pass("the restic repository is on a different disk than the data")
 
 

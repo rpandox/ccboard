@@ -5,8 +5,13 @@ Why: a model ccusage has no rate for comes back `missingPricing: true` with cost
 The dollars then understate what the work is worth. Nothing here changes a reported figure: an estimate is added beside it, never into it.
 
 Prices are USD per million tokens, from the Anthropic pricing page read on PRICE_DATE (list prices; the Batch API is 50 % off and Fast mode is dearer, neither is
-modelled). Cache-read prices are on the page; CACHE-WRITE PRICES ARE NOT in the material this table was made from, so `cache_write` is None and a cache write is
-priced at CACHE_WRITE_FALLBACK_X times the input price (1.25, Anthropic's multiplier for the 5-minute cache) and the estimate says so. The rates of the legacy ids (Fable 5,
+modelled). The Haiku 5.5 row is not from that page: it is the rate both the statusline and ccusage charged for it on the box (box check, 2026-10-09, issue #94:
+input 0.10, output 0.50, cache read 0.01 per million), see ROW_SOURCES. Cache-read prices are on the page; CACHE-WRITE PRICES ARE NOT in the material this table
+was made from, so `cache_write` is None and a cache write is priced by its TTL: a 1-hour write at CACHE_WRITE_1H_X (2) times the input price and a 5-minute one at
+CACHE_WRITE_FALLBACK_X (1.25) times, where the token split says which (`cache_creation_1h` / `cache_creation_5m` beside the total `cache_creation`; the box
+check reproduced Claude Code's own figure to the 8th decimal with 1-hour writes at 2 x). Cache-write tokens with no split are priced at the 5-minute rate and the
+estimate says that is an assumption (ccusage's session rows carry no split). A session the board launched is not priced from this table at all when its statusline
+cost exists (app/cost.py prefer_statusline): this table is for the rest. The rates of the legacy ids (Fable 5,
 Opus 5, Sonnet 5) are not on the page either: such an id takes its family's newest entry as a SIBLING and the estimate says that too.
 
     estimate_model(model, tokens) -> {usd, basis: 'list' | 'sibling', family, cache_write_assumed} | None      None = no defensible price: stays unpriced
@@ -26,7 +31,8 @@ log = logging.getLogger("ccboard.pricing")
 
 PRICE_DATE = "2026-10-07"
 PRICE_SOURCE = "Anthropic pricing page (list prices per million tokens)"
-CACHE_WRITE_FALLBACK_X = 1.25      # x the input price when a family's cache-write price is not known (assumed; says so in the estimate)
+CACHE_WRITE_FALLBACK_X = 1.25      # x the input price for a 5-minute cache write, and for a write whose TTL is not known (assumed; says so in the estimate)
+CACHE_WRITE_1H_X = 2.0             # x the input price for a 1-hour cache write (Claude Code's default on the box; reproduced its figure exactly)
 FIELDS = ("input", "output", "cache_read", "cache_write")
 
 # family key (the model id without `claude-` and without a date suffix) -> USD per million tokens. cache_write None = not on the page.
@@ -35,7 +41,10 @@ PRICES: dict[str, dict[str, float | None]] = {
     "opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.20, "cache_write": None},
     "sonnet-5-5": {"input": 2.0, "output": 10.0, "cache_read": 0.20, "cache_write": None},
     "haiku-4-5": {"input": 1.0, "output": 5.0, "cache_read": 0.10, "cache_write": None},
+    "haiku-5-5": {"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": None},      # the `haiku` alias since 2026-10; NOT the 4.5 row (a tenth of it)
 }
+# Where a row came from when it is not the pricing page read on PRICE_DATE (the README sentence and a test pin it).
+ROW_SOURCES = {"haiku-5-5": "box check 2026-10-09: the statusline and ccusage 20.0.26 both charged 0.10 / 0.50 per million, cache read 0.01"}
 
 _DATE_SUFFIX = re.compile(r"-(?:20\d{6}|latest)$")
 _FAMILY = re.compile(r"^([a-z]+)-(\d+(?:-\d+)*)$")
@@ -130,13 +139,18 @@ def table() -> Table:
 
 
 def _usd(entry: dict, tokens: dict) -> tuple[float, bool]:
-    """(USD, cache_write_assumed) for {input, output, cache_creation, cache_read} token counts at one entry's rates."""
+    """(USD, cache_write_assumed) for {input, output, cache_creation, cache_read} token counts at one entry's rates. `cache_creation` is the total of the cache
+    writes; `cache_creation_1h` and `cache_creation_5m`, when present, say how much of it was which TTL (1h at CACHE_WRITE_1H_X times the input price, 5m at the
+    entry's cache_write or CACHE_WRITE_FALLBACK_X times). What the split does not cover is priced as a 5-minute write and counts as assumed."""
+    n1h, n5m = max(0.0, float(tokens.get("cache_creation_1h") or 0)), max(0.0, float(tokens.get("cache_creation_5m") or 0))
+    total = max(float(tokens.get("cache_creation") or 0), n1h + n5m)
+    unsplit = total - n1h - n5m
     cw = entry.get("cache_write")
-    assumed = cw is None and tokens.get("cache_creation", 0) > 0
-    if cw is None:
-        cw = float(entry["input"]) * CACHE_WRITE_FALLBACK_X
+    assumed = cw is None and unsplit > 0
+    cw5 = float(cw) if cw is not None else float(entry["input"]) * CACHE_WRITE_FALLBACK_X
+    cw1h = max(float(entry["input"]) * CACHE_WRITE_1H_X, cw5)
     usd = (tokens.get("input", 0) * float(entry["input"]) + tokens.get("output", 0) * float(entry["output"])
-           + tokens.get("cache_creation", 0) * cw + tokens.get("cache_read", 0) * float(entry.get("cache_read") or 0.0)) / 1e6
+           + n1h * cw1h + (n5m + unsplit) * cw5 + tokens.get("cache_read", 0) * float(entry.get("cache_read") or 0.0)) / 1e6
     return usd, assumed
 
 

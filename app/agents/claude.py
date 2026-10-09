@@ -165,6 +165,19 @@ def _arg_matching(extra: list[str], parts: tuple[str, ...]) -> str | None:
     return None
 
 
+BARE_REFUSAL = ("--bare reads only ANTHROPIC_API_KEY or an apiKeyHelper, never the claude.ai login, so on a box signed in with claude.ai the run "
+                "fails at once with 'Not logged in'; it also skips hooks, auto-memory and CLAUDE.md. Set ANTHROPIC_API_KEY for the board to use it")
+
+
+def bare_refused(extra: list[str]) -> str | None:
+    """`--bare` in an unattended run's extra args, unless the board's own environment has ANTHROPIC_API_KEY (the one credential a bare run can read that
+    the board can see; an apiKeyHelper in the settings is opaque to it). The box check (Claude Code 2.1.294, issue #107): bare + a claude.ai login = exit 1,
+    'Not logged in', 1 s."""
+    if os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        return None
+    return next((a for a in extra if a.lower() == "--bare"), None)
+
+
 # ---------- what this box's claude can do (one `claude --help` per binary, never on a hot path twice) ----------
 
 _clock = time.monotonic                           # patched by tests (failure retry age)
@@ -260,8 +273,20 @@ def _bin_key(exe: str) -> tuple:
         return (exe, 0)
 
 
+def _denied_tools(data: dict) -> list[str]:
+    """The tool names of the run's `permission_denials` (one per denied call, so a repeat repeats), in the order they happened. Only the names:
+    the denied call's input can hold a command, a path or a secret and is never kept. [] when the run has none or the field is not a list."""
+    raw = data.get("permission_denials")
+    out = []
+    for d in raw if isinstance(raw, list) else []:
+        name = d.get("tool_name") if isinstance(d, dict) else d
+        out.append(name.strip()[:60] if isinstance(name, str) and name.strip() else "?")
+    return out
+
+
 def parse_result(stdout: str) -> dict:
-    """claude -p --output-format json -> {text, session_id, cost, turns, is_error, subtype, rate_limited}."""
+    """claude -p --output-format json -> {text, session_id, cost, turns, is_error, subtype, rate_limited, denials}. `denials` are the tool names of
+    the run's permission_denials: a run whose tools were all denied still exits 0 with is_error false (box check, issue #107), so only this shows it."""
     data = None
     for line in reversed([ln for ln in stdout.splitlines() if ln.strip()]):
         try:
@@ -271,7 +296,7 @@ def parse_result(stdout: str) -> dict:
             continue
     if not isinstance(data, dict):
         return {"text": stdout.strip()[-20000:], "session_id": None, "cost": None, "turns": None, "is_error": True,
-                "subtype": "no_json", "rate_limited": bool(RATE_RE.search(stdout or ""))}
+                "subtype": "no_json", "rate_limited": bool(RATE_RE.search(stdout or "")), "denials": []}
     text = data.get("result") if isinstance(data.get("result"), str) else json.dumps(data.get("result"))
     err = bool(data.get("is_error")) or str(data.get("subtype", "")).startswith("error")
     turns = data.get("num_turns")
@@ -282,7 +307,7 @@ def parse_result(stdout: str) -> dict:
         (mentions_limit and (turns is None or turns <= 1) and len(text or "") < 300) or \
         bool(LIMIT_MSG_RE.search((text or "")[-500:]))     # a limit hit after several turns ends the output with its message
     return {"text": (text or "")[:20000], "session_id": data.get("session_id"), "cost": data.get("total_cost_usd"),
-            "turns": turns, "is_error": err, "subtype": data.get("subtype"), "rate_limited": rate_limited}
+            "turns": turns, "is_error": err, "subtype": data.get("subtype"), "rate_limited": rate_limited, "denials": _denied_tools(data)}
 
 
 def parse_limit_message(text: str | None, now: datetime | None = None) -> dict:
@@ -613,7 +638,7 @@ class ClaudeAgent(Agent):
         if "--" in extra:                    # a bare `--` turns the board's own --session-id / --name / --worktree into positionals (#44 F-07)
             return "--"
         if not interactive:
-            return _arg_matching(extra, FORBIDDEN_ARG_PARTS)
+            return _arg_matching(extra, FORBIDDEN_ARG_PARTS) or bare_refused(extra)
         bad = _arg_matching(extra, OVERRIDE_PARTS)
         if bad or not task:
             return bad

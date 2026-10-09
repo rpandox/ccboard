@@ -508,6 +508,17 @@ test('the same task in the needs-you and done columns keeps its chip (the sessio
   for (const id of [26, 27]) assert.ok(ownerChip(card(env, id)), `task ${id} has the owner chip`);
 });
 
+test('a prompt queued behind a turn in flight (turns_ahead above 0) reads "queued" on its card, not the session state; at 0 the state is back (issue #64)', async () => {
+  const mk = (id, ahead) => row(id, { title: `Q${id}`, phase: 'running', mode: 'session', column: 'in_progress', tmux: 'petroit--api--s4', session_row: 5, prompt: null, turns_ahead: ahead,
+    session: { state: 'working', state_at: new Date().toISOString(), last_message: '', needs_attention: false, command: 'claude' } });
+  const env = tasksWorld({ state: stateWith([mk(41, 1), mk(42, 0)]) });
+  await go(env, PETROIT);
+  const badge = (id) => card(env, id).querySelector('.tk-title-row .state');
+  assert.equal(textOf(badge(41)).trim(), 'queued');
+  assert.match(textOf(badge(42)), /working/, 'its own turn: the session state again');
+  assert.equal(colOf(card(env, 41)), 'In progress');
+});
+
 // ---------------------------------------------------------------- the project page and the demo fixture
 
 test('the demo fixture: the Tasks tab of phasezero shows its backlog card and its in-progress cards, one of them with the chip', async () => {

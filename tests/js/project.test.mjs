@@ -1241,3 +1241,21 @@ test('the hint is text only: the command goes through textContent and the tree s
   assert.equal(page.querySelector('.pj-uchint b'), null, 'no markup was made from the path');
   assert.ok(byPath(page, 'package.json'));
 });
+
+test('issue #107: a job with no schedule that has not been asked to run reads parked, a denied run reads denied with what was refused, and a disabled job still reads disabled', async () => {
+  const st = projectState();
+  const parked = { ...CODEX_JOB, id: 41, agent: 'claude', opts: null, cron: null, next_run_at: null, enabled: 1, last_run_at: null, last_status: null };
+  const off = { ...parked, id: 42, enabled: 0 };
+  const denied = { id: 51, job_id: 41, started_at: ISO(30), finished_at: ISO(29), status: 'denied', result: 'I could not create the file.', error: 'denied 3 tool calls: Bash, Write',
+    session_id: null, cost_usd: 0.03, num_turns: 4, worktree: null, branch: null, task_id: null, agent: 'claude' };
+  st.jobs = [...st.jobs, parked, off];
+  st.runs = [denied, ...st.runs];
+  const env = projectWorld({ state: st });
+  const page = await go(env, '#/p/phasezero?tab=schedules');
+  const rows = all(page, '.pj-job');
+  const state = (id) => textOf(rows.find((r) => r.getAttribute('data-job') === String(id)).querySelector('.main .state'));
+  assert.equal(state(41), 'parked: Run now');
+  assert.equal(state(42), 'disabled');
+  const line = textOf(rows.find((r) => r.getAttribute('data-job') === '41').querySelector('.pj-run-line'));
+  assert.match(line, /· denied · \$0\.03 · 4 turns · denied 3 tool calls: Bash, Write/);
+});

@@ -626,7 +626,7 @@ def build(db, days: int = 30, tz_min: int = DEFAULT_TZ_MIN, now: datetime | None
         top.append({"key": key, "project": meta.get("p") if isinstance(meta.get("p"), str) and meta.get("p") else UNATTRIBUTED,
                     "repo": meta.get("r") if isinstance(meta.get("r"), str) else None, "agent": _agent_of(key, meta),
                     **({"via": "folder"} if meta.get("j") and meta.get("p") else {}),
-                    **({"est_basis": meta["eb"]} if basis == BASIS_EST and isinstance(meta.get("eb"), str) else {}),
+                    **({"est_basis": meta["eb"]} if isinstance(meta.get("eb"), str) and (basis == BASIS_EST or meta["eb"] == "statusline") else {}),   # a statusline figure is the cost on both bases, and says so
                     "total": round(total, 4), "hours": _rise_hours(k["points"]), "tokens": int(k["days"][max(k["days"])][1]),
                     "models": [m for m in meta.get("m") or [] if isinstance(m, str)] if isinstance(meta.get("m"), list) else []})
     top.sort(key=lambda r: (-r["total"], r["key"]))

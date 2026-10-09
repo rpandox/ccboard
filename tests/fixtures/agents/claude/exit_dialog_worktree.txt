@@ -1,0 +1,8 @@
+> /exit
+
+ You have 1 uncommitted file. These will be lost if you remove the worktree.
+
+ ❯ 1. Keep worktree (stays at the worktree path)
+   2. Remove worktree
+
+ Enter to confirm · Esc to cancel

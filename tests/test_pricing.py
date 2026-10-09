@@ -63,14 +63,14 @@ def test_family_key_refuses_what_is_not_a_claude_id(model):
 
 
 def test_each_current_model_resolves_to_itself_as_list():
-    for m, fam in (("claude-fable-5-1", "fable-5-1"), ("claude-opus-5-5", "opus-5-5"), ("claude-sonnet-5-5", "sonnet-5-5"), ("claude-haiku-4-5-20251001", "haiku-4-5")):
+    for m, fam in (("claude-fable-5-1", "fable-5-1"), ("claude-opus-5-5", "opus-5-5"), ("claude-sonnet-5-5", "sonnet-5-5"), ("claude-haiku-4-5-20251001", "haiku-4-5"), ("claude-haiku-5-5", "haiku-5-5")):
         key, entry, basis = pricing.table().resolve(m)
         assert (key, basis) == (fam, "list") and entry == pricing.PRICES[fam]
 
 
 def test_a_legacy_id_takes_the_newest_entry_of_its_family_as_a_sibling():
     for m, fam in (("claude-opus-5", "opus-5-5"), ("claude-opus-4-7", "opus-5-5"), ("claude-fable-5", "fable-5-1"), ("claude-sonnet-5", "sonnet-5-5"),
-                   ("claude-sonnet-4-6", "sonnet-5-5"), ("claude-haiku-5", "haiku-4-5")):
+                   ("claude-sonnet-4-6", "sonnet-5-5"), ("claude-haiku-5", "haiku-5-5"), ("claude-haiku-4", "haiku-5-5")):
         key, _entry, basis = pricing.table().resolve(m)
         assert (key, basis) == (fam, "sibling"), m
 
