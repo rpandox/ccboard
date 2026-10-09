@@ -2,6 +2,14 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.33 - 2026-10-09
+
+### Added
+- Settings > Nodes shows this node (name, node id, system, agents, free lanes) and, on Refresh, the ccboard boards found on your tailnet: your own devices and devices tagged `tag:ccboard` (`CCBOARD_NODE_TAGS`), never a device shared in from another user. Each row says whether ccboard answers there (`CCBOARD_NODE_PORTS`, default 443 and 8443). Finding a device gives it no access; pairing comes next.
+- The probe only talks HTTPS to tailnet addresses, resolves a name once and connects to that checked address, follows no redirect, runs at most 4 at a time and reads nothing but the hello's three fields. Nothing is sent until you press Refresh. Doctor rows `tailscale-status`, `nodes-port`, `nodes-tagged-self`.
+
+Upgrade: nothing to do.
+
 ## v0.5.32 - 2026-10-09
 
 ### Added

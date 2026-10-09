@@ -203,19 +203,189 @@ function settingsNotify(p) {
       el('li', {}, 'Tap "Send test" above. Pushes follow the switches under What to notify. Allow and Deny answer a permission from the notification, “Terminal” opens the session, “Ack” marks it seen.'))));
 }
 
-function settingsNodes(p) {
-  p.textContent = '';
-  const list = (state.nodes && state.nodes.value) || [];
-  if (!list.length) { p.append(el('div', { class: 'dim', text: 'No other nodes are configured.' })); return; }
-  for (const x of list) {
-    const h = x.health || {};
-    const txt = x.online
-      ? `${x.sessions} sess · ${x.attention} need you${typeof h.cpu_pct === 'number' ? ' · cpu ' + h.cpu_pct + '%' : ''}${h.mem ? ' · ram ' + h.mem.pct + '%' : ''}${h.disk ? ' · disk ' + h.disk.pct + '%' : ''}${x.usage && x.usage.five_hour ? ' · 5h ' + Math.round(x.usage.five_hour.used_percentage) + '%' : ''}`
-      : 'offline' + (x.error ? ' · ' + x.error.slice(0, 60) : '');
-    const safe = /^https:\/\/[A-Za-z0-9.-]+(:\d+)?$/.test(x.url || '');
-    p.append(settingsKv(x.name, el('span', { class: x.online ? (x.attention ? 'v warn' : 'v') : 'v bad', text: txt }),
-      safe ? el('a', { class: 'btn small', href: x.url + '/', target: '_blank', rel: 'noopener', title: x.url, text: 'Open' }) : null));
+/* Settings > Nodes (issue #134): three labelled sections. This node (the card of state.node), Paired nodes (the CCBOARD_NODES rows until pairing exists, then the paired ones)
+   and Found on your tailnet (GET /api/nodes/discover). The frame is built once per visit and the sections are patched in place, so a poll or an answer never recreates the
+   Refresh button under a finger: it keeps its focus, and a found row is repainted only when what it shows changed (keyed by the Tailscale id). The tailnet is asked about
+   only when a person opens this tab (a plain GET: the board answers from its last look) or presses Refresh (?refresh=1: the board looks again). No timer, no poll: the
+   page script never asks while this tab is closed or the page is hidden, and a board with no tailnet answers once with a plain reason. Everything the board's answer
+   says about a device is shown through textContent (NodeView in nodes.js) and nothing in it is ever opened or followed. */
+const settingsNd = { data: null, at: 0, err: '', busy: false, seq: 0, rev: 0, ui: null };
+const SETTINGS_ND_PAIR_WHY = 'Pairing comes in the next release';
+
+/* A device's agents as [{id, name, version, ok}] from the full card (a list) or from this board's state.agents (a map); only installed ones. */
+function settingsNdAgents(st) {
+  const card = st.node && Array.isArray(st.node.agents) ? st.node.agents.map((a) => ({ id: a.id, version: a.version, ok: !!a.logged_in && !a.login_problem, installed: !!a.installed })) : null;
+  const rows = card || Object.entries((st.agents && typeof st.agents === 'object') ? st.agents : {}).map(([id, a]) => ({ id, version: a && a.version, ok: !!(a && a.loggedIn), installed: !!(a && a.installed) }));
+  return rows.filter((a) => a.installed && typeof a.id === 'string').map((a) => ({ ...a, name: a.id.charAt(0).toUpperCase() + a.id.slice(1) }));
+}
+
+/* This node: name, short node id (the full one to copy), operating system, agents and lanes. All from state.node, which every poll carries. */
+function settingsNdPaintThis(host, st) {
+  host.textContent = '';
+  const n = st.node && typeof st.node === 'object' ? st.node : null;
+  if (!n) { host.append(el('div', { class: 'dim', text: 'This board has not sent its node card yet.' })); return; }
+  host.append(settingsKv('Name', el('span', { class: 'v', text: String(n.name || st.node_name || 'this node') })));
+  if (n.node_id) host.append(settingsKv('Node id', el('span', { class: 'v', title: String(n.node_id), text: NodeView.shortId(String(n.node_id)) }), typeof copyButton === 'function' ? copyButton(String(n.node_id), 'node id') : null));
+  const os = n.os && typeof n.os === 'object' ? n.os : {};
+  const osText = [NodeView.osName(os.tailscale_os || os.system), os.release].filter(Boolean).join(' ');
+  if (osText) host.append(settingsKv('System', el('span', { class: 'v', text: osText })));
+  const agents = settingsNdAgents(st);
+  host.append(settingsKv('Agents', agents.length
+    ? el('span', { class: 'set-chips' }, agents.map((a) => NodeView.chip(`${typeof AGENT_GLYPH !== 'undefined' && ownKey(AGENT_GLYPH, a.id) ? AGENT_GLYPH[a.id] + ' ' : ''}${a.name}${a.version ? ' ' + a.version : ''}${a.ok ? '' : ', not logged in'}`, a.ok ? '' : 'warn')))
+    : el('span', { class: 'v dim', text: 'none installed' })));
+  const l = n.lanes && typeof n.lanes === 'object' ? n.lanes : null;
+  if (l && Number.isFinite(l.cap) && Number.isFinite(l.free)) host.append(settingsKv('Free lanes', el('span', { class: 'v', text: `${l.free} of ${l.cap}` }), el('span', { class: 'dim', text: 'A lane is a task slot: tasks sent here wait when none is free.' })));
+}
+
+/* Paired nodes: until pairing exists these are the CCBOARD_NODES rows (their https-only Open link and offline text as they always were). */
+function settingsNdLegacy(x) {
+  const h = x.health || {};
+  const txt = x.online
+    ? `${x.sessions} sess · ${x.attention} need you${typeof h.cpu_pct === 'number' ? ' · cpu ' + h.cpu_pct + '%' : ''}${h.mem ? ' · ram ' + h.mem.pct + '%' : ''}${h.disk ? ' · disk ' + h.disk.pct + '%' : ''}${x.usage && x.usage.five_hour ? ' · 5h ' + Math.round(x.usage.five_hour.used_percentage) + '%' : ''}`
+    : 'offline' + (x.error ? ' · ' + String(x.error).slice(0, 60) : '');
+  const safe = /^https:\/\/[A-Za-z0-9.-]+(:\d+)?$/.test(x.url || '');
+  return settingsKv(x.name, el('span', { class: x.online ? (x.attention ? 'v warn' : 'v') : 'v bad', text: txt }),
+    safe ? el('a', { class: 'btn small', href: x.url + '/', target: '_blank', rel: 'noopener', title: x.url, text: 'Open' }) : null);
+}
+
+function settingsNdPaintPaired(host, st) {
+  host.textContent = '';
+  const list = (st.nodes && Array.isArray(st.nodes.value)) ? st.nodes.value : [];
+  if (!list.length) { host.append(el('div', { class: 'dim', text: 'No other nodes are configured. Pairing comes in the next release.' })); return; }
+  for (const x of list) if (x && typeof x === 'object') host.append(settingsNdLegacy(x));
+}
+
+/* The line under a Tailscale that cannot be read, chosen from the words of the board's own reason (app/nodes_discovery.py read_tailscale; the reason already names the
+   fix, this line adds the next step and, for a command line login, the command to copy). The Mac app's reasons say "open the Tailscale app": no command is offered for
+   those. A reason this does not know gets the plain line. */
+function settingsNdFix(reason) {
+  const line = (t) => el('div', { class: 'dim nd-fix', text: t });
+  if (/Tailscale app/i.test(reason)) return line('Do that on this device, then press Refresh.');
+  if (/`tailscale up`|log(ged)?[ -]?(in|out)\b|login/i.test(reason)) {
+    return el('div', { class: 'nd-fix' }, el('span', { text: 'Run ' }), el('code', { class: 'doc-cmd', text: 'tailscale up' }), typeof copyButton === 'function' ? copyButton('tailscale up', 'the command') : null, el('span', { text: ' on this device, then press Refresh.' }));
   }
+  if (/MagicDNS/i.test(reason)) return line('Turn on MagicDNS in the Tailscale admin console (DNS page), then press Refresh.');
+  if (/not running|cannot be reached/i.test(reason)) return line('Start Tailscale on this device, then press Refresh.');
+  if (/install|not found/i.test(reason)) return line('Install Tailscale on this device and sign in, then press Refresh.');
+  return line('Check Tailscale on this device, then press Refresh.');
+}
+
+function settingsNdPaintFound(ui, st) {
+  const d = settingsNd.data;
+  const now = Date.now();
+  const boxMs = NodeView.boxNow(d && d.at, settingsNd.at, now);          // ages are measured on the box's clock, so a browser clock that is off does not make a fresh row stale
+  const busy = settingsNd.busy;
+  ui.refresh.textContent = busy ? 'Refreshing' : 'Refresh';
+  ui.refresh.setAttribute('aria-busy', busy ? 'true' : 'false');
+  ui.refresh.classList.toggle('busy', busy);
+  const at = d ? NodeView.epoch(d.at) : null;
+  ui.status.textContent = busy ? 'Looking at the tailnet.' : settingsNd.err ? `Could not ask the board: ${settingsNd.err}. ${d ? 'The list below is its last answer.' : 'Press Refresh to try again.'}` : at !== null ? `Looked ${NodeView.span(at, boxMs)} ago.` : '';
+  ui.status.classList.toggle('bad', !!settingsNd.err && !busy);
+  const ts = d && d.tailscale && typeof d.tailscale === 'object' ? d.tailscale : null;
+  const down = !!ts && ts.ok === false;
+  ui.problem.textContent = '';
+  ui.problem.classList.toggle('hidden', !down);
+  if (down) ui.problem.append(el('div', { class: 'set-err', role: 'alert', text: String(ts.reason || 'Tailscale is not available on this device').slice(0, 300) }), settingsNdFix(String(ts.reason || '')));
+  const paired = (st.nodes && Array.isArray(st.nodes.value)) ? st.nodes.value : [];
+  const seen = new Set();
+  const rows = [];
+  for (const r of (d && !down && Array.isArray(d.rows)) ? d.rows : []) {
+    if (!r || typeof r !== 'object' || r.ts_id === undefined || r.ts_id === null || seen.has(String(r.ts_id))) continue;
+    seen.add(String(r.ts_id));
+    if (!NodeView.isPaired(r, paired)) rows.push(r);
+  }
+  ui.empty.classList.toggle('hidden', !!rows.length || down || !d);
+  ui.empty.textContent = d && d.rows && d.rows.length && !rows.length ? 'Every device found here is already paired.'
+    : 'No other devices of yours were found on the tailnet. Install ccboard on another device, or tag it for ccboard in the tailnet, then press Refresh.';
+  const bucket = Math.floor(now / 15000);
+  const old = new Map([...ui.list.children].map((n) => [n.getAttribute('data-key'), n]));
+  rows.forEach((r, i) => {
+    const key = String(r.ts_id);
+    const sig = NodeView.sig(r, bucket);
+    let node = old.get(key);
+    if (!node || node.ccSig !== sig) {
+      const pair = NodeView.state(r) === 'found'
+        ? el('button', { class: 'primary tinted', type: 'button', disabled: true, 'aria-label': `Pair ${r.name || 'this device'}: ${SETTINGS_ND_PAIR_WHY.toLowerCase()}`, title: SETTINGS_ND_PAIR_WHY, text: 'Pair' }) : null;
+      const fresh = NodeView.row(r, { nowMs: boxMs, action: pair });
+      fresh.ccSig = sig;
+      if (node) { ui.list.insertBefore(fresh, node); node.remove(); }
+      node = fresh;
+    }
+    old.delete(key);
+    if (ui.list.children[i] !== node) ui.list.insertBefore(node, ui.list.children[i] || null);
+  });
+  for (const gone of old.values()) gone.remove();
+}
+
+function settingsNdUi() {
+  if (settingsNd.ui) return settingsNd.ui;
+  const ui = {
+    thisHost: el('div', { class: 'nd-sec' }), pairedHost: el('div', { class: 'nd-sec' }),
+    status: el('div', { class: 'dim nd-status', role: 'status', 'aria-live': 'polite' }),
+    problem: el('div', { class: 'nd-problem hidden' }),
+    empty: el('div', { class: 'dim nd-empty hidden' }),
+    list: el('div', { class: 'nd-list' }),
+  };
+  ui.refresh = el('button', { class: 'minimal', type: 'button', title: 'Look at the tailnet again now', 'aria-busy': 'false', text: 'Refresh', onclick: () => settingsNdLoad(true) });
+  ui.root = el('div', { class: 'nd-panel' },
+    settingsHead('This node'), ui.thisHost,
+    settingsHead('Paired nodes'), ui.pairedHost,
+    el('div', { class: 'nd-sec-head' }, settingsHead('Found on your tailnet'), ui.refresh),
+    el('div', { class: 'dim set-note', text: 'Finding a device gives it no access to this board: only pairing does. "On the tailnet" means the device is connected to Tailscale, not that ccboard answers there.' }),
+    ui.status, ui.problem, ui.empty, ui.list);
+  settingsNd.ui = ui;
+  return ui;
+}
+
+function settingsNodes(p) {
+  const ui = settingsNdUi();
+  if (ui.root.parentNode !== p) { p.textContent = ''; p.append(ui.root); }
+  settingsNdPaintThis(ui.thisHost, state);
+  settingsNdPaintPaired(ui.pairedHost, state);
+  settingsNdPaintFound(ui, state);
+}
+
+/* GET /api/nodes/discover (refresh: ?refresh=1). A newer ask makes an older answer stale; a failed ask keeps the last good list on screen and says so. A press while one is
+   running does nothing (the button stays focusable: aria-busy, not disabled). */
+async function settingsNdLoad(refresh) {
+  if (settingsNd.busy) return false;
+  const mine = ++settingsNd.seq;
+  settingsNd.busy = true;
+  settingsNd.err = '';
+  settingsNd.rev++;
+  settingsFill('nodes', true);
+  let d = null;
+  try { d = await api('GET', '/api/nodes/discover' + (refresh ? '?refresh=1' : '')); } catch (e) {
+    if (mine !== settingsNd.seq) return false;
+    settingsNd.busy = false;
+    settingsNd.err = (e && e.message) || 'the board did not answer';
+    settingsNd.rev++;
+    settingsFill('nodes', true);
+    return false;
+  }
+  if (mine !== settingsNd.seq) return false;
+  settingsNd.busy = false;
+  if (d && typeof d === 'object' && Array.isArray(d.rows)) { settingsNd.data = d; settingsNd.at = Date.now(); } else settingsNd.err = 'the board answered without a list';
+  settingsNd.rev++;
+  settingsFill('nodes', true);
+  return true;
+}
+
+/* The tab was opened (mount or a tab switch): look once if nothing was fetched yet or the last answer is older than the stale mark. */
+function settingsNdOpen() {
+  if (settingsNd.busy) return;
+  if (settingsNd.data && Date.now() - settingsNd.at < NodeView.STALE_S * 1000) return;
+  settingsNdLoad(false);
+}
+
+/* The page goes away: an answer still on its way is dropped and the frame is built again with the next visit. */
+function settingsNdDispose() {
+  settingsNd.seq++;
+  settingsNd.busy = false;
+  settingsNd.ui = null;
+  settingsNd.data = null;
+  settingsNd.at = 0;
+  settingsNd.err = '';
 }
 
 function settingsBox(p) {
@@ -1593,7 +1763,10 @@ const SETTINGS_BUILD = { notify: settingsNotify, nodes: settingsNodes, box: sett
 function settingsSig(id, st) {
   const minute = Math.floor(Date.now() / 60000);                       // ages ("3h ago") move on, so the minute is part of the key
   if (id === 'notify') return JSON.stringify([st.config && st.config.ntfy, st.config && st.config.backup, st.backup, st.config && st.config.auto_continue, minute]);
-  if (id === 'nodes') return JSON.stringify(st.nodes);
+  if (id === 'nodes') {                                                // the card without its clock ('now' moves with every poll), the CCBOARD_NODES rows, the tailnet list's own revision and a 15 s age bucket
+    const n = st.node && typeof st.node === 'object' ? st.node : null;
+    return JSON.stringify([st.nodes, n && [n.node_id, n.name, n.os, n.lanes, n.agents], st.agents, st.node_name, settingsNd.rev, Math.floor(Date.now() / 15000)]);
+  }
   if (id === 'box') return JSON.stringify([st.health, st.backup, st.node_name, st.user, st.claude_defaults, minute]);
   if (id === 'accounts') {                                             // identity and labels, not the readings: those move with every statusline and would rebuild the Rename button under a finger (they refresh with the minute)
     const forget = /^((acct|cx)-forget:|cx-logout)/.test(String(ui.confirm || '')) ? ui.confirm : null;      // the two-tap Forget login repaints the row
@@ -1629,7 +1802,8 @@ function settingsShow(id) {
   for (const sec of SETTINGS_SECTIONS) r.panels[sec.id].classList.toggle('hidden', sec.id !== id);
   r.tabs.set(id);
   settingsFill(id, false);
-  if (id === 'accounts') settingsAcctPatch();                         // a Log in tapped on another page starts the add flow here
+  if (id === 'nodes') settingsNdOpen();                              // opening the tab is the ask: one look, never a timer
+  if (id === 'accounts') settingsAcctPatch();                       // a Log in tapped on another page starts the add flow here
   if (typeof doctorLinePaint === 'function') doctorLinePaint();       // the 'Doctor: n checks failing' line is not shown on the Doctor tab itself
 }
 
@@ -1697,6 +1871,7 @@ registerPage('settings', {
     settingsPage.ext = null;
     settingsPage.extAsked = false;
     settingsMcpDispose();                                             // the one-time token dialog never outlives the page
+    settingsNdDispose();                                              // an answer from the tailnet list still on its way is dropped
     settingsPage.refs = null;
   },
 });

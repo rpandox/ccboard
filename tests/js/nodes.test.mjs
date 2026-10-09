@@ -7,7 +7,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { STATIC, makeWorld, plain } from './harness.mjs';
 import { installDom } from './minidom.mjs';
-import { fixtureState, homeWorld, tick } from './world.mjs';
+import { fakeState, fixtureState, homeWorld, tick } from './world.mjs';
 
 const NAME = 'shop--api--t-fix';
 
@@ -378,4 +378,134 @@ test('the quad keeps two slots for one name on two nodes: slotsState keeps both,
   const withPerm = { ...st, pending_permissions: [{ id: 1, tmux_name: tmux, tool_name: 'Bash' }] };
   assert.ok(Quad.perm(withPerm, tmux), 'this board\'s permission');
   assert.equal(Quad.perm(withPerm, 'box/' + tmux), null, 'is not the node\'s');
+});
+
+// ---------------------------------------------------------------- NodeView: the words, chips and row of a node found on the tailnet (issue #134)
+
+const rowFx = (over = {}) => ({ ts_id: 'n1', name: 'node-a', dns_name: 'node-a.example.ts.net.', os: 'linux', online: true, last_seen: null, owner: 'user', tags: [], state: 'found', url: 'https://node-a.example.ts.net:8443', node_id: 'ts:nA', at: 1_000, age: 0, stale: false, ...over });
+
+test('NodeView.PROBE: every state has plain words, a glyph and a hint; no em-dash, no raw state name in the words', () => {
+  const w = makeWorld();
+  const P = plain(w.get('NodeView.PROBE'));
+  assert.deepEqual(Object.keys(P), ['found', 'refuses', 'no_ccboard', 'no_tls', 'unreachable', 'offline', 'invalid', 'unchecked']);
+  for (const [k, v] of Object.entries(P)) {
+    assert.ok(v.word && v.glyph && v.hint, k);
+    assert.ok(['', 'ok', 'warn', 'bad'].includes(v.tone), k);
+    assert.doesNotMatch(v.word + v.hint, /—|_/, `${k}: plain words`);
+  }
+  assert.equal(P.found.tone, 'ok');
+  assert.equal(new Set(Object.values(P).map((v) => v.word)).size, 8, 'eight states, eight different words');
+});
+
+test('NodeView.state: only a state of the table counts; anything else (a prototype name, a number, a missing state) reads as unchecked, never as found', () => {
+  const w = makeWorld();
+  w.ctx.__r = [rowFx(), rowFx({ state: 'refuses' }), rowFx({ state: 'constructor' }), rowFx({ state: '__proto__' }), rowFx({ state: 7 }), rowFx({ state: null }), { ts_id: 'x' }, null];
+  assert.deepEqual(plain(w.run('__r.map((r) => NodeView.state(r))')), ['found', 'refuses', 'unchecked', 'unchecked', 'unchecked', 'unchecked', 'unchecked', 'unchecked']);
+});
+
+test('NodeView.epoch / span: seconds, milliseconds, numeric strings and ISO stamps; unreadable is null / empty', () => {
+  const w = makeWorld();
+  const run = (c) => plain(w.run(c));
+  assert.equal(run('NodeView.epoch(1700000000)'), 1700000000);
+  assert.equal(run('NodeView.epoch(1700000000000)'), 1700000000);
+  assert.equal(run('NodeView.epoch("1700000000")'), 1700000000);
+  assert.equal(run('NodeView.epoch("2023-11-14T22:13:20Z")'), 1700000000);
+  for (const bad of ['null', 'undefined', '""', '"nope"', '0', '-5', 'NaN', '{}']) assert.equal(run(`NodeView.epoch(${bad})`), null, bad);
+  const now = 1700000000 * 1000;
+  assert.deepEqual(run(`[0, 59, 60, 3599, 3600, 86399, 86400, -30].map((s) => NodeView.span(1700000000 - s, ${now}))`), ['0s', '59s', '1m', '59m', '1h', '23h', '1d', '0s']);
+  assert.equal(run(`NodeView.span("nope", ${now})`), '');
+});
+
+test('NodeView.osName / owner / onlineWord / shortId / hostOf', () => {
+  const w = makeWorld();
+  const run = (c) => plain(w.run(c));
+  assert.deepEqual(run('["linux","macOS","Windows","iOS","android","plan9","",null,"a-very-long-operating-system-name"].map((o) => NodeView.osName(o))'), ['Linux', 'macOS', 'Windows', 'iOS', 'Android', 'plan9', '', '', 'a-very-long-operatin']);
+  assert.deepEqual(run('[{owner:"user",tags:["tag:x"]},{owner:"tag",tags:["tag:ccboard"]},{owner:"other"},{tags:["tag:ccboard"]},{},null].map((r) => NodeView.owner(r))'), ['your device', 'tag', '', '', '', '']);
+  const now = 1700000000 * 1000;
+  assert.equal(run(`NodeView.onlineWord({online:true}, ${now})`), 'on the tailnet');
+  assert.equal(run(`NodeView.onlineWord({online:false,last_seen:${1700000000 - 7300}}, ${now})`), 'offline, last seen 2h ago');
+  assert.equal(run(`NodeView.onlineWord({online:false}, ${now})`), 'offline');
+  assert.equal(run(`NodeView.onlineWord({online:"yes"}, ${now})`), 'offline', 'only a real true is online');
+  assert.deepEqual(run('["ts:nDEMO1CNTRL","ccb:3f9c1a7d0b25a81e5c20d7f4","",null].map((i) => NodeView.shortId(i))'), ['ts:nDEMO1CNTRL', 'ccb:3f9c...d7f4', '', '']);
+  assert.deepEqual(run('["https://a.example.ts.net:8443/x","http://100.64.0.1","javascript:alert(1)","https://u@evil.test","https://","",null].map((u) => NodeView.hostOf(u))'), ['a.example.ts.net:8443', '100.64.0.1', '', '', '', '', '']);
+});
+
+test('NodeView.isPaired: by node id, else by host (port ignored); never by a name or a different host', () => {
+  const w = makeWorld();
+  w.ctx.__row = rowFx();
+  const paired = (list) => w.run(`NodeView.isPaired(__row, ${JSON.stringify(list)})`);
+  assert.equal(paired([{ url: 'https://node-a.example.ts.net:443' }]), true, 'same host, another port');
+  assert.equal(paired([{ url: 'https://NODE-A.example.ts.net' }]), true, 'case ignored');
+  assert.equal(paired([{ node_id: 'ts:nA', url: 'https://other.example.ts.net' }]), true, 'by node id');
+  assert.equal(paired([{ name: 'node-a', url: 'https://node-b.example.ts.net' }]), false, 'a name is not an identity');
+  assert.equal(paired([{ node_id: 'ts:nB' }]), false);
+  assert.equal(paired([]), false);
+  assert.equal(paired([null, 'x', {}]), false);
+  w.ctx.__row = rowFx({ state: 'unreachable', url: null, node_id: null });
+  assert.equal(paired([{ url: 'https://node-a.example.ts.net' }]), true, 'a row never probed still matches by its tailnet name');
+  assert.equal(w.run('NodeView.isPaired(null, [{url:"https://a"}])'), false);
+});
+
+test('NodeView.sig changes with what the row shows and with the age bucket, and with nothing else', () => {
+  const w = makeWorld();
+  const sig = (r, b = 1) => { w.ctx.__r = r; return w.run(`NodeView.sig(__r, ${b})`); };
+  const base = sig(rowFx());
+  assert.equal(sig(rowFx()), base);
+  assert.equal(sig({ ...rowFx(), ips: ['100.64.0.9'], extra: 1, age: 77, stale: true }), base, 'fields the row does not show, and the answer\'s own age, do not repaint it');
+  for (const r of [rowFx({ name: 'x' }), rowFx({ online: false }), rowFx({ state: 'refuses' }), rowFx({ owner: 'tag' }), rowFx({ os: 'macOS' }), rowFx({ at: 2_000 }), rowFx({ url: 'https://x.example.ts.net' })]) assert.notEqual(sig(r), base);
+  assert.notEqual(sig(rowFx(), 2), base);
+});
+
+function viewWorld() {
+  const { w } = homeWorld({ state: fakeState() });
+  return w;
+}
+
+test('NodeView.row: name, online word, chips, note and the action; the root is keyed by the Tailscale id and carries the state; a hostile name is text', () => {
+  const w = viewWorld();
+  const evil = '<img src=x onerror=alert(1)>';
+  w.ctx.__r = rowFx({ name: evil });
+  const row = w.run('NodeView.row(__r, { nowMs: 1000 * 1000 + 10000, action: el("button", { text: "Pair" }) })');
+  assert.equal(row.getAttribute('data-key'), 'n1');
+  assert.equal(row.getAttribute('data-state'), 'found');
+  assert.equal(row.querySelector('.nd-name').textContent, evil);
+  assert.equal(row.querySelectorAll('img').length, 0);
+  assert.deepEqual(row.querySelectorAll('.nd-chips .badge').map((b) => b.textContent), ['Linux', 'your device', '✓ ccboard answers']);
+  assert.equal(row.querySelector('.nd-act button').textContent, 'Pair');
+  assert.equal(row.classList.contains('stale'), false, 'checked 10 s ago');
+  assert.match(row.querySelector('.nd-note').textContent, /Checked 10s ago\.$/);
+  assert.notEqual(row.querySelector('.nd-chips .badge.ok'), null);
+});
+
+test('NodeView.row: no action means no action cell; a row with no name falls back to the DNS name; stale past 30 s, not before', () => {
+  const w = viewWorld();
+  w.ctx.__r = rowFx({ name: '' });
+  const at = (s) => w.run(`NodeView.row(__r, { nowMs: ${(1000 + s) * 1000} })`);
+  const fresh = at(30);
+  assert.equal(fresh.querySelector('.nd-act'), null);
+  assert.equal(fresh.querySelector('.nd-name').textContent, 'node-a.example.ts.net.');
+  assert.equal(fresh.classList.contains('stale'), false, 'exactly 30 s is still fresh');
+  assert.equal(at(31).classList.contains('stale'), true);
+  w.ctx.__r = rowFx({ name: '', dns_name: '' });
+  assert.equal(w.run('NodeView.row(__r, {})').querySelector('.nd-name').textContent, 'unnamed device');
+});
+
+test('NodeView.boxNow: the box\'s clock is the answer\'s time plus what passed here since it arrived; the browser\'s own clock only without an answer time', () => {
+  const w = makeWorld();
+  const run = (c) => plain(w.run(c));
+  assert.equal(run('NodeView.boxNow("2026-10-03T03:00:00.000+00:00", 5000, 8000)'), Date.parse('2026-10-03T03:00:03.000Z'));
+  assert.equal(run('NodeView.boxNow(1700000000, 5000, 4000)'), 1700000000 * 1000, 'a clock that went backwards adds nothing');
+  assert.equal(run('NodeView.boxNow(null, 5000, 8000)'), 8000);
+  assert.equal(run('NodeView.boxNow("nope", 5000, 8000)'), 8000);
+  assert.equal(run('NodeView.boxNow(1700000000, undefined, 8000)'), 8000);
+});
+
+test('NodeView.row: an offline, invalid or unchecked row was never probed, so it shows no check time and is never stale', () => {
+  const w = viewWorld();
+  for (const state of ['offline', 'invalid', 'unchecked']) {
+    w.ctx.__r = rowFx({ online: state !== 'offline', state, url: null, node_id: null, at: state === 'unchecked' ? null : 1 });
+    const row = w.run('NodeView.row(__r, { nowMs: 9e12 })');
+    assert.doesNotMatch(row.querySelector('.nd-note').textContent, /Checked/);
+    assert.equal(row.classList.contains('stale'), false);
+  }
 });

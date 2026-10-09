@@ -28,7 +28,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, nodes, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, nodes, nodes_discovery, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -4281,6 +4281,17 @@ def api_node():
     lanes are free. Unreadable parts are null. A paired node's token with scope `read` will open it too (issue #135)."""
     sessions, down = _merged_sessions()
     return nodes.card(db, health_snap=health.snapshot(consumer="node"), sessions=None if down else sessions.values())
+
+
+@app.get("/api/nodes/discover")
+def api_nodes_discover(request: Request, refresh: int = 0):
+    """The devices of the tailnet that may be ccboard nodes, with the probe result of each (issue #134): {at, tailscale: {ok, reason, variant}, rows}.
+    Always 200: Tailscale missing or logged out is `ok: false` with a reason and no rows. Without `refresh` nothing leaves the board. `refresh=1` probes
+    the online candidates (GET /api/node/hello, tailnet addresses only, at most four at once); because that makes the board send requests, it needs the
+    X-CCBoard header like a change does. A device shared in from another user is never listed, and a probe gives the device no access."""
+    if refresh and request.headers.get("x-ccboard") != "1":
+        return JSONResponse({"error": "missing X-CCBoard header"}, status_code=403)
+    return nodes_discovery.discover(db, refresh=bool(refresh))
 
 
 @app.get("/api/search")
