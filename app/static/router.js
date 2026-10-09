@@ -449,8 +449,9 @@ function notPairedPage() {
   const draw = (route) => {
     const p = (route && route.params) || {};
     host.textContent = '';
-    host.append(pageEmpty('info-sign','This node is not paired', `Nothing is paired as "${p.node || ''}" on this board. Pair it in Settings, then Nodes.`),
-      el('div', { class: 'actions' }, el('a', { class: 'btn', href: '#/settings?sec=nodes', text: 'Open Settings, Nodes' })));
+    const empty = pageEmpty('info-sign', 'This node is not paired', `Nothing is paired as "${p.node || ''}" on this board. Pair it in Settings, then Nodes.`);
+    empty.append(el('a', { class: 'btn', href: '#/settings?sec=nodes', text: 'Open Settings, Nodes' }));   // inside the empty state, centred like its text
+    host.append(empty);
   };
   return {
     title: 'Node not paired',

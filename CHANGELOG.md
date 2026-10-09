@@ -2,6 +2,15 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.32 - 2026-10-09
+
+### Added
+- Nodes, first step: every board has a stable node id (its Tailscale node id, else a random one kept in the data folder), a display name and a node card (`GET /api/node`: agents, accounts, load, free lanes; no secret, prompt, email or path), shown as `state.node`. `GET /api/node/hello` answers only `{app, api, node_id}` without sign-in, at most 30 times a minute per caller, so another board can find this one.
+- One naming scheme for things on another node: `#/n/<node>/s/<session>` links and storage keys that never collide with a local session of the same name; local links, bookmarks and push links are unchanged. A link to a node that is not paired says so.
+- `CCBOARD_NODE_LANES` (default 3) sets how many task lanes this board advertises as free; a dispatch over it still runs, with a warning. Doctor row `node`.
+
+Upgrade: nothing to do.
+
 ## v0.5.31 - 2026-10-09
 
 ### Fixed
