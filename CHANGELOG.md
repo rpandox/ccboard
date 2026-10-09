@@ -2,6 +2,22 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.30 - 2026-10-09
+
+### Added
+- Codex tuning from the terminal page and the quad tile: model through Codex's own picker, and reasoning, approvals and sandbox by restarting the session into the same conversation (the board shows the exact command first and runs nothing until you press Restart). `untrusted`, `on-failure` and `danger-full-access` are never offered.
+- A dead Codex login raises the same banner and notification as a dead Claude login, from Codex's own error item in the session log; `codex login status` texts are recorded from the box.
+- Scheduled Codex runs keep their token usage, and a finished run's task card moves to Done.
+
+### Fixed
+- A Codex started by hand in the same folder no longer takes over an idle board session.
+- Settings > Agents lists the Codex sessions started outside the board again (Codex 0.161 changed how it marks them).
+- Board-started Codex sessions skip Codex's update dialog (whose default answer runs a global npm install); a trust or update dialog shows as needs you and is never answered by the board; a prompt is never typed into a pane that went back to the shell, and that session shows as errored.
+- The launch preview for Codex now shows every flag the board passes.
+- Deleting a scheduled job removes its runs, so a new job never shows an old job's history.
+
+Upgrade: nothing to do.
+
 ## v0.5.29 - 2026-10-09
 
 ### Changed

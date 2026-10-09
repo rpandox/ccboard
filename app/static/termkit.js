@@ -1273,6 +1273,10 @@ const TermKit = (() => {
         el('pre', { class: 'tk-pre', text: String((pre && pre.cmd) || '') }),
         err,
         el('div', { class: 'tk-actions' }, cancel, go));
+      if (!(pre && pre.cmd)) {                                                   // no command to show (an old board, the demo): never offer a restart nobody can read first
+        err.textContent = 'The board did not say which command would run, so the restart is off. Reload the page, or update ccboard.';
+        go.disabled = true;
+      }
       if (!S.open(anchor || null, () => body, { touch: !!c.touch, title: 'Restart · ' + paneLabel(c.tmux), cls: 'tk-pop-tune', width: 320 })) finish(false);
     });
   }

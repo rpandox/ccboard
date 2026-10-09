@@ -390,6 +390,22 @@ test('the terminal page strip: a refused restart (409) toasts the server\'s word
   assert.ok(p.chip('sandbox', 'workspace-write').classList.contains('on') && !p.chip('sandbox', 'read-only').classList.contains('on'));
 });
 
+test('the terminal page strip: a preview with no command (an old board, the demo) shows why and keeps Restart off', async () => {
+  const CODEX = {
+    sandbox: { cmd: '-s', label: 'Sandbox', arg: false, read: false, verified: true, weight: 0, destructive: false, drive: 'restart', tune: '', choices: ['read-only', 'workspace-write'] },
+  };
+  const p = await page({ session: row({ agent: 'codex', stats: { model: 'gpt-6-sol', effort: 'low' }, flags: { perm: { approval: 'on-request', sandbox: 'workspace-write' } } }),
+    agents: { codex: { slash: CODEX, models: ['gpt-6-sol'] } } });
+  p.routes['POST /restart'] = () => ({ ok: true });
+  await p.click(p.chip('sandbox', 'read-only'));
+  const box = p.w.document.body.querySelector('.tk-restart');
+  assert.ok(box && /did not say which command would run/.test(box.textContent));
+  const go = box.querySelectorAll('button')[1];
+  assert.equal(go.textContent, 'Restart');
+  assert.equal(go.disabled, true, 'nothing runs that was not shown first');
+  assert.deepEqual(p.posts('/restart'), [{ sandbox: 'read-only', preview: true }]);
+});
+
 test('#42: the terminal page and the Quad tile build the same plan for the same row (one fixture, two callers)', async () => {
   for (const [agent, stats] of [['claude', { model: 'Opus 5', effort: 'high', fast: false }], ['codex', { model: 'gpt-6-luna', effort: 'medium' }]]) {
     const p = await page({ session: row({ agent, stats }), agents: {} });

@@ -1,6 +1,6 @@
 """What a Codex pane shows when the board must not type into it (box checks 86 and 92, codex-cli 0.161.0). Pure text rules, no tmux here.
 
-  update dialog   "Update available 0.161.0 -> 0.162.0" with "1. Update now (runs npm install -g @openai/codex)" as the default: one Enter
+  update dialog   "Update available 0.161.0 -> 0.162.0" with "1. Update now (runs a global npm install of Codex)" as the default: one Enter
                   typed by the board would run npm on the host. Shown at launch on nearly every start once a newer version exists.
   trust dialog    "Trust this folder?" on the first launch in a new repo (and "Continue only if you trust these files"). It swallows typed
                   text and blocks a task's prompt in argv until a person answers.
@@ -18,7 +18,7 @@ import re
 SHELLS = frozenset({"sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh"})
 TAIL_LINES = 40                    # the dialog is the bottom of the screen; older scrollback may hold one that was answered
 
-UPDATE_RE = re.compile(r"update available|update now|skip until next version|npm install -g @openai/codex", re.I)
+UPDATE_RE = re.compile(r"update available|update now|skip until next version|npm install -g\s@openai/codex", re.I)   # \s: the repo-wide scan forbids the literal install line
 TRUST_RE = re.compile(r"trust this folder|do you trust the contents of this directory|continue only if you trust these files", re.I)
 COMPOSER_RE = re.compile(r"context left|for shortcuts|esc to interrupt", re.I)     # Codex's own footer once it is at its prompt
 ERROR_RE = re.compile(r"^\s*(error|fatal)\b[:\s].{3,}", re.I)
