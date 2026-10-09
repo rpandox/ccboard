@@ -57,6 +57,8 @@ log = logging.getLogger("ccboard.nodes.discovery")
 KV = "node_discovery"
 HELLO_PATH = "/api/node/hello"
 PROBE_TIMEOUT = 2.0         # seconds one attempt may take, connect, handshake and answer together
+RESOLVE_TIMEOUT = 2.0       # seconds a name lookup may take before the row is `unreachable` (getaddrinfo itself has no timeout)
+MAX_LOOKUPS = 4             # lookups still running, across refreshes (a lookup that outlived its timeout keeps its slot until it ends)
 MAX_IN_FLIGHT = 4
 STALE_AFTER = 30.0          # seconds after which a probe result is marked stale
 MIN_REPROBE = 5.0           # a refresh leaves a result younger than this alone (two tabs, a double tap)
@@ -68,6 +70,37 @@ _RANK = {"found": 5, "refuses": 4, "no_tls": 3, "no_ccboard": 2, "unreachable": 
 
 _slots = threading.BoundedSemaphore(MAX_IN_FLIGHT)    # probes in flight, across refreshes (a refresh that gave up leaves its stragglers here)
 _refresh_lock = threading.Lock()                      # one refresh at a time; a second caller is answered from the cache
+_lookups = threading.BoundedSemaphore(MAX_LOOKUPS)
+
+
+def bounded_resolver(resolver: Callable | None = None) -> Callable:
+    """`resolver(host, port)` with a deadline: the lookup runs in a daemon thread and a probe waits RESOLVE_TIMEOUT for it, then counts the name as
+    unresolved (OSError) and moves on. The thread cannot be stopped, so it keeps one of MAX_LOOKUPS slots until the system resolver gives up;
+    with every slot taken a lookup is refused at once. So a probe always ends within RESOLVE_TIMEOUT plus PROBE_TIMEOUT per port, and the refresh
+    lock it holds (discover) always comes back: a hanging resolver can slow discovery, never switch it off."""
+    real = resolver or nodes._resolve_all
+
+    def look(host: str, port: int) -> list[str]:
+        if not _lookups.acquire(blocking=False):
+            raise OSError("too many name lookups still running")
+        box: dict = {}
+        done = threading.Event()
+
+        def run() -> None:
+            try:
+                box["v"] = list(real(host, port))
+            except BaseException as e:      # handed back to the probe below
+                box["e"] = e
+            finally:
+                done.set()
+                _lookups.release()
+        threading.Thread(target=run, name="ccboard-lookup", daemon=True).start()
+        if not done.wait(RESOLVE_TIMEOUT):
+            raise OSError("the name lookup timed out")
+        if "e" in box:
+            raise box["e"]
+        return box["v"]
+    return look
 
 
 # ---------------------------------------------------------------- the candidate list (pure)
@@ -253,7 +286,7 @@ def _probe(row, ports, suffix, transport, resolver) -> dict:
     if not dns:
         return _result("invalid")
     try:
-        target = nodes.check_peer_url(f"https://{dns}", suffix, resolver)
+        target = nodes.check_peer_url(f"https://{dns}", suffix, bounded_resolver(resolver))
     except nodes.PeerUrlError as e:
         return _result("unreachable" if e.unresolved else "invalid")
     addr = target.addrs[0]

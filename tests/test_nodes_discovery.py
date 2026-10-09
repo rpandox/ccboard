@@ -716,6 +716,41 @@ def test_stragglers_past_the_deadline_keep_the_refresh_lock_so_probes_never_pile
     assert len(world["net"].calls) > first
 
 
+def test_a_hanging_name_lookup_is_bounded_and_never_keeps_the_refresh_lock(world, monkeypatch):
+    """Security review: getaddrinfo has no timeout. A lookup that never returns must not hold a probe (and so the refresh lock) forever:
+    the row is unreachable after RESOLVE_TIMEOUT and the lock comes back."""
+    monkeypatch.setattr(nd, "RESOLVE_TIMEOUT", 0.2)
+    stuck = threading.Event()
+    hang = lambda host, port: (stuck.wait(30), [])[1]           # a resolver that never answers on its own
+    t0 = time.monotonic()
+    out = world["discover"](refresh=True, resolver=hang)
+    assert time.monotonic() - t0 < 5
+    assert {r["state"] for r in out["rows"] if r["online"] and r["state"] != "invalid"} <= {"unreachable"}
+    end = time.monotonic() + 5
+    while time.monotonic() < end and not nd._refresh_lock.acquire(blocking=False):
+        time.sleep(0.05)
+    else:
+        nd._refresh_lock.release()
+    assert time.monotonic() < end, "the refresh lock came back although the lookups still hang"
+    stuck.set()
+
+
+def test_lookups_are_capped_and_a_full_cap_refuses_at_once(monkeypatch):
+    monkeypatch.setattr(nd, "_lookups", threading.BoundedSemaphore(1))
+    monkeypatch.setattr(nd, "RESOLVE_TIMEOUT", 0.2)
+    stuck = threading.Event()
+    look = nd.bounded_resolver(lambda h, p: (stuck.wait(30), ["100.64.0.1"])[1])
+    with pytest.raises(OSError, match="timed out"):
+        look("node-a.example.ts.net", 443)                    # takes the only slot and keeps it while it hangs
+    t0 = time.monotonic()
+    with pytest.raises(OSError, match="too many"):
+        look("node-b.example.ts.net", 443)
+    assert time.monotonic() - t0 < 0.1, "refused at once, not after another timeout"
+    stuck.set()
+    time.sleep(0.1)
+    assert nd.bounded_resolver(lambda h, p: ["100.64.0.2"])("node-c.example.ts.net", 443) == ["100.64.0.2"], "the slot came back"
+
+
 def test_a_second_refresh_while_one_runs_is_answered_from_the_cache(world):
     assert nd._refresh_lock.acquire(blocking=False)
     try:
@@ -849,7 +884,11 @@ def test_nothing_runs_at_import_or_at_start(lite_client, world):
     assert not [t for t in threading.enumerate() if t.name.startswith("ccboard-discover")], "the board's start launched no discovery thread"
     assert world["net"].calls == [] and world["res"].calls == []
     src = (ROOT / "app" / "nodes_discovery.py").read_text()
-    assert not re.search(r"^\s*(?:threading\.Timer|threading\.Thread)\(|\.start\(\)|schedule|sched\.", src, re.M), "no timer, no thread of its own"
+    # bounded_resolver starts a daemon lookup thread inside a probe (a name lookup with a deadline, security review); nothing else may
+    lookup = re.search(r"^def bounded_resolver\(.*?^    return look\n", src, re.M | re.S)
+    assert lookup and "daemon=True" in lookup.group(0) and 'name="ccboard-lookup"' in lookup.group(0)
+    rest = src.replace(lookup.group(0), "")
+    assert not re.search(r"^\s*(?:threading\.Timer|threading\.Thread)\(|\.start\(\)|schedule|sched\.", rest, re.M), "no timer, no thread of its own"
 
 
 # ---------------------------------------------------------------- settings
