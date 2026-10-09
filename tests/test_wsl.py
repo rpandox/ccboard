@@ -264,8 +264,13 @@ def test_without_systemd_the_installer_refuses_early_with_the_recipe(tmp_path):
         assert "[boot]" in err and "systemd=true" in err and "/etc/wsl.conf" in err and "wsl --shutdown" in err
         assert "systemctl is-system-running" in err
         assert "PLACEMENT" not in out                                                  # it stopped before anything else
-    rc, out, err = run_block(tmp_path, GUARD, extra_env={"PATH": "/usr/bin:/bin", "FAKE_SYSTEMD": "running"})
-    assert rc == 1 and "'nothing'" in err or "systemd is not running" in err          # no systemctl at all (a PATH without the stub)
+    bare = tmp_path / "bare-bin"                                                      # no systemctl at all: a PATH with only the tools the block uses
+    bare.mkdir()
+    for tool in ("bash", "tr", "cat", "printf", "dirname"):
+        if (found := shutil.which(tool)):
+            (bare / tool).symlink_to(found)
+    rc, out, err = run_block(tmp_path, GUARD, extra_env={"PATH": str(bare), "FAKE_SYSTEMD": "running"})
+    assert rc == 1 and "systemd is not running in this WSL distro" in err and "'nothing'" in err
 
 
 @pytest.mark.parametrize("state,rc_", [("running", None), ("degraded", "1")])
