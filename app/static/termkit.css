@@ -140,6 +140,10 @@ html.force-coarse .tk-docked textarea.composer.tk-ta { padding:10px 12px; font-s
 .tk-rename .bp5-input[aria-invalid=true] { border-color:var(--bad); }
 .tk-rename .tk-err { margin:0; font-size:12px; }
 .tk-rename .tk-err:empty { display:none; }
+.tk-restart { display:flex; flex-direction:column; gap:8px; }                                                   /* issue #2: the confirm for a Codex change that restarts the session */
+.tk-restart .tk-pre { white-space:pre-wrap; overflow-wrap:anywhere; }                                              /* the command wraps instead of scrolling sideways */
+.tk-restart .tk-err { margin:0; font-size:12px; }
+.tk-restart .tk-err:empty { display:none; }
 .tk-touch .tk-rename .bp5-input { font-size:16px; }
 @media (pointer:coarse) { .tk-rename .bp5-input { font-size:16px; } }
 html.force-coarse .tk-rename .bp5-input { font-size:16px; }

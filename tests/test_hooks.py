@@ -1146,6 +1146,19 @@ def cx_hook(s, event, name=None, agent="codex", extra=None, **payload):
     return r.json()
 
 
+def test_a_codex_stop_that_quotes_a_401_is_the_models_words_not_a_dead_login(cxs):
+    """#35: the closing words of a turn are model-written text (they may well discuss a 401); only the rollout's structured error item is
+    evidence of a dead Codex login, so a Stop payload, however it reads, raises no login_problem and no auth notice."""
+    from app import login_problem
+    cx_hook(cxs, "SessionStart", source="startup", cwd="/srv/projects/shop/api")
+    cx_hook(cxs, "UserPromptSubmit", prompt="why does the api answer 401?", turn_id="t1")
+    msg = "The API answers 401 Unauthorized because your refresh token expired. Please log out and sign in again."
+    out = cx_hook(cxs, "Stop", last_assistant_message=msg, turn_id="t1")
+    assert out["state"] == "done" and out["kind"] != "auth"
+    assert login_problem.get(main.db) is None
+    assert "LoginProblem" not in event_names(cxs.name)
+
+
 def test_a_codex_row_follows_its_hooks_through_a_whole_turn(cxs):
     assert row_of(cxs.name)["agent"] == "codex" and row_of(cxs.name)["claude_session_id"] is None
     out = cx_hook(cxs, "SessionStart", source="startup", cwd="/srv/projects/shop/api")

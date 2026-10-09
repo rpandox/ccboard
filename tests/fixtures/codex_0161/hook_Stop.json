@@ -1,0 +1,11 @@
+{
+ "session_id": "00000000-0000-4000-8000-000000000086",
+ "turn_id": "00000000-0000-4000-8000-0000000000bb",
+ "transcript_path": "<codex home>/sessions/YYYY/MM/DD/rollout-<ts>-00000000-0000-4000-8000-000000000086.jsonl",
+ "cwd": "<projects dir>/<project>/<repo>",
+ "hook_event_name": "Stop",
+ "model": "gpt-6.1-sol",
+ "permission_mode": "default",
+ "stop_hook_active": false,
+ "last_assistant_message": "<last message>"
+}

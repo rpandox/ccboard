@@ -342,28 +342,52 @@ test('a shell row never shows the strip, and an unknown agent without a registry
   assert.ok(other.tune().classList.contains('hidden'), 'an agent with no registry (and no built-in one) has no strip');
 });
 
-test('a Codex session gets the shared plan: Reasoning, Model and Permissions through POST /tune (the TUI pickers), /status as a chip, no Fast and no Ultracode', async () => {
+test('a Codex session gets the shared plan: Model through POST /tune (the picker the box ran), Reasoning, Approvals and Sandbox through a confirmed restart, /status as a chip, no Fast and no Ultracode, nothing unverified', async () => {
   const CODEX = {
     model: { cmd: '/model', label: 'Model', arg: false, read: false, verified: true, weight: 0, destructive: false, drive: 'picker', tune: 'model' },
-    reasoning: { cmd: '/model', label: 'Reasoning', arg: false, read: false, verified: false, weight: 0, destructive: false, drive: 'picker', tune: 'reasoning' },
-    permissions: { cmd: '/permissions', label: 'Permissions', arg: false, read: false, verified: false, weight: 0, destructive: false, drive: 'picker', tune: 'permissions' },
+    reasoning: { cmd: '-c model_reasoning_effort', label: 'Reasoning', arg: false, read: false, verified: true, weight: 0, destructive: false, drive: 'restart', tune: '' },
+    approvals: { cmd: '-a', label: 'Approvals', arg: false, read: false, verified: true, weight: 0, destructive: false, drive: 'restart', tune: '', choices: ['on-request', 'never'] },
+    sandbox: { cmd: '-s', label: 'Sandbox', arg: false, read: false, verified: true, weight: 0, destructive: false, drive: 'restart', tune: '', choices: ['read-only', 'workspace-write'] },
     status: { cmd: '/status', label: 'Status', arg: false, read: true, verified: true, weight: 0, destructive: false, dialog: false },
   };
   const st = { model: 'gpt-6.1-sol', effort: 'low' };
-  const p = await page({ session: row({ agent: 'codex', stats: st }), allchips: true,
+  const p = await page({ session: row({ agent: 'codex', stats: st, flags: { perm: { approval: 'on-request', sandbox: 'workspace-write' } } }), allchips: true,
     agents: { codex: { slash: CODEX, models: ['gpt-6.1-sol', 'gpt-6-luna'], reasoning_by_model: { 'gpt-6.1-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] } } } });
   const kids = p.tune().querySelector('.tune-row').children;
-  assert.deepEqual(kids.map((n) => n.getAttribute('aria-label') || n.textContent), ['Status', 'Auto-continue: on', 'Reasoning', 'Model', 'Permissions']);
+  assert.deepEqual(kids.map((n) => n.getAttribute('aria-label') || n.textContent), ['Status', 'Auto-continue: on', 'Reasoning', 'Model', 'Approvals', 'Sandbox']);
   assert.deepEqual(p.tune().querySelectorAll('.tune-seg')[0].querySelectorAll('button').map((n) => n.textContent), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
-  assert.deepEqual(p.tune().querySelectorAll('.tune-seg')[2].querySelectorAll('button').map((n) => n.textContent), ['Ask for approval', 'Approve for me'], 'never Full Access, untrusted or on-failure');
+  assert.deepEqual(p.tune().querySelectorAll('.tune-seg')[2].querySelectorAll('button').map((n) => n.textContent), ['on-request', 'never'], 'never untrusted or on-failure');
+  assert.deepEqual(p.tune().querySelectorAll('.tune-seg')[3].querySelectorAll('button').map((n) => n.textContent), ['read-only', 'workspace-write'], 'never danger-full-access');
   assert.ok(p.chip('model', 'gpt-6.1-sol').classList.contains('on') && p.chip('reasoning', 'low').classList.contains('on'));
-  assert.equal(p.tune().querySelectorAll('.tune-seg')[2].querySelectorAll('.on').length, 0, 'permissions unknown: nothing selected on a guess');
-  assert.match(p.chip('reasoning', 'high').getAttribute('title'), /unverified key path/);
+  assert.ok(p.chip('approval', 'on-request').classList.contains('on') && p.chip('sandbox', 'workspace-write').classList.contains('on'), 'how the board started the session');
+  assert.ok(!/unverified/i.test(p.chip('reasoning', 'high').getAttribute('title')) && !/unverified/i.test(p.tune().textContent), 'nothing in the Codex strip is flagged unverified');
+  assert.match(p.chip('approval', 'never').getAttribute('title'), /^Restart with approvals never/);
+  p.routes['POST /restart'] = (b) => (b.preview ? { ok: true, preview: true, cmd: 'codex resume 11111111-1111-4111-8111-111111111111 -a never' } : { ok: true, tmux: NAME });
   await p.click(p.chip('model', 'gpt-6-luna'));
-  await p.click(p.chip('reasoning', 'high'));
-  await p.click(p.chip('permissions', 'Approve for me'));
-  assert.deepEqual(p.tunes(), [{ setting: 'model', value: 'gpt-6-luna' }, { setting: 'reasoning', value: 'high' }, { setting: 'permissions', value: 'auto' }]);
+  assert.deepEqual(p.tunes(), [{ setting: 'model', value: 'gpt-6-luna' }]);
+  await p.click(p.chip('approval', 'never'));
+  assert.deepEqual(p.posts('/restart'), [{ approval: 'never', preview: true }], 'the preview first: nothing is restarted by the tap alone');
+  const box = p.w.document.body.querySelector('.tk-restart');
+  assert.ok(box && /codex resume 11111111-1111-4111-8111-111111111111 -a never/.test(box.textContent), 'the adapter\'s command is shown');
+  box.querySelectorAll('button')[1].click();
+  await p.tick(10);
+  assert.deepEqual(p.posts('/restart'), [{ approval: 'never', preview: true }, { approval: 'never' }]);
   assert.deepEqual(p.commands(), [], 'nothing typed inline: Codex would send `/model gpt-6-luna` to the model as a prompt');
+  assert.equal(p.tunes().length, 1, 'reasoning, approvals and sandbox are never driven through a picker');
+});
+
+test('the terminal page strip: a refused restart (409) toasts the server\'s words and the old chip stays selected', async () => {
+  const CODEX = {
+    model: { cmd: '/model', label: 'Model', arg: false, read: false, verified: true, weight: 0, destructive: false, drive: 'picker', tune: 'model' },
+    sandbox: { cmd: '-s', label: 'Sandbox', arg: false, read: false, verified: true, weight: 0, destructive: false, drive: 'restart', tune: '', choices: ['read-only', 'workspace-write'] },
+  };
+  const p = await page({ session: row({ agent: 'codex', stats: { model: 'gpt-6-sol', effort: 'low' }, flags: { perm: { approval: 'on-request', sandbox: 'workspace-write' } } }),
+    agents: { codex: { slash: CODEX, models: ['gpt-6-sol'] } } });
+  p.routes['POST /restart'] = () => httpError(409, 'refused', { error: 'working', message: 'the session is working', retry: 5 });
+  await p.click(p.chip('sandbox', 'read-only'));
+  assert.equal(p.toasts.at(-1).text, 'the session is working · try again in 5 s');
+  assert.equal(p.w.document.body.querySelector('.tk-restart'), null);
+  assert.ok(p.chip('sandbox', 'workspace-write').classList.contains('on') && !p.chip('sandbox', 'read-only').classList.contains('on'));
 });
 
 test('#42: the terminal page and the Quad tile build the same plan for the same row (one fixture, two callers)', async () => {
@@ -372,7 +396,7 @@ test('#42: the terminal page and the Quad tile build the same plan for the same 
     const kit = p.w.get('TermKit');
     const plan = plain(kit.tunePlan(agent, null, stats));                 // what the Quad tile's TermKit.tune draws for this row
     const segs = p.tune().querySelectorAll('.tune-seg');
-    const groups = [plan.effort, plan.model, plan.perms].filter(Boolean);
+    const groups = [plan.effort, plan.model, plan.approvals, plan.sandbox].filter(Boolean);
     assert.deepEqual(segs.map((g) => g.querySelectorAll('button').map((b) => b.textContent)), groups.map((g) => g.options.map((o) => o.label)), agent);
     assert.deepEqual(segs.map((g) => g.querySelector('button').getAttribute('data-via')), groups.map((g) => g.via), agent + ': the same request route');
     const cur = plain(kit.tuneCurrent(stats, kit.tunePlan(agent, null, stats), {}));

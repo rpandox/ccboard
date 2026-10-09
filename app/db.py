@@ -174,6 +174,8 @@ MIGRATIONS = [
     # ---- v0.5.21 (issue #57, usage by folder): session id -> the folder a session ran in, learned from Claude's registry and the first lines of its transcript
     #      ('' = looked and found none). Additive: the previous image ignores the table.
     "CREATE TABLE IF NOT EXISTS session_cwd (session_id TEXT PRIMARY KEY, cwd TEXT NOT NULL DEFAULT '', first_seen TEXT NOT NULL)",
+    # ---- box fixes (Codex 0.161): a headless run's token usage as JSON ({input_tokens, cached_input_tokens, output_tokens}); NULL = none reported
+    "ALTER TABLE runs ADD COLUMN usage TEXT",
     # permissions.decision takes allow|deny|tui|interrupt (plus timeout from perm_expire). It has no CHECK constraint,
     # so nothing to migrate: the new values are plain TEXT.
 ]
@@ -252,6 +254,13 @@ def _task_fields(fields: dict) -> dict:
     if isinstance(out.get("result"), str):
         out["result"] = out["result"][:RESULT_MAX]
     return out
+
+
+def _run_view(row) -> dict:
+    """A runs row as a dict, its usage column (JSON text) as a dict or None."""
+    d = dict(row)
+    d["usage"] = _loads(d.get("usage"), dict) or None
+    return d
 
 
 def now() -> str:
@@ -604,9 +613,14 @@ class DB:
         with self.lock:
             self.conn.execute(f"UPDATE jobs SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?", (*fields.values(), jid))
 
-    def job_delete(self, jid: int) -> None:
+    def job_delete(self, jid: int) -> list[int]:
+        """Delete a job and its runs; returns the deleted run ids (the caller removes their output files). Job ids are reused (the table
+        has no AUTOINCREMENT and cannot get one additively), so a run left behind would read as a run of the next job with that id."""
         with self.lock:
+            rids = [int(r[0]) for r in self.conn.execute("SELECT id FROM runs WHERE job_id=?", (jid,))]
+            self.conn.execute("DELETE FROM runs WHERE job_id=?", (jid,))
             self.conn.execute("DELETE FROM jobs WHERE id=?", (jid,))
+        return rids
 
     def run_start(self, jid: int) -> int:
         with self.lock:
@@ -615,7 +629,9 @@ class DB:
 
     def run_finish(self, rid: int, **fields) -> None:
         fields = {k: v for k, v in fields.items() if k in ("status", "result", "error", "session_id", "cost_usd", "num_turns",
-                                                           "worktree", "branch", "task_id")}
+                                                           "worktree", "branch", "task_id", "usage")}
+        if "usage" in fields:
+            fields["usage"] = _json(fields["usage"]) if isinstance(fields["usage"], dict) and fields["usage"] else None
         with self.lock:
             self.conn.execute(f"UPDATE runs SET finished_at=?, {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
                               (now(), *fields.values(), rid))
@@ -636,13 +652,13 @@ class DB:
     def run_get(self, rid: int) -> dict | None:
         with self.lock:
             r = self.conn.execute("SELECT * FROM runs WHERE id=?", (rid,)).fetchone()
-        return dict(r) if r else None
+        return _run_view(r) if r else None
 
     def runs(self, limit: int = 50, job_id: int | None = None) -> list[dict]:
         q = "SELECT * FROM runs" + (" WHERE job_id=?" if job_id else "") + " ORDER BY id DESC LIMIT ?"
         with self.lock:
             rows = self.conn.execute(q, ((job_id, limit) if job_id else (limit,))).fetchall()
-        return [dict(r) for r in rows]
+        return [_run_view(r) for r in rows]
 
     # ---- tasks
     def task_add(self, **row) -> int:

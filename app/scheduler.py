@@ -275,6 +275,11 @@ def _finish(db, job: dict, run_id: int, summary: dict, rpath: Path, slug: str, s
                               tmux_name=tmux_name, claude_session_id=summary.get("session_id"), agent=agent)
         if summary.get("cost_usd") is not None:
             db.task_update(task_id, cost_usd=summary["cost_usd"])
+        # the card of a finished run is a finished card: left at the column default it would read `running` for ever (and count as a
+        # running task), although no session of it exists
+        stamp = db_now()
+        db.task_update(task_id, phase="done" if summary.get("status") == "ok" else "failed", result=(summary.get("result") or None),
+                       result_at=stamp, done_at=stamp)
     have = wt is not None and wt.is_dir()
     db.run_finish(run_id, **summary, worktree=str(wt) if have else None, branch=f"worktree-{slug}" if have or agent == "claude" else None,
                   task_id=task_id)
@@ -325,7 +330,7 @@ def run_job(db, job: dict, run_id: int) -> dict:
                 log.warning("codex job %s hit a rate limit; deferring its runs until %s", job["id"],
                             set_backoff(db, quota_state(db, "codex").get("resets_at"), "codex"))
             summary.update(status=status, result=last or res["text"], session_id=res["session_id"], cost_usd=None, num_turns=res["turns"],
-                           error=None if status == "ok" else (res["subtype"] or f"exit {cp.returncode}"))
+                           usage=res.get("usage"), error=None if status == "ok" else (res["subtype"] or f"exit {cp.returncode}"))
         except subprocess.TimeoutExpired:
             summary.update(status="error", error="timed out", result="")
         except tasks.WorktreeError as e:

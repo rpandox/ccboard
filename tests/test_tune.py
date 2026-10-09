@@ -436,9 +436,13 @@ def test_command_refuses_a_picker_driven_spec(lite_client, fake_tmux, tui):
     """Codex's /model never goes through /command (it would type `/model <slug>`, which Codex sends to the model as a prompt)."""
     t = tui("codex")
     session(fake_tmux, "codex", {"model": "gpt-6.1-sol"})
-    for body in ({"cmd": "model", "arg": "gpt-6-luna"}, {"cmd": "model"}, {"cmd": "reasoning", "arg": "high"}, {"cmd": "permissions"}):
+    for body in ({"cmd": "model", "arg": "gpt-6-luna"}, {"cmd": "model"}):
         r = lite_client.post(f"/api/sessions/{NAME}/command", headers=H, json=body)
         assert r.status_code == 400 and "POST /api/sessions/" in r.json()["error"] and "/tune" in r.json()["error"], body
+    for body in ({"cmd": "reasoning", "arg": "high"}, {"cmd": "approvals", "arg": "never"}, {"cmd": "sandbox", "arg": "read-only"}):
+        r = lite_client.post(f"/api/sessions/{NAME}/command", headers=H, json=body)         # issue #2: a launch flag, never typed
+        assert r.status_code == 400 and "/restart" in r.json()["error"], body
+    assert lite_client.post(f"/api/sessions/{NAME}/command", headers=H, json={"cmd": "permissions"}).status_code == 400
     assert t.log == []
     r = lite_client.post(f"/api/sessions/{NAME}/command", headers=H, json={"cmd": "status", "wait_ms": 0})
     assert r.status_code == 200 and r.json()["dialog"] is False and "Permissions" in r.json()["screen"]
@@ -489,9 +493,11 @@ def test_the_slash_tables_are_pinned_to_the_box_verdicts():
     assert not set(v["codex"]["absent"]) & {s.cmd for s in cx.values()}
     assert vc["/model"]["inline_arg"] is False and all(not s.arg and s.drive == "picker" for k, s in cx.items() if s.cmd == "/model")
     assert vc["/permissions"]["entries"][:2] == [label for _, label in pickers.CODEX_PERMS] and vc["/permissions"]["entries"][2] == "Full Access"
+    assert "permissions" not in cx, "the /permissions picker's cursor was never recorded: no Tune row drives it (reasoning, approvals and sandbox restart)"
+    assert [k for k, s in cx.items() if s.drive == "restart"] == ["reasoning", "approvals", "sandbox"] and not any(s.tune for s in cx.values() if s.drive == "restart")
     assert vc["/status"]["prints_inline"] and cx["status"].read and not cx["status"].dialog
     assert "fast" not in cx, vc["/fast"]["bare"]
-    assert (cx["model"].verified, cx["reasoning"].verified, cx["permissions"].verified) == (True, False, False)
+    assert all(s.verified for s in cx.values()), "no Codex row is flagged unverified: the picker row is the box-verified model path, the rest restart"
     assert v["codex"]["messages"]["model_session_only"] and pickers.CODEX_CHANGED_RE.search(v["codex"]["messages"]["model_session_only"])
     assert pickers.CODEX_STATUS_PERMS["auto"].search(v["codex"]["messages"]["status_permissions"])
     assert vl["/effort <level>"]["saves_default"] and cl["effort"].saves_default and cl["effort"].tune == "effort"

@@ -1092,7 +1092,8 @@ Quad.mount = function (root, route) {
     const s = tile.session || sessionOf(tile.tmux) || null;
     if (!s || !hasKit('tune')) return null;
     const agent = Quad.agentOf(s);
-    const ctx = { session: s, agent, stats: s.stats || {}, atPrompt: Quad.atPrompt(s, I.st).ok, touch: coarse(), schema: schemaOf(agent) };
+    const ctx = { session: s, agent, stats: s.stats || {}, atPrompt: Quad.atPrompt(s, I.st).ok, touch: coarse(), schema: schemaOf(agent),
+      onRestart: () => { setTimeout(() => { if (!tile.gone) reconnect(tile); }, 1500); } };    // a restarted Codex session is a new tmux session of the same name: the tile attaches again
     if (!tile.tuneCtl) { try { tile.tuneCtl = TermKit.tune({ tmux: tile.tmux, ...ctx }); } catch (e) { console.error('ccboard quad tune', e); } }
     else if (typeof tile.tuneCtl.update === 'function') tile.tuneCtl.update(ctx);
     return tile.tuneCtl || null;
