@@ -2,7 +2,9 @@
 
 The twin of app/account_store.py (read its docstring first), for Codex, which differs in four ways:
 
-  * Codex keeps its login in ONE file, `$CODEX_HOME/auth.json` (mode 0600, honoured by every codex command; `codex logout` removes it). There is
+  * Codex keeps its login in ONE file, `$CODEX_HOME/auth.json` (mode 0600, honoured by every codex command; `codex logout` removes it) while
+    its `cli_auth_credentials_store` is `file` (credential_store() reads that one key of config.toml; unset counts as file). With `keyring` or
+    `ephemeral` there is no file to swap, and with `auto` and no file there probably is none: supported() is then false and says so. There is
     no identity file beside it: at login time nothing says whose login it is. The person NAMES an account when adding it (a required label),
     and the board learns its account id and plan later, from the rollouts of Codex sessions run while that login was live (`session_meta`
     carries `creator_account_id`; rate-limit events carry `plan_type`). auth.json itself is never opened for that.
@@ -53,6 +55,12 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
+
+try:
+    import tomllib
+except ImportError:                                 # Python before 3.11: the store is then read as unset
+    tomllib = None
 
 from . import accounts, claude_auth, login_problem, platform, tmux
 from .account_store import _read_plain, _read_stable, _secure_dir, _stamp, _Unstable, _write_atomic
@@ -98,6 +106,12 @@ SPLIT_NOTICE = "A different Codex login was detected and saved as a new account.
 SERIES = "cacct"                      # event sample: key = the account that became current, meta {from, to}; or the account logged in again, meta {to, relogin: true}
 SLOT_RE = re.compile(r"^[0-9a-f]{24}\Z")             # \Z: names a directory, so no trailing newline (#44 F-03)
 REASON_NOT_INSTALLED = "codex is not installed"
+CRED_KEY = "cli_auth_credentials_store"
+CRED_STORES = ("file", "keyring", "auto", "ephemeral")
+_CRED_FIX = 'set cli_auth_credentials_store = "file" in config.toml and log in again to use saved logins'     # no ": " in the reasons: settings.js splits a reason there
+REASON_KEYRING = f"Codex keeps this login in the system keyring; {_CRED_FIX}"
+REASON_EPHEMERAL = f"Codex does not keep this login on disk (ephemeral store); {_CRED_FIX}"
+REASON_AUTO = f"Codex may keep this login in the system keyring (the store is auto and there is no auth.json); {_CRED_FIX}"
 REASON_UPDATE = "update Codex to 0.157 or newer: npm install -g --prefix ~/.local @openai/codex@latest"   # the safe update (#97): never the bare global npm install, never Codex's own prompt
 WARN_OTHER = "other Codex processes on this box keep the previous login until they restart"
 WARN_OTHER_UNKNOWN = "could not list this box's processes: any other Codex process keeps the previous login until it restarts"
@@ -152,17 +166,85 @@ def _agent():
     return get_agent("codex")
 
 
-def supported() -> bool:
-    """Saved Codex logins work wherever a codex binary exists: Codex keeps file credentials on every OS."""
+class CredStore(NamedTuple):
+    """Where Codex keeps its login on this box. `setting` is config.toml's cli_auth_credentials_store ('file', 'keyring', 'auto', 'ephemeral'), None
+    when unset, absent, unreadable or any other value. `auth_file` is whether `<CODEX_HOME>/auth.json` exists (existence only: it is never opened).
+    `file` is whether the login is a file the board can swap; `reason` says why not (None when it is)."""
+    setting: str | None
+    auth_file: bool
+    file: bool
+    reason: str | None
+
+
+_cred_cache: tuple[tuple, str | None] | None = None      # ((config.toml stamp), setting)
+
+
+def _store_setting() -> str | None:
+    """cli_auth_credentials_store from `<CODEX_HOME>/config.toml`, read with tomllib and nothing else of that file kept (it is not a credential, but
+    no other key is looked at). None when the file is missing, too big, a link, unparseable, or the value is not one of the four words. Cached on
+    the file's stamp, so a poll costs one stat."""
+    global _cred_cache
+    path = _live_dir() / CONFIG
     try:
-        return bool(_agent().bin())
+        st = os.stat(path)
+    except OSError:
+        return None
+    sig = (str(path), st.st_mtime_ns, st.st_size)
+    c = _cred_cache
+    if c and c[0] == sig:
+        return c[1]
+    value = None
+    try:
+        if tomllib is not None and st.st_size <= CONFIG_MAX and not path.is_symlink():
+            got = tomllib.loads(path.read_text(encoding="utf-8", errors="replace")).get(CRED_KEY)
+            if isinstance(got, str) and got.strip().lower() in CRED_STORES:
+                value = got.strip().lower()
+    except (OSError, ValueError):                   # tomllib.TOMLDecodeError is a ValueError
+        value = None
+    _cred_cache = (sig, value)
+    return value
+
+
+def credential_store() -> CredStore:
+    """Resolve the store from config.toml and the presence of auth.json. file: usable (even before the first login). unset: usable (a first
+    `codex login` makes the file; what Codex defaults to is still to verify). auto: usable only when auth.json exists, else refused (softened:
+    the login may be in the keyring). keyring and ephemeral: refused. Never raises."""
+    try:
+        setting = _store_setting()
     except Exception:
-        return False
+        setting = None
+    try:
+        has_file = (_live_dir() / AUTH).is_file()
+    except OSError:
+        has_file = False
+    if setting == "keyring":
+        return CredStore(setting, has_file, False, REASON_KEYRING)
+    if setting == "ephemeral":
+        return CredStore(setting, has_file, False, REASON_EPHEMERAL)
+    if setting == "auto" and not has_file:
+        return CredStore(setting, has_file, False, REASON_AUTO)
+    return CredStore(setting, has_file, True, None)
+
+
+def support_reason() -> str | None:
+    """Why saved Codex logins are off here, None when they work: no codex binary, or a credential store that is not a file."""
+    try:
+        if not _agent().bin():
+            return REASON_NOT_INSTALLED
+    except Exception:
+        return REASON_NOT_INSTALLED
+    return credential_store().reason
+
+
+def supported() -> bool:
+    """Saved Codex logins work wherever a codex binary exists and Codex keeps its login in `auth.json` (credential_store())."""
+    return support_reason() is None
 
 
 def _require() -> None:
-    if not supported():
-        raise Unsupported(REASON_NOT_INSTALLED)
+    why = support_reason()
+    if why is not None:
+        raise Unsupported(why)
 
 
 def store_dir() -> Path:
@@ -1380,7 +1462,7 @@ def _row(db, rec: dict, cur, sup: bool | None = None) -> dict:
 
 
 def store_view(count: int) -> dict:
-    """{supported, add, reason, count}: whether saved logins work here (a codex binary), whether an account can be added from the board
+    """{supported, add, reason, count}: whether saved logins work here (a codex binary and a login kept in auth.json: credential_store()), whether an account can be added from the board
     (`codex login --device-auth` exists; unknown counts as yes until the probe, started in the background, has answered) and why not."""
     try:
         agent = _agent()
@@ -1392,6 +1474,9 @@ def store_view(count: int) -> dict:
             agent.warm_login_caps()
     except Exception:
         return {"supported": False, "add": False, "reason": REASON_NOT_INSTALLED, "count": 0}
+    cred = credential_store()
+    if not cred.file:                                    # keyring, ephemeral, auto without a file: nothing to swap, and a login in .pending would not leave a file
+        return {"supported": False, "add": False, "reason": cred.reason, "count": 0}
     add = da is not False
     return {"supported": True, "add": add, "reason": None if add else REASON_UPDATE, "count": count}
 

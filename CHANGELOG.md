@@ -2,6 +2,17 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.26 - 2026-10-08
+
+### Added
+- Windows through WSL2: a README section in the order of the setup, `scripts/windows/ccboard-wsl-keepalive.ps1` (a per-user Scheduled Task that keeps the distro running), and an installer branch that runs only inside WSL. It refuses without systemd, warns about projects, data or agents on a Windows drive, and with `CCBOARD_TAILSCALE_PLACEMENT=host` prints the Tailscale serve commands to run on Windows instead of mapping from the distro. Doctor checks `wsl-*` (systemd, files, agents, network, keep-alive, placement, restarts in the last day) appear on WSL only.
+- Saved logins say why they are off on each system: on a Mac, Claude Code keeps its login in the Keychain, so the board cannot swap it, and Codex logins can still be saved. Doctor checks `claude-creds-store` (macOS) and `codex-cred-store` report where each login lives without reading it.
+
+### Changed
+- Saved Codex logins work only where Codex keeps its login in a file; with `cli_auth_credentials_store` set to `keyring` or `ephemeral` the board says so and how to change it.
+
+Upgrade: nothing to do.
+
 ## v0.5.25 - 2026-10-08
 
 ### Added

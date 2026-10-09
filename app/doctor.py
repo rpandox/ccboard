@@ -650,6 +650,9 @@ def _c_tailscale(db) -> Outcome:
     try:
         p = _run(cli.cmd("status", "--json"), timeout=TS_TIMEOUT)
     except ToolMissing:
+        if plat.tailscale_placement(implied=False) == "host":    # WSL, set on purpose (issue #118): Tailscale is on Windows, the distro has no command for it
+            return _skip("Tailscale runs on the Windows host (CCBOARD_TAILSCALE_PLACEMENT=host), so this distro has no tailscale command; check it from Windows. "
+                         "The wsl-placement row says what that means for previews")
         return _fail(f"{where}: {ts.missing_reason()}", fix("Install Tailscale, sign in, then check again", None))
     except ToolTimeout:
         return _warn(f"{where}: tailscale status did not answer in time", fix("Check that Tailscale is running"))
@@ -1415,6 +1418,8 @@ register_provider("memory", MEM_GROUP, memory_checks)       # claude-mem (v0.5.1
 register_provider("codex", CODEX_GROUP, codex_checks)       # the Codex adapter's checks (v0.5.11)
 if plat.IS_MACOS:                                            # issue #117: the macOS checks (app/doctor_macos.py) exist on a Mac only; a Linux board lists none
     from . import doctor_macos as _doctor_macos              # noqa: F401  (registers its checks when it is imported on a Mac)
+if plat.is_wsl():                                            # issue #118: the wsl- checks (app/doctor_wsl.py) exist inside WSL only; any other board lists none
+    from . import doctor_wsl as _doctor_wsl                  # noqa: F401  (registers its checks, and the Sampler hook that records the distro's starts, when imported in WSL)
 
 
 def _c_codex_saved_models(db) -> Outcome:
@@ -1441,6 +1446,77 @@ def _c_codex_saved_models(db) -> Outcome:
 
 
 register("codex-saved-models", CODEX_GROUP, "Saved Codex models", _c_codex_saved_models)
+
+
+def _c_codex_cred_store(db) -> Outcome:
+    """Where Codex keeps its login and whether the board can save and switch it (issue #119): the `cli_auth_credentials_store` key of
+    config.toml (read by codex_accounts.credential_store(), which never opens auth.json) and whether auth.json exists. Every system."""
+    from . import codex_accounts
+    try:
+        if codex_accounts.support_reason() == codex_accounts.REASON_NOT_INSTALLED:
+            return _skip("codex is not installed")
+        cred = codex_accounts.credential_store()
+    except Exception as e:                                      # a check never fails because of what it looked at
+        return _warn(f"check error: {e.__class__.__name__}")
+    if not cred.file:
+        said = {"keyring": "Codex keeps its login in the system keyring", "ephemeral": "Codex does not keep its login on disk",
+                "auto": "there is no auth.json, so the login may be in the keyring"}[cred.setting]
+        return _warn(f"cli_auth_credentials_store is {cred.setting}: {said}, so saved Codex logins are off",
+                     fix('Set cli_auth_credentials_store = "file" in config.toml in the Codex folder, then log in to Codex again'))
+    where = fix("Codex keeps its login in auth.json in the Codex folder; the board saves and switches copies of it")
+    if cred.setting == "file":
+        return _pass("cli_auth_credentials_store is file: the Codex login is auth.json" + ("" if cred.auth_file else " (not made yet)"), where)
+    if cred.setting == "auto":
+        return _pass("cli_auth_credentials_store is auto and auth.json exists: saved Codex logins can be switched", where)
+    if cred.auth_file:
+        return _pass("cli_auth_credentials_store is not set and auth.json exists: saved Codex logins can be switched", where)
+    return _pass("cli_auth_credentials_store is not set and there is no auth.json yet: a first codex login shows where Codex keeps it (to verify)")
+
+
+register("codex-cred-store", CODEX_GROUP, "Codex login store", _c_codex_cred_store)
+
+
+def _home_short(p) -> str:
+    """A path with the home folder written as ~ (a detail line, not a credential: it names a folder, never opens it)."""
+    s = str(p)
+    home = str(Path.home())
+    return "~" + s[len(home):] if home and s.startswith(home) else s
+
+
+def _keychain_run(argv: list[str]) -> tuple[int, str]:
+    """claude_auth.keychain_item()'s seam on the doctor's own _run: the exit status and stdout of an attribute-only `security` call."""
+    p = _run(argv, CMD_TIMEOUT)
+    return p.rc, p.out
+
+
+def _c_claude_creds_store(db) -> Outcome:
+    """macOS only (issue #119): where Claude Code's login lives, keychain, file, both or none. The Keychain half is an attribute-only
+    `security find-generic-password -s "Claude Code-credentials"` (never -w or -g: the secret is not asked for, not seen, not kept; the answer is
+    the words present or absent). A call that failed or timed out is "unknown", never "none". The board never deletes the file."""
+    if not plat.IS_MACOS:
+        return _skip("macOS only: Claude keeps its login in a file on this system")
+    item = claude_auth.keychain_item(run=_keychain_run)
+    path = settings.claude_config_dir / ".credentials.json"
+    has_file = path.is_file()
+    where = _home_short(path)
+    if item["state"] == "unknown":
+        return _warn(f"unknown: the Keychain could not be read; {where} " + ("exists" if has_file else "does not exist"),
+                     fix('Run security find-generic-password -s "Claude Code-credentials" in Terminal: it prints attributes, never the value'))
+    kc = item["state"] == "present"
+    if kc and has_file:
+        return _warn(f"both: the login is in the Keychain and in {where}; the file is probably a stale second copy",
+                     fix(f"The live login is the Keychain item; {where} is only written when the Keychain refuses a write. Delete it yourself if unwanted: the board never does"))
+    if kc:
+        return _pass("keychain: the login is in the macOS Keychain, which the board does not swap, so saved Claude logins are off",
+                     fix("It lives in the login Keychain as the item Claude Code-credentials (Keychain Access shows it)"))
+    if has_file:
+        return _pass(f"file: the login is in {where}; the Keychain has no item", fix(f"Claude Code wrote the login to {where}"))
+    return _warn(f"none: no Claude login in the Keychain and no {where}",
+                 fix("Log in from the board, or run claude auth login on this Mac", "claude auth login", "claude_login"))
+
+
+if plat.IS_MACOS:                                                # issue #119: macOS only; a Linux board lists no such row
+    register("claude-creds-store", "claude", "Claude login store", _c_claude_creds_store)
 
 
 # ------------------------------------------------------------------ backup, CI and version-gate checks (issues #49, #50, #51, #113)

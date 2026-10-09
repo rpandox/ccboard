@@ -96,7 +96,7 @@ tar xzf ccboard.tar.gz && cd ccboard      # or: git clone https://github.com/rpa
 
 The script prints the dashboard URL when it is done. Open it **from another device on your tailnet** (requests from the box itself carry no Tailscale identity and are rejected), then click *Log in* to sign in to Claude Code.
 
-Requirements: Ubuntu 22.04 or 24.04 for this installer (macOS 13 or newer has its own installer, see [macOS](#macos-issue-117); `./install.sh` hands over to it on a Mac), Tailscale installed and logged in, MagicDNS and **HTTPS certificates** enabled for your tailnet (admin console → DNS), `sudo` rights.
+Requirements: Ubuntu 22.04 or 24.04 for this installer (macOS 13 or newer has its own installer, see [macOS](#macos-issue-117); `./install.sh` hands over to it on a Mac; Windows 11 runs this installer inside WSL2, see [Windows (WSL2)](#windows-wsl2-issue-118)), Tailscale installed and logged in, MagicDNS and **HTTPS certificates** enabled for your tailnet (admin console → DNS), `sudo` rights.
 
 ### Settings
 
@@ -148,6 +148,7 @@ Every setting is an environment variable. Values are remembered in `/etc/ccboard
 | `CCBOARD_HEADLESS_FABLE_CAP` | `25` | The most Max $ a schedule or batch Claude run that resolves to Fable (`fable`, `best`, any id with `fable` in it) may carry. `claude -p` never asks before billing Fable usage credits, so such a job also needs its own acknowledgement; a cap alone is not consent and a stored job without both is held, not run |
 | `CCBOARD_CLAUDE_ULTRACODE_FLAG` | empty | `1` or `0` records the result of the box check whether `claude --effort ultracode` works on this box; empty asks `claude --help`. A wrong `1` makes the launcher pass a flag Claude rejects |
 | `CCBOARD_PRICE_TABLE` | empty | Absolute path of a JSON file that adds to or replaces the built-in list prices behind the Usage page's Estimated basis (`{"date": "YYYY-MM-DD", "source": "...", "models": {"sonnet-5-5": {"input": 2, "output": 10, "cache_read": 0.2, "cache_write": 2.5}}}`, USD per million tokens; `cache_write` may be left out). Server side only: the browser cannot change prices. The file is re-read when it changes; one that cannot be read changes nothing |
+| `CCBOARD_TAILSCALE_PLACEMENT` | empty | WSL2 only: where Tailscale runs, `wsl` (inside the distro, the normal install) or `host` (on Windows; the installer skips the Tailscale checks and the `serve` mappings, needs `CCBOARD_ALLOWED_USERS` and `CCBOARD_PUBLIC_URL`, and prints the PowerShell commands to run on Windows). Empty means `wsl`; `host` is never picked for you, because every program on the Windows PC can then reach the board and claim any allowed login. Ignored with a warning anywhere else; see [Windows (WSL2)](#windows-wsl2-issue-118) |
 | `CODEX_HOME` | empty | Where Codex keeps its config (empty means `~/.codex`, as for Codex itself). `hooks.json` is written there and `codex mcp add` registers there. Remembered in `/etc/ccboard/env`; absolute path, no spaces |
 
 Tailnet-only `tailscale serve` accepts any HTTPS port. If a chosen port already carries something else (another serve handler or a Funnel), `install.sh` stops and tells you; pick other ports or rerun with `CCBOARD_REPLACE_SERVE=1` to replace that port's handlers. It never runs `tailscale serve reset` and never touches ports you did not name.
@@ -329,6 +330,143 @@ Either way a second start while a run holds the lock answers 409 ("a backup is a
 **WSL2.** A repository under `/mnt/` sits on the Windows file system through drvfs: it is slow and ignores file modes, so the Doctor warns. Keep the repository on the WSL file system (ext4) or on a remote. As a second layer for the whole distribution, `wsl --export <distro> <file>.vhd --format vhd` writes a copy of it from Windows.
 
 **Restoring.** The restore runbook (issue #111) is not written yet. A backup branch comes back with the `git fetch` and `git switch -c` lines in [the security notes](#security-model).
+
+## Windows (WSL2) (issue #118)
+
+The board runs on Windows inside WSL2, as the unmodified Linux install inside an Ubuntu distro. The board's code does not change for it: WSL2 is Linux. What is added is a Windows-side keep-alive (without it WSL stops the machine and takes every tmux session with it), a stated networking mode, a stated place for Tailscale, the installer's WSL branch and a few Doctor checks.
+
+| Setup | Status |
+|---|---|
+| Windows 11 22H2 or newer, WSL2, Ubuntu 22.04 or 24.04 with systemd, this recipe | supported |
+| Windows 10 build 19041 or newer, WSL2 | best effort: NAT networking only, and whether `[boot] systemd` works there is UNVERIFIED (Microsoft documents `[boot]` for Windows 11 and Server 2022) |
+| Native Windows (no WSL) | not supported (issue #124) |
+| WSL1 | not supported (Claude Code has no WSL1 sandbox; Codex ended WSL1 support at 0.114) |
+| Docker Desktop's WSL backend | not supported; docker-ce installed inside the distro is fine (see [where the container runtime works](#where-the-container-runtime-works)) |
+| Projects, data folder, `~/.claude` or `~/.codex` on `/mnt/c` | not supported: the Doctor warns (see below) |
+
+### 1. WSL and the distro
+
+In Windows PowerShell:
+
+```powershell
+wsl --install -d Ubuntu
+wsl --update
+wsl -l -v          # the VERSION column must say 2
+```
+
+### 2. systemd
+
+Inside the distro, put this in `/etc/wsl.conf` (`[interop] appendWindowsPath=false` stops a Windows `claude` or `codex` from shadowing the Linux ones, and it takes Windows programs off the distro's PATH):
+
+```ini
+[boot]
+systemd=true
+
+[interop]
+appendWindowsPath=false
+```
+
+Then, in Windows PowerShell, `wsl --shutdown` (it ends every running session, so do it when nothing runs), open the distro again and check `systemctl is-system-running`. It must print `running` (`degraded` also works: a unit failed). Needs WSL 0.67.6 or newer. `install.sh` refuses early, with these lines, when systemd is not running.
+
+### 3. Install the board inside the distro, on the distro's own disk
+
+Use the normal Linux install ([Install](#install)) from a checkout under your Linux home, never under `/mnt/c`:
+
+```sh
+git clone https://github.com/rpandox/ccboard ~/ccboard && cd ~/ccboard
+./install.sh
+```
+
+Keep the projects, the data folder, `~/.claude` and `~/.codex` on the distro's ext4 disk. On a Windows drive (`/mnt/c`, a drvfs or 9p mount) file owners look wrong (the projects folder must be owned by the board's user), modes 0600 and 0700 are ignored, change stamps are weak and everything is slow. The installer warns when `PROJECTS_DIR`, `CCBOARD_DATA_DIR` or the checkout is below `/mnt/`, and the Doctor's `wsl-files` check warns when any of the four folders is on a Windows drive.
+
+### 4. The agents, inside the distro
+
+```sh
+curl -fsSL https://claude.ai/install.sh | bash            # Claude Code
+curl -fsSL https://chatgpt.com/codex/install.sh | sh      # Codex
+sudo apt-get install -y bubblewrap socat                  # what their sandboxes use
+which claude codex                                        # neither may point under /mnt/c
+```
+
+The login callback usually cannot reach the distro. The board's own login flow already works for that: click *Log in*, copy the link, open it in your Windows browser and paste the code back. The installer warns when `claude` or `codex` resolves under `/mnt/`, and the Doctor's `wsl-path` check does too.
+
+### 5. The keep-alive (mandatory)
+
+Microsoft documents idle timeouts in minutes, not hours: `[general] instanceIdleTimeout` (default 15000 ms) and, on Windows 11, `[wsl2] vmIdleTimeout` (default 60000 ms), and says the machine shuts down when no Windows process holds a file handle to it. It also says that systemd services do NOT keep a WSL instance alive. So a `ccboard.service` inside the distro is not enough: without a keep-alive, the tmux server and every agent session end minutes after the last terminal closes.
+
+`scripts/windows/ccboard-wsl-keepalive.ps1` registers a per-user Scheduled Task, "At log on", named `ccboard-wsl-keepalive`, that keeps one hidden `wsl.exe -d <distro>` process open. Copy it out of the distro to Windows and run it from Windows PowerShell (no administrator rights are needed):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\ccboard-wsl-keepalive.ps1 -Distro Ubuntu
+```
+
+| Parameter | Meaning |
+|---|---|
+| `-Distro <name>` | The distro as `wsl -l -q` lists it. Default: the first one listed. A name that is not installed prints a message and the script exits 0 without changing anything |
+| `-Method sleep` (default) | The task runs `wsl.exe -d <distro> --exec sleep infinity` in a hidden window and stays running. It follows from Microsoft's file-handle sentence; that it holds on every WSL version is to verify |
+| `-Method dbus` | The task runs `wsl.exe -d <distro> --exec dbus-launch true`, the community recipe (needs the `dbus` package in the distro) |
+| `-Remove` | Unregisters the task and stops; touches nothing else |
+| `-WriteWslConfig` | Writes the belt-and-braces lines below into `%UserProfile%\.wslconfig`, after copying the file to `.wslconfig.ccboard-bak-<time>`. Without it the lines are only printed |
+| `-Mirrored` | Adds `networkingMode=mirrored` to those lines (Windows 11 22H2 or newer) |
+
+Running it again replaces the task, it never makes a second one. The lines it prints (and writes only with `-WriteWslConfig`) are `[general]` `instanceIdleTimeout=-1` and `[wsl2]` `vmIdleTimeout=-1`. Field reports say those two alone do not stop the distro after the last terminal closes (WSL discussion 9245), and that WSL 2.6.1.0 stops an instance 15 to 20 seconds after the last terminal closes even with an active unit (WSL issue 13416); the task is what holds the distro. Behaviour on WSL 3.x is UNVERIFIED. The script edits nothing else.
+
+Check it in Windows with `Get-ScheduledTask -TaskName ccboard-wsl-keepalive` (State `Running`), or read the Doctor's `wsl-keepalive` row.
+
+**Reboots and logon.** WSL starts after you log on to Windows, not before (starting before logon is UNVERIFIED). After a Windows restart there is no board until someone logs on, unless Windows auto-logon is on. A Windows restart, `wsl --shutdown` or an idle-out ends the tmux server exactly like a power cut; the board's reboot recovery (`CCBOARD_RECOVER`, `CCBOARD_AUTO_CONTINUE`) relaunches the sessions and types `continue` into the ones that were working.
+
+### 6. Networking
+
+- **NAT** (the default, and the only mode on Windows 10): a Windows browser reaches a server in the distro on `http://localhost:<port>` (`localhostForwarding`, relayed by `wslrelay.exe`). Reaching it from the LAN needs `netsh interface portproxy` on Windows.
+- **Mirrored** (`networkingMode=mirrored` in `%UserProfile%\.wslconfig`, Windows 11 22H2 or newer): `127.0.0.1` works both ways (`::1` does not), and the LAN can reach the distro once a Hyper-V firewall rule allows the inbound port.
+
+The board, ttyd and code-server bind to `127.0.0.1` only, so nothing is reachable from the LAN unless you add a rule on purpose. The Doctor's `wsl-network` row names the mode (from `wslinfo --networking-mode`; older WSL has no `wslinfo`, and the row says the mode is unknown) and warns when one of the three ports listens beyond loopback.
+
+### 7. Where Tailscale runs
+
+The board's only identity is the `Tailscale-User-Login` header that `tailscale serve` adds, so `serve` must sit in front of it. Tailscale recommends running it on the Windows host only, "and not inside WSL 2" (both at once breaks traffic from the distro through the host). Two placements:
+
+| `CCBOARD_TAILSCALE_PLACEMENT` | Where | What the installer does |
+|---|---|---|
+| `wsl` | Tailscale inside the distro (against Tailscale's advice) | The unchanged Linux path: checks Tailscale, maps `/`, `/tty` and code-server with `tailscale serve`, previews work |
+| `host` | Tailscale on Windows | Skips the Tailscale checks and the `serve` mappings. You must give `CCBOARD_ALLOWED_USERS` and `CCBOARD_PUBLIC_URL`. It prints one PowerShell `tailscale serve` command per mapping (`/`, `/tty`, code-server, and ntfy when it is on) to run on Windows |
+
+Empty picks `wsl` when the distro has a `tailscale` command, else `host`; the default may change after the device check (issue #130). The choice is remembered in `/etc/ccboard/env` so the Doctor can read it.
+
+```sh
+CCBOARD_TAILSCALE_PLACEMENT=host CCBOARD_ALLOWED_USERS=you@provider \
+  CCBOARD_PUBLIC_URL=https://<this PC>.<your tailnet>.ts.net ./install.sh
+```
+
+**`host` widens who can sign in.** The board trusts the `Tailscale-User-Login` header on its loopback port. Inside the distro only the distro's own programs reach that port; with `host`, Windows forwards its localhost to the distro, so every program on the Windows PC, and every other Windows user signed in to it, can send that header and act as any allowed user. Use `host` only on a PC you alone use; the installer never picks it for you and the Doctor warns while it is set.
+
+`tailscale serve` only takes `http://127.0.0.1` proxies. That the Windows host reaches a port of the distro on its own `127.0.0.1` follows from the localhost forwarding rules but is not documented (UNVERIFIED until the device check). Previews open ports with the local `tailscale` command and cannot reach a Windows Tailscale from the distro (calling `tailscale.exe` through interop is the route described in [Tailscale on each system](#tailscale-on-each-system-issue-126), also UNVERIFIED), so with `host` the Doctor's `wsl-placement` row marks previews unavailable and says why. If you use port 443 for something else on Windows, choose `CCBOARD_HTTPS_PORT=8443`; the board never runs `tailscale serve reset`.
+
+### 8. The browser on Windows
+
+Open the tailnet HTTPS address `install.sh` printed (`https://<name>.<tailnet>.ts.net:<port>/`) in Chrome or Edge, then install it: the install icon at the right of the address bar, or menu, *Install ccboard* (Edge: ..., Apps, *Install this site as an app*); see [Install as an app](#install-as-an-app). Edge and Chrome on Windows can get Web Push (the board allows the `.notify.windows.com` push endpoints).
+
+`http://localhost:<port>` from the Windows browser reaches the board but carries no Tailscale identity, so it gets a 403 until the sign-in decision for a single machine lands (issue #127). Use the tailnet address.
+
+### 9. Backups
+
+Besides the board's own backup ([Backup on each system](#backup-on-each-system-issue-129)), `wsl --export <distro> <file>.vhd --format vhd` in Windows PowerShell writes a copy of the whole distro.
+
+### 10. The Doctor on WSL
+
+These rows (group Box, ids start with `wsl-`) exist only when the board runs inside WSL:
+
+| Row | Passes when |
+|---|---|
+| `wsl-systemd` | `systemctl is-system-running` says `running` or `degraded` |
+| `wsl-files` | the projects, data, Claude config and Codex folders are not on a Windows drive |
+| `wsl-path` | `claude` and `codex` resolve inside the distro, not under `/mnt/` |
+| `wsl-network` | the mode is NAT or mirrored and the board, ttyd and code-server listen on loopback only |
+| `wsl-keepalive` | Windows answers (through `powershell.exe`, interop) that the `ccboard-wsl-keepalive` task is registered and running. With interop off it shows as unknown with the fix, never as passing |
+| `wsl-restarts` | fewer than 2 restarts of the distro or its virtual machine in the last 24 hours, counted from the board's own record of when PID 1 started (it is kept on the Sampler's 15 s tick, so a board restart alone is not a restart of the distro) |
+| `wsl-placement` | Tailscale is where `CCBOARD_TAILSCALE_PLACEMENT` says; `host` is a warning (every Windows program can reach the board and claim a login; previews unavailable) |
+
+A Doctor inside the distro cannot say that the distro is stopped, because the board stops with it: `wsl-restarts` reports the stop afterwards. Settings, Box host says the CPU, memory and disk numbers describe the Linux machine, not Windows.
 
 ## Run the board as a container (optional)
 
@@ -824,7 +962,21 @@ ccboard measures usage per Claude subscription account, in the subscription's ow
 
 ### Several Claude accounts
 
-Claude Code keeps one login per config dir, so using more than one subscription means putting the right login in place when you want it. The board saves each login and swaps them for you. (Linux only: macOS keeps Claude's credentials in the Keychain, so there Settings says saved logins need Linux and the account calls answer 409.)
+Claude Code keeps one login per config dir, so using more than one subscription means putting the right login in place when you want it. The board saves each login and swaps them for you, where Claude keeps that login in a file it can swap. That is Linux and WSL2 on ext4. It is not macOS or native Windows, and there Settings says why and the account calls answer 409 with the same sentence.
+
+**What works on each system (issue #119).**
+
+| System | Saved Claude logins and one-tap switching | Saved Codex logins | The reason Settings gives |
+|---|---|---|---|
+| Linux | yes | yes, while Codex keeps `auth.json` | none |
+| WSL2, folders on ext4 | yes (it is Linux) | yes, while Codex keeps `auth.json` | none |
+| WSL2, Claude config folder or data dir on a Windows drive (`/mnt/c`) | no | yes, while Codex keeps `auth.json` | "the Claude config folder is on a file system that ignores permissions; move it into the Linux file system" |
+| macOS | no | yes, while Codex keeps `auth.json` | "Claude Code keeps this login in the macOS Keychain, so the board cannot swap it; Codex logins can still be saved" |
+| Native Windows | no (not a board host) | no | "Windows is not a supported board host (use WSL2)" |
+
+**Why macOS differs.** Claude Code keeps the live login in the macOS Keychain (the item `Claude Code-credentials`), not in `<config dir>/.credentials.json`. That file is written only when the Keychain refuses a write, for example over SSH while the Keychain is locked, so on a Mac it is absent or an older second copy. Swapping the file would change nothing for a running Claude, so the board does not do it: on a Mac no request writes anything under the Claude config folder. Whether a Keychain store can work at all (does a running Claude re-read an updated item, does the first read ask the person, which item name a custom `CLAUDE_CONFIG_DIR` uses) is to verify on a real Mac; the code holds a `CredentialStore` interface with the file implementation only, and nothing reads or writes the Keychain secret. What the board does with the Keychain is one question: `security find-generic-password -s "Claude Code-credentials"` without `-w` or `-g`, which prints the item's attributes and never its value. The doctor row **Claude login store** (macOS only) uses it to say `keychain`, `file`, `both` or `none`, or `unknown` when the call failed or timed out, and warns when both exist that the file is probably a stale second copy; the board never deletes it, that is your choice. The login status also refreshes when the item's modification date changes.
+
+**What still works on a Mac.** Log in and the per-account Usage split (read from Claude's state file) work as everywhere, and so do saved Codex logins. The login session sets `BROWSER` to a stub that opens nothing on the Mac; the credentials go to the Keychain and the board does not read them. For a second Claude login on a Mac, run `/login` in a terminal (log out first from the terminal page), or run Claude with its own `CLAUDE_CONFIG_DIR`; there is no one-tap switching.
 
 **Adding an account.** In Settings, Add account (with the email to pre-fill, if you like) starts `claude auth login` in a login session of its own with an empty config directory, so the login you are using is not touched. Copy the sign-in link from Settings, open it in a browser that is signed in to the other account, and paste the code the browser shows into Settings. The board saves the new login and lists the account. It becomes the live one only when nobody was logged in or it is the account you were already using. One add runs at a time; Cancel gives it up. If the login session ends without credentials for 20 seconds, or an add sits for an hour, Settings shows "the login did not complete".
 
@@ -838,7 +990,9 @@ Claude Code keeps one login per config dir, so using more than one subscription 
 
 ### Several Codex accounts
 
-The same idea for Codex: the board keeps a saved login per Codex account and puts the one you pick in place with one tap (Settings, Accounts, below the Claude section). Codex keeps its login in one file, `$CODEX_HOME/auth.json` (`~/.codex/auth.json` unless CODEX_HOME says otherwise), on every OS, so this works wherever a `codex` binary does; without one the section says "codex is not installed".
+The same idea for Codex: the board keeps a saved login per Codex account and puts the one you pick in place with one tap (Settings, Accounts, below the Claude section). Codex keeps its login in one file, `$CODEX_HOME/auth.json` (`~/.codex/auth.json` unless CODEX_HOME says otherwise), while its credential store is `file`, so this works wherever a `codex` binary does and the store is a file; without a binary the section says "codex is not installed".
+
+**Where Codex keeps its login.** Codex's `cli_auth_credentials_store` setting in `config.toml` is `file`, `keyring`, `auto` or `ephemeral`, and Codex's documentation does not state the default. The board reads that one key with a TOML parser and only checks whether `auth.json` exists (it never opens it): `file` is supported; unset is supported (a file login is what a Mac with Codex 0.160 showed; a different version or setting could choose the keyring, to verify); `auto` is supported only while an `auth.json` exists; `keyring` and `ephemeral` are refused, with the sentence "Codex keeps this login in the system keyring; set cli_auth_credentials_store = "file" in config.toml and log in again to use saved logins" (the `ephemeral` and `auto` wordings say what is true for them). A `config.toml` that cannot be parsed counts as unset and is never an error. The doctor row **Codex login store** shows the result on every system. After you change the setting, log in to Codex again so a file is made.
 
 **What is stored.** `<data dir>/codex-accounts/<slot>/`, never under `/tmp` (Codex refuses to create its helper binaries under a temporary directory, and the login runs with a CODEX_HOME in there). A slot is the first 24 hex characters of a hash of a random token minted when the account is added, so the account key is the slot's name and no email, id or label appears in a path. Directories are 0700, files 0600: `auth.json` (a byte copy of Codex's file, treated as an opaque blob: never parsed, logged or returned), `auth.json.prev` (the generation before it) and `meta.json` (label, when it was added, and the account id, plan and last-seen time once known; it lets a restored database find its slots again). The kv keeps `codex_accounts` and `codex_account_current`. The nightly backup never takes the directory (an extra path that is, holds or sits inside it is skipped with a warning).
 
@@ -854,7 +1008,7 @@ The same idea for Codex: the board keeps a saved login per Codex account and put
 
 **Logging out.** `POST /api/codex-accounts/logout` logs the box out of Codex. It first saves the live login into the current account's slot (so the account stays in the list with its saved login and can be switched back to with Switch), then removes the live `auth.json` and clears the current account. A live login that matches no saved slot is kept as a new account ("codex login <date>") before it is removed; nothing is ever deleted without a copy. It answers `{ok, was, warnings, accounts}`: `was` is the key of the account that was logged out, or `null` when nobody was logged in (not an error), and `warnings` says when other Codex processes on the box may write a dead token back. It refuses with 409 `{detail, error}` and changes nothing while a login started from Settings is in flight, while one of the board's own Codex sessions is open (close them first), or when the login could not be copied first. Like every non-GET route it needs the `X-CCBoard: 1` header. Log out is not Forget login: Forget login removes a saved copy; Log out only drops the live login. Codex has a red-outlined, two-tap Log out on its card in Settings > Agents and on the account in use in Settings > Accounts. After it the card reads "Codex: not logged in" with Log in, and the old account can be switched back to from its saved login.
 
-**The calls.** `GET /api/codex-accounts` (`{current, list: [{key, label, account_id, plan, saved, current, added_at, last_seen}], store: {supported, add, reason, count}, login: {running, adding, label, started_at, url, code, tail, result}, notice: {key, label, text, at} | null}`; `notice` is the one-time split notice, dropped by `DELETE /api/codex-accounts/notice` or a rename of that account), `POST /api/codex-accounts/login` (`{label, restart?}`, 202; 400 without a label; 409 without a codex that has `--device-auth` or while a login runs), `DELETE /api/codex-accounts/login`, `PATCH /api/codex-accounts/{key}` (`{label}`), `POST /api/codex-accounts/{key}/switch` (`{ok, already, from, to, warnings, accounts}`; 404 unknown, 409 for no saved login, a login in progress, an open board Codex session or an unsaved current login) and `DELETE /api/codex-accounts/{key}/saved` (409 for the live account) and `POST /api/codex-accounts/logout`. Errors are `{detail, error}`. `/api/state` carries one new key, `codex_accounts`, the GET body without `login.tail`; the switch writes a `cacct` event (key = the new account, meta `{from, to}`).
+**The calls.** `GET /api/codex-accounts` (`{current, list: [{key, label, account_id, plan, saved, current, added_at, last_seen}], store: {supported, add, reason, count}, login: {running, adding, label, started_at, url, code, tail, result}, notice: {key, label, text, at} | null}`; `notice` is the one-time split notice, dropped by `DELETE /api/codex-accounts/notice` or a rename of that account), `POST /api/codex-accounts/login` (`{label, restart?}`, 202; 400 without a label; 409 without a codex that has `--device-auth`, with a credential store that is not a file, or while a login runs), `DELETE /api/codex-accounts/login`, `PATCH /api/codex-accounts/{key}` (`{label}`), `POST /api/codex-accounts/{key}/switch` (`{ok, already, from, to, warnings, accounts}`; 404 unknown, 409 for no saved login, a login in progress, an open board Codex session or an unsaved current login) and `DELETE /api/codex-accounts/{key}/saved` (409 for the live account) and `POST /api/codex-accounts/logout`. Errors are `{detail, error}`. `/api/state` carries one new key, `codex_accounts`, the GET body without `login.tail`; the switch writes a `cacct` event (key = the new account, meta `{from, to}`).
 
 
 ### Login expiry and re-login

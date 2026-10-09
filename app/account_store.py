@@ -20,8 +20,10 @@ Rules this module keeps (tests pin them):
     account's login may be in use: the live file is the truth while the account is live, the saved copy while it is not.
   * `claude` is never run against a slot. The one process that ever has a slot-like directory as its CLAUDE_CONFIG_DIR is the login
     itself, in `.pending`. Who a slot belongs to is read from its `.claude.json` (accounts.read_identity(config_dir=slot, auth=False)).
-  * Saved logins need Claude's FILE credentials, so they exist on Linux only (macOS keeps them in the Keychain): on any other platform
-    every mutating call raises Unsupported and the view says so.
+  * Saved logins need Claude's FILE credentials, so they exist on Linux only (WSL2 on ext4 counts as Linux; macOS keeps the live login in
+    the Keychain, native Windows is not a board host, a config dir on a mount that ignores modes is refused): everywhere else every mutating
+    call raises Unsupported with support_reason()'s per-system text and the view says so. Nothing in here writes `<config dir>/.credentials.json`
+    as the live login unless supported() is true, and on macOS it never is (tests/test_logins_portable.py pins it).
   * When in doubt do nothing rather than overwrite: an identity that cannot be read, a state file that does not parse, a credentials file
     that is being rewritten while it is read, a login that cannot be saved first, all end the call with nothing changed.
   * One RLock serialises switch, save, seed, forget, finalize and the tick. The small login/result state the views read has its own lock
@@ -40,7 +42,6 @@ import logging
 import os
 import shutil
 import stat
-import sys
 import threading
 import time
 from pathlib import Path
@@ -73,7 +74,10 @@ PREV = ".credentials.json.prev"
 STATE = ".claude.json"
 KV_SWITCH = "account_switch"       # {from, to, at, creds_stamp: [mtime_ns, size, ino], repairs}
 KV_SAVED = "account_saved"         # {key: [mtime_ns, size, ino]}: the live credentials file as it was when the key's slot was last written
-REASON = "saved logins need Claude's file credentials (Linux)"
+REASON = "saved logins need Claude's file credentials (Linux)"          # the generic text: a system without its own below, and what the view says when supported() is patched off
+REASON_MACOS = "Claude Code keeps this login in the macOS Keychain, so the board cannot swap it; Codex logins can still be saved"
+REASON_WINDOWS = "Windows is not a supported board host (use WSL2)"
+REASON_MODES = "the Claude config folder is on a file system that ignores permissions; move it into the Linux file system"
 ERR_DID_NOT_COMPLETE = "the login did not complete"
 
 _lock = threading.RLock()
@@ -128,14 +132,34 @@ _CREATED = object()                # "the file did not exist"
 
 
 # ------------------------------------------------------------------ platform, paths
+def support_reason() -> str | None:
+    """Why saved Claude logins are off on this system, None when they work. Linux and WSL2 on ext4: None. macOS: the live login is in the
+    Keychain, not in the file this module swaps. Native Windows: not a board host. A Linux whose Claude config dir or data dir is on a
+    mount that ignores modes (a Windows drive under WSL): the 0600/0700 promises would be false. Any other system: the generic REASON."""
+    if plat.IS_MACOS:
+        return REASON_MACOS
+    if plat.IS_WINDOWS:
+        return REASON_WINDOWS
+    if not plat.IS_LINUX:
+        return REASON
+    if plat.under_drvfs(settings.claude_config_dir) or plat.under_drvfs(settings.data_dir):
+        return REASON_MODES
+    return None
+
+
 def supported() -> bool:
-    """Saved logins need Claude's file credentials: Linux. (macOS keeps them in the Keychain; Windows is not a board host.)"""
-    return sys.platform.startswith("linux")
+    """Saved logins need Claude's file credentials: Linux (and WSL2 on ext4). A boolean on purpose; support_reason() says why not."""
+    return support_reason() is None
+
+
+def why_not() -> str:
+    """The text of a refusal: the per-system reason, the generic REASON when supported() was switched off without one (tests do)."""
+    return support_reason() or REASON
 
 
 def _require() -> None:
     if not supported():
-        raise Unsupported(REASON)
+        raise Unsupported(why_not())
 
 
 def store_dir() -> Path:
@@ -221,6 +245,39 @@ def _write_atomic(dest: Path, data: bytes, mode: int = 0o600, *, still=None) -> 
     """Replace `dest` with `data` (platform.secure_write: a private temp file in the same directory, fsync, atomic replace). `still`, when
     given, is asked just before the replace and must say the destination is as it was (else _Changed and nothing is replaced)."""
     plat.secure_write(dest, data, mode, still=still)
+
+
+class CredentialStore:
+    """Where one Claude login lives, as opaque bytes. Only FileCredentialStore exists. A Keychain implementation is a follow-up that needs a
+    device check first (does a running Claude re-read `security add-generic-password -U` without a prompt, does the first read ask the person,
+    which item name a CLAUDE_CONFIG_DIR uses): nothing here reads or writes the Keychain, and the board never runs `security` with -w or -g."""
+
+    def read_login(self) -> bytes | None:
+        raise NotImplementedError
+
+    def write_login(self, data: bytes) -> None:
+        raise NotImplementedError
+
+    def stamp(self) -> list | None:
+        raise NotImplementedError
+
+
+class FileCredentialStore(CredentialStore):
+    """A credentials file: the live `<config dir>/.credentials.json` or a slot's copy. Built on the helpers above (a stable read, the private
+    atomic write, the [mtime_ns, size, inode] stamp), so the bytes, modes and stamps are exactly what they were."""
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+
+    def read_login(self) -> bytes | None:
+        got = _read_stable(self.path)
+        return got[0] if got else None
+
+    def write_login(self, data: bytes) -> None:
+        _write_atomic(self.path, data, 0o600)
+
+    def stamp(self) -> list | None:
+        return _stamp(self.path)
 
 
 def _store_creds(slot: Path, data: bytes) -> None:
@@ -980,7 +1037,7 @@ def decorate(view: dict, db=None) -> dict:
         rows.append({**r, "saved": bool(saved), "saved_at": _saved_at(r.get("key"), stamps) if saved else None})
     out = dict(view) if isinstance(view, dict) else {"current": None}
     out["list"] = rows
-    out["store"] = {"supported": sup, "reason": None if sup else REASON, "count": n}
+    out["store"] = {"supported": sup, "reason": None if sup else why_not(), "count": n}
     try:
         out["problem"] = _problem_view(db, out.get("current")) if db is not None else None
     except Exception as e:

@@ -1,9 +1,15 @@
-"""Claude login state and the web-driven `claude auth login` flow (runs in tmux)."""
+"""Claude login state and the web-driven `claude auth login` flow (runs in tmux).
+
+On macOS Claude Code keeps the live login in the Keychain (service `Claude Code-credentials`), not in `<config dir>/.credentials.json`. The board
+never reads that item's secret: keychain_item() runs `security find-generic-password -s "Claude Code-credentials"` WITHOUT -w or -g, which prints
+the item's attributes only, and keeps the exit status and the modification date. The date is part of the status cache key, so the login status
+refreshes when the login changes (issue #119)."""
 from __future__ import annotations
 
 import json
 import re
 import shlex
+import shutil
 import subprocess
 import threading
 import time
@@ -18,24 +24,89 @@ EMAIL_RE = re.compile(r"^[^\s@'\"\\]{1,120}@[^\s@'\"\\]{1,200}$")
 STATUS_TTL = 60.0
 SHELLS = {"sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh"}
 
+KEYCHAIN_SERVICE = "Claude Code-credentials"
+KEYCHAIN_EVERY = 30.0          # the Keychain item's attributes are asked for at most this often
+KEYCHAIN_TIMEOUT = 3.0         # seconds `security` may take (it asks nobody: no -w, no -g)
+SECURITY_NOT_FOUND = 44        # `security` exit status for "the specified item could not be found"
+MDAT_RE = re.compile(r'"mdat"<timedate>=\S+\s+"(\d{14})Z')
+
 _lock = threading.Lock()
 _status_cache: tuple[tuple, float, dict] | None = None  # (key, time, value)
 _version_cache: str | None = None
+_kc_lock = threading.Lock()
+_kc_cache: tuple[float, dict] | None = None             # (time, keychain_item() answer)
+_kc_clock = time.monotonic                              # patched by tests
+
+
+def _security(argv: list[str]) -> tuple[int, str]:
+    """(exit status, stdout) of a `security` call; OSError or TimeoutExpired propagate. Tests put a fake `security` first on PATH."""
+    exe = shutil.which(argv[0]) or "/usr/bin/security"
+    cp = subprocess.run([exe, *argv[1:]], capture_output=True, text=True, timeout=KEYCHAIN_TIMEOUT, stdin=subprocess.DEVNULL)
+    return cp.returncode, cp.stdout or ""
+
+
+def parse_mdat(text: str) -> str | None:
+    """The `mdat` (modification date) attribute of a `security find-generic-password` listing as 'YYYYMMDDHHMMSS', None when absent. Pure:
+    it looks at that one line only."""
+    m = MDAT_RE.search(text or "")
+    return m.group(1) if m else None
+
+
+def keychain_item(run=None) -> dict:
+    """{state: 'present' | 'absent' | 'unknown', modified: 'YYYYMMDDHHMMSS' | None} for the Claude Code Keychain item, from an attribute-only
+    `security find-generic-password -s "Claude Code-credentials"` (no -w, no -g: the secret is never asked for, never seen, never kept).
+    Exit 0 is present, exit 44 absent, anything else (a failed or timed-out call, a missing `security`, a locked keychain) unknown, which is
+    NOT absent. `run(argv) -> (rc, stdout)` is the seam (the doctor passes its own; whatever it raises reads as unknown). Off macOS:
+    unknown, nothing is run."""
+    if not platform.IS_MACOS:
+        return {"state": "unknown", "modified": None}
+    argv = ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE]
+    try:
+        rc, out = (run or _security)(argv)
+    except Exception:                                   # a probe must never fail its caller: unknown is an honest answer
+        return {"state": "unknown", "modified": None}
+    if rc == 0:
+        return {"state": "present", "modified": parse_mdat(out)}
+    if rc == SECURITY_NOT_FOUND:
+        return {"state": "absent", "modified": None}
+    return {"state": "unknown", "modified": None}
+
+
+def _keychain_cached() -> dict:
+    """keychain_item() at most once per KEYCHAIN_EVERY seconds (invalidate() forgets the answer)."""
+    global _kc_cache
+    now = _kc_clock()
+    with _kc_lock:
+        c = _kc_cache
+        if c and now - c[0] < KEYCHAIN_EVERY:
+            return c[1]
+    got = keychain_item()
+    with _kc_lock:
+        _kc_cache = (now, got)
+    return got
 
 
 def _creds_key() -> tuple:
+    """What the cached login status is keyed on: whether `<config dir>/.credentials.json` exists, its mtime and size. On macOS the live login is
+    in the Keychain, so the item's state and modification date join the key (asked for at most every 30 s). Linux: the same 3-tuple as ever."""
     p = settings.claude_config_dir / ".credentials.json"
     try:
         st = p.stat()
-        return (True, st.st_mtime_ns, st.st_size)
+        key: tuple = (True, st.st_mtime_ns, st.st_size)
     except OSError:
-        return (False, 0, 0)
+        key = (False, 0, 0)
+    if platform.IS_MACOS:
+        kc = _keychain_cached()
+        key = (*key, kc["state"], kc["modified"])
+    return key
 
 
 def invalidate() -> None:
-    global _status_cache
+    global _status_cache, _kc_cache
     with _lock:
         _status_cache = None
+    with _kc_lock:
+        _kc_cache = None
 
 
 def version() -> str | None:

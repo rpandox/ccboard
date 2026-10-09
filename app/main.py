@@ -1080,12 +1080,13 @@ class AccountCodeIn(BaseModel):                       # same body as CodeIn (bel
 @app.post("/api/accounts/login", status_code=202)
 def api_account_login(body: AccountLoginIn | None = None):
     """Add an account: `claude auth login` runs in the login tmux session against an empty config dir of its own, so the live login is
-    untouched. {email?: str | null, restart?: bool}. 202 {ok}; 400 for a bad email; 409 when saved logins are not supported (macOS) or a
+    untouched. {email?: str | null, restart?: bool}. 202 {ok}; 400 for a bad email; 409 when saved logins are not supported (the per-system
+    text of account_store.support_reason(): macOS, Windows, a config dir on a mount that ignores permissions) or a
     login is already running (restart: true replaces it). The sign-in link is state.login.url; the code goes to /api/accounts/login/code."""
     require_real_launch_ok()   # issue #100: refuses (409) on a dev board whose directories could reach the real home
     body = body or AccountLoginIn()
     if not account_store.supported():
-        return _refuse(409, account_store.REASON)
+        return _refuse(409, account_store.why_not())
     try:
         email = claude_auth.clean_email(body.email)
     except ValueError as e:

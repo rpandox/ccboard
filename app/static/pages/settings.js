@@ -688,7 +688,7 @@ function settingsMcpDispose() {
    The panel is built once (settingsAcctSkeleton): a poll rebuilds only the list of rows, never the add block, so a code being typed keeps its node and its focus. */
 const SETTINGS_RECOVERY = 'If anything looks wrong, run /login in any terminal; the board records it.';
 const SETTINGS_LOGIN_HOWTO = 'Sign in with another subscription from here: open the link, sign in, paste the code. Running /login in any terminal works too; the board notices within a minute and starts a new row for it.';
-const SETTINGS_LOGIN_TERMINAL = 'To use another subscription, run /login in any terminal; the board notices within a minute and starts a new row for it.';
+const SETTINGS_LOGIN_TERMINAL = 'To use another subscription, run /login in any terminal; the board notices within a minute and starts a new row for it. The Usage page keeps its split per account, and saved Codex logins still switch where Codex keeps its login in a file.';
 const SETTINGS_CODE_RE = /^[A-Za-z0-9._~-]{1,256}#[A-Za-z0-9._~-]{1,256}$/;           // the server's rule (claude_auth.CODE_RE)
 const SETTINGS_CODE_HINT = "paste the whole code shown by the browser, including the part after '#'";
 const SETTINGS_DEMO_LINK = 'https://claude.ai/oauth/authorize?code=true&client_id=demo&response_type=code&state=demo';       // what the demo board shows as the sign-in link (nothing signs in)
@@ -897,7 +897,7 @@ function settingsAddBlock() {
     show(off, mode === 'off');
     show(addIdle, !needLogin);
     show(logIn, needLogin);
-    if (mode === 'off') setText(reason, store.reason ? `${store.reason.charAt(0).toUpperCase()}${store.reason.slice(1)}: adding and switching accounts is off on this box.` : 'Saved logins are not available on this box: adding and switching accounts is off.');
+    if (mode === 'off') setText(reason, store.reason ? `${store.reason.charAt(0).toUpperCase()}${store.reason.slice(1).replace(/\.$/, '')}. Adding and switching Claude accounts is off on this box.` : 'Saved logins are not available on this box. Adding and switching Claude accounts is off.');
     if (mode === 'error') setText(errText, m.err);
     if (mode !== 'flight') return;
     show(wait, !url);

@@ -342,8 +342,9 @@ def test_no_personal_path_or_array_in_the_scripts():
 
 # ------------------------------------------------------------------ the dispatch in install.sh
 
-# sha256 of the first 30 lines of install.sh as committed before the dispatch line was added (the dispatch line sits further down)
-INSTALL_HEAD_SHA = "70c3d771314f181354442cd2281cd6f582b6a87fa01c3d580240bb3dfc9b9779"
+# sha256 of the first 30 lines of install.sh as committed before the dispatch line was added (the dispatch line sits further down), without the
+# ENV_KEYS line: that line is the one place every new remembered setting is added to (issue #118 added CCBOARD_TAILSCALE_PLACEMENT), the rest is pinned
+INSTALL_HEAD_SHA = "42bbfaf04a00c4b6642ca16ab155cd006d63352487e3d3a57f5c47dcaab8b967"
 
 
 def test_install_sh_has_exactly_one_dispatch_line_before_the_first_guard():
@@ -358,7 +359,7 @@ def test_install_sh_has_exactly_one_dispatch_line_before_the_first_guard():
 
 
 def test_the_first_thirty_lines_of_install_sh_are_untouched():
-    head = "\n".join(INSTALL.read_text().splitlines()[:30]) + "\n"
+    head = "\n".join(l for l in INSTALL.read_text().splitlines()[:30] if not l.startswith("ENV_KEYS=(")) + "\n"
     assert "install-macos" not in head
     assert hashlib.sha256(head.encode()).hexdigest() == INSTALL_HEAD_SHA
 
