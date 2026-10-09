@@ -285,12 +285,13 @@ def _c_placement(db):
         return d._pass("Tailscale runs inside this distro (placement wsl); Tailscale advises running it on the Windows host instead, never both")
     from . import tailscale as ts
     cli = ts.find_cli()
+    trust = ("Tailscale runs on the Windows host (placement host): every program on the Windows PC can reach the board through localhost forwarding "
+             "and claim to be any allowed user")
     if cli is not None and ts.variant(cli) == "wsl-host":
-        return d._pass(f"Tailscale runs on the Windows host (placement host); previews would go through {cli.exe} over Windows interop (to verify on a device)")
-    return d._skip("previews are unavailable: Tailscale runs on the Windows host (placement host) and the board cannot reach it from the distro, "
-                   "so it cannot open a preview port. Everything else works; serve the board from Windows with the commands install.sh printed",
-                   d.fix("To get previews, make tailscale.exe reachable on the distro's PATH through Windows interop ([interop] enabled=true), or move Tailscale into the distro "
-                         "(CCBOARD_TAILSCALE_PLACEMENT=wsl ./install.sh)"))
+        detail = f"{trust}; previews would go through {cli.exe} over Windows interop (to verify on a device)"
+    else:
+        detail = (f"{trust}; previews are unavailable, because the board cannot reach Tailscale from the distro to open a preview port")
+    return d._warn(detail, d.fix("Install Tailscale in the distro and rerun with CCBOARD_TAILSCALE_PLACEMENT=wsl ./install.sh, unless you alone use this PC"))
 
 
 # ------------------------------------------------------------------ registry

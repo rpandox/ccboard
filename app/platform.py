@@ -299,8 +299,8 @@ def init_identity() -> tuple[str, float] | None:
 
 def tailscale_placement(env=None, *, implied: bool = True) -> str | None:
     """WSL only (else None): where Tailscale runs, 'wsl' (inside the distro: the installer's normal path) or 'host' (on Windows; serve is run there).
-    CCBOARD_TAILSCALE_PLACEMENT decides (install.sh remembers it); unset, it is 'wsl' when the distro has a `tailscale` command, else 'host' (the same
-    default the installer picks); `implied=False` returns None for an unset value instead. A value that is neither is ignored."""
+    CCBOARD_TAILSCALE_PLACEMENT decides (install.sh remembers it); unset, it is 'wsl' (host is never implied: it widens who can reach the board, so
+    the installer takes it only when set); `implied=False` returns None for an unset value instead. A value that is neither is ignored."""
     if not is_wsl():
         return None
     value = ((env if env is not None else os.environ).get("CCBOARD_TAILSCALE_PLACEMENT") or "").strip().lower()
@@ -308,7 +308,7 @@ def tailscale_placement(env=None, *, implied: bool = True) -> str | None:
         return value
     if not implied:
         return None
-    return "wsl" if shutil.which("tailscale") else "host"
+    return "wsl"
 
 
 @functools.lru_cache(maxsize=64)

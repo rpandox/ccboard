@@ -74,12 +74,14 @@ wsl_resolve_placement() { # sets CCBOARD_TAILSCALE_PLACEMENT (wsl|host) and, for
   local where url port
   case "${CCBOARD_TAILSCALE_PLACEMENT:-}" in
     wsl|host) ;;
-    "") if have tailscale; then CCBOARD_TAILSCALE_PLACEMENT=wsl; else CCBOARD_TAILSCALE_PLACEMENT=host; fi;;
+    "") have tailscale || die "tailscale is not installed in this distro. Install it here (recommended: https://tailscale.com/download/linux), or, only if you accept that every program on this Windows PC (and every other Windows user signed in to it) can reach the board through Windows' localhost forwarding and claim to be any allowed user, because the board trusts the Tailscale-User-Login header on its loopback port, run Tailscale on Windows with CCBOARD_TAILSCALE_PLACEMENT=host (README, Windows (WSL2))"
+        CCBOARD_TAILSCALE_PLACEMENT=wsl;;
     *) die "CCBOARD_TAILSCALE_PLACEMENT must be wsl or host (got '$CCBOARD_TAILSCALE_PLACEMENT')";;
   esac
   where="inside this distro"; [ "$CCBOARD_TAILSCALE_PLACEMENT" != host ] || where="on the Windows host"
   note "Tailscale placement: $CCBOARD_TAILSCALE_PLACEMENT ($where)"
   [ "$CCBOARD_TAILSCALE_PLACEMENT" = host ] || return 0
+  warn "CCBOARD_TAILSCALE_PLACEMENT=host: every program on this Windows PC (and every other Windows user signed in to it) can reach the board through Windows' localhost forwarding and claim to be any allowed user, because the board trusts the Tailscale-User-Login header on its loopback port. Use it only on a PC that you alone use; CCBOARD_TAILSCALE_PLACEMENT=wsl keeps the board reachable from this distro only."
   [ "$CCBOARD_RUNTIME" != docker ] || die "CCBOARD_RUNTIME=docker needs the tailscaled socket inside this distro: it cannot be combined with CCBOARD_TAILSCALE_PLACEMENT=host. Use the systemd runtime, or install Tailscale in the distro (CCBOARD_TAILSCALE_PLACEMENT=wsl)."
   url=${CCBOARD_PUBLIC_URL:-}
   [ -n "$CCBOARD_ALLOWED_USERS" ] || die "CCBOARD_TAILSCALE_PLACEMENT=host: Tailscale runs on Windows, so this installer cannot read your tailnet login. Set CCBOARD_ALLOWED_USERS=you@provider (the login you use on the tailnet)"

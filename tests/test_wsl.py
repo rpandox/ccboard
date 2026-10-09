@@ -183,7 +183,7 @@ def test_tailscale_placement(monkeypatch):
     assert plat.tailscale_placement({"CCBOARD_TAILSCALE_PLACEMENT": "nonsense"}) == "wsl"
     assert plat.tailscale_placement({}, implied=False) is None
     monkeypatch.setattr(plat.shutil, "which", lambda n: None)
-    assert plat.tailscale_placement({}) == "host"                                      # unset and no tailscale in the distro
+    assert plat.tailscale_placement({}) == "wsl"                                       # host is never implied, even without tailscale in the distro
     monkeypatch.setattr(plat, "is_wsl", lambda: False)
     assert plat.tailscale_placement({"CCBOARD_TAILSCALE_PLACEMENT": "host"}) is None   # not a concept anywhere else
 
@@ -292,11 +292,12 @@ def test_paths_and_agents_on_a_windows_drive_are_warned_about_not_refused(tmp_pa
     assert rc == 0 and err == ""
 
 
-def test_the_placement_defaults_to_wsl_with_tailscale_in_the_distro_and_host_without(tmp_path):
+def test_the_placement_defaults_to_wsl_and_never_to_host(tmp_path):
     rc, out, err = run_block(tmp_path, GUARD, extra_env={"HAVE_TAILSCALE": "1"})
     assert rc == 0 and "PLACEMENT=[wsl]" in out and "FQDN=[]" in out                   # the old path derives the name from tailscale later
     rc, out, err = run_block(tmp_path, GUARD, extra_env={"CCBOARD_ALLOWED_USERS": "me@example.com", "CCBOARD_PUBLIC_URL": "https://pc.tail1234.ts.net"})
-    assert rc == 0 and "PLACEMENT=[host]" in out
+    assert rc == 1 and "PLACEMENT" not in out                                           # no tailscale in the distro and no explicit host: stop
+    assert "tailscale is not installed in this distro" in err and "claim to be any allowed user" in err
     rc, out, err = run_block(tmp_path, GUARD, extra_env={"CCBOARD_TAILSCALE_PLACEMENT": "wsl"})      # explicit wsl wins even without the command
     assert rc == 0 and "PLACEMENT=[wsl]" in out
     rc, out, err = run_block(tmp_path, GUARD, extra_env={"CCBOARD_TAILSCALE_PLACEMENT": "elsewhere"})
@@ -315,11 +316,11 @@ def test_host_placement_demands_the_login_and_the_address(tmp_path):
 
 def test_host_placement_derives_the_name_and_skips_nothing_it_must_keep(tmp_path):
     rc, out, err = run_block(tmp_path, GUARD, extra_env=HOST)
-    assert rc == 0 and err == ""
+    assert rc == 0 and err.count("warning:") == 1 and "claim to be any allowed user" in err    # host always says whom it lets in
     assert "PLACEMENT=[host] FQDN=[pc.tail1234.ts.net] URL=[https://pc.tail1234.ts.net]" in out
     assert "tailscale checks and the serve mappings are skipped" in out
     rc, out, err = run_block(tmp_path, GUARD, extra_env={**HOST, "CCBOARD_PUBLIC_URL": "https://pc.tail1234.ts.net:8443/", "CCBOARD_HTTPS_PORT": "8443"})
-    assert rc == 0 and err == "" and "URL=[https://pc.tail1234.ts.net:8443]" in out    # the port stays, the slash goes
+    assert rc == 0 and err.count("warning:") == 1 and "URL=[https://pc.tail1234.ts.net:8443]" in out    # the port stays, the slash goes
     rc, out, err = run_block(tmp_path, GUARD, extra_env={**HOST, "CCBOARD_PUBLIC_URL": "https://pc.tail1234.ts.net:9443"})
     assert rc == 0 and "names port 9443 but CCBOARD_HTTPS_PORT is 443" in err           # a mismatch is said aloud
     rc, out, err = run_block(tmp_path, GUARD, extra_env={**HOST, "CCBOARD_RUNTIME": "docker"})
@@ -353,7 +354,7 @@ def test_install_sh_wires_the_branch_in_the_right_places():
     i_docker = t.index('docker_host_guard "$(cat /proc/version')
     i_call = t.index('wsl_guard "$(cat /proc/version')
     i_head = t.index("# ---------------------------------------------------------------- tailscale checks (before touching anything)")
-    i_tscheck = t.index("have tailscale || die")
+    i_tscheck = t.index('have tailscale || die "tailscale is not installed (https://tailscale.com/download)"')
     i_serve_head = t.index("# ---------------------------------------------------------------- tailscale serve")
     assert t.index("# >>> wsl branch") < i_call and i_docker < i_call < i_head < i_tscheck < i_serve_head
     # the Tailscale checks sit in the else of the host placement, untouched: the first line after `else` is the old first line
@@ -699,11 +700,12 @@ def test_placement_check(wsl, monkeypatch):
     monkeypatch.setattr(plat, "IS_LINUX", True)
     monkeypatch.setattr(plat, "IS_MACOS", False)                                         # ts.variant() looks at the system flags first
     out = dw._c_placement(None)
-    assert out.status == "skip" and out.detail.startswith("previews are unavailable") and "Windows host" in out.detail
+    assert out.status == "warn" and "previews are unavailable" in out.detail and "Windows host" in out.detail
+    assert "claim to be any allowed user" in out.detail
     assert "CCBOARD_TAILSCALE_PLACEMENT=wsl" in out.fix["text"]
     monkeypatch.setattr(ts, "find_cli", lambda: ts.Cli(["/mnt/c/Program Files/Tailscale/tailscale.exe"], {}))
     out = dw._c_placement(None)
-    assert out.status == "pass" and "tailscale.exe" in out.detail and "to verify" in out.detail
+    assert out.status == "warn" and "tailscale.exe" in out.detail and "claim to be any allowed user" in out.detail
 
 
 def test_the_tailscale_row_is_a_skip_for_a_host_placement_and_unchanged_elsewhere(wsl, monkeypatch):
