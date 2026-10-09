@@ -14,6 +14,9 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 - Board-started sessions are priced from Claude Code's own statusline figure; the price table gains Haiku 5.5, prices 1-hour cache writes at 2x input and Sonnet 5.5 cache reads at 0.20.
 - The claude-mem worker 13.35.0 is the tested version; the memory API notes are updated from a box check.
 - README: restoring from a backup (a drill on the box: database and one transcript folder in 3 s, everything in 10 s, a backup branch in 13 s), why the worktree hooks stay unregistered, the permission-hook probe, and what the devcontainer needs on the host. The shadow compose file no longer mounts live data.
+
+Upgrade: nothing to do.
+
 ## v0.5.30 - 2026-10-09
 
 ### Added
