@@ -372,6 +372,7 @@ LAUNCH_ROUTES = {
     "api_task_reopen": ("POST", "/api/tasks/1/reopen", {}),
     "api_task_fix_ci": ("POST", "/api/tasks/1/fix-ci", None),
     "api_run_resume": ("POST", "/api/runs/1/resume", None),
+    "api_restart": ("POST", "/api/sessions/shop--api--s1/restart", {"approval": "never"}),
     "api_job_run": ("POST", "/api/jobs/1/run", None),
     "api_account_login": ("POST", "/api/accounts/login", {}),
     "api_codex_account_login": ("POST", "/api/codex-accounts/login", {"label": "qa"}),

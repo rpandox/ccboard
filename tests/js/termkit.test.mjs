@@ -2609,9 +2609,11 @@ const TUNE_REG = {
 const TUNE_REG_NOW = {
   claude: { ...TUNE_REG.claude, effort: { cmd: '/effort', read: false, arg: true, tune: 'effort', saves_default: true, verified: true },
     model: { cmd: '/model', read: false, arg: true, saves_default: true, verified: true }, fast: { cmd: '/fast', read: false, arg: true, choices: ['on', 'off'] } },
+  // issue #2: Model is the box-verified /model picker; reasoning, approvals and sandbox are launch flags changed by a restart (POST /restart); nothing is unverified
   codex: { model: { cmd: '/model', arg: false, read: false, drive: 'picker', tune: 'model', verified: true },
-    reasoning: { cmd: '/model', arg: false, read: false, drive: 'picker', tune: 'reasoning', verified: false },
-    permissions: { cmd: '/permissions', arg: false, read: false, drive: 'picker', tune: 'permissions', verified: false },
+    reasoning: { cmd: '-c model_reasoning_effort', arg: false, read: false, drive: 'restart', tune: '', verified: true },
+    approvals: { cmd: '-a', arg: false, read: false, drive: 'restart', tune: '', verified: true, choices: ['on-request', 'never'] },
+    sandbox: { cmd: '-s', arg: false, read: false, drive: 'restart', tune: '', verified: true, choices: ['read-only', 'workspace-write'] },
     status: { cmd: '/status', arg: false, read: true, dialog: false, verified: true } },
 };
 const claudeStats = (over = {}) => ({ model: 'Opus 5', model_id: 'claude-opus-5', effort: 'high', fast: false, context_pct: 42, session_name: 'login work', ...over });
@@ -2711,55 +2713,132 @@ test('tune: a /tune answer settles the row at once: confirmed flashes ok, a cont
   assert.ok(luna.classList.contains('ok') && !luna.classList.contains('pending'));
   t.update({ stats: { model: 'gpt-6-luna', effort: 'medium' } });
   assert.deepEqual(pressed(t.root, 'model'), ['gpt-6-luna']);
-  const ask = t.root.querySelector('.tk-seg[data-kind=perms]').querySelectorAll('button')[0];
-  answers.push({ ok: true, confirmed: false, observed: 'Approve for me', message: 'permissions not applied: the session shows Approve for me' });
-  ask.click();
+  const sol = t.root.querySelector('.tk-seg[data-kind=model]').querySelectorAll('button')[0];
+  answers.push({ ok: true, confirmed: false, observed: 'gpt-6-luna medium', message: 'model not applied: the session shows gpt-6-luna medium' });
+  sol.click();
   await settle();
-  assert.deepEqual(toasts(w).at(-1), { text: 'permissions not applied: the session shows Approve for me', kind: 'warn' });
-  assert.equal(ask.getAttribute('aria-pressed'), 'false', 'not applied: not selected');
+  assert.deepEqual(toasts(w).at(-1), { text: 'model not applied: the session shows gpt-6-luna medium', kind: 'warn' });
+  assert.equal(sol.getAttribute('aria-pressed'), 'false', 'not applied: not selected');
 });
 
-test('tune for Codex: MODEL, REASONING and PERMISSIONS through POST /tune (the TUI pickers, never `/model <slug>` typed inline), /status as a cell, no switches', async () => {
+test('tune for Codex: MODEL through POST /tune (the box-verified picker), REASONING, APPROVALS and SANDBOX through a restart (preview, confirm, POST /restart), /status as a cell, nothing flagged unverified', async () => {
   const { w, kit } = uiWorld();
   const schema = { models: ['gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-luna-mini'], efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     reasoning_by_model: { 'gpt-6.1-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], 'gpt-6-luna': ['low', 'medium', 'high', 'xhigh', 'max'], 'gpt-6-luna-mini': ['low', 'medium'] },
     slash: TUNE_REG_NOW.codex };
-  const st = { model: 'gpt-6-luna-mini', effort: 'medium' };
+  const st = { model: 'gpt-6-luna-mini', effort: 'medium', approval: 'on-request', sandbox: 'workspace-write' };
   const t = kit.tune(tuneCtx({ agent: 'codex', schema, stats: st, session: paneRow({ agent: 'codex', state: 'idle', stats: st }) }));
   t.open(anchorAt(w), false);
-  assert.deepEqual(labels(t.root), ['MODEL', 'REASONING', 'PERMISSIONS', 'OPTIONS', 'COMMANDS']);
+  assert.deepEqual(labels(t.root), ['MODEL', 'REASONING', 'APPROVALS', 'SANDBOX', 'OPTIONS', 'COMMANDS']);
   assert.deepEqual(segTexts(t.root, 'model'), ['gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-luna-mini']);
   assert.deepEqual(pressed(t.root, 'model'), ['gpt-6-luna-mini'], 'the longest name wins: gpt-6-luna is inside gpt-6-luna-mini');
   assert.deepEqual(segTexts(t.root, 'effort'), ['low', 'medium'], 'the levels of the current model');
   assert.deepEqual(pressed(t.root, 'effort'), ['medium']);
-  assert.deepEqual(segTexts(t.root, 'perms'), ['Ask for approval', 'Approve for me'], 'no Full Access, no untrusted, no on-failure');
-  assert.deepEqual(pressed(t.root, 'perms'), [], 'unknown until the board reads it back: nothing selected on a guess');
+  assert.deepEqual(segTexts(t.root, 'approvals'), ['on-request', 'never'], 'never untrusted, never on-failure');
+  assert.deepEqual(segTexts(t.root, 'sandbox'), ['read-only', 'workspace-write'], 'never danger-full-access');
+  assert.deepEqual(pressed(t.root, 'approvals'), ['on-request'], 'read from the rollout (stats.approval)');
+  assert.deepEqual(pressed(t.root, 'sandbox'), ['workspace-write']);
   assert.equal(t.root.querySelectorAll('.tk-tog').length, 0, 'no Fast (bare /fast toggles and writes config.toml)');
   assert.deepEqual(t.root.querySelectorAll('.tk-cell').map((b) => b.textContent), ['/status']);
-  assert.equal(t.root.querySelectorAll('.tk-unverified').length, 2, 'reasoning and permissions: the key path was not run end to end on the box');
-  t.root.querySelector('.tk-seg[data-kind=effort] button').click();
-  await settle();
+  assert.equal(t.root.querySelectorAll('.tk-unverified').length, 0, 'nothing in the Codex panel is flagged unverified');
+  assert.ok(!/unverified|experimental/i.test(t.root.textContent), 'and no such word anywhere in it');
+  const note = t.root.querySelector('.tk-seg[data-kind=approvals]').parentNode.querySelectorAll('.tk-note').map((n) => n.textContent);
+  assert.ok(note.some((x) => /restarts the session and resumes the same conversation/.test(x)), 'a restart row says so');
+  assert.deepEqual(t.root.querySelector('.tk-seg[data-kind=model]').querySelector('button').getAttribute('data-via'), 'tune');
+  assert.deepEqual(['effort', 'approvals', 'sandbox'].map((k) => t.root.querySelector(`.tk-seg[data-kind=${k}] button`).getAttribute('data-via')), ['restart', 'restart', 'restart']);
   t.root.querySelector('.tk-seg[data-kind=model] button').click();
   await settle();
-  t.root.querySelector('.tk-seg[data-kind=perms] button').click();
-  await settle();
-  assert.deepEqual(calls(w).map((c) => [c.path.split('/').pop(), c.body]), [['tune', { setting: 'reasoning', value: 'low' }], ['tune', { setting: 'model', value: 'gpt-6.1-sol' }],
-    ['tune', { setting: 'permissions', value: 'ask' }]]);
+  assert.deepEqual(calls(w).map((c) => [c.path.split('/').pop(), c.body]), [['tune', { setting: 'model', value: 'gpt-6.1-sol' }]]);
   const sol = kit.tune(tuneCtx({ agent: 'codex', schema, stats: { model: 'gpt-6.1-sol' } }));
   sol.open(anchorAt(w), false);
   assert.deepEqual(segTexts(sol.root, 'effort'), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], 'ultra where the model lists it');
+  assert.deepEqual(pressed(sol.root, 'approvals'), [], 'nothing reported yet: nothing selected on a guess');
   const luna = kit.tune(tuneCtx({ agent: 'codex', schema, stats: { model: 'gpt-6-luna' } }));
   luna.open(anchorAt(w), false);
   assert.ok(!segTexts(luna.root, 'effort').includes('ultra'), 'never where it does not');
   const bare = kit.tune(tuneCtx({ agent: 'codex', schema: null, stats: {} }));
   bare.open(anchorAt(w), false);
   assert.ok(!bare.root.textContent.includes('There is nothing to tune'), 'no schema: a Codex tile still has something to tune');
-  assert.deepEqual(labels(bare.root), ['MODEL', 'REASONING', 'PERMISSIONS', 'OPTIONS', 'COMMANDS']);
+  assert.deepEqual(labels(bare.root), ['MODEL', 'REASONING', 'APPROVALS', 'SANDBOX', 'OPTIONS', 'COMMANDS']);
   assert.deepEqual(segTexts(bare.root, 'model'), ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'], 'the built-in list (codex.py FALLBACK_MODELS)');
   assert.deepEqual(segTexts(bare.root, 'effort'), ['low', 'medium', 'high', 'xhigh', 'max']);
-  // an older server's registry types /model <slug> inline, which Codex sends to the model as a prompt: no model or reasoning row then
+  // an older server's registry types /model <slug> inline, which Codex sends to the model as a prompt: no model, reasoning, approvals or sandbox row then
   const old = kit.tunePlan('codex', { models: ['gpt-6-sol'], slash: TUNE_REG.codex }, {});
-  assert.deepEqual([old.model, old.effort], [null, null]);
+  assert.deepEqual([old.model, old.effort, old.approvals, old.sandbox], [null, null, null, null]);
+});
+
+test('tune for Codex: the current approvals and sandbox come from the rollout, else from how the board started the session; a word the panel does not offer selects nothing', () => {
+  const { kit } = uiWorld();
+  const plan = kit.tunePlan('codex', null, {});
+  const cur = (stats, flags) => plain(kit.tuneCurrent(stats, plan, flags));
+  assert.deepEqual([cur({}, {}).approval, cur({}, {}).sandbox], ['', ''], 'unknown: no selection');
+  assert.deepEqual([cur({}, { perm: { approval: 'never', sandbox: 'read-only' } }).approval, cur({}, { perm: { approval: 'never', sandbox: 'read-only' } }).sandbox], ['never', 'read-only'], 'the launch');
+  const both = cur({ approval: 'on-request', sandbox: 'workspace-write' }, { perm: { approval: 'never', sandbox: 'read-only' } });
+  assert.deepEqual([both.approval, both.sandbox], ['on-request', 'workspace-write'], 'the rollout (what the session runs now) wins over the launch');
+  const odd = cur({ approval: 'untrusted', sandbox: 'danger-full-access' }, {});
+  assert.deepEqual([odd.approval, odd.sandbox], ['', ''], 'untrusted and danger-full-access are not offered, so they select nothing');
+  assert.equal(cur({ approval: 'OnRequest', sandbox: 'workspaceWrite' }, {}).approval, 'on-request', 'a spelling of the same word still matches');
+  assert.equal(cur({ approval: 'OnRequest', sandbox: 'workspaceWrite' }, {}).sandbox, 'workspace-write');
+});
+
+test('tune for Codex: a restart row asks the board for the exact command first, shows it, and only Restart sends the change; Cancel sends nothing', async () => {
+  const { w, kit } = uiWorld();
+  const st = { model: 'gpt-6-sol', effort: 'high', approval: 'on-request', sandbox: 'workspace-write' };
+  w.run('__route = async (m, p, b) => (b && b.preview ? { ok: true, preview: true, cmd: "codex resume 11111111-1111-4111-8111-111111111111 -a never" } : { ok: true, tmux: "shop--api--s1" });');
+  const restarted = [];
+  w.ctx.__restarted = restarted;
+  const ctx = tuneCtx({ agent: 'codex', stats: st, session: paneRow({ agent: 'codex', state: 'idle', stats: st }), onRestart: (r) => restarted.push(r.tmux) });
+  const t = kit.tune(ctx);
+  const never = () => t.root.querySelector('.tk-seg[data-kind=approvals]').querySelectorAll('button')[1];
+  t.open(anchorAt(w), false);
+  never().click();
+  await settle();
+  assert.deepEqual(calls(w).map((c) => [c.path.split('/').pop(), c.body]), [['restart', { approval: 'never', preview: true }]], 'the first request is the preview: nothing changed yet');
+  const box = w.document.body.querySelector('.tk-restart');
+  assert.ok(box, 'the confirm is on screen');
+  assert.match(box.querySelector('pre').textContent, /^codex resume 11111111-1111-4111-8111-111111111111 -a never$/, 'the adapter\'s command, not one the browser put together');
+  assert.deepEqual(box.querySelectorAll('button').map((b) => b.textContent), ['Cancel', 'Restart']);
+  box.querySelectorAll('button')[0].click();
+  await settle();
+  assert.equal(calls(w).length, 1, 'Cancel: nothing was sent');
+  assert.equal(w.document.body.querySelector('.tk-restart'), null);
+  t.open(anchorAt(w), false);
+  never().click();
+  await settle();
+  w.document.body.querySelector('.tk-restart').querySelectorAll('button')[1].click();
+  await settle();
+  assert.deepEqual(calls(w).map((c) => [c.path.split('/').pop(), c.body]).slice(-1), [['restart', { approval: 'never' }]]);
+  assert.deepEqual(plain(restarted), ['shop--api--s1'], 'the page is told, so it can attach the terminal to the new session');
+  assert.equal(w.document.body.querySelector('.tk-restart'), null);
+  assert.match(toasts(w).at(-1).text, /Restarted with approval never/);
+});
+
+test('tune for Codex: a refused restart (409) is a toast with the old value kept; nothing opens', async () => {
+  const { w, kit } = uiWorld();
+  const st = { model: 'gpt-6-sol', effort: 'high', approval: 'on-request', sandbox: 'workspace-write' };
+  w.run('__route = () => { throw __httpError(409, "refused", { error: "not_ready", message: "the session has not reported its conversation yet: send it one message, then restart it", retry: 3 }); }');
+  const t = kit.tune(tuneCtx({ agent: 'codex', stats: st, session: paneRow({ agent: 'codex', state: 'idle', stats: st }) }));
+  t.open(anchorAt(w), false);
+  const ro = t.root.querySelector('.tk-seg[data-kind=sandbox]').querySelectorAll('button')[0];
+  ro.click();
+  await settle();
+  assert.deepEqual(toasts(w), [{ text: 'the session has not reported its conversation yet: send it one message, then restart it · try again in 3 s', kind: 'warn' }]);
+  assert.equal(w.document.body.querySelector('.tk-restart'), null);
+  assert.deepEqual(pressed(t.root, 'sandbox'), ['workspace-write'], 'the old value stays selected');
+  assert.equal(ro.disabled, false, 'free again');
+});
+
+test('the restart request is the adapter\'s: tuneRequest posts the group\'s setting, and untrusted / on-failure / danger-full-access are in no option list', () => {
+  const { kit } = uiWorld();
+  const plan = kit.tunePlan('codex', null, {});
+  assert.deepEqual(plain(kit.tuneRequest(plan.approvals, 'never')), { path: '/restart', body: { approval: 'never' } });
+  assert.deepEqual(plain(kit.tuneRequest(plan.sandbox, 'read-only')), { path: '/restart', body: { sandbox: 'read-only' } });
+  assert.deepEqual(plain(kit.tuneRequest(plan.effort, 'high')), { path: '/restart', body: { reasoning: 'high' } });
+  const every = [plan.approvals, plan.sandbox, plan.effort].flatMap((g) => g.options.map((o) => o.value));
+  for (const bad of ['untrusted', 'on-failure', 'danger-full-access']) assert.ok(!every.includes(bad), bad);
+  assert.equal(plain(plan.approvals).unverified, false);
+  assert.ok(kit.tunePlan('claude', null, {}).approvals === null && kit.tunePlan('claude', null, {}).sandbox === null, 'Claude has none of these rows');
+  assert.deepEqual(plain(kit.tunePlan('shell', null, {})), { model: null, effort: null, approvals: null, sandbox: null, fast: false, ultra: false, cells: [] }, 'a shell has nothing to tune');
 });
 
 test('the built-in Codex model list is codex.py FALLBACK_MODELS (the copies must not drift): same slugs, same order; ultra only on gpt-6.1-sol', () => {
@@ -2779,7 +2858,7 @@ test('tune for Codex with a state row\'s agent entry (status_summary: installed,
   const t = kit.tune(tuneCtx({ agent: 'codex', schema: statusSummary, stats: { model: 'gpt-6-sol', effort: 'high' }, session: paneRow({ agent: 'codex', state: 'idle', stats: { model: 'gpt-6-sol', effort: 'high' } }) }));
   t.open(anchorAt(w), false);
   assert.ok(!t.root.textContent.includes('There is nothing to tune'));
-  assert.deepEqual(labels(t.root), ['MODEL', 'REASONING', 'PERMISSIONS', 'OPTIONS', 'COMMANDS']);
+  assert.deepEqual(labels(t.root), ['MODEL', 'REASONING', 'APPROVALS', 'SANDBOX', 'OPTIONS', 'COMMANDS']);
   assert.equal(segTexts(t.root, 'model').length, 4);
   assert.deepEqual(pressed(t.root, 'model'), ['gpt-6-sol']);
   assert.deepEqual(pressed(t.root, 'effort'), ['high']);
@@ -2787,7 +2866,7 @@ test('tune for Codex with a state row\'s agent entry (status_summary: installed,
   const plan = kit.tunePlan('codex', statusSummary, {});
   assert.equal(plan.model.cmd, 'model');
   assert.equal(plan.effort.cmd, 'reasoning');
-  assert.deepEqual([plan.model.via, plan.effort.via, plan.perms.via], ['tune', 'tune', 'tune']);
+  assert.deepEqual([plan.model.via, plan.effort.via, plan.approvals.via, plan.sandbox.via], ['tune', 'restart', 'restart', 'restart']);
   const fromSchema = kit.tunePlan('codex', { models: ['gpt-6-sol'], efforts: ['low'], slash: TUNE_REG_NOW.codex }, {});
   assert.deepEqual([fromSchema.model.options.map((o) => o.value), fromSchema.effort.options.map((o) => o.value)], [['gpt-6-sol'], ['low']], 'a schema that lists them wins over the built-in lists');
 });

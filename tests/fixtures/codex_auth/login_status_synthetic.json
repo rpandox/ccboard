@@ -1,5 +1,5 @@
 {
-  "_note": "SYNTHETIC (#68): `codex login status` in three states of a scratch CODEX_HOME, written from the adapter's known verdicts, NOT captured on the box. The unreadable-file text is a guess; the box capture is still to do.",
+  "_note": "SYNTHETIC (#68): `codex login status` in three states of a scratch CODEX_HOME, written from the adapter's known verdicts, NOT captured on the box (codex-cli 0.161.0 was checked there only for the doctor row and the device-auth pane). Every string here is ASSUMED and the unreadable-file text is a guess; login_states_0161.json says what is observed and what is not.",
   "missing": {"rc": 1, "stdout": "", "stderr": "Not logged in\n"},
   "unreadable": {"rc": 1, "stdout": "", "stderr": "Error: failed to read the login file\n"},
   "present": {"rc": 0, "stdout": "Logged in using ChatGPT\n", "stderr": ""}

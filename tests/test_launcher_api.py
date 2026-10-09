@@ -607,5 +607,23 @@ def test_the_sheets_body_gets_the_command_the_preview_shows(case, request):
     of v must split into `tokens`; here `body` goes to the real route (the fake tmux, the fake codex 0.145, the temp dirs) and its cmd must split
     into the same `tokens`. So the preview cannot say a command the server does not build."""
     board_ = request.getfixturevalue("cx" if case["v"]["agent"] == "codex" else "board")
+    if case.get("codex_help"):                    # a Codex whose --help has --no-daemon / --approve-for-me / `codex fork`, like the box's 0.161.0
+        write_fake_codex(Path(settings.codex_bin()), help_name=case["codex_help"])
+        codex.reset_caches()
+        live = board_.client.get("/api/agents", headers=H).json()["agents"]["codex"]["capabilities"]
+        assert {k: live[k] for k in case["ctx"]["caps"]} == case["ctx"]["caps"], "the sheet's ctx.caps must be what /api/agents answers for this binary"
     res = post(board_, case["body"])
     assert masked_tokens(res, case) == case["tokens"], res["cmd"]
+
+
+def test_every_codex_launch_kind_previews_no_daemon_where_the_server_adds_it():
+    """Box check #92: every Codex preview lacked --no-daemon while the route added it right after `codex` / `codex resume|fork` whenever
+    the installed Codex has the flag. The parity cases that name codex_help_0160.txt cover new (default, custom, auto), fork, resume and
+    continue; the rest of the list stays on the 0.145 fake, which has no flag."""
+    named = [c for c in CASES if c.get("codex_help")]
+    assert {c["body"]["launcher"] for c in named} >= {"claude", "fork", "resume", "continue"} and len(named) >= 6
+    for c in named:
+        assert c["ctx"]["caps"]["no_daemon"] is True and "--no-daemon" in c["tokens"], c["id"]
+        i = c["tokens"].index("--no-daemon")
+        assert c["tokens"][:i] in (["codex"], ["codex", "resume"], ["codex", "fork"]) and c["tokens"][i + 1:i + 4] == ["-c", "check_for_update_on_startup=false", "--no-alt-screen"], c["id"]   # 0.161 update dialog skipped
+    assert not any("--no-daemon" in c["tokens"] for c in CASES if not c.get("codex_help"))

@@ -1,0 +1,68 @@
+{
+ "_note": "The three states of the live Codex login (#68, #35) and what the board's free signals say about each. Every record says `observed` (true: seen on the box, codex-cli 0.161.0, 2026-10-09) or false (ASSUMED: written from the adapter's verdict rules and from Codex's source and docs, never captured). Nothing here comes from an auth.json: the board treats that file as opaque bytes. Logged in, logged out (no auth.json) and unreadable (empty or garbage auth.json) are observed; only the expired/revoked state is assumed, because producing it needs a real login that the server has revoked.",
+ "logged_in": {
+  "login_status": {
+   "observed": true,
+   "rc": 0,
+   "stdout": "",
+   "stderr": "Logged in using ChatGPT\n",
+   "basis": "Observed on the box, codex-cli 0.161.0, 2026-10-09: `codex login status` printed this line on stderr (not stdout) and exited 0. `login status` has no --json option (its --help lists only -c, --enable, --disable)."
+  },
+  "rollout": {
+   "observed": true,
+   "file": "rollout_ok_token_count_0161.jsonl",
+   "basis": "A real token_count event of a working turn on 0.161.0 (box check 86). Only the outer timestamp is added here; the capture was the payload alone."
+  },
+  "expect": "ok"
+ },
+ "logged_out": {
+  "login_status": {
+   "observed": true,
+   "rc": 1,
+   "stdout": "",
+   "stderr": "Not logged in\n",
+   "basis": "Observed on the box, codex-cli 0.161.0, 2026-10-09, with a scratch CODEX_HOME holding no auth.json (no real account was logged out)."
+  },
+  "rollout": null,
+  "expect": "missing"
+ },
+ "expired_revoked": {
+  "login_status": {
+   "observed": false,
+   "rc": 0,
+   "stdout": "Logged in using ChatGPT\n",
+   "stderr": "",
+   "basis": "Assumed: login status reports that a login file exists, not that it works, so a dead login is believed to read exactly like a live one."
+  },
+  "rollout": {
+   "observed": false,
+   "file": "rollout_auth_error_synthetic.jsonl",
+   "basis": "ASSUMED error item (event_msg of type error: 401 Unauthorized, refresh token revoked, log out and sign in again), built from Codex's source and docs. No real expired or revoked Codex login has been seen yet."
+  },
+  "expect": "rejected"
+ },
+ "not_an_auth_failure": [
+  {
+   "observed": true,
+   "text": "Error: account/read failed during TUI bootstrap: account/read failed: workspace routing discovery timed out (code -32603)",
+   "basis": "Printed once by the 0.161.0 TUI on the box (box check 86) while the network answered slowly; Codex exited back to the shell. A real failure that is NOT a dead login."
+  },
+  {
+   "observed": true,
+   "text": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\"",
+   "basis": "Printed by `codex login --device-auth` on 0.161.0 with CODEX_HOME under /tmp (box check 87). A scratch-home probe prints it on stderr beside the real answer."
+  }
+ ],
+ "unreadable": {
+  "login_status": {
+   "observed": true,
+   "rc": 1,
+   "stdout": "",
+   "stderr_empty_file": "Error checking login status: EOF while parsing a value at line 1 column 0\n",
+   "stderr_garbage_file": "Error checking login status: stream did not contain valid UTF-8\n",
+   "basis": "Observed on the box, codex-cli 0.161.0, 2026-10-09, with a scratch CODEX_HOME whose auth.json was empty, then 64 random bytes. The verdict reads this as an error (rc 1 without 'not logged in'), never as logged in."
+  },
+  "rollout": null,
+  "expect": "unknown"
+ }
+}
