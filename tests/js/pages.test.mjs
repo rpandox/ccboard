@@ -725,7 +725,7 @@ test('#/tasks draws the Backlog column first (empty too, with what to do) and a 
   withShell(w);
   w.location.hash = '#/tasks';
   const sec = page(w).querySelector('section#tasks');
-  assert.deepEqual(sec.querySelectorAll('.col h3').map((h) => text(h).replace(/\s*\(\d+\)$/, '')), ['Backlog', 'In progress'], 'Backlog first, even with nothing in it; the other empty columns stay out of the way');
+  assert.deepEqual(sec.querySelectorAll('.col h2').map((h) => text(h).replace(/\s*\(\d+\)$/, '')), ['Backlog', 'In progress'], 'Backlog first, even with nothing in it; the other empty columns stay out of the way');
   assert.match(text(sec.querySelector('.col[data-col=backlog]')), /nothing queued/);
   const add = sec.querySelectorAll('button').find((b) => /^\+\s*task$/.test(text(b)));
   assert.ok(add, 'a + task button in the head');

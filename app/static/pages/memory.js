@@ -457,7 +457,7 @@ function memWingCard(w, ctx) {
   paint();
   const keys = Array.isArray(w.keys) && w.keys.length > 1 ? el('span', { class: 'mem-wing-keys dim mono', title: 'claude-mem keys folded into this wing', text: w.keys.join(', ') }) : null;
   return el('section', { class: 'mem-wing', 'data-wing': w.name },
-    el('div', { class: 'mem-wing-head' }, el('h3', { class: 'mem-wing-name mono', text: w.name }), el('span', { class: 'mem-wing-n dim', text: `${w.total} observation${w.total === 1 ? '' : 's'}` }), keys),
+    el('div', { class: 'mem-wing-head' }, el('h2', { class: 'mem-wing-name mono', text: w.name }), el('span', { class: 'mem-wing-n dim', text: `${w.total} observation${w.total === 1 ? '' : 's'}` }), keys),
     memBarNode(w.types, w.total), el('div', { class: 'mem-k', text: 'Rooms' }), rooms, el('div', { class: 'mem-k', text: 'Newest drawers' }), drawers);
 }
 
@@ -598,7 +598,7 @@ function memoryHealthTile(h, o) {
   const pill = memPillInfo(h, null);
   const node = el('section', { class: 'mem-tile' + (opt.compact ? ' compact' : ''), 'data-state': h.state || 'unknown', 'aria-label': 'claude-mem health' });
   if (!opt.bare) {
-    node.append(el('div', { class: 'mem-tile-head' }, el('h3', { class: 'mem-k', text: 'claude-mem health' }),
+    node.append(el('div', { class: 'mem-tile-head' }, el('h2', { class: 'mem-k', text: 'claude-mem health' }),
       el('span', { class: `mem-pill ${pill.cls}`, title: pill.title }, el('span', { class: 'mem-pill-g', 'aria-hidden': 'true', text: pill.glyph }), el('span', { class: 'mem-pill-t', text: pill.text }))));
   }
   if (h.state !== 'up' && h.reason) node.append(el('p', { class: 'mem-reason', text: h.reason }));
@@ -913,7 +913,7 @@ MemoryPage.paintSearch = function (P, d, errEnv) {
   P.panel.append(el('p', { class: 'mem-counts dim', text: `${memNum(d.total) === null ? obs.length + sess.length + prompts.length : d.total} match${(d.total || 0) === 1 ? '' : 'es'} for “${memOneLine(d.query || P.q, 60)}”${d.fallback === 'per_key' ? ' · searched key by key' : ''}` }));
   const section = (title, rows, build) => {
     if (!rows.length) return;
-    P.panel.append(el('h3', { class: 'mem-sec', text: `${title} (${rows.length})` }), el('div', { class: 'mem-list' }, ...rows.map(build)));
+    P.panel.append(el('h2', { class: 'mem-sec', text: `${title} (${rows.length})` }), el('div', { class: 'mem-list' }, ...rows.map(build)));
   };
   section('Observations', obs, (o) => memItem(o, ctx));
   section('Session summaries', sess, (s) => memSummaryCard(s, { onSession: ctx.onSession }));
@@ -1011,7 +1011,7 @@ MemoryPage.paintList = function (P, errEnv, anchorId) {
   const ctx = { project: P.project, open: P.open, meta: true, send: tab === 'timeline', onSession: (sid) => MemoryPage.filterSession(P, sid) };
   const list = el('div', { class: 'mem-list', 'data-tab': tab });
   for (const g of memGroupDays(L.items)) {
-    list.append(el('h3', { class: 'mem-day', text: g.ms === null ? 'Undated' : memDayLabel(g.ms) }));
+    list.append(el('h2', { class: 'mem-day', text: g.ms === null ? 'Undated' : memDayLabel(g.ms) }));
     for (const it of g.rows) list.append(tab === 'timeline' ? memItem(it, ctx) : memSummaryCard(it, ctx));
   }
   P.panel.append(list);

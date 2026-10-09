@@ -19,7 +19,7 @@ function tasksChainsPaint() {
   const list = boardTasks(state);
   const strips = taskChainStrips(list, taskChainInfo(list));
   if (!strips.length) return;
-  const host = el('div', { class: 'tk-chains' }, el('h3', { class: 'tk-sec', text: 'Chains' }), ...strips);
+  const host = el('div', { class: 'tk-chains' }, el('h2', { class: 'tk-sec', text: 'Chains' }), ...strips);
   const grid = section.querySelector('.kanban');
   if (grid) section.insertBefore(host, grid); else section.append(host);
 }

@@ -29,6 +29,10 @@ body[data-sb="full"] #app { --sb-w:var(--sb-full); }                   /* var() 
 body[data-shell] #main { min-width:0; min-height:0; max-width:none; margin:0; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain;
                          -webkit-overflow-scrolling:touch; outline:none; padding:0 max(12px, var(--sar)) 28px max(12px, var(--sal)); }
 body[data-shell=compact] #main { padding-left:max(10px, var(--sal)); padding-right:max(10px, var(--sar)); }
+/* Before shell.js has built the chrome (index.html ships body[data-shell=""] and no data-sb) the frame already has the sidebar column Shell.applyMode is about to give it, so #main does not jump
+   sideways when the shell is built (Lighthouse CLS 0.18 at 1280 on every page, issue #103): the rail from 600 px, the full sidebar from 840 px, the same defaults as applyMode. */
+@media (min-width:600px) { body[data-shell=""] #app { --sb-w:var(--sb-rail); } }
+@media (min-width:840px) { body[data-shell=""] #app { --sb-w:var(--sb-full); } }
 #page { min-width:0; }
 #banner:empty { display:none; }
 #dock { position:relative; min-width:0; min-height:0; overflow:auto; background:var(--bg); }
@@ -324,6 +328,8 @@ dialog#sheet:focus, dialog#sheet:focus-visible, dialog#drawer:focus, dialog#draw
 .sb-resize { display:none; grid-area:side; justify-self:end; align-self:stretch; position:relative; z-index:15; width:6px; margin-right:-3px; touch-action:none; cursor:col-resize; }
 .sb-resize::after { content:""; position:absolute; top:0; bottom:0; left:2px; width:2px; background:transparent; }
 @media (any-pointer:fine) { body[data-sb="full"] .sb-resize { display:block; } }
+.sb-resize-wrap { display:none; }   /* the region around the strip (shell.js): no empty landmark where the strip is not drawn, and no box of its own where it is */
+@media (any-pointer:fine) { body[data-sb="full"] .sb-resize-wrap { display:contents; } }
 @media (hover:hover) { .sb-resize:hover::after { background:var(--line); } }
 .sb-resize:focus-visible::after, #app.sb-dragging .sb-resize::after { background:var(--sig); }
 .sb-resize:focus-visible { outline:none; }

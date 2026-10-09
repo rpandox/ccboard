@@ -52,6 +52,7 @@ body.term input, body.term textarea { -webkit-user-select:text; user-select:text
 
 /* ---------- context strip: task, last prompt (2 lines, tap to expand), the question or last message ---------- */
 #ctxstrip { grid-area:ctx; min-width:0; padding:6px 10px; background:var(--bg); border-bottom:1px solid var(--line-soft); font-size:12px; line-height:1.4; cursor:pointer; overflow:hidden; }
+#ctxstrip:focus-visible { outline:2px solid var(--sig); outline-offset:-2px; }
 #ctxstrip .cx-task { font-weight:600; color:var(--fg); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 #ctxstrip .cx-task .badge, #ctxstrip .cx-task .state { margin-left:6px; font-weight:400; font-size:11px; padding:0 7px; }
 #ctxstrip .cx-prompt, #ctxstrip .cx-ask { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; color:var(--dim); }

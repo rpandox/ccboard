@@ -39,7 +39,7 @@ function settingsKv(label, ...kids) {
 }
 
 /* A section heading inside a panel: 13 px, upper case, dim. */
-function settingsHead(text) { return el('h3', { class: 'set-h', text }); }
+function settingsHead(text) { return el('h2', { class: 'set-h', text }); }
 
 /* What to notify (v0.5.18): five switches stored on the box (kv notify_prefs through /api/notify/prefs) and an example of the notice each one
    sends, built by the same code that builds the real ones (GET answers {prefs, samples}). The panel is rebuilt on a minute tick: what was

@@ -153,6 +153,20 @@ test('the seven sections in the asked order (Accounts first), each with an h2 an
   clean(w, 'loaded');
 });
 
+test('until the first summary is in the page carries .ubooting (the CSS keeps the sections under Accounts unpainted), and it is dropped with the first answer (#103)', async () => {
+  const { w } = usageWorld();
+  w.location.hash = '#/usage';
+  assert.equal(q(w, '.usage-page').classList.contains('ubooting'), true, 'skeletons only: the layout under Accounts is not shown yet');
+  await loading(w);
+  assert.equal(q(w, '.usage-page').classList.contains('ubooting'), false, 'the summary arrived: every section shows');
+  const failing = usageWorld({ over: { '/api/usage/summary?days=7': { __error: 'down' } } });
+  failing.w.location.hash = '#/usage';
+  await loading(failing.w);
+  assert.equal(q(failing.w, '.usage-page').classList.contains('ubooting'), false, 'a failed summary still ends the boot state: the error blocks must be visible');
+  const css = fs.readFileSync(path.join(STATIC, 'charts.css'), 'utf8');
+  assert.match(css, /\.usage-page\.ubooting \.ugrid > \.usec:not\(\[data-sec="accounts"\]\)\s*\{\s*visibility:hidden;/, 'visibility (not display): the Limits chart measures its box');
+});
+
 test('fetches: the three reads in parallel on mount, in the viewer\'s zone, uPlot asked for through Charts.ready; update() never fetches', async () => {
   const { w } = usageWorld();
   await go(w);

@@ -949,7 +949,8 @@ Shell.buildResizer = function (app) {
     e.preventDefault();
     Shell.setSbWidth(w, true);
   });
-  app.append(h);
+  // the strip sits in a labelled region of its own (display: contents, so the grid placement below is unchanged): content outside every landmark is an axe 'region' finding
+  app.append(el('div', { class: 'sb-resize-wrap', role: 'region', 'aria-label': 'Sidebar width' }, h));
   return h;
 };
 

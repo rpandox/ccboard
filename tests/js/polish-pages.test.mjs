@@ -232,7 +232,7 @@ test('#/tasks: the board is not a card (the task cards are the only bordered box
   assert.ok(sec, 'the board section');
   assert.equal(has(sec, 'card'), false, 'no card around the board');
   assert.ok(has(sec, 'tasks-board'));
-  const heads = sec.querySelectorAll('.col h3').map((h) => h.textContent.replace(/\s*\(\d+\)\s*$/, ''));
+  const heads = sec.querySelectorAll('.col h2').map((h) => h.textContent.replace(/\s*\(\d+\)\s*$/, ''));
   const counts = sec.querySelectorAll('.col').map((c) => c.querySelectorAll('.task').length);
   heads.forEach((h, i) => { if (h !== 'Backlog') assert.ok(counts[i] > 0, `${h} is drawn only because it has a card`); });
   const head = sec.querySelector('.page-head');

@@ -2,6 +2,15 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.27 - 2026-10-08
+
+### Fixed
+- Pages load faster: the board compresses its static files (scripts, styles, demo data; never the live stream, the API or the terminal), loads scripts deferred, fetches the icon font early and keeps the sidebar, the Home usage card and the Usage sections from jumping while the page fills in. Lighthouse in demo mode went from 39-62 to 92-98 on desktop and from 31-58 to 73-88 on a phone.
+- Accessibility: every page passes axe-core with no violation at 1280 and 390 (before: a low-contrast "ended" tag, an issue link marked by colour only, a scrollable strip with no keyboard stop, skipped heading levels, the sidebar resize handle outside a landmark and two empty table headers). The terminal page's context strip opens from the keyboard. Nothing looks different.
+- `scripts/qa-ui.sh` passes on main again: its task, chip and session-peek checks follow the current design.
+
+Upgrade: nothing to do.
+
 ## v0.5.26 - 2026-10-08
 
 ### Added
