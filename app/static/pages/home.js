@@ -172,6 +172,18 @@ function diffSideControl(items, initial, onPick) {
   return node;
 }
 
+/* The first-run redirect lives in pages/onboarding.js, a lazy bundle (lazy.js): only a board that was never used and has no project asks for it (once per page load; the
+   file itself decides whether the wizard opens). Every other Home visit never loads the wizard. */
+let homeOnboardAsked = false;
+
+function homeOnboard(st) {
+  if (typeof onboardingMaybeRedirect === 'function') { onboardingMaybeRedirect(st); return; }
+  if (homeOnboardAsked || typeof Lazy === 'undefined' || !st || !st.setup || !st.setup.first_run || (Array.isArray(st.projects) && st.projects.length)) return;
+  homeOnboardAsked = true;
+  Lazy.load('onboarding').then(() => { if (typeof onboardingMaybeRedirect === 'function') onboardingMaybeRedirect(currentState() || st); }, (e) => console.error('ccboard onboarding', e));
+}
+
+let homeDndAsked = false;
 let homeLaneBar = null;                                            // the dispatch bar of #/tasks (dnd.js): one node kept across repaints
 
 function renderTasks() {
@@ -191,6 +203,9 @@ function renderTasks() {
     if (!homeLaneBar) homeLaneBar = Dnd.laneBar({});
     homeLaneBar.ccPatch(state);
     sec.append(homeLaneBar);
+  } else if (typeof Lazy !== 'undefined' && Lazy.wants('dnd')) {               // dnd.js is a lazy bundle (lazy.js): the bar's room is kept while it loads, then the board is drawn again
+    sec.append(el('div', { class: 'dnd-bar-slot' }));
+    if (!homeDndAsked) { homeDndAsked = true; Lazy.load('dnd').then(() => renderTasks(), () => { homeDndAsked = false; }); }
   }
   const grid = el('div', { class: 'kanban' });
   for (const [key, label] of BOARD_COLUMNS) {
@@ -1126,7 +1141,7 @@ registerPage('home', {
       blocks: makeKeyedList(blocksHost, { key: (b) => b.key, create: (b) => (b.kind === 'older' ? homeOlderNode(b) : homeBlockNode(b)), patch: (n, b) => n.ccPatch(b) }) };
     startAgeTicker();
   },
-  update(st) { homeRender(st); if (typeof onboardingMaybeRedirect === 'function') onboardingMaybeRedirect(st); },        // a board never used, with no project: the wizard once (pages/onboarding.js)
+  update(st) { homeRender(st); homeOnboard(st); },                                  // a board never used, with no project: the wizard once (pages/onboarding.js)
   onRoute(route) {                                                                    // #/ <-> #/?f=waiting: the same page, a different filter (no remount, no lost subscriptions)
     homePage.filter = homeFilterOf(route);
     homePage.cache = null;

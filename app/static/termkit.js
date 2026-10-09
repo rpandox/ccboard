@@ -819,6 +819,7 @@ const TermKit = (() => {
         h.head.setAttribute('data-drop', 'session');
         h.head.setAttribute('data-tmux', tmux);
         if (typeof Dnd !== 'undefined' && Dnd && typeof Dnd.bind === 'function') Dnd.bind(h.head);
+        else if (typeof Lazy !== 'undefined') Lazy.later('dnd', () => { if (typeof Dnd !== 'undefined') Dnd.bind(h.head); });     // dnd.js is lazy (lazy.js)
       }
       taskText = el('span', { class: 'tp-task-text' });
       taskPhase = el('span', { class: 'tp-phase hidden' });

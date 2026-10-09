@@ -79,6 +79,9 @@ let mountedHash = '';
 let overlayId = null;        // an overlay page (the session peek) mounted on top of the base page in mountedId
 let routeCount = 0;          // routes handled in this document: more than one means history.back() stays inside the app
 let routing = false;
+let lazyToken = 0;           // bumped by every route(): a bundle that arrives after the person went elsewhere is ignored
+let lazyRetry = false;       // route() is running again for a bundle that just arrived: not a new navigation (routeCount stays)
+let lazyHint = null;         // the timer of the 'Loading…' line
 
 function registerPage(id, page) { pages[id] = page; }
 
@@ -194,10 +197,13 @@ function route() {
     history.replaceState(null, '', '#/');
     r = parseHash('#/');
   }
-  routeCount += 1;
+  if (!lazyRetry) { routeCount += 1; lazyToken += 1; }
+  clearLazyHint();
   const prev = currentRouteValue;
   currentRouteValue = r;
   const page = pages[r.id];
+  const wait = typeof Lazy !== 'undefined' && !lazyRetry ? Lazy.pending(r.id) : [];
+  if (wait.length) { routeLazy(r, wait); return; }       // the page's script (and its sheet) is not here yet: load it, then come back to this route
   if (!page) return;                      // nothing registered: the page that is mounted stays as it is
   const root = document.querySelector('#page');
   if (!root) return;
@@ -259,6 +265,71 @@ function route() {
     updateNav();
     if (!page.noFocus) focusMain();
     restoreScroll(mountedHash);
+  } finally { routing = false; }
+}
+
+/* ---------- lazy pages (lazy.js): a route whose script is not loaded yet ---------- */
+
+function clearLazyHint() {
+  if (lazyHint) { clearTimeout(lazyHint); lazyHint = null; }
+  try { document.body.removeAttribute('data-page-loading'); } catch (_) { /* no body */ }
+}
+
+/* The mounted page (and a peek over it) goes, as it does just before the next page mounts. A lazy route does this when it starts to load, not when it is ready: a page that is
+   still up keeps working, and some of them (the quad, the filters of a list) write their own address now and then, which would put the old route back in the address bar
+   and make the late mount follow it instead of the click. */
+function takeDownPage() {
+  const root = document.querySelector('#page');
+  routeCloseChrome(true);
+  unmountOverlay();
+  saveScroll();
+  const old = mountedId && pages[mountedId];
+  if (old && typeof old.unmount === 'function') { try { old.unmount(); } catch (e) { console.error('ccboard unmount', mountedId, e); } }
+  mountedId = null;
+  mountedHash = '';
+  if (root) root.textContent = '';
+  return root;
+}
+
+/* Load the bundles a route waits for, then route() again for the same address. The page that was up goes at once (takeDownPage); 'Loading…' shows after a beat for a slow load;
+   a bundle that cannot be fetched leaves an error state with a Retry, never a blank page. If the person moved on meanwhile (lazyToken changed) a late arrival only registers its page. */
+function routeLazy(r, wait) {
+  const token = lazyToken;
+  updateNav();
+  let root = null;
+  routing = true;                         // a close event of the sheet or peek that goes down with the page is not a navigation (goBack looks at this)
+  try { root = takeDownPage(); } finally { routing = false; }
+  try { document.body.setAttribute('data-page-loading', r.id); } catch (_) { /* no body */ }
+  if (root) {
+    lazyHint = setTimeout(() => {
+      lazyHint = null;
+      if (token !== lazyToken || mountedId) return;
+      root.textContent = '';
+      root.append(el('div', { class: 'dim lazy-hint', role: 'status', text: 'Loading…' }));
+    }, 250);
+  }
+  Promise.all(wait.map((n) => Lazy.load(n))).then(() => {
+    if (token !== lazyToken) return;
+    clearLazyHint();
+    lazyRetry = true;
+    try { route(); } finally { lazyRetry = false; }
+  }, (err) => {
+    if (token !== lazyToken) return;
+    clearLazyHint();
+    showLoadError(r, err);
+  });
+}
+
+/* The page could not be loaded: say so, with a Retry that asks again (Lazy forgot the failure). */
+function showLoadError(r, err) {
+  console.error('ccboard load', r.id, err);
+  routing = true;
+  try {
+    const root = takeDownPage();
+    if (!root) return;
+    try { document.body.setAttribute('data-page', r.id); } catch (_) { /* no body */ }
+    const retry = el('button', { class: 'btn small', type: 'button', text: 'Retry', onclick: () => { lazyToken += 1; lazyRetry = false; route(); } });
+    root.append(el('div', { class: 'load-error', role: 'alert' }, pageEmpty('warning-sign', 'This page could not be loaded', 'The connection dropped or the board is restarting. Try again in a moment.'), el('div', { class: 'actions' }, retry)));
   } finally { routing = false; }
 }
 

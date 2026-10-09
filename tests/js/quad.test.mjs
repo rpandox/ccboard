@@ -26,7 +26,7 @@ const BASE = 1_800_000_000_000;
 
 const GRID = (name) => `/tty/?arg=${name}&arg=grid&fontSize=11&rendererType=canvas&disableResizeOverlay=true&disableReconnect=true`;
 
-/** The quad's part of pages.css: from its section header to the next section header (v0.5.13: later sections such as the launcher sheet's are not the quad's). */
+/** The quad's part of pages/quad.css (split out of pages.css for issue #103): from its section header to the next section header, or the end of the file (the fullscreen rules follow it there). */
 function quadBlock(css) {
   const at = css.indexOf('/* ---------- quad (v0.5.9');
   const next = css.indexOf('/* ---------- ', at + 20);
@@ -1436,7 +1436,7 @@ test('Quad.addToQuad while the quad is up shows the session at once (a free slot
 // ---------------------------------------------------------------- pages.css: the header tiers, the title floor, the sizes
 
 test('pages.css (quad block): the title keeps 40 % of the tile, the pieces shed in the measured order, the mode picker is a menu button under 354 px, touch sheds earlier', () => {
-  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const css = fs.readFileSync(path.join(STATIC, 'pages', 'quad.css'), 'utf8');
   const quad = quadBlock(css);
   assert.match(quad, /\.qt-title \{[^}]*min-width:40cqi/, 'the title floor is 40 % of the size container (the tile)');
   const hide = (sel, scope = '') => { const m = new RegExp(`@container \\(max-width: (\\d+)px\\) \\{ #page \\.quad${scope} ${sel.replace('.', '\\.')} \\{ display:none; \\}`).exec(quad); return m ? Number(m[1]) : null; };
@@ -1455,7 +1455,7 @@ test('pages.css (quad block): the title keeps 40 % of the tile, the pieces shed 
 });
 
 test('pages.css (quad block): one row for the permission line from 358 px, 28 px keys and chips with a mouse (--row-btn, never --tap), the session name never shrinks', () => {
-  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const css = fs.readFileSync(path.join(STATIC, 'pages', 'quad.css'), 'utf8');
   const quad = quadBlock(css);
   assert.match(quad, /\.qt-perm \{[^}]*display:flex; align-items:center;/);
   assert.doesNotMatch(quad.match(/\.qt-perm \{[^}]*\}/)[0], /flex-wrap:wrap/, 'nowrap by default: the text truncates (its tooltip has it all)');
@@ -1725,7 +1725,7 @@ test('the crumb is asked to follow a write-back of the address (a replace fires 
 });
 
 test('pages.css (quad block, v0.5.9b): the scope select is 28 px with a mouse and 44 px on touch (--row-btn), 16 px there, cut by its own max-width; the empty-project block is centred', () => {
-  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const css = fs.readFileSync(path.join(STATIC, 'pages', 'quad.css'), 'utf8');
   const quad = css.slice(css.indexOf('/* ---------- quad (v0.5.9'));
   const sel = quad.match(/#page \.quad \.q-scope-sel \{[^}]*\}/)[0];
   assert.match(sel, /height:var\(--row-btn\)/);
@@ -1948,7 +1948,7 @@ test('zoom works with ten tiles: the overlay covers the grid, the others stay mo
 });
 
 test('pages.css (quad block, v3): the grid has the layouts\' columns, tiles are placed by `order` per slot 0 to 9 (no grid-area per slot), the layout cells are 28 px / 44 px, a tile of 300 px or less keeps glyphs, name and the menu only', () => {
-  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const css = fs.readFileSync(path.join(STATIC, 'pages', 'quad.css'), 'utf8');
   const quad = css.slice(css.indexOf('/* ---------- quad (v0.5.9'));
   const cols = { 2: 2, 4: 2, 6: 3, 8: 4, 10: 5 };
   for (const [n, c] of Object.entries(cols)) assert.match(quad, new RegExp(`\\.qgrid\\[data-layout="${n}"\\] \\{ grid-template-columns:repeat\\(${c}, minmax\\(0, 1fr\\)\\);`), `${n}-up has ${c} columns`);
@@ -2224,7 +2224,7 @@ test('a project that has nothing left to show cannot enter fullscreen, and leave
 });
 
 test('pages.css (quad block, fullscreen): chrome hidden through html.quad-fs, the head one row (32 px with a mouse, the 44 px target on touch), the tiles take the viewport', () => {
-  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const css = fs.readFileSync(path.join(STATIC, 'pages', 'quad.css'), 'utf8');
   const quad = css.slice(css.indexOf('/* ---------- quad (v0.5.9'));
   assert.match(quad, /html\.quad-fs #app \{ grid-template-columns:0 minmax\(0, 1fr\) 0; grid-template-rows:0 minmax\(0, 1fr\); \}/);
   assert.match(quad, /html\.quad-fs #topbar \{ min-height:0; height:0; padding:0; border:0; overflow:visible; \}/, 'the topbar keeps a zero-height box: components.menu() mounts its popovers there');
@@ -2234,8 +2234,11 @@ test('pages.css (quad block, fullscreen): chrome hidden through html.quad-fs, th
   assert.match(quad, /html\.quad-fs body\[data-shell\] #main \{ padding:0; overflow:hidden; \}/);
   assert.match(quad, /html\.quad-fs body\[data-page=quad\] #page \{ min-height:0; padding:0; \}/, 'the page\'s own bottom padding goes too: the tiles end at the screen\'s edge');
   assert.match(quad, /html\.quad-fs #page > \.quad \{ max-width:none; \}/, '`#page > * { max-width:1400px }` must not cap the grid in fullscreen: above 1400 px the tiles take the whole screen');
-  assert.match(css, /#page > \* \{ max-width:1400px;/, 'the page cap that rule beats (1,2,1 over 1,0,0)');
-  assert.ok(css.indexOf('html.quad-fs #page > .quad') > css.indexOf('#page > * { max-width:1400px'), 'and comes after it');
+  const base = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  assert.match(base, /#page > \* \{ max-width:1400px;/, 'the page cap that rule beats (1,2,1 over 1,0,0)');
+  const html = fs.readFileSync(path.join(STATIC, 'index.html'), 'utf8');
+  assert.ok(html.indexOf('/static/pages.css') > 0 && html.indexOf('/static/charts.css') > html.indexOf('/static/pages.css'), 'pages.css is linked before charts.css');
+  assert.match(fs.readFileSync(path.join(STATIC, 'lazy.js'), 'utf8'), /quad: \{[^}]*pages\/quad\.css/, 'and quad.css is inserted before charts.css (lazy.js), so it still comes after the page cap');
   const head = quad.match(/html\.quad-fs #page \.quad \.q-head \{([^}]*)\}/)[1];
   assert.match(head, /flex-wrap:nowrap/, 'one row');
   assert.match(head, /min-height:max\(32px, var\(--row-btn\)\)/, '32 px with a mouse, 44 px (--row-btn) with a finger');
@@ -2642,7 +2645,7 @@ test('no composer kit, no docked composer: the action is not offered and a saved
 });
 
 test('pages.css (quad block): the docked composer is there from 520 px (the tile is the size container); its box brings its own padding and hairline', () => {
-  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const css = fs.readFileSync(path.join(STATIC, 'pages', 'quad.css'), 'utf8');
   const quad = css.slice(css.indexOf('/* ---------- quad (v0.5.9'));
   assert.match(quad, /@container \(max-width: 519px\) \{ #page \.quad \.qt-dock \{ display:none; \} \}/);
   assert.match(quad, /#page \.quad \.qt-dock \{ flex:none; min-width:0; \}/);
@@ -2819,7 +2822,7 @@ test('the quad keeps no filled primary: its buttons are bordered, tinted or mini
   const src = fs.readFileSync(path.join(STATIC, 'pages', 'quad.js'), 'utf8');
   const classes = [...src.matchAll(/class: '([^']*)'/g)].map((m) => m[1]);
   for (const c of classes) if (/\bprimary\b/.test(c)) assert.match(c, /\btinted\b/, `${c}: a primary in the quad is the outlined tint`);
-  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const css = fs.readFileSync(path.join(STATIC, 'pages', 'quad.css'), 'utf8');
   const quad = css.slice(css.indexOf('/* ---------- quad (v0.5.9'), css.indexOf('/* ---------- quad (v0.5.9') + 30000);
   assert.doesNotMatch(quad.match(/#page \.quad \.q-layout[^\n]*/g).join('\n'), /background:var\(--sig\)/, 'no filled cyan on the layout control');
   assert.doesNotMatch(quad.match(/#page \.quad \.q-fs[^\n]*/g).join('\n'), /background:var\(--sig\)[^-]/);
@@ -3050,7 +3053,7 @@ test('the project/repo of a tile header is .pend (hidden by CSS) until TermKit.f
   const { w } = env;
   const T1 = names(w)[0];
   const where = tileOf(w, T1).querySelector('.qt-where');
-  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const css = fs.readFileSync(path.join(STATIC, 'pages', 'quad.css'), 'utf8');
   assert.match(css, /\.qt-where\.pend \{ visibility:hidden; \}/, 'hidden (not removed): no layout jump when it shows');
   const T = w.get('TermKit');
   const fresh = w.document.createElement('span');

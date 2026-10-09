@@ -99,6 +99,7 @@ function pjCreate(kind) {
 /* ---------- Add repo: the existing form in the sheet; its Cancel closes the sheet and a successful add closes it on the next render ---------- */
 
 function pjAddRepo(p) {
+  if (typeof addRepoForm !== 'function' && typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.launcher) { Lazy.run('launcher', () => pjAddRepo(p), 'the launcher'); return; }      // launcher.js is a lazy bundle (lazy.js)
   if (typeof addRepoForm !== 'function' || typeof openSheet !== 'function') return;
   const holder = el('div', { class: 'sheet-form' }, addRepoForm(p));
   holder.addEventListener('click', (ev) => {
@@ -285,6 +286,8 @@ function pjTasksView(P, route) {
   const bar = pjToolbar(el('button', { class: 'small primary', type: 'button', text: '+ task', onclick: () => pjCreate('task') }),
     el('span', { class: 'dim', text: 'one worktree and branch per task; the columns follow the session state' }));
   const node = el('div', { class: 'pj-tasks' }, bar, scopeNote, board.node, none);
+  // + task is this tab's primary: fetch the lazy launcher now, so the first tap opens the sheet at once (lazy.js)
+  if (typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.launcher) Lazy.load('launcher').catch(() => {});     // memoised: a second mount fetches nothing
   return {
     node,
     update(st, rt) {
@@ -415,19 +418,36 @@ function pjSchedulesView(P, route) {
 /* The Memory tab (v0.5.20): the palace of this project, the same renderer, filters (the repo kept by the Memory page) and states as #/memory (pages/memory.js). */
 function pjMemoryView(P) {
   const project = P.project;
-  const palace = typeof memoryPalaceView === 'function' ? memoryPalaceView(project, { repo: typeof memStoredFilters === 'function' ? memStoredFilters(project).repo : '' }) : null;
+  const makePalace = () => (typeof memoryPalaceView === 'function' ? memoryPalaceView(project, { repo: typeof memStoredFilters === 'function' ? memStoredFilters(project).repo : '' }) : null);
+  let palace = makePalace();
+  const placeholder = pageEmpty('database', 'Project memory', 'The memory palace of this project: observations, timeline and summaries.');
   const node = el('div', { class: 'pj-memory' },
     el('div', { class: 'pj-memory-head' }, el('a', { class: 'btn small', href: `#/memory/${encodeURIComponent(project)}`, text: 'Open in Memory' }),
       el('span', { class: 'dim', text: 'What claude-mem kept from past sessions here.' })),
-    palace ? palace.node : pageEmpty('database', 'Project memory', 'The memory palace of this project: observations, timeline and summaries.'));
+    palace ? palace.node : placeholder);
+  let gone = false;
   if (palace) palace.load();
-  return { node, update() { /* the palace is fetched once per visit; Retry and the Memory page refresh it */ }, onRoute() { /* static */ }, destroy() { if (palace) palace.destroy(); } };
+  else if (typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.memory) {       // pages/memory.js is a lazy bundle (lazy.js): the tab loads it, then the palace takes the placeholder's place
+    Lazy.load('memory').then(() => {
+      if (gone || palace) return;
+      palace = makePalace();
+      if (!palace) return;
+      node.insertBefore(palace.node, placeholder);
+      placeholder.remove();
+      palace.load();
+    }, () => { /* the placeholder stays */ });
+  }
+  return { node, update() { /* the palace is fetched once per visit; Retry and the Memory page refresh it */ }, onRoute() { /* static */ }, destroy() { gone = true; if (palace) palace.destroy(); } };
 }
 
 /* The newest gotchas in the header (v0.5.20): fetched once per project and visit, only while state.memory exists, and never a toast, a banner or a wait: a stopped worker,
    a slow one or a project without gotchas leaves the strip hidden. */
 function pjGotchas(P, st) {
   const h = P.head.gotchas;
+  if (st && st.memory && typeof memoryGotchasMount !== 'function' && typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.memory && !P.gotchAsked) {      // pages/memory.js is lazy (lazy.js): load it, then paint again
+    P.gotchAsked = true;
+    Lazy.load('memory').then(() => { if (projectPage.cur === P && typeof repaintPage === 'function') repaintPage(); }, () => { /* no strip */ });
+  }
   if (!st || !st.memory || typeof memoryGotchasMount !== 'function') { if (P.gotchFor) { P.gotchFor = null; h.textContent = ''; h.classList.add('hidden'); } return; }
   if (P.gotchFor === P.project) return;
   P.gotchFor = P.project;

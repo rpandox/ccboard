@@ -478,6 +478,10 @@ Shell.projKids = function (p, level) {
 };
 
 Shell.loadDir = function (k, fresh) {
+  if (typeof Tree === 'undefined' && typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.tree) {      // tree.js is a lazy bundle (lazy.js): the first folder to open loads it
+    if (!Shell.dirLoading.has(k.key)) Lazy.run('tree', () => Shell.loadDir(k, fresh), 'the file tree');
+    return;
+  }
   if (typeof Tree === 'undefined' || !Tree || typeof Tree.children !== 'function' || Shell.dirLoading.has(k.key)) return;
   Shell.dirLoading.add(k.key);
   Tree.children(k.project, k.repo, k.path, { repos: true, fresh: !!fresh }).then(
@@ -598,6 +602,7 @@ Shell.kidNode = function (k) {
   const node = el('a', { class: 'tn-row s-row', role: 'treeitem', tabindex: '-1', 'aria-level': '2', 'data-drop': 'session' }, slot, name, sub);
   node._k = { slot, name, sub, state: null, agent: null };
   if (typeof Dnd !== 'undefined') Dnd.bind(node);                                  // a backlog card dropped on the row is handed to this session (dnd.js)
+  else if (typeof Lazy !== 'undefined') Lazy.later('dnd', () => { if (typeof Dnd !== 'undefined') Dnd.bind(node); });     // dnd.js is lazy: the row is bound when a board that needs it has loaded it
   return node;
 };
 
@@ -992,7 +997,11 @@ Shell.dockWide = function () { return Shell.mq && Shell.mq.d ? !!Shell.mq.d.matc
 Shell.dockRoomy = function () { return Shell.mq && Shell.mq.x ? !!Shell.mq.x.matches : Shell.mqNow('(min-width: 1440px)'); };
 
 /* The dock exists in this window and this browser: wide enough, not switched off, and the terminal kit is loaded. session.js asks this to send the peek elsewhere. */
-Shell.dockOn = function () { return !Shell.dockOff() && Shell.dockWide() && typeof TermKit !== 'undefined' && !!TermKit && typeof TermKit.termPane === 'function'; };
+Shell.dockOn = function () { return !Shell.dockOff() && Shell.dockWide() && (Shell.kitReady() || Shell.kitLazy()); };
+
+/* termkit.js is a lazy bundle (lazy.js): the dock opens it on first use. kitReady: it is here; kitLazy: it is not, but can be had. */
+Shell.kitReady = function () { return typeof TermKit !== 'undefined' && !!TermKit && typeof TermKit.termPane === 'function'; };
+Shell.kitLazy = function () { return typeof TermKit === 'undefined' && typeof Lazy !== 'undefined' && !!Lazy.bundles && !!Lazy.bundles.termkit; };
 
 Shell.dockOpen = function () { return !!Shell.dock.pane; };
 
@@ -1026,7 +1035,7 @@ Shell.dockResume = function () {
 /* Why the dock will not open, as a sentence (a toast on mod+j; the Open links simply navigate). */
 Shell.dockWhy = function () {
   const say = (t) => { if (typeof toast === 'function') toast(t, { kind: 'info' }); };
-  if (typeof TermKit === 'undefined' || !TermKit || typeof TermKit.termPane !== 'function') say('The terminal kit is not loaded: reload the board');
+  if (!Shell.kitReady() && !Shell.kitLazy()) say('The terminal kit is not loaded: reload the board');
   else if (Shell.dockOff()) say('The terminal dock is off in this browser (localStorage ccboard:dock:off)');
   else if (!Shell.dockWide()) say('The terminal dock needs a window 1024 px wide or more');
   else if (Shell.dockHeld()) say('The Quad page shows the terminals itself: the dock is back when you leave it');
@@ -1216,6 +1225,10 @@ Shell.openDock = function (tmux, opts) {
   if (typeof tmux !== 'string' || !tmux) return false;
   if (!Shell.dockOn() || Shell.dockHeld()) { if (!o.quiet) Shell.dockWhy(); return false; }          // the quad owns the window: no dock over it
   if (!$('#dock')) return false;
+  if (!Shell.kitReady()) {                                                                            // the terminal kit loads now; the dock opens when it is here (true: it is on its way)
+    Lazy.load('termkit').then(() => { if (Shell.kitReady() && !Shell.dockHeld() && !Shell.dockOff()) Shell.openDock(tmux, o); }, (e) => { if (!o.quiet) Lazy.fail('the terminal', e); });
+    return true;
+  }
   if (D.pane && D.tmux === tmux) {
     if (o.focus && !TermKit.typingTarget()) D.pane.focus();
     return true;
@@ -1261,7 +1274,10 @@ Shell.dockSync = function () {
   const on = Shell.dockOn();
   const held = Shell.dockHeld();
   if (D.pane && (!on || held)) { D.wanted = D.tmux; Shell.dockUnmount(false); }              // below 1024 px, switched off, or the quad page: the pane goes, ccboard:dock stays
-  else if (!D.pane && D.wanted && on && !held) { const t = D.wanted; D.wanted = ''; Shell.dockMount(t, {}); }
+  else if (!D.pane && D.wanted && on && !held) {
+    if (!Shell.kitReady()) { Lazy.load('termkit').then(() => { if (Shell.kitReady() && Shell.mq) Shell.applyMode(); }, () => { /* the dock stays wanted; the next mode pass asks again */ }); return; }
+    const t = D.wanted; D.wanted = ''; Shell.dockMount(t, {});
+  }
 };
 
 /* ccboard:dock:off from outside (a setting, a test): true turns the dock off and closes it. */
@@ -1390,10 +1406,17 @@ Shell.openCreate = function (kind, ctx) {
   if (kind === 'session' || kind === 'task') { if (!(pre && Shell.createFor(kind, pre))) Shell.pickRepo(kind, pre); }
   else if (kind === 'schedule' || kind === 'job') { if (!(pre && Shell.createFor('job', pre))) Shell.pickRepo('job', pre); }
   else if (kind === 'project') Shell.go(Shell.hash('onboarding', { step: 'project' }));          // v0.5.19: the wizard (pages/onboarding.js) replaced the new-project sheet
-  else if (kind === 'import') Shell.formSheet('Import repos from GitHub', importForm, 'Import queued');
-  else if (kind === 'batch') Shell.formSheet('Batch prompt across repos', batchForm, 'Batch queued');
+  else if (kind === 'import') Shell.withForms(() => Shell.formSheet('Import repos from GitHub', importForm, 'Import queued'));
+  else if (kind === 'batch') Shell.withForms(() => Shell.formSheet('Batch prompt across repos', batchForm, 'Batch queued'));
   else return false;
   return true;
+};
+
+/* The launcher's forms (launcher.js) are a lazy bundle (lazy.js): fn runs now when they are here, else once they have loaded. */
+Shell.withForms = function (fn) {
+  if (typeof Lazy === 'undefined' || Lazy.done('launcher')) return fn();
+  Lazy.run('launcher', fn, 'the launcher');
+  return undefined;
 };
 
 /* The project (and repo) the current route is about: the project page, or the session open in the peek (its tmux name is project--repo--name).
@@ -1514,6 +1537,7 @@ Shell.pickRepo = function (kind, ctx) {
 /* The launcher form in the sheet. The task form takes a "where" select over the project's places (a switch re-opens it for the other repo with the
    typed text carried over) and closes the sheet itself once its call worked; the session and schedule forms close it through the next render. */
 Shell.showForm = function (kind, e, carry) {
+  if (typeof Lazy !== 'undefined' && !Lazy.done('launcher')) { Lazy.run('launcher', () => Shell.showForm(kind, e, carry), 'the launcher'); return undefined; }
   const form = kind === 'session' ? sessionForm(e.p, e.r)
     : kind === 'task' ? taskForm(e.p, e.r, { carry, targets: taskTargets(e.p), onTarget: (x, c) => Shell.showForm('task', { p: x.p, r: x.r, label: x.label }, c),
       onDone: () => { closeSheet(); }, onCancel: () => closeSheet() })

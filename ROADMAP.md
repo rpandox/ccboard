@@ -104,6 +104,7 @@ Working rules: one phase at a time; each item is one commit; tick items as they 
 - [x] v0.5.26 WSL2 and logins off Linux (#118, #119; device runs in #130)
 - [x] v0.5.27 Follow-ups: qa-ui checks (#176), axe clean (#45), Lighthouse misses (#103), the estimate check (#95)
 - [x] v0.5.28 Auto-continue opt-out and the power-cut continue (#84), chart keyboard access (#45), registry source decided (#27)
+- [x] v0.5.29 Per-route loading and recorded Lighthouse scores (#103)
   - *as built:* `app/platform.py` is the only module that knows the operating system (a grep of `app/` for `import pwd`, `import fcntl`, `os.getuid` and `/proc` finds it and the doctor's `PROC_VERSION` seam); Linux paths are moved code with their strings pinned (tests/test_platform_hints.py); psutil only off Linux (`requirements.txt` marker), lsof as the port fallback. Doctor `tmux-socket`, `runtime-host`, `hook-helpers`; `tmux.socket_path()` cached for the hook path; hook commands through `shlex.quote`; `pytest.ini` markers and the advisory `test-macos` CI job. Checked on an Intel Mac with psutil 7.2.2: memory, uptime and CPU fill in, the Doctor's code-server fix reads brew. Not built: slice 8 (process-group kill, changes Linux) and everything that needs the macOS launchd runtime (#117): plists, `install-macos.sh`, the claude-mem launchd job, TMUX_TMPDIR pinning. Not verified: WSL2, the native Windows branches, psutil environ and net_connections on a real pane.
 
 ## Never

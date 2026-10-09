@@ -24,7 +24,7 @@ function hostileWorld() {
   });
 }
 
-for (const file of ['core.js', 'components.js', 'termkit.js', 'pages/widgets.js', 'dnd.js']) {
+for (const file of ['core.js', 'components.js', 'termkit.js', 'pages/widgets.js', 'dnd.js', 'lazy.js']) {
   test(`${file} defines only: no DOM, storage, network, listener or timer access at load`, (t) => {
     const abs = path.join(STATIC, file);
     if (!fs.existsSync(abs)) {

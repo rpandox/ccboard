@@ -86,7 +86,7 @@ SECTION_HEADS = ("set-h", "mem-wing-name", "mem-k", "mem-sec", "mem-day", "empty
 
 
 def _css_all():
-    return "\n".join(p.read_text() for p in sorted(STATIC.glob("*.css")))
+    return "\n".join(p.read_text() for p in sorted(STATIC.glob("*.css")) + sorted(STATIC.glob("pages/*.css")))      # pages/*.css: the page sheets split out of pages.css (issue #103)
 
 
 def _js_all():

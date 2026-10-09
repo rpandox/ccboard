@@ -197,9 +197,19 @@ Keymap.help = function () {
   return out;
 };
 
+/* palette.js is a lazy bundle (lazy.js): the keys that open it load it first (once, however often they are pressed meanwhile). False when there is no palette to be had. */
+Keymap.withPalette = function (fn) {
+  if (typeof Palette !== 'undefined') { fn(); return true; }
+  if (typeof Lazy === 'undefined' || !Lazy.bundles || !Lazy.bundles.palette) return false;
+  if (Keymap.paletteLoading) return true;
+  Keymap.paletteLoading = true;
+  Lazy.load('palette').then(() => { Keymap.paletteLoading = false; fn(); }, (e) => { Keymap.paletteLoading = false; Lazy.fail('the command palette', e); });
+  return true;
+};
+
 Keymap.openHelp = function () {
-  if (typeof Palette !== 'undefined' && typeof Palette.openHelp === 'function') { Palette.openHelp(); return true; }
-  return false;
+  if (typeof Palette !== 'undefined') { if (typeof Palette.openHelp !== 'function') return false; Palette.openHelp(); return true; }
+  return Keymap.withPalette(() => { if (typeof Palette.openHelp === 'function') Palette.openHelp(); });
 };
 
 /* ---------- the app's own bindings ---------- */
@@ -224,9 +234,9 @@ Keymap.bindDefaults = function () {
     return true;
   };
 
-  B('mod+k', () => { if (typeof Palette === 'undefined') return false; Palette.toggle(); return true; },
+  B('mod+k', () => Keymap.withPalette(() => Palette.toggle()),
     { help: 'Command palette: sessions, routes, nudges, controls', group: 'General', dialog: true, input: true });
-  B('?', () => { if (typeof Palette === 'undefined') return false; Palette.openHelp(); return true; }, { help: 'This list of shortcuts', group: 'General' });
+  B('?', () => Keymap.withPalette(() => Palette.openHelp()), { help: 'This list of shortcuts', group: 'General' });
   B('/', () => { if (typeof Shell === 'undefined' || typeof Shell.focusSearch !== 'function') return false; Shell.focusSearch(); return true; },
     { help: 'Search transcripts', group: 'General' });
   // Esc only reports itself: the native <dialog> closes the palette, sheet and drawer, and the list selection clears when nothing modal is open

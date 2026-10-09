@@ -554,6 +554,13 @@ Usage.build = function (root, route) {
   return P;
 };
 
+/* The rename sheet of an account is Settings' (pages/settings.js, a lazy bundle: lazy.js): the pencil loads it the first time. */
+Usage.renameAccount = function (a, opts) {
+  const open = () => (opts ? settingsRenameAccount(a, opts) : settingsRenameAccount(a));
+  if (typeof settingsRenameAccount === 'function' || typeof Lazy === 'undefined') return open();
+  return Lazy.run('settings', open, 'the settings');
+};
+
 /* The claude-mem health tile (v0.5.20, pages/memory.js memoryHealthTile, the compact one): state.memory from the 3 s poll, nothing fetched here. Hidden when claude-mem is off
    or not sampled yet; rebuilt only when what it shows changed. */
 Usage.paintMem = function (P) {
@@ -566,6 +573,9 @@ Usage.paintMem = function (P) {
   P.memSig = sig;
   host.textContent = '';
   const tile = m && typeof memoryHealthTile === 'function' ? memoryHealthTile(m, { compact: true, link: true }) : null;
+  if (m && typeof memoryHealthTile !== 'function' && typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.memory) {      // memory.js is lazy (lazy.js): only a box with claude-mem loads it for the tile
+    Lazy.load('memory').then(() => { if (typeof memoryHealthTile === 'function') { P.memSig = null; Usage.paintMem(P); } }, () => { /* no tile */ });
+  }
   if (tile) host.append(tile);
   host.classList.toggle('hidden', !tile);
 };
@@ -1376,7 +1386,7 @@ Usage.accRow = function (a, w, hits) {
   // the name, plan, current marker and email wrap among themselves (.ua-who); the pencil is its own flex item at the right of the card header, so a long
   // email never pushes it onto a line of its own
   const id = [el('span', { class: 'ua-who' }, ...who)];
-  if (!unknown) id.push(el('button', { class: 'icon minimal small ua-edit', type: 'button', title: 'Rename this account', 'aria-label': `Rename ${name}`, onclick: () => settingsRenameAccount(a) }, ic('edit')));   // the one rename sheet, settings.js
+  if (!unknown) id.push(el('button', { class: 'icon minimal small ua-edit', type: 'button', title: 'Rename this account', 'aria-label': `Rename ${name}`, onclick: () => Usage.renameAccount(a) }, ic('edit')));   // the one rename sheet, settings.js (a lazy bundle: Usage.renameAccount loads it)
   const wins = unknown ? [el('div', { class: 'ua-win ua-blank', role: 'cell' }), el('div', { class: 'ua-win ua-blank', role: 'cell' })]
     : [Usage.accGauge('5H', a.rl_5h, name, '5h'), Usage.accGauge('7D', a.rl_7d, name, '7d')];
   return el('div', { class: 'ua-row' + (unknown ? ' unknown' : ''), role: 'row', 'data-account': a.key, 'data-current': a.current ? true : null },
@@ -1512,8 +1522,8 @@ Usage.cxRow = function (P, a) {
   if (plan) who.push(el('span', { class: 'bdg mono ua-plan', title: 'Codex plan', text: plan }));
   if (a.current) who.push(el('span', { class: 'bdg ua-current', title: 'The Codex login in use on this box', text: 'current' }));
   const id = [el('span', { class: 'ua-who' }, ...who)];
-  if (typeof settingsRenameAccount === 'function') {
-    id.push(el('button', { class: 'icon minimal small ua-edit', type: 'button', title: 'Rename this account', 'aria-label': `Rename ${name}`, onclick: () => settingsRenameAccount(a, { codex: true }) }, ic('edit')));
+  if (typeof settingsRenameAccount === 'function' || (typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.settings)) {
+    id.push(el('button', { class: 'icon minimal small ua-edit', type: 'button', title: 'Rename this account', 'aria-label': `Rename ${name}`, onclick: () => Usage.renameAccount(a, { codex: true }) }, ic('edit')));
   }
   const blank = () => el('div', { class: 'ua-win ua-blank', role: 'cell' });
   const win5 = rd.five ? Usage.accGauge('5H', rd.five, name) : blank();

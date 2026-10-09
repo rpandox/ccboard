@@ -106,15 +106,18 @@ def test_index_links_charts_css_after_pages_css():
         "charts.css comes after pages.css (it may refine a page rule, never the other way round)"
 
 
-def test_index_loads_charts_js_before_shell_js_and_usage_js_before_placeholders_js():
+def test_usage_scripts_are_one_lazy_bundle_charts_js_first():
+    """Issue #103: charts.js and pages/usage.js are not in index.html any more; the router loads them, in this order, the first time #/usage opens (lazy.js)."""
     need("charts.js")
     need("pages/usage.js")
     s = index_assets().scripts
     for name in ("/static/charts.js", "/static/pages/usage.js"):
-        assert s.count(name) == 1, f"index.html must load {name} exactly once, found {s}"
-    assert s.index("/static/core.js") < s.index("/static/charts.js") < s.index("/static/shell.js"), "charts.js: after core.js, before shell.js"
-    assert s.index("/static/router.js") < s.index("/static/pages/usage.js") < s.index("/static/pages/placeholders.js"), \
-        "usage.js registers its route with router.js's registerPage, and must beat the placeholder's registration"
+        assert name not in s, f"{name} is a lazy bundle: index.html must not load it up front, found {s}"
+    lazy = text_of("lazy.js")
+    m = re.search(r"usage: \{ js: \[([^\]]*)\]", lazy)
+    assert m, "lazy.js has no usage bundle"
+    assert re.findall(r"'([^']+)'", m.group(1)) == ["/static/charts.js", "/static/pages/usage.js"], "charts.js (Charts) is defined before usage.js reads it"
+    assert re.search(r"usage: 'usage'", lazy), "the usage route points at its bundle"
 
 
 def test_index_never_loads_uplot_eagerly():

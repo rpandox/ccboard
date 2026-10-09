@@ -2,7 +2,6 @@
 'use strict';
 
 const LAUNCH_KEY = (p, r) => `ccboard:launch:${p.name}/${r.name}`;
-const TASK_KEY = (p, r) => `ccboard:task:${p.name}/${r.name}`;
 const MODELS = [['', 'default (settings)'], ['fable', 'fable'], ['opus', 'opus'], ['sonnet', 'sonnet'], ['haiku', 'haiku'], ['custom', 'custom id…']];
 const EFFORTS = [['', 'default'], ['low', 'low'], ['medium', 'medium'], ['high', 'high'], ['xhigh', 'xhigh'], ['max', 'max']];
 const PERMS = [['', 'ask (default)'], ['acceptEdits', 'accept edits'], ['plan', 'plan'], ['auto', 'auto'], ['dontAsk', "don't ask: deny prompts"]];
@@ -164,30 +163,12 @@ const TASK_LEDE = {
 const TASK_LEDE_CODEX_SCHEDULE = 'A headless run (codex exec) in its own worktree, on a cron or once now; the result becomes a task card.';
 const TASK_ICON = { now: 'play', later: 'add', schedule: 'time' };
 const JOB_MODES = ['acceptEdits', 'default', 'plan', 'auto', 'dontAsk'];
-const TASK_LAST_KEY = (project) => `ccboard:task:last:${project}`;       // the repo a task was last started in, per project
-const TASK_LAST_ANY_KEY = 'ccboard:task:last';                          // and the {project, repo} of the last task anywhere: where '+ task' opens off a project page
-
 /* The title a task gets when none was typed: the first line of the prompt, whitespace collapsed, cut at a word near 80 characters. */
 function taskTitleFrom(prompt) {
   const line = String(prompt || '').split('\n').map((l) => l.trim()).find(Boolean) || '';
   let t = line.replace(/\s+/g, ' ');
   if (t.length > 80) { t = t.slice(0, 80); const i = t.lastIndexOf(' '); if (i > 40) t = t.slice(0, i); }
   return t.replace(/[\s.:;,]+$/, '') || 'task';
-}
-
-function taskLastRepo(project) { try { return localStorage.getItem(TASK_LAST_KEY(project)) || ''; } catch (_) { return ''; } }
-function taskSaveLastRepo(project, repo) {
-  try {
-    localStorage.setItem(TASK_LAST_KEY(project), repo);
-    localStorage.setItem(TASK_LAST_ANY_KEY, JSON.stringify({ project, repo }));
-  } catch (_) { /* storage may be unavailable */ }
-}
-/* The {project, repo} a task was last created in, on any page, or null (nothing saved, or not shaped like that). The caller checks it still exists. */
-function taskLastAny() {
-  try {
-    const v = JSON.parse(localStorage.getItem(TASK_LAST_ANY_KEY) || 'null');
-    return v && typeof v.project === 'string' && typeof v.repo === 'string' && v.project && v.repo ? { project: v.project, repo: v.repo } : null;
-  } catch (_) { return null; }
 }
 
 /* A segmented control: buttons with aria-pressed (one on), arrow keys move. items [[value, label]]; onChange(value) runs on a change, not at build. */
@@ -2790,7 +2771,11 @@ function openLauncher(o) {
    has claude-mem. The answer is dropped when the sheet closed or was swapped meanwhile; a stopped or slow worker, or no gotchas, shows nothing and never takes the focus
    or touches what was typed. */
 function launcherGotchas(ctl, p, mode) {
-  if (mode !== 'session' || !ctl.memHost || typeof memoryGotchasMount !== 'function' || !(state && state.memory)) return;
+  if (mode !== 'session' || !ctl.memHost || !(state && state.memory)) return;
+  if (typeof memoryGotchasMount !== 'function') {                         // pages/memory.js is a lazy bundle (lazy.js): a box with claude-mem loads it once, after the sheet has painted
+    if (typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.memory) Lazy.load('memory').then(() => { if (typeof memoryGotchasMount === 'function') launcherGotchas(ctl, p, mode); }, () => { /* no strip */ });
+    return;
+  }
   const host = ctl.memHost;
   setTimeout(() => {
     memoryGotchasMount(host, p.name, { isCurrent: () => ui.openForm === 'sheet' && host.isConnected !== false && ctl.form._launcher === ctl });
