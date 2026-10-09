@@ -174,6 +174,9 @@ MIGRATIONS = [
     # ---- v0.5.21 (issue #57, usage by folder): session id -> the folder a session ran in, learned from Claude's registry and the first lines of its transcript
     #      ('' = looked and found none). Additive: the previous image ignores the table.
     "CREATE TABLE IF NOT EXISTS session_cwd (session_id TEXT PRIMARY KEY, cwd TEXT NOT NULL DEFAULT '', first_seen TEXT NOT NULL)",
+    # ---- nodes epic P1 (issue #137): the board that asked for this task, as JSON {node, user}; NULL = asked for here (every task today, and every old row).
+    #      Never a token or a prompt. Additive: the previous image ignores the column.
+    "ALTER TABLE tasks ADD COLUMN origin TEXT",
     # permissions.decision takes allow|deny|tui|interrupt (plus timeout from perm_expire). It has no CHECK constraint,
     # so nothing to migrate: the new values are plain TEXT.
 ]
@@ -191,7 +194,7 @@ TASK_COLS = ("project", "repo", "slug", "title", "prompt", "branch", "base", "wo
              "status", "pr_number", "pr_url", "pr_state", "pr_json", "ci", "cost_usd", "overlap", "archived_at",
              "preview_port", "preview_https",
              "agent", "mode", "phase", "session_row", "auto_close", "parent_id", "chain_id", "spec", "result",
-             "result_at", "assigned_at", "done_at", "issue_number", "issue_url", "issue_commented_at")
+             "result_at", "assigned_at", "done_at", "issue_number", "issue_url", "issue_commented_at", "origin")
 TASK_REQUIRED = ("project", "repo", "slug", "title", "prompt")
 TASK_UNASSIGNED = ("tmux_name", "worktree", "branch")     # NOT NULL without a default: '' when there is none yet
 JOB_COLS = ("project", "repo", "name", "prompt", "cron", "permission_mode", "max_turns", "max_budget_usd", "args",
@@ -249,6 +252,8 @@ def _task_fields(fields: dict) -> dict:
     out = dict(fields)
     if "spec" in out:
         out["spec"] = _json(out["spec"])
+    if "origin" in out:
+        out["origin"] = _json(out["origin"])
     if isinstance(out.get("result"), str):
         out["result"] = out["result"][:RESULT_MAX]
     return out

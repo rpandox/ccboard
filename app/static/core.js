@@ -269,6 +269,7 @@ async function demoApi(method, path, body) {
   const bare = path.split('?')[0];
   let name = null;
   if (bare === '/api/state') name = 'state';
+  else if (bare === '/api/node') name = 'node';   // this board's node card (GET /api/node, issue #133): the same shape the route answers
   else if (/^\/api\/sessions\/[^/]+$/.test(bare)) name = 'session';    // the terminal page's own read: the row of state.json with that tmux name (its agent drives Tune and the quick replies)
   else if (bare === '/api/skills') name = 'skills';   // the palette's Skills group (issue #102): the same shape GET /api/skills answers
   else if (bare === '/api/agents') name = 'agents';   // the launcher's option schemas (v0.5.13); the same shape GET /api/agents answers

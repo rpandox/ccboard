@@ -133,6 +133,17 @@ def _quiet_box(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_tailscale(monkeypatch):
+    """The node id and name read `tailscale status --json` through one seam (app/nodes.py _ts_status): no test runs the real command, and each test
+    starts with no id, no Tailscale reading and an empty hello limiter. tests/test_nodes_card.py patches the seam with a fake reading."""
+    from app import nodes
+    monkeypatch.setattr(nodes, "_ts_status", lambda: None)
+    nodes.reset()
+    yield
+    nodes.reset()
+
+
+@pytest.fixture(autouse=True)
 def _stub_clone_dns(monkeypatch):
     """The real resolver is never used: every clone host name 'resolves' to one public address (the clone URL guard resolves names,
     issue #22), and the answer cache starts empty. tests/test_clone_url_guard.py patches projects.getaddrinfo with its own tables."""

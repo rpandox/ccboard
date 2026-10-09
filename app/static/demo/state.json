@@ -2263,6 +2263,23 @@
     "duration_s": 41.7
   },
   "node_name": "box",
+  "node": {
+    "app": "ccboard",
+    "api": 1,
+    "node_id": "ts:nDEMO1CNTRL",
+    "name": "box",
+    "url": "https://box.example.ts.net",
+    "version": "0.5.29",
+    "os": {"system": "Linux", "release": "6.8.0-demo", "tailscale_os": "linux"},
+    "runtime": "systemd",
+    "now": "2026-10-03T03:00:00.000+00:00",
+    "lanes": {"cap": 3, "running": 1, "free": 2},
+    "load": {"load1": 1.32, "cores": 8, "cpu_pct": 18.4, "mem_pct": 43.1, "disk_pct": 41.2},
+    "sessions": {"live": 8, "working": 1, "needs_you": 4},
+    "capabilities": ["state", "tasks", "sessions", "stream"],
+    "tailscale": {"dns_name": "box.example.ts.net", "tags": [], "user_owned": true},
+    "handle": "local"
+  },
   "claude_defaults": {
     "subagent_model": "inherit",
     "fable_cap": 25.0

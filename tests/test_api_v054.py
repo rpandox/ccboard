@@ -324,7 +324,7 @@ def test_state_legacy_keys_are_unchanged(board):
     db().kv_set("rate_limits", {"five_hour": {"used_percentage": 42, "resets_at": 1791349200}})
     st = board.client.get("/api/state", headers=H).json()
     assert LEGACY_TOP <= set(st) and set(st) - LEGACY_TOP == {"agents", "setup", "deploy", "memory", "accounts", "codex_accounts", "usage_codex", "usage_refresh",
-                                                               "scan_slow", "claude_defaults"}      # claude_defaults: Phase G (v0.5.x) subagent model + Fable cap shown in Settings > Box, from settings only
+                                                               "scan_slow", "claude_defaults", "node"}      # node: nodes epic P1 (#133), the node card without agents and accounts; claude_defaults: Phase G (v0.5.x) subagent model + Fable cap shown in Settings > Box, from settings only
     assert st["scan_slow"] is False, "#31: false while the box is not busy"
     assert st["usage_refresh"] == {"running": False, "last": None}, "v0.5.17f: the Usage page's Refresh: a /usage ask in flight, and the newest one"
     assert st["usage_codex"] is None, "v0.5.12: the Codex account's windows (kv rate_limits_codex), null until a rollout reported them"
@@ -936,6 +936,7 @@ def test_state_is_gzipped_only_for_a_client_that_accepts_it(board):
     a, b = plain_r.json(), gz.json()
     for st in (a, b):
         st.pop("health")                                      # cpu_pct and at move between two reads
+        st.pop("node")                                        # so do the node card's `now` and load
     assert a == b, "the same state either way"
     for k in ("content-security-policy", "x-content-type-options", "referrer-policy", "cache-control"):
         assert plain_r.headers.get(k) == gz.headers.get(k), f"{k}: compression changes no security or caching header"

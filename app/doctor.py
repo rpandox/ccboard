@@ -677,7 +677,36 @@ def _c_tailscale(db) -> Outcome:
     return _pass(f"{where}: signed in, {ok}; {note}")
 
 
-MCP_STALE_DAYS = 90          # a device token not used for this long is worth a look
+def _c_node(db) -> Outcome:
+    """This board as a node (issues #131 and #133), read only: the node id is saved and still the one Tailscale reports, the name is a valid node
+    name, CCBOARD_PUBLIC_URL is set when other boards are configured (a peer needs an address to reach this one), and CCBOARD_NODE_LANES is a
+    whole number. Nothing is written here; the id file is only created by the board's own first request for the id."""
+    from . import health, nodes
+    try:
+        rep = nodes.id_report()
+    except Exception as e:
+        return _warn(f"the node id could not be read ({e.__class__.__name__})", fix("Check that the data directory is writable by the board"))
+    if rep["drifted"]:
+        return _warn(f"the saved node id ({rep['id']}) is not the id Tailscale reports now ({rep['ts_id']}): this device was registered again",
+                     fix("Reset the node id (remove the node-id file in the data directory and restart the board); every pair must be made again afterwards"))
+    problems = []
+    if settings.node_name and nodes.display_name() != settings.node_name:
+        problems.append(("CCBOARD_NODE_NAME is not a valid node name (letters, digits, - or _, at most 41 characters), so the shown name is " + nodes.display_name(),
+                         fix("Set CCBOARD_NODE_NAME in /etc/ccboard/env to letters, digits, - or _ and restart the board")))
+    if getattr(settings, "node_lanes_bad", False):
+        problems.append(("CCBOARD_NODE_LANES is not a whole number from 0 to 999, so the default 3 is used",
+                         fix("Set CCBOARD_NODE_LANES in /etc/ccboard/env to a whole number (0 means no limit) and restart the board")))
+    if health.parse_nodes(settings.nodes_raw) and not settings.public_url:
+        problems.append(("other nodes are configured but CCBOARD_PUBLIC_URL is empty, so they cannot be told this board's address",
+                         fix("Set CCBOARD_PUBLIC_URL in /etc/ccboard/env (the board's https address on the tailnet) and rerun ./install.sh")))
+    if problems:
+        return _warn("; ".join(t for t, _ in problems), problems[0][1])
+    cap = int(getattr(settings, "node_lanes", 3))
+    return _pass(f"node {nodes.display_name()}, id {rep['id']} ({'from Tailscale' if rep['kind'] == 'tailscale' else 'random, kept in the data directory'}); "
+                 + (f"{cap} lanes advised" if cap else "no lane limit advised"))
+
+
+MCP_STALE_DAYS = 90         # a device token not used for this long is worth a look
 MCP_EXPIRY_WARN_DAYS = 7     # a device token that expires within this many days is about to stop working
 
 
@@ -1414,6 +1443,7 @@ for _id, _group, _label, _fn in (
 del _id, _group, _label, _fn
 register("hook-helpers", "claude", "Hook helpers (curl, python3)", _c_hook_helpers)   # issue #121
 register("tailscale", "box", "Tailscale", _c_tailscale)   # issue #126
+register("node", "box", "This board as a node", _c_node)   # issue #133
 register_provider("memory", MEM_GROUP, memory_checks)       # claude-mem (v0.5.10): one probe, seven checks
 register_provider("codex", CODEX_GROUP, codex_checks)       # the Codex adapter's checks (v0.5.11)
 if plat.IS_MACOS:                                            # issue #117: the macOS checks (app/doctor_macos.py) exist on a Mac only; a Linux board lists none

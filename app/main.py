@@ -28,7 +28,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, nodes, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import codex_discovery
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -144,6 +144,10 @@ async def lifespan(app: FastAPI):
         push.ensure_keys()
     except Exception as e:  # pywebpush missing or unwritable data dir: the board still works
         log.warning("web push disabled: %s", e)
+    try:                                                  # the node id is settled at the first start, not by the first poll that happens to ask (nodes epic, #133)
+        nodes.node_id()
+    except Exception as e:
+        log.warning("node id could not be read: %s", e.__class__.__name__)
     poller = usage.Poller(db)
     poller.start()
     sampler = samples.Sampler(db, health_fn=_sampler_health, counts_fn=_sampler_counts)
@@ -290,6 +294,11 @@ async def auth_middleware(request: Request, call_next):
         if not health.check_hub_token(request.headers.get(health.HUB_HEADER)):
             return JSONResponse({"error": "bad hub token"}, status_code=403)
         request.state.user = "hub"
+        return await call_next(request)
+    if request.url.path == "/api/node/hello" and request.method == "GET":
+        # The one route that answers with no identity (issue #133): three fixed keys, rate limited per source in the handler. Every other /api/node* route
+        # (the card, the summary) still needs an identity, a hook token or the legacy hub token (the summary only).
+        request.state.user = None
         return await call_next(request)
     if request.url.path in ("/api/hook", "/api/permission", "/api/deploy/gate"):
         # Hooks run on the box itself (no Tailscale identity); they carry the local token instead.
@@ -569,6 +578,7 @@ def build_state(user: str) -> dict:
     st["nodes"] = db.kv_get(health.KV_NODES)
     st["backup"] = health.backup_status()
     st["node_name"] = settings.node_name or st["health"]["host"]
+    st["node"] = nodes.card(db, health_snap=st["health"], sessions=None if st.get("tmux_down") else _state_sessions(st["projects"]), full=False)    # the node card without agents and accounts (issue #133)
     st["claude_defaults"] = {"subagent_model": settings.subagent_model or "inherit", "fable_cap": settings.headless_fable_cap}     # CCBOARD_SUBAGENT_MODEL, CCBOARD_HEADLESS_FABLE_CAP: shown in Settings > Box
     st["rate_limited"] = _rate_limited_view()
     st["scheduler"] = {**scheduler.quota_state(db), "codex": scheduler.quota_state(db, "codex")}      # Codex's own window and back-off ride along: a Codex job never waits on Claude's
@@ -578,6 +588,17 @@ def build_state(user: str) -> dict:
         st["dev"] = {"sandboxed": settings.dev_sandboxed()}
     st["setup"] = _setup_state(st)
     return st
+
+
+def _state_sessions(projs) -> list[dict]:
+    """Every live session of the project scan (repo sessions, the project folder's, and the orphans), for the node card's counts."""
+    out = []
+    for p in projs or []:
+        for r in p.get("repos") or []:
+            out += r.get("sessions") or []
+        out += (p.get("root") or {}).get("sessions") or []
+        out += p.get("orphan_sessions") or []
+    return out
 
 
 def _fable_view(j: dict) -> dict | None:
@@ -2005,6 +2026,8 @@ def api_task_dispatch(tid: int, body: DispatchIn | None = None):
         gate = taskflow.limit_gate(db, agent=_task_agent(body.agent or t.get("agent"))) if isinstance(res, dict) else None
         if gate:                                             # a hand dispatch is never held by the window, only warned
             res["limit_warning"] = gate
+        if isinstance(res, dict) and res.get("phase") == "running" and not body.session and (warn := nodes.lane_warning(db)):
+            res["lane_warning"] = warn                       # more lanes than CCBOARD_NODE_LANES: advice for the toast, never a refusal
         return res
 
 
@@ -4019,6 +4042,25 @@ def api_health():
 @app.get("/api/node/summary")
 def api_node_summary():
     return _node_summary()
+
+
+@app.get("/api/node/hello")
+def api_node_hello(request: Request):
+    """The probe another board sends before it asks anything else (issue #133). No identity: exactly {app, api, node_id}, nothing else (not the
+    version, not the name). 30 per minute per source address (nodes.caller_addr: X-Forwarded-For counts only from a loopback connection);
+    over that, 429 with Retry-After."""
+    ok, wait = nodes.hello_limiter.allow(nodes.caller_addr(request.client.host if request.client else None, request.headers.get("x-forwarded-for")))
+    if not ok:
+        return JSONResponse({"error": "too many requests"}, status_code=429, headers={"Retry-After": str(wait), "Cache-Control": "no-store"})
+    return JSONResponse(nodes.hello(), headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@app.get("/api/node")
+def api_node():
+    """This board's node card (issue #133): who it is, what it runs on, its agents and accounts with their windows, how loaded it is and how many
+    lanes are free. Unreadable parts are null. A paired node's token with scope `read` will open it too (issue #135)."""
+    sessions, down = _merged_sessions()
+    return nodes.card(db, health_snap=health.snapshot(consumer="node"), sessions=None if down else sessions.values())
 
 
 @app.get("/api/search")

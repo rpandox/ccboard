@@ -20,7 +20,16 @@ const ROUTES = [
   { id: 'session', re: /^\/s\/([A-Za-z0-9_-]+)$/, params: ['tmux'] },
 ];
 
+/* Another node's addresses (the grammar of nodes.js): a handle is [a-z0-9][a-z0-9-]{0,30} and never 'local'; this board's own items keep the unqualified routes above.
+   Kept apart from ROUTES (the twelve pages of the shell): these three ids share one page until a node is paired (notPairedPage below). */
+const NODE_ROUTES = [
+  { id: 'node', re: /^\/n\/(?!local$)([a-z0-9][a-z0-9-]{0,30})$/, params: ['node'] },
+  { id: 'node-session', re: /^\/n\/(?!local\/)([a-z0-9][a-z0-9-]{0,30})\/s\/([A-Za-z0-9_-]{1,200})$/, params: ['node', 'tmux'] },
+  { id: 'node-task', re: /^\/n\/(?!local\/)([a-z0-9][a-z0-9-]{0,30})\/t\/([0-9]{1,12})$/, params: ['node', 'id'] },
+];
+
 const ROUTE_PARAM_RE = /^[A-Za-z0-9_-]+$/;
+const NODE_HANDLE_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
 const LEGACY_HASH_RE = /^#s=([A-Za-z0-9_-]+)$/;
 
 function parseHash(hash) {
@@ -32,7 +41,7 @@ function parseHash(hash) {
   const path = q >= 0 ? h.slice(0, q) : h;
   const query = {};
   if (q >= 0) for (const [k, v] of new URLSearchParams(h.slice(q + 1))) query[k] = v;
-  for (const r of ROUTES) {
+  for (const r of ROUTES.concat(NODE_ROUTES)) {
     const m = r.re.exec(path);
     if (!m) continue;
     const params = {};
@@ -59,6 +68,12 @@ function buildHash(id, params, query) {
   if (id === 'home') h = '#/';
   else if (id === 'project') h = '#/p/' + need('project') + (opt('repo') ? '/' + opt('repo') : '');
   else if (id === 'session') h = '#/s/' + need('tmux');
+  else if (id === 'node' || id === 'node-session' || id === 'node-task') {
+    if (!NODE_HANDLE_RE.test(need('node')) || need('node') === 'local') throw new Error('bad route param');
+    h = '#/n/' + need('node');
+    if (id === 'node-session') h += '/s/' + need('tmux');
+    else if (id === 'node-task') { if (!/^[0-9]{1,12}$/.test(need('id'))) throw new Error('bad route param'); h += '/t/' + need('id'); }
+  }
   else if (id === 'memory') h = '#/memory' + (opt('project') ? '/' + opt('project') : '');
   else if (id === 'onboarding') {
     if (opt('step') && opt('step') !== 'project') throw new Error('bad route param');
@@ -426,6 +441,29 @@ function pageToast(text, kind) {
   ui.notice = text;
   if (typeof renderBanner === 'function') renderBanner();
 }
+
+/* A node address (#/n/<handle>[/s/<tmux> | /t/<id>]) for a node this board does not know: a plain page that says so and links Settings, Nodes. The hub phase registers the
+   real node, peek and task pages over these three ids (pages/node.js, lazy); until a node is paired every handle is unknown, so nothing here ever calls a node. */
+function notPairedPage() {
+  let host = null;
+  const draw = (route) => {
+    const p = (route && route.params) || {};
+    host.textContent = '';
+    host.append(pageEmpty('info-sign','This node is not paired', `Nothing is paired as "${p.node || ''}" on this board. Pair it in Settings, then Nodes.`),
+      el('div', { class: 'actions' }, el('a', { class: 'btn', href: '#/settings?sec=nodes', text: 'Open Settings, Nodes' })));
+  };
+  return {
+    title: 'Node not paired',
+    mount(root, route) { host = el('div', { class: 'page-narrow not-paired', role: 'status' }); root.append(host); draw(route); },
+    update() {},
+    onRoute(route) { if (host) draw(route); },
+    unmount() { host = null; },
+  };
+}
+
+registerPage('node', notPairedPage());
+registerPage('node-session', notPairedPage());
+registerPage('node-task', notPairedPage());
 
 if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('hashchange', route);
 

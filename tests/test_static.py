@@ -528,7 +528,7 @@ from collections import Counter  # noqa: E402
 INDEX = STATIC / "index.html"
 SKELETON_IDS = ("topbar", "sidebar", "main", "banner", "page", "dock", "bnav", "drawer", "sheet", "helpdlg", "toasts")
 SCRIPT_ORDER = ["/static/" + n for n in (            # the first-paint set (issue #103): the shell and the pages the shell reads from (Home, Inbox, Widgets, Tasks, Agents, Search, the session peek, the placeholders). Everything else is a lazy bundle (app/static/lazy.js)
-    "core.js", "components.js", "keymap.js", "live.js", "lazy.js", "shell.js", "router.js",
+    "core.js", "nodes.js", "components.js", "keymap.js", "live.js", "lazy.js", "shell.js", "router.js",       # nodes.js (Ref, definition-only; issue #137) right after core.js: every key below is built through it
     "pages/home.js", "pages/inbox.js", "pages/widgets.js", "pages/tasks.js", "pages/agents.js", "pages/search.js",
     "pages/session.js", "pages/placeholders.js", "main.js")]
 STYLE_ORDER = ["/static/vendor/blueprint/blueprint.css", "/static/vendor/blueprint/blueprint-icons.css", "/static/tokens.css",
@@ -677,7 +677,7 @@ def test_index_dialogs_are_empty_in_the_html():
 DEMO_DIR = STATIC / "demo"
 DEMO_FILES = ("state.json", "skills.json", "search.json", "tree.json", "file.json", "series.json", "series_events.json", "usage_summary.json", "memory.json",
               "agents.json", "doctor.json", "memory_health.json", "memory_prefs.json", "memory_observations.json", "memory_summaries.json",
-              "memory_search.json", "memory_timeline.json", "memory_palace.json", "memory_states.json")
+              "memory_search.json", "memory_timeline.json", "memory_palace.json", "memory_states.json", "node.json")
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+--[A-Za-z0-9_-]+--[A-Za-z0-9_-]+$")
 KANBAN = ("backlog", "in_progress", "needs_you", "done", "pr", "merged")
 DEMO_HEADERS = {"Tailscale-User-Login": "alice@example.com"}

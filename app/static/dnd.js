@@ -8,7 +8,9 @@
               mark one explicitly (a grip node carrying data-task and draggable=true inside the card works too: the whole card is the drag image).
      targets  any node with [data-drop]; the attributes say what it is, never the class:
                 data-drop="lane"    data-agent="claude|codex"  [data-project=<name>]   drop = a new session of that agent
-                data-drop="session" data-tmux=<tmux name>                              drop = hand the prompt to that session
+                data-drop="session" data-tmux=<tmux name> [data-node=<handle>]         drop = hand the prompt to that session (data-node only on a session of
+                                                                                       another node: a target is its Ref.key, so one name on two nodes is two
+                                                                                       targets; the drop refuses a remote one until the relay phase)
               Session rows (agents.js sessionCard, the sidebar's s-row), the dispatch bar's lanes and chips (Dnd.laneBar, mounted by home.js renderTasks and
               by components.js makeTaskBoard), and later quad tiles and the dock header carry them. Dnd.bind(node, spec) sets them and installs the listeners;
               Dnd.bind(root) only installs.
@@ -84,7 +86,7 @@ Dnd.sessions = function (st) {
 
 Dnd.index = function (st) {
   const m = new Map();
-  for (const s of Dnd.sessions(st || Dnd.state())) if (s && s.tmux) m.set(s.tmux, s);
+  for (const s of Dnd.sessions(st || Dnd.state())) if (s && s.tmux) m.set(Ref.key(s), s);      // by Ref.key: the same name on two nodes is two entries
   return m;
 };
 
@@ -94,7 +96,9 @@ Dnd.agentLabel = function (agent) { return agent === 'codex' ? 'Codex' : agent =
 Dnd.targetOf = function (node) {
   const kind = node.getAttribute('data-drop');
   if (kind === 'lane') return { kind, agent: node.getAttribute('data-agent') || 'claude', project: node.getAttribute('data-project') || '' };
-  return { kind: 'session', tmux: node.getAttribute('data-tmux') || '' };
+  const tmux = node.getAttribute('data-tmux') || '';
+  const from = Ref.nodeOf(node.getAttribute('data-node'));                    // data-node is absent on this board's own rows: their target is what it always was
+  return from === null ? { kind: 'session', tmux } : { kind: 'session', tmux, node: from };
 };
 
 /* ---------- the accept rules ---------- */
@@ -119,8 +123,9 @@ Dnd.verdict = function (task, target, st, idx) {
     }
     return { ok: true, kind: 'lane', agent: target.agent, note: '', autoClose: true };
   }
-  const s = (idx || Dnd.index(cur)).get(target.tmux);
+  const s = (idx || Dnd.index(cur)).get(Ref.key(target));
   if (!s) return no('unknown session');
+  if (Ref.nodeOf(s) !== null) return no('on another node');                 // the relay (a later phase) hands work over; a drop must never reach this board's session of the same name
   const stt = s.state || 'unknown';
   if (stt === 'ended') return no('session ended');
   const sAgent = Dnd.agentOf(s);
@@ -339,6 +344,7 @@ Dnd.bind = function (node, spec) {
   if (node && spec && typeof node.setAttribute === 'function') {
     if (spec.drop) node.setAttribute('data-drop', spec.drop);
     if (spec.tmux) node.setAttribute('data-tmux', spec.tmux);
+    if (spec.node) node.setAttribute('data-node', spec.node);
     if (spec.agent) node.setAttribute('data-agent', spec.agent);
     if (spec.project) node.setAttribute('data-project', spec.project);
   }
@@ -537,7 +543,7 @@ Dnd.laneBar = function (opts) {
     const node = el('div', { class: 'dnd-lane', 'data-drop': 'lane', 'data-agent': agent, 'data-project': project || null, 'data-lane': agent },
       el('span', { class: 'dnd-lane-head' }, agentGlyph(agent), el('strong', { text: Dnd.agentLabel(agent) }), el('span', { class: 'dim dnd-lane-hint', text: 'new session' })),
       chips);
-    const list = makeKeyedList(chips, { key: (s) => s.tmux, create: (s) => Dnd.chip(s), patch: (n, s) => n.ccPatch(s) });
+    const list = makeKeyedList(chips, { key: (s) => Ref.key(s), create: (s) => Dnd.chip(s), patch: (n, s) => n.ccPatch(s) });
     lanes[agent] = { node, chips, list };
     bar.append(node);
   }
@@ -563,7 +569,9 @@ Dnd.laneBar = function (opts) {
 Dnd.chip = function (s) {
   const slot = el('span', { class: 'dnd-chip-g' });
   const name = el('span', { class: 'dnd-chip-name mono' });
-  const node = el('a', { class: 'dnd-chip', 'data-drop': 'session', 'data-tmux': s.tmux, draggable: 'false', href: typeof taskPeekHash === 'function' ? taskPeekHash(s.tmux) : '#' }, slot, name);
+  const remote = Ref.nodeOf(s) !== null;
+  const node = el('a', { class: 'dnd-chip', 'data-drop': 'session', 'data-tmux': s.tmux, 'data-node': remote ? Ref.nodeOf(s) : null, draggable: 'false',
+    href: remote ? (Ref.hash(s) || '#') : (typeof taskPeekHash === 'function' ? taskPeekHash(s.tmux) : '#') }, slot, name);
   node.ccPatch = function (s2) {
     const key = s2.state || 'unknown';
     if (node._k !== key) { node._k = key; slot.textContent = ''; slot.append(stateGlyph(key)); }

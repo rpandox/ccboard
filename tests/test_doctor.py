@@ -2437,3 +2437,61 @@ def test_claude_unattended_reads_the_cached_probe_and_never_starts_a_process(new
     assert c["status"] == "warn" and "may stall" in c["detail"] and "Allowed tools" in c["fix"]["text"] and c["fix"]["cmd"] == "claude update"
     world.claude_exe = None
     assert newc("claude-unattended")["status"] == "skip"
+
+
+# ------------------------------------------------------------------ nodes epic P1 (issue #133): the `node` check (group box), read only
+
+NODE_CHECK = next(c for c in doctor.CHECKS if c[0] == "node")
+
+
+@pytest.fixture
+def node_check(monkeypatch):
+    from app import nodes
+
+    def run():
+        monkeypatch.setattr(doctor, "CHECKS", [NODE_CHECK])
+        out = doctor.run("box", refresh=True)
+        assert [c["id"] for c in out["checks"]] == ["node"]
+        return out["checks"][0]
+    monkeypatch.setattr(settings, "node_name", "")
+    monkeypatch.setattr(settings, "node_lanes", 3)
+    monkeypatch.setattr(settings, "node_lanes_bad", False)
+    monkeypatch.setattr(settings, "nodes_raw", "")
+    monkeypatch.setattr(settings, "public_url", "")
+    nodes.reset()
+    return run
+
+
+def test_the_node_check_is_registered_in_the_box_group_and_the_baseline_does_not_list_it():
+    assert NODE_CHECK[1] == "box" and NODE_CHECK[2] == "This board as a node"
+    assert "node" not in BUILTIN_IDS
+
+
+def test_the_node_check_passes_on_a_single_board_and_says_who_it_is(node_check, monkeypatch):
+    monkeypatch.setattr(settings, "node_name", "node-a")
+    c = node_check()
+    assert c["status"] == "pass" and "node node-a" in c["detail"] and "3 lanes advised" in c["detail"] and c["fix"] is None
+    assert re.search(r"id n_[0-9a-f]{16} \(random, kept in the data directory\)", c["detail"])
+    monkeypatch.setattr(settings, "node_lanes", 0)
+    assert "no lane limit advised" in node_check()["detail"]
+
+
+def test_the_node_check_warns_for_a_bad_name_bad_lanes_or_peers_without_a_public_url(node_check, monkeypatch):
+    monkeypatch.setattr(settings, "node_name", "bad name!")
+    c = node_check()
+    assert c["status"] == "warn" and "CCBOARD_NODE_NAME" in c["detail"] and "bad-name" in c["detail"] and "/etc/ccboard/env" in c["fix"]["text"]
+    monkeypatch.setattr(settings, "node_name", "node-a")
+    monkeypatch.setattr(settings, "node_lanes_bad", True)
+    c = node_check()
+    assert c["status"] == "warn" and "CCBOARD_NODE_LANES" in c["detail"] and "whole number" in c["fix"]["text"]
+    monkeypatch.setattr(settings, "node_lanes_bad", False)
+    monkeypatch.setattr(settings, "nodes_raw", "other=https://other.example.ts.net:8443")
+    c = node_check()
+    assert c["status"] == "warn" and "CCBOARD_PUBLIC_URL is empty" in c["detail"]
+    monkeypatch.setattr(settings, "public_url", "https://node-a.example.ts.net")
+    assert node_check()["status"] == "pass"
+
+
+def test_the_node_check_writes_nothing_but_the_id_the_board_would_write_anyway(node_check):
+    node_check()
+    assert sorted(p.name for p in settings.data_dir.iterdir() if p.name.startswith("node")) == ["node-id"]

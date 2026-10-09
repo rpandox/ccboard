@@ -227,6 +227,14 @@ def test_launch_options(client, projects_dir, fake_tmux, monkeypatch):
     assert client.post("/api/projects/shop/repos/api/tasks", json={"title": "t2", "prompt": "p", "permission_mode": "bypassPermissions"}, headers=H).status_code == 400
 
 
+def test_state_carries_the_node_card_and_keeps_node_name(client, projects_dir):
+    """Nodes epic P1 (#133): the one key a single board gains is `node` (the card without agents and accounts, plus handle 'local'); node_name stays."""
+    st = client.get("/api/state", headers=H).json()
+    assert st["node"]["handle"] == "local" and "agents" not in st["node"] and "accounts" not in st["node"]
+    assert st["node"]["node_id"].startswith("n_") and st["node_name"]
+    assert st["nodes"] is None, "the v0.4 hub strip is still its own key (null while no CCBOARD_NODES board is polled)"
+
+
 def test_state_carries_shell_version(client, projects_dir):
     from app import main
     v = client.get("/api/state", headers=H).json()["version"]
