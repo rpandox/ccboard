@@ -881,6 +881,7 @@ Quad.mount = function (root, route) {
     tile.node.addEventListener('pointerdown', () => { touched(); setActive(tmux); }, true);
     tile.node.addEventListener('focusin', () => setActive(tmux));                // ttyd focuses its own terminal on load: that is no use of the tile
     if (typeof Dnd !== 'undefined' && typeof Dnd.bind === 'function') Dnd.bind(tile.node, { drop: 'session', tmux });      // a backlog card dropped on the tile is handed to the session
+    else if (typeof Lazy !== 'undefined') Lazy.later('dnd', () => { if (typeof Dnd !== 'undefined') Dnd.bind(tile.node, { drop: 'session', tmux }); });     // dnd.js is lazy (lazy.js)
     if (typeof ResizeObserver === 'function') {
       tile.ro = new ResizeObserver((entries) => {
         const r = entries && entries[0] && entries[0].contentRect;

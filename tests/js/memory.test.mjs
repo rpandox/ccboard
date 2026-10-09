@@ -217,7 +217,7 @@ test('a narrative that contains markup is shown as text, with pre-wrap, and neve
   assert.equal(text(item.querySelector('.mem-file')), '<svg onload=1>.ts');
   for (const tag of ['img', 'i', 'u', 'script', 'svg']) assert.equal(qa(m.w, tag).length, 0, `<${tag}> from data must not exist`);
   assert.equal(qa(m.w, '.mem-wing b').length, 0, '<b> from data must not exist');
-  assert.match(fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8'), /\.mem-narr \{[^}]*white-space:pre-wrap/);
+  assert.match(fs.readFileSync(path.join(STATIC, 'pages', 'memory.css'), 'utf8'), /\.mem-narr \{[^}]*white-space:pre-wrap/);
 });
 
 test('file chips link to code-server only when the path resolves inside the wing\'s repo', async () => {
@@ -747,7 +747,7 @@ test('gotchas strip: on a narrow screen it is one line with the rest behind a ta
   more.click();
   assert.equal(s.getAttribute('data-open'), 'true');
   assert.equal(text(more), 'fewer');
-  assert.match(fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8'), /\.mem-gotchas\[data-open=false\] \.mem-gotcha:nth-child\(n\+2\) \{ display:none/);
+  assert.match(fs.readFileSync(path.join(STATIC, 'pages', 'memory.css'), 'utf8'), /\.mem-gotchas\[data-open=false\] \.mem-gotcha:nth-child\(n\+2\) \{ display:none/);
 });
 
 test('gotchas strip on a touch screen opens the drawer as a sheet and gives the focus back to the gotcha', () => {
@@ -800,7 +800,7 @@ test('memory.js writes no style, no innerHTML, names no worker address and uses 
 });
 
 test('the type bar is a ladder of classes: every width class the code can produce exists in pages.css', () => {
-  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const css = fs.readFileSync(path.join(STATIC, 'pages', 'memory.css'), 'utf8');
   for (let n = 5; n <= 100; n += 5) assert.match(css, new RegExp(`\\.mem-bar \\.mem-w${n} \\{ flex:0 0 ${n}%; \\}`), `mem-w${n}`);
   const { w } = memWorld();
   for (const f of [0, 0.01, 0.049, 0.5, 0.97, 1]) {

@@ -1,0 +1,176 @@
+/* ccboard Memory page styles (pages/memory.js; also the project page's Memory tab and strip, the Settings and Usage tiles), split out of pages.css (issue #103): loaded with pages/memory.js (lazy.js).
+   .lx-form .lx-mem and .pj-gotchas (min-width only) stay in pages.css: their hosts exist before the script does. */
+
+/* ===== v0.5.20 Memory page (pages/memory.js): header, tile, tabs, palace, timeline, summaries, search, gotchas strip. Class ladders only: nothing here is written as a style. ===== */
+.memory-page { display:flex; flex-direction:column; gap:10px; padding-bottom:24px; min-width:0; }
+.memory-page .mem-pagehead { align-items:center; }
+.mem-k { margin:0; font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+.mem-pill { display:inline-flex; align-items:center; gap:6px; max-width:100%; min-height:24px; padding:0 10px; border:1px solid var(--line); border-radius:12px; font:12px/1.2 var(--font-mono); color:var(--fg-2); }
+.mem-pill-g { font-family:var(--font-glyph); }
+.mem-pill-t { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mem-pill.up .mem-pill-g { color:var(--mute-green); }
+.mem-pill.degraded, .mem-pill.stale { border-color:var(--mute-amber-bd); background:var(--mute-amber-bg); }
+.mem-pill.degraded .mem-pill-g, .mem-pill.stale .mem-pill-g { color:var(--mute-amber); }
+.mem-pill.down { border-color:var(--mute-rose-bd); background:var(--mute-rose-bg); }
+.mem-pill.down .mem-pill-g { color:var(--mute-rose); }
+.mem-controls { display:flex; flex-wrap:wrap; gap:10px 14px; align-items:flex-end; }
+.mem-fcell { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.mem-fcell select, .mem-fcell input { min-height:var(--row-btn); max-width:100%; }
+.mem-proj { flex:0 1 220px; }
+.mem-proj select { width:100%; }
+.mem-q { flex:1 1 240px; }
+.mem-q input { width:100%; }
+.mem-viewer { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; min-width:0; }
+.mem-viewer-cap { font-size:12px; overflow-wrap:anywhere; min-width:0; }
+.mem-viewer-link { min-height:var(--row-btn); }
+.mem-tile-host { min-width:0; }
+.mem-tile { padding:10px 12px; border:1px solid var(--line); border-radius:2px; background:var(--card); min-width:0; }
+.mem-tile-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px 10px; margin-bottom:6px; }
+.mem-krows { display:flex; flex-direction:column; }
+.mem-krow { display:grid; grid-template-columns:150px minmax(0,1fr); gap:2px 10px; padding:5px 0; border-top:1px solid var(--line-soft); font-size:13px; }
+.mem-kl { color:var(--dim); }
+.mem-kv { min-width:0; overflow-wrap:anywhere; }
+.mem-err { display:inline; }
+.mem-err.failing { color:var(--mute-amber); }
+.mem-err.recovered { color:var(--mute-green); }
+.mem-err-g { font-family:var(--font-glyph); margin-right:4px; }
+.mem-err-msg { color:var(--fg-2); display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom; }
+.mem-tile-foot { margin:6px 0 0; font-size:12px; }
+.mem-tile-link { margin-top:8px; min-height:var(--row-btn); }
+.mem-reason { margin:2px 0 6px; overflow-wrap:anywhere; }
+.mem-filters { display:flex; flex-wrap:wrap; align-items:flex-end; gap:8px 16px; }
+.mem-filters .mem-clear { min-height:var(--row-btn); }
+.mem-sess-chip { min-height:var(--row-btn); }
+.mem-new { display:flex; justify-content:center; }
+.mem-new-btn { min-height:var(--row-btn); border-color:var(--sig); background:rgba(77,208,225,.14); color:var(--fg); }
+.mem-notes { display:flex; flex-direction:column; gap:4px; }
+.mem-note { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 8px; padding:6px 10px; border:1px solid var(--line-soft); border-radius:2px; font-size:12px; line-height:1.5; color:var(--fg-2); }
+.mem-note.warn { border-color:var(--mute-amber-bd); background:var(--mute-amber-bg); }
+.mem-note-g { font-family:var(--font-glyph); }
+.mem-note-t { flex:1 1 200px; min-width:0; overflow-wrap:anywhere; }
+.mem-retry { min-height:var(--row-btn); }
+.mem-degraded { display:flex; gap:12px; padding:16px; border:1px solid var(--line); border-radius:2px; background:var(--card); }
+.mem-degraded-g { font:20px/1 var(--font-glyph); color:var(--mute-amber); }
+.mem-degraded[data-state=down] .mem-degraded-g { color:var(--mute-rose); }
+.mem-degraded-b { display:flex; flex-direction:column; align-items:flex-start; gap:6px; min-width:0; }
+.mem-degraded-b p { margin:0; }
+.mem-retry-note { font-size:12px; }
+.mem-counts { margin:0 0 6px; font-size:12px; }
+.mem-palace { display:flex; flex-direction:column; gap:12px; min-width:0; }
+.mem-wing { display:flex; flex-direction:column; gap:8px; padding:12px; border:1px solid var(--line); border-radius:2px; background:var(--card); min-width:0; }
+.mem-wing-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 12px; }
+.mem-wing-name { margin:0; font-size:15px; font-weight:600; overflow-wrap:anywhere; }
+.mem-wing-n { font-size:12px; }
+.mem-wing-keys { font-size:11px; overflow-wrap:anywhere; }
+.mem-bargroup { display:flex; flex-direction:column; gap:6px; }
+.mem-bar { display:flex; height:10px; overflow:hidden; border-radius:2px; background:var(--line-soft); }
+.mem-seg { display:block; height:100%; min-width:3px; border-right:1px solid var(--card); }
+.mem-seg.mem-seg-rest { flex:1 1 0; border-right:0; }
+.mem-bar .mem-w5 { flex:0 0 5%; }
+.mem-bar .mem-w10 { flex:0 0 10%; }
+.mem-bar .mem-w15 { flex:0 0 15%; }
+.mem-bar .mem-w20 { flex:0 0 20%; }
+.mem-bar .mem-w25 { flex:0 0 25%; }
+.mem-bar .mem-w30 { flex:0 0 30%; }
+.mem-bar .mem-w35 { flex:0 0 35%; }
+.mem-bar .mem-w40 { flex:0 0 40%; }
+.mem-bar .mem-w45 { flex:0 0 45%; }
+.mem-bar .mem-w50 { flex:0 0 50%; }
+.mem-bar .mem-w55 { flex:0 0 55%; }
+.mem-bar .mem-w60 { flex:0 0 60%; }
+.mem-bar .mem-w65 { flex:0 0 65%; }
+.mem-bar .mem-w70 { flex:0 0 70%; }
+.mem-bar .mem-w75 { flex:0 0 75%; }
+.mem-bar .mem-w80 { flex:0 0 80%; }
+.mem-bar .mem-w85 { flex:0 0 85%; }
+.mem-bar .mem-w90 { flex:0 0 90%; }
+.mem-bar .mem-w95 { flex:0 0 95%; }
+.mem-bar .mem-w100 { flex:0 0 100%; }
+.mem-legend { display:flex; flex-wrap:wrap; gap:2px 14px; margin:0; padding:0; list-style:none; font:12px/1.5 var(--font-mono); color:var(--fg-2); }
+.mem-swatch { display:inline-block; width:9px; height:9px; margin-right:5px; border-radius:2px; }
+.mem-type-bugfix { background:var(--mute-blue); }
+.mem-type-feature { background:var(--mute-green); }
+.mem-type-refactor { background:var(--mute-violet); }
+.mem-type-change { background:var(--mute-teal); }
+.mem-type-discovery { background:var(--mute-slate); }
+.mem-type-decision { background:var(--dim); }
+.mem-type-other { background:var(--dim-2); }
+.mem-rooms { display:flex; flex-wrap:wrap; gap:6px; }
+.mem-room { display:inline-flex; align-items:center; gap:6px; min-height:var(--row-btn); }
+.mem-room[aria-pressed=true] { border-color:var(--sig); background:rgba(77,208,225,.14); color:var(--fg); }
+.mem-room-n { color:var(--dim); }
+.mem-drawers, .mem-list { display:flex; flex-direction:column; min-width:0; }
+.mem-day { margin:14px 0 4px; padding-bottom:4px; border-bottom:1px solid var(--line); font-size:12px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+.mem-sec { margin:14px 0 4px; font-size:13px; font-weight:600; }
+.mem-item { display:flex; flex-direction:column; gap:3px; padding:6px 0; border-bottom:1px solid var(--line-soft); min-width:0; }
+.mem-item-head { font:inherit; cursor:pointer; }
+.mem-item-head:focus-visible, .mem-gotcha:focus-visible, .mem-room:focus-visible { outline:2px solid var(--sig); outline-offset:1px; }
+.mem-type { flex:none; padding:0 7px; border-radius:9px; font:11px/18px var(--font-mono); color:var(--bg-0); }
+.mem-title { font-weight:600; min-width:0; overflow-wrap:anywhere; }
+.mem-sub { font-size:12px; min-width:0; overflow-wrap:anywhere; }
+.mem-meta { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; font-size:12px; color:var(--dim); }
+.mem-repo { overflow-wrap:anywhere; }
+.mem-sess { min-height:var(--row-btn); }
+.mem-send { min-height:var(--row-btn); margin-left:auto; }
+.mem-body { display:flex; flex-direction:column; gap:8px; padding:4px 0 6px 4px; min-width:0; }
+.mem-narr { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; font-size:13px; line-height:1.55; color:var(--fg-2); }
+.mem-facts { margin:0; padding-left:18px; font-size:13px; color:var(--fg-2); }
+.mem-fact { overflow-wrap:anywhere; white-space:pre-wrap; }
+.mem-tags, .mem-files { display:flex; flex-wrap:wrap; gap:6px; }
+.mem-tag { padding:1px 8px; border:1px solid var(--line); border-radius:10px; font-size:11px; color:var(--dim); }
+.mem-file { max-width:100%; padding:1px 6px; border:1px solid var(--line-soft); border-radius:2px; font-size:11px; color:var(--fg-2); overflow-wrap:anywhere; }
+a.mem-file { color:var(--sig); }
+.mem-send-panel { display:flex; flex-direction:column; gap:6px; margin-top:4px; padding:8px 10px; border:1px solid var(--line); border-radius:2px; background:var(--card); }
+.mem-send-text { margin:0; max-height:140px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.5 var(--font-mono); color:var(--fg-2); }
+.mem-send-actions { display:flex; gap:8px; }
+.mem-send-actions button { min-height:var(--row-btn); }
+.mem-send-status.bad { color:var(--bad); }
+.mem-sum, .mem-prompt { display:flex; flex-direction:column; gap:4px; padding:10px 0; border-bottom:1px solid var(--line-soft); min-width:0; }
+.mem-sum-head { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; font-size:12px; color:var(--dim); }
+.mem-more { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; margin-top:12px; font-size:12px; }
+.mem-loadmore { min-height:var(--row-btn); }
+.mem-gotchas { display:flex; flex-direction:column; gap:2px; padding:4px 0; min-width:0; color:var(--dim); }
+.mem-gotcha-rows { display:flex; flex-direction:column; }
+.mem-gotchas[data-open=false] .mem-gotcha:nth-child(n+2) { display:none; }
+.mem-gotcha { font-size:13px; }
+.mem-gotcha-a { margin-left:auto; flex:none; font-size:12px; }
+.mem-gotcha-g { font-family:var(--font-glyph); color:var(--mute-amber); }
+.mem-gotcha-t { font-weight:500; min-width:0; overflow-wrap:anywhere; }
+.mem-gotcha-s { min-width:0; overflow-wrap:anywhere; }
+.mem-gotcha-more { align-self:flex-start; min-height:var(--row-btn); }
+.mem-gotcha-panel { padding:6px 0 2px 4px; }
+.mem-sheet-meta { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.mem-usage { margin-top:12px; }
+@media (max-width:599px) {
+  .mem-krow { grid-template-columns:minmax(0,1fr); }
+  .mem-proj, .mem-q { flex:1 1 100%; }
+  .mem-pill { max-width:100%; }
+}
+@media (pointer:coarse) { .mem-q input, .mem-fcell select, .mem-fcell input { font-size:16px; } }
+html.force-coarse .mem-q input, html.force-coarse .mem-fcell select, html.force-coarse .mem-fcell input { font-size:16px; }
+html.force-coarse .mem-item-head, html.force-coarse .mem-gotcha { min-height:var(--tap); }
+.pj-memory { display:flex; flex-direction:column; gap:10px; min-width:0; }
+.pj-memory-head { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; }
+.pj-memory-head .btn { min-height:var(--row-btn); }
+
+/* List rows (v0.5.20 polish): the gotcha rows and the drawer heads are buttons, but they read as rows of a list: left-aligned, icon or badge first, the dim detail,
+   the age at the right (own line on a phone), a hairline between rows and no box. The selector outranks the default button rule of style.css (0,4,0). */
+.bp5-button.mem-row.mem-row:not([class*=bp5-intent-]):not(.bp5-minimal) { display:flex; flex-wrap:wrap; align-items:baseline; justify-content:flex-start; gap:2px 10px; width:100%; min-height:var(--row-btn); padding:8px 2px; border:0; border-radius:0; background:transparent; box-shadow:none; text-align:left; color:var(--fg); }
+.bp5-button.mem-row.mem-row.mem-row:not([class*=bp5-intent-]):not(.bp5-minimal) > .bp5-button-text { display:contents; }
+.mem-gotcha-rows > .bp5-button.mem-row.mem-row:not([class*=bp5-intent-]):not(.bp5-minimal) { border-bottom:1px solid var(--line-soft); }
+.mem-gotcha-rows > .bp5-button.mem-row.mem-row:not([class*=bp5-intent-]):not(.bp5-minimal):last-child { border-bottom:0; }
+@media (pointer:coarse) { .bp5-button.mem-row.mem-row:not([class*=bp5-intent-]):not(.bp5-minimal) { min-height:var(--tap); } }
+html.force-coarse .bp5-button.mem-row.mem-row:not([class*=bp5-intent-]):not(.bp5-minimal) { min-height:var(--tap); }
+@media (max-width:599px) { .mem-gotcha-a { flex:1 0 100%; margin-left:0; } }
+.mem-viewer.hidden { display:none; }
+.mem-health { border:1px solid var(--line); border-radius:2px; background:var(--card); min-width:0; }
+.mem-health-sum { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 10px; min-height:var(--row-btn); padding:8px 12px; cursor:pointer; list-style:none; }
+.mem-health-sum::-webkit-details-marker { display:none; }
+.mem-health-sum::before { content:'▸'; font-family:var(--font-glyph); color:var(--dim); }
+.mem-health[open] > .mem-health-sum::before { content:'▾'; }
+.mem-health-line { min-width:0; overflow-wrap:anywhere; font-size:13px; }
+.mem-health-line.bad { color:var(--mute-rose); }
+.mem-health[data-state=degraded] .mem-health-line.bad, .mem-health[data-state=incompatible] .mem-health-line.bad { color:var(--mute-amber); }
+.mem-health > .mem-tile { border:0; border-top:1px solid var(--line-soft); border-radius:0; background:transparent; }
+@media (pointer:coarse) { .mem-health-sum { min-height:var(--tap); } }
+html.force-coarse .mem-health-sum { min-height:var(--tap); }

@@ -155,17 +155,15 @@ def test_script_order_core_first_main_last():
     assert idx[0] == "/static/core.js" and idx[-1] == "/static/main.js", idx
     assert idx[:3] == ["/static/core.js", "/static/components.js", "/static/keymap.js"], idx
     assert idx.index("/static/router.js") < idx.index("/static/pages/home.js") < idx.index("/static/main.js"), idx
-    assert idx.index("/static/palette.js") < idx.index("/static/shell.js"), idx
     assert idx.index("/static/pages/inbox.js") + 1 == idx.index("/static/pages/widgets.js") < idx.index("/static/pages/tasks.js"), \
         "pages/widgets.js (Widgets, definition-only) loads right after pages/inbox.js"
-    assert idx.index("/static/launcher.js") + 1 == idx.index("/static/tree.js") < idx.index("/static/palette.js"), \
-        "tree.js (Tree, definition-only) loads right after launcher.js"
-    assert idx.index("/static/pages/tasks.js") + 1 == idx.index("/static/pages/project.js") < idx.index("/static/pages/agents.js"), \
-        "pages/project.js loads right after pages/tasks.js"
+    assert idx.index("/static/live.js") + 1 == idx.index("/static/lazy.js") < idx.index("/static/router.js"), \
+        "lazy.js (Lazy, definition-only; issue #103) loads after live.js and before router.js, which asks it for a route's bundle"
     assert len(idx) == len(set(idx)), f"duplicate script tag: {idx}"
     assert idx == SCRIPT_ORDER, "index.html script order differs from the contract:\n  got      " + "\n  ".join(map(str, idx)) + "\n  expected " + "\n  ".join(SCRIPT_ORDER)
-    assert idx.index("/static/live.js") + 1 == idx.index("/static/termkit.js") < idx.index("/static/shell.js"), \
-        "termkit.js (TermKit, definition-only) loads right after live.js: the terminal dock (shell.js) and the quad page mount TermKit.termPane (v0.5.9)"
+    for lazy_file in ("launcher.js", "palette.js", "dnd.js", "tree.js", "termkit.js", "charts.js", "pages/project.js", "pages/settings.js", "pages/doctor.js",
+                      "pages/usage.js", "pages/quad.js", "pages/onboarding.js", "pages/memory.js"):
+        assert "/static/" + lazy_file not in idx, f"{lazy_file} is a lazy bundle (lazy.js): it must not be in the first-paint script set"
     assert _scripts("term.html") == TERM_SCRIPTS, _scripts("term.html")
 
 

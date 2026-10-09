@@ -297,6 +297,9 @@ function settingsMemBlock() {
   const err = el('span', { class: 'v bad', role: 'status' });
   const sends = el('ul', { class: 'set-mem-sends dim' });
   const tile = typeof memoryHealthTile === 'function' && typeof state !== 'undefined' && state && state.memory ? memoryHealthTile(state.memory, { link: true }) : null;     // v0.5.20 health tile (pages/memory.js)
+  if (typeof memoryHealthTile !== 'function' && typeof state !== 'undefined' && state && state.memory && typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.memory) {      // memory.js is lazy (lazy.js): only a box with claude-mem loads it for the tile
+    Lazy.load('memory').then(() => { if (settingsPage.refs && typeof memoryHealthTile === 'function') settingsFill('box', true); }, () => { /* no tile */ });
+  }
   const hasViewer = typeof state !== 'undefined' && state && state.config && typeof state.config.mem_viewer_url === 'string' && /^https:\/\//.test(state.config.mem_viewer_url);
   const wrap = el('div', { class: 'set-mem' },
     tile,
@@ -363,7 +366,10 @@ function backupPushText(bk) {
 const SETTINGS_EXT_NOTE = 'Codex threads of the last 14 days that were not started here. Open resumes one in a board session, in its folder.';
 
 function settingsModelCount(agent) {
-  if (typeof launcherSchema !== 'function') return 0;
+  if (typeof launcherSchema !== 'function') {          // launcher.js is a lazy bundle (lazy.js): its embedded catalogue is what is counted, so the Agents tab loads it once and repaints
+    if (typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.launcher && settingsPage.refs) Lazy.load('launcher').then(() => { if (settingsPage.refs) settingsFill('agents', true); }, () => { /* the row stays out */ });
+    return 0;
+  }
   const m = launcherSchema(agent).models;
   return Array.isArray(m) ? m.length : 0;
 }

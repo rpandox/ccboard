@@ -962,12 +962,14 @@ test('shell.css: the dock default, the flex column of the terminal dock, the han
   }
 });
 
-test('index.html loads termkit.js (the dock and the quad need TermKit) after live.js and before shell.js, and #dock is a hidden aside', () => {
+test('termkit.js is a lazy bundle (lazy.js, issue #103): index.html no longer loads it, the dock opens it on first use and the quad bundle needs it; #dock is a hidden aside', () => {
   const html = fs.readFileSync(path.join(STATIC, 'index.html'), 'utf8');
   const order = [...html.matchAll(/<script (?:defer )?src="([^"]+)"/g)].map((m) => m[1]);
   assert.ok(order.length > 5, 'the script tags were found');
-  assert.ok(order.indexOf('/static/termkit.js') > order.indexOf('/static/live.js'));
-  assert.ok(order.indexOf('/static/termkit.js') < order.indexOf('/static/shell.js'));
+  assert.ok(!order.includes('/static/termkit.js'), 'not in the first-paint script set');
+  const lazy = fs.readFileSync(path.join(STATIC, 'lazy.js'), 'utf8');
+  assert.match(lazy, /termkit: \{ js: \['\/static\/termkit\.js'\]/);
+  assert.match(lazy, /quad: \{ needs: \['termkit'\]/);
   assert.match(html, /<aside id="dock" class="hidden" aria-label="Terminal dock"><\/aside>/);
 });
 

@@ -14,20 +14,35 @@ function markStandalone() {
   return on;
 }
 
+/* palette.js is a lazy bundle (lazy.js): only a share needs it at boot, and only a share loads it. */
+function sharePossible(search) { return /[?&](text|url|share)=/.test(String(search || '')); }     // a bare title counts only with share=1
+
+function withPalette(fn) {
+  if (typeof Palette !== 'undefined') return fn();
+  if (typeof Lazy !== 'undefined') Lazy.run('palette', fn, 'the command palette');
+  return undefined;
+}
+
 /* A page or snippet shared to the installed app (the manifest's share_target, GET /?title=&text=&url=) opens the palette's "send to session" list
    with the text in its box. Once the first state is in, so the list has sessions to offer. */
 let shareOffered = { text: '', at: 0 };
 
 function offerShare(text) {
-  if (!text || typeof Palette === 'undefined') return;
-  if (text === shareOffered.text && Date.now() - shareOffered.at < 3000) return;   // a fresh launch hands over the same share twice: the address and launchQueue
-  shareOffered = { text, at: Date.now() };
-  Palette.open({ mode: 'send', text });
+  if (!text) return;
+  withPalette(() => {
+    if (typeof Palette === 'undefined') return;
+    if (text === shareOffered.text && Date.now() - shareOffered.at < 3000) return;   // a fresh launch hands over the same share twice: the address and launchQueue
+    shareOffered = { text, at: Date.now() };
+    Palette.open({ mode: 'send', text });
+  });
 }
 
 function openSharedText() {
-  if (typeof Palette === 'undefined' || typeof Palette.shareFromQuery !== 'function') return;
-  offerShare(Palette.shareFromQuery(location.search));
+  if (typeof Palette === 'undefined' && !sharePossible(location.search)) return;
+  withPalette(() => {
+    if (typeof Palette === 'undefined' || typeof Palette.shareFromQuery !== 'function') return;
+    offerShare(Palette.shareFromQuery(location.search));
+  });
 }
 
 /* The manifest says launch_handler focus-existing: with the app already open, a share or a shortcut does not navigate its window, the browser
@@ -38,9 +53,12 @@ function watchLaunches() {
   q.setConsumer((params) => {
     let u = null;
     try { u = new URL(params.targetURL); } catch (_) { return; }
-    const text = typeof Palette !== 'undefined' && typeof Palette.shareFromQuery === 'function' ? Palette.shareFromQuery(u.search) : null;
-    if (text) { offerShare(text); return; }
-    if (/^#\//.test(u.hash) && u.hash !== location.hash && typeof navigate === 'function') navigate(u.hash);
+    const go = () => { if (/^#\//.test(u.hash) && u.hash !== location.hash && typeof navigate === 'function') navigate(u.hash); };
+    if (typeof Palette === 'undefined' && !sharePossible(u.search)) { go(); return; }
+    withPalette(() => {
+      const text = typeof Palette !== 'undefined' && typeof Palette.shareFromQuery === 'function' ? Palette.shareFromQuery(u.search) : null;
+      if (text) offerShare(text); else go();
+    });
   });
 }
 
@@ -50,6 +68,7 @@ markStandalone();
 // The keyboard layer goes in before the shell: its listener then runs first, so a key it handles ('/' and '[' too) is already
 // defaultPrevented when the shell's own fallback listener sees it, and nothing fires twice.
 if (typeof Keymap !== 'undefined') Keymap.install();
+if (typeof Lazy !== 'undefined') Lazy.watchLinks();                // a pointer over a link to a lazy page starts loading it (lazy.js)
 if (typeof installShell === 'function') installShell();           // shell.js: topbar, sidebar, bottom nav, drawer, keys
 // Without shell.js (a partial deploy, a test page) the poll still needs a render() and the legacy header hooks: never shadow the shell's own.
 if (typeof render !== 'function') window.render = () => { updateCurrentPage(state); if (typeof renderBanner === 'function') renderBanner(); };

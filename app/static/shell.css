@@ -406,6 +406,7 @@ body.dnd-task iframe { pointer-events:none; }
 .dnd-bar { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:8px; margin:8px 0 10px; }
 .dnd-lane { display:flex; align-items:center; gap:10px; min-width:0; min-height:40px; padding:4px 10px; border:1px dashed var(--line-strong); border-radius:2px; background:var(--bg); }
 .dnd-lane.hidden { display:none; }
+.dnd-bar-slot { min-height:40px; margin:8px 0 10px; }                       /* the dispatch bar's room while dnd.js loads (lazy.js), so the board below does not jump */
 .dnd-lane-head { display:inline-flex; align-items:center; gap:6px; flex:0 0 auto; white-space:nowrap; }
 .dnd-lane-hint { font-size:11px; }
 .dnd-chips { display:flex; align-items:center; gap:6px; flex:1 1 auto; min-width:0; overflow-x:auto; scrollbar-width:thin; }
@@ -416,6 +417,8 @@ body.dnd-task iframe { pointer-events:none; }
 .dnd-lane.drop-ok.drop-over, .dnd-chip.drop-ok.drop-over { border-style:solid; }
 @media (pointer:coarse) { .dnd-bar { display:none; } }
 html.force-coarse .dnd-bar { display:none; }
+@media (pointer:coarse) { .dnd-bar-slot { display:none; } }
+html.force-coarse .dnd-bar-slot { display:none; }
 
 /* the confirm popover after a drop: a compact non-modal dialog next to the drop point */
 dialog.dnd-pop { position:fixed; inset:auto; margin:0; z-index:60; width:min(360px, calc(100vw - 16px)); max-width:none; max-height:calc(100vh - 16px); overflow:auto;

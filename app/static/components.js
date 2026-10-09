@@ -733,6 +733,27 @@ function longPress(node, onFire, opts) {
   return ctl;
 }
 
+/* ---- what the launcher remembers, readable without it (launcher.js is a lazy bundle, lazy.js): the saved choices of a repo, the repo a task last went to ---- */
+
+const TASK_KEY = (p, r) => `ccboard:task:${p.name}/${r.name}`;
+const TASK_LAST_KEY = (project) => `ccboard:task:last:${project}`;       // the repo a task was last started in, per project
+const TASK_LAST_ANY_KEY = 'ccboard:task:last';                          // and the {project, repo} of the last task anywhere: where '+ task' opens off a project page
+
+function taskLastRepo(project) { try { return localStorage.getItem(TASK_LAST_KEY(project)) || ''; } catch (_) { return ''; } }
+function taskSaveLastRepo(project, repo) {
+  try {
+    localStorage.setItem(TASK_LAST_KEY(project), repo);
+    localStorage.setItem(TASK_LAST_ANY_KEY, JSON.stringify({ project, repo }));
+  } catch (_) { /* storage may be unavailable */ }
+}
+/* The {project, repo} a task was last created in, on any page, or null (nothing saved, or not shaped like that). The caller checks it still exists. */
+function taskLastAny() {
+  try {
+    const v = JSON.parse(localStorage.getItem(TASK_LAST_ANY_KEY) || 'null');
+    return v && typeof v.project === 'string' && typeof v.repo === 'string' && v.project && v.repo ? { project: v.project, repo: v.repo } : null;
+  } catch (_) { return null; }
+}
+
 /* ---- the Move sheet: where does this Backlog card go (touch: a long press, the card's menu or the m key; a desktop card is dragged) ---- */
 
 /* What the repo's saved launch choices say, for the subtitle of a lane button ('opus · high · acceptEdits'); '' when nothing is saved. */
@@ -1011,6 +1032,7 @@ function makeTaskBoard(opts) {
   let sig = null;
   let bar = null;
   let barFor = null;
+  let dndAsked = false;
   return {
     node,
     update(tasks, st) {
@@ -1019,6 +1041,9 @@ function makeTaskBoard(opts) {
       if (o.lanes !== false && typeof Dnd !== 'undefined' && Dnd && typeof Dnd.laneBar === 'function') {
         if (!bar || barFor !== project) { bar = Dnd.laneBar({ project }); barFor = project; lanesHost.textContent = ''; lanesHost.append(bar); }
         bar.ccPatch(st);
+      } else if (o.lanes !== false && typeof Lazy !== 'undefined' && Lazy.wants('dnd')) {      // dnd.js is a lazy bundle (lazy.js): the bar's room is kept while it loads, then the board is drawn again
+        if (!lanesHost.firstChild) lanesHost.append(el('div', { class: 'dnd-bar-slot' }));
+        if (!dndAsked) { dndAsked = true; Lazy.load('dnd').then(() => { sig = null; taskRepaint(); }, () => { dndAsked = false; lanesHost.textContent = ''; }); }
       }
       const info = taskChainInfo(tasks);
       const ready = tasks.filter(taskIsBacklog).map((t) => taskSessionTargets(t, st).filter((x) => x.ok && x.same).map((x) => x.s.tmux));      // a backlog card's quick send follows the sessions

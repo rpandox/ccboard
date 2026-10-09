@@ -544,13 +544,13 @@ async function enablePush() {
   const reg = await navigator.serviceWorker.ready;
   const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
   await api('POST', '/api/push/subscribe', { subscription: sub.toJSON() });
-  setError(null); renderNotifyPanel();
+  setError(null); if (typeof renderNotifyPanel === 'function') renderNotifyPanel();      // settings.js (a lazy bundle) defines it; only its buttons call this
 }
 
 async function disablePush() {
   const sub = await pushSubscription();
   if (sub) { await api('DELETE', '/api/push/subscribe', { subscription: sub.toJSON() }); await sub.unsubscribe(); }
-  renderNotifyPanel();
+  if (typeof renderNotifyPanel === 'function') renderNotifyPanel();
 }
 
 function loadPrefs(key) { try { return JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch (_) { return {}; } }

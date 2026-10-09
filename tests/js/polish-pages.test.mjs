@@ -275,7 +275,7 @@ test('settings: every tab that has sections titles them with the same .set-h hea
   w.location.hash = '#/settings?sec=notify'; await tick();
   const notifyKeys = page(w).querySelectorAll('.settings-panel[data-sec=notify] .kv .k').map(text);
   for (const h of ['Web Push', 'Backup']) assert.ok(!notifyKeys.includes(h), `${h} is a heading now, not also a row label`);
-  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const css = fs.readFileSync(path.join(STATIC, 'pages', 'settings.css'), 'utf8');       // split out of pages.css (issue #103)
   const rule = /#page \.settings-page \.set-h\s*\{([^}]*)\}/.exec(css);
   assert.ok(rule);
   assert.match(rule[1], /font-size:\s*13px/);

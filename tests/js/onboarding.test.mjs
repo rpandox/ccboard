@@ -551,7 +551,7 @@ test('every control of the wizard has a label, a name or an aria-label; the step
   for (const g of a.querySelectorAll('.seg-ctl')) assert.ok(g.getAttribute('aria-label') || g.getAttribute('aria-labelledby'), 'unlabelled group');
   const src = fs.readFileSync(path.join(STATIC, 'pages', 'onboarding.js'), 'utf8');
   assert.doesNotMatch(src, /innerHTML|cssText|setAttribute\(\s*['"]style|\.style\./);
-  const css = fs.readFileSync(path.join(STATIC, 'pages.css'), 'utf8');
+  const css = fs.readFileSync(path.join(STATIC, 'pages', 'onboarding.css'), 'utf8');
   assert.match(css, /#page \.wiz \.wiz-prompt \{[^}]*min-height:120px/);
   assert.match(css, /@media \(max-width:599px\) \{\s*#page \.wiz \.wiz-seg \.seg-btn/);
 });

@@ -808,7 +808,8 @@ function sessionCard(s, opts) {
       glyphs, el('div', { class: 'rr-main' }, nameNode, where, age), rich ? el('div', { class: 'rr-metaline' }, meta, badges) : meta,
       el('div', { class: 'rr-last' }, o.perm ? permNote : null, promptNode, msgNode),
       el('div', { class: 'rr-actions' }, o.perm ? permBtns : null, openLink, killSlot, moreBtn), chips, sendRow, tailHost);
-    if (typeof Dnd !== 'undefined') Dnd.bind(node, { drop: 'session', tmux });      // a backlog card dropped on the row is handed to this session (dnd.js)
+    if (typeof Dnd !== 'undefined') Dnd.bind(node, { drop: 'session', tmux });
+    else if (typeof Lazy !== 'undefined') Lazy.later('dnd', () => { if (typeof Dnd !== 'undefined') Dnd.bind(node, { drop: 'session', tmux }); });     // dnd.js is lazy (lazy.js): bound once a board has loaded it      // a backlog card dropped on the row is handed to this session (dnd.js)
   }
 
   function patchPerm(pr) {
