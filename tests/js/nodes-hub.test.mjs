@@ -652,6 +652,14 @@ test('@box narrows Sessions and the tasks of other nodes to that node and filter
   assert.deepEqual(plain(w.run('Palette.nodePrefix("@build-box   fix the login")')), { node: 'build-box', rest: 'fix the login' });
 });
 
+test('a node cannot take another node\'s @handle by naming itself after it; a shared name names nobody; a start matches handles only', async () => {
+  const { w } = await ready([rec('evil', { name: 'build-box' }), rec('build-box'), rec('twin-a', { name: 'twin' }), rec('twin-b', { name: 'twin' })]);
+  assert.deepEqual(plain(w.run('Palette.nodePrefix("@build-box fix")')), { node: 'build-box', rest: 'fix' }, 'the exact handle wins over an earlier node that calls itself build-box');
+  assert.equal(w.run('Palette.nodePrefix("@twin")'), null, 'two nodes share the name: it names neither');
+  assert.deepEqual(plain(w.run('Palette.nodePrefix("@twin-b")')), { node: 'twin-b', rest: '' });
+  assert.deepEqual(plain(w.run('Palette.nodePrefix("@build")')), { node: 'build-box', rest: '' }, 'a start matches handles only: evil\'s name build-box does not make @build ambiguous');
+});
+
 test('a remote session\'s palette row uses Palette.sessionHash through Ref; Enter on the Open board row opens a plain https link with no opener', async () => {
   const { w } = await ready([rec('build-box')]);
   assert.equal(w.run("Palette.sessionHash({ tmux: 'shop--api--s1', node: 'build-box' })"), '#/n/build-box/s/shop--api--s1');

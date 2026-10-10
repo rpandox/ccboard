@@ -297,7 +297,10 @@ Palette.nodePrefix = function (query) {
   const rest = (m[2] || '').trim();
   if (tok === 'local' || tok === 'this') return { node: 'local', rest };
   const recs = Nodes.list();
-  let hit = recs.find((r) => r.handle === tok || String(r.name || '').toLowerCase() === tok);
+  // A handle is ours (the registry's); a name is what the node called itself when it paired. So an exact handle wins over every name, a name counts only when exactly
+  // one node has it, and a start matches handles only: a node cannot take another node's @handle by naming itself after it.
+  let hit = recs.find((r) => r.handle === tok);
+  if (!hit) { const named = recs.filter((r) => String(r.name || '').toLowerCase() === tok); if (named.length === 1) hit = named[0]; }
   if (!hit) { const some = recs.filter((r) => r.handle.startsWith(tok)); if (some.length === 1) hit = some[0]; }
   return hit ? { node: hit.handle, rest } : null;
 };
