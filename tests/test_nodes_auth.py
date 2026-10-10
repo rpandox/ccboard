@@ -132,7 +132,7 @@ def test_a_listed_path_with_an_unlisted_method_is_closed(board, wide_buckets, me
         assert r.status_code == 403 and r.json()["error"] == CLOSED, (method, path)
 
 
-@pytest.mark.parametrize("path", ["/api/nope", "/api/node/hello/x", "/api/nodes/discover", "/api/nodes/pair", "/api/nodes/pair-code", "/api/nodes", "/api/nodes/pairs",
+@pytest.mark.parametrize("path", ["/api/nope", "/api/node/hello/x", "/api/nodes/discover", "/api/nodes/pair", "/api/nodes/pair/confirm", "/api/nodes/pair-code", "/api/nodes", "/api/nodes/pairs",
                                   "/api/nodes/audit", f"/api/nodes/{PEER}/rotate", f"/api/nodes/{PEER}", "/api/hook", "/api/permission", "/api/deploy/gate",
                                   "/api/state", "/api/tasks", "/api/mcp/tokens", "/api/node/../state", "/api//state"])
 def test_a_node_token_is_refused_on_these_paths(board, wide_buckets, path):

@@ -11,7 +11,7 @@
 Kinds: identity (the Tailscale login on CCBOARD_ALLOWED_USERS), identity+csrf (that and X-CCBoard: 1), hook-token (the 0600
 <data dir>/hook-token only), identity+device-token (/mcp, issue #13), hub-token|identity (/api/node/summary), none (/api/node/hello,
 issue #133: exactly {app, api, node_id}, rate limited; nothing else under /api/node answers without auth), pair-code (POST /api/nodes/pair, issue #135: no
-identity, but X-CCBoard, no Origin, no disallowed identity header, a code), node-token (POST /api/node/rotate and /api/node/unpair: a paired node's token,
+identity, but X-CCBoard, no Origin, no disallowed identity header, a code; POST /api/nodes/pair/confirm, the callback that proves who is redeeming), node-token (POST /api/node/rotate and /api/node/unpair: a paired node's token,
 any scope; an owner's identity reaches a handler that refuses it). A paired node's token also opens the routes of nodes.NODE_ROUTES and nothing else
 (tests/test_nodes_auth.py walks every route). Besides these, the
 hook token also opens every other /api/* route without identity or X-CCBoard (local automation; accepted, see the report, F-A2).
@@ -159,6 +159,7 @@ EXPECTED = {
     ("POST", "/api/nodes/pair-code"): "identity+csrf",
     ("DELETE", "/api/nodes/pair-code"): "identity+csrf",
     ("POST", "/api/nodes/pair"): "pair-code",       # the other board's call with a code: no identity (a tagged board has none); X-CCBoard, no Origin, an allowed-or-absent identity, a body under 16 KB, 20 a minute per source
+    ("POST", "/api/nodes/pair/confirm"): "pair-code",   # the callback of the board being called: no identity; X-CCBoard, no Origin, 1 KB, 30 a minute per source; answers {node_id} only while this board's own add_node is in flight, else 404
     ("POST", "/api/nodes/{peer}/rotate"): "identity+csrf",
     ("DELETE", "/api/nodes/{peer}"): "identity+csrf",
     ("GET", "/api/nodes/discover"): "identity",   # the tailnet devices that may be nodes (issue #134); refresh=1 also needs X-CCBoard (it makes the board send requests), checked in the handler

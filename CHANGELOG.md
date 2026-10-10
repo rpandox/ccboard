@@ -8,6 +8,7 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 - Pairing two boards: Settings > Nodes > Create pairing code makes a one-time code (10 minutes by default, five wrong tries burn it) with the scopes you choose (read and tasks by default; sessions and permissions only if you tick them). On the other board, Add node takes the address and the code. Each board then holds a token for the other (`ccbnode_...`; the receiving board keeps only its hash), shown in Paired nodes and in "Who can control this node", with Rotate (the old token works 60 more seconds) and Remove or Revoke (works even when the other board is offline).
 - A node token opens only the node routes on a closed list, each with the scope it needs; it is never accepted on the hook, MCP or any other route, and the hook token, the hub token and an MCP device token never open a node route. Every pairing step, refusal and call is in the Activity list, with no token or code in it.
 - The older read-only fleet (`CCBOARD_NODES` with the hub token) keeps working, and its rows are offered for pairing.
+- A pair is verified only when the address it names confirms that it is the board redeeming that code right now (`POST /api/nodes/pair/confirm`, answered only while that board's own Add node runs). Someone holding a code who claims another node's id and address is paired as "not verified", and removing a node or an unpair acts only on verified pairs at the same address.
 
 Upgrade: nothing to do.
 

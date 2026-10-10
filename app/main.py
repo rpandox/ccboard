@@ -387,6 +387,11 @@ async def auth_middleware(request: Request, call_next):
         # disallowed identity header, the size, the rate and the code before it does anything.
         request.state.user = None
         return await call_next(request)
+    if request.url.path == "/api/nodes/pair/confirm" and request.method == "POST":
+        # The callback of the board that is being called (issue #135): it asks whether THIS board is the one redeeming its code right now. No identity (a
+        # tagged board has none); the handler checks X-CCBoard, Origin, the size and the rate, and answers only while this board's own add_node is in flight.
+        request.state.user = None
+        return await call_next(request)
     if request.url.path == "/api/node/hello" and request.method == "GET":
         # The one route that answers with no identity (issue #133): three fixed keys, rate limited per source in the handler. Every other /api/node* route
         # (the card, the summary) still needs an identity, a hook token or the legacy hub token (the summary only).
@@ -4532,6 +4537,37 @@ async def api_nodes_pair(request: Request):
         return _pair_failed(e)
     doctor.invalidate()
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+PAIR_CONFIRM_MAX = 1024
+
+
+@app.post("/api/nodes/pair/confirm")
+async def api_nodes_pair_confirm(request: Request):
+    """The callback of the board this one is pairing with (issue #135): body {proof}, a digest of the code and a nonce that only this board's own
+    add_node (in flight right now, two minutes at most) and the board it called know. Answers {node_id} while that add_node runs, else 404, the same
+    404 for an unknown and a stale proof. The code, the nonce and every token never travel in this call. No identity is needed (a tagged board has none);
+    X-CCBoard: 1 is required, an Origin header is refused, the body is capped at 1 KB and a source address gets 30 calls a minute."""
+    if request.headers.get("x-ccboard") != "1":
+        return JSONResponse({"error": "missing X-CCBoard header"}, status_code=403)
+    if request.headers.get("origin") is not None:
+        return JSONResponse({"error": "requests from a web page (an Origin header) are refused"}, status_code=403)
+    if request.headers.get("tailscale-user-login") is not None and identify(request.headers, settings) is None:
+        return JSONResponse({"error": "no Tailscale identity or not in CCBOARD_ALLOWED_USERS"}, status_code=403)
+    ok, wait = nodes.confirm_limiter.allow(nodes.caller_addr(request.client.host if request.client else None, request.headers.get("x-forwarded-for")))
+    if not ok:
+        return JSONResponse({"error": "too many requests"}, status_code=429, headers={"Retry-After": str(wait), "Cache-Control": "no-store"})
+    raw = await _read_capped(request, PAIR_CONFIRM_MAX)
+    if raw is None:
+        return JSONResponse({"error": "the body is over 1 KB"}, status_code=413)
+    try:
+        body = json.loads(raw or b"{}")
+    except ValueError:
+        body = None
+    got = nodes.confirm_answer(body.get("proof")) if isinstance(body, dict) and set(body) == {"proof"} else None
+    if got is None:
+        return JSONResponse({"error": "no pairing is in progress here"}, status_code=404, headers={"Cache-Control": "no-store"})
+    return JSONResponse({"node_id": got}, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
 @app.post("/api/nodes", status_code=201)

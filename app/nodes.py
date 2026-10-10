@@ -137,8 +137,10 @@ def reset() -> None:
         _id_cache.clear()
         _warned.clear()
     hello_limiter.clear()
-    for lim in (pair_limiter, refusal_limiter, node_read_limiter, node_write_limiter):
+    for lim in (pair_limiter, refusal_limiter, node_read_limiter, node_write_limiter, confirm_limiter):
         lim.clear()
+    with _pending_lock:
+        _pending.clear()
     global _last_prune
     _last_prune = None
 
@@ -771,6 +773,12 @@ pair_limiter = _Limiter(PAIR_RATE, 60.0, 2048)               # pair attempts per
 refusal_limiter = _Limiter(30, 600.0, 4)                      # audit rows for refused pair attempts, whole board
 node_read_limiter = _Limiter(READ_RATE, 60.0, 2048)          # per pair
 node_write_limiter = _Limiter(WRITE_RATE, 60.0, 2048)
+confirm_limiter = _Limiter(30, 60.0, 2048)                    # POST /api/nodes/pair/confirm, per source address
+CONFIRM_TTL = 120.0                                           # seconds an in-flight add_node answers the confirm route
+CONFIRM_MAX = 16                                              # in-flight records kept at most
+NONCE_RE = re.compile(r"[A-Za-z0-9_-]{22,64}")
+_pending: dict[tuple[str, str], float] = {}                   # (this board's node id, proof) -> expiry: only add_node writes it, in memory only
+_pending_lock = threading.Lock()
 _code_lock = threading.Lock()                                 # one redeem at a time: two requests cannot both spend the code
 _reg_lock = threading.RLock()                                 # the registry is read, changed and written whole
 _tok_lock = threading.Lock()                                  # the token file likewise
@@ -1227,9 +1235,13 @@ def add_incoming(node=None, scopes=DEFAULT_SCOPES, *, callback_unverified: bool 
 
 def revoke_older_pairs(node_id: str, keep_peer_id: str, db=None) -> int:
     """Pairing the same node again replaces: every other active incoming pair of `node_id` is revoked, the pair `keep_peer_id` never. Call it only
-    once the node id is confirmed (the callback named the same id); a claim nobody confirmed must not cut another pair. Returns how many it revoked."""
+    once the node id is confirmed (the callback named the same id); a claim nobody confirmed must not cut another pair, so a `keep_peer_id` that is
+    missing, revoked or still `callback_unverified` revokes nothing. Returns how many it revoked."""
     d = _db(db)
     if not isinstance(node_id, str) or not node_id:
+        return 0
+    keep = d.node_pair_get(keep_peer_id)
+    if keep is None or keep["revoked_at"] or keep["callback_unverified"] or keep["peer_node_id"] != node_id:
         return 0
     n = 0
     for r in d.node_pairs():
@@ -1399,7 +1411,7 @@ def redeem_code(code, caller: str, *, node=None, db=None) -> dict:
             raise PairError("wrong")
         d.kv_del(KV_CODE)                                          # spent: a second use of the same code finds none
     scopes = _scopes_of(v.get("scopes")) or list(DEFAULT_SCOPES)
-    row, token = add_incoming(node, scopes, db=d)
+    row, token = add_incoming(node, scopes, callback_unverified=True, db=d)      # a spent code proves nothing about who is calling: unverified until handle_pair says otherwise
     audit("in", row["peer_id"], "code_used", True, f"scopes {','.join(scopes)}", node_name=row["name"], db=d)
     return {"peer_id": row["peer_id"], "token": token, "scopes": scopes, "expires_at": row["expires_at"]}
 
@@ -1522,16 +1534,73 @@ def _remote_unpair(url: str, token: str) -> bool:
         return False
 
 
+# ---------------------------------------------------------------- who is redeeming this code right now (the callback proof)
+
+def confirm_proof(norm: str, nonce: str) -> str:
+    """The proof that the board redeeming a code is the one that called add_node with it: a digest of the code and a random nonce that only the
+    calling board and the board it called have seen. Neither the code nor the nonce goes into the callback, only this digest."""
+    return hashlib.sha256(f"ccboard-pair-confirm:{norm}:{nonce}".encode("utf-8")).hexdigest()
+
+
+def begin_confirm(norm: str, nonce: str) -> tuple[str, str]:
+    """Register an in-flight add_node on this board (in memory, CONFIRM_TTL seconds). Returns the key to hand to end_confirm."""
+    key = (node_id(), confirm_proof(norm, nonce))
+    now = _now()
+    with _pending_lock:
+        for k in [k for k, exp in _pending.items() if exp <= now]:
+            _pending.pop(k, None)
+        while len(_pending) >= CONFIRM_MAX:
+            _pending.pop(min(_pending, key=_pending.get), None)
+        _pending[key] = now + CONFIRM_TTL
+    return key
+
+
+def end_confirm(key) -> None:
+    with _pending_lock:
+        _pending.pop(key, None)
+
+
+def confirm_answer(proof) -> str | None:
+    """This board's node id when `proof` belongs to an add_node that is in flight on this board right now, else None (the route answers 404 for an
+    unknown and for a stale proof alike, so it says nothing about what is pending)."""
+    if not isinstance(proof, str) or not re.fullmatch(r"[0-9a-f]{64}", proof):
+        return None
+    me = node_id()
+    now = _now()
+    with _pending_lock:
+        found = False
+        for (nid, pr), exp in _pending.items():              # every record is compared; the loop never stops early
+            if hmac.compare_digest(pr, proof) and nid == me and exp > now:
+                found = True
+        return me if found else None
+
+
+def _same_address(a, b) -> bool:
+    """Do two peer addresses name the same scheme, host and port (host lower case, port 443 when absent)? False when either is missing or no address.
+    A node id is only a claim; a gate that acts on a claimed id also asks for the same address."""
+    from urllib.parse import urlsplit
+    try:
+        ka, kb = ((u.scheme, (u.hostname or "").rstrip(".").lower(), u.port or 443) for u in (urlsplit(str(a or "")), urlsplit(str(b or ""))))
+    except ValueError:
+        return False
+    return bool(ka[1]) and ka == kb
+
+
 # ---------------------------------------------------------------- the handshake, accepting side
 
 _NODE_KEYS = {"id", "name", "url", "version"}
+_PAIR_KEYS = {"code", "node", "reverse", "confirm"}
 
 
-def _check_pair_body(body) -> tuple[str, dict, dict | None]:
-    """(code, node claim, reverse or None) from the pair request, or PairError('bad_request'). Strict: a key nobody asked for (a permission mode, a
-    sandbox, a scope list outside `reverse`) refuses the whole request, so no pair route can carry such a field."""
+def _check_pair_body(body) -> tuple[str, dict, dict | None, str | None]:
+    """(code, node claim, reverse or None, confirm nonce or None) from the pair request, or PairError('bad_request'). Strict: a key nobody asked
+    for (a permission mode, a sandbox, a scope list outside `reverse`) refuses the whole request, so no pair route can carry such a field. The
+    `confirm` nonce is what the calling board's add_node made up for this one call (see handle_pair); an older board sends none."""
     bad = PairError("bad_request")
-    if not isinstance(body, dict) or not set(body) <= {"code", "node", "reverse"} or not isinstance(body.get("code"), str):
+    if not isinstance(body, dict) or not set(body) <= _PAIR_KEYS or not isinstance(body.get("code"), str):
+        raise bad
+    confirm = body.get("confirm")
+    if confirm is not None and (not isinstance(confirm, str) or not NONCE_RE.fullmatch(confirm)):
         raise bad
     node = body.get("node")
     if not isinstance(node, dict) or not set(node) <= _NODE_KEYS or not isinstance(node.get("id"), str) or not ID_RE.fullmatch(node["id"]):
@@ -1553,29 +1622,39 @@ def _check_pair_body(body) -> tuple[str, dict, dict | None]:
             rev = {"token": rev["token"], "scopes": clean_scopes(rev.get("scopes") or list(DEFAULT_SCOPES))}
         except ValueError:
             raise bad from None
-    return body["code"], node, rev
+    return body["code"], node, rev, confirm
 
 
 def handle_pair(body, caller: str, db=None) -> dict:
     """The accepting side of the handshake: everything POST /api/nodes/pair does after the route has checked its headers. Nothing happens before the
-    code is right (only the shape of the request is read). Then: the code is spent, the pair row (digest only) is written, B asks the caller's address
-    for its hello (the address rule applies) and compares the node id: a different id revokes the pair and refuses; an unreachable address pairs with
-    `callback_unverified`. A `reverse` token is kept as an outgoing pair for the caller. Returns {token, scopes, node, expires_at,
-    callback_unverified, reverse}. Raises PairError."""
+    code is right (only the shape of the request is read). Then: the code is spent and the pair row (digest only) is written as
+    `callback_unverified`. B then proves that the board at the caller's address is the one redeeming this code right now: it POSTs
+    /api/nodes/pair/confirm there with a digest of the code and the request's `confirm` nonce (never the code, the nonce or a token), and the pair
+    is verified only when that route answers with the claimed node id. A different id revokes the pair and refuses (callback_mismatch). An
+    address that is down, an older board without the route, a board with no add_node in flight (a stranger who holds the code and claims another
+    node's id and address) and a request with no `confirm` all leave the pair `callback_unverified`. A `reverse` token is kept as an outgoing pair
+    for the caller only when verified. Returns {token, scopes, node, expires_at, callback_unverified, reverse}. Raises PairError."""
     d = _db(db)
-    code, node, rev = _check_pair_body(body)
+    code, node, rev, confirm = _check_pair_body(body)
+    norm = normalize_code(code)
     r = redeem_code(code, caller, node=node, db=d)
     pid = r["peer_id"]
-    unverified = False
+    unverified = True
     try:
-        reply = peer_call(node["url"], "GET", "/api/node/hello", timeout=3.0)
-        got = reply.json.get("node_id") if reply.ok and isinstance(reply.json, dict) else None
-        if got is not None and got != node["id"]:
+        if confirm and norm:
+            reply = peer_call(node["url"], "POST", "/api/nodes/pair/confirm", body={"proof": confirm_proof(norm, confirm)}, timeout=3.0)
+            got = reply.json.get("node_id") if reply.ok and isinstance(reply.json, dict) else None
+        else:
+            check_peer_url(node["url"], tailnet_suffix())             # no proof to send, but the address rule still applies
+            got = None
+        if isinstance(got, str) and got != node["id"]:
             revoke(pid, db=d, why="callback named another node")
             audit("in", pid, "pair_refused", False, "callback named another node", node_name=node["name"], status="refused", db=d)
             raise PairError("callback_mismatch")
-        unverified = got is None
-    except PeerError as e:
+        unverified = not isinstance(got, str)
+    except (PeerError, PeerUrlError) as e:
+        if isinstance(e, PeerUrlError):
+            e = PeerError("url", str(e), unresolved=e.unresolved)
         if e.reason == "url" and not e.unresolved:
             revoke(pid, db=d, why="the address is outside the tailnet")
             audit("in", pid, "pair_refused", False, "the address breaks the rule", node_name=node["name"], status="refused", db=d)
@@ -1583,9 +1662,9 @@ def handle_pair(body, caller: str, db=None) -> dict:
         unverified = True
     reverse_reason = None
     if unverified:
-        d.node_pair_update(pid, callback_unverified=1)
-        audit("in", pid, "callback_unverified", False, "the caller's address did not answer", node_name=node["name"], db=d)
+        audit("in", pid, "callback_unverified", False, "the caller's address did not confirm this pairing", node_name=node["name"], db=d)
     else:
+        d.node_pair_update(pid, callback_unverified=0)                # only now does the claimed node id count
         revoke_older_pairs(node["id"], pid, db=d)                     # the node id is confirmed: pairing again replaces
     reverse_saved = None
     if rev is not None and unverified:
@@ -1614,9 +1693,10 @@ def handle_pair(body, caller: str, db=None) -> dict:
 
 
 def unpair_incoming(peer_id: str, db=None) -> bool:
-    """The other board says it is leaving (POST /api/node/unpair): cut its own pair here. The outgoing pair to the same node id goes too, but only
-    when this pair's node id was confirmed by the callback (an unverified claim must not remove the pair to another node). Never calls the other
-    board. False when the pair was already gone."""
+    """The other board says it is leaving (POST /api/node/unpair): cut its own pair here. The outgoing pair to the same node goes too, but only when
+    this pair's node id was confirmed (not `callback_unverified`) AND the outgoing pair is at the same address: a node id is a claim, and a claim
+    nobody confirmed, or one made from another address, must not remove the pair to another node. Never calls the other board. False when the pair
+    was already gone."""
     d = _db(db)
     row = d.node_pair_get(peer_id)
     if row is None:
@@ -1624,7 +1704,8 @@ def unpair_incoming(peer_id: str, db=None) -> bool:
     cut = revoke(peer_id, db=d, why="the other node unpaired")
     if row["peer_node_id"] and not row["callback_unverified"]:
         for p in peers(d):
-            if p["direction"] == "out" and p["node_id"] == row["peer_node_id"]:
+            if (p["direction"] == "out" and not p["legacy"] and p["node_id"] == row["peer_node_id"]
+                    and _same_address(p["url"], row["peer_url"])):
                 remove_peer(p["peer_id"], d)
     return cut
 
@@ -1647,11 +1728,13 @@ def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = F
     me = own_claim()
     if not me["url"]:
         raise ValueError("this node does not know its own address, so the other node could not call back; set CCBOARD_PUBLIC_URL")
-    body: dict = {"code": format_code(norm), "node": me}
+    nonce = secrets.token_urlsafe(16)
+    body: dict = {"code": format_code(norm), "node": me, "confirm": nonce}
     back = None
     if both_ways:
-        back, back_token = add_incoming(None, DEFAULT_SCOPES, db=d)
+        back, back_token = add_incoming(None, DEFAULT_SCOPES, callback_unverified=True, db=d)       # unverified until the other board has answered
         body["reverse"] = {"token": back_token, "scopes": list(DEFAULT_SCOPES)}
+    pending = begin_confirm(norm, nonce)       # while this call runs, POST /api/nodes/pair/confirm tells the board we called that it is us
     try:
         try:
             reply = peer_call(target.url, "POST", "/api/nodes/pair", body=body, timeout=8.0)
@@ -1691,12 +1774,16 @@ def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = F
             revoke(back["peer_id"], db=d, why="the other node did not keep the reverse token")
             back = None
         if back is not None:
-            d.node_pair_update(back["peer_id"], peer_node_id=theirs["id"], peer_name=name, peer_url=target.url)
+            # The id is the other board's own word, from an answer at the address the person typed; it counts as confirmed only for that address (the
+            # gates in unpair_incoming and remove_node also ask for the same address).
+            d.node_pair_update(back["peer_id"], peer_node_id=theirs["id"], peer_name=name, peer_url=target.url, callback_unverified=0)
     except BaseException:
         if back is not None:
             revoke(back["peer_id"], db=d, why="pairing did not finish")
         audit("out", "", "pair_failed", False, None, db=d)
         raise
+    finally:
+        end_confirm(pending)
     audit("out", pid, "paired", True, f"scopes {','.join(scopes)}" + (", both ways" if both_ways else ""), node_name=name, db=d)
     try:                                                              # the first card read: a pair is "paired" once the card answers
         card_reply = PeerClient(view, db=d).get("/api/node")
@@ -1743,9 +1830,10 @@ def remove_node(ident, db=None) -> dict:
         tk = None if p["legacy"] else _load_outgoing(p["peer_id"])
         told = bool(tk and p["url"] and _remote_unpair(p["url"], tk))
         tk = None
-        if p["node_id"]:
-            for q in peers(d):
-                if q["direction"] == "in" and q["node_id"] == p["node_id"]:
+        if p["node_id"] and not p["legacy"]:
+            for q in peers(d):                                        # the pair that board holds for us: confirmed, same node id and the same address
+                if (q["direction"] == "in" and not q["callback_unverified"] and q["node_id"] == p["node_id"]
+                        and _same_address(q["url"], p["url"])):
                     revoke(q["peer_id"], db=d, why="the pair was removed on this node")
     remove_peer(p["peer_id"], d)
     if p["direction"] == "out":

@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import threading
 
 import pytest
@@ -824,6 +825,9 @@ def serve(two, board, method, path, headers, body):
             return out(200, nodes.handle_pair(j, "100.64.0.9"))
         except nodes.PairError as e:
             return out(e.status, e.payload(), {"retry-after": str(e.retry_after)} if e.retry_after else None)
+    if (method, path) == ("POST", "/api/nodes/pair/confirm"):
+        got = nodes.confirm_answer((j or {}).get("proof")) if isinstance(j, dict) else None
+        return out(200, {"node_id": got}) if got else out(404, {"error": "no pairing is in progress here"})
     if (method, path) == ("GET", "/api/node"):
         pair, err = authed("read")
         return err or out(200, {"node_id": nodes.node_id(), "name": nodes.display_name()})
@@ -859,6 +863,14 @@ def claim_a(two) -> dict:
     """The card A sends when it pairs: its real node id, name and address."""
     with two.a.enter():
         return {"id": nodes.node_id(), "name": "node-a", "url": two.a.url, "version": "1"}
+
+
+def a_in_flight(two, code, **extra) -> dict:
+    """A pair body from A that B can verify: A has an add_node in flight for this code (what add_node does around its call), so B's callback finds it."""
+    nonce = secrets.token_urlsafe(16)
+    with two.a.enter():
+        nodes.begin_confirm(nodes.normalize_code(code), nonce)
+    return {"code": code, "node": claim_a(two), "confirm": nonce, **extra}
 
 
 def pair(two, scopes=("read", "tasks"), **kw):
@@ -919,7 +931,7 @@ def test_pairing_gives_a_token_that_reads_the_card_and_the_registry_rows_on_both
         assert inc["callback_unverified"] is False and inc["last_seen"]
         assert nodes.code_status()["active"] is False
     assert [c[1:] for c in pair2.log if c[0] == "node-a"][:2] == [("POST", "node-b", "/api/nodes/pair", 200), ("GET", "node-b", "/api/node", 200)]
-    assert ("node-b", "GET", "node-a", "/api/node/hello", 200) in pair2.log                       # B checked the callback
+    assert ("node-b", "POST", "node-a", "/api/nodes/pair/confirm", 200) in pair2.log                # B asked A to confirm the pairing
 
 
 def test_the_scopes_asked_on_the_code_are_the_scopes_granted(pair2):
@@ -1025,8 +1037,9 @@ def test_a_callback_that_names_another_node_refuses_the_pair_and_revokes_it(pair
     with pair2.b.enter():
         code = nodes.create_code()["code"]
         liar = {"id": "n_" + "c" * 16, "name": "node-c", "url": pair2.a.url}                      # the address belongs to A, the claim says c
+        body = {**a_in_flight(pair2, code), "node": liar}                                         # A is mid add_node with this code, so its address answers with A's id
         with pytest.raises(nodes.PairError) as e:
-            nodes.handle_pair({"code": code, "node": liar}, "100.64.0.9")
+            nodes.handle_pair(body, "100.64.0.9")
         assert e.value.reason == "callback_mismatch" and e.value.status == 409
         assert nodes.peers() == [] and len(pair2.b.db.node_pairs()) == 0
         assert pair2.b.db.node_pairs(include_revoked=True)[0]["revoked_at"] and pair2.b.db.node_pairs(include_revoked=True)[0]["token_sha256"] == ""
@@ -1232,7 +1245,9 @@ def test_unpair_from_an_unverified_pair_keeps_the_outgoing_row_to_the_claimed_no
     assert nodes.has_outgoing(out["peer_id"])
     nobody, _ = nodes.add_incoming({"name": "no id"}, db=db)                 # no node id at all: nothing to match
     assert nodes.unpair_incoming(nobody["peer_id"], db=db) is True and nodes.peer(out["peer_id"], db)
-    real, _ = nodes.add_incoming({"id": out["node_id"], "name": "node-b"}, callback_unverified=False, db=db)
+    elsewhere, _ = nodes.add_incoming({"id": out["node_id"], "name": "node-b", "url": "https://100.64.0.77"}, db=db)          # verified, but from another address
+    assert nodes.unpair_incoming(elsewhere["peer_id"], db=db) is True and nodes.peer(out["peer_id"], db), "a claim made from another address removes nothing"
+    real, _ = nodes.add_incoming({"id": out["node_id"], "name": "node-b", "url": B_URL}, callback_unverified=False, db=db)
     assert nodes.unpair_incoming(real["peer_id"], db=db) is True
     assert nodes.peers(db) == [] and not nodes.has_outgoing(out["peer_id"]), "a verified pair takes the outgoing pair to the same node with it"
 
@@ -1261,7 +1276,7 @@ def test_a_verified_repair_of_the_same_node_replaces_the_old_pair(pair2):
         toks = []
         for _ in range(2):
             code = nodes.create_code()["code"]
-            toks.append(nodes.handle_pair({"code": code, "node": claim_a(pair2)}, "100.64.0.9")["token"])
+            toks.append(nodes.handle_pair(a_in_flight(pair2, code), "100.64.0.9")["token"])
         assert nodes.verify_token(toks[0]) is None and nodes.verify_token(toks[1])
         ins = [p for p in nodes.peers() if p["direction"] == "in"]
         assert len(ins) == 1 and ins[0]["callback_unverified"] is False
@@ -1297,7 +1312,7 @@ def test_a_verified_pair_keeps_its_reverse_token(pair2):
     with pair2.b.enter():
         code = nodes.create_code()["code"]
         rev = nodes._new_token()
-        r = nodes.handle_pair({"code": code, "node": claim_a(pair2), "reverse": {"token": rev, "scopes": ["read", "tasks"]}}, "100.64.0.9")
+        r = nodes.handle_pair(a_in_flight(pair2, code, reverse={"token": rev, "scopes": ["read", "tasks"]}), "100.64.0.9")
         assert r["callback_unverified"] is False and r["reverse"] is True and "reverse_reason" not in r
         (out,) = [p for p in nodes.peers() if p["direction"] == "out"]
         assert nodes._load_outgoing(out["peer_id"]) == rev
@@ -1393,3 +1408,227 @@ def test_a_flood_of_refused_pair_attempts_cannot_fill_the_audit_but_a_burned_cod
         with pytest.raises(nodes.PairError):
             nodes.redeem_code("ZZZZZ-ZZZZZ", "100.64.3.1", db=db)
     assert [r["action"] for r in nodes.audit_list(500, db=db)].count("code_burned") == 1
+
+
+# ================================================================ the callback proves who is redeeming the code right now (security finding 1)
+
+C_ID = "n_" + "c" * 16
+C_URL = "https://100.64.0.3"
+
+
+def confirm_post(board, proof):
+    """POST /api/nodes/pair/confirm the way a tagged board does: X-CCBoard, no identity."""
+    return board.post("/api/nodes/pair/confirm", owner=False, headers={"X-CCBoard": "1"}, json={"proof": proof})
+
+
+@pytest.mark.parametrize("attack", ["no_nonce", "own_nonce", "a_pairing_in_flight_with_another_code"])
+def test_a_stranger_with_a_code_who_claims_a_paired_nodes_id_and_real_address_ends_unverified_and_cuts_nothing(pair2, attack):
+    """The attack: a code of B in a stranger's hands, claiming A's node id AND A's real address. A's address answers the old hello with A's id,
+    which used to verify the stranger. Now the address must confirm this very redemption, and A has no add_node in flight for it."""
+    pair(pair2, both_ways=True)                                              # A <-> B both ways
+    with pair2.b.enter():
+        (inc,) = [p for p in nodes.peers() if p["direction"] == "in"]
+        (out,) = [p for p in nodes.peers() if p["direction"] == "out"]
+        out_token = nodes._load_outgoing(out["peer_id"])
+        assert inc["callback_unverified"] is False
+        before = dict(pair2.b.db.node_pair_get(inc["peer_id"]))
+        code = nodes.create_code()["code"]
+    if attack == "a_pairing_in_flight_with_another_code":
+        with pair2.a.enter():
+            nodes.begin_confirm("ABCDEFGHJK", secrets.token_urlsafe(16))      # A really is mid add_node, with a code and a nonce the stranger never saw
+    body = {"code": code, "node": claim_a(pair2), "reverse": {"token": nodes._new_token(), "scopes": ["read", "tasks"]}}
+    if attack != "no_nonce":
+        body["confirm"] = secrets.token_urlsafe(16)
+    with pair2.b.enter():
+        r = nodes.handle_pair(body, "100.64.0.9")
+        assert r["callback_unverified"] is True and r["reverse"] is False and r["reverse_reason"] == "callback_unverified"
+        (mine,) = [p for p in nodes.peers() if p["direction"] == "in" and p["peer_id"] != inc["peer_id"]]
+        assert mine["callback_unverified"] is True and nodes.verify_token(r["token"])
+        assert dict(pair2.b.db.node_pair_get(inc["peer_id"])) == before, "A's pair is untouched, not revoked"
+        assert [p["peer_id"] for p in nodes.peers() if p["direction"] == "out"] == [out["peer_id"]], "no outgoing row was added, none changed"
+        assert nodes._load_outgoing(out["peer_id"]) == out_token
+        assert nodes.unpair_incoming(mine["peer_id"]) is True                  # the stranger leaves again ...
+        assert nodes.peer(out["peer_id"]) and nodes._load_outgoing(out["peer_id"]) == out_token, "... and A's outgoing row and token stay"
+        assert pair2.b.db.node_pair_get(inc["peer_id"])["revoked_at"] is None
+        assert nodes.PeerClient(nodes.peer(out["peer_id"])).get("/api/node").ok, "B still reads A with the reverse token"
+    with pair2.a.enter():
+        (a_out,) = [p for p in nodes.peers() if p["direction"] == "out"]
+        assert nodes.PeerClient(a_out).get("/api/node").ok, "A still reads B with its own token"
+
+
+def test_the_confirm_route_answers_only_while_this_boards_add_node_is_in_flight(pair2, clock):
+    norm = nodes.normalize_code("ABCDE-FGHJK")
+    nonce = secrets.token_urlsafe(16)
+    proof = nodes.confirm_proof(norm, nonce)
+    assert confirm_post(pair2.a, proof).status_code == 404, "nothing is in flight"
+    with pair2.a.enter():
+        key = nodes.begin_confirm(norm, nonce)
+        a_id = nodes.node_id()
+    r = confirm_post(pair2.a, proof)
+    assert r.status_code == 200 and r.json() == {"node_id": a_id}
+    assert confirm_post(pair2.b, proof).status_code == 404, "another board has no such pairing"
+    assert confirm_post(pair2.a, nodes.confirm_proof(norm, nonce + "x")).status_code == 404 and confirm_post(pair2.a, "x" * 64).status_code == 404
+    clock.t += nodes.CONFIRM_TTL - 1
+    assert confirm_post(pair2.a, proof).status_code == 200
+    clock.t += 2
+    assert confirm_post(pair2.a, proof).status_code == 404, "a record older than two minutes answers nothing"
+    with pair2.a.enter():
+        key = nodes.begin_confirm(norm, nonce)
+        nodes.end_confirm(key)
+    assert confirm_post(pair2.a, proof).status_code == 404, "and neither does one that finished"
+
+
+def test_add_node_registers_the_in_flight_record_and_removes_it_whether_it_succeeds_or_fails(pair2, monkeypatch):
+    seen = []
+    real = nodes.confirm_answer
+    monkeypatch.setattr(nodes, "confirm_answer", lambda proof: seen.append(real(proof)) or seen[-1])
+    pair(pair2)
+    assert seen and seen[0] is not None, "B's callback found A's record while the call ran"
+    assert nodes._pending == {}, "gone after a pairing"
+    with pair2.b.enter():
+        code = nodes.create_code()["code"]
+    pair2.offline.add("node-b")
+    with pair2.a.enter(), pytest.raises(nodes.PairError):
+        nodes.add_node(pair2.b.url, code)
+    assert nodes._pending == {}, "gone after a failed one"
+    pair2.offline.discard("node-b")
+    with pair2.a.enter(), pytest.raises(nodes.PairError):
+        nodes.add_node(pair2.b.url, "ZZZZZ-ZZZZZ")
+    assert nodes._pending == {}, "gone after a refused one"
+
+
+def test_the_confirm_route_is_strict_rate_limited_and_never_leaks_the_code_the_nonce_or_a_token(pair2, monkeypatch):
+    c, zero = pair2.a, "0" * 64
+    XH = {"X-CCBoard": "1"}
+    assert c.post("/api/nodes/pair/confirm", owner=False, json={"proof": zero}).status_code == 403, "X-CCBoard is needed"
+    assert c.post("/api/nodes/pair/confirm", owner=False, headers={**XH, "Origin": "https://evil.example"}, json={"proof": zero}).status_code == 403
+    assert c.post("/api/nodes/pair/confirm", owner=False, headers={**XH, "Tailscale-User-Login": "mallory@example.com"}, json={"proof": zero}).status_code == 403
+    for bad in (b"not json", b"[1]", b'{"proof":"' + b"0" * 64 + b'","x":1}', b"{}", b'{"proof":5}'):
+        assert c.post("/api/nodes/pair/confirm", owner=False, headers=XH, content=bad).status_code == 404, bad
+    assert c.post("/api/nodes/pair/confirm", owner=False, headers=XH, content=b"x" * 1025).status_code == 413
+    # a real pairing: what travels in the callback and in its answer
+    spied, mine = [], {}
+    inner = nodes.peer_transport
+    real_begin = nodes.begin_confirm
+
+    def spy_begin(norm, nonce):
+        mine.update(norm=norm, nonce=nonce)
+        return real_begin(norm, nonce)
+
+    def spy(target, method, path, headers, body, timeout):
+        res = inner(target, method, path, headers, body, timeout)
+        spied.append((path, headers, body, res[2]))
+        return res
+    monkeypatch.setattr(nodes, "begin_confirm", spy_begin)
+    monkeypatch.setattr(nodes, "peer_transport", spy)
+    view, code = pair(pair2, both_ways=True)
+    ((_, headers, body, answer),) = [s for s in spied if s[0] == "/api/nodes/pair/confirm"]
+    tokens = []
+    with pair2.a.enter():
+        tokens.append(nodes._load_outgoing(view["peer_id"]))
+    with pair2.b.enter():
+        tokens += [nodes._load_outgoing(p["peer_id"]) for p in nodes.peers() if p["direction"] == "out"]
+    tokens.append(json.loads(next(s[2] for s in spied if s[0] == "/api/nodes/pair"))["reverse"]["token"])
+    on_wire = json.dumps(headers) + body.decode() + answer.decode()
+    assert json.loads(body) == {"proof": nodes.confirm_proof(mine["norm"], mine["nonce"])} and "authorization" not in {k.lower() for k in headers}
+    assert len(tokens) == 3 and all(tokens)
+    for secret in (code, code.replace("-", ""), mine["norm"], mine["nonce"], *tokens):
+        assert secret not in on_wire
+    for i in range(40):
+        last = c.post("/api/nodes/pair/confirm", owner=False, headers=XH, json={"proof": f"{i:064x}"})
+    assert last.status_code == 429 and int(last.headers["retry-after"]) >= 1
+
+
+def test_an_older_board_without_the_confirm_route_pairs_unverified_never_verified(pair2, monkeypatch):
+    real = serve
+
+    def old_board(two, board, method, path, headers, body):
+        if path == "/api/nodes/pair/confirm":
+            return 404, {"content-type": "application/json"}, b'{"detail":"Not Found"}'
+        return real(two, board, method, path, headers, body)
+    monkeypatch.setitem(globals(), "serve", old_board)
+    view, _ = pair(pair2, both_ways=True)
+    with pair2.b.enter():
+        (inc,) = [p for p in nodes.peers() if p["direction"] == "in"]
+        assert inc["callback_unverified"] is True and [p for p in nodes.peers() if p["direction"] == "out"] == []
+    with pair2.a.enter():
+        assert view["direction"] == "out" and nodes.peer(view["peer_id"]), "the caller's own pair still works one way"
+        assert [p for p in nodes.peers() if p["direction"] == "in"] == [], "and the back pair, which B did not keep, is revoked"
+
+
+def test_a_pair_row_is_unverified_from_the_moment_the_code_is_spent_and_verified_only_by_the_confirmation(pair2):
+    with pair2.b.enter():
+        r = nodes.redeem_code(nodes.create_code()["code"], "100.64.0.9", node=claim_a(pair2))
+        assert pair2.b.db.node_pair_get(r["peer_id"])["callback_unverified"] == 1, "a spent code proves nothing about the caller"
+        code = nodes.create_code()["code"]
+    body = a_in_flight(pair2, code)
+    with pair2.b.enter():
+        out = nodes.handle_pair(body, "100.64.0.9")
+        assert out["callback_unverified"] is False
+        row = next(x for x in pair2.b.db.node_pairs() if x["token_sha256"] == nodes._digest(out["token"]))
+        assert row["callback_unverified"] == 0
+
+
+# ================================================================ no gate acts on a claim nobody confirmed (security finding 2)
+
+def test_removing_a_node_revokes_only_confirmed_pairs_from_its_own_address(db):
+    """remove_node used to revoke every incoming pair with the removed node's id, an unverified claim included, and the id of an outgoing row is the
+    other board's own word. A board at 100.64.0.66 that says it is C must not get C's pair cut, and a claim nobody confirmed does not count."""
+    mallory, _ = out_peer(db, url="https://100.64.0.66", name="mallory", node_id=C_ID, token=False)
+    real_c, _ = nodes.add_incoming({"id": C_ID, "name": "node-c", "url": C_URL}, db=db)                                     # C's own, confirmed, from C's address
+    claim, _ = nodes.add_incoming({"id": C_ID, "name": "x", "url": "https://100.64.0.66"}, callback_unverified=True, db=db)  # a claim nobody confirmed
+    no_url, _ = nodes.add_incoming({"id": C_ID, "name": "y"}, db=db)                                                         # a confirmed id with no address to compare
+    back, _ = nodes.add_incoming({"id": C_ID, "name": "mallory", "url": "https://100.64.0.66"}, db=db)                     # the pair this board gave that address
+    assert nodes.remove_node(mallory["peer_id"], db=db) == {"removed": True, "peer_told": False}
+    state = {x["peer_id"]: x["revoked_at"] for x in db.node_pairs(include_revoked=True)}
+    assert state[back["peer_id"]], "the pair given to that very address goes with it"
+    for keep in (real_c, claim, no_url):
+        assert state[keep["peer_id"]] is None, keep
+
+
+def test_a_node_that_names_another_nodes_id_in_its_answer_cannot_unpair_the_pair_with_that_node(pair2, monkeypatch):
+    """Both ways with a board that answers with C's id: A's back pair and its outgoing row both carry C's id. When that board unpairs, A's own pair
+    with it goes, and A's real pair with C (another address) stays."""
+    real = nodes.own_claim
+    monkeypatch.setattr(nodes, "own_claim", lambda: {**real(), "id": C_ID} if settings.node_name == "node-b" else real())
+    with pair2.a.enter():
+        c_out, _ = out_peer(pair2.a.db, url=C_URL, name="node-c", node_id=C_ID)
+        c_in, _ = nodes.add_incoming({"id": C_ID, "name": "node-c", "url": C_URL}, db=pair2.a.db)
+        c_token = nodes._load_outgoing(c_out["peer_id"])
+    view, _ = pair(pair2, both_ways=True)
+    with pair2.a.enter():
+        assert view["node_id"] == C_ID
+        (back,) = [p for p in nodes.peers() if p["direction"] == "in" and p["url"] == pair2.b.url]
+        assert back["node_id"] == C_ID and back["callback_unverified"] is False
+    with pair2.b.enter():
+        (b_out,) = [p for p in nodes.peers() if p["direction"] == "out"]
+        assert nodes.PeerClient(b_out).post("/api/node/unpair").ok                          # the liar leaves
+    with pair2.a.enter():
+        assert nodes.peer(view["peer_id"]) is None, "A's own row to the liar's address goes with its pair"
+        assert nodes.peer(c_out["peer_id"]) and nodes._load_outgoing(c_out["peer_id"]) == c_token, "A's outgoing pair with C is intact"
+        assert c_in["peer_id"] in {p["peer_id"] for p in nodes.peers() if p["direction"] == "in"}, "and so is C's pair with A"
+
+
+def test_revoke_older_pairs_acts_only_for_a_confirmed_pair(db):
+    old, _ = nodes.add_incoming({"id": C_ID, "name": "old", "url": C_URL}, db=db)
+    claim, _ = nodes.add_incoming({"id": C_ID, "name": "claim"}, callback_unverified=True, db=db)
+    assert nodes.revoke_older_pairs(C_ID, claim["peer_id"], db=db) == 0, "an unconfirmed pair replaces nothing"
+    assert nodes.revoke_older_pairs(C_ID, "p_" + "0" * 16, db=db) == 0
+    assert db.node_pair_get(old["peer_id"])["revoked_at"] is None
+    real, _ = nodes.add_incoming({"id": C_ID, "name": "real", "url": C_URL}, db=db)
+    assert nodes.revoke_older_pairs(C_ID, real["peer_id"], db=db) == 2
+    assert db.node_pair_get(real["peer_id"])["revoked_at"] is None
+
+
+def test_the_back_pair_is_unverified_until_the_other_board_answered_and_then_carries_that_boards_id_and_address(pair2, monkeypatch):
+    created = []
+    real = nodes.add_incoming
+    monkeypatch.setattr(nodes, "add_incoming", lambda *a, **k: (created.append(k.get("callback_unverified")), real(*a, **k))[1])
+    pair(pair2, both_ways=True)
+    assert created and all(created), "every pair row starts unverified"
+    with pair2.b.enter():
+        b_id = nodes.node_id()
+    with pair2.a.enter():
+        (back,) = [p for p in nodes.peers() if p["direction"] == "in"]
+        row = pair2.a.db.node_pair_get(back["peer_id"])
+        assert row["callback_unverified"] == 0 and row["peer_node_id"] == b_id and row["peer_url"] == pair2.b.url
