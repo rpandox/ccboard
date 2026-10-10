@@ -887,7 +887,7 @@ function sessionCard(s, opts) {
       s2.project, s2.repo, s2.folder, s2.stats, s2.path, s2.flags, s2.task, s2.hooks_missing || null,
       pr ? pr.id + ':' + pr.summary : '', ui.confirm === killKey,
       t ? [t.id, t.pr_number, t.pr_url, t.pr_state, t.mode, t.ci && t.ci.bucket] : null, rl && rl.session === s2.tmux ? [rl.message, rl.resets_at] : null,
-      rich ? [s2.account || '', accts.length > 1, ac ? [ac.label, ac.name, ac.email] : null] : null]);
+      rich ? [s2.account || '', accts.length > 1, ac ? [ac.label, ac.name, ac.email] : null] : null, Nodes.sig(s2)]);
   }
 
   function patch(s2) {
@@ -908,6 +908,7 @@ function sessionCard(s, opts) {
     }
     setTextIfChanged(nameNode, s2.name || tmux);
     setTextIfChanged(where, sessionWhere(s2, o.showProject));
+    Nodes.mark(where, s2);                                     // the node chip (dim for this board) once nodes are paired (nodes.js)
     if (o.showProject && s2.project) chipHueSet(where, chipHue('project', s2.project));
     agentsAgeNode(age, sessionActivity(s2));
     setTextIfChanged(meta, rich ? GLYPH_LABEL[sk] : sessionMetaText(s2, sk));

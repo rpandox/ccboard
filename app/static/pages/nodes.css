@@ -1,0 +1,85 @@
+/* The hub view (issue #139), loaded with nodes-hub.js and pages/node.js (lazy.js 'nodeshub'): the Home strip, the node page and its peeks, the inbox and Tasks sections, the sidebar groups.
+   Colour: state is a glyph plus a word; amber and rose only mean attention. 28 px controls with a mouse, --tap (44 px) on touch; nothing wider than 390 px. */
+#page .nd-h { margin:0; font:600 11px/1.4 var(--font-ui); letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+#page .nd-count { font-weight:400; letter-spacing:0; text-transform:none; }
+#page .nd-ro, #page .nd-note, #page .nd-empty, #page .nd-perm { margin:6px 0 0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+#page .nd-sg { flex:none; font-family:var(--font-mono); }
+
+#page .nd-strip { margin:0 0 14px; }
+#page .nd-strip-h { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:var(--row-btn); }
+#page .nd-manage { display:inline-flex; align-items:center; min-height:var(--row-btn); padding:0 4px; font-size:12px; }
+#page .nd-attn { margin:2px 0 8px; font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
+#page .nd-attn-a { color:var(--warn-fg); }
+#page .nd-cells { display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); gap:8px; }
+#page .nd-cell { display:flex; flex-direction:column; gap:3px; min-width:0; min-height:var(--tap); padding:8px 10px; border:1px solid var(--line); border-radius:3px; background:var(--card); color:var(--fg); text-decoration:none; }
+#page .nd-cell:focus-visible { outline:2px solid var(--sig); outline-offset:1px; }
+@media (hover:hover) { #page .nd-cell:hover { border-color:var(--line-strong); background:var(--panel); } }
+#page .nd-cell.dim { background:transparent; border-style:dashed; color:var(--dim); }
+#page .nd-cell.dim .nd-cell-n { color:var(--fg-2); }
+#page .nd-cell.attn { border-left:2px solid var(--warn); }
+#page .nd-cell-h { display:flex; align-items:baseline; gap:6px; min-width:0; }
+#page .nd-cell-n { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+#page .nd-cell-s, #page .nd-cell-k, #page .nd-cell-ago { font-size:12px; line-height:1.4; overflow-wrap:anywhere; }
+#page .nd-cell-s.ok { color:var(--ok-fg); }
+#page .nd-cell-s.warn { color:var(--warn-fg); }
+#page .nd-cell-s.bad { color:var(--bad-fg); }
+#page .nd-cell-k, #page .nd-cell-ago { color:var(--dim); }
+#page .nd-pill { align-self:flex-start; margin-top:2px; padding:0 7px; border:1px solid var(--line); border-radius:9px; font:11px/18px var(--font-mono); color:var(--fg-2); }
+#page .nd-pill.warn { border-color:var(--warn); color:var(--warn-fg); }
+#page .nd-pill.none { color:var(--dim); }
+
+#page .nd-inbox, #page .nd-tasks { margin:14px 0 0; }
+#page .nd-tfilter { margin:0 0 10px; max-width:100%; }
+#page .nd-tfilter .seg-ctl { flex-wrap:nowrap; max-width:100%; }
+#page .nd-tfilter .seg-btn { white-space:nowrap; }
+#page .nd-tlabel { display:inline-flex; align-items:center; gap:8px; max-width:100%; }
+#page .nd-tsel { height:var(--row-btn); min-height:var(--row-btn); max-width:min(260px, 70vw); padding:0 6px; font-size:12px; text-overflow:ellipsis; }
+@media (pointer:coarse) { #page .nd-tsel { font-size:16px; } }
+html.force-coarse #page .nd-tsel { font-size:16px; }
+#page .nd-hide { display:none !important; }
+#page .nd-item { display:flex; flex-wrap:wrap; align-items:center; gap:2px 10px; min-width:0; min-height:var(--row-h); padding:6px 0; border-bottom:1px solid var(--line-soft); }
+#page .nd-item.attn { border-left:2px solid var(--warn); padding-left:8px; }
+#page .nd-item .nd-g { display:inline-flex; gap:4px; flex:none; }
+#page .nd-item .nd-name { flex:1 1 140px; min-width:0; font-weight:500; color:var(--fg); overflow-wrap:anywhere; }
+#page .nd-item a.nd-name { display:inline-flex; align-items:center; min-height:var(--tap); }
+#page .nd-item .nd-where, #page .nd-item .nd-meta { font-size:12px; overflow-wrap:anywhere; }
+#page .nd-item .nd-meta { margin-left:auto; }
+
+#page > .nd-page.nd-wide { max-width:960px; }
+#page .nd-head { margin:0 0 6px; }
+#page .nd-title { overflow-wrap:anywhere; }
+#page .nd-status { display:inline-flex; align-items:baseline; gap:6px; font-size:13px; }
+#page .nd-status.ok { color:var(--ok-fg); }
+#page .nd-status.warn { color:var(--warn-fg); }
+#page .nd-status.bad { color:var(--bad-fg); }
+#page .nd-facts { margin:4px 0 0; font-size:12px; overflow-wrap:anywhere; }
+#page .nd-banner { margin:8px 0 0; padding:8px 10px; border:1px solid var(--line); border-radius:3px; font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+#page .nd-banner.warn { border-color:var(--warn); background:var(--warn-bg); }
+#page .nd-banner.bad { border-color:var(--bad); background:var(--bad-bg); }
+#page .nd-actbox { margin:12px 0 4px; }
+#page .nd-acts { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:8px; }
+#page .nd-acts > a.btn, #page .nd-acts > button { display:inline-flex; align-items:center; justify-content:center; width:100%; min-width:0; min-height:var(--row-btn); text-align:center; }
+#page .nd-off { opacity:.6; cursor:not-allowed; }
+#page .nd-whys { margin:8px 0 0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+#page .nd-sec { margin:18px 0 0; padding-top:10px; border-top:1px solid var(--line-soft); }
+#page .nd-sec > .nd-h { margin-bottom:4px; }
+#page .nd-win .nd-meta .warn { color:var(--warn-fg); }
+#page .nd-facts-dl { display:grid; grid-template-columns:max-content minmax(0, 1fr); gap:6px 14px; margin:10px 0; font-size:13px; }
+#page .nd-facts-dl dt { color:var(--dim); font-size:11px; letter-spacing:.06em; text-transform:uppercase; align-self:center; }
+#page .nd-facts-dl dd { margin:0; overflow-wrap:anywhere; }
+#page .nd-peek .page-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; }
+
+/* sidebar groups: one collapsed group per paired node, after the projects of this node */
+#sidebar .nd-sbh, #drawer .nd-sbh { margin-top:12px; }
+#sidebar .nd-group .nd-sg, #drawer .nd-group .nd-sg { margin-right:6px; color:var(--dim); }
+#sidebar .nd-group .tn-cnt, #drawer .nd-group .tn-cnt { color:var(--warn-fg); }
+#sidebar .nd-more, #drawer .nd-more { color:var(--dim); font-size:12px; }
+
+html.force-coarse #page .nd-cell { min-height:var(--tap); }
+@media (max-width:599px) {
+  #page .nd-cells { grid-template-columns:repeat(2, minmax(0, 1fr)); gap:6px; }
+  #page .nd-cell { padding:6px 8px; }
+  #page .nd-item .nd-meta { margin-left:0; flex-basis:100%; }
+  #page .nd-facts-dl { grid-template-columns:1fr; gap:2px 0; }
+  #page .nd-facts-dl dd { margin-bottom:8px; }
+}

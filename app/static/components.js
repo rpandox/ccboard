@@ -866,6 +866,8 @@ function taskActions(acts) {
 
 function taskCardShell(t, cls, move, ...kids) {
   const card = el('div', { class: 'task' + cls, 'data-task': t.id, 'data-phase': taskPhase(t), tabindex: '0', role: 'group', 'aria-label': `Task: ${String(t.title || '').slice(0, 120)}` }, ...kids);
+  const chip = Nodes.chip(null);                                                        // paired nodes: this board's dim chip on every card (nodes.js); null otherwise
+  if (chip) { const meta = card.querySelector('.meta'); if (meta) meta.append(' ', chip); else card.append(chip); }                  // in the meta line, beside where the task lives and its age
   if (move) {
     card.setAttribute('data-movable', '1');
     card.setAttribute('aria-keyshortcuts', 'm');

@@ -338,3 +338,65 @@ NodeView.row = function (row, { nowMs = Date.now(), action = null } = {}) {
       el('div', { class: 'dim nd-note', text: notes.join(' ') })),
     action ? el('div', { class: 'nd-act' }, action) : null);
 };
+
+/* ---------------------------------------------------------------- the hub view, eager half (issue #139)
+
+   Nodes is the few bytes every page needs before a node is paired: is the hub view on (state.nodes_enabled), the node chip, and the hook that loads the rest. Everything
+   else (the model and its 6 s poll, the Home strip, the node page and its peeks, the sidebar groups, the palette rows, the Tasks filter) lives in nodes-hub.js and
+   pages/node.js, a lazy bundle (lazy.js 'nodeshub') that loads only when state.nodes_enabled is true. With it false nothing here runs, asks the network or changes a screen. */
+const Nodes = { ready: false, info: {}, bad: 0 };
+
+Nodes.enabled = function (st) {
+  const s = st || (typeof state !== 'undefined' ? state : null);
+  return !!s && s.nodes_enabled === true;
+};
+
+/* The name a node shows under: this board's own for null / 'local', else the registry's name from the last reading, else its handle. */
+Nodes.nameOf = function (h) {
+  const n = Ref.nodeOf(h);
+  if (n === null) { const s = typeof state !== 'undefined' ? state : null; return (s && typeof s.node_name === 'string' && s.node_name) || 'this node'; }
+  const i = Nodes.info[n];
+  return (i && i.name) || n;
+};
+
+/* Run fn once the hub bundle is here; false (and nothing loaded) while the hub view is off. A bundle that cannot be fetched is not asked again for a minute. */
+Nodes.use = function (fn) {
+  if (!Nodes.enabled()) return false;
+  if (Nodes.ready) { fn(); return true; }
+  if (typeof Lazy !== 'undefined' && !(Nodes.bad && Date.now() - Nodes.bad < 60000)) Lazy.load('nodeshub').then(() => { if (Nodes.ready) fn(); }, () => { Nodes.bad = Date.now(); });
+  return true;
+};
+
+/* Called with every state: starts (or, when the view went off, stops) the hub's poll. */
+Nodes.sync = function (st) {
+  if (Nodes.enabled(st)) Nodes.use(() => Nodes.start());
+  else if (Nodes.ready) Nodes.stop();
+};
+
+/* The chip of a node: a bordered neutral chip, a two-letter monogram and the name (never an agent or state hue); a node that is not online wears a glyph too. Local (null) is
+   dim; null while the hub view is off. Names are peer data: text only. */
+Nodes.chip = function (h) {
+  if (!Nodes.enabled()) return null;
+  const n = Ref.nodeOf(h);
+  const name = Nodes.nameOf(n);
+  const i = n === null ? null : Nodes.info[n];
+  return el('span', { class: n === null ? 'nchip local' : 'nchip', 'data-node': n === null ? 'local' : n, title: n === null ? `${name} (this node)` : i && i.word ? `${name}: ${i.word}` : name },
+    el('span', { class: 'nchip-m', 'aria-hidden': 'true', text: (name.replace(/[^A-Za-z0-9]/g, '').slice(0, 2) || '?').toUpperCase() }), el('span', { class: 'nchip-n', text: name }),
+    i && i.glyph ? el('span', { class: 'nchip-g', 'aria-hidden': 'true', text: i.glyph }) : null);
+};
+
+/* What a row's chip depends on, for a row that repaints only when its signature changed. */
+Nodes.sig = function (item) { return Nodes.enabled() ? Nodes.nameOf(item) + '|' + ((Nodes.info[Ref.nodeOf(item)] || {}).glyph || '') : ''; };
+
+/* Put the chip of `item`'s node right after `at` (and take it away when the view goes off); idempotent. */
+Nodes.mark = function (at, item) {
+  const want = Nodes.sig(item);
+  const c = at.ccNode || null;
+  if (c && c.ccSig === want) return;
+  if (c) { c.remove(); at.ccNode = null; }
+  const n = want ? Nodes.chip(item) : null;
+  if (!n || !at.parentNode) return;
+  n.ccSig = want;
+  at.parentNode.insertBefore(n, at.nextSibling);
+  at.ccNode = n;
+};

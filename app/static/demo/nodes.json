@@ -1,34 +1,814 @@
 {
-  "demo": {"epoch": 1790996400},
+  "demo": {
+    "epoch": 1790996400
+  },
   "nodes": [
-    {"peer_id": "p-build-box", "handle": "build-box", "node_id": "ts:nBOXDEMO01", "name": "build-box", "url": "https://build-box.example.ts.net:8443",
-     "scopes": ["read", "tasks"], "created_at": "2026-09-20T09:00:00+00:00", "last_seen": "2026-10-03T02:59:30+00:00", "direction": "out"},
-    {"peer_id": "p-alice-mac", "handle": "alice-mac", "node_id": "ts:nMACDEMO02", "name": "alice-mac", "url": "https://alice-mac.example.ts.net",
-     "scopes": ["read"], "created_at": "2026-10-03T02:40:00+00:00", "last_seen": null, "direction": "out"},
-    {"peer_id": "p-old-laptop", "handle": "old-laptop", "node_id": "ts:nLAPDEMO03", "name": "old-laptop", "url": "https://old-laptop.example.ts.net",
-     "scopes": ["read", "tasks"], "created_at": "2026-08-01T09:00:00+00:00", "last_seen": "2026-10-01T18:20:00+00:00", "direction": "out",
-     "needs_repair": true, "last_error": "the saved token was refused (401)"}
+    {
+      "peer_id": "p-build-box",
+      "handle": "build-box",
+      "node_id": "ts:nBOXDEMO01",
+      "name": "build-box",
+      "url": "https://build-box.example.ts.net:8443",
+      "scopes": [
+        "read",
+        "tasks"
+      ],
+      "created_at": "2026-09-20T09:00:00+00:00",
+      "last_seen": "2026-10-03T02:59:30+00:00",
+      "direction": "out"
+    },
+    {
+      "peer_id": "p-alice-mac",
+      "handle": "alice-mac",
+      "node_id": "ts:nMACDEMO02",
+      "name": "alice-mac",
+      "url": "https://alice-mac.example.ts.net",
+      "scopes": [
+        "read"
+      ],
+      "created_at": "2026-10-03T02:40:00+00:00",
+      "last_seen": null,
+      "direction": "out"
+    },
+    {
+      "peer_id": "p-old-laptop",
+      "handle": "old-laptop",
+      "node_id": "ts:nLAPDEMO03",
+      "name": "old-laptop",
+      "url": "https://old-laptop.example.ts.net",
+      "scopes": [
+        "read",
+        "tasks"
+      ],
+      "created_at": "2026-08-01T09:00:00+00:00",
+      "last_seen": "2026-10-01T18:20:00+00:00",
+      "direction": "out",
+      "needs_repair": true,
+      "last_error": "the saved token was refused (401)"
+    }
   ],
   "pairs": [
-    {"peer_id": "p-desk-pc", "node_id": "ts:nWINDEMO04", "name": "desk-pc", "url": "https://desk-pc.example.ts.net", "scopes": ["read", "tasks", "sessions"],
-     "created_at": "2026-09-25T12:00:00+00:00", "last_seen": "2026-10-03T02:58:10+00:00", "direction": "in"},
-    {"peer_id": "p-phone-board", "node_id": "ts:nPHNDEMO05", "name": "phone-board", "url": "https://phone-board.example.ts.net", "scopes": ["read"],
-     "created_at": "2026-10-03T02:50:00+00:00", "last_seen": null, "callback_unverified": true, "direction": "in"},
-    {"peer_id": "p-build-box-new", "node_id": "ts:nBOXDEMO01", "name": "build-box", "url": "https://build-box.example.ts.net:8443", "scopes": ["read", "tasks"],
-     "created_at": "2026-10-03T02:30:00+00:00", "last_seen": "2026-10-03T02:55:00+00:00", "direction": "in", "superseded_by": null, "superseded_by_url": null},
-    {"peer_id": "p-build-box-old", "node_id": "ts:nBOXDEMO01", "name": "build-box", "url": "https://100.64.0.21", "scopes": ["read", "tasks"],
-     "created_at": "2026-09-21T09:00:00+00:00", "last_seen": "2026-10-02T11:00:00+00:00", "direction": "in",
-     "superseded_by": "p-build-box-new", "superseded_by_url": "https://build-box.example.ts.net:8443"},
-    {"peer_id": "p-build-box-claim", "node_id": "ts:nBOXDEMO01", "name": "build-box", "url": "https://100.64.0.66", "scopes": ["read"],
-     "created_at": "2026-10-03T02:45:00+00:00", "last_seen": null, "callback_unverified": true, "direction": "in"}
+    {
+      "peer_id": "p-desk-pc",
+      "node_id": "ts:nWINDEMO04",
+      "name": "desk-pc",
+      "url": "https://desk-pc.example.ts.net",
+      "scopes": [
+        "read",
+        "tasks",
+        "sessions"
+      ],
+      "created_at": "2026-09-25T12:00:00+00:00",
+      "last_seen": "2026-10-03T02:58:10+00:00",
+      "direction": "in"
+    },
+    {
+      "peer_id": "p-phone-board",
+      "node_id": "ts:nPHNDEMO05",
+      "name": "phone-board",
+      "url": "https://phone-board.example.ts.net",
+      "scopes": [
+        "read"
+      ],
+      "created_at": "2026-10-03T02:50:00+00:00",
+      "last_seen": null,
+      "callback_unverified": true,
+      "direction": "in"
+    },
+    {
+      "peer_id": "p-build-box-new",
+      "node_id": "ts:nBOXDEMO01",
+      "name": "build-box",
+      "url": "https://build-box.example.ts.net:8443",
+      "scopes": [
+        "read",
+        "tasks"
+      ],
+      "created_at": "2026-10-03T02:30:00+00:00",
+      "last_seen": "2026-10-03T02:55:00+00:00",
+      "direction": "in",
+      "superseded_by": null,
+      "superseded_by_url": null
+    },
+    {
+      "peer_id": "p-build-box-old",
+      "node_id": "ts:nBOXDEMO01",
+      "name": "build-box",
+      "url": "https://100.64.0.21",
+      "scopes": [
+        "read",
+        "tasks"
+      ],
+      "created_at": "2026-09-21T09:00:00+00:00",
+      "last_seen": "2026-10-02T11:00:00+00:00",
+      "direction": "in",
+      "superseded_by": "p-build-box-new",
+      "superseded_by_url": "https://build-box.example.ts.net:8443"
+    },
+    {
+      "peer_id": "p-build-box-claim",
+      "node_id": "ts:nBOXDEMO01",
+      "name": "build-box",
+      "url": "https://100.64.0.66",
+      "scopes": [
+        "read"
+      ],
+      "created_at": "2026-10-03T02:45:00+00:00",
+      "last_seen": null,
+      "callback_unverified": true,
+      "direction": "in"
+    }
   ],
   "audit": [
-    {"id": 7, "at": "2026-10-03T02:50:00+00:00", "direction": "in", "peer": "p-phone-board", "node_name": "phone-board", "user": null, "action": "code_used", "target": null, "status": "ok", "detail": "scopes read"},
-    {"id": 6, "at": "2026-10-03T02:49:20+00:00", "direction": "in", "peer": "", "node_name": null, "user": "alice@example.com", "action": "code_created", "target": null, "status": "ok", "detail": "scopes read, 10 min"},
-    {"id": 5, "at": "2026-10-03T02:40:00+00:00", "direction": "out", "peer": "p-alice-mac", "node_name": "alice-mac", "user": "alice@example.com", "action": "paired", "target": null, "status": "ok", "detail": "scopes read"},
-    {"id": 4, "at": "2026-10-03T02:38:00+00:00", "direction": "out", "peer": "", "node_name": null, "user": "alice@example.com", "action": "pair_failed", "target": null, "status": "failed", "detail": null},
-    {"id": 3, "at": "2026-10-02T10:00:00+00:00", "direction": "out", "peer": "p-build-box", "node_name": "build-box", "user": "alice@example.com", "action": "rotated", "target": null, "status": "ok", "detail": "the old token works 60 s more there"},
-    {"id": 2, "at": "2026-10-01T18:20:00+00:00", "direction": "out", "peer": "p-old-laptop", "node_name": "old-laptop", "user": "alice@example.com", "action": "rotate_failed", "target": null, "status": "failed", "detail": "the peer answered 401"},
-    {"id": 1, "at": "2026-09-25T12:00:00+00:00", "direction": "in", "peer": "p-desk-pc", "node_name": "desk-pc", "user": null, "action": "code_used", "target": null, "status": "ok", "detail": "scopes read,tasks,sessions"}
+    {
+      "id": 7,
+      "at": "2026-10-03T02:50:00+00:00",
+      "direction": "in",
+      "peer": "p-phone-board",
+      "node_name": "phone-board",
+      "user": null,
+      "action": "code_used",
+      "target": null,
+      "status": "ok",
+      "detail": "scopes read"
+    },
+    {
+      "id": 6,
+      "at": "2026-10-03T02:49:20+00:00",
+      "direction": "in",
+      "peer": "",
+      "node_name": null,
+      "user": "alice@example.com",
+      "action": "code_created",
+      "target": null,
+      "status": "ok",
+      "detail": "scopes read, 10 min"
+    },
+    {
+      "id": 5,
+      "at": "2026-10-03T02:40:00+00:00",
+      "direction": "out",
+      "peer": "p-alice-mac",
+      "node_name": "alice-mac",
+      "user": "alice@example.com",
+      "action": "paired",
+      "target": null,
+      "status": "ok",
+      "detail": "scopes read"
+    },
+    {
+      "id": 4,
+      "at": "2026-10-03T02:38:00+00:00",
+      "direction": "out",
+      "peer": "",
+      "node_name": null,
+      "user": "alice@example.com",
+      "action": "pair_failed",
+      "target": null,
+      "status": "failed",
+      "detail": null
+    },
+    {
+      "id": 3,
+      "at": "2026-10-02T10:00:00+00:00",
+      "direction": "out",
+      "peer": "p-build-box",
+      "node_name": "build-box",
+      "user": "alice@example.com",
+      "action": "rotated",
+      "target": null,
+      "status": "ok",
+      "detail": "the old token works 60 s more there"
+    },
+    {
+      "id": 2,
+      "at": "2026-10-01T18:20:00+00:00",
+      "direction": "out",
+      "peer": "p-old-laptop",
+      "node_name": "old-laptop",
+      "user": "alice@example.com",
+      "action": "rotate_failed",
+      "target": null,
+      "status": "failed",
+      "detail": "the peer answered 401"
+    },
+    {
+      "id": 1,
+      "at": "2026-09-25T12:00:00+00:00",
+      "direction": "in",
+      "peer": "p-desk-pc",
+      "node_name": "desk-pc",
+      "user": null,
+      "action": "code_used",
+      "target": null,
+      "status": "ok",
+      "detail": "scopes read,tasks,sessions"
+    }
+  ],
+  "hub": [
+    {
+      "peer_id": "p-build-box",
+      "handle": "build-box",
+      "node_id": "ts:nBOXDEMO01",
+      "name": "build-box",
+      "url": "https://build-box.example.ts.net:8443",
+      "status": "online",
+      "polled_at": "2026-10-03T02:59:58+00:00",
+      "last_ok_at": "2026-10-03T02:59:58+00:00",
+      "age_s": 2,
+      "skew_ms": 120,
+      "skew_warn": false,
+      "error_kind": null,
+      "etag": "demo-build-box",
+      "legacy": false,
+      "scopes": [
+        "read",
+        "tasks"
+      ],
+      "card": {
+        "app": "ccboard",
+        "api": 1,
+        "node_id": "ts:nBOXDEMO01",
+        "name": "build-box",
+        "url": "https://build-box.example.ts.net:8443",
+        "version": "0.5.36",
+        "os": {
+          "system": "Linux",
+          "release": "6.8.0-demo",
+          "tailscale_os": "linux"
+        },
+        "runtime": "docker",
+        "now": "2026-10-03T03:00:00+00:00",
+        "agents": [
+          {
+            "id": "claude",
+            "installed": true,
+            "version": "2.1.40",
+            "logged_in": true,
+            "hooks": true,
+            "login_problem": false
+          },
+          {
+            "id": "codex",
+            "installed": true,
+            "version": "0.145.0",
+            "logged_in": true,
+            "hooks": true,
+            "login_problem": false
+          }
+        ],
+        "accounts": {
+          "supported": true,
+          "items": [
+            {
+              "agent": "claude",
+              "label": "Work",
+              "current": true,
+              "subscription_key": null,
+              "window": {
+                "pct": 42,
+                "resets_at": 1791003600,
+                "backoff_until": null,
+                "known": true
+              },
+              "limited": false
+            },
+            {
+              "agent": "codex",
+              "label": "Personal",
+              "current": true,
+              "subscription_key": null,
+              "window": {
+                "pct": 12,
+                "resets_at": 1791010800,
+                "backoff_until": null,
+                "known": true
+              },
+              "limited": false
+            }
+          ]
+        },
+        "lanes": {
+          "cap": 3,
+          "running": 1,
+          "free": 2
+        },
+        "load": {
+          "load1": 0.9,
+          "cores": 16,
+          "cpu_pct": 11.2,
+          "mem_pct": 36.4,
+          "disk_pct": 58.0
+        },
+        "sessions": {
+          "live": 4,
+          "working": 1,
+          "needs_you": 2
+        },
+        "capabilities": [
+          "state",
+          "tasks",
+          "sessions",
+          "stream"
+        ],
+        "tailscale": {
+          "dns_name": "build-box.example.ts.net",
+          "tags": [],
+          "user_owned": true
+        }
+      },
+      "state": {
+        "api": 1,
+        "node": {
+          "id": "ts:nBOXDEMO01",
+          "version": "0.5.36",
+          "now": "2026-10-03T03:00:00+00:00"
+        },
+        "etag_base": "demo",
+        "projects": [
+          {
+            "name": "shop",
+            "repos": [
+              {
+                "name": "api",
+                "slug": "example/shop-api",
+                "branch": "main",
+                "dirty": false
+              },
+              {
+                "name": "web",
+                "slug": "example/shop-web",
+                "branch": "feat/cart",
+                "dirty": true
+              }
+            ]
+          },
+          {
+            "name": "infra",
+            "repos": [
+              {
+                "name": "deploy",
+                "slug": null,
+                "branch": "main",
+                "dirty": false
+              }
+            ]
+          }
+        ],
+        "sessions": [
+          {
+            "tmux": "shop--api--s1",
+            "project": "shop",
+            "repo": "api",
+            "session": "s1",
+            "agent": "claude",
+            "state": "waiting",
+            "needs_you": true,
+            "kind": "user",
+            "since": "2026-10-03T02:54:00+00:00",
+            "model": "Opus 5"
+          },
+          {
+            "tmux": "shop--web--t-cart-page",
+            "project": "shop",
+            "repo": "web",
+            "session": "t-cart-page",
+            "agent": "claude",
+            "state": "working",
+            "needs_you": false,
+            "kind": "task",
+            "since": "2026-10-03T02:58:00+00:00",
+            "model": "Opus 5"
+          },
+          {
+            "tmux": "infra--deploy--s2",
+            "project": "infra",
+            "repo": "deploy",
+            "session": "s2",
+            "agent": "codex",
+            "state": "waiting",
+            "needs_you": true,
+            "kind": "user",
+            "since": "2026-10-03T02:45:00+00:00",
+            "model": "gpt-5.5"
+          },
+          {
+            "tmux": "shop--api--s3",
+            "project": "shop",
+            "repo": "api",
+            "session": "s3",
+            "agent": "claude",
+            "state": "idle",
+            "needs_you": false,
+            "kind": "user",
+            "since": "2026-10-03T01:53:20+00:00",
+            "model": "Sonnet 5.5"
+          }
+        ],
+        "tasks": [
+          {
+            "id": 41,
+            "title": "Add pagination to the orders endpoint",
+            "phase": "running",
+            "agent": "claude",
+            "project": "shop",
+            "repo": "api",
+            "branch": "task/orders-pagination",
+            "tmux": "shop--api--t-orders",
+            "issue_ref": "#212",
+            "updated_at": "2026-10-03T02:58:30+00:00"
+          },
+          {
+            "id": 40,
+            "title": "Cart page: empty state",
+            "phase": "review",
+            "agent": "claude",
+            "project": "shop",
+            "repo": "web",
+            "branch": "task/cart-empty",
+            "tmux": "shop--web--t-cart-page",
+            "issue_ref": "#208",
+            "updated_at": "2026-10-03T02:55:00+00:00"
+          },
+          {
+            "id": 38,
+            "title": "Upgrade the Postgres image",
+            "phase": "done",
+            "agent": "codex",
+            "project": "infra",
+            "repo": "deploy",
+            "branch": "task/pg-17",
+            "tmux": null,
+            "issue_ref": null,
+            "updated_at": "2026-10-03T01:00:00+00:00"
+          }
+        ],
+        "needs_you": {
+          "permissions": 0,
+          "input": 2,
+          "errors": 0
+        },
+        "usage": {
+          "claude": {
+            "pct": 42,
+            "resets_at": 1791003600,
+            "backoff_until": null,
+            "known": true,
+            "limited": false
+          },
+          "codex": {
+            "pct": 12,
+            "resets_at": 1791010800,
+            "backoff_until": null,
+            "known": true,
+            "limited": false
+          }
+        },
+        "lanes": {
+          "cap": 3,
+          "running": 1,
+          "free": 2
+        },
+        "login_problems": [],
+        "truncated": false
+      }
+    },
+    {
+      "peer_id": "p-alice-mac",
+      "handle": "alice-mac",
+      "node_id": "ts:nMACDEMO02",
+      "name": "alice-mac",
+      "url": "https://alice-mac.example.ts.net",
+      "status": "stale",
+      "polled_at": "2026-10-03T02:59:40+00:00",
+      "last_ok_at": "2026-10-03T02:56:50+00:00",
+      "age_s": 190,
+      "skew_ms": 7400,
+      "skew_warn": true,
+      "error_kind": "timeout",
+      "etag": "demo-alice-mac",
+      "legacy": false,
+      "scopes": [
+        "read"
+      ],
+      "card": {
+        "app": "ccboard",
+        "api": 1,
+        "node_id": "ts:nMACDEMO02",
+        "name": "alice-mac",
+        "url": "https://alice-mac.example.ts.net",
+        "version": "0.5.35",
+        "os": {
+          "system": "macOS",
+          "release": "24.6.0",
+          "tailscale_os": "macos"
+        },
+        "runtime": null,
+        "now": "2026-10-03T03:00:00+00:00",
+        "agents": [
+          {
+            "id": "claude",
+            "installed": true,
+            "version": "2.1.38",
+            "logged_in": true,
+            "hooks": true,
+            "login_problem": false
+          },
+          {
+            "id": "codex",
+            "installed": false,
+            "version": null,
+            "logged_in": false,
+            "hooks": false,
+            "login_problem": false
+          }
+        ],
+        "accounts": {
+          "supported": true,
+          "items": [
+            {
+              "agent": "claude",
+              "label": "Personal",
+              "current": true,
+              "subscription_key": null,
+              "window": {
+                "pct": 71,
+                "resets_at": 1791000000,
+                "backoff_until": null,
+                "known": true
+              },
+              "limited": false
+            }
+          ]
+        },
+        "lanes": {
+          "cap": 3,
+          "running": 1,
+          "free": 2
+        },
+        "load": {
+          "load1": 2.4,
+          "cores": 10,
+          "cpu_pct": 24.0,
+          "mem_pct": 61.0,
+          "disk_pct": 44.0
+        },
+        "sessions": {
+          "live": 2,
+          "working": 1,
+          "needs_you": 1
+        },
+        "capabilities": [
+          "state",
+          "tasks",
+          "sessions",
+          "stream"
+        ],
+        "tailscale": {
+          "dns_name": "alice-mac.example.ts.net",
+          "tags": [],
+          "user_owned": true
+        }
+      },
+      "state": {
+        "api": 1,
+        "node": {
+          "id": "ts:nMACDEMO02",
+          "version": "0.5.35",
+          "now": "2026-10-03T03:00:00+00:00"
+        },
+        "etag_base": "demo",
+        "projects": [
+          {
+            "name": "notes",
+            "repos": [
+              {
+                "name": "site",
+                "slug": "example/notes-site",
+                "branch": "main",
+                "dirty": true
+              }
+            ]
+          }
+        ],
+        "sessions": [
+          {
+            "tmux": "notes--site--s1",
+            "project": "notes",
+            "repo": "site",
+            "session": "s1",
+            "agent": "claude",
+            "state": "waiting",
+            "needs_you": true,
+            "kind": "user",
+            "since": "2026-10-03T02:35:00+00:00",
+            "model": "Opus 5"
+          },
+          {
+            "tmux": "notes--site--t-rss",
+            "project": "notes",
+            "repo": "site",
+            "session": "t-rss",
+            "agent": "claude",
+            "state": "working",
+            "needs_you": false,
+            "kind": "task",
+            "since": "2026-10-03T02:56:00+00:00",
+            "model": "Sonnet 5.5"
+          }
+        ],
+        "tasks": [
+          {
+            "id": 12,
+            "title": "Publish an RSS feed",
+            "phase": "running",
+            "agent": "claude",
+            "project": "notes",
+            "repo": "site",
+            "branch": "task/rss",
+            "tmux": "notes--site--t-rss",
+            "issue_ref": "#31",
+            "updated_at": "2026-10-03T02:56:00+00:00"
+          }
+        ],
+        "needs_you": {
+          "permissions": 1,
+          "input": 1,
+          "errors": 0
+        },
+        "usage": {
+          "claude": {
+            "pct": 71,
+            "resets_at": 1791000000,
+            "backoff_until": null,
+            "known": true,
+            "limited": false
+          },
+          "codex": {
+            "pct": null,
+            "resets_at": null,
+            "backoff_until": null,
+            "known": false,
+            "limited": false
+          }
+        },
+        "lanes": {
+          "cap": 3,
+          "running": 1,
+          "free": 2
+        },
+        "login_problems": [],
+        "truncated": false
+      }
+    },
+    {
+      "peer_id": "p-old-laptop",
+      "handle": "old-laptop",
+      "node_id": "ts:nLAPDEMO03",
+      "name": "old-laptop",
+      "url": "https://old-laptop.example.ts.net",
+      "status": "offline",
+      "polled_at": "2026-10-03T02:59:55+00:00",
+      "last_ok_at": "2026-10-02T21:00:00+00:00",
+      "age_s": 21600,
+      "skew_ms": null,
+      "skew_warn": false,
+      "error_kind": "refused",
+      "etag": "demo-old-laptop",
+      "legacy": false,
+      "scopes": [
+        "read",
+        "tasks"
+      ],
+      "card": {
+        "app": "ccboard",
+        "api": 1,
+        "node_id": "ts:nLAPDEMO03",
+        "name": "old-laptop",
+        "url": "https://old-laptop.example.ts.net",
+        "version": "0.5.30",
+        "os": {
+          "system": "Windows",
+          "release": "10.0.22631",
+          "tailscale_os": "windows"
+        },
+        "runtime": null,
+        "now": "2026-10-03T03:00:00+00:00",
+        "agents": [
+          {
+            "id": "claude",
+            "installed": true,
+            "version": "2.1.30",
+            "logged_in": true,
+            "hooks": true,
+            "login_problem": false
+          }
+        ],
+        "accounts": {
+          "supported": true,
+          "items": [
+            {
+              "agent": "claude",
+              "label": "Spare",
+              "current": true,
+              "subscription_key": null,
+              "window": {
+                "pct": 5,
+                "resets_at": 1790998200,
+                "backoff_until": null,
+                "known": true
+              },
+              "limited": false
+            }
+          ]
+        },
+        "lanes": {
+          "cap": 3,
+          "running": 1,
+          "free": 2
+        },
+        "load": {
+          "load1": null,
+          "cores": 4,
+          "cpu_pct": 3.0,
+          "mem_pct": 52.0,
+          "disk_pct": 71.0
+        },
+        "sessions": {
+          "live": 1,
+          "working": 0,
+          "needs_you": 0
+        },
+        "capabilities": [
+          "state",
+          "tasks",
+          "sessions",
+          "stream"
+        ],
+        "tailscale": {
+          "dns_name": "old-laptop.example.ts.net",
+          "tags": [],
+          "user_owned": true
+        }
+      },
+      "state": {
+        "api": 1,
+        "node": {
+          "id": "ts:nLAPDEMO03",
+          "version": "0.5.30",
+          "now": "2026-10-03T03:00:00+00:00"
+        },
+        "etag_base": "demo",
+        "projects": [
+          {
+            "name": "scratch",
+            "repos": [
+              {
+                "name": "play",
+                "slug": null,
+                "branch": "main",
+                "dirty": false
+              }
+            ]
+          }
+        ],
+        "sessions": [
+          {
+            "tmux": "scratch--play--s1",
+            "project": "scratch",
+            "repo": "play",
+            "session": "s1",
+            "agent": "claude",
+            "state": "idle",
+            "needs_you": false,
+            "kind": "user",
+            "since": "2026-10-02T20:53:20+00:00",
+            "model": "Sonnet 5.5"
+          }
+        ],
+        "tasks": [],
+        "needs_you": {
+          "permissions": 0,
+          "input": 0,
+          "errors": 0
+        },
+        "usage": {
+          "claude": {
+            "pct": 5,
+            "resets_at": 1790998200,
+            "backoff_until": null,
+            "known": true,
+            "limited": false
+          }
+        },
+        "lanes": {
+          "cap": 3,
+          "running": 1,
+          "free": 2
+        },
+        "login_problems": [],
+        "truncated": false
+      }
+    }
   ]
 }

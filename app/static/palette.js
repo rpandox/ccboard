@@ -16,6 +16,8 @@
      More       collapsed; the fun commands (/color /copy /rewind /radio /stickers /tui /passes) as plain inserts into that box
    mode 'send' is the share target: the box holds the shared text (editable) and the list is "send to session"; Enter sends it with Enter,
    Shift+Enter only types it. Closing the dialog in that mode strips the shared params from the address (Router.stripShare).
+   Nodes      (issue #139, only with a node paired) Go to <node>, Open board on <node>; remote sessions join Sessions with their node chip, remote tasks show while searching; `@box fix`
+                narrows Sessions and the tasks of other nodes to the node `box` (its handle or name, or a unique start of the handle; `@local` is this board) and filters by `fix`
    Palette.openHelp() draws Keymap.help() grouped. Everything here is built with el() and textContent. */
 'use strict';
 
@@ -286,6 +288,23 @@ Palette.insert = function (text, how, into) {
   return P.withSendBox(fill);
 };
 
+/* `@box fix`: a leading @token that names a paired node (its handle or name, or the one handle it starts; @local or @this is this board) narrows Sessions and the tasks of other
+   nodes to that node and filters by the rest. null for anything else, so a text that merely starts with @ is searched as typed. */
+Palette.nodePrefix = function (query) {
+  const m = /^@([A-Za-z0-9-]+)(?:\s+([\s\S]*))?$/.exec(String(query || '').trim());
+  if (!m || typeof Nodes === 'undefined' || !Nodes.ready || !Nodes.enabled()) return null;
+  const tok = m[1].toLowerCase();
+  const rest = (m[2] || '').trim();
+  if (tok === 'local' || tok === 'this') return { node: 'local', rest };
+  const recs = Nodes.list();
+  // A handle is ours (the registry's); a name is what the node called itself when it paired. So an exact handle wins over every name, a name counts only when exactly
+  // one node has it, and a start matches handles only: a node cannot take another node's @handle by naming itself after it.
+  let hit = recs.find((r) => r.handle === tok);
+  if (!hit) { const named = recs.filter((r) => String(r.name || '').toLowerCase() === tok); if (named.length === 1) hit = named[0]; }
+  if (!hit) { const some = recs.filter((r) => r.handle.startsWith(tok)); if (some.length === 1) hit = some[0]; }
+  return hit ? { node: hit.handle, rest } : null;
+};
+
 /* The groups the palette offers, as [{ id, title, items: [{ id, label, hint, kbd, glyph, keywords, run, keep? }] }] before any filtering. */
 Palette.catalog = function (ctx, query) {
   const groups = [];
@@ -298,13 +317,40 @@ Palette.catalog = function (ctx, query) {
     return { id: 's:' + Ref.key(s), label: s.name || s.tmux, hint: `${Palette.where(s)} · ${GLYPH_LABEL[st]}`, kbd: i < 9 ? Palette.modLabel() + (i + 1) : '', glyph,
       keywords: `${s.project || ''} ${s.repo || ''} ${s.tmux}${Ref.nodeOf(s) ? ' ' + Ref.nodeOf(s) : ''}`, run: () => { close(); Palette.go(Palette.sessionHash(s)); } };
   });
-  groups.push({ id: 'sessions', title: 'Sessions', items: sessions, limit: query ? Palette.PER_GROUP : Palette.SESSIONS_SHOWN });
+  const hub = typeof Nodes !== 'undefined' && Nodes.enabled() && Nodes.ready && Nodes.list().length;
+  if (hub) {                                                   // paired nodes (nodes-hub.js): their sessions after this board's, each with its node chip; the tasks and the Nodes group below
+    for (const s of Nodes.sessions()) {
+      const st = Palette.stateOf(s);
+      const glyph = stateGlyph(st);
+      glyph.setAttribute('aria-hidden', 'true');
+      glyph.removeAttribute('title');
+      sessions.push({ id: 's:' + Ref.key(s), label: s.session || s.tmux, hint: `${Palette.where(s)} · ${GLYPH_LABEL[st]}`, kbd: '', glyph, chip: Nodes.chip(s.node), node: s.node,
+        keywords: `${s.project || ''} ${s.repo || ''} ${s.tmux} ${s.node}`, run: () => { close(); Palette.go(Palette.sessionHash(s)); } });
+    }
+  }
+  groups.push({ id: 'sessions', title: 'Sessions', items: sessions, limit: query || ctx.scope ? Palette.PER_GROUP : Palette.SESSIONS_SHOWN });
+  if (hub && (query || ctx.scope)) {
+    groups.push({ id: 'rtasks', title: 'Tasks on other nodes', limit: Palette.PER_GROUP, items: Nodes.tasks().map((t) => ({ id: 't:' + Ref.key({ kind: 'task', node: t.node, id: t.id }), label: String(t.title || `Task ${t.id}`),
+      hint: `${Palette.where(t)} · ${t.phase || ''}`, chip: Nodes.chip(t.node), node: t.node, keywords: `task ${t.node} ${t.issue_ref || ''}`, run: () => { close(); Palette.go(Ref.hash(Ref.task(t.node, t.id)) || '#/'); } })) });
+  }
+  if (ctx.scope) return groups.filter((g) => g.id === 'sessions' || g.id === 'rtasks').map((g) => ({ ...g, items: g.items.filter((it) => (Ref.nodeOf(it.node) || 'local') === ctx.scope) }));
 
   // With nothing typed, Search is a plain route. With a query it moves to a group of its own at the very end (never filtered out, never ranked above
   // a real match): Enter on the best match then runs that match, and "search transcripts for ..." is the last row.
   const routes = Palette.ROUTES.filter((r) => r[1] !== '#/search' || !query).map(([label, hash, kbd]) => ({ id: 'r:' + hash, label, hint: hash === '#/search' ? 'transcripts' : '', kbd,
     run: () => { close(); Palette.go(hash === '#/quad' && typeof Shell !== 'undefined' && Shell && typeof Shell.quadHref === 'function' ? Shell.quadHref() : hash); } }));      // the quad opens the scope last used
   groups.push({ id: 'routes', title: 'Routes', items: routes });
+  if (hub) {
+    const items = [];
+    Nodes.list().forEach((r, i) => {
+      const name = typeof r.name === 'string' && r.name ? r.name : r.handle;
+      const url = Nodes.boardUrl(r.url);
+      items.push({ id: 'nd:' + r.handle, label: `Go to ${name}`, hint: Nodes.view(r).word, kbd: i === 0 ? 'g n' : '', keywords: `node ${r.handle}`, run: () => { close(); Palette.go(Ref.hash(Ref.node(r.handle)) || '#/'); } });
+      items.push({ id: 'nb:' + r.handle, label: `Open board on ${name}`, hint: url ? 'new tab' : '', keywords: `node ${r.handle} open board`, off: url ? '' : 'The address saved for this node is not an https tailnet address.',
+        run: () => { if (!url) { Palette.say('The address saved for this node is not an https tailnet address.', 'warn'); return; } close(); window.open(url, '_blank', 'noopener,noreferrer'); } });
+    });
+    groups.push({ id: 'nodes', title: 'Nodes', items, limit: query ? Palette.PER_GROUP : 4 });
+  }
 
   // Quad: <project> for every project with a live session: only for a search that starts like the word ("qu", "quad", "quad pet"), so a project name alone still finds its
   // sessions first and the empty palette keeps its short list
@@ -366,9 +412,10 @@ Palette.catalog = function (ctx, query) {
 
 /* The shown groups for `query`: fuzzy-filtered and ranked, empty groups dropped, More collapsed to one row until opened or searched. */
 Palette.groups = function (ctx, query, moreOpen, skillsOpen) {
-  const q = String(query || '').trim();
+  const pre = Palette.nodePrefix(query);
+  const q = pre ? pre.rest : String(query || '').trim();
   const out = [];
-  for (const g of Palette.catalog({ ...ctx, skillsOpen: !!skillsOpen }, q)) {
+  for (const g of Palette.catalog({ ...ctx, skillsOpen: !!skillsOpen, scope: pre ? pre.node : null }, q)) {
     let items = g.items;
     let best = 0;
     if (q) {
@@ -488,6 +535,7 @@ Palette.open = function (opts) {
   const u = { dlg, view: 'palette', mode, input, list, foot, from, ctx: null, shown: [], nodes: [], sel: 0, selId: null, moreOpen: false, skillsOpen: false, timer: null, sig: typeof ui !== 'undefined' ? ui.lastJson : null };
   Palette.ui = u;
   u.ctx = Palette.context();
+  Nodes.use(() => Palette.refresh());                                                  // paired nodes: their rows join once the hub bundle is here
   input.addEventListener('keydown', Palette.key);
   input.addEventListener('input', () => { if (u.mode === 'default') { u.selId = null; Palette.render(); } });
   list.addEventListener('mousedown', (e) => e.preventDefault());                       // a click on a row must not take the focus from the box
@@ -519,10 +567,17 @@ Palette.tick = function () {
   Palette.render();
 };
 
+/* Redraw the open palette (the nodes' reading changed, or the hub bundle arrived), keeping the text and the row. */
+Palette.refresh = function () {
+  const u = Palette.ui;
+  if (u && u.view === 'palette' && u.dlg.open) { u.ctx = Palette.context(); Palette.render(); }
+};
+
 Palette.itemNode = function (it, id) {
   return el('div', { class: 'pal-item' + (it.off ? ' off' : ''), role: 'option', id, 'aria-selected': 'false', 'aria-disabled': it.off ? 'true' : null },
     it.glyph || null,
     el('span', { class: 'pal-label' }, ...Palette.highlight(it.label, it.hits)),
+    it.chip || null,
     it.off ? el('span', { class: 'pal-hint', text: it.off }) : (it.hint ? el('span', { class: 'pal-hint', text: it.hint }) : null),
     it.note ? el('span', { class: 'pal-note', text: it.note }) : null,
     it.act ? el('span', { class: 'pal-act', text: it.act }) : null,

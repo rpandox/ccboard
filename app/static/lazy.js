@@ -24,13 +24,15 @@ const LAZY_BUNDLES = {
   memory: { js: ['/static/pages/memory.js'], css: [{ href: '/static/pages/memory.css', rank: 13 }], probe: () => typeof Memory !== 'undefined' },
   project: { needs: ['tree'], js: ['/static/pages/project.js'], probe: () => typeof projectPage !== 'undefined' },
   settings: { js: ['/static/nodes-pair.js', '/static/pages/doctor.js', '/static/pages/settings.js'], css: [{ href: '/static/pages/settings.css', rank: 10 }], probe: () => typeof settingsPage !== 'undefined' },
+  // the hub view (issue #139): loads only once state.nodes_enabled is true (nodes.js Nodes.use), or for a #/n/ address
+  nodeshub: { js: ['/static/nodes-hub.js', '/static/pages/node.js'], css: [{ href: '/static/pages/nodes.css', rank: 14 }], probe: () => typeof Nodes !== 'undefined' && Nodes.ready },
   usage: { js: ['/static/charts.js', '/static/pages/usage.js'], probe: () => typeof Usage !== 'undefined' },
   quad: { needs: ['termkit'], js: ['/static/pages/quad.js'], css: [{ href: '/static/pages/quad.css', rank: 12 }], probe: () => typeof Quad !== 'undefined' },
   onboarding: { needs: ['launcher'], js: ['/static/pages/onboarding.js'], css: [{ href: '/static/pages/onboarding.css', rank: 11 }], probe: () => typeof wizPage !== 'undefined' },
 };
 
 /* route id -> the bundle that registers its page (the routes not named here are registered by index.html's own scripts) */
-const LAZY_ROUTES = { project: 'project', settings: 'settings', usage: 'usage', quad: 'quad', memory: 'memory', onboarding: 'onboarding' };
+const LAZY_ROUTES = { project: 'project', settings: 'settings', usage: 'usage', quad: 'quad', memory: 'memory', onboarding: 'onboarding', node: 'nodeshub', 'node-session': 'nodeshub', 'node-task': 'nodeshub' };
 
 const lazyPromises = {};      // bundle -> the promise of its load, while it is running or done
 const lazyDoneSet = {};       // bundle -> true once its files ran (a probe can say so too, until this loader has touched the bundle)

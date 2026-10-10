@@ -425,6 +425,7 @@ registerPage('inbox', {
     Pages.paint();
     r.none.classList.toggle('hidden', items.length > 0);
     r.hint.classList.toggle('hidden', !items.length);
+    Nodes.use(() => Nodes.slot('inbox', r.listNode, { none: r.none, local: items.length }));     // paired nodes: "On other nodes" under the local cards (nodes-hub.js)
     refreshTitle();
   },
   unmount() {
