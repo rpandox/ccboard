@@ -290,3 +290,185 @@ def test_a_field_the_model_does_not_have_is_a_422_on_both_sides_even_when_the_gu
     row = pair_up()
     r = two_nodes.a.post(f"/api/nodes/{row['handle']}/probe", json={"agent": "claude", "surprise": 1})
     assert r.status_code == 422 and "surprise" in r.json()["error"] and probe_rows.calls == []
+
+
+# ---------------------------------------------------------------- 5. the launch line: what a remote launch runs with and what a target session runs with (review of P8)
+# The strings are the lines the adapters type (tests/test_launcher_api.py shows them), plus the ways a person widens a session on the peer's own board.
+
+CLAUDE_OK = [
+    "claude --permission-mode manual --session-id 11111111-1111-4111-8111-111111111111 --name s1",
+    "claude --permission-mode default --name s1",
+    "claude --model sonnet --effort high --permission-mode acceptEdits --worktree t-x --session-id 11111111-1111-4111-8111-111111111111 -- fix the bug",
+    "env CLAUDE_CODE_SUBAGENT_MODEL=haiku claude --permission-mode plan --name s1",
+    "claude --permission-mode=plan --name s1",
+    "claude --permission-mode manual --session-id x -- the prompt may say bypassPermissions or --dangerously-skip-permissions and is not read",
+]
+CLAUDE_WIDE = [
+    ("claude --permission-mode bypassPermissions --name s1", "bypassPermissions"),
+    ("claude --permission-mode=bypassPermissions --name s1", "bypass"),
+    ("claude --dangerously-skip-permissions --name s1", "dangerously"),
+    ("claude --allow-dangerously-skip-permissions --permission-mode manual", "dangerously"),
+    ("claude --permission-mode auto --name s1", "outside the allowed set"),
+    ("claude --permission-mode dontAsk", "outside the allowed set"),
+    ("claude --permission-mode manual --permission-mode bypassPermissions", "bypass"),
+    ("claude --permission-mode plan --permission-mode auto", "outside the allowed set"),
+    ("claude --permission-mode", "outside the allowed set"),
+    ("claude --permission-mode manual --allowedTools Bash", "allowedtools"),
+    ("claude --permission-mode manual --allowed-tools Bash", "allowed-tools"),
+    ("claude --permission-mode manual --settings /tmp/x.json", "--settings"),
+    ("claude --permission-mode manual --setting-sources user", "--setting-sources"),
+    ("claude --name s1", "sets no permission mode"),
+    ("claude", "sets no permission mode"),
+    ("zsh", "cannot be read"),
+    ("", "cannot be read"),
+    (None, "cannot be read"),
+    ("claude --permission-mode 'manual", "cannot be read"),
+    ("codex -s workspace-write -a on-request", "cannot be read"),
+]
+
+
+@pytest.mark.parametrize("cmd", CLAUDE_OK)
+def test_a_claude_line_that_says_a_mode_inside_the_set_is_inside_it(cmd):
+    assert nr.launch_line_refusal("claude", cmd) is None
+
+
+@pytest.mark.parametrize("cmd,why", CLAUDE_WIDE, ids=lambda x: str(x)[:50])
+def test_a_claude_line_wider_than_the_set_or_silent_about_its_mode_is_refused(cmd, why):
+    got = nr.launch_line_refusal("claude", cmd)
+    assert got and why.lower() in got.lower(), got
+
+
+CODEX_OK = [
+    "codex --no-alt-screen -s workspace-write -a on-request",
+    "codex --no-alt-screen -s read-only -a on-request -m gpt-5.5 -c 'model_reasoning_effort=\"high\"'",
+    "codex resume --no-alt-screen -a on-request -s workspace-write 019a-uuid",
+    "codex --no-daemon -c check_for_update_on_startup=false --no-alt-screen -s workspace-write -a on-request -- danger-full-access in a prompt",
+    "codex --sandbox=read-only --ask-for-approval=on-request",
+]
+CODEX_WIDE = [
+    ("codex --no-alt-screen -s danger-full-access -a on-request", "danger-full-access"),
+    ("codex --no-alt-screen -s workspace-write -a never", "outside the allowed set"),
+    ("codex --no-alt-screen -s workspace-write -a on-failure", "outside the allowed set"),
+    ("codex --no-alt-screen -s workspace-write -a untrusted", "outside the allowed set"),
+    ("codex --no-alt-screen -s workspace-write", "no sandbox or no approval"),
+    ("codex --no-alt-screen -a on-request", "no sandbox or no approval"),
+    ("codex --no-alt-screen", "no sandbox or no approval"),
+    ("codex --dangerously-bypass-approvals-and-sandbox", "dangerously"),
+    ("codex --yolo", "--yolo"),
+    ("codex -s workspace-write -a on-request --approve-for-me", "--approve-for-me"),
+    ("codex -s workspace-write -a on-request --full-auto", "--full-auto"),
+    ("codex -s workspace-write -a on-request -c 'sandbox_mode=\"danger-full-access\"'", "danger-full-access"),
+    ("codex -s workspace-write -a on-request -c approval_policy=never", "-c line"),
+    ("codex -s workspace-write -a on-request --config=sandbox_workspace_write.network_access=true", "-c line"),
+    ("codex -s read-only -s danger-full-access -a on-request", "danger-full-access"),
+    ("claude --permission-mode manual", "cannot be read"),
+]
+
+
+@pytest.mark.parametrize("cmd", CODEX_OK)
+def test_a_codex_line_with_both_flags_inside_the_set_is_inside_it(cmd):
+    assert nr.launch_line_refusal("codex", cmd) is None
+
+
+@pytest.mark.parametrize("cmd,why", CODEX_WIDE, ids=lambda x: str(x)[:50])
+def test_a_codex_line_wider_than_the_set_or_with_a_flag_missing_is_refused(cmd, why):
+    got = nr.launch_line_refusal("codex", cmd)
+    assert got and why.lower() in got.lower(), got
+
+
+@pytest.mark.parametrize("agent,opts", [("claude", {"permission_mode": "auto"}), ("claude", {"permission_mode": "dontAsk"}), ("claude", {"permission_mode": "bypassPermissions"}),
+                                        ("codex", {"permission_mode": "auto"}), ("codex", {"permission_mode": "dontAsk"})])
+def test_stored_options_outside_the_set_refuse_even_when_the_line_looks_fine(agent, opts):
+    cmd = "claude --permission-mode manual" if agent == "claude" else "codex -s workspace-write -a on-request"
+    assert "stored permission mode" in nr.launch_line_refusal(agent, cmd, opts)
+    assert nr.launch_line_refusal(agent, cmd, {"permission_mode": "plan"}) is None
+
+
+@pytest.mark.parametrize("agent,args,want", [
+    ("claude", {}, {"permission_mode": "manual"}),
+    ("claude", {"permission_mode": "default"}, {"permission_mode": "manual"}),
+    ("claude", {"mode": "default"}, {"permission_mode": "manual"}),
+    ("claude", {"permission_mode": "acceptEdits"}, {"permission_mode": "acceptEdits"}),
+    ("claude", {"mode": "read-only"}, {"permission_mode": "plan"}),
+    ("claude", {"permission_mode": "plan", "mode": "acceptEdits"}, {"permission_mode": "acceptEdits"}),
+    ("codex", {}, {"sandbox": "workspace-write", "approval": "on-request"}),
+    ("codex", {"permission_mode": "plan"}, {"sandbox": "read-only", "approval": "on-request"}),
+    ("codex", {"mode": "read-only"}, {"sandbox": "read-only", "approval": "on-request"}),
+    ("codex", {"sandbox": "read-only"}, {"sandbox": "read-only", "approval": "on-request"}),
+    ("codex", {"approval": "on-request"}, {"sandbox": "workspace-write", "approval": "on-request"}),
+    (None, {}, {"permission_mode": "manual"}),
+])
+def test_an_omitted_permission_is_resolved_to_an_explicit_safe_value(agent, args, want):
+    assert nr.safe_launch(agent, **args) == want
+
+
+@pytest.mark.parametrize("agent,args", [("claude", {"permission_mode": "auto"}), ("claude", {"mode": "bypass"}), ("codex", {"sandbox": "danger-full-access"}),
+                                        ("codex", {"approval": "never"}), ("codex", {"mode": "custom"}), ("claude", {"permission_mode": "bypassPermissions"})])
+def test_a_word_outside_the_set_is_not_resolved_to_anything(agent, args):
+    from app import projects
+    with pytest.raises(projects.BadRequest):
+        nr.safe_launch(agent, **args)
+
+
+def test_the_final_options_are_guarded_with_manual_read_as_default():
+    assert nr.guard_final({"permission_mode": "manual", "subagent_model": "inherit", "subagent_force": False, "opts": {"sandbox": "workspace-write", "approval": "on-request"}}) == []
+    assert nr.guard_final({"permission_mode": "auto"}) and nr.guard_final({"permission_mode": "bypassPermissions"}) and nr.guard_final({"opts": {"approval": "never"}})
+    assert nr.guard_final({"permission_mode": "manual", "allowed_tools": "Bash"}) and nr.guard_final({"permission_mode": "manual", "model": "x --dangerously-skip-permissions"})
+
+
+def test_require_remote_launch_raises_before_anything_starts():
+    from app import projects
+    nr.require_remote_launch("claude", "claude --permission-mode manual --name s")
+    with pytest.raises(projects.BadRequest) as e:
+        nr.require_remote_launch("claude", "claude --name s")
+    assert "nothing was started" in str(e.value)
+
+
+class _Db:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def open_rows(self):
+        return self.rows
+
+
+@pytest.fixture
+def tmux_has(monkeypatch):
+    from app import tmux
+    live = set()
+    monkeypatch.setattr(tmux, "has_session", lambda name: name in live)
+    return live
+
+
+TASK = {"project": "shop", "repo": "api"}
+
+
+def row(**kw):
+    return {"agent": "claude", "launcher": "claude", "cmd": "claude --permission-mode manual --name s1", "opts": {"permission_mode": "manual"}, **kw}
+
+
+@pytest.mark.parametrize("name,rows,live,fragment", [
+    ("not-a-session", {}, True, "not a ccboard session name"),
+    ("_ccboard-login", {}, True, "not a ccboard session name"),
+    ("shop--api--s1", {}, True, "not a session this board started"),                                           # tmux has it, the board has no row: foreign
+    ("shop--api--s1", {"shop--api--s1": row(agent="shell", launcher="shell")}, True, "not an agent session"),
+    ("shop--api--s1", {"shop--api--s1": row(launcher="clone")}, True, "not an agent session"),
+    ("shop--api--s1", {"shop--api--s1": row(agent="gemini")}, True, "not an agent session"),
+    ("shop--other--s1", {"shop--other--s1": row()}, True, "another repo"),
+    ("other--api--s1", {"other--api--s1": row()}, True, "another repo"),
+    ("shop--api--s1", {"shop--api--s1": row(cmd=None)}, True, "wider permissions"),
+    ("shop--api--s1", {"shop--api--s1": row(cmd="claude --dangerously-skip-permissions")}, True, "wider permissions"),
+    ("shop--api--s1", {"shop--api--s1": row(opts={"permission_mode": "auto"})}, True, "wider permissions"),
+    ("shop--api--s1", {"shop--api--s1": row(agent="codex", cmd="codex -s workspace-write -a never", opts={})}, True, "wider permissions"),
+])
+def test_the_target_of_a_session_dispatch_must_be_one_of_the_boards_own_sessions_in_the_tasks_repo_inside_the_set(tmux_has, name, rows, live, fragment):
+    if live:
+        tmux_has.add(name)
+    assert fragment in nr.session_target_refusal(_Db(rows), TASK, name)
+
+
+def test_a_target_inside_the_set_and_a_session_tmux_does_not_have_are_left_to_the_board(tmux_has):
+    tmux_has.add("shop--api--s1")
+    assert nr.session_target_refusal(_Db({"shop--api--s1": row()}), TASK, "shop--api--s1") is None
+    assert nr.session_target_refusal(_Db({"shop--api--s1": row(agent="codex", cmd="codex -s read-only -a on-request", opts={})}), TASK, "shop--api--s1") is None
+    assert nr.session_target_refusal(_Db({}), TASK, "shop--api--gone") is None, "the board answers 404 itself"

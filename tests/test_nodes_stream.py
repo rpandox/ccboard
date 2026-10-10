@@ -483,16 +483,16 @@ def test_the_third_stream_to_one_node_is_a_429_with_retry_after_and_a_slot_comes
 
 
 def test_the_ninth_stream_on_a_hub_is_refused_and_the_caps_are_the_issues():
-    assert (ns.MAX_PER_NODE, ns.MAX_TOTAL, ns.LINE_MAX, ns.IDLE_S, ns.BEAT_S) == (2, 8, 64 * 1024, 60.0, 15.0)
-    held = [ns.LEASES.acquire(f"p_{i:016x}", f"n{i}") for i in range(4) for _ in range(2)]
+    assert (ns.MAX_PER_NODE, ns.MAX_PER_USER, ns.MAX_TOTAL, ns.LINE_MAX, ns.IDLE_S, ns.BEAT_S) == (2, 6, 8, 64 * 1024, 60.0, 15.0)
+    held = [ns.LEASES.acquire(f"p_{i:016x}", f"n{i}", f"person{i % 2 + 10 * (i // 2)}") for i in range(4) for _ in range(2)]      # 4 nodes x 2, held by 4 people
     assert ns.open_count() == 8
     with pytest.raises(nr.RelayError) as e:
-        ns.LEASES.acquire("p_" + "f" * 16, "ninth")
+        ns.LEASES.acquire("p_" + "f" * 16, "ninth", "someone-new")
     assert e.value.status == 429 and e.value.headers == {"Retry-After": "5"} and "8 live streams" in e.value.message
     with pytest.raises(nr.RelayError):
-        ns.LEASES.acquire("p_" + "0" * 16, "third-on-the-first")
+        ns.LEASES.acquire("p_" + "0" * 16, "third-on-the-first", "someone-new")
     ns.LEASES.release(held[0])
-    assert ns.LEASES.acquire("p_" + "f" * 16, "ninth") is not None
+    assert ns.LEASES.acquire("p_" + "f" * 16, "ninth", "someone-new") is not None
 
 
 def test_a_lease_nobody_renews_is_swept_by_the_next_open(clock):
@@ -1203,3 +1203,97 @@ def test_peer_client_open_stream_sends_the_token_and_the_headers_a_call_does(wor
         reply = nodes.PeerClient(reg, db=w.a.db).open_stream(f"/api/node/stream?names={S1}", acting_user="alice@example.com")
     assert reply.ok and w.up.calls[0]["headers"]["Authorization"].startswith("Bearer ") and w.up.calls[0]["headers"]["X-CCBoard-Node"]
     reply.stream.close()
+
+
+# ================================================================ review of P8: one person cannot take the hub's streams, internal names, the once flag
+
+def test_one_person_holds_at_most_six_streams_and_a_slot_comes_back(monkeypatch):
+    monkeypatch.setattr(ns, "MAX_PER_NODE", 8)
+    held = [ns.LEASES.acquire(f"p_{i:016x}", f"n{i}", "alice@example.com") for i in range(6)]
+    assert {x.user for x in held} == {"alice@example.com"}
+    with pytest.raises(nr.RelayError) as e:
+        ns.LEASES.acquire("p_" + "e" * 16, "seventh", "alice@example.com")
+    assert e.value.status == 429 and e.value.headers == {"Retry-After": "5"} and "you already hold 6 live streams" in e.value.message
+    assert ns.LEASES.acquire("p_" + "e" * 16, "seventh", "bob@example.com") is not None, "another person is not held back by alice"
+    ns.LEASES.acquire("p_" + "c" * 16, "eighth", "dave@example.com")
+    with pytest.raises(nr.RelayError) as e:
+        ns.LEASES.acquire("p_" + "d" * 16, "ninth", "carol@example.com")
+    assert "this board already has 8 live streams" in e.value.message, "the hub's own cap still holds"
+    ns.LEASES.release(held[0])
+    assert ns.LEASES.acquire("p_" + "e" * 16, "seventh", "alice@example.com") is not None
+
+
+def test_one_person_cannot_take_the_hubs_streams_over_http(world, monkeypatch):
+    w = world
+    monkeypatch.setattr(ns, "MAX_PER_NODE", 8)
+    monkeypatch.setattr(ns, "MAX_PER_USER", 2)
+
+    async def scenario():
+        c1 = await Conn(url(w, S1)).open()
+        c2 = await Conn(url(w, S2)).open()
+        await c1.until(lambda: len(w.up.streams) == 2)
+        c3 = await Conn(url(w, S3)).open()
+        await c3.until(lambda: c3.done)
+        body = json.loads(c3.buf)
+        assert c3.status == 429 and body["reason"] == "stream_limit" and "you already hold 2 live streams" in body["error"], c3.buf
+        assert len(w.up.streams) == 2, "no third upstream request"
+        assert {x.user for x in ns.LEASES._open} == {"alice@example.com"}
+        await c1.leave()
+        await c1.until(lambda: ns.open_count() == 1)
+        c4 = await Conn(url(w, S3)).open()
+        await c4.until(lambda: len(w.up.streams) == 3)
+        assert c4.status == 200
+        await c2.leave()
+        await c4.leave()
+    run(w, scenario)
+
+
+@pytest.mark.parametrize("query", ["names=_ccboard-login", f"names={S1},_ccboard-login", "names=_ccboard--a--b", "names=--a--b", "names=shop--api--", "names=shop--api--s1--x", "names=a%2Fb--c--d"])
+def test_an_internal_or_odd_name_is_a_400_on_the_hub_with_no_call_and_on_the_peer_before_any_tmux_call(world, query):
+    w = world
+
+    async def scenario():
+        c = Conn(f"/api/nodes/{w.h}/stream?{query}")
+        await c.open()
+        await c.until(lambda: c.done)
+        assert c.status == 400 and json.loads(c.buf)["reason"] == "invalid", c.buf
+    run(w, scenario)
+    assert w.up.calls == []
+    n = len(w.two.tmux_b["run"])
+    r = peer_get(w, f"/api/node/stream?{query}")
+    assert r.status_code == 400, r.text
+    assert len(w.two.tmux_b["run"]) == n, "the peer touched tmux for a name it refused"
+
+
+@pytest.mark.parametrize("once", ["1", "true", "0", "false", ""])
+def test_the_hub_route_takes_no_once_flag_so_a_person_cannot_end_or_reshape_the_upstream(world, once):
+    w = world
+
+    async def scenario():
+        c = Conn(f"/api/nodes/{w.h}/stream?names={S1}&once={once}")
+        await c.open()
+        await c.until(lambda: c.done)
+        assert c.status == 400 and "only names and lines are taken" in json.loads(c.buf)["error"], c.buf
+    run(w, scenario)
+    assert w.up.calls == [] and ns.open_count() == 0
+
+
+def test_the_peer_never_streams_an_internal_session_even_when_the_hub_names_one_that_exists(world):
+    w = world
+    with w.b.enter():
+        w.two.tmux_b["sessions"]["_ccboard-login"] = {"created": 1, "attached": 0, "windows": 1, "pane_id": "%7", "command": "claude", "path": "/x", "pid": 1, "env": {}}
+        w.two.tmux_b["screen"] = "LOGIN CODE ABCD-EFGH"
+    r = peer_get(w, "/api/node/stream?names=_ccboard-login&once=1")
+    assert r.status_code == 400 and "ABCD-EFGH" not in r.text
+
+
+def test_a_hub_only_ever_asks_for_names_and_lines_upstream(world):
+    w = world
+
+    async def scenario():
+        c = await Conn(url(w, f"{S1},{S2}", 5)).open()
+        await c.until(lambda: w.up.streams)
+        await c.leave()
+    run(w, scenario)
+    path = w.up.calls[0]["path"]
+    assert path.split("?")[0] == "/api/node/stream" and set(q.split("=")[0] for q in path.split("?")[1].split("&")) == {"names", "lines"}

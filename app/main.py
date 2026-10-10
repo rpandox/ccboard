@@ -3222,6 +3222,8 @@ def _start_session_row(name: str, project: str, repo: str, session: str, launche
     Returns (real tmux name, sessions.id). With task_id the task's session_row is pointed at the new row, which is how a
     relaunched task session (fix-ci, run resume, reboot recovery) stays the task's live session."""
     require_real_launch_ok()   # issue #100: refuses (409) on a dev board whose directories could reach the real home
+    if nodes_relay.CALLER.get() is not None:      # a paired node's request is being served (issue #141): the typed line must say its permissions and stay inside the allowed set
+        nodes_relay.require_remote_launch(agent, cmd_line, opts)
     env = {"CCBOARD_SESSION": name, "CCBOARD_URL": settings.loopback_url(),
            "CCBOARD_APPROVE_TIMEOUT": str(int(settings.approve_timeout)), "CCBOARD_AGENT": agent, **(env_extra or {})}
     real = tmux.new_session(name, cwd, env=env)

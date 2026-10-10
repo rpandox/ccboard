@@ -214,9 +214,11 @@ def test_dispatch_of_a_task_that_is_not_there_is_404_and_a_started_one_is_409(wo
     assert r.status_code == 409 and "already dispatched" in r.json()["error"]
 
 
-def make_session_on_b(w, name="s1", state="idle"):
+def make_session_on_b(w, name="s1", state="idle", **body):
+    """A session started on the peer's own board (as its owner would). It says its permission mode (`mode: default`) unless a test passes its own body fields: a
+    session whose line says nothing is undeterminable and another node may not type into it."""
     with w.b.enter():
-        r = w.two.client.post("/api/projects/shop/repos/api/sessions", headers={**ID, "X-CCBoard": "1"}, json={"launcher": "claude", "name": name})
+        r = w.two.client.post("/api/projects/shop/repos/api/sessions", headers={**ID, "X-CCBoard": "1"}, json={"launcher": "claude", "name": name, **({"mode": "default"} if not body else body)})
         assert r.status_code == 201, r.text
         tm = r.json()["tmux"]
         w.b.db.set_state(tm, state, "test")
@@ -336,14 +338,14 @@ def test_the_answer_of_a_create_has_exactly_the_issues_fields_and_nothing_of_the
 def test_a_peer_answer_is_rebuilt_from_a_whitelist_and_redacted_and_the_ref_is_the_hubs(world):
     w = world
     secret = "xox" + "b-" + "1234567890-abcdefghijklmnop"
-    nodes.peer_transport = Answer({"id": 7, "slug": "slug " + secret, "tmux": "shop--api--t", "branch": "worktree-x", "phase": "running", "ref": "other:99", "worktree": "/home/x/y",
+    nodes.peer_transport = Answer({"id": 7, "slug": "slug-ok", "tmux": "shop--api--t", "branch": "worktree-x", "phase": "running", "ref": "other:99", "worktree": "/home/x/y",
                                    "prompt": PROMPT, "attach_url": "/term/x", "evil": {"a": 1}, "limit_warning": {"kind": "5h", "resets_at": 5, "pct": 90.5, "extra": 1},
-                                   "task": {"id": 7, "title": "T", "prompt": PROMPT, "worktree": "/x", "phase": "running"}})
+                                   "task": {"id": 7, "title": "T " + secret, "prompt": PROMPT, "worktree": "/x", "phase": "running"}})
     r = hub_post(w, "/tasks", SHOP)
     d = r.json()["data"]
     assert d["ref"] == "node-b:7", "built from the registry's handle and the id, never the peer's `ref`"
     assert set(d) == {"ref", "id", "slug", "tmux", "branch", "phase", "task", "limit_warning"} and d["limit_warning"] == {"kind": "5h", "resets_at": 5, "pct": 90.5}
-    assert secret not in r.text and "[redacted]" in d["slug"] and PROMPT not in r.text and "/home/x" not in r.text and set(d["task"]) >= {"id", "title", "phase"} and "prompt" not in d["task"]
+    assert secret not in r.text and d["slug"] == "slug-ok" and "[redacted]" in d["task"]["title"] and PROMPT not in r.text and "/home/x" not in r.text and set(d["task"]) >= {"id", "title", "phase"} and "prompt" not in d["task"]
 
 
 def test_a_peer_answer_without_a_task_id_is_a_502_and_not_shown(world):
@@ -674,3 +676,409 @@ def test_the_boards_own_task_and_session_routes_keep_their_answers(world):
     assert s.status_code == 201 and {"tmux", "attach_url", "agent", "cmd"} <= set(s.json())
     with w.b.enter():
         assert "origin" not in w.b.db.open_rows()["shop--api--plain"]["flags"]
+
+
+# ================================================================ 6. review of P8: the target session's permissions, no inherited defaults, the final plan, the typed text
+
+WIDE = "wider permissions than another node may use"
+
+
+def later_card(w, **kw) -> dict:
+    r = hub_post(w, "/tasks", {**SHOP, "when": "later", **kw})
+    assert r.status_code == 200, r.text
+    return r.json()["data"]
+
+
+def typed_lines(w) -> list[tuple[str, str]]:
+    return list(w.two.tmux_b["sent"])
+
+
+def dispatch_both_ways(w, card_id: int, body: dict):
+    """The hub's route and the peer's wrapper with a valid token (the hub's checks bypassed): both answers."""
+    return hub_post(w, f"/tasks/{card_id}/dispatch", body), direct(w, "POST", f"/api/node/tasks/{card_id}/dispatch", body)
+
+
+# the ways a session on the peer can run wider than a remote launch may, each started the way its owner would start it on the peer's own board
+WIDER_SESSIONS = [
+    {"launcher": "claude", "mode": "bypass", "bypass": True},
+    {"launcher": "claude", "permission_mode": "bypassPermissions"},
+    {"launcher": "claude", "bypass": True},
+    {"launcher": "claude", "mode": "auto"},
+    {"launcher": "claude", "permission_mode": "dontAsk"},
+    {"launcher": "claude", "mode": "default", "args": "--permission-mode bypassPermissions"},
+    {"launcher": "claude", "mode": "default", "args": "--dangerously-skip-permissions"},
+    {"launcher": "claude", "mode": "default", "allowed_tools": "Bash"},
+    {"launcher": "claude"},                                   # says nothing: Claude Code's own settings.json picks the mode, so it cannot be told
+]
+
+
+@pytest.mark.parametrize("body", WIDER_SESSIONS, ids=lambda b: ",".join(f"{k}={v}" for k, v in b.items() if k != "launcher") or "no-mode")
+def test_a_task_is_never_typed_into_a_session_that_runs_wider_than_the_remote_set_even_with_a_valid_token_and_both_scopes(world, body):
+    w = world
+    tm = make_session_on_b(w, "wide", **body)
+    card = later_card(w)
+    hub, peer = dispatch_both_ways(w, card["id"], {"mode": "session", "session": tm})
+    for r in (hub, peer):
+        assert r.status_code == 409 and WIDE in r.json()["error"], r.text
+    assert w.two.tmux_b["pasted"] == [] and task_on_b(w, card["id"])["phase"] == "backlog", "nothing was typed, the card did not move"
+    assert PROMPT not in everything_audited(w)
+
+
+@pytest.mark.parametrize("body", [{"launcher": "claude", "mode": "default"}, {"launcher": "claude", "mode": "acceptEdits"}, {"launcher": "claude", "mode": "read-only"},
+                                  {"launcher": "claude", "permission_mode": "plan", "model": "sonnet"}])
+def test_a_session_inside_the_allowed_set_takes_the_task(world, body):
+    w = world
+    tm = make_session_on_b(w, "fine", **body)
+    card = later_card(w)
+    r = hub_post(w, f"/tasks/{card['id']}/dispatch", {"mode": "session", "session": tm})
+    assert r.status_code == 200 and r.json()["data"]["pasted"] is True, r.text
+
+
+def test_a_session_row_with_no_recorded_line_is_undeterminable_and_refused(world):
+    w = world
+    name = "shop--api--bare"
+    with w.b.enter():
+        w.two.tmux_b["sessions"][name] = {"created": 1, "attached": 0, "windows": 1, "pane_id": "%9", "command": "claude", "path": "/x", "pid": 1, "env": {}}
+        w.b.db.add_session(tmux_name=name, project="shop", repo="api", name="bare", launcher="claude", cmd=None, agent="claude")
+        w.b.db.set_state(name, "idle", "test")
+    card = later_card(w)
+    for r in dispatch_both_ways(w, card["id"], {"mode": "session", "session": name}):
+        assert r.status_code == 409 and WIDE in r.json()["error"], r.text
+    assert w.two.tmux_b["pasted"] == []
+
+
+def test_a_foreign_session_one_in_another_repo_and_an_internal_name_are_refused_on_the_peer(world):
+    w = world
+    git_init(w.two.b_projects / "shop" / "other")
+    with w.b.enter():
+        w.two.tmux_b["sessions"]["shop--api--foreign"] = {"created": 1, "attached": 0, "windows": 1, "pane_id": "%8", "command": "zsh", "path": "/x", "pid": 1, "env": {}}
+        r = w.two.client.post("/api/projects/shop/repos/other/sessions", headers={**ID, "X-CCBoard": "1"}, json={"launcher": "claude", "name": "elsewhere", "mode": "default"})
+        assert r.status_code == 201, r.text
+        w.b.db.set_state(r.json()["tmux"], "idle", "test")
+    card = later_card(w)
+    hub, peer = dispatch_both_ways(w, card["id"], {"mode": "session", "session": "shop--api--foreign"})
+    for r in (hub, peer):
+        assert r.status_code == 409 and "not a session this board started" in r.json()["error"], r.text
+    hub, peer = dispatch_both_ways(w, card["id"], {"mode": "session", "session": "shop--other--elsewhere"})
+    for r in (hub, peer):
+        assert r.status_code == 409 and "another repo" in r.json()["error"], r.text
+    for name in ("_ccboard-login", "_ccboard--x--y"):
+        hub, peer = dispatch_both_ways(w, card["id"], {"mode": "session", "session": name})
+        assert hub.status_code == 422 and peer.status_code == 422, (hub.text, peer.text)
+    assert w.two.tmux_b["pasted"] == [] and task_on_b(w, card["id"])["phase"] == "backlog"
+
+
+def test_a_session_that_does_not_exist_is_still_a_404_from_the_board(world):
+    card = later_card(world)
+    r = hub_post(world, f"/tasks/{card['id']}/dispatch", {"mode": "session", "session": "shop--api--nobody"})
+    assert r.status_code == 404, r.text
+
+
+# ---------------------------------------------------------------- a remote launch never inherits what this board, the person or the CLI would default to
+
+def line_of(w, tmux_name: str) -> str:
+    return next(t for n, t in typed_lines(w) if n == tmux_name)
+
+
+def test_an_omitted_permission_mode_is_the_explicit_ask_mode_on_the_line_of_a_task_a_card_and_a_session(world, monkeypatch):
+    """The board has no default permission mode of its own for a task, but the CLI has one: a line without --permission-mode is Claude Code's settings.json
+    (defaultMode, which can say bypassPermissions). So the line of a remote launch always carries the flag. The board's subagent-model default is the second
+    local default that must not ride along."""
+    from app.config import settings
+    w = world
+    monkeypatch.setattr(settings, "subagent_model", "haiku")
+    d = hub_post(w, "/tasks", SHOP).json()["data"]
+    line = line_of(w, d["tmux"])
+    assert "--permission-mode manual" in line and "CLAUDE_CODE_SUBAGENT_MODEL" not in line and "bypass" not in line.lower(), line
+    spec = json.loads(task_on_b(w, d["id"])["spec"])
+    assert spec["permission_mode"] == "manual" and spec["subagent_model"] == "inherit", "the explicit choice is stored on the card"
+    card = later_card(w, title="Second")
+    assert json.loads(task_on_b(w, card["id"])["spec"])["permission_mode"] == "manual"
+    d2 = hub_post(w, f"/tasks/{card['id']}/dispatch", {}).json()["data"]
+    assert "--permission-mode manual" in line_of(w, d2["tmux"]) and "CLAUDE_CODE_SUBAGENT_MODEL" not in line_of(w, d2["tmux"])
+    for body in ({}, {"permission_mode": "default"}, {"mode": "default"}):
+        s = hub_post(w, "/sessions", {"project": "shop", "repo": "api", **body}).json()["data"]
+        assert "--permission-mode manual" in line_of(w, s["tmux"]) and "CLAUDE_CODE_SUBAGENT_MODEL" not in line_of(w, s["tmux"]), body
+    with w.b.enter():
+        assert w.b.db.open_rows()[d["tmux"]]["opts"].get("subagent_model") in (None, "inherit"), "the stored options of the task carry no subagent model either"
+        local = w.two.client.post("/api/projects/shop/repos/api/sessions", headers={**ID, "X-CCBoard": "1"}, json={"launcher": "claude", "name": "mine"}).json()
+    assert "CLAUDE_CODE_SUBAGENT_MODEL=haiku" in line_of(w, local["tmux"]) and "--permission-mode" not in line_of(w, local["tmux"]), "the owner's own launch still uses the defaults"
+
+
+def test_a_card_saved_on_the_peer_keeps_its_own_allowed_mode_and_gets_the_ask_mode_when_it_has_none(world, monkeypatch):
+    from app.config import settings
+    w = world
+    monkeypatch.setattr(settings, "subagent_model", "opus")
+    plan = w.b.post("/api/tasks", json={**SHOP, "title": "Plan card", "when": "later", "permission_mode": "plan", "subagent_model": "sonnet"}).json()
+    bare = w.b.post("/api/tasks", json={**SHOP, "title": "Bare card", "when": "later"}).json()
+    p = hub_post(w, f"/tasks/{plan['id']}/dispatch", {}).json()["data"]
+    assert "--permission-mode plan" in line_of(w, p["tmux"]) and "--permission-mode manual" not in line_of(w, p["tmux"]), "a card's narrower choice is not widened"
+    assert "CLAUDE_CODE_SUBAGENT_MODEL" not in line_of(w, p["tmux"]), "the card's subagent model is the owner's: a remote launch says inherit"
+    b = hub_post(w, f"/tasks/{bare['id']}/dispatch", {}).json()["data"]
+    assert "--permission-mode manual" in line_of(w, b["tmux"]) and "CLAUDE_CODE_SUBAGENT_MODEL" not in line_of(w, b["tmux"])
+
+
+def test_a_card_with_a_control_character_in_its_prompt_is_not_typed_from_another_node(world):
+    w = world
+    made = w.b.post("/api/tasks", json={**SHOP, "when": "later", "prompt": "fix it" + chr(3) + "; echo hi"}).json()
+    r = hub_post(w, f"/tasks/{made['id']}/dispatch", {})
+    assert r.status_code == 409 and "control character" in r.json()["error"], r.text
+    assert w.two.tmux_b["created"] == [] and task_on_b(w, made["id"])["phase"] == "backlog"
+
+
+@pytest.fixture
+def cx(world, fake_codex, monkeypatch):
+    from app.agents import codex
+    monkeypatch.setattr(codex.CodexAgent, "_warm_models", lambda self, exe: None)
+    return world
+
+
+def test_omitted_codex_choices_are_both_flags_on_the_line_and_never_the_config_toml(cx):
+    w = cx
+    for body, want in (({}, "-s workspace-write -a on-request"), ({"sandbox": "read-only"}, "-s read-only -a on-request"), ({"mode": "read-only"}, "-s read-only -a on-request"),
+                       ({"approval": "on-request"}, "-s workspace-write -a on-request"), ({"permission_mode": "plan"}, "-s read-only -a on-request")):
+        r = hub_post(w, "/sessions", {"project": "shop", "repo": "api", "agent": "codex", **body})
+        assert r.status_code == 200, (body, r.text)
+        line = line_of(w, r.json()["data"]["tmux"])
+        assert want in line and "never" not in line and "dangerously" not in line and "--yolo" not in line, (body, line)
+    subprocess.run(["git", "-C", str(w.two.b_projects / "shop" / "api"), "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--allow-empty", "-q", "-m", "x"], check=True)
+    t = hub_post(w, "/tasks", {**SHOP, "agent": "codex"})
+    assert t.status_code == 200, t.text
+    assert "-s workspace-write -a on-request" in line_of(w, t.json()["data"]["tmux"])
+    spec = json.loads(task_on_b(w, t.json()["data"]["id"])["spec"])
+    assert spec["opts"] == {"sandbox": "workspace-write", "approval": "on-request"}
+
+
+@pytest.mark.parametrize("body", [{"launcher": "claude", "agent": "codex", "mode": "bypass", "bypass": True},
+                                  {"launcher": "claude", "agent": "codex", "mode": "custom", "sandbox": "workspace-write", "approval": "never"},
+                                  {"launcher": "claude", "agent": "codex", "mode": "auto"},
+                                  {"launcher": "claude", "agent": "codex", "mode": "custom", "sandbox": "read-only"},
+                                  {"launcher": "claude", "agent": "codex"}])
+def test_a_codex_session_wider_than_the_set_or_with_no_flags_is_not_a_target(cx, body):
+    w = cx
+    tm = make_session_on_b(w, "cx", **body)
+    card = later_card(w, agent="codex")
+    for r in dispatch_both_ways(w, card["id"], {"mode": "session", "session": tm}):
+        assert r.status_code == 409 and WIDE in r.json()["error"], (body, r.text)
+    assert w.two.tmux_b["pasted"] == []
+
+
+def test_a_codex_session_inside_the_set_takes_the_task(cx):
+    w = cx
+    tm = make_session_on_b(w, "cx", launcher="claude", agent="codex", mode="default")
+    card = later_card(w, agent="codex")
+    r = hub_post(w, f"/tasks/{card['id']}/dispatch", {"mode": "session", "session": tm})
+    assert r.status_code == 200, r.text
+
+
+# ---------------------------------------------------------------- the final plan is guarded too
+
+@pytest.fixture
+def no_flag(monkeypatch):
+    """The Claude adapter forgets to put the permission flag on the line: the defence in depth must catch what the body-level guard cannot see."""
+    from app.agents import claude
+    monkeypatch.setattr(claude.ClaudeAgent, "_opt_args", lambda self, full: [])
+
+
+def test_a_final_line_without_its_permission_flag_is_refused_before_a_session_exists_on_every_launch_row(world, no_flag):
+    w = world
+    card = later_card(w)
+    for r in (hub_post(w, "/tasks", SHOP), hub_post(w, "/sessions", {"project": "shop", "repo": "api"}), hub_post(w, f"/tasks/{card['id']}/dispatch", {})):
+        assert r.status_code == 400 and "would not stay inside what another node may use" in r.json()["error"] and "nothing was started" in r.json()["error"], r.text
+    assert w.two.tmux_b["created"] == [] and w.two.tmux_b["sent"] == [] and w.b.db.open_rows() == {}
+    assert task_on_b(w, card["id"])["phase"] == "backlog" and len(w.b.db.tasks()) == 1
+
+
+def test_the_same_line_is_fine_for_the_owner_on_the_peers_own_board(world, no_flag):
+    r = world.b.post("/api/tasks", json={**SHOP, "title": "Local"})
+    assert r.status_code == 201 and "--permission-mode" not in line_of(world, r.json()["tmux"]), "the check applies to a request of a paired node only"
+
+
+def test_a_line_with_a_bypass_spelling_in_it_is_refused_whatever_put_it_there(world, monkeypatch):
+    from app.agents import claude
+    w = world
+    monkeypatch.setattr(claude.ClaudeAgent, "_opt_args", lambda self, full: ["--permission-mode", "manual", "--dangerously-" + "skip-permissions"])
+    r = hub_post(w, "/tasks", SHOP)
+    assert r.status_code == 400 and "dangerously-skip-permissions" in r.json()["error"], r.text
+    assert w.two.tmux_b["created"] == []
+
+
+def test_the_guard_runs_on_the_options_the_launch_ends_up_with(world, monkeypatch):
+    w = world
+    made = w.b.post("/api/tasks", json={**SHOP, "when": "later"}).json()
+    monkeypatch.setattr(nr, "safe_launch", lambda *a, **k: {"permission_mode": "auto"})
+    for r in (hub_post(w, "/tasks", SHOP), hub_post(w, "/sessions", {"project": "shop", "repo": "api"}), hub_post(w, f"/tasks/{made['id']}/dispatch", {})):
+        assert r.status_code == 409 and "would go beyond what another node may use" in r.json()["error"], r.text
+    assert w.two.tmux_b["created"] == [] and len(w.b.db.tasks()) == 1 and task_on_b(w, made["id"])["phase"] == "backlog"
+
+
+# ---------------------------------------------------------------- the typed text, the names and the claims
+
+def test_the_prompt_is_typed_into_a_shell_so_a_control_character_is_a_422_on_both_sides(world):
+    w = world
+    for field, value in (("prompt", "a" + chr(3) + "; echo x"), ("prompt", "a" + chr(4)), ("prompt", chr(27) + "[2J"), ("prompt", "a\rb"), ("prompt", "a" + chr(0)),
+                         ("prompt", "a" + chr(127)), ("prompt", "a" + chr(0x85)), ("title", "t" + chr(3)), ("title", "t" + chr(27))):
+        n = w.count.seen
+        r = hub_post(w, "/tasks", {**SHOP, field: value})
+        assert r.status_code == 422 and "control characters" in r.json()["error"] and w.count.seen == n, (field, r.text)
+        assert chr(3) not in r.text and chr(27) not in r.text
+        assert direct(w, "POST", "/api/node/tasks", {**SHOP, field: value}).status_code == 422
+    assert w.b.db.tasks() == [] and w.two.tmux_b["created"] == []
+
+
+def test_tab_newline_and_crlf_are_text_and_a_crlf_is_one_newline(world):
+    w = world
+    r = hub_post(w, "/tasks", {**SHOP, "when": "later", "prompt": "one\r\ntwo\n\tthree"})
+    assert r.status_code == 200, r.text
+    assert task_on_b(w, r.json()["data"]["id"])["prompt"] == "one\ntwo\n\tthree"
+
+
+@pytest.mark.parametrize("ref", ["-x/api#1", "acme/..#1", "acme/.hidden#1", "acme/-x#1", "a_b/api#1", "acme/api#", "acme/api#1x", "acme/api #1", "../api#1", "acme/a/b#1",
+                                 "x" * 40 + "/api#1", "acme/api#1234567890"])
+def test_an_issue_reference_has_the_shape_of_an_owner_and_a_repo(world, ref):
+    w = world
+    assert hub_post(w, "/tasks", {**SHOP, "when": "later", "issue_ref": ref}).status_code == 422
+    assert direct(w, "POST", "/api/node/tasks", {**SHOP, "when": "later", "issue_ref": ref}).status_code == 422
+    assert w.b.db.tasks() == []
+
+
+def test_an_issue_reference_of_a_real_owner_and_repo_is_kept(world):
+    r = hub_post(world, "/tasks", {**SHOP, "when": "later", "issue_ref": "Acme-Co/my.repo_x-1#99999"})
+    t = task_on_b(world, r.json()["data"]["id"])
+    assert r.status_code == 200 and t["issue_number"] == 99999 and t["issue_url"] == "https://github.com/Acme-Co/my.repo_x-1/issues/99999"
+
+
+@pytest.mark.parametrize("name", ["../x", "a--b", "-x", "x" * 64, "a/b", "a b", "a\nb", ".hidden", "x_", ""])
+def test_a_session_name_from_another_node_has_the_boards_own_shape(world, name):
+    w = world
+    assert hub_post(w, "/sessions", {"project": "shop", "repo": "api", "name": name}).status_code == 422
+    assert direct(w, "POST", "/api/node/sessions", {"project": "shop", "repo": "api", "name": name}).status_code == 422
+    assert w.two.tmux_b["created"] == []
+
+
+def test_the_reserved_clone_name_is_refused_by_the_board(world):
+    r = hub_post(world, "/sessions", {"project": "shop", "repo": "api", "name": "clone"})
+    assert r.status_code == 400 and "reserved" in r.json()["error"] and world.two.tmux_b["created"] == []
+
+
+@pytest.mark.parametrize("project,repo", [("..", "api"), ("shop", ".."), ("shop/api", "x"), ("shop", "api/x"), ("sh op", "api"), ("-shop", "api"), ("shop", "")])
+def test_a_project_or_repo_that_is_not_a_plain_name_never_reaches_a_path(world, project, repo):
+    w = world
+    for call in (lambda: hub_post(w, "/sessions", {"project": project, "repo": repo}), lambda: hub_post(w, "/tasks", {**SHOP, "project": project, "repo": repo})):
+        assert call().status_code == 422
+    assert w.two.tmux_b["created"] == []
+
+
+def test_two_opens_at_once_never_choose_the_same_automatic_name(world, monkeypatch):
+    import threading
+    import time as _t
+    from app import main
+    w = world
+    real = main._free_session_name
+
+    def slow(project, repo):
+        n = real(project, repo)
+        _t.sleep(0.15)                                  # the window in which a second open would choose the same name
+        return n
+    monkeypatch.setattr(main, "_free_session_name", slow)
+    got, errs = [], []
+
+    def go():
+        try:
+            got.append(nr.peer_session_open(w.b.db, {}, {"project": "shop", "repo": "api"})["tmux"])
+        except Exception as e:                           # noqa: BLE001
+            errs.append(repr(e))
+    with w.b.enter():
+        ts = [threading.Thread(target=go) for _ in range(2)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(10)
+    assert errs == [] and len(set(got)) == 2, (got, errs)
+
+
+def test_the_origin_is_a_plain_label_whatever_the_caller_reported(world):
+    w = world
+    with w.a.enter():
+        token = nodes._load_outgoing(w.reg["peer_id"])
+    hostile = "../../etc/passwd; rm -rf <b>x</b> " + "y" * 500
+    r = w.b.call("POST", "/api/node/tasks", owner=False, headers=bearer(token, **{"X-CCBoard-Acting-User": hostile}), json={**SHOP, "when": "later"})
+    assert r.status_code == 200, r.text
+    origin = json.loads(task_on_b(w, r.json()["id"])["origin"])
+    assert set(origin) == {"node", "user"} and origin["node"] == "node-a"
+    assert len(origin["user"]) <= 64 and not set(origin["user"]) & set("/\\<>;\"'`$|&()[]{}=*?!#%^~") and ".." not in origin["user"], origin
+
+
+def test_a_claimed_name_is_cut_to_letters_digits_and_a_few_marks():
+    ok = nr._claim("alice@example.com", 64)
+    assert ok == "alice@example.com"
+    for bad in ("a/b", "..", "../x", "a\x00b", "a\x1bb", "<script>", "a`b", "a$(b)", "é", "‮txt", "x" * 500, "  ", None, 7):
+        got = nr._claim(bad, 41)
+        assert len(got) <= 41 and not set(got) & set("/\\<>;\"'`$|&()[]{}=\x00\x1b‮") and ".." not in got and got == got.strip(), (bad, got)
+
+
+# ---------------------------------------------------------------- the missing-repo hint shows a GitHub slug and nothing else
+
+def hub_repo(w, name: str, remote: str | None):
+    p = git_init(w.two.a_projects / "shop" / name)
+    if remote:
+        subprocess.run(["git", "-C", str(p), "remote", "add", "origin", remote], check=True)
+    return p
+
+
+def test_a_remote_url_with_credentials_never_reaches_the_answer(world):
+    w = world
+    user, tok = "ci-bot", "gh" + "p_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    hub_repo(w, "credrepo", f"https://{user}:{tok}@github.com/acme/credrepo.git")
+    r = hub_post(w, "/tasks", {**SHOP, "repo": "credrepo"})
+    assert r.status_code == 404 and r.json()["reason"] == "repo_missing"
+    assert "acme/credrepo" in r.json()["error"] and "Nothing was cloned or created" in r.json()["error"]
+    assert tok not in r.text and user not in r.text and "@" not in r.json()["error"] and "https://" not in r.json()["error"]
+    assert tok not in everything_audited(w) and user not in everything_audited(w)
+
+
+@pytest.mark.parametrize("remote", ["https://ci:" + "tok" + "en123@git.internal.example/srv/private/privrepo.git", "ssh://git@git.internal.example:2222/srv/secret-path/privrepo.git",
+                                    "/srv/private/privrepo.git", "https://github.com.evil.example/acme/privrepo.git", "https://u:p/ss@github.com/acme/privrepo.git"])
+def test_a_remote_that_is_not_a_github_slug_is_not_shown_at_all(world, remote):
+    w = world
+    hub_repo(w, "privrepo", remote)
+    r = hub_post(w, "/tasks", {**SHOP, "repo": "privrepo"})
+    err = r.json()["error"]
+    assert r.status_code == 404 and err == "privrepo is not on node-b. Nothing was created.", err
+
+
+def test_the_missing_repo_text_goes_through_the_redaction(world, monkeypatch):
+    w = world
+    secret = "xox" + "b-" + "1234567890-abcdefghijklmnop"
+    from app import node_state
+    monkeypatch.setattr(node_state, "repo_slug", lambda path: "acme/" + secret)
+    hub_repo(w, "oddrepo", None)
+    r = hub_post(w, "/tasks", {**SHOP, "repo": "oddrepo"})
+    assert r.status_code == 404 and secret not in r.text, r.text
+
+
+# ---------------------------------------------------------------- what a peer says about what it made is checked, not trusted
+
+def test_a_hostile_peer_answer_loses_every_field_that_is_not_the_shape_it_should_be(world):
+    w = world
+    secret = "xox" + "b-" + "1234567890-abcdefghijklmnop"
+    nodes.peer_transport = Answer({"id": 7, "slug": "../../etc/passwd", "tmux": "not a session name", "branch": "worktree-x;rm -rf /", "phase": "<script>",
+                                   "limit_warning": {"kind": "<img src=x onerror=1>", "resets_at": 5, "pct": 90},
+                                   "task": {"id": 7, "title": "T " + secret, "phase": "run ning", "agent": "../x", "project": "a/b", "repo": "..", "branch": "x y",
+                                            "tmux": "a--b", "issue_ref": "javascript:1", "updated_at": "<now>"}})
+    d = hub_post(w, "/tasks", SHOP).json()["data"]
+    assert d["slug"] is None and d["tmux"] is None and d["branch"] is None and d["phase"] is None and d["limit_warning"]["kind"] is None
+    t = d["task"]
+    assert all(t[k] is None for k in ("phase", "agent", "project", "repo", "branch", "tmux", "issue_ref", "updated_at")) and secret not in json.dumps(d) and "[redacted]" in t["title"]
+    nodes.peer_transport = Answer({"tmux": "shop--api--ok", "agent": "claude<", "project": "shop", "repo": "../api"})
+    s = hub_post(w, "/sessions", {"project": "shop", "repo": "api"}).json()["data"]
+    assert s == {"ref": "node-b/shop--api--ok", "tmux": "shop--api--ok", "agent": None, "project": "shop", "repo": None}
+
+
+def test_a_peers_error_text_is_capped_plain_and_redacted_in_the_hubs_answer(world):
+    w = world
+    secret = "xox" + "b-" + "1234567890-abcdefghijklmnop"
+    nodes.peer_transport = Answer({"error": "boom " + secret + " \x1b[31m" + "z" * 600}, status=409)
+    r = hub_post(w, "/tasks", SHOP)
+    err = r.json()["error"]
+    assert r.status_code == 409 and secret not in err and "\x1b" not in err and len(err) <= 200, err

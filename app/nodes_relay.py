@@ -45,8 +45,12 @@ guard_launch(fields) -> [refusal]: see its text. Three rows start or steer an ag
 dispatch into a running session also needs `sessions`, `Row.extra_scope`) and `session_open` (scope sessions). The hub runs the guard and the strict model before the
 call, the peer runs both again and calls the same internal function the board's own route calls (never an HTTP call to itself). A launch from another node can
 never widen permissions: permission_mode default, acceptEdits or plan, no bypass, no args, tools, directories or system prompt, Codex sandbox read-only or
-workspace-write with approval on-request. The task row on the peer carries `origin` {node, user} (the caller's node and the login it reported); a session keeps
-the same in its flags. A write that timed out or lost its connection after the request was sent is `unconfirmed`: the peer may have done it, nothing is retried.
+workspace-write with approval on-request. The peer never inherits a default for what the request leaves out: `safe_launch` writes the explicit permissions (Claude
+`--permission-mode manual`, Codex `-s workspace-write -a on-request`, no subagent-model override) into the options of the task, the card and the session, the final options go
+through `guard_final`, and the line the board is about to type must pass `launch_line_refusal` (`require_remote_launch`, called by main._start_session_row while CALLER is set).
+A dispatch into a running session is checked against the TARGET (`session_target_refusal`: one of this board's own sessions, in the task's repo, whose recorded line is inside the
+set; a line that says no mode cannot be told and is refused). The task row on the peer carries `origin` {node, user} (the caller's node and the login it reported, cut to a plain
+label by `_claim`); a session keeps the same in its flags. A write that timed out or lost its connection after the request was sent is `unconfirmed`: the peer may have done it, nothing is retried.
 """
 from __future__ import annotations
 
@@ -56,7 +60,9 @@ import http.client
 import json
 import logging
 import re
+import shlex
 import socket
+import threading
 import unicodedata
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -191,6 +197,154 @@ def guard_launch(fields) -> list[str]:
 
     visit(fields, 0)
     return out
+
+
+# ================================================================ the launch line: what a remote launch runs with, and what a session already runs with
+
+SAFE_CLAUDE = "manual"                                         # the adapter's ask-as-usual mode (the CLI word `default`); sent explicitly, so settings.json cannot choose
+CLAUDE_MODE_WORDS = ("manual", "default", "acceptEdits", "plan")          # the --permission-mode values of a line that is inside the remote-allowed set
+WIDE_SESSION = "that session runs with wider permissions than another node may use, or its mode cannot be read; start it from its own board"
+_CLAUDE_WIDEN = ("--settings", "--setting-sources", "--allowedtools", "--allowed-tools", "--permission-prompt-tool")     # options that change what is asked, by name
+
+
+def safe_launch(agent: str | None, mode=None, permission_mode=None, sandbox=None, approval=None) -> dict:
+    """The explicit permissions of a launch for another node: what the body asked for (already inside the allowed set), else the safe constant. Never what this
+    board's own defaults say: Claude Code reads its settings.json and Codex its config.toml when a line carries no flag, so a launch always carries them.
+      claude  -> {"permission_mode": "manual" | "acceptEdits" | "plan"}
+      codex   -> {"sandbox": "read-only" | "workspace-write", "approval": "on-request"}   (default and acceptEdits: workspace-write; plan and read-only: read-only)
+    Raises BadRequest for a word outside the allowed set (the guard has refused it before; this is the second look)."""
+    word = mode if mode not in (None, "") else permission_mode
+    if word not in (None, "", "default", "manual", "acceptEdits", "plan", "read-only"):
+        raise projects.BadRequest("permission mode: default, acceptEdits or plan")
+    if (agent or "claude") == "claude":
+        if word in ("read-only", "plan"):
+            return {"permission_mode": "plan"}
+        return {"permission_mode": "acceptEdits" if word == "acceptEdits" else SAFE_CLAUDE}
+    sb = "read-only" if word in ("read-only", "plan") else "workspace-write"
+    if sandbox not in (None, ""):
+        if sandbox not in SANDBOXES:
+            raise projects.BadRequest("sandbox must be read-only or workspace-write")
+        sb = sandbox
+    if approval not in (None, "") and approval not in APPROVALS:
+        raise projects.BadRequest("approval must be on-request")
+    return {"sandbox": sb, "approval": "on-request"}
+
+
+def guard_final(fields: dict) -> list[str]:
+    """guard_launch for the options a launch ends up with (a copy; `manual`, the adapter's word for default, is read as default). Empty values are not options."""
+    f = {k: v for k, v in fields.items() if v not in (None, "", [], {}, False)}
+    if f.get("permission_mode") == "manual":
+        f["permission_mode"] = "default"
+    return guard_launch(f)
+
+
+def _agent_region(cmd):
+    """(agent word, the tokens after it up to the prompt's `--`) of a typed launch line, or None when it cannot be read as one."""
+    if not isinstance(cmd, str) or not cmd.strip():
+        return None
+    try:
+        toks = shlex.split(cmd)
+    except ValueError:
+        return None
+    for i, t in enumerate(toks):
+        if t in ("claude", "codex"):
+            rest = toks[i + 1:]
+            return t, rest[:rest.index("--")] if "--" in rest else rest
+    return None
+
+
+def launch_line_refusal(agent: str | None, cmd, opts=None) -> str | None:
+    """None when the typed launch line of an agent runs with a permission mode inside what another node may use, else the plain reason. The line is what the
+    board recorded for the session (sessions.cmd: the stored options never hold a bypass, so they cannot prove a session safe) and it must SAY its mode:
+      claude   every --permission-mode is manual, default, acceptEdits or plan (at least one), no bypass spelling, no settings override, no --allowedTools
+      codex    -s read-only|workspace-write and -a on-request are on the line, no --approve-for-me, no bypass spelling, no -c line about sandbox or approval
+    A line without the flags leaves the mode to the CLI's own settings: it cannot be told, so it is refused. Only the part before the prompt (`--`) is read."""
+    agent = agent or "claude"
+    got = _agent_region(cmd)
+    if got is None or got[0] != agent:
+        return "its launch line cannot be read"
+    _, rest = got
+    sq = _squash(" ".join(rest))
+    for shown, want in _SQUASHED:
+        if want in sq:
+            return f"{shown} is on its launch line"
+    if isinstance(opts, dict):
+        pm = opts.get("permission_mode")
+        if pm not in (None, "") and pm not in (CLAUDE_MODE_WORDS if agent == "claude" else PERMISSION_MODES):
+            return "its stored permission mode is outside the allowed set"
+
+    def value(i: int, t: str, *names: str):
+        for n in names:
+            if t == n:
+                return rest[i + 1] if i + 1 < len(rest) else ""
+            if t.startswith(n + "="):
+                return t[len(n) + 1:]
+        return None
+
+    if agent == "claude":
+        modes: list[str] = []
+        for i, t in enumerate(rest):
+            low = t.lower()
+            if any(low == w or low.startswith(w + "=") for w in _CLAUDE_WIDEN):
+                return f"{t.split('=')[0]} is on its launch line"
+            v = value(i, t, "--permission-mode")
+            if v is not None:
+                modes.append(v)
+        if not modes:
+            return "its launch line sets no permission mode"
+        if any(m not in CLAUDE_MODE_WORDS for m in modes):
+            return "its launch line sets a permission mode outside the allowed set"
+        return None
+    sandboxes: list[str] = []
+    approvals: list[str] = []
+    for i, t in enumerate(rest):
+        if t in ("--approve-for-me", "--full-auto"):
+            return f"{t} is on its launch line"
+        cfg = value(i, t, "--config", "-c")
+        if cfg is not None and re.search(r"sandbox|approval|permission|bypass", cfg, re.I):
+            return "a -c line sets the sandbox or the approvals"
+        s_ = value(i, t, "--sandbox", "-s")
+        if s_ is not None:
+            sandboxes.append(s_)
+        a_ = value(i, t, "--ask-for-approval", "-a")
+        if a_ is not None:
+            approvals.append(a_)
+    if not sandboxes or not approvals:
+        return "its launch line sets no sandbox or no approval policy"
+    if any(x not in SANDBOXES for x in sandboxes) or any(x not in APPROVALS for x in approvals):
+        return "its launch line sets a sandbox or approval policy outside the allowed set"
+    return None
+
+
+def require_remote_launch(agent: str | None, cmd_line, opts=None) -> None:
+    """Called by the board's session start while a request of a paired node is being served (CALLER is set): the typed line is the FINAL plan of the launch, and it
+    must say its permissions and stay inside the allowed set, whatever the body, the card or the board's defaults said. Raises BadRequest before any session exists."""
+    why = launch_line_refusal(agent, cmd_line, opts)
+    if why:
+        raise projects.BadRequest(f"this launch would not stay inside what another node may use ({why}); nothing was started")
+
+
+def session_target_refusal(db, task: dict, name: str) -> str | None:
+    """Why a task of another node may not be typed into the running session `name` (None: it may go on to the board's own checks). The target must be one of this
+    board's own sessions (a row with a ccboard name; not internal, not a tmux session the board did not start) in the task's own project and repo, and its recorded
+    launch line must be inside the allowed set (launch_line_refusal). A session that does not exist is left to the board (404)."""
+    try:
+        sp, sr, _ = tmux.split_name(name)
+    except ValueError:
+        return "not a ccboard session name"
+    if tmux.is_internal(name):
+        return "not a session another node may use"
+    if not tmux.has_session(name):
+        return None
+    row = db.open_rows().get(name)
+    if not row:
+        return "that is not a session this board started"
+    agent = row.get("agent") or "claude"
+    if agent not in _agent_names() or row.get("launcher") in ("shell", "clone", "external"):
+        return "that is not an agent session this board started"
+    if (sp, sr) != (task.get("project"), task.get("repo")):
+        return "this session works in another repo"
+    return WIDE_SESSION if launch_line_refusal(agent, row.get("cmd"), row.get("opts")) else None
 
 
 # ================================================================ the table
@@ -340,7 +494,7 @@ def _shape_pane(body, reg):
 
 TASK_TITLE_IN = 300                                                          # the peer cuts a stored title at 120; the model only keeps a runaway out
 TASK_PROMPT_IN = 20000                                                       # main.TASK_PROMPT_MAX
-_ISSUE_REF = re.compile(r"([A-Za-z0-9_.-]{1,100})/([A-Za-z0-9_.-]{1,100})#([0-9]{1,9})")
+_ISSUE_REF = re.compile(r"([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/((?![-.])[A-Za-z0-9_.-]{1,100})#([0-9]{1,9})")      # a GitHub owner, a repo name without a leading dot or dash
 
 
 def _plain_name(v):
@@ -377,6 +531,16 @@ class TaskCreateBody(_Launch):
     @classmethod
     def _names(cls, v):
         return _plain_name(v)
+
+    @field_validator("title", "prompt")
+    @classmethod
+    def _typed_text(cls, v):
+        """The prompt is typed into a shell line of the peer (tmux send-keys -l) and the title names a card: a control character (Ctrl-C, Ctrl-D, Escape, a lone CR
+        ...) would be read by the terminal before the shell's quotes are, so only tab and newline are text. CRLF is read as a newline."""
+        v = v.replace("\r\n", "\n")
+        if any(unicodedata.category(c) == "Cc" and c not in "\t\n" for c in v):
+            raise ValueError("no control characters (tab and newline are text)")
+        return v
 
     @field_validator("issue_ref")
     @classmethod
@@ -431,13 +595,38 @@ def _title80(clean: dict) -> str:
     return redact(t, known_secrets())[:80]
 
 
+_SLUG_OUT = re.compile(r"[a-z0-9][a-z0-9-]{0,79}")
+_BRANCH_OUT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,119}")
+_WORD_OUT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,19}")
+_NAME_OUT = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9])?")
+_ISSUE_OUT = re.compile(r"#[0-9]{1,9}|[A-Za-z0-9._-]{1,40}/[A-Za-z0-9._-]{1,40}#[0-9]{1,9}")
+_TIME_OUT = re.compile(r"[0-9T:.+Z -]{1,40}")
+
+
+def _shaped(v, rx: re.Pattern, n: int = 200):
+    """A peer's string that has the shape `rx` (the whole of it), else None: a slug, a branch, a phase or a session name is not free text."""
+    from . import nodes_hub
+    t = nodes_hub._s(v, n)
+    return t if t is not None and rx.fullmatch(t) and ".." not in t else None
+
+
+def _shaped_tmux(v):
+    t = _shaped(v, re.compile(r"[A-Za-z0-9_-]{1,190}"), 200)
+    try:
+        tmux.split_name(t or "")
+    except ValueError:
+        return None
+    return t
+
+
 def _shape_row(r) -> dict | None:
     from . import nodes_hub
     if not isinstance(r, dict):
         return None
     s, i = nodes_hub._s, nodes_hub._i
-    return {"id": i(r.get("id")), "title": s(r.get("title")), "phase": s(r.get("phase"), 20), "agent": s(r.get("agent"), 20), "project": s(r.get("project")),
-            "repo": s(r.get("repo")), "branch": s(r.get("branch")), "tmux": s(r.get("tmux")), "issue_ref": s(r.get("issue_ref"), 20), "updated_at": s(r.get("updated_at"), 40)}
+    return {"id": i(r.get("id")), "title": s(r.get("title")), "phase": _shaped(r.get("phase"), _WORD_OUT, 20), "agent": _shaped(r.get("agent"), _WORD_OUT, 20),
+            "project": _shaped(r.get("project"), _NAME_OUT, 63), "repo": _shaped(r.get("repo"), _NAME_OUT, 63), "branch": _shaped(r.get("branch"), _BRANCH_OUT, 120),
+            "tmux": _shaped_tmux(r.get("tmux")), "issue_ref": _shaped(r.get("issue_ref"), _ISSUE_OUT, 60), "updated_at": _shaped(r.get("updated_at"), _TIME_OUT, 40)}
 
 
 def _shape_started(body, reg):
@@ -450,14 +639,14 @@ def _shape_started(body, reg):
     tid = i(body.get("id"))
     if tid is None or tid < 1:
         raise nodes_hub.Bad("no task id")
-    out = {"ref": nodes.format_ref(reg["handle"], str(tid), "task"), "id": tid, "slug": s(body.get("slug"), 80), "tmux": s(body.get("tmux")),
-           "branch": s(body.get("branch")), "phase": s(body.get("phase"), 20), "task": _shape_row(body.get("task"))}
+    out = {"ref": nodes.format_ref(reg["handle"], str(tid), "task"), "id": tid, "slug": _shaped(body.get("slug"), _SLUG_OUT, 80), "tmux": _shaped_tmux(body.get("tmux")),
+           "branch": _shaped(body.get("branch"), _BRANCH_OUT, 120), "phase": _shaped(body.get("phase"), _WORD_OUT, 20), "task": _shape_row(body.get("task"))}
     for k in ("pasted", "queued", "held"):
         if isinstance(body.get(k), bool):
             out[k] = body[k]
     lw = body.get("limit_warning")
     if isinstance(lw, dict):
-        out["limit_warning"] = {"kind": s(lw.get("kind"), 20), "resets_at": n(lw.get("resets_at")), "pct": n(lw.get("pct"))}
+        out["limit_warning"] = {"kind": _shaped(lw.get("kind"), _WORD_OUT, 20), "resets_at": n(lw.get("resets_at")), "pct": n(lw.get("pct"))}
     return out
 
 
@@ -472,8 +661,8 @@ def _shape_session_started(body, reg):
         tmux.split_name(name or "")
     except ValueError:
         raise nodes_hub.Bad("no session name") from None
-    return {"ref": nodes.format_ref(reg["handle"], name, "session"), "tmux": name, "agent": s(body.get("agent"), 20), "project": s(body.get("project")),
-            "repo": s(body.get("repo"))}
+    return {"ref": nodes.format_ref(reg["handle"], name, "session"), "tmux": name, "agent": _shaped(body.get("agent"), _WORD_OUT, 20),
+            "project": _shaped(body.get("project"), _NAME_OUT, 63), "repo": _shaped(body.get("repo"), _NAME_OUT, 63)}
 
 
 RELAY: tuple[Row, ...] = (
@@ -703,7 +892,7 @@ def _missing_repo_text(clean: dict, name: str) -> str:
         text += f". It is {slug} on GitHub: clone it in Settings > Projects on {name}. Nothing was cloned or created."
     else:
         text += ". Nothing was created."
-    return text
+    return redact(text, known_secrets())[:300]
 
 
 def _map_reply(r, row: Row, reg: dict, clean: dict | None = None) -> dict:
@@ -833,13 +1022,25 @@ def _acting(request) -> str:
 CALLER: contextvars.ContextVar = contextvars.ContextVar("ccboard_node_caller", default=None)     # {node, user} of the request a peer handler is serving
 
 
+_CLAIM_BAD = re.compile(r"[^A-Za-z0-9 ._@+:-]")
+
+
+def _claim(v, n: int) -> str:
+    """A name a caller reported, as it may be stored: ASCII letters, digits and ` . _ @ + : -` only (no slash, quote, bracket or control character, no `..`), at most
+    `n` characters. It is a label: nothing reads it as a path, a command or a permission."""
+    t = _CLAIM_BAD.sub("", str(v or "")[:4 * n])
+    t = re.sub(r"\.{2,}", ".", " ".join(t.split()))
+    return t.strip(" .")[:n]
+
+
 def caller_origin() -> dict | None:
     """Who asked, as a peer handler stamps it on the task or session it makes: {node: the paired node's name, user: the login that node reported}. The login is a
-    claim (the pair token proves the node, not the person) and is never used to decide anything."""
+    claim (the pair token proves the node, not the person): it is cut to a plain label here and never used to decide anything."""
     c = CALLER.get()
     if not c:
         return None
-    return {k: v for k, v in (("node", c.get("node")), ("user", c.get("user"))) if v}
+    node, user = _claim(c.get("node"), 41), _claim(c.get("user"), 64)
+    return {k: v for k, v in (("node", node), ("user", user)) if v}
 
 
 class RepoMissing(projects.NotFound):
@@ -1322,6 +1523,27 @@ def _task_answer(db, res: dict) -> dict:
     return out
 
 
+def _task_launch_kw(agent: str, spec: dict | None = None) -> dict:
+    """The permission options a task launched for another node always carries, as TaskCreateIn / DispatchIn fields. The card's own choice when it is inside the
+    allowed set, else the safe constant (safe_launch); never this board's settings, the person's remembered choices or the CLI's own config. No subagent model
+    either: CCBOARD_SUBAGENT_MODEL is the owner's choice for the owner's launches, so a remote launch says `inherit` itself."""
+    spec = spec or {}
+    opts = spec.get("opts") if isinstance(spec.get("opts"), dict) else {}
+    safe = safe_launch(agent, None, spec.get("permission_mode"), opts.get("sandbox"), opts.get("approval"))
+    if agent == "claude":
+        return {**safe, "subagent_model": "inherit", "subagent_force": False}
+    return {"permission_mode": "default", "opts": safe}
+
+
+def _require_final(main, req, extra: dict | None = None) -> None:
+    """The guard on the options a launch ENDS UP with (the body, the card and the safe constants merged), as well as on the body: a refusal here is a bug or a
+    card the owner saved with more than another node may use. Raises Conflict (409) naming what, never a value of the prompt."""
+    fields = req.model_dump(include=set(main.TASK_SPEC_KEYS) | {"agent"})          # (a DispatchIn's own `mode` is lane or session: not a permission word)
+    bad = guard_final({**fields, **(extra or {})})
+    if bad:
+        raise projects.Conflict("this launch would go beyond what another node may use: " + "; ".join(bad)[:200])
+
+
 def peer_task_create(db, params: dict, body: dict) -> dict:
     """POST /api/node/tasks: the board's own task create (main._tasks_create), with `origin` set to the caller. A missing project or repo is a 404 and nothing is made."""
     from . import main
@@ -1332,7 +1554,8 @@ def peer_task_create(db, params: dict, body: dict) -> dict:
         extra = {"issue_number": int(num), "issue_url": f"https://github.com/{owner}/{name}/issues/{int(num)}"}
     req = main.TaskCreateIn(project=body["project"], repo=body["repo"], title=body["title"], prompt=body["prompt"], when=body.get("when", "now"),
                             agent=body.get("agent"), model=body.get("model"), effort=body.get("effort"), reasoning_effort=body.get("reasoning_effort"),
-                            auto_close=body.get("auto_close"), **extra)
+                            auto_close=body.get("auto_close"), **extra, **_task_launch_kw(body.get("agent") or "claude"))
+    _require_final(main, req)
     return _task_answer(db, main._tasks_create(req, origin=caller_origin()))
 
 
@@ -1342,12 +1565,22 @@ def peer_task_dispatch(db, params: dict, body: dict) -> dict:
     from . import main
     tid = int(params["tid"])
     t = db.task_get(tid)
+    kw: dict = {}
+    if t and body.get("mode") == "session":
+        why = session_target_refusal(db, t, body.get("session") or "")      # the TARGET's launch options, not the card's: the prompt runs with the session's permissions
+        if why:
+            raise projects.Conflict(why)
     if t and body.get("mode") == "lane":
         spec = {k: v for k, v in main._task_spec(t).items() if k in main.TASK_SPEC_KEYS}
-        if guard_launch(spec):
+        if guard_final(spec):
             raise projects.Conflict(f"this card was saved with launch options that a request from another node may not use: start it on {nodes.display_name()}")
+        if any(unicodedata.category(c) == "Cc" and c not in "\t\n" for c in str(t.get("prompt") or "")):
+            raise projects.Conflict(f"this card holds a control character, which is not typed into a terminal from another node: start it on {nodes.display_name()}")
+        kw = _task_launch_kw(body.get("agent") or t.get("agent") or "claude", spec)
     req = main.DispatchIn(mode=body.get("mode"), session=body.get("session"), agent=body.get("agent"), model=body.get("model"), effort=body.get("effort"),
-                          reasoning_effort=body.get("reasoning_effort"), auto_close=body.get("auto_close"))
+                          reasoning_effort=body.get("reasoning_effort"), auto_close=body.get("auto_close"), **kw)
+    if kw:
+        _require_final(main, req, {**{k: v for k, v in (main._task_spec(t) if t else {}).items() if k in main.TASK_SPEC_KEYS}, **kw})
     res = main._task_dispatch(tid, req, origin=caller_origin())
     if isinstance(res, JSONResponse):                        # the session dispatch answers its refusals (busy, waiting, another repo) as a 409 body, not an exception
         try:
@@ -1362,14 +1595,22 @@ def peer_session_open(db, params: dict, body: dict) -> dict:
     """POST /api/node/sessions: the board's own new-session route (main._session_create) for a plain session of the launcher; the origin goes in its flags."""
     from . import main
     _repo_here(body["project"], body["repo"])
-    pm = body.get("permission_mode")
-    if pm == "default" and body.get("agent") in (None, "claude"):
-        pm = None                                           # Claude's own word for "ask as usual" is `manual`; leaving the flag out is the same thing
+    agent = body.get("agent") or "claude"
+    # The permissions are always on the line: what the body chose (inside the allowed set) or the safe constant. A line without them leaves the mode to Claude Code's
+    # settings.json (defaultMode) or Codex's config.toml, which can say bypass; `default` is Claude's `manual` here (the adapter's own word, accepted by every claude).
+    safe = safe_launch(agent, body.get("mode"), body.get("permission_mode"), body.get("sandbox"), body.get("approval"))
+    kw = {**safe, "subagent_model": "inherit", "subagent_force": False} if agent == "claude" else safe
     req = main.SessionIn(launcher="claude", agent=body.get("agent"), name=body.get("name"), model=body.get("model"), effort=body.get("effort"),
-                         reasoning_effort=body.get("reasoning_effort"), permission_mode=pm, mode=body.get("mode"),
-                         sandbox=body.get("sandbox"), approval=body.get("approval"))
-    out = main._session_create(body["project"], body["repo"], req, origin=caller_origin())
+                         reasoning_effort=body.get("reasoning_effort"), **kw)
+    bad = guard_final({k: v for k, v in req.model_dump().items() if k != "launcher"})
+    if bad:
+        raise projects.Conflict("this session would go beyond what another node may use: " + "; ".join(bad)[:200])
+    with _OPEN_LOCK:                                        # the free name and the tmux session are one step: two opens cannot choose the same `auto` name
+        out = main._session_create(body["project"], body["repo"], req, origin=caller_origin())
     return {"tmux": out["tmux"], "agent": out["agent"], "project": body["project"], "repo": body["repo"]}
+
+
+_OPEN_LOCK = threading.Lock()
 
 
 HANDLERS = {"task": peer_task, "pane": peer_pane, "agents": peer_agents, "task_create": peer_task_create, "task_dispatch": peer_task_dispatch,

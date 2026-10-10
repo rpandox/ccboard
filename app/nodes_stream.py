@@ -9,7 +9,8 @@ The two routes
         hook token is a 403 `human_only` (it is held by every agent session on the box). It checks, in this order, and makes no request when one refuses:
           caller 403, rate (the read bucket per person) 429, handle 400/404, own address 400, legacy row 409, the pair's scope `sessions` 409, names and lines 400,
           the hub's reading of the node (offline, re-pair, unpaired, not read yet: ONE `gone` event and the stream closes, status 200, because an EventSource cannot
-          read an error body), the caps (2 streams per node, 8 in total: 429 with Retry-After).
+          read an error body), the caps (2 streams per node, 6 per signed-in person, 8 in total: 429 with Retry-After). `once` and any other query key are a 400 here and
+          are never put on the upstream path (only names and lines are).
         Then it opens ONE upstream request through nodes.PeerClient (the address rule at the call, TLS verified, no redirect, `Accept: text/event-stream`) and
         reads it in one daemon thread per stream (a blocking read, a bounded hand-over to the event loop, never more than 8 threads on a hub).
 
@@ -49,6 +50,7 @@ log = logging.getLogger("ccboard.nodes.stream")
 
 MAX_PER_NODE = 2                    # upstream streams per paired node
 MAX_TOTAL = 8                       # upstream streams on one hub
+MAX_PER_USER = 6                    # upstream streams one signed-in person may hold: one person cannot take the hub's whole share
 LINE_MAX = 64 * 1024                # bytes of one upstream line (and of one event's data)
 IDLE_S = 60.0                       # seconds without a valid event before the stream is closed
 BEAT_S = 15.0                       # a comment heartbeat while nothing else is sent
@@ -85,8 +87,8 @@ FINAL = frozenset({"repair", "unpaired", "revoked", "shutdown"})      # reconnec
 class Lease:
     """One open upstream stream. `close()` may be called from any thread: it flags the stop and closes the upstream, which unblocks the reader."""
 
-    def __init__(self, peer_id: str, handle: str):
-        self.peer_id, self.handle = peer_id, handle
+    def __init__(self, peer_id: str, handle: str, user: str = ""):
+        self.peer_id, self.handle, self.user = peer_id, handle, user
         self.stop = threading.Event()
         self.reason: str | None = None
         self.stream = None
@@ -109,19 +111,22 @@ class Leases:
         self._lock = threading.Lock()
         self._open: set[Lease] = set()
 
-    def acquire(self, peer_id: str, handle: str) -> Lease:
-        """A lease, or nr.RelayError 429 (with Retry-After) when the node already has MAX_PER_NODE streams or the hub has MAX_TOTAL."""
+    def acquire(self, peer_id: str, handle: str, user: str = "") -> Lease:
+        """A lease, or nr.RelayError 429 (with Retry-After) when the node already has MAX_PER_NODE streams, the person already holds MAX_PER_USER or the hub has
+        MAX_TOTAL. A person is whoever the hub's caller check named (the signed-in login)."""
         now = mono()
         with self._lock:
             for old in [x for x in self._open if x.expires < now]:     # a lease nobody renews: its response never started or its pump died
                 self._open.discard(old)
                 old.close("closed")
             mine = sum(1 for x in self._open if x.peer_id == peer_id)
-            if mine >= MAX_PER_NODE or len(self._open) >= MAX_TOTAL:
-                what = "this node already has" if mine >= MAX_PER_NODE else "this board already has"
-                raise nr.RelayError(429, "stream_limit", f"{what} {MAX_PER_NODE if mine >= MAX_PER_NODE else MAX_TOTAL} live streams: close one first, then try again",
+            yours = sum(1 for x in self._open if x.user == user)
+            if mine >= MAX_PER_NODE or yours >= MAX_PER_USER or len(self._open) >= MAX_TOTAL:
+                what, cap = (("this node already has", MAX_PER_NODE) if mine >= MAX_PER_NODE else ("you already hold", MAX_PER_USER) if yours >= MAX_PER_USER
+                             else ("this board already has", MAX_TOTAL))
+                raise nr.RelayError(429, "stream_limit", f"{what} {cap} live streams: close one first, then try again",
                                     headers={"Retry-After": str(RETRY_AFTER)}, kind="refused")
-            lease = Lease(peer_id, handle)
+            lease = Lease(peer_id, handle, user)
             self._open.add(lease)
             return lease
 
@@ -398,7 +403,7 @@ def _open(request: Request, handle: str, db, hub):
             if e.reason in _GONE_FROM_STATUS:
                 raise Gone(_GONE_FROM_STATUS[e.reason], e.message.replace("; nothing was sent", "")) from None
             raise
-        lease = LEASES.acquire(reg["peer_id"], handle)
+        lease = LEASES.acquire(reg["peer_id"], handle, user or "")
         try:
             path = "/api/node/stream?" + urlencode({"names": ",".join(sorted(names)), "lines": nlines})
             try:
