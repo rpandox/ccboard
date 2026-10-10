@@ -1,0 +1,20 @@
+{
+  "at": "2026-10-03T03:00:00+00:00",
+  "tailscale": {"ok": true, "reason": "", "variant": "linux"},
+  "rows": [
+    {"ts_id": "nBOXDEMO01", "name": "build-box", "dns_name": "build-box.example.ts.net", "os": "linux", "online": true, "last_seen": "2026-10-03T02:59:40Z",
+     "owner": "tag", "tags": ["tag:ccboard"], "state": "found", "url": "https://build-box.example.ts.net:8443", "node_id": "ts:nBOXDEMO01",
+     "at": "2026-10-03T02:59:58+00:00", "age": 2, "stale": false},
+    {"ts_id": "nMACDEMO02", "name": "alice-mac", "dns_name": "alice-mac.example.ts.net", "os": "macOS", "online": true, "last_seen": "2026-10-03T02:59:50Z",
+     "owner": "user", "tags": [], "state": "found", "url": "https://alice-mac.example.ts.net", "node_id": "ts:nMACDEMO02",
+     "at": "2026-10-03T02:58:10+00:00", "age": 110, "stale": true},
+    {"ts_id": "nWINDEMO03", "name": "desk-pc", "dns_name": "desk-pc.example.ts.net", "os": "windows", "online": true, "last_seen": "2026-10-03T02:59:30Z",
+     "owner": "user", "tags": [], "state": "refuses", "url": "https://desk-pc.example.ts.net", "node_id": null,
+     "at": "2026-10-03T02:59:58+00:00", "age": 2, "stale": false},
+    {"ts_id": "nNASDEMO04", "name": "nas", "dns_name": "nas.example.ts.net", "os": "linux", "online": true, "last_seen": "2026-10-03T02:59:00Z",
+     "owner": "user", "tags": [], "state": "no_ccboard", "url": null, "node_id": null,
+     "at": "2026-10-03T02:59:58+00:00", "age": 2, "stale": false},
+    {"ts_id": "nPHNDEMO05", "name": "phone", "dns_name": "phone.example.ts.net", "os": "iOS", "online": false, "last_seen": "2026-10-02T21:14:09Z",
+     "owner": "user", "tags": [], "state": "offline", "url": null, "node_id": null, "at": null, "age": null, "stale": false}
+  ]
+}

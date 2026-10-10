@@ -815,3 +815,20 @@ html.force-coarse .job-fable .checks label { min-height:var(--tap); }
 
 .lx-form .lx-mem { min-width:0; }
 .pj-gotchas { min-width:0; }
+
+/* A node found on the tailnet (issue #134, NodeView.row in nodes.js; Settings > Nodes, and the node pages after it): the name and the online word, the chips, one plain line; the
+   action (Pair) sits at the right and drops under the text on a phone. A stale row (older than 30 s) is dimmed, never hidden. */
+.nd-list { display:flex; flex-direction:column; }
+.nd-row { display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:6px 12px; padding:10px 0; border-bottom:1px solid var(--line-soft); }
+.nd-row .nd-main { display:flex; flex-direction:column; gap:4px; flex:1 1 240px; min-width:0; }
+.nd-row .nd-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 10px; min-width:0; }
+.nd-row .nd-name { font-weight:500; color:var(--fg); overflow-wrap:anywhere; }
+.nd-row .nd-online { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--dim); }
+.nd-row .nd-online .dot { margin-left:0; flex:none; }
+.nd-row .nd-chips { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.nd-row .nd-chips .badge { max-width:100%; }
+.nd-row .nd-glyph { font-family:var(--font-mono); }
+.nd-row .nd-note { font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+.nd-row .nd-act { display:flex; align-items:center; flex:none; }
+.nd-row .nd-act .bp5-button { min-height:var(--row-btn); }
+.nd-row.stale .nd-name, .nd-row.stale .nd-chips { opacity:.75; }

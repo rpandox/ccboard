@@ -142,6 +142,15 @@ function demoRebase(data) {
   return walk(data, '');
 }
 
+/* The demo's tailnet list (issue #134): the fixture's ISO times (the answer's at, last_seen, a row's at) follow the clock like state.json's (demoRebase), and a Refresh
+   (?refresh=1) is answered as if every probe had just run, so the demo shows a stale row at first and a fresh one after the tap. */
+function demoDiscover(data0, refresh) {
+  const data = demoRebase(data0);
+  if (!refresh || !data || typeof data !== 'object' || !Array.isArray(data.rows)) return data;
+  const iso = new Date().toISOString();
+  return { ...data, at: iso, rows: data.rows.map((r) => (r && r.at ? { ...r, at: iso, age: 0, stale: false } : r)) };
+}
+
 /* A demo answer that is an HTTP error: the tree and file previews read err.status (the real endpoints answer 403 / 404 / 415 the same way). */
 function demoError(status, message) {
   const e = new Error(message || `${status}`);
@@ -270,6 +279,7 @@ async function demoApi(method, path, body) {
   let name = null;
   if (bare === '/api/state') name = 'state';
   else if (bare === '/api/node') name = 'node';   // this board's node card (GET /api/node, issue #133): the same shape the route answers
+  else if (bare === '/api/nodes/discover') name = 'nodes-discover';   // Settings > Nodes > Found on your tailnet (issue #134): a found node, a refusing one, an offline one and one with nothing listening
   else if (/^\/api\/sessions\/[^/]+$/.test(bare)) name = 'session';    // the terminal page's own read: the row of state.json with that tmux name (its agent drives Tune and the quick replies)
   else if (bare === '/api/skills') name = 'skills';   // the palette's Skills group (issue #102): the same shape GET /api/skills answers
   else if (bare === '/api/agents') name = 'agents';   // the launcher's option schemas (v0.5.13); the same shape GET /api/agents answers
@@ -310,6 +320,7 @@ async function demoApi(method, path, body) {
     return data.detail[one[1]];
   }
   if (name === 'usage_summary' && /[?&]basis=est(&|$)/.test(path)) return { ...demoRebase(data), basis: 'est' };   // the Estimated basis (issue #95): the demo has nothing to estimate, so the same numbers under the other name (rebased like the reported one, or the windows read as rolled over)
+  if (name === 'nodes-discover') return demoDiscover(data, /[?&]refresh=1(&|$)/.test(path));
   if (name === 'tree' || name === 'file') return demoPick(name, bare, path.slice(bare.length + 1), data);
   if (/^memory_(observations|summaries|search|timeline|palace)$/.test(name)) return demoMemVariant(data, bare);
   if (name === 'series_events' && data && data.demo && data.demo.epoch && Array.isArray(data.events)) {   // keep the fixture's 24 h alive, like state.json

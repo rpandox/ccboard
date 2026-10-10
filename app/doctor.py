@@ -796,6 +796,65 @@ def _c_node(db) -> Outcome:
                  + (f"{cap} lanes advised" if cap else "no lane limit advised"))
 
 
+def _c_tailscale_status(db) -> Outcome:
+    """What finding other nodes needs from Tailscale (issue #134), read only, the same reading Settings > Nodes shows: signed in, a MagicDNS suffix
+    (names under it are the only ones a probe may reach), HTTPS certificates for this device, and how many devices could be nodes. The `tailscale` row
+    above judges the command and `serve`; this one is about the tailnet. A board that is not on a tailnet is not a failure: finding nodes is optional."""
+    from . import nodes, nodes_discovery as nd
+    status, info = nd.read_tailscale(fresh=True)
+    if status is None:
+        if ts.find_cli() is None:
+            return _skip(f"{info['reason']}. Finding other nodes needs Tailscale; a single board does not")
+        return _warn(info["reason"], _ts_start_fix(info["variant"]))
+    problems = []
+    if not nodes.dns_name(status):
+        problems.append(("this device has no MagicDNS name", fix("Enable MagicDNS in the Tailscale admin console (DNS page)")))
+    if not status.get("CertDomains"):
+        problems.append(("HTTPS certificates are off for the tailnet, so a board cannot answer a probe over https",
+                         fix("Turn on HTTPS Certificates in the Tailscale admin console (DNS page)")))
+    if problems:
+        return _warn("; ".join(t for t, _ in problems), problems[0][1])
+    cand = nd.candidates(status, settings.node_tags, nd.self_user(status))
+    online = sum(1 for r in cand if r["online"])
+    tags = ", ".join(settings.node_tags) or "none"
+    return _pass(f"signed in, MagicDNS suffix {nd.magic_suffix(status)}, HTTPS on; {len(cand)} device{'s' if len(cand) != 1 else ''} could be a node "
+                 f"({online} online; the same user's devices and tags: {tags})")
+
+
+def _c_nodes_port(db) -> Outcome:
+    """This board is served on a port the probe list covers (issue #134): another board looks for ccboard on CCBOARD_NODE_PORTS (443 and 8443 by
+    default), so a board on any other port is not found unless every other board lists its port too. A malformed list is named."""
+    port = int(getattr(settings, "ccboard_https_port", 443) or 443)
+    ports = tuple(getattr(settings, "node_ports", (443, 8443)))
+    listed = ",".join(str(p) for p in ports)
+    if getattr(settings, "node_ports_bad", False):
+        return _warn(f"CCBOARD_NODE_PORTS has an item that is not a port (1 to 65535), so only {listed} is used",
+                     fix("Set CCBOARD_NODE_PORTS in /etc/ccboard/env to ports separated by commas, for example 443,8443, and restart the board"))
+    if port not in ports:
+        return _warn(f"this board is served on port {port}, which is not in CCBOARD_NODE_PORTS ({listed}), so other boards will not find it",
+                     fix(f"Add {port} to CCBOARD_NODE_PORTS in /etc/ccboard/env on this board and on every other board that should find it, then restart them",
+                         f"CCBOARD_NODE_PORTS={listed},{port}"))
+    return _pass(f"this board is served on port {port}; probes try {listed}")
+
+
+def _c_nodes_tagged_self(db) -> Outcome:
+    """Is this device tagged (issue #134)? A tagged device has no user, so a browser on it carries no identity and cannot open any board; it is fine
+    for a server nobody browses from. Also names a malformed CCBOARD_NODE_TAGS. Read only; nothing is probed."""
+    from . import nodes_discovery as nd
+    status, info = nd.read_tailscale(fresh=False)
+    me = status.get("Self") if isinstance(status, dict) else None
+    bad = getattr(settings, "node_tags_bad", False)
+    if bad:
+        return _warn("CCBOARD_NODE_TAGS has an item that is not a Tailscale tag (tag:name), so it is ignored",
+                     fix("Set CCBOARD_NODE_TAGS in /etc/ccboard/env to tags such as tag:ccboard separated by commas (none = the same user's devices only), then restart the board"))
+    if not isinstance(me, dict):
+        return _skip(f"{info['reason'] or 'Tailscale could not be read'}, so it is not known whether this device is tagged")
+    if nd._tags(me.get("Tags")):
+        return _warn("this device is tagged: browsers on it carry no identity (fine for a server nobody browses from)",
+                     fix("To open boards from this device, remove its tag in the Tailscale admin console and sign in as a user; otherwise open the boards from another device"))
+    return _pass("this device belongs to a user, so a browser on it carries an identity")
+
+
 MCP_STALE_DAYS = 90         # a device token not used for this long is worth a look
 MCP_EXPIRY_WARN_DAYS = 7     # a device token that expires within this many days is about to stop working
 
@@ -1535,6 +1594,9 @@ register("hook-helpers", "claude", "Hook helpers (curl, python3)", _c_hook_helpe
 register("tailscale", "box", "Tailscale", _c_tailscale)   # issue #126
 register("devcontainer", "box", "Devcontainer prerequisites (host)", _c_devcontainer)   # issue #104
 register("node", "box", "This board as a node", _c_node)   # issue #133
+register("tailscale-status", "box", "Tailnet for finding nodes", _c_tailscale_status)   # issue #134
+register("nodes-port", "box", "Node probe ports", _c_nodes_port)   # issue #134
+register("nodes-tagged-self", "box", "This device is tagged", _c_nodes_tagged_self)   # issue #134
 register_provider("memory", MEM_GROUP, memory_checks)       # claude-mem (v0.5.10): one probe, seven checks
 register_provider("codex", CODEX_GROUP, codex_checks)       # the Codex adapter's checks (v0.5.11)
 if plat.IS_MACOS:                                            # issue #117: the macOS checks (app/doctor_macos.py) exist on a Mac only; a Linux board lists none

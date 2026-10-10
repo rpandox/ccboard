@@ -161,3 +161,16 @@ html.force-coarse #page .settings-page .cx-split button { min-height:var(--tap, 
   #page .doc-side:empty { display:none; }
 }
 #page .set-ext { margin-top:4px; }
+
+/* Settings > Nodes (issue #134, settings.js settingsNodes): the frame is three labelled sections; the found rows are .nd-row (pages.css, shared with the node pages). Refresh sits
+   at the right of its heading and is quiet; the status line and the tailnet problem sit above the list. */
+#page .settings-page .nd-panel > .set-h:first-child { margin-top:0; }
+#page .settings-page .nd-sec-head { display:flex; align-items:flex-end; justify-content:space-between; gap:8px; }
+#page .settings-page .nd-sec-head .set-h { margin-bottom:0; }
+#page .settings-page .nd-sec-head > button { flex:none; min-height:var(--row-btn); }
+#page .settings-page .nd-sec-head > button.busy { opacity:.6; }
+#page .settings-page .nd-status { margin:6px 0 0; font-size:12px; min-height:18px; overflow-wrap:anywhere; }
+#page .settings-page .nd-status.bad { color:var(--bad-fg); }
+#page .settings-page .nd-problem { margin:8px 0 0; }
+#page .settings-page .nd-fix { display:flex; flex-wrap:wrap; align-items:center; gap:6px; font-size:13px; line-height:1.5; }
+#page .settings-page .nd-empty { margin:8px 0 0; font-size:13px; line-height:1.5; max-width:62ch; }
