@@ -796,6 +796,14 @@ class DB:
             rows = self.conn.execute(q + " ORDER BY id DESC", args).fetchall()
         return [dict(r) for r in rows]
 
+    def session_by_id(self, row_id: int | None) -> dict | None:
+        """One sessions row by its id (open or ended), shaped for the API; None for an unknown id."""
+        if row_id is None:
+            return None
+        with self.lock:
+            r = self.conn.execute("SELECT * FROM sessions WHERE id=?", (row_id,)).fetchone()
+        return session_view(dict(r)) if r else None
+
     def tasks_in_chains(self, chain_ids) -> list[dict]:
         """Every task (archived too: a step's place in its chain must not move when a sibling is archived) of the given chains, with
         just the columns a position needs: id, chain_id, parent_id, phase, title."""

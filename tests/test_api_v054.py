@@ -605,7 +605,8 @@ def test_create_session_error_order_is_unchanged(board, monkeypatch):
     assert board.client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "shell"}).status_code == 201
 
 
-def test_create_session_with_a_devcontainer_stores_it_in_opts(board):
+def test_create_session_with_a_devcontainer_stores_it_in_opts(board, monkeypatch):
+    monkeypatch.setattr(doctor, "devcontainer_cli_state", lambda: "ok")
     (board.projects / "shop" / "api" / ".devcontainer").mkdir()
     (board.projects / "shop" / "api" / ".devcontainer" / "devcontainer.json").write_text("{}")
     r = new_session(board, "claude", name="dc", devcontainer=True, add_dirs=["shop/web"])
@@ -616,7 +617,28 @@ def test_create_session_with_a_devcontainer_stores_it_in_opts(board):
     assert sh["cmd"].endswith("-- bash -l") and sh["agent"] == "shell"
 
 
-def test_the_typed_devcontainer_line_is_exactly_what_the_host_runs(board):
+def test_launch_with_a_devcontainer_is_refused_with_409_when_the_host_has_no_cli(board, monkeypatch):
+    """Issue #104: with no devcontainer CLI the typed line only ends in "command not found" in the pane. The board checks first (the probe the
+    doctor row uses) and answers 409 naming the fix; nothing is typed and no row is made."""
+    (board.projects / "shop" / "api" / ".devcontainer").mkdir()
+    (board.projects / "shop" / "api" / ".devcontainer" / "devcontainer.json").write_text("{}")
+    sent_before, created_before = list(board.tmux["sent"]), list(board.tmux["created"])
+    for state, words in (("missing", "not installed"), ("broken", "does not run")):
+        monkeypatch.setattr(doctor, "devcontainer_cli_state", lambda state=state: state)
+        for launcher in ("claude", "shell"):
+            r = board.client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": launcher, "devcontainer": True, "name": "nocli"})
+            err = r.json()["error"]
+            assert r.status_code == 409 and words in err and "npm install -g --prefix ~/.local @devcontainers/cli" in err and "without the devcontainer" in err, r.text
+    assert board.tmux["sent"] == sent_before and board.tmux["created"] == created_before, "nothing was started or typed"
+    # a slow probe is not a verdict, and a launch without the checkbox never asks
+    monkeypatch.setattr(doctor, "devcontainer_cli_state", lambda: "timeout")
+    assert board.client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude", "devcontainer": True, "name": "slow"}).status_code == 201
+    monkeypatch.setattr(doctor, "devcontainer_cli_state", lambda: pytest.fail("asked without the devcontainer checkbox"))
+    assert board.client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude", "name": "plain"}).status_code == 201
+
+
+def test_the_typed_devcontainer_line_is_exactly_what_the_host_runs(board, monkeypatch):
+    monkeypatch.setattr(doctor, "devcontainer_cli_state", lambda: "ok")
     """Issue #104: the board runs no docker. It TYPES one line into the session's tmux window, and that tmux is the host's, so the line runs
     on the host: the prerequisites are the host's docker, docker group and `devcontainer` CLI, not a socket in the board's container."""
     (board.projects / "shop" / "api" / ".devcontainer").mkdir()

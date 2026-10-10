@@ -1715,6 +1715,30 @@ test('basis: Estimated explains itself in a disclosure a keyboard can open: the 
   clean(w);
 });
 
+test('basis: the statusline count in the disclosure is the API\'s estimate.bases.statusline, on every range, and says it is not a range count (issue #94)', async () => {
+  const block = (n) => ({ ...EST_BLOCK, sessions: 0, usd: 0, bases: { statusline: n } });
+  const over = { '/api/usage/summary?days=7': (path) => SUMMARY(DAILY7, { basis: path.includes('basis=est') ? 'est' : 'reported', estimate: block(5) }),
+    '/api/usage/summary?days=30': (path) => SUMMARY(DAILY30, { basis: path.includes('basis=est') ? 'est' : 'reported', estimate: block(5) }) };
+  const { w } = usageWorld({ over });
+  w.localStorage.setItem('ccboard:usage:basis', 'est');
+  await go(w);
+  const row = () => q(w, 'details[data-note="estimate"] li[data-basis="statusline"]');
+  assert.equal(text(row()), "5 sessions Claude Code's own statusline cost for a session the board launched: API-equivalent, not an invoice, and used in place of ccusage's figure");
+  assert.match(text(q(w, 'details[data-note="estimate"]')), /^How these estimates are made.*0 sessions on models ccusage prices at zero add ~\$0\.00/s);
+  assert.match(text(q(w, 'details[data-note="estimate"]')), /over every session priced at the last cost refresh \(not only the range shown\)/);
+  q(w, 'button[data-range="30d"]').click();
+  await loading(w);
+  assert.match(text(row()), /^5 sessions Claude Code's own statusline cost/, 'the 30d range shows the same count');
+  assert.equal(w.document.querySelectorAll('details[data-note="estimate"] li[data-basis]').length, 1, 'and no other basis line');
+  clean(w);
+  // a refresh that changed the API's number changes the page's number with it: they are one field
+  const again = usageWorld({ over: { '/api/usage/summary?days=7': (path) => SUMMARY(DAILY7, { basis: path.includes('basis=est') ? 'est' : 'reported', estimate: block(12) }) } });
+  again.w.localStorage.setItem('ccboard:usage:basis', 'est');
+  await go(again.w);
+  assert.match(text(q(again.w, 'details[data-note="estimate"] li[data-basis="statusline"]')), /^12 sessions Claude Code's own statusline cost/);
+  clean(again.w);
+});
+
 test('basis: on Reported a quiet caption says how many sessions are left out and what Estimated would add; with none estimated there is none', async () => {
   const { w } = usageWorld({ over: estOver() });
   await go(w);

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shlex
 import subprocess
 import threading
@@ -28,7 +29,7 @@ RUN_TIMEOUT = 3600
 MODES = HEADLESS_MODES     # bypassPermissions only inside a devcontainer (v0.4.5); defined in agents/claude.py with the rest of the argv rules
 BACKOFF_MINUTES = 30       # after a run comes back rate-limited, defer everything this long (or until the window resets)
 BACKOFF_MAX_HOURS = 5
-STATUS_DENIED = "denied"   # a run that exited 0 but had tools denied: nothing may have been done (issue #107)
+STATUS_DENIED = "denied"   # a run that exited 0, had tools denied and produced no usable result (issue #107); with a good answer it is ok plus a warning
 KV_BACKOFF = "sched_backoff_until"
 KV_LOGIN_ALERT = "sched_login_alerted"
 KV_RATE_CODEX = "rate_limits_codex"                    # agents/codex_rollout.py: {value: {primary: {used_percent, window_minutes, resets_at}, secondary, ...}, at}
@@ -273,6 +274,27 @@ def denied_note(denials) -> str | None:
     return f"denied {len(names)} tool call{'s' if len(names) != 1 else ''}: {', '.join(uniq[:6])}{' ...' if len(uniq) > 6 else ''}"
 
 
+# the words a model uses when it says it could not do the work because a tool was refused; read only when the run also has denials
+_CANNOT_PROCEED_RE = re.compile(r"couldn.?t|could not|can.?not|can.?t|unable|not able|wasn.?t able|was not able|denied|refus|declin|blocked|"
+                                r"not (?:allowed|permitted)|no permission|without permission|permission (?:was|were|is|has)", re.I)
+
+
+def headless_outcome(status: str, res: dict) -> tuple[str, str | None]:
+    """(status, note) for a run that exited 0 without is_error. Tools that were denied do not by themselves make a run `denied` (issue #107): a model
+    often probes a tool it does not need (a memory plugin's MCP tool) and then answers. The run is `ok` with the note as a visible warning when it
+    produced a usable result, and `denied` only when it did not: an empty result, or denials together with a result that says it could not go on.
+    Any other status is returned unchanged with no note."""
+    if status != "ok":
+        return status, None
+    note = denied_note(res.get("denials"))
+    if not note:
+        return status, None
+    text = (res.get("text") or "").strip()
+    if not text or _CANNOT_PROCEED_RE.search(text):
+        return STATUS_DENIED, note
+    return status, note
+
+
 def _finish(db, job: dict, run_id: int, summary: dict, rpath: Path, slug: str, stamp: str, wt: Path | None, agent: str) -> dict:
     """The tail every run shares: the worktree it left becomes a task card (agent, branch, worktree, the agent's session id), the run row
     is closed and the job's last status stored."""
@@ -371,9 +393,7 @@ def run_job(db, job: dict, run_id: int) -> dict:
         status = "rate_limited" if res["rate_limited"] else ("error" if res["is_error"] or cp.returncode != 0 else "ok")
         if status == "rate_limited":
             log.warning("job %s hit a rate limit; deferring all runs until %s", job["id"], set_backoff(db, quota_state(db).get("resets_at")))
-        denied = denied_note(res.get("denials")) if status == "ok" else None
-        if denied:                                  # exit 0, is_error false, but the run was refused tools: never a silent ok (issue #107)
-            status = STATUS_DENIED
+        status, denied = headless_outcome(status, res)      # exit 0, is_error false, tools refused: `denied` only when no usable result came out (issue #107)
         summary.update(status=status, result=res["text"], session_id=res["session_id"], cost_usd=res["cost"],
                        num_turns=res["turns"], error=denied if denied else None if status == "ok" else (res["subtype"] or f"exit {cp.returncode}"))
     except subprocess.TimeoutExpired:

@@ -2106,19 +2106,24 @@ def _dispatch_session(t: dict, body: DispatchIn, prompt: str | None = None):
         if not body.force:
             return _conflict_body("this session works in another repo", mismatch={"task": f"{t['project']}/{t['repo']}", "session": f"{sproject}/{srepo}"})
         prompt = f"Work in {task_path}.\n\n{prompt}"
-    tmux.paste_text(name, prompt, enter=True)
-    # the UserPromptSubmit hook says the same within a second; painting it now keeps the card in In progress, not in Done
-    db.set_state(name, "working", "TaskDispatch", prompt=prompt[:500])
-    db.add_event(name, "TaskDispatch", t["title"], f"task {t['id']} sent to the session", {"task": t["id"], "force": bool(body.force), "queued": queued},
-                 agent=row.get("agent"))
     # a prompt queued behind a turn in flight has a Stop of its own AFTER the Stops of the turns ahead of it (issue #64): the runtime skips
-    # that many Stops before it credits this task, and the card reads Queued until then
+    # that many Stops before it credits this task, and the card reads Queued until then. Claude runs the prompts it holds in its queue as
+    # ONE turn, so a second board-queued prompt is not typed now: it is kept in the board (spec.unsent) and the runtime types it once the
+    # prompt ahead of it has begun its turn
     ahead = taskflow.next_turns_ahead(db, row["row_id"]) if queued else 0
+    held = queued and taskflow.must_hold(db, row["row_id"])
+    if not held:
+        tmux.paste_text(name, prompt, enter=True)
+        # the UserPromptSubmit hook says the same within a second; painting it now keeps the card in In progress, not in Done
+        db.set_state(name, "working", "TaskDispatch", prompt=prompt[:500])
+    db.add_event(name, "TaskDispatch", t["title"], f"task {t['id']} " + ("held until the queued prompt before it has begun" if held else "sent to the session"),
+                 {"task": t["id"], "force": bool(body.force), "queued": queued, "held": held}, agent=row.get("agent"))
     db.task_update(t["id"], tmux_name=name, session_row=row["row_id"], mode="session", phase="running", assigned_at=db_now(),
                    auto_close=int(_effective_auto_close(t, body.auto_close, lane=False)))
     taskflow.set_turns_ahead(db, t["id"], ahead)
+    taskflow.set_unsent(db, t["id"], prompt if held else None)
     _invalidate_scan()
-    return {"id": t["id"], "phase": "running", "tmux": name, "session_row": row["row_id"], "pasted": True, "queued": queued,
+    return {"id": t["id"], "phase": "running", "tmux": name, "session_row": row["row_id"], "pasted": not held, "queued": queued, "held": held,
             "turns_ahead": ahead, "task": _task_row(t["id"])}
 
 
@@ -2210,6 +2215,36 @@ class ReopenIn(LaunchOpts):
     auto_close: bool | None = None       # unset: the card's switch, else on (a reopen is a lane dispatch)
 
 
+def _task_transcript(t: dict, wt: Path, agent: str, sid: str) -> Path | None:
+    """The transcript of a lane task's previous conversation, or None. Claude started with --worktree begins in the REPO ROOT, so it keeps
+    the conversation under the root's project folder (<config>/projects/<root path mangled>/<id>.jsonl), not under the worktree's: the
+    path its own hooks reported (flags.transcript_path of the task's old row) comes first, then the worktree's folder, then the root's.
+    Issue #88: looking only at the worktree's folder never found it, so a Reopen started a fresh conversation."""
+    ad = agents.get(agent)
+    old = db.session_by_id(t.get("session_row"))
+    given = ((old or {}).get("flags") or {}).get("transcript_path")
+    if given:
+        f = ad.transcript_path({"transcript_path": given})
+        if f is not None and f.is_file():
+            return f
+    for cwd in (str(wt), str(projects.repo_path(t["project"], t["repo"]))):
+        f = ad.transcript_path({"session_id": sid, "agent_session_id": sid, "cwd": cwd})
+        if f is not None:
+            return f
+    return None
+
+
+def _stage_transcript(src: Path, wt: Path) -> None:
+    """A `claude --resume <id>` looks for the conversation under the project folder of the directory it starts in. The reopened session
+    starts in the worktree, but the lane's conversation lives under the repo root's folder: put a copy where the resume will look
+    (never over a file that is already there; the original stays, it is the record of the first run)."""
+    dest = settings.claude_config_dir / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(wt)) / src.name
+    if dest.exists() or dest.parent == src.parent:
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+
+
 def _reopen_in_worktree(t: dict, launch: TaskIn, wt: Path) -> tuple[str, int, str | None]:
     """A new session of the task's agent that starts IN its existing worktree (no --worktree, no new branch): the same launch the card
     remembers, with a line that says the work so far is already there. Returns (tmux name, sessions.id, agent session id)."""
@@ -2227,7 +2262,10 @@ def _reopen_in_worktree(t: dict, launch: TaskIn, wt: Path) -> tuple[str, int, st
     resumable = False
     if isinstance(old_sid, str) and old_sid:
         try:
-            resumable = agents.get(agent).transcript_path({"session_id": old_sid, "agent_session_id": old_sid, "cwd": str(wt)}) is not None
+            found = _task_transcript(t, wt, agent, old_sid)
+            if found is not None and agent == "claude":
+                _stage_transcript(found, wt)
+            resumable = found is not None
         except Exception:      # a lookup problem only means a fresh conversation
             resumable = False
     if resumable:
@@ -2294,6 +2332,7 @@ def api_task_reopen(tid: int, body: ReopenIn | None = None):
         db.task_update(tid, result=None, result_at=None, done_at=None,
                        auto_close=int(_effective_auto_close(t, body.auto_close, lane=True)))
         taskflow.set_turns_ahead(db, tid, 0)
+        taskflow.set_unsent(db, tid, None)
     _invalidate_scan()
     gate = taskflow.limit_gate(db, agent=_task_agent(t.get("agent")))
     return {"id": tid, "phase": "running", "tmux": real, "session_row": row_id, "attach_url": f"/term/{real}", "slug": slug,
@@ -2320,9 +2359,9 @@ def api_task_detach(tid: int):
             _taskflow().cancel_close(name)
         rpath = projects.repo_path(t["project"], t["repo"])
         mode = "attached" if t["repo"] == projects.ROOT and not projects.is_repo(rpath) else "worktree"
+        taskflow.forget_queue(db, t)                  # its counter and held prompt go; the tasks queued behind it wait for one Stop less
         db.task_update(tid, tmux_name="", session_row=None, claude_session_id=None, phase="backlog", mode=mode, assigned_at=None,
                        done_at=None, result=None, result_at=None)
-        taskflow.set_turns_ahead(db, tid, 0)
     _invalidate_scan()
     return {"id": tid, "phase": "backlog", "task": _task_row(tid)}
 
@@ -3284,6 +3323,13 @@ def api_create_session(project: str, repo: str, body: SessionIn):
     opts_clean: dict | None = None
     if body.devcontainer and not projects.has_devcontainer(rpath):
         raise projects.BadRequest("this repo has no .devcontainer/devcontainer.json")
+    if body.devcontainer and agent != "codex":       # the typed line starts with `devcontainer`: without the CLI the pane only says "command not found" (issue #104)
+        cli = doctor.devcontainer_cli_state()
+        if cli in ("missing", "broken"):
+            raise projects.Conflict(
+                ("the devcontainer CLI is not installed on this host" if cli == "missing" else "the devcontainer CLI on this host does not run (it needs node)")
+                + f", so the devcontainer launch would only print \"command not found\". Install it on the host ({doctor.DEVCONTAINER_INSTALL}, "
+                  "or CCBOARD_DEVCONTAINER=1 ./install.sh), or launch without the devcontainer")
     bad = _override_requested(extra) if agent != "codex" else agents.get("codex").forbidden_extra(extra, interactive=True)
     if bad:
         raise projects.BadRequest(f"{bad}: settings overrides are not allowed in extra args; use the model / effort / permission / tools controls")
@@ -3571,8 +3617,16 @@ def _state_refusal(name: str, row: dict, queue: bool = False) -> JSONResponse | 
     if state == "ended":
         return _terminal_refusal("ended", "the session has ended", row, None)
     if state not in TYPEABLE_STATES:
-        return _terminal_refusal("not_ready", "the session has not reported a state yet", row, 3)
+        shown = _dialog_refusal(name, row)           # a fresh Codex has no state yet; the dialog it waits behind is the reason to show
+        return shown or _terminal_refusal("not_ready", "the session has not reported a state yet", row, 3)
     return None
+
+
+def _dialog_refusal(name: str, row: dict) -> JSONResponse | None:
+    """The 409 `dialog` when a Codex pane shows its update or trust dialog (it wins over not_ready: Codex sends no hook, so no state, until
+    its first turn, and the dialog blocks that turn), else None. Only the dialog is read here: a login shell in a young pane is the launch line."""
+    block = _pane_block(name, row, shell=False)
+    return _terminal_refusal(block[0], block[1], row, None) if block else None
 
 
 def _permission_pending(name: str) -> bool:
@@ -3891,7 +3945,8 @@ def api_restart(name: str, request: Request, body: RestartIn | None = None):
         raise projects.BadRequest("nothing to change: send reasoning, approval or sandbox")
     sid = str(row.get("agent_session_id") or row.get("claude_session_id") or "").strip()
     if not sid:
-        return _terminal_refusal("not_ready", "the session has not reported its conversation yet: send it one message, then restart it", row, 3)
+        return _dialog_refusal(name, row) or _terminal_refusal(
+            "not_ready", "the session has not reported its conversation yet: send it one message, then restart it", row, 3)
     now_perm = adapter.permissions_of(row.get("opts"), row.get("cmd"))
     if now_perm and now_perm.get("bypass"):
         return _terminal_refusal("bypass", "this session runs without approvals and without the sandbox; a restart would not carry that over: "

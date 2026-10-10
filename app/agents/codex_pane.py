@@ -9,7 +9,9 @@
 
 The board never answers a dialog and never types a prompt into any of these; main.py refuses the typing (409), shows the row as needing a
 person (dialog) or marks it errored with the reason (exit). The strings below are the ones the box findings quote; they are matched on the
-last lines of the visible screen only, and a screen that shows Codex's normal composer footer after them is a dialog that was answered.
+last lines of the screen only, and a dialog counts only while it is the CURRENT screen: once Codex has drawn anything of its own after
+it (its composer footer, the prompt line, a reply, its header box) the dialog was answered, however few lines have scrolled by since
+(live check, issue 2 and 86: the answered trust dialog kept refusing prompt and restart for several turns on codex-cli 0.161).
 """
 from __future__ import annotations
 
@@ -20,7 +22,12 @@ TAIL_LINES = 40                    # the dialog is the bottom of the screen; old
 
 UPDATE_RE = re.compile(r"update available|update now|skip until next version|npm install -g\s@openai/codex", re.I)   # \s: the repo-wide scan forbids the literal install line
 TRUST_RE = re.compile(r"trust this folder|do you trust the contents of this directory|continue only if you trust these files", re.I)
-COMPOSER_RE = re.compile(r"context left|for shortcuts|esc to interrupt", re.I)     # Codex's own footer once it is at its prompt
+COMPOSER_RE = re.compile(r"context left|for shortcuts|esc to interrupt|reply wit", re.I)     # Codex's own footer once it is at its prompt
+# Codex 0.161's footer in a narrow pane has none of those words: "GPT-6.1-Sol default · <path> · Reply wit…" (model and mode, the folder, a
+# hint, cut at the pane width). Two " · " separators on one line, which no dialog line has.
+FOOTER_RE = re.compile(r"^\s*\S+(?:\s\S+)?\s+·\s+\S.*\s·\s+\S")
+# What Codex draws once it runs: its header box, a reply or tool bullet, the prompt line "› text" (not the dialogs' numbered "› 1. Yes").
+SESSION_RE = re.compile(r"^\s*(?:[╭│╰]|•\s|›\s+(?!\d+\.)\S|>_\s|openai codex\b)", re.I)
 ERROR_RE = re.compile(r"^\s*(error|fatal)\b[:\s].{3,}", re.I)
 
 NOTES = {
@@ -39,6 +46,11 @@ def _tail(text: str) -> list[str]:
     return lines[-TAIL_LINES:]
 
 
+def _codex_drawn(line: str) -> bool:
+    """Is this line Codex's own running screen (composer footer, prompt line, reply, header) rather than part of a dialog?"""
+    return bool(COMPOSER_RE.search(line) or FOOTER_RE.match(line) or SESSION_RE.match(line))
+
+
 def dialog(text: str) -> str | None:
     """'update' or 'trust' while the screen shows that dialog, else None. The update dialog wins when both are on screen."""
     lines = _tail(text)
@@ -46,8 +58,8 @@ def dialog(text: str) -> str | None:
         hit = next((i for i in range(len(lines) - 1, -1, -1) if rx.search(lines[i])), None)
         if hit is None:
             continue
-        if any(COMPOSER_RE.search(ln) for ln in lines[hit + 1:]):
-            continue                                    # the composer was drawn after it: answered
+        if any(_codex_drawn(ln) for ln in lines[hit + 1:]):
+            continue                                    # Codex drew its own screen after it: answered
         return kind
     return None
 

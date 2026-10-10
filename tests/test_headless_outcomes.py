@@ -33,6 +33,51 @@ def test_denied_note_counts_calls_and_lists_each_tool_once():
     assert scheduler.denied_note([f"T{i}" for i in range(8)]).endswith("T5 ...")
 
 
+# the live case (box, 2026-10-10): Haiku probed a claude-mem MCP tool first, it was denied, then it answered "ok"
+PROBE_THEN_ANSWER = {"type": "result", "subtype": "success", "is_error": False, "result": "ok",
+                     "session_id": "55555555-5555-4555-8555-555555555555", "total_cost_usd": 0.006, "num_turns": 2,
+                     "permission_denials": [{"tool_name": "mcp__plugin_claude-mem_mcp-search__work_state_read", "tool_use_id": "p", "tool_input": {}}]}
+
+
+def test_headless_outcome_one_denied_probe_then_a_good_answer_is_ok_with_a_warning():
+    res = scheduler.parse_result(json.dumps(PROBE_THEN_ANSWER))
+    status, note = scheduler.headless_outcome("ok", res)
+    assert status == "ok" and note == "denied 1 tool call: mcp__plugin_claude-mem_mcp-search__work_state_read"
+
+
+def test_headless_outcome_denied_only_when_there_is_no_usable_result():
+    assert scheduler.headless_outcome("ok", scheduler.parse_result(json.dumps(DENIED_RUN))) == ("denied", "denied 3 tool calls: Bash, Write")
+    assert scheduler.headless_outcome("ok", scheduler.parse_result(json.dumps({**PROBE_THEN_ANSWER, "result": ""})))[0] == "denied"
+    assert scheduler.headless_outcome("ok", scheduler.parse_result(json.dumps({**PROBE_THEN_ANSWER, "result": "   "})))[0] == "denied"
+    for said in ("I couldn't commit: the Bash tool was refused.", "Unable to write note.txt.", "Permission was denied for the commit.",
+                 "I cannot proceed without that tool."):
+        assert scheduler.headless_outcome("ok", scheduler.parse_result(json.dumps({**PROBE_THEN_ANSWER, "result": said})))[0] == "denied", said
+    # no denials: nothing to judge, and other statuses pass through untouched
+    assert scheduler.headless_outcome("ok", scheduler.parse_result(json.dumps({**PROBE_THEN_ANSWER, "permission_denials": []}))) == ("ok", None)
+    assert scheduler.headless_outcome("error", scheduler.parse_result(json.dumps(DENIED_RUN))) == ("error", None)
+    assert scheduler.headless_outcome("rate_limited", {"denials": ["Bash"], "text": ""}) == ("rate_limited", None)
+
+
+def test_a_probe_then_answer_run_is_ok_with_the_warning_on_the_run_line(lite_client, projects_dir, fake_tmux, tmp_path, monkeypatch):
+    from app import main
+    make_repo(projects_dir)
+    claude = fake_claude(tmp_path)
+    claude.write_text(claude.read_text().replace("  *denyme*)", "  *probeok*) echo '" + json.dumps(PROBE_THEN_ANSWER) + "';;\n  *denyme*)", 1))
+    monkeypatch.setattr(main.settings, "claude_bin", lambda: str(claude))
+    monkeypatch.setattr(main, "sched", None)
+    r = _post_job(lite_client, cron=None, run_now=True, prompt="reply with probeok")
+    assert r.status_code == 201
+    w = scheduler.Worker(main.db)
+    rids = w.tick()
+    _join_all(w)
+    run = main.db.run_get(rids[0])
+    assert run["status"] == "ok", _runs_report(main.db, rids)
+    assert run["error"] == "denied 1 tool call: mcp__plugin_claude-mem_mcp-search__work_state_read" and run["result"] == "ok"
+    assert main.db.job_get(r.json()["id"])["last_status"] == "ok"
+    card = main.db.task_get(run["task_id"])
+    assert card["phase"] == "done" and "denied" not in card["title"]
+
+
 def test_a_run_whose_tools_were_denied_is_denied_not_ok(lite_client, projects_dir, fake_tmux, tmp_path, monkeypatch):
     from app import main
     make_repo(projects_dir)

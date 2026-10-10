@@ -480,6 +480,21 @@ def _probe_docker() -> str:
     return "ok" if p.rc == 0 else "denied"
 
 
+def _devcontainer_path() -> str:
+    """Where the host's devcontainer CLI is looked up: the hook PATH, then ~/.local/bin (where install.sh puts it)."""
+    return _hook_path() + os.pathsep + str(Path.home() / ".local" / "bin")
+
+
+def devcontainer_cli_state() -> str:
+    """'ok' | 'missing' | 'broken' (ran, exited non-zero) | 'timeout': the probe behind the Devcontainer doctor row and the launcher's refusal.
+    On the host it runs `devcontainer --version` on the host's PATH. In a container the host's PATH is out of sight, so the one place it can
+    look is ~/.local/bin/devcontainer (the host's home is mounted)."""
+    if settings.runtime == "docker":
+        local = Path.home() / ".local" / "bin" / "devcontainer"
+        return "ok" if os.path.isfile(local) and os.access(local, os.X_OK) else "missing"
+    return _probe_helper("devcontainer", ["--version"], _devcontainer_path())
+
+
 def _c_devcontainer(db) -> Outcome:
     """What "Run in the devcontainer" needs. The board types `devcontainer up ... && devcontainer exec ... -- claude` into the session's tmux
     window, and that tmux is the HOST's, so the line runs on the host: the prerequisites are the host's docker, the user in the docker group
@@ -504,7 +519,7 @@ def _c_devcontainer(db) -> Outcome:
                      fix(f"On the host: CCBOARD_DEVCONTAINER=1 ./install.sh, or {DEVCONTAINER_INSTALL} (ignore this if it is installed elsewhere there)",
                          DEVCONTAINER_INSTALL))
     from concurrent.futures import ThreadPoolExecutor
-    path = _hook_path() + os.pathsep + str(local.parent)
+    path = _devcontainer_path()
     with ThreadPoolExecutor(max_workers=2) as ex:
         f_docker = ex.submit(_probe_docker)
         f_cli = ex.submit(_probe_helper, "devcontainer", ["--version"], path)

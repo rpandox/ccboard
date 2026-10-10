@@ -2841,6 +2841,20 @@ test('the restart request is the adapter\'s: tuneRequest posts the group\'s sett
   assert.deepEqual(plain(kit.tunePlan('shell', null, {})), { model: null, effort: null, approvals: null, sandbox: null, fast: false, ultra: false, cells: [] }, 'a shell has nothing to tune');
 });
 
+test('tune for Codex: only the current model\'s levels; while the model is unknown only the levels every listed model accepts (never ultra for a model that stops at max)', () => {
+  const { kit } = uiWorld();
+  const schema = { models: ['gpt-6.1-sol', 'gpt-6-luna'], efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+    reasoning_by_model: { 'gpt-6.1-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], 'gpt-6-luna': ['low', 'medium', 'high', 'xhigh', 'max'] }, slash: TUNE_REG_NOW.codex };
+  const levels = (stats) => kit.tunePlan('codex', schema, stats).effort.options.map((o) => o.value);
+  assert.deepEqual(levels({ model: 'gpt-6.1-sol' }), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+  assert.deepEqual(levels({ model: 'gpt-6-luna' }), ['low', 'medium', 'high', 'xhigh', 'max']);
+  assert.deepEqual(levels({}), ['low', 'medium', 'high', 'xhigh', 'max'], 'model not reported yet: no ultra on a guess');
+  assert.deepEqual(levels({ model: 'gpt-5.6-sol' }), ['low', 'medium', 'high', 'xhigh', 'max'], 'a model the panel does not list (legacy) gets the base levels');
+  const bare = kit.tunePlan('codex', null, {});
+  assert.deepEqual(plain(bare.effort.options.map((o) => o.value)), ['low', 'medium', 'high', 'xhigh', 'max'], 'built-in lists, model unknown');
+  assert.ok(!bare.model.options.some((o) => /^gpt-5/.test(o.value)), 'no legacy model in the built-in list');
+});
+
 test('the built-in Codex model list is codex.py FALLBACK_MODELS (the copies must not drift): same slugs, same order; ultra only on gpt-6.1-sol', () => {
   const { kit } = uiWorld();
   const py = fs.readFileSync(path.join(ROOT, 'app', 'agents', 'codex.py'), 'utf8');

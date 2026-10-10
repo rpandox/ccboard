@@ -624,8 +624,7 @@
       "gpt-6.1-sol",
       "gpt-6-astra",
       "gpt-6-sol",
-      "gpt-6-luna",
-      "gpt-5.6-sol"
+      "gpt-6-luna"
      ],
      "default": null,
      "help": "-m. A slug from `codex debug models` (cached for an hour) or any model id; empty = Codex's own default.",
@@ -864,8 +863,7 @@
     "gpt-6.1-sol",
     "gpt-6-astra",
     "gpt-6-sol",
-    "gpt-6-luna",
-    "gpt-5.6-sol"
+    "gpt-6-luna"
    ],
    "reasoning_by_model": {
     "gpt-6.1-sol": [
@@ -891,13 +889,6 @@
      "max"
     ],
     "gpt-6-luna": [
-     "low",
-     "medium",
-     "high",
-     "xhigh",
-     "max"
-    ],
-    "gpt-5.6-sol": [
      "low",
      "medium",
      "high",

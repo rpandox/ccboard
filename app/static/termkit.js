@@ -1163,8 +1163,14 @@ const TermKit = (() => {
       if (has('model') && pickers && models.length) plan.model = group('model', 'model', models.map(opt));
       const by = tkPlain(sc.reasoning_by_model) || (listed.length ? {} : TK_CODEX_REASONING);
       const cur = tuneModel(stats, plan.model || { options: models.map(opt) });
+      /* The levels of the CURRENT model (reasoning_by_model). While the model is not known, only the levels every listed model accepts: the schema's `efforts` is the
+         union over the catalogue and would offer ultra (GPT-6.1 Sol only) to a model that stops at max, which Codex then refuses. */
+      const known = models.some((m) => Array.isArray(by[m]) && by[m].length);
+      const lists = known ? models.map((m) => (Array.isArray(by[m]) && by[m].length ? by[m] : TK_CODEX_EFFORTS)) : [];   // a model with no entry has the base levels
+      const shared = lists.length ? lists[0].filter((e) => lists.every((l) => l.includes(e))) : [];
       const named = Array.isArray(sc.efforts) ? sc.efforts.filter((e) => typeof e === 'string' && e) : [];
-      const levels = (cur && Array.isArray(by[cur]) && by[cur].length ? by[cur] : (cur ? TK_CODEX_EFFORTS : (named.length ? named : TK_CODEX_EFFORTS))).filter((e) => typeof e === 'string' && e);
+      const unknown = lists.length ? shared : (named.length ? named : TK_CODEX_EFFORTS);     // no per-model levels at all: the schema's own list
+      const levels = (cur && Array.isArray(by[cur]) && by[cur].length ? by[cur] : (cur ? TK_CODEX_EFFORTS : unknown)).filter((e) => typeof e === 'string' && e);
       if (has('reasoning') && row('reasoning').drive === 'restart' && levels.length) plan.effort = group('reasoning', 'reasoning', levels.map(opt));
       if (has('approvals') && row('approvals').drive === 'restart') plan.approvals = group('approvals', 'approval', TK_CODEX_APPROVALS.map(opt));
       if (has('sandbox') && row('sandbox').drive === 'restart') plan.sandbox = group('sandbox', 'sandbox', TK_CODEX_SANDBOXES.map(opt));

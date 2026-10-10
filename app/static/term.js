@@ -628,8 +628,14 @@
       tuneItems.push({ node, kind: 'auto', cmd: 'autocontinue', label: 'Auto-continue', title: AUTO_CONTINUE_WHAT });
       row.append(node);
     }
-    if (segs.effort) row.append(segs.effort);
-    if (segs.model) row.append(segs.model);
+    if (codex) {                                               // Codex: Model, Reasoning, Approvals, Sandbox, the order of the quad tile's Tune (Claude keeps Effort then Model)
+      if (segs.model) row.append(segs.model);
+      if (segs.effort) row.append(segs.effort);
+    } else {
+      if (segs.effort) row.append(segs.effort);
+      if (segs.model) row.append(segs.model);
+    }
+    if (plan.approvals || plan.sandbox) row.classList.add('tune-wrap');     // four sections do not fit one phone-wide scroller: they wrap (term.css, under 840 px)
     if (segs.approvals) row.append(segs.approvals);
     if (segs.sandbox) row.append(segs.sandbox);
     row.addEventListener('scroll', tuneFade);
