@@ -52,7 +52,8 @@ test('buildHash: the node forms build what parseHash reads, and refuse a handle 
 function pageWorld() {
   const w = makeWorld();
   installDom(w);
-  for (const f of ['core.js', 'components.js', 'router.js']) w.load(f);
+  for (const f of ['core.js', 'components.js', 'router.js', 'nodes-hub.js', 'pages/node.js']) w.load(f);      // the node pages are the lazy 'nodeshub' bundle (lazy.js), loaded here the way a #/n/ address loads it
+  w.run('state = { nodes_enabled: false }');      // the first state has arrived and no node is paired (before it the page says "Reading the nodes", not "not paired")
   return w;
 }
 
@@ -84,7 +85,7 @@ test('the not-paired page follows the address in place (box to node-a) and gives
   assert.doesNotMatch(w.document.querySelector('#page').textContent, /not paired/);
 });
 
-test('node addresses add nothing to the twelve routes of ROUTES; their three ids carry the not-paired page and nothing else is registered by the router', () => {
+test('node addresses add nothing to the twelve routes of ROUTES; their three ids carry the node pages (pages/node.js) and the router registers none itself', () => {
   const w = pageWorld();
   assert.equal(plain(w.run('ROUTES.map((r) => r.id)')).length, 12);
   assert.deepEqual(plain(w.run('NODE_ROUTES.map((r) => r.id)')), ['node', 'node-session', 'node-task']);

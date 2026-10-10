@@ -2,6 +2,20 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.37 - 2026-10-10
+
+### Added
+- Nodes P5, the hub view in the UI. Once a board is paired, Home gets a Nodes strip after the away line: this board first, then one cell per node with its name, a glyph and a word for its state (online, stale 3 min, offline since 09:14, re-pair), live sessions, how many need you and the 5-hour pill. A tap opens the node page `#/n/<handle>`, and a line above the cells counts what waits on other nodes ("2 need you on build-box").
+- The node page shows the node's name, status and the age of the reading, system and version, Open board (a new tab), then Needs you, Sessions, Tasks, Repos and Account windows. A row opens a read-only peek (`#/n/<handle>/s/<name>`, `#/n/<handle>/t/<id>`) with the row's fields and Open on that node. Controls that need the relay (send, answer, close, new task) are shown but off, each with its reason, for example "needs the sessions scope on build-box".
+- A node chip (a two-letter monogram and the name, neutral, never an agent or state colour) marks the rows of other nodes; this board's own rows wear a dim one once a node is paired. Other nodes' items that need you are listed under "On other nodes" in the inbox and on Home, and Tasks gets an All nodes / This node / each node filter with the other nodes' tasks, read only.
+- The sidebar keeps "This node" and adds one collapsed group per node with its needs-you count and up to 20 sessions. The command palette gets a Nodes group (Go to, Open board on), remote sessions and tasks with their chip, the `@node` prefix (`@build fix` narrows to one node) and `g n` goes to the first node. Settings > Nodes shows the hub's reading under each paired node (state and age, clock off by more than 5 s, agents, accounts).
+- `?demo=1` shows three nodes: online, stale with a clock warning, and offline.
+
+### Changed
+- The hub view is a lazy bundle that loads only when a node is paired (or for a `#/n/` address): a board with no node paired loads nothing new, asks nothing at `/api/nodes*` and draws every screen as before. The page asks `GET /api/nodes/state` on its own address every 6 seconds while the tab is visible, with `If-None-Match`, keeps the last reading when the board does not answer, and says how old it is. A node's address becomes a link only when it is an https tailnet name or address.
+
+Upgrade: nothing to do.
+
 ## v0.5.36 - 2026-10-10
 
 ### Added

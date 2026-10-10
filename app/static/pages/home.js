@@ -1058,7 +1058,9 @@ function homeRender(st) {
   homePatchSummary(model.counts, model.filter);
   for (const [k, btn] of Object.entries(r.group.ccBtns)) btn.setAttribute('aria-pressed', model.mode === k ? 'true' : 'false');
   homePatchAway(s);
+  Nodes.use(() => Nodes.slot('strip', r.away));                                     // paired nodes: the Nodes strip after the away line, before the inbox (nodes-hub.js)
   homePatchInbox(s);
+  Nodes.use(() => Nodes.slot('inbox', r.inboxHost, { limit: HOME_INBOX_LIMIT }));   // and the inbox items of other nodes under the local ones
   homePatchSched(s);
   r.blocks.update(model.blocks);
   const noProjects = !(s.projects || []).length;

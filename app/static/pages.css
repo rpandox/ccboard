@@ -836,3 +836,12 @@ html.force-coarse .job-fable .checks label { min-height:var(--tap); }
 .nd-row.superseded { box-shadow:inset 3px 0 0 var(--warn); padding-left:10px; }
 .nd-sheet .nd-rm-list { display:flex; flex-direction:column; gap:6px; margin:8px 0; }
 .nd-sheet .nd-rm-row .set-pref-t { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 10px; }
+
+/* The node chip (issue #139, nodes.js Nodes.chip): a bordered neutral chip, a two-letter monogram and the node's name. It never takes an agent or state hue; this board's own is dim. */
+.nchip { display:inline-flex; align-items:center; gap:5px; max-width:100%; min-height:18px; padding:0 7px 0 3px; border:1px solid var(--line-strong); border-radius:9px; color:var(--fg-2); font:11px/16px var(--font-ui); white-space:nowrap; vertical-align:middle; }
+.nchip.local { border-color:var(--line); color:var(--dim); }
+.nchip-m { display:inline-grid; place-items:center; min-width:16px; height:14px; padding:0 2px; border:1px solid var(--line); border-radius:3px; font:600 9px/1 var(--font-mono); letter-spacing:.02em; }
+.nchip-n { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.nchip-g { font-family:var(--font-mono); }
+#page .task .meta .nchip { margin-left:4px; }
+#page .rrow .rr-main .nchip, #page .peek-sub .nchip { flex:none; }

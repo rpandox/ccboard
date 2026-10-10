@@ -248,7 +248,7 @@ test('exactly one registerPage per route id, across pages/*.js', () => {
   // and the sources agree: one registerPage('<id>' literal per id in pages/*.js
   const seen = [];
   for (const f of fs.readdirSync(path.join(STATIC, 'pages'))) {
-    if (!f.endsWith('.js')) continue;
+    if (!f.endsWith('.js') || f === 'node.js') continue;                      // node.js registers the three #/n/ ids of NODE_ROUTES (lazy 'nodeshub'), not ROUTES
     for (const m of fs.readFileSync(path.join(STATIC, 'pages', f), 'utf8').matchAll(/registerPage\(\s*'([a-z]+)'/g)) seen.push(m[1]);
   }
   assert.deepEqual([...seen].sort(), [...ids].sort());

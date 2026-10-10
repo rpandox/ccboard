@@ -41,6 +41,7 @@ registerPage('tasks', {
     section.classList.toggle('hidden', none);
     if (tasksPage.empty) tasksPage.empty.classList.toggle('hidden', !none);
     tasksChainsPaint();
+    Nodes.use(() => Nodes.slot('tasks', section, {}));                         // paired nodes: the All nodes / This node / <node> filter and the read only tasks of other nodes (nodes-hub.js)
   },
   unmount() { tasksPage.empty = null; },
 });

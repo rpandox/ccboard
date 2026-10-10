@@ -348,9 +348,12 @@ def test_agents_route_is_the_plain_path_slash_agents():
 
 
 def _register_calls():
-    """{page id: [files that call registerPage('<id>', ...)]} over app/static/pages/*.js."""
+    """{page id: [files that call registerPage('<id>', ...)]} over app/static/pages/*.js, except pages/node.js: its three ids are the NODE_ROUTES of router.js (see
+    test_the_node_pages_register_exactly_the_three_node_routes)."""
     calls = {}
     for js in sorted((STATIC_ROOT / "pages").glob("*.js")):
+        if js.name == "node.js":
+            continue
         code = _blank_js(js.read_text())
         for m in re.finditer(r"\bregisterPage\(\s*'([A-Za-z0-9_-]+)'", code):
             calls.setdefault(m.group(1), []).append(js.name)
@@ -364,6 +367,16 @@ def test_exactly_one_register_page_per_route_id_across_the_pages():
     assert not missing, f"no registerPage call in app/static/pages/*.js for: {missing}"
     dup = {i: files for i, files in calls.items() if len(files) != 1}
     assert not dup, f"each route id is registered exactly once: {dup}"
+
+
+def test_the_node_pages_register_exactly_the_three_node_routes():
+    """Issue #139: #/n/<handle>, its session peek and its task peek are NODE_ROUTES (router.js), registered by pages/node.js, which only the lazy 'nodeshub' bundle loads;
+    router.js itself registers no page for them any more (a board with no paired node loads the bundle only for such an address)."""
+    node_ids = re.findall(r"\bid:\s*'([a-z-]+)'", re.search(r"const NODE_ROUTES = \[(.*?)\n\];", (STATIC_ROOT / "router.js").read_text(), re.S).group(1))
+    assert node_ids == ["node", "node-session", "node-task"]
+    code = _blank_js((STATIC_ROOT / "pages" / "node.js").read_text())
+    assert re.findall(r"\bregisterPage\(\s*'([a-z-]+)'", code) == node_ids
+    assert "registerPage(" not in _blank_js((STATIC_ROOT / "router.js").read_text()).replace("function registerPage(", "")
 
 
 def test_each_page_registers_in_its_own_file_or_the_placeholders():

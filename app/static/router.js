@@ -442,29 +442,8 @@ function pageToast(text, kind) {
   if (typeof renderBanner === 'function') renderBanner();
 }
 
-/* A node address (#/n/<handle>[/s/<tmux> | /t/<id>]) for a node this board does not know: a plain page that says so and links Settings, Nodes. The hub phase registers the
-   real node, peek and task pages over these three ids (pages/node.js, lazy); until a node is paired every handle is unknown, so nothing here ever calls a node. */
-function notPairedPage() {
-  let host = null;
-  const draw = (route) => {
-    const p = (route && route.params) || {};
-    host.textContent = '';
-    const empty = pageEmpty('info-sign', 'This node is not paired', `Nothing is paired as "${p.node || ''}" on this board. Pair it in Settings, then Nodes.`);
-    empty.append(el('a', { class: 'btn', href: '#/settings?sec=nodes', text: 'Open Settings, Nodes' }));   // inside the empty state, centred like its text
-    host.append(empty);
-  };
-  return {
-    title: 'Node not paired',
-    mount(root, route) { host = el('div', { class: 'page-narrow not-paired', role: 'status' }); root.append(host); draw(route); },
-    update() {},
-    onRoute(route) { if (host) draw(route); },
-    unmount() { host = null; },
-  };
-}
-
-registerPage('node', notPairedPage());
-registerPage('node-session', notPairedPage());
-registerPage('node-task', notPairedPage());
+/* The pages of the three node addresses (#/n/<handle>[/s/<tmux> | /t/<id>]) are registered by pages/node.js, the lazy 'nodeshub' bundle (lazy.js LAZY_ROUTES): the router waits for it before it
+   mounts one, so a board with no node paired still answers an address with the plain "This node is not paired" page and never calls a node. */
 
 if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('hashchange', route);
 

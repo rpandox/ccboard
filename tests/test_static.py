@@ -1714,3 +1714,46 @@ def test_no_array_method_is_called_on_a_live_children_collection():
             if re.search(r"\.children\.(map|filter|forEach|find|some|every|reduce|flatMap|includes)\(", line):
                 bad.append(f"{p.relative_to(STATIC)}:{i}")
     assert bad == [], bad
+
+
+# ---------- the hub view (issue #139): the lazy 'nodeshub' bundle ----------
+
+HUB_FILES = ("nodes-hub.js", "pages/node.js", "pages/nodes.css")
+
+
+def test_hub_view_files_are_in_the_service_worker_shell_and_in_no_index_tag():
+    """The hub view is the lazy 'nodeshub' bundle (lazy.js): precached by the service worker so a node page opens offline, and never an index.html tag (the first paint budget)."""
+    from app.main import shell_paths
+    shell = set(shell_paths())
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    for f in HUB_FILES:
+        assert (STATIC / f).is_file(), f
+        assert "/static/" + f in shell, f"{f} is missing from the service-worker shell"
+        assert f not in html, f"{f} must load lazily, not from index.html"
+
+
+def test_hub_view_files_build_dom_with_el_and_text_only():
+    """Peer data (a node's name, a session or task title) is only ever text: none of the hub view's files may write markup, a style or an inline handler, or name another origin."""
+    for f in ("nodes.js", "nodes-hub.js", "pages/node.js"):
+        code = blank_js((STATIC / f).read_text(encoding="utf-8"), strings=True)
+        for bad in (r"innerHTML", r"outerHTML", r"insertAdjacentHTML", r"\.style\b", r"style\s*:", r"cssText", r"document\.write", r"\beval\s*\(", r"new Function", r"<iframe", r"createElement\(\s*['\"]iframe"):
+            assert not re.search(bad, code), f"{f}: {bad}"
+        raw = blank_js((STATIC / f).read_text(encoding="utf-8"))
+        assert not re.search(r"""['"`]http://""", raw), f"{f}: a plain http URL"
+        assert "iframe" not in raw.lower(), f"{f}: no iframe"
+    # the one place a node's address is built: Nodes.boardUrl (https, a tailnet name or address, checked first); no other file makes an https URL
+    assert len(re.findall(r"""['"`]https://""", blank_js((STATIC / "nodes-hub.js").read_text(encoding="utf-8")))) == 1
+    assert not re.search(r"""['"`]https://""", blank_js((STATIC / "pages" / "node.js").read_text(encoding="utf-8")))
+
+
+def test_demo_nodes_fixture_carries_the_hub_records():
+    """demo/nodes.json also holds `hub`: the records GET /api/nodes/state answers, three of them (online, stale with a skew warning, offline), for ?demo=1."""
+    d = demo_json("nodes.json")
+    assert [r["status"] for r in d["hub"]] == ["online", "stale", "offline"]
+    assert [r["handle"] for r in d["hub"]] == ["build-box", "alice-mac", "old-laptop"]
+    assert d["hub"][1]["skew_warn"] is True and abs(d["hub"][1]["skew_ms"]) > 5000
+    from app.nodes_hub import NodeHub
+    keys = {"peer_id", "handle", "node_id", "name", "url", "status", "polled_at", "last_ok_at", "age_s", "skew_ms", "skew_warn", "error_kind", "card", "state", "etag", "legacy", "scopes"}
+    for r in d["hub"]:
+        assert set(r) == keys, "the record has the keys NodeHub._public gives it"
+    assert NodeHub  # the shape above is the one app/nodes_hub.py `_public` builds

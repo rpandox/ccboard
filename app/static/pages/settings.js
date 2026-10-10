@@ -722,10 +722,15 @@ function settingsNdPaintPaired(nu, st) {
       if (it.legacy) return JSON.stringify([it.legacy, minute]);
       const id = NodeView.peer(it.rec).id;
       const rot = P.rotated[id] && Date.now() - P.rotated[id] < (NodeView.ROTATE_GRACE_S + 15) * 1000 ? Math.floor(Date.now() / 15000) : 0;
-      return JSON.stringify([it.rec, minute, P.act[id] || '', settingsNdArmed(id), rot]);
+      return JSON.stringify([it.rec, minute, P.act[id] || '', settingsNdArmed(id), rot, Nodes.ready ? Nodes.M.rev : 0]);
     },
-    (it) => (it.legacy ? settingsNdLegacy(it.legacy)
-      : NodeView.peerRow(it.rec, { nowMs: now, actions: settingsNdPeerActions(it.rec, false), rotatedMs: P.rotated[NodeView.peer(it.rec).id] || 0 })));
+    (it) => {
+      if (it.legacy) return settingsNdLegacy(it.legacy);
+      const row = NodeView.peerRow(it.rec, { nowMs: now, actions: settingsNdPeerActions(it.rec, false), rotatedMs: P.rotated[NodeView.peer(it.rec).id] || 0 });
+      const line = Nodes.ready && Nodes.enabled() ? Nodes.settingsLine(NodeView.peer(it.rec).handle) : null;      // the hub's reading of this node (status and age, clock skew, agents, accounts); nodes-hub.js
+      if (line) row.querySelector('.nd-main').append(line);
+      return row;
+    });
   settingsNdEmpty(nu.pairedEmpty, !items.length && !(P.nodes === null && !P.err), 'No node is paired. Press Add node and type the address and code the other board shows, or press Pair on a device found below.');
 }
 
@@ -2294,7 +2299,7 @@ function settingsSig(id, st) {
   if (id === 'nodes') {                                                // the card without its clock ('now' moves with every poll), the CCBOARD_NODES rows, the tailnet list's own revision and a 15 s age bucket
     const n = st.node && typeof st.node === 'object' ? st.node : null;
     const armed = /^node-/.test(String(ui.confirm || '')) ? ui.confirm : null;                 // the two-tap Rotate token, Remove and Revoke repaint their row
-    return JSON.stringify([st.nodes, n && [n.node_id, n.name, n.os, n.lanes, n.agents], st.agents, st.node_name, settingsNd.rev, armed, Math.floor(Date.now() / 15000)]);
+    return JSON.stringify([st.nodes, n && [n.node_id, n.name, n.os, n.lanes, n.agents], st.agents, st.node_name, settingsNd.rev, armed, Math.floor(Date.now() / 15000), Nodes.ready ? Nodes.M.rev : 0]);
   }
   if (id === 'box') return JSON.stringify([st.health, st.backup, st.node_name, st.user, st.claude_defaults, minute]);
   if (id === 'accounts') {                                             // identity and labels, not the readings: those move with every statusline and would rebuild the Rename button under a finger (they refresh with the minute)
