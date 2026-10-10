@@ -744,6 +744,7 @@ SCOPE_ANY = "any"                       # a route any valid pair may call, whate
 NODE_ROUTES: dict[tuple[str, str], str] = {
     ("GET", "/api/node"): "read",
     ("GET", "/api/node/summary"): "read",
+    ("GET", "/api/node/state"): "read",
     ("POST", "/api/node/rotate"): SCOPE_ANY,
     ("POST", "/api/node/unpair"): SCOPE_ANY,
 }
@@ -836,9 +837,10 @@ class PeerError(Exception):
     """An outgoing call that failed before an answer was usable. `reason`: url (the address rule refused it), unresolved, no_token, unreachable,
     redirect, too_large, bad_path, store. str() holds no header, no token and no address of the peer's answer."""
 
-    def __init__(self, reason: str, message: str | None = None, unresolved: bool = False):
+    def __init__(self, reason: str, message: str | None = None, unresolved: bool = False, cause: BaseException | None = None):
         self.reason = reason
         self.unresolved = unresolved
+        self.cause = cause                  # the transport's own exception for `unreachable` (the hub tells a timeout from a refusal or a TLS failure by its type); never shown
         super().__init__(message or reason)
 
 
@@ -1020,11 +1022,25 @@ def _out_rows(db) -> list[dict]:
     return [r for r in v if isinstance(r, dict) and PEER_ID_RE.fullmatch(str(r.get("peer_id")))] if isinstance(v, list) else []
 
 
+registry_listener = None                      # main sets it: called (no arguments) after the registry was saved with at least one row, so the hub starts the moment a node is paired
+
+
 def _save_out(db, rows: list[dict]) -> None:
     if rows:
         db.kv_set(KV_PEERS, rows)
+        cb = registry_listener
+        if cb is not None:
+            try:
+                cb()
+            except Exception as e:
+                log.debug("registry listener failed: %s", e.__class__.__name__)
     else:
         db.kv_del(KV_PEERS)                       # a board with no paired node keeps no row
+
+
+def out_peers(db) -> list[dict]:
+    """The registry rows this board calls (direction out, legacy rows included) as views: no token, no digest. [] on a board with no paired node."""
+    return [_out_view(r) for r in _out_rows(db)]
 
 
 def _out_view(r: dict) -> dict:
@@ -1498,8 +1514,8 @@ def peer_call(url: str, method: str, path: str, *, headers: dict | None = None, 
     try:
         status, rh, data = (peer_transport or _https)(target, method.upper(), path, hdrs, raw, timeout)
     except Exception as e:
-        raise PeerError("unreachable", f"the peer could not be reached ({e.__class__.__name__})") from None
-    if 300 <= status < 400:
+        raise PeerError("unreachable", f"the peer could not be reached ({e.__class__.__name__})", cause=e) from None
+    if 300 <= status < 400 and status != 304:           # 304 answers a conditional GET (If-None-Match): a status, never a redirect
         raise PeerError("redirect", "the peer answered with a redirect, which is never followed")
     if len(data) > RESP_MAX:
         raise PeerError("too_large", "the peer's answer is too large")
@@ -1517,11 +1533,12 @@ class PeerClient:
         self.legacy = bool(record.get("legacy"))
         self._db_arg = db
 
-    def request(self, method: str, path: str, body=None, *, acting_user: str | None = None, timeout: float = CALL_TIMEOUT) -> PeerReply:
+    def request(self, method: str, path: str, body=None, *, acting_user: str | None = None, timeout: float = CALL_TIMEOUT,
+                headers: dict | None = None) -> PeerReply:
         token = None if self.legacy else _load_outgoing(self.peer_id)
         if not token:
             raise PeerError("no_token", "this node holds no token for that peer; pair again")
-        headers = {"Authorization": "Bearer " + token, "X-CCBoard-Node": node_id()}
+        headers = {**(headers or {}), "Authorization": "Bearer " + token, "X-CCBoard-Node": node_id()}      # extra headers (If-None-Match) can never replace the credential
         who = _scrub(acting_user, 64)
         if who:
             headers["X-CCBoard-Acting-User"] = who

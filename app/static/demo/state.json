@@ -2194,6 +2194,7 @@
     "cores": 8,
     "at": 1790996400.0
   },
+  "nodes_enabled": true,
   "nodes": {
     "value": [
       {

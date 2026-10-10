@@ -2,6 +2,18 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.36 - 2026-10-10
+
+### Added
+- Nodes P4, the hub read model: every paired board answers `GET /api/node/state` (projects and repos, sessions, tasks, needs-you counts, usage windows, lanes; no prompt, reply, result, transcript, account label or path) to a node token with scope `read`. It is cut to 200 sessions and 200 tasks and 100 KB, carries a weak ETag, and answers 304 when nothing changed.
+- The hub polls its paired boards in parallel (at most 4 at once, every `CCBOARD_NODES_POLL` seconds, 20 by default and 5 at least, 5 second timeout) and keeps the last good reading of each with its age: `GET /api/nodes/state` (and `?handle=`) says online, stale, offline, unauthorized or unpaired, why the last poll failed, and how far the other clock is off. A slow board never delays another, and an offline board keeps showing its last state.
+- A board with no paired board still starts no thread and makes no request. `state.nodes` keeps its shape and `state.nodes_enabled` says whether any board is paired.
+
+### Changed
+- `CCBOARD_NODES` boards are polled by the same threads (still the summary with the hub token). A node's answer is rebuilt from a whitelist and its name, address and id always come from your list of nodes, never from what it says.
+
+Upgrade: nothing to do.
+
 ## v0.5.35 - 2026-10-10
 
 ### Added

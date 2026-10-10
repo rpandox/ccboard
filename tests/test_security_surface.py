@@ -152,6 +152,8 @@ EXPECTED = {
     ("GET", "/api/node"): "identity",            # the node card; a paired node's token will open it too (issue #135)
     ("POST", "/api/node/rotate"): "node-token",     # a paired node rotating its own token (issue #135); the owner's identity reaches a handler that says it takes a node token
     ("POST", "/api/node/unpair"): "node-token",     # a paired node leaving (issue #135)
+    ("GET", "/api/node/state"): "identity",         # the trimmed read-only state a hub reads (issue #138); a paired node's token with scope read opens it too; no prompt, result, transcript or account label in it
+    ("GET", "/api/nodes/state"): "identity",        # the hub read model (issue #138): every paired node's card and last state with its age; built by the board, the page never calls a peer
     ("GET", "/api/nodes"): "identity",              # the nodes this board calls and the pairs that call it (issue #135); never a token or a hash
     ("POST", "/api/nodes"): "identity+csrf",        # pair with another board: its address and its code
     ("GET", "/api/nodes/pairs"): "identity",

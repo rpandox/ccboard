@@ -130,6 +130,7 @@ Every setting is an environment variable. Values are remembered in `/etc/ccboard
 | `CCBOARD_NODE_PORTS` | `443,8443` | HTTPS ports a board tries, in this order, on another tailnet device when it looks for ccboard (issue #134). Every board that should be found must be served on one of them (`CCBOARD_HTTPS_PORT`); the Doctor's `nodes-port` row warns when this board is not. An item that is not a port is dropped and the row says so |
 | `CCBOARD_NODE_TAGS` | `tag:ccboard` | Tailscale tags, separated by commas, that make a device a candidate node besides your own devices (`none` = your own devices only). A device shared in from another user is never a candidate. See [Finding other nodes](#finding-other-nodes-issue-134-phase-p2) |
 | `CCBOARD_NODES` | empty | `name=https://host.tailnet.ts.net:port,…` of the other boxes this one polls |
+| `CCBOARD_NODES_POLL` | `20` | Seconds between two polls of one paired node by the hub read model (`GET /api/node/state`; a little jitter is added). Never below `5`; a value that is not a number falls back to `20`. A board with no paired node polls nothing. See [The hub read model](#the-hub-read-model-issue-138-phase-p4) |
 | `CCBOARD_RESTIC_REPO` | `<data dir>/restic` | restic repository for the nightly backup (`sftp:user@host:/path`, `rclone:remote:path`, `s3:…`, or `off`). The default is on the same disk: fine against deletion and corruption, useless against disk loss |
 | `CCBOARD_BACKUP_PUSH` | `1` | `0` skips the nightly copy of unpushed work to `ccboard-backup/<node>/<branch>` on every repo's `origin` |
 | `CCBOARD_BACKUP_ONCALENDAR` | `*-*-* 02:30:00` | systemd calendar spec of the backup timer (`CCBOARD_BACKUP=0` at install time leaves the timer disabled). On a Mac only `*-*-* HH:MM[:SS]` and `HH:MM` (every day) are understood; see [Backup on each system](#backup-on-each-system-issue-129) |
@@ -1148,7 +1149,7 @@ Pairing connects two boards with a one-time code that you read on one and type o
 
 | Scope | What it lets the other board do | Default |
 | --- | --- | --- |
-| `read` | Read this board's card (`GET /api/node`) and summary (`GET /api/node/summary`) | on |
+| `read` | Read this board's card (`GET /api/node`), summary (`GET /api/node/summary`) and trimmed state (`GET /api/node/state`: projects and repos, sessions, tasks, counts; **task titles and session names are visible to every paired node that holds `read`**, but no prompt, reply, result, transcript, account label or path) | on |
 | `tasks` | Start and follow tasks here (the relay phase; opens nothing yet) | on |
 | `sessions` | Read what a session shows and type into it (a later phase; opens nothing yet) | off |
 | `permissions` | See permission requests. A request is still answered only by a signed-in person on the calling board, never by the token alone (a later phase; opens nothing yet) | off |
@@ -1163,6 +1164,7 @@ Pairing connects two boards with a one-time code that you read on one and type o
 | --- | --- |
 | `GET /api/node` | `read` |
 | `GET /api/node/summary` | `read` |
+| `GET /api/node/state` | `read` |
 | `POST /api/node/rotate` | any (a pair may always manage itself) |
 | `POST /api/node/unpair` | any |
 
@@ -1174,11 +1176,39 @@ Every other `/api/*` route is a `403` for a node token (the table is closed; `te
 
 **Audit.** `node_audit` holds one row per pair event (code created, cancelled and burned, a pair made, refused and revoked, rotated, removed) and per refused node call, with the time, direction (`in` or `out`), the other board's name, the action, the status and a short detail. Rows are kept 90 days. A row never holds a token, a code, a hash or a prompt: anything shaped like one is replaced before it is written.
 
-**`CCBOARD_NODES` and the hub token (deprecated).** Each entry is read into the registry at start as a **legacy** row ("read only, pair to enable actions"). The old poller keeps polling it with `CCBOARD_HUB_TOKEN` on `GET /api/node/summary`, exactly as before; the hub token is accepted on that one route and nowhere else. Pairing the same address replaces the legacy row and the poller stops asking it with the hub token. A board with no `CCBOARD_NODES` and no pair starts no thread, makes no request, and adds no key to `/api/state`.
+**`CCBOARD_NODES` and the hub token (deprecated).** Each entry is read into the registry at start as a **legacy** row ("read only, pair to enable actions"). The hub polls it with `CCBOARD_HUB_TOKEN` on `GET /api/node/summary`, exactly as before (since v0.5.36 by the hub read model's threads, [below](#the-hub-read-model-issue-138-phase-p4)); the hub token is accepted on that one route and nowhere else. Pairing the same address replaces the legacy row and the hub stops asking it with the hub token. A board with no `CCBOARD_NODES` and no pair starts no thread, makes no request, and adds no key to `/api/state`.
 
 **Doctor row (group Box, read only).** `nodes-pairs` warns for a pair that nobody has used for 90 days, a token made or rotated more than 180 days ago (judged for a pair that calls this board; a node this board calls does not record its rotations yet, so its token's age is not judged), and a pair marked `needs_repair` (the other board stopped taking the saved token); each fix names the button (Remove then Add node, Rotate token, Revoke).
 
 `?demo=1` reads `app/static/demo/nodes.json` for the paired list, who can control this node and the activity. To verify in the two-node check (#155): the whole handshake across two real boards through `tailscale serve`, the 60-second rotation window against a real clock, the callback check from a tagged board, and that a user-owned board's server process (which arrives with the owner's login) is told apart by its token alone.
+
+#### The hub read model (issue #138; phase P4)
+
+A board you look at (the hub) can show every paired board's projects, sessions, tasks and needs-you counts, with how old each reading is, without your browser ever calling another board (the page may only talk to its own origin). The hub's backend polls the nodes, keeps the last good reading of each, and serves the merged result from its own address.
+
+**What a node offers: `GET /api/node/state`.** A small read-only answer, opened by a node token with scope `read` or by a signed-in person. It is built from the same project scan the page poll uses (the 2 second scan cache), so a hub polling every 20 seconds adds no scan. It holds: `api`, `node` (`id`, `name`, `url`, `version`, `now`), `etag_base`, `projects` (each with its repos: `name`, `slug`, `branch`, `dirty`; `slug` is `owner/name` of the repo's `origin` when that is a GitHub remote, else `null`), `sessions` (`tmux`, `project`, `repo`, `session`, `agent`, `state`, `needs_you`, `kind` = how it was started, `since`, `model`), `tasks` (`id`, `title`, `phase`, `agent`, `project`, `repo`, `branch`, `tmux`, `issue_ref`, `updated_at`), `needs_you` (`permissions`, `input`, `errors` counts), `usage` (the Claude and Codex windows, no account), `lanes`, `login_problems` (agent names) and `truncated`. It holds no prompt, reply, result, transcript, account label, e-mail address or path (project and repo names only). Task titles and session names are visible to every paired node that holds `read`: do not pair a board you do not trust with them.
+
+Size: at most 200 sessions and 200 tasks (unfinished tasks and live sessions first), strings cut to 200 characters without control characters, the whole body at most 100 KB. If it is larger, finished tasks older than 24 hours go first, then ended sessions, then rows from the tail of the longer list; `truncated` is `true` whenever any row was left out, for the 200 cap too. The weak `ETag` (`W/"<etag_base>"`) is a hash of the body without `node.now`, so the same state keeps the same tag; `If-None-Match` that matches answers `304` with no body (and the node's time in `X-CCBoard-Now`).
+
+**What the hub does.** Only when the registry has a row (a pair, or a `CCBOARD_NODES` entry): one scheduler thread, and a pool of at most 4 workers. Each node is polled every `CCBOARD_NODES_POLL` seconds (default 20, never below 5; a little random spread is added), with a 5 second timeout and the held `ETag`. A node that is slow holds one worker for at most its timeout and is never queued twice, so it cannot delay another node's reading. The card (`GET /api/node`) is read on the first good poll and then every 5 minutes. The hub only ever calls the addresses in its registry, with the token saved for that pair. A board with no paired node starts no thread, makes no request and stores nothing.
+
+**The record of a node** (`GET /api/nodes/state`, `GET /api/nodes/state?handle=<handle>`, an `ETag` over everything but `age_s`): `handle`, `node_id`, `name`, `url`, `status`, `polled_at`, `last_ok_at`, `age_s`, `skew_ms`, `skew_warn`, `error_kind`, `card`, `state`, `etag`, `legacy`, `scopes`. The times are the hub's own clock. `name`, `url`, `handle` and `node_id` come from the registry, never from what the node says.
+
+| Status | Meaning |
+| --- | --- |
+| `online` | The last good reading is at most two poll intervals old |
+| `stale` | The last good reading is at most 10 minutes old; its card and state are still shown, with the age |
+| `offline` | Older than that, or never read. A restart shows the last reading as old as it really is |
+| `unauthorized` | The node answered 401 or 403: the pair was revoked or its token was replaced. The row says "re-pair" |
+| `unpaired` | The node answered 404 on a node route, or it reports another node id than the registry holds (`error_kind` `identity_changed`) |
+
+`error_kind` says why the last poll failed: `timeout`, `refused` (also a refused redirect, an address that no longer passes the address rule), `tls`, `http_5xx` (any other error status), `bad_body` (not JSON, or not the right shape), `too_large` (over 100 KB) or `identity_changed`; it is `null` after a good poll. A failed poll changes `status`, `age_s` and `error_kind` only: the previous card and state stay.
+
+**Skew.** `skew_ms` is the node's `node.now` minus the middle of the request (the hub's send time plus half the round trip). `skew_warn` is true above 5000 ms. Ordering across nodes never uses a node's clock. To verify in the two-node check (#155): skew on real clocks and poll cost on a loaded box (the 20 second default and the 300 ms target are not measured).
+
+**A node's answer is untrusted.** It is rebuilt field by field: unknown keys are dropped, strings cut to 200 characters without control characters, lists to their caps, numbers checked, and a node whose answer names another node id than the registry row is not merged. Nothing a node sends is written into the hub's database except the last good record, kept in kv `node_last` at most once a minute (and at shutdown) and read back at start; the pair's own registry notes (`last_seen`, `needs_repair`) are not peer data.
+
+**Where the hub shows it.** `GET /api/nodes` lists each node with its `status`, `age_s`, `polled_at`, `last_ok_at`, `skew_ms`, `error_kind`, `scopes` and `counts` (sessions, working, needs you, open tasks). `state.nodes` keeps today's shape (`{value: [{name, url, online, ...}], at}`), now built from these records (an offline node keeps its last numbers); `state.nodes_enabled` is true when the registry is not empty. `CCBOARD_NODES` (legacy) rows are polled by the same threads the old way, `GET /api/node/summary` with the hub token, and fill only the summary fields (no card, no state).
 
 ## claude-mem
 
