@@ -259,6 +259,20 @@ def test_the_pane_rules_on_the_reconstructed_screens():
         [True, True, True, True, False, False, False, False, False]
 
 
+def test_an_answered_trust_dialog_is_not_the_current_screen_even_when_it_is_still_in_the_last_lines():
+    """Live check (issues 2 and 86, codex-cli 0.161): the dialog stayed in the last 40 lines and the narrow-pane footer
+    "GPT-6.1-Sol default \u00b7 <path> \u00b7 Reply wit\u2026" has none of the old footer words, so prompt and restart answered 409 dialog for several turns."""
+    assert codex_pane.dialog(pane("trust_dialog")) == "trust"
+    assert codex_pane.dialog(pane("trust_answered_footer")) is None, "only the 0.161 footer line after the dialog"
+    assert codex_pane.dialog(pane("trust_answered_working")) is None, "header box, prompt, reply and footer after the dialog"
+    assert len(pane("trust_answered_working").splitlines()) < codex_pane.TAIL_LINES, "the dialog is inside the tail: no scrolling out"
+    # the dialog's own numbered options and the selector arrow are not Codex's running screen
+    selected = pane("trust_dialog").replace("  1. Yes, continue", "\u203a 1. Yes, continue")
+    assert codex_pane.dialog(selected) == "trust"
+    # a NEW dialog drawn after a working session counts again
+    assert codex_pane.dialog(pane("trust_answered_working") + "\n" + pane("update_dialog")) == "update"
+
+
 @pytest.fixture
 def cxrow(lite_client, fake_tmux):
     """A Codex row in tmux session CXNAME, idle (it has taken a turn), its pane running codex with an empty screen."""
@@ -364,3 +378,32 @@ def test_a_fresh_codex_row_behind_a_dialog_shows_as_needing_a_person_and_a_dead_
     assert main.db.open_row(name)["state"] == "errored" and event_names(name).count("AgentExited") == 1
     _session_view(lite_client, name)
     assert event_names(name).count("AgentExited") == 1
+
+
+def test_a_fresh_codex_behind_a_dialog_answers_dialog_not_not_ready(lite_client, projects_dir, fake_tmux, fake_codex):
+    """Live check (issue 86): a fresh launch has no state yet, so _state_refusal answered not_ready and the dialog never showed."""
+    ext_git_init(projects_dir / "shop" / "api")
+    name = lite_client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "codex"}).json()["tmux"]
+    assert main.db.open_row(name)["state"] is None
+    fake_tmux["screen"] = ""
+    r = post_prompt(lite_client, name)
+    assert r.status_code == 409 and r.json()["error"] == "not_ready", "no dialog on screen: the plain reason"
+    for which, word in (("update_dialog", "Skip"), ("trust_dialog", "trust this folder")):
+        fake_tmux["screen"] = pane(which)
+        r = post_prompt(lite_client, name)
+        assert r.status_code == 409 and r.json()["error"] == "dialog" and word in r.json()["message"], r.text
+        assert nothing_typed(fake_tmux)
+    fake_tmux["screen"] = pane("trust_answered_footer")        # answered, no hook yet: back to the plain reason
+    assert post_prompt(lite_client, name).json()["error"] == "not_ready"
+    fake_tmux["sessions"][name]["command"] = "zsh"             # a login shell in a young pane is the launch line: not agent_exited here
+    fake_tmux["screen"] = ""
+    assert post_prompt(lite_client, name).json()["error"] == "not_ready"
+
+
+def test_an_answered_dialog_no_longer_blocks_prompt_and_restart_of_a_working_session(lite_client, cxrow, fake_tmux):
+    """The same live finding through the routes: the screen still holds the answered trust dialog above the working composer."""
+    fake_tmux["screen"] = pane("trust_answered_working")
+    r = post_prompt(lite_client, cxrow)
+    assert r.status_code == 200, r.text
+    fake_tmux["screen"] = pane("trust_answered_footer")
+    assert post_prompt(lite_client, cxrow).status_code == 200

@@ -1,0 +1,24 @@
+$ codex --no-daemon --no-alt-screen -s workspace-write -a on-request -- 'Run the shell command: echo hi'
+
+  Trust this folder?
+
+  > You are running Codex in <projects dir>/<project>/<repo>
+
+  1. Yes, continue
+  2. No, quit
+
+  Press enter to continue
+
+╭──────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.161.0)                   │
+│                                              │
+│ model:     gpt-6.1-sol   /model to change    │
+│ directory: <projects dir>/<project>/<repo>   │
+╰──────────────────────────────────────────────╯
+
+› Reply with the single word: ok
+
+• ok
+
+› Ask Codex to do anything
+  GPT-6.1-Sol default · <projects dir>/<project>/<repo> · Reply wit…

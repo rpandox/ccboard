@@ -251,6 +251,7 @@ test('the strip sits between the context strip and the terminal as ONE row: the 
   const kids = rows[0].children;
   const NOTE = /(Also saves your default.*|Unverified key path.*)$/;          // the wide column's notes under a group (term.css hides them on a phone)
   assert.deepEqual(kids.map((n) => n.textContent.replace(NOTE, '')), ['Clear', 'Compact', 'Usage', 'Rename', 'Context', 'Status', 'Ultracode', 'Auto-continue: on', 'effortlowmediumhighxhighmax', 'modelopusfablesonnethaiku']);
+  assert.ok(!rows[0].classList.contains('tune-wrap'), 'Claude keeps the one scrolling row');
   assert.match(kids[8].textContent, /Unverified key path/, 'Claude Effort goes through the slider, a key path the box has not run');
   assert.match(kids[9].textContent, /Also saves your default/, 'Claude Model typed inline also saves the default: said in words');
   assert.deepEqual(kids.slice(0, 8).map((n) => n.tagName), Array(8).fill('BUTTON'), 'six command chips, the Ultracode switch and the Auto-continue switch first');
@@ -354,8 +355,9 @@ test('a Codex session gets the shared plan: Model through POST /tune (the picker
   const p = await page({ session: row({ agent: 'codex', stats: st, flags: { perm: { approval: 'on-request', sandbox: 'workspace-write' } } }), allchips: true,
     agents: { codex: { slash: CODEX, models: ['gpt-6.1-sol', 'gpt-6-luna'], reasoning_by_model: { 'gpt-6.1-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] } } } });
   const kids = p.tune().querySelector('.tune-row').children;
-  assert.deepEqual(kids.map((n) => n.getAttribute('aria-label') || n.textContent), ['Status', 'Auto-continue: on', 'Reasoning', 'Model', 'Approvals', 'Sandbox']);
-  assert.deepEqual(p.tune().querySelectorAll('.tune-seg')[0].querySelectorAll('button').map((n) => n.textContent), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+  assert.deepEqual(kids.map((n) => n.getAttribute('aria-label') || n.textContent), ['Status', 'Auto-continue: on', 'Model', 'Reasoning', 'Approvals', 'Sandbox'], 'Model first (the quad tile\'s order), then Reasoning, Approvals, Sandbox');
+  assert.ok(p.tune().querySelector('.tune-row').classList.contains('tune-wrap'), 'four sections: the strip wraps under 840 px (term.css), so Approvals and Sandbox are not off-screen');
+  assert.deepEqual(p.tune().querySelectorAll('.tune-seg')[1].querySelectorAll('button').map((n) => n.textContent), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
   assert.deepEqual(p.tune().querySelectorAll('.tune-seg')[2].querySelectorAll('button').map((n) => n.textContent), ['on-request', 'never'], 'never untrusted or on-failure');
   assert.deepEqual(p.tune().querySelectorAll('.tune-seg')[3].querySelectorAll('button').map((n) => n.textContent), ['read-only', 'workspace-write'], 'never danger-full-access');
   assert.ok(p.chip('model', 'gpt-6.1-sol').classList.contains('on') && p.chip('reasoning', 'low').classList.contains('on'));
@@ -412,12 +414,12 @@ test('#42: the terminal page and the Quad tile build the same plan for the same 
     const kit = p.w.get('TermKit');
     const plan = plain(kit.tunePlan(agent, null, stats));                 // what the Quad tile's TermKit.tune draws for this row
     const segs = p.tune().querySelectorAll('.tune-seg');
-    const groups = [plan.effort, plan.model, plan.approvals, plan.sandbox].filter(Boolean);
+    const groups = (agent === 'codex' ? [plan.model, plan.effort, plan.approvals, plan.sandbox] : [plan.effort, plan.model, plan.approvals, plan.sandbox]).filter(Boolean);
     assert.deepEqual(segs.map((g) => g.querySelectorAll('button').map((b) => b.textContent)), groups.map((g) => g.options.map((o) => o.label)), agent);
     assert.deepEqual(segs.map((g) => g.querySelector('button').getAttribute('data-via')), groups.map((g) => g.via), agent + ': the same request route');
     const cur = plain(kit.tuneCurrent(stats, kit.tunePlan(agent, null, stats), {}));
     const on = segs.map((g) => g.querySelectorAll('button.on').map((b) => b.textContent)).flat();
-    assert.deepEqual(on, [cur.effort, cur.model].filter(Boolean), agent + ': the same current values');
+    assert.deepEqual(on, (agent === 'codex' ? [cur.model, cur.effort] : [cur.effort, cur.model]).filter(Boolean), agent + ': the same current values');
   }
 });
 
@@ -911,6 +913,18 @@ test('term.css: #tune is one scrolling row (not a column of rows), the toggle\'s
   assert.match(css, /#tune::before\s*\{[^}]*left:\s*0/);
   assert.match(css, /#tune::after\s*\{[^}]*right:\s*0/);
   for (const sel of ['.bp5-dark #tune .bp5-button.tune-chip:not([class*=bp5-intent-])']) assert.match(rule(css, sel), /min-height:\s*var\(--tap\)/, '44 px on a coarse pointer comes from --tap');
+});
+
+test('term.css under 840 px: a Codex strip (Model, Reasoning, Approvals, Sandbox) wraps instead of scrolling sideways; the desktop column and the Claude strip are untouched', () => {
+  const css = termCss();
+  const narrow = mediaBlock(css, '(max-width:839px)');
+  const wrap = rule(narrow, '.tune-row.tune-wrap');
+  assert.match(wrap, /flex-wrap:\s*wrap/);
+  assert.match(wrap, /overflow-x:\s*visible/, 'nothing is off-screen to the right');
+  assert.match(rule(narrow, '.tune-row.tune-wrap > .tune-seg'), /flex:\s*1 1 100%/, 'each section on its own line');
+  assert.match(rule(narrow, '.tune-row.tune-wrap > .tune-seg'), /flex-wrap:\s*wrap/, 'a long model list wraps inside its section');
+  assert.doesNotMatch(rule(css, '.tune-row'), /flex-wrap/, 'the base row (Claude, all widths) still scrolls');
+  assert.doesNotMatch(mediaBlock(css, '(min-width:840px)'), /tune-wrap/, 'the 840 px grid does not know the class');
 });
 
 test('term.css at 840 px and up: an inspector column (320 to 360 px): segmented effort and model over a three-column command grid, a six-column key grid, the reply block at the bottom', () => {

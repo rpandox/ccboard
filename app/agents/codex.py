@@ -527,6 +527,18 @@ def parse_models(text: str) -> list[dict]:
     return [t[2] for t in out]
 
 
+GENERATION_RE = re.compile(r"^gpt-(\d+)", re.I)
+
+
+def current_family(rows: list[dict]) -> list[dict]:
+    """The models a person is offered to pick: the catalogue lists the older generation too (live check on codex-cli 0.161: gpt-5.6-* next
+    to gpt-6.*), which the model docs call legacy. A `gpt-N` model of a lower N than the highest listed N is left out of the picker; a model
+    that names no generation (o-series, codex-*) and a catalogue of one generation stay as they are. Launch options still accept any id."""
+    gens = [int(m.group(1)) for r in rows if (m := GENERATION_RE.match(str(r.get("slug") or "")))]
+    top = max(gens, default=None)
+    return [r for r in rows if not (top is not None and (m := GENERATION_RE.match(str(r.get("slug") or ""))) and int(m.group(1)) < top)]
+
+
 # ---------------------------------------------------------------- hooks.json helpers
 
 def _hook_commands(groups) -> list[str]:
@@ -591,7 +603,7 @@ class CodexAgent(Agent):
     # ---- what GET /api/agents lists: derived from the (cached) catalogue, never from a subprocess of its own ----
     @property
     def MODELS(self) -> tuple:                          # type: ignore[override]
-        return tuple(m["slug"] for m in self.models(fetch=False))
+        return tuple(m["slug"] for m in current_family(self.models(fetch=False)))
 
     @property
     def EFFORTS(self) -> tuple:                         # type: ignore[override]
@@ -599,7 +611,7 @@ class CodexAgent(Agent):
 
     @property
     def REASONING_BY_MODEL(self) -> dict:               # type: ignore[override]
-        return {m["slug"]: list(m["reasoning"]) for m in self.models(fetch=False) if m["reasoning"]}
+        return {m["slug"]: list(m["reasoning"]) for m in current_family(self.models(fetch=False)) if m["reasoning"]}
 
     # ---- detection and auth ----
     def bin(self) -> str | None:
@@ -860,7 +872,7 @@ class CodexAgent(Agent):
         exe = self.bin()
         if exe:
             self._warm_models(exe)                       # background; the schema below uses what is cached (or the fallback)
-        models = [m["slug"] for m in self.models(fetch=False)]
+        models = [m["slug"] for m in current_family(self.models(fetch=False))]
         efforts = list(self._allowed_efforts(None))
         caps = self.launch_caps()
         kinds = [k for k in LAUNCH_KINDS if k != "fork" or caps.get("fork")]

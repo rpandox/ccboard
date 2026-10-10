@@ -79,6 +79,11 @@ body.term input, body.term textarea { -webkit-user-select:text; user-select:text
 #tune::after { right:0; background:linear-gradient(to left, var(--bg), transparent); }
 #tune.more-l::before, #tune.more-r::after { opacity:1; }
 .tune-seg { flex:0 0 auto; display:flex; align-items:center; gap:3px; }
+@media (max-width:839px) {                                                     /* Codex (Model, Reasoning, Approvals, Sandbox): the strip wraps instead of scrolling sideways, so all four are on screen */
+  .tune-row.tune-wrap { flex-wrap:wrap; overflow-x:visible; row-gap:6px; padding-right:8px; }
+  .tune-row.tune-wrap::after { display:none; }
+  .tune-row.tune-wrap > .tune-seg { flex:1 1 100%; flex-wrap:wrap; row-gap:3px; }
+}
 .tune-lbl { flex:0 0 auto; padding:0 3px; font-size:11px; color:var(--dim); }
 .tune-note { display:none; }                                         /* the phone strip is one scrolling row: the note is the chip's title there */
 /* a chip is the default bordered button (style.css: --btn-bg, 1 px --line-strong): no ring of its own on top. Sizes only here. */
