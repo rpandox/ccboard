@@ -1264,15 +1264,15 @@ test('demo mode: the three lists come from demo/nodes.json with times that follo
 
 const moved = (over) => caller({ peer_id: 'c-old', name: 'build-box', url: 'https://100.64.0.21', superseded_by: 'c-new', superseded_by_url: 'https://build-box.example.ts.net:8443', ...over });
 
-test('a pair that a newer pair from another address replaced says so, with the new address, and its Revoke is the solid one', async () => {
+test('a pair that shares its node id with a newer pair from another address says so neutrally, with the new address, and its Revoke is the usual one', async () => {
   const { w } = pairWorld({ inn: [moved(), caller({ peer_id: 'c-new', name: 'build-box', url: 'https://build-box.example.ts.net:8443' })] });
   await settle();
   const [old, fresh] = incomingRows(w);
   assert.ok(old.classList.contains('superseded') && !fresh.classList.contains('superseded'));
-  assert.equal(text(old.querySelector('.nd-replaced')), 'Replaced by a newer pair from build-box.example.ts.net:8443. This one still works until you revoke it.');
-  assert.ok(old.querySelectorAll('.nd-chips .badge').map(text).includes('! replaced'));
+  assert.equal(text(old.querySelector('.nd-replaced')), 'Another pair from build-box.example.ts.net:8443 says it is this node too. A node id is not proof, so both still work: revoke the one you do not recognise.');
+  assert.ok(old.querySelectorAll('.nd-chips .badge').map(text).includes('! same node id'));
   assert.equal(fresh.querySelector('.nd-replaced'), null);
-  assert.ok(btn(old, 'Revoke').classList.contains('confirm'), 'solid red at rest on the replaced pair');
+  assert.ok(!btn(old, 'Revoke').classList.contains('confirm'), 'a claimed node id points at neither pair: the usual Revoke');
   assert.ok(!btn(fresh, 'Revoke').classList.contains('confirm'), 'the other stays red-outlined');
   btn(old, 'Revoke').click();
   await settle();
@@ -1286,19 +1286,19 @@ test('a pair that a newer pair from another address replaced says so, with the n
 test('a replaced pair whose newer pair has no known address still says it was replaced', async () => {
   const { w } = pairWorld({ inn: [moved({ superseded_by_url: null })] });
   await settle();
-  assert.equal(text(incomingRows(w)[0].querySelector('.nd-replaced')), 'Replaced by a newer pair. This one still works until you revoke it.');
+  assert.equal(text(incomingRows(w)[0].querySelector('.nd-replaced')), 'Another pair says it is this node too. A node id is not proof, so both still work: revoke the one you do not recognise.');
 });
 
 test('the audit words for a replaced pair and for a kept outgoing pair are not "Node removed"', () => {
   const w = nodesWorld();
-  assert.equal(w.run("NodeView.auditWord('superseded', true)"), 'Pair replaced, still active');
+  assert.equal(w.run("NodeView.auditWord('superseded', true)"), 'Same node id from another address');
   assert.equal(w.run("NodeView.auditWord('unpair_kept_outgoing', true)"), 'Pair kept');
   assert.equal(w.run("NodeView.auditWord('unpair', true)"), 'Node removed');
 });
 
 const OTHERS = [{ peer_id: 'c-old', name: 'build-box', url: 'https://100.64.0.21', verified: true }, { peer_id: 'c-claim', name: 'maybe-build-box', url: 'https://100.64.0.66', verified: false }];
 
-test('Remove opens a sheet that asks the board first and lists the other pairs of the node id as ticked boxes with their addresses and a not confirmed tag', async () => {
+test('Remove opens a sheet that asks the board first and lists the other pairs of the node id as unticked boxes with their addresses and a not confirmed tag', async () => {
   const { w, server } = pairWorld({ out: [peer()], inn: [moved(), moved({ peer_id: 'c-claim', name: 'maybe-build-box', url: 'https://100.64.0.66', callback_unverified: true, superseded_by: null })] });
   server.others = OTHERS;
   await settle();
@@ -1308,12 +1308,12 @@ test('Remove opens a sheet that asks the board first and lists the other pairs o
   const d = dlg(w);
   assert.equal(text(d.querySelector('h2')), 'Remove build-box');
   const rows = d.querySelectorAll('.nd-rm-row');
-  assert.deepEqual(rows.map((r) => [text(r.querySelector('b')), r.querySelector('input').checked, r.querySelector('input').getAttribute('data-pair')]), [['build-box', true, 'c-old'], ['maybe-build-box', true, 'c-claim']]);
+  assert.deepEqual(rows.map((r) => [text(r.querySelector('b')), r.querySelector('input').checked, r.querySelector('input').getAttribute('data-pair')]), [['build-box', false, 'c-old'], ['maybe-build-box', false, 'c-claim']]);
   assert.match(text(rows[0]), /100\.64\.0\.21/);
   assert.match(text(rows[1]), /100\.64\.0\.66/);
   assert.equal(rows[0].querySelectorAll('.badge').length, 0, 'a confirmed pair carries no tag');
   assert.deepEqual(rows[1].querySelectorAll('.badge').map(text), ['! not confirmed']);
-  assert.match(text(d), /These pairs use the same node id from another address, or never confirmed who they are, so they were not cut with it\. Tick the ones to revoke too\./);
+  assert.match(text(d), /These pairs use the same node id from another address, or never confirmed who they are, so they were not cut with it\. None is ticked: a node id is not proof of who a board is\. Tick any you want revoked too\./);
 });
 
 test('Remove sends exactly the ticked pairs as also_revoke and says what happened to the rest', async () => {
@@ -1324,7 +1324,7 @@ test('Remove sends exactly the ticked pairs as also_revoke and says what happene
   btn(pairedRows(w)[0], 'Remove').click();
   await settle();
   const boxes = dlg(w).querySelectorAll('.nd-rm-row input');
-  flip(boxes[1], false);
+  flip(boxes[0], true);
   btn(dlg(w), 'Remove').click();
   await settle();
   const del = nodeCalls(w, 'DELETE');
@@ -1335,13 +1335,14 @@ test('Remove sends exactly the ticked pairs as also_revoke and says what happene
   assert.deepEqual(incomingRows(w).map((r) => text(r.querySelector('.nd-name'))), ['maybe-build-box'], 'the list is read again: the unticked one is still there');
 });
 
-test('Remove with every box left ticked revokes all of them, and with no other pair sends no body at all', async () => {
+test('Remove with every box left unticked revokes none of them, every box ticked revokes all, and with no other pair sends no body at all', async () => {
   const a = pairWorld({ out: [peer()], inn: [moved(), moved({ peer_id: 'c-claim', name: 'x', callback_unverified: true, superseded_by: null })] });
   a.server.others = OTHERS;
   a.server.peerNotified = true;
   await settle();
   btn(pairedRows(a.w)[0], 'Remove').click();
   await settle();
+  for (const c of dlg(a.w).querySelectorAll('.nd-rm-row input')) flip(c, true);
   btn(dlg(a.w), 'Remove').click();
   await settle();
   assert.deepEqual(nodeCalls(a.w, 'DELETE')[0].body, { also_revoke: ['c-old', 'c-claim'] });
@@ -1386,11 +1387,11 @@ test('a refused removal keeps the sheet open with the reason and the boxes as th
   await settle();
   btn(pairedRows(w)[0], 'Remove').click();
   await settle();
-  flip(dlg(w).querySelector('.nd-rm-row input'), false);
+  flip(dlg(w).querySelector('.nd-rm-row input'), true);
   btn(dlg(w), 'Remove').click();
   await settle();
   assert.ok(dlg(w), 'still open');
   assert.match(text(dlg(w).querySelector('.qr-err')), /^build-box not removed: only an active pair/);
-  assert.equal(dlg(w).querySelector('.nd-rm-row input').checked, false);
+  assert.equal(dlg(w).querySelector('.nd-rm-row input').checked, true);
   assert.ok(btn(dlg(w), 'Remove') && !btn(dlg(w), 'Remove').disabled, 'it can be tried again');
 });

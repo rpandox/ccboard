@@ -832,7 +832,7 @@ html.force-coarse .job-fable .checks label { min-height:var(--tap); }
 .nd-row .nd-act { display:flex; align-items:center; flex:none; }
 .nd-row .nd-act .bp5-button { min-height:var(--row-btn); }
 .nd-row.stale .nd-name, .nd-row.stale .nd-chips { opacity:.75; }
-.nd-row .nd-replaced { font-size:12px; line-height:1.5; font-weight:500; color:var(--bad-fg); overflow-wrap:anywhere; }
-.nd-row.superseded { box-shadow:inset 3px 0 0 var(--bad); padding-left:10px; }
+.nd-row .nd-replaced { font-size:12px; line-height:1.5; font-weight:500; color:var(--warn-fg); overflow-wrap:anywhere; }
+.nd-row.superseded { box-shadow:inset 3px 0 0 var(--warn); padding-left:10px; }
 .nd-sheet .nd-rm-list { display:flex; flex-direction:column; gap:6px; margin:8px 0; }
 .nd-sheet .nd-rm-row .set-pref-t { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 10px; }

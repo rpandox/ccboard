@@ -472,7 +472,7 @@ NodeView.peerNote = function (p, { nowMs = Date.now(), incoming = false, rotated
 };
 
 /* A pair as a row, in the shape of the found rows: name (and its handle), chips (state, scopes, flags), a note, and `actions` (elements) at the right. */
-NodeView.REPLACED = 'Replaced by a newer pair';
+NodeView.REPLACED = 'Another pair';
 
 NodeView.peerRow = function (rec, { nowMs = Date.now(), actions = null, incoming = false, rotatedMs = 0 } = {}) {
   const p = NodeView.peer(rec);
@@ -485,8 +485,8 @@ NodeView.peerRow = function (rec, { nowMs = Date.now(), actions = null, incoming
       el('div', { class: 'nd-chips' }, NodeView.chip(st.word, st.tone, st.glyph, st.hint),
         scopes.map((s) => NodeView.chip(s.label.toLowerCase(), '', '', s.what)),
         p.unverified ? NodeView.chip('callback not verified', 'warn', '!', 'That node did not confirm who it is when it was paired. The pair works; its name is not confirmed.') : null,
-        replaced ? NodeView.chip('replaced', 'warn', '!', 'The same node paired again from another address. This older pair was left as it is, for you to decide.') : null),
-      replaced ? el('div', { class: 'nd-replaced', text: `${NodeView.REPLACED}${p.supersededHost ? ` from ${p.supersededHost}` : ''}. This one still works until you revoke it.` }) : null,
+        replaced ? NodeView.chip('same node id', 'warn', '!', 'A newer pair from another address gave this node\'s id. A node id is only the word of the board at its address, so neither pair was cut.') : null),
+      replaced ? el('div', { class: 'nd-replaced', text: `${NodeView.REPLACED}${p.supersededHost ? ` from ${p.supersededHost}` : ''} says it is this node too. A node id is not proof, so both still work: revoke the one you do not recognise.` }) : null,
       el('div', { class: 'dim nd-note', text: NodeView.peerNote(p, { nowMs, incoming, rotatedMs }) })),
     actions ? el('div', { class: 'nd-act' }, actions) : null);
 };
@@ -502,7 +502,7 @@ NodeView.AUDIT_WORDS = [
   [/callback/, 'Callback checked', 'Callback not verified'],
   [/paired?_back|reverse/, 'Paired both ways', 'Pairing both ways failed'],
   [/rotat/, 'Token rotated', 'Token rotation failed'],
-  [/supersed/, 'Pair replaced, still active', 'Pair replaced, still active'],
+  [/supersed/, 'Same node id from another address', 'Same node id from another address'],
   [/kept/, 'Pair kept', 'Pair kept'],
   [/revok/, 'Pair revoked', 'Pair not revoked'],
   [/unpair|remov|delet/, 'Node removed', 'Node removed, the other node was not told'],

@@ -210,8 +210,8 @@ function settingsNotify(p) {
    pasted from it. Rotate token (POST /api/nodes/<peer>/rotate) keeps the old token for 60 s on the other side and says so; Remove and Revoke (DELETE /api/nodes/<peer>) work even
    when the other node is offline and say when it was not told. Rotate token and Revoke are two-tap confirmButtons. Remove opens a sheet that first asks the board
    what else would stay able to call it (POST /api/nodes/<peer>/remove-preview): the pairs that use the same node id from another address, or were never
-   confirmed, are listed with a ticked box each, and Remove sends the ticked ones as DELETE {also_revoke: [peer_id, ...]}. A pair the node made again from another address is listed under
-   Who can control this node as replaced, still working, with its Revoke filled in.
+   confirmed, are listed with an unticked box each, and Remove sends the ones the person ticks as DELETE {also_revoke: [peer_id, ...]}. A pair the node made again from another address is listed under
+   Who can control this node as "says it is this node too", still working, with its usual Revoke: a node id is not proof, so nothing points at one pair.
 
    A code is in this file only as the text of the open sheet (settingsNdSheet.code and the output node): it is never put in storage, a URL, a toast or a log, and closing the sheet
    empties every node and the variable. A token is never in this file at all: the board's answers to rotate and add carry none that this page reads. The one timer here is the
@@ -308,11 +308,11 @@ async function settingsNdRemove(p, revoke) {
   await settingsNdLoadPeers();
 }
 
-/* The pairs of the preview as the sheet's rows: a ticked box each (the person asked to remove this node, and these still hold its node id), the name, the address and, for a pair
+/* The pairs of the preview as the sheet's rows: an unticked box each (a node id is only a claim, so revoking another pair is the person's choice, never the default), the name, the address and, for a pair
    nobody confirmed, the tag "not confirmed". */
 function settingsNdRemoveRow(o, checks) {
   const c = el('input', { type: 'checkbox', 'data-pair': NodeView.str(o.peer_id, 80) });
-  c.checked = true;
+  c.checked = false;
   checks.push(c);
   const name = NodeView.str(o.name, 80) || 'unnamed node';
   const host = NodeView.hostOf(NodeView.str(o.url, 300));
@@ -322,7 +322,7 @@ function settingsNdRemoveRow(o, checks) {
     o.verified === false ? NodeView.chip('not confirmed', 'warn', '!', 'This pair never confirmed who it is. It may only be using this node\'s id.') : null));
 }
 
-/* Remove a node this board calls: the sheet asks the board which other pairs name the same node id (they are not revoked by the id alone), lists them ticked, and Remove sends
+/* Remove a node this board calls: the sheet asks the board which other pairs name the same node id (they are not revoked by the id alone), lists them unticked, and Remove sends
    the ticked ones. A failed ask does not block the removal: the sheet says so and Remove then revokes nothing else. */
 function settingsNdRemoveSheet(opener, rec) {
   settingsNdSheetClose();
@@ -352,7 +352,7 @@ function settingsNdRemoveSheet(opener, rec) {
     if (shell !== s.shell) return;
     const others = NodeView.list(pv, 'others');
     if (others.length) {
-      info.textContent = 'These pairs use the same node id from another address, or never confirmed who they are, so they were not cut with it. Tick the ones to revoke too.';
+      info.textContent = 'These pairs use the same node id from another address, or never confirmed who they are, so they were not cut with it. None is ticked: a node id is not proof of who a board is. Tick any you want revoked too.';
       settingsNdPut(list, ...others.map((o) => settingsNdRemoveRow(o, checks)));
     } else info.textContent = 'No other pair uses this node\'s id.';
     go.disabled = false;
@@ -398,7 +398,6 @@ function settingsNdPeerActions(rec, incoming) {
   if (incoming) {
     if (busy) return [wait('Revoking…')];
     const rv = confirmButton(`node-rv:${p.id}`, 'Revoke', () => settingsNdRemove(p, true), false);
-    if (p.superseded && rv.tagName === 'BUTTON') rv.classList.add('confirm');                    // a replaced pair is the one to act on: its resting Revoke is the solid one
     return [rv];
   }
   if (p.legacy) {
