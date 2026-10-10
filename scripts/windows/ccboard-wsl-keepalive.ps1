@@ -76,7 +76,8 @@ function Get-WslDistros {
   } finally {
     [Console]::OutputEncoding = $previous
   }
-  return @($lines | ForEach-Object { ($_ -replace "`0", '').Trim() } | Where-Object { $_ })
+  # The leading comma keeps an empty list an empty list: a bare `return @()` unrolls to $null, which reads as "wsl.exe was not found".
+  return , @($lines | ForEach-Object { ($_ -replace "`0", '').Trim() } | Where-Object { $_ })
 }
 
 $distros = Get-WslDistros
