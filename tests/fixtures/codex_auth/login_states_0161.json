@@ -1,5 +1,5 @@
 {
- "_note": "The three states of the live Codex login (#68, #35) and what the board's free signals say about each. Every record says `observed` (true: seen on the box, codex-cli 0.161.0, 2026-10-09) or false (ASSUMED: written from the adapter's verdict rules and from Codex's source and docs, never captured). Nothing here comes from an auth.json: the board treats that file as opaque bytes. Logged in, logged out (no auth.json) and unreadable (empty or garbage auth.json) are observed; only the expired/revoked state is assumed, because producing it needs a real login that the server has revoked.",
+ "_note": "The states of the Codex login (#68, #35) and what the board's free signals say about each. Every record says `observed` (true: seen on the box, codex-cli 0.161.0, 2026-10-09 and 2026-10-10) or false (ASSUMED: written from the adapter's verdict rules and from Codex's source and docs, never captured). Nothing here comes from an auth.json: the board treats that file as opaque bytes. Logged in, logged out (no auth.json) and unreadable (empty or garbage auth.json) are observed for `codex login status`; `codex exec` was run in the same three logged-out states on 2026-10-10 and all three look the same (see `exec_no_login`). Only the server-rejected state (an expired or revoked login) is assumed, because producing it needs a real login that the server has revoked.",
  "logged_in": {
   "login_status": {
    "observed": true,
@@ -21,7 +21,7 @@
    "rc": 1,
    "stdout": "",
    "stderr": "Not logged in\n",
-   "basis": "Observed on the box, codex-cli 0.161.0, 2026-10-09, with a scratch CODEX_HOME holding no auth.json (no real account was logged out)."
+   "basis": "Observed on the box, codex-cli 0.161.0, 2026-10-09 and again 2026-10-10, with a scratch CODEX_HOME holding no auth.json (no real account was logged out)."
   },
   "rollout": null,
   "expect": "missing"
@@ -39,7 +39,11 @@
    "file": "rollout_auth_error_synthetic.jsonl",
    "basis": "ASSUMED error item (event_msg of type error: 401 Unauthorized, refresh token revoked, log out and sign in again), built from Codex's source and docs. No real expired or revoked Codex login has been seen yet."
   },
-  "expect": "rejected"
+  "expect": "rejected",
+  "exec": {
+   "observed": false,
+   "basis": "ASSUMED: a login the server rejects (expired or revoked) is believed to end an exec run in the same turn.failed shape with a different 401 text (a refresh token that expired, was revoked or was already used). Never captured; needs a genuinely dead login."
+  }
  },
  "not_an_auth_failure": [
   {
@@ -60,9 +64,28 @@
    "stdout": "",
    "stderr_empty_file": "Error checking login status: EOF while parsing a value at line 1 column 0\n",
    "stderr_garbage_file": "Error checking login status: stream did not contain valid UTF-8\n",
-   "basis": "Observed on the box, codex-cli 0.161.0, 2026-10-09, with a scratch CODEX_HOME whose auth.json was empty, then 64 random bytes. The verdict reads this as an error (rc 1 without 'not logged in'), never as logged in."
+   "basis": "Observed on the box, codex-cli 0.161.0, with a scratch CODEX_HOME whose auth.json was empty (EOF text), 64 random bytes (UTF-8 text; 2026-10-09) and a short garbage text file (`expected ident`; 2026-10-10). The verdict reads each as an error (rc 1 without 'not logged in'), never as logged in.",
+   "stderr_garbage_text_file": "Error checking login status: expected ident at line 1 column 2\n"
   },
   "rollout": null,
   "expect": "unknown"
+ },
+ "exec_no_login": {
+  "observed": true,
+  "version": "codex-cli 0.161.0",
+  "date": "2026-10-10",
+  "command": "codex exec --json -s read-only --skip-git-repo-check \"say ok\" (scratch CODEX_HOME)",
+  "file": "../codex_exec/auth_failed_0161.jsonl",
+  "rc": 1,
+  "states_that_look_the_same": [
+   "no auth.json",
+   "empty auth.json",
+   "garbage auth.json"
+  ],
+  "tells_the_states_apart": false,
+  "seconds": "25 to 30 (five retries on the websocket, five on https)",
+  "stderr_repeats": "failed to connect to websocket: HTTP error: 401 Unauthorized",
+  "basis": "Observed on the box, 2026-10-10: events thread.started, turn.started, four error 'Reconnecting... N/5 (unexpected status 401 Unauthorized: Missing bearer or basic authentication in header ...)', one item.completed of type error 'Falling back from WebSockets to HTTPS transport ...', five more error, a final error, then turn.failed with the 401 message. The fixture keeps that order and wording; request ids, cf-ray values and urls are replaced by <scrubbed>, and the text the recording elided ('...') is not invented. `exec` does not report a bad auth.json as a parse error, so only `codex login status` tells missing from unreadable.",
+  "expect": "auth_failure"
  }
 }

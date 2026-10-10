@@ -138,7 +138,8 @@ function hooksMissingChip(kind, cls) {
 }
 
 function stateBadge(s) {
-  const st = s.state || 'unknown';
+  const parked = limitParkedText(s);                          // #71: parked on a rate limit: amber, glyph and words, not a bare "error"
+  const st = parked ? 'waiting' : s.state || 'unknown';
   if (!STATE_LABEL[st]) return null;
   const age = s.state_at ? fmtAge(Date.parse(s.state_at) / 1000) : '';
   // beside its text label the glyph is decoration: hide it from screen readers (no double announcement) and let the
@@ -147,7 +148,7 @@ function stateBadge(s) {
   glyph.setAttribute('aria-hidden', 'true');
   glyph.removeAttribute('title');
   return el('span', { class: `state ${st}` + (s.needs_attention ? ' attn' : ''), title: s.last_event || '' },
-    glyph, ' ', STATE_LABEL[st] + (age ? ` ${age}` : ''));
+    glyph, ' ', parked || STATE_LABEL[st] + (age ? ` ${age}` : ''));
 }
 
 function statsText(s) {
@@ -892,7 +893,7 @@ function taskOwnerChip(t) {
   const s = t.session;
   const name = sessionNameOf(t.tmux);
   const age = s && s.state_at ? fmtAge(Date.parse(s.state_at) / 1000) : '';
-  const state = s && STATE_LABEL[s.state] ? STATE_LABEL[s.state] + (age ? ` · ${age}` : '') : '';
+  const state = s && STATE_LABEL[s.state] ? (s.parked ? 'limit reached' : STATE_LABEL[s.state]) + (age ? ` · ${age}` : '') : '';
   return el('a', { class: 'chip-btn tk-owner', href: taskPeekHash(t.tmux), title: `this task runs in ${name}: open it` },
     agentGlyph(t.agent || 'claude'), ' ', el('span', { class: 'tk-owner-name', text: name }),
     s && s.state ? [' ', stateGlyph(s.state), ' ', el('span', { class: 'tk-owner-state', text: state })] : null);
@@ -1172,6 +1173,13 @@ async function taskPreview(t, port) {
   return r;
 }
 
+/* #126: the board cannot make a preview here (state.preview from app/previews.py capability()): a disabled Preview and the reason in words, before any click. */
+function taskPreviewOff(t, pv) {
+  const id = `tk-pv-${t.id}`;
+  return el('div', { class: 'tk-pv' }, el('button', { class: 'minimal small', type: 'button', disabled: true, 'aria-describedby': id, 'data-act': 'preview', text: 'Preview' }),
+    el('span', { id, class: 'dim tk-pv-why', text: `unavailable: ${pv.reason || 'Tailscale is not ready'}` }));
+}
+
 function taskPortSheet(t, why) {
   const port = el('input', { type: 'number', min: '1', max: '65535', step: '1', inputmode: 'numeric', autocomplete: 'off', placeholder: 'e.g. 3000' });
   const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
@@ -1287,7 +1295,8 @@ function startedCard(t, ctx) {
     try { const r = await api('POST', `/api/tasks/${t.id}/fix-ci`); setError(null); toast(`CI logs (${r.chars} chars) sent to ${t.title}${r.relaunched ? ' (session relaunched)' : ''}`, { kind: 'ok', ttl: 8000 }); } catch (e) { setError(e.message); }
     await poll(true);
   } } : null;
-  const previewAct = starting || !live ? null : (t.preview_url
+  const pvOff = !starting && live && !t.preview_url && typeof state !== 'undefined' && state && state.preview && state.preview.available === false ? state.preview : null;
+  const previewAct = starting || !live || pvOff ? null : (t.preview_url
     ? { id: 'preview', label: `Preview :${t.preview_port}`, href: t.preview_url, newTab: true }
     : { id: 'preview', label: 'Preview', title: 'expose a dev server running in this session on its own tailnet HTTPS port', onClick: async () => {
       try { await taskPreview(t); }
@@ -1318,6 +1327,7 @@ function startedCard(t, ctx) {
     el('div', { class: 'meta' }, starting ? `${taskWhere(t)} · starting…` : (t.branch ? `${t.project}/${t.repo} · ${t.branch}` : taskWhere(t) + (t.mode === 'attached' ? ' · in place' : '')), t.pr_url ? ' · PR #' + t.pr_number : null, t.issue_number ? [' · ', taskIssueLink(t)] : null,
       typeof t.cost_usd === 'number' ? [' · ', el('span', { class: 'mono', text: '$' + t.cost_usd.toFixed(2) })] : null),
     chips.length ? el('div', { class: 'tk-chips' }, ...chips) : null,
+    pvOff ? taskPreviewOff(t, pvOff) : null,
     pending && live ? taskAutoCloseStrip(t, ac) : null,
     s && s.last_message && !(finished && t.result) ? el('div', { class: 'last', text: s.last_message.slice(0, 160) }) : null,
     finished ? taskResultNode(t) : null,

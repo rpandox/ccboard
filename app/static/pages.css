@@ -581,6 +581,8 @@ html.force-coarse #page .task .tk-owner { min-height:var(--tap); }
 .task .tk-ac-tag, .task .tk-closed, .task .tk-hold, .task .tk-chain-badge { display:inline-flex; align-items:center; gap:4px; }              /* an icon, a word and a countdown: spaced by the gap, not by text spaces a flex row trims */
 .task .tk-asked, .task .tk-hold { white-space:normal; border-radius:10px; }                                                                  /* these two may take two lines on a narrow card: a pill that is not a stadium */
 .task .tk-ac-why { font-weight:400; }
+.task .tk-pv { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; margin:0 0 6px; min-width:0; }
+.task .tk-pv-why { min-width:0; overflow-wrap:anywhere; }
 
 /* the pending close: '⏻ auto-close 0:32' and Keep open */
 .task .tk-ac { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px; margin:0 0 6px; }

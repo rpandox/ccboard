@@ -1354,6 +1354,7 @@ class CodexAgent(Agent):
         usage = None
         failed = False
         errors: list[str] = []
+        final_error: str | None = None             # the message of the last turn.failed: the run's own verdict, after the retries' noise
         events = 0
         for line in (stdout or "").splitlines():
             line = line.strip()
@@ -1378,6 +1379,7 @@ class CodexAgent(Agent):
                 msg = err.get("message") if isinstance(err, dict) else err
                 if isinstance(msg, str) and msg:
                     errors.append(msg)
+                    final_error = msg
             elif typ == "error":
                 if isinstance(ev.get("message"), str) and ev["message"]:
                     errors.append(ev["message"])
@@ -1403,12 +1405,17 @@ class CodexAgent(Agent):
         else:
             subtype = "success"
         if not text and is_error:
-            text = "\n".join(errors) or (stderr or "").strip()[-4000:] or (stdout or "").strip()[-4000:]
+            text = final_error or "\n".join(errors) or (stderr or "").strip()[-4000:] or (stdout or "").strip()[-4000:]
         blob = "\n".join(errors) + (f"\n{stderr}" if rc != 0 else "")
         rate_limited = is_error and bool(RATE_RE.search(blob) or LIMIT_MSG_RE.search(blob[-500:]) or "usage_limit" in blob.lower())
-        # #68: a run that already happened says for free whether the login was refused (its turn.failed / error text); never a rate limit
+        # #68: a run that already happened says for free whether the login was refused; never a rate limit. OBSERVED (codex-cli 0.161.0,
+        # 2026-10-10, tests/fixtures/codex_exec/auth_failed_0161.jsonl): with no usable login `exec` retries ten times ("Reconnecting... N/5
+        # (unexpected status 401 Unauthorized: Missing bearer or basic authentication in header ...)", websocket then https), exits 1 and ends
+        # in turn.failed with that 401. A turn.failed is the run's verdict, so when there is one it decides (an early 401 that a retry got
+        # past does not make a later, different failure a dead login); without one every error text counts.
         from ..login_problem import codex_auth_failure
-        auth_failure = is_error and not rate_limited and any(codex_auth_failure(e) for e in errors)
+        verdict = [final_error] if final_error else errors
+        auth_failure = is_error and not rate_limited and any(codex_auth_failure(e) for e in verdict)
         return {"text": (text or "")[:20000], "session_id": sid, "cost": None, "turns": turns or None, "is_error": is_error,
                 "subtype": subtype, "rate_limited": rate_limited, "usage": usage, "auth_failure": auth_failure}
 

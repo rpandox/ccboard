@@ -84,6 +84,35 @@ def _still_parked(row: dict, ep: dict) -> bool:
     return not state_at or state_at <= ep["at"] + 60          # no state change after the hit
 
 
+def parked_view(db, rows: dict[str, dict], now: float) -> dict[str, dict]:
+    """#71: name -> {kind, resets_at} for every open Claude row that is parked on a rate limit, so a card can say "limit reached, continues
+    at <time>" instead of a bare error chip. Parked = state errored with a limit message in its last message (the StopFailure left it
+    there), or errored/idle on a recorded 'lim' episode that nothing has moved on from (the same test tick() applies, minus the opt-out
+    and the board switch, which the page knows from flags.no_autoresume and config.auto_continue). resets_at is 0 when the limit message
+    came with no recorded episode or reset time. One query, and only when some row looks parked: the 3 s poll calls this."""
+    cand = {n: r for n, r in rows.items()
+            if (r.get("agent") or "claude") == "claude" and (r.get("state") or "") in ("errored", "idle")
+            and LIMIT_MSG_RE.search((r.get("last_message") or "")[-500:])}
+    if not cand:
+        return {}
+    out: dict[str, dict] = {}
+    for ep in sorted(episodes(db, now), key=lambda e: e["at"]):                 # the newest episode of a session wins
+        row = cand.get(ep["session"])
+        if row is None:
+            continue
+        state_at = _epoch(row.get("state_at"))
+        if state_at and state_at > ep["at"] + 60:                               # it moved on after the hit
+            continue
+        at = int(ep["resets_at"]) if ep["resets_at"] else 0
+        if at and (now > at + WINDOW_AFTER or db.kv_get(f"autoresume:{ep['session']}:{at}") is not None):
+            at = 0                                                              # tick() has decided (skipped, or already typed) or its window is over: no promise
+        out[ep["session"]] = {"kind": ep["kind"], "resets_at": at}
+    for n, r in cand.items():
+        if n not in out and r.get("state") == "errored":
+            out[n] = {"kind": "other", "resets_at": 0}
+    return out
+
+
 def _where(name: str) -> str:
     try:
         parts = tmux.split_name(name)

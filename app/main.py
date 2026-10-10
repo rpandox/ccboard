@@ -635,6 +635,11 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
         if rich and row.get("agent") == "codex" and not row.get("state"):
             _codex_launch_view(name, row, s["command"], out[name])
     if rich and out:
+        try:                                         # #71: a session parked on a rate limit says when it continues (display only; never breaks the poll)
+            for name, p in autoresume.parked_view(db, {n: rows.get(n, {}) for n in out}, time.time()).items():
+                out[name]["parked"] = p
+        except Exception as e:
+            log.debug("parked view failed: %s", e.__class__.__name__)
         snap = _registry_snapshot({n: s["pid"] for n, s in live.items() if s.get("pid")})
         if snap:
             try:
@@ -723,6 +728,7 @@ def build_state(user: str) -> dict:
     st["login"] = _login_payload()
     st["pending_permissions"] = db.perm_pending()
     st["tasks"] = _tasks_view()
+    st["preview"] = previews.capability()                 # #126: {available, code, reason}: the Preview control says why it is off before the click
     st["jobs"] = _jobs_view()
     by_job = {j["id"]: j["agent"] for j in st["jobs"]}
     st["runs"] = [{**{k: (v[:400] if k == "result" and isinstance(v, str) else v) for k, v in r.items()}, "agent": by_job.get(r["job_id"], "claude")}
@@ -1690,7 +1696,7 @@ class LaunchOpts(BaseModel):
     """The launch choices the board offers as proper controls (mirrors the claude CLI flags)."""
     model: str | None = None                 # --model alias or full id
     effort: str | None = None                # --effort low|medium|high|xhigh|max
-    permission_mode: str | None = None       # --permission-mode (bypassPermissions only inside a devcontainer)
+    permission_mode: str | None = None       # --permission-mode (bypassPermissions is refused for unattended runs; an interactive session chooses it per session, #104)
     allowed_tools: str | None = None         # --allowedTools, comma/newline separated patterns
     disallowed_tools: str | None = None      # --disallowedTools
     append_system_prompt: str | None = None  # --append-system-prompt
@@ -2890,7 +2896,7 @@ def _validate_job(body) -> dict:
     if body.cron and not scheduler.valid_cron(body.cron.strip()):
         raise projects.BadRequest("cron must be a 5-field expression like '30 2 * * *'")
     if body.permission_mode not in scheduler.MODES:
-        raise projects.BadRequest(f"permission_mode must be one of {', '.join(scheduler.MODES)} (bypass only inside a devcontainer)")
+        raise projects.BadRequest(f"permission_mode must be one of {', '.join(scheduler.MODES)} (bypass is never allowed for unattended runs)")
     if agent == "claude" and body.max_turns is not None and not (1 <= body.max_turns <= 500):
         raise projects.BadRequest("max_turns must be 1..500")
     if body.max_budget_usd is not None and not (0 < body.max_budget_usd <= 1000):

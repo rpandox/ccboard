@@ -38,8 +38,10 @@ def is_auth_failure(*texts) -> bool:
 
 # Codex has no StopFailure hook: its failures are error items in a rollout's tail (codex_rollout.parse_tail) or the `turn.failed` / `error`
 # events of `codex exec --json`. Besides AUTH_RE's words, a Codex login that is no good says "401 Unauthorized" (an HTTP status line), that
-# its refresh token expired, was revoked or was already used and to "log out and sign in again", or names `codex login`. The exact text a
-# dead login gives was NOT captured on the box (codex-cli 0.161.0; see README, Login expiry): the words come from Codex's source and docs.
+# its refresh token expired, was revoked or was already used and to "log out and sign in again", or names `codex login`. OBSERVED (codex-cli
+# 0.161.0, 2026-10-10, tests/fixtures/codex_exec/auth_failed_0161.jsonl): with no usable login `codex exec --json` retries ten times ("Reconnecting...
+# N/5 (unexpected status 401 Unauthorized: Missing bearer or basic authentication in header ...)") and ends in turn.failed with that 401. The text of
+# a login the SERVER rejects (expired or revoked) was NOT captured: those words come from Codex's source and docs.
 # A usage limit ("You've hit your usage limit"), a full context window and a network error ("stream disconnected", "timeout") never match,
 # nor does the 0.161.0 TUI's "account/read failed during TUI bootstrap" (seen on the box, a slow network, not a login).
 CODEX_AUTH_RE = re.compile(r"\bunauthori[sz]ed\b|refresh[_ ]token|sign in again|log ?in again|\bcodex login\b|not signed in|"

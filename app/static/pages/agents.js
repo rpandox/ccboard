@@ -884,7 +884,7 @@ function sessionCard(s, opts) {
     const accts = rich && s2.account ? agentsAccounts(st) : [];
     const ac = accts.length > 1 ? (accts.find((x) => x.key === s2.account) || null) : null;
     return JSON.stringify([s2.state, s2.state_at, s2.name, s2.last_prompt, s2.last_message, s2.needs_attention, s2.agent, s2.launcher, s2.created,
-      s2.project, s2.repo, s2.folder, s2.stats, s2.path, s2.flags, s2.task, s2.hooks_missing || null,
+      s2.project, s2.repo, s2.folder, s2.stats, s2.path, s2.flags, s2.task, s2.hooks_missing || null, s2.parked,
       pr ? pr.id + ':' + pr.summary : '', ui.confirm === killKey,
       t ? [t.id, t.pr_number, t.pr_url, t.pr_state, t.mode, t.ci && t.ci.bucket] : null, rl && rl.session === s2.tmux ? [rl.message, rl.resets_at] : null,
       rich ? [s2.account || '', accts.length > 1, ac ? [ac.label, ac.name, ac.email] : null] : null, Nodes.sig(s2)]);
@@ -911,7 +911,7 @@ function sessionCard(s, opts) {
     Nodes.mark(where, s2);                                     // the node chip (dim for this board) once nodes are paired (nodes.js)
     if (o.showProject && s2.project) chipHueSet(where, chipHue('project', s2.project));
     agentsAgeNode(age, sessionActivity(s2));
-    setTextIfChanged(meta, rich ? GLYPH_LABEL[sk] : sessionMetaText(s2, sk));
+    setTextIfChanged(meta, rich ? limitParkedText(s2) || GLYPH_LABEL[sk] : sessionMetaText(s2, sk));       // #71: a parked session says the limit, not 'error'
     const lim = o.peek ? [800, 2000] : (o.compact || rich ? [120, 160] : [200, 320]);
     const pt = s2.last_prompt ? '› ' + String(s2.last_prompt).slice(0, lim[0]) : '';
     const mt = s2.last_message ? String(s2.last_message).slice(0, lim[1]) : '';

@@ -36,7 +36,7 @@ import sys
 from xml.sax.saxutils import escape
 
 TOKEN_RE = re.compile(r"__([A-Z][A-Z0-9_]*)__")
-MAX_SOCKET_PATH = 100               # bytes; sun_path holds 104 on macOS and 108 on Linux, with room to spare (issue #125)
+MAX_SOCKET_PATH = 100               # bytes; a socket path holds 103 on macOS (measured, issue #130: 104 fails with "File name too long") and 107 on Linux, with room to spare (issue #125)
 SESSION_TYPES = ("Aqua", "Background", "LoginWindow", "System")
 ABSOLUTE = {"HOME", "SHELL", "APP_DIR", "APP_BIN", "LOG_DIR", "ENV_FILE", "TMUX_BIN", "TTYD_BIN", "CODE_SERVER_BIN", "TMUX_TMPDIR", "BREW_PREFIX"}
 PORTS = {"CCBOARD_PORT", "TTYD_PORT"}

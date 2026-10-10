@@ -347,3 +347,82 @@ def test_the_opt_out_also_covers_the_account_switch_path(world, monkeypatch):
     db.update_flags("shop--api--s2", {"no_autoresume": True})
     monkeypatch.setattr(settings, "auto_continue", False)
     assert cp(world, T) == ["shop--api--s1"] and world["sent"] == [("shop--api--s1", "continue")]
+
+
+# ---- #71: parked_view, the per-session limit field the cards turn into "limit reached, continues at <time>"
+
+def test_parked_view_gives_the_reset_of_a_session_parked_on_a_limit(world):
+    db, T = world["db"], 1_800_000_000
+    seed(db, "shop--api--s1", hit_at=T - 600, resets_at=T)
+    seed(db, "shop--api--s2", hit_at=T - 500, resets_at=T + 7 * 86400, kind="7d")
+    assert autoresume.parked_view(db, db.open_rows(), T - 300) == {
+        "shop--api--s1": {"kind": "5h", "resets_at": T}, "shop--api--s2": {"kind": "7d", "resets_at": T + 7 * 86400}}
+
+
+def test_parked_view_is_empty_when_nothing_looks_parked(world):
+    db, T = world["db"], 1_800_000_000
+    seed(db, "shop--api--s1", hit_at=T - 600, resets_at=T, state="working")                       # working again: the person or the agent moved on
+    seed(db, "shop--api--s2", hit_at=T - 600, resets_at=T, message="build failed: exit 2")        # an error that is not a limit
+    assert autoresume.parked_view(db, db.open_rows(), T - 300) == {}
+
+
+def test_parked_view_does_not_promise_a_continue_after_a_later_hook(world):
+    """tick() will not type into a session whose state changed after the hit, so the card must not say it continues: an errored row still
+    shows the limit, with no reset (the card then says auto-continue is off); an idle one is simply not parked."""
+    db, T = world["db"], 1_800_000_000
+    seed(db, "shop--api--s1", hit_at=T - 600, resets_at=T)
+    seed(db, "shop--api--s2", hit_at=T - 600, resets_at=T, state="idle")
+    for n in ("shop--api--s1", "shop--api--s2"):
+        db.conn.execute("UPDATE sessions SET state_at=? WHERE tmux_name=?", (iso(T - 100), n))
+    assert autoresume.parked_view(db, db.open_rows(), T - 50) == {"shop--api--s1": {"kind": "other", "resets_at": 0}}
+
+
+def test_parked_view_without_an_episode_has_no_reset_and_only_for_errored(world):
+    db, T = world["db"], 1_800_000_000
+    msg = "You've hit your usage limit"
+    db.add_session(tmux_name="shop--api--e1", project="shop", repo="api", name="e1", launcher="claude")
+    db.set_state("shop--api--e1", "errored", "StopFailure", message=msg)
+    db.add_session(tmux_name="shop--api--i1", project="shop", repo="api", name="i1", launcher="claude")
+    db.set_state("shop--api--i1", "idle", "Stop", message=msg)
+    assert autoresume.parked_view(db, db.open_rows(), T) == {"shop--api--e1": {"kind": "other", "resets_at": 0}}
+
+
+def test_parked_view_ignores_codex_rows_and_does_not_read_samples_when_no_row_is_a_candidate(world, monkeypatch):
+    db, T = world["db"], 1_800_000_000
+    seed(db, "shop--api--cx", hit_at=T - 600, resets_at=T)
+    db.conn.execute("UPDATE sessions SET agent='codex' WHERE tmux_name=?", ("shop--api--cx",))
+    assert autoresume.parked_view(db, db.open_rows(), T - 300) == {}
+    monkeypatch.setattr(db, "samples_query", lambda *a, **k: (_ for _ in ()).throw(AssertionError("queried")))
+    assert autoresume.parked_view(db, {"x": {"state": "working", "last_message": "limit reached"}}, T) == {}
+
+
+def test_state_carries_parked_for_a_session_parked_on_a_limit(client, projects_dir, fake_tmux, monkeypatch):
+    """#71 through the real poll: the session row says when the limit resets, and a session that is not parked has no such field."""
+    import time
+
+    from app import main
+    s = _one_session(client, projects_dir, monkeypatch)
+    resets = int(time.time()) + 1800
+    msg = "You've hit your session limit · resets 10:05pm (Asia/Kathmandu)"
+    main.db.set_state(s["tmux"], "errored", "StopFailure", message=msg)
+    main.db.sample("lim", "5h", 1.0, {"session": s["tmux"], "resets_at": resets, "message": msg}, at=iso(time.time() - 60))
+
+    def sess():
+        st = client.get("/api/state", headers=H).json()
+        return next(x for p in st["projects"] for rp in p["repos"] for x in rp["sessions"] if x["tmux"] == s["tmux"])
+    main._scan_cache = None
+    assert sess()["parked"] == {"kind": "5h", "resets_at": resets}
+    main.db.set_state(s["tmux"], "working", "UserPromptSubmit", message="continue")
+    main._scan_cache = None                                   # past the 2 s scan cache
+    assert "parked" not in sess()
+
+
+def test_parked_view_promises_nothing_that_tick_has_decided_or_given_up_on(world):
+    """A reset that tick() already skipped or typed for (kv autoresume:<session>:<resets_at>), or whose WINDOW_AFTER is over, shows no time."""
+    db, T = world["db"], 1_800_000_000
+    seed(db, "shop--api--s1", hit_at=T - 600, resets_at=T)
+    seed(db, "shop--api--s2", hit_at=T - 600, resets_at=T)
+    db.kv_set(f"autoresume:shop--api--s2:{T}", {"skipped": "someone was at the terminal", "at": T})
+    got = autoresume.parked_view(db, db.open_rows(), T + 60)
+    assert got["shop--api--s1"]["resets_at"] == T and got["shop--api--s2"]["resets_at"] == 0
+    assert autoresume.parked_view(db, db.open_rows(), T + autoresume.WINDOW_AFTER + 1)["shop--api--s1"]["resets_at"] == 0

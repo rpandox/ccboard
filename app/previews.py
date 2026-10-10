@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil      # noqa: F401  (tests patch previews.shutil.which and previews.subprocess.run: the stdlib modules, shared with app.tailscale)
 import subprocess  # noqa: F401
+import time
 from urllib.parse import urlsplit
 
 from . import platform as plat
@@ -90,6 +92,45 @@ def public_host() -> str:
     return urlsplit(settings.public_url).hostname or "" if settings.public_url else ""
 
 
+DENIED_TTL = 300        # seconds a refused `serve` keeps the control off; after that one more try is allowed (nothing else could clear it)
+_refused = {"at": 0.0, "why": ""}
+
+
+def capability() -> dict:
+    """#126: can a preview be made here at all, and if not why, so the control says so BEFORE the click: {available, code, reason}. In the order a
+    person would fix it: CCBOARD_PUBLIC_URL, a WSL2 distro whose Tailscale is on the Windows side (no route), no Tailscale command, Tailscale not
+    running, not signed in, and a `serve` that was refused a moment ago (denied; only known after one real attempt, so it expires after DENIED_TTL).
+    Reads the board's cached Tailscale reading (app/nodes.py, two minutes); runs no `serve`, sends no signal, never raises."""
+    def off(code: str, reason: str) -> dict:
+        return {"available": False, "code": code, "reason": reason}
+    try:
+        from . import nodes
+        if not public_host():
+            return off("no_public_url", "CCBOARD_PUBLIC_URL is not set (rerun install.sh)")
+        if nodes.windows_side():
+            return off("wsl_host", "Tailscale runs on the Windows side of this WSL2 distro, which has no route to expose a preview")
+        cli = ts.find_cli()
+        if cli is None or (shutil.which(cli.exe) is None and not os.path.exists(cli.exe)):      # Linux always names a command; it may not be there
+            return off("no_cli", ts.missing_reason())
+        d = nodes._ts()
+        if not isinstance(d, dict):
+            return off("not_running", "Tailscale is not running or cannot be reached from the board")
+        if str(d.get("BackendState") or "") != "Running":
+            return off("not_signed_in", "Tailscale is not logged in on this device")
+        if _refused["why"] and time.monotonic() - _refused["at"] < DENIED_TTL:
+            return off("denied", _refused["why"])
+    except Exception as e:
+        log.debug("preview capability failed: %s", e.__class__.__name__)
+        return {"available": True, "code": "unknown", "reason": None}
+    return {"available": True, "code": "ok", "reason": None}
+
+
+def _refusal(text: str) -> bool:
+    """Is this `serve` failure a refusal of the user (operator not set, the app refused) rather than a port or network problem?"""
+    t = text.lower()
+    return "operator" in t or "refused it" in t or "denied" in t
+
+
 def serve_cmd(*args: str) -> list[str]:
     """tailscale as the operator if allowed (always so in the container), else through the sudoers rule installed by install.sh (app/tailscale.py)."""
     return ts.serve_cmd(*args)
@@ -108,7 +149,10 @@ def _run_serve(args: list[str]) -> None:
     try:
         ts.run_serve(args, sock=TAILSCALE_SOCK)
     except ts.TailscaleError as e:
+        if _refusal(str(e)):
+            _refused.update(at=time.monotonic(), why=str(e)[:300])         # capability() reports it, so the control says "denied" before the next click
         raise PreviewError(str(e)) from None
+    _refused["why"] = ""
 
 
 def serve_on(https_port: int, local_port: int) -> str:

@@ -12,6 +12,14 @@
    removes what it put there itself and stray text, so a callout another file keeps in #banner (Widgets.limitBanner) survives a repaint. */
 const bannerOwn = [];
 
+/* "2 Claude and 1 Codex sessions": last_recovery.agents maps each recovered session to its agent; a record from before that field says "3 sessions". */
+function recoveryWho(v) {
+  const n = v.recovered.length, by = {};
+  for (const name of v.recovered) { const a = (v.agents || {})[name]; if (a) by[a] = (by[a] || 0) + 1; }
+  const parts = Object.keys(by).map((a) => `${by[a]} ${a.charAt(0).toUpperCase()}${a.slice(1)}`);
+  return `${parts.length ? parts.join(' and ') : n} session${n === 1 ? '' : 's'}`;
+}
+
 function renderBanner() {
   const b = $('#banner');
   if (!b) return;
@@ -55,7 +63,7 @@ function renderBanner() {
     b.classList.add('warn');
     const v = state.last_recovery.value;
     const cont = v.continue || [];
-    own(el('span', { text: `After a restart, ${v.recovered.length} Claude session${v.recovered.length === 1 ? '' : 's'} relaunched with --resume: ${v.recovered.join(', ')}${cont.length ? ' · was working, continue typed once back: ' + cont.join(', ') : ''}${v.closed.length ? ' · closed: ' + v.closed.join(', ') : ''}` }),
+    own(el('span', { text: `After a restart, ${recoveryWho(v)} relaunched: ${v.recovered.join(', ')}${cont.length ? ' · was working, continue typed once back: ' + cont.join(', ') : ''}${v.closed.length ? ' · closed: ' + v.closed.join(', ') : ''}` }),
       el('button', { class: 'minimal small', type: 'button', onclick: async () => { try { await api('POST', '/api/recovery/dismiss'); } catch (e) { setError(e.message); } await poll(true); }, text: 'dismiss' }));
   } else if (rl) {
     own(el('span', { text: `Rate limited: ${rl.message || ''}${rl.session ? ' (' + rl.session + ')' : ''}` }),

@@ -117,13 +117,7 @@ Inbox.head = function (msg, n) { return msg.length > n ? msg.slice(0, n).trimEnd
 Inbox.tail = function (msg, n) { return msg.length > n ? '…' + msg.slice(-n).trimStart() : msg; };
 
 /* Local clock time of an epoch ('22:05'), with the weekday when it is more than a day away (a 5 h window that resets after midnight is still just a time). */
-Inbox.clock = function (epoch) {
-  if (!epoch) return '';
-  const d = new Date(epoch * 1000);
-  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  if (Math.abs(epoch - Date.now() / 1000) < 20 * 3600) return hm;
-  return `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]} ${hm}`;
-};
+Inbox.clock = clockAt;
 
 /* {text, mono, note, reply}: the lead text (mono for a permission summary), a dim note beside it, and a suggested reply (needs). */
 Inbox.context = function (s, st, kind) {
@@ -148,7 +142,9 @@ Inbox.context = function (s, st, kind) {
     const lim = Inbox.limit(st);
     const mine = lim && lim.session === s.tmux;
     const reset = mine && lim.resets_at ? Inbox.clock(lim.resets_at) : '';
-    return { text: Inbox.head((mine && lim.message) || msg || 'rate limit reached', 320), mono: false, note: reset ? `resets ${reset}${lim.resets_at * 1000 > Date.now() ? ' · in ' + fmtIn(lim.resets_at) : ''}` : '', reply: '' };
+    const parked = limitParkedText(s);                  // #71: what happens next, in words
+    return { text: Inbox.head((mine && lim.message) || msg || 'rate limit reached', 320), mono: false, reply: '',
+             note: parked || (reset ? `resets ${reset}${lim.resets_at * 1000 > Date.now() ? ' · in ' + fmtIn(lim.resets_at) : ''}` : '') };
   }
   if (kind === 'error') return { text: Inbox.head(msg || 'the session failed', 320), mono: false, note: '', reply: '' };
   if (kind === 'done') return { text: Inbox.head(msg || 'finished', 320), mono: false, note: '', reply: '' };
@@ -162,7 +158,7 @@ Inbox.sig = function (s, st, kind) {
   const lim = Inbox.limit(st) || {};
   return JSON.stringify([kind, s.state, s.state_at, s.needs_attention, s.name, s.agent, s.last_message, s.last_prompt, s.project, s.repo, s.folder,
     perm && [perm.id, perm.summary, perm.tool_name], s.viewers && s.viewers.full, job.needs, job.tempo, job.state, job.suggested_reply,
-    lim.session === s.tmux ? [lim.message, lim.resets_at] : null, s.task && s.task.title]);
+    lim.session === s.tmux ? [lim.message, lim.resets_at] : null, s.task && s.task.title, limitParkedText(s)]);
 };
 
 /* ---------- the card ---------- */

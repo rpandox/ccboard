@@ -324,7 +324,7 @@ def test_state_legacy_keys_are_unchanged(board):
     db().kv_set("rate_limits", {"five_hour": {"used_percentage": 42, "resets_at": 1791349200}})
     st = board.client.get("/api/state", headers=H).json()
     assert LEGACY_TOP <= set(st) and set(st) - LEGACY_TOP == {"agents", "setup", "deploy", "memory", "accounts", "codex_accounts", "usage_codex", "usage_refresh",
-                                                               "scan_slow", "claude_defaults", "node", "nodes_enabled"}      # nodes_enabled: nodes P4 (#138), true when a node is paired; node: nodes epic P1 (#133), the node card without agents and accounts; claude_defaults: Phase G (v0.5.x) subagent model + Fable cap shown in Settings > Box, from settings only
+                                                               "scan_slow", "claude_defaults", "node", "nodes_enabled", "preview"}      # nodes_enabled: nodes P4 (#138), true when a node is paired; node: nodes epic P1 (#133), the node card without agents and accounts; claude_defaults: Phase G (v0.5.x) subagent model + Fable cap shown in Settings > Box, from settings only
     assert st["scan_slow"] is False, "#31: false while the box is not busy"
     assert st["usage_refresh"] == {"running": False, "last": None}, "v0.5.17f: the Usage page's Refresh: a /usage ask in flight, and the newest one"
     assert st["usage_codex"] is None, "v0.5.12: the Codex account's windows (kv rate_limits_codex), null until a rollout reported them"
