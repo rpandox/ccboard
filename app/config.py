@@ -97,7 +97,7 @@ ENV_FILE_KEYS = (
     "CCBOARD_AUTO_CONTINUE", "CCBOARD_CLAUDE_MEM", "CCBOARD_MEM_PORT", "CCBOARD_MEM_HTTPS_PORT", "CCBOARD_MEM_SERVICE",
     "CCBOARD_CODEX_HOOK_TRUST", "CCBOARD_CLONE_ALLOWED_HOSTS", "CCBOARD_MCP_REMOTE", "CODEX_HOME", "CCBOARD_AUTOCLOSE_GRACE",
     "CCBOARD_CODEX_HOOKS_ASYNC", "CCBOARD_CLAUDE_ULTRACODE_FLAG", "CCBOARD_SUBAGENT_MODEL", "CCBOARD_HEADLESS_FABLE_CAP", "CCBOARD_PRICE_TABLE",
-    "CCBOARD_TAILSCALE_PLACEMENT", "CCBOARD_NODE_LANES", "CCBOARD_NODE_PORTS", "CCBOARD_NODE_TAGS",
+    "CCBOARD_TAILSCALE_PLACEMENT", "CCBOARD_NODE_LANES", "CCBOARD_NODE_PORTS", "CCBOARD_NODE_TAGS", "CCBOARD_NODES_POLL",
 )
 ENV_FILE_MAX = 1 << 20     # bytes read from the settings file
 
@@ -244,6 +244,14 @@ class Settings:
         self.node_ports, self.node_ports_bad = parse_node_ports(env.get("CCBOARD_NODE_PORTS"))
         self.node_tags, self.node_tags_bad = parse_node_tags(env.get("CCBOARD_NODE_TAGS"))
         self.nodes_raw = env.get("CCBOARD_NODES") or ""
+        # The hub read model (issue #138): seconds between two polls of one paired node. Default 20, never below 5; not a number: the default.
+        try:
+            poll = float((env.get("CCBOARD_NODES_POLL") or "").strip() or 20)
+            if poll != poll or poll in (float("inf"), float("-inf")):
+                raise ValueError("not finite")
+            self.nodes_poll = max(5.0, poll)
+        except ValueError:
+            self.nodes_poll = 20.0
         # Nightly backup: restic repo ('off' disables restic; empty = local repo under the data dir), its password
         # file (written by install.sh), whether to copy unpushed work to backup branches on every repo's origin, extra paths to include.
         self.restic_repo = (env.get("CCBOARD_RESTIC_REPO") or "").strip() or str(self.data_dir / "restic")

@@ -107,9 +107,9 @@ def parse_nodes(raw: str) -> list[dict]:
     return out
 
 
-def fetch_node(url: str) -> dict:
+def fetch_node(url: str, timeout: float = 10) -> dict:
     req = urllib.request.Request(url + "/api/node/summary", headers={HUB_HEADER: settings.hub_token, "X-CCBoard": "1"})
-    with urllib.request.urlopen(req, timeout=10) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read() or b"{}")
 
 
@@ -119,7 +119,8 @@ def same_url(a: str, b: str) -> bool:
 
 
 class Poller(threading.Thread):
-    """Runs on the hub: refreshes every node's summary into kv 'nodes'. The CCBOARD_NODES entries are the legacy rows of the registry (issue #135):
+    """The v0.4 poller. Since issue #138 the board starts app/nodes_hub.py's NodeHub instead (which polls the legacy rows the same way, in parallel); this class
+    stays for the kv `nodes` record it writes and for its tests. Runs on the hub: refreshes every node's summary into kv 'nodes'. The CCBOARD_NODES entries are the legacy rows of the registry (issue #135):
     polled with the hub token on GET /api/node/summary and nothing else. `paired()` (optional) returns the addresses that have since been paired
     with a token; pairing the same address replaces the legacy row, so those entries are no longer polled this way."""
 

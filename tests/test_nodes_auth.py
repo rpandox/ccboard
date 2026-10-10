@@ -39,6 +39,7 @@ CLOSED = "this node token does not open that route"
 EXPECTED_NODE_ROUTES = {
     ("GET", "/api/node"): "read",
     ("GET", "/api/node/summary"): "read",
+    ("GET", "/api/node/state"): "read",
     ("POST", "/api/node/rotate"): nodes.SCOPE_ANY,
     ("POST", "/api/node/unpair"): nodes.SCOPE_ANY,
 }
@@ -125,7 +126,7 @@ def test_a_node_token_opens_only_the_listed_routes(board, wide_buckets):
 def test_a_listed_path_with_an_unlisted_method_is_closed(board, wide_buckets, method):
     c, db = board
     _, tok = mint(db, nodes.SCOPES)
-    for path in ("/api/node", "/api/node/summary", "/api/node/rotate", "/api/node/unpair"):
+    for path in ("/api/node", "/api/node/summary", "/api/node/state", "/api/node/rotate", "/api/node/unpair"):
         if (method, path) in EXPECTED_NODE_ROUTES:
             continue
         r = c.request(method, path, headers=bearer(tok))

@@ -28,7 +28,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, nodes, nodes_discovery, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_hub, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -124,6 +124,17 @@ def _paired_urls() -> list[str]:
     return [r["url"] for r in nodes.peers(db=db) if r.get("direction") != "in" and not r.get("legacy") and r.get("url")]
 
 
+node_hub: "nodes_hub.NodeHub | None" = None
+
+
+def _hub() -> "nodes_hub.NodeHub":
+    """The hub read model of this board's database (issue #138). The object holds no thread and makes no request until `ensure()` finds a paired node."""
+    global node_hub
+    if node_hub is None or node_hub.db is not db:
+        node_hub = nodes_hub.NodeHub(db)
+    return node_hub
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global db, sampler
@@ -181,11 +192,11 @@ async def lifespan(app: FastAPI):
             nodes.import_legacy(hub_nodes, db=db)
         except Exception as e:
             log.warning("CCBOARD_NODES could not be added to the node registry: %s", e.__class__.__name__)
-    if hub_nodes and settings.hub_token:
-        hub = health.Poller(db, hub_nodes, paired=_paired_urls)
-        hub.start()
-    elif hub_nodes:
+    if hub_nodes and not settings.hub_token:
         log.warning("CCBOARD_NODES is set but CCBOARD_HUB_TOKEN is empty: hub polling disabled")
+    hub = _hub()                                          # issue #138: one scheduler thread for every registry row (legacy rows too), only when there is a row
+    nodes.registry_listener = hub.ensure                  # a node paired later starts the same thread
+    hub.ensure()
     try:
         rec = recover.run(db, _start_session)
         if rec["recovered"] or rec["closed"]:
@@ -208,8 +219,8 @@ async def lifespan(app: FastAPI):
         mem_mon.stop.set()
     indexer.stop.set()
     sched_worker.stop.set()
-    if hub:
-        hub.stop.set()
+    nodes.registry_listener = None
+    hub.stop()
 
 
 app = FastAPI(title="ccboard", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -654,19 +665,25 @@ def _cached_projects() -> list[dict] | None:
 doctor.set_projects_source(_cached_projects)
 
 
-def build_state(user: str) -> dict:
+def _scan_entry() -> dict:
+    """The project scan {tmux_down, projects, scan_slow}, at most SCAN_TTL seconds old: the state poll and GET /api/node/state share it, so a hub that
+    polls adds no scan. A copy of the cached dict (its lists are shared: read them, never change them)."""
     global _scan_cache
     with _scan_lock:
         if _scan_cache and time.monotonic() - _scan_cache[0] < SCAN_TTL:
-            st = dict(_scan_cache[1])
-        else:
-            sessions, down = _merged_sessions(rich=True)
-            # #31: on a busy box the scan reuses each repo's git answer for up to 10 s (branch and dirty may be that old) and says so
-            # in state.scan_slow; sessions, hooks and user actions are never slowed (_invalidate_scan drops the reused answers too)
-            slow = health.under_load()
-            st = {"tmux_down": down, "projects": projects.scan(sessions, git_max_age=projects.GIT_TTL_LOADED if slow else 0.0),
-                  "scan_slow": slow}
-            _scan_cache = (time.monotonic(), st)
+            return dict(_scan_cache[1])
+        sessions, down = _merged_sessions(rich=True)
+        # #31: on a busy box the scan reuses each repo's git answer for up to 10 s (branch and dirty may be that old) and says so
+        # in state.scan_slow; sessions, hooks and user actions are never slowed (_invalidate_scan drops the reused answers too)
+        slow = health.under_load()
+        st = {"tmux_down": down, "projects": projects.scan(sessions, git_max_age=projects.GIT_TTL_LOADED if slow else 0.0),
+              "scan_slow": slow}
+        _scan_cache = (time.monotonic(), st)
+        return dict(st)
+
+
+def build_state(user: str) -> dict:
+    st = _scan_entry()
     st["user"] = user
     st["config"] = {"code_https_port": settings.code_https_port, "projects_dir": str(settings.projects_dir),
                     "runtime": settings.runtime, "auto_continue": settings.auto_continue,
@@ -695,7 +712,9 @@ def build_state(user: str) -> dict:
     st["block"] = db.kv_get(usage.KV_BLOCK)
     st["cost"] = db.kv_get(cost.KV_COST)
     st["health"] = health.snapshot()
-    st["nodes"] = db.kv_get(health.KV_NODES)
+    hub_rows = _hub().rows()                              # the registry: empty on a board with no paired node (a read, nothing more)
+    st["nodes_enabled"] = bool(hub_rows)                  # issue #138: true when the registry is not empty
+    st["nodes"] = (_hub().summary_rows() if hub_rows else None) or db.kv_get(health.KV_NODES)     # today's shape, built from the hub read model; the v0.4 record is the fallback
     st["backup"] = health.backup_status()
     st["node_name"] = settings.node_name or st["health"]["host"]
     st["node"] = nodes.card(db, health_snap=st["health"], sessions=None if st.get("tmux_down") else _state_sessions(st["projects"]), full=False)    # the node card without agents and accounts (issue #133)
@@ -4435,6 +4454,21 @@ def api_node():
     return nodes.card(db, health_snap=health.snapshot(consumer="node"), sessions=None if down else sessions.values())
 
 
+@app.get("/api/node/state")
+def api_node_state(request: Request):
+    """The trimmed, read-only state a paired node reads (issue #138; app/node_state.py has the fields): projects and repos, sessions, tasks, the needs-you
+    counts, the usage windows, the lanes and the agents with a login problem. No prompt, result, transcript, account label or path. Built from the scan the
+    page poll uses (the 2 s scan cache). A weak ETag over the body without `node.now`; `If-None-Match` that matches answers 304 with no body (and the node's
+    time in X-CCBoard-Now). A paired node's token with scope `read` opens it; so does a signed-in person."""
+    body = node_state.build(db, _scan_entry())
+    tag = node_state.etag(body)
+    now = body["node"]["now"]
+    headers = {"ETag": tag, "Cache-Control": "no-cache", "X-CCBoard-Now": now, "X-Content-Type-Options": "nosniff"}
+    if node_state.matches(request.headers.get("if-none-match"), tag):
+        return Response(status_code=304, headers=headers)
+    return Response(node_state.encode(body), media_type="application/json", headers=headers)
+
+
 @app.get("/api/nodes/discover")
 def api_nodes_discover(request: Request, refresh: int = 0):
     """The devices of the tailnet that may be ccboard nodes, with the probe result of each (issue #134): {at, tailscale: {ok, reason, variant}, rows}.
@@ -4597,8 +4631,32 @@ def api_nodes(request: Request):
     A board with no pair answers empty lists and starts nothing."""
     _node_manager(request)
     rows = nodes.peers(db=db)
-    return JSONResponse({"nodes": [r for r in rows if r.get("direction") != "in"], "pairs": [r for r in rows if r.get("direction") == "in"], "at": db_now()},
+    out = [r for r in rows if r.get("direction") != "in"]
+    if out:                                                  # issue #138: each row also carries what the hub last read from that node (status, age, counts)
+        live = _hub().list_rows()
+        out = [{**r, **live[r["peer_id"]]} if r.get("peer_id") in live else r for r in out]
+    return JSONResponse({"nodes": out, "pairs": [r for r in rows if r.get("direction") == "in"], "at": db_now()},
                         headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/nodes/state")
+def api_nodes_state(request: Request, handle: str | None = None):
+    """The hub read model (issue #138): every paired node's card and last good state with its status, the hub's own `polled_at` and `last_ok_at`, `age_s`,
+    `skew_ms` and `error_kind` -- {nodes: [record], at}. `?handle=` keeps one node (400 for text that is not a handle, 404 for an unknown one). A weak ETag
+    over the records without `age_s`; a matching `If-None-Match` answers 304 (a client that reuses its copy works out the age from `last_ok_at`). The page
+    calls this on the board's own origin; the board, not the browser, talks to the nodes. A board with no paired node answers an empty list."""
+    _node_manager(request)
+    if handle is not None and not nodes.valid_handle(handle):
+        raise projects.BadRequest("not a node handle")
+    hub = _hub()
+    recs = hub.records(handle)
+    if handle is not None and not recs:
+        raise projects.NotFound("unknown node")
+    tag = hub.etag(recs)
+    headers = {"ETag": tag, "Cache-Control": "no-cache"}
+    if node_state.matches(request.headers.get("if-none-match"), tag):
+        return Response(status_code=304, headers=headers)
+    return JSONResponse({"nodes": recs, "at": db_now()}, headers=headers)
 
 
 @app.get("/api/nodes/pairs")
