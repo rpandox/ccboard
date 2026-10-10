@@ -308,7 +308,8 @@ class NodeHub:
         pool = self._pool
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=True)
-        deadline = time.monotonic() + STOP_WAIT                 # a poll in flight ends by its own timeout; wait for it, so nothing reads the database after stop()
+        own = threading.current_thread().name.startswith("node-hub")      # called from a worker or the scheduler: waiting for itself would only burn STOP_WAIT
+        deadline = time.monotonic() + (0.0 if own else STOP_WAIT)  # a poll in flight ends by its own timeout; wait for it, so nothing reads the database after stop()
         while time.monotonic() < deadline:
             with self._lock:
                 if not self._inflight:

@@ -353,12 +353,19 @@ def _meta_obj(raw):
 
 
 class DB:
+    CLOSE_WAIT = 10.0                  # seconds close() waits for a query in progress
+
     def close(self) -> None:
         """Close the connection under the lock: a thread in the middle of a query finishes first, and a later call raises
         sqlite3.ProgrammingError. Closing while another thread uses the connection crashes the process (seen: a node hub
         worker reading kv while a test closed the database)."""
-        with self.lock:
+        if not self.lock.acquire(timeout=self.CLOSE_WAIT):
+            log.warning("the database was not closed: a query held the lock for %s s", self.CLOSE_WAIT)      # leaking the connection beats closing it under a running query
+            return
+        try:
             self.conn.close()
+        finally:
+            self.lock.release()
 
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)

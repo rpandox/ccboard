@@ -919,9 +919,9 @@ def own_claim() -> dict:
 
 # ---------------------------------------------------------------- the audit
 
-_TOKENISH = re.compile(r"cc(?:bnode|bmcp)_[A-Za-z0-9_-]{6,}")
+_TOKENISH = re.compile(r"cc(?:bnode|bmcp)_[A-Za-z0-9_-]{6,200}")
 _CODEISH = re.compile(r"\b[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}\b")
-_HEXISH = re.compile(r"\b[0-9a-fA-F]{40,}\b")
+_HEXISH = re.compile(r"\b[0-9a-fA-F]{40,512}\b")
 _last_prune_gap = 3600.0
 
 
@@ -929,7 +929,7 @@ def _scrub(v, n: int) -> str | None:
     """A short printable text with anything that looks like a token, a pairing code or a digest replaced. Defence in depth: callers pass no secret."""
     if v is None:
         return None
-    t = "".join(c for c in str(v) if c.isprintable()).strip()
+    t = "".join(c for c in str(v)[:max(4 * n, 256)] if c.isprintable()).strip()       # cut BEFORE the patterns run: a long hex run with a late mismatch backtracks
     t = _HEXISH.sub("[digest]", _CODEISH.sub("[code]", _TOKENISH.sub("[token]", t)))
     return t[:n] or None
 

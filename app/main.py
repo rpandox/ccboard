@@ -220,7 +220,7 @@ async def lifespan(app: FastAPI):
     indexer.stop.set()
     sched_worker.stop.set()
     nodes.registry_listener = None
-    hub.stop()
+    await asyncio.to_thread(hub.stop)                     # it waits (6 s at most) for the polls in flight: not on the event loop, which a poll through this app may need
 
 
 app = FastAPI(title="ccboard", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)

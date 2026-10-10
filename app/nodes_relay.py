@@ -246,6 +246,7 @@ class Row:
     peer_exists: bool = False           # the peer path is a route that already exists (card, state); no new wrapper is made
     target: Callable[[dict], str] = field(default=lambda p: "", compare=False)
     shape: Callable | None = field(default=None, compare=False)   # rebuilds the peer's answer on the hub from a whitelist (raises Bad)
+    answer_max: int = 64 * 1024                                   # bytes of the peer's answer the hub accepts for this row (nodes.RESP_MAX is the transport's limit)
 
     @cached_property
     def params(self) -> tuple[str, ...]:
@@ -321,21 +322,21 @@ def _shape_pane(body, reg):
     from . import nodes_hub
     if not isinstance(body, dict) or not isinstance(body.get("lines"), list):
         raise nodes_hub.Bad("not a screen tail")
-    lines = screen_lines("\n".join(x for x in body["lines"][-PANE_LINES:] if isinstance(x, str)), PANE_LINES)      # the hub redacts again: the peer's own pass is not trusted
+    lines = screen_lines_from(body["lines"], PANE_LINES)                  # the caps first, then the hub redacts again: the peer's own pass is not trusted
     return {"name": nodes_hub.node_state.clean(body.get("name"), 120), "lines": lines, "cap": PANE_LINES}
 
 
 RELAY: tuple[Row, ...] = (
     Row("card", "GET", "/api/nodes/{handle}/card", "GET", "/api/node", "read", NoFields, READ, "read_card", human_only=True, peer_exists=True,
         target=lambda p: "card", shape=_shape_card),
-    Row("state", "GET", "/api/nodes/{handle}/state", "GET", "/api/node/state", "read", NoFields, READ, "read_state", human_only=True, peer_exists=True,
+    Row("state", "GET", "/api/nodes/{handle}/state", "GET", "/api/node/state", "read", NoFields, READ, "read_state", human_only=True, peer_exists=True, answer_max=128 * 1024,
         target=lambda p: "state", shape=_shape_state),
-    Row("task", "GET", "/api/nodes/{handle}/tasks/{tid}", "GET", "/api/node/tasks/{tid}", "read", NoFields, READ, "read_task", human_only=True,
+    Row("task", "GET", "/api/nodes/{handle}/tasks/{tid}", "GET", "/api/node/tasks/{tid}", "read", NoFields, READ, "read_task", human_only=True, answer_max=16 * 1024,
         target=lambda p: f"task {p.get('tid')}", shape=_shape_task),
     # Screen text is session content, not names and counts: the pane row needs `sessions`, never `read`.
     Row("pane", "GET", "/api/nodes/{handle}/sessions/{name}/pane", "GET", "/api/node/sessions/{name}/pane", "sessions", PaneQuery, READ, "read_pane", human_only=True,
         target=lambda p: f"session {p.get('name')}", shape=_shape_pane),
-    Row("agents", "GET", "/api/nodes/{handle}/agents", "GET", "/api/node/agents", "read", NoFields, READ, "read_agents", human_only=True,
+    Row("agents", "GET", "/api/nodes/{handle}/agents", "GET", "/api/node/agents", "read", NoFields, READ, "read_agents", human_only=True, answer_max=256 * 1024,
         target=lambda p: "agents", shape=_shape_agents),
 )
 # Every row above is human only: the hub relay routes take a signed-in allowed person with X-CCBoard and nothing else. The local hook token is held by every
@@ -517,7 +518,7 @@ def _span(s) -> str:
 def _cut(v, n: int = 160) -> str:
     from . import node_state
     t = node_state.clean(v, n) or ""
-    return nodes._scrub(t, n) or ""
+    return redact(nodes._scrub(t, n) or "", known_secrets()) if t else ""
 
 
 def _map_reply(r, row: Row, reg: dict) -> dict:
@@ -599,11 +600,13 @@ def relay(handle, row: Row, params: dict, body, request, *, db=None, hub=None) -
                                                         acting_user=user, timeout=RELAY_TIMEOUT)
         except nodes.PeerError as e:
             raise _map_peer_error(e, reg) from None
+        if len(reply.body) > row.answer_max:                       # cut by size before the answer is read any further
+            raise RelayError(502, "too_large", f"{name} answered more than this row ever needs; nothing was shown", kind="failed")
         data = _map_reply(reply, row, reg)
         if row.shape is not None:
             from . import nodes_hub
             try:
-                data = row.shape(data, reg)
+                data = redact_tree(row.shape(data, reg))              # every free-text field of the peer's answer goes through the redaction
             except nodes_hub.Bad as e:
                 raise RelayError(502, "wrong_node" if "another node" in str(e) else "bad_answer",
                                  f"{name} answered with something this board will not show", kind="failed") from None
@@ -731,43 +734,156 @@ _CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u206
 
 
 REDACTED = "[redacted]"
-_PEM = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)")
-_PEM_TAIL = re.compile(r"\A[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----")           # the tail of a screen can start inside a key
-_OWN_TOKEN = re.compile(r"cc(?:bnode|bmcp)_[A-Za-z0-9_-]{6,}")
+MARGIN = 128                                                   # a secret that straddles a line's 400th character is redacted whole before the final cut
+LINE_IN = PANE_LINE_MAX + MARGIN
+REDACT_MAX = PANE_LINES * (LINE_IN + 1)                        # the most text any regex of this module is given, whoever asks (the pane's 40 lines)
+# Every quantifier below is bounded and no two unbounded ones overlap, so no input can make a pattern backtrack more than a few hundred steps per start
+# position; and no peer text reaches one before it was cut to PANE_LINES lines of LINE_IN characters (redact() cuts again, whoever calls it).
+_PEM = re.compile(r"-----BEGIN [A-Z0-9 ]{1,40}-----[\s\S]*?(?:-----END [A-Z0-9 ]{1,40}-----|\Z)")
+_PEM_TAIL = re.compile(r"\A[\s\S]*?-----END [A-Z0-9 ]{1,40}-----")           # the tail of a screen can start inside a key block
+_OWN_TOKEN = re.compile(r"cc(?:bnode|bmcp)_[A-Za-z0-9_-]{6,200}")
+# Shapes of a token that is one word: found on a line, and again on the lines joined (a token tmux wrapped over two lines).
+_TOKEN_SHAPES = (
+    _OWN_TOKEN,
+    re.compile(r"\bsk-ant-[A-Za-z0-9_-]{8,200}"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{20,200}"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,200}"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,200}"),
+    re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+    re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,200}"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{35}"),
+    re.compile(r"\b[spr]k_(?:live|test)_[0-9A-Za-z]{10,100}"),
+    re.compile(r"\bwhsec_[0-9A-Za-z]{10,100}"),
+    re.compile(r"\bnpm_[A-Za-z0-9]{30,100}"),
+    re.compile(r"\bglpat-[A-Za-z0-9_-]{16,100}"),
+    re.compile(r"\bhf_[A-Za-z0-9]{30,100}"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{6,200}\.[A-Za-z0-9_-]{6,200}\.[A-Za-z0-9_-]{6,200}"),
+)
+# The same shapes without their word boundaries, for the lines joined end to end (a token that starts a line has a letter right before it there).
+_WRAP_SHAPES = tuple(re.compile(rx.pattern.replace(r"\b", "")) for rx in _TOKEN_SHAPES)
+_NAME = r"[A-Za-z0-9_.-]{0,40}"
+_KEYWORD = (r"(?:password|passwd|passphrase|pwd|token|secret|credential|api[_-]?key|apikey|access[_-]?key|private[_-]?key|auth[_-]?key"
+            r"|(?:(?<=[_.-])|\b)key(?![A-Za-z]))")
+_VALUE = r"(\"[^\"\n]{0,300}\"|'[^'\n]{0,300}'|[^\s\"',;]{1,300})"
+_FLAG = (r"(?<![A-Za-z0-9])(--?[a-z0-9-]{0,30}(?:token|password|passwd|secret|api-?key|apikey|credential|auth-?key)[a-z0-9-]{0,30})([ \t]{1,8}|=)"
+         r"((?![-=:])\"[^\"\n]{0,300}\"|(?![-=:])'[^'\n]{0,300}'|(?![-=:])[^\s\"']{1,300})")
+
+
+def _basic(m):
+    """`Basic <base64>` only when the word after it looks like base64 and not like a plain English word ("Basic configuration")."""
+    v = m.group(1)
+    if any(c.isdigit() or c in "+/=" for c in v) or any(c.isupper() for c in v[1:]):
+        return "Basic " + REDACTED
+    return m.group(0)
+
+
+_KW = re.compile(_KEYWORD, re.I)
+_NAME_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
+_AFTER = re.compile(r"([\"']?[ \t]{0,8}[=:][ \t]{0,8})(\"[^\"\n]{0,300}\"|'[^'\n]{0,300}'|[^\s\"',;]{1,300})")
+
+
+def _redact_kv(t: str) -> str:
+    """`NAME=VALUE`, `export NAME=VALUE`, `NAME: VALUE`, `"name": "value"` for a NAME that holds password, token, secret, credential or key as a word of its own.
+    A scan, not one big pattern: find the word, widen the name by at most 40 characters each way, then read the value; every step is bounded, so it is linear."""
+    out, pos = [], 0
+    for m in _KW.finditer(t):
+        if m.start() < pos:
+            continue
+        b, limit = m.end(), min(len(t), m.end() + 40)
+        while b < limit and t[b] in _NAME_CHARS:
+            b += 1
+        after = _AFTER.match(t, b)
+        if after is None:
+            continue
+        out.append(t[pos:b])
+        out.append(after.group(1))
+        out.append(REDACTED)
+        pos = after.end()
+    if not out:
+        return t
+    out.append(t[pos:])
+    return "".join(out)
+
+
+class _KVRule:
+    """Stands in for a compiled pattern in _SHAPES: `.sub(repl, text)` runs the scan; `.pattern` names the words the hint check looks for."""
+    pattern = "password token secret credential key (the NAME=VALUE scan)"
+
+    @staticmethod
+    def sub(repl, t):
+        return _redact_kv(t)
+
+
+_KV = _KVRule()
+_URL_USER = re.compile(r"([A-Za-z][A-Za-z0-9+.-]{1,20}://)[^\s/@?#]{1,200}@")
 _SHAPES = (
-    (re.compile(r"(?im)\bauthorization\s*[:=][^\n]*"), "Authorization: " + REDACTED),
-    (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{12,}"), "Bearer " + REDACTED),
-    (re.compile(r"\bsk-ant-[A-Za-z0-9_-]{8,}"), REDACTED),
-    (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"), REDACTED),
-    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"), REDACTED),
-    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"), REDACTED),
-    (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), REDACTED),
-    (re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"), REDACTED),
-    (re.compile(r"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}"), REDACTED),
-    (re.compile(r"\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b"), REDACTED),
-    (re.compile(r"(?i)\b([A-Za-z0-9_.-]*(?:password|passwd|pwd|token|secret|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credentials?)[A-Za-z0-9_.-]*)([\"']?\s*[=:]\s*)"
-                r"(\"[^\"\n]*\"|'[^'\n]*'|[^\s\"',;]+)"), lambda m: m.group(1) + m.group(2) + REDACTED),
-    (re.compile(r"([=:]\s*)[A-Za-z0-9+_-]{32,}={0,2}"), lambda m: m.group(1) + REDACTED),
+    (re.compile(r"(?im)\b(?:proxy-)?authorization[ \t]{0,4}[:=][^\n]*"), "Authorization: " + REDACTED),
+    (re.compile(r"(?im)\b(?:set-)?cookie[ \t]{0,4}:[^\n]*"), "Cookie: " + REDACTED),
+    (re.compile(r"(?im)\bx-[a-z0-9-]{0,40}(?:key|token|secret|auth|password|credential|signature)[a-z0-9-]{0,40}[ \t]{0,4}:[^\n]*"), "X-header: " + REDACTED),
+    (re.compile(r"(?i)\bbearer[ \t]{1,4}[A-Za-z0-9._~+/=-]{12,300}"), "Bearer " + REDACTED),
+    (re.compile(r"(?i)\bbasic[ \t]{1,4}([A-Za-z0-9+/]{8,200}={0,2})"), _basic),
+    (_URL_USER, lambda m: m.group(1) + REDACTED + "@"),       # user:password@host, token@host
+    *((rx, REDACTED) for rx in _TOKEN_SHAPES[1:]),
+    (re.compile(r"\b[A-Za-z0-9_-]{16,200}\.[A-Za-z0-9_-]{16,200}\.[A-Za-z0-9_-]{16,200}\b"), REDACTED),
+    (re.compile(r"(?i)" + _FLAG), lambda m: m.group(1) + m.group(2) + REDACTED),
+    (_KV, None),
+    (re.compile(r"([=:][ \t]{0,8})[A-Za-z0-9+_-]{32,400}={0,2}"), lambda m: m.group(1) + REDACTED),
 )
 
 
-def redact(text: str, known=()) -> str:
-    """A screen's text with secrets replaced by `[redacted]`: key blocks, the values in `known` (this process's own tokens, compared by value and never logged),
-    this board's node and device tokens, and the common shapes (Anthropic, OpenAI-style, GitHub, AWS, Slack keys, `Authorization:` and `Bearer` values, JWTs,
-    `password=`, `token:`, `secret=`, `api_key=` and their values, 32 or more token characters after `=` or `:`). Best effort, not a guarantee: a secret in a shape
-    that is not here goes through, which is why the pane row needs the `sessions` scope and a signed-in person, and why `read` never shows screen text."""
-    t = _PEM_TAIL.sub(REDACTED, _PEM.sub(REDACTED, str(text or "")))
+_SECRET_WORDS = ("pass", "pwd", "token", "secret", "credential", "key")
+# A pattern runs only when the (lower-case) text holds one of its words: most screens never reach the heavy ones.
+_HINT: dict = {}
+for _rx, _ in _SHAPES:
+    _p = _rx.pattern
+    _HINT[_rx] = (("authorization",) if "authorization" in _p else ("cookie",) if "cookie" in _p else ("x-",) if _p.startswith("(?im)\\bx-") else ("bearer",) if "bearer" in _p
+                  else ("basic",) if "basic" in _p else ("://",) if "://" in _p else (".",) if _p.startswith("\\b[A-Za-z0-9_-]{16,200}\\.") else ("=", ":") if _p.startswith("([=:]")
+                  else ("-",) if "(?<![A-Za-z0-9])(--?" in _p else _SECRET_WORDS if "password" in _p else None)
+
+
+class _Secret(str):
+    """A secret value this process knows, as a string that never shows itself in a repr, a traceback or a log line."""
+
+    def __repr__(self) -> str:
+        return "<secret>"
+
+
+def redact(text: str, known=(), strict: bool = True) -> str:
+    """A screen's text with secrets replaced by `[redacted]`. The input is cut to REDACT_MAX characters first, so no regex ever sees more. In order: key blocks of
+    any label, the values in `known` (this process's own tokens, compared by value with str.replace, never logged), this board's node and device tokens, URL
+    credentials (`scheme://user:password@host`, connection strings), `Authorization`, `Cookie`, `Set-Cookie` and `X-...-Key` header lines, `Bearer` and `Basic`
+    values, the common key shapes (Anthropic, OpenAI-style, GitHub, AWS, Google, Stripe, npm, GitLab, Hugging Face, Slack, JWT), `--token VALUE` flags, the
+    value after a name that holds password, token, secret, credential or key (`NAME=VALUE`, `export NAME=VALUE`, `NAME: VALUE`, quoted or not), and 32 or more
+    key characters after `=` or `:`. Bare git hashes stay. `strict=False` keeps only key blocks, the known values, token shapes and URL credentials (for help
+    text). Best effort, not a guarantee: a secret in a shape that is not here goes through, which is why the pane row needs the `sessions` scope and a signed-in
+    person, and why `read` never shows screen text."""
+    t = str(text or "")[:REDACT_MAX]
+    if strict:
+        t = _PEM_TAIL.sub(REDACTED, _PEM.sub(REDACTED, t))
+    else:
+        t = _PEM.sub(REDACTED, t)
     for k in known:
         if isinstance(k, str) and len(k) >= 8:
             t = t.replace(k, REDACTED)
+    if not strict:
+        t = _URL_USER.sub(lambda m: m.group(1) + REDACTED + "@", t)
+        for rx in _TOKEN_SHAPES:
+            t = rx.sub(REDACTED, t)
+        return t
     t = _OWN_TOKEN.sub(REDACTED, t)
+    low = t.lower()
     for rx, repl in _SHAPES:
+        hint = _HINT.get(rx)
+        if hint is not None and not any(h in low for h in hint):
+            continue
         t = rx.sub(repl, t)
+        low = t.lower() if hint is not None else low
     return t
 
 
 def known_secrets() -> list[str]:
-    """The secret values this process holds that could land on a screen: the hook token and the hub token. Read from memory, never logged or returned."""
+    """The secret values this process holds that could land on a screen: the hook token and the hub token. Read from memory, never logged, returned in a
+    repr or put in an exception (they are `_Secret`s)."""
     out: list[str] = []
     try:
         from . import hooks
@@ -779,15 +895,95 @@ def known_secrets() -> list[str]:
         out.append(settings.hub_token or "")
     except Exception:
         pass
-    return [k for k in out if k]
+    return [_Secret(k) for k in out if k]
+
+
+def redact_tree(v, known=None, depth: int = 6, loose: tuple = ("help",)):
+    """A peer's answer after the hub rebuilt it: every string in it goes through redact(), so a secret a person typed into a task title or a branch name does not
+    reach the browser. Values under a key in `loose` (launcher help text, which is prose) get the lighter pass."""
+    k = known_secrets() if known is None else known
+    if isinstance(v, str):
+        return redact(v, k) if len(v) >= 6 else v
+    if depth <= 0:
+        return v
+    if isinstance(v, list):
+        return [redact_tree(x, k, depth - 1, loose) for x in v]
+    if isinstance(v, dict):
+        return {key: (redact(x, k, strict=False) if key in loose and isinstance(x, str) else redact_tree(x, k, depth - 1, loose)) for key, x in v.items()}
+    return v
+
+
+def _hide_wrapped(lines: list[str], known) -> list[str]:
+    """A secret that tmux wrapped over two or more lines: look for the known values and the token shapes in the lines joined end to end, and hide every part of a
+    match that crosses a line break (each fragment becomes `[redacted]`). tmux wraps at the pane's width, so only a line as long as the longest line of the screen
+    is joined to the next one; every other break is a real one and no match crosses it."""
+    if len(lines) < 2:
+        return lines
+    width = max(len(x) for x in lines)
+    parts, starts, bounds, pos = [], [], [], 0
+    for i, x in enumerate(lines):
+        starts.append(pos)
+        parts.append(x)
+        pos += len(x)
+        if i < len(lines) - 1:
+            if len(x) >= width:
+                bounds.append(pos)                      # a wrapped line: the next one continues it
+            else:
+                parts.append("\x00")                    # a real line break: nothing matches across it
+                pos += 1
+    if not bounds:
+        return lines
+    joined = "".join(parts)
+    spans: list[tuple[int, int]] = []
+    for k in known:
+        if isinstance(k, str) and len(k) >= 8:
+            i = joined.find(k)
+            n = 0
+            while i >= 0 and n < 20:
+                spans.append((i, i + len(k)))
+                i, n = joined.find(k, i + 1), n + 1
+    for rx in _WRAP_SHAPES:
+        spans.extend(m.span() for m in rx.finditer(joined))
+    hidden = bytearray(len(joined))
+    for a, b in spans:
+        if any(a < x < b for x in bounds):
+            hidden[a:b] = b"\x01" * (b - a)
+    if not any(hidden):
+        return lines
+    out = []
+    for x, off in zip(lines, starts):
+        seg, buf, run = hidden[off:off + len(x)], [], False
+        for ch, h in zip(x, seg):
+            if h:
+                if not run:
+                    buf.append(REDACTED)
+                run = True
+            else:
+                run = False
+                buf.append(ch)
+        out.append("".join(buf))
+    return out
+
+
+def _clean_screen_line(x: str) -> str:
+    x = str(x)[:LINE_IN].replace("\t", "    ")
+    return "".join(c for c in x if unicodedata.category(c) not in ("Cc", "Cf"))[:LINE_IN]      # control, format (zero-width, soft hyphen, bidi) characters
+
+
+def screen_lines_from(lines, n: int = PANE_LINES) -> list[str]:
+    """Screen lines as a peer may send them. The caps come FIRST (the last n <= 40 lines, each cut to LINE_IN characters), then the invisible characters go (so a
+    secret cannot hide behind one), then the redaction, then the wrapped-secret pass, then the final cut of each line to PANE_LINE_MAX."""
+    n = max(1, min(int(n), PANE_LINES))
+    keep = [_clean_screen_line(x) for x in list(lines)[-n:] if isinstance(x, str)]
+    known = known_secrets()
+    keep = _hide_wrapped(keep, known)                   # first: the per-line pass would redact one fragment and leave the rest of a wrapped token looking like a word
+    return [clean_line(x) for x in redact("\n".join(keep), known).split("\n")][-n:]
 
 
 def screen_lines(text: str, n: int) -> list[str]:
-    """The last `n` lines of a screen as a peer may send them: control and invisible characters out first (so a secret cannot hide behind one), then the
-    redaction over the whole text (a key block spans lines), then the tail, each line cut to PANE_LINE_MAX."""
-    t = str(text or "").replace("\t", "    ").replace("\u2028", "\n").replace("\u2029", "\n")
-    t = "".join(c for c in t if c == "\n" or unicodedata.category(c) not in ("Cc", "Cf"))      # control, format (zero-width, soft hyphen, bidi) characters
-    return [clean_line(x) for x in tail_lines(redact(t, known_secrets()), n)]
+    """The last `n` lines of a captured screen: tail_lines first (no regex), then screen_lines_from."""
+    t = str(text or "")[-262144:].replace(chr(0x2028), "\n").replace(chr(0x2029), "\n")
+    return screen_lines_from(tail_lines(t, n), n)
 
 
 def tail_lines(text: str, n: int) -> list[str]:
