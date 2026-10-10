@@ -10,7 +10,10 @@
 
 Kinds: identity (the Tailscale login on CCBOARD_ALLOWED_USERS), identity+csrf (that and X-CCBoard: 1), hook-token (the 0600
 <data dir>/hook-token only), identity+device-token (/mcp, issue #13), hub-token|identity (/api/node/summary), none (/api/node/hello,
-issue #133: exactly {app, api, node_id}, rate limited; nothing else under /api/node answers without auth). Besides these, the
+issue #133: exactly {app, api, node_id}, rate limited; nothing else under /api/node answers without auth), pair-code (POST /api/nodes/pair, issue #135: no
+identity, but X-CCBoard, no Origin, no disallowed identity header, a code; POST /api/nodes/pair/confirm, the callback that proves who is redeeming), node-token (POST /api/node/rotate and /api/node/unpair: a paired node's token,
+any scope; an owner's identity reaches a handler that refuses it). A paired node's token also opens the routes of nodes.NODE_ROUTES and nothing else
+(tests/test_nodes_auth.py walks every route). Besides these, the
 hook token also opens every other /api/* route without identity or X-CCBoard (local automation; accepted, see the report, F-A2).
 No route answers without auth except /healthz, which is answered by the middleware itself and is not in app.routes, and /api/node/hello.
 Temp dirs and fakes only (tests/conftest.py); nothing here starts tmux, git over the network, claude or codex.
@@ -147,6 +150,19 @@ EXPECTED = {
     ("GET", "/api/node/summary"): "hub-token|identity",
     ("GET", "/api/node/hello"): "none",         # the one route that answers with no identity (issue #133): three fixed keys, 30 per minute per source
     ("GET", "/api/node"): "identity",            # the node card; a paired node's token will open it too (issue #135)
+    ("POST", "/api/node/rotate"): "node-token",     # a paired node rotating its own token (issue #135); the owner's identity reaches a handler that says it takes a node token
+    ("POST", "/api/node/unpair"): "node-token",     # a paired node leaving (issue #135)
+    ("GET", "/api/nodes"): "identity",              # the nodes this board calls and the pairs that call it (issue #135); never a token or a hash
+    ("POST", "/api/nodes"): "identity+csrf",        # pair with another board: its address and its code
+    ("GET", "/api/nodes/pairs"): "identity",
+    ("GET", "/api/nodes/audit"): "identity",
+    ("POST", "/api/nodes/pair-code"): "identity+csrf",
+    ("DELETE", "/api/nodes/pair-code"): "identity+csrf",
+    ("POST", "/api/nodes/pair"): "pair-code",       # the other board's call with a code: no identity (a tagged board has none); X-CCBoard, no Origin, an allowed-or-absent identity, a body under 16 KB, 20 a minute per source
+    ("POST", "/api/nodes/pair/confirm"): "pair-code",   # the callback of the board being called: no identity; X-CCBoard, no Origin, 1 KB, 30 a minute per source; answers {node_id} only while this board's own add_node is in flight, else 404
+    ("POST", "/api/nodes/{peer}/rotate"): "identity+csrf",
+    ("POST", "/api/nodes/{peer}/remove-preview"): "identity+csrf",   # what removing a pair would also touch (the other incoming pairs of the same node id); changes nothing
+    ("DELETE", "/api/nodes/{peer}"): "identity+csrf",
     ("GET", "/api/nodes/discover"): "identity",   # the tailnet devices that may be nodes (issue #134); refresh=1 also needs X-CCBoard (it makes the board send requests), checked in the handler
     ("GET", "/api/search"): "identity",
     ("POST", "/api/cost/refresh"): "identity+csrf",
@@ -167,7 +183,7 @@ EXPECTED = {
 # Answered with no auth at all, by auth_middleware before any route (not in app.routes): the compose and Dockerfile healthcheck over loopback.
 NO_AUTH = {("GET", "/healthz"): "a constant 'ok' for the container healthcheck; reads nothing, changes nothing"}
 FILL = {"agent": "claude", "decision": "allow", "jid": "1", "key": "k", "n:int": "1", "name": "p--r--s", "pid": "1", "project": "p",
-        "repo": "r", "rid": "1", "sid": UUID, "tid": "1", "token_id": "t"}
+        "repo": "r", "rid": "1", "sid": UUID, "tid": "1", "token_id": "t", "peer": "p_0123456789abcdef"}
 PROBE = {"/static/": "/static/core.js", "/tty/": "/tty/"}
 
 
@@ -205,7 +221,7 @@ def test_route_table_is_complete():
 def test_kinds_follow_the_method():
     """A non-GET route a person calls must be identity+csrf; only the token routes are exempt, and each is named."""
     for (method, path), kind in EXPECTED.items():
-        if kind in ("hook-token", "identity+device-token", "hub-token|identity", "none"):
+        if kind in ("hook-token", "identity+device-token", "hub-token|identity", "none", "pair-code", "node-token"):
             continue
         assert kind == ("identity" if method == "GET" else "identity+csrf"), (method, path, kind)
 
@@ -224,6 +240,9 @@ def test_every_route_refuses_a_request_without_identity(lite_client, method, pat
         return
     if kind == "none":
         assert r.status_code == 200 and set(r.json()) == {"app", "api", "node_id"}, (method, path)
+        return
+    if kind == "pair-code":                          # no identity is asked for, but the request still needs X-CCBoard (and must carry no Origin)
+        assert r.status_code == 403 and r.json()["error"] == NO_CSRF, (method, path)
         return
     assert r.status_code == 403, (method, path, r.status_code)
     want = "bad hook token" if kind == "hook-token" else NO_ID

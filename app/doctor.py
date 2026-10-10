@@ -855,6 +855,55 @@ def _c_nodes_tagged_self(db) -> Outcome:
     return _pass("this device belongs to a user, so a browser on it carries an identity")
 
 
+PAIR_UNUSED_DAYS = 90        # a pair not used for this long is worth a look (issue #135)
+PAIR_TOKEN_DAYS = 180        # a pair token this old should be rotated
+
+
+def _c_nodes_pairs(db) -> Outcome:
+    """The pairs with other boards (issue #135), read only, from the same lists Settings > Nodes shows: a pair nobody has used for 90 days, a token older
+    than 180 days (since it was made or last rotated) and a pair marked needs_repair (the other board stopped taking the token). Each fix names the button.
+    A board with no pair skips; nothing is called, so an offline peer cannot make this slow."""
+    from . import nodes
+    try:
+        rows = nodes.peers(db=db)
+    except Exception as e:
+        return _warn(f"the paired nodes could not be read ({e.__class__.__name__})", fix("Check that the data directory is writable by the board"))
+    rows = [r for r in rows if not r.get("legacy")]
+    if not rows:
+        return _skip("no node is paired; pair one from Settings > Nodes when you want boards to work together")
+    unused, old, repair = [], [], []
+    for r in rows:
+        name = r.get("name") or r.get("peer_id") or "a node"
+        calls = r.get("direction") == "in"
+        if r.get("needs_repair"):
+            repair.append(name)
+        seen = _iso_age(r.get("last_seen") or r.get("created_at"))
+        if seen is not None and seen > PAIR_UNUSED_DAYS * 86400:
+            unused.append((name, calls))
+        # A pair that calls this board records when its token was rotated. A pair this board calls does not yet (the row keeps its first created_at), so
+        # its token's age is not judged until the row has a rotated_at key: otherwise Rotate token could never clear the warning.
+        known = calls or "rotated_at" in r
+        made = _iso_age(r.get("rotated_at") or r.get("created_at")) if known else None
+        if made is not None and made > PAIR_TOKEN_DAYS * 86400:
+            old.append((name, calls))
+    if repair:
+        return _warn(f"the other board no longer takes the saved token for {', '.join(repair)}",
+                     fix("Open Settings > Nodes, press Remove on that node, then Add node with a new pairing code from the other board"))
+    if old:
+        who = ", ".join(n for n, _ in old)
+        mine = [n for n, calls in old if not calls]
+        if mine:
+            return _warn(f"the token for {who} is over {PAIR_TOKEN_DAYS} days old",
+                         fix("Open Settings > Nodes and press Rotate token on that node (the old token keeps working for 60 seconds)"))
+        return _warn(f"the token {who} uses here is over {PAIR_TOKEN_DAYS} days old",
+                     fix("Ask the owner of that board to press Rotate token on its Settings > Nodes, or press Revoke under Who can control this node and pair again"))
+    if unused:
+        who = ", ".join(n for n, _ in unused)
+        return _warn(f"{who} {'has' if len(unused) == 1 else 'have'} not been used for {PAIR_UNUSED_DAYS} days",
+                     fix("If it is not needed, open Settings > Nodes and press Remove (a node this board calls) or Revoke (one that calls this board)"))
+    return _pass(f"{len(rows)} paired node{'s' if len(rows) != 1 else ''}, all used within {PAIR_UNUSED_DAYS} days and with a token under {PAIR_TOKEN_DAYS} days old")
+
+
 MCP_STALE_DAYS = 90         # a device token not used for this long is worth a look
 MCP_EXPIRY_WARN_DAYS = 7     # a device token that expires within this many days is about to stop working
 
@@ -1597,6 +1646,7 @@ register("node", "box", "This board as a node", _c_node)   # issue #133
 register("tailscale-status", "box", "Tailnet for finding nodes", _c_tailscale_status)   # issue #134
 register("nodes-port", "box", "Node probe ports", _c_nodes_port)   # issue #134
 register("nodes-tagged-self", "box", "This device is tagged", _c_nodes_tagged_self)   # issue #134
+register("nodes-pairs", "box", "Paired nodes", _c_nodes_pairs)   # issue #135
 register_provider("memory", MEM_GROUP, memory_checks)       # claude-mem (v0.5.10): one probe, seven checks
 register_provider("codex", CODEX_GROUP, codex_checks)       # the Codex adapter's checks (v0.5.11)
 if plat.IS_MACOS:                                            # issue #117: the macOS checks (app/doctor_macos.py) exist on a Mac only; a Linux board lists none

@@ -677,7 +677,7 @@ def test_index_dialogs_are_empty_in_the_html():
 DEMO_DIR = STATIC / "demo"
 DEMO_FILES = ("state.json", "skills.json", "search.json", "tree.json", "file.json", "series.json", "series_events.json", "usage_summary.json", "memory.json",
               "agents.json", "doctor.json", "memory_health.json", "memory_prefs.json", "memory_observations.json", "memory_summaries.json",
-              "memory_search.json", "memory_timeline.json", "memory_palace.json", "memory_states.json", "node.json", "nodes-discover.json")
+              "memory_search.json", "memory_timeline.json", "memory_palace.json", "memory_states.json", "node.json", "nodes-discover.json", "nodes.json")
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+--[A-Za-z0-9_-]+--[A-Za-z0-9_-]+$")
 KANBAN = ("backlog", "in_progress", "needs_you", "done", "pr", "merged")
 DEMO_HEADERS = {"Tailscale-User-Login": "alice@example.com"}

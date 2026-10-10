@@ -279,16 +279,15 @@ NodeView.hostOf = function (url) {
   return m ? m[1].slice(0, 80) : '';
 };
 
-/* Is this found row already one of `paired` ([{node_id?, url?}], the entries of state.nodes.value today)? A match by node id, else by the host of its address (the
-   row's answering url, else its tailnet name). A found row is listed once: as paired, or as found, never both. */
+/* Is this found row already one of `paired` ([{node_id?, url?}], the entries of state.nodes.value today)? A match by the host of its address (the row's answering
+   url, else its tailnet name). A node id alone decides nothing: it is only the word of the board at that address, and a paired board that claimed a found
+   device's id must not hide that device from the list. A found row is listed once: as paired, or as found, never both. */
 NodeView.isPaired = function (row, paired) {
   if (!row || !Array.isArray(paired) || !paired.length) return false;
-  const id = typeof row.node_id === 'string' && row.node_id ? row.node_id : null;
   const bare = (u) => NodeView.hostOf(u).toLowerCase().replace(/:\d+$/, '');
   const hosts = new Set([bare(row.url), bare(typeof row.dns_name === 'string' ? `https://${row.dns_name.replace(/\.$/, '')}` : '')].filter(Boolean));
   return paired.some((x) => {
     if (!x || typeof x !== 'object') return false;
-    if (id && x.node_id === id) return true;
     const h = bare(x.url);
     return !!h && hosts.has(h);
   });

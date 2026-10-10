@@ -2,6 +2,17 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.35 - 2026-10-10
+
+### Added
+- Pairing two boards: Settings > Nodes > Create pairing code makes a one-time code (10 minutes by default, five wrong tries burn it) with the scopes you choose (read and tasks by default; sessions and permissions only if you tick them). On the other board, Add node takes the address and the code. Each board then holds a token for the other (`ccbnode_...`; the receiving board keeps only its hash), shown in Paired nodes and in "Who can control this node", with Rotate (the old token works 60 more seconds) and Remove or Revoke (works even when the other board is offline).
+- A node token opens only the node routes on a closed list, each with the scope it needs; it is never accepted on the hook, MCP or any other route, and the hook token, the hub token and an MCP device token never open a node route. Every pairing step, refusal and call is in the Activity list, with no token or code in it.
+- The older read-only fleet (`CCBOARD_NODES` with the hub token) keeps working, and its rows are offered for pairing.
+- A pair is verified only when the address it names confirms that it is the board redeeming that code right now (`POST /api/nodes/pair/confirm`, answered only while that board's own Add node runs). The confirmation is bound to the address you typed: a board that forwards your pair request to the board whose code you hold gets "not verified", because that board's own address is not the one you typed. Someone holding a code who claims another node's id and address is paired as "not verified" too.
+- A node id is only the word of the board at its address, so removing a node, an unpair, replacing an older pair of the same node and the list of found devices all ask for the same address as well as the same id: a board that claims another node's id from its own address cuts none of that node's pairs. Nothing is left quiet either: when a node pairs again from another address, its older pair keeps working but is listed as "Another pair from ... says it is this node too", and Remove asks the board which other pairs use the same node id (from another address, or never confirmed) and shows them as boxes to tick and revoke with it, none ticked by default.
+
+Upgrade: nothing to do.
+
 ## v0.5.34 - 2026-10-09
 
 ### Fixed

@@ -23,7 +23,7 @@ const LAZY_BUNDLES = {
   termkit: { js: ['/static/termkit.js'], probe: () => typeof TermKit !== 'undefined' },
   memory: { js: ['/static/pages/memory.js'], css: [{ href: '/static/pages/memory.css', rank: 13 }], probe: () => typeof Memory !== 'undefined' },
   project: { needs: ['tree'], js: ['/static/pages/project.js'], probe: () => typeof projectPage !== 'undefined' },
-  settings: { js: ['/static/pages/doctor.js', '/static/pages/settings.js'], css: [{ href: '/static/pages/settings.css', rank: 10 }], probe: () => typeof settingsPage !== 'undefined' },
+  settings: { js: ['/static/nodes-pair.js', '/static/pages/doctor.js', '/static/pages/settings.js'], css: [{ href: '/static/pages/settings.css', rank: 10 }], probe: () => typeof settingsPage !== 'undefined' },
   usage: { js: ['/static/charts.js', '/static/pages/usage.js'], probe: () => typeof Usage !== 'undefined' },
   quad: { needs: ['termkit'], js: ['/static/pages/quad.js'], css: [{ href: '/static/pages/quad.css', rank: 12 }], probe: () => typeof Quad !== 'undefined' },
   onboarding: { needs: ['launcher'], js: ['/static/pages/onboarding.js'], css: [{ href: '/static/pages/onboarding.css', rank: 11 }], probe: () => typeof wizPage !== 'undefined' },

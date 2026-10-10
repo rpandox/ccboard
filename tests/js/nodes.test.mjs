@@ -39,6 +39,15 @@ test('nodes.js: no innerHTML, no inline style, no cssText, no storage, no networ
   }
 });
 
+test('the pairing half is not in the first-paint set: nodes-pair.js is in no index.html tag and loads with the settings bundle, right before pages/settings.js', () => {
+  const html = fs.readFileSync(path.join(STATIC, 'index.html'), 'utf8');
+  assert.ok(!html.includes('nodes-pair.js'), 'index.html does not load nodes-pair.js');
+  const lazy = fs.readFileSync(path.join(STATIC, 'lazy.js'), 'utf8');
+  assert.match(lazy, /settings: \{ js: \['\/static\/nodes-pair\.js', '\/static\/pages\/doctor\.js', '\/static\/pages\/settings\.js'\]/);
+  const eager = fs.readFileSync(path.join(STATIC, 'nodes.js'), 'utf8');
+  for (const moved of ['NodeView.SCOPES', 'NodeView.peerRow', 'NodeView.auditWord', 'NodeView.errField']) assert.ok(!eager.includes(moved), `${moved} lives in nodes-pair.js`);
+});
+
 // ---------------------------------------------------------------- the grammar
 
 test('handle: [a-z0-9][a-z0-9-]{0,30}, and local is reserved', () => {
@@ -430,13 +439,14 @@ test('NodeView.osName / owner / onlineWord / shortId / hostOf', () => {
   assert.deepEqual(run('["https://a.example.ts.net:8443/x","http://100.64.0.1","javascript:alert(1)","https://u@evil.test","https://","",null].map((u) => NodeView.hostOf(u))'), ['a.example.ts.net:8443', '100.64.0.1', '', '', '', '', '']);
 });
 
-test('NodeView.isPaired: by node id, else by host (port ignored); never by a name or a different host', () => {
+test('NodeView.isPaired: by host (port ignored); never by a name, a different host or a node id alone', () => {
   const w = makeWorld();
   w.ctx.__row = rowFx();
   const paired = (list) => w.run(`NodeView.isPaired(__row, ${JSON.stringify(list)})`);
   assert.equal(paired([{ url: 'https://node-a.example.ts.net:443' }]), true, 'same host, another port');
   assert.equal(paired([{ url: 'https://NODE-A.example.ts.net' }]), true, 'case ignored');
-  assert.equal(paired([{ node_id: 'ts:nA', url: 'https://other.example.ts.net' }]), true, 'by node id');
+  assert.equal(paired([{ node_id: 'ts:nA', url: 'https://other.example.ts.net' }]), false, 'a node id at another address is only a claim');
+  assert.equal(paired([{ node_id: 'ts:nA', url: 'https://node-a.example.ts.net' }]), true, 'the same id at the same address');
   assert.equal(paired([{ name: 'node-a', url: 'https://node-b.example.ts.net' }]), false, 'a name is not an identity');
   assert.equal(paired([{ node_id: 'ts:nB' }]), false);
   assert.equal(paired([]), false);
@@ -508,4 +518,256 @@ test('NodeView.row: an offline, invalid or unchecked row was never probed, so it
     assert.doesNotMatch(row.querySelector('.nd-note').textContent, /Checked/);
     assert.equal(row.classList.contains('stale'), false);
   }
+});
+
+// ---------------------------------------------------------------- pairing (issue #135): the words and checks of the Settings > Nodes pairing flow
+
+const pv = (code, arg) => { const w = viewWorld(); w.ctx.__a = arg; return plain(w.run(code)); };
+
+test('NodeView.SCOPES: read and tasks are on by default, sessions and permissions are off and say so; the permissions line says a person answers, never the token', () => {
+  const S = pv('NodeView.SCOPES');
+  assert.deepEqual(S.map((s) => s.id), ['read', 'tasks', 'sessions', 'permissions']);
+  assert.deepEqual(S.map((s) => s.on), [true, true, false, false]);
+  for (const s of S) { assert.ok(s.label && s.what, s.id); assert.doesNotMatch(s.what + s.label, /—/, `${s.id}: no em-dash`); }
+  assert.match(S[3].what, /still answered only by a signed-in person on the calling board, never by the token alone/);
+  assert.match(S[2].what + S[3].what, /Off unless you turn it on\./);
+  assert.deepEqual(pv('NodeView.CODE_MINUTES'), [1, 5, 10, 20, 30]);
+  assert.equal(pv('NodeView.CODE_DEFAULT_MINUTES'), 10);
+});
+
+test('NodeView.scopeList keeps the scopes this page can explain, in the table\'s order, once each', () => {
+  assert.deepEqual(pv('NodeView.scopeList(__a)', ['tasks', 'read', 'tasks', 'root', 'sessions']), ['read', 'tasks', 'sessions']);
+  assert.deepEqual(pv('NodeView.scopeList(__a)', 'read'), []);
+  assert.deepEqual(pv('NodeView.scopeList(__a)', null), []);
+  assert.deepEqual(pv('NodeView.scopeList(__a)', [{ id: 'read' }, 5, null]), []);
+});
+
+test('NodeView.code: Crockford base32, case, spaces and dashes do not matter, O is 0 and I or L is 1, U and a wrong length are refused with a plain sentence', () => {
+  const good = { code: 'K7Q2M-4XD9R', err: '' };
+  for (const v of ['K7Q2M-4XD9R', 'k7q2m-4xd9r', ' k7q2m 4xd9r ', 'K7Q2M4XD9R', 'k7q2m_4xd9r'.replace('_', '-')]) assert.deepEqual(pv('NodeView.code(__a)', v), good, v);
+  assert.equal(pv('NodeView.code(__a)', 'OIL00-11000').code, '01100-11000', 'O reads as 0, I and L as 1');
+  for (const v of ['', 'K7Q2M-4XD9', 'K7Q2M-4XD9RR', 'K7Q2M-4XD9U', 'K7Q2M 4XD9!', null, 5, {}]) {
+    const r = pv('NodeView.code(__a)', v);
+    assert.equal(r.code, '', String(v));
+    assert.equal(r.err, 'A pairing code is 10 letters and numbers, like K7Q2M-4XD9R.', String(v));
+  }
+});
+
+test('NodeView.formatCode shows XXXXX-XXXXX, upper case, and leaves anything else as it came', () => {
+  assert.equal(pv('NodeView.formatCode(__a)', 'k7q2m4xd9r'), 'K7Q2M-4XD9R');
+  assert.equal(pv('NodeView.formatCode(__a)', 'K7Q2M-4XD9R'), 'K7Q2M-4XD9R');
+  assert.equal(pv('NodeView.formatCode(__a)', 'abc'), 'ABC');
+  assert.equal(pv('NodeView.formatCode(__a)', null), '');
+});
+
+test('NodeView.address: https host[:port] only; a bare host gets https; http, a path, user info, a query and junk are refused in plain words', () => {
+  const ok = (v) => pv('NodeView.address(__a)', v);
+  assert.deepEqual(ok('https://box.example.ts.net'), { url: 'https://box.example.ts.net', err: '' });
+  assert.deepEqual(ok('  Box.Example.ts.net:8443/ '), { url: 'https://box.example.ts.net:8443', err: '' });
+  assert.deepEqual(ok('https://100.101.102.103:8443'), { url: 'https://100.101.102.103:8443', err: '' });
+  assert.deepEqual(ok('https://[fd7a:115c:a1e0::1]:8443'), { url: 'https://[fd7a:115c:a1e0::1]:8443', err: '' });
+  assert.match(ok('http://box.example.ts.net').err, /^Use an https address/);
+  assert.match(ok('HTTP://box.example.ts.net').err, /^Use an https address/);
+  assert.equal(ok('').err, 'Type the address of the other board.');
+  assert.equal(ok('   ').err, 'Type the address of the other board.');
+  for (const bad of ['https://box.example.ts.net/api', 'https://user:pw@box.example.ts.net', 'https://box.example.ts.net?x=1', 'https://box.example.ts.net#x', 'ftp://box.example.ts.net',
+    'https://bo x.example.ts.net', 'https://-box.example.ts.net', 'https://box.example.ts.net:99999999', 'https://', 'javascript:alert(1)', null, 7]) {
+    const r = ok(bad);
+    assert.equal(r.url, '', String(bad));
+    assert.ok(r.err, String(bad));
+  }
+});
+
+test('NodeView.handle: empty is fine, a valid handle is lower-cased, local and self are taken, anything else is refused', () => {
+  const h = (v) => pv('NodeView.handle(__a)', v);
+  assert.deepEqual(h(''), { handle: '', err: '' });
+  assert.deepEqual(h('  '), { handle: '', err: '' });
+  assert.deepEqual(h(' Build-Box '), { handle: 'build-box', err: '' });
+  assert.match(h('local').err, /"local" is taken/);
+  assert.match(h('SELF').err, /"self" is taken/);
+  for (const bad of ['-box', 'box_1', 'a'.repeat(32), 'box.one', 'two words']) assert.match(h(bad).err, /1 to 31 lower case letters, numbers or dashes/, bad);
+  assert.equal(h('a'.repeat(31)).handle, 'a'.repeat(31));
+});
+
+test('NodeView.countdown: m:ss, rounded up, never negative, never NaN', () => {
+  const c = (v) => pv('NodeView.countdown(__a)', v);
+  assert.equal(c(600000), '10:00');
+  assert.equal(c(599001), '10:00');
+  assert.equal(c(599000), '9:59');
+  assert.equal(c(61000), '1:01');
+  assert.equal(c(1), '0:01');
+  assert.equal(c(0), '0:00');
+  assert.equal(c(-5000), '0:00');
+  assert.equal(c(NaN), '0:00');
+  assert.equal(c('x'), '0:00');
+});
+
+test('NodeView.errField: the field an error is about, from the status and the board\'s words; a 429 is the code field; the rest belongs to no field', () => {
+  const f = (s, m, r) => { const w = viewWorld(); w.ctx.__s = s; w.ctx.__m = m; w.ctx.__r = r; return w.run('NodeView.errField(__s, __m, __r)'); };
+  assert.equal(f(429, ''), 'code');
+  assert.equal(f(400, 'that code is wrong, expired or already used'), 'code');
+  assert.equal(f(400, 'code burned: too many wrong tries'), 'code');
+  assert.equal(f(400, 'the address is not on the tailnet'), 'address');
+  assert.equal(f(502, 'the other node could not be reached'), 'address');
+  assert.equal(f(400, 'the host name does not resolve'), 'address');
+  assert.equal(f(409, 'handle build-box is already taken'), 'handle');
+  assert.equal(f(500, 'something odd happened'), '');
+  assert.equal(f(500, null), '');
+  assert.equal(f(undefined, undefined), '');
+  for (const [reason, field] of [['none', 'code'], ['wrong', 'code'], ['expired', 'code'], ['burned', 'code'], ['rate_limited', 'code'], ['bad_url', 'address'], ['callback_mismatch', 'address'],
+    ['unreachable', 'address'], ['refused', ''], ['bad_request', ''], ['store', '']]) assert.equal(f(500, 'anything', reason), field, reason);
+  assert.equal(f(400, 'the address is bad', 'made_up_reason'), 'address', 'a reason this page does not know falls back to the words');
+  assert.equal(f(502, 'handle x', 'refused'), '', 'the board\'s reason wins over the words');
+});
+
+test('NodeView.list takes a bare array, or the first key that holds one, and drops what is not an object', () => {
+  const l = (a, ...keys) => { const w = viewWorld(); w.ctx.__a = a; w.ctx.__k = keys; return plain(w.run('NodeView.list(__a, ...__k)')); };
+  assert.deepEqual(l([{ a: 1 }, null, 5, 'x']), [{ a: 1 }]);
+  assert.deepEqual(l({ nodes: [{ a: 1 }] }, 'peers', 'nodes'), [{ a: 1 }]);
+  assert.deepEqual(l({ peers: [{ b: 2 }], nodes: [{ a: 1 }] }, 'peers', 'nodes'), [{ b: 2 }]);
+  assert.deepEqual(l({ ok: true }, 'nodes'), []);
+  assert.deepEqual(l(null, 'nodes'), []);
+  assert.deepEqual(l({ nodes: 'x' }, 'nodes'), []);
+});
+
+test('NodeView.peer: the id the routes take, the name with its fallbacks, the address host, scopes this page knows, and the last time the board really heard from it', () => {
+  const p = (r) => pv('NodeView.peer(__a)', r);
+  const r = p({ peer_id: 'p1', handle: 'box', node_id: 'ts:n', name: 'Build Box', url: 'https://box.example.ts.net:8443/x', scopes: ['tasks', 'read', 'root'], last_seen: '2026-10-03T03:00:00Z', created_at: '2026-01-01T00:00:00Z', direction: 'out' });
+  assert.equal(r.id, 'p1');
+  assert.equal(r.key, 'p1');
+  assert.equal(r.name, 'Build Box');
+  assert.equal(r.handle, 'box');
+  assert.equal(r.host, 'box.example.ts.net:8443');
+  assert.deepEqual(r.scopes, ['read', 'tasks']);
+  assert.equal(r.seen, Date.parse('2026-10-03T03:00:00Z') / 1000);
+  assert.equal(p({ peer_id: 'p2', created_at: '2026-01-01T00:00:00Z' }).seen, null, 'the day it was saved is not a time it was reached');
+  assert.equal(p({ id: 'x', peer_name: 'Desk', peer_url: 'https://desk.example.ts.net', last_used_at: 1790996400 }).name, 'Desk');
+  assert.equal(p({ id: 'x', last_used_at: 1790996400 }).seen, 1790996400);
+  assert.equal(p({ handle: 'only-handle' }).name, 'only-handle');
+  assert.equal(p({}).name, 'unnamed node');
+  assert.equal(p(null).name, 'unnamed node');
+  assert.equal(p({ peer_id: 'p', callback_unverified: true, needs_repair: true, legacy: true, revoked_at: '2026-01-01', direction: 'in' }).direction, 'in');
+  assert.deepEqual([p({ peer_id: 'p', callback_unverified: true }).unverified, p({ peer_id: 'p', callback_unverified: 'yes' }).unverified], [true, false], 'only a real true counts');
+  assert.equal(p({ peer_id: 'p'.repeat(200) }).id.length, 80);
+});
+
+test('NodeView.peerState: re-pair wins; paired only once reached; incoming has its own words; every state has a glyph, words and a hint', () => {
+  const s = (p, inc) => { const w = viewWorld(); w.ctx.__p = p; w.ctx.__i = inc; return plain(w.run('NodeView.peerState(__p, __i)')); };
+  assert.equal(s({ repair: true, seen: 1 }, false).word, 're-pair needed');
+  assert.equal(s({ repair: true, seen: 1 }, false).tone, 'warn');
+  assert.deepEqual([s({ seen: 1 }, false).word, s({ seen: 1 }, false).tone], ['paired', 'ok']);
+  assert.equal(s({ seen: null }, false).word, 'waiting for first contact');
+  assert.deepEqual([s({ legacy: true, seen: 1 }, false).word, s({ legacy: true, seen: null }, false).word], ['read only', 'read only'], 'a CCBOARD_NODES row is never called paired, read or not');
+  assert.equal(s({ legacy: true, repair: true }, false).word, 're-pair needed');
+  assert.equal(s({ seen: 1 }, true).word, 'in use');
+  assert.equal(s({ seen: null }, true).word, 'never used');
+  for (const x of [s({ repair: true }, false), s({ seen: 1 }, false), s({ seen: null }, false), s({ seen: 1 }, true), s({ seen: null }, true)]) {
+    assert.ok(x.glyph && x.word && x.hint);
+    assert.doesNotMatch(x.word + x.hint, /—/);
+  }
+});
+
+test('NodeView.peerNote: address, when it was last reached, the last error, the legacy sentence, and the 60 s rotation window only while it lasts', () => {
+  const n = (p, o) => { const w = viewWorld(); w.ctx.__p = p; w.ctx.__o = o; return w.run('NodeView.peerNote(__p, __o)'); };
+  const base = { host: 'box.example.ts.net', seen: 1000, error: '', legacy: false };
+  assert.equal(n(base, { nowMs: 1000 * 1000 + 120000 }), 'box.example.ts.net · last reached 2m ago');
+  assert.equal(n({ ...base, seen: null }, { nowMs: 5 }), 'box.example.ts.net · not reached yet');
+  assert.equal(n({ ...base, seen: null, host: '' }, { nowMs: 5, incoming: true }), 'never used');
+  assert.equal(n(base, { nowMs: 1000 * 1000 + 3600000, incoming: true }), 'box.example.ts.net · last used 1h ago');
+  assert.match(n({ ...base, error: 'refused (401)' }, { nowMs: 1000 * 1000 }), /· last error: refused \(401\)$/);
+  assert.doesNotMatch(n({ ...base, error: 'refused (401)' }, { nowMs: 1000 * 1000, incoming: true }), /last error/, 'an error of our calls is not shown for a caller');
+  assert.match(n({ ...base, legacy: true }, { nowMs: 1000 * 1000 }), /· read only, pair to enable actions$/);
+  assert.match(n(base, { nowMs: 1000 * 1000 + 30000, rotatedMs: 1000 * 1000 }), /token rotated, the old one still works for 60 s$/);
+  assert.doesNotMatch(n(base, { nowMs: 1000 * 1000 + 60000, rotatedMs: 1000 * 1000 }), /rotated/, 'the window is over at 60 s');
+});
+
+test('NodeView.peerRow: name and short name, state chip, scope chips with their meaning as the hint, flags, a note and the actions; keyed by the id; a hostile name is text', () => {
+  const w = viewWorld();
+  const evil = '<img src=x onerror=alert(1)>';
+  w.ctx.__r = { peer_id: 'p1', handle: 'box', name: evil, url: 'https://box.example.ts.net', scopes: ['read', 'permissions'], last_seen: 1790996400, callback_unverified: true, legacy: true };
+  const row = w.run('NodeView.peerRow(__r, { nowMs: 1790996400000 + 5000, actions: [el("button", { text: "Remove" })] })');
+  assert.equal(row.getAttribute('data-key'), 'p1');
+  assert.equal(row.getAttribute('data-kind'), 'out');
+  assert.equal(row.querySelector('.nd-name').textContent, evil);
+  assert.equal(row.querySelectorAll('img').length, 0);
+  assert.equal(row.querySelector('.nd-handle').textContent, 'box');
+  assert.deepEqual(row.querySelectorAll('.nd-chips .badge').map((b) => b.textContent), ['· read only', 'read', 'permissions', '! callback not verified'], 'a legacy row that was read a moment ago is not "paired"');
+  assert.match(row.querySelectorAll('.nd-chips .badge')[2].getAttribute('title'), /never by the token alone/);
+  assert.equal(row.querySelector('.nd-act button').textContent, 'Remove');
+  assert.equal(row.classList.contains('repair'), false);
+  const inc = w.run('NodeView.peerRow(__r, { incoming: true })');
+  assert.equal(inc.getAttribute('data-kind'), 'in');
+  assert.equal(w.run('NodeView.peerRow({ peer_id: "p", needs_repair: true })').classList.contains('repair'), true);
+  assert.equal(w.run('NodeView.peerRow({ peer_id: "p" })').querySelector('.nd-act'), null, 'no actions, no action cell');
+});
+
+test('NodeView.auditWord: the board\'s own actions in plain words (worked and not), the raw name made readable for the rest, nothing long', () => {
+  const a = (v, ok) => { const w = viewWorld(); w.ctx.__a = v; w.ctx.__ok = ok; return w.run('NodeView.auditWord(__a, __ok)'); };
+  assert.equal(a('code_created', true), 'Pairing code created');
+  assert.equal(a('code_used', true), 'Pairing code used');
+  assert.equal(a('code_burned', false), 'Pairing code burned');
+  assert.equal(a('code_cancelled', true), 'Pairing code cancelled');
+  assert.equal(a('callback_unverified', false), 'Callback not verified');
+  assert.equal(a('paired', true), 'Paired');
+  assert.equal(a('paired_back', true), 'Paired both ways');
+  assert.equal(a('pair_refused', false), 'Pairing refused');
+  assert.equal(a('pair_failed', false), 'Pairing failed');
+  assert.equal(a('rotated', true), 'Token rotated');
+  assert.equal(a('rotate_failed', false), 'Token rotation failed');
+  assert.equal(a('revoked', true), 'Pair revoked');
+  assert.equal(a('removed', true), 'Node removed');
+  assert.equal(a('unpair', true), 'Node removed');
+  assert.equal(a('unpair', false), 'Node removed, the other node was not told');
+  assert.equal(a('relay.task_start', true), 'Relay task start');
+  assert.equal(a('relay.task_start', false), 'Relay task start failed');
+  assert.equal(a('', true), 'Event');
+  assert.equal(a(null, false), 'Event failed');
+  assert.equal(a('rotated'), 'Token rotated', 'no verdict means it worked');
+  assert.ok(a('x'.repeat(500), true).length <= 40);
+});
+
+test('NodeView.audit: who, which way, whether it worked (the board\'s status word, a boolean ok, or a status below 400), the words for that, and the detail cut short', () => {
+  const a = (r) => pv('NodeView.audit(__a, 4)', r);
+  const r = a({ id: 9, at: '2026-10-03T03:00:00Z', direction: 'in', peer: 'abc123', node_name: 'desk', action: 'code_used', status: 'ok', detail: 'x'.repeat(500) });
+  assert.deepEqual([r.key, r.dir, r.who, r.word, r.ok, r.detail.length], ['9', 'from', 'desk', 'Pairing code used', true, 140]);
+  assert.equal(r.at, Date.parse('2026-10-03T03:00:00Z') / 1000);
+  assert.equal(a({ direction: 'out', status: 'failed', action: 'rotate_failed' }).ok, false);
+  assert.equal(a({ direction: 'out', status: 'failed', action: 'rotate_failed' }).word, 'Token rotation failed');
+  assert.equal(a({ direction: 'out', status: 'refused', action: 'pair_refused' }).ok, false);
+  assert.equal(a({ direction: 'out', ok: false, action: 'paired' }).word, 'Pairing failed');
+  assert.equal(a({ direction: 'out' }).dir, 'to');
+  assert.equal(a({ status: 403 }).ok, false);
+  assert.equal(a({ status: 200 }).ok, true);
+  assert.equal(a({ status: 'ok' }).ok, true);
+  assert.equal(a({}).key, 'i4', 'a row with no id is keyed by its place');
+  assert.equal(a({ direction: 'sideways' }).dir, '');
+  assert.equal(a({ peer: 'abc123' }).who, '', 'an opaque peer id is not a name to show');
+  assert.equal(a(null).word, 'Event');
+});
+
+test('NodeView.auditRow: a done row has a tick, a failed row a cross and its words (never colour only), the place and age, and the detail as text', () => {
+  const w = viewWorld();
+  const evil = '<img src=x onerror=alert(1)>';
+  w.ctx.__i = { key: '1', at: 1000, word: 'Pairing failed', dir: 'to', who: evil, ok: false, detail: evil };
+  const row = w.run('NodeView.auditRow(__i, 1000 * 1000 + 180000)');
+  assert.equal(row.querySelector('.nd-glyph').textContent, '✕');
+  assert.equal(row.querySelector('.nd-audit-word').textContent, 'Pairing failed');
+  assert.equal(row.querySelector('.nd-audit-where').textContent, `to ${evil} · 3m ago`);
+  assert.equal(row.querySelector('.nd-audit-detail').textContent, evil);
+  assert.equal(row.querySelectorAll('img').length, 0);
+  assert.ok(row.classList.contains('bad'));
+  assert.equal(row.getAttribute('data-key'), '1');
+  w.ctx.__i = { key: '2', at: null, word: 'Token rotated', dir: '', who: '', ok: true, detail: '' };
+  const ok = w.run('NodeView.auditRow(__i, 5)');
+  assert.equal(ok.querySelector('.nd-glyph').textContent, '✓');
+  assert.equal(ok.querySelector('.nd-audit-word').textContent, 'Token rotated');
+  assert.equal(ok.querySelector('.nd-audit-where'), null);
+  assert.equal(ok.querySelector('.nd-audit-detail'), null);
+});
+
+test('nodes-pair.js pairing helpers hold no code or token: no storage, no network, no timer, no innerHTML, and the words carry no em-dash', () => {
+  const src = fs.readFileSync(path.join(STATIC, 'nodes-pair.js'), 'utf8');
+  const code = src.slice(src.indexOf('NodeView.SCOPES = [')).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  assert.doesNotMatch(code, /localStorage|sessionStorage|fetch\(|XMLHttpRequest|setInterval|setTimeout|innerHTML|insertAdjacentHTML|cssText|style=|\.style\b|api\(/);
+  assert.doesNotMatch(code, /—/);
 });

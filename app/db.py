@@ -179,6 +179,46 @@ MIGRATIONS = [
     # ---- nodes epic P1 (issue #137): the board that asked for this task, as JSON {node, user}; NULL = asked for here (every task today, and every old row).
     #      Never a token or a prompt. Additive: the previous image ignores the column.
     "ALTER TABLE tasks ADD COLUMN origin TEXT",
+    # ---- nodes epic P3 (issue #135, pairing): the pairs ANOTHER board holds with this one (this board is the accepting side). One row per pair:
+    #      only the SHA-256 digest of the token is kept (never the token, never the pairing code); `prev_sha256` and `prev_until` keep the old
+    #      digest for the 60 seconds after a rotation. `peer_id` is the key every route uses. Empty on a board nobody paired with.
+    #      node_audit: one row per pair event and, later, per relayed action, with no token, code or prompt in `detail`; rows older than 90 days
+    #      are pruned (app/nodes.py audit()). Both tables are additive: the previous image ignores them.
+    """CREATE TABLE IF NOT EXISTS node_pairs (
+  id INTEGER PRIMARY KEY,
+  peer_id TEXT NOT NULL UNIQUE,
+  peer_node_id TEXT NOT NULL DEFAULT '',
+  peer_name TEXT NOT NULL DEFAULT '',
+  peer_url TEXT,
+  token_sha256 TEXT NOT NULL DEFAULT '',
+  scopes TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  expires_at TEXT,
+  last_used_at TEXT,
+  last_ip_hint TEXT,
+  callback_unverified INTEGER NOT NULL DEFAULT 0,
+  revoked_at TEXT,
+  prev_sha256 TEXT,
+  prev_until TEXT,
+  rotated_at TEXT
+)""",
+    """CREATE TABLE IF NOT EXISTS node_audit (
+  id INTEGER PRIMARY KEY,
+  at TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  peer TEXT NOT NULL DEFAULT '',
+  node_name TEXT,
+  user TEXT,
+  action TEXT NOT NULL,
+  target TEXT,
+  status TEXT NOT NULL DEFAULT 'ok',
+  detail TEXT
+)""",
+    "CREATE INDEX IF NOT EXISTS node_audit_at ON node_audit(at)",
+    # ---- nodes epic P3 (issue #135, review fix): a pair the person has not yet answered for. When a verified re-pair arrives from ANOTHER address with
+    #      the same node id, the older active pair is not revoked (a node id is only a claim); it is marked with the peer_id of the newer pair, keeps
+    #      working, and Settings > Nodes shows it with a prominent Revoke. NULL = not superseded (every old row). Additive: the previous image ignores it.
+    "ALTER TABLE node_pairs ADD COLUMN superseded_by TEXT",
     # permissions.decision takes allow|deny|tui|interrupt (plus timeout from perm_expire). It has no CHECK constraint,
     # so nothing to migrate: the new values are plain TEXT.
 ]
@@ -202,6 +242,9 @@ TASK_UNASSIGNED = ("tmux_name", "worktree", "branch")     # NOT NULL without a d
 JOB_COLS = ("project", "repo", "name", "prompt", "cron", "permission_mode", "max_turns", "max_budget_usd", "args",
             "timeout_s", "enabled", "batch_id", "next_run_at", "agent", "opts")
 JOB_REQUIRED = ("project", "repo", "name", "prompt")
+NODE_PAIR_COLS = ("peer_id", "peer_node_id", "peer_name", "peer_url", "token_sha256", "scopes", "created_at", "expires_at", "last_used_at",
+                  "last_ip_hint", "callback_unverified", "revoked_at", "prev_sha256", "prev_until", "rotated_at", "superseded_by")
+NODE_AUDIT_CAP = 20000
 ACTIVE_TASK_PHASES = ("queued", "running", "done", "failed")
 
 
@@ -853,6 +896,59 @@ class DB:
             return {"value": json.loads(r[0]), "at": r[1]}
         except ValueError:
             return None
+
+    # ---- nodes epic P3 (issue #135): incoming pairs and the audit. The digest columns never leave app/nodes.py; callers there strip them.
+    def node_pair_add(self, **vals) -> int:
+        bad = set(vals) - set(NODE_PAIR_COLS)
+        if bad:
+            raise TypeError(f"unknown node_pairs column: {sorted(bad)}")
+        vals.setdefault("created_at", now())
+        with self.lock:
+            return _insert(self.conn, "node_pairs", vals)
+
+    def node_pair_get(self, peer_id: str) -> dict | None:
+        with self.lock:
+            r = self.conn.execute("SELECT * FROM node_pairs WHERE peer_id=?", (peer_id,)).fetchone()
+        return dict(r) if r else None
+
+    def node_pairs(self, include_revoked: bool = False) -> list[dict]:
+        """The pair rows, oldest first; revoked ones only when asked."""
+        q = "SELECT * FROM node_pairs" + ("" if include_revoked else " WHERE revoked_at IS NULL") + " ORDER BY id"
+        with self.lock:
+            return [dict(r) for r in self.conn.execute(q).fetchall()]
+
+    def node_pair_update(self, peer_id: str, **fields) -> bool:
+        bad = set(fields) - set(NODE_PAIR_COLS)
+        if bad:
+            raise TypeError(f"unknown node_pairs column: {sorted(bad)}")
+        if not fields:
+            return False
+        with self.lock:
+            cur = self.conn.execute(f"UPDATE node_pairs SET {', '.join(k + '=?' for k in fields)} WHERE peer_id=?", (*fields.values(), peer_id))
+            return cur.rowcount > 0
+
+    def node_pair_delete(self, peer_id: str) -> bool:
+        with self.lock:
+            return self.conn.execute("DELETE FROM node_pairs WHERE peer_id=?", (peer_id,)).rowcount > 0
+
+    def node_audit_add(self, *, at: str, direction: str, peer: str, action: str, status: str, node_name=None, user=None, target=None, detail=None) -> int:
+        with self.lock:
+            return _insert(self.conn, "node_audit", {"at": at, "direction": direction, "peer": peer, "node_name": node_name, "user": user,
+                                                     "action": action, "target": target, "status": status, "detail": detail})
+
+    def node_audit_list(self, limit: int = 100) -> list[dict]:
+        """The newest audit rows first."""
+        with self.lock:
+            return [dict(r) for r in self.conn.execute("SELECT * FROM node_audit ORDER BY id DESC LIMIT ?", (max(1, min(int(limit), 1000)),)).fetchall()]
+
+    def node_audit_prune(self, before: str) -> int:
+        """Delete audit rows and revoked pair rows older than `before` (an iso() text), and keep the audit table to its newest NODE_AUDIT_CAP rows;
+        returns how many went."""
+        with self.lock:
+            n = self.conn.execute("DELETE FROM node_audit WHERE at < ?", (before,)).rowcount
+            n += self.conn.execute("DELETE FROM node_audit WHERE id <= (SELECT MAX(id) FROM node_audit) - ?", (NODE_AUDIT_CAP,)).rowcount
+            n += self.conn.execute("DELETE FROM node_pairs WHERE revoked_at IS NOT NULL AND revoked_at < ?", (before,)).rowcount
+            return n
 
     def end(self, tmux_name: str, reason: str = "killed") -> None:
         """Close every open row of this tmux name. reason: killed|auto_close|exited|reconciled|project_deleted. A row that was

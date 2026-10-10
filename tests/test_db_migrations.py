@@ -529,3 +529,82 @@ def test_tasks_origin_is_a_nullable_text_column_for_work_asked_by_another_board(
         assert db.task_get(remote)["origin"] is None
     finally:
         db.conn.close()
+
+
+# ---- nodes epic P3 (issue #135): node_pairs and node_audit ---------------------------------------------------------------------------
+NODE_PAIR_COLS = {"id", "peer_id", "peer_node_id", "peer_name", "peer_url", "token_sha256", "scopes", "created_at", "expires_at", "last_used_at",
+                  "last_ip_hint", "callback_unverified", "revoked_at", "prev_sha256", "prev_until", "rotated_at", "superseded_by"}
+NODE_AUDIT_COLS = {"id", "at", "direction", "peer", "node_name", "user", "action", "target", "status", "detail"}
+
+
+def test_previous_release_db_gets_the_node_tables_empty_and_a_second_open_is_a_no_op(tmp_path):
+    path = tmp_path / "old.db"
+    make_old_db(path)
+    old = sqlite3.connect(str(path))
+    assert old.execute("SELECT COUNT(*) FROM sqlite_master WHERE name IN ('node_pairs','node_audit')").fetchone()[0] == 0     # the last release had neither
+    old.close()
+    first = DB(path)
+    try:
+        assert set(columns(first.conn, "node_pairs")) == NODE_PAIR_COLS
+        assert set(columns(first.conn, "node_audit")) == NODE_AUDIT_COLS
+        assert first.conn.execute("SELECT COUNT(*) FROM node_pairs").fetchone()[0] == 0              # a board nobody paired with has no row
+        assert first.conn.execute("SELECT COUNT(*) FROM node_audit").fetchone()[0] == 0
+        assert first.kv_get("node_peers") is None and first.kv_get("node_pair_code") is None
+        assert columns(first.conn, "node_pairs")["token_sha256"] == ("TEXT", 1, "''")                  # no plaintext column exists to fill
+        assert not {c for c in columns(first.conn, "node_pairs") if "token" in c and c != "token_sha256"}
+        before = dump(first)
+    finally:
+        first.conn.close()
+    second = DB(path)
+    try:
+        assert dump(second) == before
+    finally:
+        second.conn.close()
+
+
+def test_the_node_tables_match_on_a_fresh_and_an_upgraded_db(tmp_path):
+    make_old_db(tmp_path / "old.db")
+    old, fresh = DB(tmp_path / "old.db"), DB(tmp_path / "fresh.db")
+    try:
+        for table in ("node_pairs", "node_audit"):
+            assert columns(fresh.conn, table) == columns(old.conn, table), table
+    finally:
+        old.conn.close()
+        fresh.conn.close()
+
+
+def test_node_pair_api_stores_rows_by_peer_id_and_refuses_unknown_columns(db):
+    pid = "p_" + "0" * 16
+    db.node_pair_add(peer_id=pid, peer_node_id="n_0123456789abcdef", peer_name="node-b", token_sha256="ab" * 32, scopes='["read"]')
+    with pytest.raises(sqlite3.IntegrityError):
+        db.node_pair_add(peer_id=pid, token_sha256="cd" * 32)                                      # peer_id is unique
+    with pytest.raises(TypeError):
+        db.node_pair_add(peer_id="p_" + "1" * 16, token="plaintext")                                # there is no column a token could go in
+    with pytest.raises(TypeError):
+        db.node_pair_update(pid, nope=1)
+    row = db.node_pair_get(pid)
+    assert row["callback_unverified"] == 0 and row["revoked_at"] is None and row["created_at"]
+    assert db.node_pair_update(pid, revoked_at="2026-10-01T00:00:00+00:00") is True
+    assert db.node_pairs() == [] and len(db.node_pairs(include_revoked=True)) == 1                  # a revoked pair is not listed unless asked
+    assert db.node_pair_update("p_" + "9" * 16, last_used_at="x") is False
+    assert db.node_pair_delete(pid) is True and db.node_pair_get(pid) is None
+
+
+def test_node_audit_lists_newest_first_and_prunes_old_rows_and_revoked_pairs(db):
+    for i, at in enumerate(("2026-01-01T00:00:00+00:00", "2026-06-01T00:00:00+00:00", "2026-10-01T00:00:00+00:00")):
+        db.node_audit_add(at=at, direction="in", peer="p", action=f"a{i}", status="ok")
+    assert [r["action"] for r in db.node_audit_list(2)] == ["a2", "a1"]
+    db.node_pair_add(peer_id="p_" + "a" * 16, revoked_at="2026-01-02T00:00:00+00:00")
+    db.node_pair_add(peer_id="p_" + "b" * 16, revoked_at="2026-10-02T00:00:00+00:00")
+    db.node_pair_add(peer_id="p_" + "c" * 16)
+    assert db.node_audit_prune("2026-07-01T00:00:00+00:00") == 3                                    # two audit rows and the one old revoked pair
+    assert [r["action"] for r in db.node_audit_list(10)] == ["a2"]
+    assert {r["peer_id"] for r in db.node_pairs(include_revoked=True)} == {"p_" + "b" * 16, "p_" + "c" * 16}
+
+
+def test_node_audit_keeps_only_its_newest_rows(db, monkeypatch):
+    monkeypatch.setattr(dbmod, "NODE_AUDIT_CAP", 5)
+    for i in range(12):
+        db.node_audit_add(at="2026-10-01T00:00:00+00:00", direction="in", peer="p", action=f"a{i}", status="ok")
+    assert db.node_audit_prune("2026-01-01T00:00:00+00:00") == 7
+    assert [r["action"] for r in db.node_audit_list(10)] == ["a11", "a10", "a9", "a8", "a7"]

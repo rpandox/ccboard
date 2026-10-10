@@ -151,6 +151,26 @@ function demoDiscover(data0, refresh) {
   return { ...data, at: iso, rows: data.rows.map((r) => (r && r.at ? { ...r, at: iso, age: 0, stale: false } : r)) };
 }
 
+/* The demo's pairing (issue #135, Settings > Nodes): demo/nodes.json holds the three lists (outgoing pairs, incoming pairs, activity) and, because a POST never reaches a box in demo
+   mode, a code, a pair, a rotation and a removal are played here for the life of the page: the code is a made-up one, a new pair is listed as waiting for its first contact, a
+   removed one disappears (one of them answers "the other node was not told") and each leaves a row in Activity. Nothing of this is a credential. The writes themselves (demoNodesWrite) are in nodes-pair.js, which loads with Settings, the only page that
+   makes them; the state they leave (demoNodesMade) and the three GETs that read it are here. */
+const demoNodesMade = { gone: new Set(), added: [], audit: [], seq: 0 };
+async function demoNodesFixture() {
+  const r = await fetch('/static/demo/nodes.json');
+  return r.ok ? demoRebase(await r.json()) : {};
+}
+/* The three GETs of demo/nodes.json, shaped like the board's ({nodes, pairs, at}, {pairs, at}, {rows, at}): the fixture's rows (times follow the clock like state.json's), minus the ones removed here, plus the ones paired here, plus the activity made here. */
+function demoNodes(data0, bare) {
+  const data = demoRebase(data0);
+  const gone = (r) => demoNodesMade.gone.has(r.peer_id);
+  const at = new Date().toISOString();
+  const pairs = (data.pairs || []).filter((r) => !gone(r));
+  if (bare === '/api/nodes/pairs') return { pairs, at };
+  if (bare === '/api/nodes/audit') return { rows: [...demoNodesMade.audit, ...(data.audit || [])], at };
+  return { nodes: [...(data.nodes || []).filter((r) => !gone(r)), ...demoNodesMade.added.filter((r) => !gone(r))], pairs, at };
+}
+
 /* A demo answer that is an HTTP error: the tree and file previews read err.status (the real endpoints answer 403 / 404 / 415 the same way). */
 function demoError(status, message) {
   const e = new Error(message || `${status}`);
@@ -267,6 +287,7 @@ async function demoApi(method, path, body) {
   if (method !== 'GET') {
     await new Promise((resolve) => setTimeout(resolve, 150));
     demoMake(method, path, body);
+    if (/^\/api\/nodes(\/|$)/.test(path) && typeof demoNodesWrite === 'function') { const made = demoNodesWrite(method, path, body, await demoNodesFixture()); if (made) return made; }   // pairing (issue #135): played here, nothing leaves the page
     if (path === '/api/usage/refresh') {
       if (demoRefreshFlag() === 'none') throw demoError(409, 'no Claude session is at its prompt; start one to refresh');
       demoRefresh.tap = Date.now() / 1000;
@@ -279,6 +300,7 @@ async function demoApi(method, path, body) {
   let name = null;
   if (bare === '/api/state') name = 'state';
   else if (bare === '/api/node') name = 'node';   // this board's node card (GET /api/node, issue #133): the same shape the route answers
+  else if (bare === '/api/nodes' || bare === '/api/nodes/pairs' || bare === '/api/nodes/audit') name = 'nodes';   // Settings > Nodes > Paired nodes, Who can control this node and Activity (issue #135): one fixture, three answers
   else if (bare === '/api/nodes/discover') name = 'nodes-discover';   // Settings > Nodes > Found on your tailnet (issue #134): a found node, a refusing one, an offline one and one with nothing listening
   else if (/^\/api\/sessions\/[^/]+$/.test(bare)) name = 'session';    // the terminal page's own read: the row of state.json with that tmux name (its agent drives Tune and the quick replies)
   else if (bare === '/api/skills') name = 'skills';   // the palette's Skills group (issue #102): the same shape GET /api/skills answers
@@ -320,6 +342,7 @@ async function demoApi(method, path, body) {
     return data.detail[one[1]];
   }
   if (name === 'usage_summary' && /[?&]basis=est(&|$)/.test(path)) return { ...demoRebase(data), basis: 'est' };   // the Estimated basis (issue #95): the demo has nothing to estimate, so the same numbers under the other name (rebased like the reported one, or the windows read as rolled over)
+  if (name === 'nodes') return demoNodes(data, bare);
   if (name === 'nodes-discover') return demoDiscover(data, /[?&]refresh=1(&|$)/.test(path));
   if (name === 'tree' || name === 'file') return demoPick(name, bare, path.slice(bare.length + 1), data);
   if (/^memory_(observations|summaries|search|timeline|palace)$/.test(name)) return demoMemVariant(data, bare);

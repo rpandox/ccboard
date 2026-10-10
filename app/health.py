@@ -113,17 +113,32 @@ def fetch_node(url: str) -> dict:
         return json.loads(r.read() or b"{}")
 
 
-class Poller(threading.Thread):
-    """Runs on the hub: refreshes every node's summary into kv 'nodes'."""
+def same_url(a: str, b: str) -> bool:
+    """Two node addresses are the same when they differ only in case or a trailing slash."""
+    return str(a or "").strip().rstrip("/").lower() == str(b or "").strip().rstrip("/").lower()
 
-    def __init__(self, db, nodes: list[dict], fetch=fetch_node):
+
+class Poller(threading.Thread):
+    """Runs on the hub: refreshes every node's summary into kv 'nodes'. The CCBOARD_NODES entries are the legacy rows of the registry (issue #135):
+    polled with the hub token on GET /api/node/summary and nothing else. `paired()` (optional) returns the addresses that have since been paired
+    with a token; pairing the same address replaces the legacy row, so those entries are no longer polled this way."""
+
+    def __init__(self, db, nodes: list[dict], fetch=fetch_node, paired=None):
         super().__init__(name="hub-poller", daemon=True)
-        self.db, self.nodes, self.fetch = db, nodes, fetch
+        self.db, self.nodes, self.fetch, self.paired = db, nodes, fetch, paired
         self.stop = threading.Event()
+
+    def _targets(self) -> list[dict]:
+        try:
+            urls = list(self.paired()) if self.paired else []
+        except Exception as e:
+            log.warning("hub poll could not read the paired nodes: %s", e.__class__.__name__)
+            urls = []
+        return [n for n in self.nodes if not any(same_url(n["url"], u) for u in urls)]
 
     def poll_once(self) -> list[dict]:
         out = []
-        for n in self.nodes:
+        for n in self._targets():
             try:
                 s = self.fetch(n["url"])
                 if not isinstance(s, dict):

@@ -26,7 +26,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, nodes, nodes_discovery, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import codex_discovery, codex_pane
@@ -119,6 +119,11 @@ def startup_line() -> str:
     return f"ccboard on {settings.loopback_url()}, projects in {settings.projects_dir}, {who}"
 
 
+def _paired_urls() -> list[str]:
+    """The addresses of the nodes this board has paired with (not the legacy rows): the hub poller leaves those to the pair."""
+    return [r["url"] for r in nodes.peers(db=db) if r.get("direction") != "in" and not r.get("legacy") and r.get("url")]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global db, sampler
@@ -170,11 +175,16 @@ async def lifespan(app: FastAPI):
     sched = sched_worker
     sched_worker.start()
     hub = None
-    nodes = health.parse_nodes(settings.nodes_raw)
-    if nodes and settings.hub_token:
-        hub = health.Poller(db, nodes)
+    hub_nodes = health.parse_nodes(settings.nodes_raw)       # not `nodes`: that name is the module, and the node id above is read through it
+    if hub_nodes:
+        try:                                                  # the CCBOARD_NODES entries are the registry's legacy rows (read only until paired, issue #135)
+            nodes.import_legacy(hub_nodes, db=db)
+        except Exception as e:
+            log.warning("CCBOARD_NODES could not be added to the node registry: %s", e.__class__.__name__)
+    if hub_nodes and settings.hub_token:
+        hub = health.Poller(db, hub_nodes, paired=_paired_urls)
         hub.start()
-    elif nodes:
+    elif hub_nodes:
         log.warning("CCBOARD_NODES is set but CCBOARD_HUB_TOKEN is empty: hub polling disabled")
     try:
         rec = recover.run(db, _start_session)
@@ -279,14 +289,91 @@ def is_immutable_static(path: str) -> bool:
     return path.startswith("/static/vendor/") or path.endswith(".woff2")
 
 
+PAIR_BODY_MAX = 16 * 1024           # the pair endpoint answers anyone on the tailnet, so its body is held much smaller
+NODE_SECURITY_HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+
+
+def _node_bearer(request: Request) -> bool:
+    """Does any Authorization header carry a node token (`Bearer ccbnode_...`)? Looks at every value, so a second header cannot hide one."""
+    for v in request.headers.getlist("authorization"):
+        t = mcp_tokens.bearer(v)
+        if t is not None and t.startswith(nodes.TOKEN_PREFIX):
+            return True
+    return False
+
+
+def _node_refused(status: int, message: str, **headers) -> JSONResponse:
+    return JSONResponse({"error": message}, status_code=status, headers={**NODE_SECURITY_HEADERS, **headers})
+
+
+def _clean_text(v, n: int) -> str:
+    """Header text for the audit: control characters out, at most n characters."""
+    return "".join(c for c in str(v or "") if c.isprintable())[:n].strip()
+
+
+def _node_note(request: Request) -> str:
+    """The caller's own words about itself (X-CCBoard-Node, X-CCBoard-Acting-User) for an audit row. Recorded, never trusted for access."""
+    node, user = _clean_text(request.headers.get("x-ccboard-node"), 64), _clean_text(request.headers.get("x-ccboard-acting-user"), 64)
+    return " ".join(x for x in (f"node {node}" if node else "", f"acting user {user}" if user else "") if x)
+
+
+async def _node_auth(request: Request, call_next):
+    """A request with `Authorization: Bearer ccbnode_...` (issue #135): one paired node calling this board. It carries that token and nothing else (no
+    hook token, no hub token, one Authorization header), X-CCBoard: 1, and no Origin. The token is looked up by its digest (nodes.verify_token, constant
+    time), the pair's rate bucket is taken, and only a route in nodes.NODE_ROUTES whose scope the pair holds is answered; every other /api route is a 403
+    for it, whatever it asks. The identity check is not used: in user-owned mode the caller arrives with the owner's login, so identity cannot tell nodes apart."""
+    if len(request.headers.getlist("authorization")) != 1:
+        return _node_refused(403, "send exactly one Authorization header")
+    if request.headers.get(hooks.TOKEN_HEADER) or request.headers.get(health.HUB_HEADER):
+        return _node_refused(403, "a node token is the only credential a node request carries")
+    if request.headers.get("origin") is not None:
+        return _node_refused(403, "requests from a web page (an Origin header) are refused")
+    if request.headers.get("x-ccboard") != "1":
+        return _node_refused(403, "missing X-CCBoard header")
+    addr = nodes.caller_addr(request.client.host if request.client else None, request.headers.get("x-forwarded-for"))
+    peer = nodes.verify_token(mcp_tokens.bearer(request.headers.get("authorization")), ip=addr, db=db)
+    if peer is None:
+        return _node_refused(401, "this node token is wrong, expired or was revoked", **{"WWW-Authenticate": 'Bearer realm="ccboard", error="invalid_token"'})
+    pid = peer["peer_id"]
+    ok, wait = nodes.rate_check(pid, write=request.method not in ("GET", "HEAD"))
+    if not ok:
+        return _node_refused(429, "too many requests from this node", **{"Retry-After": str(wait)})
+    scope = nodes.route_scope(request.method, request.url.path)
+    note = _node_note(request)
+    if not nodes.scope_ok(peer.get("scopes"), scope):
+        nodes.audit("in", pid, "route_refused" if scope is None else "scope_refused", False, (f"scope {scope} not granted " if scope else "") + note,
+                    node_name=peer.get("name"), target=f"{request.method} {request.url.path}"[:120], status="refused", db=db)
+        return _node_refused(403, "this node token does not open that route" if scope is None else f"this node token does not hold the {scope} scope")
+    if request.headers.get("transfer-encoding"):
+        return _node_refused(411, "send a Content-Length")
+    try:
+        size = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        return _node_refused(400, "bad Content-Length")
+    if size > nodes.BODY_MAX:
+        return _node_refused(413, f"the body is over {nodes.BODY_MAX // 1024} KB")
+    request.state.user = "node:" + _clean_text(peer.get("name") or pid, 60)
+    request.state.node_pair = pid
+    request.state.node_peer = peer
+    request.state.node_note = note
+    resp = await call_next(request)
+    for k, v in NODE_SECURITY_HEADERS.items():
+        resp.headers[k] = v
+    return resp
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     if request.url.path == "/healthz":
         return PlainTextResponse("ok")
+    if request.url.path == mcp_remote.PATH and mcp_tokens.enabled() and _node_bearer(request):
+        return _node_refused(403, "a node token is not accepted at /mcp; use a device token from Settings > Agents")
     if request.url.path == mcp_remote.PATH:
         # The remote MCP endpoint (issue #13): 404 while off, then identity AND a device token, never the hook token (app/mcp_remote.py).
         refused = mcp_remote.gate(request)
         return refused if refused is not None else await call_next(request)
+    if request.url.path.startswith("/api/") and _node_bearer(request):
+        return await _node_auth(request, call_next)
     if request.url.path.startswith("/api/") and mcp_tokens.bearer(request.headers.get("authorization")) is not None:
         # A device token opens /mcp and nothing else: a bearer is refused on every /api route, whatever else the request carries.
         return JSONResponse({"error": "device tokens open /mcp only"}, status_code=403)
@@ -294,6 +381,16 @@ async def auth_middleware(request: Request, call_next):
         if not health.check_hub_token(request.headers.get(health.HUB_HEADER)):
             return JSONResponse({"error": "bad hub token"}, status_code=403)
         request.state.user = "hub"
+        return await call_next(request)
+    if request.url.path == "/api/nodes/pair" and request.method == "POST":
+        # The other board's pairing call (issue #135): a tagged board has no identity, so none is asked for. The handler checks X-CCBoard, Origin, a
+        # disallowed identity header, the size, the rate and the code before it does anything.
+        request.state.user = None
+        return await call_next(request)
+    if request.url.path == "/api/nodes/pair/confirm" and request.method == "POST":
+        # The callback of the board that is being called (issue #135): it asks whether THIS board is the one redeeming its code right now. No identity (a
+        # tagged board has none); the handler checks X-CCBoard, Origin, the size and the rate, and answers only while this board's own add_node is in flight.
+        request.state.user = None
         return await call_next(request)
     if request.url.path == "/api/node/hello" and request.method == "GET":
         # The one route that answers with no identity (issue #133): three fixed keys, rate limited per source in the handler. Every other /api/node* route
@@ -4347,6 +4444,265 @@ def api_nodes_discover(request: Request, refresh: int = 0):
     if refresh and request.headers.get("x-ccboard") != "1":
         return JSONResponse({"error": "missing X-CCBoard header"}, status_code=403)
     return nodes_discovery.discover(db, refresh=bool(refresh))
+
+
+# ---------- pairing two boards (issue #135): codes, the pair endpoint, the paired lists, rotate and remove; the logic is in app/nodes.py ----------
+
+def _node_manager(request: Request) -> None:
+    """Pairing is managed by a person in Settings: the hook token (local automation), the hub and a node token may not make codes, list pairs or remove them."""
+    user = getattr(request.state, "user", None)
+    if user in ("local-token", "hub") or (isinstance(user, str) and user.startswith("node:")):
+        raise projects.Forbidden("pairing is managed from Settings > Nodes by a signed-in person")
+
+
+class PairCodeIn(BaseModel):
+    model_config = {"extra": "forbid"}          # no permission or sandbox field is ever read here
+    scopes: list[str] | None = None
+    minutes: int = 10
+
+
+class NodeAddIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    url: str
+    code: str
+    handle: str | None = None
+    both_ways: bool = False
+
+
+def _pair_failed(e: "nodes.PairError") -> JSONResponse:
+    headers = {"Cache-Control": "no-store"}
+    if e.status == 429:
+        headers["Retry-After"] = str(getattr(e, "retry_after", None) or 60)
+    return JSONResponse(e.payload(), status_code=e.status, headers=headers)
+
+
+@app.post("/api/nodes/pair-code")
+def api_nodes_pair_code(body: PairCodeIn, request: Request):
+    """Make this board's pairing code (the accepting side): {code (the only time it is shown), expires_at, scopes}. Scopes default to read and tasks; minutes are
+    1 to 30 (default 10). One code at a time: a new one replaces the old. The scopes are what the board that uses the code may do here."""
+    _node_manager(request)
+    try:
+        made = nodes.create_code(body.scopes, body.minutes, db=db)           # scopes None = read and tasks; a bad scope or minutes is a ValueError
+    except ValueError as e:
+        raise projects.BadRequest(str(e)) from None
+    return JSONResponse({"code": made["code"], "expires_at": made["expires_at"], "scopes": made["scopes"], "minutes": body.minutes},
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.delete("/api/nodes/pair-code")
+def api_nodes_pair_code_cancel(request: Request):
+    """Cancel the pairing code, if there is one. Always {cancelled: bool}."""
+    _node_manager(request)
+    return JSONResponse({"cancelled": bool(nodes.cancel_code(db=db))}, headers={"Cache-Control": "no-store"})
+
+
+async def _read_capped(request: Request, limit: int) -> bytes | None:
+    """The request body, or None once it is over `limit` bytes (the rest is never read)."""
+    try:
+        if int(request.headers.get("content-length") or 0) > limit:
+            return None
+    except ValueError:
+        return None
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf += chunk
+        if len(buf) > limit:
+            return None
+    return bytes(buf)
+
+
+@app.post("/api/nodes/pair")
+async def api_nodes_pair(request: Request):
+    """The other board's call with a code (issue #135). No identity is needed (a tagged board has none), so before anything else is read or changed: it must
+    send X-CCBoard: 1, must not send an Origin header, and an identity header, when there is one, must be an allowed login. The body is capped at 16 KB and
+    only `code`, `node` and `reverse` are accepted (any other key, a permission or sandbox field included, is a 400). Everything after that (the rate limit per source address, the code, the callback) is nodes.handle_pair:
+    nothing is stored or called before the code has been checked. Answers once {token, scopes, node, expires_at}."""
+    if request.headers.get("x-ccboard") != "1":
+        return JSONResponse({"error": "missing X-CCBoard header"}, status_code=403)
+    if request.headers.get("origin") is not None:
+        return JSONResponse({"error": "requests from a web page (an Origin header) are refused"}, status_code=403)
+    if request.headers.get("tailscale-user-login") is not None and identify(request.headers, settings) is None:
+        return JSONResponse({"error": "no Tailscale identity or not in CCBOARD_ALLOWED_USERS"}, status_code=403)
+    raw = await _read_capped(request, PAIR_BODY_MAX)
+    if raw is None:
+        return JSONResponse({"error": f"the body is over {PAIR_BODY_MAX // 1024} KB"}, status_code=413)
+    try:
+        body = json.loads(raw or b"{}")
+    except ValueError:
+        body = None
+    caller = nodes.caller_addr(request.client.host if request.client else None, request.headers.get("x-forwarded-for"))
+    try:
+        out = await asyncio.to_thread(nodes.handle_pair, body, caller, db=db)
+    except nodes.PairError as e:
+        return _pair_failed(e)
+    doctor.invalidate()
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+PAIR_CONFIRM_MAX = 1024
+
+
+@app.post("/api/nodes/pair/confirm")
+async def api_nodes_pair_confirm(request: Request):
+    """The callback of the board this one is pairing with (issue #135): body {proof}, a digest of the code and a nonce that only this board's own
+    add_node (in flight right now, 30 seconds at most) and the board it called know. Answers {node_id} while that add_node runs, else 404, the same
+    404 for an unknown and a stale proof. The code, the nonce and every token never travel in this call. No identity is needed (a tagged board has none);
+    X-CCBoard: 1 is required, an Origin header is refused, the body is capped at 1 KB and a source address gets 30 calls a minute."""
+    if request.headers.get("x-ccboard") != "1":
+        return JSONResponse({"error": "missing X-CCBoard header"}, status_code=403)
+    if request.headers.get("origin") is not None:
+        return JSONResponse({"error": "requests from a web page (an Origin header) are refused"}, status_code=403)
+    if request.headers.get("tailscale-user-login") is not None and identify(request.headers, settings) is None:
+        return JSONResponse({"error": "no Tailscale identity or not in CCBOARD_ALLOWED_USERS"}, status_code=403)
+    ok, wait = nodes.confirm_limiter.allow(nodes.caller_addr(request.client.host if request.client else None, request.headers.get("x-forwarded-for")))
+    if not ok:
+        return JSONResponse({"error": "too many requests"}, status_code=429, headers={"Retry-After": str(wait), "Cache-Control": "no-store"})
+    raw = await _read_capped(request, PAIR_CONFIRM_MAX)
+    if raw is None:
+        return JSONResponse({"error": "the body is over 1 KB"}, status_code=413)
+    try:
+        body = json.loads(raw or b"{}")
+    except ValueError:
+        body = None
+    got = nodes.confirm_answer(body.get("proof")) if isinstance(body, dict) and set(body) == {"proof"} else None
+    if got is None:
+        return JSONResponse({"error": "no pairing is in progress here"}, status_code=404, headers={"Cache-Control": "no-store"})
+    return JSONResponse({"node_id": got}, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@app.post("/api/nodes", status_code=201)
+def api_nodes_add(body: NodeAddIn, request: Request):
+    """Pair with another board (the calling side): its address and the code it shows. This board checks the address (the peer address rule), calls the other
+    board's pair endpoint with its own card, keeps the token it gets in <data dir>/node-tokens.json and answers the registry row (never a token). With
+    both_ways the other board is also given a token to call this one (read and tasks). 400 a bad address, code or handle (a taken handle gets a
+    number after it), 403 a wrong, expired, used or burned code, 409 the other board's address belongs to another node, 429 too many tries, 502 the other
+    board refused or did not answer."""
+    _node_manager(request)
+    try:
+        row = nodes.add_node(body.url, body.code, body.handle, body.both_ways, db=db)
+    except nodes.PairError as e:
+        return _pair_failed(e)
+    except nodes.PeerError as e:
+        return JSONResponse({"error": f"the other board did not answer ({e})", "reason": e.reason}, status_code=502, headers={"Cache-Control": "no-store"})
+    except ValueError as e:                                                 # a bad address (PeerUrlError), code or handle
+        raise projects.BadRequest(str(e)) from None
+    doctor.invalidate()
+    return JSONResponse(row, status_code=201, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/nodes")
+def api_nodes(request: Request):
+    """The nodes this board calls (direction out; a CCBOARD_NODES entry is a `legacy` row, read only until it is paired) and the pairs that call this board
+    (direction in), as {nodes, pairs, at}. Rows are {peer_id, node_id, name, url, scopes, created_at, last_seen, direction, ...}; never a token or a digest.
+    A board with no pair answers empty lists and starts nothing."""
+    _node_manager(request)
+    rows = nodes.peers(db=db)
+    return JSONResponse({"nodes": [r for r in rows if r.get("direction") != "in"], "pairs": [r for r in rows if r.get("direction") == "in"], "at": db_now()},
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/nodes/pairs")
+def api_nodes_pairs(request: Request):
+    """Who can control this node: the pairs that call this board (direction in), {pairs, at}. Never a token or a digest."""
+    _node_manager(request)
+    return JSONResponse({"pairs": [r for r in nodes.peers(db=db) if r.get("direction") == "in"], "at": db_now()}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/nodes/audit")
+def api_nodes_audit(request: Request, limit: int = 100):
+    """The pairing and node activity, newest first: {rows: [{id, at, direction, peer, node_name, user, action, target, status, detail}]}. Rows hold no
+    token, code or prompt; they are kept 90 days. limit 1 to 500."""
+    _node_manager(request)
+    return JSONResponse({"rows": nodes.audit_list(max(1, min(limit, 500)), db=db), "at": db_now()}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/nodes/{peer}/rotate")
+def api_nodes_rotate(peer: str, request: Request):
+    """Rotate the token of a node this board calls: the other board mints a new one (the old one works there for 60 more seconds) and this board keeps
+    it. Nothing about either token is answered. 404 no such node, 409 a pair that calls this board (the board that holds a token rotates it) or a
+    legacy row, 502 the other board did not answer (the saved token is then unchanged)."""
+    _node_manager(request)
+    rec = nodes.peer(peer, db=db)
+    if rec is None:
+        raise projects.NotFound("no such node")
+    if rec.get("direction") == "in" or rec.get("legacy"):
+        raise projects.Conflict("only a node this board has paired with can be rotated, and by this board")
+    try:
+        nodes.rotate_outgoing(rec["peer_id"], db=db)
+    except LookupError:
+        raise projects.NotFound("no such node") from None
+    except nodes.PairError as e:
+        return _pair_failed(e)
+    except nodes.PeerError as e:
+        return JSONResponse({"error": f"the other board did not give a new token ({e}); the saved token is unchanged", "reason": e.reason}, status_code=502,
+                            headers={"Cache-Control": "no-store"})
+    doctor.invalidate()
+    return JSONResponse({"rotated": True, "grace_s": nodes.ROTATE_GRACE}, headers={"Cache-Control": "no-store"})
+
+
+class NodeRemoveIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    also_revoke: list[str] = Field(default_factory=list, max_length=50)
+
+
+@app.post("/api/nodes/{peer}/remove-preview")
+def api_nodes_remove_preview(peer: str, request: Request):
+    """What removing this pair would also touch, and nothing is changed: {auto, others}. `auto` are the incoming pairs the removal revokes by itself
+    (confirmed, same node id, same address); `others` are the active incoming pairs that name the same node id from another address or were never
+    confirmed ({peer_id, name, url, verified}): they stay unless DELETE /api/nodes/<peer> lists them in `also_revoke`. 404 no such node."""
+    _node_manager(request)
+    try:
+        out = nodes.removal_preview(peer, db=db)
+    except LookupError:
+        raise projects.NotFound("no such node") from None
+    return JSONResponse({"auto": out["auto"], "others": out["others"], "at": db_now()}, headers={"Cache-Control": "no-store"})
+
+
+@app.delete("/api/nodes/{peer}")
+def api_nodes_remove(peer: str, request: Request, body: NodeRemoveIn | None = None):
+    """Remove a node this board calls, or revoke a pair that calls this board (it fails on its next request). Never fails because the other board is
+    offline: a node this board calls is asked to unpair (best effort) and {peer_notified} says whether it was told. An optional body
+    {also_revoke: [peer_id, ...]} also revokes exactly those incoming pairs; each must be an active pair with the removed node's node id (400
+    otherwise, and nothing happens). The answer lists the other pairs that name the same node id and are still active (`other_pairs`). 404 no such node."""
+    _node_manager(request)
+    rec = nodes.peer(peer, db=db)
+    if rec is None:
+        raise projects.NotFound("no such node")
+    try:
+        done = nodes.remove_node(rec["peer_id"], db=db, also_revoke=body.also_revoke if body else None)
+    except LookupError:
+        raise projects.NotFound("no such node") from None
+    except ValueError as e:
+        raise projects.BadRequest(str(e)) from None
+    doctor.invalidate()
+    return JSONResponse({"removed": True, "peer_notified": bool(done["peer_told"]) if rec.get("direction") != "in" and not rec.get("legacy") else None,
+                         "also_revoked": done["also_revoked"], "other_pairs": done["other_pairs"]}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/node/rotate")
+def api_node_rotate(request: Request):
+    """A paired board rotating the token it uses here (a node token, any scope): answers the new token once; the old one works for 60 more seconds."""
+    pid = getattr(request.state, "node_pair", None)
+    if not pid:
+        raise projects.Forbidden("this route takes a node token")
+    if (getattr(request.state, "node_peer", None) or {}).get("via_previous"):
+        return _node_refused(401, "this token was already rotated away; rotate with the current token", **{"WWW-Authenticate": 'Bearer realm="ccboard", error="invalid_token"'})
+    try:
+        token = nodes.rotate_token(pid, db=db)
+    except LookupError:
+        return _node_refused(401, "this pair is gone")
+    return JSONResponse({"token": token, "grace_s": nodes.ROTATE_GRACE}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/node/unpair")
+def api_node_unpair(request: Request):
+    """A paired board telling this one it removed the pair (a node token, any scope): the pair is revoked. Idempotent."""
+    pid = getattr(request.state, "node_pair", None)
+    if not pid:
+        raise projects.Forbidden("this route takes a node token")
+    nodes.unpair_incoming(pid, db=db)
+    doctor.invalidate()
+    return JSONResponse({"unpaired": True}, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/search")
