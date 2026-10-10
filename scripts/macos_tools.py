@@ -4,7 +4,8 @@
     macos_tools.py bottle --formula ttyd --macos 14.7.3 --arch x86_64 [--file info.json] [--tag sonoma] [--explain]
         Reads `brew info --json=v2 <formula>` (stdin, or --file) and says whether Homebrew has a bottle for this macOS and processor:
         prints "bottle available ...", "builds from source ..." or "could not tell ...". Exit 0, 10 or 20 in that order. --explain adds the
-        "takes several minutes" line and, on Intel, the Tier 3 sentence. It never claims a bottle it could not find.
+        "takes several minutes" line, the warning that Homebrew may upgrade packages you already have, the measured ttyd finding (for ttyd)
+        and, on Intel, the Tier 3 sentence. It never claims a bottle it could not find.
     macos_tools.py ttyd (--bin PATH | --version-text FILE --help-text FILE)
         Acceptance for ttyd: version 1.7.4 or newer and -W, -O and -a in its --help. Exit 0, or 1 with one line per problem naming the flag.
     macos_tools.py code-server-config --port N
@@ -38,6 +39,14 @@ RELOCATABLE = {":any", ":any_skip_relocation", "any", "any_skip_relocation"}
 INTEL_NOTE = ("Homebrew supports Intel Macs only at Tier 3 (problems may be closed without investigation) and not at all from about "
               "September 2027: a date to plan around, not a reason to stop.")
 SEVERAL_MINUTES = "Building takes several minutes."
+# `brew bundle --no-upgrade` in Homebrew 7.0.5 is documented as "Do not check for outdated dependencies. Note they may still be upgraded by
+# brew install if needed": it does not keep a source build from upgrading what the formula depends on.
+SOURCE_UPGRADES = ("A source build may also upgrade packages you already have that it depends on; `brew bundle --no-upgrade` only skips "
+                   "the check for outdated ones, and Homebrew says they may still be upgraded if needed.")
+# Measured by a device check (issue #130, row M8) on an Intel Mac with macOS 14.7.3 and Homebrew 7.0.5; not measured on any other Mac.
+TTYD_SOURCE_FINDING = ("Measured on an Intel Mac with macOS 14: ttyd has no bottle there, Homebrew builds it with cmake (more than 10 minutes "
+                       "before the run was stopped) and the install would have upgraded 11 installed packages, python@3.14 among them. "
+                       "Plan for a long wait, or use an Apple silicon Mac on macOS 15 or newer, where Homebrew lists a ttyd bottle.")
 EXIT_BOTTLE, EXIT_SOURCE, EXIT_UNKNOWN = 0, 10, 20
 
 
@@ -234,6 +243,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{word} ({detail})")
         if a.explain and status == "source":
             print(SEVERAL_MINUTES)
+            print(SOURCE_UPGRADES)
+            if short_name(a.formula or "") == "ttyd":
+                print(TTYD_SOURCE_FINDING)
             if a.arch in ("x86_64", "i386"):
                 print(INTEL_NOTE)
         if a.explain and status == "unknown":

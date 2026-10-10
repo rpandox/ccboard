@@ -249,3 +249,80 @@ def test_the_changes_job_runs_macos_when_it_cannot_tell(tmp_path):
 
 def test_the_linux_test_job_installs_shellcheck_too():
     assert "apt-get install -y tmux shellcheck" in _job(CI.read_text(), "test")
+
+
+# ---------------------------------------------------------------- issue #123: the advisory Windows (PowerShell) job
+PESTER = CI.parent.parent.parent / "tests" / "windows" / "ccboard-wsl-keepalive.Tests.ps1"
+KEEPALIVE = CI.parent.parent.parent / "scripts" / "windows" / "ccboard-wsl-keepalive.ps1"
+
+
+def _code(job_text):
+    """A job's text without whole-line comments (the comment above the next job lands at the end of this one)."""
+    return "\n".join(l for l in job_text.splitlines() if not l.lstrip().startswith("#"))
+
+
+def test_the_windows_job_is_advisory_read_only_secret_free_and_outside_the_deploy_gate():
+    text = CI.read_text()
+    win = _job(text, "check-windows")
+    assert re.search(r"^    runs-on: windows-latest$", win, re.M) and re.search(r"^    timeout-minutes: \d+$", win, re.M)
+    assert re.search(r"^    continue-on-error: true$", win, re.M), "advisory, as test-macos is; promoting it is the owner's decision"
+    assert re.search(r"^    permissions:\n      contents: read\n(?!      )", win, re.M), "contents: read and nothing else"
+    assert "packages:" not in win and not re.search(r"\$\{\{\s*secrets\.", win) and "GITHUB_TOKEN" not in win and "login-action" not in win
+    assert _needs(win) == "changes"
+    assert re.search(r"^    if: needs\.changes\.outputs\.code == 'true'$", win, re.M), "skipped for documentation-only changes"
+    # the deploy gate does not know the job exists
+    for name in ("image", "image-check", "test"):
+        assert "check-windows" not in _code(_job(text, name)), name
+    assert _needs(_job(text, "image")) == "test" and _needs(_job(text, "image-check")) == "test"
+    assert "check-windows" not in _code(_job(text, "test-macos")) and "check-windows" not in _code(_job(text, "changes"))
+    assert [j for j in re.findall(r"^  ([\w-]+):\n", text[text.index("\njobs:\n"):], re.M) if "packages: write" in _job(text, j)] == ["image"]
+
+
+def test_the_windows_job_parses_analyses_and_runs_pester_with_pinned_tools_and_no_new_action():
+    win = _job(CI.read_text(), "check-windows")
+    assert win.count("shell: pwsh") >= 4
+    assert "[System.Management.Automation.Language.Parser]::ParseFile" in win and "scripts/windows" in win and "tests/windows" in win
+    assert "Invoke-ScriptAnalyzer" in win and "Get-ChildItem -Path scripts/windows -Filter *.ps1" in win
+    assert re.search(r"Invoke-ScriptAnalyzer .*-Severity Error, Warning", win), "warnings fail the job, not only errors"
+    assert "Invoke-Pester" in win and "$config.Run.Path = 'tests/windows'" in win and "$config.Run.Exit = $true" in win
+    # the modules are pinned to an exact version, from the gallery; the only action is the checkout, pinned like every other one
+    for module in ("Pester", "PSScriptAnalyzer"):
+        assert re.search(rf"Install-Module -Name {module} -RequiredVersion \d+\.\d+\.\d+ ", win), module
+        assert re.search(rf"Import-Module {module} -RequiredVersion \d+\.\d+\.\d+", win), module
+    assert [ref.split("@")[0] for ref, _ in _uses(win)] == ["actions/checkout"]
+    assert "pytest" not in win and "python" not in win, "no board code runs on Windows"
+    assert "${{" not in "\n".join(_run_blocks(win))
+
+
+def test_the_windows_job_excludes_exactly_three_analyzer_rules_and_says_why():
+    win = _job(CI.read_text(), "check-windows")
+    m = re.search(r"-ExcludeRule ([\w, ]+)\n", win)
+    assert m and sorted(x.strip() for x in m.group(1).split(",")) == sorted(
+        ["PSAvoidUsingWriteHost", "PSUseShouldProcessForStateChangingFunctions", "PSUseSingularNouns"])
+    assert "Write-Host" in win.split("- name: PSScriptAnalyzer")[0].rsplit("# Rules left out", 1)[1], "the reason sits above the step"
+
+
+def test_the_pester_file_mocks_the_scheduler_and_wsl_and_runs_no_real_task():
+    assert KEEPALIVE.exists() and PESTER.exists()
+    text = PESTER.read_text()
+    for cmd in ("Register-ScheduledTask", "Unregister-ScheduledTask", "Start-ScheduledTask", "Stop-ScheduledTask", "Get-ScheduledTask"):
+        assert re.search(rf"^\s*Mock {cmd} ", text, re.M), f"{cmd} must be mocked"
+        assert f"Should -Invoke {cmd}" in text or cmd in ("Get-ScheduledTask",), f"{cmd} must be asserted"
+    assert "function global:wsl.exe" in text and "Remove-Item -Path 'function:global:wsl.exe'" in text, "wsl.exe is replaced and put back"
+    assert "$env:USERPROFILE = $TestDrive" in text, "the real .wslconfig is never touched"
+    assert "$onWindows" in text and "-Skip:(-not $onWindows)" in text
+    # what the script promises is what the test asserts: the task name, the log-on trigger user, the hidden window, both methods, -Remove
+    script = KEEPALIVE.read_text()
+    for needle in ("ccboard-wsl-keepalive", "sleep infinity", "dbus-launch true", "-WindowStyle Hidden", "-RunLevel Limited"):
+        assert needle in script, needle
+    for needle in ("ccboard-wsl-keepalive", "sleep infinity", "dbus-launch true", "-WindowStyle Hidden", "'Limited'", "-Remove", "-WriteWslConfig", "-Mirrored"):
+        assert needle in text, needle
+    # nothing in it can reach the machine it runs on
+    for bad in ("schtasks", "wsl --shutdown", "Invoke-Expression", "Start-Process"):
+        assert bad not in text, bad
+
+
+def test_the_windows_files_hold_no_host_name_email_or_personal_path():
+    for path in (PESTER, KEEPALIVE):
+        text = path.read_text()
+        assert "/Us" + "ers/" not in text and "C:\\Us" + "ers\\" not in text and not re.search(r"\b[\w.+-]+@[\w-]+\.[\w.]+", text), path.name

@@ -64,7 +64,8 @@ function makeNode(tag) {
  *   world.location.hash  assigning fires 'hashchange' like a browser; setHash(h, {silent:true}) does not
  *   world.document.nodes selector -> node map used by document.querySelector (default: nothing, so querySelector returns null)
  */
-export function makeWorld(extra = {}) {
+export function makeWorld(extra0 = {}) {
+  const { companions = true, ...extra } = extra0;            // companions: false keeps the lazy halves out (lazy.test.mjs makes the loader fetch them)
   const win = emitter();
   const doc = emitter();
   let hash = '';
@@ -104,6 +105,7 @@ export function makeWorld(extra = {}) {
     ...extra,
   };
   const ctx = vm.createContext(sandbox);
+  if (!companions) NO_COMPANIONS.add(ctx);
   vm.runInContext('globalThis.window = globalThis;', ctx);
   loadScript(ctx, 'nodes.js');       // index.html loads nodes.js (the Ref helpers) right after core.js; it is definition-only and needs nothing, so every world has it (never load it again)
   loadScript(ctx, 'nodes-pair.js');  // the pairing half (lazy.js loads it with the settings bundle, not index.html); definition-only too, so a world that needs the pair words and the demo's writes has it up front
@@ -118,6 +120,37 @@ export function makeWorld(extra = {}) {
   };
 }
 
+/**
+ * Lazy halves (issue #103 and later): code that index.html does not load up front lives in a file of its own that lazy.js fetches on first use. A test world is not a
+ * browser, so by default loading the file a half was cut from also runs the half right after it, once per world: the world is then the one it was before the cut and
+ * every test that loads its scripts by a list keeps working. makeWorld({ companions: false }) skips this, for the tests that drive the real loader (lazy.test.mjs).
+ * A companion that is not in the directory the parent came from (an older static tree) is skipped.
+ */
+export const COMPANIONS = {
+  'pages/agents.js': ['pages/agents-page.js'],
+  'shell.js': ['shell-create.js'],
+  'components.js': ['task-sheets.js'],
+};
+const NO_COMPANIONS = new WeakSet();
+const COMPANIONS_RUN = new WeakMap();
+
+function runCompanions(ctx, abs) {
+  if (NO_COMPANIONS.has(ctx)) return;
+  const posix = abs.split(path.sep).join('/');
+  for (const [parent, list] of Object.entries(COMPANIONS)) {
+    if (!posix.endsWith('/' + parent)) continue;
+    const root = abs.slice(0, abs.length - parent.length);
+    const done = COMPANIONS_RUN.get(ctx) || new Set();
+    COMPANIONS_RUN.set(ctx, done);
+    for (const c of list) {
+      const target = path.join(root, c);
+      if (done.has(c) || !fs.existsSync(target)) continue;
+      done.add(c);
+      new vm.Script(fs.readFileSync(target, 'utf8'), { filename: target }).runInContext(ctx);
+    }
+  }
+}
+
 /** Run a classic script (path relative to app/static, or absolute) inside a context. A missing file throws '<name> missing: ...'. */
 export function loadScript(ctx, file) {
   const abs = path.isAbsolute(file) ? file : path.join(STATIC, file);
@@ -125,4 +158,5 @@ export function loadScript(ctx, file) {
   if (abs === path.join(STATIC, 'nodes-pair.js') && vm.runInContext("typeof NodeView !== 'undefined' && typeof NodeView.peerRow", ctx) === 'function') return;     // makeWorld already ran it
   if (abs === path.join(STATIC, 'nodes.js') && vm.runInContext('typeof Ref', ctx) !== 'undefined') return;     // makeWorld already ran it (a `const Ref` cannot be declared twice); index.html's list still names it
   new vm.Script(fs.readFileSync(abs, 'utf8'), { filename: abs }).runInContext(ctx);
+  runCompanions(ctx, abs);
 }

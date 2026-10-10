@@ -403,6 +403,20 @@ function boardAutoContinueOff(st) {
   return !!c && c.auto_continue === false;
 }
 function autoContinueLabel(off) { return 'Auto-continue: ' + (off ? 'off' : 'on'); }
+/* '22:05', with the weekday when it is a day away. */
+function clockAt(epoch) {
+  if (!epoch) return '';
+  const d = new Date(epoch * 1000);
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return Math.abs(epoch - Date.now() / 1000) < 20 * 3600 ? hm : `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]} ${hm}`;
+}
+/* #71: a session parked on a rate limit (s.parked {kind, resets_at}, from the server) says what happens next, not a bare "error". */
+function limitParkedText(s) {
+  const p = s && s.parked;
+  if (!p) return '';
+  if (!p.resets_at || sessionAutoContinueOff(s) || boardAutoContinueOff()) return 'limit reached, auto-continue is off';
+  return p.resets_at * 1000 > Date.now() ? `limit reached, continues at ${clockAt(p.resets_at)}` : 'limit reset, continuing shortly';
+}
 /* resolves true when the row now shows the wanted value; false when nothing changed (a second tap while one is in flight, or a refusal) */
 async function setAutoContinue(tmux, off, o) {
   const x = o || {};

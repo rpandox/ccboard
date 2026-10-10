@@ -426,6 +426,10 @@ def test_a_codex_row_is_recovered_with_codex_resume_by_id_or_last(cx):
     summary = recover.run(cx.db(), main_start_session())
     assert sorted(summary["recovered"]) == sorted([bound["tmux"], web["tmux"], task_less["tmux"]]) and summary["skipped"] == []
     assert "notes" not in summary, "nothing was guessed"
+    # #93: the summary (and so the Home banner) says which agent each recovered session ran, so a Codex row is not called a Claude one
+    assert summary["agents"] == {bound["tmux"]: "codex", web["tmux"]: "codex", task_less["tmux"]: "claude"}
+    stored = cx.db().kv_get("last_recovery")["value"]
+    assert stored["agents"] == summary["agents"]
     typed = dict(cx.tmux["sent"])
     assert typed[bound["tmux"]].startswith(f"codex resume ") and typed[bound["tmux"]].endswith(CX1)
     assert typed[web["tmux"]].endswith("--last")

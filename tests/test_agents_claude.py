@@ -377,7 +377,7 @@ def test_validate_opts_headless_messages(ag):
     for pm in ("bypassPermissions", "manual", "bogus"):
         with pytest.raises(projects.BadRequest) as e:
             v(ag, {"permission_mode": pm}, **h)
-        assert str(e.value) == "permission_mode must be one of default, acceptEdits, plan, auto, dontAsk (bypass only inside a devcontainer)"
+        assert str(e.value) == "permission_mode must be one of default, acceptEdits, plan, auto, dontAsk (bypass is never allowed for unattended runs)"
     for bad in ("--permission-mode=auto", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--settings"):
         with pytest.raises(projects.BadRequest) as e:
             v(ag, {"extra": ["--model", "opus", bad]}, **h)

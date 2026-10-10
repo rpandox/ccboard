@@ -464,7 +464,11 @@ def test_a_refused_repository_setting_fails_with_the_reason(dj, monkeypatch):
 def test_the_ssh_agent_note_appears_only_after_a_push_failure_on_a_mac(dj, monkeypatch):
     dj.record(push=[{"repo": "a/b", "pushed": [], "rejected": [], "error": "git push: Permission denied (publickey)"}])
     out = dj.run()
-    assert out.status == "warn" and "ssh-agent" in out.detail and "UNVERIFIED" in out.detail and "ssh-add --apple-use-keychain" in out.fix["text"]
+    assert out.status == "warn" and "ssh-agent" in out.detail and "ssh-add --apple-use-keychain" in out.fix["text"]
+    # the README's measured result (2026-10-10, Intel Mac, macOS 14): a gui-domain job sees SSH_AUTH_SOCK, a user-domain Background job does not; whether the agent holds the key is still open
+    assert "UNVERIFIED" not in out.detail and "SSH_AUTH_SOCK" in out.detail and "gui domain" in out.detail and "user domain" in out.detail
+    assert "measured 2026-10-10" in out.detail and "still to verify" in out.detail
+    assert "gui domain" in out.fix["text"] and "CCBOARD_LAUNCHD_DOMAIN=user" in out.fix["text"]
     dj.record(push=[{"repo": "a/b", "pushed": ["x"], "rejected": ["y: remote rejected"]}])
     assert dj.run().status == "pass", "a branch the remote refused is not an agent problem"
     dj.record(push=[{"repo": "a/b", "skipped": "no origin"}])

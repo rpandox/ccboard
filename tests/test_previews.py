@@ -87,3 +87,113 @@ def test_preview_route_docker_without_operator(lite_client, projects_dir, fake_t
     assert r.status_code == 422
     assert r.json()["error"] == "tailscale serve failed; on the box run: sudo tailscale set --operator=example"
     assert len(calls) == 1 and "sudo" not in calls[0]
+
+
+# ---- #126: capability(), what state.preview tells the Preview control before any click
+
+import pytest  # noqa: E402
+
+from app import nodes, tailscale as ts  # noqa: E402
+from app.config import settings  # noqa: E402
+
+
+@pytest.fixture
+def cap(monkeypatch, tmp_path):
+    """A Linux box with a command, a public url and a signed-in Tailscale reading (the seam nodes._ts), each piece changeable by a test."""
+    exe = tmp_path / "tailscale"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    monkeypatch.setattr(settings, "public_url", "https://box.example.ts.net:8443")
+    monkeypatch.setattr(ts, "find_cli", lambda: ts.Cli([str(exe)], {}))
+    monkeypatch.setattr(nodes, "windows_side", lambda: False)
+    reading = {"d": {"BackendState": "Running"}}
+    monkeypatch.setattr(nodes, "_ts", lambda: reading["d"])
+    previews._refused.update(at=0.0, why="")
+    yield type("Cap", (), {"reading": reading, "exe": exe})
+    previews._refused.update(at=0.0, why="")
+
+
+def test_capability_is_available_when_everything_is_in_place(cap):
+    assert previews.capability() == {"available": True, "code": "ok", "reason": None}
+
+
+@pytest.mark.parametrize("what, code, words", [
+    ("no_url", "no_public_url", "CCBOARD_PUBLIC_URL is not set"),
+    ("wsl", "wsl_host", "Windows side"),
+    ("no_cli", "no_cli", "tailscale"),
+    ("down", "not_running", "not running or cannot be reached"),
+    ("logged_out", "not_signed_in", "not logged in"),
+])
+def test_capability_names_each_reason(cap, monkeypatch, what, code, words):
+    if what == "no_url":
+        monkeypatch.setattr(settings, "public_url", "")
+    elif what == "wsl":
+        monkeypatch.setattr(nodes, "windows_side", lambda: True)
+    elif what == "no_cli":
+        monkeypatch.setattr(ts, "find_cli", lambda: None)
+    elif what == "down":
+        cap.reading["d"] = None
+    else:
+        cap.reading["d"] = {"BackendState": "NeedsLogin"}
+    got = previews.capability()
+    assert got["available"] is False and got["code"] == code and words in got["reason"], got
+
+
+def test_capability_no_cli_also_when_linux_names_a_command_that_is_not_there(cap, monkeypatch, tmp_path):
+    """On Linux find_cli() always answers (the fallback path); a command that does not exist is still 'no CLI'."""
+    monkeypatch.setattr(ts, "find_cli", lambda: ts.Cli([str(tmp_path / "nowhere" / "tailscale")], {}))
+    monkeypatch.setattr(previews.shutil, "which", lambda _: None)
+    assert previews.capability()["code"] == "no_cli"
+
+
+def test_a_refused_serve_turns_the_control_off_until_it_expires_or_a_serve_works(cap, monkeypatch):
+    def refuse(args, sock=None):
+        raise ts.TailscaleError("tailscale serve failed; on the box run: sudo tailscale set --operator=alice")
+    monkeypatch.setattr(ts, "run_serve", refuse)
+    with pytest.raises(previews.PreviewError):
+        previews.serve_on(9100, 5173)
+    got = previews.capability()
+    assert got["available"] is False and got["code"] == "denied" and "--operator=alice" in got["reason"]
+    # a port or network failure is not a denial
+    previews._refused.update(at=0.0, why="")
+    monkeypatch.setattr(ts, "run_serve", lambda args, sock=None: (_ for _ in ()).throw(ts.TailscaleError("port 9100 is in use")))
+    with pytest.raises(previews.PreviewError):
+        previews.serve_on(9100, 5173)
+    assert previews.capability()["available"] is True
+    # it expires, so one more try is possible (nothing else could clear it while the button is off)
+    previews._refused.update(at=previews.time.monotonic() - previews.DENIED_TTL - 1, why="denied once")
+    assert previews.capability()["available"] is True
+    # a serve that works clears it at once
+    previews._refused.update(at=previews.time.monotonic(), why="denied once")
+    monkeypatch.setattr(ts, "run_serve", lambda args, sock=None: None)
+    previews.serve_on(9100, 5173)
+    assert previews.capability()["available"] is True
+
+
+def test_capability_runs_nothing_and_never_raises(cap, monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("ran a process")
+    monkeypatch.setattr(previews.subprocess, "run", boom)
+    monkeypatch.setattr(ts, "_exec", boom)
+    assert previews.capability()["available"] is True
+    monkeypatch.setattr(nodes, "_ts", lambda: (_ for _ in ()).throw(RuntimeError("x")))
+    assert previews.capability() == {"available": True, "code": "unknown", "reason": None}
+
+
+def test_state_carries_the_preview_capability(client, monkeypatch):
+    monkeypatch.setattr(settings, "public_url", "")
+    st = client.get("/api/state", headers=H).json()
+    assert st["preview"]["available"] is False and st["preview"]["code"] == "no_public_url"
+    assert "CCBOARD_PUBLIC_URL" in st["preview"]["reason"]
+
+
+def test_variant_reads_the_file_layout_only_and_runs_no_command(monkeypatch):
+    """#126: variant() does not read `tailscale version` (dropped from the scope: what it prints per variant is not measured, and a command per
+    poll would cost more than it tells); it must never start a process."""
+    def boom(*a, **k):
+        raise AssertionError("variant ran a process")
+    monkeypatch.setattr(ts.subprocess, "run", boom)
+    for kind in ("IS_MACOS", "IS_LINUX", "IS_WINDOWS"):
+        for other in ("IS_MACOS", "IS_LINUX", "IS_WINDOWS"):
+            monkeypatch.setattr(ts.plat, other, other == kind)
+        assert isinstance(ts.variant(ts.Cli(["/x/tailscale"], {})), str)

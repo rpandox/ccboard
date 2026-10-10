@@ -184,6 +184,7 @@ def run(db, start_session) -> dict:
                                  task_id=task_ids.get(t["name"]) if row.get("launcher") == "task" else None)
             real = real if isinstance(real, str) and real else t["name"]
             summary["recovered"].append(t["name"])
+            summary.setdefault("agents", {})[t["name"]] = row.get("agent") or "claude"        # #93: the Home banner says which agent each one was
             log.info("recovered %s with %s", t["name"], " ".join(t["cmd"][:3]))
             if t.get("note"):
                 summary.setdefault("notes", []).append(f"{t['name']}: {t['note']}")

@@ -47,7 +47,7 @@ jobs:
           pip-audit --require-hashes --disable-pip -r requirements.lock
 
   # Issue #123: is this change more than documents? The macOS job below runs only when it is (macOS minutes cost more than Linux ones).
-  # Anything outside *.md and docs/ counts, and a workflow, a script or the installer always counts. Only test-macos needs this job.
+  # Anything outside *.md and docs/ counts, and a workflow, a script or the installer always counts. Only test-macos and check-windows need this job.
   changes:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -125,6 +125,64 @@ jobs:
         run: |
           mkdir -p "$HOME" "$TMUX_TMPDIR"
           python -m pytest -q
+
+  # Issue #123: the PowerShell side of the Windows (WSL2) support, checked on a Windows runner. Advisory like test-macos: NOT in the image job's
+  # needs, continue-on-error, read-only token, no secrets, no third-party action (the modules come from the PowerShell Gallery at a pinned version).
+  # No board code runs here (the board does not run on native Windows): the scripts under scripts/windows are parsed, analysed, and the
+  # keep-alive script is run by Pester with Register-ScheduledTask, Unregister-ScheduledTask and wsl.exe mocked, so no task is ever registered.
+  # It runs when the `changes` job says more than documents changed. Do NOT promote it to a required job without the owner's decision.
+  check-windows:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Pester and PSScriptAnalyzer (pinned)
+        shell: pwsh
+        timeout-minutes: 8
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name Pester -RequiredVersion 5.7.1 -Force -SkipPublisherCheck -Scope CurrentUser
+          Install-Module -Name PSScriptAnalyzer -RequiredVersion 1.24.0 -Force -Scope CurrentUser
+      - name: Parse check
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($file in Get-ChildItem -Path scripts/windows, tests/windows -Filter *.ps1 -Recurse) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            foreach ($e in $errors) {
+              Write-Host "$($file.Name):$($e.Extent.StartLineNumber): $($e.Message)"
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+      # Rules left out on purpose: the script talks to a person at a console (Write-Host), and its helpers are functions of a script, not
+      # cmdlets (ShouldProcess) with a plural noun that names a list (Get-WslDistros).
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Import-Module PSScriptAnalyzer -RequiredVersion 1.24.0
+          $found = @(Get-ChildItem -Path scripts/windows -Filter *.ps1 -Recurse | ForEach-Object {
+            Invoke-ScriptAnalyzer -Path $_.FullName -Severity Error, Warning -ExcludeRule PSAvoidUsingWriteHost, PSUseShouldProcessForStateChangingFunctions, PSUseSingularNouns
+          })
+          $found | Format-Table -Property Severity, RuleName, ScriptName, Line, Message -Wrap -AutoSize | Out-String -Width 200 | Write-Host
+          if ($found.Count -gt 0) { exit 1 }
+      - name: Pester
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          Import-Module Pester -RequiredVersion 5.7.1
+          $config = New-PesterConfiguration
+          $config.Run.Path = 'tests/windows'
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $config
 
   # Push to main (or a v* tag): build the amd64 image and load it, smoke-test it, and only then build-and-push the
   # multi-arch manifest (amd64 + arm64) with every tag. A failed smoke step or a failed arm64 leg fails the job before any

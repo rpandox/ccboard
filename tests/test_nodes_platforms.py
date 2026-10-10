@@ -466,3 +466,19 @@ def test_the_readme_names_the_mac_browser_limit_and_the_decision_without_a_bypas
     sec = sec[:sec.index("\n## ")]
     assert "#127" in sec and "another device" in sec and "caffeinate -s" in sec and "to verify" in sec
     assert "CCBOARD_DEV_BYPASS_USER" not in sec
+
+
+def test_where_ccboard_runs_has_one_line_per_platform_of_the_support_table():
+    """Issue #115: the short support section and the node platform table share the platform list, so they cannot disagree."""
+    text = README.read_text(encoding="utf-8")
+    sec = text[text.index("## Where ccboard runs"):]
+    sec = sec[3:sec.index("\n## ", 3)]
+    rows = [[c.strip() for c in ln.strip().strip("|").split("|")] for ln in sec.splitlines() if ln.startswith("|")][2:]
+    assert [r[0] for r in rows] == list(nodes.SUPPORT_PLATFORMS)
+    by = {r[0]: r[1] for r in rows}
+    assert by["Native Windows"].startswith("Not supported")
+    assert "arm64 image is not Docker Desktop support" in by["Linux container"]
+    assert "another device" in by["Mac"] and "to verify" in by["Mac"] and "to verify" in by["WSL2"]
+    top = text[:text.index("## What v0.1 does")]
+    assert "(#where-ccboard-runs-issue-115)" in top, "linked from the top of the README"
+    assert "(#where-ccboard-runs-issue-115)" in text[text.index("## Install"):text.index("### Settings")], "and from Install"

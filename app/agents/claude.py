@@ -110,7 +110,7 @@ SUBAGENT_CHOICES = ("inherit", "haiku", "sonnet", "opus")
 MAX_ALLOWED_TOOLS = 20                            # a headless job's pre-approved tool rules
 FABLE_ENV = "ANTHROPIC_DEFAULT_FABLE_MODEL"       # remaps what the fable alias means
 MAX_MCP_PATH = 400
-HEADLESS_MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk")   # bypassPermissions only inside a devcontainer (v0.4.5)
+HEADLESS_MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk")   # bypassPermissions is never a headless mode: unattended runs, tasks and schedules refuse it everywhere, devcontainer or not. On an interactive session bypass is an explicit per-session choice, never a default, and a devcontainer launch does not change that; whether bypass inside the container should be offered is an open owner decision (#104)
 TOOL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_*.:/ ()\-]{0,119}\Z")   # a tool name first: a rule that starts with - would reach the variadic --allowedTools as a flag
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 WORKTREE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")              # \Z: names a directory, so no trailing newline (#44 F-03)
@@ -736,7 +736,7 @@ class ClaudeAgent(Agent):
         pm = raw.get("permission_mode")
         if not interactive:                                   # scheduled / headless run
             if pm and pm not in HEADLESS_MODES:
-                raise projects.BadRequest(f"permission_mode must be one of {', '.join(HEADLESS_MODES)} (bypass only inside a devcontainer)")
+                raise projects.BadRequest(f"permission_mode must be one of {', '.join(HEADLESS_MODES)} (bypass is never allowed for unattended runs)")
             bad = self.forbidden_extra(extra, interactive=False)
             if bad:
                 raise projects.BadRequest(f"argument not allowed for unattended runs: {bad}")

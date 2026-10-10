@@ -21,8 +21,8 @@ const settle = async (until, max = 200) => {
 };
 
 /** The first-paint set of index.html (shell.js included, main.js left out) in a world whose head fetches lazy files from app/static. */
-function lazyWorld({ fine = true, fail = [], state = fixtureState(), hash = null, slow = 0 } = {}) {
-  const w = makeWorld({ matchMedia: (q) => ({ matches: fine && /pointer:\s*fine/.test(q), addEventListener() {}, removeEventListener() {} }) });
+function lazyWorld({ fine = true, fail = [], state = fixtureState(), hash = null, slow = 0, realCreate = false } = {}) {
+  const w = makeWorld({ companions: false, matchMedia: (q) => ({ matches: fine && /pointer:\s*fine/.test(q), addEventListener() {}, removeEventListener() {} }) });
   const dom = installDom(w);
   const doc = w.document;
   const head = new dom.El('head');
@@ -59,7 +59,7 @@ function lazyWorld({ fine = true, fail = [], state = fixtureState(), hash = null
   w.run(`api = async (method, path, body) => { __calls.push({ method, path, body }); return { ok: true }; }; poll = async () => {};`);
   w.ctx.__st = state;
   w.run('state = __st');
-  w.run('Shell.openCreate = () => true');
+  if (!realCreate) w.run('Shell.openCreate = () => true');
   if (hash !== null) w.setHash(hash, { silent: true });
   const mounted = () => w.get('mountedId');
   const hrefs = () => head.children.filter((n) => n.tagName === 'LINK').map((n) => n.getAttribute('href'));
@@ -67,7 +67,7 @@ function lazyWorld({ fine = true, fail = [], state = fixtureState(), hash = null
   return { w, dom, net, head, mounted, hrefs, go };
 }
 
-const LAZY_GLOBALS = ['Tree', 'Dnd', 'Palette', 'TermKit', 'Charts', 'Memory', 'Usage', 'Quad', 'projectPage', 'settingsPage', 'doctorStore', 'wizPage', 'launcherSchema'];
+const LAZY_GLOBALS = ['agentsPage', 'Tree', 'Dnd', 'Palette', 'TermKit', 'Charts', 'Memory', 'Usage', 'Quad', 'projectPage', 'settingsPage', 'doctorStore', 'wizPage', 'launcherSchema'];
 
 test('index.html loads only the shell set: no lazy script is in it, and with just those files nothing lazy is defined', () => {
   const lazy = JSON.parse(JSON.stringify([]));
@@ -87,7 +87,7 @@ test('index.html loads only the shell set: no lazy script is in it, and with jus
 test('the pages of the first-paint set mount without a fetch, with a mouse or without', async () => {
   for (const fine of [false, true]) {
     const L = lazyWorld({ fine });
-    for (const [hash, id] of [['#/agents', 'agents'], ['#/', 'home'], ['#/inbox', 'inbox'], ['#/search', 'search']]) {
+    for (const [hash, id] of [['#/', 'home'], ['#/inbox', 'inbox'], ['#/search', 'search']]) {
       L.w.location.hash = hash;
       assert.equal(L.mounted(), id, `${id} mounts synchronously`);
     }
@@ -107,7 +107,7 @@ test('the Tasks page with a mouse keeps the dispatch bar\'s room, loads dnd.js o
   assert.deepEqual(mouse.net.scripts, ['/static/dnd.js']);
   assert.ok(await settle(() => mouse.w.document.querySelector('.dnd-bar')), 'the bar is drawn once dnd.js is here');
   assert.equal(mouse.w.document.querySelector('.dnd-bar-slot'), null, 'and the placeholder is gone');
-  mouse.w.location.hash = '#/agents';
+  mouse.w.location.hash = '#/inbox';
   mouse.w.location.hash = '#/tasks';
   assert.deepEqual(mouse.net.scripts, ['/static/dnd.js'], 'the second visit loads nothing');
 
@@ -119,8 +119,9 @@ test('the Tasks page with a mouse keeps the dispatch bar\'s room, loads dnd.js o
 });
 
 const ROUTES = [
+  { hash: '#/agents', id: 'agents', scripts: ['/static/pages/agents-page.js'], sheets: [] },
   { hash: '#/usage', id: 'usage', scripts: ['/static/charts.js', '/static/pages/usage.js'], sheets: [] },
-  { hash: '#/settings', id: 'settings', scripts: ['/static/nodes-pair.js', '/static/pages/doctor.js', '/static/pages/settings.js'], sheets: ['/static/pages/settings.css'] },
+  { hash: '#/settings', id: 'settings', scripts: ['/static/pages/agents-page.js', '/static/nodes-pair.js', '/static/pages/doctor.js', '/static/pages/settings.js'], sheets: ['/static/pages/settings.css'] },
   { hash: '#/memory', id: 'memory', scripts: ['/static/pages/memory.js'], sheets: ['/static/pages/memory.css'] },
   { hash: '#/quad', id: 'quad', scripts: ['/static/termkit.js', '/static/pages/quad.js'], sheets: ['/static/pages/quad.css'] },
   { hash: '#/p/ccboard', id: 'project', scripts: ['/static/tree.js', '/static/pages/project.js'], sheets: [] },
@@ -130,8 +131,8 @@ const ROUTES = [
 for (const r of ROUTES) {
   test(`${r.hash}: the first visit loads ${r.scripts.length} script(s) and ${r.sheets.length} sheet(s) in order, once, before the page mounts; a second visit loads nothing`, async () => {
     const L = lazyWorld();
-    L.w.location.hash = '#/agents';
-    assert.equal(L.mounted(), 'agents');
+    L.w.location.hash = '#/inbox';
+    assert.equal(L.mounted(), 'inbox');
     L.w.location.hash = r.hash;
     assert.equal(L.mounted(), null, 'the old page is taken down when the load starts (a page that rewrites its own address would otherwise undo the click)');
     assert.equal(L.w.document.body.getAttribute('data-page-loading'), r.id, 'the loading state is on the body (no visual)');
@@ -141,8 +142,8 @@ for (const r of ROUTES) {
     assert.equal(L.w.document.body.getAttribute('data-page-loading'), null);
     assert.equal(L.w.document.body.getAttribute('data-page'), r.id);
     for (const src of r.scripts) assert.equal(L.net.scripts.filter((x) => x === src).length, 1);
-    L.w.location.hash = '#/agents';
-    assert.equal(L.mounted(), 'agents');
+    L.w.location.hash = '#/inbox';
+    assert.equal(L.mounted(), 'inbox');
     const before = [L.net.scripts.length, L.net.sheets.length];
     L.w.location.hash = r.hash;
     assert.equal(L.mounted(), r.id, 'mounts at once the second time');
@@ -152,7 +153,7 @@ for (const r of ROUTES) {
 
 test('routeCount is not bumped by the late mount: history.back() decisions see one navigation per click', async () => {
   const L = lazyWorld();
-  L.w.location.hash = '#/agents';
+  L.w.location.hash = '#/inbox';
   const n = L.w.get('routeCount');
   L.w.location.hash = '#/usage';
   assert.ok(await settle(() => L.mounted() === 'usage'));
@@ -170,7 +171,7 @@ test('page sheets go in before charts.css, in the order pages.css had their rule
 
 test('a script that cannot be fetched leaves an error state with a Retry, not a blank page; Retry loads again and mounts', async () => {
   const L = lazyWorld({ fail: ['/static/pages/usage.js'] });
-  L.w.location.hash = '#/agents';
+  L.w.location.hash = '#/inbox';
   L.w.location.hash = '#/usage';
   assert.ok(await settle(() => L.w.document.querySelector('#page .load-error')));
   const page = L.w.document.querySelector('#page');
@@ -197,7 +198,7 @@ test('a sheet that cannot be fetched is an error state too: the page never mount
   assert.notEqual(L.w.run('typeof Memory'), 'undefined', 'the script itself did run');
   assert.deepEqual(L.hrefs(), ['/static/charts.css'], 'the failed sheet is not left in the head');
   L.net.fail.clear();
-  L.w.location.hash = '#/agents';
+  L.w.location.hash = '#/inbox';
   L.w.location.hash = '#/memory';
   assert.equal(L.mounted(), null, 'a global that exists is not proof the bundle is whole: still loading');
   assert.ok(await settle(() => L.mounted() === 'memory'));
@@ -207,7 +208,7 @@ test('a sheet that cannot be fetched is an error state too: the page never mount
 
 test('a load that finishes after the person went elsewhere only registers its page', async () => {
   const L = lazyWorld();
-  L.w.location.hash = '#/agents';
+  L.w.location.hash = '#/inbox';
   L.w.location.hash = '#/usage';
   L.w.location.hash = '#/inbox';
   assert.equal(L.mounted(), 'inbox');
@@ -232,7 +233,7 @@ test('a cold deep link shows Loading… after a beat when the load is slow and n
 
 test('an unknown address and the pages of the first-paint set never ask the loader for anything', () => {
   const L = lazyWorld({ fine: false });
-  for (const id of ['home', 'inbox', 'tasks', 'agents', 'search']) assert.deepEqual(plain(L.w.run(`Lazy.pending('${id}')`)), [], id);
+  for (const id of ['home', 'inbox', 'tasks', 'search']) assert.deepEqual(plain(L.w.run(`Lazy.pending('${id}')`)), [], id);
   assert.deepEqual(plain(L.w.run("Lazy.pending('usage')")), ['usage']);
   assert.deepEqual(plain(L.w.run("Lazy.pending('project')")), ['project']);
   assert.equal(L.w.run("Lazy.wants('dnd')"), false, 'dnd is for a mouse: not wanted on touch');
@@ -334,4 +335,120 @@ test('the Usage page\'s rename pencil loads Settings on first use and then opens
   assert.ok(await settle(() => L.w.run('typeof settingsRenameAccount') === 'function'));
   assert.ok(L.net.scripts.includes('/static/pages/settings.js'));
   assert.ok(await settle(() => L.w.document.querySelector('#sheet').open === true), 'the rename sheet is open');
+});
+
+// ---------------------------------------------------------------- the lazy halves of the fixes after #103: the Agents page, the create flow, the task card's sheets
+
+const read = (f) => fs.readFileSync(path.join(STATIC, f), 'utf8');
+
+test('the Agents page is a lazy route: pages/agents.js keeps the session card and the roster helpers Home reads, pages/agents-page.js registers the page', async () => {
+  const L = lazyWorld();
+  for (const name of ['sessionCard', 'agentsGroups', 'agentsCounts', 'accountLogin']) assert.equal(L.w.run(`typeof ${name}`), 'function', `${name} stays in the first-paint set`);
+  for (const name of ['agentsExtRows', 'agentsExtNode', 'agentsGroupNode', 'agentsSummaryNode', 'agentsExt']) assert.equal(L.w.run(`typeof ${name}`), 'undefined', `${name} is in the agents bundle`);
+  assert.deepEqual(plain(L.w.run("Lazy.pending('agents')")), ['agents']);
+  L.w.location.hash = '#/inbox';
+  assert.deepEqual(L.net.scripts, [], 'Home and the Inbox never ask for it');
+  L.w.location.hash = '#/agents';
+  assert.equal(L.mounted(), null, 'taken down while the bundle loads');
+  assert.ok(await settle(() => L.mounted() === 'agents'));
+  assert.deepEqual(L.net.scripts, ['/static/pages/agents-page.js']);
+  assert.equal(L.w.run('typeof agentsExtRows'), 'function');
+});
+
+test('a pointer over the Agents link warms the page, and Settings brings the Codex threads list of the agents bundle with it', async () => {
+  const L = lazyWorld();
+  L.w.run("Lazy.warm('agents')");
+  assert.ok(await settle(() => L.w.run('typeof agentsPage') !== 'undefined'));
+  assert.deepEqual(L.net.scripts, ['/static/pages/agents-page.js']);
+  const S = lazyWorld();
+  S.w.location.hash = '#/settings';
+  assert.ok(await settle(() => S.mounted() === 'settings'));
+  assert.equal(S.net.scripts[0], '/static/pages/agents-page.js', 'settings needs the agents bundle first');
+  assert.equal(S.w.run('typeof agentsExtLoad'), 'function');
+});
+
+test('Shell.openCreate answers at once and the create flow (shell-create.js) loads on the first tap, once', async () => {
+  const L = lazyWorld({ realCreate: true });
+  const sheet = () => L.w.document.getElementById('sheet');
+  for (const name of ['openCreate', 'createItems', 'defaultRepo', 'withCreate', 'withForms', 'targetLabel']) assert.equal(L.w.run(`typeof Shell.${name}`), 'function', `Shell.${name} stays in shell.js`);
+  for (const name of ['pickRepo', 'showForm', 'createFor', 'launchAt', 'routeCtx', 'createPlace']) assert.equal(L.w.run(`typeof Shell.${name}`), 'undefined', `Shell.${name} is in the shellcreate bundle`);
+  assert.equal(L.w.run("Shell.openCreate('nonsense')"), false, 'an unknown kind is answered without loading anything');
+  assert.deepEqual(L.net.scripts, [], 'an unknown kind loads nothing');
+  assert.equal(L.w.run("Shell.openCreate('session')"), true, 'the answer does not wait for the file');
+  assert.equal(sheet().open, false);
+  assert.ok(await settle(() => sheet().open === true));
+  assert.deepEqual(L.net.scripts, ['/static/shell-create.js']);
+  assert.equal(sheet().querySelector('.sheet-title').textContent, 'New session');
+  sheet().close();
+  assert.equal(L.w.run("Shell.openCreate('task')"), true);
+  assert.equal(sheet().open, true, 'loaded: opens in the same tick');
+  assert.deepEqual(L.net.scripts, ['/static/shell-create.js'], 'nothing is fetched twice');
+});
+
+test('a create flow that cannot be fetched says so in a toast and the next tap tries again', async () => {
+  const L = lazyWorld({ realCreate: true, fail: ['/static/shell-create.js'] });
+  L.w.ctx.__toasts = [];
+  L.w.run('toast = (t) => { __toasts.push(t); }');
+  assert.equal(L.w.run("Shell.openCreate('session')"), true);
+  assert.ok(await settle(() => L.w.ctx.__toasts.length > 0));
+  assert.match(L.w.ctx.__toasts[0], /Could not load the create sheet/);
+  L.net.fail.clear();
+  L.w.run("Shell.openCreate('session')");
+  assert.ok(await settle(() => L.w.document.getElementById('sheet').open === true));
+  assert.equal(L.net.scripts.filter((x) => x === '/static/shell-create.js').length, 2);
+});
+
+const BACKLOG = { id: 31, slug: 'tidy', title: 'Tidy the settings page', project: 'ccboard', repo: 'ccboard', column: 'backlog', phase: 'backlog', agent: 'claude', prompt: 'Tidy it', prompt_len: 7 };
+
+test("the task card's sheets are stubs until the first tap: Move and Edit load task-sheets.js once and open", async () => {
+  const L = lazyWorld();
+  const sheet = () => L.w.document.getElementById('sheet');
+  for (const name of ['taskMoveSheet', 'taskEditSheet', 'taskPortSheet', 'openTaskModal']) assert.equal(L.w.run(`typeof ${name}`), 'function', `${name} answers before the file is here`);
+  assert.equal(L.w.run('typeof diffSideControl'), 'undefined');
+  assert.equal(L.w.run('typeof makeTaskBoard'), 'undefined', "the project board is project.js's");
+  L.w.ctx.__t = BACKLOG;
+  L.w.run('taskMoveSheet(__t)');
+  L.w.run('taskEditSheet(__t)');
+  assert.ok(await settle(() => sheet().open === true));
+  assert.deepEqual(L.net.scripts, ['/static/task-sheets.js'], 'one fetch for both taps');
+  assert.equal(L.w.run('taskMoveSheet.toString().includes("lazyLoad")'), false, 'the real sheet replaced the stub');
+  assert.equal(L.w.run('window.taskEditSheet === taskEditSheet'), true);
+  assert.match(sheet().querySelector('.sheet-title').textContent, /^(Move|Edit task)/);
+  sheet().close();
+  L.w.run('taskEditSheet(__t)');
+  assert.equal(sheet().open, true, 'loaded: opens in the same tick');
+  assert.match(sheet().querySelector('.sheet-title').textContent, /^Edit task/);
+  assert.deepEqual(L.net.scripts, ['/static/task-sheets.js']);
+});
+
+test('a task sheet that cannot be fetched toasts, and the sheet opens on the next tap', async () => {
+  const L = lazyWorld({ fail: ['/static/task-sheets.js'] });
+  L.w.ctx.__toasts = [];
+  L.w.ctx.__t = BACKLOG;
+  L.w.run('toast = (t) => { __toasts.push(t); }');
+  L.w.run('taskEditSheet(__t)');
+  assert.ok(await settle(() => L.w.ctx.__toasts.length > 0));
+  assert.match(L.w.ctx.__toasts[0], /Could not load the task sheet/);
+  assert.equal(L.w.document.getElementById('sheet').open, false);
+  L.net.fail.clear();
+  L.w.run('taskEditSheet(__t)');
+  assert.ok(await settle(() => L.w.document.getElementById('sheet').open === true));
+});
+
+test('the diff and pull request sheet comes with the same bundle: openTaskModal and its segmented control', async () => {
+  const L = lazyWorld();
+  L.w.ctx.__t = { ...BACKLOG, id: 32, column: 'review', phase: 'review', branch: 'task/tidy' };
+  L.w.run('openTaskModal(__t)');
+  assert.ok(await settle(() => L.w.run('typeof diffSideControl') === 'function'));
+  assert.deepEqual(L.net.scripts, ['/static/task-sheets.js']);
+  assert.ok(await settle(() => L.w.document.getElementById('sheet').open === true));
+});
+
+test('the project page brings its own task board: makeTaskBoard is in project.js, not in components.js', async () => {
+  const L = lazyWorld();
+  L.w.location.hash = '#/p/ccboard';
+  assert.ok(await settle(() => L.mounted() === 'project'));
+  assert.equal(L.w.run('typeof makeTaskBoard'), 'function');
+  assert.ok(!read('components.js').includes('function makeTaskBoard'));
+  assert.ok(read('pages/project.js').includes('function makeTaskBoard'));
 });

@@ -130,7 +130,7 @@ def test_the_sidebar_resize_strip_is_inside_a_landmark():
 
 def test_agents_summary_strip_scrolls_with_a_focusable_stop():
     """axe scrollable-region-focusable: the Agents legend scrolls sideways at 390 px and holds no link, so the strip itself takes the focus."""
-    assert re.search(r"'summary sumbar sumbar-static'[^}]*tabindex:\s*'0'", (STATIC / "pages" / "agents.js").read_text())
+    assert re.search(r"'summary sumbar sumbar-static'[^}]*tabindex:\s*'0'", (STATIC / "pages" / "agents-page.js").read_text())
 
 
 def test_usage_details_column_header_has_text():

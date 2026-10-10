@@ -148,6 +148,26 @@ def test_cli_intel_on_sonoma_says_builds_from_source_with_the_tier_3_sentence(tm
     assert r.returncode == 10 and "several minutes" in r.stdout and "Tier 3" not in r.stdout, "the Intel sentence is for Intel only"
 
 
+def test_cli_explains_the_measured_ttyd_source_build_and_what_no_upgrade_does_not_stop(tmp_path):
+    """Issue #128, device row M8: on the Intel Mac with macOS 14 there is no ttyd bottle, cmake ran for more than ten minutes and the install
+    would have upgraded 11 packages (python@3.14 among them). `brew bundle --no-upgrade` is documented as not stopping that."""
+    r = bottle_cli(tmp_path, TTYD, "--formula", "ttyd", "--macos", "14.7.3", "--arch", "x86_64", "--explain")
+    assert r.returncode == 10
+    assert "Measured on an Intel Mac with macOS 14" in r.stdout and "no bottle" in r.stdout and "cmake" in r.stdout
+    assert "more than 10 minutes" in r.stdout and "11 installed packages" in r.stdout and "python@3.14" in r.stdout
+    assert "--no-upgrade" in r.stdout and "may still be upgraded" in r.stdout
+    # the ttyd finding belongs to ttyd; the upgrade warning belongs to every source build
+    r = bottle_cli(tmp_path, TMUX, "--formula", "tmux", "--macos", "14.7.3", "--arch", "x86_64", "--explain")
+    assert r.returncode == 10 and "Measured on an Intel Mac" not in r.stdout and "python@3.14" not in r.stdout
+    assert "--no-upgrade" in r.stdout and "several minutes" in r.stdout
+    # a bottle needs neither
+    r = bottle_cli(tmp_path, TTYD, "--formula", "ttyd", "--macos", "15.2", "--arch", "arm64", "--explain")
+    assert "Measured" not in r.stdout and "--no-upgrade" not in r.stdout
+    # without --explain only the verdict line is printed
+    r = bottle_cli(tmp_path, TTYD, "--formula", "ttyd", "--macos", "14.7.3", "--arch", "x86_64")
+    assert r.stdout.count("\n") == 1 and "Measured" not in r.stdout
+
+
 def test_cli_never_claims_a_bottle_when_brew_info_failed(tmp_path):
     for raw in ("", "not json", "{}", '{"formulae": "x"}'):
         r = bottle_cli(tmp_path, None, "--formula", "ttyd", "--macos", "15.2", "--arch", "arm64", "--explain", raw=raw)

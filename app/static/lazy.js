@@ -10,11 +10,15 @@
    Stylesheets of a page go in just before the first eager sheet that used to follow pages.css (the <link> of /static/charts.css in index.html), ordered by `rank`, so
    the cascade is the order the single pages.css had.
 
-   Entry points that open from anywhere (the launcher sheet, the task dispatch and Fable sheets) are stubbed below under the same global name: the stub loads the real
+   Entry points that open from anywhere (the launcher sheet, the task dispatch and Fable sheets, the task card's own sheets) are stubbed below under the same global name: the stub loads the real
    file and calls the real function, which replaces the stub in the global scope when the script runs. */
 'use strict';
 
 const LAZY_BUNDLES = {
+  // the create flow behind Shell.openCreate (+ session / + task / Schedule): the place from the route, the repo picker, the launcher form in a sheet; shell.js asks for it on a tap
+  shellcreate: { js: ['/static/shell-create.js'], probe: () => typeof Shell !== 'undefined' && typeof Shell.pickRepo === 'function' },
+  // the sheets a task card opens on a tap (Move, Edit, the preview port, the diff and pull request): components.js and home.js call them by name, lazyStub below loads this first
+  tasksheets: { js: ['/static/task-sheets.js'], probe: () => typeof diffSideControl === 'function' },
   launcher: { js: ['/static/launcher.js'], probe: () => typeof launcherSchema === 'function' },
   palette: { js: ['/static/palette.js'], probe: () => typeof Palette !== 'undefined' },
   // dnd is for a mouse: a task board asks Lazy.wants('dnd') before it loads it
@@ -23,7 +27,9 @@ const LAZY_BUNDLES = {
   termkit: { js: ['/static/termkit.js'], probe: () => typeof TermKit !== 'undefined' },
   memory: { js: ['/static/pages/memory.js'], css: [{ href: '/static/pages/memory.css', rank: 13 }], probe: () => typeof Memory !== 'undefined' },
   project: { needs: ['tree'], js: ['/static/pages/project.js'], probe: () => typeof projectPage !== 'undefined' },
-  settings: { js: ['/static/nodes-pair.js', '/static/pages/doctor.js', '/static/pages/settings.js'], css: [{ href: '/static/pages/settings.css', rank: 10 }], probe: () => typeof settingsPage !== 'undefined' },
+  // the Agents page (#/agents): the roster half of pages/agents.js; Settings > Agents reads the Codex threads list from it, so settings needs it
+  agents: { js: ['/static/pages/agents-page.js'], probe: () => typeof agentsPage !== 'undefined' },
+  settings: { needs: ['agents'], js: ['/static/nodes-pair.js', '/static/pages/doctor.js', '/static/pages/settings.js'], css: [{ href: '/static/pages/settings.css', rank: 10 }], probe: () => typeof settingsPage !== 'undefined' },
   // the hub view (issue #139): loads only once state.nodes_enabled is true (nodes.js Nodes.use), or for a #/n/ address
   nodeshub: { js: ['/static/nodes-hub.js', '/static/pages/node.js'], css: [{ href: '/static/pages/nodes.css', rank: 14 }], probe: () => typeof Nodes !== 'undefined' && Nodes.ready },
   usage: { js: ['/static/charts.js', '/static/pages/usage.js'], probe: () => typeof Usage !== 'undefined' },
@@ -32,7 +38,7 @@ const LAZY_BUNDLES = {
 };
 
 /* route id -> the bundle that registers its page (the routes not named here are registered by index.html's own scripts) */
-const LAZY_ROUTES = { project: 'project', settings: 'settings', usage: 'usage', quad: 'quad', memory: 'memory', onboarding: 'onboarding', node: 'nodeshub', 'node-session': 'nodeshub', 'node-task': 'nodeshub' };
+const LAZY_ROUTES = { agents: 'agents', project: 'project', settings: 'settings', usage: 'usage', quad: 'quad', memory: 'memory', onboarding: 'onboarding', node: 'nodeshub', 'node-session': 'nodeshub', 'node-task': 'nodeshub' };
 
 const lazyPromises = {};      // bundle -> the promise of its load, while it is running or done
 const lazyDoneSet = {};       // bundle -> true once its files ran (a probe can say so too, until this loader has touched the bundle)
@@ -202,11 +208,11 @@ const Lazy = {
   done: lazyDone, wants: lazyWants, load: lazyLoad, pending: lazyPending, run: lazyRun, later: lazyLater, warm: lazyWarm, watchLinks: lazyWatchLinks, fail: lazyFail,
 };
 
-/* ---------- entry points that open from anywhere: the real ones come with launcher.js ---------- */
+/* ---------- entry points that open from anywhere: the real ones come with launcher.js (the launcher bundle) or task-sheets.js (the tasksheets bundle) ---------- */
 
-function lazyStub(name, what) {
+function lazyStub(name, what, bundle = 'launcher') {
   const stub = function (...args) {
-    lazyLoad('launcher').then(() => {
+    lazyLoad(bundle).then(() => {
       const real = window[name];
       if (typeof real === 'function' && real !== stub) real(...args);
     }, (e) => lazyFail(what, e));
@@ -217,3 +223,5 @@ function lazyStub(name, what) {
 if (typeof openLauncher !== 'function') window.openLauncher = lazyStub('openLauncher', 'the launcher');
 if (typeof taskDispatchSheet !== 'function') window.taskDispatchSheet = lazyStub('taskDispatchSheet', 'the launcher');
 if (typeof jobFableSheet !== 'function') window.jobFableSheet = lazyStub('jobFableSheet', 'the launcher');
+// the task card's sheets (task-sheets.js, bundle tasksheets): a click handler calls the name, the stub loads the file and calls the real function that replaced it
+for (const name of ['taskMoveSheet', 'taskEditSheet', 'taskPortSheet', 'openTaskModal']) if (typeof window[name] !== 'function') window[name] = lazyStub(name, 'the task sheet', 'tasksheets');

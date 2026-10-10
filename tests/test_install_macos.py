@@ -91,6 +91,12 @@ class Mac:
         _script(self.bin / "uname", f'case "$1" in -s) echo Darwin;; -m) echo x86_64;; *) echo Darwin;; esac\n')
         _script(self.bin / "sw_vers", f'[ "$1" = -productVersion ] && cat {q(s)}/macos-version 2>/dev/null || echo 14.7.3\n')
         _script(self.bin / "hostname", 'echo testmac\n')
+        _script(self.bin / "xcode-select", log + f'''case "$1" in
+  -p) if [ -e {q(s)}/no-clt ]; then echo "xcode-select: error: unable to get active developer directory" >&2; exit 2; fi
+      echo /Library/Developer/CommandLineTools;;
+esac
+exit 0
+''')
         _script(self.bin / "sudo", log + 'echo "sudo: must never be run" >&2\nexit 1\n')
         _script(self.bin / "launchctl", log + f'''S={q(s)}
 case "$1" in
@@ -106,7 +112,9 @@ exit 0
 case "$1" in
   --prefix) echo "$S/prefix"; exit 0;;
   list) grep -qxF "$3" "$S/brew-installed"; exit $?;;
-  info) echo '{{"formulae":[{{"name":"'"$3"'","bottle":{{"stable":{{"files":{{"sonoma":{{"cellar":":any"}}}}}}}}}}]}}'; exit 0;;
+  info) [ ! -e "$S/brew-info-fails" ] || exit 1
+        tag=sonoma; grep -qxF "$3" "$S/brew-source-build" 2>/dev/null && tag=arm64_sequoia      # a bottle for another system: this Mac builds from source
+        echo '{{"formulae":[{{"name":"'"$3"'","bottle":{{"stable":{{"files":{{"'$tag'":{{"cellar":":any"}}}}}}}}}}]}}'; exit 0;;
   bundle)
     for a in "$@"; do case "$a" in --file=*) f=${{a#--file=}};; esac; done
     names=$(sed -n 's/^brew "\\([^"]*\\)".*/\\1/p' "$f")
@@ -139,6 +147,14 @@ case "$1 $2" in
   "mcp get") [ -f "$S/claude-mcp" ] && {{ cat "$S/claude-mcp"; exit 0; }}; exit 1;;
   "mcp add") shift 6; printf 'ccboard\\n  Command: %s\\n  Args: %s\\n' "$1" "$2" > "$S/claude-mcp"; exit 0;;
   "mcp remove") rm -f "$S/claude-mcp"; exit 0;;
+  "plugin marketplace") [ ! -e "$S/plugin-add-hangs" ] || exec sleep 31
+                        [ ! -e "$S/plugin-add-fails" ] || {{ echo "marketplace add failed" >&2; exit 1; }}
+                        exit 0;;
+  "plugin install") [ ! -e "$S/plugin-install-hangs" ] || exec sleep 31
+                    [ ! -e "$S/plugin-install-fails" ] || {{ echo "could not clone the marketplace" >&2; exit 1; }}
+                    [ ! -e "$S/plugin-install-forgets" ] || exit 0
+                    mkdir -p "$HOME/.claude/plugins"
+                    printf '{{"version":2,"plugins":{{"%s":[{{"version":"13.35.0"}}]}}}}' "$3" > "$HOME/.claude/plugins/installed_plugins.json"; exit 0;;
 esac
 exit 0
 ''')
@@ -194,20 +210,20 @@ sys.exit(0)
         if not uninstalling:
             assert not [c for c in tmux if c.startswith("launchctl bootout")], "the installer never boots tmux out"
 
-    def run(self, script=None, args=(), env=None, check=None):
+    def run(self, script=None, args=(), env=None, check=None, stdin=subprocess.DEVNULL):
         mark = len(self.calls())
-        r = self._run(script, args, env, check)
+        r = self._run(script, args, env, check, stdin)
         board_https = {**self.env, **(env or {})}.get("CCBOARD_HTTPS_PORT", "8443")
         self._invariants(mark, script is not None and Path(script).name == "uninstall-macos.sh", board_https)
         return r
 
-    def _run(self, script=None, args=(), env=None, check=None):
+    def _run(self, script=None, args=(), env=None, check=None, stdin=subprocess.DEVNULL):
         e = {"PATH": str(self.bin), "HOME": str(self.home), "TMPDIR": str(self.tmp), "PYTHONDONTWRITEBYTECODE": "1",
              "CCBOARD_MACOS_VENV_READY": "1", "CCBOARD_MACOS_HEALTH_TRIES": "2", "CCBOARD_HTTPS_PORT": "8443", "CODE_HTTPS_PORT": "10000"}
         e.update(self.env)
         e.update(env or {})
         r = subprocess.run([str(script or self.app / "scripts" / "install-macos.sh"), *args], env=e, capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL, timeout=180)
+                           stdin=stdin, timeout=180)
         if check is not None:
             assert r.returncode == check, f"exit {r.returncode}\n--- stdout\n{r.stdout}\n--- stderr\n{r.stderr}"
         return r
@@ -505,6 +521,178 @@ def test_ttyd_without_the_flags_ccboard_needs_is_refused(mac):
     r = mac.run()
     assert r.returncode == 1 and "ttyd" in r.stderr and "-W" in r.stderr
     assert mac.plists() == []
+
+
+# ------------------------------------------------------------------ source builds and the Command Line Tools (#128)
+
+def no_ttyd(mac, source=("ttyd",), clt=True):
+    """ttyd is not installed; `source` are the formulae whose only bottle is for another system (this fake Mac builds them from source)."""
+    (mac.state / "brew-installed").write_text("git\ntmux\npython@3.12\nnode\ngh\ncode-server\nrestic\nbun\nshellcheck\n")
+    (mac.state / "brew-source-build").write_text("".join(f"{n}\n" for n in source))
+    if not clt:
+        (mac.state / "no-clt").write_text("")
+
+
+def test_a_source_build_without_the_command_line_tools_stops_before_anything_is_installed(mac):
+    no_ttyd(mac, clt=False)
+    for env in ({}, {"CCBOARD_MACOS_INSTALL_TOOLS": "1"}, {"CCBOARD_MACOS_INSTALL_TOOLS": "1", "CCBOARD_MACOS_ALLOW_SOURCE_BUILD": "1"}):
+        r = mac.run(env=env)
+        assert r.returncode == 1, env
+        assert "xcode-select --install" in r.stderr and "ttyd" in r.stderr and "Nothing was installed" in r.stderr, r.stderr
+        assert mutating(mac.calls(), "brew") == [] and mac.plists() == [] and not (mac.data / "env").exists()
+    calls = mac.calls()
+    assert any(c.startswith("xcode-select -p") for c in calls)
+
+
+def test_the_command_line_tools_are_only_asked_for_when_something_builds_from_source(mac):
+    no_ttyd(mac, source=(), clt=False)                                   # every missing tool has a bottle for this Mac
+    mac.run(env={"CCBOARD_MACOS_INSTALL_TOOLS": "1"}, check=0)
+    assert any(" --no-upgrade " in b and b.endswith("scripts/macos/Brewfile") for b in mutating(mac.calls(), "brew"))
+    assert not any(c.startswith("xcode-select") for c in mac.calls()), "nothing builds, so the tools are not even asked about"
+    mark = mac.mark()
+    mac.run(check=0)                                                     # now everything is present
+    assert not any(c.startswith("xcode-select") for c in mac.since(mark))
+
+
+def test_a_source_build_needs_an_answer_of_its_own_and_says_what_it_costs(mac):
+    no_ttyd(mac)
+    r = mac.run(env={"CCBOARD_MACOS_INSTALL_TOOLS": "1"})                # a yes for bottles is not a yes for a long build
+    assert r.returncode == 1 and mutating(mac.calls(), "brew") == [] and mac.plists() == []
+    assert "build from source: ttyd" in r.stderr and "CCBOARD_MACOS_ALLOW_SOURCE_BUILD=1" in r.stderr and "Nothing was installed" in r.stderr
+    # the preflight text names what was measured and what --no-upgrade does not stop
+    assert "ttyd: builds from source" in r.stdout and "more than 10 minutes" in r.stdout and "python@3.14" in r.stdout
+    assert "--no-upgrade" in r.stdout and "Tier 3" in r.stdout
+    mac.run(env={"CCBOARD_MACOS_INSTALL_TOOLS": "1", "CCBOARD_MACOS_ALLOW_SOURCE_BUILD": "1"}, check=0)
+    assert any(" --no-upgrade " in b and b.endswith("scripts/macos/Brewfile") for b in mutating(mac.calls(), "brew"))
+
+
+def test_a_source_build_that_goes_ahead_warns_first(mac):
+    no_ttyd(mac)
+    r = mac.run(env={"CCBOARD_MACOS_INSTALL_TOOLS": "1", "CCBOARD_MACOS_ALLOW_SOURCE_BUILD": "1"}, check=0)
+    assert "building from source with Homebrew: ttyd" in r.stderr and "may upgrade packages you already have" in r.stderr
+    calls = mac.calls()
+    assert [i for i, c in enumerate(calls) if c.startswith("xcode-select")][0] < [i for i, c in enumerate(calls) if " bundle " in c and "--no-upgrade" in c][0]
+
+
+def test_a_missing_answer_about_bottles_alone_is_unchanged(mac):
+    no_ttyd(mac, source=())
+    r = mac.run()
+    assert r.returncode == 1 and "tools are missing: ttyd" in r.stderr and "CCBOARD_MACOS_INSTALL_TOOLS=1" in r.stderr
+    assert "build from source" not in r.stderr and "bottle available" in r.stdout
+    no_ttyd(mac)
+    r = mac.run(env={"CCBOARD_MACOS_INSTALL_TOOLS": "0"})                # an explicit no is a no, with or without the tools
+    assert r.returncode == 1 and "tools are missing: ttyd" in r.stderr and "xcode" not in r.stderr and mutating(mac.calls(), "brew") == []
+    assert mac.run(env={"CCBOARD_MACOS_ALLOW_SOURCE_BUILD": "yes"}).returncode == 1
+
+
+def test_a_formula_brew_cannot_describe_counts_as_a_source_build_when_it_is_required(mac):
+    no_ttyd(mac, source=(), clt=False)
+    (mac.state / "brew-info-fails").write_text("")
+    r = mac.run(env={"CCBOARD_MACOS_INSTALL_TOOLS": "1"})
+    assert r.returncode == 1 and "xcode-select --install" in r.stderr and "could not tell" in r.stdout
+    assert "bottle available" not in r.stdout and mutating(mac.calls(), "brew") == []
+
+
+def test_an_optional_tool_that_builds_from_source_is_left_out_not_built(mac):
+    (mac.state / "brew-installed").write_text("git\ntmux\npython@3.12\nnode\ngh\nttyd\ncode-server\n")        # restic is missing
+    (mac.state / "brew-source-build").write_text("restic\n")
+    r = mac.run(env={"CCBOARD_MACOS_INSTALL_TOOLS": "1"}, check=0)
+    assert "optional tools are missing" in r.stderr and "build from source: restic" in r.stderr
+    assert not any("Brewfile.optional" in b for b in mutating(mac.calls(), "brew"))
+
+
+@pytest.mark.parametrize("answer,builds", [("n\n", False), ("\n", False), ("y\n", True)])
+def test_on_a_terminal_the_question_names_the_source_build(mac, answer, builds):
+    import pty
+    no_ttyd(mac)
+    master, slave = pty.openpty()
+    try:
+        os.write(master, answer.encode())
+        r = mac.run(stdin=slave)
+    finally:
+        os.close(master)
+        os.close(slave)
+    assert "Homebrew will BUILD from source: ttyd" in r.stdout and "several minutes" in r.stdout
+    assert bool(mutating(mac.calls(), "brew")) is builds
+    assert (r.returncode == 0) is builds
+
+
+# ------------------------------------------------------------------ the claude-mem plugin step (#122)
+
+PLUGIN_ADD = "claude plugin marketplace add thedotmack/claude-mem"
+PLUGIN_INSTALL = "claude plugin install claude-mem@thedotmack"
+
+
+def test_the_plugin_is_added_and_installed_in_that_order_without_a_timeout_tool(mac):
+    assert not (mac.bin / "gtimeout").exists(), "the fake PATH has no timeout tool: this is the python wrapper's case"
+    r = mac.install()
+    assert [c for c in mac.calls() if c.startswith("claude plugin")] == [PLUGIN_ADD, PLUGIN_INSTALL]
+    assert "installed claude-mem@thedotmack" in r.stdout and "claude-mem" not in r.stderr
+    assert "claude-mem@thedotmack" in (mac.home / ".claude" / "plugins" / "installed_plugins.json").read_text()
+    mark = mac.mark()
+    r = mac.install()
+    assert [c for c in mac.since(mark) if c.startswith("claude plugin")] == [], "a rerun installs nothing"
+    assert "present: claude-mem@thedotmack" in r.stdout
+
+
+def test_ccboard_claude_mem_0_skips_the_plugin_step(mac):
+    r = mac.install(env={"CCBOARD_CLAUDE_MEM": "0"})
+    assert not [c for c in mac.calls() if c.startswith("claude plugin")] and not (mac.home / ".claude" / "plugins").exists()
+    assert "skipped (CCBOARD_CLAUDE_MEM=0)" in r.stdout
+
+
+def test_gtimeout_is_used_when_it_is_there(mac):
+    _script(mac.bin / "gtimeout", f'echo "gtimeout $*" >> {shlex.quote(str(mac.log))}\nsecs=$1; shift\nexec "$@"\n')
+    mac.install()
+    calls = mac.calls()
+    assert f"gtimeout 300 {mac.bin}/claude plugin marketplace add thedotmack/claude-mem" in calls
+    assert f"gtimeout 300 {mac.bin}/claude plugin install claude-mem@thedotmack" in calls
+    assert [c for c in calls if c.startswith("claude plugin")] == [PLUGIN_ADD, PLUGIN_INSTALL]
+
+
+def test_a_failed_install_is_a_warning_and_the_install_goes_on(mac):
+    (mac.state / "plugin-install-fails").write_text("")
+    r = mac.install()
+    assert "claude plugin install claude-mem@thedotmack failed" in r.stderr and "could not clone the marketplace" in r.stderr
+    assert "ccboard is installed" in r.stdout and not (mac.home / ".claude" / "plugins").exists()
+
+
+def test_an_error_from_marketplace_add_does_not_stop_the_install_step(mac):
+    (mac.state / "plugin-add-fails").write_text("")                     # already added, or no network
+    r = mac.install()
+    assert [c for c in mac.calls() if c.startswith("claude plugin")] == [PLUGIN_ADD, PLUGIN_INSTALL]
+    assert "marketplace add reported an error" in r.stdout and "installed claude-mem@thedotmack" in r.stdout
+
+
+def test_an_install_that_leaves_no_trace_is_a_warning(mac):
+    (mac.state / "plugin-install-forgets").write_text("")
+    r = mac.install()
+    assert "is not in installed_plugins.json yet" in r.stderr and "ccboard is installed" in r.stdout
+
+
+@pytest.mark.parametrize("hang,installs", [("plugin-add-hangs", False), ("plugin-install-hangs", True)])
+def test_a_stuck_plugin_command_is_ended_at_the_time_limit_and_only_warns(mac, hang, installs):
+    import time
+    (mac.state / hang).write_text("")
+    t0 = time.monotonic()
+    r = mac.install(env={"CCBOARD_MACOS_PLUGIN_SECONDS": "1"})
+    assert time.monotonic() - t0 < 25, "the 31 second sleep of the fake claude was not waited for"
+    assert "passed its 1s limit" in r.stderr and "ccboard is installed" in r.stdout
+    assert (PLUGIN_INSTALL in mac.calls()) is installs
+    ps = subprocess.run(["ps", "-axo", "command"], capture_output=True, text=True).stdout
+    assert not [l for l in ps.splitlines() if l.strip().endswith("sleep 31")], "the stuck command was ended, not left running"
+
+
+def test_the_plugin_step_needs_claude_and_a_sane_time_limit(mac):
+    (mac.bin / "claude").unlink()
+    r = mac.install()
+    assert "claude plugin marketplace add thedotmack/claude-mem" in r.stdout and "claude plugin install claude-mem@thedotmack" in r.stdout
+    assert not [c for c in mac.calls() if c.startswith("claude")]
+    mark = mac.mark()
+    for bad in ("abc", "0", "-5", "1.5"):
+        r = mac.run(env={"CCBOARD_MACOS_PLUGIN_SECONDS": bad})
+        assert r.returncode == 1 and "CCBOARD_MACOS_PLUGIN_SECONDS" in r.stderr, bad
+    assert mutating(mac.since(mark), "launchctl") == [] and mutating(mac.since(mark), "tailscale") == [], "refused before any change"
 
 
 # ------------------------------------------------------------------ the first run

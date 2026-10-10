@@ -3,14 +3,22 @@
    since the tab was last looked at), the inbox section (Inbox.section, only when something needs you), the schedules strip, the project
    blocks (grouped by project, state or agent; projects idle for a week fold into one 'older' block) and the usage card (Widgets.usageCard).
    The rows are the shared sessionCard from pages/agents.js in its rich form; the keyed lists keep their nodes across polls.
-   Also home to the banner (its Log in goes to Settings > Accounts: accountLogin, pages/agents.js), logout, the diff and PR sheet (openTaskModal), the keyboard selection (Pages) and the v0.4
-   renderers other pages still import (renderTasks, renderJobs, openTaskModal, inboxItems).
+   Also home to the banner (its Log in goes to Settings > Accounts: accountLogin, pages/agents.js), logout, the diff and PR sheet (openTaskModal, task-sheets.js), the keyboard selection (Pages) and the v0.4
+   renderers other pages still import (renderTasks, renderJobs, inboxItems).
    The header, usage pills, nav and the render() state consumer are in shell.js; the notify panel and nodes strip in pages/settings.js. */
 'use strict';
 
 /* The banner: one message at a time (a notice, offline, an error, a login that does not work, a recovery, a rate limit, tmux down, not logged in). renderBanner only
    removes what it put there itself and stray text, so a callout another file keeps in #banner (Widgets.limitBanner) survives a repaint. */
 const bannerOwn = [];
+
+/* "2 Claude and 1 Codex sessions": last_recovery.agents maps each recovered session to its agent; a record from before that field says "3 sessions". */
+function recoveryWho(v) {
+  const n = v.recovered.length, by = {};
+  for (const name of v.recovered) { const a = (v.agents || {})[name]; if (a) by[a] = (by[a] || 0) + 1; }
+  const parts = Object.keys(by).map((a) => `${by[a]} ${a.charAt(0).toUpperCase()}${a.slice(1)}`);
+  return `${parts.length ? parts.join(' and ') : n} session${n === 1 ? '' : 's'}`;
+}
 
 function renderBanner() {
   const b = $('#banner');
@@ -55,7 +63,7 @@ function renderBanner() {
     b.classList.add('warn');
     const v = state.last_recovery.value;
     const cont = v.continue || [];
-    own(el('span', { text: `After a restart, ${v.recovered.length} Claude session${v.recovered.length === 1 ? '' : 's'} relaunched with --resume: ${v.recovered.join(', ')}${cont.length ? ' · was working, continue typed once back: ' + cont.join(', ') : ''}${v.closed.length ? ' · closed: ' + v.closed.join(', ') : ''}` }),
+    own(el('span', { text: `After a restart, ${recoveryWho(v)} relaunched: ${v.recovered.join(', ')}${cont.length ? ' · was working, continue typed once back: ' + cont.join(', ') : ''}${v.closed.length ? ' · closed: ' + v.closed.join(', ') : ''}` }),
       el('button', { class: 'minimal small', type: 'button', onclick: async () => { try { await api('POST', '/api/recovery/dismiss'); } catch (e) { setError(e.message); } await poll(true); }, text: 'dismiss' }));
   } else if (rl) {
     own(el('span', { text: `Rate limited: ${rl.message || ''}${rl.session ? ' (' + rl.session + ')' : ''}` }),
@@ -70,107 +78,7 @@ function renderBanner() {
   if (state) homeAwayTouch(state);                                           // every render counts as "the tab was looked at", on any page
 }
 
-
-
-
-/* The diff and pull request of a task card, in the sheet (v0.5.13: it was the legacy #modal): the commits and files, the diff one side at a time (a segmented control),
-   then the pull request (Describe with Claude, Create PR, and for a card that has one, Merge). The diff wants room, so the sheet is wider than the forms. */
-function openTaskModal(t) {
-  const status = el('div', { class: 'dim form-status tm-status', role: 'status', 'aria-live': 'polite' });
-  const diffBox = el('div', { class: 'diffbox' });
-  const commits = el('div', { class: 'dim tm-line' });
-  const files = el('div', { class: 'dim tm-line' });
-  const tabs = el('div', { class: 'tm-tabs' });
-  const title = el('input', { type: 'text', placeholder: 'PR title', maxlength: 250, value: t.title });
-  const body = el('textarea', { placeholder: 'PR body (Markdown)' });
-  let diff = null;
-  const show = (which) => {
-    if (!diff) return;
-    const text = which === 'uncommitted' ? diff.uncommitted : diff.committed;
-    diffBox.textContent = '';
-    if (!text) { diffBox.append(el('span', { class: 'dim', text: which === 'uncommitted' ? 'no uncommitted changes' : 'nothing committed on this branch yet' })); return; }
-    loadDiff2Html().then(() => {
-      new window.Diff2HtmlUI(diffBox, text, { drawFileList: false, matching: 'lines', outputFormat: 'line-by-line', highlight: false }).draw();
-    }).catch(e => { diffBox.append(el('pre', { class: 'tail', text: text.slice(0, 20000) })); status.textContent = e.message; });
-  };
-  const load = async () => {
-    status.textContent = 'loading diff…';
-    try {
-      diff = await api('GET', `/api/tasks/${t.id}/diff`);
-      status.textContent = diff.truncated ? 'diff truncated for display' : '';
-      const dCommits = Array.isArray(diff.commits) ? diff.commits : [], dFiles = Array.isArray(diff.files) ? diff.files : [], dUnc = Array.isArray(diff.files_uncommitted) ? diff.files_uncommitted : [];   // a malformed answer reads as empty
-      commits.textContent = dCommits.length ? `Commits (${dCommits.length}): ` + dCommits.slice(0, 20).join(' · ') : 'No commits on the branch yet.';
-      files.textContent = (dFiles.length ? `Files: ${dFiles.join(', ')}` : '') + (dUnc.length ? `  ·  uncommitted: ${dUnc.join(', ')}` : '');
-      tabs.textContent = '';
-      tabs.append(diffSideControl([['committed', `Committed vs ${diff.base || 'base'}`], ['uncommitted', `Uncommitted (${dUnc.length})`]], 'committed', show));
-      show('committed');
-    } catch (e) { status.textContent = e.message; }
-  };
-  const describeBtn = el('button', { type: 'button', onclick: async () => {
-    status.textContent = 'asking Claude for a title and description (claude -p, one turn)…'; describeBtn.disabled = true;
-    try { const r = await api('POST', `/api/tasks/${t.id}/describe`); title.value = r.title; body.value = r.body; status.textContent = 'description ready; edit and create the PR'; }
-    catch (e) { status.textContent = e.message; } finally { describeBtn.disabled = false; }
-  }, text: 'Describe with Claude' });
-  const prBtn = el('button', { class: 'primary', type: 'button', onclick: async () => {
-    status.textContent = 'pushing and creating the PR…'; prBtn.disabled = true;
-    try {
-      const r = await api('POST', `/api/tasks/${t.id}/pr`, { title: title.value.trim(), body: body.value });
-      status.textContent = (r.existing ? 'PR already existed: ' : 'PR created: ') + r.url; t.pr_url = r.url; t.pr_number = r.number;
-      mergeRow.classList.remove('hidden');
-      await poll(true); render(true);
-    } catch (e) { status.textContent = e.message; } finally { prBtn.disabled = false; }
-  }, text: t.pr_url ? 'Update PR (recreate)' : 'Create PR' });
-  // Merge is destructive: red-outlined, two taps (confirmButton repaints the page, not a sheet, so the arming is local)
-  const mergeRow = el('span', { class: 'tm-merge' + (t.pr_number ? '' : ' hidden') });
-  const doMerge = async () => {
-    status.textContent = 'merging…';
-    const run = async (force) => api('POST', `/api/tasks/${t.id}/merge`, { method: 'squash', force });
-    try { await run(false); status.textContent = 'merged and archived'; closeSheet(); await poll(true); }
-    catch (e) {
-      if (/uncommitted/.test(e.message) && window.confirm(e.message + '\n\nDiscard them and merge?')) { try { await run(true); closeSheet(); await poll(true); } catch (e2) { status.textContent = e2.message; } }
-      else status.textContent = e.message;
-    }
-  };
-  const paintMerge = (armed) => {
-    mergeRow.textContent = '';
-    if (!armed) mergeRow.append(el('button', { class: 'danger', type: 'button', title: 'Merge (squash) & archive (tap again to confirm)', onclick: () => paintMerge(true), text: 'Merge (squash) & archive' }));
-    else mergeRow.append(el('button', { class: 'danger confirm', type: 'button', onclick: doMerge, text: 'Confirm merge' }), el('button', { type: 'button', onclick: () => paintMerge(false), text: 'Cancel' }));
-  };
-  paintMerge(false);
-  const sec = (label, ...kids) => el('section', { class: 'tm-sec' }, el('h3', { class: 'tm-k', text: label }), ...kids);
-  openSheet({ title: t.title, wide: true, body: [
-    el('div', { class: 'tm-meta' }, el('span', { class: 'dim mono', text: `${t.project}/${t.repo} · ${t.branch}` }),
-      t.pr_url ? el('a', { class: 'btn small', href: t.pr_url, target: '_blank', rel: 'noopener', text: `PR #${t.pr_number}` }) : null),
-    sec('Changes', commits, files),
-    sec('Diff', tabs, diffBox),
-    sec('Pull request', el('div', { class: 'form tm-form' }, field('Title', title), field('Description', body),
-      el('div', { class: 'tm-actions' }, describeBtn, prBtn, mergeRow)), status)] });
-  load();
-}
-
-/* Two or three exclusive sides of one thing as a segmented control (one track, aria-pressed, arrow keys): the diff's committed / uncommitted switch. */
-function diffSideControl(items, initial, onPick) {
-  const node = el('div', { class: 'seg-ctl tm-seg', role: 'group', 'aria-label': 'Diff' });
-  const btns = new Map();
-  let cur = initial;
-  const set = (v, focus) => {
-    cur = v;
-    for (const [k, b] of btns) b.setAttribute('aria-pressed', k === cur ? 'true' : 'false');
-    if (focus) btns.get(v).focus();
-    onPick(v);
-  };
-  for (const [v, text] of items) {
-    btns.set(v, el('button', { class: 'seg-btn', type: 'button', 'data-side': v, 'aria-pressed': v === cur ? 'true' : 'false', text, onclick: () => set(v), onkeydown: (e) => {
-      const i = items.findIndex(([x]) => x === cur);
-      const to = e.key === 'ArrowRight' ? items[(i + 1) % items.length][0] : e.key === 'ArrowLeft' ? items[(i + items.length - 1) % items.length][0] : null;
-      if (to === null) return;
-      e.preventDefault();
-      set(to, true);
-    } }));
-    node.append(btns.get(v));
-  }
-  return node;
-}
+/* The diff and pull request sheet of a task card (openTaskModal) and its segmented control (diffSideControl) are task-sheets.js, a lazy bundle: a card's Diff / New PR button loads it. */
 
 /* The first-run redirect lives in pages/onboarding.js, a lazy bundle (lazy.js): only a board that was never used and has no project asks for it (once per page load; the
    file itself decides whether the wizard opens). Every other Home visit never loads the wizard. */

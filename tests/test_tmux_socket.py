@@ -375,3 +375,87 @@ def test_tmux_server_sockets_reads_ps_and_gives_none_when_ps_is_missing(monkeypa
         raise doctor.ToolMissing("ps")
     monkeypatch.setattr(doctor, "_run", missing)
     assert doctor._tmux_server_sockets() is None
+
+
+# ---- issue #202: the real _tmux_server_sockets / _parse_server_titles against Linux-style and macOS-style `ps` output (nothing patched out
+# except the ps call itself)
+
+LINUX_PS = """\
+    1     0 /sbin/init
+  812     1 /usr/bin/tmux -L ccboard -f /srv/ccboard/tmux.conf start-server
+  813   812 /bin/bash
+  900     1 tmux -L other new-session -d -s x
+  901  5000 tmux -L ccboard list-sessions
+  902  5001 grep tmux -L ccboard start-server
+  903     1 /usr/bin/tmux -Lccboard new-session -d -s scratch
+  904     1 tmux -N -L ccboard-x start-server
+"""
+
+
+@pytest.fixture
+def linux_uid(monkeypatch):
+    monkeypatch.setattr(plat, "current_uid", lambda: 1000)
+    monkeypatch.delenv("TMUX_TMPDIR", raising=False)
+
+
+def test_linux_server_is_found_from_its_start_command(monkeypatch, linux_uid):
+    monkeypatch.setattr(settings, "tmux_socket", "ccboard")
+    monkeypatch.setattr(doctor, "_run", lambda argv, timeout=1: doctor.Proc(0, LINUX_PS, ""))
+    # -L name resolves under /tmp/tmux-<uid>; '-Lname' (attached) works; a client (list-sessions), grep, another name and a longer name do not
+    assert doctor._tmux_server_sockets() == [(812, "/tmp/tmux-1000/ccboard"), (903, "/tmp/tmux-1000/ccboard")]
+
+
+def test_linux_server_socket_follows_tmux_tmpdir(monkeypatch, linux_uid, tmp_path):
+    monkeypatch.setenv("TMUX_TMPDIR", str(tmp_path))
+    assert doctor._parse_server_titles("812 1 tmux -L ccboard start-server\n", "ccboard") == [(812, f"{tmp_path}/tmux-1000/ccboard")]
+
+
+def test_linux_server_with_an_s_path(linux_uid):
+    text = "700 1 tmux -S /run/ccboard/tmux.sock new-session -d\n701 1 tmux -S /run/ccboard/other.sock start-server\n"
+    assert doctor._parse_server_titles(text, "tmux.sock") == [(700, "/run/ccboard/tmux.sock")]
+
+
+def test_a_daemon_comes_before_a_client_that_shares_the_start_command(linux_uid):
+    text = "950 4000 tmux -L ccboard new-session -s a\n812 1 tmux -L ccboard new-session -s a\n"
+    assert doctor._parse_server_titles(text, "ccboard") == [(812, "/tmp/tmux-1000/ccboard"), (950, "/tmp/tmux-1000/ccboard")]
+
+
+def test_no_uid_means_no_guess_for_a_name_only_command_line(monkeypatch):
+    monkeypatch.setattr(plat, "current_uid", lambda: None)
+    assert doctor._parse_server_titles("812 1 tmux -L ccboard start-server\n", "ccboard") == []
+
+
+MACOS_PS = """\
+    1     0 /sbin/launchd
+ 4411     1 tmux: server (/private/tmp/tmux-501/ccboard) (tmux)
+ 4412  4411 -zsh
+ 4500     1 tmux: server (/private/tmp/tmux-501/default) (tmux)
+"""
+
+
+def test_macos_title_form_still_works_through_the_real_function(monkeypatch):
+    monkeypatch.setattr(settings, "tmux_socket", "ccboard")
+    monkeypatch.setattr(doctor, "_run", lambda argv, timeout=1: doctor.Proc(0, MACOS_PS, ""))
+    assert doctor._tmux_server_sockets() == [(4411, "/private/tmp/tmux-501/ccboard")]
+
+
+def test_ps_asks_for_the_parent_pid_too(monkeypatch):
+    seen = []
+    monkeypatch.setattr(doctor, "_run", lambda argv, timeout=1: seen.append(argv) or doctor.Proc(0, "", ""))
+    assert doctor._tmux_server_sockets() == [] and seen == [["ps", "-axo", "pid=,ppid=,command="]]
+
+
+def test_doctor_row_warns_with_the_sigusr1_fix_for_a_linux_server_whose_socket_file_is_gone(ftmux, linux_uid, monkeypatch, tmp_path):
+    """The whole path, nothing patched except ps and the signal call: tmux is unreachable (socket file removed), ps shows the Linux start
+    command, the file is not there -> warn with the SIGUSR1 text, and no signal is sent."""
+    monkeypatch.setenv("TMUX_TMPDIR", str(tmp_path))
+    monkeypatch.setattr(settings, "tmux_socket", "ccboard")
+    ftmux.flag("down")
+    ps = f"  812     1 /usr/bin/tmux -L ccboard -f {tmp_path}/tmux.conf start-server\n"
+    monkeypatch.setattr(doctor, "_run", lambda argv, timeout=1: doctor.Proc(0, ps, ""))
+    sent = []
+    monkeypatch.setattr(os, "kill", lambda *a: sent.append(a))
+    out = doctor._c_tmux_socket(None)
+    assert out.status == "warn" and "812" in out.detail and "gone" in out.detail and f"{tmp_path}/tmux-1000/ccboard" in out.detail
+    assert "SIGUSR1" in out.fix["text"] and out.fix["cmd"] == "kill -USR1 812"
+    assert sent == []

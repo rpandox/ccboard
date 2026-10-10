@@ -278,14 +278,16 @@ def _c_tmux_conf(db) -> Outcome:
     return _skip("verified in v0.5.7")
 
 
-SOCKET_PATH_MAX = 100     # bytes; a unix socket path holds 104 on macOS and 108 on Linux (sun_path), 100 leaves a margin
+SOCKET_PATH_MAX = 100     # bytes; a unix socket path holds 103 on macOS (measured, issue #130: 104 fails) and 107 on Linux (sun_path is 108 with its NUL), 100 leaves a margin
 
 
 def _tmux_server_sockets() -> list[tuple[int, str]] | None:
-    """(pid, socket path) of every live tmux server on the board's socket name, read from the process titles ('tmux: server (<path>)')
-    that `ps` shows; None when the process list cannot be read. Tests patch this."""
+    """(pid, socket path) of every live tmux server on the board's socket name, read from the process list; None when it cannot be read.
+    Two shapes, because tmux differs by system: macOS rewrites the server's process title to 'tmux: server (<path>)'; Linux keeps the
+    start command ('tmux -L <name> -f <conf> start-server', '... new-session -d ...'), so there the name or path comes from -L / -S.
+    Nothing is signalled. Tests drive this with real-looking `ps` output."""
     try:
-        p = _run(["ps", "-axo", "pid=,command="])
+        p = _run(["ps", "-axo", "pid=,ppid=,command="])
     except (ToolMissing, ToolTimeout):
         return None
     if p.rc != 0:
@@ -293,13 +295,78 @@ def _tmux_server_sockets() -> list[tuple[int, str]] | None:
     return _parse_server_titles(p.out, settings.tmux_socket)
 
 
+_TMUX_OPTS_WITH_ARG = "cfLST"                    # tmux's own options that take a value (-c shell-command, -f file, -L name, -S path, -T features)
+_TMUX_SERVER_COMMANDS = {"start-server", "start", "new-session", "new"}      # a command that can start a server (and so stay as its command line)
+
+
+def _tmux_start_command(argv: list[str]) -> tuple[str | None, str | None, str | None]:
+    """(-L name, -S path, sub-command) of a `tmux ...` command line; (None, None, None) when argv is not tmux. getopt rules: '-Lname' and
+    '-L name' both work, flags may be bundled ('-2uN'), and the first word that is not an option is the command."""
+    if not argv or os.path.basename(argv[0]) != "tmux":
+        return None, None, None
+    name = path = None
+    i = 1
+    while i < len(argv):
+        w = argv[i]
+        if w == "--":
+            i += 1
+            break
+        if not w.startswith("-") or w == "-":
+            break
+        j = 1
+        while j < len(w):
+            if w[j] in _TMUX_OPTS_WITH_ARG:
+                val = w[j + 1:] or (argv[i + 1] if i + 1 < len(argv) else "")
+                if not w[j + 1:]:
+                    i += 1
+                if w[j] == "L":
+                    name = val
+                elif w[j] == "S":
+                    path = val
+                break
+            j += 1
+        i += 1
+    return name, path, (argv[i] if i < len(argv) else None)
+
+
+def _tmux_socket_dir() -> str | None:
+    """Where a tmux of this user keeps `-L <name>` sockets: $TMUX_TMPDIR (else /tmp) / tmux-<uid>; None where there is no uid."""
+    uid = plat.current_uid()
+    if uid is None:
+        return None
+    return os.path.join(os.environ.get("TMUX_TMPDIR") or "/tmp", f"tmux-{uid}")
+
+
 def _parse_server_titles(text: str, name: str) -> list[tuple[int, str]]:
-    found = []
+    """The servers on socket `name` in `ps -axo pid=,ppid=,command=` text (`pid=,command=` also works). A title form wins over a command
+    line; among command lines, a process that init or a subreaper adopted (ppid 1) comes first, since the daemon is not the client."""
+    titled: list[tuple[int, str]] = []
+    started: list[tuple[int, int, str]] = []
     for line in text.splitlines():
-        m = re.match(r"\s*(\d+)\s+tmux: server \((/[^)]*)\)", line)
-        if m and m.group(2).rsplit("/", 1)[-1] == name:
-            found.append((int(m.group(1)), m.group(2)))
-    return found
+        m = re.match(r"\s*(\d+)\s+(?:(\d+)\s+)?(\S.*)$", line)
+        if not m:
+            continue
+        pid, ppid, cmd = int(m.group(1)), int(m.group(2) or 0), m.group(3)
+        t = re.match(r"tmux: server \((/[^)]*)\)", cmd)
+        if t:
+            if t.group(1).rsplit("/", 1)[-1] == name:
+                titled.append((pid, t.group(1)))
+            continue
+        try:
+            argv = shlex.split(cmd)
+        except ValueError:
+            argv = cmd.split()
+        lname, lpath, sub = _tmux_start_command(argv)
+        if sub not in _TMUX_SERVER_COMMANDS:
+            continue
+        if lpath:
+            if lpath.rsplit("/", 1)[-1] == name:
+                started.append((0 if ppid == 1 else 1, pid, lpath))
+        elif lname == name:
+            folder = _tmux_socket_dir()
+            if folder:
+                started.append((0 if ppid == 1 else 1, pid, os.path.join(folder, name)))
+    return titled + [(pid, path) for _, pid, path in sorted(started)]
 
 
 def _c_tmux_socket(db) -> Outcome:
@@ -328,7 +395,7 @@ def _c_tmux_socket(db) -> Outcome:
                      fix("The socket directory must be private to its owner", f"chmod 700 {shlex.quote(folder)}"))
     if n > SOCKET_PATH_MAX:
         return _warn(f"socket {path}: the path is {n} bytes, over the {SOCKET_PATH_MAX} byte limit",
-                     fix("Use a shorter TMUX_TMPDIR for the tmux service (a unix socket path holds 104 bytes on macOS and 108 on Linux)"))
+                     fix("Use a shorter TMUX_TMPDIR for the tmux service (a unix socket path holds 103 bytes on macOS and 107 on Linux)"))
     if not os.path.exists(path):
         return _warn(f"socket {path}: tmux reports it but the file is missing",
                      fix("tmux recreates its socket when the server process gets SIGUSR1 (tmux manual); the board never sends it"))
@@ -1956,9 +2023,10 @@ def _c_backup_job(db) -> Outcome:
     pushes = (st or {}).get("push")
     push_failed = any(isinstance(x, dict) and x.get("error") for x in (pushes if isinstance(pushes, list) else []))
     if push_failed and launchd and plat.IS_MACOS:
-        bad.append(("warn", "the last run could not push the backup branches; a launchd job may not see your ssh-agent or the Keychain key (UNVERIFIED)",
-                    fix("Load the key without a prompt (ssh-add --apple-use-keychain on the key file), or use an https remote with `gh auth setup-git`; "
-                        "the job runs ssh with BatchMode, so it never asks")))
+        bad.append(("warn", "the last run could not push the backup branches; a launchd job in the gui domain has SSH_AUTH_SOCK but one in the user domain does not "
+                            "(measured 2026-10-10, macOS 14), and whether the ssh-agent then holds your Keychain key when the job runs is still to verify",
+                    fix("Run the job in the gui domain (the installer's default; CCBOARD_LAUNCHD_DOMAIN=user cannot push through an agent), load the key without a prompt "
+                        "(ssh-add --apple-use-keychain on the key file), or use an https remote with `gh auth setup-git`; the job runs ssh with BatchMode, so it never asks")))
     if not bad:
         return _pass("; ".join(notes))
     worst = "fail" if any(b[0] == "fail" for b in bad) else "warn"

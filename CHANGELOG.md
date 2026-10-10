@@ -2,6 +2,30 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.41 - 2026-10-10
+
+### Fixed
+- The Doctor's `tmux-socket` row now sees a tmux server on Linux (#202). It used to know only the macOS process title `tmux: server (<path>)`, so a Linux server whose socket file was gone was not found. It now also reads the command line (`tmux -L <name> ...` or `-S <path>` with a command that starts a server, the daemon before any client), and the existing warning and its `kill -USR1 <pid>` fix text are unchanged. Nothing is signalled. A service that runs with another `TMUX_TMPDIR` than the doctor can make the "socket file gone" warning untrue.
+- Codex's dead-login signal rests on an observed capture now (#68). `tests/fixtures/codex_exec/auth_failed_0161.jsonl` is a real `codex exec` run with no login (codex-cli 0.161.0, ids scrubbed) and replaces the invented fixture. A headless run's text is the final `turn.failed` message ("unexpected status 401 Unauthorized: Missing bearer or basic authentication in header") instead of twelve retry lines, and a 401 on a retry followed by a different failure is not a dead login. `codex exec` cannot tell no, empty and garbage `auth.json` apart; only `codex login status` does. A login the server rejected is still assumed, not captured.
+- A Claude session parked on a rate limit no longer reads as an error (#71). Its badge, Inbox card and Home row say "limit reached, continues at HH:MM" (a weekday in front when the reset is more than 20 hours away), "limit reached, auto-continue is off" or "limit reset, continuing shortly"; a task card's owner chip says "limit reached". `/api/state` sessions carry `parked`, and a reset time is promised only when the board will act on it.
+- The Home banner after a restart no longer says "Claude" and "--resume" for a recovered Codex row (#93): "After a restart, 2 Claude and 1 Codex sessions relaunched: a, b, c", or "After a restart, 1 Codex session relaunched: <name>". The recovery record now names each session's agent; an older record names none.
+- The WSL keep-alive script (`scripts/windows/ccboard-wsl-keepalive.ps1`) now says "No WSL distro is installed" when WSL is there but has no distro; it used to say "wsl.exe was not found". The new `check-windows` CI job found it on its first run.
+
+### Added
+- Settings > Accounts on a Mac has its own **Log in** button when saved logins are off, Claude Code is installed and not logged in (#119). It does what the Home banner's Log in does, which starts nothing on a Mac: the toast says "Run /login in any terminal; the board notices within a minute."
+- The Preview button says why it cannot work before you click (#126). `state.preview` is `{available, code, reason}`; when it is false the task card shows a disabled Preview and "unavailable: <reason>" (`CCBOARD_PUBLIC_URL` is not set, Tailscale on the Windows side of WSL2, Tailscale missing, not running, not logged in, or the last `serve` was refused within 5 minutes). It runs no `serve` to find out.
+- The macOS installer installs the claude-mem plugin (#122): `claude plugin marketplace add thedotmack/claude-mem`, then `claude plugin install claude-mem@thedotmack`, each limited to 300 seconds (`CCBOARD_MACOS_PLUGIN_SECONDS`), skipped by `CCBOARD_CLAUDE_MEM=0`, a no-op when the plugin is already listed, and never a reason to fail.
+- The macOS installer checks before it builds (#128): it asks Homebrew which missing tools would build from source, stops with "the Xcode Command Line Tools are not installed, and these would be built from source: ttyd. Nothing was installed." when the tools are missing, and `scripts/macos_tools.py bottle --explain` prints the measured ttyd finding.
+- A `check-windows` CI job (#123) runs a PowerShell parse check, PSScriptAnalyzer and a Pester test of the WSL keep-alive script on `windows-latest`. It is advisory (`continue-on-error`), read only, skipped for docs-only changes, and gates nothing.
+
+### Changed
+- `CCBOARD_MACOS_INSTALL_TOOLS=1` is a yes for bottles only. A source build needs a "y" on a terminal or `CCBOARD_MACOS_ALLOW_SOURCE_BUILD=1` as well; an unattended Intel run that used to pass with only `=1` (tmux is a source build there) now stops and names both variables. An optional tool that would build from source is left out with a warning.
+- README: a "Where ccboard runs" section with one support line per system, linked from the top and from Install; the corrections from the device check on an Intel Mac with macOS 14 (#130): ttyd has no bottle there and is a source build of more than ten minutes that upgrades 11 packages, the Mac's tmux socket limit is 103 bytes, a `unix:` serve target answers 502, `SSH_AUTH_SOCK` is set in `gui/<uid>` jobs only (#129), the first https request after `serve` waits for the certificate, a socket file is not proof of a server, and a same-Mac request through the tailnet name carries identity. The Tailscale App Store row reads "works as the logged-in user, no sudo, no operator (measured 1.102.4)". Mac survival and Keychain rows all say "to verify".
+- README launcher: `--fallback-model` (up to 3) and `codex fork <thread id>` work in an interactive session; a fork does not carry model or reasoning, and the board binds the new thread id after the first prompt (#92).
+- Help text only: a headless `permission_mode` error now ends "(bypass is never allowed for unattended runs)" instead of the stale "(bypass only inside a devcontainer)" (#104; the owner decision on bypass inside a devcontainer is still open), and the Doctor's socket fix text says 103 bytes on macOS.
+
+Upgrade: nothing to do.
+
 ## v0.5.40 - 2026-10-10
 
 ### Added

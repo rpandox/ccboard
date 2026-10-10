@@ -1991,6 +1991,11 @@
     },
     "notice": null
   },
+  "preview": {
+    "available": true,
+    "code": "ok",
+    "reason": null
+  },
   "usage_refresh": {
     "running": false,
     "last": null

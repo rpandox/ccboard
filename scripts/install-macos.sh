@@ -15,6 +15,11 @@
 #   CCBOARD_BACKUP=0               no nightly backup job (otherwise dev.ccboard.backup runs at CCBOARD_BACKUP_ONCALENDAR)
 #   CCBOARD_MACOS_OPTIONAL=...     optional Homebrew tools, default code-server,restic,bun; none = skip them
 #   CCBOARD_MACOS_INSTALL_TOOLS=1  install missing Homebrew tools without asking (0 = never; unset = ask, and refuse without a terminal)
+#   CCBOARD_MACOS_ALLOW_SOURCE_BUILD=1   also let Homebrew BUILD a missing tool from source without asking (ttyd on an Intel Mac takes many
+#                                  minutes and may upgrade packages you have); without it a build from source is asked about on a
+#                                  terminal and refused otherwise. With no Command Line Tools such a build is refused before anything installs.
+#   CCBOARD_CLAUDE_MEM=0           skip the claude-mem plugin step (otherwise: claude plugin marketplace add / install, warn and go on if it fails)
+#   CCBOARD_MACOS_PLUGIN_SECONDS=N time limit for each of the two plugin commands (default 300; gtimeout, or a python wrapper without it)
 #   CCBOARD_TMUX_TMPDIR, CCBOARD_TMUX_SOCKET   where tmux puts its socket (default /tmp and ccboard); the same in every job
 #   CCBOARD_REPLACE_SERVE=1        replace another tailscale serve handler on one of our ports (never 443 unless it is the board's)
 #   CCBOARD_REPLACE_CODE_SERVER_CONFIG=1   back up and replace a code-server config.yaml that ccboard did not write
@@ -187,6 +192,9 @@ fi
 [[ "$PROJECTS_DIR" = /* ]] || die "PROJECTS_DIR must be an absolute path"
 case "$CCBOARD_CLAUDE_MEM" in 0|1) ;; *) die "CCBOARD_CLAUDE_MEM must be 0 or 1 (got '$CCBOARD_CLAUDE_MEM')";; esac
 case "$CCBOARD_MEM_SERVICE" in 0|1) ;; *) die "CCBOARD_MEM_SERVICE must be 0 or 1 (got '$CCBOARD_MEM_SERVICE')";; esac
+MEM_SECS=${CCBOARD_MACOS_PLUGIN_SECONDS:-300}
+[[ "$MEM_SECS" =~ ^[1-9][0-9]{0,4}$ ]] || die "CCBOARD_MACOS_PLUGIN_SECONDS must be a number of seconds, 1 or more (got '$MEM_SECS')"
+case "${CCBOARD_MACOS_ALLOW_SOURCE_BUILD:-}" in ''|0|1) ;; *) die "CCBOARD_MACOS_ALLOW_SOURCE_BUILD must be 0 or 1 (got '$CCBOARD_MACOS_ALLOW_SOURCE_BUILD')";; esac
 case "${CCBOARD_KEEP_AWAKE:-0}" in 0|1) ;; *) die "CCBOARD_KEEP_AWAKE must be 0 or 1 (got '${CCBOARD_KEEP_AWAKE:-}')";; esac
 case "${CCBOARD_BACKUP:-1}" in 0|1) ;; *) die "CCBOARD_BACKUP must be 0 or 1 (got '${CCBOARD_BACKUP:-}')";; esac
 [ -z "$CCBOARD_MEM_PORT" ] || [[ "$CCBOARD_MEM_PORT" =~ ^[0-9]{1,5}$ ]] || die "CCBOARD_MEM_PORT must be empty or a port number (got '$CCBOARD_MEM_PORT')"
@@ -299,25 +307,53 @@ if [ -z "$NEED_REQ$NEED_OPT" ]; then
 else
   [ -z "$NEED_REQ" ] || note "missing (required): $NEED_REQ"
   [ -z "$NEED_OPT" ] || note "missing (optional): $NEED_OPT"
-  for f in $NEED_REQ; do   # say beforehand which ones compile (tmux and ttyd have no Intel bottle) instead of leaving a silent wait
-    out=$("$BREW" info --json=v2 "${f##*/}" 2>/dev/null | "$PY3" "$APP_DIR/scripts/macos_tools.py" bottle --formula "${f##*/}" --macos "$MACOS_VERSION" --arch "$ARCH" --explain 2>&1 || true)
-    printf '%s\n' "$out" | while IFS= read -r l; do note "${f##*/}: $l"; done
+  # Say beforehand which ones compile (tmux and ttyd have no Intel bottle) instead of leaving a silent wait. A required formula whose bottle
+  # cannot be told counts as a source build; an optional one only when brew says so (a tap that is not added yet cannot answer).
+  SOURCE_LIST=""
+  for f in $NEED_REQ $NEED_OPT; do
+    rc=0
+    "$BREW" info --json=v2 "${f##*/}" >"$TMPD/brew-info.json" 2>/dev/null || : >"$TMPD/brew-info.json"
+    out=$("$PY3" "$APP_DIR/scripts/macos_tools.py" bottle --formula "${f##*/}" --macos "$MACOS_VERSION" --arch "$ARCH" --file "$TMPD/brew-info.json" --explain 2>&1) || rc=$?
+    case " $NEED_REQ " in *" $f "*) req=1;; *) req=0;; esac
+    if [ "$rc" = 10 ] || { [ "$rc" = 20 ] && [ "$req" = 1 ]; }; then SOURCE_LIST="$SOURCE_LIST ${f##*/}"; fi
+    if [ "$req" = 1 ] || [ "$rc" = 10 ]; then printf '%s\n' "$out" | while IFS= read -r l; do note "${f##*/}: $l"; done; fi
   done
-  go=0
+  SOURCE_LIST=${SOURCE_LIST# }
+  # Command Line Tools: a build from source needs them, and brew fails midway without them. Stop before anything is installed.
+  if [ -n "$SOURCE_LIST" ] && [ "${CCBOARD_MACOS_INSTALL_TOOLS:-}" != 0 ] && ! xcode-select -p >/dev/null 2>&1; then
+    die "the Xcode Command Line Tools are not installed, and these would be built from source: $SOURCE_LIST. Nothing was installed. Install the tools with: xcode-select --install   (a window opens; when it has finished, rerun this installer)"
+  fi
+  # A yes to the tools question is not a yes to a build that takes minutes and may upgrade packages you have: that needs its own answer.
+  consent=''
   case "${CCBOARD_MACOS_INSTALL_TOOLS:-}" in
-    1) go=1;;
-    0) go=0;;
-    '') if [ -t 0 ]; then
-          printf '    Install the missing tools with Homebrew (brew bundle)? [y/N] '
-          read -r ans || ans=n
-          case "$ans" in y|Y|yes|YES) go=1;; esac
-        fi;;
+    1) consent=yes;;
+    0) consent=no;;
+    '') consent=ask;;
     *) die "CCBOARD_MACOS_INSTALL_TOOLS must be 1 or 0 (got '$CCBOARD_MACOS_INSTALL_TOOLS')";;
   esac
+  if [ -n "$SOURCE_LIST" ] && [ "$consent" = yes ] && [ "${CCBOARD_MACOS_ALLOW_SOURCE_BUILD:-}" != 1 ]; then consent=ask; fi
+  go=0
+  if [ "$consent" = yes ]; then
+    go=1
+  elif [ "$consent" = ask ] && [ -t 0 ]; then
+    if [ -n "$SOURCE_LIST" ]; then
+      printf '    Homebrew will BUILD from source: %s. That takes several minutes and may upgrade packages you have. Build them? [y/N] ' "$SOURCE_LIST"
+    else
+      printf '    Install the missing tools with Homebrew (brew bundle)? [y/N] '
+    fi
+    read -r ans || ans=n
+    case "$ans" in y|Y|yes|YES) go=1;; esac
+  fi
   if [ "$go" != 1 ]; then
-    [ -z "$NEED_REQ" ] || die "tools are missing: $NEED_REQ. Install them with: brew bundle --file=$APP_DIR/scripts/macos/Brewfile   (or rerun with CCBOARD_MACOS_INSTALL_TOOLS=1)"
-    warn "optional tools are missing ($NEED_OPT); continuing without them. Install later with: brew bundle --file=$APP_DIR/scripts/macos/Brewfile.optional"
+    if [ -n "$SOURCE_LIST" ] && [ "$consent" != no ]; then
+      [ -z "$NEED_REQ" ] || die "tools are missing: $NEED_REQ. Homebrew would build from source: $SOURCE_LIST (several minutes, and it may upgrade packages you have). Nothing was installed. Build them by running this installer in a terminal and answering y, or rerun with CCBOARD_MACOS_INSTALL_TOOLS=1 CCBOARD_MACOS_ALLOW_SOURCE_BUILD=1, or install them yourself: brew bundle --file=$APP_DIR/scripts/macos/Brewfile"
+      warn "optional tools are missing ($NEED_OPT) and Homebrew would build from source: $SOURCE_LIST; continuing without them. Install later with: brew bundle --file=$APP_DIR/scripts/macos/Brewfile.optional"
+    else
+      [ -z "$NEED_REQ" ] || die "tools are missing: $NEED_REQ. Install them with: brew bundle --file=$APP_DIR/scripts/macos/Brewfile   (or rerun with CCBOARD_MACOS_INSTALL_TOOLS=1)"
+      warn "optional tools are missing ($NEED_OPT); continuing without them. Install later with: brew bundle --file=$APP_DIR/scripts/macos/Brewfile.optional"
+    fi
   else
+    [ -z "$SOURCE_LIST" ] || warn "building from source with Homebrew: $SOURCE_LIST. This takes several minutes and may upgrade packages you already have (brew bundle --no-upgrade does not prevent that)"
     if [ -n "$NEED_REQ" ]; then
       "$BREW" bundle --no-upgrade --file="$APP_DIR/scripts/macos/Brewfile" || die "brew bundle failed for the required tools; fix the error above and rerun"
     fi
@@ -637,8 +673,79 @@ elif have npm; then
 else
   warn "node/npm not found: ccusage skipped (the usage strip still shows the 5h/weekly limits from Claude's statusline)"
 fi
-if [ "$CCBOARD_CLAUDE_MEM" = 1 ]; then
-  note "the claude-mem plugin is not installed by this installer; if you want it: claude plugin marketplace add thedotmack/claude-mem, then claude plugin install claude-mem@thedotmack"
+# The claude-mem plugin (issue #122), optional: CCBOARD_CLAUDE_MEM=0 skips it. A failure or a stuck download only warns; nothing here stops the install.
+# run_limited: a command under a time limit. gtimeout (Homebrew's coreutils) when it is there, otherwise a small python wrapper that ends the
+# command and its children when the limit passes. Exit status: the command's own, or 124 when the limit ended it (the same as gtimeout).
+run_limited() { # seconds command [args...]
+  local secs=$1
+  shift
+  if have gtimeout; then
+    gtimeout "$secs" "$@"
+  else
+    "$PY3" -c '
+import os, signal, subprocess, sys
+secs, argv = float(sys.argv[1]), sys.argv[2:]
+try:
+    p = subprocess.Popen(argv, start_new_session=True)
+except OSError as e:
+    sys.stderr.write("%s\n" % e)
+    sys.exit(127)
+try:
+    sys.exit(p.wait(timeout=secs))
+except subprocess.TimeoutExpired:
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(p.pid, sig)
+        except OSError:
+            pass
+        try:
+            p.wait(timeout=5)
+            break
+        except subprocess.TimeoutExpired:
+            pass
+    sys.exit(124)
+' "$secs" "$@"
+  fi
+}
+MEM_PLUGIN_KEY=claude-mem@thedotmack
+mem_plugin_present() { # 0 when installed_plugins.json of the Claude config folder names the plugin (a read; nothing is run)
+  "$PY3" -c '
+import json, os, sys
+try:
+    with open(os.path.join(sys.argv[1], "plugins", "installed_plugins.json")) as f:
+        sys.exit(0 if (json.load(f).get("plugins") or {}).get(sys.argv[2]) else 1)
+except Exception:
+    sys.exit(1)
+' "${CLAUDE_CONFIG_DIR:-$HOME_DIR/.claude}" "$MEM_PLUGIN_KEY"
+}
+log "claude-mem plugin"
+if [ "$CCBOARD_CLAUDE_MEM" = 0 ]; then
+  note "skipped (CCBOARD_CLAUDE_MEM=0)"
+elif mem_plugin_present; then
+  note "present: $MEM_PLUGIN_KEY"
+elif [ -z "$CLAUDE_BIN" ]; then
+  note "claude is not installed, so the claude-mem plugin is not installed either. Later: claude plugin marketplace add thedotmack/claude-mem, then claude plugin install $MEM_PLUGIN_KEY"
+else
+  note "installing the claude-mem plugin (needs github.com; at most ${MEM_SECS}s for each of the two steps)"
+  rc=0
+  run_limited "$MEM_SECS" "$CLAUDE_BIN" plugin marketplace add thedotmack/claude-mem </dev/null >"$TMPD/mem-plugin.log" 2>&1 || rc=$?
+  if [ "$rc" = 124 ]; then
+    warn "claude plugin marketplace add thedotmack/claude-mem passed its ${MEM_SECS}s limit; the plugin was not installed. Run it by hand, then: claude plugin install $MEM_PLUGIN_KEY"
+  else
+    # not chained with the add: a marketplace that is already added may answer with an error, and the install is what counts
+    [ "$rc" = 0 ] || note "marketplace add reported an error (continuing with the install): $(tail -n 1 "$TMPD/mem-plugin.log")"
+    rc=0
+    run_limited "$MEM_SECS" "$CLAUDE_BIN" plugin install "$MEM_PLUGIN_KEY" </dev/null >"$TMPD/mem-plugin.log" 2>&1 || rc=$?
+    if [ "$rc" = 124 ]; then
+      warn "claude plugin install $MEM_PLUGIN_KEY passed its ${MEM_SECS}s limit; run it by hand"
+    elif [ "$rc" != 0 ]; then
+      warn "claude plugin install $MEM_PLUGIN_KEY failed (it needs github.com): $(tail -n 1 "$TMPD/mem-plugin.log"). Run it by hand"
+    elif mem_plugin_present; then
+      note "installed $MEM_PLUGIN_KEY; Claude sessions that are already open load its hooks when they next start"
+    else
+      warn "claude plugin install finished, but $MEM_PLUGIN_KEY is not in installed_plugins.json yet; the board's doctor will say so"
+    fi
+  fi
 fi
 
 # ---------------------------------------------------------------- tailscale serve

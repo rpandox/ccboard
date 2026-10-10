@@ -1648,7 +1648,9 @@ function settingsAddBlock() {
   const failed = el('div', { class: 'add-error hidden' }, errText, el('div', { class: 'add-btns' }, retry, dismiss));
 
   const reason = el('div', { class: 'dim set-note add-reason' });
-  const off = el('div', { class: 'add-off hidden' }, reason, el('div', { class: 'dim set-note', text: SETTINGS_LOGIN_TERMINAL }));
+  // #119: where saved logins are off (a Mac) and Claude Code is not logged in, the section has the same Log in as the banner (accountLogin); it starts nothing here, the how-to is the way
+  const logInOff = el('button', { class: 'primary tinted hidden', type: 'button', text: 'Log in', onclick: () => { accountLogin(); pageToast('Run /login in any terminal; the board notices within a minute.', 'ok'); } });
+  const off = el('div', { class: 'add-off hidden' }, reason, el('div', { class: 'dim set-note', text: SETTINGS_LOGIN_TERMINAL }), el('div', { class: 'add-btns' }, logInOff));
   root.append(note, idle, flight, failed, off);
 
   const show = (node, on) => node.classList.toggle('hidden', !on);
@@ -1707,6 +1709,7 @@ function settingsAddBlock() {
     show(flight, mode === 'flight');
     show(failed, mode === 'error');
     show(off, mode === 'off');
+    show(logInOff, mode === 'off' && !!(st && st.claude && st.claude.installed && st.claude.loggedIn === false));
     show(addIdle, !needLogin);
     show(logIn, needLogin);
     if (mode === 'off') setText(reason, store.reason ? `${store.reason.charAt(0).toUpperCase()}${store.reason.slice(1).replace(/\.$/, '')}. Adding and switching Claude accounts is off on this box.` : 'Saved logins are not available on this box. Adding and switching Claude accounts is off.');

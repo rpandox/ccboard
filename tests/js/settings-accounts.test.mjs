@@ -632,6 +632,31 @@ test('where saved logins are not supported the Log in buttons still lead to the 
   assert.equal(w.get('acctFlow.want'), null, 'the wish is not kept for later');
 });
 
+test('#119: where saved logins are off and Claude Code is not logged in, the Accounts section has its own Log in beside the reason; it starts nothing and says what to do', async () => {
+  const reason = "saved logins need Claude's file credentials (Linux)";
+  const w = acctWorld({ state: stateOf({ claude: { installed: true, loggedIn: false }, accounts: accountsOf([], { supported: false, reason, count: 0 }) }) });
+  const off = panel(w).querySelector('.add-off');
+  assert.equal(hidden(off), false);
+  const logIn = btn(off, 'Log in');
+  assert.ok(logIn && !hidden(logIn), 'the section has the button the banner has');
+  assert.ok(hasCls(logIn, 'tinted') && !isFilled(logIn), 'the banner owns the filled primary');
+  assert.deepEqual(visibleButtons(panel(w)).map(text).filter((t) => t === 'Log in'), ['Log in']);
+  logIn.click();
+  await tick();
+  assert.equal(apiCalls(w).filter((c) => c.method === 'POST').length, 0, 'nothing is started: the server refuses saved logins here');
+  assert.equal(w.location.hash, '#/settings?sec=accounts');
+  assert.equal(toasts(w).pop().text, 'Run /login in any terminal; the board notices within a minute.');
+  assert.equal(w.get('acctFlow.want'), null);
+  // logged in, or Claude Code not installed, or saved logins supported: no such button
+  for (const over of [{ claude: { installed: true, loggedIn: true }, accounts: accountsOf(THREE(), { supported: false, reason, count: 0 }) },
+    { claude: { installed: false, loggedIn: false }, accounts: accountsOf([], { supported: false, reason, count: 0 }) }]) {
+    const w2 = acctWorld({ state: stateOf(over) });
+    assert.equal(hidden(btn(panel(w2).querySelector('.add-off'), 'Log in')), true);
+  }
+  const w3 = acctWorld({ state: stateOf({ claude: { installed: true, loggedIn: false }, accounts: accountsOf([]) }) });
+  assert.equal(hidden(panel(w3).querySelector('.add-off')), true, 'the Linux idle block keeps its own Log in');
+});
+
 test('the old modal login is gone: no startLogin / openModal / updateModal / modalParts, and (v0.5.13) no #modal or closeModal either: the task dialog is a sheet', () => {
   const { w } = homeWorld();
   for (const name of ['startLogin', 'openModal', 'updateModal', 'updateModalSafe', 'modalParts', 'closeModal']) assert.equal(w.run(`typeof ${name}`), 'undefined', name);

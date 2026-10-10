@@ -2,11 +2,12 @@
 tail_auth_evidence / auth_signal, codex.auth_verdict / CodexAgent.auth_probe, parse_headless's auth_failure) and the Tailer raising and
 clearing kv login_problem for the rollout's owner account.
 
-Provenance (codex-cli 0.161.0 on the box, 2026-10-09). OBSERVED: a working turn's token_count event (codex_auth/rollout_ok_token_count_0161.jsonl),
-the TUI bootstrap error "account/read failed ... timed out" and the /tmp PATH-aliases warning (both texts are in the table below as NOT auth
-failures). ASSUMED, never captured: every `codex login status` string and the 401 / revoked refresh token error item
-(codex_auth/*_synthetic.*, codex_exec/auth_failed_synthetic.jsonl): they follow Codex's source and docs. codex_auth/login_states_0161.json
-marks each record observed or not. Temp CODEX_HOME, a bare DB, no real codex; no test opens or parses an auth.json.
+Provenance (codex-cli 0.161.0 on the box, 2026-10-09 and 2026-10-10). OBSERVED: a working turn's token_count event
+(codex_auth/rollout_ok_token_count_0161.jsonl), the TUI bootstrap error "account/read failed ... timed out" and the /tmp PATH-aliases warning (both
+texts are in the table below as NOT auth failures), the `codex login status` answers (login_states_0161.json) and the `codex exec --json` run with no
+usable login (codex_exec/auth_failed_0161.jsonl: ten 401 retries, then turn.failed, exit 1; the three logged-out states look the same).
+ASSUMED, never captured: the error item of a login the SERVER rejects (expired or revoked refresh token) in codex_auth/rollout_auth_error_synthetic.jsonl
+and the login_status_synthetic.json strings: they follow Codex's source and docs. codex_auth/login_states_0161.json marks each record observed or not. Temp CODEX_HOME, a bare DB, no real codex; no test opens or parses an auth.json.
 """
 import json
 from pathlib import Path
@@ -66,7 +67,7 @@ def test_fixture_texts_classify_as_the_issue_says():
             elif ev.get("type") == "turn.failed":
                 out.append(ev["error"]["message"])
         return out
-    assert all(login_problem.codex_auth_failure(t) for t in errors("auth_failed_synthetic.jsonl"))
+    assert all(login_problem.codex_auth_failure(t) for t in errors("auth_failed_0161.jsonl"))
     assert not any(login_problem.codex_auth_failure(t) for t in errors("rate_limit.jsonl"))
     assert not any(login_problem.codex_auth_failure(t) for t in errors("turn_failed.jsonl"))
 
@@ -256,7 +257,7 @@ def test_auth_probe_never_opens_auth_json(tmp_path, monkeypatch, db, home):
 def test_parse_headless_flags_an_auth_failure_and_never_a_rate_limit():
     from app import agents
     ag = agents.get("codex")
-    text = (FIX / "codex_exec" / "auth_failed_synthetic.jsonl").read_text()
+    text = (FIX / "codex_exec" / "auth_failed_0161.jsonl").read_text()
     r = ag.parse_headless(text, "", 1)
     assert r["is_error"] and r["auth_failure"] is True and r["rate_limited"] is False
     for name in ("rate_limit.jsonl", "turn_failed.jsonl", "success.jsonl"):
@@ -329,3 +330,62 @@ def test_a_claude_problem_is_not_cleared_by_a_codex_turn(db, home, work):
     add_codex_row(db, work, flags={"transcript_path": str(p), "hook_seen": True})
     cr.Tailer().tail_rows(db, NOW)
     assert login_problem.get(db)["agent"] == "claude"
+
+
+# ------------------------------------------------------------------ the observed `codex exec` capture (#68, codex-cli 0.161.0, 2026-10-10)
+def _exec_events(name="auth_failed_0161.jsonl"):
+    return [json.loads(line) for line in (FIX / "codex_exec" / name).read_text().splitlines()]
+
+
+def test_the_observed_exec_capture_has_the_recorded_shape_and_no_ids():
+    import re
+    ev = _exec_events()
+    kinds = [e["type"] for e in ev]
+    assert kinds == (["thread.started", "turn.started"] + ["error"] * 4 + ["item.completed"] + ["error"] * 5 + ["error", "turn.failed"])
+    assert ev[6]["item"]["type"] == "error" and ev[6]["item"]["message"].startswith("Falling back from WebSockets to HTTPS transport")
+    assert [e["message"].split(" (")[0] for e in ev[2:6]] == [f"Reconnecting... {n}/5" for n in (1, 2, 3, 4)]
+    assert ev[-1]["error"]["message"] == "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header"
+    raw = (FIX / "codex_exec" / "auth_failed_0161.jsonl").read_text()
+    assert "<scrubbed>" in raw and not re.search(r"[0-9a-f]{16}-[A-Z]{3}", raw)                 # a cf-ray value looks like <hex>-<AIRPORT>
+    assert not (FIX / "codex_exec" / "auth_failed_synthetic.jsonl").exists()
+
+
+def test_the_observed_exec_run_is_an_auth_failure_with_the_401_as_its_text():
+    from app import agents
+    r = agents.get("codex").parse_headless((FIX / "codex_exec" / "auth_failed_0161.jsonl").read_text(),
+                                           "failed to connect to websocket: HTTP error: 401 Unauthorized\n", 1)
+    assert r["is_error"] and r["subtype"] == "turn_failed" and r["auth_failure"] is True and r["rate_limited"] is False
+    assert r["session_id"] == "00000000-0000-0000-0000-000000000000" and r["turns"] is None
+    # the run's verdict, not twelve lines of retry noise
+    assert r["text"] == "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header"
+
+
+def test_a_401_retry_that_ended_in_a_different_failure_is_not_a_dead_login():
+    """turn.failed decides when there is one: a transient 401 in a retry line followed by a context overflow is not a login problem."""
+    from app import agents
+    lines = [json.dumps(e) for e in _exec_events()[:4]]
+    lines.append(json.dumps({"type": "turn.failed", "error": {"message": "context window exceeded"}}))
+    r = agents.get("codex").parse_headless("\n".join(lines) + "\n", "", 1)
+    assert r["is_error"] and r["auth_failure"] is False and r["text"] == "context window exceeded"
+
+
+def test_an_exec_run_that_exits_0_after_a_reconnect_401_is_not_an_error():
+    from app import agents
+    ev = _exec_events()[:3] + [{"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}},
+                               {"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}}]
+    r = agents.get("codex").parse_headless("\n".join(json.dumps(e) for e in ev) + "\n", "", 0)
+    assert r["is_error"] is False and r["auth_failure"] is False and r["text"] == "ok"
+
+
+def test_the_states_fixture_records_the_exec_capture_as_observed_and_the_rejected_login_as_assumed():
+    st = _states()
+    ex = st["exec_no_login"]
+    assert ex["observed"] is True and ex["version"] == "codex-cli 0.161.0" and ex["date"] == "2026-10-10" and ex["rc"] == 1
+    assert ex["tells_the_states_apart"] is False and len(ex["states_that_look_the_same"]) == 3
+    assert (FIX / "codex_auth" / ex["file"]).resolve().exists()
+    assert st["expired_revoked"]["exec"]["observed"] is False and "ASSUMED" in st["expired_revoked"]["exec"]["basis"]
+    assert st["expired_revoked"]["login_status"]["observed"] is False
+    # the second garbage text seen on 2026-10-10 reads as an error as well, never as logged in
+    un = st["unreadable"]["login_status"]
+    v = verdict_of(un["rc"], un["stdout"], un["stderr_garbage_text_file"])
+    assert v["loggedIn"] is False and v["error"] == "codex login status exited 1"
