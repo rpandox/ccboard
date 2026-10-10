@@ -204,7 +204,6 @@ def guard_launch(fields) -> list[str]:
 SAFE_CLAUDE = "manual"                                         # the adapter's ask-as-usual mode (the CLI word `default`); sent explicitly, so settings.json cannot choose
 CLAUDE_MODE_WORDS = ("manual", "default", "acceptEdits", "plan")          # the --permission-mode values of a line that is inside the remote-allowed set
 WIDE_SESSION = "that session runs with wider permissions than another node may use, or its mode cannot be read; start it from its own board"
-_CLAUDE_WIDEN = ("--settings", "--setting-sources", "--allowedtools", "--allowed-tools", "--permission-prompt-tool")     # options that change what is asked, by name
 
 
 def safe_launch(agent: str | None, mode=None, permission_mode=None, sandbox=None, approval=None) -> dict:
@@ -230,41 +229,247 @@ def safe_launch(agent: str | None, mode=None, permission_mode=None, sandbox=None
     return {"sandbox": sb, "approval": "on-request"}
 
 
+FINAL_KEYS = ("agent", "model", "effort", "reasoning_effort", "permission_mode", "subagent_model", "subagent_force", "opts", "sandbox", "approval", "name", "auto_close")
+FINAL_OPTS = ("sandbox", "approval")
+
+
 def guard_final(fields: dict) -> list[str]:
-    """guard_launch for the options a launch ends up with (a copy; `manual`, the adapter's word for default, is read as default). Empty values are not options."""
+    """The options a launch ends up with, checked by an ALLOW list on top of guard_launch: only the keys of FINAL_KEYS may be set (a copy; `manual`, the adapter's word
+    for default, is read as default), `opts` holds a sandbox and an approval and nothing else, and each string has the rule of its kind (check_field). Empty values are not options."""
     f = {k: v for k, v in fields.items() if v not in (None, "", [], {}, False)}
     if f.get("permission_mode") == "manual":
         f["permission_mode"] = "default"
-    return guard_launch(f)
+    out = guard_launch(f)
+
+    def add(msg: str) -> None:
+        if msg not in out:
+            out.append(msg)
+
+    for k, v in f.items():
+        if k not in FINAL_KEYS:
+            add(f"{k} is not part of a request from another node")
+        elif k == "opts":
+            if not isinstance(v, dict) or any(x not in FINAL_OPTS and _present(y) for x, y in v.items()):
+                add("opts may hold a sandbox and an approval only")
+            else:
+                for x, y in v.items():
+                    try:
+                        check_field(x, y) if _present(y) else None
+                    except ValueError:
+                        add(f"opts {x} is not allowed")
+        elif k in ("agent", "model", "effort", "reasoning_effort", "permission_mode", "sandbox", "approval", "name"):
+            try:
+                check_field("effort" if k == "reasoning_effort" else k, v)
+            except ValueError:
+                add(f"{k} is not allowed in a request from another node")
+        elif k == "subagent_model":
+            try:
+                check_field("model", v)
+            except ValueError:
+                add("subagent_model is not allowed in a request from another node")
+    return out
 
 
-def _agent_region(cmd):
-    """(agent word, the tokens after it up to the prompt's `--`) of a typed launch line, or None when it cannot be read as one."""
-    if not isinstance(cmd, str) or not cmd.strip():
+CARD_KEYS = ("model", "effort", "reasoning_effort", "permission_mode", "subagent_model", "subagent_force", "auto_close", "opts")
+
+
+def card_refusal(task: dict, spec: dict) -> str | None:
+    """Why a stored card may not be started from another node (None: it may), by an allow list: its title and prompt are text without control, format or line-separator
+    characters, its spec holds only the keys of CARD_KEYS, and each string in it has the rule of its kind. The same check_field the hub's models use."""
+    try:
+        free_text(task.get("title") or "", TASK_TITLE_IN)
+        free_text(task.get("prompt") or "", TASK_PROMPT_IN)
+    except ValueError:
+        return "text"
+    for k, v in (spec or {}).items():
+        if not _present(v):
+            continue
+        if k not in CARD_KEYS:
+            return "options"
+        try:
+            if k in ("model", "effort", "reasoning_effort"):
+                check_field("effort" if k == "reasoning_effort" else k, v)
+            elif k == "permission_mode":
+                if v not in CLAUDE_MODE_WORDS:
+                    return "options"
+            elif k == "subagent_model":
+                check_field("model", v)
+            elif k == "opts":
+                if not isinstance(v, dict):
+                    return "options"
+                for x, y in v.items():
+                    if _present(y):
+                        if x not in FINAL_OPTS:
+                            return "options"
+                        check_field(x, y)
+        except ValueError:
+            return "options"
+    return None
+
+
+# The allow list. A typed launch line is accepted only when it is exactly the shape the board's own adapters write (app/agents/claude.py and codex.py launch_plan,
+# tasks.build_command): shlex.join of its tokens gives the line back, an optional `env` prefix of the two names the board sets itself, the agent, then flags from a
+# table of known-safe flags with a value rule each, then at most `-- <prompt>`. A flag that is not in the table is refused, so a flag an adapter adds later fails
+# closed until it is added here (tests/test_nodes_guard.py generates the adapters' lines and checks that every one passes).
+_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+_WTREE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
+_MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}(?:\[1m\])?")
+_CODEX_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,79}")
+_CODEX_REASONING_C = re.compile(r'model_reasoning_effort="[a-z][a-z0-9-]{1,19}"')
+
+
+def _ok_model(v: str) -> bool:
+    return bool(_MODEL_ID.fullmatch(v))
+
+
+def _ok_effort(v: str) -> bool:
+    return v in ("low", "medium", "high", "xhigh", "max", "ultracode")
+
+
+def _ok_fallbacks(v: str) -> bool:
+    items = v.split(",")
+    return 1 <= len(items) <= 3 and all(_ok_model(x) for x in items)
+
+
+def _ok_session_name(v: str) -> bool:
+    return len(v) <= 63 and tmux.valid_name(v)
+
+
+# flag -> (kind, value rule): kind val = takes one value, bool = takes none, optuuid = an optional uuid, once = may appear once only (all flags may)
+_CLAUDE_FLAGS = {
+    "--session-id": ("val", lambda v: bool(_UUID.fullmatch(v))),
+    "--resume": ("optuuid", None),
+    "--continue": ("bool", None),
+    "--fork-session": ("bool", None),
+    "--name": ("val", _ok_session_name),
+    "--model": ("val", _ok_model),
+    "--effort": ("val", _ok_effort),
+    "--permission-mode": ("val", lambda v: v in CLAUDE_MODE_WORDS),
+    "--fallback-model": ("val", _ok_fallbacks),
+    "--worktree": ("val", lambda v: bool(_WTREE.fullmatch(v)) and ".." not in v),
+}
+_CODEX_FLAGS = {
+    "--no-daemon": ("bool", None),
+    "--no-alt-screen": ("bool", None),
+    "--dangerously-bypass-hook-trust": ("hooktrust", None),          # only while the board's own CCBOARD_CODEX_HOOK_TRUST=bypass writes it on every line
+    "-m": ("val", lambda v: bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}", v))),
+    "-s": ("val", lambda v: v in SANDBOXES),
+    "-a": ("val", lambda v: v in APPROVALS),
+    "-c": ("val", lambda v: v == "check_for_update_on_startup=false" or bool(_CODEX_REASONING_C.fullmatch(v))),
+    "--last": ("bool", None),
+}
+_ENV_NAMES = {"CLAUDE_CODE_SUBAGENT_MODEL": lambda v: v in ("inherit", "haiku", "sonnet", "opus") or _ok_model(v),
+              "CLAUDE_CODE_SUBAGENT_MODEL_FORCE": lambda v: v == "1"}
+
+
+def _line_tokens(cmd):
+    """The tokens of a typed line when it is in the board's own canonical form (shlex.join of its tokens is the line itself, so there is no unquoted `;`, `&&`, `|`,
+    backtick, `$()`, redirection or odd spacing), else None."""
+    if not isinstance(cmd, str) or not cmd.strip() or len(cmd) > 400000:
         return None
     try:
         toks = shlex.split(cmd)
     except ValueError:
         return None
-    for i, t in enumerate(toks):
-        if t in ("claude", "codex"):
-            rest = toks[i + 1:]
-            return t, rest[:rest.index("--")] if "--" in rest else rest
-    return None
+    return toks if toks and shlex.join(toks) == cmd.strip() else None
+
+
+def _parse_line(agent: str, cmd):
+    """-> (flags: {name: [values]}, why). `why` is None when the line is entirely inside the table, else the plain reason (and flags is None)."""
+    toks = _line_tokens(cmd)
+    if toks is None:
+        return None, "its launch line is not in the form the board writes"
+    i, seen_env = 0, set()
+    if toks[0] == "env":
+        i = 1
+        while i < len(toks) and "=" in toks[i] and not toks[i].startswith("-"):
+            name, _, val = toks[i].partition("=")
+            rule = _ENV_NAMES.get(name)
+            if agent != "claude" or rule is None or name in seen_env or not rule(val):
+                return None, f"{name} is set on its launch line"
+            seen_env.add(name)
+            i += 1
+        if not seen_env:
+            return None, "its launch line starts with an env prefix the board does not write"
+    if i >= len(toks) or toks[i] != agent:
+        return None, "its launch line does not start with the agent the board starts"
+    rest = toks[i + 1:]
+    prompt: list[str] = []
+    if "--" in rest:
+        k = rest.index("--")
+        rest, prompt = rest[:k], rest[k + 1:]
+        if len(prompt) != 1:
+            return None, "its launch line holds more than one prompt"
+    table = _CLAUDE_FLAGS if agent == "claude" else _CODEX_FLAGS
+    flags: dict[str, list[str]] = {}
+    sub = None
+    if agent == "codex" and rest and rest[0] in ("resume", "fork"):
+        sub, rest = rest[0], rest[1:]
+    j, rid = 0, None
+    while j < len(rest):
+        t = rest[j]
+        if not t.startswith("-"):
+            if sub and rid is None and j == len(rest) - 1 and (_UUID.fullmatch(t) or _CODEX_NAME.fullmatch(t)):
+                rid = t
+                j += 1
+                continue
+            return None, "its launch line holds an argument the board does not write"
+        name, eq, val = t.partition("=") if t.startswith("--") else (t, "", "")
+        if name not in table:
+            return None, f"{name} is on its launch line"
+        kind, rule = table[name]
+        if kind == "hooktrust":
+            from .config import settings
+            if settings.codex_hook_trust != "bypass":
+                return None, f"{name} is on its launch line"
+            kind = "bool"
+        if name == "--last" and sub != "resume":
+            return None, "--last is on its launch line"
+        if kind == "bool":
+            if eq:
+                return None, f"{name} takes no value"
+            flags.setdefault(name, []).append("")
+        elif kind == "optuuid":
+            if not eq and j + 1 < len(rest) and _UUID.fullmatch(rest[j + 1]):
+                val, j = rest[j + 1], j + 1
+            elif not eq:
+                val = ""
+            if val and not _UUID.fullmatch(val):
+                return None, f"{name} holds something that is not a session id"
+            flags.setdefault(name, []).append(val)
+        else:
+            if not eq:
+                if j + 1 >= len(rest):
+                    return None, f"{name} has no value"
+                val, j = rest[j + 1], j + 1
+            if not rule(val):
+                return None, f"{name} holds a value the board does not write"
+            flags.setdefault(name, []).append(val)
+        j += 1
+    for name, vals in flags.items():
+        if len(vals) > 1 and not (agent == "codex" and name == "-c"):
+            return None, f"{name} is on its launch line twice"
+    if agent == "codex" and len(flags.get("-c", [])) != len(set(flags.get("-c", []))):
+        return None, "-c is repeated on its launch line"
+    return flags, None
 
 
 def launch_line_refusal(agent: str | None, cmd, opts=None) -> str | None:
-    """None when the typed launch line of an agent runs with a permission mode inside what another node may use, else the plain reason. The line is what the
-    board recorded for the session (sessions.cmd: the stored options never hold a bypass, so they cannot prove a session safe) and it must SAY its mode:
-      claude   every --permission-mode is manual, default, acceptEdits or plan (at least one), no bypass spelling, no settings override, no --allowedTools
-      codex    -s read-only|workspace-write and -a on-request are on the line, no --approve-for-me, no bypass spelling, no -c line about sandbox or approval
-    A line without the flags leaves the mode to the CLI's own settings: it cannot be told, so it is refused. Only the part before the prompt (`--`) is read."""
+    """None when the typed launch line of an agent is exactly a line the board writes and runs with a permission mode inside what another node may use, else the plain
+    reason. ONE function for the final plan of a remote launch and for the target session of a dispatch, so they cannot drift. The line must tokenise, be the
+    canonical shlex.join of its tokens, start with the agent (after at most the `env` of the two names the board sets itself), and hold only flags of the tables above
+    with values of the shapes the board writes, each once. It must also SAY its mode:
+      claude   --permission-mode manual, default, acceptEdits or plan
+      codex    -s read-only|workspace-write and -a on-request
+    A line that leaves the mode to the CLI's own settings cannot be told and is refused. Only the part before the prompt (`--`) is read; the prompt is one token."""
     agent = agent or "claude"
-    got = _agent_region(cmd)
-    if got is None or got[0] != agent:
+    if agent not in ("claude", "codex"):
         return "its launch line cannot be read"
-    _, rest = got
-    sq = _squash(" ".join(rest))
+    flags, why = _parse_line(agent, cmd)
+    if why:
+        return why
+    toks = _line_tokens(cmd) or []
+    sq = _squash(" ".join(toks[:toks.index("--")] if "--" in toks else toks))
     for shown, want in _SQUASHED:
         if want in sq:
             return f"{shown} is on its launch line"
@@ -272,47 +477,10 @@ def launch_line_refusal(agent: str | None, cmd, opts=None) -> str | None:
         pm = opts.get("permission_mode")
         if pm not in (None, "") and pm not in (CLAUDE_MODE_WORDS if agent == "claude" else PERMISSION_MODES):
             return "its stored permission mode is outside the allowed set"
-
-    def value(i: int, t: str, *names: str):
-        for n in names:
-            if t == n:
-                return rest[i + 1] if i + 1 < len(rest) else ""
-            if t.startswith(n + "="):
-                return t[len(n) + 1:]
-        return None
-
     if agent == "claude":
-        modes: list[str] = []
-        for i, t in enumerate(rest):
-            low = t.lower()
-            if any(low == w or low.startswith(w + "=") for w in _CLAUDE_WIDEN):
-                return f"{t.split('=')[0]} is on its launch line"
-            v = value(i, t, "--permission-mode")
-            if v is not None:
-                modes.append(v)
-        if not modes:
-            return "its launch line sets no permission mode"
-        if any(m not in CLAUDE_MODE_WORDS for m in modes):
-            return "its launch line sets a permission mode outside the allowed set"
-        return None
-    sandboxes: list[str] = []
-    approvals: list[str] = []
-    for i, t in enumerate(rest):
-        if t in ("--approve-for-me", "--full-auto"):
-            return f"{t} is on its launch line"
-        cfg = value(i, t, "--config", "-c")
-        if cfg is not None and re.search(r"sandbox|approval|permission|bypass", cfg, re.I):
-            return "a -c line sets the sandbox or the approvals"
-        s_ = value(i, t, "--sandbox", "-s")
-        if s_ is not None:
-            sandboxes.append(s_)
-        a_ = value(i, t, "--ask-for-approval", "-a")
-        if a_ is not None:
-            approvals.append(a_)
-    if not sandboxes or not approvals:
+        return None if flags.get("--permission-mode") else "its launch line sets no permission mode"
+    if not flags.get("-s") or not flags.get("-a"):
         return "its launch line sets no sandbox or no approval policy"
-    if any(x not in SANDBOXES for x in sandboxes) or any(x not in APPROVALS for x in approvals):
-        return "its launch line sets a sandbox or approval policy outside the allowed set"
     return None
 
 
@@ -329,6 +497,7 @@ def session_target_refusal(db, task: dict, name: str) -> str | None:
     board's own sessions (a row with a ccboard name; not internal, not a tmux session the board did not start) in the task's own project and repo, and its recorded
     launch line must be inside the allowed set (launch_line_refusal). A session that does not exist is left to the board (404)."""
     try:
+        check_field("session", name)
         sp, sr, _ = tmux.split_name(name)
     except ValueError:
         return "not a ccboard session name"
@@ -340,9 +509,10 @@ def session_target_refusal(db, task: dict, name: str) -> str | None:
     if not row:
         return "that is not a session this board started"
     agent = row.get("agent") or "claude"
-    if agent not in _agent_names() or row.get("launcher") in ("shell", "clone", "external"):
+    from . import recover                                    # the launchers the board itself writes for an agent session (an allow list: anything else is not one)
+    if agent not in _agent_names() or row.get("launcher") not in recover.RECOVERABLE:
         return "that is not an agent session this board started"
-    if (sp, sr) != (task.get("project"), task.get("repo")):
+    if (sp, sr) != (task.get("project"), task.get("repo")) or (row.get("project"), row.get("repo")) != (sp, sr):
         return "this session works in another repo"
     return WIDE_SESSION if launch_line_refusal(agent, row.get("cmd"), row.get("opts")) else None
 
@@ -380,7 +550,7 @@ def _valid_param(name: str, value) -> bool:
         return bool(_TID.fullmatch(value))
     if name == "name":
         try:
-            tmux.split_name(value)
+            check_field("session", value)
         except ValueError:
             return False
         return True
@@ -497,10 +667,83 @@ TASK_PROMPT_IN = 20000                                                       # m
 _ISSUE_REF = re.compile(r"([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/((?![-.])[A-Za-z0-9_.-]{1,100})#([0-9]{1,9})")      # a GitHub owner, a repo name without a leading dot or dash
 
 
-def _plain_name(v):
-    if not isinstance(v, str) or not tmux.valid_name(v):
-        raise ValueError("use letters, digits, '-' or '_' (no '--')")
+# ---- typed text: ONE rule for every string a remote caller can send. The hub's models, the peer wrapper and the check of a stored card all call check_field(), so the
+# paths cannot differ. A string that reaches a typed command line, tmux send-keys, a path or a branch name has an anchored pattern and a length cap (an enum where it
+# is one); only a title and a prompt are free text, and those refuse every control, format and line-separator character (U+2028/2029, bidi controls, zero-width
+# characters ...), looked at as sent AND after NFKC, so a look-alike cannot carry one in. A patterned value must be NFKC-stable, so full-width letters are refused.
+_FREE_BAD = ("Cc", "Cf", "Zl", "Zp")
+FREE_TEXT_MESSAGE = "no control characters, format characters or line separators (tab and newline are text)"
+_RX = {
+    "agent": re.compile(r"[a-z][a-z0-9_-]{0,19}"),
+    "model": re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}(?:\[1m\])?"),
+    "effort": re.compile(r"[a-z][a-z0-9-]{1,19}"),
+}
+_ENUMS = {"permission_mode": PERMISSION_MODES, "mode": SESSION_MODES, "sandbox": SANDBOXES, "approval": APPROVALS}
+FIELD_KINDS = ("agent", "model", "effort", "name", "session", "issue_ref", "permission_mode", "mode", "sandbox", "approval", "title", "prompt")
+_CAPS = {"title": TASK_TITLE_IN, "prompt": TASK_PROMPT_IN}
+
+
+def free_text(v, cap: int):
+    """A title or a prompt: text with tab and newline (CRLF is a newline), no control, format or line-separator character, at most `cap` characters. ValueError."""
+    if not isinstance(v, str):
+        raise ValueError("must be text")
+    v = v.replace("\r\n", "\n")
+    if len(v) > cap:
+        raise ValueError(f"at most {cap} characters")
+    for form in (v, unicodedata.normalize("NFKC", v)):
+        if any(unicodedata.category(c) in _FREE_BAD and c not in "\t\n" for c in form):
+            raise ValueError(FREE_TEXT_MESSAGE)
     return v
+
+
+def check_field(kind: str, v):
+    """Validate one string field of a remote request by its kind (FIELD_KINDS) and return it unchanged; ValueError says what is wrong and never repeats the value."""
+    if kind in ("title", "prompt"):
+        return free_text(v, _CAPS[kind])
+    if not isinstance(v, str) or unicodedata.normalize("NFKC", v) != v:
+        raise ValueError("use plain ASCII letters, digits and the usual marks")
+    if kind in _ENUMS:
+        if v not in _ENUMS[kind]:
+            raise ValueError("one of " + ", ".join(_ENUMS[kind]))
+    elif kind == "name":
+        if len(v) > 63 or not tmux.valid_name(v):
+            raise ValueError("use letters, digits, '-' or '_' (no '--')")
+    elif kind == "session":
+        try:
+            if len(v) > 190:
+                raise ValueError
+            tmux.split_name(v)
+        except ValueError:
+            raise ValueError("not a ccboard session name") from None
+    elif kind == "issue_ref":
+        if len(v) > 250 or not _ISSUE_REF.fullmatch(v):
+            raise ValueError("an issue reference is owner/name#number")
+    elif kind in _RX:
+        if not _RX[kind].fullmatch(v):
+            raise ValueError({"agent": "an agent name", "model": "a model id", "effort": "an effort level"}[kind] + " (letters, digits, '.', '_', ':', '-'; no leading dash)")
+    else:
+        raise ValueError("unknown field")
+    return v
+
+
+def stream_names_error(names) -> str | None:
+    """Why the `names` of a stream request from or to another node is refused (None: every name is a ccboard session name exactly as written, with no space, control
+    character or look-alike around it, and there are at most 20). The same check_field a launch uses for a session."""
+    if not isinstance(names, str):
+        return "names must be text"
+    parts = names.split(",")
+    if len(parts) > 20:
+        return "names: at most 20 sessions per stream"
+    for raw in parts:
+        try:
+            check_field("session", raw)
+        except ValueError:
+            return "names: one of them is not a ccboard session name"
+    return None
+
+
+def _plain_name(v):
+    return check_field("name", v)
 
 
 class _Launch(_Strict):
@@ -509,6 +752,11 @@ class _Launch(_Strict):
     model: str | None = Field(None, max_length=80)
     effort: str | None = Field(None, max_length=40)
     reasoning_effort: str | None = Field(None, max_length=40)
+
+    @field_validator("agent", "model", "effort", "reasoning_effort")
+    @classmethod
+    def _launch_fields(cls, v, info):
+        return None if v is None else check_field("effort" if info.field_name == "reasoning_effort" else info.field_name, v)
 
 
 class TaskCreateBody(_Launch):
@@ -530,40 +778,29 @@ class TaskCreateBody(_Launch):
     @field_validator("project", "repo")
     @classmethod
     def _names(cls, v):
-        return _plain_name(v)
+        return check_field("name", v)
 
     @field_validator("title", "prompt")
     @classmethod
-    def _typed_text(cls, v):
-        """The prompt is typed into a shell line of the peer (tmux send-keys -l) and the title names a card: a control character (Ctrl-C, Ctrl-D, Escape, a lone CR
-        ...) would be read by the terminal before the shell's quotes are, so only tab and newline are text. CRLF is read as a newline."""
-        v = v.replace("\r\n", "\n")
-        if any(unicodedata.category(c) == "Cc" and c not in "\t\n" for c in v):
-            raise ValueError("no control characters (tab and newline are text)")
-        return v
+    def _typed_text(cls, v, info):
+        """The prompt is typed into a shell line of the peer (tmux send-keys -l) and the title names a card: see free_text."""
+        return check_field(info.field_name, v)
 
     @field_validator("issue_ref")
     @classmethod
     def _ref(cls, v):
-        if v is not None and not _ISSUE_REF.fullmatch(v):
-            raise ValueError("an issue reference is owner/name#number")
-        return v
+        return None if v is None else check_field("issue_ref", v)
 
 
 class DispatchBody(_Launch):
     mode: Literal["lane", "session"] = "lane"
-    session: str | None = None
+    session: str | None = Field(None, max_length=190)
     auto_close: bool | None = None
 
     @field_validator("session")
     @classmethod
     def _session(cls, v):
-        if v is not None:
-            try:
-                tmux.split_name(v)
-            except ValueError:
-                raise ValueError("not a ccboard session name") from None
-        return v
+        return None if v is None else check_field("session", v)
 
     @model_validator(mode="after")
     def _consistent(self):
@@ -586,7 +823,12 @@ class SessionOpenBody(_Launch):
     @field_validator("project", "repo", "name")
     @classmethod
     def _names(cls, v):
-        return None if v is None else _plain_name(v)
+        return None if v is None else check_field("name", v)
+
+    @field_validator("permission_mode", "mode", "sandbox", "approval")
+    @classmethod
+    def _choices(cls, v, info):
+        return None if v is None else check_field(info.field_name, v)
 
 
 def _title80(clean: dict) -> str:
@@ -1531,7 +1773,7 @@ def _task_launch_kw(agent: str, spec: dict | None = None) -> dict:
     opts = spec.get("opts") if isinstance(spec.get("opts"), dict) else {}
     safe = safe_launch(agent, None, spec.get("permission_mode"), opts.get("sandbox"), opts.get("approval"))
     if agent == "claude":
-        return {**safe, "subagent_model": "inherit", "subagent_force": False}
+        return {**safe, "subagent_model": "inherit", "subagent_force": False, "opts": {}}
     return {"permission_mode": "default", "opts": safe}
 
 
@@ -1539,7 +1781,10 @@ def _require_final(main, req, extra: dict | None = None) -> None:
     """The guard on the options a launch ENDS UP with (the body, the card and the safe constants merged), as well as on the body: a refusal here is a bug or a
     card the owner saved with more than another node may use. Raises Conflict (409) naming what, never a value of the prompt."""
     fields = req.model_dump(include=set(main.TASK_SPEC_KEYS) | {"agent"})          # (a DispatchIn's own `mode` is lane or session: not a permission word)
-    bad = guard_final({**fields, **(extra or {})})
+    merged = {**fields, **(extra or {})}
+    bad = guard_final(merged)
+    if merged.get("subagent_model") not in (None, "", "inherit") or merged.get("subagent_force"):
+        bad.append("a subagent model override is the owner's own choice")
     if bad:
         raise projects.Conflict("this launch would go beyond what another node may use: " + "; ".join(bad)[:200])
 
@@ -1566,16 +1811,17 @@ def peer_task_dispatch(db, params: dict, body: dict) -> dict:
     tid = int(params["tid"])
     t = db.task_get(tid)
     kw: dict = {}
+    why_card = card_refusal(t, main._task_spec(t)) if t else None          # the stored card's own strings and options, by the same rules as a request body
+    if why_card == "text":
+        raise projects.Conflict(f"this card holds a control character or an unusual one (format or line separator), which is not typed into a terminal from another node: start it on {nodes.display_name()}")
     if t and body.get("mode") == "session":
         why = session_target_refusal(db, t, body.get("session") or "")      # the TARGET's launch options, not the card's: the prompt runs with the session's permissions
         if why:
             raise projects.Conflict(why)
     if t and body.get("mode") == "lane":
         spec = {k: v for k, v in main._task_spec(t).items() if k in main.TASK_SPEC_KEYS}
-        if guard_final(spec):
+        if why_card or guard_final(spec):
             raise projects.Conflict(f"this card was saved with launch options that a request from another node may not use: start it on {nodes.display_name()}")
-        if any(unicodedata.category(c) == "Cc" and c not in "\t\n" for c in str(t.get("prompt") or "")):
-            raise projects.Conflict(f"this card holds a control character, which is not typed into a terminal from another node: start it on {nodes.display_name()}")
         kw = _task_launch_kw(body.get("agent") or t.get("agent") or "claude", spec)
     req = main.DispatchIn(mode=body.get("mode"), session=body.get("session"), agent=body.get("agent"), model=body.get("model"), effort=body.get("effort"),
                           reasoning_effort=body.get("reasoning_effort"), auto_close=body.get("auto_close"), **kw)

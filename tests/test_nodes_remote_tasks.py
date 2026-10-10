@@ -1082,3 +1082,58 @@ def test_a_peers_error_text_is_capped_plain_and_redacted_in_the_hubs_answer(worl
     r = hub_post(w, "/tasks", SHOP)
     err = r.json()["error"]
     assert r.status_code == 409 and secret not in err and "\x1b" not in err and len(err) <= 200, err
+
+
+# ---------------------------------------------------------------- every string field has its own rule on the hub and on the peer (see tests/test_nodes_guard.py for the full matrix)
+
+FIELD_ATTACKS = [
+    ("task_create", "title", "x y"), ("task_create", "title", "x‮y"), ("task_create", "prompt", "x y"), ("task_create", "prompt", "x​y"),
+    ("task_create", "model", "-x"), ("task_create", "model", "a;b"), ("task_create", "effort", "hi\x03"), ("task_create", "reasoning_effort", "$(id)"),
+    ("task_create", "agent", "claude;x"), ("task_create", "issue_ref", "acme/api#1\n"), ("task_create", "project", "shop\n"), ("task_create", "repo", "api "),
+    ("session_open", "name", "a\nb"), ("session_open", "model", "$(id)"), ("session_open", "mode", "default\n"), ("session_open", "permission_mode", "plan "),
+    ("session_open", "sandbox", "read-only\x03"), ("session_open", "approval", "on-request;"), ("session_open", "reasoning_effort", "-x"), ("session_open", "effort", "x" * 300),
+    ("task_dispatch", "session", "shop--api--s1\n"), ("task_dispatch", "model", "a b"), ("task_dispatch", "effort", "‮"), ("task_dispatch", "agent", "ｃlaude"),
+]
+
+
+@pytest.mark.parametrize("row,field,value", FIELD_ATTACKS, ids=lambda x: repr(x)[:30])
+def test_each_string_field_is_refused_on_the_hub_with_no_call_and_on_the_peer_with_nothing_made(world, row, field, value):
+    w = world
+    card = later_card(w)
+    hub_url, peer_url = url_for(row, card["id"])
+    body = {**base_for(row), field: value}
+    if row == "task_dispatch" and field == "session":
+        body["mode"] = "session"
+    n = w.count.seen
+    r = hub_post(w, hub_url, body)
+    assert r.status_code == 422 and r.json()["reason"] == "invalid" and w.count.seen == n, r.text
+    d = direct(w, "POST", peer_url, body)
+    assert d.status_code == 422, d.text
+    for text in (r.text, d.text):
+        assert "$(id)" not in text and "\x03" not in text
+    assert w.two.tmux_b["created"] == [] and w.two.tmux_b["pasted"] == []
+    assert len(w.b.db.tasks()) == 1 and task_on_b(w, card["id"])["phase"] == "backlog"
+
+
+@pytest.mark.parametrize("bad", ["a b", "a b", "a‮b", "a​b", "a\x03b", "a⁦b"])
+def test_a_stored_card_with_a_line_separator_or_a_bidi_control_is_not_typed_from_another_node_in_either_mode(world, bad):
+    w = world
+    made = w.b.post("/api/tasks", json={**SHOP, "when": "later"}).json()
+    with w.b.enter():
+        w.b.db.task_update(made["id"], prompt="fix " + bad + " it")
+    tm = make_session_on_b(w, "fine", mode="default")
+    for body in ({}, {"mode": "session", "session": tm}):
+        r = hub_post(w, f"/tasks/{made['id']}/dispatch", body)
+        assert r.status_code == 409 and "control character" in r.json()["error"], r.text
+    assert w.two.tmux_b["pasted"] == [] and task_on_b(w, made["id"])["phase"] == "backlog"
+
+
+@pytest.mark.parametrize("spec", [{"model": "a;b"}, {"effort": "hi\x03"}, {"subagent_model": "-x"}, {"opts": {"sandbox": "full"}}, {"opts": {"profile": "p"}}, {"mystery": "x"}])
+def test_a_stored_card_with_a_string_the_hubs_models_would_refuse_is_not_started_from_another_node(world, spec):
+    w = world
+    made = w.b.post("/api/tasks", json={**SHOP, "when": "later"}).json()
+    with w.b.enter():
+        w.b.db.task_update(made["id"], spec=spec)
+    r = hub_post(w, f"/tasks/{made['id']}/dispatch", {})
+    assert r.status_code == 409 and "launch options" in r.json()["error"], r.text
+    assert w.two.tmux_b["created"] == []

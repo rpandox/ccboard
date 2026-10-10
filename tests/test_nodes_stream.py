@@ -1260,7 +1260,7 @@ def test_an_internal_or_odd_name_is_a_400_on_the_hub_with_no_call_and_on_the_pee
     run(w, scenario)
     assert w.up.calls == []
     n = len(w.two.tmux_b["run"])
-    r = peer_get(w, f"/api/node/stream?{query}")
+    r = peer_get(w, f"/api/node/stream?{query}&once=1")
     assert r.status_code == 400, r.text
     assert len(w.two.tmux_b["run"]) == n, "the peer touched tmux for a name it refused"
 
@@ -1297,3 +1297,21 @@ def test_a_hub_only_ever_asks_for_names_and_lines_upstream(world):
     run(w, scenario)
     path = w.up.calls[0]["path"]
     assert path.split("?")[0] == "/api/node/stream" and set(q.split("=")[0] for q in path.split("?")[1].split("&")) == {"names", "lines"}
+
+
+@pytest.mark.parametrize("raw", ["names=%20shop--api--s1", "names=shop--api--s1%0a", "names=shop--api--s1%20", f"names={S1},%20{S2}", "names=%EF%BD%93hop--api--s1", "names=shop--api--s1%00",
+                                 "names=shop--api--" + "x" * 200, "names=shop--api--s1%E2%80%AE"])
+def test_a_stream_name_is_a_session_name_exactly_as_written_on_the_hub_and_on_the_peer(world, raw):
+    w = world
+
+    async def scenario():
+        c = Conn(f"/api/nodes/{w.h}/stream?{raw}")
+        await c.open()
+        await c.until(lambda: c.done)
+        assert c.status == 400 and json.loads(c.buf)["reason"] == "invalid", c.buf
+    run(w, scenario)
+    assert w.up.calls == []
+    n = len(w.two.tmux_b["run"])
+    r = peer_get(w, f"/api/node/stream?{raw}&once=1")
+    assert r.status_code == 400, r.text
+    assert len(w.two.tmux_b["run"]) == n

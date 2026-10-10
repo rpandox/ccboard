@@ -369,6 +369,9 @@ def _query(request: Request) -> tuple[frozenset, int]:
     q = dict(items)
     if "names" not in q:
         raise nr.RelayError(400, "invalid", "names is required: at most 20 session names", kind="refused")
+    bad = nr.stream_names_error(q["names"])
+    if bad:
+        raise nr.RelayError(400, "invalid", bad, kind="refused")
     try:
         wanted, n = main._stream_query(q["names"], q.get("lines"))
     except projects.BadRequest as e:

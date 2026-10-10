@@ -4291,6 +4291,9 @@ def _node_stream_query(request: Request) -> tuple[set[str], int, bool]:
         q = dict(items)
         if "names" not in q:
             raise projects.BadRequest("names is required: at most 20 session names")
+        bad = nodes_relay.stream_names_error(q["names"])
+        if bad:
+            raise projects.BadRequest(bad)
         wanted, n = _stream_query(q["names"], q.get("lines"))
         once = q.get("once", "0") in ("1", "true")
     except projects.BadRequest as e:
