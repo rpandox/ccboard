@@ -1524,6 +1524,8 @@ function lxCmdNodes(text) {
 }
 function lxList(text) { return String(text || '').split(/[,\n]+/).map((x) => x.trim()).filter(Boolean); }
 function lxShort(text, n) { const t = String(text || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n - 1) + '…' : t; }
+const LX_FALLBACK_MAX = 3, LX_FALLBACK_MSG = 'Up to 3 fallback models.';     // the server's MAX_FALLBACKS: it counts what is typed (comma or space apart) before it drops duplicates
+function lxFallbackOver(v) { return v.agent === 'claude' && String(v.fallback_model || '').split(/[,\s]+/).filter(Boolean).length > LX_FALLBACK_MAX; }
 function lxModelOf(v) { return v.model === 'custom' ? String(v.model_custom || '').trim() : String(v.model || ''); }
 /* The subagent model (CLAUDE_CODE_SUBAGENT_MODEL, issue #106). subagentChoice: what the form holds ('' = the board default, an alias, or 'custom' with subagent_custom); the effective value
    is that choice, else the board default the schema carries (CCBOARD_SUBAGENT_MODEL, 'inherit' when unset). Aliases are lower-cased as the adapter does; 'inherit' sets no variable. */
@@ -2417,6 +2419,7 @@ function launcherForm(o) {
     hide(lede, mode !== 'task');
   }
 
+  const fallbackOver = (v, w) => lxFallbackOver(v) && lxHas('claude', 'fallback_model') && w !== 'schedule' && !(mode === 'dispatch' && D.where === 'session');     // only where the field is shown
   update = () => {
     const v = view();
     cmdText = truth || commandPreview(v, ctx());
@@ -2429,13 +2432,16 @@ function launcherForm(o) {
     const issueHeld = mode === 'task' && issueKit.blocked();
     const gated = (d && !acked() && !ack.checked) || issueHeld;
     const w = when();
+    const fbOver = fallbackOver(v, w);
+    fieldError(fallbackF, fbOver ? LX_FALLBACK_MSG : '');
+    if (fbOver) { cmdText = ''; cmdNode.textContent = `${LX_FALLBACK_MSG} Remove one to see the command.`; }          // never a command the server refuses
     if (mode === 'session') { goText.textContent = busy ? 'Starting…' : 'Start & open'; }
     else if (mode === 'task') goText.textContent = busy ? TASK_BUSY[w] : TASK_SUBMIT[w];
     else goText.textContent = busy ? 'Starting…' : (D.where === 'lane' ? `Start in ${AGENT_NAME[v.agent] || 'a new session'}` : 'Send to the session');
     goIcon.textContent = '';
     goIcon.append(ic(mode === 'task' ? LX_TASK_ICON[w] : 'play'));
-    lxDisable(go, busy || gated || (mode === 'dispatch' && D.where === 'session' && !ready.length));
-    go.setAttribute('title', issueHeld ? 'Tick I have read it, under the issue, to go on' : gated ? 'Tick I understand to go on' : 'Enter in the prompt starts it');
+    lxDisable(go, busy || gated || fbOver || (mode === 'dispatch' && D.where === 'session' && !ready.length));
+    go.setAttribute('title', fbOver ? LX_FALLBACK_MSG : issueHeld ? 'Tick I have read it, under the issue, to go on' : gated ? 'Tick I understand to go on' : 'Enter in the prompt starts it');
     if (mode !== 'session') autoChk.input.checked = autoValue();
     paintAccount();
   };
@@ -2641,6 +2647,7 @@ function launcherForm(o) {
     }
     if (v.agent === 'codex' && w !== 'schedule' && String(v.profile || '').trim() && !LX_PROFILE_RE.test(String(v.profile).trim())) return errs(profileF, "profile: use letters, digits, '.', '_' or '-'");
     if (launcherDanger(v, mode) && !acked() && !ack.checked) return errs(ackRow, 'Tick I understand to start without approvals.');
+    if (fallbackOver(v, w)) return errs(fallbackF, LX_FALLBACK_MSG);
     if (mode === 'task' && issueKit.blocked()) return errs(issueField, 'Tick I have read it to start from this issue.');
     if (mode === 'dispatch') { submitDispatch(v); return; }
     if (mode === 'task') {

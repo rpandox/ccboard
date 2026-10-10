@@ -499,6 +499,59 @@ class DB:
         if changed:
             self._fire_state([changed])
 
+    TUI_WAIT_EVENTS = ("UserPromptSubmit", "Stop", "StopFailure", "SessionStart", "SessionEnd", "Interrupt", "PermissionRequest")
+
+    def release_esc_dismissed(self, tmux_name: str, state_at: str, message: str) -> bool:
+        """Issue 193, one transaction: a row that waits on a permission goes idle (wait_kind cleared) ONLY IF the person answered that
+        very request "In terminal" and nothing has happened since. Under one lock hold, so no hook interleaves:
+          - the newest open row is `waiting`, flags.wait_kind `permission`, with the `state_at` the caller read (a hook that
+            changed it since, a new PermissionRequest included, makes this a no-op);
+          - the session's NEWEST permission row has decision `tui` and no permission of the session is undecided;
+          - that waiting was set by that request: last_event PermissionRequest and the request is not older than state_at, or last_event
+            Notification (Claude's own "needs your permission", sent after the dialog drew) not older than the request, with no turn
+            event after the request and no tool batch after it (the request's tool did not run).
+        The UPDATE itself repeats the state / state_at / no-undecided-permission conditions. Returns whether a row changed; the caller
+        stores the Interrupt event only then. on_state_change fires after the lock, as in set_state."""
+        changed = None
+        with self.lock:
+            row = self._open_row_locked(tmux_name)
+            if not row or row["state"] != "waiting" or row["state_at"] != state_at:
+                return False
+            flags = _loads(row.get("flags"), dict)
+            if flags.get("wait_kind") != "permission":
+                return False
+            perm = self.conn.execute("SELECT id, created_at, decision FROM permissions WHERE tmux_name=? ORDER BY id DESC LIMIT 1",
+                                     (tmux_name,)).fetchone()
+            if not perm or perm["decision"] != "tui":
+                return False
+            last, made = row.get("last_event"), perm["created_at"]
+            if last == "PermissionRequest":
+                ok = made >= state_at
+            elif last == "Notification":
+                marks = ",".join("?" * len(self.TUI_WAIT_EVENTS))
+                later = self.conn.execute(f"SELECT 1 FROM events WHERE tmux_name=? AND at>=? AND event IN ({marks}) LIMIT 1",
+                                          (tmux_name, made, *self.TUI_WAIT_EVENTS)).fetchone()
+                tool = flags.get("last_tool_at")
+                ok = made <= state_at and not later and not (isinstance(tool, str) and tool > made)
+            else:
+                ok = False
+            if not ok:
+                return False
+            flags.pop("wait_kind", None)
+            ts = now()
+            cur = self.conn.execute(
+                "UPDATE sessions SET state='idle', state_at=?, last_event='Interrupt', last_message=?, flags=? WHERE id=? AND state='waiting'"
+                " AND state_at=? AND NOT EXISTS (SELECT 1 FROM permissions WHERE tmux_name=? AND decision IS NULL)",
+                (ts, message[:500], json.dumps(flags), row["id"], state_at, tmux_name))
+            if cur.rowcount != 1:
+                return False
+            if self.on_state_change is not None:
+                changed = (tmux_name, "waiting", "idle", "Interrupt",
+                           session_view({**row, "state": "idle", "state_at": ts, "last_event": "Interrupt", "flags": json.dumps(flags)}))
+        if changed:
+            self._fire_state([changed])
+        return True
+
     def _open_row_locked(self, tmux_name: str) -> dict | None:
         """The newest open row of a tmux name as a plain dict (the caller holds self.lock)."""
         r = self.conn.execute(

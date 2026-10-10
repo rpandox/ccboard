@@ -2,6 +2,14 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.38 - 2026-10-10
+
+### Fixed
+- A Claude session no longer stays on "Claude needs your permission" after you answered "In terminal" and dismissed Claude's dialog with Esc (#193). Claude sends no hook for that. The board now reads the pane only for a session that waits on a permission you answered "In terminal" with nothing pending since: when the pane shows "Interrupted · What should Claude do instead?" directly above Claude's own input box, the session goes to idle on the next scan and the Needs-you count drops. Text a program prints can never clear a wait on its own, a new request landing mid-scan keeps the session waiting (one conditional write), and there is no timer.
+- The launcher sheet stops a fourth fallback model before the round trip (#92): "Up to 3 fallback models." under the field, Start off, and a preview that does not show a command the server would refuse. Duplicates count, as the server counts them.
+
+Upgrade: nothing to do.
+
 ## v0.5.37 - 2026-10-10
 
 ### Added
