@@ -499,11 +499,11 @@
         "url": "https://alice-mac.example.ts.net",
         "version": "0.5.35",
         "os": {
-          "system": "macOS",
-          "release": "24.6.0",
-          "tailscale_os": "macos"
+          "system": "Darwin",
+          "release": "23.6.0",
+          "tailscale_os": "macOS"
         },
-        "runtime": null,
+        "runtime": "launchd",
         "now": "2026-10-03T03:00:00+00:00",
         "agents": [
           {
@@ -524,7 +524,7 @@
           }
         ],
         "accounts": {
-          "supported": true,
+          "supported": false,
           "items": [
             {
               "agent": "claude",
@@ -547,11 +547,11 @@
           "free": 2
         },
         "load": {
-          "load1": 2.4,
-          "cores": 10,
-          "cpu_pct": 24.0,
-          "mem_pct": 61.0,
-          "disk_pct": 44.0
+          "load1": null,
+          "cores": null,
+          "cpu_pct": null,
+          "mem_pct": null,
+          "disk_pct": null
         },
         "sessions": {
           "live": 2,
@@ -688,11 +688,12 @@
         "url": "https://old-laptop.example.ts.net",
         "version": "0.5.30",
         "os": {
-          "system": "Windows",
-          "release": "10.0.22631",
-          "tailscale_os": "windows"
+          "system": "Linux",
+          "release": "5.15.167.4-microsoft-standard-WSL2",
+          "tailscale_os": "windows",
+          "wsl": true
         },
-        "runtime": null,
+        "runtime": "systemd",
         "now": "2026-10-03T03:00:00+00:00",
         "agents": [
           {

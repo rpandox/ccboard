@@ -1,0 +1,65 @@
+{
+  "app": "ccboard",
+  "api": 1,
+  "node_id": "n_<16 hex>",
+  "name": "desk-wsl",
+  "url": "https://desk-wsl.example.ts.net:8443",
+  "version": null,
+  "os": {
+    "system": "Linux",
+    "release": "5.15.167.4-microsoft-standard-WSL2",
+    "tailscale_os": null,
+    "wsl": true
+  },
+  "runtime": "systemd",
+  "agents": [
+    {
+      "id": "claude",
+      "installed": true,
+      "version": "2.1.288",
+      "logged_in": true,
+      "hooks": true,
+      "login_problem": false
+    },
+    {
+      "id": "codex",
+      "installed": false,
+      "version": null,
+      "logged_in": false,
+      "hooks": false,
+      "login_problem": false
+    }
+  ],
+  "accounts": {
+    "supported": true,
+    "items": []
+  },
+  "lanes": {
+    "cap": 3,
+    "running": 0,
+    "free": 3
+  },
+  "load": {
+    "load1": 0.46,
+    "cores": 4,
+    "cpu_pct": 12.3,
+    "mem_pct": 25.0,
+    "disk_pct": 50.0
+  },
+  "sessions": {
+    "live": 0,
+    "working": 0,
+    "needs_you": 0
+  },
+  "capabilities": [
+    "state",
+    "tasks",
+    "sessions",
+    "stream"
+  ],
+  "tailscale": {
+    "dns_name": null,
+    "tags": null,
+    "user_owned": null
+  }
+}

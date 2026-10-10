@@ -324,6 +324,9 @@ def read_tailscale(fresh: bool = False) -> tuple[dict | None, dict]:
         cli, variant = None, "unknown"
     info = {"ok": False, "reason": "", "variant": variant}
     gui = variant in ("macos-appstore", "macos-standalone")
+    if nodes.windows_side():                 # WSL2 with Tailscale on Windows: nothing is run (tailscale.exe only with CCBOARD_TAILSCALE_PLACEMENT=host)
+        info["reason"] = nodes.WINDOWS_SIDE
+        return None, info
     if cli is None:
         info["reason"] = ts.missing_reason()
         return None, info

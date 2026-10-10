@@ -1395,3 +1395,48 @@ test('a refused removal keeps the sheet open with the reason and the boxes as th
   assert.equal(dlg(w).querySelector('.nd-rm-row input').checked, true);
   assert.ok(btn(dlg(w), 'Remove') && !btn(dlg(w), 'Remove').disabled, 'it can be tried again');
 });
+
+// ---------------------------------------------------------------- a Mac and WSL2 (issue #154, phase P6)
+
+const MAC_CARD = { ...CARD, name: 'alice-mac', os: { system: 'Darwin', release: '23.6.0', tailscale_os: 'macOS' }, runtime: 'launchd',
+  load: { load1: null, cores: null, cpu_pct: null, mem_pct: null, disk_pct: null } };
+const kvOf = (w) => Object.fromEntries(panel(w).querySelectorAll('.kv').map((r) => [text(r.querySelector('.k')), r]));
+
+test('This node on a Mac: the platform chip, load as n/a (never 0) and the saved-logins line from the board\'s own answer', async () => {
+  const w = nodesWorld({ over: { node: MAC_CARD, accounts: { store: { supported: false } } } });
+  await tick();
+  const row = kvOf(w).Platform;
+  assert.ok(row, 'a Platform row');
+  const t = text(row);
+  assert.match(t, /Mac/);
+  assert.match(t, /load cpu n\/a · memory n\/a · disk n\/a/);
+  assert.doesNotMatch(t, /\b0%/);
+  assert.match(t, /Saved logins are not available on a Mac\. Normal login still works\./);
+  assert.equal(text(kvOf(w).System.querySelector('.kv-main')), 'macOS 23.6.0');
+});
+
+test('This node on WSL2 says WSL2 and what its load describes; on a Linux box there is no Platform row at all', async () => {
+  const wsl = nodesWorld({ over: { node: { ...CARD, os: { system: 'Linux', release: '5.15-microsoft-standard-WSL2', tailscale_os: null, wsl: true }, load: { cpu_pct: 3, mem_pct: 20, disk_pct: 41 } } } });
+  await tick();
+  assert.match(text(kvOf(wsl).Platform), /WSL2.*load cpu 3% · memory 20% · disk 41%.*distro and its VM, not Windows/);
+  const box = nodesWorld();
+  await tick();
+  assert.equal(kvOf(box).Platform, undefined);
+});
+
+test('WSL2 with Tailscale on the Windows side: the sentence, the way forward (Add node), no command to copy, and the Add node button is there', async () => {
+  const reason = "Tailscale runs on the Windows side: type the other node's address in Pair a node";
+  const w = nodesWorld({ answer: { at: iso(0), tailscale: { ok: false, reason, variant: 'linux' }, rows: [] } });
+  await tick();
+  const p = panel(w);
+  assert.equal(text(p.querySelector('.nd-problem .set-err')), reason);
+  const fix = text(p.querySelector('.nd-fix'));
+  assert.match(fix, /^Press Add node, then type the other board's address and its pairing code\./);
+  assert.doesNotMatch(fix, /Check Tailscale on this device/);
+  assert.equal(p.querySelector('.nd-fix code'), null);
+  const add = p.querySelectorAll('button').find((b) => text(b) === 'Add node');
+  assert.ok(add && !add.disabled, 'the manual form stays available');
+  add.click();
+  await tick();
+  assert.ok(w.document.querySelector('.nd-addr-in'), 'the address field is there');
+});

@@ -51,6 +51,7 @@ function nodeHeader(rec) {
   const ver = (rec.state && rec.state.node && rec.state.node.version) || card.version;
   const facts = [os, ver ? `v${String(ver).replace(/^v/, '')}` : '', card.runtime || '', `handle ${rec.handle}`].filter(Boolean);
   const notes = nodeNotes(rec);
+  const plat = NodeView.platform(card);
   const repair = notes.some((n) => n.repair);
   const open = nhOpenLink('Open board', rec, '', repair ? 'btn' : 'btn primary') || Nodes.off('Open board', 'the address saved for this node is not an https tailnet address');
   const acts = Nodes.acts(repair ? el('a', { class: 'btn primary', href: '#/settings?sec=nodes', text: 'Re-pair' }) : null, open,
@@ -58,13 +59,15 @@ function nodeHeader(rec) {
   return el('header', { class: 'nd-head' },
     el('div', { class: 'page-head' }, el('h1', { class: 'nd-title', text: nhName(rec) }), nhStatusLine(v)),
     el('p', { class: 'dim nd-facts', text: facts.join(' · ') }),
+    plat.name ? el('div', { class: 'nd-plat' }, NodeView.chip(plat.name, '', '', 'Platform'), el('span', { class: 'dim nd-load', text: `Load: ${plat.load}` }),
+      ...Nodes.platNotes(card, plat.name).map((t) => el('p', { class: 'dim nd-note', text: t }))) : null,
     ...notes.map((n) => el('p', { class: `nd-banner ${n.cls}`, role: 'status', text: n.text })), acts,
     el('p', { class: 'dim nd-ro', text: 'Read only here. Starting or answering things on another node arrives with the relay.' }));
 }
 
 function nodeHeaderSig(rec) {
   const c = rec.card || {};
-  return JSON.stringify([rec.status, rec.name, rec.url, rec.error_kind, rec.skew_warn, rec.scopes, rec.last_ok_at, c.version, c.os, c.runtime, rec.state && rec.state.truncated,
+  return JSON.stringify([rec.status, rec.name, rec.url, rec.error_kind, rec.skew_warn, rec.scopes, rec.last_ok_at, c.version, c.os, c.runtime, c.load, c.accounts && c.accounts.supported, rec.state && rec.state.truncated,
     Nodes.M.err, Math.floor(Date.now() / 60000), Math.floor((Nodes.ageOf(rec) || 0) / 60)]);
 }
 

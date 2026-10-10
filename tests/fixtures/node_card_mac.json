@@ -1,0 +1,64 @@
+{
+  "app": "ccboard",
+  "api": 1,
+  "node_id": "ts:nMACX1",
+  "name": "alice-mac",
+  "url": "https://alice-mac.example.ts.net",
+  "version": null,
+  "os": {
+    "system": "Darwin",
+    "release": "23.6.0",
+    "tailscale_os": "macOS"
+  },
+  "runtime": "launchd",
+  "agents": [
+    {
+      "id": "claude",
+      "installed": true,
+      "version": "2.1.288",
+      "logged_in": true,
+      "hooks": true,
+      "login_problem": false
+    },
+    {
+      "id": "codex",
+      "installed": false,
+      "version": null,
+      "logged_in": false,
+      "hooks": false,
+      "login_problem": false
+    }
+  ],
+  "accounts": {
+    "supported": false,
+    "items": []
+  },
+  "lanes": {
+    "cap": 3,
+    "running": 0,
+    "free": 3
+  },
+  "load": {
+    "load1": null,
+    "cores": null,
+    "cpu_pct": null,
+    "mem_pct": null,
+    "disk_pct": null
+  },
+  "sessions": {
+    "live": null,
+    "working": null,
+    "needs_you": null
+  },
+  "capabilities": [
+    "state",
+    "tasks",
+    "sessions",
+    "stream"
+  ],
+  "tailscale": {
+    "dns_name": "alice-mac.example.ts.net",
+    "tags": [],
+    "user_owned": true
+  }
+}

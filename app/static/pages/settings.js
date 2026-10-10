@@ -627,6 +627,13 @@ function settingsNdAddSheet(opener, prefill) {
    says about a device is shown through textContent (NodeView in nodes.js) and nothing in it is ever opened or followed. */
 const settingsNd = { data: null, at: 0, err: '', busy: false, seq: 0, rev: 0, ui: null };
 
+/* The short lines under a Mac or WSL2 node's platform (issue #154); the same words as Nodes.platNotes in nodes-hub.js, which a single board's Settings page does not load. */
+function settingsNdPlatNotes(card, name) {
+  const mac = name === 'Mac';
+  return [mac && card.accounts && card.accounts.supported === false ? 'Saved logins are not available on a Mac. Normal login still works.' : '',
+    mac ? 'A sleeping Mac shows as stale.' : name ? 'Load describes the distro and its VM, not Windows.' : ''].filter(Boolean);
+}
+
 /* A device's agents as [{id, name, version, ok}] from the full card (a list) or from this board's state.agents (a map); only installed ones. */
 function settingsNdAgents(st) {
   const card = st.node && Array.isArray(st.node.agents) ? st.node.agents.map((a) => ({ id: a.id, version: a.version, ok: !!a.logged_in && !a.login_problem, installed: !!a.installed })) : null;
@@ -644,6 +651,10 @@ function settingsNdPaintThis(host, st) {
   const os = n.os && typeof n.os === 'object' ? n.os : {};
   const osText = [NodeView.osName(os.tailscale_os || os.system), os.release].filter(Boolean).join(' ');
   if (osText) host.append(settingsKv('System', el('span', { class: 'v', text: osText })));
+  const store = st.accounts && st.accounts.store;                    // state.node holds no accounts; the board's own saved-login answer stands in for it
+  const full = (n.accounts || !store) ? n : { ...n, accounts: { supported: !!store.supported } };
+  const plat = NodeView.platform(n);
+  if (plat.name) host.append(settingsKv('Platform', NodeView.chip(plat.name, '', '', 'Platform'), el('span', { class: 'v', text: `load ${plat.load}` }), ...settingsNdPlatNotes(full, plat.name).map((t) => el('span', { class: 'dim', text: t }))));
   const agents = settingsNdAgents(st);
   host.append(settingsKv('Agents', agents.length
     ? el('span', { class: 'set-chips' }, agents.map((a) => NodeView.chip(`${typeof AGENT_GLYPH !== 'undefined' && ownKey(AGENT_GLYPH, a.id) ? AGENT_GLYPH[a.id] + ' ' : ''}${a.name}${a.version ? ' ' + a.version : ''}${a.ok ? '' : ', not logged in'}`, a.ok ? '' : 'warn')))
@@ -758,6 +769,7 @@ function settingsNdPaintAudit(nu) {
    those. A reason this does not know gets the plain line. */
 function settingsNdFix(reason) {
   const line = (t) => el('div', { class: 'dim nd-fix', text: t });
+  if (/Windows side/i.test(reason)) return line('Press Add node, then type the other board\'s address and its pairing code. Finding devices here needs Tailscale inside this Linux distro.');
   if (/Tailscale app/i.test(reason)) return line('Do that on this device, then press Refresh.');
   if (/`tailscale up`|log(ged)?[ -]?(in|out)\b|login/i.test(reason)) {
     return el('div', { class: 'nd-fix' }, el('span', { text: 'Run ' }), el('code', { class: 'doc-cmd', text: 'tailscale up' }), typeof copyButton === 'function' ? copyButton('tailscale up', 'the command') : null, el('span', { text: ' on this device, then press Refresh.' }));
