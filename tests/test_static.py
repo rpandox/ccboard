@@ -1369,7 +1369,7 @@ def test_demo_memory_health_has_the_tile_fields():
 # ---------- terminal page on mobile: definition-only kit, no ES modules, the term.css scroll-fix set, the dev tty fake ----------
 
 REPO = STATIC.parent.parent
-DEFINE_ONLY = ("core.js", "components.js", "termkit.js", "pages/widgets.js", "tree.js", "dnd.js")
+DEFINE_ONLY = ("core.js", "components.js", "termkit.js", "pages/widgets.js", "tree.js", "dnd.js", "task-sheets.js", "shell-create.js")
 # a declaration, a string (a directive), or a function / literal assigned to a property of a declared namespace (`Widgets.usageCard = function ...`):
 # none of them runs anything at load. A call, an `if`, a bare `document.x = ...` or `Name.start();` is not in the list.
 DEFINE_ONLY_START = re.compile(

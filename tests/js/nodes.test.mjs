@@ -43,7 +43,7 @@ test('the pairing half is not in the first-paint set: nodes-pair.js is in no ind
   const html = fs.readFileSync(path.join(STATIC, 'index.html'), 'utf8');
   assert.ok(!html.includes('nodes-pair.js'), 'index.html does not load nodes-pair.js');
   const lazy = fs.readFileSync(path.join(STATIC, 'lazy.js'), 'utf8');
-  assert.match(lazy, /settings: \{ js: \['\/static\/nodes-pair\.js', '\/static\/pages\/doctor\.js', '\/static\/pages\/settings\.js'\]/);
+  assert.match(lazy, /settings: \{ needs: \['agents'\], js: \['\/static\/nodes-pair\.js', '\/static\/pages\/doctor\.js', '\/static\/pages\/settings\.js'\]/);
   const eager = fs.readFileSync(path.join(STATIC, 'nodes.js'), 'utf8');
   for (const moved of ['NodeView.SCOPES', 'NodeView.peerRow', 'NodeView.auditWord', 'NodeView.errField']) assert.ok(!eager.includes(moved), `${moved} lives in nodes-pair.js`);
 });

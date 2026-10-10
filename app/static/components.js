@@ -778,45 +778,6 @@ function taskLaunchOpts(t, preset) {
 
 function taskMoveable(t) { return taskPhase(t) === 'backlog'; }
 
-function taskMoveSheet(t) {
-  const want = t.agent || 'claude';
-  const lane = (agent) => {
-    const ok = taskAgentInstalled(agent);
-    return el('button', { class: 'tk-lane-btn' + (agent === want ? ' primary tinted' : ''), type: 'button', 'data-agent': agent, disabled: !ok,
-      title: ok ? `Start in a new ${AGENT_NAME[agent]} session, in its own worktree` : `${AGENT_NAME[agent]} is not installed on this box`,
-      onclick: () => { closeSheet(); taskStart(t, { agent }); } },
-    el('span', { class: 'tk-lane-top' }, agentGlyph(agent), el('span', { class: 'tk-lane-name', text: AGENT_NAME[agent] })),
-    el('span', { class: 'tk-lane-sub', text: ok ? (taskDefaultsLine(t, agent) || 'repo defaults') : 'not installed on this box' }));
-  };
-  const list = taskSessionTargets(t);
-  const bound = new Map();
-  for (const x of boardTasks(typeof state !== 'undefined' ? state : null)) if (x.tmux && taskPhase(x) === 'running' && x.id !== t.id) bound.set(x.tmux, x);
-  const rows = list.map((x) => {
-    const mine = bound.get(x.s.tmux);
-    return el('button', { class: 'minimal pick-row tk-pick' + (x.ok ? '' : ' off'), type: 'button', disabled: !x.ok, 'data-tmux': x.s.tmux,
-      title: x.why || x.note || `send the prompt to ${x.s.name}`, onclick: () => { closeSheet(); taskSend(t, x); } },
-    stateGlyph(x.s.state),
-    el('span', { class: 'pr-name mono', text: x.s.name }),
-    x.ok ? el('span', { class: 'dim tk-st', text: STATE_LABEL[x.s.state] || '' }) : null,
-    el('span', { class: 'dim tk-repo', text: (x.repo === 'root' ? 'project folder' : x.repo) + (x.same ? '' : ' · other repo') }),
-    x.why || x.note ? el('span', { class: 'dim', text: x.why || x.note }) : null,
-    mine ? el('span', { class: 'dim tk-last', text: `task: ${mine.title}` }) : (x.s.last_prompt ? el('span', { class: 'dim tk-last', text: '› ' + String(x.s.last_prompt).slice(0, 100) }) : null));
-  });
-  const anyOk = list.some((x) => x.ok);
-  const foot = el('div', { class: 'tk-foot' },
-    typeof openLauncher === 'function' || typeof taskDispatchSheet === 'function' ? el('button', { type: 'button', class: 'tk-opts', onclick: () => launch(taskLaunchOpts(t)), text: 'Options…' }) : null,         // the launcher in dispatch mode; no closeSheet() first: a closed dialog fires its close event a task later and would wipe the form that replaced it
-    el('button', { type: 'button', class: 'tk-cancel', onclick: () => closeSheet(), text: 'Cancel' }));
-  const body = el('div', { class: 'tk-move' },
-    el('h3', { class: 'tk-sec', text: 'Start in a new session' }),
-    el('div', { class: 'tk-lane-btns' }, lane('claude'), lane('codex')),
-    el('h3', { class: 'tk-sec', text: 'Hand to a running session' }),
-    list.length ? el('p', { class: 'dim tk-note', text: anyOk ? 'Ready sessions first. A session in another repo asks before it works there.' : 'None of these can take it right now: wait for one, or start a new session above.' })
-      : el('p', { class: 'dim tk-note', text: 'No session of this project is running.' }),
-    list.length ? el('div', { class: 'pick-list' }, ...rows) : null,
-    foot);
-  openSheet({ title: `Move “${String(t.title).slice(0, 60)}”`, body, placement: 'bottom' });
-}
-
 function taskSendSheet(t) { return taskMoveSheet(t); }          // the name v0.5.14a gave the sheet
 
 /* ---- the card's action rows (two rows on one 3-column grid; a phone keeps two and folds the rest into a ... menu) ----
@@ -1019,111 +980,6 @@ function taskChainStrips(list, info) {
   return out;
 }
 
-/* ---- the board: the dispatch bar (dnd.js: Dnd.laneBar, one node kept across repaints), the chains, then the columns. One node per page; update()
-   rebuilds only when something it shows changed, and never while a card is being dragged (a node that leaves the page mid-drag never gets its dragend:
-   Dnd.afterDrag queues the repaint for the end of the drag). ---- */
-
-function taskSig(v) { try { return JSON.stringify(v); } catch (_) { return String(Math.random()); } }
-
-/* makeTaskBoard({project?: name | () => name, lanes?, cls?, empty?}) -> {node, update(tasks, st)}; tasks are boardTasks(st) rows (already filtered to the page's scope).
-   The Tasks page draws its own board (home.js renderTasks) and adds the chains (pages/tasks.js); the project's Tasks tab draws this one. */
-function makeTaskBoard(opts) {
-  const o = opts || {};
-  const lanesHost = el('div', { class: 'tk-lanes-host' });
-  const chainsHost = el('div', { class: 'tk-chains hidden' });
-  const grid = el('div', { class: 'kanban' + (o.cls ? ' ' + o.cls : '') });
-  const node = el('div', { class: 'tk-board' }, lanesHost, chainsHost, grid);
-  let sig = null;
-  let bar = null;
-  let barFor = null;
-  let dndAsked = false;
-  return {
-    node,
-    update(tasks, st) {
-      if (typeof Dnd !== 'undefined' && Dnd && typeof Dnd.afterDrag === 'function' && Dnd.afterDrag(taskRepaint)) return;
-      const project = (typeof o.project === 'function' ? o.project() : o.project) || '';
-      if (o.lanes !== false && typeof Dnd !== 'undefined' && Dnd && typeof Dnd.laneBar === 'function') {
-        if (!bar || barFor !== project) { bar = Dnd.laneBar({ project }); barFor = project; lanesHost.textContent = ''; lanesHost.append(bar); }
-        bar.ccPatch(st);
-      } else if (o.lanes !== false && typeof Lazy !== 'undefined' && Lazy.wants('dnd')) {      // dnd.js is a lazy bundle (lazy.js): the bar's room is kept while it loads, then the board is drawn again
-        if (!lanesHost.firstChild) lanesHost.append(el('div', { class: 'dnd-bar-slot' }));
-        if (!dndAsked) { dndAsked = true; Lazy.load('dnd').then(() => { sig = null; taskRepaint(); }, () => { dndAsked = false; lanesHost.textContent = ''; }); }
-      }
-      const info = taskChainInfo(tasks);
-      const ready = tasks.filter(taskIsBacklog).map((t) => taskSessionTargets(t, st).filter((x) => x.ok && x.same).map((x) => x.s.tmux));      // a backlog card's quick send follows the sessions
-      const next = taskSig([tasks, ui.confirm, ready, narrowViewport(), coarsePointer(), taskUi.open, taskUi.full, [...info], Math.floor(Date.now() / 60000)]);   // the minute: a card's ages stay current
-      if (next === sig) return;
-      sig = next;
-      const strips = taskChainStrips(tasks, info);
-      chainsHost.textContent = '';
-      if (strips.length) chainsHost.append(el('h2', { class: 'tk-sec', text: 'Chains' }), ...strips);
-      chainsHost.classList.toggle('hidden', !strips.length);
-      grid.textContent = '';
-      const ctx = { chain: info };
-      for (const [key, label] of BOARD_COLUMNS) {
-        const items = tasks.filter((t) => t.column === key);
-        if (!items.length && key !== 'backlog') continue;            // a column is drawn when it has a card; Backlog stays, it is where a task starts
-        const col = el('div', { class: 'col', 'data-col': key, role: 'group', 'aria-label': label }, el('h2', { text: `${label} (${items.length})` }));
-        if (!items.length && key === 'backlog') col.append(el('div', { class: 'dim', text: o.empty || 'nothing queued: + task, then Later' }));
-        for (const t of items) col.append(taskCard(t, ctx));
-        grid.append(col);
-      }
-    },
-  };
-}
-
-/* Edit a backlog card: a title and a prompt in a small sheet (PATCH sends only what changed). The full prompt is fetched when the row carries only its head. */
-function taskEditSheet(t) {
-  const title = el('input', { type: 'text', maxlength: 120, value: t.title || '', autocomplete: 'off' });
-  const prompt = el('textarea', { class: 'composer task-prompt', rows: '4', autocomplete: 'off', spellcheck: 'false' });
-  const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
-  const titleField = field('Title', title);
-  const promptField = field('Prompt', prompt, 'Cmd/Ctrl+Enter saves.');
-  const truncated = typeof t.prompt_len === 'number' && typeof t.prompt === 'string' && t.prompt.length < t.prompt_len;
-  let original = typeof t.prompt === 'string' ? t.prompt : '';
-  prompt.value = original;
-  if (truncated) {
-    prompt.disabled = true;
-    prompt.placeholder = 'loading the full prompt…';
-    Promise.resolve().then(() => api('GET', `/api/tasks/${t.id}`)).then((full) => {
-      original = String((full && full.prompt) || t.prompt || '');
-      prompt.value = original;
-      prompt.disabled = false;
-      if (typeof composerGrow === 'function') composerGrow(prompt, 12);
-    }).catch((e) => { prompt.placeholder = 'could not load the full prompt: leave empty to keep it'; prompt.disabled = false; taskStatus(status, e.message, true); });
-  }
-  const save = async () => {
-    const body = {};
-    const nt = title.value.trim();
-    fieldError(titleField, '');
-    if (!nt) { fieldError(titleField, 'A title is required.', true); return; }                  // the sheet stays: closing it would look like a save
-    if (nt !== t.title) body.title = nt;
-    const np = prompt.value.trim();
-    if (np && np !== original.trim()) body.prompt = np;
-    if (!Object.keys(body).length) { closeSheet(); return; }
-    taskStatus(status, 'saving…');
-    try {
-      const res = await api('PATCH', `/api/tasks/${t.id}`, body);
-      const head = typeof res.prompt === 'string' ? res.prompt.slice(0, 600) : (body.prompt ? body.prompt.slice(0, 600) : t.prompt);
-      const row = res && res.task && typeof res.task === 'object' ? { ...t, ...res.task } : { ...t, title: body.title || t.title, prompt: head, prompt_len: body.prompt ? body.prompt.length : t.prompt_len };
-      taskOverrideSet(row, ['title', 'prompt', 'prompt_len']);
-      closeSheet();
-      toast('saved', { kind: 'ok' });
-      taskRepaint();
-      if (typeof poll === 'function') poll(true);
-    } catch (e) { taskStatus(status, e.message, true); }
-  };
-  prompt.addEventListener('input', () => { if (typeof composerGrow === 'function') composerGrow(prompt, 12); });
-  prompt.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); save(); } });
-  const form = el('form', { class: 'form', onsubmit: (e) => { e.preventDefault(); save(); } },
-    titleField, promptField, status,
-    el('div', { class: 'submit' }, el('button', { class: 'primary', type: 'submit', text: 'Save' }),
-      el('button', { type: 'button', onclick: () => closeSheet(), text: 'Cancel' })));
-  openSheet({ title: `Edit task · ${taskWhere(t)}`, body: form });
-  if (typeof composerGrow === 'function') composerGrow(prompt, 12);
-  focusFine(title);
-}
-
 /* Delete a backlog card: gone at once, back with an error toast if the server refused. Called through confirmButton (two taps). */
 async function taskDelete(t) {
   taskOverrideSet(t, ['phase'], { _gone: true });
@@ -1178,27 +1034,6 @@ function taskPreviewOff(t, pv) {
   const id = `tk-pv-${t.id}`;
   return el('div', { class: 'tk-pv' }, el('button', { class: 'minimal small', type: 'button', disabled: true, 'aria-describedby': id, 'data-act': 'preview', text: 'Preview' }),
     el('span', { id, class: 'dim tk-pv-why', text: `unavailable: ${pv.reason || 'Tailscale is not ready'}` }));
-}
-
-function taskPortSheet(t, why) {
-  const port = el('input', { type: 'number', min: '1', max: '65535', step: '1', inputmode: 'numeric', autocomplete: 'off', placeholder: 'e.g. 3000' });
-  const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
-  const portField = field('Dev server port', port, why || 'The port the dev server in this session listens on.');
-  const go = el('button', { class: 'primary', type: 'submit', text: 'Expose preview' });
-  const form = el('form', { class: 'form', novalidate: true, onsubmit: async (e) => {
-    e.preventDefault();
-    const n = parseInt(port.value, 10);
-    fieldError(portField, '');
-    if (!(n >= 1 && n <= 65535)) { fieldError(portField, 'Enter a port between 1 and 65535.', true); return; }
-    go.disabled = true;
-    taskStatus(status, 'exposing…');
-    try { await taskPreview(t, n); closeSheet(); if (typeof poll === 'function') await poll(true); }
-    catch (err) { taskStatus(status, err.message, true); }
-    go.disabled = false;
-  } }, portField, status,
-  el('div', { class: 'submit' }, go, el('button', { type: 'button', onclick: () => closeSheet(), text: 'Cancel' })));
-  openSheet({ title: `Preview · ${String(t.title).slice(0, 60)}`, body: form });
-  focusFine(port);
 }
 
 /* Open the diff / PR sheet of the card (home.js openTaskModal: diff, Describe, Create PR, Merge) */

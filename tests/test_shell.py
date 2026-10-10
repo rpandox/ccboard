@@ -380,9 +380,10 @@ def test_the_node_pages_register_exactly_the_three_node_routes():
 
 
 def test_each_page_registers_in_its_own_file_or_the_placeholders():
-    """pages/<id>.js owns its route; the routes with no page yet live in pages/placeholders.js until their phase lands."""
+    """pages/<id>.js owns its route (pages/<id>-page.js when the file of that name keeps what the first paint reads and the page itself is a lazy route, as agents does);
+    the routes with no page yet live in pages/placeholders.js until their phase lands."""
     for page_id, files in _register_calls().items():
-        assert files[0] in (f"{page_id}.js", "placeholders.js"), f"registerPage('{page_id}') sits in pages/{files[0]}"
+        assert files[0] in (f"{page_id}.js", f"{page_id}-page.js", "placeholders.js"), f"registerPage('{page_id}') sits in pages/{files[0]}"
     placeholders = [i for i, files in _register_calls().items() if files == ["placeholders.js"]]
     assert {"quad", "usage", "memory"} >= set(placeholders), placeholders          # v0.5.19: onboarding has its own page (pages/onboarding.js)
     assert "project" not in placeholders, "the project route has its real page since v0.5.6 (pages/project.js)"

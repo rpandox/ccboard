@@ -64,7 +64,7 @@ def test_the_frame_has_its_sidebar_column_before_the_shell_is_built():
 # ---------------------------------------------------------------- lazy loading (lazy.js): the first-paint set and the bundles
 
 LAZY_SRC = STATIC / "lazy.js"
-FIRST_PAINT_BUDGET = 560_000      # bytes of script index.html may load up front; the lazy split took it from 1.1 MB to about 520 KB
+FIRST_PAINT_BUDGET = 560_000      # bytes of script index.html may load up front; the lazy split took it from 1.1 MB to about 520 KB (the Agents page, the create flow and the task card sheets later brought it back from 560 KB to about 518 KB)
 
 
 def _manifest():
@@ -97,7 +97,7 @@ def test_the_first_paint_set_is_the_shell_and_stays_under_budget():
 
 def test_every_script_is_in_index_or_in_exactly_one_lazy_bundle():
     m = _manifest()
-    assert {"launcher", "palette", "dnd", "tree", "termkit", "memory", "project", "settings", "usage", "quad", "onboarding"} <= set(m)
+    assert {"launcher", "palette", "dnd", "tree", "termkit", "memory", "project", "settings", "usage", "quad", "onboarding", "agents", "shellcreate", "tasksheets"} <= set(m)
     lazy = [j for b in m.values() for j in b["js"]]
     assert len(lazy) == len(set(lazy)), "a script is in two bundles"
     eager = [a["src"] for t, a in tags("index.html") if t == "script"]
@@ -161,3 +161,75 @@ def test_the_lazy_loader_is_definition_only_and_the_router_waits_for_it():
     main = (STATIC / "main.js").read_text(encoding="utf-8")
     assert "Lazy.watchLinks()" in main
     assert (STATIC / "term.html").read_text(encoding="utf-8").count("lazy.js") == 0, "the terminal page loads its own scripts eagerly"
+
+
+# ---------------------------------------------------------------- code moved out of the first-paint set (the pieces a first Home paint never runs)
+
+def _code(rel):
+    """A static file without its comments (a name that only a comment mentions is not a use)."""
+    return re.sub(r"/\*.*?\*/", "", (STATIC / rel).read_text(encoding="utf-8"), flags=re.S)
+
+
+def _declares(code, name):
+    return re.search(rf"^(?:async\s+)?(?:function\s+{name}\b|(?:const|let|var)\s+{name}\b|{name}\s*=)", code, re.M) is not None
+
+
+# (lazy file, bundle, the file the code was cut from, the declarations that moved)
+MOVES = [
+    ("pages/agents-page.js", "agents", "pages/agents.js",
+     ["agentsPage", "agentsGroupNode", "agentsSummaryNode", "agentsPatchSummary", "agentsExt", "agentsExtNode", "agentsExtRow", "agentsExtRows", "agentsExtLoad", "agentsExtOpen", "AGENTS_SEGS"]),
+    ("shell-create.js", "shellcreate", "shell.js", []),
+    ("task-sheets.js", "tasksheets", "components.js", ["taskMoveSheet", "taskEditSheet", "taskPortSheet"]),
+    ("task-sheets.js", "tasksheets", "pages/home.js", ["openTaskModal", "diffSideControl"]),
+    ("pages/project.js", "project", "components.js", ["makeTaskBoard", "taskSig"]),
+]
+
+
+@pytest.mark.parametrize("lazy_file,bundle,source,names", MOVES, ids=lambda v: v if isinstance(v, str) else "")
+def test_moved_declarations_are_gone_from_the_eager_file_and_live_in_a_bundle(lazy_file, bundle, source, names):
+    m = _manifest()
+    assert "/static/" + lazy_file in m[bundle]["js"], f"{lazy_file} is not in the {bundle} bundle"
+    assert "/static/" + source in [a["src"] for t, a in tags("index.html") if t == "script"], f"{source} is an eager file"
+    eager, lazy = _code(source), _code(lazy_file)
+    for name in names:
+        assert not _declares(eager, name), f"{name} is still declared in {source}"
+        assert _declares(lazy, name), f"{name} is not declared in {lazy_file}"
+
+
+def test_the_shell_create_flow_moved_out_of_shell_js_but_openCreate_stayed():
+    eager, lazy = _code("shell.js"), _code("shell-create.js")
+    for name in ("routeCtx", "createFor", "launchAt", "pickRepo", "showForm", "createPlace"):
+        assert f"Shell.{name} = " not in eager, f"Shell.{name} is still in shell.js"
+        assert f"Shell.{name} = " in lazy, f"Shell.{name} is not in shell-create.js"
+    for name in ("openCreate", "createItems", "defaultRepo", "targetLabel", "withCreate"):
+        assert f"Shell.{name} = " in eager, f"Shell.{name} must stay in shell.js: callers read its answer, or build the menu, at once"
+    assert "Lazy.run('shellcreate'" in eager
+
+
+def test_the_task_card_names_are_stubs_in_lazy_js_for_the_tasksheets_bundle():
+    src = LAZY_SRC.read_text(encoding="utf-8")
+    m = re.search(r"for \(const name of \[([^\]]*)\]\) if \(typeof window\[name\] !== 'function'\) window\[name\] = lazyStub\(name, '[^']*', 'tasksheets'\)", src)
+    assert m, "the loop that stubs the task sheets"
+    stubbed = re.findall(r"'(\w+)'", m.group(1))
+    assert sorted(stubbed) == ["openTaskModal", "taskEditSheet", "taskMoveSheet", "taskPortSheet"]
+    # the probe must be a name that is NOT stubbed, or the stub would make the bundle look loaded before its file ran
+    probe = re.search(r"tasksheets: \{[^}]*probe: \(\) => typeof (\w+)", src).group(1)
+    assert probe not in stubbed and _declares(_code("task-sheets.js"), probe)
+    shellcreate = re.search(r"shellcreate: \{[^}]*probe: \(\) => typeof Shell !== 'undefined' && typeof Shell\.(\w+)", src).group(1)
+    assert shellcreate == "pickRepo", "the shellcreate probe is a method that shell.js does not define"
+
+
+def test_the_agents_route_is_lazy_and_settings_loads_the_bundle_it_reads():
+    m = _manifest()
+    assert m["agents"]["js"] == ["/static/pages/agents-page.js"]
+    assert "agents" in m["settings"]["needs"], "Settings > Agents reads agentsExtRows / agentsExtLoad from the agents bundle"
+    assert re.search(r"LAZY_ROUTES = \{[^}]*\bagents: 'agents'", LAZY_SRC.read_text(encoding="utf-8"))
+    eager_js = "".join(_code(a["src"][len("/static/"):]) for t, a in tags("index.html") if t == "script")
+    assert "registerPage('agents'" not in eager_js and "agentsExt" not in eager_js
+
+
+def test_no_term_page_script_uses_what_moved_out_of_components_js():
+    """term.html loads core.js and components.js without lazy.js: it has no stubs, so nothing it runs may need the task sheets."""
+    term = "".join(_code(f) for f in ("term.js", "termkit.js"))
+    for name in ("taskMoveSheet", "taskEditSheet", "taskPortSheet", "openTaskModal", "makeTaskBoard", "diffSideControl"):
+        assert not re.search(rf"\b{name}\b", term), f"{name} is used by the terminal page, which has no lazy loader"

@@ -275,6 +275,59 @@ function pjSessionsView(P, route) {
   };
 }
 
+/* ---- the board: the dispatch bar (dnd.js: Dnd.laneBar, one node kept across repaints), the chains, then the columns. One node per page; update()
+   rebuilds only when something it shows changed, and never while a card is being dragged (a node that leaves the page mid-drag never gets its dragend:
+   Dnd.afterDrag queues the repaint for the end of the drag). ---- */
+
+function taskSig(v) { try { return JSON.stringify(v); } catch (_) { return String(Math.random()); } }
+
+/* makeTaskBoard({project?: name | () => name, lanes?, cls?, empty?}) -> {node, update(tasks, st)}; tasks are boardTasks(st) rows (already filtered to the page's scope).
+   The Tasks page draws its own board (home.js renderTasks) and adds the chains (pages/tasks.js); the project's Tasks tab draws this one. */
+function makeTaskBoard(opts) {
+  const o = opts || {};
+  const lanesHost = el('div', { class: 'tk-lanes-host' });
+  const chainsHost = el('div', { class: 'tk-chains hidden' });
+  const grid = el('div', { class: 'kanban' + (o.cls ? ' ' + o.cls : '') });
+  const node = el('div', { class: 'tk-board' }, lanesHost, chainsHost, grid);
+  let sig = null;
+  let bar = null;
+  let barFor = null;
+  let dndAsked = false;
+  return {
+    node,
+    update(tasks, st) {
+      if (typeof Dnd !== 'undefined' && Dnd && typeof Dnd.afterDrag === 'function' && Dnd.afterDrag(taskRepaint)) return;
+      const project = (typeof o.project === 'function' ? o.project() : o.project) || '';
+      if (o.lanes !== false && typeof Dnd !== 'undefined' && Dnd && typeof Dnd.laneBar === 'function') {
+        if (!bar || barFor !== project) { bar = Dnd.laneBar({ project }); barFor = project; lanesHost.textContent = ''; lanesHost.append(bar); }
+        bar.ccPatch(st);
+      } else if (o.lanes !== false && typeof Lazy !== 'undefined' && Lazy.wants('dnd')) {      // dnd.js is a lazy bundle (lazy.js): the bar's room is kept while it loads, then the board is drawn again
+        if (!lanesHost.firstChild) lanesHost.append(el('div', { class: 'dnd-bar-slot' }));
+        if (!dndAsked) { dndAsked = true; Lazy.load('dnd').then(() => { sig = null; taskRepaint(); }, () => { dndAsked = false; lanesHost.textContent = ''; }); }
+      }
+      const info = taskChainInfo(tasks);
+      const ready = tasks.filter(taskIsBacklog).map((t) => taskSessionTargets(t, st).filter((x) => x.ok && x.same).map((x) => x.s.tmux));      // a backlog card's quick send follows the sessions
+      const next = taskSig([tasks, ui.confirm, ready, narrowViewport(), coarsePointer(), taskUi.open, taskUi.full, [...info], Math.floor(Date.now() / 60000)]);   // the minute: a card's ages stay current
+      if (next === sig) return;
+      sig = next;
+      const strips = taskChainStrips(tasks, info);
+      chainsHost.textContent = '';
+      if (strips.length) chainsHost.append(el('h2', { class: 'tk-sec', text: 'Chains' }), ...strips);
+      chainsHost.classList.toggle('hidden', !strips.length);
+      grid.textContent = '';
+      const ctx = { chain: info };
+      for (const [key, label] of BOARD_COLUMNS) {
+        const items = tasks.filter((t) => t.column === key);
+        if (!items.length && key !== 'backlog') continue;            // a column is drawn when it has a card; Backlog stays, it is where a task starts
+        const col = el('div', { class: 'col', 'data-col': key, role: 'group', 'aria-label': label }, el('h2', { text: `${label} (${items.length})` }));
+        if (!items.length && key === 'backlog') col.append(el('div', { class: 'dim', text: o.empty || 'nothing queued: + task, then Later' }));
+        for (const t of items) col.append(taskCard(t, ctx));
+        grid.append(col);
+      }
+    },
+  };
+}
+
 function pjTasksView(P, route) {
   const scopeNote = pjScopeNote(P, route);
   let scope = '';                                                    // the project the tab shows: the dispatch bar lists its sessions

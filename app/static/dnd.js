@@ -12,7 +12,7 @@
                                                                                        another node: a target is its Ref.key, so one name on two nodes is two
                                                                                        targets; the drop refuses a remote one until the relay phase)
               Session rows (agents.js sessionCard, the sidebar's s-row), the dispatch bar's lanes and chips (Dnd.laneBar, mounted by home.js renderTasks and
-              by components.js makeTaskBoard), and later quad tiles and the dock header carry them. Dnd.bind(node, spec) sets them and installs the listeners;
+              by pages/project.js makeTaskBoard), and later quad tiles and the dock header carry them. Dnd.bind(node, spec) sets them and installs the listeners;
               Dnd.bind(root) only installs.
      state    Dnd.dragging = {id, task} while a card is held; body.dnd-task (iframes stop catching the pointer, see shell.css); every target gets
               .drop-ok or .drop-no, the one under the pointer also .drop-over and data-drop-note (the reason, or 'will be queued after the current turn'),

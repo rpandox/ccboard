@@ -2023,9 +2023,10 @@ def _c_backup_job(db) -> Outcome:
     pushes = (st or {}).get("push")
     push_failed = any(isinstance(x, dict) and x.get("error") for x in (pushes if isinstance(pushes, list) else []))
     if push_failed and launchd and plat.IS_MACOS:
-        bad.append(("warn", "the last run could not push the backup branches; a launchd job may not see your ssh-agent or the Keychain key (UNVERIFIED)",
-                    fix("Load the key without a prompt (ssh-add --apple-use-keychain on the key file), or use an https remote with `gh auth setup-git`; "
-                        "the job runs ssh with BatchMode, so it never asks")))
+        bad.append(("warn", "the last run could not push the backup branches; a launchd job in the gui domain has SSH_AUTH_SOCK but one in the user domain does not "
+                            "(measured 2026-10-10, macOS 14), and whether the ssh-agent then holds your Keychain key when the job runs is still to verify",
+                    fix("Run the job in the gui domain (the installer's default; CCBOARD_LAUNCHD_DOMAIN=user cannot push through an agent), load the key without a prompt "
+                        "(ssh-add --apple-use-keychain on the key file), or use an https remote with `gh auth setup-git`; the job runs ssh with BatchMode, so it never asks")))
     if not bad:
         return _pass("; ".join(notes))
     worst = "fail" if any(b[0] == "fail" for b in bad) else "warn"
