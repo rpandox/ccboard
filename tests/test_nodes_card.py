@@ -36,6 +36,14 @@ def fake_ts(sid="nDEMO1CNTRL", dns="node-a.example.ts.net.", tags=None, os_name=
     return {"BackendState": "Running", "Self": {"ID": sid, "DNSName": dns, "OS": os_name, "UserID": 7, "Tags": tags}}
 
 
+@pytest.fixture(autouse=True)
+def _fresh_scan():
+    """The page scan is cached for 2 s in the process; a test file that ran just before must not hand its scan to these tests (tmux down read as 0 sessions)."""
+    main._invalidate_scan()
+    yield
+    main._invalidate_scan()
+
+
 @pytest.fixture
 def ts(monkeypatch):
     """Make Tailscale answer with a fake reading; the returned dict's "reading" is what the next fresh read sees."""

@@ -45,7 +45,7 @@ def clock(monkeypatch):
 def db(projects_dir):
     d = DB(settings.db_path)
     yield d
-    d.conn.close()
+    d.close()
 
 
 def iso_ms(epoch: float) -> str:
@@ -745,3 +745,56 @@ def test_a_hub_reads_a_second_board_through_the_real_route_with_its_token_and_ge
     assert ("node-a", "GET", "node-b", "/api/node/state", 304) in two_nodes.log, "the held ETag came back as 304 from the real route"
     assert second["state"] == first["state"] and second["status"] == "online"
     assert not [c for c in two_nodes.log if c[3] not in ("/api/node/state", "/api/node")], "only the two read routes were called"
+
+
+# ---------------------------------------------------------------- a poll in flight and the database (a crash seen in the P7 test run)
+
+def test_stop_waits_for_a_poll_in_flight_so_nothing_reads_the_database_afterwards(monkeypatch):
+    """stop() used to return while a worker was still inside a poll; the worker then read kv from a database the caller was closing, which crashes
+    sqlite3. Now stop() waits (bounded by STOP_WAIT) until no poll is in flight."""
+    import threading, time
+    from app import nodes_hub
+    monkeypatch.setattr(nodes_hub, "STOP_WAIT", 3.0)
+    hub = nodes_hub.NodeHub.__new__(nodes_hub.NodeHub)
+    hub._stop, hub._thread, hub._pool, hub._lock, hub._inflight = threading.Event(), None, None, threading.RLock(), {"p1"}
+    monkeypatch.setattr(hub, "persist", lambda force=False: order.append("persist"), raising=False)
+    order = []
+    def finish():
+        time.sleep(0.25)
+        with hub._lock:
+            hub._inflight.discard("p1")
+        order.append("poll ended")
+    t = threading.Thread(target=finish); t.start()
+    t0 = time.monotonic(); hub.stop(); took = time.monotonic() - t0
+    t.join()
+    assert order == ["poll ended", "persist"], "the last state is written only after the poll in flight ended"
+    assert 0.2 <= took < 2.5
+
+
+def test_stop_gives_up_after_the_wait_when_a_poll_never_ends(monkeypatch):
+    import threading, time
+    from app import nodes_hub
+    monkeypatch.setattr(nodes_hub, "STOP_WAIT", 0.2)
+    hub = nodes_hub.NodeHub.__new__(nodes_hub.NodeHub)
+    hub._stop, hub._thread, hub._pool, hub._lock, hub._inflight = threading.Event(), None, None, threading.RLock(), {"stuck"}
+    monkeypatch.setattr(hub, "persist", lambda force=False: None, raising=False)
+    t0 = time.monotonic(); hub.stop()
+    assert 0.15 <= time.monotonic() - t0 < 1.5, "bounded: a stuck node cannot hold the shutdown"
+
+
+def test_closing_the_database_waits_for_a_query_and_a_later_call_is_an_error_not_a_crash(projects_dir):
+    import sqlite3, threading, time
+    d = DB(settings.db_path)
+    d.kv_set("k", {"v": 1})
+    seen = []
+    def reader():
+        with d.lock:                       # a thread in the middle of a query holds the lock
+            seen.append("query started"); time.sleep(0.2); seen.append("query ended")
+    t = threading.Thread(target=reader); t.start()
+    while not seen:
+        time.sleep(0.01)
+    d.close(); seen.append("closed")
+    t.join()
+    assert seen == ["query started", "query ended", "closed"]
+    with pytest.raises(sqlite3.ProgrammingError):
+        d.kv_get("k")

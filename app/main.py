@@ -28,7 +28,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_hub, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_hub, nodes_relay, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import claude_pane, codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -220,7 +220,7 @@ async def lifespan(app: FastAPI):
     indexer.stop.set()
     sched_worker.stop.set()
     nodes.registry_listener = None
-    hub.stop()
+    await asyncio.to_thread(hub.stop)                     # it waits (6 s at most) for the polls in flight: not on the event loop, which a poll through this app may need
 
 
 app = FastAPI(title="ccboard", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -346,11 +346,15 @@ async def _node_auth(request: Request, call_next):
     if peer is None:
         return _node_refused(401, "this node token is wrong, expired or was revoked", **{"WWW-Authenticate": 'Bearer realm="ccboard", error="invalid_token"'})
     pid = peer["peer_id"]
-    ok, wait = nodes.rate_check(pid, write=request.method not in ("GET", "HEAD"))
+    ok, wait = nodes.rate_check(pid, write=nodes_relay.rate_class(request.method, request.url.path) == nodes_relay.WRITE)      # the row's class (issue #140), else by method
     if not ok:
         return _node_refused(429, "too many requests from this node", **{"Retry-After": str(wait)})
     scope = nodes.route_scope(request.method, request.url.path)
     note = _node_note(request)
+    allowed = nodes_relay.methods_for(request.url.path) if scope is None else []
+    if allowed:                                                  # a listed path with another method: 405, not 403 (issue #140)
+        nodes.audit("in", pid, "method_refused", False, note, node_name=peer.get("name"), target=f"{request.method} {request.url.path}"[:120], status="refused", db=db)
+        return _node_refused(405, "that method is not allowed on this route", Allow=", ".join(allowed))
     if not nodes.scope_ok(peer.get("scopes"), scope):
         nodes.audit("in", pid, "route_refused" if scope is None else "scope_refused", False, (f"scope {scope} not granted " if scope else "") + note,
                     node_name=peer.get("name"), target=f"{request.method} {request.url.path}"[:120], status="refused", db=db)
@@ -4198,10 +4202,7 @@ def _capture_all(names: set[str] | None = None, nlines: int = LIVE_LINES) -> tup
             text = tmux.capture(n, lines=nlines, join=False)
         except tmux.TmuxError:
             continue
-        tail = [ln.rstrip() for ln in text.splitlines()]
-        while tail and not tail[-1]:
-            tail.pop()
-        out[n] = tail[-nlines:]
+        out[n] = nodes_relay.tail_lines(text, nlines)
     return live_names, out
 
 
@@ -4474,9 +4475,11 @@ def api_node_hello(request: Request):
 
 
 @app.get("/api/node")
-def api_node():
+def api_node(request: Request):
     """This board's node card (issue #133): who it is, what it runs on, its agents and accounts with their windows, how loaded it is and how many
-    lanes are free. Unreadable parts are null. A paired node's token with scope `read` will open it too (issue #135)."""
+    lanes are free. Unreadable parts are null. A paired node's token with scope `read` opens it too (issue #135); a call that carries an acting user (a hub
+    relaying for a person, issue #140) is audited, a hub poll is not."""
+    nodes_relay.note_inbound(request, "card", db)
     sessions, down = _merged_sessions()
     return nodes.card(db, health_snap=health.snapshot(consumer="node"), sessions=None if down else sessions.values())
 
@@ -4487,6 +4490,7 @@ def api_node_state(request: Request):
     counts, the usage windows, the lanes and the agents with a login problem. No prompt, result, transcript, account label or path. Built from the scan the
     page poll uses (the 2 s scan cache). A weak ETag over the body without `node.now`; `If-None-Match` that matches answers 304 with no body (and the node's
     time in X-CCBoard-Now). A paired node's token with scope `read` opens it; so does a signed-in person."""
+    nodes_relay.note_inbound(request, "state", db)
     body = node_state.build(db, _scan_entry())
     tag = node_state.etag(body)
     now = body["node"]["now"]
@@ -4694,11 +4698,21 @@ def api_nodes_pairs(request: Request):
 
 
 @app.get("/api/nodes/audit")
-def api_nodes_audit(request: Request, limit: int = 100):
+def api_nodes_audit(request: Request, limit: int = 100, direction: str | None = None, node: str | None = None, action: str | None = None, failures: int = 0):
     """The pairing and node activity, newest first: {rows: [{id, at, direction, peer, node_name, user, action, target, status, detail}]}. Rows hold no
-    token, code or prompt; they are kept 90 days. limit 1 to 500."""
+    token, code or prompt; they are kept 90 days. limit 1 to 500. Filters (all optional, all together): `direction` in or out, `node` (a node's name or its peer
+    id), `action` (one audit action, for example read_task) and `failures=1` (only rows that did not end ok). A bad filter is a 400."""
     _node_manager(request)
-    return JSONResponse({"rows": nodes.audit_list(max(1, min(limit, 500)), db=db), "at": db_now()}, headers={"Cache-Control": "no-store"})
+    if direction is not None and direction not in ("in", "out"):
+        raise projects.BadRequest("direction is in or out")
+    if node is not None and not (0 < len(node) <= 64 and node.isprintable()):
+        raise projects.BadRequest("node is a node name or a peer id")
+    if action is not None and not re.fullmatch(r"[a-z0-9_.-]{1,40}", action):
+        raise projects.BadRequest("action is one audit action, like read_task")
+    if failures not in (0, 1):
+        raise projects.BadRequest("failures is 0 or 1")
+    rows = nodes.audit_list(max(1, min(limit, 500)), db=db, direction=direction, node=node, action=action, failures=bool(failures))
+    return JSONResponse({"rows": rows, "at": db_now()}, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/nodes/{peer}/rotate")
@@ -4788,6 +4802,11 @@ def api_node_unpair(request: Request):
     nodes.unpair_incoming(pid, db=db)
     doctor.invalidate()
     return JSONResponse({"unpaired": True}, headers={"Cache-Control": "no-store"})
+
+
+# ---------- the relay (issue #140): the hub routes /api/nodes/{handle}/..., the peer wrappers /api/node/... and nothing else; the table is app/nodes_relay.py RELAY ----------
+
+nodes_relay.install(app, nodes_relay.HANDLERS, lambda: db, lambda: _hub())
 
 
 @app.get("/api/search")

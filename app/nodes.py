@@ -159,7 +159,7 @@ def reset() -> None:
         _id_cache.clear()
         _warned.clear()
     hello_limiter.clear()
-    for lim in (pair_limiter, refusal_limiter, node_read_limiter, node_write_limiter, confirm_limiter):
+    for lim in (pair_limiter, refusal_limiter, node_read_limiter, node_write_limiter, relay_read_limiter, relay_write_limiter, confirm_limiter):
         lim.clear()
     with _pending_lock:
         _pending.clear()
@@ -799,6 +799,8 @@ pair_limiter = _Limiter(PAIR_RATE, 60.0, 2048)               # pair attempts per
 refusal_limiter = _Limiter(30, 600.0, 4)                      # audit rows for refused pair attempts, whole board
 node_read_limiter = _Limiter(READ_RATE, 60.0, 2048)          # per pair
 node_write_limiter = _Limiter(WRITE_RATE, 60.0, 2048)
+relay_read_limiter = _Limiter(READ_RATE, 60.0, 512)           # the hub relay routes (issue #140), per signed-in person and class
+relay_write_limiter = _Limiter(WRITE_RATE, 60.0, 512)
 confirm_limiter = _Limiter(30, 60.0, 2048)                    # POST /api/nodes/pair/confirm, per source address
 CONFIRM_TTL = 30.0                                            # seconds an in-flight add_node answers the confirm route (its pair call waits 8 s at most)
 CONFIRM_MAX = 16                                              # in-flight records kept at most; only add_node (a signed-in person's action) writes one
@@ -917,9 +919,9 @@ def own_claim() -> dict:
 
 # ---------------------------------------------------------------- the audit
 
-_TOKENISH = re.compile(r"cc(?:bnode|bmcp)_[A-Za-z0-9_-]{6,}")
+_TOKENISH = re.compile(r"cc(?:bnode|bmcp)_[A-Za-z0-9_-]{6,200}")
 _CODEISH = re.compile(r"\b[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}\b")
-_HEXISH = re.compile(r"\b[0-9a-fA-F]{40,}\b")
+_HEXISH = re.compile(r"\b[0-9a-fA-F]{40,512}\b")
 _last_prune_gap = 3600.0
 
 
@@ -927,7 +929,7 @@ def _scrub(v, n: int) -> str | None:
     """A short printable text with anything that looks like a token, a pairing code or a digest replaced. Defence in depth: callers pass no secret."""
     if v is None:
         return None
-    t = "".join(c for c in str(v) if c.isprintable()).strip()
+    t = "".join(c for c in str(v)[:max(4 * n, 256)] if c.isprintable()).strip()       # cut BEFORE the patterns run: a long hex run with a late mismatch backtracks
     t = _HEXISH.sub("[digest]", _CODEISH.sub("[code]", _TOKENISH.sub("[token]", t)))
     return t[:n] or None
 
@@ -951,10 +953,11 @@ def audit(direction: str, peer_id: str, action: str, ok: bool, detail: str | Non
         log.debug("audit row failed: %s", e.__class__.__name__)
 
 
-def audit_list(limit: int = 100, db=None) -> list[dict]:
-    """The newest audit rows first: {id, at, direction, peer, node_name, user, action, target, status, detail}."""
+def audit_list(limit: int = 100, db=None, *, direction: str | None = None, node: str | None = None, action: str | None = None, failures: bool = False) -> list[dict]:
+    """The newest audit rows first: {id, at, direction, peer, node_name, user, action, target, status, detail}. The filters narrow it: `direction` (in or out),
+    `node` (the row's node name or its peer id), `action` (one audit action) and `failures` (status other than ok); all together when several are given."""
     try:
-        rows = _db(db).node_audit_list(limit)
+        rows = _db(db).node_audit_list(limit, direction=direction, node=node, action=action, failures=failures)
     except Exception:
         return []
     return [{k: r[k] for k in ("id", "at", "direction", "peer", "node_name", "user", "action", "target", "status", "detail")} for r in rows]
@@ -1979,3 +1982,7 @@ def remove_node(ident, db=None, also_revoke=None) -> dict:
     _, others = _claimants(d, p)
     return {"removed": True, "peer_told": told, "also_revoked": revoked,
             "other_pairs": [{k: o[k] for k in ("peer_id", "name", "url", "verified")} for o in others]}
+
+
+# The relay table (issue #140, app/nodes_relay.py) lists the rows it adds to NODE_ROUTES when it is imported; import it last, whoever imported this module first.
+from . import nodes_relay  # noqa: E402,F401

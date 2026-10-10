@@ -216,7 +216,8 @@ function settingsNotify(p) {
    A code is in this file only as the text of the open sheet (settingsNdSheet.code and the output node): it is never put in storage, a URL, a toast or a log, and closing the sheet
    empties every node and the variable. A token is never in this file at all: the board's answers to rotate and add carry none that this page reads. The one timer here is the
    countdown of an open sheet; it is cleared when the sheet closes, the code runs out, or the page goes away. */
-const settingsNdPeers = { nodes: null, pairs: null, audit: null, err: '', at: 0, now: null, busy: false, seq: 0, act: {}, rotated: {} };
+const settingsNdPeers = { nodes: null, pairs: null, audit: null, err: '', at: 0, now: null, busy: false, seq: 0, act: {}, rotated: {},
+  filter: NodeView.auditFilter(), auditSeq: 0, seen: { nodes: new Set(), actions: new Set() } };
 const settingsNdSheet = { shell: null, timer: null, tick: null, deadline: 0, code: '', opener: null, scopes: null, minutes: NodeView.CODE_DEFAULT_MINUTES };
 
 /* This board's clock for ages in the pair lists: the answer's own `now` or `at` plus what has passed here since, else the browser's. */
@@ -256,16 +257,49 @@ async function settingsNdLoadPeers() {
   const mine = ++P.seq;
   P.busy = true;
   const ask = async (path) => { try { return { v: await api('GET', path) }; } catch (e) { return { err: (e && e.message) || 'the board did not answer' }; } };
-  const [n, p, a] = await Promise.all([ask('/api/nodes'), ask('/api/nodes/pairs'), ask('/api/nodes/audit?limit=50')]);
+  const aseq = P.auditSeq;                                              // an answer for a filter that was changed meanwhile is not used
+  const [n, p, a] = await Promise.all([ask('/api/nodes'), ask('/api/nodes/pairs'), ask('/api/nodes/audit' + NodeView.auditQuery(P.filter))]);
   if (mine !== P.seq) return false;
   P.busy = false;
   P.err = n.err || p.err || a.err || '';
   if (n.err === undefined) { P.nodes = n.v === undefined || n.v === null ? {} : n.v; P.at = Date.now(); P.now = n.v && typeof n.v === 'object' ? (n.v.now || n.v.at || null) : null; }
   if (p.err === undefined) P.pairs = p.v === undefined || p.v === null ? {} : p.v;
-  if (a.err === undefined) P.audit = a.v === undefined || a.v === null ? {} : a.v;
+  if (a.err === undefined && aseq === P.auditSeq) { P.audit = a.v === undefined || a.v === null ? {} : a.v; settingsNdSeen(P.audit); }
   settingsNd.rev++;
   settingsFill('nodes', true);
   return true;
+}
+
+/* The nodes and actions of the rows seen so far feed the two selects of the Activity filters; a narrowed answer never takes a choice away. */
+function settingsNdSeen(answer) {
+  const P = settingsNdPeers;
+  for (const r of NodeView.list(answer, 'rows', 'audit', 'events')) {
+    if (typeof r.node_name === 'string' && r.node_name && P.seen.nodes.size < 200) P.seen.nodes.add(r.node_name.slice(0, 64));
+    if (typeof r.action === 'string' && r.action && P.seen.actions.size < 200) P.seen.actions.add(r.action.slice(0, 40));
+  }
+}
+
+/* A filter was changed (or cleared with null): paint with the rows held at once, then ask the board for the narrowed list. A newer ask makes an older answer stale. */
+function settingsNdFilter(change) {
+  const P = settingsNdPeers;
+  P.filter = change === null ? NodeView.auditFilter() : { ...P.filter, ...change };
+  settingsNd.rev++;
+  settingsFill('nodes', true);
+  settingsNdLoadAudit();
+}
+
+async function settingsNdLoadAudit() {
+  const P = settingsNdPeers;
+  const mine = ++P.auditSeq;
+  let v = null;
+  let err = '';
+  try { v = await api('GET', '/api/nodes/audit' + NodeView.auditQuery(P.filter)); } catch (e) { err = (e && e.message) || 'the board did not answer'; }
+  if (mine !== P.auditSeq) return false;
+  if (err) P.err = `The activity could not be read: ${err}`;
+  else { P.err = ''; P.audit = v === undefined || v === null ? {} : v; settingsNdSeen(P.audit); }
+  settingsNd.rev++;
+  settingsFill('nodes', true);
+  return !err;
 }
 
 function settingsNdOpenPeers() {
@@ -755,13 +789,48 @@ function settingsNdPaintIncoming(nu) {
   settingsNdEmpty(nu.inEmpty, !items.length && !(P.pairs === null && P.nodes === null), 'No node can control this board. Press Create pairing code, then type the code on the other board.');
 }
 
+/* One select of the Activity filters: its options are rebuilt only when the list of choices changed. */
+function settingsNdSelect(sel, opts, value) {
+  const sig = JSON.stringify(opts);
+  if (sel.ccSig !== sig) {
+    sel.textContent = '';
+    for (const [v, t] of opts) sel.append(el('option', { value: v, text: t }));
+    sel.ccSig = sig;
+  }
+  if (sel.value !== value) sel.value = value;
+}
+
+/* A short segmented control (one track of buttons, aria-pressed, arrow keys move): items [[value, label, title]]. */
+function settingsNdSeg(label, items, onPick) {
+  const node = el('div', { class: 'seg-ctl', role: 'group', 'aria-label': label });
+  const btns = items.map(([v, text, title], i) => el('button', { class: 'seg-btn', type: 'button', 'data-v': String(v), 'aria-pressed': 'false', title: title || null, text, onclick: () => onPick(v),
+    onkeydown: (e) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+      const j = (i + (e.key === 'ArrowRight' ? 1 : items.length - 1)) % items.length;
+      onPick(items[j][0]);
+      btns[j].focus();
+    } }));
+  node.append(el('span', { class: 'seg-k dim', text: label.toLowerCase() }), ...btns);
+  return { node, paint: (cur) => btns.forEach((b, i) => b.setAttribute('aria-pressed', items[i][0] === cur ? 'true' : 'false')) };
+}
+
 function settingsNdPaintAudit(nu) {
   const P = settingsNdPeers;
+  const f = P.filter;
   const now = settingsNdNow();
   const minute = Math.floor(Date.now() / 60000);
-  const items = NodeView.list(P.audit, 'rows', 'audit', 'events').slice(0, 25).map((r, i) => NodeView.audit(r, i));
+  const items = NodeView.list(P.audit, 'rows', 'audit', 'events').filter((r) => NodeView.auditMatch(r, f)).slice(0, 25).map((r, i) => NodeView.audit(r, i));
+  const active = NodeView.auditActive(f);
+  nu.auditBar.classList.toggle('hidden', !active && !P.seen.actions.size);
+  nu.fDir.paint(f.direction);
+  nu.fFail.paint(f.failures ? 'fail' : '');
+  settingsNdSelect(nu.fNode, [['', 'All nodes'], ...NodeView.auditChoices(P.seen.nodes, f.node, (v) => v)], f.node);
+  settingsNdSelect(nu.fAction, [['', 'All actions'], ...NodeView.auditChoices(P.seen.actions, f.action, (v) => NodeView.auditWord(v, true))], f.action);
+  nu.fClear.classList.toggle('hidden', !active);
   settingsNdPatch(nu.auditList, items, (a) => a.key, (a) => JSON.stringify([a, minute]), (a) => NodeView.auditRow(a, now));
-  settingsNdEmpty(nu.auditEmpty, !items.length && P.audit !== null, 'Nothing yet. Making a code, pairing, rotating and removing show here.');
+  settingsNdEmpty(nu.auditEmpty, !items.length && P.audit !== null,
+    active ? 'No activity matches these filters. Press Clear filters to see all of it.' : 'Nothing yet. Making a code, pairing, rotating and removing show here.');
 }
 
 /* The line under a Tailscale that cannot be read, chosen from the words of the board's own reason (app/nodes_discovery.py read_tailscale; the reason already names the
@@ -847,6 +916,15 @@ function settingsNdUi() {
     auditList: el('div', { class: 'nd-list' }),
     auditEmpty: el('div', { class: 'dim nd-pempty hidden' }),
   };
+  ui.fDir = settingsNdSeg('Direction', [['', 'All', 'Every row'], ['out', 'Sent', 'What this board asked other nodes to do'], ['in', 'Received', 'What other nodes asked this board']],
+    (v) => settingsNdFilter({ direction: v }));
+  ui.fFail = settingsNdSeg('Result', [['', 'All', 'Every row'], ['fail', 'Failed', 'Only rows that did not end well: failed or refused']], (v) => settingsNdFilter({ failures: v === 'fail' }));
+  ui.fNode = el('select', { class: 'nd-fsel', 'aria-label': 'Node', onchange: () => settingsNdFilter({ node: ui.fNode.value }) });
+  ui.fAction = el('select', { class: 'nd-fsel', 'aria-label': 'Action', onchange: () => settingsNdFilter({ action: ui.fAction.value }) });
+  ui.fClear = el('button', { class: 'minimal hidden', type: 'button', title: 'Show all the activity again', text: 'Clear filters', onclick: () => settingsNdFilter(null) });
+  ui.auditBar = el('div', { class: 'nd-filter hidden', role: 'group', 'aria-label': 'Filter the activity' }, ui.fDir.node, ui.fFail.node,
+    el('label', { class: 'nd-flabel' }, el('span', { class: 'seg-k dim', text: 'node' }), ui.fNode),
+    el('label', { class: 'nd-flabel' }, el('span', { class: 'seg-k dim', text: 'action' }), ui.fAction), ui.fClear);
   ui.refresh = el('button', { class: 'minimal', type: 'button', title: 'Look at the tailnet again now', 'aria-busy': 'false', text: 'Refresh', onclick: () => settingsNdLoad(true) });
   ui.addBtn = el('button', { type: 'button', title: 'Pair with another board using its code', text: 'Add node' });
   ui.addBtn.addEventListener('click', () => settingsNdAddSheet(ui.addBtn, ''));
@@ -864,7 +942,7 @@ function settingsNdUi() {
     el('div', { class: 'dim set-note', text: 'Nodes that hold a token for this board, and what each may do. Revoke cuts one off at once.' }),
     ui.inList, ui.inEmpty,
     el('div', { class: 'nd-sec-head' }, settingsHead('Activity'), ui.reload),
-    ui.auditList, ui.auditEmpty);
+    ui.auditBar, ui.auditList, ui.auditEmpty);
   settingsNd.ui = ui;
   return ui;
 }
@@ -920,6 +998,9 @@ function settingsNdDispose() {
   P.seq++;
   P.busy = false;
   P.nodes = P.pairs = P.audit = null;
+  P.filter = NodeView.auditFilter();
+  P.auditSeq++;
+  P.seen = { nodes: new Set(), actions: new Set() };
   P.err = '';
   P.at = 0;
   P.now = null;
