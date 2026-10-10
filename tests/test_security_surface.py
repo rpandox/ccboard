@@ -9,9 +9,10 @@
    token right and wrong, a clone URL carrying a password) under DEBUG capture; no token, digest, password or login may appear.
 
 Kinds: identity (the Tailscale login on CCBOARD_ALLOWED_USERS), identity+csrf (that and X-CCBoard: 1), hook-token (the 0600
-<data dir>/hook-token only), identity+device-token (/mcp, issue #13), hub-token|identity (/api/node/summary). Besides these, the
+<data dir>/hook-token only), identity+device-token (/mcp, issue #13), hub-token|identity (/api/node/summary), none (/api/node/hello,
+issue #133: exactly {app, api, node_id}, rate limited; nothing else under /api/node answers without auth). Besides these, the
 hook token also opens every other /api/* route without identity or X-CCBoard (local automation; accepted, see the report, F-A2).
-No route answers without auth except /healthz, which is answered by the middleware itself and is not in app.routes.
+No route answers without auth except /healthz, which is answered by the middleware itself and is not in app.routes, and /api/node/hello.
 Temp dirs and fakes only (tests/conftest.py); nothing here starts tmux, git over the network, claude or codex.
 """
 from __future__ import annotations
@@ -144,6 +145,8 @@ EXPECTED = {
     ("POST", "/api/backup/run"): "identity+csrf",
     ("GET", "/api/health"): "identity",
     ("GET", "/api/node/summary"): "hub-token|identity",
+    ("GET", "/api/node/hello"): "none",         # the one route that answers with no identity (issue #133): three fixed keys, 30 per minute per source
+    ("GET", "/api/node"): "identity",            # the node card; a paired node's token will open it too (issue #135)
     ("GET", "/api/search"): "identity",
     ("POST", "/api/cost/refresh"): "identity+csrf",
     ("POST", "/api/usage/rate-limit/clear"): "identity+csrf",
@@ -201,7 +204,7 @@ def test_route_table_is_complete():
 def test_kinds_follow_the_method():
     """A non-GET route a person calls must be identity+csrf; only the token routes are exempt, and each is named."""
     for (method, path), kind in EXPECTED.items():
-        if kind in ("hook-token", "identity+device-token", "hub-token|identity"):
+        if kind in ("hook-token", "identity+device-token", "hub-token|identity", "none"):
             continue
         assert kind == ("identity" if method == "GET" else "identity+csrf"), (method, path, kind)
 
@@ -217,6 +220,9 @@ def test_every_route_refuses_a_request_without_identity(lite_client, method, pat
     r = send(lite_client, method, path)
     if kind == "identity+device-token":
         assert r.status_code == 404                  # off by default: the endpoint does not advertise itself
+        return
+    if kind == "none":
+        assert r.status_code == 200 and set(r.json()) == {"app", "api", "node_id"}, (method, path)
         return
     assert r.status_code == 403, (method, path, r.status_code)
     want = "bad hook token" if kind == "hook-token" else NO_ID

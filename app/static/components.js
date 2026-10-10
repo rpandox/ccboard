@@ -1711,7 +1711,8 @@ const QUICK_LINE_MAX = 200;
 const QUICK_HOLD_MS = 500;
 let quickEditing = null;                                             // the editor that is open, if any (a second long-press must not stack another)
 
-function quickKey(tmux) { return 'ccboard:quick:' + tmux; }
+/* A tmux name (this board's: the key it always had) or a roster row / ref: a session of another node keeps its own list, 'ccboard:quick:<handle>/<tmux>' (nodes.js Ref.storeKey). */
+function quickKey(tmux) { return tmux !== null && typeof tmux === 'object' && typeof Ref !== 'undefined' ? Ref.storeKey('ccboard:quick:', tmux) : 'ccboard:quick:' + tmux; }
 
 function quickClean(list) {
   const out = [];

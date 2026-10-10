@@ -80,7 +80,7 @@ const SHELL_STATE_RANK = { waiting: 0, errored: 1, working: 2, idle: 3, done: 4 
 
 Shell.sessionItem = function (s, repo) {
   const t = Math.max((s.state_at ? Date.parse(s.state_at) / 1000 : 0) || 0, s.created || 0);
-  return { key: 's:' + s.tmux, kind: 'sess', tmux: s.tmux, name: s.name, repo, state: s.state || 'unknown', agent: sessionAgent(s), needs: !!s.needs_attention, at: t };
+  return { key: 's:' + Ref.key(s), kind: 'sess', tmux: s.tmux, node: Ref.nodeOf(s), name: s.name, repo, state: s.state || 'unknown', agent: sessionAgent(s), needs: !!s.needs_attention, at: t };
 };
 
 Shell.model = function (st) {
@@ -613,8 +613,9 @@ Shell.patchKid = function (node, k) {
   node.setAttribute('data-key', k.key);
   setText(r.name, k.name);
   if (k.kind === 'repo') { node.setAttribute('href', Shell.hash('project', { project: k.project, repo: k.name })); return; }
-  node.setAttribute('href', Shell.hash('session', { tmux: k.tmux }));
+  node.setAttribute('href', k.node ? (Ref.hash(k) || '#/') : Shell.hash('session', { tmux: k.tmux }));      // a session of another node: #/n/<handle>/s/<tmux> (nodes.js); this board's keep #/s/<tmux>
   node.setAttribute('data-tmux', k.tmux);                                          // the drop target's session (dnd.js)
+  if (k.node) node.setAttribute('data-node', k.node); else node.removeAttribute('data-node');     // with data-tmux it is the row's Ref.key: the same name on two nodes is two targets
   node.classList.toggle('attn', k.needs);
   if (r.state !== k.state || r.agent !== k.agent) {
     r.state = k.state; r.agent = k.agent;
@@ -823,6 +824,7 @@ Shell.crumbList = function (r) {
     const parts = String(p.tmux || '').split('--');
     return parts.length === 3 ? [{ text: parts[0], href: Shell.hash('project', { project: parts[0] }) }, { text: parts[1] }, { text: parts[2] }] : [{ text: p.tmux }];
   }
+  if (r.id === 'node' || r.id === 'node-session' || r.id === 'node-task') return [{ text: p.node }].concat(p.tmux ? [{ text: p.tmux }] : (p.id ? [{ text: 'task ' + p.id }] : []));
   if (r.id === 'memory' && p.project) return [{ text: 'Memory', href: '#/memory' }, { text: p.project }];
   if (r.id === 'quad' && r.query && typeof r.query.p === 'string' && /^[A-Za-z0-9_-]+$/.test(r.query.p)) return [{ text: 'Quad · ' + r.query.p }];
   return [{ text: Shell.CRUMB_NAMES[r.id] || r.id }];
@@ -1124,7 +1126,7 @@ Shell.dockPick = function (st) {
   if (!st) return '';
   const m = Shell.model(st);
   const all = [];
-  for (const p of [...m.main, ...m.older]) for (const k of p.kids) if (k.kind === 'sess' && k.state !== 'ended') all.push(k);
+  for (const p of [...m.main, ...m.older]) for (const k of p.kids) if (k.kind === 'sess' && k.state !== 'ended' && !k.node) all.push(k);      // the dock shows this board's terminals only
   all.sort((a, b) => ((a.needs ? 0 : 1) - (b.needs ? 0 : 1)) || ((SHELL_STATE_RANK[a.state] ?? 5) - (SHELL_STATE_RANK[b.state] ?? 5)) || (b.at - a.at) || a.tmux.localeCompare(b.tmux));
   return all.length ? all[0].tmux : '';
 };
@@ -1132,7 +1134,7 @@ Shell.dockPick = function (st) {
 /* The session's row in a state payload, or null. */
 Shell.dockRow = function (st, tmux) {
   if (!st || typeof rosterSessions !== 'function') return null;
-  return rosterSessions(st).find((s) => s.tmux === tmux) || null;
+  return rosterSessions(st).find((s) => s.tmux === tmux && Ref.nodeOf(s) === null) || null;      // the same name on another node is not this terminal
 };
 
 /* Paint the open pane from the state (called by renderShell on every render). */

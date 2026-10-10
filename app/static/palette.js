@@ -62,7 +62,12 @@ Palette.where = function (s) {
   return s.project ? `${s.project}/${s.repo || '?'}` : String(s.repo || '');
 };
 
-Palette.sessionHash = function (tmux) { return typeof sessionHash === 'function' ? sessionHash(tmux) : '#/s/' + tmux; };
+/* The address of a session: a tmux name or a roster row. A row of another node gets #/n/<handle>/s/<tmux> (nodes.js); this board's keep #/s/<tmux>. */
+Palette.sessionHash = function (x) {
+  if (x && typeof x === 'object' && Ref.nodeOf(x) !== null) return Ref.hash(x) || '#/';
+  const tmux = x && typeof x === 'object' ? x.tmux : x;
+  return typeof sessionHash === 'function' ? sessionHash(tmux) : '#/s/' + tmux;
+};
 
 Palette.nudgeable = function (s) {
   if (typeof sessionNudgeable === 'function') return sessionNudgeable(s);
@@ -134,7 +139,7 @@ Palette.context = function () {
   const P = Palette.pages();
   const sessions = P ? P.order() : [];
   const t = P ? P.target() : null;
-  return { sessions, target: t ? (sessions.find((x) => x.tmux === t) || null) : null, targetTmux: t || null, box: P && typeof P.sendBox === 'function' ? P.sendBox() : null,
+  return { sessions, target: t ? (sessions.find((x) => Ref.key(x) === t) || null) : null, targetTmux: t || null, box: P && typeof P.sendBox === 'function' ? P.sendBox() : null,
     skills: Palette.skills.list, composer: Palette.composer() };
 };
 
@@ -290,8 +295,8 @@ Palette.catalog = function (ctx, query) {
     const glyph = stateGlyph(st);
     glyph.setAttribute('aria-hidden', 'true');
     glyph.removeAttribute('title');
-    return { id: 's:' + s.tmux, label: s.name || s.tmux, hint: `${Palette.where(s)} · ${GLYPH_LABEL[st]}`, kbd: i < 9 ? Palette.modLabel() + (i + 1) : '', glyph,
-      keywords: `${s.project || ''} ${s.repo || ''} ${s.tmux}`, run: () => { close(); Palette.go(Palette.sessionHash(s.tmux)); } };
+    return { id: 's:' + Ref.key(s), label: s.name || s.tmux, hint: `${Palette.where(s)} · ${GLYPH_LABEL[st]}`, kbd: i < 9 ? Palette.modLabel() + (i + 1) : '', glyph,
+      keywords: `${s.project || ''} ${s.repo || ''} ${s.tmux}${Ref.nodeOf(s) ? ' ' + Ref.nodeOf(s) : ''}`, run: () => { close(); Palette.go(Palette.sessionHash(s)); } };
   });
   groups.push({ id: 'sessions', title: 'Sessions', items: sessions, limit: query ? Palette.PER_GROUP : Palette.SESSIONS_SHOWN });
 
@@ -323,7 +328,7 @@ Palette.catalog = function (ctx, query) {
   const t = ctx.target;
   if (t && Palette.nudgeable(t)) {
     const name = t.name || t.tmux;
-    const nudges = quickLoad(t.tmux, sessionAgent(t));                  // #69: the session's quick replies (components.js), its agent's defaults until edited
+    const nudges = quickLoad(t, sessionAgent(t));                  // #69: the session's quick replies (components.js), its agent's defaults until edited
     groups.push({ id: 'nudges', title: `Nudge · ${name}`, items: nudges.map((text) => ({ id: 'n:' + text, label: text, hint: 'typed into ' + name, run: () => { close(); Palette.send(t.tmux, text, name); } })) });
     groups.push({ id: 'controls', title: `Controls · ${name}`, items: Palette.controlsFor(t).map((c) => ({ id: 'c:' + c.text, label: c.label, hint: c.label === c.text ? 'typed into ' + name : `${c.text} · typed into ${name}`, keywords: c.text,
       run: () => { close(); Palette.command(t.tmux, c.key, name); } })) });
@@ -390,14 +395,14 @@ Palette.groups = function (ctx, query, moreOpen, skillsOpen) {
 
 /* send mode: the sessions that can take text, the peeked or selected one first */
 Palette.sendGroups = function (ctx) {
-  const list = ctx.sessions.filter((s) => Palette.nudgeable(s));
-  list.sort((a, b) => (b.tmux === ctx.targetTmux ? 1 : 0) - (a.tmux === ctx.targetTmux ? 1 : 0));
+  const list = ctx.sessions.filter((s) => Palette.nudgeable(s) && Ref.nodeOf(s) === null);      // text goes to this board's sessions only until the relay phase
+  list.sort((a, b) => (Ref.key(b) === ctx.targetTmux ? 1 : 0) - (Ref.key(a) === ctx.targetTmux ? 1 : 0));
   const items = list.map((s) => {
     const st = Palette.stateOf(s);
     const glyph = stateGlyph(st);
     glyph.setAttribute('aria-hidden', 'true');
     glyph.removeAttribute('title');
-    return { id: 'send:' + s.tmux, label: s.name || s.tmux, hint: `${Palette.where(s)} · ${GLYPH_LABEL[st]}`, glyph, session: s, run: (e) => Palette.sendShared(s, e) };
+    return { id: 'send:' + Ref.key(s), label: s.name || s.tmux, hint: `${Palette.where(s)} · ${GLYPH_LABEL[st]}`, glyph, session: s, run: (e) => Palette.sendShared(s, e) };
   });
   return items.length ? [{ id: 'send', title: 'Send to session', items }] : [];
 };
@@ -406,6 +411,7 @@ Palette.sendShared = function (s, e) {
   const u = Palette.ui;
   const text = u && u.input ? u.input.value.trim() : '';
   if (!text) { Palette.say('Nothing to send.', 'warn'); return; }
+  if (Ref.nodeOf(s) !== null) { Palette.say('That session is on another node: sending to it arrives with the relay.', 'warn'); return; }      // Palette.send posts to this board by tmux name
   Palette.close();
   Palette.send(s.tmux, text, s.name || s.tmux, !(e && e.shiftKey));
 };

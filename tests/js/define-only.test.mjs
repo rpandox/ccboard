@@ -37,3 +37,9 @@ for (const file of ['core.js', 'components.js', 'termkit.js', 'pages/widgets.js'
     if (file !== 'core.js') w.load(file);
   });
 }
+
+test('nodes.js defines only: makeWorld runs it first, inside the hostile world, and the Ref helpers are there', () => {
+  const w = hostileWorld();                                // throws if nodes.js touched the DOM, storage, the network, a listener or a timer at load
+  assert.equal(w.run('typeof Ref'), 'object');
+  assert.equal(w.run("Ref.key({ tmux: 'a--b--c' })"), 'a--b--c');
+});

@@ -153,7 +153,7 @@ def test_script_order_core_first_main_last():
     from tests.test_static import SCRIPT_ORDER
     idx = _scripts("index.html")
     assert idx[0] == "/static/core.js" and idx[-1] == "/static/main.js", idx
-    assert idx[:3] == ["/static/core.js", "/static/components.js", "/static/keymap.js"], idx
+    assert idx[:4] == ["/static/core.js", "/static/nodes.js", "/static/components.js", "/static/keymap.js"], idx       # nodes.js (Ref, definition-only; issue #137) right after core.js
     assert idx.index("/static/router.js") < idx.index("/static/pages/home.js") < idx.index("/static/main.js"), idx
     assert idx.index("/static/pages/inbox.js") + 1 == idx.index("/static/pages/widgets.js") < idx.index("/static/pages/tasks.js"), \
         "pages/widgets.js (Widgets, definition-only) loads right after pages/inbox.js"

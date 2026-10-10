@@ -171,6 +171,8 @@ def test_secure_write_keeps_the_old_write_atomic_mode_and_content(tmp_path):
 @pytest.mark.parametrize("system,reason,drvfs", [("macos", MAC_REASON, False), ("windows", WIN_REASON, False), ("linux", MODES_REASON, True)])
 def test_the_409_and_the_view_carry_the_per_system_reason(home, lite_client, monkeypatch, system, reason, drvfs):
     set_system(monkeypatch, system, drvfs=drvfs)
+    from app import nodes
+    nodes.node_id()            # the board writes its node-id once at start (#133); the snapshot is of what these requests change
     before = (tree(home.live), tree(home.data))
     r = lite_client.post("/api/accounts/login", headers=H, json={})
     assert r.status_code == 409 and r.json() == {"detail": reason, "error": reason}

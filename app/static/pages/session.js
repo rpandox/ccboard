@@ -7,11 +7,12 @@
    is the shared sessionCard from pages/agents.js. Closing goes back in history when the app itself opened the peek, else home. */
 'use strict';
 
-const sessionPeek = { tmux: null, surface: null, parts: null, pageRoot: null, token: 0, row: null };
+const sessionPeek = { tmux: null, node: null, surface: null, parts: null, pageRoot: null, token: 0, row: null };
 
-function peekLabel(tmux) {
+function peekLabel(tmux, node) {
   const p = String(tmux).split('--');
-  return p.length === 3 ? `${p[0]}/${p[1] === 'root' ? 'project folder' : p[1]} · ${p[2]}` : String(tmux);
+  const base = p.length === 3 ? `${p[0]}/${p[1] === 'root' ? 'project folder' : p[1]} · ${p[2]}` : String(tmux);
+  return node ? base + ' · on ' + node : base;
 }
 
 function peekSurface() {
@@ -30,6 +31,7 @@ async function peekSend(input) {
   const text = String(input.value || '').replace(/\r\n?/g, '\n');
   const tmux = sessionPeek.tmux;
   if (!text.trim() || !tmux) return;
+  if (sessionPeek.node) { pageToast('This session is on another node: sending to it arrives with the relay.', 'warn'); return; }      // the keys route below is this board's
   try {
     await api('POST', `/api/sessions/${encodeURIComponent(tmux)}/keys`, { text, enter: true });
     input.value = '';
@@ -42,21 +44,22 @@ async function peekSend(input) {
 /* The nudge chips of the peek's card come from the same list as the terminal page's quick replies (components.js quickLoad, localStorage
    ccboard:quick:<tmux>; the agent defaults until edited). A hold on a chip or the pencil chip opens the <dialog> editor (quickReplyEditor).
    The chips div itself stays the card's own: agents.js ccPatch toggles its `hidden` class with the session's state. */
-function peekChips(card, tmux) {
+function peekChips(card, tmux, node) {
   const chips = card && typeof card.querySelector === 'function' ? card.querySelector('.chips') : null;
   if (!chips || typeof quickLoad !== 'function') return;
-  const target = () => sessionPeek.row || { tmux, name: typeof sessionNameOf === 'function' ? sessionNameOf(tmux) : tmux };
+  const target = () => sessionPeek.row || { tmux, node: Ref.nodeOf(node), name: typeof sessionNameOf === 'function' ? sessionNameOf(tmux) : tmux };
   const ag = () => sessionAgent(target());                            // #69: the session's agent picks the default list
-  const edit = () => quickReplyEditor({ items: quickLoad(tmux, ag()), defaults: quickDefaults(ag()), onSave: (items) => { quickSave(tmux, items, ag()); fill(); } });
+  const who = { tmux, node: Ref.nodeOf(node) };                       // the list's key: ccboard:quick:<tmux> here, ccboard:quick:<handle>/<tmux> for a session of another node (Ref.storeKey)
+  const edit = () => quickReplyEditor({ items: quickLoad(who, ag()), defaults: quickDefaults(ag()), onSave: (items) => { quickSave(who, items, ag()); fill(); } });
   function fill() {
     chips.textContent = '';
-    for (const text of quickLoad(tmux, ag())) chips.append(quickChip(text, { cls: 'chip-btn', onSend: (b) => sessionNudge(target(), text, b), onEdit: edit }));
+    for (const text of quickLoad(who, ag())) chips.append(quickChip(text, { cls: 'chip-btn', onSend: (b) => sessionNudge(target(), text, b), onEdit: edit }));
     chips.append(el('button', { class: 'icon minimal qr-edit', type: 'button', title: 'Edit quick replies', 'aria-label': 'Edit quick replies', onclick: edit }, ic('edit')));
   }
   fill();
 }
 
-function peekBuild(tmux) {
+function peekBuild(tmux, node) {
   const title = el('span', { class: 'peek-title' });
   const head = el('div', { class: 'peek-head' }, title,
     el('button', { class: 'minimal small', type: 'button', 'aria-label': 'Close', title: 'Close', onclick: peekClose }, ic('cross')));
@@ -67,7 +70,7 @@ function peekBuild(tmux) {
   input.setAttribute('title', `send to the session: ${hint}`);
   const form = el('form', { class: 'peek-send', onsubmit: (e) => { e.preventDefault(); peekSend(input); } },
     input, el('button', { class: 'primary small', type: 'submit', text: 'Send' }));      // tinted until the box has text (style.css, .has-text on the form)
-  const root = el('div', { class: 'peek', 'data-tmux': tmux }, head, host, gone, form);
+  const root = el('div', { class: 'peek', 'data-tmux': tmux, 'data-node': node || null }, head, host, gone, form);
   return { root, head, title, host, gone, input, card: null };
 }
 
@@ -81,14 +84,15 @@ function peekClearSurface(surface) {
 }
 
 /* Build the panel for `tmux` and put it on its surface, replacing whatever the peek showed before. */
-function peekShow(tmux) {
+function peekShow(tmux, node) {
   sessionPeek.token += 1;                                             // a close event of the previous panel is stale from here on
   const token = sessionPeek.token;
   const prev = sessionPeek.surface;
   const surface = peekSurface();
-  const parts = peekBuild(tmux);
-  const label = peekLabel(tmux);
+  const parts = peekBuild(tmux, node);
+  const label = peekLabel(tmux, node);
   sessionPeek.tmux = tmux;
+  sessionPeek.node = Ref.nodeOf(node);
   sessionPeek.parts = parts;
   sessionPeek.surface = surface;
   parts.head.classList.toggle('hidden', surface === 'sheet');         // the sheet has its own title and close button
@@ -110,11 +114,11 @@ function peekShow(tmux) {
 function peekUpdate(st) {
   const p = sessionPeek.parts;
   if (!p || !st) return;
-  if (peekSurface() !== sessionPeek.surface) { peekShow(sessionPeek.tmux); return peekUpdate(st); }   // the window crossed 1024 px
-  const s = rosterSessions(st).find((x) => x.tmux === sessionPeek.tmux);
+  if (peekSurface() !== sessionPeek.surface) { peekShow(sessionPeek.tmux, sessionPeek.node); return peekUpdate(st); }   // the window crossed 1024 px
+  const s = rosterSessions(st).find((x) => Ref.key(x) === Ref.key({ tmux: sessionPeek.tmux, node: sessionPeek.node }));
   sessionPeek.row = s || null;
   if (s) {
-    if (!p.card) { p.card = sessionCard(s, { peek: true, perm: true, showProject: true, link: false }); p.host.append(p.card); peekChips(p.card, sessionPeek.tmux); }
+    if (!p.card) { p.card = sessionCard(s, { peek: true, perm: true, showProject: true, link: false }); p.host.append(p.card); peekChips(p.card, sessionPeek.tmux, sessionPeek.node); }
     else p.card.ccPatch(s);
   } else if (p.card) { p.card.remove(); p.card = null; }
   p.gone.classList.toggle('hidden', !!s);
@@ -122,17 +126,17 @@ function peekUpdate(st) {
 
 registerPage('session', {
   overlay: true,                                                      // keeps the page it opened from mounted; lives in #dock or the sheet
-  title: (r) => peekLabel((r && r.params && r.params.tmux) || ''),
+  title: (r) => peekLabel((r && r.params && r.params.tmux) || '', r && r.params && r.params.node),
   noFocus: true,                                                      // the sheet focuses itself; the page must not pull focus away
   mount(root, route) {
     sessionPeek.pageRoot = root;
-    peekShow(route.params.tmux);
+    peekShow(route.params.tmux, route.params.node);
     startAgeTicker();
   },
   update(st) { peekUpdate(st); },
   onRoute(route) {
     if (!sessionPeek.parts) return;
-    peekShow(route.params.tmux);
+    peekShow(route.params.tmux, route.params.node);
     peekUpdate(typeof state !== 'undefined' ? state : null);
   },
   unmount() {
@@ -141,6 +145,7 @@ registerPage('session', {
     sessionPeek.parts = null;
     sessionPeek.surface = null;
     sessionPeek.tmux = null;
+    sessionPeek.node = null;
     sessionPeek.row = null;
     sessionPeek.pageRoot = null;
     stopAgeTicker();

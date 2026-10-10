@@ -152,7 +152,7 @@ def dump(db):
 
 NEW_SESSION_COLS = {"agent", "cwd", "opts", "flags", "ended_reason"}
 NEW_TASK_COLS = {"agent", "mode", "phase", "session_row", "auto_close", "parent_id", "chain_id", "spec", "result",
-                 "result_at", "assigned_at", "done_at", "issue_number", "issue_url", "issue_commented_at"}
+                 "result_at", "assigned_at", "done_at", "issue_number", "issue_url", "issue_commented_at", "origin"}
 
 
 @pytest.fixture
@@ -195,7 +195,7 @@ def test_old_db_is_upgraded_in_place(tmp_path, with_migrations):
         assert task["worktree"] == "/p/shop/api/.claude/worktrees/fix" and task["tmux_name"] == "shop--api--t-fix"
         assert (task["agent"], task["mode"], task["phase"], task["auto_close"]) == ("claude", "worktree", "running", 0)
         for k in ("session_row", "parent_id", "chain_id", "spec", "result", "result_at", "assigned_at", "done_at",
-                  "issue_number", "issue_url", "issue_commented_at"):
+                  "issue_number", "issue_url", "issue_commented_at", "origin"):
             assert task[k] is None, k
         assert db.jobs()[0]["agent"] == "claude"
         assert db.conn.execute("SELECT agent FROM events").fetchone()["agent"] is None
@@ -511,3 +511,21 @@ def test_add_event_skips_noise_and_caps(db, monkeypatch):
     msgs = [r[0] for r in db.conn.execute("SELECT message FROM events ORDER BY id")]
     assert msgs == [f"m{i}" for i in range(7, 12)]                                         # exactly the newest EVENTS_CAP rows
     assert [e["message"] for e in db.recent_events(2)] == ["m11", "m10"]
+
+
+# ---- nodes epic P1 (issue #137): tasks.origin ------------------------------------------------------------------------
+def test_tasks_origin_is_a_nullable_text_column_for_work_asked_by_another_board(tmp_path):
+    path = tmp_path / "old.db"
+    make_old_db(path)
+    db = DB(path)
+    try:
+        assert columns(db.conn, "tasks")["origin"] == ("TEXT", 0, None)                  # nullable, no default: the previous image's INSERTs still work
+        assert db.task_get(1)["origin"] is None                                           # an old row
+        local = db.task_add(project="shop", repo="api", slug="a", title="a", prompt="p")
+        assert db.task_get(local)["origin"] is None                                       # a local request stays null
+        remote = db.task_add(project="shop", repo="api", slug="b", title="b", prompt="p", origin={"node": "n_0123456789abcdef", "user": "alice"})
+        assert json.loads(db.task_get(remote)["origin"]) == {"node": "n_0123456789abcdef", "user": "alice"}
+        db.task_update(remote, origin=None)
+        assert db.task_get(remote)["origin"] is None
+    finally:
+        db.conn.close()

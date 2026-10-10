@@ -3078,3 +3078,29 @@ test('the project/repo of a tile header is .pend (hidden by CSS) until TermKit.f
   assert.equal(fresh.classList.contains('pend'), false, 'the first measurement shows it');
   assert.equal(where.classList.contains('pend') || where.classList.contains('qt-where'), true);
 });
+
+// ---------------------------------------------------------------- issue #137: one name on two nodes is two tiles
+
+test('the same session name on this board and on a node: two tiles, the node\'s never opens a terminal or a drop on this board\'s session, and the store keeps both shapes', () => {
+  const st = fixtureState();
+  const twin = { ...st.projects.flatMap((p) => [p.root, ...p.repos]).filter(Boolean).flatMap((r) => r.sessions).find((s) => s.tmux === S1), node: 'box' };
+  st.projects.find((p) => p.name === 'ccboard').repos.find((r) => r.name === 'ccboard').sessions.push(twin);
+  const { w } = quadWorld({ hash: '#/quad', state: st, storage: { 'ccboard:quad:all': { layout: 2, slots: pad(S1, { node: 'box', tmux: S1 }), modes: { ['box/' + S1]: 'ro' }, zoom: null } } });
+  const all = page(w).querySelectorAll('.qtile');
+  assert.equal(all.length, 2, 'both tiles exist');
+  const [here, there] = ['', 'box'].map((n) => all.find((t) => (t.getAttribute('data-node') || '') === n));
+  assert.ok(here && there);
+  assert.equal(here.getAttribute('data-tmux'), S1);
+  assert.equal(there.getAttribute('data-tmux'), S1);
+  assert.equal(here.getAttribute('data-node'), null, 'this board\'s tile carries no node: a drop on it is what it always was');
+  assert.equal(there.getAttribute('data-node'), 'box', 'the other tile is another drop target');
+  assert.ok(here.querySelector('iframe'), 'this board\'s tile has its terminal');
+  assert.equal(there.querySelector('iframe'), null, 'the node\'s tile never opens a terminal by a name it only shares');
+  assert.match(text(there), /runs on another node/);
+  assert.equal(frameOf(w, S1).src, GRID(S1));
+  // the store: this board's slot is still a string, the node's is {node, tmux}, and the node's mode is kept under its key
+  const saved = savedOf(w);
+  assert.equal(saved.slots[0], S1);
+  assert.deepEqual(saved.slots[1], { node: 'box', tmux: S1 });
+  assert.equal(saved.modes['box/' + S1], 'ro');
+});

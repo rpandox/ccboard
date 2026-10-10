@@ -122,18 +122,27 @@ Quad.parts = function (tmux) {
 
 /* 'phasezero/website · s1'; the project folder is just the project ('phasezero · s1'). */
 Quad.label = function (tmux) {
+  const k = Ref.splitKey(tmux);
+  if (k && k.node) return `${Quad.label(k.tmux)} · on ${k.node}`;       // a slot key of another node: '<handle>/<name>'
   const [p, r, n] = Quad.parts(tmux);
   if (!r) return String(tmux || '');
   return `${p}${r === 'root' ? '' : '/' + r} · ${n}`;
 };
 
-/* Quad.SLOTS strings: a valid, not repeated tmux name or ''. */
+/* Is this a slot key (nodes.js Ref.key): a tmux name of this board, or '<handle>/<tmux name>' for a session of another node? */
+Quad.keyOk = function (k) {
+  const p = Ref.splitKey(k);
+  return !!p && Quad.NAME_RE.test(p.tmux);
+};
+
+/* Quad.SLOTS slot keys: a valid, not repeated key or ''. A slot is a Ref.key in memory and in the address (?s=): the bare name for this board's session, '<handle>/<name>'
+   for another node's. Stored it is the bare name too, or {node, tmux} (Ref.slotValue / slotKey); an entry in neither shape is an empty slot. */
 Quad.cleanSlots = function (list) {
   const out = [];
   const seen = new Set();
   for (let i = 0; i < Quad.SLOTS; i++) {
-    const t = Array.isArray(list) && typeof list[i] === 'string' ? list[i] : '';
-    if (t && Quad.NAME_RE.test(t) && !seen.has(t)) { seen.add(t); out.push(t); } else out.push('');
+    const t = Array.isArray(list) ? Ref.slotKey(list[i]) : '';
+    if (t && Quad.keyOk(t) && !seen.has(t)) { seen.add(t); out.push(t); } else out.push('');
   }
   return out;
 };
@@ -186,9 +195,9 @@ Quad.load = function (project) {
   try { raw = JSON.parse(localStorage.getItem(Quad.storageKey(project)) || 'null'); } catch (_) { raw = null; }
   if (!raw || typeof raw !== 'object') return null;
   const modes = {};
-  if (raw.modes && typeof raw.modes === 'object') for (const [k, v] of Object.entries(raw.modes)) if (Quad.NAME_RE.test(k) && Quad.MODES.includes(v)) modes[k] = v;
+  if (raw.modes && typeof raw.modes === 'object') for (const [k, v] of Object.entries(raw.modes)) if (Quad.keyOk(k) && Quad.MODES.includes(v)) modes[k] = v;
   const composers = {};
-  if (raw.composers && typeof raw.composers === 'object') for (const [k, v] of Object.entries(raw.composers)) if (Quad.NAME_RE.test(k) && v === true) composers[k] = true;
+  if (raw.composers && typeof raw.composers === 'object') for (const [k, v] of Object.entries(raw.composers)) if (Quad.keyOk(k) && v === true) composers[k] = true;
   const zoom = Number.isInteger(raw.zoom) && raw.zoom >= 0 && raw.zoom < Quad.SLOTS ? raw.zoom : null;
   return { layout: Quad.LAYOUTS.includes(raw.layout) ? raw.layout : Quad.DEFAULT_LAYOUT, slots: Quad.cleanSlots(raw.slots), modes, zoom, composers };
 };
@@ -201,7 +210,7 @@ Quad.save = function (project, st) {
   const docked = Object.keys(st.composers || {}).filter((k) => st.composers[k] === true);
   for (const k of docked.slice(Math.max(0, docked.length - Quad.MODES_MAX))) composers[k] = true;
   const zoom = Number.isInteger(st.zoom) && st.zoom >= 0 && st.zoom < Quad.SLOTS ? st.zoom : null;
-  const value = { layout: Quad.LAYOUTS.includes(Number(st.layout)) ? Number(st.layout) : Quad.DEFAULT_LAYOUT, slots: Quad.cleanSlots(st.slots), modes, zoom, composers };
+  const value = { layout: Quad.LAYOUTS.includes(Number(st.layout)) ? Number(st.layout) : Quad.DEFAULT_LAYOUT, slots: Quad.cleanSlots(st.slots).map(Ref.slotValue), modes, zoom, composers };      // this board's slots stay bare names; another node's are {node, tmux}
   if (typeof savePrefs === 'function') savePrefs(Quad.storageKey(project), value);
   else { try { localStorage.setItem(Quad.storageKey(project), JSON.stringify(value)); } catch (_) { /* storage may be unavailable */ } }
   return value;
@@ -229,6 +238,7 @@ Quad.activity = function (s) {
   return Number.isFinite(t) ? t : (s.created || 0);
 };
 
+/* `tmux` is a slot key: a pending permission is this board's, so only a bare name (never '<handle>/<name>') can match its tmux_name. */
 Quad.perm = function (st, tmux) {
   for (const pr of ((st && st.pending_permissions) || [])) if (pr.tmux_name === tmux) return pr;
   return null;
@@ -243,7 +253,7 @@ Quad.inboxFor = function (st) {
   let hit = Quad.inboxCache.get(st);
   if (hit === undefined) {
     hit = null;
-    try { hit = { rank: new Map(Inbox.items(st).map((it, i) => [it.tmux, i])) }; } catch (_) { hit = null; }       // an inbox that throws leaves the quad on its own rule
+    try { hit = { rank: new Map(Inbox.items(st).map((it, i) => [Ref.key(it), i])) }; } catch (_) { hit = null; }       // an inbox that throws leaves the quad on its own rule
     Quad.inboxCache.set(st, hit);
   }
   return hit;
@@ -253,17 +263,17 @@ Quad.inboxFor = function (st) {
 Quad.needsYou = function (s, st) {
   if (!s) return false;
   const ib = Quad.inboxFor(st);
-  if (ib) return ib.rank.has(s.tmux);
-  return !!(Quad.perm(st, s.tmux) || s.state === 'waiting' || s.needs_attention === true);
+  if (ib) return ib.rank.has(Ref.key(s));
+  return !!(Quad.perm(st, Ref.key(s)) || s.state === 'waiting' || s.needs_attention === true);
 };
 
 /* 0 needs you (with the inbox: its order; without: 0 a permission, 1 waiting, 2 needs an ack), 3 working, 4 the rest, 5 a plain shell. */
 Quad.group = function (s, st) {
   const ib = Quad.inboxFor(st);
   if (ib) {
-    if (ib.rank.has(s.tmux)) return 0;
+    if (ib.rank.has(Ref.key(s))) return 0;
   } else {
-    if (Quad.perm(st, s.tmux)) return 0;
+    if (Quad.perm(st, Ref.key(s))) return 0;
     if (s.state === 'waiting') return 1;
     if (s.needs_attention === true) return 2;
   }
@@ -277,9 +287,9 @@ Quad.compare = function (a, b, st) {
   const gb = Quad.group(b, st);
   if (ga !== gb) return ga - gb;
   const ib = ga === 0 ? Quad.inboxFor(st) : null;
-  if (ib) return ib.rank.get(a.tmux) - ib.rank.get(b.tmux);
+  if (ib) return ib.rank.get(Ref.key(a)) - ib.rank.get(Ref.key(b));
   const d = ga <= 2 ? Quad.activity(a) - Quad.activity(b) : Quad.activity(b) - Quad.activity(a);
-  return d || String(a.tmux).localeCompare(String(b.tmux));
+  return d || Ref.key(a).localeCompare(Ref.key(b));
 };
 
 /* The sessions a tile can show (not ended), in auto-fill order; `project` limits it to one project. */
@@ -302,15 +312,15 @@ Quad.scopeOptions = function (st, current) {
 /* Does this session belong to `project`? ('' is every project.) The roster knows; a session that has gone is told by the project of its name. */
 Quad.inProject = function (st, tmux, project) {
   if (!project) return true;
-  for (const s of Quad.roster(st)) if (s.tmux === tmux) return s.project === project;
-  return Quad.parts(tmux)[0] === project;
+  for (const s of Quad.roster(st)) if (Ref.key(s) === tmux) return s.project === project;
+  return Quad.parts((Ref.splitKey(tmux) || { tmux }).tmux)[0] === project;
 };
 
 /* The tmux names that auto-fill picks for `n` tiles: opts {project, exclude: names already placed}. */
 Quad.autoFill = function (st, n, opts) {
   const o = opts || {};
   const skip = new Set(o.exclude || []);
-  return Quad.candidates(st, o.project).map((s) => s.tmux).filter((t) => !skip.has(t)).slice(0, Math.max(0, n));
+  return Quad.candidates(st, o.project).map((s) => Ref.key(s)).filter((t) => !skip.has(t)).slice(0, Math.max(0, n));
 };
 
 /* `slots` with the empty ones among the indexes `only` (default: the first n) filled: first by the live sessions that sit in the hidden slots (n and up: a smaller layout
@@ -321,7 +331,7 @@ Quad.fillSlots = function (slots, st, n, opts) {
   const out = Quad.cleanSlots(slots);
   const shown = Math.min(Math.max(0, n), Quad.SLOTS);
   const idx = (o.only || Array.from({ length: shown }, (_, i) => i)).filter((i) => i >= 0 && i < Quad.SLOTS && !out[i]);
-  const live = new Set(Quad.candidates(st, o.project).map((s) => s.tmux));
+  const live = new Set(Quad.candidates(st, o.project).map((s) => Ref.key(s)));
   const hidden = [];
   for (let i = shown; i < Quad.SLOTS; i++) if (out[i] && live.has(out[i])) hidden.push(i);
   let k = 0;
@@ -348,7 +358,7 @@ Quad.slotsState = function (o) {
   const composers = saved && saved.composers ? { ...saved.composers } : {};
   let zoom = saved && saved.zoom !== null && saved.zoom < n ? saved.zoom : null;
   if (st) {
-    const live = new Set(Quad.roster(st).map((s) => s.tmux));
+    const live = new Set(Quad.roster(st).map((s) => Ref.key(s)));
     if (!parsed.slots) slots = slots.map((t) => (t && !live.has(t) ? '' : t));
     slots = Quad.fillSlots(slots, st, n, { project: o.project || '' });
   }
@@ -436,7 +446,7 @@ Quad.shortcutOf = function (e) {
 
 /* The next session after `current` that needs you (permission first, then the longest waiting), or '' when nothing does. */
 Quad.attentionNext = function (st, project, current) {
-  const list = Quad.candidates(st, project).filter((s) => Quad.needsYou(s, st)).map((s) => s.tmux);
+  const list = Quad.candidates(st, project).filter((s) => Quad.needsYou(s, st)).map((s) => Ref.key(s));
   if (!list.length) return '';
   return list[(list.indexOf(current) + 1) % list.length];
 };
@@ -444,7 +454,7 @@ Quad.attentionNext = function (st, project, current) {
 /* Put a session into the saved slots of a scope (the first free visible slot, else the last visible one) and go to #/quad there: the dock's 'add to quad'. The layout grows
    (1, 2, 4, 6, 8, 10) rather than evict a tile, as far as this window takes tiles. */
 Quad.addToQuad = function (tmux, project) {
-  if (typeof tmux !== 'string' || !Quad.NAME_RE.test(tmux)) return false;
+  if (typeof tmux !== 'string' || !Quad.keyOk(tmux)) return false;
   const scope = project && Quad.WORD_RE.test(project) ? project : '';
   const cur = Quad.current;
   if (cur && cur.project === scope) {
@@ -616,6 +626,7 @@ Quad.mount = function (root, route) {
     tile.node.setAttribute('data-mode', tile.mode);
     patchModeButtons(tile);
     if (tile.gone) { dropTail(tile); dropFrame(tile); showNote(tile, 'This session is not running any more.'); return; }
+    if ((Ref.splitKey(tile.tmux) || {}).node) { dropTail(tile); dropFrame(tile); showNote(tile, 'This session runs on another node. Its terminal opens from that board.'); return; }      // a remote tile (a later phase) never opens a local terminal by a name it only shares
     if (tile.mode === 'tail') { dropFrame(tile); ensureTail(tile); } else { dropTail(tile); ensureFrame(tile); }
   }
 
@@ -776,7 +787,7 @@ Quad.mount = function (root, route) {
 
   /* ----- slots ----- */
   function assign(slot, tmux) {
-    if (!(slot >= 0 && slot < Quad.SLOTS) || (tmux && !Quad.NAME_RE.test(tmux))) return false;
+    if (!(slot >= 0 && slot < Quad.SLOTS) || (tmux && !Quad.keyOk(tmux))) return false;
     const j = tmux ? I.slots.indexOf(tmux) : -1;
     if (j === slot) return true;
     const old = I.slots[slot];
@@ -791,7 +802,7 @@ Quad.mount = function (root, route) {
 
   /* A session from outside (the dock, a chip): the first free visible slot, else the active tile's, else slot 0. */
   function pick(tmux) {
-    if (!Quad.NAME_RE.test(tmux)) return false;
+    if (!Quad.keyOk(tmux)) return false;
     if (I.slots.indexOf(tmux) >= 0 && I.slots.indexOf(tmux) < I.n) return focusTile(tileAt(I.slots.indexOf(tmux))) || true;
     let slot = I.slots.findIndex((t, i) => !t && i < I.n);
     if (slot < 0) { const a = I.tiles.get(I.active); slot = a ? a.slot : 0; }
@@ -877,11 +888,12 @@ Quad.mount = function (root, route) {
     tile.permNode = el('div', { class: 'qt-perm hidden' }, tile.permText, tile.permBtns);
     tile.body = el('div', { class: 'qt-body' });
     tile.dock = el('div', { class: 'qt-dock hidden' });                 // the docked composer, from 520 px (pages.css), when 'Show composer' is ticked
-    tile.node = el('article', { class: 'qtile', 'data-tmux': tmux, 'data-slot': '-1', 'data-mode': '', 'data-drop': 'session', tabindex: '-1', 'aria-label': label }, head, tile.task, tile.permNode, tile.body, tile.dock);
+    const kp = Ref.splitKey(tmux) || { node: null, tmux };               // tile key -> the name and the node a drop target needs (dnd.js): the tile key is never a name by itself
+    tile.node = el('article', { class: 'qtile', 'data-tmux': kp.tmux, 'data-node': kp.node, 'data-slot': '-1', 'data-mode': '', 'data-drop': 'session', tabindex: '-1', 'aria-label': label }, head, tile.task, tile.permNode, tile.body, tile.dock);
     tile.node.addEventListener('pointerdown', () => { touched(); setActive(tmux); }, true);
     tile.node.addEventListener('focusin', () => setActive(tmux));                // ttyd focuses its own terminal on load: that is no use of the tile
-    if (typeof Dnd !== 'undefined' && typeof Dnd.bind === 'function') Dnd.bind(tile.node, { drop: 'session', tmux });      // a backlog card dropped on the tile is handed to the session
-    else if (typeof Lazy !== 'undefined') Lazy.later('dnd', () => { if (typeof Dnd !== 'undefined') Dnd.bind(tile.node, { drop: 'session', tmux }); });     // dnd.js is lazy (lazy.js)
+    if (typeof Dnd !== 'undefined' && typeof Dnd.bind === 'function') Dnd.bind(tile.node, { drop: 'session', tmux: kp.tmux, node: kp.node });      // a backlog card dropped on the tile is handed to the session
+    else if (typeof Lazy !== 'undefined') Lazy.later('dnd', () => { if (typeof Dnd !== 'undefined') Dnd.bind(tile.node, { drop: 'session', tmux: kp.tmux, node: kp.node }); });     // dnd.js is lazy (lazy.js)
     if (typeof ResizeObserver === 'function') {
       tile.ro = new ResizeObserver((entries) => {
         const r = entries && entries[0] && entries[0].contentRect;
@@ -1273,8 +1285,8 @@ Quad.mount = function (root, route) {
     const here = new Set(visibleSlots().filter(Boolean));
     /* Swap decision (v0.5.21): this fallback menu (no TermKit kit) keeps its swap rows; the kit menu does not list them, because an empty tile's pick rows and Close tile already
        move a session between tiles in two taps. A "Swap in..." row comes back only if those prove too little. */
-    for (const s of Quad.candidates(I.st, I.project).filter((x) => !here.has(x.tmux)).slice(0, 10)) {
-      items.push({ label: `Swap in ${Quad.label(s.tmux)}`, onClick: () => assign(tile.slot, s.tmux) });
+    for (const s of Quad.candidates(I.st, I.project).filter((x) => !here.has(Ref.key(x))).slice(0, 10)) {
+      items.push({ label: `Swap in ${Quad.label(Ref.key(s))}`, onClick: () => assign(tile.slot, Ref.key(s)) });
     }
     return items;
   }
@@ -1393,8 +1405,8 @@ Quad.mount = function (root, route) {
 
   function patchEmpty(e) {
     const shown = I.slots.slice(0, I.n);                                                      // a session in a hidden slot is free for a visible tile (picking it moves it)
-    const free = Quad.candidates(I.st, I.project).filter((s) => !shown.includes(s.tmux)).slice(0, 6);
-    const sig = `${I.st ? 1 : 0}|${free.map((s) => `${s.tmux}:${s.state}`).join(',')}`;
+    const free = Quad.candidates(I.st, I.project).filter((s) => !shown.includes(Ref.key(s))).slice(0, 6);
+    const sig = `${I.st ? 1 : 0}|${free.map((s) => `${Ref.key(s)}:${s.state}`).join(',')}`;
     if (e.sig === sig) return;
     e.sig = sig;
     e.node.textContent = '';
@@ -1402,8 +1414,8 @@ Quad.mount = function (root, route) {
     if (!I.st) return;
     const list = el('div', { class: 'qe-list' });
     for (const s of free) {
-      list.append(el('button', { class: 'small qe-pick', type: 'button', 'data-tmux': s.tmux, title: Quad.label(s.tmux), onclick: () => assign(e.slot, s.tmux) },
-        stateGlyph(s.state), el('span', { class: 'qe-name', text: Quad.label(s.tmux) })));      // the full name stays in the title: the row cuts it with an ellipsis
+      list.append(el('button', { class: 'small qe-pick', type: 'button', 'data-tmux': Ref.key(s), title: Quad.label(Ref.key(s)), onclick: () => assign(e.slot, Ref.key(s)) },
+        stateGlyph(s.state), el('span', { class: 'qe-name', text: Quad.label(Ref.key(s)) })));      // the full name stays in the title: the row cuts it with an ellipsis
     }
     e.node.append(list, el('button', { class: 'small qe-new', type: 'button', title: 'start a new session for this tile', onclick: () => newSessionHere(e.slot) }, ic('plus'), 'New session'));
   }
@@ -1420,6 +1432,7 @@ Quad.mount = function (root, route) {
 
   function chipTailOn(tmux) {
     if (I.chipTails.has(tmux) || typeof Live === 'undefined' || typeof Live.subscribe !== 'function') return;
+    if ((Ref.splitKey(tmux) || {}).node) return;                       // Live streams this board's panes: a session of another node has no tail here
     const fn = (lines) => {
       if (Live.isDemo && Live.isDemo()) return;                       // the demo note is not output
       I.chipLines.set(tmux, chipLine(lines));
@@ -1441,7 +1454,7 @@ Quad.mount = function (root, route) {
   function chipNode(s) {
     const tail = el('span', { class: 'q-chip-tail' });
     const glyphs = el('span', { class: 'q-chip-glyphs' });
-    const node = el('button', { class: 'q-chip', type: 'button', role: 'tab', 'data-tmux': s.tmux, 'aria-selected': 'false', title: s.tmux, onclick: () => assign(0, s.tmux) },
+    const node = el('button', { class: 'q-chip', type: 'button', role: 'tab', 'data-tmux': Ref.key(s), 'aria-selected': 'false', title: Ref.key(s), onclick: () => assign(0, Ref.key(s)) },
       glyphs, el('span', { class: 'q-chip-text' }, el('span', { class: 'q-chip-name', text: s.name || Quad.parts(s.tmux)[2] }), tail));
     node.ccGlyphs = glyphs;
     node.ccTail = tail;
@@ -1460,7 +1473,7 @@ Quad.mount = function (root, route) {
     }
     node.classList.toggle('needs', Quad.needsYou(s, I.st));
     node.setAttribute('aria-selected', node.getAttribute('data-tmux') === I.slots[0] ? 'true' : 'false');
-    setTextIfChanged(node.ccTail, I.chipLines.get(s.tmux) || '');
+    setTextIfChanged(node.ccTail, I.chipLines.get(Ref.key(s)) || '');
   }
 
   function renderChips() {
@@ -1469,13 +1482,13 @@ Quad.mount = function (root, route) {
     if (!I.oneUp || !I.st || I.noScope) { chipTailsOff(); return; }
     const list = Quad.candidates(I.st, I.project);
     const cur = I.slots[0] ? sessionOf(I.slots[0]) : null;
-    if (cur && !list.some((s) => s.tmux === cur.tmux)) list.unshift(cur);          // an ended session that is on screen stays a chip
+    if (cur && !list.some((s) => Ref.key(s) === Ref.key(cur))) list.unshift(cur);          // an ended session that is on screen stays a chip
     const shown = list.slice(0, Quad.CHIPS_MAX);
     const order = new Set(I.chipOrder);
-    const present = new Set(shown.map((s) => s.tmux));
+    const present = new Set(shown.map((s) => Ref.key(s)));
     I.chipOrder = I.chipOrder.filter((t) => present.has(t));
-    for (const s of shown) if (!order.has(s.tmux)) I.chipOrder.push(s.tmux);        // a chip keeps its place; a new one joins at its rank
-    const byTmux = new Map(shown.map((s) => [s.tmux, s]));
+    for (const s of shown) if (!order.has(Ref.key(s))) I.chipOrder.push(Ref.key(s));        // a chip keeps its place; a new one joins at its rank
+    const byTmux = new Map(shown.map((s) => [Ref.key(s), s]));
     I.chipList.update(I.chipOrder.map((t) => byTmux.get(t)));
     chipTailsOff(present);
     for (const t of I.chipOrder) chipTailOn(t);
@@ -1626,7 +1639,7 @@ Quad.mount = function (root, route) {
     if (I.disposed) return;
     I.st = st || null;
     I.roster = Quad.roster(st);
-    I.index = new Map(I.roster.map((s) => [s.tmux, s]));
+    I.index = new Map(I.roster.map((s) => [Ref.key(s), s]));
     const first = !I.resolved && !!st;
     if (first) resolveInitial();
     if (!I.resolved) return;
@@ -1779,7 +1792,7 @@ Quad.mount = function (root, route) {
   I.noneNew = el('button', { class: 'small q-none-new hidden', type: 'button', text: 'New session', onclick: () => newSession() });
   I.none = el('div', { class: 'q-none hidden', role: 'status' }, I.noneLine, el('div', { class: 'q-none-actions' }, I.noneNew, el('a', { class: 'btn minimal small q-none-all', href: '#/quad', text: 'All projects' })));
   I.chipsHost = el('div', { class: 'q-chips hidden', role: 'tablist', 'aria-label': 'Sessions' });
-  I.chipList = makeKeyedList(I.chipsHost, { key: (s) => s.tmux, create: chipNode, patch: patchChip });
+  I.chipList = makeKeyedList(I.chipsHost, { key: (s) => Ref.key(s), create: chipNode, patch: patchChip });
   I.grid = el('div', { class: 'qgrid', 'data-layout': '1' });
   I.keysTo = el('span', { class: 'q-keys-to dim' });
   I.keysHost = el('div', { class: 'q-keys hidden' }, I.keysTo);

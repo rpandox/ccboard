@@ -1,0 +1,32 @@
+{
+  "app": "ccboard",
+  "api": 1,
+  "node_id": "ts:nDEMO1CNTRL",
+  "name": "box",
+  "url": "https://box.example.ts.net",
+  "version": "0.5.29",
+  "os": {"system": "Linux", "release": "6.8.0-demo", "tailscale_os": "linux"},
+  "runtime": "systemd",
+  "now": "2026-10-03T03:00:00.000+00:00",
+  "agents": [
+    {"id": "claude", "installed": true, "version": "2.1.288", "logged_in": true, "hooks": true, "login_problem": false},
+    {"id": "codex", "installed": true, "version": "0.160.0", "logged_in": true, "hooks": true, "login_problem": false},
+    {"id": "shell", "installed": true, "version": null, "logged_in": true, "hooks": false, "login_problem": false}
+  ],
+  "accounts": {
+    "supported": true,
+    "items": [
+      {"agent": "claude", "label": "Work", "current": true, "subscription_key": "3f9c1a7d0b25",
+       "window": {"pct": 42.0, "resets_at": 1791006000, "backoff_until": null, "known": true}, "limited": false},
+      {"agent": "claude", "label": "Personal", "current": false, "subscription_key": "a81e5c20d7f4",
+       "window": {"pct": 12.0, "resets_at": 1791012000, "backoff_until": null, "known": true}, "limited": false},
+      {"agent": "codex", "label": "Codex account", "current": true, "subscription_key": null,
+       "window": {"pct": null, "resets_at": null, "backoff_until": null, "known": false}, "limited": false}
+    ]
+  },
+  "lanes": {"cap": 3, "running": 1, "free": 2},
+  "load": {"load1": 1.32, "cores": 8, "cpu_pct": 18.4, "mem_pct": 43.1, "disk_pct": 41.2},
+  "sessions": {"live": 8, "working": 1, "needs_you": 4},
+  "capabilities": ["state", "tasks", "sessions", "stream"],
+  "tailscale": {"dns_name": "box.example.ts.net", "tags": [], "user_owned": true}
+}

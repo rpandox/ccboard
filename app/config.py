@@ -52,7 +52,7 @@ ENV_FILE_KEYS = (
     "CCBOARD_AUTO_CONTINUE", "CCBOARD_CLAUDE_MEM", "CCBOARD_MEM_PORT", "CCBOARD_MEM_HTTPS_PORT", "CCBOARD_MEM_SERVICE",
     "CCBOARD_CODEX_HOOK_TRUST", "CCBOARD_CLONE_ALLOWED_HOSTS", "CCBOARD_MCP_REMOTE", "CODEX_HOME", "CCBOARD_AUTOCLOSE_GRACE",
     "CCBOARD_CODEX_HOOKS_ASYNC", "CCBOARD_CLAUDE_ULTRACODE_FLAG", "CCBOARD_SUBAGENT_MODEL", "CCBOARD_HEADLESS_FABLE_CAP", "CCBOARD_PRICE_TABLE",
-    "CCBOARD_TAILSCALE_PLACEMENT",
+    "CCBOARD_TAILSCALE_PLACEMENT", "CCBOARD_NODE_LANES",
 )
 ENV_FILE_MAX = 1 << 20     # bytes read from the settings file
 
@@ -184,6 +184,16 @@ class Settings:
         self.auto_continue = (env.get("CCBOARD_AUTO_CONTINUE") or "1") != "0"   # type `continue` once a limit window resets (app/autoresume.py)
         self.node_name = (env.get("CCBOARD_NODE_NAME") or "").strip()
         self.hub_token = (env.get("CCBOARD_HUB_TOKEN") or "").strip()
+        # Task lanes this node advertises (issue #133): advice for routing and a warning on a hand start, never a refusal. 0 = no advisory cap.
+        # Not a whole number from 0 to 999: the default (3), and the doctor's node check says so.
+        raw_lanes = (env.get("CCBOARD_NODE_LANES") or "").strip()
+        self.node_lanes_bad = False
+        self.node_lanes = 3
+        if raw_lanes:
+            if raw_lanes.isascii() and raw_lanes.isdigit() and int(raw_lanes) <= 999:
+                self.node_lanes = int(raw_lanes)
+            else:
+                self.node_lanes_bad = True
         self.nodes_raw = env.get("CCBOARD_NODES") or ""
         # Nightly backup: restic repo ('off' disables restic; empty = local repo under the data dir), its password
         # file (written by install.sh), whether to copy unpushed work to backup branches on every repo's origin, extra paths to include.
