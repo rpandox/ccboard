@@ -176,12 +176,18 @@ def test_mint_token_replaces_the_token_and_the_old_one_stops_at_once(db, clock):
     assert nodes.verify_token(new, db=db) and nodes.verify_token(old, db=db) is None
 
 
-def test_pairing_the_same_node_again_replaces_its_older_pair(db, clock):
+def test_add_incoming_never_revokes_another_pair_and_revoke_older_pairs_replaces_only_the_older_ones(db, clock):
     node = {"id": "n_" + "a" * 16, "name": "node-a"}
     first, t1 = nodes.add_incoming(node, db=db)
     second, t2 = nodes.add_incoming(node, db=db)
+    assert nodes.verify_token(t1, db=db) and nodes.verify_token(t2, db=db), "a claim alone replaces nothing"
+    assert nodes.revoke_older_pairs(node["id"], second["peer_id"], db=db) == 1
     assert nodes.verify_token(t1, db=db) is None and nodes.verify_token(t2, db=db)["peer_id"] == second["peer_id"]
     assert [p["peer_id"] for p in nodes.peers(db)] == [second["peer_id"]]
+    assert nodes.revoke_older_pairs(node["id"], second["peer_id"], db=db) == 0 and nodes.revoke_older_pairs("", second["peer_id"], db=db) == 0
+    other, t3 = nodes.add_incoming({"id": "n_" + "c" * 16, "name": "node-c"}, db=db)
+    nodes.revoke_older_pairs(node["id"], second["peer_id"], db=db)
+    assert nodes.verify_token(t3, db=db), "another node's pair is not touched"
 
 
 def test_scopes_are_a_closed_set_in_a_fixed_order(db):
@@ -1216,6 +1222,99 @@ def test_unpair_incoming_cuts_the_pair_and_the_outgoing_pair_to_the_same_node(pa
         (inc,) = [p for p in nodes.peers() if p["direction"] == "in"]
         assert nodes.unpair_incoming(inc["peer_id"]) is True
         assert nodes.peers() == [] and nodes.unpair_incoming(inc["peer_id"]) is False and nodes.unpair_incoming("p_" + "0" * 16) is False
+
+
+def test_unpair_from_an_unverified_pair_keeps_the_outgoing_row_to_the_claimed_node_and_a_verified_one_removes_it(db):
+    out, _ = out_peer(db)                                                    # this board calls node-b (id n_bbbb...)
+    liar, _ = nodes.add_incoming({"id": out["node_id"], "name": "liar"}, callback_unverified=True, db=db)
+    assert nodes.unpair_incoming(liar["peer_id"], db=db) is True
+    assert [p["peer_id"] for p in nodes.peers(db) if p["direction"] == "out"] == [out["peer_id"]], "an unverified claim removes no outgoing pair"
+    assert nodes.has_outgoing(out["peer_id"])
+    nobody, _ = nodes.add_incoming({"name": "no id"}, db=db)                 # no node id at all: nothing to match
+    assert nodes.unpair_incoming(nobody["peer_id"], db=db) is True and nodes.peer(out["peer_id"], db)
+    real, _ = nodes.add_incoming({"id": out["node_id"], "name": "node-b"}, callback_unverified=False, db=db)
+    assert nodes.unpair_incoming(real["peer_id"], db=db) is True
+    assert nodes.peers(db) == [] and not nodes.has_outgoing(out["peer_id"]), "a verified pair takes the outgoing pair to the same node with it"
+
+
+def test_an_unverified_pair_claiming_a_paired_nodes_id_replaces_and_revokes_nothing(pair2):
+    pair(pair2)                                                              # A <-> B; B holds a verified incoming pair from A
+    with pair2.b.enter():
+        (inc,) = [p for p in nodes.peers() if p["direction"] == "in"]
+        assert inc["callback_unverified"] is False
+        old_row = dict(pair2.b.db.node_pair_get(inc["peer_id"]))
+        code = nodes.create_code()["code"]
+        pair2.offline.add("node-a")                                          # the callback to the claimed address does not answer
+        r = nodes.handle_pair({"code": code, "node": {**claim_a(pair2), "name": "intruder"}}, "100.64.0.9")
+        assert r["callback_unverified"] is True and nodes.verify_token(r["token"])
+        ins = [p for p in nodes.peers() if p["direction"] == "in"]
+        assert len(ins) == 2 and {p["callback_unverified"] for p in ins} == {False, True}
+        assert dict(pair2.b.db.node_pair_get(inc["peer_id"])) == old_row, "the existing pair is unchanged"
+        assert pair2.b.db.node_pair_get(inc["peer_id"])["revoked_at"] is None
+    pair2.offline.discard("node-a")
+    with pair2.a.enter():
+        assert nodes.PeerClient([p for p in nodes.peers() if p["direction"] == "out"][0]).get("/api/node").ok, "A still reads B with its own token"
+
+
+def test_a_verified_repair_of_the_same_node_replaces_the_old_pair(pair2):
+    with pair2.b.enter():
+        toks = []
+        for _ in range(2):
+            code = nodes.create_code()["code"]
+            toks.append(nodes.handle_pair({"code": code, "node": claim_a(pair2)}, "100.64.0.9")["token"])
+        assert nodes.verify_token(toks[0]) is None and nodes.verify_token(toks[1])
+        ins = [p for p in nodes.peers() if p["direction"] == "in"]
+        assert len(ins) == 1 and ins[0]["callback_unverified"] is False
+        code = nodes.create_code()["code"]
+        pair2.offline.add("node-a")
+        unverified = nodes.handle_pair({"code": code, "node": claim_a(pair2)}, "100.64.0.9")
+        assert nodes.verify_token(toks[1]) and nodes.verify_token(unverified["token"]), "and an unverified repair after it replaces nothing"
+
+
+def test_the_reverse_token_of_an_unverified_pair_is_never_saved(pair2):
+    pair2.offline.add("node-a")
+    with pair2.b.enter():
+        code = nodes.create_code()["code"]
+        rev = nodes._new_token()
+        r = nodes.handle_pair({"code": code, "node": claim_a(pair2), "reverse": {"token": rev, "scopes": ["read", "tasks"]}}, "100.64.0.9")
+        assert r["callback_unverified"] is True and r["reverse"] is False and r["reverse_reason"] == "callback_unverified"
+        assert r["token"] and [p["direction"] for p in nodes.peers()] == ["in"], "no outgoing row was planted"
+        assert rev.encode() not in files_text(pair2.b.data_dir), "the token is in no file and no database"
+        assert nodes._read_tokens() == {}
+        assert "reverse_dropped" in {x["action"] for x in nodes.audit_list(20)}
+
+
+def test_the_callers_back_pair_is_revoked_when_the_other_node_did_not_keep_the_reverse_token(pair2):
+    pair2.offline.add("node-a")
+    with pair2.b.enter():
+        code = nodes.create_code()["code"]
+    with pair2.a.enter():
+        nodes.add_node(pair2.b.url, code, both_ways=True)
+        assert [p for p in nodes.peers() if p["direction"] == "in"] == [], "no usable incoming pair is left on the calling board"
+
+
+def test_a_verified_pair_keeps_its_reverse_token(pair2):
+    with pair2.b.enter():
+        code = nodes.create_code()["code"]
+        rev = nodes._new_token()
+        r = nodes.handle_pair({"code": code, "node": claim_a(pair2), "reverse": {"token": rev, "scopes": ["read", "tasks"]}}, "100.64.0.9")
+        assert r["callback_unverified"] is False and r["reverse"] is True and "reverse_reason" not in r
+        (out,) = [p for p in nodes.peers() if p["direction"] == "out"]
+        assert nodes._load_outgoing(out["peer_id"]) == rev
+
+
+def test_a_node_id_in_the_answer_never_picks_a_registry_row_at_another_address(pair2):
+    with pair2.b.enter():
+        b_id = nodes.node_id()
+    with pair2.a.enter():
+        (old,) = nodes.import_legacy([{"name": "node-b", "url": "https://other.tailnet.ts.net"}])
+        nodes.put_peer({"peer_id": old["peer_id"], "direction": "out", "node_id": b_id, "legacy": True, "url": "https://other.tailnet.ts.net"})
+    view, _ = pair(pair2)
+    assert view["peer_id"] != old["peer_id"] and view["handle"] != old["handle"]
+    with pair2.a.enter():
+        rows = {p["peer_id"]: p for p in nodes.peers() if p["direction"] == "out"}
+        assert set(rows) == {old["peer_id"], view["peer_id"]} and rows[old["peer_id"]]["legacy"] is True
+        assert rows[old["peer_id"]]["url"] == "https://other.tailnet.ts.net"
 
 
 # ================================================================ nothing secret in the database, the logs or the answers

@@ -1213,19 +1213,29 @@ def _clean_claim(node) -> dict:
 
 
 def add_incoming(node=None, scopes=DEFAULT_SCOPES, *, callback_unverified: bool = False, db=None) -> tuple[dict, str]:
-    """A new incoming pair: the row (digest only) and the token's plaintext, which this call returns and nothing keeps. An older active pair of the
-    same node id is revoked first (pairing again replaces)."""
+    """A new incoming pair: the row (digest only) and the token's plaintext, which this call returns and nothing keeps. It never touches another
+    pair: the node id in `node` is only a claim until the caller's address has confirmed it (handle_pair), and only then does
+    revoke_older_pairs retire the older pairs of that node."""
     d = _db(db)
     c = _clean_claim(node)
     token = _new_token()
     pid = _new_peer_id()
-    if c["node_id"]:
-        for r in d.node_pairs():
-            if r["peer_node_id"] == c["node_id"]:
-                revoke(r["peer_id"], db=d, why="replaced by a new pair")
     d.node_pair_add(peer_id=pid, peer_node_id=c["node_id"], peer_name=c["name"], peer_url=c["url"], token_sha256=_digest(token),
                     scopes=json.dumps(clean_scopes(list(scopes))), created_at=iso(_now()), callback_unverified=1 if callback_unverified else 0)
     return _in_view(d.node_pair_get(pid)), token
+
+
+def revoke_older_pairs(node_id: str, keep_peer_id: str, db=None) -> int:
+    """Pairing the same node again replaces: every other active incoming pair of `node_id` is revoked, the pair `keep_peer_id` never. Call it only
+    once the node id is confirmed (the callback named the same id); a claim nobody confirmed must not cut another pair. Returns how many it revoked."""
+    d = _db(db)
+    if not isinstance(node_id, str) or not node_id:
+        return 0
+    n = 0
+    for r in d.node_pairs():
+        if r["peer_node_id"] == node_id and r["peer_id"] != keep_peer_id and revoke(r["peer_id"], db=d, why="replaced by a new pair"):
+            n += 1
+    return n
 
 
 def mint_token(peer_id: str, db=None) -> str:
@@ -1571,11 +1581,18 @@ def handle_pair(body, caller: str, db=None) -> dict:
             audit("in", pid, "pair_refused", False, "the address breaks the rule", node_name=node["name"], status="refused", db=d)
             raise PairError("bad_url") from None
         unverified = True
+    reverse_reason = None
     if unverified:
         d.node_pair_update(pid, callback_unverified=1)
         audit("in", pid, "callback_unverified", False, "the caller's address did not answer", node_name=node["name"], db=d)
+    else:
+        revoke_older_pairs(node["id"], pid, db=d)                     # the node id is confirmed: pairing again replaces
     reverse_saved = None
-    if rev is not None:
+    if rev is not None and unverified:
+        reverse_saved = False                                         # the claim was never confirmed: no outgoing row, no token written
+        reverse_reason = "callback_unverified"
+        audit("in", pid, "reverse_dropped", False, "the caller's address did not confirm its node id", node_name=node["name"], db=d)
+    elif rev is not None:
         reverse_saved = False
         try:
             rid = _new_peer_id()
@@ -1589,19 +1606,23 @@ def handle_pair(body, caller: str, db=None) -> dict:
                     drop_outgoing(rid)
         except (OSError, ValueError) as e:
             log.info("could not keep the reverse pair: %s", e.__class__.__name__)
-    return {"token": r["token"], "scopes": r["scopes"], "node": own_claim(), "expires_at": r["expires_at"], "callback_unverified": unverified,
-            "reverse": reverse_saved}
+    out = {"token": r["token"], "scopes": r["scopes"], "node": own_claim(), "expires_at": r["expires_at"], "callback_unverified": unverified,
+           "reverse": reverse_saved}
+    if reverse_reason:
+        out["reverse_reason"] = reverse_reason
+    return out
 
 
 def unpair_incoming(peer_id: str, db=None) -> bool:
-    """The other board says it is leaving (POST /api/node/unpair): cut its pair here, and the outgoing pair to the same node id too. Never calls
-    the other board. False when the pair was already gone."""
+    """The other board says it is leaving (POST /api/node/unpair): cut its own pair here. The outgoing pair to the same node id goes too, but only
+    when this pair's node id was confirmed by the callback (an unverified claim must not remove the pair to another node). Never calls the other
+    board. False when the pair was already gone."""
     d = _db(db)
     row = d.node_pair_get(peer_id)
     if row is None:
         return False
     cut = revoke(peer_id, db=d, why="the other node unpaired")
-    if row["peer_node_id"]:
+    if row["peer_node_id"] and not row["callback_unverified"]:
         for p in peers(d):
             if p["direction"] == "out" and p["node_id"] == row["peer_node_id"]:
                 remove_peer(p["peer_id"], d)
@@ -1647,7 +1668,9 @@ def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = F
             raise PairError("refused", message="The other node's answer was not a pairing answer.")
         scopes = [x for x in SCOPES if x in (j.get("scopes") or [])] or list(DEFAULT_SCOPES)
         name = _sanitize_name(theirs.get("name")) or "node"
-        same = next((r for r in _out_rows(d) if r.get("node_id") == theirs["id"] or str(r.get("url")).rstrip("/") == target.url.rstrip("/")), None)
+        # An existing row is replaced only when it is at the address the person typed. The node id in the answer is the other board's own claim, so
+        # it must not pick a row (and so its token and handle) of a node at another address; that makes a new row with a free handle.
+        same = next((r for r in _out_rows(d) if str(r.get("url")).rstrip("/") == target.url.rstrip("/")), None)
         pid = same["peer_id"] if same else _new_peer_id()
         try:
             save_outgoing(pid, token)
@@ -1664,6 +1687,9 @@ def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = F
                 _remote_unpair(target.url, tk)
             drop_outgoing(pid)
             raise
+        if back is not None and j.get("reverse") is not True:         # the other board did not keep our token, so nobody can use this pair
+            revoke(back["peer_id"], db=d, why="the other node did not keep the reverse token")
+            back = None
         if back is not None:
             d.node_pair_update(back["peer_id"], peer_node_id=theirs["id"], peer_name=name, peer_url=target.url)
     except BaseException:

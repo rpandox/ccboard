@@ -4627,6 +4627,8 @@ def api_node_rotate(request: Request):
     pid = getattr(request.state, "node_pair", None)
     if not pid:
         raise projects.Forbidden("this route takes a node token")
+    if (getattr(request.state, "node_peer", None) or {}).get("via_previous"):
+        return _node_refused(401, "this token was already rotated away; rotate with the current token", **{"WWW-Authenticate": 'Bearer realm="ccboard", error="invalid_token"'})
     try:
         token = nodes.rotate_token(pid, db=db)
     except LookupError:

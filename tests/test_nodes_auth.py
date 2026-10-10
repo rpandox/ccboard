@@ -360,6 +360,22 @@ def test_rotate_gives_a_new_token_once_and_the_old_one_works_for_60_seconds(boar
     assert new not in json.dumps(c.get("/api/nodes", headers=H).json()), "the listing never carries the token"
 
 
+def test_rotate_with_a_token_that_is_only_good_through_the_grace_is_refused_and_the_current_token_still_rotates(board, monkeypatch):
+    c, db = board
+    clock = [1_800_000_000.0]
+    monkeypatch.setattr(nodes, "_now", lambda: clock[0])
+    row, old = mint(db)
+    new = c.post("/api/node/rotate", headers=bearer(old)).json()["token"]
+    before = dict(db.node_pair_get(row["peer_id"]))
+    r = c.post("/api/node/rotate", headers=bearer(old))                                         # the old token still reads, but cannot mint
+    assert r.status_code == 401 and "current token" in r.json()["error"] and new not in r.text
+    assert dict(db.node_pair_get(row["peer_id"])) == before, "a refused rotation changed nothing"
+    assert c.get("/api/node", headers=bearer(new)).status_code == 200, "the current token was not replaced"
+    assert c.get("/api/node", headers=bearer(old)).status_code == 200, "the old token still reads during its grace"
+    r = c.post("/api/node/rotate", headers=bearer(new))
+    assert r.status_code == 200 and r.json()["token"] not in (old, new)
+
+
 def test_a_node_that_unpairs_cuts_its_pair_at_once(board):
     c, db = board
     row, tok = mint(db)

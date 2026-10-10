@@ -2,6 +2,15 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.35 - 2026-10-10
+
+### Added
+- Pairing two boards: Settings > Nodes > Create pairing code makes a one-time code (10 minutes by default, five wrong tries burn it) with the scopes you choose (read and tasks by default; sessions and permissions only if you tick them). On the other board, Add node takes the address and the code. Each board then holds a token for the other (`ccbnode_...`; the receiving board keeps only its hash), shown in Paired nodes and in "Who can control this node", with Rotate (the old token works 60 more seconds) and Remove or Revoke (works even when the other board is offline).
+- A node token opens only the node routes on a closed list, each with the scope it needs; it is never accepted on the hook, MCP or any other route, and the hook token, the hub token and an MCP device token never open a node route. Every pairing step, refusal and call is in the Activity list, with no token or code in it.
+- The older read-only fleet (`CCBOARD_NODES` with the hub token) keeps working, and its rows are offered for pairing.
+
+Upgrade: nothing to do.
+
 ## v0.5.34 - 2026-10-09
 
 ### Fixed
