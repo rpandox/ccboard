@@ -4545,7 +4545,7 @@ PAIR_CONFIRM_MAX = 1024
 @app.post("/api/nodes/pair/confirm")
 async def api_nodes_pair_confirm(request: Request):
     """The callback of the board this one is pairing with (issue #135): body {proof}, a digest of the code and a nonce that only this board's own
-    add_node (in flight right now, two minutes at most) and the board it called know. Answers {node_id} while that add_node runs, else 404, the same
+    add_node (in flight right now, 30 seconds at most) and the board it called know. Answers {node_id} while that add_node runs, else 404, the same
     404 for an unknown and a stale proof. The code, the nonce and every token never travel in this call. No identity is needed (a tagged board has none);
     X-CCBoard: 1 is required, an Origin header is refused, the body is capped at 1 KB and a source address gets 30 calls a minute."""
     if request.headers.get("x-ccboard") != "1":

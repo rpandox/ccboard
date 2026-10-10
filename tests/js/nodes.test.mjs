@@ -430,13 +430,14 @@ test('NodeView.osName / owner / onlineWord / shortId / hostOf', () => {
   assert.deepEqual(run('["https://a.example.ts.net:8443/x","http://100.64.0.1","javascript:alert(1)","https://u@evil.test","https://","",null].map((u) => NodeView.hostOf(u))'), ['a.example.ts.net:8443', '100.64.0.1', '', '', '', '', '']);
 });
 
-test('NodeView.isPaired: by node id, else by host (port ignored); never by a name or a different host', () => {
+test('NodeView.isPaired: by host (port ignored); never by a name, a different host or a node id alone', () => {
   const w = makeWorld();
   w.ctx.__row = rowFx();
   const paired = (list) => w.run(`NodeView.isPaired(__row, ${JSON.stringify(list)})`);
   assert.equal(paired([{ url: 'https://node-a.example.ts.net:443' }]), true, 'same host, another port');
   assert.equal(paired([{ url: 'https://NODE-A.example.ts.net' }]), true, 'case ignored');
-  assert.equal(paired([{ node_id: 'ts:nA', url: 'https://other.example.ts.net' }]), true, 'by node id');
+  assert.equal(paired([{ node_id: 'ts:nA', url: 'https://other.example.ts.net' }]), false, 'a node id at another address is only a claim');
+  assert.equal(paired([{ node_id: 'ts:nA', url: 'https://node-a.example.ts.net' }]), true, 'the same id at the same address');
   assert.equal(paired([{ name: 'node-a', url: 'https://node-b.example.ts.net' }]), false, 'a name is not an identity');
   assert.equal(paired([{ node_id: 'ts:nB' }]), false);
   assert.equal(paired([]), false);

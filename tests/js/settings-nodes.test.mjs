@@ -272,7 +272,7 @@ test('a keyed repaint: a changed row is rebuilt, the others keep their nodes, ne
   assert.equal(panel(w).querySelectorAll('.nd-row').length, 3, 'node-c is gone from the list');
 });
 
-test('a node already paired is not listed twice (matched by node id, else by host)', async () => {
+test('a node already paired is not listed twice (matched by host; a claimed node id alone hides nothing)', async () => {
   const nodes = { value: [
     { name: 'a-paired', online: true, sessions: 0, attention: 0, url: 'https://node-a.example.ts.net:8443' },
     { name: 'b-paired', online: true, sessions: 0, attention: 0, url: 'https://elsewhere.example.ts.net', node_id: 'ts:nOTHER' },
@@ -283,8 +283,7 @@ test('a node already paired is not listed twice (matched by node id, else by hos
   const byId = { ...ANSWER, rows: [{ ...ROWS[1], state: 'found', url: 'https://node-b.example.ts.net', node_id: 'ts:nOTHER', at: iso(0) }] };
   const w2 = nodesWorld({ over: { nodes }, answer: byId });
   await tick();
-  assert.equal(rowsOf(w2).length, 0, 'matched by node id');
-  assert.match(text(panel(w2)), /Every device found here is already paired\./);
+  assert.deepEqual(rowsOf(w2).map((r) => text(r.querySelector('.nd-name'))), ['node-b'], 'a paired board at another address claiming this id does not hide it');
 });
 
 // ---------------------------------------------------------------- states

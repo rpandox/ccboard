@@ -178,15 +178,15 @@ def test_mint_token_replaces_the_token_and_the_old_one_stops_at_once(db, clock):
 
 
 def test_add_incoming_never_revokes_another_pair_and_revoke_older_pairs_replaces_only_the_older_ones(db, clock):
-    node = {"id": "n_" + "a" * 16, "name": "node-a"}
+    node = {"id": "n_" + "a" * 16, "name": "node-a", "url": "https://100.64.0.1"}
     first, t1 = nodes.add_incoming(node, db=db)
-    second, t2 = nodes.add_incoming(node, db=db)
+    second, t2 = nodes.add_incoming({**node, "url": "https://100.64.0.1:443"}, db=db)             # the same address, spelled another way
     assert nodes.verify_token(t1, db=db) and nodes.verify_token(t2, db=db), "a claim alone replaces nothing"
     assert nodes.revoke_older_pairs(node["id"], second["peer_id"], db=db) == 1
     assert nodes.verify_token(t1, db=db) is None and nodes.verify_token(t2, db=db)["peer_id"] == second["peer_id"]
     assert [p["peer_id"] for p in nodes.peers(db)] == [second["peer_id"]]
     assert nodes.revoke_older_pairs(node["id"], second["peer_id"], db=db) == 0 and nodes.revoke_older_pairs("", second["peer_id"], db=db) == 0
-    other, t3 = nodes.add_incoming({"id": "n_" + "c" * 16, "name": "node-c"}, db=db)
+    other, t3 = nodes.add_incoming({"id": "n_" + "c" * 16, "name": "node-c", "url": "https://100.64.0.1"}, db=db)
     nodes.revoke_older_pairs(node["id"], second["peer_id"], db=db)
     assert nodes.verify_token(t3, db=db), "another node's pair is not touched"
 
@@ -869,7 +869,7 @@ def a_in_flight(two, code, **extra) -> dict:
     """A pair body from A that B can verify: A has an add_node in flight for this code (what add_node does around its call), so B's callback finds it."""
     nonce = secrets.token_urlsafe(16)
     with two.a.enter():
-        nodes.begin_confirm(nodes.normalize_code(code), nonce)
+        nodes.begin_confirm(nodes.normalize_code(code), nonce, two.b.url)                 # A typed B's address
     return {"code": code, "node": claim_a(two), "confirm": nonce, **extra}
 
 
@@ -1033,11 +1033,17 @@ def test_nothing_leaves_the_accepting_board_before_the_code_is_right(pair2):
     assert pair2.log == [] and db_pairs(pair2.b) == 0
 
 
-def test_a_callback_that_names_another_node_refuses_the_pair_and_revokes_it(pair2):
+def test_a_callback_that_names_another_node_refuses_the_pair_and_revokes_it(pair2, monkeypatch):
+    real = serve
+
+    def answers_c(two, board, method, path, headers, body):
+        if path == "/api/nodes/pair/confirm":                                                     # the board at the claimed address says it is c, whatever the proof
+            return 200, {"content-type": "application/json"}, json.dumps({"node_id": "n_" + "c" * 16}).encode()
+        return real(two, board, method, path, headers, body)
+    monkeypatch.setitem(globals(), "serve", answers_c)
     with pair2.b.enter():
         code = nodes.create_code()["code"]
-        liar = {"id": "n_" + "c" * 16, "name": "node-c", "url": pair2.a.url}                      # the address belongs to A, the claim says c
-        body = {**a_in_flight(pair2, code), "node": liar}                                         # A is mid add_node with this code, so its address answers with A's id
+        body = a_in_flight(pair2, code)                                                           # the claim says A's id, the answer says c
         with pytest.raises(nodes.PairError) as e:
             nodes.handle_pair(body, "100.64.0.9")
         assert e.value.reason == "callback_mismatch" and e.value.status == 409
@@ -1435,7 +1441,7 @@ def test_a_stranger_with_a_code_who_claims_a_paired_nodes_id_and_real_address_en
         code = nodes.create_code()["code"]
     if attack == "a_pairing_in_flight_with_another_code":
         with pair2.a.enter():
-            nodes.begin_confirm("ABCDEFGHJK", secrets.token_urlsafe(16))      # A really is mid add_node, with a code and a nonce the stranger never saw
+            nodes.begin_confirm("ABCDEFGHJK", secrets.token_urlsafe(16), pair2.b.url)      # A really is mid add_node, with a code and a nonce the stranger never saw
     body = {"code": code, "node": claim_a(pair2), "reverse": {"token": nodes._new_token(), "scopes": ["read", "tasks"]}}
     if attack != "no_nonce":
         body["confirm"] = secrets.token_urlsafe(16)
@@ -1459,21 +1465,23 @@ def test_a_stranger_with_a_code_who_claims_a_paired_nodes_id_and_real_address_en
 def test_the_confirm_route_answers_only_while_this_boards_add_node_is_in_flight(pair2, clock):
     norm = nodes.normalize_code("ABCDE-FGHJK")
     nonce = secrets.token_urlsafe(16)
-    proof = nodes.confirm_proof(norm, nonce)
+    with pair2.a.enter():
+        a_id = nodes.node_id()
+    proof = nodes.confirm_proof(norm, nonce, a_id, pair2.a.url, pair2.b.url)
     assert confirm_post(pair2.a, proof).status_code == 404, "nothing is in flight"
     with pair2.a.enter():
-        key = nodes.begin_confirm(norm, nonce)
-        a_id = nodes.node_id()
+        key = nodes.begin_confirm(norm, nonce, pair2.b.url)
     r = confirm_post(pair2.a, proof)
     assert r.status_code == 200 and r.json() == {"node_id": a_id}
     assert confirm_post(pair2.b, proof).status_code == 404, "another board has no such pairing"
-    assert confirm_post(pair2.a, nodes.confirm_proof(norm, nonce + "x")).status_code == 404 and confirm_post(pair2.a, "x" * 64).status_code == 404
+    assert confirm_post(pair2.a, nodes.confirm_proof(norm, nonce + "x", a_id, pair2.a.url, pair2.b.url)).status_code == 404
+    assert confirm_post(pair2.a, "x" * 64).status_code == 404
     clock.t += nodes.CONFIRM_TTL - 1
     assert confirm_post(pair2.a, proof).status_code == 200
     clock.t += 2
-    assert confirm_post(pair2.a, proof).status_code == 404, "a record older than two minutes answers nothing"
+    assert confirm_post(pair2.a, proof).status_code == 404, "a record older than CONFIRM_TTL answers nothing"
     with pair2.a.enter():
-        key = nodes.begin_confirm(norm, nonce)
+        key = nodes.begin_confirm(norm, nonce, pair2.b.url)
         nodes.end_confirm(key)
     assert confirm_post(pair2.a, proof).status_code == 404, "and neither does one that finished"
 
@@ -1511,9 +1519,9 @@ def test_the_confirm_route_is_strict_rate_limited_and_never_leaks_the_code_the_n
     inner = nodes.peer_transport
     real_begin = nodes.begin_confirm
 
-    def spy_begin(norm, nonce):
-        mine.update(norm=norm, nonce=nonce)
-        return real_begin(norm, nonce)
+    def spy_begin(norm, nonce, target):
+        mine.update(norm=norm, nonce=nonce, target=target)
+        return real_begin(norm, nonce, target)
 
     def spy(target, method, path, headers, body, timeout):
         res = inner(target, method, path, headers, body, timeout)
@@ -1530,7 +1538,9 @@ def test_the_confirm_route_is_strict_rate_limited_and_never_leaks_the_code_the_n
         tokens += [nodes._load_outgoing(p["peer_id"]) for p in nodes.peers() if p["direction"] == "out"]
     tokens.append(json.loads(next(s[2] for s in spied if s[0] == "/api/nodes/pair"))["reverse"]["token"])
     on_wire = json.dumps(headers) + body.decode() + answer.decode()
-    assert json.loads(body) == {"proof": nodes.confirm_proof(mine["norm"], mine["nonce"])} and "authorization" not in {k.lower() for k in headers}
+    with pair2.a.enter():
+        a_id = nodes.node_id()
+    assert json.loads(body) == {"proof": nodes.confirm_proof(mine["norm"], mine["nonce"], a_id, pair2.a.url, pair2.b.url)} and "authorization" not in {k.lower() for k in headers}
     assert len(tokens) == 3 and all(tokens)
     for secret in (code, code.replace("-", ""), mine["norm"], mine["nonce"], *tokens):
         assert secret not in on_wire
@@ -1616,7 +1626,8 @@ def test_revoke_older_pairs_acts_only_for_a_confirmed_pair(db):
     assert nodes.revoke_older_pairs(C_ID, "p_" + "0" * 16, db=db) == 0
     assert db.node_pair_get(old["peer_id"])["revoked_at"] is None
     real, _ = nodes.add_incoming({"id": C_ID, "name": "real", "url": C_URL}, db=db)
-    assert nodes.revoke_older_pairs(C_ID, real["peer_id"], db=db) == 2
+    assert nodes.revoke_older_pairs(C_ID, real["peer_id"], db=db) == 1, "the older pair of C at C's address goes; the claim with no address stays"
+    assert db.node_pair_get(claim["peer_id"])["revoked_at"] is None
     assert db.node_pair_get(real["peer_id"])["revoked_at"] is None
 
 
@@ -1632,3 +1643,154 @@ def test_the_back_pair_is_unverified_until_the_other_board_answered_and_then_car
         (back,) = [p for p in nodes.peers() if p["direction"] == "in"]
         row = pair2.a.db.node_pair_get(back["peer_id"])
         assert row["callback_unverified"] == 0 and row["peer_node_id"] == b_id and row["peer_url"] == pair2.b.url
+
+
+# ================================================================ the proof is bound to the target and to the address (security findings 1, 2 and 3)
+
+M_URL = "https://100.64.0.99"
+M_HOST = "100.64.0.99"
+
+
+def through_m(pair2, monkeypatch, forward=True, answer_id=None):
+    """A third board M at M_URL. forward: M relays every call to B untouched (the person typed M's address, and M passes A's pair body on to B).
+    answer_id: M answers B's confirm callback with that node id, whatever the proof. Returns the list of what M saw."""
+    seen = []
+    inner = nodes.peer_transport
+
+    def transport(target, method, path, headers, body, timeout):
+        if target.host != M_HOST:
+            return inner(target, method, path, headers, body, timeout)
+        seen.append((method, path, json.loads(body) if body else None))
+        if answer_id and path == "/api/nodes/pair/confirm":
+            return 200, {"content-type": "application/json"}, json.dumps({"node_id": answer_id}).encode()
+        if not forward:
+            raise ConnectionRefusedError("M does not answer")
+        b = pair2.b.url.split("//")[1]
+        return inner(nodes.PeerTarget(pair2.b.url, b, 443, (b,)), method, path, headers, body, timeout)
+    monkeypatch.setattr(nodes, "peer_transport", transport)
+    return seen
+
+
+def test_a_relay_that_forwards_the_pair_body_to_the_board_the_code_came_from_ends_unverified_and_replaces_nothing(pair2, monkeypatch):
+    """The person has A and B paired, then types M's address with a code B showed. M forwards A's pair body (A's id and address, A's nonce) to B, so
+    B calls A's real address to confirm and A really has that code and nonce in flight. The old digest (code + nonce) matched; the proof now names the
+    address A typed (M), B puts its own, and A answers 404."""
+    pair(pair2, both_ways=True)
+    with pair2.b.enter():
+        (old_in,) = [p for p in nodes.peers() if p["direction"] == "in"]
+        (old_out,) = [p for p in nodes.peers() if p["direction"] == "out"]
+        old_token = nodes._load_outgoing(old_out["peer_id"])
+        before = dict(pair2.b.db.node_pair_get(old_in["peer_id"]))
+        code = nodes.create_code()["code"]
+    seen = through_m(pair2, monkeypatch)
+    pair2.log.clear()
+    with pair2.a.enter():
+        nodes.add_node(M_URL, code, both_ways=True)
+    assert seen and seen[0][1] == "/api/nodes/pair", "M carried the pair body to B"
+    assert ("node-b", "POST", "node-a", "/api/nodes/pair/confirm", 404) in pair2.log, "A would not vouch for a pairing it typed for M"
+    with pair2.b.enter():
+        fresh = [p for p in nodes.peers() if p["direction"] == "in" and p["peer_id"] != old_in["peer_id"]]
+        assert len(fresh) == 1 and fresh[0]["callback_unverified"] is True, "the relayed pair is not verified"
+        assert dict(pair2.b.db.node_pair_get(old_in["peer_id"])) == before, "and it replaced nothing: the real pair with A is untouched"
+        assert [p["peer_id"] for p in nodes.peers() if p["direction"] == "out"] == [old_out["peer_id"]], "B kept no outgoing row for the relayed reverse token"
+        assert nodes._load_outgoing(old_out["peer_id"]) == old_token
+        assert "callback_unverified" in {r["action"] for r in nodes.audit_list(50)}
+
+
+def test_the_proof_is_a_keyed_digest_bound_to_the_code_the_nonce_both_ids_and_both_addresses(pair2):
+    import hashlib
+    norm, nonce, a_id = nodes.normalize_code("ABCDE-FGHJK"), "n" * 22, "n_" + "a" * 16
+    ref = nodes.confirm_proof(norm, nonce, a_id, pair2.a.url, pair2.b.url)
+    assert re.fullmatch(r"[0-9a-f]{64}", ref)
+    plain = (hashlib.sha256(f"ccboard-pair-confirm:{norm}:{nonce}".encode()).hexdigest(), hashlib.sha256((norm + nonce).encode()).hexdigest())
+    assert ref not in plain, "keyed, not a bare hash of the code and nonce"
+    for changed in (("ABCDEFGHJM", nonce, a_id, pair2.a.url, pair2.b.url), (norm, nonce + "x", a_id, pair2.a.url, pair2.b.url),
+                    (norm, nonce, "n_" + "c" * 16, pair2.a.url, pair2.b.url), (norm, nonce, a_id, M_URL, pair2.b.url),
+                    (norm, nonce, a_id, pair2.a.url, M_URL), (norm, nonce, a_id, pair2.a.url, pair2.b.url + ":8443")):
+        assert nodes.confirm_proof(*changed) != ref, changed
+    assert nodes.confirm_proof(norm, nonce, a_id, "HTTPS://100.64.0.1:443/", pair2.b.url + "/") == ref, "one address, however it is spelled"
+    assert nodes.confirm_proof(norm, nonce, a_id, "", pair2.b.url) is None and nodes.confirm_proof(norm, nonce, a_id, pair2.a.url, "not an address") is None
+
+
+def test_a_board_with_no_address_of_its_own_cannot_verify_anyone(pair2, monkeypatch):
+    with pair2.b.enter():
+        code = nodes.create_code()["code"]
+    body = a_in_flight(pair2, code)
+    with pair2.b.enter():
+        monkeypatch.setattr(nodes, "public_url", lambda: None)
+        r = nodes.handle_pair(body, "100.64.0.9")
+        assert r["callback_unverified"] is True
+
+
+def test_a_board_that_claims_another_nodes_id_from_its_own_address_cuts_none_of_that_nodes_pairs(pair2, monkeypatch):
+    """M's address answers the callback with whatever id M likes (nothing authenticates that answer), so M is 'verified' as node C at M_URL.
+    That must be worth exactly that: C's real pair at C_URL stays, and so does B's pair to C."""
+    with pair2.b.enter():
+        c_out, _ = out_peer(pair2.b.db, url=C_URL, name="node-c", node_id=C_ID)
+        c_tok = nodes._load_outgoing(c_out["peer_id"])
+        c_in, c_in_token = nodes.add_incoming({"id": C_ID, "name": "node-c", "url": C_URL}, db=pair2.b.db)
+        other_port, _ = nodes.add_incoming({"id": C_ID, "name": "node-c", "url": C_URL + ":8443"}, db=pair2.b.db)
+        code = nodes.create_code()["code"]
+    seen = through_m(pair2, monkeypatch, forward=False, answer_id=C_ID)
+    nonce = secrets.token_urlsafe(16)
+    body = {"code": code, "node": {"id": C_ID, "name": "mallory", "url": M_URL}, "confirm": nonce}
+    with pair2.b.enter():
+        r = nodes.handle_pair(body, "100.64.0.9")
+        assert [s[1] for s in seen] == ["/api/nodes/pair/confirm"]
+        assert r["callback_unverified"] is False, "M's address vouched for the id it claims, which is all the answer can say"
+        mine = [p for p in nodes.peers() if p["direction"] == "in" and p["url"] == M_URL]
+        assert len(mine) == 1 and mine[0]["node_id"] == C_ID
+        for keep in (c_in, other_port):
+            assert pair2.b.db.node_pair_get(keep["peer_id"])["revoked_at"] is None, "C's pairs stay"
+        assert nodes.verify_token(c_in_token) and nodes.peer(c_out["peer_id"]) and nodes._load_outgoing(c_out["peer_id"]) == c_tok
+        assert nodes.revoke_older_pairs(C_ID, c_in["peer_id"], db=pair2.b.db) == 0, "a re-pair of C at C's own address does not find M's row either"
+        assert nodes.unpair_incoming(mine[0]["peer_id"]) is True
+        assert nodes.peer(c_out["peer_id"]) and nodes._load_outgoing(c_out["peer_id"]) == c_tok, "M leaving does not remove B's pair to C"
+        assert nodes.verify_token(c_in_token)
+
+
+def test_the_same_address_is_the_same_scheme_host_and_port_and_nothing_else():
+    same = nodes._same_address
+    assert same("https://100.64.0.1", "https://100.64.0.1:443/") and same("https://Node-A.ts.net.", "https://node-a.ts.net")
+    assert not same("https://100.64.0.1", "https://100.64.0.1:8443") and not same("https://100.64.0.1", "https://100.64.0.2")
+    assert not same("https://100.64.0.1", "http://100.64.0.1:443") and not same(None, None) and not same("", "") and not same("x", "x")
+
+
+def test_discovery_does_not_treat_a_claimed_node_id_as_proof_of_pairing():
+    from pathlib import Path
+    js = (Path(__file__).resolve().parents[1] / "app" / "static" / "nodes.js").read_text()
+    body = js[js.index("NodeView.isPaired = function"):]
+    body = body[:body.index("\n};")]
+    assert "node_id" not in body, "isPaired matches by the address; an id at another address is only a claim"
+
+
+def test_the_confirm_route_cannot_be_made_to_hold_state_and_answers_the_same_404_for_everything_it_does_not_vouch_for(pair2):
+    norm, nonce = nodes.normalize_code("ABCDE-FGHJK"), secrets.token_urlsafe(16)
+    with pair2.a.enter():
+        nodes.begin_confirm(norm, nonce, pair2.b.url)
+        held = dict(nodes._pending)
+    answers = set()
+    for i in range(15):
+        r = confirm_post(pair2.a, f"{i:064x}")
+        answers.add((r.status_code, r.content))
+    for bad in ("", "x", "0" * 63, "G" * 64, "A" * 64):
+        r = confirm_post(pair2.a, bad)
+        answers.add((r.status_code, r.content))
+    r = pair2.a.post("/api/nodes/pair/confirm", owner=False, headers={"X-CCBoard": "1"}, content=b"nope")
+    answers.add((r.status_code, r.content))
+    assert len(answers) == 1 and next(iter(answers))[0] == 404, "unknown, malformed and unreadable proofs all get one answer"
+    nothing = confirm_post(pair2.b, "0" * 64)
+    assert (nothing.status_code, nothing.content) == next(iter(answers)), "a board with nothing in flight answers just the same"
+    assert nodes._pending == held, "no call to the route adds, changes or removes a record"
+
+
+def test_the_pending_store_is_bounded_and_every_record_is_compared_in_constant_time(pair2, monkeypatch):
+    with pair2.a.enter():
+        keys = [nodes.begin_confirm(nodes.normalize_code("ABCDE-FGHJK"), secrets.token_urlsafe(16), pair2.b.url) for _ in range(nodes.CONFIRM_MAX * 2)]
+        assert len(nodes._pending) == nodes.CONFIRM_MAX and keys[-1] in nodes._pending and keys[0] not in nodes._pending
+        calls = []
+        real = nodes.hmac.compare_digest
+        monkeypatch.setattr(nodes.hmac, "compare_digest", lambda a, b: calls.append(1) or real(a, b))
+        first = next(iter(nodes._pending))[1]
+        assert nodes.confirm_answer(first) == nodes.node_id()
+        assert len(calls) == nodes.CONFIRM_MAX, "the loop does not stop at the match"

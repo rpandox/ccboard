@@ -774,8 +774,8 @@ refusal_limiter = _Limiter(30, 600.0, 4)                      # audit rows for r
 node_read_limiter = _Limiter(READ_RATE, 60.0, 2048)          # per pair
 node_write_limiter = _Limiter(WRITE_RATE, 60.0, 2048)
 confirm_limiter = _Limiter(30, 60.0, 2048)                    # POST /api/nodes/pair/confirm, per source address
-CONFIRM_TTL = 120.0                                           # seconds an in-flight add_node answers the confirm route
-CONFIRM_MAX = 16                                              # in-flight records kept at most
+CONFIRM_TTL = 30.0                                            # seconds an in-flight add_node answers the confirm route (its pair call waits 8 s at most)
+CONFIRM_MAX = 16                                              # in-flight records kept at most; only add_node (a signed-in person's action) writes one
 NONCE_RE = re.compile(r"[A-Za-z0-9_-]{22,64}")
 _pending: dict[tuple[str, str], float] = {}                   # (this board's node id, proof) -> expiry: only add_node writes it, in memory only
 _pending_lock = threading.Lock()
@@ -1236,7 +1236,9 @@ def add_incoming(node=None, scopes=DEFAULT_SCOPES, *, callback_unverified: bool 
 def revoke_older_pairs(node_id: str, keep_peer_id: str, db=None) -> int:
     """Pairing the same node again replaces: every other active incoming pair of `node_id` is revoked, the pair `keep_peer_id` never. Call it only
     once the node id is confirmed (the callback named the same id); a claim nobody confirmed must not cut another pair, so a `keep_peer_id` that is
-    missing, revoked or still `callback_unverified` revokes nothing. Returns how many it revoked."""
+    missing, revoked or still `callback_unverified` revokes nothing. A node id is only the word of the board at its address, so a pair is replaced
+    only when it has the same node id AND the same address as the kept one: a board that claims another node's id from its own address cuts nothing
+    of that node's. Returns how many it revoked."""
     d = _db(db)
     if not isinstance(node_id, str) or not node_id:
         return 0
@@ -1245,7 +1247,8 @@ def revoke_older_pairs(node_id: str, keep_peer_id: str, db=None) -> int:
         return 0
     n = 0
     for r in d.node_pairs():
-        if r["peer_node_id"] == node_id and r["peer_id"] != keep_peer_id and revoke(r["peer_id"], db=d, why="replaced by a new pair"):
+        if (r["peer_node_id"] == node_id and r["peer_id"] != keep_peer_id and _same_address(r["peer_url"], keep["peer_url"])
+                and revoke(r["peer_id"], db=d, why="replaced by a new pair")):
             n += 1
     return n
 
@@ -1536,15 +1539,40 @@ def _remote_unpair(url: str, token: str) -> bool:
 
 # ---------------------------------------------------------------- who is redeeming this code right now (the callback proof)
 
-def confirm_proof(norm: str, nonce: str) -> str:
-    """The proof that the board redeeming a code is the one that called add_node with it: a digest of the code and a random nonce that only the
-    calling board and the board it called have seen. Neither the code nor the nonce goes into the callback, only this digest."""
-    return hashlib.sha256(f"ccboard-pair-confirm:{norm}:{nonce}".encode("utf-8")).hexdigest()
+def canon_url(u) -> str | None:
+    """A board address in one spelling: scheme://host:port with the scheme and host in lower case, no trailing dot and the port always there (443
+    when absent). None when it is not an address with a host. Both sides of the confirm proof and every same-address check use this."""
+    from urllib.parse import urlsplit
+    try:
+        p = urlsplit(str(u or ""))
+        host = (p.hostname or "").rstrip(".").lower()
+        port = p.port or 443
+    except ValueError:
+        return None
+    if not host or not p.scheme:
+        return None
+    return f"{p.scheme.lower()}://{'[' + host + ']' if ':' in host else host}:{port}"
 
 
-def begin_confirm(norm: str, nonce: str) -> tuple[str, str]:
-    """Register an in-flight add_node on this board (in memory, CONFIRM_TTL seconds). Returns the key to hand to end_confirm."""
-    key = (node_id(), confirm_proof(norm, nonce))
+def confirm_proof(norm: str, nonce: str, caller_id: str, caller_url: str, target_url: str) -> str | None:
+    """The proof that the board redeeming a code is the one that called add_node with it, and for THIS target: an HMAC-SHA256 keyed with the code over
+    the nonce, the caller's node id, the caller's address and the address the caller typed (the target). The receiving board fills in its own address
+    as the target, so a request that a third board relayed (the person typed the relay's address, the relay forwarded the body) gives a different
+    digest and the caller answers 404. Neither the code nor the nonce goes into the callback, only this digest. None when an address is not one."""
+    c, t = canon_url(caller_url), canon_url(target_url)
+    if not c or not t or not isinstance(norm, str) or not isinstance(nonce, str) or not isinstance(caller_id, str):
+        return None
+    msg = json.dumps(["ccboard-pair-confirm/2", nonce, caller_id, c, t], separators=(",", ":")).encode("utf-8")
+    return hmac.new(norm.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+
+def begin_confirm(norm: str, nonce: str, target_url: str):
+    """Register an in-flight add_node on this board towards `target_url` (in memory, CONFIRM_TTL seconds). Returns the key to hand to end_confirm,
+    or None when this board has no address to put in the proof."""
+    proof = confirm_proof(norm, nonce, node_id(), public_url() or "", target_url)
+    if proof is None:
+        return None
+    key = (node_id(), proof)
     now = _now()
     with _pending_lock:
         for k in [k for k, exp in _pending.items() if exp <= now]:
@@ -1556,34 +1584,32 @@ def begin_confirm(norm: str, nonce: str) -> tuple[str, str]:
 
 
 def end_confirm(key) -> None:
-    with _pending_lock:
-        _pending.pop(key, None)
+    if key is not None:
+        with _pending_lock:
+            _pending.pop(key, None)
 
 
 def confirm_answer(proof) -> str | None:
     """This board's node id when `proof` belongs to an add_node that is in flight on this board right now, else None (the route answers 404 for an
-    unknown and for a stale proof alike, so it says nothing about what is pending)."""
+    unknown and for a stale proof alike, so it says nothing about what is pending). Only a caller that knows the code and the nonce can make a
+    proof that matches; every record is compared in constant time and the loop never stops early."""
     if not isinstance(proof, str) or not re.fullmatch(r"[0-9a-f]{64}", proof):
         return None
     me = node_id()
     now = _now()
+    found = False
     with _pending_lock:
-        found = False
-        for (nid, pr), exp in _pending.items():              # every record is compared; the loop never stops early
-            if hmac.compare_digest(pr, proof) and nid == me and exp > now:
-                found = True
-        return me if found else None
+        for (nid, pr), exp in _pending.items():
+            same = hmac.compare_digest(pr.encode("ascii"), proof.encode("ascii"))
+            found = found or (same and nid == me and exp > now)
+    return me if found else None
 
 
 def _same_address(a, b) -> bool:
     """Do two peer addresses name the same scheme, host and port (host lower case, port 443 when absent)? False when either is missing or no address.
-    A node id is only a claim; a gate that acts on a claimed id also asks for the same address."""
-    from urllib.parse import urlsplit
-    try:
-        ka, kb = ((u.scheme, (u.hostname or "").rstrip(".").lower(), u.port or 443) for u in (urlsplit(str(a or "")), urlsplit(str(b or ""))))
-    except ValueError:
-        return False
-    return bool(ka[1]) and ka == kb
+    A node id is only a claim, and the board at an address can claim any id: every gate that acts on a claimed id also asks for the same address."""
+    ca, cb = canon_url(a), canon_url(b)
+    return ca is not None and ca == cb
 
 
 # ---------------------------------------------------------------- the handshake, accepting side
@@ -1641,8 +1667,11 @@ def handle_pair(body, caller: str, db=None) -> dict:
     pid = r["peer_id"]
     unverified = True
     try:
-        if confirm and norm:
-            reply = peer_call(node["url"], "POST", "/api/nodes/pair/confirm", body={"proof": confirm_proof(norm, confirm)}, timeout=3.0)
+        # The target in the proof is THIS board's own address, never one taken from the request: a body that a third board relayed here was typed by
+        # the person at that board's address, so the caller's proof for it does not match and the caller answers 404.
+        proof = confirm_proof(norm, confirm, node["id"], node["url"], public_url() or "") if confirm and norm else None
+        if proof:
+            reply = peer_call(node["url"], "POST", "/api/nodes/pair/confirm", body={"proof": proof}, timeout=3.0)
             got = reply.json.get("node_id") if reply.ok and isinstance(reply.json, dict) else None
         else:
             check_peer_url(node["url"], tailnet_suffix())             # no proof to send, but the address rule still applies
@@ -1734,7 +1763,7 @@ def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = F
     if both_ways:
         back, back_token = add_incoming(None, DEFAULT_SCOPES, callback_unverified=True, db=d)       # unverified until the other board has answered
         body["reverse"] = {"token": back_token, "scopes": list(DEFAULT_SCOPES)}
-    pending = begin_confirm(norm, nonce)       # while this call runs, POST /api/nodes/pair/confirm tells the board we called that it is us
+    pending = begin_confirm(norm, nonce, target.url)       # while this call runs, POST /api/nodes/pair/confirm tells the board at `target` that it is us
     try:
         try:
             reply = peer_call(target.url, "POST", "/api/nodes/pair", body=body, timeout=8.0)
