@@ -203,7 +203,7 @@ const NodeView = {
     invalid: { word: 'invalid name', tone: 'bad', glyph: '✕', hint: 'The name Tailscale gave is not a tailnet name, so it was not checked.' },
     unchecked: { word: 'not checked yet', tone: '', glyph: '·', hint: 'Press Refresh to check this device.' },
   },
-  OS: { linux: 'Linux', macos: 'macOS', windows: 'Windows', ios: 'iOS', android: 'Android', freebsd: 'FreeBSD', tvos: 'tvOS' },
+  OS: { linux: 'Linux', macos: 'macOS', darwin: 'macOS', windows: 'Windows', ios: 'iOS', android: 'Android', freebsd: 'FreeBSD', tvos: 'tvOS' },
 };
 
 /* An epoch in seconds from a number (seconds, or milliseconds when it is that big), a numeric string or an ISO string; null when it is none of those. */
@@ -236,6 +236,15 @@ NodeView.state = function (row) {
 NodeView.probeInfo = function (row) {
   const state = NodeView.state(row);
   return { state, ...NodeView.PROBE[state] };
+};
+
+/* A Mac or WSL2 node's card (issue #154) as {name, load}; name is '' on any other node, which then shows nothing extra. A load that is null reads "n/a", never 0. The words
+   that go with a platform are in the lazy files that show them (nodes-hub.js Nodes.platNotes, pages/settings.js settingsNdPlatNotes). */
+NodeView.platform = function (c) {
+  const o = (c && c.os) || {}, l = (c && c.load) || {};
+  const name = o.system === 'Darwin' ? 'Mac' : o.wsl === true ? 'WSL2' : '';
+  const p = (k, v) => `${k} ${typeof v === 'number' ? Math.round(v) + '%' : 'n/a'}`;
+  return { name, load: name ? [p('cpu', l.cpu_pct), p('memory', l.mem_pct), p('disk', l.disk_pct)].join(' · ') : '' };
 };
 
 /* 'Linux', 'macOS' ...; an OS this table does not know is shown as Tailscale spelled it (cut to 20 characters); '' when there is none. */

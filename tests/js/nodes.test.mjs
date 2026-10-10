@@ -771,3 +771,23 @@ test('nodes-pair.js pairing helpers hold no code or token: no storage, no networ
   assert.doesNotMatch(code, /localStorage|sessionStorage|fetch\(|XMLHttpRequest|setInterval|setTimeout|innerHTML|insertAdjacentHTML|cssText|style=|\.style\b|api\(/);
   assert.doesNotMatch(code, /—/);
 });
+
+// ---------------------------------------------------------------- the platform of a card (issue #154)
+
+test('NodeView.platform: a Mac and a WSL2 card get a chip name and n/a for a null load; any other card gets nothing (the words live in the lazy files)', () => {
+  const w = makeWorld();
+  const run = (src) => plain(w.run(src));
+  const nul = '{ cpu_pct: null, mem_pct: null, disk_pct: null }';
+  const mac = run(`NodeView.platform({ os: { system: 'Darwin' }, load: ${nul}, accounts: { supported: false } })`);
+  assert.equal(mac.name, 'Mac');
+  assert.equal(mac.load, 'cpu n/a · memory n/a · disk n/a');
+  assert.equal('notes' in mac, false, 'no sentence in the eager file');
+  assert.equal(run("NodeView.platform({ os: { system: 'Darwin' } }).load"), 'cpu n/a · memory n/a · disk n/a', 'a card with no load at all');
+  const wsl = run("NodeView.platform({ os: { system: 'Linux', wsl: true }, load: { cpu_pct: 12.34, mem_pct: 0, disk_pct: 50 } })");
+  assert.equal(wsl.name, 'WSL2');
+  assert.equal(wsl.load, 'cpu 12% · memory 0% · disk 50%', 'a real 0 is shown as 0');
+  for (const src of ["{ os: { system: 'Linux' } }", "{ os: { system: 'Linux', wsl: false } }", '{}', 'null', 'undefined']) {
+    assert.deepEqual(run(`NodeView.platform(${src})`), { name: '', load: '' }, src);
+  }
+  assert.equal(run("NodeView.osName('Darwin')"), 'macOS');
+});

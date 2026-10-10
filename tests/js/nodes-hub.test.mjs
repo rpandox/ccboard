@@ -773,3 +773,78 @@ test('Tasks filter with more than four options is a native select labelled Node;
   assert.deepEqual(all(bar, '.seg-btn').map(text), ['All nodes', 'This node', 'build-box', 'alice-mac']);
   assert.equal(bar.querySelector('[aria-pressed=true]').textContent, 'alice-mac');
 });
+
+// ---------------------------------------------------------------- a Mac and a WSL2 node (issue #154, phase P6)
+
+const NULL_LOAD = { load1: null, cores: null, cpu_pct: null, mem_pct: null, disk_pct: null };
+const macRec = () => rec('alice-mac', { card: { ...rec('alice-mac').card, os: { system: 'Darwin', release: '23.6.0', tailscale_os: 'macOS' }, runtime: 'launchd', load: NULL_LOAD,
+  accounts: { supported: false, items: [] } } });
+const wslRec = () => rec('desk-wsl', { card: { ...rec('desk-wsl').card, os: { system: 'Linux', release: '5.15-microsoft-standard-WSL2', tailscale_os: null, wsl: true }, runtime: 'systemd',
+  load: { load1: 0.5, cores: 4, cpu_pct: 12.3, mem_pct: 25, disk_pct: 50 } } });
+
+test('the node page of a Mac says Mac, shows unknown load as n/a (never 0) and that saved logins are not available', async () => {
+  const { w } = await ready([macRec(), rec('build-box')]);
+  await go(w, '#/n/alice-mac');
+  const plat = page(w).querySelector('.nd-plat');
+  assert.ok(plat, 'a platform row beside the node');
+  const t = text(plat);
+  assert.match(t, /^Mac/);
+  assert.match(t, /Load: cpu n\/a · memory n\/a · disk n\/a/);
+  assert.doesNotMatch(t, /\b0%/, 'unknown is not zero');
+  assert.match(t, /Saved logins are not available on a Mac\. Normal login still works\./);
+  assert.match(t, /A sleeping Mac shows as stale\./);
+  assert.match(text(page(w).querySelector('.nd-facts')), /macOS/, 'the system reads macOS');
+  noMarkup(w);
+});
+
+test('the node page of a WSL2 node says WSL2 and that its load is the distro and its VM, with the numbers it has', async () => {
+  const { w } = await ready([wslRec()]);
+  await go(w, '#/n/desk-wsl');
+  const t = text(page(w).querySelector('.nd-plat'));
+  assert.match(t, /^WSL2/);
+  assert.match(t, /Load: cpu 12% · memory 25% · disk 50%/);
+  assert.match(t, /Load describes the distro and its VM, not Windows\./);
+  assert.doesNotMatch(t, /Saved logins/);
+});
+
+test('a Linux node gets no platform row on its page and nothing extra in Settings: the box looks as it did', async () => {
+  const { w } = await ready([rec('build-box')]);
+  await go(w, '#/n/build-box');
+  assert.equal(page(w).querySelector('.nd-plat'), null);
+  assert.doesNotMatch(text(w.run("Nodes.settingsLine('build-box')")), /load|Mac|WSL2/);
+});
+
+test('Settings, Nodes: a Mac row carries the platform chip, n/a load and the saved-logins line; a WSL2 row its distro line', async () => {
+  const { w } = await ready([macRec(), wslRec()]);
+  const mac = text(w.run("Nodes.settingsLine('alice-mac')"));
+  assert.match(mac, /Mac.*load cpu n\/a · memory n\/a · disk n\/a.*Saved logins are not available on a Mac/);
+  assert.match(text(w.run("Nodes.settingsLine('desk-wsl')")), /WSL2.*load cpu 12% · memory 25% · disk 50%.*distro and its VM/);
+});
+
+test('the node page of a Mac repaints when its load becomes known (the header signature holds the load)', async () => {
+  const { w } = await ready([macRec(), rec('build-box')]);
+  await go(w, '#/n/alice-mac');
+  assert.match(text(page(w).querySelector('.nd-plat')), /cpu n\/a/);
+  const next = macRec();
+  next.card = { ...next.card, load: { ...NULL_LOAD, cpu_pct: 7, mem_pct: 61 } };
+  answer(w, 200, { nodes: [next, rec('build-box')], at: iso(0) }, 'W/"2"');
+  await poll(w);
+  assert.match(text(page(w).querySelector('.nd-plat')), /cpu 7% · memory 61% · disk n\/a/);
+});
+
+test('the shipped demo shows the platform lines: alice-mac is a Mac with n/a load and no saved logins, old-laptop is a WSL2 node, build-box is plain Linux', async () => {
+  const { w } = hubWorld({ search: '?demo=1', realApi: true });
+  setState(w, plain(await w.run("api('GET', '/api/state')")));
+  await poll(w);
+  await go(w, '#/n/alice-mac');
+  const mac = text(page(w).querySelector('.nd-plat'));
+  assert.match(mac, /^Mac/);
+  assert.match(mac, /Load: cpu n\/a · memory n\/a · disk n\/a/);
+  assert.match(mac, /Saved logins are not available on a Mac/);
+  await go(w, '#/n/old-laptop');
+  const wsl = text(page(w).querySelector('.nd-plat'));
+  assert.match(wsl, /^WSL2/);
+  assert.match(wsl, /distro and its VM/);
+  await go(w, '#/n/build-box');
+  assert.equal(page(w).querySelector('.nd-plat'), null);
+});

@@ -550,6 +550,13 @@ if (typeof Keymap !== 'undefined' && Keymap && typeof Keymap.bindKey === 'functi
 
 /* ---------- Settings, Nodes: the read model's line under a paired node's row ---------- */
 
+/* The short lines under a Mac or WSL2 node (issue #154): what the card cannot do or describes. [] for any other platform. */
+Nodes.platNotes = function (card, name) {
+  const mac = name === 'Mac';
+  return [mac && card && card.accounts && card.accounts.supported === false ? 'Saved logins are not available on a Mac. Normal login still works.' : '',
+    mac ? 'A sleeping Mac shows as stale.' : name ? 'Load describes the distro and its VM, not Windows.' : ''].filter(Boolean);
+};
+
 /* Status with its age, the skew warning above 5 s, the agents and the accounts with their windows, from the node's card. null while the hub has no record of that handle. */
 Nodes.settingsLine = function (handle) {
   const rec = Nodes.get(handle);
@@ -561,6 +568,8 @@ Nodes.settingsLine = function (handle) {
   const card = rec.card && typeof rec.card === 'object' ? rec.card : null;
   const agents = card && Array.isArray(card.agents) ? card.agents.filter((a) => a && typeof a.id === 'string') : [];
   if (agents.length) kids.push(el('span', { class: 'dim', text: agents.map((a) => `${a.id} ${a.installed ? (a.logged_in ? 'ready' : 'not logged in') : 'not installed'}`).join(', ') }));
+  const plat = NodeView.platform(card);
+  if (plat.name) kids.push(NodeView.chip(plat.name, '', '', 'Platform'), el('span', { class: 'dim', text: `load ${plat.load}` }), ...Nodes.platNotes(card, plat.name).map((t) => el('span', { class: 'dim', text: t })));
   const items = card && card.accounts && Array.isArray(card.accounts.items) ? card.accounts.items : [];
   if (items.length) {
     const word = (a) => `${a.agent} ${a.label || 'account'}${a.window && a.window.known && typeof a.window.pct === 'number' ? ` ${Math.round(a.window.pct)}%` : ''}${a.limited ? ' limit' : ''}`;

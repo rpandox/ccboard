@@ -53,6 +53,8 @@ html.force-coarse #page .nd-tsel { font-size:16px; }
 #page .nd-status.warn { color:var(--warn-fg); }
 #page .nd-status.bad { color:var(--bad-fg); }
 #page .nd-facts { margin:4px 0 0; font-size:12px; overflow-wrap:anywhere; }
+#page .nd-plat { display:flex; flex-wrap:wrap; align-items:center; gap:2px 10px; margin:6px 0 0; font-size:12px; overflow-wrap:anywhere; }
+#page .nd-plat .nd-note { flex-basis:100%; margin:0; }
 #page .nd-banner { margin:8px 0 0; padding:8px 10px; border:1px solid var(--line); border-radius:3px; font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
 #page .nd-banner.warn { border-color:var(--warn); background:var(--warn-bg); }
 #page .nd-banner.bad { border-color:var(--bad); background:var(--bad-bg); }

@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.39 - 2026-10-10
+
+### Added
+- Nodes P6, the Mac and WSL2 as nodes. A Mac's card says `Darwin` and `launchd`, its cpu, memory and disk are null and show as "n/a" (never 0) on the node page and in Settings > Nodes, and "Saved logins are not available on a Mac. Normal login still works." A WSL2 card says `os.wsl: true`, gets a random `n_` id when no Tailscale client is reachable, and takes its address from `CCBOARD_PUBLIC_URL`. A platform chip with one short line sits beside the node on both screens; a Linux box shows nothing extra.
+- Discovery on both: the Mac finds the Tailscale app's own binary. In WSL2 with no Tailscale in the distro the list says "Tailscale runs on the Windows side: type the other node's address in Pair a node" and Add node stays available. `tailscale.exe` through Windows interop is used only with `CCBOARD_TAILSCALE_PLACEMENT=host` (off by default, to verify).
+- Four read-only Doctor rows on a Mac or in WSL2 only: `node-mac-public-url`, `node-sleep` (a sleeping Mac shows as stale; the fix names `caffeinate -s`, to verify), `node-wsl-keepalive` and `node-gh`, each with a fix text.
+- README "Several devices": a support table with one line each for Linux box, Linux container, Mac, WSL2 and native Windows, kept equal to a list in the code by a test.
+
+Upgrade: nothing to do.
+
 ## v0.5.38 - 2026-10-10
 
 ### Fixed

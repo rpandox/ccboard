@@ -77,6 +77,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 
+from . import platform as plat
 from . import tailscale as ts
 from . import tmux
 from .config import settings
@@ -101,6 +102,8 @@ LABEL_MAX = 60
 TS_TIMEOUT = 3.0                                              # seconds a request waits for `tailscale status --json`
 TS_TTL = 120.0                                                # a reading is reused this long (a failed one for TS_TTL_FAIL)
 TS_TTL_FAIL = 60.0
+SUPPORT_PLATFORMS = ("Linux box", "Linux container", "Mac", "WSL2", "Native Windows")   # the rows of the README table "Several devices" (issue #154); tests/test_nodes_platforms.py keeps the two equal
+WINDOWS_SIDE = "Tailscale runs on the Windows side: type the other node's address in Pair a node"   # the reason discovery gives on WSL2 with no Tailscale client it may use
 
 
 class RefError(ValueError):
@@ -109,8 +112,27 @@ class RefError(ValueError):
 
 # ---------------------------------------------------------------- Tailscale (one seam, so tests never run the real command)
 
+def windows_side() -> bool:
+    """WSL2 only (False anywhere else, with no command run): is Tailscale out of this board's reach, on the Windows side? True when the distro has no
+    `tailscale`, or when the only one is `tailscale.exe` through Windows interop and CCBOARD_TAILSCALE_PLACEMENT is not `host` (the setting that says
+    Tailscale runs on Windows; it is never implied, so interop is off by default and to verify on a real machine, issue #130). Then the node id is `n_`,
+    the card has no Tailscale part and discovery gives WINDOWS_SIDE as its reason; the manual Add node form is always there."""
+    if not plat.is_wsl():
+        return False
+    try:
+        cli = ts.find_cli()
+    except Exception:
+        return False
+    exe = cli.exe if cli is not None else ""
+    if exe.lower().endswith(".exe"):
+        return plat.tailscale_placement(implied=False) != "host"
+    return not ts._executable(exe)
+
+
 def _ts_status() -> dict | None:
     """`tailscale status --json` parsed, None when it cannot be read; a short timeout so a request never waits long. Never raises."""
+    if windows_side():
+        return None
     try:
         r = ts.call(["status", "--json"], timeout=TS_TIMEOUT)
         if r.rc != 0:
@@ -436,7 +458,10 @@ def agents_view(db) -> list[dict]:
 
 def _os_view(d: dict | None) -> dict:
     tos = _self(d).get("OS")
-    return {"system": _pf.system() or None, "release": _pf.release() or None, "tailscale_os": tos if isinstance(tos, str) and tos else None}
+    out = {"system": _pf.system() or None, "release": _pf.release() or None, "tailscale_os": tos if isinstance(tos, str) and tos else None}
+    if plat.is_wsl():
+        out["wsl"] = True          # only ever added on WSL2: a Linux box's card is exactly what it was. Its health numbers describe the distro and its VM, not Windows
+    return out
 
 
 def tailscale_view(d: dict | None) -> dict:

@@ -803,6 +803,8 @@ def _c_tailscale_status(db) -> Outcome:
     from . import nodes, nodes_discovery as nd
     status, info = nd.read_tailscale(fresh=True)
     if status is None:
+        if nodes.windows_side():
+            return _skip(info["reason"])
         if ts.find_cli() is None:
             return _skip(f"{info['reason']}. Finding other nodes needs Tailscale; a single board does not")
         return _warn(info["reason"], _ts_start_fix(info["variant"]))
@@ -1651,6 +1653,8 @@ register_provider("memory", MEM_GROUP, memory_checks)       # claude-mem (v0.5.1
 register_provider("codex", CODEX_GROUP, codex_checks)       # the Codex adapter's checks (v0.5.11)
 if plat.IS_MACOS:                                            # issue #117: the macOS checks (app/doctor_macos.py) exist on a Mac only; a Linux board lists none
     from . import doctor_macos as _doctor_macos              # noqa: F401  (registers its checks when it is imported on a Mac)
+if plat.IS_MACOS or plat.is_wsl():                           # issue #154: the node-* checks (app/doctor_nodes.py) exist on a Mac and in WSL only; a Linux board lists none
+    from . import doctor_nodes as _doctor_nodes              # noqa: F401
 if plat.is_wsl():                                            # issue #118: the wsl- checks (app/doctor_wsl.py) exist inside WSL only; any other board lists none
     from . import doctor_wsl as _doctor_wsl                  # noqa: F401  (registers its checks, and the Sampler hook that records the distro's starts, when imported in WSL)
 
