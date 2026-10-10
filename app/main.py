@@ -29,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_hub, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
-from .agents import codex_discovery, codex_pane
+from .agents import claude_pane, codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
 from .agents.base import LaunchReq
@@ -555,6 +555,35 @@ def _codex_launch_view(name: str, row: dict, command: str | None, view: dict) ->
         log.debug("codex launch check failed for %s: %s", name, e.__class__.__name__)
 
 
+def _esc_dismissed_permissions(live: dict, rows: dict[str, dict]) -> bool:
+    """Issue 193: Claude fires no hook when a permission dialog is dismissed with Esc, so a row answered "In terminal" stays
+    waiting / permission for good. For each Claude row in exactly that state with no permission request of its own still pending,
+    read the pane: when it shows "Interrupted · What should Claude do instead?" at the idle prompt (agents/claude_pane), the dialog is
+    gone and the row becomes idle (flag wait_kind cleared, an `Interrupt` event stored). Pane text is the only evidence used; a tmux
+    hiccup or a pane still showing a dialog changes nothing. Returns whether any row changed. Never raises into the 3 s poll."""
+    changed = False
+    for name, row in rows.items():
+        flags = row.get("flags") or {}
+        if (name not in live or row.get("state") != "waiting" or flags.get("wait_kind") != "permission"
+                or (row.get("agent") or "claude") != "claude" or tmux.is_internal(name) or _permission_pending(name)):
+            continue
+        try:
+            if not claude_pane.interrupted_at_prompt(tmux.capture(name, lines=claude_pane.TAIL_LINES)):
+                continue
+            fresh = db.open_row(name) or {}            # a PermissionRequest may have landed while the pane was read
+            if (fresh.get("state_at") != row.get("state_at") or fresh.get("state") != "waiting"
+                    or (fresh.get("flags") or {}).get("wait_kind") != "permission" or _permission_pending(name)):
+                continue
+            msg = "Interrupted in the terminal"
+            db.update_flags(name, {"wait_kind": None})
+            db.set_state(name, "idle", "Interrupt", message=msg)
+            db.add_event(name, "Interrupt", None, msg, {}, agent="claude")
+            changed = True
+        except Exception as e:
+            log.debug("interrupted-dialog check failed for %s: %s", name, e.__class__.__name__)
+    return changed
+
+
 def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
     """tmux sessions (non-internal) merged with DB rows. Returns (sessions, tmux_down).
 
@@ -570,6 +599,8 @@ def _merged_sessions(rich: bool = False) -> tuple[dict[str, dict], bool]:
     assert db is not None
     db.reconcile(set(live.keys()), before=snapshot_at)
     rows = db.open_rows()
+    if _esc_dismissed_permissions(live, rows):
+        rows = db.open_rows()
     chips = db.active_tasks_by_session() if rich else {}
     waits = _wait_kinds({n: rows.get(n, {}) for n in live if not tmux.is_internal(n)})
     try:                                             # one list-clients per scan; the 3 s poll must not depend on it

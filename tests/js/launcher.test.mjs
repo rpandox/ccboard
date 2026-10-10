@@ -1652,3 +1652,38 @@ test('the board default from the schema shows as the default entry and in the pr
   choose(sel, 'inherit');
   assert.ok(!/^env/.test(previewOf(f)));
 });
+
+test('a fourth fallback model is stopped in the form: an inline error, no command preview, Start off and no request; three are fine, and so is the field once it is cut back (box check 92)', async () => {
+  const w = lWorld({ answers: { '/api/projects/shop/repos/api/sessions': { tmux: 'shop--api--s2', cmd: 'claude ...' } } });
+  assert.equal(w.run(`lxFallbackOver({ agent: 'claude', fallback_model: 'a, b c,d' })`), true);
+  assert.equal(w.run(`lxFallbackOver({ agent: 'claude', fallback_model: 'a,b,c' })`), false);
+  assert.equal(w.run(`lxFallbackOver({ agent: 'claude', fallback_model: 'a,a,a,a' })`), true, 'the server counts what is typed, before it drops duplicates');
+  assert.equal(w.run(`lxFallbackOver({ agent: 'codex', fallback_model: 'a,b,c,d' })`), false, 'Claude only');
+  open(w, {});
+  const f = form(w);
+  const fb = fieldOf(f, /^Fallback model$/);
+  const input = fb.querySelector('input');
+  const err = () => text(fb.querySelector('.field-err'));
+  typeInto(input, 'sonnet, haiku, opus');
+  assert.match(previewOf(f), /--fallback-model sonnet,haiku,opus/);
+  assert.equal(err(), '');
+  assert.ok(!off(start(f)));
+  typeInto(input, 'sonnet, haiku, opus, fable');
+  assert.equal(err(), 'Up to 3 fallback models.');
+  assert.ok(off(start(f)), 'Start & open waits');
+  assert.doesNotMatch(previewOf(f), /--fallback-model/, 'the preview does not offer a command the server refuses');
+  assert.match(previewOf(f), /Up to 3 fallback models/);
+  submit(f);                                                       // Enter in the prompt goes through submit(), not the button
+  await tick();
+  assert.equal(posts(w, /\/sessions$/).length, 0, 'nothing was sent');
+  assert.equal(err(), 'Up to 3 fallback models.');
+  assert.equal(input.value, 'sonnet, haiku, opus, fable', 'the typed value is kept');
+  typeInto(input, 'sonnet, haiku, opus');
+  assert.equal(err(), '');
+  assert.ok(!off(start(f)));
+  assert.match(previewOf(f), /--fallback-model sonnet,haiku,opus/);
+  submit(f);
+  await tick(); await tick();
+  assert.equal(posts(w, /\/sessions$/).length, 1);
+  assert.equal(posts(w, /\/sessions$/)[0].body.fallback_model, 'sonnet, haiku, opus');
+});
