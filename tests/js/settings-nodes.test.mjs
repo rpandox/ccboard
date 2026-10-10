@@ -456,7 +456,7 @@ const defer = () => { let resolve; const p = new Promise((r) => { resolve = r; }
 const settle = async () => { for (let i = 0; i < 8; i++) await tick(); };
 const refuse = (status, message, reason) => { const e = new Error(message); e.status = status; if (reason) e.body = { error: message, reason }; return e; };
 
-function pairWorld({ out = [], inn = [], audit = [], over = {}, fail = {}, hold = {}, answer = ANSWER } = {}) {
+function pairWorld({ out = [], inn = [], audit = [], over = {}, fail = {}, hold = {}, answer = ANSWER, serverFilters = false } = {}) {
   const w = nodesWorld({ hash: '', over, answer });
   const server = { out: out.map((x) => ({ ...x })), inn: inn.map((x) => ({ ...x })), audit: audit.map((x) => ({ ...x })), codeBody: null, cancelled: 0, added: null, peerNotified: undefined, others: [] };
   w.ctx.__copied = [];
@@ -466,7 +466,18 @@ function pairWorld({ out = [], inn = [], audit = [], over = {}, fail = {}, hold 
     const bare = p.split('?')[0];
     if (method === 'GET' && bare === '/api/nodes') { if (fail.list) throw refuse(500, fail.list); return { nodes: server.out.map((x) => ({ ...x })), pairs: server.inn.map((x) => ({ ...x })), at: iso(0) }; }
     if (method === 'GET' && bare === '/api/nodes/pairs') return { pairs: server.inn.map((x) => ({ ...x })), at: iso(0) };
-    if (method === 'GET' && bare === '/api/nodes/audit') return { rows: server.audit.map((x) => ({ ...x })), at: iso(0) };
+    if (method === 'GET' && bare === '/api/nodes/audit') {
+      if (fail.audit) throw refuse(500, fail.audit);
+      const q = new URLSearchParams(p.split('?')[1] || '');
+      let rows = server.audit.map((x) => ({ ...x }));
+      if (serverFilters) {                                             // what the board does with the four filters (app/main.py api_nodes_audit)
+        if (q.get('direction')) rows = rows.filter((r) => r.direction === q.get('direction'));
+        if (q.get('node')) rows = rows.filter((r) => r.node_name === q.get('node') || r.peer === q.get('node'));
+        if (q.get('action')) rows = rows.filter((r) => r.action === q.get('action'));
+        if (q.get('failures') === '1') rows = rows.filter((r) => r.status !== 'ok');
+      }
+      return { rows, at: iso(0) };
+    }
     if (method === 'POST' && bare === '/api/nodes/pair-code') {
       if (hold.code) await hold.code.p;
       if (fail.code) throw refuse(500, fail.code);
@@ -1439,4 +1450,186 @@ test('WSL2 with Tailscale on the Windows side: the sentence, the way forward (Ad
   add.click();
   await tick();
   assert.ok(w.document.querySelector('.nd-addr-in'), 'the address field is there');
+});
+
+
+// ---------------------------------------------------------------- Activity filters and the relay's rows (issue #140)
+
+const RELAY_AUDIT = [
+  { id: 9, at: iso(60), direction: 'out', peer: 'p1', node_name: 'build-box', user: 'alice@example.com', action: 'read_task', target: 'task 42', status: 'ok', detail: null },
+  { id: 8, at: iso(120), direction: 'in', peer: 'c1', node_name: 'desk-pc', user: 'for bob@example.com', action: 'read_pane', target: 'session shop--api--t-fix', status: 'ok', detail: null },
+  { id: 7, at: iso(180), direction: 'out', peer: 'p1', node_name: 'build-box', user: 'alice@example.com', action: 'read_pane', target: 'session shop--api--t-fix', status: 'refused', detail: 'offline: build-box is offline (last answered 20 min ago); nothing was sent' },
+  { id: 6, at: iso(240), direction: 'in', peer: 'c2', node_name: 'phone', user: null, action: 'route_refused', target: 'GET /api/state', status: 'refused', detail: 'node phone' },
+  { id: 5, at: iso(300), direction: 'out', peer: 'p2', node_name: 'alice-mac', user: 'alice@example.com', action: 'read_agents', target: 'agents', status: 'failed', detail: 'peer_error: alice-mac answered with an error (500)' },
+  { id: 4, at: iso(360), direction: 'in', peer: 'c1', node_name: 'desk-pc', user: null, action: 'code_used', target: null, status: 'ok', detail: 'scopes read' },
+];
+const auditPaths = (w) => nodeCalls(w, 'GET').filter((c) => c.path.startsWith('/api/nodes/audit')).map((c) => c.path);
+const auditKeys = (w) => panel(w).querySelectorAll('.nd-audit').map((r) => r.getAttribute('data-key'));
+const bar = (w) => panel(w).querySelector('.nd-filter');
+const seg = (w, label) => bar(w).querySelectorAll('.seg-ctl').find((c) => c.getAttribute('aria-label') === label);
+const segPress = (w, label, word) => seg(w, label).querySelectorAll('.seg-btn').find((b) => text(b) === word).click();
+const pressed = (w, label) => seg(w, label).querySelectorAll('.seg-btn').filter((b) => b.getAttribute('aria-pressed') === 'true').map(text);
+const filterSel = (w, label) => bar(w).querySelectorAll('select').find((x) => x.getAttribute('aria-label') === label);
+const choose = (sel, v) => { sel.value = v; sel.dispatchEvent({ type: 'change' }); };
+
+test('the relay\'s rows read in plain words: what was read, to or from which node, which target, who asked (a claim on the peer), when; a refusal and a failure say so', async () => {
+  const { w } = pairWorld({ audit: RELAY_AUDIT });
+  await settle();
+  const rows = panel(w).querySelectorAll('.nd-audit');
+  const word = (r) => text(r.querySelector('.nd-audit-word'));
+  const where = (r) => text(r.querySelector('.nd-audit-where'));
+  assert.deepEqual(rows.map(word), ['Task read', 'Screen tail read', 'Screen tail read failed', 'Request refused', 'Agents read failed', 'Pairing code used']);
+  assert.equal(where(rows[0]), 'to build-box · task 42 · by alice@example.com · 1m ago');
+  assert.equal(where(rows[1]), 'from desk-pc · session shop--api--t-fix · for bob@example.com · 2m ago', 'on the peer the user is a claim: `for <login>`');
+  assert.equal(where(rows[3]), 'from phone · GET /api/state · 4m ago');
+  assert.equal(where(rows[5]), 'from desk-pc · 6m ago', 'a pairing row without target or user is as it was');
+  assert.ok(rows[2].classList.contains('bad') && rows[3].classList.contains('bad') && rows[4].classList.contains('bad') && !rows[0].classList.contains('bad'));
+  assert.match(text(rows[2].querySelector('.nd-audit-detail')), /^offline: build-box is offline/);
+  assert.equal(text(rows[2].querySelector('.nd-glyph')), '✕');
+});
+
+test('the filter bar: direction and result as segmented controls, node and action as selects built from the rows, All everywhere and no Clear button at first', async () => {
+  const { w } = pairWorld({ audit: RELAY_AUDIT });
+  await settle();
+  assert.ok(!bar(w).classList.contains('hidden'));
+  assert.deepEqual(seg(w, 'Direction').querySelectorAll('.seg-btn').map(text), ['All', 'Sent', 'Received']);
+  assert.deepEqual(seg(w, 'Result').querySelectorAll('.seg-btn').map(text), ['All', 'Failed']);
+  assert.deepEqual(pressed(w, 'Direction'), ['All']);
+  assert.deepEqual(pressed(w, 'Result'), ['All']);
+  assert.deepEqual(filterSel(w, 'Node').querySelectorAll('option').map(text), ['All nodes', 'alice-mac', 'build-box', 'desk-pc', 'phone']);
+  assert.deepEqual(filterSel(w, 'Action').querySelectorAll('option').map(text), ['All actions', 'Agents read', 'Pairing code used', 'Request refused', 'Screen tail read', 'Task read']);
+  assert.ok(btn(bar(w), 'Clear filters').classList.contains('hidden'));
+  assert.deepEqual(auditPaths(w), ['/api/nodes/audit?limit=50'], 'no filter, the same ask as before');
+});
+
+test('each filter asks the board with its parameter, together with the others, and the list shows only the rows that match', async () => {
+  const { w } = pairWorld({ audit: RELAY_AUDIT, serverFilters: true });
+  await settle();
+  segPress(w, 'Direction', 'Sent');
+  await settle();
+  assert.equal(auditPaths(w).pop(), '/api/nodes/audit?limit=50&direction=out');
+  assert.deepEqual(auditKeys(w), ['9', '7', '5']);
+  assert.deepEqual(pressed(w, 'Direction'), ['Sent']);
+  segPress(w, 'Result', 'Failed');
+  await settle();
+  assert.equal(auditPaths(w).pop(), '/api/nodes/audit?limit=50&direction=out&failures=1');
+  assert.deepEqual(auditKeys(w), ['7', '5']);
+  choose(filterSel(w, 'Node'), 'build-box');
+  await settle();
+  assert.equal(auditPaths(w).pop(), '/api/nodes/audit?limit=50&direction=out&node=build-box&failures=1');
+  assert.deepEqual(auditKeys(w), ['7']);
+  choose(filterSel(w, 'Action'), 'read_pane');
+  await settle();
+  assert.equal(auditPaths(w).pop(), '/api/nodes/audit?limit=50&direction=out&node=build-box&action=read_pane&failures=1');
+  assert.deepEqual(auditKeys(w), ['7']);
+  assert.ok(!btn(bar(w), 'Clear filters').classList.contains('hidden'));
+  assert.equal(filterSel(w, 'Node').querySelectorAll('option').length, 5, 'a narrowed answer does not take a choice away');
+});
+
+test('a board that ignores the filters (or the demo) still shows only the matching rows', async () => {
+  const { w } = pairWorld({ audit: RELAY_AUDIT, serverFilters: false });
+  await settle();
+  segPress(w, 'Direction', 'Received');
+  await settle();
+  assert.deepEqual(auditKeys(w), ['8', '6', '4']);
+  choose(filterSel(w, 'Node'), 'desk-pc');
+  await settle();
+  assert.deepEqual(auditKeys(w), ['8', '4']);
+  choose(filterSel(w, 'Action'), 'code_used');
+  await settle();
+  assert.deepEqual(auditKeys(w), ['4']);
+  segPress(w, 'Result', 'Failed');
+  await settle();
+  assert.deepEqual(auditKeys(w), []);
+  const shown = panel(w).querySelectorAll('.nd-pempty').filter((n) => !n.classList.contains('hidden')).map(text);
+  assert.ok(shown.some((t) => /^No activity matches these filters\. Press Clear filters/.test(t)), shown.join(' | '));
+});
+
+test('a node can be picked by name or by peer id and a failed row is any status but ok', () => {
+  const w = makeWorld({});
+  w.load('nodes-pair.js');
+  const m = (r, f) => w.run(`NodeView.auditMatch(${JSON.stringify(r)}, ${JSON.stringify({ direction: '', node: '', action: '', failures: false, ...f })})`);
+  assert.equal(m({ node_name: 'a', peer: 'p_1' }, { node: 'a' }), true);
+  assert.equal(m({ node_name: 'a', peer: 'p_1' }, { node: 'p_1' }), true);
+  assert.equal(m({ node_name: 'a', peer: 'p_1' }, { node: 'b' }), false);
+  assert.equal(m({ status: 'ok' }, { failures: true }), false);
+  assert.equal(m({ status: 'refused' }, { failures: true }), true);
+  assert.equal(m({ status: 'failed' }, { failures: true }), true);
+  assert.equal(m({ status: 'ok', ok: false }, { failures: true }), true);
+  assert.equal(m({ status: 'ok', direction: 'in' }, { direction: 'out' }), false);
+  assert.equal(w.run("NodeView.auditQuery(NodeView.auditFilter())"), '?limit=50');
+  assert.equal(w.run("NodeView.auditQuery({ direction: 'in', node: 'a b&c', action: 'read_task', failures: true })"), '?limit=50&direction=in&node=a%20b%26c&action=read_task&failures=1');
+  assert.equal(w.run("NodeView.auditQuery({ direction: 'sideways', node: '', action: '', failures: false })"), '?limit=50', 'a direction that is not in or out is not sent');
+});
+
+test('Clear filters asks for everything again and the bar goes back to All', async () => {
+  const { w } = pairWorld({ audit: RELAY_AUDIT, serverFilters: true });
+  await settle();
+  segPress(w, 'Direction', 'Received');
+  choose(filterSel(w, 'Action'), 'read_pane');
+  await settle();
+  assert.deepEqual(auditKeys(w), ['8']);
+  btn(bar(w), 'Clear filters').click();
+  await settle();
+  assert.equal(auditPaths(w).pop(), '/api/nodes/audit?limit=50');
+  assert.deepEqual(auditKeys(w), ['9', '8', '7', '6', '5', '4']);
+  assert.deepEqual(pressed(w, 'Direction'), ['All']);
+  assert.equal(filterSel(w, 'Action').value, '');
+  assert.ok(btn(bar(w), 'Clear filters').classList.contains('hidden'));
+});
+
+test('an older answer never replaces a newer filter\'s list, and a failed ask keeps the rows and says so', async () => {
+  const gate = defer();
+  const { w } = pairWorld({ audit: RELAY_AUDIT, serverFilters: true });
+  await settle();
+  const orig = w.ctx.__answers['/api/nodes'];
+  let n = 0;
+  w.ctx.__answers['/api/nodes'] = async (req) => { if (req.method === 'GET' && req.path.startsWith('/api/nodes/audit') && n++ === 0) await gate.p; return orig(req); };
+  segPress(w, 'Direction', 'Sent');                                    // this ask waits
+  await settle();
+  segPress(w, 'Result', 'Failed');                                     // a newer ask answers first
+  await settle();
+  const newer = auditKeys(w);
+  gate.resolve();
+  await settle();
+  assert.deepEqual(auditKeys(w), newer, 'the stale answer was dropped');
+  assert.deepEqual(newer, ['7', '5']);
+  w.ctx.__answers['/api/nodes'] = async (req) => { if (req.method === 'GET' && req.path.startsWith('/api/nodes/audit')) throw refuse(500, 'the board is busy'); return orig(req); };
+  choose(filterSel(w, 'Node'), 'build-box');
+  await settle();
+  assert.deepEqual(auditKeys(w), ['7'], 'the rows held, narrowed here');
+  assert.match(text(panel(w).querySelector('.nd-pstatus')), /The activity could not be read: the board is busy/);
+});
+
+test('hostile node and action names are text in the selects and the rows, never markup', async () => {
+  const evil = '<img src=x onerror=alert(1)>';
+  const { w } = pairWorld({ audit: [{ id: 1, at: iso(5), direction: 'in', peer: 'c1', node_name: evil, user: `for ${evil}`, action: evil, target: evil, status: 'ok', detail: evil }] });
+  await settle();
+  assert.deepEqual(filterSel(w, 'Node').querySelectorAll('option').map(text), ['All nodes', evil]);
+  assert.equal(panel(w).querySelector('img'), null);
+  assert.match(text(panel(w).querySelector('.nd-audit-where')), /from <img src=x onerror=alert\(1\)> · <img/);
+  assert.equal(encodeURIComponent(evil).includes('<'), false);
+});
+
+test('the demo file has relay rows for the filters: both directions, a refusal, a failure-class row, several nodes and actions', async () => {
+  const kinds = new Set(demoFile.audit.map((r) => `${r.direction}:${r.status}`));
+  for (const k of ['in:ok', 'out:ok', 'out:refused', 'in:refused']) assert.ok(kinds.has(k), k);
+  const { w } = pairWorld({ out: demoFile.nodes, inn: demoFile.pairs, audit: demoFile.audit });
+  await settle();
+  const actions = new Set(demoFile.audit.map((r) => r.action));
+  for (const a of ['read_task', 'read_pane', 'read_agents', 'route_refused']) assert.ok(actions.has(a), a);
+  segPress(w, 'Result', 'Failed');
+  await settle();
+  const failed = demoFile.audit.filter((r) => r.status !== 'ok').map((r) => String(r.id));
+  assert.deepEqual(auditKeys(w), failed.slice(0, 25));
+  assert.ok(demoFile.audit.every((r) => !JSON.stringify(r).match(/ccbnode_|ccbmcp_|sha256/)));
+  assert.equal(new Set(demoFile.audit.map((r) => r.id)).size, demoFile.audit.length, 'ids stay unique');
+});
+
+test('the filter code keeps to the page rules: el() and textContent only, no storage, no timer of its own', () => {
+  const src = fs.readFileSync(path.join(STATIC, 'pages', 'settings.js'), 'utf8') + fs.readFileSync(path.join(STATIC, 'nodes-pair.js'), 'utf8');
+  const start = src.indexOf('function settingsNdSeen');
+  const block = src.slice(start, start + 9000).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  assert.ok(start > 0);
+  assert.doesNotMatch(block, /innerHTML|insertAdjacentHTML|\.style\b|cssText|localStorage|sessionStorage|setTimeout|setInterval/);
 });

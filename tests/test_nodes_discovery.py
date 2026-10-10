@@ -125,7 +125,7 @@ def world(monkeypatch, projects_dir, tmp_path):
     w["clock"] = [1_800_000_000.0]
     w["discover"] = lambda **k: nd.discover(w["db"], clock=lambda: w["clock"][0], **k)
     yield w
-    w["db"].conn.close()
+    w["db"].close()
 
 
 @pytest.fixture(autouse=True)

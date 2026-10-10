@@ -185,6 +185,12 @@ html.force-coarse #page .settings-page .cx-split button { min-height:var(--tap, 
 #page .settings-page .nd-row.repair { border-left:2px solid var(--warn); padding-left:8px; }
 #page .settings-page .nd-row .nd-act { flex-wrap:wrap; justify-content:flex-end; gap:6px; }
 #page .settings-page .nd-row .nd-act .row { display:flex; gap:6px; }
+#page .settings-page .nd-filter { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin:8px 0 4px; }
+#page .settings-page .nd-filter .seg-ctl { flex:none; max-width:100%; }
+#page .settings-page .nd-flabel { display:inline-flex; align-items:center; gap:6px; min-width:0; max-width:100%; }
+#page .settings-page .nd-fsel { height:var(--row-btn); min-height:var(--row-btn); min-width:0; max-width:min(220px, 62vw); padding:0 6px; font-size:12px; text-overflow:ellipsis; }
+@media (pointer:coarse) { #page .settings-page .nd-fsel { font-size:16px; } }
+html.force-coarse #page .settings-page .nd-fsel { font-size:16px; }
 #page .settings-page .nd-audit { display:flex; align-items:flex-start; gap:8px; padding:6px 0; border-bottom:1px solid var(--line-soft); font-size:13px; }
 #page .settings-page .nd-audit .nd-glyph { flex:none; width:1.2em; font-family:var(--font-mono); color:var(--ok-fg); }
 #page .settings-page .nd-audit.bad .nd-glyph, #page .settings-page .nd-audit.bad .nd-audit-word { color:var(--bad-fg); }

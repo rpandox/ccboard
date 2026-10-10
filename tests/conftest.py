@@ -466,6 +466,14 @@ def codex_home(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _short_hub_stop(monkeypatch):
+    """NodeHub.stop() waits for the polls in flight (so none reads a database that is being closed); a test that parks a poll on purpose
+    must not make every stop() wait the production six seconds."""
+    from app import nodes_hub
+    monkeypatch.setattr(nodes_hub, "STOP_WAIT", 0.5)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_codex(codex_home, monkeypatch):
     """No test runs a real codex or reads the real ~/.codex: settings.claude_bin's twin answers None (like CI's runner, which has no
     codex) until a test fakes the binary itself (fake_codex), the codex home is the temp one, and the adapter's probe caches start
@@ -668,5 +676,57 @@ def two_nodes(tmp_path, monkeypatch, projects_dir):
     monkeypatch.setattr(nodes, "peer_transport", t.transport)
     yield t
     main.db = saved_db
-    t.a.db.conn.close()
-    t.b.db.conn.close()
+    t.a.db.close()
+    t.b.db.close()
+
+
+@pytest.fixture
+def probe_rows():
+    """Two synthetic relay rows on the running app for one test (this phase ships only read rows): `probe`, a write row on scope `sessions` that starts an
+    agent (guard on, a body model with the launch fields), and `probe_answer`, a human-only write row on scope `permissions`. They go through the same
+    install() and register_scopes() as the real table; the routes and the NODE_ROUTES entries are taken out again afterwards. `calls` holds the clean body
+    each peer handler saw."""
+    from types import SimpleNamespace
+    from pydantic import BaseModel, ConfigDict
+    from app import main, nodes_relay as nr
+
+    class LaunchProbe(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        agent: str | None = None
+        title: str | None = None
+        prompt: str | None = None
+        permission_mode: str | None = None
+        mode: str | None = None
+        sandbox: str | None = None
+        approval: str | None = None
+        opts: dict | None = None
+
+    calls: list = []
+    rows = [nr.Row("probe", "POST", "/api/nodes/{handle}/probe", "POST", "/api/node/probe", "sessions", LaunchProbe, nr.WRITE, "probe_launch", guard=True,
+                   target=lambda p: "probe"),
+            nr.Row("probe_answer", "POST", "/api/nodes/{handle}/probe-answer", "POST", "/api/node/probe-answer", "permissions", nr.NoFields, nr.WRITE,
+                   "probe_answer", human_only=True, target=lambda p: "probe answer")]
+    handlers = {"probe": lambda db, params, body: calls.append(body) or {"ok": True}, "probe_answer": lambda db, params, body: calls.append(body) or {"ok": True}}
+    added = nr.install(main.app, handlers, lambda: main.db, lambda: main._hub(), rows=rows)
+    nr.register_scopes(rows)
+    try:
+        yield SimpleNamespace(rows=rows, calls=calls, launch=rows[0], answer=rows[1])
+    finally:
+        nr.forget_scopes(rows)
+        for r in added:
+            main.app.router.routes.remove(r)
+
+
+@pytest.fixture
+def pair_up(two_nodes):
+    """`pair_up(scopes)` pairs board `a` (the hub, the one that calls) with board `b` through the real routes and answers a's registry row view; the per-pair
+    buckets and the in-memory readings are reset first. Every file and database stays in the two boards' temp data dirs (issue #140)."""
+    from app import nodes
+
+    def go(scopes=("read", "tasks", "sessions", "permissions")):
+        nodes.reset()
+        code = two_nodes.b.post("/api/nodes/pair-code", json={"scopes": list(scopes), "minutes": 10}).json()["code"]
+        made = two_nodes.a.post("/api/nodes", json={"url": two_nodes.b.url, "code": code})
+        assert made.status_code == 201, made.text
+        return made.json()
+    return go

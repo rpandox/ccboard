@@ -57,7 +57,7 @@ def clean(v, n: int = STR_MAX) -> str | None:
     """A string for the wire: control characters become nothing, whitespace is collapsed, at most `n` characters; None for anything but a non-empty string."""
     if not isinstance(v, str):
         return None
-    t = " ".join(_CTRL.sub(" ", v).split())[:n]
+    t = " ".join(_CTRL.sub(" ", v[:65536]).split())[:n]               # a peer's string is cut before any pattern runs
     return t or None
 
 
