@@ -203,14 +203,341 @@ function settingsNotify(p) {
       el('li', {}, 'Tap "Send test" above. Pushes follow the switches under What to notify. Allow and Deny answer a permission from the notification, “Terminal” opens the session, “Ack” marks it seen.'))));
 }
 
-/* Settings > Nodes (issue #134): three labelled sections. This node (the card of state.node), Paired nodes (the CCBOARD_NODES rows until pairing exists, then the paired ones)
-   and Found on your tailnet (GET /api/nodes/discover). The frame is built once per visit and the sections are patched in place, so a poll or an answer never recreates the
+/* Settings > Nodes > pairing (issue #135): the paired nodes and the activity (GET /api/nodes, /api/nodes/pairs, /api/nodes/audit), the two sheets and the three actions on a pair.
+
+   Create pairing code (POST /api/nodes/pair-code {scopes, minutes}) shows the code once, large, with Copy and a countdown, and says that closing the sheet does not cancel the
+   code (Cancel code does, DELETE /api/nodes/pair-code). Add node (POST /api/nodes {url, code, handle?, both_ways}) takes the address of the other board and the code typed or
+   pasted from it. Rotate token (POST /api/nodes/<peer>/rotate) keeps the old token for 60 s on the other side and says so; Remove and Revoke (DELETE /api/nodes/<peer>) work even
+   when the other node is offline and say when it was not told. All three are two-tap confirmButtons.
+
+   A code is in this file only as the text of the open sheet (settingsNdSheet.code and the output node): it is never put in storage, a URL, a toast or a log, and closing the sheet
+   empties every node and the variable. A token is never in this file at all: the board's answers to rotate and add carry none that this page reads. The one timer here is the
+   countdown of an open sheet; it is cleared when the sheet closes, the code runs out, or the page goes away. */
+const settingsNdPeers = { nodes: null, pairs: null, audit: null, err: '', at: 0, now: null, busy: false, seq: 0, act: {}, rotated: {} };
+const settingsNdSheet = { shell: null, timer: null, tick: null, deadline: 0, code: '', opener: null, scopes: null, minutes: NodeView.CODE_DEFAULT_MINUTES };
+
+/* This board's clock for ages in the pair lists: the answer's own `now` or `at` plus what has passed here since, else the browser's. */
+function settingsNdNow() { return NodeView.boxNow(settingsNdPeers.now, settingsNdPeers.at, Date.now()); }
+
+/* The pairs this board calls (direction 'out', and the legacy rows the registry imported) and the ones that call this board. A revoked pair is not listed. */
+function settingsNdOut() {
+  return NodeView.list(settingsNdPeers.nodes, 'nodes', 'peers', 'rows').filter((r) => r.direction !== 'in' && !r.revoked_at);
+}
+function settingsNdIn() {
+  const P = settingsNdPeers;
+  const seen = new Set();
+  const out = [];
+  for (const r of [...NodeView.list(P.pairs, 'pairs', 'rows', 'nodes'), ...NodeView.list(P.nodes, 'pairs'), ...NodeView.list(P.nodes, 'nodes', 'peers', 'rows').filter((x) => x.direction === 'in')]) {
+    const k = NodeView.peer(r).key;
+    if (r.revoked_at || !k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(r);
+  }
+  return out;
+}
+
+/* The two-tap confirm armed on this pair, if any ('node-rot:<id>', 'node-rm:<id>', 'node-rv:<id>'): part of the row's signature, so arming repaints the row. */
+function settingsNdArmed(id) {
+  const c = String(ui.confirm || '');
+  return c.startsWith('node-') && c.endsWith(`:${id}`) ? c : '';
+}
+
+function settingsNdToast(msg, kind) {
+  if (typeof pageToast === 'function') pageToast(msg, kind || 'ok');
+  else if (typeof toast === 'function') toast(msg, { kind: kind || 'ok' });
+}
+
+/* The three lists in one go. A failed list keeps the last good one on screen and the page says so; a newer ask makes an older answer stale. */
+async function settingsNdLoadPeers() {
+  const P = settingsNdPeers;
+  const mine = ++P.seq;
+  P.busy = true;
+  const ask = async (path) => { try { return { v: await api('GET', path) }; } catch (e) { return { err: (e && e.message) || 'the board did not answer' }; } };
+  const [n, p, a] = await Promise.all([ask('/api/nodes'), ask('/api/nodes/pairs'), ask('/api/nodes/audit?limit=50')]);
+  if (mine !== P.seq) return false;
+  P.busy = false;
+  P.err = n.err || p.err || a.err || '';
+  if (n.err === undefined) { P.nodes = n.v === undefined || n.v === null ? {} : n.v; P.at = Date.now(); P.now = n.v && typeof n.v === 'object' ? (n.v.now || n.v.at || null) : null; }
+  if (p.err === undefined) P.pairs = p.v === undefined || p.v === null ? {} : p.v;
+  if (a.err === undefined) P.audit = a.v === undefined || a.v === null ? {} : a.v;
+  settingsNd.rev++;
+  settingsFill('nodes', true);
+  return true;
+}
+
+function settingsNdOpenPeers() {
+  const P = settingsNdPeers;
+  if (P.busy) return;
+  if (P.nodes !== null && Date.now() - P.at < NodeView.STALE_S * 1000) return;
+  settingsNdLoadPeers();
+}
+
+function settingsNdBusy(id, word) {
+  const P = settingsNdPeers;
+  if (word) P.act[id] = word; else delete P.act[id];
+  settingsNd.rev++;
+  settingsFill('nodes', true);
+}
+
+/* Rotate: the other node keeps the old token for 60 s and this board saves the new one; nothing about either token comes back to this page. */
+async function settingsNdRotate(p) {
+  if (settingsNdPeers.act[p.id]) return;
+  settingsNdBusy(p.id, 'rotate');
+  try {
+    const r = await api('POST', `/api/nodes/${encodeURIComponent(p.id)}/rotate`);
+    const grace = r && Number.isFinite(r.grace_s) && r.grace_s > 0 && r.grace_s <= 3600 ? Math.round(r.grace_s) : NodeView.ROTATE_GRACE_S;
+    settingsNdPeers.rotated[p.id] = Date.now();
+    settingsNdToast(`Token for ${p.name} rotated. The old one still works for ${grace} seconds.`);
+  } catch (e) { settingsNdToast(`Token for ${p.name} not rotated: ${e.message}`, 'warn'); }
+  settingsNdBusy(p.id, '');
+  await settingsNdLoadPeers();
+}
+
+/* Remove (a pair this board calls) and Revoke (one that calls this board) are the same request. The board never fails it because the other node is offline; it says when that
+   node was not told (the answer's peer_notified, or notified, false). */
+async function settingsNdRemove(p, revoke) {
+  if (settingsNdPeers.act[p.id]) return;
+  settingsNdBusy(p.id, revoke ? 'revoke' : 'remove');
+  try {
+    const r = await api('DELETE', `/api/nodes/${encodeURIComponent(p.id)}`);
+    const told = r && typeof r === 'object' ? (r.peer_notified !== undefined ? r.peer_notified : r.notified) : undefined;
+    if (revoke) settingsNdToast(`${p.name} can no longer call this board.`);
+    else settingsNdToast(told === false ? `${p.name} removed. It was not told (offline or no answer), so remove this board there too.` : `${p.name} removed.`, told === false ? 'warn' : 'ok');
+  } catch (e) { settingsNdToast(`${p.name} not ${revoke ? 'revoked' : 'removed'}: ${e.message}`, 'warn'); }
+  settingsNdBusy(p.id, '');
+  await settingsNdLoadPeers();
+}
+
+/* The actions of a pair row: Rotate token and Remove (a pair this board calls), Revoke (one that calls it), or just Pair for a legacy row. */
+function settingsNdPeerActions(rec, incoming) {
+  const p = NodeView.peer(rec);
+  const busy = settingsNdPeers.act[p.id];
+  const wait = (word) => el('button', { class: 'danger', type: 'button', disabled: true, text: word });
+  if (incoming) return busy ? [wait('Revoking…')] : [confirmButton(`node-rv:${p.id}`, 'Revoke', () => settingsNdRemove(p, true), false)];
+  if (p.legacy) {
+    const pair = el('button', { class: 'primary tinted', type: 'button', 'aria-label': `Pair ${p.name}`, text: 'Pair' });
+    pair.addEventListener('click', () => settingsNdAddSheet(pair, rec.url));
+    return [pair];
+  }
+  return [busy === 'rotate' ? wait('Rotating…') : confirmButton(`node-rot:${p.id}`, 'Rotate token', () => settingsNdRotate(p), false),
+    busy === 'remove' ? wait('Removing…') : confirmButton(`node-rm:${p.id}`, 'Remove', () => settingsNdRemove(p, false), false)];
+}
+
+/* Empty everything the sheet holds, stop its timer, and give the focus back to what opened it (or to Add node when that row was repainted away). */
+function settingsNdSheetGone(shell) {
+  const s = settingsNdSheet;
+  if (s.timer) { clearInterval(s.timer); s.timer = null; }
+  s.code = '';
+  s.tick = null;
+  s.deadline = 0;
+  shell.dlg.textContent = '';
+  if (s.shell === shell) s.shell = null;
+  const o = s.opener;
+  s.opener = null;
+  const back = o && o.isConnected !== false ? o : (settingsNd.ui && settingsNd.ui.addBtn) || null;
+  if (back && typeof back.focus === 'function') back.focus();
+}
+
+/* append() with the empty slots left out (a bare null would be written into the page as the word "null"). */
+function settingsNdPut(host, ...kids) { host.append(...kids.filter((k) => k !== null && k !== undefined && k !== false)); }
+
+function settingsNdSheetClose() { if (settingsNdSheet.shell) settingsNdSheet.shell.close(); }
+
+function settingsNdScopeRows(checks, chosen) {
+  return NodeView.SCOPES.map((sc) => {
+    const c = el('input', { type: 'checkbox', 'data-scope': sc.id });
+    c.checked = chosen ? chosen.includes(sc.id) : sc.on;
+    checks[sc.id] = c;
+    return el('label', { class: 'set-check set-pref' }, c, el('span', { class: 'set-pref-t' }, el('b', { text: sc.label }), el('span', { class: 'dim', text: sc.what })));
+  });
+}
+
+/* Create pairing code: the form (what the other node may do, how long the code works), then the code. */
+function settingsNdCodeSheet(opener) {
+  settingsNdSheetClose();
+  const s = settingsNdSheet;
+  s.opener = opener || null;
+  let shell = null;
+  shell = modalShell('qr-editor readout nd-sheet', 'Create pairing code', () => settingsNdSheetGone(shell));
+  s.shell = shell;
+  const box = el('div', { class: 'qr-box' });
+  shell.dlg.append(box);
+  const stop = () => { if (s.timer) { clearInterval(s.timer); s.timer = null; } };
+  const title = () => el('h2', { class: 'qr-title', text: 'Create pairing code' });
+
+  function form(note) {
+    stop();
+    s.code = '';
+    box.textContent = '';
+    const checks = {};
+    const scopeField = field('What the other node may do here', el('div', { class: 'nd-scopes' }, settingsNdScopeRows(checks, s.scopes)));
+    const mins = selectEl(NodeView.CODE_MINUTES.map((m) => [String(m), m === 1 ? '1 minute' : `${m} minutes`]), String(s.minutes));
+    const minField = field('The code works for', mins);
+    const err = el('p', { class: 'qr-err bad', role: 'alert' });
+    const create = el('button', { class: 'primary', type: 'submit', text: 'Create code' });
+    const f = el('form', { class: 'nd-form', novalidate: true, onsubmit: (e) => { e.preventDefault(); go(); } }, scopeField, minField, err,
+      el('div', { class: 'qr-actions' }, el('button', { type: 'button', onclick: () => shell.close(), text: 'Cancel' }), create));
+    settingsNdPut(box, title(), el('p', { class: 'qr-hint dim', text: 'Make a one-time code, then type it on the other board under Settings, Nodes, Add node. Nothing is allowed until it is used, and you choose what the other node may do.' }),
+      note ? el('p', { class: 'qr-hint warn', role: 'status', text: note }) : null, f);
+    async function go() {
+      if (create.disabled) return;
+      const scopes = NodeView.SCOPES.map((x) => x.id).filter((id) => checks[id].checked);
+      s.scopes = scopes;
+      s.minutes = parseInt(mins.value, 10) || NodeView.CODE_DEFAULT_MINUTES;
+      if (!scopes.length) { fieldError(scopeField, 'Pick at least one thing the other node may do.'); return; }
+      fieldError(scopeField, '');
+      err.textContent = '';
+      create.disabled = true;
+      create.textContent = 'Creating…';
+      const sent = Date.now();
+      let r = null;
+      try { r = await api('POST', '/api/nodes/pair-code', { scopes, minutes: s.minutes }); } catch (e) { err.textContent = `No code was made: ${e.message}`; }
+      const code = r && typeof r === 'object' && typeof r.code === 'string' ? NodeView.formatCode(r.code) : '';
+      if (s.shell !== shell) {                                          // closed while the board was making it: nobody will see this code, so do not leave it live
+        if (code) { try { await api('DELETE', '/api/nodes/pair-code'); } catch (_) { /* it ends by itself */ } }
+        return;
+      }
+      create.disabled = false;
+      create.textContent = 'Create code';
+      if (!r) return;
+      if (!code) { err.textContent = 'The board answered without a code.'; return; }
+      const granted = r && Array.isArray(r.scopes) ? NodeView.scopeList(r.scopes) : scopes;
+      show(code, sent + s.minutes * 60000, granted);
+      settingsNdLoadPeers();
+    }
+  }
+
+  function show(code, deadline, granted) {
+    stop();
+    s.code = code;
+    s.deadline = deadline;
+    box.textContent = '';
+    const out = el('output', { class: 'nd-code', 'aria-label': 'Pairing code', text: code });
+    const count = el('div', { class: 'dim nd-count', role: 'timer' });
+    const err = el('p', { class: 'qr-err bad', role: 'alert' });
+    const cancel = el('button', { type: 'button', text: 'Cancel code', onclick: cancelCode });
+    const url = settingsNdSelfUrl();
+    settingsNdPut(box, title(),
+      el('p', { class: 'qr-hint dim', text: 'On the other board open Settings, Nodes, Add node, and type this code with the address of this board. It works once.' }),
+      el('div', { class: 'nd-code-row' }, out, copyButton(code, 'pairing code')),
+      el('div', { class: 'dim nd-granted', text: `It lets that node use: ${granted.length ? granted.join(', ') : 'nothing'}.` }),
+      url ? el('div', { class: 'nd-addr' }, el('span', { class: 'dim', text: 'This board' }), el('code', { text: url }), copyButton(url, 'address')) : null,
+      count, el('p', { class: 'qr-hint dim', text: 'Closing this sheet does not cancel the code. Cancel code does.' }), err,
+      el('div', { class: 'qr-actions' }, cancel, el('button', { class: 'primary', type: 'button', onclick: () => shell.close(), text: 'Done' })));
+    const tick = () => {
+      const left = s.deadline - Date.now();
+      if (left <= 0) { expired(); return; }
+      count.textContent = `Ends in ${NodeView.countdown(left)}`;
+    };
+    async function cancelCode() {
+      cancel.disabled = true;
+      err.textContent = '';
+      try { await api('DELETE', '/api/nodes/pair-code'); } catch (e) {
+        err.textContent = `The code was not cancelled: ${e.message}. It still works until it ends.`;
+        cancel.disabled = false;
+        return;
+      }
+      settingsNdToast('Pairing code cancelled.');
+      shell.close();
+      settingsNdLoadPeers();
+    }
+    s.tick = tick;                                                    // the interval calls it; a test calls it to move the clock on
+    tick();
+    if (s.code) {
+      s.timer = setInterval(tick, 1000);
+      if (s.timer && typeof s.timer.unref === 'function') s.timer.unref();
+    }
+  }
+
+  function expired() {
+    stop();
+    s.code = '';
+    box.textContent = '';
+    settingsNdPut(box, title(), el('p', { class: 'qr-hint warn', role: 'status', text: 'This code has run out. It can no longer pair anything.' }),
+      el('div', { class: 'qr-actions' }, el('button', { type: 'button', onclick: () => shell.close(), text: 'Done' }), el('button', { class: 'primary', type: 'button', onclick: () => form(''), text: 'Create a new code' })));
+    settingsNdLoadPeers();
+  }
+
+  form('');
+  shell.show();
+  return shell;
+}
+
+/* This board's own address for the other board to type, when the node card has one. */
+function settingsNdSelfUrl() {
+  const n = typeof state !== 'undefined' && state && state.node && typeof state.node === 'object' ? state.node : null;
+  return n && typeof n.url === 'string' && NodeView.address(n.url).url ? NodeView.address(n.url).url : '';
+}
+
+/* Add node: the address of the other board and the code it shows. A refusal shows beside the field it belongs to and keeps everything typed. */
+function settingsNdAddSheet(opener, prefill) {
+  settingsNdSheetClose();
+  const s = settingsNdSheet;
+  s.opener = opener || null;
+  let shell = null;
+  shell = modalShell('qr-editor readout nd-sheet', 'Add node', () => settingsNdSheetGone(shell));
+  s.shell = shell;
+  const url = el('input', { type: 'text', class: 'nd-addr-in', inputmode: 'url', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', placeholder: 'https://box.example.ts.net' });
+  const code = el('input', { type: 'text', class: 'nd-code-in', autocomplete: 'off', autocapitalize: 'characters', spellcheck: 'false', maxlength: '24', placeholder: 'XXXXX-XXXXX' });
+  const handle = el('input', { type: 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', maxlength: '31', placeholder: 'box' });
+  const both = el('input', { type: 'checkbox' });
+  if (typeof prefill === 'string' && prefill) url.value = prefill;
+  const addrF = field('Address of the other board', url, 'The https address the other board answers on over the tailnet.');
+  const codeF = field('Pairing code', code, 'The code the other board shows under Create pairing code. Paste it or type it.');
+  const handleF = field('Short name (optional)', handle, 'Used in addresses, like box. Letters, numbers and dashes. Leave it empty to use the node\'s own name.');
+  const bothRow = el('label', { class: 'set-check set-pref' }, both, el('span', { class: 'set-pref-t' }, el('b', { text: 'Also let that node control this one' }),
+    el('span', { class: 'dim', text: 'It gets Read and Tasks on this board. Leave it off to control the other node from here only.' })));
+  const err = el('p', { class: 'qr-err bad', role: 'alert' });
+  const pair = el('button', { class: 'primary', type: 'submit', text: 'Pair' });
+  code.addEventListener('change', () => { const c = NodeView.code(code.value); if (c.code) code.value = c.code; });
+  const fields = { address: addrF, code: codeF, handle: handleF };
+  const form = el('form', { class: 'nd-form', novalidate: true, onsubmit: (e) => { e.preventDefault(); go(); } }, addrF, codeF, handleF, bothRow, err,
+    el('div', { class: 'qr-actions' }, el('button', { type: 'button', onclick: () => shell.close(), text: 'Cancel' }), pair));
+  shell.dlg.append(el('div', { class: 'qr-box' }, el('h2', { class: 'qr-title', text: 'Add node' }),
+    el('p', { class: 'qr-hint dim', text: 'Pair this board with another one. On the other board open Settings, Nodes and press Create pairing code, then type its address and code here.' }), form));
+  async function go() {
+    if (pair.disabled) return;
+    const a = NodeView.address(url.value);
+    const c = NodeView.code(code.value);
+    const h = NodeView.handle(handle.value);
+    fieldError(addrF, a.err);
+    fieldError(codeF, c.err);
+    fieldError(handleF, h.err);
+    err.textContent = '';
+    if (a.err || c.err || h.err) { const bad = a.err ? addrF : c.err ? codeF : handleF; fieldError(bad, a.err || c.err || h.err, true); return; }
+    pair.disabled = true;
+    pair.textContent = 'Pairing…';
+    let r = null;
+    let fail = null;
+    try { r = await api('POST', '/api/nodes', { url: a.url, code: c.code, ...(h.handle ? { handle: h.handle } : {}), both_ways: !!both.checked }); } catch (e) { fail = e; }
+    pair.disabled = false;
+    pair.textContent = 'Pair';
+    if (fail) {
+      const msg = fail.status === 429 ? 'Too many tries. Wait a minute, then try again.' : (fail.message || 'the board refused');
+      const which = NodeView.errField(fail.status, msg, fail.body && fail.body.reason);
+      if (which) fieldError(fields[which], msg, true); else err.textContent = `Not paired: ${msg}`;
+      settingsNdLoadPeers();
+      return;
+    }
+    const row = r && typeof r === 'object' ? r : {};
+    const name = NodeView.str(row.name || row.handle, 60) || NodeView.hostOf(a.url);
+    code.value = '';
+    shell.close();
+    settingsNdToast(row.callback_unverified === true ? `Paired with ${name}, but its own address did not confirm who it is.` : `Paired with ${name}.`, row.callback_unverified === true ? 'warn' : 'ok');
+    settingsNdLoadPeers();
+  }
+  shell.show();
+  if (typeof coarsePointer !== 'function' || !coarsePointer()) (prefill ? code : url).focus();
+  return shell;
+}
+
+/* Settings > Nodes (issue #134): the sections. This node (the card of state.node), Paired nodes (the pairs of #135 and, until they are paired, the CCBOARD_NODES rows), Found on
+   your tailnet (GET /api/nodes/discover), Who can control this node and Activity (both #135, above). The frame is built once per visit and the sections are patched in place, so a poll or an answer never recreates the
    Refresh button under a finger: it keeps its focus, and a found row is repainted only when what it shows changed (keyed by the Tailscale id). The tailnet is asked about
    only when a person opens this tab (a plain GET: the board answers from its last look) or presses Refresh (?refresh=1: the board looks again). No timer, no poll: the
    page script never asks while this tab is closed or the page is hidden, and a board with no tailnet answers once with a plain reason. Everything the board's answer
    says about a device is shown through textContent (NodeView in nodes.js) and nothing in it is ever opened or followed. */
 const settingsNd = { data: null, at: 0, err: '', busy: false, seq: 0, rev: 0, ui: null };
-const SETTINGS_ND_PAIR_WHY = 'Pairing comes in the next release';
 
 /* A device's agents as [{id, name, version, ok}] from the full card (a list) or from this board's state.agents (a map); only installed ones. */
 function settingsNdAgents(st) {
@@ -237,22 +564,100 @@ function settingsNdPaintThis(host, st) {
   if (l && Number.isFinite(l.cap) && Number.isFinite(l.free)) host.append(settingsKv('Free lanes', el('span', { class: 'v', text: `${l.free} of ${l.cap}` }), el('span', { class: 'dim', text: 'A lane is a task slot: tasks sent here wait when none is free.' })));
 }
 
-/* Paired nodes: until pairing exists these are the CCBOARD_NODES rows (their https-only Open link and offline text as they always were). */
+/* Keep a list of keyed rows up to date without recreating the ones that did not change (a button under a finger keeps its node): `sigOf` says what a row shows. */
+function settingsNdPatch(host, items, keyOf, sigOf, build) {
+  const old = new Map([...host.children].map((n) => [n.getAttribute('data-key'), n]));
+  const seen = new Set();
+  let i = 0;
+  for (const it of items) {
+    const key = keyOf(it);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const sig = sigOf(it);
+    let node = old.get(key);
+    if (!node || node.ccSig !== sig) {
+      const fresh = build(it);
+      fresh.ccSig = sig;
+      fresh.setAttribute('data-key', key);
+      if (node) { host.insertBefore(fresh, node); node.remove(); }
+      node = fresh;
+    }
+    old.delete(key);
+    if (host.children[i] !== node) host.insertBefore(node, host.children[i] || null);
+    i++;
+  }
+  for (const gone of old.values()) gone.remove();
+}
+
+/* An empty-list sentence: present only while the list is empty (not just hidden), so it is never read out or found beside rows. */
+function settingsNdEmpty(node, show, words) {
+  node.classList.toggle('hidden', !show);
+  node.textContent = show ? words : '';
+}
+
+/* The CCBOARD_NODES rows. The board keeps them as read only `legacy` rows of the registry too, but the state's own row (state.nodes.value) is the one that carries the health
+   line and the https-only Open link, so it is the one shown for an address; the registry's legacy row is shown only when the state has none for that address. Once the same address
+   is really paired both legacy rows go: the pair replaces them. */
+function settingsNdPairedOut() { return settingsNdOut().filter((r) => r.legacy !== true); }
+function settingsNdLegacyRows(st) {
+  const list = (st.nodes && Array.isArray(st.nodes.value)) ? st.nodes.value : [];
+  const paired = settingsNdPairedOut();
+  return list.filter((x) => x && typeof x === 'object' && !NodeView.isPaired({ url: x.url, node_id: x.node_id }, paired));
+}
+function settingsNdRegistryLegacy(st, shown) {
+  const paired = settingsNdPairedOut();
+  return settingsNdOut().filter((r) => r.legacy === true && !NodeView.isPaired({ url: r.url, node_id: r.node_id }, paired) && !shown.some((x) => NodeView.isPaired({ url: x.url, node_id: x.node_id }, [r])));
+}
+
 function settingsNdLegacy(x) {
   const h = x.health || {};
   const txt = x.online
     ? `${x.sessions} sess · ${x.attention} need you${typeof h.cpu_pct === 'number' ? ' · cpu ' + h.cpu_pct + '%' : ''}${h.mem ? ' · ram ' + h.mem.pct + '%' : ''}${h.disk ? ' · disk ' + h.disk.pct + '%' : ''}${x.usage && x.usage.five_hour ? ' · 5h ' + Math.round(x.usage.five_hour.used_percentage) + '%' : ''}`
     : 'offline' + (x.error ? ' · ' + String(x.error).slice(0, 60) : '');
   const safe = /^https:\/\/[A-Za-z0-9.-]+(:\d+)?$/.test(x.url || '');
-  return settingsKv(x.name, el('span', { class: x.online ? (x.attention ? 'v warn' : 'v') : 'v bad', text: txt }),
-    safe ? el('a', { class: 'btn small', href: x.url + '/', target: '_blank', rel: 'noopener', title: x.url, text: 'Open' }) : null);
+  const pair = el('button', { class: 'primary tinted', type: 'button', 'aria-label': `Pair ${x.name || 'this node'}`, text: 'Pair' });
+  pair.addEventListener('click', () => settingsNdAddSheet(pair, safe ? x.url : ''));
+  return settingsKv(x.name, el('span', { class: x.online ? (x.attention ? 'v warn' : 'v') : 'v bad', text: txt }), el('span', { class: 'dim', text: 'read only, pair to enable actions' }),
+    safe ? el('a', { class: 'btn small', href: x.url + '/', target: '_blank', rel: 'noopener', title: x.url, text: 'Open' }) : null, pair);
 }
 
-function settingsNdPaintPaired(host, st) {
-  host.textContent = '';
-  const list = (st.nodes && Array.isArray(st.nodes.value)) ? st.nodes.value : [];
-  if (!list.length) { host.append(el('div', { class: 'dim', text: 'No other nodes are configured. Pairing comes in the next release.' })); return; }
-  for (const x of list) if (x && typeof x === 'object') host.append(settingsNdLegacy(x));
+function settingsNdPaintPaired(nu, st) {
+  const P = settingsNdPeers;
+  const now = settingsNdNow();
+  const minute = Math.floor(Date.now() / 60000);
+  const kv = settingsNdLegacyRows(st);
+  const items = [...settingsNdPairedOut().map((rec) => ({ rec })), ...kv.map((x) => ({ legacy: x })), ...settingsNdRegistryLegacy(st, kv).map((rec) => ({ rec }))];
+  nu.pairedStatus.textContent = P.err ? `Could not read the paired list: ${P.err}. ${P.nodes !== null ? 'The list below is the last answer.' : ''}` : '';
+  nu.pairedStatus.classList.toggle('hidden', !P.err);
+  settingsNdPatch(nu.pairedList, items, (it) => (it.legacy ? `legacy:${it.legacy.url || it.legacy.name}` : NodeView.peer(it.rec).key),
+    (it) => {
+      if (it.legacy) return JSON.stringify([it.legacy, minute]);
+      const id = NodeView.peer(it.rec).id;
+      const rot = P.rotated[id] && Date.now() - P.rotated[id] < (NodeView.ROTATE_GRACE_S + 15) * 1000 ? Math.floor(Date.now() / 15000) : 0;
+      return JSON.stringify([it.rec, minute, P.act[id] || '', settingsNdArmed(id), rot]);
+    },
+    (it) => (it.legacy ? settingsNdLegacy(it.legacy)
+      : NodeView.peerRow(it.rec, { nowMs: now, actions: settingsNdPeerActions(it.rec, false), rotatedMs: P.rotated[NodeView.peer(it.rec).id] || 0 })));
+  settingsNdEmpty(nu.pairedEmpty, !items.length && !(P.nodes === null && !P.err), 'No node is paired. Press Add node and type the address and code the other board shows, or press Pair on a device found below.');
+}
+
+function settingsNdPaintIncoming(nu) {
+  const P = settingsNdPeers;
+  const now = settingsNdNow();
+  const minute = Math.floor(Date.now() / 60000);
+  const items = settingsNdIn();
+  settingsNdPatch(nu.inList, items, (rec) => NodeView.peer(rec).key, (rec) => JSON.stringify([rec, minute, P.act[NodeView.peer(rec).id] || '', settingsNdArmed(NodeView.peer(rec).id)]),
+    (rec) => NodeView.peerRow(rec, { nowMs: now, incoming: true, actions: settingsNdPeerActions(rec, true) }));
+  settingsNdEmpty(nu.inEmpty, !items.length && !(P.pairs === null && P.nodes === null), 'No node can control this board. Press Create pairing code, then type the code on the other board.');
+}
+
+function settingsNdPaintAudit(nu) {
+  const P = settingsNdPeers;
+  const now = settingsNdNow();
+  const minute = Math.floor(Date.now() / 60000);
+  const items = NodeView.list(P.audit, 'rows', 'audit', 'events').slice(0, 25).map((r, i) => NodeView.audit(r, i));
+  settingsNdPatch(nu.auditList, items, (a) => a.key, (a) => JSON.stringify([a, minute]), (a) => NodeView.auditRow(a, now));
+  settingsNdEmpty(nu.auditEmpty, !items.length && P.audit !== null, 'Nothing yet. Making a code, pairing, rotating and removing show here.');
 }
 
 /* The line under a Tailscale that cannot be read, chosen from the words of the board's own reason (app/nodes_discovery.py read_tailscale; the reason already names the
@@ -286,7 +691,7 @@ function settingsNdPaintFound(ui, st) {
   ui.problem.textContent = '';
   ui.problem.classList.toggle('hidden', !down);
   if (down) ui.problem.append(el('div', { class: 'set-err', role: 'alert', text: String(ts.reason || 'Tailscale is not available on this device').slice(0, 300) }), settingsNdFix(String(ts.reason || '')));
-  const paired = (st.nodes && Array.isArray(st.nodes.value)) ? st.nodes.value : [];
+  const paired = [...((st.nodes && Array.isArray(st.nodes.value)) ? st.nodes.value : []), ...settingsNdOut()];          // the CCBOARD_NODES rows and the pairs of the registry: a found device is listed once
   const seen = new Set();
   const rows = [];
   for (const r of (d && !down && Array.isArray(d.rows)) ? d.rows : []) {
@@ -304,8 +709,12 @@ function settingsNdPaintFound(ui, st) {
     const sig = NodeView.sig(r, bucket);
     let node = old.get(key);
     if (!node || node.ccSig !== sig) {
-      const pair = NodeView.state(r) === 'found'
-        ? el('button', { class: 'primary tinted', type: 'button', disabled: true, 'aria-label': `Pair ${r.name || 'this device'}: ${SETTINGS_ND_PAIR_WHY.toLowerCase()}`, title: SETTINGS_ND_PAIR_WHY, text: 'Pair' }) : null;
+      let pair = null;
+      if (NodeView.state(r) === 'found') {                                // Pair opens the Add node sheet with the address that answered; the code is typed there
+        pair = el('button', { class: 'primary tinted', type: 'button', 'aria-label': `Pair ${r.name || 'this device'}`, text: 'Pair' });
+        const btn = pair;
+        btn.addEventListener('click', () => settingsNdAddSheet(btn, typeof r.url === 'string' ? r.url : ''));
+      }
       const fresh = NodeView.row(r, { nowMs: boxMs, action: pair });
       fresh.ccSig = sig;
       if (node) { ui.list.insertBefore(fresh, node); node.remove(); }
@@ -320,19 +729,37 @@ function settingsNdPaintFound(ui, st) {
 function settingsNdUi() {
   if (settingsNd.ui) return settingsNd.ui;
   const ui = {
-    thisHost: el('div', { class: 'nd-sec' }), pairedHost: el('div', { class: 'nd-sec' }),
+    thisHost: el('div', { class: 'nd-sec' }),
+    pairedStatus: el('div', { class: 'dim nd-pstatus bad hidden', role: 'status' }),
+    pairedList: el('div', { class: 'nd-list' }),
+    pairedEmpty: el('div', { class: 'dim nd-pempty hidden' }),
     status: el('div', { class: 'dim nd-status', role: 'status', 'aria-live': 'polite' }),
     problem: el('div', { class: 'nd-problem hidden' }),
     empty: el('div', { class: 'dim nd-empty hidden' }),
     list: el('div', { class: 'nd-list' }),
+    inList: el('div', { class: 'nd-list' }),
+    inEmpty: el('div', { class: 'dim nd-pempty hidden' }),
+    auditList: el('div', { class: 'nd-list' }),
+    auditEmpty: el('div', { class: 'dim nd-pempty hidden' }),
   };
   ui.refresh = el('button', { class: 'minimal', type: 'button', title: 'Look at the tailnet again now', 'aria-busy': 'false', text: 'Refresh', onclick: () => settingsNdLoad(true) });
+  ui.addBtn = el('button', { type: 'button', title: 'Pair with another board using its code', text: 'Add node' });
+  ui.addBtn.addEventListener('click', () => settingsNdAddSheet(ui.addBtn, ''));
+  ui.codeBtn = el('button', { type: 'button', title: 'Make a one-time code to type on another board', text: 'Create pairing code' });
+  ui.codeBtn.addEventListener('click', () => settingsNdCodeSheet(ui.codeBtn));
+  ui.reload = el('button', { class: 'minimal', type: 'button', title: 'Read the paired nodes and the activity again', text: 'Reload', onclick: () => settingsNdLoadPeers() });
   ui.root = el('div', { class: 'nd-panel' },
     settingsHead('This node'), ui.thisHost,
-    settingsHead('Paired nodes'), ui.pairedHost,
+    el('div', { class: 'nd-sec-head' }, settingsHead('Paired nodes'), ui.addBtn),
+    ui.pairedStatus, ui.pairedList, ui.pairedEmpty,
     el('div', { class: 'nd-sec-head' }, settingsHead('Found on your tailnet'), ui.refresh),
     el('div', { class: 'dim set-note', text: 'Finding a device gives it no access to this board: only pairing does. "On the tailnet" means the device is connected to Tailscale, not that ccboard answers there.' }),
-    ui.status, ui.problem, ui.empty, ui.list);
+    ui.status, ui.problem, ui.empty, ui.list,
+    el('div', { class: 'nd-sec-head' }, settingsHead('Who can control this node'), ui.codeBtn),
+    el('div', { class: 'dim set-note', text: 'Nodes that hold a token for this board, and what each may do. Revoke cuts one off at once.' }),
+    ui.inList, ui.inEmpty,
+    el('div', { class: 'nd-sec-head' }, settingsHead('Activity'), ui.reload),
+    ui.auditList, ui.auditEmpty);
   settingsNd.ui = ui;
   return ui;
 }
@@ -341,8 +768,10 @@ function settingsNodes(p) {
   const ui = settingsNdUi();
   if (ui.root.parentNode !== p) { p.textContent = ''; p.append(ui.root); }
   settingsNdPaintThis(ui.thisHost, state);
-  settingsNdPaintPaired(ui.pairedHost, state);
+  settingsNdPaintPaired(ui, state);
   settingsNdPaintFound(ui, state);
+  settingsNdPaintIncoming(ui);
+  settingsNdPaintAudit(ui);
 }
 
 /* GET /api/nodes/discover (refresh: ?refresh=1). A newer ask makes an older answer stale; a failed ask keeps the last good list on screen and says so. A press while one is
@@ -373,6 +802,7 @@ async function settingsNdLoad(refresh) {
 
 /* The tab was opened (mount or a tab switch): look once if nothing was fetched yet or the last answer is older than the stale mark. */
 function settingsNdOpen() {
+  settingsNdOpenPeers();
   if (settingsNd.busy) return;
   if (settingsNd.data && Date.now() - settingsNd.at < NodeView.STALE_S * 1000) return;
   settingsNdLoad(false);
@@ -380,6 +810,16 @@ function settingsNdOpen() {
 
 /* The page goes away: an answer still on its way is dropped and the frame is built again with the next visit. */
 function settingsNdDispose() {
+  settingsNdSheetClose();
+  const P = settingsNdPeers;
+  P.seq++;
+  P.busy = false;
+  P.nodes = P.pairs = P.audit = null;
+  P.err = '';
+  P.at = 0;
+  P.now = null;
+  P.act = {};
+  P.rotated = {};
   settingsNd.seq++;
   settingsNd.busy = false;
   settingsNd.ui = null;
@@ -1765,7 +2205,8 @@ function settingsSig(id, st) {
   if (id === 'notify') return JSON.stringify([st.config && st.config.ntfy, st.config && st.config.backup, st.backup, st.config && st.config.auto_continue, minute]);
   if (id === 'nodes') {                                                // the card without its clock ('now' moves with every poll), the CCBOARD_NODES rows, the tailnet list's own revision and a 15 s age bucket
     const n = st.node && typeof st.node === 'object' ? st.node : null;
-    return JSON.stringify([st.nodes, n && [n.node_id, n.name, n.os, n.lanes, n.agents], st.agents, st.node_name, settingsNd.rev, Math.floor(Date.now() / 15000)]);
+    const armed = /^node-/.test(String(ui.confirm || '')) ? ui.confirm : null;                 // the two-tap Rotate token, Remove and Revoke repaint their row
+    return JSON.stringify([st.nodes, n && [n.node_id, n.name, n.os, n.lanes, n.agents], st.agents, st.node_name, settingsNd.rev, armed, Math.floor(Date.now() / 15000)]);
   }
   if (id === 'box') return JSON.stringify([st.health, st.backup, st.node_name, st.user, st.claude_defaults, minute]);
   if (id === 'accounts') {                                             // identity and labels, not the readings: those move with every statusline and would rebuild the Rename button under a finger (they refresh with the minute)

@@ -820,7 +820,7 @@ test('#/settings picks its section from ?sec= and switches through onRoute', () 
   const panel = (id) => page(w).querySelector(`.settings-panel[data-sec=${id}]`);
   assert.equal(panel('nodes').classList.contains('hidden'), false);
   assert.equal(panel('notify').classList.contains('hidden'), true);
-  assert.match(text(panel('nodes')), /No other nodes/);
+  assert.match(text(panel('nodes')), /Paired nodesAdd node/);
   assert.equal(page(w).querySelector('.tab[data-tab=nodes]').getAttribute('aria-selected'), 'true');
   w.location.hash = '#/settings?sec=box';
   assert.equal(mounts(w, 'settings'), 1, 'onRoute, not mount');

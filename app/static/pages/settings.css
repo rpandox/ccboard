@@ -174,3 +174,49 @@ html.force-coarse #page .settings-page .cx-split button { min-height:var(--tap, 
 #page .settings-page .nd-problem { margin:8px 0 0; }
 #page .settings-page .nd-fix { display:flex; flex-wrap:wrap; align-items:center; gap:6px; font-size:13px; line-height:1.5; }
 #page .settings-page .nd-empty { margin:8px 0 0; font-size:13px; line-height:1.5; max-width:62ch; }
+
+/* Pairing (issue #135, settings.js settingsNdAddSheet / settingsNdCodeSheet): the section buttons sit at the right of their heading like Refresh; the paired and incoming rows
+   are .nd-row (pages.css) with Rotate and Remove (or Revoke) at the right, a pair that needs re-pairing has an amber edge, and Activity is a plain list. */
+#page .settings-page .nd-pstatus { margin:6px 0 0; font-size:12px; overflow-wrap:anywhere; }
+#page .settings-page .nd-pempty { margin:8px 0 0; font-size:13px; line-height:1.5; max-width:62ch; }
+#page .settings-page .nd-sec-head > .row,#page .settings-page .nd-sec-head > button { flex:none; }
+#page .settings-page .nd-sec-head + .nd-note { margin:4px 0 0; font-size:12px; line-height:1.5; }
+#page .settings-page .nd-row .nd-handle { font-family:var(--font-mono); font-size:12px; }
+#page .settings-page .nd-row.repair { border-left:2px solid var(--warn); padding-left:8px; }
+#page .settings-page .nd-row .nd-act { flex-wrap:wrap; justify-content:flex-end; gap:6px; }
+#page .settings-page .nd-row .nd-act .row { display:flex; gap:6px; }
+#page .settings-page .nd-audit { display:flex; align-items:flex-start; gap:8px; padding:6px 0; border-bottom:1px solid var(--line-soft); font-size:13px; }
+#page .settings-page .nd-audit .nd-glyph { flex:none; width:1.2em; font-family:var(--font-mono); color:var(--ok-fg); }
+#page .settings-page .nd-audit.bad .nd-glyph, #page .settings-page .nd-audit.bad .nd-audit-word { color:var(--bad-fg); }
+#page .settings-page .nd-audit-main { display:flex; flex-direction:column; gap:1px; min-width:0; overflow-wrap:anywhere; }
+#page .settings-page .nd-audit-main > .dim { font-size:12px; line-height:1.45; }
+#page .settings-page .nd-audit-word { font-weight:500; }
+@media (pointer:coarse) { #page .settings-page .nd-row .nd-act .bp5-button, #page .settings-page .nd-sec-head > button { min-height:var(--tap); } }
+@media (max-width:599px) { #page .settings-page .nd-row .nd-act { width:100%; justify-content:flex-start; } }
+
+/* The two sheets are <dialog>s on the body (dialog.qr-editor.readout, style.css), so the form rules above that are scoped to the page are repeated for them here. The code is
+   large mono type that selects whole with one tap; the countdown is quiet text (role timer, never announced), and nothing in the sheet is wider than a 390 px screen. */
+dialog.nd-sheet .qr-box { overflow-y:auto; overscroll-behavior:contain; }
+dialog.nd-sheet .nd-form { display:flex; flex-direction:column; gap:10px; min-width:0; }
+dialog.nd-sheet .field { display:flex; flex-direction:column; gap:6px; min-width:0; }
+dialog.nd-sheet .field-label { margin:0; font-size:13px; font-weight:400; color:var(--fg-2); }
+dialog.nd-sheet .field input[type=text], dialog.nd-sheet .field select { width:100%; min-width:0; }
+dialog.nd-sheet .field select { max-width:220px; }
+dialog.nd-sheet .nd-code-in, dialog.nd-sheet .nd-addr-in { font-family:var(--font-mono); }
+dialog.nd-sheet .nd-code-in { letter-spacing:.08em; text-transform:uppercase; }
+dialog.nd-sheet .set-check { display:flex; align-items:center; gap:8px; margin:6px 0 0; min-height:var(--tap); font-size:13px; color:var(--fg); cursor:pointer; }
+dialog.nd-sheet .set-check input, dialog.nd-sheet .set-check .bp5-control-indicator { flex:none; }
+dialog.nd-sheet .set-check input:checked ~ .bp5-control-indicator::before { background-image:none; content:''; display:block; box-sizing:border-box; width:5px; height:9px; margin:1px auto 0; border:solid var(--on-sig); border-width:0 2px 2px 0; transform:rotate(45deg); }
+dialog.nd-sheet .set-pref { align-items:flex-start; margin:2px 0 0; padding:4px 0 4px 26px; }
+dialog.nd-sheet .set-pref-t { display:flex; flex-direction:column; gap:1px; min-width:0; }
+dialog.nd-sheet .set-pref-t > b { font-weight:500; }
+dialog.nd-sheet .set-pref-t > .dim { font-size:12px; line-height:1.45; }
+dialog.nd-sheet .nd-scopes { display:flex; flex-direction:column; }
+dialog.nd-sheet .nd-code-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; border:1px solid var(--line); border-radius:2px; background:var(--bg); }
+dialog.nd-sheet .nd-code { font:600 26px/1.2 var(--font-mono); letter-spacing:.12em; user-select:all; overflow-wrap:anywhere; min-width:0; }
+dialog.nd-sheet .nd-count { font-size:13px; font-variant-numeric:tabular-nums; }
+dialog.nd-sheet .nd-addr { display:flex; flex-wrap:wrap; align-items:center; gap:6px; font-size:12px; min-width:0; }
+dialog.nd-sheet .nd-addr code { font-family:var(--font-mono); overflow-wrap:anywhere; min-width:0; }
+dialog.nd-sheet .qr-actions { flex-wrap:wrap; }
+@media (pointer:coarse) { dialog.nd-sheet .field input, dialog.nd-sheet .field select { font-size:16px; } dialog.nd-sheet .nd-code { font-size:24px; } }
+@media (max-width:599px) { dialog.nd-sheet .qr-actions { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); } dialog.nd-sheet .qr-actions > .bp5-button { min-width:0; } }

@@ -30,10 +30,38 @@ Names of things on a node (issue #137), the one grammar the Python and the JavaS
   A bare tmux name is a local session. The JavaScript side (`Ref.parse`) takes any [A-Za-z0-9_-] name as the tmux part; this side takes only a
   ccboard session name (three parts joined by `--`, as the relay and the MCP tools need), so what this side accepts, that side accepts too. Addresses use the handle, not the display name, so a peer renaming itself breaks no bookmark; the
   node id is the true key in the registry. Relay routes use path parameters, so refs appear only in UI hashes and the MCP tools.
+
+Pairing (issue #135, phase P3). The contract the routes (app/main.py) and the Settings page (app/static) are written against
+  Two stores, never one
+    incoming  the pairs ANOTHER board holds with this one, because this board accepted its code. Table `node_pairs`; only the SHA-256 digest of the
+              token is kept. `mint_token`, `verify_token`, `rotate_token` and `revoke` work here. `verify_token` is what the auth middleware calls.
+    outgoing  the tokens this board RECEIVED when it paired with another board. `<data dir>/node-tokens.json` (0600, written whole and atomically,
+              a failed write keeps the old file). Only `PeerClient` reads a token out of it; no public function returns one. `save_outgoing`,
+              `drop_outgoing`, `has_outgoing`.
+    The pairing code lives in kv `node_pair_code` as a digest, an expiry, the scopes and an attempt counter. No token and no code is ever stored.
+  One key, `peer_id`: `p_` and 16 hex characters, minted here, the key of a `node_pairs` row and of a registry row. The routes' `{peer}` is a peer_id; the
+    lookup functions also accept a registry handle. Registry rows (kv `node_peers`, direction `out`) also carry `handle`, because registry() and resolve()
+    above only see rows with a valid handle. `peers()` merges both stores; a record is
+    {peer_id, node_id, name, url, scopes, created_at, last_seen, direction 'in' | 'out'} plus, for `out`: handle, last_error, needs_repair, legacy
+    and, for `in`: callback_unverified, expires_at, rotated_at. It never holds a token or a digest.
+  Scopes: SCOPES = read, tasks, sessions, permissions; a pair starts with read and tasks. NODE_ROUTES is the closed map (method, path) -> scope (or
+    SCOPE_ANY) of what a node token may call; route_scope(method, path) answers it (None = not listed = 403). The walk test in tests/test_nodes_auth.py
+    goes over every /api route.
+  Seams (all optional keyword arguments are compatible with the fixed interface): every function takes `db=None` (the running board's `main.db`, as
+    resolve() does); `_now()` is the clock (code expiry, the 60 s rotation window, the 90 day audit prune); `peer_transport`, when set, replaces the
+    HTTPS connection of every outgoing call (`transport(target, method, path, headers, body, timeout) -> (status, headers, body)`).
+  Outgoing calls: PeerClient(record).get(path) / .post(path, body) check the address rule again at the call (check_peer_url), connect to the validated
+    address, send `Authorization: Bearer <token>`, `X-CCBoard: 1` and `X-CCBoard-Node: <this node id>`, never follow a redirect, read at most RESP_MAX.
+    PairError(reason) (reasons none, wrong, expired, burned, rate_limited, bad_request, bad_url, callback_mismatch) carries .status and .payload();
+    PeerError(reason) is a failed outgoing call.
+  The handshake in one call each side: handle_pair(body, caller) on the accepting board (the route answers its dict), add_node(url, code, handle,
+    both_ways) on the calling board, rotate_outgoing(peer) / remove_node(peer) on the calling board, rotate_token(peer_id) and unpair_incoming(peer_id)
+    for the two token-authenticated routes. audit(direction, peer_id, action, ok, detail) writes a row with nothing secret in it.
 """
 from __future__ import annotations
 
 import hashlib
+import hmac
 import ipaddress
 import json
 import logging
@@ -52,8 +80,9 @@ from typing import NamedTuple
 from . import tailscale as ts
 from . import tmux
 from .config import settings
+from .db import iso
 
-log = logging.getLogger("ccboard.nodes")
+log =logging.getLogger("ccboard.nodes")
 
 APP = "ccboard"
 API_VERSION = 1
@@ -66,7 +95,7 @@ HANDLE_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,30}")
 TASK_ID_RE = re.compile(r"[0-9]{1,12}")
 LOCAL = "local"
 LANE_MODES = ("worktree", "attached")                         # a task of these modes owns a lane session; mode 'session' is a prompt handed to one
-KV_PEERS = "node_peers"                                       # the registry (issue #135 writes it); an empty or missing one means no paired node
+KV_PEERS = "node_peers"                                       # the registry of nodes this board calls (rows with a handle); empty or missing = no paired node
 SUB_KEY_LEN = 12
 LABEL_MAX = 60
 TS_TIMEOUT = 3.0                                              # seconds a request waits for `tailscale status --json`
@@ -108,6 +137,10 @@ def reset() -> None:
         _id_cache.clear()
         _warned.clear()
     hello_limiter.clear()
+    for lim in (pair_limiter, refusal_limiter, node_read_limiter, node_write_limiter):
+        lim.clear()
+    global _last_prune
+    _last_prune = None
 
 
 def _log_once(key: str, msg: str, *args) -> None:
@@ -697,3 +730,998 @@ def valid_peer_url(url, suffix, resolver=None) -> list[str] | None:
         return list(check_peer_url(url, suffix, resolver).addrs)
     except PeerUrlError:
         return None
+
+
+# ================================================================ pairing (issue #135, phase P3)
+
+SCOPES = ("read", "tasks", "sessions", "permissions")
+DEFAULT_SCOPES = ("read", "tasks")
+SCOPE_ANY = "any"                       # a route any valid pair may call, whatever its scopes (rotate and unpair: a pair may always manage itself)
+# The closed table of what a node token may call: (method, path) -> the scope it needs. A path may hold `{name}` for one segment. Every later
+# issue adds its rows here, each with a refusal test; nothing outside this table opens for a node token (the middleware answers 403).
+NODE_ROUTES: dict[tuple[str, str], str] = {
+    ("GET", "/api/node"): "read",
+    ("GET", "/api/node/summary"): "read",
+    ("POST", "/api/node/rotate"): SCOPE_ANY,
+    ("POST", "/api/node/unpair"): SCOPE_ANY,
+}
+
+TOKEN_PREFIX = "ccbnode_"
+TOKEN_RE = re.compile(r"ccbnode_[A-Za-z0-9_-]{43}")          # secrets.token_urlsafe(32) is 43 characters: 256 bits
+PEER_ID_RE = re.compile(r"p_[0-9a-f]{16}")
+TOKEN_FILE = "node-tokens.json"
+KV_CODE = "node_pair_code"
+CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"           # Crockford base32: no I, L, O, U
+CODE_LEN = 10                                                 # 10 characters of 5 bits: 50 bits
+CODE_TRIES = 5                                                # wrong tries that burn the code
+CODE_MINUTES = (1, 30)
+CODE_DEFAULT_MINUTES = 10
+PAIR_RATE = 20                                                # pair attempts per minute and source address
+ROTATE_GRACE = 60                                             # seconds the old token stays valid after a rotation
+AUDIT_DAYS = 90
+AUDIT_DETAIL_MAX = 200
+USED_EVERY = 30                                               # last_used_at / last_seen are written at most this often per pair
+READ_RATE, WRITE_RATE = 120, 30                               # per pair and minute
+BODY_MAX = 256 * 1024                                         # the largest request body a node route accepts (413 above it)
+RESP_MAX = 512 * 1024                                         # the largest answer a PeerClient reads
+CALL_TIMEOUT = 5.0
+RESERVED_HANDLES = ("local", "self")
+
+pair_limiter = _Limiter(PAIR_RATE, 60.0, 2048)               # pair attempts per source address
+refusal_limiter = _Limiter(30, 600.0, 4)                      # audit rows for refused pair attempts, whole board
+node_read_limiter = _Limiter(READ_RATE, 60.0, 2048)          # per pair
+node_write_limiter = _Limiter(WRITE_RATE, 60.0, 2048)
+_code_lock = threading.Lock()                                 # one redeem at a time: two requests cannot both spend the code
+_reg_lock = threading.RLock()                                 # the registry is read, changed and written whole
+_tok_lock = threading.Lock()                                  # the token file likewise
+_last_prune: float | None = None
+
+peer_transport = None                                         # tests set a fake: transport(target, method, path, headers, body, timeout) -> (status, headers, body)
+
+
+def _now() -> float:
+    """The clock for code expiry, the rotation window and the audit prune (epoch seconds). Tests replace it."""
+    return time.time()
+
+
+def _db(db=None):
+    if db is not None:
+        return db
+    from . import main                          # the running board's database, as resolve() does
+    return main.db
+
+
+class PairError(Exception):
+    """A pairing that did not happen. `reason` is one word the page can switch on; str() is the sentence for a person; `status` the HTTP code."""
+    STATUS = {"none": 403, "wrong": 403, "expired": 403, "burned": 403, "rate_limited": 429, "bad_request": 400, "bad_url": 400,
+              "callback_mismatch": 409, "refused": 502, "unreachable": 502, "store": 500}
+    MESSAGES = {
+        "none": "There is no active pairing code on that node. Make a new one there.",
+        "wrong": "That code is not right.",
+        "expired": "That code has expired. Make a new one on the other node.",
+        "burned": "Too many wrong tries; that code is cancelled. Make a new one on the other node.",
+        "rate_limited": "Too many tries; wait a minute.",
+        "bad_request": "The pairing request is not valid.",
+        "bad_url": "The address is not one this board may call.",
+        "callback_mismatch": "The address does not belong to the node that asked to pair.",
+        "refused": "The other node refused the pairing.",
+        "unreachable": "The other node could not be reached.",
+        "store": "The token could not be saved on this node; nothing was paired.",
+    }
+
+    def __init__(self, reason: str, retry_after: int = 0, message: str | None = None):
+        self.reason = reason if reason in self.STATUS else "refused"
+        self.retry_after = int(retry_after or 0)
+        self.message = message or self.MESSAGES[self.reason]
+        super().__init__(self.message)
+
+    @property
+    def status(self) -> int:
+        return self.STATUS[self.reason]
+
+    def payload(self) -> dict:
+        """The JSON body of the error answer; the route adds Retry-After when `retry_after` is set."""
+        return {"error": self.message, "reason": self.reason}
+
+
+class PeerError(Exception):
+    """An outgoing call that failed before an answer was usable. `reason`: url (the address rule refused it), unresolved, no_token, unreachable,
+    redirect, too_large, bad_path, store. str() holds no header, no token and no address of the peer's answer."""
+
+    def __init__(self, reason: str, message: str | None = None, unresolved: bool = False):
+        self.reason = reason
+        self.unresolved = unresolved
+        super().__init__(message or reason)
+
+
+def route_scope(method: str, path: str) -> str | None:
+    """The scope a node token needs for (method, path): a scope name or SCOPE_ANY; None when the route is not in NODE_ROUTES (the token gets a 403)."""
+    m = str(method or "").upper()
+    hit = NODE_ROUTES.get((m, path))
+    if hit is not None:
+        return hit
+    for (rm, pat), scope in NODE_ROUTES.items():
+        if rm == m and "{" in pat and re.fullmatch(re.sub(r"\{[a-z_]+\}", "[^/]+", re.escape(pat).replace("\\{", "{").replace("\\}", "}")), path):
+            return scope
+    return None
+
+
+def scope_ok(scopes, needed: str | None) -> bool:
+    """Does a pair holding `scopes` meet the scope a route needs (None = the route is not listed: never)?"""
+    return needed is not None and (needed == SCOPE_ANY or needed in (scopes or ()))
+
+
+def clean_scopes(scopes) -> list[str]:
+    """`scopes` as a list in SCOPES order, no repeats. ValueError for an empty list, a non-list or a name outside SCOPES."""
+    if not isinstance(scopes, (list, tuple)) or not scopes or not all(isinstance(x, str) for x in scopes):
+        raise ValueError("choose at least one scope")
+    bad = [x for x in scopes if x not in SCOPES]
+    if bad:
+        raise ValueError("unknown scope")
+    return [x for x in SCOPES if x in scopes]
+
+
+def _scopes_of(raw) -> list[str]:
+    try:
+        v = json.loads(raw) if isinstance(raw, str) else raw
+        return [x for x in SCOPES if x in v] if isinstance(v, list) else []
+    except ValueError:
+        return []
+
+
+def tailnet_suffix() -> str | None:
+    """This tailnet's MagicDNS suffix, which the address rule needs for a name; None when Tailscale does not say."""
+    from . import nodes_discovery               # imported here: that module imports this one
+    return nodes_discovery.magic_suffix(_ts())
+
+
+def own_claim() -> dict:
+    """What this board tells another when it pairs: {id, name, url, version}. No path, no address of this machine, no secret."""
+    return {"id": node_id(), "name": display_name(), "url": public_url(), "version": settings.image_version or None}
+
+
+# ---------------------------------------------------------------- the audit
+
+_TOKENISH = re.compile(r"cc(?:bnode|bmcp)_[A-Za-z0-9_-]{6,}")
+_CODEISH = re.compile(r"\b[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}\b")
+_HEXISH = re.compile(r"\b[0-9a-fA-F]{40,}\b")
+_last_prune_gap = 3600.0
+
+
+def _scrub(v, n: int) -> str | None:
+    """A short printable text with anything that looks like a token, a pairing code or a digest replaced. Defence in depth: callers pass no secret."""
+    if v is None:
+        return None
+    t = "".join(c for c in str(v) if c.isprintable()).strip()
+    t = _HEXISH.sub("[digest]", _CODEISH.sub("[code]", _TOKENISH.sub("[token]", t)))
+    return t[:n] or None
+
+
+def audit(direction: str, peer_id: str, action: str, ok: bool, detail: str | None = None, *, node_name: str | None = None, user: str | None = None,
+          target: str | None = None, status: str | None = None, db=None) -> None:
+    """Write one audit row (`direction` is `in` or `out`), then, at most once an hour, drop the rows older than 90 days. Never raises: the audit
+    must not break the action it describes. Nothing secret goes in: a token, a code or a digest in `detail` is replaced (so a name shaped like a pairing
+    code, `ABCDE-12345`, is replaced too), and a prompt is never passed."""
+    global _last_prune
+    try:
+        d = _db(db)
+        d.node_audit_add(at=iso(_now()), direction="out" if direction == "out" else "in", peer=str(peer_id or "")[:64],
+                         action=_scrub(action, 40) or "unknown", status=status or ("ok" if ok else "failed"), node_name=_scrub(node_name, 41),
+                         user=_scrub(user, 64), target=_scrub(target, 120), detail=_scrub(detail, AUDIT_DETAIL_MAX))
+        t = time.monotonic()
+        if _last_prune is None or t - _last_prune > _last_prune_gap:
+            _last_prune = t
+            d.node_audit_prune(iso(_now() - AUDIT_DAYS * 86400))
+    except Exception as e:
+        log.debug("audit row failed: %s", e.__class__.__name__)
+
+
+def audit_list(limit: int = 100, db=None) -> list[dict]:
+    """The newest audit rows first: {id, at, direction, peer, node_name, user, action, target, status, detail}."""
+    try:
+        rows = _db(db).node_audit_list(limit)
+    except Exception:
+        return []
+    return [{k: r[k] for k in ("id", "at", "direction", "peer", "node_name", "user", "action", "target", "status", "detail")} for r in rows]
+
+
+# ---------------------------------------------------------------- outgoing tokens: the 0600 file
+
+def tokens_path() -> Path:
+    return Path(settings.data_dir) / TOKEN_FILE
+
+
+def _read_tokens() -> dict[str, str]:
+    """{peer_id: token} from the file; {} when it is missing. A file that is there but is not what this module wrote is moved aside as
+    `node-tokens.json.bad` (still 0600), once, so a later save does not destroy it silently."""
+    p = tokens_path()
+    try:
+        raw = p.read_bytes()
+    except OSError:
+        return {}
+    try:
+        t = json.loads(raw)["tokens"]
+        return {k: v for k, v in t.items() if isinstance(k, str) and isinstance(v, str) and TOKEN_RE.fullmatch(v)}
+    except (ValueError, KeyError, TypeError, AttributeError):
+        _log_once("tokens-bad:" + str(p), "the node token file is not readable; it was set aside and the pairs need to be made again")
+        try:
+            os.replace(p, p.with_name(p.name + ".bad"))
+        except OSError:
+            pass
+        return {}
+
+
+def _write_tokens(d: dict[str, str]) -> None:
+    _write_id_file(tokens_path(), json.dumps({"v": 1, "tokens": d}, separators=(",", ":")))       # atomic, 0600, the old file stays on any failure
+
+
+def save_outgoing(peer_id: str, token: str) -> None:
+    """Keep the token another board gave this one. OSError when the file cannot be written (then nothing changed)."""
+    if not PEER_ID_RE.fullmatch(str(peer_id)) or not TOKEN_RE.fullmatch(str(token)):
+        raise ValueError("not a peer id or a token")
+    with _tok_lock:
+        d = _read_tokens()
+        d[peer_id] = token
+        _write_tokens(d)
+
+
+def drop_outgoing(peer_id: str) -> bool:
+    """Forget a token. False when there was none or the file could not be rewritten (the caller never fails for that)."""
+    with _tok_lock:
+        d = _read_tokens()
+        if peer_id not in d:
+            return False
+        del d[peer_id]
+        try:
+            if d:
+                _write_tokens(d)
+            else:
+                tokens_path().unlink()                      # the last token: no file is left behind
+        except OSError as e:
+            log.warning("could not rewrite the node token file: %s", e.__class__.__name__)
+            return False
+        return True
+
+
+def has_outgoing(peer_id: str) -> bool:
+    with _tok_lock:
+        return peer_id in _read_tokens()
+
+
+def _load_outgoing(peer_id: str) -> str | None:
+    """The only reader of a stored token: PeerClient and the unpair call use it. Private on purpose."""
+    with _tok_lock:
+        return _read_tokens().get(peer_id)
+
+
+# ---------------------------------------------------------------- the registry (outgoing rows in kv, incoming rows in node_pairs)
+
+_OUT_KEYS = ("peer_id", "handle", "node_id", "name", "url", "scopes", "created_at", "last_seen", "direction", "last_error", "needs_repair", "legacy")
+
+
+def _new_peer_id() -> str:
+    return "p_" + secrets.token_hex(8)
+
+
+def _out_rows(db) -> list[dict]:
+    try:
+        rec = db.kv_get(KV_PEERS)
+    except Exception:
+        return []
+    v = rec.get("value") if isinstance(rec, dict) else None
+    return [r for r in v if isinstance(r, dict) and PEER_ID_RE.fullmatch(str(r.get("peer_id")))] if isinstance(v, list) else []
+
+
+def _save_out(db, rows: list[dict]) -> None:
+    if rows:
+        db.kv_set(KV_PEERS, rows)
+    else:
+        db.kv_del(KV_PEERS)                       # a board with no paired node keeps no row
+
+
+def _out_view(r: dict) -> dict:
+    v = {k: r.get(k) for k in _OUT_KEYS}
+    v["direction"] = "out"
+    v["scopes"] = _scopes_of(r.get("scopes"))
+    v["needs_repair"] = bool(r.get("needs_repair"))
+    v["legacy"] = bool(r.get("legacy"))
+    return v
+
+
+def _in_view(r: dict) -> dict:
+    return {"peer_id": r["peer_id"], "node_id": r["peer_node_id"] or None, "name": r["peer_name"] or None, "url": r["peer_url"],
+            "scopes": _scopes_of(r["scopes"]), "created_at": r["created_at"], "last_seen": r["last_used_at"], "direction": "in",
+            "callback_unverified": bool(r["callback_unverified"]), "expires_at": r["expires_at"], "rotated_at": r["rotated_at"]}
+
+
+def peers(db=None) -> list[dict]:
+    """Every pair this board has, both directions, oldest first; no token and no digest. [] on a board nobody paired with."""
+    d = _db(db)
+    rows = [_out_view(r) for r in _out_rows(d)] + [_in_view(r) for r in d.node_pairs()]
+    return sorted(rows, key=lambda r: (str(r["created_at"] or ""), r["peer_id"]))
+
+
+def peer(ident, db=None) -> dict | None:
+    """One pair by peer_id, or by registry handle. None when there is none."""
+    if not isinstance(ident, str) or not ident:
+        return None
+    for r in peers(db):
+        if r["peer_id"] == ident or (r["direction"] == "out" and r.get("handle") == ident):
+            return r
+    return None
+
+
+def _handle_for(wanted, name, taken: set[str]) -> str:
+    """A free registry handle. An explicit one that breaks the rule is refused (ValueError); a free one is used as it is; a taken one, or one made
+    from the node's name, gets `-2`, `-3` ... `local` and `self` are reserved."""
+    if wanted not in (None, ""):
+        h = str(wanted)
+        if not HANDLE_RE.fullmatch(h) or h in RESERVED_HANDLES:
+            raise ValueError("a handle is 1 to 31 lower-case letters, digits or dashes, and starts with a letter or a digit; local and self are reserved")
+        base = h
+    else:
+        base = re.sub(r"[^a-z0-9-]+", "-", str(name or "").lower()).strip("-")[:31].strip("-")
+        if not base or base in RESERVED_HANDLES:
+            base = "node"
+    cand, n = base, 1
+    while cand in taken or cand in RESERVED_HANDLES:
+        n += 1
+        suffix = f"-{n}"
+        cand = base[:31 - len(suffix)] + suffix
+    return cand
+
+
+def put_peer(record: dict, db=None) -> dict:
+    """Save a registry row (direction `out`) or change a pair row of an incoming pair (direction `in`, which must exist: only a redeemed code or
+    add_incoming creates one). Only the known keys are kept, so a token or a digest in `record` is dropped, never stored. The address rule is
+    applied here (PeerUrlError, a ValueError, when it fails), except for a legacy row, which the old poller reads on its own terms. Returns the view."""
+    if not isinstance(record, dict):
+        raise ValueError("not a record")
+    d = _db(db)
+    direction = record.get("direction", "out")
+    url = record.get("url")
+    legacy = bool(record.get("legacy"))
+    if direction == "in":
+        pid = record.get("peer_id")
+        row = d.node_pair_get(pid) if isinstance(pid, str) else None
+        if row is None or row["revoked_at"]:
+            raise ValueError("no such pair")
+        fields: dict = {}
+        if url is not None:
+            check_peer_url(url, tailnet_suffix())
+            fields["peer_url"] = str(url)
+        if "name" in record:
+            fields["peer_name"] = _sanitize_name(record["name"]) or ""
+        if "node_id" in record:
+            fields["peer_node_id"] = record["node_id"] if isinstance(record["node_id"], str) and ID_RE.fullmatch(record["node_id"]) else ""
+        if "scopes" in record:
+            fields["scopes"] = json.dumps(clean_scopes(record["scopes"]))
+        if "callback_unverified" in record:
+            fields["callback_unverified"] = 1 if record["callback_unverified"] else 0
+        d.node_pair_update(pid, **fields)
+        return _in_view(d.node_pair_get(pid))
+    if direction != "out":
+        raise ValueError("direction is in or out")
+    if legacy:
+        if not isinstance(url, str) or not url:
+            raise ValueError("a legacy row needs an address")
+        shown = url.rstrip("/")
+    else:
+        shown = check_peer_url(url, tailnet_suffix()).url
+    with _reg_lock:
+        rows = _out_rows(d)
+        pid = record.get("peer_id") or _new_peer_id()
+        if not PEER_ID_RE.fullmatch(str(pid)):
+            raise ValueError("not a peer id")
+        old = next((r for r in rows if r["peer_id"] == pid), None)
+        taken = {r.get("handle") for r in rows if r["peer_id"] != pid}
+        name = _sanitize_name(record.get("name")) or (old or {}).get("name") or "node"
+        handle = record.get("handle") or (old or {}).get("handle")
+        new ={"peer_id": pid, "handle": _handle_for(handle, name, taken), "direction": "out",
+               "node_id": record.get("node_id") if isinstance(record.get("node_id"), str) and ID_RE.fullmatch(record["node_id"]) else (old or {}).get("node_id"),
+               "name": name, "url": shown,
+               "scopes": clean_scopes(record["scopes"]) if record.get("scopes") else ((old or {}).get("scopes") or ["read"]),
+               "created_at": (old or {}).get("created_at") or record.get("created_at") or iso(_now()),
+               "last_seen": record.get("last_seen", (old or {}).get("last_seen")), "last_error": record.get("last_error", (old or {}).get("last_error")),
+               "needs_repair": bool(record.get("needs_repair", (old or {}).get("needs_repair"))), "legacy": legacy}
+        _save_out(d, [new if r["peer_id"] == pid else r for r in rows] if old else rows + [new])
+        return _out_view(new)
+
+
+def remove_peer(ident, db=None) -> bool:
+    """Forget a pair on this board only: an outgoing row and its token are deleted, an incoming pair is revoked. Never calls the other board, so it
+    cannot fail because that board is off. False when there is no such pair."""
+    d = _db(db)
+    p = peer(ident, d)
+    if p is None:
+        return False
+    if p["direction"] == "in":
+        return revoke(p["peer_id"], db=d)
+    with _reg_lock:
+        _save_out(d, [r for r in _out_rows(d) if r["peer_id"] != p["peer_id"]])
+    drop_outgoing(p["peer_id"])
+    audit("out", p["peer_id"], "removed", True, "legacy row" if p["legacy"] else None, node_name=p["name"], db=d)
+    return True
+
+
+def _note(db, peer_id: str, *, ok: bool | None = None, error: str | None = None, repair: bool | None = None) -> None:
+    """Record what the last call to a peer showed: last_seen on an answer, last_error on a failure, needs_repair when the peer no longer takes the
+    token. Written only when something changed or the last write is older than USED_EVERY seconds."""
+    try:
+        with _reg_lock:
+            rows = _out_rows(db)
+            row = next((r for r in rows if r["peer_id"] == peer_id), None)
+            if row is None:
+                return
+            before = dict(row)
+            if ok:
+                if not row.get("last_seen") or iso(_now() - USED_EVERY) > row["last_seen"]:
+                    row["last_seen"] = iso(_now())
+                row["last_error"] = None
+                row["needs_repair"] = False
+            else:
+                row["last_error"] = error
+                if repair is not None:
+                    row["needs_repair"] = repair
+            if row != before:
+                _save_out(db, rows)
+    except Exception as e:
+        log.debug("could not note the call: %s", e.__class__.__name__)
+
+
+def import_legacy(items, db=None) -> list[dict]:
+    """Make the CCBOARD_NODES entries ([{name, url}], as health.parse_nodes gives them) read-only `legacy` rows, and drop legacy rows that are no
+    longer listed. The old poller keeps reading them with the hub token on GET /api/node/summary; they hold no token and take no action. Pairing the
+    same address replaces the row (add_node). Writes nothing when there is nothing to change. Returns the legacy views."""
+    d = _db(db)
+    want = [(str(i.get("name") or ""), str(i.get("url") or "").rstrip("/")) for i in (items or []) if isinstance(i, dict) and i.get("url")]
+    with _reg_lock:
+        rows = _out_rows(d)
+        keep = [r for r in rows if not r.get("legacy") or str(r.get("url")).rstrip("/") in {u for _n, u in want}]
+        have = {str(r.get("url")).rstrip("/") for r in keep}
+        taken = {r.get("handle") for r in keep}
+        for n, u in want:
+            if u in have:
+                continue
+            h = _handle_for(None, n, taken)
+            taken.add(h)
+            have.add(u)
+            keep.append({"peer_id": _new_peer_id(), "handle": h, "direction": "out", "node_id": None, "name": _sanitize_name(n) or h, "url": u,
+                         "scopes": ["read"], "created_at": iso(_now()), "last_seen": None, "last_error": None, "needs_repair": False, "legacy": True})
+        if keep != rows:
+            _save_out(d, keep)
+        return [_out_view(r) for r in keep if r.get("legacy")]
+
+
+# ---------------------------------------------------------------- incoming tokens: the digest store
+
+def _digest(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _new_token() -> str:
+    return TOKEN_PREFIX + secrets.token_urlsafe(32)
+
+
+def _clean_claim(node) -> dict:
+    """The parts of a caller's claimed card this board keeps: a node id, a short name and an address, each only if it is well formed."""
+    n = node if isinstance(node, dict) else {}
+    nid = n.get("id")
+    url = n.get("url")
+    return {"node_id": nid if isinstance(nid, str) and ID_RE.fullmatch(nid) else "", "name": _sanitize_name(n.get("name")) or "",
+            "url": url if isinstance(url, str) and 0 < len(url) <= 300 else None}
+
+
+def add_incoming(node=None, scopes=DEFAULT_SCOPES, *, callback_unverified: bool = False, db=None) -> tuple[dict, str]:
+    """A new incoming pair: the row (digest only) and the token's plaintext, which this call returns and nothing keeps. An older active pair of the
+    same node id is revoked first (pairing again replaces)."""
+    d = _db(db)
+    c = _clean_claim(node)
+    token = _new_token()
+    pid = _new_peer_id()
+    if c["node_id"]:
+        for r in d.node_pairs():
+            if r["peer_node_id"] == c["node_id"]:
+                revoke(r["peer_id"], db=d, why="replaced by a new pair")
+    d.node_pair_add(peer_id=pid, peer_node_id=c["node_id"], peer_name=c["name"], peer_url=c["url"], token_sha256=_digest(token),
+                    scopes=json.dumps(clean_scopes(list(scopes))), created_at=iso(_now()), callback_unverified=1 if callback_unverified else 0)
+    return _in_view(d.node_pair_get(pid)), token
+
+
+def mint_token(peer_id: str, db=None) -> str:
+    """A fresh token for an existing incoming pair (the old one stops at once). Returns the plaintext, once. LookupError for an unknown or revoked pair."""
+    d = _db(db)
+    row = d.node_pair_get(peer_id)
+    if row is None or row["revoked_at"]:
+        raise LookupError("no such pair")
+    token = _new_token()
+    d.node_pair_update(peer_id, token_sha256=_digest(token), prev_sha256=None, prev_until=None)
+    return token
+
+
+def verify_token(plaintext, *, ip: str | None = None, db=None) -> dict | None:
+    """The incoming pair a presented token belongs to (the view plus `via_previous`), or None for anything else: not a token, unknown, revoked,
+    expired, or an old token past its 60 s. Every active pair is compared with hmac.compare_digest and the loop never stops early. The pair's
+    last_used_at (and an address hint) is written at most every 30 s."""
+    if not isinstance(plaintext, str) or not TOKEN_RE.fullmatch(plaintext):
+        return None
+    d = _db(db)
+    given = _digest(plaintext)
+    now_iso = iso(_now())
+    found, via_prev = None, False
+    for r in d.node_pairs():
+        cur = hmac.compare_digest(given, r["token_sha256"] or "-")
+        prev = bool(r["prev_sha256"] and r["prev_until"] and now_iso < r["prev_until"]) and hmac.compare_digest(given, r["prev_sha256"] or "-")
+        if (cur or prev) and found is None and not (r["expires_at"] and now_iso >= r["expires_at"]):
+            found, via_prev = r, not cur
+    if found is None:
+        return None
+    upd: dict = {}
+    if not found["last_used_at"] or iso(_now() - USED_EVERY) > found["last_used_at"]:
+        upd["last_used_at"] = now_iso
+    hint = _scrub(ip, 45)
+    if hint and hint != found["last_ip_hint"]:
+        upd["last_ip_hint"] = hint
+    if upd:
+        d.node_pair_update(found["peer_id"], **upd)
+        found = {**found, **upd}
+    return {**_in_view(found), "via_previous": via_prev}
+
+
+def rotate_token(peer_id: str, db=None) -> str:
+    """Rotate an incoming pair's token: the new plaintext is returned once, the old one still works for ROTATE_GRACE seconds."""
+    d = _db(db)
+    row = d.node_pair_get(peer_id)
+    if row is None or row["revoked_at"]:
+        raise LookupError("no such pair")
+    token = _new_token()
+    d.node_pair_update(peer_id, token_sha256=_digest(token), prev_sha256=row["token_sha256"] or None,
+                       prev_until=iso(_now() + ROTATE_GRACE), rotated_at=iso(_now()))
+    audit("in", peer_id, "rotated", True, f"the old token works {ROTATE_GRACE} s more", node_name=row["peer_name"], db=d)
+    return token
+
+
+def revoke(peer_id: str, db=None, why: str | None = None) -> bool:
+    """Cut an incoming pair at once: the digests are blanked and the row marked revoked. False when there was nothing to revoke."""
+    d = _db(db)
+    row = d.node_pair_get(peer_id)
+    if row is None or row["revoked_at"]:
+        return False
+    d.node_pair_update(peer_id, revoked_at=iso(_now()), token_sha256="", prev_sha256=None, prev_until=None)
+    audit("in", peer_id, "revoked", True, why, node_name=row["peer_name"], db=d)
+    return True
+
+
+def rate_check(peer_id: str, write: bool = False) -> tuple[bool, int]:
+    """The per-pair token bucket (reads 120 a minute, writes 30): (True, 0) or (False, seconds to wait) for the 429's Retry-After."""
+    return (node_write_limiter if write else node_read_limiter).allow(str(peer_id))
+
+
+# ---------------------------------------------------------------- pair codes
+
+def format_code(norm: str) -> str:
+    return f"{norm[:5]}-{norm[5:]}"
+
+
+def normalize_code(text) -> str | None:
+    """A typed code as its 10 characters: upper case, dashes and spaces dropped, O read as 0, I and L as 1 (Crockford). None when it is not one."""
+    if not isinstance(text, str) or len(text) > 40:
+        return None
+    t = "".join(text.split()).replace("-", "").upper().translate(str.maketrans("OIL", "011"))
+    return t if len(t) == CODE_LEN and all(c in CODE_ALPHABET for c in t) else None
+
+
+def _code_digest(norm: str) -> str:
+    return hashlib.sha256(("ccboard-pair-code:" + norm).encode("utf-8")).hexdigest()
+
+
+def create_code(scopes=None, minutes: int = CODE_DEFAULT_MINUTES, db=None) -> dict:
+    """Make the node's one pairing code (a new one replaces the old). Returns {code 'XXXXX-XXXXX', expires_at, scopes} once; only the digest, the
+    expiry, the scopes and an attempt counter are kept. ValueError for a bad scope list or for minutes outside 1 to 30."""
+    d = _db(db)
+    sc = clean_scopes(list(DEFAULT_SCOPES if scopes is None else scopes))
+    if isinstance(minutes, bool) or not isinstance(minutes, int) or not CODE_MINUTES[0] <= minutes <= CODE_MINUTES[1]:
+        raise ValueError("minutes is 1 to 30")
+    n = secrets.randbits(CODE_LEN * 5)
+    norm = "".join(CODE_ALPHABET[(n >> (5 * i)) & 31] for i in range(CODE_LEN - 1, -1, -1))
+    expires = _now() + minutes * 60
+    with _code_lock:
+        d.kv_set(KV_CODE, {"sha256": _code_digest(norm), "expires_at": expires, "scopes": sc, "attempts": 0}, at=_now())
+    audit("in", "", "code_created", True, f"scopes {','.join(sc)}, {minutes} min", db=d)
+    return {"code": format_code(norm), "expires_at": iso(expires), "scopes": sc}
+
+
+def code_status(db=None) -> dict:
+    """{active, expires_at, scopes} of the pairing code, without the digest. Active only while it has not expired."""
+    rec = _db(db).kv_get(KV_CODE)
+    v = rec.get("value") if isinstance(rec, dict) else None
+    if not isinstance(v, dict) or not isinstance(v.get("expires_at"), (int, float)) or _now() >= v["expires_at"]:
+        return {"active": False, "expires_at": None, "scopes": []}
+    return {"active": True, "expires_at": iso(v["expires_at"]), "scopes": _scopes_of(v.get("scopes"))}
+
+
+def cancel_code(db=None) -> bool:
+    d = _db(db)
+    with _code_lock:
+        had = d.kv_get(KV_CODE) is not None
+        d.kv_del(KV_CODE)
+    if had:
+        audit("in", "", "code_cancelled", True, db=d)
+    return had
+
+
+def _audit_refused(db, detail: str) -> None:
+    """The audit row of a refused pair attempt. The pair endpoint is open to the whole tailnet, so these rows are capped (30 in 10 minutes for the
+    whole board): a flood of guesses cannot fill the table. A burned code and a spent one are always written."""
+    if refusal_limiter.allow("all")[0]:
+        audit("in", "", "pair_refused", False, detail, status="refused", db=db)
+
+
+def redeem_code(code, caller: str, *, node=None, db=None) -> dict:
+    """Spend the pairing code. Returns {peer_id, token, scopes, expires_at} with the token's plaintext, once. `caller` is the source address (the
+    20 attempts a minute are counted before the code is looked at). Raises PairError: rate_limited, none (no active code), expired, wrong, burned
+    (the 5th wrong try deletes the code). `node` is the caller's claimed card; its id, name and address fill the pair row."""
+    d = _db(db)
+    who = str(caller or "unknown")[:64]
+    ok, wait = pair_limiter.allow(who)
+    if not ok:
+        _audit_refused(d, "rate limited")
+        raise PairError("rate_limited", retry_after=wait)
+    norm = normalize_code(code)
+    with _code_lock:
+        rec = d.kv_get(KV_CODE)
+        v = rec.get("value") if isinstance(rec, dict) else None
+        if not isinstance(v, dict) or not isinstance(v.get("sha256"), str) or not isinstance(v.get("expires_at"), (int, float)):
+            _audit_refused(d, "no active code")
+            raise PairError("none")
+        if _now() >= v["expires_at"]:
+            d.kv_del(KV_CODE)
+            _audit_refused(d, "code expired")
+            raise PairError("expired")
+        if not hmac.compare_digest(_code_digest(norm or ""), v["sha256"]):
+            tries = int(v.get("attempts") or 0) + 1
+            if tries >= CODE_TRIES:
+                d.kv_del(KV_CODE)
+                audit("in", "", "code_burned", False, f"{CODE_TRIES} wrong tries", status="refused", db=d)
+                raise PairError("burned")
+            d.kv_set(KV_CODE, {**v, "attempts": tries}, at=_now())
+            _audit_refused(d, f"wrong code, try {tries}")
+            raise PairError("wrong")
+        d.kv_del(KV_CODE)                                          # spent: a second use of the same code finds none
+    scopes = _scopes_of(v.get("scopes")) or list(DEFAULT_SCOPES)
+    row, token = add_incoming(node, scopes, db=d)
+    audit("in", row["peer_id"], "code_used", True, f"scopes {','.join(scopes)}", node_name=row["name"], db=d)
+    return {"peer_id": row["peer_id"], "token": token, "scopes": scopes, "expires_at": row["expires_at"]}
+
+
+# ---------------------------------------------------------------- outgoing calls
+
+class PeerReply:
+    """An answer from a peer: `status`, the raw `body` (at most RESP_MAX bytes), `headers` (lower-case names) and `json` (the parsed body or None)."""
+
+    def __init__(self, status: int, body: bytes, headers: dict):
+        self.status, self.body, self.headers = status, body, headers
+        try:
+            self.json = json.loads(body.decode("utf-8")) if body else None
+        except (ValueError, UnicodeDecodeError):
+            self.json = None
+
+    @property
+    def ok(self) -> bool:
+        return 200 <= self.status < 300
+
+
+_PATH_RE = re.compile(r"/[A-Za-z0-9._~%/-]*(?:\?[A-Za-z0-9._~%=&-]*)?")
+
+
+def _https(target: PeerTarget, method: str, path: str, headers: dict, body: bytes | None, timeout: float):
+    """One HTTPS exchange over the connection pinned to the validated address (the certificate is checked for the name). No redirect is followed."""
+    from .nodes_discovery import _Pinned         # imported here: that module imports this one
+    end = time.monotonic() + timeout
+    conn = _Pinned(target.host, target.addrs[0], target.port, timeout)
+    try:
+        conn.request(method, path, body=body, headers=headers)
+        resp = conn.getresponse()
+        buf = b""
+        while len(buf) <= RESP_MAX:
+            left = end - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("the answer took too long")
+            if conn.sock is not None:
+                conn.sock.settimeout(left)
+            chunk = resp.read(8192)
+            if not chunk:
+                break
+            buf += chunk
+        return resp.status, {k.lower(): v for k, v in resp.getheaders()}, buf
+    finally:
+        conn.close()
+
+
+def peer_call(url: str, method: str, path: str, *, headers: dict | None = None, body=None, timeout: float = CALL_TIMEOUT) -> PeerReply:
+    """One call to a peer's address with the address rule applied now: a name is resolved once and the connection goes to that address. Raises
+    PeerError (url, unresolved, bad_path, too_large, unreachable, redirect); an HTTP error status is an answer, not an error. `body` is bytes or a
+    dict (sent as JSON). The headers are the caller's, so a call made here carries no credential unless the caller adds one."""
+    if not isinstance(path, str) or not _PATH_RE.fullmatch(path) or ".." in path or "//" in path:
+        raise PeerError("bad_path", "not a path on the peer")
+    try:
+        target = check_peer_url(url, tailnet_suffix())
+    except PeerUrlError as e:
+        raise PeerError("url", str(e), unresolved=e.unresolved) from None
+    hdrs = {"X-CCBoard": "1", "Accept": "application/json", **(headers or {})}
+    raw = None
+    if body is not None:
+        raw = body if isinstance(body, bytes) else json.dumps(body, separators=(",", ":")).encode("utf-8")
+        if len(raw) > BODY_MAX:
+            raise PeerError("too_large", "the request is too large")
+        hdrs.setdefault("Content-Type", "application/json")
+    try:
+        status, rh, data = (peer_transport or _https)(target, method.upper(), path, hdrs, raw, timeout)
+    except Exception as e:
+        raise PeerError("unreachable", f"the peer could not be reached ({e.__class__.__name__})") from None
+    if 300 <= status < 400:
+        raise PeerError("redirect", "the peer answered with a redirect, which is never followed")
+    if len(data) > RESP_MAX:
+        raise PeerError("too_large", "the peer's answer is too large")
+    return PeerReply(status, data, {str(k).lower(): v for k, v in (rh or {}).items()})
+
+
+class PeerClient:
+    """Calls another board as a paired node: `PeerClient(record).get("/api/node")`. `record` is a registry view (peer_id and url). The token is read
+    from the 0600 file at each call and goes only into the Authorization header. The address rule runs at each call. A 401 marks the pair
+    `needs_repair`; an answer clears it. Never follows a redirect, never sends an identity header."""
+
+    def __init__(self, record: dict, *, db=None):
+        self.peer_id = str(record.get("peer_id") or "")
+        self.url = str(record.get("url") or "")
+        self.legacy = bool(record.get("legacy"))
+        self._db_arg = db
+
+    def request(self, method: str, path: str, body=None, *, acting_user: str | None = None, timeout: float = CALL_TIMEOUT) -> PeerReply:
+        token = None if self.legacy else _load_outgoing(self.peer_id)
+        if not token:
+            raise PeerError("no_token", "this node holds no token for that peer; pair again")
+        headers = {"Authorization": "Bearer " + token, "X-CCBoard-Node": node_id()}
+        who = _scrub(acting_user, 64)
+        if who:
+            headers["X-CCBoard-Acting-User"] = who
+        d = self._db_arg or _db()
+        try:
+            r = peer_call(self.url, method, path, headers=headers, body=body, timeout=timeout)
+        except PeerError as e:
+            _note(d, self.peer_id, ok=False, error=e.reason)
+            raise
+        if r.ok:
+            _note(d, self.peer_id, ok=True)
+        else:
+            _note(d, self.peer_id, ok=False, error=f"the peer answered {r.status}", repair=True if r.status == 401 else None)
+        return r
+
+    def get(self, path: str, **kw) -> PeerReply:
+        return self.request("GET", path, **kw)
+
+    def post(self, path: str, body=None, **kw) -> PeerReply:
+        return self.request("POST", path, body, **kw)
+
+
+def _remote_unpair(url: str, token: str) -> bool:
+    """Tell a peer we are leaving. Best effort: True only when it answered 2xx; any failure is False and never raises."""
+    try:
+        return peer_call(url, "POST", "/api/node/unpair", headers={"Authorization": "Bearer " + token, "X-CCBoard-Node": node_id()}, timeout=3.0).ok
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------- the handshake, accepting side
+
+_NODE_KEYS = {"id", "name", "url", "version"}
+
+
+def _check_pair_body(body) -> tuple[str, dict, dict | None]:
+    """(code, node claim, reverse or None) from the pair request, or PairError('bad_request'). Strict: a key nobody asked for (a permission mode, a
+    sandbox, a scope list outside `reverse`) refuses the whole request, so no pair route can carry such a field."""
+    bad = PairError("bad_request")
+    if not isinstance(body, dict) or not set(body) <= {"code", "node", "reverse"} or not isinstance(body.get("code"), str):
+        raise bad
+    node = body.get("node")
+    if not isinstance(node, dict) or not set(node) <= _NODE_KEYS or not isinstance(node.get("id"), str) or not ID_RE.fullmatch(node["id"]):
+        raise bad
+    if not isinstance(node.get("name"), str) or not NAME_RE.fullmatch(node["name"]) or not isinstance(node.get("url"), str):
+        raise bad
+    if node.get("version") is not None and not isinstance(node.get("version"), str):
+        raise bad
+    try:
+        check_peer_url(node["url"], tailnet_suffix(), lambda h, p: ["100.64.0.1"])          # the syntax only: no lookup before the code is checked
+    except PeerUrlError:
+        raise PairError("bad_url") from None
+    rev = body.get("reverse")
+    if rev is not None:
+        if (not isinstance(rev, dict) or not set(rev) <= {"token", "scopes"} or not isinstance(rev.get("token"), str)
+                or not TOKEN_RE.fullmatch(rev["token"])):
+            raise bad
+        try:
+            rev = {"token": rev["token"], "scopes": clean_scopes(rev.get("scopes") or list(DEFAULT_SCOPES))}
+        except ValueError:
+            raise bad from None
+    return body["code"], node, rev
+
+
+def handle_pair(body, caller: str, db=None) -> dict:
+    """The accepting side of the handshake: everything POST /api/nodes/pair does after the route has checked its headers. Nothing happens before the
+    code is right (only the shape of the request is read). Then: the code is spent, the pair row (digest only) is written, B asks the caller's address
+    for its hello (the address rule applies) and compares the node id: a different id revokes the pair and refuses; an unreachable address pairs with
+    `callback_unverified`. A `reverse` token is kept as an outgoing pair for the caller. Returns {token, scopes, node, expires_at,
+    callback_unverified, reverse}. Raises PairError."""
+    d = _db(db)
+    code, node, rev = _check_pair_body(body)
+    r = redeem_code(code, caller, node=node, db=d)
+    pid = r["peer_id"]
+    unverified = False
+    try:
+        reply = peer_call(node["url"], "GET", "/api/node/hello", timeout=3.0)
+        got = reply.json.get("node_id") if reply.ok and isinstance(reply.json, dict) else None
+        if got is not None and got != node["id"]:
+            revoke(pid, db=d, why="callback named another node")
+            audit("in", pid, "pair_refused", False, "callback named another node", node_name=node["name"], status="refused", db=d)
+            raise PairError("callback_mismatch")
+        unverified = got is None
+    except PeerError as e:
+        if e.reason == "url" and not e.unresolved:
+            revoke(pid, db=d, why="the address is outside the tailnet")
+            audit("in", pid, "pair_refused", False, "the address breaks the rule", node_name=node["name"], status="refused", db=d)
+            raise PairError("bad_url") from None
+        unverified = True
+    if unverified:
+        d.node_pair_update(pid, callback_unverified=1)
+        audit("in", pid, "callback_unverified", False, "the caller's address did not answer", node_name=node["name"], db=d)
+    reverse_saved = None
+    if rev is not None:
+        reverse_saved = False
+        try:
+            rid = _new_peer_id()
+            save_outgoing(rid, rev["token"])
+            try:
+                put_peer({"peer_id": rid, "direction": "out", "node_id": node["id"], "name": node["name"], "url": node["url"], "scopes": rev["scopes"]}, db=d)
+                reverse_saved = True
+                audit("out", rid, "paired_back", True, f"scopes {','.join(rev['scopes'])}", node_name=node["name"], db=d)
+            finally:
+                if not reverse_saved:
+                    drop_outgoing(rid)
+        except (OSError, ValueError) as e:
+            log.info("could not keep the reverse pair: %s", e.__class__.__name__)
+    return {"token": r["token"], "scopes": r["scopes"], "node": own_claim(), "expires_at": r["expires_at"], "callback_unverified": unverified,
+            "reverse": reverse_saved}
+
+
+def unpair_incoming(peer_id: str, db=None) -> bool:
+    """The other board says it is leaving (POST /api/node/unpair): cut its pair here, and the outgoing pair to the same node id too. Never calls
+    the other board. False when the pair was already gone."""
+    d = _db(db)
+    row = d.node_pair_get(peer_id)
+    if row is None:
+        return False
+    cut = revoke(peer_id, db=d, why="the other node unpaired")
+    if row["peer_node_id"]:
+        for p in peers(d):
+            if p["direction"] == "out" and p["node_id"] == row["peer_node_id"]:
+                remove_peer(p["peer_id"], d)
+    return cut
+
+
+# ---------------------------------------------------------------- the handshake, calling side
+
+def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = False, db=None) -> dict:
+    """The calling side of the handshake (POST /api/nodes): check the address, send this board's card and the code to the other board's pair endpoint,
+    keep the token it answers (0600 file) and the registry row, read the card once to confirm, and return the registry view. With `both_ways` this
+    board also mints a token (scopes read and tasks) for the other board and sends it as `reverse`. Pairing an address that is already in the registry
+    (a legacy row, or the same node again) replaces that row. Raises ValueError (a bad address, code or handle; PeerUrlError is one), PairError
+    (the other board refused, or the token could not be kept), PeerError (it could not be reached)."""
+    d = _db(db)
+    norm = normalize_code(code)
+    if norm is None:
+        raise ValueError("a pairing code is 10 letters and digits, like ABCDE-12345")
+    target = check_peer_url(url, tailnet_suffix())
+    if handle not in (None, ""):
+        _handle_for(handle, None, set())                              # refuses a handle that breaks the rule, before anything is sent
+    me = own_claim()
+    if not me["url"]:
+        raise ValueError("this node does not know its own address, so the other node could not call back; set CCBOARD_PUBLIC_URL")
+    body: dict = {"code": format_code(norm), "node": me}
+    back = None
+    if both_ways:
+        back, back_token = add_incoming(None, DEFAULT_SCOPES, db=d)
+        body["reverse"] = {"token": back_token, "scopes": list(DEFAULT_SCOPES)}
+    try:
+        try:
+            reply = peer_call(target.url, "POST", "/api/nodes/pair", body=body, timeout=8.0)
+        except PeerError as e:
+            raise PairError("unreachable", message=str(e) if e.reason in ("url", "unreachable", "redirect") else None) from None
+        body = None                                                   # the reverse token's plaintext is not kept past the call
+        if not reply.ok:
+            j = reply.json if isinstance(reply.json, dict) else {}
+            reason = j.get("reason") if j.get("reason") in PairError.STATUS else ("rate_limited" if reply.status == 429 else "refused")
+            raise PairError(reason, retry_after=int(reply.headers.get("retry-after", 0) or 0) if reply.status == 429 else 0)
+        j = reply.json if isinstance(reply.json, dict) else {}
+        token, theirs = j.get("token"), j.get("node") if isinstance(j.get("node"), dict) else {}
+        if not isinstance(token, str) or not TOKEN_RE.fullmatch(token) or not isinstance(theirs.get("id"), str) or not ID_RE.fullmatch(theirs["id"]):
+            raise PairError("refused", message="The other node's answer was not a pairing answer.")
+        scopes = [x for x in SCOPES if x in (j.get("scopes") or [])] or list(DEFAULT_SCOPES)
+        name = _sanitize_name(theirs.get("name")) or "node"
+        same = next((r for r in _out_rows(d) if r.get("node_id") == theirs["id"] or str(r.get("url")).rstrip("/") == target.url.rstrip("/")), None)
+        pid = same["peer_id"] if same else _new_peer_id()
+        try:
+            save_outgoing(pid, token)
+        except OSError:
+            _remote_unpair(target.url, token)                         # B holds a pair we cannot use; best effort
+            raise PairError("store") from None
+        token = None
+        try:
+            view = put_peer({"peer_id": pid, "direction": "out", "node_id": theirs["id"], "name": name, "url": target.url, "scopes": scopes,
+                             "handle": (same or {}).get("handle") if same else handle, "legacy": False, "needs_repair": False, "last_error": None}, db=d)
+        except Exception:
+            tk = _load_outgoing(pid)
+            if tk:
+                _remote_unpair(target.url, tk)
+            drop_outgoing(pid)
+            raise
+        if back is not None:
+            d.node_pair_update(back["peer_id"], peer_node_id=theirs["id"], peer_name=name, peer_url=target.url)
+    except BaseException:
+        if back is not None:
+            revoke(back["peer_id"], db=d, why="pairing did not finish")
+        audit("out", "", "pair_failed", False, None, db=d)
+        raise
+    audit("out", pid, "paired", True, f"scopes {','.join(scopes)}" + (", both ways" if both_ways else ""), node_name=name, db=d)
+    try:                                                              # the first card read: a pair is "paired" once the card answers
+        card_reply = PeerClient(view, db=d).get("/api/node")
+        if card_reply.ok and isinstance(card_reply.json, dict) and card_reply.json.get("node_id") != theirs["id"]:
+            _note(d, pid, ok=False, error="the card names another node id", repair=True)
+    except PeerError:
+        pass
+    return peer(pid, d) or view
+
+
+def rotate_outgoing(ident, db=None) -> dict:
+    """Ask the other board for a new token (POST /api/node/rotate with the current one) and keep it. The old token works there for 60 s more.
+    Returns the registry view. LookupError for an unknown pair, PeerError when the other board cannot be reached or does not answer a token,
+    PairError('store') when the new token could not be saved (the pair is then marked needs_repair)."""
+    d = _db(db)
+    p = peer(ident, d)
+    if p is None or p["direction"] != "out":
+        raise LookupError("no such node")
+    r = PeerClient(p, db=d).post("/api/node/rotate")
+    tok = r.json.get("token") if r.ok and isinstance(r.json, dict) else None
+    if not isinstance(tok, str) or not TOKEN_RE.fullmatch(tok):
+        audit("out", p["peer_id"], "rotate_failed", False, f"the peer answered {r.status}", node_name=p["name"], db=d)
+        raise PeerError("refused", f"the other node did not give a new token (it answered {r.status})")
+    try:
+        save_outgoing(p["peer_id"], tok)
+    except OSError:
+        _note(d, p["peer_id"], ok=False, error="the new token could not be saved", repair=True)
+        audit("out", p["peer_id"], "rotate_failed", False, "the new token could not be saved", node_name=p["name"], db=d)
+        raise PairError("store") from None
+    audit("out", p["peer_id"], "rotated", True, f"the old token works {ROTATE_GRACE} s more there", node_name=p["name"], db=d)
+    return peer(p["peer_id"], d) or p
+
+
+def remove_node(ident, db=None) -> dict:
+    """Remove a pair from this board. For a node this board calls, the other board is told first (best effort, 3 s), then the registry row and the
+    token are deleted, and so is the pair that board holds for this one (the same node id). This never fails because the other board is off.
+    Returns {removed, peer_told}. LookupError for an unknown pair."""
+    d = _db(db)
+    p = peer(ident, d)
+    if p is None:
+        raise LookupError("no such node")
+    told = False
+    if p["direction"] == "out":
+        tk = None if p["legacy"] else _load_outgoing(p["peer_id"])
+        told = bool(tk and p["url"] and _remote_unpair(p["url"], tk))
+        tk = None
+        if p["node_id"]:
+            for q in peers(d):
+                if q["direction"] == "in" and q["node_id"] == p["node_id"]:
+                    revoke(q["peer_id"], db=d, why="the pair was removed on this node")
+    remove_peer(p["peer_id"], d)
+    if p["direction"] == "out":
+        audit("out", p["peer_id"], "unpair", told, "the other node was told" if told else "the other node was not told", node_name=p["name"], db=d)
+    return {"removed": True, "peer_told": told}

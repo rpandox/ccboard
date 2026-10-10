@@ -547,3 +547,126 @@ def write_fake_codex(path, *, login="Logged in using ChatGPT", mcp_rc=0, help_na
                                              device_url=device_url, device_code=device_code, auth_blob=auth_blob))
     path.chmod(0o755)
     return path
+
+
+# ---- two boards in one process (nodes epic, issue #135) -----------------------------------------------------------------------------
+class FlakyTransport:
+    """Wraps a peer transport (nodes.peer_transport) and fails the first `fail_first` calls it sees with `error` before it lets calls through; a
+    `match` substring limits it to paths holding that text. Counts every call it saw (`seen`) and every failure it made (`failed`). Later phases use it
+    for the offline and slow-peer cases; it never sleeps."""
+
+    def __init__(self, inner, fail_first=0, error=ConnectionRefusedError, match=None):
+        self.inner, self.fail_first, self.error, self.match = inner, fail_first, error, match
+        self.seen = 0
+        self.failed = 0
+
+    def __call__(self, target, method, path, headers, body, timeout):
+        if self.match is None or self.match in path:
+            self.seen += 1
+            if self.failed < self.fail_first:
+                self.failed += 1
+                raise self.error("flaky transport: planned failure")
+        return self.inner(target, method, path, headers, body, timeout)
+
+
+class Board:
+    """One ccboard in the process. app.main, settings, the hook token and the notify DB are process-wide, so a Board owns the pieces that differ
+    (data dir, SQLite file, public address, node name, hook token) and `enter()` swaps them in for the length of a `with`, then puts the previous ones
+    back. Calls are strictly one after another (a request and the peer call it makes nest, they never overlap), so nothing is locked."""
+
+    def __init__(self, parent, name, url, data_dir):
+        from app import hooks
+        from app.db import DB
+        self.parent, self.name, self.url, self.data_dir = parent, name, url, data_dir
+        self.db_path = data_dir / "ccboard.db"
+        self.hub_token = ""
+        self.hook_token = ""
+        self.db = DB(self.db_path)
+        with self.enter():
+            self.hook_token = hooks.ensure_token()
+
+    @contextlib.contextmanager
+    def enter(self):
+        from app import hooks, main, notify
+        from app.config import settings
+        names = ("data_dir", "db_path", "public_url", "node_name", "hub_token")
+        saved = ({n: getattr(settings, n) for n in names}, main.db, hooks._token, notify._db)
+        settings.data_dir, settings.db_path, settings.public_url = self.data_dir, self.db_path, self.url
+        settings.node_name, settings.hub_token = self.name, self.hub_token
+        main.db, hooks._token = self.db, self.hook_token or None
+        notify.set_db(self.db)
+        try:
+            yield self
+        finally:
+            for n, v in saved[0].items():
+                setattr(settings, n, v)
+            main.db, hooks._token = saved[1], saved[2]
+            notify.set_db(saved[3])
+
+    def call(self, method, path, *, owner=True, headers=None, **kw):
+        """A request to this board's app. `owner=True` carries the owner's identity header and X-CCBoard (a browser on this board); False sends
+        only `headers`, the way a node's server process arrives on a tagged tailnet (no identity)."""
+        h = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"} if owner else {}
+        h.update(headers or {})
+        with self.enter():
+            return self.parent.client.request(method, path, headers=h, **kw)
+
+    def get(self, path, **kw):
+        return self.call("GET", path, **kw)
+
+    def post(self, path, **kw):
+        return self.call("POST", path, **kw)
+
+    def delete(self, path, **kw):
+        return self.call("DELETE", path, **kw)
+
+
+class TwoNodes:
+    """Two boards, `a` and `b`, with separate data dirs and databases, joined by an in-process transport: an outgoing call of nodes.PeerClient or
+    nodes.peer_call goes to the board whose address it names (https://100.64.0.1 is a, https://100.64.0.2 is b) through the app's test client, with
+    no socket. `identity` is the header an owner's server process would carry in user-owned mode (None = a tagged node, no identity). `offline` holds
+    the names of boards that refuse connections. `log` has one (caller, method, board, path, status) per call and no header, so no token.
+    The limiters in app/nodes.py (pair attempts, per-pair buckets) are process-wide, so the two boards share them, and a request made through the test
+    client comes from the address "testclient": a test that redeems more than 20 codes in a minute meets a 429 that a real tailnet would not."""
+
+    def __init__(self, tmp_path):
+        from fastapi.testclient import TestClient
+        from app import main
+        self.client = TestClient(main.app)
+        self.identity = None
+        self.offline: set[str] = set()
+        self.log: list[tuple] = []
+        self.a = Board(self, "node-a", "https://100.64.0.1", tmp_path / "node-a")
+        self.b = Board(self, "node-b", "https://100.64.0.2", tmp_path / "node-b")
+        self.boards = {(b.url.split("//")[1], 443): b for b in (self.a, self.b)}
+
+    def transport(self, target, method, path, headers, body, timeout):
+        from app.config import settings
+        board = self.boards.get((target.host, target.port))
+        if board is None or board.name in self.offline:
+            raise ConnectionRefusedError("no board there")
+        caller = settings.node_name or "?"
+        h = dict(headers)
+        if self.identity:
+            h.setdefault("Tailscale-User-Login", self.identity)
+        with board.enter():
+            r = self.client.request(method, path, headers=h, content=body)
+        self.log.append((caller, method, board.name, path, r.status_code))
+        return r.status_code, dict(r.headers), r.content
+
+
+@pytest.fixture
+def two_nodes(tmp_path, monkeypatch, projects_dir):
+    """Two in-process boards (`two_nodes.a`, `two_nodes.b`), each with its own data dir and database, and nodes.peer_transport routing outgoing
+    calls between them. Run board code inside `with board.enter():` or through `board.get/post/delete`. Wrap `two_nodes.transport` in a
+    FlakyTransport and set nodes.peer_transport to it for failure cases."""
+    from app import main, nodes
+    monkeypatch.setattr(main, "sched", None)
+    monkeypatch.setattr(main, "indexer", None)
+    saved_db = main.db
+    t = TwoNodes(tmp_path)
+    monkeypatch.setattr(nodes, "peer_transport", t.transport)
+    yield t
+    main.db = saved_db
+    t.a.db.conn.close()
+    t.b.db.conn.close()
