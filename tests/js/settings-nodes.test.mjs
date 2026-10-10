@@ -403,8 +403,8 @@ test('a hostile device name, tag, system or address is text: no element is made 
   assert.equal(text(p.querySelectorAll('.kv').find((r) => text(r.querySelector('.k')) === 'Name').querySelector('.kv-main')), evil, 'this node\'s own name is text too');
 });
 
-test('settings.js and nodes.js build no markup from text: no innerHTML, no inline style, no cssText', () => {
-  for (const f of ['pages/settings.js', 'nodes.js']) {
+test('settings.js, nodes.js and nodes-pair.js build no markup from text: no innerHTML, no inline style, no cssText', () => {
+  for (const f of ['pages/settings.js', 'nodes.js', 'nodes-pair.js']) {
     const code = fs.readFileSync(path.join(STATIC, f), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
     assert.doesNotMatch(code, /innerHTML|insertAdjacentHTML|outerHTML|cssText|style=|\.style\b/, f);
   }

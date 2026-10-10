@@ -39,6 +39,15 @@ test('nodes.js: no innerHTML, no inline style, no cssText, no storage, no networ
   }
 });
 
+test('the pairing half is not in the first-paint set: nodes-pair.js is in no index.html tag and loads with the settings bundle, right before pages/settings.js', () => {
+  const html = fs.readFileSync(path.join(STATIC, 'index.html'), 'utf8');
+  assert.ok(!html.includes('nodes-pair.js'), 'index.html does not load nodes-pair.js');
+  const lazy = fs.readFileSync(path.join(STATIC, 'lazy.js'), 'utf8');
+  assert.match(lazy, /settings: \{ js: \['\/static\/nodes-pair\.js', '\/static\/pages\/doctor\.js', '\/static\/pages\/settings\.js'\]/);
+  const eager = fs.readFileSync(path.join(STATIC, 'nodes.js'), 'utf8');
+  for (const moved of ['NodeView.SCOPES', 'NodeView.peerRow', 'NodeView.auditWord', 'NodeView.errField']) assert.ok(!eager.includes(moved), `${moved} lives in nodes-pair.js`);
+});
+
 // ---------------------------------------------------------------- the grammar
 
 test('handle: [a-z0-9][a-z0-9-]{0,30}, and local is reserved', () => {
@@ -756,8 +765,8 @@ test('NodeView.auditRow: a done row has a tick, a failed row a cross and its wor
   assert.equal(ok.querySelector('.nd-audit-detail'), null);
 });
 
-test('nodes.js pairing helpers hold no code or token: no storage, no network, no timer, no innerHTML, and the words carry no em-dash', () => {
-  const src = fs.readFileSync(path.join(STATIC, 'nodes.js'), 'utf8');
+test('nodes-pair.js pairing helpers hold no code or token: no storage, no network, no timer, no innerHTML, and the words carry no em-dash', () => {
+  const src = fs.readFileSync(path.join(STATIC, 'nodes-pair.js'), 'utf8');
   const code = src.slice(src.indexOf('NodeView.SCOPES = [')).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   assert.doesNotMatch(code, /localStorage|sessionStorage|fetch\(|XMLHttpRequest|setInterval|setTimeout|innerHTML|insertAdjacentHTML|cssText|style=|\.style\b|api\(/);
   assert.doesNotMatch(code, /—/);
