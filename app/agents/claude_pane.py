@@ -17,11 +17,31 @@ INTERRUPTED_RE = re.compile(r"^\W*Interrupted\b\W{0,4}What should Claude do inst
 AFTER_RE = re.compile(r"do you want to|esc to cancel|esc to interrupt|tab to amend|\(esc\)|^\W*\d\.\s+(?:yes|no)\b|^\s*[⏺●]", re.I)
 
 
+BOX_CHARS = set("─━│┃┌┐└┘├┤╭╮╯╰ ")
+RULE_RE = re.compile(r"[─━]{8,}")
+PROMPT_RE = re.compile(r"^[│┃]?\s*[>❯](?:\s|$)")       # Claude's input line: "> " or "❯ ", inside the old box's side bar or between two rules
+
+
+def _box_only(line: str) -> bool:
+    return bool(line.strip()) and set(line) <= BOX_CHARS
+
+
 def interrupted_at_prompt(text: str) -> bool:
-    """Does the screen show Claude back at its idle prompt right after an Esc-rejected dialog? True when its last "Interrupted · What
-    should Claude do instead?" line has nothing after it that belongs to a dialog, a running turn or a new tool call."""
+    """Does the screen show Claude back at its idle prompt right after an Esc-rejected dialog? True when the last "Interrupted · What
+    should Claude do instead?" line is followed ONLY by the frame of Claude's input box (rule or box-top lines), then the input line
+    itself ("> " / "❯ ", possibly inside the box's side bars), and nothing after that belongs to a dialog, a running turn or a new tool
+    call. Text between the line and the input box (more tool output) means the line was program output, not Claude's.
+
+    This is evidence about the screen only, and a program can print the same text; the caller (main._esc_dismissed_permissions) acts on
+    it only for a row whose permission the person answered "In terminal" (db.release_esc_dismissed)."""
     lines = [ln.rstrip() for ln in (text or "").splitlines() if ln.strip()][-TAIL_LINES:]
     hit = next((i for i in range(len(lines) - 1, -1, -1) if INTERRUPTED_RE.search(lines[i].strip())), None)
     if hit is None:
         return False
-    return not any(AFTER_RE.search(ln) for ln in lines[hit + 1:])
+    j, rule = hit + 1, False
+    while j < len(lines) and _box_only(lines[j]):
+        rule = rule or bool(RULE_RE.search(lines[j]))
+        j += 1
+    if not rule or j >= len(lines) or not PROMPT_RE.match(lines[j].strip()):
+        return False
+    return not any(AFTER_RE.search(ln) for ln in lines[j + 1:])

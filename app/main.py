@@ -557,10 +557,11 @@ def _codex_launch_view(name: str, row: dict, command: str | None, view: dict) ->
 
 def _esc_dismissed_permissions(live: dict, rows: dict[str, dict]) -> bool:
     """Issue 193: Claude fires no hook when a permission dialog is dismissed with Esc, so a row answered "In terminal" stays
-    waiting / permission for good. For each Claude row in exactly that state with no permission request of its own still pending,
-    read the pane: when it shows "Interrupted · What should Claude do instead?" at the idle prompt (agents/claude_pane), the dialog is
-    gone and the row becomes idle (flag wait_kind cleared, an `Interrupt` event stored). Pane text is the only evidence used; a tmux
-    hiccup or a pane still showing a dialog changes nothing. Returns whether any row changed. Never raises into the 3 s poll."""
+    waiting / permission for good. For each Claude row in exactly that state with no permission request pending, read the pane
+    (agents/claude_pane: "Interrupted · What should Claude do instead?" followed by Claude's own input prompt). Pane text is attacker
+    influenced (a tool's output can print that line), so it never clears an attention state by itself: db.release_esc_dismissed moves
+    the row to idle, in one conditional UPDATE, only when the person's own "In terminal" answer to that very request is on record and
+    nothing has changed since. Returns whether any row changed. Never raises into the 3 s poll."""
     changed = False
     for name, row in rows.items():
         flags = row.get("flags") or {}
@@ -570,15 +571,10 @@ def _esc_dismissed_permissions(live: dict, rows: dict[str, dict]) -> bool:
         try:
             if not claude_pane.interrupted_at_prompt(tmux.capture(name, lines=claude_pane.TAIL_LINES)):
                 continue
-            fresh = db.open_row(name) or {}            # a PermissionRequest may have landed while the pane was read
-            if (fresh.get("state_at") != row.get("state_at") or fresh.get("state") != "waiting"
-                    or (fresh.get("flags") or {}).get("wait_kind") != "permission" or _permission_pending(name)):
-                continue
             msg = "Interrupted in the terminal"
-            db.update_flags(name, {"wait_kind": None})
-            db.set_state(name, "idle", "Interrupt", message=msg)
-            db.add_event(name, "Interrupt", None, msg, {}, agent="claude")
-            changed = True
+            if db.release_esc_dismissed(name, row.get("state_at"), msg):
+                db.add_event(name, "Interrupt", None, msg, {}, agent="claude")
+                changed = True
         except Exception as e:
             log.debug("interrupted-dialog check failed for %s: %s", name, e.__class__.__name__)
     return changed
