@@ -730,3 +730,46 @@ def pair_up(two_nodes):
         assert made.status_code == 201, made.text
         return made.json()
     return go
+
+
+@pytest.fixture
+def split_boards(two_nodes, fake_tmux, tmp_path):
+    """The two boards of `two_nodes` with their own projects dir and their own fake tmux sessions (issue #141): what board `b` creates is under
+    `split_boards.b_projects` and in `split_boards.tmux_b`, never on `a`, and the other way round. `Board.enter()` swaps `settings.projects_dir` and the
+    containers of the shared fake tmux store (`sessions`, `created`, `sent`, ...) for the length of a `with`, and puts them back, nested or not. Returns
+    the TwoNodes object with `a_projects`, `b_projects`, `tmux_a` and `tmux_b` added (each tmux_x is that board's store: the same keys as `fake_tmux`)."""
+    from types import SimpleNamespace
+    from app import main
+    from app.config import settings
+
+    fake_tmux.setdefault("screen", "")                     # a key a test sets later would otherwise leak out of the board's store when the swap is undone
+
+    def fresh():
+        return {k: (type(v)() if isinstance(v, (dict, list)) else v) for k, v in fake_tmux.items()}
+
+    def wrap(board, pdir, store):
+        orig = board.enter
+
+        @contextlib.contextmanager
+        def enter():
+            saved_dir, saved_store = settings.projects_dir, dict(fake_tmux)
+            settings.projects_dir = pdir
+            fake_tmux.update(store)
+            main._invalidate_scan()
+            try:
+                with orig():
+                    yield board
+            finally:
+                fake_tmux.update(saved_store)
+                settings.projects_dir = saved_dir
+                main._invalidate_scan()
+        board.enter = enter
+
+    pa, pb = tmp_path / "projects-a", tmp_path / "projects-b"
+    pa.mkdir()
+    pb.mkdir()
+    sa, sb = fresh(), fresh()
+    wrap(two_nodes.a, pa, sa)
+    wrap(two_nodes.b, pb, sb)
+    two_nodes.a_projects, two_nodes.b_projects, two_nodes.tmux_a, two_nodes.tmux_b = pa, pb, sa, sb
+    return two_nodes

@@ -301,6 +301,8 @@ class NodeHub:
         return bool(t is not None and t.is_alive())
 
     def stop(self) -> None:
+        from . import nodes_stream                      # the streams to peers (issue #143) end with the hub: their reader threads never touch the database, but nothing is left open behind it
+        nodes_stream.close_all("shutdown", wait=1.0)
         self._stop.set()
         t = self._thread
         if t is not None and t is not threading.current_thread():

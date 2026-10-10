@@ -85,3 +85,21 @@ html.force-coarse #page .nd-cell { min-height:var(--tap); }
   #page .nd-facts-dl { grid-template-columns:1fr; gap:2px 0; }
   #page .nd-facts-dl dd { margin-bottom:8px; }
 }
+
+/* The tail of a remote session (issue #143): the last captured lines in a <pre>, kept apart from the peek's repaints; a stream that ended keeps its lines, dimmed. */
+#page .nd-tail { margin:14px 0 0; }
+#page .nd-tail-pre { margin:6px 0 0; padding:8px 10px; min-height:3.2em; max-height:18em; overflow:auto; border:1px solid var(--line); border-radius:3px; background:var(--card); color:var(--fg-2);
+  font:12px/1.5 var(--font-mono); white-space:pre-wrap; overflow-wrap:anywhere; }
+#page .nd-tail-pre:focus-visible { outline:2px solid var(--sig); outline-offset:1px; }
+#page .nd-tail.gone .nd-tail-pre { opacity:.6; }
+#page .nd-tail-st { margin:6px 0 0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+
+/* The launcher on another node (issues #141, #143; launcher-node.js): the picker above the form, the remote form's own lines and the toast's link. */
+.lx-nodepick { margin-bottom:0; }
+.lx-remote .lx-nodewhy { margin:0; font-size:12px; overflow-wrap:anywhere; }
+.lx-remote .lx-nobypass { margin:0; font-size:12px; }
+.lx-remote .lx-nodetask { display:flex; flex-wrap:wrap; gap:2px 6px; min-width:0; overflow-wrap:anywhere; }
+.lx-nodepick select { width:100%; }
+.toast .toast-link { display:inline-flex; align-items:center; min-height:28px; margin-left:10px; color:var(--sig); text-decoration:underline; }
+@media (pointer:coarse) { .toast .toast-link { min-height:var(--tap); } }
+html.force-coarse .toast .toast-link { min-height:var(--tap); }

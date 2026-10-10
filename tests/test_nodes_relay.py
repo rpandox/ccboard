@@ -121,6 +121,17 @@ def hub_path(row: nr.Row, handle: str = "node-b", **more) -> str:
     return fill(row.hub_path, handle=handle, **more)
 
 
+SAMPLE = {"task_create": {"project": "shop", "repo": "api", "title": "A task", "prompt": "do it"}, "task_dispatch": {}, "session_open": {"project": "shop", "repo": "api"}}
+
+
+def ask(board, row, handle: str = "node-b", **kw):
+    """The hub route of a row as a signed-in person calls it: a GET, or a POST with the row's sample body."""
+    if row.hub_method == "GET":
+        return board.call("GET", hub_path(row, handle), **kw)
+    kw.setdefault("json", SAMPLE[row.name])
+    return board.call(row.hub_method, hub_path(row, handle), **kw)
+
+
 def token_of(two, row) -> str:
     with two.a.enter():
         return nodes._load_outgoing(row["peer_id"])
@@ -155,14 +166,19 @@ def test_names_actions_and_routes_are_unique_and_every_row_has_its_routes():
 
 
 def test_node_routes_are_the_base_routes_and_the_rows_and_nothing_else():
-    base = {("POST", "/api/node/rotate"): nodes.SCOPE_ANY, ("POST", "/api/node/unpair"): nodes.SCOPE_ANY, ("GET", "/api/node/summary"): "read"}
+    base = {("POST", "/api/node/rotate"): nodes.SCOPE_ANY, ("POST", "/api/node/unpair"): nodes.SCOPE_ANY, ("GET", "/api/node/summary"): "read",
+            ("GET", "/api/node/stream"): "sessions"}          # the stream relay (issue #143, app/nodes_stream.py) is not a JSON row; screen text needs `sessions`
     assert dict(nodes.NODE_ROUTES) == {**base, **{(r.peer_method, r.peer_path): r.scope for r in ROWS}}
 
 
-def test_the_first_rows_are_the_five_reads_and_screen_text_needs_sessions_not_read():
+def test_the_rows_are_the_five_reads_and_the_three_writes_and_screen_text_needs_sessions_not_read():
     assert {r.name: (r.peer_method, r.peer_path, r.scope) for r in ROWS} == {
         "card": ("GET", "/api/node", "read"), "state": ("GET", "/api/node/state", "read"), "task": ("GET", "/api/node/tasks/{tid}", "read"),
-        "pane": ("GET", "/api/node/sessions/{name}/pane", "sessions"), "agents": ("GET", "/api/node/agents", "read")}
+        "pane": ("GET", "/api/node/sessions/{name}/pane", "sessions"), "agents": ("GET", "/api/node/agents", "read"),
+        "task_create": ("POST", "/api/node/tasks", "tasks"), "task_dispatch": ("POST", "/api/node/tasks/{tid}/dispatch", "tasks"),
+        "session_open": ("POST", "/api/node/sessions", "sessions")}
+    assert {r.name: r.rate_class for r in ROWS if r.peer_method == "POST"} == {"task_create": "write", "task_dispatch": "write", "session_open": "write"}
+    assert all(r.guard for r in ROWS if r.peer_method == "POST"), "every write row starts or steers an agent: the guard runs on both sides"
 
 
 def test_every_row_is_human_only_until_a_phase_opens_one_on_purpose():
@@ -269,9 +285,11 @@ def test_a_write_row_draws_on_the_write_bucket_even_though_the_method_is_not_get
 def test_a_wrong_method_on_a_row_is_405(lone, wide, row):
     c, db = lone
     _, tok = mint(db, nodes.SCOPES)
-    for method in ("POST", "PUT", "PATCH", "DELETE"):
+    for method in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+        if method == row.peer_method:
+            continue
         r = c.request(method, fill(row.peer_path), headers=bearer(tok))
-        assert r.status_code == 405 and "GET" in r.headers["allow"], (method, row.name)
+        assert r.status_code == 405 and row.peer_method in r.headers["allow"], (method, row.name)
 
 
 @pytest.mark.parametrize("row", [r for r in ROWS if not r.peer_exists], ids=ids)
@@ -279,7 +297,7 @@ def test_a_token_with_the_scope_reaches_the_handler_and_gets_the_handlers_own_an
     c, db = lone
     _, tok = mint(db, [row.scope])
     r = c.request(row.peer_method, fill(row.peer_path), headers=bearer(tok))
-    assert r.status_code in (200, 404) and r.headers["cache-control"] == "no-store" and r.headers["x-content-type-options"] == "nosniff"
+    assert r.status_code in ((200, 404) if row.peer_method == "GET" else (404, 422)) and r.headers["cache-control"] == "no-store" and r.headers["x-content-type-options"] == "nosniff"
 
 
 @pytest.mark.parametrize("row", [r for r in ROWS if not r.peer_exists], ids=ids)
@@ -323,7 +341,7 @@ def test_a_pair_without_the_scope_is_409_before_any_call(two_nodes, pair_up, row
     reg = pair_up([s for s in nodes.SCOPES if s != row.scope][:3] if row.scope != "read" else ["tasks"])
     count = Count(two_nodes.transport)
     nodes.peer_transport = count
-    r = two_nodes.a.get(hub_path(row, reg["handle"]))
+    r = ask(two_nodes.a, row, reg["handle"])
     assert r.status_code == 409 and r.json()["reason"] == "scope" and r.json()["error"] == f"needs the {row.scope} scope on node-b", r.text
     assert r.json()["node"] == "node-b" and count.seen == 0
     out = audit_rows(two_nodes.a, action=row.audit_action)
@@ -335,7 +353,7 @@ def test_an_offline_node_is_503_with_the_reason_and_the_age_and_no_call(hub, mon
     two, reg, count = hub
     from app import main
     monkeypatch.setattr(main, "_hub", lambda: FakeHub(status="offline", age_s=1234))
-    r = two.a.get(hub_path(row, reg["handle"]))
+    r = ask(two.a, row, reg["handle"])
     assert r.status_code == 503 and r.json()["reason"] == "offline" and r.json()["age"] == 1234 and "offline" in r.json()["error"] and "20 min" in r.json()["error"], r.text
     assert count.seen == 0, "no request was made"
     assert audit_rows(two.a, action=row.audit_action)[0]["status"] == "refused"
@@ -365,7 +383,7 @@ def test_a_node_the_hub_has_not_read_yet_is_409_not_read_yet_and_no_call(hub, mo
     from app import main
     for rec in ({"status": "offline", "age_s": None, "polled_at": None, "last_ok_at": None}, None):
         monkeypatch.setattr(main, "_hub", (lambda: FakeHub(**rec)) if rec else (lambda: type("H", (), {"records": lambda self, h=None: []})()))
-        r = two.a.get(hub_path(row, reg["handle"]))
+        r = ask(two.a, row, reg["handle"])
         assert r.status_code == 409 and r.json()["reason"] == "not_read_yet" and "not been read yet" in r.json()["error"], r.text
     assert count.seen == 0
     assert audit_rows(two.a, action=row.audit_action)[0]["status"] == "refused"
@@ -461,12 +479,12 @@ def test_a_caller_needs_identity_and_the_csrf_header_or_the_hook_token(hub, wide
 @pytest.mark.parametrize("row", ROWS, ids=ids)
 def test_the_hook_token_every_agent_session_holds_cannot_relay_on_any_row(hub, wide, fake_tmux, row):
     two, reg, count = hub
-    r = two.a.call(row.hub_method, hub_path(row, reg["handle"]), owner=False, headers={"X-CCBoard-Token": two.a.hook_token})
+    r = ask(two.a, row, reg["handle"], owner=False, headers={"X-CCBoard-Token": two.a.hook_token})
     assert r.status_code == 403 and r.json()["reason"] == "human_only" and "signed-in person" in r.json()["error"], r.text
     assert count.seen == 0, "nothing reached another node"
-    r = two.a.call(row.hub_method, hub_path(row, reg["handle"]), owner=False, headers={"X-CCBoard-Token": two.a.hook_token, "X-CCBoard": "1", **ID})
+    r = ask(two.a, row, reg["handle"], owner=False, headers={"X-CCBoard-Token": two.a.hook_token, "X-CCBoard": "1", **ID})
     assert r.status_code == 403, "the hook token with a person's headers beside it is still the hook token"
-    assert two.a.get(hub_path(row, reg["handle"])).status_code in (200, 404), "the signed-in person still can"
+    assert ask(two.a, row, reg["handle"]).status_code in (200, 404, 422), "the signed-in person still can (a write row with nothing on the peer says 404 or 422)"
 
 
 def test_the_acting_user_is_the_authenticated_login_never_a_header_or_a_query_the_caller_sends(hub, wide):

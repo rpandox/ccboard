@@ -384,7 +384,7 @@ LAUNCH_EXEMPT: dict[str, str] = {
     "api_add_repo": "same: `git clone` only, refused at the launch point on an unsandboxed dev board",
 }
 #: routes that reach the guard through a helper which calls it first thing
-GUARDED_HELPERS = {"_task_launch"}
+GUARDED_HELPERS = {"_task_launch", "_session_create", "_task_dispatch", "_tasks_create"}      # the routes' bodies (issue #141 split them out so a paired node's wrapper calls the same code); _tasks_create reaches the guard through _task_launch
 #: routes that start a session only on some bodies, with the body that makes them do so
 LAUNCH_ROUTES.update({"api_create_task": ("POST", "/api/projects/shop/repos/api/tasks", {"title": "t", "prompt": "p", "dispatch": True}),
                       "api_tasks_create": ("POST", "/api/tasks", {"project": "shop", "repo": "api", "title": "t", "prompt": "p", "dispatch": True}),
@@ -514,7 +514,7 @@ def test_every_route_that_can_start_a_process_calls_the_guard():
         assert name in routes, f"{name} is not a route any more"
         assert "require_real_launch_ok" in calls[name] or calls[name] & GUARDED_HELPERS, f"{name} does not call the guard"
     for h in GUARDED_HELPERS:
-        assert "require_real_launch_ok" in calls[h], f"{h} is listed as a guarded helper but does not call the guard"
+        assert "require_real_launch_ok" in calls[h] or calls[h] & (GUARDED_HELPERS - {h}), f"{h} is listed as a guarded helper but does not call the guard"
     assert "require_real_launch_ok" in calls["_start_session_row"], "the one tmux launch point is guarded too"
 
 

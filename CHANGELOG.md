@@ -2,6 +2,27 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.42 - 2026-10-10
+
+### Added
+- Nodes P8, start work on another node (#141). Three relay rows with the `tasks` and `sessions` scopes: create a task (now, or as a Backlog card), hand a Backlog task to a new session or an idle one, and open a plain session. The hub and the node each run the strict body and `guard_launch` (never bypass, arguments, tools, directories or a first prompt for a session; `after_task_id` is refused: "chains stay inside one node"), each writes an audit row, and the task row on the node carries `origin` (the calling node and the login it reported). A write that times out is "unconfirmed" and is never retried.
+- The launcher has a **Node** control (`This node | build-box`, a native select above four) when the hub view is on and a node is online. A node swaps in its own projects, repos, agents, models and efforts (the agents row, cached 10 minutes per node), hides every danger option ("Bypass is only available on the node itself."), remembers its choices per node and repo, paints the row at once as "Starting on <node>", and toasts "Started on <node>" with **Open on <node>** and the node's limit warning. Start is off with the reason when the node is offline, needs a new pairing or lacks the scope.
+- **New task here** and **New session here** on the node page are live when the pair holds the scope, and a Backlog task's peek has **Start on <node>**. The demo (`?demo=1`) plays all three.
+- Nodes P8, the stream relay (#143). `GET /api/node/stream` (scope `sessions`) and `GET /api/nodes/{handle}/stream` (a signed-in person only): the hub parses the peer's stream, re-emits only `lines` and `tick` (cut to the line and width caps, then redacted, on both boards) and always ends with a `gone` event that says why. At most 2 streams per node and 8 per hub, a 60 s idle limit, 64 KB per line, closed when the browser leaves, the pair is removed or the board stops. No new dependency.
+- `Live.subscribe(ref, fn)` takes a remote `Ref`: one `EventSource` per node, a `gone` keeps the lines and reads "offline, last seen 09:14", and the page reconnects after 5, 10, 20 and at most 30 seconds. A remote session's peek shows its **Tail** when the pair holds `sessions`.
+
+### Changed
+- The README says a tail can hold secrets the agent saw: `sessions` lets everyone signed in on the calling board read every session's tail, and the redaction is best effort. The scopes and relay tables list the new rows; the node page no longer calls itself read only.
+
+### Fixed
+- A task handed to a running session on a node (mode `session`) is checked against that session, not the card: the session must be one of the node's own sessions in the task's repo, and the line the board recorded for it must say a Claude permission mode of `manual`, `default`, `acceptEdits` or `plan` (Codex: `-s read-only|workspace-write` with `-a on-request`). A session started with bypass, `auto` or `dontAsk`, or whose line says no mode, is refused with `that session runs with wider permissions than another node may use` (`409`).
+- A launch from another node never inherits a local default: a request that leaves the permission out gets `--permission-mode manual` (Claude) or `-s workspace-write -a on-request` (Codex) on its line, a card keeps its own narrower choice, and `CCBOARD_SUBAGENT_MODEL` is not applied. The options the launch ends up with go through the guard on the node, and a line that does not say its permissions inside the allowed set is refused before a session exists.
+- A prompt or title with a control character (Ctrl-C, Escape, a lone CR) is a `422` from another node, because the prompt is typed into a terminal; the issue reference is an owner and a repo name in the GitHub shape; a peer's answer keeps only fields of the expected shape (a slug, a branch, a session name, a phase); the origin is a plain label; two session opens cannot choose the same automatic name.
+- The launch-line check is an allow list now: a line is accepted only when it is exactly what the board's adapters write (canonical quoting, the board's own `env` names, a table of known flags with value rules, each once), the same function for the target session and for the final plan of a remote launch. Every string field of a remote request has an anchored rule (one helper for the hub, the peer, a stored card and stream names), and free text refuses format and line-separator characters too.
+- The stream relay holds at most 6 streams per signed-in person (and still 2 per node and 8 per hub), so one person cannot take the hub's share.
+
+Upgrade: nothing to do.
+
 ## v0.5.41 - 2026-10-10
 
 ### Fixed

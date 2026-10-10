@@ -45,9 +45,14 @@ EXPECTED_NODE_ROUTES = {
     ("GET", "/api/node/tasks/{tid}"): "read",                    # the relay rows (issue #140, app/nodes_relay.py RELAY): each has its refusal tests in tests/test_nodes_relay.py
     ("GET", "/api/node/sessions/{name}/pane"): "sessions",      # screen text is session content: never `read`
     ("GET", "/api/node/agents"): "read",
+    ("POST", "/api/node/tasks"): "tasks",                        # the write rows (issue #141): each has its refusal tests in tests/test_nodes_relay.py and its own in tests/test_nodes_remote_tasks.py
+    ("POST", "/api/node/tasks/{tid}/dispatch"): "tasks",         # a dispatch into a running session also needs `sessions` (checked in the wrapper, after the body is read)
+    ("POST", "/api/node/sessions"): "sessions",
+    ("GET", "/api/node/stream"): "sessions",                     # the read-only stream relay (issue #143, app/nodes_stream.py): screen text, so `sessions`; refuses a request without names before it streams
 }
 # What a listed route answers a token that holds every scope, on the empty test board: the handler's own status, never a 403.
-LISTED_STATUS = {("GET", "/api/node/tasks/{tid}"): 404, ("GET", "/api/node/sessions/{name}/pane"): 404}
+LISTED_STATUS = {("GET", "/api/node/tasks/{tid}"): 404, ("GET", "/api/node/sessions/{name}/pane"): 404, ("POST", "/api/node/tasks"): 422, ("POST", "/api/node/sessions"): 422,
+                 ("POST", "/api/node/tasks/{tid}/dispatch"): 404, ("GET", "/api/node/stream"): 400}       # a write with no body says what is missing; no such task; a stream with no names is a 400 before it streams
 CALLER = {"id": "ts:nCALLER000001", "name": "caller", "url": "https://100.64.0.9"}
 
 

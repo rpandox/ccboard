@@ -169,11 +169,19 @@ EXPECTED = {
     ("GET", "/api/node/tasks/{tid}"): "node-token",     # a relay row (issue #140, app/nodes_relay.py RELAY): a node token with scope read; a person or the hook token gets a 403 from the handler
     ("GET", "/api/node/sessions/{name}/pane"): "node-token",   # the last 40 lines of a screen, control characters out
     ("GET", "/api/node/agents"): "node-token",          # the installed agents and their launcher options, without the account block
+    ("POST", "/api/node/tasks"): "node-token",          # the write rows (issue #141): a node token with scope tasks; the guard and the strict model run on the peer again
+    ("POST", "/api/node/tasks/{tid}/dispatch"): "node-token",
+    ("POST", "/api/node/sessions"): "node-token",       # scope sessions
+    ("GET", "/api/node/stream"): "node-token",          # the read-only stream relay (issue #143): scope sessions, names required, 20 names and 1 to 40 lines; every tail redacted
     ("GET", "/api/nodes/{handle}/card"): "relay",       # the hub side of a relay row: a signed-in person with X-CCBoard (even for a GET), or the local hook token; a node token is a 403; 404 for a handle the registry does not hold
     ("GET", "/api/nodes/{handle}/state"): "relay",
     ("GET", "/api/nodes/{handle}/tasks/{tid}"): "relay",
     ("GET", "/api/nodes/{handle}/sessions/{name}/pane"): "relay",
     ("GET", "/api/nodes/{handle}/agents"): "relay",
+    ("POST", "/api/nodes/{handle}/tasks"): "relay",
+    ("POST", "/api/nodes/{handle}/tasks/{tid}/dispatch"): "relay",
+    ("POST", "/api/nodes/{handle}/sessions"): "relay",
+    ("GET", "/api/nodes/{handle}/stream"): "relay",      # an SSE passthrough that parses and re-serialises: only lines, tick and gone leave it (app/nodes_stream.py); a person only, never the hook token
     ("GET", "/api/nodes/discover"): "identity",   # the tailnet devices that may be nodes (issue #134); refresh=1 also needs X-CCBoard (it makes the board send requests), checked in the handler
     ("GET", "/api/search"): "identity",
     ("POST", "/api/cost/refresh"): "identity+csrf",

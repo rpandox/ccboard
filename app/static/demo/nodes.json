@@ -283,7 +283,8 @@
       "legacy": false,
       "scopes": [
         "read",
-        "tasks"
+        "tasks",
+        "sessions"
       ],
       "card": {
         "app": "ccboard",
@@ -871,5 +872,197 @@
         "truncated": false
       }
     }
-  ]
+  ],
+  "agents": {
+    "build-box": {
+      "agents": [
+        {
+          "name": "claude",
+          "label": "Claude",
+          "glyph": "◆",
+          "installed": true,
+          "version": "2.1.40",
+          "logged_in": true,
+          "hooks": true,
+          "options": [
+            {
+              "key": "model",
+              "label": "Model",
+              "kind": "combo",
+              "choices": [
+                "opus",
+                "sonnet",
+                "haiku"
+              ],
+              "default": "opus",
+              "help": "",
+              "group": "basic",
+              "danger": false,
+              "when": null
+            },
+            {
+              "key": "effort",
+              "label": "Effort",
+              "kind": "select",
+              "choices": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "default": "medium",
+              "help": "",
+              "group": "basic",
+              "danger": false,
+              "when": null
+            },
+            {
+              "key": "permission_mode",
+              "label": "Permission mode",
+              "kind": "select",
+              "choices": [
+                "manual",
+                "acceptEdits",
+                "plan",
+                "auto",
+                "dontAsk",
+                "bypassPermissions"
+              ],
+              "default": null,
+              "help": "",
+              "group": "basic",
+              "danger": false,
+              "when": null
+            }
+          ],
+          "permission_modes": [
+            "manual",
+            "acceptEdits",
+            "plan",
+            "auto",
+            "dontAsk",
+            "bypassPermissions"
+          ],
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "models": [
+            "opus",
+            "sonnet",
+            "haiku"
+          ],
+          "reasoning_by_model": {}
+        },
+        {
+          "name": "codex",
+          "label": "Codex",
+          "glyph": "◇",
+          "installed": true,
+          "version": "0.145.0",
+          "logged_in": true,
+          "hooks": true,
+          "options": [
+            {
+              "key": "model",
+              "label": "Model",
+              "kind": "combo",
+              "choices": [
+                "gpt-6-sol",
+                "gpt-6-luna"
+              ],
+              "default": null,
+              "help": "",
+              "group": "basic",
+              "danger": false,
+              "when": null
+            },
+            {
+              "key": "reasoning_effort",
+              "label": "Reasoning",
+              "kind": "select",
+              "choices": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "default": null,
+              "help": "",
+              "group": "basic",
+              "danger": false,
+              "when": null
+            }
+          ],
+          "permission_modes": [
+            "default",
+            "acceptEdits",
+            "plan",
+            "auto",
+            "dontAsk",
+            "bypassPermissions"
+          ],
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "models": [
+            "gpt-6-sol",
+            "gpt-6-luna"
+          ],
+          "reasoning_by_model": {
+            "gpt-6-sol": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "gpt-6-luna": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "tails": {
+    "build-box/shop--api--s1": [
+      "● Update(app/orders.py)",
+      "  ⎿  Updated app/orders.py with 12 additions and 3 removals",
+      "● Bash(pytest tests/test_orders.py -q)",
+      "  ⎿  14 passed in 1.82s",
+      "",
+      "Claude needs your permission to run: git push origin task/orders-pagination",
+      "  1. Yes   2. Yes, and do not ask again   3. No"
+    ],
+    "build-box/shop--web--t-cart-page": [
+      "● Read(src/cart/EmptyState.tsx)",
+      "● Update(src/cart/EmptyState.tsx)",
+      "  ⎿  Updated src/cart/EmptyState.tsx with 8 additions",
+      "✽ Running the tests…"
+    ],
+    "build-box/infra--deploy--s2": [
+      "• Planning the Postgres 17 upgrade",
+      "• Ran docker compose config",
+      "Approve the command? [y/N]"
+    ],
+    "build-box/shop--api--s3": [
+      "Done. The change is on branch task/orders-pagination.",
+      "What next?"
+    ],
+    "default": [
+      "(nothing captured yet)"
+    ]
+  }
 }

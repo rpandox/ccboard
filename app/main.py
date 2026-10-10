@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gzip
 import hashlib
 import json
@@ -28,7 +29,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_hub, nodes_relay, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_hub, nodes_relay, nodes_stream, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import claude_pane, codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -220,6 +221,7 @@ async def lifespan(app: FastAPI):
     indexer.stop.set()
     sched_worker.stop.set()
     nodes.registry_listener = None
+    await asyncio.to_thread(nodes_stream.close_all, "shutdown")      # the streams to peers end before the hub and the database do
     await asyncio.to_thread(hub.stop)                     # it waits (6 s at most) for the polls in flight: not on the event loop, which a poll through this app may need
 
 
@@ -1822,13 +1824,13 @@ def _task_danger(raw: dict) -> str | None:
     return None
 
 
-def _task_launch(project: str, repo: str, body, *, task_id: int | None = None) -> dict:
+def _task_launch(project: str, repo: str, body, *, task_id: int | None = None, origin: dict | None = None) -> dict:
     """Start a task: a tmux session running the agent in a fresh worktree branch 'worktree-<slug>' of the repo (repo 'root' = the
     project folder). Claude makes the worktree itself (`claude --worktree`); Codex has no such flag, so ccboard runs `git worktree
     add` under .ccboard/worktrees first (see _launch_managed_task). Without task_id a new task row is inserted (phase running, mode
     worktree). With task_id that backlog row is UPDATED instead (slug from its current title, tmux_name, branch, worktree, base,
-    claude_session_id, session_row, assigned_at, phase running), so an edited title names the branch. Returns {id, slug, tmux, branch,
-    attach_url}."""
+    claude_session_id, session_row, assigned_at, phase running), so an edited title names the branch. `origin` ({node, user}: a paired node that
+    asked, issue #141) is stored on a new row. Returns {id, slug, tmux, branch, attach_url}."""
     require_real_launch_ok()   # issue #100: before any worktree is made
     with _task_lock:
         c = _task_check(project, repo, body, launching=True)
@@ -1869,7 +1871,7 @@ def _task_launch(project: str, repo: str, body, *, task_id: int | None = None) -
             tid = db.task_add(project=project, repo=repo, slug=slug, title=title, prompt=prompt, branch=branch, base=base,
                               worktree=worktree, tmux_name=real, claude_session_id=sid, agent=agent, session_row=row_id, mode=mode,
                               assigned_at=db_now(), auto_close=1 if getattr(body, "auto_close", False) else None, spec=spec or None,
-                              **_issue_link(body))
+                              origin=origin or None, **_issue_link(body))
         else:
             tid = task_id
             db.task_update(tid, slug=slug, tmux_name=real, branch=branch, base=base, worktree=worktree, claude_session_id=sid,
@@ -1970,11 +1972,16 @@ def _issue_link(body) -> dict:
 
 @app.post("/api/tasks", status_code=201)
 def api_tasks_create(body: TaskCreateIn):
+    return _tasks_create(body)
+
+
+def _tasks_create(body: TaskCreateIn, origin: dict | None = None):
     """Create a task from anywhere. when 'now' starts it (like the legacy route) and answers {id, slug, tmux, branch, attach_url,
     phase 'running', session_row, task} (plus limit_warning when the Claude window is nearly full: a hand start is never held, only
     warned); when 'later' adds a backlog card with the launch choices kept in `spec` and answers {id, slug, phase 'backlog', tmux null,
     task}. With after_task_id the card is a chain step instead: phase 'queued', parent_id = that task, chain_id shared with it (made
-    when it had none), agent inherited unless named; it needs when 'later' (or none). `task` is the state.tasks row."""
+    when it had none), agent inherited unless named; it needs when 'later' (or none). `task` is the state.tasks row. The route
+    calls this with no origin; a paired node's peer wrapper (issue #141, app/nodes_relay.py) calls it with {node, user}, which the new row keeps in `origin`."""
     project, repo = body.project.strip(), body.repo.strip()
     if not project or not repo:
         raise projects.BadRequest("project and repo are required")
@@ -1985,7 +1992,7 @@ def api_tasks_create(body: TaskCreateIn):
     if body.after_task_id is not None and when != "later":
         raise projects.BadRequest("a task queued behind another cannot start now")
     if when == "now":
-        out = _task_launch(project, repo, body)
+        out = _task_launch(project, repo, body, origin=origin)
         t = db.task_get(out["id"]) or {}
         gate = taskflow.limit_gate(db, agent=agent)
         return {**out, "phase": "running", "session_row": t.get("session_row"), "task": _task_row(out["id"]),
@@ -2012,7 +2019,7 @@ def api_tasks_create(body: TaskCreateIn):
                           branch="", base="" if c.get("inplace") else tasks.default_branch(c["rpath"]), agent=agent,
                           mode="attached" if c.get("inplace") else "worktree", phase="queued" if parent else "backlog",
                           auto_close=1 if body.auto_close else None, spec=spec, parent_id=parent["id"] if parent else None,
-                          chain_id=chain_id, **_issue_link(body))
+                          chain_id=chain_id, origin=origin or None, **_issue_link(body))
     _invalidate_scan()
     return {"id": tid, "slug": slug, "phase": "queued" if parent else "backlog", "tmux": None, "task": _task_row(tid)}
 
@@ -2190,10 +2197,15 @@ def _dispatch_session(t: dict, body: DispatchIn, prompt: str | None = None):
 
 @app.post("/api/tasks/{tid}/dispatch")
 def api_task_dispatch(tid: int, body: DispatchIn | None = None):
+    return _task_dispatch(tid, body)
+
+
+def _task_dispatch(tid: int, body: DispatchIn | None = None, origin: dict | None = None):
     """Start a backlog task: in a new session of its own ({mode: 'lane'}, the default; launch choices from the card's spec,
     overridable in the body) or in a running session ({session: '<tmux>', force?}). Answers {id, phase 'running', tmux,
     session_row, attach_url (lane) | pasted + queued (session), task, limit_warning when the Claude window is at 85 % or a limit
-    episode is active: {kind, resets_at, pct}); the client navigates to the tmux session from this response."""
+    episode is active: {kind, resets_at, pct}); the client navigates to the tmux session from this response. `origin` ({node, user}, issue #141): the
+    paired node that asked; a card that has no origin yet keeps it."""
     require_real_launch_ok()   # issue #100: refuses (409) on a dev board whose directories could reach the real home
     body = body or DispatchIn()
     if body.mode not in (None, "lane", "session"):
@@ -2219,6 +2231,8 @@ def api_task_dispatch(tid: int, body: DispatchIn | None = None):
         elif phase != "backlog":
             raise projects.Conflict("already dispatched")
         res = _dispatch_session(t, body, prompt) if body.session else _dispatch_lane(t, body, prompt)
+        if origin and isinstance(res, dict) and not t.get("origin"):
+            db.task_update(tid, origin=origin)
         gate = taskflow.limit_gate(db, agent=_task_agent(body.agent or t.get("agent"))) if isinstance(res, dict) else None
         if gate:                                             # a hand dispatch is never held by the window, only warned
             res["limit_warning"] = gate
@@ -3208,6 +3222,8 @@ def _start_session_row(name: str, project: str, repo: str, session: str, launche
     Returns (real tmux name, sessions.id). With task_id the task's session_row is pointed at the new row, which is how a
     relaunched task session (fix-ci, run resume, reboot recovery) stays the task's live session."""
     require_real_launch_ok()   # issue #100: refuses (409) on a dev board whose directories could reach the real home
+    if nodes_relay.CALLER.get() is not None:      # a paired node's request is being served (issue #141): the typed line must say its permissions and stay inside the allowed set
+        nodes_relay.require_remote_launch(agent, cmd_line, opts)
     env = {"CCBOARD_SESSION": name, "CCBOARD_URL": settings.loopback_url(),
            "CCBOARD_APPROVE_TIMEOUT": str(int(settings.approve_timeout)), "CCBOARD_AGENT": agent, **(env_extra or {})}
     real = tmux.new_session(name, cwd, env=env)
@@ -3353,6 +3369,11 @@ def _codex_session_opts(body, extra: list[str]) -> dict:
 
 @app.post("/api/projects/{project}/repos/{repo}/sessions", status_code=201)
 def api_create_session(project: str, repo: str, body: SessionIn):
+    return _session_create(project, repo, body)
+
+
+def _session_create(project: str, repo: str, body: SessionIn, origin: dict | None = None):
+    """The new-session route's work. A paired node's peer wrapper (issue #141) calls it with `origin` {node, user}, which the session keeps in its flags."""
     require_real_launch_ok()   # issue #100: refuses (409) on a dev board whose directories could reach the real home
     agent, launcher, kind = _launch_kind(body)
     rpath = projects.repo_path(project, repo)
@@ -3467,6 +3488,8 @@ def api_create_session(project: str, repo: str, body: SessionIn):
         if managed:
             tasks.discard_managed_worktree(rpath, managed[0], managed[1])
         raise
+    if origin:
+        db.update_flags(real, {"origin": origin})
     _invalidate_scan()
     return {"tmux": real, "attach_url": f"/tty/?arg={real}", "agent": agent, "agent_session_id": agent_session_id,
             "claude_session_id": agent_session_id, "cmd": cmd_line}
@@ -4193,9 +4216,10 @@ def _stream_query(names: str | None = None, lines: str | None = None) -> tuple[s
     return wanted, n
 
 
-def _capture_all(names: set[str] | None = None, nlines: int = LIVE_LINES) -> tuple[list[str], dict[str, list[str]]]:
+def _capture_all(names: set[str] | None = None, nlines: int = LIVE_LINES, clean: bool = False) -> tuple[list[str], dict[str, list[str]]]:
     """(every non-internal session name, name -> last nlines visible lines). Only the sessions in `names` (all when None) are
-    captured: one tmux capture-pane each is the expensive part, the listing is one call."""
+    captured: one tmux capture-pane each is the expensive part, the listing is one call. `clean` (the stream a paired node reads, issue #143) runs each tail
+    through the same cap-then-redact pass as the node pane row (nodes_relay.screen_lines); the board's own stream keeps the raw tail."""
     try:
         live_names = sorted(n for n in tmux.list_sessions() if not tmux.is_internal(n))
     except tmux.TmuxDown:
@@ -4208,7 +4232,7 @@ def _capture_all(names: set[str] | None = None, nlines: int = LIVE_LINES) -> tup
             text = tmux.capture(n, lines=nlines, join=False)
         except tmux.TmuxError:
             continue
-        out[n] = nodes_relay.tail_lines(text, nlines)
+        out[n] = nodes_relay.screen_lines(text, nlines) if clean else nodes_relay.tail_lines(text, nlines)
     return live_names, out
 
 
@@ -4219,19 +4243,74 @@ async def api_stream(request: Request, query=Depends(_stream_query), once: bool 
     sets the tail length. The tick always lists every live session, filtered or not. Bad names or lines are a 400 before the stream
     starts. FastAPI encodes the yielded ServerSentEvent objects (response_class=EventSourceResponse)."""
     names, nlines = query
+    async with contextlib.aclosing(_live_events(request, names, nlines, once)) as events:
+        async for ev in events:
+            yield ev
+
+
+async def _live_events(request: Request, names: set[str] | None, nlines: int, once: bool, *, clean: bool = False, tick_names: set[str] | None = None):
+    """The loop behind /api/stream and /api/node/stream: 'lines' when a session's tail changes, 'tick' every interval (every live session, or only those in
+    `tick_names`). `clean` redacts the tails (the stream a paired node reads)."""
     last: dict[str, list[str]] = {}
     while True:
-        live_names, snap = await asyncio.to_thread(_capture_all, names, nlines)
+        live_names, snap = await asyncio.to_thread(_capture_all, names, nlines, clean)
         for name, tail in snap.items():
             if last.get(name) != tail:
                 last[name] = tail
                 yield ServerSentEvent(event="lines", data={"name": name, "lines": tail})
         for gone in [n for n in last if n not in snap]:
             del last[gone]
-        yield ServerSentEvent(event="tick", data={"sessions": live_names})
+        yield ServerSentEvent(event="tick", data={"sessions": live_names if tick_names is None else [n for n in live_names if n in tick_names]})
         if once or await request.is_disconnected():
             return
         await asyncio.sleep(LIVE_INTERVAL)
+
+
+def _node_stream_query(request: Request) -> tuple[set[str], int, bool]:
+    """GET /api/node/stream?names=a--b--c&lines=12 for a paired node's token with the `sessions` scope (a tail is session content, never `read`). The same
+    limits as /api/stream (at most 20 names, lines 1 to 40) and one more: names is required, so a node cannot ask for every session. Every refusal is an
+    answer before the stream starts, and nothing else opens the route (a person and the hook token use /api/stream). One `in` audit row per open, with the names."""
+    peer, pid = getattr(request.state, "node_peer", None), getattr(request.state, "node_pair", None)
+    if not peer or not pid:
+        raise projects.Forbidden("this route takes a node token")
+    acting = nodes._scrub(request.headers.get("x-ccboard-acting-user"), 64)
+
+    def audit(ok: bool, status: str, detail: str | None, target: str) -> None:
+        nodes.audit("in", pid, "read_stream", ok, detail, node_name=peer.get("name"), user=f"for {acting}" if acting else None, target=target, status=status, db=db)
+
+    if not nodes.scope_ok(peer.get("scopes"), "sessions"):
+        audit(False, "refused", "scope sessions not granted", "stream")
+        raise projects.Forbidden("this node token does not hold the sessions scope")
+    items = list(request.query_params.multi_items())
+    keys = [k for k, _ in items]
+    try:
+        if len(set(keys)) != len(keys):
+            raise projects.BadRequest("a query field is given twice")
+        if not set(keys) <= {"names", "lines", "once"}:
+            raise projects.BadRequest("only names and lines are taken")
+        q = dict(items)
+        if "names" not in q:
+            raise projects.BadRequest("names is required: at most 20 session names")
+        bad = nodes_relay.stream_names_error(q["names"])
+        if bad:
+            raise projects.BadRequest(bad)
+        wanted, n = _stream_query(q["names"], q.get("lines"))
+        once = q.get("once", "0") in ("1", "true")
+    except projects.BadRequest as e:
+        audit(False, "refused", str(e)[:160], "stream")
+        raise
+    audit(True, "ok", None, "stream " + ",".join(sorted(wanted)))
+    return wanted or set(), n, once
+
+
+@app.get("/api/node/stream", response_class=EventSourceResponse)
+async def api_node_stream(request: Request, query=Depends(_node_stream_query)):
+    """SSE for a paired node (scope `sessions`): the same generator as /api/stream, over the sessions it named only, each tail cut to its caps and redacted the way
+    the pane row does, and a tick that lists those names only. `once=1` ends it after one pass."""
+    names, nlines, once = query
+    async with contextlib.aclosing(_live_events(request, names, nlines, once, clean=True, tick_names=names)) as events:
+        async for ev in events:
+            yield ev
 
 
 # ---------- hooks ----------
@@ -4813,6 +4892,7 @@ def api_node_unpair(request: Request):
 # ---------- the relay (issue #140): the hub routes /api/nodes/{handle}/..., the peer wrappers /api/node/... and nothing else; the table is app/nodes_relay.py RELAY ----------
 
 nodes_relay.install(app, nodes_relay.HANDLERS, lambda: db, lambda: _hub())
+app.add_api_route("/api/nodes/{handle}/stream", nodes_stream.hub_endpoint(lambda: db, lambda: _hub()), methods=["GET"], name="relay_stream", include_in_schema=False)
 
 
 @app.get("/api/search")
