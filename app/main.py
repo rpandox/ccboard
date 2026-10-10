@@ -26,7 +26,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, nodes, nodes_discovery, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import codex_discovery, codex_pane
@@ -4640,21 +4640,43 @@ def api_nodes_rotate(peer: str, request: Request):
     return JSONResponse({"rotated": True, "grace_s": nodes.ROTATE_GRACE}, headers={"Cache-Control": "no-store"})
 
 
+class NodeRemoveIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    also_revoke: list[str] = Field(default_factory=list, max_length=50)
+
+
+@app.post("/api/nodes/{peer}/remove-preview")
+def api_nodes_remove_preview(peer: str, request: Request):
+    """What removing this pair would also touch, and nothing is changed: {auto, others}. `auto` are the incoming pairs the removal revokes by itself
+    (confirmed, same node id, same address); `others` are the active incoming pairs that name the same node id from another address or were never
+    confirmed ({peer_id, name, url, verified}): they stay unless DELETE /api/nodes/<peer> lists them in `also_revoke`. 404 no such node."""
+    _node_manager(request)
+    try:
+        out = nodes.removal_preview(peer, db=db)
+    except LookupError:
+        raise projects.NotFound("no such node") from None
+    return JSONResponse({"auto": out["auto"], "others": out["others"], "at": db_now()}, headers={"Cache-Control": "no-store"})
+
+
 @app.delete("/api/nodes/{peer}")
-def api_nodes_remove(peer: str, request: Request):
+def api_nodes_remove(peer: str, request: Request, body: NodeRemoveIn | None = None):
     """Remove a node this board calls, or revoke a pair that calls this board (it fails on its next request). Never fails because the other board is
-    offline: a node this board calls is asked to unpair (best effort) and {peer_notified} says whether it was told. 404 no such node."""
+    offline: a node this board calls is asked to unpair (best effort) and {peer_notified} says whether it was told. An optional body
+    {also_revoke: [peer_id, ...]} also revokes exactly those incoming pairs; each must be an active pair with the removed node's node id (400
+    otherwise, and nothing happens). The answer lists the other pairs that name the same node id and are still active (`other_pairs`). 404 no such node."""
     _node_manager(request)
     rec = nodes.peer(peer, db=db)
     if rec is None:
         raise projects.NotFound("no such node")
     try:
-        done = nodes.remove_node(rec["peer_id"], db=db)
+        done = nodes.remove_node(rec["peer_id"], db=db, also_revoke=body.also_revoke if body else None)
     except LookupError:
         raise projects.NotFound("no such node") from None
+    except ValueError as e:
+        raise projects.BadRequest(str(e)) from None
     doctor.invalidate()
-    return JSONResponse({"removed": True, "peer_notified": bool(done["peer_told"]) if rec.get("direction") != "in" and not rec.get("legacy") else None},
-                        headers={"Cache-Control": "no-store"})
+    return JSONResponse({"removed": True, "peer_notified": bool(done["peer_told"]) if rec.get("direction") != "in" and not rec.get("legacy") else None,
+                         "also_revoked": done["also_revoked"], "other_pairs": done["other_pairs"]}, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/node/rotate")

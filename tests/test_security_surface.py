@@ -161,6 +161,7 @@ EXPECTED = {
     ("POST", "/api/nodes/pair"): "pair-code",       # the other board's call with a code: no identity (a tagged board has none); X-CCBoard, no Origin, an allowed-or-absent identity, a body under 16 KB, 20 a minute per source
     ("POST", "/api/nodes/pair/confirm"): "pair-code",   # the callback of the board being called: no identity; X-CCBoard, no Origin, 1 KB, 30 a minute per source; answers {node_id} only while this board's own add_node is in flight, else 404
     ("POST", "/api/nodes/{peer}/rotate"): "identity+csrf",
+    ("POST", "/api/nodes/{peer}/remove-preview"): "identity+csrf",   # what removing a pair would also touch (the other incoming pairs of the same node id); changes nothing
     ("DELETE", "/api/nodes/{peer}"): "identity+csrf",
     ("GET", "/api/nodes/discover"): "identity",   # the tailnet devices that may be nodes (issue #134); refresh=1 also needs X-CCBoard (it makes the board send requests), checked in the handler
     ("GET", "/api/search"): "identity",

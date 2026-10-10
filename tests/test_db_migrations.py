@@ -533,7 +533,7 @@ def test_tasks_origin_is_a_nullable_text_column_for_work_asked_by_another_board(
 
 # ---- nodes epic P3 (issue #135): node_pairs and node_audit ---------------------------------------------------------------------------
 NODE_PAIR_COLS = {"id", "peer_id", "peer_node_id", "peer_name", "peer_url", "token_sha256", "scopes", "created_at", "expires_at", "last_used_at",
-                  "last_ip_hint", "callback_unverified", "revoked_at", "prev_sha256", "prev_until", "rotated_at"}
+                  "last_ip_hint", "callback_unverified", "revoked_at", "prev_sha256", "prev_until", "rotated_at", "superseded_by"}
 NODE_AUDIT_COLS = {"id", "at", "direction", "peer", "node_name", "user", "action", "target", "status", "detail"}
 
 

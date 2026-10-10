@@ -1202,7 +1202,7 @@ def test_removing_a_node_tells_the_other_board_which_drops_its_pair_both_ways(pa
     view, _ = pair(pair2, both_ways=True)
     with pair2.a.enter():
         res = nodes.remove_node(view["handle"])
-        assert res == {"removed": True, "peer_told": True}
+        assert res == {"removed": True, "peer_told": True, "also_revoked": [], "other_pairs": []}
         assert nodes.peers() == [] and not nodes.has_outgoing(view["peer_id"])                      # the row, the token and the reverse pair
     with pair2.b.enter():
         assert nodes.peers() == []                                                                 # B dropped the pair A held and its own token for A
@@ -1215,7 +1215,7 @@ def test_removing_a_node_while_the_other_board_is_off_still_removes_everything_h
     with pair2.a.enter():
         old = nodes._load_outgoing(view["peer_id"])
         res = nodes.remove_node(view["peer_id"])
-        assert res == {"removed": True, "peer_told": False}
+        assert res == {"removed": True, "peer_told": False, "also_revoked": [], "other_pairs": []}
         assert nodes.peers() == [] and not nodes.has_outgoing(view["peer_id"]) and not nodes.tokens_path().exists()
         assert nodes.remove_peer(view["peer_id"]) is False
         rows = [r for r in nodes.audit_list(20) if r["action"] == "unpair"]
@@ -1231,7 +1231,7 @@ def test_removing_a_node_while_the_other_board_is_off_still_removes_everything_h
 def test_a_legacy_row_is_removed_without_calling_anyone(pair2):
     with pair2.a.enter():
         (legacy,) = nodes.import_legacy([{"name": "ubu", "url": "https://ubu.tailnet.ts.net"}])
-        assert nodes.remove_node("ubu") == {"removed": True, "peer_told": False}
+        assert nodes.remove_node("ubu") == {"removed": True, "peer_told": False, "also_revoked": [], "other_pairs": []}
     assert pair2.log == []
 
 
@@ -1589,7 +1589,9 @@ def test_removing_a_node_revokes_only_confirmed_pairs_from_its_own_address(db):
     claim, _ = nodes.add_incoming({"id": C_ID, "name": "x", "url": "https://100.64.0.66"}, callback_unverified=True, db=db)  # a claim nobody confirmed
     no_url, _ = nodes.add_incoming({"id": C_ID, "name": "y"}, db=db)                                                         # a confirmed id with no address to compare
     back, _ = nodes.add_incoming({"id": C_ID, "name": "mallory", "url": "https://100.64.0.66"}, db=db)                     # the pair this board gave that address
-    assert nodes.remove_node(mallory["peer_id"], db=db) == {"removed": True, "peer_told": False}
+    res = nodes.remove_node(mallory["peer_id"], db=db)
+    assert (res["removed"], res["peer_told"], res["also_revoked"]) == (True, False, [])
+    assert {o["peer_id"] for o in res["other_pairs"]} == {real_c["peer_id"], claim["peer_id"], no_url["peer_id"]}, "the ones that stay are listed, not hidden"
     state = {x["peer_id"]: x["revoked_at"] for x in db.node_pairs(include_revoked=True)}
     assert state[back["peer_id"]], "the pair given to that very address goes with it"
     for keep in (real_c, claim, no_url):
@@ -1794,3 +1796,139 @@ def test_the_pending_store_is_bounded_and_every_record_is_compared_in_constant_t
         first = next(iter(nodes._pending))[1]
         assert nodes.confirm_answer(first) == nodes.node_id()
         assert len(calls) == nodes.CONFIRM_MAX, "the loop does not stop at the match"
+
+
+# ================================================================ a moved node is not silent: superseded pairs, the remove preview, also_revoke (security finding 3)
+
+NEW_URL = "https://100.64.0.9"
+
+
+def audit_actions(db):
+    return [r["action"] for r in nodes.audit_list(100, db=db)]
+
+
+def test_a_re_pair_from_another_address_marks_the_old_pair_superseded_and_leaves_it_working(db, clock):
+    """A node that moved (or is known by its IP one way and by its name the other) pairs again from a new address: nothing is revoked on a claimed
+    id, but the old pair must not sit there unnoticed, so it is marked with the newer pair and an audit row says so."""
+    old, old_token = nodes.add_incoming({"id": C_ID, "name": "node-c", "url": C_URL}, db=db)
+    same, same_token = nodes.add_incoming({"id": C_ID, "name": "node-c", "url": NEW_URL + ":443"}, db=db)         # the new address, spelled another way
+    new, new_token = nodes.add_incoming({"id": C_ID, "name": "node-c", "url": NEW_URL}, db=db)
+    newer, _ = nodes.add_incoming({"id": C_ID, "name": "later", "url": "https://100.64.0.77"}, db=db)             # created after the kept one: not 'older'
+    assert nodes.revoke_older_pairs(C_ID, new["peer_id"], db=db) == 1, "only the same-address pair is revoked"
+    assert nodes.verify_token(same_token, db=db) is None and db.node_pair_get(same["peer_id"])["superseded_by"] is None, "same address: replaced, not marked"
+    assert nodes.verify_token(old_token, db=db)["peer_id"] == old["peer_id"], "a pair at another address keeps working until the person acts"
+    assert nodes.verify_token(new_token, db=db)
+    assert db.node_pair_get(old["peer_id"])["superseded_by"] == new["peer_id"] and db.node_pair_get(old["peer_id"])["revoked_at"] is None
+    assert db.node_pair_get(new["peer_id"])["superseded_by"] is None and db.node_pair_get(newer["peer_id"])["superseded_by"] is None
+    view = {p["peer_id"]: p for p in nodes.peers(db)}
+    assert view[old["peer_id"]]["superseded_by"] == new["peer_id"] and view[old["peer_id"]]["superseded_by_url"] == NEW_URL, "the list carries the flag and the new address"
+    assert view[new["peer_id"]]["superseded_by"] is None and view[new["peer_id"]]["superseded_by_url"] is None
+    rows = [r for r in nodes.audit_list(100, db=db) if r["action"] == "superseded"]
+    assert len(rows) == 1 and rows[0]["peer"] == old["peer_id"] and NEW_URL in rows[0]["detail"] and "revoke" in rows[0]["detail"]
+    assert nodes.revoke_older_pairs(C_ID, new["peer_id"], db=db) == 0
+    assert len([r for r in nodes.audit_list(100, db=db) if r["action"] == "superseded"]) == 1, "marking again writes no second row"
+
+
+def test_a_pair_that_nobody_confirmed_supersedes_nothing_and_a_revoked_pair_is_not_marked(db, clock):
+    old, _ = nodes.add_incoming({"id": C_ID, "name": "node-c", "url": C_URL}, db=db)
+    gone, _ = nodes.add_incoming({"id": C_ID, "name": "node-c", "url": "https://100.64.0.5"}, db=db)
+    nodes.revoke(gone["peer_id"], db=db)
+    claim, _ = nodes.add_incoming({"id": C_ID, "name": "claim", "url": NEW_URL}, callback_unverified=True, db=db)
+    assert nodes.revoke_older_pairs(C_ID, claim["peer_id"], db=db) == 0
+    assert db.node_pair_get(old["peer_id"])["superseded_by"] is None, "a claim nobody confirmed supersedes nothing"
+    real, _ = nodes.add_incoming({"id": C_ID, "name": "node-c", "url": NEW_URL}, db=db)
+    assert nodes.revoke_older_pairs(C_ID, real["peer_id"], db=db) == 1, "the claim is at the same address as the confirmed pair: it is replaced"
+    assert db.node_pair_get(gone["peer_id"])["superseded_by"] is None
+    assert db.node_pair_get(old["peer_id"])["superseded_by"] == real["peer_id"]
+
+
+def test_the_confirmed_re_pair_over_the_handshake_marks_the_old_pair_of_another_address(pair2):
+    """End to end through handle_pair: B holds an older pair of node A at another address; A pairs again from its real address."""
+    with pair2.a.enter():
+        a_id = nodes.node_id()
+    with pair2.b.enter():
+        old, old_token = nodes.add_incoming({"id": a_id, "name": "node-a", "url": "https://100.64.0.50"}, db=pair2.b.db)
+    pair(pair2)
+    with pair2.b.enter():
+        fresh = [p for p in nodes.peers() if p["direction"] == "in" and p["url"] == pair2.a.url]
+        assert len(fresh) == 1 and fresh[0]["superseded_by"] is None and fresh[0]["callback_unverified"] is False
+        (stale,) = [p for p in nodes.peers() if p["peer_id"] == old["peer_id"]]
+        assert stale["superseded_by"] == fresh[0]["peer_id"] and stale["superseded_by_url"] == pair2.a.url
+        assert nodes.verify_token(old_token), "still works until the person revokes it"
+
+
+def test_remove_preview_lists_what_removal_would_touch_and_changes_nothing(db):
+    out, _ = out_peer(db, node_id=C_ID, url=C_URL, name="node-c")
+    auto, _ = nodes.add_incoming({"id": C_ID, "name": "node-c", "url": C_URL}, db=db)
+    moved, _ = nodes.add_incoming({"id": C_ID, "name": "node-c-new", "url": NEW_URL}, db=db)
+    claim, _ = nodes.add_incoming({"id": C_ID, "name": "claim", "url": "https://100.64.0.66"}, callback_unverified=True, db=db)
+    nodes.add_incoming({"id": "n_" + "d" * 16, "name": "someone else", "url": C_URL}, db=db)
+    pv = nodes.removal_preview(out["peer_id"], db=db)
+    assert [a["peer_id"] for a in pv["auto"]] == [auto["peer_id"]]
+    assert {o["peer_id"]: (o["name"], o["url"], o["verified"]) for o in pv["others"]} == {
+        moved["peer_id"]: ("node-c-new", NEW_URL, True), claim["peer_id"]: ("claim", "https://100.64.0.66", False)}
+    assert nodes.peer(out["peer_id"], db) and all(r["revoked_at"] is None for r in db.node_pairs(include_revoked=True)), "nothing was changed"
+    with pytest.raises(LookupError):
+        nodes.removal_preview("p_" + "0" * 16, db=db)
+
+
+def test_remove_node_answers_with_the_pairs_it_left_and_also_revoke_cuts_exactly_the_listed_ones(db, monkeypatch):
+    told = []
+    monkeypatch.setattr(nodes, "_remote_unpair", lambda url, tk: told.append(url) or True)
+    out, _ = out_peer(db, node_id=C_ID, url=C_URL, name="node-c")
+    auto, auto_tok = nodes.add_incoming({"id": C_ID, "name": "node-c", "url": C_URL}, db=db)
+    moved, moved_tok = nodes.add_incoming({"id": C_ID, "name": "node-c-new", "url": NEW_URL}, db=db)
+    claim, claim_tok = nodes.add_incoming({"id": C_ID, "name": "claim", "url": "https://100.64.0.66"}, callback_unverified=True, db=db)
+    res = nodes.remove_node(out["peer_id"], db=db, also_revoke=[moved["peer_id"]])
+    assert told == [C_URL] and res["removed"] is True and res["also_revoked"] == [moved["peer_id"]]
+    assert nodes.verify_token(auto_tok, db=db) is None, "the confirmed pair at the same address still goes by itself"
+    assert nodes.verify_token(moved_tok, db=db) is None, "the ticked one goes"
+    assert nodes.verify_token(claim_tok, db=db), "the one that was not ticked stays"
+    assert res["other_pairs"] == [{"peer_id": claim["peer_id"], "name": "claim", "url": "https://100.64.0.66", "verified": False}]
+    assert nodes.peer(out["peer_id"], db) is None
+
+
+def test_remove_node_without_also_revoke_leaves_the_other_address_pairs_and_names_them(db, monkeypatch):
+    monkeypatch.setattr(nodes, "_remote_unpair", lambda url, tk: True)
+    out, _ = out_peer(db, node_id=C_ID, url=C_URL, name="node-c")
+    moved, moved_tok = nodes.add_incoming({"id": C_ID, "name": "node-c-new", "url": NEW_URL}, db=db)
+    res = nodes.remove_node(out["peer_id"], db=db)
+    assert res["also_revoked"] == [] and [o["peer_id"] for o in res["other_pairs"]] == [moved["peer_id"]] and res["other_pairs"][0]["verified"] is True
+    assert nodes.verify_token(moved_tok, db=db), "no silent revoke by claimed id"
+
+
+@pytest.mark.parametrize("bad", ["another_node_id", "unknown", "revoked", "not_a_string"])
+def test_also_revoke_refuses_anything_but_an_active_pair_of_the_removed_nodes_id_and_then_does_nothing(db, monkeypatch, bad):
+    told = []
+    monkeypatch.setattr(nodes, "_remote_unpair", lambda url, tk: told.append(url) or True)
+    out, tk = out_peer(db, node_id=C_ID, url=C_URL, name="node-c")
+    ok, ok_tok = nodes.add_incoming({"id": C_ID, "name": "node-c-new", "url": NEW_URL}, db=db)
+    stranger, stranger_tok = nodes.add_incoming({"id": "n_" + "d" * 16, "name": "stranger", "url": NEW_URL}, db=db)
+    dead, _ = nodes.add_incoming({"id": C_ID, "name": "dead", "url": NEW_URL}, db=db)
+    nodes.revoke(dead["peer_id"], db=db)
+    wanted = {"another_node_id": stranger["peer_id"], "unknown": "p_" + "0" * 16, "revoked": dead["peer_id"], "not_a_string": 7}[bad]
+    with pytest.raises(ValueError):
+        nodes.remove_node(out["peer_id"], db=db, also_revoke=[ok["peer_id"], wanted])
+    assert told == [] and nodes.peer(out["peer_id"], db) and nodes._load_outgoing(out["peer_id"]) == tk, "a refused request changes nothing, the other board is not told"
+    assert nodes.verify_token(ok_tok, db=db) and nodes.verify_token(stranger_tok, db=db), "not even the valid id in the same request was revoked"
+
+
+def test_also_revoke_is_refused_for_a_row_with_no_node_id(db, monkeypatch):
+    monkeypatch.setattr(nodes, "_remote_unpair", lambda url, tk: True)
+    out, _ = out_peer(db, node_id=None, url=C_URL, name="node-c")
+    nameless, tok = nodes.add_incoming({"name": "no id", "url": NEW_URL}, db=db)
+    with pytest.raises(ValueError):
+        nodes.remove_node(out["peer_id"], db=db, also_revoke=[nameless["peer_id"]])
+    assert nodes.verify_token(tok, db=db)
+
+
+def test_unpair_incoming_keeps_the_outgoing_pair_at_another_address_and_says_so_in_the_audit(db):
+    out, _ = out_peer(db, node_id=C_ID, url=C_URL, name="node-c")
+    moved, _ = nodes.add_incoming({"id": C_ID, "name": "node-c", "url": NEW_URL}, db=db)
+    assert nodes.unpair_incoming(moved["peer_id"], db=db) is True
+    assert nodes.peer(out["peer_id"], db), "nothing is removed on a claimed id"
+    (row,) = [r for r in nodes.audit_list(100, db=db) if r["action"] == "unpair_kept_outgoing"]
+    assert row["peer"] == moved["peer_id"] and "node-c" in row["detail"] and C_URL in row["detail"] and row["status"] == "ok"
+    real, _ = nodes.add_incoming({"id": C_ID, "name": "node-c", "url": C_URL}, db=db)
+    assert nodes.unpair_incoming(real["peer_id"], db=db) is True and nodes.peer(out["peer_id"], db) is None
+    assert audit_actions(db).count("unpair_kept_outgoing") == 1, "a removal that kept nothing writes no 'kept' row"

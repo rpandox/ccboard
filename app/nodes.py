@@ -1039,13 +1039,19 @@ def _out_view(r: dict) -> dict:
 def _in_view(r: dict) -> dict:
     return {"peer_id": r["peer_id"], "node_id": r["peer_node_id"] or None, "name": r["peer_name"] or None, "url": r["peer_url"],
             "scopes": _scopes_of(r["scopes"]), "created_at": r["created_at"], "last_seen": r["last_used_at"], "direction": "in",
-            "callback_unverified": bool(r["callback_unverified"]), "expires_at": r["expires_at"], "rotated_at": r["rotated_at"]}
+            "callback_unverified": bool(r["callback_unverified"]), "expires_at": r["expires_at"], "rotated_at": r["rotated_at"],
+            "superseded_by": r.get("superseded_by") or None, "superseded_by_url": None}
 
 
 def peers(db=None) -> list[dict]:
     """Every pair this board has, both directions, oldest first; no token and no digest. [] on a board nobody paired with."""
     d = _db(db)
-    rows = [_out_view(r) for r in _out_rows(d)] + [_in_view(r) for r in d.node_pairs()]
+    inc = [_in_view(r) for r in d.node_pairs()]
+    if any(v["superseded_by"] for v in inc):                                  # the address of the newer pair, even if that pair was revoked since
+        urls = {r["peer_id"]: r["peer_url"] for r in d.node_pairs(include_revoked=True)}
+        for v in inc:
+            v["superseded_by_url"] = urls.get(v["superseded_by"]) if v["superseded_by"] else None
+    rows = [_out_view(r) for r in _out_rows(d)] + inc
     return sorted(rows, key=lambda r: (str(r["created_at"] or ""), r["peer_id"]))
 
 
@@ -1234,11 +1240,13 @@ def add_incoming(node=None, scopes=DEFAULT_SCOPES, *, callback_unverified: bool 
 
 
 def revoke_older_pairs(node_id: str, keep_peer_id: str, db=None) -> int:
-    """Pairing the same node again replaces: every other active incoming pair of `node_id` is revoked, the pair `keep_peer_id` never. Call it only
-    once the node id is confirmed (the callback named the same id); a claim nobody confirmed must not cut another pair, so a `keep_peer_id` that is
-    missing, revoked or still `callback_unverified` revokes nothing. A node id is only the word of the board at its address, so a pair is replaced
-    only when it has the same node id AND the same address as the kept one: a board that claims another node's id from its own address cuts nothing
-    of that node's. Returns how many it revoked."""
+    """Pairing the same node again replaces: every other active incoming pair of `node_id` at the SAME address as the kept one is revoked, the pair
+    `keep_peer_id` never. Call it only once the node id is confirmed (the callback named the same id); a claim nobody confirmed must not cut another
+    pair, so a `keep_peer_id` that is missing, revoked or still `callback_unverified` revokes nothing. A node id is only the word of the board at its
+    address, so nothing is revoked on the id alone: a board that claims another node's id from its own address cuts nothing of that node's.
+    An older active pair with the same node id at ANOTHER address (the node moved, or it is known by its IP one way and by its name the other) is not
+    revoked either, and is not left silent: it is marked `superseded_by` the kept pair and an audit row says so. It keeps working until the person
+    revokes it, and Settings > Nodes shows it with its Revoke. Returns how many it revoked."""
     d = _db(db)
     if not isinstance(node_id, str) or not node_id:
         return 0
@@ -1247,9 +1255,16 @@ def revoke_older_pairs(node_id: str, keep_peer_id: str, db=None) -> int:
         return 0
     n = 0
     for r in d.node_pairs():
-        if (r["peer_node_id"] == node_id and r["peer_id"] != keep_peer_id and _same_address(r["peer_url"], keep["peer_url"])
-                and revoke(r["peer_id"], db=d, why="replaced by a new pair")):
-            n += 1
+        if r["peer_node_id"] != node_id or r["peer_id"] == keep_peer_id:
+            continue
+        if _same_address(r["peer_url"], keep["peer_url"]):
+            if revoke(r["peer_id"], db=d, why="replaced by a new pair"):
+                n += 1
+        elif r["id"] < keep["id"] and r.get("superseded_by") != keep_peer_id:
+            d.node_pair_update(r["peer_id"], superseded_by=keep_peer_id)
+            audit("in", r["peer_id"], "superseded", True,
+                  f"the same node id paired again from {keep['peer_url'] or 'another address'}; this pair stays active until you revoke it",
+                  node_name=r["peer_name"], db=d)
     return n
 
 
@@ -1724,18 +1739,26 @@ def handle_pair(body, caller: str, db=None) -> dict:
 def unpair_incoming(peer_id: str, db=None) -> bool:
     """The other board says it is leaving (POST /api/node/unpair): cut its own pair here. The outgoing pair to the same node goes too, but only when
     this pair's node id was confirmed (not `callback_unverified`) AND the outgoing pair is at the same address: a node id is a claim, and a claim
-    nobody confirmed, or one made from another address, must not remove the pair to another node. Never calls the other board. False when the pair
-    was already gone."""
+    nobody confirmed, or one made from another address, must not remove the pair to another node. When an outgoing pair to the same node id is
+    kept for that reason, an audit row (`unpair_kept_outgoing`) says which one stayed, so it is not silent. Never calls the other board. False when
+    the pair was already gone."""
     d = _db(db)
     row = d.node_pair_get(peer_id)
     if row is None:
         return False
     cut = revoke(peer_id, db=d, why="the other node unpaired")
-    if row["peer_node_id"] and not row["callback_unverified"]:
+    if row["peer_node_id"]:
+        kept = []
         for p in peers(d):
-            if (p["direction"] == "out" and not p["legacy"] and p["node_id"] == row["peer_node_id"]
-                    and _same_address(p["url"], row["peer_url"])):
-                remove_peer(p["peer_id"], d)
+            if p["direction"] == "out" and not p["legacy"] and p["node_id"] == row["peer_node_id"]:
+                if not row["callback_unverified"] and _same_address(p["url"], row["peer_url"]):
+                    remove_peer(p["peer_id"], d)
+                else:
+                    kept.append(p)
+        if kept:                                                      # nothing is removed on a claimed id; the person is told what stayed
+            audit("in", peer_id, "unpair_kept_outgoing", True,
+                  "kept the pair this board holds with " + ", ".join(f"{k['name'] or 'a node'} at {k['url'] or 'no address'}" for k in kept[:3])
+                  + ": same node id, another address or not confirmed. Remove it yourself if it should go.", node_name=row["peer_name"], db=d)
     return cut
 
 
@@ -1846,25 +1869,71 @@ def rotate_outgoing(ident, db=None) -> dict:
     return peer(p["peer_id"], d) or p
 
 
-def remove_node(ident, db=None) -> dict:
-    """Remove a pair from this board. For a node this board calls, the other board is told first (best effort, 3 s), then the registry row and the
-    token are deleted, and so is the pair that board holds for this one (the same node id). This never fails because the other board is off.
-    Returns {removed, peer_told}. LookupError for an unknown pair."""
+def _claimants(d, p: dict) -> tuple[list[dict], list[dict]]:
+    """The active incoming pairs that name the node id of `p` (a pair row of peers()), split in two: the ones remove_node revokes by itself (confirmed,
+    at the same address as `p`) and the others (another address, or never confirmed), which only the person may decide on. Each is
+    {peer_id, name, url, verified, node_id}. Both empty when `p` has no node id (a legacy row)."""
+    if not p.get("node_id") or p.get("legacy"):
+        return [], []
+    auto, others = [], []
+    for r in d.node_pairs():
+        if r["peer_node_id"] != p["node_id"] or r["peer_id"] == p["peer_id"]:
+            continue
+        v = {"peer_id": r["peer_id"], "name": r["peer_name"] or None, "url": r["peer_url"], "verified": not r["callback_unverified"], "node_id": r["peer_node_id"]}
+        if p["direction"] == "out" and v["verified"] and _same_address(r["peer_url"], p["url"]):
+            auto.append(v)
+        else:
+            others.append(v)
+    return auto, others
+
+
+def removal_preview(ident, db=None) -> dict:
+    """What removing a pair would also touch, without touching anything: {peer_id, name, url, auto, others}. `auto` are the incoming pairs remove_node
+    revokes by itself (confirmed, same node id, same address); `others` are the active incoming pairs that name the same node id from another address
+    or were never confirmed, which stay unless the person lists them in `also_revoke`. LookupError for an unknown pair."""
     d = _db(db)
     p = peer(ident, d)
     if p is None:
         raise LookupError("no such node")
+    auto, others = _claimants(d, p)
+    return {"peer_id": p["peer_id"], "name": p["name"], "url": p["url"], "auto": auto, "others": others}
+
+
+def remove_node(ident, db=None, also_revoke=None) -> dict:
+    """Remove a pair from this board. For a node this board calls, the other board is told first (best effort, 3 s), then the registry row and the
+    token are deleted, and so is the pair that board holds for this one (confirmed, the same node id and the same address). This never fails because
+    the other board is off. A node id is only a claim, so another active incoming pair that names the same node id (from another address, or never
+    confirmed) is NOT revoked here: it is returned in `other_pairs` ({peer_id, name, url, verified}), and the person can revoke exactly the ones they
+    list in `also_revoke` (peer ids). Every id in `also_revoke` must be an active incoming pair with the removed node's node id, else ValueError and
+    nothing at all happens (the other board is not told either). Returns {removed, peer_told, also_revoked, other_pairs}. LookupError for an unknown pair."""
+    d = _db(db)
+    p = peer(ident, d)
+    if p is None:
+        raise LookupError("no such node")
+    wanted = list(dict.fromkeys(also_revoke or []))
+    if wanted:
+        if not p.get("node_id") or p.get("legacy"):
+            raise ValueError("this node has no node id, so no other pair can be revoked with it")
+        by_id = {r["peer_id"]: r for r in d.node_pairs()}
+        for w in wanted:
+            r = by_id.get(w) if isinstance(w, str) else None
+            if r is None or r["revoked_at"] or r["peer_node_id"] != p["node_id"]:
+                raise ValueError("only an active pair with the same node id can be revoked together with this node")
     told = False
     if p["direction"] == "out":
         tk = None if p["legacy"] else _load_outgoing(p["peer_id"])
         told = bool(tk and p["url"] and _remote_unpair(p["url"], tk))
         tk = None
-        if p["node_id"] and not p["legacy"]:
-            for q in peers(d):                                        # the pair that board holds for us: confirmed, same node id and the same address
-                if (q["direction"] == "in" and not q["callback_unverified"] and q["node_id"] == p["node_id"]
-                        and _same_address(q["url"], p["url"])):
-                    revoke(q["peer_id"], db=d, why="the pair was removed on this node")
+        auto, _ = _claimants(d, p)                                    # the pair that board holds for us: confirmed, same node id and the same address
+        for q in auto:
+            revoke(q["peer_id"], db=d, why="the pair was removed on this node")
+    revoked = []
+    for w in wanted:
+        if revoke(w, db=d, why="revoked together with the node it names"):
+            revoked.append(w)
     remove_peer(p["peer_id"], d)
     if p["direction"] == "out":
         audit("out", p["peer_id"], "unpair", told, "the other node was told" if told else "the other node was not told", node_name=p["name"], db=d)
-    return {"removed": True, "peer_told": told}
+    _, others = _claimants(d, p)
+    return {"removed": True, "peer_told": told, "also_revoked": revoked,
+            "other_pairs": [{k: o[k] for k in ("peer_id", "name", "url", "verified")} for o in others]}

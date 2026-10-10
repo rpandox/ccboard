@@ -208,7 +208,10 @@ function settingsNotify(p) {
    Create pairing code (POST /api/nodes/pair-code {scopes, minutes}) shows the code once, large, with Copy and a countdown, and says that closing the sheet does not cancel the
    code (Cancel code does, DELETE /api/nodes/pair-code). Add node (POST /api/nodes {url, code, handle?, both_ways}) takes the address of the other board and the code typed or
    pasted from it. Rotate token (POST /api/nodes/<peer>/rotate) keeps the old token for 60 s on the other side and says so; Remove and Revoke (DELETE /api/nodes/<peer>) work even
-   when the other node is offline and say when it was not told. All three are two-tap confirmButtons.
+   when the other node is offline and say when it was not told. Rotate token and Revoke are two-tap confirmButtons. Remove opens a sheet that first asks the board
+   what else would stay able to call it (POST /api/nodes/<peer>/remove-preview): the pairs that use the same node id from another address, or were never
+   confirmed, are listed with a ticked box each, and Remove sends the ticked ones as DELETE {also_revoke: [peer_id, ...]}. A pair the node made again from another address is listed under
+   Who can control this node as replaced, still working, with its Revoke filled in.
 
    A code is in this file only as the text of the open sheet (settingsNdSheet.code and the output node): it is never put in storage, a URL, a toast or a log, and closing the sheet
    empties every node and the variable. A token is never in this file at all: the board's answers to rotate and add carry none that this page reads. The one timer here is the
@@ -293,19 +296,98 @@ async function settingsNdRotate(p) {
   await settingsNdLoadPeers();
 }
 
-/* Remove (a pair this board calls) and Revoke (one that calls this board) are the same request. The board never fails it because the other node is offline; it says when that
-   node was not told (the answer's peer_notified, or notified, false). */
+/* Revoke (a pair that calls this board) is DELETE /api/nodes/<peer>. The board never fails it because the other node is offline. */
 async function settingsNdRemove(p, revoke) {
   if (settingsNdPeers.act[p.id]) return;
   settingsNdBusy(p.id, revoke ? 'revoke' : 'remove');
   try {
-    const r = await api('DELETE', `/api/nodes/${encodeURIComponent(p.id)}`);
-    const told = r && typeof r === 'object' ? (r.peer_notified !== undefined ? r.peer_notified : r.notified) : undefined;
-    if (revoke) settingsNdToast(`${p.name} can no longer call this board.`);
-    else settingsNdToast(told === false ? `${p.name} removed. It was not told (offline or no answer), so remove this board there too.` : `${p.name} removed.`, told === false ? 'warn' : 'ok');
+    await api('DELETE', `/api/nodes/${encodeURIComponent(p.id)}`);
+    settingsNdToast(`${p.name} can no longer call this board.`);
   } catch (e) { settingsNdToast(`${p.name} not ${revoke ? 'revoked' : 'removed'}: ${e.message}`, 'warn'); }
   settingsNdBusy(p.id, '');
   await settingsNdLoadPeers();
+}
+
+/* The pairs of the preview as the sheet's rows: a ticked box each (the person asked to remove this node, and these still hold its node id), the name, the address and, for a pair
+   nobody confirmed, the tag "not confirmed". */
+function settingsNdRemoveRow(o, checks) {
+  const c = el('input', { type: 'checkbox', 'data-pair': NodeView.str(o.peer_id, 80) });
+  c.checked = true;
+  checks.push(c);
+  const name = NodeView.str(o.name, 80) || 'unnamed node';
+  const host = NodeView.hostOf(NodeView.str(o.url, 300));
+  return el('label', { class: 'set-check set-pref nd-rm-row' }, c, el('span', { class: 'set-pref-t' },
+    el('b', { text: name }),
+    el('span', { class: 'dim', text: host || 'no address' }),
+    o.verified === false ? NodeView.chip('not confirmed', 'warn', '!', 'This pair never confirmed who it is. It may only be using this node\'s id.') : null));
+}
+
+/* Remove a node this board calls: the sheet asks the board which other pairs name the same node id (they are not revoked by the id alone), lists them ticked, and Remove sends
+   the ticked ones. A failed ask does not block the removal: the sheet says so and Remove then revokes nothing else. */
+function settingsNdRemoveSheet(opener, rec) {
+  settingsNdSheetClose();
+  const s = settingsNdSheet;
+  s.opener = opener || null;
+  const p = NodeView.peer(rec);
+  let shell = null;
+  shell = modalShell('qr-editor readout nd-sheet', `Remove ${p.name}`, () => settingsNdSheetGone(shell));
+  s.shell = shell;
+  const checks = [];
+  const list = el('div', { class: 'nd-rm-list' });
+  const info = el('p', { class: 'qr-hint dim', text: 'Checking which other nodes can still call this board…' });
+  const err = el('p', { class: 'qr-err bad', role: 'alert' });
+  const go = el('button', { class: 'danger confirm', type: 'button', text: 'Remove', disabled: true, onclick: () => submit() });
+  const f = el('form', { class: 'nd-form', novalidate: true, onsubmit: (e) => { e.preventDefault(); submit(); } }, info, list, err,
+    el('div', { class: 'qr-actions' }, el('button', { type: 'button', onclick: () => shell.close(), text: 'Cancel' }), go));
+  shell.dlg.append(el('div', { class: 'qr-box' }, el('h2', { class: 'qr-title', text: `Remove ${p.name}` }),
+    el('p', { class: 'qr-hint dim', text: 'This board stops calling the node and tells it to unpair. That works even when the node is offline.' }), f));
+  async function ask() {
+    let pv = null;
+    try { pv = await api('POST', `/api/nodes/${encodeURIComponent(p.id)}/remove-preview`); } catch (e) {
+      if (shell !== s.shell) return;
+      info.textContent = `Could not check which other pairs would stay (${e.message}). Removing still works; look at Who can control this node afterwards.`;
+      go.disabled = false;
+      return;
+    }
+    if (shell !== s.shell) return;
+    const others = NodeView.list(pv, 'others');
+    if (others.length) {
+      info.textContent = 'These pairs use the same node id from another address, or never confirmed who they are, so they were not cut with it. Tick the ones to revoke too.';
+      settingsNdPut(list, ...others.map((o) => settingsNdRemoveRow(o, checks)));
+    } else info.textContent = 'No other pair uses this node\'s id.';
+    go.disabled = false;
+  }
+  async function submit() {
+    if (go.disabled) return;
+    const ticked = checks.filter((c) => c.checked).map((c) => c.getAttribute('data-pair')).filter(Boolean);
+    go.disabled = true;
+    go.textContent = 'Removing…';
+    err.textContent = '';
+    settingsNdBusy(p.id, 'remove');
+    let r = null;
+    let fail = null;
+    try { r = ticked.length ? await api('DELETE', `/api/nodes/${encodeURIComponent(p.id)}`, { also_revoke: ticked }) : await api('DELETE', `/api/nodes/${encodeURIComponent(p.id)}`); } catch (e) { fail = e; }
+    settingsNdBusy(p.id, '');
+    if (fail) {
+      go.disabled = false;
+      go.textContent = 'Remove';
+      err.textContent = `${p.name} not removed: ${fail.message}`;
+      settingsNdLoadPeers();
+      return;
+    }
+    const told = r && typeof r === 'object' ? (r.peer_notified !== undefined ? r.peer_notified : r.notified) : undefined;
+    const cut = r && Array.isArray(r.also_revoked) ? r.also_revoked.length : 0;
+    const left = r && Array.isArray(r.other_pairs) ? r.other_pairs.length : 0;
+    const said = [told === false ? `${p.name} removed. It was not told (offline or no answer), so remove this board there too.` : `${p.name} removed.`,
+      cut ? `${cut} other ${cut === 1 ? 'pair' : 'pairs'} revoked.` : '',
+      left ? `${left} other ${left === 1 ? 'pair' : 'pairs'} with its node id can still call this board.` : ''].filter(Boolean).join(' ');
+    shell.close();
+    settingsNdToast(said, told === false || left ? 'warn' : 'ok');
+    settingsNdLoadPeers();
+  }
+  shell.show();
+  ask();
+  return shell;
 }
 
 /* The actions of a pair row: Rotate token and Remove (a pair this board calls), Revoke (one that calls it), or just Pair for a legacy row. */
@@ -313,14 +395,21 @@ function settingsNdPeerActions(rec, incoming) {
   const p = NodeView.peer(rec);
   const busy = settingsNdPeers.act[p.id];
   const wait = (word) => el('button', { class: 'danger', type: 'button', disabled: true, text: word });
-  if (incoming) return busy ? [wait('Revoking…')] : [confirmButton(`node-rv:${p.id}`, 'Revoke', () => settingsNdRemove(p, true), false)];
+  if (incoming) {
+    if (busy) return [wait('Revoking…')];
+    const rv = confirmButton(`node-rv:${p.id}`, 'Revoke', () => settingsNdRemove(p, true), false);
+    if (p.superseded && rv.tagName === 'BUTTON') rv.classList.add('confirm');                    // a replaced pair is the one to act on: its resting Revoke is the solid one
+    return [rv];
+  }
   if (p.legacy) {
     const pair = el('button', { class: 'primary tinted', type: 'button', 'aria-label': `Pair ${p.name}`, text: 'Pair' });
     pair.addEventListener('click', () => settingsNdAddSheet(pair, rec.url));
     return [pair];
   }
+  const rm = el('button', { class: 'danger', type: 'button', title: 'Remove (asks what else would stay)', 'aria-label': `Remove ${p.name}`, text: 'Remove' });
+  rm.addEventListener('click', () => settingsNdRemoveSheet(rm, rec));
   return [busy === 'rotate' ? wait('Rotating…') : confirmButton(`node-rot:${p.id}`, 'Rotate token', () => settingsNdRotate(p), false),
-    busy === 'remove' ? wait('Removing…') : confirmButton(`node-rm:${p.id}`, 'Remove', () => settingsNdRemove(p, false), false)];
+    busy === 'remove' ? wait('Removing…') : rm];
 }
 
 /* Empty everything the sheet holds, stop its timer, and give the focus back to what opened it (or to Add node when that row was repainted away). */

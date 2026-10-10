@@ -577,7 +577,7 @@ def test_remove_revokes_an_incoming_pair_and_404s_an_unknown_one(board):
     assert c.delete("/api/nodes/p_ffffffffffffffff", headers=H).status_code == 404
     assert c.delete("/api/nodes/not-a-peer", headers=H).status_code == 404
     r = c.delete(f"/api/nodes/{row['peer_id']}", headers=H)
-    assert r.status_code == 200 and r.json() == {"removed": True, "peer_notified": None}
+    assert r.status_code == 200 and r.json() == {"removed": True, "peer_notified": None, "also_revoked": [], "other_pairs": []}
     assert c.get("/api/node", headers=bearer(tok)).status_code == 401
     assert c.get("/api/nodes/pairs", headers=H).json()["pairs"] == [], "a revoked pair is no longer listed"
     assert c.delete(f"/api/nodes/{row['peer_id']}", headers=H).status_code == 404
@@ -708,7 +708,7 @@ def test_rotate_from_the_calling_board_and_remove_with_the_other_offline(two_nod
         assert new and new != old and nodes.PeerClient(row, db=a.db).get("/api/node").ok
     two_nodes.offline.add("node-b")
     r = a.delete(f"/api/nodes/{row['peer_id']}")
-    assert r.status_code == 200 and r.json() == {"removed": True, "peer_notified": False}, "removal never fails because the other board is off"
+    assert r.status_code == 200 and r.json() == {"removed": True, "peer_notified": False, "also_revoked": [], "other_pairs": []}, "removal never fails because the other board is off"
     assert a.get("/api/nodes").json()["nodes"] == []
     with a.enter():
         assert nodes._load_outgoing(row["peer_id"]) is None
@@ -723,7 +723,7 @@ def test_removal_tells_the_other_board_when_it_is_up(two_nodes):
     a, b = two_nodes.a, two_nodes.b
     row, _ = pair_boards(two_nodes)
     r = a.delete(f"/api/nodes/{row['peer_id']}")
-    assert r.json() == {"removed": True, "peer_notified": True}
+    assert r.json() == {"removed": True, "peer_notified": True, "also_revoked": [], "other_pairs": []}
     assert b.get("/api/nodes/pairs").json()["pairs"] == [], "B revoked the pair when A said it was leaving"
 
 
@@ -834,3 +834,87 @@ def test_start_with_no_ccboard_nodes_writes_no_registry_row(projects_dir, monkey
     with TestClient(main.app) as c:
         assert main.db.kv_get(nodes.KV_PEERS) is None and not main.db.node_pairs(include_revoked=True) and main.db.node_audit_list(5) == []
         assert c.get("/api/nodes", headers=H).json()["nodes"] == []
+
+
+# ---- a moved node is not silent (security finding 3): the superseded flag in the lists, the remove preview and also_revoke
+
+C_ID = "n_" + "c" * 16
+OLD_URL, NEW_URL = "https://100.64.0.3", "https://100.64.0.9"
+
+
+def out_to_c(db):
+    """An outgoing pair to node C (a registry row and a token in the 0600 file), as add_node would have kept it."""
+    v = nodes.put_peer({"direction": "out", "url": OLD_URL, "name": "node-c", "scopes": ["read", "tasks"], "node_id": C_ID}, db=db)
+    nodes.save_outgoing(v["peer_id"], nodes._new_token())
+    return v
+
+
+def test_the_pair_lists_carry_the_superseded_flag_and_the_newer_pairs_address(board):
+    c, db = board
+    old, old_tok = mint(db, node={"id": C_ID, "name": "node-c", "url": OLD_URL})
+    new, _ = mint(db, node={"id": C_ID, "name": "node-c", "url": NEW_URL})
+    assert nodes.revoke_older_pairs(C_ID, new["peer_id"], db=db) == 0
+    for path, key in (("/api/nodes/pairs", "pairs"), ("/api/nodes", "pairs")):
+        rows = {p["peer_id"]: p for p in c.get(path, headers=H).json()[key]}
+        assert rows[old["peer_id"]]["superseded_by"] == new["peer_id"] and rows[old["peer_id"]]["superseded_by_url"] == NEW_URL, path
+        assert rows[new["peer_id"]]["superseded_by"] is None, path
+    assert c.get("/api/node", headers=bearer(old_tok)).status_code == 200, "a superseded pair still works until it is revoked"
+    assert c.delete(f"/api/nodes/{old['peer_id']}", headers=H).status_code == 200
+    assert c.get("/api/node", headers=bearer(old_tok)).status_code == 401
+
+
+def test_remove_preview_lists_the_other_pairs_of_the_same_node_id_and_changes_nothing(board):
+    c, db = board
+    out = out_to_c(db)
+    auto, _ = mint(db, node={"id": C_ID, "name": "node-c", "url": OLD_URL})
+    moved, _ = mint(db, node={"id": C_ID, "name": "node-c-new", "url": NEW_URL})
+    claim, _ = nodes.add_incoming({"id": C_ID, "name": "claim", "url": "https://100.64.0.66"}, callback_unverified=True, db=db)
+    r = c.post(f"/api/nodes/{out['peer_id']}/remove-preview", headers=H)
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    body = r.json()
+    assert [a["peer_id"] for a in body["auto"]] == [auto["peer_id"]]
+    assert {o["peer_id"]: (o["name"], o["url"], o["verified"]) for o in body["others"]} == {
+        moved["peer_id"]: ("node-c-new", NEW_URL, True), claim["peer_id"]: ("claim", "https://100.64.0.66", False)}
+    assert nodes.peer(out["peer_id"], db) and not any(p["revoked_at"] for p in db.node_pairs(include_revoked=True)), "a preview changes nothing"
+    assert c.post("/api/nodes/p_ffffffffffffffff/remove-preview", headers=H).status_code == 404
+    assert c.post(f"/api/nodes/{out['peer_id']}/remove-preview", headers=ID).status_code == 403, "it needs X-CCBoard like every POST"
+    assert c.post(f"/api/nodes/{out['peer_id']}/remove-preview").status_code == 403, "and an identity"
+
+
+def test_a_node_token_cannot_ask_for_a_remove_preview(board):
+    c, db = board
+    out = out_to_c(db)
+    _, tok = mint(db)
+    r = c.post(f"/api/nodes/{out['peer_id']}/remove-preview", headers=bearer(tok))
+    assert r.status_code in (401, 403) and "auto" not in r.text
+
+
+def test_delete_with_also_revoke_cuts_exactly_the_listed_pairs_and_answers_with_the_rest(board, monkeypatch):
+    c, db = board
+    monkeypatch.setattr(nodes, "_remote_unpair", lambda url, tk: True)
+    out = out_to_c(db)
+    auto, auto_tok = mint(db, node={"id": C_ID, "name": "node-c", "url": OLD_URL})
+    moved, moved_tok = mint(db, node={"id": C_ID, "name": "node-c-new", "url": NEW_URL})
+    claim, claim_tok = nodes.add_incoming({"id": C_ID, "name": "claim", "url": "https://100.64.0.66"}, callback_unverified=True, db=db)
+    r = c.request("DELETE", f"/api/nodes/{out['peer_id']}", headers=H, json={"also_revoke": [moved["peer_id"]]})
+    assert r.status_code == 200
+    assert r.json() == {"removed": True, "peer_notified": True, "also_revoked": [moved["peer_id"]],
+                        "other_pairs": [{"peer_id": claim["peer_id"], "name": "claim", "url": "https://100.64.0.66", "verified": False}]}
+    assert c.get("/api/node", headers=bearer(auto_tok)).status_code == 401 and c.get("/api/node", headers=bearer(moved_tok)).status_code == 401
+    assert c.get("/api/node", headers=bearer(claim_tok)).status_code == 200
+
+
+def test_delete_refuses_an_also_revoke_that_names_another_nodes_pair_and_changes_nothing(board, monkeypatch):
+    c, db = board
+    told = []
+    monkeypatch.setattr(nodes, "_remote_unpair", lambda url, tk: told.append(url) or True)
+    out = out_to_c(db)
+    other, other_tok = mint(db, node={"id": "n_" + "d" * 16, "name": "someone else", "url": NEW_URL})
+    for payload in ({"also_revoke": [other["peer_id"]]}, {"also_revoke": ["p_" + "0" * 16]}, {"also_revoke": ["not-a-peer"]}):
+        r = c.request("DELETE", f"/api/nodes/{out['peer_id']}", headers=H, json=payload)
+        assert r.status_code == 400 and "same node id" in r.json()["error"], payload
+    assert c.request("DELETE", f"/api/nodes/{out['peer_id']}", headers=H, json={"also_revoke": [], "extra": 1}).status_code in (400, 422)
+    assert c.request("DELETE", f"/api/nodes/{out['peer_id']}", headers=H, json={"also_revoke": "p_x"}).status_code in (400, 422)
+    assert told == [] and nodes.peer(out["peer_id"], db), "nothing was removed and the other board was not told"
+    assert c.get("/api/node", headers=bearer(other_tok)).status_code == 200, "and the other node's pair is intact"
+    assert c.delete(f"/api/nodes/{out['peer_id']}", headers=H).status_code == 200, "a plain DELETE with no body still works"

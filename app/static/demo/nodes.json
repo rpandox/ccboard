@@ -13,7 +13,14 @@
     {"peer_id": "p-desk-pc", "node_id": "ts:nWINDEMO04", "name": "desk-pc", "url": "https://desk-pc.example.ts.net", "scopes": ["read", "tasks", "sessions"],
      "created_at": "2026-09-25T12:00:00+00:00", "last_seen": "2026-10-03T02:58:10+00:00", "direction": "in"},
     {"peer_id": "p-phone-board", "node_id": "ts:nPHNDEMO05", "name": "phone-board", "url": "https://phone-board.example.ts.net", "scopes": ["read"],
-     "created_at": "2026-10-03T02:50:00+00:00", "last_seen": null, "callback_unverified": true, "direction": "in"}
+     "created_at": "2026-10-03T02:50:00+00:00", "last_seen": null, "callback_unverified": true, "direction": "in"},
+    {"peer_id": "p-build-box-new", "node_id": "ts:nBOXDEMO01", "name": "build-box", "url": "https://build-box.example.ts.net:8443", "scopes": ["read", "tasks"],
+     "created_at": "2026-10-03T02:30:00+00:00", "last_seen": "2026-10-03T02:55:00+00:00", "direction": "in", "superseded_by": null, "superseded_by_url": null},
+    {"peer_id": "p-build-box-old", "node_id": "ts:nBOXDEMO01", "name": "build-box", "url": "https://100.64.0.21", "scopes": ["read", "tasks"],
+     "created_at": "2026-09-21T09:00:00+00:00", "last_seen": "2026-10-02T11:00:00+00:00", "direction": "in",
+     "superseded_by": "p-build-box-new", "superseded_by_url": "https://build-box.example.ts.net:8443"},
+    {"peer_id": "p-build-box-claim", "node_id": "ts:nBOXDEMO01", "name": "build-box", "url": "https://100.64.0.66", "scopes": ["read"],
+     "created_at": "2026-10-03T02:45:00+00:00", "last_seen": null, "callback_unverified": true, "direction": "in"}
   ],
   "audit": [
     {"id": 7, "at": "2026-10-03T02:50:00+00:00", "direction": "in", "peer": "p-phone-board", "node_name": "phone-board", "user": null, "action": "code_used", "target": null, "status": "ok", "detail": "scopes read"},

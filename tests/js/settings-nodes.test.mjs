@@ -458,7 +458,7 @@ const refuse = (status, message, reason) => { const e = new Error(message); e.st
 
 function pairWorld({ out = [], inn = [], audit = [], over = {}, fail = {}, hold = {}, answer = ANSWER } = {}) {
   const w = nodesWorld({ hash: '', over, answer });
-  const server = { out: out.map((x) => ({ ...x })), inn: inn.map((x) => ({ ...x })), audit: audit.map((x) => ({ ...x })), codeBody: null, cancelled: 0, added: null, peerNotified: undefined };
+  const server = { out: out.map((x) => ({ ...x })), inn: inn.map((x) => ({ ...x })), audit: audit.map((x) => ({ ...x })), codeBody: null, cancelled: 0, added: null, peerNotified: undefined, others: [] };
   w.ctx.__copied = [];
   w.ctx.navigator.clipboard = { writeText: async (t) => { w.ctx.__copied.push(t); } };
   w.run('globalThis.__errors = []; setError = (m) => { if (m) __errors.push(m); };');
@@ -484,13 +484,21 @@ function pairWorld({ out = [], inn = [], audit = [], over = {}, fail = {}, hold 
     }
     let m = /^\/api\/nodes\/([^/]+)\/rotate$/.exec(bare);
     if (method === 'POST' && m) { if (hold.rotate) await hold.rotate.p; if (fail.rotate) throw refuse(502, fail.rotate); return { rotated: true, grace_s: server.grace || 60 }; }
+    m = /^\/api\/nodes\/([^/]+)\/remove-preview$/.exec(bare);
+    if (method === 'POST' && m) {
+      if (hold.preview) await hold.preview.p;
+      if (fail.preview) throw refuse(500, fail.preview);
+      return { auto: [], others: server.others.map((x) => ({ ...x })), at: iso(0) };
+    }
     m = /^\/api\/nodes\/([^/]+)$/.exec(bare);
     if (method === 'DELETE' && m) {
       if (hold.remove) await hold.remove.p;
+      if (fail.remove) throw refuse(fail.removeStatus || 400, fail.remove);
       const id = decodeURIComponent(m[1]);
+      const asked = body && Array.isArray(body.also_revoke) ? body.also_revoke : [];
       server.out = server.out.filter((x) => x.peer_id !== id);
-      server.inn = server.inn.filter((x) => x.peer_id !== id);
-      return { removed: true, peer_notified: server.peerNotified === undefined ? null : server.peerNotified };
+      server.inn = server.inn.filter((x) => x.peer_id !== id && !asked.includes(x.peer_id));
+      return { removed: true, peer_notified: server.peerNotified === undefined ? null : server.peerNotified, also_revoked: asked, other_pairs: server.others.filter((x) => !asked.includes(x.peer_id)) };
     }
     return { ok: true };
   };
@@ -598,14 +606,16 @@ test('Remove: two taps, the row stays (and reads Removing) until the board answe
   await settle();
   btn(pairedRows(w)[0], 'Remove').click();
   await settle();
-  assert.deepEqual(writes(w), []);
-  btn(pairedRows(w)[0], 'Confirm Remove').click();
+  assert.deepEqual(writes(w), ['POST /api/nodes/p1/remove-preview'], 'the sheet only asks what would be affected');
+  btn(dlg(w), 'Remove').click();
   await settle();
-  assert.deepEqual(writes(w), ['DELETE /api/nodes/p1']);
+  assert.deepEqual(writes(w), ['POST /api/nodes/p1/remove-preview', 'DELETE /api/nodes/p1']);
   assert.equal(pairedRows(w).length, 2, 'still listed while the answer is on its way');
   assert.notEqual(btn(pairedRows(w)[0], 'Removing…').getAttribute('disabled'), null);
+  assert.notEqual(btn(dlg(w), 'Removing…').getAttribute('disabled'), null, 'the sheet waits too');
   hold.resolve();
   await settle();
+  assert.equal(dlg(w), null, 'the sheet closes when the board has answered');
   assert.deepEqual(pairedRows(w).map((r) => text(r.querySelector('.nd-name'))), ['alice-mac']);
   assert.deepEqual(lastToast(w), { text: 'build-box removed. It was not told (offline or no answer), so remove this board there too.', kind: 'warn' });
 });
@@ -616,7 +626,8 @@ test('Remove when the other node was told is a plain confirmation, and the empty
   await settle();
   btn(pairedRows(w)[0], 'Remove').click();
   await settle();
-  btn(pairedRows(w)[0], 'Confirm Remove').click();
+  assert.match(text(dlg(w)), /No other pair uses this node's id\./);
+  btn(dlg(w), 'Remove').click();
   await settle();
   assert.deepEqual(lastToast(w), { text: 'build-box removed.', kind: 'ok' });
   assert.equal(pairedRows(w).length, 0);
@@ -1171,9 +1182,9 @@ test('a peer with a path-like or odd id is only ever put in a URL encoded', asyn
   await settle();
   btn(pairedRows(w)[0], 'Remove').click();
   await settle();
-  btn(pairedRows(w)[0], 'Confirm Remove').click();
+  btn(dlg(w), 'Remove').click();
   await settle();
-  assert.deepEqual(writes(w), ['DELETE /api/nodes/a%2F..%2Fb%20c']);
+  assert.deepEqual(writes(w), ['POST /api/nodes/a%2F..%2Fb%20c/remove-preview', 'DELETE /api/nodes/a%2F..%2Fb%20c']);
 });
 
 // ---------------------------------------------------------------- the source
@@ -1217,8 +1228,12 @@ test('demo mode: the three lists come from demo/nodes.json with times that follo
   const audit = await w.run('api("GET", "/api/nodes/audit?limit=50")');
   assert.deepEqual(asked, ['/static/demo/nodes.json', '/static/demo/nodes.json', '/static/demo/nodes.json']);
   assert.equal(list.nodes.length, 3);
-  assert.equal(list.pairs.length, 2, 'GET /api/nodes carries both lists like the board\'s');
-  assert.equal(pairs.pairs.length, 2);
+  assert.equal(list.pairs.length, 5, 'GET /api/nodes carries both lists like the board\'s');
+  assert.equal(pairs.pairs.length, 5);
+  const old = pairs.pairs.find((x) => x.peer_id === 'p-build-box-old');
+  assert.equal(old.superseded_by, 'p-build-box-new', 'the demo has one pair that a newer one replaced, for the screen to show');
+  assert.equal(old.superseded_by_url, 'https://build-box.example.ts.net:8443');
+  assert.equal(pairs.pairs.filter((x) => x.superseded_by).length, 1);
   assert.equal(audit.rows.length, demoFile.audit.length);
   const secs = (s) => Date.parse(s) / 1000;
   assert.ok(Math.abs(secs(list.nodes[0].last_seen) - (NOW_S - 30)) <= 8, 'last seen follows the clock');
@@ -1231,10 +1246,151 @@ test('demo mode: the three lists come from demo/nodes.json with times that follo
   assert.equal(added.peer_id, 'demo-box-2');
   assert.equal(added.last_seen, null, 'a new pair has not been reached yet');
   assert.equal((await w.run('api("GET", "/api/nodes")')).nodes.length, 4);
-  assert.deepEqual(plain(await w.run('api("DELETE", "/api/nodes/p-old-laptop")')), { removed: true, peer_notified: false });
-  assert.deepEqual(plain(await w.run('api("DELETE", "/api/nodes/p-build-box")')), { removed: true, peer_notified: true });
+  assert.deepEqual(plain(await w.run('api("DELETE", "/api/nodes/p-old-laptop")')), { removed: true, peer_notified: false, also_revoked: [], other_pairs: [] });
+  const pv = plain(await w.run('api("POST", "/api/nodes/p-build-box/remove-preview")'));
+  assert.deepEqual(pv.auto.map((x) => x.peer_id), ['p-build-box-new']);
+  assert.deepEqual(pv.others.map((x) => [x.peer_id, x.verified]), [['p-build-box-old', true], ['p-build-box-claim', false]]);
+  const gone = plain(await w.run('api("DELETE", "/api/nodes/p-build-box", { also_revoke: ["p-build-box-old"] })'));
+  assert.deepEqual([gone.removed, gone.peer_notified, gone.also_revoked, gone.other_pairs.map((x) => x.peer_id)], [true, true, ['p-build-box-old'], ['p-build-box-claim']]);
+  assert.deepEqual(plain((await w.run('api("GET", "/api/nodes/pairs")')).pairs.map((x) => x.peer_id)), ['p-desk-pc', 'p-phone-board', 'p-build-box-claim'], 'the pair at its address and the ticked one went; the other stayed');
   assert.deepEqual(plain((await w.run('api("GET", "/api/nodes")')).nodes.map((n) => n.peer_id)), ['p-alice-mac', 'demo-box-2']);
   const acts = plain((await w.run('api("GET", "/api/nodes/audit")')).rows.slice(0, 4).map((r) => r.action));
   assert.deepEqual(acts, ['unpair', 'unpair', 'paired', 'code_created'], 'each write left a row, newest first');
   assert.doesNotMatch(JSON.stringify(plain([list, pairs, audit, made, added])), /ccbnode_|ccbmcp_|sha256|digest/);
+});
+
+
+// ---------------------------------------------------------------- a moved node is not silent (security finding 3): the replaced label and the remove sheet
+
+const moved = (over) => caller({ peer_id: 'c-old', name: 'build-box', url: 'https://100.64.0.21', superseded_by: 'c-new', superseded_by_url: 'https://build-box.example.ts.net:8443', ...over });
+
+test('a pair that a newer pair from another address replaced says so, with the new address, and its Revoke is the solid one', async () => {
+  const { w } = pairWorld({ inn: [moved(), caller({ peer_id: 'c-new', name: 'build-box', url: 'https://build-box.example.ts.net:8443' })] });
+  await settle();
+  const [old, fresh] = incomingRows(w);
+  assert.ok(old.classList.contains('superseded') && !fresh.classList.contains('superseded'));
+  assert.equal(text(old.querySelector('.nd-replaced')), 'Replaced by a newer pair from build-box.example.ts.net:8443. This one still works until you revoke it.');
+  assert.ok(old.querySelectorAll('.nd-chips .badge').map(text).includes('! replaced'));
+  assert.equal(fresh.querySelector('.nd-replaced'), null);
+  assert.ok(btn(old, 'Revoke').classList.contains('confirm'), 'solid red at rest on the replaced pair');
+  assert.ok(!btn(fresh, 'Revoke').classList.contains('confirm'), 'the other stays red-outlined');
+  btn(old, 'Revoke').click();
+  await settle();
+  assert.deepEqual(writes(w), [], 'it is still a two-tap Revoke');
+  btn(incomingRows(w)[0], 'Confirm Revoke').click();
+  await settle();
+  assert.deepEqual(writes(w), ['DELETE /api/nodes/c-old']);
+  assert.deepEqual(incomingRows(w).map((r) => text(r.querySelector('.nd-name'))), ['build-box']);
+});
+
+test('a replaced pair whose newer pair has no known address still says it was replaced', async () => {
+  const { w } = pairWorld({ inn: [moved({ superseded_by_url: null })] });
+  await settle();
+  assert.equal(text(incomingRows(w)[0].querySelector('.nd-replaced')), 'Replaced by a newer pair. This one still works until you revoke it.');
+});
+
+test('the audit words for a replaced pair and for a kept outgoing pair are not "Node removed"', () => {
+  const w = nodesWorld();
+  assert.equal(w.run("NodeView.auditWord('superseded', true)"), 'Pair replaced, still active');
+  assert.equal(w.run("NodeView.auditWord('unpair_kept_outgoing', true)"), 'Pair kept');
+  assert.equal(w.run("NodeView.auditWord('unpair', true)"), 'Node removed');
+});
+
+const OTHERS = [{ peer_id: 'c-old', name: 'build-box', url: 'https://100.64.0.21', verified: true }, { peer_id: 'c-claim', name: 'maybe-build-box', url: 'https://100.64.0.66', verified: false }];
+
+test('Remove opens a sheet that asks the board first and lists the other pairs of the node id as ticked boxes with their addresses and a not confirmed tag', async () => {
+  const { w, server } = pairWorld({ out: [peer()], inn: [moved(), moved({ peer_id: 'c-claim', name: 'maybe-build-box', url: 'https://100.64.0.66', callback_unverified: true, superseded_by: null })] });
+  server.others = OTHERS;
+  await settle();
+  btn(pairedRows(w)[0], 'Remove').click();
+  await settle();
+  assert.deepEqual(writes(w), ['POST /api/nodes/p1/remove-preview'], 'nothing is removed by opening the sheet');
+  const d = dlg(w);
+  assert.equal(text(d.querySelector('h2')), 'Remove build-box');
+  const rows = d.querySelectorAll('.nd-rm-row');
+  assert.deepEqual(rows.map((r) => [text(r.querySelector('b')), r.querySelector('input').checked, r.querySelector('input').getAttribute('data-pair')]), [['build-box', true, 'c-old'], ['maybe-build-box', true, 'c-claim']]);
+  assert.match(text(rows[0]), /100\.64\.0\.21/);
+  assert.match(text(rows[1]), /100\.64\.0\.66/);
+  assert.equal(rows[0].querySelectorAll('.badge').length, 0, 'a confirmed pair carries no tag');
+  assert.deepEqual(rows[1].querySelectorAll('.badge').map(text), ['! not confirmed']);
+  assert.match(text(d), /These pairs use the same node id from another address, or never confirmed who they are, so they were not cut with it\. Tick the ones to revoke too\./);
+});
+
+test('Remove sends exactly the ticked pairs as also_revoke and says what happened to the rest', async () => {
+  const { w, server } = pairWorld({ out: [peer()], inn: [moved(), moved({ peer_id: 'c-claim', name: 'maybe-build-box', url: 'https://100.64.0.66', callback_unverified: true, superseded_by: null })] });
+  server.others = OTHERS;
+  server.peerNotified = true;
+  await settle();
+  btn(pairedRows(w)[0], 'Remove').click();
+  await settle();
+  const boxes = dlg(w).querySelectorAll('.nd-rm-row input');
+  flip(boxes[1], false);
+  btn(dlg(w), 'Remove').click();
+  await settle();
+  const del = nodeCalls(w, 'DELETE');
+  assert.equal(del.length, 1);
+  assert.deepEqual(del[0].body, { also_revoke: ['c-old'] });
+  assert.equal(dlg(w), null);
+  assert.deepEqual(lastToast(w), { text: 'build-box removed. 1 other pair revoked. 1 other pair with its node id can still call this board.', kind: 'warn' });
+  assert.deepEqual(incomingRows(w).map((r) => text(r.querySelector('.nd-name'))), ['maybe-build-box'], 'the list is read again: the unticked one is still there');
+});
+
+test('Remove with every box left ticked revokes all of them, and with no other pair sends no body at all', async () => {
+  const a = pairWorld({ out: [peer()], inn: [moved(), moved({ peer_id: 'c-claim', name: 'x', callback_unverified: true, superseded_by: null })] });
+  a.server.others = OTHERS;
+  a.server.peerNotified = true;
+  await settle();
+  btn(pairedRows(a.w)[0], 'Remove').click();
+  await settle();
+  btn(dlg(a.w), 'Remove').click();
+  await settle();
+  assert.deepEqual(nodeCalls(a.w, 'DELETE')[0].body, { also_revoke: ['c-old', 'c-claim'] });
+  assert.deepEqual(lastToast(a.w), { text: 'build-box removed. 2 other pairs revoked.', kind: 'ok' });
+  const b = pairWorld({ out: [peer()] });
+  b.server.peerNotified = true;
+  await settle();
+  btn(pairedRows(b.w)[0], 'Remove').click();
+  await settle();
+  btn(dlg(b.w), 'Remove').click();
+  await settle();
+  assert.equal(nodeCalls(b.w, 'DELETE')[0].body, undefined, 'a plain DELETE, as before');
+});
+
+test('the sheet cannot remove until the board has answered the question, Cancel removes nothing, and a failed question says so but still allows Remove', async () => {
+  const hold = defer();
+  const a = pairWorld({ out: [peer()], hold: { preview: hold } });
+  await settle();
+  btn(pairedRows(a.w)[0], 'Remove').click();
+  await settle();
+  assert.notEqual(btn(dlg(a.w), 'Remove').getAttribute('disabled'), null, 'Remove waits for the answer');
+  btn(dlg(a.w), 'Cancel').click();
+  await settle();
+  assert.equal(dlg(a.w), null);
+  assert.deepEqual(writes(a.w), ['POST /api/nodes/p1/remove-preview'], 'Cancel changes nothing');
+  hold.resolve();
+  await settle();
+  const b = pairWorld({ out: [peer()], fail: { preview: 'busy' } });
+  await settle();
+  btn(pairedRows(b.w)[0], 'Remove').click();
+  await settle();
+  assert.match(text(dlg(b.w)), /Could not check which other pairs would stay \(busy\)\. Removing still works/);
+  assert.equal(dlg(b.w).querySelectorAll('.nd-rm-row').length, 0);
+  btn(dlg(b.w), 'Remove').click();
+  await settle();
+  assert.deepEqual(writes(b.w), ['POST /api/nodes/p1/remove-preview', 'DELETE /api/nodes/p1']);
+});
+
+test('a refused removal keeps the sheet open with the reason and the boxes as they were', async () => {
+  const { w, server } = pairWorld({ out: [peer()], inn: [moved()], fail: { remove: 'only an active pair with the same node id can be revoked together with this node' } });
+  server.others = [OTHERS[0]];
+  await settle();
+  btn(pairedRows(w)[0], 'Remove').click();
+  await settle();
+  flip(dlg(w).querySelector('.nd-rm-row input'), false);
+  btn(dlg(w), 'Remove').click();
+  await settle();
+  assert.ok(dlg(w), 'still open');
+  assert.match(text(dlg(w).querySelector('.qr-err')), /^build-box not removed: only an active pair/);
+  assert.equal(dlg(w).querySelector('.nd-rm-row input').checked, false);
+  assert.ok(btn(dlg(w), 'Remove') && !btn(dlg(w), 'Remove').disabled, 'it can be tried again');
 });

@@ -159,7 +159,21 @@ const DEMO_PAIR_CODE = 'K7Q2M-4XD9R';
 function demoNodesNote(action, who, ok, detail, direction) {
   demoNodesMade.audit.unshift({ id: `demo-w${++demoNodesMade.seq}`, at: new Date().toISOString(), direction: direction || 'out', peer: '', node_name: who || '', action, status: ok === false ? 'failed' : 'ok', detail: detail || '' });
 }
-function demoNodesWrite(method, path, body) {
+/* What removing a node would also touch, as the board works it out: the confirmed pairs at the node's own address go by themselves (`auto`), the other pairs that name its node id
+   (another address, or never confirmed) stay unless the request lists them (`others`). */
+function demoRemoval(data, id) {
+  const host = (u) => String(u || '').replace(/^https?:\/\//i, '').replace(/\/+$/, '').toLowerCase();
+  const out = [...(data.nodes || []), ...demoNodesMade.added].find((r) => r.peer_id === id);
+  const res = { auto: [], others: [] };
+  if (!out || !out.node_id) return res;
+  for (const r of (data.pairs || [])) {
+    if (r.node_id !== out.node_id || demoNodesMade.gone.has(r.peer_id)) continue;
+    const v = { peer_id: r.peer_id, name: r.name, url: r.url, verified: r.callback_unverified !== true };
+    (v.verified && host(r.url) === host(out.url) ? res.auto : res.others).push(v);
+  }
+  return res;
+}
+function demoNodesWrite(method, path, body, data) {
   const b = body && typeof body === 'object' ? body : {};
   let m = null;
   if (method === 'POST' && path === '/api/nodes/pair-code') {
@@ -177,13 +191,25 @@ function demoNodesWrite(method, path, body) {
     return row;
   }
   if (method === 'POST' && (m = /^\/api\/nodes\/([^/]+)\/rotate$/.exec(path))) { demoNodesNote('rotated', decodeURIComponent(m[1]), true, 'the old token works 60 s more there'); return { rotated: true, grace_s: 60 }; }
+  if (method === 'POST' && (m = /^\/api\/nodes\/([^/]+)\/remove-preview$/.exec(path))) {
+    const rm = demoRemoval(data, decodeURIComponent(m[1]));
+    return { auto: rm.auto, others: rm.others, at: new Date().toISOString() };
+  }
   if (method === 'DELETE' && (m = /^\/api\/nodes\/([^/]+)$/.exec(path))) {
     const id = decodeURIComponent(m[1]);
+    const rm = demoRemoval(data, id);
+    const asked = Array.isArray(b.also_revoke) ? b.also_revoke : [];
+    const cut = rm.others.filter((x) => asked.includes(x.peer_id));
     demoNodesMade.gone.add(id);
+    for (const x of [...rm.auto, ...cut]) demoNodesMade.gone.add(x.peer_id);
     demoNodesNote('unpair', id, true, '');
-    return { removed: true, peer_notified: id !== 'p-old-laptop' };
+    return { removed: true, peer_notified: id !== 'p-old-laptop', also_revoked: cut.map((x) => x.peer_id), other_pairs: rm.others.filter((x) => !asked.includes(x.peer_id)) };
   }
   return null;
+}
+async function demoNodesFixture() {
+  const r = await fetch('/static/demo/nodes.json');
+  return r.ok ? demoRebase(await r.json()) : {};
 }
 /* The three GETs of demo/nodes.json, shaped like the board's ({nodes, pairs, at}, {pairs, at}, {rows, at}): the fixture's rows (times follow the clock like state.json's), minus the ones removed here, plus the ones paired here, plus the activity made here. */
 function demoNodes(data0, bare) {
@@ -312,7 +338,7 @@ async function demoApi(method, path, body) {
   if (method !== 'GET') {
     await new Promise((resolve) => setTimeout(resolve, 150));
     demoMake(method, path, body);
-    if (/^\/api\/nodes(\/|$)/.test(path)) { const made = demoNodesWrite(method, path, body); if (made) return made; }   // pairing (issue #135): played here, nothing leaves the page
+    if (/^\/api\/nodes(\/|$)/.test(path)) { const made = demoNodesWrite(method, path, body, await demoNodesFixture()); if (made) return made; }   // pairing (issue #135): played here, nothing leaves the page
     if (path === '/api/usage/refresh') {
       if (demoRefreshFlag() === 'none') throw demoError(409, 'no Claude session is at its prompt; start one to refresh');
       demoRefresh.tap = Date.now() / 1000;

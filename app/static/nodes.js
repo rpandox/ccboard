@@ -433,7 +433,8 @@ NodeView.list = function (answer, ...keys) {
 };
 
 /* One paired node (a row of GET /api/nodes or GET /api/nodes/pairs) in the words the list shows:
-   { id, key, name, handle, host, scopes, seen, unverified, repair, legacy, revoked, error, direction }.
+   { id, key, name, handle, host, scopes, seen, unverified, repair, legacy, revoked, error, direction, superseded, supersededHost }.
+   `superseded` is the peer_id of the newer pair that replaced this one from another address ('' when none), `supersededHost` that pair's address.
    id is what the board's routes take (peer_id); name falls back to the handle and then the id; `seen` is the last time the board really heard from it (epoch s) or null. */
 NodeView.peer = function (rec) {
   const r = rec && typeof rec === 'object' ? rec : {};
@@ -445,6 +446,7 @@ NodeView.peer = function (rec) {
     id, key: id || s(r.node_id, 80), name: s(r.name || r.peer_name || handle || id, 80) || 'unnamed node', handle, host: NodeView.hostOf(s(r.url || r.peer_url, 300)),
     scopes: NodeView.scopeList(r.scopes), seen, unverified: r.callback_unverified === true, repair: r.needs_repair === true, legacy: r.legacy === true,
     revoked: !!r.revoked_at, error: s(r.last_error, 120), direction: r.direction === 'in' ? 'in' : 'out',
+    superseded: s(r.superseded_by, 80), supersededHost: NodeView.hostOf(s(r.superseded_by_url, 300)),
   };
 };
 
@@ -470,22 +472,27 @@ NodeView.peerNote = function (p, { nowMs = Date.now(), incoming = false, rotated
 };
 
 /* A pair as a row, in the shape of the found rows: name (and its handle), chips (state, scopes, flags), a note, and `actions` (elements) at the right. */
+NodeView.REPLACED = 'Replaced by a newer pair';
+
 NodeView.peerRow = function (rec, { nowMs = Date.now(), actions = null, incoming = false, rotatedMs = 0 } = {}) {
   const p = NodeView.peer(rec);
   const st = NodeView.peerState(p, incoming);
   const scopes = NodeView.SCOPES.filter((s) => p.scopes.includes(s.id));
-  return el('div', { class: p.repair ? 'nd-row repair' : 'nd-row', 'data-key': p.key, 'data-kind': incoming ? 'in' : 'out' },
+  const replaced = incoming && p.superseded;
+  return el('div', { class: `nd-row${p.repair ? ' repair' : ''}${replaced ? ' superseded' : ''}`, 'data-key': p.key, 'data-kind': incoming ? 'in' : 'out' },
     el('div', { class: 'nd-main' },
       el('div', { class: 'nd-head' }, el('b', { class: 'nd-name', text: p.name }), p.handle ? el('span', { class: 'dim nd-handle', text: p.handle }) : null),
       el('div', { class: 'nd-chips' }, NodeView.chip(st.word, st.tone, st.glyph, st.hint),
         scopes.map((s) => NodeView.chip(s.label.toLowerCase(), '', '', s.what)),
-        p.unverified ? NodeView.chip('callback not verified', 'warn', '!', 'That node did not confirm who it is when it was paired. The pair works; its name is not confirmed.') : null),
+        p.unverified ? NodeView.chip('callback not verified', 'warn', '!', 'That node did not confirm who it is when it was paired. The pair works; its name is not confirmed.') : null,
+        replaced ? NodeView.chip('replaced', 'warn', '!', 'The same node paired again from another address. This older pair was left as it is, for you to decide.') : null),
+      replaced ? el('div', { class: 'nd-replaced', text: `${NodeView.REPLACED}${p.supersededHost ? ` from ${p.supersededHost}` : ''}. This one still works until you revoke it.` }) : null,
       el('div', { class: 'dim nd-note', text: NodeView.peerNote(p, { nowMs, incoming, rotatedMs }) })),
     actions ? el('div', { class: 'nd-act' }, actions) : null);
 };
 
 /* The words of an audit action (GET /api/nodes/audit; the actions are app/nodes.py audit(): code_created, code_cancelled, code_burned, code_used, callback_unverified, paired,
-   paired_back, pair_refused, pair_failed, rotated, rotate_failed, revoked, removed, unpair): the first rule that matches the action's name gives [words when it worked, words when
+   paired_back, pair_refused, pair_failed, rotated, rotate_failed, revoked, superseded, unpair_kept_outgoing, removed, unpair): the first rule that matches the action's name gives [words when it worked, words when
    it did not]. An action this table does not know is its name with the underscores and dots turned into spaces, and 'failed' after it when it did not work. */
 NodeView.AUDIT_WORDS = [
   [/burn/, 'Pairing code burned', 'Pairing code burned'],
@@ -495,6 +502,8 @@ NodeView.AUDIT_WORDS = [
   [/callback/, 'Callback checked', 'Callback not verified'],
   [/paired?_back|reverse/, 'Paired both ways', 'Pairing both ways failed'],
   [/rotat/, 'Token rotated', 'Token rotation failed'],
+  [/supersed/, 'Pair replaced, still active', 'Pair replaced, still active'],
+  [/kept/, 'Pair kept', 'Pair kept'],
   [/revok/, 'Pair revoked', 'Pair not revoked'],
   [/unpair|remov|delet/, 'Node removed', 'Node removed, the other node was not told'],
   [/refus/, 'Pairing refused', 'Pairing refused'],

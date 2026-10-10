@@ -215,6 +215,10 @@ MIGRATIONS = [
   detail TEXT
 )""",
     "CREATE INDEX IF NOT EXISTS node_audit_at ON node_audit(at)",
+    # ---- nodes epic P3 (issue #135, review fix): a pair the person has not yet answered for. When a verified re-pair arrives from ANOTHER address with
+    #      the same node id, the older active pair is not revoked (a node id is only a claim); it is marked with the peer_id of the newer pair, keeps
+    #      working, and Settings > Nodes shows it with a prominent Revoke. NULL = not superseded (every old row). Additive: the previous image ignores it.
+    "ALTER TABLE node_pairs ADD COLUMN superseded_by TEXT",
     # permissions.decision takes allow|deny|tui|interrupt (plus timeout from perm_expire). It has no CHECK constraint,
     # so nothing to migrate: the new values are plain TEXT.
 ]
@@ -239,7 +243,7 @@ JOB_COLS = ("project", "repo", "name", "prompt", "cron", "permission_mode", "max
             "timeout_s", "enabled", "batch_id", "next_run_at", "agent", "opts")
 JOB_REQUIRED = ("project", "repo", "name", "prompt")
 NODE_PAIR_COLS = ("peer_id", "peer_node_id", "peer_name", "peer_url", "token_sha256", "scopes", "created_at", "expires_at", "last_used_at",
-                  "last_ip_hint", "callback_unverified", "revoked_at", "prev_sha256", "prev_until", "rotated_at")
+                  "last_ip_hint", "callback_unverified", "revoked_at", "prev_sha256", "prev_until", "rotated_at", "superseded_by")
 NODE_AUDIT_CAP = 20000
 ACTIVE_TASK_PHASES = ("queued", "running", "done", "failed")
 
