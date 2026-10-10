@@ -1,0 +1,114 @@
+{
+  "Version": "1.78.1",
+  "BackendState": "Running",
+  "HaveNodeKey": true,
+  "TUN": true,
+  "CertDomains": [
+    "node-a.example.ts.net"
+  ],
+  "Self": {
+    "ID": "nSELF1",
+    "PublicKey": "nodekey:nself1nself1nself1nself1nself1nself1nself1nself1nself1nself1nsel",
+    "HostName": "node-a",
+    "DNSName": "node-a.example.ts.net.",
+    "OS": "linux",
+    "UserID": 2147455555,
+    "TailscaleIPs": [
+      "100.100.1.1",
+      "fd7a:115c:a1e0::1"
+    ],
+    "Tags": [
+      "tag:ccboard"
+    ],
+    "Online": true,
+    "Active": true,
+    "LastSeen": "0001-01-01T00:00:00Z",
+    "Relay": "fra",
+    "ExitNode": false,
+    "Expired": false
+  },
+  "Health": [],
+  "MagicDNSSuffix": "example.ts.net",
+  "CurrentTailnet": {
+    "Name": "example.com",
+    "MagicDNSSuffix": "example.ts.net",
+    "MagicDNSEnabled": true
+  },
+  "Peer": {
+    "nodekey:ntag01ntag01ntag01ntag01ntag01ntag01ntag01ntag01ntag01ntag01ntag": {
+      "ID": "nTAG01",
+      "PublicKey": "nodekey:ntag01ntag01ntag01ntag01ntag01ntag01ntag01ntag01ntag01ntag01ntag",
+      "HostName": "box",
+      "DNSName": "box.example.ts.net.",
+      "OS": "linux",
+      "UserID": 2147455555,
+      "TailscaleIPs": [
+        "100.100.1.4"
+      ],
+      "Tags": [
+        "tag:ccboard"
+      ],
+      "Online": true,
+      "Active": true,
+      "LastSeen": "2026-10-10T08:00:00Z",
+      "Relay": "fra",
+      "ExitNode": false,
+      "Expired": false
+    },
+    "nodekey:ntag02ntag02ntag02ntag02ntag02ntag02ntag02ntag02ntag02ntag02ntag": {
+      "ID": "nTAG02",
+      "PublicKey": "nodekey:ntag02ntag02ntag02ntag02ntag02ntag02ntag02ntag02ntag02ntag02ntag",
+      "HostName": "build",
+      "DNSName": "build.example.ts.net.",
+      "OS": "linux",
+      "UserID": 2147455555,
+      "TailscaleIPs": [
+        "100.100.1.5"
+      ],
+      "Tags": [
+        "tag:other"
+      ],
+      "Online": true,
+      "Active": true,
+      "LastSeen": "2026-10-10T08:00:00Z",
+      "Relay": "fra",
+      "ExitNode": false,
+      "Expired": false
+    },
+    "nodekey:nsame1nsame1nsame1nsame1nsame1nsame1nsame1nsame1nsame1nsame1nsam": {
+      "ID": "nSAME1",
+      "PublicKey": "nodekey:nsame1nsame1nsame1nsame1nsame1nsame1nsame1nsame1nsame1nsame1nsam",
+      "HostName": "node-b",
+      "DNSName": "node-b.example.ts.net.",
+      "OS": "linux",
+      "UserID": 1001,
+      "TailscaleIPs": [
+        "100.100.1.2"
+      ],
+      "Tags": null,
+      "Online": true,
+      "Active": true,
+      "LastSeen": "2026-10-10T08:00:00Z",
+      "Relay": "fra",
+      "ExitNode": false,
+      "Expired": false
+    }
+  },
+  "User": {
+    "1001": {
+      "ID": 1001,
+      "LoginName": "alice@example.com",
+      "DisplayName": "Alice"
+    },
+    "2002": {
+      "ID": 2002,
+      "LoginName": "bob@example.net",
+      "DisplayName": "Bob"
+    },
+    "2147455555": {
+      "ID": 2147455555,
+      "LoginName": "tagged-devices",
+      "DisplayName": "Tagged devices"
+    }
+  }
+}

@@ -577,3 +577,123 @@ def resolve(handle, db=None):
         if row.get("handle") == handle:
             return row
     raise projects.NotFound("unknown node")
+
+
+# ---------------------------------------------------------------- the address rule for a peer (issues #134 and #135)
+
+TAILNET_V4 = ipaddress.ip_network("100.64.0.0/10")           # Tailscale's CGNAT range
+TAILNET_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")     # Tailscale's IPv6 range
+_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+class PeerUrlError(ValueError):
+    """A peer address the rule refuses; str() is the reason in words. `unresolved` is True when the only fault is that the name did not resolve."""
+
+    def __init__(self, reason: str, unresolved: bool = False):
+        super().__init__(reason)
+        self.unresolved = unresolved
+
+
+class PeerTarget(NamedTuple):
+    url: str                  # https://<host>[:<port>], as given, with no path
+    host: str                 # lower case, no trailing dot; the name the certificate is checked for
+    port: int
+    addrs: tuple[str, ...]    # every address the host resolved to, all inside the tailnet ranges, IPv4 first; a connection goes to addrs[0]
+
+
+def in_tailnet(addr) -> bool:
+    """Is this text an IPv4 address in 100.64.0.0/10 or an IPv6 address in fd7a:115c:a1e0::/48? Anything else is False: loopback, link-local,
+    169.254.169.254, private ranges, public addresses, IPv4-mapped IPv6, an address with a zone id, text that is no address."""
+    try:
+        ip = ipaddress.ip_address(str(addr))
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address):
+        return ip.scope_id is None and ip in TAILNET_V6
+    return ip in TAILNET_V4
+
+
+def _suffix(suffix) -> str | None:
+    s = str(suffix or "").strip().strip(".").lower()
+    return s if s and all(_LABEL_RE.fullmatch(p) for p in s.split(".")) else None
+
+
+def _resolve_all(host: str, port: int) -> list[str]:
+    """Every address the system resolver gives for `host`, as text, IPv4 first, no repeats. OSError when it cannot resolve. This is the one place a
+    peer name is looked up; tests replace it with a fake."""
+    seen: list[str] = []
+    for fam, _t, _p, _c, sa in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM):
+        if fam in (socket.AF_INET, socket.AF_INET6) and sa[0] not in seen:
+            seen.append(sa[0])
+    return sorted(seen, key=lambda a: ":" in a)
+
+
+def check_peer_url(url, suffix, resolver=None) -> PeerTarget:
+    """The one rule for an address of another node. Raises PeerUrlError (never anything else) unless: the scheme is https; there is no user info,
+    no query, no fragment and no path beyond `/`; the port is 1 to 65535 (443 when absent); the host is an address inside the tailnet ranges, or a
+    name that ends with `.<suffix>` (the tailnet's MagicDNS suffix) AND that resolves, now, only to addresses inside them. One address outside the
+    ranges in the answer refuses the whole name. `resolver(host, port) -> [address text]` is called once, for a name only. The caller connects to
+    `addrs[0]` and checks the certificate for `host`, so the name is not looked up a second time and a second answer cannot be trusted."""
+    resolve = resolver or _resolve_all
+    if not isinstance(url, str) or not url or len(url) > 300:
+        raise PeerUrlError("not an address")
+    if any(ord(c) <= 0x20 or ord(c) >= 0x7F or c == "\\" for c in url):
+        raise PeerUrlError("the address holds a space, a control or non-ASCII character or a backslash")
+    if "?" in url or "#" in url:
+        raise PeerUrlError("no query or fragment is allowed")
+    from urllib.parse import urlsplit
+    try:
+        u = urlsplit(url)
+        port = u.port
+        host = u.hostname
+    except ValueError:
+        raise PeerUrlError("not a valid address") from None
+    if u.scheme != "https":
+        raise PeerUrlError("only https is allowed")
+    if "@" in u.netloc or u.username is not None or u.password is not None:
+        raise PeerUrlError("no user info is allowed")
+    if u.path not in ("", "/"):
+        raise PeerUrlError("the address is a host and a port, nothing after")
+    if not host:
+        raise PeerUrlError("no host")
+    if port is not None and not 1 <= port <= 65535:
+        raise PeerUrlError("the port is out of range")
+    port = port or 443
+    host = host.rstrip(".").lower()
+    try:
+        ipaddress.ip_address(host)
+        literal = True
+    except ValueError:
+        literal = False
+    if literal:
+        if not in_tailnet(host):
+            raise PeerUrlError("the address is not inside the tailnet ranges")
+        addrs: list[str] = [str(ipaddress.ip_address(host))]
+    else:
+        suf = _suffix(suffix)
+        if suf is None:
+            raise PeerUrlError("this tailnet's MagicDNS name is not known, so a name cannot be checked")
+        labels = host.split(".")
+        if not host.endswith("." + suf) or not all(_LABEL_RE.fullmatch(p) for p in labels):
+            raise PeerUrlError("the name is not under this tailnet's MagicDNS suffix")
+        try:
+            got = list(resolve(host, port))
+        except OSError:
+            raise PeerUrlError("the name does not resolve", unresolved=True) from None
+        except Exception:
+            raise PeerUrlError("the name could not be resolved") from None
+        if not got:
+            raise PeerUrlError("the name does not resolve", unresolved=True)
+        if not all(isinstance(a, str) and in_tailnet(a) for a in got):
+            raise PeerUrlError("the name resolves to an address outside the tailnet ranges")
+        addrs = [str(ipaddress.ip_address(a)) for a in got]
+    shown = f"[{host}]" if ":" in host else host
+    return PeerTarget(f"https://{shown}" + ("" if port == 443 else f":{port}"), host, port, tuple(addrs))
+
+
+def valid_peer_url(url, suffix, resolver=None) -> list[str] | None:
+    """The addresses a connection to `url` may use (see check_peer_url), or None when the address is refused."""
+    try:
+        return list(check_peer_url(url, suffix, resolver).addrs)
+    except PeerUrlError:
+        return None

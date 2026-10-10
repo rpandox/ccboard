@@ -147,6 +147,7 @@ EXPECTED = {
     ("GET", "/api/node/summary"): "hub-token|identity",
     ("GET", "/api/node/hello"): "none",         # the one route that answers with no identity (issue #133): three fixed keys, 30 per minute per source
     ("GET", "/api/node"): "identity",            # the node card; a paired node's token will open it too (issue #135)
+    ("GET", "/api/nodes/discover"): "identity",   # the tailnet devices that may be nodes (issue #134); refresh=1 also needs X-CCBoard (it makes the board send requests), checked in the handler
     ("GET", "/api/search"): "identity",
     ("POST", "/api/cost/refresh"): "identity+csrf",
     ("POST", "/api/usage/rate-limit/clear"): "identity+csrf",

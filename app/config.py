@@ -42,6 +42,51 @@ def parse_clone_hosts(raw: str) -> tuple[str, ...]:
     return tuple(out)
 
 
+DEFAULT_NODE_PORTS = (443, 8443)
+DEFAULT_NODE_TAGS = ("tag:ccboard",)
+NODE_LIST_MAX = 8
+_TAG_RE = re.compile(r"tag:[a-z][a-z0-9-]{0,62}")
+
+
+def parse_node_ports(raw) -> tuple[tuple[int, ...], bool]:
+    """CCBOARD_NODE_PORTS: comma or space separated ports 1 to 65535, in order, no repeats, at most 8. Unset or blank: (443, 8443). Items that are not
+    a port are dropped and the second value is True (the doctor says so); when nothing is left the default is used."""
+    text = (raw or "").strip()
+    if not text:
+        return DEFAULT_NODE_PORTS, False
+    out, bad = [], False
+    for item in re.split(r"[,\s]+", text):
+        if not item:
+            continue
+        if item.isascii() and item.isdigit() and 1 <= int(item) <= 65535:
+            if int(item) not in out and len(out) < NODE_LIST_MAX:
+                out.append(int(item))
+        else:
+            bad = True
+    return (tuple(out), bad) if out else (DEFAULT_NODE_PORTS, True)
+
+
+def parse_node_tags(raw) -> tuple[tuple[str, ...], bool]:
+    """CCBOARD_NODE_TAGS: comma or space separated Tailscale tags (`tag:name`, a bare `name` gets the prefix), at most 8. Unset or blank: ("tag:ccboard",).
+    `none` means no tag counts, only the same user's devices. Items that are not a tag are dropped and the second value is True."""
+    text = (raw or "").strip()
+    if not text:
+        return DEFAULT_NODE_TAGS, False
+    if text.lower() == "none":
+        return (), False
+    out, bad = [], False
+    for item in re.split(r"[,\s]+", text):
+        if not item:
+            continue
+        tag = item if item.startswith("tag:") else "tag:" + item
+        if _TAG_RE.fullmatch(tag):
+            if tag not in out and len(out) < NODE_LIST_MAX:
+                out.append(tag)
+        else:
+            bad = True
+    return tuple(out), bad
+
+
 # The settings a launchd job cannot get from an EnvironmentFile (issue #117): the keys install.sh accepts for /etc/ccboard/env, in its order
 # (tests/test_macos_board.py pins this tuple to install.sh's ENV_KEYS). Any other line in the file is ignored.
 ENV_FILE_KEYS = (
@@ -52,7 +97,7 @@ ENV_FILE_KEYS = (
     "CCBOARD_AUTO_CONTINUE", "CCBOARD_CLAUDE_MEM", "CCBOARD_MEM_PORT", "CCBOARD_MEM_HTTPS_PORT", "CCBOARD_MEM_SERVICE",
     "CCBOARD_CODEX_HOOK_TRUST", "CCBOARD_CLONE_ALLOWED_HOSTS", "CCBOARD_MCP_REMOTE", "CODEX_HOME", "CCBOARD_AUTOCLOSE_GRACE",
     "CCBOARD_CODEX_HOOKS_ASYNC", "CCBOARD_CLAUDE_ULTRACODE_FLAG", "CCBOARD_SUBAGENT_MODEL", "CCBOARD_HEADLESS_FABLE_CAP", "CCBOARD_PRICE_TABLE",
-    "CCBOARD_TAILSCALE_PLACEMENT", "CCBOARD_NODE_LANES",
+    "CCBOARD_TAILSCALE_PLACEMENT", "CCBOARD_NODE_LANES", "CCBOARD_NODE_PORTS", "CCBOARD_NODE_TAGS",
 )
 ENV_FILE_MAX = 1 << 20     # bytes read from the settings file
 
@@ -194,6 +239,10 @@ class Settings:
                 self.node_lanes = int(raw_lanes)
             else:
                 self.node_lanes_bad = True
+        # Finding other nodes (issue #134): the HTTPS ports a probe tries on a tailnet device, and the tags that make a device a candidate besides
+        # "same Tailscale user". Bad items are dropped and the doctor says so; nothing here starts a request.
+        self.node_ports, self.node_ports_bad = parse_node_ports(env.get("CCBOARD_NODE_PORTS"))
+        self.node_tags, self.node_tags_bad = parse_node_tags(env.get("CCBOARD_NODE_TAGS"))
         self.nodes_raw = env.get("CCBOARD_NODES") or ""
         # Nightly backup: restic repo ('off' disables restic; empty = local repo under the data dir), its password
         # file (written by install.sh), whether to copy unpushed work to backup branches on every repo's origin, extra paths to include.

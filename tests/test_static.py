@@ -677,7 +677,7 @@ def test_index_dialogs_are_empty_in_the_html():
 DEMO_DIR = STATIC / "demo"
 DEMO_FILES = ("state.json", "skills.json", "search.json", "tree.json", "file.json", "series.json", "series_events.json", "usage_summary.json", "memory.json",
               "agents.json", "doctor.json", "memory_health.json", "memory_prefs.json", "memory_observations.json", "memory_summaries.json",
-              "memory_search.json", "memory_timeline.json", "memory_palace.json", "memory_states.json", "node.json")
+              "memory_search.json", "memory_timeline.json", "memory_palace.json", "memory_states.json", "node.json", "nodes-discover.json")
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+--[A-Za-z0-9_-]+--[A-Za-z0-9_-]+$")
 KANBAN = ("backlog", "in_progress", "needs_you", "done", "pr", "merged")
 DEMO_HEADERS = {"Tailscale-User-Login": "alice@example.com"}
@@ -1699,3 +1699,18 @@ def test_every_demo_fixture_is_read_by_a_route_and_none_names_a_host():
     diff = demo_json("diff.json")
     assert set(diff) == {"base", "branch", "commits", "files", "files_uncommitted", "committed", "uncommitted", "truncated"}, "the shape gitops.task_diff returns"
     assert len(diff["commits"]) == 2 and len(diff["files"]) == 3 and len(diff["files_uncommitted"]) == 1
+
+
+def test_no_array_method_is_called_on_a_live_children_collection():
+    """A browser's element.children is an HTMLCollection: it has no map/filter/forEach/find/some/reduce. The JS tests' fake DOM
+    returns a plain array, so such a call passes there and throws on every repaint in a real browser (Settings > Nodes, nodes P2).
+    Spread it first: [...el.children].map(...)."""
+    import re
+    bad = []
+    for p in sorted(STATIC.rglob("*.js")):
+        if "vendor" in p.parts:
+            continue
+        for i, line in enumerate(p.read_text().splitlines(), 1):
+            if re.search(r"\.children\.(map|filter|forEach|find|some|every|reduce|flatMap|includes)\(", line):
+                bad.append(f"{p.relative_to(STATIC)}:{i}")
+    assert bad == [], bad

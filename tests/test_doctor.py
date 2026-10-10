@@ -2497,3 +2497,24 @@ def test_the_node_check_warns_for_a_bad_name_bad_lanes_or_peers_without_a_public
 def test_the_node_check_writes_nothing_but_the_id_the_board_would_write_anyway(node_check):
     node_check()
     assert sorted(p.name for p in settings.data_dir.iterdir() if p.name.startswith("node")) == ["node-id"]
+
+
+# ------------------------------------------------------------------ nodes epic P2 (issue #134): tailscale-status, nodes-port, nodes-tagged-self (group box), read only
+# The behaviour of the three rows is pinned in tests/test_nodes_discovery.py (they need the Tailscale fixtures); here: they are registered in the
+# Box group, the baseline does not list them, and each answer fits the report shape.
+
+DISCOVERY_CHECKS = {c[0]: c for c in doctor.CHECKS if c[0] in ("tailscale-status", "nodes-port", "nodes-tagged-self")}     # taken at import, before a fixture narrows CHECKS
+
+
+def test_the_discovery_rows_are_registered_in_the_box_group_and_the_baseline_does_not_list_them(monkeypatch):
+    by = DISCOVERY_CHECKS
+    assert set(by) == {"tailscale-status", "nodes-port", "nodes-tagged-self"}
+    for cid in ("tailscale-status", "nodes-port", "nodes-tagged-self"):
+        assert cid in by and by[cid][1] == "box" and by[cid][2], cid
+        assert cid not in BUILTIN_IDS
+    monkeypatch.setattr(doctor, "CHECKS", [by["nodes-port"], by["nodes-tagged-self"], by["tailscale-status"]])
+    out = doctor.run("box", refresh=True)
+    assert sorted(c["id"] for c in out["checks"]) == ["nodes-port", "nodes-tagged-self", "tailscale-status"]
+    for c in out["checks"]:
+        assert c["status"] in doctor.STATUSES and "\n" not in c["detail"] and len(c["detail"]) <= doctor.DETAIL_MAX
+        assert c["fix"] is None or c["fix"]["text"]

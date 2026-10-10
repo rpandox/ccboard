@@ -1,0 +1,15 @@
+{
+  "Version": "1.78.1",
+  "BackendState": "NeedsLogin",
+  "HaveNodeKey": false,
+  "TUN": true,
+  "CertDomains": null,
+  "Self": null,
+  "Health": [
+    "You are logged out."
+  ],
+  "MagicDNSSuffix": "",
+  "CurrentTailnet": null,
+  "Peer": null,
+  "User": null
+}
