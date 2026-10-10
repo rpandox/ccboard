@@ -353,6 +353,13 @@ def _meta_obj(raw):
 
 
 class DB:
+    def close(self) -> None:
+        """Close the connection under the lock: a thread in the middle of a query finishes first, and a later call raises
+        sqlite3.ProgrammingError. Closing while another thread uses the connection crashes the process (seen: a node hub
+        worker reading kv while a test closed the database)."""
+        with self.lock:
+            self.conn.close()
+
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.Lock()

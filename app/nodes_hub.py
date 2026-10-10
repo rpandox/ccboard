@@ -58,6 +58,7 @@ log = logging.getLogger("ccboard.nodes.hub")
 KV_LAST = "node_last"
 WORKERS = 4
 TIMEOUT = 5.0                 # seconds one request to a node may take
+STOP_WAIT = TIMEOUT + 1.0     # seconds stop() waits for the polls in flight, so none reads the database after it returned
 JITTER = 0.1                  # +-10 % of the interval
 STALE_AFTER = 600.0           # seconds after the last good reading at which `stale` becomes `offline`
 ONLINE_CYCLES = 2             # `online` while the last good reading is at most this many intervals old
@@ -307,6 +308,12 @@ class NodeHub:
         pool = self._pool
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=True)
+        deadline = time.monotonic() + STOP_WAIT                 # a poll in flight ends by its own timeout; wait for it, so nothing reads the database after stop()
+        while time.monotonic() < deadline:
+            with self._lock:
+                if not self._inflight:
+                    break
+            time.sleep(0.02)
         self.persist(force=True)
 
     def _run(self) -> None:

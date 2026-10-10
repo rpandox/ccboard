@@ -86,6 +86,18 @@ def _fresh_scan():
     main._invalidate_scan()
 
 
+@pytest.fixture(autouse=True)
+def _hub_online(monkeypatch):
+    """Right after pairing the hub has read nothing, and a relay waits for a reading; these tests ask about the relay itself, so the hub has read every node.
+    The tests of that wait put their own record in (or use the real NodeHub)."""
+    from app import main
+    REAL_HUB["fn"] = REAL_HUB.get("fn") or main._hub
+    monkeypatch.setattr(main, "_hub", lambda: FakeHub())
+
+
+REAL_HUB: dict = {}
+
+
 @pytest.fixture
 def wide(monkeypatch):
     big = lambda: nodes._Limiter(10 ** 6, 60.0, 64)
@@ -147,10 +159,15 @@ def test_node_routes_are_the_base_routes_and_the_rows_and_nothing_else():
     assert dict(nodes.NODE_ROUTES) == {**base, **{(r.peer_method, r.peer_path): r.scope for r in ROWS}}
 
 
-def test_the_first_rows_are_the_five_reads_on_scope_read():
+def test_the_first_rows_are_the_five_reads_and_screen_text_needs_sessions_not_read():
     assert {r.name: (r.peer_method, r.peer_path, r.scope) for r in ROWS} == {
         "card": ("GET", "/api/node", "read"), "state": ("GET", "/api/node/state", "read"), "task": ("GET", "/api/node/tasks/{tid}", "read"),
-        "pane": ("GET", "/api/node/sessions/{name}/pane", "read"), "agents": ("GET", "/api/node/agents", "read")}
+        "pane": ("GET", "/api/node/sessions/{name}/pane", "sessions"), "agents": ("GET", "/api/node/agents", "read")}
+
+
+def test_every_row_is_human_only_until_a_phase_opens_one_on_purpose():
+    """The hook token is held by every agent session on the box: no row lets it relay. A later phase (MCP across nodes) opens a row by setting human_only False."""
+    assert ROWS and all(r.human_only for r in ROWS), [r.name for r in ROWS if not r.human_only]
 
 
 def test_rate_class_is_the_rows_and_else_by_method():
@@ -342,13 +359,34 @@ def test_a_pair_marked_needs_repair_is_409_and_no_call(hub):
     assert r.status_code == 409 and r.json()["reason"] == "needs_repair" and count.seen == 0
 
 
-def test_a_node_the_hub_has_not_tried_yet_is_called_and_a_stale_one_too(hub, monkeypatch):
+@pytest.mark.parametrize("row", ROWS, ids=ids)
+def test_a_node_the_hub_has_not_read_yet_is_409_not_read_yet_and_no_call(hub, monkeypatch, row):
     two, reg, count = hub
     from app import main
-    monkeypatch.setattr(main, "_hub", lambda: FakeHub(status="offline", age_s=None, polled_at=None, last_ok_at=None))
-    assert two.a.get(hub_path(ROWS[0], reg["handle"])).status_code == 200, "right after pairing nothing was tried yet: ask the node"
+    for rec in ({"status": "offline", "age_s": None, "polled_at": None, "last_ok_at": None}, None):
+        monkeypatch.setattr(main, "_hub", (lambda: FakeHub(**rec)) if rec else (lambda: type("H", (), {"records": lambda self, h=None: []})()))
+        r = two.a.get(hub_path(row, reg["handle"]))
+        assert r.status_code == 409 and r.json()["reason"] == "not_read_yet" and "not been read yet" in r.json()["error"], r.text
+    assert count.seen == 0
+    assert audit_rows(two.a, action=row.audit_action)[0]["status"] == "refused"
+
+
+def test_only_an_online_or_stale_reading_is_called_and_the_real_hub_gets_there_after_one_poll(two_nodes, pair_up, monkeypatch):
+    from app import main
+    reg = pair_up()
+    count = Count(two_nodes.transport)
+    nodes.peer_transport = count
     monkeypatch.setattr(main, "_hub", lambda: FakeHub(status="stale", age_s=400))
-    assert two.a.get(hub_path(ROWS[0], reg["handle"])).status_code == 200
+    assert two_nodes.a.get(hub_path(BY["card"], reg["handle"])).status_code == 200
+    monkeypatch.setattr(main, "_hub", REAL_HUB["fn"])                       # the real hub, which has read nothing yet
+    monkeypatch.setattr(main, "node_hub", None)
+    seen = count.seen
+    r = two_nodes.a.get(hub_path(BY["card"], reg["handle"]))
+    assert r.status_code == 409 and r.json()["reason"] == "not_read_yet" and count.seen == seen
+    with two_nodes.a.enter():
+        main._hub().poll_once()
+    r = two_nodes.a.get(hub_path(BY["card"], reg["handle"]))
+    assert r.status_code == 200 and r.json()["data"]["name"] == "node-b", "one good poll later the node is called"
 
 
 def test_the_order_of_the_refusals_scope_then_status_then_body(two_nodes, pair_up, monkeypatch, probe_rows):
@@ -417,10 +455,36 @@ def test_a_caller_needs_identity_and_the_csrf_header_or_the_hook_token(hub, wide
     assert r.status_code == 403 and r.json()["error"] == "missing X-CCBoard header", "a GET too: it makes this board call another"
     assert two.a.call("GET", path, owner=False, headers={"Tailscale-User-Login": "mallory@example.com", "X-CCBoard": "1"}).status_code == 403
     assert count.seen == 0
-    r = two.a.call("GET", path, owner=False, headers={"X-CCBoard-Token": two.a.hook_token})
+    assert count.seen == 0
+
+
+@pytest.mark.parametrize("row", ROWS, ids=ids)
+def test_the_hook_token_every_agent_session_holds_cannot_relay_on_any_row(hub, wide, fake_tmux, row):
+    two, reg, count = hub
+    r = two.a.call(row.hub_method, hub_path(row, reg["handle"]), owner=False, headers={"X-CCBoard-Token": two.a.hook_token})
+    assert r.status_code == 403 and r.json()["reason"] == "human_only" and "signed-in person" in r.json()["error"], r.text
+    assert count.seen == 0, "nothing reached another node"
+    r = two.a.call(row.hub_method, hub_path(row, reg["handle"]), owner=False, headers={"X-CCBoard-Token": two.a.hook_token, "X-CCBoard": "1", **ID})
+    assert r.status_code == 403, "the hook token with a person's headers beside it is still the hook token"
+    assert two.a.get(hub_path(row, reg["handle"])).status_code in (200, 404), "the signed-in person still can"
+
+
+def test_the_acting_user_is_the_authenticated_login_never_a_header_or_a_query_the_caller_sends(hub, wide):
+    two, reg, count = hub
+    seen = {}
+
+    def spy(target, method, path, headers, body, timeout):
+        seen.update(headers)
+        seen["path"] = path
+        return two.transport(target, method, path, headers, body, timeout)
+    nodes.peer_transport = spy
+    r = two.a.get(hub_path(BY["card"], reg["handle"]), headers={"X-CCBoard-Acting-User": "root", "X-CCBoard-Node": "ts:nFORGED"})
     assert r.status_code == 200
-    assert audit_rows(two.a, action="read_card")[0]["user"] == "local-token", "the MCP shim's calls are recorded as the local token"
-    assert audit_rows(two.b, action="read_card")[0]["user"] == "for local-token"
+    assert seen["X-CCBoard-Acting-User"] == "alice@example.com" and seen["X-CCBoard-Node"] != "ts:nFORGED"
+    r = two.a.get(hub_path(BY["card"], reg["handle"]) + "?acting_user=root")
+    assert r.status_code == 422 and "acting_user" in r.json()["error"], "the query cannot carry it either"
+    assert audit_rows(two.a, action="read_card")[0]["user"] == "alice@example.com"
+    assert audit_rows(two.b, action="read_card")[0]["user"] == "for alice@example.com"
 
 
 BY = nr.BY_NAME
@@ -633,7 +697,7 @@ def test_the_pane_row_is_the_last_40_lines_with_control_characters_out_and_token
     direct = two.b.get(fill(BY["pane"].peer_path, name=name), owner=False, headers=bearer(token_of(two, reg))).json()
     assert len(direct["lines"]) == 40 and direct["cap"] == 40, "the peer cuts the tail itself; the hub's cut is a second one"
     joined = "\n".join(d["lines"])
-    assert tok not in joined and "[token]" in joined and SCREEN_MARKER in joined
+    assert tok not in joined and "[redacted]" in joined and SCREEN_MARKER in joined
     assert not re.search("[\x00-\x08\x0b-\x1f\x7f-\x9f\u202e]", joined), "control and bidi characters are out"
     assert all(len(x) <= nr.PANE_LINE_MAX for x in d["lines"])
     fake_tmux["screen"] = "x" * 5000
@@ -866,3 +930,208 @@ def test_the_audit_route_stays_a_persons_route(filled):
     assert c.get("/api/nodes/audit", headers=bearer(tok)).status_code == 403
     from app import hooks
     assert c.get("/api/nodes/audit", headers={"X-CCBoard-Token": hooks.ensure_token()}).status_code == 403
+
+
+# ================================================================ review fixes: redaction, validation, caps, limits (issue #140)
+
+SECRETS = {
+    "anthropic": "sk-" + "ant-" + "api03-AbCdEf123456789_xyzQ",
+    "openai": "sk-proj-AbCdEfGhIjKlMnOpQrStUv123",
+    "github ghp": "ghp_" + "A1b2C3d4E5" * 3,
+    "github gho": "gho_" + "Z9y8X7w6V5" * 3,
+    "github ghs": "ghs_" + "Q1w2E3r4T5" * 3,
+    "github pat": "github_" + "pat_" + "11ABCDEFG0abcdefghijkl_mnopqrstuvwxyz0123",
+    "aws": "AKIA" + "IOSFODNN7" + "EXAMPLE",
+    "slack": "xox" + "b-" + "123456789012-abcdefABCDEF1234",
+    "jwt": "eyJ" + "hbGciOiJIUzI1NiJ9" + "." + "eyJ" + "zdWIiOiIxMjM0NTY3ODkwIn0" + ".dBjftJeZ4CVPmB92K27uhbUJU1p1r",
+    "three-part base64": "AbCdEfGhIjKlMnOpQr.StUvWxYzAbCdEfGhIj.KlMnOpQrStUvWxYzAbCd",
+    "ccbnode": nodes.TOKEN_PREFIX + "Q" * 43,
+    "ccbmcp": "ccbmcp_" + "R" * 43,
+}
+KV_SECRETS = {
+    "bearer": ("Authorization-less header Bearer ", "abcdefghijklmnopqrstuvwx"),
+    "password": ("password=", "hunter2hunter2"),
+    "password colon": ("db_password: ", "correct-horse-battery"),
+    "token": ("token = ", "abcd1234efgh"),
+    "secret quoted": ("client_secret=", '"has spaces inside"'),
+    "api_key": ("api_key=", "k3y-v4lue-0000"),
+    "json": ('{"apiKey": ', '"zzzz-1111-yyyy"}'),
+    "long hex after =": ("digest=", "a" * 40),
+    "long base64 after colon": ("blob: ", "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5"),
+}
+PEM = "-----BEGIN OPENSSH " + "PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU\nAAAAB3NzaC1lZDI1NTE5AAAAIP\n-----END OPENSSH " + "PRIVATE KEY-----"
+
+
+@pytest.mark.parametrize("name", sorted(SECRETS))
+def test_redact_replaces_each_secret_shape(name):
+    secret = SECRETS[name]
+    out = nr.redact(f"before {secret} after")
+    assert secret not in out and "[redacted]" in out and out.startswith("before ") and out.endswith(" after"), out
+
+
+@pytest.mark.parametrize("name", sorted(KV_SECRETS))
+def test_redact_replaces_the_value_after_a_secret_looking_key(name):
+    lead, value = KV_SECRETS[name]
+    out = nr.redact(f"run: {lead}{value} done")
+    core = value.strip('"} ')
+    assert core not in out and "[redacted]" in out and "run:" in out, out
+
+
+def test_redact_removes_an_authorization_header_line_and_a_whole_key_block_and_the_tail_of_one():
+    assert "dXNlcjpwYXNz" not in nr.redact("Authorization: Basic dXNlcjpwYXNz\nnext line")
+    assert nr.redact("Authorization: Basic dXNlcjpwYXNz\nnext line").endswith("next line")
+    out = nr.redact(f"ls\n{PEM}\nafter")
+    assert "b3BlbnNzaC1rZXk" not in out and "AAAAB3NzaC1lZDI1" not in out and out.startswith("ls\n") and out.endswith("\nafter")
+    cut = nr.redact("AAAAB3NzaC1lZDI1NTE5AAAAIP\nmoreBase64Lines==\n-----END OPENSSH PRIVATE KEY-----\nprompt $")
+    assert "AAAAB3NzaC1lZDI1" not in cut and cut.endswith("\nprompt $"), "a screen that starts inside a key"
+    assert "b3Blbn" not in nr.redact("-----BEGIN RSA " + "PRIVATE KEY-----\nb3BlbnNzaC1r"), "a key whose end is below the screen"
+
+
+def test_redact_replaces_the_values_this_process_knows_by_value_and_ignores_short_ones():
+    out = nr.redact("echo HOOKVALUE-123456 and HUBVALUE-987654 but not abc", ["HOOKVALUE-123456", "HUBVALUE-987654", "abc", "", None])
+    assert out == "echo [redacted] and [redacted] but not abc"
+
+
+@pytest.mark.parametrize("text", ["git status", "commit 1a2b3c4 on main", "See https://example.com/docs/page for details", "error: file not found",
+                                  "line 007 hello world", "tokens used: 5", "$ ls -la", "def secret_santa(): pass"])
+def test_redact_leaves_ordinary_screen_text_alone(text):
+    assert nr.redact(text) == text
+
+
+def test_a_secret_cannot_hide_behind_an_invisible_character_or_a_control_character():
+    zw, bell = chr(0x200B), chr(7)
+    for shape in ("sk-ant-" + zw + "api03-abcdefghij", "ghp_" + bell + "A1b2C3d4E5" * 3, "AKIA" + chr(0x00AD) + "IOSFODNN7" + "EXAMPLE"):
+        lines = nr.screen_lines(f"x {shape} y", 5)
+        assert "[redacted]" in lines[0] and "abcdefghij" not in lines[0] and "IOSFODNN7" not in lines[0] and "A1b2C3d4E5" not in lines[0], lines
+
+
+def test_the_pane_row_redacts_every_shape_the_hook_token_and_the_hub_token_on_both_boards(hub, fake_tmux, caplog):
+    two, reg, count = hub
+    caplog.set_level(logging.DEBUG)
+    two.b.hub_token = "HUBSECRET-0123456789"
+    name = "shop--api--s1"
+    fake_tmux["sessions"][name] = {"created": 1, "attached": 0, "windows": 1, "pane_id": "%1", "command": "zsh", "path": "/x", "pid": 1, "env": {}}
+    planted = [*SECRETS.values(), two.b.hook_token, "HUBSECRET-0123456789", *(v.strip('"} ') for _, v in KV_SECRETS.values()), "b3BlbnNzaC1rZXktdjEAAAAABG5vbmU"]
+    fake_tmux["screen"] = "\n".join(["$ env", *SECRETS.values(), f"hook {two.b.hook_token}", "hub HUBSECRET-0123456789", *(a + b for a, b in KV_SECRETS.values()),
+                                       PEM, f"visible {SCREEN_MARKER}"])
+    via_hub = two.a.get(hub_path(BY["pane"], reg["handle"], name=name))
+    direct = two.b.get(fill(BY["pane"].peer_path, name=name), owner=False, headers=bearer(token_of(two, reg)))
+    assert via_hub.status_code == direct.status_code == 200
+    for blob in (via_hub.text, direct.text, json.dumps(audit_rows(two.a) + audit_rows(two.b)), caplog.text):
+        for secret in planted:
+            assert secret not in blob, (secret, blob[:200])
+    assert SCREEN_MARKER in via_hub.text and "[redacted]" in via_hub.text
+    for board in (two.a, two.b):
+        raw = b"".join(p.read_bytes() for p in board.data_dir.glob("ccboard.db*"))
+        assert all(x.encode() not in raw for x in planted if len(x) > 12 and x != SCREEN_MARKER and x != two.b.hook_token), "a screen is stored nowhere"
+
+
+def test_the_hub_redacts_again_what_a_careless_peer_sent(two_nodes, pair_up):
+    reg = pair_up()
+    leak = json.dumps({"name": "shop--api--s1", "lines": ["ok", "key " + "sk-" + "ant-api03-AbCdEf123456789_xyzQ", "password=hunter2hunter2", "x" * 900, "\x1b[31mred\x1b[0m\x00"]}).encode()
+    nodes.peer_transport = Answer(200, leak)
+    body = two_nodes.a.get(hub_path(BY["pane"], reg["handle"], name="shop--api--s1")).json()["data"]
+    text = "\n".join(body["lines"])
+    assert "sk-ant" not in text and "hunter2" not in text and all(len(x) <= nr.PANE_LINE_MAX for x in body["lines"]) and "\x1b" not in text and "\x00" not in text
+
+
+# ---------------------------------------------------------------- what the read rows promise `read`
+
+def test_the_task_and_agents_rows_carry_nothing_beyond_what_read_promises(hub):
+    two, reg, count = hub
+    tid = add_task(two.b.db, prompt=f"plan {PROMPT_MARKER}", result=f"result {PROMPT_MARKER}", origin=json.dumps({"node": "ts:nX", "user": "carol@example.com"}))
+    task = two.a.get(hub_path(BY["task"], reg["handle"], tid=str(tid))).json()["data"]
+    assert set(task) == {"id", "title", "phase", "agent", "project", "repo", "branch", "tmux", "issue_ref", "updated_at", "slug", "mode", "base", "created_at",
+                         "assigned_at", "done_at", "pr_number", "pr_state", "has_result"}, "a fixed list: no origin or login, no path, no session id"
+    assert "carol@example.com" not in json.dumps(task)
+    direct = two.b.get(fill(BY["task"].peer_path), owner=False, headers=bearer(token_of(two, reg)))
+    assert "carol@example.com" not in direct.text and "origin" not in direct.json()
+    agents = two.a.get(hub_path(BY["agents"], reg["handle"])).json()["data"]
+    assert set(agents) == {"agents"}
+    for a in agents["agents"]:
+        assert set(a) == {"name", "label", "glyph", "installed", "version", "logged_in", "hooks", "options", "permission_modes", "efforts", "models", "reasoning_by_model"}
+
+
+def test_the_answer_envelope_never_reflects_the_peers_keys_at_the_top_level(two_nodes, pair_up):
+    reg = pair_up()
+    evil = {"id": 5, "title": "t", "node": "forged", "age": 99999, "error": "boom", "reason": "forged", "data": {"x": 1}, "__proto__": {"a": 1}, "prompt": "P"}
+    for row, body in ((BY["task"], evil), (BY["agents"], {"agents": [], **evil})):
+        nodes.peer_transport = Answer(200, json.dumps(body).encode())
+        r = two_nodes.a.get(hub_path(row, reg["handle"], tid="5"))
+        assert r.status_code == 200 and set(r.json()) == {"node", "age", "data"} and r.json()["node"] == "node-b" and r.json()["age"] == 0
+        assert not {"node", "age", "error", "reason", "data", "__proto__", "prompt"} & set(r.json()["data"]), row.name
+
+
+# ---------------------------------------------------------------- parameters, caps and text from elsewhere
+
+def test_path_parameters_are_checked_on_both_sides_before_use(hub, fake_tmux):
+    two, reg, count = hub
+    tok = token_of(two, reg)
+    seen = count.seen
+    bad_tids = ["1%0A", "%D9%A3", "0x10", "1_0", "+1", "-1", "1.5", "1" * 13, "%20", "1%00"]
+    bad_names = ["p--r--s%0A", "%EF%BD%90--r--s", "p--r", "p--r--s--t", "p%2F..--r--s", "p--r--s%00", "a%20b--c--d", "%E2%80%AE--r--s"]
+    for t in bad_tids:
+        assert two.a.get(f"/api/nodes/{reg['handle']}/tasks/{t}").status_code == 422, t
+        assert two.b.get(f"/api/node/tasks/{t}", owner=False, headers=bearer(tok)).status_code in (404, 422), t
+    for n in bad_names:
+        assert two.a.get(f"/api/nodes/{reg['handle']}/sessions/{n}/pane").status_code in (404, 422), n       # a decoded slash is no route at all
+        assert two.b.get(f"/api/node/sessions/{n}/pane", owner=False, headers=bearer(tok)).status_code in (403, 404, 422), n
+    assert count.seen == seen, "the hub sent none of them"
+
+
+@pytest.mark.parametrize("value", ["+5", " 5", "5 ", "0x10", "1_0", "5.0", "0", "41", "100", "-1", "%D9%A4%D9%A0", "", "5e1", "true"])
+def test_lines_is_one_or_two_plain_ascii_digits_from_1_to_40(hub, fake_tmux, value):
+    two, reg, count = hub
+    name = "shop--api--s1"
+    fake_tmux["sessions"][name] = {"created": 1, "attached": 0, "windows": 1, "pane_id": "%1", "command": "zsh", "path": "/x", "pid": 1, "env": {}}
+    seen = count.seen
+    r = two.a.get(hub_path(BY["pane"], reg["handle"], name=name) + "?lines=" + value.replace(" ", "%20"))
+    assert r.status_code == 422 and count.seen == seen, (value, r.status_code)
+    assert two.b.get(fill(BY["pane"].peer_path, name=name) + "?lines=" + value.replace(" ", "%20"), owner=False, headers=bearer(token_of(two, reg))).status_code == 422
+
+
+def test_text_a_caller_makes_up_is_capped_and_cleaned_before_it_reaches_an_answer_or_an_audit_row(hub, fake_tmux):
+    two, reg, count = hub
+    tok = token_of(two, reg)
+    key = "k" * 400 + "%07" + "ccbnode_" + "Z" * 43
+    r = two.b.get(fill(BY["pane"].peer_path) + f"?{key}=1", owner=False, headers=bearer(tok))
+    assert r.status_code == 422 and len(r.json()["error"]) <= 130 and "\x07" not in r.text and nodes.TOKEN_PREFIX not in r.text
+    r = two.a.get(hub_path(BY["card"], reg["handle"]) + f"?{key}=1")
+    assert r.status_code == 422 and len(r.json()["error"]) <= 130 and "\x07" not in r.text and nodes.TOKEN_PREFIX not in r.text
+    r = two.b.get("/api/node/tasks/%E2%80%AEevil" + "A" * 300, owner=False, headers=bearer(tok))
+    assert r.status_code == 422
+    for board in (two.a, two.b):
+        for row in audit_rows(board):
+            for k in ("target", "user", "detail", "node_name", "action"):
+                v = row[k] or ""
+                assert v.isprintable() and nodes.TOKEN_PREFIX not in v and len(v) <= {"target": 120, "user": 64, "detail": 200, "node_name": 41, "action": 40}[k], (k, v)
+    targets = [x["target"] for x in audit_rows(two.b, action="read_task")]
+    assert targets and set(targets) == {"task ?"}, targets
+
+
+def test_a_peers_error_text_is_capped_and_plain_text_when_it_reaches_the_browser_and_the_audit(two_nodes, pair_up):
+    reg = pair_up()
+    nasty = "<script>alert(1)</script>" + "x" * 1000 + chr(7) + chr(0x202E) + nodes.TOKEN_PREFIX + "Q" * 43
+    nodes.peer_transport = Answer(400, json.dumps({"error": nasty}).encode())
+    r = two_nodes.a.get(hub_path(BY["task"], reg["handle"], tid="1"))
+    assert r.status_code == 400 and len(r.json()["error"]) <= 160 and chr(7) not in r.text and chr(0x202E) not in r.text and nodes.TOKEN_PREFIX not in r.text
+    assert r.headers["content-type"].startswith("application/json") and r.headers["x-content-type-options"] == "nosniff"
+    row = audit_rows(two_nodes.a, action="read_task")[0]
+    assert len(row["detail"]) <= 200 and nodes.TOKEN_PREFIX not in row["detail"]
+    nodes.peer_transport = Answer(404, json.dumps({"error": nasty}).encode())
+    assert len(two_nodes.a.get(hub_path(BY["task"], reg["handle"], tid="1")).json()["error"]) <= 160
+
+
+def test_the_hub_relay_routes_are_rate_limited_per_person_and_class_with_retry_after(hub, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "allowed_users", {"alice@example.com", "bob@example.com"})
+    two, reg, count = hub
+    monkeypatch.setattr(nodes, "relay_read_limiter", nodes._Limiter(2, 60.0, 8))
+    path = hub_path(BY["card"], reg["handle"])
+    assert [two.a.get(path).status_code for _ in range(2)] == [200, 200]
+    seen = count.seen
+    r = two.a.get(path)
+    assert r.status_code == 429 and r.json()["reason"] == "rate_limited" and r.headers["retry-after"].isdigit() and count.seen == seen, r.text
+    bob = two.a.call("GET", path, owner=False, headers={"Tailscale-User-Login": "bob@example.com", "X-CCBoard": "1"})
+    assert bob.status_code == 200, "another person has their own bucket"
+    assert nodes.relay_write_limiter.limit == nodes.WRITE_RATE == 30 and nr.BY_NAME["card"].rate_class == "read"

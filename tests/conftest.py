@@ -466,6 +466,14 @@ def codex_home(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _short_hub_stop(monkeypatch):
+    """NodeHub.stop() waits for the polls in flight (so none reads a database that is being closed); a test that parks a poll on purpose
+    must not make every stop() wait the production six seconds."""
+    from app import nodes_hub
+    monkeypatch.setattr(nodes_hub, "STOP_WAIT", 0.5)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_codex(codex_home, monkeypatch):
     """No test runs a real codex or reads the real ~/.codex: settings.claude_bin's twin answers None (like CI's runner, which has no
     codex) until a test fakes the binary itself (fake_codex), the codex home is the temp one, and the adapter's probe caches start
@@ -668,8 +676,8 @@ def two_nodes(tmp_path, monkeypatch, projects_dir):
     monkeypatch.setattr(nodes, "peer_transport", t.transport)
     yield t
     main.db = saved_db
-    t.a.db.conn.close()
-    t.b.db.conn.close()
+    t.a.db.close()
+    t.b.db.close()
 
 
 @pytest.fixture

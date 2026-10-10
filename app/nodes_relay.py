@@ -58,7 +58,7 @@ from urllib.parse import urlencode
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from . import nodes, projects, tmux
 
@@ -200,6 +200,14 @@ class NoFields(_Strict):
 class PaneQuery(_Strict):
     lines: int = Field(PANE_LINES, ge=1, le=PANE_LINES)
 
+    @field_validator("lines", mode="before")
+    @classmethod
+    def _plain_digits(cls, v):
+        """A query value is text: only one or two ASCII digits (no sign, space, underscore, hex, other-script digits, float or bool)."""
+        if isinstance(v, bool) or not isinstance(v, (int, str)) or (isinstance(v, str) and not re.fullmatch(r"[0-9]{1,2}", v)):
+            raise ValueError("lines is a whole number from 1 to 40")
+        return v
+
 
 _TID = re.compile(r"[0-9]{1,12}")
 
@@ -296,26 +304,43 @@ def _shape_agents(body, reg):
     return {"agents": out}
 
 
+def _shape_task(body, reg):
+    """One task's detail rebuilt field by field: a key the peer adds is dropped, a string is cut and cleaned."""
+    from . import nodes_hub
+    if not isinstance(body, dict):
+        raise nodes_hub.Bad("not an object")
+    s, i = nodes_hub._s, nodes_hub._i
+    return {"id": i(body.get("id")), "title": s(body.get("title")), "phase": s(body.get("phase"), 20), "agent": s(body.get("agent"), 20), "project": s(body.get("project")),
+            "repo": s(body.get("repo")), "branch": s(body.get("branch")), "tmux": s(body.get("tmux")), "issue_ref": s(body.get("issue_ref"), 20),
+            "updated_at": s(body.get("updated_at"), 40), "slug": s(body.get("slug"), 80), "mode": s(body.get("mode"), 20), "base": s(body.get("base")),
+            "created_at": s(body.get("created_at"), 40), "assigned_at": s(body.get("assigned_at"), 40), "done_at": s(body.get("done_at"), 40),
+            "pr_number": i(body.get("pr_number")), "pr_state": s(body.get("pr_state"), 20), "has_result": bool(body.get("has_result"))}
+
+
 def _shape_pane(body, reg):
     from . import nodes_hub
     if not isinstance(body, dict) or not isinstance(body.get("lines"), list):
         raise nodes_hub.Bad("not a screen tail")
-    lines = [clean_line(x) for x in body["lines"][-PANE_LINES:] if isinstance(x, str)]
+    lines = screen_lines("\n".join(x for x in body["lines"][-PANE_LINES:] if isinstance(x, str)), PANE_LINES)      # the hub redacts again: the peer's own pass is not trusted
     return {"name": nodes_hub.node_state.clean(body.get("name"), 120), "lines": lines, "cap": PANE_LINES}
 
 
 RELAY: tuple[Row, ...] = (
-    Row("card", "GET", "/api/nodes/{handle}/card", "GET", "/api/node", "read", NoFields, READ, "read_card", peer_exists=True,
+    Row("card", "GET", "/api/nodes/{handle}/card", "GET", "/api/node", "read", NoFields, READ, "read_card", human_only=True, peer_exists=True,
         target=lambda p: "card", shape=_shape_card),
-    Row("state", "GET", "/api/nodes/{handle}/state", "GET", "/api/node/state", "read", NoFields, READ, "read_state", peer_exists=True,
+    Row("state", "GET", "/api/nodes/{handle}/state", "GET", "/api/node/state", "read", NoFields, READ, "read_state", human_only=True, peer_exists=True,
         target=lambda p: "state", shape=_shape_state),
-    Row("task", "GET", "/api/nodes/{handle}/tasks/{tid}", "GET", "/api/node/tasks/{tid}", "read", NoFields, READ, "read_task",
-        target=lambda p: f"task {p.get('tid')}", shape=_shape_any),
-    Row("pane", "GET", "/api/nodes/{handle}/sessions/{name}/pane", "GET", "/api/node/sessions/{name}/pane", "read", PaneQuery, READ, "read_pane",
+    Row("task", "GET", "/api/nodes/{handle}/tasks/{tid}", "GET", "/api/node/tasks/{tid}", "read", NoFields, READ, "read_task", human_only=True,
+        target=lambda p: f"task {p.get('tid')}", shape=_shape_task),
+    # Screen text is session content, not names and counts: the pane row needs `sessions`, never `read`.
+    Row("pane", "GET", "/api/nodes/{handle}/sessions/{name}/pane", "GET", "/api/node/sessions/{name}/pane", "sessions", PaneQuery, READ, "read_pane", human_only=True,
         target=lambda p: f"session {p.get('name')}", shape=_shape_pane),
-    Row("agents", "GET", "/api/nodes/{handle}/agents", "GET", "/api/node/agents", "read", NoFields, READ, "read_agents",
+    Row("agents", "GET", "/api/nodes/{handle}/agents", "GET", "/api/node/agents", "read", NoFields, READ, "read_agents", human_only=True,
         target=lambda p: "agents", shape=_shape_agents),
 )
+# Every row above is human only: the hub relay routes take a signed-in allowed person with X-CCBoard and nothing else. The local hook token is held by every
+# agent session on the box, so letting it relay would let any agent read other nodes through the hub. A later phase (MCP across nodes, #152) may open a
+# specific row to the hook token on purpose by setting `human_only=False` on that row; nothing opens by default.
 BY_NAME = {r.name: r for r in RELAY}
 
 
@@ -356,6 +381,11 @@ def methods_for(path: str) -> list[str]:
 
 # ================================================================ checking a request: one function for both sides
 
+def _text(v, n: int) -> str:
+    """Plain printable text of at most n characters (control characters out, a token-shaped word replaced)."""
+    return nodes._scrub(v, n) or ""
+
+
 class Invalid(Exception):
     """A request body or parameter the row does not take. `messages` are plain sentences with no value of the request in them."""
 
@@ -368,7 +398,7 @@ def _model_messages(e: ValidationError) -> list[str]:
     out = []
     for err in e.errors():
         loc = ".".join(str(x) for x in err.get("loc", ())) or "request"
-        out.append(f"{loc}: {str(err.get('msg') or 'not valid')[:80]}")
+        out.append(_text(f"{loc}: {str(err.get('msg') or 'not valid')[:80]}", 120))     # `loc` can be a key the caller made up: cap it and drop control characters
     return out[:6]
 
 
@@ -390,6 +420,11 @@ def validate(row: Row, params: dict, body) -> dict:
     except ValidationError as e:
         raise Invalid(_model_messages(e)) from None
     return model.model_dump(exclude_none=True)
+
+
+def safe_target(row: Row, params: dict) -> str:
+    """The audit target of a request: the row's wording with every path parameter that is not valid replaced by `?`, so text a caller made up never reaches a row."""
+    return row.target({k: (v if _valid_param(k, v) else "?") for k, v in (params or {}).items()})
 
 
 def peer_path(row: Row, params: dict, clean: dict) -> str:
@@ -466,7 +501,9 @@ def _status_check(reg: dict, rec: dict | None, name: str) -> None:
     status = (rec or {}).get("status")
     if status == "unpaired":
         raise RelayError(409, "unpaired", f"{name} answers as another node or no longer knows this board: remove it and pair it again", kind="refused")
-    if status == "offline" and rec and (rec.get("polled_at") or rec.get("last_ok_at")):
+    if not rec or not (rec.get("polled_at") or rec.get("last_ok_at")):
+        raise RelayError(409, "not_read_yet", f"{name} has not been read yet: wait for the first reading (a few seconds after pairing); nothing was sent", kind="refused")
+    if status not in ("online", "stale"):
         age = rec.get("age_s")
         when = f"last answered {_span(age)} ago" if age is not None else "has not answered yet"
         raise RelayError(503, "offline", f"{name} is offline ({when}); nothing was sent", age=age, kind="refused")
@@ -531,9 +568,12 @@ def relay(handle, row: Row, params: dict, body, request, *, db=None, hub=None) -
         hub = main._hub()
     reg: dict | None = None
     user: str | None = None
-    target = row.target(params or {})
+    target = safe_target(row, params or {})
     try:
         user = _caller(request, row)
+        ok, wait = (nodes.relay_write_limiter if row.rate_class == WRITE else nodes.relay_read_limiter).allow(user)     # per person and class, like the peer's per pair bucket
+        if not ok:
+            raise RelayError(429, "rate_limited", f"too many relayed requests from you; wait {wait} s", headers={"Retry-After": str(wait)}, kind="refused")
         reg = _registry_row(handle, d)
         _self_check(reg)
         name = reg.get("name") or handle
@@ -595,7 +635,7 @@ def _inbound_audit(db, request, row: Row, params: dict, ok: bool, status: str, d
         detail = ((detail + "; ") if detail else "") + "the caller names another node id"
     acting = _acting(request)
     nodes.audit("in", pid, row.audit_action, ok, detail, node_name=peer.get("name"), user=f"for {acting}" if acting else None,
-                target=row.target(params or {}), status=status, db=db)
+                target=safe_target(row, params or {}), status=status, db=db)
 
 
 def note_inbound(request, row_name: str, db) -> None:
@@ -690,6 +730,66 @@ def install(app, handlers: dict[str, Callable], get_db: Callable, get_hub: Calla
 _CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2064\ufeff]")
 
 
+REDACTED = "[redacted]"
+_PEM = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)")
+_PEM_TAIL = re.compile(r"\A[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----")           # the tail of a screen can start inside a key
+_OWN_TOKEN = re.compile(r"cc(?:bnode|bmcp)_[A-Za-z0-9_-]{6,}")
+_SHAPES = (
+    (re.compile(r"(?im)\bauthorization\s*[:=][^\n]*"), "Authorization: " + REDACTED),
+    (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{12,}"), "Bearer " + REDACTED),
+    (re.compile(r"\bsk-ant-[A-Za-z0-9_-]{8,}"), REDACTED),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"), REDACTED),
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"), REDACTED),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"), REDACTED),
+    (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), REDACTED),
+    (re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"), REDACTED),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}"), REDACTED),
+    (re.compile(r"\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b"), REDACTED),
+    (re.compile(r"(?i)\b([A-Za-z0-9_.-]*(?:password|passwd|pwd|token|secret|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credentials?)[A-Za-z0-9_.-]*)([\"']?\s*[=:]\s*)"
+                r"(\"[^\"\n]*\"|'[^'\n]*'|[^\s\"',;]+)"), lambda m: m.group(1) + m.group(2) + REDACTED),
+    (re.compile(r"([=:]\s*)[A-Za-z0-9+_-]{32,}={0,2}"), lambda m: m.group(1) + REDACTED),
+)
+
+
+def redact(text: str, known=()) -> str:
+    """A screen's text with secrets replaced by `[redacted]`: key blocks, the values in `known` (this process's own tokens, compared by value and never logged),
+    this board's node and device tokens, and the common shapes (Anthropic, OpenAI-style, GitHub, AWS, Slack keys, `Authorization:` and `Bearer` values, JWTs,
+    `password=`, `token:`, `secret=`, `api_key=` and their values, 32 or more token characters after `=` or `:`). Best effort, not a guarantee: a secret in a shape
+    that is not here goes through, which is why the pane row needs the `sessions` scope and a signed-in person, and why `read` never shows screen text."""
+    t = _PEM_TAIL.sub(REDACTED, _PEM.sub(REDACTED, str(text or "")))
+    for k in known:
+        if isinstance(k, str) and len(k) >= 8:
+            t = t.replace(k, REDACTED)
+    t = _OWN_TOKEN.sub(REDACTED, t)
+    for rx, repl in _SHAPES:
+        t = rx.sub(repl, t)
+    return t
+
+
+def known_secrets() -> list[str]:
+    """The secret values this process holds that could land on a screen: the hook token and the hub token. Read from memory, never logged or returned."""
+    out: list[str] = []
+    try:
+        from . import hooks
+        out.append(hooks._token or "")
+    except Exception:
+        pass
+    try:
+        from .config import settings
+        out.append(settings.hub_token or "")
+    except Exception:
+        pass
+    return [k for k in out if k]
+
+
+def screen_lines(text: str, n: int) -> list[str]:
+    """The last `n` lines of a screen as a peer may send them: control and invisible characters out first (so a secret cannot hide behind one), then the
+    redaction over the whole text (a key block spans lines), then the tail, each line cut to PANE_LINE_MAX."""
+    t = str(text or "").replace("\t", "    ").replace("\u2028", "\n").replace("\u2029", "\n")
+    t = "".join(c for c in t if c == "\n" or unicodedata.category(c) not in ("Cc", "Cf"))      # control, format (zero-width, soft hyphen, bidi) characters
+    return [clean_line(x) for x in tail_lines(redact(t, known_secrets()), n)]
+
+
 def tail_lines(text: str, n: int) -> list[str]:
     """The last `n` visible lines of a captured pane: trailing blanks dropped, each line stripped of its right-hand blanks. The board's live stream and the
     node pane row both use it."""
@@ -714,18 +814,11 @@ def peer_task(db, params: dict, body: dict) -> dict:
     if not t:
         raise projects.NotFound("no such task")
     c = node_state.clean
-    origin = t.get("origin")
-    if isinstance(origin, str):
-        try:
-            origin = json.loads(origin)
-        except ValueError:
-            origin = None
     out = node_state._task_row(t)
     out.update({"slug": c(t.get("slug"), 80), "mode": c(t.get("mode") or "worktree", 20), "base": c(t.get("base")), "created_at": c(t.get("created_at"), 40),
                 "assigned_at": c(t.get("assigned_at"), 40), "done_at": c(t.get("done_at"), 40),
                 "pr_number": t["pr_number"] if isinstance(t.get("pr_number"), int) and not isinstance(t.get("pr_number"), bool) else None,
-                "pr_state": c(t.get("pr_state"), 20), "has_result": bool(t.get("result")),
-                "origin": {"node": c(origin.get("node"), 64), "user": c(origin.get("user"), 64)} if isinstance(origin, dict) else None})
+                "pr_state": c(t.get("pr_state"), 20), "has_result": bool(t.get("result"))})
     return out
 
 
@@ -737,7 +830,7 @@ def peer_pane(db, params: dict, body: dict) -> dict:
         raise projects.NotFound(f"session {name} not found")
     n = int(body.get("lines", PANE_LINES))
     text = tmux.capture(name, lines=n, join=False)
-    return {"name": name, "lines": [clean_line(x) for x in tail_lines(text, n)], "cap": PANE_LINES}
+    return {"name": name, "lines": screen_lines(text, n), "cap": PANE_LINES}
 
 
 _ONLY = {"permissionmode": PERMISSION_MODES, "mode": SESSION_MODES, "sandbox": SANDBOXES, "approval": APPROVALS, "approvalpolicy": APPROVALS}

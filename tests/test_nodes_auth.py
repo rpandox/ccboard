@@ -43,7 +43,7 @@ EXPECTED_NODE_ROUTES = {
     ("POST", "/api/node/rotate"): nodes.SCOPE_ANY,
     ("POST", "/api/node/unpair"): nodes.SCOPE_ANY,
     ("GET", "/api/node/tasks/{tid}"): "read",                    # the relay rows (issue #140, app/nodes_relay.py RELAY): each has its refusal tests in tests/test_nodes_relay.py
-    ("GET", "/api/node/sessions/{name}/pane"): "read",
+    ("GET", "/api/node/sessions/{name}/pane"): "sessions",      # screen text is session content: never `read`
     ("GET", "/api/node/agents"): "read",
 }
 # What a listed route answers a token that holds every scope, on the empty test board: the handler's own status, never a 403.
@@ -109,9 +109,10 @@ def test_the_table_is_exactly_this_files_list():
 @pytest.mark.parametrize("method,path", sorted(k for k, v in EXPECTED_NODE_ROUTES.items() if v != nodes.SCOPE_ANY))
 def test_every_scoped_row_refuses_a_pair_without_that_scope(board, method, path):
     c, db = board
-    _, tok = mint(db, ("tasks",))                                         # holds tasks, not read
+    need = EXPECTED_NODE_ROUTES[(method, path)]
+    _, tok = mint(db, [x for x in ("tasks", "permissions") if x != need])        # holds other scopes, not the one this row needs
     r = c.request(method, path, headers=bearer(tok))
-    assert r.status_code == 403 and "read scope" in r.json()["error"], (method, path)
+    assert r.status_code == 403 and f"{need} scope" in r.json()["error"], (method, path)
     assert any(x["action"] == "scope_refused" and x["target"] == f"{method} {path}" and x["status"] == "refused" for x in rows(db))
 
 
@@ -953,3 +954,30 @@ def test_delete_refuses_an_also_revoke_that_names_another_nodes_pair_and_changes
     assert told == [] and nodes.peer(out["peer_id"], db), "nothing was removed and the other board was not told"
     assert c.get("/api/node", headers=bearer(other_tok)).status_code == 200, "and the other node's pair is intact"
     assert c.delete(f"/api/nodes/{out['peer_id']}", headers=H).status_code == 200, "a plain DELETE with no body still works"
+
+
+def test_a_read_only_pair_cannot_read_screen_text_the_pane_row_needs_sessions(board, wide_buckets, fake_tmux):
+    """Issue #140 review: `read` is names, titles and counts. The screen tail is session content and needs `sessions` (403 on the peer)."""
+    c, db = board
+    fake_tmux["sessions"]["p--r--s"] = {"created": 1, "attached": 0, "windows": 1, "pane_id": "%1", "command": "zsh", "path": "/x", "pid": 1, "env": {}}
+    fake_tmux["screen"] = "SCREEN-SECRET"
+    _, read = mint(db, ("read", "tasks", "permissions"))
+    r = c.get("/api/node/sessions/p--r--s/pane", headers=bearer(read))
+    assert r.status_code == 403 and "sessions scope" in r.json()["error"] and "SCREEN-SECRET" not in r.text
+    _, ok = mint(db, ("sessions",))
+    assert "SCREEN-SECRET" in c.get("/api/node/sessions/p--r--s/pane", headers=bearer(ok)).text
+
+
+@pytest.mark.parametrize("method", ["POST", "DELETE", "PUT"])
+def test_the_405_is_only_for_a_valid_token_an_invalid_one_is_401_and_no_token_is_403(board, wide_buckets, method):
+    """Which methods exist on a route is not told to a caller without a valid token."""
+    c, db = board
+    for path in ("/api/node", "/api/node/tasks/1", "/api/node/agents"):
+        bad = c.request(method, path, headers=bearer(nodes.TOKEN_PREFIX + "Z" * 43))
+        assert bad.status_code == 401 and "allow" not in bad.headers, (method, path)
+        none = c.request(method, path, headers={"X-CCBoard": "1"})
+        assert none.status_code == 403 and "allow" not in none.headers, (method, path)
+    _, tok = mint(db, ("read",))
+    nodes.revoke(next(r["peer_id"] for r in db.node_pairs()), db=db)
+    r = c.request(method, "/api/node", headers=bearer(tok))
+    assert r.status_code == 401 and "allow" not in r.headers, "a revoked token is a 401 too"

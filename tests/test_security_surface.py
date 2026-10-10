@@ -263,14 +263,15 @@ def test_every_route_refuses_a_request_without_identity(lite_client, method, pat
 @pytest.mark.parametrize("method,path", sorted(k for k, v in EXPECTED.items() if v == "relay"))
 def test_a_relay_route_needs_identity_and_the_csrf_header_even_for_a_get(lite_client, method, path):
     """Issue #140: the hub side of a relay row. No identity is a 403; an identity without X-CCBoard is a 403 (a GET included: it makes this board call another);
-    with both, or with the hook token, the handler runs and a board with no paired node answers 404 for every handle."""
+    with both the handler runs and a board with no paired node answers 404 for every handle; the hook token is a 403 on every relay row (all are human only)."""
     from app import hooks
     assert send(lite_client, method, path).json()["error"] == NO_ID
     r = send(lite_client, method, path, ID)
     assert r.status_code == 403 and r.json()["error"] == NO_CSRF, (method, path)
-    for headers in (H, {"X-CCBoard-Token": hooks.ensure_token()}):
-        r = send(lite_client, method, path, headers)
-        assert r.status_code == 404 and r.json()["reason"] == "unknown_node", (method, path, headers)
+    r = send(lite_client, method, path, H)
+    assert r.status_code == 404 and r.json()["reason"] == "unknown_node", (method, path)
+    r = send(lite_client, method, path, {"X-CCBoard-Token": hooks.ensure_token()})
+    assert r.status_code == 403 and r.json()["reason"] == "human_only", "the hook token is held by every agent session: no relay row takes it"
 
 
 @pytest.mark.parametrize("method,path", sorted(k for k, v in EXPECTED.items() if v == "node-token" and k[1] not in ("/api/node/rotate", "/api/node/unpair")))

@@ -239,6 +239,17 @@ class Count:
         return self.inner(*a)
 
 
+@pytest.fixture(autouse=True)
+def _hub_online(monkeypatch):
+    """The relay waits for the hub to have read the node; these tests are about the guard, so the hub has."""
+    from app import main
+
+    class Online:
+        def records(self, handle=None):
+            return [{"status": "online", "age_s": 1, "polled_at": "2026-10-10T00:00:00Z", "last_ok_at": "2026-10-10T00:00:00Z"}]
+    monkeypatch.setattr(main, "_hub", lambda: Online())
+
+
 @pytest.fixture
 def wide(monkeypatch):
     big = lambda: nodes._Limiter(10 ** 6, 60.0, 64)
