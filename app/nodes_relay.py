@@ -41,11 +41,18 @@ The peer side: a wrapper per row, registered under /api/node/ with the row's sco
 What a peer's reads show (README): `read` shows task titles, session names and screen tails. The pane row is the last 40 lines at most, control characters out,
 anything shaped like a node or device token replaced; a person may have typed a secret into a pane, so give `read` only to a board you trust.
 
-guard_launch(fields) -> [refusal]: see its text. No row in this phase starts or steers an agent; the guard and its tests ship now for the rows that will.
+guard_launch(fields) -> [refusal]: see its text. Three rows start or steer an agent (issue #141): `task_create` (scope tasks), `task_dispatch` (scope tasks; a
+dispatch into a running session also needs `sessions`, `Row.extra_scope`) and `session_open` (scope sessions). The hub runs the guard and the strict model before the
+call, the peer runs both again and calls the same internal function the board's own route calls (never an HTTP call to itself). A launch from another node can
+never widen permissions: permission_mode default, acceptEdits or plan, no bypass, no args, tools, directories or system prompt, Codex sandbox read-only or
+workspace-write with approval on-request. The task row on the peer carries `origin` {node, user} (the caller's node and the login it reported); a session keeps
+the same in its flags. A write that timed out or lost its connection after the request was sent is `unconfirmed`: the peer may have done it, nothing is retried.
 """
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import http.client
 import json
 import logging
 import re
@@ -53,12 +60,12 @@ import socket
 import unicodedata
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Callable
+from typing import Callable, Literal
 from urllib.parse import urlencode
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from . import nodes, projects, tmux
 
@@ -247,6 +254,9 @@ class Row:
     target: Callable[[dict], str] = field(default=lambda p: "", compare=False)
     shape: Callable | None = field(default=None, compare=False)   # rebuilds the peer's answer on the hub from a whitelist (raises Bad)
     answer_max: int = 64 * 1024                                   # bytes of the peer's answer the hub accepts for this row (nodes.RESP_MAX is the transport's limit)
+    guard_skip: tuple = ()                                        # top-level fields the guard does not read because the row's model checks them itself (the dispatch `mode`)
+    extra_scope: Callable[[dict], str | None] | None = field(default=None, compare=False)   # the scope the validated body needs besides `scope` (dispatch into a session: sessions)
+    body_target: Callable[[dict, dict], str] | None = field(default=None, compare=False)    # the audit target from (safe path parameters, validated body): a task title, cut, when the path does not say enough
 
     @cached_property
     def params(self) -> tuple[str, ...]:
@@ -326,6 +336,146 @@ def _shape_pane(body, reg):
     return {"name": nodes_hub.node_state.clean(body.get("name"), 120), "lines": lines, "cap": PANE_LINES}
 
 
+# ---- the write rows (issue #141): strict models with exactly the fields the launcher sends
+
+TASK_TITLE_IN = 300                                                          # the peer cuts a stored title at 120; the model only keeps a runaway out
+TASK_PROMPT_IN = 20000                                                       # main.TASK_PROMPT_MAX
+_ISSUE_REF = re.compile(r"([A-Za-z0-9_.-]{1,100})/([A-Za-z0-9_.-]{1,100})#([0-9]{1,9})")
+
+
+def _plain_name(v):
+    if not isinstance(v, str) or not tmux.valid_name(v):
+        raise ValueError("use letters, digits, '-' or '_' (no '--')")
+    return v
+
+
+class _Launch(_Strict):
+    """The launch choices a node may send, alone (never the flags, tools, directories or prompts of the board's own launch bodies)."""
+    agent: str | None = Field(None, max_length=20)
+    model: str | None = Field(None, max_length=80)
+    effort: str | None = Field(None, max_length=40)
+    reasoning_effort: str | None = Field(None, max_length=40)
+
+
+class TaskCreateBody(_Launch):
+    project: str
+    repo: str
+    title: str = Field(min_length=1, max_length=TASK_TITLE_IN)
+    prompt: str = Field(min_length=1, max_length=TASK_PROMPT_IN)
+    when: Literal["now", "later"] = "now"
+    auto_close: bool | None = None
+    issue_ref: str | None = Field(None, max_length=250)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_chain(cls, data):
+        if isinstance(data, dict) and "after_task_id" in data:
+            raise ValueError("chains stay inside one node")
+        return data
+
+    @field_validator("project", "repo")
+    @classmethod
+    def _names(cls, v):
+        return _plain_name(v)
+
+    @field_validator("issue_ref")
+    @classmethod
+    def _ref(cls, v):
+        if v is not None and not _ISSUE_REF.fullmatch(v):
+            raise ValueError("an issue reference is owner/name#number")
+        return v
+
+
+class DispatchBody(_Launch):
+    mode: Literal["lane", "session"] = "lane"
+    session: str | None = None
+    auto_close: bool | None = None
+
+    @field_validator("session")
+    @classmethod
+    def _session(cls, v):
+        if v is not None:
+            try:
+                tmux.split_name(v)
+            except ValueError:
+                raise ValueError("not a ccboard session name") from None
+        return v
+
+    @model_validator(mode="after")
+    def _consistent(self):
+        if self.mode == "session" and not self.session:
+            raise ValueError("session is required to hand a task to a session")
+        if self.mode == "lane" and self.session:
+            raise ValueError("a lane dispatch starts a new session: drop session, or use mode session")
+        return self
+
+
+class SessionOpenBody(_Launch):
+    project: str
+    repo: str
+    name: str | None = Field(None, max_length=63)
+    permission_mode: str | None = Field(None, max_length=30)
+    mode: str | None = Field(None, max_length=20)
+    sandbox: str | None = Field(None, max_length=30)
+    approval: str | None = Field(None, max_length=30)
+
+    @field_validator("project", "repo", "name")
+    @classmethod
+    def _names(cls, v):
+        return None if v is None else _plain_name(v)
+
+
+def _title80(clean: dict) -> str:
+    """A task title for an audit target: whitespace collapsed, anything shaped like a secret replaced, at most 80 characters. The prompt never comes near."""
+    t = _text(" ".join(str(clean.get("title") or "").split()), TASK_TITLE_IN)
+    return redact(t, known_secrets())[:80]
+
+
+def _shape_row(r) -> dict | None:
+    from . import nodes_hub
+    if not isinstance(r, dict):
+        return None
+    s, i = nodes_hub._s, nodes_hub._i
+    return {"id": i(r.get("id")), "title": s(r.get("title")), "phase": s(r.get("phase"), 20), "agent": s(r.get("agent"), 20), "project": s(r.get("project")),
+            "repo": s(r.get("repo")), "branch": s(r.get("branch")), "tmux": s(r.get("tmux")), "issue_ref": s(r.get("issue_ref"), 20), "updated_at": s(r.get("updated_at"), 40)}
+
+
+def _shape_started(body, reg):
+    """The answer of a task create or dispatch: {ref, id, slug, tmux, branch, phase, task, limit_warning?} rebuilt field by field. `ref` is built here from the
+    registry's handle and the id, never taken from the peer."""
+    from . import nodes_hub
+    if not isinstance(body, dict):
+        raise nodes_hub.Bad("not an object")
+    s, i, n = nodes_hub._s, nodes_hub._i, nodes_hub._n
+    tid = i(body.get("id"))
+    if tid is None or tid < 1:
+        raise nodes_hub.Bad("no task id")
+    out = {"ref": nodes.format_ref(reg["handle"], str(tid), "task"), "id": tid, "slug": s(body.get("slug"), 80), "tmux": s(body.get("tmux")),
+           "branch": s(body.get("branch")), "phase": s(body.get("phase"), 20), "task": _shape_row(body.get("task"))}
+    for k in ("pasted", "queued", "held"):
+        if isinstance(body.get(k), bool):
+            out[k] = body[k]
+    lw = body.get("limit_warning")
+    if isinstance(lw, dict):
+        out["limit_warning"] = {"kind": s(lw.get("kind"), 20), "resets_at": n(lw.get("resets_at")), "pct": n(lw.get("pct"))}
+    return out
+
+
+def _shape_session_started(body, reg):
+    """The answer of an opened session: {ref, tmux, agent, project, repo}; `ref` is `<handle>/<tmux>`, built here."""
+    from . import nodes_hub
+    if not isinstance(body, dict):
+        raise nodes_hub.Bad("not an object")
+    s = nodes_hub._s
+    name = s(body.get("tmux"))
+    try:
+        tmux.split_name(name or "")
+    except ValueError:
+        raise nodes_hub.Bad("no session name") from None
+    return {"ref": nodes.format_ref(reg["handle"], name, "session"), "tmux": name, "agent": s(body.get("agent"), 20), "project": s(body.get("project")),
+            "repo": s(body.get("repo"))}
+
+
 RELAY: tuple[Row, ...] = (
     Row("card", "GET", "/api/nodes/{handle}/card", "GET", "/api/node", "read", NoFields, READ, "read_card", human_only=True, peer_exists=True,
         target=lambda p: "card", shape=_shape_card),
@@ -338,8 +488,17 @@ RELAY: tuple[Row, ...] = (
         target=lambda p: f"session {p.get('name')}", shape=_shape_pane),
     Row("agents", "GET", "/api/nodes/{handle}/agents", "GET", "/api/node/agents", "read", NoFields, READ, "read_agents", human_only=True, answer_max=256 * 1024,
         target=lambda p: "agents", shape=_shape_agents),
+    # The write rows (issue #141). A task is a worktree, a branch and a tmux session on the node that runs it: the hub never makes one.
+    Row("task_create", "POST", "/api/nodes/{handle}/tasks", "POST", "/api/node/tasks", "tasks", TaskCreateBody, WRITE, "create_task", guard=True, human_only=True,
+        answer_max=16 * 1024, target=lambda p: "create task", body_target=lambda p, c: f"create task: {_title80(c)}", shape=_shape_started),
+    Row("task_dispatch", "POST", "/api/nodes/{handle}/tasks/{tid}/dispatch", "POST", "/api/node/tasks/{tid}/dispatch", "tasks", DispatchBody, WRITE, "dispatch_task",
+        guard=True, guard_skip=("mode",), human_only=True, answer_max=16 * 1024, extra_scope=lambda c: "sessions" if c.get("mode") == "session" else None,
+        target=lambda p: f"dispatch task {p.get('tid')}", body_target=lambda p, c: f"dispatch task {p.get('tid')} ({c.get('mode')})", shape=_shape_started),
+    Row("session_open", "POST", "/api/nodes/{handle}/sessions", "POST", "/api/node/sessions", "sessions", SessionOpenBody, WRITE, "open_session", guard=True,
+        human_only=True, answer_max=4 * 1024, target=lambda p: "open session", body_target=lambda p, c: f"open session {c.get('project')}/{c.get('repo')}",
+        shape=_shape_session_started),
 )
-# Every row above is human only: the hub relay routes take a signed-in allowed person with X-CCBoard and nothing else. The local hook token is held by every
+# Every row is human only: the hub relay routes take a signed-in allowed person with X-CCBoard and nothing else. The local hook token is held by every
 # agent session on the box, so letting it relay would let any agent read other nodes through the hub. A later phase (MCP across nodes, #152) may open a
 # specific row to the hook token on purpose by setting `human_only=False` on that row; nothing opens by default.
 BY_NAME = {r.name: r for r in RELAY}
@@ -399,7 +558,9 @@ def _model_messages(e: ValidationError) -> list[str]:
     out = []
     for err in e.errors():
         loc = ".".join(str(x) for x in err.get("loc", ())) or "request"
-        out.append(_text(f"{loc}: {str(err.get('msg') or 'not valid')[:80]}", 120))     # `loc` can be a key the caller made up: cap it and drop control characters
+        msg = str(err.get("msg") or "not valid")
+        msg = msg[len("Value error, "):] if msg.startswith("Value error, ") else msg
+        out.append(_text(f"{loc}: {msg[:80]}", 120))     # `loc` can be a key the caller made up: cap it and drop control characters
     return out[:6]
 
 
@@ -413,7 +574,7 @@ def validate(row: Row, params: dict, body) -> dict:
     if not isinstance(data, dict):
         raise Invalid(["the request must be a JSON object"])
     if row.guard:
-        refusals = guard_launch(data)
+        refusals = guard_launch({k: v for k, v in data.items() if k not in row.guard_skip} if row.guard_skip else data)
         if refusals:
             raise Invalid(refusals)
     try:
@@ -423,9 +584,13 @@ def validate(row: Row, params: dict, body) -> dict:
     return model.model_dump(exclude_none=True)
 
 
-def safe_target(row: Row, params: dict) -> str:
-    """The audit target of a request: the row's wording with every path parameter that is not valid replaced by `?`, so text a caller made up never reaches a row."""
-    return row.target({k: (v if _valid_param(k, v) else "?") for k, v in (params or {}).items()})
+def safe_target(row: Row, params: dict, clean: dict | None = None) -> str:
+    """The audit target of a request: the row's wording with every path parameter that is not valid replaced by `?`, so text a caller made up never reaches a row.
+    `clean` is the validated body: a row with a `body_target` (a task's title) uses it once the body is known; before that the plain wording stands."""
+    safe = {k: (v if _valid_param(k, v) else "?") for k, v in (params or {}).items()}
+    if clean is not None and row.body_target is not None:
+        return row.body_target(safe, clean)
+    return row.target(safe)
 
 
 def peer_path(row: Row, params: dict, clean: dict) -> str:
@@ -521,7 +686,27 @@ def _cut(v, n: int = 160) -> str:
     return redact(nodes._scrub(t, n) or "", known_secrets()) if t else ""
 
 
-def _map_reply(r, row: Row, reg: dict) -> dict:
+def _missing_repo_text(clean: dict, name: str) -> str:
+    """"<repo> is not on <node>", from the hub's own validated request (never the peer's words). When this board has the same repo with a GitHub remote, the clone
+    path on that node is named; the hub never clones for the peer."""
+    project, repo = str(clean.get("project") or ""), str(clean.get("repo") or "")
+    what = f"project {project}" if repo == projects.ROOT else repo
+    text = f"{what} is not on {name}"
+    slug = None
+    try:
+        from . import node_state
+        path = projects.repo_path(project, repo)
+        slug = node_state.repo_slug(path) if path.is_dir() else None
+    except Exception as e:
+        log.debug("local slug unknown: %s", e.__class__.__name__)
+    if slug:
+        text += f". It is {slug} on GitHub: clone it in Settings > Projects on {name}. Nothing was cloned or created."
+    else:
+        text += ". Nothing was created."
+    return text
+
+
+def _map_reply(r, row: Row, reg: dict, clean: dict | None = None) -> dict:
     """The peer's answer as a body, or a RelayError for every status that is not a good answer."""
     name = reg.get("name") or reg.get("handle")
     if r.ok:
@@ -534,6 +719,8 @@ def _map_reply(r, row: Row, reg: dict) -> dict:
     if r.status == 403:
         raise RelayError(409, "scope", f"needs the {row.scope} scope on {name}" if "scope" in msg.lower() or not msg else f"{name} refused: {msg}", kind="failed")
     if r.status == 404:
+        if isinstance(r.json, dict) and r.json.get("reason") == "repo_missing" and clean and "project" in clean:
+            raise RelayError(404, "repo_missing", _missing_repo_text(clean, name), kind="failed")
         raise RelayError(404, "not_found", msg or f"{name} has no such thing", kind="failed")
     if r.status == 429:
         wait = str(max(1, min(3600, int(r.headers.get("retry-after", "1") or 1)))) if str(r.headers.get("retry-after", "1")).isdigit() else "1"
@@ -545,7 +732,10 @@ def _map_reply(r, row: Row, reg: dict) -> dict:
     raise RelayError(502, "peer_error", f"{name} answered with an error ({r.status if r.status >= 500 else 'unexpected'})", kind="failed")
 
 
-def _map_peer_error(e: nodes.PeerError, reg: dict) -> RelayError:
+_MAYBE_SENT = (TimeoutError, socket.timeout, ConnectionResetError, ConnectionAbortedError, BrokenPipeError, http.client.HTTPException, EOFError)
+
+
+def _map_peer_error(e: nodes.PeerError, reg: dict, row: Row | None = None) -> RelayError:
     name = reg.get("name") or reg.get("handle")
     if e.reason == "no_token":
         return RelayError(409, "needs_repair", f"{name}: this board holds no token for it: re-pair", kind="refused")
@@ -556,7 +746,13 @@ def _map_peer_error(e: nodes.PeerError, reg: dict) -> RelayError:
     if e.reason == "too_large":
         return RelayError(502, "too_large", f"the request or the answer was over the size limit", kind="failed")
     if isinstance(e.cause, (TimeoutError, socket.timeout)):
+        if row is not None and row.rate_class == WRITE:
+            return RelayError(504, "unconfirmed", f"{name} did not answer in {int(RELAY_TIMEOUT)} s: it could not be confirmed whether it started, and it was not retried. "
+                                                  f"Check {name} before starting again.", kind="failed")
         return RelayError(504, "unconfirmed", f"{name} did not answer in {int(RELAY_TIMEOUT)} s: it could not be confirmed and it was not retried", kind="failed")
+    if row is not None and row.rate_class == WRITE and isinstance(e.cause, _MAYBE_SENT):          # the connection broke after the request went out: the peer may have acted
+        return RelayError(502, "unconfirmed", f"the connection to {name} broke while it was answering: it could not be confirmed whether it started, and it was not "
+                                              f"retried. Check {name} before starting again.", kind="failed")
     return RelayError(502, "unreachable", f"{name} could not be reached", kind="failed")
 
 
@@ -594,15 +790,19 @@ def relay(handle, row: Row, params: dict, body, request, *, db=None, hub=None) -
             clean = validate(row, params or {}, body)
         except Invalid as e:
             raise RelayError(422, "invalid", "; ".join(e.messages), kind="refused") from None
+        target = safe_target(row, params or {}, clean)            # the body is known and valid now: a task's title (cut, redacted) joins the target, the prompt never does
+        extra = row.extra_scope(clean) if row.extra_scope else None
+        if extra and extra not in (nodes._scopes_of(reg.get("scopes")) or []):
+            raise RelayError(409, "scope", f"needs the {extra} scope on {name}", kind="refused")
         path = peer_path(row, params or {}, clean)
         try:
             reply = nodes.PeerClient(reg, db=d).request(row.peer_method, path, clean if row.peer_method != "GET" and clean else None,
                                                         acting_user=user, timeout=RELAY_TIMEOUT)
         except nodes.PeerError as e:
-            raise _map_peer_error(e, reg) from None
+            raise _map_peer_error(e, reg, row) from None
         if len(reply.body) > row.answer_max:                       # cut by size before the answer is read any further
             raise RelayError(502, "too_large", f"{name} answered more than this row ever needs; nothing was shown", kind="failed")
-        data = _map_reply(reply, row, reg)
+        data = _map_reply(reply, row, reg, clean)
         if row.shape is not None:
             from . import nodes_hub
             try:
@@ -630,7 +830,23 @@ def _acting(request) -> str:
     return nodes._scrub(request.headers.get("x-ccboard-acting-user"), 64) or ""
 
 
-def _inbound_audit(db, request, row: Row, params: dict, ok: bool, status: str, detail: str | None) -> None:
+CALLER: contextvars.ContextVar = contextvars.ContextVar("ccboard_node_caller", default=None)     # {node, user} of the request a peer handler is serving
+
+
+def caller_origin() -> dict | None:
+    """Who asked, as a peer handler stamps it on the task or session it makes: {node: the paired node's name, user: the login that node reported}. The login is a
+    claim (the pair token proves the node, not the person) and is never used to decide anything."""
+    c = CALLER.get()
+    if not c:
+        return None
+    return {k: v for k, v in (("node", c.get("node")), ("user", c.get("user"))) if v}
+
+
+class RepoMissing(projects.NotFound):
+    """The project or repo a node asked for is not on this board (404 with reason `repo_missing`, so the hub can say it in its own words)."""
+
+
+def _inbound_audit(db, request, row: Row, params: dict, ok: bool, status: str, detail: str | None, clean: dict | None = None) -> None:
     peer = getattr(request.state, "node_peer", None) or {}
     pid = getattr(request.state, "node_pair", None) or ""
     claim = nodes._scrub(request.headers.get("x-ccboard-node"), 64)
@@ -638,7 +854,7 @@ def _inbound_audit(db, request, row: Row, params: dict, ok: bool, status: str, d
         detail = ((detail + "; ") if detail else "") + "the caller names another node id"
     acting = _acting(request)
     nodes.audit("in", pid, row.audit_action, ok, detail, node_name=peer.get("name"), user=f"for {acting}" if acting else None,
-                target=safe_target(row, params or {}), status=status, db=db)
+                target=safe_target(row, params or {}, clean), status=status, db=db)
 
 
 def note_inbound(request, row_name: str, db) -> None:
@@ -673,12 +889,23 @@ def serve_peer(row: Row, handler: Callable, request, raw: bytes, db) -> JSONResp
     except Invalid as e:
         _inbound_audit(db, request, row, params, False, "refused", str(e)[:160])
         raise projects.Unprocessable(str(e)) from None
+    extra = row.extra_scope(clean) if row.extra_scope else None
+    if extra and not nodes.scope_ok(peer.get("scopes"), extra):
+        _inbound_audit(db, request, row, params, False, "refused", f"scope {extra} not granted", clean)
+        raise projects.Forbidden(f"this node token does not hold the {extra} scope")
+    token = CALLER.set({"node": nodes._scrub(peer.get("name"), 41) or "", "user": _acting(request) or None})
     try:
         out = handler(db, params, clean)
+    except RepoMissing as e:
+        _inbound_audit(db, request, row, params, False, "failed", "repo_missing", clean)
+        return JSONResponse({"error": str(e), "reason": "repo_missing"}, status_code=404, headers=NO_STORE)
     except Exception as e:
-        _inbound_audit(db, request, row, params, False, "failed", (str(e) if isinstance(e, (projects.NotFound, projects.BadRequest, projects.Conflict)) else e.__class__.__name__)[:120])
+        _inbound_audit(db, request, row, params, False, "failed", (str(e) if isinstance(e, (projects.NotFound, projects.BadRequest, projects.Conflict)) else e.__class__.__name__)[:120],
+                       clean)
         raise
-    _inbound_audit(db, request, row, params, True, "ok", None)
+    finally:
+        CALLER.reset(token)
+    _inbound_audit(db, request, row, params, True, "ok", None, clean)
     return JSONResponse(out, headers=NO_STORE)
 
 
@@ -909,8 +1136,19 @@ def redact_tree(v, known=None, depth: int = 6, loose: tuple = ("help",)):
     if isinstance(v, list):
         return [redact_tree(x, k, depth - 1, loose) for x in v]
     if isinstance(v, dict):
-        return {key: (redact(x, k, strict=False) if key in loose and isinstance(x, str) else redact_tree(x, k, depth - 1, loose)) for key, x in v.items()}
+        return {key: (x if key == "ref" and _is_ref(x) else redact(x, k, strict=False) if key in loose and isinstance(x, str) else redact_tree(x, k, depth - 1, loose))
+                for key, x in v.items()}
     return v
+
+
+def _is_ref(v) -> bool:
+    """A string in the ref grammar (`<handle>:<id>`, `<handle>/<session>`) whose part after the handle holds nothing redact() would change: the hub builds these
+    itself, and a handle such as `token` (which the registry chose, not the peer) must not be mistaken for a secret."""
+    try:
+        r = nodes.parse(v) if isinstance(v, str) else None
+    except ValueError:
+        return False
+    return r is not None and r.handle is not None and redact(r.rest, known_secrets()) == r.rest
 
 
 def _hide_wrapped(lines: list[str], known) -> list[str]:
@@ -1061,4 +1299,78 @@ def peer_agents(db, params: dict, body: dict) -> dict:
     return {"agents": out}
 
 
-HANDLERS = {"task": peer_task, "pane": peer_pane, "agents": peer_agents}
+def _repo_here(project: str, repo: str) -> None:
+    """RepoMissing unless the project folder (repo `root`) or the repo's folder exists on this board. Nothing is created or cloned for the caller."""
+    rpath = projects.repo_path(project, repo)
+    if not rpath.is_dir():
+        what = f"project {project}" if repo == projects.ROOT else repo
+        raise RepoMissing(f"{what} is not on {nodes.display_name()}")
+
+
+def _task_answer(db, res: dict) -> dict:
+    """What a create or dispatch tells the hub: {id, slug, tmux, branch, phase, task, limit_warning?} read back from the task row (the board's own answer holds a
+    worktree path, a session row id and the head of a backlog prompt, none of which leave this board), plus the session dispatch flags."""
+    from . import node_state
+    t = db.task_get(int(res["id"])) or {}
+    out = {"id": t.get("id"), "slug": t.get("slug"), "tmux": t.get("tmux_name") or None, "branch": t.get("branch") or None, "phase": t.get("phase") or "running",
+           "task": node_state._task_row(t)}
+    for k in ("pasted", "queued", "held"):
+        if isinstance(res.get(k), bool):
+            out[k] = res[k]
+    if isinstance(res.get("limit_warning"), dict):
+        out["limit_warning"] = res["limit_warning"]
+    return out
+
+
+def peer_task_create(db, params: dict, body: dict) -> dict:
+    """POST /api/node/tasks: the board's own task create (main._tasks_create), with `origin` set to the caller. A missing project or repo is a 404 and nothing is made."""
+    from . import main
+    _repo_here(body["project"], body["repo"])
+    extra = {}
+    if body.get("issue_ref"):
+        owner, name, num = _ISSUE_REF.fullmatch(body["issue_ref"]).groups()
+        extra = {"issue_number": int(num), "issue_url": f"https://github.com/{owner}/{name}/issues/{int(num)}"}
+    req = main.TaskCreateIn(project=body["project"], repo=body["repo"], title=body["title"], prompt=body["prompt"], when=body.get("when", "now"),
+                            agent=body.get("agent"), model=body.get("model"), effort=body.get("effort"), reasoning_effort=body.get("reasoning_effort"),
+                            auto_close=body.get("auto_close"), **extra)
+    return _task_answer(db, main._tasks_create(req, origin=caller_origin()))
+
+
+def peer_task_dispatch(db, params: dict, body: dict) -> dict:
+    """POST /api/node/tasks/{tid}/dispatch: the board's own dispatch (main._task_dispatch). A card saved on this board with options a request from another node may
+    not carry (extra args, tools, directories, a permission mode outside the three) is not started from here: its owner starts it on this node."""
+    from . import main
+    tid = int(params["tid"])
+    t = db.task_get(tid)
+    if t and body.get("mode") == "lane":
+        spec = {k: v for k, v in main._task_spec(t).items() if k in main.TASK_SPEC_KEYS}
+        if guard_launch(spec):
+            raise projects.Conflict(f"this card was saved with launch options that a request from another node may not use: start it on {nodes.display_name()}")
+    req = main.DispatchIn(mode=body.get("mode"), session=body.get("session"), agent=body.get("agent"), model=body.get("model"), effort=body.get("effort"),
+                          reasoning_effort=body.get("reasoning_effort"), auto_close=body.get("auto_close"))
+    res = main._task_dispatch(tid, req, origin=caller_origin())
+    if isinstance(res, JSONResponse):                        # the session dispatch answers its refusals (busy, waiting, another repo) as a 409 body, not an exception
+        try:
+            msg = json.loads(res.body).get("error")
+        except (ValueError, AttributeError):
+            msg = None
+        raise projects.Conflict(msg if isinstance(msg, str) and msg else "the session cannot take the task now")
+    return _task_answer(db, res)
+
+
+def peer_session_open(db, params: dict, body: dict) -> dict:
+    """POST /api/node/sessions: the board's own new-session route (main._session_create) for a plain session of the launcher; the origin goes in its flags."""
+    from . import main
+    _repo_here(body["project"], body["repo"])
+    pm = body.get("permission_mode")
+    if pm == "default" and body.get("agent") in (None, "claude"):
+        pm = None                                           # Claude's own word for "ask as usual" is `manual`; leaving the flag out is the same thing
+    req = main.SessionIn(launcher="claude", agent=body.get("agent"), name=body.get("name"), model=body.get("model"), effort=body.get("effort"),
+                         reasoning_effort=body.get("reasoning_effort"), permission_mode=pm, mode=body.get("mode"),
+                         sandbox=body.get("sandbox"), approval=body.get("approval"))
+    out = main._session_create(body["project"], body["repo"], req, origin=caller_origin())
+    return {"tmux": out["tmux"], "agent": out["agent"], "project": body["project"], "repo": body["repo"]}
+
+
+HANDLERS = {"task": peer_task, "pane": peer_pane, "agents": peer_agents, "task_create": peer_task_create, "task_dispatch": peer_task_dispatch,
+            "session_open": peer_session_open}

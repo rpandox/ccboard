@@ -813,6 +813,8 @@ _tok_lock = threading.Lock()                                  # the token file l
 _last_prune: float | None = None
 
 peer_transport = None                                         # tests set a fake: transport(target, method, path, headers, body, timeout) -> (status, headers, body)
+peer_stream_transport = None                                  # tests set a fake for the read-only stream relay (issue #143): transport(target, path, headers, timeout) -> (status, headers, stream)
+stream_closer = None                                          # nodes_stream sets it: called with a peer_id when that pair is removed or no longer takes the token, so its open streams end
 
 
 def _now() -> float:
@@ -1198,8 +1200,19 @@ def remove_peer(ident, db=None) -> bool:
     with _reg_lock:
         _save_out(d, [r for r in _out_rows(d) if r["peer_id"] != p["peer_id"]])
     drop_outgoing(p["peer_id"])
+    _close_streams(p["peer_id"])
     audit("out", p["peer_id"], "removed", True, "legacy row" if p["legacy"] else None, node_name=p["name"], db=d)
     return True
+
+
+def _close_streams(peer_id: str) -> None:
+    """The pair is gone (or the peer refused its token): the read-only streams open on it end now (app/nodes_stream.py). Never raises."""
+    cb = stream_closer
+    if cb is not None:
+        try:
+            cb(peer_id)
+        except Exception as e:
+            log.debug("stream closer failed: %s", e.__class__.__name__)
 
 
 def _note(db, peer_id: str, *, ok: bool | None = None, error: str | None = None, repair: bool | None = None) -> None:
@@ -1223,6 +1236,8 @@ def _note(db, peer_id: str, *, ok: bool | None = None, error: str | None = None,
                     row["needs_repair"] = repair
             if row != before:
                 _save_out(db, rows)
+        if repair:
+            _close_streams(peer_id)
     except Exception as e:
         log.debug("could not note the call: %s", e.__class__.__name__)
 
@@ -1582,11 +1597,152 @@ class PeerClient:
             _note(d, self.peer_id, ok=False, error=f"the peer answered {r.status}", repair=True if r.status == 401 else None)
         return r
 
+    def open_stream(self, path: str, *, acting_user: str | None = None, timeout: float = CALL_TIMEOUT) -> PeerStreamReply:
+        """GET `path` as an event stream (issue #143): the same token, headers, address rule and bookkeeping as request(), but the body is left open for the
+        caller to read. The caller closes `reply.stream`."""
+        token = None if self.legacy else _load_outgoing(self.peer_id)
+        if not token:
+            raise PeerError("no_token", "this node holds no token for that peer; pair again")
+        headers = {"Authorization": "Bearer " + token, "X-CCBoard-Node": node_id()}
+        who = _scrub(acting_user, 64)
+        if who:
+            headers["X-CCBoard-Acting-User"] = who
+        d = self._db_arg or _db()
+        try:
+            r = peer_stream_call(self.url, path, headers=headers, timeout=timeout)
+        except PeerError as e:
+            _note(d, self.peer_id, ok=False, error=e.reason)
+            raise
+        if r.ok:
+            _note(d, self.peer_id, ok=True)
+        else:
+            _note(d, self.peer_id, ok=False, error=f"the peer answered {r.status}", repair=True if r.status == 401 else None)
+        return r
+
     def get(self, path: str, **kw) -> PeerReply:
         return self.request("GET", path, **kw)
 
     def post(self, path: str, body=None, **kw) -> PeerReply:
         return self.request("POST", path, body, **kw)
+
+
+class PeerStream:
+    """An open answer of a peer whose body is read in pieces (the stream relay, issue #143): `read(n)` blocks for the next bytes and answers b"" at the end,
+    `close()` may be called from another thread and makes a blocked `read` return. The production one wraps the pinned HTTPS connection."""
+
+    def __init__(self, conn, resp):
+        self._conn, self._resp, self._closed = conn, resp, False
+
+    def read(self, n: int) -> bytes:
+        try:
+            return self._resp.read1(n)
+        except Exception:
+            if self._closed:                              # close() from another thread broke the read: that is the end of the stream, not an error
+                return b""
+            raise
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        sock = getattr(self._conn, "sock", None)
+        try:
+            if sock is not None:
+                sock.shutdown(socket.SHUT_RDWR)          # unblocks a read in another thread; a plain close() does not
+        except OSError:
+            pass
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
+
+class PeerStreamReply:
+    """The status and headers of a stream request, and the open body (`stream`, a PeerStream or a test fake) when the answer is 200; for any other status the
+    body is not kept open (`stream` is None and `body` holds at most 4 KB of the error)."""
+
+    def __init__(self, status: int, headers: dict, stream, body: bytes = b""):
+        self.status, self.headers, self.stream, self.body = status, headers, stream, body
+        try:
+            self.json = json.loads(body.decode("utf-8")) if body else None
+        except (ValueError, UnicodeDecodeError):
+            self.json = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == 200 and self.stream is not None
+
+
+STREAM_READ_WAIT = 75.0                                      # seconds one read of an open stream may block (the relay's own idle limit is 60)
+
+
+class _Closed:
+    """The already-read error body of a non-200 stream answer, in the shape of a stream."""
+
+    def __init__(self, body: bytes):
+        self.body = body
+
+    def read(self, n: int) -> bytes:
+        return b""
+
+    def close(self) -> None:
+        pass
+
+
+def _https_stream(target: PeerTarget, path: str, headers: dict, timeout: float):
+    """GET `path` over the pinned, verified connection and return (status, headers, stream) as soon as the headers are in: the connection stays open for the
+    caller to read from. No redirect is followed. The connect and the headers have `timeout` seconds; after that the socket waits at most STREAM_READ_WAIT
+    for bytes (the relay closes it itself long before: 60 s without a valid event)."""
+    from .nodes_discovery import _Pinned         # imported here: that module imports this one
+    conn = _Pinned(target.host, target.addrs[0], target.port, timeout)
+    try:
+        conn.request("GET", path, headers=headers)
+        resp = conn.getresponse()
+        if conn.sock is not None:
+            conn.sock.settimeout(STREAM_READ_WAIT)
+        hdrs = {k.lower(): v for k, v in resp.getheaders()}
+        if resp.status != 200:
+            body = resp.read(4096)
+            conn.close()
+            return resp.status, hdrs, _Closed(body)
+        return resp.status, hdrs, PeerStream(conn, resp)
+    except BaseException:
+        conn.close()
+        raise
+
+
+def _close_quietly(stream) -> None:
+    try:
+        if stream is not None:
+            stream.close()
+    except Exception:
+        pass
+
+
+def peer_stream_call(url: str, path: str, *, headers: dict | None = None, timeout: float = CALL_TIMEOUT) -> PeerStreamReply:
+    """peer_call for a body that is read as it arrives: the address rule is applied now, the connection goes to the validated address, the certificate is
+    checked, and a redirect is never followed. Raises PeerError (url, unresolved, bad_path, unreachable, redirect). For a status other than 200 the reply holds the
+    first 4 KB of the answer and no stream."""
+    if not isinstance(path, str) or not _PATH_RE.fullmatch(path) or ".." in path or "//" in path:
+        raise PeerError("bad_path", "not a path on the peer")
+    try:
+        target = check_peer_url(url, tailnet_suffix())
+    except PeerUrlError as e:
+        raise PeerError("url", str(e), unresolved=e.unresolved) from None
+    hdrs = {"X-CCBoard": "1", "Accept": "text/event-stream", **(headers or {})}
+    try:
+        status, rh, stream = (peer_stream_transport or _https_stream)(target, path, hdrs, timeout)
+    except Exception as e:
+        raise PeerError("unreachable", f"the peer could not be reached ({e.__class__.__name__})", cause=e) from None
+    rh = {str(k).lower(): v for k, v in (rh or {}).items()}
+    if 300 <= status < 400:
+        _close_quietly(stream)
+        raise PeerError("redirect", "the peer answered with a redirect, which is never followed")
+    if status != 200:
+        body = getattr(stream, "body", b"") if stream is not None else b""
+        _close_quietly(stream)
+        return PeerStreamReply(status, rh, None, body[:4096] if isinstance(body, (bytes, bytearray)) else b"")
+    return PeerStreamReply(status, rh, stream)
 
 
 def _remote_unpair(url: str, token: str) -> bool:
@@ -1986,3 +2142,4 @@ def remove_node(ident, db=None, also_revoke=None) -> dict:
 
 # The relay table (issue #140, app/nodes_relay.py) lists the rows it adds to NODE_ROUTES when it is imported; import it last, whoever imported this module first.
 from . import nodes_relay  # noqa: E402,F401
+from . import nodes_stream  # noqa: E402,F401          # the read-only stream relay (issue #143): its peer route is listed in NODE_ROUTES when it is imported

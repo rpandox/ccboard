@@ -19,7 +19,7 @@ const LAZY_BUNDLES = {
   shellcreate: { js: ['/static/shell-create.js'], probe: () => typeof Shell !== 'undefined' && typeof Shell.pickRepo === 'function' },
   // the sheets a task card opens on a tap (Move, Edit, the preview port, the diff and pull request): components.js and home.js call them by name, lazyStub below loads this first
   tasksheets: { js: ['/static/task-sheets.js'], probe: () => typeof diffSideControl === 'function' },
-  launcher: { js: ['/static/launcher.js'], probe: () => typeof launcherSchema === 'function' },
+  launcher: { js: ['/static/launcher.js', '/static/launcher-node.js'], probe: () => typeof launcherSchema === 'function' && typeof lxnKit === 'function' },
   palette: { js: ['/static/palette.js'], probe: () => typeof Palette !== 'undefined' },
   // dnd is for a mouse: a task board asks Lazy.wants('dnd') before it loads it
   dnd: { js: ['/static/dnd.js'], probe: () => typeof Dnd !== 'undefined', when: () => lazyFinePointer() },

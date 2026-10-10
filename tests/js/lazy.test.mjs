@@ -125,7 +125,7 @@ const ROUTES = [
   { hash: '#/memory', id: 'memory', scripts: ['/static/pages/memory.js'], sheets: ['/static/pages/memory.css'] },
   { hash: '#/quad', id: 'quad', scripts: ['/static/termkit.js', '/static/pages/quad.js'], sheets: ['/static/pages/quad.css'] },
   { hash: '#/p/ccboard', id: 'project', scripts: ['/static/tree.js', '/static/pages/project.js'], sheets: [] },
-  { hash: '#/onboarding/project', id: 'onboarding', scripts: ['/static/launcher.js', '/static/pages/onboarding.js'], sheets: ['/static/pages/onboarding.css'] },
+  { hash: '#/onboarding/project', id: 'onboarding', scripts: ['/static/launcher.js', '/static/launcher-node.js', '/static/pages/onboarding.js'], sheets: ['/static/pages/onboarding.css'] },
 ];
 
 for (const r of ROUTES) {
@@ -244,7 +244,7 @@ test('the launcher entry points are stubs that load launcher.js once and then ca
   assert.equal(L.w.run('openLauncher({ mode: "session" })'), true);
   assert.equal(L.w.run('taskDispatchSheet({ id: 1 })'), true);
   assert.ok(await settle(() => L.w.run('typeof launcherSchema') === 'function'));
-  assert.deepEqual(L.net.scripts, ['/static/launcher.js'], 'one fetch for both');
+  assert.deepEqual(L.net.scripts, ['/static/launcher.js', '/static/launcher-node.js'], 'one fetch for both');
   assert.equal(L.w.run('openLauncher.toString().includes("lazyLoad")'), false, 'the real openLauncher replaced the stub');
   assert.equal(L.w.run('window.openLauncher === openLauncher'), true);
 });
@@ -302,7 +302,7 @@ test('a board never used, with no project: Home loads the wizard (and the launch
   L.w.location.hash = '#/';
   assert.equal(L.mounted(), 'home');
   assert.ok(await settle(() => L.mounted() === 'onboarding'));
-  assert.deepEqual(L.net.scripts, ['/static/launcher.js', '/static/pages/onboarding.js']);
+  assert.deepEqual(L.net.scripts, ['/static/launcher.js', '/static/launcher-node.js', '/static/pages/onboarding.js']);
   assert.deepEqual(L.net.sheets, ['/static/pages/onboarding.css']);
   assert.match(L.w.location.hash, /^#\/onboarding/);
   const calm = lazyWorld({ state: fixtureState() });

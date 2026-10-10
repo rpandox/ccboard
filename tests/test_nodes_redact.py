@@ -394,10 +394,11 @@ def test_a_handle_must_match_the_registrys_exact_rule_so_no_status_check_is_reac
     pair_up()
     seen = Answer()
     nodes.peer_transport = seen
-    for row in nr.RELAY:
-        path = row.hub_path.replace("{handle}", handle).replace("{tid}", "1").replace("{name}", "p--r--s")
-        r = two_nodes.a.get(path)
-        assert r.status_code in (400, 404) and r.json().get("reason") in (None, "bad_handle", "unknown_node"), (handle, row.name, r.status_code, r.text[:80])
+    paths = [(row.hub_method, row.hub_path, row.name) for row in nr.RELAY] + [("GET", "/api/nodes/{handle}/stream?names=p--r--s", "stream")]
+    for method, hub_path, name in paths:
+        path = hub_path.replace("{handle}", handle).replace("{tid}", "1").replace("{name}", "p--r--s")
+        r = two_nodes.a.call(method, path, **({} if method == "GET" else {"json": {}}))
+        assert r.status_code in (400, 404) and r.json().get("reason") in (None, "bad_handle", "unknown_node"), (handle, name, r.status_code, r.text[:80])
     assert seen.seen == 0
 
 

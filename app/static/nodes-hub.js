@@ -26,6 +26,13 @@ function nhSpan(sec) {
   return `${Math.floor(s / 86400)} d`;
 }
 
+/* 45 seconds, 1 minute, 4 minutes, 2 hours, 1 day: the whole-word form of nhSpan, for a sentence ("last seen 4 minutes ago") */
+function nhAgo(sec) {
+  const s = Math.max(0, Math.floor(sec));
+  const [n, u] = s < 60 ? [s, 'second'] : s < 3600 ? [Math.floor(s / 60), 'minute'] : s < 86400 ? [Math.floor(s / 3600), 'hour'] : [Math.floor(s / 86400), 'day'];
+  return `${n} ${u}${n === 1 ? '' : 's'}`;
+}
+
 /* 09:14, or 7 Oct 09:14 when it was more than a day ago */
 function nhClock(iso, nowMs) {
   const t = typeof iso === 'string' ? Date.parse(iso) : NaN;
@@ -72,8 +79,58 @@ function nhTasks(rec) {
   const rows = rec && rec.state && Array.isArray(rec.state.tasks) ? rec.state.tasks : [];
   return rows.filter((t) => t && (typeof t.id === 'number' || /^\d+$/.test(String(t.id)))).map((t) => ({ ...t, node: rec.handle }));
 }
-Nodes.sessions = function (handle) { return (handle ? [Nodes.get(handle)] : Nodes.M.recs).filter(Boolean).flatMap(nhSessions); };
-Nodes.tasks = function (handle) { return (handle ? [Nodes.get(handle)] : Nodes.M.recs).filter(Boolean).flatMap(nhTasks); };
+Nodes.sessions = function (handle) { return nhMerge('session', handle, (handle ? [Nodes.get(handle)] : Nodes.M.recs).filter(Boolean).flatMap(nhSessions)); };
+Nodes.tasks = function (handle) { return nhMerge('task', handle, (handle ? [Nodes.get(handle)] : Nodes.M.recs).filter(Boolean).flatMap(nhTasks)); };
+
+/* Optimistic rows (issue #141): a task or a session started on a node shows at once, before the node's next reading carries it. Nodes.pend({kind, node, ...row}) adds one with
+   pending 'starting' ("Starting on <node>"), Nodes.pended(p, patch) turns it into 'started' when the node's answer came (its id or tmux is then known), Nodes.unpend(p) takes it
+   away (a refusal). A row goes by itself when the reading carries the same task id or session name, and 3 minutes after it was made. A row with `replace` (the dispatch of a task
+   that is already in the reading) stands in the place of the reading's row until that row leaves the phase it had (`was`). Memory only, never stored. */
+Nodes.pending = [];
+const NH_PENDING_MS = 180000;
+function nhMerge(kind, handle, rows) {
+  const now = Date.now();
+  const keyOf = (r) => (kind === 'task' ? `${r.node}:${r.id}` : `${r.node}/${r.tmux}`);
+  const gone = new Set(Nodes.pending.filter((p) => now - p.at >= NH_PENDING_MS));
+  const live = [];
+  const hide = new Set();
+  for (const p of Nodes.pending) {
+    if (gone.has(p) || p.kind !== kind || (handle && p.node !== handle)) continue;
+    const seen = rows.find((r) => keyOf(r) === keyOf(p));
+    if (p.replace) {
+      if (seen && seen.phase !== p.was) { gone.add(p); continue; }                      // the reading has moved on: it is the truth now
+      if (seen) hide.add(keyOf(p));
+      live.push(p);
+    } else if (seen) gone.add(p);                                                         // the reading carries it now
+    else live.push(p);
+  }
+  if (gone.size) Nodes.pending = Nodes.pending.filter((p) => !gone.has(p));
+  return rows.filter((r) => !hide.has(keyOf(r))).concat(live);
+}
+Nodes.pend = function (row) {
+  const p = { ...row, pending: 'starting', at: Date.now() };
+  Nodes.pending.push(p);
+  Nodes.changed(false);
+  return p;
+};
+Nodes.pended = function (p, patch) { Object.assign(p, patch || {}, { pending: 'started', at: Date.now() }); Nodes.changed(false); return p; };
+Nodes.unpend = function (p) { Nodes.pending = Nodes.pending.filter((x) => x !== p); Nodes.changed(false); };
+
+/* Can an action that needs `scope` be sent to this node now? {ok, why}: why is the plain sentence a disabled control shows, in the order the hub refuses (a paired token, the
+   pair's scope, the reading: nothing is queued for later). A stale node (its last try failed, the reading is younger than 10 minutes) is still called. */
+Nodes.can = function (rec, scope) {
+  if (!rec) return { ok: false, why: 'this node is not paired any more' };
+  const name = nhName(rec);
+  if (rec.legacy) return { ok: false, why: `${name} was added without a token: pair it to act on it` };
+  if (!(Array.isArray(rec.scopes) && rec.scopes.includes(scope))) return { ok: false, why: `needs the ${scope} scope on ${name}` };
+  if (rec.status === 'unauthorized') return { ok: false, why: `${name} no longer takes this board's token: re-pair it in Settings, Nodes` };
+  if (rec.status === 'unpaired') return { ok: false, why: `${name} answers as another node: remove it and pair it again` };
+  if (rec.status === 'offline') {
+    const age = Nodes.ageOf(rec);
+    return { ok: false, why: age === null ? `${name} has not answered yet` : `${name} is offline, last seen ${nhAgo(age)} ago` };
+  }
+  return { ok: true, why: '' };
+};
 
 /* {sessions, working, needs, tasks} of a record, null for each while it has no reading. needs = sessions that need you plus the permission requests waiting (as the hub counts it). */
 Nodes.counts = function (rec) {
@@ -178,6 +235,7 @@ Nodes.stop = function () {
   Nodes.hosts = new Set();
   M.subs.clear();
   M.recs = []; M.by = new Map(); M.etag = null; M.loaded = false; M.err = null;
+  Nodes.pending = [];
   Nodes.refreshInfo();
   try { if (typeof Shell !== 'undefined' && Shell && typeof Shell.patchTrees === 'function') Shell.patchTrees(); } catch (_) { /* no shell */ }
 };
@@ -280,9 +338,9 @@ function nhSessionRow(s) {
   const st = ownKey(STATE_GLYPH, s.state) ? s.state : 'unknown';
   return el('div', { class: 'nd-item' + (s.needs_you ? ' attn' : ''), 'data-key': Ref.key({ tmux: s.tmux, node: s.node }) },
     el('span', { class: 'nd-g' }, stateGlyph(st), agentGlyph(nhAgent(s.agent))), label, el('span', { class: 'dim nd-where', text: nhWhere(s) }),
-    Nodes.chip(s.node), el('span', { class: 'dim nd-meta', text: [GLYPH_LABEL[st], s.since ? nhAgeText(s.since) : ''].filter(Boolean).join(' · ') }));
+    Nodes.chip(s.node), el('span', { class: 'dim nd-meta', text: s.pending === 'starting' ? `Starting on ${Nodes.nameOf(s.node)}` : [s.pending === 'started' ? 'started' : GLYPH_LABEL[st], s.since ? nhAgeText(s.since) : ''].filter(Boolean).join(' · ') }));
 }
-function nhSessionSig(s) { return JSON.stringify([s.tmux, s.session, s.state, s.needs_you, s.agent, s.project, s.repo, s.since, Math.floor(Date.now() / 60000), Nodes.sig(s)]); }
+function nhSessionSig(s) { return JSON.stringify([s.tmux, s.session, s.state, s.needs_you, s.agent, s.project, s.repo, s.since, s.pending, Math.floor(Date.now() / 60000), Nodes.sig(s)]); }
 
 const NH_PHASE = { queued: '○', running: '✽', review: '✻', done: '✓', failed: '✕', cancelled: '○', backlog: '∙' };
 function nhTaskRow(t) {
@@ -292,9 +350,9 @@ function nhTaskRow(t) {
   return el('div', { class: 'nd-item nd-task', 'data-key': Ref.key({ kind: 'task', node: t.node, id: t.id }), 'data-phase': phase },
     el('span', { class: 'nd-g' }, el('span', { class: 'glyph', 'aria-hidden': 'true', text: ownKey(NH_PHASE, phase) ? NH_PHASE[phase] : '·' }), agentGlyph(nhAgent(t.agent))),
     el(href ? 'a' : 'span', { class: 'nd-name', href: href || null, text: title }), el('span', { class: 'dim nd-where', text: nhWhere(t) + (t.issue_ref ? ` ${t.issue_ref}` : '') }),
-    Nodes.chip(t.node), el('span', { class: 'dim nd-meta', text: [phase, t.updated_at ? nhAgeText(t.updated_at) : ''].filter(Boolean).join(' · ') }));
+    Nodes.chip(t.node), el('span', { class: 'dim nd-meta', text: t.pending === 'starting' ? `Starting on ${Nodes.nameOf(t.node)}` : [phase, t.updated_at ? nhAgeText(t.updated_at) : ''].filter(Boolean).join(' · ') }));
 }
-function nhTaskSig(t) { return JSON.stringify([t.id, t.title, t.phase, t.agent, t.project, t.repo, t.issue_ref, t.updated_at, Math.floor(Date.now() / 60000), Nodes.sig(t)]); }
+function nhTaskSig(t) { return JSON.stringify([t.id, t.title, t.phase, t.agent, t.project, t.repo, t.issue_ref, t.updated_at, t.pending, Math.floor(Date.now() / 60000), Nodes.sig(t)]); }
 
 /* ---------- slots: the sections other pages host ---------- */
 
@@ -583,6 +641,67 @@ Nodes.settingsLine = function (handle) {
 /* GET /api/nodes/state in demo mode (core.js demoApi): the fixture's `hub` records, as the board would answer them. */
 function demoHubState(data, at) {
   return { nodes: Array.isArray(data && data.hub) ? data.hub : [], at };
+}
+
+/* The relay's answers in demo mode (core.js demoApi hands every /api/nodes/<handle>/... path here; nothing leaves the page): GET .../agents is the node's agents schema and GET
+   .../sessions/<name>/pane its tail, both from demo/nodes.json (`agents` per handle, `tails` per '<handle>/<tmux>'); a POST to .../tasks, .../tasks/<id>/dispatch or .../sessions is
+   answered the way the hub answers a start: {node, age, data: {ref, id, ...}}. The refusals are the real ones' reasons: a node that is offline, a scope the pair lacks, a repo the node
+   does not list (the demo's way to see each: old-laptop is offline, alice-mac holds read only, a repo that is not in the reading). A task started with effort max carries the
+   limit warning. The ids count up from 100 for the life of the page. */
+let demoRelaySeq = 100;
+function demoRelayFail(status, reason, error, extra) {
+  const e = demoError(status, error);
+  e.body = { error, reason, ...(extra || {}) };
+  return e;
+}
+function demoRelayRead(data, bare) {
+  const m = /^\/api\/nodes\/([^/]+)\/(agents|sessions\/([^/]+)\/pane)$/.exec(bare);
+  if (!m) return {};
+  const h = decodeURIComponent(m[1]);
+  const rec = (data && Array.isArray(data.hub) ? data.hub : []).find((r) => r.handle === h);
+  if (!rec) throw demoRelayFail(404, 'unknown_node', 'no paired node has that handle');
+  if (m[2] === 'agents') return { node: h, age: 0, data: { agents: (data.agents && data.agents[h] && data.agents[h].agents) || [] } };
+  const tmux = decodeURIComponent(m[3]);
+  const tail = (data.tails && data.tails[`${h}/${tmux}`]) || (data.tails && data.tails.default) || [];
+  return { node: h, age: 0, data: { name: tmux, lines: tail, cap: 40 } };
+}
+function demoRelayWrite(method, path, body, data) {
+  const m = /^\/api\/nodes\/([^/]+)\/(tasks|sessions|tasks\/(\d+)\/dispatch)$/.exec(path);
+  if (!m || method !== 'POST') return null;
+  const h = decodeURIComponent(m[1]);
+  const b = body && typeof body === 'object' ? body : {};
+  const rec = (data && Array.isArray(data.hub) ? data.hub : []).find((r) => r.handle === h);
+  if (!rec) throw demoRelayFail(404, 'unknown_node', 'no paired node has that handle');
+  const scope = m[2] === 'sessions' ? 'sessions' : 'tasks';
+  if (!(rec.scopes || []).includes(scope)) throw demoRelayFail(409, 'scope', `needs the ${scope} scope on ${rec.name}`, { node: h });
+  if (b.mode === 'session' && !(rec.scopes || []).includes('sessions')) throw demoRelayFail(409, 'scope', `needs the sessions scope on ${rec.name}`, { node: h });
+  if (rec.status === 'offline') throw demoRelayFail(503, 'offline', `${rec.name} is offline; nothing was sent`, { node: h, age: rec.age_s });
+  if (rec.status === 'unauthorized') throw demoRelayFail(409, 'needs_repair', `${rec.name} no longer takes this board's token: re-pair`, { node: h });
+  const now = new Date().toISOString();
+  const slug = (t) => String(t || 'task').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'task';
+  if (m[2] === 'sessions') {
+    const p = (rec.state.projects || []).find((x) => x.name === b.project);
+    if (!p || !(p.repos || []).some((r) => r.name === b.repo)) throw demoRelayFail(404, 'repo_missing', `${b.repo} is not on ${rec.name}. Nothing was created.`, { node: h });
+    demoRelaySeq += 1;
+    const tmux = `${b.project}--${b.repo}--${b.name || `s${demoRelaySeq}`}`;
+    return { node: h, age: 0, data: { ref: `${h}/${tmux}`, tmux, agent: b.agent || 'claude', project: b.project, repo: b.repo } };
+  }
+  const warn = b.effort === 'max' ? { limit_warning: { kind: '5h', resets_at: Math.floor(Date.now() / 1000) + 5400, pct: 91 } } : {};
+  if (m[3]) {
+    const t = (rec.state.tasks || []).find((x) => String(x.id) === m[3]);
+    if (!t) throw demoRelayFail(404, 'not_found', 'no such task', { node: h });
+    const tmux = b.mode === 'session' ? b.session : `${t.project}--${t.repo}--t-${slug(t.title)}`;
+    const row = { id: t.id, title: t.title, phase: 'running', agent: b.agent || t.agent, project: t.project, repo: t.repo, branch: `task/${slug(t.title)}`, tmux, issue_ref: t.issue_ref || null, updated_at: now };
+    return { node: h, age: 0, data: { ref: `${h}:${t.id}`, id: t.id, slug: slug(t.title), tmux, branch: row.branch, phase: 'running', task: row, ...(b.mode === 'session' ? { pasted: true, queued: false, held: false } : {}), ...warn } };
+  }
+  const p = (rec.state.projects || []).find((x) => x.name === b.project);
+  if (!p || !(p.repos || []).some((r) => r.name === b.repo)) throw demoRelayFail(404, 'repo_missing', `${b.repo} is not on ${rec.name}. Nothing was created.`, { node: h });
+  demoRelaySeq += 1;
+  const now1 = b.when !== 'later';
+  const sl = slug(b.title);
+  const tmux = now1 ? `${b.project}--${b.repo}--t-${sl}` : null;
+  const row = { id: demoRelaySeq, title: b.title, phase: now1 ? 'running' : 'backlog', agent: b.agent || 'claude', project: b.project, repo: b.repo, branch: now1 ? `task/${sl}` : '', tmux, issue_ref: b.issue_ref ? `#${String(b.issue_ref).split('#')[1]}` : null, updated_at: now };
+  return { node: h, age: 0, data: { ref: `${h}:${demoRelaySeq}`, id: demoRelaySeq, slug: sl, tmux, branch: row.branch, phase: row.phase, task: row, ...(now1 ? warn : {}) } };
 }
 
 Nodes.ready = true;

@@ -326,7 +326,10 @@ test('controls that need a relay action are present, aria-disabled, and carry th
   assert.match(text(all(note, 'span')[0]), /^New task:/);
   assert.match(plain(w.get('__toasts'))[0].text, /New task here: needs the tasks scope on build-box/);
   await go(w, '#/n/wide');
-  assert.equal(text(page(w).querySelector('.nd-whys')), 'New task: read only in this version. New session: read only in this version.', 'with the scope the reason is the version, not a permission');
+  const wide = page(w).querySelector('.nd-acts');
+  assert.deepEqual(wide.children.map(text), ['Open board', 'New task here', 'New session here']);
+  assert.equal(all(wide, 'button.nd-off').length, 0, 'with the scope and a node that answers, New task here and New session here are live buttons (issue #141)');
+  assert.equal(page(w).querySelector('.nd-whys'), null, 'no reason to print');
 });
 
 test('the session peek is read only: its fields, an Open on <node> link to that node\'s own page in a new tab, no iframe, and the disabled controls with their reasons', async () => {

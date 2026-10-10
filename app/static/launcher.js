@@ -2756,24 +2756,38 @@ function launcherAfterStart(tmux, cmd, arg) {
   next.then(() => { if (LX_AFTER.get(tmux) === next) LX_AFTER.delete(tmux); });
 }
 
-/* Open the launcher in the sheet. See the comment at the top of this section for the options. Returns the controller (launcherForm's), or false when the project or repo is unknown (or a dispatch has no task). */
+/* Open the launcher in the sheet. See the comment at the top of this section for the options. Returns the controller (launcherForm's), or false when the project or repo is unknown (or a dispatch has no task).
+   Nodes (issues #141, #143; launcher-node.js): with the hub view on and a paired node online, a segmented control "This node | <node>" sits above the form (lxnKit); a node swaps in the
+   remote form (lxnForm), "This node" keeps this one untouched. {node: <handle>} opens the sheet with that node chosen (the node page's New task here / New session here); {mode: 'dispatch',
+   node, remoteTask} dispatches a backlog task of that node (the picker is fixed on it: a task lives on one node). Without a node picker the sheet is exactly what it was. */
 function openLauncher(o) {
   const opt = o || {};
   const ctl = launcherForm(opt);
-  if (!ctl) return false;                                               // launch() (components.js) reads false as 'nothing opened'
-  const rp = lxResolve(opt.project, opt.repo);
-  const label = typeof opt.label === 'string' && opt.label ? opt.label : (rp.r.root ? `${rp.p.name} · project folder` : `${rp.p.name}/${rp.r.name}`);
   const mode = opt.mode === 'task' || opt.mode === 'dispatch' ? opt.mode : 'session';
-  const title = mode === 'task' ? `New task · ${label}` : mode === 'dispatch' ? `Start “${String(opt.task.title).slice(0, 60)}”` : `New session · ${label}`;
-  const holder = el('div', { class: 'sheet-form' }, ctl.form);
+  const kit = typeof lxnKit === 'function' ? lxnKit(opt, ctl, mode) : null;
+  if (!ctl && !kit) return false;                                       // launch() (components.js) reads false as 'nothing opened'
+  const rp = ctl ? lxResolve(opt.project, opt.repo) : null;
+  const label = typeof opt.label === 'string' && opt.label ? opt.label : (rp ? (rp.r.root ? `${rp.p.name} · project folder` : `${rp.p.name}/${rp.r.name}`) : '');
+  const title = mode === 'task' ? `New task · ${label}` : mode === 'dispatch' ? `Start “${String((opt.task || opt.remoteTask || {}).title).slice(0, 60)}”` : `New session · ${label}`;
+  if (kit) kit.localTitle = title;
+  const holder = el('div', { class: 'sheet-form' }, kit ? kit.pick : null, ctl ? ctl.form : null, kit ? kit.host : null);
   ui.openForm = 'sheet';
-  ctl.sheet = openSheet({ title, body: holder, back: opt.back && typeof opt.back.onClick === 'function' ? opt.back : null,
+  const sheet = openSheet({ title: kit && kit.current() ? kit.title() : title, body: holder, back: opt.back && typeof opt.back.onClick === 'function' ? opt.back : null,
     onClose: () => { if (ui.openForm === 'sheet') ui.openForm = null; if (typeof Shell !== 'undefined' && Shell) Shell.formWatch = null; } });
+  const out = ctl || kit.ctl;
+  if (ctl) ctl.sheet = sheet;
+  if (kit) kit.setTitle = (text) => {                                    // the sheet's heading follows the node chosen
+    const h = sheet && sheet.dialog && typeof sheet.dialog.querySelector === 'function' ? sheet.dialog.querySelector('.sheet-title') : null;
+    const last = h && h.lastChild;
+    if (last && last.nodeType === 3) last.textContent = text; else if (h) h.append(text);
+  };
   if (typeof Shell !== 'undefined' && Shell) Shell.formWatch = () => { if (ui.openForm !== 'sheet') { Shell.formWatch = null; closeSheet(); } };
-  if (typeof ctl.form.focusFirst === 'function') ctl.form.focusFirst();
-  launcherSchemaLoad().then((m) => { if (m) ctl.refreshSchema(); });
-  launcherGotchas(ctl, rp.p, mode);
-  return ctl;
+  if (kit) kit.focus(); else if (typeof ctl.form.focusFirst === 'function') ctl.form.focusFirst();
+  if (ctl) {
+    launcherSchemaLoad().then((m) => { if (m) ctl.refreshSchema(); });
+    launcherGotchas(ctl, rp.p, mode);
+  }
+  return out;
 }
 
 /* The newest claude-mem gotchas of the project under the repo field (v0.5.20): one fetch per sheet open, started after the sheet has painted, only while the board

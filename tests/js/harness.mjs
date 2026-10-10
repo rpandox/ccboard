@@ -130,6 +130,7 @@ export const COMPANIONS = {
   'pages/agents.js': ['pages/agents-page.js'],
   'shell.js': ['shell-create.js'],
   'components.js': ['task-sheets.js'],
+  'launcher.js': ['launcher-node.js'],
 };
 const NO_COMPANIONS = new WeakSet();
 const COMPANIONS_RUN = new WeakMap();

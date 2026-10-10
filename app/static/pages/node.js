@@ -5,7 +5,11 @@
    skewed, then the sections Needs you, Sessions, Tasks, Repos and Account windows. Every row has the node chip and opens its peek. A peek shows the row's fields from the last reading, an
    "Open on <node>" link to the node's own page (a new tab; no iframe) and the controls that need a relay action, present but disabled with their reason (Nodes.off). Nothing here asks
    another node: the reading is what this board's hub polled (GET /api/nodes/state). A handle this board does not know, or any #/n/ address while no node is paired, gets the plain "This
-   node is not paired" page. Every string of a node is peer data: textContent only. */
+   node is not paired" page. Every string of a node is peer data: textContent only.
+
+   Issues #141 and #143: New task here and New session here open the launcher (launcher.js, with launcher-node.js) with this node chosen when the pair holds the scope and the node can be
+   called (Nodes.can), else they stay off with the reason; a backlog task's peek has Start (the launcher in dispatch mode, on that node); and the session peek shows the tail of
+   the session (Live.subscribe with a remote Ref: one stream per node through this board's own origin) when the pair holds the `sessions` scope. */
 'use strict';
 
 const NODE_ERR = {
@@ -54,15 +58,29 @@ function nodeHeader(rec) {
   const plat = NodeView.platform(card);
   const repair = notes.some((n) => n.repair);
   const open = nhOpenLink('Open board', rec, '', repair ? 'btn' : 'btn primary') || Nodes.off('Open board', 'the address saved for this node is not an https tailnet address');
-  const acts = Nodes.acts(repair ? el('a', { class: 'btn primary', href: '#/settings?sec=nodes', text: 'Re-pair' }) : null, open,
-    Nodes.off('New task here', Nodes.reason(rec, 'tasks'), 'New task'), Nodes.off('New session here', Nodes.reason(rec, 'sessions'), 'New session'));
+  const acts = Nodes.acts(repair ? el('a', { class: 'btn primary', href: '#/settings?sec=nodes', text: 'Re-pair' }) : null, open, nodeNew(rec, 'task'), nodeNew(rec, 'session'));
   return el('header', { class: 'nd-head' },
     el('div', { class: 'page-head' }, el('h1', { class: 'nd-title', text: nhName(rec) }), nhStatusLine(v)),
     el('p', { class: 'dim nd-facts', text: facts.join(' · ') }),
     plat.name ? el('div', { class: 'nd-plat' }, NodeView.chip(plat.name, '', '', 'Platform'), el('span', { class: 'dim nd-load', text: `Load: ${plat.load}` }),
       ...Nodes.platNotes(card, plat.name).map((t) => el('p', { class: 'dim nd-note', text: t }))) : null,
     ...notes.map((n) => el('p', { class: `nd-banner ${n.cls}`, role: 'status', text: n.text })), acts,
-    el('p', { class: 'dim nd-ro', text: 'Read only here. Starting or answering things on another node arrives with the relay.' }));
+    el('p', { class: 'dim nd-ro', text: 'Read only here, except starting a task or a session and the tail of a session. Answering, typing and closing arrive with a later phase.' }));
+}
+
+/* New task here / New session here: a button that opens the launcher on this node when the pair holds the scope and the node can be called, else the disabled control with its reason. */
+function nodeNew(rec, kind) {
+  const task = kind === 'task';
+  const c = Nodes.can(rec, task ? 'tasks' : 'sessions');
+  if (!c.ok) return Nodes.off(task ? 'New task here' : 'New session here', c.why, task ? 'New task' : 'New session');
+  return el('button', { class: 'small', type: 'button', text: task ? 'New task here' : 'New session here', onclick: () => nodeLaunch(rec, kind) });
+}
+
+/* Open the launcher with `rec` chosen. The local place (the repo this board last used) comes along, so "This node" stays a choice in the sheet; none is fine (the picker then keeps
+   "This node" off). */
+function nodeLaunch(rec, kind, extra) {
+  const pl = kind !== 'dispatch' && typeof launchPlace === 'function' ? launchPlace(null, kind) : null;
+  if (typeof launch === 'function') launch({ mode: kind, node: rec.handle, ...(pl ? { project: pl.project, repo: pl.repo } : {}), ...(extra || {}) });
 }
 
 function nodeHeaderSig(rec) {
@@ -164,7 +182,47 @@ function nodePeekBack(rec, tab) {
   return el('a', { class: 'btn small', href: Ref.hash(Ref.node(rec.handle)) || '#/', text: `Back to ${nhName(rec)}` });
 }
 
-function nodeSessionPeek(rec, tmux) {
+/* The tail of a remote session (issue #143): the last captured lines, kept across the peek's repaints (the peek is rebuilt with every reading; the stream is not). Every line is
+   peer data and goes into a <pre> through textContent. A `gone` keeps the lines and says why in plain words. Returns {node, stop()}. */
+const NODE_TAIL_GONE = {
+  offline: 'offline', upstream_error: 'could not be reached', closed: 'the stream ended', idle: 'the stream went quiet',
+  repair: 'needs a new pairing: its token was refused', unpaired: 'answers as another node now', revoked: 'the pair was removed',
+  not_read_yet: 'has not been read yet', too_large: 'sent a line that was too long', shutdown: 'this board is stopping',
+};
+function nodeClock(ms) {
+  if (!ms) return '';
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+function nodeTailWords(gone, name) {
+  if (!gone) return '';
+  const at = nodeClock(gone.seen);
+  const seen = at ? `last seen ${at}` : 'no lines seen yet';
+  if (gone.reason === 'offline') return `offline, ${seen}`;
+  const why = ownKey(NODE_TAIL_GONE, gone.reason) ? NODE_TAIL_GONE[gone.reason] : 'the stream ended';
+  return !ownKey(NODE_TAIL_GONE, gone.reason) || gone.reason === 'upstream_error' || gone.reason === 'closed' || gone.reason === 'idle' ? `${name}: ${why}, ${seen}` : `${name}: ${why}`;
+}
+
+function nodeTailMake(handle, tmux) {
+  const ref = Ref.session(handle, tmux);
+  if (!ref) return null;
+  const pre = el('pre', { class: 'nd-tail-pre', tabindex: '0', role: 'log', 'aria-label': `Tail of ${tmux}` });
+  const st = el('p', { class: 'dim nd-tail-st', role: 'status', text: 'Waiting for the first lines…' });
+  const node = el('section', { class: 'nd-tail', 'aria-label': 'Tail' },
+    el('h2', { class: 'nd-h', text: 'Tail' }), el('p', { class: 'dim nd-ro', text: 'The last captured lines of the session, not a terminal. Secrets on the screen are hidden on a best-effort basis.' }), pre, st);
+  let got = false;
+  const off = Live.subscribe(ref, (lines, meta) => {
+    got = got || (Array.isArray(lines) && lines.length > 0);
+    const rec = Nodes.get(handle);
+    setTextIfChanged(pre, Array.isArray(lines) ? lines.join('\n') : '');
+    const gone = meta && meta.gone ? meta.gone : null;
+    node.classList.toggle('gone', !!gone);
+    setTextIfChanged(st, gone ? nodeTailWords(gone, rec ? nhName(rec) : handle) : got ? 'Live: updates as the session prints.' : 'Waiting for the first lines…');
+  });
+  return { node, stop() { off(); } };
+}
+
+function nodeSessionPeek(rec, tmux, tail) {
   const s = Nodes.sessions(rec.handle).find((x) => x.tmux === tmux);
   if (!s) return nodePeekGone(rec, 'session', 'This session is not in the last reading of the node. It may have ended.');
   const v = Nodes.view(rec);
@@ -175,6 +233,7 @@ function nodeSessionPeek(rec, tmux) {
     el('p', { class: 'dim nd-ro', text: `Read only: the last reading of ${nhName(rec)}, ${nodeAge(rec)}${v.status === 'online' ? '' : ` (${v.word})`}.` }),
     nodeFacts([['State', el('span', {}, stateGlyph(st), ' ', GLYPH_LABEL[st] + (s.needs_you && st !== 'waiting' ? ', needs you' : ''))], ['Agent', nhAgent(s.agent)], ['Model', s.model], ['Where', nhWhere(s)],
       ['Started as', s.kind], ['Since', s.since ? `${nhAgeText(s.since)} ago` : ''], ['Session', s.tmux]]),
+    tail ? tail.node : null,
     Nodes.acts(open, nodePeekBack(rec), Nodes.off('Send a prompt', Nodes.reason(rec, 'sessions')), s.needs_you ? Nodes.off('Answer', Nodes.reason(rec, 'sessions')) : null,
       Nodes.off('Close session', Nodes.reason(rec, 'sessions'))));
 }
@@ -190,7 +249,15 @@ function nodeTaskPeek(rec, id) {
     el('p', { class: 'dim nd-ro', text: `Read only: the last reading of ${nhName(rec)}, ${nodeAge(rec)}${v.status === 'online' ? '' : ` (${v.word})`}.` }),
     nodeFacts([['Phase', t.phase], ['Agent', nhAgent(t.agent)], ['Where', nhWhere(t)], ['Branch', t.branch], ['Issue', t.issue_ref], ['Updated', t.updated_at ? `${nhAgeText(t.updated_at)} ago` : ''],
       ['Session', sHref ? el('a', { href: sHref, text: String(t.tmux) }) : t.tmux]]),
-    Nodes.acts(open, nodePeekBack(rec), Nodes.off('Run again', Nodes.reason(rec, 'tasks')), Nodes.off('Cancel task', Nodes.reason(rec, 'tasks'))));
+    Nodes.acts(open, nodePeekBack(rec), nodeStart(rec, t), Nodes.off('Run again', Nodes.reason(rec, 'tasks')), Nodes.off('Cancel task', Nodes.reason(rec, 'tasks'))));
+}
+
+/* Start on <node> for a card in the node's backlog: the launcher in dispatch mode, on the node the task lives on (a task id exists on one node only). */
+function nodeStart(rec, t) {
+  if (t.phase !== 'backlog') return null;
+  const c = Nodes.can(rec, 'tasks');
+  if (!c.ok) return Nodes.off(`Start on ${nhName(rec)}`, c.why, 'Start');
+  return el('button', { class: 'small', type: 'button', text: `Start on ${nhName(rec)}`, onclick: () => nodeLaunch(rec, 'dispatch', { remoteTask: t }) });
 }
 
 function nodePeekGone(rec, what, text) {
@@ -207,6 +274,8 @@ function nodePage(kind) {
   let mode = '';
   let paintBody = null;
   let peekSig = '';
+  let tail = null;
+  const stopTail = () => { if (tail) { tail.stop(); tail = null; } };
   const title = () => {
     const h = route && route.params && route.params.node;
     const rec = h && Nodes.enabled() ? Nodes.get(h) : null;
@@ -226,6 +295,7 @@ function nodePage(kind) {
     const key = `${want}|${h}|${route.params.tmux || ''}|${route.params.id || ''}`;
     if (key !== mode) {
       mode = key; paintBody = null; peekSig = '';
+      stopTail();
       host.textContent = '';
       if (want === 'none') nodeNotPaired(host, h);
       else if (want === 'loading') host.append(el('p', { class: 'dim', role: 'status', text: M.err ? `Could not read the nodes (${M.err}). Trying again.` : 'Reading the nodes…' }));
@@ -233,8 +303,13 @@ function nodePage(kind) {
     }
     if (want === 'node' && paintBody) paintBody(rec);
     else if (want === 'peek') {
-      const s = JSON.stringify([rec, Math.floor(Date.now() / 60000), M.err]);
-      if (s !== peekSig) { peekSig = s; host.textContent = ''; host.append(kind === 'node-session' ? nodeSessionPeek(rec, route.params.tmux) : nodeTaskPeek(rec, route.params.id)); }
+      if (kind === 'node-session') {                                           // the tail lives as long as the peek does, not as long as one reading
+        const here = Nodes.sessions(rec.handle).some((x) => x.tmux === route.params.tmux) && Array.isArray(rec.scopes) && rec.scopes.includes('sessions');
+        if (here && !tail && typeof Live !== 'undefined') tail = nodeTailMake(rec.handle, route.params.tmux);
+        else if (!here) stopTail();
+      }
+      const s = JSON.stringify([rec, Math.floor(Date.now() / 60000), M.err, !!tail]);
+      if (s !== peekSig) { peekSig = s; host.textContent = ''; host.append(kind === 'node-session' ? nodeSessionPeek(rec, route.params.tmux, tail) : nodeTaskPeek(rec, route.params.id)); }
     } else if (want === 'loading') {
       const p = host.firstChild;
       if (p && M.err) setTextIfChanged(p, `Could not read the nodes (${M.err}). Trying again.`);
@@ -254,7 +329,7 @@ function nodePage(kind) {
     },
     update() { paint(); },
     onRoute(r) { route = r; paint(); },
-    unmount() { Nodes.M.subs.delete(paint); host = null; mode = ''; paintBody = null; },
+    unmount() { Nodes.M.subs.delete(paint); stopTail(); host = null; mode = ''; paintBody = null; },
   };
 }
 

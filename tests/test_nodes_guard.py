@@ -3,8 +3,9 @@
 1. The matrix, table driven: each refused field and each refused spelling, in every string field, for Claude and Codex bodies, with the allowed values passing.
 2. The guard agrees with the rules the board already has (recover._is_bypass, which main._task_danger uses, and the adapters' bypass spellings).
 3. No refusal repeats a value of the request (a prompt is never echoed).
-4. Over HTTP: a synthetic guarded row (tests/conftest.py probe_rows; this phase ships only read rows) gives a 422 with the message on the hub before any call
-   (no transport call) and on the peer when the hub is bypassed by a direct call with a valid token; the allowed bodies pass.
+4. Over HTTP: a synthetic guarded row (tests/conftest.py probe_rows, kept for the scope and human-only cases the real rows do not cover) gives a 422 with the
+   message on the hub before any call (no transport call) and on the peer when the hub is bypassed by a direct call with a valid token; the allowed bodies pass.
+   The same REFUSED_BODIES run against the three real rows (task_create, task_dispatch, session_open) in tests/test_nodes_remote_tasks.py.
 
 Temp dirs and fakes only: nothing here reaches a real board, tmux, claude or codex.
 """
