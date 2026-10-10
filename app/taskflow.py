@@ -49,6 +49,8 @@ EXIT_DIALOG_MAX = 2             # answers the exit dialog gets per close (a stuc
 RECHECK = 15.0                  # seconds between re-checks while a guard defers the close (a person attached, a subagent, a compaction)
 GIVE_UP = 600.0                 # after this long of deferring, the session is kept and the close is dropped
 MEM_RECHECK = 5.0               # seconds between looks at claude-mem's queue
+SETTLE = 3.0                    # seconds after a Stop before the next held queued prompt is typed (Claude takes the queued turn within a second)
+MEM_WAITING = "waiting for claude-mem"    # the reason on the card while a busy claude-mem defers the close
 MEM_WAIT = 60.0                 # how long a busy claude-mem is waited for before the session is closed anyway
 RETRY_START = 30.0              # seconds before a chain step whose launch hit a tmux hiccup is tried again
 ENDED_GRACE = 30.0              # seconds a session may sit in state 'ended' before its running task counts as cancelled
@@ -131,6 +133,48 @@ def set_turns_ahead(db, tid: int, n: int) -> None:
     else:
         return
     db.task_update(tid, spec=spec)
+
+
+def unsent_prompt(t: dict | None) -> str | None:
+    """The prompt a queued task still has to type into its session (spec.unsent), or None once it is typed. A task is held like this
+    while another board-queued prompt sits in Claude's queue: two queued prompts that Claude holds together are run as ONE turn (issue
+    #64, seen on the box), so the board keeps at most one of them in Claude's queue per session and the rest wait here."""
+    v = _spec_of(t).get("unsent")
+    return v if isinstance(v, str) and v else None
+
+
+def set_unsent(db, tid: int, text: str | None) -> None:
+    """Store (text) or clear (None) the prompt a held task has still to type, leaving the rest of the spec as it was."""
+    t = db.task_get(tid)
+    spec = _spec_of(t)
+    if text:
+        spec["unsent"] = text
+    elif "unsent" in spec:
+        spec.pop("unsent")
+    else:
+        return
+    db.task_update(tid, spec=spec)
+
+
+def must_hold(db, row_id: int | None) -> bool:
+    """Is a prompt queued for this WORKING Claude row now to be held in the board? True when a task of the row already waits for an earlier
+    turn (its counter is above zero): its prompt is in Claude's queue, or is itself held."""
+    return row_id is not None and any(turns_ahead(o) > 0 for o in db.tasks_for_session(row_id, ("running",)))
+
+
+def forget_queue(db, t: dict | None) -> None:
+    """A task leaves its session's queue without running (detached): its counter and held prompt go, and the tasks behind it have one
+    Stop less to wait for (the Stop it would have used never comes)."""
+    if not t:
+        return
+    mine = turns_ahead(t)
+    row_id = t.get("session_row")
+    set_turns_ahead(db, t["id"], 0)
+    set_unsent(db, t["id"], None)
+    if mine and row_id is not None:
+        for o in db.tasks_for_session(row_id, ("running",)):
+            if o["id"] != t["id"] and turns_ahead(o) > mine:
+                set_turns_ahead(db, o["id"], turns_ahead(o) - 1)
 
 
 def next_turns_ahead(db, row_id: int | None) -> int:
@@ -301,10 +345,11 @@ class Runtime:
     returns its response (None: someone else already did); `end_session(name, reason)` kills a session and closes its row. The rest are
     seams for tests and default to the real thing: send_text(name, text) types a line into the pane, real_clients(name) counts people
     attached, perm_pending(name) says whether a permission request waits, mem_processing() whether claude-mem is busy, capture(name)
-    reads the pane and send_keys(name, keys) presses named keys (the exit dialog), clock() is epoch seconds."""
+    reads the pane and send_keys(name, keys) presses named keys (the exit dialog), paste_prompt(name, text) types a held queued prompt,
+    clock() is epoch seconds."""
 
     def __init__(self, db, *, start_session, end_session, send_text=None, real_clients=None, perm_pending=None, mem_processing=None,
-                 capture=None, send_keys=None, clock=time.time, grace: float | None = None, tick: float = TICK):
+                 capture=None, send_keys=None, paste_prompt=None, clock=time.time, grace: float | None = None, tick: float = TICK):
         from . import tmux
         self.db = db
         self.start_session, self.end_session = start_session, end_session
@@ -314,6 +359,8 @@ class Runtime:
         self.mem_processing = mem_processing or globals()["mem_processing"]
         self.capture = capture or (lambda name: tmux.capture(name, 40))
         self.send_keys = send_keys or (lambda name, keys: tmux.send_keys(name, keys))
+        self.paste_prompt = paste_prompt or (lambda name, text: tmux.paste_text(name, text, enter=True))
+        self._turn_end: dict[int, float] = {}                # session row -> when its last Stop was seen (the settle time before a held prompt is typed)
         self.clock = clock
         self.grace = settings.autoclose_grace if grace is None else float(grace)
         self.tick = tick
@@ -362,7 +409,7 @@ class Runtime:
         """Everything that is due at `now`: pending closes, queued chain steps, and (every SWEEP_EVERY seconds) the sweep. Returns what
         happened: {closed: [names], exit_sent: [names], dropped: [names], started: [task ids], blocked: [task ids], swept: [task ids]}."""
         now = self.clock() if now is None else now
-        out = {"closed": [], "exit_sent": [], "dropped": [], "started": [], "blocked": [], "swept": []}
+        out = {"closed": [], "exit_sent": [], "dropped": [], "started": [], "blocked": [], "swept": [], "typed": []}
         for name, p in list(self.pending.items()):
             if now < p["due"]:
                 continue
@@ -375,6 +422,10 @@ class Runtime:
                         p["due"] = now + RECHECK
                         if now - p["started"] >= GIVE_UP:
                             self.pending.pop(name, None)
+        try:
+            out["typed"] = self.release_held(now)
+        except Exception as e:
+            log.warning("taskflow held-prompt release failed: %s", e)
         try:
             self._advance_queued(now, out)
         except Exception as e:
@@ -397,7 +448,7 @@ class Runtime:
         if row_id is None:
             return None
         bound = self.db.tasks_for_session(row_id, ("running",))
-        ready = [t for t in bound if not turns_ahead(t)]
+        ready = [t for t in bound if not turns_ahead(t) and not unsent_prompt(t)]       # a held prompt is not typed yet: no Stop is its own
         if ready:
             return ready[0]
         if bound:
@@ -423,6 +474,50 @@ class Runtime:
                 out.append(t["id"])
         return out
 
+    def release_held(self, now: float | None = None) -> list[int]:
+        """Type the next held queued prompt of each Claude session (issue #64). Claude folds the prompts it holds in its queue into ONE turn,
+        so the board lets at most one of its prompts wait in Claude's queue: a task queued behind another queued task is only stored
+        (spec.unsent) and is typed here once no other prompt of the board waits in the queue (the Stop before it has come), SETTLE seconds
+        after that Stop so that Claude has taken the queued turn off its queue. Waits while the session is in a permission prompt or a
+        dialog. Returns the ids of the tasks typed."""
+        now = self.clock() if now is None else now
+        held: dict[int, list[dict]] = {}
+        for t in self.db.tasks_by_phase(("running",)):
+            if unsent_prompt(t) and t.get("session_row") is not None:
+                held.setdefault(t["session_row"], []).append(t)
+        typed = []
+        for row_id, tasks in held.items():
+            name = tasks[0].get("tmux_name") or ""
+            row = self.db.open_row(name) if name else None
+            if row is None or row.get("row_id") != row_id:
+                continue                                                            # the session ended: the sweep cancels these tasks
+            if any(turns_ahead(o) > 0 and not unsent_prompt(o) for o in self.db.tasks_for_session(row_id, ("running",))):
+                continue                                                            # a prompt of the board is still waiting in Claude's queue
+            st, flags = row.get("state"), row.get("flags") or {}
+            if not (st in ("working", "done", "idle") or (st == "waiting" and flags.get("wait_kind") == "idle")) or self.perm_pending(name):
+                continue
+            since = self._turn_end.get(row_id)
+            if since is None and st in ("done", "idle"):
+                since = _epoch(row.get("state_at"))
+            if since is not None and now - since < SETTLE:
+                continue
+            nxt = min(tasks, key=lambda x: (turns_ahead(x), x["id"]))
+            text = unsent_prompt(nxt)
+            set_unsent(self.db, nxt["id"], None)                                    # first: a second tick must never type it twice
+            try:
+                self.paste_prompt(name, text)
+            except Exception as e:
+                set_unsent(self.db, nxt["id"], text)
+                log.warning("typing the held prompt of task %s failed: %s", nxt["id"], e)
+                continue
+            if st != "working":
+                self.db.set_state(name, "working", "TaskDispatch", prompt=text[:500])
+            self.db.add_event(name, "TaskDispatch", nxt.get("title"), f"task {nxt['id']} typed into the session (it was held for the prompt before it)",
+                              {"task": nxt["id"], "queued": True, "held": True}, agent=row.get("agent"))
+            self._turn_end[row_id] = now                                            # the next held prompt waits for this one's turn to begin
+            typed.append(nxt["id"])
+        return typed
+
     def _continues(self, t: dict, row: dict) -> bool:
         """Is `row` (open, in the task's tmux session) the task's own session carried on? A legacy task (no session_row) of a task
         session, or a task whose old row has ended and that a reboot recovery relaunched in this one (launcher 'recovered')."""
@@ -439,6 +534,8 @@ class Runtime:
         or None when no task was running on the row. A Stop that belongs to an earlier turn of the row (a task queued behind it, issue
         #64) credits nobody and starts no countdown: {task: None, skipped: [the queued task ids]}."""
         t = self.active_task(name, row)
+        if (row or {}).get("row_id") is not None and not (failed and limit is not None):
+            self._turn_end[row["row_id"]] = self.clock()
         parked = failed and limit is not None                    # a rate limit does not end the turn: the queue behind it waits on
         skipped = [] if parked else self._pass_turn(row)
         if t is None:
@@ -621,6 +718,7 @@ class Runtime:
             p.setdefault("mem_since", now)
             if now - p["mem_since"] < MEM_WAIT:
                 p["stage"], p["due"] = "mem", now + MEM_RECHECK
+                self.db.update_flags(name, {"autoclose": {"task": p["task"], "due": _iso(p["due"]), "waiting": MEM_WAITING}})   # #88: the card says why
                 return
         if self.pending.get(name) is not p:                                            # cancelled while this pass was looking
             return

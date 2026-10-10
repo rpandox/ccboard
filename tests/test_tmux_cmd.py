@@ -138,6 +138,8 @@ def test_devcontainer_and_bypass_rules(lite_client, projects_dir, fake_tmux, mon
     assert lite_client.post("/api/projects/shop/repos/api/sessions", headers=H, json={"launcher": "claude", "devcontainer": True}).status_code == 400  # no devcontainer there
     assert lite_client.post("/api/projects/shop/repos/api/tasks", headers=H, json={"title": "t", "prompt": "p", "args": "--dangerously-skip-permissions"}).status_code == 400
     # inside the devcontainer it is allowed and wrapped in devcontainer up/exec
+    from app import doctor
+    monkeypatch.setattr(doctor, "devcontainer_cli_state", lambda: "ok")     # the host's CLI is the doctor's business here (issue #104 has its own test)
     r = lite_client.post("/api/projects/shop/repos/web/sessions", headers=H, json={"launcher": "claude", "devcontainer": True, "bypass": True, "args": "--model opus"})
     assert r.status_code == 201, r.text
     cmd = r.json()["cmd"]

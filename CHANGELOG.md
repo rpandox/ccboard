@@ -2,6 +2,21 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.34 - 2026-10-09
+
+### Fixed
+- Several tasks queued to one busy Claude session in quick succession each get their own turn: the board types the next one only after the previous queued prompt has started, so Claude never merges two of them into one turn.
+- Reopen resumes the task's previous conversation (Claude keeps a `--worktree` session's transcript under the repo's own project folder, and the board now finds it there); a close that waits for claude-mem says so on the card.
+- A Codex dialog that was already answered no longer blocks prompts and restarts; a fresh launch behind a trust dialog reports the dialog, not "not ready".
+- A scheduled run that produced its answer is `ok` with a "denied N tool calls" note even when one tool call was refused; `denied` stays for runs that could not do their work.
+- A devcontainer launch on a host without the devcontainer CLI is refused with the fix, instead of typing a command that fails.
+
+### Changed
+- The Codex Tune panel offers only the current model generation and the reasoning levels the model accepts, shows Model first, and wraps on a phone instead of scrolling sideways.
+- The Usage estimates disclosure counts the same sessions as the numbers above it.
+
+Upgrade: nothing to do.
+
 ## v0.5.32 - 2026-10-09
 
 ### Added

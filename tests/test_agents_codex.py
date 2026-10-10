@@ -1600,3 +1600,27 @@ def test_rebinds_wraps_thread_relation(ag):
     assert ag.rebinds({"session_id": OTHER, "source": "startup"}, {**row, "state": "working"}) is False   # a guardian thread, mid-turn
     assert ag.rebinds({"session_id": OTHER, "source": "clear"}, {**row, "state": "working"}) is True
     assert ag.rebinds({"session_id": SID, "source": "startup"}, row) is True and ag.rebinds({"session_id": OTHER}, None) is True
+
+
+def test_the_picker_lists_only_the_current_generation_of_models():
+    """Live check (issue 2, codex-cli 0.161): the catalogue lists gpt-5.6-* beside gpt-6.*; the older generation is legacy and stays out of the
+    Tune panel and the launcher's list. One generation, and models that name none, stay as they are."""
+    rows = [{"slug": s, "name": s, "reasoning": ["low"], "default_reasoning": None}
+            for s in ("gpt-6.1-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5", "o3")]
+    assert [r["slug"] for r in codex.current_family(rows)] == ["gpt-6.1-sol", "gpt-6-luna", "o3"]
+    old = [r for r in rows if r["slug"].startswith("gpt-5")]
+    assert codex.current_family(old) == old, "a catalogue of one generation is shown whole"
+    assert codex.current_family([]) == []
+
+
+def test_schema_models_drop_the_legacy_generation_but_the_levels_of_any_id_stay_known(ag, fake, clock):
+    mixed = json.dumps({"models": [
+        {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol", "visibility": "list", "priority": 1, "default_reasoning_level": "low",
+         "supported_reasoning_levels": [{"effort": e} for e in ("low", "medium", "high", "xhigh", "max", "ultra")]},
+        {"slug": "gpt-5.6-sol", "display_name": "GPT-5.6 Sol", "visibility": "list", "priority": 2, "default_reasoning_level": "medium",
+         "supported_reasoning_levels": [{"effort": e} for e in ("low", "medium", "high", "xhigh", "max")]}]})
+    fake.use(models=mixed)
+    assert [m["slug"] for m in ag.models()] == ["gpt-6.1-sol", "gpt-5.6-sol"], "the catalogue itself is whole (doctor, validate_opts)"
+    assert ag.MODELS == ("gpt-6.1-sol",) and list(ag.REASONING_BY_MODEL) == ["gpt-6.1-sol"]
+    assert ag._allowed_efforts("gpt-5.6-sol") == ("low", "medium", "high", "xhigh", "max"), "a launch with a legacy id still validates"
+    assert next(f for f in ag.option_schema() if f.key == "model").choices == ["gpt-6.1-sol"]

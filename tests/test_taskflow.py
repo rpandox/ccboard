@@ -46,7 +46,7 @@ def rig(tmp_path, monkeypatch):
     handle = DB(tmp_path / "rt.db")
     clock = Clock()
     r = SimpleNamespace(db=handle, clock=clock, started=[], ended=[], sent=[], clients={}, perms=set(), mem=[False], start_error=[None],
-                        screens={}, keys=[])
+                        screens={}, keys=[], pasted=[])
 
     def start_session(task, *, prompt=None, auto_close=None):
         if r.start_error[0]:
@@ -66,7 +66,8 @@ def rig(tmp_path, monkeypatch):
 
     r.rt = Runtime(handle, start_session=start_session, end_session=end_session, send_text=lambda n, t: r.sent.append((n, t)),
                    real_clients=lambda n: r.clients.get(n, 0), perm_pending=lambda n: n in r.perms, mem_processing=lambda: r.mem[0],
-                   capture=lambda n: r.screens.get(n, ""), send_keys=lambda n, k: r.keys.append((n, list(k))), clock=clock, grace=45.0)
+                   capture=lambda n: r.screens.get(n, ""), send_keys=lambda n, k: r.keys.append((n, list(k))), paste_prompt=lambda n, t: r.pasted.append((n, t)),
+                   clock=clock, grace=45.0)
     return r
 
 
@@ -1688,3 +1689,276 @@ def test_a_task_created_now_with_auto_close_off_stays_off_and_a_plain_one_keeps_
     assert json.loads(db().task_get(tid)["spec"]) == {"auto_close": False}
     plain = post_task(flow, title="Plain one").json()["id"]
     assert not db().task_get(plain)["spec"], "nothing to remember"
+
+
+# ---------------------------------------------------------------- queued prompts: at most one in Claude's queue (issue #64, box check)
+# Live on the box: two tasks queued to one busy Claude session within a second were run by Claude as ONE turn (one Stop for both), so the
+# first task got the merged text and the second never finished. The board now keeps one board-queued prompt in Claude's queue and holds
+# the rest (spec.unsent), typing the next one only after the prompt ahead of it has begun its turn.
+
+def held_task(rig, rid, name, ahead, slug, prompt=None):
+    """What main._dispatch_session leaves for a prompt it held back: counter set, prompt stored, nothing typed."""
+    tid = queued_task(rig, rid, name, ahead, slug)
+    taskflow.set_unsent(rig.db, tid, prompt or f"prompt {slug}")
+    return tid
+
+
+def test_a_held_prompt_is_typed_only_after_the_prompt_ahead_of_it_has_begun_its_turn(rig):
+    name, rid = session(rig, state="working")                          # the person's prompt A is running
+    b = queued_task(rig, rid, name, 1, "b")                            # typed: waits in Claude's queue
+    c = held_task(rig, rid, name, 2, "c")
+    assert tick(rig, 60)["typed"] == [] and rig.pasted == [], "B is still in Claude's queue: C stays in the board"
+    assert stop(rig, name, "A")["task"] is None                        # A's Stop: B's turn begins
+    assert [taskflow.turns_ahead(rig.db.task_get(x)) for x in (b, c)] == [0, 1]
+    assert tick(rig, 1)["typed"] == [] and rig.pasted == [], "Claude has not taken B off its queue yet: wait"
+    assert tick(rig, 3)["typed"] == [c] and rig.pasted == [(name, "prompt c")]
+    assert taskflow.unsent_prompt(rig.db.task_get(c)) is None and taskflow.turns_ahead(rig.db.task_get(c)) == 1
+    assert tick(rig, 10)["typed"] == [] and len(rig.pasted) == 1, "typed once"
+    assert [e for e in rig.db.recent_events(20) if e["event"] == "TaskDispatch"]
+    out = stop(rig, name, "B result")
+    assert out["task"] == b and out["close"] is None and rig.db.task_get(b)["result"] == "B result"
+    out = stop(rig, name, "C result")
+    assert out["task"] == c and out["close"] == "pending", "each task had a Stop and a result of its own; the last one closes the session"
+    assert rig.db.task_get(c)["result"] == "C result" and rig.db.task_get(b)["result"] == "B result"
+
+
+def test_three_queued_tasks_are_typed_one_at_a_time_each_with_its_own_stop(rig):
+    name, rid = session(rig, state="working")
+    b = queued_task(rig, rid, name, 1, "b")
+    c = held_task(rig, rid, name, 2, "c")
+    d = held_task(rig, rid, name, 3, "d")
+    stop(rig, name, "A")
+    tick(rig, 3)
+    assert rig.pasted == [(name, "prompt c")], "only C goes into Claude's queue; D waits behind it"
+    assert tick(rig, 30)["typed"] == [] and len(rig.pasted) == 1
+    assert stop(rig, name, "B text")["task"] == b
+    assert [taskflow.turns_ahead(rig.db.task_get(x)) for x in (c, d)] == [0, 1]
+    assert tick(rig, 1)["typed"] == [] and len(rig.pasted) == 1, "settle time after the Stop"
+    tick(rig, 3)
+    assert rig.pasted == [(name, "prompt c"), (name, "prompt d")]
+    out = stop(rig, name, "C text")
+    assert out["task"] == c and out["close"] is None
+    out = stop(rig, name, "D text")
+    assert out["task"] == d and out["close"] == "pending"
+    assert [rig.db.task_get(x)["result"] for x in (b, c, d)] == ["B text", "C text", "D text"]
+    assert [rig.db.task_get(x)["phase"] for x in (b, c, d)] == ["done"] * 3
+
+
+def test_a_stop_is_never_credited_to_a_prompt_that_was_not_typed_yet(rig):
+    """B finished before the settle time ran out: C's counter is zero but its text is still in the board, so a Stop is nobody's."""
+    name, rid = session(rig, state="working")
+    b = queued_task(rig, rid, name, 1, "b")
+    c = held_task(rig, rid, name, 2, "c")
+    stop(rig, name, "A")
+    assert stop(rig, name, "B text")["task"] == b
+    assert taskflow.turns_ahead(rig.db.task_get(c)) == 0 and rig.pasted == []
+    assert rig.rt.active_task(name, rig.db.open_row(name)) is None, "C has not been typed"
+    assert stop(rig, name, "a stray Stop") is None and rig.db.task_get(c)["phase"] == "running" and rig.db.task_get(c)["result"] is None
+    tick(rig, 3)
+    assert rig.pasted == [(name, "prompt c")]
+    assert stop(rig, name, "C text")["task"] == c
+
+
+def test_a_held_prompt_waits_while_the_session_is_in_a_permission_prompt_or_a_dialog(rig):
+    name, rid = session(rig, state="working")
+    queued_task(rig, rid, name, 1, "b")
+    held_task(rig, rid, name, 2, "c")
+    stop(rig, name, "A")
+    rig.perms.add(name)
+    assert tick(rig, 30)["typed"] == [] and rig.pasted == []
+    rig.perms.clear()
+    rig.db.update_flags(name, {"wait_kind": "permission"})
+    rig.db.set_state(name, "waiting", "Notification")
+    assert tick(rig, 30)["typed"] == [] and rig.pasted == []
+    rig.db.update_flags(name, {"wait_kind": "idle"})
+    assert len(tick(rig, 30)["typed"]) == 1 and len(rig.pasted) == 1
+
+
+def test_a_paste_that_fails_keeps_the_prompt_for_the_next_tick(rig):
+    name, rid = session(rig, state="working")
+    queued_task(rig, rid, name, 1, "b")
+    c = held_task(rig, rid, name, 2, "c")
+    stop(rig, name, "A")
+    real = rig.rt.paste_prompt
+
+    def boom(n, t):
+        raise RuntimeError("no tmux")
+    rig.rt.paste_prompt = boom
+    assert tick(rig, 5)["typed"] == [] and taskflow.unsent_prompt(rig.db.task_get(c)) == "prompt c"
+    rig.rt.paste_prompt = real
+    assert tick(rig, 2)["typed"] == [c] and rig.pasted == [(name, "prompt c")]
+
+
+def test_must_hold_is_true_only_while_a_prompt_of_the_board_waits_in_the_queue(rig):
+    name, rid = session(rig, state="working")
+    assert taskflow.must_hold(rig.db, rid) is False and taskflow.must_hold(rig.db, None) is False
+    task(rig, rid, name, slug="a")                                     # a task running the turn in flight: nothing is in the queue
+    assert taskflow.must_hold(rig.db, rid) is False
+    queued_task(rig, rid, name, 1, "b")
+    assert taskflow.must_hold(rig.db, rid) is True
+
+
+def test_detaching_a_held_task_gives_the_ones_behind_it_one_stop_less_to_wait_for(rig):
+    name, rid = session(rig, state="working")
+    b = queued_task(rig, rid, name, 1, "b")
+    c = held_task(rig, rid, name, 2, "c")
+    d = held_task(rig, rid, name, 3, "d")
+    taskflow.forget_queue(rig.db, rig.db.task_get(c))
+    assert taskflow.unsent_prompt(rig.db.task_get(c)) is None and taskflow.turns_ahead(rig.db.task_get(c)) == 0
+    assert [taskflow.turns_ahead(rig.db.task_get(x)) for x in (b, d)] == [1, 2]
+    assert taskflow.unsent_prompt(rig.db.task_get(d)) == "prompt d"
+
+
+def test_set_unsent_keeps_the_rest_of_the_spec(rig):
+    name, rid = session(rig)
+    tid = task(rig, rid, name, slug="keep", spec={"model": "opus"})
+    taskflow.set_unsent(rig.db, tid, "text")
+    assert json.loads(rig.db.task_get(tid)["spec"]) == {"model": "opus", "unsent": "text"}
+    taskflow.set_unsent(rig.db, tid, None)
+    assert json.loads(rig.db.task_get(tid)["spec"]) == {"model": "opus"}
+
+
+def queue_dispatch(flow, tid, session_name):
+    r = flow.client.post(f"/api/tasks/{tid}/dispatch", headers=H, json={"session": session_name, "queue": True})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def typed_into(flow, name):
+    return [p[1] for p in flow.tmux["pasted"] if p[0] == name]
+
+
+def settle(flow, seconds=3):
+    flow.clock.advance(seconds)
+    return flow.rt.run_due(flow.clock())
+
+
+def test_two_tasks_queued_to_a_busy_session_within_a_second_each_get_their_own_turn(flow):
+    """The box finding through the real routes and hooks: B is typed, C is held; Claude never holds two board prompts at once."""
+    s1 = make_session(flow, state="idle")
+    hook(flow, s1, "UserPromptSubmit", prompt="a long prompt")
+    b, c = backlog(flow, title="Task B", prompt="B: reply B-DONE", auto_close=True), backlog(flow, title="Task C", prompt="C: reply C-DONE", auto_close=True)
+    rb = queue_dispatch(flow, b, s1)
+    rc = queue_dispatch(flow, c, s1)
+    assert (rb["pasted"], rb["held"], rb["turns_ahead"]) == (True, False, 1)
+    assert (rc["pasted"], rc["held"], rc["turns_ahead"]) == (False, True, 2)
+    assert typed_into(flow, s1) == ["B: reply B-DONE"], "only B is in Claude's queue"
+    v = tasks_in_state(flow)
+    assert v[b]["turns_ahead"] == 1 and v[c]["turns_ahead"] == 2 and v[c]["phase"] == "running", "both read as queued on the card"
+    hook(flow, s1, "UserPromptSubmit", prompt="B: reply B-DONE")             # Claude fires it when the text is queued
+    hook(flow, s1, "Stop", last_assistant_message="A text")
+    assert db().task_get(b)["result"] is None
+    settle(flow, 1)
+    assert typed_into(flow, s1) == ["B: reply B-DONE"], "settle time"
+    assert settle(flow, 3)["typed"] == [c]
+    assert typed_into(flow, s1) == ["B: reply B-DONE", "C: reply C-DONE"]
+    hook(flow, s1, "Stop", last_assistant_message="B-DONE")
+    assert db().task_get(b)["phase"] == "done" and db().task_get(b)["result"] == "B-DONE"
+    assert db().task_get(c)["phase"] == "running" and not flow.rt.pending, "C still has its turn: no countdown"
+    hook(flow, s1, "Stop", last_assistant_message="C-DONE")
+    assert db().task_get(c)["phase"] == "done" and db().task_get(c)["result"] == "C-DONE"
+    assert s1 in flow.rt.pending, "the last task closes the session"
+
+
+def test_three_tasks_queued_to_a_busy_session_through_the_routes(flow):
+    s1 = make_session(flow, state="idle")
+    hook(flow, s1, "UserPromptSubmit", prompt="a long prompt")
+    ids = [backlog(flow, title=f"Task {n}", prompt=f"{n}: reply {n}-DONE", auto_close=True) for n in "BCD"]
+    out = [queue_dispatch(flow, t, s1) for t in ids]
+    assert [(o["held"], o["turns_ahead"]) for o in out] == [(False, 1), (True, 2), (True, 3)]
+    hook(flow, s1, "Stop", last_assistant_message="A text")
+    settle(flow)
+    assert typed_into(flow, s1) == ["B: reply B-DONE", "C: reply C-DONE"]
+    settle(flow)
+    assert len(typed_into(flow, s1)) == 2
+    hook(flow, s1, "Stop", last_assistant_message="B-DONE")
+    settle(flow)
+    assert typed_into(flow, s1) == ["B: reply B-DONE", "C: reply C-DONE", "D: reply D-DONE"]
+    hook(flow, s1, "Stop", last_assistant_message="C-DONE")
+    assert not flow.rt.pending, "D still has its turn"
+    hook(flow, s1, "Stop", last_assistant_message="D-DONE")
+    assert [db().task_get(t)["result"] for t in ids] == ["B-DONE", "C-DONE", "D-DONE"]
+    assert [db().task_get(t)["phase"] for t in ids] == ["done"] * 3
+    assert s1 in flow.rt.pending, "the last task closes the session"
+
+
+def test_detach_of_a_held_task_clears_its_held_prompt(flow):
+    s1 = make_session(flow, state="idle")
+    hook(flow, s1, "UserPromptSubmit", prompt="a long prompt")
+    b, c = backlog(flow, title="Task B"), backlog(flow, title="Task C")
+    queue_dispatch(flow, b, s1)
+    queue_dispatch(flow, c, s1)
+    assert taskflow.unsent_prompt(db().task_get(c))
+    assert flow.client.post(f"/api/tasks/{c}/detach", headers=H).status_code == 200
+    row = db().task_get(c)
+    assert row["phase"] == "backlog" and taskflow.unsent_prompt(row) is None and taskflow.turns_ahead(row) == 0
+
+
+# ---------------------------------------------------------------- #88: the reason on the card while claude-mem defers the close
+
+def test_the_card_says_why_while_a_busy_claude_mem_defers_the_close(rig):
+    name, rid, tid, out = finished(rig)
+    rig.mem[0] = True
+    tick(rig, 45)                                                      # the countdown is up: claude-mem is busy
+    af = flag(rig, name, "autoclose")
+    assert af["task"] == tid and af["waiting"] == "waiting for claude-mem" and af["due"] == iso(rig.clock() + 5), af
+    tick(rig, 5)
+    assert flag(rig, name, "autoclose")["due"] == iso(rig.clock() + 5), "the due time rolls forward with each look"
+    rig.mem[0] = False
+    tick(rig, 5)
+    assert rig.sent == [(name, "/exit")]
+    assert flag(rig, name, "autoclose") == {"task": tid, "closing": True}, "the reason is gone once the exit is sent"
+
+
+# ---------------------------------------------------------------- #88: where Claude keeps a lane task's conversation
+
+def _closed_lane_task(flow, **hook_payload):
+    tid = backlog(flow, model="opus")
+    name = dispatch(flow, tid)["tmux"]
+    wt = flow.projects / "shop" / "api" / ".claude" / "worktrees" / "add-login-page"
+    wt.mkdir(parents=True)
+    hook(flow, name, "UserPromptSubmit", prompt="go")
+    hook(flow, name, "Stop", last_assistant_message="First round.", **hook_payload)
+    flow.client.post(f"/api/tasks/{tid}/close-session", headers=H)
+    flow.clock.advance(8)
+    flow.rt.run_due(flow.clock())
+    return tid, name, wt
+
+
+def test_reopen_finds_the_conversation_in_the_repo_roots_project_folder_where_claude_keeps_a_worktree_session(flow):
+    """Box check (#88): `claude --worktree` starts in the repo root, so its transcript is <config>/projects/<root path mangled>/<id>.jsonl
+    (the box shows -srv-projects-<repo> for a lane task whose worktree is <repo>/.claude/worktrees/<slug>), never the worktree's own
+    folder. Reopen looked only at the worktree's folder, found nothing and started a fresh conversation (resumed: false)."""
+    tid, name, wt = _closed_lane_task(flow)
+    old_sid = db().task_get(tid)["claude_session_id"]
+    root = flow.projects / "shop" / "api"
+    root_folder = settings.claude_config_dir / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(root))
+    root_folder.mkdir(parents=True, exist_ok=True)
+    (root_folder / f"{old_sid}.jsonl").write_text('{"type":"user"}\n')
+    assert root_folder.name != re.sub(r"[^A-Za-z0-9]", "-", str(wt)), "the two folders are different names"
+    r = flow.client.post(f"/api/tasks/{tid}/reopen", headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json()["resumed"] is True and r.json()["reopened"] == "worktree"
+    argv = shlex.split(flow.tmux["sent"][-1][1])
+    assert argv[:2] == ["claude", "--resume"] and argv[2] == old_sid
+    wt_copy = settings.claude_config_dir / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(wt)) / f"{old_sid}.jsonl"
+    assert wt_copy.read_text() == '{"type":"user"}\n', "a copy sits where `claude --resume` looks from the worktree"
+    assert (root_folder / f"{old_sid}.jsonl").is_file(), "the original stays"
+
+
+def test_reopen_follows_the_transcript_path_the_sessions_own_hooks_reported(flow):
+    tid, name, wt = _closed_lane_task(flow)
+    old_sid = db().task_get(tid)["claude_session_id"]
+    odd = settings.claude_config_dir / "projects" / "-some-other-folder"
+    odd.mkdir(parents=True, exist_ok=True)
+    (odd / f"{old_sid}.jsonl").write_text('{"type":"user"}\n')
+    row_id = db().task_get(tid)["session_row"]
+    db().conn.execute("UPDATE sessions SET flags=? WHERE id=?", (json.dumps({"transcript_path": str(odd / f"{old_sid}.jsonl")}), row_id))
+    r = flow.client.post(f"/api/tasks/{tid}/reopen", headers=H)
+    assert r.status_code == 200 and r.json()["resumed"] is True, r.text
+
+
+def test_reopen_without_any_transcript_still_starts_a_new_conversation(flow):
+    tid, name, wt = _closed_lane_task(flow)
+    r = flow.client.post(f"/api/tasks/{tid}/reopen", headers=H)
+    assert r.status_code == 200 and r.json()["resumed"] is False and r.json()["reopened"] == "worktree"

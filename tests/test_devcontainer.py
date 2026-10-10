@@ -181,3 +181,26 @@ def test_the_old_claim_is_gone_and_the_host_prerequisites_are_stated():
     assert "host's tmux" in read("ROADMAP.md") and "host's docker" in read("install.sh")
     # the install step itself is unchanged and works in docker mode: npm --prefix ~/.local, no sudo
     assert re.search(r'npm install -g --prefix "\$HOME_DIR/\.local" @devcontainers/cli', read("install.sh"))
+
+
+# ------------------------------------------------------------------ the launcher's probe (issue #104)
+
+def test_the_cli_probe_on_the_host_uses_the_same_lookup_as_the_doctor_row(box):
+    box["cli"] = "missing"
+    assert doctor.devcontainer_cli_state() == "missing"
+    assert box["cli_path"] == ("devcontainer", ["--version"], "/nonexistent-bin:" + str(Path.home() / ".local" / "bin"))
+    box["cli"] = "ok"
+    assert doctor.devcontainer_cli_state() == "ok"
+    box["cli"] = "broken"
+    assert doctor.devcontainer_cli_state() == "broken"
+
+
+def test_the_cli_probe_in_a_container_looks_only_in_the_hosts_local_bin(in_container):
+    assert doctor.devcontainer_cli_state() == "missing"
+    in_container.mkdir(parents=True)
+    cli = in_container / "devcontainer"
+    cli.write_text("#!/bin/sh\n")
+    cli.chmod(0o644)
+    assert doctor.devcontainer_cli_state() == "missing", "present but not executable"
+    cli.chmod(0o755)
+    assert doctor.devcontainer_cli_state() == "ok"

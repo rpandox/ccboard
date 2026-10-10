@@ -773,3 +773,13 @@ def test_the_demo_fixtures_accounts_add_up_like_the_real_thing():
     for series, field in (("rl_5h", "headroom_5h"), ("rl_7d", "headroom_7d")):
         left = {a["key"]: (100.0 if a[series]["resets_at"] <= now else round(100 - a[series]["value"], 1)) for a in real}
         assert total[field] == [{"key": k, "left_pct": v} for k, v in sorted(left.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+
+def test_estimate_bases_are_the_cost_records_and_do_not_follow_days_or_basis(sdb):
+    """Issue #94: the Usage page's disclosure prints estimate.bases as it is, so the API must give one answer per cost refresh whatever the range
+    or the basis (the count is over every session priced then, not over the window)."""
+    sdb.kv_set("cost", {"estimate": {"date": "2026-10-07", "source": "t", "sessions": 0, "usd": 0, "bases": {"statusline": 5, "list": 2, "bad": "x"},
+                                     "cache_write_assumed": False, "cache_write_x": 1.25}})
+    seen = [usage_summary.build(sdb, days=d, tz_min=KTM, now=NOW, basis=b)["estimate"]["bases"]
+            for d in (1, 7, 30) for b in (usage_summary.BASIS_REPORTED, usage_summary.BASIS_EST)]
+    assert seen == [{"statusline": 5, "list": 2}] * 6

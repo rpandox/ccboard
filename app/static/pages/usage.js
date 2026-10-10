@@ -1026,6 +1026,8 @@ Usage.estimateDetails = function (est) {
     el('p', { text: `${Usage.plural(est.sessions, 'session')} on models ccusage prices at zero ${est.sessions === 1 ? 'adds' : 'add'} ${Usage.usdOf(est.usd, true)} to the reported dollars. Each of those numbers is an estimate from the token counts at the list prices of ${est.date || 'the price table'}${est.source ? ` (${est.source})` : ''}.` }),
   ];
   const bases = Object.keys(Usage.BASIS_WORDS).filter((k) => Usage.num(est.bases[k]) > 0);
+  /* The counts are the API's estimate.bases as the last cost refresh wrote it (issue #94): every session priced then, whatever the page's range, so they do not follow the 7d / 30d toggle. */
+  if (bases.length) lines.push(el('p', { class: 'dim', text: 'Per session, over every session priced at the last cost refresh (not only the range shown):' }));
   if (bases.length) lines.push(el('ul', { class: 'uest-bases' }, ...bases.map((k) => el('li', { 'data-basis': k, text: `${Usage.plural(Usage.num(est.bases[k]), 'session')} ${Usage.BASIS_WORDS[k]}` }))));
   if (est.cwa) lines.push(el('p', { text: `The cache-write price of these models is not known: cache writes are priced at ${est.cwx} times the input price, an assumption.` }));
   lines.push(el('p', { text: 'A session whose model has no price in the table is not guessed: it stays hatched. These are API-equivalent dollars, what the same tokens would cost at API list prices, not a subscription invoice.' }));
