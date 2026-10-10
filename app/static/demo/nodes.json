@@ -121,7 +121,7 @@
   ],
   "audit": [
     {
-      "id": 7,
+      "id": 12,
       "at": "2026-10-03T02:50:00+00:00",
       "direction": "in",
       "peer": "p-phone-board",
@@ -133,7 +133,7 @@
       "detail": "scopes read"
     },
     {
-      "id": 6,
+      "id": 11,
       "at": "2026-10-03T02:49:20+00:00",
       "direction": "in",
       "peer": "",
@@ -143,6 +143,66 @@
       "target": null,
       "status": "ok",
       "detail": "scopes read, 10 min"
+    },
+    {
+      "id": 10,
+      "at": "2026-10-03T02:46:00+00:00",
+      "direction": "out",
+      "peer": "p-alice-mac",
+      "node_name": "alice-mac",
+      "user": "alice@example.com",
+      "action": "read_task",
+      "target": "task 42",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "id": 9,
+      "at": "2026-10-03T02:44:00+00:00",
+      "direction": "in",
+      "peer": "p-desk-pc",
+      "node_name": "desk-pc",
+      "user": "for bob@example.com",
+      "action": "read_pane",
+      "target": "session shop--api--t-fix",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "id": 8,
+      "at": "2026-10-03T02:43:00+00:00",
+      "direction": "out",
+      "peer": "p-build-box",
+      "node_name": "build-box",
+      "user": "alice@example.com",
+      "action": "read_pane",
+      "target": "session shop--api--t-fix",
+      "status": "refused",
+      "detail": "offline: build-box is offline (last answered 20 min ago); nothing was sent"
+    },
+    {
+      "id": 7,
+      "at": "2026-10-03T02:42:00+00:00",
+      "direction": "in",
+      "peer": "p-phone-board",
+      "node_name": "phone-board",
+      "user": null,
+      "action": "route_refused",
+      "target": "GET /api/state",
+      "status": "refused",
+      "detail": "node phone-board"
+    },
+    {
+      "id": 6,
+      "at": "2026-10-03T02:41:00+00:00",
+      "direction": "out",
+      "peer": "p-alice-mac",
+      "node_name": "alice-mac",
+      "user": "alice@example.com",
+      "action": "read_agents",
+      "target": "agents",
+      "status": "ok",
+      "detail": null
     },
     {
       "id": 5,

@@ -156,9 +156,16 @@ NodeView.peerRow = function (rec, { nowMs = Date.now(), actions = null, incoming
 };
 
 /* The words of an audit action (GET /api/nodes/audit; the actions are app/nodes.py audit(): code_created, code_cancelled, code_burned, code_used, callback_unverified, paired,
-   paired_back, pair_refused, pair_failed, rotated, rotate_failed, revoked, superseded, unpair_kept_outgoing, removed, unpair): the first rule that matches the action's name gives [words when it worked, words when
+   paired_back, pair_refused, pair_failed, rotated, rotate_failed, revoked, superseded, unpair_kept_outgoing, removed, unpair, and, from the relay (issue #140), read_card, read_state,
+   read_task, read_pane, read_agents, scope_refused, route_refused, method_refused): the first rule that matches the action's name gives [words when it worked, words when
    it did not]. An action this table does not know is its name with the underscores and dots turned into spaces, and 'failed' after it when it did not work. */
 NodeView.AUDIT_WORDS = [
+  [/^(scope|route|method)_refused/, 'Request refused', 'Request refused'],
+  [/^read_card/, 'Card read', 'Card read failed'],
+  [/^read_state/, 'State read', 'State read failed'],
+  [/^read_task/, 'Task read', 'Task read failed'],
+  [/^read_pane/, 'Screen tail read', 'Screen tail read failed'],
+  [/^read_agents/, 'Agents read', 'Agents read failed'],
   [/burn/, 'Pairing code burned', 'Pairing code burned'],
   [/code.*(cancel|delete|revoke)|(cancel|delete).*code/, 'Pairing code cancelled', 'Pairing code not cancelled'],
   [/code.*(creat|mint|issue|new)|(creat|mint|issue).*code/, 'Pairing code created', 'Pairing code not created'],
@@ -195,13 +202,48 @@ NodeView.audit = function (row, index) {
   return {
     key: String(r.id !== undefined && r.id !== null ? r.id : `i${index}`), at: NodeView.epoch(r.at), word: NodeView.auditWord(r.action, ok), ok,
     dir: r.direction === 'out' ? 'to' : r.direction === 'in' ? 'from' : '', who: s(r.node_name || r.name || r.peer_name || r.handle, 60),
-    detail: s(r.detail, 140),
+    detail: s(r.detail, 140), target: s(r.target, 80), user: s(r.user, 70),
   };
+};
+
+/* The Activity filters (issue #140): GET /api/nodes/audit takes direction (in | out), node (a node name or a peer id), action and failures=1. The page asks the board with
+   them and, since the same rows may come from a board that ignores them (or from the demo), also keeps only the rows that match. A filter is { direction, node, action, failures }. */
+NodeView.AUDIT_LIMIT = 50;
+NodeView.auditFilter = function () { return { direction: '', node: '', action: '', failures: false }; };
+NodeView.auditActive = function (f) { return !!(f && (f.direction || f.node || f.action || f.failures)); };
+NodeView.auditQuery = function (f, limit) {
+  const q = [`limit=${limit || NodeView.AUDIT_LIMIT}`];
+  if (f && (f.direction === 'in' || f.direction === 'out')) q.push(`direction=${f.direction}`);
+  if (f && f.node) q.push(`node=${encodeURIComponent(NodeView.str(f.node, 64))}`);
+  if (f && f.action) q.push(`action=${encodeURIComponent(NodeView.str(f.action, 40))}`);
+  if (f && f.failures) q.push('failures=1');
+  return `?${q.join('&')}`;
+};
+NodeView.auditFailed = function (r) {
+  if (!r || typeof r !== 'object') return false;
+  if (typeof r.ok === 'boolean') return !r.ok;
+  if (typeof r.status === 'number') return r.status >= 400;
+  return typeof r.status === 'string' && r.status !== '' && !/^(ok|[23]\d\d)$/i.test(r.status);
+};
+NodeView.auditMatch = function (r, f) {
+  if (!r || typeof r !== 'object') return false;
+  if (!f) return true;
+  if (f.direction && r.direction !== f.direction) return false;
+  if (f.node && r.node_name !== f.node && r.peer !== f.node) return false;
+  if (f.action && r.action !== f.action) return false;
+  if (f.failures && !NodeView.auditFailed(r)) return false;
+  return true;
+};
+/* The choices of the node and action selects: every distinct value of the rows seen so far, the current choice always among them. [[value, label]] after 'all'. */
+NodeView.auditChoices = function (seen, current, label) {
+  const vals = [...new Set([...(seen || []), ...(current ? [current] : [])])].filter((v) => typeof v === 'string' && v).sort((a, b) => label(a).localeCompare(label(b)));
+  return vals.map((v) => [v, label(v)]);
 };
 
 NodeView.auditRow = function (info, nowMs) {
   const ago = info.at !== null ? NodeView.span(info.at, nowMs) : '';
-  const where = [info.dir && info.who ? `${info.dir} ${info.who}` : info.who, ago ? `${ago} ago` : ''].filter(Boolean).join(' · ');
+  const by = info.user ? (info.user.startsWith('for ') ? info.user : `by ${info.user}`) : '';       // the acting user: on the peer a claim (`for <login>`), never a proof
+  const where = [info.dir && info.who ? `${info.dir} ${info.who}` : info.who, info.target, by, ago ? `${ago} ago` : ''].filter(Boolean).join(' · ');
   return el('div', { class: info.ok ? 'nd-audit' : 'nd-audit bad', 'data-key': info.key },
     el('span', { class: 'nd-glyph', 'aria-hidden': 'true', text: info.ok ? '✓' : '✕' }),
     el('div', { class: 'nd-audit-main' },

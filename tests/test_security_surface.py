@@ -12,7 +12,8 @@ Kinds: identity (the Tailscale login on CCBOARD_ALLOWED_USERS), identity+csrf (t
 <data dir>/hook-token only), identity+device-token (/mcp, issue #13), hub-token|identity (/api/node/summary), none (/api/node/hello,
 issue #133: exactly {app, api, node_id}, rate limited; nothing else under /api/node answers without auth), pair-code (POST /api/nodes/pair, issue #135: no
 identity, but X-CCBoard, no Origin, no disallowed identity header, a code; POST /api/nodes/pair/confirm, the callback that proves who is redeeming), node-token (POST /api/node/rotate and /api/node/unpair: a paired node's token,
-any scope; an owner's identity reaches a handler that refuses it). A paired node's token also opens the routes of nodes.NODE_ROUTES and nothing else
+any scope; an owner's identity reaches a handler that refuses it; so do the relay rows' peer wrappers under /api/node/), relay (the hub side of a relay row,
+issue #140: /api/nodes/{handle}/...; a signed-in person AND X-CCBoard, even for a GET, or the local hook token). A paired node's token also opens the routes of nodes.NODE_ROUTES and nothing else
 (tests/test_nodes_auth.py walks every route). Besides these, the
 hook token also opens every other /api/* route without identity or X-CCBoard (local automation; accepted, see the report, F-A2).
 No route answers without auth except /healthz, which is answered by the middleware itself and is not in app.routes, and /api/node/hello.
@@ -165,6 +166,14 @@ EXPECTED = {
     ("POST", "/api/nodes/{peer}/rotate"): "identity+csrf",
     ("POST", "/api/nodes/{peer}/remove-preview"): "identity+csrf",   # what removing a pair would also touch (the other incoming pairs of the same node id); changes nothing
     ("DELETE", "/api/nodes/{peer}"): "identity+csrf",
+    ("GET", "/api/node/tasks/{tid}"): "node-token",     # a relay row (issue #140, app/nodes_relay.py RELAY): a node token with scope read; a person or the hook token gets a 403 from the handler
+    ("GET", "/api/node/sessions/{name}/pane"): "node-token",   # the last 40 lines of a screen, control characters out
+    ("GET", "/api/node/agents"): "node-token",          # the installed agents and their launcher options, without the account block
+    ("GET", "/api/nodes/{handle}/card"): "relay",       # the hub side of a relay row: a signed-in person with X-CCBoard (even for a GET), or the local hook token; a node token is a 403; 404 for a handle the registry does not hold
+    ("GET", "/api/nodes/{handle}/state"): "relay",
+    ("GET", "/api/nodes/{handle}/tasks/{tid}"): "relay",
+    ("GET", "/api/nodes/{handle}/sessions/{name}/pane"): "relay",
+    ("GET", "/api/nodes/{handle}/agents"): "relay",
     ("GET", "/api/nodes/discover"): "identity",   # the tailnet devices that may be nodes (issue #134); refresh=1 also needs X-CCBoard (it makes the board send requests), checked in the handler
     ("GET", "/api/search"): "identity",
     ("POST", "/api/cost/refresh"): "identity+csrf",
@@ -184,7 +193,7 @@ EXPECTED = {
 }
 # Answered with no auth at all, by auth_middleware before any route (not in app.routes): the compose and Dockerfile healthcheck over loopback.
 NO_AUTH = {("GET", "/healthz"): "a constant 'ok' for the container healthcheck; reads nothing, changes nothing"}
-FILL = {"agent": "claude", "decision": "allow", "jid": "1", "key": "k", "n:int": "1", "name": "p--r--s", "pid": "1", "project": "p",
+FILL = {"agent": "claude", "decision": "allow", "handle": "node-b", "jid": "1", "key": "k", "n:int": "1", "name": "p--r--s", "pid": "1", "project": "p",
         "repo": "r", "rid": "1", "sid": UUID, "tid": "1", "token_id": "t", "peer": "p_0123456789abcdef"}
 PROBE = {"/static/": "/static/core.js", "/tty/": "/tty/"}
 
@@ -223,7 +232,7 @@ def test_route_table_is_complete():
 def test_kinds_follow_the_method():
     """A non-GET route a person calls must be identity+csrf; only the token routes are exempt, and each is named."""
     for (method, path), kind in EXPECTED.items():
-        if kind in ("hook-token", "identity+device-token", "hub-token|identity", "none", "pair-code", "node-token"):
+        if kind in ("hook-token", "identity+device-token", "hub-token|identity", "none", "pair-code", "node-token", "relay"):
             continue
         assert kind == ("identity" if method == "GET" else "identity+csrf"), (method, path, kind)
 
@@ -249,6 +258,28 @@ def test_every_route_refuses_a_request_without_identity(lite_client, method, pat
     assert r.status_code == 403, (method, path, r.status_code)
     want = "bad hook token" if kind == "hook-token" else NO_ID
     assert r.json()["error"] == want, (method, path)
+
+
+@pytest.mark.parametrize("method,path", sorted(k for k, v in EXPECTED.items() if v == "relay"))
+def test_a_relay_route_needs_identity_and_the_csrf_header_even_for_a_get(lite_client, method, path):
+    """Issue #140: the hub side of a relay row. No identity is a 403; an identity without X-CCBoard is a 403 (a GET included: it makes this board call another);
+    with both, or with the hook token, the handler runs and a board with no paired node answers 404 for every handle."""
+    from app import hooks
+    assert send(lite_client, method, path).json()["error"] == NO_ID
+    r = send(lite_client, method, path, ID)
+    assert r.status_code == 403 and r.json()["error"] == NO_CSRF, (method, path)
+    for headers in (H, {"X-CCBoard-Token": hooks.ensure_token()}):
+        r = send(lite_client, method, path, headers)
+        assert r.status_code == 404 and r.json()["reason"] == "unknown_node", (method, path, headers)
+
+
+@pytest.mark.parametrize("method,path", sorted(k for k, v in EXPECTED.items() if v == "node-token" and k[1] not in ("/api/node/rotate", "/api/node/unpair")))
+def test_a_peer_wrapper_refuses_a_person_and_the_hook_token(lite_client, method, path):
+    """Issue #140: the peer wrappers of the relay rows are for a paired node's token only; the owner's identity and the local hook token get a 403 from the handler."""
+    from app import hooks
+    for headers in (H, {"X-CCBoard-Token": hooks.ensure_token()}):
+        r = send(lite_client, method, path, headers)
+        assert r.status_code == 403 and "takes a node token" in r.json()["error"], (method, path, headers)
 
 
 @pytest.mark.parametrize("method,path", sorted(k for k, v in EXPECTED.items() if v == "identity+csrf"))

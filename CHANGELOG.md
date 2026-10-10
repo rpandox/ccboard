@@ -2,6 +2,19 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.40 - 2026-10-10
+
+### Added
+- Nodes P7, the allowlisted relay (#140). `RELAY` in `app/nodes_relay.py` is the one table through which a hub may ask a peer for something: each row has a scope, a strict body model, a rate class and an audit action, and adds a hub route (`/api/nodes/{handle}/...`, a signed-in person with `X-CCBoard` or the local hook token, never a node token) and a peer wrapper (`/api/node/...`, a node token with the scope). The first rows only read: the card, the state, one task's detail (never its prompt or result), the last 40 lines of a session's screen (control characters out, tokens replaced) and the agents the launcher can offer.
+- The hub refuses in a fixed order and makes no request when it does: caller, handle (`local`, unknown, this board itself, a legacy row), the pair's scope (`needs the read scope on build-box`), the node's status (`re-pair`, or offline with the age), then the body. The call has a 10 s timeout, 256 KB and 512 KB caps and follows no redirect; the answer comes back as `{node, age, data}` with a stable `reason` on every error, and a timeout after sending is "could not confirm" and never retried.
+- `guard_launch`, the one guard for every row that will start or steer an agent, runs on the hub and again on the peer: a permission mode beyond default, acceptEdits and plan, any bypass flag or acknowledgement, `args`, `add_dirs` and the tool and prompt fields, a Codex sandbox beyond read-only and workspace-write, an approval beyond on-request, the six dangerous spellings in any string, an unknown agent and the shell launcher. No row uses it yet; it ships with its full matrix.
+- Both boards audit each relayed call with the acting user (`for <login>` on the peer, a claim that decides nothing), the action, the target and the result, never a token, a code or a prompt. `GET /api/nodes/audit` takes `direction`, `node`, `action` and `failures=1`, and Settings > Nodes > Activity has the filters (Sent or Received, Failed, a node, an action) and shows who, what and the result. README: the scopes table, the allowlist rule and "`read` shows screen tails".
+
+### Changed
+- A node token on a path it may call with another method now gets `405` with `Allow` (it was `403`). Every other path is still a `403`, and the walk test fails for a route that opens without a row.
+
+Upgrade: nothing to do.
+
 ## v0.5.39 - 2026-10-10
 
 ### Added

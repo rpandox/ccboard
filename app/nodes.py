@@ -951,10 +951,11 @@ def audit(direction: str, peer_id: str, action: str, ok: bool, detail: str | Non
         log.debug("audit row failed: %s", e.__class__.__name__)
 
 
-def audit_list(limit: int = 100, db=None) -> list[dict]:
-    """The newest audit rows first: {id, at, direction, peer, node_name, user, action, target, status, detail}."""
+def audit_list(limit: int = 100, db=None, *, direction: str | None = None, node: str | None = None, action: str | None = None, failures: bool = False) -> list[dict]:
+    """The newest audit rows first: {id, at, direction, peer, node_name, user, action, target, status, detail}. The filters narrow it: `direction` (in or out),
+    `node` (the row's node name or its peer id), `action` (one audit action) and `failures` (status other than ok); all together when several are given."""
     try:
-        rows = _db(db).node_audit_list(limit)
+        rows = _db(db).node_audit_list(limit, direction=direction, node=node, action=action, failures=failures)
     except Exception:
         return []
     return [{k: r[k] for k in ("id", "at", "direction", "peer", "node_name", "user", "action", "target", "status", "detail")} for r in rows]
@@ -1979,3 +1980,7 @@ def remove_node(ident, db=None, also_revoke=None) -> dict:
     _, others = _claimants(d, p)
     return {"removed": True, "peer_told": told, "also_revoked": revoked,
             "other_pairs": [{k: o[k] for k in ("peer_id", "name", "url", "verified")} for o in others]}
+
+
+# The relay table (issue #140, app/nodes_relay.py) lists the rows it adds to NODE_ROUTES when it is imported; import it last, whoever imported this module first.
+from . import nodes_relay  # noqa: E402,F401

@@ -989,10 +989,25 @@ class DB:
             return _insert(self.conn, "node_audit", {"at": at, "direction": direction, "peer": peer, "node_name": node_name, "user": user,
                                                      "action": action, "target": target, "status": status, "detail": detail})
 
-    def node_audit_list(self, limit: int = 100) -> list[dict]:
-        """The newest audit rows first."""
+    def node_audit_list(self, limit: int = 100, *, direction: str | None = None, node: str | None = None, action: str | None = None,
+                        failures: bool = False) -> list[dict]:
+        """The newest audit rows first. `direction` (in or out), `node` (the node name or the peer id), `action` and `failures` (status other than ok)
+        narrow it; the values are bound parameters."""
+        where, args = [], []
+        if direction in ("in", "out"):
+            where.append("direction=?")
+            args.append(direction)
+        if node:
+            where.append("(node_name=? OR peer=?)")
+            args += [node, node]
+        if action:
+            where.append("action=?")
+            args.append(action)
+        if failures:
+            where.append("status<>'ok'")
+        q = "SELECT * FROM node_audit" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY id DESC LIMIT ?"
         with self.lock:
-            return [dict(r) for r in self.conn.execute("SELECT * FROM node_audit ORDER BY id DESC LIMIT ?", (max(1, min(int(limit), 1000)),)).fetchall()]
+            return [dict(r) for r in self.conn.execute(q, (*args, max(1, min(int(limit), 1000)))).fetchall()]
 
     def node_audit_prune(self, before: str) -> int:
         """Delete audit rows and revoked pair rows older than `before` (an iso() text), and keep the audit table to its newest NODE_AUDIT_CAP rows;

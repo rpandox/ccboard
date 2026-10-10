@@ -31,7 +31,7 @@ ID = {"Tailscale-User-Login": "alice@example.com"}
 H = {**ID, "X-CCBoard": "1"}
 UUID = "0b0e7c4c-1a2b-4c3d-8e9f-0123456789ab"
 PEER = "p_0123456789abcdef"
-FILL = {"agent": "claude", "decision": "allow", "jid": "1", "key": "k", "n:int": "1", "name": "p--r--s", "pid": "1", "project": "p",
+FILL = {"agent": "claude", "decision": "allow", "handle": "node-b", "jid": "1", "key": "k", "n:int": "1", "name": "p--r--s", "pid": "1", "project": "p",
         "repo": "r", "rid": "1", "sid": UUID, "tid": "1", "token_id": "t", "peer": PEER}
 NO_ID = "no Tailscale identity or not in CCBOARD_ALLOWED_USERS"
 NO_CSRF = "missing X-CCBoard header"
@@ -42,7 +42,12 @@ EXPECTED_NODE_ROUTES = {
     ("GET", "/api/node/state"): "read",
     ("POST", "/api/node/rotate"): nodes.SCOPE_ANY,
     ("POST", "/api/node/unpair"): nodes.SCOPE_ANY,
+    ("GET", "/api/node/tasks/{tid}"): "read",                    # the relay rows (issue #140, app/nodes_relay.py RELAY): each has its refusal tests in tests/test_nodes_relay.py
+    ("GET", "/api/node/sessions/{name}/pane"): "read",
+    ("GET", "/api/node/agents"): "read",
 }
+# What a listed route answers a token that holds every scope, on the empty test board: the handler's own status, never a 403.
+LISTED_STATUS = {("GET", "/api/node/tasks/{tid}"): 404, ("GET", "/api/node/sessions/{name}/pane"): 404}
 CALLER = {"id": "ts:nCALLER000001", "name": "caller", "url": "https://100.64.0.9"}
 
 
@@ -67,6 +72,14 @@ def bearer(token: str, **extra) -> dict:
 def mint(db, scopes=("read", "tasks"), node=CALLER):
     """A pair on this board (the accepting side) and its token's plaintext, as the pair endpoint would have made them."""
     return nodes.add_incoming(dict(node), list(scopes), db=db)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_scan():
+    """GET /api/node/state shares the 2 s project scan cache of app/main.py; leave it empty so a test that runs next (tmux down, a different board) never reads this one's."""
+    yield
+    from app import main
+    main._invalidate_scan()
 
 
 @pytest.fixture
@@ -102,8 +115,9 @@ def test_every_scoped_row_refuses_a_pair_without_that_scope(board, method, path)
     assert any(x["action"] == "scope_refused" and x["target"] == f"{method} {path}" and x["status"] == "refused" for x in rows(db))
 
 
-def test_a_node_token_opens_only_the_listed_routes(board, wide_buckets):
-    """The walk: every route of the app, every method, with a token that holds all four scopes. Only NODE_ROUTES is answered by a handler."""
+def test_a_node_token_opens_only_the_listed_routes(board, wide_buckets, fake_tmux):
+    """The walk: every route of the app, every method, with a token that holds all four scopes. Only NODE_ROUTES is answered by a handler; a route that is
+    added later without a row is a 403 here by default. (tmux is the in-memory fake: the pane row looks for a session.)"""
     c, db = board
     _, tok = mint(db, nodes.SCOPES)
     listed, closed = 0, 0
@@ -113,8 +127,8 @@ def test_a_node_token_opens_only_the_listed_routes(board, wide_buckets):
         if (method, path) in EXPECTED_NODE_ROUTES:
             listed += 1
             if EXPECTED_NODE_ROUTES[(method, path)] != nodes.SCOPE_ANY:             # rotate and unpair change the pair: their own tests call them
-                r = c.request(method, path, headers=bearer(tok))
-                assert r.status_code == 200, (method, path)
+                r = c.request(method, concrete(path), headers=bearer(tok))
+                assert r.status_code == LISTED_STATUS.get((method, path), 200), (method, path, r.status_code)
             continue
         r = c.request(method, concrete(path), headers=bearer(tok), content=b"{}" if method != "GET" else None)
         closed += 1
@@ -122,15 +136,35 @@ def test_a_node_token_opens_only_the_listed_routes(board, wide_buckets):
     assert listed == len(EXPECTED_NODE_ROUTES) and closed > 100          # the walk saw the whole app, not a short list
 
 
-@pytest.mark.parametrize("method", ["GET", "POST", "PUT", "PATCH", "DELETE"])
-def test_a_listed_path_with_an_unlisted_method_is_closed(board, wide_buckets, method):
+def test_a_route_listed_by_mistake_is_not_a_403_so_the_walk_would_catch_it(board, wide_buckets, monkeypatch):
+    """Mutation check of the walk above: a route that is wrongly listed in NODE_ROUTES (here the skills list) is no longer a 403, and this file's list does not
+    have it, so test_a_node_token_opens_only_the_listed_routes (and the equality test below) fail for it."""
     c, db = board
     _, tok = mint(db, nodes.SCOPES)
-    for path in ("/api/node", "/api/node/summary", "/api/node/state", "/api/node/rotate", "/api/node/unpair"):
-        if (method, path) in EXPECTED_NODE_ROUTES:
+    assert c.request("GET", "/api/skills", headers=bearer(tok)).status_code == 403
+    monkeypatch.setitem(nodes.NODE_ROUTES, ("GET", "/api/skills"), "read")
+    assert c.request("GET", "/api/skills", headers=bearer(tok)).status_code != 403
+    assert dict(nodes.NODE_ROUTES) != EXPECTED_NODE_ROUTES
+
+
+def listed_key(path: str) -> str:
+    """A concrete listed path as its table key."""
+    return re.sub(r"/tasks/[^/]+$", "/tasks/{tid}", re.sub(r"/sessions/[^/]+/pane$", "/sessions/{name}/pane", path))
+
+
+@pytest.mark.parametrize("method", ["GET", "POST", "PUT", "PATCH", "DELETE"])
+def test_a_listed_path_with_an_unlisted_method_is_405(board, wide_buckets, method):
+    """The path is a row, the method is not: 405 with Allow (issue #140). An unlisted path stays the same 403 whatever the method."""
+    c, db = board
+    _, tok = mint(db, nodes.SCOPES)
+    for path in ("/api/node", "/api/node/summary", "/api/node/state", "/api/node/rotate", "/api/node/unpair", "/api/node/tasks/1",
+                 "/api/node/sessions/p--r--s/pane", "/api/node/agents"):
+        if (method, listed_key(path)) in EXPECTED_NODE_ROUTES:
             continue
         r = c.request(method, path, headers=bearer(tok))
-        assert r.status_code == 403 and r.json()["error"] == CLOSED, (method, path)
+        allow = sorted(m for (m, p) in EXPECTED_NODE_ROUTES if p == listed_key(path))
+        assert r.status_code == 405 and r.headers["allow"] == ", ".join(allow), (method, path, r.status_code)
+    assert any(x["action"] == "method_refused" and x["status"] == "refused" for x in rows(db))
 
 
 @pytest.mark.parametrize("path", ["/api/nope", "/api/node/hello/x", "/api/nodes/discover", "/api/nodes/pair", "/api/nodes/pair/confirm", "/api/nodes/pair-code", "/api/nodes", "/api/nodes/pairs",
