@@ -246,8 +246,10 @@ function nodeSessionParts(rec, s, steer) {
       ['Started as', s.kind], ['Since', s.since ? `${nhAgeText(s.since)} ago` : ''], ['Session', s.tmux]])];
   const pc = Nodes.can(rec, 'permissions');
   const answer = steer ? (s.needs_you && nsWaiting(rec) > 0 && !pc.ok ? Nodes.off('Answer', pc.why) : null) : (s.needs_you ? Nodes.off('Answer', Nodes.reason(rec, 'sessions')) : null);
-  const acts = steer ? Nodes.acts(open, nodePeekBack(rec), answer)
-    : Nodes.acts(open, nodePeekBack(rec), Nodes.off('Send a prompt', Nodes.reason(rec, 'sessions')), answer, Nodes.off('Close session', Nodes.reason(rec, 'sessions')));
+  const term = Nodes.termBtn(rec.handle, s.tmux, { cls: 'small' });                       // issue #144: the session's own terminal page on the node, in a new window
+  const acts = steer ? Nodes.acts(open, term, nodePeekBack(rec), answer)
+    : Nodes.acts(open, term, nodePeekBack(rec), Nodes.off('Send a prompt', Nodes.reason(rec, 'sessions')), answer, Nodes.off('Close session', Nodes.reason(rec, 'sessions')));
+  acts.append(el('p', { class: 'dim nd-ro nd-term-note', text: [Nodes.termNote(rec), `The terminal opens on ${name} itself, not through this board.`, Nodes.TERM_ID].filter(Boolean).join(' ') }));
   return { top, acts };
 }
 
@@ -495,6 +497,169 @@ function nodeSteerMake(handle, tmux) {
   Nodes.peek = ctl;
   return ctl;
 }
+
+/* ---------- a session of another node as a tail tile (issue #144) ----------
+
+   Nodes.tailTile(handle, tmux, opt) builds the body of a remote tile for the quad and the terminal dock: the last 12 lines of the session from the stream relay (Live.subscribe with a
+   remote Ref: read only, scrolled to the bottom, every line peer data and put in through textContent), one status line (the connection, or what the last send came to) and a one-line
+   prompt box that sends through the prompt relay row (Nodes.sendPrompt), so every refusal arrives as the plain sentence the steer rules give it. It never builds a framed page, never
+   opens a socket of its own and sends nothing to the node's own address: the terminal is a link (Nodes.termBtn). Enter sends; Shift+Enter (and Alt+Enter) is refused, because this
+   box cannot show a second line (the docked box of a local tile does the same). A refusal and a timeout keep the draft; only a confirmed send empties the box.
+   opt: {head: true builds the one-row header the dock uses (the quad has its own), onClose(), onChange(state) after every repaint}.
+   Returns {root, head, update(), state(), focus(), open(), reload(), destroy()}; null for a name or handle outside the grammar. */
+const NODE_TILE_LINES = 12;
+const NODE_TILE_MSG_MS = 12000;
+
+Nodes.tailTile = function (handle, tmux, opt) {
+  const ref = Ref.session(handle, tmux);
+  if (!ref || ref.node === null) return null;
+  const o = opt || {};
+  const T = { rec: null, row: null, off: null, got: false, gone: null, lines: [], busy: false, last: '', msg: null, dead: false, conn: '', can: { ok: false, why: '' }, sig: '' };
+  const pre = el('pre', { class: 'qr-tail', tabindex: '0', role: 'log', 'aria-label': `Last lines of ${tmux}` });
+  const st = el('span', { class: 'qr-st-t' });
+  const queue = el('button', { class: 'small qr-queue hidden', type: 'button', title: 'Type it as soon as the session is ready', text: 'Queue it', onclick: () => send(true) });
+  const line = el('p', { class: 'qr-st dim', role: 'status' }, st, queue);
+  const ta = el('textarea', { class: 'composer tk-ta qr-ta', rows: '1', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'send', 'aria-label': `Prompt for ${tmux} on ${handle}` });
+  const sendBtn = el('button', { class: 'tk-send qr-send', type: 'button', title: 'Send (Enter)', text: 'Send', onclick: () => send(false) });
+  const box = el('div', { class: 'tk-composer tk-docked qr-box', role: 'group', 'aria-label': 'Prompt box' }, ta, sendBtn);
+  ta.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.isComposing) return;                      // Enter that confirms an IME candidate is not a send
+    e.preventDefault();                                                  // Shift+Enter would add a line this box cannot show
+    if (!e.shiftKey && !e.altKey) send(false);
+  });
+  let head = null;
+  let hg = null;
+  let hl = null;
+  let ht = null;
+  if (o.head) {                                                          // the dock's header: state, the session, its node, the mode word, the terminal link and Close
+    hg = el('span', { class: 'qr-hg' });
+    hl = el('span', { class: 'qr-hn', title: tmux });
+    ht = el('span', { class: 'qr-ht' });
+    head = el('header', { class: 'qr-head' }, hg, hl, Nodes.chip(handle), el('span', { class: 'qr-mode', title: 'Tail: the last captured lines, not an interactive terminal', text: 'Tail' }), ht,
+      typeof o.onClose === 'function' ? el('button', { class: 'icon minimal small qr-close', type: 'button', 'aria-label': 'Close this tile', title: 'Close this tile', onclick: () => o.onClose() }, ic('cross')) : null);
+  }
+  const root = el('div', { class: 'qr', 'data-node': handle }, head, pre, line, box);
+  const name = () => (T.rec ? nhName(T.rec) : handle);
+  const sess = () => String((T.row && T.row.session) || tmux.split('--')[2] || tmux);
+
+  function say(kind, text, url) { T.msg = { kind, text, url: url || null, at: Date.now(), queue: false }; paintLine(); }
+
+  function paintLine() {
+    const m = T.msg && (T.busy || Date.now() - T.msg.at < NODE_TILE_MSG_MS) ? T.msg : null;
+    if (!m) T.msg = null;
+    const kind = m ? m.kind : (T.can.ok && !T.gone ? '' : 'warn');
+    line.className = `qr-st ${kind || 'dim'}`.trim();
+    st.textContent = '';
+    st.append(m ? m.text : T.conn);
+    if (m && m.url) st.append(' ', el('a', { class: 'qr-fall', href: m.url, target: '_blank', rel: 'noopener noreferrer', text: `Tap to open the terminal on ${name()}` }));
+    queue.classList.toggle('hidden', !(m && m.queue));
+  }
+
+  function unsub() { if (T.off) { try { T.off(); } catch (e) { console.error('ccboard node tile', e); } T.off = null; } }
+
+  function sub() {
+    if (T.off || typeof Live === 'undefined' || typeof Live.subscribe !== 'function') return;
+    T.off = Live.subscribe(ref, (lines, meta) => {
+      if (T.dead) return;
+      if (Array.isArray(lines)) { T.lines = lines.filter((x) => typeof x === 'string').slice(-NODE_TILE_LINES); T.got = T.got || T.lines.length > 0; }
+      T.gone = meta && meta.gone ? meta.gone : null;
+      setTextIfChanged(pre, T.lines.join('\n'));
+      pre.scrollTop = pre.scrollHeight;                                  // the newest line is the last one
+      paint();
+    });
+  }
+
+  /* The connection in plain words: the hub's reading of the node first (offline since HH:MM, re-pair), then what the stream said. */
+  function connWords(rec, v, can, wants) {
+    if (!rec) return 'This node is not paired any more. Close the tile, or pair it again in Settings.';
+    if (v.status === 'offline' || v.status === 'unauthorized' || v.status === 'unpaired') return v.word;
+    if (T.gone) return nodeTailWords(T.gone, nhName(rec));
+    if (!wants) return can.why;
+    return T.got ? 'Live: updates as the session prints.' : 'Waiting for the first lines…';
+  }
+
+  function paint() {
+    if (T.dead) return;
+    const rec = Nodes.get(handle);
+    T.rec = rec;
+    const rows = rec ? Nodes.sessions(handle) : [];
+    T.row = rows.find((x) => x.tmux === tmux) || null;
+    const v = rec ? Nodes.view(rec) : null;
+    const can = Nodes.can(rec, 'sessions');
+    T.can = can;
+    const wants = !!rec && Array.isArray(rec.scopes) && rec.scopes.includes('sessions');
+    if (wants) sub(); else unsub();
+    T.conn = connWords(rec, v, can, wants);
+    const agent = T.row ? nhAgent(T.row.agent) : '';
+    const inReading = !!rec && !!rec.state;
+    let why = can.ok ? '' : can.why;
+    if (!why && inReading && !T.row) why = `This session is not in the last reading of ${name()}. It may have ended.`;
+    if (!why && T.row && (agent === 'shell' || T.row.state === 'ended')) why = 'This session is a shell or has ended: it cannot take a prompt.';
+    const off = !!why || T.busy;
+    ta.disabled = off;
+    sendBtn.disabled = off;
+    ta.setAttribute('placeholder', why || `Send to ${sess()}…`);
+    ta.setAttribute('title', why || 'Enter sends. This one-line box has no new line.');
+    root.setAttribute('data-state', T.row ? String(T.row.state || 'unknown') : 'unknown');
+    root.classList.toggle('blocked', !!why);
+    root.classList.toggle('gone', !!(T.gone || (v && v.status !== 'online' && v.status !== 'stale')));
+    paintLine();
+    if (head) {
+      const sig = JSON.stringify([T.row && T.row.state, T.row && T.row.agent, T.row && T.row.session, rec && rec.url, Nodes.TF.has(`${handle}/${tmux}`), rec && rec.status, rec && rec.name]);
+      if (sig !== T.sig) {
+        T.sig = sig;
+        hg.textContent = '';
+        if (T.row) hg.append(stateGlyph(T.row.state), agentGlyph(nhAgent(T.row.agent)));
+        setTextIfChanged(hl, sess());
+        ht.textContent = '';
+        ht.append(Nodes.termBtn(handle, tmux, { icon: true, cls: 'icon minimal small qr-term' }));
+      }
+    }
+    if (typeof o.onChange === 'function') { try { o.onChange(ctl.state()); } catch (e) { console.error('ccboard node tile', e); } }
+  }
+
+  /* A prompt: the draft stays in the box until the node confirmed it (a refusal, a timeout and a scope that is missing all keep it). */
+  async function send(asQueue) {
+    if (T.busy || T.dead) return;
+    const text = asQueue === true ? T.last : ta.value;
+    if (!String(text).trim()) return;
+    T.last = String(text);
+    T.busy = true;
+    say('info', `Sending to ${name()}…`);
+    paint();
+    const r = await Nodes.sendPrompt(handle, tmux, text, { queue: asQueue === true });
+    T.busy = false;
+    if (T.dead) return;
+    if (r.ok) {
+      if (asQueue !== true) { ta.value = ''; if (typeof rowCleared === 'function') rowCleared(ta); }
+      say('ok', r.queued ? `Queued on ${name()}. It is typed when the session is ready.` : `Sent through the relay to ${name()}.`);
+    } else {
+      say(r.reason === 'busy' || r.reason === 'rate_limited' ? 'warn' : 'bad', r.text);
+      T.msg.queue = !!(r.busy && r.busy.code === 'working');
+    }
+    paint();
+    if (typeof ta.focus === 'function' && !ta.disabled) ta.focus();
+  }
+
+  const subscriber = () => paint();
+  Nodes.M.subs.add(subscriber);
+  const ctl = {
+    root, head, ta, pre, handle, tmux,
+    update: paint,
+    state() { const rec = T.rec; return { rec, row: T.row, view: rec ? Nodes.view(rec) : null, can: T.can, conn: T.conn, gone: T.gone }; },
+    focus() { if (ta.disabled || typeof ta.focus !== 'function') return false; ta.focus(); return true; },
+    open() {
+      const r = Nodes.openTerm(handle, tmux);
+      if (!r.ok) say('warn', `The address saved for ${name()} is not one this board opens.`);
+      else if (r.blocked) say('warn', 'No window opened.', r.url);
+      return r;
+    },
+    reload() { unsub(); T.got = false; T.gone = null; sub(); paint(); if (typeof Nodes.poll === 'function') Nodes.poll({ force: true }); },
+    destroy() { T.dead = true; Nodes.M.subs.delete(subscriber); unsub(); },
+  };
+  paint();
+  return ctl;
+};
 
 /* ---------- the three pages ---------- */
 

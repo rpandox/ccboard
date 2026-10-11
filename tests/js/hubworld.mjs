@@ -41,7 +41,7 @@ export function rec(handle, over = {}) {
 
 const PAGES = ['inbox', 'widgets', 'tasks', 'agents', 'home', 'session', 'search'];
 
-export function hubWorld({ state = null, nodes = [], search = '', extra = {}, scripts = true, realApi = false, hash = null } = {}) {
+export function hubWorld({ state = null, nodes = [], search = '', extra = {}, scripts = true, realApi = false, hash = null, realLive = false } = {}) {
   const w = makeWorld({ matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), setInterval: () => 0, clearInterval: () => {}, ...extra });   // no real timer: Nodes.start would keep node alive
   const dom = installDom(w);
   w.location.search = search;
@@ -65,7 +65,7 @@ export function hubWorld({ state = null, nodes = [], search = '', extra = {}, sc
     toast = (text, o) => { __toasts.push({ text, kind: o && o.kind }); };
     poll = async () => {};
     window.open = (...a) => { __opened.push(a); };
-    if (typeof Live !== 'undefined') { Live.subscribe = () => () => {}; Live.unsubscribe = () => {}; }
+    if (typeof Live !== 'undefined' && !${realLive}) { Live.subscribe = () => () => {}; Live.unsubscribe = () => {}; }
   `);
   if (state) setState(w, state);
   answer(w, 200, { nodes, at: iso(0) }, 'W/"1"');

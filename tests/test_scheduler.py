@@ -653,3 +653,29 @@ def test_changing_the_model_or_the_cap_makes_the_acknowledgement_stale(projects_
     assert scheduler.fable_hold({**job, "args": "--model sonnet", "opts": None}) is None
     assert scheduler.fable_hold({**job, "agent": "codex", "args": "--model fable", "opts": None}) is None
     assert scheduler.fable_hold({**job, "args": "--model opus", "opts": None}, env={"ANTHROPIC_DEFAULT_FABLE_MODEL": "opus"}) == scheduler.FABLE_HELD
+
+
+def test_starting_an_agent_is_tried_again_while_its_binary_is_busy_and_other_errors_are_raised(monkeypatch):
+    """ETXTBSY (the binary is still open for writing somewhere) clears within milliseconds: the run is tried again, not failed. This is what made
+    test_batch_respects_cap fail now and then on CI ("[Errno 26] Text file busy")."""
+    calls = []
+    def flaky(cmd, **kw):
+        calls.append(cmd)
+        if len(calls) < 3:
+            raise OSError(26, "Text file busy")
+        return "done"
+    monkeypatch.setattr(scheduler.subprocess, "run", flaky)
+    monkeypatch.setattr(scheduler, "BUSY_PAUSE", 0)
+    assert scheduler._run_agent(["claude"], cwd=".") == "done" and len(calls) == 3
+    calls.clear()
+    monkeypatch.setattr(scheduler.subprocess, "run", lambda cmd, **kw: (_ for _ in ()).throw(OSError(26, "Text file busy")))
+    with pytest.raises(OSError):
+        scheduler._run_agent(["claude"])                    # still busy after BUSY_TRIES: raised, never looped for ever
+    seen = []
+    def missing(cmd, **kw):
+        seen.append(1)
+        raise FileNotFoundError(2, "No such file")
+    monkeypatch.setattr(scheduler.subprocess, "run", missing)
+    with pytest.raises(FileNotFoundError):
+        scheduler._run_agent(["claude"])
+    assert len(seen) == 1, "another error is not retried"

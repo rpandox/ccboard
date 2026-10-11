@@ -14,12 +14,13 @@ const URL0 = 'https://board.example';
 const row = (over = {}) => ({ id: 'a1b2c3d4e5f6', name: 'laptop', scopes: ['read', 'tasks'], created_at: '2026-10-01T10:00:00Z', last_used_at: null, last_user: null,
   last_tool: null, expires_at: '2026-12-30T10:00:00Z', expired: false, ...over });
 
-function mcpWorld({ enabled = false, tokens = [], publicUrl = URL0, hold = null, refuse = null } = {}) {
+function mcpWorld({ enabled = false, tokens = [], publicUrl = URL0, hold = null, refuse = null, nodes = null, nodesEnabled = false } = {}) {
   const st = fakeState();
   st.config = { ...st.config, public_url: publicUrl };
+  if (nodesEnabled) st.nodes_enabled = true;
   const { w } = homeWorld({ state: st });
   const server = { enabled, tokens: tokens.map((t) => ({ ...t })) };
-  const view = () => ({ enabled: server.enabled, env_default: false, tokens: server.tokens.map((t) => ({ ...t })), recent: [], max_tokens: 10 });
+  const view = () => ({ enabled: server.enabled, env_default: false, tokens: server.tokens.map((t) => ({ ...t })), recent: [], max_tokens: 10, ...(nodes ? { nodes } : {}) });
   w.ctx.__copied = [];
   w.ctx.navigator.clipboard = { writeText: async (t) => { w.ctx.__copied.push(t); } };
   w.run('globalThis.__errors = []; setError = (m) => { if (m) __errors.push(m); }; demoOn = () => false;');
@@ -229,4 +230,52 @@ test('the command templates are the README\'s, word for word', () => {
   assert.equal(w.run("mcpUrl({ config: { public_url: 'https://board.example/' } })"), 'https://board.example/mcp');
   assert.equal(w.run("mcpUrl({ config: { public_url: '' } })"), '');
   assert.equal(w.run("mcpUrl({ config: { public_url: 'javascript:alert(1)' } })"), '');
+});
+
+// ---- issue #152: the nodes switch of the board, read only in the same block
+
+const NODES_LINES = {
+  off: 'Agents on this board stay on this board: they cannot reach another node.',
+  read: 'Agents on this board may list paired nodes and read their projects and tasks; they cannot start a task there, type into a session, answer a permission or read a screen on another node.',
+  tasks: 'Agents on this board may list paired nodes, read their projects and tasks and start tasks on them in a new session; they can never type into a session, answer a permission or read a screen on another node.',
+};
+const nodesLine = (w) => block(w).querySelector('.mcp-nodes');
+
+test('Settings, Agents shows CCBOARD_MCP_NODES read only next to the MCP block: its level in words, its env value and what it allows in one sentence; there is no control for it', async () => {
+  for (const [level, word, value] of [['off', 'off', '0'], ['read', 'read only', 'read'], ['tasks', 'read and start tasks', 'tasks']]) {
+    const { w } = mcpWorld({ nodes: { enabled: level !== 'off', level, env: 'CCBOARD_MCP_NODES' }, nodesEnabled: true });
+    await settle();
+    const line = nodesLine(w);
+    assert.ok(line && !hiddenUp(line), level);
+    assert.ok(text(line).includes(`Agents on other nodes: ${word} (CCBOARD_MCP_NODES=${value}, set on the box, read only here)`), `${level}: ${text(line)}`);
+    assert.ok(text(line).includes(NODES_LINES[level]), level);
+    assert.equal(line.querySelectorAll('input, button, select, a').length, 0, 'nothing to press: the switch is the box\'s env');
+    assert.ok(!text(line).includes('\u2014'), 'no em-dash');
+  }
+});
+
+test('the line shows a level that is on even without a paired node, and is absent on a single board with it off or from an older server; an answer without a level reads enabled as read', async () => {
+  const on = mcpWorld({ nodes: { enabled: true, level: 'tasks', env: 'CCBOARD_MCP_NODES' } });
+  await settle();
+  assert.match(text(nodesLine(on.w)), /Agents on other nodes: read and start tasks \(CCBOARD_MCP_NODES=tasks,/);
+  assert.ok(!hiddenUp(nodesLine(on.w)));
+  const single = mcpWorld({ nodes: { enabled: false, level: 'off', env: 'CCBOARD_MCP_NODES' } });
+  await settle();
+  assert.ok(hiddenUp(nodesLine(single.w)), 'a board with no paired node and the switch off: nothing new on the screen');
+  const old = mcpWorld({ nodesEnabled: true });
+  await settle();
+  assert.ok(hiddenUp(nodesLine(old.w)), 'an answer without `nodes` shows no line');
+  const legacy = mcpWorld({ nodes: { enabled: true, env: 'CCBOARD_MCP_NODES' } });
+  await settle();
+  assert.match(text(nodesLine(legacy.w)), /Agents on other nodes: read only \(CCBOARD_MCP_NODES=read,/);
+  const bogus = mcpWorld({ nodes: { enabled: true, level: '__proto__', env: 'CCBOARD_MCP_NODES' } });
+  await settle();
+  assert.match(text(nodesLine(bogus.w)), /Agents on other nodes: read only \(CCBOARD_MCP_NODES=read,/, 'an unknown level word is not trusted');
+});
+
+test('the env name in the answer is shown only when it looks like an env name: a hostile value is replaced by the real one', async () => {
+  const { w } = mcpWorld({ nodes: { enabled: true, level: 'read', env: '<img src=x onerror=alert(1)>' } });
+  await settle();
+  assert.match(text(nodesLine(w)), /\(CCBOARD_MCP_NODES=read,/);
+  assert.equal(nodesLine(w).querySelectorAll('img').length, 0);
 });

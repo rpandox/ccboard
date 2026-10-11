@@ -247,12 +247,15 @@ def touch(token_id: str, user: str | None, tool: str | None = None) -> None:
                 return
 
 
-def audit(row: dict, tool: str, task_id, outcome: str) -> None:
-    """One tools/call in the bounded log. Never the arguments' text, never a result."""
+def audit(row: dict, tool: str, task_id, outcome: str, node: str | None = None) -> None:
+    """One tools/call in the bounded log. Never the arguments' text, never a result. `node` (issue #152) is the handle of the paired node a call was for; a call for this board
+    has no such key. A task id on another node is a ref, not a number, so it is not kept here: the relay's own audit row on both boards names the node and the task."""
     entry = {"at": _iso(_now()), "token_id": row.get("id"), "name": row.get("name"), "tool": tool,
              "task_id": task_id if isinstance(task_id, int) and not isinstance(task_id, bool) else None, "outcome": outcome}
-    log.info("mcp %s by token %s (%s): %s%s", tool, entry["token_id"], entry["name"], outcome,
-             f" (task {entry['task_id']})" if entry["task_id"] is not None else "")
+    if isinstance(node, str) and node:
+        entry["node"] = node[:31]
+    log.info("mcp %s by token %s (%s): %s%s%s", tool, entry["token_id"], entry["name"], outcome,
+             f" (task {entry['task_id']})" if entry["task_id"] is not None else "", f" on node {entry['node']}" if "node" in entry else "")
     db = _store()
     if db is None:
         return

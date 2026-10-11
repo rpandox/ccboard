@@ -14,7 +14,13 @@ The table: RELAY
 
 The hub side: relay(handle, row, params, body, request) checks, in this order, and makes no call when one refuses
   1 who asks     a signed-in person with X-CCBoard: 1, or the local hook token (user `local-token`, the MCP shim); never a node token (that is already a 403 from
-                 the middleware, no chaining) and never the legacy hub; a `human_only` row refuses the hook token too
+                 the middleware, no chaining) and never the legacy hub; a `human_only` row refuses the hook token too. An agent (the hook token = the stdio shim, or a /mcp
+                 device token) is let in only on the four rows that say `mcp` (state, task, task_create, task_dispatch; no tool reads the card or the agents), and only after: CCBOARD_MCP_NODES
+                 is not off (403 `mcp_off`), its level grants the row's scope (`read`: the reads; `tasks`: also the two writes; else 403 `mcp_level`, nothing sent) and the caller's own
+                 scope holds it too (403 `mcp_scope`; the shim holds only what the level grants, never every scope); the audit names it `local-token` or `mcp:<token name>` and the peer
+                 records that as the acting user's claim. An agent's body is read with the row's `agent_model`, which has only the fields its tool sends (mcp.NODE_SEND; anything else is
+                 a 422 at the route), the hub adds the row's constants (`agent_force`: a lane dispatch, so an agent never gets a row's `extra_scope`), and its answer is the row's reduced
+                 `agent_shape`. An unknown handle is told the paired handles (and only the handles).
   2 which node   `local` is 400, text that is no handle 400, a handle the registry does not hold 404 (the target comes from the registry only, never from the
                  request), a registry row with this board's own node id or address 400 (no self-relay), a legacy row (no token) 409
   3 the scope    the pair's granted scope must hold the row's scope: 409 `needs the <scope> scope on <node>`
@@ -89,7 +95,8 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator, model_validator
 
-from . import nodes, projects, tmux
+from . import mcp as mcp_tools, nodes, projects, tmux
+from .config import settings
 
 log = logging.getLogger("ccboard.nodes.relay")
 
@@ -98,6 +105,15 @@ PANE_LINES = 40                            # the most lines of a screen a peer e
 PANE_LINE_MAX = 400                        # characters kept of one line
 NO_STORE = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
 READ, WRITE = "read", "write"
+MCP_SCOPES = ("read", "tasks")            # the only scopes an agent's MCP tool ever asks a node for (a prompt needs sessions, a permission answer permissions: never from an agent)
+MCP_LEVELS = {"read": ("read",), "tasks": ("read", "tasks")}      # CCBOARD_MCP_NODES: the scopes an agent holds at each level (off holds none; the stdio shim holds exactly these)
+MCP_OFF = "this board does not let agents act on other nodes (CCBOARD_MCP_NODES is off)"
+MCP_READ_ONLY = "this board lets agents read other nodes but not start tasks on them (CCBOARD_MCP_NODES is read; tasks allows it); nothing was sent"
+
+
+def mcp_level() -> str:
+    """The level CCBOARD_MCP_NODES grants agents: "" (off), "read" or "tasks". Anything else the setting holds is off."""
+    return settings.mcp_nodes if settings.mcp_nodes in MCP_LEVELS else ""
 
 
 # ================================================================ the guard
@@ -634,6 +650,22 @@ class Row:
     per_session: bool = False           # nodes.PROMPT_RATE a minute into one session, counted on the hub and again on the peer
     dialog_scope: str | None = field(default=None, compare=False)     # the scope the PEER also wants while the target session is asking a question in its terminal (a permission, a dialog,
                                                                       # a state it cannot read): a key or a line typed then answers it, which only `permissions` may do (peer_keys, peer_prompt)
+    mcp: bool = False                   # an agent's MCP tool may use this row (issue #152): the stdio shim with the hook token, or a /mcp device token. Off by default, and only when
+                                        # CCBOARD_MCP_NODES grants the row's scope (read: the reads; tasks: also the two writes); an agent never gets `extra_scope` (a dispatch into a running
+                                        # session), and a row that is a person's act, types into a session or answers a permission can never be mcp (see __post_init__)
+    agent_model: type[BaseModel] | None = field(default=None, compare=False)    # what an AGENT may send on an mcp row: exactly the fields its tool sends (mcp.NODE_SEND), extra="forbid"
+    agent_shape: Callable | None = field(default=None, compare=False)           # what an AGENT receives from an mcp row: a reduced answer built field by field for what the tools return
+    agent_force: dict = field(default_factory=dict, compare=False)              # the constants the hub adds to an agent's validated body (a lane dispatch)
+
+    def __post_init__(self):
+        if self.mcp:
+            why = ("a person's act" if self.human_only else "a person's act by name" if self.acting else "a prompt into one session" if self.per_session
+                   else "free text beyond a task" if self.big_field else "a dialog answer" if self.dialog_scope else "a scope an agent never holds" if self.scope not in MCP_SCOPES
+                   else "a write that starts nothing guarded" if self.rate_class == WRITE and not self.guard else None)
+            if why:
+                raise ValueError(f"relay row {self.name} cannot be opened to an agent: {why}")
+            if self.agent_model is None or self.agent_shape is None:
+                raise ValueError(f"relay row {self.name} cannot be opened to an agent: it needs its own agent body and agent shape")
 
     @cached_property
     def params(self) -> tuple[str, ...]:
@@ -885,6 +917,48 @@ class DispatchBody(_Launch):
         return self
 
 
+# ---- what an AGENT may send (issue #152): the body of an mcp write row, narrower than the person's. Exactly the fields the tool sends (mcp.NODE_SEND, checked below at import), nothing
+# else: no model, effort, reasoning, issue reference, mode, session, force or queue, and the sizes of the tool's own schema. The model and the effort of the launch are never the agent's
+# choice: the peer writes the explicit safe launch options for everything that is left out (safe_launch), and a dispatch is always a lane start (Row.agent_force).
+
+class AgentTaskCreateBody(_Strict):
+    project: str = Field(min_length=1, max_length=mcp_tools.MAX_LEN["project"])
+    repo: str = Field(min_length=1, max_length=mcp_tools.MAX_LEN["repo"])
+    title: str = Field(min_length=1, max_length=mcp_tools.MAX_LEN["title"])
+    prompt: str = Field(min_length=1, max_length=mcp_tools.MAX_LEN["prompt"])
+    when: Literal["now", "later"] = "now"
+    agent: Literal["claude", "codex"] | None = None
+    auto_close: StrictBool | None = None
+
+    @field_validator("project", "repo")
+    @classmethod
+    def _names(cls, v):
+        return check_field("name", v)
+
+    @field_validator("title", "prompt")
+    @classmethod
+    def _typed_text(cls, v, info):
+        return check_field("typed_prompt" if info.field_name == "prompt" else info.field_name, v)
+
+
+class AgentDispatchBody(_Strict):
+    agent: Literal["claude", "codex"] | None = None
+    auto_close: StrictBool | None = None
+
+
+def _check_agent_models() -> None:
+    """A tool and its agent body cannot drift: the fields of each body are exactly the values of mcp.NODE_SEND, and the agent names are the tool schema's enum."""
+    for tool, model in (("create_task", AgentTaskCreateBody), ("dispatch_task", AgentDispatchBody)):
+        if set(model.model_fields) != set(mcp_tools.NODE_SEND[tool].values()):
+            raise RuntimeError(f"the agent body of {tool} does not match mcp.NODE_SEND")
+    enum = next(t for t in mcp_tools.TOOLS if t["name"] == "create_task")["inputSchema"]["properties"]["agent"]["enum"]
+    if tuple(enum) != ("claude", "codex"):
+        raise RuntimeError("the agent names of the tools changed: update the agent bodies")
+
+
+_check_agent_models()
+
+
 class SessionOpenBody(_Launch):
     project: str
     repo: str
@@ -1076,23 +1150,79 @@ def _shape_permission_answer(body, reg):
     return {"ok": True, "id": pid if pid and pid > 0 else None, "decision": body["decision"] if body.get("decision") in DECISIONS else None}
 
 
+# ---- what an AGENT receives (issue #152): the reduced answers of the mcp rows, built field by field for what the tools return and nothing else. No account or login detail, no usage
+# window, lane count or scope, no address, node id, version or OS detail, no audit data and no screen state beyond the state word. A free-text field is cut to 120 characters, on one line,
+# without control or format characters and with its angle brackets and backticks replaced (mcp.untrusted_text); a field with a shape (a name, a branch, a phase, a session name, a time)
+# is that shape or null (mcp.untrusted_shaped). The tool layer applies the same helpers again, so a transport cannot return more than this.
+
+_AG_NAME, _AG_BRANCH, _AG_WORD, _AG_TMUX, _AG_TIME = mcp_tools._R_NAME, mcp_tools._R_BRANCH, mcp_tools._R_WORD, mcp_tools._R_TMUX, mcp_tools._R_TIME
+
+
+def _ag_sh(v, rx, n: int = 200):
+    return mcp_tools.untrusted_shaped(v, rx, n)
+
+
+def _agent_state(body, reg):
+    """The state for an agent: projects (name, repos: name, branch, dirty), sessions (tmux, project, repo, agent, state, kind), tasks (id, title, phase, project, repo, branch, tmux), truncated.
+    The whitelist, the sizes and the node id check of a person's state run first."""
+    from . import nodes_hub
+    st = nodes_hub.clean_state(body, reg)
+    return {"projects": [{"name": _ag_sh(p.get("name"), _AG_NAME, 63),
+                          "repos": [{"name": _ag_sh(r.get("name"), _AG_NAME, 63), "branch": _ag_sh(r.get("branch"), _AG_BRANCH, 120), "dirty": r.get("dirty") if isinstance(r.get("dirty"), bool) else None}
+                                    for r in p.get("repos") or []]} for p in st["projects"]],
+            "sessions": [{"tmux": _ag_sh(s.get("tmux"), _AG_TMUX, 190), "project": _ag_sh(s.get("project"), _AG_NAME, 63), "repo": _ag_sh(s.get("repo"), _AG_NAME, 63),
+                          "agent": _ag_sh(s.get("agent"), _AG_WORD, 20), "state": _ag_sh(s.get("state"), _AG_WORD, 20), "kind": _ag_sh(s.get("kind"), _AG_WORD, 20)} for s in st["sessions"]],
+            "tasks": [{"id": t.get("id"), "title": mcp_tools.untrusted_text(t.get("title"), mcp_tools.TITLE_MAX), "phase": _ag_sh(t.get("phase"), _AG_WORD, 20),
+                       "project": _ag_sh(t.get("project"), _AG_NAME, 63), "repo": _ag_sh(t.get("repo"), _AG_NAME, 63), "branch": _ag_sh(t.get("branch"), _AG_BRANCH, 120),
+                       "tmux": _ag_sh(t.get("tmux"), _AG_TMUX, 190)} for t in st["tasks"]],
+            "truncated": bool(st.get("truncated"))}
+
+
+def _agent_task(body, reg):
+    """One task for an agent: id, title, phase, agent, project, repo, branch, tmux, pr_state, pr_number, updated_at, done_at, has_result."""
+    from . import nodes_hub
+    if not isinstance(body, dict):
+        raise nodes_hub.Bad("not an object")
+    i = nodes_hub._i
+    return {"id": i(body.get("id")), "title": mcp_tools.untrusted_text(body.get("title"), mcp_tools.TITLE_MAX), "phase": _ag_sh(body.get("phase"), _AG_WORD, 20),
+            "agent": _ag_sh(body.get("agent"), _AG_WORD, 20), "project": _ag_sh(body.get("project"), _AG_NAME, 63), "repo": _ag_sh(body.get("repo"), _AG_NAME, 63),
+            "branch": _ag_sh(body.get("branch"), _AG_BRANCH, 120), "tmux": _ag_sh(body.get("tmux"), _AG_TMUX, 190), "pr_state": _ag_sh(body.get("pr_state"), _AG_WORD, 20),
+            "pr_number": i(body.get("pr_number")), "updated_at": _ag_sh(body.get("updated_at"), _AG_TIME, 40), "done_at": _ag_sh(body.get("done_at"), _AG_TIME, 40),
+            "has_result": body.get("has_result") is True}
+
+
+def _agent_started(body, reg):
+    """The answer of a create or dispatch for an agent: ref, id, tmux, branch, phase, task (id, title, phase, agent, project, repo, branch, tmux, updated_at), limit_warning (kind, resets_at, pct)."""
+    full = _shape_started(body, reg)
+    t = full.get("task")
+    out = {"ref": full["ref"], "id": full["id"], "tmux": full["tmux"], "branch": full["branch"], "phase": full["phase"],
+           "task": {"id": t["id"], "title": mcp_tools.untrusted_text(t.get("title"), mcp_tools.TITLE_MAX), "phase": t["phase"], "agent": t["agent"], "project": t["project"],
+                    "repo": t["repo"], "branch": t["branch"], "tmux": t["tmux"], "updated_at": t["updated_at"]} if isinstance(t, dict) else None}
+    if "limit_warning" in full:
+        out["limit_warning"] = full["limit_warning"]
+    return out
+
+
 RELAY: tuple[Row, ...] = (
+    # card and agents: a person's rows. No MCP tool reads either (list_nodes is built from the hub's own reading), so an agent has no use for them and does not get them.
     Row("card", "GET", "/api/nodes/{handle}/card", "GET", "/api/node", "read", NoFields, READ, "read_card", human_only=True, peer_exists=True,
         target=lambda p: "card", shape=_shape_card),
-    Row("state", "GET", "/api/nodes/{handle}/state", "GET", "/api/node/state", "read", NoFields, READ, "read_state", human_only=True, peer_exists=True, answer_max=128 * 1024,
-        target=lambda p: "state", shape=_shape_state),
-    Row("task", "GET", "/api/nodes/{handle}/tasks/{tid}", "GET", "/api/node/tasks/{tid}", "read", NoFields, READ, "read_task", human_only=True, answer_max=16 * 1024,
-        target=lambda p: f"task {p.get('tid')}", shape=_shape_task),
+    Row("state", "GET", "/api/nodes/{handle}/state", "GET", "/api/node/state", "read", NoFields, READ, "read_state", mcp=True, peer_exists=True, answer_max=128 * 1024,
+        agent_model=NoFields, agent_shape=_agent_state, target=lambda p: "state", shape=_shape_state),
+    Row("task", "GET", "/api/nodes/{handle}/tasks/{tid}", "GET", "/api/node/tasks/{tid}", "read", NoFields, READ, "read_task", mcp=True, answer_max=16 * 1024,
+        agent_model=NoFields, agent_shape=_agent_task, target=lambda p: f"task {p.get('tid')}", shape=_shape_task),
     # Screen text is session content, not names and counts: the pane row needs `sessions`, never `read`.
     Row("pane", "GET", "/api/nodes/{handle}/sessions/{name}/pane", "GET", "/api/node/sessions/{name}/pane", "sessions", PaneQuery, READ, "read_pane", human_only=True,
         target=lambda p: f"session {p.get('name')}", shape=_shape_pane),
     Row("agents", "GET", "/api/nodes/{handle}/agents", "GET", "/api/node/agents", "read", NoFields, READ, "read_agents", human_only=True, answer_max=256 * 1024,
         target=lambda p: "agents", shape=_shape_agents),
     # The write rows (issue #141). A task is a worktree, a branch and a tmux session on the node that runs it: the hub never makes one.
-    Row("task_create", "POST", "/api/nodes/{handle}/tasks", "POST", "/api/node/tasks", "tasks", TaskCreateBody, WRITE, "create_task", guard=True, human_only=True,
-        answer_max=16 * 1024, target=lambda p: "create task", body_target=lambda p, c: f"create task: {_title80(c)}", shape=_shape_started),
+    Row("task_create", "POST", "/api/nodes/{handle}/tasks", "POST", "/api/node/tasks", "tasks", TaskCreateBody, WRITE, "create_task", guard=True, mcp=True,
+        agent_model=AgentTaskCreateBody, agent_shape=_agent_started, answer_max=16 * 1024, target=lambda p: "create task",
+        body_target=lambda p, c: f"create task: {_title80(c)}", shape=_shape_started),
     Row("task_dispatch", "POST", "/api/nodes/{handle}/tasks/{tid}/dispatch", "POST", "/api/node/tasks/{tid}/dispatch", "tasks", DispatchBody, WRITE, "dispatch_task",
-        guard=True, guard_skip=("mode",), human_only=True, answer_max=16 * 1024, extra_scope=lambda c: "sessions" if c.get("mode") == "session" else None,
+        guard=True, guard_skip=("mode",), mcp=True, agent_model=AgentDispatchBody, agent_shape=_agent_started, agent_force={"mode": "lane"}, answer_max=16 * 1024,
+        extra_scope=lambda c: "sessions" if c.get("mode") == "session" else None,
         target=lambda p: f"dispatch task {p.get('tid')}", body_target=lambda p, c: f"dispatch task {p.get('tid')} ({c.get('mode')})", shape=_shape_started),
     Row("session_open", "POST", "/api/nodes/{handle}/sessions", "POST", "/api/node/sessions", "sessions", SessionOpenBody, WRITE, "open_session", guard=True,
         human_only=True, answer_max=4 * 1024, target=lambda p: "open session", body_target=lambda p, c: f"open session {c.get('project')}/{c.get('repo')}",
@@ -1116,9 +1246,13 @@ RELAY: tuple[Row, ...] = (
         "answer_permission", human_only=True, acting=True, answer_max=4 * 1024, target=lambda p: f"permission {p.get('pid')} {p.get('decision')}",
         shape=_shape_permission_answer),
 )
-# Every row is human only: the hub relay routes take a signed-in allowed person with X-CCBoard and nothing else. The local hook token is held by every
-# agent session on the box, so letting it relay would let any agent read other nodes through the hub. A later phase (MCP across nodes, #152) may open a
-# specific row to the hook token on purpose by setting `human_only=False` on that row; nothing opens by default.
+# A row is human only unless it says `mcp=True`: the hub relay routes take a signed-in allowed person with X-CCBoard and nothing else. The local hook token is held
+# by every agent session on the box, so letting it relay would let any agent read other nodes through the hub. MCP across nodes (issue #152) opens exactly four rows to
+# an agent on purpose and nothing else: the reads state and task, and the writes task_create and task_dispatch (a new session only: an agent never gets a row's
+# `extra_scope`). Even those need CCBOARD_MCP_NODES to grant the row's scope (read, or tasks for the writes), the device token's own scope (the hook token, the stdio shim,
+# holds only what the level grants) and the pair's, and an agent sends and receives the row's narrower body and reduced answer (agent_model, agent_shape).
+# Never an agent: prompt, keys, ack, close, permissions, permission_answer, pane, session_open, the stream, pairing, tokens, settings. Row.__post_init__ refuses
+# `mcp=True` on a human-only row, a named-person row, a prompt, a dialog answer, a scope beyond read and tasks and an unguarded write.
 BY_NAME = {r.name: r for r in RELAY}
 
 
@@ -1182,9 +1316,12 @@ def _model_messages(e: ValidationError) -> list[str]:
     return out[:6]
 
 
-def validate(row: Row, params: dict, body) -> dict:
+def validate(row: Row, params: dict, body, *, agent: bool = False) -> dict:
     """The body of a request as the row's model reads it (`{}` for no body), or Invalid. Path parameters are checked first, then the guard (for a row that
-    has one), then the model, so a refusal always names a field and never repeats a value."""
+    has one), then the model, so a refusal always names a field and never repeats a value. `agent` (the caller is an MCP agent, the hook token or a device token) reads the body with
+    the row's agent model instead, which has only the fields the tool sends, and adds the row's constants (a lane dispatch)."""
+    if agent and row.agent_model is None:
+        raise Invalid(["this row takes no request from an agent"])
     for name in row.params:
         if not _valid_param(name, (params or {}).get(name)):
             raise Invalid([f"{name} is not valid"])
@@ -1196,11 +1333,12 @@ def validate(row: Row, params: dict, body) -> dict:
         if refusals:
             raise Invalid(refusals)
     try:
-        model = row.body_model.model_validate(data)
+        model = (row.agent_model if agent else row.body_model).model_validate(data)
     except ValidationError as e:
         big = row.big_field is not None and any(err.get("type") == "string_too_long" and tuple(err.get("loc", ())) == (row.big_field,) for err in e.errors())
         raise Invalid(_model_messages(e), 413 if big else 422) from None
-    return model.model_dump(exclude_none=True)
+    clean = model.model_dump(exclude_none=True)
+    return {**clean, **row.agent_force} if agent else clean
 
 
 def safe_target(row: Row, params: dict, clean: dict | None = None) -> str:
@@ -1239,16 +1377,43 @@ class RelayError(Exception):
         return JSONResponse(body, status_code=self.status, headers={**NO_STORE, **self.headers})
 
 
+def mcp_identity(request) -> dict | None:
+    """The agent behind a request, or None when it is a person's: {by, scopes, kind}. `by` is what the audit names (`local-token` for the stdio shim, which holds the hook token,
+    and `mcp:<token name>` for a /mcp device token); `scopes` are the scopes that caller holds on other nodes. The shim holds exactly what CCBOARD_MCP_NODES grants (read: read; tasks:
+    read and tasks; off: nothing), never every scope; a device token holds the ones it was minted with, as far as the level grants them. Only the auth middleware sets `state.user`
+    to `local-token`, and only mcp_remote.gate (or the in-process call it makes) sets `state.mcp_token`: a name that merely looks like one is refused (RelayError 403)."""
+    user = getattr(request.state, "user", None)
+    granted = MCP_LEVELS.get(mcp_level(), ())
+    if user == "local-token":
+        return {"by": user, "scopes": granted, "kind": "shim"}
+    if isinstance(user, str) and user.startswith("mcp:"):
+        tok = getattr(request.state, "mcp_token", None)
+        if not isinstance(tok, dict) or not tok.get("id") or user != "mcp:" + str(tok.get("name")):
+            raise RelayError(403, "forbidden", "that caller is not a device token", kind="refused")
+        return {"by": user, "scopes": tuple(s for s in (tok.get("scopes") or []) if isinstance(s, str) and s in granted), "kind": "token"}
+    return None
+
+
 def _caller(request, row: Row) -> str:
-    """Who asked, as the audit names them: the signed-in login, or `local-token`. Refuses a node token, the legacy hub and a request that is no person's
-    without X-CCBoard, and, for a human-only row, the hook token."""
+    """Who asked, as the audit names them: the signed-in login, `local-token` (the MCP shim) or `mcp:<token name>` (a /mcp device token). Refuses a node token, the legacy hub
+    and a request that is no person's without X-CCBoard. An agent (the hook token or a device token) gets in only on a row that says `mcp`, in this order: the board's
+    CCBOARD_MCP_NODES is not off (403 mcp_off), its level grants the row's scope (read: the reads; tasks: also the writes; else 403 mcp_level), the caller's own scope holds
+    it too (403 mcp_scope); the pair's scope and the rest follow in relay(). Any other row is a person's: 403 human_only."""
     user = getattr(request.state, "user", None)
     if not isinstance(user, str) or not user or user == "hub" or user.startswith("node:"):
         raise RelayError(403, "forbidden", "a node token cannot ask a board to relay", kind="refused")
-    if user == "local-token":
-        if row.human_only:
+    agent = mcp_identity(request)
+    if agent is not None:
+        if not row.mcp:
             raise RelayError(403, "human_only", "this action must be done by a signed-in person on this board", kind="refused")
-        return user
+        level = mcp_level()
+        if not level:
+            raise RelayError(403, "mcp_off", MCP_OFF, kind="refused")
+        if row.scope not in MCP_LEVELS[level]:
+            raise RelayError(403, "mcp_level", MCP_READ_ONLY, kind="refused")
+        if row.scope not in agent["scopes"]:
+            raise RelayError(403, "mcp_scope", f"this device token does not hold the {row.scope} scope: mint one that does in Settings > Agents", kind="refused")
+        return agent["by"]
     if request.headers.get("x-ccboard") != "1":
         raise RelayError(403, "csrf", "missing X-CCBoard header", kind="refused")
     return user
@@ -1292,6 +1457,15 @@ def _status_check(reg: dict, rec: dict | None, name: str) -> None:
         age = rec.get("age_s")
         when = f"last answered {_span(age)} ago" if age is not None else "has not answered yet"
         raise RelayError(503, "offline", f"{name} is offline ({when}); nothing was sent", age=age, kind="refused")
+
+
+def _not_installed(rec: dict | None, agent: str) -> bool:
+    """Does the hub's last reading of the node's card say the node has no usable `agent`? False (go on, the node checks again) when the card was not read or lists no agent at all."""
+    card = (rec or {}).get("card")
+    listed = card.get("agents") if isinstance(card, dict) else None
+    if not isinstance(listed, list) or not listed:
+        return False
+    return agent not in {a.get("id") for a in listed if isinstance(a, dict) and a.get("installed") is True}
 
 
 def _span(s) -> str:
@@ -1405,20 +1579,32 @@ def relay(handle, row: Row, params: dict, body, request, *, db=None, hub=None) -
         hub = main._hub()
     reg: dict | None = None
     user: str | None = None
+    agent: dict | None = None
     target = safe_target(row, params or {})
     try:
         user = _caller(request, row)
-        ok, wait = (nodes.relay_write_limiter if row.rate_class == WRITE else nodes.relay_read_limiter).allow(user)     # per person and class, like the peer's per pair bucket
+        agent = mcp_identity(request)
+        # The bucket is keyed by who asked: a person's login, a device token's name, or `local-token`, which is every agent session on the box together (the hook token names no
+        # session). An agent never draws from a person's bucket, and the shim's own is shared among the box's agents, which only makes it the stricter.
+        ok, wait = (nodes.relay_write_limiter if row.rate_class == WRITE else nodes.relay_read_limiter).allow(user)
         if not ok:
             raise RelayError(429, "rate_limited", f"too many relayed requests from you; wait {wait} s", headers={"Retry-After": str(wait)}, kind="refused")
-        reg = _registry_row(handle, d)
+        try:
+            reg = _registry_row(handle, d)
+        except RelayError as e:
+            if agent is not None and e.reason == "unknown_node":          # an agent is told which handles exist (a handle is a short label, never an address)
+                handles = [r["handle"] for r in nodes.registry(d) if r.get("handle")]
+                raise RelayError(404, "unknown_node", f"no paired node has the handle {handle}; " + (f"paired nodes: {', '.join(handles)}" if handles else "this board has no paired node"),
+                                 kind="refused") from None
+            raise
         _self_check(reg)
         name = reg.get("name") or handle
         if reg.get("legacy"):
             raise RelayError(409, "legacy", f"{name} was added with CCBOARD_NODES and holds no token: pair it to act on it", kind="refused")
         if row.scope not in (nodes._scopes_of(reg.get("scopes")) or []):
             raise RelayError(409, "scope", f"needs the {row.scope} scope on {name}", kind="refused")
-        _status_check(reg, _hub_record(hub, handle), name)
+        rec = _hub_record(hub, handle)
+        _status_check(reg, rec, name)
         if isinstance(body, (bytes, bytearray)):
             if len(body) > nodes.BODY_MAX:
                 raise RelayError(413, "too_large", f"the body is over {nodes.BODY_MAX // 1024} KB", kind="refused")
@@ -1427,11 +1613,15 @@ def relay(handle, row: Row, params: dict, body, request, *, db=None, hub=None) -
             except (ValueError, UnicodeDecodeError):
                 raise RelayError(422, "invalid", "the body is not JSON", kind="refused") from None
         try:
-            clean = validate(row, params or {}, body)
+            clean = validate(row, params or {}, body, agent=agent is not None)
         except Invalid as e:
             raise RelayError(e.status, "invalid" if e.status == 422 else "too_large", "; ".join(e.messages), kind="refused") from None
+        if agent is not None and clean.get("agent") and _not_installed(rec, clean["agent"]):          # an agent names an agent the node has: the hub's own reading of its card says so
+            raise RelayError(422, "invalid", f"{clean['agent']} is not installed on {name}; nothing was sent", kind="refused")
         target = safe_target(row, params or {}, clean)            # the body is known and valid now: a task's title (cut, redacted) joins the target, the prompt never does
         extra = row.extra_scope(clean) if row.extra_scope else None
+        if extra and agent is not None:                                # an agent never types into a running session of another node: no scope of the token or the pair opens it
+            raise RelayError(403, "mcp_session", "an agent cannot hand a task to a running session on another node; it can start the task in a new session there", kind="refused")
         if extra and extra not in (nodes._scopes_of(reg.get("scopes")) or []):
             raise RelayError(409, "scope", f"needs the {extra} scope on {name}", kind="refused")
         if row.per_session:                                         # nodes.PROMPT_RATE a minute into one session; the peer counts again
@@ -1447,15 +1637,18 @@ def relay(handle, row: Row, params: dict, body, request, *, db=None, hub=None) -
         if len(reply.body) > row.answer_max:                       # cut by size before the answer is read any further
             raise RelayError(502, "too_large", f"{name} answered more than this row ever needs; nothing was shown", kind="failed")
         data = _map_reply(reply, row, reg, clean)
-        if row.shape is not None:
+        shape = row.agent_shape if agent is not None else row.shape      # an agent gets the reduced answer, a person the full one
+        if shape is not None:
             from . import nodes_hub
             try:
-                data = redact_tree(row.shape(data, reg))              # every free-text field of the peer's answer goes through the redaction
+                data = redact_tree(shape(data, reg))                  # every free-text field of the peer's answer goes through the redaction
             except nodes_hub.Bad as e:
                 raise RelayError(502, "wrong_node" if "another node" in str(e) else "bad_answer",
                                  f"{name} answered with something this board will not show", kind="failed") from None
     except RelayError as e:
-        if reg is None and e.reason in ("human_only", "forbidden", "csrf"):             # a caller that may not relay (the hook token, a node user): a row when the handle is a paired node
+        if agent is not None:                                         # the sentence an agent reads can hold the node's name and its own words: cut, cleaned and redacted
+            e.message = _cut(e.message, mcp_tools.ERROR_MAX) or e.reason
+        if reg is None and e.reason in ("human_only", "forbidden", "csrf", "mcp_off", "mcp_level", "mcp_scope"):             # a caller that may not relay (the hook token, a node user): a row when the handle is a paired node
             try:
                 reg = _registry_row(handle, d)
             except RelayError:
@@ -1641,6 +1834,36 @@ def install(app, handlers: dict[str, Callable], get_db: Callable, get_hub: Calla
         if not r.peer_exists:
             app.add_api_route(r.peer_path, peer_endpoint(r, handlers[r.name], get_db), methods=[r.peer_method], name=f"node_{r.name}", include_in_schema=False)
     return app.router.routes[before:]
+
+
+# ================================================================ MCP across nodes (issue #152): what an agent may see of the paired nodes
+
+def mcp_nodes_view(hub) -> dict:
+    """What `list_nodes` answers (an agent's view, issue #152): {level, allows: {read, tasks}, nodes: [{handle, name, status, age_s, free_lanes, agents: [{name, ready}]}]}, and nothing else.
+    Built field by field from the hub read model (nothing is asked of a node); never an address, a node id, a peer id, a token, an account label or login detail, a usage window, a version,
+    a scope of the pair or a lane cap. `ready` is true when the agent is installed and logged in on that node. A value the hub has not read is null, never 0: `agents` is null until a card
+    was read, `free_lanes` until a state was. Works with CCBOARD_MCP_NODES off (it only lists); `level` is off, read or tasks, and `allows` says what a tool call may do on a node."""
+    level = mcp_level()
+    granted = MCP_LEVELS.get(level, ())
+    out = []
+    for r in hub.records():
+        h = r.get("handle")
+        if not nodes.valid_handle(h):
+            continue
+        card, st = r.get("card") if isinstance(r.get("card"), dict) else None, r.get("state") if isinstance(r.get("state"), dict) else None
+        agents = None
+        if card is not None and isinstance(card.get("agents"), list):
+            agents = []
+            for a in card["agents"][:8]:
+                if not isinstance(a, dict):
+                    continue
+                inst, login, problem = a.get("installed"), a.get("logged_in"), a.get("login_problem")
+                agents.append({"name": mcp_tools.untrusted_shaped(a.get("id"), _AG_WORD, 20),
+                               "ready": (inst is True and login is True and problem is not True) if isinstance(inst, bool) and isinstance(login, bool) else None})
+        free = ((st.get("lanes") or {}).get("free") if isinstance(st.get("lanes"), dict) else None) if st is not None else None
+        out.append({"handle": h, "name": mcp_tools.untrusted_text(r.get("name"), mcp_tools.NAME_MAX), "status": mcp_tools.untrusted_shaped(r.get("status"), _AG_WORD, 20),
+                    "age_s": int(r["age_s"]) if isinstance(r.get("age_s"), (int, float)) and not isinstance(r.get("age_s"), bool) and 0 <= r["age_s"] < 10 ** 9 else None, "free_lanes": free if isinstance(free, int) and not isinstance(free, bool) else None, "agents": agents})
+    return {"level": level or "off", "allows": {"read": "read" in granted, "tasks": "tasks" in granted}, "nodes": out}
 
 
 # ================================================================ the peer's internal functions (what the wrappers call)

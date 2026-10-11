@@ -173,6 +173,7 @@ if [ -z "$CCBOARD_HUB_TOKEN" ]; then CCBOARD_HUB_TOKEN=$("$PY3" -c 'import secre
 : "${CCBOARD_MEM_SERVICE:=0}"
 : "${CCBOARD_CODEX_HOOK_TRUST:=review}"
 : "${CCBOARD_MCP_REMOTE:=0}"
+: "${CCBOARD_MCP_NODES:=0}"             # 0 = agents stay on this board; read (or 1) = they may list nodes and read their projects and tasks; tasks = they may also start tasks there (issue #152)
 : "${CCBOARD_AUTOCLOSE_GRACE:=45}"
 : "${CCBOARD_CODEX_HOOKS_ASYNC:=1}"
 

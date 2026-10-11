@@ -139,6 +139,7 @@ EXPECTED = {
     ("PUT", "/api/notify/prefs"): "identity+csrf",
     ("POST", "/api/notify/test"): "identity+csrf",
     ("POST", "/mcp"): "identity+device-token",
+    ("GET", "/api/mcp/nodes"): "identity",              # issue #152: the node list an agent may see (tool list_nodes); a person or the hook token, never a node token
     ("GET", "/api/mcp/tokens"): "identity",
     ("POST", "/api/mcp/tokens"): "identity+csrf",
     ("DELETE", "/api/mcp/tokens/{token_id}"): "identity+csrf",
@@ -291,7 +292,11 @@ def test_a_relay_route_needs_identity_and_the_csrf_header_even_for_a_get(lite_cl
     r = send(lite_client, method, path, H)
     assert r.status_code == 404 and r.json()["reason"] == "unknown_node", (method, path)
     r = send(lite_client, method, path, {"X-CCBoard-Token": hooks.ensure_token()})
-    assert r.status_code == 403 and r.json()["reason"] == "human_only", "the hook token is held by every agent session: no relay row takes it"
+    from app import nodes_relay
+    row = next((x for x in nodes_relay.RELAY if (x.hub_method, x.hub_path) == (method, path)), None)      # the stream route is no table row: it is a person's
+    # the six rows an agent's MCP tool uses (issue #152) are shut while CCBOARD_MCP_NODES is off (the default); every other row is a person's
+    want = "mcp_off" if row is not None and row.mcp else "human_only"
+    assert r.status_code == 403 and r.json()["reason"] == want, "the hook token is held by every agent session: only the rows that say mcp take it, and only when the board allows it"
 
 
 @pytest.mark.parametrize("method,path", sorted(k for k, v in EXPECTED.items() if v == "node-token" and k[1] not in ("/api/node/rotate", "/api/node/unpair")))

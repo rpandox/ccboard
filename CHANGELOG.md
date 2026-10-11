@@ -2,6 +2,22 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.44 - 2026-10-11
+
+### Added
+- Nodes P10, a session on another node in the browser (#144). **Open terminal on <node>** on the node page, the peek, the Inbox permission cards, the quad tile and in the palette: it opens `<the node's address>/term/<session>` in a new window with `noopener`, straight from your browser, only for an https tailnet address and a valid session name, with a link to tap when no window opens, and it says when the node is offline and keeps the link. Nothing is sent to the hub; the browser needs a Tailscale identity on that node.
+- A session of another node as a tail tile in the quad and in the terminal dock: the node chip, the last 12 lines from the stream relay (read only), a one-line prompt box that sends through the `prompt` relay row and shows each steer refusal as its plain sentence, `offline since 09:14` or `re-pair` with the last lines kept, and never a framed page. An empty tile's pick list groups sessions by node, the quad stores `{node, tmux}`, `o` on a focused remote tile opens its terminal, and the demo (`?demo=1`) shows all of it.
+- Nodes P10, MCP across nodes (#152, part 1). The six MCP tools take an optional `node`; `list_nodes` lists the paired nodes from the hub's last reading (handle, name, status, age, free lanes, ready agents, and what this board's level allows). Off unless `CCBOARD_MCP_NODES` is `read` (list nodes, read their projects and tasks; **`1` keeps meaning `read`**, the safer reading of the old value) or `tasks` (also create a task and start it in a new session there); both the level and the token's scope and the pair's scope are needed, and an agent can never type into a session, answer a permission, read a screen or hand a task to a running session. Every call is audited on both boards as `mcp:<token name>` or `local-token`, with the node.
+- Settings > Agents shows `CCBOARD_MCP_NODES` read only next to the MCP block, as its level in words (off, read only, read and start tasks) with one sentence on what it allows.
+
+### Changed
+- `RELAY` rows are still human-only by default; four carry `mcp` (`state`, `task`, `task_create`, `task_dispatch` in lane mode; no tool reads the card or the agents, so those two stay a person's) and a test walks the table to prove no other row is reachable from an MCP token or the hook token. The peek's `o` key still opens the node's own board; the quad's `o` opens the terminal.
+- What an agent may send to a node is checked at the hub route, not only in the tool: the hook token or a device token calling `/api/nodes/<handle>/...` directly is read with a body of exactly the fields its tool sends (`create_task`: project, repo, title, prompt, when, agent, auto_close; `dispatch_task`: agent, auto_close, always a new session), made from the same table as the tool schemas; `model`, `effort`, `issue_ref`, `mode`, `session`, options and any query are a `422`.
+- What a node says is untrusted data for the agent that reads it: every tool answer for another node is `{node, age, untrusted, notice, data}`, free text is cut (title 120, error 160), single-line, free of control, bidi and format characters, with `<`, `>` and backticks replaced, names and branches that do not fit their shape are `null`, and every tool description says so. The stdio shim and `/mcp` share the code.
+- The stdio shim holds only the scopes the level grants (`read`: read; `tasks`: read and tasks), not every scope; an agent gets a reduced answer built field by field (no account or login detail, usage window, version, address, node id or audit data), and `list_nodes` shows less (no usage windows, scopes of the pair, lane caps or login problems).
+
+Upgrade: nothing to do.
+
 ## v0.5.43 - 2026-10-11
 
 ### Added

@@ -15,7 +15,8 @@ application/json answer; a notification or a response gets 202 and no body. Limi
 in flight per token, 240 a minute and 16 in flight across all tokens, 10 create_task or dispatch_task calls a minute per token.
 
 The tools are app/mcp.py's, run in-process: inproc_api() calls the board's own route functions as the person `mcp:<token name>`, never
-the board over HTTP and never with the hook token. A tools/call needs the token's scope for it (app/mcp.required_scope); without it
+the board over HTTP and never with the hook token. A call with a `node` argument (issue #152) goes to nodes_relay.relay as that device token: CCBOARD_MCP_NODES, the
+token's scope and the pair's scope all have to allow it, the audit on both boards names `mcp:<token name>` and the node, and no tool reaches a row beyond the four that say `mcp`. A tools/call needs the token's scope for it (app/mcp.required_scope); without it
 the answer is a JSON-RPC error and nothing runs. Every tools/call lands in the audit (app/mcp_tokens.audit): token, tool, task id,
 outcome, never the prompt or the result.
 """
@@ -27,6 +28,7 @@ import math
 import re
 import threading
 import time
+from types import SimpleNamespace
 from collections import defaultdict, deque
 
 from fastapi import HTTPException, Request
@@ -155,18 +157,31 @@ def _too_many(wait: int, what: str) -> JSONResponse:
 _LEGACY = re.compile(r"/api/projects/([^/]+)/repos/([^/]+)/tasks")
 _DISPATCH = re.compile(r"/api/tasks/(\d{1,12})/dispatch")
 _TASK = re.compile(r"/api/tasks/(\d{1,12})")
+_NODE = r"/api/nodes/([a-z0-9][a-z0-9-]{0,30})"
+_RELAYED = (("GET", re.compile(_NODE + r"/state"), "state"), ("GET", re.compile(_NODE + r"/tasks/(\d{1,12})"), "task"),
+            ("POST", re.compile(_NODE + r"/tasks"), "task_create"), ("POST", re.compile(_NODE + r"/tasks/(\d{1,12})/dispatch"), "task_dispatch"))
 
 
-def inproc_api(user: str):
+def inproc_api(user: str, token: dict | None = None):
     """api(method, path, body) for app/mcp.tool_call that runs the board's route functions in this process, as `user`. Refusals come back
-    as RuntimeError("ccboard <status>: <message>"), the way the stdio shim reports an HTTP error."""
-    from . import gitops, github, main, previews, projects, tmux
+    as RuntimeError("ccboard <status>: <message>"), the way the stdio shim reports an HTTP error. A call for another node (/api/nodes/<handle>/...)
+    goes to nodes_relay.relay as this device token (`token` is its row: the relay reads its name and scopes), the same function the hub route calls
+    for the shim; /api/mcp/nodes is the node list the tool `list_nodes` shows."""
+    from . import gitops, github, main, nodes_relay, previews, projects, tmux
 
     def call(method: str, path: str, body: dict | None = None):
         b = body or {}
         try:
             if method == "GET" and path == "/api/state":
                 out = main.build_state(user)
+            elif method == "GET" and path == "/api/mcp/nodes":
+                out = nodes_relay.mcp_nodes_view(main._hub())
+            elif (hit := next(((m, nm) for verb, rx, nm in _RELAYED if verb == method and (m := rx.fullmatch(path))), None)) is not None:
+                m, nm = hit
+                row = nodes_relay.BY_NAME[nm]
+                params = {k: v for k, v in zip(("tid",), m.groups()[1:])}
+                standin = SimpleNamespace(state=SimpleNamespace(user=user, mcp_token=token), headers={})
+                out = nodes_relay.relay(m[1], row, params, b if row.peer_method != "GET" else {}, standin, db=main.db, hub=main._hub())
             elif method == "POST" and path == "/api/tasks":
                 out = main.api_tasks_create(main.TaskCreateIn(**b))
             elif method == "POST" and (m := _LEGACY.fullmatch(path)):
@@ -179,6 +194,8 @@ def inproc_api(user: str):
                 raise RuntimeError(f"ccboard: {method} {path} is not a call the MCP tools make")
         except RuntimeError:
             raise
+        except nodes_relay.RelayError as e:
+            raise RuntimeError(f"ccboard {e.status}: {e.message}") from None
         except projects.BadRequest as e:
             raise RuntimeError(f"ccboard 400: {e}") from None
         except projects.NotFound as e:
@@ -290,18 +307,19 @@ async def _serve(request: Request, row: dict) -> Response:
                 return _too_many(wait, f"at most {WRITES_PER_MIN} create_task or dispatch_task calls a minute per device")
     mcp_tokens.touch(row["id"], login, tool)
     user = f"mcp:{row['name']}"
-    api = inproc_api(user)
+    api = inproc_api(user, row)
 
     def call(name, args):
         task_id = args.get("task_id") if isinstance(args, dict) else None
+        node = args.get("node") if isinstance(args, dict) and isinstance(args.get("node"), str) and args["node"] != "local" else None
         try:
             out = mcp.tool_call(name, args, api)
         except Exception:
-            mcp_tokens.audit(row, name, task_id, "error")
+            mcp_tokens.audit(row, name, task_id, "error", node)
             raise
         if task_id is None and isinstance(out, dict):
             task_id = out.get("id")
-        mcp_tokens.audit(row, name, task_id, "ok")
+        mcp_tokens.audit(row, name, task_id, "ok", node)
         return out
 
     resp = await run_in_threadpool(mcp.rpc, msg, call)

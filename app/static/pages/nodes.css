@@ -143,3 +143,33 @@ html.force-coarse .toast .toast-link { min-height:var(--tap); }
 #page .nd-pstub .nd-actbox { margin:4px 0 0; }
 #page .nd-pcard .ib-actions .btn { display:inline-flex; align-items:center; }
 #page .nd-peek-top > .nd-ro { margin-bottom:2px; }
+
+/* The terminal of a session on another node (issue #144): the icon in a session row, the link that replaces a button when no window opened, the note under a peek's actions. */
+#page .nd-item .nd-term-ic { flex:none; min-width:var(--row-btn); width:var(--row-btn); min-height:var(--row-btn); height:var(--row-btn); padding:0; justify-content:center; color:var(--fg-2); }
+.nd-termlink { display:inline-flex; align-items:center; justify-content:center; min-height:var(--row-btn); text-align:center; text-decoration:underline; overflow-wrap:anywhere; }
+a.icon.nd-termlink { min-width:var(--row-btn); width:var(--row-btn); height:var(--row-btn); padding:0; }
+#page .nd-acts > a.nd-termlink { width:100%; min-width:0; }
+#page .nd-term-note { margin:8px 0 0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+#page .nd-pcard .ib-actions .nd-termlink { display:inline-flex; }
+
+/* A session of another node as a tail tile (issue #144; pages/node.js Nodes.tailTile): the quad's tile body and the terminal dock's pane. Black like a terminal, the lines read only, one status
+   line, and the same one-line prompt box as a docked local tile (termkit.css .tk-docked: 28 px with a mouse, 44 px and 16 px type on touch). */
+.qr { display:flex; flex-direction:column; min-width:0; min-height:0; height:100%; background:#000; color:var(--fg-2); }
+.qr-head { flex:none; display:flex; align-items:center; gap:6px; min-height:var(--row-btn); padding:0 2px 0 8px; background:var(--bg); border-bottom:1px solid var(--line-soft); }
+.qr-hg { flex:none; display:inline-flex; align-items:center; }
+.qr-hn { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:600 12px/1 var(--font-ui); color:var(--fg); }
+.qr-mode { flex:none; padding:0 6px; border:1px solid var(--line); border-radius:9px; font:11px/16px var(--font-mono); color:var(--dim); }
+.qr-ht { flex:none; display:inline-flex; align-items:center; }
+.qr-head .icon { flex:none; min-width:var(--row-btn); width:var(--row-btn); min-height:var(--row-btn); height:var(--row-btn); padding:0; justify-content:center; color:var(--fg-2); }
+.qr-tail { flex:1 1 0; min-height:0; margin:0; padding:8px 10px; overflow:auto; border:0; border-radius:0; background:#000; color:var(--fg-2); font:11px/1.35 var(--font-mono); white-space:pre-wrap; overflow-wrap:anywhere; }
+.qr-tail:focus-visible { outline:2px solid var(--sig); outline-offset:-2px; }
+.qr.gone .qr-tail { opacity:.6; }
+.qr-st { flex:none; display:flex; align-items:center; flex-wrap:wrap; gap:4px 8px; margin:0; padding:4px 10px; background:var(--bg-0); border-top:1px solid var(--line-soft); font-size:12px; line-height:1.4; overflow-wrap:anywhere; }
+.qr-st-t { flex:1 1 160px; min-width:0; }
+.qr-st.ok { color:var(--ok-fg); }
+.qr-st.warn { color:var(--warn-fg); }
+.qr-st.bad { color:var(--bad-fg); }
+.qr-st a { color:inherit; text-decoration:underline; }
+.qr-queue { flex:none; min-height:var(--row-btn); }
+.qr-box { flex:none; }
+.qr.blocked .qr-box { opacity:.6; }

@@ -9,6 +9,7 @@ import re
 import shlex
 import subprocess
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -243,6 +244,23 @@ def job_opts(job: dict) -> dict:
     return v if isinstance(v, dict) else {}
 
 
+BUSY_TRIES = 6        # starts of an agent binary that answers ETXTBSY
+BUSY_PAUSE = 0.05     # seconds between them
+
+
+def _run_agent(cmd, **kw):
+    """subprocess.run for an agent binary, tried again when the kernel says the file is busy (ETXTBSY). That happens when another process still has
+    the binary open for writing at the moment of the exec: an installer or an update that just wrote it, or (in the tests) a fork that inherited the
+    descriptor a fake binary was written through. It clears within milliseconds; any other error, and a busy file after BUSY_TRIES, is raised as it is."""
+    for i in range(BUSY_TRIES):
+        try:
+            return subprocess.run(cmd, **kw)
+        except OSError as e:
+            if e.errno != 26 or i == BUSY_TRIES - 1:          # 26: ETXTBSY
+                raise
+            time.sleep(BUSY_PAUSE)
+
+
 def codex_command(job: dict, wt: Path, out_file: Path, extra: list[str]) -> list[str]:
     """`codex exec --json -s <sandbox> [-a never] -o <out_file> [-m model] [-c model_reasoning_effort=...] [extra] --skip-git-repo-check -- <prompt>`.
     The sandbox comes from the job's permission mode (plan = read-only, everything else workspace-write; a headless run never bypasses and
@@ -356,7 +374,7 @@ def run_job(db, job: dict, run_id: int) -> dict:
             if exe:
                 cmd[0] = exe
             env = {**codex_agent._child_env(), "CCBOARD_SESSION": "none"}      # the hook resolver ignores this run: it is not a board session
-            cp = subprocess.run(cmd, cwd=str(wt), capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, env=env)
+            cp = _run_agent(cmd, cwd=str(wt), capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, env=env)
             ran = True
             res = ag.parse_headless(cp.stdout, cp.stderr, cp.returncode)
             last = _last_message(out_file)
@@ -388,7 +406,7 @@ def run_job(db, job: dict, run_id: int) -> dict:
     env = run_env(job)
     try:
         tasks.ensure_excluded(rpath)
-        cp = subprocess.run(cmd, cwd=str(rpath), capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, **({"env": env} if env else {}))
+        cp = _run_agent(cmd, cwd=str(rpath), capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, **({"env": env} if env else {}))
         res = agents.get("claude").parse_headless(cp.stdout, cp.stderr, cp.returncode)
         status = "rate_limited" if res["rate_limited"] else ("error" if res["is_error"] or cp.returncode != 0 else "ok")
         if status == "rate_limited":

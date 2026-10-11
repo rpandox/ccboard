@@ -188,9 +188,82 @@ def test_the_rows_are_the_reads_and_the_writes_and_screen_text_needs_sessions_no
     assert not any(r.guard for r in ROWS if r.name in ("ack", "close", "permissions", "permission_answer")), "these carry no text for an agent"
 
 
-def test_every_row_is_human_only_until_a_phase_opens_one_on_purpose():
-    """The hook token is held by every agent session on the box: no row lets it relay. A later phase (MCP across nodes) opens a row by setting human_only False."""
-    assert ROWS and all(r.human_only for r in ROWS), [r.name for r in ROWS if not r.human_only]
+AGENT_ROWS = {"state", "task", "task_create", "task_dispatch"}      # issue #152: the rows an agent's MCP tool may use, and nothing else (card and agents: no tool reads them)
+
+
+def test_a_row_is_human_only_unless_it_is_one_of_the_four_the_mcp_tools_use_on_purpose():
+    """The hook token is held by every agent session on the box: no row lets it relay unless the row says `mcp=True`, and then it is not human only (tests/test_mcp_nodes.py walks the rest)."""
+    assert ROWS and {r.name for r in ROWS if r.mcp} == AGENT_ROWS, [r.name for r in ROWS if r.mcp]
+    assert all(r.human_only != r.mcp for r in ROWS), [r.name for r in ROWS if r.human_only == r.mcp]
+    assert nr.BY_NAME["card"].human_only and nr.BY_NAME["agents"].human_only, "no tool reads the card or the agents: an agent has no use for them and does not get them"
+
+
+# ---- the body an agent may send (issue #152): narrower than a person's, per row, from the one table mcp.NODE_SEND
+
+def _field_junk(name: str):
+    """A value that is valid for the person's field of this name, so only its absence from the agent body can refuse it."""
+    return {"agent": "claude", "model": "opus", "effort": "high", "reasoning_effort": "high", "issue_ref": "acme/shop#12", "mode": "session", "session": "shop--api--s1",
+            "when": "later", "auto_close": True}.get(name, "x")
+
+
+AGENT_BODY = {"task_create": {"project": "shop", "repo": "api", "title": "A task", "prompt": "do it"}, "task_dispatch": {}}
+
+
+@pytest.mark.parametrize("row", [r for r in ROWS if r.mcp], ids=ids)
+def test_every_agent_row_has_its_own_body_made_of_exactly_what_its_tool_sends(row):
+    from app import mcp
+    assert row.agent_model is not None and row.agent_shape is not None and issubclass(row.agent_model, BaseModel)
+    assert row.agent_model.model_config.get("extra") == "forbid", "an agent body is strict too"
+    tools = [t for t, r in mcp.NODE_ROW.items() if r == row.name and t in mcp.NODE_SEND]
+    if not tools:
+        assert not row.agent_model.model_fields, f"{row.name}: a read takes nothing"
+        return
+    (tool,) = tools
+    assert set(row.agent_model.model_fields) == set(mcp.NODE_SEND[tool].values()), "the body and the tool are made from one table"
+    schema = next(t for t in mcp.TOOLS if t["name"] == tool)["inputSchema"]["properties"]
+    assert {a for a in schema if a != "node"} == set(mcp.NODE_SEND[tool]) | set(mcp.NODE_LOCAL_ONLY[tool]), "every argument of the tool is sent or stays on this board, on purpose"
+
+
+@pytest.mark.parametrize("row", [r for r in ROWS if r.mcp and r.peer_method == "POST"], ids=ids)
+def test_a_field_of_the_persons_body_that_is_not_in_the_agent_body_is_a_422_for_an_agent_and_fine_for_a_person(row):
+    persons = set(row.body_model.model_fields)
+    agents = set(row.agent_model.model_fields)
+    hidden = sorted(persons - agents)
+    assert hidden, "the agent body is narrower than the person's"
+    params = {"tid": "1"} if "tid" in row.params else {}
+    for name in hidden + ["permission_mode", "opts", "args", "sandbox", "approval", "after_task_id", "force", "queue", "reasoning"]:
+        body = {**AGENT_BODY[row.name], name: _field_junk(name)}
+        with pytest.raises(nr.Invalid) as e:
+            nr.validate(row, params, body, agent=True)
+        assert e.value.status == 422, name
+    for name in hidden:                                       # the same field is valid for a person
+        body = {**AGENT_BODY[row.name], name: _field_junk(name)}
+        if name == "mode":
+            body = {**body, "session": "shop--api--s1"}
+        if name == "session":
+            body = {**body, "mode": "session"}
+        assert nr.validate(row, params, body) is not None, name
+
+
+def test_an_agent_dispatch_is_always_a_lane_start_whatever_it_sends_and_a_create_carries_no_launch_choice():
+    clean = nr.validate(nr.BY_NAME["task_dispatch"], {"tid": "4"}, {"agent": "codex", "auto_close": False}, agent=True)
+    assert clean == {"agent": "codex", "auto_close": False, "mode": "lane"}
+    assert nr.validate(nr.BY_NAME["task_dispatch"], {"tid": "4"}, {}, agent=True) == {"mode": "lane"}
+    clean = nr.validate(nr.BY_NAME["task_create"], {}, {**AGENT_BODY["task_create"], "when": "later", "agent": "claude", "auto_close": True}, agent=True)
+    assert set(clean) == {"project", "repo", "title", "prompt", "when", "agent", "auto_close"} and not any(k in clean for k in ("model", "effort", "permission_mode", "mode", "opts"))
+    for bad in ({"title": "t" * 121}, {"agent": "shell"}, {"auto_close": "yes"}, {"when": "yesterday"}):
+        with pytest.raises(nr.Invalid):
+            nr.validate(nr.BY_NAME["task_create"], {}, {**AGENT_BODY["task_create"], **bad}, agent=True)
+
+
+@pytest.mark.parametrize("row", [r for r in ROWS if r.mcp and r.peer_method == "GET"], ids=ids)
+def test_a_read_row_takes_no_query_from_an_agent(row):
+    params = {"tid": "1"} if "tid" in row.params else {}
+    assert nr.validate(row, params, {}, agent=True) == {}
+    for q in ({"lines": "5"}, {"limit": "1"}, {"acting_user": "root"}, {"fields": "all"}):
+        with pytest.raises(nr.Invalid) as e:
+            nr.validate(row, params, q, agent=True)
+        assert e.value.status == 422
 
 
 def test_rate_class_is_the_rows_and_else_by_method():
@@ -487,7 +560,10 @@ def test_a_caller_needs_identity_and_the_csrf_header_or_the_hook_token(hub, wide
 def test_the_hook_token_every_agent_session_holds_cannot_relay_on_any_row(hub, wide, fake_tmux, row):
     two, reg, count = hub
     r = ask(two.a, row, reg["handle"], owner=False, headers={"X-CCBoard-Token": two.a.hook_token})
-    assert r.status_code == 403 and r.json()["reason"] == "human_only" and "signed-in person" in r.json()["error"], r.text
+    if row.mcp:                                           # the four rows an agent's tool uses (issue #152): shut while CCBOARD_MCP_NODES is off, which is the default
+        assert r.status_code == 403 and r.json()["reason"] == "mcp_off" and "CCBOARD_MCP_NODES is off" in r.json()["error"], r.text
+    else:
+        assert r.status_code == 403 and r.json()["reason"] == "human_only" and "signed-in person" in r.json()["error"], r.text
     assert count.seen == 0, "nothing reached another node"
     r = ask(two.a, row, reg["handle"], owner=False, headers={"X-CCBoard-Token": two.a.hook_token, "X-CCBoard": "1", **ID})
     assert r.status_code == 403, "the hook token with a person's headers beside it is still the hook token"

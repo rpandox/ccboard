@@ -297,6 +297,26 @@ Quad.candidates = function (st, project) {
   return Quad.roster(st).filter((s) => s.tmux && s.state !== 'ended' && (!project || s.project === project)).sort((a, b) => Quad.compare(a, b, st));
 };
 
+/* The sessions of the paired nodes an empty tile offers (issue #144), one group per node in the order of `recs` (Nodes.list(): [{handle, name, status}]): [{handle, name, status, items:
+   [{key: '<handle>/<tmux>', tmux, row}]}]. o = {sessions (Nodes.sessions(): rows with `node`), project ('' is every project), shown (keys already on screen), per (items per node, default 4)}.
+   A node with nothing to offer has no group. Not ended, a valid session name, the quad's project; the ones that need you first, then working, then the rest. Pure: no Nodes call. */
+Quad.remoteGroups = function (recs, o) {
+  const opt = o || {};
+  const per = opt.per > 0 ? opt.per : 4;
+  const shown = new Set(opt.shown || []);
+  const rank = { waiting: 1, errored: 2, working: 3, idle: 4, done: 5 };
+  const out = [];
+  for (const r of Array.isArray(recs) ? recs : []) {
+    if (!r || !Ref.isHandle(r.handle)) continue;
+    const items = (Array.isArray(opt.sessions) ? opt.sessions : [])
+      .filter((s) => s && s.node === r.handle && Ref.isTmux(s.tmux) && s.state !== 'ended' && (!opt.project || s.project === opt.project) && !shown.has(`${r.handle}/${s.tmux}`))
+      .sort((a, b) => ((a.needs_you ? 0 : 1) - (b.needs_you ? 0 : 1)) || ((rank[a.state] || 9) - (rank[b.state] || 9)) || String(a.tmux).localeCompare(String(b.tmux)))
+      .slice(0, per).map((s) => ({ key: `${r.handle}/${s.tmux}`, tmux: s.tmux, row: s }));
+    if (items.length) out.push({ handle: r.handle, name: typeof r.name === 'string' && r.name ? r.name : r.handle, status: r.status || '', items });
+  }
+  return out;
+};
+
 /* The scope select's options: [{project: '' (all) | name, count, label}]: All projects first, then every project with a live session (the sessions a tile can show,
    not ended) by name, a count in each label. `current` is always listed (with 0 when it has none): a select that did not could not show where the page is. */
 Quad.scopeOptions = function (st, current) {
@@ -359,7 +379,7 @@ Quad.slotsState = function (o) {
   let zoom = saved && saved.zoom !== null && saved.zoom < n ? saved.zoom : null;
   if (st) {
     const live = new Set(Quad.roster(st).map((s) => Ref.key(s)));
-    if (!parsed.slots) slots = slots.map((t) => (t && !live.has(t) ? '' : t));
+    if (!parsed.slots) slots = slots.map((t) => (t && !live.has(t) && !(Ref.splitKey(t) || {}).node ? '' : t));       // this board's roster knows its own sessions only: a saved {node, tmux} stays (its tile says when the session or the node is gone)
     slots = Quad.fillSlots(slots, st, n, { project: o.project || '' });
   }
   if (zoom !== null && !slots[zoom]) zoom = null;
@@ -372,6 +392,7 @@ Quad.slotsState = function (o) {
 Quad.defaultMode = function (forced) { return forced ? 'full' : 'grid'; };
 
 Quad.modeOf = function (modes, tmux, forced) {
+  if ((Ref.splitKey(tmux) || {}).node) return 'tail';                 // a session of another node is a tail tile (captured lines and a prompt box), whatever was stored: no terminal of another origin is ever framed
   const m = modes && modes[tmux];
   return Quad.MODES.includes(m) ? m : Quad.defaultMode(forced);
 };
@@ -626,8 +647,93 @@ Quad.mount = function (root, route) {
     tile.node.setAttribute('data-mode', tile.mode);
     patchModeButtons(tile);
     if (tile.gone) { dropTail(tile); dropFrame(tile); showNote(tile, 'This session is not running any more.'); return; }
-    if ((Ref.splitKey(tile.tmux) || {}).node) { dropTail(tile); dropFrame(tile); showNote(tile, 'This session runs on another node. Its terminal opens from that board.'); return; }      // a remote tile (a later phase) never opens a local terminal by a name it only shares
+    if (tile.remote) { dropTail(tile); dropFrame(tile); mountRemote(tile); return; }      // a session of another node is a tail tile with a prompt box (Nodes.tailTile): never a terminal of this board, never a framed page
     if (tile.mode === 'tail') { dropFrame(tile); ensureTail(tile); } else { dropTail(tile); ensureFrame(tile); }
+  }
+
+  /* ----- a session of another node (issue #144): the node's name, the last lines from the stream relay, a prompt box, and a link to its own terminal ----- */
+  function ensureNodes() {
+    if (I.nodesOn || I.disposed || typeof Nodes === 'undefined' || !Nodes.enabled()) return;
+    Nodes.use(() => {
+      if (I.disposed || I.nodesOn) return;
+      I.nodesOn = true;
+      // o on a focused tile of another node opens its terminal on that node (a plain key: inert in a field, in a dialog and inside a terminal, like every Keymap key; false leaves the key to the others).
+      // Bound only on a board with paired nodes: a single-board quad has no such key and its help list is unchanged.
+      if (typeof Keymap !== 'undefined' && typeof Keymap.bindKey === 'function') {
+        try { I.offs.push(Keymap.bindKey('o', () => openRemote(), { when: () => !!remoteTarget(), help: 'Quad: open the terminal of a tile on another node', label: 'O', group: 'Quad' })); } catch (_) { /* a spec Keymap does not take */ }
+      }
+      Nodes.M.subs.add(onNodes);                                       // a new reading of the nodes repaints the pick lists and the tiles
+      I.pointerOff.push(() => Nodes.M.subs.delete(onNodes));
+      onNodes();
+    });
+  }
+
+  function onNodes() {
+    if (I.disposed || !I.resolved) return;
+    for (const t of I.tiles.values()) if (t.remote && !t.rc) mountRemote(t);
+    for (const e of I.empties.values()) patchEmpty(e);
+  }
+
+  function mountRemote(tile) {
+    if (tile.rc) return;
+    const k = Ref.splitKey(tile.tmux);
+    if (!k || typeof Nodes === 'undefined' || !Nodes.enabled()) { showNote(tile, 'This session runs on another node that is not paired on this board.'); return; }
+    if (!Nodes.ready || typeof Nodes.tailTile !== 'function') { showNote(tile, 'Reading the nodes…'); ensureNodes(); return; }
+    hideNote(tile);
+    const rc = Nodes.tailTile(k.node, k.tmux, { onChange: (s) => patchRemote(tile, s) });
+    if (!rc) { showNote(tile, 'This is not a session name this board can show.'); return; }
+    tile.rc = rc;
+    tile.body.append(rc.root);
+  }
+
+  function dropRemote(tile) {
+    const rc = tile.rc;
+    tile.rc = null;
+    if (!rc) return;
+    try { rc.destroy(); } catch (e) { console.error('ccboard quad remote', e); }
+    try { rc.root.remove(); } catch (_) { /* detached */ }
+  }
+
+  /* What the reading of the node says about this tile: its state glyph and agent, the node chip, the link to its terminal, whether it needs you and whether the node is away. */
+  function patchRemote(tile, s) {
+    const row = s && s.row ? s.row : null;
+    const rec = s && s.rec ? s.rec : null;
+    const k = Ref.splitKey(tile.tmux);
+    const sig = JSON.stringify([row && row.state, row && row.agent, rec && rec.url, rec && rec.name, rec && rec.status, !!(typeof Nodes !== 'undefined' && Nodes.TF && k && Nodes.TF.has(tile.tmux))]);
+    if (tile.sig !== sig) {
+      tile.sig = sig;
+      tile.glyphs.textContent = '';
+      if (row) tile.glyphs.append(stateGlyph(row.state), agentGlyph(Quad.agentOf(row)));
+      tile.node.setAttribute('data-state', row && row.state ? row.state : 'unknown');
+      if (row) tile.node.setAttribute('data-agent', Quad.agentOf(row));
+      tile.chipSlot.textContent = '';
+      const chip = typeof Nodes !== 'undefined' && k ? Nodes.chip(k.node) : null;
+      if (chip) tile.chipSlot.append(chip);
+      tile.openSlot.textContent = '';
+      if (k && typeof Nodes !== 'undefined' && typeof Nodes.termBtn === 'function') tile.openSlot.append(Nodes.termBtn(k.node, k.tmux, { icon: true, cls: 'icon minimal small qt-rterm' }));
+    }
+    tile.node.classList.toggle('needs', !!(row && row.needs_you));
+    tile.node.classList.toggle('gone', !!(s && s.view && s.view.status !== 'online' && s.view.status !== 'stale'));
+  }
+
+  /* o on a focused tile of another node: its terminal, on that node, in a new window (a link when the browser gives none). */
+  function remoteTarget() {
+    const t = I.tiles.get(I.active);
+    if (!t || !t.remote || !t.rc) return null;
+    let inside = true;
+    try {
+      const a = typeof document !== 'undefined' ? document.activeElement : null;
+      const host = a && typeof a.closest === 'function' ? a.closest('.qtile') : null;                // the focus is in another tile: that one is the focused tile; anywhere else (the page, a button) it is the active one
+      inside = !host || host === t.node;
+    } catch (_) { inside = true; }
+    return inside ? t : null;
+  }
+
+  function openRemote(tile) {
+    const t = tile || remoteTarget();
+    if (!t || !t.rc) return false;
+    t.rc.open();
+    return true;
   }
 
   function patchModeButtons(tile) {
@@ -707,6 +813,7 @@ Quad.mount = function (root, route) {
   }
 
   function reconnect(tile) {
+    if (tile.remote) { if (tile.rc) tile.rc.reload(); else mountRemote(tile); return; }
     if (tile.gone) { tile.missing = 0; tile.gone = false; mountBody(tile); return; }
     if (tile.mode === 'tail') { dropTail(tile); ensureTail(tile); return; }
     if (!reloadFrame(tile)) mountBody(tile);
@@ -740,21 +847,26 @@ Quad.mount = function (root, route) {
     return true;
   }
 
+  const REMOTE_KEYS = 'This tile shows a session on another node. Type in its box, or open the terminal on that node.';
+
   async function sendKeys(keys) {
     const tmux = I.active;
     if (!tmux) { note('No tile is selected'); return; }
+    if ((Ref.splitKey(tmux) || {}).node) { note(REMOTE_KEYS, 'info'); return; }                    // the host key bar types into this board's sessions only
     try { await api('POST', `/api/sessions/${enc(tmux)}/keys`, { keys }); } catch (e) { note(e.message); }
   }
 
   async function sendText(text, enter) {
     const tmux = I.active;
     if (!tmux) return;
+    if ((Ref.splitKey(tmux) || {}).node) { note(REMOTE_KEYS, 'info'); return; }
     try { await api('POST', `/api/sessions/${enc(tmux)}/keys`, { text, enter: !!enter }); } catch (e) { note(e.message); }
   }
 
   async function scrollActive(dir) {
     const tmux = I.active;
     if (!tmux) return;
+    if ((Ref.splitKey(tmux) || {}).node) return;                                                    // the tile's own lines scroll by hand
     try { await api('POST', `/api/sessions/${enc(tmux)}/scroll`, { dir, n: 1 }); } catch (e) { note(e.message); }
   }
 
@@ -781,8 +893,8 @@ Quad.mount = function (root, route) {
     I.keysHost.classList.toggle('hidden', !on);
     I.keysBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
     const t = I.tiles.get(I.active) || null;
-    setTextIfChanged(I.keysTo, t ? `keys to ${Quad.label(t.tmux)}` : 'keys: no tile selected');
-    I.keysHost.classList.toggle('off', !t || t.mode === 'ro' || t.mode === 'tail');
+    setTextIfChanged(I.keysTo, !t ? 'keys: no tile selected' : t.remote ? 'keys are off: this tile is on another node, type in its box' : `keys to ${Quad.label(t.tmux)}`);
+    I.keysHost.classList.toggle('off', !t || t.remote || t.mode === 'ro' || t.mode === 'tail');      // a tile of another node takes no host keys (sendKeys refuses them): the bar reads as off
   }
 
   /* ----- slots ----- */
@@ -854,17 +966,20 @@ Quad.mount = function (root, route) {
   function buildTile(tmux) {
     const tile = { tmux, slot: -1, mode: '', node: null, body: null, frame: null, bound: null, url: '', pre: null, tailOff: null, note: null, ro: null, measureTimer: null,
       dims: null, session: null, perm: null, permSig: '', decided: null, sig: '', missing: 0, gone: false, zoomed: false, fit: { key: '', at: 0, tries: 0, blocked: '' }, modeBtns: [],
-      kit: hasKit('tileMenu'), menuCtl: null, composerCtl: null, tuneCtl: null, docked: false, head: null, dock: null };
+      kit: hasKit('tileMenu'), menuCtl: null, composerCtl: null, tuneCtl: null, docked: false, head: null, dock: null, remote: false, rc: null, chipSlot: null, openSlot: null };
+    const kp = Ref.splitKey(tmux) || { node: null, tmux };               // tile key -> the name and the node a drop target needs (dnd.js): the tile key is never a name by itself
+    tile.remote = kp.node !== null;                                      // issue #144: a session of another node is a tail tile, never a terminal
     const label = Quad.label(tmux);
     tile.glyphs = el('span', { class: 'qt-glyphs' });
-    const [proj, repo, sname] = Quad.parts(tmux);
+    const [proj, repo, sname] = Quad.parts(kp.tmux);
     // two spans so a narrow header drops the project/repo first and keeps the session name: 'phasezero/website · ' shrinks, 't-checkout-redesign' stays
     tile.where = el('span', { class: 'qt-where' + (repo ? ' pend' : ''), text: repo ? `${proj}${repo === 'root' ? '' : '/' + repo} · ` : '' });      // .pend: hidden until TermKit.fitName has measured it, so no sliver flashes at first paint
-    tile.name = el('span', { class: 'qt-name' }, tile.where, el('span', { class: 'qt-sess', text: repo ? sname : tmux }));
+    tile.name = el('span', { class: 'qt-name' }, tile.where, el('span', { class: 'qt-sess', text: repo ? sname : kp.tmux }));
     // the name and its ▾ open the tile's view dropdown (TermKit.tileMenu: view, input, tune, session); a kit without it (slice B not loaded) keeps the old title menu
     tile.title = el('button', { class: 'minimal small qt-title', type: 'button', title: tile.kit ? `${tmux}: view, input and tune options` : `${tmux}: swap, reconnect, close`, 'aria-label': `${label}: tile menu`, 'aria-haspopup': 'menu' },
       tile.name, el('span', { class: 'qt-caret', 'aria-hidden': 'true', text: '▾' }));
-    if (tile.kit) tile.title.addEventListener('click', (e) => toggleTileMenu(tile, !!(e && e.detail === 0 && e.isTrusted)));
+    if (tile.remote) { if (typeof menu === 'function') menu(tile.title, () => remoteItems(tile)); }      // the menu of a tile of another node: its terminal, a reload, zoom, close, and why there is no tune
+    else if (tile.kit) tile.title.addEventListener('click', (e) => toggleTileMenu(tile, !!(e && e.detail === 0 && e.isTrusted)));
     else if (typeof menu === 'function') menu(tile.title, () => titleItems(tile));
     // the mode picker: a 4-way segmented control from 366 px up (a compact one under 460), one menu button under that (pages.css picks; both are always here)
     tile.modeBtns = Quad.MODES.map((m) => el('button', { class: 'seg-btn qt-mode', type: 'button', 'data-mode': m, 'aria-pressed': 'false', title: Quad.MODE_TITLE[m], text: m, onclick: () => setMode(tile, m) }));
@@ -880,7 +995,11 @@ Quad.mount = function (root, route) {
     const again = el('button', { class: 'icon minimal small qt-reconnect', type: 'button', 'aria-label': 'Reconnect', title: 'Reconnect this tile', onclick: () => reconnect(tile) }, ic('refresh'));
     const shut = el('button', { class: 'icon minimal small qt-close', type: 'button', 'aria-label': 'Close this tile', title: 'Close this tile', onclick: () => close(tile) }, ic('cross'));
     tile.hooks = el('span', { class: 'qt-hooks hidden' });       // #96: 'no hooks (untrusted?)' while hooks_missing (patchTile)
-    const head = el('header', { class: 'qt-head' }, tile.glyphs, tile.title, tile.hooks, tile.modes, tile.modeMenu, tile.ctx, tile.size, tile.zoomBtn, open, again, shut);
+    tile.chipSlot = el('span', { class: 'qt-nodechip' });            // issue #144: the node's chip, filled once the nodes are read (patchRemote)
+    tile.openSlot = el('span', { class: 'qt-openslot' });             // and the link to its terminal, on the node itself
+    const tailWord = el('span', { class: 'qt-tailword', title: 'Tail: the last captured lines of the session and a prompt box, not an interactive terminal', text: 'Tail' });
+    const head = tile.remote ? el('header', { class: 'qt-head' }, tile.glyphs, tile.title, tile.chipSlot, tailWord, tile.zoomBtn, tile.openSlot, again, shut)
+      : el('header', { class: 'qt-head' }, tile.glyphs, tile.title, tile.hooks, tile.modes, tile.modeMenu, tile.ctx, tile.size, tile.zoomBtn, open, again, shut);
     tile.head = head;
     tile.task = el('div', { class: 'qt-task hidden' });
     tile.permText = el('span', { class: 'qt-perm-text' });
@@ -888,7 +1007,6 @@ Quad.mount = function (root, route) {
     tile.permNode = el('div', { class: 'qt-perm hidden' }, tile.permText, tile.permBtns);
     tile.body = el('div', { class: 'qt-body' });
     tile.dock = el('div', { class: 'qt-dock hidden' });                 // the docked composer, from 520 px (pages.css), when 'Show composer' is ticked
-    const kp = Ref.splitKey(tmux) || { node: null, tmux };               // tile key -> the name and the node a drop target needs (dnd.js): the tile key is never a name by itself
     tile.node = el('article', { class: 'qtile', 'data-tmux': kp.tmux, 'data-node': kp.node, 'data-slot': '-1', 'data-mode': '', 'data-drop': 'session', tabindex: '-1', 'aria-label': label }, head, tile.task, tile.permNode, tile.body, tile.dock);
     tile.node.addEventListener('pointerdown', () => { touched(); setActive(tmux); }, true);
     tile.node.addEventListener('focusin', () => setActive(tmux));                // ttyd focuses its own terminal on load: that is no use of the tile
@@ -911,7 +1029,7 @@ Quad.mount = function (root, route) {
     I.tiles.set(tmux, tile);
     I.grid.append(tile.node);                                       // appended, never inserted: an iframe that moves in the DOM reloads
     tile.mode = modeFor(tmux);
-    tile.gone = known() && !sessionOf(tmux);
+    tile.gone = !tile.remote && known() && !sessionOf(tmux);              // a session of another node is not in this board's roster: its tile reads the nodes' reading (patchRemote)
     tile.node.classList.toggle('gone', tile.gone);
     mountBody(tile);
     const s = sessionOf(tmux);
@@ -927,6 +1045,7 @@ Quad.mount = function (root, route) {
     if (tile.ro) { try { tile.ro.disconnect(); } catch (_) { /* gone */ } tile.ro = null; }
     dropTail(tile);
     dropFrame(tile);
+    dropRemote(tile);
     try { tile.node.remove(); } catch (_) { /* detached */ }
     I.tiles.delete(tile.tmux);
     if (I.active === tile.tmux) { I.active = ''; patchKeys(); }
@@ -1291,6 +1410,23 @@ Quad.mount = function (root, route) {
     return items;
   }
 
+  /* The menu of a tile of another node (issue #144): its terminal on that node, its session page here, a reload of the tail, zoom, the dock and Close tile, and one row that says why there
+     is no Tune or slash command (this board sends words to a session of another node, never a command). Close tile removes the view; the session keeps running on its node. */
+  function remoteItems(tile) {
+    const k = Ref.splitKey(tile.tmux) || { node: '', tmux: '' };
+    const name = typeof Nodes !== 'undefined' && typeof Nodes.nameOf === 'function' ? Nodes.nameOf(k.node) : k.node;
+    const items = [
+      { label: `Open terminal on ${name}`, icon: 'share', sub: 'a new window on the node itself', onClick: () => openRemote(tile) },
+      { label: 'Open the session page', icon: 'blank', sub: 'the read only page of this board', onClick: () => { const h = Ref.hash({ tmux: k.tmux, node: k.node }); if (h && typeof navigate === 'function') navigate(h); } },
+      { label: 'Reload the tail', icon: 'refresh', onClick: () => reconnect(tile) },
+    ];
+    if (I.n >= 2) items.push({ label: tile.slot === I.zoom ? 'Back to the grid' : 'Zoom this tile', icon: tile.slot === I.zoom ? 'minimize' : 'maximize', onClick: () => zoomSlot(tile.slot) });
+    if (dockPossible()) items.push({ label: 'Add to dock', icon: 'blank', sub: 'opens in the dock when you leave the Quad', onClick: () => dockTile(tile) });
+    items.push({ label: 'Close tile', icon: 'cross', sub: 'the session keeps running on its node', onClick: () => close(tile) });
+    items.push({ label: 'Tune and slash commands', icon: 'blank', sub: 'Not offered on a tile of another node. Type the words you want the session to read.', onClick: () => {} });
+    return items;
+  }
+
   /* The line a pending permission gets: its summary, Allow / Deny / In terminal. The buttons are there whenever the request is still in pending_permissions: POST allow works
      whether or not a terminal is attached (a request that arrives while a full client is attached is already settled by the hook and never listed). The viewers count only
      drives the note: another full client than this tile's own (a full tile's iframe is one itself). */
@@ -1370,6 +1506,7 @@ Quad.mount = function (root, route) {
 
   /* A tile whose session has been missing for two polls in a row says so instead of showing a dead iframe; a blip (tmux down, an empty first poll) never does. */
   function patchGone(tile) {
+    if (tile.remote) return;                                          // the nodes' reading decides for a tile of another node (patchRemote)
     const here = !!sessionOf(tile.tmux);
     if (here) tile.missing = 0; else if (known()) tile.missing += 1;
     const gone = here ? false : (known() && tile.missing >= 2 ? true : tile.gone);
@@ -1403,19 +1540,37 @@ Quad.mount = function (root, route) {
     return false;
   }
 
+  /* The pick list's remote half: Nodes.list() and Nodes.sessions() (the hub bundle), through Quad.remoteGroups; none while the hub view is off or not loaded yet. */
+  function remoteGroupsNow(shown) {
+    if (typeof Nodes === 'undefined' || !Nodes.ready || !Nodes.enabled() || typeof Nodes.sessions !== 'function') return [];
+    try { return Quad.remoteGroups(Nodes.list(), { sessions: Nodes.sessions(), project: I.project, shown }); } catch (e) { console.error('ccboard quad nodes', e); return []; }
+  }
+
   function patchEmpty(e) {
     const shown = I.slots.slice(0, I.n);                                                      // a session in a hidden slot is free for a visible tile (picking it moves it)
     const free = Quad.candidates(I.st, I.project).filter((s) => !shown.includes(Ref.key(s))).slice(0, 6);
-    const sig = `${I.st ? 1 : 0}|${free.map((s) => `${Ref.key(s)}:${s.state}`).join(',')}`;
+    const groups = remoteGroupsNow(shown);                                                    // issue #144: the sessions of the paired nodes, per node (none on a board with no node)
+    const sig = `${I.st ? 1 : 0}|${free.map((s) => `${Ref.key(s)}:${s.state}`).join(',')}${groups.length ? `|${groups.map((g) => `${g.handle}:${g.name}:${g.status}:${g.items.map((i) => `${i.key}:${i.row.state}`).join(',')}`).join(';')}` : ''}`;
     if (e.sig === sig) return;
     e.sig = sig;
     e.node.textContent = '';
-    e.node.append(el('div', { class: 'qe-title', text: !I.st ? 'Loading sessions…' : (free.length ? 'Pick a session for this tile' : (I.project ? `No other session in ${I.project}` : 'No other session is running')) }));
+    const any = free.length > 0 || groups.length > 0;
+    e.node.append(el('div', { class: 'qe-title', text: !I.st ? 'Loading sessions…' : (any ? 'Pick a session for this tile' : (I.project ? `No other session in ${I.project}` : 'No other session is running')) }));
     if (!I.st) return;
-    const list = el('div', { class: 'qe-list' });
-    for (const s of free) {
-      list.append(el('button', { class: 'small qe-pick', type: 'button', 'data-tmux': Ref.key(s), title: Quad.label(Ref.key(s)), onclick: () => assign(e.slot, Ref.key(s)) },
-        stateGlyph(s.state), el('span', { class: 'qe-name', text: Quad.label(Ref.key(s)) })));      // the full name stays in the title: the row cuts it with an ellipsis
+    const pick = (s) => el('button', { class: 'small qe-pick', type: 'button', 'data-tmux': Ref.key(s), title: Quad.label(Ref.key(s)), onclick: () => assign(e.slot, Ref.key(s)) },
+      stateGlyph(s.state), el('span', { class: 'qe-name', text: Quad.label(Ref.key(s)) }));      // the full name stays in the title: the row cuts it with an ellipsis
+    const list = el('div', { class: groups.length ? 'qe-list qe-grouped' : 'qe-list' });
+    if (!groups.length) for (const s of free) list.append(pick(s));
+    else {                                                                                    // grouped by node: this node first, then one group per paired node
+      if (free.length) list.append(el('div', { class: 'qe-group', role: 'group', 'aria-label': 'This node', 'data-node': 'local' }, el('div', { class: 'qe-gh', text: 'This node' }), ...free.map(pick)));
+      for (const g of groups) {
+        const rec = typeof Nodes !== 'undefined' && typeof Nodes.get === 'function' ? Nodes.get(g.handle) : null;
+        const word = rec && typeof Nodes.view === 'function' && g.status !== 'online' ? Nodes.view(rec).word : '';
+        list.append(el('div', { class: 'qe-group', role: 'group', 'aria-label': `On ${g.name}`, 'data-node': g.handle },
+          el('div', { class: 'qe-gh' }, el('span', { class: 'qe-gn', text: g.name }), word ? el('span', { class: 'dim qe-gs', text: word }) : null),
+          ...g.items.map((i) => el('button', { class: 'small qe-pick qe-rpick', type: 'button', 'data-tmux': i.key, 'data-node': g.handle, title: `${Quad.label(i.tmux)} on ${g.name}`, onclick: () => assign(e.slot, i.key) },
+            stateGlyph(i.row.state), el('span', { class: 'qe-name', text: Quad.label(i.tmux) })))));
+      }
     }
     e.node.append(list, el('button', { class: 'small qe-new', type: 'button', title: 'start a new session for this tile', onclick: () => newSessionHere(e.slot) }, ic('plus'), 'New session'));
   }
@@ -1451,6 +1606,12 @@ Quad.mount = function (root, route) {
     }
   }
 
+  /* The row of a session of another node (the hub's reading), or null: the one-up chip of a tile that shows it. */
+  function remoteRow(key) {
+    if (!(Ref.splitKey(key) || {}).node || typeof Nodes === 'undefined' || !Nodes.ready || !Nodes.enabled() || typeof Nodes.sessions !== 'function') return null;
+    try { return Nodes.sessions().find((s) => Ref.key(s) === key) || null; } catch (_) { return null; }
+  }
+
   function chipNode(s) {
     const tail = el('span', { class: 'q-chip-tail' });
     const glyphs = el('span', { class: 'q-chip-glyphs' });
@@ -1481,7 +1642,7 @@ Quad.mount = function (root, route) {
     I.chipsHost.classList.toggle('hidden', !I.oneUp || I.noScope);
     if (!I.oneUp || !I.st || I.noScope) { chipTailsOff(); return; }
     const list = Quad.candidates(I.st, I.project);
-    const cur = I.slots[0] ? sessionOf(I.slots[0]) : null;
+    const cur = I.slots[0] ? (sessionOf(I.slots[0]) || remoteRow(I.slots[0])) : null;      // a session of another node on screen stays a chip too
     if (cur && !list.some((s) => Ref.key(s) === Ref.key(cur))) list.unshift(cur);          // an ended session that is on screen stays a chip
     const shown = list.slice(0, Quad.CHIPS_MAX);
     const order = new Set(I.chipOrder);
@@ -1640,6 +1801,7 @@ Quad.mount = function (root, route) {
     I.st = st || null;
     I.roster = Quad.roster(st);
     I.index = new Map(I.roster.map((s) => [Ref.key(s), s]));
+    ensureNodes();                                                    // paired nodes (issue #144): the hub bundle and its reading, for the pick lists and the tiles of other nodes
     const first = !I.resolved && !!st;
     if (first) resolveInitial();
     if (!I.resolved) return;
@@ -1863,6 +2025,8 @@ Quad.mount = function (root, route) {
   I.leaveFullscreen = leaveFullscreen;
   I.menuCtx = (tmux) => { const t = I.tiles.get(tmux); return t ? menuCtx(t) : null; };      // what TermKit.tileMenu gets for a tile
   I.openMenu = (tmux, byKeyboard) => { const t = I.tiles.get(tmux); return t ? toggleTileMenu(t, !!byKeyboard) : false; };
+  I.openRemote = (tmux) => openRemote(tmux ? I.tiles.get(tmux) : null);
+  I.remoteTarget = () => remoteTarget();
   I.openComposer = (tmux) => { const t = I.tiles.get(tmux); return t ? openComposer(t) : false; };
   I.openTune = (tmux) => { const t = I.tiles.get(tmux); return t ? openTune(t) : false; };
   I.toggleDocked = (tmux) => { const t = I.tiles.get(tmux); return t ? toggleDocked(t) : false; };
