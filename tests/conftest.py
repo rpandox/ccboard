@@ -144,6 +144,22 @@ def _no_real_tailscale(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_github_reader(monkeypatch):
+    """The epic reader (app/github.py `api`, which runs `gh api`) and the login lookup behind the claim author rule never reach the real gh: both answer "no gh"
+    until a test installs tests/fake_github.py, which puts a fake gh first on PATH and gives them back. The reader's cache and back-off start empty."""
+    from app import github, nodes_epics, prpoll
+
+    def refuse(path, etag=None):
+        raise github.GhReadError("no_gh")
+    monkeypatch.setattr(github, "api", refuse)
+    monkeypatch.setattr(nodes_epics, "_gh_login", lambda: None)
+    monkeypatch.setattr(prpoll, "_gh_login", None)
+    nodes_epics.reset()
+    yield
+    nodes_epics.reset()
+
+
+@pytest.fixture(autouse=True)
 def _stub_clone_dns(monkeypatch):
     """The real resolver is never used: every clone host name 'resolves' to one public address (the clone URL guard resolves names,
     issue #22), and the answer cache starts empty. tests/test_clone_url_guard.py patches projects.getaddrinfo with its own tables."""

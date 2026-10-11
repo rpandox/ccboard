@@ -2,6 +2,20 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.46 - 2026-10-11
+
+### Added
+- Nodes P12, the epic view (#147). **Tasks > Epics** lists the issues labelled `ccboard:epic` in the repositories this board knows, and `#/epic/<owner>/<repo>/<n>` shows one epic: its sub-issues in GitHub's queue order, a progress bar for each node (done, running, queued, failed, in words and glyphs, never colour alone), the node that holds each issue, its claim ("not live" when it was not renewed), the task phase on that node (an offline node shows its last phase and age), the pull request, and a **Pin** menu per issue. Entry points: the Tasks switch, an **Epics** link in the project header, and the palette (`epic`, `epic owner/repo#147`). **In this version the page only reads GitHub**: **Run** is shown disabled ("available when routing is installed") and nothing is claimed, started or commented.
+- **Pause** or **Resume** and the pins are kept on this board only (`PUT /api/epics/<owner>/<repo>/<n>/settings`, a signed-in person with the CSRF header; a pin must name `local` or a paired node, and a pin to a node unpaired later shows as ignored). A label `ccboard:node:<alias>` on a child is read as a pin; the page pin wins. Each change paints at once and a refusal puts it back with the board's words.
+- A read-only GitHub reader (`app/github.py`): `gh api` with `GET` only, an argv list, strict owner, repository and number checks before anything is run, a 20 s timeout, a 2 MB cap, ETag and `If-None-Match`, a 60 s cache, and a back-off kept in memory when GitHub says wait (the page says "GitHub asked us to wait 40 s" and keeps the last read). The `gh` token is never read or returned, and everything GitHub sends (titles, labels, comments) is treated as untrusted text: capped, stripped of control and bidi characters, and shown with `textContent` only; links are built from the checked owner, repository and number.
+- Claim comments (`<!-- ccboard:claim v1 -->`, written by a later phase) are read for display. One counts only when its author is the repository owner or listed in the new `CCBOARD_EPIC_AUTHORS` (empty: the login `gh` uses on this board); anyone else's is shown as "not from an allowed author" and never as a claim. Doctor: **Epics from GitHub** (`epic-gh`) checks the `gh` login, the `repo` scope and read access, read only.
+- `?demo=1#/epic/example/website/147` shows a six-child epic across two nodes; `&epic=nologin|noaccess|notfound|wait|stale|labels|empty|norepo|none|down` shows each degraded state.
+
+### Changed
+- The first-paint script grew by about 4 KB (the Epics switch hook on the Tasks page, the `#/epic/` address in the router and one demo dispatch line); the epic page, its list and its palette rows are the lazy `epic` bundle. A board with no GitHub issue task, no paired node and no epic visit keeps its Tasks page and palette byte for byte.
+
+Upgrade: nothing to do.
+
 ## v0.5.45 - 2026-10-11
 
 ### Added

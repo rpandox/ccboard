@@ -348,11 +348,11 @@ def test_agents_route_is_the_plain_path_slash_agents():
 
 
 def _register_calls():
-    """{page id: [files that call registerPage('<id>', ...)]} over app/static/pages/*.js, except pages/node.js: its three ids are the NODE_ROUTES of router.js (see
-    test_the_node_pages_register_exactly_the_three_node_routes)."""
+    """{page id: [files that call registerPage('<id>', ...)]} over app/static/pages/*.js, except pages/node.js (its three ids are the NODE_ROUTES of router.js, see
+    test_the_node_pages_register_exactly_the_three_node_routes) and pages/epic.js (its one id is the EPIC_ROUTE of router.js, issue #147)."""
     calls = {}
     for js in sorted((STATIC_ROOT / "pages").glob("*.js")):
-        if js.name == "node.js":
+        if js.name in ("node.js", "epic.js"):
             continue
         code = _blank_js(js.read_text())
         for m in re.finditer(r"\bregisterPage\(\s*'([A-Za-z0-9_-]+)'", code):

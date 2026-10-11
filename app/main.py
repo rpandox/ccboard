@@ -27,9 +27,9 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_hub, nodes_relay, nodes_stream, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_stream, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import claude_pane, codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -4614,6 +4614,65 @@ def api_nodes_discover(request: Request, refresh: int = 0):
     if refresh and request.headers.get("x-ccboard") != "1":
         return JSONResponse({"error": "missing X-CCBoard header"}, status_code=403)
     return nodes_discovery.discover(db, refresh=bool(refresh))
+
+
+# ---------- epics (issue #147): GitHub's epics read through gh (GET only), per-node progress, this board's pins and pause; the logic is in app/nodes_epics.py ----------
+
+def _epic_ids(owner: str, repo: str, n: str) -> int:
+    """The issue number, after owner, repository and number were checked against GitHub's own rules (nothing else ever reaches a gh command line)."""
+    if not github.valid_slug(owner, repo) or not github.valid_number(n):
+        raise projects.BadRequest("not a valid GitHub owner, repository or issue number")
+    return int(n)
+
+
+def _hub_records() -> list[dict]:
+    hub = _hub()
+    return hub.records() if hub.rows() else []
+
+
+@app.get("/api/epics")
+def api_epics():
+    """The open issues labelled ccboard:epic in the GitHub repositories this board knows (its projects' remotes and the paired nodes' readings), each with its
+    children's counts: {epics: [{repo, number, title, url, children: {open, closed, total} | null, updated_at, labels, paused}], repos, errors, error, rate, at}.
+    Read through gh (GET only), cached 60 s; a GitHub problem is an `error` in a 200 answer (reason, message, wait_s), never a 5xx."""
+    recs = _hub_records()
+    projs = _cached_projects()
+    out = nodes_epics.list_epics(db, nodes_epics.known_repos(projs if projs is not None else _scan_entry().get("projects"), recs))
+    out["at"] = db_now()
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/epics/{owner}/{repo}/{n}")
+def api_epic(owner: str, repo: str, n: str):
+    """One epic: {epic, source, note, children: [...], progress: {by_node, unclaimed, open, closed, total}, pins, epic_pin, paused, report, auto_pr, nodes, rate,
+    server_now, error, stale_age_s, truncated, partial, comments_pending, empty, at}. 400 for an owner, repository or number outside GitHub's rules (before any
+    gh command is built); every GitHub problem is `error` in a 200 answer, with the last good data when there is one."""
+    num = _epic_ids(owner, repo, n)
+    out = nodes_epics.detail(db, owner, repo, num, _hub_records())
+    out["at"] = db_now()
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+class EpicSettingsIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    pins: dict[str, str | None] | None = None
+    epic_pin: str | None = None
+    paused: StrictBool | None = None
+    report: StrictBool | None = None
+    auto_pr: StrictBool | None = None
+
+
+@app.put("/api/epics/{owner}/{repo}/{n}/settings")
+def api_epic_settings(owner: str, repo: str, n: str, body: EpicSettingsIn, request: Request):
+    """Pins and pause for one epic, kept on this board only (kv `epic:<owner/repo#n>`); only the keys sent change. `pins` merges per issue number (a node handle
+    sets, null removes), `epic_pin` is a handle or null, `paused`, `report` and `auto_pr` are booleans. A handle must be `local` or a paired node (400 otherwise).
+    Nothing is sent to GitHub. A signed-in person only: the hook token, the hub and a node token get 403. Answers {pins, epic_pin, paused, report, auto_pr, nodes}."""
+    user = getattr(request.state, "user", None)
+    if user in ("local-token", "hub") or (isinstance(user, str) and user.startswith("node:")):
+        raise projects.Forbidden("epic pins and pause are set by a signed-in person")
+    num = _epic_ids(owner, repo, n)
+    nodes_epics.save_settings(db, owner, repo, num, {k: getattr(body, k) for k in body.model_fields_set})
+    return JSONResponse(nodes_epics.settings_view(db, owner, repo, num, _hub_records()), headers={"Cache-Control": "no-store"})
 
 
 # ---------- pairing two boards (issue #135): codes, the pair endpoint, the paired lists, rotate and remove; the logic is in app/nodes.py ----------

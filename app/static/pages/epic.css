@@ -1,0 +1,89 @@
+/* The epic view (issue #147), loaded with pages/epic.js (lazy.js 'epic'): the page #/epic/<owner>/<repo>/<n> and the Epics list of the Tasks page.
+   State is a glyph plus a word, never colour alone: the bar segments differ in fill AND edge (solid, striped, hollow, crossed); amber and rose only mean attention.
+   28 px controls with a mouse, --tap (44 px) on touch; nothing wider than 390 px; no inline styles (the one dynamic number, a segment's weight, is set on the node by the script). */
+#page .ep { max-width:960px; }
+#page .ep-head { margin:0 0 10px; }
+#page .ep-crumb { display:flex; flex-wrap:wrap; align-items:center; gap:2px 4px; padding-top:10px; font-size:12px; min-width:0; }
+#page .ep-back { display:inline-flex; align-items:center; min-height:var(--row-btn); }
+#page .ep-name { min-width:0; overflow-wrap:anywhere; }
+#page .ep-name a { color:var(--fg-2); }
+#page .ep-titlerow { padding-top:2px; }
+#page .ep-h1 { min-width:0; overflow-wrap:anywhere; }
+#page .ep-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+#page .ep-actions button { min-height:var(--row-btn); }
+#page .ep-run[disabled] { opacity:.55; cursor:not-allowed; }
+#page .ep-pause[aria-pressed=true] { border-color:var(--warn); color:var(--warn-fg); }
+#page .ep-sub { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; margin:4px 0 0; font-size:13px; }
+#page .ep-why { margin:4px 0 0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+#page .ep-pin-btn { display:inline-flex; align-items:center; gap:4px; min-height:var(--row-btn); }
+
+#page .ep-banner { margin:0; }
+#page .ep-note { display:flex; flex-direction:column; gap:2px; margin:8px 0 0; padding:8px 10px; border:1px solid var(--line); border-left-width:3px; border-radius:3px; background:var(--card); font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+#page .ep-note.warn { border-left-color:var(--warn); }
+#page .ep-note.bad { border-left-color:var(--bad); }
+#page .ep-note.dim { border-left-color:var(--line-strong); background:transparent; }
+#page .ep-note-n { font-size:12px; }
+#page .ep-emptybox { margin:12px 0; }
+
+#page .ep-sec { margin:16px 0 0; }
+#page .ep-h { margin:0 0 6px; font:600 11px/1.4 var(--font-ui); letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+#page .ep-hn { font-weight:400; letter-spacing:0; text-transform:none; }
+
+/* progress by node: who, a bar, the numbers in words */
+#page .ep-prows { list-style:none; margin:0; padding:0; }
+#page .ep-prow { display:grid; grid-template-columns:minmax(120px, 200px) minmax(100px, 1fr) minmax(0, 1.2fr); align-items:center; gap:4px 12px; padding:8px 0; border-bottom:1px solid var(--line-soft); }
+#page .ep-pwho { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; min-width:0; }
+#page .ep-plabel { font-weight:600; }
+#page .ep-ptot { font-size:12px; }
+#page .ep-bar { display:flex; gap:2px; height:14px; min-width:0; }
+#page .ep-seg { min-width:6px; border:1px solid var(--line-strong); border-radius:2px; }
+#page .ep-seg.done, #page .ep-seg.closed { background:var(--mute-green); border-color:var(--mute-green-bd); }
+#page .ep-seg.running { background:repeating-linear-gradient(135deg, var(--sig) 0 4px, var(--sig-bg) 4px 8px); border-color:var(--sig-bd); }
+#page .ep-seg.queued, #page .ep-seg.open { background:transparent; border-style:dashed; border-color:var(--mute-slate); }
+#page .ep-seg.failed { background:repeating-linear-gradient(45deg, var(--mute-rose) 0 2px, var(--mute-rose-bg) 2px 6px); border-color:var(--mute-rose-bd); }
+#page .ep-seg.none { flex:1; border-style:dotted; background:transparent; }
+#page .ep-words { display:flex; flex-wrap:wrap; gap:2px 12px; margin:0; padding:0; list-style:none; font-size:12px; line-height:1.5; }
+#page .ep-wg { display:inline-block; min-width:1em; font-family:var(--font-glyph); text-align:center; }
+#page .ep-wg.done, #page .ep-wg.closed { color:var(--mute-green); }
+#page .ep-wg.running { color:var(--sig); }
+#page .ep-wg.failed { color:var(--mute-rose); }
+
+/* the issues */
+#page .ep-rows, #page .ep-lrows { list-style:none; margin:0; padding:0; }
+#page .ep-row { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:4px 12px; align-items:start; padding:8px 0; border-bottom:1px solid var(--line-soft); }
+#page .ep-row.failed { border-left:2px solid var(--mute-rose); padding-left:8px; }
+#page .ep-main { grid-column:1; display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 8px; min-width:0; }
+#page .ep-g { flex:none; width:1.2em; text-align:center; font-family:var(--font-glyph); }
+#page .ep-g.done, #page .ep-g.closed { color:var(--mute-green); }
+#page .ep-g.running { color:var(--sig); }
+#page .ep-g.failed { color:var(--mute-rose); }
+#page .ep-num { flex:none; font-family:var(--font-mono); font-size:12px; }
+#page .ep-title { flex:1 1 200px; min-width:0; font-weight:500; overflow-wrap:anywhere; }
+#page .ep-other { max-width:100%; }
+#page .ep-meta2 { grid-column:1; display:flex; flex-wrap:wrap; align-items:center; gap:2px 10px; min-width:0; padding-left:calc(1.2em + 8px); font-size:12px; line-height:1.6; }
+#page .ep-meta2 > * { min-width:0; overflow-wrap:anywhere; }
+#page .ep-claim.warn, #page .ep-pintext.warn { color:var(--warn-fg); }
+#page .ep-pinbox { grid-column:2; grid-row:1 / span 2; display:flex; flex-direction:column; align-items:flex-end; gap:2px; max-width:200px; font-size:12px; text-align:right; }
+#page .ep-pintext { overflow-wrap:anywhere; }
+#page a.ep-pr, #page a.ep-num { display:inline-flex; align-items:center; min-height:var(--row-btn); }
+
+/* the Epics list of the Tasks page */
+#page .ep-lrow { display:flex; flex-direction:column; gap:2px; padding:10px 0; border-bottom:1px solid var(--line-soft); min-width:0; }
+#page .ep-ltitle { display:inline-flex; align-items:center; min-height:var(--row-btn); font-weight:600; overflow-wrap:anywhere; }
+#page .ep-lmeta { display:flex; flex-wrap:wrap; align-items:center; gap:2px 12px; font-size:12px; color:var(--fg-2); }
+#page .ep-lnote { margin:8px 0 0; font-size:12px; overflow-wrap:anywhere; }
+#page a.ep-lgh { display:inline-flex; align-items:center; min-height:var(--row-btn); }
+#page .tk-tabs { margin:6px 0 10px; }
+#page .ep-hide { display:none !important; }
+
+@media (hover:hover) { #page .ep-seg:hover { border-color:var(--fg-2); } }
+@media (max-width:640px) {
+  #page .ep-prow { grid-template-columns:minmax(0, 1fr); }
+  #page .ep-row { grid-template-columns:minmax(0, 1fr); }
+  #page .ep-pinbox { grid-column:1; grid-row:auto; flex-direction:row; flex-wrap:wrap; align-items:center; max-width:none; padding-left:calc(1.2em + 8px); text-align:left; }
+}
+@media (pointer:coarse) {
+  #page .ep-actions button, #page .ep-pin-btn, #page .ep-back, #page a.ep-pr, #page a.ep-num, #page .ep-ltitle, #page a.ep-lgh { min-height:var(--tap); }
+}
+html.force-coarse #page .ep-actions button, html.force-coarse #page .ep-pin-btn, html.force-coarse #page .ep-back, html.force-coarse #page a.ep-pr, html.force-coarse #page a.ep-num,
+html.force-coarse #page .ep-ltitle, html.force-coarse #page a.ep-lgh { min-height:var(--tap); }

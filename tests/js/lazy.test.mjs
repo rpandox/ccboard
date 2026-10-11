@@ -67,7 +67,7 @@ function lazyWorld({ fine = true, fail = [], state = fixtureState(), hash = null
   return { w, dom, net, head, mounted, hrefs, go };
 }
 
-const LAZY_GLOBALS = ['agentsPage', 'Tree', 'Dnd', 'Palette', 'TermKit', 'Charts', 'Memory', 'Usage', 'Quad', 'projectPage', 'settingsPage', 'doctorStore', 'wizPage', 'launcherSchema'];
+const LAZY_GLOBALS = ['agentsPage', 'Tree', 'Dnd', 'Palette', 'TermKit', 'Charts', 'Memory', 'Usage', 'Quad', 'projectPage', 'settingsPage', 'doctorStore', 'wizPage', 'launcherSchema', 'epicPage', 'Epics'];
 
 test('index.html loads only the shell set: no lazy script is in it, and with just those files nothing lazy is defined', () => {
   const lazy = JSON.parse(JSON.stringify([]));
@@ -158,6 +158,24 @@ test('routeCount is not bumped by the late mount: history.back() decisions see o
   L.w.location.hash = '#/usage';
   assert.ok(await settle(() => L.mounted() === 'usage'));
   assert.equal(L.w.get('routeCount'), n + 1);
+});
+
+test('#/epic/<owner>/<repo>/<n> is a lazy route: epic.js and epic.css load once, in order, before the page mounts; the Tasks page and the palette never load them on their own', async () => {
+  const L = lazyWorld();
+  L.w.location.hash = '#/inbox';
+  L.w.location.hash = '#/epic/example/website/147';
+  assert.equal(L.mounted(), null);
+  assert.ok(await settle(() => L.mounted() === 'epic'), 'epic mounted');
+  assert.deepEqual(L.net.scripts, ['/static/pages/epic.js']);
+  assert.deepEqual(L.net.sheets, ['/static/pages/epic.css']);
+  assert.deepEqual(L.hrefs(), ['/static/pages/epic.css', '/static/charts.css'], 'the sheet goes in before charts.css');
+  assert.equal(L.w.document.body.getAttribute('data-page'), 'epic');
+  L.w.location.hash = '#/inbox';                                        // leaves the page: its timer and listener go
+  const T = lazyWorld({ fine: false });
+  T.w.location.hash = '#/tasks';
+  await settle(null, 30);
+  assert.deepEqual(T.net.scripts, [], 'Tasks without a sign of epics loads nothing for them');
+  assert.equal(T.w.document.querySelector('.tk-tabs'), null);
 });
 
 test('page sheets go in before charts.css, in the order pages.css had their rules, whichever page was opened first', async () => {

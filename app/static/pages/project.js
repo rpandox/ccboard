@@ -133,12 +133,13 @@ function pjHeader(P) {
   menu(more, () => pjMoreItems(P));
   // the project's live sessions side by side (the quad scoped to it): a quiet bordered link beside the ... menu, on every width and on every tab
   const quad = el('a', { class: 'btn minimal small pj-quad', href: '#/quad', title: "This project's live sessions side by side (the quad)" }, ic('layout-grid'), 'Quad');
+  const epics = el('a', { class: 'btn minimal small pj-epics', href: '#/tasks?tab=epics', title: 'Epics: GitHub issues with sub-issues, shared out across your nodes' }, ic('git-branch'), 'Epics');   // issue #147
   const repos = el('div', { class: 'pj-repos', role: 'group', 'aria-label': 'Repos' });
   const stats = el('div', { class: 'pj-stats mono' });
   const actions = el('div', { class: 'pj-actions' });                 // pjPatchActions fills it: the filled primary follows the tab
   const manage = el('div', { class: 'pj-manage hidden', role: 'region', 'aria-label': 'Repos and danger zone' });
   const gotchas = el('div', { class: 'pj-gotchas hidden' });           // the newest claude-mem gotchas (pjGotchas fills it; it stays hidden unless there are some)
-  const node = el('header', { class: 'pj-head' }, el('div', { class: 'pj-title' }, name, path, el('span', { class: 'spacer' }), quad, more), repos, stats, gotchas, actions, manage);
+  const node = el('header', { class: 'pj-head' }, el('div', { class: 'pj-title' }, name, path, el('span', { class: 'spacer' }), epics, quad, more), repos, stats, gotchas, actions, manage);
   return { node, name, path, quad, repos, stats, gotchas, actions, manage, sig: { repos: null, tab: null, manage: null } };
 }
 

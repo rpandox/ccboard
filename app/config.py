@@ -87,6 +87,25 @@ def parse_node_tags(raw) -> tuple[tuple[str, ...], bool]:
     return tuple(out), bad
 
 
+EPIC_AUTHORS_MAX = 20
+_LOGIN_RE = re.compile(r"(?=.{1,39}\Z)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*")      # GitHub's login rule (the same as app/github.py OWNER_RE)
+
+
+def parse_epic_authors(raw) -> tuple[tuple[str, ...], bool]:
+    """CCBOARD_EPIC_AUTHORS (issue #147): GitHub logins, separated by commas or spaces, lower-cased, at most 20, whose claim comments count on an epic besides
+    the repository owner's own. Items that are not a login are dropped and the second value is True. Empty: () and the board trusts the gh login only."""
+    out, bad = [], False
+    for item in re.split(r"[,\s]+", (raw or "").strip()):
+        if not item:
+            continue
+        if _LOGIN_RE.fullmatch(item) and len(out) < EPIC_AUTHORS_MAX:
+            if item.lower() not in out:
+                out.append(item.lower())
+        else:
+            bad = True
+    return tuple(out), bad
+
+
 # The settings a launchd job cannot get from an EnvironmentFile (issue #117): the keys install.sh accepts for /etc/ccboard/env, in its order
 # (tests/test_macos_board.py pins this tuple to install.sh's ENV_KEYS). Any other line in the file is ignored.
 ENV_FILE_KEYS = (
@@ -98,6 +117,7 @@ ENV_FILE_KEYS = (
     "CCBOARD_CODEX_HOOK_TRUST", "CCBOARD_CLONE_ALLOWED_HOSTS", "CCBOARD_MCP_REMOTE", "CODEX_HOME", "CCBOARD_AUTOCLOSE_GRACE",
     "CCBOARD_CODEX_HOOKS_ASYNC", "CCBOARD_CLAUDE_ULTRACODE_FLAG", "CCBOARD_SUBAGENT_MODEL", "CCBOARD_HEADLESS_FABLE_CAP", "CCBOARD_PRICE_TABLE",
     "CCBOARD_TAILSCALE_PLACEMENT", "CCBOARD_NODE_LANES", "CCBOARD_NODE_PORTS", "CCBOARD_NODE_TAGS", "CCBOARD_NODES_POLL", "CCBOARD_MCP_NODES",
+    "CCBOARD_EPIC_AUTHORS",
 )
 ENV_FILE_MAX = 1 << 20     # bytes read from the settings file
 
@@ -222,6 +242,8 @@ class Settings:
         # list the nodes and read a node's projects and tasks; `tasks` also lets them create a task there and start it in a new session; unset, `0` or anything else = off
         # ("" here) and a tool call that names a node other than `local` is a tool error. Read at start; there is no switch in Settings, only this word.
         self.mcp_nodes = {"1": "read", "read": "read", "tasks": "tasks"}.get((env.get("CCBOARD_MCP_NODES") or "").strip().lower(), "")
+        # Whose claim comments count on an epic (issue #147), besides the repository owner's: GitHub logins. Empty = the login gh uses on this board only.
+        self.epic_authors, self.epic_authors_bad = parse_epic_authors(env.get("CCBOARD_EPIC_AUTHORS"))
         self.ntfy_url = (env.get("NTFY_URL") or "").strip()            # loopback, e.g. http://127.0.0.1:2586
         self.ntfy_topic = (env.get("NTFY_TOPIC") or "ccboard").strip()
         self.ntfy_public_url = (env.get("NTFY_PUBLIC_URL") or "").strip()  # what the phone subscribes to
