@@ -929,3 +929,341 @@ def test_the_rule_is_one_helper_in_check_field_and_used_by_the_prompt_model_and_
     assert nr.check_field("typed_text", "@a/b.py") == "@a/b.py"
     relay = (ROOT / "app" / "nodes_relay.py").read_text()
     assert relay.count('check_field("typed_text"') == 1 and "starts_like_a_command(" in relay
+
+
+# ================================================================ 8. a session that is asking a question in its terminal: a key or a line would ANSWER it
+
+def make_it_ask(w, tm: str, how: str) -> None:
+    """Put the peer's session `tm` in one of the states in which it is asking a question in its terminal."""
+    if how == "pending_permission":
+        seed_permission(w, tm)
+        return
+    with w.b.enter():
+        if how == "waiting_permission":
+            w.b.db.set_state(tm, "waiting", "PermissionRequest")
+            w.b.db.update_flags(tm, {"wait_kind": "permission"})
+        elif how == "waiting_elicitation":
+            w.b.db.set_state(tm, "waiting", "Notification")
+            w.b.db.update_flags(tm, {"wait_kind": "elicitation"})
+        elif how == "waiting_unnamed":
+            w.b.db.set_state(tm, "waiting", "Notification")
+            w.b.db.update_flags(tm, {"wait_kind": None})
+        elif how == "no_state_yet":
+            w.b.db.set_state(tm, "starting", "test")
+        else:
+            raise AssertionError(how)
+
+
+ASKING = ["pending_permission", "waiting_permission", "waiting_elicitation", "waiting_unnamed", "no_state_yet"]
+ASK_SENTENCE = "needs the permissions scope on node-b: this session is asking a question in its terminal"
+
+
+def sessions_only(w):
+    """A pair that holds `sessions` and not `permissions`: (the registry row, its token)."""
+    reg = w.pair_up(["read", "tasks", "sessions"])
+    with w.a.enter():
+        return reg, nodes._load_outgoing(reg["peer_id"])
+
+
+def test_the_table_declares_the_scope_a_row_needs_while_its_session_is_asking():
+    assert {r.name: r.dialog_scope for r in nr.RELAY if r.dialog_scope} == {"prompt": "permissions", "keys": "permissions"}
+
+
+@pytest.mark.parametrize("how", ASKING)
+@pytest.mark.parametrize("key", ["Enter", "y", "n", "1", "Escape", "Up", "Down", "Tab"])
+def test_a_pair_with_sessions_and_without_permissions_cannot_press_a_key_while_the_session_asks(world, how, key):
+    """y, n, 1 to 9, Enter, Escape, the arrows and Tab all answer or move through a permission, trust or plan dialog: that is `permissions` business, whatever the key."""
+    w = world
+    tm = sess(w)
+    make_it_ask(w, tm, how)
+    reg, token = sessions_only(w)
+    before = tmux_effects(w)
+    p = peer(w, "POST", f"/api/node/sessions/{tm}/keys", {"key": key}, token=token)
+    assert p.status_code == 403 and p.json()["reason"] == "asking" and "permissions scope" in p.json()["error"] and "asking a question in its terminal" in p.json()["error"], p.text
+    h = w.a.post(f"/api/nodes/{reg['handle']}/sessions/{tm}/keys", json={"key": key})
+    assert h.status_code == 409 and h.json()["reason"] == "scope" and h.json()["error"] == ASK_SENTENCE, h.text
+    assert tmux_effects(w) == before, "no key reached the terminal"
+    assert any(x["action"] == "send_keys" and x["status"] == "failed" and x["detail"] == "asking" for x in audit(w.b))
+
+
+@pytest.mark.parametrize("how", ASKING)
+@pytest.mark.parametrize("key", ["y", "n", "1", "5", "9", "Enter"])
+def test_with_permissions_a_key_that_chooses_an_answer_is_still_refused_while_the_session_asks(world, how, key):
+    """A permission is answered by the permission row (a person, allow or deny, once); a key that picks an option is never a way round it."""
+    w = world
+    tm = sess(w)
+    make_it_ask(w, tm, how)
+    before = tmux_effects(w)
+    for r in (hub(w, "POST", f"/sessions/{tm}/keys", {"key": key}), peer(w, "POST", f"/api/node/sessions/{tm}/keys", {"key": key})):
+        assert r.status_code == 409 and r.json()["reason"] == "busy" and r.json()["code"] == "asking" and "Allow or Deny" in r.json()["error"], r.text
+    assert tmux_effects(w) == before
+
+
+@pytest.mark.parametrize("how", ASKING)
+@pytest.mark.parametrize("key", ["Escape", "Up", "Down", "Tab"])
+def test_with_permissions_the_keys_that_only_move_or_cancel_pass_while_the_session_asks(world, how, key):
+    w = world
+    tm = sess(w)
+    make_it_ask(w, tm, how)
+    r = hub(w, "POST", f"/sessions/{tm}/keys", {"key": key})
+    assert r.status_code == 200, r.text
+    assert w.two.tmux_b["keys"][-1][1:] == ([key],) or key in json.dumps(w.two.tmux_b["keys"][-1])
+
+
+def test_a_session_at_its_prompt_or_working_takes_every_key_as_before(world):
+    w = world
+    tm = sess(w)
+    for state in ("idle", "working", "done"):
+        with w.b.enter():
+            w.b.db.set_state(tm, state, "test")
+        for key in ("Enter", "y", "1", "Escape"):
+            assert hub(w, "POST", f"/sessions/{tm}/keys", {"key": key}).status_code == 200, (state, key)
+    with w.b.enter():
+        w.b.db.set_state(tm, "waiting", "Notification")
+        w.b.db.update_flags(tm, {"wait_kind": "idle"})
+    assert hub(w, "POST", f"/sessions/{tm}/keys", {"key": "Enter"}).status_code == 200, "waiting at the idle prompt is not a question"
+
+
+@pytest.mark.parametrize("how", ASKING)
+def test_a_line_pasted_while_the_session_asks_answers_nothing(world, how):
+    w = world
+    tm = sess(w)
+    make_it_ask(w, tm, how)
+    before = tmux_effects(w)
+    for r in (hub(w, "POST", f"/sessions/{tm}/prompt", {"text": "y", "queue": True}), peer(w, "POST", f"/api/node/sessions/{tm}/prompt", {"text": "y", "queue": True})):
+        assert r.status_code == 409 and r.json()["reason"] == "busy", "even with permissions a line is not typed into a question"
+    reg, token = sessions_only(w)
+    p = peer(w, "POST", f"/api/node/sessions/{tm}/prompt", {"text": "1", "queue": True}, token=token)
+    assert p.status_code == 403 and p.json()["reason"] == "asking" and "permissions scope" in p.json()["error"], p.text
+    h = w.a.post(f"/api/nodes/{reg['handle']}/sessions/{tm}/prompt", json={"text": "1", "queue": True})
+    assert h.status_code == 409 and h.json()["reason"] == "scope" and h.json()["error"] == ASK_SENTENCE, h.text
+    assert tmux_effects(w) == before
+
+
+def test_a_session_whose_wait_state_cannot_be_read_counts_as_asking(world, monkeypatch):
+    from app import main
+    w = world
+    tm = sess(w)
+
+    def boom(name):
+        raise RuntimeError("cannot read")
+    monkeypatch.setattr(main, "_permission_pending", boom)
+    before = tmux_effects(w)
+    assert peer(w, "POST", f"/api/node/sessions/{tm}/keys", {"key": "Enter"}).status_code == 409, "with every scope: the answer-capable keys are refused"
+    reg, token = sessions_only(w)
+    assert peer(w, "POST", f"/api/node/sessions/{tm}/keys", {"key": "Escape"}, token=token).status_code == 403
+    assert peer(w, "POST", f"/api/node/sessions/{tm}/prompt", {"text": "hi"}, token=token).status_code == 403
+    assert tmux_effects(w) == before
+    with w.b.enter():
+        assert nr.asking_reason(w.b.db, tm) == "unknown"
+
+
+def test_a_codex_pane_showing_a_dialog_counts_as_asking(world, monkeypatch):
+    from app import main
+    w = world
+    tm = sess(w)
+    monkeypatch.setattr(main, "_pane_block", lambda name, row, *a, **k: ("dialog", "Codex shows its update dialog"))
+    before = tmux_effects(w)
+    assert peer(w, "POST", f"/api/node/sessions/{tm}/keys", {"key": "y"}).status_code == 409
+    reg, token = sessions_only(w)
+    assert peer(w, "POST", f"/api/node/sessions/{tm}/keys", {"key": "Enter"}, token=token).status_code == 403
+    with w.b.enter():
+        assert nr.asking_reason(w.b.db, tm) == "pane"
+    assert tmux_effects(w) == before
+
+
+# ================================================================ 9. one ownership check for every row that names a session
+
+def external_session(w, name: str = "shop--api--ext") -> str:
+    """A tmux session with a ccboard-shaped name that the board did not start (no row): the owner's own, started outside the board."""
+    w.two.tmux_b["sessions"][name] = {"created": 1, "attached": 1, "windows": 1, "pane_id": "%9", "command": "claude", "path": "/x", "pid": 2, "env": {}}
+    return name
+
+
+ROWS_NAMING_A_SESSION = [("POST", "/sessions/{n}/prompt", {"text": "hi"}), ("POST", "/sessions/{n}/keys", {"key": "Escape"}), ("POST", "/sessions/{n}/ack", None), ("DELETE", "/sessions/{n}", None)]
+
+
+@pytest.mark.parametrize("method,path,body", ROWS_NAMING_A_SESSION)
+def test_every_row_refuses_a_session_the_board_did_not_start_on_the_peer(world, method, path, body):
+    w = world
+    name = external_session(w)
+    before = tmux_effects(w)
+    h = hub(w, method, path.format(n=name), body)
+    p = peer(w, method, "/api/node" + path.format(n=name), body)
+    for r in (h, p):
+        assert r.status_code == 409 and "not a session this board started" in r.json()["error"], (path, r.status_code, r.text)
+    assert name in w.two.tmux_b["sessions"] and tmux_effects(w) == before
+    with w.b.enter():
+        assert w.b.db.open_rows().get(name) is None, "nothing was acked or closed in the database either"
+
+
+@pytest.mark.parametrize("method,path,body", ROWS_NAMING_A_SESSION)
+def test_every_row_refuses_a_shell_and_a_clone_row(world, method, path, body):
+    w = world
+    for launcher in ("shell", "clone"):
+        tm = sess(w, "o" + launcher)
+        with w.b.enter():
+            w.b.db.conn.execute("UPDATE sessions SET launcher=? WHERE tmux_name=?", (launcher, tm))
+        r = peer(w, method, "/api/node" + path.format(n=tm), body)
+        assert r.status_code == 409 and "not an agent session this board started" in r.json()["error"], (launcher, path, r.text)
+        assert tm in w.two.tmux_b["sessions"]
+
+
+def test_ack_and_close_may_touch_a_session_started_with_wider_permissions_because_they_run_nothing(world):
+    w = world
+    tm = sess(w, "wide", launcher="claude", mode="bypass", bypass=True)
+    assert hub(w, "POST", f"/sessions/{tm}/ack").status_code == 200
+    r = hub(w, "DELETE", f"/sessions/{tm}")
+    assert r.status_code == 200 and tm not in w.two.tmux_b["sessions"]
+    other = sess(w, "w2", launcher="claude", mode="bypass", bypass=True)
+    with w.b.enter():
+        assert nr.owned_session_refusal(w.b.db, other) is None
+        assert nr.session_target_refusal(w.b.db, {"project": "shop", "repo": "api"}, other) == nr.WIDE_SESSION
+
+
+def test_close_ends_a_session_with_a_terminal_attached_just_as_the_local_delete_does(world):
+    w = world
+    tm = sess(w)
+    w.two.tmux_b["sessions"][tm]["attached"] = 2
+    assert hub(w, "DELETE", f"/sessions/{tm}").status_code == 200 and tm not in w.two.tmux_b["sessions"]
+
+
+def test_the_ack_and_close_handlers_themselves_run_the_ownership_check(world):
+    w = world
+    name = external_session(w)
+    with w.b.enter():
+        for fn in (nr.peer_ack, nr.peer_close, nr.peer_prompt, nr.peer_keys):
+            with pytest.raises(Exception, match="not a session this board started"):
+                fn(w.b.db, {"name": name}, {"text": "hi", "key": "Escape"})
+
+
+# ================================================================ 10. a permission answer acts on a request the board itself would let a person answer from afar
+
+def listed(w) -> list[int]:
+    return [x["id"] for x in hub(w, "GET", "/permissions").json()["data"]["permissions"]]
+
+
+@pytest.mark.parametrize("tool,summary", [("ExitPlanMode", "ExitPlanMode: {}"), ("AskUserQuestion", "AskUserQuestion: {}"), ("EnterPlanMode", "EnterPlanMode: {}"),
+                                          ("EnterWorktree", "EnterWorktree: {}"), ("Frobnicate", "Frobnicate: x"), ("Task", "Task: x"), ("bash", "bash: ls"), ("Bash ", "Bash : ls"),
+                                          ("mcp", "mcp: x"), ("mcp__", "mcp__: x"), ("", "something"), ("Bash", ""), ("Bash", "   ")])
+def test_a_request_of_a_kind_that_belongs_to_the_terminal_is_neither_listed_nor_answered(world, tool, summary):
+    w = world
+    tm = sess(w)
+    with w.b.enter():
+        pid = w.b.db.perm_add(tm, tool, summary, {})
+    assert pid not in listed(w), "the page is never offered a button that is refused"
+    for decision in ("allow", "deny"):
+        for r in (hub(w, "POST", f"/permissions/{pid}/{decision}"), peer(w, "POST", f"/api/node/permissions/{pid}/{decision}")):
+            assert r.status_code == 409 and r.json()["reason"] == "refused", r.text
+    with w.b.enter():
+        assert w.b.db.perm_get(pid)["decision"] is None, "nothing was decided"
+
+
+@pytest.mark.parametrize("tool", ["Bash", "Edit", "MultiEdit", "Write", "NotebookEdit", "Read", "Glob", "Grep", "WebFetch", "WebSearch", "apply_patch", "mcp__github__create_issue"])
+def test_an_ordinary_tool_request_is_listed_and_answered(world, tool):
+    w = world
+    tm = sess(w)
+    with w.b.enter():
+        pid = w.b.db.perm_add(tm, tool, f"{tool}: x", {"command": "x"})
+    assert pid in listed(w)
+    assert hub(w, "POST", f"/permissions/{pid}/deny").status_code == 200
+
+
+def test_the_list_and_the_answer_agree_about_every_request(world):
+    w = world
+    tm = sess(w)
+    ext = external_session(w)
+    ids = {}
+    with w.b.enter():
+        for tool, name in (("Bash", tm), ("ExitPlanMode", tm), ("Bash", ext), ("Frobnicate", tm), ("Edit", tm)):
+            ids[w.b.db.perm_add(name, tool, f"{tool}: x", {})] = (tool, name)
+    shown = set(listed(w))
+    for pid in ids:
+        r = peer(w, "POST", f"/api/node/permissions/{pid}/deny")
+        assert (r.status_code == 200) == (pid in shown), (ids[pid], r.status_code, r.text)
+    assert {ids[p] for p in shown} == {("Bash", tm), ("Edit", tm)}
+
+
+def test_a_request_of_a_session_the_board_did_not_start_is_neither_listed_nor_answered(world):
+    w = world
+    ext = external_session(w)
+    with w.b.enter():
+        pid = w.b.db.perm_add(ext, "Bash", "Bash: ls", {})
+    assert pid not in listed(w)
+    for r in (hub(w, "POST", f"/permissions/{pid}/allow"), peer(w, "POST", f"/api/node/permissions/{pid}/allow")):
+        assert r.status_code == 409 and "not a session this board started" in r.json()["error"], r.text
+    with w.b.enter():
+        assert w.b.db.perm_get(pid)["decision"] is None
+
+
+def test_the_internal_login_session_and_a_shell_row_have_no_answerable_request(world):
+    w = world
+    w.two.tmux_b["sessions"]["_ccboard-login"] = {"created": 1, "attached": 0, "windows": 1, "pane_id": "%8", "command": "claude", "path": "/x", "pid": 1, "env": {}}
+    tm = sess(w, "sh")
+    with w.b.enter():
+        w.b.db.conn.execute("UPDATE sessions SET launcher='shell' WHERE tmux_name=?", (tm,))
+        a, b = w.b.db.perm_add("_ccboard-login", "Bash", "Bash: ls", {}), w.b.db.perm_add(tm, "Bash", "Bash: ls", {})
+    assert listed(w) == []
+    for pid in (a, b):
+        assert peer(w, "POST", f"/api/node/permissions/{pid}/allow").status_code == 409
+
+
+def test_allow_is_a_one_time_allow_in_the_local_function_and_nothing_wider_exists(world, monkeypatch):
+    """What the local function is called with: the id, the word allow (or deny) and a stand-in request that names the node. No `always`, no rule, no mode."""
+    from app import main
+    w = world
+    tm = sess(w)
+    calls, decided = [], []
+    real_decide, real_perm = main.api_permission_decide, w.b.db.perm_decide
+    monkeypatch.setattr(main, "api_permission_decide", lambda pid, decision, request: (calls.append((pid, decision, request.state.user)), real_decide(pid, decision, request))[1])
+    monkeypatch.setattr(w.b.db, "perm_decide", lambda pid, decision, source: (decided.append((pid, decision, source)), real_perm(pid, decision, source))[1])
+    pid = seed_permission(w, tm)
+    assert hub(w, "POST", f"/permissions/{pid}/allow").status_code == 200
+    assert calls == [(pid, "allow", "node node-a for alice@example.com")] and decided == [(pid, "allow", "node node-a for alice@example.com")]
+    assert set(nr.DECISIONS) == {"allow", "deny"}
+    # the hook answers the agent with the behavior alone: no updated permissions, no rule, no mode
+    hook = (ROOT / "bin" / "ccboard-permission").read_text()
+    assert '"behavior": b' in hook and "updatedPermissions" not in hook and "always" not in hook.lower() and "setMode" not in hook
+    main_src = (ROOT / "app" / "main.py").read_text()
+    assert "updatedPermissions" not in main_src and "permission_suggestions" not in main_src
+    relay = (ROOT / "app" / "nodes_relay.py").read_text()
+    assert relay.count("api_permission_decide(") == 1 and "perm_decide(" not in relay
+
+
+@pytest.mark.parametrize("unreadable", ["raises", "no_row"])
+def test_a_session_whose_row_cannot_be_read_takes_no_answer_capable_key_and_no_prompt_with_or_without_permissions(world, monkeypatch, unreadable):
+    """The test that a stub `asking_reason` (always None) would fail: fail closed on a row that cannot be read."""
+    w = world
+    tm = sess(w)
+    before = tmux_effects(w)
+
+    def broken(name):
+        raise RuntimeError("cannot read the row")
+    monkeypatch.setattr(w.b.db, "open_row", broken if unreadable == "raises" else (lambda name: None))
+    for key in ("y", "n", "1", "9", "Enter"):
+        r = peer(w, "POST", f"/api/node/sessions/{tm}/keys", {"key": key})
+        assert r.status_code == 409 and r.json()["code"] == "asking" and "Allow or Deny" in r.json()["error"], (key, r.text)
+    assert peer(w, "POST", f"/api/node/sessions/{tm}/prompt", {"text": "1"}).status_code == 409
+    reg, token = sessions_only(w)
+    for key in ("y", "n", "1", "Enter", "Escape"):
+        r = peer(w, "POST", f"/api/node/sessions/{tm}/keys", {"key": key}, token=token)
+        assert r.status_code == 403 and r.json()["reason"] == "asking" and "permissions scope" in r.json()["error"], (key, r.text)
+    assert peer(w, "POST", f"/api/node/sessions/{tm}/prompt", {"text": "1"}, token=token).status_code == 403
+    assert tmux_effects(w) == before
+    with w.b.enter():
+        assert nr.asking_reason(w.b.db, tm) in ("unknown",)
+
+
+def test_asking_reason_names_what_it_found(world):
+    w = world
+    tm = sess(w)
+    with w.b.enter():
+        assert nr.asking_reason(w.b.db, tm) is None, "idle at its prompt"
+    for i, (how, want) in enumerate((("pending_permission", "permission"), ("waiting_permission", "dialog"), ("waiting_elicitation", "dialog"),
+                                     ("waiting_unnamed", "dialog"), ("no_state_yet", "dialog"))):
+        t2 = sess(w, f"q{i}")
+        make_it_ask(w, t2, how)
+        with w.b.enter():
+            assert nr.asking_reason(w.b.db, t2) == want, how
+    import inspect
+    assert "_unused" not in inspect.getsource(nr) and inspect.getsource(nr.asking_reason).count("return None") == 1, "no stub, no dead twin"

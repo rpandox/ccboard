@@ -523,10 +523,11 @@ class _Db:
 
 
 @pytest.fixture
-def tmux_has(monkeypatch):
-    from app import tmux
+def tmux_has(monkeypatch, tmp_path):
+    from app import projects, tmux
     live = set()
     monkeypatch.setattr(tmux, "has_session", lambda name: name in live)
+    monkeypatch.setattr(projects, "repo_path", lambda project, repo: tmp_path)          # the folder of every repo here is a real one
     return live
 
 
@@ -564,6 +565,39 @@ def test_a_target_inside_the_set_and_a_session_tmux_does_not_have_are_left_to_th
     assert nr.session_target_refusal(_Db({"shop--api--s1": row()}), TASK, "shop--api--s1") is None
     assert nr.session_target_refusal(_Db({"shop--api--s1": row(agent="codex", cmd="codex -s read-only -a on-request", opts={})}), TASK, "shop--api--s1") is None
     assert nr.session_target_refusal(_Db({}), TASK, "shop--api--gone") is None, "the board answers 404 itself"
+
+
+@pytest.mark.parametrize("name,rows,live,fragment", [
+    ("not-a-session", {}, True, "not a ccboard session name"),
+    ("_ccboard-login", {}, True, "not a ccboard session name"),
+    ("shop--api--s1", {}, True, "not a session this board started"),
+    ("shop--api--s1", {"shop--api--s1": row(agent="shell", launcher="shell")}, True, "not an agent session"),
+    ("shop--api--s1", {"shop--api--s1": row(launcher="clone")}, True, "not an agent session"),
+    ("shop--api--s1", {"shop--api--s1": row(launcher="weird")}, True, "not an agent session"),
+    ("shop--api--s1", {"shop--api--s1": row(repo="other")}, True, "another repo"),
+])
+def test_one_ownership_check_for_every_row_that_names_a_session(tmux_has, name, rows, live, fragment):
+    assert fragment in nr.owned_session_refusal(_Db(rows), name)
+
+
+def test_ownership_does_not_ask_for_the_launch_line_and_does_ask_for_the_repo_folder(tmux_has, monkeypatch, tmp_path):
+    from app import projects
+    tmux_has.add("shop--api--s1")
+    wide = _Db({"shop--api--s1": row(cmd="claude --dangerously-skip-permissions")})
+    assert nr.owned_session_refusal(wide, "shop--api--s1") is None, "an ack, a close and a permission answer run nothing"
+    assert nr.session_target_refusal(wide, TASK, "shop--api--s1") == nr.WIDE_SESSION
+    monkeypatch.setattr(projects, "repo_path", lambda p, r: tmp_path / "missing")
+    assert "not on this board" in nr.owned_session_refusal(wide, "shop--api--s1")
+    assert "not on this board" in nr.session_target_refusal(wide, TASK, "shop--api--s1")
+
+
+def test_the_handlers_call_the_one_ownership_function():
+    import inspect
+    for fn in (nr.peer_ack, nr.peer_close):
+        assert "_owned(" in inspect.getsource(fn), fn.__name__
+    assert "owned_session_refusal(" in inspect.getsource(nr._owned) and "owned_session_refusal(" in inspect.getsource(nr.session_target_refusal)
+    assert "owned_session_refusal(" in inspect.getsource(nr.permission_refusal)
+    assert "_dialog_gate(" in inspect.getsource(nr.peer_keys) and "_dialog_gate(" in inspect.getsource(nr.peer_prompt)
 
 
 # ---------------------------------------------------------------- 6. every string a remote caller sends has a rule of its own (one helper: nr.check_field / nr.free_text)

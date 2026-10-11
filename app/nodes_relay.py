@@ -60,6 +60,12 @@ key comes from the closed list STEER_KEYS (C-c only with confirm true), a decisi
 `out` row and one `in` row and stores neither the text, nor a key sequence beyond its name, nor a permission summary. The peer's refusals keep their own status: 409 `busy` (with the
 typing refusal's code, retry seconds and state), 409 `answered` or `expired`, 404 `gone`, 413 for text over 8 KB, 429 for the 20 prompts a minute one session takes. No relay row, MCP
 tool or scheduled job reaches the board's own permission route (tests/test_nodes_steer.py reads the source to say so).
+Who may touch which session, and what a key may answer: EVERY row that names a session runs `owned_session_refusal` on the peer (a ccboard name that is not internal, a row this
+board opened, an agent session of a launcher the board writes, in a project and repo whose folder is here); `prompt`, `keys` and a dispatch add `launch_line_refusal`, while `ack`,
+`close` and a permission answer run nothing and may touch a session started with wider permissions. While a session is asking a question in its terminal (`asking_reason`: a live
+permission request, a state other than working, idle, done, errored or waiting at the idle prompt, a Codex pane dialog, or anything unreadable) `Row.dialog_scope` (`permissions`)
+is wanted for `keys` and `prompt` (403 `asking`), and even with it `y`, `n`, 1 to 9 and Enter are refused (409 `busy`, code `asking`): a permission is answered by the permission
+row only, once, allow or deny, for a request `permission_refusal` accepts (an ordinary tool of an owned session with a summary; the list shows exactly those).
 """
 from __future__ import annotations
 
@@ -505,6 +511,36 @@ def require_remote_launch(agent: str | None, cmd_line, opts=None) -> None:
         raise projects.BadRequest(f"this launch would not stay inside what another node may use ({why}); nothing was started")
 
 
+def owned_session_refusal(db, name: str) -> str | None:
+    """Why the session `name` is not one this board's own agent sessions another node may act on (None: it is). ONE function for every relay row that names a session
+    (prompt, keys, ack, close, a dispatch into a session) and for the session of a permission request: a ccboard name that is not internal (the login session), a row
+    this board opened (not a tmux session the owner started outside the board), an agent of this board started by a launcher it writes itself (recover.RECOVERABLE: not
+    a shell, not a clone), in a project and repo whose folder is on this board. What it does NOT ask is the launch line: typing into a session also wants
+    launch_line_refusal (session_target_refusal), while an ack, a close and a permission answer run nothing and may touch a session started with wider permissions."""
+    try:
+        check_field("session", name)
+        sp, sr, _ = tmux.split_name(name)
+    except ValueError:
+        return "not a ccboard session name"
+    if tmux.is_internal(name):
+        return "not a session another node may use"
+    row = db.open_rows().get(name)
+    if not row:
+        return "that is not a session this board started"
+    agent = row.get("agent") or "claude"
+    from . import recover                                    # the launchers the board itself writes for an agent session (an allow list: anything else is not one)
+    if agent not in _agent_names() or row.get("launcher") not in recover.RECOVERABLE:
+        return "that is not an agent session this board started"
+    if (row.get("project"), row.get("repo")) != (sp, sr):
+        return "this session works in another repo"
+    try:
+        if not projects.repo_path(sp, sr).is_dir():
+            return "the project or repo of that session is not on this board"
+    except (ValueError, projects.BadRequest, projects.NotFound):
+        return "the project or repo of that session is not on this board"
+    return None
+
+
 def session_target_refusal(db, task: dict, name: str) -> str | None:
     """Why a task of another node may not be typed into the running session `name` (None: it may go on to the board's own checks). The target must be one of this
     board's own sessions (a row with a ccboard name; not internal, not a tmux session the board did not start) in the task's own project and repo, and its recorded
@@ -518,16 +554,13 @@ def session_target_refusal(db, task: dict, name: str) -> str | None:
         return "not a session another node may use"
     if not tmux.has_session(name):
         return None
-    row = db.open_rows().get(name)
-    if not row:
-        return "that is not a session this board started"
-    agent = row.get("agent") or "claude"
-    from . import recover                                    # the launchers the board itself writes for an agent session (an allow list: anything else is not one)
-    if agent not in _agent_names() or row.get("launcher") not in recover.RECOVERABLE:
-        return "that is not an agent session this board started"
-    if (sp, sr) != (task.get("project"), task.get("repo")) or (row.get("project"), row.get("repo")) != (sp, sr):
+    why = owned_session_refusal(db, name)
+    if why:
+        return why
+    row = db.open_rows().get(name) or {}
+    if (sp, sr) != (task.get("project"), task.get("repo")):
         return "this session works in another repo"
-    return WIDE_SESSION if launch_line_refusal(agent, row.get("cmd"), row.get("opts")) else None
+    return WIDE_SESSION if launch_line_refusal(row.get("agent") or "claude", row.get("cmd"), row.get("opts")) else None
 
 
 # ================================================================ the table
@@ -599,6 +632,8 @@ class Row:
     acting: bool = False                # the peer refuses a request that names no acting user (a person's act, relayed by the hub)
     big_field: str | None = None        # a string field whose length over its cap is a 413, not a 422 (the text of a prompt)
     per_session: bool = False           # nodes.PROMPT_RATE a minute into one session, counted on the hub and again on the peer
+    dialog_scope: str | None = field(default=None, compare=False)     # the scope the PEER also wants while the target session is asking a question in its terminal (a permission, a dialog,
+                                                                      # a state it cannot read): a key or a line typed then answers it, which only `permissions` may do (peer_keys, peer_prompt)
 
     @cached_property
     def params(self) -> tuple[str, ...]:
@@ -1065,9 +1100,9 @@ RELAY: tuple[Row, ...] = (
     # The steering rows (issue #142). Text and keys typed into a session are launching work in it (guard=True; the peer also checks the target's recorded launch line).
     # The prompt text is never in a target, an audit row or an answer; a key is, by its name from the closed list.
     Row("prompt", "POST", "/api/nodes/{handle}/sessions/{name}/prompt", "POST", "/api/node/sessions/{name}/prompt", "sessions", PromptBody, WRITE, "send_prompt", guard=True,
-        human_only=True, acting=True, big_field="text", per_session=True, answer_max=4 * 1024, target=lambda p: f"prompt {p.get('name')}", shape=_shape_prompt),
+        human_only=True, acting=True, big_field="text", per_session=True, dialog_scope="permissions", answer_max=4 * 1024, target=lambda p: f"prompt {p.get('name')}", shape=_shape_prompt),
     Row("keys", "POST", "/api/nodes/{handle}/sessions/{name}/keys", "POST", "/api/node/sessions/{name}/keys", "sessions", KeysBody, WRITE, "send_keys", guard=True,
-        human_only=True, acting=True, answer_max=4 * 1024, target=lambda p: f"keys {p.get('name')}", body_target=lambda p, c: f"keys {p.get('name')} ({c.get('key')})",
+        human_only=True, acting=True, dialog_scope="permissions", answer_max=4 * 1024, target=lambda p: f"keys {p.get('name')}", body_target=lambda p, c: f"keys {p.get('name')} ({c.get('key')})",
         shape=_shape_keys),
     Row("ack", "POST", "/api/nodes/{handle}/sessions/{name}/ack", "POST", "/api/node/sessions/{name}/ack", "sessions", NoFields, WRITE, "ack_session", human_only=True,
         acting=True, answer_max=4 * 1024, target=lambda p: f"ack {p.get('name')}", shape=_shape_acked),
@@ -1313,9 +1348,11 @@ def _map_reply(r, row: Row, reg: dict, clean: dict | None = None) -> dict:
     msg = _cut((r.json or {}).get("error") if isinstance(r.json, dict) else "")
     if r.status == 401:
         raise RelayError(409, "needs_repair", f"{name} no longer takes this board's token: re-pair", kind="failed")
+    peer_reason = r.json.get("reason") if isinstance(r.json, dict) else None
+    if r.status == 403 and peer_reason == "asking" and row.dialog_scope:          # the session asks a question in its terminal: the pair needs the scope that may answer it
+        raise RelayError(409, "scope", f"needs the {row.dialog_scope} scope on {name}: this session is asking a question in its terminal", kind="failed")
     if r.status == 403:
         raise RelayError(409, "scope", f"needs the {row.scope} scope on {name}" if "scope" in msg.lower() or not msg else f"{name} refused: {msg}", kind="failed")
-    peer_reason = r.json.get("reason") if isinstance(r.json, dict) else None
     if r.status == 404:
         if peer_reason == "repo_missing" and clean and "project" in clean:
             raise RelayError(404, "repo_missing", _missing_repo_text(clean, name), kind="failed")
@@ -1445,6 +1482,12 @@ def _acting(request) -> str:
 
 
 CALLER: contextvars.ContextVar = contextvars.ContextVar("ccboard_node_caller", default=None)     # {node, user} of the request a peer handler is serving
+CALLER_SCOPES: contextvars.ContextVar = contextvars.ContextVar("ccboard_node_scopes", default=None)     # the scopes the pair of that request holds (None: unknown, which holds nothing)
+
+
+def caller_has(scope: str) -> bool:
+    """Does the pair whose request a peer handler is serving hold `scope`? Unknown (no request) holds nothing."""
+    return nodes.scope_ok(CALLER_SCOPES.get(), scope)
 
 
 _CLAIM_BAD = re.compile(r"[^A-Za-z0-9 ._@+:-]")
@@ -1534,6 +1577,7 @@ def serve_peer(row: Row, handler: Callable, request, raw: bytes, db) -> JSONResp
         _inbound_audit(db, request, row, params, False, "refused", f"scope {extra} not granted", clean)
         raise projects.Forbidden(f"this node token does not hold the {extra} scope")
     token = CALLER.set({"node": nodes._scrub(peer.get("name"), 41) or "", "user": _acting(request) or None})
+    scopes_token = CALLER_SCOPES.set(peer.get("scopes"))
     try:
         out = handler(db, params, clean)
     except RepoMissing as e:
@@ -1547,6 +1591,7 @@ def serve_peer(row: Row, handler: Callable, request, raw: bytes, db) -> JSONResp
                        clean)
         raise
     finally:
+        CALLER_SCOPES.reset(scopes_token)
         CALLER.reset(token)
     _inbound_audit(db, request, row, params, True, "ok", None, clean)
     return JSONResponse(out, headers=NO_STORE)
@@ -2132,12 +2177,56 @@ def _steerable(db, name: str) -> None:
         raise projects.Conflict(why)
 
 
+ANSWER_KEYS = ("Enter", *LITERAL_KEYS)                       # the keys that choose an option of a dialog: y, n, 1 to 9 and Enter
+ASKING_MESSAGE = "this session is asking a question in its terminal"
+
+
+def asking_reason(db, name: str) -> str | None:
+    """Is the session `name` asking a question in its terminal, so that a key or a line typed now would ANSWER it? A word for what is known, None when it is at its prompt
+    or working. Every signal the board has, and a state that cannot be read counts as asking (fail closed): a permission request a hook is still waiting on (`permission`);
+    a session that is waiting on anything but its idle prompt (a permission or elicitation dialog, a kind the board cannot name), one with no state yet (it may be behind the
+    trust dialog) or one that has ended (`dialog`); a Codex pane that shows its update or trust dialog, or has left for the shell (`pane`); a row, a flag or a pane that cannot
+    be read (`unknown`)."""
+    from . import main
+    try:
+        row = db.open_row(name)
+        if row is None:
+            return "unknown"
+        if main._permission_pending(name):
+            return "permission"
+        flags = row.get("flags") or {}
+        state = row.get("state")
+        if state == "waiting":
+            if flags.get("wait_kind") != "idle":
+                return "dialog"
+        elif state not in ("working", "idle", "done", "errored"):
+            return "dialog"
+        if main._pane_block(name, row) is not None:
+            return "pane"
+    except Exception:
+        return "unknown"
+    return None
+
+
+def _dialog_gate(row_name: str, name: str, reason: str) -> None:
+    """The session asks a question in its terminal: the row's `dialog_scope` (permissions) is the only scope that may act on it, and a pair without it is refused (403 `asking`;
+    the hub says it needs that scope). A pair WITH it goes on to the row's own rule about what may be typed."""
+    need = BY_NAME[row_name].dialog_scope
+    if need and not caller_has(need):
+        raise Refusal(403, "asking", f"needs the {need} scope on {nodes.display_name()}: {ASKING_MESSAGE}")
+
+
 def peer_prompt(db, params: dict, body: dict) -> dict:
     """POST /api/node/sessions/{name}/prompt: the board's own prompt route (paste into the composer, Enter) for a session that passes steer_refusal, with the same state
     refusals (a working session takes it only with `queue`). The text is typed once and not kept: the BoardPrompt event says how long it was, not what."""
     from . import main
     name = params["name"]
     _steerable(db, name)
+    asking = asking_reason(db, name)
+    if asking:                                              # a line pasted into a question answers it: without `permissions` a 403, and even with it the board's own busy 409 below
+        _dialog_gate("prompt", name, asking)
+        if asking == "unknown":                             # a row or a state that cannot be read: nothing is typed (the board's own checks below would need that row)
+            raise Refusal(409, "busy", f"{ASKING_MESSAGE}, or its state cannot be read: nothing was typed", code="asking", retry=None)
     ok, wait = nodes.node_prompt_limiter.allow(name)
     if not ok:
         raise Refusal(429, "rate_limited", f"this session takes {nodes.PROMPT_RATE} prompts a minute; wait {wait} s", headers={"Retry-After": str(wait)}, retry=wait)
@@ -2158,8 +2247,23 @@ def peer_keys(db, params: dict, body: dict) -> dict:
     from . import main
     name, key = params["name"], body["key"]
     _steerable(db, name)
+    asking = asking_reason(db, name)
+    if asking:
+        # While the session asks a question the pair needs `permissions` (403 `asking` without it). With it, a key that CHOOSES an answer (y, n, 1 to 9, Enter) is still refused:
+        # a permission is answered by the permission row (a person, allow or deny, once), never by a key. Escape, Up, Down, Tab and C-c (with confirm) move or cancel only.
+        _dialog_gate("keys", name, asking)
+        if key in ANSWER_KEYS:
+            raise Refusal(409, "busy", f"{ASKING_MESSAGE}: answer it with Allow or Deny, not with a key", code="asking", retry=None)
     main.api_send_keys(name, main.KeysIn(text=key) if key in LITERAL_KEYS else main.KeysIn(keys=[key]))
     return {"ok": True, "key": key}
+
+
+def _owned(db, name: str) -> None:
+    """409 unless the session is one of this board's own agent sessions (owned_session_refusal). For an ack and a close that is all: they run nothing, so a session started
+    with wider permissions may be acknowledged or ended; one the owner started outside the board, a shell, a clone and the login session may not."""
+    why = owned_session_refusal(db, name)
+    if why:
+        raise projects.Conflict(why)
 
 
 def peer_ack(db, params: dict, body: dict) -> dict:
@@ -2167,6 +2271,7 @@ def peer_ack(db, params: dict, body: dict) -> dict:
     from . import main
     main._terminal_session(params["name"])
     _session_here(params["name"])
+    _owned(db, params["name"])
     return main.api_ack(params["name"])
 
 
@@ -2175,6 +2280,7 @@ def peer_close(db, params: dict, body: dict) -> dict:
     from . import main
     main._terminal_session(params["name"])
     _session_here(params["name"])
+    _owned(db, params["name"])                              # the same ownership as the local DELETE (which kills whatever is attached) plus the board's own-agent-session rule
     return main.api_kill_session(params["name"])
 
 
@@ -2185,14 +2291,39 @@ def _perm_summary(v, known) -> str:
     return redact("".join(c for c in t if unicodedata.category(c) not in _FREE_BAD), known)[:SUMMARY_MAX]
 
 
+# The requests another node may answer: an ordinary tool asking to run ONCE. Everything else (a plan approval, a question to the person, a switch of mode or worktree, a
+# tool the board does not know) is answered in its terminal, and the list does not offer it.
+ANSWERABLE_TOOLS = ("Bash", "Edit", "MultiEdit", "Write", "NotebookEdit", "Read", "Glob", "Grep", "WebFetch", "WebSearch", "apply_patch")
+_MCP_TOOL = re.compile(r"mcp__[A-Za-z0-9_-]{1,50}")
+
+
+def permission_refusal(db, p: dict) -> str | None:
+    """Why the permission request row `p` may not be answered from another node (None: it may). ONE function for the list and the answer, so the page is never offered a
+    button that is refused: the session is one of this board's own agent sessions (owned_session_refusal) and is there; the request has a tool and a summary; and the tool is an
+    ordinary one in ANSWERABLE_TOOLS or an MCP tool. A plan approval, a question, a mode or worktree switch and any tool not listed stay with the terminal."""
+    name = p.get("tmux_name") or ""
+    if not _alive(name):
+        return "the session is gone"
+    why = owned_session_refusal(db, name)
+    if why:
+        return why
+    tool = str(p.get("tool_name") or "")
+    if not tool or not str(p.get("summary") or "").strip():
+        return "this request does not say what it asks"
+    if tool not in ANSWERABLE_TOOLS and not _MCP_TOOL.match(tool):
+        return "this kind of request is answered in its terminal"
+    return None
+
+
 def peer_permissions(db, params: dict, body: dict) -> dict:
-    """GET /api/node/permissions: the requests a hook is still waiting on, {id, tmux, tool, summary, since}, for sessions that are still there."""
+    """GET /api/node/permissions: the requests a hook is still waiting on, {id, tmux, tool, summary, since}, for sessions that are still there and requests the answer row
+    would accept (permission_refusal)."""
     from . import main
     known = known_secrets()
     out = []
     for p in main._live_permissions():
         name = p.get("tmux_name") or ""
-        if not _alive(name):
+        if permission_refusal(db, db.perm_get(int(p["id"])) or p):
             continue
         tool = str(p.get("tool_name") or "")
         out.append({"id": int(p["id"]), "tmux": name, "tool": tool if _TOOL_OUT.fullmatch(tool) else "tool", "summary": _perm_summary(p.get("summary"), known),
@@ -2212,6 +2343,9 @@ def peer_permission_answer(db, params: dict, body: dict) -> dict:
         raise Refusal(409, "answered", ANSWERED)
     if pid not in {p["id"] for p in main._live_permissions()}:
         raise Refusal(409, "expired", EXPIRED)
+    why = permission_refusal(db, row)                       # the session is the peer's own agent session and the request is an ordinary one: else it stays with the terminal
+    if why:
+        raise Refusal(409, "refused", f"{why}: answer it on {nodes.display_name()}")
     try:
         main.api_permission_decide(pid, decision, _standin())
     except projects.Conflict:

@@ -10,7 +10,7 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 - Every action paints at once and toasts with the node's name; "Allowed on <node>" appears only when the node confirmed, a refusal puts the card or the draft back with a plain sentence, and a timeout reads "Could not confirm whether <node> got this" and is never retried.
 
 ### Changed
-- A session started with bypass, `auto` or `dontAsk`, or whose mode cannot be read, cannot be steered from another node; a remote prompt, or the first prompt of a new remote task, cannot start with `/`, `!` or `#` (a `422` on the hub and on the node; a stored card that does is not started from another node), because the terminal reads those as commands. The node page no longer says that answering, typing and closing are for a later phase.
+- A key or a line cannot answer a permission or any dialog from another node (the `permissions` scope is the only way, and `y`, `n`, digits and Enter are refused while a question is asked); ack, close and a permission answer check the session is one of the node's own agent sessions, and an answer is limited to ordinary tool requests, the same ones the list shows. A session started with bypass, `auto` or `dontAsk`, or whose mode cannot be read, cannot be steered from another node; a remote prompt, or the first prompt of a new remote task, cannot start with `/`, `!` or `#` (a `422` on the hub and on the node; a stored card that does is not started from another node), because the terminal reads those as commands. The node page no longer says that answering, typing and closing are for a later phase.
 
 Upgrade: nothing to do.
 
