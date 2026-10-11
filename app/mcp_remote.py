@@ -16,7 +16,7 @@ in flight per token, 240 a minute and 16 in flight across all tokens, 10 create_
 
 The tools are app/mcp.py's, run in-process: inproc_api() calls the board's own route functions as the person `mcp:<token name>`, never
 the board over HTTP and never with the hook token. A call with a `node` argument (issue #152) goes to nodes_relay.relay as that device token: CCBOARD_MCP_NODES, the
-token's scope and the pair's scope all have to allow it, the audit on both boards names `mcp:<token name>` and the node, and no tool reaches a row beyond the six that say `mcp`. A tools/call needs the token's scope for it (app/mcp.required_scope); without it
+token's scope and the pair's scope all have to allow it, the audit on both boards names `mcp:<token name>` and the node, and no tool reaches a row beyond the four that say `mcp`. A tools/call needs the token's scope for it (app/mcp.required_scope); without it
 the answer is a JSON-RPC error and nothing runs. Every tools/call lands in the audit (app/mcp_tokens.audit): token, tool, task id,
 outcome, never the prompt or the result.
 """

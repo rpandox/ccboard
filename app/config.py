@@ -218,9 +218,10 @@ class Settings:
         # The remote MCP endpoint /mcp (issue #13): '1' turns it on until someone flips the switch in Settings > Agents (the stored
         # choice then wins); unset or anything else = off. Off, /mcp answers 404.
         self.mcp_remote = (env.get("CCBOARD_MCP_REMOTE") or "").strip()
-        # MCP across nodes (issue #152): '1' lets an agent's MCP tools (the stdio shim and /mcp) act on a paired node through the relay; unset or anything else
-        # = off, and a tool call that names a node other than `local` is a tool error. Read at start; there is no switch in Settings, only this word.
-        self.mcp_nodes = (env.get("CCBOARD_MCP_NODES") or "").strip() == "1"
+        # MCP across nodes (issue #152): how far an agent's MCP tools (the stdio shim and /mcp) may act on a paired node through the relay. `read` (or the old `1`) lets them
+        # list the nodes and read a node's projects and tasks; `tasks` also lets them create a task there and start it in a new session; unset, `0` or anything else = off
+        # ("" here) and a tool call that names a node other than `local` is a tool error. Read at start; there is no switch in Settings, only this word.
+        self.mcp_nodes = {"1": "read", "read": "read", "tasks": "tasks"}.get((env.get("CCBOARD_MCP_NODES") or "").strip().lower(), "")
         self.ntfy_url = (env.get("NTFY_URL") or "").strip()            # loopback, e.g. http://127.0.0.1:2586
         self.ntfy_topic = (env.get("NTFY_TOPIC") or "ccboard").strip()
         self.ntfy_public_url = (env.get("NTFY_PUBLIC_URL") or "").strip()  # what the phone subscribes to

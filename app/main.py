@@ -4452,7 +4452,7 @@ def _mcp_view(changed: bool = False) -> dict:
     return {"enabled": mcp_tokens.enabled(), "env_default": mcp_tokens.env_default(), "tokens": mcp_tokens.listing(),
             "recent": mcp_tokens.recent(), "max_tokens": mcp_tokens.MAX_TOKENS, "scopes": list(mcp.SCOPES),
             "default_scopes": list(mcp.DEFAULT_SCOPES), "default_days": mcp_tokens.DEFAULT_DAYS, "path": mcp_remote.PATH,
-            "nodes": {"enabled": bool(settings.mcp_nodes), "env": "CCBOARD_MCP_NODES"}}      # agents acting on a paired node (issue #152): env only, shown read-only
+            "nodes": {"enabled": bool(nodes_relay.mcp_level()), "level": nodes_relay.mcp_level() or "off", "env": "CCBOARD_MCP_NODES"}}      # agents acting on a paired node (issue #152): env only, shown read-only
 
 
 def _mcp_refused(e: "mcp_tokens.Refused") -> JSONResponse:
@@ -4461,9 +4461,9 @@ def _mcp_refused(e: "mcp_tokens.Refused") -> JSONResponse:
 
 @app.get("/api/mcp/nodes")
 def api_mcp_nodes(request: Request):
-    """The paired nodes as an agent may see them (issue #152; the tool `list_nodes`): {enabled, env, nodes: [{handle, name, status, age_s, agents, lanes, windows, scopes}]}.
-    Built from the hub read model and the registry, nothing is asked of a node; never an address, a node id or a token. A person and the local hook token (the stdio shim) may read
-    it; a node token cannot (it is not in NODE_ROUTES). `enabled` is CCBOARD_MCP_NODES: whether a tool call may act on a node. A board with no paired node answers an empty list."""
+    """The paired nodes as an agent may see them (issue #152; the tool `list_nodes`): {level, allows: {read, tasks}, nodes: [{handle, name, status, age_s, free_lanes, agents: [{name, ready}]}]}.
+    Built from the hub read model and the registry, nothing is asked of a node; never an address, a node id, a token, an account or a usage window. A person and the local hook token (the
+    stdio shim) may read it; a node token cannot (it is not in NODE_ROUTES). `level` is CCBOARD_MCP_NODES (off, read, tasks): what a tool call may do on a node. A board with no paired node answers an empty list."""
     return JSONResponse(nodes_relay.mcp_nodes_view(_hub()), headers={"Cache-Control": "no-store"})
 
 
