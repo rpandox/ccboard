@@ -189,7 +189,7 @@ test('Home strip from the demo fixture: this node first, then three cells in the
   assert.deepEqual(cells.map((c) => c.getAttribute('href')), ['#/agents', '#/n/build-box', '#/n/alice-mac', '#/n/old-laptop']);
   assert.deepEqual(cells.map((c) => c.querySelector('.nd-cell-s').textContent), ['online', 'online', 'stale 3 min', w.run("Nodes.view(Nodes.get('old-laptop')).word")]);
   assert.deepEqual(cells.map((c) => c.querySelector('.nd-sg').textContent), ['●', '●', '◐', '○']);
-  assert.match(text(cells[1]), /4 live · 2 need you/);
+  assert.match(text(cells[1]), /4 live · 6 need you/);
   assert.match(text(cells[1]), /5h 42%/);
   assert.match(text(cells[2]), /last reading 3 min ago/);
   assert.ok(cells[3].classList.contains('dim') && !cells[1].classList.contains('dim'), 'an offline cell is dim');
@@ -197,7 +197,7 @@ test('Home strip from the demo fixture: this node first, then three cells in the
   assert.match(cells[3].getAttribute('aria-label'), /^old-laptop: offline since \d\d:\d\d, /);
   const strip = w.document.querySelector('.nd-strip');
   assert.match(text(strip), /The clock of alice-mac differs from this board's by more than 5 s/);
-  assert.match(text(w.document.querySelector('.nd-attn')), /2 need you on build-box/);
+  assert.match(text(w.document.querySelector('.nd-attn')), /6 need you on build-box/);
   assert.equal(all(w, '.nd-strip .primary').length, 0, 'the strip adds no filled primary');
   noMarkup(w);
 });
@@ -456,7 +456,7 @@ test('the inbox: remote items that need you sit in "On other nodes" under the lo
   assert.match(text(sec.querySelector('h2')), /^On other nodes \(2\)$/);
   assert.deepEqual(all(sec, '.nd-item').map((r) => r.querySelector('.nchip-n').textContent), ['build-box', 'alice-mac']);
   assert.deepEqual(all(sec, 'a.nd-name').map((a) => a.getAttribute('href')), ['#/n/build-box/s/shop--api--s1', '#/n/alice-mac/s/shop--api--s1']);
-  assert.match(text(sec), /Read only here/);
+  assert.match(text(sec), /Open a session to reply to it, press keys in it or acknowledge it\./);
   const sib = sec.parentNode.children;
   assert.ok(sib[sib.indexOf(sec) - 1].classList.contains('inbox-list'), 'right under the local list');
   const none = all(page(w), '.empty').find((n) => /Nothing needs you/.test(text(n)));

@@ -173,6 +173,12 @@ EXPECTED = {
     ("POST", "/api/node/tasks/{tid}/dispatch"): "node-token",
     ("POST", "/api/node/sessions"): "node-token",       # scope sessions
     ("GET", "/api/node/stream"): "node-token",          # the read-only stream relay (issue #143): scope sessions, names required, 20 names and 1 to 40 lines; every tail redacted
+    ("POST", "/api/node/sessions/{name}/prompt"): "node-token",    # steering (issue #142), scope sessions: text typed into a session of this board, only one that passes the launch-line check; an acting user is required
+    ("POST", "/api/node/sessions/{name}/keys"): "node-token",      # one key of a closed list; C-c with confirm
+    ("POST", "/api/node/sessions/{name}/ack"): "node-token",
+    ("DELETE", "/api/node/sessions/{name}"): "node-token",         # ends the session on this board only
+    ("GET", "/api/node/permissions"): "node-token",                # scope permissions: the pending requests (tool, a 300-character redacted summary)
+    ("POST", "/api/node/permissions/{pid}/{decision}"): "node-token",     # scope permissions: allow or deny once. The only way a node token answers a permission, and the hub route is a signed-in person only
     ("GET", "/api/nodes/{handle}/card"): "relay",       # the hub side of a relay row: a signed-in person with X-CCBoard (even for a GET), or the local hook token; a node token is a 403; 404 for a handle the registry does not hold
     ("GET", "/api/nodes/{handle}/state"): "relay",
     ("GET", "/api/nodes/{handle}/tasks/{tid}"): "relay",
@@ -181,6 +187,12 @@ EXPECTED = {
     ("POST", "/api/nodes/{handle}/tasks"): "relay",
     ("POST", "/api/nodes/{handle}/tasks/{tid}/dispatch"): "relay",
     ("POST", "/api/nodes/{handle}/sessions"): "relay",
+    ("POST", "/api/nodes/{handle}/sessions/{name}/prompt"): "relay",     # steering (issue #142): a signed-in person with X-CCBoard; never the hook token, a node token or a node:* user
+    ("POST", "/api/nodes/{handle}/sessions/{name}/keys"): "relay",
+    ("POST", "/api/nodes/{handle}/sessions/{name}/ack"): "relay",
+    ("DELETE", "/api/nodes/{handle}/sessions/{name}"): "relay",
+    ("GET", "/api/nodes/{handle}/permissions"): "relay",
+    ("POST", "/api/nodes/{handle}/permissions/{pid}/{decision}"): "relay",     # allow or deny another node's request: a person's act, no setting, tool or job reaches it
     ("GET", "/api/nodes/{handle}/stream"): "relay",      # an SSE passthrough that parses and re-serialises: only lines, tick and gone leave it (app/nodes_stream.py); a person only, never the hook token
     ("GET", "/api/nodes/discover"): "identity",   # the tailnet devices that may be nodes (issue #134); refresh=1 also needs X-CCBoard (it makes the board send requests), checked in the handler
     ("GET", "/api/search"): "identity",

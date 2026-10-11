@@ -103,3 +103,43 @@ html.force-coarse #page .nd-cell { min-height:var(--tap); }
 .toast .toast-link { display:inline-flex; align-items:center; min-height:28px; margin-left:10px; color:var(--sig); text-decoration:underline; }
 @media (pointer:coarse) { .toast .toast-link { min-height:var(--tap); } }
 html.force-coarse .toast .toast-link { min-height:var(--tap); }
+
+/* Steering a remote session and answering its permission requests (issue #142): the steer panel of the peek (built once, kept across readings), the permission cards of the inbox group,
+   the node page and the peek. Cards reuse the inbox card's look (pages.css .inbox-card, .ib-*). 28 px controls with a mouse, --row-btn / --tap (44 px) on touch; nothing wider than 390 px. */
+#page .nd-steer { margin:14px 0 0; }
+#page .nd-ssec { margin:12px 0 0; padding-top:10px; border-top:1px solid var(--line-soft); }
+#page .nd-steer > .nd-perms + .nd-ro { margin-bottom:4px; }
+#page .nd-perms { margin:8px 0 0; }
+#page .nd-perms:empty { display:none; }
+#page .nd-ssec > .nd-h { margin-bottom:6px; }
+#page .nd-chips { margin:0 0 8px; }
+#page .nd-send { max-width:none; }
+#page .nd-steer-echo { margin:6px 0 0; font:12px/1.4 var(--font-mono); overflow-wrap:anywhere; white-space:pre-wrap; }
+#page .nd-steer-line { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; margin:6px 0 0; }
+#page .nd-steer-st { flex:1 1 200px; min-width:0; margin:0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; color:var(--fg-2); }
+#page .nd-steer-st.ok { color:var(--ok-fg); }
+#page .nd-steer-st.warn { color:var(--warn-fg); }
+#page .nd-steer-st.bad { color:var(--bad-fg); }
+#page .nd-steer-acts { display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:8px; }
+#page .nd-steer-acts > button { display:inline-flex; align-items:center; justify-content:center; width:100%; min-width:0; min-height:var(--row-btn); text-align:center; }
+#page .nd-kill { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:8px; min-width:0; }
+#page .nd-kill > button { flex:1 1 150px; min-height:var(--row-btn); min-width:0; }
+#page .nd-kill > .row { flex:1 1 100%; flex-wrap:wrap; gap:8px; }
+#page .nd-kill > .row > button { flex:1 1 130px; min-height:var(--row-btn); min-width:0; }
+#page .nd-keys { display:grid; grid-template-columns:repeat(auto-fill, minmax(64px, 1fr)); gap:6px; margin:8px 0 0; }
+#page .nd-keys > button { width:100%; min-width:0; min-height:var(--row-btn); font-family:var(--font-mono); }
+#page .nd-ckey { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:8px; }
+#page .nd-ckey > button { flex:1 1 130px; min-height:var(--row-btn); min-width:0; }
+#page .nd-ckey > .row { flex:1 1 100%; flex-wrap:wrap; gap:8px; }
+#page .nd-ckey > .row > button { flex:1 1 130px; min-height:var(--row-btn); min-width:0; }
+#page .nd-steer.blocked .chip-btn, #page .nd-steer.blocked .nd-send .nd-off { opacity:.6; }
+#page .nd-steer .nd-swhys { margin:8px 0 0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+#page .nd-pcard.pending { border-left-color:var(--sig); }
+#page .nd-pcard.pending .ib-ctx { color:var(--fg-2); }
+#page .nd-pcard.closed { border-left-color:var(--line-strong, var(--line)); }
+#page .nd-pcard .nd-perr { margin:0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+#page .nd-pcard .nd-perr.bad { color:var(--bad-fg); }
+#page .nd-pcard .nd-perr.warn { color:var(--warn-fg); }
+#page .nd-pstub .nd-actbox { margin:4px 0 0; }
+#page .nd-pcard .ib-actions .btn { display:inline-flex; align-items:center; }
+#page .nd-peek-top > .nd-ro { margin-bottom:2px; }

@@ -2260,11 +2260,11 @@ def test_the_two_gh_commands_run_in_parallel_and_auth_gets_the_long_limit(world,
 def test_only_one_gh_probe_is_in_flight_and_the_cache_still_applies(world, monkeypatch):
     monkeypatch.setattr(doctor, "GH_WAIT", 0.05)
     log = []
-    pump(monkeypatch, world, auth=(0.5, doctor.Proc(0, "", "")), log=log)
+    pump(monkeypatch, world, auth=(2.0, doctor.Proc(0, "", "")), log=log)             # 2 s, not 0.5: a slow CI runner (macOS) needs more than half a second for four runs
     for _ in range(4):
         doctor.run("box", refresh=True)                                               # four Re-checks while the first auth probe still runs
     assert [a[1] for a in log].count(("gh", "auth", "status")) == 1
-    time.sleep(0.6)
+    time.sleep(2.1)
     doctor.invalidate()
     log.clear()
     pump(monkeypatch, world, auth=(0, doctor.Proc(0, "", "")), log=log)

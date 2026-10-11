@@ -51,6 +51,21 @@ through `guard_final`, and the line the board is about to type must pass `launch
 A dispatch into a running session is checked against the TARGET (`session_target_refusal`: one of this board's own sessions, in the task's repo, whose recorded line is inside the
 set; a line that says no mode cannot be told and is refused). The task row on the peer carries `origin` {node, user} (the caller's node and the login it reported, cut to a plain
 label by `_claim`); a session keeps the same in its flags. A write that timed out or lost its connection after the request was sent is `unconfirmed`: the peer may have done it, nothing is retried.
+
+Steering a session and answering a permission (issue #142, six more rows, every one human only): `prompt`, `keys`, `ack` and `close` (scope sessions), `permissions` (the pending
+list, scope permissions, read class) and `permission_answer` (allow or deny, scope permissions). Typing into a session is launching work in it: `prompt` and `keys` are refused
+on the PEER unless the target passes `steer_refusal` (session_target_refusal for a session of its own project and repo: one of the peer's own agent sessions whose recorded launch
+line is inside the allowed set; a bypass or unreadable mode fails closed). The text is free text (8 KB; a control, format or separator character is a 422, nothing is stripped), a
+key comes from the closed list STEER_KEYS (C-c only with confirm true), a decision is allow or deny. The peer refuses a request that names no acting user. Each action writes one
+`out` row and one `in` row and stores neither the text, nor a key sequence beyond its name, nor a permission summary. The peer's refusals keep their own status: 409 `busy` (with the
+typing refusal's code, retry seconds and state), 409 `answered` or `expired`, 404 `gone`, 413 for text over 8 KB, 429 for the 20 prompts a minute one session takes. No relay row, MCP
+tool or scheduled job reaches the board's own permission route (tests/test_nodes_steer.py reads the source to say so).
+Who may touch which session, and what a key may answer: EVERY row that names a session runs `owned_session_refusal` on the peer (a ccboard name that is not internal, a row this
+board opened, an agent session of a launcher the board writes, in a project and repo whose folder is here); `prompt`, `keys` and a dispatch add `launch_line_refusal`, while `ack`,
+`close` and a permission answer run nothing and may touch a session started with wider permissions. While a session is asking a question in its terminal (`asking_reason`: a live
+permission request, a state other than working, idle, done, errored or waiting at the idle prompt, a Codex pane dialog, or anything unreadable) `Row.dialog_scope` (`permissions`)
+is wanted for `keys` and `prompt` (403 `asking`), and even with it `y`, `n`, 1 to 9 and Enter are refused (409 `busy`, code `asking`): a permission is answered by the permission
+row only, once, allow or deny, for a request `permission_refusal` accepts (an ordinary tool of an owned session with a summary; the list shows exactly those).
 """
 from __future__ import annotations
 
@@ -64,6 +79,7 @@ import shlex
 import socket
 import threading
 import unicodedata
+from types import SimpleNamespace
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Callable, Literal
@@ -71,7 +87,7 @@ from urllib.parse import urlencode
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator, model_validator
 
 from . import nodes, projects, tmux
 
@@ -273,14 +289,17 @@ def guard_final(fields: dict) -> list[str]:
 CARD_KEYS = ("model", "effort", "reasoning_effort", "permission_mode", "subagent_model", "subagent_force", "auto_close", "opts")
 
 
-def card_refusal(task: dict, spec: dict) -> str | None:
+def card_refusal(task: dict, spec: dict, typed: bool = False) -> str | None:
     """Why a stored card may not be started from another node (None: it may), by an allow list: its title and prompt are text without control, format or line-separator
-    characters, its spec holds only the keys of CARD_KEYS, and each string in it has the rule of its kind. The same check_field the hub's models use."""
+    characters, its spec holds only the keys of CARD_KEYS, and each string in it has the rule of its kind. The same check_field the hub's models use. `typed`: the prompt
+    may not start like a terminal command (it is typed into a running session, or is a launch argument Claude Code reads as a slash command): "command"."""
     try:
         free_text(task.get("title") or "", TASK_TITLE_IN)
         free_text(task.get("prompt") or "", TASK_PROMPT_IN)
     except ValueError:
         return "text"
+    if typed and starts_like_a_command(task.get("prompt") or ""):
+        return "command"
     for k, v in (spec or {}).items():
         if not _present(v):
             continue
@@ -492,6 +511,36 @@ def require_remote_launch(agent: str | None, cmd_line, opts=None) -> None:
         raise projects.BadRequest(f"this launch would not stay inside what another node may use ({why}); nothing was started")
 
 
+def owned_session_refusal(db, name: str) -> str | None:
+    """Why the session `name` is not one this board's own agent sessions another node may act on (None: it is). ONE function for every relay row that names a session
+    (prompt, keys, ack, close, a dispatch into a session) and for the session of a permission request: a ccboard name that is not internal (the login session), a row
+    this board opened (not a tmux session the owner started outside the board), an agent of this board started by a launcher it writes itself (recover.RECOVERABLE: not
+    a shell, not a clone), in a project and repo whose folder is on this board. What it does NOT ask is the launch line: typing into a session also wants
+    launch_line_refusal (session_target_refusal), while an ack, a close and a permission answer run nothing and may touch a session started with wider permissions."""
+    try:
+        check_field("session", name)
+        sp, sr, _ = tmux.split_name(name)
+    except ValueError:
+        return "not a ccboard session name"
+    if tmux.is_internal(name):
+        return "not a session another node may use"
+    row = db.open_rows().get(name)
+    if not row:
+        return "that is not a session this board started"
+    agent = row.get("agent") or "claude"
+    from . import recover                                    # the launchers the board itself writes for an agent session (an allow list: anything else is not one)
+    if agent not in _agent_names() or row.get("launcher") not in recover.RECOVERABLE:
+        return "that is not an agent session this board started"
+    if (row.get("project"), row.get("repo")) != (sp, sr):
+        return "this session works in another repo"
+    try:
+        if not projects.repo_path(sp, sr).is_dir():
+            return "the project or repo of that session is not on this board"
+    except (ValueError, projects.BadRequest, projects.NotFound):
+        return "the project or repo of that session is not on this board"
+    return None
+
+
 def session_target_refusal(db, task: dict, name: str) -> str | None:
     """Why a task of another node may not be typed into the running session `name` (None: it may go on to the board's own checks). The target must be one of this
     board's own sessions (a row with a ccboard name; not internal, not a tmux session the board did not start) in the task's own project and repo, and its recorded
@@ -505,16 +554,13 @@ def session_target_refusal(db, task: dict, name: str) -> str | None:
         return "not a session another node may use"
     if not tmux.has_session(name):
         return None
-    row = db.open_rows().get(name)
-    if not row:
-        return "that is not a session this board started"
-    agent = row.get("agent") or "claude"
-    from . import recover                                    # the launchers the board itself writes for an agent session (an allow list: anything else is not one)
-    if agent not in _agent_names() or row.get("launcher") not in recover.RECOVERABLE:
-        return "that is not an agent session this board started"
-    if (sp, sr) != (task.get("project"), task.get("repo")) or (row.get("project"), row.get("repo")) != (sp, sr):
+    why = owned_session_refusal(db, name)
+    if why:
+        return why
+    row = db.open_rows().get(name) or {}
+    if (sp, sr) != (task.get("project"), task.get("repo")):
         return "this session works in another repo"
-    return WIDE_SESSION if launch_line_refusal(agent, row.get("cmd"), row.get("opts")) else None
+    return WIDE_SESSION if launch_line_refusal(row.get("agent") or "claude", row.get("cmd"), row.get("opts")) else None
 
 
 # ================================================================ the table
@@ -546,8 +592,10 @@ _TID = re.compile(r"[0-9]{1,12}")
 def _valid_param(name: str, value) -> bool:
     if not isinstance(value, str):
         return False
-    if name == "tid":
+    if name in ("tid", "pid"):
         return bool(_TID.fullmatch(value))
+    if name == "decision":
+        return value in DECISIONS
     if name == "name":
         try:
             check_field("session", value)
@@ -581,6 +629,11 @@ class Row:
     guard_skip: tuple = ()                                        # top-level fields the guard does not read because the row's model checks them itself (the dispatch `mode`)
     extra_scope: Callable[[dict], str | None] | None = field(default=None, compare=False)   # the scope the validated body needs besides `scope` (dispatch into a session: sessions)
     body_target: Callable[[dict, dict], str] | None = field(default=None, compare=False)    # the audit target from (safe path parameters, validated body): a task title, cut, when the path does not say enough
+    acting: bool = False                # the peer refuses a request that names no acting user (a person's act, relayed by the hub)
+    big_field: str | None = None        # a string field whose length over its cap is a 413, not a 422 (the text of a prompt)
+    per_session: bool = False           # nodes.PROMPT_RATE a minute into one session, counted on the hub and again on the peer
+    dialog_scope: str | None = field(default=None, compare=False)     # the scope the PEER also wants while the target session is asking a question in its terminal (a permission, a dialog,
+                                                                      # a state it cannot read): a key or a line typed then answers it, which only `permissions` may do (peer_keys, peer_prompt)
 
     @cached_property
     def params(self) -> tuple[str, ...]:
@@ -678,9 +731,26 @@ _RX = {
     "model": re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}(?:\[1m\])?"),
     "effort": re.compile(r"[a-z][a-z0-9-]{1,19}"),
 }
-_ENUMS = {"permission_mode": PERMISSION_MODES, "mode": SESSION_MODES, "sandbox": SANDBOXES, "approval": APPROVALS}
-FIELD_KINDS = ("agent", "model", "effort", "name", "session", "issue_ref", "permission_mode", "mode", "sandbox", "approval", "title", "prompt")
-_CAPS = {"title": TASK_TITLE_IN, "prompt": TASK_PROMPT_IN}
+STEER_MAX = 8192                                                             # the text a person sends into a remote session: 8 KB
+STEER_KEYS = ("Enter", "Escape", "Up", "Down", "Tab", "y", "n", "1", "2", "3", "4", "5", "6", "7", "8", "9", "C-c")      # the closed list; C-c only with confirm true
+CONFIRMED_KEYS = ("C-c",)
+LITERAL_KEYS = ("y", "n", "1", "2", "3", "4", "5", "6", "7", "8", "9")       # typed as one character (tmux's own key names do not include them)
+DECISIONS = ("allow", "deny")                                                # never `tui`, `always` or a rule
+_ENUMS = {"permission_mode": PERMISSION_MODES, "mode": SESSION_MODES, "sandbox": SANDBOXES, "approval": APPROVALS, "key": STEER_KEYS, "decision": DECISIONS}
+FIELD_KINDS = ("agent", "model", "effort", "name", "session", "issue_ref", "permission_mode", "mode", "sandbox", "approval", "title", "prompt", "text", "typed_text", "typed_prompt", "key", "decision")
+_CAPS = {"title": TASK_TITLE_IN, "prompt": TASK_PROMPT_IN, "text": STEER_MAX, "typed_text": STEER_MAX, "typed_prompt": TASK_PROMPT_IN}
+# Text that is TYPED into a running agent session (a steer prompt; the prompt of a stored card handed to a running session) is read by the agent's own input line, where a
+# first character of `/` is a slash command (model, permission mode, settings ...), `!` runs a shell line in bash mode without a permission prompt and `#` writes to the
+# memory files (Codex reads `/` and `!` the same way). The board pastes it as ONE bracketed paste (tmux.paste_text), so the first character of the whole text is the one
+# that counts, not the first of each line. `@file` is a mention, not a command, and passes. The first prompt of a NEW task (`typed_prompt`, the task prompt cap) is an argv
+# argument after `--`, but Claude Code runs a leading `/` of a launch argument as a slash command too, so it has the same rule and fails closed.
+TYPED_COMMAND_CHARS = "/!#"
+TYPED_COMMAND_MESSAGE = "a remote prompt cannot start with / ! or # (those are commands in the terminal); start it from its own board"
+
+
+def starts_like_a_command(v: str) -> bool:
+    """Does this text, as the terminal will read it, start with `/`, `!` or `#`? Looked at after NFKC (full-width forms) and past any leading whitespace or newlines."""
+    return unicodedata.normalize("NFKC", v).lstrip()[:1] in tuple(TYPED_COMMAND_CHARS)
 
 
 def free_text(v, cap: int):
@@ -698,8 +768,11 @@ def free_text(v, cap: int):
 
 def check_field(kind: str, v):
     """Validate one string field of a remote request by its kind (FIELD_KINDS) and return it unchanged; ValueError says what is wrong and never repeats the value."""
-    if kind in ("title", "prompt"):
-        return free_text(v, _CAPS[kind])
+    if kind in ("title", "prompt", "text", "typed_text", "typed_prompt"):
+        v = free_text(v, _CAPS[kind])
+        if kind in ("typed_text", "typed_prompt") and starts_like_a_command(v):
+            raise ValueError(TYPED_COMMAND_MESSAGE)
+        return v
     if not isinstance(v, str) or unicodedata.normalize("NFKC", v) != v:
         raise ValueError("use plain ASCII letters, digits and the usual marks")
     if kind in _ENUMS:
@@ -783,8 +856,9 @@ class TaskCreateBody(_Launch):
     @field_validator("title", "prompt")
     @classmethod
     def _typed_text(cls, v, info):
-        """The prompt is typed into a shell line of the peer (tmux send-keys -l) and the title names a card: see free_text."""
-        return check_field(info.field_name, v)
+        """The prompt is typed into a shell line of the peer (tmux send-keys -l) and the title names a card: see free_text. The prompt also may not start like a terminal command
+        (`typed_prompt`): a launch argument that starts with `/` is a slash command in Claude Code."""
+        return check_field("typed_prompt" if info.field_name == "prompt" else info.field_name, v)
 
     @field_validator("issue_ref")
     @classmethod
@@ -829,6 +903,40 @@ class SessionOpenBody(_Launch):
     @classmethod
     def _choices(cls, v, info):
         return None if v is None else check_field(info.field_name, v)
+
+
+class PromptBody(_Strict):
+    """Text for a remote session's composer (issue #142). Free text by the one rule (check_field `text`): at most 8 KB, tab and newline are text, no control, format or
+    line-separator character (a 422, never stripped: the text is typed into a terminal). `queue` is the local flag: also accept a session that is working."""
+    text: str = Field(min_length=1, max_length=STEER_MAX)
+    queue: StrictBool = False
+
+    @field_validator("text")
+    @classmethod
+    def _typed_text(cls, v):
+        v = check_field("typed_text", v)
+        if not v.strip():
+            raise ValueError("text is empty")
+        return v
+
+
+class KeysBody(_Strict):
+    """One key for a remote session: a name from STEER_KEYS, nothing else. C-c needs `confirm` true (the UI's second tap), and `confirm` means nothing for another key."""
+    key: str = Field(max_length=8)
+    confirm: StrictBool = False
+
+    @field_validator("key")
+    @classmethod
+    def _key(cls, v):
+        return check_field("key", v)
+
+    @model_validator(mode="after")
+    def _confirmed(self):
+        if self.key in CONFIRMED_KEYS and not self.confirm:
+            raise ValueError(f"{self.key} needs confirm true")
+        if self.confirm and self.key not in CONFIRMED_KEYS:
+            raise ValueError("confirm is only for " + ", ".join(CONFIRMED_KEYS))
+        return self
 
 
 def _title80(clean: dict) -> str:
@@ -907,6 +1015,67 @@ def _shape_session_started(body, reg):
             "project": _shaped(body.get("project"), _NAME_OUT, 63), "repo": _shaped(body.get("repo"), _NAME_OUT, 63)}
 
 
+# ---- the steering rows (issue #142): the peer's answers rebuilt from a whitelist. A write row's answer is tolerant (a 2xx already says the peer did it); what the hub shows
+# of it is built here, never copied.
+
+SUMMARY_MAX = 300
+_TOOL_OUT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,59}")
+_PERMISSIONS_MAX = 50
+
+
+def _shape_prompt(body, reg):
+    from . import nodes_hub
+    if not isinstance(body, dict):
+        raise nodes_hub.Bad("not an object")
+    return {"ok": True, "pasted": body.get("pasted") is True, "queued": body.get("queued") is True}
+
+
+def _shape_keys(body, reg):
+    from . import nodes_hub
+    if not isinstance(body, dict):
+        raise nodes_hub.Bad("not an object")
+    return {"ok": True, "key": body["key"] if body.get("key") in STEER_KEYS else None}
+
+
+def _shape_acked(body, reg):
+    from . import nodes_hub
+    if not isinstance(body, dict):
+        raise nodes_hub.Bad("not an object")
+    return {"acked": _shaped_tmux(body.get("acked"))}
+
+
+def _shape_closed(body, reg):
+    from . import nodes_hub
+    if not isinstance(body, dict):
+        raise nodes_hub.Bad("not an object")
+    return {"killed": _shaped_tmux(body.get("killed"))}
+
+
+def _shape_permissions(body, reg):
+    """The pending requests rebuilt field by field: {permissions: [{id, tmux, tool, summary (300 characters), since}]}. A row without an id or a session name is dropped."""
+    from . import nodes_hub
+    if not isinstance(body, dict) or not isinstance(body.get("permissions"), list):
+        raise nodes_hub.Bad("not a permission list")
+    out = []
+    for r in body["permissions"][:_PERMISSIONS_MAX]:
+        if not isinstance(r, dict):
+            continue
+        pid, tm = nodes_hub._i(r.get("id")), _shaped_tmux(r.get("tmux"))
+        if pid is None or pid < 1 or tm is None:
+            continue
+        out.append({"id": pid, "tmux": tm, "tool": _shaped(r.get("tool"), _TOOL_OUT, 60) or "tool", "summary": nodes_hub._s(r.get("summary"), SUMMARY_MAX) or "",
+                    "since": _shaped(r.get("since"), _TIME_OUT, 40)})
+    return {"permissions": out}
+
+
+def _shape_permission_answer(body, reg):
+    from . import nodes_hub
+    if not isinstance(body, dict):
+        raise nodes_hub.Bad("not an object")
+    pid = nodes_hub._i(body.get("id"))
+    return {"ok": True, "id": pid if pid and pid > 0 else None, "decision": body["decision"] if body.get("decision") in DECISIONS else None}
+
+
 RELAY: tuple[Row, ...] = (
     Row("card", "GET", "/api/nodes/{handle}/card", "GET", "/api/node", "read", NoFields, READ, "read_card", human_only=True, peer_exists=True,
         target=lambda p: "card", shape=_shape_card),
@@ -928,6 +1097,24 @@ RELAY: tuple[Row, ...] = (
     Row("session_open", "POST", "/api/nodes/{handle}/sessions", "POST", "/api/node/sessions", "sessions", SessionOpenBody, WRITE, "open_session", guard=True,
         human_only=True, answer_max=4 * 1024, target=lambda p: "open session", body_target=lambda p, c: f"open session {c.get('project')}/{c.get('repo')}",
         shape=_shape_session_started),
+    # The steering rows (issue #142). Text and keys typed into a session are launching work in it (guard=True; the peer also checks the target's recorded launch line).
+    # The prompt text is never in a target, an audit row or an answer; a key is, by its name from the closed list.
+    Row("prompt", "POST", "/api/nodes/{handle}/sessions/{name}/prompt", "POST", "/api/node/sessions/{name}/prompt", "sessions", PromptBody, WRITE, "send_prompt", guard=True,
+        human_only=True, acting=True, big_field="text", per_session=True, dialog_scope="permissions", answer_max=4 * 1024, target=lambda p: f"prompt {p.get('name')}", shape=_shape_prompt),
+    Row("keys", "POST", "/api/nodes/{handle}/sessions/{name}/keys", "POST", "/api/node/sessions/{name}/keys", "sessions", KeysBody, WRITE, "send_keys", guard=True,
+        human_only=True, acting=True, dialog_scope="permissions", answer_max=4 * 1024, target=lambda p: f"keys {p.get('name')}", body_target=lambda p, c: f"keys {p.get('name')} ({c.get('key')})",
+        shape=_shape_keys),
+    Row("ack", "POST", "/api/nodes/{handle}/sessions/{name}/ack", "POST", "/api/node/sessions/{name}/ack", "sessions", NoFields, WRITE, "ack_session", human_only=True,
+        acting=True, answer_max=4 * 1024, target=lambda p: f"ack {p.get('name')}", shape=_shape_acked),
+    Row("close", "DELETE", "/api/nodes/{handle}/sessions/{name}", "DELETE", "/api/node/sessions/{name}", "sessions", NoFields, WRITE, "close_session", human_only=True,
+        acting=True, answer_max=4 * 1024, target=lambda p: f"close {p.get('name')}", shape=_shape_closed),
+    # A permission request is the agent asking its owner: only a signed-in person answers it, and only allow or deny (no `always`, no rule). The list shows what the agent
+    # wants to do, so it needs `permissions`, never `read`.
+    Row("permissions", "GET", "/api/nodes/{handle}/permissions", "GET", "/api/node/permissions", "permissions", NoFields, READ, "read_permissions", human_only=True,
+        acting=True, answer_max=64 * 1024, target=lambda p: "permissions", shape=_shape_permissions),
+    Row("permission_answer", "POST", "/api/nodes/{handle}/permissions/{pid}/{decision}", "POST", "/api/node/permissions/{pid}/{decision}", "permissions", NoFields, WRITE,
+        "answer_permission", human_only=True, acting=True, answer_max=4 * 1024, target=lambda p: f"permission {p.get('pid')} {p.get('decision')}",
+        shape=_shape_permission_answer),
 )
 # Every row is human only: the hub relay routes take a signed-in allowed person with X-CCBoard and nothing else. The local hook token is held by every
 # agent session on the box, so letting it relay would let any agent read other nodes through the hub. A later phase (MCP across nodes, #152) may open a
@@ -980,8 +1167,8 @@ def _text(v, n: int) -> str:
 class Invalid(Exception):
     """A request body or parameter the row does not take. `messages` are plain sentences with no value of the request in them."""
 
-    def __init__(self, messages: list[str]):
-        self.messages = list(messages)
+    def __init__(self, messages: list[str], status: int = 422):
+        self.messages, self.status = list(messages), status           # 422, or 413 for text over its cap (Row.big_field)
         super().__init__("; ".join(self.messages))
 
 
@@ -1011,7 +1198,8 @@ def validate(row: Row, params: dict, body) -> dict:
     try:
         model = row.body_model.model_validate(data)
     except ValidationError as e:
-        raise Invalid(_model_messages(e)) from None
+        big = row.big_field is not None and any(err.get("type") == "string_too_long" and tuple(err.get("loc", ())) == (row.big_field,) for err in e.errors())
+        raise Invalid(_model_messages(e), 413 if big else 422) from None
     return model.model_dump(exclude_none=True)
 
 
@@ -1137,6 +1325,19 @@ def _missing_repo_text(clean: dict, name: str) -> str:
     return redact(text, known_secrets())[:300]
 
 
+_WORD = re.compile(r"[a-z][a-z0-9_-]{0,29}")
+
+
+def _busy_extra(j: dict) -> dict:
+    """The parts of a peer's 409 `busy` the page may use, each rebuilt: `code` (why: working, compacting, permission ...), `retry` (seconds, or null when waiting will not help),
+    `state` and `wait_kind` (words). Anything else the peer put there is dropped."""
+    def word(v):
+        return v if isinstance(v, str) and _WORD.fullmatch(v) else None
+    retry = j.get("retry")
+    return {"code": word(j.get("code")), "retry": retry if isinstance(retry, int) and not isinstance(retry, bool) and 0 <= retry <= 86400 else None,
+            "state": word(j.get("state")), "wait_kind": word(j.get("wait_kind"))}
+
+
 def _map_reply(r, row: Row, reg: dict, clean: dict | None = None) -> dict:
     """The peer's answer as a body, or a RelayError for every status that is not a good answer."""
     name = reg.get("name") or reg.get("handle")
@@ -1147,18 +1348,26 @@ def _map_reply(r, row: Row, reg: dict, clean: dict | None = None) -> dict:
     msg = _cut((r.json or {}).get("error") if isinstance(r.json, dict) else "")
     if r.status == 401:
         raise RelayError(409, "needs_repair", f"{name} no longer takes this board's token: re-pair", kind="failed")
+    peer_reason = r.json.get("reason") if isinstance(r.json, dict) else None
+    if r.status == 403 and peer_reason == "asking" and row.dialog_scope:          # the session asks a question in its terminal: the pair needs the scope that may answer it
+        raise RelayError(409, "scope", f"needs the {row.dialog_scope} scope on {name}: this session is asking a question in its terminal", kind="failed")
     if r.status == 403:
         raise RelayError(409, "scope", f"needs the {row.scope} scope on {name}" if "scope" in msg.lower() or not msg else f"{name} refused: {msg}", kind="failed")
     if r.status == 404:
-        if isinstance(r.json, dict) and r.json.get("reason") == "repo_missing" and clean and "project" in clean:
+        if peer_reason == "repo_missing" and clean and "project" in clean:
             raise RelayError(404, "repo_missing", _missing_repo_text(clean, name), kind="failed")
-        raise RelayError(404, "not_found", msg or f"{name} has no such thing", kind="failed")
+        raise RelayError(404, "gone" if peer_reason == "gone" else "not_found", msg or f"{name} has no such thing", kind="failed")
+    if r.status == 409 and peer_reason in ("busy", "answered", "expired"):          # the peer's own state answers, passed on with the words it chose from a closed list
+        extra = _busy_extra(r.json) if peer_reason == "busy" else {}
+        raise RelayError(409, peer_reason, msg or f"{name} cannot take this now", kind="failed", **extra)
     if r.status == 429:
         wait = str(max(1, min(3600, int(r.headers.get("retry-after", "1") or 1)))) if str(r.headers.get("retry-after", "1")).isdigit() else "1"
         raise RelayError(429, "rate_limited", f"{name} is receiving too many requests from this board; wait {wait} s", headers={"Retry-After": wait}, kind="failed")
     if r.status == 422:
         raise RelayError(422, "invalid", msg or f"{name} did not accept the request", kind="failed")
-    if r.status in (400, 409, 411, 413):
+    if r.status == 413:
+        raise RelayError(413, "too_large", msg or f"{name} did not accept the request", kind="failed")
+    if r.status in (400, 409, 411):
         raise RelayError(r.status, "refused", msg or f"{name} did not accept the request", kind="failed")
     raise RelayError(502, "peer_error", f"{name} answered with an error ({r.status if r.status >= 500 else 'unexpected'})", kind="failed")
 
@@ -1220,11 +1429,15 @@ def relay(handle, row: Row, params: dict, body, request, *, db=None, hub=None) -
         try:
             clean = validate(row, params or {}, body)
         except Invalid as e:
-            raise RelayError(422, "invalid", "; ".join(e.messages), kind="refused") from None
+            raise RelayError(e.status, "invalid" if e.status == 422 else "too_large", "; ".join(e.messages), kind="refused") from None
         target = safe_target(row, params or {}, clean)            # the body is known and valid now: a task's title (cut, redacted) joins the target, the prompt never does
         extra = row.extra_scope(clean) if row.extra_scope else None
         if extra and extra not in (nodes._scopes_of(reg.get("scopes")) or []):
             raise RelayError(409, "scope", f"needs the {extra} scope on {name}", kind="refused")
+        if row.per_session:                                         # nodes.PROMPT_RATE a minute into one session; the peer counts again
+            ok, wait = nodes.relay_prompt_limiter.allow(f"{handle}/{(params or {}).get('name')}")
+            if not ok:
+                raise RelayError(429, "rate_limited", f"too many prompts to this session; wait {wait} s", headers={"Retry-After": str(wait)}, kind="refused")
         path = peer_path(row, params or {}, clean)
         try:
             reply = nodes.PeerClient(reg, db=d).request(row.peer_method, path, clean if row.peer_method != "GET" and clean else None,
@@ -1242,6 +1455,13 @@ def relay(handle, row: Row, params: dict, body, request, *, db=None, hub=None) -
                 raise RelayError(502, "wrong_node" if "another node" in str(e) else "bad_answer",
                                  f"{name} answered with something this board will not show", kind="failed") from None
     except RelayError as e:
+        if reg is None and e.reason in ("human_only", "forbidden", "csrf"):             # a caller that may not relay (the hook token, a node user): a row when the handle is a paired node
+            try:
+                reg = _registry_row(handle, d)
+            except RelayError:
+                reg = None
+            who = getattr(request.state, "user", None)
+            user = user or (who if isinstance(who, str) else None)
         if reg is not None:                       # a refusal before any node was found (a bad caller, local, an unknown handle) leaves no row: a single board gets none
             nodes.audit("out", reg.get("peer_id") or "", row.audit_action, False, f"{e.reason}: {e.message}"[:200], node_name=reg.get("name"),
                         user=user, target=target, status=e.kind, db=d)
@@ -1262,6 +1482,12 @@ def _acting(request) -> str:
 
 
 CALLER: contextvars.ContextVar = contextvars.ContextVar("ccboard_node_caller", default=None)     # {node, user} of the request a peer handler is serving
+CALLER_SCOPES: contextvars.ContextVar = contextvars.ContextVar("ccboard_node_scopes", default=None)     # the scopes the pair of that request holds (None: unknown, which holds nothing)
+
+
+def caller_has(scope: str) -> bool:
+    """Does the pair whose request a peer handler is serving hold `scope`? Unknown (no request) holds nothing."""
+    return nodes.scope_ok(CALLER_SCOPES.get(), scope)
 
 
 _CLAIM_BAD = re.compile(r"[^A-Za-z0-9 ._@+:-]")
@@ -1283,6 +1509,15 @@ def caller_origin() -> dict | None:
         return None
     node, user = _claim(c.get("node"), 41), _claim(c.get("user"), 64)
     return {k: v for k, v in (("node", node), ("user", user)) if v}
+
+
+class Refusal(Exception):
+    """An answer a peer handler gives with its own status and a stable `reason` word (and a few small facts in `extra`): 409 busy / answered / expired, 404 gone,
+    429 rate_limited. serve_peer turns it into the JSON {error, reason, ...}; the hub passes the words from a closed list on (_map_reply)."""
+
+    def __init__(self, status: int, reason: str, message: str, *, headers: dict | None = None, **extra):
+        super().__init__(message)
+        self.status, self.reason, self.message, self.headers, self.extra = status, reason, message, dict(headers or {}), extra
 
 
 class RepoMissing(projects.NotFound):
@@ -1315,6 +1550,9 @@ def serve_peer(row: Row, handler: Callable, request, raw: bytes, db) -> JSONResp
         _inbound_audit(db, request, row, {}, False, "refused", f"scope {row.scope} not granted")
         raise projects.Forbidden(f"this node token does not hold the {row.scope} scope")
     params = dict(request.path_params)
+    if row.acting and not _acting(request):                  # a person's act, relayed by the hub: the hub names the person (a claim the peer cannot verify, but must have)
+        _inbound_audit(db, request, row, params, False, "refused", "no acting user named")
+        raise projects.Forbidden("this request must name the person acting (X-CCBoard-Acting-User); a hub sends it")
     try:
         if row.peer_method == "GET":
             items = list(request.query_params.multi_items())
@@ -1331,22 +1569,29 @@ def serve_peer(row: Row, handler: Callable, request, raw: bytes, db) -> JSONResp
         clean = validate(row, params, body)
     except Invalid as e:
         _inbound_audit(db, request, row, params, False, "refused", str(e)[:160])
+        if e.status == 413:
+            return JSONResponse({"error": str(e), "reason": "too_large"}, status_code=413, headers=NO_STORE)
         raise projects.Unprocessable(str(e)) from None
     extra = row.extra_scope(clean) if row.extra_scope else None
     if extra and not nodes.scope_ok(peer.get("scopes"), extra):
         _inbound_audit(db, request, row, params, False, "refused", f"scope {extra} not granted", clean)
         raise projects.Forbidden(f"this node token does not hold the {extra} scope")
     token = CALLER.set({"node": nodes._scrub(peer.get("name"), 41) or "", "user": _acting(request) or None})
+    scopes_token = CALLER_SCOPES.set(peer.get("scopes"))
     try:
         out = handler(db, params, clean)
     except RepoMissing as e:
         _inbound_audit(db, request, row, params, False, "failed", "repo_missing", clean)
         return JSONResponse({"error": str(e), "reason": "repo_missing"}, status_code=404, headers=NO_STORE)
+    except Refusal as e:
+        _inbound_audit(db, request, row, params, False, "refused" if e.status == 429 else "failed", e.reason, clean)
+        return JSONResponse({"error": e.message, "reason": e.reason, **e.extra}, status_code=e.status, headers={**NO_STORE, **e.headers})
     except Exception as e:
         _inbound_audit(db, request, row, params, False, "failed", (str(e) if isinstance(e, (projects.NotFound, projects.BadRequest, projects.Conflict)) else e.__class__.__name__)[:120],
                        clean)
         raise
     finally:
+        CALLER_SCOPES.reset(scopes_token)
         CALLER.reset(token)
     _inbound_audit(db, request, row, params, True, "ok", None, clean)
     return JSONResponse(out, headers=NO_STORE)
@@ -1811,9 +2056,16 @@ def peer_task_dispatch(db, params: dict, body: dict) -> dict:
     tid = int(params["tid"])
     t = db.task_get(tid)
     kw: dict = {}
-    why_card = card_refusal(t, main._task_spec(t)) if t else None          # the stored card's own strings and options, by the same rules as a request body
+    # the stored card's own strings and options, by the same rules as a request body; its prompt may not start with / ! or # in either mode (typed into a session, or a launch argument)
+    why_card = card_refusal(t, main._task_spec(t), typed=True) if t else None
+    if t and not why_card and t.get("phase") == "queued" and t.get("parent_id") is not None:       # a chain step starts as composed with its parent's result
+        parent = db.task_get(t["parent_id"])
+        if parent and starts_like_a_command(main.taskflow.compose_prompt(t["prompt"], parent)):
+            why_card = "command"
     if why_card == "text":
         raise projects.Conflict(f"this card holds a control character or an unusual one (format or line separator), which is not typed into a terminal from another node: start it on {nodes.display_name()}")
+    if why_card == "command":
+        raise projects.Conflict(f"this card's prompt starts with / ! or #, which the terminal reads as a command: start it on {nodes.display_name()}")
     if t and body.get("mode") == "session":
         why = session_target_refusal(db, t, body.get("session") or "")      # the TARGET's launch options, not the card's: the prompt runs with the session's permissions
         if why:
@@ -1859,5 +2111,250 @@ def peer_session_open(db, params: dict, body: dict) -> dict:
 _OPEN_LOCK = threading.Lock()
 
 
+# ---- steering a session and answering a permission (issue #142). Each handler calls the board's own internal function; nothing here is an HTTP call to itself.
+
+GONE = "This request is gone. Open terminal to see the current prompt."
+ANSWERED = "This request was already answered. Open terminal to see the current prompt."
+EXPIRED = "This request has expired. Open terminal to see the current prompt."
+
+
+def steer_refusal(db, name: str) -> str | None:
+    """Why text or a key may not be typed into the session `name` from another node (None: it may go on to the board's own checks). The same check a dispatch makes of its
+    target (session_target_refusal: one of this board's own agent sessions, with a recorded launch line inside the allowed set; a bypass or unreadable mode fails closed), with the
+    project and repo taken from the name itself. A session that does not exist is left to the board (404)."""
+    try:
+        sp, sr, _ = tmux.split_name(name)
+    except ValueError:
+        return "not a ccboard session name"
+    return session_target_refusal(db, {"project": sp, "repo": sr}, name)
+
+
+def _alive(name: str) -> bool:
+    try:
+        return bool(name) and tmux.has_session(name)
+    except (tmux.TmuxError, tmux.TmuxDown):
+        return False
+
+
+def _session_here(name: str) -> None:
+    """404 for a session tmux does not have and for an internal one (the login session shows codes); the name was checked already."""
+    if tmux.is_internal(name) or not tmux.has_session(name):
+        raise projects.NotFound(f"session {name} not found")
+
+
+def _by() -> str:
+    """Who asked, as this board's event log and permission row name them: `node <name> for <login>`, from the claims `caller_origin` cleaned."""
+    o = caller_origin() or {}
+    return (f"node {o.get('node') or '?'}" + (f" for {o['user']}" if o.get("user") else ""))[:100]
+
+
+def _standin() -> SimpleNamespace:
+    """The `request` the board's own route functions read (request.state.user), for a call made in-process on behalf of a node."""
+    return SimpleNamespace(state=SimpleNamespace(user=_by()))
+
+
+def _typing_busy(res: JSONResponse) -> Refusal:
+    """The board's 409 for a pane it will not type into now ({error: code, message, state, wait_kind, retry}) as a Refusal: the peer's own words and retry seconds."""
+    try:
+        b = json.loads(res.body)
+    except (ValueError, AttributeError):
+        b = {}
+    b = b if isinstance(b, dict) else {}
+    msg = b.get("message") if isinstance(b.get("message"), str) else "the session cannot take this now"     # a Codex pane's exit reason is read off the screen: clean and redact it
+    msg = redact(_text(msg, 200), known_secrets()) or "the session cannot take this now"
+    retry = b.get("retry") if isinstance(b.get("retry"), int) and not isinstance(b.get("retry"), bool) else None
+    return Refusal(409, "busy", msg, code=b.get("error") if isinstance(b.get("error"), str) else None, retry=retry,
+                   state=b.get("state") if isinstance(b.get("state"), str) else None, wait_kind=b.get("wait_kind") if isinstance(b.get("wait_kind"), str) else None)
+
+
+def _steerable(db, name: str) -> None:
+    """Every check before text or a key reaches a session: the session is there (404), not internal, and one of this board's own agent sessions inside the allowed set (409)."""
+    from . import main
+    main._terminal_session(name)
+    _session_here(name)
+    why = steer_refusal(db, name)
+    if why:
+        raise projects.Conflict(why)
+
+
+ANSWER_KEYS = ("Enter", *LITERAL_KEYS)                       # the keys that choose an option of a dialog: y, n, 1 to 9 and Enter
+ASKING_MESSAGE = "this session is asking a question in its terminal"
+
+
+def asking_reason(db, name: str) -> str | None:
+    """Is the session `name` asking a question in its terminal, so that a key or a line typed now would ANSWER it? A word for what is known, None when it is at its prompt
+    or working. Every signal the board has, and a state that cannot be read counts as asking (fail closed): a permission request a hook is still waiting on (`permission`);
+    a session that is waiting on anything but its idle prompt (a permission or elicitation dialog, a kind the board cannot name), one with no state yet (it may be behind the
+    trust dialog) or one that has ended (`dialog`); a Codex pane that shows its update or trust dialog, or has left for the shell (`pane`); a row, a flag or a pane that cannot
+    be read (`unknown`)."""
+    from . import main
+    try:
+        row = db.open_row(name)
+        if row is None:
+            return "unknown"
+        if main._permission_pending(name):
+            return "permission"
+        flags = row.get("flags") or {}
+        state = row.get("state")
+        if state == "waiting":
+            if flags.get("wait_kind") != "idle":
+                return "dialog"
+        elif state not in ("working", "idle", "done", "errored"):
+            return "dialog"
+        if main._pane_block(name, row) is not None:
+            return "pane"
+    except Exception:
+        return "unknown"
+    return None
+
+
+def _dialog_gate(row_name: str, name: str, reason: str) -> None:
+    """The session asks a question in its terminal: the row's `dialog_scope` (permissions) is the only scope that may act on it, and a pair without it is refused (403 `asking`;
+    the hub says it needs that scope). A pair WITH it goes on to the row's own rule about what may be typed."""
+    need = BY_NAME[row_name].dialog_scope
+    if need and not caller_has(need):
+        raise Refusal(403, "asking", f"needs the {need} scope on {nodes.display_name()}: {ASKING_MESSAGE}")
+
+
+def peer_prompt(db, params: dict, body: dict) -> dict:
+    """POST /api/node/sessions/{name}/prompt: the board's own prompt route (paste into the composer, Enter) for a session that passes steer_refusal, with the same state
+    refusals (a working session takes it only with `queue`). The text is typed once and not kept: the BoardPrompt event says how long it was, not what."""
+    from . import main
+    name = params["name"]
+    _steerable(db, name)
+    asking = asking_reason(db, name)
+    if asking:                                              # a line pasted into a question answers it: without `permissions` a 403, and even with it the board's own busy 409 below
+        _dialog_gate("prompt", name, asking)
+        if asking == "unknown":                             # a row or a state that cannot be read: nothing is typed (the board's own checks below would need that row)
+            raise Refusal(409, "busy", f"{ASKING_MESSAGE}, or its state cannot be read: nothing was typed", code="asking", retry=None)
+    ok, wait = nodes.node_prompt_limiter.allow(name)
+    if not ok:
+        raise Refusal(429, "rate_limited", f"this session takes {nodes.PROMPT_RATE} prompts a minute; wait {wait} s", headers={"Retry-After": str(wait)}, retry=wait)
+    row, _, refusal = main._agent_row(name)
+    if refusal:
+        raise _typing_busy(refusal)
+    refusal = main._typing_refusal(name, row, queue=bool(body.get("queue")))
+    if refusal:
+        raise _typing_busy(refusal)
+    text = body["text"]
+    out = main._paste_prompt(name, row, text, True, _by(), event_text=f"prompt from another node ({len(text)} characters)")
+    return {"ok": True, "pasted": out["pasted"], "queued": out["queued"]}
+
+
+def peer_keys(db, params: dict, body: dict) -> dict:
+    """POST /api/node/sessions/{name}/keys: one key of STEER_KEYS through the board's own keys route. y, n and 1 to 9 are typed as a character (tmux's key names do not
+    list them); the rest are tmux key names the board's allow list knows. Nothing else can reach send-keys."""
+    from . import main
+    name, key = params["name"], body["key"]
+    _steerable(db, name)
+    asking = asking_reason(db, name)
+    if asking:
+        # While the session asks a question the pair needs `permissions` (403 `asking` without it). With it, a key that CHOOSES an answer (y, n, 1 to 9, Enter) is still refused:
+        # a permission is answered by the permission row (a person, allow or deny, once), never by a key. Escape, Up, Down, Tab and C-c (with confirm) move or cancel only.
+        _dialog_gate("keys", name, asking)
+        if key in ANSWER_KEYS:
+            raise Refusal(409, "busy", f"{ASKING_MESSAGE}: answer it with Allow or Deny, not with a key", code="asking", retry=None)
+    main.api_send_keys(name, main.KeysIn(text=key) if key in LITERAL_KEYS else main.KeysIn(keys=[key]))
+    return {"ok": True, "key": key}
+
+
+def _owned(db, name: str) -> None:
+    """409 unless the session is one of this board's own agent sessions (owned_session_refusal). For an ack and a close that is all: they run nothing, so a session started
+    with wider permissions may be acknowledged or ended; one the owner started outside the board, a shell, a clone and the login session may not."""
+    why = owned_session_refusal(db, name)
+    if why:
+        raise projects.Conflict(why)
+
+
+def peer_ack(db, params: dict, body: dict) -> dict:
+    """POST /api/node/sessions/{name}/ack: the board's own ack (clears the attention mark; answers no request)."""
+    from . import main
+    main._terminal_session(params["name"])
+    _session_here(params["name"])
+    _owned(db, params["name"])
+    return main.api_ack(params["name"])
+
+
+def peer_close(db, params: dict, body: dict) -> dict:
+    """DELETE /api/node/sessions/{name}: the board's own kill (the tmux session ends, its row closes). It ends here only; no other node is told."""
+    from . import main
+    main._terminal_session(params["name"])
+    _session_here(params["name"])
+    _owned(db, params["name"])                              # the same ownership as the local DELETE (which kills whatever is attached) plus the board's own-agent-session rule
+    return main.api_kill_session(params["name"])
+
+
+def _perm_summary(v, known) -> str:
+    """A permission request's summary as it may leave this board: control, format and separator characters out, secrets replaced, at most SUMMARY_MAX characters. It is
+    shown to the person and kept nowhere on the hub."""
+    t = " ".join(str(v or "")[:2000].split())
+    return redact("".join(c for c in t if unicodedata.category(c) not in _FREE_BAD), known)[:SUMMARY_MAX]
+
+
+# The requests another node may answer: an ordinary tool asking to run ONCE. Everything else (a plan approval, a question to the person, a switch of mode or worktree, a
+# tool the board does not know) is answered in its terminal, and the list does not offer it.
+ANSWERABLE_TOOLS = ("Bash", "Edit", "MultiEdit", "Write", "NotebookEdit", "Read", "Glob", "Grep", "WebFetch", "WebSearch", "apply_patch")
+_MCP_TOOL = re.compile(r"mcp__[A-Za-z0-9_-]{1,50}")
+
+
+def permission_refusal(db, p: dict) -> str | None:
+    """Why the permission request row `p` may not be answered from another node (None: it may). ONE function for the list and the answer, so the page is never offered a
+    button that is refused: the session is one of this board's own agent sessions (owned_session_refusal) and is there; the request has a tool and a summary; and the tool is an
+    ordinary one in ANSWERABLE_TOOLS or an MCP tool. A plan approval, a question, a mode or worktree switch and any tool not listed stay with the terminal."""
+    name = p.get("tmux_name") or ""
+    if not _alive(name):
+        return "the session is gone"
+    why = owned_session_refusal(db, name)
+    if why:
+        return why
+    tool = str(p.get("tool_name") or "")
+    if not tool or not str(p.get("summary") or "").strip():
+        return "this request does not say what it asks"
+    if tool not in ANSWERABLE_TOOLS and not _MCP_TOOL.match(tool):
+        return "this kind of request is answered in its terminal"
+    return None
+
+
+def peer_permissions(db, params: dict, body: dict) -> dict:
+    """GET /api/node/permissions: the requests a hook is still waiting on, {id, tmux, tool, summary, since}, for sessions that are still there and requests the answer row
+    would accept (permission_refusal)."""
+    from . import main
+    known = known_secrets()
+    out = []
+    for p in main._live_permissions():
+        name = p.get("tmux_name") or ""
+        if permission_refusal(db, db.perm_get(int(p["id"])) or p):
+            continue
+        tool = str(p.get("tool_name") or "")
+        out.append({"id": int(p["id"]), "tmux": name, "tool": tool if _TOOL_OUT.fullmatch(tool) else "tool", "summary": _perm_summary(p.get("summary"), known),
+                    "since": str(p.get("created_at") or "")[:40]})
+    return {"permissions": out[:_PERMISSIONS_MAX]}
+
+
+def peer_permission_answer(db, params: dict, body: dict) -> dict:
+    """POST /api/node/permissions/{pid}/{decision}: allow or deny one request, once, through the board's own route function. A request that is gone is 404 `gone`, one that was
+    answered (here, in the terminal, or by a timeout) is 409 `answered`, one nobody is waiting for any more is 409 `expired`; none of these writes anything."""
+    from . import main
+    pid, decision = int(params["pid"]), params["decision"]
+    row = db.perm_get(pid)
+    if not row or not _alive(row.get("tmux_name") or ""):
+        raise Refusal(404, "gone", GONE)
+    if row.get("decision") is not None:
+        raise Refusal(409, "answered", ANSWERED)
+    if pid not in {p["id"] for p in main._live_permissions()}:
+        raise Refusal(409, "expired", EXPIRED)
+    why = permission_refusal(db, row)                       # the session is the peer's own agent session and the request is an ordinary one: else it stays with the terminal
+    if why:
+        raise Refusal(409, "refused", f"{why}: answer it on {nodes.display_name()}")
+    try:
+        main.api_permission_decide(pid, decision, _standin())
+    except projects.Conflict:
+        raise Refusal(409, "answered", ANSWERED) from None
+    except projects.NotFound:
+        raise Refusal(404, "gone", GONE) from None
+    return {"ok": True, "id": pid, "decision": decision}
+
+
 HANDLERS = {"task": peer_task, "pane": peer_pane, "agents": peer_agents, "task_create": peer_task_create, "task_dispatch": peer_task_dispatch,
-            "session_open": peer_session_open}
+            "session_open": peer_session_open, "prompt": peer_prompt, "keys": peer_keys, "ack": peer_ack, "close": peer_close, "permissions": peer_permissions,
+            "permission_answer": peer_permission_answer}

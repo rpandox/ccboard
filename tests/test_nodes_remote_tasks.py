@@ -1137,3 +1137,70 @@ def test_a_stored_card_with_a_string_the_hubs_models_would_refuse_is_not_started
     r = hub_post(w, f"/tasks/{made['id']}/dispatch", {})
     assert r.status_code == 409 and "launch options" in r.json()["error"], r.text
     assert w.two.tmux_b["created"] == []
+
+
+# ---------------------------------------------------------------- a prompt never starts like a terminal command: typed into a session, or a launch argument
+
+CMD_STARTS = ["/model opus", "!ls", "#note", "／model opus", "！ls", "  /permissions", "\n!ls"]
+
+
+@pytest.mark.parametrize("mode", ["session", "lane"])
+@pytest.mark.parametrize("prompt", CMD_STARTS)
+def test_a_stored_card_whose_prompt_starts_like_a_command_is_never_started_from_another_node_in_either_mode(world, prompt, mode):
+    w = world
+    tm = make_session_on_b(w)
+    created = list(w.two.tmux_b["created"])
+    made = w.b.post("/api/tasks", json={**SHOP, "when": "later"}).json()
+    with w.b.enter():
+        w.b.db.task_update(made["id"], prompt=prompt)
+    body = {"mode": "session", "session": tm} if mode == "session" else {"mode": "lane"}
+    r = hub_post(w, f"/tasks/{made['id']}/dispatch", body)
+    assert r.status_code == 409 and "starts with / ! or #" in r.json()["error"], r.text
+    d = direct(w, "POST", f"/api/node/tasks/{made['id']}/dispatch", body)
+    assert d.status_code == 409 and "starts with / ! or #" in d.json()["error"], d.text
+    r = hub_post(w, f"/tasks/{made['id']}/dispatch", {})
+    assert r.status_code == 409 and "starts with / ! or #" in r.json()["error"], "the default mode is a lane"
+    assert w.two.tmux_b["pasted"] == [] and w.two.tmux_b["texts"] == [] and w.two.tmux_b["keys"] == [], "nothing was typed on the peer"
+    assert w.two.tmux_b["created"] == created and task_on_b(w, made["id"])["phase"] == "backlog"
+
+
+def test_a_card_with_a_slash_or_a_bang_later_in_its_prompt_or_an_at_mention_starts_in_both_modes(world):
+    w = world
+    tm = make_session_on_b(w)
+    for i, prompt in enumerate(["run tests / fix them!", "@src/app.py explain it", "fix issue #12"]):
+        made = w.b.post("/api/tasks", json={**SHOP, "title": f"Card {i}", "when": "later"}).json()
+        with w.b.enter():
+            w.b.db.task_update(made["id"], prompt=prompt)
+            w.b.db.set_state(tm, "idle", "test")
+        r = hub_post(w, f"/tasks/{made['id']}/dispatch", {"mode": "session", "session": tm})
+        assert r.status_code == 200, r.text
+        assert w.two.tmux_b["pasted"][-1][1] == prompt
+        lane = w.b.post("/api/tasks", json={**SHOP, "title": f"Lane {i}", "when": "later"}).json()
+        with w.b.enter():
+            w.b.db.task_update(lane["id"], prompt=prompt)
+        r = hub_post(w, f"/tasks/{lane['id']}/dispatch", {"mode": "lane"})
+        assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize("when", ["now", "later"])
+@pytest.mark.parametrize("prompt", CMD_STARTS)
+def test_a_new_remote_tasks_prompt_that_starts_like_a_command_is_a_422_on_the_hub_and_on_the_peer_and_nothing_is_made(world, prompt, when):
+    """Claude Code runs a leading `/` of a launch argument as a slash command, so the first prompt of a new task has the typed-text rule too."""
+    w = world
+    n = w.count.seen
+    r = hub_post(w, "/tasks", {**SHOP, "when": when, "prompt": prompt})
+    assert r.status_code == 422 and r.json()["reason"] == "invalid" and "cannot start with / ! or #" in r.json()["error"] and w.count.seen == n, r.text
+    d = direct(w, "POST", "/api/node/tasks", {**SHOP, "when": when, "prompt": prompt})
+    assert d.status_code == 422 and "cannot start with / ! or #" in d.json()["error"], d.text
+    assert w.b.db.tasks() == [] and w.two.tmux_b["created"] == [] and w.two.tmux_b["pasted"] == []
+
+
+def test_a_new_tasks_prompt_with_those_characters_later_or_an_at_mention_passes_and_goes_after_the_double_dash(world):
+    import inspect
+    from app import tasks
+    w = world
+    for i, prompt in enumerate(["run tests / fix them!", "@src/app.py explain it", "- a markdown bullet", "fix issue #12"]):
+        r = hub_post(w, "/tasks", {**SHOP, "title": f"T{i}", "when": "later", "prompt": prompt})
+        assert r.status_code == 200, (prompt, r.text)
+        assert task_on_b(w, r.json()["data"]["id"])["prompt"] == prompt
+    assert '"--", prompt' in inspect.getsource(tasks.build_command) and '"--", prompt' in inspect.getsource(tasks.build_command_inplace)

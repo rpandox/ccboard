@@ -27,7 +27,7 @@ ID = {"Tailscale-User-Login": "alice@example.com"}
 H = {**ID, "X-CCBoard": "1"}
 NO_ID = "no Tailscale identity or not in CCBOARD_ALLOWED_USERS"
 CLOSED = "this node token does not open that route"
-FILL = {"tid": "1", "name": "p--r--s"}
+FILL = {"tid": "1", "name": "p--r--s", "pid": "1", "decision": "allow"}
 CALLER = {"id": "ts:nCALLER000001", "name": "caller", "url": "https://100.64.0.9"}
 PROMPT_MARKER = "MARKER-prompt-9c41e0"
 SCREEN_MARKER = "MARKER-screen-55ab12"
@@ -121,7 +121,8 @@ def hub_path(row: nr.Row, handle: str = "node-b", **more) -> str:
     return fill(row.hub_path, handle=handle, **more)
 
 
-SAMPLE = {"task_create": {"project": "shop", "repo": "api", "title": "A task", "prompt": "do it"}, "task_dispatch": {}, "session_open": {"project": "shop", "repo": "api"}}
+SAMPLE = {"task_create": {"project": "shop", "repo": "api", "title": "A task", "prompt": "do it"}, "task_dispatch": {}, "session_open": {"project": "shop", "repo": "api"},
+          "prompt": {"text": "hello"}, "keys": {"key": "Enter"}, "ack": {}, "close": {}, "permission_answer": {}}
 
 
 def ask(board, row, handle: str = "node-b", **kw):
@@ -171,14 +172,20 @@ def test_node_routes_are_the_base_routes_and_the_rows_and_nothing_else():
     assert dict(nodes.NODE_ROUTES) == {**base, **{(r.peer_method, r.peer_path): r.scope for r in ROWS}}
 
 
-def test_the_rows_are_the_five_reads_and_the_three_writes_and_screen_text_needs_sessions_not_read():
+def test_the_rows_are_the_reads_and_the_writes_and_screen_text_needs_sessions_not_read():
     assert {r.name: (r.peer_method, r.peer_path, r.scope) for r in ROWS} == {
         "card": ("GET", "/api/node", "read"), "state": ("GET", "/api/node/state", "read"), "task": ("GET", "/api/node/tasks/{tid}", "read"),
         "pane": ("GET", "/api/node/sessions/{name}/pane", "sessions"), "agents": ("GET", "/api/node/agents", "read"),
         "task_create": ("POST", "/api/node/tasks", "tasks"), "task_dispatch": ("POST", "/api/node/tasks/{tid}/dispatch", "tasks"),
-        "session_open": ("POST", "/api/node/sessions", "sessions")}
-    assert {r.name: r.rate_class for r in ROWS if r.peer_method == "POST"} == {"task_create": "write", "task_dispatch": "write", "session_open": "write"}
-    assert all(r.guard for r in ROWS if r.peer_method == "POST"), "every write row starts or steers an agent: the guard runs on both sides"
+        "session_open": ("POST", "/api/node/sessions", "sessions"),
+        "prompt": ("POST", "/api/node/sessions/{name}/prompt", "sessions"), "keys": ("POST", "/api/node/sessions/{name}/keys", "sessions"),
+        "ack": ("POST", "/api/node/sessions/{name}/ack", "sessions"), "close": ("DELETE", "/api/node/sessions/{name}", "sessions"),
+        "permissions": ("GET", "/api/node/permissions", "permissions"), "permission_answer": ("POST", "/api/node/permissions/{pid}/{decision}", "permissions")}
+    assert {r.name: r.rate_class for r in ROWS if r.peer_method != "GET"} == {n: "write" for n in ("task_create", "task_dispatch", "session_open", "prompt", "keys", "ack", "close",
+                                                                                                     "permission_answer")}
+    assert nr.BY_NAME["permissions"].rate_class == "read" and nr.BY_NAME["permissions"].scope == "permissions", "the list is a read of the permissions scope, never `read`"
+    assert all(r.guard for r in ROWS if r.name in ("task_create", "task_dispatch", "session_open", "prompt", "keys")), "every row that starts or steers an agent runs the guard on both sides"
+    assert not any(r.guard for r in ROWS if r.name in ("ack", "close", "permissions", "permission_answer")), "these carry no text for an agent"
 
 
 def test_every_row_is_human_only_until_a_phase_opens_one_on_purpose():
@@ -296,7 +303,7 @@ def test_a_wrong_method_on_a_row_is_405(lone, wide, row):
 def test_a_token_with_the_scope_reaches_the_handler_and_gets_the_handlers_own_answer(lone, wide, fake_tmux, row):
     c, db = lone
     _, tok = mint(db, [row.scope])
-    r = c.request(row.peer_method, fill(row.peer_path), headers=bearer(tok))
+    r = c.request(row.peer_method, fill(row.peer_path), headers=bearer(tok, **{"X-CCBoard-Acting-User": "alice@example.com"}))
     assert r.status_code in ((200, 404) if row.peer_method == "GET" else (404, 422)) and r.headers["cache-control"] == "no-store" and r.headers["x-content-type-options"] == "nosniff"
 
 

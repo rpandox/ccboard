@@ -2,6 +2,18 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.43 - 2026-10-11
+
+### Added
+- Nodes P9, steer a session on another node (#142). Six relay rows: `prompt`, `keys`, `ack`, `close` (scope `sessions`) and `permissions`, `permission_answer` (scope `permissions`). All are human-only and need an acting user; the hub and the peer each check the text, the key, the target and the scope. A permission is answered by a signed-in person only (the hook token, a node token and a node user get a `403` and an audit row), `allow` or `deny` only, and no relay row, MCP tool or job can reach it.
+- On a remote session's peek: a Reply box with the session's quick replies, **Ack**, a **Keys** panel (Enter, Esc, Up, Down, Tab, y, n, 1 to 9; C-c after a second tap) and **Kill session on <node>** (two taps). A permission request of a node is a card (tool, summary, **Allow**, **Deny**) in the Inbox and Home group "On other nodes", on the node page and on the peek, and in the palette; the palette also has "Reply to <session> on <node>". The demo (`?demo=1`) plays every refusal.
+- Every action paints at once and toasts with the node's name; "Allowed on <node>" appears only when the node confirmed, a refusal puts the card or the draft back with a plain sentence, and a timeout reads "Could not confirm whether <node> got this" and is never retried.
+
+### Changed
+- A key or a line cannot answer a permission or any dialog from another node (the `permissions` scope is the only way, and `y`, `n`, digits and Enter are refused while a question is asked); ack, close and a permission answer check the session is one of the node's own agent sessions, and an answer is limited to ordinary tool requests, the same ones the list shows. A session started with bypass, `auto` or `dontAsk`, or whose mode cannot be read, cannot be steered from another node; a remote prompt, or the first prompt of a new remote task, cannot start with `/`, `!` or `#` (a `422` on the hub and on the node; a stored card that does is not started from another node), because the terminal reads those as commands. The node page no longer says that answering, typing and closing are for a later phase.
+
+Upgrade: nothing to do.
+
 ## v0.5.42 - 2026-10-10
 
 ### Added

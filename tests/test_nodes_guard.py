@@ -523,10 +523,11 @@ class _Db:
 
 
 @pytest.fixture
-def tmux_has(monkeypatch):
-    from app import tmux
+def tmux_has(monkeypatch, tmp_path):
+    from app import projects, tmux
     live = set()
     monkeypatch.setattr(tmux, "has_session", lambda name: name in live)
+    monkeypatch.setattr(projects, "repo_path", lambda project, repo: tmp_path)          # the folder of every repo here is a real one
     return live
 
 
@@ -566,6 +567,39 @@ def test_a_target_inside_the_set_and_a_session_tmux_does_not_have_are_left_to_th
     assert nr.session_target_refusal(_Db({}), TASK, "shop--api--gone") is None, "the board answers 404 itself"
 
 
+@pytest.mark.parametrize("name,rows,live,fragment", [
+    ("not-a-session", {}, True, "not a ccboard session name"),
+    ("_ccboard-login", {}, True, "not a ccboard session name"),
+    ("shop--api--s1", {}, True, "not a session this board started"),
+    ("shop--api--s1", {"shop--api--s1": row(agent="shell", launcher="shell")}, True, "not an agent session"),
+    ("shop--api--s1", {"shop--api--s1": row(launcher="clone")}, True, "not an agent session"),
+    ("shop--api--s1", {"shop--api--s1": row(launcher="weird")}, True, "not an agent session"),
+    ("shop--api--s1", {"shop--api--s1": row(repo="other")}, True, "another repo"),
+])
+def test_one_ownership_check_for_every_row_that_names_a_session(tmux_has, name, rows, live, fragment):
+    assert fragment in nr.owned_session_refusal(_Db(rows), name)
+
+
+def test_ownership_does_not_ask_for_the_launch_line_and_does_ask_for_the_repo_folder(tmux_has, monkeypatch, tmp_path):
+    from app import projects
+    tmux_has.add("shop--api--s1")
+    wide = _Db({"shop--api--s1": row(cmd="claude --dangerously-skip-permissions")})
+    assert nr.owned_session_refusal(wide, "shop--api--s1") is None, "an ack, a close and a permission answer run nothing"
+    assert nr.session_target_refusal(wide, TASK, "shop--api--s1") == nr.WIDE_SESSION
+    monkeypatch.setattr(projects, "repo_path", lambda p, r: tmp_path / "missing")
+    assert "not on this board" in nr.owned_session_refusal(wide, "shop--api--s1")
+    assert "not on this board" in nr.session_target_refusal(wide, TASK, "shop--api--s1")
+
+
+def test_the_handlers_call_the_one_ownership_function():
+    import inspect
+    for fn in (nr.peer_ack, nr.peer_close):
+        assert "_owned(" in inspect.getsource(fn), fn.__name__
+    assert "owned_session_refusal(" in inspect.getsource(nr._owned) and "owned_session_refusal(" in inspect.getsource(nr.session_target_refusal)
+    assert "owned_session_refusal(" in inspect.getsource(nr.permission_refusal)
+    assert "_dialog_gate(" in inspect.getsource(nr.peer_keys) and "_dialog_gate(" in inspect.getsource(nr.peer_prompt)
+
+
 # ---------------------------------------------------------------- 6. every string a remote caller sends has a rule of its own (one helper: nr.check_field / nr.free_text)
 
 def _leaf_types(tp):
@@ -576,13 +610,25 @@ def _leaf_types(tp):
     return {tp} if not args else set().union(*(_leaf_types(a) for a in args))
 
 
-@pytest.mark.parametrize("model", [nr.TaskCreateBody, nr.DispatchBody, nr.SessionOpenBody], ids=lambda m: m.__name__)
+@pytest.mark.parametrize("model", [nr.TaskCreateBody, nr.DispatchBody, nr.SessionOpenBody, nr.PromptBody, nr.KeysBody], ids=lambda m: m.__name__)
 def test_every_string_field_of_a_remote_model_has_a_validator_so_a_field_added_later_is_caught(model):
     validated = {f for d in model.__pydantic_decorators__.field_validators.values() for f in d.info.fields}
     strs = [name for name, f in model.model_fields.items() if str in _leaf_types(f.annotation)]
     assert strs, model
     assert [n for n in strs if n not in validated] == [], "a str field with no validator: give it a rule in nr.check_field"
-    assert all(k in nr.FIELD_KINDS for k in ("title", "prompt", "agent", "model", "effort", "name", "session", "issue_ref", "permission_mode", "mode", "sandbox", "approval"))
+    assert all(k in nr.FIELD_KINDS for k in ("title", "prompt", "agent", "model", "effort", "name", "session", "issue_ref", "permission_mode", "mode", "sandbox", "approval",
+                                              "text", "key", "decision"))
+
+
+def test_every_model_a_row_uses_is_strict_and_every_str_field_of_every_row_has_a_validator():
+    """Walks the table, not a list of models: a row added later with a str field that has no rule fails here by itself."""
+    for row in nr.RELAY:
+        model = row.body_model
+        assert model.model_config.get("extra") == "forbid", row.name
+        validated = {f for d in model.__pydantic_decorators__.field_validators.values() for f in d.info.fields}
+        strs = [name for name, f in model.model_fields.items() if str in _leaf_types(f.annotation)]
+        assert [n for n in strs if n not in validated] == [], (row.name, "a str field with no validator")
+    assert all(nr._valid_param(p, "!") is False for r in nr.RELAY for p in r.params), "every path parameter has a rule that an arbitrary string does not pass"
 
 
 ROW_BASE = {"task_create": {"project": "shop", "repo": "api", "title": "t", "prompt": "p"}, "session_open": {"project": "shop", "repo": "api"}, "task_dispatch": {}}
@@ -688,3 +734,26 @@ def test_the_final_options_are_an_allow_list_not_a_deny_list():
               {"model": "-x"}, {"effort": "hi;gh"}, {"agent": "claude;x"}, {"opts": {"profile": "p"}}, {"opts": {"sandbox": "danger-full-access"}}, {"opts": "x"},
               {"name": "a b"}, {"subagent_model": "a;b"}, {"sandbox": "full"}, {"approval": "never"}):
         assert nr.guard_final(f), f
+
+
+@pytest.mark.parametrize("prompt,want", [("do it", None), ("@file.py look", None), ("run tests / fix", None), ("wow!", None), ("a\n/b\n!c", None),
+                                         ("/model", "command"), ("!ls", "command"), ("#note", "command"), ("／model", "command"), ("！ls", "command"), ("＃n", "command"),
+                                         ("  \n /x", "command"), ("a\x03b", "text")])
+def test_a_stored_card_may_not_start_like_a_terminal_command_in_any_dispatch_mode(prompt, want):
+    card = {"title": "t", "prompt": prompt}
+    assert nr.card_refusal(card, {}, typed=True) == want
+    assert nr.card_refusal(card, {}) == (None if want == "command" else want), "only the remote dispatch asks for the command rule"
+
+
+def test_the_prompt_models_apply_the_command_rule_to_a_steer_text_and_to_a_new_tasks_prompt():
+    from pydantic import ValidationError
+    for bad in ("/model", "!ls", "#x", "！ls", " \n/x"):
+        with pytest.raises(ValidationError, match="cannot start with / ! or #"):
+            nr.PromptBody(text=bad)
+        with pytest.raises(ValidationError, match="cannot start with / ! or #"):
+            nr.TaskCreateBody(project="p", repo="r", title="t", prompt=bad)
+    assert nr.PromptBody(text="@f.py ok. wow!").text == "@f.py ok. wow!"
+    assert nr.TaskCreateBody(project="p", repo="r", title="t", prompt="@f.py review /x").prompt == "@f.py review /x"
+    with pytest.raises(ValidationError, match="at most"):
+        nr.TaskCreateBody(project="p", repo="r", title="t", prompt="x" * (nr.TASK_PROMPT_IN + 1))
+    assert nr.check_field("typed_prompt", "x" * nr.TASK_PROMPT_IN)

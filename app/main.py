@@ -3716,13 +3716,18 @@ def _dialog_refusal(name: str, row: dict) -> JSONResponse | None:
 def _permission_pending(name: str) -> bool:
     """Is a permission request of this session waiting for its answer? Only one the hook can still be long-polling counts: a row left
     undecided by a restart (its waiter died with the process) would otherwise block the session for good."""
+    return any(p.get("tmux_name") == name for p in _live_permissions())
+
+
+def _live_permissions() -> list[dict]:
+    """The undecided permission requests a hook can still be long-polling for (the rest were left by a restart or have timed out): oldest first."""
     horizon = _utcnow() - timedelta(seconds=settings.approve_timeout + PERMISSION_GRACE)
+    out = []
     for p in db.perm_pending():
-        if p.get("tmux_name") == name:
-            at = _parse_at(p.get("created_at"))
-            if at is None or at >= horizon:
-                return True
-    return False
+        at = _parse_at(p.get("created_at"))
+        if at is None or at >= horizon:
+            out.append(p)
+    return out
 
 
 def _clean_line(v, what: str, limit: int) -> str:
@@ -4158,11 +4163,17 @@ def api_prompt(name: str, request: Request, body: PromptIn | None = None):
     refusal = _typing_refusal(name, row, queue=b.queue)
     if refusal:
         return refusal
+    return _paste_prompt(name, row, text, b.enter, request.state.user)
+
+
+def _paste_prompt(name: str, row: dict, text: str, enter: bool, by: str, event_text: str | None = None) -> dict:
+    """The typing half of /prompt, after every check: paste, record the BoardPrompt event, arm the Codex hooks check, drop the scan cache.
+    `event_text` replaces the first 200 characters of the prompt in the event: a prompt from another node (issue #142) is never stored, the event says how long it was."""
     queued = row.get("state") == "working"
-    tmux.paste_text(name, text, enter=b.enter)
-    db.add_event(name, "BoardPrompt", None, text[:200], {"chars": len(text), "enter": b.enter, "queued": queued,
-                                                         "by": request.state.user}, agent=row.get("agent"))
-    if row.get("agent") == "codex" and b.enter and not (row.get("flags") or {}).get("turn_seen_at"):
+    tmux.paste_text(name, text, enter=enter)
+    db.add_event(name, "BoardPrompt", None, text[:200] if event_text is None else event_text, {"chars": len(text), "enter": enter, "queued": queued,
+                                                                                             "by": by}, agent=row.get("agent"))
+    if row.get("agent") == "codex" and enter and not (row.get("flags") or {}).get("turn_seen_at"):
         db.update_flags(name, {"turn_seen_at": db_now()})   # #96: the first turn the board knows of arms hooks_missing
     _invalidate_scan()
     return {"ok": True, "pasted": True, "queued": queued}
