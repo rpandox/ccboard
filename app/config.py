@@ -92,8 +92,9 @@ _LOGIN_RE = re.compile(r"(?=.{1,39}\Z)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*")      # Gi
 
 
 def parse_epic_authors(raw) -> tuple[tuple[str, ...], bool]:
-    """CCBOARD_EPIC_AUTHORS (issue #147): GitHub logins, separated by commas or spaces, lower-cased, at most 20, whose claim comments count on an epic besides
-    the repository owner's own. Items that are not a login are dropped and the second value is True. Empty: () and the board trusts the gh login only."""
+    """CCBOARD_EPIC_AUTHORS (issue #147): GitHub logins, separated by commas or spaces, lower-cased, at most 20, whose claim comments count on an epic (and only
+    when GitHub says the author can write to the repository). Items that are not a login are dropped and the second value is True. Empty: () and the board trusts the
+    gh login only; the repository owner is never trusted by being the owner."""
     out, bad = [], False
     for item in re.split(r"[,\s]+", (raw or "").strip()):
         if not item:
@@ -242,7 +243,7 @@ class Settings:
         # list the nodes and read a node's projects and tasks; `tasks` also lets them create a task there and start it in a new session; unset, `0` or anything else = off
         # ("" here) and a tool call that names a node other than `local` is a tool error. Read at start; there is no switch in Settings, only this word.
         self.mcp_nodes = {"1": "read", "read": "read", "tasks": "tasks"}.get((env.get("CCBOARD_MCP_NODES") or "").strip().lower(), "")
-        # Whose claim comments count on an epic (issue #147), besides the repository owner's: GitHub logins. Empty = the login gh uses on this board only.
+        # Whose claim comments count on an epic (issue #147): GitHub logins who can also write to the repository. Empty = the login gh uses on this board only. Never the repository owner by default.
         self.epic_authors, self.epic_authors_bad = parse_epic_authors(env.get("CCBOARD_EPIC_AUTHORS"))
         self.ntfy_url = (env.get("NTFY_URL") or "").strip()            # loopback, e.g. http://127.0.0.1:2586
         self.ntfy_topic = (env.get("NTFY_TOPIC") or "ccboard").strip()

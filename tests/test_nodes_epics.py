@@ -50,14 +50,29 @@ def gh(tmp_path, monkeypatch, clock):
     return FakeGitHub(tmp_path).install(monkeypatch)
 
 
+def set_repos(main, monkeypatch, slugs) -> None:
+    """The GitHub repositories of this board's own projects, without a git repository on disk: a fake path per slug that `node_state.repo_slug` answers; any other
+    path (the list tests build real repositories) goes to the real lookup."""
+    from app import node_state
+    real = getattr(node_state.repo_slug, "real", node_state.repo_slug)
+    table = {f"/fake/{s.replace('/', '--')}": s for s in slugs}
+
+    def fake(path):
+        return table.get(str(path)) or real(path)
+    fake.real = real
+    monkeypatch.setattr(node_state, "repo_slug", fake)
+    projs = [{"name": "p", "repos": [{"name": s.split("/")[1], "path": p, "state": "ok"} for p, s in table.items()]}]
+    monkeypatch.setattr(main, "_cached_projects", lambda: projs)
+
+
 @pytest.fixture
 def board(lite_client, gh, monkeypatch):
     from app import main
     monkeypatch.setattr(nodes, "registry_listener", None)           # a pair saved here must not start the hub's thread
     monkeypatch.setattr(nodes, "display_name", lambda: "node-a")
     main.node_hub = None
-    monkeypatch.setattr(main, "_cached_projects", lambda: [])
-    yield SimpleNamespace(c=lite_client, db=main.db, main=main, gh=gh)
+    set_repos(main, monkeypatch, ["acme/shop", "acme/api"])                  # this board's own projects: two repositories with a GitHub remote
+    yield SimpleNamespace(c=lite_client, db=main.db, main=main, gh=gh, repos=lambda *slugs: set_repos(main, monkeypatch, list(slugs)))
     main.node_hub = None
 
 
@@ -255,20 +270,15 @@ def test_the_100_child_cap(board):
     assert [c["number"] for c in d["children"][:2]] == [1001, 1002] and d["progress"]["total"] == 100
 
 
-def test_the_100_comment_cap_a_claim_after_the_hundredth_comment_is_not_read(board):
+def test_the_100_comment_cap_never_makes_a_cut_thread_look_free(board):
+    """Finding 3: 100 junk comments, then a real claim. The old reader kept the first 100 and called the issue unclaimed."""
     gh = board.gh
     world(gh, claims=False)
-    for i in range(100):
-        gh.comment(f"{REPO}#202", f"chatter {i}", created_at=iso(START - 5000 + i), updated_at=iso(START - 5000 + i))
+    gh.junk(f"{REPO}#202", 100)
     gh.comment(f"{REPO}#202", claim_body("node-a", "running"), created_at=iso(START - 100), updated_at=iso(START - 100))
     d = get(board).json()
-    assert child(d, 202)["claim"] is None
-    assert len([p for p in gh.paths() if "/202/comments" in p]) == 1, "one page of 100, no second page"
-    gh.set(page_size=100)
-    gh.world["comments"][f"{REPO}#202"].pop(0)                                # 100 comments now: the claim is the last of them
-    gh.save()
-    nodes_epics.reset()
-    assert child(get(board).json(), 202)["claim"]["alias"] == "node-a"
+    assert child(d, 202)["claim"]["alias"] == "node-a" and child(d, 202)["claim_state"] == "claimed", "101 comments are read whole (page 1 and page 2)"
+    assert len([p for p in gh.paths() if "/202/comments" in p]) == 2
 
 
 # ================================================================ rate limits: honour Retry-After and remaining 0, in memory, never loop
@@ -470,8 +480,9 @@ def test_a_unicode_alias_is_kept_and_the_marker_may_follow_leading_blank_lines()
 
 def test_a_comment_that_copies_a_marker_line_is_counted_as_a_claim_which_is_the_documented_limit():
     forged = claim_body("node-a", "running")
-    claims = nodes_epics.parse_claims([{"id": 1, "body": forged, "user": {"login": "owner1"}, "created_at": "2026-10-01T09:00:00Z", "updated_at": "2026-10-01T09:00:00Z"}])
-    assert len(claims) == 1 and claims[0]["author"] == "owner1"
+    claims = nodes_epics.parse_claims([{"id": 1, "body": forged, "user": {"login": "owner1", "type": "User"}, "author_association": "OWNER", "created_at": "2026-10-01T09:00:00Z",
+                                        "updated_at": "2026-10-01T09:00:00Z"}])
+    assert len(claims) == 1 and claims[0]["author"] == "owner1" and claims[0]["association"] == "OWNER"
 
 
 def test_parse_claims_drops_comments_without_id_or_timestamps_and_orders_by_created_then_id():
@@ -524,44 +535,105 @@ def test_a_claim_shaped_comment_from_a_stranger_is_not_a_claim(board):
     assert d["progress"]["unclaimed"] == {"open": 6, "closed": 1}
 
 
-def test_the_repository_owner_and_the_configured_authors_count_and_by_default_the_gh_login(board, monkeypatch):
+def test_the_repository_owner_is_not_trusted_by_being_the_owner(board):
+    """Finding 1: the owner segment of the slug used to be trusted. A clone of someone else's repository must not take its owner's claim-shaped comments as claims."""
     gh = board.gh
     world(gh, claims=False)
-    gh.comment(f"{REPO}#202", claim_body("node-o", "running"), user="acme", created_at=iso(START - 900), updated_at=iso(START - 60))
+    gh.comment(f"{REPO}#202", claim_body("node-o", "running"), user="acme", assoc="OWNER", created_at=iso(START - 900), updated_at=iso(START - 60))
+    d = get(board).json()
+    c = child(d, 202)
+    assert c["claim"] is None and c["claim_rejected"] == 1 and c["claim_note"] == "not from an allowed author" and "node-o" not in json.dumps(d)
+    assert c["claim_state"] == "none", "all comments were read and no allowed claim exists"
+
+
+def test_the_configured_authors_count_and_by_default_the_gh_login(board, monkeypatch):
+    gh = board.gh
+    world(gh, claims=False)
     gh.comment(f"{REPO}#203", claim_body("node-c", "claimed"), user="Carol", created_at=iso(START - 900), updated_at=iso(START - 60))
     gh.comment(f"{REPO}#204", claim_body("node-g", "claimed"), user="alice", created_at=iso(START - 900), updated_at=iso(START - 60))
     d = get(board).json()
-    assert child(d, 202)["claim"]["alias"] == "node-o", "the repository owner always counts"
     assert child(d, 204)["claim"]["alias"] == "node-g", "empty CCBOARD_EPIC_AUTHORS: the login gh uses on this board (api user -> alice)"
     assert child(d, 203)["claim"] is None and child(d, 203)["claim_rejected"] == 1
     monkeypatch.setattr(settings, "epic_authors", ("carol",))
     d = get(board).json()
     assert child(d, 203)["claim"]["alias"] == "node-c", "a configured login counts, whatever its case"
     assert child(d, 204)["claim"] is None, "with authors set, the gh login is not added on top"
-    assert child(d, 202)["claim"]["alias"] == "node-o"
 
 
-def test_when_gh_cannot_say_who_it_is_only_the_owner_counts(board, monkeypatch):
+@pytest.mark.parametrize("assoc,counts", [("OWNER", True), ("MEMBER", True), ("COLLABORATOR", True), ("CONTRIBUTOR", False), ("FIRST_TIMER", False),
+                                          ("FIRST_TIME_CONTRIBUTOR", False), ("NONE", False), ("MANNEQUIN", False), ("owner", False), (None, False), ("", False)])
+def test_a_claim_counts_only_from_someone_who_can_write_to_the_repository(board, monkeypatch, assoc, counts):
+    """The login matches (alice, the gh login; also bob, a configured name) but GitHub's author_association must still be OWNER, MEMBER or COLLABORATOR."""
     gh = board.gh
     world(gh, claims=False)
-    gh.comment(f"{REPO}#204", claim_body("node-g", "claimed"), user="alice", created_at=iso(START - 900), updated_at=iso(START - 60))
-    gh.comment(f"{REPO}#205", claim_body("node-o", "claimed"), user="acme", created_at=iso(START - 900), updated_at=iso(START - 60))
+    gh.comment(f"{REPO}#202", claim_body("node-a", "running"), user="alice", assoc=assoc, created_at=iso(START - 900), updated_at=iso(START - 60))
+    c = child(get(board).json(), 202)
+    assert (c["claim"] is not None) is counts and c["claim_rejected"] == (0 if counts else 1)
+    monkeypatch.setattr(settings, "epic_authors", ("alice",))
+    nodes_epics.reset()
+    c = child(get(board).json(), 202)
+    assert (c["claim"] is not None) is counts, "a configured name is no exception"
+
+
+def test_a_comment_with_no_user_a_bot_or_a_login_that_is_not_one_never_counts(board, monkeypatch):
+    gh = board.gh
+    world(gh, claims=False)
+    monkeypatch.setattr(settings, "epic_authors", ("alice", "ghost", "dependabot"))
+    gh.comment(f"{REPO}#202", claim_body("node-a", "running"), user=None, created_at=iso(START - 900), updated_at=iso(START - 60))
+    gh.comment(f"{REPO}#203", claim_body("node-a", "running"), user="dependabot", user_type="Bot", created_at=iso(START - 900), updated_at=iso(START - 60))
+    gh.comment(f"{REPO}#204", claim_body("node-a", "running"), user="alice", user_type="Organization", created_at=iso(START - 900), updated_at=iso(START - 60))
+    gh.comment(f"{REPO}#205", claim_body("node-a", "running"), user="al ice;x", created_at=iso(START - 900), updated_at=iso(START - 60))
+    d = get(board).json()
+    for n in (202, 203, 204, 205):
+        assert child(d, n)["claim"] is None and child(d, n)["claim_rejected"] == 1 and child(d, n)["claim_state"] == "none", n
+    assert nodes_epics.parse_claims([{"id": 1, "body": claim_body(), "user": {"login": "alice"}, "author_association": "OWNER", "created_at": "2026-10-01T09:00:00Z",
+                                      "updated_at": "2026-10-01T09:00:00Z"}])[0]["author"] is None, "a user object with no type is not a user"
+
+
+def test_the_login_compare_ignores_case_and_a_squatter_on_a_renamed_login_is_refused_by_the_association(board):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.comment(f"{REPO}#202", claim_body("node-a", "running"), user="ALICE", assoc="MEMBER", created_at=iso(START - 900), updated_at=iso(START - 60))
+    gh.comment(f"{REPO}#203", claim_body("node-b", "running"), user="alice", assoc="NONE", created_at=iso(START - 900), updated_at=iso(START - 60))
+    d = get(board).json()
+    assert child(d, 202)["claim"]["alias"] == "node-a", "the same login in another case, from a writer"
+    assert child(d, 203)["claim"] is None and child(d, 203)["claim_rejected"] == 1, "the same login string from someone who cannot write (a new owner of a freed name)"
+
+
+def test_when_gh_cannot_say_who_it_is_nobody_counts_and_the_page_says_it_cannot_tell(board, monkeypatch):
+    """Fail closed: no CCBOARD_EPIC_AUTHORS and no gh login. No claim counts, no child is reported free (every child is unknown), and no comment is even read."""
+    gh = board.gh
+    world(gh)
     monkeypatch.setattr(nodes_epics, "_gh_login", lambda: None)
     d = get(board).json()
-    assert child(d, 204)["claim"] is None and child(d, 204)["claim_rejected"] == 1 and child(d, 205)["claim"]["alias"] == "node-o"
-    assert nodes_epics.allowed_authors("acme", None, ()) == {"acme"}
-    assert nodes_epics.allowed_authors("acme", "Alice", ()) == {"acme", "alice"} and nodes_epics.allowed_authors("acme", "alice", ("bob",)) == {"acme", "bob"}
+    assert d["claims_note"] == "cannot tell who may claim: gh login unknown"
+    assert all(c["claim"] is None and c["claim_state"] == "unknown" and c["claim_unknown"] == {"reason": "authors_unknown", "text": "cannot tell who may claim: gh login unknown"}
+               for c in d["children"])
+    assert not any("/comments" in p for p in gh.paths()), "nothing is read that could not be told apart"
+    p = d["progress"]
+    assert p["unclaimed"] == {"open": 0, "closed": 1} and p["unknown"] == 6, "the six open children are unknown, none is unclaimed (the closed one is closed)"
+    assert sum(1 for c in d["children"] if c["bucket"]["state"] == "open") == 0, "never a bucket that reads as free"
+    monkeypatch.setattr(settings, "epic_authors", ("alice",))
+    d = get(board).json()
+    assert d["claims_note"] is None and child(d, 202)["claim"]["alias"] == "node-a", "a configured author needs no gh login"
+
+
+def test_allowed_authors_is_the_configured_names_or_the_gh_login_never_the_owner():
+    assert nodes_epics.allowed_authors(None, ()) == set() and nodes_epics.allowed_authors("", ()) == set()
+    assert nodes_epics.allowed_authors("Alice", ()) == {"alice"}
+    assert nodes_epics.allowed_authors("alice", ("bob", "Carol")) == {"bob", "carol"}
+    assert nodes_epics.allowed_authors("bad login;", ()) == set() and nodes_epics.allowed_authors("-x", ()) == set()
 
 
 def test_the_first_live_claim_by_created_then_id_holds_the_issue_and_an_older_stale_one_is_shown_only_when_nothing_is_live(board):
     gh = board.gh
     world(gh, claims=False)
     live = iso(START - 60)
-    gh.comment(f"{REPO}#202", claim_body("node-b", "claimed"), user="acme", created_at=iso(START - 500), updated_at=live, cid=20)
-    gh.comment(f"{REPO}#202", claim_body("node-a", "claimed"), user="acme", created_at=iso(START - 500), updated_at=live, cid=10)
-    gh.comment(f"{REPO}#202", claim_body("node-c", "claimed"), user="acme", created_at=iso(START - 900), updated_at=iso(START - 9000), cid=30)
-    gh.comment(f"{REPO}#203", claim_body("node-b", "running"), user="acme", created_at=iso(START - 9000), updated_at=iso(START - 9000), cid=31)
-    gh.comment(f"{REPO}#203", claim_body("node-a", "released"), user="acme", created_at=iso(START - 8000), updated_at=iso(START - 7000), cid=32)
+    gh.comment(f"{REPO}#202", claim_body("node-b", "claimed"), user="alice", created_at=iso(START - 500), updated_at=live, cid=20)
+    gh.comment(f"{REPO}#202", claim_body("node-a", "claimed"), user="alice", created_at=iso(START - 500), updated_at=live, cid=10)
+    gh.comment(f"{REPO}#202", claim_body("node-c", "claimed"), user="alice", created_at=iso(START - 900), updated_at=iso(START - 9000), cid=30)
+    gh.comment(f"{REPO}#203", claim_body("node-b", "running"), user="alice", created_at=iso(START - 9000), updated_at=iso(START - 9000), cid=31)
+    gh.comment(f"{REPO}#203", claim_body("node-a", "released"), user="alice", created_at=iso(START - 8000), updated_at=iso(START - 7000), cid=32)
     d = get(board).json()
     assert child(d, 202)["claim"]["alias"] == "node-a" and child(d, 202)["claim"]["live"] is True, "equal created_at: the lower comment id"
     assert child(d, 203)["claim"]["alias"] == "node-a" and child(d, 203)["claim"]["status"] == "released" and child(d, 203)["claim"]["live"] is False
@@ -673,9 +745,10 @@ def test_hostile_titles_labels_and_comments_are_capped_and_cleaned(board):
     gh.add_issue(REPO, 147, "Epic‮​ title\x00\x1b[31m" + "A" * 500, labels=["ccboard:epic"])
     gh.add_issue(REPO, 201, "<img src=x onerror=alert(1)>   line\nbreak", labels=["bug‮", "x" * 200, "\x00", "a\tb", 5, None] + ["l%d" % i for i in range(60)])
     gh.link(f"{REPO}#147", f"{REPO}#201")
-    gh.comment(f"{REPO}#201", claim_body("node-a", "running") + "<script>x</script>" * 1000, user="acme", created_at=iso(START - 900), updated_at=iso(START - 60))
+    gh.comment(f"{REPO}#201", claim_body("node-a", "running") + "<script>x</script>" * 1000, user="alice", created_at=iso(START - 900), updated_at=iso(START - 60))
     gh.comment(f"{REPO}#201", "z" * 500_000, user="mallory")
     d = get(board).json()
+    assert d["error"] is None, d["error"]
     assert len(d["epic"]["title"]) <= 200 and not re.search(r"[\x00-\x1f‮​  ]", d["epic"]["title"])
     c = child(d, 201)
     assert c["title"] == "<img src=x onerror=alert(1)> line break", "markup stays text for textContent; control, separator and bidi characters are gone"
@@ -696,11 +769,13 @@ def test_urls_in_the_payload_are_never_used_or_returned(board):
     d = r.json()
     assert "evil.example" not in r.text and "phish" not in r.text
     assert d["epic"]["url"] == "https://github.com/acme/shop/issues/147"
-    assert child(d, 201)["url"] == "https://github.com/acme/shop/issues/201" and child(d, 202)["repo"] == REPO, "a repository_url that is not exactly the API form is ignored"
+    assert {c["number"] for c in d["children"]} == {203}, "a repository_url that is not exactly the API form places nothing: those two are not shown, and the epic says it is not complete"
+    assert d["truncated"] is True
     c203 = child(d, 203, "other/lib")
     assert c203["url"] == "https://github.com/other/lib/issues/203", "a well-formed repository_url names the repo, and only its validated parts are used"
+    assert c203["claim_state"] == "unknown" and c203["claim_unknown"]["text"] == "in another repository"
     assert not any("evil" in " ".join(c["argv"]) for c in gh.calls())
-    assert all(re.fullmatch(r"/repos/(acme/shop|other/lib)/issues/[0-9]+(/comments\?per_page=100&page=1|/sub_issues\?per_page=100&page=1)?", p) for p in gh.paths())
+    assert all(re.fullmatch(r"/repos/acme/shop/issues/[0-9]+(/sub_issues\?per_page=100&page=1)?", p) for p in gh.paths()), "no request names a repository this board has no project for"
 
 
 def test_a_pull_request_url_is_built_from_the_validated_repo_and_number(board):
@@ -795,6 +870,7 @@ def test_the_hub_text_is_cleaned_and_the_phase_is_one_of_the_known_words(board, 
 def test_pins_and_pause_are_stored_on_this_board_and_change_nothing_on_github(board):
     gh = board.gh
     world(gh)
+    get(board)                                                                 # the page reads the epic first: a pin may name only an issue read as its child
     b = add_node(board)
     before = len(gh.calls())
     r = put(board, {"pins": {"202": b["handle"], "205": "local"}, "epic_pin": b["handle"], "paused": True, "report": True})
@@ -811,6 +887,8 @@ def test_pins_and_pause_are_stored_on_this_board_and_change_nothing_on_github(bo
 
 
 def test_settings_merge_per_key_and_a_null_removes_and_defaults_remove_the_row(board):
+    world(board.gh)
+    get(board)
     b = add_node(board)
     put(board, {"pins": {"202": b["handle"], "203": "local"}, "paused": True})
     r = put(board, {"pins": {"202": None, "204": b["handle"]}})
@@ -859,6 +937,7 @@ def test_a_pin_to_a_removed_node_is_stale_and_ignored_and_the_ui_pin_wins_over_t
     gh.world["issues"][f"{REPO}#205"]["labels"] = ["ccboard:node:node-b"]
     gh.save()
     b = add_node(board)
+    get(board)
     put(board, {"pins": {"202": "local", "205": b["handle"]}})
     d = get(board).json()
     assert child(d, 202)["pin"] == {"handle": "local", "node_name": "node-a", "source": "page", "stale": False}, "the page pin wins on conflict"
@@ -878,6 +957,7 @@ def test_a_stale_page_pin_falls_back_to_a_good_label_pin(board):
     gh.world["issues"][f"{REPO}#202"]["labels"] = ["ccboard:node:node-a"]
     gh.save()
     b = add_node(board)
+    get(board)
     put(board, {"pins": {"202": b["handle"]}})
     nodes.remove_peer(b["peer_id"], db=board.db)
     assert child(get(board).json(), 202)["pin"] == {"handle": "local", "node_name": "node-a", "source": "label", "stale": False}
@@ -937,11 +1017,11 @@ def test_the_list_finds_epics_in_the_repos_the_projects_remotes_name_with_child_
     assert r.status_code == 200 and d["repos"] == ["acme/api", "acme/shop"] and d["error"] is None and d["errors"] == []
     assert [(e["repo"], e["number"]) for e in d["epics"]] == [(REPO, 150), ("acme/api", 3), (REPO, 147)], "newest update first"
     by = {(e["repo"], e["number"]): e for e in d["epics"]}
-    assert by[("acme/api", 3)]["children"] == {"open": 3, "closed": 1, "total": 4}, "from the parent's own summary: no extra call"
-    assert by[(REPO, 147)]["children"] == {"open": 6, "closed": 1, "total": 7}, "no summary: counted from the sub-issues list"
-    assert by[(REPO, 150)]["children"] == {"open": 0, "closed": 0, "total": 0}
+    assert by[("acme/api", 3)]["children"] == {"open": 3, "closed": 1, "total": 4, "more": False}, "from the parent's own summary: no extra call"
+    assert by[(REPO, 147)]["children"] == {"open": 6, "closed": 1, "total": 7, "more": False}, "no summary: counted from the sub-issues list"
+    assert by[(REPO, 150)]["children"] == {"open": 0, "closed": 0, "total": 0, "more": False}
     assert by[(REPO, 147)] == {"repo": REPO, "owner": "acme", "name": "shop", "number": 147, "title": "Checkout rework", "url": "https://github.com/acme/shop/issues/147",
-                               "state": "open", "children": {"open": 6, "closed": 1, "total": 7}, "updated_at": "2026-10-01T09:00:00Z", "labels": ["ccboard:epic"], "paused": False}
+                               "state": "open", "children": {"open": 6, "closed": 1, "total": 7, "more": False}, "updated_at": "2026-10-01T09:00:00Z", "labels": ["ccboard:epic"], "paused": False}
     assert not any("gitlab" in p or "other" in p for p in gh.paths())
 
 
@@ -992,18 +1072,22 @@ def test_a_failed_list_read_keeps_the_last_list_with_its_age(board, projects_dir
 
 
 def test_no_github_remote_means_nothing_is_asked_of_github(board):
+    board.repos()
     d = board.c.get("/api/epics", headers=ID).json()
     assert d == {**d, "epics": [], "repos": [], "error": None, "errors": []} and "GitHub remote" in d["note"] and board.gh.calls() == []
 
 
-def test_known_repos_come_from_the_projects_and_the_nodes_readings_deduplicated_and_validated(monkeypatch):
+def test_known_repos_are_this_boards_own_projects_deduplicated_and_validated(monkeypatch):
     from app import node_state
-    monkeypatch.setattr(node_state, "repo_slug", lambda path: {"/p/a": "Acme/Shop", "/p/b": "acme/api"}.get(path))
-    projs = [{"name": "p", "repos": [{"path": "/p/a", "state": "ok"}, {"path": "/p/b", "state": "ok"}, {"path": "/p/c", "state": "ok"}, {"path": "/p/a", "state": "error"}]}]
-    recs = [record(projects=[{"name": "p", "repos": [{"slug": "acme/shop"}, {"slug": "acme/new"}, {"slug": "-x/y"}, {"slug": "a/b/c"}, {"slug": 5}, {"slug": "o/..", "name": "x"}]}])]
-    assert nodes_epics.known_repos(projs, recs) == ["Acme/Shop", "acme/api", "acme/new"]
-    many = [{"name": "p", "repos": [{"slug": f"o{i}/r"} for i in range(60)]}]
-    assert len(nodes_epics.known_repos([], [record(projects=many)])) == nodes_epics.REPO_CAP
+    monkeypatch.setattr(node_state, "repo_slug", lambda path: {"/p/a": "Acme/Shop", "/p/b": "acme/api", "/p/d": "acme/shop", "/p/e": "-x/y", "/p/f": "a/b/c", "/p/g": "o/.."}.get(path))
+    projs = [{"name": "p", "repos": [{"path": "/p/a", "state": "ok"}, {"path": "/p/b", "state": "ok"}, {"path": "/p/c", "state": "ok"}, {"path": "/p/a", "state": "error"},
+                                     {"path": "/p/d", "state": "ok"}, {"path": "/p/e", "state": "ok"}, {"path": "/p/f", "state": "ok"}, {"path": "/p/g", "state": "ok"}]}]
+    assert nodes_epics.known_repos(projs) == ["Acme/Shop", "acme/api"]
+    carried = [{"name": "p", "repos": [{"path": "/p/c", "state": "ok", "slug": "evil/repo"}], "slug": "evil/other"}]
+    assert nodes_epics.known_repos(carried) == [], "a slug carried inside a project entry (the shape of a node's reading) is not a remote of this board"
+    assert nodes_epics.known_repos(None) == [] and nodes_epics.known_repos([{"repos": "x"}, 5]) == []
+    import inspect
+    assert list(inspect.signature(nodes_epics.known_repos).parameters) == ["projects_list"], "no node's reading can be passed in"
 
 
 # ================================================================ nothing runs in the background
@@ -1135,7 +1219,7 @@ def test_the_doctor_row_reports_login_scopes_access_budget_and_the_gh_version_no
 
 def test_the_doctor_row_warns_for_a_missing_repo_scope_a_repository_it_cannot_read_and_a_wait(gh, monkeypatch):
     doctor = probe_reset()
-    monkeypatch.setattr(nodes_epics, "known_repos", lambda p, r: ["acme/shop", "acme/api"])
+    monkeypatch.setattr(nodes_epics, "known_repos", lambda p: ["acme/shop", "acme/api"])
     gh.add_issue("acme/shop", 1)
     gh.add_issue("acme/api", 1)
     gh.set(scopes="read:org")
@@ -1208,3 +1292,367 @@ def test_the_scopes_of_a_304_are_the_scopes_of_that_answer_not_of_the_merged_cac
     assert rep.cached and rep.scopes is None, "the 304 carried no scopes: the old ones are not claimed for it"
     gh.set(scopes="repo")
     assert github.reader.get(path, 0).scopes == "repo" and github.reader.get(path, 60).scopes == "repo"
+
+
+# ================================================================ finding 3: what is not read is unknown, never unclaimed
+
+def comments_of(gh, n):
+    return [p for p in gh.paths() if f"/{n}/comments" in p]
+
+
+def test_a_real_claim_behind_150_or_250_junk_comments_is_found(board):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.junk(f"{REPO}#202", 150)
+    gh.comment(f"{REPO}#202", claim_body("node-a", "running"))
+    gh.junk(f"{REPO}#203", 250)
+    gh.comment(f"{REPO}#203", claim_body("node-b", "claimed"))
+    d = get(board).json()
+    assert child(d, 202)["claim_state"] == "claimed" and child(d, 202)["claim"]["alias"] == "node-a", "151 comments are read whole"
+    assert child(d, 203)["claim_state"] == "claimed" and child(d, 203)["claim"]["alias"] == "node-b", "the newest comments are read too: page 3 of 3"
+    assert any("page=3" in p for p in comments_of(gh, 203)) and not any("page=4" in p for p in comments_of(gh, 203))
+
+
+def test_the_newest_100_comments_are_read_wherever_they_fall_on_the_pages(board):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.junk(f"{REPO}#202", 250)                                                 # 251 + 49 = 300: the claim is comment 251, inside the last 100 (201 to 300), page 3
+    gh.comment(f"{REPO}#202", claim_body("node-a", "running"))
+    gh.junk(f"{REPO}#202", 49, start=START - 500)
+    gh.junk(f"{REPO}#203", 159)                                                 # 160 + 91 = 251: the newest 100 are 152 to 251, across pages 2 and 3; the claim is on page 2
+    gh.comment(f"{REPO}#203", claim_body("node-b", "claimed"))
+    gh.junk(f"{REPO}#203", 91, start=START - 500)
+    d = get(board).json()
+    assert child(d, 202)["claim_state"] == "claimed" and child(d, 202)["claim"]["alias"] == "node-a"
+    assert child(d, 203)["claim_state"] == "claimed" and child(d, 203)["claim"]["alias"] == "node-b"
+
+
+def test_a_claim_in_the_middle_of_300_comments_is_unknown_not_unclaimed(board):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.junk(f"{REPO}#202", 150)
+    gh.comment(f"{REPO}#202", claim_body("node-a", "running"))
+    gh.junk(f"{REPO}#202", 149, start=START - 1000)
+    d = get(board).json()
+    c = child(d, 202)
+    assert len(gh.world["comments"][f"{REPO}#202"]) == 300
+    assert c["claim"] is None and c["claim_state"] == "unknown" and c["claim_unknown"] == {"reason": "too_long", "text": "too many comments to read"}
+    assert c["bucket"] == {"node": None, "state": "unknown"}
+    p = d["progress"]
+    assert p["unknown"] == 1 and p["unclaimed"] == {"open": 5, "closed": 1}, "kept apart from the unclaimed ones"
+    assert p["total"] == p["unknown"] + sum(p["unclaimed"].values()) + sum(v[k] for v in p["by_node"].values() for k in ("done", "running", "queued", "failed"))
+    assert not any("page=2" in x for x in comments_of(gh, 202)), "100 from each end, nothing between"
+
+
+def test_none_needs_every_comment_read_so_a_long_thread_without_a_claim_is_unknown(board):
+    gh = board.gh
+    world(gh, claims=False)
+    for n, count in ((202, 100), (203, 200), (204, 201), (205, 300)):
+        gh.junk(f"{REPO}#{n}", count)
+    gh.junk(f"{REPO}#206", 100)
+    gh.comment(f"{REPO}#206", claim_body("node-b", "claimed"), created_at=iso(START - 100), updated_at=iso(START - 100))      # comment 101 of 101
+    d = get(board).json()
+    got = {n: child(d, n)["claim_state"] for n in (202, 203, 204, 205, 206)}
+    assert got == {202: "none", 203: "none", 204: "unknown", 205: "unknown", 206: "claimed"}, got
+    assert child(d, 204)["claim_unknown"]["text"] == "too many comments to read" and child(d, 204)["bucket"]["state"] == "unknown"
+
+
+def test_a_claim_found_in_a_thread_that_was_cut_counts_only_while_it_is_live(board):
+    """The unread middle may hold a live claim; a stale one at an end must not make the issue look takeable."""
+    gh = board.gh
+    world(gh, claims=False)
+    gh.junk(f"{REPO}#202", 250)
+    gh.comment(f"{REPO}#202", claim_body("node-a", "claimed"), created_at=iso(START - 9000), updated_at=iso(START - 8000))        # not live
+    gh.junk(f"{REPO}#203", 250)
+    gh.comment(f"{REPO}#203", claim_body("node-a", "released"))
+    d = get(board).json()
+    assert child(d, 202)["claim_state"] == "unknown" and child(d, 202)["claim"] is None
+    assert child(d, 203)["claim_state"] == "unknown", "a released claim is not live either"
+
+
+def test_a_wrong_comments_count_does_not_make_a_short_read_look_complete(board):
+    gh = board.gh
+    world(gh, claims=False)
+    for n, over in ((202, 10), (203, 500), (204, 900)):
+        gh.junk(f"{REPO}#{n}", 150)
+        gh.comment(f"{REPO}#{n}", claim_body("node-b", "claimed"))
+        gh.world["issues"][f"{REPO}#{n}"]["raw"] = {"comments": over}
+    gh.save()
+    d = get(board).json()
+    assert child(d, 202)["claim_state"] == "claimed", "a count that is too low: page 2 is tried anyway"
+    assert child(d, 203)["claim_state"] == "claimed", "a count that is too high: the end is found by walking back"
+    assert child(d, 204)["claim_state"] == "unknown" and child(d, 204)["claim_unknown"]["reason"] == "too_long", "the end of the thread was not found: not complete"
+
+
+def test_a_short_page_that_says_more_follows_is_not_a_whole_read(board):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.junk(f"{REPO}#202", 120)
+    gh.set(page_size=50)
+    d = get(board).json()
+    assert child(d, 202)["claim_state"] == "unknown", "page 1 came back with 50 of 100 and a next link: nothing is concluded from it"
+
+
+def test_the_comment_budget_leaves_unread_children_unknown_never_unclaimed(board, monkeypatch, clock):
+    gh = board.gh
+    world(gh, claims=False)
+    for n in (202, 203, 204, 205):
+        gh.comment(f"{REPO}#{n}", "just a note", user="bob", assoc="NONE")
+    monkeypatch.setattr(nodes_epics, "COMMENT_CALLS", 2)
+    d = get(board).json()
+    states = {n: child(d, n)["claim_state"] for n in (202, 203, 204, 205, 206)}
+    assert states == {202: "none", 203: "none", 204: "unknown", 205: "unknown", 206: "none"}, "206 has no comment: the list says so"
+    assert child(d, 204)["claim_unknown"] == {"reason": "budget", "text": "not read yet in this refresh"}
+    assert d["partial"] is True and d["comments_pending"] == 2 and d["progress"]["unknown"] == 2
+    assert d["progress"]["total"] == 7 and d["progress"]["unclaimed"] == {"open": 4, "closed": 1}, d["progress"]
+    clock.t += 1
+    monkeypatch.setattr(nodes_epics, "COMMENT_CALLS", 40)
+    d = get(board).json()
+    assert d["partial"] is False and d["progress"]["unknown"] == 0 and child(d, 204)["claim_state"] == "none"
+
+
+def test_a_budget_that_runs_out_in_the_middle_of_a_thread_is_unknown(board, monkeypatch):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.junk(f"{REPO}#202", 150)
+    gh.comment(f"{REPO}#202", claim_body("node-a", "running"))
+    monkeypatch.setattr(nodes_epics, "COMMENT_CALLS", 1)
+    c = child(get(board).json(), 202)
+    assert c["claim_state"] == "unknown" and c["claim_unknown"]["reason"] == "budget" and c["claim"] is None
+    assert len(comments_of(gh, 202)) == 1
+
+
+def test_the_deadline_leaves_the_comments_unknown(board, monkeypatch):
+    gh = board.gh
+    world(gh)
+    monkeypatch.setattr(nodes_epics, "DEADLINE", -1.0)
+    d = get(board).json()
+    assert comments_of(gh, 202) == [] and child(d, 202)["claim_state"] == "unknown" and child(d, 202)["claim_unknown"]["reason"] == "budget"
+    assert child(d, 205)["claim_state"] == "none", "205 has no comment at all"
+
+
+def test_a_back_off_in_the_middle_leaves_the_rest_unknown_with_the_reason(board):
+    gh = board.gh
+    world(gh)
+    gh.fail("/203/comments", 429, headers={"Retry-After": "40"})
+    d = get(board).json()
+    assert child(d, 202)["claim_state"] == "claimed"
+    for n in (203, 204, 206):
+        c = child(d, n)
+        assert c["claim_state"] == "unknown" and c["claim"] is None and c["claim_unknown"] == {"reason": "rate_limited", "text": "GitHub asked us to wait"}, n
+    assert child(d, 205)["claim_state"] == "none" and d["progress"]["unknown"] >= 3
+    assert d["progress"]["unclaimed"]["open"] == 1, "only 205, read whole by the list's count of 0"
+
+
+def test_an_error_reading_one_issue_makes_that_issue_unknown_and_the_others_carry_on(board):
+    gh = board.gh
+    world(gh)
+    gh.fail("/203/comments", 500)
+    d = get(board).json()
+    assert child(d, 203)["claim_state"] == "unknown" and child(d, 203)["claim_unknown"] == {"reason": "error", "text": "the comments could not be read"}
+    assert child(d, 204)["claim_state"] == "claimed" and child(d, 202)["claim_state"] == "claimed" and d["partial"] is True and d["comments_pending"] == 1
+
+
+def test_a_stale_issue_list_cannot_vouch_for_a_comments_count_of_zero(board, clock):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.comment(f"{REPO}#202", "a note", user="bob", assoc="NONE")
+    assert child(get(board).json(), 205)["claim_state"] == "none"
+    gh.comment(f"{REPO}#205", claim_body("node-b", "claimed"))                  # posted after the list was cached: the cached count for 205 is still 0
+    clock.t += 61
+    gh.fail("/147/sub_issues", 429, headers={"Retry-After": "60"})
+    d = get(board).json()
+    c = child(d, 205)
+    assert c["claim_state"] == "unknown" and c["claim_unknown"]["reason"] == "rate_limited"
+    assert c["bucket"]["state"] == "unknown" and d["progress"]["unknown"] >= 1
+
+
+def test_an_unread_child_of_a_stale_last_good_answer_is_still_unknown(board, clock):
+    gh = board.gh
+    world(gh)
+    gh.fail("/203/comments", 500)
+    get(board)
+    clock.t += 100
+    gh.set(login=None)
+    d = get(board).json()
+    assert d["error"]["reason"] == "no_login" and d["stale_age_s"] == 100
+    assert child(d, 203)["claim_state"] == "unknown", "the stale answer keeps what it knew, including what it did not know"
+
+
+# ================================================================ finding 2: this board's own repositories are the only ones it asks about
+
+def tasks_for(*refs, project="shop", repo="shop"):
+    return [{"id": 100 + i, "phase": "running", "project": project, "repo": repo, "issue_ref": ref, "updated_at": "2026-10-10T10:00:00+00:00"} for i, ref in enumerate(refs)]
+
+
+def test_a_hostile_node_state_costs_no_gh_call_and_attaches_nothing_it_did_not_name_correctly(board, monkeypatch):
+    gh = board.gh
+    world(gh)
+    d0 = get(board).json()
+    clean = gh.paths()
+    nodes_epics.reset()
+    gh.clear_calls()
+    hostile = record(
+        projects=[{"name": "shop", "repos": [{"name": "shop", "slug": "evil/repo"}, {"name": "lib", "slug": "other/lib"}, {"name": "x", "slug": "acme/new"}]}],
+        tasks=tasks_for("#202", "evil/repo#203", "acme/shop#9999", "#999", "other/lib#9", "#0", "#01", "../x#204", "acme/shop/../x#205", "#2" + "0" * 30)
+        + tasks_for("#204", project="nope", repo="shop") + tasks_for("acme/api#9", project="nope", repo="zzz"))
+    monkeypatch.setattr(board.main, "_hub_records", lambda: [hostile])
+    d = get(board).json()
+    assert gh.paths() == clean, "the same requests as with no node at all: not one more"
+    assert not any(x in " ".join(c["argv"]) for c in gh.calls() for x in ("evil", "other/lib", "acme/new"))
+    assert [(c["repo"], c["number"]) for c in d["children"]] == [(c["repo"], c["number"]) for c in d0["children"]], "a node cannot make a child appear"
+    for n in (202, 203, 204):
+        assert child(d, n)["task"] is None, f"#{n}: the node named another repository, or none that is this board's: no join"
+    assert child(d, 9, "acme/api")["task"]["node"] == "box", "the one task that names a repository of this board with the exact number is joined"
+    assert [(c["state"], c["url"]) for c in d["children"]] == [(c["state"], c["url"]) for c in d0["children"]], "a node cannot change a child's state or supply a link"
+    r = board.c.get("/api/epics", headers=ID).json()
+    assert r["repos"] == ["acme/shop", "acme/api"] and not any("evil" in p or "other/lib" in p or "acme/new" in p for p in gh.paths())
+
+
+def test_a_remote_task_with_only_a_repository_name_is_never_joined(board, monkeypatch):
+    """The old join fell back to the repository NAME for a task that named no slug: a node could name its repository `shop` and land on acme/shop."""
+    world(board.gh)
+    recs = [record(projects=[{"name": "p", "repos": [{"name": "shop"}]}], tasks=tasks_for("#205", project="p"))]
+    monkeypatch.setattr(board.main, "_hub_records", lambda: recs)
+    assert child(get(board).json(), 205)["task"] is None
+    make_task(board, issue_number=205, issue_url=None, repo="shop", title="this board's own task")
+    assert child(get(board).json(), 205)["task"]["node"] == "local", "this board's own database may tell by name"
+
+
+def test_a_route_for_a_repository_that_is_not_a_project_here_is_a_404_and_asks_github_nothing(board):
+    gh = board.gh
+    world(gh)
+    gh.add_issue("other/lib", 5, "Third party epic", labels=["ccboard:epic"])
+    r = board.c.get("/api/epics/other/lib/5", headers=ID)
+    assert r.status_code == 404 and r.json()["error"] == "this board has no project for other/lib" and gh.calls() == []
+    r = board.c.put("/api/epics/other/lib/5/settings", json={"paused": True}, headers=H)
+    assert r.status_code == 404 and gh.calls() == [] and board.db.kv_get("epic:other/lib#5") is None
+    board.repos()
+    assert board.c.get("/api/epics/acme/shop/147", headers=ID).status_code == 404 and gh.calls() == []
+    board.repos("Other/Lib")
+    r = board.c.get("/api/epics/other/lib/5", headers=ID)
+    assert r.status_code == 200 and r.json()["epic"]["repo"] == "Other/Lib", "the compare ignores case; the request uses the spelling of this board's own remote"
+
+
+def test_a_sub_issue_in_another_repository_is_shown_from_the_list_and_causes_no_request(board):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.add_issue("other/lib", 7, "Their issue", body="depends on third/party#5\nDepends on: other/lib#8, evil/x#1", raw={"comments": 3})
+    gh.comment("other/lib#7", claim_body("node-a", "running"))
+    gh.link(f"{REPO}#147", "other/lib#7")
+    d = get(board).json()
+    c = child(d, 7, "other/lib")
+    assert c["title"] == "Their issue" and c["url"] == "https://github.com/other/lib/issues/7"
+    assert c["claim_state"] == "unknown" and c["claim"] is None and c["claim_unknown"] == {"reason": "other_repo", "text": "in another repository"}
+    assert c["bucket"] == {"node": None, "state": "unknown"} and d["progress"]["unknown"] == 1
+    assert c["depends_on"] == ["third/party#5", "#8", "evil/x#1"], "shown as text (#8 is in the issue's own repository)"
+    assert not any(x in p for p in gh.paths() for x in ("other/lib", "third/party", "evil")), gh.paths()
+
+
+def test_a_node_task_does_not_join_a_child_of_a_repository_this_board_has_no_project_for(board, monkeypatch):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.add_issue("other/lib", 7, "Their issue")
+    gh.link(f"{REPO}#147", "other/lib#7")
+    recs = [record(projects=[{"name": "lib", "repos": [{"name": "lib", "slug": "other/lib"}]}], tasks=tasks_for("other/lib#7", "#7", project="lib", repo="lib"))]
+    monkeypatch.setattr(board.main, "_hub_records", lambda: recs)
+    c = child(get(board).json(), 7, "other/lib")
+    assert c["task"] is None and c["bucket"] == {"node": None, "state": "unknown"}, "the node named the repository exactly, but it is not one of this board's own"
+
+
+def test_a_sub_issue_in_a_repository_of_this_board_is_read_and_a_node_cannot_move_a_pin_or_a_task_to_it_by_number(board, monkeypatch):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.add_issue("other/lib", 202, "Same number elsewhere")
+    gh.link(f"{REPO}#147", "other/lib#202")
+    monkeypatch.setattr(board.main, "_hub_records", lambda: [record(tasks=tasks_for("acme/shop#202"))])
+    d = get(board).json()
+    assert child(d, 202)["task"]["node"] == "box" and child(d, 202, "other/lib")["task"] is None
+    b = add_node(board)
+    assert put(board, {"pins": {"202": b["handle"]}}).status_code == 200
+    d = get(board).json()
+    assert child(d, 202)["pin"]["handle"] == b["handle"] and child(d, 202, "other/lib")["pin"] is None, "a pin is by issue number: it belongs to the epic's own repository"
+
+
+def test_a_label_list_places_every_issue_in_the_repository_it_was_asked_of(board):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.set(sub_issues_missing=True)
+    gh.add_issue(REPO, 300, "Labelled", labels=["epic:147"], raw={"repository_url": "https://api.github.com/repos/other/lib", "comments": 1})
+    gh.comment(f"{REPO}#300", "note", user="bob", assoc="NONE")
+    d = get(board).json()
+    assert d["source"] == "labels" and child(d, 300)["url"] == "https://github.com/acme/shop/issues/300"
+    assert child(d, 300)["claim_state"] == "none" and not any("other/lib" in p for p in gh.paths())
+
+
+# ---- pins
+
+def test_a_pin_names_only_an_issue_of_the_epic_this_board_has_read(board):
+    gh = board.gh
+    world(gh)
+    assert put(board, {"pins": {"202": "local"}}).status_code == 400, "nothing read yet"
+    get(board)
+    assert put(board, {"pins": {"202": "local"}}).status_code == 200
+    r = put(board, {"pins": {"999": "local"}})
+    assert r.status_code == 400 and "not one of the epic's issues" in r.json()["error"]
+    assert put(board, {"pins": {"9": "local"}}).status_code == 400, "#9 is a child in acme/api, not in the epic's repository: a pin is by number only"
+    assert put(board, {"pins": {"202": None}}).status_code == 200, "removing a pin needs no read"
+    assert put(board, {"pins": {"999": None}}).status_code == 200
+    assert board.db.kv_get("epic:acme/shop#147") is None
+    assert put(board, {"paused": True}).status_code == 200
+
+
+def test_a_pin_stored_by_hand_for_a_foreign_issue_is_not_applied(board):
+    world(board.gh, claims=False)
+    board.gh.add_issue("other/lib", 9, "Foreign")
+    board.gh.link(f"{REPO}#147", "other/lib#9")
+    board.db.kv_set("epic:acme/shop#147", {"pins": {"9": "local", "205": "local"}})
+    d = get(board).json()
+    assert child(d, 9, "other/lib")["pin"] is None and child(d, 205)["pin"]["handle"] == "local"
+
+
+# ---- the other caps
+
+def test_an_epic_with_more_children_than_were_read_never_presents_itself_as_complete(board):
+    gh = board.gh
+    gh.add_issue(REPO, 147, "Big epic", labels=["ccboard:epic"])
+    for i in range(1, 100):
+        gh.add_issue(REPO, 1000 + i, f"Child {i}")
+        gh.link(f"{REPO}#147", f"{REPO}#{1000 + i}")
+    assert get(board).json()["truncated"] is False
+    gh.add_issue(REPO, 1100, "The hundredth")
+    gh.link(f"{REPO}#147", f"{REPO}#1100")
+    nodes_epics.reset()
+    d = get(board).json()
+    assert len(d["children"]) == 100 and d["truncated"] is True, "a full page may have a next one: it says so rather than claim the whole"
+    gh.add_issue(REPO, 1101, "One more")
+    gh.link(f"{REPO}#147", f"{REPO}#1101")
+    nodes_epics.reset()
+    d = get(board).json()
+    assert len(d["children"]) == 100 and d["truncated"] is True
+
+
+def test_the_epics_list_says_when_it_shows_less_than_there_is(board, projects_dir, monkeypatch):
+    gh = board.gh
+    with_projects(board, monkeypatch, [git_repo(projects_dir, "shop", "https://github.com/acme/shop.git")])
+    gh.add_issue(REPO, 1, "Big", labels=["ccboard:epic"])
+    for i in range(130):
+        gh.add_issue(REPO, 1000 + i, f"c{i}")
+        gh.link(f"{REPO}#1", f"{REPO}#{1000 + i}")
+    d = board.c.get("/api/epics", headers=ID).json()
+    assert d["epics"][0]["children"] == {"open": 100, "closed": 0, "total": 100, "more": True} and d["truncated"] is False and d["repos_truncated"] is False
+    for i in range(60):
+        gh.add_issue(REPO, 3000 + i, f"epic {i}", labels=["ccboard:epic"], summary={"total": 1, "completed": 0})
+    nodes_epics.reset()
+    d = board.c.get("/api/epics", headers=ID).json()
+    assert len(d["epics"]) == nodes_epics.EPIC_CAP and d["truncated"] is True
+
+
+def test_more_repositories_than_the_list_reads_are_said_and_the_extra_ones_are_not_asked(board):
+    gh = board.gh
+    slugs = [f"acme/r{i:02d}" for i in range(nodes_epics.REPO_CAP + 3)]
+    board.repos(*slugs)
+    d = board.c.get("/api/epics", headers=ID).json()
+    assert d["repos_truncated"] is True and d["repos"] == slugs[:nodes_epics.REPO_CAP]
+    assert not any(slugs[-1] in p for p in gh.paths()) and len(gh.paths()) == nodes_epics.REPO_CAP
+    assert board.c.get(f"/api/epics/acme/r{nodes_epics.REPO_CAP + 2:02d}/5", headers=ID).status_code == 200, "a repository past the list's cap is still one of this board's own"

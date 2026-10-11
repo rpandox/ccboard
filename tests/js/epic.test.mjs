@@ -49,16 +49,19 @@ test('the page mounts on #/epic/<owner>/<repo>/<n> and asks the board for that e
   assert.ok(root(w));
   assert.deepEqual(gets(w).map((c) => c.path), ['/api/epics/example/website/147']);
   assert.equal(text(page(w).querySelector('.ep-h1')), 'Checkout rework');
-  assert.equal(rows(w).length, 6);
+  assert.equal(rows(w).length, 7);
 });
 
 // ---------------------------------------------------------------- the fixture itself (demo/epic.json is what ?demo=1 shows)
 
-test('the demo epic has six children across two nodes: done, running, queued, failed, unclaimed, a stale claim and a claim from a person who is not allowed', () => {
+test('the demo epic has seven children across two nodes: done, running, queued, failed, unclaimed, a stale claim, a claim from a person who is not allowed and one whose claim is not known', () => {
   const d = FX.details[KEY];
-  assert.equal(d.children.length, 6);
+  assert.equal(d.children.length, 7);
   const states = d.children.map((c) => `${c.bucket.node || '-'}:${c.bucket.state}`);
-  assert.deepEqual(states, ['node-a:done', 'node-a:running', 'node-b:queued', 'node-b:failed', '-:open', '-:open']);
+  assert.deepEqual(states, ['node-a:done', 'node-a:running', 'node-b:queued', 'node-b:failed', '-:open', '-:open', '-:unknown']);
+  const unk = d.children.find((c) => c.claim_state === 'unknown');
+  assert.deepEqual([unk.number, unk.claim, unk.claim_unknown], [207, null, { reason: 'too_long', text: 'too many comments to read' }]);
+  assert.ok(d.children.filter((c) => c.claim_state !== 'unknown').every((c) => c.claim_unknown === null && (c.claim ? c.claim_state === 'claimed' : c.claim_state === 'none')));
   assert.ok(d.children.some((c) => c.claim && c.claim.live === false && c.claim.status === 'claimed'), 'a claim that was not renewed');
   assert.ok(d.children.some((c) => !c.claim && c.claim_rejected > 0 && c.claim_note === 'not from an allowed author'), 'a claim comment from someone not allowed');
   assert.deepEqual(d.nodes.map((n) => n.handle), ['local', 'node-b']);
@@ -68,14 +71,17 @@ test('the fixture adds up: the strip counts are the children buckets, closed one
   const d = FX.details[KEY];
   const by = {};
   const un = { open: 0, closed: 0 };
+  let unknown = 0;
   for (const c of d.children) {
+    if (!c.bucket.node && c.bucket.state === 'unknown') { unknown += 1; continue; }
     if (!c.bucket.node) { un[c.bucket.state === 'closed' ? 'closed' : 'open'] += 1; continue; }
     by[c.bucket.node] = by[c.bucket.node] || { done: 0, running: 0, queued: 0, failed: 0 };
     by[c.bucket.node][c.bucket.state] += 1;
   }
   for (const [alias, p] of Object.entries(d.progress.by_node)) for (const k of ['done', 'running', 'queued', 'failed']) assert.equal(p[k], by[alias][k], `${alias} ${k}`);
   assert.deepEqual(d.progress.unclaimed, un);
-  const sum = Object.values(d.progress.by_node).reduce((a, p) => a + p.done + p.running + p.queued + p.failed, 0) + un.open + un.closed;
+  assert.equal(d.progress.unknown, unknown, 'the unknown ones are counted apart from the unclaimed');
+  const sum = Object.values(d.progress.by_node).reduce((a, p) => a + p.done + p.running + p.queued + p.failed, 0) + un.open + un.closed + unknown;
   assert.equal(sum, d.progress.total);
   assert.equal(d.progress.total, d.progress.open + d.progress.closed);
 });
@@ -120,7 +126,7 @@ test('the header: title, the epic on GitHub, the counts, the rate note, Pause (b
   assert.equal(text(ref), 'example/website#147');
   assert.equal(ref.getAttribute('target'), '_blank');
   assert.equal(ref.getAttribute('rel'), 'noopener noreferrer');
-  assert.equal(text(pg.querySelector('.ep-counts')), '5 open, 1 closed');
+  assert.equal(text(pg.querySelector('.ep-counts')), '6 open, 1 closed');
   assert.equal(text(pg.querySelector('.ep-rate')), 'GitHub requests left: 4990 of 5000');
   const run = btn(pg, 'Run');
   assert.notEqual(run.getAttribute('disabled'), null, 'Run waits for the routing phase');
@@ -146,7 +152,7 @@ test('Run does nothing: no request goes out when it is tapped, and the page neve
 test('the strip: one row per node and an Unclaimed row, a bar of segments (done, running, queued, failed) and the numbers in words with a glyph each', async () => {
   const w = await epicWorld();
   const prows = page(w).querySelectorAll('.ep-prow');
-  assert.deepEqual(prows.map((r) => r.getAttribute('data-node')), ['local', 'node-b', 'Unclaimed']);
+  assert.deepEqual(prows.map((r) => r.getAttribute('data-node')), ['local', 'node-b', 'Unclaimed', 'Claim not known']);
   const a = prows[0];
   assert.equal(text(a.querySelector('.nchip-n')), 'node-a');
   assert.equal(a.querySelector('.ep-bar').getAttribute('aria-label'), 'node-a: 1 done, 1 running');
@@ -159,8 +165,13 @@ test('the strip: one row per node and an Unclaimed row, a bar of segments (done,
   const u = prows[2];
   assert.equal(text(u.querySelector('.ep-plabel')), 'Unclaimed');
   assert.deepEqual(u.querySelectorAll('.ep-words li').map((li) => text(li).trim()), ['○ 2 open']);
+  const k = prows[3];
+  assert.equal(text(k.querySelector('.ep-plabel')), 'Claim not known');
+  assert.deepEqual(k.querySelectorAll('.ep-words li').map((li) => text(li).trim()), ['? 1 claim not known']);
+  assert.equal(k.querySelector('.ep-bar').getAttribute('aria-label'), 'Claim not known: 1 claim not known');
+  assert.equal(u.querySelectorAll('.ep-words li').length, 1, 'the unknown one is not in the Unclaimed row');
   const total = prows.reduce((n, r) => n + Number(/^(\d+)/.exec(text(r.querySelector('.ep-ptot')))[1]), 0);
-  assert.equal(total, 6, 'the strip adds up to the children');
+  assert.equal(total, 7, 'the strip adds up to the children');
 });
 
 test('a segment\'s width is its count (set on the node, never as an attribute), and the states differ by class as well as colour', async () => {
@@ -193,13 +204,15 @@ test('a node the board does not know (a claim by an alias that is no paired node
 test('rows keep the queue order, split into the issues a node holds and the Unclaimed, each with a glyph and its word', async () => {
   const w = await epicWorld();
   const groups = page(w).querySelectorAll('section.ep-sec[data-group]');
-  assert.deepEqual(groups.map((g) => g.getAttribute('data-group')), ['nodes', 'free']);
+  assert.deepEqual(groups.map((g) => g.getAttribute('data-group')), ['nodes', 'free', 'unknown']);
   assert.match(text(groups[0].querySelector('h2')), /^On nodes \(4\)/);
   assert.match(text(groups[1].querySelector('h2')), /^Unclaimed \(2\)/);
+  assert.match(text(groups[2].querySelector('h2')), /^Claim not known \(1\)/);
+  assert.deepEqual(groups[2].querySelectorAll('.ep-row').map((r) => r.getAttribute('data-n')), ['207']);
   assert.deepEqual(groups[0].querySelectorAll('.ep-row').map((r) => r.getAttribute('data-n')), ['201', '202', '203', '204']);
   assert.deepEqual(groups[1].querySelectorAll('.ep-row').map((r) => r.getAttribute('data-n')), ['205', '206']);
   const word = (n) => rowOf(w, n).querySelector('.ep-g').getAttribute('aria-label');
-  assert.deepEqual([201, 202, 203, 204, 205].map(word), ['done', 'running', 'queued', 'failed', 'open']);
+  assert.deepEqual([201, 202, 203, 204, 205, 207].map(word), ['done', 'running', 'queued', 'failed', 'open', 'claim not known']);
   assert.equal(text(rowOf(w, 201).querySelector('.ep-g')), '✓');
   assert.equal(text(rowOf(w, 204).querySelector('.ep-g')), '✕');
 });
@@ -257,14 +270,44 @@ test('an offline node shows its last phase and how long ago', async () => {
   assert.equal(text(rowOf(w, 203).querySelector('.ep-task')), 'node-b is offline: last seen running 2 h ago');
 });
 
-test('claims not read yet (the board ran out of its budget) say so on an open issue and nowhere else', async () => {
+test('a child whose claim is not known says why, in its own group, and is never shown as free; the reason is the board\'s sentence', async () => {
   const d = detail({ partial: true, comments_pending: 2 });
-  d.children[5].claim = null;
-  d.children[5].claim_known = false;
+  for (const [n, reason, text_] of [[206, 'budget', 'not read yet in this refresh'], [205, 'rate_limited', 'GitHub asked us to wait']]) {
+    const c = d.children.find((x) => x.number === n);
+    Object.assign(c, { claim: null, claim_rejected: 0, claim_note: null, claim_state: 'unknown', claim_unknown: { reason, text: text_ }, bucket: { node: null, state: 'unknown' } });
+  }
+  d.progress.unclaimed.open = 0;
+  d.progress.unknown = 3;
   const w = await epicWorld({ data: d });
-  assert.equal(text(rowOf(w, 206).querySelector('.ep-claim')), 'claims not read yet');
+  assert.equal(text(rowOf(w, 206).querySelector('.ep-claim')), '? Claim not known: not read yet in this refresh');
+  assert.equal(text(rowOf(w, 205).querySelector('.ep-claim')), '? Claim not known: GitHub asked us to wait');
+  assert.equal(text(rowOf(w, 207).querySelector('.ep-claim')), '? Claim not known: too many comments to read');
+  const groups = page(w).querySelectorAll('section.ep-sec[data-group]').filter((g) => !g.classList.contains('hidden'));
+  assert.deepEqual(groups.map((g) => g.getAttribute('data-group')), ['nodes', 'unknown'], 'nothing is Unclaimed: the free group is empty and hidden');
+  assert.ok(page(w).querySelector('section[data-group="free"]').classList.contains('hidden'));
+  assert.deepEqual(groups[1].querySelectorAll('.ep-row').map((r) => r.getAttribute('data-n')), ['205', '206', '207']);
+  assert.match(text(groups[1]), /Only "Unclaimed" means free\./);
+  assert.ok(rowOf(w, 206).querySelector('.ep-claim').classList.contains('warn'), 'attention, with a glyph and words');
   assert.match(text(page(w).querySelector('.ep-banner')), /2 issues still to be checked for claims/);
+  const strip = page(w).querySelectorAll('.ep-prow');
+  assert.equal(text(strip.find((r) => r.getAttribute('data-node') === 'Claim not known').querySelector('.ep-ptot')), '3 issues');
+  assert.equal(strip.find((r) => r.getAttribute('data-node') === 'Unclaimed'), undefined, 'no Unclaimed row when nothing was read as free');
   assert.equal(rowOf(w, 202).querySelector('.dim.ep-claim'), null);
+});
+
+test('a claim that is not known is also said on a closed issue only by its group: a closed child says nothing about claims', async () => {
+  const d = detail();
+  Object.assign(d.children[0], { claim_state: 'unknown', claim_unknown: { reason: 'budget', text: 'not read yet in this refresh' } });
+  const w = await epicWorld({ data: d });
+  assert.ok(!/Claim not known/.test(text(rowOf(w, 201))));
+});
+
+test('when the board cannot tell who may claim it says so, with what to do', async () => {
+  const d = detail({ claims_note: 'cannot tell who may claim: gh login unknown' });
+  const w = await epicWorld({ data: d });
+  const note = text(page(w).querySelector('.ep-banner'));
+  assert.match(note, /cannot tell who may claim: gh login unknown/);
+  assert.match(note, /CCBOARD_EPIC_AUTHORS/);
 });
 
 test('a dependency cycle and an issue of another repository are marked', async () => {
@@ -435,7 +478,7 @@ test('a rate-limit pause says "GitHub asked us to wait 40 s", keeps the last rea
   assert.match(banner(w), /GitHub asked us to wait 40 s/);
   assert.match(banner(w), /asks again by itself once the time is up/);
   assert.match(banner(w), /Showing the last read, from 2 min ago\./);
-  assert.equal(rows(w).length, 6, 'the last read stays');
+  assert.equal(rows(w).length, 7, 'the last read stays');
   assert.ok(page(w).querySelector('.ep-note.warn'));
   assert.equal(text(page(w).querySelector('.ep-rate')), '', 'no "requests left" line while waiting');
   assert.equal(w.run('epDelay(epicPage.cur)'), 41000);
@@ -449,7 +492,7 @@ test('a slow or broken GitHub keeps the last read and says how old it is', async
   assert.match(banner(w), /gh did not answer in time/);
   assert.match(banner(w), /GitHub is slow to answer\./);
   assert.match(banner(w), /Showing the last read, from 2 min ago\./);
-  assert.equal(rows(w).length, 6);
+  assert.equal(rows(w).length, 7);
 });
 
 test('the board itself failing (a 5xx or no network) is a quiet note with the page kept, never a blank screen; the page asks again in 15 s', async () => {
@@ -462,7 +505,7 @@ test('the board itself failing (a 5xx or no network) is a quiet note with the pa
   await w.run('epFetch(epicPage.cur)');
   await settle();
   assert.equal(banner(w), '');
-  assert.equal(rows(w).length, 6, 'it recovers on the next read');
+  assert.equal(rows(w).length, 7, 'it recovers on the next read');
 });
 
 test('a 400 (an address the board refuses) reads as a plain sentence', async () => {
@@ -483,9 +526,11 @@ test('an empty epic says "This epic has no issues yet. Add sub-issues on GitHub.
 test('the label fallback gives a quiet note, not an error; truncation and pending claims are plain notes too', async () => {
   const w = await epicWorld({ data: detail({ ...clone(FX.variants.labels.detail), truncated: true }) });
   const notes = page(w).querySelectorAll('.ep-note');
-  assert.deepEqual(notes.map((n) => text(n)), ['This repository has no sub-issues endpoint, so the children are the issues labelled epic:147.', 'This epic has more than 100 issues: only the first 100 are shown.']);
-  assert.ok(notes.every((n) => n.classList.contains('dim')), 'quiet');
-  assert.equal(rows(w).length, 6);
+  assert.deepEqual(notes.map((n) => text(n)), ['This repository has no sub-issues endpoint, so the children are the issues labelled epic:147.',
+    'This epic has more issues than shown: only the first 100 are read, so the numbers here are a floor.']);
+  assert.ok(notes[0].classList.contains('dim'), 'the label note is quiet');
+  assert.ok(notes[1].classList.contains('warn'), 'an incomplete epic is not quiet: it never presents itself as complete');
+  assert.equal(rows(w).length, 7);
 });
 
 // ---------------------------------------------------------------- untrusted text
@@ -712,7 +757,8 @@ test('Epics: the address becomes #/tasks?tab=epics, the board gives way to the l
   const first = lrows[0];
   assert.equal(first.querySelector('.ep-ltitle').getAttribute('href'), '#/epic/example/website/147');
   assert.equal(text(first.querySelector('.ep-ltitle')), 'Checkout rework');
-  assert.match(text(first.querySelector('.ep-lmeta')), /5 open, 1 closed/);
+  assert.match(text(first.querySelector('.ep-lmeta')), /6 open, 1 closed/);
+  assert.ok(!/more issues than shown/.test(text(first.querySelector('.ep-lmeta'))));
   assert.match(text(first.querySelector('.ep-lmeta')), /updated 4 min ago/);
   assert.equal(first.querySelector('.badge'), null);
   assert.equal(text(lrows[1].querySelector('.badge')), 'paused');
@@ -720,6 +766,20 @@ test('Epics: the address becomes #/tasks?tab=epics, the board gives way to the l
   assert.equal(gh.getAttribute('href'), 'https://github.com/example/website/issues/147');
   assert.equal(gh.getAttribute('rel'), 'noopener noreferrer');
   assert.match(text(page(w)), /Looked in 2 repositories: example\/website, example\/board\./);
+});
+
+test('the Epics list never looks complete when it is not: more issues, more epics and more repositories than it reads are each said', async () => {
+  const list = clone(FX.list);
+  list.epics[0].children = { open: 100, closed: 0, total: 100, more: true };
+  list.truncated = true;
+  list.repos_truncated = true;
+  const w = await tasksWorld({ list });
+  tabBtn(w, 'Epics').click();
+  await settle();
+  const t = text(page(w));
+  assert.match(text(page(w).querySelectorAll('.ep-lrow')[0].querySelector('.ep-lmeta')), /100 open, 0 closed, more issues than shown/);
+  assert.match(t, /There are more epics than shown\./);
+  assert.match(t, /This board has more repositories than it looks in\./);
 });
 
 test('opening #/tasks?tab=epics directly works even for a board with no sign of epics, and Board brings the task board back and stops the list', async () => {
@@ -903,8 +963,9 @@ test('demo mode routes /api/epics through the epic bundle: the list, one epic, a
   const l = await demoCall(w, 'GET', '/api/epics');
   assert.deepEqual(l.epics.map((e) => e.title), ['Checkout rework', 'Offline shell polish']);
   const d = await demoCall(w, 'GET', '/api/epics/example/website/147');
-  assert.equal(d.children.length, 6);
+  assert.equal(d.children.length, 7);
   assert.deepEqual(d.progress.unclaimed, { open: 2, closed: 0 });
+  assert.equal(d.progress.unknown, 1);
   const other = await demoCall(w, 'GET', '/api/epics/example/website/999');
   assert.deepEqual(other.children, []);
   assert.equal(other.epic.url, 'https://github.com/example/website/issues/999');
@@ -938,7 +999,7 @@ test('?epic=<name> picks a degraded state of the demo: no login, no access, not 
   await assert.rejects(demoCall(await demoWorld({ search: '?epic=down' }), 'GET', '/api/epics/example/website/147'), /could not answer/);
 });
 
-test('the demo page end to end: the six-child epic renders with all its cases and the pin menu works', async () => {
+test('the demo page end to end: the seven-child epic renders with all its cases and the pin menu works', async () => {
   const { w } = homeWorld({ state: fakeState() });
   made.push(w);
   w.load('pages/epic.js');
@@ -947,8 +1008,9 @@ test('the demo page end to end: the six-child epic renders with all its cases an
          api = (method, path, body) => demoEpics(method, path, body);`);
   w.location.hash = HASH;
   await later(400);
-  assert.equal(rows(w).length, 6);
-  assert.deepEqual(rows(w).map((r) => r.getAttribute('data-state')), ['done', 'running', 'queued', 'failed', 'open', 'open']);
+  assert.equal(rows(w).length, 7);
+  assert.deepEqual(rows(w).map((r) => r.getAttribute('data-state')), ['done', 'running', 'queued', 'failed', 'open', 'open', 'unknown']);
+  assert.equal(text(rowOf(w, 207).querySelector('.ep-claim')), '? Claim not known: too many comments to read');
   pinBtn(w, 202).click();
   menuPick(w, 'node-b');
   assert.equal(text(rowOf(w, 202).querySelector('.ep-pintext')), 'pinned: node-b');

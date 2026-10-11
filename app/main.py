@@ -4630,25 +4630,39 @@ def _hub_records() -> list[dict]:
     return hub.records() if hub.rows() else []
 
 
+def _epic_repos() -> list[str]:
+    """The GitHub repositories of this board's OWN projects (their local `origin` remotes): the only repositories the epic routes ask GitHub about. What a paired
+    node reports, and what GitHub or a node names inside an epic, never adds to it."""
+    projs = _cached_projects()
+    return nodes_epics.known_repos(projs if projs is not None else _scan_entry().get("projects"))
+
+
+def _epic_here(owner: str, repo: str) -> list[str]:
+    """This board's repositories, after checking that the one in the route is among them (404 `this board has no project for <owner>/<repo>`, before any gh call)."""
+    repos = _epic_repos()
+    if f"{owner}/{repo}".lower() not in {s.lower() for s in repos}:
+        raise projects.NotFound(f"this board has no project for {owner}/{repo}")
+    return repos
+
+
 @app.get("/api/epics")
 def api_epics():
-    """The open issues labelled ccboard:epic in the GitHub repositories this board knows (its projects' remotes and the paired nodes' readings), each with its
-    children's counts: {epics: [{repo, number, title, url, children: {open, closed, total} | null, updated_at, labels, paused}], repos, errors, error, rate, at}.
-    Read through gh (GET only), cached 60 s; a GitHub problem is an `error` in a 200 answer (reason, message, wait_s), never a 5xx."""
-    recs = _hub_records()
-    projs = _cached_projects()
-    out = nodes_epics.list_epics(db, nodes_epics.known_repos(projs if projs is not None else _scan_entry().get("projects"), recs))
+    """The open issues labelled ccboard:epic in the GitHub repositories of this board's own projects (their remotes), each with its children's counts:
+    {epics: [{repo, number, title, url, children: {open, closed, total, more} | null, updated_at, labels, paused}], repos, repos_truncated, truncated, errors, error,
+    rate, at}. Read through gh (GET only), cached 60 s; a GitHub problem is an `error` in a 200 answer (reason, message, wait_s), never a 5xx."""
+    out = nodes_epics.list_epics(db, _epic_repos())
     out["at"] = db_now()
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/epics/{owner}/{repo}/{n}")
 def api_epic(owner: str, repo: str, n: str):
-    """One epic: {epic, source, note, children: [...], progress: {by_node, unclaimed, open, closed, total}, pins, epic_pin, paused, report, auto_pr, nodes, rate,
-    server_now, error, stale_age_s, truncated, partial, comments_pending, empty, at}. 400 for an owner, repository or number outside GitHub's rules (before any
-    gh command is built); every GitHub problem is `error` in a 200 answer, with the last good data when there is one."""
+    """One epic: {epic, source, note, children: [...], progress: {by_node, unclaimed, unknown, open, closed, total}, claims_note, pins, epic_pin, paused, report, auto_pr,
+    nodes, rate, server_now, error, stale_age_s, truncated, partial, comments_pending, empty, at}. 400 for an owner, repository or number outside GitHub's rules
+    (before any gh command is built), 404 for a repository that is not one of this board's projects; every GitHub problem is `error` in a 200 answer, with the
+    last good data when there is one."""
     num = _epic_ids(owner, repo, n)
-    out = nodes_epics.detail(db, owner, repo, num, _hub_records())
+    out = nodes_epics.detail(db, owner, repo, num, _hub_records(), repos=_epic_here(owner, repo))
     out["at"] = db_now()
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
@@ -4671,6 +4685,7 @@ def api_epic_settings(owner: str, repo: str, n: str, body: EpicSettingsIn, reque
     if user in ("local-token", "hub") or (isinstance(user, str) and user.startswith("node:")):
         raise projects.Forbidden("epic pins and pause are set by a signed-in person")
     num = _epic_ids(owner, repo, n)
+    _epic_here(owner, repo)
     nodes_epics.save_settings(db, owner, repo, num, {k: getattr(body, k) for k in body.model_fields_set})
     return JSONResponse(nodes_epics.settings_view(db, owner, repo, num, _hub_records()), headers={"Cache-Control": "no-store"})
 

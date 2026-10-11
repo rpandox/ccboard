@@ -14,7 +14,7 @@ const EP_POLL_MS = 30000;          // the page asks again this often while it is
 const EP_LIST_POLL_MS = 60000;
 const EP_WAIT_MAX_MS = 65000;
 const EP_LINK_RE = /^https:\/\/github\.com\/[A-Za-z0-9-]{1,39}\/[A-Za-z0-9_.-]{1,100}\/(?:issues|pull)\/[1-9][0-9]{0,8}$/;
-const EP_STATE = { done: ['✓', 'done'], running: ['✽', 'running'], queued: ['∙', 'queued'], failed: ['✕', 'failed'], open: ['○', 'open'], closed: ['✓', 'closed'] };
+const EP_STATE = { done: ['✓', 'done'], running: ['✽', 'running'], queued: ['∙', 'queued'], failed: ['✕', 'failed'], open: ['○', 'open'], closed: ['✓', 'closed'], unknown: ['?', 'claim not known'] };
 const EP_PHASE = { backlog: 'in the backlog', queued: 'queued', running: 'running', done: 'done', failed: 'failed', cancelled: 'cancelled', unknown: 'in an unknown phase' };
 const EP_CLAIM = { claimed: 'claimed', running: 'running', done: 'done', failed: 'failed', released: 'released', cancelled: 'cancelled' };
 const EP_NEXT = {                  // what to do next, by the reason the board gives (the board's own sentence comes first)
@@ -28,6 +28,9 @@ const EP_NEXT = {                  // what to do next, by the reason the board g
   bad_answer: 'GitHub sent an answer this board could not read. This page asks again by itself.',
   too_large: 'GitHub sent more than this board reads at once.',
 };
+const EP_TRUNCATED = 'This epic has more issues than shown: only the first 100 are read, so the numbers here are a floor.';
+const EP_AUTHORS_NEXT = 'Set CCBOARD_EPIC_AUTHORS, or log gh in on this board. Until then no claim is read and no issue is shown as free.';
+const EP_UNKNOWN_HINT = 'Not every comment of these issues could be read, so a claim may exist. Only "Unclaimed" means free.';
 const EP_EMPTY = 'This epic has no issues yet. Add sub-issues on GitHub.';
 const EP_RUN_WHY = 'available when routing is installed';
 const EP_PAUSE_WHY = 'Pause stops this board routing the epic. Nothing changes on GitHub.';
@@ -147,6 +150,8 @@ function epStrip(data) {
   }
   const un = (data.progress && data.progress.unclaimed) || { open: 0, closed: 0 };
   if (epNum(un.open) + epNum(un.closed) > 0) host.append(epStripRow('Unclaimed', undefined, [['open', 'open'], ['closed', 'closed']], un));
+  const unk = epNum(data.progress && data.progress.unknown);
+  if (unk > 0) host.append(epStripRow('Claim not known', undefined, [['unknown', 'claim not known']], { unknown: unk }));
   return host;
 }
 
@@ -227,8 +232,11 @@ function epFillRow(P, li, c) {
     meta.append(epChip(handle, b.node, handle ? null : `${b.node} is not a node paired with this board`, handle ? null : '?'));
   }
   if (claim.text) meta.append(el('span', { class: 'ep-claim' + (claim.warn ? ' warn' : ''), title: claim.title || null }, claim.warn ? el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: '⚠ ' }) : null, claim.text));
-  else if (c.claim_rejected > 0) meta.append(el('span', { class: 'ep-claim warn', title: 'Someone who is not on the allowed list wrote a claim comment. It is ignored.' }, el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: '⚠ ' }), c.claim_note || 'not from an allowed author'));
-  else if (c.claim_known === false && c.state === 'open') meta.append(el('span', { class: 'dim ep-claim', text: 'claims not read yet' }));
+  else if (c.claim_state === 'unknown' && c.state === 'open') {
+    const why = c.claim_unknown && typeof c.claim_unknown.text === 'string' && c.claim_unknown.text ? c.claim_unknown.text : 'not every comment was read';
+    meta.append(el('span', { class: 'ep-claim warn', 'data-claim': 'unknown', title: 'The board could not read all the comments of this issue, so it cannot tell whether someone has claimed it. It is not shown as free.' },
+      el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: '? ' }), `Claim not known: ${why}`));
+  } else if (c.claim_rejected > 0) meta.append(el('span', { class: 'ep-claim warn', title: 'Someone who is not on the allowed list wrote a claim comment. It is ignored.' }, el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: '⚠ ' }), c.claim_note || 'not from an allowed author'));
   if (task) meta.append(el('span', { class: 'ep-task', text: task }));
   if (c.pr) meta.append(epLink(c.pr.url, `PR #${c.pr.number} ${c.pr.draft ? 'draft' : c.pr.state}`, 'ep-pr', 'Open the pull request on GitHub'));
   if ((c.blocked_by || []).length) meta.append(el('span', { class: 'ep-dep', text: `waits for ${c.blocked_by.join(', ')}` }));
@@ -308,7 +316,8 @@ function epBanner(P) {
     if (typeof d.stale_age_s === 'number') out.push(['dim', `Showing the last read, from ${epAgo(d.stale_age_s).replace(' ago', '')} ago.`, '']);
   }
   if (d.note) out.push(['dim', d.note, '']);
-  if (d.truncated) out.push(['dim', 'This epic has more than 100 issues: only the first 100 are shown.', '']);
+  if (d.claims_note) out.push(['warn', d.claims_note, EP_AUTHORS_NEXT]);
+  if (d.truncated) out.push(['warn', EP_TRUNCATED, '']);
   if (d.partial && d.comments_pending > 0) out.push(['dim', `${d.comments_pending} ${d.comments_pending === 1 ? 'issue' : 'issues'} still to be checked for claims; they fill in on the next refresh.`, '']);
   return out;
 }
@@ -350,11 +359,13 @@ function epPaint(P) {
   if (showEmpty) P.empty.append(pageEmpty('git-branch', EP_EMPTY, ''), epLink(e.url, 'Open the epic on GitHub', 'btn small ep-open'));
   P.skel.classList.toggle('hidden', true);
 
-  // two groups in the queue order GitHub keeps: the issues a node holds or finished, then the Unclaimed. A row that holds focus stays in its group until it lets go, so a poll never moves it.
-  const groups = { nodes: [], free: [] };
+  // three groups in the queue order GitHub keeps: the issues a node holds or finished, the Unclaimed (every comment read, no claim) and the ones whose claim is not known (never mixed
+  // with the Unclaimed). A row that holds focus stays in its group until it lets go, so a poll never moves it.
+  const groups = { nodes: [], free: [], unknown: [] };
   for (const c of kids) {
     const key = c.repo + '#' + c.number;
-    const want = epBucket(c).node ? 'nodes' : 'free';
+    const b = epBucket(c);
+    const want = b.node ? 'nodes' : (b.state === 'unknown' ? 'unknown' : 'free');
     const was = P.where.get(key);
     const row = P.lists[was] && P.lists[was].nodes.get(key);
     const g = row && was !== want && row.contains(document.activeElement) ? was : want;
@@ -362,7 +373,7 @@ function epPaint(P) {
     groups[g].push(c);
   }
   for (const [key] of Array.from(P.where)) if (!kids.some((c) => c.repo + '#' + c.number === key)) P.where.delete(key);
-  for (const g of ['nodes', 'free']) {
+  for (const g of ['nodes', 'free', 'unknown']) {
     P.lists[g].update(groups[g]);
     P.secs[g].classList.toggle('hidden', !groups[g].length);
     setText(P.counts2[g], `(${groups[g].length})`);
@@ -421,7 +432,7 @@ function epFetch(P) {
 }
 
 function epBlank(P) {
-  return { epic: { repo: `${P.owner}/${P.repo}`, owner: P.owner, name: P.repo, number: Number(P.n), title: null, url: `${EP_GH}${P.owner}/${P.repo}/issues/${P.n}`, state: null }, children: [], progress: { by_node: {}, unclaimed: { open: 0, closed: 0 }, open: 0, closed: 0, total: 0 },
+  return { epic: { repo: `${P.owner}/${P.repo}`, owner: P.owner, name: P.repo, number: Number(P.n), title: null, url: `${EP_GH}${P.owner}/${P.repo}/issues/${P.n}`, state: null }, children: [], progress: { by_node: {}, unclaimed: { open: 0, closed: 0 }, unknown: 0, open: 0, closed: 0, total: 0 },
     pins: {}, epic_pin: null, paused: false, nodes: [], rate: null, server_now: null, error: null, stale_age_s: null, empty: false };
 }
 
@@ -453,11 +464,12 @@ function epMount(root, route) {
   const sec = (g, label) => {
     const host = el('ul', { class: 'ep-rows' });
     P.counts2[g] = el('span', { class: 'ep-hn dim' });
-    P.secs[g] = el('section', { class: 'ep-sec hidden', 'data-group': g, 'aria-label': label }, el('h2', { class: 'ep-h' }, label + ' ', P.counts2[g]), host);
+    P.secs[g] = el('section', { class: 'ep-sec hidden', 'data-group': g, 'aria-label': label }, el('h2', { class: 'ep-h' }, label + ' ', P.counts2[g]),
+      g === 'unknown' ? el('p', { class: 'dim ep-why', text: EP_UNKNOWN_HINT }) : null, host);
     P.lists[g] = epRowList(P, g, host);
     return P.secs[g];
   };
-  root.append(el('div', { class: 'ep ep-page' }, P.head, P.banner, P.skel, P.empty, P.stripSec, sec('nodes', 'On nodes'), sec('free', 'Unclaimed')));
+  root.append(el('div', { class: 'ep ep-page' }, P.head, P.banner, P.skel, P.empty, P.stripSec, sec('nodes', 'On nodes'), sec('free', 'Unclaimed'), sec('unknown', 'Claim not known')));
   P.stripSec.classList.add('hidden');
   P.onVis = () => {
     if (document.hidden || epicPage.cur !== P) return;
@@ -504,7 +516,7 @@ Epics.fetchList = function (force) {
 function epListRow(e, nowIso) {
   const h = Epics.hash(e.owner, e.name, e.number);
   const c = e.children;
-  const counts = c ? `${c.open} open, ${c.closed} closed` : 'issues not counted yet';
+  const counts = c ? `${c.open} open, ${c.closed} closed${c.more ? ', more issues than shown' : ''}` : 'issues not counted yet';
   const when = epSince(e.updated_at, nowIso);
   return el('li', { class: 'ep-lrow' + (e.paused ? ' paused' : ''), 'data-epic': epRef(e.owner, e.name, e.number) },
     el('a', { class: 'ep-ltitle', href: h || '#/tasks?tab=epics', text: e.title || `Epic #${e.number}` }),
@@ -529,7 +541,8 @@ function epListPaint(L) {
   } else if (!d.error) {
     L.body.append(pageEmpty('git-branch', d.note ? 'No GitHub remote here' : 'No epics yet', d.note || 'An epic is an issue labelled ccboard:epic that has sub-issues. Label one on GitHub and it shows up here.'));
   }
-  if (d.repos && d.repos.length) L.body.append(el('p', { class: 'dim ep-lnote', text: `Looked in ${d.repos.length} ${d.repos.length === 1 ? 'repository' : 'repositories'}: ${d.repos.slice(0, 4).join(', ')}${d.repos.length > 4 ? ' and more' : ''}.` }));
+  if (d.truncated) L.body.append(el('div', { class: 'ep-note warn', role: 'status' }, el('span', { class: 'ep-note-t', text: 'There are more epics than shown.' })));
+  if (d.repos && d.repos.length) L.body.append(el('p', { class: 'dim ep-lnote', text: `Looked in ${d.repos.length} ${d.repos.length === 1 ? 'repository' : 'repositories'}: ${d.repos.slice(0, 4).join(', ')}${d.repos.length > 4 ? ' and more' : ''}.${d.repos_truncated ? ' This board has more repositories than it looks in.' : ''}` }));
   const rate = epRateText(d.rate);
   if (rate) L.body.append(el('p', { class: 'dim ep-lnote', text: rate }));
 }

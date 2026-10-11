@@ -267,7 +267,7 @@ if [ -z "${CCBOARD_HUB_TOKEN:-}" ]; then CCBOARD_HUB_TOKEN=$(python3 -c 'import 
 : "${CCBOARD_CLONE_ALLOWED_HOSTS:=}"      # empty = clones may only name public hosts; a private git server (gitea.lan, 192.168.1.5) is listed here, comma separated
 : "${CCBOARD_MCP_REMOTE:=0}"            # 1 = the remote MCP endpoint /mcp starts on (Settings > Agents can still turn it off); 0 = off until switched on there
 : "${CCBOARD_MCP_NODES:=0}"             # 0 = agents stay on this board; read (or 1) = they may list nodes and read their projects and tasks; tasks = they may also start tasks there (issue #152)
-: "${CCBOARD_EPIC_AUTHORS:=}"             # GitHub logins whose claim comments count on an epic besides the repository owner (empty = the gh login only; issue #147)
+: "${CCBOARD_EPIC_AUTHORS:=}"             # GitHub logins whose claim comments count on an epic, if they can write to the repository (empty = the gh login only; issue #147)
 : "${CODEX_HOME:=}"                    # empty = Codex's own default (~/.codex); the hooks.json and the MCP entry go where Codex reads them
 : "${CCBOARD_AUTOCLOSE_GRACE:=45}"     # seconds between a task session's Stop and the board closing it (the app reads an empty value as 45)
 : "${CCBOARD_CODEX_HOOKS_ASYNC:=1}"    # 0 = write every Codex hook synchronous, for a Codex build that skips async hooks (scripts/codex_hooks.py reads it below)

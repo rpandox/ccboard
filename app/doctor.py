@@ -737,7 +737,7 @@ def _epic_probe() -> dict:
     Runs on a probe thread (it talks to GitHub); nothing is written and the token is never read."""
     from . import nodes_epics
     src = _projects_source
-    repos = nodes_epics.known_repos(src() if callable(src) else None, [])
+    repos = nodes_epics.known_repos(src() if callable(src) else None)
     try:
         p = _run(["gh", "--version"])
         ver = (_vstr(p.out) or "") if p.rc == 0 else ""

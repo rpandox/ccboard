@@ -9,14 +9,27 @@ and the answer says so (`source: labels`). Other labels the board reads: `ccboar
 GitHub is read through app/github.py (`gh api` GET only, ETag, a 60 s cache, a back-off kept in memory) and only when a person (or the hook token) asks:
 nothing here starts a thread or a timer, so a board with no epic label anywhere and no paired node does nothing in the background.
 
-EVERYTHING GitHub returns is untrusted text written by other people. Lists are capped (100 children, 100 comments per issue, 25 repositories), only whitelisted
-fields are kept, strings go through github.clean_text, links are built from a validated owner, repository and number (never copied from the payload) and the
-page renders all of it with textContent.
+EVERYTHING GitHub returns is untrusted text written by other people. Lists are capped (100 children, 100 comments from each end of an issue, 25 repositories),
+only whitelisted fields are kept, strings go through github.clean_text, links are built from a validated owner, repository and number (never copied from the
+payload) and the page renders all of it with textContent. A cap never turns into a permissive answer: an epic with more children than were read says so
+(`truncated`), and a child whose comments were not all read is `claim_state: unknown`, never free.
 
-A claim comment (`<!-- ccboard:claim v1 -->`, written by the claim phase, issue #148) counts only when its author is the repository owner or an allowed login
-(CCBOARD_EPIC_AUTHORS; empty means the login gh uses on this board). A claim-shaped comment from anyone else is counted as `claim_rejected` and never shown
-as a claim. A claim is live when its status is claimed or running and GitHub's own clock (the Date header of the comments answer) is less than the claim's
-lease after the comment's updated_at; the local clock decides nothing.
+Which repositories this board may ask GitHub about: exactly the GitHub remotes of its OWN projects (`known_repos`, from local `git remote` only), and an epic
+addressed in a route only when its repository is in that set. Nothing another node sends (a remote task's issue_ref, a slug in a node's state) and nothing GitHub
+sends (a repository_url, a `depends on owner/name#N` line, a sub-issue living elsewhere) ever selects a request: a child in a repository outside the set is shown
+from the data the sub-issues answer already held, with its claim "in another repository". A node's task is only JOINED to a child already read, by the exact issue
+number and a repository slug that is in the set.
+
+A claim comment (`<!-- ccboard:claim v1 -->`, written by the claim phase, issue #148) counts only when ALL of these hold: its author is a user (a user object with a
+login and type User, not a bot), the login is in CCBOARD_EPIC_AUTHORS (empty: the login gh is authenticated as on this board; when neither is known nobody counts),
+and GitHub's own `author_association` on the comment is OWNER, MEMBER or COLLABORATOR (someone who can write to the repository). Being the repository owner earns no
+trust by itself. A claim-shaped comment from anyone else is counted as `claim_rejected` and never shown as a claim. A claim is live when its status is claimed or
+running and GitHub's own clock (the Date header of the comments answer) is less than the claim's lease after the comment's updated_at; the local clock decides nothing.
+
+What a child's claim knowledge is (`claim_state`): `claimed` (an allowed claim was found), `none` (ALL the comments of the issue were read in this refresh and none is
+an allowed claim: the only state that means free) or `unknown` (anything else: not read, cut short, an error, a back-off, another repository, no way to tell who may
+claim). A thread of up to 200 comments is read whole (its first and its last 100); a longer one is read from both ends and is `unknown` unless a LIVE allowed claim
+was found. The last page is computed from the comments count GitHub sends with the issue and the page size; no Link URL is ever followed.
 """
 from __future__ import annotations
 
@@ -38,7 +51,8 @@ NODE_LABEL = "ccboard:node:"
 FALLBACK_LABEL = "epic:"                 # + the parent's number, on each child, when the sub-issues endpoint is not there
 CHILD_CAP = 100
 COMMENT_CAP = 100
-REPO_CAP = 25
+REPO_CAP = 25                            # repositories the Epics list reads at most (more is said: `repos_truncated`)
+REPO_SET_MAX = 500                       # repositories of this board's own projects the route check knows
 EPIC_CAP = 50                            # epics listed at most
 LABEL_CAP = 30
 DEPENDS_CAP = 20
@@ -51,6 +65,16 @@ COMMENTS_TTL_CLOSED = 600.0              # a closed child's: its claim history i
 COMMENT_CALLS = 40                       # gh calls for comments one refresh may make; the rest wait for the next one (answer.partial)
 DEADLINE = 30.0                          # seconds one refresh may take
 STALE_NOTE = "not from an allowed author"
+AUTHORS_NOTE = "cannot tell who may claim: gh login unknown"
+ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR")           # GitHub's own word for the people who can write to the repository
+UNKNOWN_TEXT = {                                               # claim_state unknown: the reason code and the sentence the page shows
+    "too_long": "too many comments to read",
+    "rate_limited": "GitHub asked us to wait",
+    "budget": "not read yet in this refresh",
+    "error": "the comments could not be read",
+    "other_repo": "in another repository",
+    "authors_unknown": AUTHORS_NOTE,
+}
 KV_PREFIX = "epic:"
 STATUSES = ("claimed", "running", "done", "failed", "released", "cancelled")
 LEASE_MIN, LEASE_MAX, LEASE_DEFAULT = 10, 120, 30
@@ -131,10 +155,11 @@ def parse_claim(body) -> dict | None:
 
 def parse_claims(comments) -> list[dict]:
     """The claims in a list of GitHub comment objects, oldest first by (created_at, id): {id, author, created_at, updated_at, alias, status, ...}. Comments
-    without the marker, with another version or without a usable id and timestamps are ignored; `author` is the login (validated) or None. No author check
+    without the marker, with another version or without a usable id and timestamps are ignored; `author` is the login (validated) of a user object of type
+    User, else None (no user, a bot, an organisation, a login that is not one); `association` is GitHub's author_association word or None. No author check
     happens here: see `pick_claim`."""
     out = []
-    for c in comments[:COMMENT_CAP] if isinstance(comments, list) else []:
+    for c in comments[:2 * COMMENT_CAP] if isinstance(comments, list) else []:
         if not isinstance(c, dict):
             continue
         cid, created, updated = c.get("id"), github.clean_ts(c.get("created_at")), github.clean_ts(c.get("updated_at"))
@@ -144,8 +169,10 @@ def parse_claims(comments) -> list[dict]:
         if claim is None:
             continue
         user = c.get("user")
-        login = user.get("login") if isinstance(user, dict) else None
-        claim.update(id=cid, created_at=created, updated_at=updated, author=login if isinstance(login, str) and github.OWNER_RE.fullmatch(login) else None)
+        login = user.get("login") if isinstance(user, dict) and user.get("type") == "User" else None
+        assoc = c.get("author_association")
+        claim.update(id=cid, created_at=created, updated_at=updated, author=login if isinstance(login, str) and github.OWNER_RE.fullmatch(login) else None,
+                     association=assoc if isinstance(assoc, str) and assoc.isupper() and len(assoc) <= 30 else None)
         out.append(claim)
     out.sort(key=lambda c: (c["created_at"], c["id"]))
     return out
@@ -161,21 +188,20 @@ def is_live(claim: dict, server_now: float | None) -> bool | None:
     return server_now - upd < claim["lease_min"] * 60
 
 
-def allowed_authors(owner: str, gh_login: str | None, configured=None) -> set[str]:
-    """The logins whose claim comments count on a repository of `owner`: the owner, and CCBOARD_EPIC_AUTHORS (empty: the login gh uses on this board)."""
+def allowed_authors(gh_login: str | None, configured=None) -> set[str]:
+    """The logins whose claim comments may count (lower case): CCBOARD_EPIC_AUTHORS, or, when that is empty, the login gh is authenticated as on this board. The
+    repository owner is not added: owning a repository one has a clone of says nothing about who this board trusts. EMPTY when neither is known: nobody counts and the
+    page says it cannot tell (fail closed). Every name is checked against GitHub's login rule."""
     configured = settings.epic_authors if configured is None else configured
-    allowed = {owner.lower()}
-    if configured:
-        allowed |= {a.lower() for a in configured}
-    elif gh_login:
-        allowed.add(gh_login.lower())
-    return allowed
+    names = list(configured) if configured else [gh_login]
+    return {n.lower() for n in names if isinstance(n, str) and github.OWNER_RE.fullmatch(n)}
 
 
 def pick_claim(claims: list[dict], allowed: set[str], server_now: float | None) -> tuple[dict | None, int]:
     """(the claim to show, how many claim comments were refused). The first live claim by (created_at, id) among the allowed authors', else the newest one of
-    theirs (not live); a claim-shaped comment of anyone else is only counted."""
-    ok = [c for c in claims if (c.get("author") or "").lower() in allowed]
+    theirs (not live). A comment counts only when its author is a user whose login is in `allowed` AND GitHub's author_association on it is OWNER, MEMBER or
+    COLLABORATOR; a claim-shaped comment of anyone else is only counted."""
+    ok = [c for c in claims if (c.get("author") or "").lower() in allowed and c.get("author") and c.get("association") in ASSOCIATIONS]
     rejected = len(claims) - len(ok)
     if not ok:
         return None, rejected
@@ -187,10 +213,12 @@ def pick_claim(claims: list[dict], allowed: set[str], server_now: float | None) 
 
 # ---------------------------------------------------------------- children
 
-def _repo_of(item: dict, owner: str, repo: str) -> tuple[str, str]:
+def _repo_of(item: dict) -> tuple[str, str] | None:
+    """The repository a sub-issue lives in, from the payload's repository_url (for display and the "another repository" mark only: it never selects a request unless
+    the repository is one of this board's own). None when the payload names none that passes GitHub's rules."""
     u = item.get("repository_url")
     m = _REPO_URL.fullmatch(u) if isinstance(u, str) and len(u) < 300 else None
-    return (m.group(1), m.group(2)) if m and github.valid_slug(m.group(1), m.group(2)) else (owner, repo)
+    return (m.group(1), m.group(2)) if m and github.valid_slug(m.group(1), m.group(2)) else None
 
 
 def parse_depends(body, owner: str, repo: str, own: int | None = None) -> list[str]:
@@ -210,14 +238,19 @@ def parse_depends(body, owner: str, repo: str, own: int | None = None) -> list[s
     return out
 
 
-def shape_child(item, owner: str, repo: str, index: int) -> dict | None:
-    """One issue of a list as a child, whitelisted: None for a pull request or anything without a valid number. Nothing of the payload's URLs is kept."""
+def shape_child(item, owner: str, repo: str, index: int, same_repo: bool = False) -> dict | None | bool:
+    """One issue of a list as a child, whitelisted: None for a pull request or anything without a valid number. Nothing of the payload's URLs is kept except the
+    repository it names (checked against GitHub's rules). `same_repo` is for a list the board asked of ONE repository (the label list): the child is of that
+    repository whatever the payload says. A sub-issue whose payload names no usable repository is False: it cannot be placed, and the caller counts it as not shown."""
     if not isinstance(item, dict) or "pull_request" in item:
         return None
     num = item.get("number")
     if isinstance(num, bool) or not isinstance(num, int) or not github.valid_number(num):
         return None
-    o, r = _repo_of(item, owner, repo)
+    where = (owner, repo) if same_repo else _repo_of(item)
+    if where is None:
+        return False
+    o, r = where
     labels = [github.clean_text(lb.get("name"), 50) for lb in (item.get("labels") or [])[:LABEL_CAP] if isinstance(lb, dict)]
     labels = [lb for lb in labels if lb]
     cnt = item.get("comments")
@@ -225,7 +258,8 @@ def shape_child(item, owner: str, repo: str, index: int) -> dict | None:
             "state": "closed" if item.get("state") == "closed" else "open", "url": issue_url(o, r, num), "labels": labels,
             "depends_on_refs": parse_depends(item.get("body"), o, r, num), "order": index,
             "comments": cnt if isinstance(cnt, int) and not isinstance(cnt, bool) and cnt >= 0 else None,
-            "updated_at": github.clean_ts(item.get("updated_at")), "claims": [], "server_now": None, "claims_read": False}
+            "updated_at": github.clean_ts(item.get("updated_at")), "claims": [], "server_now": None,
+            "thread": None, "reason": None}               # thread: None (not read), "complete" (every comment read) or "incomplete"; reason: why the claim is unknown (UNKNOWN_TEXT)
 
 
 def _display_ref(ref: str, repo_lower: str) -> str:
@@ -286,9 +320,72 @@ def _paged(builder, cap: int, ttl: float) -> tuple[list, bool, float | None, boo
     return items, truncated, srv, stale
 
 
-def _read_epic(owner: str, repo: str, n: int) -> dict:
+class _Cut(Exception):
+    """The refresh's own budget (gh calls for comments, seconds) ran out in the middle of a thread."""
+
+
+def _read_thread(c: dict, ttl: float, spend) -> tuple[list, bool, float | None, bool]:
+    """(comments, complete, GitHub's clock, any page stale) of one child: page 1, then the page where the thread ends (worked out from the comments count GitHub
+    sent with the issue and the page size, and walked up or down while a page disagrees; a Link URL is never followed) and the page before it when the newest
+    COMMENT_CAP comments need it. `complete` is True only when every comment of the issue was read: a thread of up to 2 * COMMENT_CAP comments is read whole, a
+    longer one gives its first and its last COMMENT_CAP comments and `complete` False, as does a thread whose end could not be found. `spend()` raises _Cut when
+    the refresh may not make another call."""
+    per = github.PER_PAGE
+    pages: dict[int, list] = {}
+    seen = {"srv": None, "stale": False, "odd": False}
+
+    def page(p: int) -> list:
+        if p not in pages:
+            spend()
+            rep = github.reader.get(github.comments_path(c["owner"], c["name"], c["number"], p, per), ttl)
+            if not isinstance(rep.data, list):
+                raise github.GhReadError("bad_answer")
+            if rep.server_now is not None:
+                seen["srv"] = rep.server_now if seen["srv"] is None else max(seen["srv"], rep.server_now)
+            seen["stale"] = seen["stale"] or rep.stale
+            if len(rep.data) < per and 'rel="next"' in (rep.headers.get("link") or ""):
+                seen["odd"] = True                                                  # a short page that says more follows: the page arithmetic does not hold, so no whole read
+            pages[p] = rep.data
+        return pages[p]
+
+    def out(complete: bool, wanted=None):
+        flat: list = []
+        for p in sorted(pages):
+            for i, x in enumerate(pages[p]):
+                if wanted is None or ((p - 1) * per + i + 1) in wanted:
+                    flat.append(x)
+        return flat, complete and not seen["odd"], seen["srv"], seen["stale"]
+
+    first = page(1)
+    if len(first) < per:
+        return out(True)
+    cnt = c["comments"]
+    p = max(2, -(-cnt // per)) if isinstance(cnt, int) and not isinstance(cnt, bool) and cnt > 0 else 2          # the last page by the count GitHub sent
+    end = None                                                                                                      # how many comments the thread has
+    for _ in range(4):
+        d = page(p)
+        if 0 < len(d) < per:
+            end = (p - 1) * per + len(d)
+            break
+        if not d:
+            if len(page(p - 1)) == per:
+                end = (p - 1) * per
+                break
+            p -= 1
+        else:
+            p += 1
+    if end is None:
+        return out(False)
+    head, tail = set(range(1, min(end, COMMENT_CAP) + 1)), set(range(max(1, end - COMMENT_CAP + 1), end + 1))
+    for idx in sorted(head | tail):
+        page((idx - 1) // per + 1)
+    return out(min(tail) <= max(head) + 1, head | tail)
+
+
+def _read_epic(owner: str, repo: str, n: int, readable: frozenset = frozenset(), read_comments: bool = True) -> dict:
     """The GitHub part of an epic's answer: the parent, its children (with the claim comments of each) and what was cut. Raises GhReadError when the parent
-    cannot be read; a failure while reading comments ends that part early (`partial_error`) and keeps what was read."""
+    cannot be read; a failure while reading comments ends that part early (`partial_error`) and keeps what was read. Comments are asked only for children in a
+    repository of `readable` (lower-case slugs: this board's own projects); the others, and every child when `read_comments` is False, get a reason instead."""
     started = mono()
     rd = github.reader
     head = rd.get(github.issue_path(owner, repo, n), ISSUE_TTL)
@@ -311,35 +408,61 @@ def _read_epic(owner: str, repo: str, n: int) -> dict:
         part["note"] = f"This repository has no sub-issues endpoint, so the children are the issues labelled {FALLBACK_LABEL}{n}."
         items, trunc, srv, stale = _paged(lambda p: github.labeled_path(owner, repo, f"{FALLBACK_LABEL}{n}", "all", p), CHILD_CAP, ISSUE_TTL)
         items = sorted((i for i in items if isinstance(i, dict) and isinstance(i.get("number"), int)), key=lambda i: i["number"])
-    children = []
+    same = part["source"] == "labels"
+    own = f"{owner}/{repo}".lower()
+    children, unplaced = [], 0
     for item in items:
-        c = shape_child(item, owner, repo, len(children) + 1)
-        if c is not None and c["number"] != n:
+        c = shape_child(item, owner, repo, len(children) + 1, same)
+        if c is False:
+            unplaced += 1                                                           # a sub-issue whose payload names no repository: it cannot be placed, so the epic is not complete
+        elif c is not None and not (c["number"] == n and c["repo"].lower() == own):
             children.append(c)
     _link_children(children)
-    part.update(children=children, truncated=trunc, stale=part["stale"] or stale)
+    part.update(children=children, truncated=trunc or unplaced > 0, stale=part["stale"] or stale)
     srv_all = [t for t in (head.server_now, srv) if t is not None]
+    list_stale = stale or head.stale                                                # the comments counts below are as old as the list that carried them
     calls0 = rd.calls
-    for c in sorted(children, key=lambda c: (c["state"] != "open", c["order"])):          # open children first: they are the ones that change
-        if c["comments"] == 0:
-            c["claims_read"] = True
-            continue
+
+    def spend() -> None:
         if rd.calls - calls0 >= COMMENT_CALLS or mono() - started > DEADLINE:
-            break
+            raise _Cut()
+
+    stop = None                                                                     # why the loop ended early: a reason code of UNKNOWN_TEXT
+    for c in sorted(children, key=lambda c: (c["state"] != "open", c["order"])):          # open children first: they are the ones that change
+        if not read_comments:
+            c["reason"] = "authors_unknown"
+            continue
+        if c["repo"].lower() not in readable:                                       # not one of this board's own repositories: no request, whatever the payload or a node says
+            c["reason"] = "other_repo"
+            continue
+        if c["comments"] == 0 and not list_stale:                                   # GitHub's own count, fresh: there is nothing to read and nothing hidden
+            c["thread"] = "complete"
+            continue
+        if stop:
+            c["reason"] = stop
+            continue
         try:
-            raw, _, csrv, cstale = _paged(lambda p, c=c: github.comments_path(c["owner"], c["name"], c["number"], p), COMMENT_CAP,
-                                          COMMENTS_TTL if c["state"] == "open" else COMMENTS_TTL_CLOSED)
+            raw, complete, csrv, cstale = _read_thread(c, COMMENTS_TTL if c["state"] == "open" else COMMENTS_TTL_CLOSED, spend)
+        except _Cut:
+            stop = c["reason"] = "budget"
+            continue
         except github.GhReadError as e:
             part["comments_failed"] += 1
+            c["reason"] = "rate_limited" if e.reason == "rate_limited" else "error"
             if e.reason in ("rate_limited", "no_login", "no_gh", "timeout"):
                 part["partial_error"] = e.as_dict()
-                break
+                stop = c["reason"]
             continue
-        c["claims"], c["server_now"], c["claims_read"] = parse_claims(raw), csrv, True
+        c["claims"], c["server_now"] = parse_claims(raw), csrv
+        if cstale:                                                                  # kept from an earlier refresh because GitHub asked us to wait: not read in this one
+            c["thread"], c["reason"] = "incomplete", "rate_limited"
+        else:
+            c["thread"], c["reason"] = ("complete", None) if complete else ("incomplete", "too_long")
         part["stale"] = part["stale"] or cstale
         if csrv is not None:
             srv_all.append(csrv)
-    part["comments_pending"] = sum(1 for c in children if not c["claims_read"])          # children whose claim comments were not read this time (budget, a failure)
+    # children of this board's repositories whose comments were not all read for a reason that passes (budget, a failure): the next refresh reads them
+    part["comments_pending"] = sum(1 for c in children if c["thread"] is None and c["reason"] in ("budget", "rate_limited", "error"))
     part["partial"] = bool(part["comments_pending"])
     part["server_now"] = max(srv_all) if srv_all else None
     return part
@@ -421,9 +544,13 @@ def _local_pr(t: dict) -> dict | None:
     return {"number": n, "state": state.lower(), "draft": draft}
 
 
-def _join_task(views: dict[int, list[dict]], child: dict) -> dict | None:
+def _join_task(views: dict[int, list[dict]], child: dict, readable: frozenset) -> dict | None:
+    """The task for a child ALREADY READ from GitHub: the exact issue number, and a repository slug that is one of this board's own (a node cannot name another one
+    into the join, make a child appear or change one). A task of this board with no issue address may be told by its repository name; a node's task never is."""
     slug = child["repo"].lower()
-    cands = [v for v in views.get(child["number"], []) if v["slug"] == slug or (v["slug"] is None and v["repo"] == child["name"].lower())]
+    if slug not in readable:
+        return None
+    cands = [v for v in views.get(child["number"], []) if v["slug"] == slug or (v["slug"] is None and v["node"] == nodes.LOCAL and v["repo"] == child["name"].lower())]
     if not cands:
         return None
     active = [v for v in cands if v["phase"] in ("backlog", "queued", "running")]
@@ -473,12 +600,22 @@ def _handle_ok(h, known: set[str]) -> bool:
     return isinstance(h, str) and (h == nodes.LOCAL or (nodes.valid_handle(h) and h in known))
 
 
+def _read_children(owner: str, repo: str, n) -> set[int]:
+    """The numbers of the epic's own-repository issues this board has read (its last good answer, kept in memory): the only issues a pin may name."""
+    with _lock:
+        lg = _last_good.get((owner.lower(), repo.lower(), int(n)))
+    own = f"{owner}/{repo}".lower()
+    return {c["number"] for c in lg[1]["children"] if c["repo"].lower() == own} if lg is not None else set()
+
+
 def save_settings(db, owner: str, repo: str, n, patch: dict) -> dict:
     """Merge `patch` ({pins, epic_pin, paused, report, auto_pr}; only the keys present) into the stored settings and return the new ones. `pins` merges per
-    issue: a handle sets, null or '' removes. Every handle must be `local` or a node in the registry (BadRequest otherwise), issue keys are digits, flags are
-    booleans. Nothing is sent to GitHub. When everything is back to its default the row is removed."""
+    issue: a handle sets, null or '' removes. Every handle must be `local` or a node in the registry, and a pin may name only an issue of the epic's own
+    repository that this board has read as one of its children (BadRequest otherwise); issue keys are digits, flags are booleans. Nothing is sent to GitHub.
+    When everything is back to its default the row is removed."""
     known = {r["handle"] for r in nodes.registry(db)}
     cur = load_settings(db, owner, repo, n)
+    kids = _read_children(owner, repo, n) if isinstance(patch.get("pins"), dict) else set()
     if "pins" in patch:
         pins = patch["pins"]
         if not isinstance(pins, dict) or len(pins) > PINS_CAP:
@@ -490,6 +627,8 @@ def save_settings(db, owner: str, repo: str, n, patch: dict) -> dict:
             if h is None or h == "":
                 cur["pins"].pop(str(int(ks)), None)
             elif _handle_ok(h, known):
+                if int(ks) not in kids:
+                    raise projects.BadRequest("a pin names an issue that is not one of the epic's issues this board has read (open the epic first)")
                 cur["pins"][str(int(ks))] = h
             else:
                 raise projects.BadRequest("a pin names a node that is not paired with this board (or not a node handle)")
@@ -555,9 +694,10 @@ def _label_pin(labels: list[str], amap: dict[str, str]) -> dict | None:
 
 # ---------------------------------------------------------------- progress
 
-def _bucket(closed: bool, claim: dict | None, task: dict | None) -> tuple[str | None, str]:
-    """(node alias | None, done|running|queued|failed|closed|open) of one child. A closed child is done (by the node that held it, when known); an open child is
-    what its claim and its task say; a claim that is not live and has no task behind it counts for nobody."""
+def _bucket(closed: bool, claim: dict | None, task: dict | None, claim_state: str = "none") -> tuple[str | None, str]:
+    """(node alias | None, done|running|queued|failed|closed|open|unknown) of one child. A closed child is done (by the node that held it, when known); an open child
+    is what its claim and its task say; a claim that is not live and has no task behind it counts for nobody: `open` (unclaimed, only when every comment was read)
+    or `unknown` (its claim is not known: never counted as unclaimed)."""
     phase = task["phase"] if task else None
     if closed:
         who = (claim and claim["alias"]) or (task and task["node_name"])
@@ -576,20 +716,25 @@ def _bucket(closed: bool, claim: dict | None, task: dict | None) -> tuple[str | 
         return claim["alias"], "running" if claim["status"] == "running" else "queued"
     if task and phase in ("queued", "backlog"):
         return task["node_name"], "queued"
-    return None, "open"
+    return None, "unknown" if claim_state == "unknown" else "open"
 
 
 def progress_of(rows: list[tuple[str | None, str]], amap: dict[str, str]) -> dict:
-    """{by_node: {alias: {done, running, queued, failed, handle}}, unclaimed: {open, closed}, open, closed, total}; the counts add up to the children."""
+    """{by_node: {alias: {done, running, queued, failed, handle}}, unclaimed: {open, closed}, unknown, open, closed, total}; the counts add up to the children.
+    `unclaimed` is only what was read whole and has no claim; `unknown` (claim not known) is kept apart and never added to it."""
     by: dict[str, dict] = {}
     unclaimed = {"open": 0, "closed": 0}
+    unknown = 0
     for who, b in rows:
         if who is None:
-            unclaimed["closed" if b == "closed" else "open"] += 1
+            if b == "unknown":
+                unknown += 1
+            else:
+                unclaimed["closed" if b == "closed" else "open"] += 1
             continue
         row = by.setdefault(who, {"done": 0, "running": 0, "queued": 0, "failed": 0, "handle": amap.get(who.lower())})
         row[b] += 1
-    return {"by_node": by, "unclaimed": unclaimed, "total": len(rows)}
+    return {"by_node": by, "unclaimed": unclaimed, "unknown": unknown, "total": len(rows)}
 
 
 # ---------------------------------------------------------------- the answers
@@ -605,13 +750,35 @@ def _empty_epic(owner: str, repo: str, n: int) -> dict:
             "labelled": None, "updated_at": None}
 
 
-def detail(db, owner: str, repo: str, n: int, records, *, login=None) -> dict:
-    """GET /api/epics/{owner}/{repo}/{n}. `records` is hub.records() ([] on a single board). GitHub problems never raise: the answer carries `error`
-    ({reason, message, wait_s}) and, when an earlier read exists, its data with `stale_age_s`. The caller has validated owner, repo and n."""
+def _claim_state(c: dict, claim: dict | None, authors_ok: bool) -> tuple[str, str | None]:
+    """(claimed | none | unknown, the reason code when unknown) of one child. `none` (free) needs every comment read in this refresh and no allowed claim; a claim found
+    in a thread that was only read from its two ends counts only while it is live (a hidden live claim in the unread middle could otherwise be overridden)."""
+    if not authors_ok:
+        return "unknown", "authors_unknown"
+    if c["thread"] == "complete":
+        return ("claimed" if claim else "none"), None
+    if c["thread"] == "incomplete" and claim is not None and claim.get("live") is True:
+        return "claimed", None
+    return "unknown", c["reason"] or "budget"
+
+
+def detail(db, owner: str, repo: str, n: int, records, *, login=None, repos=None) -> dict:
+    """GET /api/epics/{owner}/{repo}/{n}. `records` is hub.records() ([] on a single board); `repos` is the list of GitHub repositories of this board's own projects
+    (`known_repos`): the epic's repository must be one of them (projects.NotFound otherwise, before any request) and comments are read for children of those
+    only. GitHub problems never raise: the answer carries `error` ({reason, message, wait_s}) and, when an earlier read exists, its data with `stale_age_s`.
+    The caller has validated owner, repo and n."""
+    readable = frozenset(s.lower() for s in (repos or ()))
+    if f"{owner}/{repo}".lower() not in readable:
+        raise projects.NotFound(f"this board has no project for {owner}/{repo}")
+    for s in repos:
+        if s.lower() == f"{owner}/{repo}".lower():
+            owner, _, repo = s.partition("/")                      # the spelling of this board's own remote
+            break
     key = (owner.lower(), repo.lower(), int(n))
+    allowed = allowed_authors(None if settings.epic_authors else (login if login is not None else _gh_login()))
     part, error, stale_age = None, None, None
     try:
-        part = _read_epic(owner, repo, int(n))
+        part = _read_epic(owner, repo, int(n), readable, bool(allowed))
         with _lock:
             _last_good[key] = (mono(), part)
             while len(_last_good) > GOOD_MAX:
@@ -632,22 +799,26 @@ def detail(db, owner: str, repo: str, n: int, records, *, login=None) -> dict:
     names = {x["handle"]: x["name"] for x in node_list(records)}
     st = load_settings(db, owner, repo, n)
     out = {"epic": part["epic"] if part else _empty_epic(owner, repo, int(n)), "source": part["source"] if part else None, "note": part["note"] if part else None,
-           "children": [], "progress": {"by_node": {}, "unclaimed": {"open": 0, "closed": 0}, "open": 0, "closed": 0, "total": 0},
+           "children": [], "progress": {"by_node": {}, "unclaimed": {"open": 0, "closed": 0}, "unknown": 0, "open": 0, "closed": 0, "total": 0},
+           "claims_note": None if allowed else AUTHORS_NOTE,
            **settings_view(db, owner, repo, n, records), "rate": github.reader.rate(), "server_now": github.epoch_iso(part["server_now"]) if part else None, "error": error, "stale_age_s": stale_age,
            "truncated": bool(part and part["truncated"]), "partial": bool(part and part["partial"]), "comments_pending": part["comments_pending"] if part else 0,
            "empty": bool(part is not None and not part["children"])}
     if part is None:
         return out
-    allowed = allowed_authors(owner, login if login is not None else _gh_login())
     views = _task_views(db, records, display)
     rows = []
+    own = f"{owner}/{repo}".lower()
     for c in part["children"]:
         claim, rejected = pick_claim([dict(x) for x in c["claims"]], allowed, c["server_now"] if c["server_now"] is not None else part["server_now"])
-        tv = _join_task(views, c)
+        cstate, reason = _claim_state(c, claim, bool(allowed))
+        if cstate == "unknown" and c["state"] != "closed":
+            claim = None                                           # a claim seen in a read that was not whole is not presented as the answer (a closed issue only says who did it)
+        tv = _join_task(views, c, readable)
         task = _task_out(tv)
-        who, bucket = _bucket(c["state"] == "closed", claim, task)
+        who, bucket = _bucket(c["state"] == "closed", claim, task, cstate)
         rows.append((who, bucket))
-        page_pin = st["pins"].get(str(c["number"]))
+        page_pin = st["pins"].get(str(c["number"])) if c["repo"].lower() == own else None          # a pin is by issue number: only an issue of the epic's own repository can carry one
         lp = _label_pin(c["labels"], amap)
         pin = None
         if page_pin and page_pin in known | {nodes.LOCAL}:
@@ -668,7 +839,8 @@ def detail(db, owner: str, repo: str, n: int, records, *, login=None) -> dict:
                                                   "renewed_at": claim["updated_at"], "live": claim["live"], "attempt": claim["attempt"], "seq": claim["seq"],
                                                   "task_ref": claim["task_ref"], "branch": claim["branch"]},
             "claim_rejected": rejected, "claim_note": STALE_NOTE if rejected else None,
-            "claim_known": c["claims_read"], "task": task, "pr": pr, "pin": pin,
+            "claim_state": cstate, "claim_unknown": {"reason": reason, "text": UNKNOWN_TEXT[reason]} if cstate == "unknown" else None,
+            "task": task, "pr": pr, "pin": pin,
             "label_pin": lp, "bucket": {"node": who, "state": bucket}})                 # the progress strip's own bucket of this child: the page groups rows by it, so rows and strip agree
     prog = progress_of(rows, amap)
     prog["open"] = sum(1 for c in part["children"] if c["state"] == "open")
@@ -677,64 +849,61 @@ def detail(db, owner: str, repo: str, n: int, records, *, login=None) -> dict:
     return out
 
 
-def known_repos(projects_list, records) -> list[str]:
-    """`owner/name` of every GitHub repository this board knows: its projects' repos (their `origin`) and the slugs in the nodes' last readings. Deduplicated
-    without regard to case, valid names only, at most 25."""
+def known_repos(projects_list) -> list[str]:
+    """`owner/name` of every GitHub repository of THIS board's own projects (the `origin` remote of each repository on this disk, read with git; validated against
+    GitHub's rules): the one set of repositories this board may ask GitHub about. Nothing another node sends is in it. Deduplicated without regard to case, at
+    most REPO_SET_MAX. The list view reads the first REPO_CAP of them and says when there are more."""
     seen: dict[str, str] = {}
-
-    def add(slug):
-        if isinstance(slug, str) and "/" in slug:
-            o, _, r = slug.partition("/")
-            if github.valid_slug(o, r) and slug.lower() not in seen and len(seen) < REPO_CAP:
-                seen[slug.lower()] = slug
     for p in projects_list or []:
         for r in (p.get("repos") or []) if isinstance(p, dict) else []:
             if isinstance(r, dict) and r.get("state") == "ok" and r.get("path"):
-                add(node_state.repo_slug(r["path"]))
-    for rec in records or []:
-        st = rec.get("state") if isinstance(rec, dict) else None
-        for p in (st.get("projects") or []) if isinstance(st, dict) else []:
-            for r in (p.get("repos") or []) if isinstance(p, dict) else []:
-                if isinstance(r, dict):
-                    add(r.get("slug"))
+                slug = node_state.repo_slug(r["path"])
+                if isinstance(slug, str) and "/" in slug:
+                    o, _, name = slug.partition("/")
+                    if github.valid_slug(o, name) and slug.lower() not in seen and len(seen) < REPO_SET_MAX:
+                        seen[slug.lower()] = slug
     return list(seen.values())
 
 
 def _counts(owner: str, repo: str, issue: dict) -> dict | None:
-    """{open, closed, total} children of an epic: from the parent's own sub_issues_summary when GitHub sends it (no extra call), else by reading the list."""
+    """{open, closed, total, more} children of an epic: from the parent's own sub_issues_summary when GitHub sends it (no extra call), else by reading the list.
+    `more` is True when the list had more issues than were read (CHILD_CAP): the numbers are then a floor, and the page says "more than"."""
     s = issue.get("sub_issues_summary")
     if isinstance(s, dict) and all(isinstance(s.get(k), int) and not isinstance(s.get(k), bool) and s.get(k) >= 0 for k in ("total", "completed")) and s["completed"] <= s["total"]:
-        return {"open": s["total"] - s["completed"], "closed": s["completed"], "total": s["total"]}
+        return {"open": s["total"] - s["completed"], "closed": s["completed"], "total": s["total"], "more": False}
     n = issue["number"]
     try:
-        items, _, _, _ = _paged(lambda p: github.sub_issues_path(owner, repo, n, p), CHILD_CAP, LIST_TTL)
+        items, more, _, _ = _paged(lambda p: github.sub_issues_path(owner, repo, n, p), CHILD_CAP, LIST_TTL)
     except github.GhReadError as e:
         if e.reason != "not_found":
             raise
-        items, _, _, _ = _paged(lambda p: github.labeled_path(owner, repo, f"{FALLBACK_LABEL}{n}", "all", p), CHILD_CAP, LIST_TTL)
+        items, more, _, _ = _paged(lambda p: github.labeled_path(owner, repo, f"{FALLBACK_LABEL}{n}", "all", p), CHILD_CAP, LIST_TTL)
     kids = [i for i in items if isinstance(i, dict) and "pull_request" not in i and i.get("number") != n]
     closed = sum(1 for i in kids if i.get("state") == "closed")
-    return {"open": len(kids) - closed, "closed": closed, "total": len(kids)}
+    return {"open": len(kids) - closed, "closed": closed, "total": len(kids), "more": bool(more)}
 
 
 def _read_list(repos: list[str]) -> dict:
     epics, errors, top = [], [], None
     srv = None
+    cut = False                                                                      # more epics than are listed (EPIC_CAP in all, or more than one page in a repository)
     for slug in repos:
         owner, _, repo = slug.partition("/")
         try:
-            items, _, s, _ = _paged(lambda p, o=owner, r=repo: github.labeled_path(o, r, EPIC_LABEL, "open", p), EPIC_CAP, LIST_TTL)
+            items, ptrunc, s, _ = _paged(lambda p, o=owner, r=repo: github.labeled_path(o, r, EPIC_LABEL, "open", p), EPIC_CAP, LIST_TTL)
         except github.GhReadError as e:
             if e.reason in ("no_gh", "no_login", "rate_limited", "timeout"):
                 top = e.as_dict()
                 break
             errors.append({"repo": slug, **e.as_dict()})
             continue
+        cut = cut or ptrunc
         srv = s if s is not None and (srv is None or s > srv) else srv
         for it in items:
             if not isinstance(it, dict) or "pull_request" in it or not isinstance(it.get("number"), int) or not github.valid_number(it["number"]):
                 continue
             if len(epics) >= EPIC_CAP:
+                cut = True
                 break
             try:
                 counts = _counts(owner, repo, it)
@@ -750,14 +919,18 @@ def _read_list(repos: list[str]) -> dict:
         if top:
             break
     epics.sort(key=lambda e: e["updated_at"] or "", reverse=True)
-    return {"epics": epics, "errors": errors, "error": top, "server_now": srv}
+    return {"epics": epics, "errors": errors, "error": top, "server_now": srv, "truncated": cut}
 
 
 def list_epics(db, repos: list[str]) -> dict:
-    """GET /api/epics: the open issues labelled ccboard:epic in `repos`, newest update first, each with its children's counts and whether this board paused it.
-    Cached 60 s (a failed read keeps the last list with its age). With no repository to look in nothing is asked of GitHub."""
+    """GET /api/epics: the open issues labelled ccboard:epic in `repos` (the first REPO_CAP of them: `repos_truncated` says when there are more), newest update
+    first, each with its children's counts and whether this board paused it. `truncated` says there are more epics than listed. Cached 60 s (a failed read keeps the
+    last list with its age). With no repository to look in nothing is asked of GitHub. `repos` is this board's own set (`known_repos`)."""
+    more_repos = len(repos) > REPO_CAP
+    repos = list(repos)[:REPO_CAP]
     key = tuple(r.lower() for r in repos)
-    out = {"epics": [], "repos": list(repos), "errors": [], "error": None, "stale_age_s": None, "server_now": None, "rate": github.reader.rate()}
+    out = {"epics": [], "repos": list(repos), "repos_truncated": more_repos, "truncated": False, "errors": [], "error": None, "stale_age_s": None, "server_now": None,
+           "rate": github.reader.rate()}
     if not repos:
         out["note"] = "No project here has a GitHub remote, so there is nowhere to look for epics."
         return out
@@ -770,7 +943,7 @@ def list_epics(db, repos: list[str]) -> dict:
             res = _read_list(list(repos))
         except Exception as e:
             log.warning("epic list failed: %s", e.__class__.__name__)
-            res = {"epics": [], "errors": [], "error": github.GhReadError("bad_answer").as_dict(), "server_now": None}
+            res = {"epics": [], "errors": [], "error": github.GhReadError("bad_answer").as_dict(), "server_now": None, "truncated": False}
         if res["error"] and hit is not None:
             out["stale_age_s"] = int(max(0.0, mono() - hit[0]))
             out["error"] = res["error"]
@@ -780,7 +953,7 @@ def list_epics(db, repos: list[str]) -> dict:
                 _list_good[key] = (mono(), res)
                 while len(_list_good) > GOOD_MAX:
                     _list_good.pop(next(iter(_list_good)))
-    out.update(epics=[], errors=res["errors"], server_now=github.epoch_iso(res["server_now"]), rate=github.reader.rate())
+    out.update(epics=[], errors=res["errors"], server_now=github.epoch_iso(res["server_now"]), rate=github.reader.rate(), truncated=bool(res.get("truncated")))
     out["error"] = out["error"] or res["error"]
     for e in res["epics"]:
         st = load_settings(db, e["owner"], e["name"], e["number"])

@@ -41,12 +41,14 @@
 #page .ep-seg.running { background:repeating-linear-gradient(135deg, var(--sig) 0 4px, var(--sig-bg) 4px 8px); border-color:var(--sig-bd); }
 #page .ep-seg.queued, #page .ep-seg.open { background:transparent; border-style:dashed; border-color:var(--mute-slate); }
 #page .ep-seg.failed { background:repeating-linear-gradient(45deg, var(--mute-rose) 0 2px, var(--mute-rose-bg) 2px 6px); border-color:var(--mute-rose-bd); }
+#page .ep-seg.unknown { background:transparent; border-style:dotted; border-color:var(--warn); }
 #page .ep-seg.none { flex:1; border-style:dotted; background:transparent; }
 #page .ep-words { display:flex; flex-wrap:wrap; gap:2px 12px; margin:0; padding:0; list-style:none; font-size:12px; line-height:1.5; }
 #page .ep-wg { display:inline-block; min-width:1em; font-family:var(--font-glyph); text-align:center; }
 #page .ep-wg.done, #page .ep-wg.closed { color:var(--mute-green); }
 #page .ep-wg.running { color:var(--sig); }
 #page .ep-wg.failed { color:var(--mute-rose); }
+#page .ep-wg.unknown, #page .ep-g.unknown { color:var(--warn-fg); }
 
 /* the issues */
 #page .ep-rows, #page .ep-lrows { list-style:none; margin:0; padding:0; }

@@ -164,7 +164,12 @@ if m:
         items = [issue_obj(c) for c in world.get("subs", {}).get(k, [])]
         chunk, extra = paged(items, query or "")
         respond(200, chunk, extra)
-    items = [dict(c, user={"login": c["user"]}) for c in world.get("comments", {}).get(k, [])]
+    items = []
+    for c in world.get("comments", {}).get(k, []):
+        c = dict(c, user=None if c["user"] is None else {"login": c["user"], "type": c.get("user_type", "User")}, author_association=c.get("assoc", "COLLABORATOR"))
+        c.pop("user_type", None)
+        c.pop("assoc", None)
+        items.append(c)
     chunk, extra = paged(items, query or "")
     respond(200, chunk, extra)
 m = re.fullmatch(r"/repos/([^/]+)/([^/?]+)/issues\?(.*)", path or "")
@@ -269,14 +274,27 @@ class FakeGitHub:
         self.world["subs"].setdefault(parent, []).append(child)
         self.save()
 
-    def comment(self, issue: str, body: str, *, user="alice", created_at=None, updated_at=None, cid=None) -> int:
+    def comment(self, issue: str, body: str, *, user="alice", created_at=None, updated_at=None, cid=None, assoc="COLLABORATOR", user_type="User") -> int:
+        """One comment. `assoc` is GitHub's author_association (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE...), `user_type` the user's type (User, Bot); user=None
+        is a comment with no user object (a deleted account)."""
         self.reload()
         self._next_comment += 1
         cid = cid or self._next_comment
         created = created_at or iso(self.world["now"] - 60)
-        self.world["comments"].setdefault(issue, []).append({"id": cid, "body": body, "user": user, "created_at": created, "updated_at": updated_at or created})
+        self.world["comments"].setdefault(issue, []).append({"id": cid, "body": body, "user": user, "created_at": created, "updated_at": updated_at or created,
+                                                             "assoc": assoc, "user_type": user_type})
         self.save()
         return cid
+
+    def junk(self, issue: str, count: int, *, start: float | None = None, user="bob") -> None:
+        """`count` plain comments (no claim), one second apart from `start` (default: a day before the server clock), in one save."""
+        self.reload()
+        t0 = (self.world["now"] - 86400) if start is None else start
+        lst = self.world["comments"].setdefault(issue, [])
+        for i in range(count):
+            self._next_comment += 1
+            lst.append({"id": self._next_comment, "body": f"chatter {i}", "user": user, "created_at": iso(t0 + i), "updated_at": iso(t0 + i), "assoc": "NONE", "user_type": "User"})
+        self.save()
 
     def fail(self, match: str, status: int, *, headers=None, body=None, times: int = 1) -> None:
         """The next `times` (-1: always) calls whose path contains `match` get this answer."""

@@ -11,9 +11,10 @@
     "url": "https://github.com/example/website/issues/147",
     "state": "open",
     "children": {
-     "open": 5,
+     "open": 6,
      "closed": 1,
-     "total": 6
+     "total": 7,
+     "more": false
     },
     "updated_at": "2026-10-11T08:56:00Z",
     "labels": [
@@ -32,7 +33,8 @@
     "children": {
      "open": 3,
      "closed": 4,
-     "total": 7
+     "total": 7,
+     "more": false
     },
     "updated_at": "2026-10-09T08:40:00Z",
     "labels": [
@@ -55,7 +57,9 @@
    "reset": "2026-10-11T09:30:00Z",
    "wait_s": null
   },
-  "at": "2026-10-11T09:00:00Z"
+  "at": "2026-10-11T09:00:00Z",
+  "truncated": false,
+  "repos_truncated": false
  },
  "details": {
   "example/website#147": {
@@ -101,7 +105,6 @@
      },
      "claim_rejected": 0,
      "claim_note": null,
-     "claim_known": true,
      "task": {
       "ref": "38",
       "phase": "done",
@@ -122,7 +125,9 @@
      "bucket": {
       "node": "node-a",
       "state": "done"
-     }
+     },
+     "claim_state": "claimed",
+     "claim_unknown": null
     },
     {
      "repo": "example/website",
@@ -152,7 +157,6 @@
      },
      "claim_rejected": 0,
      "claim_note": null,
-     "claim_known": true,
      "task": {
       "ref": "42",
       "phase": "running",
@@ -173,7 +177,9 @@
      "bucket": {
       "node": "node-a",
       "state": "running"
-     }
+     },
+     "claim_state": "claimed",
+     "claim_unknown": null
     },
     {
      "repo": "example/website",
@@ -207,7 +213,6 @@
      },
      "claim_rejected": 0,
      "claim_note": null,
-     "claim_known": true,
      "task": {
       "ref": "node-b:12",
       "phase": "queued",
@@ -223,7 +228,9 @@
      "bucket": {
       "node": "node-b",
       "state": "queued"
-     }
+     },
+     "claim_state": "claimed",
+     "claim_unknown": null
     },
     {
      "repo": "example/website",
@@ -253,7 +260,6 @@
      },
      "claim_rejected": 0,
      "claim_note": null,
-     "claim_known": true,
      "task": {
       "ref": "node-b:9",
       "phase": "failed",
@@ -269,7 +275,9 @@
      "bucket": {
       "node": "node-b",
       "state": "failed"
-     }
+     },
+     "claim_state": "claimed",
+     "claim_unknown": null
     },
     {
      "repo": "example/website",
@@ -286,7 +294,6 @@
      "claim": null,
      "claim_rejected": 1,
      "claim_note": "not from an allowed author",
-     "claim_known": true,
      "task": null,
      "pr": null,
      "pin": {
@@ -299,7 +306,9 @@
      "bucket": {
       "node": null,
       "state": "open"
-     }
+     },
+     "claim_state": "none",
+     "claim_unknown": null
     },
     {
      "repo": "example/website",
@@ -329,7 +338,6 @@
      },
      "claim_rejected": 0,
      "claim_note": null,
-     "claim_known": true,
      "task": null,
      "pr": null,
      "pin": {
@@ -346,6 +354,37 @@
      "bucket": {
       "node": null,
       "state": "open"
+     },
+     "claim_state": "claimed",
+     "claim_unknown": null
+    },
+    {
+     "repo": "example/website",
+     "number": 207,
+     "title": "Receipt PDF export",
+     "state": "open",
+     "url": "https://github.com/example/website/issues/207",
+     "labels": [],
+     "depends_on": [],
+     "blocked_by": [],
+     "dependency_cycle": false,
+     "order": 7,
+     "updated_at": "2026-10-11T08:20:00Z",
+     "claim": null,
+     "claim_rejected": 0,
+     "claim_note": null,
+     "claim_state": "unknown",
+     "claim_unknown": {
+      "reason": "too_long",
+      "text": "too many comments to read"
+     },
+     "task": null,
+     "pr": null,
+     "pin": null,
+     "label_pin": null,
+     "bucket": {
+      "node": null,
+      "state": "unknown"
      }
     }
    ],
@@ -370,9 +409,10 @@
      "open": 2,
      "closed": 0
     },
-    "total": 6,
-    "open": 5,
-    "closed": 1
+    "total": 7,
+    "open": 6,
+    "closed": 1,
+    "unknown": 1
    },
    "pins": {
     "205": {
@@ -413,7 +453,8 @@
    "partial": false,
    "comments_pending": 0,
    "empty": false,
-   "at": "2026-10-11T09:00:00Z"
+   "at": "2026-10-11T09:00:00Z",
+   "claims_note": null
   },
   "example/board#52": {
    "epic": {
@@ -438,7 +479,8 @@
     },
     "open": 0,
     "closed": 0,
-    "total": 0
+    "total": 0,
+    "unknown": 0
    },
    "pins": {
     "205": {
@@ -479,7 +521,8 @@
    "partial": false,
    "comments_pending": 0,
    "empty": true,
-   "at": "2026-10-11T09:00:00Z"
+   "at": "2026-10-11T09:00:00Z",
+   "claims_note": null
   }
  },
  "blank": {
@@ -505,7 +548,8 @@
    },
    "open": 0,
    "closed": 0,
-   "total": 0
+   "total": 0,
+   "unknown": 0
   },
   "pins": {},
   "epic_pin": null,
@@ -539,7 +583,8 @@
   "partial": false,
   "comments_pending": 0,
   "empty": false,
-  "at": "2026-10-11T09:00:00Z"
+  "at": "2026-10-11T09:00:00Z",
+  "claims_note": null
  },
  "variants": {
   "nologin": {
@@ -566,7 +611,8 @@
      },
      "open": 0,
      "closed": 0,
-     "total": 0
+     "total": 0,
+     "unknown": 0
     },
     "pins": {},
     "epic_pin": null,
@@ -639,7 +685,8 @@
      },
      "open": 0,
      "closed": 0,
-     "total": 0
+     "total": 0,
+     "unknown": 0
     },
     "pins": {},
     "epic_pin": null,
@@ -715,7 +762,8 @@
      },
      "open": 0,
      "closed": 0,
-     "total": 0
+     "total": 0,
+     "unknown": 0
     },
     "pins": {},
     "epic_pin": null,
@@ -831,7 +879,8 @@
      },
      "open": 0,
      "closed": 0,
-     "total": 0
+     "total": 0,
+     "unknown": 0
     },
     "pins": {},
     "epic_pin": null,
