@@ -18,6 +18,8 @@
    Shift+Enter only types it. Closing the dialog in that mode strips the shared params from the address (Router.stripShare).
    Nodes      (issue #139, only with a node paired) Go to <node>, Open board on <node>; remote sessions join Sessions with their node chip, remote tasks show while searching; `@box fix`
                 narrows Sessions and the tasks of other nodes to the node `box` (its handle or name, or a unique start of the handle; `@local` is this board) and filters by `fix`
+               (issue #142) "Allow / Deny <session> on <node>" for the lead remote permission request and "Reply to <session> on <node>" for a remote session (the peek opens with its send
+                box focused); send mode takes the sessions of the nodes whose pair holds the sessions scope
    Palette.openHelp() draws Keymap.help() grouped. Everything here is built with el() and textContent. */
 'use strict';
 
@@ -305,6 +307,36 @@ Palette.nodePrefix = function (query) {
   return hit ? { node: hit.handle, rest } : null;
 };
 
+/* The palette's steering rows for the nodes (issue #142): Allow / Deny for the lead remote permission request (the first one that can still be answered) and "Reply to <session> on
+   <node>" for a remote session, which opens its peek with the send box focused. A node that cannot be steered now (no scope, offline) keeps the row, off, with the reason. */
+Palette.remoteSteer = function (query) {
+  const out = [];
+  const lead = Nodes.permLead();
+  if (lead) {
+    const name = Nodes.nameOf(lead.node);
+    const sess = Nodes.sessions(lead.node).find((x) => x.tmux === lead.tmux);
+    const who = String((sess && sess.session) || lead.tmux);
+    const what = `${lead.tool}${lead.summary ? ': ' + lead.summary.slice(0, 80) : ''}`;
+    out.push({ id: 'rperm', title: `Permission on ${name}`, items: [['allow', 'Allow'], ['deny', 'Deny']].map(([d, w]) => ({ id: 'rp:' + d, label: `${w} ${who} on ${name}`, hint: what, keywords: `permission request ${d} ${lead.tool}`,
+      run: () => { Palette.close(); Nodes.permAnswer(lead, d); } })) });
+  }
+  const rows = Nodes.sessions().filter((x) => Palette.nudgeable(x) && (query || x.needs_you));
+  if (rows.length) {
+    out.push({ id: 'rreply', title: 'Reply on other nodes', limit: Palette.PER_GROUP, items: rows.map((x) => {
+      const c = Nodes.can(Nodes.get(x.node), 'sessions');
+      const who = String(x.session || x.tmux);
+      return { id: 'rr:' + Ref.key(x), label: `Reply to ${who} on ${Nodes.nameOf(x.node)}`, hint: `${Palette.where(x)} · ${GLYPH_LABEL[Palette.stateOf(x)]}`, keywords: `reply send answer ${x.node} ${x.tmux}`, off: c.ok ? '' : c.why,
+        run: () => {
+          if (!c.ok) { Palette.say(c.why, 'warn'); return; }
+          Palette.close();
+          Palette.go(Palette.sessionHash(x));
+          Nodes.withPeek(x.node, x.tmux, (peek) => peek.focus());
+        } };
+    }) });
+  }
+  return out;
+};
+
 /* The groups the palette offers, as [{ id, title, items: [{ id, label, hint, kbd, glyph, keywords, run, keep? }] }] before any filtering. */
 Palette.catalog = function (ctx, query) {
   const groups = [];
@@ -329,6 +361,7 @@ Palette.catalog = function (ctx, query) {
     }
   }
   groups.push({ id: 'sessions', title: 'Sessions', items: sessions, limit: query || ctx.scope ? Palette.PER_GROUP : Palette.SESSIONS_SHOWN });
+  if (hub && !ctx.scope) groups.unshift(...Palette.remoteSteer(query));              // a permission request waiting on a node leads the list
   if (hub && (query || ctx.scope)) {
     groups.push({ id: 'rtasks', title: 'Tasks on other nodes', limit: Palette.PER_GROUP, items: Nodes.tasks().map((t) => ({ id: 't:' + Ref.key({ kind: 'task', node: t.node, id: t.id }), label: String(t.title || `Task ${t.id}`),
       hint: `${Palette.where(t)} · ${t.phase || ''}`, chip: Nodes.chip(t.node), node: t.node, keywords: `task ${t.node} ${t.issue_ref || ''}`, run: () => { close(); Palette.go(Ref.hash(Ref.task(t.node, t.id)) || '#/'); } })) });
@@ -442,14 +475,19 @@ Palette.groups = function (ctx, query, moreOpen, skillsOpen) {
 
 /* send mode: the sessions that can take text, the peeked or selected one first */
 Palette.sendGroups = function (ctx) {
-  const list = ctx.sessions.filter((s) => Palette.nudgeable(s) && Ref.nodeOf(s) === null);      // text goes to this board's sessions only until the relay phase
+  const list = ctx.sessions.filter((s) => Palette.nudgeable(s) && Ref.nodeOf(s) === null);
   list.sort((a, b) => (Ref.key(b) === ctx.targetTmux ? 1 : 0) - (Ref.key(a) === ctx.targetTmux ? 1 : 0));
-  const items = list.map((s) => {
+  const hub = typeof Nodes !== 'undefined' && Nodes.enabled() && Nodes.ready;
+  const remote = hub ? Nodes.sessions().filter((s) => Palette.nudgeable(s)) : [];                // the nodes' sessions follow this board's (issue #142); one whose pair lacks the scope is off, with the reason
+  const items = list.concat(remote).map((s) => {
     const st = Palette.stateOf(s);
     const glyph = stateGlyph(st);
     glyph.setAttribute('aria-hidden', 'true');
     glyph.removeAttribute('title');
-    return { id: 'send:' + Ref.key(s), label: s.name || s.tmux, hint: `${Palette.where(s)} · ${GLYPH_LABEL[st]}`, glyph, session: s, run: (e) => Palette.sendShared(s, e) };
+    const far = Ref.nodeOf(s) !== null;
+    const c = far ? Nodes.can(Nodes.get(s.node), 'sessions') : { ok: true, why: '' };
+    return { id: 'send:' + Ref.key(s), label: far ? String(s.session || s.tmux) : s.name || s.tmux, hint: `${Palette.where(s)} · ${GLYPH_LABEL[st]}`, glyph, chip: far ? Nodes.chip(s.node) : null, session: s,
+      off: c.ok ? '' : c.why, run: (e) => Palette.sendShared(s, e) };
   });
   return items.length ? [{ id: 'send', title: 'Send to session', items }] : [];
 };
@@ -458,7 +496,16 @@ Palette.sendShared = function (s, e) {
   const u = Palette.ui;
   const text = u && u.input ? u.input.value.trim() : '';
   if (!text) { Palette.say('Nothing to send.', 'warn'); return; }
-  if (Ref.nodeOf(s) !== null) { Palette.say('That session is on another node: sending to it arrives with the relay.', 'warn'); return; }      // Palette.send posts to this board by tmux name
+  if (Ref.nodeOf(s) !== null) {                                    // a session of another node: the relay's prompt row (nodes-hub.js), Enter or not, never a slash command
+    const c = Nodes.ready ? Nodes.can(Nodes.get(s.node), 'sessions') : { ok: false, why: 'the nodes are not loaded yet' };
+    if (!c.ok) { Palette.say(c.why, 'warn'); return; }
+    const chk = Nodes.promptCheck(text);
+    if (!chk.ok) { Palette.say(chk.why, 'warn'); return; }
+    Palette.close();
+    const who = String(s.session || s.tmux);
+    Nodes.sendPrompt(s.node, s.tmux, text).then((r) => Palette.say(r.ok ? `Sent to ${who} on ${Nodes.nameOf(s.node)}` : r.text, r.ok ? 'ok' : 'warn'));
+    return;
+  }
   Palette.close();
   Palette.send(s.tmux, text, s.name || s.tmux, !(e && e.shiftKey));
 };

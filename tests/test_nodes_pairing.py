@@ -207,7 +207,8 @@ def test_node_routes_is_a_closed_table_and_route_scope_reads_it(monkeypatch):
                          ("POST", "/api/deploy/gate"), ("GET", "/mcp"), ("GET", "/api/node/hello/x"), ("GET", "/api/node/"), ("DELETE", "/api/node"),
                          ("GET", "/api/nodes"), ("GET", "/api/nodes/pairs"), ("POST", "/api/nodes/pair"), ("GET", "/api/nodes/audit")):
         assert nodes.route_scope(method, path) is None, (method, path)
-    assert all(m in ("GET", "POST") and p.startswith("/api/node") for m, p in nodes.NODE_ROUTES)
+    assert all(m in ("GET", "POST", "DELETE") and p.startswith("/api/node") for m, p in nodes.NODE_ROUTES)      # DELETE: closing a session on another node (#142)
+    assert [(m, p) for m, p in nodes.NODE_ROUTES if m == "DELETE"] == [("DELETE", "/api/node/sessions/{name}")], "one DELETE row only"
     assert all(s in nodes.SCOPES or s == nodes.SCOPE_ANY for s in nodes.NODE_ROUTES.values())
     monkeypatch.setitem(nodes.NODE_ROUTES, ("POST", "/api/node/tasks/{id}/cancel"), "tasks")      # a path pattern matches one segment
     assert nodes.route_scope("POST", "/api/node/tasks/42/cancel") == "tasks"

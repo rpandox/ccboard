@@ -284,7 +284,8 @@
       "scopes": [
         "read",
         "tasks",
-        "sessions"
+        "sessions",
+        "permissions"
       ],
       "card": {
         "app": "ccboard",
@@ -505,7 +506,7 @@
           }
         ],
         "needs_you": {
-          "permissions": 0,
+          "permissions": 4,
           "input": 2,
           "errors": 0
         },
@@ -739,7 +740,8 @@
       "legacy": false,
       "scopes": [
         "read",
-        "tasks"
+        "tasks",
+        "sessions"
       ],
       "card": {
         "app": "ccboard",
@@ -1064,5 +1066,49 @@
     "default": [
       "(nothing captured yet)"
     ]
+  },
+  "permissions": {
+    "build-box": [
+      {
+        "id": 41,
+        "tmux": "shop--api--s1",
+        "tool": "Bash",
+        "summary": "git push origin task/orders-pagination",
+        "since": "2026-10-03T02:50:00+00:00"
+      },
+      {
+        "id": 42,
+        "tmux": "infra--deploy--s2",
+        "tool": "Edit",
+        "summary": "Edit infra/deploy/values.yaml",
+        "since": "2026-10-03T02:53:00+00:00",
+        "demo_answer": "answered"
+      },
+      {
+        "id": 43,
+        "tmux": "shop--api--s3",
+        "tool": "Bash",
+        "summary": "npm ci && npm run build",
+        "since": "2026-10-03T02:55:00+00:00",
+        "demo_answer": "expired"
+      },
+      {
+        "id": 44,
+        "tmux": "shop--web--t-cart-page",
+        "tool": "Write",
+        "summary": "Write src/cart/EmptyState.test.tsx",
+        "since": "2026-10-03T02:57:00+00:00",
+        "demo_answer": "gone"
+      }
+    ]
+  },
+  "steer": {
+    "build-box/shop--api--s3": {
+      "refuse": "wide"
+    },
+    "build-box/infra--deploy--s2": {
+      "prompt": "unconfirmed",
+      "close": "gone"
+    }
   }
 }

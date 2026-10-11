@@ -159,7 +159,7 @@ def reset() -> None:
         _id_cache.clear()
         _warned.clear()
     hello_limiter.clear()
-    for lim in (pair_limiter, refusal_limiter, node_read_limiter, node_write_limiter, relay_read_limiter, relay_write_limiter, confirm_limiter):
+    for lim in (pair_limiter, refusal_limiter, node_read_limiter, node_write_limiter, relay_read_limiter, relay_write_limiter, relay_prompt_limiter, node_prompt_limiter, confirm_limiter):
         lim.clear()
     with _pending_lock:
         _pending.clear()
@@ -801,6 +801,9 @@ node_read_limiter = _Limiter(READ_RATE, 60.0, 2048)          # per pair
 node_write_limiter = _Limiter(WRITE_RATE, 60.0, 2048)
 relay_read_limiter = _Limiter(READ_RATE, 60.0, 512)           # the hub relay routes (issue #140), per signed-in person and class
 relay_write_limiter = _Limiter(WRITE_RATE, 60.0, 512)
+PROMPT_RATE = 20                                                # prompts a minute into one session, on top of the write bucket (issue #142)
+relay_prompt_limiter = _Limiter(PROMPT_RATE, 60.0, 512)         # the hub's, per node and session
+node_prompt_limiter = _Limiter(PROMPT_RATE, 60.0, 512)          # the peer's, per session: it never trusts the hub's count
 confirm_limiter = _Limiter(30, 60.0, 2048)                    # POST /api/nodes/pair/confirm, per source address
 CONFIRM_TTL = 30.0                                            # seconds an in-flight add_node answers the confirm route (its pair call waits 8 s at most)
 CONFIRM_MAX = 16                                              # in-flight records kept at most; only add_node (a signed-in person's action) writes one

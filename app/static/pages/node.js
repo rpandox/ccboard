@@ -65,7 +65,7 @@ function nodeHeader(rec) {
     plat.name ? el('div', { class: 'nd-plat' }, NodeView.chip(plat.name, '', '', 'Platform'), el('span', { class: 'dim nd-load', text: `Load: ${plat.load}` }),
       ...Nodes.platNotes(card, plat.name).map((t) => el('p', { class: 'dim nd-note', text: t }))) : null,
     ...notes.map((n) => el('p', { class: `nd-banner ${n.cls}`, role: 'status', text: n.text })), acts,
-    el('p', { class: 'dim nd-ro', text: 'Read only here, except starting a task or a session and the tail of a session. Answering, typing and closing arrive with a later phase.' }));
+    el('p', { class: 'dim nd-ro', text: 'Read only here, except starting a task or a session, the tail of a session and, with the sessions and permissions scopes, replying to a session, pressing keys, acknowledging, closing it and answering its permission requests.' }));
 }
 
 /* New task here / New session here: a button that opens the launcher on this node when the pair holds the scope and the node can be called, else the disabled control with its reason. */
@@ -140,13 +140,18 @@ function nodePageBuild(host, rec) {
   };
   const sKey = (s) => Ref.key({ tmux: s.tmux, node: s.node });
   const tKey = (t) => Ref.key({ kind: 'task', node: t.node, id: t.id });
-  const needs = mk('needs', 'Needs you', (r) => Nodes.sessions(r.handle).filter((s) => s.needs_you), sKey, nhSessionRow, nhSessionSig, (r) => `Nothing needs you on ${nhName(r)}.`);
+  const needs = mk('needs', 'Needs you', (r) => { const owned = new Set(Nodes.permCards().filter((c) => !c.stub && c.node === r.handle).map((c) => c.tmux)); return Nodes.sessions(r.handle).filter((s) => s.needs_you && !owned.has(s.tmux)); },
+    sKey, nhSessionRow, nhSessionSig, (r) => `Nothing needs you on ${nhName(r)}.`);
   const sess = mk('sessions', 'Sessions', (r) => Nodes.sessions(r.handle), sKey, nhSessionRow, nhSessionSig, (r) => `No live session in the last reading of ${nhName(r)}. Start one on its own board (Open board).`);
   const tasks = mk('tasks', 'Tasks', (r) => Nodes.tasks(r.handle), tKey, nhTaskRow, nhTaskSig, (r) => `No task in the last reading of ${nhName(r)}. Open its board to add one.`);
   const repos = mk('repos', 'Repos', nodeRepoRows, (r) => r.key, nodeRepoRow, (r) => JSON.stringify(r), (r) => `No repo in the last reading of ${nhName(r)}.`);
   const wins = mk('windows', 'Account windows', nodeWindows, (r) => r.key, nodeWindowRow, (r) => JSON.stringify([r, Math.floor(Date.now() / 60000)]), (r) => `No account reading from ${nhName(r)} yet. Log in to Claude or Codex on its board.`);
   const permNote = el('p', { class: 'dim nd-perm hidden' });
-  needs.insertBefore(permNote, needs.querySelector('.nd-list'));
+  const permWrap = el('div', { class: 'roster nd-list nd-perms' });
+  const permList = nhList(permWrap, (c) => c.key, nsPermNode, nsPermSig);
+  const sessList = needs.querySelector('.nd-list');
+  needs.insertBefore(permNote, sessList);
+  needs.insertBefore(permWrap, sessList);
   host.append(head, needs, sess, tasks, repos, wins);
   let sig = '';
   return function paint(r) {
@@ -162,8 +167,12 @@ function nodePageBuild(host, rec) {
       e.empty.classList.toggle('hidden', !none);
     }
     const perm = Number(r.state && r.state.needs_you && r.state.needs_you.permissions) || 0;
-    setTextIfChanged(permNote, perm ? `${perm} permission request${perm === 1 ? '' : 's'} waiting on ${nhName(r)}. Answer on its board (Open board); answering from here arrives with the relay.` : '');
-    permNote.classList.toggle('hidden', !perm);
+    const cards = Nodes.permCards().filter((c) => !c.stub && c.node === r.handle);
+    permList.update(cards);
+    const can = Nodes.can(r, 'permissions');
+    const word = `${perm} permission request${perm === 1 ? '' : 's'}`;
+    setTextIfChanged(permNote, perm && !cards.length ? (can.ok ? `${word} waiting on ${nhName(r)}. Reading ${perm === 1 ? 'it' : 'them'} from the node…` : `${word} waiting on ${nhName(r)}. Allow and Deny: ${can.why}. You can answer on its board (Open board).`) : '');
+    permNote.classList.toggle('hidden', !(perm && !cards.length));
   };
 }
 
@@ -222,20 +231,41 @@ function nodeTailMake(handle, tmux) {
   return { node, stop() { off(); } };
 }
 
+/* The facts and the actions of a session's peek, from the last reading. `steer`: the steer panel is on the page (the pair holds the sessions scope), so the page's filled primary is its
+   Send and Open on <node> is a plain button; without it the controls that need the scope stay, disabled, with their reason. */
+function nodeSessionParts(rec, s, steer) {
+  const v = Nodes.view(rec);
+  const st = ownKey(STATE_GLYPH, s.state) ? s.state : 'unknown';
+  const name = nhName(rec);
+  const open = nhOpenLink(`Open on ${name}`, rec, Ref.isTmux(s.tmux) ? `#/s/${s.tmux}` : '', steer ? 'btn' : 'btn primary') || Nodes.off(`Open on ${name}`, 'the address saved for this node is not an https tailnet address');
+  const top = [
+    el('div', { class: 'page-head' }, el('h1', { class: 'nd-title', text: String(s.session || s.tmux) }), Nodes.chip(rec.handle)),
+    el('p', { class: 'dim nd-ro', text: steer ? `The facts are from the last reading of ${name}, ${nodeAge(rec)}${v.status === 'online' ? '' : ` (${v.word})`}. The panel below acts on ${name} now.`
+      : `Read only: the last reading of ${name}, ${nodeAge(rec)}${v.status === 'online' ? '' : ` (${v.word})`}.` }),
+    nodeFacts([['State', el('span', {}, stateGlyph(st), ' ', GLYPH_LABEL[st] + (s.needs_you && st !== 'waiting' ? ', needs you' : ''))], ['Agent', nhAgent(s.agent)], ['Model', s.model], ['Where', nhWhere(s)],
+      ['Started as', s.kind], ['Since', s.since ? `${nhAgeText(s.since)} ago` : ''], ['Session', s.tmux]])];
+  const pc = Nodes.can(rec, 'permissions');
+  const answer = steer ? (s.needs_you && nsWaiting(rec) > 0 && !pc.ok ? Nodes.off('Answer', pc.why) : null) : (s.needs_you ? Nodes.off('Answer', Nodes.reason(rec, 'sessions')) : null);
+  const acts = steer ? Nodes.acts(open, nodePeekBack(rec), answer)
+    : Nodes.acts(open, nodePeekBack(rec), Nodes.off('Send a prompt', Nodes.reason(rec, 'sessions')), answer, Nodes.off('Close session', Nodes.reason(rec, 'sessions')));
+  return { top, acts };
+}
+
+/* The plain peek: no steer panel (the pair lacks the sessions scope). */
 function nodeSessionPeek(rec, tmux, tail) {
   const s = Nodes.sessions(rec.handle).find((x) => x.tmux === tmux);
   if (!s) return nodePeekGone(rec, 'session', 'This session is not in the last reading of the node. It may have ended.');
-  const v = Nodes.view(rec);
-  const st = ownKey(STATE_GLYPH, s.state) ? s.state : 'unknown';
-  const open = nhOpenLink(`Open on ${nhName(rec)}`, rec, Ref.isTmux(s.tmux) ? `#/s/${s.tmux}` : '', 'btn primary') || Nodes.off(`Open on ${nhName(rec)}`, 'the address saved for this node is not an https tailnet address');
-  return el('div', { class: 'nd-peek' },
-    el('div', { class: 'page-head' }, el('h1', { class: 'nd-title', text: String(s.session || s.tmux) }), Nodes.chip(rec.handle)),
-    el('p', { class: 'dim nd-ro', text: `Read only: the last reading of ${nhName(rec)}, ${nodeAge(rec)}${v.status === 'online' ? '' : ` (${v.word})`}.` }),
-    nodeFacts([['State', el('span', {}, stateGlyph(st), ' ', GLYPH_LABEL[st] + (s.needs_you && st !== 'waiting' ? ', needs you' : ''))], ['Agent', nhAgent(s.agent)], ['Model', s.model], ['Where', nhWhere(s)],
-      ['Started as', s.kind], ['Since', s.since ? `${nhAgeText(s.since)} ago` : ''], ['Session', s.tmux]]),
-    tail ? tail.node : null,
-    Nodes.acts(open, nodePeekBack(rec), Nodes.off('Send a prompt', Nodes.reason(rec, 'sessions')), s.needs_you ? Nodes.off('Answer', Nodes.reason(rec, 'sessions')) : null,
-      Nodes.off('Close session', Nodes.reason(rec, 'sessions'))));
+  const p = nodeSessionParts(rec, s, false);
+  return el('div', { class: 'nd-peek' }, ...p.top, tail ? tail.node : null, p.acts);
+}
+
+/* The peek with the steer panel: the facts above and the actions below are repainted with every reading; the tail and the panel in between are the same elements for as long as the
+   peek lives, so a draft, a focus, an armed confirm and an open Keys panel survive. */
+function nodeShellMake(tail, steer) {
+  const top = el('div', { class: 'nd-peek-top' });
+  const bot = el('div', { class: 'nd-peek-bot' });
+  const root = el('div', { class: 'nd-peek' }, top, tail ? tail.node : null, steer.node, bot);
+  return { root, paint(rec, s) { const p = nodeSessionParts(rec, s, true); top.textContent = ''; top.append(...p.top); bot.textContent = ''; bot.append(p.acts); } };
 }
 
 function nodeTaskPeek(rec, id) {
@@ -266,6 +296,206 @@ function nodePeekGone(rec, what, text) {
   return el('div', { class: 'nd-peek nd-gone', role: 'status' }, e);
 }
 
+/* ---------- steering a remote session (issue #142) ----------
+
+   The steer panel of a session's peek: the permission request waiting on it (Allow, Deny), a quick-reply row and a one-line send box (Enter sends, Shift+Enter adds a line), Ack, a Keys
+   panel (the closed list of Nodes.KEYS; C-c needs a second tap) and Kill session (two taps). It is built once per peek and kept across the readings (the peek around it is repainted
+   every 6 s; a draft, an armed confirm and an open Keys panel must survive that). Every action goes through Nodes.sendPrompt / sendKey / ackSession / closeSession / permAnswer
+   (nodes-hub.js), which refuse early with a plain sentence and never throw. The sentence stays in the panel beside the toast, so a missed toast loses nothing. A draft is
+   cleared only when the node confirmed; a refusal or a timeout keeps it. */
+
+const NODE_WHO = 'Reply, Keys, Ack and Kill session';
+
+function nodeSteerMake(handle, tmux) {
+  if (!Ref.session(handle, tmux)) return null;
+  const killKey = `kill:${handle}/${tmux}`;
+  const ctrlKey = `ckey:${handle}/${tmux}`;
+  const whyId = `nd-sw-${handle}-${tmux}`;
+  const who = { tmux, node: handle };
+  const S = { rec: null, s: null, can: { ok: false, why: '' }, busy: false, keyBusy: false, closing: false, keysOpen: false, last: '', actSig: '', chipSig: '', queue: null };
+  const nm = () => (S.rec ? nhName(S.rec) : handle);
+  const sn = () => String((S.s && S.s.session) || tmux);
+  const agent = () => nhAgent(S.s && S.s.agent);
+  const takesText = () => !!S.s && agent() !== 'shell' && ['waiting', 'idle', 'done', 'working', 'errored'].includes(S.s.state);
+  const takesKeys = () => !!S.s && agent() !== 'shell' && S.s.state !== 'ended';
+
+  const permHead = el('h2', { class: 'nd-h hidden', text: 'Permission request' });
+  const permList = el('div', { class: 'roster nd-list nd-perms' });
+  const permNote = el('p', { class: 'dim nd-ro hidden', text: 'Allow and Deny go to the node through this board. The node trusts this board to pass on a person\'s choice and records the name this board reports; it cannot check it.' });
+  const permKeys = nhList(permList, (c) => c.key, nsPermNode, nsPermSig);
+
+  const chips = el('div', { class: 'chips nd-chips', role: 'group', 'aria-label': 'Quick replies' });
+  const ta = composer({ placeholder: typeof sessionPlaceholder === 'function' ? sessionPlaceholder('send to', '') : 'send', label: 'Send a prompt to this session', onSend: () => sendText(ta.value, true) });
+  ta.setAttribute('title', 'Send a prompt: Enter sends, Shift+Enter adds a line');
+  const sendBtn = el('button', { class: 'small primary', type: 'submit', text: 'Send' });
+  const form = el('form', { class: 'ib-send nd-send', onsubmit: (e) => { e.preventDefault(); sendText(ta.value, true); } }, ta, sendBtn);
+  const echo = el('p', { class: 'dim nd-steer-echo hidden' });
+  const status = el('p', { class: 'nd-steer-st hidden', role: 'status' });
+  const queueSlot = el('span', { class: 'nd-queue' });
+  const line = el('div', { class: 'nd-steer-line hidden' }, status, queueSlot);
+  const replySec = el('div', { class: 'nd-ssec nd-reply' }, el('h2', { class: 'nd-h', text: 'Reply' }), chips, form, echo, line);
+  const noText = el('p', { class: 'dim nd-ro hidden', text: 'This session cannot take a prompt: it is a shell or it has ended.' });
+  const acts = el('div', { class: 'nd-steer-acts' });
+  const keysBox = el('div', { class: 'nd-keys hidden', role: 'group', 'aria-label': 'Keys' });
+  const why = el('p', { class: 'dim nd-swhys hidden' });
+  const actSec = el('div', { class: 'nd-ssec nd-actions' }, el('h2', { class: 'nd-h', text: 'Session' }), acts, keysBox, why);
+  const node = el('section', { class: 'nd-steer', 'aria-label': 'Steer this session' }, permHead, permList, permNote, replySec, noText, actSec);
+
+  function show(kind, text) {
+    status.className = `nd-steer-st ${kind}`;
+    setTextIfChanged(status, text);
+    status.classList.toggle('hidden', !text);
+    line.classList.toggle('hidden', !text);
+  }
+  function echoLine(text) { setTextIfChanged(echo, text ? `› ${text}` : ''); echo.classList.toggle('hidden', !text); }
+  function fail(r) { show(r.reason === 'busy' ? 'warn' : 'bad', r.text); Nodes.say(r.text, r.reason === 'busy' || r.reason === 'rate_limited' ? 'warn' : 'bad'); }
+
+  /* A prompt: from the box (fromBox: the box is locked while the node answers, emptied only when it confirmed) or from a chip (the draft in the box is left alone). */
+  async function sendText(text, fromBox, opts) {
+    if (S.busy) return;
+    const t = String(text === undefined || text === null ? '' : text);
+    const first = t.replace(/\r\n?/g, '\n').trim().split('\n')[0].slice(0, 160);
+    S.busy = true;
+    S.last = t;
+    queueSlot.textContent = '';
+    if (fromBox) ta.disabled = true;
+    sendBtn.disabled = true;
+    show('info', `Sending to ${nm()}…`);
+    echoLine(first);
+    const r = await Nodes.sendPrompt(handle, tmux, t, opts);
+    S.busy = false;
+    if (fromBox) ta.disabled = false;
+    sendBtn.disabled = false;
+    if (r.ok) {
+      if (fromBox) { ta.value = ''; if (typeof rowCleared === 'function') rowCleared(ta); }
+      show('ok', r.queued ? `Queued on ${nm()}. It is typed when the session is ready.` : `Sent to ${nm()}.`);
+      Nodes.say(r.queued ? `Queued for ${sn()} on ${nm()}` : `Sent to ${sn()} on ${nm()}`, 'ok');
+    } else {
+      echoLine('');
+      fail(r);
+      if (r.busy && r.busy.code === 'working') queueSlot.append(el('button', { class: 'small', type: 'button', title: 'Type it as soon as the session is ready', text: 'Queue it', onclick: () => sendText(S.last, fromBox, { queue: true }) }));
+    }
+    if (fromBox && typeof ta.focus === 'function') ta.focus();
+  }
+
+  async function doKey(key, confirm) {
+    if (S.keyBusy) return;
+    S.keyBusy = true;
+    const word = Nodes.KEY_WORD[key] || key;
+    const r = await Nodes.sendKey(handle, tmux, key, confirm === true);
+    S.keyBusy = false;
+    if (r.ok) { show('ok', `Sent ${word} to ${nm()}.`); Nodes.say(`Sent ${word} to ${sn()} on ${nm()}`, 'ok'); } else fail(r);
+    paint();
+  }
+
+  async function doAck() {
+    const r = await Nodes.ackSession(handle, tmux);
+    if (r.ok) { show('ok', `Acknowledged on ${nm()}.`); Nodes.say(`Acknowledged ${sn()} on ${nm()}`, 'ok'); } else fail(r);
+  }
+
+  async function doClose() {
+    S.closing = true;
+    show('info', `Closing ${sn()} on ${nm()}…`);
+    paint();
+    const r = await Nodes.closeSession(handle, tmux);
+    S.closing = false;
+    if (r.ok) {
+      Nodes.say(`Killed ${sn()} on ${nm()}`, 'ok');
+      const back = Ref.hash(Ref.node(handle)) || '#/';
+      if (typeof navigate === 'function') navigate(back); else if (typeof location !== 'undefined') location.hash = back;
+    } else fail(r);
+    paint();
+  }
+
+  /* The quick replies of this session: its agent's list until edited (components.js quickLoad, kept per node and session). A slash command is not sent to another node, so a reply that
+     starts with one is left out of the row (it stays in the editor's list). */
+  function fillChips() {
+    if (!S.s || typeof quickLoad !== 'function') return;
+    const ag = agent();
+    const list = quickLoad(who, ag);
+    const sig = JSON.stringify([ag, list, S.can.ok]);
+    if (sig === S.chipSig) return;
+    S.chipSig = sig;
+    const edit = () => quickReplyEditor({ items: quickLoad(who, ag), defaults: quickDefaults(ag), onSave: (items) => { quickSave(who, items, ag); S.chipSig = ''; paint(); } });
+    chips.textContent = '';
+    for (const text of list) {
+      if (/^\s*\//.test(text)) continue;
+      chips.append(quickChip(text, { cls: 'chip-btn', onSend: () => sendText(text, false), onEdit: edit }));
+    }
+    chips.append(el('button', { class: 'icon minimal qr-edit', type: 'button', title: 'Edit quick replies', 'aria-label': 'Edit quick replies', onclick: edit }, ic('edit')));
+  }
+
+  function keyCell(k) {
+    const word = Nodes.KEY_WORD[k] || k;
+    return el('button', { class: 'small nd-key', type: 'button', 'data-key': k, title: `Send ${word} to ${sn()}`, text: word, onclick: () => doKey(k, false) });
+  }
+
+  function paintActs() {
+    const ok = S.can.ok;
+    const needs = !!(S.s && S.s.needs_you);
+    const keysOn = ok && takesKeys();
+    const open = keysOn && S.keysOpen;
+    const sig = JSON.stringify([ok, S.can.why, needs, open, keysOn, ui.confirm === killKey, ui.confirm === ctrlKey, S.closing, nm(), sn()]);
+    if (sig === S.actSig) return;
+    S.actSig = sig;
+    acts.textContent = '';
+    const cells = [];
+    if (needs) cells.push(ok ? el('button', { class: 'small', type: 'button', 'data-act': 'ack', title: 'Clears the attention mark on this session. It answers no request.', text: 'Ack', onclick: doAck }) : Nodes.off('Ack', S.can.why));
+    if (takesKeys()) {
+      if (ok) cells.push(el('button', { class: 'small' + (open ? ' on' : ''), type: 'button', 'data-act': 'keys', 'aria-expanded': open ? 'true' : 'false', title: 'Press a key in the session', text: 'Keys',
+        onclick: () => { S.keysOpen = !S.keysOpen; S.actSig = ''; paintActs(); } }));
+      else cells.push(Nodes.off('Keys', S.can.why));
+    }
+    acts.append(...cells);
+    acts.append(el('div', { class: 'nd-kill' }, !ok ? Nodes.off('Kill session', S.can.why, 'Kill session')
+      : S.closing ? el('button', { class: 'danger', type: 'button', disabled: true, text: `Closing on ${nm()}…` }) : confirmButton(killKey, `Kill session on ${nm()}`, doClose, false)));
+    keysBox.textContent = '';
+    keysBox.classList.toggle('hidden', !open);
+    if (open) {
+      for (const k of Nodes.KEYS) keysBox.append(keyCell(k));
+      keysBox.append(el('div', { class: 'nd-ckey' }, confirmButton(ctrlKey, Nodes.CONFIRM_KEY, () => doKey(Nodes.CONFIRM_KEY, true), false)));
+    }
+    why.textContent = '';
+    why.classList.toggle('hidden', ok);
+    if (!ok) {
+      why.append(el('span', { id: whyId, class: 'nd-why', text: `${NODE_WHO}: ${S.can.why}.` }));
+      for (const b of Array.from(acts.querySelectorAll('.nd-off'))) b.setAttribute('aria-describedby', whyId);
+    }
+  }
+
+  function paint() {
+    if (!S.rec || !S.s) return;
+    const ok = S.can.ok;
+    const text = takesText();
+    replySec.classList.toggle('hidden', !text);
+    noText.classList.toggle('hidden', text || !S.s);
+    sendBtn.classList.toggle('nd-off', !ok);
+    if (ok) sendBtn.removeAttribute('aria-disabled'); else sendBtn.setAttribute('aria-disabled', 'true');
+    sendBtn.setAttribute('title', ok ? 'Send this prompt' : S.can.why);
+    node.classList.toggle('blocked', !ok);
+    if (text) fillChips();
+    const cards = Nodes.permCards().filter((c) => !c.stub && c.node === handle && c.tmux === tmux).map((c) => ({ ...c, lead: true }));
+    permKeys.update(cards);
+    permHead.classList.toggle('hidden', !cards.length);
+    permNote.classList.toggle('hidden', !cards.length);
+    paintActs();
+  }
+
+  const ctl = {
+    handle, tmux, node, ta,
+    update(rec, s) { S.rec = rec; S.s = s; S.can = Nodes.can(rec, 'sessions'); paint(); },
+    focus() { if (!takesText() || typeof ta.focus !== 'function') return false; ta.focus(); return true; },
+    ack() { if (!S.s || !S.s.needs_you) { Nodes.say(`${sn()} has nothing to acknowledge`, 'info'); return true; } doAck(); return true; },
+    allow() { const c = Nodes.permFor(handle, tmux); if (!c) return false; Nodes.permAnswer(c, 'allow'); return true; },
+    deny() { const c = Nodes.permFor(handle, tmux); if (!c) return false; Nodes.permAnswer(c, 'deny'); return true; },
+    open() { const url = S.rec ? Nodes.openUrl(S.rec, Ref.isTmux(tmux) ? `#/s/${tmux}` : '') : null; if (!url) return false; window.open(url, '_blank', 'noopener,noreferrer'); return true; },
+    stop() { if (Nodes.peek === ctl) Nodes.peek = null; },
+  };
+  keysBox.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.keysOpen) { e.preventDefault(); e.stopPropagation(); S.keysOpen = false; S.actSig = ''; paintActs(); const b = acts.querySelector('[data-act=keys]'); if (b) b.focus(); } });
+  Nodes.peek = ctl;
+  return ctl;
+}
+
 /* ---------- the three pages ---------- */
 
 function nodePage(kind) {
@@ -275,7 +505,10 @@ function nodePage(kind) {
   let paintBody = null;
   let peekSig = '';
   let tail = null;
+  let steer = null;
+  let shell = null;
   const stopTail = () => { if (tail) { tail.stop(); tail = null; } };
+  const stopSteer = () => { if (steer) { steer.stop(); steer = null; } shell = null; };
   const title = () => {
     const h = route && route.params && route.params.node;
     const rec = h && Nodes.enabled() ? Nodes.get(h) : null;
@@ -296,6 +529,7 @@ function nodePage(kind) {
     if (key !== mode) {
       mode = key; paintBody = null; peekSig = '';
       stopTail();
+      stopSteer();
       host.textContent = '';
       if (want === 'none') nodeNotPaired(host, h);
       else if (want === 'loading') host.append(el('p', { class: 'dim', role: 'status', text: M.err ? `Could not read the nodes (${M.err}). Trying again.` : 'Reading the nodes…' }));
@@ -303,13 +537,20 @@ function nodePage(kind) {
     }
     if (want === 'node' && paintBody) paintBody(rec);
     else if (want === 'peek') {
-      if (kind === 'node-session') {                                           // the tail lives as long as the peek does, not as long as one reading
-        const here = Nodes.sessions(rec.handle).some((x) => x.tmux === route.params.tmux) && Array.isArray(rec.scopes) && rec.scopes.includes('sessions');
+      let live = null;
+      if (kind === 'node-session') {                                           // the tail and the steer panel live as long as the peek does, not as long as one reading
+        live = Nodes.sessions(rec.handle).find((x) => x.tmux === route.params.tmux) || null;
+        const here = !!live && Array.isArray(rec.scopes) && rec.scopes.includes('sessions');
         if (here && !tail && typeof Live !== 'undefined') tail = nodeTailMake(rec.handle, route.params.tmux);
         else if (!here) stopTail();
+        if (here && !shell) {
+          steer = nodeSteerMake(rec.handle, route.params.tmux);
+          if (steer) { shell = nodeShellMake(tail, steer); host.textContent = ''; host.append(shell.root); peekSig = ''; }
+        } else if (!here && shell) { stopSteer(); peekSig = ''; }
       }
-      const s = JSON.stringify([rec, Math.floor(Date.now() / 60000), M.err, !!tail]);
-      if (s !== peekSig) { peekSig = s; host.textContent = ''; host.append(kind === 'node-session' ? nodeSessionPeek(rec, route.params.tmux, tail) : nodeTaskPeek(rec, route.params.id)); }
+      const s = JSON.stringify([rec, Math.floor(Date.now() / 60000), M.err, !!tail, !!shell, live && live.needs_you]);
+      if (shell) { steer.update(rec, live); if (s !== peekSig) { peekSig = s; shell.paint(rec, live); } }
+      else if (s !== peekSig) { peekSig = s; host.textContent = ''; host.append(kind === 'node-session' ? nodeSessionPeek(rec, route.params.tmux, tail) : nodeTaskPeek(rec, route.params.id)); }
     } else if (want === 'loading') {
       const p = host.firstChild;
       if (p && M.err) setTextIfChanged(p, `Could not read the nodes (${M.err}). Trying again.`);
@@ -329,7 +570,7 @@ function nodePage(kind) {
     },
     update() { paint(); },
     onRoute(r) { route = r; paint(); },
-    unmount() { Nodes.M.subs.delete(paint); stopTail(); host = null; mode = ''; paintBody = null; },
+    unmount() { Nodes.M.subs.delete(paint); stopTail(); stopSteer(); host = null; mode = ''; paintBody = null; },
   };
 }
 

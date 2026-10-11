@@ -73,7 +73,10 @@ Nodes.get = function (handle) { return Nodes.M.by.get(handle) || null; };
 
 function nhSessions(rec) {
   const rows = rec && rec.state && Array.isArray(rec.state.sessions) ? rec.state.sessions : [];
-  return rows.filter((s) => s && typeof s.tmux === 'string').map((s) => ({ ...s, node: rec.handle }));
+  const now = Date.now();
+  const rev = Nodes.M.rev;
+  return rows.filter((s) => s && typeof s.tmux === 'string' && !nsClosed(rec.handle, s.tmux, now))
+    .map((s) => (Nodes.acked.get(`${rec.handle}/${s.tmux}`) === rev ? { ...s, needs_you: false, node: rec.handle } : { ...s, node: rec.handle }));
 }
 function nhTasks(rec) {
   const rows = rec && rec.state && Array.isArray(rec.state.tasks) ? rec.state.tasks : [];
@@ -203,6 +206,7 @@ Nodes.poll = async function (o) {
     M.errAt = Date.now();
   } finally { M.busy = false; }
   Nodes.changed(changed);
+  Nodes.permsSync();                                   // the pending permission requests of the nodes that report one (issue #142)
   return changed;
 };
 
@@ -236,6 +240,7 @@ Nodes.stop = function () {
   M.subs.clear();
   M.recs = []; M.by = new Map(); M.etag = null; M.loaded = false; M.err = null;
   Nodes.pending = [];
+  Nodes.steerClear();
   Nodes.refreshInfo();
   try { if (typeof Shell !== 'undefined' && Shell && typeof Shell.patchTrees === 'function') Shell.patchTrees(); } catch (_) { /* no shell */ }
 };
@@ -452,20 +457,35 @@ Nodes.SLOTS = {
   inbox(anchor, opts) {
     const title = el('h2', { class: 'nd-h' });
     const more = el('a', { class: 'btn small hidden', href: '#/inbox' });
+    const perms = el('div', { class: 'roster nd-list nd-perms' });
     const list = el('div', { class: 'roster nd-list' });
-    const host = el('section', { class: 'nd-inbox hidden', 'aria-label': 'On other nodes' }, el('div', { class: 'row head' }, title, more), list,
-      el('p', { class: 'dim nd-ro', text: 'Read only here: open the session on its node to answer it.' }));
+    const note = el('p', { class: 'dim nd-ro' });
+    const host = el('section', { class: 'nd-inbox hidden', 'aria-label': 'On other nodes' }, el('div', { class: 'row head' }, title, more), perms, list, note);
     nhInsertAfter(anchor, host);
+    const pl = nhList(perms, (c) => c.key, nsPermNode, nsPermSig);
     const kl = nhList(list, (s) => Ref.key({ tmux: s.tmux, node: s.node }), nhSessionRow, nhSessionSig);
     return { hosts: [host], paint() {
-      const all = Nodes.sessions().filter((s) => s.needs_you);
-      const items = opts.limit > 0 ? all.slice(0, opts.limit) : all;
-      kl.update(items);
-      setTextIfChanged(title, `On other nodes (${all.length})`);
-      setTextIfChanged(more, `Show all ${all.length}`);
-      more.classList.toggle('hidden', !(opts.limit > 0 && all.length > items.length));
-      host.classList.toggle('hidden', !all.length);
-      if (opts.none) opts.none.classList.toggle('hidden', !!opts.local || all.length > 0);      // "Nothing needs you" is not true while another node's items wait
+      const cards = Nodes.permCards();
+      const real = cards.filter((c) => !c.stub);
+      const stubs = cards.filter((c) => c.stub);
+      const owned = new Set(real.map((c) => `${c.node}/${c.tmux}`));
+      const rows = Nodes.sessions().filter((s) => s.needs_you && !owned.has(`${s.node}/${s.tmux}`));
+      const total = real.length + rows.length;
+      const lim = opts.limit > 0 ? opts.limit : Infinity;
+      const localN = typeof opts.local === 'number' ? opts.local : nsLocalCount();
+      const lead = localN === 0 ? real.find((c) => c.phase === 'ask' || c.phase === 'failed') : null;      // one filled primary per screen: Allow is it only when no local card leads
+      const shownCards = real.slice(0, lim).map((c) => (c === lead ? { ...c, lead: true } : c));
+      const shownRows = rows.slice(0, Math.max(0, lim - shownCards.length));
+      pl.update(shownCards.concat(stubs));
+      kl.update(shownRows);
+      setTextIfChanged(title, `On other nodes (${total})`);
+      setTextIfChanged(more, `Show all ${total}`);
+      more.classList.toggle('hidden', !(opts.limit > 0 && total > shownCards.length + shownRows.length));
+      setTextIfChanged(note, real.length ? 'Allow and Deny go to the node through this board. The node trusts this board to pass on a person\'s choice and records the name this board reports; it cannot check it.'
+        : 'Open a session to reply to it, press keys in it or acknowledge it. A permission request can be answered here when the pair holds the permissions scope.');
+      const any = total > 0 || stubs.length > 0;
+      host.classList.toggle('hidden', !any);
+      if (opts.none) opts.none.classList.toggle('hidden', !!opts.local || any);      // "Nothing needs you" is not true while another node's items wait
     } };
   },
 
@@ -636,11 +656,395 @@ Nodes.settingsLine = function (handle) {
   return el('div', { class: 'nd-set-line', 'data-handle': handle }, ...kids);
 };
 
+/* ---------- steering a session and answering a permission request (issue #142) ----------
+
+   Every call goes to this board's own origin: POST /api/nodes/<handle>/sessions/<tmux>/prompt | keys | ack, DELETE .../sessions/<tmux>, GET .../permissions and
+   POST .../permissions/<id>/allow | deny. The hub checks the person (a signed-in login with the CSRF header), the pair's scope, the text and the key, and the peer checks it all again; this
+   file checks the same things first only to refuse early with a plain sentence. Nothing here retries a write: a timeout is "could not confirm", and the draft stays in its box.
+
+   The text a person types is sent as it is (CRLF becomes LF); a control, format or line-separator character is refused here and by both boards, never stripped. A key comes from the closed
+   list Nodes.KEYS (C-c only after a second tap). A permission is answered with Allow or Deny only, bound to the request id the card shows. Every string of a node (a tool, a summary, a
+   session name) is peer data and goes into the page as text.
+
+   The permission list is read only for a node whose pair holds the `permissions` scope AND whose reading says a request is waiting (state.needs_you.permissions > 0), right after the
+   hub poll that said so, and only while the page is visible: every read leaves an audit row on both boards, so a quiet node costs nothing. A board with no node paired runs none of it. */
+
+Nodes.KEYS = ['Enter', 'Escape', 'Up', 'Down', 'Tab', 'y', 'n', '1', '2', '3', '4', '5', '6', '7', '8', '9'];      // plus C-c, which needs a second tap (Nodes.CONFIRM_KEY)
+Nodes.CONFIRM_KEY = 'C-c';
+Nodes.KEY_WORD = { Escape: 'Esc' };
+Nodes.PROMPT_MAX = 8192;
+Nodes.acked = new Map();                      // '<handle>/<tmux>' -> the reading (Nodes.M.rev) it was acknowledged in: needs_you is false until a newer reading says otherwise
+Nodes.closed = new Map();                     // '<handle>/<tmux>' -> when it was closed: the session is left out of the lists for a short while (the next reading is the truth)
+const NS_CLOSED_MS = 20000;
+const NS_DONE_MS = 20000;
+const NS_SHOW_MS = 10000;
+const NS_CTRL = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+const NS_TEXT_BAD = 'That text has a character a terminal cannot take (a control, format or line-separator character). Tab and newline are fine. Remove it and send again.';
+const NS_SLASH = 'Slash commands are not sent to another node. Type the words you want the session to read, or use the session on its own board.';
+const NS_WIDE = 'That session runs with wider permissions than another node may use, or its mode cannot be read. Start it from its own board.';
+const NS_ANSWERS = {
+  answered: 'This request was already answered. Open terminal to see the current prompt.',
+  expired: 'This request has expired. Open terminal to see the current prompt.',
+  gone: 'This request is gone. Open terminal to see the current prompt.',
+};
+
+function nsClosed(handle, tmux, now) {
+  const at = Nodes.closed.get(`${handle}/${tmux}`);
+  return at !== undefined && now - at < NS_CLOSED_MS;
+}
+
+function nsSentence(t) {
+  const s = String(t === undefined || t === null ? '' : t).replace(/\s+/g, ' ').trim().slice(0, 200);
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) + (/[.!?]$/.test(s) ? '' : '.') : '';
+}
+
+function nsQuiet(text, kind) { if (typeof toast === 'function') toast(String(text), { kind: kind || 'info' }); }
+Nodes.say = nsQuiet;
+
+/* A failed relay call as one plain sentence. err.body is the hub's {error, reason, node, age, code, retry}: the reason picks the words; the hub's own text (already cleaned) fills the
+   cases that carry something only the peer knows (why a session is busy, why it cannot be steered). o.what: prompt | keys | ack | close | perms | perm. */
+Nodes.errText = function (err, handle, o) {
+  const what = (o && o.what) || 'prompt';
+  const perm = what === 'perm' || what === 'perms';
+  const b = err && err.body && typeof err.body === 'object' ? err.body : {};
+  const name = Nodes.nameOf(handle);
+  const own = typeof b.error === 'string' ? b.error : '';
+  const reason = typeof b.reason === 'string' ? b.reason : '';
+  const unsure = `Could not confirm whether ${name} got this. Check the terminal before answering again.`;
+  if (!reason && (!err || !err.status || err.status >= 502)) return what === 'perms' ? `${name} could not be reached` : unsure;     // no answer at all, or a proxy's: a write may have gone through
+  switch (reason) {
+    case 'unconfirmed': return unsure;
+    case 'offline': return typeof b.age === 'number' ? `${name} is offline, last seen ${nhAgo(b.age)} ago` : `${name} has not answered yet`;
+    case 'scope': return /^needs the /.test(own) ? own.slice(0, 200) : `needs the ${perm ? 'permissions' : 'sessions'} scope on ${name}`;
+    case 'needs_repair': return `${name} no longer takes this board's token: re-pair it in Settings, Nodes`;
+    case 'unpaired': return `${name} answers as another node or no longer knows this board: remove it and pair it again`;
+    case 'not_read_yet': return `${name} has not been read yet: wait a few seconds and try again`;
+    case 'rate_limited': return perm ? 'Too many requests in a minute. Try again in a moment.' : 'Too many prompts in a minute for this session. Try again in a moment.';
+    case 'busy': {
+      const retry = typeof b.retry === 'number' && b.retry >= 0 && b.retry <= 86400 ? Math.max(1, Math.floor(b.retry)) : null;
+      return `${nsSentence(own) || 'The session is busy.'} ${retry === null ? 'Waiting will not help.' : `Try again in ${nhAgo(retry)}.`}`;
+    }
+    case 'answered': case 'expired': case 'gone': return NS_ANSWERS[reason];
+    case 'not_found': return perm ? NS_ANSWERS.gone : `That session is gone from ${name}.`;
+    case 'refused': return nsSentence(own) || NS_WIDE;
+    case 'too_large': return 'The text is over 8 KB. Shorten it and send again.';
+    case 'invalid': return what === 'prompt' ? (own && !/control|format|line.?sep/i.test(own) ? nsSentence(own) : NS_TEXT_BAD) : what === 'keys' ? 'That key is not on the list this board may send.' : 'That is not an answer a node takes.';
+    case 'bad_answer': return `${name} sent an answer this board could not read`;
+    case 'unreachable': case 'peer_error': case 'bad_address': case 'redirect': return `${name} could not be reached`;
+    default: return nsSentence(own) || (err && err.message ? nsSentence(err.message) : 'The request failed.');
+  }
+};
+
+/* The text to send: CRLF to LF, not empty, up to 8192 characters, no control, format or line-separator character (tab and newline are text). {ok, text} or {ok: false, why}. */
+Nodes.promptCheck = function (text) {
+  const t = String(text === undefined || text === null ? '' : text).replace(/\r\n?/g, '\n');
+  if (!t.trim()) return { ok: false, why: 'Nothing to send.' };
+  if (/^\s*\//.test(t)) return { ok: false, why: NS_SLASH };                                        // slash commands are not relayed in v1
+  const n = Array.from(t).length;
+  if (n > Nodes.PROMPT_MAX) return { ok: false, why: `The text is ${n} characters; a prompt can be up to 8 KB (${Nodes.PROMPT_MAX} characters). Shorten it and send again.` };
+  if (NS_CTRL.test(t.replace(/[\t\n]/g, ''))) return { ok: false, why: NS_TEXT_BAD };
+  return { ok: true, text: t };
+};
+
+/* The checks made before a call: a handle and a session name the grammar allows, and Nodes.can for the scope. null when the call may go. */
+function nsGate(handle, tmux, scope) {
+  if (!Ref.isHandle(handle) || (tmux !== null && !Ref.isTmux(tmux))) return { ok: false, local: true, text: 'That is not a session this board can reach.' };
+  const c = Nodes.can(Nodes.get(handle), scope);
+  return c.ok ? null : { ok: false, local: true, text: c.why };
+}
+
+function nsPath(handle, tmux, tail) { return `/api/nodes/${encodeURIComponent(handle)}${tmux === null ? '' : '/sessions/' + encodeURIComponent(tmux)}${tail || ''}`; }
+
+function nsFail(e, handle, what) {
+  const b = e && e.body && typeof e.body === 'object' ? e.body : {};
+  const out = { ok: false, text: Nodes.errText(e, handle, { what }), reason: typeof b.reason === 'string' ? b.reason : '', status: e && e.status ? e.status : 0 };
+  if (out.reason === 'busy') out.busy = { code: typeof b.code === 'string' ? b.code : '', retry: typeof b.retry === 'number' ? b.retry : null };
+  return out;
+}
+
+/* Each of these resolves to {ok, text?, data?, ...} and never throws or retries. */
+Nodes.sendPrompt = async function (handle, tmux, text, o) {
+  const gate = nsGate(handle, tmux, 'sessions');
+  if (gate) return gate;
+  const chk = Nodes.promptCheck(text);
+  if (!chk.ok) return { ok: false, local: true, text: chk.why };
+  try {
+    const r = await api('POST', nsPath(handle, tmux, '/prompt'), { text: chk.text, queue: !!(o && o.queue) });
+    const d = r && r.data && typeof r.data === 'object' ? r.data : {};
+    if (d.ok !== true) return { ok: false, text: Nodes.errText({ status: 502 }, handle, { what: 'prompt' }), reason: 'unconfirmed' };
+    return { ok: true, pasted: d.pasted === true, queued: d.queued === true };
+  } catch (e) { return nsFail(e, handle, 'prompt'); }
+};
+
+Nodes.sendKey = async function (handle, tmux, key, confirm) {
+  const gate = nsGate(handle, tmux, 'sessions');
+  if (gate) return gate;
+  const risky = key === Nodes.CONFIRM_KEY;
+  if (!(Nodes.KEYS.includes(key) || risky)) return { ok: false, local: true, text: 'That key is not on the list this board may send.' };
+  if (risky && confirm !== true) return { ok: false, local: true, text: 'C-c needs a second tap to confirm.' };
+  try {
+    const r = await api('POST', nsPath(handle, tmux, '/keys'), risky ? { key, confirm: true } : { key });
+    if (!r || !r.data || r.data.ok !== true) return { ok: false, text: Nodes.errText({ status: 502 }, handle, { what: 'keys' }), reason: 'unconfirmed' };
+    return { ok: true, key };
+  } catch (e) { return nsFail(e, handle, 'keys'); }
+};
+
+/* Ack paints at once (the session stops asking for you until a newer reading says otherwise) and puts the old state back when the node refuses. */
+Nodes.ackSession = async function (handle, tmux) {
+  const gate = nsGate(handle, tmux, 'sessions');
+  if (gate) return gate;
+  const key = `${handle}/${tmux}`;
+  Nodes.acked.set(key, Nodes.M.rev);
+  Nodes.changed(false);
+  try {
+    const r = await api('POST', nsPath(handle, tmux, '/ack'));
+    if (!r || !r.data || typeof r.data.acked !== 'string') throw Object.assign(new Error('no answer'), { status: 502 });
+    return { ok: true };
+  } catch (e) {
+    Nodes.acked.delete(key);
+    Nodes.changed(false);
+    return nsFail(e, handle, 'ack');
+  }
+};
+
+/* Close ends the session on that node only. The session leaves the lists once the node confirmed it (a pending line shows until then). */
+Nodes.closeSession = async function (handle, tmux) {
+  const gate = nsGate(handle, tmux, 'sessions');
+  if (gate) return gate;
+  try {
+    const r = await api('DELETE', nsPath(handle, tmux, ''));
+    if (!r || !r.data || typeof r.data.killed !== 'string') throw Object.assign(new Error('no answer'), { status: 502 });
+    Nodes.closed.set(`${handle}/${tmux}`, Date.now());
+    Nodes.changed(false);
+    return { ok: true };
+  } catch (e) { return nsFail(e, handle, 'close'); }
+};
+
+/* ---------- the permission requests of the nodes ---------- */
+
+/* P.by: handle -> {list: [{id, tmux, tool, summary, since}], at, err}; P.st: '<handle>/<id>' -> {phase: sending | failed | closed, decision, text, at}; P.done: ids answered here, hidden
+   from the list for a while (a reading made before the answer must not bring the card back); P.busy: handles being read. */
+Nodes.P = { by: new Map(), st: new Map(), done: new Map(), busy: new Set() };
+
+Nodes.steerClear = function () {
+  const P = Nodes.P;
+  P.by.clear(); P.st.clear(); P.done.clear(); P.busy.clear();
+  Nodes.acked.clear(); Nodes.closed.clear();
+};
+
+function nsKey(handle, id) { return `${handle}/${id}`; }
+function nsWaiting(rec) { return Math.max(0, Math.floor(Number(rec && rec.state && rec.state.needs_you && rec.state.needs_you.permissions) || 0)); }
+
+/* The list a node answered, rebuilt field by field: a request needs a positive id and a session name; the rest is cut. */
+function nsCleanPerms(body) {
+  const rows = body && Array.isArray(body.permissions) ? body.permissions.slice(0, 50) : [];
+  const out = [];
+  for (const r of rows) {
+    if (!r || typeof r !== 'object' || !Number.isSafeInteger(r.id) || r.id < 1 || !Ref.isTmux(r.tmux)) continue;
+    out.push({ id: r.id, tmux: r.tmux, tool: typeof r.tool === 'string' && r.tool ? r.tool.slice(0, 60) : 'tool', summary: typeof r.summary === 'string' ? r.summary.slice(0, 300) : '',
+      since: typeof r.since === 'string' && !Number.isNaN(Date.parse(r.since)) ? r.since : null });
+  }
+  return out;
+}
+
+async function nsPermsFetch(rec) {
+  const P = Nodes.P;
+  const h = rec.handle;
+  P.busy.add(h);
+  try {
+    const r = await api('GET', `/api/nodes/${encodeURIComponent(h)}/permissions`);
+    if (!r || !r.data || !Array.isArray(r.data.permissions)) throw Object.assign(new Error('no list'), { status: 502, body: { reason: 'bad_answer' } });
+    P.by.set(h, { list: nsCleanPerms(r.data), tried: Date.now(), n: nsWaiting(rec), err: null });
+  } catch (e) {
+    const old = P.by.get(h);
+    P.by.set(h, { list: old ? old.list : [], tried: Date.now(), n: nsWaiting(rec), err: Nodes.errText(e, h, { what: 'perms' }) });
+  } finally { P.busy.delete(h); }
+  Nodes.changed(false);
+}
+
+/* Called after every hub poll: read the list of each node that may be asked and has a request waiting. Nothing while the view is off or the page is hidden. Every read leaves an
+   audit row on both boards, so a list already held is read again only when the reading's count changed since that read, or after NS_PERMS_MS (a request replaced by another keeps the
+   count); a failed read is tried again after the same time. */
+const NS_PERMS_MS = 15000;
+Nodes.permsSync = function () {
+  const P = Nodes.P;
+  if (!Nodes.enabled()) return;
+  const hidden = typeof document !== 'undefined' && document.hidden === true;
+  const now = Date.now();
+  const keep = new Set();
+  for (const rec of Nodes.M.recs) {
+    const n = nsWaiting(rec);
+    if (!Nodes.can(rec, 'permissions').ok || n < 1) continue;
+    keep.add(rec.handle);
+    const got = P.by.get(rec.handle);
+    const due = !got || now - got.tried >= NS_PERMS_MS || (!got.err && got.n !== n);
+    if (!hidden && due && !P.busy.has(rec.handle)) nsPermsFetch(rec);
+  }
+  for (const h of Array.from(P.by.keys())) if (!keep.has(h)) P.by.delete(h);
+  const known = new Set(Nodes.M.recs.map((r) => r.handle));
+  for (const k of Array.from(P.st.keys())) if (!known.has(k.split('/')[0])) P.st.delete(k);
+  for (const k of Array.from(P.done.keys())) if (!known.has(k.split('/')[0])) P.done.delete(k);
+};
+
+/* The requests to show, oldest first, then one notice per node whose request cannot be shown ({stub: true}: no scope, offline, not read yet). A card has its phase:
+   ask | sending | failed | closed. */
+Nodes.permCards = function () {
+  const P = Nodes.P;
+  const now = Date.now();
+  for (const [k, v] of Array.from(P.done)) if (now - v >= NS_DONE_MS) P.done.delete(k);
+  for (const [k, v] of Array.from(P.st)) if (v.phase === 'closed' && now - v.at >= NS_SHOW_MS) { P.st.delete(k); P.done.set(k, now); }
+  const cards = [];
+  const stubs = [];
+  for (const rec of Nodes.M.recs) {
+    const n = nsWaiting(rec);
+    if (n < 1) continue;
+    const c = Nodes.can(rec, 'permissions');
+    const got = P.by.get(rec.handle);
+    if (c.ok && got && !got.err) {
+      for (const p of got.list) {
+        const key = nsKey(rec.handle, p.id);
+        if (P.done.has(key)) continue;
+        const st = P.st.get(key);
+        cards.push({ ...p, node: rec.handle, key, phase: st ? st.phase : 'ask', decision: st ? st.decision : '', text: st ? st.text : '' });
+      }
+    } else stubs.push({ stub: true, node: rec.handle, key: `stub:${rec.handle}`, count: n, why: !c.ok ? c.why : got && got.err ? got.err : `reading the requests on ${nhName(rec)}` });
+  }
+  const at = (c) => (c.since ? Date.parse(c.since) : Infinity);
+  cards.sort((a, b) => at(a) - at(b) || a.id - b.id);
+  return cards.concat(stubs);
+};
+
+/* The request Allow and Deny act on from the palette and the keys: the first card that can still be answered. */
+Nodes.permLead = function () { return Nodes.permCards().find((c) => !c.stub && (c.phase === 'ask' || c.phase === 'failed')) || null; };
+Nodes.permFor = function (handle, tmux) { return Nodes.permCards().find((c) => !c.stub && c.node === handle && c.tmux === tmux && (c.phase === 'ask' || c.phase === 'failed')) || null; };
+
+/* Allow or Deny one request. The card turns into a pending line at once (the buttons are gone, so a double tap cannot answer twice); "Allowed on <node>" appears only when the node
+   confirmed; a refusal puts the card back with the sentence (an answered, expired or gone request stays as a sentence without buttons, and goes by itself). */
+Nodes.permAnswer = async function (card, decision) {
+  const P = Nodes.P;
+  if (!card || card.stub || !(decision === 'allow' || decision === 'deny') || !Ref.isHandle(card.node) || !Number.isSafeInteger(card.id) || card.id < 1) return { ok: false, local: true, text: 'That is not a request this board can answer.' };
+  const key = nsKey(card.node, card.id);
+  const cur = P.st.get(key);
+  if (cur && (cur.phase === 'sending' || cur.phase === 'closed')) return { ok: false, local: true, text: 'That request is already being answered.' };
+  const name = Nodes.nameOf(card.node);
+  const gate = nsGate(card.node, null, 'permissions');
+  if (gate) { nsQuiet(gate.text, 'warn'); return gate; }
+  P.st.set(key, { phase: 'sending', decision, text: '', at: Date.now() });
+  Nodes.changed(false);
+  try {
+    const r = await api('POST', `/api/nodes/${encodeURIComponent(card.node)}/permissions/${card.id}/${decision}`);
+    if (!r || !r.data || r.data.ok !== true || r.data.decision !== decision) throw Object.assign(new Error('no answer'), { status: 502 });
+    P.st.delete(key);
+    P.done.set(key, Date.now());
+    nsQuiet(decision === 'allow' ? `Allowed on ${name}` : `Denied on ${name}`, decision === 'allow' ? 'ok' : 'warn');
+    Nodes.changed(false);
+    return { ok: true };
+  } catch (e) {
+    const f = nsFail(e, card.node, 'perm');
+    const final = f.reason === 'answered' || f.reason === 'expired' || f.reason === 'gone' || f.reason === 'not_found';
+    P.st.set(key, { phase: final ? 'closed' : 'failed', decision: '', text: f.text, at: Date.now() });
+    nsQuiet(f.text, final ? 'warn' : 'bad');
+    Nodes.changed(false);
+    return f;
+  }
+};
+
+/* ---------- the cards ---------- */
+
+function nsLocalCount() {
+  try { return typeof Inbox !== 'undefined' && typeof state !== 'undefined' && state ? Inbox.items(state).length : 0; } catch (_) { return 0; }
+}
+
+function nsSessionName(handle, tmux) {
+  const row = nhSessions(Nodes.get(handle)).find((s) => s.tmux === tmux);
+  return String((row && row.session) || tmux);
+}
+
+function nsPermSig(c) { return JSON.stringify([c.key, c.stub, c.count, c.why, c.tool, c.summary, c.since && Math.floor(Date.parse(c.since) / 60000), c.phase, c.decision, c.text, !!c.lead, c.tmux, Math.floor(Date.now() / 60000), Nodes.sig({ node: c.node })]); }
+
+/* The notice of a node whose requests cannot be answered from here: how many wait, why the buttons are off, and a way to answer on the node's own board. */
+function nsPermStub(c) {
+  const rec = Nodes.get(c.node);
+  const name = rec ? nhName(rec) : c.node;
+  const open = rec ? nhOpenLink(`Open on ${name}`, rec, '', 'btn small') : null;
+  return el('div', { class: 'inbox-card nd-pcard nd-pstub attn', 'data-key': c.key },
+    el('div', { class: 'ib-lead' }, el('span', { class: 'ib-kind', text: 'permission' }), el('div', { class: 'ib-ctx', text: `${c.count} permission request${c.count === 1 ? ' is' : 's are'} waiting on ${name}.` })),
+    el('div', { class: 'ib-sub' }, Nodes.chip(c.node)),
+    Nodes.acts(Nodes.off('Allow', c.why), Nodes.off('Deny', c.why), open));
+}
+
+function nsPermNode(c) {
+  if (c.stub) return nsPermStub(c);
+  const rec = Nodes.get(c.node);
+  const name = rec ? nhName(rec) : c.node;
+  const who = nsSessionName(c.node, c.tmux);
+  const href = Ref.hash({ tmux: c.tmux, node: c.node });
+  const link = el(href ? 'a' : 'span', { class: 'ib-name', href: href || null, text: who });
+  const sub = el('div', { class: 'ib-sub' }, el('span', { class: 'ib-glyphs' }, stateGlyph('waiting')), link, Nodes.chip(c.node), c.since ? el('span', { class: 'dim', text: `waiting ${nhAgeText(c.since)}` }) : null);
+  if (c.phase === 'sending') {
+    return el('div', { class: 'inbox-card nd-pcard pending', role: 'status', 'data-key': c.key },
+      el('div', { class: 'ib-ctx', text: `${c.decision === 'deny' ? 'Denying' : 'Allowing'} on ${name}…` }), sub);
+  }
+  const dup = !!c.tool && String(c.summary).toLowerCase().startsWith(c.tool.toLowerCase());
+  const open = rec ? nhOpenLink(`Open on ${name}`, rec, href && Ref.isTmux(c.tmux) ? `#/s/${c.tmux}` : '', 'btn small') : null;
+  const live = c.phase === 'ask' || c.phase === 'failed';
+  const acts = el('div', { class: 'ib-actions' });
+  if (live) {
+    acts.append(el('span', { class: 'actions perm-btns' },
+      el('button', { class: c.lead ? 'primary small' : 'primary tinted small', type: 'button', 'data-act': 'allow', title: `Allow this on ${name}`, onclick: () => Nodes.permAnswer(c, 'allow'), text: 'Allow' }),
+      el('button', { class: 'small', type: 'button', 'data-act': 'deny', title: `Deny this on ${name}`, onclick: () => Nodes.permAnswer(c, 'deny'), text: 'Deny' })));
+  }
+  if (open) acts.append(open);
+  return el('div', { class: 'inbox-card nd-pcard attn kind-permission' + (c.lead ? ' lead' : '') + (c.phase === 'closed' ? ' closed' : ''), 'data-key': c.key },
+    el('div', { class: 'ib-lead' }, el('span', { class: 'ib-kind', text: 'permission' }),
+      el('div', { class: 'ib-ctx mono', title: c.summary, text: c.summary || c.tool }),
+      el('div', { class: 'ib-extra' }, c.tool && !dup ? el('span', { class: 'ib-note dim', text: c.tool }) : null)),
+    sub,
+    c.text ? el('p', { class: 'nd-perr ' + (c.phase === 'closed' ? 'warn' : 'bad'), role: 'alert', text: c.text }) : null,
+    acts);
+}
+
+/* ---------- keys on a remote session's peek ---------- */
+
+if (typeof Keymap !== 'undefined' && Keymap && typeof Keymap.bindKey === 'function') {
+  /* The peek (pages/node.js) registers itself in Nodes.peek while a remote session is open. These are the keys the local peek has (Pages.target is empty on #/n/ pages), same letters:
+     r focuses the send box, a acknowledges, y and d allow or deny the request waiting on that session, o opens the session on its own board. No help text: the help already lists them. */
+  const on = () => !!Nodes.peek;
+  const run = (name) => () => { const p = Nodes.peek; return p && typeof p[name] === 'function' ? p[name]() : false; };
+  Keymap.bindKey('r', run('focus'), { when: on });
+  Keymap.bindKey('a', run('ack'), { when: on });
+  Keymap.bindKey('y', run('allow'), { when: on });
+  Keymap.bindKey('d', run('deny'), { when: on });
+  Keymap.bindKey('o', run('open'), { when: on });
+}
+
+/* Run fn(peek) as soon as the peek of this session has registered (a palette row navigates to it first): now, or within about half a second. */
+Nodes.withPeek = function (handle, tmux, fn, tries) {
+  const p = Nodes.peek;
+  if (p && p.handle === handle && p.tmux === tmux) { fn(p); return true; }
+  const left = typeof tries === 'number' ? tries : 8;
+  if (left <= 0 || typeof setTimeout !== 'function') return false;
+  setTimeout(() => Nodes.withPeek(handle, tmux, fn, left - 1), 60);
+  return true;
+};
+
 /* ---------- demo ---------- */
 
-/* GET /api/nodes/state in demo mode (core.js demoApi): the fixture's `hub` records, as the board would answer them. */
+/* GET /api/nodes/state in demo mode (core.js demoApi): the fixture's `hub` records, as the board would answer them, with what was done to them on this page (an Ack, a Kill session,
+   a permission answered) left out the way the next reading would. */
+const demoSteerMade = { acked: new Set(), closed: new Set(), answered: new Set() };
+function demoSteered(r) {
+  const st = r && r.state;
+  if (!st) return r;
+  const m = demoSteerMade;
+  const sessions = (Array.isArray(st.sessions) ? st.sessions : []).filter((s) => !m.closed.has(`${r.handle}/${s.tmux}`)).map((s) => (m.acked.has(`${r.handle}/${s.tmux}`) ? { ...s, needs_you: false } : s));
+  const done = Array.from(m.answered).filter((k) => k.startsWith(`${r.handle}/`)).length;
+  return { ...r, state: { ...st, sessions, needs_you: { ...(st.needs_you || {}), permissions: Math.max(0, Number(st.needs_you && st.needs_you.permissions || 0) - done) } } };
+}
 function demoHubState(data, at) {
-  return { nodes: Array.isArray(data && data.hub) ? data.hub : [], at };
+  const recs = Array.isArray(data && data.hub) ? data.hub : [];
+  const m = demoSteerMade;
+  return { nodes: m.acked.size || m.closed.size || m.answered.size ? recs.map(demoSteered) : recs, at };
 }
 
 /* The relay's answers in demo mode (core.js demoApi hands every /api/nodes/<handle>/... path here; nothing leaves the page): GET .../agents is the node's agents schema and GET
@@ -654,18 +1058,85 @@ function demoRelayFail(status, reason, error, extra) {
   e.body = { error, reason, ...(extra || {}) };
   return e;
 }
+function demoRelayCan(rec, scope) {
+  const h = rec.handle;
+  if (!(rec.scopes || []).includes(scope)) throw demoRelayFail(409, 'scope', `needs the ${scope} scope on ${rec.name}`, { node: h });
+  if (rec.status === 'offline') throw demoRelayFail(503, 'offline', `${rec.name} is offline; nothing was sent`, { node: h, age: rec.age_s });
+  if (rec.status === 'unauthorized') throw demoRelayFail(409, 'needs_repair', `${rec.name} no longer takes this board's token: re-pair`, { node: h });
+}
 function demoRelayRead(data, bare) {
-  const m = /^\/api\/nodes\/([^/]+)\/(agents|sessions\/([^/]+)\/pane)$/.exec(bare);
+  const m = /^\/api\/nodes\/([^/]+)\/(agents|permissions|sessions\/([^/]+)\/pane)$/.exec(bare);
   if (!m) return {};
   const h = decodeURIComponent(m[1]);
   const rec = (data && Array.isArray(data.hub) ? data.hub : []).find((r) => r.handle === h);
   if (!rec) throw demoRelayFail(404, 'unknown_node', 'no paired node has that handle');
+  if (m[2] === 'permissions') {                                                  // the pending requests (the fixture's extra demo_answer says how an answer to it goes; a node never sends it)
+    demoRelayCan(rec, 'permissions');
+    const left = ((data.permissions && data.permissions[h]) || []).filter((p) => !demoSteerMade.answered.has(`${h}/${p.id}`)).map(({ demo_answer: _a, ...p }) => p);
+    return { node: h, age: 0, data: { permissions: left } };
+  }
   if (m[2] === 'agents') return { node: h, age: 0, data: { agents: (data.agents && data.agents[h] && data.agents[h].agents) || [] } };
   const tmux = decodeURIComponent(m[3]);
   const tail = (data.tails && data.tails[`${h}/${tmux}`]) || (data.tails && data.tails.default) || [];
   return { node: h, age: 0, data: { name: tmux, lines: tail, cap: 40 } };
 }
+/* The steering rows in demo mode (issue #142), the way the hub answers them. Where each refusal comes from: alice-mac holds `read` only (needs the sessions or permissions scope),
+   old-laptop is offline, a session of the reading that is working is busy unless `queue` is set, the fixture's `steer` map (key '<handle>/<tmux>') makes shop--api--s3 refuse as a
+   session with wider permissions and infra--deploy--s2 time out on a prompt ("could not confirm") and be gone on a Close; a permission's `demo_answer` (answered, expired, gone) says how
+   its answer is refused. Nothing leaves the page; the ids and names are made up. */
+function demoSteerWrite(method, path, body, data) {
+  const hubOf = (h) => (data && Array.isArray(data.hub) ? data.hub : []).find((r) => r.handle === h);
+  const b = body && typeof body === 'object' ? body : {};
+  const pm = /^\/api\/nodes\/([^/]+)\/permissions\/(\d+)\/([a-z]+)$/.exec(path);
+  if (pm && method === 'POST') {
+    const h = decodeURIComponent(pm[1]);
+    const rec = hubOf(h);
+    if (!rec) throw demoRelayFail(404, 'unknown_node', 'no paired node has that handle');
+    demoRelayCan(rec, 'permissions');
+    if (pm[3] !== 'allow' && pm[3] !== 'deny') throw demoRelayFail(422, 'invalid', 'decision is not valid', { node: h });
+    const p = ((data.permissions && data.permissions[h]) || []).find((x) => String(x.id) === pm[2]);
+    const key = `${h}/${pm[2]}`;
+    const out = !p || demoSteerMade.answered.has(key) ? 'gone' : p.demo_answer || 'ok';
+    demoSteerMade.answered.add(key);
+    if (out !== 'ok') {
+      const words = { answered: 'This request was already answered. Open terminal to see the current prompt.', expired: 'This request has expired. Open terminal to see the current prompt.', gone: 'This request is gone. Open terminal to see the current prompt.' };
+      throw demoRelayFail(out === 'gone' ? 404 : 409, out, words[out], { node: h });
+    }
+    return { node: h, age: 0, data: { ok: true, id: Number(pm[2]), decision: pm[3] } };
+  }
+  const sm = /^\/api\/nodes\/([^/]+)\/sessions\/([^/]+?)(?:\/(prompt|keys|ack))?$/.exec(path);
+  if (!sm || !((method === 'POST' && sm[3]) || (method === 'DELETE' && !sm[3]))) return null;
+  const h = decodeURIComponent(sm[1]);
+  const tmux = decodeURIComponent(sm[2]);
+  const rec = hubOf(h);
+  if (!rec) throw demoRelayFail(404, 'unknown_node', 'no paired node has that handle');
+  demoRelayCan(rec, 'sessions');
+  const key = `${h}/${tmux}`;
+  const row = ((rec.state && rec.state.sessions) || []).find((s) => s.tmux === tmux);
+  const rule = (data.steer && data.steer[key]) || {};
+  if (!row || demoSteerMade.closed.has(key)) throw demoRelayFail(404, 'not_found', 'no such session', { node: h });
+  if (sm[3] === 'ack') { demoSteerMade.acked.add(key); return { node: h, age: 0, data: { acked: tmux } }; }
+  if (!sm[3]) {
+    demoSteerMade.closed.add(key);
+    if (rule.close === 'gone') throw demoRelayFail(404, 'not_found', 'no such session', { node: h });
+    return { node: h, age: 0, data: { killed: tmux } };
+  }
+  if (rule.refuse === 'wide') throw demoRelayFail(409, 'refused', 'that session runs with wider permissions than another node may use, or its mode cannot be read; start it from its own board', { node: h });
+  if (sm[3] === 'keys') {
+    const ok = ['Enter', 'Escape', 'Up', 'Down', 'Tab', 'y', 'n', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'C-c'];
+    if (!ok.includes(b.key) || (b.key === 'C-c') !== (b.confirm === true)) throw demoRelayFail(422, 'invalid', 'key is not valid', { node: h });
+    return { node: h, age: 0, data: { ok: true, key: b.key } };
+  }
+  const text = typeof b.text === 'string' ? b.text : '';
+  if (!text.trim()) throw demoRelayFail(422, 'invalid', 'text: text is empty', { node: h });
+  if (Array.from(text).length > 8192) throw demoRelayFail(413, 'too_large', 'the text is over 8 KB', { node: h });
+  if (rule.prompt === 'unconfirmed') throw demoRelayFail(504, 'unconfirmed', `${rec.name} did not answer in 8 s: it could not be confirmed and it was not retried`, { node: h });
+  if (row.state === 'working' && b.queue !== true) throw demoRelayFail(409, 'busy', 'the session is working', { node: h, code: 'working', retry: 8, state: 'working', wait_kind: null });
+  return { node: h, age: 0, data: { ok: true, pasted: row.state !== 'working', queued: row.state === 'working' } };
+}
 function demoRelayWrite(method, path, body, data) {
+  const steered = demoSteerWrite(method, path, body, data);
+  if (steered) return steered;
   const m = /^\/api\/nodes\/([^/]+)\/(tasks|sessions|tasks\/(\d+)\/dispatch)$/.exec(path);
   if (!m || method !== 'POST') return null;
   const h = decodeURIComponent(m[1]);

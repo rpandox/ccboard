@@ -49,10 +49,18 @@ EXPECTED_NODE_ROUTES = {
     ("POST", "/api/node/tasks/{tid}/dispatch"): "tasks",         # a dispatch into a running session also needs `sessions` (checked in the wrapper, after the body is read)
     ("POST", "/api/node/sessions"): "sessions",
     ("GET", "/api/node/stream"): "sessions",                     # the read-only stream relay (issue #143, app/nodes_stream.py): screen text, so `sessions`; refuses a request without names before it streams
+    ("POST", "/api/node/sessions/{name}/prompt"): "sessions",    # steering (issue #142): typed into a session, so the guard and the peer's own target check run; each row needs an acting user
+    ("POST", "/api/node/sessions/{name}/keys"): "sessions",
+    ("POST", "/api/node/sessions/{name}/ack"): "sessions",
+    ("DELETE", "/api/node/sessions/{name}"): "sessions",
+    ("GET", "/api/node/permissions"): "permissions",             # what the agent wants to do (tool and a summary): never `read`
+    ("POST", "/api/node/permissions/{pid}/{decision}"): "permissions",      # allow or deny, once; the hub route is a signed-in person only
 }
 # What a listed route answers a token that holds every scope, on the empty test board: the handler's own status, never a 403.
 LISTED_STATUS = {("GET", "/api/node/tasks/{tid}"): 404, ("GET", "/api/node/sessions/{name}/pane"): 404, ("POST", "/api/node/tasks"): 422, ("POST", "/api/node/sessions"): 422,
-                 ("POST", "/api/node/tasks/{tid}/dispatch"): 404, ("GET", "/api/node/stream"): 400}       # a write with no body says what is missing; no such task; a stream with no names is a 400 before it streams
+                 ("POST", "/api/node/tasks/{tid}/dispatch"): 404, ("GET", "/api/node/stream"): 400,       # a write with no body says what is missing; no such task; a stream with no names is a 400 before it streams
+                 ("POST", "/api/node/sessions/{name}/prompt"): 422, ("POST", "/api/node/sessions/{name}/keys"): 422, ("POST", "/api/node/sessions/{name}/ack"): 404,
+                 ("DELETE", "/api/node/sessions/{name}"): 404, ("POST", "/api/node/permissions/{pid}/{decision}"): 404}      # no text, no key; no such session; no such request
 CALLER = {"id": "ts:nCALLER000001", "name": "caller", "url": "https://100.64.0.9"}
 
 
@@ -133,7 +141,7 @@ def test_a_node_token_opens_only_the_listed_routes(board, wide_buckets, fake_tmu
         if (method, path) in EXPECTED_NODE_ROUTES:
             listed += 1
             if EXPECTED_NODE_ROUTES[(method, path)] != nodes.SCOPE_ANY:             # rotate and unpair change the pair: their own tests call them
-                r = c.request(method, concrete(path), headers=bearer(tok))
+                r = c.request(method, concrete(path), headers=bearer(tok, **{"X-CCBoard-Acting-User": "alice"}))      # the steering rows need a named person; the others ignore it
                 assert r.status_code == LISTED_STATUS.get((method, path), 200), (method, path, r.status_code)
             continue
         r = c.request(method, concrete(path), headers=bearer(tok), content=b"{}" if method != "GET" else None)

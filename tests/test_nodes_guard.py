@@ -576,13 +576,25 @@ def _leaf_types(tp):
     return {tp} if not args else set().union(*(_leaf_types(a) for a in args))
 
 
-@pytest.mark.parametrize("model", [nr.TaskCreateBody, nr.DispatchBody, nr.SessionOpenBody], ids=lambda m: m.__name__)
+@pytest.mark.parametrize("model", [nr.TaskCreateBody, nr.DispatchBody, nr.SessionOpenBody, nr.PromptBody, nr.KeysBody], ids=lambda m: m.__name__)
 def test_every_string_field_of_a_remote_model_has_a_validator_so_a_field_added_later_is_caught(model):
     validated = {f for d in model.__pydantic_decorators__.field_validators.values() for f in d.info.fields}
     strs = [name for name, f in model.model_fields.items() if str in _leaf_types(f.annotation)]
     assert strs, model
     assert [n for n in strs if n not in validated] == [], "a str field with no validator: give it a rule in nr.check_field"
-    assert all(k in nr.FIELD_KINDS for k in ("title", "prompt", "agent", "model", "effort", "name", "session", "issue_ref", "permission_mode", "mode", "sandbox", "approval"))
+    assert all(k in nr.FIELD_KINDS for k in ("title", "prompt", "agent", "model", "effort", "name", "session", "issue_ref", "permission_mode", "mode", "sandbox", "approval",
+                                              "text", "key", "decision"))
+
+
+def test_every_model_a_row_uses_is_strict_and_every_str_field_of_every_row_has_a_validator():
+    """Walks the table, not a list of models: a row added later with a str field that has no rule fails here by itself."""
+    for row in nr.RELAY:
+        model = row.body_model
+        assert model.model_config.get("extra") == "forbid", row.name
+        validated = {f for d in model.__pydantic_decorators__.field_validators.values() for f in d.info.fields}
+        strs = [name for name, f in model.model_fields.items() if str in _leaf_types(f.annotation)]
+        assert [n for n in strs if n not in validated] == [], (row.name, "a str field with no validator")
+    assert all(nr._valid_param(p, "!") is False for r in nr.RELAY for p in r.params), "every path parameter has a rule that an arbitrary string does not pass"
 
 
 ROW_BASE = {"task_create": {"project": "shop", "repo": "api", "title": "t", "prompt": "p"}, "session_open": {"project": "shop", "repo": "api"}, "task_dispatch": {}}
@@ -688,3 +700,26 @@ def test_the_final_options_are_an_allow_list_not_a_deny_list():
               {"model": "-x"}, {"effort": "hi;gh"}, {"agent": "claude;x"}, {"opts": {"profile": "p"}}, {"opts": {"sandbox": "danger-full-access"}}, {"opts": "x"},
               {"name": "a b"}, {"subagent_model": "a;b"}, {"sandbox": "full"}, {"approval": "never"}):
         assert nr.guard_final(f), f
+
+
+@pytest.mark.parametrize("prompt,want", [("do it", None), ("@file.py look", None), ("run tests / fix", None), ("wow!", None), ("a\n/b\n!c", None),
+                                         ("/model", "command"), ("!ls", "command"), ("#note", "command"), ("／model", "command"), ("！ls", "command"), ("＃n", "command"),
+                                         ("  \n /x", "command"), ("a\x03b", "text")])
+def test_a_stored_card_may_not_start_like_a_terminal_command_in_any_dispatch_mode(prompt, want):
+    card = {"title": "t", "prompt": prompt}
+    assert nr.card_refusal(card, {}, typed=True) == want
+    assert nr.card_refusal(card, {}) == (None if want == "command" else want), "only the remote dispatch asks for the command rule"
+
+
+def test_the_prompt_models_apply_the_command_rule_to_a_steer_text_and_to_a_new_tasks_prompt():
+    from pydantic import ValidationError
+    for bad in ("/model", "!ls", "#x", "！ls", " \n/x"):
+        with pytest.raises(ValidationError, match="cannot start with / ! or #"):
+            nr.PromptBody(text=bad)
+        with pytest.raises(ValidationError, match="cannot start with / ! or #"):
+            nr.TaskCreateBody(project="p", repo="r", title="t", prompt=bad)
+    assert nr.PromptBody(text="@f.py ok. wow!").text == "@f.py ok. wow!"
+    assert nr.TaskCreateBody(project="p", repo="r", title="t", prompt="@f.py review /x").prompt == "@f.py review /x"
+    with pytest.raises(ValidationError, match="at most"):
+        nr.TaskCreateBody(project="p", repo="r", title="t", prompt="x" * (nr.TASK_PROMPT_IN + 1))
+    assert nr.check_field("typed_prompt", "x" * nr.TASK_PROMPT_IN)

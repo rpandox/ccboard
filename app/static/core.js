@@ -289,7 +289,7 @@ async function demoApi(method, path, body) {
   if (method !== 'GET') {
     await new Promise((resolve) => setTimeout(resolve, 150));
     demoMake(method, path, body);
-    if (/^\/api\/nodes\/[^/]+\/(tasks|sessions)/.test(path) && typeof demoRelayWrite === 'function') { const made = demoRelayWrite(method, path, body, await demoNodesFixture()); if (made) return made; }   // a start on another node (issue #141): played here
+    if (/^\/api\/nodes\/[^/]+\/(tasks|sessions|permissions)/.test(path) && typeof demoRelayWrite === 'function') { const made = demoRelayWrite(method, path, body, await demoNodesFixture()); if (made) return made; }   // a start on another node (issue #141): played here
     if (/^\/api\/nodes(\/|$)/.test(path) && typeof demoNodesWrite === 'function') { const made = demoNodesWrite(method, path, body, await demoNodesFixture()); if (made) return made; }   // pairing (issue #135): played here, nothing leaves the page
     if (path === '/api/usage/refresh') {
       if (demoRefreshFlag() === 'none') throw demoError(409, 'no Claude session is at its prompt; start one to refresh');
@@ -303,7 +303,7 @@ async function demoApi(method, path, body) {
   let name = null;
   if (bare === '/api/state') name = 'state';
   else if (bare === '/api/node') name = 'node';   // this board's node card (GET /api/node, issue #133): the same shape the route answers
-  else if (bare === '/api/nodes' || bare === '/api/nodes/pairs' || bare === '/api/nodes/audit' || bare === '/api/nodes/state' || /^\/api\/nodes\/[^/]+\/(agents|sessions\/[^/]+\/pane)$/.test(bare)) name = 'nodes';   // Settings > Nodes > Paired nodes, Who can control this node and Activity (issue #135): one fixture, three answers
+  else if (bare === '/api/nodes' || bare === '/api/nodes/pairs' || bare === '/api/nodes/audit' || bare === '/api/nodes/state' || /^\/api\/nodes\/[^/]+\/(agents|permissions|sessions\/[^/]+\/pane)$/.test(bare)) name = 'nodes';   // Settings > Nodes > Paired nodes, Who can control this node and Activity (issue #135): one fixture, three answers
   else if (bare === '/api/nodes/discover') name = 'nodes-discover';   // Settings > Nodes > Found on your tailnet (issue #134): a found node, a refusing one, an offline one and one with nothing listening
   else if (/^\/api\/sessions\/[^/]+$/.test(bare)) name = 'session';    // the terminal page's own read: the row of state.json with that tmux name (its agent drives Tune and the quick replies)
   else if (bare === '/api/skills') name = 'skills';   // the palette's Skills group (issue #102): the same shape GET /api/skills answers

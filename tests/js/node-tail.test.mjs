@@ -269,7 +269,7 @@ test('demo mode: the relay\'s reads and writes are answered from demo/nodes.json
 test('the demo fixture offers the picker a remote node to choose: online with tasks and sessions, one read only, one offline; its tails belong to its sessions', () => {
   const d = JSON.parse(fs.readFileSync(path.join(STATIC, 'demo', 'nodes.json'), 'utf8'));
   const by = Object.fromEntries(d.hub.map((r) => [r.handle, r]));
-  assert.deepEqual(by['build-box'].scopes, ['read', 'tasks', 'sessions']);
+  assert.deepEqual(by['build-box'].scopes, ['read', 'tasks', 'sessions', 'permissions']);
   assert.deepEqual(by['alice-mac'].scopes, ['read']);
   assert.equal(by['old-laptop'].status, 'offline');
   assert.deepEqual(Object.keys(d.agents), ['build-box']);
