@@ -1,0 +1,1049 @@
+{
+ "nopub": {
+  "codex_rate_limit": {
+   "actions": [],
+   "agent": "codex",
+   "badge": null,
+   "body": "5-hour window used 100%\nresets Mon 14:13 UTC\nwork · plus",
+   "click": null,
+   "kind": "rate_limit",
+   "path": "/#/usage",
+   "perm_id": null,
+   "priority": 4,
+   "renotify": true,
+   "state": "errored",
+   "tag": "rate-limit-codex",
+   "tags": [
+    "rotating_light"
+   ],
+   "title": "Codex rate limited",
+   "tmux": "",
+   "url": "/#/usage",
+   "web": true,
+   "web_actions": []
+  },
+  "done": {
+   "actions": [],
+   "agent": "claude",
+   "badge": null,
+   "body": "Fix login redirect\n› fix the login redirect\n? Fixed the redirect and the tests pass.",
+   "click": null,
+   "kind": "done",
+   "path": "/#/s/shop--api--s1",
+   "perm_id": null,
+   "priority": 3,
+   "renotify": true,
+   "state": "done",
+   "tag": "shop--api--s1",
+   "tags": [
+    "white_check_mark"
+   ],
+   "title": "◆ shop/api · s1: done",
+   "tmux": "shop--api--s1",
+   "url": "/#/s/shop--api--s1",
+   "web": true,
+   "web_actions": [
+    {
+     "action": "terminal",
+     "title": "Terminal"
+    },
+    {
+     "action": "ack",
+     "title": "Ack"
+    }
+   ]
+  },
+  "elicitation": {
+   "actions": [],
+   "agent": "claude",
+   "badge": null,
+   "body": "Fix login redirect\n› fix the login redirect\n? Pick one",
+   "click": null,
+   "kind": "elicitation",
+   "path": "/#/s/shop--api--s1",
+   "perm_id": null,
+   "priority": 4,
+   "renotify": true,
+   "state": "waiting",
+   "tag": "shop--api--s1",
+   "tags": [
+    "bell"
+   ],
+   "title": "◆ shop/api · s1: needs you",
+   "tmux": "shop--api--s1",
+   "url": "/#/s/shop--api--s1",
+   "web": true,
+   "web_actions": [
+    {
+     "action": "terminal",
+     "title": "Terminal"
+    },
+    {
+     "action": "ack",
+     "title": "Ack"
+    }
+   ]
+  },
+  "error": {
+   "actions": [],
+   "agent": "claude",
+   "badge": null,
+   "body": "Fix login redirect\n› fix the login redirect\n? API Error: 500 Internal server error",
+   "click": null,
+   "kind": "error",
+   "path": "/#/s/shop--api--s1",
+   "perm_id": null,
+   "priority": 4,
+   "renotify": true,
+   "state": "errored",
+   "tag": "shop--api--s1",
+   "tags": [
+    "rotating_light"
+   ],
+   "title": "◆ shop/api · s1: error",
+   "tmux": "shop--api--s1",
+   "url": "/#/s/shop--api--s1",
+   "web": true,
+   "web_actions": [
+    {
+     "action": "terminal",
+     "title": "Terminal"
+    },
+    {
+     "action": "ack",
+     "title": "Ack"
+    }
+   ]
+  },
+  "idle": {
+   "actions": [],
+   "agent": "claude",
+   "badge": null,
+   "body": "Fix login redirect\n› fix the login redirect\n? Claude is waiting for your input",
+   "click": null,
+   "kind": "idle",
+   "path": "/#/s/shop--api--s1",
+   "perm_id": null,
+   "priority": 4,
+   "renotify": true,
+   "state": "waiting",
+   "tag": "shop--api--s1",
+   "tags": [
+    "bell"
+   ],
+   "title": "◆ shop/api · s1: needs you",
+   "tmux": "shop--api--s1",
+   "url": "/#/s/shop--api--s1",
+   "web": true,
+   "web_actions": [
+    {
+     "action": "terminal",
+     "title": "Terminal"
+    },
+    {
+     "action": "ack",
+     "title": "Ack"
+    }
+   ]
+  },
+  "login": {
+   "actions": [],
+   "agent": "claude",
+   "badge": null,
+   "body": "◆ shop/api · s1\nPlease run /login\nLog in again in Settings > Accounts.",
+   "click": null,
+   "kind": "login",
+   "path": "/#/settings?sec=accounts&acct=work",
+   "perm_id": null,
+   "priority": 4,
+   "renotify": true,
+   "state": "errored",
+   "tag": "login-problem",
+   "tags": [
+    "warning",
+    "key"
+   ],
+   "title": "Claude login not valid: work",
+   "tmux": "shop--api--s1",
+   "url": "/#/settings?sec=accounts&acct=work",
+   "web": true,
+   "web_actions": []
+  },
+  "login_no_account": {
+   "actions": [],
+   "agent": "claude",
+   "badge": null,
+   "body": "shop / api · s1\nLog in again in Settings > Accounts.",
+   "click": null,
+   "kind": "login",
+   "path": "/#/settings?sec=accounts",
+   "perm_id": null,
+   "priority": 4,
+   "renotify": true,
+   "state": "errored",
+   "tag": "login-problem",
+   "tags": [
+    "warning",
+    "key"
+   ],
+   "title": "Claude login not valid",
+   "tmux": "shop--api--s1",
+   "url": "/#/settings?sec=accounts",
+   "web": true,
+   "web_actions": []
+  },
+  "no_row": {
+   "actions": [],
+   "agent": "claude",
+   "badge": null,
+   "body": "? ok",
+   "click": null,
+   "kind": "done",
+   "path": "/#/s/shop--api--s1",
+   "perm_id": null,
+   "priority": 3,
+   "renotify": true,
+   "state": "done",
+   "tag": "shop--api--s1",
+   "tags": [
+    "white_check_mark"
+   ],
+   "title": "shop / api · s1: done",
+   "tmux": "shop--api--s1",
+   "url": "/#/s/shop--api--s1",
+   "web": true,
+   "web_actions": [
+    {
+     "action": "terminal",
+     "title": "Terminal"
+    },
+    {
+     "action": "ack",
+     "title": "Ack"
+    }
+   ]
+  },
+  "ntfy_test": {
+   "message": "Notifications work.",
+   "priority": 3,
+   "tags": [
+    "tada"
+   ],
+   "title": "ccboard test",
+   "topic": "ccboard"
+  },
+  "permission": {
+   "actions": [],
+   "agent": "claude",
+   "badge": null,
+   "body": "Fix login redirect\n› fix the login redirect\n? Bash: npm test",
+   "click": null,
+   "kind": "permission",
+   "path": "/#/s/shop--api--s1",
+   "perm_id": 5,
+   "priority": 4,
+   "renotify": true,
+   "state": "waiting",
+   "tag": "shop--api--s1",
+   "tags": [
+    "bell",
+    "key"
+   ],
+   "title": "◆ shop/api · s1: needs you",
+   "tmux": "shop--api--s1",
+   "url": "/#/s/shop--api--s1",
+   "web": true,
+   "web_actions": [
+    {
+     "action": "allow",
+     "title": "Allow"
+    },
+    {
+     "action": "deny",
+     "title": "Deny"
+    },
+    {
+     "action": "terminal",
+     "title": "Terminal"
+    }
+   ]
+  },
+  "permission_no_request": {
+   "actions": [],
+   "agent": "claude",
+   "badge": null,
+   "body": "› fix the login redirect\n? Claude needs your permission to use Bash",
+   "click": null,
+   "kind": "permission",
+   "path": "/#/s/shop--api--s1",
+   "perm_id": null,
+   "priority": 4,
+   "renotify": true,
+   "state": "waiting",
+   "tag": "shop--api--s1",
+   "tags": [
+    "bell",
+    "key"
+   ],
+   "title": "◆ shop/api · s1: needs you",
+   "tmux": "shop--api--s1",
+   "url": "/#/s/shop--api--s1",
+   "web": true,
+   "web_actions": [
+    {
+     "action": "terminal",
+     "title": "Terminal"
+    },
+    {
+     "action": "ack",
+     "title": "Ack"
+    }
+   ]
+  },
+  "push_test": {
+   "args": [
+    "ccboard test",
+    "Web Push works. Two buttons under this text mean this device shows notification actions.",
+    "/"
+   ],
+   "kwargs": {
+    "actions": [
+     {
+      "action": "terminal",
+      "title": "Open board"
+     },
+     {
+      "action": "ack",
+      "title": "Dismiss"
+     }
+    ],
+    "extra": {
+     "agent": "claude",
+     "perm_id": null,
+     "state": "done",
+     "tmux": ""
+    },
+    "renotify": true,
+    "tag": "test"
+   }
+  },
+  "rate_limit": {
+   "actions": [],
+   "agent": "claude",
+   "badge": null,
+   "body": "◆ shop/api · s1\nFix login redirect\n› fix the login redirect\n? 5-hour limit reached, resets 14:00",
+   "click": null,
+   "kind": "rate_limit",
+   "path": "/#/s/shop--api--s1",
+   "perm_id": null,
+   "priority": 5,
+   "renotify": true,
+   "state": "errored",
+   "tag": "rate-limit",
+   "tags": [
+    "no_entry"
+   ],
+   "title": "Claude rate limited",
+   "tmux": "shop--api--s1",
+   "url": "/#/s/shop--api--s1",
+   "web": true,
+   "web_actions": [
+    {
+     "action": "terminal",
+     "title": "Terminal"
+    },
+    {
+     "action": "ack",
+     "title": "Ack"
+    }
+   ]
+  },
+  "samples": {
+   "done": {
+    "body": "Fix login redirect\n› fix the login redirect\n? Fixed the redirect and the tests pass.",
+    "buttons": [
+     "Terminal",
+     "Ack"
+    ],
+    "kind": "done",
+    "priority": 3,
+    "title": "◆ shop/api · s1: done"
+   },
+   "error": {
+    "body": "Fix login redirect\n› fix the login redirect\n? API Error: 500 Internal server error",
+    "buttons": [
+     "Terminal",
+     "Ack"
+    ],
+    "kind": "error",
+    "priority": 4,
+    "title": "◆ shop/api · s1: error"
+   },
+   "limit": {
+    "body": "◆ shop/api · s1\nFix login redirect\n› fix the login redirect\n? 5-hour limit reached, resets 14:00",
+    "buttons": [
+     "Terminal",
+     "Ack"
+    ],
+    "kind": "rate_limit",
+    "priority": 5,
+    "title": "Claude rate limited"
+   },
+   "login": {
+    "body": "◆ shop/api · s1\nPlease run /login\nLog in again in Settings > Accounts.",
+    "buttons": [],
+    "kind": "login",
+    "priority": 4,
+    "title": "Claude login not valid: work"
+   },
+   "needs": {
+    "body": "Fix login redirect\n› fix the login redirect\n? Bash: npm test",
+    "buttons": [
+     "Allow",
+     "Deny"
+    ],
+    "kind": "permission",
+    "priority": 4,
+    "title": "◆ shop/api · s1: needs you"
+   }
+  },
+  "session_rate_limit": {
+   "actions": [],
+   "agent": "claude",
+   "badge": null,
+   "body": "Fix login redirect\n› fix the login redirect\n? 5-hour limit reached, resets 14:00",
+   "click": null,
+   "kind": "rate_limit",
+   "path": "/#/s/shop--api--s1",
+   "perm_id": null,
+   "priority": 5,
+   "renotify": true,
+   "state": "errored",
+   "tag": "shop--api--s1",
+   "tags": [
+    "no_entry"
+   ],
+   "title": "◆ shop/api · s1: error",
+   "tmux": "shop--api--s1",
+   "url": "/#/s/shop--api--s1",
+   "web": true,
+   "web_actions": [
+    {
+     "action": "terminal",
+     "title": "Terminal"
+    },
+    {
+     "action": "ack",
+     "title": "Ack"
+    }
+   ]
+  }
+ },
+ "pub": {
+  "codex_rate_limit": {
+   "actions": [],
+   "agent": "codex",
+   "badge": null,
+   "body": "5-hour window used 100%\nresets Mon 14:13 UTC\nwork · plus",
+   "click": "https://box.ts.net:8443/#/usage",
+   "kind": "rate_limit",
+   "path": "/#/usage",
+   "perm_id": null,
+   "priority": 4,
+   "renotify": true,
+   "state": "errored",
+   "tag": "rate-limit-codex",
+   "tags": [
+    "rotating_light"
+   ],
+   "title": "Codex rate limited",
+   "tmux": "",
+   "url": "https://box.ts.net:8443/#/usage",
+   "web": true,
+   "web_actions": []
+  },
+  "done": {
+   "actions": [
+    {
+     "action": "view",
+     "label": "Terminal",
+     "url": "https://box.ts.net:8443/term/shop--api--s1"
+    },
+    {
+     "action": "http",
+     "clear": true,
+     "headers": {
+      "X-CCBoard": "1"
+     },
+     "label": "Ack",
+     "method": "POST",
+     "url": "https://box.ts.net:8443/api/sessions/shop--api--s1/ack"
+    }
+   ],
+   "agent": "claude",
+   "badge": null,
+   "body": "Fix login redirect\n› fix the login redirect\n? Fixed the redirect and the tests pass.",
+   "click": "https://box.ts.net:8443/#/s/shop--api--s1",
+   "kind": "done",
+   "path": "/#/s/shop--api--s1",
+   "perm_id": null,
+   "priority": 3,
+   "renotify": true,
+   "state": "done",
+   "tag": "shop--api--s1",
+   "tags": [
+    "white_check_mark"
+   ],
+   "title": "◆ shop/api · s1: done",
+   "tmux": "shop--api--s1",
+   "url": "https://box.ts.net:8443/#/s/shop--api--s1",
+   "web": true,
+   "web_actions": [
+    {
+     "action": "terminal",
+     "title": "Terminal"
+    },
+    {
+     "action": "ack",
+     "title": "Ack"
+    }
+   ]
+  },
+  "elicitation": {
+   "actions": [
+    {
+     "action": "view",
+     "label": "Terminal",
+     "url": "https://box.ts.net:8443/term/shop--api--s1"
+    },
+    {
+     "action": "http",
+     "clear": true,
+     "headers": {
+      "X-CCBoard": "1"
+     },
+     "label": "Ack",
+     "method": "POST",
+     "url": "https://box.ts.net:8443/api/sessions/shop--api--s1/ack"
+    }
+   ],
+   "agent": "claude",
+   "badge": null,
+   "body": "Fix login redirect\n› fix the login redirect\n? Pick one",
+   "click": "https://box.ts.net:8443/#/s/shop--api--s1",
+   "kind": "elicitation",
+   "path": "/#/s/shop--api--s1",
+   "perm_id": null,
+   "priority": 4,
+   "renotify": true,
+   "state": "waiting",
+   "tag": "shop--api--s1",
+   "tags": [
+    "bell"
+   ],
+   "title": "◆ shop/api · s1: needs you",
+   "tmux": "shop--api--s1",
+   "url": "https://box.ts.net:8443/#/s/shop--api--s1",
+   "web": true,
+   "web_actions": [
+    {
+     "action": "terminal",
+     "title": "Terminal"
+    },
+    {
+     "action": "ack",
+     "title": "Ack"
+    }
+   ]
+  },
+  "error": {
+   "actions": [
+    {
+     "action": "view",
+     "label": "Terminal",
+     "url": "https://box.ts.net:8443/term/shop--api--s1"
+    },
+    {
+     "action": "http",
+     "clear": true,
+     "headers": {
+      "X-CCBoard": "1"
+     },
+     "label": "Ack",
+     "method": "POST",
+     "url": "https://box.ts.net:8443/api/sessions/shop--api--s1/ack"
+    }
+   ],
+   "agent": "claude",
+   "badge": null,
+   "body": "Fix login redirect\n› fix the login redirect\n? API Error: 500 Internal server error",
+   "click": "https://box.ts.net:8443/#/s/shop--api--s1",
+   "kind": "error",
+   "path": "/#/s/shop--api--s1",
+   "perm_id": null,
+   "priority": 4,
+   "renotify": true,
+   "state": "errored",
+   "tag": "shop--api--s1",
+   "tags": [
+    "rotating_light"
+   ],
+   "title": "◆ shop/api · s1: error",
+   "tmux": "shop--api--s1",
+   "url": "https://box.ts.net:8443/#/s/shop--api--s1",
+   "web": true,
+   "web_actions": [
+    {
+     "action": "terminal",
+     "title": "Terminal"
+    },
+    {
+     "action": "ack",
+     "title": "Ack"
+    }
+   ]
+  },
+  "idle": {
+   "actions": [
+    {
+     "action": "view",
+     "label": "Terminal",
+     "url": "https://box.ts.net:8443/term/shop--api--s1"
+    },
+    {
+     "action": "http",
+     "clear": true,
+     "headers": {
+      "X-CCBoard": "1"
+     },
+     "label": "Ack",
+     "method": "POST",
+     "url": "https://box.ts.net:8443/api/sessions/shop--api--s1/ack"
+    }
+   ],
+   "agent": "claude",
+   "badge": null,
+   "body": "Fix login redirect\n› fix the login redirect\n? Claude is waiting for your input",
+   "click": "https://box.ts.net:8443/#/s/shop--api--s1",
+   "kind": "idle",
+   "path": "/#/s/shop--api--s1",
+   "perm_id": null,
+   "priority": 4,
+   "renotify": true,
+   "state": "waiting",
+   "tag": "shop--api--s1",
+   "tags": [
+    "bell"
+   ],
+   "title": "◆ shop/api · s1: needs you",
+   "tmux": "shop--api--s1",
+   "url": "https://box.ts.net:8443/#/s/shop--api--s1",
+   "web": true,
+   "web_actions": [
+    {
+     "action": "terminal",
+     "title": "Terminal"
+    },
+    {
+     "action": "ack",
+     "title": "Ack"
+    }
+   ]
+  },
+  "login": {
+   "actions": [
+    {
+     "action": "view",
+     "label": "Log in again",
+     "url": "https://box.ts.net:8443/#/settings?sec=accounts&acct=work"
+    }
+   ],
+   "agent": "claude",
+   "badge": null,
+   "body": "◆ shop/api · s1\nPlease run /login\nLog in again in Settings > Accounts.",
+   "click": "https://box.ts.net:8443/#/settings?sec=accounts&acct=work",
+   "kind": "login",
+   "path": "/#/settings?sec=accounts&acct=work",
+   "perm_id": null,
+   "priority": 4,
+   "renotify": true,
+   "state": "errored",
+   "tag": "login-problem",
+   "tags": [
+    "warning",
+    "key"
+   ],
+   "title": "Claude login not valid: work",
+   "tmux": "shop--api--s1",
+   "url": "https://box.ts.net:8443/#/settings?sec=accounts&acct=work",
+   "web": true,
+   "web_actions": []
+  },
+  "login_no_account": {
+   "actions": [
+    {
+     "action": "view",
+     "label": "Log in again",
+     "url": "https://box.ts.net:8443/#/settings?sec=accounts"
+    }
+   ],
+   "agent": "claude",
+   "badge": null,
+   "body": "shop / api · s1\nLog in again in Settings > Accounts.",
+   "click": "https://box.ts.net:8443/#/settings?sec=accounts",
+   "kind": "login",
+   "path": "/#/settings?sec=accounts",
+   "perm_id": null,
+   "priority": 4,
+   "renotify": true,
+   "state": "errored",
+   "tag": "login-problem",
+   "tags": [
+    "warning",
+    "key"
+   ],
+   "title": "Claude login not valid",
+   "tmux": "shop--api--s1",
+   "url": "https://box.ts.net:8443/#/settings?sec=accounts",
+   "web": true,
+   "web_actions": []
+  },
+  "no_row": {
+   "actions": [
+    {
+     "action": "view",
+     "label": "Terminal",
+     "url": "https://box.ts.net:8443/term/shop--api--s1"
+    },
+    {
+     "action": "http",
+     "clear": true,
+     "headers": {
+      "X-CCBoard": "1"
+     },
+     "label": "Ack",
+     "method": "POST",
+     "url": "https://box.ts.net:8443/api/sessions/shop--api--s1/ack"
+    }
+   ],
+   "agent": "claude",
+   "badge": null,
+   "body": "? ok",
+   "click": "https://box.ts.net:8443/#/s/shop--api--s1",
+   "kind": "done",
+   "path": "/#/s/shop--api--s1",
+   "perm_id": null,
+   "priority": 3,
+   "renotify": true,
+   "state": "done",
+   "tag": "shop--api--s1",
+   "tags": [
+    "white_check_mark"
+   ],
+   "title": "shop / api · s1: done",
+   "tmux": "shop--api--s1",
+   "url": "https://box.ts.net:8443/#/s/shop--api--s1",
+   "web": true,
+   "web_actions": [
+    {
+     "action": "terminal",
+     "title": "Terminal"
+    },
+    {
+     "action": "ack",
+     "title": "Ack"
+    }
+   ]
+  },
+  "ntfy_test": {
+   "click": "https://box.ts.net:8443",
+   "message": "Notifications work.",
+   "priority": 3,
+   "tags": [
+    "tada"
+   ],
+   "title": "ccboard test",
+   "topic": "ccboard"
+  },
+  "permission": {
+   "actions": [
+    {
+     "action": "http",
+     "clear": true,
+     "headers": {
+      "X-CCBoard": "1"
+     },
+     "label": "Allow",
+     "method": "POST",
+     "url": "https://box.ts.net:8443/api/permission/5/allow"
+    },
+    {
+     "action": "http",
+     "clear": true,
+     "headers": {
+      "X-CCBoard": "1"
+     },
+     "label": "Deny",
+     "method": "POST",
+     "url": "https://box.ts.net:8443/api/permission/5/deny"
+    },
+    {
+     "action": "view",
+     "label": "Terminal",
+     "url": "https://box.ts.net:8443/term/shop--api--s1"
+    }
+   ],
+   "agent": "claude",
+   "badge": null,
+   "body": "Fix login redirect\n› fix the login redirect\n? Bash: npm test",
+   "click": "https://box.ts.net:8443/#/s/shop--api--s1",
+   "kind": "permission",
+   "path": "/#/s/shop--api--s1",
+   "perm_id": 5,
+   "priority": 4,
+   "renotify": true,
+   "state": "waiting",
+   "tag": "shop--api--s1",
+   "tags": [
+    "bell",
+    "key"
+   ],
+   "title": "◆ shop/api · s1: needs you",
+   "tmux": "shop--api--s1",
+   "url": "https://box.ts.net:8443/#/s/shop--api--s1",
+   "web": true,
+   "web_actions": [
+    {
+     "action": "allow",
+     "title": "Allow"
+    },
+    {
+     "action": "deny",
+     "title": "Deny"
+    },
+    {
+     "action": "terminal",
+     "title": "Terminal"
+    }
+   ]
+  },
+  "permission_no_request": {
+   "actions": [
+    {
+     "action": "view",
+     "label": "Terminal",
+     "url": "https://box.ts.net:8443/term/shop--api--s1"
+    },
+    {
+     "action": "http",
+     "clear": true,
+     "headers": {
+      "X-CCBoard": "1"
+     },
+     "label": "Ack",
+     "method": "POST",
+     "url": "https://box.ts.net:8443/api/sessions/shop--api--s1/ack"
+    }
+   ],
+   "agent": "claude",
+   "badge": null,
+   "body": "› fix the login redirect\n? Claude needs your permission to use Bash",
+   "click": "https://box.ts.net:8443/#/s/shop--api--s1",
+   "kind": "permission",
+   "path": "/#/s/shop--api--s1",
+   "perm_id": null,
+   "priority": 4,
+   "renotify": true,
+   "state": "waiting",
+   "tag": "shop--api--s1",
+   "tags": [
+    "bell",
+    "key"
+   ],
+   "title": "◆ shop/api · s1: needs you",
+   "tmux": "shop--api--s1",
+   "url": "https://box.ts.net:8443/#/s/shop--api--s1",
+   "web": true,
+   "web_actions": [
+    {
+     "action": "terminal",
+     "title": "Terminal"
+    },
+    {
+     "action": "ack",
+     "title": "Ack"
+    }
+   ]
+  },
+  "push_test": {
+   "args": [
+    "ccboard test",
+    "Web Push works. Two buttons under this text mean this device shows notification actions.",
+    "/"
+   ],
+   "kwargs": {
+    "actions": [
+     {
+      "action": "terminal",
+      "title": "Open board"
+     },
+     {
+      "action": "ack",
+      "title": "Dismiss"
+     }
+    ],
+    "extra": {
+     "agent": "claude",
+     "perm_id": null,
+     "state": "done",
+     "tmux": ""
+    },
+    "renotify": true,
+    "tag": "test"
+   }
+  },
+  "rate_limit": {
+   "actions": [
+    {
+     "action": "view",
+     "label": "Terminal",
+     "url": "https://box.ts.net:8443/term/shop--api--s1"
+    },
+    {
+     "action": "http",
+     "clear": true,
+     "headers": {
+      "X-CCBoard": "1"
+     },
+     "label": "Ack",
+     "method": "POST",
+     "url": "https://box.ts.net:8443/api/sessions/shop--api--s1/ack"
+    }
+   ],
+   "agent": "claude",
+   "badge": null,
+   "body": "◆ shop/api · s1\nFix login redirect\n› fix the login redirect\n? 5-hour limit reached, resets 14:00",
+   "click": "https://box.ts.net:8443/#/s/shop--api--s1",
+   "kind": "rate_limit",
+   "path": "/#/s/shop--api--s1",
+   "perm_id": null,
+   "priority": 5,
+   "renotify": true,
+   "state": "errored",
+   "tag": "rate-limit",
+   "tags": [
+    "no_entry"
+   ],
+   "title": "Claude rate limited",
+   "tmux": "shop--api--s1",
+   "url": "https://box.ts.net:8443/#/s/shop--api--s1",
+   "web": true,
+   "web_actions": [
+    {
+     "action": "terminal",
+     "title": "Terminal"
+    },
+    {
+     "action": "ack",
+     "title": "Ack"
+    }
+   ]
+  },
+  "samples": {
+   "done": {
+    "body": "Fix login redirect\n› fix the login redirect\n? Fixed the redirect and the tests pass.",
+    "buttons": [
+     "Terminal",
+     "Ack"
+    ],
+    "kind": "done",
+    "priority": 3,
+    "title": "◆ shop/api · s1: done"
+   },
+   "error": {
+    "body": "Fix login redirect\n› fix the login redirect\n? API Error: 500 Internal server error",
+    "buttons": [
+     "Terminal",
+     "Ack"
+    ],
+    "kind": "error",
+    "priority": 4,
+    "title": "◆ shop/api · s1: error"
+   },
+   "limit": {
+    "body": "◆ shop/api · s1\nFix login redirect\n› fix the login redirect\n? 5-hour limit reached, resets 14:00",
+    "buttons": [
+     "Terminal",
+     "Ack"
+    ],
+    "kind": "rate_limit",
+    "priority": 5,
+    "title": "Claude rate limited"
+   },
+   "login": {
+    "body": "◆ shop/api · s1\nPlease run /login\nLog in again in Settings > Accounts.",
+    "buttons": [],
+    "kind": "login",
+    "priority": 4,
+    "title": "Claude login not valid: work"
+   },
+   "needs": {
+    "body": "Fix login redirect\n› fix the login redirect\n? Bash: npm test",
+    "buttons": [
+     "Allow",
+     "Deny"
+    ],
+    "kind": "permission",
+    "priority": 4,
+    "title": "◆ shop/api · s1: needs you"
+   }
+  },
+  "session_rate_limit": {
+   "actions": [
+    {
+     "action": "view",
+     "label": "Terminal",
+     "url": "https://box.ts.net:8443/term/shop--api--s1"
+    },
+    {
+     "action": "http",
+     "clear": true,
+     "headers": {
+      "X-CCBoard": "1"
+     },
+     "label": "Ack",
+     "method": "POST",
+     "url": "https://box.ts.net:8443/api/sessions/shop--api--s1/ack"
+    }
+   ],
+   "agent": "claude",
+   "badge": null,
+   "body": "Fix login redirect\n› fix the login redirect\n? 5-hour limit reached, resets 14:00",
+   "click": "https://box.ts.net:8443/#/s/shop--api--s1",
+   "kind": "rate_limit",
+   "path": "/#/s/shop--api--s1",
+   "perm_id": null,
+   "priority": 5,
+   "renotify": true,
+   "state": "errored",
+   "tag": "shop--api--s1",
+   "tags": [
+    "no_entry"
+   ],
+   "title": "◆ shop/api · s1: error",
+   "tmux": "shop--api--s1",
+   "url": "https://box.ts.net:8443/#/s/shop--api--s1",
+   "web": true,
+   "web_actions": [
+    {
+     "action": "terminal",
+     "title": "Terminal"
+    },
+    {
+     "action": "ack",
+     "title": "Ack"
+    }
+   ]
+  }
+ }
+}

@@ -4388,7 +4388,7 @@ def api_push_unsubscribe(body: SubIn):
 @app.post("/api/push/test")
 def api_push_test():
     # two buttons, so the phone shows whether this device does notification actions (iOS ignores them); neither names a session
-    n = push.send_all(db, "ccboard test", "Web Push works. Two buttons under this text mean this device shows notification actions.", "/", tag="test",
+    n = push.send_all(db, notify.titled("ccboard test"), "Web Push works. Two buttons under this text mean this device shows notification actions.", "/", tag=notify.tagged("test"),
                       extra={"agent": "claude", "state": "done", "tmux": "", "perm_id": None, "ts": int(time.time() * 1000)},
                       actions=[{"action": "terminal", "title": "Open board"}, {"action": "ack", "title": "Dismiss"}], renotify=True)
     return {"sent": n, "subscriptions": len(db.push_subs())}
@@ -4418,7 +4418,7 @@ def api_notify_prefs_set(body: NotifyPrefsIn):
 def api_notify_test():
     if not notify.enabled():
         raise projects.BadRequest("ntfy is not configured (NTFY_URL is empty)")
-    ok = notify.publish("ccboard test", "Notifications work.", click=(settings.public_url or None), tags=["tada"])
+    ok = notify.publish(notify.titled("ccboard test"), "Notifications work.", click=(settings.public_url or None), tags=["tada"])
     return {"ok": ok}
 
 

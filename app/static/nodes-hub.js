@@ -83,6 +83,56 @@ function nhTasks(rec) {
   return rows.filter((t) => t && (typeof t.id === 'number' || /^\d+$/.test(String(t.id)))).map((t) => ({ ...t, node: rec.handle }));
 }
 Nodes.sessions = function (handle) { return nhMerge('session', handle, (handle ? [Nodes.get(handle)] : Nodes.M.recs).filter(Boolean).flatMap(nhSessions)); };
+
+/* The merged inbox (issue #151): the sessions of other nodes that need you, one entry per (node id, tmux, kind, since) whatever the number of polls that listed them. An entry is
+   {...session, attn: 'input' | 'error', dk, stale, readAge}: `dk` is that key, `stale` is true while the node is not online (its items are the last reading, not live), `readAge` the
+   seconds since that reading. An item is in the list for as long as the node's latest reading lists it and no longer: the next reading without it takes it away. A permission request
+   is its own card (Nodes.permCards, keyed by node and request id). Nothing here sends a notice: each node notifies for itself. */
+const NH_ATTN = { input: 'needs input', error: 'error' };
+Nodes.attention = function () {
+  const now = Date.now();
+  const seen = new Set();
+  const out = [];
+  for (const s of Nodes.sessions()) {
+    if (!s || !s.needs_you || s.pending) continue;
+    const rec = Nodes.get(s.node);
+    const attn = s.state === 'errored' ? 'error' : 'input';
+    const dk = [(rec && rec.node_id) || s.node, s.tmux, attn, s.since || ''].join('|');
+    if (seen.has(dk)) continue;
+    seen.add(dk);
+    const v = Nodes.view(rec, now);
+    out.push({ ...s, attn, dk, stale: v.status !== 'online', readAge: v.age });
+  }
+  return out;
+};
+
+/* One line for each account window that is used up on a node (issue #151), for the Home strip. Two nodes that work under one subscription (the same `subscription_key` on the current
+   account of one agent, a one-way digest the card carries) share one window, so they give ONE line naming both and saying that each sends its own notice; nodes whose accounts differ
+   give a line each. A node that is offline or whose pair is gone is not counted (its reading is old). Names are the registry's; text only. */
+const NH_AGENT = { claude: 'Claude', codex: 'Codex' };
+Nodes.limitLines = function () {
+  const groups = new Map();
+  for (const rec of Nodes.M.recs) {
+    if (!['online', 'stale'].includes(Nodes.view(rec).status)) continue;
+    const items = rec.card && rec.card.accounts && Array.isArray(rec.card.accounts.items) ? rec.card.accounts.items : [];
+    const usage = rec.state && rec.state.usage && typeof rec.state.usage === 'object' ? rec.state.usage : {};
+    for (const it of items) {
+      if (!it || it.current !== true || !ownKey(NH_AGENT, it.agent)) continue;
+      const w = usage[it.agent];
+      const limited = w && typeof w === 'object' ? w.limited === true : it.limited === true;
+      if (!limited) continue;
+      const key = it.agent + '|' + (typeof it.subscription_key === 'string' && it.subscription_key ? it.subscription_key : 'node:' + rec.handle);
+      const g = groups.get(key) || { agent: it.agent, names: [] };
+      if (!g.names.includes(nhName(rec))) g.names.push(nhName(rec));
+      groups.set(key, g);
+    }
+  }
+  return Array.from(groups.values()).map((g) => {
+    const who = NH_AGENT[g.agent];
+    if (g.names.length < 2) return `${who} limit reached on ${g.names[0]}.`;
+    return `${who} limit reached on ${g.names.slice(0, -1).join(', ')} and ${g.names[g.names.length - 1]}: one account, one window. Each node sends its own notice; turn it off on one (Settings > Notifications).`;
+  });
+};
 Nodes.tasks = function (handle) { return nhMerge('task', handle, (handle ? [Nodes.get(handle)] : Nodes.M.recs).filter(Boolean).flatMap(nhTasks)); };
 
 /* Optimistic rows (issue #141): a task or a session started on a node shows at once, before the node's next reading carries it. Nodes.pend({kind, node, ...row}) adds one with
@@ -407,11 +457,24 @@ function nhSessionRow(s) {
   const label = el(href ? 'a' : 'span', { class: 'nd-name', href: href || null, text: name });
   const st = ownKey(STATE_GLYPH, s.state) ? s.state : 'unknown';
   const term = s.pending === 'starting' ? null : Nodes.termBtn(s.node, s.tmux, { icon: true, cls: 'icon minimal small nd-term-ic' });      // issue #144: this session's terminal on its own node
-  return el('div', { class: 'nd-item' + (s.needs_you ? ' attn' : ''), 'data-key': Ref.key({ tmux: s.tmux, node: s.node }) },
+  const word = s.pending === 'starting' ? `Starting on ${Nodes.nameOf(s.node)}` : [s.pending === 'started' ? 'started' : s.attn && ownKey(NH_ATTN, s.attn) ? NH_ATTN[s.attn] : GLYPH_LABEL[st], s.since ? nhAgeText(s.since) : '',
+    s.stale ? (typeof s.readAge === 'number' ? `stale: last reading ${nhSpan(s.readAge)} ago` : 'stale') : ''].filter(Boolean).join(' · ');
+  return el('div', { class: 'nd-item' + (s.needs_you ? ' attn' : '') + (s.stale ? ' stale' : ''), 'data-key': Ref.key({ tmux: s.tmux, node: s.node }) },
     el('span', { class: 'nd-g' }, stateGlyph(st), agentGlyph(nhAgent(s.agent))), label, term, el('span', { class: 'dim nd-where', text: nhWhere(s) }),
-    Nodes.chip(s.node), el('span', { class: 'dim nd-meta', text: s.pending === 'starting' ? `Starting on ${Nodes.nameOf(s.node)}` : [s.pending === 'started' ? 'started' : GLYPH_LABEL[st], s.since ? nhAgeText(s.since) : ''].filter(Boolean).join(' · ') }));
+    Nodes.chip(s.node), el('span', { class: 'dim nd-meta', text: word }));
 }
-function nhSessionSig(s) { const r = Nodes.get(s.node); return JSON.stringify([s.tmux, s.session, s.state, s.needs_you, s.agent, s.project, s.repo, s.since, s.pending, Math.floor(Date.now() / 60000), Nodes.sig(s), r && r.url, Nodes.TF.has(`${s.node}/${s.tmux}`)]); }
+function nhSessionSig(s) { const r = Nodes.get(s.node); return JSON.stringify([s.tmux, s.session, s.state, s.needs_you, s.agent, s.project, s.repo, s.since, s.pending, s.attn, s.stale, Math.floor(Date.now() / 60000), Nodes.sig(s), r && r.url, Nodes.TF.has(`${s.node}/${s.tmux}`)]); }
+
+/* One row of Settings > Notifications for a node: what this page knows, and a way to the node's own Settings. */
+function nhNotifyRow(rec) {
+  const name = nhName(rec);
+  const link = nhOpenLink(`Open ${name}`, rec, '#/settings', 'btn small');
+  const open = link || el('button', { class: 'small nd-off', type: 'button', 'aria-disabled': 'true', title: 'The address saved for this node is not an https tailnet address.', text: `Open ${name}` });
+  return el('div', { class: 'nd-nrow', 'data-key': rec.handle },
+    el('span', { class: 'nd-ntext', text: `Notifications from ${name}: subscribe this device on that node` }), open,
+    link ? null : el('span', { class: 'dim nd-nwhy', text: 'Its saved address is not an https tailnet address.' }));
+}
+function nhNotifySig(rec) { return JSON.stringify([nhName(rec), rec.url]); }
 
 const NH_PHASE = { queued: '○', running: '✽', review: '✻', done: '✓', failed: '✕', cancelled: '○', backlog: '∙' };
 function nhTaskRow(t) {
@@ -430,9 +493,9 @@ function nhTaskSig(t) { return JSON.stringify([t.id, t.title, t.phase, t.agent, 
 Nodes.hosts = new Set();
 
 /* Nodes.slot(name, anchor, opts): make (once) and repaint a section next to `anchor`: 'strip' (Home, after the away line), 'inbox' (Home and #/inbox, after the local cards), 'tasks' (the filter
-   before the board, the tasks of other nodes after it). The section registers its repaint, which the poll calls every 6 s. */
+   before the board, the tasks of other nodes after it), 'notify' (Settings > Notifications, a row for each node). The section registers its repaint, which the poll calls every 6 s. */
 Nodes.slot = function (name, anchor, opts) {
-  if (!anchor || !Nodes.SLOTS[name]) return;
+  if (!anchor || !anchor.parentNode || !Nodes.SLOTS[name]) return;                 // an anchor that left the page while the bundle loaded (a panel rebuilt) gets nothing
   let s = anchor.ccSlots && anchor.ccSlots[name];
   if (s && !nhAttached(s.hosts[0])) { delete anchor.ccSlots[name]; s = null; }          // Nodes.stop took its sections away: build them again when nodes come back
   const o = Object.assign((s && s.o) || {}, opts || {});                    // the page's latest facts (a limit, how many local cards): the section reads them when it paints
@@ -441,7 +504,7 @@ Nodes.slot = function (name, anchor, opts) {
     s.o = o;
     (anchor.ccSlots ||= {})[name] = s;
     for (const h of s.hosts) Nodes.hosts.add(h);
-    const paint = () => { if (!nhAttached(anchor)) { Nodes.M.subs.delete(paint); return; } s.paint(); };
+    const paint = () => { if (!nhAttached(anchor)) { Nodes.M.subs.delete(paint); for (const h of s.hosts) Nodes.hosts.delete(h); return; } s.paint(); };
     Nodes.M.subs.add(paint);
   }
   s.paint();
@@ -492,10 +555,11 @@ function nhArrowKeys(e, root) {
 Nodes.SLOTS = {
   strip(anchor) {
     const attn = el('div', { class: 'nd-attn hidden', role: 'status' });
+    const lims = el('div', { class: 'nd-attn nd-lims hidden', role: 'status' });                 // issue #151: one line per used up account window
     const cells = el('div', { class: 'nd-cells', role: 'list', 'aria-label': 'Nodes' });
     const note = el('p', { class: 'dim nd-note hidden', role: 'status' });
     const host = el('section', { class: 'nd-strip hidden', 'aria-label': 'Nodes' },
-      el('div', { class: 'nd-strip-h' }, el('h2', { class: 'nd-h', text: 'Nodes' }), el('a', { class: 'nd-manage', href: '#/settings?sec=nodes', text: 'Manage' })), attn, cells, note);
+      el('div', { class: 'nd-strip-h' }, el('h2', { class: 'nd-h', text: 'Nodes' }), el('a', { class: 'nd-manage', href: '#/settings?sec=nodes', text: 'Manage' })), attn, lims, cells, note);
     nhInsertAfter(anchor, host);
     cells.addEventListener('keydown', (e) => nhArrowKeys(e, cells));
     const list = nhList(cells, (c) => c.key, nhCellNode, nhCellSig);
@@ -511,6 +575,10 @@ Nodes.SLOTS = {
       attn.textContent = '';
       need.forEach((c, i) => { if (i) attn.append(' · '); attn.append(el('a', { class: 'nd-attn-a', href: c.href }, el('span', { class: 'glyph', 'aria-hidden': 'true', text: STATE_GLYPH.waiting }), ` ${c.needs} need you on `, el('b', { text: c.name }))); });
       attn.classList.toggle('hidden', !need.length);
+      const lines = Nodes.limitLines();
+      const had = Array.from(lims.children).map((n) => n.textContent);
+      if (JSON.stringify(had) !== JSON.stringify(lines)) { lims.textContent = ''; for (const l of lines) lims.append(el('div', { class: 'nd-lim', text: l })); }
+      lims.classList.toggle('hidden', !lines.length);
       const skew = M.recs.filter((r) => r.skew_warn);
       let text = '';
       if (M.err) text = M.loaded ? `Could not refresh the nodes (${M.err}). Showing the last reading from ${nhSpan((Date.now() - M.recvAt) / 1000)} ago.` : `Could not read the nodes (${M.err}). Trying again.`;
@@ -529,13 +597,13 @@ Nodes.SLOTS = {
     const host = el('section', { class: 'nd-inbox hidden', 'aria-label': 'On other nodes' }, el('div', { class: 'row head' }, title, more), perms, list, note);
     nhInsertAfter(anchor, host);
     const pl = nhList(perms, (c) => c.key, nsPermNode, nsPermSig);
-    const kl = nhList(list, (s) => Ref.key({ tmux: s.tmux, node: s.node }), nhSessionRow, nhSessionSig);
+    const kl = nhList(list, (s) => s.dk || Ref.key({ tmux: s.tmux, node: s.node }), nhSessionRow, nhSessionSig);
     return { hosts: [host], paint() {
       const cards = Nodes.permCards();
       const real = cards.filter((c) => !c.stub);
       const stubs = cards.filter((c) => c.stub);
       const owned = new Set(real.map((c) => `${c.node}/${c.tmux}`));
-      const rows = Nodes.sessions().filter((s) => s.needs_you && !owned.has(`${s.node}/${s.tmux}`));
+      const rows = Nodes.attention().filter((s) => !owned.has(`${s.node}/${s.tmux}`));
       const total = real.length + rows.length;
       const lim = opts.limit > 0 ? opts.limit : Infinity;
       const localN = typeof opts.local === 'number' ? opts.local : nsLocalCount();
@@ -552,6 +620,22 @@ Nodes.SLOTS = {
       const any = total > 0 || stubs.length > 0;
       host.classList.toggle('hidden', !any);
       if (opts.none) opts.none.classList.toggle('hidden', !!opts.local || any);      // "Nothing needs you" is not true while another node's items wait
+    } };
+  },
+
+  /* Settings > Notifications (issue #151): a row for each paired node. Web Push belongs to one origin, so a device subscribes once per node; this page is one origin and knows only its own
+     subscription, which it says, instead of guessing the others. Open <node> goes to that node's own Settings (its Notifications are the default section), in a new tab. */
+  notify(anchor) {
+    const title = el('h2', { class: 'set-h', text: 'Other nodes' });
+    const list = el('div', { class: 'nd-nrows' });
+    const note = el('p', { class: 'dim set-note nd-ro', text: 'Web Push is kept per node and per device. This page only knows this device on this board; it cannot see whether it is subscribed on another node. Open the node to check or to turn it on there.' });
+    const host = el('section', { class: 'nd-notify hidden', 'aria-label': 'Notifications from other nodes' }, title, list, note);
+    nhInsertAfter(anchor, host);
+    const kl = nhList(list, (r) => r.handle, nhNotifyRow, nhNotifySig);
+    return { hosts: [host], paint() {
+      const recs = Nodes.M.recs.filter((r) => !r.legacy);
+      kl.update(recs);
+      host.classList.toggle('hidden', !recs.length);
     } };
   },
 

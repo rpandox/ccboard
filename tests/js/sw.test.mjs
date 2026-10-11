@@ -199,3 +199,29 @@ test('a url that leaves the origin is never opened', async () => {
   await w.click('', { url: 'https://evil.example/x' });
   assert.deepEqual(w.calls.opened, [ORIGIN + '/']);
 });
+
+// ---- issue #151: notifications across nodes. The service worker belongs to one origin (one node), so a tap, Allow or Terminal always goes to the node that sent it.
+// A payload from a paired node carries `<node> · ` in its title and `<node>:<session>` as its tag; the worker needs no change to show it or to act on it.
+
+test('a notice from a paired node (node name in the title, node:session as the tag) is shown as it comes and its actions go to this origin', async () => {
+  const w = worker();
+  await w.push({ title: 'node-a · ◆ shop/api · s1: needs you', body: '? Bash: npm test', url: '/#/s/shop--api--s1', tag: 'node-a:shop--api--s1', renotify: true, state: 'waiting', tmux: 'shop--api--s1', perm_id: 5,
+                 actions: [{ action: 'allow', title: 'Allow' }, { action: 'deny', title: 'Deny' }, { action: 'terminal', title: 'Terminal' }] });
+  const { title, o } = w.calls.shown[0];
+  assert.equal(title, 'node-a · ◆ shop/api · s1: needs you');
+  assert.deepEqual([o.tag, o.renotify, o.requireInteraction], ['node-a:shop--api--s1', true, true]);
+  assert.deepEqual(o.actions.map((a) => a.action), ['allow', 'deny'], 'two buttons, as before');
+  await w.click('allow', { perm_id: 5, tmux: 'shop--api--s1', url: '/#/s/shop--api--s1' }, { title, tag: 'node-a:shop--api--s1' });
+  assert.deepEqual(w.calls.fetched.map(([u, init]) => [u, init.method, init.credentials]), [['/api/permission/5/allow', 'POST', 'same-origin']], 'the answer is a same-origin POST: it reaches the node whose page this worker serves');
+  await w.click('terminal', { tmux: 'shop--api--s1' }, { tag: 'node-a:shop--api--s1' });
+  assert.deepEqual(w.calls.opened.slice(-1), [`${ORIGIN}/term/shop--api--s1`]);
+  await w.click('', { url: '/#/s/shop--api--s1' }, { tag: 'node-a:shop--api--s1' });
+  assert.deepEqual(w.calls.opened.slice(-1), [`${ORIGIN}/#/s/shop--api--s1`], 'a plain tap with no board window open opens the session on this origin');
+});
+
+test('two notices with one session name from two nodes are two notifications: the tag differs, so neither replaces the other', async () => {
+  const w = worker();
+  await w.push({ title: 'node-a · ◆ shop/api · s1: done', body: 'x', tag: 'node-a:shop--api--s1', renotify: true });
+  await w.push({ title: 'node-b · ◆ shop/api · s1: done', body: 'x', tag: 'node-b:shop--api--s1', renotify: true });
+  assert.deepEqual(w.calls.shown.map((s) => s.o.tag), ['node-a:shop--api--s1', 'node-b:shop--api--s1']);
+});
