@@ -1104,6 +1104,38 @@ def peers(db=None) -> list[dict]:
     return sorted(rows, key=lambda r: (str(r["created_at"] or ""), r["peer_id"]))
 
 
+def any_paired(db) -> bool:
+    """Is at least one node paired with this board, in either direction (a node this board calls, or a node that calls this board with a live token)? A
+    CCBOARD_NODES entry (a legacy row) is not a pair. Never raises; no database means no pair. Notices use it to decide whether to name their node (issue #151)."""
+    if db is None:
+        return False
+    try:
+        if any(not r.get("legacy") for r in _out_rows(db)):
+            return True
+        return bool(db.node_pairs())
+    except Exception:
+        return False
+
+
+def shared_subscriptions(readings) -> list[dict]:
+    """The accounts that more than one node works under. `readings` is [(node name, accounts items)], the items being the `accounts.items` of a card
+    ({agent, current, subscription_key, ...}). Only the current account of an agent counts (a saved login nobody uses sends nothing), and only an item with a
+    key (a one-way digest of the provider account id; the same login on two nodes gives the same key). Returns [{agent, key, nodes: [names]}] for each
+    (agent, key) held by two or more nodes, in the order first seen. The names are the caller's: the registry's, never a peer's own claim."""
+    groups: dict[tuple, list] = {}
+    for name, items in readings:
+        seen: set = set()
+        for it in items if isinstance(items, list) else []:
+            if not isinstance(it, dict) or it.get("current") is not True:
+                continue
+            agent, key = it.get("agent"), it.get("subscription_key")
+            if not isinstance(agent, str) or not isinstance(key, str) or not key or (agent, key) in seen:
+                continue
+            seen.add((agent, key))
+            groups.setdefault((agent, key), []).append(name)
+    return [{"agent": a, "key": k, "nodes": ns} for (a, k), ns in groups.items() if len(ns) > 1]
+
+
 def peer(ident, db=None) -> dict | None:
     """One pair by peer_id, or by registry handle. None when there is none."""
     if not isinstance(ident, str) or not ident:

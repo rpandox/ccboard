@@ -51,7 +51,7 @@ const NOTIFY_KINDS = [
   { key: 'error', label: 'Error or crash', pick: 'Error', note: 'A turn failed for some other reason.' },
   { key: 'login', label: 'Login problem', pick: 'Login', note: 'A saved login stopped working.' },
 ];
-/* The same five examples GET /api/notify/prefs answers, for ?demo=1 (the demo layer has no fixture file for this route). */
+/* The same five examples GET /api/notify/prefs answers, for ?demo=1 (the demo layer has no fixture file for this route). With paired nodes (the demo has them) each title starts with this board's name, as a paired board sends it (settingsNotifyDemo). */
 const SETTINGS_NOTIFY_DEMO = { prefs: { needs: true, done: true, limit: true, error: true, login: true }, samples: {
   needs: { title: '◆ shop/api · s1: needs you', body: 'Fix login redirect\n› fix the login redirect\n? Bash: npm test', buttons: ['Allow', 'Deny'] },
   done: { title: '◆ shop/api · s1: done', body: 'Fix login redirect\n› fix the login redirect\n? Fixed the redirect and the tests pass.', buttons: ['Terminal', 'Ack'] },
@@ -59,6 +59,13 @@ const SETTINGS_NOTIFY_DEMO = { prefs: { needs: true, done: true, limit: true, er
   error: { title: '◆ shop/api · s1: error', body: 'Fix login redirect\n› fix the login redirect\n? API Error: 500 Internal server error', buttons: ['Terminal', 'Ack'] },
   login: { title: 'Claude login not valid: work', body: '◆ shop/api · s1\nPlease run /login\nLog in again in Settings > Accounts.', buttons: [] },
 } };
+function settingsNotifyDemo() {
+  if (!Nodes.enabled()) return SETTINGS_NOTIFY_DEMO;
+  const name = (state && typeof state.node_name === 'string' && state.node_name) || 'this node';
+  const samples = {};
+  for (const [k, v] of Object.entries(SETTINGS_NOTIFY_DEMO.samples)) samples[k] = { ...v, title: `${name} · ${v.title}` };
+  return { prefs: SETTINGS_NOTIFY_DEMO.prefs, samples };
+}
 const settingsNotifyState = { prefs: { needs: true, done: true, limit: true, error: true, login: true }, samples: {}, kind: 'needs', at: 0, repaint: null };
 
 function settingsNotifyAdopt(r) {
@@ -71,7 +78,7 @@ async function settingsNotifyLoad() {
   const st = settingsNotifyState;
   if (st.at && Date.now() - st.at < 20000) return;
   st.at = Date.now();
-  if (typeof demoOn === 'function' && demoOn()) { if (!Object.keys(st.samples).length) { settingsNotifyAdopt(SETTINGS_NOTIFY_DEMO); if (st.repaint) st.repaint(); } return; }
+  if (typeof demoOn === 'function' && demoOn()) { if (!Object.keys(st.samples).length) { settingsNotifyAdopt(settingsNotifyDemo()); if (st.repaint) st.repaint(); } return; }
   try { settingsNotifyAdopt(await api('GET', '/api/notify/prefs')); } catch (e) { st.at = 0; setError(e.message); return; }
   if (st.repaint) st.repaint();
 }
@@ -150,6 +157,7 @@ function settingsNotify(p) {
       el('button', { type: 'button', disabled: true, title: 'Enable push first', text: 'Send test push' }));
   }).catch(() => pushRow.add(el('span', { class: 'dim', text: 'Web Push not available here.' })));
 
+  Nodes.use(() => Nodes.slot('notify', pushRow, {}));      // paired nodes (issue #151): a row for each, saying this page only knows this device here (nodes-hub.js)
   p.append(settingsNotifyBlock());
   settingsNotifyLoad();
 

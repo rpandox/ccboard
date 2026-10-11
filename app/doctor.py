@@ -1133,6 +1133,47 @@ def _c_push(db) -> Outcome:
     return _pass(f"{n} subscription{'s' if n != 1 else ''}" + ("" if keys else "; the VAPID key is created on the next board start"))
 
 
+def _c_notify_public_url(db) -> Outcome:
+    """Notification links on a board that has a paired node (issue #151). A tap on a notice opens `{CCBOARD_PUBLIC_URL}/#/s/<session>`; with no public URL the
+    link is only the relative route, which opens nothing from another device or another node's page. Skips on a board nobody paired with."""
+    from . import nodes
+    if not nodes.any_paired(db):
+        return _skip("no node is paired, so notices do not need to name an address")
+    if settings.public_url:
+        return _pass(f"notification links start with {settings.public_url.rstrip('/')}")
+    guess = nodes.public_url()
+    return _warn("a node is paired and CCBOARD_PUBLIC_URL is empty: links in notifications are relative and will not open from another device",
+                 fix(f"Set CCBOARD_PUBLIC_URL={guess if guess else 'https://<this node>.<tailnet>.ts.net[:port]'} in /etc/ccboard/env and restart the board "
+                     "(install.sh derives it from the Tailscale name and CCBOARD_HTTPS_PORT)"))
+
+
+def _c_notify_shared(db) -> Outcome:
+    """Two nodes working under one subscription (issue #151): the usage window is the account's, so each of them sends its own rate-limit notice for it.
+    Read from the hub's cards (the `subscription_key` digest of the current account) and this board's own account; nothing is asked of a node here."""
+    from . import nodes, notify
+    try:
+        from . import main
+        recs = main._hub().records()
+    except Exception as e:
+        return _warn(f"the nodes' readings could not be read ({e.__class__.__name__})", fix("Open Settings > Nodes to see whether the nodes answer"))
+    readings = [(r.get("name") or r.get("handle") or "a node", ((r.get("card") or {}).get("accounts") or {}).get("items")) for r in recs if not r.get("legacy")]
+    if not readings:
+        return _skip("no node is paired")
+    try:
+        readings.insert(0, (nodes.display_name(), nodes.accounts_view(db).get("items")))
+    except Exception:
+        pass
+    groups = nodes.shared_subscriptions(readings)
+    if not groups:
+        return _pass("no two nodes work under one subscription")
+    g = groups[0]
+    who = notify.AGENT_LABELS.get(g["agent"], str(g["agent"]).title())
+    many = "both nodes" if len(g["nodes"]) == 2 else f"all {len(g['nodes'])} nodes"
+    more = f" (and {len(groups) - 1} more shared)" if len(groups) > 1 else ""
+    return _warn(f"{who} on {', '.join(g['nodes'])} is one subscription: {many} will send rate-limit notices for one window{more}",
+                 fix("Turn off Rate limit under What to notify on all but one of them (Settings > Notifications)"))
+
+
 # ------------------------------------------------------------------ claude checks
 
 def _c_claude_bin(db) -> Outcome:
@@ -1716,6 +1757,8 @@ register("tailscale-status", "box", "Tailnet for finding nodes", _c_tailscale_st
 register("nodes-port", "box", "Node probe ports", _c_nodes_port)   # issue #134
 register("nodes-tagged-self", "box", "This device is tagged", _c_nodes_tagged_self)   # issue #134
 register("nodes-pairs", "box", "Paired nodes", _c_nodes_pairs)   # issue #135
+register("notify-public-url", "notify", "Notification links", _c_notify_public_url)   # issue #151
+register("notify-shared", "notify", "One subscription on two nodes", _c_notify_shared)   # issue #151
 register_provider("memory", MEM_GROUP, memory_checks)       # claude-mem (v0.5.10): one probe, seven checks
 register_provider("codex", CODEX_GROUP, codex_checks)       # the Codex adapter's checks (v0.5.11)
 if plat.IS_MACOS:                                            # issue #117: the macOS checks (app/doctor_macos.py) exist on a Mac only; a Linux board lists none

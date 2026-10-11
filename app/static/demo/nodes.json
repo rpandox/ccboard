@@ -326,14 +326,14 @@
               "agent": "claude",
               "label": "Work",
               "current": true,
-              "subscription_key": null,
+              "subscription_key": "d3m0shared01",
               "window": {
                 "pct": 42,
                 "resets_at": 1791003600,
-                "backoff_until": null,
+                "backoff_until": "2026-10-03T03:30:00+00:00",
                 "known": true
               },
-              "limited": false
+              "limited": true
             },
             {
               "agent": "codex",
@@ -514,9 +514,9 @@
           "claude": {
             "pct": 42,
             "resets_at": 1791003600,
-            "backoff_until": null,
+            "backoff_until": "2026-10-03T03:30:00+00:00",
             "known": true,
-            "limited": false
+            "limited": true
           },
           "codex": {
             "pct": 12,
@@ -592,14 +592,14 @@
               "agent": "claude",
               "label": "Personal",
               "current": true,
-              "subscription_key": null,
+              "subscription_key": "d3m0shared01",
               "window": {
                 "pct": 71,
                 "resets_at": 1791000000,
-                "backoff_until": null,
+                "backoff_until": "2026-10-03T03:30:00+00:00",
                 "known": true
               },
-              "limited": false
+              "limited": true
             }
           ]
         },
@@ -702,9 +702,9 @@
           "claude": {
             "pct": 71,
             "resets_at": 1791000000,
-            "backoff_until": null,
+            "backoff_until": "2026-10-03T03:30:00+00:00",
             "known": true,
-            "limited": false
+            "limited": true
           },
           "codex": {
             "pct": null,

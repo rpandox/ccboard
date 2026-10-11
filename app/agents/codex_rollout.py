@@ -986,7 +986,7 @@ def _send_notice(notify, w: dict, plan: str | None, label: str | None) -> bool:
         lines.append(" · ".join(x for x in (label, plan) if x))
     pub = (settings.public_url or "").rstrip("/")
     link = f"{pub}/#/usage" if pub else None
-    n = notify.Notice(title="Codex rate limited", body="\n".join(lines), click=link, url=link or "/#/usage", tag="rate-limit-codex", priority=4,
+    n = notify.Notice(title=notify.titled("Codex rate limited"), body="\n".join(lines), click=link, url=link or "/#/usage", tag=notify.tagged("rate-limit-codex"), priority=4,
                       tags=["rotating_light"], actions=[], web_actions=[], kind="rate_limit", state="errored", tmux="", agent="codex",
                       path="/#/usage")
     return bool(notify.send(n))

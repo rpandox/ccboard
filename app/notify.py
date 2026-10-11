@@ -236,6 +236,44 @@ LOOK = {"permission": (4, ["bell", "key"]), "idle": (4, ["bell"]), "elicitation"
         "error": (4, ["rotating_light"]), "done": (3, ["white_check_mark"]), "rate_limit": (5, ["no_entry"])}
 
 
+# ---------------------------------------------------------------- the node in the notice (issue #151)
+
+NODE_SEP = " · "            # a middle dot with spaces; never a dash
+
+
+def _node_name() -> str | None:
+    """This board's own name when at least one node is paired with it (either direction), else None. The name is the board's own configured one
+    (nodes.display_name), never a string a peer sent. The pairing is looked up before the name is read, so a board with no pair never asks Tailscale
+    on the hook path. Never raises."""
+    if _db is None:
+        return None
+    try:
+        from . import nodes
+        return nodes.display_name() if nodes.any_paired(_db) else None
+    except Exception as e:
+        log.debug("notify node name: %s", e.__class__.__name__)
+        return None
+
+
+def _prefixed(title: str, node: str | None) -> str:
+    return f"{node}{NODE_SEP}{title}" if node else title
+
+
+def _tagged(tag: str, node: str | None) -> str:
+    return f"{node}:{tag}" if node and tag else tag
+
+
+def titled(title: str) -> str:
+    """`title` as this board sends it: `<node> · title` while a node is paired, the title itself otherwise."""
+    return _prefixed(title, _node_name())
+
+
+def tagged(tag: str) -> str:
+    """`tag` as this board sends it: `<node>:tag` while a node is paired (so two nodes with a session of one name do not replace each other's notice
+    on one phone or one ntfy topic), the tag itself otherwise. An empty tag stays empty (a notice without a tag never renotifies)."""
+    return _tagged(tag, _node_name())
+
+
 def legacy_label(tmux_name: str) -> str:
     return tmux_name.replace("--", " / ", 1).replace("--", " · ")
 
@@ -292,8 +330,10 @@ def _asks_back(message) -> bool:
 def build(row: dict | None, task: dict | None, state: str, kind: str | None, message: str | None,
           perm: dict | None = None, now: datetime | None = None) -> Notice:
     """The Notice for a session entering `state`. `row` is a session_view dict, `task` {title, phase} or None, `perm` {id, summary}
-    for a permission waiting on an answer, `now` the clock for the '(session closes in Ns)' line (default: the wall clock). Reads no
-    DB: the close line comes from the row's flags.autoclose, which taskflow stamps before the notice is built."""
+    for a permission waiting on an answer, `now` the clock for the '(session closes in Ns)' line (default: the wall clock). The close
+    line comes from the row's flags.autoclose, which taskflow stamps before the notice is built. The only read of the DB is whether a node
+    is paired: then the title starts with this board's name and the tag carries it (_node_name); with none paired the Notice is what it
+    always was."""
     row = row if isinstance(row, dict) else {}
     perm = perm if isinstance(perm, dict) else None
     tmux_name = str(row.get("tmux_name") or "")
@@ -301,7 +341,8 @@ def build(row: dict | None, task: dict | None, state: str, kind: str | None, mes
     cat = category(state, kind, perm)
     pub = (settings.public_url or "").rstrip("/")
     path = f"/#/s/{tmux_name}" if tmux_name else "/"
-    title = f"{_where(row, agent, tmux_name)}: {TITLES.get(state, state)}"
+    node = _node_name()
+    title = _prefixed(f"{_where(row, agent, tmux_name)}: {TITLES.get(state, state)}", node)
 
     lines: list[str] = []
     if isinstance(task, dict) and task.get("title"):
@@ -343,7 +384,7 @@ def build(row: dict | None, task: dict | None, state: str, kind: str | None, mes
     if handover:
         priority = 2
     link = f"{pub}{path}" if pub else None
-    return Notice(title=title, body=body, click=link, url=link or path, tag=tmux_name, priority=priority, tags=list(tags),
+    return Notice(title=title, body=body, click=link, url=link or path, tag=_tagged(tmux_name, node), priority=priority, tags=list(tags),
                   actions=actions[:3], web_actions=web_actions, kind=cat, state=state, tmux=tmux_name, agent=agent,
                   perm_id=pid, path=path, web=not handover)
 
@@ -515,7 +556,8 @@ def notify_session(name: str, state: str, message: str | None, kind: str | None 
 def _limit_notice(row: dict, task: dict | None, name: str, agent: str, message: str | None) -> Notice:
     n = build(row, task, "errored", "rate_limit", message or "rate limit hit")
     # the title names the account, so the first body line names the session that hit it
-    return replace(n, title=f"{AGENT_LABELS.get(agent, str(agent).title())} rate limited", tag="rate-limit",
+    node = _node_name()
+    return replace(n, title=_prefixed(f"{AGENT_LABELS.get(agent, str(agent).title())} rate limited", node), tag=_tagged("rate-limit", node),
                    body=f"{_where(row, _agent_of(row), name)}\n{n.body}")
 
 
@@ -561,8 +603,9 @@ def _login_notice(row: dict, account: str | None, label: str | None, name: str, 
     where = _where(row, _agent_of(row), name)
     body = f"{where}\n{_one_line(message, ASKED_CHARS)}\nLog in again in Settings > Accounts." if message else f"{where}\nLog in again in Settings > Accounts."
     actions = [{"action": "view", "label": "Log in again", "url": link}] if link else []
-    return Notice(title=f"{who} login not valid" + (f": {_one_line(label, 60)}" if label else ""), body=body, click=link, url=link or path,
-                  tag="login-problem", priority=4, tags=["warning", "key"], actions=actions, web_actions=[], kind="login", state="errored",
+    node = _node_name()
+    return Notice(title=_prefixed(f"{who} login not valid" + (f": {_one_line(label, 60)}" if label else ""), node), body=body, click=link, url=link or path,
+                  tag=_tagged("login-problem", node), priority=4, tags=["warning", "key"], actions=actions, web_actions=[], kind="login", state="errored",
                   tmux=name, agent=agent, path=path)
 
 

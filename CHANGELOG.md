@@ -2,6 +2,18 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.45 - 2026-10-11
+
+### Added
+- Nodes P11, notifications across nodes (#151). Once a node is paired (either direction), every notice a board sends starts with its own name, `node-a · ◆ shop/api · s1: needs you`, and its tag becomes `node-a:<session>` (`node-a:rate-limit`, `node-a:login-problem`, `node-a:test`), so two nodes with a session of one name no longer replace each other on a phone. The name is this board's own, never a peer's; with no paired node every title, body, tag and link is byte for byte what it was (pinned against strings captured before the change). The first pairing changes the tags, so one notice may show again.
+- Doctor: **Notification links** warns when a node is paired and `CCBOARD_PUBLIC_URL` is empty (links in notifications are relative and will not open from another device), with the fix; **One subscription on two nodes** says when two nodes work under one Claude or Codex login (the `subscription_key` digest the card already carries), because both send a rate-limit notice for the one window, and to turn the Rate limit switch off on one.
+- Settings › Notifications has a row for each paired node, "Notifications from node-b: subscribe this device on that node", with **Open node-b** (that node's own Settings, a new tab, only for an https tailnet address); the page says it can only see its own subscription. The Home strip shows one line for an account window that is used up, shared by the nodes under one subscription, and the Inbox and Home group "On other nodes" now says `needs input` or `error` for each item and marks a node's items stale while it is not online. `?demo=1` shows all three.
+
+### Changed
+- The Inbox group is keyed by node id, session, kind and time, so a remote item is one row however many polls list it and goes when the node's next reading drops it. The hub never calls Web Push, ntfy or the badge for a remote item (a test fails if any hub module imports a sender); the app badge stays this board's own count.
+
+Upgrade: nothing to do.
+
 ## v0.5.44 - 2026-10-11
 
 ### Added
