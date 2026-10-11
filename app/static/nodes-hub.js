@@ -281,6 +281,71 @@ function nhOpenLink(label, rec, route, cls) {
   return el('a', { class: cls || 'btn small', href, target: '_blank', rel: 'noopener noreferrer', text: label });
 }
 
+/* ---------- the terminal of a session on another node (issue #144) ----------
+
+   "Open terminal on <node>" goes from this browser straight to the node: <registry address>/term/<tmux> in a new window, opened with window.open(url, '_blank', 'noopener'). Nothing is sent
+   to this board or to the node by the click, and the node's own access rules decide who gets a shell (a device needs a tailnet identity there; a tagged device gets a 403). The
+   address is the registry's, checked by Nodes.boardUrl (https, a tailnet name or address, no path), and the session name by Ref.isTmux (no slash, no dot, no quote, no space): either
+   one failing gives no link at all, only a disabled control that says why. A browser that returns no window (a blocked pop-up, and every window opened with noopener) gets the same
+   address as a link the person taps, in the place of the button. */
+
+Nodes.TERM_ID = 'This device needs a Tailscale identity on that node: a tagged device has none and gets a 403.';
+Nodes.TF_MS = 120000;
+Nodes.TF = new Map();                                                    // '<handle>/<tmux>' -> {url, at}: a window that did not open, so the link stays through the repaints
+
+Nodes.termUrl = function (rec, tmux) {
+  const base = Nodes.boardUrl(rec && rec.url);
+  return base && Ref.isTmux(tmux) ? base + 'term/' + tmux : null;
+};
+
+/* Open it. {ok, url, blocked}: ok false (and nothing opened) when the address or the name fails its rule; blocked when the browser gave no window back. No request of any kind. */
+Nodes.openTerm = function (handle, tmux) {
+  const url = Nodes.termUrl(Nodes.get(handle), tmux);
+  if (!url) return { ok: false, url: null, blocked: false };
+  let win = null;
+  try { win = window.open(url, '_blank', 'noopener'); } catch (_) { win = null; }
+  if (!win) Nodes.TF.set(`${handle}/${tmux}`, { url, at: Date.now() });
+  else Nodes.TF.delete(`${handle}/${tmux}`);
+  return { ok: true, url, blocked: !win };
+};
+
+/* The words under a terminal control for a node that is not answering, '' for one that is. The link is still offered: it goes to the node, not through this board. */
+Nodes.termNote = function (rec) {
+  if (!rec) return '';
+  const v = Nodes.view(rec);
+  const name = nhName(rec);
+  if (v.status === 'offline') return `${name} is ${v.word}. The link is still here and opens once ${name} is back.`;
+  if (v.status === 'unauthorized') return `${name} needs a new pairing (re-pair). The terminal link does not use the pairing: it goes to ${name} itself.`;
+  if (v.status === 'unpaired') return `${name} is not paired any more. The terminal link goes to the address saved for it.`;
+  if (v.status === 'stale') return `${name} was last read ${nhAgo(v.age === null ? 0 : v.age)} ago. The link goes to ${name} itself.`;
+  return '';
+};
+
+/* The control: a button "Open terminal on <name>" (o.icon: an icon button with the same words as its label and title), or a link the person taps when the last try opened no window, or a
+   disabled control with the reason when the address or the name is not usable. o.cls: classes; o.label: the words. */
+Nodes.termBtn = function (handle, tmux, o) {
+  const opt = o || {};
+  const rec = Nodes.get(handle);
+  const name = rec ? nhName(rec) : handle;
+  const label = opt.label || `Open terminal on ${name}`;
+  const key = `${handle}/${tmux}`;
+  if (!Nodes.termUrl(rec, tmux)) {
+    const why = Ref.isTmux(tmux) ? 'the address saved for this node is not an https tailnet address' : 'that is not a session name this board can open';
+    if (!opt.icon) return Nodes.off(label, why, 'Open terminal');
+    return el('button', { class: `${opt.cls || 'small'} nd-off`, type: 'button', 'aria-disabled': 'true', 'aria-label': label, title: `${label}: ${why}`, 'data-act': 'terminal',      // an icon in a row or a header cannot print its reason: the title and the toast do
+      onclick: (e) => { e.preventDefault(); if (typeof toast === 'function') toast(`${label}: ${why}`, { kind: 'warn' }); } }, ic('share'));
+  }
+  const cls = opt.cls || 'small';
+  const body = () => (opt.icon ? [ic('share')] : [label]);
+  const tf = Nodes.TF.get(key);
+  const link = (url) => el('a', { class: `${cls} nd-termlink`, href: url, target: '_blank', rel: 'noopener noreferrer', title: `Tap to open the terminal on ${name}. ${Nodes.TERM_ID}`, 'aria-label': `Tap to open the terminal on ${name}`, 'data-act': 'terminal' },
+    ...(opt.icon ? [ic('share')] : [`Tap to open the terminal on ${name}`]));
+  if (tf && Date.now() - tf.at < Nodes.TF_MS && tf.url === Nodes.termUrl(rec, tmux)) return link(tf.url);
+  const b = el('button', { class: cls, type: 'button', 'data-act': 'terminal', title: [`${label}: a new window on ${name} itself.`, Nodes.termNote(rec), Nodes.TERM_ID].filter(Boolean).join(' '), 'aria-label': opt.icon ? label : null,
+    onclick: () => { const r = Nodes.openTerm(handle, tmux); if (r.ok && r.blocked && b.parentNode) { b.parentNode.insertBefore(link(r.url), b); b.remove(); } } }, ...body());
+  return b;
+};
+
 /* ---------- controls that need a relay action: present, never active in this version ---------- */
 
 let nhSeq = 0;
@@ -341,11 +406,12 @@ function nhSessionRow(s) {
   const name = String(s.session || s.tmux);
   const label = el(href ? 'a' : 'span', { class: 'nd-name', href: href || null, text: name });
   const st = ownKey(STATE_GLYPH, s.state) ? s.state : 'unknown';
+  const term = s.pending === 'starting' ? null : Nodes.termBtn(s.node, s.tmux, { icon: true, cls: 'icon minimal small nd-term-ic' });      // issue #144: this session's terminal on its own node
   return el('div', { class: 'nd-item' + (s.needs_you ? ' attn' : ''), 'data-key': Ref.key({ tmux: s.tmux, node: s.node }) },
-    el('span', { class: 'nd-g' }, stateGlyph(st), agentGlyph(nhAgent(s.agent))), label, el('span', { class: 'dim nd-where', text: nhWhere(s) }),
+    el('span', { class: 'nd-g' }, stateGlyph(st), agentGlyph(nhAgent(s.agent))), label, term, el('span', { class: 'dim nd-where', text: nhWhere(s) }),
     Nodes.chip(s.node), el('span', { class: 'dim nd-meta', text: s.pending === 'starting' ? `Starting on ${Nodes.nameOf(s.node)}` : [s.pending === 'started' ? 'started' : GLYPH_LABEL[st], s.since ? nhAgeText(s.since) : ''].filter(Boolean).join(' · ') }));
 }
-function nhSessionSig(s) { return JSON.stringify([s.tmux, s.session, s.state, s.needs_you, s.agent, s.project, s.repo, s.since, s.pending, Math.floor(Date.now() / 60000), Nodes.sig(s)]); }
+function nhSessionSig(s) { const r = Nodes.get(s.node); return JSON.stringify([s.tmux, s.session, s.state, s.needs_you, s.agent, s.project, s.repo, s.since, s.pending, Math.floor(Date.now() / 60000), Nodes.sig(s), r && r.url, Nodes.TF.has(`${s.node}/${s.tmux}`)]); }
 
 const NH_PHASE = { queued: '○', running: '✽', review: '✻', done: '✓', failed: '✕', cancelled: '○', backlog: '∙' };
 function nhTaskRow(t) {
@@ -960,7 +1026,7 @@ function nsSessionName(handle, tmux) {
   return String((row && row.session) || tmux);
 }
 
-function nsPermSig(c) { return JSON.stringify([c.key, c.stub, c.count, c.why, c.tool, c.summary, c.since && Math.floor(Date.parse(c.since) / 60000), c.phase, c.decision, c.text, !!c.lead, c.tmux, Math.floor(Date.now() / 60000), Nodes.sig({ node: c.node })]); }
+function nsPermSig(c) { return JSON.stringify([c.key, c.stub, c.count, c.why, c.tool, c.summary, c.since && Math.floor(Date.parse(c.since) / 60000), c.phase, c.decision, c.text, !!c.lead, c.tmux, Math.floor(Date.now() / 60000), Nodes.sig({ node: c.node }), (Nodes.get(c.node) || {}).url, Nodes.TF.has(`${c.node}/${c.tmux}`)]); }
 
 /* The notice of a node whose requests cannot be answered from here: how many wait, why the buttons are off, and a way to answer on the node's own board. */
 function nsPermStub(c) {
@@ -995,6 +1061,7 @@ function nsPermNode(c) {
       el('button', { class: 'small', type: 'button', 'data-act': 'deny', title: `Deny this on ${name}`, onclick: () => Nodes.permAnswer(c, 'deny'), text: 'Deny' })));
   }
   if (open) acts.append(open);
+  acts.append(Nodes.termBtn(c.node, c.tmux, { cls: 'small' }));                                  // issue #144: its terminal, on the node itself
   return el('div', { class: 'inbox-card nd-pcard attn kind-permission' + (c.lead ? ' lead' : '') + (c.phase === 'closed' ? ' closed' : ''), 'data-key': c.key },
     el('div', { class: 'ib-lead' }, el('span', { class: 'ib-kind', text: 'permission' }),
       el('div', { class: 'ib-ctx mono', title: c.summary, text: c.summary || c.tool }),

@@ -126,7 +126,7 @@ def test_the_only_code_that_decides_a_permission_is_the_boards_route_the_expiry_
 
 def test_the_mcp_tools_have_no_permission_tool_and_no_call_of_theirs_reaches_a_permission_session_or_node_route():
     from app import mcp
-    assert not [n for n in mcp.TOOL_NAMES if re.search(r"permission|allow|approve|answer|node|keys|prompt|ack|close|kill", n)], mcp.TOOL_NAMES
+    assert not [n for n in mcp.TOOL_NAMES if re.search(r"permission|allow|approve|answer|node|keys|prompt|ack|close|kill", n) and n != "list_nodes"], mcp.TOOL_NAMES      # list_nodes only lists (issue #152)
     assert mcp.required_scope("allow_permission", {}) is None and mcp.required_scope("answer_permission", {}) is None, "no such tool exists to hold a scope"
     paths: list[str] = []
 
@@ -141,9 +141,10 @@ def test_the_mcp_tools_have_no_permission_tool_and_no_call_of_theirs_reaches_a_p
         except RuntimeError:
             pass
     assert len(paths) >= len(mcp.TOOLS) - 1, paths
-    assert not [p for p in paths if "permission" in p or "/api/node" in p or "/keys" in p or "/ack" in p or p.startswith("DELETE")], paths
-    for text in ((ROOT / "scripts" / "ccboard_mcp.py").read_text(), (ROOT / "app" / "mcp_remote.py").read_text()):
-        assert "/api/permission" not in text and "/api/node" not in text and "perm_decide" not in text
+    assert not [p for p in paths if "permission" in p or re.search(r"/api/node(?!s/)", p) or "/keys" in p or "/ack" in p or p.startswith("DELETE")], paths
+    for text in ((ROOT / "scripts" / "ccboard_mcp.py").read_text(), (ROOT / "app" / "mcp_remote.py").read_text(), (ROOT / "app" / "mcp.py").read_text()):
+        # the hub's relay routes /api/nodes/<handle>/... are the only node paths a tool uses (issue #152); a peer wrapper /api/node/... never
+        assert "/api/permission" not in text and not re.search(r"/api/node(?!s/)", text) and "perm_decide" not in text
 
 
 def test_there_is_no_auto_allow_setting_for_remote_requests():

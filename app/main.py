@@ -4451,11 +4451,20 @@ def _mcp_view(changed: bool = False) -> dict:
         doctor.invalidate()                      # the doctor's mcp-remote check reads the switch and the tokens: no 20 s old answer after a change
     return {"enabled": mcp_tokens.enabled(), "env_default": mcp_tokens.env_default(), "tokens": mcp_tokens.listing(),
             "recent": mcp_tokens.recent(), "max_tokens": mcp_tokens.MAX_TOKENS, "scopes": list(mcp.SCOPES),
-            "default_scopes": list(mcp.DEFAULT_SCOPES), "default_days": mcp_tokens.DEFAULT_DAYS, "path": mcp_remote.PATH}
+            "default_scopes": list(mcp.DEFAULT_SCOPES), "default_days": mcp_tokens.DEFAULT_DAYS, "path": mcp_remote.PATH,
+            "nodes": {"enabled": bool(settings.mcp_nodes), "env": "CCBOARD_MCP_NODES"}}      # agents acting on a paired node (issue #152): env only, shown read-only
 
 
 def _mcp_refused(e: "mcp_tokens.Refused") -> JSONResponse:
     return JSONResponse({"error": str(e)}, status_code=e.status)
+
+
+@app.get("/api/mcp/nodes")
+def api_mcp_nodes(request: Request):
+    """The paired nodes as an agent may see them (issue #152; the tool `list_nodes`): {enabled, env, nodes: [{handle, name, status, age_s, agents, lanes, windows, scopes}]}.
+    Built from the hub read model and the registry, nothing is asked of a node; never an address, a node id or a token. A person and the local hook token (the stdio shim) may read
+    it; a node token cannot (it is not in NODE_ROUTES). `enabled` is CCBOARD_MCP_NODES: whether a tool call may act on a node. A board with no paired node answers an empty list."""
+    return JSONResponse(nodes_relay.mcp_nodes_view(_hub()), headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/mcp/tokens")

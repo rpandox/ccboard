@@ -1172,11 +1172,40 @@ Shell.dockAddButton = function (pane, tmux) {
   return add;
 };
 
+/* A session of another node in the dock (issue #144; key '<handle>/<tmux>'): the same tail tile as the quad's (Nodes.tailTile, pages/node.js), never a terminal: no framed page, no socket. The hub
+   bundle may still be on its way; the tile mounts when it is here (false now). Not remembered across a reload. */
+Shell.dockRemote = function (key, o) {
+  const D = Shell.dock;
+  const host = $('#dock');
+  const k = Ref.splitKey(key);
+  if (!host || !k || k.node === null) return false;
+  if (typeof Nodes === 'undefined' || !Nodes.enabled()) { if (typeof toast === 'function') toast('That session is on a node that is not paired on this board', { kind: 'bad' }); return false; }
+  if (D.pane && D.tmux === key) { if (o && o.focus) D.pane.focus(); return true; }
+  if (!Nodes.ready || typeof Nodes.tailTile !== 'function') { Nodes.use(() => { if (!Shell.dock.pane && !Shell.dockHeld() && !Shell.dockOff()) Shell.dockRemote(key, o); }); return false; }
+  if (!Nodes.get(k.node)) { if (typeof toast === 'function') toast('That node is not paired on this board', { kind: 'bad' }); return false; }
+  const tile = Nodes.tailTile(k.node, k.tmux, { head: true, onClose: () => Shell.closeDock() });
+  if (!tile) return false;
+  Shell.dockUnmount(true);
+  if (!D.resizer) D.resizer = Shell.buildDockResizer();
+  host.textContent = '';
+  host.append(D.resizer, tile.root);
+  host.classList.add('has-term');
+  host.classList.remove('hidden');
+  D.pane = { root: tile.root, head: tile.head, update() {}, focus: () => tile.focus(), destroy: () => tile.destroy() };
+  D.tmux = key;
+  D.last = key;
+  if (D.w) D.resizer.setAttribute('aria-valuenow', String(D.w));
+  if (Shell.mq) Shell.applyMode();
+  if (o && o.focus) tile.focus();
+  return true;
+};
+
 /* DOM only (no mode pass): put a pane for `tmux` into #dock, replacing the one there. */
 Shell.dockMount = function (tmux, o) {
   const D = Shell.dock;
   const host = $('#dock');
   if (!host) return false;
+  if ((Ref.splitKey(tmux) || {}).node) return Shell.dockRemote(tmux, o);
   const typing = TermKit.typingTarget();                              // a composer that has the keyboard keeps it, however the dock was opened
   let pane = null;
   try {                                                               // built detached first: a name that cannot be shown leaves the dock as it was
@@ -1228,6 +1257,7 @@ Shell.openDock = function (tmux, opts) {
   if (typeof tmux !== 'string' || !tmux) return false;
   if (!Shell.dockOn() || Shell.dockHeld()) { if (!o.quiet) Shell.dockWhy(); return false; }          // the quad owns the window: no dock over it
   if (!$('#dock')) return false;
+  if ((Ref.splitKey(tmux) || {}).node) return Shell.dockRemote(tmux, o);                              // another node's session: its tail tile, not a terminal
   if (!Shell.kitReady()) {                                                                            // the terminal kit loads now; the dock opens when it is here (true: it is on its way)
     Lazy.load('termkit').then(() => { if (Shell.kitReady() && !Shell.dockHeld() && !Shell.dockOff()) Shell.openDock(tmux, o); }, (e) => { if (!o.quiet) Lazy.fail('the terminal', e); });
     return true;
@@ -1245,6 +1275,8 @@ Shell.openDock = function (tmux, opts) {
 
 /* The one call for "open this session's terminal": the dock when it is on (true), else its own page through openPage (false). For the keys and the palette. */
 Shell.openTerm = function (tmux) {
+  const rk = Ref.splitKey(tmux);
+  if (rk && rk.node) { if (typeof Nodes !== 'undefined' && typeof Nodes.openTerm === 'function') Nodes.openTerm(rk.node, rk.tmux); return false; }      // another node's terminal opens on that node (issue #144), never as /term/<handle>/<name> here
   if (Shell.dockAuto() && Shell.openDock(tmux, { focus: true, quiet: true })) return true;
   if (typeof tmux === 'string' && tmux) { const url = '/term/' + encodeURIComponent(tmux); if (typeof openPage === 'function') openPage(url); else window.open(url, '_blank', 'noopener'); }
   return false;
@@ -1309,6 +1341,8 @@ Shell.restoreDock = function (st) {
 Shell.popOutDock = function (tmux) {
   const t = tmux || Shell.dock.tmux;
   if (!t) return false;
+  const rk = Ref.splitKey(t);
+  if (rk && rk.node) { if (typeof Nodes !== 'undefined' && typeof Nodes.openTerm === 'function') Nodes.openTerm(rk.node, rk.tmux); return true; }      // the tail tile stays; the terminal opens on its node
   const url = '/term/' + encodeURIComponent(t);
   if (typeof openPage === 'function') openPage(url); else window.open(url, '_blank', 'noopener');
   Shell.closeDock();

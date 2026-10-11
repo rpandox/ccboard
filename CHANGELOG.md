@@ -2,6 +2,19 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.44 - 2026-10-11
+
+### Added
+- Nodes P10, a session on another node in the browser (#144). **Open terminal on <node>** on the node page, the peek, the Inbox permission cards, the quad tile and in the palette: it opens `<the node's address>/term/<session>` in a new window with `noopener`, straight from your browser, only for an https tailnet address and a valid session name, with a link to tap when no window opens, and it says when the node is offline and keeps the link. Nothing is sent to the hub; the browser needs a Tailscale identity on that node.
+- A session of another node as a tail tile in the quad and in the terminal dock: the node chip, the last 12 lines from the stream relay (read only), a one-line prompt box that sends through the `prompt` relay row and shows each steer refusal as its plain sentence, `offline since 09:14` or `re-pair` with the last lines kept, and never a framed page. An empty tile's pick list groups sessions by node, the quad stores `{node, tmux}`, `o` on a focused remote tile opens its terminal, and the demo (`?demo=1`) shows all of it.
+- Nodes P10, MCP across nodes (#152, part 1). The six MCP tools take an optional `node`; `list_nodes` lists the paired nodes from the hub's last reading. Off unless `CCBOARD_MCP_NODES=1`; then an agent can read a node's projects, tasks and agents and create a task or start it in a new session there, with both the token's scope and the pair's scope, and never type into a session, answer a permission, read a screen or hand a task to a running session. Every call is audited on both boards as `mcp:<token name>` or `local-token`, with the node.
+- Settings > Agents shows `CCBOARD_MCP_NODES` read only next to the MCP block, with one sentence on what it allows.
+
+### Changed
+- `RELAY` rows are still human-only by default; six carry `mcp` (`card`, `state`, `task`, `agents`, `task_create`, `task_dispatch` in lane mode) and a test walks the table to prove no other row is reachable from an MCP token or the hook token. The peek's `o` key still opens the node's own board; the quad's `o` opens the terminal.
+
+Upgrade: nothing to do.
+
 ## v0.5.43 - 2026-10-11
 
 ### Added

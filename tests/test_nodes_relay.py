@@ -188,9 +188,13 @@ def test_the_rows_are_the_reads_and_the_writes_and_screen_text_needs_sessions_no
     assert not any(r.guard for r in ROWS if r.name in ("ack", "close", "permissions", "permission_answer")), "these carry no text for an agent"
 
 
-def test_every_row_is_human_only_until_a_phase_opens_one_on_purpose():
-    """The hook token is held by every agent session on the box: no row lets it relay. A later phase (MCP across nodes) opens a row by setting human_only False."""
-    assert ROWS and all(r.human_only for r in ROWS), [r.name for r in ROWS if not r.human_only]
+AGENT_ROWS = {"card", "state", "task", "agents", "task_create", "task_dispatch"}      # issue #152: the six rows an agent's MCP tool may use, and nothing else
+
+
+def test_a_row_is_human_only_unless_it_is_one_of_the_six_the_mcp_tools_use_on_purpose():
+    """The hook token is held by every agent session on the box: no row lets it relay unless the row says `mcp=True`, and then it is not human only (tests/test_mcp_nodes.py walks the rest)."""
+    assert ROWS and {r.name for r in ROWS if r.mcp} == AGENT_ROWS, [r.name for r in ROWS if r.mcp]
+    assert all(r.human_only != r.mcp for r in ROWS), [r.name for r in ROWS if r.human_only == r.mcp]
 
 
 def test_rate_class_is_the_rows_and_else_by_method():
@@ -487,7 +491,10 @@ def test_a_caller_needs_identity_and_the_csrf_header_or_the_hook_token(hub, wide
 def test_the_hook_token_every_agent_session_holds_cannot_relay_on_any_row(hub, wide, fake_tmux, row):
     two, reg, count = hub
     r = ask(two.a, row, reg["handle"], owner=False, headers={"X-CCBoard-Token": two.a.hook_token})
-    assert r.status_code == 403 and r.json()["reason"] == "human_only" and "signed-in person" in r.json()["error"], r.text
+    if row.mcp:                                           # the six rows an agent's tool uses (issue #152): shut while CCBOARD_MCP_NODES is off, which is the default
+        assert r.status_code == 403 and r.json()["reason"] == "mcp_off" and "CCBOARD_MCP_NODES is off" in r.json()["error"], r.text
+    else:
+        assert r.status_code == 403 and r.json()["reason"] == "human_only" and "signed-in person" in r.json()["error"], r.text
     assert count.seen == 0, "nothing reached another node"
     r = ask(two.a, row, reg["handle"], owner=False, headers={"X-CCBoard-Token": two.a.hook_token, "X-CCBoard": "1", **ID})
     assert r.status_code == 403, "the hook token with a person's headers beside it is still the hook token"

@@ -1063,6 +1063,17 @@
       "Done. The change is on branch task/orders-pagination.",
       "What next?"
     ],
+    "old-laptop/scratch--play--s1": [
+      "● Bash(npm run build)",
+      "  ⎿  built in 4.1s",
+      "● Update(src/play/sandbox.ts)",
+      "  ⎿  Updated src/play/sandbox.ts with 6 additions",
+      "∙ Idle. Waiting for your next prompt."
+    ],
+    "alice-mac/notes--site--s1": [
+      "● Read(content/rss.md)",
+      "Should the feed include drafts? [y/N]"
+    ],
     "default": [
       "(nothing captured yet)"
     ]
@@ -1109,6 +1120,28 @@
     "build-box/infra--deploy--s2": {
       "prompt": "unconfirmed",
       "close": "gone"
+    }
+  },
+  "mcp": {
+    "enabled": false,
+    "env_default": false,
+    "tokens": [],
+    "recent": [],
+    "max_tokens": 10,
+    "scopes": [
+      "read",
+      "tasks",
+      "sessions"
+    ],
+    "default_scopes": [
+      "read",
+      "tasks"
+    ],
+    "default_days": 90,
+    "path": "/mcp",
+    "nodes": {
+      "enabled": false,
+      "env": "CCBOARD_MCP_NODES"
     }
   }
 }

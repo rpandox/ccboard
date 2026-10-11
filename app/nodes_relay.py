@@ -14,7 +14,11 @@ The table: RELAY
 
 The hub side: relay(handle, row, params, body, request) checks, in this order, and makes no call when one refuses
   1 who asks     a signed-in person with X-CCBoard: 1, or the local hook token (user `local-token`, the MCP shim); never a node token (that is already a 403 from
-                 the middleware, no chaining) and never the legacy hub; a `human_only` row refuses the hook token too
+                 the middleware, no chaining) and never the legacy hub; a `human_only` row refuses the hook token too. An agent (the hook token = the stdio shim, or a /mcp
+                 device token) is let in only on the six rows that say `mcp`, and only after: CCBOARD_MCP_NODES is 1 (403 `mcp_off`), the caller's own scope holds the
+                 row's (403 `mcp_scope`; the shim holds every scope, as it does for the board's own tools); the audit names it `local-token` or `mcp:<token name>` and the peer
+                 records that as the acting user's claim. An agent never gets a row's `extra_scope`: a dispatch into a running session is 403 `mcp_session` after the body is
+                 known, whatever scopes the token and the pair hold. An unknown handle is told the paired handles (and only the handles).
   2 which node   `local` is 400, text that is no handle 400, a handle the registry does not hold 404 (the target comes from the registry only, never from the
                  request), a registry row with this board's own node id or address 400 (no self-relay), a legacy row (no token) 409
   3 the scope    the pair's granted scope must hold the row's scope: 409 `needs the <scope> scope on <node>`
@@ -90,6 +94,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator, model_validator
 
 from . import nodes, projects, tmux
+from .config import settings
 
 log = logging.getLogger("ccboard.nodes.relay")
 
@@ -98,6 +103,8 @@ PANE_LINES = 40                            # the most lines of a screen a peer e
 PANE_LINE_MAX = 400                        # characters kept of one line
 NO_STORE = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
 READ, WRITE = "read", "write"
+MCP_SCOPES = ("read", "tasks")            # the only scopes an agent's MCP tool ever asks a node for (a prompt needs sessions, a permission answer permissions: never from an agent)
+MCP_OFF = "this board does not let agents act on other nodes (CCBOARD_MCP_NODES is off)"
 
 
 # ================================================================ the guard
@@ -634,6 +641,17 @@ class Row:
     per_session: bool = False           # nodes.PROMPT_RATE a minute into one session, counted on the hub and again on the peer
     dialog_scope: str | None = field(default=None, compare=False)     # the scope the PEER also wants while the target session is asking a question in its terminal (a permission, a dialog,
                                                                       # a state it cannot read): a key or a line typed then answers it, which only `permissions` may do (peer_keys, peer_prompt)
+    mcp: bool = False                   # an agent's MCP tool may use this row (issue #152): the stdio shim with the hook token, or a /mcp device token. Off by default, and only when
+                                        # CCBOARD_MCP_NODES is 1; an agent never gets `extra_scope` (a dispatch into a running session), and a row that is a person's act, types into a
+                                        # session or answers a permission can never be mcp (see __post_init__)
+
+    def __post_init__(self):
+        if self.mcp:
+            why = ("a person's act" if self.human_only else "a person's act by name" if self.acting else "a prompt into one session" if self.per_session
+                   else "free text beyond a task" if self.big_field else "a dialog answer" if self.dialog_scope else "a scope an agent never holds" if self.scope not in MCP_SCOPES
+                   else "a write that starts nothing guarded" if self.rate_class == WRITE and not self.guard else None)
+            if why:
+                raise ValueError(f"relay row {self.name} cannot be opened to an agent: {why}")
 
     @cached_property
     def params(self) -> tuple[str, ...]:
@@ -1077,22 +1095,22 @@ def _shape_permission_answer(body, reg):
 
 
 RELAY: tuple[Row, ...] = (
-    Row("card", "GET", "/api/nodes/{handle}/card", "GET", "/api/node", "read", NoFields, READ, "read_card", human_only=True, peer_exists=True,
+    Row("card", "GET", "/api/nodes/{handle}/card", "GET", "/api/node", "read", NoFields, READ, "read_card", mcp=True, peer_exists=True,
         target=lambda p: "card", shape=_shape_card),
-    Row("state", "GET", "/api/nodes/{handle}/state", "GET", "/api/node/state", "read", NoFields, READ, "read_state", human_only=True, peer_exists=True, answer_max=128 * 1024,
+    Row("state", "GET", "/api/nodes/{handle}/state", "GET", "/api/node/state", "read", NoFields, READ, "read_state", mcp=True, peer_exists=True, answer_max=128 * 1024,
         target=lambda p: "state", shape=_shape_state),
-    Row("task", "GET", "/api/nodes/{handle}/tasks/{tid}", "GET", "/api/node/tasks/{tid}", "read", NoFields, READ, "read_task", human_only=True, answer_max=16 * 1024,
+    Row("task", "GET", "/api/nodes/{handle}/tasks/{tid}", "GET", "/api/node/tasks/{tid}", "read", NoFields, READ, "read_task", mcp=True, answer_max=16 * 1024,
         target=lambda p: f"task {p.get('tid')}", shape=_shape_task),
     # Screen text is session content, not names and counts: the pane row needs `sessions`, never `read`.
     Row("pane", "GET", "/api/nodes/{handle}/sessions/{name}/pane", "GET", "/api/node/sessions/{name}/pane", "sessions", PaneQuery, READ, "read_pane", human_only=True,
         target=lambda p: f"session {p.get('name')}", shape=_shape_pane),
-    Row("agents", "GET", "/api/nodes/{handle}/agents", "GET", "/api/node/agents", "read", NoFields, READ, "read_agents", human_only=True, answer_max=256 * 1024,
+    Row("agents", "GET", "/api/nodes/{handle}/agents", "GET", "/api/node/agents", "read", NoFields, READ, "read_agents", mcp=True, answer_max=256 * 1024,
         target=lambda p: "agents", shape=_shape_agents),
     # The write rows (issue #141). A task is a worktree, a branch and a tmux session on the node that runs it: the hub never makes one.
-    Row("task_create", "POST", "/api/nodes/{handle}/tasks", "POST", "/api/node/tasks", "tasks", TaskCreateBody, WRITE, "create_task", guard=True, human_only=True,
+    Row("task_create", "POST", "/api/nodes/{handle}/tasks", "POST", "/api/node/tasks", "tasks", TaskCreateBody, WRITE, "create_task", guard=True, mcp=True,
         answer_max=16 * 1024, target=lambda p: "create task", body_target=lambda p, c: f"create task: {_title80(c)}", shape=_shape_started),
     Row("task_dispatch", "POST", "/api/nodes/{handle}/tasks/{tid}/dispatch", "POST", "/api/node/tasks/{tid}/dispatch", "tasks", DispatchBody, WRITE, "dispatch_task",
-        guard=True, guard_skip=("mode",), human_only=True, answer_max=16 * 1024, extra_scope=lambda c: "sessions" if c.get("mode") == "session" else None,
+        guard=True, guard_skip=("mode",), mcp=True, answer_max=16 * 1024, extra_scope=lambda c: "sessions" if c.get("mode") == "session" else None,
         target=lambda p: f"dispatch task {p.get('tid')}", body_target=lambda p, c: f"dispatch task {p.get('tid')} ({c.get('mode')})", shape=_shape_started),
     Row("session_open", "POST", "/api/nodes/{handle}/sessions", "POST", "/api/node/sessions", "sessions", SessionOpenBody, WRITE, "open_session", guard=True,
         human_only=True, answer_max=4 * 1024, target=lambda p: "open session", body_target=lambda p, c: f"open session {c.get('project')}/{c.get('repo')}",
@@ -1116,9 +1134,12 @@ RELAY: tuple[Row, ...] = (
         "answer_permission", human_only=True, acting=True, answer_max=4 * 1024, target=lambda p: f"permission {p.get('pid')} {p.get('decision')}",
         shape=_shape_permission_answer),
 )
-# Every row is human only: the hub relay routes take a signed-in allowed person with X-CCBoard and nothing else. The local hook token is held by every
-# agent session on the box, so letting it relay would let any agent read other nodes through the hub. A later phase (MCP across nodes, #152) may open a
-# specific row to the hook token on purpose by setting `human_only=False` on that row; nothing opens by default.
+# A row is human only unless it says `mcp=True`: the hub relay routes take a signed-in allowed person with X-CCBoard and nothing else. The local hook token is held
+# by every agent session on the box, so letting it relay would let any agent read other nodes through the hub. MCP across nodes (issue #152) opens exactly six rows to
+# an agent on purpose and nothing else: the reads card, state, task and agents, and the writes task_create and task_dispatch (a new session only: an agent never
+# gets a row's `extra_scope`). Even those need CCBOARD_MCP_NODES=1, the device token's own scope (the hook token, the stdio shim, holds them all) and the pair's.
+# Never an agent: prompt, keys, ack, close, permissions, permission_answer, pane, session_open, the stream, pairing, tokens, settings. Row.__post_init__ refuses
+# `mcp=True` on a human-only row, a named-person row, a prompt, a dialog answer, a scope beyond read and tasks and an unguarded write.
 BY_NAME = {r.name: r for r in RELAY}
 
 
@@ -1239,16 +1260,40 @@ class RelayError(Exception):
         return JSONResponse(body, status_code=self.status, headers={**NO_STORE, **self.headers})
 
 
+def mcp_identity(request) -> dict | None:
+    """The agent behind a request, or None when it is a person's: {by, scopes, kind}. `by` is what the audit names (`local-token` for the stdio shim, which holds the hook token,
+    and `mcp:<token name>` for a /mcp device token); `scopes` are the scopes that caller holds (the shim holds them all, as it does for the board's own tools; a device token holds
+    the ones it was minted with). Only the auth middleware sets `state.user` to `local-token`, and only mcp_remote.gate (or the in-process call it makes) sets `state.mcp_token`: a
+    name that merely looks like one is refused (RelayError 403)."""
+    user = getattr(request.state, "user", None)
+    if user == "local-token":
+        from . import mcp
+        return {"by": user, "scopes": tuple(mcp.SCOPES), "kind": "shim"}
+    if isinstance(user, str) and user.startswith("mcp:"):
+        tok = getattr(request.state, "mcp_token", None)
+        if not isinstance(tok, dict) or not tok.get("id") or user != "mcp:" + str(tok.get("name")):
+            raise RelayError(403, "forbidden", "that caller is not a device token", kind="refused")
+        return {"by": user, "scopes": tuple(s for s in (tok.get("scopes") or []) if isinstance(s, str)), "kind": "token"}
+    return None
+
+
 def _caller(request, row: Row) -> str:
-    """Who asked, as the audit names them: the signed-in login, or `local-token`. Refuses a node token, the legacy hub and a request that is no person's
-    without X-CCBoard, and, for a human-only row, the hook token."""
+    """Who asked, as the audit names them: the signed-in login, `local-token` (the MCP shim) or `mcp:<token name>` (a /mcp device token). Refuses a node token, the legacy hub
+    and a request that is no person's without X-CCBoard. An agent (the hook token or a device token) gets in only on a row that says `mcp`, in this order: the board's
+    CCBOARD_MCP_NODES is 1 (403 mcp_off), the caller's own scope holds the row's (403 mcp_scope); the pair's scope and the rest follow in relay(). Any other row is a
+    person's: 403 human_only."""
     user = getattr(request.state, "user", None)
     if not isinstance(user, str) or not user or user == "hub" or user.startswith("node:"):
         raise RelayError(403, "forbidden", "a node token cannot ask a board to relay", kind="refused")
-    if user == "local-token":
-        if row.human_only:
+    agent = mcp_identity(request)
+    if agent is not None:
+        if not row.mcp:
             raise RelayError(403, "human_only", "this action must be done by a signed-in person on this board", kind="refused")
-        return user
+        if not settings.mcp_nodes:
+            raise RelayError(403, "mcp_off", MCP_OFF, kind="refused")
+        if row.scope not in agent["scopes"]:
+            raise RelayError(403, "mcp_scope", f"this device token does not hold the {row.scope} scope: mint one that does in Settings > Agents", kind="refused")
+        return agent["by"]
     if request.headers.get("x-ccboard") != "1":
         raise RelayError(403, "csrf", "missing X-CCBoard header", kind="refused")
     return user
@@ -1411,7 +1456,15 @@ def relay(handle, row: Row, params: dict, body, request, *, db=None, hub=None) -
         ok, wait = (nodes.relay_write_limiter if row.rate_class == WRITE else nodes.relay_read_limiter).allow(user)     # per person and class, like the peer's per pair bucket
         if not ok:
             raise RelayError(429, "rate_limited", f"too many relayed requests from you; wait {wait} s", headers={"Retry-After": str(wait)}, kind="refused")
-        reg = _registry_row(handle, d)
+        agent = mcp_identity(request)
+        try:
+            reg = _registry_row(handle, d)
+        except RelayError as e:
+            if agent is not None and e.reason == "unknown_node":          # an agent is told which handles exist (a handle is a short label, never an address)
+                handles = [r["handle"] for r in nodes.registry(d) if r.get("handle")]
+                raise RelayError(404, "unknown_node", f"no paired node has the handle {handle}; " + (f"paired nodes: {', '.join(handles)}" if handles else "this board has no paired node"),
+                                 kind="refused") from None
+            raise
         _self_check(reg)
         name = reg.get("name") or handle
         if reg.get("legacy"):
@@ -1432,6 +1485,8 @@ def relay(handle, row: Row, params: dict, body, request, *, db=None, hub=None) -
             raise RelayError(e.status, "invalid" if e.status == 422 else "too_large", "; ".join(e.messages), kind="refused") from None
         target = safe_target(row, params or {}, clean)            # the body is known and valid now: a task's title (cut, redacted) joins the target, the prompt never does
         extra = row.extra_scope(clean) if row.extra_scope else None
+        if extra and agent is not None:                                # an agent never types into a running session of another node: no scope of the token or the pair opens it
+            raise RelayError(403, "mcp_session", "an agent cannot hand a task to a running session on another node; it can start the task in a new session there", kind="refused")
         if extra and extra not in (nodes._scopes_of(reg.get("scopes")) or []):
             raise RelayError(409, "scope", f"needs the {extra} scope on {name}", kind="refused")
         if row.per_session:                                         # nodes.PROMPT_RATE a minute into one session; the peer counts again
@@ -1455,7 +1510,7 @@ def relay(handle, row: Row, params: dict, body, request, *, db=None, hub=None) -
                 raise RelayError(502, "wrong_node" if "another node" in str(e) else "bad_answer",
                                  f"{name} answered with something this board will not show", kind="failed") from None
     except RelayError as e:
-        if reg is None and e.reason in ("human_only", "forbidden", "csrf"):             # a caller that may not relay (the hook token, a node user): a row when the handle is a paired node
+        if reg is None and e.reason in ("human_only", "forbidden", "csrf", "mcp_off", "mcp_scope"):             # a caller that may not relay (the hook token, a node user): a row when the handle is a paired node
             try:
                 reg = _registry_row(handle, d)
             except RelayError:
@@ -1641,6 +1696,43 @@ def install(app, handlers: dict[str, Callable], get_db: Callable, get_hub: Calla
         if not r.peer_exists:
             app.add_api_route(r.peer_path, peer_endpoint(r, handlers[r.name], get_db), methods=[r.peer_method], name=f"node_{r.name}", include_in_schema=False)
     return app.router.routes[before:]
+
+
+# ================================================================ MCP across nodes (issue #152): what an agent may see of the paired nodes
+
+def _win(w) -> dict | None:
+    if not isinstance(w, dict):
+        return None
+    return {"pct": w.get("pct"), "resets_at": w.get("resets_at"), "known": bool(w.get("known")), "limited": bool(w.get("limited"))}
+
+
+def mcp_nodes_view(hub) -> dict:
+    """What `list_nodes` answers and Settings > Agents can show: {enabled, env, nodes: [{handle, name, status, age_s, agents, lanes, windows, scopes}]}. Built field by field from the hub
+    read model (nothing is asked of a node) and the registry; never an address, a node id, a peer id, a token or an account label. A value the hub has not read is null, never 0:
+    `agents` (name, installed, logged_in, login_problem) is null until a card was read, `lanes` and `windows` are null until a state was. Works with CCBOARD_MCP_NODES off (it only lists);
+    `enabled` says whether a tool call may act on a node."""
+    from . import node_state
+    out = []
+    for r in hub.records():
+        h = r.get("handle")
+        if not nodes.valid_handle(h):
+            continue
+        card, st = r.get("card") if isinstance(r.get("card"), dict) else None, r.get("state") if isinstance(r.get("state"), dict) else None
+        agents = None
+        if card is not None and isinstance(card.get("agents"), list):
+            agents = [{"name": node_state.clean(a.get("id"), 20), "installed": a.get("installed") if isinstance(a.get("installed"), bool) else None,
+                       "logged_in": a.get("logged_in") if isinstance(a.get("logged_in"), bool) else None,
+                       "login_problem": a.get("login_problem") if isinstance(a.get("login_problem"), bool) else None} for a in card["agents"][:8] if isinstance(a, dict)]
+        lanes = None
+        if st is not None:
+            ln = st.get("lanes") if isinstance(st.get("lanes"), dict) else {}
+            lanes = {k: ln.get(k) for k in ("cap", "running", "free")}
+        windows = None
+        if st is not None and isinstance(st.get("usage"), dict):
+            windows = {k: _win(st["usage"].get(k)) for k in ("claude", "codex")}
+        out.append({"handle": h, "name": node_state.clean(r.get("name"), 60), "status": r.get("status"), "age_s": r.get("age_s"), "agents": agents, "lanes": lanes,
+                    "windows": windows, "scopes": [s for s in (r.get("scopes") or []) if s in nodes.SCOPES]})
+    return {"enabled": bool(settings.mcp_nodes), "env": "CCBOARD_MCP_NODES", "nodes": out}
 
 
 # ================================================================ the peer's internal functions (what the wrappers call)

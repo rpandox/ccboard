@@ -524,7 +524,7 @@ test('the inbox group "On other nodes" shows a permission card per request: the 
   assert.equal(text(c.querySelector('a.ib-name')), 's1');
   assert.equal(text(c.querySelector('.nchip-n')), 'build-box');
   assert.match(text(c), /waiting 5m/);
-  assert.deepEqual(all(c, 'button').map(text), ['Allow', 'Deny']);
+  assert.deepEqual(all(c, 'button').map(text), ['Allow', 'Deny', 'Open terminal on build-box'], 'the terminal control of issue #144 sits after the answers');
   assert.match(text(sec(w)), /Allow and Deny go to the node through this board\. The node trusts this board to pass on a person's choice and records the name this board reports; it cannot check it\./);
   assert.equal(all(sec(w), '.nd-item').length, 0, 'the two sessions that wait on these requests are the cards, not a second row');
   assert.ok(!/Read only here/.test(text(sec(w))));
@@ -616,7 +616,7 @@ test('a refusal puts the card back with the sentence and its buttons: offline, s
     const c = cardOf(w, 41);
     assert.ok(c, `back: ${want}`);
     assert.equal(text(c.querySelector('.nd-perr')), want);
-    assert.deepEqual(all(c, 'button').map(text), ['Allow', 'Deny'], 'ready for another try');
+    assert.deepEqual(all(c, 'button').map(text), ['Allow', 'Deny', 'Open terminal on build-box'], 'ready for another try');
     assert.equal(h.writes().length, 1, 'nothing was retried');
     assert.deepEqual(shapes(w), [want]);
     assert.equal(plain(w.get('__toasts'))[0].kind, 'bad');
@@ -642,7 +642,7 @@ test('an answered, expired or gone request stops being actionable and says so: n
     await flush();
     const c = cardOf(w, 41);
     assert.equal(text(c.querySelector('.nd-perr')), want);
-    assert.equal(all(c, 'button').length, 0, 'nothing to press');
+    assert.deepEqual(all(c, 'button').map(text), ['Open terminal on build-box'], 'nothing to answer: only the way to the terminal the sentence points at');
     assert.ok(c.classList.contains('closed'));
     assert.ok(all(c, 'a.btn').some((a) => text(a) === 'Open on build-box'), 'a way to the node\'s own board');
     assert.deepEqual(shapes(w), [want]);
@@ -1030,7 +1030,7 @@ test('demo: Home shows the four remote requests of build-box as cards and one no
     const [sentence, closed] = want[id];
     const t = plain(w.get('__toasts')).map((x) => x.text);
     assert.equal(t[t.length - 1], sentence, String(id));
-    if (closed) { assert.ok(dcard(w, id).classList.contains('closed')); assert.equal(text(dcard(w, id).querySelector('.nd-perr')), sentence); assert.equal(all(dcard(w, id), 'button').length, 0); }
+    if (closed) { assert.ok(dcard(w, id).classList.contains('closed')); assert.equal(text(dcard(w, id).querySelector('.nd-perr')), sentence); assert.deepEqual(all(dcard(w, id), 'button').map(text), ['Open terminal on build-box']); }
     else assert.equal(dcard(w, id), undefined, 'answered: gone');
   }
   await poll(w, { force: true });

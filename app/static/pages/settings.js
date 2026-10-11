@@ -1280,6 +1280,7 @@ const MCP_COMMANDS = Object.freeze({
 const MCP_CHECKS = Object.freeze({ claude: 'claude mcp list', codex: 'codex mcp list' });
 const MCP_NOTE = "Lets Claude Code or Codex on another device of your tailnet list, create and start board tasks through /mcp, each device with a token of its own. The box's hook token never leaves the box.";
 const MCP_BOX_NOTE = 'Not needed on the box itself: the stdio ccboard server is registered there already.';
+const MCP_NODES_NOTE = 'Agents on this board may list paired nodes and start tasks on them when this is on; they can never type into a session, answer a permission or read a screen on another node.';    // issue #152
 const MCP_SESSIONS_WARN = 'Sessions lets the device type a task into a session that is already running.';
 const MCP_URL_WARN = 'No board address: set CCBOARD_PUBLIC_URL on the box (the https address of the board on your tailnet) and rerun ./install.sh. Until then no command is shown, so none points at a guessed address.';
 const MCP_SCOPES = [['read', 'Read', 'list projects and tasks, read results'], ['tasks', 'Tasks', 'create tasks and start them in a new session'], ['sessions', 'Sessions', 'hand a task to a running session']];
@@ -1308,7 +1309,8 @@ function settingsMcpAdopt(r) {
     tokens.push({ id: t.id, name: String(t.name || ''), scopes: Array.isArray(t.scopes) ? t.scopes.filter((s) => typeof s === 'string') : [],
       created_at: str(t.created_at), last_used_at: str(t.last_used_at), last_tool: str(t.last_tool), expires_at: str(t.expires_at), expired: t.expired === true });
   }
-  settingsMcp.data = { enabled: r.enabled === true, max: Number.isInteger(r.max_tokens) ? r.max_tokens : 10, tokens };
+  const nodes = r.nodes && typeof r.nodes === 'object' ? { enabled: r.nodes.enabled === true, env: typeof r.nodes.env === 'string' && /^[A-Z_]{3,40}$/.test(r.nodes.env) ? r.nodes.env : 'CCBOARD_MCP_NODES' } : null;      // the board's env switch (issue #152), read only here
+  settingsMcp.data = { enabled: r.enabled === true, max: Number.isInteger(r.max_tokens) ? r.max_tokens : 10, tokens, nodes };
 }
 
 function settingsMcpRepaint() { if (settingsMcp.paint) settingsMcp.paint(); }
@@ -1428,7 +1430,10 @@ function settingsMcpBlock() {
   const form = el('form', { class: 'add-form mcp-form', novalidate: true, onsubmit: (e) => { e.preventDefault(); submit(); } },
     nameField, scopeField, daysField, el('div', { class: 'add-btns' }, add));
   const on = el('div', { class: 'mcp-on hidden' }, urlWarn, count, list, el('h4', { class: 'mcp-add-h', text: 'Add device' }), form);
-  const node = el('div', { class: 'set-mcp' }, sw, status, el('div', { class: 'dim set-note', text: MCP_BOX_NOTE }), err, on);
+  const nodesWord = el('b', { class: 'mcp-nodes-s' });
+  const nodesEnv = el('code', { class: 'mcp-nodes-env' });
+  const nodesLine = el('div', { class: 'set-note mcp-nodes hidden', role: 'status' }, el('div', {}, 'Agents on other nodes: ', nodesWord, ' (', nodesEnv, ', set on the box, read only here)'), el('div', { class: 'dim', text: MCP_NODES_NOTE }));
+  const node = el('div', { class: 'set-mcp' }, sw, status, el('div', { class: 'dim set-note', text: MCP_BOX_NOTE }), nodesLine, err, on);
 
   async function submit() {
     if (settingsMcp.busy === 'mint') return;                            // a second tap while minting does nothing
@@ -1455,6 +1460,9 @@ function settingsMcpBlock() {
     status.textContent = settingsMcp.busy === 'switch' ? 'Saving…' : (!d && !settingsMcp.err ? 'Checking…' : '');
     err.textContent = settingsMcp.err || '';
     on.classList.toggle('hidden', !live);
+    const nd = d && d.nodes ? d.nodes : null;                           // shown on a board with a paired node, or whenever the switch is on
+    nodesLine.classList.toggle('hidden', !(nd && (nd.enabled || (typeof state !== 'undefined' && state && state.nodes_enabled === true))));
+    if (nd) { setTextIfChanged(nodesWord, nd.enabled ? 'on' : 'off'); setTextIfChanged(nodesEnv, `${nd.env}=${nd.enabled ? '1' : '0'}`); }
     urlWarn.classList.toggle('hidden', !!mcpUrl(typeof state !== 'undefined' ? state : null));
     warnS.classList.toggle('hidden', !checks.sessions.checked);
     const toks = d ? d.tokens : [];

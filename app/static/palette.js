@@ -337,6 +337,32 @@ Palette.remoteSteer = function (query) {
   return out;
 };
 
+/* "Open terminal on <node>" (issue #144): the terminal of a session on another node, opened on that node's own address in a new window (Nodes.openTerm; nothing is sent to the hub). The
+   session in front of you leads it (the remote peek that is open, or the focused remote tile of the Quad); once you type, every remote session has a row. A node whose saved address is not
+   usable keeps its row, off, with the reason. A group, or null. */
+Palette.remoteTerminals = function (query) {
+  const rows = [];
+  const seen = new Set();
+  const add = (x) => { const k = Ref.key(x); if (x && x.node && Ref.isTmux(x.tmux) && !seen.has(k)) { seen.add(k); rows.push(x); } };
+  const peek = Nodes.peek;
+  if (peek && peek.handle && peek.tmux) add({ node: peek.handle, tmux: peek.tmux });
+  const cur = typeof Quad !== 'undefined' && Quad && Quad.current && typeof Quad.current.remoteTarget === 'function' ? Quad.current.remoteTarget() : null;
+  const ck = cur ? Ref.splitKey(cur.tmux) : null;
+  if (ck && ck.node) add({ node: ck.node, tmux: ck.tmux });
+  if (query) for (const x of Nodes.sessions()) add(x);
+  if (!rows.length) return null;
+  const items = rows.map((x) => {
+    const live = Nodes.sessions(x.node).find((s) => s.tmux === x.tmux) || x;
+    const name = Nodes.nameOf(x.node);
+    const who = String(live.session || x.tmux);
+    const rec = Nodes.get(x.node);
+    const off = Nodes.termUrl(rec, x.tmux) ? '' : 'The address saved for this node is not an https tailnet address.';
+    return { id: 'ot:' + Ref.key(x), label: `Open terminal on ${name}`, hint: `${who} · a new window on the node itself`, chip: Nodes.chip(x.node), node: x.node, keywords: `terminal open window shell ${x.node} ${x.tmux} ${who}`, off,
+      run: () => { if (off) { Palette.say(off, 'warn'); return; } Palette.close(); const r = Nodes.openTerm(x.node, x.tmux); if (r.blocked && typeof toast === 'function') toast(`No window opened. The link is on the ${who} page of ${name}.`, { kind: 'warn' }); } };
+  });
+  return { id: 'rterm', title: 'Terminal on another node', limit: Palette.PER_GROUP, items };
+};
+
 /* The groups the palette offers, as [{ id, title, items: [{ id, label, hint, kbd, glyph, keywords, run, keep? }] }] before any filtering. */
 Palette.catalog = function (ctx, query) {
   const groups = [];
@@ -362,6 +388,7 @@ Palette.catalog = function (ctx, query) {
   }
   groups.push({ id: 'sessions', title: 'Sessions', items: sessions, limit: query || ctx.scope ? Palette.PER_GROUP : Palette.SESSIONS_SHOWN });
   if (hub && !ctx.scope) groups.unshift(...Palette.remoteSteer(query));              // a permission request waiting on a node leads the list
+  if (hub && !ctx.scope) { const rt = Palette.remoteTerminals(query); if (rt) groups.push(rt); }      // issue #144: Open terminal on <node> for the session in front of you, and for any remote session once you type
   if (hub && (query || ctx.scope)) {
     groups.push({ id: 'rtasks', title: 'Tasks on other nodes', limit: Palette.PER_GROUP, items: Nodes.tasks().map((t) => ({ id: 't:' + Ref.key({ kind: 'task', node: t.node, id: t.id }), label: String(t.title || `Task ${t.id}`),
       hint: `${Palette.where(t)} · ${t.phase || ''}`, chip: Nodes.chip(t.node), node: t.node, keywords: `task ${t.node} ${t.issue_ref || ''}`, run: () => { close(); Palette.go(Ref.hash(Ref.task(t.node, t.id)) || '#/'); } })) });

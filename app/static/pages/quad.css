@@ -211,3 +211,19 @@ html.quad-fs #page .quad[data-forced] .q-fill { display:none; }
 html.quad-fs #page .quad .qgrid { gap:4px; }
 html.quad-fs #page .quad .q-chips { padding-bottom:4px; }
 @media (max-width:599px) { html.quad-fs #page .quad .q-scope-sel { max-width:34vw; } }
+
+/* A tile of another node (issue #144): the node chip, the mode word Tail and the link to its terminal in the header; the body is Nodes.tailTile (pages/nodes.css .qr). */
+#page .quad .qt-body > .qr { position:absolute; inset:0; height:auto; }
+#page .quad .qt-nodechip { flex:none; display:inline-flex; align-items:center; min-width:0; }
+#page .quad .qt-tailword { flex:none; padding:0 6px; border:1px solid var(--line); border-radius:9px; font:11px/16px var(--font-mono); color:var(--dim); }
+#page .quad .qt-openslot { flex:none; display:inline-flex; align-items:center; }
+@container (max-width: 480px) { #page .quad .qt-tailword, #page .quad .qt-nodechip .nchip-n { display:none; } }
+@container (max-width: 300px) { #page .quad .qt-tailword, #page .quad .qt-nodechip, #page .quad .qt-rterm, #page .quad .qt-openslot .nd-termlink { display:none; } }
+#page .quad .qtile[data-node] .qt-task { display:none; }
+
+/* the pick list of an empty tile, grouped by node (issue #144) */
+#page .quad .qe-grouped { gap:8px; max-height:100%; overflow:auto; }
+#page .quad .qe-group { display:flex; flex-direction:column; align-items:stretch; gap:4px; }
+#page .quad .qe-gh { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 8px; padding:0 2px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+#page .quad .qe-gn { color:var(--fg-2); overflow-wrap:anywhere; }
+#page .quad .qe-gs { text-transform:none; letter-spacing:0; }
