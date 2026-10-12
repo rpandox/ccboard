@@ -1,0 +1,967 @@
+{
+ "_note": "Fixture of the epic view (issue #147). details is keyed owner/repo#n in lower case; variants are laid over by ?epic=<name> (nologin noaccess notfound wait stale labels empty norepo none down). Times are GitHub's: the page shows them against server_now, never the browser clock.",
+ "list": {
+  "epics": [
+   {
+    "repo": "example/website",
+    "owner": "example",
+    "name": "website",
+    "number": 147,
+    "title": "Checkout rework",
+    "url": "https://github.com/example/website/issues/147",
+    "state": "open",
+    "children": {
+     "open": 6,
+     "closed": 1,
+     "total": 7,
+     "more": false
+    },
+    "updated_at": "2026-10-11T08:56:00Z",
+    "labels": [
+     "ccboard:epic"
+    ],
+    "paused": false
+   },
+   {
+    "repo": "example/board",
+    "owner": "example",
+    "name": "board",
+    "number": 52,
+    "title": "Offline shell polish",
+    "url": "https://github.com/example/board/issues/52",
+    "state": "open",
+    "children": {
+     "open": 3,
+     "closed": 4,
+     "total": 7,
+     "more": false
+    },
+    "updated_at": "2026-10-09T08:40:00Z",
+    "labels": [
+     "ccboard:epic"
+    ],
+    "paused": true
+   }
+  ],
+  "repos": [
+   "example/website",
+   "example/board"
+  ],
+  "errors": [],
+  "error": null,
+  "stale_age_s": null,
+  "server_now": "2026-10-11T09:00:00Z",
+  "rate": {
+   "remaining": 4990,
+   "limit": 5000,
+   "reset": "2026-10-11T09:30:00Z",
+   "wait_s": null
+  },
+  "at": "2026-10-11T09:00:00Z",
+  "truncated": false,
+  "repos_truncated": false
+ },
+ "details": {
+  "example/website#147": {
+   "epic": {
+    "repo": "example/website",
+    "owner": "example",
+    "name": "website",
+    "number": 147,
+    "title": "Checkout rework",
+    "url": "https://github.com/example/website/issues/147",
+    "state": "open",
+    "labelled": true,
+    "updated_at": "2026-10-11T08:56:00Z"
+   },
+   "source": "sub_issues",
+   "note": null,
+   "children": [
+    {
+     "repo": "example/website",
+     "number": 201,
+     "title": "Tax rules table",
+     "state": "closed",
+     "url": "https://github.com/example/website/issues/201",
+     "labels": [
+      "ccboard:in-progress"
+     ],
+     "depends_on": [],
+     "blocked_by": [],
+     "dependency_cycle": false,
+     "order": 1,
+     "updated_at": "2026-10-11T04:00:00Z",
+     "claim": {
+      "alias": "node-a",
+      "node": "local",
+      "status": "done",
+      "since": "2026-10-11T02:20:00Z",
+      "renewed_at": "2026-10-11T04:00:00Z",
+      "live": false,
+      "attempt": 1,
+      "seq": 1,
+      "task_ref": "38",
+      "branch": "worktree-tax-rules"
+     },
+     "claim_rejected": 0,
+     "claim_note": null,
+     "task": {
+      "ref": "38",
+      "phase": "done",
+      "node": "local",
+      "node_name": "node-a",
+      "status": "online",
+      "age_s": 0,
+      "updated_at": "2026-10-11T08:58:00Z"
+     },
+     "pr": {
+      "number": 75,
+      "url": "https://github.com/example/website/pull/75",
+      "state": "merged",
+      "draft": false
+     },
+     "pin": null,
+     "label_pin": null,
+     "bucket": {
+      "node": "node-a",
+      "state": "done"
+     },
+     "claim_state": "claimed",
+     "claim_unknown": null,
+     "claims_read_at": "2026-10-11T08:50:00Z"
+    },
+    {
+     "repo": "example/website",
+     "number": 202,
+     "title": "Checkout form validation",
+     "state": "open",
+     "url": "https://github.com/example/website/issues/202",
+     "labels": [
+      "ccboard:in-progress"
+     ],
+     "depends_on": [],
+     "blocked_by": [],
+     "dependency_cycle": false,
+     "order": 2,
+     "updated_at": "2026-10-11T08:56:00Z",
+     "claim": {
+      "alias": "node-a",
+      "node": "local",
+      "status": "running",
+      "since": "2026-10-11T07:30:00Z",
+      "renewed_at": "2026-10-11T08:57:00Z",
+      "live": true,
+      "attempt": 1,
+      "seq": 1,
+      "task_ref": "42",
+      "branch": "worktree-form-validation"
+     },
+     "claim_rejected": 0,
+     "claim_note": null,
+     "task": {
+      "ref": "42",
+      "phase": "running",
+      "node": "local",
+      "node_name": "node-a",
+      "status": "online",
+      "age_s": 0,
+      "updated_at": "2026-10-11T08:58:00Z"
+     },
+     "pr": {
+      "number": 77,
+      "url": "https://github.com/example/website/pull/77",
+      "state": "open",
+      "draft": false
+     },
+     "pin": null,
+     "label_pin": null,
+     "bucket": {
+      "node": "node-a",
+      "state": "running"
+     },
+     "claim_state": "claimed",
+     "claim_unknown": null,
+     "claims_read_at": "2026-10-11T08:59:40Z"
+    },
+    {
+     "repo": "example/website",
+     "number": 203,
+     "title": "Address autocomplete",
+     "state": "open",
+     "url": "https://github.com/example/website/issues/203",
+     "labels": [
+      "ccboard:in-progress"
+     ],
+     "depends_on": [
+      "#202"
+     ],
+     "blocked_by": [
+      "#202"
+     ],
+     "dependency_cycle": false,
+     "order": 3,
+     "updated_at": "2026-10-11T08:48:00Z",
+     "claim": {
+      "alias": "node-b",
+      "node": "node-b",
+      "status": "claimed",
+      "since": "2026-10-11T08:46:00Z",
+      "renewed_at": "2026-10-11T08:48:00Z",
+      "live": true,
+      "attempt": 1,
+      "seq": 1,
+      "task_ref": "12",
+      "branch": null
+     },
+     "claim_rejected": 0,
+     "claim_note": null,
+     "task": {
+      "ref": "node-b:12",
+      "phase": "queued",
+      "node": "node-b",
+      "node_name": "node-b",
+      "status": "online",
+      "age_s": 4,
+      "updated_at": "2026-10-11T08:58:00Z"
+     },
+     "pr": null,
+     "pin": null,
+     "label_pin": null,
+     "bucket": {
+      "node": "node-b",
+      "state": "queued"
+     },
+     "claim_state": "claimed",
+     "claim_unknown": null,
+     "claims_read_at": "2026-10-11T08:59:40Z"
+    },
+    {
+     "repo": "example/website",
+     "number": 204,
+     "title": "Payment retry logic",
+     "state": "open",
+     "url": "https://github.com/example/website/issues/204",
+     "labels": [
+      "ccboard:in-progress"
+     ],
+     "depends_on": [],
+     "blocked_by": [],
+     "dependency_cycle": false,
+     "order": 4,
+     "updated_at": "2026-10-11T08:05:00Z",
+     "claim": {
+      "alias": "node-b",
+      "node": "node-b",
+      "status": "failed",
+      "since": "2026-10-11T06:50:00Z",
+      "renewed_at": "2026-10-11T08:05:00Z",
+      "live": false,
+      "attempt": 2,
+      "seq": 4,
+      "task_ref": "9",
+      "branch": "worktree-payment-retry"
+     },
+     "claim_rejected": 0,
+     "claim_note": null,
+     "task": {
+      "ref": "node-b:9",
+      "phase": "failed",
+      "node": "node-b",
+      "node_name": "node-b",
+      "status": "online",
+      "age_s": 4,
+      "updated_at": "2026-10-11T08:58:00Z"
+     },
+     "pr": null,
+     "pin": null,
+     "label_pin": null,
+     "bucket": {
+      "node": "node-b",
+      "state": "failed"
+     },
+     "claim_state": "claimed",
+     "claim_unknown": null,
+     "claims_read_at": "2026-10-11T08:59:40Z"
+    },
+    {
+     "repo": "example/website",
+     "number": 205,
+     "title": "Order confirmation email",
+     "state": "open",
+     "url": "https://github.com/example/website/issues/205",
+     "labels": [],
+     "depends_on": [],
+     "blocked_by": [],
+     "dependency_cycle": false,
+     "order": 5,
+     "updated_at": "2026-10-11T08:40:00Z",
+     "claim": null,
+     "claim_rejected": 1,
+     "claim_note": "not from an allowed author",
+     "task": null,
+     "pr": null,
+     "pin": {
+      "handle": "node-b",
+      "node_name": "node-b",
+      "source": "page",
+      "stale": false
+     },
+     "label_pin": null,
+     "bucket": {
+      "node": null,
+      "state": "open"
+     },
+     "claim_state": "none",
+     "claim_unknown": null,
+     "claims_read_at": "2026-10-11T08:59:40Z"
+    },
+    {
+     "repo": "example/website",
+     "number": 206,
+     "title": "Receipt PDF layout",
+     "state": "open",
+     "url": "https://github.com/example/website/issues/206",
+     "labels": [
+      "ccboard:node:node-c"
+     ],
+     "depends_on": [],
+     "blocked_by": [],
+     "dependency_cycle": false,
+     "order": 6,
+     "updated_at": "2026-10-11T05:00:00Z",
+     "claim": {
+      "alias": "node-a",
+      "node": "local",
+      "status": "claimed",
+      "since": "2026-10-11T04:00:00Z",
+      "renewed_at": "2026-10-11T04:20:00Z",
+      "live": false,
+      "attempt": 1,
+      "seq": 1,
+      "task_ref": null,
+      "branch": null
+     },
+     "claim_rejected": 0,
+     "claim_note": null,
+     "task": null,
+     "pr": null,
+     "pin": {
+      "handle": null,
+      "node_name": null,
+      "source": "label",
+      "stale": true
+     },
+     "label_pin": {
+      "alias": "node-c",
+      "handle": null,
+      "stale": true
+     },
+     "bucket": {
+      "node": null,
+      "state": "open"
+     },
+     "claim_state": "claimed",
+     "claim_unknown": null,
+     "claims_read_at": "2026-10-11T08:56:00Z"
+    },
+    {
+     "repo": "example/website",
+     "number": 207,
+     "title": "Receipt PDF export",
+     "state": "open",
+     "url": "https://github.com/example/website/issues/207",
+     "labels": [],
+     "depends_on": [],
+     "blocked_by": [],
+     "dependency_cycle": false,
+     "order": 7,
+     "updated_at": "2026-10-11T08:20:00Z",
+     "claim": null,
+     "claim_rejected": 0,
+     "claim_note": null,
+     "claim_state": "unknown",
+     "claim_unknown": {
+      "reason": "too_long",
+      "text": "too many comments to read"
+     },
+     "task": null,
+     "pr": null,
+     "pin": null,
+     "label_pin": null,
+     "bucket": {
+      "node": null,
+      "state": "unknown"
+     },
+     "claims_read_at": "2026-10-11T08:59:40Z"
+    }
+   ],
+   "progress": {
+    "by_node": {
+     "node-a": {
+      "done": 1,
+      "running": 1,
+      "queued": 0,
+      "failed": 0,
+      "handle": "local"
+     },
+     "node-b": {
+      "done": 0,
+      "running": 0,
+      "queued": 1,
+      "failed": 1,
+      "handle": "node-b"
+     }
+    },
+    "unclaimed": {
+     "open": 2,
+     "closed": 0
+    },
+    "total": 7,
+    "open": 6,
+    "closed": 1,
+    "unknown": 1
+   },
+   "pins": {
+    "205": {
+     "handle": "node-b",
+     "node_name": "node-b",
+     "source": "page",
+     "stale": false
+    }
+   },
+   "epic_pin": null,
+   "paused": false,
+   "report": false,
+   "auto_pr": false,
+   "nodes": [
+    {
+     "handle": "local",
+     "name": "node-a",
+     "status": "online",
+     "age_s": 0
+    },
+    {
+     "handle": "node-b",
+     "name": "node-b",
+     "status": "online",
+     "age_s": 4
+    }
+   ],
+   "rate": {
+    "remaining": 4990,
+    "limit": 5000,
+    "reset": "2026-10-11T09:30:00Z",
+    "wait_s": null
+   },
+   "server_now": "2026-10-11T09:00:00Z",
+   "error": null,
+   "stale_age_s": null,
+   "truncated": false,
+   "partial": false,
+   "comments_pending": 0,
+   "empty": false,
+   "at": "2026-10-11T09:00:00Z",
+   "claims_note": null
+  },
+  "example/board#52": {
+   "epic": {
+    "repo": "example/board",
+    "owner": "example",
+    "name": "board",
+    "number": 52,
+    "title": "Offline shell polish",
+    "url": "https://github.com/example/board/issues/52",
+    "state": "open",
+    "labelled": true,
+    "updated_at": "2026-10-11T08:56:00Z"
+   },
+   "source": "sub_issues",
+   "note": null,
+   "children": [],
+   "progress": {
+    "by_node": {},
+    "unclaimed": {
+     "open": 0,
+     "closed": 0
+    },
+    "open": 0,
+    "closed": 0,
+    "total": 0,
+    "unknown": 0
+   },
+   "pins": {
+    "205": {
+     "handle": "node-b",
+     "node_name": "node-b",
+     "source": "page",
+     "stale": false
+    }
+   },
+   "epic_pin": null,
+   "paused": true,
+   "report": false,
+   "auto_pr": false,
+   "nodes": [
+    {
+     "handle": "local",
+     "name": "node-a",
+     "status": "online",
+     "age_s": 0
+    },
+    {
+     "handle": "node-b",
+     "name": "node-b",
+     "status": "online",
+     "age_s": 4
+    }
+   ],
+   "rate": {
+    "remaining": 4990,
+    "limit": 5000,
+    "reset": "2026-10-11T09:30:00Z",
+    "wait_s": null
+   },
+   "server_now": "2026-10-11T09:00:00Z",
+   "error": null,
+   "stale_age_s": null,
+   "truncated": false,
+   "partial": false,
+   "comments_pending": 0,
+   "empty": true,
+   "at": "2026-10-11T09:00:00Z",
+   "claims_note": null
+  }
+ },
+ "blank": {
+  "epic": {
+   "repo": "example/website",
+   "owner": "example",
+   "name": "website",
+   "number": 0,
+   "title": null,
+   "url": "https://github.com/example/website/issues/1",
+   "state": null,
+   "labelled": null,
+   "updated_at": null
+  },
+  "source": null,
+  "note": null,
+  "children": [],
+  "progress": {
+   "by_node": {},
+   "unclaimed": {
+    "open": 0,
+    "closed": 0
+   },
+   "open": 0,
+   "closed": 0,
+   "total": 0,
+   "unknown": 0
+  },
+  "pins": {},
+  "epic_pin": null,
+  "paused": false,
+  "report": false,
+  "auto_pr": false,
+  "nodes": [
+   {
+    "handle": "local",
+    "name": "node-a",
+    "status": "online",
+    "age_s": 0
+   },
+   {
+    "handle": "node-b",
+    "name": "node-b",
+    "status": "online",
+    "age_s": 4
+   }
+  ],
+  "rate": {
+   "remaining": 4990,
+   "limit": 5000,
+   "reset": "2026-10-11T09:30:00Z",
+   "wait_s": null
+  },
+  "server_now": "2026-10-11T09:00:00Z",
+  "error": null,
+  "stale_age_s": null,
+  "truncated": false,
+  "partial": false,
+  "comments_pending": 0,
+  "empty": false,
+  "at": "2026-10-11T09:00:00Z",
+  "claims_note": null
+ },
+ "variants": {
+  "nologin": {
+   "detail": {
+    "epic": {
+     "repo": "example/website",
+     "owner": "example",
+     "name": "website",
+     "number": 0,
+     "title": null,
+     "url": "https://github.com/example/website/issues/1",
+     "state": null,
+     "labelled": null,
+     "updated_at": null
+    },
+    "source": null,
+    "note": null,
+    "children": [],
+    "progress": {
+     "by_node": {},
+     "unclaimed": {
+      "open": 0,
+      "closed": 0
+     },
+     "open": 0,
+     "closed": 0,
+     "total": 0,
+     "unknown": 0
+    },
+    "pins": {},
+    "epic_pin": null,
+    "paused": false,
+    "report": false,
+    "auto_pr": false,
+    "nodes": [
+     {
+      "handle": "local",
+      "name": "node-a",
+      "status": "online",
+      "age_s": 0
+     },
+     {
+      "handle": "node-b",
+      "name": "node-b",
+      "status": "online",
+      "age_s": 4
+     }
+    ],
+    "rate": {
+     "remaining": 4990,
+     "limit": 5000,
+     "reset": "2026-10-11T09:30:00Z",
+     "wait_s": null
+    },
+    "server_now": "2026-10-11T09:00:00Z",
+    "error": {
+     "reason": "no_login",
+     "message": "gh is not logged in on this board: run gh auth login there",
+     "wait_s": null
+    },
+    "stale_age_s": null,
+    "truncated": false,
+    "partial": false,
+    "comments_pending": 0,
+    "empty": false,
+    "at": "2026-10-11T09:00:00Z"
+   },
+   "list": {
+    "epics": [],
+    "error": {
+     "reason": "no_login",
+     "message": "gh is not logged in on this board: run gh auth login there",
+     "wait_s": null
+    }
+   }
+  },
+  "noaccess": {
+   "detail": {
+    "epic": {
+     "repo": "example/website",
+     "owner": "example",
+     "name": "website",
+     "number": 0,
+     "title": null,
+     "url": "https://github.com/example/website/issues/1",
+     "state": null,
+     "labelled": null,
+     "updated_at": null
+    },
+    "source": null,
+    "note": null,
+    "children": [],
+    "progress": {
+     "by_node": {},
+     "unclaimed": {
+      "open": 0,
+      "closed": 0
+     },
+     "open": 0,
+     "closed": 0,
+     "total": 0,
+     "unknown": 0
+    },
+    "pins": {},
+    "epic_pin": null,
+    "paused": false,
+    "report": false,
+    "auto_pr": false,
+    "nodes": [
+     {
+      "handle": "local",
+      "name": "node-a",
+      "status": "online",
+      "age_s": 0
+     },
+     {
+      "handle": "node-b",
+      "name": "node-b",
+      "status": "online",
+      "age_s": 4
+     }
+    ],
+    "rate": {
+     "remaining": 4990,
+     "limit": 5000,
+     "reset": "2026-10-11T09:30:00Z",
+     "wait_s": null
+    },
+    "server_now": "2026-10-11T09:00:00Z",
+    "error": {
+     "reason": "no_access",
+     "message": "this gh login cannot read that repository",
+     "wait_s": null
+    },
+    "stale_age_s": null,
+    "truncated": false,
+    "partial": false,
+    "comments_pending": 0,
+    "empty": false,
+    "at": "2026-10-11T09:00:00Z"
+   },
+   "list": {
+    "epics": [],
+    "errors": [
+     {
+      "repo": "example/website",
+      "reason": "no_access",
+      "message": "this gh login cannot read that repository",
+      "wait_s": null
+     }
+    ]
+   }
+  },
+  "notfound": {
+   "detail": {
+    "epic": {
+     "repo": "example/website",
+     "owner": "example",
+     "name": "website",
+     "number": 0,
+     "title": null,
+     "url": "https://github.com/example/website/issues/1",
+     "state": null,
+     "labelled": null,
+     "updated_at": null
+    },
+    "source": null,
+    "note": null,
+    "children": [],
+    "progress": {
+     "by_node": {},
+     "unclaimed": {
+      "open": 0,
+      "closed": 0
+     },
+     "open": 0,
+     "closed": 0,
+     "total": 0,
+     "unknown": 0
+    },
+    "pins": {},
+    "epic_pin": null,
+    "paused": false,
+    "report": false,
+    "auto_pr": false,
+    "nodes": [
+     {
+      "handle": "local",
+      "name": "node-a",
+      "status": "online",
+      "age_s": 0
+     },
+     {
+      "handle": "node-b",
+      "name": "node-b",
+      "status": "online",
+      "age_s": 4
+     }
+    ],
+    "rate": {
+     "remaining": 4990,
+     "limit": 5000,
+     "reset": "2026-10-11T09:30:00Z",
+     "wait_s": null
+    },
+    "server_now": "2026-10-11T09:00:00Z",
+    "error": {
+     "reason": "not_found",
+     "message": "GitHub has no such issue, or this login cannot see it",
+     "wait_s": null
+    },
+    "stale_age_s": null,
+    "truncated": false,
+    "partial": false,
+    "comments_pending": 0,
+    "empty": false,
+    "at": "2026-10-11T09:00:00Z"
+   },
+   "list": {
+    "epics": []
+   }
+  },
+  "wait": {
+   "detail": {
+    "error": {
+     "reason": "rate_limited",
+     "message": "GitHub asked us to wait 40 s",
+     "wait_s": 40
+    },
+    "stale_age_s": 95,
+    "rate": {
+     "remaining": 0,
+     "limit": 5000,
+     "reset": "2026-10-11T09:01:00Z",
+     "wait_s": 40
+    }
+   },
+   "list": {
+    "error": {
+     "reason": "rate_limited",
+     "message": "GitHub asked us to wait 40 s",
+     "wait_s": 40
+    },
+    "stale_age_s": 95
+   }
+  },
+  "stale": {
+   "detail": {
+    "error": {
+     "reason": "timeout",
+     "message": "gh did not answer in time",
+     "wait_s": null
+    },
+    "stale_age_s": 130
+   },
+   "list": {
+    "error": {
+     "reason": "timeout",
+     "message": "gh did not answer in time",
+     "wait_s": null
+    },
+    "stale_age_s": 130
+   }
+  },
+  "labels": {
+   "detail": {
+    "source": "labels",
+    "note": "This repository has no sub-issues endpoint, so the children are the issues labelled epic:147."
+   }
+  },
+  "empty": {
+   "detail": {
+    "epic": {
+     "repo": "example/website",
+     "owner": "example",
+     "name": "website",
+     "number": 0,
+     "title": null,
+     "url": "https://github.com/example/website/issues/1",
+     "state": null,
+     "labelled": null,
+     "updated_at": null
+    },
+    "source": null,
+    "note": null,
+    "children": [],
+    "progress": {
+     "by_node": {},
+     "unclaimed": {
+      "open": 0,
+      "closed": 0
+     },
+     "open": 0,
+     "closed": 0,
+     "total": 0,
+     "unknown": 0
+    },
+    "pins": {},
+    "epic_pin": null,
+    "paused": false,
+    "report": false,
+    "auto_pr": false,
+    "nodes": [
+     {
+      "handle": "local",
+      "name": "node-a",
+      "status": "online",
+      "age_s": 0
+     },
+     {
+      "handle": "node-b",
+      "name": "node-b",
+      "status": "online",
+      "age_s": 4
+     }
+    ],
+    "rate": {
+     "remaining": 4990,
+     "limit": 5000,
+     "reset": "2026-10-11T09:30:00Z",
+     "wait_s": null
+    },
+    "server_now": "2026-10-11T09:00:00Z",
+    "error": null,
+    "stale_age_s": null,
+    "truncated": false,
+    "partial": false,
+    "comments_pending": 0,
+    "empty": true,
+    "at": "2026-10-11T09:00:00Z"
+   },
+   "list": {
+    "epics": [
+     {
+      "repo": "example/website",
+      "owner": "example",
+      "name": "website",
+      "number": 147,
+      "title": "Checkout rework",
+      "url": "https://github.com/example/website/issues/147",
+      "state": "open",
+      "children": {
+       "open": 0,
+       "closed": 0,
+       "total": 0
+      },
+      "updated_at": "2026-10-11T08:56:00Z",
+      "labels": [
+       "ccboard:epic"
+      ],
+      "paused": false
+     }
+    ]
+   }
+  },
+  "norepo": {
+   "list": {
+    "epics": [],
+    "repos": [],
+    "note": "No project here has a GitHub remote, so there is nowhere to look for epics."
+   }
+  },
+  "none": {
+   "list": {
+    "epics": []
+   }
+  },
+  "down": {
+   "status": 503,
+   "error": "the board could not answer"
+  }
+ }
+}

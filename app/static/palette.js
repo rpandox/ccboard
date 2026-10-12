@@ -364,6 +364,36 @@ Palette.remoteTerminals = function (query) {
 };
 
 /* The groups the palette offers, as [{ id, title, items: [{ id, label, hint, kbd, glyph, keywords, run, keep? }] }] before any filtering. */
+/* An epic address typed in the palette: owner/repo#n, owner/repo/n or a GitHub issue or pull link (GitHub's own name rules, as the route's). null for anything else. */
+Palette.epicRef = function (text) {
+  const m = /^(?:https:\/\/github\.com\/)?([A-Za-z0-9][A-Za-z0-9-]{0,38})\/((?![-.])[A-Za-z0-9_.-]{1,100})(?:#|\/issues\/|\/pull\/|\/)([1-9][0-9]{0,8})\/?$/.exec(String(text || '').trim());
+  return m ? { owner: m[1], repo: m[2], n: m[3] } : null;
+};
+
+Palette.epicGroup = function (query, close) {
+  const words = String(query || '').trim().split(/\s+/);
+  if (words[0] && words[0].toLowerCase() === 'open') words.shift();
+  const first = String(words[0] || '').toLowerCase();
+  if (first.length < 2 || !'epics'.startsWith(first)) return null;
+  const rest = words.slice(1).join(' ');
+  const u = Palette.ui;
+  if (first.length >= 4 && u && !u.epicAsked && typeof Lazy !== 'undefined') {
+    u.epicAsked = true;
+    Lazy.load('epic').then(() => Epics.fetchList()).then(() => { if (Palette.ui === u) Palette.render(); }, () => {});
+  }
+  const go = (h) => { close(); Palette.go(h); };
+  const items = [];
+  const ref = Palette.epicRef(rest);
+  if (ref) items.push({ id: 'ep:open', label: `Open epic ${ref.owner}/${ref.repo}#${ref.n}`, hint: 'read from GitHub through this board', always: true, run: () => { let h = null; try { h = buildHash('epic', ref); } catch (_) { h = null; } if (h) go(h); else Palette.say('That is not a GitHub epic address.', 'warn'); } });
+  if (!rest) items.push({ id: 'ep:list', label: 'Epics', hint: 'on the Tasks page', always: true, run: () => go('#/tasks?tab=epics') });
+  for (const e of typeof Epics !== 'undefined' && Array.isArray(Epics.known) ? Epics.known : []) {
+    const h = Epics.hash(e.owner, e.name, e.number);
+    const hay = `${e.title || ''} ${e.repo}#${e.number}`.toLowerCase();
+    if (h && rest.toLowerCase().split(/\s+/).every((w) => hay.includes(w))) items.push({ id: `ep:${e.repo}#${e.number}`, label: `Epic ${e.title || '#' + e.number}`, hint: `${e.repo}#${e.number}`, always: true, run: () => go(h) });
+  }
+  return items.length ? { id: 'epics', title: 'Epics', items, limit: Palette.PER_GROUP } : null;
+};
+
 Palette.catalog = function (ctx, query) {
   const groups = [];
   const close = () => Palette.close();
@@ -422,6 +452,11 @@ Palette.catalog = function (ctx, query) {
       run: () => { close(); Palette.go(typeof buildHash === 'function' ? buildHash('quad', {}, { p: project }) : '#/quad?p=' + project); } }));
     groups.push({ id: 'quads', title: 'Quad', items: quads });
   }
+
+  // Epics (issue #147): only for a search that starts like the word ("ep", "epic", "open epic ..."), so the empty palette keeps its short list. Typing an address after the word
+  // (owner/repo#n, owner/repo/n or a GitHub issue link) gives "Open epic <address>"; the epics this board last read are listed too (the list is asked for once the word is typed in full).
+  const epics = Palette.epicGroup(query, close);
+  if (epics) groups.push(epics);
 
   // Backlog cards: Move… is the keyboard route of the drag (the card's m key opens the same sheet). Three with nothing typed.
   if (typeof boardTasks === 'function' && typeof taskMoveable === 'function' && typeof taskMoveSheet === 'function' && typeof state !== 'undefined' && state) {

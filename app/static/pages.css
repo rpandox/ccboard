@@ -416,6 +416,7 @@ html.force-coarse #page .pblock .pb-toggle { min-width:var(--tap); }
 #page .pj-name { margin:0; font-size:18px; font-weight:600; overflow-wrap:anywhere; }
 #page .pj-path { font:12px/1.4 var(--font-mono); overflow-wrap:anywhere; }
 #page .pj-more, #page .pj-quad { align-self:center; }
+#page .pj-epics { align-self:center; }
 /* the repos are one row that scrolls sideways (two chips used to take a row each); from 840 px they wrap again */
 #page .pj-repos { display:flex; flex-wrap:nowrap; gap:6px 10px; min-width:0; overflow-x:auto; overscroll-behavior-x:contain; scrollbar-width:none; -webkit-overflow-scrolling:touch; }
 #page .pj-repos::-webkit-scrollbar { display:none; }
@@ -519,6 +520,7 @@ html.force-coarse #sidebar .tn-row.d-row .tw, html.force-coarse #drawer .tn-row.
 @media (max-width:599px) {
   #page .pj-title .spacer { order:1; }
   #page .pj-more, #page .pj-quad { order:2; }
+  #page .pj-epics { order:2; }
   #page .pj-path { order:3; flex:1 1 100%; }
 }
 

@@ -727,6 +727,70 @@ def _c_gh(db) -> Outcome:
     return _stale("gh", last, limit, running)
 
 
+# ------------------------------------------------------------------ epics read from GitHub (issue #147)
+
+EPIC_REPOS = 3                         # repositories the epic-gh row reads (one tiny label query each; a 304 costs no request budget)
+
+
+def _epic_probe() -> dict:
+    """The facts of the epic-gh row, read only: gh's version, the login and its scopes, and read access to the first repositories that carry an epic label.
+    Runs on a probe thread (it talks to GitHub); nothing is written and the token is never read."""
+    from . import nodes_epics
+    src = _projects_source
+    repos = nodes_epics.known_repos(src() if callable(src) else None)
+    try:
+        p = _run(["gh", "--version"])
+        ver = (_vstr(p.out) or "") if p.rc == 0 else ""
+    except ToolMissing:
+        return {"state": "no_gh"}
+    except ToolTimeout:
+        ver = ""
+    facts = nodes_epics.doctor_facts(repos, EPIC_REPOS)
+    facts["version"], facts["repos"] = ver, len(repos)
+    return facts
+
+
+def _epic_outcome(f: dict) -> Outcome:
+    st = f.get("state")
+    if st == "no_gh":
+        return _skip("gh is not installed, so epics cannot be read from GitHub (the GitHub CLI row says how to install it)")
+    if st == "no_login":
+        return _skip("no gh login on this board, so epics cannot be read from GitHub", fix("Log gh in on the box (epics are read with it)", "gh auth login"))
+    if st != "ok":
+        reason = str(st).split(":", 1)[-1]
+        if reason == "rate_limited":
+            return _warn(f"GitHub asked this board to wait {f.get('wait_s') or 60} s before the next read", fix(RECHECK_FIX))
+        return _warn("GitHub could not be read just now (" + {"timeout": "gh did not answer in time", "unavailable": "an error on GitHub's side",
+                                                              "too_large": "the answer was too large"}.get(reason, "gh gave an unreadable answer") + ")", fix(RECHECK_FIX))
+    ver = f"gh {f['version']}" if f.get("version") else "gh"
+    note = f"{ver}: gh issue create --parent is to verify on this version (epics are read with gh api and do not need it)"
+    scopes = f.get("scopes")
+    if scopes is not None and "repo" not in scopes:
+        return _warn("the gh login has no repo scope, so private repositories cannot be read for epics",
+                     fix("Add the repo scope to the gh login", "gh auth refresh -s repo"))
+    bad = f.get("failed") or {}
+    if bad:
+        first = sorted(bad)[0]
+        return _warn(f"no read access to {first}" + (f" and {len(bad) - 1} more" if len(bad) > 1 else "") + " for epics (this login cannot see it, or GitHub refused)",
+                     fix("Log gh in with an account that can read the repository", "gh auth login"))
+    left = f"{f['remaining']} of {f['limit']} requests left" if f.get("remaining") is not None and f.get("limit") else "request budget not reported"
+    seen = f"scopes: {', '.join(scopes)}" if scopes else "scopes not reported"
+    return _pass(f"gh can read epics ({seen}; {left}; {f.get('checked', 0)} of {f.get('repos', 0)} repositories checked). {note}")
+
+
+def _c_epic_gh(db) -> Outcome:
+    """Can this board read epics from GitHub (issue #147)? Read only: one /rate_limit call and a label query per repository, on a probe thread so a slow
+    GitHub gives the last answer with its age, not a bare timeout."""
+    pr = _probe_start("epic-gh", _epic_probe)
+    r = _probe_wait(pr, time.monotonic() + GH_WAIT)
+    if r is None:
+        last = (pr.last[0], _epic_outcome(pr.last[1])) if pr.last else None            # type: ignore[arg-type]
+        return _stale("GitHub", last, GH_WAIT, True)
+    if r[0] == "err":
+        raise r[1]                                                                    # type: ignore[misc]
+    return _epic_outcome(r[1])                                                        # type: ignore[arg-type]
+
+
 def _c_ccusage(db) -> Outcome:
     try:
         p = _run(["ccusage", "--version"])
@@ -1759,6 +1823,7 @@ register("nodes-tagged-self", "box", "This device is tagged", _c_nodes_tagged_se
 register("nodes-pairs", "box", "Paired nodes", _c_nodes_pairs)   # issue #135
 register("notify-public-url", "notify", "Notification links", _c_notify_public_url)   # issue #151
 register("notify-shared", "notify", "One subscription on two nodes", _c_notify_shared)   # issue #151
+register("epic-gh", "box", "Epics from GitHub", _c_epic_gh)   # issue #147
 register_provider("memory", MEM_GROUP, memory_checks)       # claude-mem (v0.5.10): one probe, seven checks
 register_provider("codex", CODEX_GROUP, codex_checks)       # the Codex adapter's checks (v0.5.11)
 if plat.IS_MACOS:                                            # issue #117: the macOS checks (app/doctor_macos.py) exist on a Mac only; a Linux board lists none

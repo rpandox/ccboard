@@ -155,6 +155,9 @@ EXPECTED = {
     ("POST", "/api/node/rotate"): "node-token",     # a paired node rotating its own token (issue #135); the owner's identity reaches a handler that says it takes a node token
     ("POST", "/api/node/unpair"): "node-token",     # a paired node leaving (issue #135)
     ("GET", "/api/node/state"): "identity",         # the trimmed read-only state a hub reads (issue #138); a paired node's token with scope read opens it too; no prompt, result, transcript or account label in it
+    ("GET", "/api/epics"): "identity",              # the epics of the repos this board knows, read through gh (GET only; issue #147); a GitHub problem is an `error` in a 200 answer
+    ("GET", "/api/epics/{owner}/{repo}/{n}"): "identity",       # one epic: children, claims, tasks, progress; owner, repo and number are checked against GitHub's rules before any gh command is built
+    ("PUT", "/api/epics/{owner}/{repo}/{n}/settings"): "identity+csrf",   # pins and pause, kept on this board only; a signed-in person: the hook token, the hub and a node token get 403 from the handler
     ("GET", "/api/nodes/state"): "identity",        # the hub read model (issue #138): every paired node's card and last state with its age; built by the board, the page never calls a peer
     ("GET", "/api/nodes"): "identity",              # the nodes this board calls and the pairs that call it (issue #135); never a token or a hash
     ("POST", "/api/nodes"): "identity+csrf",        # pair with another board: its address and its code
@@ -215,7 +218,7 @@ EXPECTED = {
 # Answered with no auth at all, by auth_middleware before any route (not in app.routes): the compose and Dockerfile healthcheck over loopback.
 NO_AUTH = {("GET", "/healthz"): "a constant 'ok' for the container healthcheck; reads nothing, changes nothing"}
 FILL = {"agent": "claude", "decision": "allow", "handle": "node-b", "jid": "1", "key": "k", "n:int": "1", "name": "p--r--s", "pid": "1", "project": "p",
-        "repo": "r", "rid": "1", "sid": UUID, "tid": "1", "token_id": "t", "peer": "p_0123456789abcdef"}
+        "repo": "r", "rid": "1", "sid": UUID, "tid": "1", "token_id": "t", "peer": "p_0123456789abcdef", "owner": "o", "n": "1"}
 PROBE = {"/static/": "/static/core.js", "/tty/": "/tty/"}
 
 
