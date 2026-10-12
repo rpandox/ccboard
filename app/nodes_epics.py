@@ -849,7 +849,7 @@ def progress_of(rows: list[tuple[str | None, str]], amap: dict[str, str]) -> dic
 def _gh_login() -> str | None:
     from . import prpoll
     cwd = Path(settings.projects_dir)
-    return prpoll.gh_login(cwd if cwd.is_dir() else Path.home())
+    return prpoll.gh_login(cwd if cwd.is_dir() else Path(settings.data_dir))      # a directory that exists: the probe needs a cwd, never the home
 
 
 def _empty_epic(owner: str, repo: str, n: int) -> dict:
