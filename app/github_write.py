@@ -1,6 +1,6 @@
 """The writer next to the reader (nodes epic, issue #148): the few GitHub writes the claim of an epic issue needs, and nothing else.
 
-WRITES ARE OFF BY DEFAULT. `settings.epic_writes` (CCBOARD_EPIC_WRITES, exactly "1") turns them on. With it off, `build()` refuses before an argv exists, `send()` and the queue refuse
+WRITES ARE OFF BY DEFAULT. `settings.epic_writes` (CCBOARD_EPIC_WRITES, exactly "1") turns them on. With it off, `argv()` refuses before an argv exists, `send()` and the queue refuse
 before anything else, and no gh command with a method other than GET is ever built or run (the reader in app/github.py stays GET only).
 
 The allow list is the ONLY thing this module can send. Each shape is built from a validated owner, repository, issue number, comment id, the one label and a login:
@@ -16,7 +16,7 @@ The allow list is the ONLY thing this module can send. Each shape is built from 
 
 No issue edit, no close, no pull request, no repository setting, no other label, no comment that is not the board's own. Whose comment it is, is the caller's business (app/nodes_epics.py
 records the ids it created and re-reads before every edit); this module only guarantees the SHAPE. A comment body is never free text: it is made by `claim_body()` from validated fields and a
-fixed sentence, or it is HELP_BODY, and `build()` refuses any other body. The body goes to gh on stdin as JSON (`--input -`), the command is an argv list (never a shell) with a bounded timeout
+fixed sentence, or it is HELP_BODY, and `argv()` refuses any other body. The body goes to gh on stdin as JSON (`--input -`), the command is an argv list (never a shell) with a bounded timeout
 and a capped answer, and a gh failure is reduced to a fixed reason (no stderr text is ever passed on).
 
 The QUEUE: one write at a time per board, at least 1.1 s apart, at most 30 a minute, a back-off on 403 and 429 (Retry-After, else the secondary limit's 60 s), and never a retry here: a write
@@ -49,6 +49,7 @@ STATUSES = ("claimed", "running", "done", "failed", "released", "cancelled")
 MIN_GAP = 1.1                       # seconds between two writes of one board
 CEILING = 30                        # writes a minute
 CEILING_WINDOW = 60.0
+LOCK_TIMEOUT = 45.0                 # the longest a write waits for its turn in the queue; then it is refused as busy and nothing is sent
 MAX_WAIT = 120.0                    # the longest the queue sleeps for one write; a longer back-off is raised as rate_limited instead
 TIMEOUT = 20.0
 OUT_CAP = 256 * 1024
@@ -60,6 +61,7 @@ MESSAGES = {
     "not_found": "GitHub has no such issue or comment, or this login cannot see it",
     "invalid": "GitHub refused the request as invalid",
     "rate_limited": "GitHub asked us to wait",
+    "busy": "too many GitHub writes are waiting on this board, so this one was not sent",
     "timeout": "gh did not answer in time, so the outcome of the write is not known",
     "unavailable": "GitHub did not answer (an error on its side), so the outcome of the write is not known",
     "bad_answer": "GitHub sent an answer this board could not read",
@@ -311,10 +313,10 @@ class Queue:
     """One write at a time, MIN_GAP seconds apart, CEILING a minute, a back-off after 403/429. `mono` and `sleep` are injectable (tests pass a fake clock). Each board has one; the
     module's `queue` is this board's. Nothing here retries: a refusal or an unknown outcome is raised once and the caller decides."""
 
-    def __init__(self, mono=None, sleep=None, gap: float = MIN_GAP, ceiling: int = CEILING):
+    def __init__(self, mono=None, sleep=None, gap: float = MIN_GAP, ceiling: int = CEILING, lock_timeout: float = LOCK_TIMEOUT):
         self.mono = mono or time.monotonic
         self.sleep = sleep or time.sleep
-        self.gap, self.ceiling = gap, ceiling
+        self.gap, self.ceiling, self.lock_timeout = gap, ceiling, lock_timeout
         self.lock = threading.Lock()
         self.last: float | None = None
         self.until = 0.0
@@ -343,7 +345,9 @@ class Queue:
         unknown=True; 403/429 set the back-off and are rate_limited when GitHub asked us to wait)."""
         _off()
         argv(req)                                                       # the allow list and the body rule, before the lock and before any wait
-        with self.lock:
+        if not self.lock.acquire(timeout=self.lock_timeout):
+            raise GhWriteError("busy")                              # another write holds the turn (or is waiting out a back-off): refused, nothing sent, never retried here
+        try:
             _off()
             self._pace()
             now = self.mono()
@@ -369,6 +373,8 @@ class Queue:
             if status >= 500:
                 raise GhWriteError("unavailable", unknown=True, status=status)
             raise GhWriteError("bad_answer", unknown=True, status=status)
+        finally:
+            self.lock.release()
 
 
 queue = Queue()

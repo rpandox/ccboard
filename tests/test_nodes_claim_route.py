@@ -92,6 +92,7 @@ def world(two_nodes, pair_up, wide, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "epic_authors", ())
     monkeypatch.setattr(settings, "epic_lease_min", 30)
     monkeypatch.setattr(nodes_epics, "RENEWER", False)
+    monkeypatch.setattr(nodes_epics, "READ_CHILD_MAX_AGE", 10 ** 9)
     monkeypatch.setattr(nodes_epics, "host_names", lambda: {"mybox"})
     monkeypatch.setattr(main, "_epic_repos", lambda: [REPO])
     gh.add_issue(REPO, 147, "The epic", labels=["ccboard:epic"])
@@ -526,13 +527,14 @@ def test_with_writes_on_the_row_reports_login_scopes_push_access_alias_and_lease
     assert all(c["argv"][0] in ("--version", "api") and "--method" not in c["argv"] or c["argv"][c["argv"].index("--method") + 1] == "GET" for c in gh_script.calls()), "reads only"
 
 
-def test_without_push_access_the_row_warns_and_says_the_claim_still_works(gh_script, monkeypatch):
+def test_without_push_access_the_row_warns_and_says_the_board_will_not_claim_there(gh_script, monkeypatch):
     probe_reset()
     with_repos(monkeypatch)
     monkeypatch.setattr(settings, "epic_writes", True)
     gh_script.set(repos={REPO: {"push": False, "private": True}})
     out = doctor._claim_outcome(doctor._claim_probe())
-    assert out.status == "warn" and "cannot push to acme/shop" in out.detail and "assignee and the label will be refused" in out.detail and "claim comment itself still works" in out.detail
+    assert out.status == "warn" and "cannot push to acme/shop" in out.detail and "would not count" in out.detail and "will not claim in that repository" in out.detail
+    assert "still works" not in out.detail
 
 
 def test_the_row_warns_for_a_missing_repo_scope_an_unreadable_repository_and_a_wait(gh_script, monkeypatch):
@@ -583,3 +585,21 @@ def test_the_reader_has_one_more_get_shape_the_repository_and_nothing_else_new()
     for o, r in (("a b", "x"), ("acme", "../x"), ("acme", ".x"), ("", "x")):
         with pytest.raises(github.GhReadError):
             github.repo_path(o, r)
+
+
+def test_only_a_few_claims_run_at_once_on_a_node_and_the_next_is_told_busy_before_anything_starts(world):
+    w = world
+    held = [nodes_epics.claim_slots.acquire(blocking=False) for _ in range(nodes_epics.CLAIMS_IN_FLIGHT)]
+    try:
+        assert all(held)
+        r = claim(w)
+        assert r.status_code == 409 and r.json()["reason"] == "claim_refused" and r.json()["why"] == "busy", r.text
+        assert nodes_epics.CLAIM_TEXT["busy"] in r.json()["error"]
+        assert w.gh.calls() == [], "the node asked GitHub nothing and wrote nothing"
+    finally:
+        for _ in held:
+            nodes_epics.claim_slots.release()
+    assert claim(w).status_code == 200
+    assert claim(w, {"repo": REPO, "issue": 204, "epic": 147}).status_code == 200
+    assert nodes_epics.claim_slots.acquire(blocking=False) and nodes_epics.claim_slots._value == nodes_epics.CLAIMS_IN_FLIGHT - 1, "a finished claim gave its place back"
+    nodes_epics.claim_slots.release()

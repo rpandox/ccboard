@@ -61,6 +61,7 @@ LABEL_CAP = 30
 DEPENDS_CAP = 20
 PINS_CAP = 200
 GOOD_MAX = 32                            # last good answers kept in memory
+READ_CHILD_MAX_AGE = 900.0               # seconds a reading of an epic keeps its children claimable; an older one is read again (the page names the epic in its claim)
 LIST_TTL = 60.0
 ISSUE_TTL = 60.0
 COMMENTS_TTL = 0.0                       # an open child's comments are revalidated on every refresh (a 304 costs no request budget): `none` is a statement about a moment
@@ -584,6 +585,8 @@ def fresh_claim_state(owner: str, repo: str, number, repos, login=None, detail: 
         return done("budget")
     except github.GhReadError as e:
         return done("rate_limited" if e.reason == "rate_limited" else "error")
+    if not res["fresh"]:
+        return done("not_recent")                                                   # a page came from the cache or a stale entry: the thread is not known now, whatever it holds
     parsed = parse_claims(res["flat"])
     claim, _ = pick_claim(parsed, allowed, res["now"])
     c.update(thread="incomplete" if not res["consistent"] or not res["complete"] else "complete", fresh=res["fresh"],
@@ -1197,6 +1200,8 @@ PENDING_KV = "claim-pending:"
 LOST_KEEP_S = 7 * 86400
 RENEWER = True                          # tests that run many claims switch the timer off
 sleep = time.sleep                      # the protocol's waits: tests patch it
+CLAIMS_IN_FLIGHT = 4                    # claims a peer may ask of this board at once; one more is refused as `busy`
+claim_slots = threading.BoundedSemaphore(CLAIMS_IN_FLIGHT)           # taken without waiting by the peer route (nodes_relay.peer_epic_claim)
 LOST_HOOKS: list = []                   # callables (claim view, reason) run once when a claim is definitely lost: the run phase parks the task and raises the toast
 CLAIM_TEXT = {
     "won": "This node holds the issue.",
@@ -1215,7 +1220,8 @@ CLAIM_TEXT = {
     "attempts_exhausted": "Three attempts ended without a result. This board asked for a person and stopped.",
     "too_many_claims": "This board already holds as many claims as it will keep.",
     "rate_limited": "GitHub asked us to wait before writing.",
-    "no_access": "This gh login may not comment on that repository.",
+    "busy": "This board is busy with other claims right now. Nothing was claimed; try again in a moment.",
+    "no_access": "This gh login cannot push to that repository, so a claim from it would not count. Nothing was written.",
     "no_login": "gh is not logged in on this board.",
     "error": "GitHub did not take the claim, so nothing is claimed.",
     "outcome_unknown": "GitHub did not say whether the claim was written; the board will look before it writes again.",
@@ -1372,13 +1378,29 @@ def _index(actor: Actor) -> list[str]:
     return [k for k in v if isinstance(k, str) and k.startswith(CLAIM_KV)][:HELD_MAX * 3] if isinstance(v, list) else []
 
 
+def _trim_index(actor: Actor, idx: list[str]) -> list[str]:
+    """`idx` cut to HELD_MAX * 3 keys: the oldest lost or finished records go first (their rows too), and a record that is held or being claimed is never dropped (it still has to
+    be renewed, released or recovered). Only when every key is one of those can it stay longer than the cap."""
+    cap = HELD_MAX * 3
+    for key in list(idx):
+        if len(idx) <= cap:
+            break
+        m = re.fullmatch(CLAIM_KV + r"([^/]+)/([^#]+)#([0-9]+)", key)
+        rec = _rec_load(actor, m.group(1), m.group(2), int(m.group(3))) if m else None
+        if rec is not None and rec["state"] in ("claiming", "held"):
+            continue
+        actor.db.kv_del(key)
+        idx.remove(key)
+    return idx
+
+
 def _rec_save(actor: Actor, rec: dict) -> None:
     with _klock:
         key = _key(rec["owner"], rec["repo"], rec["number"])
         actor.db.kv_set(key, {k: v for k, v in rec.items() if k != "ref"})
         idx = _index(actor)
         if key not in idx:
-            actor.db.kv_set(INDEX_KV, (idx + [key])[-HELD_MAX * 3:])
+            actor.db.kv_set(INDEX_KV, _trim_index(actor, idx + [key]))
 
 
 def _rec_drop(actor: Actor, owner: str, repo: str, n) -> None:
@@ -1472,11 +1494,12 @@ def _target(repo, issue) -> tuple[str, str, int] | None:
 
 
 def is_read_child(owner: str, repo: str, n) -> bool:
-    """True when issue n of owner/repo is a child of an epic this board has read (its last good answer, in memory). An epic is not a child of itself, so it is not claimable;
-    nothing another node or GitHub names makes an issue claimable."""
+    """True when issue n of owner/repo is a child of an epic this board has read (its last good answer, in memory) as an epic: the parent carries the `ccboard:epic` label and the
+    reading is younger than READ_CHILD_MAX_AGE. An epic is not a child of itself, so it is not claimable; nothing another node or GitHub names makes an issue claimable."""
     slug = f"{owner}/{repo}".lower()
+    now = mono()
     with _lock:
-        parts = [v[1] for v in _last_good.values()]
+        parts = [v[1] for v in _last_good.values() if 0 <= now - v[0] <= READ_CHILD_MAX_AGE and (v[1].get("epic") or {}).get("labelled") is True]
     return any(c.get("number") == int(n) and str(c.get("repo", "")).lower() == slug for part in parts for c in part.get("children") or [])
 
 
@@ -1486,13 +1509,16 @@ def _read(actor: Actor, owner: str, repo: str, n, repos) -> dict:
 
 def _mine(actor: Actor, comments, cid: int) -> tuple[dict | None, dict | None, str | None]:
     """(raw comment, its parse, a reason it is not the board's own) for comment `cid` in a list just read: the author must be this board's gh login (a user), the marker must
-    parse and its nid must be this board's. A comment that is gone, edited into something else or somebody else's gives the reason."""
+    parse and its nid must be this board's. A comment that is gone, edited into something else or somebody else's gives the reason. When this board does not know its own
+    login (`login_unknown`) nothing can be said about whose the comment is: that is not a loss, and the callers treat it as not settled."""
     raw = next((c for c in comments or [] if isinstance(c, dict) and c.get("id") == cid), None)
     if raw is None:
         return None, None, "deleted"
     user = raw.get("user")
     login = user.get("login") if isinstance(user, dict) and user.get("type") == "User" else None
-    if not isinstance(login, str) or not actor.login or login.lower() != actor.login.lower():
+    if not actor.login:
+        return raw, None, "login_unknown"
+    if not isinstance(login, str) or login.lower() != actor.login.lower():
         return raw, None, "not_ours"
     parsed = parse_claim(raw.get("body"))
     if parsed is None:
@@ -1520,6 +1546,9 @@ def _fence(actor: Actor, rec: dict, repos) -> dict:
     raw, parsed, why = _mine(actor, d.get("comments"), rec["comment_id"])
     if why == "deleted" and not d.get("complete"):
         out["reason"] = "too_long"                                      # the comment may sit in the part of a long thread that was not read: not a loss
+        return out
+    if why == "login_unknown":
+        out["reason"] = why                                             # this board cannot tell whose the comment is right now: nothing is written, and nothing is lost
         return out
     if why:
         out.update(lost=True, reason=why)
@@ -1600,7 +1629,7 @@ def _stop(res: dict, reason: str, **kw) -> dict:
 
 
 def _err_reason(e: github_write.GhWriteError) -> str:
-    return e.reason if e.reason in ("rate_limited", "no_access", "no_login") else "error"
+    return e.reason if e.reason in ("rate_limited", "no_access", "no_login", "busy") else "error"
 
 
 def _withdraw(actor: Actor, rec: dict, comments=None) -> tuple[bool, str | None]:
@@ -1817,6 +1846,19 @@ def claim_issue(repo, issue, *, actor: Actor | None = None, repos=None, epic=Non
         return _claim_locked(actor, repos, owner, name, n, alias, nid, res, task_ref, branch)
 
 
+def _may_push(owner: str, repo: str) -> bool | None:
+    """Can this board's gh login push to the repository? Read now (GET /repos/{o}/{r}, revalidated): True or False as GitHub says in `permissions.push`, None when the read failed or
+    the field is missing. A claim comment counts only from a login that can write (allowed_claims wants OWNER, MEMBER or COLLABORATOR), so a login that cannot push would post a
+    public comment that never counts and then delete it."""
+    try:
+        data = github.reader.get(github.repo_path(owner, repo), 0.0).data
+    except github.GhReadError:
+        return None
+    perms = data.get("permissions") if isinstance(data, dict) else None
+    push = perms.get("push") if isinstance(perms, dict) else None
+    return push if isinstance(push, bool) else None
+
+
 def _claim_locked(actor: Actor, repos: list, owner: str, name: str, n: int, alias: str, nid: str, res: dict, task_ref, branch) -> dict:
     prior = _rec_load(actor, owner, name, n)
     if prior is None and sum(1 for v in held_claims(actor) if v["state"] in ("claiming", "held")) >= HELD_MAX:
@@ -1853,6 +1895,11 @@ def _claim_locked(actor: Actor, repos: list, owner: str, name: str, n: int, alia
     newest = claims[-1] if claims else None
     if newest is not None and newest["status"] == "done":
         return _stop(res, "done", winner=newest["alias"])
+    push = _may_push(owner, name)                               # before the first POST: a comment from a login that cannot push never counts, so none is posted
+    if push is not True:
+        why = "no_access" if push is False else "error"
+        _audit(actor, "epic-claim", False, owner, name, n, why if push is False else "access_unknown")
+        return _stop(res, why, **({} if push is False else {"unknown_reason": "access_unknown"}))
     attempt = max([c["attempt"] for c in claims] + [0]) + 1
     if attempt > MAX_ATTEMPTS:
         asked = _ask_person(actor, owner, name, n, d.get("comments"))

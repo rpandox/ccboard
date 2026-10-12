@@ -80,7 +80,7 @@ class Env(SimpleNamespace):
 
 def read_epic(children, epic=147):
     """Make the board's last good answer say these issues are children of an epic it has read (the claim writes only to such issues)."""
-    nodes_epics._last_good[("acme", "shop", epic)] = (nodes_epics.mono(), {"children": [{"repo": REPO, "number": n} for n in children]})
+    nodes_epics._last_good[("acme", "shop", epic)] = (nodes_epics.mono(), {"epic": {"labelled": True}, "children": [{"repo": REPO, "number": n} for n in children]})
 
 
 @pytest.fixture
@@ -99,6 +99,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "epic_alias", "")
     monkeypatch.setattr(settings, "epic_authors", ())
     monkeypatch.setattr(nodes_epics, "RENEWER", False)
+    monkeypatch.setattr(nodes_epics, "READ_CHILD_MAX_AGE", 10 ** 9)           # the fake clock jumps by hours in many tests; the age rule has its own test
     monkeypatch.setattr(nodes_epics, "host_names", lambda: {"mybox"})
     for n in range(201, 211):
         gh.add_issue(REPO, n, f"Issue {n}")
@@ -1204,7 +1205,7 @@ def test_the_repository_spelling_is_this_boards_own_and_case_does_not_choose_a_t
     gh = env.gh
     a = env.actor(repos=["Acme/Shop"])
     gh.add_issue("Acme/Shop", 201, "Mixed case")
-    nodes_epics._last_good[("acme", "shop", 147)] = (nodes_epics.mono(), {"children": [{"repo": "acme/shop", "number": 201}]})
+    nodes_epics._last_good[("acme", "shop", 147)] = (nodes_epics.mono(), {"epic": {"labelled": True}, "children": [{"repo": "acme/shop", "number": 201}]})
     r = nodes_epics.claim_issue("acme/shop", 201, actor=a)
     assert r["claimed"] is True and all("/repos/Acme/Shop/" in p for _, p, _ in gh.writes())
 
@@ -1596,6 +1597,7 @@ def race(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "epic_alias", "")
     monkeypatch.setattr(settings, "epic_authors", ())
     monkeypatch.setattr(nodes_epics, "RENEWER", False)
+    monkeypatch.setattr(nodes_epics, "READ_CHILD_MAX_AGE", 10 ** 9)
     monkeypatch.setattr(nodes_epics, "host_names", lambda: {"mybox"})
     mono = lambda: gh.world["now"] - START + 1000.0
     monkeypatch.setattr(nodes_epics, "mono", mono)
@@ -1864,3 +1866,132 @@ def test_read_epic_now_reads_only_this_boards_own_labelled_epics(env):
     assert nodes_epics.read_epic_now("acme", "shop", "01", [REPO]) is False and nodes_epics.read_epic_now("acme", "shop", True, [REPO]) is False and gh.calls() == []
     assert nodes_epics.read_epic_now("acme", "shop", 147, [REPO]) is True and ("acme", "shop", 147) in nodes_epics._last_good
     assert nodes_epics.read_epic_now("acme", "shop", 999, [REPO]) is False
+
+
+# ================================================================ hardening: six reviewed defects
+
+def test_a_board_that_does_not_know_its_login_settles_nothing_and_loses_nothing(env, monkeypatch):
+    """The gh login can be empty for a moment (gh not answering). That is not a lost claim: nothing is written, nothing is marked lost, no hook runs, and a later call with the login behaves as before."""
+    gh = env.gh
+    monkeypatch.setattr(settings, "epic_authors", ("alice",))                          # who counts is configured, so the page can still be read without a login
+    a = env.actor("node-a")
+    ref = env.claim(a, 201)["claim_ref"]
+    blind = a._replace(login="")
+    seen = []
+    monkeypatch.setattr(nodes_epics, "LOST_HOOKS", [lambda view, reason: seen.append(reason)])
+    n = len(gh.writes())
+    f = nodes_epics.fence(ref, actor=blind)
+    assert f["ok"] is False and f["lost"] is False and f["reason"] == "login_unknown"
+    r = nodes_epics.renew(ref, actor=blind)
+    assert r["renewed"] is False and r["lost"] is False and r["reason"] == "login_unknown"
+    r = nodes_epics.release(ref, "done", actor=blind)
+    assert r["released"] is False and r["reason"] == "login_unknown" and "lost" not in r
+    assert len(gh.writes()) == n, "fail closed: nothing was written"
+    assert seen == [] and nodes_epics.held_claims(a)[0]["state"] == "held"
+    assert not [x for x in nodes.audit_list(20, db=a.db) if x["action"] == "epic-claim-lost"]
+    assert nodes_epics.fence_ok(ref, actor=a) is True
+    assert nodes_epics.renew(ref, actor=a)["renewed"] is True and nodes_epics.held_claims(a)[0]["state"] == "held"
+
+
+def test_a_login_that_cannot_push_posts_no_claim_comment_at_all(env):
+    gh = env.gh
+    a = env.actor()
+    gh.world["repos"] = {REPO: {"push": False}}
+    r = env.claim(a, 201)
+    assert r["claimed"] is False and r["reason"] == "no_access" and "cannot push" in r["message"]
+    assert gh.writes() == [] and env.claims(201) == [] and nodes_epics.held_claims(a) == []
+    assert a.db.kv_get("claim-pending:acme/shop#201") is None
+    assert "/repos/acme/shop" in gh.paths(), "the repository was read first"
+    gh.clear_calls()
+    gh.world["repos"] = {REPO: {"push": True}}
+    r = env.claim(a, 201)
+    assert r["claimed"] is True
+    methods = [c["argv"][c["argv"].index("--method") + 1] if "--method" in c["argv"] else None for c in gh.calls()]
+    paths = [c["argv"][-1] for c in gh.calls()]
+    assert paths.index("/repos/acme/shop") < methods.index("POST")
+
+
+def test_a_repository_whose_permissions_cannot_be_read_is_not_claimed_either(env, monkeypatch):
+    gh = env.gh
+    a = env.actor()
+    gh.world["repos_default"] = False                                                 # GitHub answers 404 for the repository itself
+    r = env.claim(a, 201)
+    assert r["claimed"] is False and r["reason"] == "error" and r["unknown_reason"] == "access_unknown" and gh.writes() == []
+    gh.world["repos_default"] = True
+    real = github.reader.get
+    monkeypatch.setattr(github.reader, "get", lambda path, ttl=60.0: real(path, ttl)._replace(data={"full_name": REPO}) if path == "/repos/acme/shop" else real(path, ttl))
+    r = env.claim(a, 201)
+    assert r["claimed"] is False and r["reason"] == "error" and r["unknown_reason"] == "access_unknown" and gh.writes() == [], "no permissions field: fail closed"
+    assert nodes_epics.held_claims(a) == [] and env.claims(201) == []
+
+
+def test_pages_that_were_not_confirmed_by_github_in_this_read_make_the_state_unknown(env):
+    gh = env.gh
+    a = env.actor()
+    ref = env.claim(a, 201)["claim_ref"]
+    gh.fail("/comments", 429, headers={"Retry-After": "60"}, method="GET")             # the comments are answered from the cache this time: the issue itself was read fresh
+    d = nodes_epics.fresh_claim_state("acme", "shop", 201, [REPO], "alice", detail=True)
+    assert d["state"] == "unknown" and d["reason"] == "not_recent" and d["claim"] is None
+    env.tick(61)
+    gh.fail("/comments", 429, headers={"Retry-After": "60"}, method="GET")
+    f = nodes_epics.fence(ref, actor=a)
+    assert f["ok"] is False and f["lost"] is False and f["reason"] == "not_recent", "a stale thread settles nothing, and loses nothing"
+    assert nodes_epics.held_claims(a)[0]["state"] == "held"
+    env.tick(61)
+    assert nodes_epics.fence_ok(ref, actor=a) is True
+
+
+def test_a_write_that_cannot_get_its_turn_in_the_queue_is_refused_as_busy_and_nothing_is_sent(env):
+    gh = env.gh
+    a = env.actor()
+    a.wq.lock_timeout = 0.05
+    sent = []
+    req = GW.comment_create("acme", "shop", 201, GW.HELP_BODY)
+    with a.wq.lock:                                                                    # another write holds the turn (for instance while it waits out a back-off)
+        with pytest.raises(GW.GhWriteError) as e:
+            a.wq.run(req, tport=lambda r: sent.append(r))
+        assert e.value.reason == "busy" and e.value.unknown is False and sent == []
+        r = env.claim(a, 201)
+    assert r["claimed"] is False and r["reason"] == "busy" and gh.writes() == [] and nodes_epics.held_claims(a) == []
+    assert a.db.kv_get("claim-pending:acme/shop#201") is None and a.wq.count == 0
+    assert env.claim(a, 201)["claimed"] is True, "the lock was given back: the next claim goes through"
+
+
+def test_a_reading_of_an_epic_makes_its_children_claimable_only_for_a_labelled_epic_and_only_for_a_while(env, monkeypatch):
+    gh = env.gh
+    a = env.actor()
+    monkeypatch.setattr(nodes_epics, "READ_CHILD_MAX_AGE", 900.0)
+    nodes_epics._last_good.clear()
+    nodes_epics._last_good[("acme", "shop", 300)] = (nodes_epics.mono(), {"epic": {"labelled": False}, "children": [{"repo": REPO, "number": 202}]})
+    assert nodes_epics.is_read_child("acme", "shop", 202) is False
+    gh.clear_calls()
+    assert env.claim(a, 202)["reason"] == "not_epic_child" and gh.calls() == []
+    read_epic([203])
+    assert nodes_epics.is_read_child("acme", "shop", 203) is True
+    env.tick(899)
+    assert nodes_epics.is_read_child("acme", "shop", 203) is True
+    env.tick(2)
+    assert nodes_epics.is_read_child("acme", "shop", 203) is False
+    assert env.claim(a, 203)["reason"] == "not_epic_child", "an old reading is not enough; the page names the epic and it is read again"
+    gh.link(f"{REPO}#147", K[203])
+    assert env.claim(a, 203, epic=147)["reason"] == "won"
+
+
+def _rec(n, state, **kw):
+    return {"v": 1, "owner": "acme", "repo": "shop", "number": n, "comment_id": 9000 + n, "nid": "a1b2c3d4", "alias": "node-a", "login": "alice", "lease_min": 30, "seq": 1,
+            "attempt": 1, "status": "claimed", "state": state, "added_assignee": False, "added_label": False, "renewals": 0, "notes": [], **kw}
+
+
+def test_trimming_the_claim_index_never_drops_a_held_or_pending_claim(env, monkeypatch):
+    monkeypatch.setattr(nodes_epics, "HELD_MAX", 2)                                    # the index keeps 6 keys
+    a = env.actor()
+    nodes_epics._rec_save(a, _rec(201, "held"))
+    nodes_epics._rec_save(a, _rec(202, "claiming"))
+    for n in range(301, 312):
+        nodes_epics._rec_save(a, _rec(n, "lost", lost_at=1.0))
+    keys = nodes_epics._index(a)
+    assert len(keys) == 6 and "claim:acme/shop#201" in keys and "claim:acme/shop#202" in keys
+    assert keys[2:] == [f"claim:acme/shop#{n}" for n in range(308, 312)], "the oldest lost records went first"
+    assert {v["issue"] for v in nodes_epics.held_claims(a) if v["state"] in ("held", "claiming")} == {201, 202}
+    assert a.db.kv_get("claim:acme/shop#301") is None, "a dropped record leaves no row behind"
+    assert nodes_epics._rec_load(a, "acme", "shop", 201)["state"] == "held"

@@ -858,7 +858,7 @@ def _claim_outcome(f: dict | None) -> Outcome:
         fix_ = fix_ or fix("Log gh in with an account that can write to the repository", "gh auth login")
     nopush = sorted(k for k, v in (f.get("push") or {}).items() if v is False)
     if nopush:
-        bad.append(f"this login cannot push to {nopush[0]}" + (f" and {len(nopush) - 1} more" if len(nopush) > 1 else "") + ", so the assignee and the label will be refused there (the claim comment itself still works)")
+        bad.append(f"this login cannot push to {nopush[0]}" + (f" and {len(nopush) - 1} more" if len(nopush) > 1 else "") + ", so a claim comment from it would not count there: the board will not claim in that repository, and the assignee and the label would be refused too")
     if bad:
         return _warn("CCBOARD_EPIC_WRITES is on, but: " + "; ".join(bad) + f". Settings: {words}.", fix_)
     seen = f"scopes: {', '.join(scopes)}" if scopes else "scopes not reported"

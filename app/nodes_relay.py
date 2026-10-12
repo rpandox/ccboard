@@ -1165,7 +1165,7 @@ def _shape_closed(body, reg):
 
 _ALIAS_OUT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}")
 CLAIM_PEER_WHY = ("writes_off", "bad_request", "other_repo", "not_epic_child", "authors_unknown", "login_not_allowed", "claim_unknown", "taken", "lost", "closed", "done",
-                  "attempts_exhausted", "too_many_claims", "rate_limited", "no_access", "no_login", "error", "outcome_unknown", "withdraw_failed")      # nodes_epics.CLAIM_TEXT without the two good answers
+                  "attempts_exhausted", "too_many_claims", "rate_limited", "busy", "no_access", "no_login", "error", "outcome_unknown", "withdraw_failed")      # nodes_epics.CLAIM_TEXT without the two good answers
 CLAIM_GOOD = ("won", "already_held")
 
 
@@ -2673,7 +2673,12 @@ def peer_epic_claim(db, params: dict, body: dict) -> dict:
     409 `claim_refused` with `why` (a word of nodes_epics.CLAIM_TEXT) and a few facts. The claim reference stays on this board (it is the fencing token), and nothing from the
     request or from GitHub is written into a comment: the comment is built from this board's own alias and node id."""
     from . import nodes_epics
-    res = nodes_epics.claim_issue(body["repo"], body["issue"], epic=body.get("epic"))
+    if not nodes_epics.claim_slots.acquire(blocking=False):          # a few claims at once; the rest are told to try again, with nothing started
+        raise Refusal(409, "claim_refused", nodes_epics.CLAIM_TEXT["busy"], why="busy")
+    try:
+        res = nodes_epics.claim_issue(body["repo"], body["issue"], epic=body.get("epic"))
+    finally:
+        nodes_epics.claim_slots.release()
     if res.get("claimed"):
         return {"claimed": True, "reason": res.get("reason"), "repo": body["repo"], "issue": body["issue"], **_claim_facts(res)}
     why = res.get("reason") if res.get("reason") in CLAIM_PEER_WHY else "error"
