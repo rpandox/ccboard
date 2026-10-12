@@ -8,6 +8,7 @@ is never retried; with CCBOARD_EPIC_WRITES off nothing at all reaches gh on the 
 """
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import json
 from types import SimpleNamespace
@@ -130,7 +131,7 @@ def test_the_row_is_a_tasks_write_a_person_only_and_never_an_agents():
 def test_no_mcp_tool_and_no_agent_body_reaches_the_row():
     assert "epic_claim" not in set(mcp.NODE_ROW.values()) and not any("claim" in t["name"] or "epic" in t["name"] for t in mcp.TOOLS)
     with pytest.raises(ValueError, match="a person's act"):
-        nr.Row(**{**ROW.__dict__, "mcp": True, "agent_model": nr.NoFields, "agent_shape": nr._agent_task})
+        dataclasses.replace(ROW, mcp=True, agent_model=nr.NoFields, agent_shape=nr._agent_task)
     with pytest.raises(nr.Invalid):
         nr.validate(ROW, {}, {"repo": REPO, "issue": 205}, agent=True)
 
