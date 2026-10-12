@@ -46,7 +46,7 @@ def issue_obj(world: dict, k: str) -> dict:
     repo = k.split("#")[0]
     n = int(k.split("#")[1])
     o = {"number": n, "title": it.get("title", "Issue %d" % n), "state": it.get("state", "open"), "body": it.get("body", ""),
-         "labels": [{"name": x} for x in it.get("labels", [])], "user": {"login": it.get("user", "alice")},
+         "labels": [{"name": x} for x in it.get("labels", [])], "user": {"login": it.get("user", "alice"), "type": it.get("user_type", "User")},
          "assignees": [{"login": x, "type": "User"} for x in it.get("assignees", [])],
          "comments": len(visible(world, k)),
          "repository_url": "https://api.github.com/repos/" + repo, "html_url": "https://github.com/%s/issues/%d" % (repo, n),

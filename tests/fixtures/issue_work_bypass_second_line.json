@@ -1,0 +1,5 @@
+{
+ "title": "Run unattended, the second line",
+ "user": "alice",
+ "body": "Go fast.\n\n## Who should do it\n\n- Claude Code: `claude --model sonnet --permission-mode acceptEdits`\n- Claude Code: `claude --permission-mode bypassPermissions`\n"
+}

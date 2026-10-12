@@ -1,0 +1,5 @@
+{
+ "title": "Run unattended, yolo",
+ "user": "alice",
+ "body": "Go fast.\n\n## Who should do it\n\n- Codex: `codex --yolo -m gpt-6.1-sol`\n"
+}

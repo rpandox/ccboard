@@ -237,6 +237,19 @@ def _repo_of(item: dict) -> tuple[str, str] | None:
     return (m.group(1), m.group(2)) if m and github.valid_slug(m.group(1), m.group(2)) else None
 
 
+def author_of(item) -> str | None:
+    """The login that wrote an issue (a GitHub issue payload), when it is a user (type User, not a bot or an organisation) with a login that passes GitHub's rule; else None. None is
+    never an allowed author."""
+    u = item.get("user") if isinstance(item, dict) else None
+    login = u.get("login") if isinstance(u, dict) and u.get("type") == "User" else None
+    return login if isinstance(login, str) and github.OWNER_RE.fullmatch(login) else None
+
+
+def author_ok(login, allowed: set[str]) -> bool:
+    """True when `login` is among the allowed authors (the one rule of `allowed_authors`: the logins of CCBOARD_EPIC_AUTHORS, else this board's gh login)."""
+    return isinstance(login, str) and login.lower() in allowed
+
+
 def parse_depends(body, owner: str, repo: str, own: int | None = None) -> list[str]:
     """The issues a child waits for: `depends on #N` or `depends on owner/name#N` lines of its body, as `owner/name#N` (lower case), at most 20; never the
     issue itself."""
@@ -274,7 +287,7 @@ def shape_child(item, owner: str, repo: str, index: int, same_repo: bool = False
             "state": "closed" if item.get("state") == "closed" else "open", "url": issue_url(o, r, num), "labels": labels,
             "depends_on_refs": parse_depends(item.get("body"), o, r, num), "order": index,
             "comments": cnt if isinstance(cnt, int) and not isinstance(cnt, bool) and cnt >= 0 else None,
-            "updated_at": github.clean_ts(item.get("updated_at")), "claims": [], "server_now": None,
+            "updated_at": github.clean_ts(item.get("updated_at")), "author": author_of(item), "claims": [], "server_now": None,
             "thread": None, "reason": None, "fresh": False, "read_at": None}               # thread: None (not read), "complete" (every comment read) or "incomplete"; reason: why the claim is unknown (UNKNOWN_TEXT)
 
 
@@ -470,7 +483,7 @@ def _read_epic(owner: str, repo: str, n: int, readable: frozenset = frozenset(),
     labels = [lb for lb in labels if lb]
     part = {"epic": {"repo": f"{owner}/{repo}", "owner": owner, "name": repo, "number": n, "title": github.clean_text(issue.get("title"), 200) or f"Issue {n}",
                      "url": issue_url(owner, repo, n), "state": "closed" if issue.get("state") == "closed" else "open", "labelled": EPIC_LABEL in labels,
-                     "updated_at": github.clean_ts(issue.get("updated_at"))},
+                     "updated_at": github.clean_ts(issue.get("updated_at")), "author": author_of(issue)},
             "source": "sub_issues", "note": None, "truncated": False, "partial": False, "comments_pending": 0, "comments_failed": 0, "partial_error": None,
             "server_now": head.server_now, "stale": head.stale}
     try:
@@ -711,7 +724,27 @@ def settings_key(owner: str, repo: str, n) -> str:
     return f"{KV_PREFIX}{owner.lower()}/{repo.lower()}#{int(n)}"
 
 
-DEFAULTS = {"pins": {}, "epic_pin": None, "paused": False, "report": False, "auto_pr": False}
+REPORTS = ("phase", "summary", "none")       # what a node posts on the issue of this epic (issue #149): phase comments only (the default), also the redacted head of the result, or nothing
+DEFAULTS = {"pins": {}, "epic_pin": None, "paused": False, "report": "phase", "auto_pr": False, "close": False}
+
+
+def report_word(v, default: str = "phase") -> str:
+    """The `report` setting as one of REPORTS. A stored boolean is migrated without losing the choice (the first phases kept it as true or false): true is `summary` (the person
+    asked for the result to be reported), false and missing are `phase`. Anything else is the default."""
+    if v is True:
+        return "summary"
+    if v is False or v is None:
+        return "phase"
+    return v if isinstance(v, str) and v in REPORTS else default
+
+
+def work_plan(st: dict) -> dict:
+    """The three per-epic switches that start off, in plain words for the page, so a person reads what Run will post and push before pressing it."""
+    return {"report": {"phase": "Posts short phase comments on each issue: waiting for a person, pull request opened, done or failed. No result text leaves the node.",
+                       "summary": "Posts the phase comments and the first 1500 characters of each result, after home folders and anything shaped like a token are removed.",
+                       "none": "Posts no phase comment and no result. The claim comment and a refusal still appear."}[st["report"]],
+            "auto_pr": "Pushes the task's own branch and opens a pull request when a task is done." if st["auto_pr"] else "Pushes nothing and opens no pull request.",
+            "close": "The pull request says Closes #N." if st["close"] and st["auto_pr"] else ("Close is on, but it only applies with pull requests on." if st["close"] else "Nothing says Closes #N.")}
 
 
 def load_settings(db, owner: str, repo: str, n) -> dict:
@@ -728,7 +761,7 @@ def load_settings(db, owner: str, repo: str, n) -> dict:
             pins[str(int(k))] = h
     ep = v.get("epic_pin")
     return {"pins": pins, "epic_pin": ep if ep == nodes.LOCAL or nodes.valid_handle(ep) else None, "paused": v.get("paused") is True,
-            "report": v.get("report") is True, "auto_pr": v.get("auto_pr") is True}
+            "report": report_word(v.get("report")), "auto_pr": v.get("auto_pr") is True, "close": v.get("close") is True}
 
 
 def _handle_ok(h, known: set[str]) -> bool:
@@ -744,7 +777,7 @@ def _read_children(owner: str, repo: str, n) -> set[int]:
 
 
 def save_settings(db, owner: str, repo: str, n, patch: dict) -> dict:
-    """Merge `patch` ({pins, epic_pin, paused, report, auto_pr}; only the keys present) into the stored settings and return the new ones. `pins` merges per
+    """Merge `patch` ({pins, epic_pin, paused, report (phase | summary | none; a boolean is migrated), auto_pr, close}; only the keys present) into the stored settings and return the new ones. `pins` merges per
     issue: a handle sets, null or '' removes. Every handle must be `local` or a node in the registry, and a pin may name only an issue of the epic's own
     repository that this board has read as one of its children (BadRequest otherwise); issue keys are digits, flags are booleans. Nothing is sent to GitHub.
     When everything is back to its default the row is removed."""
@@ -777,11 +810,16 @@ def save_settings(db, owner: str, repo: str, n, patch: dict) -> dict:
             cur["epic_pin"] = h
         else:
             raise projects.BadRequest("epic_pin names a node that is not paired with this board (or not a node handle)")
-    for k in ("paused", "report", "auto_pr"):
+    for k in ("paused", "auto_pr", "close"):
         if k in patch:
             if not isinstance(patch[k], bool):
                 raise projects.BadRequest(f"{k} is true or false")
             cur[k] = patch[k]
+    if "report" in patch:
+        v = patch["report"]
+        if not (isinstance(v, bool) or (isinstance(v, str) and v in REPORTS)):
+            raise projects.BadRequest("report is phase, summary or none")
+        cur["report"] = report_word(v)                         # a boolean from an older page is migrated: true is summary, false is phase
     key = settings_key(owner, repo, n)
     if cur == DEFAULTS:
         db.kv_del(key)
@@ -791,14 +829,14 @@ def save_settings(db, owner: str, repo: str, n, patch: dict) -> dict:
 
 
 def settings_view(db, owner: str, repo: str, n, records) -> dict:
-    """{pins: {issue: {handle, node_name, source, stale}}, epic_pin, paused, report, auto_pr, nodes}: the stored settings as the page shows them. A pin to a node
-    that is no longer in the registry is `stale: true` and ignored."""
+    """{pins: {issue: {handle, node_name, source, stale}}, epic_pin, paused, report (phase | summary | none), auto_pr, close, plan, nodes}: the stored settings as the page shows them.
+    `plan` says in plain words what Run will post and push (report, auto_pr, close). A pin to a node that is no longer in the registry is `stale: true` and ignored."""
     known = {r["handle"] for r in nodes.registry(db)}
     names = {x["handle"]: x["name"] for x in node_list(records)}
     st = load_settings(db, owner, repo, n)
     return {"pins": {k: _pin_view(h, "page", known, names) for k, h in st["pins"].items()},
             "epic_pin": _pin_view(st["epic_pin"], "page", known, names) if st["epic_pin"] else None,
-            "paused": st["paused"], "report": st["report"], "auto_pr": st["auto_pr"], "nodes": node_list(records)}
+            "paused": st["paused"], "report": st["report"], "auto_pr": st["auto_pr"], "close": st["close"], "plan": work_plan(st), "nodes": node_list(records)}
 
 
 def _alias_map(records, display: str) -> dict[str, str]:
@@ -945,10 +983,18 @@ def detail(db, owner: str, repo: str, n: int, records, *, login=None, repos=None
            "claims_note": None if allowed else AUTHORS_NOTE,
            **settings_view(db, owner, repo, n, records), "rate": github.reader.rate(), "server_now": github.epoch_iso(part["server_now"]) if part else None, "error": error, "stale_age_s": stale_age,
            "truncated": bool(part and part["truncated"]), "partial": bool(part and part["partial"]), "comments_pending": part["comments_pending"] if part else 0,
-           "empty": bool(part is not None and not part["children"]), "writes": github_write.writes_enabled(), "own_claims": []}
+           "empty": bool(part is not None and not part["children"]), "writes": github_write.writes_enabled(), "own_claims": [],
+           "authors": {"allowed": sorted(allowed), "epic": None, "epic_ok": None, "blocked": [], "text": None}}
     if part is None:
         return out
     out["own_claims"] = own_claims(db, [(c["repo"], c["number"]) for c in part["children"]])
+    from . import nodes_work
+    works = nodes_work.work_views(db, [(c["repo"], c["number"]) for c in part["children"]])          # this board's own epic work: reads the database only
+    blocked = [{"number": c["number"], "author": c.get("author")} for c in part["children"] if c["state"] == "open" and allowed and not author_ok(c.get("author"), allowed)]
+    epic_ok = author_ok(part["epic"].get("author"), allowed) if allowed else None
+    out["authors"] = {"allowed": sorted(allowed), "epic": part["epic"].get("author"), "epic_ok": epic_ok, "blocked": blocked,
+                      "text": (None if not allowed else "The epic is not by an allowed author, so nothing in it will run." if not epic_ok else
+                               ("These issues are not by an allowed author and will be skipped: " + ", ".join(f"#{b['number']}" for b in blocked) + ".") if blocked else None)}
     views = _task_views(db, records, display)
     rows = []
     own = f"{owner}/{repo}".lower()
@@ -985,8 +1031,10 @@ def detail(db, owner: str, repo: str, n: int, records, *, login=None, repos=None
                                                   "task_ref": claim["task_ref"], "branch": claim["branch"]},
             "claim_rejected": rejected, "claim_note": STALE_NOTE if rejected else None,
             "claim_state": cstate, "claims_read_at": github.epoch_iso(c["read_at"]), "claim_unknown": {"reason": reason, "text": UNKNOWN_TEXT[reason]} if cstate == "unknown" else None,
-            "task": task, "pr": pr, "pin": pin,
-            "label_pin": lp, "bucket": {"node": who, "state": bucket}})                 # the progress strip's own bucket of this child: the page groups rows by it, so rows and strip agree
+            "task": task, "pr": pr, "pin": pin, "author": c.get("author"), "author_ok": author_ok(c.get("author"), allowed) if allowed else None,
+            "work": works.get((c["repo"].lower(), c["number"])),
+            "label_pin": lp, "bucket": {"node": who, "state": bucket}})
+        out["children"][-1]["phase"] = (out["children"][-1]["work"] or {}).get("phase") or bucket                 # the progress strip's own bucket of this child: the page groups rows by it, so rows and strip agree
     prog = progress_of(rows, amap)
     prog["open"] = sum(1 for c in part["children"] if c["state"] == "open")
     prog["closed"] = sum(1 for c in part["children"] if c["state"] == "closed")
@@ -1203,6 +1251,7 @@ sleep = time.sleep                      # the protocol's waits: tests patch it
 CLAIMS_IN_FLIGHT = 4                    # claims a peer may ask of this board at once; one more is refused as `busy`
 claim_slots = threading.BoundedSemaphore(CLAIMS_IN_FLIGHT)           # taken without waiting by the peer route (nodes_relay.peer_epic_claim)
 LOST_HOOKS: list = []                   # callables (claim view, reason) run once when a claim is definitely lost: the run phase parks the task and raises the toast
+RENEW_HOOKS: list = []                  # callables (actor, claim view) run on every beat of the renew timer for each held claim (issue #149: waiting for a person, a comment that had to wait, a start to retry)
 CLAIM_TEXT = {
     "won": "This node holds the issue.",
     "already_held": "This board already holds that issue.",
@@ -1501,6 +1550,29 @@ def is_read_child(owner: str, repo: str, n) -> bool:
     with _lock:
         parts = [v[1] for v in _last_good.values() if 0 <= now - v[0] <= READ_CHILD_MAX_AGE and (v[1].get("epic") or {}).get("labelled") is True]
     return any(c.get("number") == int(n) and str(c.get("repo", "")).lower() == slug for part in parts for c in part.get("children") or [])
+
+
+def epic_has_child(epic: tuple, owner: str, repo: str, n) -> bool:
+    """True when the epic `epic` = (owner, repo, number), as this board last read it from GitHub (memory only, younger than READ_CHILD_MAX_AGE), is labelled `ccboard:epic` and lists issue
+    n of owner/repo as a child. Unlike `is_read_child` it names the epic: the author check of the work route needs THIS epic to be the issue's parent, not any epic."""
+    now = mono()
+    with _lock:
+        hit = _last_good.get((str(epic[0]).lower(), str(epic[1]).lower(), int(epic[2])))
+    if hit is None or not 0 <= now - hit[0] <= READ_CHILD_MAX_AGE or (hit[1].get("epic") or {}).get("labelled") is not True:
+        return False
+    slug = f"{owner}/{repo}".lower()
+    return any(c.get("number") == int(n) and str(c.get("repo", "")).lower() == slug for c in hit[1].get("children") or [])
+
+
+def epics_of_child(owner: str, repo: str, n) -> list[tuple]:
+    """The epics (owner, repo, number) this board has read that list issue n of owner/repo as a child (see `epic_has_child`): the way a work request that names no epic finds it."""
+    now = mono()
+    slug = f"{owner}/{repo}".lower()
+    with _lock:
+        items = list(_last_good.items())
+    return [(part["epic"].get("owner") or _o, part["epic"].get("name") or _r, _n) for (_o, _r, _n), (at, part) in items
+            if 0 <= now - at <= READ_CHILD_MAX_AGE and (part.get("epic") or {}).get("labelled") is True
+            and any(c.get("number") == int(n) and str(c.get("repo", "")).lower() == slug for c in part.get("children") or [])]
 
 
 def _read(actor: Actor, owner: str, repo: str, n, repos) -> dict:
@@ -2107,12 +2179,18 @@ def _renew_loop(actor: Actor, stop: threading.Event) -> None:
         for v in live:
             if stop.is_set():
                 return
-            if v["renewals"] >= RENEW_MAX:
-                continue                                          # bounded: a claim renewed for 24 h is left to lapse
-            try:
-                renew(v["claim_ref"], actor=actor, stop=stop)
-            except Exception as e:
-                log.warning("claim renew failed: %s", e.__class__.__name__)
+            if v["renewals"] < RENEW_MAX:                         # bounded: a claim renewed for 24 h is left to lapse
+                try:
+                    renew(v["claim_ref"], actor=actor, stop=stop)
+                except Exception as e:
+                    log.warning("claim renew failed: %s", e.__class__.__name__)
+            for hook in list(RENEW_HOOKS):                        # the work of a held claim (issue #149) is looked at on the same beat; only while a claim is held
+                if stop.is_set():
+                    return
+                try:
+                    hook(actor, v)
+                except Exception as e:
+                    log.warning("claim beat hook failed: %s", e.__class__.__name__)
     with _klock:
         cur = _renewers.get(id(actor.db))
         if cur is not None and cur[1] is stop:

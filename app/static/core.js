@@ -253,6 +253,18 @@ function demoMake(method, path, body) {
     else demoMakeRepo(project, b.name || demoRepoName(b.url));
   }
 }
+/* ?taskepic=<name> (running waiting pr failed cancelled lost) lays a variant of the epic record (issue #149) over the demo's task 23: demo/task-epic.json. */
+async function demoTaskEpic(st) {
+  let q = '';
+  try { q = location.search; } catch (_) { q = ''; }
+  const m = /[?&]taskepic=([a-z]+)/.exec(q);
+  if (!m || !st || !Array.isArray(st.tasks)) return st;
+  const r = await fetch('/static/demo/task-epic.json');
+  const fx = r.ok ? await r.json() : {};
+  const v = m[1] !== '_note' && ownKey(fx, m[1]) ? fx[m[1]] : null;
+  return v ? { ...st, tasks: st.tasks.map((t) => (t.id === 23 ? { ...t, ...(v.task || {}), epic: v.epic } : t)) } : st;
+}
+
 function demoMadeState(st) {
   if (st && Array.isArray(st.projects) && Object.keys(demoNoAuto).length) {
     const lay = (list) => (Array.isArray(list) ? list.map((x) => (ownKey(demoNoAuto, x.tmux) ? { ...x, flags: { ...(x.flags || {}), no_autoresume: demoNoAuto[x.tmux] || undefined } } : x)) : list);
@@ -287,7 +299,7 @@ async function demoMemVariant(data0, bare) {
 
 // demo/state.json must carry every key of the real /api/state: tests/test_api_v054.py (the demo state test) fails when build_state() gains one.
 async function demoApi(method, path, body) {
-  if (/^\/api\/(epics(\/|$)|nodes\/[^/]+\/epics\/claim$)/.test(path.split('?')[0]) && typeof demoEpics === 'function') return demoEpics(method, path, body);   // the epic view (issue #147, demo/epic.json): its answers and pins are played in pages/epic.js
+  if (/^\/api\/(epics(\/|$)|nodes\/[^/]+\/epics\/(claim|work)$)/.test(path.split('?')[0]) && typeof demoEpics === 'function') return demoEpics(method, path, body);   // the epic view (issue #147, demo/epic.json): its answers and pins are played in pages/epic.js
   if (method !== 'GET') {
     await new Promise((resolve) => setTimeout(resolve, 150));
     demoMake(method, path, body);
@@ -361,7 +373,7 @@ async function demoApi(method, path, body) {
     for (const [k, m] of Object.entries(data.meta)) meta[k] = m && typeof m.resets_at === 'number' ? { ...m, resets_at: m.resets_at + dt } : m;
     return { ...data, meta };
   }
-  if (name === 'state') return demoMadeState(demoUsageRefresh(demoRebase(data)));                 // the usage reading's own time follows the make-believe refresh above
+  if (name === 'state') return demoTaskEpic(demoMadeState(demoUsageRefresh(demoRebase(data))));                 // the usage reading's own time follows the make-believe refresh above
   return name === 'usage_summary' ? demoRebase(data) : data;                         // both carry demo.epoch: the summary's reset times and ISO stamps ride along with the state's
 }
 

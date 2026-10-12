@@ -123,7 +123,7 @@ def hub_path(row: nr.Row, handle: str = "node-b", **more) -> str:
 
 SAMPLE = {"task_create": {"project": "shop", "repo": "api", "title": "A task", "prompt": "do it"}, "task_dispatch": {}, "session_open": {"project": "shop", "repo": "api"},
           "prompt": {"text": "hello"}, "keys": {"key": "Enter"}, "ack": {}, "close": {}, "permission_answer": {},
-          "epic_claim": {"repo": "acme/shop", "issue": 205, "epic": 147}}
+          "epic_claim": {"repo": "acme/shop", "issue": 205, "epic": 147}, "epic_work": {"repo": "acme/shop", "issue": 205, "epic": 147}}
 
 
 def ask(board, row, handle: str = "node-b", **kw):
@@ -182,9 +182,9 @@ def test_the_rows_are_the_reads_and_the_writes_and_screen_text_needs_sessions_no
         "prompt": ("POST", "/api/node/sessions/{name}/prompt", "sessions"), "keys": ("POST", "/api/node/sessions/{name}/keys", "sessions"),
         "ack": ("POST", "/api/node/sessions/{name}/ack", "sessions"), "close": ("DELETE", "/api/node/sessions/{name}", "sessions"),
         "permissions": ("GET", "/api/node/permissions", "permissions"), "permission_answer": ("POST", "/api/node/permissions/{pid}/{decision}", "permissions"),
-        "epic_claim": ("POST", "/api/node/epics/claim", "tasks")}
+        "epic_claim": ("POST", "/api/node/epics/claim", "tasks"), "epic_work": ("POST", "/api/node/epics/work", "tasks")}
     assert {r.name: r.rate_class for r in ROWS if r.peer_method != "GET"} == {n: "write" for n in ("task_create", "task_dispatch", "session_open", "prompt", "keys", "ack", "close",
-                                                                                                     "permission_answer", "epic_claim")}
+                                                                                                     "permission_answer", "epic_claim", "epic_work")}
     assert nr.BY_NAME["permissions"].rate_class == "read" and nr.BY_NAME["permissions"].scope == "permissions", "the list is a read of the permissions scope, never `read`"
     assert all(r.guard for r in ROWS if r.name in ("task_create", "task_dispatch", "session_open", "prompt", "keys")), "every row that starts or steers an agent runs the guard on both sides"
     assert not any(r.guard for r in ROWS if r.name in ("ack", "close", "permissions", "permission_answer")), "these carry no text for an agent"

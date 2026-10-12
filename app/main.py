@@ -21,6 +21,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
@@ -29,7 +30,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictBool
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_stream, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_stream, nodes_work, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import claude_pane, codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -142,6 +143,7 @@ def _recover_claims() -> None:
         did = nodes_epics.recover()
         if did:
             log.info("epic claims: %s", ", ".join(sorted({d['did'] for d in did})))
+        nodes_work.recover(db)                                  # work (issue #149) whose task ended while the board was down: its report is finished now
     except Exception as e:
         log.warning("epic claims could not be recovered: %s", e.__class__.__name__)
 
@@ -237,6 +239,7 @@ async def lifespan(app: FastAPI):
     if claims_task is not None:
         await asyncio.wait({claims_task}, timeout=15)                      # a recovery still asking GitHub is given a moment; it is not cancelled half way
     await asyncio.to_thread(nodes_epics.stop_renewals, 15.0)               # the renew timer (only alive while this board holds a claim) stops before the database does
+    await asyncio.to_thread(nodes_work.stop_work, 15.0)                    # a report of epic work that is writing to an issue is given a moment (the next start finishes what is left)
     await asyncio.to_thread(nodes_stream.close_all, "shutdown")      # the streams to peers end before the hub and the database do
     await asyncio.to_thread(hub.stop)                     # it waits (6 s at most) for the polls in flight: not on the event loop, which a poll through this app may need
 
@@ -1656,6 +1659,7 @@ def _tasks_view(rows: list[dict] | None = None) -> list[dict]:
     queued = any((t.get("phase") or "running") == "queued" for t in rows)
     gates = {a: taskflow.limit_gate(db, agent=a) for a in ("claude", "codex")} if queued else {}      # each agent waits on its own window
     by_id = {t["id"]: t for t in rows}
+    has_work = any(t.get("issue_number") for t in rows) and nodes_work.has_records(db)          # one read of one key, and only when a task has an issue: a board that never ran epic work reads nothing more
     out = []
     for t in rows:
         if t.get("session_row") is not None:
@@ -1710,6 +1714,9 @@ def _tasks_view(rows: list[dict] | None = None) -> list[dict]:
             "session": {"state": s["state"], "state_at": s["state_at"], "last_message": s["last_message"],
                         "needs_attention": s["needs_attention"], "command": s["command"]} if s else None,
         })
+        ew = nodes_work.task_work(db, t) if has_work and t.get("issue_number") else None          # a task an epic started (issue #149) says so: its phase, branch and the settings it runs with; no other task has the key
+        if ew is not None:
+            out[-1]["epic"] = ew
     return out
 
 
@@ -4689,15 +4696,17 @@ class EpicSettingsIn(BaseModel):
     pins: dict[str, str | None] | None = None
     epic_pin: str | None = None
     paused: StrictBool | None = None
-    report: StrictBool | None = None
+    report: Literal["phase", "summary", "none"] | StrictBool | None = None          # a boolean from an older page is migrated (true: summary, false: phase)
     auto_pr: StrictBool | None = None
+    close: StrictBool | None = None
 
 
 @app.put("/api/epics/{owner}/{repo}/{n}/settings")
 def api_epic_settings(owner: str, repo: str, n: str, body: EpicSettingsIn, request: Request):
     """Pins and pause for one epic, kept on this board only (kv `epic:<owner/repo#n>`); only the keys sent change. `pins` merges per issue number (a node handle
-    sets, null removes), `epic_pin` is a handle or null, `paused`, `report` and `auto_pr` are booleans. A handle must be `local` or a paired node (400 otherwise).
-    Nothing is sent to GitHub. A signed-in person only: the hook token, the hub and a node token get 403. Answers {pins, epic_pin, paused, report, auto_pr, nodes}."""
+    sets, null removes), `epic_pin` is a handle or null, `paused`, `auto_pr` and `close` are booleans, `report` is phase (the default), summary or none (a boolean from an older page
+    is read as summary / phase). A handle must be `local` or a paired node (400 otherwise). Nothing is sent to GitHub. A signed-in person only: the hook token, the hub and a node token
+    get 403. Answers {pins, epic_pin, paused, report, auto_pr, close, plan, nodes}."""
     user = getattr(request.state, "user", None)
     if user in ("local-token", "hub") or (isinstance(user, str) and user.startswith("node:")):
         raise projects.Forbidden("epic pins and pause are set by a signed-in person")

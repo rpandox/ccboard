@@ -1000,7 +1000,7 @@ test('demo mode routes /api/epics through the epic bundle: the list, one epic, a
 test('demo pins and pause are played on the page: the PUT answers the settings shape, a bad handle is a 400, and the next read shows what was set', async () => {
   const w = await demoWorld();
   const put = await demoCall(w, 'PUT', '/api/epics/example/website/147/settings', { pins: { 203: 'node-b', 205: null }, paused: true, epic_pin: 'local' });
-  assert.deepEqual(Object.keys(put).sort(), ['auto_pr', 'epic_pin', 'nodes', 'paused', 'pins', 'report']);
+  assert.deepEqual(Object.keys(put).sort(), ['auto_pr', 'close', 'epic_pin', 'nodes', 'paused', 'pins', 'plan', 'report']);
   assert.deepEqual(Object.keys(put.pins), ['203']);
   assert.equal(put.paused, true);
   assert.equal(put.epic_pin.handle, 'local');

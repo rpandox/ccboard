@@ -65,6 +65,17 @@ BLOCKED = "blocked: step failed"
 EXIT_DIALOG_KEEP = "keep worktree"       # Claude's /exit dialog for a worktree with changes: "1. Keep worktree" and "2. Remove worktree"
 EXIT_DIALOG_REMOVE = "remove worktree"
 TRANSCRIPT_TAIL = 256 * 1024
+RESULT_HOOKS: list = []         # callables (db, task id, phase) run once a task has reached done, failed or cancelled and its row says so (issue #149: a task an epic started reports on its issue)
+
+
+def _ended(db, task_id: int, phase: str) -> None:
+    """Tell the result hooks that a task is over. A hook must return at once for a task it does not know (a plain board has none registered that does anything) and do its slow work
+    (GitHub, git) on a thread of its own: this runs in the request thread of a Stop hook. A hook that raises is logged and never costs the task its result."""
+    for hook in list(RESULT_HOOKS):
+        try:
+            hook(db, task_id, phase)
+        except Exception as e:
+            log.warning("task result hook failed: %s", e.__class__.__name__)
 
 
 def _iso(epoch: float) -> str:
@@ -548,6 +559,7 @@ class Runtime:
             text = (message or "the turn failed").strip()[:RESULT_MAX]
             self.db.task_update(t["id"], phase="failed", result=text, result_at=now_iso, done_at=now_iso)
             self.advance(t["id"])                                                   # cancels the steps queued behind it
+            _ended(self.db, t["id"], "failed")
             return {"task": t["id"], "phase": "failed"}
         text = (result or "").strip() or transcript_tail(self.db.open_row(name) or row) or ""
         self.db.task_update(t["id"], phase="done", result=text[:RESULT_MAX] or None, result_at=now_iso, done_at=now_iso)
@@ -556,6 +568,7 @@ class Runtime:
             self.advance(t["id"])
         except Exception as e:                                                      # a chain problem must not cost the result its close
             log.warning("chain advance after task %s failed: %s", t["id"], e)
+        _ended(self.db, t["id"], "done")
         if text:
             try:                                                                    # claude-mem write-back: off by default, a daemon thread, never fails the task
                 from . import memory_proxy
@@ -850,4 +863,5 @@ class Runtime:
             stamp = db_now()
             self.db.task_update(t["id"], phase="cancelled", done_at=stamp)
             swept.append(t["id"])
+            _ended(self.db, t["id"], "cancelled")
         return swept

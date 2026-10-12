@@ -1,0 +1,157 @@
+{
+ "_note": "Variants of the epic record on the demo's task 23 (issue #149): ?taskepic=<name> lays one over it. Each is the board's own work record of a task an epic started (nodes_work.view_of) and the task fields it changes.",
+ "running": {
+  "epic": {
+   "phase": "running",
+   "state": "active",
+   "task_id": 23,
+   "branch": "worktree-audit-sw-cache",
+   "alias": "node-a",
+   "attempt": 1,
+   "report": "phase",
+   "auto_pr": false,
+   "close": false,
+   "pr_number": null,
+   "waiting": false,
+   "since": "2026-10-03T01:00:00+00:00",
+   "issue_url": "https://github.com/example/board/issues/47",
+   "claim_url": "https://github.com/example/board/issues/47#issuecomment-4701"
+  },
+  "task": {
+   "phase": "running",
+   "session": {
+    "state": "working",
+    "state_at": "2026-10-03T02:20:00+00:00",
+    "last_message": "Reading the service worker's cache rules.",
+    "needs_attention": false,
+    "command": "claude"
+   }
+  }
+ },
+ "waiting": {
+  "epic": {
+   "phase": "waiting",
+   "state": "active",
+   "task_id": 23,
+   "branch": "worktree-audit-sw-cache",
+   "alias": "node-a",
+   "attempt": 1,
+   "report": "phase",
+   "auto_pr": false,
+   "close": false,
+   "pr_number": null,
+   "waiting": true,
+   "since": "2026-10-03T01:00:00+00:00",
+   "issue_url": "https://github.com/example/board/issues/47",
+   "claim_url": "https://github.com/example/board/issues/47#issuecomment-4701"
+  },
+  "task": {
+   "phase": "running",
+   "session": {
+    "state": "waiting",
+    "state_at": "2026-10-03T02:20:00+00:00",
+    "last_message": "Reading the service worker's cache rules.",
+    "needs_attention": true,
+    "command": "claude"
+   }
+  }
+ },
+ "pr": {
+  "epic": {
+   "phase": "pr",
+   "state": "active",
+   "task_id": 23,
+   "branch": "worktree-audit-sw-cache",
+   "alias": "node-a",
+   "attempt": 1,
+   "report": "phase",
+   "auto_pr": true,
+   "close": false,
+   "pr_number": 77,
+   "waiting": false,
+   "since": "2026-10-03T01:00:00+00:00",
+   "issue_url": "https://github.com/example/board/issues/47",
+   "claim_url": "https://github.com/example/board/issues/47#issuecomment-4701"
+  },
+  "task": {
+   "phase": "running",
+   "session": {
+    "state": "working",
+    "state_at": "2026-10-03T02:20:00+00:00",
+    "last_message": "Reading the service worker's cache rules.",
+    "needs_attention": false,
+    "command": "claude"
+   }
+  }
+ },
+ "failed": {
+  "epic": {
+   "phase": "failed",
+   "state": "finished",
+   "task_id": 23,
+   "branch": "worktree-audit-sw-cache",
+   "alias": "node-a",
+   "attempt": 2,
+   "report": "phase",
+   "auto_pr": false,
+   "close": false,
+   "pr_number": null,
+   "waiting": false,
+   "since": "2026-10-03T01:00:00+00:00",
+   "issue_url": "https://github.com/example/board/issues/47",
+   "claim_url": "https://github.com/example/board/issues/47#issuecomment-4701"
+  },
+  "task": {
+   "phase": "failed"
+  }
+ },
+ "cancelled": {
+  "epic": {
+   "phase": "cancelled",
+   "state": "finished",
+   "task_id": 23,
+   "branch": "worktree-audit-sw-cache",
+   "alias": "node-a",
+   "attempt": 1,
+   "report": "phase",
+   "auto_pr": false,
+   "close": false,
+   "pr_number": null,
+   "waiting": false,
+   "since": "2026-10-03T01:00:00+00:00",
+   "issue_url": "https://github.com/example/board/issues/47",
+   "claim_url": "https://github.com/example/board/issues/47#issuecomment-4701"
+  },
+  "task": {
+   "phase": "cancelled"
+  }
+ },
+ "lost": {
+  "epic": {
+   "phase": "lost",
+   "state": "lost",
+   "task_id": 23,
+   "branch": "worktree-audit-sw-cache",
+   "alias": "node-a",
+   "attempt": 1,
+   "report": "phase",
+   "auto_pr": false,
+   "close": false,
+   "pr_number": null,
+   "waiting": false,
+   "since": "2026-10-03T01:00:00+00:00",
+   "issue_url": "https://github.com/example/board/issues/47",
+   "claim_url": "https://github.com/example/board/issues/47#issuecomment-4701"
+  },
+  "task": {
+   "phase": "running",
+   "session": {
+    "state": "working",
+    "state_at": "2026-10-03T02:20:00+00:00",
+    "last_message": "Reading the service worker's cache rules.",
+    "needs_attention": false,
+    "command": "claude"
+   }
+  }
+ }
+}

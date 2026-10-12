@@ -102,12 +102,19 @@ def describe(wt: Path, base: str, title_hint: str, prompt_hint: str) -> dict:
     return {"title": title, "body": body, "commits": d["commits"], "files": d["files"]}
 
 
-def push_branch(wt: Path, branch: str) -> None:
-    run(["git", "push", "-u", "origin", branch], wt, timeout=180)
+NO_HOOKS = ["-c", "core.hooksPath=/dev/null"]     # the switch for "run no hook script": the unattended epic path adds it, with --no-verify, to its commit and push
 
 
-def pr_view(wt: Path, branch: str) -> dict | None:
-    cp = run(["gh", "pr", "view", branch, "--json", "number,url,state,isDraft,title,mergeable,mergeStateStatus,reviewDecision,"
+def push_branch(wt: Path, branch: str, unattended: bool = False) -> None:
+    """`unattended` (the epic's auto_pr: nobody has read the diff) runs no repository hook, because an agent could have edited a tracked hook script. The person-triggered flow keeps its hooks."""
+    if unattended:
+        run(["git", *NO_HOOKS, "push", "--no-verify", "-u", "origin", branch], wt, timeout=180)
+    else:
+        run(["git", "push", "-u", "origin", branch], wt, timeout=180)
+
+
+def pr_view(wt: Path, branch: str, repo: str | None = None) -> dict | None:
+    cp = run(["gh", "pr", "view", branch, *(["--repo", repo] if repo else []), "--json", "number,url,state,isDraft,title,mergeable,mergeStateStatus,reviewDecision,"
               "statusCheckRollup,headRefName,baseRefName"], wt, timeout=60, check=False)
     if cp.returncode != 0:
         return None
@@ -128,9 +135,9 @@ def local_head(wt: Path) -> str:
     return run(["git", "rev-parse", "HEAD"], wt, check=False).stdout.strip()
 
 
-def push_and_verify(wt: Path, branch: str) -> str:
+def push_and_verify(wt: Path, branch: str, unattended: bool = False) -> str:
     """Push the branch and confirm origin has exactly the local HEAD. Returns the sha."""
-    push_branch(wt, branch)
+    push_branch(wt, branch, unattended)
     head = local_head(wt)
     remote = remote_head(wt, branch)
     if not head or remote != head:
@@ -138,9 +145,11 @@ def push_and_verify(wt: Path, branch: str) -> str:
     return head
 
 
-def pr_create(wt: Path, branch: str, base: str, title: str, body: str, draft: bool = False) -> dict:
-    push_and_verify(wt, branch)  # also syncs new commits when the PR already exists
-    existing = pr_view(wt, branch)
+def pr_create(wt: Path, branch: str, base: str, title: str, body: str, draft: bool = False, repo: str | None = None, unattended: bool = False) -> dict:
+    """`repo` ("owner/name") names the repository to gh, so a clone with an upstream remote cannot open the pull request elsewhere; `unattended` pushes without hooks (see push_branch).
+    Both default to what the person-triggered flow always did."""
+    push_and_verify(wt, branch, unattended)  # also syncs new commits when the PR already exists
+    existing = pr_view(wt, branch, repo)
     if existing and existing.get("state") == "OPEN":
         return {"url": existing["url"], "number": existing["number"], "existing": True}
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
@@ -148,6 +157,8 @@ def pr_create(wt: Path, branch: str, base: str, title: str, body: str, draft: bo
         body_file = f.name
     try:
         args = ["gh", "pr", "create", "--title", title[:250], "--body-file", body_file, "--base", base, "--head", branch]
+        if repo:
+            args += ["--repo", repo]
         if draft:
             args.append("--draft")
         cp = run(args, wt, timeout=120)

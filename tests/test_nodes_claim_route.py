@@ -124,7 +124,7 @@ def audit(board, **kw):
 def test_the_row_is_a_tasks_write_a_person_only_and_never_an_agents():
     assert (ROW.peer_method, ROW.peer_path, ROW.hub_path, ROW.scope, ROW.rate_class, ROW.audit_action) == ("POST", "/api/node/epics/claim", CLAIM_ROUTE, "tasks", "write", "claim_issue")
     assert ROW.human_only and ROW.acting and not ROW.mcp and ROW.agent_model is None and ROW.agent_shape is None and not ROW.guard
-    assert ROW.timeout == nr.CLAIM_TIMEOUT == 45.0 and all(r.timeout == nr.RELAY_TIMEOUT for r in nr.RELAY if r is not ROW), "only the claim waits longer than 10 s"
+    assert ROW.timeout == nr.CLAIM_TIMEOUT == 45.0 and all(r.timeout == nr.RELAY_TIMEOUT for r in nr.RELAY if r.name not in ("epic_claim", "epic_work")), "only the claim and the run wait longer than 10 s"
     assert ROW.body_model.model_config.get("extra") == "forbid" and set(ROW.body_model.model_fields) == {"repo", "issue", "epic"}
     assert ROW.target({}) == "claim" and ROW.body_target({}, {"repo": REPO, "issue": 205}) == "claim acme/shop#205"
 

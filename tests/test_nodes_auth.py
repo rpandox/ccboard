@@ -55,6 +55,7 @@ EXPECTED_NODE_ROUTES = {
     ("DELETE", "/api/node/sessions/{name}"): "sessions",
     ("GET", "/api/node/permissions"): "permissions",             # what the agent wants to do (tool and a summary): never `read`
     ("POST", "/api/node/permissions/{pid}/{decision}"): "permissions",      # allow or deny, once; the hub route is a signed-in person only
+    ("POST", "/api/node/epics/work"): "tasks",                   # run a claimed issue as a task on this board and report on it (issue #149): the claim, the author check, a task with the issue's own model line; an acting user is required
     ("POST", "/api/node/epics/claim"): "tasks",                  # claim one issue of an epic on this board (issue #148): a write to GitHub made by this board, only with CCBOARD_EPIC_WRITES=1; an acting user is required
 }
 # What a listed route answers a token that holds every scope, on the empty test board: the handler's own status, never a 403.
@@ -62,7 +63,7 @@ LISTED_STATUS = {("GET", "/api/node/tasks/{tid}"): 404, ("GET", "/api/node/sessi
                  ("POST", "/api/node/tasks/{tid}/dispatch"): 404, ("GET", "/api/node/stream"): 400,       # a write with no body says what is missing; no such task; a stream with no names is a 400 before it streams
                  ("POST", "/api/node/sessions/{name}/prompt"): 422, ("POST", "/api/node/sessions/{name}/keys"): 422, ("POST", "/api/node/sessions/{name}/ack"): 404,
                  ("DELETE", "/api/node/sessions/{name}"): 404, ("POST", "/api/node/permissions/{pid}/{decision}"): 404,      # no text, no key; no such session; no such request
-                 ("POST", "/api/node/epics/claim"): 422}      # no repo, no issue
+                 ("POST", "/api/node/epics/claim"): 422, ("POST", "/api/node/epics/work"): 422}      # no repo, no issue
 CALLER = {"id": "ts:nCALLER000001", "name": "caller", "url": "https://100.64.0.9"}
 
 

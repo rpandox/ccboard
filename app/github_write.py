@@ -14,9 +14,10 @@ The allow list is the ONLY thing this module can send. Each shape is built from 
     DELETE /repos/{o}/{r}/issues/{n}/labels/{name}   remove `ccboard:in-progress`
     POST   /repos/{o}/{r}/labels                     create `ccboard:in-progress`
 
-No issue edit, no close, no pull request, no repository setting, no other label, no comment that is not the board's own. Whose comment it is, is the caller's business (app/nodes_epics.py
+No issue edit, no close, no pull request (a pull request is gitops', the one GitHub write that does not come through here), no repository setting, no other label, no comment that is not the board's own. Whose comment it is, is the caller's business (app/nodes_epics.py
 records the ids it created and re-reads before every edit); this module only guarantees the SHAPE. A comment body is never free text: it is made by `claim_body()` from validated fields and a
-fixed sentence, or it is HELP_BODY, and `argv()` refuses any other body. The body goes to gh on stdin as JSON (`--input -`), the command is an argv list (never a shell) with a bounded timeout
+fixed sentence, by `progress_body()` (issue #149: the alias, one phase sentence of a closed list, a branch name, a pull request link built from a validated repository and number and, only
+when the epic asks for it, a result that went through `redact_result()` first), or it is HELP_BODY, and `argv()` refuses any other body. The body goes to gh on stdin as JSON (`--input -`), the command is an argv list (never a shell) with a bounded timeout
 and a capped answer, and a gh failure is reduced to a fixed reason (no stderr text is ever passed on).
 
 The QUEUE: one write at a time per board, at least 1.1 s apart, at most 30 a minute, a back-off on 403 and 429 (Retry-After, else the secondary limit's 60 s), and never a retry here: a write
@@ -33,6 +34,8 @@ import shutil
 import subprocess
 import threading
 import time
+import unicodedata
+from pathlib import Path
 from typing import Any, NamedTuple
 
 from . import github
@@ -87,6 +90,101 @@ _PATHS = (
     ("DELETE", re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/issues/[1-9][0-9]{0,8}/labels/ccboard%3Ain-progress")),
     ("POST", re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/labels")),
 )
+# ---------------------------------------------------------------- progress comments (issue #149): fixed sentences, validated fields, and a result that is redacted before it gets here
+PROGRESS_MARKER = "<!-- ccboard:progress v1 -->"
+PHASE_TEXT = {                                                  # the closed list of phases a progress comment can name, with the one sentence of each
+    "waiting": "waiting for a person",
+    "pr": "pull request opened",
+    "done": "done",
+    "failed": "failed",
+    "cancelled": "cancelled",
+    "refused_bypass": "refused: the issue asks for bypass",
+    "refused_posture": "refused: the issue asks for a permission setting this node does not use",
+}
+RESULT_MAX = 1500                                               # characters of a result that may be posted, counted after the redaction
+RESULT_IN = 4000                                                # characters of a result the redaction reads: the cap comes BEFORE any pattern runs
+RESULT_HEAD = "Result (first 1500 characters, redacted):"
+REMOVED = "[removed]"
+NOTE_REMOVED = "Some text was removed before posting."
+PR_URL_RE = re.compile(r"https://github\.com/[A-Za-z0-9][A-Za-z0-9-]{0,38}/(?![-.])[A-Za-z0-9_.-]{1,100}/pull/[1-9][0-9]{0,8}")
+_PHASE_ALT = "|".join(re.escape(v) for v in PHASE_TEXT.values())
+_PROGRESS = re.compile(re.escape(PROGRESS_MARKER) + r"\nccboard (?P<alias>[A-Za-z0-9][A-Za-z0-9_-]{0,39}): (?P<phase>" + _PHASE_ALT + r")(?: (?P<url>https://\S+))?"
+                       r"(?:\nBranch: (?P<branch>\S+))?"
+                       r"(?:\n\n" + re.escape(RESULT_HEAD) + r"\n```text\n(?P<text>[^`]{0,1600})\n```(?P<note>\n" + re.escape(NOTE_REMOVED) + r")?)?")
+# a home folder name may hold spaces ("Ann Lee"): up to four words, and only when a slash follows them, else the one word
+_NAME = r"(?:[^/\\\s]+(?: [^/\\\s]+){0,3}(?=[/\\])|[^/\\\s]+)"
+_HOME = re.compile(r"/(?:Users|home)/" + _NAME)
+_WIN_HOME = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]Users[\\/]" + _NAME)
+_ROOT_HOME = re.compile(r"(?<![\w./-])/root(?=[/\s'\")\],;:]|$)")
+_TEMP = re.compile(r"(?<![\w./-])(?:/private)?/var/folders(?:/[^/\s]+){0,3}|(?<![\w./-])/private/var(?:/[^/\s]+)?")
+_URL_CRED = re.compile(r"//[^/\s:@]+:[^/\s@]+@")
+_EMAIL = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+_ASSIGN = re.compile(r"(?i)(password|passwd|secret|token|api[_-]?key)([ \t]{0,3}=[ \t]{0,3})(?:\"[^\"\n]{0,200}\"|'[^'\n]{0,200}'|[^\s\"',;&]{1,200})")
+_DOTTED = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
+_HOST_END = (".ts.net", ".local", ".internal", ".lan")
+_TOKENS = (
+    re.compile(r"gh[a-z]_[A-Za-z0-9_]{8,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{8,}"),
+    re.compile(r"sk-[A-Za-z0-9_-]{8,}"),
+    re.compile(r"AKIA[0-9A-Z]{8,}"),
+    re.compile(r"xox[A-Za-z]-[A-Za-z0-9-]{8,}"),
+    re.compile(r"(?i:bearer)\s+[A-Za-z0-9._~+/=-]{8,}"),
+    re.compile(r"[A-Fa-f0-9]{32,}"),
+)
+_RUN = re.compile(r"[A-Za-z0-9+/=_-]{32,}")
+_DROP = frozenset(("Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"))
+
+
+def _host_name(m: "re.Match") -> str:
+    """A dotted name that ends in .ts.net, .local, .internal or .lan is a machine of someone's network."""
+    t = m.group(0)
+    return REMOVED if "." in t and t.lower().endswith(_HOST_END) else t
+
+
+def _run_is_token(m: "re.Match") -> str:
+    """A run of 32 or more base64 characters is a token when it holds a digit and a letter (a long word, a path or a hyphenated name does not)."""
+    t = m.group(0)
+    return REMOVED if any(c.isdigit() for c in t) and any(c.isalpha() for c in t) else t
+
+
+def redact_result(raw, limit: int = RESULT_MAX) -> tuple[str, bool]:
+    """(text, removed): a task result made safe to post in a public comment, by ONE pass. The text is capped FIRST (RESULT_IN characters; when it was longer it is cut at the last white
+    space, so a token cut in two by the cap does not stay behind as a fragment), then URL credentials (`//user:pass@`) and email addresses become `[removed]`, the home directory and the
+    macOS, Linux, Windows and /root home folder prefixes (the user folder and the name after it, spaces included) become `~`, the temp folders (/var/folders, /private/var) become `[tmp]`, and
+    anything shaped like a token (GitHub gh*_ and github_pat_, sk-, AKIA, xox, Bearer, a run of 32 or more hex characters, a run of 32 or more base64 characters with a digit and a letter, the
+    value of a password=, token=, secret= or api_key= assignment, a host name ending in .ts.net, .local, .internal or .lan) becomes `[removed]`. Control and format characters are dropped and a backtick becomes an apostrophe (the text is posted in a fenced block it cannot leave). The result is cut to `limit`
+    characters. `removed` is True when a token was replaced. The function applied to its own output changes nothing, which is how `valid_body` knows a result is redacted."""
+    if not isinstance(raw, str):
+        return "", False
+    text = raw[:RESULT_IN]
+    if len(raw) > RESULT_IN:
+        cut = max(text.rfind(" "), text.rfind("\n"), text.rfind("\t"))
+        text = text[:cut] if cut > 0 else ""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = "".join(c for c in text if c in "\n\t" or (unicodedata.category(c) not in _DROP and ord(c) >= 32 and c != "\x7f"))
+    try:
+        home = str(Path.home())
+    except (RuntimeError, KeyError, OSError):
+        home = ""
+    text = _URL_CRED.sub("//" + REMOVED + "@", text)
+    text = _EMAIL.sub(REMOVED, text)
+    if len(home) > 1:
+        text = text.replace(home, "~")
+    for rx in (_WIN_HOME, _HOME, _ROOT_HOME):
+        text = rx.sub("~", text)
+    text = _TEMP.sub("[tmp]", text)
+    removed = False
+    for rx in _TOKENS:
+        text, n = rx.subn(REMOVED, text)
+        removed = removed or n > 0
+    text = _ASSIGN.sub(lambda m: m.group(1) + m.group(2) + REMOVED, text)
+    text = _DOTTED.sub(_host_name, text)
+    text = _RUN.sub(_run_is_token, text)
+    removed = removed or REMOVED in text
+    text = text.replace("`", "'")
+    return text[:limit].strip(), removed
+
+
 SECRETISH = re.compile(r"gh[pousr]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|(?i:bearer\s+\S{8,})|[A-Za-z0-9_-]{41,}")
 
 
@@ -149,10 +247,58 @@ def claim_body(alias: str, nid: str, lease_min: int, seq: int, status: str, atte
     return f"{MARKER}\n{line}\n\n{CLAIM_TEXT}"
 
 
+def progress_body(alias: str, phase: str, *, branch: str | None = None, pr: tuple | None = None, text: str | None = None, removed: bool = False) -> str:
+    """A progress comment (issue #149): `ccboard <alias>: <the sentence of the phase> [<pull request link>]`, an optional `Branch: <name>` line and, only when `text` is given, the
+    result in a fenced block. Every field is checked against its own pattern (ValueError otherwise): the phase is a key of PHASE_TEXT, the alias and the branch have the claim's rules, the
+    link is built here from a validated owner, repository and number (`pr` = (owner, repo, number)), and `text` must be what `redact_result` returns (it is run again: a text that would
+    change is refused). Nothing here names a path, a host or a token; one that still looks like a token is refused, never posted."""
+    if not isinstance(alias, str) or not ALIAS_RE.fullmatch(alias) or phase not in PHASE_TEXT:
+        raise ValueError("bad progress field")
+    if branch is not None and not (isinstance(branch, str) and BRANCH_RE.fullmatch(branch) and ".." not in branch):
+        raise ValueError("bad progress field")
+    url = None
+    if pr is not None:
+        o, r, n = pr
+        if not github.valid_slug(o, r) or not github.valid_number(n):
+            raise ValueError("bad progress field")
+        url = f"https://github.com/{o}/{r}/pull/{int(n)}"
+    if (phase == "pr") != (url is not None and phase == "pr") or (url is not None and phase not in ("pr", "done")):
+        raise ValueError("bad progress field")
+    out = f"{PROGRESS_MARKER}\nccboard {alias}: {PHASE_TEXT[phase]}" + (f" {url}" if url else "")
+    if branch is not None:
+        out += f"\nBranch: {branch}"
+    if text is not None:
+        out += f"\n\n{RESULT_HEAD}\n```text\n{text}\n```" + (f"\n{NOTE_REMOVED}" if removed else "")
+    if not valid_body(out):
+        raise ValueError("bad progress field")
+    return out
+
+
+def _valid_progress(body: str) -> bool:
+    if len(body) > 2400:
+        return False
+    m = _PROGRESS.fullmatch(body)
+    if not m:
+        return False
+    if m["branch"] is not None and not (BRANCH_RE.fullmatch(m["branch"]) and ".." not in m["branch"]):
+        return False
+    phase = next(k for k, v in PHASE_TEXT.items() if v == m["phase"])
+    if (phase == "pr") != (m["url"] is not None and phase == "pr") or (m["url"] is not None and (phase not in ("pr", "done") or not PR_URL_RE.fullmatch(m["url"]))):
+        return False
+    if m["text"] is not None:
+        t = m["text"]
+        if len(t) > RESULT_MAX or redact_result(t, 10 ** 6)[0] != t or SECRETISH.search(t) or (REMOVED in t and not m["note"]):
+            return False
+    return not SECRETISH.search(body.replace(PROGRESS_MARKER, "").replace(RESULT_HEAD, ""))
+
+
 def valid_body(body) -> bool:
-    """True only for HELP_BODY or a body `claim_body` could have made (its pattern, its fields checked again, nothing secret-shaped)."""
+    """True only for HELP_BODY, a body `claim_body` could have made (its pattern, its fields checked again, nothing secret-shaped) or a body `progress_body` could have made (its
+    pattern, its fields checked again, and a result that `redact_result` leaves as it is)."""
     if body == HELP_BODY:
         return True
+    if isinstance(body, str) and body.startswith(PROGRESS_MARKER):
+        return _valid_progress(body)
     if not isinstance(body, str) or len(body) > 1200:
         return False
     m = _BODY.fullmatch(body)
