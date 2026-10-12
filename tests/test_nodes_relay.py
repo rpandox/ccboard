@@ -122,7 +122,8 @@ def hub_path(row: nr.Row, handle: str = "node-b", **more) -> str:
 
 
 SAMPLE = {"task_create": {"project": "shop", "repo": "api", "title": "A task", "prompt": "do it"}, "task_dispatch": {}, "session_open": {"project": "shop", "repo": "api"},
-          "prompt": {"text": "hello"}, "keys": {"key": "Enter"}, "ack": {}, "close": {}, "permission_answer": {}}
+          "prompt": {"text": "hello"}, "keys": {"key": "Enter"}, "ack": {}, "close": {}, "permission_answer": {},
+          "epic_claim": {"repo": "acme/shop", "issue": 205, "epic": 147}}
 
 
 def ask(board, row, handle: str = "node-b", **kw):
@@ -180,9 +181,10 @@ def test_the_rows_are_the_reads_and_the_writes_and_screen_text_needs_sessions_no
         "session_open": ("POST", "/api/node/sessions", "sessions"),
         "prompt": ("POST", "/api/node/sessions/{name}/prompt", "sessions"), "keys": ("POST", "/api/node/sessions/{name}/keys", "sessions"),
         "ack": ("POST", "/api/node/sessions/{name}/ack", "sessions"), "close": ("DELETE", "/api/node/sessions/{name}", "sessions"),
-        "permissions": ("GET", "/api/node/permissions", "permissions"), "permission_answer": ("POST", "/api/node/permissions/{pid}/{decision}", "permissions")}
+        "permissions": ("GET", "/api/node/permissions", "permissions"), "permission_answer": ("POST", "/api/node/permissions/{pid}/{decision}", "permissions"),
+        "epic_claim": ("POST", "/api/node/epics/claim", "tasks")}
     assert {r.name: r.rate_class for r in ROWS if r.peer_method != "GET"} == {n: "write" for n in ("task_create", "task_dispatch", "session_open", "prompt", "keys", "ack", "close",
-                                                                                                     "permission_answer")}
+                                                                                                     "permission_answer", "epic_claim")}
     assert nr.BY_NAME["permissions"].rate_class == "read" and nr.BY_NAME["permissions"].scope == "permissions", "the list is a read of the permissions scope, never `read`"
     assert all(r.guard for r in ROWS if r.name in ("task_create", "task_dispatch", "session_open", "prompt", "keys")), "every row that starts or steers an agent runs the guard on both sides"
     assert not any(r.guard for r in ROWS if r.name in ("ack", "close", "permissions", "permission_answer")), "these carry no text for an agent"
@@ -567,7 +569,7 @@ def test_the_hook_token_every_agent_session_holds_cannot_relay_on_any_row(hub, w
     assert count.seen == 0, "nothing reached another node"
     r = ask(two.a, row, reg["handle"], owner=False, headers={"X-CCBoard-Token": two.a.hook_token, "X-CCBoard": "1", **ID})
     assert r.status_code == 403, "the hook token with a person's headers beside it is still the hook token"
-    assert ask(two.a, row, reg["handle"]).status_code in (200, 404, 422), "the signed-in person still can (a write row with nothing on the peer says 404 or 422)"
+    assert ask(two.a, row, reg["handle"]).status_code in (200, 404, 409, 422), "the signed-in person still can (a write row with nothing on the peer says 404 or 422; the claim says 409, GitHub writes are off there)"
 
 
 def test_the_acting_user_is_the_authenticated_login_never_a_header_or_a_query_the_caller_sends(hub, wide):
@@ -716,7 +718,8 @@ def test_the_target_is_the_registry_row_never_something_the_request_carries(hub)
     assert r.status_code in (400, 404) and count.seen == 0
 
 
-def test_no_registry_rows_means_every_hub_relay_route_is_404_and_no_peer_wrapper_is_reachable(lone, probe_rows, wide, fake_tmux):
+def test_no_registry_rows_means_every_hub_relay_route_is_404_and_no_peer_wrapper_is_reachable(lone, probe_rows, wide, fake_tmux, monkeypatch):
+    monkeypatch.setattr(nodes, "relay_write_limiter", nodes._Limiter(10 ** 6, 60.0, 64))          # every row three times is more than a person's 30 writes a minute
     c, db = lone
     assert nodes.registry(db) == []
     for row in (*ROWS, *probe_rows.rows):

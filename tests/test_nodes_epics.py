@@ -179,7 +179,7 @@ def test_hostile_labels_pages_and_states_are_refused():
 
 
 @pytest.mark.parametrize("path", [
-    "/user", "/repos/acme/shop", "/repos/acme/shop/issues", "/repos/acme/shop/issues/5/labels", "/repos/acme/shop/issues/5/comments", "/repos/acme/shop/pulls/5",
+    "/user", "/repos/acme/shop/", "/repos/acme/shop/issues", "/repos/acme/shop/issues/5/labels", "/repos/acme/shop/issues/5/comments", "/repos/acme/shop/pulls/5",
     "/repos/acme/../issues/5", "/repos/acme/shop/issues/5/../../x", "/repos/acme/shop/issues/05", "/repos/-a/shop/issues/5", "/repos/acme/.git/issues/5",
     "https://api.github.com/repos/acme/shop/issues/5", "repos/acme/shop/issues/5", "/repos/acme/shop/issues/5?per_page=1&page=1&x=1", "--hostname", "-X",
     "/repos/acme/shop/issues/5/sub_issues?per_page=100&page=1\n/user", "/graphql", "/rate_limit?x=1", "/rate_limit/", "/repos/acme/shop/issues?labels=a b&state=open&per_page=1&page=1",
@@ -459,7 +459,7 @@ def test_an_answer_over_the_cap_is_too_large_and_a_timeout_is_a_state(gh, monkey
 
 def test_parse_claim_reads_the_documented_line_and_tolerates_extra_fields():
     c = nodes_epics.parse_claim(claim_body("node-a", "running", task="42", branch="worktree-x", extra=" colour=blue reclaims=77"))
-    assert c == {"alias": "node-a", "status": "running", "nid": "a1b2c3d4", "lease_min": 30, "seq": 1, "attempt": 1, "task_ref": "42", "branch": "worktree-x"}
+    assert c == {"alias": "node-a", "status": "running", "nid": "a1b2c3d4", "lease_min": 30, "seq": 1, "attempt": 1, "task_ref": "42", "branch": "worktree-x", "reclaims": 77}
     c = nodes_epics.parse_claim("<!-- ccboard:claim v1 -->\nccboard claim: alias=n1 status=claimed lease=999m seq=x attempt=0 nid=ZZ task=$(rm)\n")
     assert c["lease_min"] == 120 and c["seq"] == 0 and c["attempt"] == 1 and c["nid"] is None and c["task_ref"] is None
     assert nodes_epics.parse_claim(claim_body(lease="1m"))["lease_min"] == 10 and nodes_epics.parse_claim(claim_body(lease="soon"))["lease_min"] == 30
@@ -1104,8 +1104,15 @@ def test_a_single_board_with_no_epic_does_nothing_in_the_background(board):
 
 
 def test_the_epic_modules_define_no_thread_and_no_timer():
-    src = open(nodes_epics.__file__).read() + open(github.__file__).read()
+    """The reader and the epic view start nothing. The only thread of the module is the claim's renew timer (issue #148), below the claim marker, started by
+    `_ensure_renewer` and only while this board holds a claim (tests/test_nodes_claim.py pins that)."""
+    full = open(nodes_epics.__file__).read()
+    marker = "# ---------------------------------------------------------------- the claim (nodes epic, issue #148)"
+    assert full.count(marker) == 1
+    src = full.split(marker)[0] + open(github.__file__).read()
     assert "threading.Thread" not in src and "Timer(" not in src and "ThreadPool" not in src and "asyncio" not in src
+    tail = full.split(marker)[1]
+    assert tail.count("threading.Thread(") == 1 and "Timer(" not in tail and "ThreadPool" not in tail and "asyncio" not in tail
 
 
 # ================================================================ GET only, end to end

@@ -1142,6 +1142,16 @@
     "nodes": {
       "enabled": false,
       "env": "CCBOARD_MCP_NODES"
+    },
+    "epics": {
+      "writes": true,
+      "writes_env": "CCBOARD_EPIC_WRITES",
+      "alias": "willow-3f",
+      "alias_source": "derived",
+      "alias_env": "CCBOARD_EPIC_ALIAS",
+      "alias_note": null,
+      "lease_min": 30,
+      "lease_env": "CCBOARD_EPIC_LEASE_MIN"
     }
   }
 }

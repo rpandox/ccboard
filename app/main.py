@@ -29,7 +29,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictBool
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_stream, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_stream, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import claude_pane, codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -136,6 +136,16 @@ def _hub() -> "nodes_hub.NodeHub":
     return node_hub
 
 
+def _recover_claims() -> None:
+    """Startup, on a thread: the claim records of an earlier run (issue #148). A failure is logged, never raised (nothing reads this thread's result)."""
+    try:
+        did = nodes_epics.recover()
+        if did:
+            log.info("epic claims: %s", ", ".join(sorted({d['did'] for d in did})))
+    except Exception as e:
+        log.warning("epic claims could not be recovered: %s", e.__class__.__name__)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global db, sampler
@@ -207,6 +217,9 @@ async def lifespan(app: FastAPI):
     global taskflow_rt
     taskflow_rt = taskflow.Runtime(db, start_session=_taskflow_start, end_session=_end_session, perm_pending=_permission_pending)
     taskflow_rt.start()                                   # after the recovery: its sweep must not see a session the reboot has not relaunched yet
+    claims_task = None
+    if github_write.writes_enabled() and nodes_epics.has_records(db):          # claims of an epic (issue #148): only a board that may write and keeps a claim record does anything here
+        claims_task = asyncio.ensure_future(asyncio.to_thread(_recover_claims))      # takes back an unconfirmed claim, restarts the renew timer for a held one
     log.info("%s", startup_line())
     threading.Thread(target=static_mount.warm, name="static-gzip", daemon=True).start()          # the gzip of every script and style, before the first page load asks for it
     log.info("runtime %s, image %s", settings.runtime, settings.image_version or "-")
@@ -221,6 +234,9 @@ async def lifespan(app: FastAPI):
     indexer.stop.set()
     sched_worker.stop.set()
     nodes.registry_listener = None
+    if claims_task is not None:
+        await asyncio.wait({claims_task}, timeout=15)                      # a recovery still asking GitHub is given a moment; it is not cancelled half way
+    await asyncio.to_thread(nodes_epics.stop_renewals, 15.0)               # the renew timer (only alive while this board holds a claim) stops before the database does
     await asyncio.to_thread(nodes_stream.close_all, "shutdown")      # the streams to peers end before the hub and the database do
     await asyncio.to_thread(hub.stop)                     # it waits (6 s at most) for the polls in flight: not on the event loop, which a poll through this app may need
 
@@ -4452,7 +4468,8 @@ def _mcp_view(changed: bool = False) -> dict:
     return {"enabled": mcp_tokens.enabled(), "env_default": mcp_tokens.env_default(), "tokens": mcp_tokens.listing(),
             "recent": mcp_tokens.recent(), "max_tokens": mcp_tokens.MAX_TOKENS, "scopes": list(mcp.SCOPES),
             "default_scopes": list(mcp.DEFAULT_SCOPES), "default_days": mcp_tokens.DEFAULT_DAYS, "path": mcp_remote.PATH,
-            "nodes": {"enabled": bool(nodes_relay.mcp_level()), "level": nodes_relay.mcp_level() or "off", "env": "CCBOARD_MCP_NODES"}}      # agents acting on a paired node (issue #152): env only, shown read-only
+            "nodes": {"enabled": bool(nodes_relay.mcp_level()), "level": nodes_relay.mcp_level() or "off", "env": "CCBOARD_MCP_NODES"},      # agents acting on a paired node (issue #152): env only, shown read-only
+            "epics": nodes_epics.switches_view()}      # GitHub writes for epic claims and the alias in a claim (issue #148): env only, shown read-only
 
 
 def _mcp_refused(e: "mcp_tokens.Refused") -> JSONResponse:

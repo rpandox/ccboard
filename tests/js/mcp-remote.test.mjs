@@ -14,13 +14,13 @@ const URL0 = 'https://board.example';
 const row = (over = {}) => ({ id: 'a1b2c3d4e5f6', name: 'laptop', scopes: ['read', 'tasks'], created_at: '2026-10-01T10:00:00Z', last_used_at: null, last_user: null,
   last_tool: null, expires_at: '2026-12-30T10:00:00Z', expired: false, ...over });
 
-function mcpWorld({ enabled = false, tokens = [], publicUrl = URL0, hold = null, refuse = null, nodes = null, nodesEnabled = false } = {}) {
+function mcpWorld({ enabled = false, tokens = [], publicUrl = URL0, hold = null, refuse = null, nodes = null, nodesEnabled = false, epics = null } = {}) {
   const st = fakeState();
   st.config = { ...st.config, public_url: publicUrl };
   if (nodesEnabled) st.nodes_enabled = true;
   const { w } = homeWorld({ state: st });
   const server = { enabled, tokens: tokens.map((t) => ({ ...t })) };
-  const view = () => ({ enabled: server.enabled, env_default: false, tokens: server.tokens.map((t) => ({ ...t })), recent: [], max_tokens: 10, ...(nodes ? { nodes } : {}) });
+  const view = () => ({ enabled: server.enabled, env_default: false, tokens: server.tokens.map((t) => ({ ...t })), recent: [], max_tokens: 10, ...(nodes ? { nodes } : {}), ...(epics ? { epics } : {}) });
   w.ctx.__copied = [];
   w.ctx.navigator.clipboard = { writeText: async (t) => { w.ctx.__copied.push(t); } };
   w.run('globalThis.__errors = []; setError = (m) => { if (m) __errors.push(m); }; demoOn = () => false;');
@@ -278,4 +278,63 @@ test('the env name in the answer is shown only when it looks like an env name: a
   await settle();
   assert.match(text(nodesLine(w)), /\(CCBOARD_MCP_NODES=read,/);
   assert.equal(nodesLine(w).querySelectorAll('img').length, 0);
+});
+
+// ---- issue #148: the two settings of an epic claim, read only beside the nodes line
+
+const EP = (over = {}) => ({ writes: true, writes_env: 'CCBOARD_EPIC_WRITES', alias: 'willow-3f', alias_source: 'derived', alias_env: 'CCBOARD_EPIC_ALIAS', alias_note: null, lease_min: 30, lease_env: 'CCBOARD_EPIC_LEASE_MIN', ...over });
+const epicsLine = (w) => block(w).querySelector('.mcp-epics');
+const WRITES_ON = 'This board may claim an epic issue: it comments on it, assigns itself and adds the ccboard:in-progress label, and writes nothing else to GitHub.';
+const WRITES_OFF = 'This board only reads GitHub. It claims no issue and writes no comment, assignee or label.';
+const ALIAS_SENTENCE = 'The short name nodes use for this board in a claim comment. Comments on a public repository are public, so it is never the host name.';
+
+test('Settings, Agents shows CCBOARD_EPIC_WRITES and the alias read only, each with one sentence, and no control for either', async () => {
+  const on = mcpWorld({ epics: EP(), nodesEnabled: true });
+  await settle();
+  const line = epicsLine(on.w);
+  assert.ok(line && !hiddenUp(line));
+  assert.ok(text(line).includes('GitHub writes for epics: on (CCBOARD_EPIC_WRITES=1, set on the box, read only here)'), text(line));
+  assert.ok(text(line).includes(WRITES_ON));
+  assert.ok(text(line).includes('Name in claim comments: willow-3f (CCBOARD_EPIC_ALIAS is not set, set on the box, read only here)'), text(line));
+  assert.ok(text(line).includes(ALIAS_SENTENCE));
+  assert.equal(line.querySelectorAll('input, button, select, a').length, 0, 'nothing to press: both are the box\'s env');
+  assert.ok(!text(line).includes('\u2014'), 'no em-dash');
+  const off = mcpWorld({ epics: EP({ writes: false }), nodesEnabled: true });
+  await settle();
+  assert.ok(text(epicsLine(off.w)).includes('GitHub writes for epics: off (CCBOARD_EPIC_WRITES=0, set on the box, read only here)'));
+  assert.ok(text(epicsLine(off.w)).includes(WRITES_OFF) && !text(epicsLine(off.w)).includes(WRITES_ON));
+});
+
+test('a configured alias is shown with its env value; one the board does not use says so and which name it uses instead', async () => {
+  const set = mcpWorld({ epics: EP({ alias: 'river-9', alias_source: 'setting' }), nodesEnabled: true });
+  await settle();
+  assert.ok(text(epicsLine(set.w)).includes('Name in claim comments: river-9 (CCBOARD_EPIC_ALIAS=river-9, set on the box, read only here)'));
+  for (const [note, words] of [['host name', 'The configured alias looks like a host name'], ['not valid', 'The configured alias is not valid (letters, digits, - and _ only)']]) {
+    const w = mcpWorld({ epics: EP({ alias_note: note }), nodesEnabled: true });
+    await settle();
+    assert.ok(text(epicsLine(w.w)).includes(`${words}, so the board uses this name instead. ${ALIAS_SENTENCE}`), note);
+    assert.ok(text(epicsLine(w.w)).includes('Name in claim comments: willow-3f'));
+  }
+});
+
+test('the lines show with writes on even without a paired node, and are absent on a single board with writes off or from an older server', async () => {
+  const on = mcpWorld({ epics: EP() });
+  await settle();
+  assert.ok(!hiddenUp(epicsLine(on.w)));
+  const single = mcpWorld({ epics: EP({ writes: false }) });
+  await settle();
+  assert.ok(hiddenUp(epicsLine(single.w)), 'a board with no paired node and writes off: nothing new on the screen');
+  const old = mcpWorld({ nodesEnabled: true });
+  await settle();
+  assert.ok(hiddenUp(epicsLine(old.w)), 'an answer without `epics` shows no line');
+});
+
+test('a hostile value in the answer is not trusted: env names and aliases are shown only when they look like themselves', async () => {
+  const evil = '<img src=x onerror=alert(1)>';
+  const w = mcpWorld({ epics: EP({ writes_env: evil, alias_env: evil, alias: evil, alias_note: evil, alias_source: 'setting' }), nodesEnabled: true });
+  await settle();
+  const t = text(epicsLine(w.w));
+  assert.ok(t.includes('(CCBOARD_EPIC_WRITES=1,') && t.includes('Name in claim comments: chosen by the board (CCBOARD_EPIC_ALIAS='), t);
+  assert.equal(epicsLine(w.w).querySelectorAll('img').length, 0);
+  assert.ok(!t.includes('onerror') && !t.includes('configured alias'));
 });

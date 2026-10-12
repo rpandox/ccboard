@@ -33,13 +33,16 @@ was found. The last page is computed from the comments count GitHub sends with t
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
+import socket
 import threading
 import time
 from pathlib import Path
+from typing import Any, NamedTuple
 
-from . import github, node_state, nodes, projects
+from . import github, github_write, node_state, nodes, projects
 from .config import settings
 
 log = logging.getLogger("ccboard.nodes.epics")
@@ -104,9 +107,12 @@ mono = time.monotonic                                   # patched by tests
 
 def reset() -> None:
     """Forget every cache and the back-off (tests)."""
+    stop_renewals(5.0)                                      # a renew thread of an earlier test must not outlive it
     with _lock:
         _last_good.clear()
         _list_good.clear()
+    with _klock:
+        _locks.clear()
     github.reader.reset_state()
 
 
@@ -152,7 +158,8 @@ def parse_claim(body) -> dict | None:
             "lease_min": max(LEASE_MIN, min(LEASE_MAX, int(lease.group(1)))) if lease else LEASE_DEFAULT,
             "seq": _i(f.get("seq"), 0, 10 ** 9, 0), "attempt": _i(f.get("attempt"), 1, 99, 1),
             "task_ref": f["task"] if _TASKREF.fullmatch(f.get("task", "")) else None,
-            "branch": f["branch"] if _BRANCH.fullmatch(f.get("branch", "")) else None}
+            "branch": f["branch"] if _BRANCH.fullmatch(f.get("branch", "")) else None,
+            "reclaims": _i(f.get("reclaims"), 1, 10 ** 11, 0) or None}
 
 
 def parse_claims(comments) -> list[dict]:
@@ -199,11 +206,17 @@ def allowed_authors(gh_login: str | None, configured=None) -> set[str]:
     return {n.lower() for n in names if isinstance(n, str) and github.OWNER_RE.fullmatch(n)}
 
 
+def allowed_claims(claims: list[dict], allowed: set[str]) -> list[dict]:
+    """The claims that count, in the order they came: author a user whose login is in `allowed` AND GitHub's author_association OWNER, MEMBER or COLLABORATOR. The one rule
+    the reader (`pick_claim`) and the claim protocol (ordering, attempts, the fence) share, so a claim one ignores the other ignores."""
+    return [c for c in claims if (c.get("author") or "").lower() in allowed and c.get("author") and c.get("association") in ASSOCIATIONS]
+
+
 def pick_claim(claims: list[dict], allowed: set[str], server_now: float | None) -> tuple[dict | None, int]:
     """(the claim to show, how many claim comments were refused). The first live claim by (created_at, id) among the allowed authors', else the newest one of
     theirs (not live). A comment counts only when its author is a user whose login is in `allowed` AND GitHub's author_association on it is OWNER, MEMBER or
     COLLABORATOR; a claim-shaped comment of anyone else is only counted."""
-    ok = [c for c in claims if (c.get("author") or "").lower() in allowed and c.get("author") and c.get("association") in ASSOCIATIONS]
+    ok = allowed_claims(claims, allowed)
     rejected = len(claims) - len(ok)
     if not ok:
         return None, rejected
@@ -339,7 +352,9 @@ def _snapshot(c: dict, spend) -> dict:
         raise github.GhReadError("bad_answer")
     cnt = d.get("comments")
     return {"count": cnt if isinstance(cnt, int) and not isinstance(cnt, bool) and cnt >= 0 else None, "updated": github.clean_ts(d.get("updated_at")),
-            "state": "closed" if d.get("state") == "closed" else "open", "fresh": rep.fresh, "srv": rep.server_now}
+            "state": "closed" if d.get("state") == "closed" else "open", "fresh": rep.fresh, "srv": rep.server_now,
+            "assignees": sorted({u["login"].lower() for u in (d.get("assignees") or [])[:30] if isinstance(u, dict) and isinstance(u.get("login"), str) and github.OWNER_RE.fullmatch(u["login"])}),
+            "labels": [github.clean_text(lb.get("name"), 50) for lb in (d.get("labels") or [])[:LABEL_CAP] if isinstance(lb, dict) and github.clean_text(lb.get("name"), 50)]}
 
 
 def _read_pages(c: dict, ttl: float, spend, count) -> dict:
@@ -529,14 +544,16 @@ def _read_epic(owner: str, repo: str, n: int, readable: frozenset = frozenset(),
     return part
 
 
-def fresh_claim_state(owner: str, repo: str, number, repos, login=None) -> dict:
+def fresh_claim_state(owner: str, repo: str, number, repos, login=None, detail: bool = False) -> dict:
     """The claim state of ONE issue, read now with every cache and TTL bypassed: the issue and each page of its comments are revalidated with GitHub in this call
     (a 304 on If-None-Match counts), the issue is read again afterwards and the thread is read once more if anything moved (see `_read_consistent`). Returns
     {state: claimed | none | unknown, reason (a key of UNKNOWN_TEXT, or None), text, claim (the allowed claim, or None), read_at (GitHub's clock, ISO), issue_state
     (open | closed | None)}. It costs at most the pages plus 2 gh calls (more only for a retry) against the same budget and deadline as a refresh.
     **This is the only answer a later phase may act on.** The `claim_state` that GET /api/epics/... shows can be minutes old (a closed issue's comments are cached for
     ten minutes), may come from the last good answer while GitHub is unreachable, and says `none` only for the moment it was read: nothing may treat a cached `none` as
-    free. `repos` is the list from `known_repos` (an issue of any other repository is `unknown: other_repo`, with no request)."""
+    free. `repos` is the list from `known_repos` (an issue of any other repository is `unknown: other_repo`, with no request).
+    `detail=True` (the claim protocol, issue #148) adds what the same reading held: `claims` (every claim that counts, oldest first by (created_at, id), each with `live`
+    judged by GitHub's clock), `comments` (the raw comments read), `now` (GitHub's clock, epoch), `issue` ({assignees, labels} of the first reading) and `complete`."""
     out = {"state": "unknown", "reason": None, "text": None, "claim": None, "read_at": None, "issue_state": None}
 
     def done(reason: str) -> dict:
@@ -567,11 +584,18 @@ def fresh_claim_state(owner: str, repo: str, number, repos, login=None) -> dict:
         return done("budget")
     except github.GhReadError as e:
         return done("rate_limited" if e.reason == "rate_limited" else "error")
-    claim, _ = pick_claim(parse_claims(res["flat"]), allowed, res["now"])
+    parsed = parse_claims(res["flat"])
+    claim, _ = pick_claim(parsed, allowed, res["now"])
     c.update(thread="incomplete" if not res["consistent"] or not res["complete"] else "complete", fresh=res["fresh"],
              reason="changed" if not res["consistent"] else (None if res["complete"] else "too_long"))
     state, reason = _claim_state(c, claim, True)
     out.update(state=state, reason=reason, text=UNKNOWN_TEXT[reason] if reason else None, claim=claim if state == "claimed" else None, read_at=github.epoch_iso(res["srv"]))
+    if detail:
+        ok = allowed_claims(parsed, allowed)
+        for x in ok:
+            x["live"] = is_live(x, res["now"])
+        out.update(claims=ok, comments=res["flat"], now=res["now"], complete=bool(res["complete"] and res["consistent"]),
+                   issue={"assignees": before["assignees"], "labels": before["labels"]})
     return out
 
 
@@ -585,11 +609,12 @@ def _display() -> str:
 
 
 def node_list(records) -> list[dict]:
-    """This board and every paired node, for the pin menu: {handle, name, status, age_s}."""
+    """This board and every paired node, for the pin menu: {handle, name, status, age_s} and, for a paired node, `tasks` (the pair holds the tasks scope)."""
     out = [{"handle": nodes.LOCAL, "name": _display(), "status": "online", "age_s": 0}]
     for r in records or []:
         if isinstance(r, dict) and nodes.valid_handle(r.get("handle")) and not r.get("legacy"):
-            out.append({"handle": r["handle"], "name": github.clean_text(r.get("name"), 60) or r["handle"], "status": r.get("status") or "offline", "age_s": r.get("age_s")})
+            out.append({"handle": r["handle"], "name": github.clean_text(r.get("name"), 60) or r["handle"], "status": r.get("status") or "offline", "age_s": r.get("age_s"),
+                        "tasks": "tasks" in (nodes._scopes_of(r.get("scopes")) or [])})          # the pair holds the tasks scope: a claim can be asked of this node (issue #148)
     return out
 
 
@@ -917,9 +942,10 @@ def detail(db, owner: str, repo: str, n: int, records, *, login=None, repos=None
            "claims_note": None if allowed else AUTHORS_NOTE,
            **settings_view(db, owner, repo, n, records), "rate": github.reader.rate(), "server_now": github.epoch_iso(part["server_now"]) if part else None, "error": error, "stale_age_s": stale_age,
            "truncated": bool(part and part["truncated"]), "partial": bool(part and part["partial"]), "comments_pending": part["comments_pending"] if part else 0,
-           "empty": bool(part is not None and not part["children"])}
+           "empty": bool(part is not None and not part["children"]), "writes": github_write.writes_enabled(), "own_claims": []}
     if part is None:
         return out
+    out["own_claims"] = own_claims(db, [(c["repo"], c["number"]) for c in part["children"]])
     views = _task_views(db, records, display)
     rows = []
     own = f"{owner}/{repo}".lower()
@@ -1104,3 +1130,999 @@ def doctor_facts(repos: list[str], limit: int = 3) -> dict:
             if e.reason == "rate_limited":
                 break
     return out
+
+
+def claim_doctor_facts(repos: list[str], limit: int = 3) -> dict:
+    """What the doctor's `epic-claim` row reports, read only (GET /rate_limit and GET /repos/{o}/{r}; nothing is written): {state (ok, no_gh, no_login, error:<reason>), scopes,
+    push: {repo: True | False | None}, private: {repo: bool | None}, failed: {repo: reason}, checked}. Called only when CCBOARD_EPIC_WRITES is on."""
+    out = {"state": "ok", "scopes": None, "push": {}, "private": {}, "failed": {}, "checked": 0}
+    try:
+        rep = github.reader.get(github.RATE_PATH, 0.0)
+    except github.GhReadError as e:
+        out["state"] = e.reason if e.reason in ("no_gh", "no_login") else f"error:{e.reason}"
+        out["wait_s"] = e.wait_s
+        return out
+    out["scopes"] = sorted({s.strip() for s in rep.scopes.split(",") if s.strip()}) if isinstance(rep.scopes, str) else None
+    for slug in repos[:limit]:
+        o, _, r = slug.partition("/")
+        try:
+            data = github.reader.get(github.repo_path(o, r), 0.0).data
+        except github.GhReadError as e:
+            out["failed"][slug] = e.reason
+            if e.reason == "rate_limited":
+                break
+            continue
+        perms = data.get("permissions") if isinstance(data, dict) else None
+        push = perms.get("push") if isinstance(perms, dict) else None
+        out["push"][slug] = push if isinstance(push, bool) else None
+        priv = data.get("private") if isinstance(data, dict) else None
+        out["private"][slug] = priv if isinstance(priv, bool) else None
+        out["checked"] += 1
+    return out
+
+
+# ---------------------------------------------------------------- the claim (nodes epic, issue #148)
+#
+# Several nodes work one epic; each open issue must be taken by exactly one of them, a node that dies gives its issue back, and a node that was slow must not write after it lost.
+# GitHub is the only arbiter and GitHub's clock the only clock: a claim is a comment on the issue, the order of the claims is (created_at, id) as GitHub stamped them, a claim is
+# live while GitHub's own Date is less than the lease after the comment's updated_at, and the comment's id is the fencing token. The assignee and the label are visible state,
+# never the lock.
+#
+#   0  guards   writes on (CCBOARD_EPIC_WRITES), a valid repository that is one of this board's own, an issue that is a child of an epic this board has read, a gh login that
+#               counts as an author. With writes off nothing at all is asked of GitHub.
+#   1  check    `fresh_claim_state`: the issue and every page of its comments revalidated now. unknown is never claimable; a live claim of anyone is `taken`; a closed issue
+#               is never claimed; a claim that is not live is ignored by the ordering and noted as `reclaims=<id>`; the attempt is the highest seen plus one, and after attempt 3
+#               the node stops and asks for a person.
+#   2  post     the claim comment (status claimed, seq 1). Its id is the claim_ref's last part. A POST whose outcome is unknown is never repeated before the thread is read back.
+#   3  decide   wait, read without cache, wait, read again: the node wins only when its claim is the first live one of BOTH reads. Otherwise it deletes its own comment and
+#               nothing else.
+#   4  mark     (after the win; the issue's order puts this before the decision, but a loser must leave nothing to undo and two claimers must not both think they added the
+#               label) the assignee (this gh login, only if it was not one) and the label (created if missing), and notes, never a refusal, when GitHub does not take them.
+#   5  hold     `renew` (every RENEW_S, by editing the own comment with seq + 1) and `start` (status running); both through the fence.
+#   6  release  `release(ref, status)`: the comment's status, then the label and the assignee, but only what this board added.
+#   *  fence    `fence_ok(ref)` before every later write: the comment exists, is the board's own (author, marker, nid), is live and is first. A definite loss marks the claim
+#               `lost`, writes an audit row, calls LOST_HOOKS and ends every write for it; any read problem answers False (fail closed) without marking a loss.
+#
+# The board's own claims are kept in kv (`claim:<owner/repo#n>`, listed in `claim-index`): the comment id the board created, its nid, the seq, the attempt and what it added, so a
+# restart can renew, release or drop them. A comment is edited or deleted only when its id is in that record AND a read just before showed it is still the board's own.
+
+WAIT_S = 1.5                            # the two waits of the decide step (tests patch `sleep`)
+RENEW_S = 300.0                         # the heartbeat
+RENEW_MAX = 288                         # renewals one claim gets (24 h); then it is left to lapse
+MAX_ATTEMPTS = 3
+HELD_MAX = 20
+CLAIM_KV = "claim:"
+INDEX_KV = "claim-index"
+PENDING_KV = "claim-pending:"
+LOST_KEEP_S = 7 * 86400
+RENEWER = True                          # tests that run many claims switch the timer off
+sleep = time.sleep                      # the protocol's waits: tests patch it
+LOST_HOOKS: list = []                   # callables (claim view, reason) run once when a claim is definitely lost: the run phase parks the task and raises the toast
+CLAIM_TEXT = {
+    "won": "This node holds the issue.",
+    "already_held": "This board already holds that issue.",
+    "writes_off": github_write.MESSAGES["writes_off"],
+    "bad_request": "That is not an issue this board will claim.",
+    "other_repo": "That repository is not one of this board's own projects.",
+    "not_epic_child": "That issue is not one of the issues of an epic this board has read.",
+    "authors_unknown": AUTHORS_NOTE,
+    "login_not_allowed": "The gh login of this board is not among the logins whose claims count (CCBOARD_EPIC_AUTHORS).",
+    "claim_unknown": "Who holds that issue is not known right now, so it is not claimed.",
+    "taken": "Another node holds that issue.",
+    "lost": "Another node was first, so this board withdrew its claim.",
+    "closed": "That issue is closed.",
+    "done": "That issue is already done.",
+    "attempts_exhausted": "Three attempts ended without a result. This board asked for a person and stopped.",
+    "too_many_claims": "This board already holds as many claims as it will keep.",
+    "rate_limited": "GitHub asked us to wait before writing.",
+    "no_access": "This gh login may not comment on that repository.",
+    "no_login": "gh is not logged in on this board.",
+    "error": "GitHub did not take the claim, so nothing is claimed.",
+    "outcome_unknown": "GitHub did not say whether the claim was written; the board will look before it writes again.",
+    "withdraw_failed": "Another node was first and this board could not remove its comment yet; it will try again.",
+}
+
+
+# ---- who this board is in a claim: the alias and the nid
+
+_WORDS = ("amber", "birch", "cedar", "delta", "ember", "fjord", "glade", "harbor", "iris", "juniper", "kelp", "lumen", "maple", "nimbus", "onyx", "pebble", "quartz", "river",
+          "sage", "tundra", "umber", "vale", "willow", "yarrow", "zephyr", "acorn", "basalt", "cobalt", "dune", "fern", "grove", "heron", "indigo", "jade", "linden", "marsh",
+          "nectar", "opal", "pine", "reed", "slate", "thistle", "violet", "wren", "alder", "brook", "clover", "dawn", "egret", "flint", "garnet", "hazel", "ivory", "jasper",
+          "lark", "moss", "north", "orchid", "plover", "quill", "robin", "sorrel", "teal", "ursa")
+
+
+def node_nid(node_id: str) -> str:
+    """The 8 hex characters a claim names this board by: the start of sha256 of its node id (the id itself never leaves the board)."""
+    return hashlib.sha256(str(node_id).encode("utf-8")).hexdigest()[:8]
+
+
+def derived_alias(node_id: str) -> str:
+    """A short neutral word and two hex characters from the hash of the node id, e.g. `willow-3f`: the default alias, never the host name."""
+    h = hashlib.sha256(("alias:" + str(node_id)).encode("utf-8")).digest()
+    return f"{_WORDS[h[0] % len(_WORDS)]}-{h[1]:02x}"
+
+
+def host_names() -> set[str]:
+    """The short names this machine goes by (lower case): its host name, its MagicDNS name and, when no CCBOARD_NODE_NAME is set, the name the board shows. A claim alias
+    equal to one of them, or with a dot in it, looks like a host name."""
+    out: set[str] = set()
+    try:
+        out.add(socket.gethostname().split(".")[0].lower())
+    except OSError:
+        pass
+    try:
+        dns = nodes.dns_name(nodes._ts())
+        if dns:
+            out.add(dns.split(".")[0].lower())
+        if not settings.node_name:
+            out.add(nodes.display_name().lower())
+    except Exception:
+        pass
+    return {n for n in out if n}
+
+
+def looks_like_host(alias: str) -> bool:
+    return "." in alias or alias.lower() in host_names()
+
+
+def alias_report(node_id: str | None = None) -> dict:
+    """{alias (the one comments use), configured (CCBOARD_EPIC_ALIAS or None), source (setting | derived), host_like (the configured name has a dot or is this machine's short
+    name), invalid (it is not letters, digits, - and _), ignored (configured but not used), nid}. A configured alias that looks like a host name or is not valid is NOT used:
+    the derived word is, so a comment never carries a host name."""
+    nid_src = node_id if node_id is not None else nodes.node_id()
+    conf = settings.epic_alias or None
+    invalid = bool(conf) and not github_write.ALIAS_RE.fullmatch(conf or "")
+    host_like = bool(conf) and looks_like_host(conf)
+    use = conf if conf and not invalid and not host_like else None
+    return {"alias": use or derived_alias(nid_src), "configured": conf, "source": "setting" if use else "derived", "host_like": host_like, "invalid": invalid,
+            "ignored": bool(conf) and use is None, "nid": node_nid(nid_src), "lease_min": settings.epic_lease_min, "writes": github_write.writes_enabled()}
+
+
+class Actor(NamedTuple):
+    """Who writes: the database the claim records live in, the node id (hashed into the nid), the gh login, the alias, the write queue (None: this board's) and the repositories
+    this board may write to (None: `board_repos()`, this board's own projects, asked each time). A board has one; the tests make several in one process."""
+    db: Any
+    node_id: str
+    login: str | None
+    alias: str
+    wq: Any = None
+    repos: Any = None
+
+
+def _repos(actor: "Actor", repos=None) -> list[str]:
+    """The repositories a write may go to: the caller's list, else the actor's, else this board's own projects. Always a list."""
+    return list(repos if repos is not None else actor.repos if actor.repos is not None else board_repos())
+
+
+def board_actor(db=None) -> Actor:
+    """This running board as the writer. Asks gh for its login (cached), so call it only after the writes switch has been checked."""
+    from . import main
+    nid_src = nodes.node_id()
+    return Actor(db if db is not None else main.db, nid_src, _gh_login(), alias_report(nid_src)["alias"])
+
+
+def board_repos() -> list[str]:
+    from . import main
+    return main._epic_repos()
+
+
+# ---- claim_ref and the kv records
+
+_CLAIM_REF = re.compile(r"([^/#:\s]{1,39})/([^/#:\s]{1,100})#([1-9][0-9]{0,8}):([1-9][0-9]{0,15})")
+_klock = threading.RLock()
+_locks: dict[tuple, threading.RLock] = {}
+_renewers: dict[int, tuple[threading.Thread, threading.Event]] = {}
+
+
+def make_ref(owner: str, repo: str, n, cid) -> str:
+    return f"{owner}/{repo}#{int(n)}:{int(cid)}"
+
+
+def parse_ref(ref) -> tuple[str, str, int, int] | None:
+    """(owner, repo, issue number, comment id) of a claim_ref, or None when it is not one (any text a peer or a payload sends is checked here before it names anything)."""
+    m = _CLAIM_REF.fullmatch(ref) if isinstance(ref, str) and len(ref) <= 200 else None
+    return (m.group(1), m.group(2), int(m.group(3)), int(m.group(4))) if m and github.valid_slug(m.group(1), m.group(2)) else None
+
+
+def _key(owner: str, repo: str, n) -> str:
+    return f"{CLAIM_KV}{owner.lower()}/{repo.lower()}#{int(n)}"
+
+
+def _lock_for(actor: Actor, owner: str, repo: str, n) -> threading.RLock:
+    k = (id(actor.db), _key(owner, repo, n))
+    with _klock:
+        if k not in _locks:
+            _locks[k] = threading.RLock()                       # one per issue ever touched, never dropped: a second lock for an issue would be two claims at once
+        return _locks[k]
+
+
+_REC_STATES = ("claiming", "held", "lost")
+
+
+def _rec_load(actor: Actor, owner: str, repo: str, n) -> dict | None:
+    """The stored claim record of this board for an issue, re-validated (a hand-edited row cannot put a wrong type in it), or None."""
+    try:
+        row = actor.db.kv_get(_key(owner, repo, n))
+    except Exception:
+        return None
+    v = row.get("value") if isinstance(row, dict) else None
+    if not isinstance(v, dict) or v.get("state") not in _REC_STATES:
+        return None
+    try:
+        if not (isinstance(v.get("comment_id"), int) and not isinstance(v.get("comment_id"), bool) and v["comment_id"] > 0 and v.get("number") == int(n)
+                and isinstance(v.get("nid"), str) and github_write.NID_RE.fullmatch(v["nid"]) and isinstance(v.get("alias"), str) and isinstance(v.get("seq"), int)
+                and isinstance(v.get("attempt"), int) and v.get("status") in github_write.STATUSES and str(v.get("owner", "")).lower() == owner.lower()
+                and str(v.get("repo", "")).lower() == repo.lower()):
+            return None
+    except (TypeError, ValueError):
+        return None
+    out = dict(v)
+    out["added_assignee"], out["added_label"] = v.get("added_assignee") is True, v.get("added_label") is True
+    out["renewals"] = v["renewals"] if isinstance(v.get("renewals"), int) and not isinstance(v.get("renewals"), bool) else 0
+    out["ref"] = make_ref(out["owner"], out["repo"], n, out["comment_id"])
+    return out
+
+
+def _index(actor: Actor) -> list[str]:
+    try:
+        row = actor.db.kv_get(INDEX_KV)
+    except Exception:
+        return []
+    v = row.get("value") if isinstance(row, dict) else None
+    return [k for k in v if isinstance(k, str) and k.startswith(CLAIM_KV)][:HELD_MAX * 3] if isinstance(v, list) else []
+
+
+def _rec_save(actor: Actor, rec: dict) -> None:
+    with _klock:
+        key = _key(rec["owner"], rec["repo"], rec["number"])
+        actor.db.kv_set(key, {k: v for k, v in rec.items() if k != "ref"})
+        idx = _index(actor)
+        if key not in idx:
+            actor.db.kv_set(INDEX_KV, (idx + [key])[-HELD_MAX * 3:])
+
+
+def _rec_drop(actor: Actor, owner: str, repo: str, n) -> None:
+    with _klock:
+        key = _key(owner, repo, n)
+        actor.db.kv_del(key)
+        idx = [k for k in _index(actor) if k != key]
+        actor.db.kv_set(INDEX_KV, idx) if idx else actor.db.kv_del(INDEX_KV)
+
+
+def _pending_key(owner, repo, n) -> str:
+    return PENDING_KV + _key(owner, repo, n)[len(CLAIM_KV):]
+
+
+def claim_view(rec: dict) -> dict:
+    """What a claim record shows a caller: no login, no node id, only the alias that is public anyway."""
+    return {"claim_ref": rec["ref"], "repo": f"{rec['owner']}/{rec['repo']}", "issue": rec["number"], "comment_id": rec["comment_id"], "alias": rec["alias"], "status": rec["status"],
+            "state": rec["state"], "seq": rec["seq"], "attempt": rec["attempt"], "task_ref": rec.get("task_ref"), "branch": rec.get("branch"), "task_id": rec.get("task_id"),
+            "added_assignee": rec["added_assignee"], "added_label": rec["added_label"], "notes": list(rec.get("notes") or []), "lost_reason": rec.get("lost_reason"),
+            "renewals": rec["renewals"]}
+
+
+def held_claims(actor: Actor | None = None) -> list[dict]:
+    """The claims this board keeps a record of (claiming, held, lost), as claim_view. Reads only the database."""
+    actor = actor or board_actor_lazy()
+    if actor is None:
+        return []
+    out = []
+    for key in _index(actor):
+        m = re.fullmatch(CLAIM_KV + r"([^/]+)/([^#]+)#([0-9]+)", key)
+        if m:
+            rec = _rec_load(actor, m.group(1), m.group(2), int(m.group(3)))
+            if rec:
+                out.append(claim_view(rec))
+    return out
+
+
+def own_claims(db, pairs) -> list[dict]:
+    """This board's own claim records (claim_view, so no login, no node id, no claim_ref) for the given [(repo "owner/name", issue number)] pairs. Reads the database only, asks
+    GitHub nothing and starts nothing: a board that never claimed answers []. The epic page shows these as held, renewing and lost."""
+    want = {(str(r).lower(), int(n)) for r, n in pairs or [] if isinstance(r, str) and github.valid_number(n)}
+    if not want:
+        return []
+    out = []
+    for v in held_claims(Actor(db, "", None, "")):
+        if (v["repo"].lower(), v["issue"]) in want:
+            v = {k: v[k] for k in ("repo", "issue", "alias", "status", "state", "seq", "attempt", "task_ref", "branch", "task_id", "added_assignee", "added_label", "notes", "lost_reason", "renewals")}
+            out.append(v)
+    return out
+
+
+def switches_view() -> dict:
+    """The two settings of the claim as Settings shows them, read only: {writes, writes_env, alias, alias_source, alias_env, alias_note, lease_min, lease_env}. `alias_note` is a short
+    word when the configured alias is not used (`host name` or `not valid`), else None. No node id, no hash and no host name."""
+    r = alias_report()
+    note = "host name" if r["host_like"] else "not valid" if r["invalid"] else None
+    return {"writes": github_write.writes_enabled(), "writes_env": "CCBOARD_EPIC_WRITES", "alias": r["alias"], "alias_source": r["source"], "alias_env": "CCBOARD_EPIC_ALIAS",
+            "alias_note": note, "lease_min": r["lease_min"], "lease_env": "CCBOARD_EPIC_LEASE_MIN"}
+
+
+def has_records(db) -> bool:
+    """True when this board keeps any claim record. A board that never claimed has none, so nothing at startup or shutdown needs to run for claims."""
+    return bool(_index(Actor(db, "", None, "")))
+
+
+def board_actor_lazy() -> Actor | None:
+    """The board's actor without asking gh for anything (no login): enough to read and keep records. None when there is no database yet."""
+    try:
+        from . import main
+        if main.db is None:
+            return None
+        return Actor(main.db, nodes.node_id(), None, alias_report()["alias"])
+    except Exception:
+        return None
+
+
+def _audit(actor: Actor, action: str, ok: bool, owner: str, repo: str, n, detail: str | None = None) -> None:
+    """One audit row for a claim step: the action, the repository and the issue number, and a reason word. Nothing else is written (no login, no comment body)."""
+    nodes.audit("out", "", action, ok, detail, target=f"{owner}/{repo}#{int(n)}", status="ok" if ok else "failed", db=actor.db)
+
+
+def _send(actor: Actor, req) -> tuple[int, dict, Any]:
+    return github_write.send(req, actor.wq)
+
+
+def _target(repo, issue) -> tuple[str, str, int] | None:
+    if not isinstance(repo, str) or len(repo) > 140 or repo.count("/") != 1 or not github.valid_number(issue):
+        return None
+    owner, _, name = repo.partition("/")
+    return (owner, name, int(issue)) if github.valid_slug(owner, name) else None
+
+
+def is_read_child(owner: str, repo: str, n) -> bool:
+    """True when issue n of owner/repo is a child of an epic this board has read (its last good answer, in memory). An epic is not a child of itself, so it is not claimable;
+    nothing another node or GitHub names makes an issue claimable."""
+    slug = f"{owner}/{repo}".lower()
+    with _lock:
+        parts = [v[1] for v in _last_good.values()]
+    return any(c.get("number") == int(n) and str(c.get("repo", "")).lower() == slug for part in parts for c in part.get("children") or [])
+
+
+def _read(actor: Actor, owner: str, repo: str, n, repos) -> dict:
+    return fresh_claim_state(owner, repo, n, repos, actor.login, detail=True)
+
+
+def _mine(actor: Actor, comments, cid: int) -> tuple[dict | None, dict | None, str | None]:
+    """(raw comment, its parse, a reason it is not the board's own) for comment `cid` in a list just read: the author must be this board's gh login (a user), the marker must
+    parse and its nid must be this board's. A comment that is gone, edited into something else or somebody else's gives the reason."""
+    raw = next((c for c in comments or [] if isinstance(c, dict) and c.get("id") == cid), None)
+    if raw is None:
+        return None, None, "deleted"
+    user = raw.get("user")
+    login = user.get("login") if isinstance(user, dict) and user.get("type") == "User" else None
+    if not isinstance(login, str) or not actor.login or login.lower() != actor.login.lower():
+        return raw, None, "not_ours"
+    parsed = parse_claim(raw.get("body"))
+    if parsed is None:
+        return raw, None, "unparseable"
+    if parsed["nid"] != node_nid(actor.node_id):
+        return raw, parsed, "edited"
+    return raw, parsed, None
+
+
+def _winner(claims: list[dict]) -> dict | None:
+    live = [c for c in claims if c.get("live") is True]
+    return live[0] if live else None
+
+
+def _fence(actor: Actor, rec: dict, repos) -> dict:
+    """The fence's reading of a held claim: {ok, lost (a definite loss), reason, mine (the claim as GitHub holds it), comment (the raw own comment), now, read}. Fails closed:
+    anything the reading could not settle is ok False with lost False."""
+    out = {"ok": False, "lost": False, "reason": None, "mine": None, "comment": None, "now": None, "read": None, "winner": None}
+    d = _read(actor, rec["owner"], rec["repo"], rec["number"], repos)
+    out["read"] = d
+    if d["state"] == "unknown":
+        out["reason"] = d["reason"] or "unknown"
+        return out
+    out["now"] = d.get("now")
+    raw, parsed, why = _mine(actor, d.get("comments"), rec["comment_id"])
+    if why == "deleted" and not d.get("complete"):
+        out["reason"] = "too_long"                                      # the comment may sit in the part of a long thread that was not read: not a loss
+        return out
+    if why:
+        out.update(lost=True, reason=why)
+        return out
+    mine = next((c for c in d.get("claims") or [] if c["id"] == rec["comment_id"]), None)
+    if mine is None:
+        out.update(lost=True, reason="not_counted")
+        return out
+    out.update(mine=mine, comment=raw)
+    if parsed["status"] not in ("claimed", "running"):
+        out.update(lost=True, reason="status_changed")
+    elif mine.get("live") is None:
+        out["reason"] = "clock_unknown"
+    elif mine["live"] is not True:
+        out.update(lost=True, reason="expired")
+    else:
+        first = _winner(d["claims"])
+        if first is None or first["id"] != rec["comment_id"]:
+            out.update(lost=True, reason="not_first", winner=first["alias"] if first else None)
+        elif not d.get("complete"):
+            out["reason"] = "too_long"                                  # first among what was read, but a longer thread may hide an earlier live claim: not settled
+        else:
+            out["ok"] = True
+    return out
+
+
+def _mark_lost(actor: Actor, rec: dict, reason: str) -> None:
+    """The claim is definitely lost: keep the record as `lost` (every later write for it is refused), write an audit row and call the hooks (the run phase parks the task
+    `lost-claim` and raises the toast). Writes nothing to GitHub: the worktree and the comments stay for the owner."""
+    rec = dict(rec, state="lost", lost_reason=reason, lost_at=time.time())
+    try:
+        _rec_save(actor, rec)
+    except Exception:
+        log.warning("could not keep a lost claim record")
+    _audit(actor, "epic-claim-lost", False, rec["owner"], rec["repo"], rec["number"], reason)
+    view = claim_view(_rec_load(actor, rec["owner"], rec["repo"], rec["number"]) or {**rec, "ref": rec["ref"]})
+    for hook in list(LOST_HOOKS):
+        try:
+            hook(view, reason)
+        except Exception as e:
+            log.warning("claim lost hook failed: %s", e.__class__.__name__)
+
+
+def fence(claim_ref, *, actor: Actor | None = None, repos=None) -> dict:
+    """{ok, lost, reason, winner} for a claim_ref: re-reads the thread (revalidated, no cache) and requires the claim to exist, be the board's own, be live and be first. A
+    definite loss is recorded once (see `_mark_lost`). Nothing is written to GitHub. Not a held claim of this board, or writes off: ok False."""
+    ref = parse_ref(claim_ref)
+    bad = {"ok": False, "lost": False, "reason": "unknown_claim", "winner": None}
+    if ref is None or not github_write.writes_enabled():
+        return {**bad, "reason": "writes_off" if ref is not None else "unknown_claim"}
+    owner, repo, n, cid = ref
+    actor = actor or board_actor()
+    with _lock_for(actor, owner, repo, n):
+        rec = _rec_load(actor, owner, repo, n)
+        if rec is None or rec["comment_id"] != cid:
+            return bad
+        if rec["state"] == "lost":
+            return {"ok": False, "lost": True, "reason": rec.get("lost_reason") or "lost", "winner": None}
+        if rec["state"] != "held":
+            return {**bad, "reason": "not_held"}
+        f = _fence(actor, rec, _repos(actor, repos))
+        if f["lost"]:
+            _mark_lost(actor, rec, f["reason"])
+        return {"ok": f["ok"], "lost": f["lost"], "reason": f["reason"], "winner": f["winner"]}
+
+
+def fence_ok(claim_ref, *, actor: Actor | None = None, repos=None) -> bool:
+    """True only when the claim still exists, is the board's own, is live and is first, read just now. Every later write by the holder (a progress comment, a label, a pull
+    request, the release) is skipped unless this is True."""
+    return fence(claim_ref, actor=actor, repos=repos)["ok"]
+
+
+# ---- the steps
+
+def _stop(res: dict, reason: str, **kw) -> dict:
+    res.update(reason=reason, message=CLAIM_TEXT.get(reason), **kw)
+    return res
+
+
+def _err_reason(e: github_write.GhWriteError) -> str:
+    return e.reason if e.reason in ("rate_limited", "no_access", "no_login") else "error"
+
+
+def _withdraw(actor: Actor, rec: dict, comments=None) -> tuple[bool, str | None]:
+    """Delete the board's own claim comment `rec` named, nothing else, and forget the record. `comments` (a thread just read) must show it is still the board's own; without
+    a reading the record alone is the proof (the id was created by this board in this run and checked against the POST's answer). Returns (done, a reason when not)."""
+    if comments is not None:
+        raw, _, why = _mine(actor, comments, rec["comment_id"])
+        if why and why != "deleted":
+            return False, why                                   # there, and not the board's own any more: never delete it
+        # "deleted": a reading that lacks the comment does not prove it is gone (GitHub may not show a new comment yet); the id is the board's own record, so ask for the delete, a 404 is fine
+    try:
+        _send(actor, github_write.comment_delete(rec["owner"], rec["repo"], rec["comment_id"]))
+    except github_write.GhWriteError as e:
+        if e.reason == "not_found":
+            _rec_drop(actor, rec["owner"], rec["repo"], rec["number"])
+            return True, None
+        return False, e.reason
+    _rec_drop(actor, rec["owner"], rec["repo"], rec["number"])
+    return True, None
+
+
+def _ask_person(actor: Actor, owner: str, repo: str, n, comments) -> bool:
+    """After the third attempt: one fixed comment (no marker, so no parser counts it) asking for a person. Not posted twice."""
+    if any(isinstance(c, dict) and c.get("body") == github_write.HELP_BODY for c in comments or []):
+        return False
+    try:
+        _send(actor, github_write.comment_create(owner, repo, n, github_write.HELP_BODY))
+    except github_write.GhWriteError:
+        return False
+    return True
+
+
+def _readback(actor: Actor, owner: str, repo: str, n, repos, before_ids: set, attempt: int) -> tuple[str, dict | None]:
+    """After a POST whose outcome is unknown: read the thread (twice, WAIT_S apart) for a claim comment of this board that was not there before, with this attempt and seq 1.
+    ("found", the raw comment) when it is there; ("absent", None) when two whole readings show it is not; ("unknown", None) when the readings could not settle it."""
+    whole = 0
+    for _ in range(2):
+        sleep(WAIT_S)
+        d = _read(actor, owner, repo, n, repos)
+        if d["state"] == "unknown" or not d.get("complete"):
+            continue
+        whole += 1
+        for raw in d.get("comments") or []:
+            if not isinstance(raw, dict) or raw.get("id") in before_ids:
+                continue
+            _, parsed, why = _mine(actor, [raw], raw.get("id")) if isinstance(raw.get("id"), int) and not isinstance(raw.get("id"), bool) else (None, None, "x")
+            if why is None and parsed and parsed["attempt"] == attempt and parsed["seq"] == 1 and parsed["status"] == "claimed":
+                return "found", raw
+    return ("absent", None) if whole == 2 else ("unknown", None)
+
+
+def _sweep_orphans(actor: Actor, owner: str, repo: str, n, d: dict) -> int:
+    """A pending marker says a POST of this board may have created a comment that was never recorded. Delete such comments (this board's own, by author and nid, with the
+    pending attempt and seq 1) found in a complete reading, then forget the marker. Without a complete reading the marker stays."""
+    try:
+        row = actor.db.kv_get(_pending_key(owner, repo, n))
+    except Exception:
+        return 0
+    pend = row.get("value") if isinstance(row, dict) else None
+    if not isinstance(pend, dict) or d.get("state") == "unknown" or not d.get("complete"):
+        return 0
+    gone = 0
+    mine_rec = _rec_load(actor, owner, repo, n)
+    for raw in d.get("comments") or []:
+        cid = raw.get("id") if isinstance(raw, dict) else None
+        if not isinstance(cid, int) or isinstance(cid, bool) or (mine_rec and mine_rec["comment_id"] == cid):
+            continue
+        _, parsed, why = _mine(actor, [raw], cid)
+        if why is None and parsed and parsed["attempt"] == pend.get("attempt") and parsed["seq"] == 1 and parsed["status"] == "claimed":
+            try:
+                _send(actor, github_write.comment_delete(owner, repo, cid))
+                gone += 1
+            except github_write.GhWriteError:
+                return gone
+    actor.db.kv_del(_pending_key(owner, repo, n))
+    return gone
+
+
+def _decide(actor: Actor, rec: dict, repos) -> tuple[str, str | None, dict | None]:
+    """Step 3. (verdict, winner alias, the last reading): `won` only when the claim is the first live one of both of two uncached readings taken WAIT_S apart; `lost` (another
+    live claim is first, or this one is not to be seen); `closed`; `error` (a reading could not settle it, so the claim is not believed)."""
+    d = None
+    for _ in range(2):
+        sleep(WAIT_S)
+        d = _read(actor, rec["owner"], rec["repo"], rec["number"], repos)
+        if d["issue_state"] == "closed":
+            return "closed", None, d
+        if d["state"] == "unknown" or not d.get("complete"):
+            return "error", None, d
+        first = _winner(d["claims"])
+        if first is None:
+            return "error", None, d                             # this board's own claim is not to be seen (not visible yet, or not counted): it does not believe it won
+        if first["id"] != rec["comment_id"]:
+            return "lost", first["alias"], d
+        if any(c.get("live") is None for c in d["claims"]):
+            return "error", None, d
+    return "won", rec["alias"], d
+
+
+def _mark(actor: Actor, rec: dict, issue: dict, reclaiming: bool) -> dict:
+    """Step 4 (after the win): the assignee and the label, as visible state. Returns the record with added_assignee, added_label and notes. Never raises: a refusal is a note."""
+    notes: list[str] = []
+    login = (actor.login or "").lower()
+    o, r, n = rec["owner"], rec["repo"], rec["number"]
+    added_assignee = added_label = False
+    if login in (issue.get("assignees") or []):
+        pass                                                    # already an assignee (a person, or a node of this login): this board did not add it and will not remove it
+    else:
+        try:
+            _, _, data = _send(actor, github_write.assignee_add(o, r, n, actor.login))
+            got = {u.get("login", "").lower() for u in (data.get("assignees") or []) if isinstance(u, dict)} if isinstance(data, dict) else set()
+            if login in got:
+                added_assignee = True
+            else:
+                notes.append("no_push_access")                  # GitHub ignores an assignee from a login that cannot be assigned, and says nothing
+        except github_write.GhWriteError as e:
+            notes.append("assignee_" + _err_reason(e))
+    if github_write.LABEL in (issue.get("labels") or []):
+        added_label = reclaiming                                # a dead holder's label: the board that takes over also takes over the clean-up
+    else:
+        try:
+            try:
+                _send(actor, github_write.label_add(o, r, n))
+            except github_write.GhWriteError as e:
+                if e.reason not in ("invalid", "not_found"):
+                    raise
+                try:
+                    _send(actor, github_write.label_create(o, r))
+                except github_write.GhWriteError as e2:
+                    if e2.reason != "invalid":                  # 422: it exists already (someone made it in between)
+                        notes.append("label_create_refused")
+                        raise
+                _send(actor, github_write.label_add(o, r, n))
+            added_label = True
+        except github_write.GhWriteError as e:
+            if "label_create_refused" not in notes:
+                notes.append("label_" + _err_reason(e))
+    return dict(rec, added_assignee=added_assignee, added_label=added_label, notes=notes)
+
+
+def read_epic_now(owner: str, repo: str, n, repos) -> bool:
+    """Read the epic `owner/repo#n` from GitHub now (its children only, no comments) and keep it as this board's last good answer, so its children are issues of an epic this
+    board has read. True only when the epic is one of this board's own repositories' issues, is labelled `ccboard:epic` and was read. Used by `claim_issue(epic=...)`: the
+    node that runs a relayed claim has usually not had the epic page open, but it reads the epic itself; what a caller says about the epic is a number to read, never a
+    list of children."""
+    readable = frozenset(s.lower() for s in repos if isinstance(s, str))
+    if f"{owner}/{repo}".lower() not in readable or not github.valid_number(n):
+        return False
+    try:
+        part = _read_epic(owner, repo, int(n), readable, read_comments=False)
+    except github.GhReadError:
+        return False
+    if not part["epic"].get("labelled"):
+        return False
+    with _lock:
+        _last_good[(owner.lower(), repo.lower(), int(n))] = (mono(), part)
+        while len(_last_good) > GOOD_MAX:
+            _last_good.pop(next(iter(_last_good)))
+    return True
+
+
+def _epic_ref(epic, owner: str, name: str):
+    """(owner, repo, number) of the `epic` argument of claim_issue: a number (an issue of the claimed issue's own repository) or "owner/name#number"; None when it is neither."""
+    if epic is None:
+        return None
+    if github.valid_number(epic):
+        return owner, name, int(epic)
+    m = re.fullmatch(r"([^/#\s]{1,39})/([^/#\s]{1,100})#([1-9][0-9]{0,8})", epic) if isinstance(epic, str) and len(epic) <= 160 else None
+    return (m.group(1), m.group(2), int(m.group(3))) if m and github.valid_slug(m.group(1), m.group(2)) else None
+
+
+def claim_issue(repo, issue, *, actor: Actor | None = None, repos=None, epic=None, task_ref: str | None = None, branch: str | None = None) -> dict:
+    """Claim issue `issue` of repository `repo` ("owner/name") for this board. Returns {claimed, reason, claim_ref, winner, message, ...}.
+
+    `claimed` is True only for `won` (the board holds the issue: keep claim_ref, renew it, fence every later write with it) and `already_held` (this board already did; claim_ref
+    is the same). Otherwise `reason` is one of CLAIM_TEXT: writes_off, bad_request, other_repo, not_epic_child, authors_unknown, login_not_allowed, claim_unknown (never
+    claimable), taken (a live claim of another node, `winner` is its alias), lost (this board posted, was not first and deleted its own comment), closed, done,
+    attempts_exhausted (after attempt 3), rate_limited / no_access / no_login / error (a GitHub write failed: `claimed` False and no claim comment is left), outcome_unknown (a
+    write may have happened: the next call reads the thread before it writes), withdraw_failed. With writes off nothing at all is sent to GitHub, not even a read. Safe to
+    call from several threads: one claim of one issue runs at a time on a board.
+    The issue must be a child of an epic this board has READ. `epic` (a number in the issue's repository, or "owner/name#number") lets a board that has not had the epic open
+    (a node running a relayed claim, or any board after a restart) read it first, on demand; the epic must be in this board's own repositories and labelled ccboard:epic.
+    Without `epic` a child of an epic this board has not read is `not_epic_child`, and nothing is asked of GitHub."""
+    res: dict = {"claimed": False, "reason": None, "claim_ref": None, "winner": None, "message": None}
+    if not github_write.writes_enabled():
+        return _stop(res, "writes_off")
+    tgt = _target(repo, issue)
+    if tgt is None:
+        return _stop(res, "bad_request")
+    owner, name, n = tgt
+    repos = list(repos if repos is not None else actor.repos if actor is not None and actor.repos is not None else board_repos())
+    spelled = next((s for s in repos if isinstance(s, str) and s.lower() == f"{owner}/{name}".lower()), None)
+    if spelled is None or not github.valid_slug(*spelled.partition("/")[::2]):
+        return _stop(res, "other_repo")
+    owner, _, name = spelled.partition("/")
+    if not is_read_child(owner, name, n):
+        ep = _epic_ref(epic, owner, name)
+        if epic is not None and ep is None:
+            return _stop(res, "bad_request")
+        if ep is None:
+            return _stop(res, "not_epic_child")
+        if f"{ep[0]}/{ep[1]}".lower() not in {s.lower() for s in repos if isinstance(s, str)}:
+            return _stop(res, "other_repo")
+        if not read_epic_now(ep[0], ep[1], ep[2], repos) or not is_read_child(owner, name, n):
+            return _stop(res, "not_epic_child")
+    actor = actor or board_actor()                              # asks gh who it is logged in as: only after the cheap refusals above
+    if not actor.login:
+        return _stop(res, "authors_unknown")
+    if actor.login.lower() not in allowed_authors(None if settings.epic_authors else actor.login):
+        return _stop(res, "login_not_allowed")
+    alias = actor.alias if github_write.ALIAS_RE.fullmatch(actor.alias or "") and not looks_like_host(actor.alias) else derived_alias(actor.node_id)
+    nid = node_nid(actor.node_id)
+    with _lock_for(actor, owner, name, n):
+        return _claim_locked(actor, repos, owner, name, n, alias, nid, res, task_ref, branch)
+
+
+def _claim_locked(actor: Actor, repos: list, owner: str, name: str, n: int, alias: str, nid: str, res: dict, task_ref, branch) -> dict:
+    prior = _rec_load(actor, owner, name, n)
+    if prior is None and sum(1 for v in held_claims(actor) if v["state"] in ("claiming", "held")) >= HELD_MAX:
+        return _stop(res, "too_many_claims")
+    if prior is not None and prior["state"] == "held":
+        f = fence(prior["ref"], actor=actor, repos=repos)
+        if f["ok"]:
+            return _stop(res, "already_held", claim_ref=prior["ref"], claimed=True, winner=prior["alias"])
+        prior = _rec_load(actor, owner, name, n)
+    if prior is not None and prior["state"] == "claiming":
+        ok, why = _withdraw(actor, prior)                       # an earlier call died between the post and the decision: take the unconfirmed comment back first
+        if not ok:
+            return _stop(res, "withdraw_failed")
+    elif prior is not None and prior["state"] == "lost":
+        _rec_drop(actor, owner, name, n)                        # the loss was handled when it happened; this is a new attempt
+    # step 1: check, fresh
+    d = fresh_claim_state(owner, name, n, repos, actor.login, detail=True)
+    if d["issue_state"] == "closed":
+        return _stop(res, "closed")
+    if d["state"] == "unknown":
+        return _stop(res, "claim_unknown", unknown_reason=d["reason"])
+    if _sweep_orphans(actor, owner, name, n, d):
+        d = fresh_claim_state(owner, name, n, repos, actor.login, detail=True)           # the orphans were this board's own live claims: read again without them
+        if d["issue_state"] == "closed":
+            return _stop(res, "closed")
+        if d["state"] == "unknown":
+            return _stop(res, "claim_unknown", unknown_reason=d["reason"])
+    claims = d.get("claims") or []
+    if any(c.get("live") is None for c in claims):
+        return _stop(res, "claim_unknown", unknown_reason="clock_unknown")
+    live = _winner(claims)
+    if live is not None:
+        return _stop(res, "taken", winner=live["alias"])
+    newest = claims[-1] if claims else None
+    if newest is not None and newest["status"] == "done":
+        return _stop(res, "done", winner=newest["alias"])
+    attempt = max([c["attempt"] for c in claims] + [0]) + 1
+    if attempt > MAX_ATTEMPTS:
+        asked = _ask_person(actor, owner, name, n, d.get("comments"))
+        _audit(actor, "epic-claim", False, owner, name, n, "attempts_exhausted")
+        return _stop(res, "attempts_exhausted", asked_person=asked, attempt=attempt - 1)
+    reclaims = newest["id"] if newest is not None else None
+    try:
+        text = github_write.claim_body(alias, nid, settings.epic_lease_min, 1, "claimed", attempt, reclaims=reclaims, task=task_ref, branch=branch)
+    except ValueError:
+        return _stop(res, "bad_request")
+    # step 2: post. A marker first, so a crash between the POST and the record leaves a trace the next call can sweep.
+    before_ids = {c.get("id") for c in d.get("comments") or [] if isinstance(c, dict)}
+    actor.db.kv_set(_pending_key(owner, name, n), {"nid": nid, "attempt": attempt, "seq": 1})
+    try:
+        _, _, data = _send(actor, github_write.comment_create(owner, name, n, text))
+        raw = data if isinstance(data, dict) and isinstance(data.get("id"), int) and not isinstance(data.get("id"), bool) else None
+        if raw is None:
+            raise github_write.GhWriteError("bad_answer", unknown=True)
+    except github_write.GhWriteError as e:
+        if not e.unknown:
+            actor.db.kv_del(_pending_key(owner, name, n))
+            _audit(actor, "epic-claim", False, owner, name, n, e.reason)
+            return _stop(res, _err_reason(e), wait_s=e.wait_s)
+        found, raw = _readback(actor, owner, name, n, repos, before_ids, attempt)
+        if raw is None:
+            if found == "absent":
+                actor.db.kv_del(_pending_key(owner, name, n))            # two whole readings show nothing was written: no half claim, nothing to sweep later
+            _audit(actor, "epic-claim", False, owner, name, n, "error" if found == "absent" else "outcome_unknown")
+            return _stop(res, "error" if found == "absent" else "outcome_unknown", unknown_outcome=found != "absent", status_code=e.status)
+    actor.db.kv_del(_pending_key(owner, name, n))
+    rec = {"v": 1, "owner": owner, "repo": name, "number": n, "comment_id": raw["id"], "nid": nid, "alias": alias, "login": actor.login, "lease_min": settings.epic_lease_min,
+           "seq": 1, "attempt": attempt, "status": "claimed", "state": "claiming", "added_assignee": False, "added_label": False, "reclaims": reclaims, "task_ref": task_ref,
+           "branch": branch, "task_id": None, "renewals": 0, "notes": [], "created_at": raw.get("created_at") if isinstance(raw.get("created_at"), str) else None}
+    _rec_save(actor, rec)
+    rec["ref"] = make_ref(owner, name, n, rec["comment_id"])
+    # step 3: decide
+    verdict, winner, dd = _decide(actor, rec, repos)
+    if verdict != "won":
+        ok, why = _withdraw(actor, rec, (dd or {}).get("comments") if dd and dd.get("state") != "unknown" else None)
+        _audit(actor, "epic-claim", False, owner, name, n, verdict if ok else "withdraw_failed")
+        if not ok:
+            return _stop(res, "withdraw_failed", winner=winner)
+        if verdict == "error":
+            return _stop(res, "claim_unknown", unknown_reason=(dd or {}).get("reason") or "not_settled")
+        return _stop(res, verdict, winner=winner)
+    rec = dict(rec, state="held")
+    _rec_save(actor, rec)
+    # step 4: mark, then hold
+    rec = _mark(actor, rec, d.get("issue") or {}, reclaiming=newest is not None)
+    rec["ref"] = make_ref(owner, name, n, rec["comment_id"])
+    _rec_save(actor, rec)
+    _audit(actor, "epic-claim", True, owner, name, n, f"attempt {attempt}")
+    _ensure_renewer(actor)
+    res.update(claimed=True, claim_ref=rec["ref"], winner=alias, attempt=attempt, notes=rec["notes"], reclaims=reclaims)
+    return _stop(res, "won", claimed=True)
+
+
+def _held(actor: Actor, claim_ref) -> tuple[dict | None, tuple | None]:
+    ref = parse_ref(claim_ref)
+    if ref is None:
+        return None, None
+    rec = _rec_load(actor, ref[0], ref[1], ref[2])
+    return (rec if rec and rec["comment_id"] == ref[3] else None), ref
+
+
+def renew(claim_ref, *, actor: Actor | None = None, repos=None, status: str | None = None, task_ref: str | None = None, branch: str | None = None, bump: bool = True,
+          stop: threading.Event | None = None) -> dict:
+    """Step 5: the heartbeat, and the way a status or a task is written into the claim. Fenced: the claim must still be the board's, live and first (otherwise nothing is
+    written; a definite loss is recorded). Edits the board's OWN comment, keeping its marker and nid, with seq + 1 (`bump=False` keeps seq: the status change to running), so GitHub
+    moves updated_at. Returns {renewed, reason, seq, lost}. `stop` is the renew timer's stop flag: once set, the database is not touched again."""
+    out = {"renewed": False, "reason": None, "seq": None, "lost": False}
+    if stop is not None and stop.is_set():
+        return {**out, "reason": "stopped"}                                      # before anything: not a database read, not a request
+    if status is not None and status not in ("claimed", "running"):
+        return {**out, "reason": "bad_request"}
+    if not github_write.writes_enabled():
+        return {**out, "reason": "writes_off"}
+    actor = actor or board_actor()
+    rec, ref = _held(actor, claim_ref)
+    if ref is None or rec is None or rec["state"] != "held":
+        return {**out, "reason": "unknown_claim" if rec is None else ("lost" if rec["state"] == "lost" else "not_held"), "lost": bool(rec and rec["state"] == "lost")}
+    with _lock_for(actor, rec["owner"], rec["repo"], rec["number"]):
+        rec = _rec_load(actor, rec["owner"], rec["repo"], rec["number"])
+        if rec is None or rec["state"] != "held" or rec["comment_id"] != ref[3]:
+            return {**out, "reason": "not_held"}
+        if stop is not None and stop.is_set():
+            return {**out, "reason": "stopped"}
+        f = _fence(actor, rec, _repos(actor, repos))
+        if f["lost"]:
+            if stop is None or not stop.is_set():
+                _mark_lost(actor, rec, f["reason"])
+            return {**out, "reason": f["reason"], "lost": True}
+        if not f["ok"]:
+            return {**out, "reason": f["reason"] or "unknown"}
+        cur = parse_claim(f["comment"].get("body"))                              # the comment as it is now: the seq GitHub holds, never a stale record's
+        seq = max(rec["seq"], cur["seq"]) + (1 if bump else 0)
+        new_status = status or cur["status"]
+        try:
+            text = github_write.claim_body(rec["alias"], rec["nid"], rec["lease_min"], seq, new_status, rec["attempt"], reclaims=rec.get("reclaims"),
+                                           task=task_ref if task_ref is not None else rec.get("task_ref"), branch=branch if branch is not None else rec.get("branch"))
+            _send(actor, github_write.comment_edit(rec["owner"], rec["repo"], rec["comment_id"], text))
+        except ValueError:
+            return {**out, "reason": "bad_request"}
+        except github_write.GhWriteError as e:
+            return {**out, "reason": _err_reason(e), "wait_s": e.wait_s, "unknown": e.unknown}
+        if stop is not None and stop.is_set():
+            return {**out, "renewed": True, "reason": "stopped", "seq": seq}         # sent; the record is left for the next start to correct from GitHub's copy
+        rec = dict(rec, seq=seq, status=new_status, renewals=rec["renewals"] + (1 if bump else 0),
+                   task_ref=task_ref if task_ref is not None else rec.get("task_ref"), branch=branch if branch is not None else rec.get("branch"))
+        _rec_save(actor, rec)
+        return {**out, "renewed": True, "seq": seq, "reason": "ok"}
+
+
+def start(claim_ref, task_ref: str | None = None, branch: str | None = None, *, actor: Actor | None = None, repos=None) -> dict:
+    """The claim's status becomes `running` (seq kept), with the task ref and branch when given: the run phase calls it when the task starts. Fenced like `renew`."""
+    return renew(claim_ref, actor=actor, repos=repos, status="running", task_ref=task_ref, branch=branch, bump=False)
+
+
+def release(claim_ref, status: str = "released", *, actor: Actor | None = None, repos=None) -> dict:
+    """Step 6: done, failed, cancelled or released. Fenced once; then the comment's status is edited (seq + 1) and ONLY what this board added is taken back: the label if it
+    added it, itself as assignee if it added itself. The record is forgotten afterwards. Returns {released, reason, cleanup: {label, assignee}}. A lost claim writes nothing."""
+    out = {"released": False, "reason": None, "cleanup": {"label": None, "assignee": None}}
+    if status not in ("done", "failed", "cancelled", "released"):
+        return {**out, "reason": "bad_request"}
+    if not github_write.writes_enabled():
+        return {**out, "reason": "writes_off"}
+    actor = actor or board_actor()
+    rec, ref = _held(actor, claim_ref)
+    if ref is None or rec is None:
+        return {**out, "reason": "unknown_claim"}
+    with _lock_for(actor, rec["owner"], rec["repo"], rec["number"]):
+        rec = _rec_load(actor, rec["owner"], rec["repo"], rec["number"])
+        if rec is None or rec["comment_id"] != ref[3]:
+            return {**out, "reason": "unknown_claim"}
+        if rec["state"] != "held":
+            return {**out, "reason": "lost" if rec["state"] == "lost" else "not_held"}
+        f = _fence(actor, rec, _repos(actor, repos))
+        if f["lost"]:
+            _mark_lost(actor, rec, f["reason"])
+            return {**out, "reason": f["reason"], "lost": True}
+        if not f["ok"]:
+            return {**out, "reason": f["reason"] or "unknown"}
+        cur = parse_claim(f["comment"].get("body"))
+        try:
+            text = github_write.claim_body(rec["alias"], rec["nid"], rec["lease_min"], max(rec["seq"], cur["seq"]) + 1, status, rec["attempt"], reclaims=rec.get("reclaims"),
+                                           task=rec.get("task_ref"), branch=rec.get("branch"))
+            _send(actor, github_write.comment_edit(rec["owner"], rec["repo"], rec["comment_id"], text))
+        except ValueError:
+            return {**out, "reason": "bad_request"}
+        except github_write.GhWriteError as e:
+            return {**out, "reason": _err_reason(e), "wait_s": e.wait_s, "unknown": e.unknown}
+        if rec["added_label"]:
+            try:
+                _send(actor, github_write.label_remove(rec["owner"], rec["repo"], rec["number"]))
+                out["cleanup"]["label"] = "removed"
+            except github_write.GhWriteError as e:
+                out["cleanup"]["label"] = "not_found" if e.reason == "not_found" else "failed"
+        if rec["added_assignee"] and actor.login:
+            try:
+                _send(actor, github_write.assignee_remove(rec["owner"], rec["repo"], rec["number"], actor.login))
+                out["cleanup"]["assignee"] = "removed"
+            except github_write.GhWriteError as e:
+                out["cleanup"]["assignee"] = "failed"
+        _rec_drop(actor, rec["owner"], rec["repo"], rec["number"])
+        _audit(actor, "epic-claim-release", True, rec["owner"], rec["repo"], rec["number"], status)
+        return {**out, "released": True, "reason": "ok"}
+
+
+def attach_task(claim_ref, task_id: int, *, actor: Actor | None = None) -> bool:
+    """Remember which local task works the claim, so the lost hook can park it. Database only."""
+    actor = actor or board_actor_lazy()
+    if actor is None or isinstance(task_id, bool) or not isinstance(task_id, int) or task_id <= 0:
+        return False
+    rec, ref = _held(actor, claim_ref)
+    if rec is None:
+        return False
+    with _lock_for(actor, rec["owner"], rec["repo"], rec["number"]):
+        rec = _rec_load(actor, rec["owner"], rec["repo"], rec["number"])
+        if rec is None:
+            return False
+        _rec_save(actor, dict(rec, task_id=task_id))
+    return True
+
+
+def drop_claim(claim_ref, *, actor: Actor | None = None) -> bool:
+    """Forget a claim record without writing anything to GitHub (a lost claim once the task is parked, or a record nobody will renew). The comment, if any, stays and lapses."""
+    actor = actor or board_actor_lazy()
+    rec, ref = _held(actor, claim_ref) if actor is not None else (None, None)
+    if rec is None:
+        return False
+    with _lock_for(actor, rec["owner"], rec["repo"], rec["number"]):
+        _rec_drop(actor, rec["owner"], rec["repo"], rec["number"])
+    return True
+
+
+# ---- the renew timer: only while this board holds a claim, bounded, stopped on shutdown
+
+def _renew_loop(actor: Actor, stop: threading.Event) -> None:
+    while not stop.wait(RENEW_S):
+        if stop.is_set():
+            return
+        live = [v for v in held_claims(actor) if v["state"] == "held"]
+        if not live:
+            break
+        for v in live:
+            if stop.is_set():
+                return
+            if v["renewals"] >= RENEW_MAX:
+                continue                                          # bounded: a claim renewed for 24 h is left to lapse
+            try:
+                renew(v["claim_ref"], actor=actor, stop=stop)
+            except Exception as e:
+                log.warning("claim renew failed: %s", e.__class__.__name__)
+    with _klock:
+        cur = _renewers.get(id(actor.db))
+        if cur is not None and cur[1] is stop:
+            _renewers.pop(id(actor.db), None)
+
+
+def _ensure_renewer(actor: Actor) -> None:
+    """Start this board's renew thread if it is not running. Nothing starts at import or on a board that holds no claim."""
+    if not RENEWER:
+        return
+    with _klock:
+        cur = _renewers.get(id(actor.db))
+        if cur is not None and cur[0].is_alive() and not cur[1].is_set():
+            return
+        stop = threading.Event()
+        t = threading.Thread(target=_renew_loop, args=(actor, stop), name="ccboard-epic-renew", daemon=True)
+        _renewers[id(actor.db)] = (t, stop)
+        t.start()
+
+
+def renewer_running() -> bool:
+    with _klock:
+        return any(t.is_alive() for t, _ in _renewers.values())
+
+
+def stop_renewals(timeout: float = 30.0) -> None:
+    """Shutdown: set every renew thread's stop flag and wait for it. After this returns no timer touches the database again."""
+    with _klock:
+        items = list(_renewers.values())
+        _renewers.clear()
+    for _, stop in items:
+        stop.set()
+    for t, _ in items:
+        t.join(timeout)
+
+
+def recover(actor: Actor | None = None, repos=None) -> list[dict]:
+    """After a restart: take back the unconfirmed claims (state `claiming`: delete the board's own comment and forget it), start the renew timer when a claim is held, and forget
+    lost records older than a week. Returns what it did, as claim_view plus `did`. Reads the database first and asks GitHub only for a record that needs it."""
+    actor = actor or board_actor()
+    did = []
+    for key in _index(actor):
+        m = re.fullmatch(CLAIM_KV + r"([^/]+)/([^#]+)#([0-9]+)", key)
+        if not m:
+            continue
+        rec = _rec_load(actor, m.group(1), m.group(2), int(m.group(3)))
+        if rec is None:
+            continue
+        if rec["state"] == "claiming" and github_write.writes_enabled():
+            with _lock_for(actor, rec["owner"], rec["repo"], rec["number"]):
+                ok, _ = _withdraw(actor, rec)
+            did.append({**claim_view(rec), "did": "withdrawn" if ok else "withdraw_failed"})
+        elif rec["state"] == "lost" and time.time() - float(rec.get("lost_at") or 0) > LOST_KEEP_S:
+            _rec_drop(actor, rec["owner"], rec["repo"], rec["number"])
+            did.append({**claim_view(rec), "did": "forgotten"})
+        elif rec["state"] == "held":
+            did.append({**claim_view(rec), "did": "held"})
+    if any(d["did"] == "held" for d in did) and github_write.writes_enabled():
+        _ensure_renewer(actor)
+    return did

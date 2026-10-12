@@ -175,6 +175,9 @@ if [ -z "$CCBOARD_HUB_TOKEN" ]; then CCBOARD_HUB_TOKEN=$("$PY3" -c 'import secre
 : "${CCBOARD_MCP_REMOTE:=0}"
 : "${CCBOARD_MCP_NODES:=0}"             # 0 = agents stay on this board; read (or 1) = they may list nodes and read their projects and tasks; tasks = they may also start tasks there (issue #152)
 : "${CCBOARD_EPIC_AUTHORS:=}"             # GitHub logins whose claim comments count on an epic, if they can write to the repository (empty = the gh login only; issue #147)
+: "${CCBOARD_EPIC_WRITES:=0}"
+: "${CCBOARD_EPIC_ALIAS:=}"
+: "${CCBOARD_EPIC_LEASE_MIN:=30}"
 : "${CCBOARD_AUTOCLOSE_GRACE:=45}"
 : "${CCBOARD_CODEX_HOOKS_ASYNC:=1}"
 

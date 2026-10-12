@@ -1294,6 +1294,13 @@ const MCP_NODES_LEVELS = Object.freeze({
   read: ['read only', 'read', 'Agents on this board may list paired nodes and read their projects and tasks; they cannot start a task there, type into a session, answer a permission or read a screen on another node.'],
   tasks: ['read and start tasks', 'tasks', 'Agents on this board may list paired nodes, read their projects and tasks and start tasks on them in a new session; they can never type into a session, answer a permission or read a screen on another node.'],
 });
+// issue #148: the two settings of an epic claim, shown beside the MCP switch, read only (env, set on the box). One sentence each.
+const EPIC_WRITES_SENTENCE = {
+  true: 'This board may claim an epic issue: it comments on it, assigns itself and adds the ccboard:in-progress label, and writes nothing else to GitHub.',
+  false: 'This board only reads GitHub. It claims no issue and writes no comment, assignee or label.',
+};
+const EPIC_ALIAS_SENTENCE = 'The short name nodes use for this board in a claim comment. Comments on a public repository are public, so it is never the host name.';
+const EPIC_ALIAS_NOTE = { 'host name': 'The configured alias looks like a host name', 'not valid': 'The configured alias is not valid (letters, digits, - and _ only)' };
 const MCP_SESSIONS_WARN = 'Sessions lets the device type a task into a session that is already running.';
 const MCP_URL_WARN = 'No board address: set CCBOARD_PUBLIC_URL on the box (the https address of the board on your tailnet) and rerun ./install.sh. Until then no command is shown, so none points at a guessed address.';
 const MCP_SCOPES = [['read', 'Read', 'list projects and tasks, read results'], ['tasks', 'Tasks', 'create tasks and start them in a new session'], ['sessions', 'Sessions', 'hand a task to a running session']];
@@ -1323,7 +1330,15 @@ function settingsMcpAdopt(r) {
       created_at: str(t.created_at), last_used_at: str(t.last_used_at), last_tool: str(t.last_tool), expires_at: str(t.expires_at), expired: t.expired === true });
   }
   const nodes = r.nodes && typeof r.nodes === 'object' ? { level: Object.prototype.hasOwnProperty.call(MCP_NODES_LEVELS, r.nodes.level) ? r.nodes.level : (r.nodes.enabled === true ? 'read' : 'off'), env: typeof r.nodes.env === 'string' && /^[A-Z_]{3,40}$/.test(r.nodes.env) ? r.nodes.env : 'CCBOARD_MCP_NODES' } : null;      // the board's env switch and its level (issue #152), read only here
-  settingsMcp.data = { enabled: r.enabled === true, max: Number.isInteger(r.max_tokens) ? r.max_tokens : 10, tokens, nodes };
+  const ep = r.epics && typeof r.epics === 'object' ? {
+    writes: r.epics.writes === true,
+    writesEnv: typeof r.epics.writes_env === 'string' && /^[A-Z_]{3,40}$/.test(r.epics.writes_env) ? r.epics.writes_env : 'CCBOARD_EPIC_WRITES',
+    alias: typeof r.epics.alias === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(r.epics.alias) ? r.epics.alias : '',
+    fromSetting: r.epics.alias_source === 'setting',
+    aliasEnv: typeof r.epics.alias_env === 'string' && /^[A-Z_]{3,40}$/.test(r.epics.alias_env) ? r.epics.alias_env : 'CCBOARD_EPIC_ALIAS',
+    note: r.epics.alias_note === 'host name' || r.epics.alias_note === 'not valid' ? r.epics.alias_note : null,
+  } : null;       // issue #148: the writes switch and the alias of an epic claim, read only here
+  settingsMcp.data = { enabled: r.enabled === true, max: Number.isInteger(r.max_tokens) ? r.max_tokens : 10, tokens, nodes, epics: ep };
 }
 
 function settingsMcpRepaint() { if (settingsMcp.paint) settingsMcp.paint(); }
@@ -1447,7 +1462,16 @@ function settingsMcpBlock() {
   const nodesEnv = el('code', { class: 'mcp-nodes-env' });
   const nodesNote = el('div', { class: 'dim' });
   const nodesLine = el('div', { class: 'set-note mcp-nodes hidden', role: 'status' }, el('div', {}, 'Agents on other nodes: ', nodesWord, ' (', nodesEnv, ', set on the box, read only here)'), nodesNote);
-  const node = el('div', { class: 'set-mcp' }, sw, status, el('div', { class: 'dim set-note', text: MCP_BOX_NOTE }), nodesLine, err, on);
+  const epWord = el('b', { class: 'mcp-epics-w' });
+  const epEnv = el('code', { class: 'mcp-epics-wenv' });
+  const epNote = el('div', { class: 'dim' });
+  const alWord = el('b', { class: 'mcp-epics-a' });
+  const alEnv = el('code', { class: 'mcp-epics-aenv' });
+  const alNote = el('div', { class: 'dim' });
+  const epicsLine = el('div', { class: 'set-note mcp-epics hidden', role: 'status' },
+    el('div', {}, 'GitHub writes for epics: ', epWord, ' (', epEnv, ', set on the box, read only here)'), epNote,
+    el('div', {}, 'Name in claim comments: ', alWord, ' (', alEnv, ', set on the box, read only here)'), alNote);
+  const node = el('div', { class: 'set-mcp' }, sw, status, el('div', { class: 'dim set-note', text: MCP_BOX_NOTE }), nodesLine, epicsLine, err, on);
 
   async function submit() {
     if (settingsMcp.busy === 'mint') return;                            // a second tap while minting does nothing
@@ -1477,6 +1501,16 @@ function settingsMcpBlock() {
     const nd = d && d.nodes ? d.nodes : null;                           // shown on a board with a paired node, or whenever the switch is on
     nodesLine.classList.toggle('hidden', !(nd && (nd.level !== 'off' || (typeof state !== 'undefined' && state && state.nodes_enabled === true))));
     if (nd) { const lv = MCP_NODES_LEVELS[nd.level]; setTextIfChanged(nodesWord, lv[0]); setTextIfChanged(nodesEnv, `${nd.env}=${lv[1]}`); setTextIfChanged(nodesNote, lv[2]); }
+    const ep = d && d.epics ? d.epics : null;                           // shown beside the nodes line: on a board with a paired node, or whenever writes are on
+    epicsLine.classList.toggle('hidden', !(ep && (ep.writes || (typeof state !== 'undefined' && state && state.nodes_enabled === true))));
+    if (ep) {
+      setTextIfChanged(epWord, ep.writes ? 'on' : 'off');
+      setTextIfChanged(epEnv, `${ep.writesEnv}=${ep.writes ? '1' : '0'}`);
+      setTextIfChanged(epNote, EPIC_WRITES_SENTENCE[ep.writes ? 'true' : 'false']);
+      setTextIfChanged(alWord, ep.alias || 'chosen by the board');
+      setTextIfChanged(alEnv, ep.fromSetting ? `${ep.aliasEnv}=${ep.alias}` : `${ep.aliasEnv} is not set`);
+      setTextIfChanged(alNote, ep.note ? `${EPIC_ALIAS_NOTE[ep.note]}, so the board uses this name instead. ${EPIC_ALIAS_SENTENCE}` : EPIC_ALIAS_SENTENCE);
+    }
     urlWarn.classList.toggle('hidden', !!mcpUrl(typeof state !== 'undefined' ? state : null));
     warnS.classList.toggle('hidden', !checks.sessions.checked);
     const toks = d ? d.tokens : [];

@@ -131,7 +131,7 @@ test('the header: title, the epic on GitHub, the counts, the rate note, Pause (b
   const run = btn(pg, 'Run');
   assert.notEqual(run.getAttribute('disabled'), null, 'Run waits for the routing phase');
   assert.ok(run.classList.contains('primary'));
-  assert.equal(pg.querySelectorAll('button.primary').length, 1, 'one filled primary on the page');
+  assert.equal(pg.querySelectorAll('button.primary').filter((b) => !b.classList.contains('tinted')).length, 1, 'one filled primary on the page (a Claim button is the tinted kind)');
   const why = pg.querySelector('#' + run.getAttribute('aria-describedby'));
   assert.match(text(why), /available when routing is installed/);
   assert.ok(!btn(pg, 'Pause').classList.contains('primary'), 'Pause is bordered, not filled');

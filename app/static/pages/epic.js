@@ -2,8 +2,11 @@
    command palette and the demo's answers for /api/epics. Classic script, definition-only at load: nothing here touches the DOM, the network or a timer until a page, the list
    or the demo asks (registerPage is the one call made at load).
 
-   The page only READS GitHub (through the board: GET /api/epics, GET /api/epics/<owner>/<repo>/<n>). It claims nothing, runs nothing and comments on nothing; Run is shown
-   disabled until the routing phase wires it. The two things it writes are this board's own: PUT /api/epics/<owner>/<repo>/<n>/settings {pins, epic_pin, paused}.
+   The page READS GitHub through the board (GET /api/epics, GET /api/epics/<owner>/<repo>/<n>) and never writes to it. It runs nothing; Run is shown disabled until the
+   routing phase wires it. It writes two things: this board's own settings, PUT /api/epics/<owner>/<repo>/<n>/settings {pins, epic_pin, paused}, and, only when the board says
+   GitHub writes are on (CCBOARD_EPIC_WRITES), a person's ask to a paired node to claim one issue: POST /api/nodes/<handle>/epics/claim {repo, issue, epic} (issue #148). The
+   node does the claiming; this page paints the ask at once and shows the node's answer in plain words (taken, lost, claim not known, writes off, closed, attempts used up,
+   offline, scope, unconfirmed). It also shows this board's own claims (held, renewing, lost) from the answer's `own_claims`, and says once, with a toast, that one was lost.
 
    Everything GitHub sent (titles, labels, claim aliases) is untrusted text written by other people: it goes into the page through textContent only, and a link is drawn only
    for an address that is exactly https://github.com/<owner>/<repo>/(issues|pull)/<n> (the board builds them from validated parts; this file checks again).
@@ -35,6 +38,14 @@ const EP_EMPTY = 'This epic has no issues yet. Add sub-issues on GitHub.';
 const EP_RUN_WHY = 'available when routing is installed';
 const EP_PAUSE_WHY = 'Pause stops this board routing the epic. Nothing changes on GitHub.';
 const EP_KEY = 'ccboard:epics';
+const EP_LOST_KEY = 'ccboard:epic-lost';
+const EP_WRITES_OFF = 'GitHub writes are off on this board (CCBOARD_EPIC_WRITES)';
+const EP_WRITES_OFF_NEXT = 'Claiming comments on the issue, assigns the node and labels it. Set CCBOARD_EPIC_WRITES=1 on the box to allow it; until then this board only reads GitHub.';
+const EP_CLAIM_TITLE = 'The node posts a claim comment on the issue, assigns itself and labels it ccboard:in-progress. Nothing else changes on GitHub.';
+const EP_LOST_WHY = {              // why this board's own claim was lost (the node's word -> plain words)
+  not_first: 'another node was first', expired: 'its lease ran out', deleted: 'the claim comment was deleted', not_ours: 'the claim comment is no longer this board\'s', unparseable: 'the claim comment was edited',
+  edited: 'the claim comment was edited', not_counted: 'the claim comment no longer counts', status_changed: 'its status was changed on GitHub',
+};
 const EP_GH = 'https://github.com/';    // the demo and the blank page build the epic's own address from the route's checked parts; every other link is the board's
 
 const epicPage = { cur: null, ids: 0 };
@@ -86,6 +97,167 @@ function epChip(handle, name, title, glyph) {
   return el('span', { class: handle === 'local' ? 'nchip local' : 'nchip', 'data-node': handle || null, title: title || n },
     el('span', { class: 'nchip-m', 'aria-hidden': 'true', text: (n.replace(/[^A-Za-z0-9]/g, '').slice(0, 2) || '?').toUpperCase() }), el('span', { class: 'nchip-n', text: n }),
     glyph ? el('span', { class: 'nchip-g', 'aria-hidden': 'true', text: glyph }) : null);
+}
+
+/* ---------- this board's own claims and the ask to claim (issue #148) ---------- */
+
+function epOwn(data, c) {
+  const slug = String(c.repo || '').toLowerCase();
+  return (data.own_claims || []).find((o) => o && String(o.repo || '').toLowerCase() === slug && o.issue === c.number) || null;
+}
+
+function epOwnActive(o) { return !!o && (o.state === 'held' || o.state === 'claiming'); }
+
+/* One sentence for this board's own claim record. `writes` is the board's switch: a held claim is not renewed while it is off. */
+function epOwnText(o, writes) {
+  if (!o) return '';
+  if (o.state === 'lost') {
+    const why = ownKey(EP_LOST_WHY, o.lost_reason) ? EP_LOST_WHY[o.lost_reason] : 'it changed on GitHub';
+    return `This board lost its claim: ${why}. It writes nothing more for it.${o.task_id ? ` Its task ${o.task_id} is marked lost-claim; its worktree is kept.` : ''}`;
+  }
+  if (o.state === 'claiming') return 'This board is claiming this issue';
+  if (writes === false) return 'This board holds this claim, but GitHub writes are off, so it is not renewed';
+  const n = epNum(o.renewals);
+  const word = o.status === 'running' ? 'This board is running this issue and renews its claim' : 'This board holds this claim and renews it';
+  return n > 0 ? `${word} (renewed ${n} ${n === 1 ? 'time' : 'times'})` : word;
+}
+
+/* The node a claim on this row would go to: the issue's pin, else the epic's pin; never this board (a claim is asked of a paired node), never a stale pin. */
+function epClaimNode(data, c) {
+  const pin = epPinOf(data, c);
+  const ep = data.epic_pin && !data.epic_pin.stale ? data.epic_pin : null;
+  const handle = pin && !pin.stale ? pin.handle : (ep ? ep.handle : null);
+  if (!handle || handle === 'local') return null;
+  return (data.nodes || []).find((x) => x.handle === handle) || null;
+}
+
+/* Would a claim be offered on this row if nothing stood in the way: the issue is open, its claim is known to be none, and this board holds no claim of it. */
+function epClaimable(data, c) {
+  return c.state === 'open' && c.claim_state === 'none' && !c.claim && !epOwnActive(epOwn(data, c));
+}
+
+/* The plain sentence for a refused or failed claim. `e` is what api() threw: e.status and e.body {reason, why, winner, error}. */
+function epClaimSentence(e, name, n) {
+  const b = e && e.body && typeof e.body === 'object' ? e.body : {};
+  const who = typeof b.winner === 'string' && b.winner ? b.winner : 'Another node';
+  const issue = `#${n}`;
+  const byWhy = {
+    taken: `${who} already holds ${issue}. Nothing was claimed.`,
+    lost: `${who} was first on ${issue}, so ${name} withdrew its claim.`,
+    claim_unknown: `${name} could not tell who holds ${issue} (claim not known), so it claimed nothing.`,
+    writes_off: `GitHub writes are off on ${name} (CCBOARD_EPIC_WRITES). Nothing was claimed.`,
+    closed: `${issue} is closed. Nothing was claimed.`,
+    done: `${issue} is already done. Nothing was claimed.`,
+    attempts_exhausted: `Three attempts on ${issue} ended without a result. ${name} asked for a person and stopped.`,
+    not_epic_child: `${name} does not take ${issue} as an issue of this epic. Nothing was claimed.`,
+    other_repo: `${name} does not have this repository as one of its projects. Nothing was claimed.`,
+    authors_unknown: `${name} cannot tell whose claims count, so it claimed nothing.`,
+    login_not_allowed: `The gh login of ${name} is not one whose claims count. Nothing was claimed.`,
+    no_login: `gh is not logged in on ${name}. Nothing was claimed.`,
+    no_access: `The gh login of ${name} may not comment on that repository. Nothing was claimed.`,
+    too_many_claims: `${name} already holds as many claims as it keeps.`,
+    rate_limited: `GitHub asked ${name} to wait${typeof b.wait_s === 'number' ? ` ${b.wait_s} s` : ''}. Try ${issue} again then.`,
+    outcome_unknown: `GitHub did not say whether the claim on ${issue} was written. ${name} looks before it writes again; check the issue.`,
+    withdraw_failed: `${who} was first on ${issue}, and ${name} could not remove its own comment yet. It will try again.`,
+    error: `${name} could not claim ${issue}. Nothing was claimed.`,
+    bad_request: `${name} could not claim ${issue}. Nothing was claimed.`,
+  };
+  const byReason = {
+    offline: `${name} is offline. Nothing was claimed.`,
+    scope: `${name} is paired without the tasks scope. Nothing was claimed.`,
+    unconfirmed: `${name} did not answer in time, so it is not known whether ${issue} was claimed. Check the issue on GitHub. Nothing was retried.`,
+    needs_repair: `${name} no longer takes this board's token: pair it again in Settings. Nothing was claimed.`,
+    unknown_node: `${name} is no longer paired. Nothing was claimed.`,
+    unreachable: `${name} could not be reached. Nothing was claimed.`,
+    human_only: 'Only a signed-in person can claim an issue.',
+    forbidden: 'Only a signed-in person can claim an issue.',
+    rate_limited: 'Too many requests to the nodes from this board. Try again in a minute.',
+  };
+  if (b.reason === 'claim_refused' && ownKey(byWhy, b.why)) return byWhy[b.why];
+  if (ownKey(byReason, b.reason)) return byReason[b.reason];
+  if (e && e.status === 503) return byReason.offline;
+  return `${name} did not claim ${issue}${e && e.message ? `: ${String(e.message).slice(0, 160)}` : ''}. Nothing was claimed.`;
+}
+
+/* The bits of the claim UI of one row, added under the pin: the action when it is offered, else why not (writes off, offline, no scope, no pin), then the last refusal. */
+function epClaimBits(P, c) {
+  const d = P.data;
+  const out = [];
+  const key = `${c.repo}#${c.number}`;
+  const note = P.notes.get(key);
+  if (epClaimable(d, c)) {
+    const node = epClaimNode(d, c);
+    const busy = P.claiming.get(key);
+    if (d.writes === false && node) out.push(el('span', { class: 'ep-claimhint warn', 'data-claim-off': 'writes', text: EP_WRITES_OFF }));
+    else if (d.writes === true && !node && (d.nodes || []).some((x) => x.handle !== 'local')) out.push(el('span', { class: 'ep-claimhint dim', 'data-claim-off': 'pin', text: 'Pin this issue to a paired node to claim it there.' }));
+    else if (d.writes === true && node && node.status !== 'online') out.push(el('span', { class: 'ep-claimhint dim', 'data-claim-off': 'offline', text: `${node.name} is ${node.status}: it cannot claim.` }));
+    else if (d.writes === true && node && node.tasks !== true) out.push(el('span', { class: 'ep-claimhint dim', 'data-claim-off': 'scope', text: `${node.name} is paired without the tasks scope.` }));
+    else if (d.writes === true && node) {
+      out.push(el('button', { class: 'small primary tinted ep-claim-btn', type: 'button', 'data-claim': node.handle, title: EP_CLAIM_TITLE, 'aria-label': `Claim issue #${c.number} on ${node.name}`,
+        disabled: !!busy || null, onclick: () => epClaim(P, c, node), text: busy ? `Claiming on ${node.name}…` : `Claim on ${node.name}` }));
+    }
+  }
+  if (note) out.push(el('span', { class: 'ep-claimhint warn ep-claimnote', role: 'status', 'data-claim-note': note.why || 'error', text: note.text }));
+  return out;
+}
+
+/* Ask the paired node to claim the issue. The row shows "Claiming on <node>…" at once; the node's answer (or its refusal, in plain words) replaces it, and a refused claim puts
+   the row back as it was. The next poll only confirms. */
+function epClaim(P, c, node) {
+  const key = `${c.repo}#${c.number}`;
+  if (P.claiming.has(key) || epicPage.cur !== P) return null;
+  P.claiming.set(key, node.handle);
+  P.notes.delete(key);
+  epPaint(P);
+  const body = { repo: c.repo, issue: c.number, epic: epRef(P.owner, P.repo, P.n) };
+  return api('POST', `/api/nodes/${encodeURIComponent(node.handle)}/epics/claim`, body).then((r) => {
+    P.claiming.delete(key);
+    if (epicPage.cur !== P) return;
+    if (r && r.data && r.data.claimed === true) {
+      const alias = (r.data.winner && String(r.data.winner)) || node.name;
+      const kid = (P.data.children || []).find((x) => x.repo === c.repo && x.number === c.number);
+      if (kid) {                                                                  // painted at once; the next poll reads GitHub and confirms
+        kid.claim = { alias, node: node.handle, status: 'claimed', since: P.data.server_now, renewed_at: P.data.server_now, live: true, attempt: r.data.attempt || 1, seq: 1, task_ref: null, branch: null };
+        kid.claim_state = 'claimed';
+        kid.bucket = { node: alias, state: 'queued' };
+      }
+      toast(r.data.reason === 'already_held' ? `${node.name} already held #${c.number}` : `${node.name} claimed #${c.number}`);
+    } else {
+      P.notes.set(key, { why: 'error', text: epClaimSentence({ status: 502, body: {} }, node.name, c.number) });
+    }
+    epPaint(P);
+    epFetch(P);
+  }, (e) => {
+    P.claiming.delete(key);
+    if (epicPage.cur !== P) return;
+    const text = epClaimSentence(e, node.name, c.number);
+    P.notes.set(key, { why: (e && e.body && (e.body.why || e.body.reason)) || 'error', text });
+    toast(text, { kind: 'bad' });
+    epPaint(P);
+    const b = e && e.body;
+    if (b && b.reason === 'claim_refused' && (b.why === 'taken' || b.why === 'lost' || b.why === 'done' || b.why === 'closed')) epFetch(P);       // the thread changed: read it again
+  });
+}
+
+/* A lost claim is said once per browser with a toast (a record is kept until it is dropped, so the page would otherwise say it at every visit). */
+function epLostSeen() {
+  try { return new Set(JSON.parse(localStorage.getItem(EP_LOST_KEY) || '[]')); } catch (_) { return new Set(); }
+}
+
+function epToastLost(P) {
+  const lost = (P.data.own_claims || []).filter((o) => o && o.state === 'lost');
+  if (!lost.length) return;
+  const seen = epLostSeen();
+  let fresh = false;
+  for (const o of lost) {
+    const k = `${o.repo}#${o.issue}:${o.attempt}:${o.lost_reason || ''}`;
+    if (seen.has(k) || P.toasted.has(k)) continue;
+    P.toasted.add(k);
+    seen.add(k);
+    fresh = true;
+    toast(`Lost the claim on #${o.issue}. ${epOwnText(o, P.data.writes)}`, { kind: 'bad', ttl: 9000 });
+  }
+  if (fresh) { try { localStorage.setItem(EP_LOST_KEY, JSON.stringify(Array.from(seen).slice(-40))); } catch (_) { /* storage may be unavailable */ } }
 }
 
 /* ---------- pins: the page pin wins over a label pin; a pin to a removed node is stale and ignored ---------- */
@@ -186,7 +358,8 @@ function epClaimParts(c, nowIso) {
 
 /* What a row shows, as a string: the row repaints only when this changes (a poll never rebuilds a row that looks the same). */
 function epRowSig(P, c) {
-  return JSON.stringify([c, epPinOf(P.data, c), P.data.server_now, P.data.nodes]);
+  const key = `${c.repo}#${c.number}`;
+  return JSON.stringify([c, epPinOf(P.data, c), P.data.server_now, P.data.nodes, P.data.writes, epOwn(P.data, c), P.claiming.get(key) || null, P.notes.get(key) || null, P.data.epic_pin]);
 }
 
 function epPinItems(P, current, apply) {
@@ -207,7 +380,7 @@ function epPinBox(P, c) {
     if (pin.stale) text = pin.source === 'page' ? `pinned to ${pin.node_name || pin.handle}, which is no longer paired: ignored` : `label names ${pin.node_name}, which is not paired: ignored`;
     else text = `${pin.source === 'label' ? 'label pin' : 'pinned'}: ${pin.node_name || pin.handle}`;
   }
-  return el('div', { class: 'ep-pinbox' }, btn, text ? el('span', { class: 'ep-pintext' + (pin.stale ? ' warn' : ' dim'), text }) : null);
+  return el('div', { class: 'ep-pinbox' }, btn, text ? el('span', { class: 'ep-pintext' + (pin.stale ? ' warn' : ' dim'), text }) : null, ...epClaimBits(P, c));
 }
 
 function epFillRow(P, li, c) {
@@ -237,6 +410,8 @@ function epFillRow(P, li, c) {
     meta.append(el('span', { class: 'ep-claim warn', 'data-claim': 'unknown', title: 'The board could not read all the comments of this issue, so it cannot tell whether someone has claimed it. It is not shown as free.' },
       el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: '? ' }), `Claim not known: ${why}`));
   } else if (c.claim_rejected > 0) meta.append(el('span', { class: 'ep-claim warn', title: 'Someone who is not on the allowed list wrote a claim comment. It is ignored.' }, el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: '⚠ ' }), c.claim_note || 'not from an allowed author'));
+  const own = epOwn(data, c);
+  if (own) meta.append(el('span', { class: 'ep-own' + (own.state === 'lost' || (own.state === 'held' && data.writes === false) ? ' warn' : ''), 'data-own': own.state }, el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: own.state === 'lost' ? '⚠ ' : own.state === 'claiming' ? '∙ ' : '✽ ' }), epOwnText(own, data.writes)));
   const readAgo = c.state === 'open' && c.claims_read_at ? epSince(c.claims_read_at, data.server_now) : '';
   if (readAgo) meta.append(el('span', { class: 'dim ep-read', title: 'When the board last read this issue\'s comments, by GitHub\'s clock. "Unclaimed" is only true for that moment.', text: `claims read ${readAgo}` }));
   if (task) meta.append(el('span', { class: 'ep-task', text: task }));
@@ -320,6 +495,8 @@ function epBanner(P) {
   if (d.note) out.push(['dim', d.note, '']);
   if (d.claims_note) out.push(['warn', d.claims_note, EP_AUTHORS_NEXT]);
   if (d.truncated) out.push(['warn', EP_TRUNCATED, '']);
+  if (d.writes === false && (d.own_claims || []).some((o) => o && o.state === 'held')) out.push(['warn', EP_WRITES_OFF, 'A claim this board holds is not renewed while writes are off, so it lapses after its lease.']);
+  else if (d.writes === false && (d.children || []).some((c) => epClaimable(d, c) && epClaimNode(d, c))) out.push(['dim', EP_WRITES_OFF, EP_WRITES_OFF_NEXT]);
   if (d.partial && d.comments_pending > 0) out.push(['dim', `${d.comments_pending} ${d.comments_pending === 1 ? 'issue' : 'issues'} still to be checked for claims; they fill in on the next refresh.`, '']);
   return out;
 }
@@ -360,6 +537,7 @@ function epPaint(P) {
   P.empty.classList.toggle('hidden', !showEmpty);
   if (showEmpty) P.empty.append(pageEmpty('git-branch', EP_EMPTY, ''), epLink(e.url, 'Open the epic on GitHub', 'btn small ep-open'));
   P.skel.classList.toggle('hidden', true);
+  epToastLost(P);
 
   // three groups in the queue order GitHub keeps: the issues a node holds or finished, the Unclaimed (every comment read, no claim) and the ones whose claim is not known (never mixed
   // with the Unclaimed). A row that holds focus stays in its group until it lets go, so a poll never moves it.
@@ -435,12 +613,12 @@ function epFetch(P) {
 
 function epBlank(P) {
   return { epic: { repo: `${P.owner}/${P.repo}`, owner: P.owner, name: P.repo, number: Number(P.n), title: null, url: `${EP_GH}${P.owner}/${P.repo}/issues/${P.n}`, state: null }, children: [], progress: { by_node: {}, unclaimed: { open: 0, closed: 0 }, unknown: 0, open: 0, closed: 0, total: 0 },
-    pins: {}, epic_pin: null, paused: false, nodes: [], rate: null, server_now: null, error: null, stale_age_s: null, empty: false };
+    pins: {}, epic_pin: null, paused: false, nodes: [], rate: null, server_now: null, error: null, stale_age_s: null, empty: false, writes: null, own_claims: [] };
 }
 
 function epMount(root, route) {
   const q = route.params || {};
-  const P = { id: ++epicPage.ids, owner: q.owner, repo: q.repo, n: q.n, data: null, failed: null, busy: null, timer: null, sleeping: false, loaded: false, where: new Map(), lists: {}, secs: {}, counts2: {}, writes: 0 };
+  const P = { id: ++epicPage.ids, owner: q.owner, repo: q.repo, n: q.n, data: null, failed: null, busy: null, timer: null, sleeping: false, loaded: false, where: new Map(), lists: {}, secs: {}, counts2: {}, writes: 0, claiming: new Map(), notes: new Map(), toasted: new Set() };
   P.title = el('h1', { class: 'ep-h1', text: `Epic #${P.n}` });
   P.name = el('span', { class: 'ep-name mono' });
   P.counts = el('span', { class: 'ep-counts' });
@@ -588,6 +766,29 @@ Epics.stopList = function () {
 
 const demoEpicMade = {};                                    // "owner/repo#n" -> the settings the visitor made
 
+/* The claim ask in the demo: ?claim=<word> plays a refusal (taken lost unknown writesoff closed done attempts offline scope unconfirmed), else the claim is made and the issue shows as
+   claimed by that node from then on. Nothing leaves the page. */
+const DEMO_CLAIM = {
+  taken: [409, { reason: 'claim_refused', why: 'taken', winner: 'willow-3f' }], lost: [409, { reason: 'claim_refused', why: 'lost', winner: 'willow-3f' }],
+  unknown: [409, { reason: 'claim_refused', why: 'claim_unknown', unknown_reason: 'too_long' }], writesoff: [409, { reason: 'claim_refused', why: 'writes_off' }],
+  closed: [409, { reason: 'claim_refused', why: 'closed' }], done: [409, { reason: 'claim_refused', why: 'done' }], attempts: [409, { reason: 'claim_refused', why: 'attempts_exhausted' }],
+  offline: [503, { reason: 'offline' }], scope: [409, { reason: 'scope' }], unconfirmed: [504, { reason: 'unconfirmed' }],
+};
+const demoEpicClaimed = {};
+function demoClaimFlag() { try { const m = /[?&]claim=([a-z]+)/.exec(location.search); return m ? m[1] : ''; } catch (_) { return ''; } }
+function demoEpicClaim(handle, body, fx) {
+  const flag = demoClaimFlag();
+  if (flag && ownKey(DEMO_CLAIM, flag)) {
+    const [status, b] = DEMO_CLAIM[flag];
+    const e = demoError(status, 'played');
+    e.body = { ...b, error: 'played', node: handle };
+    throw e;
+  }
+  demoEpicClaimed[`${body.repo}#${body.issue}`] = handle;
+  const node = (((fx.details || {})['example/website#147'] || {}).nodes || []).find((n) => n.handle === handle);
+  return { node: handle, age: 0, data: { claimed: true, reason: 'won', repo: body.repo, issue: body.issue, winner: node ? node.name : handle, attempt: 1 } };
+}
+
 function demoEpicFlag() { try { const m = /[?&]epic=([a-z]+)/.exec(location.search); return m ? m[1] : ''; } catch (_) { return ''; } }
 
 async function demoEpics(method, path, body) {
@@ -600,6 +801,8 @@ async function demoEpics(method, path, body) {
   const v = flag && ownKey(fx.variants || {}, flag) ? fx.variants[flag] : null;
   if (v && v.status) throw demoError(v.status, v.error);
   if (bare === '/api/epics') return { ...fx.list, ...((v && v.list) || {}) };
+  const cm = /^\/api\/nodes\/([^/]+)\/epics\/claim$/.exec(bare);
+  if (cm) return demoEpicClaim(decodeURIComponent(cm[1]), body || {}, fx);
   const m = /^\/api\/epics\/([^/]+)\/([^/]+)\/([^/]+?)(\/settings)?$/.exec(bare);
   if (!m) return {};
   const key = `${decodeURIComponent(m[1])}/${decodeURIComponent(m[2])}#${m[3]}`.toLowerCase();
@@ -622,5 +825,12 @@ async function demoEpics(method, path, body) {
     if (typeof b.paused === 'boolean') made.paused = b.paused;
     return { pins: made.pins, epic_pin: made.epic_pin, paused: made.paused, report: false, auto_pr: false, nodes };
   }
-  return shell({ ...base, ...((v && v.detail) || {}), pins: made.pins, epic_pin: made.epic_pin, paused: made.paused });
+  const out = shell({ ...base, ...((v && v.detail) || {}), pins: made.pins, epic_pin: made.epic_pin, paused: made.paused });
+  const kids = out.children || [];
+  if (!kids.length) return out;
+  return { ...out, children: kids.map((c) => {
+    const h = ownKey(demoEpicClaimed, `${c.repo}#${c.number}`) ? demoEpicClaimed[`${c.repo}#${c.number}`] : null;
+    const n = h ? (out.nodes || []).find((x) => x.handle === h) : null;
+    return n ? { ...c, claim_state: 'claimed', claim: { alias: n.name, node: h, status: 'claimed', since: out.server_now, renewed_at: out.server_now, live: true, attempt: 1, seq: 1, task_ref: null, branch: null }, bucket: { node: n.name, state: 'queued' } } : c;
+  }) };
 }

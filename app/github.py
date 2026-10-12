@@ -102,6 +102,7 @@ MESSAGES = {
     "too_large": "GitHub's answer was larger than this board reads",
     "bad_request": "that is not a GitHub repository or issue this board will ask for",
 }
+_REPO_PATH = re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})")
 _PATH = re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/issues(?:/[1-9][0-9]{0,8}(?:/(?:sub_issues|comments)\?per_page=[0-9]{1,3}&page=[0-9]{1,3})?"
                    r"|\?labels=[A-Za-z0-9%._-]{1,200}&state=(?:open|closed|all)&per_page=[0-9]{1,3}&page=[0-9]{1,3})")
 
@@ -172,13 +173,23 @@ def labeled_path(owner, repo, label, state: str = "open", page: int = 1, per_pag
 RATE_PATH = "/rate_limit"
 
 
+def repo_path(owner, repo) -> str:
+    """/repos/{owner}/{repo}: the repository itself, read by the doctor for `permissions.push` and `private` (a GET like every other path of this module)."""
+    if not valid_slug(owner, repo):
+        raise GhReadError("bad_request")
+    return f"/repos/{owner}/{repo}"
+
+
 def allowed_path(path) -> bool:
-    """True for the paths this module may GET and nothing else: /repos/{owner}/{repo}/issues/{n}, .../sub_issues, .../comments, /repos/{owner}/{repo}/issues?labels=...
-    (owner and repo checked again against GitHub's rules) and /rate_limit."""
+    """True for the paths this module may GET and nothing else: /repos/{owner}/{repo}/issues/{n}, .../sub_issues, .../comments, /repos/{owner}/{repo}/issues?labels=...,
+    /repos/{owner}/{repo} itself (the doctor reads `permissions.push` and `private`, issue #148; owner and repo checked again against GitHub's rules) and /rate_limit."""
     if not isinstance(path, str) or len(path) > 400:
         return False
     if path == RATE_PATH:
         return True
+    r = _REPO_PATH.fullmatch(path)
+    if r:
+        return valid_slug(r.group(1), r.group(2))
     m = _PATH.fullmatch(path)
     return bool(m) and valid_slug(m.group(1), m.group(2))
 

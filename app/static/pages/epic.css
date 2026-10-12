@@ -64,9 +64,13 @@
 #page .ep-other { max-width:100%; }
 #page .ep-meta2 { grid-column:1; display:flex; flex-wrap:wrap; align-items:center; gap:2px 10px; min-width:0; padding-left:calc(1.2em + 8px); font-size:12px; line-height:1.6; }
 #page .ep-meta2 > * { min-width:0; overflow-wrap:anywhere; }
-#page .ep-claim.warn, #page .ep-pintext.warn { color:var(--warn-fg); }
+#page .ep-claim.warn, #page .ep-pintext.warn, #page .ep-claimhint.warn { color:var(--warn-fg); }
 #page .ep-pinbox { grid-column:2; grid-row:1 / span 2; display:flex; flex-direction:column; align-items:flex-end; gap:2px; max-width:200px; font-size:12px; text-align:right; }
-#page .ep-pintext { overflow-wrap:anywhere; }
+#page .ep-pintext, #page .ep-claimhint { overflow-wrap:anywhere; }
+#page .ep-claim-btn { display:inline-flex; align-items:center; justify-content:center; min-height:var(--row-btn); max-width:100%; white-space:normal; text-align:center; }
+#page .ep-claim-btn[disabled] { opacity:.7; cursor:progress; }
+#page .ep-claimnote { max-width:100%; line-height:1.5; }
+#page .ep-own.warn { color:var(--warn-fg); }
 #page a.ep-pr, #page a.ep-num { display:inline-flex; align-items:center; min-height:var(--row-btn); }
 
 /* the Epics list of the Tasks page */
@@ -83,9 +87,10 @@
   #page .ep-prow { grid-template-columns:minmax(0, 1fr); }
   #page .ep-row { grid-template-columns:minmax(0, 1fr); }
   #page .ep-pinbox { grid-column:1; grid-row:auto; flex-direction:row; flex-wrap:wrap; align-items:center; max-width:none; padding-left:calc(1.2em + 8px); text-align:left; }
+  #page .ep-claimnote { flex-basis:100%; }
 }
 @media (pointer:coarse) {
-  #page .ep-actions button, #page .ep-pin-btn, #page .ep-back, #page a.ep-pr, #page a.ep-num, #page .ep-ltitle, #page a.ep-lgh { min-height:var(--tap); }
+  #page .ep-actions button, #page .ep-pin-btn, #page .ep-claim-btn, #page .ep-back, #page a.ep-pr, #page a.ep-num, #page .ep-ltitle, #page a.ep-lgh { min-height:var(--tap); }
 }
-html.force-coarse #page .ep-actions button, html.force-coarse #page .ep-pin-btn, html.force-coarse #page .ep-back, html.force-coarse #page a.ep-pr, html.force-coarse #page a.ep-num,
+html.force-coarse #page .ep-actions button, html.force-coarse #page .ep-pin-btn, html.force-coarse #page .ep-claim-btn, html.force-coarse #page .ep-back, html.force-coarse #page a.ep-pr, html.force-coarse #page a.ep-num,
 html.force-coarse #page .ep-ltitle, html.force-coarse #page a.ep-lgh { min-height:var(--tap); }
