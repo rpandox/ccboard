@@ -127,7 +127,8 @@
       "state": "done"
      },
      "claim_state": "claimed",
-     "claim_unknown": null
+     "claim_unknown": null,
+     "claims_read_at": "2026-10-11T08:50:00Z"
     },
     {
      "repo": "example/website",
@@ -179,7 +180,8 @@
       "state": "running"
      },
      "claim_state": "claimed",
-     "claim_unknown": null
+     "claim_unknown": null,
+     "claims_read_at": "2026-10-11T08:59:40Z"
     },
     {
      "repo": "example/website",
@@ -230,7 +232,8 @@
       "state": "queued"
      },
      "claim_state": "claimed",
-     "claim_unknown": null
+     "claim_unknown": null,
+     "claims_read_at": "2026-10-11T08:59:40Z"
     },
     {
      "repo": "example/website",
@@ -277,7 +280,8 @@
       "state": "failed"
      },
      "claim_state": "claimed",
-     "claim_unknown": null
+     "claim_unknown": null,
+     "claims_read_at": "2026-10-11T08:59:40Z"
     },
     {
      "repo": "example/website",
@@ -308,7 +312,8 @@
       "state": "open"
      },
      "claim_state": "none",
-     "claim_unknown": null
+     "claim_unknown": null,
+     "claims_read_at": "2026-10-11T08:59:40Z"
     },
     {
      "repo": "example/website",
@@ -356,7 +361,8 @@
       "state": "open"
      },
      "claim_state": "claimed",
-     "claim_unknown": null
+     "claim_unknown": null,
+     "claims_read_at": "2026-10-11T08:56:00Z"
     },
     {
      "repo": "example/website",
@@ -385,7 +391,8 @@
      "bucket": {
       "node": null,
       "state": "unknown"
-     }
+     },
+     "claims_read_at": "2026-10-11T08:59:40Z"
     }
    ],
    "progress": {

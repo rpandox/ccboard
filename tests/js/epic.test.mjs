@@ -295,6 +295,31 @@ test('a child whose claim is not known says why, in its own group, and is never 
   assert.equal(rowOf(w, 202).querySelector('.dim.ep-claim'), null);
 });
 
+test('each open issue says when its claims were read, by GitHub\'s clock: "Unclaimed" is true for that moment only', async () => {
+  const w = await epicWorld();
+  const read = (n) => text(rowOf(w, n).querySelector('.ep-read'));
+  assert.equal(read(205), 'claims read just now', 'the fixture\'s server_now is 09:00:00 and 205 was read at 08:59:40');
+  assert.equal(read(206), 'claims read 4 min ago');
+  assert.equal(rowOf(w, 201).querySelector('.ep-read'), null, 'a closed issue has no claim to be free');
+  w.run("Date.now = () => Date.parse('2030-01-01T00:00:00Z')");
+  w.run('epicPage.cur.data = epicPage.cur.data');
+  assert.equal(read(206), 'claims read 4 min ago', 'the browser\'s clock decides nothing');
+  const d = detail();
+  d.children.find((c) => c.number === 205).claims_read_at = null;
+  const w2 = await epicWorld({ data: d });
+  assert.equal(rowOf(w2, 205).querySelector('.ep-read'), null, 'nothing to say when the board has no reading time');
+});
+
+test('the two newest reasons a claim is not known are shown as the board words them', async () => {
+  const d = detail();
+  Object.assign(d.children.find((c) => c.number === 205), { claim: null, claim_state: 'unknown', claim_unknown: { reason: 'not_recent', text: 'not read recently' }, bucket: { node: null, state: 'unknown' } });
+  Object.assign(d.children.find((c) => c.number === 206), { claim: null, claim_state: 'unknown', claim_unknown: { reason: 'changed', text: 'changed while it was read' }, bucket: { node: null, state: 'unknown' } });
+  const w = await epicWorld({ data: d });
+  assert.equal(text(rowOf(w, 205).querySelector('.ep-claim')), '? Claim not known: not read recently');
+  assert.equal(text(rowOf(w, 206).querySelector('.ep-claim')), '? Claim not known: changed while it was read');
+  assert.equal(page(w).querySelectorAll('section[data-group="unknown"] .ep-row').length, 3);
+});
+
 test('a claim that is not known is also said on a closed issue only by its group: a closed child says nothing about claims', async () => {
   const d = detail();
   Object.assign(d.children[0], { claim_state: 'unknown', claim_unknown: { reason: 'budget', text: 'not read yet in this refresh' } });

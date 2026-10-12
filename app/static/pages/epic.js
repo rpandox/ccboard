@@ -237,6 +237,8 @@ function epFillRow(P, li, c) {
     meta.append(el('span', { class: 'ep-claim warn', 'data-claim': 'unknown', title: 'The board could not read all the comments of this issue, so it cannot tell whether someone has claimed it. It is not shown as free.' },
       el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: '? ' }), `Claim not known: ${why}`));
   } else if (c.claim_rejected > 0) meta.append(el('span', { class: 'ep-claim warn', title: 'Someone who is not on the allowed list wrote a claim comment. It is ignored.' }, el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: '⚠ ' }), c.claim_note || 'not from an allowed author'));
+  const readAgo = c.state === 'open' && c.claims_read_at ? epSince(c.claims_read_at, data.server_now) : '';
+  if (readAgo) meta.append(el('span', { class: 'dim ep-read', title: 'When the board last read this issue\'s comments, by GitHub\'s clock. "Unclaimed" is only true for that moment.', text: `claims read ${readAgo}` }));
   if (task) meta.append(el('span', { class: 'ep-task', text: task }));
   if (c.pr) meta.append(epLink(c.pr.url, `PR #${c.pr.number} ${c.pr.draft ? 'draft' : c.pr.state}`, 'ep-pr', 'Open the pull request on GitHub'));
   if ((c.blocked_by || []).length) meta.append(el('span', { class: 'ep-dep', text: `waits for ${c.blocked_by.join(', ')}` }));

@@ -244,7 +244,7 @@ def test_two_pages_are_read_and_the_page_loop_stops_at_a_short_page(gh, monkeypa
         gh.add_issue(REPO, i, f"Extra {i}")
         gh.link(epic, f"{REPO}#{i}")
     gh.set(page_size=40)                                                      # GitHub sends 40 per page whatever is asked: Link says there is more
-    items, trunc, srv, stale = nodes_epics._paged(lambda p: github.sub_issues_path("acme", "shop", 147, p), 100, 60)
+    items, trunc, srv, stale, *_ = nodes_epics._paged(lambda p: github.sub_issues_path("acme", "shop", 147, p), 100, 60)
     assert len(items) == 77 - 0 and not trunc, "7 listed + 70 extra, over two pages"
     paths = [p for p in gh.paths() if "sub_issues" in p]
     assert paths == [github.sub_issues_path("acme", "shop", 147, 1), github.sub_issues_path("acme", "shop", 147, 2)]
@@ -629,8 +629,8 @@ def test_the_first_live_claim_by_created_then_id_holds_the_issue_and_an_older_st
     gh = board.gh
     world(gh, claims=False)
     live = iso(START - 60)
+    gh.comment(f"{REPO}#202", claim_body("node-a", "claimed"), user="alice", created_at=iso(START - 500), updated_at=live, cid=10)          # ids increase in the order GitHub lists them
     gh.comment(f"{REPO}#202", claim_body("node-b", "claimed"), user="alice", created_at=iso(START - 500), updated_at=live, cid=20)
-    gh.comment(f"{REPO}#202", claim_body("node-a", "claimed"), user="alice", created_at=iso(START - 500), updated_at=live, cid=10)
     gh.comment(f"{REPO}#202", claim_body("node-c", "claimed"), user="alice", created_at=iso(START - 900), updated_at=iso(START - 9000), cid=30)
     gh.comment(f"{REPO}#203", claim_body("node-b", "running"), user="alice", created_at=iso(START - 9000), updated_at=iso(START - 9000), cid=31)
     gh.comment(f"{REPO}#203", claim_body("node-a", "released"), user="alice", created_at=iso(START - 8000), updated_at=iso(START - 7000), cid=32)
@@ -1144,7 +1144,7 @@ def test_a_second_refresh_after_the_ttl_revalidates_with_etags_and_costs_no_new_
     assert all(any(x.startswith("If-None-Match: W/") for x in a) for a in again), "every refresh carries the ETag it was given"
 
 
-def test_comments_of_an_open_child_are_read_every_30_seconds_and_a_closed_childs_every_10_minutes(board, clock):
+def test_comments_of_an_open_child_are_revalidated_in_every_refresh_and_a_closed_childs_every_10_minutes(board, clock):
     gh = board.gh
     world(gh)
     get(board)
@@ -1152,7 +1152,7 @@ def test_comments_of_an_open_child_are_read_every_30_seconds_and_a_closed_childs
     clock.t += 31
     get(board)
     new = gh.paths()[n0:]
-    assert any("/202/comments" in p for p in new) and not any("/201/comments" in p for p in new), "open: due after 30 s; closed: not before 10 min"
+    assert any("/202/comments" in p for p in new) and not any("/201/comments" in p for p in new), "open: revalidated in every refresh; closed: not before 10 min"
     clock.t += 700
     get(board)
     assert any("/201/comments" in p for p in gh.paths()[n0 + len(new):])
@@ -1171,12 +1171,12 @@ def test_the_comment_budget_per_refresh_leaves_the_rest_for_the_next_one(board, 
     monkeypatch.setattr(nodes_epics, "COMMENT_CALLS", 2)
     d = get(board).json()
     assert d["partial"] is True and d["comments_pending"] > 0
-    assert len([p for p in gh.paths() if "/comments" in p]) == 2
+    assert len([p for p in gh.paths() if "/comments" in p]) == 1 and len([p for p in gh.paths() if p.endswith("/issues/202")]) == 1, "one child: its page and the issue read after it"
     clock.t += 1
     monkeypatch.setattr(nodes_epics, "COMMENT_CALLS", 40)
     d3 = get(board).json()
     assert d3["partial"] is False and d3["comments_pending"] == 0 and child(d3, 206)["claim"] is not None
-    assert len([p for p in gh.paths() if "/comments" in p]) == 6, "the two read before cost nothing again"
+    assert len([p for p in gh.paths() if "/comments" in p]) == 1 + 6, "every child's page is revalidated in each refresh (a 304 when nothing moved)"
 
 
 def test_a_rate_limit_in_the_middle_of_the_comments_keeps_what_was_read_and_says_so(board, clock):
@@ -1370,7 +1370,7 @@ def test_a_claim_found_in_a_thread_that_was_cut_counts_only_while_it_is_live(boa
     assert child(d, 203)["claim_state"] == "unknown", "a released claim is not live either"
 
 
-def test_a_wrong_comments_count_does_not_make_a_short_read_look_complete(board):
+def test_a_comments_count_that_disagrees_with_the_pages_is_never_a_whole_read(board):
     gh = board.gh
     world(gh, claims=False)
     for n, over in ((202, 10), (203, 500), (204, 900)):
@@ -1379,9 +1379,10 @@ def test_a_wrong_comments_count_does_not_make_a_short_read_look_complete(board):
         gh.world["issues"][f"{REPO}#{n}"]["raw"] = {"comments": over}
     gh.save()
     d = get(board).json()
-    assert child(d, 202)["claim_state"] == "claimed", "a count that is too low: page 2 is tried anyway"
-    assert child(d, 203)["claim_state"] == "claimed", "a count that is too high: the end is found by walking back"
-    assert child(d, 204)["claim_state"] == "unknown" and child(d, 204)["claim_unknown"]["reason"] == "too_long", "the end of the thread was not found: not complete"
+    for n in (202, 203):
+        c = child(d, n)
+        assert c["claim_state"] == "unknown" and c["claim"] is None and c["claim_unknown"] == {"reason": "changed", "text": "changed while it was read"}, n
+    assert child(d, 204)["claim_state"] == "unknown" and child(d, 204)["claim_unknown"]["reason"] == "too_long", "the end of the thread was not found"
 
 
 def test_a_short_page_that_says_more_follows_is_not_a_whole_read(board):
@@ -1401,10 +1402,10 @@ def test_the_comment_budget_leaves_unread_children_unknown_never_unclaimed(board
     monkeypatch.setattr(nodes_epics, "COMMENT_CALLS", 2)
     d = get(board).json()
     states = {n: child(d, n)["claim_state"] for n in (202, 203, 204, 205, 206)}
-    assert states == {202: "none", 203: "none", 204: "unknown", 205: "unknown", 206: "none"}, "206 has no comment: the list says so"
+    assert states == {202: "none", 203: "unknown", 204: "unknown", 205: "unknown", 206: "none"}, "206 has no comment: the list, confirmed in this refresh, says so"
     assert child(d, 204)["claim_unknown"] == {"reason": "budget", "text": "not read yet in this refresh"}
-    assert d["partial"] is True and d["comments_pending"] == 2 and d["progress"]["unknown"] == 2
-    assert d["progress"]["total"] == 7 and d["progress"]["unclaimed"] == {"open": 4, "closed": 1}, d["progress"]
+    assert d["partial"] is True and d["comments_pending"] == 3 and d["progress"]["unknown"] == 3
+    assert d["progress"]["total"] == 7 and d["progress"]["unclaimed"] == {"open": 3, "closed": 1}, d["progress"]
     clock.t += 1
     monkeypatch.setattr(nodes_epics, "COMMENT_CALLS", 40)
     d = get(board).json()
@@ -1656,3 +1657,269 @@ def test_more_repositories_than_the_list_reads_are_said_and_the_extra_ones_are_n
     assert d["repos_truncated"] is True and d["repos"] == slugs[:nodes_epics.REPO_CAP]
     assert not any(slugs[-1] in p for p in gh.paths()) and len(gh.paths()) == nodes_epics.REPO_CAP
     assert board.c.get(f"/api/epics/acme/r{nodes_epics.REPO_CAP + 2:02d}/5", headers=ID).status_code == 200, "a repository past the list's cap is still one of this board's own"
+
+
+# ================================================================ `none` is a statement about a moment, and a thread is read as one reading
+
+ISSUE202 = "=/repos/acme/shop/issues/202"
+
+
+def calls_for(gh, n, repo="acme/shop"):
+    return [p for p in gh.paths() if p.startswith(f"/repos/{repo}/issues/{n}") and (p.endswith(f"/{n}") or f"/{n}/comments" in p)]
+
+
+def test_a_claim_posted_between_two_page_reads_is_found_by_the_retry(board):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.junk(f"{REPO}#202", 150)
+    gh.mutate("/202/comments?per_page=100&page=2", f"{REPO}#202", "add", comment=claim_body("node-a", "running"))
+    d = get(board).json()
+    c = child(d, 202)
+    assert c["claim_state"] == "claimed" and c["claim"]["alias"] == "node-a", "the first reading was torn (150 before, 151 after): read again"
+    got = calls_for(gh, 202)
+    assert got.count("/repos/acme/shop/issues/202/comments?per_page=100&page=1") == 2 and got.count("/repos/acme/shop/issues/202") == 2, got
+
+
+def test_a_comment_deleted_between_page_reads_cannot_hide_a_claim(board):
+    """Page 1 is read, a comment before the claim is deleted, page 2 is read: the claim moved from position 101 to 100 and is on neither page. Counting the comments
+    before and after is what tells."""
+    gh = board.gh
+    world(gh, claims=False)
+    gh.junk(f"{REPO}#202", 100)
+    gh.comment(f"{REPO}#202", claim_body("node-a", "running"))                  # comment 101: the first of page 2
+    gh.junk(f"{REPO}#202", 49, start=START - 500)
+    gh.mutate("/202/comments?per_page=100&page=2", f"{REPO}#202", "delete", index=0)
+    c = child(get(board).json(), 202)
+    assert c["claim_state"] == "claimed" and c["claim"]["alias"] == "node-a"
+
+
+def test_a_count_that_changes_between_the_before_and_the_after_read_makes_a_retry_that_can_succeed(board):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.junk(f"{REPO}#202", 5)
+    gh.mutate(ISSUE202, f"{REPO}#202", "add")
+    c = child(get(board).json(), 202)
+    assert c["claim_state"] == "none", "the second reading is whole and steady"
+    got = calls_for(gh, 202)
+    assert got.count("/repos/acme/shop/issues/202") == 2 and got.count("/repos/acme/shop/issues/202/comments?per_page=100&page=1") == 2, "one retry, no more"
+
+
+def test_a_thread_that_moves_again_in_the_retry_is_unknown_changed_while_it_was_read_and_never_loops(board):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.junk(f"{REPO}#202", 5)
+    gh.comment(f"{REPO}#202", claim_body("node-a", "running"))
+    gh.mutate(ISSUE202, f"{REPO}#202", "add", times=5)
+    d = get(board).json()
+    c = child(d, 202)
+    assert c["claim_state"] == "unknown" and c["claim"] is None and c["claim_unknown"] == {"reason": "changed", "text": "changed while it was read"}
+    assert c["bucket"] == {"node": None, "state": "unknown"} and d["progress"]["unknown"] == 1
+    got = calls_for(gh, 202)
+    assert got.count("/repos/acme/shop/issues/202") == 2 and got.count("/repos/acme/shop/issues/202/comments?per_page=100&page=1") == 2, "two readings, then it stops"
+
+
+def test_a_live_claim_in_a_thread_longer_than_the_cap_must_come_from_a_steady_reading(board):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.junk(f"{REPO}#202", 250)
+    gh.comment(f"{REPO}#202", claim_body("node-a", "running"))
+    gh.mutate(ISSUE202, f"{REPO}#202", "add", times=5)
+    c = child(get(board).json(), 202)
+    assert c["claim_state"] == "unknown" and c["claim_unknown"]["reason"] == "changed", "the claim is in the newest 100, but the thread moved while it was read"
+    nodes_epics.reset()
+    gh.clear_mutations()
+    assert child(get(board).json(), 202)["claim_state"] == "claimed"
+
+
+def test_none_is_not_kept_from_an_earlier_refresh_a_cached_page_is_unknown_not_read_recently(board, clock):
+    """A closed child's comments are kept 10 minutes. What the cache holds is shown (a claim in it, with its age) but never as free."""
+    gh = board.gh
+    world(gh, claims=False)
+    gh.comment(f"{REPO}#201", "a note", user="bob", assoc="NONE")
+    gh.comment(f"{REPO}#202", "a note", user="bob", assoc="NONE")
+    d = get(board).json()
+    assert child(d, 201)["claim_state"] == "none" and child(d, 202)["claim_state"] == "none"
+    clock.t += 10
+    gh.clear_calls()
+    d = get(board).json()
+    assert child(d, 201)["claim_state"] == "unknown" and child(d, 201)["claim_unknown"] == {"reason": "not_recent", "text": "not read recently"}
+    assert not any("/201/comments" in p for p in gh.paths()), "from the cache: no call"
+    assert child(d, 202)["claim_state"] == "none"
+    again = [c["argv"] for c in gh.calls() if c["argv"][-1].startswith("/repos/acme/shop/issues/202")]
+    assert again and all(any(x.startswith("If-None-Match: ") for x in a) for a in again), "an open child's pages and issue are revalidated with their ETags, and a 304 keeps none"
+    clock.t += 700
+    d = get(board).json()
+    assert child(d, 201)["claim_state"] == "none", "revalidated (a 304) after the ten minutes"
+
+
+def test_a_child_that_was_reopened_is_never_none_from_its_closed_days(board, clock):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.comment(f"{REPO}#201", "a note", user="bob", assoc="NONE")
+    assert child(get(board).json(), 201)["claim_state"] == "none"
+    clock.t += 10
+    gh.world["issues"][f"{REPO}#201"]["state"] = "open"
+    gh.save()
+    gh.comment(f"{REPO}#201", claim_body("node-b", "claimed"))
+    c = child(get(board).json(), 201)
+    assert c["state"] == "open" and c["claim_state"] == "claimed" and c["claim"]["alias"] == "node-b", "open now: its comments are revalidated, not the ten-minute cache"
+
+
+def test_a_back_off_never_yields_none(board, clock):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.comment(f"{REPO}#202", "a note", user="bob", assoc="NONE")
+    d = get(board).json()
+    assert child(d, 202)["claim_state"] == "none" and child(d, 205)["claim_state"] == "none"
+    clock.t += 61
+    gh.fail("/147/sub_issues", 429, headers={"Retry-After": "60"})
+    d = get(board).json()
+    for c in d["children"]:
+        assert c["claim_state"] != "none", (c["number"], c["claim_state"])
+    assert child(d, 202)["claim_unknown"]["reason"] in ("not_recent", "rate_limited") and child(d, 205)["claim_unknown"]["reason"] in ("not_recent", "rate_limited")
+
+
+def test_the_last_good_answer_never_yields_none_and_an_old_live_claim_ages_out(board, clock):
+    gh = board.gh
+    world(gh)
+    gh.comment(f"{REPO}#205", "a note", user="bob", assoc="NONE")
+    d = get(board).json()
+    assert child(d, 202)["claim"]["live"] is True and child(d, 205)["claim_state"] == "none"
+    clock.t += 2400
+    gh.set(login=None)
+    d = get(board).json()
+    assert d["error"]["reason"] == "no_login" and d["stale_age_s"] == 2400
+    assert child(d, 205)["claim_state"] == "unknown" and child(d, 205)["claim_unknown"]["reason"] == "not_recent"
+    assert child(d, 202)["claim_state"] == "claimed" and child(d, 202)["claim"]["live"] is False, "the lease (30 min) ran out by the time that has passed since the read"
+    assert all(c["claim_state"] != "none" for c in d["children"])
+
+
+def test_a_cached_claim_is_shown_with_the_time_it_was_read_and_is_not_live_past_its_lease(board, clock):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.comment(f"{REPO}#201", claim_body("node-a", "claimed"), updated_at=iso(START - 60))      # a closed child: its comments are cached for ten minutes
+    d = get(board).json()
+    c = child(d, 201)
+    assert c["claims_read_at"] == iso(START) and c["claim"]["live"] is True
+    gh.tick(2000)
+    clock.t += 10
+    d = get(board).json()
+    c = child(d, 201)
+    assert c["claims_read_at"] == iso(START), "the cache is shown with the time GitHub's clock had when it was read"
+    assert d["server_now"] == iso(START + 2000) and c["claim"]["live"] is False, "judged by GitHub's clock now, not the clock of the reading"
+    assert child(d, 202)["claims_read_at"] == iso(START + 2000), "an open child is revalidated in each refresh"
+
+
+def test_the_pages_of_a_thread_must_be_one_reading_the_checks():
+    ok = {"flat": [{"id": 1}, {"id": 2}], "complete": True, "end": 2, "ids_ok": True, "last_next": False}
+    b = {"count": 2, "updated": "2026-10-01T09:00:00Z", "fresh": True}
+    assert nodes_epics._consistent(ok, b, dict(b)) is True
+    assert nodes_epics._consistent(ok, b, dict(b, count=3)) is False, "the count moved"
+    assert nodes_epics._consistent(ok, dict(b, count=3), dict(b, count=3)) is False, "the count is not what the pages show"
+    assert nodes_epics._consistent(ok, b, dict(b, updated="2026-10-01T09:00:01Z")) is False, "updated_at moved"
+    assert nodes_epics._consistent(ok, b, dict(b, count=None)) is False and nodes_epics._consistent(ok, dict(b, count=None), b) is False
+    assert nodes_epics._consistent(dict(ok, ids_ok=False), b, dict(b)) is False, "ids that repeat or go back"
+    assert nodes_epics._consistent(dict(ok, last_next=True), b, dict(b)) is False, "a next link beyond the last page read"
+    assert nodes_epics._consistent(dict(ok, flat=[{"id": 1}]), b, dict(b)) is False, "fewer comments in hand than the thread has"
+    cut = dict(ok, complete=False, flat=[{"id": 1}], end=2)
+    assert nodes_epics._consistent(cut, b, dict(b)) is True, "a longer thread is not held to having every comment, only to a steady count"
+
+
+def test_the_ids_of_a_thread_must_strictly_increase(board):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.comment(f"{REPO}#202", "a", cid=50)
+    gh.comment(f"{REPO}#202", "b", cid=40)
+    c = child(get(board).json(), 202)
+    assert c["claim_state"] == "unknown" and c["claim_unknown"]["reason"] == "changed", "an id that goes back is a reading that cannot be trusted"
+    nodes_epics.reset()
+    gh.world["comments"][f"{REPO}#202"] = [{**x, "id": i} for x, i in zip(gh.world["comments"][f"{REPO}#202"], (7, 7))]
+    gh.save()
+    assert child(get(board).json(), 202)["claim_state"] == "unknown", "the same id twice"
+
+
+def test_the_extra_reads_cost_one_issue_read_per_child_and_stay_inside_the_budget(board, monkeypatch):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.comment(f"{REPO}#202", "a note", user="bob", assoc="NONE")
+    get(board)
+    assert calls_for(gh, 202) == ["/repos/acme/shop/issues/202/comments?per_page=100&page=1", "/repos/acme/shop/issues/202"], "one page, then the issue again: the list was the 'before'"
+    assert calls_for(gh, 205) == [], "no comment: no call (the list, confirmed in this refresh, says so)"
+    nodes_epics.reset()
+    gh.clear_calls()
+    monkeypatch.setattr(nodes_epics, "COMMENT_CALLS", 3)
+    gh.comment(f"{REPO}#203", "a note", user="bob", assoc="NONE")
+    gh.comment(f"{REPO}#204", "a note", user="bob", assoc="NONE")
+    d = get(board).json()
+    assert len([p for p in gh.paths() if "/comments" in p or p.endswith(("/202", "/203", "/204"))]) <= 4, "the budget of 3 stops a child at its next call"
+    assert d["partial"] is True and child(d, 204)["claim_state"] == "unknown"
+
+
+# ---- fresh_claim_state: the one answer a later phase may act on
+
+def fresh(board, n, repo="acme/shop"):
+    o, _, r = repo.partition("/")
+    return nodes_epics.fresh_claim_state(o, r, n, ["acme/shop", "acme/api"])
+
+
+def test_fresh_claim_state_says_claimed_none_or_unknown_and_ignores_every_cache(board, clock):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.comment(f"{REPO}#201", "a note", user="bob", assoc="NONE")
+    gh.comment(f"{REPO}#202", claim_body("node-a", "running"))
+    gh.junk(f"{REPO}#204", 300)
+    d = get(board).json()
+    assert child(d, 205)["claim_state"] == "none" and child(d, 201)["claim_state"] == "none"
+    r = fresh(board, 202)
+    assert r["state"] == "claimed" and r["claim"]["alias"] == "node-a" and r["reason"] is None and r["read_at"] == iso(START) and r["issue_state"] == "open"
+    gh.clear_calls()
+    r = fresh(board, 205)
+    assert r["state"] == "none" and gh.paths() == ["/repos/acme/shop/issues/205"], "no comment: the issue read alone"
+    r = fresh(board, 204)
+    assert r["state"] == "unknown" and r["reason"] == "too_long" and r["text"] == "too many comments to read"
+    # a claim posted after the board's last reading, on a child whose comments the board keeps for ten minutes: the board's answer is behind, this one is not
+    gh.comment(f"{REPO}#201", claim_body("node-b", "claimed"))
+    clock.t += 10
+    shown = child(get(board).json(), 201)
+    assert shown["claim_state"] != "none" and shown["claim"] is None, "the board still shows what its cache holds, and not as free"
+    r = fresh(board, 201)
+    assert r["state"] == "claimed" and r["claim"]["alias"] == "node-b" and r["issue_state"] == "closed"
+    gh.comment(f"{REPO}#205", claim_body("node-c", "claimed"))
+    assert fresh(board, 205)["state"] == "claimed", "the list had said 0 comments a moment ago"
+
+
+def test_fresh_claim_state_asks_nothing_for_a_repository_or_a_login_it_cannot_vouch_for(board, monkeypatch):
+    gh = board.gh
+    world(gh)
+    assert nodes_epics.fresh_claim_state("other", "lib", 5, ["acme/shop"])["reason"] == "other_repo"
+    assert nodes_epics.fresh_claim_state("acme", "shop", "0", ["acme/shop"])["reason"] == "other_repo"
+    assert nodes_epics.fresh_claim_state("-x", "shop", 5, ["acme/shop"])["state"] == "unknown"
+    monkeypatch.setattr(nodes_epics, "_gh_login", lambda: None)
+    r = nodes_epics.fresh_claim_state("acme", "shop", 202, ["acme/shop"])
+    assert r["state"] == "unknown" and r["reason"] == "authors_unknown" and gh.calls() == []
+
+
+def test_fresh_claim_state_is_unknown_during_a_back_off_and_when_the_budget_is_spent(board, monkeypatch):
+    gh = board.gh
+    world(gh)
+    get(board)
+    gh.fail("/issues/202", 429, headers={"Retry-After": "60"})
+    r = fresh(board, 202)
+    assert r["state"] == "unknown" and r["reason"] == "not_recent", "a stale entry is not a reading"
+    nodes_epics.reset()
+    monkeypatch.setattr(nodes_epics, "COMMENT_CALLS", 1)
+    r = fresh(board, 203)
+    assert r["state"] == "unknown" and r["reason"] == "budget"
+
+
+def test_in_a_long_thread_a_live_claim_counts_only_when_the_count_agrees_with_the_pages(board):
+    gh = board.gh
+    world(gh, claims=False)
+    gh.junk(f"{REPO}#202", 300)
+    gh.comment(f"{REPO}#202", claim_body("node-a", "running"))                  # comment 301
+    assert child(get(board).json(), 202)["claim_state"] == "claimed"
+    nodes_epics.reset()
+    gh.world["issues"][f"{REPO}#202"]["raw"] = {"comments": 350}                  # the issue says 350 (before and after alike); the pages end at 301
+    gh.save()
+    c = child(get(board).json(), 202)
+    assert c["claim_state"] == "unknown" and c["claim_unknown"]["reason"] == "changed" and c["claim"] is None

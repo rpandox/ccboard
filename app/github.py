@@ -85,7 +85,7 @@ PER_PAGE = 100
 MAX_PAGES = 5
 OUT_CAP = 2 * 1024 * 1024                    # bytes of one `gh api` answer; more is `too_large`
 TIMEOUT = 20.0
-CACHE_MAX = 256                             # entries: a 100-child epic needs about 102 (the parent, the list, one comments path per child)
+CACHE_MAX = 400                             # entries: a 100-child epic needs about 205 (the parent, the list, a comments path and an issue path per child)
 BACKOFF_MAX = 3600
 BACKOFF_DEFAULT = 60                        # the secondary limit's own advice, when GitHub names no wait
 SAFE_HEADERS = ("etag", "date", "retry-after", "link", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset", "x-oauth-scopes")
@@ -331,6 +331,12 @@ class Reply(NamedTuple):
     cached: bool                      # served from the memory cache (no gh call, or a 304)
     stale: bool                       # older than asked for, kept because GitHub asked us to wait
     scopes: str | None = None         # X-OAuth-Scopes of the answer that confirmed this (None: a fine-grained token sends none)
+    source: str = "network"           # where it came from: network (a 200 just now), revalidated (a 304 just now), cache (a fresh entry, no call) or stale (kept during a back-off)
+
+    @property
+    def fresh(self) -> bool:
+        """True when GitHub itself confirmed this answer in this call (a 200 or a 304 on If-None-Match), not a cache entry or a stale one."""
+        return self.source in ("network", "revalidated")
 
 
 class _Entry:
@@ -388,11 +394,11 @@ class Reader:
             ent = self.cache.get(path)
             if ent is not None and self.mono() - ent.at < ttl:
                 self.cache.move_to_end(path)
-                return Reply(ent.data, ent.headers, ent.server_now, True, False, ent.scopes)
+                return Reply(ent.data, ent.headers, ent.server_now, True, False, ent.scopes, "cache")
             left = self.wait_left()
             if left > 0:
                 if ent is not None:
-                    return Reply(ent.data, ent.headers, ent.server_now, True, True, ent.scopes)
+                    return Reply(ent.data, ent.headers, ent.server_now, True, True, ent.scopes, "stale")
                 raise GhReadError("rate_limited", left)
             self.calls += 1
             status, headers, data = (self.fetch or api)(path, ent.etag if ent is not None else None)
@@ -404,20 +410,20 @@ class Reader:
                 ent.at, ent.server_now, ent.scopes = now, server_now if server_now is not None else ent.server_now, scopes
                 ent.headers = {**ent.headers, **headers}                                                           # a 304 carries the current headers
                 self.cache.move_to_end(path)
-                return Reply(ent.data, ent.headers, ent.server_now, True, False, scopes)
+                return Reply(ent.data, ent.headers, ent.server_now, True, False, scopes, "revalidated")
             if 200 <= status < 300 and isinstance(data, (list, dict)):
                 tag = headers.get("etag")
                 self.cache[path] = _Entry(tag if isinstance(tag, str) and ETAG_RE.fullmatch(tag) else None, data, headers, server_now, now, scopes)
                 self.cache.move_to_end(path)
                 while len(self.cache) > CACHE_MAX:
                     self.cache.popitem(last=False)
-                return Reply(data, headers, server_now, False, False, scopes)
+                return Reply(data, headers, server_now, False, False, scopes, "network")
             if status in (404, 410):
                 self.cache.pop(path, None)
                 raise GhReadError("not_found")
             if wait:
                 if ent is not None:
-                    return Reply(ent.data, ent.headers, ent.server_now, True, True, ent.scopes)
+                    return Reply(ent.data, ent.headers, ent.server_now, True, True, ent.scopes, "stale")
                 raise GhReadError("rate_limited", wait)
             if status == 401:
                 raise GhReadError("no_login")

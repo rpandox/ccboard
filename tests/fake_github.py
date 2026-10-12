@@ -115,6 +115,23 @@ for ov in world.get("overrides", []):
         respond(ov["status"], ov.get("body", {"message": "override"}), ov.get("headers"))
 
 
+for hk in world.get("mutations", []):                    # the world changes between two calls: just before a call whose path contains `match` (after `skip` such calls)
+    hit = (path == hk["match"][1:]) if hk["match"].startswith("=") else (hk["match"] in (path or ""))                # "=<path>": that path exactly
+    if hit and hk.get("times", 1) != 0:
+        if hk.get("skip", 0) > 0:
+            hk["skip"] -= 1
+        else:
+            if hk.get("times", 1) > 0:
+                hk["times"] -= 1
+            lst = world.setdefault("comments", {}).setdefault(hk["issue"], [])
+            if hk["op"] == "add":
+                lst.append(hk["comment"])
+                hk["comment"] = dict(hk["comment"], id=hk["comment"]["id"] + 1)           # a repeated add posts a new comment, not the same one again
+            elif hk["op"] == "delete" and lst:
+                lst.pop(hk["index"])
+        json.dump(world, open(W, "w"))
+
+
 def key(o, r, n):
     return "%s/%s#%s" % (o, r, n)
 
@@ -230,11 +247,16 @@ class FakeGitHub:
     def save(self) -> None:
         """Write the world. The file's overrides are kept, not this copy's: the script counts them down in the file, and a save from here must not bring a used one back."""
         if self.world_path.exists():
-            self.reload()
+            on_disk = json.loads(self.world_path.read_text())
+            for k in ("overrides", "mutations"):
+                self.world[k] = on_disk.get(k, [])
         self.world_path.write_text(json.dumps(self.world))
 
     def reload(self) -> None:
-        self.world["overrides"] = json.loads(self.world_path.read_text())["overrides"]
+        """Take from the file what the script changes on its own: the one-shot overrides, the between-call mutations and the comments they add or delete."""
+        on_disk = json.loads(self.world_path.read_text())
+        for k in ("overrides", "mutations", "comments"):
+            self.world[k] = on_disk.get(k, [] if k != "comments" else {})
 
     def calls(self) -> list[dict]:
         if not self.log_path.exists():
@@ -295,6 +317,26 @@ class FakeGitHub:
             self._next_comment += 1
             lst.append({"id": self._next_comment, "body": f"chatter {i}", "user": user, "created_at": iso(t0 + i), "updated_at": iso(t0 + i), "assoc": "NONE", "user_type": "User"})
         self.save()
+
+    def mutate(self, match: str, issue: str, op: str, *, comment: str | None = None, index: int = 0, skip: int = 0, times: int = 1, user="alice", assoc="COLLABORATOR",
+               created_at=None) -> None:
+        """Change the world just before the next `times` calls whose path contains `match` (or is exactly the rest of it after a leading "=") (after skipping `skip` of them): op "add" appends a comment (`comment` is
+        its body; its id follows the last comment's, so ids keep increasing) to `issue`, op "delete" removes the comment at `index`. This is how a test makes a thread
+        move between two page reads."""
+        self.reload()
+        rec = None
+        if op == "add":
+            last = max([c["id"] for c in self.world["comments"].get(issue, [])] + [self._next_comment])
+            self._next_comment = last + 1000
+            rec = {"id": last + 500, "body": comment or "later", "user": user, "created_at": created_at or iso(self.world["now"] - 30), "updated_at": created_at or iso(self.world["now"] - 30),
+                   "assoc": assoc, "user_type": "User"}
+        self.world.setdefault("mutations", []).append({"match": match, "issue": issue, "op": op, "comment": rec, "index": index, "skip": skip, "times": times})
+        self.world_path.write_text(json.dumps(self.world))
+
+    def clear_mutations(self) -> None:
+        self.reload()
+        self.world["mutations"] = []
+        self.world_path.write_text(json.dumps(self.world))
 
     def fail(self, match: str, status: int, *, headers=None, body=None, times: int = 1) -> None:
         """The next `times` (-1: always) calls whose path contains `match` get this answer."""

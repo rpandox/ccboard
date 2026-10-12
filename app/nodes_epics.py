@@ -60,8 +60,8 @@ PINS_CAP = 200
 GOOD_MAX = 32                            # last good answers kept in memory
 LIST_TTL = 60.0
 ISSUE_TTL = 60.0
-COMMENTS_TTL = 30.0                      # an open child's comments: the claim may change
-COMMENTS_TTL_CLOSED = 600.0              # a closed child's: its claim history is settled
+COMMENTS_TTL = 0.0                       # an open child's comments are revalidated on every refresh (a 304 costs no request budget): `none` is a statement about a moment
+COMMENTS_TTL_CLOSED = 600.0              # a closed child's: its claim history is settled; a page kept this way is never the basis of `none`, and a child that was reopened is open again
 COMMENT_CALLS = 40                       # gh calls for comments one refresh may make; the rest wait for the next one (answer.partial)
 DEADLINE = 30.0                          # seconds one refresh may take
 STALE_NOTE = "not from an allowed author"
@@ -74,6 +74,8 @@ UNKNOWN_TEXT = {                                               # claim_state unk
     "error": "the comments could not be read",
     "other_repo": "in another repository",
     "authors_unknown": AUTHORS_NOTE,
+    "not_recent": "not read recently",
+    "changed": "changed while it was read",
 }
 KV_PREFIX = "epic:"
 STATUSES = ("claimed", "running", "done", "failed", "released", "cancelled")
@@ -259,7 +261,7 @@ def shape_child(item, owner: str, repo: str, index: int, same_repo: bool = False
             "depends_on_refs": parse_depends(item.get("body"), o, r, num), "order": index,
             "comments": cnt if isinstance(cnt, int) and not isinstance(cnt, bool) and cnt >= 0 else None,
             "updated_at": github.clean_ts(item.get("updated_at")), "claims": [], "server_now": None,
-            "thread": None, "reason": None}               # thread: None (not read), "complete" (every comment read) or "incomplete"; reason: why the claim is unknown (UNKNOWN_TEXT)
+            "thread": None, "reason": None, "fresh": False, "read_at": None}               # thread: None (not read), "complete" (every comment read) or "incomplete"; reason: why the claim is unknown (UNKNOWN_TEXT)
 
 
 def _display_ref(ref: str, repo_lower: str) -> str:
@@ -293,11 +295,13 @@ def _link_children(children: list[dict]) -> None:
         c["dependency_cycle"] = bool(c["depends_on_refs"]) and reaches(me, me)
 
 
-def _paged(builder, cap: int, ttl: float) -> tuple[list, bool, float | None, bool]:
-    """(items, truncated, GitHub's clock, any page stale): pages 1.. of builder(page) until a short page, `cap` items or MAX_PAGES. Never follows a link."""
+def _paged(builder, cap: int, ttl: float) -> tuple[list, bool, float | None, bool, bool]:
+    """(items, truncated, GitHub's clock, any page stale, every page fresh): pages 1.. of builder(page) until a short page, `cap` items or MAX_PAGES. Never follows a
+    link. "Fresh" means GitHub itself confirmed every page in this call (a 200, or a 304 on If-None-Match), not a cache entry or a stale one."""
     items: list = []
     srv: float | None = None
     stale = truncated = False
+    fresh = True
     per = github.PER_PAGE
     for page in range(1, github.MAX_PAGES + 1):
         rep = github.reader.get(builder(page), ttl)
@@ -307,6 +311,7 @@ def _paged(builder, cap: int, ttl: float) -> tuple[list, bool, float | None, boo
         if rep.server_now is not None:
             srv = rep.server_now if srv is None else max(srv, rep.server_now)
         stale = stale or rep.stale
+        fresh = fresh and rep.fresh
         items.extend(data)
         more = len(data) >= per or 'rel="next"' in (rep.headers.get("link") or "")
         if len(items) >= cap:
@@ -317,22 +322,37 @@ def _paged(builder, cap: int, ttl: float) -> tuple[list, bool, float | None, boo
             break
     else:
         truncated = True
-    return items, truncated, srv, stale
+    return items, truncated, srv, stale, fresh
 
 
 class _Cut(Exception):
     """The refresh's own budget (gh calls for comments, seconds) ran out in the middle of a thread."""
 
 
-def _read_thread(c: dict, ttl: float, spend) -> tuple[list, bool, float | None, bool]:
-    """(comments, complete, GitHub's clock, any page stale) of one child: page 1, then the page where the thread ends (worked out from the comments count GitHub
-    sent with the issue and the page size, and walked up or down while a page disagrees; a Link URL is never followed) and the page before it when the newest
-    COMMENT_CAP comments need it. `complete` is True only when every comment of the issue was read: a thread of up to 2 * COMMENT_CAP comments is read whole, a
-    longer one gives its first and its last COMMENT_CAP comments and `complete` False, as does a thread whose end could not be found. `spend()` raises _Cut when
-    the refresh may not make another call."""
+def _snapshot(c: dict, spend) -> dict:
+    """The issue itself, REVALIDATED now (never from the cache): {count (its comments count), updated (updated_at), state, fresh, srv}. One gh call (a 304 when nothing
+    changed, which costs no request budget). The count and updated_at before and after the pages of a thread are what make the pages one consistent reading."""
+    spend()
+    rep = github.reader.get(github.issue_path(c["owner"], c["name"], c["number"]), 0.0)
+    d = rep.data
+    if not isinstance(d, dict):
+        raise github.GhReadError("bad_answer")
+    cnt = d.get("comments")
+    return {"count": cnt if isinstance(cnt, int) and not isinstance(cnt, bool) and cnt >= 0 else None, "updated": github.clean_ts(d.get("updated_at")),
+            "state": "closed" if d.get("state") == "closed" else "open", "fresh": rep.fresh, "srv": rep.server_now}
+
+
+def _read_pages(c: dict, ttl: float, spend, count) -> dict:
+    """The pages of one thread: page 1, then the page where the thread ends (worked out from `count`, the comments count GitHub sent, and the page size, and walked
+    up or down while a page disagrees; a Link URL is never followed) and the page before it when the newest COMMENT_CAP comments need it. Returns {flat (the comments
+    read, in order), complete (every comment of the issue is in `flat`: a thread of up to 2 * COMMENT_CAP comments is read whole, a longer one gives its first and its
+    last COMMENT_CAP comments, and a thread whose end was not found is not complete), end (how many comments the thread has, or None), fresh (every page confirmed by
+    GitHub in this call), srv (the oldest server time of a page), now (the newest), odd, last_next, ids_ok}. `spend()` raises _Cut when the refresh may not make
+    another call."""
     per = github.PER_PAGE
     pages: dict[int, list] = {}
-    seen = {"srv": None, "stale": False, "odd": False}
+    nxt: dict[int, bool] = {}
+    seen = {"srv": None, "now": None, "fresh": True, "odd": False}
 
     def page(p: int) -> list:
         if p not in pages:
@@ -341,26 +361,30 @@ def _read_thread(c: dict, ttl: float, spend) -> tuple[list, bool, float | None, 
             if not isinstance(rep.data, list):
                 raise github.GhReadError("bad_answer")
             if rep.server_now is not None:
-                seen["srv"] = rep.server_now if seen["srv"] is None else max(seen["srv"], rep.server_now)
-            seen["stale"] = seen["stale"] or rep.stale
-            if len(rep.data) < per and 'rel="next"' in (rep.headers.get("link") or ""):
+                seen["srv"] = rep.server_now if seen["srv"] is None else min(seen["srv"], rep.server_now)
+                seen["now"] = rep.server_now if seen["now"] is None else max(seen["now"], rep.server_now)
+            seen["fresh"] = seen["fresh"] and rep.fresh
+            nxt[p] = 'rel="next"' in (rep.headers.get("link") or "")
+            if len(rep.data) < per and nxt[p]:
                 seen["odd"] = True                                                  # a short page that says more follows: the page arithmetic does not hold, so no whole read
             pages[p] = rep.data
         return pages[p]
 
-    def out(complete: bool, wanted=None):
+    def out(complete: bool, end, wanted=None) -> dict:
         flat: list = []
         for p in sorted(pages):
             for i, x in enumerate(pages[p]):
                 if wanted is None or ((p - 1) * per + i + 1) in wanted:
                     flat.append(x)
-        return flat, complete and not seen["odd"], seen["srv"], seen["stale"]
+        ids = [x.get("id") if isinstance(x, dict) else None for x in flat]
+        ok = all(isinstance(i, int) and not isinstance(i, bool) for i in ids) and all(a < b for a, b in zip(ids, ids[1:]))      # strictly increasing: no repeat, no reorder
+        return {"flat": flat, "complete": complete and not seen["odd"], "end": end, "fresh": seen["fresh"], "srv": seen["srv"], "now": seen["now"], "odd": seen["odd"],
+                "last_next": nxt.get(max(pages), False), "ids_ok": ok}
 
     first = page(1)
     if len(first) < per:
-        return out(True)
-    cnt = c["comments"]
-    p = max(2, -(-cnt // per)) if isinstance(cnt, int) and not isinstance(cnt, bool) and cnt > 0 else 2          # the last page by the count GitHub sent
+        return out(True, len(first))
+    p = max(2, -(-count // per)) if isinstance(count, int) and not isinstance(count, bool) and count > 0 else 2          # the last page by the count GitHub sent
     end = None                                                                                                      # how many comments the thread has
     for _ in range(4):
         d = page(p)
@@ -375,17 +399,51 @@ def _read_thread(c: dict, ttl: float, spend) -> tuple[list, bool, float | None, 
         else:
             p += 1
     if end is None:
-        return out(False)
+        return out(False, None)
     head, tail = set(range(1, min(end, COMMENT_CAP) + 1)), set(range(max(1, end - COMMENT_CAP + 1), end + 1))
     for idx in sorted(head | tail):
         page((idx - 1) // per + 1)
-    return out(min(tail) <= max(head) + 1, head | tail)
+    return out(min(tail) <= max(head) + 1, end, head | tail)
+
+
+def _consistent(pr: dict, before: dict, after: dict) -> bool:
+    """True when the pages of a thread are one reading of it: the issue's comments count and updated_at are the same before and after, the count is the number of
+    comments the pages show the thread to have, the ids of what was read strictly increase (so none repeats), a whole thread has exactly that many comments in
+    hand, and no page read carried a next link beyond the last one read."""
+    if before["count"] is None or after["count"] is None or before["count"] != after["count"] or before["updated"] != after["updated"]:
+        return False
+    if pr["end"] is not None and pr["end"] != after["count"]:
+        return False
+    if not pr["ids_ok"] or pr["last_next"]:
+        return False
+    return not pr["complete"] or len(pr["flat"]) == after["count"]
+
+
+def _read_consistent(c: dict, ttl: float, spend, before: dict) -> dict:
+    """One thread, read so that `none` can be believed. `before` is the issue's count and updated_at read in this refresh (the revalidated list, or `_snapshot`).
+    Pages are read with `ttl` (0: every page revalidated now), then the issue is read again, revalidated; if anything differs the whole thread is read ONCE more
+    against that newer reading, and if that differs too the result is `consistent: False` (reason "changed while it was read"). Pages that were not confirmed by GitHub
+    in this call (a cache entry, a stale one) are returned as `fresh: False` with no second read. Returns {flat, complete, fresh, consistent, srv, now}."""
+    pr: dict = {}
+    for _ in range(2):
+        pr = _read_pages(c, ttl, spend, before["count"])
+        if not (pr["fresh"] and before["fresh"]):
+            return {**pr, "fresh": False, "consistent": True}
+        after = _snapshot(c, spend)
+        if not after["fresh"]:
+            return {**pr, "fresh": False, "consistent": True}
+        if _consistent(pr, before, after):
+            return {**pr, "consistent": True, "now": max(t for t in (pr["now"], after["srv"]) if t is not None) if (pr["now"] or after["srv"]) else None}
+        before = after
+    return {**pr, "consistent": False}
 
 
 def _read_epic(owner: str, repo: str, n: int, readable: frozenset = frozenset(), read_comments: bool = True) -> dict:
     """The GitHub part of an epic's answer: the parent, its children (with the claim comments of each) and what was cut. Raises GhReadError when the parent
     cannot be read; a failure while reading comments ends that part early (`partial_error`) and keeps what was read. Comments are asked only for children in a
-    repository of `readable` (lower-case slugs: this board's own projects); the others, and every child when `read_comments` is False, get a reason instead."""
+    repository of `readable` (lower-case slugs: this board's own projects); the others, and every child when `read_comments` is False, get a reason instead.
+    The list of children is revalidated on every refresh (a 304 costs no request budget), so its comments counts are current; an open child's pages are revalidated
+    too and the issue is read once more after them (see `_read_consistent`): at most pages + 1 gh calls for a child, none for a child with no comments."""
     started = mono()
     rd = github.reader
     head = rd.get(github.issue_path(owner, repo, n), ISSUE_TTL)
@@ -400,13 +458,13 @@ def _read_epic(owner: str, repo: str, n: int, readable: frozenset = frozenset(),
             "source": "sub_issues", "note": None, "truncated": False, "partial": False, "comments_pending": 0, "comments_failed": 0, "partial_error": None,
             "server_now": head.server_now, "stale": head.stale}
     try:
-        items, trunc, srv, stale = _paged(lambda p: github.sub_issues_path(owner, repo, n, p), CHILD_CAP, ISSUE_TTL)
+        items, trunc, srv, stale, lfresh = _paged(lambda p: github.sub_issues_path(owner, repo, n, p), CHILD_CAP, 0.0)
     except github.GhReadError as e:
         if e.reason != "not_found":
             raise
         part["source"] = "labels"
         part["note"] = f"This repository has no sub-issues endpoint, so the children are the issues labelled {FALLBACK_LABEL}{n}."
-        items, trunc, srv, stale = _paged(lambda p: github.labeled_path(owner, repo, f"{FALLBACK_LABEL}{n}", "all", p), CHILD_CAP, ISSUE_TTL)
+        items, trunc, srv, stale, lfresh = _paged(lambda p: github.labeled_path(owner, repo, f"{FALLBACK_LABEL}{n}", "all", p), CHILD_CAP, 0.0)
         items = sorted((i for i in items if isinstance(i, dict) and isinstance(i.get("number"), int)), key=lambda i: i["number"])
     same = part["source"] == "labels"
     own = f"{owner}/{repo}".lower()
@@ -420,7 +478,6 @@ def _read_epic(owner: str, repo: str, n: int, readable: frozenset = frozenset(),
     _link_children(children)
     part.update(children=children, truncated=trunc or unplaced > 0, stale=part["stale"] or stale)
     srv_all = [t for t in (head.server_now, srv) if t is not None]
-    list_stale = stale or head.stale                                                # the comments counts below are as old as the list that carried them
     calls0 = rd.calls
 
     def spend() -> None:
@@ -435,14 +492,18 @@ def _read_epic(owner: str, repo: str, n: int, readable: frozenset = frozenset(),
         if c["repo"].lower() not in readable:                                       # not one of this board's own repositories: no request, whatever the payload or a node says
             c["reason"] = "other_repo"
             continue
-        if c["comments"] == 0 and not list_stale:                                   # GitHub's own count, fresh: there is nothing to read and nothing hidden
-            c["thread"] = "complete"
+        if c["comments"] == 0 and lfresh:                                           # the list was confirmed by GitHub in this refresh and says there is no comment
+            c["thread"], c["fresh"], c["read_at"] = "complete", True, srv
             continue
         if stop:
             c["reason"] = stop
             continue
         try:
-            raw, complete, csrv, cstale = _read_thread(c, COMMENTS_TTL if c["state"] == "open" else COMMENTS_TTL_CLOSED, spend)
+            if lfresh and isinstance(c["comments"], int):
+                before = {"count": c["comments"], "updated": c["updated_at"], "fresh": True, "srv": srv}
+            else:
+                before = _snapshot(c, spend)                                        # the list is not this refresh's own reading: ask the issue itself
+            res = _read_consistent(c, COMMENTS_TTL if c["state"] == "open" else COMMENTS_TTL_CLOSED, spend, before)
         except _Cut:
             stop = c["reason"] = "budget"
             continue
@@ -453,19 +514,65 @@ def _read_epic(owner: str, repo: str, n: int, readable: frozenset = frozenset(),
                 part["partial_error"] = e.as_dict()
                 stop = c["reason"]
             continue
-        c["claims"], c["server_now"] = parse_claims(raw), csrv
-        if cstale:                                                                  # kept from an earlier refresh because GitHub asked us to wait: not read in this one
-            c["thread"], c["reason"] = "incomplete", "rate_limited"
+        c["claims"], c["server_now"], c["read_at"], c["fresh"] = parse_claims(res["flat"]), res["now"], res["srv"], res["fresh"]
+        if not res["consistent"]:
+            c["thread"], c["reason"] = "incomplete", "changed"
         else:
-            c["thread"], c["reason"] = ("complete", None) if complete else ("incomplete", "too_long")
-        part["stale"] = part["stale"] or cstale
-        if csrv is not None:
-            srv_all.append(csrv)
+            c["thread"], c["reason"] = ("complete", None) if res["complete"] else ("incomplete", "too_long")
+        part["stale"] = part["stale"] or not res["fresh"] and c["state"] == "open"
+        if res["now"] is not None:
+            srv_all.append(res["now"])
     # children of this board's repositories whose comments were not all read for a reason that passes (budget, a failure): the next refresh reads them
     part["comments_pending"] = sum(1 for c in children if c["thread"] is None and c["reason"] in ("budget", "rate_limited", "error"))
     part["partial"] = bool(part["comments_pending"])
     part["server_now"] = max(srv_all) if srv_all else None
     return part
+
+
+def fresh_claim_state(owner: str, repo: str, number, repos, login=None) -> dict:
+    """The claim state of ONE issue, read now with every cache and TTL bypassed: the issue and each page of its comments are revalidated with GitHub in this call
+    (a 304 on If-None-Match counts), the issue is read again afterwards and the thread is read once more if anything moved (see `_read_consistent`). Returns
+    {state: claimed | none | unknown, reason (a key of UNKNOWN_TEXT, or None), text, claim (the allowed claim, or None), read_at (GitHub's clock, ISO), issue_state
+    (open | closed | None)}. It costs at most the pages plus 2 gh calls (more only for a retry) against the same budget and deadline as a refresh.
+    **This is the only answer a later phase may act on.** The `claim_state` that GET /api/epics/... shows can be minutes old (a closed issue's comments are cached for
+    ten minutes), may come from the last good answer while GitHub is unreachable, and says `none` only for the moment it was read: nothing may treat a cached `none` as
+    free. `repos` is the list from `known_repos` (an issue of any other repository is `unknown: other_repo`, with no request)."""
+    out = {"state": "unknown", "reason": None, "text": None, "claim": None, "read_at": None, "issue_state": None}
+
+    def done(reason: str) -> dict:
+        out.update(state="unknown", reason=reason, text=UNKNOWN_TEXT[reason])
+        return out
+    if not github.valid_slug(owner, repo) or not github.valid_number(number) or f"{owner}/{repo}".lower() not in {s.lower() for s in (repos or ())}:
+        return done("other_repo")
+    allowed = allowed_authors(None if settings.epic_authors else (login if login is not None else _gh_login()))
+    if not allowed:
+        return done("authors_unknown")
+    rd = github.reader
+    started, calls0 = mono(), rd.calls
+
+    def spend() -> None:
+        if rd.calls - calls0 >= COMMENT_CALLS or mono() - started > DEADLINE:
+            raise _Cut()
+    c = {"owner": owner, "name": repo, "number": int(number), "comments": None, "state": "open"}
+    try:
+        before = _snapshot(c, spend)
+        out["issue_state"] = before["state"]
+        if not before["fresh"]:
+            return done("not_recent")
+        if before["count"] == 0:
+            res = {"flat": [], "complete": True, "fresh": True, "consistent": True, "srv": before["srv"], "now": before["srv"]}
+        else:
+            res = _read_consistent(c, 0.0, spend, before)
+    except _Cut:
+        return done("budget")
+    except github.GhReadError as e:
+        return done("rate_limited" if e.reason == "rate_limited" else "error")
+    claim, _ = pick_claim(parse_claims(res["flat"]), allowed, res["now"])
+    c.update(thread="incomplete" if not res["consistent"] or not res["complete"] else "complete", fresh=res["fresh"],
+             reason="changed" if not res["consistent"] else (None if res["complete"] else "too_long"))
+    state, reason = _claim_state(c, claim, True)
+    out.update(state=state, reason=reason, text=UNKNOWN_TEXT[reason] if reason else None, claim=claim if state == "claimed" else None, read_at=github.epoch_iso(res["srv"]))
+    return out
 
 
 # ---------------------------------------------------------------- the hub's side: nodes, tasks, pull requests
@@ -750,13 +857,20 @@ def _empty_epic(owner: str, repo: str, n: int) -> dict:
             "labelled": None, "updated_at": None}
 
 
-def _claim_state(c: dict, claim: dict | None, authors_ok: bool) -> tuple[str, str | None]:
-    """(claimed | none | unknown, the reason code when unknown) of one child. `none` (free) needs every comment read in this refresh and no allowed claim; a claim found
-    in a thread that was only read from its two ends counts only while it is live (a hidden live claim in the unread middle could otherwise be overridden)."""
+def _claim_state(c: dict, claim: dict | None, authors_ok: bool, cached: bool = False) -> tuple[str, str | None]:
+    """(claimed | none | unknown, the reason code when unknown) of one child. `none` (free) is a statement about a moment: it needs every comment read, every page
+    confirmed by GitHub in THIS refresh (fetched, or revalidated with a 304), the reading consistent (the issue's comments count the same before and after) and no
+    allowed claim; a thread read from the cache, from a stale entry or from the last good answer (`cached`) is `unknown: not read recently` instead. A claim found in
+    a thread that was only read from its two ends counts only while it is live (a hidden live claim in the unread middle could otherwise be overridden). A reading
+    that moved twice while it was taken is `unknown: changed`."""
     if not authors_ok:
         return "unknown", "authors_unknown"
+    if c["reason"] == "changed":
+        return "unknown", "changed"
     if c["thread"] == "complete":
-        return ("claimed" if claim else "none"), None
+        if claim:
+            return "claimed", None
+        return ("none", None) if c["fresh"] and not cached else ("unknown", "not_recent")
     if c["thread"] == "incomplete" and claim is not None and claim.get("live") is True:
         return "claimed", None
     return "unknown", c["reason"] or "budget"
@@ -809,9 +923,11 @@ def detail(db, owner: str, repo: str, n: int, records, *, login=None, repos=None
     views = _task_views(db, records, display)
     rows = []
     own = f"{owner}/{repo}".lower()
+    cached = stale_age is not None                                          # the last good answer, not a reading of this call: nothing in it is `none`
+    now = part["server_now"] + stale_age if cached and part["server_now"] is not None else part["server_now"]          # GitHub's clock as best known NOW: a cached live claim ages out by its lease
     for c in part["children"]:
-        claim, rejected = pick_claim([dict(x) for x in c["claims"]], allowed, c["server_now"] if c["server_now"] is not None else part["server_now"])
-        cstate, reason = _claim_state(c, claim, bool(allowed))
+        claim, rejected = pick_claim([dict(x) for x in c["claims"]], allowed, now)
+        cstate, reason = _claim_state(c, claim, bool(allowed), cached)
         if cstate == "unknown" and c["state"] != "closed":
             claim = None                                           # a claim seen in a read that was not whole is not presented as the answer (a closed issue only says who did it)
         tv = _join_task(views, c, readable)
@@ -839,7 +955,7 @@ def detail(db, owner: str, repo: str, n: int, records, *, login=None, repos=None
                                                   "renewed_at": claim["updated_at"], "live": claim["live"], "attempt": claim["attempt"], "seq": claim["seq"],
                                                   "task_ref": claim["task_ref"], "branch": claim["branch"]},
             "claim_rejected": rejected, "claim_note": STALE_NOTE if rejected else None,
-            "claim_state": cstate, "claim_unknown": {"reason": reason, "text": UNKNOWN_TEXT[reason]} if cstate == "unknown" else None,
+            "claim_state": cstate, "claims_read_at": github.epoch_iso(c["read_at"]), "claim_unknown": {"reason": reason, "text": UNKNOWN_TEXT[reason]} if cstate == "unknown" else None,
             "task": task, "pr": pr, "pin": pin,
             "label_pin": lp, "bucket": {"node": who, "state": bucket}})                 # the progress strip's own bucket of this child: the page groups rows by it, so rows and strip agree
     prog = progress_of(rows, amap)
@@ -873,11 +989,11 @@ def _counts(owner: str, repo: str, issue: dict) -> dict | None:
         return {"open": s["total"] - s["completed"], "closed": s["completed"], "total": s["total"], "more": False}
     n = issue["number"]
     try:
-        items, more, _, _ = _paged(lambda p: github.sub_issues_path(owner, repo, n, p), CHILD_CAP, LIST_TTL)
+        items, more, *_ = _paged(lambda p: github.sub_issues_path(owner, repo, n, p), CHILD_CAP, LIST_TTL)
     except github.GhReadError as e:
         if e.reason != "not_found":
             raise
-        items, more, _, _ = _paged(lambda p: github.labeled_path(owner, repo, f"{FALLBACK_LABEL}{n}", "all", p), CHILD_CAP, LIST_TTL)
+        items, more, *_ = _paged(lambda p: github.labeled_path(owner, repo, f"{FALLBACK_LABEL}{n}", "all", p), CHILD_CAP, LIST_TTL)
     kids = [i for i in items if isinstance(i, dict) and "pull_request" not in i and i.get("number") != n]
     closed = sum(1 for i in kids if i.get("state") == "closed")
     return {"open": len(kids) - closed, "closed": closed, "total": len(kids), "more": bool(more)}
@@ -890,7 +1006,7 @@ def _read_list(repos: list[str]) -> dict:
     for slug in repos:
         owner, _, repo = slug.partition("/")
         try:
-            items, ptrunc, s, _ = _paged(lambda p, o=owner, r=repo: github.labeled_path(o, r, EPIC_LABEL, "open", p), EPIC_CAP, LIST_TTL)
+            items, ptrunc, s, *_ = _paged(lambda p, o=owner, r=repo: github.labeled_path(o, r, EPIC_LABEL, "open", p), EPIC_CAP, LIST_TTL)
         except github.GhReadError as e:
             if e.reason in ("no_gh", "no_login", "rate_limited", "timeout"):
                 top = e.as_dict()
