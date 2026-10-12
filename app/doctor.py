@@ -791,6 +791,99 @@ def _c_epic_gh(db) -> Outcome:
     return _epic_outcome(r[1])                                                        # type: ignore[arg-type]
 
 
+# ------------------------------------------------------------------ claiming an epic issue (issue #148)
+
+def _claim_probe() -> dict:
+    """The facts of the epic-claim row, read only: gh's login and scopes and, for the first repositories of this board's own projects, whether the login may push and whether
+    the repository is private. Only run when CCBOARD_EPIC_WRITES is on. Nothing is written and the token is never read."""
+    from . import nodes_epics
+    src = _projects_source
+    repos = nodes_epics.known_repos(src() if callable(src) else None)
+    try:
+        p = _run(["gh", "--version"])
+        if p.rc != 0:
+            return {"state": "no_gh"}
+    except ToolMissing:
+        return {"state": "no_gh"}
+    except ToolTimeout:
+        pass
+    facts = nodes_epics.claim_doctor_facts(repos, EPIC_REPOS)
+    facts["repos"] = len(repos)
+    return facts
+
+
+def _claim_words() -> tuple[str, list[str]]:
+    """(the settings in plain words, the problems with them): the alias in use and where it comes from, the lease, and what is wrong with either setting."""
+    from . import nodes_epics
+    r = nodes_epics.alias_report()
+    probs = []
+    words = f"alias {r['alias']} ({'from CCBOARD_EPIC_ALIAS' if r['source'] == 'setting' else 'chosen by the board; CCBOARD_EPIC_ALIAS changes it'}), lease {r['lease_min']} min"
+    if r["host_like"]:
+        probs.append(f"CCBOARD_EPIC_ALIAS looks like a host name, and comments on a public repository are public: the board uses {r['alias']} instead; set a short neutral word")
+    elif r["invalid"]:
+        probs.append(f"CCBOARD_EPIC_ALIAS is not letters, digits, - and _ (at most 40): the board uses {r['alias']} instead")
+    if settings.epic_lease_bad:
+        probs.append(f"CCBOARD_EPIC_LEASE_MIN is not a whole number from 10 to 120: the board uses {r['lease_min']} min")
+    return words, probs
+
+
+def _claim_outcome(f: dict | None) -> Outcome:
+    """The epic-claim row. With CCBOARD_EPIC_WRITES off (`f` is None) it asks GitHub for nothing and says so in plain words."""
+    words, probs = _claim_words()
+    if f is None:
+        tail = f" ({words})" + (f"; {probs[0]}" if probs else "")
+        return _skip("this board does not write to GitHub, so it will not claim an epic issue (CCBOARD_EPIC_WRITES is off; set it to 1 on the box and rerun ./install.sh to let it comment, "
+                     "assign itself and label an issue it claims)" + tail)
+    st = f.get("state")
+    if st == "no_gh":
+        return _warn("CCBOARD_EPIC_WRITES is on but gh is not installed, so no claim can be made (the GitHub CLI row says how to install it)")
+    if st == "no_login":
+        return _warn("CCBOARD_EPIC_WRITES is on but gh has no login on this board, so no claim can be made", fix("Log gh in on the box (claims are made with it)", "gh auth login"))
+    if st != "ok":
+        reason = str(st).split(":", 1)[-1]
+        if reason == "rate_limited":
+            return _warn(f"GitHub asked this board to wait {f.get('wait_s') or 60} s before the next read", fix(RECHECK_FIX))
+        return _warn("GitHub could not be read just now (" + {"timeout": "gh did not answer in time", "unavailable": "an error on GitHub's side",
+                                                              "too_large": "the answer was too large"}.get(reason, "gh gave an unreadable answer") + ")", fix(RECHECK_FIX))
+    fix_: dict | None = None
+    bad = list(probs)
+    scopes = f.get("scopes")
+    if scopes is not None and "repo" not in scopes:
+        bad.insert(0, "the gh login has no repo scope, so it cannot comment on a private repository")
+        fix_ = fix("Add the repo scope to the gh login", "gh auth refresh -s repo")
+    failed = f.get("failed") or {}
+    if failed:
+        first = sorted(failed)[0]
+        bad.append(f"could not read {first}" + (f" and {len(failed) - 1} more" if len(failed) > 1 else "") + " (this login cannot see it, or GitHub refused)")
+        fix_ = fix_ or fix("Log gh in with an account that can write to the repository", "gh auth login")
+    nopush = sorted(k for k, v in (f.get("push") or {}).items() if v is False)
+    if nopush:
+        bad.append(f"this login cannot push to {nopush[0]}" + (f" and {len(nopush) - 1} more" if len(nopush) > 1 else "") + ", so a claim comment from it would not count there: the board will not claim in that repository, and the assignee and the label would be refused too")
+    if bad:
+        return _warn("CCBOARD_EPIC_WRITES is on, but: " + "; ".join(bad) + f". Settings: {words}.", fix_)
+    seen = f"scopes: {', '.join(scopes)}" if scopes else "scopes not reported"
+    push = [k for k, v in (f.get("push") or {}).items() if v is True]
+    pushed = f"push access to {len(push)} of {f.get('checked', 0)} repositories checked" if f.get("checked") else "no epic repository to check yet"
+    public = sorted(k for k, v in (f.get("private") or {}).items() if v is False)
+    pub = "; comments on public repositories are public, and hold only the alias, a short hash, the lease and the status" if public else ""
+    return _pass(f"this board may write to GitHub for epic claims (CCBOARD_EPIC_WRITES=1): comment, assign itself and label the issue it claims, nothing else ({seen}; {pushed}). Settings: {words}{pub}.")
+
+
+def _c_epic_claim(db) -> Outcome:
+    """Can this board claim an epic issue on GitHub (issue #148)? With the writes switch off nothing runs and nothing is asked of GitHub. With it on: read only, on a probe thread
+    (it talks to GitHub), so a slow GitHub gives the last answer with its age."""
+    if not settings.epic_writes:
+        return _claim_outcome(None)
+    pr = _probe_start("epic-claim", _claim_probe)
+    r = _probe_wait(pr, time.monotonic() + GH_WAIT)
+    if r is None:
+        last = (pr.last[0], _claim_outcome(pr.last[1])) if pr.last else None            # type: ignore[arg-type]
+        return _stale("GitHub", last, GH_WAIT, True)
+    if r[0] == "err":
+        raise r[1]                                                                    # type: ignore[misc]
+    return _claim_outcome(r[1])                                                       # type: ignore[arg-type]
+
+
 def _c_ccusage(db) -> Outcome:
     try:
         p = _run(["ccusage", "--version"])
@@ -1824,6 +1917,7 @@ register("nodes-pairs", "box", "Paired nodes", _c_nodes_pairs)   # issue #135
 register("notify-public-url", "notify", "Notification links", _c_notify_public_url)   # issue #151
 register("notify-shared", "notify", "One subscription on two nodes", _c_notify_shared)   # issue #151
 register("epic-gh", "box", "Epics from GitHub", _c_epic_gh)   # issue #147
+register("epic-claim", "box", "Claiming epic issues", _c_epic_claim)   # issue #148
 register_provider("memory", MEM_GROUP, memory_checks)       # claude-mem (v0.5.10): one probe, seven checks
 register_provider("codex", CODEX_GROUP, codex_checks)       # the Codex adapter's checks (v0.5.11)
 if plat.IS_MACOS:                                            # issue #117: the macOS checks (app/doctor_macos.py) exist on a Mac only; a Linux board lists none

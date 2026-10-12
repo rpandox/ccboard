@@ -107,6 +107,20 @@ def parse_epic_authors(raw) -> tuple[tuple[str, ...], bool]:
     return tuple(out), bad
 
 
+EPIC_LEASE_MIN, EPIC_LEASE_MAX, EPIC_LEASE_DEFAULT = 10, 120, 30
+
+
+def parse_epic_lease(raw) -> tuple[int, bool]:
+    """CCBOARD_EPIC_LEASE_MIN (issue #148): the minutes a claim on an epic issue stays live without a renewal, 10 to 120 (default 30). Anything else is the default and
+    the second value is True (the doctor says so)."""
+    text = (raw or "").strip()
+    if not text:
+        return EPIC_LEASE_DEFAULT, False
+    if text.isascii() and text.isdigit() and len(text) <= 4 and EPIC_LEASE_MIN <= int(text) <= EPIC_LEASE_MAX:
+        return int(text), False
+    return EPIC_LEASE_DEFAULT, True
+
+
 # The settings a launchd job cannot get from an EnvironmentFile (issue #117): the keys install.sh accepts for /etc/ccboard/env, in its order
 # (tests/test_macos_board.py pins this tuple to install.sh's ENV_KEYS). Any other line in the file is ignored.
 ENV_FILE_KEYS = (
@@ -118,7 +132,7 @@ ENV_FILE_KEYS = (
     "CCBOARD_CODEX_HOOK_TRUST", "CCBOARD_CLONE_ALLOWED_HOSTS", "CCBOARD_MCP_REMOTE", "CODEX_HOME", "CCBOARD_AUTOCLOSE_GRACE",
     "CCBOARD_CODEX_HOOKS_ASYNC", "CCBOARD_CLAUDE_ULTRACODE_FLAG", "CCBOARD_SUBAGENT_MODEL", "CCBOARD_HEADLESS_FABLE_CAP", "CCBOARD_PRICE_TABLE",
     "CCBOARD_TAILSCALE_PLACEMENT", "CCBOARD_NODE_LANES", "CCBOARD_NODE_PORTS", "CCBOARD_NODE_TAGS", "CCBOARD_NODES_POLL", "CCBOARD_MCP_NODES",
-    "CCBOARD_EPIC_AUTHORS",
+    "CCBOARD_EPIC_AUTHORS", "CCBOARD_EPIC_WRITES", "CCBOARD_EPIC_ALIAS", "CCBOARD_EPIC_LEASE_MIN",
 )
 ENV_FILE_MAX = 1 << 20     # bytes read from the settings file
 
@@ -245,6 +259,11 @@ class Settings:
         self.mcp_nodes = {"1": "read", "read": "read", "tasks": "tasks"}.get((env.get("CCBOARD_MCP_NODES") or "").strip().lower(), "")
         # Whose claim comments count on an epic (issue #147): GitHub logins who can also write to the repository. Empty = the login gh uses on this board only. Never the repository owner by default.
         self.epic_authors, self.epic_authors_bad = parse_epic_authors(env.get("CCBOARD_EPIC_AUTHORS"))
+        # Writes to GitHub for the claim of an epic issue (issue #148): OFF unless this is exactly "1". With it off no code path builds or runs a gh command that is not a GET.
+        self.epic_writes = (env.get("CCBOARD_EPIC_WRITES") or "").strip() == "1"
+        # The name this board gives itself in a claim comment on GitHub (public on a public repository): empty = a neutral word derived from the node id, never the host name.
+        self.epic_alias = (env.get("CCBOARD_EPIC_ALIAS") or "").strip()
+        self.epic_lease_min, self.epic_lease_bad = parse_epic_lease(env.get("CCBOARD_EPIC_LEASE_MIN"))
         self.ntfy_url = (env.get("NTFY_URL") or "").strip()            # loopback, e.g. http://127.0.0.1:2586
         self.ntfy_topic = (env.get("NTFY_TOPIC") or "ccboard").strip()
         self.ntfy_public_url = (env.get("NTFY_PUBLIC_URL") or "").strip()  # what the phone subscribes to

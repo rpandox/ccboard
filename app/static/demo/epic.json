@@ -1,5 +1,5 @@
 {
- "_note": "Fixture of the epic view (issue #147). details is keyed owner/repo#n in lower case; variants are laid over by ?epic=<name> (nologin noaccess notfound wait stale labels empty norepo none down). Times are GitHub's: the page shows them against server_now, never the browser clock.",
+ "_note": "Fixture of the epic view (issue #147, claims issue #148). details is keyed owner/repo#n in lower case; variants are laid over by ?epic=<name> (nologin noaccess notfound wait stale labels empty norepo none down writesoff offline notasks). `writes` is the board's CCBOARD_EPIC_WRITES; `own_claims` are this board's own claims (held, lost). ?claim=<word> plays a refusal of the Claim button (taken lost unknown writesoff closed done attempts offline scope unconfirmed). Times are GitHub's: the page shows them against server_now, never the browser clock.",
  "list": {
   "epics": [
    {
@@ -444,7 +444,8 @@
      "handle": "node-b",
      "name": "node-b",
      "status": "online",
-     "age_s": 4
+     "age_s": 4,
+     "tasks": true
     }
    ],
    "rate": {
@@ -461,7 +462,44 @@
    "comments_pending": 0,
    "empty": false,
    "at": "2026-10-11T09:00:00Z",
-   "claims_note": null
+   "claims_note": null,
+   "writes": true,
+   "own_claims": [
+    {
+     "repo": "example/website",
+     "issue": 202,
+     "alias": "node-a",
+     "status": "running",
+     "state": "held",
+     "seq": 4,
+     "attempt": 1,
+     "task_ref": "41",
+     "branch": "worktree-checkout-form",
+     "task_id": 41,
+     "added_assignee": true,
+     "added_label": true,
+     "notes": [],
+     "lost_reason": null,
+     "renewals": 3
+    },
+    {
+     "repo": "example/website",
+     "issue": 203,
+     "alias": "node-a",
+     "status": "claimed",
+     "state": "lost",
+     "seq": 1,
+     "attempt": 1,
+     "task_ref": "42",
+     "branch": null,
+     "task_id": 42,
+     "added_assignee": false,
+     "added_label": false,
+     "notes": [],
+     "lost_reason": "not_first",
+     "renewals": 0
+    }
+   ]
   },
   "example/board#52": {
    "epic": {
@@ -512,7 +550,8 @@
      "handle": "node-b",
      "name": "node-b",
      "status": "online",
-     "age_s": 4
+     "age_s": 4,
+     "tasks": true
     }
    ],
    "rate": {
@@ -529,7 +568,9 @@
    "comments_pending": 0,
    "empty": true,
    "at": "2026-10-11T09:00:00Z",
-   "claims_note": null
+   "claims_note": null,
+   "writes": true,
+   "own_claims": []
   }
  },
  "blank": {
@@ -591,7 +632,9 @@
   "comments_pending": 0,
   "empty": false,
   "at": "2026-10-11T09:00:00Z",
-  "claims_note": null
+  "claims_note": null,
+  "writes": true,
+  "own_claims": []
  },
  "variants": {
   "nologin": {
@@ -962,6 +1005,49 @@
   "down": {
    "status": 503,
    "error": "the board could not answer"
+  },
+  "writesoff": {
+   "detail": {
+    "writes": false
+   }
+  },
+  "offline": {
+   "detail": {
+    "nodes": [
+     {
+      "handle": "local",
+      "name": "node-a",
+      "status": "online",
+      "age_s": 0
+     },
+     {
+      "handle": "node-b",
+      "name": "node-b",
+      "status": "offline",
+      "age_s": 7200,
+      "tasks": true
+     }
+    ]
+   }
+  },
+  "notasks": {
+   "detail": {
+    "nodes": [
+     {
+      "handle": "local",
+      "name": "node-a",
+      "status": "online",
+      "age_s": 0
+     },
+     {
+      "handle": "node-b",
+      "name": "node-b",
+      "status": "online",
+      "age_s": 4,
+      "tasks": false
+     }
+    ]
+   }
   }
  }
 }

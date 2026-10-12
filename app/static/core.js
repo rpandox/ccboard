@@ -287,7 +287,7 @@ async function demoMemVariant(data0, bare) {
 
 // demo/state.json must carry every key of the real /api/state: tests/test_api_v054.py (the demo state test) fails when build_state() gains one.
 async function demoApi(method, path, body) {
-  if (/^\/api\/epics(\/|$)/.test(path.split('?')[0]) && typeof demoEpics === 'function') return demoEpics(method, path, body);   // the epic view (issue #147, demo/epic.json): its answers and pins are played in pages/epic.js
+  if (/^\/api\/(epics(\/|$)|nodes\/[^/]+\/epics\/claim$)/.test(path.split('?')[0]) && typeof demoEpics === 'function') return demoEpics(method, path, body);   // the epic view (issue #147, demo/epic.json): its answers and pins are played in pages/epic.js
   if (method !== 'GET') {
     await new Promise((resolve) => setTimeout(resolve, 150));
     demoMake(method, path, body);

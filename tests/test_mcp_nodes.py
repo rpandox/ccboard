@@ -150,7 +150,7 @@ def test_exactly_four_rows_are_open_to_an_agent_and_none_of_them_is_a_persons():
         if r.mcp:
             assert r.scope in nr.MCP_SCOPES and not r.acting and not r.per_session and not r.dialog_scope and r.big_field is None, r.name
             assert r.peer_method == "GET" or r.guard, f"{r.name}: a write an agent may start runs the guard on both sides"
-    for name in ("card", "agents", "prompt", "keys", "ack", "close", "permissions", "permission_answer", "pane", "session_open"):
+    for name in ("card", "agents", "prompt", "keys", "ack", "close", "permissions", "permission_answer", "pane", "session_open", "epic_claim"):
         assert not nr.BY_NAME[name].mcp and nr.BY_NAME[name].human_only, name
 
 

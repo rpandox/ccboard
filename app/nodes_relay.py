@@ -93,14 +93,15 @@ from urllib.parse import urlencode
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, ValidationError, field_validator, model_validator
 
-from . import mcp as mcp_tools, nodes, projects, tmux
+from . import github, mcp as mcp_tools, nodes, projects, tmux
 from .config import settings
 
 log = logging.getLogger("ccboard.nodes.relay")
 
 RELAY_TIMEOUT = 10.0                       # seconds one relayed call may take
+CLAIM_TIMEOUT = 45.0                       # the claim of an epic issue (issue #148) waits 1.5 s twice and writes at least 1.1 s apart: more than 10 s is normal, and the answer after it is real
 PANE_LINES = 40                            # the most lines of a screen a peer ever sends
 PANE_LINE_MAX = 400                        # characters kept of one line
 NO_STORE = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
@@ -646,6 +647,7 @@ class Row:
     extra_scope: Callable[[dict], str | None] | None = field(default=None, compare=False)   # the scope the validated body needs besides `scope` (dispatch into a session: sessions)
     body_target: Callable[[dict, dict], str] | None = field(default=None, compare=False)    # the audit target from (safe path parameters, validated body): a task title, cut, when the path does not say enough
     acting: bool = False                # the peer refuses a request that names no acting user (a person's act, relayed by the hub)
+    timeout: float = RELAY_TIMEOUT      # seconds the hub waits for the peer's answer to this row (a write is never retried after it)
     big_field: str | None = None        # a string field whose length over its cap is a 413, not a 422 (the text of a prompt)
     per_session: bool = False           # nodes.PROMPT_RATE a minute into one session, counted on the hub and again on the peer
     dialog_scope: str | None = field(default=None, compare=False)     # the scope the PEER also wants while the target session is asking a question in its terminal (a permission, a dialog,
@@ -750,6 +752,9 @@ def _shape_pane(body, reg):
 TASK_TITLE_IN = 300                                                          # the peer cuts a stored title at 120; the model only keeps a runaway out
 TASK_PROMPT_IN = 20000                                                       # main.TASK_PROMPT_MAX
 _ISSUE_REF = re.compile(r"([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/((?![-.])[A-Za-z0-9_.-]{1,100})#([0-9]{1,9})")      # a GitHub owner, a repo name without a leading dot or dash
+_REPO_SLUG = re.compile(r"([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/((?![-.])[A-Za-z0-9_.-]{1,100})")
+_EPIC_NUM = re.compile(r"[1-9][0-9]{0,8}")
+_EPIC_REF = re.compile(r"([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/((?![-.])[A-Za-z0-9_.-]{1,100})#([1-9][0-9]{0,8})")
 
 
 # ---- typed text: ONE rule for every string a remote caller can send. The hub's models, the peer wrapper and the check of a stored card all call check_field(), so the
@@ -769,7 +774,7 @@ CONFIRMED_KEYS = ("C-c",)
 LITERAL_KEYS = ("y", "n", "1", "2", "3", "4", "5", "6", "7", "8", "9")       # typed as one character (tmux's own key names do not include them)
 DECISIONS = ("allow", "deny")                                                # never `tui`, `always` or a rule
 _ENUMS = {"permission_mode": PERMISSION_MODES, "mode": SESSION_MODES, "sandbox": SANDBOXES, "approval": APPROVALS, "key": STEER_KEYS, "decision": DECISIONS}
-FIELD_KINDS = ("agent", "model", "effort", "name", "session", "issue_ref", "permission_mode", "mode", "sandbox", "approval", "title", "prompt", "text", "typed_text", "typed_prompt", "key", "decision")
+FIELD_KINDS = ("agent", "model", "effort", "name", "session", "issue_ref", "repo_slug", "epic_ref", "permission_mode", "mode", "sandbox", "approval", "title", "prompt", "text", "typed_text", "typed_prompt", "key", "decision")
 _CAPS = {"title": TASK_TITLE_IN, "prompt": TASK_PROMPT_IN, "text": STEER_MAX, "typed_text": STEER_MAX, "typed_prompt": TASK_PROMPT_IN}
 # Text that is TYPED into a running agent session (a steer prompt; the prompt of a stored card handed to a running session) is read by the agent's own input line, where a
 # first character of `/` is a slash command (model, permission mode, settings ...), `!` runs a shell line in bash mode without a permission prompt and `#` writes to the
@@ -823,6 +828,14 @@ def check_field(kind: str, v):
     elif kind == "issue_ref":
         if len(v) > 250 or not _ISSUE_REF.fullmatch(v):
             raise ValueError("an issue reference is owner/name#number")
+    elif kind == "repo_slug":
+        m = _REPO_SLUG.fullmatch(v) if len(v) <= 140 else None
+        if not m or not github.valid_slug(*m.groups()):
+            raise ValueError("a repository is owner/name")
+    elif kind == "epic_ref":
+        m = _EPIC_REF.fullmatch(v) if len(v) <= 160 else None
+        if not (len(v) <= 9 and _EPIC_NUM.fullmatch(v)) and not (m and github.valid_slug(m.group(1), m.group(2))):
+            raise ValueError("an epic is its issue number, or owner/name#number")
     elif kind in _RX:
         if not _RX[kind].fullmatch(v):
             raise ValueError({"agent": "an agent name", "model": "a model id", "effort": "an effort level"}[kind] + " (letters, digits, '.', '_', ':', '-'; no leading dash)")
@@ -1013,6 +1026,31 @@ class KeysBody(_Strict):
         return self
 
 
+class EpicClaimBody(_Strict):
+    """Claim one issue of an epic on the node that takes this request (issue #148). Three plain values and nothing else: `repo` (owner/name), `issue` (a whole number) and `epic`
+    (the epic's issue number in that repository, or owner/name#number), which the node reads itself before it believes the issue is a child. No text from a person, a peer, an
+    agent or an issue ever reaches the claim comment: the node builds it from its own validated fields. The node still checks that the repository is one of its own projects."""
+    repo: str = Field(max_length=140)
+    issue: StrictInt = Field(ge=1, lt=10 ** 9)
+    epic: str | int | None = None
+
+    @field_validator("repo")
+    @classmethod
+    def _repo(cls, v):
+        return check_field("repo_slug", v)
+
+    @field_validator("epic", mode="before")
+    @classmethod
+    def _epic(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, int) and not isinstance(v, bool):
+            v = str(v)
+        if not isinstance(v, str):
+            raise ValueError("an epic is its issue number, or owner/name#number")
+        return check_field("epic_ref", v)
+
+
 def _title80(clean: dict) -> str:
     """A task title for an audit target: whitespace collapsed, anything shaped like a secret replaced, at most 80 characters. The prompt never comes near."""
     t = _text(" ".join(str(clean.get("title") or "").split()), TASK_TITLE_IN)
@@ -1123,6 +1161,44 @@ def _shape_closed(body, reg):
     if not isinstance(body, dict):
         raise nodes_hub.Bad("not an object")
     return {"killed": _shaped_tmux(body.get("killed"))}
+
+
+_ALIAS_OUT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}")
+CLAIM_PEER_WHY = ("writes_off", "bad_request", "other_repo", "not_epic_child", "authors_unknown", "login_not_allowed", "claim_unknown", "taken", "lost", "closed", "done",
+                  "attempts_exhausted", "too_many_claims", "rate_limited", "busy", "no_access", "no_login", "error", "outcome_unknown", "withdraw_failed")      # nodes_epics.CLAIM_TEXT without the two good answers
+CLAIM_GOOD = ("won", "already_held")
+
+
+def _claim_facts(src: dict) -> dict:
+    """The few facts of a claim answer, each rebuilt: the winner's alias (a plain word), the attempt (0 to 99), the wait (seconds, at most a day) and the unknown reason (a word).
+    Nothing else the peer put there is kept; never its sentence, a claim_ref, a login or a comment id."""
+    out: dict = {}
+    w = src.get("winner")
+    if isinstance(w, str) and _ALIAS_OUT.fullmatch(w):
+        out["winner"] = w
+    for k, hi in (("attempt", 99), ("wait_s", 86400)):
+        v = src.get(k)
+        if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= hi:
+            out[k] = v
+    u = src.get("unknown_reason")
+    if isinstance(u, str) and _WORD_OUT.fullmatch(u):
+        out["unknown_reason"] = u
+    for k in ("unknown_outcome", "asked_person"):
+        if src.get(k) is True:
+            out[k] = True
+    return out
+
+
+def _shape_epic_claim(body, reg):
+    """The answer of a claim that was made: {claimed: true, reason: won | already_held, repo, issue, winner?, attempt?}. A refusal never comes through here (it is a 409 `claim_refused`)."""
+    from . import nodes_hub
+    if not isinstance(body, dict) or body.get("claimed") is not True or body.get("reason") not in CLAIM_GOOD:
+        raise nodes_hub.Bad("not a claim")
+    repo = _shaped(body.get("repo"), re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}"), 140)
+    issue = body.get("issue")
+    if not repo or not isinstance(issue, int) or isinstance(issue, bool) or not 0 < issue < 10 ** 9:
+        raise nodes_hub.Bad("not a claim")
+    return {"claimed": True, "reason": body["reason"], "repo": repo, "issue": issue, **_claim_facts(body)}
 
 
 def _shape_permissions(body, reg):
@@ -1245,6 +1321,10 @@ RELAY: tuple[Row, ...] = (
     Row("permission_answer", "POST", "/api/nodes/{handle}/permissions/{pid}/{decision}", "POST", "/api/node/permissions/{pid}/{decision}", "permissions", NoFields, WRITE,
         "answer_permission", human_only=True, acting=True, answer_max=4 * 1024, target=lambda p: f"permission {p.get('pid')} {p.get('decision')}",
         shape=_shape_permission_answer),
+    # Claim one issue of an epic on that node (issue #148): a write to GitHub made by the node, so it needs `tasks`, a signed-in person (human only, and the person is named: acting),
+    # never an agent (mcp stays off: the agent path for epics is a later phase). The audit target is the repository and the issue number and nothing else.
+    Row("epic_claim", "POST", "/api/nodes/{handle}/epics/claim", "POST", "/api/node/epics/claim", "tasks", EpicClaimBody, WRITE, "claim_issue", human_only=True, acting=True,
+        timeout=CLAIM_TIMEOUT, answer_max=4 * 1024, target=lambda p: "claim", body_target=lambda p, c: f"claim {c.get('repo')}#{c.get('issue')}", shape=_shape_epic_claim),
 )
 # A row is human only unless it says `mcp=True`: the hub relay routes take a signed-in allowed person with X-CCBoard and nothing else. The local hook token is held
 # by every agent session on the box, so letting it relay would let any agent read other nodes through the hub. MCP across nodes (issue #152) opens exactly four rows to
@@ -1531,6 +1611,13 @@ def _map_reply(r, row: Row, reg: dict, clean: dict | None = None) -> dict:
         if peer_reason == "repo_missing" and clean and "project" in clean:
             raise RelayError(404, "repo_missing", _missing_repo_text(clean, name), kind="failed")
         raise RelayError(404, "gone" if peer_reason == "gone" else "not_found", msg or f"{name} has no such thing", kind="failed")
+    if r.status == 409 and peer_reason == "claim_refused" and row.name == "epic_claim":          # the node did not take the issue: the reason comes from a closed list, the sentence is this board's
+        why = r.json.get("why") if isinstance(r.json, dict) else None
+        why = why if isinstance(why, str) and why in CLAIM_PEER_WHY else "error"
+        facts = _claim_facts(r.json if isinstance(r.json, dict) else {})
+        from . import nodes_epics
+        text = f"{name}: {nodes_epics.CLAIM_TEXT[why]}" + (f" It is {facts['winner']}." if facts.get("winner") and why in ("taken", "lost") else "")
+        raise RelayError(409, "claim_refused", text, kind="failed", why=why, **facts)
     if r.status == 409 and peer_reason in ("busy", "answered", "expired"):          # the peer's own state answers, passed on with the words it chose from a closed list
         extra = _busy_extra(r.json) if peer_reason == "busy" else {}
         raise RelayError(409, peer_reason, msg or f"{name} cannot take this now", kind="failed", **extra)
@@ -1561,9 +1648,9 @@ def _map_peer_error(e: nodes.PeerError, reg: dict, row: Row | None = None) -> Re
         return RelayError(502, "too_large", f"the request or the answer was over the size limit", kind="failed")
     if isinstance(e.cause, (TimeoutError, socket.timeout)):
         if row is not None and row.rate_class == WRITE:
-            return RelayError(504, "unconfirmed", f"{name} did not answer in {int(RELAY_TIMEOUT)} s: it could not be confirmed whether it started, and it was not retried. "
+            return RelayError(504, "unconfirmed", f"{name} did not answer in {int(row.timeout)} s: it could not be confirmed whether it started, and it was not retried. "
                                                   f"Check {name} before starting again.", kind="failed")
-        return RelayError(504, "unconfirmed", f"{name} did not answer in {int(RELAY_TIMEOUT)} s: it could not be confirmed and it was not retried", kind="failed")
+        return RelayError(504, "unconfirmed", f"{name} did not answer in {int(row.timeout if row is not None else RELAY_TIMEOUT)} s: it could not be confirmed and it was not retried", kind="failed")
     if row is not None and row.rate_class == WRITE and isinstance(e.cause, _MAYBE_SENT):          # the connection broke after the request went out: the peer may have acted
         return RelayError(502, "unconfirmed", f"the connection to {name} broke while it was answering: it could not be confirmed whether it started, and it was not "
                                               f"retried. Check {name} before starting again.", kind="failed")
@@ -1631,7 +1718,7 @@ def relay(handle, row: Row, params: dict, body, request, *, db=None, hub=None) -
         path = peer_path(row, params or {}, clean)
         try:
             reply = nodes.PeerClient(reg, db=d).request(row.peer_method, path, clean if row.peer_method != "GET" and clean else None,
-                                                        acting_user=user, timeout=RELAY_TIMEOUT)
+                                                        acting_user=user, timeout=row.timeout)
         except nodes.PeerError as e:
             raise _map_peer_error(e, reg, row) from None
         if len(reply.body) > row.answer_max:                       # cut by size before the answer is read any further
@@ -1777,7 +1864,8 @@ def serve_peer(row: Row, handler: Callable, request, raw: bytes, db) -> JSONResp
         _inbound_audit(db, request, row, params, False, "failed", "repo_missing", clean)
         return JSONResponse({"error": str(e), "reason": "repo_missing"}, status_code=404, headers=NO_STORE)
     except Refusal as e:
-        _inbound_audit(db, request, row, params, False, "refused" if e.status == 429 else "failed", e.reason, clean)
+        why = e.extra.get("why")
+        _inbound_audit(db, request, row, params, False, "refused" if e.status == 429 else "failed", f"{e.reason}: {why}" if isinstance(why, str) and _WORD.fullmatch(why) else e.reason, clean)
         return JSONResponse({"error": e.message, "reason": e.reason, **e.extra}, status_code=e.status, headers={**NO_STORE, **e.headers})
     except Exception as e:
         _inbound_audit(db, request, row, params, False, "failed", (str(e) if isinstance(e, (projects.NotFound, projects.BadRequest, projects.Conflict)) else e.__class__.__name__)[:120],
@@ -2578,6 +2666,25 @@ def peer_permission_answer(db, params: dict, body: dict) -> dict:
     return {"ok": True, "id": pid, "decision": decision}
 
 
+def peer_epic_claim(db, params: dict, body: dict) -> dict:
+    """POST /api/node/epics/claim {repo, issue, epic?}: this board's own claim of one issue of an epic (nodes_epics.claim_issue, issue #148). It works only when this board's
+    CCBOARD_EPIC_WRITES is on, only for a repository that is one of this board's own projects and an issue that is a child of an epic this board has read (`epic` lets it read
+    that epic first, in its own repositories only). A claim that was made is {claimed: true, reason: won | already_held, repo, issue, winner, attempt}; every other outcome is a
+    409 `claim_refused` with `why` (a word of nodes_epics.CLAIM_TEXT) and a few facts. The claim reference stays on this board (it is the fencing token), and nothing from the
+    request or from GitHub is written into a comment: the comment is built from this board's own alias and node id."""
+    from . import nodes_epics
+    if not nodes_epics.claim_slots.acquire(blocking=False):          # a few claims at once; the rest are told to try again, with nothing started
+        raise Refusal(409, "claim_refused", nodes_epics.CLAIM_TEXT["busy"], why="busy")
+    try:
+        res = nodes_epics.claim_issue(body["repo"], body["issue"], epic=body.get("epic"))
+    finally:
+        nodes_epics.claim_slots.release()
+    if res.get("claimed"):
+        return {"claimed": True, "reason": res.get("reason"), "repo": body["repo"], "issue": body["issue"], **_claim_facts(res)}
+    why = res.get("reason") if res.get("reason") in CLAIM_PEER_WHY else "error"
+    raise Refusal(409, "claim_refused", nodes_epics.CLAIM_TEXT[why], why=why, **_claim_facts(res))
+
+
 HANDLERS = {"task": peer_task, "pane": peer_pane, "agents": peer_agents, "task_create": peer_task_create, "task_dispatch": peer_task_dispatch,
             "session_open": peer_session_open, "prompt": peer_prompt, "keys": peer_keys, "ack": peer_ack, "close": peer_close, "permissions": peer_permissions,
-            "permission_answer": peer_permission_answer}
+            "permission_answer": peer_permission_answer, "epic_claim": peer_epic_claim}

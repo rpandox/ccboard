@@ -15,193 +15,23 @@ import json
 import os
 import stat
 import sys
+import threading
 from pathlib import Path
 
-from app import github, nodes_epics
+from app import github, github_write, nodes_epics
+from tests import gh_server
 
 REAL_API = github.api
+REAL_TRANSPORT = github_write.transport
 REAL_GH_LOGIN = nodes_epics._gh_login
 SECRET = "ghp_" + "A1b2C3d4" * 4                    # shaped like a classic token, built by concatenation; the fake leaks it on stderr, the board must never show it
 START = 1_800_000_000                               # the server clock of a new world (2027-01-15), epoch seconds
 
 SCRIPT = r'''#!__PY__
-import email.utils, hashlib, json, os, re, sys
-W = os.environ["FAKE_GH_WORLD"]
-LOG = os.environ["FAKE_GH_LOG"]
-args = sys.argv[1:]
-with open(LOG, "a") as fh:
-    fh.write(json.dumps({"argv": args}) + "\n")
-world = json.load(open(W))
-TOKEN = os.environ.get("GH_TOKEN", "")
-
-
-def die(rc, text):
-    sys.stderr.write(text + " " + TOKEN + "\n")        # a leaky gh: the token rides on stderr
-    sys.exit(rc)
-
-
-if args[:1] == ["--version"]:
-    print("gh version 2.99.0 (2026-09-01)")
-    print("https://github.com/cli/cli/releases/tag/v2.99.0")
-    sys.exit(0)
-if args[:2] == ["auth", "status"]:
-    sys.exit(0 if world.get("login") else 1)
-if args[:2] == ["api", "user"]:
-    if not world.get("login"):
-        die(4, "To get started with GitHub CLI, please run:  gh auth login")
-    print(json.dumps({"login": world["login"]}))
-    sys.exit(0)
-if args[:1] != ["api"]:
-    die(1, "unknown command")
-if not world.get("login"):
-    die(4, "To get started with GitHub CLI, please run:  gh auth login")
-method, inm, path, include = "GET", None, None, False
-i = 1
-while i < len(args):
-    a = args[i]
-    if a == "--include":
-        include = True
-    elif a in ("--method", "-X"):
-        i += 1
-        method = args[i]
-    elif a in ("-H", "--header"):
-        i += 1
-        k, _, v = args[i].partition(":")
-        if k.strip().lower() == "if-none-match":
-            inm = v.strip()
-    elif a.startswith("-"):
-        method = "BAD-FLAG " + a
-    else:
-        path = a
-    i += 1
-now = world["now"]
-rate = world.get("rate")
-headers = {"Date": email.utils.formatdate(now, usegmt=True), "Content-Type": "application/json; charset=utf-8"}
-if rate:
-    headers.update({"x-ratelimit-limit": str(rate["limit"]), "x-ratelimit-remaining": str(rate["remaining"]), "x-ratelimit-reset": str(rate["reset"])})
-if world.get("scopes") is not None:
-    headers["x-oauth-scopes"] = world["scopes"]
-
-
-def ts(v):
-    return v
-
-
-def respond(status, body, extra=None):
-    h = dict(headers)
-    h.update(extra or {})
-    text = json.dumps(body) if body is not None else ""
-    if status < 300:
-        tag = 'W/"' + hashlib.sha1((text + world.get("salt", "")).encode()).hexdigest()[:16] + '"'
-        if status == 200 and inm == tag:
-            status, text = 304, ""
-        h["ETag"] = tag
-    reason = {200: "OK", 304: "Not Modified", 403: "Forbidden", 404: "Not Found", 429: "Too Many Requests", 500: "Internal Server Error", 502: "Bad Gateway"}.get(status, "X")
-    out = "HTTP/2.0 %d %s\r\n" % (status, reason) + "".join("%s: %s\r\n" % kv for kv in h.items()) + "\r\n" + text
-    sys.stdout.write(out if include else text)
-    if status >= 300:
-        sys.stderr.write("gh: %s (HTTP %d) %s\n" % (reason, status, TOKEN))
-        sys.exit(1)
-    sys.exit(0)
-
-
-if method != "GET":
-    respond(405, {"message": "only GET is served here: " + method})
-for ov in world.get("overrides", []):
-    if ov["match"] in path and ov.get("times", 1) != 0:
-        if ov.get("times", 1) > 0:
-            ov["times"] -= 1
-            json.dump(world, open(W, "w"))
-        respond(ov["status"], ov.get("body", {"message": "override"}), ov.get("headers"))
-
-
-for hk in world.get("mutations", []):                    # the world changes between two calls: just before a call whose path contains `match` (after `skip` such calls)
-    hit = (path == hk["match"][1:]) if hk["match"].startswith("=") else (hk["match"] in (path or ""))                # "=<path>": that path exactly
-    if hit and hk.get("times", 1) != 0:
-        if hk.get("skip", 0) > 0:
-            hk["skip"] -= 1
-        else:
-            if hk.get("times", 1) > 0:
-                hk["times"] -= 1
-            lst = world.setdefault("comments", {}).setdefault(hk["issue"], [])
-            if hk["op"] == "add":
-                lst.append(hk["comment"])
-                hk["comment"] = dict(hk["comment"], id=hk["comment"]["id"] + 1)           # a repeated add posts a new comment, not the same one again
-            elif hk["op"] == "delete" and lst:
-                lst.pop(hk["index"])
-        json.dump(world, open(W, "w"))
-
-
-def key(o, r, n):
-    return "%s/%s#%s" % (o, r, n)
-
-
-def issue_obj(k):
-    it = world["issues"][k]
-    repo = k.split("#")[0]
-    n = int(k.split("#")[1])
-    o = {"number": n, "title": it.get("title", "Issue %d" % n), "state": it.get("state", "open"), "body": it.get("body", ""),
-         "labels": [{"name": x} for x in it.get("labels", [])], "user": {"login": it.get("user", "alice")},
-         "comments": len(world.get("comments", {}).get(k, [])),
-         "repository_url": "https://api.github.com/repos/" + repo, "html_url": "https://github.com/%s/issues/%d" % (repo, n),
-         "created_at": it.get("created_at", "2026-10-01T09:00:00Z"), "updated_at": it.get("updated_at", "2026-10-01T09:00:00Z")}
-    if it.get("pull_request"):
-        o["pull_request"] = {"url": "https://api.github.com/repos/%s/pulls/%d" % (repo, n)}
-    if it.get("summary") is not None:
-        o["sub_issues_summary"] = it["summary"]
-    o.update(it.get("raw", {}))
-    return o
-
-
-def paged(items, query):
-    q = dict(p.split("=", 1) for p in query.split("&") if "=" in p)
-    per = min(int(q.get("per_page", "30")), world.get("page_size", 100))
-    page = int(q.get("page", "1"))
-    chunk = items[(page - 1) * per: page * per]
-    more = page * per < len(items)
-    return chunk, ({"Link": '<https://api.github.com/next>; rel="next"'} if more else {})
-
-
-m = re.fullmatch(r"/repos/([^/]+)/([^/?]+)/issues/([0-9]+)(?:/(sub_issues|comments))?(?:\?(.*))?", path or "")
-if path == "/rate_limit":
-    r = rate or {"limit": 5000, "remaining": 5000, "reset": int(now) + 3600}
-    respond(200, {"resources": {"core": {"limit": r["limit"], "remaining": r["remaining"], "reset": r["reset"]}}})
-if m:
-    o, r, n, sub, query = m.groups()
-    if "%s/%s" % (o, r) in world.get("forbidden", []):
-        respond(403, {"message": "Resource not accessible"})
-    k = key(o, r, n)
-    if k not in world["issues"]:
-        respond(404, {"message": "Not Found"})
-    if sub is None:
-        respond(200, issue_obj(k))
-    if sub == "sub_issues":
-        if world.get("sub_issues_missing"):
-            respond(404, {"message": "Not Found"})
-        items = [issue_obj(c) for c in world.get("subs", {}).get(k, [])]
-        chunk, extra = paged(items, query or "")
-        respond(200, chunk, extra)
-    items = []
-    for c in world.get("comments", {}).get(k, []):
-        c = dict(c, user=None if c["user"] is None else {"login": c["user"], "type": c.get("user_type", "User")}, author_association=c.get("assoc", "COLLABORATOR"))
-        c.pop("user_type", None)
-        c.pop("assoc", None)
-        items.append(c)
-    chunk, extra = paged(items, query or "")
-    respond(200, chunk, extra)
-m = re.fullmatch(r"/repos/([^/]+)/([^/?]+)/issues\?(.*)", path or "")
-if m:
-    o, r, query = m.groups()
-    if "%s/%s" % (o, r) in world.get("forbidden", []):
-        respond(403, {"message": "Resource not accessible"})
-    q = dict(p.split("=", 1) for p in query.split("&") if "=" in p)
-    label = q.get("labels", "").replace("%3A", ":")
-    state = q.get("state", "open")
-    ks = [k for k, it in world["issues"].items() if k.startswith("%s/%s#" % (o, r)) and label in it.get("labels", []) and (state == "all" or it.get("state", "open") == state)]
-    ks.sort(key=lambda k: int(k.split("#")[1]), reverse=True)
-    chunk, extra = paged([issue_obj(k) for k in ks], query)
-    respond(200, chunk, extra)
-respond(404, {"message": "Not Found"})
+import os, sys
+sys.path.insert(0, os.environ["FAKE_GH_TESTS"])
+import gh_server
+sys.exit(gh_server.main(sys.argv[1:], os.environ, sys.stdin, os.environ["FAKE_GH_WORLD"], os.environ["FAKE_GH_LOG"], sys.stdout, sys.stderr))
 '''
 
 
@@ -215,9 +45,7 @@ def claim_body(alias="node-a", status="claimed", *, lease="30m", seq=1, attempt=
     return f"<!-- ccboard:claim {version} -->\n{line}{extra}\n\n{text}"
 
 
-def iso(epoch: float) -> str:
-    from datetime import datetime, timezone
-    return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+iso = gh_server.iso
 
 
 class FakeGitHub:
@@ -229,6 +57,7 @@ class FakeGitHub:
         self.world: dict = {"login": "alice", "now": START, "rate": {"limit": 5000, "remaining": 4990, "reset": START + 1800}, "scopes": "repo, read:org",
                             "issues": {}, "subs": {}, "comments": {}, "sub_issues_missing": False, "page_size": 100, "forbidden": [], "overrides": [], "salt": ""}
         self._next_comment = 1000
+        self.mem = False
         self.save()
 
     # ---- wiring
@@ -239,13 +68,51 @@ class FakeGitHub:
         monkeypatch.setenv("PATH", str(self.dir) + os.pathsep + os.environ.get("PATH", ""))
         monkeypatch.setenv("FAKE_GH_WORLD", str(self.world_path))
         monkeypatch.setenv("FAKE_GH_LOG", str(self.log_path))
+        monkeypatch.setenv("FAKE_GH_TESTS", str(Path(__file__).resolve().parent))
         monkeypatch.setenv("GH_TOKEN", SECRET)
         monkeypatch.setattr(github, "api", REAL_API)
+        monkeypatch.setattr(github_write, "transport", REAL_TRANSPORT)
         monkeypatch.setattr(nodes_epics, "_gh_login", REAL_GH_LOGIN)
+        return self
+
+    def use_memory(self, monkeypatch, hook=None) -> "FakeGitHub":
+        """Serve the same GitHub from this process instead of through the fake gh script: `github.api` (reads) and `github_write.transport` (writes) call
+        tests/gh_server.py on the live `world`, one request at a time, and log the call like the script does. No process is started, so hundreds of races are cheap.
+        `hook(kind, method, path)` runs before each request (a test's scheduler can yield there). The world is the live dict: save() and reload() do nothing."""
+        self.mem = True
+        self.mem_lock = threading.RLock()
+        self.mem_calls: list[dict] = []
+
+        def serve(method, path, inm=None, body=None):
+            if hook is not None:
+                hook("read" if method == "GET" else "write", method, path)
+            with self.mem_lock:
+                self.mem_calls.append({"argv": ["api", "--method", method, path], "stdin": json.dumps(body) if body is not None else ""})
+                resp, _ = gh_server.handle(self.world, method, path, inm, body)
+                return resp
+
+        def api(path, etag=None):
+            resp = serve("GET", path, etag)
+            if resp.hang:
+                raise github.GhReadError("timeout")
+            headers = {k.lower(): v for k, v in resp.headers.items() if k.lower() in github.SAFE_HEADERS}
+            return resp.status, headers, resp.body
+
+        def transport(req):
+            resp = serve(req.method, req.path, None, req.body)
+            if resp.hang:
+                raise github_write.GhWriteError("timeout", unknown=True)
+            headers = {k.lower(): v for k, v in resp.headers.items() if k.lower() in github.SAFE_HEADERS}
+            return resp.status, headers, resp.body
+        monkeypatch.setattr(github, "api", api)
+        monkeypatch.setattr(github_write, "transport", transport)
+        monkeypatch.setattr(nodes_epics, "_gh_login", lambda: self.world.get("login"))
         return self
 
     def save(self) -> None:
         """Write the world. The file's overrides are kept, not this copy's: the script counts them down in the file, and a save from here must not bring a used one back."""
+        if self.mem:
+            return
         if self.world_path.exists():
             on_disk = json.loads(self.world_path.read_text())
             for k in ("overrides", "mutations"):
@@ -254,11 +121,22 @@ class FakeGitHub:
 
     def reload(self) -> None:
         """Take from the file what the script changes on its own: the one-shot overrides, the between-call mutations and the comments they add or delete."""
+        if self.mem:
+            return
         on_disk = json.loads(self.world_path.read_text())
         for k in ("overrides", "mutations", "comments"):
             self.world[k] = on_disk.get(k, [] if k != "comments" else {})
 
+    def refresh(self) -> None:
+        """Take EVERYTHING from the file: after writes through the fake gh (comments, assignees, labels, ids), the world as GitHub now holds it."""
+        if self.mem:
+            return
+        self.world.clear()
+        self.world.update(json.loads(self.world_path.read_text()))
+
     def calls(self) -> list[dict]:
+        if self.mem:
+            return list(self.mem_calls)
         if not self.log_path.exists():
             return []
         return [json.loads(line) for line in self.log_path.read_text().splitlines() if line.strip()]
@@ -268,8 +146,49 @@ class FakeGitHub:
         return [c["argv"][-1] for c in self.calls() if c["argv"][:1] == ["api"] and c["argv"][-1] != "user"]
 
     def clear_calls(self) -> None:
-        if self.log_path.exists():
+        if self.mem:
+            self.mem_calls.clear()
+        elif self.log_path.exists():
             self.log_path.unlink()
+
+    def writes(self) -> list[tuple]:
+        """(method, path, body) of every call that was not a GET, in order (body parsed from the stdin the call carried, None when it had none)."""
+        out = []
+        for c in self.calls():
+            a = c["argv"]
+            if a[:1] != ["api"] or "--method" not in a:
+                continue
+            method = a[a.index("--method") + 1]
+            if method != "GET":
+                out.append((method, a[-1], json.loads(c["stdin"]) if c.get("stdin") else None))
+        return out
+
+    # ---- the world as GitHub now holds it, for assertions
+    def thread(self, issue: str) -> list[dict]:
+        """The comments of an issue, all of them (hidden ones too), as stored."""
+        self.refresh()
+        return [dict(c) for c in self.world.get("comments", {}).get(issue, [])]
+
+    def claims_on(self, issue: str) -> list[dict]:
+        """The comments of an issue that carry the claim marker."""
+        return [c for c in self.thread(issue) if str(c["body"]).startswith("<!-- ccboard:claim")]
+
+    def labels_of(self, issue: str) -> list[str]:
+        self.refresh()
+        return list(self.world["issues"][issue].get("labels", []))
+
+    def assignees_of(self, issue: str) -> list[str]:
+        self.refresh()
+        return list(self.world["issues"][issue].get("assignees", []))
+
+    def hide(self, cid: int, seconds: float) -> None:
+        """Eventual consistency: reads do not show comment `cid` until `seconds` of server time have passed."""
+        self.refresh()
+        for lst in self.world["comments"].values():
+            for c in lst:
+                if c["id"] == cid:
+                    c["hidden_until"] = self.world["now"] + seconds
+        self.save()
 
     # ---- the world
     def set(self, **kw) -> None:
@@ -308,38 +227,47 @@ class FakeGitHub:
         self.save()
         return cid
 
-    def junk(self, issue: str, count: int, *, start: float | None = None, user="bob") -> None:
-        """`count` plain comments (no claim), one second apart from `start` (default: a day before the server clock), in one save."""
+    def junk(self, issue: str, count: int, *, start: float | None = None, user="bob", first_id: int | None = None) -> None:
+        """`count` plain comments (no claim), one second apart from `start` (default: a day before the server clock), in one save. `first_id` makes their ids start there
+        (a thread whose ids must keep growing after comments GitHub's writes created)."""
         self.reload()
         t0 = (self.world["now"] - 86400) if start is None else start
         lst = self.world["comments"].setdefault(issue, [])
+        if first_id is not None:
+            self._next_comment = first_id - 1
         for i in range(count):
             self._next_comment += 1
             lst.append({"id": self._next_comment, "body": f"chatter {i}", "user": user, "created_at": iso(t0 + i), "updated_at": iso(t0 + i), "assoc": "NONE", "user_type": "User"})
         self.save()
 
     def mutate(self, match: str, issue: str, op: str, *, comment: str | None = None, index: int = 0, skip: int = 0, times: int = 1, user="alice", assoc="COLLABORATOR",
-               created_at=None) -> None:
+               created_at=None, method: str | None = None) -> None:
         """Change the world just before the next `times` calls whose path contains `match` (or is exactly the rest of it after a leading "=") (after skipping `skip` of them): op "add" appends a comment (`comment` is
         its body; its id follows the last comment's, so ids keep increasing) to `issue`, op "delete" removes the comment at `index`. This is how a test makes a thread
         move between two page reads."""
         self.reload()
         rec = None
         if op == "add":
-            last = max([c["id"] for c in self.world["comments"].get(issue, [])] + [self._next_comment])
+            last = max([c["id"] for c in self.world["comments"].get(issue, [])] + [self._next_comment, self.world.get("next_cid", 0)])
             self._next_comment = last + 1000
             rec = {"id": last + 500, "body": comment or "later", "user": user, "created_at": created_at or iso(self.world["now"] - 30), "updated_at": created_at or iso(self.world["now"] - 30),
                    "assoc": assoc, "user_type": "User"}
-        self.world.setdefault("mutations", []).append({"match": match, "issue": issue, "op": op, "comment": rec, "index": index, "skip": skip, "times": times})
-        self.world_path.write_text(json.dumps(self.world))
+        self.world.setdefault("mutations", []).append({"match": match, "issue": issue, "op": op, "comment": rec, "index": index, "skip": skip, "times": times, "method": method})
+        self._flush()
 
     def clear_mutations(self) -> None:
         self.reload()
         self.world["mutations"] = []
-        self.world_path.write_text(json.dumps(self.world))
+        self._flush()
 
-    def fail(self, match: str, status: int, *, headers=None, body=None, times: int = 1) -> None:
-        """The next `times` (-1: always) calls whose path contains `match` get this answer."""
+    def _flush(self) -> None:
+        if not self.mem:
+            self.world_path.write_text(json.dumps(self.world))
+
+    def fail(self, match: str, status: int, *, headers=None, body=None, times: int = 1, method: str | None = None, apply: bool = False, hang: bool = False) -> None:
+        """The next `times` (-1: always) calls whose path contains `match` (and whose method is `method`, when given) get this answer. `apply=True` lets a write happen first
+        and then answers with the fault: a comment created whose answer was lost. `hang=True` is a gh that never answers (a timeout; with `apply` the write happened)."""
         self.reload()
-        self.world["overrides"].append({"match": match, "status": status, "headers": headers or {}, "body": {"message": "override"} if body is None else body, "times": times})
-        self.world_path.write_text(json.dumps(self.world))
+        self.world["overrides"].append({"match": match, "status": status, "headers": headers or {}, "body": {"message": "override"} if body is None else body, "times": times,
+                                        "method": method, "apply": apply, "hang": hang})
+        self._flush()
