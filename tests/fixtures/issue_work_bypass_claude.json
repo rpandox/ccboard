@@ -1,0 +1,5 @@
+{
+ "title": "Run unattended",
+ "user": "alice",
+ "body": "Go fast.\n\n## Who should do it\n\n- Claude Code: `claude --model sonnet --dangerously-skip-permissions`\n- Codex: `codex -m gpt-6.1-sol -s workspace-write -a on-request`\n"
+}

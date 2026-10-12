@@ -134,7 +134,9 @@ test('Claim on <node> is on the one unclaimed issue pinned to an online node tha
   assert.ok(b);
   assert.equal(text(b).trim(), 'Claim on node-b');
   assert.equal(b.getAttribute('aria-label'), 'Claim issue #205 on node-b');
-  assert.ok(b.classList.contains('primary') && b.classList.contains('tinted') && b.classList.contains('small'), 'the same action on a row is the tinted kind, never a second filled primary');
+  assert.ok(b.classList.contains('small') && !b.classList.contains('primary'), 'with Work offered on the same row, Claim is the bordered kind: the row has one tinted action');
+  const wk = rowOf(w, 205).querySelectorAll('button').find((x) => x.getAttribute('data-work'));
+  assert.ok(wk.classList.contains('primary') && wk.classList.contains('tinted') && wk.classList.contains('small'), 'the one tinted action of the row is Work, never a second filled primary');
   assert.equal(b.getAttribute('style'), null);
   assert.match(b.getAttribute('title'), /claim comment.*assigns itself.*labels it ccboard:in-progress.*Nothing else changes on GitHub/);
   for (const n of [201, 202, 203, 204, 206, 207]) assert.equal(claimBtn(w, n), undefined, `#${n}`);
@@ -344,13 +346,13 @@ test('Run stays disabled: routing is a later phase, and a claim does not turn it
 
 // ---------------------------------------------------------------- the source: nothing written to GitHub from the page, nothing unsafe
 
-test('the page code writes to no GitHub address, builds nothing with innerHTML or style attributes, and names the one claim route', () => {
+test('the page code writes to no GitHub address, builds nothing with innerHTML or style attributes, and names the claim and the work route', () => {
   const src = fs.readFileSync(path.join(STATIC, 'pages', 'epic.js'), 'utf8');
   assert.ok(!/innerHTML|insertAdjacentHTML|cssText|\.setAttribute\(\s*'style'/.test(src));
   assert.ok(!/api\.github\.com|fetch\(/.test(src.replace(/globalThis\.fetch/g, '')) || /demo fixture/.test(src), 'only the demo reads its fixture');
   const posts = src.match(/api\('POST', `[^`]*`/g) || [];
-  assert.deepEqual(posts, ["api('POST', `/api/nodes/${encodeURIComponent(node.handle)}/epics/claim`"]);
-  assert.equal((src.match(/api\('(?:POST|DELETE|PATCH)'/g) || []).length, 1, 'the page makes one write to a node and no other');
+  assert.deepEqual(posts, ["api('POST', `/api/nodes/${encodeURIComponent(node.handle)}/epics/claim`", "api('POST', `/api/nodes/${encodeURIComponent(node.handle)}/epics/work`"]);
+  assert.equal((src.match(/api\('(?:POST|DELETE|PATCH)'/g) || []).length, 2, 'the page makes two writes to a node (claim, work) and no other');
   assert.ok(!src.includes('—'), 'no em-dash in UI text');
 });
 

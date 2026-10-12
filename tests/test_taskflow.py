@@ -161,6 +161,60 @@ def test_stop_failure_fails_the_task_and_never_closes(rig):
     assert rig.ended == [] and rig.sent == []
 
 
+# ---- the result hooks (issue #149): a task an epic started reports on its issue once the runtime has written its end
+
+@pytest.fixture
+def hooks_seen(monkeypatch):
+    seen = []
+    monkeypatch.setattr(taskflow, "RESULT_HOOKS", [lambda db, tid, phase: seen.append((tid, phase, db.task_get(tid)["phase"], db.task_get(tid)["result"]))])
+    return seen
+
+
+def test_result_hooks_run_after_the_row_says_done_with_the_result_stored(rig, hooks_seen):
+    name, rid = session(rig)
+    tid = task(rig, rid, name, auto_close=0)
+    stop(rig, name, "The final words.")
+    assert hooks_seen == [(tid, "done", "done", "The final words.")], "the row is already written when the hook looks at it"
+
+
+def test_result_hooks_run_for_a_failed_turn_and_not_for_a_parked_one(rig, hooks_seen):
+    name, rid = session(rig)
+    tid = task(rig, rid, name, auto_close=0)
+    rig.rt.on_turn_end(name, rig.db.open_row(name), None, failed=True, message="You've hit your limit", limit={"kind": "5h"})
+    assert hooks_seen == [], "a rate limit parks the task: it is not over"
+    rig.rt.on_turn_end(name, rig.db.open_row(name), None, failed=True, message="API Error: overloaded")
+    assert hooks_seen == [(tid, "failed", "failed", "API Error: overloaded")]
+
+
+def test_result_hooks_run_for_a_task_the_sweep_cancels_and_for_nothing_else(rig, hooks_seen):
+    name, rid = session(rig)
+    killed = task(rig, rid, name, slug="k")
+    rig.db.end(name, "killed")
+    alive_name, alive_rid = session(rig, "live")
+    task(rig, alive_rid, alive_name, slug="live")
+    assert tick(rig)["swept"] == [killed]
+    assert hooks_seen == [(killed, "cancelled", "cancelled", None)]
+    tick(rig, 3600)
+    assert len(hooks_seen) == 1, "once"
+
+
+def test_a_stop_that_credits_no_task_calls_no_hook(rig, hooks_seen):
+    name, rid = session(rig)
+    assert stop(rig, name) is None and hooks_seen == []
+
+
+def test_a_result_hook_that_raises_never_costs_the_task_its_result_or_stops_the_other_hooks(rig, monkeypatch):
+    seen = []
+
+    def bad(db, tid, phase):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(taskflow, "RESULT_HOOKS", [bad, lambda db, tid, phase: seen.append(tid)])
+    name, rid = session(rig)
+    tid = task(rig, rid, name, auto_close=0)
+    out = stop(rig, name, "Still stored.")
+    assert out["phase"] == "done" and rig.db.task_get(tid)["result"] == "Still stored." and seen == [tid]
+
+
 def test_a_rate_limit_only_parks_the_task_the_session_continues_after_the_reset(rig):
     name, rid = session(rig)
     tid = task(rig, rid, name)

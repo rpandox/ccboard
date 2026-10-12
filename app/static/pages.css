@@ -816,6 +816,11 @@ html.force-coarse .job-fable .checks label { min-height:var(--tap); }
 .task .tk-issue-body { margin:0; padding:6px 8px; border:1px solid var(--line-soft); font-size:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; max-height:200px; overflow:auto; }
 .task .tk-issue-link { font-variant-numeric:tabular-nums; }
 .task a.tk-issue-link { text-decoration:underline; text-underline-offset:2px; }   /* a link inside running text is told apart by more than its colour (axe link-in-text-block) */
+/* work an epic started on this board (issue #149): its phase in words with a glyph; a lost claim is a state of its own (amber is attention, never the only signal) */
+.task .tk-epic { margin:0 0 6px; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+.task .tk-epic-g { display:inline-block; min-width:1em; text-align:center; font-family:var(--font-glyph); }
+.task .tk-epic.lost, .task .tk-lostclaim { color:var(--warn-fg); }
+.task .tk-lostclaim { display:inline-flex; align-items:center; gap:4px; }
 
 .lx-form .lx-mem { min-width:0; }
 .pj-gotchas { min-width:0; }

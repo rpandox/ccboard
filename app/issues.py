@@ -14,6 +14,7 @@ VALUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,79}$")
 BYPASS_WORDS = {"bypasspermissions", "danger-full-access"}
 WARNING = "ignored a bypass setting"
 COMMENT_HEAD = 800
+BODY_MAX = 70_000                                       # GitHub's own limit for an issue body is 65536 characters: the scan never reads more than this
 
 
 def empty_who() -> dict:
@@ -21,8 +22,19 @@ def empty_who() -> dict:
 
 
 def _comment_free(text: str) -> str:
-    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
-    return re.sub(r"<!--.*\Z", "", text, flags=re.S)       # an unterminated comment hides the rest, as GitHub renders it
+    """The text without its HTML comments, in one pass (a run of `<!--` with no end is not re-scanned from each start). An unterminated comment hides the rest, as GitHub renders it."""
+    text, out, i = text[:BODY_MAX], [], 0
+    while True:
+        start = text.find("<!--", i)
+        if start < 0:
+            out.append(text[i:])
+            break
+        out.append(text[i:start])
+        end = text.find("-->", start + 4)
+        if end < 0:
+            break
+        i = end + 3
+    return "".join(out)
 
 
 def _section(body: str) -> str:

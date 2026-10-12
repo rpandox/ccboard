@@ -648,7 +648,7 @@ def test_the_detail_answer_shape_children_claims_progress_and_links(board):
     d = r.json()
     assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
     assert d["epic"] == {"repo": REPO, "owner": "acme", "name": "shop", "number": 147, "title": "Checkout rework", "url": "https://github.com/acme/shop/issues/147",
-                         "state": "open", "labelled": True, "updated_at": "2026-10-01T09:00:00Z"}
+                         "state": "open", "labelled": True, "updated_at": "2026-10-01T09:00:00Z", "author": "alice"}
     assert d["source"] == "sub_issues" and d["note"] is None and d["error"] is None and d["empty"] is False and d["partial"] is False and d["truncated"] is False
     assert [(c["repo"], c["number"]) for c in d["children"]] == [(REPO, n) for n in range(201, 207)] + [("acme/api", 9)], "the sub-issue order is the queue order"
     assert [c["order"] for c in d["children"]] == [1, 2, 3, 4, 5, 6, 7]
@@ -873,14 +873,14 @@ def test_pins_and_pause_are_stored_on_this_board_and_change_nothing_on_github(bo
     get(board)                                                                 # the page reads the epic first: a pin may name only an issue read as its child
     b = add_node(board)
     before = len(gh.calls())
-    r = put(board, {"pins": {"202": b["handle"], "205": "local"}, "epic_pin": b["handle"], "paused": True, "report": True})
+    r = put(board, {"pins": {"202": b["handle"], "205": "local"}, "epic_pin": b["handle"], "paused": True, "report": "summary", "close": True})
     assert r.status_code == 200 and len(gh.calls()) == before, "settings never reach GitHub"
     s = r.json()
     assert s["pins"]["202"] == {"handle": b["handle"], "node_name": "node-b", "source": "page", "stale": False}
-    assert s["pins"]["205"]["handle"] == "local" and s["epic_pin"]["handle"] == b["handle"] and s["paused"] is True and s["report"] is True and s["auto_pr"] is False
+    assert s["pins"]["205"]["handle"] == "local" and s["epic_pin"]["handle"] == b["handle"] and s["paused"] is True and s["report"] == "summary" and s["auto_pr"] is False and s["close"] is True
     assert [n["handle"] for n in s["nodes"]] == ["local", b["handle"]]
     stored = board.db.kv_get("epic:acme/shop#147")["value"]
-    assert stored == {"pins": {"202": b["handle"], "205": "local"}, "epic_pin": b["handle"], "paused": True, "report": True, "auto_pr": False}
+    assert stored == {"pins": {"202": b["handle"], "205": "local"}, "epic_pin": b["handle"], "paused": True, "report": "summary", "auto_pr": False, "close": True}
     d = get(board).json()
     assert d["paused"] is True and d["pins"]["202"]["handle"] == b["handle"] and child(d, 202)["pin"] == {"handle": b["handle"], "node_name": "node-b", "source": "page", "stale": False}
     assert child(d, 203)["pin"] is None

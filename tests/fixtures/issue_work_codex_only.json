@@ -1,0 +1,5 @@
+{
+ "title": "Tidy the config loader",
+ "user": "alice",
+ "body": "Tidy it.\n\n## Who should do it\n\n- Codex: `codex -m gpt-6.1-sol -c model_reasoning_effort=\"low\" -s workspace-write -a on-request`\n\n## Rules\n"
+}

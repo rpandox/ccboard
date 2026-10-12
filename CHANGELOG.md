@@ -2,6 +2,26 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.48 - 2026-10-12
+
+### Added
+- Nodes P14, run a claimed epic issue as a task on its node and report back (#149). **Work on <node>** on the epic page asks a paired node to claim the issue, start it as a task in its own worktree with the issue's own model line and keep the issue informed (`POST /api/nodes/<handle>/epics/work`, a signed-in person, scope `tasks`, never an agent). The author check is the first guard: the issue and its epic must be written by a login in `CCBOARD_EPIC_AUTHORS` (or the node's own `gh` login), or the node refuses before any claim comment exists. A model line that names bypass, `danger-full-access` or `--yolo` is refused with one comment and the claim is released as failed; an issue with no model line uses the node's defaults, never bypass. The issue text goes into the prompt as data, never into a shell or a launch line.
+- Short phase comments in a fixed template (waiting for a person, pull request opened, done, failed, cancelled), at most one per issue every 5 minutes and only on a change of phase, each checked against the claim just before it is sent. The epic's settings, all off by default and kept per epic: what is reported (phases only, summary or none), whether a done task is pushed to its own branch and opened as a pull request (never `main`), and whether that pull request says `Closes #N`. A summary is cut to 1500 characters after one redaction pass (home folders become `~`, token shapes become `[removed]`, with a note when text was removed).
+- The epic page shows **Work on <node>** (the one tinted action of a row), **Try again on <node>** after a failed attempt, the phase of the work with **Open on <node>**, a mark on issues by an author who is not allowed (their **Work** is disabled and names the author, and the line under Run names them), the three settings with one paragraph that says in words what will be posted and pushed, and a plain sentence for every refusal. The task card links the issue and its claim comment and shows a lost claim as its own state, with a glyph.
+- `?demo=1#/epic/example/website/147` shows Work, the phases and the settings; `&epic=workrun|workwait|workfail|workcancel|authors|epicauthor|noauthors` and `&work=nothere|author|epicauthor|unreadable|bypass|posture|lanes|launch|taken|lost|unknown|writesoff|closed|done|attempts|offline|scope|unconfirmed` show the other states, and `?demo=1&taskepic=running|waiting|pr|failed|cancelled|lost#/tasks` shows the task card for each phase.
+
+### Changed
+- The epic setting `report` is now one of `phase` (default), `summary` or `none`; a stored `true` is read as `summary` and `false` as `phase`. `close` is new. **Claim on <node>** becomes a bordered button on a row where Work is offered, so each row keeps one tinted action.
+- The first-paint script grew by the task card's claim link, the lost-claim chip and one demo route (about 2 KB); everything else is in the lazy epic bundle.
+- Known limits, written in the README: nothing here has run against real GitHub, a real `claude` or `codex` or a real worktree yet (the two-node check, #155, does that), and there is no route for a board to work an issue on itself, only on a paired node. Only the issue's author (and the epic's) is checked, so someone with write access can still edit an allowed author's issue before it is run.
+
+### Fixed
+- Hardening of the epic work, in plain words: a phase comment (done, failed, cancelled) is never posted twice, even when the claim cannot be released for a while and the node tries again every five minutes; the commit and push of `auto_pr` run no repository hook script and use `--no-verify`, because an agent could have edited a hook and nobody has read the diff (the **ship it** chip a person taps is unchanged); the pull request is opened for the issue's own repository (`--repo`) and only when the worktree is really on the task's own branch, otherwise nothing is committed or pushed and the done comment goes out without a link; two Runs of one issue at the same moment start one task, not two; the Stop hook of a finished task no longer waits for a report that is busy with GitHub.
+- A result posted to an issue is cleaned more: credentials in a link, email addresses, `/root`, Windows and spaced home folders, `/var/folders` and `/private/var`, `password=`, `token=`, `secret=` and `api_key=` values, and host names ending in `.ts.net`, `.local`, `.internal` or `.lan` are removed. The prompt scan strips HTML comments in one pass (an issue made of thousands of `<!--` no longer takes seconds) and also drops hidden link-reference comments (`[//]: # (text)`), so the agent reads only what a reviewer can see.
+- The README says that a change to an epic's settings applies to work started after it.
+
+Upgrade: nothing to do.
+
 ## v0.5.47 - 2026-10-12
 
 ### Added

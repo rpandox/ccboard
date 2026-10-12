@@ -1061,6 +1061,24 @@ function taskIssueLink(t) {
   return el('span', { class: 'tk-issue-link', text: label });
 }
 
+/* Work an epic started on this board (issue #149): t.epic is the board's own record of it ({phase, attempt, claim_url, ...}; no other task has the key). The card links the claim comment
+   (https only), says the phase in words with a glyph, and shows a lost claim as a state of its own. */
+const TASK_EPIC = { running: ['✽', 'running'], waiting: ['✻', 'waiting for a person'], pr: ['○', 'pull request opened'], done: ['✓', 'done'], failed: ['✕', 'failed'], cancelled: ['∙', 'cancelled'], lost: ['⚠', 'claim lost'] };
+
+function taskClaimLink(t) {
+  const u = String((t && t.epic && t.epic.claim_url) || '');
+  return /^https:\/\/github\.com\/[A-Za-z0-9._\/-]+#issuecomment-[0-9]+$/.test(u) ? el('a', { class: 'tk-issue-link', href: u, target: '_blank', rel: 'noopener noreferrer', title: 'open the claim comment on the issue', text: 'claim' }) : null;
+}
+
+function taskEpicNode(t) {
+  const e = t && t.epic;
+  if (!e || typeof e !== 'object') return null;
+  const ph = ownKey(TASK_EPIC, e.phase) ? e.phase : 'running';
+  return el('div', { class: 'tk-epic' + (ph === 'lost' ? ' lost' : ''), 'data-epic-phase': ph },
+    el('span', { class: 'tk-epic-g', 'aria-hidden': 'true', text: TASK_EPIC[ph][0] }), ` Epic work: ${TASK_EPIC[ph][1]}${e.attempt > 1 ? ` (attempt ${e.attempt})` : ''}`,
+    ph === 'lost' ? el('span', { class: 'dim', text: ' The issue may go to another node. This task is parked and its worktree is kept.' }) : null);
+}
+
 function taskIssueNode(t) {
   if (!t || !t.issue_number || taskPhase(t) !== 'done' || !String(t.result || '').trim()) return null;
   const n = t.issue_number;
@@ -1114,6 +1132,7 @@ function startedCard(t, ctx) {
   const chips = [];
   const owner = live ? taskOwnerChip(t) : null;
   if (owner) chips.push(owner);
+  if (t.epic && t.epic.phase === 'lost') chips.push(el('span', { class: 'state waiting tk-lostclaim', title: 'this board lost its claim on the issue; it writes nothing more for it', text: '⚠ lost claim' }));
   if (asked) chips.push(el('span', { class: 'state waiting tk-asked', title: 'its last message ends with a question: the session stays open for your answer', text: 'needs you · it asked a question' }));
   if (!live && finished && t.closed_at) chips.push(el('span', { class: 'badge tk-closed', title: 'the session closed itself after the task stopped' }, ic('power'), `closed after stop · ${fmtAge(taskMs(t.closed_at) / 1000)}`));
   if (chain && chain.of > 1) chips.push(el('span', { class: 'badge tk-chain-badge', title: 'a chain: each step starts when the one before it finishes', text: `step ${chain.step} of ${chain.of}` }));
@@ -1159,9 +1178,10 @@ function startedCard(t, ctx) {
   });
   return taskCardShell(t, (s && s.needs_attention || asked ? ' attn' : '') + (handed ? ' handed' : '') + (finished && !live ? ' finished' : ''), false,
     el('div', { class: 'row tk-title-row' }, el('span', { class: 'title', text: t.title }), badge, ciBadge(t)),
-    el('div', { class: 'meta' }, starting ? `${taskWhere(t)} · starting…` : (t.branch ? `${t.project}/${t.repo} · ${t.branch}` : taskWhere(t) + (t.mode === 'attached' ? ' · in place' : '')), t.pr_url ? ' · PR #' + t.pr_number : null, t.issue_number ? [' · ', taskIssueLink(t)] : null,
+    el('div', { class: 'meta' }, starting ? `${taskWhere(t)} · starting…` : (t.branch ? `${t.project}/${t.repo} · ${t.branch}` : taskWhere(t) + (t.mode === 'attached' ? ' · in place' : '')), t.pr_url ? ' · PR #' + t.pr_number : null, t.issue_number ? [' · ', taskIssueLink(t)] : null, taskClaimLink(t) ? [' · ', taskClaimLink(t)] : null,
       typeof t.cost_usd === 'number' ? [' · ', el('span', { class: 'mono', text: '$' + t.cost_usd.toFixed(2) })] : null),
     chips.length ? el('div', { class: 'tk-chips' }, ...chips) : null,
+    taskEpicNode(t),
     pvOff ? taskPreviewOff(t, pvOff) : null,
     pending && live ? taskAutoCloseStrip(t, ac) : null,
     s && s.last_message && !(finished && t.result) ? el('div', { class: 'last', text: s.last_message.slice(0, 160) }) : null,

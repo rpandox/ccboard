@@ -102,6 +102,7 @@ log = logging.getLogger("ccboard.nodes.relay")
 
 RELAY_TIMEOUT = 10.0                       # seconds one relayed call may take
 CLAIM_TIMEOUT = 45.0                       # the claim of an epic issue (issue #148) waits 1.5 s twice and writes at least 1.1 s apart: more than 10 s is normal, and the answer after it is real
+WORK_TIMEOUT = 75.0                        # running a claimed issue (issue #149) is the claim, a second read of the issue and the start of a task: a worktree, a session, two more writes to the claim
 PANE_LINES = 40                            # the most lines of a screen a peer ever sends
 PANE_LINE_MAX = 400                        # characters kept of one line
 NO_STORE = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
@@ -652,6 +653,7 @@ class Row:
     per_session: bool = False           # nodes.PROMPT_RATE a minute into one session, counted on the hub and again on the peer
     dialog_scope: str | None = field(default=None, compare=False)     # the scope the PEER also wants while the target session is asking a question in its terminal (a permission, a dialog,
                                                                       # a state it cannot read): a key or a line typed then answers it, which only `permissions` may do (peer_keys, peer_prompt)
+    fill: Callable[[dict, object], dict] | None = field(default=None, compare=False)       # (validated body, the hub's database) -> the body that is sent: values the hub holds itself (an epic's stored settings), never the page's
     mcp: bool = False                   # an agent's MCP tool may use this row (issue #152): the stdio shim with the hook token, or a /mcp device token. Off by default, and only when
                                         # CCBOARD_MCP_NODES grants the row's scope (read: the reads; tasks: also the two writes); an agent never gets `extra_scope` (a dispatch into a running
                                         # session), and a row that is a person's act, types into a session or answers a permission can never be mcp (see __post_init__)
@@ -1051,6 +1053,17 @@ class EpicClaimBody(_Strict):
         return check_field("epic_ref", v)
 
 
+class EpicWorkBody(EpicClaimBody):
+    """Run one issue of an epic on the node that takes this request (issue #149): the claim's three values, and the choices of the person and of the epic. `force` starts past the
+    node's advisory lane cap. `report` (phase, summary or none), `auto_pr` and `close` are the epic's per-epic settings, which the hub writes into the body from its own stored choice
+    (Row.fill) and every one starts off or at its plain default; the node reads exactly these and nothing else. Still no text from a person, a peer, an agent or an issue: the task
+    prompt is built on the node from the issue as GitHub holds it."""
+    force: StrictBool = False
+    report: Literal["phase", "summary", "none"] = "phase"
+    auto_pr: StrictBool = False
+    close: StrictBool = False
+
+
 def _title80(clean: dict) -> str:
     """A task title for an audit target: whitespace collapsed, anything shaped like a secret replaced, at most 80 characters. The prompt never comes near."""
     t = _text(" ".join(str(clean.get("title") or "").split()), TASK_TITLE_IN)
@@ -1201,6 +1214,51 @@ def _shape_epic_claim(body, reg):
     return {"claimed": True, "reason": body["reason"], "repo": repo, "issue": issue, **_claim_facts(body)}
 
 
+WORK_PEER_WHY = CLAIM_PEER_WHY + ("author_not_allowed", "epic_author_not_allowed", "unreadable", "bypass_refused", "posture_refused", "lanes_full", "launch_failed")     # nodes_work.REASONS without the two good answers
+
+
+def _fill_work(clean: dict, db) -> dict:
+    """The hub's side of Run: the epic's `report`, `auto_pr` and `close` are the person's choices on THIS board (kv `epic:<repo#n>`), so they are written into the body here and a body
+    that came from a page or an agent cannot choose them. Without a known epic the plain defaults go (phase comments, no pull request, no Closes)."""
+    from . import nodes_epics
+    owner, _, name = clean["repo"].partition("/")
+    ep = nodes_epics._epic_ref(clean.get("epic"), owner, name)
+    st = nodes_epics.load_settings(db, *ep) if ep else dict(nodes_epics.DEFAULTS)
+    return {**clean, "report": st["report"], "auto_pr": st["auto_pr"], "close": st["close"]}
+
+
+def _work_facts(src: dict) -> dict:
+    """The claim's few facts, and the login of the author a refusal names (a plain GitHub login; nothing else of the peer's answer is kept)."""
+    out = _claim_facts(src)
+    a = src.get("author")
+    if isinstance(a, str) and github.OWNER_RE.fullmatch(a):
+        out["author"] = a
+    return out
+
+
+def _work_text(name: str, why: str, facts: dict) -> str:
+    from . import nodes_epics, nodes_work
+    if why in ("author_not_allowed", "epic_author_not_allowed"):
+        who = "the epic" if why == "epic_author_not_allowed" else "the issue"
+        return f"{name}: {who} is authored by {facts['author']}, not on the allowed list." if facts.get("author") else f"{name}: {nodes_work.WORK_TEXT[why]}"
+    base = nodes_work.WORK_TEXT.get(why) or nodes_epics.CLAIM_TEXT[why]
+    return f"{name}: {base}" + (f" It is {facts['winner']}." if facts.get("winner") and why in ("taken", "lost") else "")
+
+
+def _shape_epic_work(body, reg):
+    """The answer of a run that started: {claimed: true, reason: won | already_held, task_ref, id, branch, tmux, repo, issue}. `task_ref` is built here from the registry's handle and
+    the id, never taken from the peer. A refusal never comes through here (it is a 409 `work_refused`, or a 404 `repo_not_here`)."""
+    from . import nodes_hub
+    if not isinstance(body, dict) or body.get("claimed") is not True or body.get("reason") not in CLAIM_GOOD:
+        raise nodes_hub.Bad("not a started task")
+    repo = _shaped(body.get("repo"), re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}"), 140)
+    issue, tid = body.get("issue"), nodes_hub._i(body.get("id"))
+    if not repo or not isinstance(issue, int) or isinstance(issue, bool) or not 0 < issue < 10 ** 9 or tid is None or tid < 1:
+        raise nodes_hub.Bad("not a started task")
+    return {"claimed": True, "reason": body["reason"], "task_ref": nodes.format_ref(reg["handle"], str(tid), "task"), "id": tid, "branch": _shaped(body.get("branch"), _BRANCH_OUT, 120),
+            "tmux": _shaped_tmux(body.get("tmux")), "repo": repo, "issue": issue}
+
+
 def _shape_permissions(body, reg):
     """The pending requests rebuilt field by field: {permissions: [{id, tmux, tool, summary (300 characters), since}]}. A row without an id or a session name is dropped."""
     from . import nodes_hub
@@ -1325,6 +1383,11 @@ RELAY: tuple[Row, ...] = (
     # never an agent (mcp stays off: the agent path for epics is a later phase). The audit target is the repository and the issue number and nothing else.
     Row("epic_claim", "POST", "/api/nodes/{handle}/epics/claim", "POST", "/api/node/epics/claim", "tasks", EpicClaimBody, WRITE, "claim_issue", human_only=True, acting=True,
         timeout=CLAIM_TIMEOUT, answer_max=4 * 1024, target=lambda p: "claim", body_target=lambda p, c: f"claim {c.get('repo')}#{c.get('issue')}", shape=_shape_epic_claim),
+    # Run a claimed issue as a task on that node and report back on the issue (issue #149): the claim, a task with the issue's own model line, and comments. It starts an agent, so it is
+    # guarded like the other launching rows (`guard=True`), a person's act (human only, acting), never an agent's (mcp stays closed: no tool starts epic work). The audit target is the
+    # repository and the issue number and nothing else; the body carries no text, only values the node validates again.
+    Row("epic_work", "POST", "/api/nodes/{handle}/epics/work", "POST", "/api/node/epics/work", "tasks", EpicWorkBody, WRITE, "work_issue", guard=True, human_only=True, acting=True,
+        timeout=WORK_TIMEOUT, answer_max=4 * 1024, target=lambda p: "work", body_target=lambda p, c: f"work {c.get('repo')}#{c.get('issue')}", shape=_shape_epic_work, fill=_fill_work),
 )
 # A row is human only unless it says `mcp=True`: the hub relay routes take a signed-in allowed person with X-CCBoard and nothing else. The local hook token is held
 # by every agent session on the box, so letting it relay would let any agent read other nodes through the hub. MCP across nodes (issue #152) opens exactly four rows to
@@ -1608,6 +1671,9 @@ def _map_reply(r, row: Row, reg: dict, clean: dict | None = None) -> dict:
     if r.status == 403:
         raise RelayError(409, "scope", f"needs the {row.scope} scope on {name}" if "scope" in msg.lower() or not msg else f"{name} refused: {msg}", kind="failed")
     if r.status == 404:
+        if peer_reason == "repo_not_here" and row.name == "epic_work":          # no clone of that repository on the node: nothing was claimed
+            from . import nodes_work
+            raise RelayError(404, "repo_not_here", f"{name}: {nodes_work.WORK_TEXT['repo_not_here']}", kind="failed", why="repo_not_here")
         if peer_reason == "repo_missing" and clean and "project" in clean:
             raise RelayError(404, "repo_missing", _missing_repo_text(clean, name), kind="failed")
         raise RelayError(404, "gone" if peer_reason == "gone" else "not_found", msg or f"{name} has no such thing", kind="failed")
@@ -1618,6 +1684,11 @@ def _map_reply(r, row: Row, reg: dict, clean: dict | None = None) -> dict:
         from . import nodes_epics
         text = f"{name}: {nodes_epics.CLAIM_TEXT[why]}" + (f" It is {facts['winner']}." if facts.get("winner") and why in ("taken", "lost") else "")
         raise RelayError(409, "claim_refused", text, kind="failed", why=why, **facts)
+    if r.status == 409 and peer_reason == "work_refused" and row.name == "epic_work":          # the node did not run the issue: the reason comes from a closed list, the sentence is this board's
+        why = r.json.get("why") if isinstance(r.json, dict) else None
+        why = why if isinstance(why, str) and why in WORK_PEER_WHY else "error"
+        facts = _work_facts(r.json if isinstance(r.json, dict) else {})
+        raise RelayError(409, "work_refused", _work_text(name, why, facts), kind="failed", why=why, **facts)
     if r.status == 409 and peer_reason in ("busy", "answered", "expired"):          # the peer's own state answers, passed on with the words it chose from a closed list
         extra = _busy_extra(r.json) if peer_reason == "busy" else {}
         raise RelayError(409, peer_reason, msg or f"{name} cannot take this now", kind="failed", **extra)
@@ -1703,6 +1774,8 @@ def relay(handle, row: Row, params: dict, body, request, *, db=None, hub=None) -
             clean = validate(row, params or {}, body, agent=agent is not None)
         except Invalid as e:
             raise RelayError(e.status, "invalid" if e.status == 422 else "too_large", "; ".join(e.messages), kind="refused") from None
+        if row.fill is not None:                                   # what the hub itself holds (an epic's stored settings) replaces whatever the caller put in those fields
+            clean = row.fill(clean, d)
         if agent is not None and clean.get("agent") and _not_installed(rec, clean["agent"]):          # an agent names an agent the node has: the hub's own reading of its card says so
             raise RelayError(422, "invalid", f"{clean['agent']} is not installed on {name}; nothing was sent", kind="refused")
         target = safe_target(row, params or {}, clean)            # the body is known and valid now: a task's title (cut, redacted) joins the target, the prompt never does
@@ -2685,6 +2758,26 @@ def peer_epic_claim(db, params: dict, body: dict) -> dict:
     raise Refusal(409, "claim_refused", nodes_epics.CLAIM_TEXT[why], why=why, **_claim_facts(res))
 
 
+def peer_epic_work(db, params: dict, body: dict) -> dict:
+    """POST /api/node/epics/work {repo, issue, epic?, force, report, auto_pr, close}: this board runs one issue of an epic (nodes_work.work_issue, issue #149): the author check first, then
+    the claim, then the task with the issue's own model line. It works only when this board's CCBOARD_EPIC_WRITES is on. A run that started is {claimed: true, reason, id, branch, tmux,
+    repo, issue}; a repository that is not cloned here is a 404 `repo_not_here`; every other refusal is a 409 `work_refused` with `why` (a word of nodes_work.REASONS) and a few facts.
+    The task, its launch and the comments are built on this board from the issue as GitHub holds it; nothing from the request is a command, a path or a comment."""
+    from . import nodes_epics, nodes_work
+    if not nodes_epics.claim_slots.acquire(blocking=False):          # a few runs at once; the rest are told to try again, with nothing started
+        raise Refusal(409, "work_refused", nodes_epics.CLAIM_TEXT["busy"], why="busy")
+    try:
+        res = nodes_work.work_issue(body["repo"], body["issue"], epic=body.get("epic"), report=body.get("report", "phase"), auto_pr=body.get("auto_pr", False),
+                                    close=body.get("close", False), force=body.get("force", False))
+    except nodes_work.Refused as e:
+        if e.reason == "repo_not_here":
+            raise Refusal(404, "repo_not_here", e.message, why="repo_not_here") from None
+        raise Refusal(409, "work_refused", e.message, why=e.reason, **_work_facts(e.facts)) from None
+    finally:
+        nodes_epics.claim_slots.release()
+    return {"claimed": True, "reason": res.get("reason"), "id": res["id"], "branch": res.get("branch"), "tmux": res.get("tmux"), "repo": res["repo"], "issue": res["issue"]}
+
+
 HANDLERS = {"task": peer_task, "pane": peer_pane, "agents": peer_agents, "task_create": peer_task_create, "task_dispatch": peer_task_dispatch,
             "session_open": peer_session_open, "prompt": peer_prompt, "keys": peer_keys, "ack": peer_ack, "close": peer_close, "permissions": peer_permissions,
-            "permission_answer": peer_permission_answer, "epic_claim": peer_epic_claim}
+            "permission_answer": peer_permission_answer, "epic_claim": peer_epic_claim, "epic_work": peer_epic_work}

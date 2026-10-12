@@ -2,11 +2,15 @@
    command palette and the demo's answers for /api/epics. Classic script, definition-only at load: nothing here touches the DOM, the network or a timer until a page, the list
    or the demo asks (registerPage is the one call made at load).
 
-   The page READS GitHub through the board (GET /api/epics, GET /api/epics/<owner>/<repo>/<n>) and never writes to it. It runs nothing; Run is shown disabled until the
-   routing phase wires it. It writes two things: this board's own settings, PUT /api/epics/<owner>/<repo>/<n>/settings {pins, epic_pin, paused}, and, only when the board says
-   GitHub writes are on (CCBOARD_EPIC_WRITES), a person's ask to a paired node to claim one issue: POST /api/nodes/<handle>/epics/claim {repo, issue, epic} (issue #148). The
-   node does the claiming; this page paints the ask at once and shows the node's answer in plain words (taken, lost, claim not known, writes off, closed, attempts used up,
-   offline, scope, unconfirmed). It also shows this board's own claims (held, renewing, lost) from the answer's `own_claims`, and says once, with a toast, that one was lost.
+   The page READS GitHub through the board (GET /api/epics, GET /api/epics/<owner>/<repo>/<n>) and never writes to it. Run is shown disabled until the routing phase wires it.
+   It writes three things: this board's own settings, PUT /api/epics/<owner>/<repo>/<n>/settings {pins, epic_pin, paused, report, auto_pr, close}, and, only when the board says
+   GitHub writes are on (CCBOARD_EPIC_WRITES), a person's ask to a paired node to claim one issue (POST /api/nodes/<handle>/epics/claim {repo, issue, epic}, issue #148) or to
+   work one: claim it, start it as a task on the node and report on the issue (POST /api/nodes/<handle>/epics/work {repo, issue, epic, force?}, issue #149). The node does the
+   claiming and the work; this page paints the ask at once and shows the node's answer in plain words (taken, lost, claim not known, writes off, closed, attempts used up,
+   offline, scope, unconfirmed, and for work also: not cloned there, author not allowed, bypass refused, lane cap). It also shows this board's own claims (held, renewing, lost)
+   from the answer's `own_claims`, and says once, with a toast, that one was lost. The settings (what a node posts: phases only, summary or none; pull request; Closes) start off
+   and are shown, with one paragraph in words, only when GitHub writes are on and a node is paired. An issue by an author who is not on the allowed list is marked, and its Work
+   action is disabled and names the author (the node checks again; this page only says so first).
 
    Everything GitHub sent (titles, labels, claim aliases) is untrusted text written by other people: it goes into the page through textContent only, and a link is drawn only
    for an address that is exactly https://github.com/<owner>/<repo>/(issues|pull)/<n> (the board builds them from validated parts; this file checks again).
@@ -47,6 +51,24 @@ const EP_LOST_WHY = {              // why this board's own claim was lost (the n
   edited: 'the claim comment was edited', not_counted: 'the claim comment no longer counts', status_changed: 'its status was changed on GitHub',
 };
 const EP_GH = 'https://github.com/';    // the demo and the blank page build the epic's own address from the route's checked parts; every other link is the board's
+
+/* Work (issue #149): the phases a node's work on one issue shows, the three per-epic settings (all off) and the words for them. */
+const EP_WORK_PHASE = {            // phase -> [glyph, words]; state is never colour alone
+  running: ['✽', 'running'], waiting: ['✻', 'waiting for a person'], pr: ['○', 'pull request opened'], done: ['✓', 'done'], failed: ['✕', 'failed'], cancelled: ['∙', 'cancelled'], lost: ['⚠', 'claim lost'],
+  queued: ['∙', 'queued'],
+};
+const EP_REPORTS = [['phase', 'Phases only'], ['summary', 'Summary'], ['none', 'None']];
+const EP_PLAN = {                  // the same sentences the board gives as `plan` (app/nodes_epics.py work_plan); this page paints them at once, before the board answers
+  report: {
+    phase: 'Posts short phase comments on each issue: waiting for a person, pull request opened, done or failed. No result text leaves the node.',
+    summary: 'Posts the phase comments and the first 1500 characters of each result, after home folders and anything shaped like a token are removed.',
+    none: 'Posts no phase comment and no result. The claim comment and a refusal still appear.',
+  },
+  auto_pr: { on: 'Pushes the task\'s own branch and opens a pull request when a task is done.', off: 'Pushes nothing and opens no pull request.' },
+  close: { on: 'The pull request says Closes #N.', needs_pr: 'Close is on, but it only applies with pull requests on.', off: 'Nothing says Closes #N.' },
+};
+const EP_WORK_TITLE = 'The node claims the issue, starts it as a task in its own worktree with the issue\'s own model line, and keeps the issue informed. Nothing is pushed unless pull requests are on.';
+const EP_NOT_ALLOWED = 'who is not on the allowed list';
 
 const epicPage = { cur: null, ids: 0 };
 const Epics = { list: null, known: [], at: 0, pending: null, host: null };
@@ -137,7 +159,7 @@ function epClaimable(data, c) {
 }
 
 /* The plain sentence for a refused or failed claim. `e` is what api() threw: e.status and e.body {reason, why, winner, error}. */
-function epClaimSentence(e, name, n) {
+function epClaimSentence(e, name, n, work) {
   const b = e && e.body && typeof e.body === 'object' ? e.body : {};
   const who = typeof b.winner === 'string' && b.winner ? b.winner : 'Another node';
   const issue = `#${n}`;
@@ -166,7 +188,8 @@ function epClaimSentence(e, name, n) {
   const byReason = {
     offline: `${name} is offline. Nothing was claimed.`,
     scope: `${name} is paired without the tasks scope. Nothing was claimed.`,
-    unconfirmed: `${name} did not answer in time, so it is not known whether ${issue} was claimed. Check the issue on GitHub. Nothing was retried.`,
+    unconfirmed: work ? `${name} did not answer in time, so it is not known whether it started ${issue}. Check its tasks and the issue on GitHub. Nothing was retried.`
+      : `${name} did not answer in time, so it is not known whether ${issue} was claimed. Check the issue on GitHub. Nothing was retried.`,
     needs_repair: `${name} no longer takes this board's token: pair it again in Settings. Nothing was claimed.`,
     unknown_node: `${name} is no longer paired. Nothing was claimed.`,
     unreachable: `${name} could not be reached. Nothing was claimed.`,
@@ -177,7 +200,28 @@ function epClaimSentence(e, name, n) {
   if (b.reason === 'claim_refused' && ownKey(byWhy, b.why)) return byWhy[b.why];
   if (ownKey(byReason, b.reason)) return byReason[b.reason];
   if (e && e.status === 503) return byReason.offline;
-  return `${name} did not claim ${issue}${e && e.message ? `: ${String(e.message).slice(0, 160)}` : ''}. Nothing was claimed.`;
+  return `${name} did not ${work ? 'start' : 'claim'} ${issue}${e && e.message ? `: ${String(e.message).slice(0, 160)}` : ''}. Nothing was ${work ? 'started' : 'claimed'}.`;
+}
+
+/* The plain sentence for a refused Work (issue #149). `e` is what api() threw: a 404 repo_not_here, or a 409 work_refused with `why` (a word of the node's closed list) and a few facts
+   (the winner's alias, the author's login). The words the claim shares are the claim's. */
+function epWorkSentence(e, name, n) {
+  const b = e && e.body && typeof e.body === 'object' ? e.body : {};
+  const issue = `#${n}`;
+  const author = typeof b.author === 'string' && b.author ? b.author : 'someone';
+  const own = {
+    repo_not_here: `${name} does not have this repository cloned, so ${issue} was not claimed.`,
+    author_not_allowed: `${issue} was written by ${author}, ${EP_NOT_ALLOWED}. Nothing was claimed.`,
+    epic_author_not_allowed: `The epic was written by ${author}, ${EP_NOT_ALLOWED}. Nothing in it will run. Nothing was claimed.`,
+    unreadable: `${name} could not read ${issue} or its epic from GitHub just now. Try again in a moment. Nothing was claimed.`,
+    bypass_refused: `${issue} asks for bypass permissions. ${name} refused to run it, said so on the issue and released the claim.`,
+    posture_refused: `${issue} asks for a permission setting that ${name} does not use for work from an issue. ${name} refused to run it and released the claim.`,
+    lanes_full: `${name} already runs as many tasks as its lane cap advises. Nothing was claimed. You can start ${issue} anyway.`,
+    launch_failed: `${name} could not start the task for ${issue} and released the claim.`,
+  };
+  if (b.reason === 'repo_not_here' || b.why === 'repo_not_here') return own.repo_not_here;
+  if (b.reason === 'work_refused' && ownKey(own, b.why)) return own[b.why];
+  return epClaimSentence({ status: e && e.status, message: e && e.message, body: b.reason === 'work_refused' ? { ...b, reason: 'claim_refused' } : b }, name, n, true);
 }
 
 /* The bits of the claim UI of one row, added under the pin: the action when it is offered, else why not (writes off, offline, no scope, no pin), then the last refusal. */
@@ -194,7 +238,8 @@ function epClaimBits(P, c) {
     else if (d.writes === true && node && node.status !== 'online') out.push(el('span', { class: 'ep-claimhint dim', 'data-claim-off': 'offline', text: `${node.name} is ${node.status}: it cannot claim.` }));
     else if (d.writes === true && node && node.tasks !== true) out.push(el('span', { class: 'ep-claimhint dim', 'data-claim-off': 'scope', text: `${node.name} is paired without the tasks scope.` }));
     else if (d.writes === true && node) {
-      out.push(el('button', { class: 'small primary tinted ep-claim-btn', type: 'button', 'data-claim': node.handle, title: EP_CLAIM_TITLE, 'aria-label': `Claim issue #${c.number} on ${node.name}`,
+      const wk = epWorkOffer(P, c);                                              // the row has one tinted action: Work when it can work, else the claim
+      out.push(el('button', { class: wk && wk.ok ? 'small ep-claim-btn' : 'small primary tinted ep-claim-btn', type: 'button', 'data-claim': node.handle, title: EP_CLAIM_TITLE, 'aria-label': `Claim issue #${c.number} on ${node.name}`,
         disabled: !!busy || null, onclick: () => epClaim(P, c, node), text: busy ? `Claiming on ${node.name}…` : `Claim on ${node.name}` }));
     }
   }
@@ -238,6 +283,264 @@ function epClaim(P, c, node) {
     const b = e && e.body;
     if (b && b.reason === 'claim_refused' && (b.why === 'taken' || b.why === 'lost' || b.why === 'done' || b.why === 'closed')) epFetch(P);       // the thread changed: read it again
   });
+}
+
+/* ---------- Work: claim an issue, run it as a task on the node and report on the issue (issue #149) ---------- */
+
+const EP_RETRY = ['failed', 'cancelled', 'released'];          // a claim that ended without a result leaves the issue open for another attempt (three at most; the node says when they are used up)
+
+/* The node that would work this row: the one a claim would go to, else (an issue claimed by a paired node that has not started it, or one whose last attempt ended) the node that held
+   the claim. Never this board: the hub refuses `local`, and a node is the one that clones the repository. */
+function epWorkNode(d, c) {
+  if (epClaimable(d, c)) return epClaimNode(d, c);
+  const k = c.claim;
+  if (c.state !== 'open' || !k || epOwnActive(epOwn(d, c))) return null;
+  const held = k.status === 'claimed' && k.live !== false && !c.task;
+  if (!held && !EP_RETRY.includes(k.status)) return null;
+  return held ? (d.nodes || []).find((x) => x.handle === k.node && k.node !== 'local') || null : (epClaimNode(d, c) || (d.nodes || []).find((x) => x.handle === k.node && k.node !== 'local') || null);
+}
+
+/* What the row's Work action is: null (not offered), {ok, node} (a button that works), or {off, text, node} (a disabled button that says why). The node checks all of this again. */
+function epWorkOffer(P, c) {
+  const d = P.data;
+  if (!d || c.state !== 'open' || typeof d.writes !== 'boolean') return null;
+  const node = epWorkNode(d, c);
+  if (!node) return null;
+  const a = d.authors && typeof d.authors === 'object' ? d.authors : null;
+  const who = typeof c.author === 'string' && c.author ? `written by ${c.author}, ${EP_NOT_ALLOWED}` : 'not written by an author on the allowed list';
+  let off = null;
+  let text = '';
+  if (d.writes === false) { off = 'writes'; text = EP_WRITES_OFF; }
+  else if (node.status !== 'online') { off = 'offline'; text = `${node.name} is ${node.status}: it cannot work.`; }
+  else if (node.tasks !== true) { off = 'scope'; text = `${node.name} is paired without the tasks scope.`; }
+  else if (a && a.epic_ok === false) { off = 'epic_author'; text = `The epic was written by ${a.epic || 'someone'}, ${EP_NOT_ALLOWED}. Nothing in it will run.`; }
+  else if (c.author_ok === false) { off = 'author'; text = `#${c.number} was ${who}.`; }
+  else if (a && Array.isArray(a.allowed) && !a.allowed.length) { off = 'authors_unknown'; text = 'This board cannot tell whose issues may run. Set CCBOARD_EPIC_AUTHORS, or log gh in on this board.'; }
+  const retry = !!c.claim && EP_RETRY.includes(c.claim.status);
+  return off ? { off, text, node, retry } : { ok: true, node, retry };
+}
+
+/* The bits of the Work UI of one row: the action (the row's one tinted action), or a disabled one that says why, then the last refusal and, for a full lane cap, the way to start anyway. */
+function epWorkBits(P, c) {
+  const out = [];
+  const key = `${c.repo}#${c.number}`;
+  const offer = epWorkOffer(P, c);
+  const busy = P.working.get(key);
+  const note = P.wnotes.get(key);
+  if (busy) {                                                                    // the ask is out: the row is painted as held by the node, and the action says so (it cannot be tapped twice)
+    out.push(el('button', { class: 'small primary tinted ep-work-btn', type: 'button', 'data-work': busy.node.handle, title: EP_WORK_TITLE, 'aria-label': `Starting issue #${c.number} on ${busy.node.name}`,
+      disabled: true, text: `Starting on ${busy.node.name}…` }));
+  } else if (offer && offer.ok) {
+    out.push(el('button', { class: 'small primary tinted ep-work-btn', type: 'button', 'data-work': offer.node.handle, title: EP_WORK_TITLE, 'aria-label': `Work on issue #${c.number} on ${offer.node.name}`,
+      onclick: () => epWork(P, c, offer.node, false), text: `${offer.retry ? 'Try again on' : 'Work on'} ${offer.node.name}` }));
+  } else if (offer) {
+    out.push(el('button', { class: 'small ep-work-btn', type: 'button', disabled: true, 'data-work-off': offer.off, title: offer.text, 'aria-label': `Work on issue #${c.number}: ${offer.text}`, text: 'Work' }));
+    if (!epClaimable(P.data, c) || offer.off === 'author' || offer.off === 'epic_author' || offer.off === 'authors_unknown') out.push(el('span', { class: 'ep-claimhint warn', 'data-work-hint': offer.off, text: offer.text }));
+  }
+  if (note) {
+    out.push(el('span', { class: 'ep-claimhint warn ep-claimnote', role: 'status', 'data-work-note': note.why || 'error', text: note.text }));
+    if (note.why === 'lanes_full' && offer && offer.ok && !busy) {
+      out.push(el('button', { class: 'small ep-work-force', type: 'button', 'data-work-force': offer.node.handle, title: 'Start it although the node runs as many tasks as its lane cap advises',
+        'aria-label': `Start issue #${c.number} on ${offer.node.name} anyway`, onclick: () => epWork(P, c, offer.node, true), text: 'Start anyway' }));
+    }
+  }
+  return out;
+}
+
+/* The fields of a child that a Work paints over, so a refusal can put them back. */
+function epWorkSnap(kid) {
+  return { claim: kid.claim, claim_state: kid.claim_state, bucket: kid.bucket, task: kid.task, phase: kid.phase };
+}
+
+function epWorkPaint(P, kid, node) {
+  const now = P.data.server_now;
+  kid.claim = { alias: node.name, node: node.handle, status: 'claimed', since: now, renewed_at: now, live: true, attempt: (kid.claim && kid.claim.attempt) || 1, seq: 1, task_ref: null, branch: null };
+  kid.claim_state = 'claimed';
+  kid.bucket = { node: node.name, state: 'queued' };
+  kid.task = { ref: null, phase: 'queued', node: node.handle, node_name: node.name, status: 'online', age_s: 0, updated_at: now };
+  kid.phase = 'queued';
+}
+
+function epWorkKid(P, c) { return ((P.data && P.data.children) || []).find((x) => x.repo === c.repo && x.number === c.number) || null; }
+
+const EP_WORKED_MS = 90000;           // how long the page keeps painting a started issue over a read that does not show the claim yet (the board's read of GitHub can be a minute old)
+
+function epWorkRunning(P, kid, w) {
+  const ref = w.ref;
+  kid.claim = { ...(kid.claim || {}), status: 'running', task_ref: ref, branch: w.branch };
+  kid.task = { ...(kid.task || {}), ref, phase: 'running' };
+  kid.bucket = { node: w.node.name, state: 'running' };
+  kid.phase = 'running';
+}
+
+/* A poll that lands while a Work is out (or just after it was answered, before the board's read of GitHub shows the claim) replaces the children: paint the ask over the new ones too,
+   so the row does not flicker back to Unclaimed. A read that shows a claim ends it. */
+function epWorkReapply(P) {
+  const kids = (P.data && P.data.children) || [];
+  const find = (key) => kids.find((x) => `${x.repo}#${x.number}` === key);
+  for (const [key, w] of Array.from(P.working)) {
+    const kid = find(key);
+    if (!kid) continue;
+    w.snap = epWorkSnap(kid);
+    epWorkPaint(P, kid, w.node);
+  }
+  for (const [key, w] of Array.from(P.worked)) {
+    const kid = find(key);
+    if (!kid || kid.claim || kid.claim_state !== 'none' || Date.now() - w.at > EP_WORKED_MS) { P.worked.delete(key); continue; }
+    epWorkPaint(P, kid, w.node);
+    epWorkRunning(P, kid, w);
+  }
+}
+
+/* Ask the paired node to work the issue. The row shows the node holding it at once ("Starting on <node>…", queued); the node's answer replaces it, a refusal (in plain words) puts the
+   row back as it was. A full lane cap offers Start anyway, which sends force. The next poll only confirms. */
+function epWork(P, c, node, force) {
+  const key = `${c.repo}#${c.number}`;
+  if (P.working.has(key) || epicPage.cur !== P) return null;
+  const kid = epWorkKid(P, c);
+  const w = { node, snap: kid ? epWorkSnap(kid) : null };
+  P.working.set(key, w);
+  P.wnotes.delete(key);
+  P.notes.delete(key);
+  if (kid) epWorkPaint(P, kid, node);
+  epPaint(P);
+  const body = { repo: c.repo, issue: c.number, epic: epRef(P.owner, P.repo, P.n) };
+  if (force === true) body.force = true;
+  const undo = () => { const k = epWorkKid(P, c); if (k && w.snap) Object.assign(k, w.snap); };
+  return api('POST', `/api/nodes/${encodeURIComponent(node.handle)}/epics/work`, body).then((r) => {
+    P.working.delete(key);
+    if (epicPage.cur !== P) return;
+    const d = r && r.data;
+    if (d && d.claimed === true) {
+      const k = epWorkKid(P, c);
+      const done = { node, ref: typeof d.task_ref === 'string' ? d.task_ref : null, branch: typeof d.branch === 'string' ? d.branch : null, at: Date.now() };
+      if (k) epWorkRunning(P, k, done);                                           // painted at once; the next poll reads GitHub and confirms
+      P.worked.set(key, done);
+      toast(d.reason === 'already_held' ? `${node.name} already held #${c.number} and started it` : `${node.name} started #${c.number}`);
+    } else {
+      undo();
+      P.wnotes.set(key, { why: 'error', text: epWorkSentence({ status: 502, body: {} }, node.name, c.number) });
+    }
+    epPaint(P);
+    epFetch(P);
+  }, (e) => {
+    P.working.delete(key);
+    if (epicPage.cur !== P) return;
+    undo();
+    const text = epWorkSentence(e, node.name, c.number);
+    P.wnotes.set(key, { why: (e && e.body && (e.body.why || e.body.reason)) || 'error', text });
+    toast(text, { kind: 'bad' });
+    epPaint(P);
+    const b = e && e.body;
+    if (b && b.reason === 'work_refused' && (b.why === 'taken' || b.why === 'lost' || b.why === 'done' || b.why === 'closed')) epFetch(P);       // the thread changed: read it again
+  });
+}
+
+/* Where the task of this issue opens: its own page on the node it runs on (#/n/<node>/t/<id>), or this board's Tasks page for a task here. Null when the task is not known yet. */
+function epTaskHash(c) {
+  const t = c.task;
+  const w = c.work;
+  let id = null;
+  if (t && typeof t.ref === 'string') { const m = /^(?:[a-z0-9-]+:)?([0-9]{1,12})$/.exec(t.ref); if (m) id = m[1]; }
+  else if (w && Number.isInteger(w.task_id) && w.task_id > 0) id = String(w.task_id);
+  const handle = t && t.node ? t.node : (w ? 'local' : null);
+  if (!handle || !id) return null;
+  if (handle === 'local') return '#/tasks';
+  try { return buildHash('node-task', { node: handle, id }); } catch (_) { return null; }
+}
+
+/* The phase of the work on one issue, from this board's own work record: a glyph and words, never colour alone. Null when this board holds no record (a remote node's task shows
+   as "Task running on <node>"). */
+function epWorkPhaseNode(c) {
+  const w = c.work;
+  if (!w || typeof w !== 'object') return null;
+  const p = ownKey(EP_WORK_PHASE, w.phase) ? w.phase : 'running';
+  const [g, words] = EP_WORK_PHASE[p];
+  const attn = p === 'waiting' || p === 'lost' || p === 'failed';
+  const more = [];
+  if (w.attempt > 1) more.push(`attempt ${w.attempt}`);
+  if (typeof w.branch === 'string' && w.branch) more.push(`branch ${w.branch}`);
+  if (p === 'pr' && w.pr_number) more.push(`PR #${w.pr_number}`);
+  return el('span', { class: 'ep-phase' + (attn ? ' warn' : ''), 'data-phase': p, title: p === 'lost' ? 'This board lost the claim. It writes nothing more for it. The task is parked and its worktree is kept.' : null },
+    el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: g + ' ' }), `Work ${words}${more.length ? ' (' + more.join(', ') + ')' : ''}`);
+}
+
+/* ---------- the per-epic settings: what a node posts and pushes (all start off) ---------- */
+
+function epReportWord(v) {
+  if (v === true) return 'summary';
+  return typeof v === 'string' && EP_REPORTS.some(([k]) => k === v) ? v : 'phase';
+}
+
+/* The paragraph under the settings: in words, what a node will post and push. */
+function epPlanText(d) {
+  const pr = d.auto_pr === true;
+  return `${EP_PLAN.report[epReportWord(d.report)]} ${pr ? EP_PLAN.auto_pr.on : EP_PLAN.auto_pr.off} ${d.close === true ? (pr ? EP_PLAN.close.on : EP_PLAN.close.needs_pr) : EP_PLAN.close.off}`;
+}
+
+/* Shown only when the board may write to GitHub and a node is paired to do the work: with writes off, or no node, nothing of this appears. */
+function epSettingsShown(d) {
+  return d.writes === true && (d.nodes || []).some((n) => n.handle !== 'local');
+}
+
+function epSetReport(P, v) {
+  if (!P.data || epReportWord(P.data.report) === v) return null;
+  return epWrite(P, { report: v }, () => { P.data.report = v; });
+}
+
+function epSetFlag(P, key, on) {
+  if (!P.data || (P.data[key] === true) === on) return null;
+  return epWrite(P, { [key]: on }, () => { P.data[key] = on; });
+}
+
+function epCfgBuild(P) {
+  const seg = el('div', { class: 'seg-ctl ep-report', role: 'group', 'aria-labelledby': 'ep-cfg-report', 'aria-describedby': 'ep-plan' },
+    ...EP_REPORTS.map(([v, t]) => el('button', { class: 'seg-btn', type: 'button', 'data-report': v, 'aria-pressed': 'false', text: t, onclick: () => epSetReport(P, v),
+      onkeydown: (e) => {
+        if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+        e.preventDefault();
+        const i = EP_REPORTS.findIndex(([k]) => k === v);
+        const nx = EP_REPORTS[(i + (e.key === 'ArrowRight' ? 1 : EP_REPORTS.length - 1)) % EP_REPORTS.length][0];
+        epSetReport(P, nx);
+        const b = seg.querySelector(`[data-report="${nx}"]`);
+        if (b) b.focus();
+      } })));
+  const flag = (key, label, hint) => {
+    const box = el('input', { type: 'checkbox', 'data-flag': key, onchange: () => epSetFlag(P, key, box.checked) });
+    return { box, row: el('label', { class: 'ep-check' }, box, el('span', { class: 'ep-check-t' }, el('b', { text: label }), el('span', { class: 'dim', text: hint }))) };
+  };
+  const pr = flag('auto_pr', 'Open a pull request when a task is done', 'Pushes only the task\'s own branch. Never main.');
+  const cl = flag('close', 'Say Closes #N in the pull request', 'Needs pull requests on. Off by default.');
+  P.cfgSeg = seg;
+  P.cfgPr = pr.box;
+  P.cfgClose = cl.box;
+  P.cfgPlan = el('p', { class: 'ep-plan', id: 'ep-plan', 'aria-live': 'polite' });
+  return el('section', { class: 'ep-sec ep-cfg hidden', 'aria-label': 'When a node works an issue', 'data-cfg': '' },
+    el('h2', { class: 'ep-h', text: 'When a node works an issue' }),
+    el('div', { class: 'ep-cfg-row' }, el('span', { class: 'ep-cfg-l', id: 'ep-cfg-report', text: 'What it posts on the issue' }), seg),
+    pr.row, cl.row, P.cfgPlan);
+}
+
+function epCfgPaint(P) {
+  const d = P.data;
+  const on = epSettingsShown(d);
+  P.cfg.classList.toggle('hidden', !on);
+  if (!on) return;
+  const r = epReportWord(d.report);
+  for (const b of P.cfgSeg.querySelectorAll('.seg-btn')) b.setAttribute('aria-pressed', b.getAttribute('data-report') === r ? 'true' : 'false');
+  P.cfgPr.checked = d.auto_pr === true;
+  P.cfgClose.checked = d.close === true;
+  setText(P.cfgPlan, epPlanText(d));
+}
+
+/* Run names what it would skip: the epic's author, or each issue by an author who is not on the allowed list. Run itself stays disabled until routing is installed. */
+function epRunAuthors(d) {
+  const a = d.authors && typeof d.authors === 'object' ? d.authors : null;
+  if (!a || d.writes !== true) return '';
+  if (a.epic_ok === false) return `Run would skip everything: the epic was written by ${a.epic || 'someone'}, ${EP_NOT_ALLOWED}.`;
+  const b = Array.isArray(a.blocked) ? a.blocked.filter((x) => x && Number.isInteger(x.number)) : [];
+  if (!b.length) return '';
+  return `Run would skip ${b.map((x) => `#${x.number}${x.author ? ' (' + x.author + ')' : ''}`).join(', ')}: ${b.length === 1 ? 'its author is' : 'their authors are'} not on the allowed list.`;
 }
 
 /* A lost claim is said once per browser with a toast (a record is kept until it is dropped, so the page would otherwise say it at every visit). */
@@ -360,7 +663,7 @@ function epClaimParts(c, nowIso) {
 /* What a row shows, as a string: the row repaints only when this changes (a poll never rebuilds a row that looks the same). */
 function epRowSig(P, c) {
   const key = `${c.repo}#${c.number}`;
-  return JSON.stringify([c, epPinOf(P.data, c), P.data.server_now, P.data.nodes, P.data.writes, epOwn(P.data, c), P.claiming.get(key) || null, P.notes.get(key) || null, P.data.epic_pin]);
+  return JSON.stringify([c, epPinOf(P.data, c), P.data.server_now, P.data.nodes, P.data.writes, epOwn(P.data, c), P.claiming.get(key) || null, P.notes.get(key) || null, P.data.epic_pin, P.working.has(key), P.wnotes.get(key) || null, P.data.authors || null]);
 }
 
 function epPinItems(P, current, apply) {
@@ -381,7 +684,7 @@ function epPinBox(P, c) {
     if (pin.stale) text = pin.source === 'page' ? `pinned to ${pin.node_name || pin.handle}, which is no longer paired: ignored` : `label names ${pin.node_name}, which is not paired: ignored`;
     else text = `${pin.source === 'label' ? 'label pin' : 'pinned'}: ${pin.node_name || pin.handle}`;
   }
-  return el('div', { class: 'ep-pinbox' }, btn, text ? el('span', { class: 'ep-pintext' + (pin.stale ? ' warn' : ' dim'), text }) : null, ...epClaimBits(P, c));
+  return el('div', { class: 'ep-pinbox' }, btn, text ? el('span', { class: 'ep-pintext' + (pin.stale ? ' warn' : ' dim'), text }) : null, ...epWorkBits(P, c), ...epClaimBits(P, c));
 }
 
 function epFillRow(P, li, c) {
@@ -415,7 +718,13 @@ function epFillRow(P, li, c) {
   if (own) meta.append(el('span', { class: 'ep-own' + (own.state === 'lost' || (own.state === 'held' && data.writes === false) ? ' warn' : ''), 'data-own': own.state }, el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: own.state === 'lost' ? '⚠ ' : own.state === 'claiming' ? '∙ ' : '✽ ' }), epOwnText(own, data.writes)));
   const readAgo = c.state === 'open' && c.claims_read_at ? epSince(c.claims_read_at, data.server_now) : '';
   if (readAgo) meta.append(el('span', { class: 'dim ep-read', title: 'When the board last read this issue\'s comments, by GitHub\'s clock. "Unclaimed" is only true for that moment.', text: `claims read ${readAgo}` }));
+  if (c.state === 'open' && c.author_ok === false) meta.append(el('span', { class: 'ep-author warn', 'data-author': 'blocked', title: 'The node runs only issues by an allowed author, because an issue body becomes the prompt of an agent that edits files.' },
+    el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: '⚠ ' }), c.author ? `by ${c.author}, ${EP_NOT_ALLOWED}` : 'author not on the allowed list'));
+  const phase = epWorkPhaseNode(c);
+  if (phase) meta.append(phase);
   if (task) meta.append(el('span', { class: 'ep-task', text: task }));
+  const open = (c.task || c.work) ? epTaskHash(c) : null;
+  if (open) meta.append(el('a', { class: 'ep-open-task', href: open, 'data-open-task': '', title: 'Open the task on the node it runs on', text: `Open on ${(c.task && c.task.node_name) || (c.claim && c.claim.alias) || 'this board'}` }));
   if (c.pr) meta.append(epLink(c.pr.url, `PR #${c.pr.number} ${c.pr.draft ? 'draft' : c.pr.state}`, 'ep-pr', 'Open the pull request on GitHub'));
   if ((c.blocked_by || []).length) meta.append(el('span', { class: 'ep-dep', text: `waits for ${c.blocked_by.join(', ')}` }));
   if (c.dependency_cycle) meta.append(el('span', { class: 'ep-claim warn', text: '⚠ dependency cycle' }));
@@ -429,18 +738,18 @@ function epFillRow(P, li, c) {
 function epPath(P, tail) { return `/api/epics/${encodeURIComponent(P.owner)}/${encodeURIComponent(P.repo)}/${encodeURIComponent(P.n)}${tail || ''}`; }
 
 function epSettingsUndo(P, snap) {
-  P.data.pins = snap.pins; P.data.epic_pin = snap.epic_pin; P.data.paused = snap.paused;
+  P.data.pins = snap.pins; P.data.epic_pin = snap.epic_pin; P.data.paused = snap.paused; P.data.report = snap.report; P.data.auto_pr = snap.auto_pr; P.data.close = snap.close;
 }
 
 /* One write to this board's settings, painted first: the new value shows at once and a refusal puts the old one back (with the board's words in a toast). */
 function epWrite(P, patch, apply) {
-  const snap = { pins: { ...(P.data.pins || {}) }, epic_pin: P.data.epic_pin, paused: P.data.paused };
+  const snap = { pins: { ...(P.data.pins || {}) }, epic_pin: P.data.epic_pin, paused: P.data.paused, report: P.data.report, auto_pr: P.data.auto_pr, close: P.data.close };
   apply();
   epPaint(P);
   const id = (P.writes = (P.writes || 0) + 1);
   return api('PUT', epPath(P, '/settings'), patch).then((r) => {
     if (epicPage.cur !== P) return;
-    if (r && typeof r === 'object' && r.pins && id === P.writes) { P.data.pins = r.pins; P.data.epic_pin = r.epic_pin || null; P.data.paused = !!r.paused; if (Array.isArray(r.nodes)) P.data.nodes = r.nodes.map((n) => ({ ...(P.data.nodes || []).find((x) => x.handle === n.handle), ...n })); }
+    if (r && typeof r === 'object' && r.pins && id === P.writes) { P.data.pins = r.pins; P.data.epic_pin = r.epic_pin || null; P.data.paused = !!r.paused; if (ownKey(r, 'report')) P.data.report = epReportWord(r.report); if (ownKey(r, 'auto_pr')) P.data.auto_pr = r.auto_pr === true; if (ownKey(r, 'close')) P.data.close = r.close === true; if (Array.isArray(r.nodes)) P.data.nodes = r.nodes.map((n) => ({ ...(P.data.nodes || []).find((x) => x.handle === n.handle), ...n })); }
     epPaint(P);
   }, (e) => {
     if (epicPage.cur !== P) return;
@@ -521,6 +830,10 @@ function epPaint(P) {
   setText(P.pauseWhy, d.paused ? 'Paused on this board: it does not route this epic. Nothing changes on GitHub.' : EP_PAUSE_WHY);
   P.head.classList.toggle('paused', !!d.paused);
   setText(P.epicPin, epEpicPinText(P));
+  const runAuthors = epRunAuthors(d);
+  setText(P.runAuthors, runAuthors);
+  P.runAuthors.classList.toggle('hidden', !runAuthors);
+  epCfgPaint(P);
   P.epicPinBtn.disabled = !(d.nodes || []).length;
 
   P.banner.textContent = '';
@@ -601,7 +914,7 @@ function epFetch(P) {
   P.busy = api('GET', epPath(P)).then((d) => {
     if (epicPage.cur !== P) return;
     P.failed = null;
-    if (d && typeof d === 'object' && d.epic) { P.data = d; P.loaded = true; epRemember(); }
+    if (d && typeof d === 'object' && d.epic) { P.data = d; P.loaded = true; epRemember(); epWorkReapply(P); }
     epPaint(P);
   }, (e) => {
     if (epicPage.cur !== P) return;
@@ -619,7 +932,7 @@ function epBlank(P) {
 
 function epMount(root, route) {
   const q = route.params || {};
-  const P = { id: ++epicPage.ids, owner: q.owner, repo: q.repo, n: q.n, data: null, failed: null, busy: null, timer: null, sleeping: false, loaded: false, where: new Map(), lists: {}, secs: {}, counts2: {}, writes: 0, claiming: new Map(), notes: new Map(), toasted: new Set() };
+  const P = { id: ++epicPage.ids, owner: q.owner, repo: q.repo, n: q.n, data: null, failed: null, busy: null, timer: null, sleeping: false, loaded: false, where: new Map(), lists: {}, secs: {}, counts2: {}, writes: 0, claiming: new Map(), notes: new Map(), working: new Map(), worked: new Map(), wnotes: new Map(), toasted: new Set() };
   P.title = el('h1', { class: 'ep-h1', text: `Epic #${P.n}` });
   P.name = el('span', { class: 'ep-name mono' });
   P.counts = el('span', { class: 'ep-counts' });
@@ -627,6 +940,7 @@ function epMount(root, route) {
   P.run = el('button', { class: 'primary ep-run', type: 'button', disabled: true, 'aria-describedby': 'ep-run-why', title: EP_RUN_WHY, text: 'Run' });
   P.pause = el('button', { class: 'ep-pause', type: 'button', 'aria-pressed': 'false', text: 'Pause', onclick: () => { if (P.data) epSetPaused(P, !P.data.paused); } });
   P.pauseWhy = el('p', { class: 'dim ep-why', text: EP_PAUSE_WHY });
+  P.runAuthors = el('p', { class: 'ep-why warn hidden', 'data-run-authors': '' });
   P.epicPin = el('span', { class: 'dim ep-epicpin', text: 'Epic: no pin' });
   P.epicPinBtn = el('button', { class: 'small ep-pin-btn', type: 'button', title: 'Pin the whole epic to a node (kept on this board only; nothing changes on GitHub)', 'aria-label': 'Pin the whole epic to a node' }, ic('pin'), 'Pin epic');
   menu(P.epicPinBtn, () => epPinItems(P, P.data && P.data.epic_pin, (h) => epSetEpicPin(P, h)));
@@ -635,6 +949,7 @@ function epMount(root, route) {
     el('div', { class: 'page-head ep-titlerow' }, P.title, el('div', { class: 'actions ep-actions' }, P.pause, P.run)),
     el('div', { class: 'ep-sub' }, P.counts, P.rate),
     el('p', { class: 'dim ep-why', id: 'ep-run-why', text: `Run: ${EP_RUN_WHY}.` }),
+    P.runAuthors,
     P.pauseWhy,
     el('div', { class: 'ep-sub' }, P.epicPinBtn, P.epicPin));
   P.banner = el('div', { class: 'ep-banner', role: 'status', 'aria-live': 'polite' });
@@ -650,7 +965,8 @@ function epMount(root, route) {
     P.lists[g] = epRowList(P, g, host);
     return P.secs[g];
   };
-  root.append(el('div', { class: 'ep ep-page' }, P.head, P.banner, P.skel, P.empty, P.stripSec, sec('nodes', 'On nodes'), sec('free', 'Unclaimed'), sec('unknown', 'Claim not known')));
+  P.cfg = epCfgBuild(P);
+  root.append(el('div', { class: 'ep ep-page' }, P.head, P.banner, P.cfg, P.skel, P.empty, P.stripSec, sec('nodes', 'On nodes'), sec('free', 'Unclaimed'), sec('unknown', 'Claim not known')));
   P.stripSec.classList.add('hidden');
   P.onVis = () => {
     if (document.hidden || epicPage.cur !== P) return;
@@ -776,6 +1092,34 @@ const DEMO_CLAIM = {
   offline: [503, { reason: 'offline' }], scope: [409, { reason: 'scope' }], unconfirmed: [504, { reason: 'unconfirmed' }],
 };
 const demoEpicClaimed = {};
+
+/* The work ask in the demo (issue #149): ?work=<word> plays a refusal (the claim's words and nothere author epicauthor unreadable bypass posture lanes launch), else the node starts the issue
+   and the row shows its task running from then on. "lanes" is refused until the visitor taps Start anyway (force). */
+const DEMO_WORK = {
+  nothere: [404, { reason: 'repo_not_here', why: 'repo_not_here' }],
+  author: [409, { reason: 'work_refused', why: 'author_not_allowed', author: 'dana-w' }], epicauthor: [409, { reason: 'work_refused', why: 'epic_author_not_allowed', author: 'dana-w' }],
+  unreadable: [409, { reason: 'work_refused', why: 'unreadable' }], bypass: [409, { reason: 'work_refused', why: 'bypass_refused' }], posture: [409, { reason: 'work_refused', why: 'posture_refused' }],
+  lanes: [409, { reason: 'work_refused', why: 'lanes_full' }], launch: [409, { reason: 'work_refused', why: 'launch_failed' }],
+  taken: [409, { reason: 'work_refused', why: 'taken', winner: 'willow-3f' }], lost: [409, { reason: 'work_refused', why: 'lost', winner: 'willow-3f' }],
+  unknown: [409, { reason: 'work_refused', why: 'claim_unknown', unknown_reason: 'too_long' }], writesoff: [409, { reason: 'work_refused', why: 'writes_off' }],
+  closed: [409, { reason: 'work_refused', why: 'closed' }], done: [409, { reason: 'work_refused', why: 'done' }], attempts: [409, { reason: 'work_refused', why: 'attempts_exhausted' }],
+  offline: [503, { reason: 'offline' }], scope: [409, { reason: 'scope' }], unconfirmed: [504, { reason: 'unconfirmed' }],
+};
+const demoEpicWorked = {};
+function demoWorkFlag() { try { const m = /[?&]work=([a-z]+)/.exec(location.search); return m ? m[1] : ''; } catch (_) { return ''; } }
+function demoEpicWork(handle, body, fx) {
+  const flag = demoWorkFlag();
+  if (flag && ownKey(DEMO_WORK, flag) && !(flag === 'lanes' && body.force === true)) {
+    const [status, b] = DEMO_WORK[flag];
+    const e = demoError(status, 'played');
+    e.body = { ...b, error: 'played', node: handle };
+    throw e;
+  }
+  demoEpicWorked[`${body.repo}#${body.issue}`] = handle;
+  const node = (((fx.details || {})['example/website#147'] || {}).nodes || []).find((n) => n.handle === handle);
+  const id = 50 + (Number(body.issue) % 50);
+  return { node: handle, age: 0, data: { claimed: true, reason: 'won', task_ref: `${handle}:${id}`, id, branch: `worktree-issue-${Number(body.issue)}`, tmux: `demo--board--t-issue-${Number(body.issue)}`, repo: body.repo, issue: body.issue, name: node ? node.name : handle } };
+}
 function demoClaimFlag() { try { const m = /[?&]claim=([a-z]+)/.exec(location.search); return m ? m[1] : ''; } catch (_) { return ''; } }
 function demoEpicClaim(handle, body, fx) {
   const flag = demoClaimFlag();
@@ -804,13 +1148,16 @@ async function demoEpics(method, path, body) {
   if (bare === '/api/epics') return { ...fx.list, ...((v && v.list) || {}) };
   const cm = /^\/api\/nodes\/([^/]+)\/epics\/claim$/.exec(bare);
   if (cm) return demoEpicClaim(decodeURIComponent(cm[1]), body || {}, fx);
+  const wm = /^\/api\/nodes\/([^/]+)\/epics\/work$/.exec(bare);
+  if (wm) return demoEpicWork(decodeURIComponent(wm[1]), body || {}, fx);
   const m = /^\/api\/epics\/([^/]+)\/([^/]+)\/([^/]+?)(\/settings)?$/.exec(bare);
   if (!m) return {};
   const key = `${decodeURIComponent(m[1])}/${decodeURIComponent(m[2])}#${m[3]}`.toLowerCase();
   const base = fx.details && ownKey(fx.details, key) ? fx.details[key] : null;
   const shell = (d) => (d.epic && d.epic.number ? d : { ...d, epic: { ...d.epic, repo: `${m[1]}/${m[2]}`, owner: m[1], name: m[2], number: Number(m[3]), url: `${EP_GH}${m[1]}/${m[2]}/issues/${m[3]}` } });
   if (!base && method === 'GET') return shell({ ...fx.blank, error: (((fx.variants || {}).notfound || {}).detail || {}).error || null });
-  const made = demoEpicMade[key] || (demoEpicMade[key] = { pins: { ...(base ? base.pins : {}) }, epic_pin: base ? base.epic_pin : null, paused: base ? base.paused : false });
+  const made = demoEpicMade[key] || (demoEpicMade[key] = { pins: { ...(base ? base.pins : {}) }, epic_pin: base ? base.epic_pin : null, paused: base ? base.paused : false,
+    report: epReportWord(base ? base.report : null), auto_pr: !!(base && base.auto_pr), close: !!(base && base.close) });
   const nodes = (base && base.nodes) || [];
   if (method === 'PUT') {
     const b = body || {};
@@ -824,14 +1171,24 @@ async function demoEpics(method, path, body) {
       made.epic_pin = b.epic_pin ? { handle: b.epic_pin, node_name: (nodes.find((n) => n.handle === b.epic_pin) || {}).name || null, source: 'page', stale: false } : null;
     }
     if (typeof b.paused === 'boolean') made.paused = b.paused;
-    return { pins: made.pins, epic_pin: made.epic_pin, paused: made.paused, report: false, auto_pr: false, nodes };
+    if (typeof b.report === 'string' && EP_REPORTS.some(([k]) => k === b.report)) made.report = b.report;
+    if (typeof b.auto_pr === 'boolean') made.auto_pr = b.auto_pr;
+    if (typeof b.close === 'boolean') made.close = b.close;
+    return { pins: made.pins, epic_pin: made.epic_pin, paused: made.paused, report: made.report, auto_pr: made.auto_pr, close: made.close, plan: null, nodes };
   }
-  const out = shell({ ...base, ...((v && v.detail) || {}), pins: made.pins, epic_pin: made.epic_pin, paused: made.paused });
+  const out = shell({ ...base, ...((v && v.detail) || {}), pins: made.pins, epic_pin: made.epic_pin, paused: made.paused, report: made.report, auto_pr: made.auto_pr, close: made.close });
   const kids = out.children || [];
   if (!kids.length) return out;
-  return { ...out, children: kids.map((c) => {
-    const h = ownKey(demoEpicClaimed, `${c.repo}#${c.number}`) ? demoEpicClaimed[`${c.repo}#${c.number}`] : null;
+  const patch = (v && v.child) || {};                                   // a variant that changes single children (by issue number) without a copy of all of them
+  return { ...out, children: kids.map((c0) => {
+    const c = ownKey(patch, String(c0.number)) ? { ...c0, ...patch[String(c0.number)] } : c0;
+    const k = `${c.repo}#${c.number}`;
+    const wh = ownKey(demoEpicWorked, k) ? demoEpicWorked[k] : null;
+    const h = wh || (ownKey(demoEpicClaimed, k) ? demoEpicClaimed[k] : null);
     const n = h ? (out.nodes || []).find((x) => x.handle === h) : null;
-    return n ? { ...c, claim_state: 'claimed', claim: { alias: n.name, node: h, status: 'claimed', since: out.server_now, renewed_at: out.server_now, live: true, attempt: 1, seq: 1, task_ref: null, branch: null }, bucket: { node: n.name, state: 'queued' } } : c;
+    if (!n) return c;
+    const claim = { alias: n.name, node: h, status: wh ? 'running' : 'claimed', since: out.server_now, renewed_at: out.server_now, live: true, attempt: 1, seq: 1, task_ref: wh ? `${h}:${50 + (c.number % 50)}` : null, branch: wh ? `worktree-issue-${c.number}` : null };
+    return { ...c, claim_state: 'claimed', claim, bucket: { node: n.name, state: wh ? 'running' : 'queued' }, phase: wh ? 'running' : 'queued',
+      task: wh ? { ref: claim.task_ref, phase: 'running', node: h, node_name: n.name, status: 'online', age_s: 0, updated_at: out.server_now } : c.task };
   }) };
 }

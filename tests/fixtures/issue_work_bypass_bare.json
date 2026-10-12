@@ -1,0 +1,5 @@
+{
+ "title": "Run unattended, no backticks",
+ "user": "alice",
+ "body": "Go fast.\n\n## Who should do it\n\n- Claude Code: use --dangerously-skip-permissions please\n- Codex: `codex -m gpt-6.1-sol`\n"
+}

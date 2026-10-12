@@ -94,3 +94,31 @@
 }
 html.force-coarse #page .ep-actions button, html.force-coarse #page .ep-pin-btn, html.force-coarse #page .ep-claim-btn, html.force-coarse #page .ep-back, html.force-coarse #page a.ep-pr, html.force-coarse #page a.ep-num,
 html.force-coarse #page .ep-ltitle, html.force-coarse #page a.ep-lgh { min-height:var(--tap); }
+
+/* Work (issue #149): the one tinted action of a row, the phase of the work, the author mark and the per-epic settings (all start off) */
+#page .ep-work-btn, #page .ep-work-force { display:inline-flex; align-items:center; justify-content:center; min-height:var(--row-btn); max-width:100%; white-space:normal; text-align:center; }
+#page .ep-work-btn[disabled] { cursor:not-allowed; }
+#page .ep-work-btn[disabled][data-work] { opacity:.7; cursor:progress; }
+#page .ep-work-btn[disabled]:not([data-work]) { opacity:.55; }
+#page .ep-phase { display:inline-flex; align-items:baseline; gap:0; }
+#page .ep-phase.warn, #page .ep-author.warn { color:var(--warn-fg); }
+#page a.ep-open-task { display:inline-flex; align-items:center; min-height:var(--row-btn); text-decoration:underline; text-underline-offset:2px; }
+#page .ep-cfg { padding:0 12px 8px; border:1px solid var(--line); border-radius:3px; background:var(--card); }
+#page .ep-cfg .ep-h { padding-top:8px; }
+#page .ep-cfg-row { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; padding:8px 0; border-top:1px solid var(--line-soft); }
+#page .ep-cfg-l { font-size:13px; color:var(--fg); }
+#page .ep-report { max-width:100%; }
+#page .ep-report .seg-btn { flex:1 1 0; min-width:96px; white-space:normal; }
+#page .ep-check { display:flex; align-items:flex-start; gap:8px; margin:0; padding:6px 0 6px 26px; min-height:var(--tap); border-top:1px solid var(--line-soft); font-size:13px; color:var(--fg); cursor:pointer; }
+#page .ep-check input, #page .ep-check .bp5-control-indicator { flex:none; }
+#page .ep-check input:checked ~ .bp5-control-indicator::before { background-image:none; content:''; display:block; box-sizing:border-box; width:5px; height:9px; margin:1px auto 0; border:solid var(--on-sig); border-width:0 2px 2px 0; transform:rotate(45deg); }
+#page .ep-check-t { display:flex; flex-direction:column; gap:1px; min-width:0; overflow-wrap:anywhere; }
+#page .ep-check-t > b { font-weight:500; }
+#page .ep-check-t > .dim { font-size:12px; line-height:1.45; }
+#page .ep-plan { margin:0; padding:8px 0 0; border-top:1px solid var(--line-soft); font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+@media (max-width:640px) {
+  #page .ep-report { display:flex; width:100%; }
+  #page .ep-report .seg-btn { min-width:0; padding:0 6px; }
+}
+@media (pointer:coarse) { #page .ep-work-btn, #page .ep-work-force, #page a.ep-open-task { min-height:var(--tap); } }
+html.force-coarse #page .ep-work-btn, html.force-coarse #page .ep-work-force, html.force-coarse #page a.ep-open-task { min-height:var(--tap); }

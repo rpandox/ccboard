@@ -1,5 +1,5 @@
 {
- "_note": "Fixture of the epic view (issue #147, claims issue #148). details is keyed owner/repo#n in lower case; variants are laid over by ?epic=<name> (nologin noaccess notfound wait stale labels empty norepo none down writesoff offline notasks). `writes` is the board's CCBOARD_EPIC_WRITES; `own_claims` are this board's own claims (held, lost). ?claim=<word> plays a refusal of the Claim button (taken lost unknown writesoff closed done attempts offline scope unconfirmed). Times are GitHub's: the page shows them against server_now, never the browser clock.",
+ "_note": "Fixture of the epic view (issue #147, claims issue #148). details is keyed owner/repo#n in lower case; variants are laid over by ?epic=<name> (nologin noaccess notfound wait stale labels empty norepo none down writesoff offline notasks). `writes` is the board's CCBOARD_EPIC_WRITES; `own_claims` are this board's own claims (held, lost). ?claim=<word> plays a refusal of the Claim button (taken lost unknown writesoff closed done attempts offline scope unconfirmed). Times are GitHub's: the page shows them against server_now, never the browser clock. Issue #149 (work): each child carries author and author_ok, and work (this board's own work record: phase running | waiting | pr | done | failed | cancelled | lost); the detail carries authors {allowed, epic, epic_ok, blocked, text} and the settings report (phase | summary | none), auto_pr, close and plan. ?epic=workrun workwait workfail workcancel plays another phase on #202; ?epic=authors marks #205 as by an author who is not allowed; ?epic=epicauthor marks the epic itself; ?epic=noauthors says no author is known. ?work=<word> plays a refusal of the Work button (the claim's words and nothere author epicauthor unreadable bypass posture lanes launch); lanes is refused until Start anyway is tapped. #205 is the row that can be worked.",
  "list": {
   "epics": [
    {
@@ -128,7 +128,26 @@
      },
      "claim_state": "claimed",
      "claim_unknown": null,
-     "claims_read_at": "2026-10-11T08:50:00Z"
+     "claims_read_at": "2026-10-11T08:50:00Z",
+     "author": "maya-r",
+     "author_ok": true,
+     "work": {
+      "phase": "done",
+      "state": "finished",
+      "task_id": 38,
+      "branch": "worktree-tax-rules",
+      "alias": "node-a",
+      "attempt": 1,
+      "report": "phase",
+      "auto_pr": true,
+      "close": false,
+      "pr_number": 75,
+      "waiting": false,
+      "since": "2026-10-11T02:20:00Z",
+      "issue_url": "https://github.com/example/website/issues/201",
+      "claim_url": "https://github.com/example/website/issues/201#issuecomment-3101"
+     },
+     "phase": "done"
     },
     {
      "repo": "example/website",
@@ -181,7 +200,26 @@
      },
      "claim_state": "claimed",
      "claim_unknown": null,
-     "claims_read_at": "2026-10-11T08:59:40Z"
+     "claims_read_at": "2026-10-11T08:59:40Z",
+     "author": "maya-r",
+     "author_ok": true,
+     "work": {
+      "phase": "pr",
+      "state": "active",
+      "task_id": 42,
+      "branch": "worktree-form-validation",
+      "alias": "node-a",
+      "attempt": 1,
+      "report": "phase",
+      "auto_pr": true,
+      "close": false,
+      "pr_number": 77,
+      "waiting": false,
+      "since": "2026-10-11T07:30:00Z",
+      "issue_url": "https://github.com/example/website/issues/202",
+      "claim_url": "https://github.com/example/website/issues/202#issuecomment-3102"
+     },
+     "phase": "pr"
     },
     {
      "repo": "example/website",
@@ -233,7 +271,26 @@
      },
      "claim_state": "claimed",
      "claim_unknown": null,
-     "claims_read_at": "2026-10-11T08:59:40Z"
+     "claims_read_at": "2026-10-11T08:59:40Z",
+     "author": "maya-r",
+     "author_ok": true,
+     "work": {
+      "phase": "lost",
+      "state": "lost",
+      "task_id": 43,
+      "branch": "worktree-address-autocomplete",
+      "alias": "node-a",
+      "attempt": 1,
+      "report": "phase",
+      "auto_pr": false,
+      "close": false,
+      "pr_number": null,
+      "waiting": false,
+      "since": "2026-10-11T07:30:00Z",
+      "issue_url": "https://github.com/example/website/issues/203",
+      "claim_url": "https://github.com/example/website/issues/203#issuecomment-3103"
+     },
+     "phase": "lost"
     },
     {
      "repo": "example/website",
@@ -281,7 +338,11 @@
      },
      "claim_state": "claimed",
      "claim_unknown": null,
-     "claims_read_at": "2026-10-11T08:59:40Z"
+     "claims_read_at": "2026-10-11T08:59:40Z",
+     "author": "maya-r",
+     "author_ok": true,
+     "work": null,
+     "phase": "failed"
     },
     {
      "repo": "example/website",
@@ -313,7 +374,11 @@
      },
      "claim_state": "none",
      "claim_unknown": null,
-     "claims_read_at": "2026-10-11T08:59:40Z"
+     "claims_read_at": "2026-10-11T08:59:40Z",
+     "author": "maya-r",
+     "author_ok": true,
+     "work": null,
+     "phase": "open"
     },
     {
      "repo": "example/website",
@@ -362,7 +427,11 @@
      },
      "claim_state": "claimed",
      "claim_unknown": null,
-     "claims_read_at": "2026-10-11T08:56:00Z"
+     "claims_read_at": "2026-10-11T08:56:00Z",
+     "author": "maya-r",
+     "author_ok": true,
+     "work": null,
+     "phase": "open"
     },
     {
      "repo": "example/website",
@@ -392,7 +461,11 @@
       "node": null,
       "state": "unknown"
      },
-     "claims_read_at": "2026-10-11T08:59:40Z"
+     "claims_read_at": "2026-10-11T08:59:40Z",
+     "author": "maya-r",
+     "author_ok": true,
+     "work": null,
+     "phase": "unknown"
     }
    ],
    "progress": {
@@ -431,7 +504,7 @@
    },
    "epic_pin": null,
    "paused": false,
-   "report": false,
+   "report": "phase",
    "auto_pr": false,
    "nodes": [
     {
@@ -499,7 +572,22 @@
      "lost_reason": "not_first",
      "renewals": 0
     }
-   ]
+   ],
+   "close": false,
+   "plan": {
+    "report": "Posts short phase comments on each issue: waiting for a person, pull request opened, done or failed. No result text leaves the node.",
+    "auto_pr": "Pushes nothing and opens no pull request.",
+    "close": "Nothing says Closes #N."
+   },
+   "authors": {
+    "allowed": [
+     "maya-r"
+    ],
+    "epic": "maya-r",
+    "epic_ok": true,
+    "blocked": [],
+    "text": null
+   }
   },
   "example/board#52": {
    "epic": {
@@ -537,7 +625,7 @@
    },
    "epic_pin": null,
    "paused": true,
-   "report": false,
+   "report": "phase",
    "auto_pr": false,
    "nodes": [
     {
@@ -570,7 +658,13 @@
    "at": "2026-10-11T09:00:00Z",
    "claims_note": null,
    "writes": true,
-   "own_claims": []
+   "own_claims": [],
+   "close": false,
+   "plan": {
+    "report": "Posts short phase comments on each issue: waiting for a person, pull request opened, done or failed. No result text leaves the node.",
+    "auto_pr": "Pushes nothing and opens no pull request.",
+    "close": "Nothing says Closes #N."
+   }
   }
  },
  "blank": {
@@ -602,7 +696,7 @@
   "pins": {},
   "epic_pin": null,
   "paused": false,
-  "report": false,
+  "report": "phase",
   "auto_pr": false,
   "nodes": [
    {
@@ -634,7 +728,13 @@
   "at": "2026-10-11T09:00:00Z",
   "claims_note": null,
   "writes": true,
-  "own_claims": []
+  "own_claims": [],
+  "close": false,
+  "plan": {
+   "report": "Posts short phase comments on each issue: waiting for a person, pull request opened, done or failed. No result text leaves the node.",
+   "auto_pr": "Pushes nothing and opens no pull request.",
+   "close": "Nothing says Closes #N."
+  }
  },
  "variants": {
   "nologin": {
@@ -667,7 +767,7 @@
     "pins": {},
     "epic_pin": null,
     "paused": false,
-    "report": false,
+    "report": "phase",
     "auto_pr": false,
     "nodes": [
      {
@@ -700,7 +800,13 @@
     "partial": false,
     "comments_pending": 0,
     "empty": false,
-    "at": "2026-10-11T09:00:00Z"
+    "at": "2026-10-11T09:00:00Z",
+    "close": false,
+    "plan": {
+     "report": "Posts short phase comments on each issue: waiting for a person, pull request opened, done or failed. No result text leaves the node.",
+     "auto_pr": "Pushes nothing and opens no pull request.",
+     "close": "Nothing says Closes #N."
+    }
    },
    "list": {
     "epics": [],
@@ -741,7 +847,7 @@
     "pins": {},
     "epic_pin": null,
     "paused": false,
-    "report": false,
+    "report": "phase",
     "auto_pr": false,
     "nodes": [
      {
@@ -774,7 +880,13 @@
     "partial": false,
     "comments_pending": 0,
     "empty": false,
-    "at": "2026-10-11T09:00:00Z"
+    "at": "2026-10-11T09:00:00Z",
+    "close": false,
+    "plan": {
+     "report": "Posts short phase comments on each issue: waiting for a person, pull request opened, done or failed. No result text leaves the node.",
+     "auto_pr": "Pushes nothing and opens no pull request.",
+     "close": "Nothing says Closes #N."
+    }
    },
    "list": {
     "epics": [],
@@ -818,7 +930,7 @@
     "pins": {},
     "epic_pin": null,
     "paused": false,
-    "report": false,
+    "report": "phase",
     "auto_pr": false,
     "nodes": [
      {
@@ -851,7 +963,13 @@
     "partial": false,
     "comments_pending": 0,
     "empty": false,
-    "at": "2026-10-11T09:00:00Z"
+    "at": "2026-10-11T09:00:00Z",
+    "close": false,
+    "plan": {
+     "report": "Posts short phase comments on each issue: waiting for a person, pull request opened, done or failed. No result text leaves the node.",
+     "auto_pr": "Pushes nothing and opens no pull request.",
+     "close": "Nothing says Closes #N."
+    }
    },
    "list": {
     "epics": []
@@ -935,7 +1053,7 @@
     "pins": {},
     "epic_pin": null,
     "paused": false,
-    "report": false,
+    "report": "phase",
     "auto_pr": false,
     "nodes": [
      {
@@ -964,7 +1082,13 @@
     "partial": false,
     "comments_pending": 0,
     "empty": true,
-    "at": "2026-10-11T09:00:00Z"
+    "at": "2026-10-11T09:00:00Z",
+    "close": false,
+    "plan": {
+     "report": "Posts short phase comments on each issue: waiting for a person, pull request opened, done or failed. No result text leaves the node.",
+     "auto_pr": "Pushes nothing and opens no pull request.",
+     "close": "Nothing says Closes #N."
+    }
    },
    "list": {
     "epics": [
@@ -1047,6 +1171,146 @@
       "tasks": false
      }
     ]
+   }
+  },
+  "workrun": {
+   "child": {
+    "202": {
+     "work": {
+      "phase": "running",
+      "state": "active",
+      "task_id": 42,
+      "branch": "worktree-form-validation",
+      "alias": "node-a",
+      "attempt": 1,
+      "report": "phase",
+      "auto_pr": false,
+      "close": false,
+      "pr_number": null,
+      "waiting": false,
+      "since": "2026-10-11T07:30:00Z",
+      "issue_url": "https://github.com/example/website/issues/202",
+      "claim_url": "https://github.com/example/website/issues/202#issuecomment-3102"
+     },
+     "phase": "running"
+    }
+   }
+  },
+  "workwait": {
+   "child": {
+    "202": {
+     "work": {
+      "phase": "waiting",
+      "state": "active",
+      "task_id": 42,
+      "branch": "worktree-form-validation",
+      "alias": "node-a",
+      "attempt": 1,
+      "report": "phase",
+      "auto_pr": false,
+      "close": false,
+      "pr_number": null,
+      "waiting": true,
+      "since": "2026-10-11T07:30:00Z",
+      "issue_url": "https://github.com/example/website/issues/202",
+      "claim_url": "https://github.com/example/website/issues/202#issuecomment-3102"
+     },
+     "phase": "waiting"
+    }
+   }
+  },
+  "workfail": {
+   "child": {
+    "202": {
+     "work": {
+      "phase": "failed",
+      "state": "finished",
+      "task_id": 42,
+      "branch": "worktree-form-validation",
+      "alias": "node-a",
+      "attempt": 2,
+      "report": "phase",
+      "auto_pr": false,
+      "close": false,
+      "pr_number": null,
+      "waiting": false,
+      "since": "2026-10-11T07:30:00Z",
+      "issue_url": "https://github.com/example/website/issues/202",
+      "claim_url": "https://github.com/example/website/issues/202#issuecomment-3102"
+     },
+     "phase": "failed"
+    }
+   }
+  },
+  "workcancel": {
+   "child": {
+    "202": {
+     "work": {
+      "phase": "cancelled",
+      "state": "finished",
+      "task_id": 42,
+      "branch": "worktree-form-validation",
+      "alias": "node-a",
+      "attempt": 1,
+      "report": "phase",
+      "auto_pr": false,
+      "close": false,
+      "pr_number": null,
+      "waiting": false,
+      "since": "2026-10-11T07:30:00Z",
+      "issue_url": "https://github.com/example/website/issues/202",
+      "claim_url": "https://github.com/example/website/issues/202#issuecomment-3102"
+     },
+     "phase": "cancelled"
+    }
+   }
+  },
+  "authors": {
+   "detail": {
+    "authors": {
+     "allowed": [
+      "maya-r"
+     ],
+     "epic": "maya-r",
+     "epic_ok": true,
+     "blocked": [
+      {
+       "number": 205,
+       "author": "dana-w"
+      }
+     ],
+     "text": "These issues are not by an allowed author and will be skipped: #205."
+    }
+   },
+   "child": {
+    "205": {
+     "author": "dana-w",
+     "author_ok": false
+    }
+   }
+  },
+  "epicauthor": {
+   "detail": {
+    "authors": {
+     "allowed": [
+      "maya-r"
+     ],
+     "epic": "dana-w",
+     "epic_ok": false,
+     "blocked": [],
+     "text": "The epic is not by an allowed author, so nothing in it will run."
+    }
+   }
+  },
+  "noauthors": {
+   "detail": {
+    "authors": {
+     "allowed": [],
+     "epic": "maya-r",
+     "epic_ok": null,
+     "blocked": [],
+     "text": null
+    }
    }
   }
  }
