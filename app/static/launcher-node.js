@@ -2,7 +2,8 @@
    DOM, storage, network, listener or timer exists until a sheet is opened. openLauncher (launcher.js) asks lxnKit() for the node picker; it answers null, and the sheet is exactly what
    it always was, unless the hub view is on and at least one paired node is online (Nodes.enabled, Nodes.ready, nodes-hub.js).
 
-   The picker is a segmented control "This node | <node> ..." (a native select above four) above the form. "This node" keeps the local form untouched. A node swaps in the REMOTE form
+   The picker is a segmented control "This node | Auto | <node> ..." (a native select above four) above the form. Auto (issue #150, tasks only) asks the board which node can take the task
+   now (GET /api/route/auto), shows the node and the reason in the command preview, and then IS that node's form; when no node can, it says why and offers Check again. "This node" keeps the local form untouched. A node swaps in the REMOTE form
    (lxnForm), a smaller form on purpose: a request from another node is checked by the hub and again by the peer and carries only project, repo, title, prompt, when, agent, model,
    effort, reasoning effort, auto close and an issue reference (a task), a session name, a permission mode of default / acceptEdits / plan or Codex read-only (a session), or a lane /
    session dispatch. No bypass, no extra arguments, tools, directories or system prompt, no first prompt for a session, no chain, no schedule: the form offers none of them and says so
@@ -24,6 +25,25 @@ const LXN_NOBYPASS = 'Bypass is only available on the node itself.';
 const LXN_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9])?$/;
 const lxnSchemas = new Map();                       // handle -> {agents: Map(name -> schema) | null, at, failed, busy, promise}
 let lxnSeq = 0;
+
+/* ---------- the demo (?demo=1): GET /api/route/auto is answered here; ?auto=wait plays "no node can take it" ---------- */
+
+function lxnDemoAuto(path) {
+  const q = new URLSearchParams(String(path).split('?')[1] || '');
+  const agent = q.get('agent') === 'codex' ? 'codex' : 'claude';
+  const slug = q.get('project') === 'shop' && q.get('repo') === 'web' ? 'example/shop-web' : 'example/shop-api';
+  let flag = '';
+  try { const m = /[?&]auto=([a-z]+)/.exec(location.search); flag = m ? m[1] : ''; } catch (_) { flag = ''; }
+  const word = agent === 'codex' ? 'weekly window' : '5-hour window';
+  if (flag === 'wait') {
+    const text = `waiting: build-box ${word} is at 90 percent until 14:10; old-laptop is offline`;
+    return Promise.resolve({ handle: null, name: null, why: text, waiting: { code: 'none_ready', reason: text.slice(9), until: 1791900600, until_iso: '2026-10-11T14:10:00Z', text, pinned: null },
+      pin: null, refused: [{ handle: 'build-box', name: 'build-box', code: 'window', text: `${word} is at 90 percent until 14:10`, until: 1791900600 }, { handle: 'old-laptop', name: 'old-laptop', code: 'offline', text: 'is offline', until: null }],
+      ranked: [], agent, slug });
+  }
+  return Promise.resolve({ handle: 'build-box', name: 'build-box', why: `chose build-box: 2 free lanes, ${word} 31 percent`, waiting: null, pin: null,
+    refused: [{ handle: 'old-laptop', name: 'old-laptop', code: 'offline', text: 'is offline', until: null }], ranked: [{ handle: 'build-box', name: 'build-box', free: 2, pct: 31, window_unknown: false, headroom: 69, shared_with: [] }], agent, slug });
+}
 
 /* ---------- the node's lists ---------- */
 
@@ -209,10 +229,11 @@ function lxnForm(opt, handle, hooks) {
   const kind = session ? 'session' : 'task';
   const rt = dispatch && opt.remoteTask && typeof opt.remoteTask === 'object' ? opt.remoteTask : null;
   const carry = (hooks && hooks.carry) || {};
+  const autoAgent = hooks && (hooks.autoAgent === 'claude' || hooks.autoAgent === 'codex') ? hooks.autoAgent : '';          // Auto asked the board for this agent: the form does not change it
   const name = () => Nodes.nameOf(handle);
   const rec = () => Nodes.get(handle);
   let repos = lxnRepos(handle);
-  const R = { project: '', repo: '', agent: 'claude', name: String(carry.name || ''), title: String(carry.title || ''), prompt: String(carry.prompt || ''), issue: '', when: 'now', autoClose: true,
+  const R = { project: '', repo: '', agent: autoAgent || 'claude', name: String(carry.name || ''), title: String(carry.title || ''), prompt: String(carry.prompt || ''), issue: '', when: 'now', autoClose: true,
     where: 'lane', sess: '', claude: null, codex: null, notes: [], dirty: false };
 
   /* ---- where: the project and repo (a dispatch is for the repo its task lives in) ---- */
@@ -227,7 +248,7 @@ function lxnForm(opt, handle, hooks) {
   }
   const loadPrefs = () => {
     R.notes = [];
-    if (!rt) { const ag = lxGet(lxnAgentKey(handle, R.project, R.repo)); if (ag === 'claude' || ag === 'codex') R.agent = ag; }
+    if (!rt && !autoAgent) { const ag = lxGet(lxnAgentKey(handle, R.project, R.repo)); if (ag === 'claude' || ag === 'codex') R.agent = ag; }
     for (const a of ['claude', 'codex']) R[a] = lxnClean(handle, a, lxJson(lxGet(lxnPrefKey(kind, handle, R.project, R.repo, a))), kind, R.notes);
     const saved = lxJson(lxGet(lxnPrefKey(kind, handle, R.project, R.repo, 'claude'))) || {};
     if (!session && !rt && saved.when === 'later') R.when = 'later';
@@ -395,7 +416,7 @@ function lxnForm(opt, handle, hooks) {
     hide(autoField, session);
     hide(whereField, !dispatch); hide(sessField, !dispatch || R.where !== 'session');
     const laneHide = dispatch && R.where === 'session';
-    hide(agentField, laneHide); hide(modelField, laneHide); hide(effortField, laneHide || !claude); hide(reasonField, laneHide || claude); hide(cmdBox, laneHide);
+    hide(agentField, laneHide || !!autoAgent); hide(modelField, laneHide); hide(effortField, laneHide || !claude); hide(reasonField, laneHide || claude); hide(cmdBox, laneHide);
     modelNote.textContent = R.notes.join(' ');
     hide(modelNote, !R.notes.length);
     update();
@@ -406,8 +427,9 @@ function lxnForm(opt, handle, hooks) {
     cmdText = previewText();
     cmdNode.textContent = '';
     cmdNode.append(...lxCmdNodes(cmdText));
-    cmdHead.textContent = `Command on ${name()}`;
-    cmdHint.textContent = `Approximate: ${name()} builds the real command.`;
+    const autoWhy = hooks && typeof hooks.autoWhy === 'string' ? hooks.autoWhy : '';
+    cmdHead.textContent = autoWhy ? `Auto: command on ${name()}` : `Command on ${name()}`;
+    cmdHint.textContent = autoWhy ? `Auto ${autoWhy}. Approximate: ${name()} builds the real command.` : `Approximate: ${name()} builds the real command.`;
     const label = session ? `Start on ${name()}` : mode === 'task' ? (R.when === 'later' ? `Add to ${name()}'s backlog` : `Start on ${name()}`) : `Start on ${name()}`;
     goText.textContent = busy ? 'Starting…' : label;
     goIcon.textContent = '';
@@ -512,6 +534,107 @@ function lxnForm(opt, handle, hooks) {
   return { form, R, submit, go, status, gate, refresh, preview: () => cmdText, body: () => (session ? lxnSessionBody(R) : dispatch ? lxnDispatchBody(R, rt) : lxnTaskBody(R)), busy: () => busy, paint };
 }
 
+/* ---------- Auto: the board picks the node (issue #150) ---------- */
+
+const LXN_AUTO = '~auto';             // the picker's value for Auto; never a node handle (handles are letters, digits and dashes)
+
+/* The Auto cell of the picker (tasks only). It asks GET /api/route/auto for the repo the sheet was opened for and the agent chosen here, and shows the answer: the node and why (in the command
+   preview of that node's form) or "waiting: <reason>" with the nodes that were left out and why. When a node comes back the cell IS that node's remote form (lxnForm), so the body, the scope
+   checks and the remembered values are the node form's own; the repo is the node's own name for the slug the board gave, and when the node does not list it the cell says so and builds no form,
+   so nothing starts in a repo nobody chose. Nothing is started by the choice: Start is the node form's, named for the node. opt: the options openLauncher got; ctl: the local controller. */
+function lxnAuto(opt, ctl, hooks) {
+  const rp = typeof lxResolve === 'function' ? lxResolve(opt.project, opt.repo) : null;
+  const project = rp ? rp.p.name : '';
+  const repo = rp ? rp.r.name : '';
+  const A = { agent: ctl && ctl.V && ctl.V.agent === 'codex' ? 'codex' : 'claude', res: null, loading: false, seq: 0, inner: null, handle: '', innerAgent: '', carry: { ...((hooks && hooks.carry) || {}) } };
+  const agentSeg = lxSeg([['claude', '◆ Claude'], ['codex', '◇ Codex']], (a) => { if (a === A.agent) return; A.agent = a; agentSeg.set(a); ask(); }, 'Agent', 'lx-agent');
+  agentSeg.set(A.agent);
+  const note = el('p', { class: 'dim lx-hint lx-autonote', text: 'Auto picks a node that has this repository, the agent ready, a free lane and room in its rate-limit window. Headroom is an estimate: an agent can still reach its limit.' });
+  const state = el('p', { class: 'lx-autostate', role: 'status', 'aria-live': 'polite', 'data-auto-state': '' });
+  const left = el('ul', { class: 'lx-autoleft' });
+  const host = el('div', { class: 'lx-autoinner' });
+  const again = el('button', { type: 'button', 'data-auto-again': '', text: 'Check again', onclick: () => ask() });
+  const goWait = el('button', { class: 'primary', type: 'button', text: 'Start', 'data-auto-start': '' });
+  const foot = el('div', { class: 'submit lx-foot' }, goWait, again);
+  const place = el('div', { class: 'lx-autorepo' }, el('b', { text: `${project}/${repo}` }), el('span', { class: 'dim', text: ' on this board' }));
+  const form = el('div', { class: 'form lx-form lx-auto', 'data-auto': '' }, field('Repo', place), field('Agent', agentSeg.node), note, state, left, host, foot);
+  const hide = (n, on) => { if (n) n.classList.toggle('hidden', !!on); };
+
+  const dropInner = () => {
+    if (A.inner) { const r = A.inner.R; A.carry = { title: r.title, prompt: r.prompt, name: r.name }; }
+    host.textContent = '';
+    A.inner = null;
+    A.handle = '';
+  };
+  const waitView = (text, refused) => {
+    dropInner();
+    state.textContent = text;
+    state.classList.add('warn');
+    left.textContent = '';
+    for (const x of (Array.isArray(refused) ? refused : []).slice(0, 8)) {
+      if (!x || typeof x.text !== 'string') continue;
+      left.append(el('li', { class: 'dim' }, el('span', { 'aria-hidden': 'true', text: '∙ ' }), `${String(x.name || x.handle || 'a node').slice(0, 60)} ${x.text.slice(0, 160)}`));
+    }
+    hide(state, false); hide(left, !left.childNodes.length); hide(foot, false);
+    lxDisable(goWait, true, text);
+    lxDisable(again, false);
+  };
+  const apply = () => {
+    const r = A.res || {};
+    if (A.loading) {
+      dropInner();
+      state.textContent = 'Choosing a node…';
+      state.classList.remove('warn');
+      left.textContent = '';
+      hide(state, false); hide(left, true); hide(foot, false);
+      lxDisable(goWait, true, 'Choosing a node'); lxDisable(again, true);
+      return;
+    }
+    if (r.error) { waitView(`Auto could not ask the board: ${String(r.error).slice(0, 200)}. Check again, or pick a node above.`, []); return; }
+    const h = typeof r.handle === 'string' && Ref.isHandle(r.handle) && Nodes.get(r.handle) ? r.handle : '';
+    if (!h) {
+      const w = r.waiting && typeof r.waiting.text === 'string' && r.waiting.text ? r.waiting.text : 'waiting: no node can take it now';
+      waitView(`${w.slice(0, 400)}. Pick a node above to start it there, or check again.`, r.refused);
+      return;
+    }
+    const rr = lxnRepos(h).find((x) => typeof r.slug === 'string' && r.slug && x.slug === r.slug);
+    if (!rr) { waitView(`Auto chose ${Nodes.nameOf(h)}, but its last reading does not list ${String(r.slug || 'this repository').slice(0, 100)}. Check again in a moment, or pick a node above.`, []); return; }
+    const why = String(r.why || `chose ${Nodes.nameOf(h)}`).slice(0, 300);
+    hide(state, true); hide(left, true); hide(foot, true);
+    if (A.inner && A.handle === h && A.innerAgent === A.agent) { A.inner.hooks.autoWhy = why; A.inner.paint(); return; }
+    dropInner();
+    const hk = { ...(hooks || {}), carry: A.carry, autoAgent: A.agent, autoWhy: why };
+    A.inner = lxnForm({ ...opt, mode: 'task', project: rr.project, repo: rr.repo }, h, hk);
+    A.inner.hooks = hk;
+    A.handle = h;
+    A.innerAgent = A.agent;
+    host.append(A.inner.form);
+  };
+  function ask() {
+    const my = ++A.seq;
+    dropInner();
+    A.res = null;
+    A.loading = true;
+    apply();
+    api('GET', `/api/route/auto?agent=${encodeURIComponent(A.agent)}&project=${encodeURIComponent(project)}&repo=${encodeURIComponent(repo)}`).then((r) => {
+      if (my !== A.seq) return;
+      A.loading = false;
+      A.res = r && typeof r === 'object' ? r : {};
+      apply();
+    }, (e) => {
+      if (my !== A.seq) return;
+      A.loading = false;
+      A.res = { error: (e && e.body && e.body.error) || (e && e.message) || 'the request failed' };
+      apply();
+    });
+  }
+  form.focusFirst = () => { if (A.inner && A.inner.form.focusFirst) A.inner.form.focusFirst(); else if (typeof again.focus === 'function') again.focus(); };
+  ask();
+  return { form, get R() { return A.inner ? A.inner.R : null; }, auto: A, go: goWait, status: state, submit: () => (A.inner ? A.inner.submit() : Promise.resolve()), refresh: () => ask(),
+    gate: () => (A.inner ? A.inner.gate() : (state.textContent || 'Auto has not chosen a node yet')), preview: () => (A.inner ? A.inner.preview() : ''), body: () => (A.inner ? A.inner.body() : null),
+    busy: () => !!(A.inner && A.inner.busy()), paint: () => { if (A.inner) A.inner.paint(); } };
+}
+
 /* ---------- the picker in the sheet ---------- */
 
 /* Called by openLauncher (launcher.js) with the options, the local controller (null when there is no local place) and the mode. null: no picker (the hub view is off, no node is
@@ -532,10 +655,13 @@ function lxnKit(opt, ctl, mode) {
   let sel = null;
   const kit = { host, setTitle: null, ctl: null };
   const label = (r) => { const v = Nodes.view(r); return r.status === 'online' ? Nodes.nameOf(r.handle) : `${Nodes.nameOf(r.handle)} ${v.glyph}`; };
+  const rpAuto = mode === 'task' && ctl && !remoteTask && typeof lxResolve === 'function' ? lxResolve(opt.project, opt.repo) : null;          // Auto is for a new task in a repo of this board
+  const autoItem = rpAuto && rpAuto.r && !rpAuto.r.root ? [[LXN_AUTO, 'Auto', { title: 'The board picks the node that has this repository, the agent ready, a free lane and room in its rate-limit window' }]] : [];
   const items = [['', 'This node', !ctl ? { disabled: true, title: 'There is no repo on this node to start in' } : remoteTask ? { disabled: true, title: `This task lives on ${Nodes.nameOf(remoteTask.node)}` } : null],
+    ...autoItem,
     ...recs.map((r) => [r.handle, label(r), remoteTask && r.handle !== remoteTask.node ? { disabled: true, title: `This task lives on ${Nodes.nameOf(remoteTask.node)}` } : { title: Nodes.view(r).word }])];
   const titleOf = (h) => {
-    const n = Nodes.nameOf(h);
+    const n = h === LXN_AUTO ? 'Auto' : Nodes.nameOf(h);
     return mode === 'task' ? `New task · ${n}` : mode === 'dispatch' ? `Start “${String(remoteTask.title || `Task ${remoteTask.id}`).slice(0, 60)}” on ${n}` : `New session · ${n}`;
   };
   const choose = (h) => {
@@ -550,7 +676,8 @@ function lxnKit(opt, ctl, mode) {
       let r = forms.get(h);
       if (!r) {
         const carry = ctl && from === '' ? { title: ctl.T ? ctl.T.title : '', prompt: ctl.V.common.prompt, name: ctl.V.common.name } : {};
-        r = lxnForm({ ...opt, mode }, h, { carry, close: () => { ui.openForm = null; closeSheet(); }, cancel: typeof opt.onCancel === 'function' ? opt.onCancel : null });
+        const hk = { carry, close: () => { ui.openForm = null; closeSheet(); }, cancel: typeof opt.onCancel === 'function' ? opt.onCancel : null };
+        r = h === LXN_AUTO ? lxnAuto({ ...opt, mode }, ctl, hk) : lxnForm({ ...opt, mode }, h, hk);
         forms.set(h, r);
       } else r.refresh();
       host.append(r.form);

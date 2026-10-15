@@ -122,3 +122,20 @@ html.force-coarse #page .ep-ltitle, html.force-coarse #page a.ep-lgh { min-heigh
 }
 @media (pointer:coarse) { #page .ep-work-btn, #page .ep-work-force, #page a.ep-open-task { min-height:var(--tap); } }
 html.force-coarse #page .ep-work-btn, html.force-coarse #page .ep-work-force, html.force-coarse #page a.ep-open-task { min-height:var(--tap); }
+
+/* Routing (issues #150 and #152): the choice or the wait shown per issue, Run on..., the window limit, the group boxes and Let MCP run this epic */
+#page .ep-why.warn, #page .ep-cfg-hint.warn { color:var(--warn-fg); }
+#page .ep-route { display:inline-flex; align-items:baseline; gap:0; }
+#page .ep-route.warn { color:var(--warn-fg); }
+#page .ep-runon-btn { display:inline-flex; align-items:center; gap:4px; min-height:var(--row-btn); }
+#page .ep-runon-btn[disabled] { opacity:.55; cursor:not-allowed; }
+#page .ep-subh { margin:0; padding:10px 0 4px; border-top:1px solid var(--line-soft); }
+#page .ep-win { width:72px; min-height:var(--row-btn); text-align:right; }
+#page .ep-cfg-hint { margin:0; padding:0 0 6px; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+#page .ep-cfg-col { display:flex; flex-direction:column; gap:2px; padding:8px 0 0; border-top:1px solid var(--line-soft); }
+#page .ep-groupbox { display:flex; flex-direction:column; }
+#page .ep-check-node { border-top:0; min-height:var(--row-btn); padding-top:2px; padding-bottom:2px; }
+@media (pointer:coarse) { #page .ep-runon-btn, #page .ep-win { min-height:var(--tap); } #page .ep-win { font-size:16px; } #page .ep-check-node { min-height:var(--tap); } }
+html.force-coarse #page .ep-runon-btn, html.force-coarse #page .ep-win { min-height:var(--tap); }
+html.force-coarse #page .ep-win { font-size:16px; }
+html.force-coarse #page .ep-check-node { min-height:var(--tap); }

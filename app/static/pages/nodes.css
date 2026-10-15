@@ -106,6 +106,15 @@ html.force-coarse #page .nd-cell { min-height:var(--tap); }
 .lx-remote .lx-nobypass { margin:0; font-size:12px; }
 .lx-remote .lx-nodetask { display:flex; flex-wrap:wrap; gap:2px 6px; min-width:0; overflow-wrap:anywhere; }
 .lx-nodepick select { width:100%; }
+/* Auto (issue #150): the repo and agent it asks for, the state ("Choosing a node...", "waiting: <reason>"), the nodes left out and why, then the chosen node's own form */
+.lx-auto { display:flex; flex-direction:column; gap:10px; min-width:0; }
+.lx-auto .lx-autorepo { min-width:0; overflow-wrap:anywhere; }
+.lx-auto .lx-autonote { margin:0; }
+.lx-auto .lx-autostate { margin:0; font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+.lx-auto .lx-autostate.warn { color:var(--warn-fg); }
+.lx-auto .lx-autoleft { list-style:none; margin:0; padding:0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+.lx-auto .lx-autoinner { min-width:0; }
+.lx-auto .lx-autoinner > .lx-form { margin:0; }
 .toast .toast-link { display:inline-flex; align-items:center; min-height:28px; margin-left:10px; color:var(--sig); text-decoration:underline; }
 @media (pointer:coarse) { .toast .toast-link { min-height:var(--tap); } }
 html.force-coarse .toast .toast-link { min-height:var(--tap); }

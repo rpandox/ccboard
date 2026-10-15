@@ -51,7 +51,7 @@ WRITES_PER_MIN = 10
 GLOBAL_PER_MIN = 240
 GLOBAL_IN_FLIGHT = 16
 WINDOW = 60.0
-WRITE_TOOLS = ("create_task", "dispatch_task")
+WRITE_TOOLS = ("create_task", "dispatch_task", "epic_run")
 FIX = "mint a new token in Settings > Agents and put it in the client's Authorization header"
 HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
 
@@ -158,6 +158,9 @@ _LEGACY = re.compile(r"/api/projects/([^/]+)/repos/([^/]+)/tasks")
 _DISPATCH = re.compile(r"/api/tasks/(\d{1,12})/dispatch")
 _TASK = re.compile(r"/api/tasks/(\d{1,12})")
 _NODE = r"/api/nodes/([a-z0-9][a-z0-9-]{0,30})"
+_EPIC = r"/api/mcp/epics/([A-Za-z0-9][A-Za-z0-9-]{0,38})/([A-Za-z0-9_.-]{1,100})/([1-9][0-9]{0,8})"
+_EPIC_STATUS = re.compile(_EPIC)
+_EPIC_RUN = re.compile(_EPIC + r"/run")
 _RELAYED = (("GET", re.compile(_NODE + r"/state"), "state"), ("GET", re.compile(_NODE + r"/tasks/(\d{1,12})"), "task"),
             ("POST", re.compile(_NODE + r"/tasks"), "task_create"), ("POST", re.compile(_NODE + r"/tasks/(\d{1,12})/dispatch"), "task_dispatch"))
 
@@ -176,6 +179,10 @@ def inproc_api(user: str, token: dict | None = None):
                 out = main.build_state(user)
             elif method == "GET" and path == "/api/mcp/nodes":
                 out = nodes_relay.mcp_nodes_view(main._hub())
+            elif method == "GET" and (m := _EPIC_STATUS.fullmatch(path)):
+                out = main.api_mcp_epic(m[1], m[2], m[3], SimpleNamespace(state=SimpleNamespace(user=user, mcp_token=token), headers={}))
+            elif method == "POST" and (m := _EPIC_RUN.fullmatch(path)):
+                out = main.api_mcp_epic_run(m[1], m[2], m[3], main.McpEpicRunIn(**b), SimpleNamespace(state=SimpleNamespace(user=user, mcp_token=token), headers={}))
             elif (hit := next(((m, nm) for verb, rx, nm in _RELAYED if verb == method and (m := rx.fullmatch(path))), None)) is not None:
                 m, nm = hit
                 row = nodes_relay.BY_NAME[nm]

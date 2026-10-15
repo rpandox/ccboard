@@ -129,21 +129,21 @@ test('the header: title, the epic on GitHub, the counts, the rate note, Pause (b
   assert.equal(text(pg.querySelector('.ep-counts')), '6 open, 1 closed');
   assert.equal(text(pg.querySelector('.ep-rate')), 'GitHub requests left: 4990 of 5000');
   const run = btn(pg, 'Run');
-  assert.notEqual(run.getAttribute('disabled'), null, 'Run waits for the routing phase');
+  assert.equal(run.getAttribute('disabled'), null, 'Run is on: the board can route and the epic is not paused');
   assert.ok(run.classList.contains('primary'));
   assert.equal(pg.querySelectorAll('button.primary').filter((b) => !b.classList.contains('tinted')).length, 1, 'one filled primary on the page (a Claim button is the tinted kind)');
   const why = pg.querySelector('#' + run.getAttribute('aria-describedby'));
-  assert.match(text(why), /available when routing is installed/);
+  assert.match(text(why), /Run sends each ready issue to the node that has a free lane/);
   assert.ok(!btn(pg, 'Pause').classList.contains('primary'), 'Pause is bordered, not filled');
   assert.match(text(pg), /Pause stops this board routing the epic\. Nothing changes on GitHub\./);
   assert.equal(w.document.title, 'example/website#147 · epic · ccboard');
 });
 
-test('Run does nothing: no request goes out when it is tapped, and the page never writes to GitHub (its only write is this board\'s settings route)', async () => {
+test('Run asks this board once, with no body, and the page never writes to GitHub (every request goes to this board\'s own epic routes)', async () => {
   const w = await epicWorld();
   btn(page(w), 'Run').click();
   await settle();
-  assert.deepEqual(calls(w).filter((c) => c.method !== 'GET'), []);
+  assert.deepEqual(calls(w).filter((c) => c.method !== 'GET').map((c) => [c.method, c.path]), [['POST', '/api/epics/example/website/147/run']]);
   assert.ok(calls(w).every((c) => c.path.startsWith('/api/epics/example/website/147')));
 });
 
@@ -434,26 +434,35 @@ test('the pin button is a labelled menu button that names the issue and says not
 
 // ---------------------------------------------------------------- Pause and Resume
 
-test('Pause flips to Resume at once, writes {paused: true}, and says this board stops routing while GitHub is untouched; Resume flips back', async () => {
+const posted = (w) => calls(w).filter((c) => c.method === 'POST');
+
+test('Pause flips to Resume at once, posts to /pause, and says this board stops routing while GitHub is untouched; Resume posts to /resume and flips back', async () => {
   const gate = defer();
   const w = await epicWorld({ put: () => gate.p });
+  w.run(`__answers['/api/epics'] = ((was) => (req) => (req.method === 'POST' ? (req.path.endsWith('/pause') ? __gate : { paused: false, route: { ...__detail.route, paused: false } }) : was(req)))(__answers['/api/epics'])`);
+  w.ctx.__gate = gate.p;
   const pg = page(w);
   btn(pg, 'Pause').click();
   assert.ok(btn(pg, 'Resume'), 'painted before the answer');
   assert.equal(btn(pg, 'Resume').getAttribute('aria-pressed'), 'true');
   assert.match(text(pg), /Paused on this board: it does not route this epic\. Nothing changes on GitHub\./);
-  assert.deepEqual(puts(w).map((c) => [c.path, c.body]), [['/api/epics/example/website/147/settings', { paused: true }]]);
-  gate.resolve({ pins: FX.details[KEY].pins, epic_pin: null, paused: true, report: false, auto_pr: false, nodes: FX.details[KEY].nodes });
+  assert.equal(btn(pg, 'Run').getAttribute('disabled'), '', 'Run is off while paused');
+  assert.match(text(pg.querySelector('#ep-run-why')), /Run is off while this epic is paused\. Resume first\./);
+  assert.deepEqual(posted(w).map((c) => [c.path, c.body]), [['/api/epics/example/website/147/pause', undefined]]);
+  assert.equal(puts(w).length, 0, 'Pause is no longer a settings write');
+  gate.resolve({ paused: true, route: { ...FX.details[KEY].route, paused: true } });
   await settle();
   assert.ok(btn(pg, 'Resume'));
-  w.ctx.__put = { pins: FX.details[KEY].pins, epic_pin: null, paused: false, report: false, auto_pr: false, nodes: FX.details[KEY].nodes };
   btn(pg, 'Resume').click();
   assert.ok(btn(pg, 'Pause'));
-  assert.deepEqual(puts(w).map((c) => c.body), [{ paused: true }, { paused: false }]);
+  await settle();
+  assert.deepEqual(posted(w).map((c) => c.path), ['/api/epics/example/website/147/pause', '/api/epics/example/website/147/resume']);
+  assert.equal(btn(pg, 'Run').getAttribute('disabled'), null, 'Run is back after Resume');
 });
 
 test('a refused Pause puts Pause back and shows the board\'s words in a toast', async () => {
   const w = await epicWorld({ put: () => Promise.reject(Object.assign(new Error('epic pins and pause are set by a signed-in person'), { status: 403 })) });
+  w.run(`__answers['/api/epics'] = ((was) => (req) => (req.method === 'POST' ? Promise.reject(Object.assign(new Error('epic pins and pause are set by a signed-in person'), { status: 403 })) : was(req)))(__answers['/api/epics'])`);
   btn(page(w), 'Pause').click();
   assert.ok(btn(page(w), 'Resume'));
   await settle();
@@ -1000,7 +1009,7 @@ test('demo mode routes /api/epics through the epic bundle: the list, one epic, a
 test('demo pins and pause are played on the page: the PUT answers the settings shape, a bad handle is a 400, and the next read shows what was set', async () => {
   const w = await demoWorld();
   const put = await demoCall(w, 'PUT', '/api/epics/example/website/147/settings', { pins: { 203: 'node-b', 205: null }, paused: true, epic_pin: 'local' });
-  assert.deepEqual(Object.keys(put).sort(), ['auto_pr', 'close', 'epic_pin', 'nodes', 'paused', 'pins', 'plan', 'report']);
+  assert.deepEqual(Object.keys(put).sort(), ['auto_pr', 'close', 'epic_pin', 'group', 'max_window_pct', 'max_window_pct_set', 'mcp_run', 'nodes', 'paused', 'pins', 'plan', 'report']);
   assert.deepEqual(Object.keys(put.pins), ['203']);
   assert.equal(put.paused, true);
   assert.equal(put.epic_pin.handle, 'local');

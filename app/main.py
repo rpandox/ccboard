@@ -28,9 +28,9 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, StrictBool
+from pydantic import BaseModel, Field, StrictBool, StrictInt
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_stream, nodes_work, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_work, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import claude_pane, codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -137,6 +137,17 @@ def _hub() -> "nodes_hub.NodeHub":
     return node_hub
 
 
+node_runner: "nodes_run.Runner | None" = None
+
+
+def _runner() -> "nodes_run.Runner":
+    """The run loop of this board's epics (issues #150 and #152). The object holds no thread until a run is active, a node is paired and GitHub writes are on."""
+    global node_runner
+    if node_runner is None or node_runner.db is not db:
+        node_runner = nodes_run.Runner(db, hub_fn=_hub, repos_fn=_epic_repos)
+    return node_runner
+
+
 def _recover_claims() -> None:
     """Startup, on a thread: the claim records of an earlier run (issue #148). A failure is logged, never raised (nothing reads this thread's result)."""
     try:
@@ -211,6 +222,10 @@ async def lifespan(app: FastAPI):
     nodes.registry_listener = hub.ensure                  # a node paired later starts the same thread
     hub.ensure()
     try:
+        _runner().resume()                                # a run that was active when the board stopped goes on; a board with none starts nothing (one key is read)
+    except Exception as e:
+        log.warning("epic runs could not be resumed: %s", e.__class__.__name__)
+    try:
         rec = recover.run(db, _start_session)
         if rec["recovered"] or rec["closed"]:
             log.info("recovery: relaunched %s, closed %s", rec["recovered"], rec["closed"])
@@ -238,6 +253,7 @@ async def lifespan(app: FastAPI):
     nodes.registry_listener = None
     if claims_task is not None:
         await asyncio.wait({claims_task}, timeout=15)                      # a recovery still asking GitHub is given a moment; it is not cancelled half way
+    await asyncio.to_thread(_runner().stop, 20.0)                          # the run loop sends nothing more (a call in flight is given a moment)
     await asyncio.to_thread(nodes_epics.stop_renewals, 15.0)               # the renew timer (only alive while this board holds a claim) stops before the database does
     await asyncio.to_thread(nodes_work.stop_work, 15.0)                    # a report of epic work that is writing to an issue is given a moment (the next start finishes what is left)
     await asyncio.to_thread(nodes_stream.close_all, "shutdown")      # the streams to peers end before the hub and the database do
@@ -4687,6 +4703,7 @@ def api_epic(owner: str, repo: str, n: str):
     last good data when there is one."""
     num = _epic_ids(owner, repo, n)
     out = nodes_epics.detail(db, owner, repo, num, _hub_records(), repos=_epic_here(owner, repo))
+    _runner().annotate(out, owner, repo, num)          # `route`: whether Run is allowed and why not, the run, what it sent and why, what waits and until when; each child's `route`
     out["at"] = db_now()
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
@@ -4699,6 +4716,27 @@ class EpicSettingsIn(BaseModel):
     report: Literal["phase", "summary", "none"] | StrictBool | None = None          # a boolean from an older page is migrated (true: summary, false: phase)
     auto_pr: StrictBool | None = None
     close: StrictBool | None = None
+    max_window_pct: StrictInt | None = None              # 10 to 100; null = the board's CCBOARD_EPIC_MAX_WINDOW_PCT (issue #150)
+    group: list[list[str]] | None = None                 # nodes that share one subscription, set by hand: [["box", "mac"]] (issue #150)
+    mcp_run: StrictBool | None = None                    # an agent's epic_run may start this epic (issue #152); only this route sets it
+
+
+def _epic_person(request: Request, what: str) -> str:
+    """The signed-in person behind an epic route that changes something. The hook token, the hub, a node token and a device token (an agent) get 403: Run, Pause, the pins and the switch
+    that lets an agent run an epic are a person's."""
+    user = getattr(request.state, "user", None)
+    if not isinstance(user, str) or not user or user in ("local-token", "hub") or user.startswith(("node:", "mcp:")):
+        raise projects.Forbidden(what)
+    return user
+
+
+def _epic_canon(owner: str, repo: str) -> tuple[str, str]:
+    """The owner and repository as this board's own remote spells them (the route's spelling may differ in case)."""
+    for s in _epic_here(owner, repo):
+        if s.lower() == f"{owner}/{repo}".lower():
+            o, _, r = s.partition("/")
+            return o, r
+    return owner, repo
 
 
 @app.put("/api/epics/{owner}/{repo}/{n}/settings")
@@ -4706,14 +4744,168 @@ def api_epic_settings(owner: str, repo: str, n: str, body: EpicSettingsIn, reque
     """Pins and pause for one epic, kept on this board only (kv `epic:<owner/repo#n>`); only the keys sent change. `pins` merges per issue number (a node handle
     sets, null removes), `epic_pin` is a handle or null, `paused`, `auto_pr` and `close` are booleans, `report` is phase (the default), summary or none (a boolean from an older page
     is read as summary / phase). A handle must be `local` or a paired node (400 otherwise). Nothing is sent to GitHub. A signed-in person only: the hook token, the hub and a node token
-    get 403. Answers {pins, epic_pin, paused, report, auto_pr, close, plan, nodes}."""
-    user = getattr(request.state, "user", None)
-    if user in ("local-token", "hub") or (isinstance(user, str) and user.startswith("node:")):
-        raise projects.Forbidden("epic pins and pause are set by a signed-in person")
+    get 403. Also `max_window_pct` (10 to 100, null = the board's setting), `group` (lists of node handles that share one subscription) and `mcp_run` (true lets an agent's epic_run start this
+    epic; false by default). Answers {pins, epic_pin, paused, report, auto_pr, close, plan, nodes, max_window_pct, max_window_pct_set, group, mcp_run}."""
+    _epic_person(request, "epic pins, pause and routing settings are set by a signed-in person")
     num = _epic_ids(owner, repo, n)
     _epic_here(owner, repo)
     nodes_epics.save_settings(db, owner, repo, num, {k: getattr(body, k) for k in body.model_fields_set})
     return JSONResponse(nodes_epics.settings_view(db, owner, repo, num, _hub_records()), headers={"Cache-Control": "no-store"})
+
+
+# ---------- Run, Pause and Resume, one issue on a node, and the Auto preview (issue #150); the routing is app/nodes_route.py, the loop app/nodes_run.py ----------
+
+def _run_refused(e: "nodes_run.RunRefused") -> JSONResponse:
+    headers = {"Cache-Control": "no-store"}
+    if e.extra.get("retry_after"):
+        headers["Retry-After"] = str(e.extra["retry_after"])
+    return JSONResponse({"error": e.text, "reason": e.code, **{k: v for k, v in e.extra.items() if k in ("outcome", "waiting", "refused")}}, status_code=e.status, headers=headers)
+
+
+@app.post("/api/epics/{owner}/{repo}/{n}/run")
+def api_epic_run(owner: str, repo: str, n: str, request: Request):
+    """Run: send every ready issue of the epic to the node routing picks, one at a time, as lanes and rate-limit windows allow, until the epic is done or paused. A signed-in person only (403 for
+    the hook token, a node token and a device token). Refused with 409 `writes_off` (CCBOARD_EPIC_WRITES is off) or `no_nodes` (nothing is paired): nothing is stored and no thread starts.
+    Run also lifts a pause. Answers {route}: the run as the epic page shows it (running, paused, assigned {issue: {handle, node, why, at}}, waiting {issue: {code, reason, until, text}}, held)."""
+    user = _epic_person(request, "Run is pressed by a signed-in person")
+    num = _epic_ids(owner, repo, n)
+    o, r = _epic_canon(owner, repo)
+    try:
+        view = _runner().start(o, r, num, user, via="page", unpause=True)
+    except nodes_run.RunRefused as e:
+        return _run_refused(e)
+    return JSONResponse({"route": view}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/epics/{owner}/{repo}/{n}/pause")
+def api_epic_pause(owner: str, repo: str, n: str, request: Request):
+    """Pause: no new assignment from this moment (the loop reads it again before every call); claims already made go on by themselves. Kept as the epic's `paused` setting. A signed-in person only.
+    Answers {paused: true, route}."""
+    _epic_person(request, "Pause is pressed by a signed-in person")
+    num = _epic_ids(owner, repo, n)
+    o, r = _epic_canon(owner, repo)
+    nodes_epics.save_settings(db, o, r, num, {"paused": True})
+    return JSONResponse({"paused": True, "route": _runner().view(o, r, num)}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/epics/{owner}/{repo}/{n}/resume")
+def api_epic_resume(owner: str, repo: str, n: str, request: Request):
+    """Resume: assignments go on at the next moment (the loop is woken). Answers {paused: false, route}. A signed-in person only."""
+    _epic_person(request, "Resume is pressed by a signed-in person")
+    num = _epic_ids(owner, repo, n)
+    o, r = _epic_canon(owner, repo)
+    nodes_epics.save_settings(db, o, r, num, {"paused": False})
+    _runner().wake()
+    return JSONResponse({"paused": False, "route": _runner().view(o, r, num)}, headers={"Cache-Control": "no-store"})
+
+
+class EpicIssueRunIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    node: str = "auto"                                   # a paired node's handle, or auto
+
+
+@app.post("/api/epics/{owner}/{repo}/{n}/issues/{issue}/run")
+def api_epic_issue_run(owner: str, repo: str, n: str, issue: str, body: EpicIssueRunIn, request: Request):
+    """Run ONE issue of the epic on `node` (a paired node's handle) or on the node routing picks (`auto`; the pins and the epic's settings apply). The same filters apply to a node you name:
+    a node that is offline, without the repository or the agent, in a back-off, at its window limit or without a free lane is not asked, and the answer says why. A signed-in person only.
+    200 {ok: true, handle, name, why, data: {claimed, reason, task_ref, id, branch, tmux, repo, issue}}; 409 {error, reason: waiting, waiting: {code, reason, until, until_iso, text}, refused: [...]}
+    when no node can take it now; 409 with the issue's own reason (claimed, depends, author ...) when it cannot be sent; 409 `writes_off` or `no_nodes` when Run is off."""
+    user = _epic_person(request, "Run is pressed by a signed-in person")
+    num = _epic_ids(owner, repo, n)
+    if not github.valid_number(issue):
+        raise projects.BadRequest("not a valid issue number")
+    o, r = _epic_canon(owner, repo)
+    try:
+        out = _runner().run_issue(o, r, num, int(issue), body.node, user)
+    except nodes_run.RunRefused as e:
+        return _run_refused(e)
+    if not out["ok"]:
+        return JSONResponse({"ok": False, "error": out["why"], "reason": "waiting", "waiting": out["waiting"], "refused": out["refused"]}, status_code=409, headers={"Cache-Control": "no-store"})
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/epics/{owner}/{repo}/{n}/route")
+def api_epic_route(owner: str, repo: str, n: str, issue: str | None = None):
+    """The run as the epic page shows it ({route}), and, with `?issue=N`, what auto routing would do with that issue now ({preview: {handle, name, why, waiting, pin, refused, ranked}}). Reads GitHub only
+    through the epic reader's cache; sends nothing."""
+    num = _epic_ids(owner, repo, n)
+    o, r = _epic_canon(owner, repo)
+    out: dict = {"route": _runner().view(o, r, num), "preview": None}
+    if issue is not None:
+        if not github.valid_number(issue):
+            raise projects.BadRequest("not a valid issue number")
+        d = nodes_epics.detail(db, o, r, num, _hub_records(), repos=_epic_here(o, r))
+        c = next((x for x in d["children"] if x["number"] == int(issue) and x["repo"].lower() == f"{o}/{r}".lower()), None)
+        if c is None:
+            raise projects.NotFound("that issue is not one of the epic's issues this board has read")
+        out["preview"] = _runner().pick_for(c, nodes_epics.load_settings(db, o, r, num), f"{o}/{r}".lower())
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/route/auto")
+def api_route_auto(agent: str = "claude", slug: str | None = None, project: str | None = None, repo: str | None = None):
+    """The launcher's Auto: which paired node would take a new task for a repository now, and why ({handle, name, why, waiting, refused, ranked}); sends nothing. Name the repository by `slug`
+    (owner/name) or by this board's `project` and `repo`. `agent` is claude or codex. The task itself is then created on the chosen node with the ordinary node routes."""
+    if agent not in ("claude", "codex"):
+        raise projects.BadRequest("agent is claude or codex")
+    if slug is None and project is not None and repo is not None:
+        try:
+            slug = node_state.repo_slug(projects.repo_path(project, repo))
+        except (projects.BadRequest, projects.NotFound):
+            slug = None
+    owner, _, name = (slug or "").partition("/")
+    if not github.valid_slug(owner, name):
+        raise projects.BadRequest("name the repository by slug (owner/name), or by project and repo with a GitHub remote")
+    out = _runner().preview({"repo": f"{owner}/{name}", "number": 0, "agent": agent})
+    return JSONResponse({**out, "agent": agent, "slug": f"{owner}/{name}"}, headers={"Cache-Control": "no-store"})
+
+
+# ---------- the epic tools of MCP (issue #152): epic_status reads, epic_run starts the loop of an epic whose owner allowed it ----------
+
+class McpEpicRunIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    max_issues: StrictInt | None = None
+
+
+def _mcp_epic_reader(request: Request) -> None:
+    """Who may read an epic through the MCP routes: a person, or an agent whose board level and own scope hold `read` (never with CCBOARD_MCP_NODES off)."""
+    try:
+        ident = nodes_relay.mcp_identity(request)
+    except nodes_relay.RelayError as e:
+        raise projects.Forbidden(e.message) from None
+    if ident is None:
+        user = getattr(request.state, "user", None)
+        if not isinstance(user, str) or user in ("hub",) or user.startswith("node:"):
+            raise projects.Forbidden("a node token cannot read epics through the MCP routes")
+        return
+    level = nodes_relay.mcp_level()
+    if not level:
+        raise projects.Forbidden(nodes_relay.MCP_OFF)
+    if "read" not in ident["scopes"]:
+        raise projects.Forbidden("this device token does not hold the read scope: mint one that does in Settings > Agents")
+
+
+@app.get("/api/mcp/epics/{owner}/{repo}/{n}")
+def api_mcp_epic(owner: str, repo: str, n: str, request: Request):
+    """The epic as an agent reads it (the tool epic_status): {repo, number, title, state, source, error, truncated, run, progress, children}, plain fields only, null where a thing is not known. Read only."""
+    _mcp_epic_reader(request)
+    num = _epic_ids(owner, repo, n)
+    o, r = _epic_canon(owner, repo)
+    return JSONResponse(nodes_run.agent_status(_runner(), o, r, num, _epic_here(o, r)), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/mcp/epics/{owner}/{repo}/{n}/run")
+def api_mcp_epic_run(owner: str, repo: str, n: str, body: McpEpicRunIn, request: Request):
+    """epic_run: an agent starts the run of an epic. Allowed only when the board's MCP level is tasks, the caller's scope holds tasks, fewer than 6 calls an hour were made by the caller, the epic's
+    `mcp_run` is on (a person sets it on the epic page), the epic is not paused and `max_issues` is 1 to 10. Audited with who asked (`mcp:<token name>` or `local-token`). A person gets 403 here: the
+    epic page has Run. Answers {started, max_issues, left, running, assigned: [{issue, node, name, why}], waiting: [{issue, reason, until}], held, error}."""
+    num = _epic_ids(owner, repo, n)
+    o, r = _epic_canon(owner, repo)
+    try:
+        out = nodes_run.agent_run(_runner(), request, o, r, num, body.max_issues)
+    except nodes_run.RunRefused as e:
+        return _run_refused(e)
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
 # ---------- pairing two boards (issue #135): codes, the pair endpoint, the paired lists, rotate and remove; the logic is in app/nodes.py ----------

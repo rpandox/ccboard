@@ -24,7 +24,7 @@ def test_protocol_handshake_and_tools(monkeypatch):
     assert m.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
     assert m.handle({"jsonrpc": "2.0", "id": 2, "method": "ping"})["result"] == {}
     tools = m.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})["result"]["tools"]
-    assert [t["name"] for t in tools] == ["list_projects", "create_task", "list_tasks", "get_task_status", "dispatch_task", "get_task_result", "list_nodes"]
+    assert [t["name"] for t in tools] == ["list_projects", "create_task", "list_tasks", "get_task_status", "dispatch_task", "get_task_result", "list_nodes", "epic_status", "epic_run"]
     assert m.handle({"jsonrpc": "2.0", "id": 4, "method": "nope"})["error"]["code"] == -32601
     # tool calls go through call_api; fake it
     calls = []
@@ -56,7 +56,7 @@ def test_stdio_roundtrip():
     cp = subprocess.run([sys.executable, str(ROOT / "scripts" / "ccboard_mcp.py")], input=lines, capture_output=True, text=True, timeout=20)
     out = [json.loads(l) for l in cp.stdout.splitlines() if l.strip()]
     assert out[0]["id"] == 1 and out[0]["result"]["protocolVersion"] == "2025-03-26"
-    assert out[1]["id"] == 2 and len(out[1]["result"]["tools"]) == 7
+    assert out[1]["id"] == 2 and len(out[1]["result"]["tools"]) == 9
     assert any(o.get("error", {}).get("code") == -32700 for o in out)
 
 
@@ -75,7 +75,7 @@ def test_create_task_dispatch_flag(monkeypatch):
     m = load_shim()
     schema = next(t for t in m.TOOLS if t["name"] == "create_task")["inputSchema"]
     assert schema["properties"]["dispatch"]["type"] == "boolean" and schema["properties"]["dispatch"]["default"] is True
-    assert "dispatch" not in schema["required"] and len(m.TOOLS) == 7
+    assert "dispatch" not in schema["required"] and len(m.TOOLS) == 9
     calls = []
 
     def fake_api(method, path, body=None):
@@ -117,7 +117,7 @@ def test_create_task_agent_passthrough(monkeypatch):
     m = load_shim()
     schema = next(t for t in m.TOOLS if t["name"] == "create_task")["inputSchema"]
     assert schema["properties"]["agent"]["enum"] == ["claude", "codex"] and schema["properties"]["agent"]["default"] == "claude"
-    assert "agent" not in schema["required"] and len(m.TOOLS) == 7
+    assert "agent" not in schema["required"] and len(m.TOOLS) == 9
     calls = []
     monkeypatch.setattr(m, "call_api", lambda method, path, body=None: calls.append((method, path, body)) or {"id": 5, "slug": "x"})
     base = {"project": "shop", "repo": "api", "title": "X", "prompt": "do"}

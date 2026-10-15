@@ -1032,7 +1032,8 @@ def test_the_row_is_a_tasks_write_a_person_only_a_guarded_launch_and_never_an_ag
 
 
 def test_no_mcp_tool_and_no_agent_body_reaches_the_row():
-    assert "epic_work" not in set(mcp.NODE_ROW.values()) and not any("work" in t["name"] or "epic" in t["name"] for t in mcp.TOOLS)
+    assert "epic_work" not in set(mcp.NODE_ROW.values()) and not any("work" in t["name"] for t in mcp.TOOLS)
+    assert {t["name"] for t in mcp.TOOLS if "epic" in t["name"]} == {"epic_status", "epic_run"}, "the two epic tools start the loop (guarded by the epic's own switch); none relays the work row itself"
     with pytest.raises(ValueError, match="a person's act"):
         dataclasses.replace(ROW, mcp=True, agent_model=nr.NoFields, agent_shape=nr._agent_task)
     with pytest.raises(nr.Invalid):

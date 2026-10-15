@@ -158,6 +158,14 @@ EXPECTED = {
     ("GET", "/api/epics"): "identity",              # the epics of the repos this board knows, read through gh (GET only; issue #147); a GitHub problem is an `error` in a 200 answer
     ("GET", "/api/epics/{owner}/{repo}/{n}"): "identity",       # one epic: children, claims, tasks, progress; owner, repo and number are checked against GitHub's rules before any gh command is built
     ("PUT", "/api/epics/{owner}/{repo}/{n}/settings"): "identity+csrf",   # pins and pause, kept on this board only; a signed-in person: the hook token, the hub and a node token get 403 from the handler
+    ("POST", "/api/epics/{owner}/{repo}/{n}/run"): "identity+csrf",       # Run (issue #150): a signed-in person only (403 for the hook token, a node token and a device token); refused with writes off or no node paired
+    ("POST", "/api/epics/{owner}/{repo}/{n}/pause"): "identity+csrf",     # Pause: no new assignment from that moment; a signed-in person only
+    ("POST", "/api/epics/{owner}/{repo}/{n}/resume"): "identity+csrf",    # Resume; a signed-in person only
+    ("POST", "/api/epics/{owner}/{repo}/{n}/issues/{issue}/run"): "identity+csrf",      # one issue on a named node or on `auto`; the routing filters apply; a signed-in person only
+    ("GET", "/api/epics/{owner}/{repo}/{n}/route"): "identity",           # the run as the page shows it, and with ?issue=N what auto routing would do; sends nothing
+    ("GET", "/api/route/auto"): "identity",                               # the launcher's Auto: which node would take a new task, and why; sends nothing
+    ("GET", "/api/mcp/epics/{owner}/{repo}/{n}"): "identity",             # epic_status for an agent (issue #152): the hook token (the shim) or a person; the level and scope of an agent are checked by the handler
+    ("POST", "/api/mcp/epics/{owner}/{repo}/{n}/run"): "identity+csrf",   # epic_run for an agent: the hook token (the shim) or, in process, a device token; a person gets 403 from the handler; guarded by the epic's own switch
     ("GET", "/api/nodes/state"): "identity",        # the hub read model (issue #138): every paired node's card and last state with its age; built by the board, the page never calls a peer
     ("GET", "/api/nodes"): "identity",              # the nodes this board calls and the pairs that call it (issue #135); never a token or a hash
     ("POST", "/api/nodes"): "identity+csrf",        # pair with another board: its address and its code
@@ -222,7 +230,7 @@ EXPECTED = {
 # Answered with no auth at all, by auth_middleware before any route (not in app.routes): the compose and Dockerfile healthcheck over loopback.
 NO_AUTH = {("GET", "/healthz"): "a constant 'ok' for the container healthcheck; reads nothing, changes nothing"}
 FILL = {"agent": "claude", "decision": "allow", "handle": "node-b", "jid": "1", "key": "k", "n:int": "1", "name": "p--r--s", "pid": "1", "project": "p",
-        "repo": "r", "rid": "1", "sid": UUID, "tid": "1", "token_id": "t", "peer": "p_0123456789abcdef", "owner": "o", "n": "1"}
+        "repo": "r", "rid": "1", "sid": UUID, "tid": "1", "token_id": "t", "peer": "p_0123456789abcdef", "owner": "o", "n": "1", "issue": "1"}
 PROBE = {"/static/": "/static/core.js", "/tty/": "/tty/"}
 
 

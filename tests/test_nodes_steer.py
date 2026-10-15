@@ -136,6 +136,8 @@ def test_the_mcp_tools_have_no_permission_tool_and_no_call_of_theirs_reaches_a_p
     samples = {"project": "p", "repo": "r", "title": "t", "prompt": "x", "task_id": 1, "session": "p--r--s", "dispatch": True, "force": True, "queue": True}
     for tool in mcp.TOOLS:
         args = {k: samples[k] for k in tool["inputSchema"]["properties"] if k in samples}
+        if tool["name"] in ("epic_status", "epic_run"):
+            args = {"repo": "o/r", "number": 5}                       # the epic tools name a GitHub repository, not a project (issue #152)
         try:
             mcp.tool_call(tool["name"], args, api)
         except RuntimeError:
