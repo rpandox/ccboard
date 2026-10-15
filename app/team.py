@@ -170,6 +170,202 @@ def branch_url(owner: str, name: str, branch: str) -> str | None:
     return f"{repo_url(owner, name)}/tree/{quote(branch, safe='/')}" if _BRANCH_LINK.fullmatch(branch) and not branch.endswith(("/", ".lock")) and ".." not in branch else None
 
 
+# ---------------------------------------------------------------- presence (issue #198, Team P2): the comment format, the whitelist and the live, idle, stale and gone rules
+#
+# One status issue per shared repository (label ccboard:presence) holds one comment per person; the comment is edited in place. Its first line is the marker, then ONE line per board
+# of that person (the #148 alias and the 8 hex characters of the node's hash), in the #148 claim-line style:
+#
+#   <!-- ccboard:presence v1 -->
+#   ccboard presence: node=willow-3f nid=1a2b3c4d repo=acme/shop seq=12 at=2027-01-15T10:05:00Z lease=30m state=running agent=claude since=2027-01-15T09:00Z last=2027-01-15T10:00Z issue=212 branch=fix-login phase=running
+#
+# The keys of a line are PRESENCE_KEYS and nothing else (a test pins the set): `build_line` refuses any other key, and every value must fit its own pattern, so no title, prompt,
+# reply, path, host name, account label or other free text can reach a body. The line's order is fixed and the parser is strict: a line that does not match exactly is dropped.
+
+PRESENCE_MARKER = "<!-- ccboard:presence v1 -->"
+PRESENCE_LABEL = "ccboard:presence"
+PRESENCE_PREFIX = "ccboard presence: "
+PRESENCE_KEYS = ("node", "nid", "repo", "seq", "at", "lease", "state", "agent", "since", "last", "issue", "branch", "phase")          # THE whitelist
+PRESENCE_REQUIRED = ("node", "nid", "repo", "seq", "at", "lease", "state")
+PRESENCE_STATES = ("running", "needs_you", "idle", "ended")
+PRESENCE_AGENTS = ("claude", "codex", "shell", "other")
+PRESENCE_PHASES = ("backlog", "queued", "running", "done", "failed", "cancelled")
+PRESENCE_LEASE_MIN = 30
+PRESENCE_GONE_S = 24 * 3600
+PRESENCE_BODY_MAX = 3000                    # characters of a presence comment: a longer one is not read (the cap comes before any pattern)
+PRESENCE_LINES_MAX = 8                      # boards (lines) one comment may hold
+LIVE_WORDS = ("live", "idle", "unconfirmed", "stale", "gone", "unknown")
+_ISO_S = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
+_ISO_M = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}Z"
+_P_VALUE = {
+    "node": r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}", "nid": r"[0-9a-f]{8}", "repo": r"[a-z0-9][a-z0-9-]{0,38}/[a-z0-9_.-]{1,100}", "seq": r"[0-9]{1,9}", "at": _ISO_S, "lease": r"[0-9]{2,3}m",
+    "state": "|".join(PRESENCE_STATES), "agent": "|".join(PRESENCE_AGENTS), "since": _ISO_M, "last": _ISO_M, "issue": r"[1-9][0-9]{0,8}",
+    "branch": r"(?![-.])[A-Za-z0-9._/-]{1,100}", "phase": "|".join(PRESENCE_PHASES)}
+_P_LINE = re.compile(re.escape(PRESENCE_PREFIX) + " ".join(f"{k}=(?P<{k}>{_P_VALUE[k]})" for k in PRESENCE_REQUIRED)
+                     + "".join(f"(?: {k}=(?P<{k}>{_P_VALUE[k]}))?" for k in PRESENCE_KEYS if k not in PRESENCE_REQUIRED))
+
+
+def _valid_iso(v: str, minute: bool) -> bool:
+    try:
+        datetime.strptime(v, "%Y-%m-%dT%H:%MZ" if minute else "%Y-%m-%dT%H:%M:%SZ")
+        return True
+    except ValueError:
+        return False
+
+
+def presence_line(fields: dict) -> str:
+    """One board's line. `fields` may name only PRESENCE_KEYS (ValueError for any other key: the whitelist) and every value must fit its pattern (ValueError otherwise). Optional keys
+    with the value None are left out. The line is checked by the parser before it is returned."""
+    if not isinstance(fields, dict):
+        raise ValueError("not a presence line")
+    extra = set(fields) - set(PRESENCE_KEYS)
+    if extra:
+        raise ValueError("key not on the presence whitelist: " + ", ".join(sorted(map(str, extra))))
+    parts = []
+    for k in PRESENCE_KEYS:
+        v = fields.get(k)
+        if v is None:
+            if k in PRESENCE_REQUIRED:
+                raise ValueError(f"presence line without {k}")
+            continue
+        s = str(v) if isinstance(v, (str, int)) and not isinstance(v, bool) else None
+        if s is None or not re.fullmatch(_P_VALUE[k], s):
+            raise ValueError(f"bad presence value for {k}")
+        parts.append(f"{k}={s}")
+    line = PRESENCE_PREFIX + " ".join(parts)
+    if parse_line(line) is None:
+        raise ValueError("bad presence line")
+    return line
+
+
+def parse_line(line) -> dict | None:
+    """The fields of one presence line, or None when it is not exactly one (strict: fixed order, known keys only, every value in its pattern, times that are real times)."""
+    if not isinstance(line, str) or len(line) > 600:
+        return None
+    m = _P_LINE.fullmatch(line)
+    if not m:
+        return None
+    f = {k: v for k, v in m.groupdict().items() if v is not None}
+    if not _valid_iso(f["at"], False) or any(k in f and not _valid_iso(f[k], True) for k in ("since", "last")):
+        return None
+    lease = int(f["lease"][:-1])
+    if not 10 <= lease <= 120 or ("branch" in f and (".." in f["branch"] or f["branch"].endswith(("/", ".lock")))):
+        return None
+    o, _, n = f["repo"].partition("/")
+    if not github.valid_slug(o, n):
+        return None
+    out: dict = dict(f)
+    out["seq"], out["lease_min"] = int(f["seq"]), lease
+    if "issue" in f:
+        out["issue"] = int(f["issue"])
+    return out
+
+
+def presence_body(lines: list[str]) -> str:
+    """The comment: the marker, then the lines (one per board, at most PRESENCE_LINES_MAX, sorted by nid so two boards build the same text). ValueError when a line is not one."""
+    if not lines or len(lines) > PRESENCE_LINES_MAX or any(parse_line(x) is None for x in lines):
+        raise ValueError("bad presence body")
+    nids = [parse_line(x)["nid"] for x in lines]
+    if len(set(nids)) != len(nids):
+        raise ValueError("two lines of one board")
+    body = PRESENCE_MARKER + "\n" + "\n".join(sorted(lines, key=lambda x: parse_line(x)["nid"]))
+    if len(body) > PRESENCE_BODY_MAX:
+        raise ValueError("presence body too long")
+    return body
+
+
+def parse_body(body) -> list[dict] | None:
+    """The lines of a presence comment, or None when it is not one: longer than PRESENCE_BODY_MAX (checked before anything else), or the first line is not the marker. A line that
+    does not parse is dropped; a second line of the same board is dropped; at most PRESENCE_LINES_MAX lines. Each line dict keeps its literal text in `raw`."""
+    if not isinstance(body, str) or len(body) > PRESENCE_BODY_MAX:
+        return None
+    head, _, rest = body.replace("\r\n", "\n").partition("\n")
+    if head != PRESENCE_MARKER:
+        return None
+    out, seen = [], set()
+    for raw in rest.split("\n")[:PRESENCE_LINES_MAX * 2]:
+        f = parse_line(raw)
+        if f is None or f["nid"] in seen:
+            continue
+        seen.add(f["nid"])
+        f["raw"] = raw
+        out.append(f)
+        if len(out) >= PRESENCE_LINES_MAX:
+            break
+    return out
+
+
+def _num(v) -> float | None:
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v else None
+
+
+def presence_live(seq_seen_at, moved: bool, updated_at, server_now, lease_min, active: bool) -> tuple[str, int | None]:
+    """(word, seconds since last seen) of one board's line, on GitHub's clock only (never this board's clock).
+
+    `seq_seen_at` is the Date header of the read that first saw the line's CURRENT sequence number, `moved` is True when an earlier read saw another number for that board (the
+    number advanced between two reads), `updated_at` the comment's own time, `server_now` the Date of the latest read. The line changed no later than both `updated_at` and
+    `seq_seen_at`, so its age is `server_now - min(updated_at, seq_seen_at)`.
+      live         the number advanced AND the line is younger than the lease (idle: the same, with no session running or waiting on a person)
+      unconfirmed  younger than the lease, but the number has not been seen to move yet (a first read): not live
+      stale        older than the lease (a moved `updated_at` alone, which a sibling board's line or a maintainer's edit also moves, keeps nothing live)
+      gone         older than 24 h (hidden, not removed)
+      unknown      no clock from GitHub: not live (fail closed)"""
+    now, upd, seen = _num(server_now), _num(updated_at), _num(seq_seen_at)
+    if now is None or upd is None:
+        return "unknown", None
+    try:
+        lease = max(10, min(120, int(lease_min))) * 60
+    except (TypeError, ValueError):
+        lease = PRESENCE_LEASE_MIN * 60
+    basis = upd if seen is None else min(upd, seen)
+    age = max(0, int(now - basis))
+    if moved is True and seen is not None and age < lease:
+        return ("live" if active else "idle"), age
+    if age >= PRESENCE_GONE_S:
+        return "gone", age
+    if age >= lease:
+        return "stale", age
+    return "unconfirmed", age
+
+
+def _presence_person(read: dict, owner: str, name: str) -> list[tuple[dict, dict]]:
+    """(user, board) of every presence line of a read, with its live word; gone lines are left out (gone hides a line, it does not remove it)."""
+    pres = read.get("presence") if isinstance(read.get("presence"), dict) else None
+    if not pres:
+        return []
+    server_now = pres.get("server_now") if isinstance(pres.get("server_now"), (int, float)) and not isinstance(pres.get("server_now"), bool) else None
+    out = []
+    for ln in (pres.get("lines") or [])[:100]:
+        if not isinstance(ln, dict):
+            continue
+        user = user_of(ln.get("user"))
+        state = ln.get("state") if ln.get("state") in PRESENCE_STATES else None
+        if user is None or state is None:
+            continue
+        active = state in ("running", "needs_you")
+        word, age = presence_live(ln.get("seq_seen_at"), ln.get("moved") is True, _epoch(ln.get("updated_at")), server_now, ln.get("lease_min") or PRESENCE_LEASE_MIN, active)
+        if word == "gone":
+            continue
+        n = number_of(ln.get("issue"))
+        b = branch_of(ln.get("branch")) if isinstance(ln.get("branch"), str) else None
+        out.append((user, {"node": text(ln.get("node"), 40), "live": word, "last_seen_s": age, "seq": ln.get("seq") if isinstance(ln.get("seq"), int) else None,
+                           "state": state, "agent": ln.get("agent") if ln.get("agent") in PRESENCE_AGENTS else None,
+                           "issue": n, "issue_url": issue_url(owner, name, n) if n else None, "branch": b, "branch_url": branch_url(owner, name, b) if b else None,
+                           "phase": ln.get("phase") if ln.get("phase") in PRESENCE_PHASES else None,
+                           "since": iso_of((ln.get("since") or "")[:-1] + ":00Z") if isinstance(ln.get("since"), str) else None,
+                           "last": iso_of((ln.get("last") or "")[:-1] + ":00Z") if isinstance(ln.get("last"), str) else None,
+                           "updated_at": iso_of(ln.get("updated_at"))}))
+    return out
+
+
+_LIVE_RANK = {"live": 0, "idle": 1, "unconfirmed": 2, "stale": 3, "unknown": 4, "gone": 5}
+READ_PRESENCE = {                            # what the reader found of the status issue of a shared repository (the `presence` block of a repository)
+    "ok": "",
+    "none": "Nobody publishes presence in this repository yet.",
+    "closed": "The presence issue of this repository is closed, so presence is not read.",
+    "error": "The presence comments could not be read just now.",
+}
+
+
 # ---------------------------------------------------------------- the people
 
 class _People:
@@ -189,7 +385,7 @@ class _People:
         if p is None:
             if len(self.by) >= PEOPLE_MAX:
                 return None
-            p = self.by[key] = {"id": uid, "login": login, "you": False, "issues": [], "branches": [], "prs": [], "last_active": None}
+            p = self.by[key] = {"id": uid, "login": login, "you": False, "issues": [], "branches": [], "prs": [], "last_active": None, "presence": None}
         if p["login"] is None and login is not None:
             p["login"] = login
         if uid is not None and login is not None:
@@ -302,9 +498,20 @@ def people_of(read: dict, me_login: str | None, me_id: int | None, owner: str, n
         if hit is not None:
             hit["claim"] = claim
         ppl.seen(p, c.get("updated_at"))
+    for user, board in _presence_person(read, owner, name):                # issue #198: the live line of each board that publishes presence
+        p = ppl.person(user)
+        if p is None:
+            continue
+        pres = p["presence"] or {"live": "gone", "last_seen_s": None, "boards": []}
+        if len(pres["boards"]) < PRESENCE_LINES_MAX:
+            pres["boards"].append(board)
+        best = min(pres["boards"], key=lambda b: (_LIVE_RANK.get(b["live"], 9), b["last_seen_s"] if b["last_seen_s"] is not None else 10 ** 9))
+        pres["live"], pres["last_seen_s"] = best["live"], best["last_seen_s"]
+        p["presence"] = pres
     people = ppl.finish()
     counts = {"people": len(people), "teammates": sum(1 for p in people if not p["you"]), "issues": sum(len(p["issues"]) for p in people),
-              "branches": sum(len(p["branches"]) for p in people), "prs": sum(len(p["prs"]) for p in people), "unattributed_branches": unattributed}
+              "branches": sum(len(p["branches"]) for p in people), "prs": sum(len(p["prs"]) for p in people), "unattributed_branches": unattributed,
+              "live": sum(1 for p in people if not p["you"] and p["presence"] and p["presence"]["live"] in ("live", "idle"))}
     return people, counts
 
 
@@ -325,9 +532,9 @@ def repo_state(entry: dict, read: dict | None, me_login: str | None, me_id: int 
             "graph_failed": False, "private": None, "people": [], "counts": {"people": 0, "teammates": 0, "issues": 0, "branches": 0, "prs": 0, "unattributed_branches": 0},
             "truncated": {"issues": False, "pulls": False, "tips": False}}
     if not out["shared"]:
-        return {**out, **base}
+        return {**out, **base, "presence": None}
     if read is None or read.get("status") == "pending" and not read.get("read_at"):
-        return {**out, **base, "state": "loading", "message": MESSAGES["loading"]}
+        return {**out, **base, "presence": None, "state": "loading", "message": MESSAGES["loading"]}
     status = read.get("status") if read.get("status") in STATES else "error"
     read_at = read.get("read_at") if isinstance(read.get("read_at"), (int, float)) and not isinstance(read.get("read_at"), bool) else None
     age = max(0, int(now - read_at)) if read_at is not None else None
@@ -336,7 +543,12 @@ def repo_state(entry: dict, read: dict | None, me_login: str | None, me_id: int 
     msg = MESSAGES[status] if status != "rate_limited" or not wait else f"GitHub asked this board to wait {wait} s."
     gql_at = read.get("gql_at") if isinstance(read.get("gql_at"), (int, float)) and not isinstance(read.get("gql_at"), bool) else None
     tr = read.get("truncated") if isinstance(read.get("truncated"), dict) else {}
-    return {**out, "state": status, "message": msg, "wait_s": wait, "stale": status != "ok" or age is None or age > STALE_S,
+    pres = read.get("presence") if isinstance(read.get("presence"), dict) else None
+    pn = number_of(pres.get("issue")) if pres else None
+    presence = {"state": pres.get("status") if pres.get("status") in READ_PRESENCE else "error", "issue": pn, "issue_url": issue_url(so, sn, pn) if pn and so else None,
+                "truncated": pres.get("truncated") is True, "editor_check": pres.get("editor_check") if pres.get("editor_check") in ("ok", "failed", "none") else "none",
+                "message": READ_PRESENCE.get(pres.get("status"), READ_PRESENCE["error"])} if pres else None
+    return {**out, "presence": presence, "state": status, "message": msg, "wait_s": wait, "stale": status != "ok" or age is None or age > STALE_S,
             "read_at": _iso_now(read_at) if read_at is not None else None, "age_s": age, "gql_at": _iso_now(gql_at) if gql_at is not None else None,
             "graph_pending": gql_at is None, "graph_failed": bool(read.get("graph_error")), "private": read.get("private") if isinstance(read.get("private"), bool) else None, "people": people, "counts": counts,
             "truncated": {k: tr.get(k) is True for k in ("issues", "pulls", "tips")}}

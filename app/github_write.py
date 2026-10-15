@@ -14,6 +14,16 @@ The allow list is the ONLY thing this module can send. Each shape is built from 
     DELETE /repos/{o}/{r}/issues/{n}/labels/{name}   remove `ccboard:in-progress`
     POST   /repos/{o}/{r}/labels                     create `ccboard:in-progress`
 
+Team presence (issue #198, Team P2) adds, with `purpose` "presence" or "presence_remove" on the request:
+
+    POST   /repos/{o}/{r}/issues                     create the status issue: a fixed title, a fixed body and the one label `ccboard:presence`, nothing else
+    POST   /repos/{o}/{r}/labels                     create `ccboard:presence` (its fixed definition)
+    POST / PATCH / DELETE of a comment               the board's OWN presence comment, whose body is a presence body (app/team.py `presence_body`)
+
+A presence write does NOT need CCBOARD_EPIC_WRITES: it is gated by the board's own per-repository publish switch instead (`presence_gate`, installed by app/team_presence.py; with no
+gate installed, or the switch off for that repository, or the global pause on, nothing is built). An epic request can never carry a presence body or create an issue, and a presence
+request can never carry a claim body.
+
 No issue edit, no close, no pull request (a pull request is gitops', the one GitHub write that does not come through here), no repository setting, no other label, no comment that is not the board's own. Whose comment it is, is the caller's business (app/nodes_epics.py
 records the ids it created and re-reads before every edit); this module only guarantees the SHAPE. A comment body is never free text: it is made by `claim_body()` from validated fields and a
 fixed sentence, by `progress_body()` (issue #149: the alias, one phase sentence of a closed list, a branch name, a pull request link built from a validated repository and number and, only
@@ -38,7 +48,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from . import github
+from . import github, team
 from .config import settings
 
 LABEL = "ccboard:in-progress"
@@ -69,7 +79,18 @@ MESSAGES = {
     "unavailable": "GitHub did not answer (an error on its side), so the outcome of the write is not known",
     "bad_answer": "GitHub sent an answer this board could not read",
     "bad_request": "that is not a write this board will make",
+    "presence_off": "this board does not publish presence to that repository (the switch is off, or presence is paused)",
+    "limited": "the repository limits who may comment right now (interaction limits)",
 }
+# the status issue of team presence (issue #198): fixed words, never free text
+PRESENCE_LABEL = team.PRESENCE_LABEL
+PRESENCE_LABEL_COLOR = "c5def5"
+PRESENCE_LABEL_DESCRIPTION = "ccboard team presence: one status comment per person"
+PRESENCE_TITLE = "ccboard team presence"
+PRESENCE_ISSUE_BODY = ("ccboard boards of the people working in this repository keep one comment each here, saying which issue and branch they work on and whether a session is running. "
+                       "Only boards whose owner switched this on write here. Please leave this issue open; closing it stops presence for everyone.")
+PURPOSES = ("epic", "presence", "presence_remove")
+presence_gate = None                # app/team_presence.py installs fn(owner, repo, purpose) -> bool; None refuses every presence write (fail closed)
 
 # a claim comment's fields, as the writer accepts them (ASCII only: a name with a dot looks like a host name and is refused)
 ALIAS_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}")
@@ -89,6 +110,7 @@ _PATHS = (
     ("POST", re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/issues/[1-9][0-9]{0,8}/labels")),
     ("DELETE", re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/issues/[1-9][0-9]{0,8}/labels/ccboard%3Ain-progress")),
     ("POST", re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/labels")),
+    ("POST", re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/issues")),          # team presence: the status issue (fixed title, body and label only)
 )
 # ---------------------------------------------------------------- progress comments (issue #149): fixed sentences, validated fields, and a result that is redacted before it gets here
 PROGRESS_MARKER = "<!-- ccboard:progress v1 -->"
@@ -209,15 +231,33 @@ class Request(NamedTuple):
     method: str
     path: str
     body: dict | None
+    purpose: str = "epic"           # epic (the claim of #148, behind CCBOARD_EPIC_WRITES) or presence / presence_remove (team presence, behind the per-repository switch)
 
 
 def writes_enabled() -> bool:
     return settings.epic_writes is True
 
 
-def _off() -> None:
-    if not writes_enabled():
-        raise GhWriteError("writes_off")
+_REPO_OF = re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})(?:/|\Z)")
+
+
+def _off(req=None) -> None:
+    """Refuse before anything is built: an epic write while CCBOARD_EPIC_WRITES is off, a presence write the publish switch does not allow (no gate, switch off, paused)."""
+    purpose = getattr(req, "purpose", "epic") if req is not None else "epic"
+    if purpose == "epic":
+        if not writes_enabled():
+            raise GhWriteError("writes_off")
+        return
+    if purpose not in PURPOSES:
+        raise GhWriteError("bad_request")
+    m = _REPO_OF.match(req.path) if isinstance(getattr(req, "path", None), str) else None
+    gate = presence_gate
+    try:
+        ok = bool(m) and gate is not None and gate(m.group(1), m.group(2), purpose) is True
+    except Exception:
+        ok = False
+    if not ok:
+        raise GhWriteError("presence_off")
 
 
 # ---------------------------------------------------------------- the comment body: a fixed template of validated fields, never free text
@@ -292,9 +332,34 @@ def _valid_progress(body: str) -> bool:
     return not SECRETISH.search(body.replace(PROGRESS_MARKER, "").replace(RESULT_HEAD, ""))
 
 
+def valid_presence_body(body) -> bool:
+    """True only for a body app/team.py `presence_body` makes: the marker and one to PRESENCE_LINES_MAX whitelisted lines, each one exactly as the builder writes it (strict parser,
+    canonical order), and nothing secret-shaped in it."""
+    if not isinstance(body, str) or len(body) > team.PRESENCE_BODY_MAX or not body.startswith(team.PRESENCE_MARKER + "\n"):
+        return False
+    lines = team.parse_body(body)
+    if not lines:
+        return False
+    try:
+        canon = team.presence_body([ln["raw"] for ln in lines])
+    except ValueError:
+        return False
+    # the secret shape is looked for in the free value only (the branch): the repository is a checked slug, which may be 41 characters or more of letters and digits, and every
+    # other value is a fixed word, a time or a number
+    return canon == body and not any(ln.get("branch") and SECRETISH.search(ln["branch"]) for ln in lines)
+
+
+def valid_presence_removal(before, body, nid) -> bool:
+    """True when `body` is `before` without the line of board `nid` and with every other line exactly as it was (a removal edit may do nothing else)."""
+    old, new = team.parse_body(before), team.parse_body(body)
+    if old is None or new is None or not isinstance(nid, str) or not NID_RE.fullmatch(nid) or any(ln["nid"] == nid for ln in new):
+        return False
+    return sorted(ln["raw"] for ln in old if ln["nid"] != nid) == sorted(ln["raw"] for ln in new)
+
+
 def valid_body(body) -> bool:
     """True only for HELP_BODY, a body `claim_body` could have made (its pattern, its fields checked again, nothing secret-shaped) or a body `progress_body` could have made (its
-    pattern, its fields checked again, and a result that `redact_result` leaves as it is)."""
+    pattern, its fields checked again, and a result that `redact_result` leaves as it is). A presence body is NOT one: it is valid only on a presence request (valid_presence_body)."""
     if body == HELP_BODY:
         return True
     if isinstance(body, str) and body.startswith(PROGRESS_MARKER):
@@ -375,6 +440,38 @@ def label_create(owner, repo) -> Request:
     return Request("POST", f"{_slug(owner, repo)}/labels", {"name": LABEL, "color": LABEL_COLOR, "description": LABEL_DESCRIPTION})
 
 
+# ---- team presence (issue #198): the board's own presence comment, the status issue and its label. Each request carries its purpose; the gate decides before anything is built.
+
+def _pbody(body) -> dict:
+    if not valid_presence_body(body):
+        raise GhWriteError("bad_request")
+    return {"body": body}
+
+
+def presence_comment_create(owner, repo, n, body) -> Request:
+    return Request("POST", f"{_slug(owner, repo)}/issues/{_num(n)}/comments", _pbody(body), "presence")
+
+
+def presence_comment_edit(owner, repo, cid, body, *, removal: bool = False, nid=None, before=None) -> Request:
+    """Edit the board's own presence comment: to publish (purpose presence) or, with `removal`, to take this board's line out of it while other boards of the same person keep theirs.
+    A removal must say whose line (`nid`) and what the comment held (`before`), and `body` must be exactly that without the line of `nid`; any other body is refused."""
+    if removal and not valid_presence_removal(before, body, nid):
+        raise GhWriteError("bad_request")
+    return Request("PATCH", f"{_slug(owner, repo)}/issues/comments/{_cid(cid)}", _pbody(body), "presence_remove" if removal else "presence")
+
+
+def presence_comment_delete(owner, repo, cid) -> Request:
+    return Request("DELETE", f"{_slug(owner, repo)}/issues/comments/{_cid(cid)}", None, "presence_remove")
+
+
+def presence_issue_create(owner, repo) -> Request:
+    return Request("POST", f"{_slug(owner, repo)}/issues", {"title": PRESENCE_TITLE, "body": PRESENCE_ISSUE_BODY, "labels": [PRESENCE_LABEL]}, "presence")
+
+
+def presence_label_create(owner, repo) -> Request:
+    return Request("POST", f"{_slug(owner, repo)}/labels", {"name": PRESENCE_LABEL, "color": PRESENCE_LABEL_COLOR, "description": PRESENCE_LABEL_DESCRIPTION}, "presence")
+
+
 def allowed_write(method, path) -> bool:
     """True for the method and path shapes of the list at the top of this module and nothing else (owner and repository checked again against GitHub's rules)."""
     if not isinstance(method, str) or not isinstance(path, str) or len(path) > 300:
@@ -390,6 +487,20 @@ def _checked_body(req: Request) -> bytes | None:
     """The JSON the request carries, after checking that its KIND is the one its path takes (a comment path takes {body}, an assignees path {assignees: [login]}, the issue labels
     path {labels: [the one label]}, the repository labels path the one label's definition, and the delete paths of comments and labels take none) and every value in it."""
     b, p = req.body, req.path
+    if req.purpose != "epic":
+        if p.endswith("/comments") or "/issues/comments/" in p and req.method == "PATCH":
+            ok = isinstance(b, dict) and set(b) == {"body"} and valid_presence_body(b["body"]) and (req.purpose == "presence" or req.method == "PATCH")
+        elif p.endswith("/issues") and req.method == "POST":
+            ok = req.purpose == "presence" and b == {"title": PRESENCE_TITLE, "body": PRESENCE_ISSUE_BODY, "labels": [PRESENCE_LABEL]}
+        elif p.endswith("/labels") and "/issues/" not in p and req.method == "POST":
+            ok = req.purpose == "presence" and b == {"name": PRESENCE_LABEL, "color": PRESENCE_LABEL_COLOR, "description": PRESENCE_LABEL_DESCRIPTION}
+        else:
+            ok = b is None and req.method == "DELETE" and "/issues/comments/" in p and req.purpose == "presence_remove"     # only the board's own comment, never a label or an assignee
+        if not ok:
+            raise GhWriteError("bad_request")
+        return None if b is None else json.dumps(b, separators=(",", ":")).encode("utf-8")
+    if p.endswith("/issues"):
+        raise GhWriteError("bad_request")                                  # an epic write never creates an issue
     if p.endswith("/comments") or "/issues/comments/" in p and req.method == "PATCH":
         ok = isinstance(b, dict) and set(b) == {"body"} and valid_body(b["body"])
     elif p.endswith("/assignees"):
@@ -409,7 +520,7 @@ def _checked_body(req: Request) -> bytes | None:
 def argv(req: Request, exe: str = "gh") -> list[str]:
     """The one command line the writer builds: `gh api --include --method <M> -H ... --input - <path>` (the body goes on stdin). Refuses with writes_off BEFORE anything is
     built when CCBOARD_EPIC_WRITES is off, and with bad_request for any method and path that is not on the allow list or any body that is not made from validated fields."""
-    _off()
+    _off(req)
     if not isinstance(req, Request) or not allowed_write(req.method, req.path):
         raise GhWriteError("bad_request")
     _checked_body(req)
@@ -423,7 +534,7 @@ def argv(req: Request, exe: str = "gh") -> list[str]:
 
 def transport(req: Request) -> tuple[int, dict, Any]:
     """Run one write: (status, headers, json). Any HTTP status is returned; a failure of gh itself is a GhWriteError (a timeout is unknown=True). Reached only through `Queue.run`."""
-    _off()
+    _off(req)
     exe = shutil.which("gh")
     if not exe:
         raise GhWriteError("no_gh")
@@ -489,12 +600,12 @@ class Queue:
     def run(self, req: Request, tport=None) -> tuple[int, dict, Any]:
         """Send one request through the allow list, the pacing and the transport: (status, headers, json) for a 2xx. A 4xx/5xx is a GhWriteError (5xx and unknown outcomes have
         unknown=True; 403/429 set the back-off and are rate_limited when GitHub asked us to wait)."""
-        _off()
+        _off(req)
         argv(req)                                                       # the allow list and the body rule, before the lock and before any wait
         if not self.lock.acquire(timeout=self.lock_timeout):
             raise GhWriteError("busy")                              # another write holds the turn (or is waiting out a back-off): refused, nothing sent, never retried here
         try:
-            _off()
+            _off(req)
             self._pace()
             now = self.mono()
             self.last = now
@@ -510,6 +621,9 @@ class Queue:
                 raise GhWriteError("rate_limited", wait_s=wait, status=status)
             if status == 401:
                 raise GhWriteError("no_login", status=status)
+            msg = data.get("message") if isinstance(data, dict) else None
+            if status in (403, 422) and isinstance(msg, str) and "interaction" in msg[:300].lower():
+                raise GhWriteError("limited", status=status)                # the repository's interaction limits (a fixed reason; GitHub's text is not passed on)
             if status == 403:
                 raise GhWriteError("no_access", status=status)
             if status in (404, 410):
@@ -528,5 +642,5 @@ queue = Queue()
 
 def send(req: Request, q: "Queue | None" = None) -> tuple[int, dict, Any]:
     """Send `req` through the board's queue (or `q`). Raises GhWriteError("writes_off") before anything else when writes are off."""
-    _off()
+    _off(req)
     return (q or queue).run(req)

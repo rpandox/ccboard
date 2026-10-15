@@ -208,8 +208,8 @@ def parse_issues(items) -> list[dict]:
     """The open issues somebody is assigned to: a pull request GitHub lists among the issues is left out (it comes from the pull list)."""
     out = []
     for it in items[:ISSUES_MAX * 2] if isinstance(items, list) else []:
-        if not isinstance(it, dict) or "pull_request" in it:
-            continue
+        if not isinstance(it, dict) or "pull_request" in it or team.PRESENCE_LABEL in _labels(it):
+            continue                                                       # a pull request comes from the pull list; the presence status issue (issue #198) is not work
         n = team.number_of(it.get("number"))
         who = [u for u in (team.user_of(a) for a in (it.get("assignees") or [])[:10]) if u] if isinstance(it.get("assignees"), list) else []
         if n is None or not who:
@@ -310,7 +310,40 @@ def parse_claims(comments, issue: int, server_now: float | None) -> list[dict]:
 def new_read(slug: str) -> dict:
     return {"slug": slug, "status": "pending", "reason": None, "message": None, "wait_s": None, "read_at": None, "gql_at": None, "private": None, "fork": None,
             "default_branch": None, "issues": [], "pulls": [], "linked": {}, "tips": [], "claims": [], "closes": {}, "claims_at": 0.0, "graph_error": None,
-            "truncated": {"issues": False, "pulls": False, "tips": False}}
+            "truncated": {"issues": False, "pulls": False, "tips": False}, "presence": None}
+
+
+# ---------------------------------------------------------------- presence comments (issue #198, Team P2), read side
+
+PRESENCE_FIND_S = 600.0           # the status issue is looked up by its label this often (its comments every REST read)
+PRESENCE_PAGES = 3                # pages of 100 comments of the status issue: 300 comments at most, whatever else is in the thread
+PRESENCE_MEM_MAX = 2000
+PRESENCE_LOOKUPS_MAX = 8          # comments older than the editor query's window that one read asks about, one call each
+
+
+def presence_candidates(comments) -> tuple[list[dict], int]:
+    """(candidates, comments looked at) of a status issue's comments. A comment counts only when its user is a User with a numeric id and a login, its author is an owner, member or
+    collaborator (GitHub's author_association, as for claims), and its body is a presence body (capped at team.PRESENCE_BODY_MAX before any pattern). Everything else is ignored,
+    however many there are. Each candidate: {id, user{id, login}, created_at, updated_at, lines[...]}."""
+    out, seen = [], 0
+    for c in comments[:PRESENCE_PAGES * github.PER_PAGE] if isinstance(comments, list) else []:
+        seen += 1
+        if not isinstance(c, dict) or c.get("author_association") not in nodes_epics.ASSOCIATIONS:
+            continue
+        u = c.get("user") if isinstance(c.get("user"), dict) and c["user"].get("type") == "User" else None
+        who = team.user_of(u)
+        cid = c.get("id")
+        if who is None or who["id"] is None or who["login"] is None or isinstance(cid, bool) or not isinstance(cid, int) or cid <= 0:
+            continue
+        body = c.get("body")
+        if not isinstance(body, str) or len(body) > team.PRESENCE_BODY_MAX or not body.startswith(team.PRESENCE_MARKER):
+            continue
+        lines = team.parse_body(body)
+        upd, created = team.iso_of(c.get("updated_at")), team.iso_of(c.get("created_at"))
+        if not lines or not upd:
+            continue
+        out.append({"id": cid, "user": who, "created_at": created, "updated_at": upd, "lines": lines, "node_id": github.clean_node_id(c.get("node_id"))})
+    return out, seen
 
 
 # ---------------------------------------------------------------- the doctor's facts
@@ -370,6 +403,8 @@ class Poller:
         self.thread: threading.Thread | None = None
         self.pause_fn = pause or (lambda s: self.stop_ev.wait(s))
         self.loaded = False
+        self.pmem: dict[tuple, dict] = {}           # (repository key, person id, board nid) -> {seq, seen_at, moved}: what the presence reads saw, on GitHub's clock
+        self.verdicts: dict[tuple, bool] = {}       # (comment id, updated_at) -> last edited by its owner (or never edited)
 
     # ---- what the page reads
     def snapshot(self) -> dict[str, dict]:
@@ -511,6 +546,16 @@ class Poller:
             if rem < below:
                 return k
         return 1
+
+    def _editor_call(self, fn, *args):
+        """One GraphQL call of the presence editor check, counted against the poll's budget and followed by the usual gap."""
+        self._gate(1)
+        self.budget.add(self.mono(), 1)
+        self.calls += 1
+        try:
+            return fn(*args)
+        finally:
+            self.pause_fn(MIN_GAP)
 
     def _gate(self, cost: float) -> None:
         now = self.mono()
@@ -670,6 +715,14 @@ class Poller:
                     rep = self._get(github.comments_path(o, n, it["number"], 1, 100))
                     claims += parse_claims(rep.data, it["number"], github.server_time(rep.headers))
                 rd["claims_at"] = now
+            try:
+                self._presence(key, o, n, rd, now)
+            except github.GhReadError as perr:
+                with self.lock:
+                    rd["presence"] = {**(rd.get("presence") or {"issue": None, "lines": [], "server_now": None, "truncated": False, "editor_check": "none", "found_at": 0.0}),
+                                      "status": "error"}
+                if perr.reason == "rate_limited" or perr.reason in HARD:
+                    raise
             with self.lock:                                                                       # the REST part is shown whatever the GraphQL read does next
                 rd.update(status="ok", reason=None, message=None, wait_s=None, read_at=self.wall(), claims=claims, slug=e["slug"])
                 sc["rest"] = now + REST_S * self._factor()
@@ -700,6 +753,89 @@ class Poller:
             self._low(now, low.wait)
         except github.GhReadError as err:
             self._fail(key, err, now)
+
+    def _presence(self, key: str, o: str, n: str, rd: dict, now: float) -> None:
+        """Read the presence comments of the repository's status issue (issue #198): the issue by its label (every PRESENCE_FIND_S), its comments by conditional REST on every
+        read (a 304 parses nothing), the editor of every edited candidate by GraphQL only when the comments changed. A line is kept only when its comment passes
+        `presence_candidates` and was last edited by its own author; when the editor cannot be checked an edited comment is left out (fail closed). Liveness memory: the Date of
+        the read that first saw each board's sequence number."""
+        old = rd.get("presence") if isinstance(rd.get("presence"), dict) else None
+        pres = dict(old) if old else {"status": "none", "issue": None, "lines": [], "server_now": None, "truncated": False, "editor_check": "none", "found_at": -1e9, "cands": []}
+        if pres.get("issue") is None or now - pres.get("found_at", -1e9) >= PRESENCE_FIND_S:
+            rep = self._get(github.labeled_path(o, n, team.PRESENCE_LABEL, "all", 1, 30))
+            found = []
+            for it in rep.data if isinstance(rep.data, list) else []:
+                num = team.number_of(it.get("number")) if isinstance(it, dict) and "pull_request" not in it else None
+                if num and team.PRESENCE_LABEL in _labels(it):
+                    found.append((it.get("state") != "open", num))
+            found.sort()
+            pres["found_at"] = now
+            if not found or found[0][0]:
+                pres.update(status="closed" if found else "none", issue=None, lines=[], cands=[], server_now=rep.server_now)
+                with self.lock:
+                    rd["presence"] = pres
+                return
+            if found[0][1] != pres.get("issue"):
+                pres.update(issue=found[0][1], cands=[])
+        issue = pres["issue"]
+        comments, changed, truncated, server_now = [], False, False, None
+        for page in range(1, PRESENCE_PAGES + 1):
+            rep = self._get(github.comments_path(o, n, issue, page, 100))
+            server_now = rep.server_now if server_now is None else server_now
+            changed = changed or rep.source == "network"
+            data = rep.data if isinstance(rep.data, list) else []
+            comments += data
+            if len(data) < github.PER_PAGE or 'rel="next"' not in (rep.headers.get("link") or ""):
+                break
+        else:
+            truncated = True
+        if changed or old is None or not old.get("cands") and comments:
+            cands, _ = presence_candidates(comments)
+            pres["truncated"] = truncated
+        else:
+            cands = pres.get("cands") or []
+        need = [c for c in cands if c["updated_at"] != c["created_at"] and (c["id"], c["updated_at"]) not in self.verdicts]
+        check = "ok"
+        if need:
+            try:
+                status, headers, data = self._editor_call(github.graphql_editors, o, n, issue)
+                ed = github.parse_editors(data) if status == 200 and not github.graphql_reason(data) else None
+                if ed is None:
+                    check = "failed"
+                else:
+                    looked = 0
+                    for c in need:
+                        v = ed.get(c["id"])
+                        if v is None and c.get("node_id") and looked < PRESENCE_LOOKUPS_MAX:        # older than the window of the query: ask for that one comment by its id
+                            looked += 1
+                            status, headers, data = self._editor_call(github.graphql_editor, c["node_id"])
+                            v = github.parse_editor(data, c["id"]) if status == 200 and not github.graphql_reason(data) else None
+                        if v is None:
+                            check = "failed"                                       # no verdict for this comment: it is left out, and the block says so
+                        else:
+                            self.verdicts[(c["id"], c["updated_at"])] = (not v["edited"]) or (v["editor"] is not None and v["editor"] == c["user"]["id"])
+            except (github.GhReadError, _Defer):
+                check = "failed"
+            if len(self.verdicts) > PRESENCE_MEM_MAX:
+                self.verdicts.clear()
+        lines = []
+        for c in cands:
+            if c["updated_at"] != c["created_at"] and self.verdicts.get((c["id"], c["updated_at"])) is not True:
+                continue                                                   # edited by somebody else, or not known who edited it: dropped
+            for ln in c["lines"]:
+                mk = (key, c["user"]["id"], ln["nid"])
+                mem = self.pmem.get(mk)
+                if mem is None or mem["seq"] != ln["seq"]:
+                    mem = {"seq": ln["seq"], "seen_at": server_now, "moved": mem is not None and ln["seq"] > mem["seq"]}
+                    self.pmem[mk] = mem
+                lines.append({"user": c["user"], "node": ln["node"], "nid": ln["nid"], "seq": ln["seq"], "lease_min": ln["lease_min"], "state": ln["state"],
+                              "agent": ln.get("agent"), "since": ln.get("since"), "last": ln.get("last"), "issue": ln.get("issue"), "branch": ln.get("branch"),
+                              "phase": ln.get("phase"), "updated_at": c["updated_at"], "seq_seen_at": mem["seen_at"], "moved": mem["moved"]})
+        if len(self.pmem) > PRESENCE_MEM_MAX:
+            self.pmem.clear()
+        pres.update(status="ok", lines=lines, cands=cands, server_now=server_now, editor_check=check if need else ("ok" if cands else "none"))
+        with self.lock:
+            rd["presence"] = pres
 
     def _low(self, now: float, wait: float) -> None:
         with self.lock:

@@ -1104,7 +1104,7 @@ function settingsTeamOpen() {
       () => { settingsPage.teamAsked = false; if (settingsPage.refs) { const q = settingsPage.refs.panels.team; q.textContent = ''; q.append(el('p', { class: 'bad set-err', role: 'alert', text: 'The team settings did not load. Reload the page to try again.' })); } });
     return;
   }
-  settingsPage.teamStop = Team.watch(() => { if (settingsPage.refs && settingsPage.active === 'team') settingsFill('team', false); });
+  settingsPage.teamStop = Team.watch(() => { if (settingsPage.refs && settingsPage.active === 'team') settingsFill('team', false); }, { presence: true });      // issue #198: this tab also reads the publishing settings
 }
 
 function settingsTeamClose() {

@@ -1,5 +1,5 @@
 {
- "_note": "Demo answers for /api/team/state (issue #197). ?demo=1 shows base: example/website is shared with alice (you) and bob, the other two repositories are off. ?team=<name> lays a variant over example/website: body patches the top level, repo patches that repository's block. Names: off, loading, empty, alone, sso, forbidden, notfound, rate, low, stale, nologin, nogh, error, pending, cut, hostile. Times follow the clock (demoRebase). A repository switched on in the demo answers state ok with nobody else in it, because no GitHub is behind the page.",
+ "_note": "Demo answers for /api/team/state (issues #197, #198). ?demo=1 shows base: example/website is shared with alice (you) and bob, the other two repositories are off; bob has two boards that publish a live line. ?team=<name> lays a variant over example/website: body patches the top level, repo patches that repository's block, lines sets the presence of a person by login (null: no line). Names: off, loading, empty, alone, sso, forbidden, notfound, rate, low, stale, nologin, nogh, error, pending, cut, hostile, lineneeds, lineended, lineunconfirmed, linestale, lineunknown, linegone, linenone, lineclosed, lineerror, linecut. Times follow the clock (demoRebase). A repository switched on in the demo answers state ok with nobody else in it, because no GitHub is behind the page.",
  "demo": {
   "epoch": 1790996400
  },
@@ -62,7 +62,29 @@
         "issue": 148
        }
       ],
-      "prs": []
+      "prs": [],
+      "presence": {
+       "live": "live",
+       "last_seen_s": 180,
+       "boards": [
+        {
+         "node": "node-a",
+         "live": "live",
+         "last_seen_s": 180,
+         "seq": 14,
+         "state": "running",
+         "agent": "claude",
+         "issue": 148,
+         "issue_url": "https://github.com/example/website/issues/148",
+         "branch": "alice/shipping-total",
+         "branch_url": "https://github.com/example/website/tree/alice/shipping-total",
+         "phase": "running",
+         "since": "2026-10-03T00:50:00Z",
+         "last": "2026-10-03T02:45:00Z",
+         "updated_at": "2026-10-03T02:57:00Z"
+        }
+       ]
+      }
      },
      {
       "id": 1002,
@@ -141,7 +163,45 @@
         "closes": [],
         "updated_at": "2026-10-02T02:00:00Z"
        }
-      ]
+      ],
+      "presence": {
+       "live": "live",
+       "last_seen_s": 240,
+       "boards": [
+        {
+         "node": "willow-3f",
+         "live": "live",
+         "last_seen_s": 240,
+         "seq": 31,
+         "state": "running",
+         "agent": "claude",
+         "issue": 152,
+         "issue_url": "https://github.com/example/website/issues/152",
+         "branch": "bob/coupon-total",
+         "branch_url": "https://github.com/example/website/tree/bob/coupon-total",
+         "phase": "running",
+         "since": "2026-10-03T01:30:00Z",
+         "last": "2026-10-03T02:45:00Z",
+         "updated_at": "2026-10-03T02:56:00Z"
+        },
+        {
+         "node": "ash-91",
+         "live": "idle",
+         "last_seen_s": 600,
+         "seq": 8,
+         "state": "idle",
+         "agent": "codex",
+         "issue": null,
+         "issue_url": null,
+         "branch": null,
+         "branch_url": null,
+         "phase": null,
+         "since": "2026-10-03T02:10:00Z",
+         "last": "2026-10-03T02:30:00Z",
+         "updated_at": "2026-10-03T02:50:00Z"
+        }
+       ]
+      }
      }
     ],
     "counts": {
@@ -150,14 +210,23 @@
      "issues": 3,
      "branches": 3,
      "prs": 2,
-     "unattributed_branches": 0
+     "unattributed_branches": 0,
+     "live": 1
     },
     "truncated": {
      "issues": false,
      "pulls": false,
      "tips": false
     },
-    "graph_failed": false
+    "graph_failed": false,
+    "presence": {
+     "state": "ok",
+     "issue": 5,
+     "issue_url": "https://github.com/example/website/issues/5",
+     "truncated": false,
+     "editor_check": "ok",
+     "message": ""
+    }
    },
    {
     "repo_slug": "github.com/example/api",
@@ -186,14 +255,16 @@
      "issues": 0,
      "branches": 0,
      "prs": 0,
-     "unattributed_branches": 0
+     "unattributed_branches": 0,
+     "live": 0
     },
     "truncated": {
      "issues": false,
      "pulls": false,
      "tips": false
     },
-    "graph_failed": false
+    "graph_failed": false,
+    "presence": null
    },
    {
     "repo_slug": "github.com/example/ccboard",
@@ -222,14 +293,16 @@
      "issues": 0,
      "branches": 0,
      "prs": 0,
-     "unattributed_branches": 0
+     "unattributed_branches": 0,
+     "live": 0
     },
     "truncated": {
      "issues": false,
      "pulls": false,
      "tips": false
     },
-    "graph_failed": false
+    "graph_failed": false,
+    "presence": null
    }
   ]
  },
@@ -253,8 +326,10 @@
      "issues": 0,
      "branches": 0,
      "prs": 0,
-     "unattributed_branches": 0
-    }
+     "unattributed_branches": 0,
+     "live": 0
+    },
+    "presence": null
    }
   },
   "loading": {
@@ -272,8 +347,10 @@
      "issues": 0,
      "branches": 0,
      "prs": 0,
-     "unattributed_branches": 0
-    }
+     "unattributed_branches": 0,
+     "live": 0
+    },
+    "presence": null
    }
   },
   "empty": {
@@ -285,7 +362,8 @@
      "issues": 0,
      "branches": 0,
      "prs": 0,
-     "unattributed_branches": 0
+     "unattributed_branches": 0,
+     "live": 0
     }
    }
   },
@@ -321,7 +399,29 @@
         "issue": 148
        }
       ],
-      "prs": []
+      "prs": [],
+      "presence": {
+       "live": "live",
+       "last_seen_s": 180,
+       "boards": [
+        {
+         "node": "node-a",
+         "live": "live",
+         "last_seen_s": 180,
+         "seq": 14,
+         "state": "running",
+         "agent": "claude",
+         "issue": 148,
+         "issue_url": "https://github.com/example/website/issues/148",
+         "branch": "alice/shipping-total",
+         "branch_url": "https://github.com/example/website/tree/alice/shipping-total",
+         "phase": "running",
+         "since": "2026-10-03T00:50:00Z",
+         "last": "2026-10-03T02:45:00Z",
+         "updated_at": "2026-10-03T02:57:00Z"
+        }
+       ]
+      }
      }
     ],
     "counts": {
@@ -330,7 +430,8 @@
      "issues": 1,
      "branches": 1,
      "prs": 0,
-     "unattributed_branches": 0
+     "unattributed_branches": 0,
+     "live": 0
     }
    }
   },
@@ -349,7 +450,8 @@
      "issues": 0,
      "branches": 0,
      "prs": 0,
-     "unattributed_branches": 0
+     "unattributed_branches": 0,
+     "live": 0
     }
    }
   },
@@ -368,7 +470,8 @@
      "issues": 0,
      "branches": 0,
      "prs": 0,
-     "unattributed_branches": 0
+     "unattributed_branches": 0,
+     "live": 0
     }
    }
   },
@@ -387,7 +490,8 @@
      "issues": 0,
      "branches": 0,
      "prs": 0,
-     "unattributed_branches": 0
+     "unattributed_branches": 0,
+     "live": 0
     }
    }
   },
@@ -436,7 +540,8 @@
      "issues": 0,
      "branches": 0,
      "prs": 0,
-     "unattributed_branches": 0
+     "unattributed_branches": 0,
+     "live": 0
     }
    }
   },
@@ -458,7 +563,8 @@
      "issues": 0,
      "branches": 0,
      "prs": 0,
-     "unattributed_branches": 0
+     "unattributed_branches": 0,
+     "live": 0
     }
    }
   },
@@ -490,7 +596,8 @@
      "issues": 3,
      "branches": 3,
      "prs": 2,
-     "unattributed_branches": 3
+     "unattributed_branches": 3,
+     "live": 0
     }
    }
   },
@@ -516,7 +623,29 @@
        }
       ],
       "branches": [],
-      "prs": []
+      "prs": [],
+      "presence": {
+       "live": "live",
+       "last_seen_s": 60,
+       "boards": [
+        {
+         "node": "<b>x</b>‮\u0007",
+         "live": "live",
+         "last_seen_s": 60,
+         "seq": 3,
+         "state": "running",
+         "agent": "claude",
+         "issue": 7,
+         "issue_url": "https://github.com/example/website/issues/7",
+         "branch": null,
+         "branch_url": null,
+         "phase": "running",
+         "since": "2026-10-03T02:00:00Z",
+         "last": "2026-10-03T02:45:00Z",
+         "updated_at": "2026-10-03T02:58:00Z"
+        }
+       ]
+      }
      }
     ],
     "counts": {
@@ -525,7 +654,501 @@
      "issues": 3,
      "branches": 3,
      "prs": 2,
-     "unattributed_branches": 0
+     "unattributed_branches": 0,
+     "live": 0
+    }
+   }
+  },
+  "lineneeds": {
+   "lines": {
+    "bob": {
+     "live": "live",
+     "last_seen_s": 120,
+     "boards": [
+      {
+       "node": "willow-3f",
+       "live": "live",
+       "last_seen_s": 120,
+       "seq": 31,
+       "state": "needs_you",
+       "agent": "claude",
+       "issue": 152,
+       "issue_url": "https://github.com/example/website/issues/152",
+       "branch": "bob/coupon-total",
+       "branch_url": "https://github.com/example/website/tree/bob/coupon-total",
+       "phase": "running",
+       "since": "2026-10-03T01:30:00Z",
+       "last": "2026-10-03T02:45:00Z",
+       "updated_at": "2026-10-03T02:56:00Z"
+      }
+     ]
+    }
+   }
+  },
+  "lineended": {
+   "lines": {
+    "bob": {
+     "live": "idle",
+     "last_seen_s": 300,
+     "boards": [
+      {
+       "node": "willow-3f",
+       "live": "idle",
+       "last_seen_s": 300,
+       "seq": 31,
+       "state": "ended",
+       "agent": "claude",
+       "issue": null,
+       "issue_url": null,
+       "branch": null,
+       "branch_url": null,
+       "phase": null,
+       "since": "2026-10-03T01:30:00Z",
+       "last": "2026-10-03T02:30:00Z",
+       "updated_at": "2026-10-03T02:56:00Z"
+      }
+     ]
+    }
+   }
+  },
+  "lineunconfirmed": {
+   "lines": {
+    "bob": {
+     "live": "unconfirmed",
+     "last_seen_s": 90,
+     "boards": [
+      {
+       "node": "willow-3f",
+       "live": "unconfirmed",
+       "last_seen_s": 90,
+       "seq": 31,
+       "state": "running",
+       "agent": "claude",
+       "issue": 152,
+       "issue_url": "https://github.com/example/website/issues/152",
+       "branch": "bob/coupon-total",
+       "branch_url": "https://github.com/example/website/tree/bob/coupon-total",
+       "phase": "running",
+       "since": "2026-10-03T01:30:00Z",
+       "last": "2026-10-03T02:45:00Z",
+       "updated_at": "2026-10-03T02:56:00Z"
+      }
+     ]
+    }
+   }
+  },
+  "linestale": {
+   "lines": {
+    "bob": {
+     "live": "stale",
+     "last_seen_s": 7500,
+     "boards": [
+      {
+       "node": "willow-3f",
+       "live": "stale",
+       "last_seen_s": 7500,
+       "seq": 31,
+       "state": "running",
+       "agent": "claude",
+       "issue": 152,
+       "issue_url": "https://github.com/example/website/issues/152",
+       "branch": "bob/coupon-total",
+       "branch_url": "https://github.com/example/website/tree/bob/coupon-total",
+       "phase": "running",
+       "since": "2026-10-03T01:30:00Z",
+       "last": "2026-10-03T02:45:00Z",
+       "updated_at": "2026-10-03T00:55:00Z"
+      }
+     ]
+    }
+   }
+  },
+  "lineunknown": {
+   "lines": {
+    "bob": {
+     "live": "unknown",
+     "last_seen_s": null,
+     "boards": [
+      {
+       "node": "willow-3f",
+       "live": "unknown",
+       "last_seen_s": null,
+       "seq": 31,
+       "state": "running",
+       "agent": "claude",
+       "issue": 152,
+       "issue_url": "https://github.com/example/website/issues/152",
+       "branch": "bob/coupon-total",
+       "branch_url": "https://github.com/example/website/tree/bob/coupon-total",
+       "phase": "running",
+       "since": "2026-10-03T01:30:00Z",
+       "last": "2026-10-03T02:45:00Z",
+       "updated_at": "2026-10-03T02:56:00Z"
+      }
+     ]
+    }
+   }
+  },
+  "linegone": {
+   "lines": {
+    "bob": null
+   }
+  },
+  "linenone": {
+   "lines": {
+    "alice": null,
+    "bob": null
+   },
+   "repo": {
+    "presence": {
+     "state": "none",
+     "issue": null,
+     "issue_url": null,
+     "truncated": false,
+     "editor_check": "none",
+     "message": "Nobody publishes presence in this repository yet."
+    }
+   }
+  },
+  "lineclosed": {
+   "lines": {
+    "alice": null,
+    "bob": null
+   },
+   "repo": {
+    "presence": {
+     "state": "closed",
+     "issue": 5,
+     "issue_url": "https://github.com/example/website/issues/5",
+     "truncated": false,
+     "editor_check": "none",
+     "message": "The presence issue of this repository is closed, so presence is not read."
+    }
+   }
+  },
+  "lineerror": {
+   "lines": {
+    "alice": null,
+    "bob": null
+   },
+   "repo": {
+    "presence": {
+     "state": "error",
+     "issue": 5,
+     "issue_url": "https://github.com/example/website/issues/5",
+     "truncated": false,
+     "editor_check": "none",
+     "message": "The presence comments could not be read just now."
+    }
+   }
+  },
+  "linecut": {
+   "lines": {
+    "alice": null
+   },
+   "repo": {
+    "presence": {
+     "state": "ok",
+     "issue": 5,
+     "issue_url": "https://github.com/example/website/issues/5",
+     "truncated": true,
+     "editor_check": "failed",
+     "message": ""
+    }
+   }
+  }
+ },
+ "presence": {
+  "_note": "Demo answers for /api/team/presence (issue #198), the Settings > Team part. ?demo=1 shows base: example/website publishes (private repository), example/api and example/ccboard do not; example/ccboard is public and example/api is not known private, so switching either on asks for the second confirm. ?presence=<name> lays a variant over example/website: body patches the top level, repo patches that block. Names: off, paused, private, confirm, waiting, removing, issuesoff, archived, locked, closed, deleted, nocreate, nolabel, forbidden, limited, ratelimit, toolong, budget, error; publishing is the base. Times follow the clock (demoRebase); last_body is the literal text and team.js moves its times the same way.",
+  "base": {
+   "api": 1,
+   "paused": false,
+   "me": {
+    "login": "alice",
+    "id": 1001
+   },
+   "node": "node-a",
+   "lease_min": 30,
+   "heartbeat_s": [
+    600,
+    900
+   ],
+   "budget": {
+    "per_hour": 240,
+    "boards": 1,
+    "board_share": 240,
+    "spent_hour": 14
+   },
+   "repos": [
+    {
+     "repo_slug": "github.com/example/website",
+     "slug": "example/website",
+     "local": [
+      {
+       "project": "phasezero",
+       "repo": "website"
+      }
+     ],
+     "read": true,
+     "publish": true,
+     "private": false,
+     "public": false,
+     "public_confirmed": false,
+     "state": "publishing",
+     "message": "",
+     "issue": 5,
+     "issue_url": "https://github.com/example/website/issues/5",
+     "published": true,
+     "last_body": "<!-- ccboard:presence v1 -->\nccboard presence: node=node-a nid=1a2b3c4d repo=example/website seq=14 at=2026-10-03T02:57:00Z lease=30m state=running agent=claude since=2026-10-03T00:50Z last=2026-10-03T02:45Z issue=148 branch=alice/shipping-total phase=running",
+     "last_at": "2026-10-03T02:57:00Z",
+     "boards": 1
+    },
+    {
+     "repo_slug": "github.com/example/api",
+     "slug": "example/api",
+     "local": [
+      {
+       "project": "phasezero",
+       "repo": "NestJs-Ecommerce-Backend"
+      }
+     ],
+     "read": false,
+     "publish": false,
+     "private": false,
+     "public": null,
+     "public_confirmed": false,
+     "state": "off",
+     "message": "Not published. Nothing is written to GitHub for this repository.",
+     "issue": null,
+     "issue_url": null,
+     "published": false,
+     "last_body": null,
+     "last_at": null,
+     "boards": 1
+    },
+    {
+     "repo_slug": "github.com/example/ccboard",
+     "slug": "example/ccboard",
+     "local": [
+      {
+       "project": "ccboard",
+       "repo": "ccboard"
+      }
+     ],
+     "read": false,
+     "publish": false,
+     "private": false,
+     "public": true,
+     "public_confirmed": false,
+     "state": "off",
+     "message": "Not published. Nothing is written to GitHub for this repository.",
+     "issue": null,
+     "issue_url": null,
+     "published": false,
+     "last_body": null,
+     "last_at": null,
+     "boards": 1
+    }
+   ],
+   "opt_in_text": "Publishing writes one comment for you on a ccboard presence issue in this repository: your GitHub login, the issue and branch you work on, your session's state and agent, when it started and when you were last active (to 15 minutes). Anyone who can read the repository can read it. GitHub keeps the edit history of a comment, and everyone who can read the repository can open it while the comment exists. Some organizations do not allow tools to write to their issues.",
+   "public_lists": [
+    "your GitHub login",
+    "the issue number you work on",
+    "the state and agent of your session",
+    "when it started and when you were last active (to 15 minutes)"
+   ],
+   "audit": [
+    {
+     "at": "2026-10-03T02:57:00Z",
+     "action": "presence_publish",
+     "target": "example/website",
+     "status": "ok",
+     "detail": null
+    },
+    {
+     "at": "2026-10-03T00:50:30Z",
+     "action": "presence_issue",
+     "target": "example/website",
+     "status": "ok",
+     "detail": null
+    },
+    {
+     "at": "2026-10-03T00:50:10Z",
+     "action": "presence_label",
+     "target": "example/website",
+     "status": "ok",
+     "detail": null
+    },
+    {
+     "at": "2026-10-03T00:50:00Z",
+     "action": "presence_on",
+     "target": "example/website",
+     "status": "ok",
+     "detail": null
+    }
+   ]
+  },
+  "variants": {
+   "off": {
+    "repo": {
+     "state": "off",
+     "message": "Not published. Nothing is written to GitHub for this repository.",
+     "publish": false,
+     "issue": null,
+     "issue_url": null,
+     "published": false,
+     "last_body": null,
+     "last_at": null
+    }
+   },
+   "paused": {
+    "body": {
+     "paused": true
+    },
+    "repo": {
+     "state": "paused",
+     "message": "Team presence is paused on this board. Nothing is written.",
+     "published": false,
+     "last_body": null,
+     "last_at": null
+    }
+   },
+   "private": {
+    "repo": {
+     "state": "private",
+     "message": "Private: this board does not publish here and has taken its line down.",
+     "private": true,
+     "published": false,
+     "last_body": null,
+     "last_at": null
+    }
+   },
+   "confirm": {
+    "repo": {
+     "state": "needs_confirm",
+     "message": "This repository is public. Publishing waits for the second confirm.",
+     "public": true,
+     "published": false,
+     "last_body": null,
+     "last_at": null
+    }
+   },
+   "waiting": {
+    "body": {
+     "me": null
+    },
+    "repo": {
+     "state": "waiting",
+     "message": "Waiting to learn which GitHub login gh uses on this board.",
+     "published": false,
+     "last_body": null,
+     "last_at": null
+    }
+   },
+   "removing": {
+    "repo": {
+     "state": "removing",
+     "message": "Taking this board's line off GitHub."
+    }
+   },
+   "issuesoff": {
+    "repo": {
+     "state": "issues_disabled",
+     "message": "Issues are turned off in this repository, so there is nowhere to publish.",
+     "published": false,
+     "last_body": null,
+     "last_at": null
+    }
+   },
+   "archived": {
+    "repo": {
+     "state": "archived",
+     "message": "The repository is archived, so nothing can be written to it."
+    }
+   },
+   "locked": {
+    "repo": {
+     "state": "locked",
+     "message": "The presence issue is locked, so the comment cannot be changed."
+    }
+   },
+   "closed": {
+    "repo": {
+     "state": "closed",
+     "message": "The presence issue is closed, so this board stopped publishing. Reopen it on GitHub to go on."
+    }
+   },
+   "deleted": {
+    "repo": {
+     "state": "deleted",
+     "message": "The presence issue is gone, so this board stopped publishing. Switch publishing off and on again to make a new one."
+    }
+   },
+   "nocreate": {
+    "repo": {
+     "state": "no_create",
+     "message": "This GitHub login may not open issues here, so the presence issue cannot be made.",
+     "issue": null,
+     "issue_url": null,
+     "published": false,
+     "last_body": null,
+     "last_at": null
+    }
+   },
+   "nolabel": {
+    "repo": {
+     "state": "no_label",
+     "message": "This GitHub login may not create or add labels here (that needs triage rights), so the presence issue cannot be marked.",
+     "issue": null,
+     "issue_url": null,
+     "published": false,
+     "last_body": null,
+     "last_at": null
+    }
+   },
+   "forbidden": {
+    "repo": {
+     "state": "forbidden",
+     "message": "GitHub refused the write for this login."
+    }
+   },
+   "limited": {
+    "repo": {
+     "state": "limited",
+     "message": "The repository limits who may comment right now (interaction limits)."
+    }
+   },
+   "ratelimit": {
+    "repo": {
+     "state": "rate_limited",
+     "message": "GitHub asked this board to wait."
+    }
+   },
+   "toolong": {
+    "repo": {
+     "state": "too_long",
+     "message": "The presence issue has more than 300 comments, so this board cannot be sure which one is its own. It writes nothing there, and cannot take its line down either."
+    }
+   },
+   "budget": {
+    "body": {
+     "budget": {
+      "per_hour": 240,
+      "boards": 2,
+      "board_share": 120,
+      "spent_hour": 120
+     }
+    },
+    "repo": {
+     "state": "budget",
+     "message": "This login's hourly presence budget is spent; the next write waits.",
+     "boards": 2
+    }
+   },
+   "error": {
+    "repo": {
+     "state": "error",
+     "message": "GitHub could not be written just now."
     }
    }
   }

@@ -147,7 +147,7 @@ def _no_real_tailscale(monkeypatch):
 def _no_real_github_reader(monkeypatch):
     """The epic reader (app/github.py `api`, which runs `gh api`) and the login lookup behind the claim author rule never reach the real gh: both answer "no gh"
     until a test installs tests/fake_github.py, which puts a fake gh first on PATH and gives them back. The reader's cache and back-off start empty."""
-    from app import github, github_write, nodes_epics, prpoll, team_github
+    from app import github, github_write, nodes_epics, prpoll, team_github, team_presence
 
     def refuse(path, etag=None):
         raise github.GhReadError("no_gh")
@@ -159,8 +159,11 @@ def _no_real_github_reader(monkeypatch):
         raise github_write.GhWriteError("no_gh")
     monkeypatch.setattr(github, "api", refuse)
     monkeypatch.setattr(github, "graphql", refuse_graph)                   # the team reader's one GraphQL seam (issue #197), refused the same way
+    monkeypatch.setattr(github, "graphql_editors", lambda owner, repo, n: refuse_graph(owner, repo))      # the presence editor check (issue #198), refused the same way
+    monkeypatch.setattr(github, "graphql_editor", lambda node_id: refuse_graph(node_id, None))             # ... and its one-comment form
     monkeypatch.setattr(team_github, "identity", lambda: (None, None))     # `gh api user` for the node card and the doctor: unknown until tests/fake_github.py is installed
     team_github.reset()
+    team_presence.reset()
     monkeypatch.setattr(github_write, "transport", refuse_write)           # the writer's one seam to gh (issue #148): a write reaches a gh only through tests/fake_github.py
     monkeypatch.setattr(github_write, "queue", github_write.Queue())       # each test starts with a fresh write queue (no pacing, no back-off left over)
     monkeypatch.setattr(nodes_epics, "_gh_login", lambda: None)
@@ -169,6 +172,7 @@ def _no_real_github_reader(monkeypatch):
     yield
     nodes_epics.reset()
     team_github.reset()
+    team_presence.reset()
 
 
 @pytest.fixture(autouse=True)

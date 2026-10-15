@@ -195,6 +195,23 @@ def repo_path(owner, repo) -> str:
     return f"/repos/{owner}/{repo}"
 
 
+# A branch of a repository (issue #198, Team P2): does it exist on GitHub? A presence line names a branch only when GitHub has it (a 404 is "not pushed", and a local-only name
+# never leaves the box). The name is checked against a narrow rule first: letters, digits, `.`, `_`, `-` and single slashes, no `..`, no leading dash or dot.
+BRANCH_NAME_RE = re.compile(r"(?![-.])[A-Za-z0-9._-]{1,100}(?:/(?![-.])[A-Za-z0-9._-]{1,100}){0,5}")
+_BRANCH_PATH = re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/branches/([A-Za-z0-9._/-]{1,250})")
+
+
+def valid_branch(name) -> bool:
+    return isinstance(name, str) and len(name) <= 200 and bool(BRANCH_NAME_RE.fullmatch(name)) and ".." not in name and not name.endswith((".lock", "/", "."))
+
+
+def branch_path(owner, repo, name) -> str:
+    """/repos/{owner}/{repo}/branches/{name}: one branch, read to learn whether it was pushed (a GET like every other path of this module)."""
+    if not valid_slug(owner, repo) or not valid_branch(name):
+        raise GhReadError("bad_request")
+    return f"/repos/{owner}/{repo}/branches/{name}"
+
+
 def allowed_path(path) -> bool:
     """True for the paths this module may GET and nothing else: /repos/{owner}/{repo}/issues/{n}, .../sub_issues, .../comments, /repos/{owner}/{repo}/issues?labels=...,
     /repos/{owner}/{repo} itself (the doctor reads `permissions.push` and `private`, issue #148; owner and repo checked again against GitHub's rules) and /rate_limit."""
@@ -208,6 +225,9 @@ def allowed_path(path) -> bool:
     t = _TEAM_LIST.fullmatch(path)
     if t:
         return valid_slug(t.group(1), t.group(2))
+    b = _BRANCH_PATH.fullmatch(path)
+    if b:
+        return valid_slug(b.group(1), b.group(2)) and valid_branch(b.group(3))
     m = _PATH.fullmatch(path)
     return bool(m) and valid_slug(m.group(1), m.group(2))
 
@@ -364,6 +384,105 @@ def graphql_argv(owner, repo, exe: str = "gh") -> list[str]:
     if not valid_slug(owner, repo) or any(w in GQL_TEAM.lower() for w in GQL_WORDS):
         raise GhReadError("bad_request")
     return [exe, "api", "graphql", "--include", "-f", "query=" + GQL_TEAM, "-f", f"owner={owner}", "-f", f"name={repo}"]
+
+
+# The editor check of the presence comments (issue #198, Team P2): REST does not say who last edited a comment, GraphQL does (`editor`, `lastEditedAt`). A second constant query,
+# read only like GQL_TEAM: the last EDITORS_MAX comments of ONE issue (the status issue), each with its id, its author's and its last editor's numeric id. Only owner, name and
+# the issue number vary; the number goes with -F (GraphQL wants an Int) and is checked against GitHub's rule first.
+EDITORS_MAX = 50
+GQL_EDITORS = (
+    "query($owner:String!,$name:String!,$number:Int!){rateLimit{cost remaining resetAt}"
+    "repository(owner:$owner,name:$name){issue(number:$number){comments(last:" + str(EDITORS_MAX) + "){nodes{databaseId lastEditedAt "
+    "author{login ... on User{databaseId}} editor{login ... on User{databaseId}}}}}}}"
+)
+
+
+def graphql_editors_argv(owner, repo, n, exe: str = "gh") -> list[str]:
+    """`gh api graphql --include -f query=<GQL_EDITORS> -f owner=<owner> -f name=<repo> -F number=<n>`: owner, repository and number checked first, nothing else in the command."""
+    if not valid_slug(owner, repo) or not valid_number(n) or any(w in GQL_EDITORS.lower() for w in GQL_WORDS):
+        raise GhReadError("bad_request")
+    return [exe, "api", "graphql", "--include", "-f", "query=" + GQL_EDITORS, "-f", f"owner={owner}", "-f", f"name={repo}", "-F", f"number={int(n)}"]
+
+
+def graphql_editors(owner, repo, n) -> tuple[int, dict, Any]:
+    """The editor query for issue n: (status, headers, json) like `graphql`."""
+    return _gql_run(lambda exe: graphql_editors_argv(owner, repo, n, exe))
+
+
+def _gql_run(build) -> tuple[int, dict, Any]:
+    exe = shutil.which("gh")
+    if not exe:
+        raise GhReadError("no_gh")
+    rc, out, _ = _exec(build(exe))
+    status, headers, body = _parse_output(out)
+    if status is None:
+        raise GhReadError("unavailable" if rc != 0 else "bad_answer")
+    data = None
+    if body.strip():
+        try:
+            data = json.loads(body.decode("utf-8", "replace"))
+        except ValueError:
+            if 200 <= status < 300:
+                raise GhReadError("bad_answer") from None
+    return status, headers, data
+
+
+# The same check for ONE comment, by its node id (REST gives every comment a `node_id`): a comment older than the last EDITORS_MAX of its issue is out of the window above and would get
+# no verdict. A third constant query; only the id varies, and it is checked against a narrow rule first.
+GQL_EDITOR = ("query($id:ID!){rateLimit{cost remaining resetAt}node(id:$id){... on IssueComment{databaseId lastEditedAt author{login ... on User{databaseId}} "
+              "editor{login ... on User{databaseId}}}}}")
+NODE_ID_RE = re.compile(r"[A-Za-z0-9_=-]{4,100}")
+
+
+def clean_node_id(v) -> str | None:
+    return v if isinstance(v, str) and NODE_ID_RE.fullmatch(v) else None
+
+
+def graphql_editor_argv(node_id, exe: str = "gh") -> list[str]:
+    """`gh api graphql --include -f query=<GQL_EDITOR> -f id=<node id>`: the id checked first, nothing else in the command."""
+    if clean_node_id(node_id) is None or any(w in GQL_EDITOR.lower() for w in GQL_WORDS):
+        raise GhReadError("bad_request")
+    return [exe, "api", "graphql", "--include", "-f", "query=" + GQL_EDITOR, "-f", f"id={node_id}"]
+
+
+def graphql_editor(node_id) -> tuple[int, dict, Any]:
+    """The editor query for one comment: (status, headers, json) like `graphql`."""
+    return _gql_run(lambda exe: graphql_editor_argv(node_id, exe))
+
+
+def _gql_uid(u) -> int | None:
+    v = u.get("databaseId") if isinstance(u, dict) else None
+    return v if isinstance(v, int) and not isinstance(v, bool) and 0 < v < 10 ** 12 else None
+
+
+def parse_editors(data) -> dict[int, dict] | None:
+    """{comment id: {author: id|None, editor: id|None, edited: bool}} from the editor query's answer, None when the issue is missing. A comment never edited has edited False;
+    one edited by a deleted account or an app has editor None (and so counts as edited by someone else: fail closed)."""
+    d = data.get("data") if isinstance(data, dict) else None
+    repo = d.get("repository") if isinstance(d, dict) else None
+    issue = repo.get("issue") if isinstance(repo, dict) else None
+    if not isinstance(issue, dict):
+        return None
+    comments = issue.get("comments") if isinstance(issue.get("comments"), dict) else {}
+    nodes = comments.get("nodes") if isinstance(comments.get("nodes"), list) else []
+    out: dict[int, dict] = {}
+    for c in nodes[:EDITORS_MAX]:
+        if not isinstance(c, dict):
+            continue
+        cid = c.get("databaseId")
+        if isinstance(cid, bool) or not isinstance(cid, int) or cid <= 0:
+            continue
+        out[cid] = {"author": _gql_uid(c.get("author")), "editor": _gql_uid(c.get("editor")), "edited": c.get("lastEditedAt") is not None or c.get("editor") is not None}
+    return out
+
+
+def parse_editor(data, cid) -> dict | None:
+    """{author, editor, edited} of comment `cid` from the single-comment query's answer, None when the node is missing or is another comment (same shape as parse_editors)."""
+    d = data.get("data") if isinstance(data, dict) else None
+    c = d.get("node") if isinstance(d, dict) else None
+    if not isinstance(c, dict) or isinstance(cid, bool) or c.get("databaseId") != cid:
+        return None
+    return {"author": _gql_uid(c.get("author")), "editor": _gql_uid(c.get("editor")), "edited": c.get("lastEditedAt") is not None or c.get("editor") is not None}
 
 
 def graphql_reason(data) -> str | None:

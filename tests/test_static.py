@@ -1286,6 +1286,7 @@ def test_demo_team_fixture_has_the_shape_of_the_real_team_state_and_every_state_
     fx = json.loads((DEMO_DIR / "team.json").read_text(encoding="utf-8"))
     entry = {"key": "github.com/example/website", "slug": "example/website", "local": [{"project": "p", "repo": "r"}], "shared": True}
     real = team.repo_state(entry, None, "alice", 1, 0.0)
+    assert {"presence"} <= set(real)                         # issue #198: every block says what the board found of the presence issue
     for name, b in [("base", fx["base"]["repos"][0])] + [(n, {**fx["base"]["repos"][0], **(v.get("repo") or {})}) for n, v in fx["variants"].items()]:
         assert set(b) == set(real), (name, set(b) ^ set(real))
         assert b["state"] in team.STATES, (name, b["state"])
@@ -1294,11 +1295,89 @@ def test_demo_team_fixture_has_the_shape_of_the_real_team_state_and_every_state_
     assert set(team.STATES) <= reached, sorted(set(team.STATES) - reached)
     people = [p for r in fx["base"]["repos"] for p in r["people"]]
     assert {p["login"] for p in people} == {"alice", "bob"} and [p["you"] for p in people] == [True, False]
-    assert all(set(p) == {"id", "login", "you", "issues", "branches", "prs", "last_active"} for p in people)
+    assert all(set(p) == {"id", "login", "you", "issues", "branches", "prs", "last_active", "presence"} for p in people)
     assert fx["demo"]["epoch"] == demo_json("state.json")["demo"]["epoch"], "the times follow the same clock as state.json"
     text = (DEMO_DIR / "team.json").read_text(encoding="utf-8")
     for needle in ("/Users/", "/home/", "gmail.com", "ts.net"):
         assert needle not in text
+
+
+def _team_people(fx):
+    """Every person of every repository block of the team fixture, base and variants (a variant's `lines` set the presence of a login)."""
+    blocks = list(fx["base"]["repos"]) + [v["repo"] for v in fx["variants"].values() if "repo" in v]
+    return [p for b in blocks for p in b.get("people", [])]
+
+
+def test_demo_team_fixture_live_lines_have_the_shape_and_words_of_the_real_read():
+    """Issue #198: the live line of a person is people[].presence {live, last_seen_s, boards[]} with the keys app/team.py `_presence_person` writes, in the words of
+    LIVE_WORDS (gone is never sent: the board hides such a line), and the presence block of a repository has the keys of `repo_state`. Every word and every session state is
+    reached by the base or a variant, and the counts say how many teammates are live."""
+    from app import team
+    fx = json.loads((DEMO_DIR / "team.json").read_text(encoding="utf-8"))
+    board_keys = {"node", "live", "last_seen_s", "seq", "state", "agent", "issue", "issue_url", "branch", "branch_url", "phase", "since", "last", "updated_at"}
+    read = {"presence": {"status": "ok", "issue": 5, "server_now": 1000.0, "editor_check": "ok", "lines": [
+        {"user": {"id": 2, "login": "bob", "type": "User"}, "state": "running", "seq": 1, "node": "n", "lease_min": 30, "updated_at": "2026-10-03T02:56:00Z", "moved": True, "seq_seen_at": 900.0}]}}
+    real = team.people_of(read, "alice", 1, "example", "website", 1000.0)[0]
+    bob = next(p for p in real if p["login"] == "bob")
+    assert set(bob["presence"]) == {"live", "last_seen_s", "boards"} and set(bob["presence"]["boards"][0]) == board_keys
+    pres_keys = set(team.repo_state({"key": "github.com/example/website", "slug": "example/website", "local": [], "shared": True},
+                                    {"status": "ok", "read_at": 1.0, "presence": read["presence"]}, "alice", 1, 2.0)["presence"])
+    lines = [(p["login"], p["presence"]) for p in _team_people(fx) if p.get("presence")]
+    lines += [(login, pr) for v in fx["variants"].values() for login, pr in (v.get("lines") or {}).items() if pr]
+    words, states = set(), set()
+    for login, pr in lines:
+        assert set(pr) == {"live", "last_seen_s", "boards"} and pr["boards"], login
+        assert pr["live"] in team.LIVE_WORDS and pr["live"] != "gone"
+        for b in pr["boards"]:
+            assert set(b) == board_keys, (login, set(b) ^ board_keys)
+            assert b["live"] in team.LIVE_WORDS and b["live"] != "gone" and b["state"] in team.PRESENCE_STATES and b["agent"] in team.PRESENCE_AGENTS
+            assert b["phase"] is None or b["phase"] in team.PRESENCE_PHASES
+            words.add(b["live"])
+            states.add(b["state"])
+    assert words == set(team.LIVE_WORDS) - {"gone"}, sorted(words)
+    assert states == set(team.PRESENCE_STATES), sorted(states)
+    assert fx["variants"]["linegone"]["lines"] == {"bob": None}, "a gone line is hidden by the board, so the person simply has none"
+    blocks = [fx["base"]["repos"][0]] + [{**fx["base"]["repos"][0], **v["repo"]} for v in fx["variants"].values() if "repo" in v]
+    for b in blocks:
+        assert b["presence"] is None or set(b["presence"]) == pres_keys
+        assert b["presence"] is None or b["presence"]["state"] in team.READ_PRESENCE
+        assert b["presence"] is None or b["presence"]["message"] == team.READ_PRESENCE[b["presence"]["state"]]
+    assert {b["presence"]["state"] for b in blocks if b["presence"]} == set(team.READ_PRESENCE)
+    assert all(set(b["counts"]) >= {"live"} for b in blocks)
+    base = fx["base"]["repos"][0]
+    assert base["counts"]["live"] == 1 == sum(1 for p in base["people"] if not p["you"] and p["presence"] and p["presence"]["live"] in ("live", "idle")), "bob is live; alice is you"
+    assert len([p for p in base["people"] if p["login"] == "bob"][0]["presence"]["boards"]) == 2, "two boards of one login"
+
+
+def test_demo_presence_fixture_matches_the_publisher_and_reaches_every_state(tmp_path):
+    """Issue #198: demo/team.json `presence` is what GET /api/team/presence answers. Its keys are the ones Publisher.view and Publisher.block write, its sentences are the
+    publisher's own MESSAGES, its opt-in text and public list are the real ones, its last body parses as a real presence body whose keys are all on the whitelist, and the variants
+    reach every state the publisher can be in."""
+    from app import team, team_presence
+    from app.db import DB
+    fx = json.loads((DEMO_DIR / "team.json").read_text(encoding="utf-8"))["presence"]
+    pub = team_presence.Publisher(DB(tmp_path / "p.db"), lambda: [], lambda: {})
+    view = pub.view([{"key": "github.com/example/website", "slug": "example/website", "local": [{"project": "p", "repo": "r"}]}], set())
+    block = pub.block({"key": "github.com/example/website", "slug": "example/website", "local": []}, False)
+    assert set(fx["base"]) == set(view)
+    assert set(fx["base"]["budget"]) == set(view["budget"]) and set(fx["base"]["audit"][0]) == {"at", "action", "target", "status", "detail"}
+    assert fx["base"]["opt_in_text"] == team_presence.OPT_IN_TEXT and fx["base"]["public_lists"] == list(team_presence.PUBLIC_LISTS)
+    assert "edit history" in fx["base"]["opt_in_text"] and "organizations" in fx["base"]["opt_in_text"]
+    blocks = [fx["base"]["repos"][0]] + [{**fx["base"]["repos"][0], **v["repo"]} for v in fx["variants"].values() if "repo" in v]
+    assert all(set(b) == set(block) for b in fx["base"]["repos"] + blocks)
+    assert all(b["state"] in team_presence.STATES and b["message"] == team_presence.MESSAGES[b["state"]] for b in blocks + fx["base"]["repos"])
+    reached = {b["state"] for b in blocks} | {b["state"] for b in fx["base"]["repos"]}
+    assert reached == set(team_presence.STATES), sorted(set(team_presence.STATES) ^ reached)
+    assert {a["action"] for a in fx["base"]["audit"]} <= {"presence_on", "presence_off", "presence_pause", "presence_resume", "presence_private", "presence_unprivate",
+                                                           "presence_issue", "presence_label", "presence_publish", "presence_delete", "presence_blocked"}
+    web = fx["base"]["repos"][0]
+    lines = team.parse_body(web["last_body"])
+    assert lines and web["last_body"] == team.presence_body([ln["raw"] for ln in lines]), "the demo shows the literal body the board would write"
+    assert all(set(ln) - {"raw", "lease_min"} <= set(team.PRESENCE_KEYS) for ln in lines)
+    assert [r["public"] for r in fx["base"]["repos"]] == [False, None, True], "one private, one not known, one public: the second confirm is reachable"
+    assert not [r for r in fx["base"]["repos"][1:] if r["publish"]]
+    text = json.dumps(fx)
+    assert "\u2014" not in text and "\u2013" not in text
 
 
 def test_demo_memory_fixture_matches_the_memory_envelope():

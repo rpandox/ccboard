@@ -75,7 +75,7 @@ def issue_obj(world: dict, k: str) -> dict:
     o = {"number": n, "title": it.get("title", "Issue %d" % n), "state": it.get("state", "open"), "body": it.get("body", ""),
          "labels": [{"name": x} for x in it.get("labels", [])], "user": {"login": it.get("user", "alice"), "type": it.get("user_type", "User")},
          "assignees": [{"login": x, "type": "User"} for x in it.get("assignees", [])],
-         "comments": len(visible(world, k)),
+         "comments": len(visible(world, k)), "locked": bool(it.get("locked", False)),
          "repository_url": "https://api.github.com/repos/" + repo, "html_url": "https://github.com/%s/issues/%d" % (repo, n),
          "created_at": it.get("created_at", "2026-10-01T09:00:00Z"), "updated_at": it.get("updated_at", "2026-10-01T09:00:00Z")}
     if it.get("pull_request"):
@@ -86,11 +86,12 @@ def issue_obj(world: dict, k: str) -> dict:
     return o
 
 
-def comment_obj(c: dict) -> dict:
+def comment_obj(c: dict, world: dict | None = None) -> dict:
     out = dict(c)
-    out["user"] = None if c["user"] is None else {"login": c["user"], "type": c.get("user_type", "User")}
+    out["node_id"] = "IC_kw%d" % c["id"]                                         # GraphQL's id of the comment (issue #198: the editor check of a comment out of the window)
+    out["user"] = None if c["user"] is None else {"login": c["user"], "id": uid(world or {}, c["user"]), "type": c.get("user_type", "User")}
     out["author_association"] = c.get("assoc", "COLLABORATOR")
-    for x in ("user_type", "assoc", "hidden_until"):
+    for x in ("user_type", "assoc", "hidden_until", "editor", "last_edited_at"):
         out.pop(x, None)
     return out
 
@@ -151,7 +152,8 @@ def write(world: dict, method: str, path: str, body) -> Resp:
                 return Resp(422, {}, {"message": "Validation Failed"})
             if body["body"] != c["body"]:
                 c["body"], c["updated_at"] = body["body"], iso(now)
-            return Resp(200, {}, comment_obj(c))
+                c["editor"], c["last_edited_at"] = login, iso(now)         # GraphQL `editor` (issue #198)
+            return Resp(200, {}, comment_obj(c, world))
         return Resp(405, {}, {"message": "method not allowed here: " + method})
     m = re.fullmatch(r"/repos/([^/]+)/([^/]+)/issues/([0-9]+)/(comments|assignees|labels)(?:/(.+))?", path)
     if m:
@@ -163,6 +165,10 @@ def write(world: dict, method: str, path: str, body) -> Resp:
         if what == "comments" and method == "POST":
             if not isinstance(body, dict) or not isinstance(body.get("body"), str) or not body["body"].strip():
                 return Resp(422, {}, {"message": "Validation Failed"})
+            if it.get("locked"):
+                return Resp(403, {}, {"message": "Unable to create comment because issue is locked."})
+            if "%s/%s" % (o, r) in world.get("interaction_limited", []):
+                return Resp(422, {}, {"message": "An interaction limit is in effect for this repository."})
             lst = world.setdefault("comments", {}).setdefault(k, [])
             cid = max([c["id"] for c in lst] + [world.get("next_cid", 100000)]) + 1
             world["next_cid"] = cid
@@ -171,7 +177,7 @@ def write(world: dict, method: str, path: str, body) -> Resp:
                 c["hidden_until"] = now + world["hide_new"]
             lst.append(c)
             _touch(world, k)
-            return Resp(201, {}, comment_obj(c))
+            return Resp(201, {}, comment_obj(c, world))
         if what == "assignees" and method in ("POST", "DELETE"):
             names = body.get("assignees") if isinstance(body, dict) else None
             if not isinstance(names, list) or not all(isinstance(x, str) for x in names):
@@ -208,6 +214,24 @@ def write(world: dict, method: str, path: str, body) -> Resp:
             _touch(world, k)
             return Resp(200, {}, _labels_of(world, k))
         return Resp(405, {}, {"message": "method not allowed here: " + method})
+    m = re.fullmatch(r"/repos/([^/]+)/([^/]+)/issues", path)
+    if m and method == "POST":                                  # a new issue (issue #198: the presence status issue); labels are dropped without push access, as GitHub does
+        o, r = m.groups()
+        info = (world.get("repos") or {}).get("%s/%s" % (o, r)) or {}
+        if info.get("has_issues") is False:
+            return Resp(410, {}, {"message": "Issues are disabled for this repo"})
+        if world.get("issue_create_forbidden") or info.get("archived"):
+            return Resp(403, {}, {"message": "Resource not accessible by integration"})
+        if not isinstance(body, dict) or not isinstance(body.get("title"), str):
+            return Resp(422, {}, {"message": "Validation Failed"})
+        nums = [int(k.split("#")[1]) for k in world["issues"] if k.startswith("%s/%s#" % (o, r))] + [int(k.split("#")[1]) for k in (world.get("pulls") or {}) if k.startswith("%s/%s#" % (o, r))]
+        n = max(nums + [world.get("next_issue", 900)]) + 1
+        world["next_issue"] = n
+        labels = [x for x in (body.get("labels") or []) if isinstance(x, str)] if not (no_push or world.get("label_add_forbidden")) else []
+        k = key(o, r, n)
+        world["issues"][k] = {"title": body["title"], "state": "open", "labels": labels, "body": body.get("body", ""), "user": login, "pull_request": False, "summary": None,
+                              "raw": {}, "updated_at": iso(now), "created_at": iso(now)}
+        return Resp(201, {}, issue_obj(world, k))
     m = re.fullmatch(r"/repos/([^/]+)/([^/]+)/labels", path)
     if m and method == "POST":
         o, r = m.groups()
@@ -244,7 +268,18 @@ def read(world: dict, path: str) -> Resp:
                 body["parent"] = {"full_name": info["parent"]}
         if "default_branch" in info:
             body["default_branch"] = info["default_branch"]
+        body["has_issues"] = info.get("has_issues", True) is not False
+        body["archived"] = bool(info.get("archived", False))
         return Resp(200, {}, body)
+    br = re.fullmatch(r"/repos/([^/]+)/([^/?]+)/branches/(.+)", path or "")
+    if br:                                                      # one branch (issue #198): 200 when it is among the repository's branch tips, else 404
+        slug = "%s/%s" % br.groups()[:2]
+        fault = access_fault(world, slug)
+        if fault is not None:
+            return fault
+        if any(t["name"] == br.group(3) for t in (world.get("tips") or {}).get(slug, [])):
+            return Resp(200, {}, {"name": br.group(3), "commit": {"sha": "0" * 40}})
+        return Resp(404, {}, {"message": "Branch not found"})
     tl = re.fullmatch(r"/repos/([^/]+)/([^/?]+)/(issues|pulls)\?(.*)", path or "")
     if tl and (tl.group(3) == "pulls" or "assignee=*" in tl.group(4)):
         o, r, what, query = tl.groups()
@@ -294,7 +329,7 @@ def read(world: dict, path: str) -> Resp:
             items = [issue_obj(world, c) for c in world.get("subs", {}).get(k, [])]
             chunk, extra = paged(world, items, query or "")
             return Resp(200, extra, chunk)
-        items = [comment_obj(c) for c in visible(world, k)]
+        items = [comment_obj(c, world) for c in visible(world, k)]
         chunk, extra = paged(world, items, query or "")
         return Resp(200, extra, chunk)
     m = re.fullmatch(r"/repos/([^/]+)/([^/?]+)/issues\?(.*)", path or "")
@@ -352,6 +387,47 @@ def handle_graphql(world: dict, owner: str, name: str) -> tuple[Resp, bool]:
             "repository": {"nameWithOwner": slug, "isPrivate": False, "isFork": False, "parent": None, "issues": {"nodes": issues}, "pullRequests": {"nodes": prs},
                            "refs": {"pageInfo": {"hasNextPage": bool(world.get("tips_more"))}, "nodes": refs}}}
     return Resp(200, headers, {"data": data}), True
+
+
+def handle_graphql_editors(world: dict, owner: str, name: str, number) -> tuple[Resp, bool]:
+    """The editor query of app/github.py (GQL_EDITORS, issue #198): the last 50 comments of one issue with the author's and the last editor's ids. A comment's editor is set by an
+    edit (gh_server.write) or by a test (`editor` on the stored comment). world["editors_fail"] answers with a GraphQL error."""
+    slug = "%s/%s" % (owner, name)
+    rate = world.setdefault("gql_rate", {"limit": 5000, "remaining": 5000, "reset": int(world["now"]) + 3600})
+    headers = {"Date": email.utils.formatdate(world["now"], usegmt=True), "Content-Type": "application/json; charset=utf-8", "x-ratelimit-resource": "graphql",
+               "x-ratelimit-limit": str(rate["limit"]), "x-ratelimit-remaining": str(rate["remaining"])}
+    world["editor_calls"] = world.get("editor_calls", 0) + 1
+    if world.get("editors_fail"):
+        return Resp(200, headers, {"data": None, "errors": [{"type": "SOMETHING", "message": "failed"}]}), True
+    k = key(owner, name, number)
+    if k not in world["issues"]:
+        return Resp(200, headers, {"data": {"repository": {"issue": None}}}), True
+
+    def user(login):
+        return None if login is None else {"login": login, "databaseId": uid(world, login)}
+    nodes = [{"databaseId": c["id"], "lastEditedAt": c.get("last_edited_at"), "author": user(c.get("user")), "editor": user(c.get("editor"))}
+             for c in visible(world, k)][-50:]
+    return Resp(200, headers, {"data": {"rateLimit": {"cost": 1, "remaining": rate["remaining"], "resetAt": "2027-01-15T10:00:00Z"}, "repository": {"issue": {"comments": {"nodes": nodes}}}}}), True
+
+
+def handle_graphql_editor(world: dict, node_id: str) -> tuple[Resp, bool]:
+    """The one-comment editor query of app/github.py (GQL_EDITOR, issue #198): the comment whose node id is `node_id`, wherever it sits in its issue. world["editors_fail"] answers
+    with a GraphQL error, as for the window query."""
+    rate = world.setdefault("gql_rate", {"limit": 5000, "remaining": 5000, "reset": int(world["now"]) + 3600})
+    headers = {"Date": email.utils.formatdate(world["now"], usegmt=True), "Content-Type": "application/json; charset=utf-8", "x-ratelimit-resource": "graphql",
+               "x-ratelimit-limit": str(rate["limit"]), "x-ratelimit-remaining": str(rate["remaining"])}
+    world["editor_node_calls"] = world.get("editor_node_calls", 0) + 1
+    if world.get("editors_fail"):
+        return Resp(200, headers, {"data": None, "errors": [{"type": "SOMETHING", "message": "failed"}]}), True
+
+    def user(login):
+        return None if login is None else {"login": login, "databaseId": uid(world, login)}
+    node = None
+    for lst in world.get("comments", {}).values():
+        for c in lst:
+            if "IC_kw%d" % c["id"] == node_id:
+                node = {"databaseId": c["id"], "lastEditedAt": c.get("last_edited_at"), "author": user(c.get("user")), "editor": user(c.get("editor"))}
+    return Resp(200, headers, {"data": {"rateLimit": {"cost": 1, "remaining": rate["remaining"], "resetAt": "2027-01-15T10:00:00Z"}, "node": node}}), True
 
 
 def handle(world: dict, method: str, path: str, inm: str | None = None, body=None) -> tuple[Resp, bool]:
@@ -441,10 +517,15 @@ def main(args: list[str], env: dict, stdin, world_path: str, log_path: str, out,
         for j, a in enumerate(args[2:], 2):
             if a == "--include":
                 include = True
-            elif a == "-f" and j + 1 < len(args):
+            elif a in ("-f", "-F") and j + 1 < len(args):
                 k, _, v = args[j + 1].partition("=")
                 fields[k] = v
-        resp, dirty = handle_graphql(world, fields.get("owner", ""), fields.get("name", ""))
+        if "node(id" in fields.get("query", ""):
+            resp, dirty = handle_graphql_editor(world, fields.get("id", ""))
+        elif "editor{" in fields.get("query", ""):
+            resp, dirty = handle_graphql_editors(world, fields.get("owner", ""), fields.get("name", ""), fields.get("number", ""))
+        else:
+            resp, dirty = handle_graphql(world, fields.get("owner", ""), fields.get("name", ""))
         if dirty:
             json.dump(world, open(world_path, "w"))
         text = json.dumps(resp.body) if resp.body is not None else ""

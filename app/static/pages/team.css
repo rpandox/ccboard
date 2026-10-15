@@ -1,4 +1,4 @@
-/* The Team view (issue #197), loaded with team.js (lazy.js 'team'): the project page's Team tab and Settings > Team.
+/* The Team view (issues #197, #198), loaded with team.js (lazy.js 'team'): the project page's Team tab and Settings > Team.
    State is a glyph plus words, never colour alone; amber and rose only mean attention. The block has no button: its only actions are links to GitHub.
    28 px controls with a mouse, --tap (44 px) on touch; nothing wider than 390 px; no inline styles. */
 #page .pj-team { max-width:960px; }
@@ -65,18 +65,71 @@
 #page .tm-smsg { margin:0 0 4px 26px; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
 #page .tm-doc { margin:0; }
 
+/* the live line of a person (issue #198): liveness, agent, the board's state words, links, times. Glyph and words together; amber means attention (stale, needs you), never hashed. */
+#page .tm-live { list-style:none; margin:2px 0 0; padding:0; }
+#page .tm-pl { display:flex; flex-wrap:wrap; align-items:center; gap:2px 10px; padding:4px 0 4px 8px; min-width:0; font-size:13px; line-height:1.5; }
+#page .tm-lv, #page .tm-ps { display:inline-flex; align-items:baseline; gap:2px; white-space:nowrap; font-size:12px; line-height:1.5; }
+#page .tm-lv { padding:1px 8px; border:1px solid var(--line-strong); border-radius:12px; color:var(--fg-2); }
+#page .tm-lv[data-live=live] { border-color:var(--mute-green-bd); }
+#page .tm-lv[data-live=live] .tm-sg { color:var(--mute-green); }
+#page .tm-lv[data-live=idle] { border-color:var(--mute-slate-bd); }
+#page .tm-lv[data-live=idle] .tm-sg { color:var(--mute-slate); }
+#page .tm-lv[data-live=unconfirmed], #page .tm-lv[data-live=unknown] { border-style:dashed; }
+#page .tm-lv[data-live=stale] { border-color:var(--warn); color:var(--warn-fg); }
+#page .tm-lv[data-live=unknown] { border-color:var(--warn); color:var(--warn-fg); }
+#page .tm-ag { display:inline-flex; align-items:baseline; gap:2px; font-size:12px; font-weight:600; color:var(--fg-2); }
+#page .tm-ag[data-agent=claude] .tm-sg { color:var(--mute-violet); }
+#page .tm-ag[data-agent=codex] .tm-sg { color:var(--mute-teal); }
+#page .tm-ag[data-agent=shell] .tm-sg, #page .tm-ag[data-agent=other] .tm-sg { color:var(--mute-slate); }
+#page .tm-ps { font-weight:600; color:var(--fg-2); }
+#page .tm-ps[data-state=needs_you] { color:var(--warn-fg); }
+#page .tm-ps[data-state=ended] { color:var(--dim); }
+#page .tm-nd { font-size:12px; }
+#page .tm-livecount { font-size:12px; color:var(--mute-green); }
+#page .tm-pnote { margin:6px 0 0; }
+#page .tm-pn { margin:2px 0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+#page .tm-pn.warn { color:var(--warn-fg); }
+
+/* Settings > Team: Publish my status (issue #198) */
+#page .tm-prow { margin:16px 0 0; padding:0 0 4px; border-top:1px solid var(--line-soft); }
+#page .tm-prow .tm-switch { margin-top:0; }
+#page .tm-prow .tm-switch + .tm-switch { margin-top:0; }
+#page .tm-dis { opacity:.6; cursor:default; }
+#page .tm-optin { margin:6px 0; font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+#page .tm-budget { margin:6px 0; }
+#page .tm-pstate[data-pstate=publishing] { border-color:var(--mute-green-bd); }
+#page .tm-pstate[data-pstate=publishing] .tm-sg { color:var(--mute-green); }
+#page .tm-pstate[data-pstate=off], #page .tm-pstate[data-pstate=paused], #page .tm-pstate[data-pstate=private], #page .tm-pstate[data-pstate=waiting], #page .tm-pstate[data-pstate=removing] { border-style:dashed; }
+#page .tm-pstate[data-pstate=needs_confirm], #page .tm-pstate[data-pstate=limited], #page .tm-pstate[data-pstate=rate_limited], #page .tm-pstate[data-pstate=budget], #page .tm-pstate[data-pstate=error] { border-color:var(--warn); color:var(--warn-fg); }
+#page .tm-pstate[data-pstate=issues_disabled], #page .tm-pstate[data-pstate=archived], #page .tm-pstate[data-pstate=locked], #page .tm-pstate[data-pstate=closed], #page .tm-pstate[data-pstate=deleted],
+#page .tm-pstate[data-pstate=no_create], #page .tm-pstate[data-pstate=no_label], #page .tm-pstate[data-pstate=forbidden] { border-color:var(--bad); color:var(--bad-fg); }
+#page .tm-next { font-weight:600; }
+
+#page .tm-confirm { display:flex; flex-direction:column; gap:4px; margin:6px 0 8px 26px; padding:8px 10px; border:1px solid var(--line); border-left:3px solid var(--warn); border-radius:3px; background:var(--card); font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+#page .tm-confirm-t { font-weight:600; }
+#page .tm-confirm-x, #page .tm-confirm-l { margin:0; }
+#page .tm-confirm-l { padding-left:20px; }
+#page .tm-confirm-a { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:4px; max-width:360px; }
+#page .tm-body { margin:4px 0; padding:8px 10px; border:1px solid var(--line); border-radius:3px; background:var(--card); font-size:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; max-height:240px; overflow:auto; }
+#page .tm-pub, #page .tm-audit { margin:4px 0 0 26px; font-size:12px; }
+#page .tm-pub-s { display:flex; align-items:center; min-height:var(--row-btn); cursor:pointer; font-size:12px; font-weight:600; color:var(--fg-2); }
+#page .tm-pub-x { margin:2px 0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+#page .tm-audit-l { list-style:none; margin:2px 0 0; padding:0; }
+#page .tm-audit-i { padding:2px 0; font-size:12px; overflow-wrap:anywhere; }
+
 @media (hover:hover) { #page a.tm-open:hover { border-color:var(--fg-2); } }
 #page a.tm-open.tm-tl { display:inline; min-height:0; padding:0; border:0; border-radius:0; font-size:inherit; white-space:normal; color:var(--fg); text-decoration:underline; text-decoration-color:var(--line-strong); text-underline-offset:3px; }   /* a row's title is its link */
 @media (hover:hover) { #page a.tm-open.tm-tl:hover { text-decoration-color:var(--fg); } }
 @media (pointer:coarse) { #page a.tm-open.tm-tl { padding:12px 0; } }
 html.force-coarse #page a.tm-open.tm-tl { padding:12px 0; }   /* a touch target as tall as a row, without changing the line */
 @media (max-width:640px) {
-  #page .tm-block, #page .tm-err, #page .tm-smsg { margin-left:0; }
+  #page .tm-block, #page .tm-err, #page .tm-smsg, #page .tm-confirm, #page .tm-pub, #page .tm-audit { margin-left:0; }
   #page .tm-kind { min-width:0; }
-  #page .tm-item { padding-left:0; }
+  #page .tm-item, #page .tm-pl { padding-left:0; }
+  #page .tm-confirm-a { max-width:none; }
 }
 @media (pointer:coarse) {
-  #page a.tm-open, #page a.tm-set, #page .tm-recheck { min-height:var(--tap); }
-  #page .tm-switch { min-height:var(--tap); }
+  #page a.tm-open, #page a.tm-set, #page .tm-recheck, #page .tm-confirm-a button { min-height:var(--tap); }
+  #page .tm-switch, #page .tm-pub-s { min-height:var(--tap); }
 }
-html.force-coarse #page a.tm-open, html.force-coarse #page a.tm-set, html.force-coarse #page .tm-recheck, html.force-coarse #page .tm-switch { min-height:var(--tap); }
+html.force-coarse #page a.tm-open, html.force-coarse #page a.tm-set, html.force-coarse #page .tm-recheck, html.force-coarse #page .tm-switch, html.force-coarse #page .tm-pub-s, html.force-coarse #page .tm-confirm-a button { min-height:var(--tap); }
