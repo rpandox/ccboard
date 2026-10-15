@@ -964,10 +964,18 @@ class DB:
         except ValueError:
             return None
 
+    @staticmethod
+    def _prefix_query(prefix: str) -> tuple[str, tuple]:
+        """The SQL and parameters for the kv rows whose key starts with `prefix`: a key range (key >= prefix AND key < the prefix with its last character raised by one), which uses the
+        primary key's index instead of reading the whole table. An empty prefix, or one ending in the highest character (no upper bound exists), keeps the plain scan."""
+        if not prefix or ord(prefix[-1]) >= 0x10FFFF:
+            return "SELECT key, value, at FROM kv WHERE substr(key, 1, ?) = ? ORDER BY key", (len(prefix), prefix)
+        return "SELECT key, value, at FROM kv WHERE key >= ? AND key < ? ORDER BY key", (prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1))
+
     def kv_list_prefix(self, prefix: str) -> list[tuple[str, object, str]]:
         """(key, value, at) of every kv row whose key starts with `prefix`, by key; a row whose value is not JSON is left out."""
         with self.lock:
-            rows = self.conn.execute("SELECT key, value, at FROM kv WHERE substr(key, 1, ?) = ? ORDER BY key", (len(prefix), prefix)).fetchall()
+            rows = self.conn.execute(*self._prefix_query(prefix)).fetchall()
         out = []
         for k, v, at in rows:
             try:

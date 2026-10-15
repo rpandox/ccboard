@@ -280,6 +280,19 @@ def read(world: dict, path: str) -> Resp:
         if any(t["name"] == br.group(3) for t in (world.get("tips") or {}).get(slug, [])):
             return Resp(200, {}, {"name": br.group(3), "commit": {"sha": "0" * 40}})
         return Resp(404, {}, {"message": "Branch not found"})
+    pf = re.fullmatch(r"/repos/([^/]+)/([^/?]+)/pulls/([0-9]+)/files\?(.*)", path or "")
+    if pf:                                                      # the files of one pull request (issue #199): world["pull_files"]["repo#n"] -> names or {filename, previous_filename}
+        o, r, n, query = pf.groups()
+        slug = "%s/%s" % (o, r)
+        fault = access_fault(world, slug)
+        if fault is not None:
+            return fault
+        files = (world.get("pull_files") or {}).get("%s#%s" % (slug, n))
+        if files is None:
+            return Resp(404, {}, {"message": "Not Found"})
+        items = [{"filename": f, "status": "modified"} if isinstance(f, str) else dict(f) for f in files]
+        chunk, extra = paged(world, items, query)
+        return Resp(200, extra, chunk)
     tl = re.fullmatch(r"/repos/([^/]+)/([^/?]+)/(issues|pulls)\?(.*)", path or "")
     if tl and (tl.group(3) == "pulls" or "assignee=*" in tl.group(4)):
         o, r, what, query = tl.groups()
@@ -306,6 +319,7 @@ def read(world: dict, path: str) -> Resp:
             head_repo = pr.get("head_repo", slug)
             items.append({"number": int(pk.split("#")[1]), "title": pr.get("title", "Pull request"), "state": "open", "draft": bool(pr.get("draft", False)),
                           "user": {"login": pr.get("user", "alice"), "id": uid(world, pr.get("user", "alice")), "type": "User"},
+                          "author_association": pr.get("assoc", "COLLABORATOR"),
                           "head": {"ref": pr.get("head_ref", "feature"), "repo": None if head_repo is None else {"full_name": head_repo, "fork": head_repo.lower() != slug.lower()}},
                           "base": {"repo": {"full_name": slug}}, "html_url": "https://github.com/%s/pull/%s" % (slug, pk.split("#")[1]),
                           "updated_at": pr.get("updated_at", "2026-10-01T09:00:00Z")})

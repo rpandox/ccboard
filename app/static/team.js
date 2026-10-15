@@ -120,7 +120,7 @@ function teamMe() {
 
 /* What a surface that repaints on a change compares: the blocks, the errors and the saves under way, and the minute (ages move on). */
 function teamSig() {
-  return JSON.stringify([teamStore.data && teamStore.data.me, teamBlocks().map((b) => [b.repo_slug, b.shared, b.state, b.message, b.stale, b.read_at, b.gql_at, b.counts, b.people, b.truncated, b.graph_pending, b.graph_failed, b.presence]),
+  return JSON.stringify([teamStore.data && teamStore.data.me, teamBlocks().map((b) => [b.repo_slug, b.shared, b.state, b.message, b.stale, b.read_at, b.gql_at, b.counts, b.people, b.truncated, b.graph_pending, b.graph_failed, b.presence, b.warnings]),
     teamStore.err, teamStore.errors, teamStore.saving, Math.floor(Date.now() / 60000),
     teamStore.pres, teamStore.presErr, teamStore.presErrors, teamStore.presSaving, teamStore.confirm]);
 }
@@ -383,7 +383,7 @@ function teamNoticeNode(n) {
 }
 
 /* One row of a person: a glyph and the kind in words, the number, the title as text, small facts, the age and the link to GitHub. */
-function teamItem(kind, word, glyph, ref, title, facts, when, url, aria) {
+function teamItem(kind, word, glyph, ref, title, facts, when, url, aria, collides) {
   // the title (a branch: its name) is the link to GitHub, so a row carries no extra button; a URL that fails the gate leaves it plain text
   const name = title || ref;
   const link = name ? teamLink(url, name, aria) : null;
@@ -394,7 +394,8 @@ function teamItem(kind, word, glyph, ref, title, facts, when, url, aria) {
     title && ref ? el('span', { class: 'tm-ref mono', text: ref }) : null,
     link || (name ? el('span', { class: title ? 'tm-title' : 'tm-ref mono', text: name }) : null),
     facts.length ? el('span', { class: 'tm-facts dim', text: facts.join(' · ') }) : null,
-    when ? el('span', { class: 'tm-when dim', text: when }) : null);
+    when ? el('span', { class: 'tm-when dim', text: when }) : null,
+    teamCollideNode(collides));
 }
 
 /* ---------- the live line (issue #198) ---------- */
@@ -480,7 +481,7 @@ function teamPersonNode(p, block) {
     if (labels.length) facts.push(labels.join(', '));
     const c = i.claim && typeof i.claim === 'object' ? i.claim : null;
     if (c) facts.push(`claimed${c.live === true ? ', live' : c.live === false ? ', not live' : ''}${teamText(c.branch, 100) ? ' on ' + teamText(c.branch, 100) : ''}`);
-    list.append(teamItem('issue', 'Assigned', '●', `#${n}`, teamText(i.title), facts, i.updated_at ? `updated ${teamAgo(i.updated_at)}` : '', i.url, `Open issue ${n} on GitHub`));
+    list.append(teamItem('issue', 'Assigned', '●', `#${n}`, teamText(i.title), facts, i.updated_at ? `updated ${teamAgo(i.updated_at)}` : '', i.url, `Open issue ${n} on GitHub`, i.collides));
   }
   for (const r of prs) {
     const n = teamNum(r && r.number);
@@ -493,7 +494,7 @@ function teamPersonNode(p, block) {
     const closes = (Array.isArray(r.closes) ? r.closes : []).map(teamNum).filter(Boolean).slice(0, 5);
     if (closes.length) facts.push(`closes ${closes.map((x) => '#' + x).join(', ')}`);
     list.append(teamItem(draft ? 'draft' : 'pr', draft ? 'Draft PR' : 'Open PR', draft ? '◌' : '◉', `#${n}`, teamText(r.title), facts, r.updated_at ? `updated ${teamAgo(r.updated_at)}` : '',
-      r.url, `Open ${draft ? 'draft ' : ''}pull request ${n} on GitHub`));
+      r.url, `Open ${draft ? 'draft ' : ''}pull request ${n} on GitHub`, r.collides));
   }
   for (const b of branches) {
     const name = teamText(b && b.name, 100);
@@ -501,7 +502,7 @@ function teamPersonNode(p, block) {
     const linked = b.source === 'linked';
     const n = teamNum(b.issue);
     list.append(teamItem(linked ? 'linked' : 'pushed', linked ? 'Linked branch' : 'Pushed branch', linked ? '↳' : '↑', name, '', n ? [`linked to #${n}`] : [], b.at ? `${linked ? 'last commit' : 'pushed'} ${teamAgo(b.at)}` : '',
-      b.url, `Open branch ${name} on GitHub`));
+      b.url, `Open branch ${name} on GitHub`, b.collides));
   }
   const parts = [];
   if (issues.length) parts.push(teamPlural(issues.length, 'issue'));
@@ -579,6 +580,211 @@ function teamShareRow(b) {
       el('span', { class: 'tm-switch-t' }, el('b', { text: 'Shared with my team' }),
         el('span', { class: 'dim', text: b.shared === true ? `On. This board reads the issues, branches and pull requests of ${slug} from GitHub${me ? ' as ' + me.login : ''}. Reading writes nothing to GitHub.` : `Off. Turn on to see who else works in ${slug}: the board then reads its issues, branches and pull requests from GitHub, read only. Reading writes nothing to GitHub.` }))),
     err ? el('p', { class: 'tm-err bad', role: 'alert', text: err }) : null);
+}
+
+/* ---------- conflict warnings (issue #199, Team P3) ----------
+   Advice, never a lock: a warning says who seems to hold an issue or a branch, or which pull request changes the same files, and the launcher's Start is the same button with or without
+   it. The data is repos[].warnings of GET /api/team/state (app/team.py `conflicts`): {api, identity_known, issues{"<n>": [warning]}, branches{"<name>": [warning]}, tasks{"<id>": {task,
+   title, issue[], branch[], files[]}}, files{checked, pending, capped}}, or null (not shared, not read yet). Nothing here asks GitHub for anything: the launcher reads the view the board
+   already holds. Every name, branch and file path comes from GitHub or from a task and is cut, stripped of control characters and set with textContent only. */
+
+const TEAM_WARN_MAX = 4;                                         // lines of one kind in the launcher; the rest is "and N more"
+const TEAM_WARN_FILES = 6;                                       // file names on one line
+const TEAM_WARN_WORDS = { taken: ['!', 'Taken'], recent: ['◌', 'Seen lately'], stale: ['◌', 'Stale'] };
+const TEAM_SIGNAL_STATE = { running: 'running', needs_you: 'needs them', idle: 'idle', ended: 'ended' };
+
+/* "@login", or "a teammate" when GitHub's text failed the login rule (the id is still known). Never "@null". */
+function teamWho(person) {
+  const l = person && typeof person === 'object' ? teamLogin(person.login) : '';
+  return l ? `@${l}` : 'a teammate';
+}
+
+/* The name git gives the branch of a task started with this title (app/tasks.py slugify, then worktree-<slug>): where a branch warning is looked up before the task exists. */
+function teamBranchFor(title) {
+  const s = String(typeof title === 'string' ? title : '').slice(0, 400).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').replace(/-{2,}/g, '-').slice(0, 40).replace(/^-+|-+$/g, '');
+  return `worktree-${s || 'task'}`;
+}
+
+function teamWarnList(v) { return Array.isArray(v) ? v.filter((w) => w && typeof w === 'object' && w.advice === true).slice(0, 10) : []; }
+
+/* The warnings of a repository in this project, or null: the block of a shared repository, its warnings (null when none were worked out) and the quiet note that says why they may be
+   missing or old. null when no repository of this project is shared (the launcher then shows nothing at all). */
+function teamLaunchView(project, repo) {
+  const blocks = teamBlocksFor(project, repo).filter((b) => b.shared === true);
+  if (!blocks.length) return null;
+  const b = blocks.find((x) => x.warnings && typeof x.warnings === 'object') || blocks[0];
+  const w = b.warnings && typeof b.warnings === 'object' && b.warnings.api === 1 ? b.warnings : null;
+  return { block: b, warnings: w, note: teamWarnNote(b, w) };
+}
+
+/* The quiet line for the cases where "no warning" does not mean "nobody": reading for the first time, a read that failed, an old read, an unknown login. Never an error, never empty-as-zero. */
+function teamWarnNote(b, w) {
+  const st = teamState(b);
+  const ago = teamAgo(b.read_at);
+  if (st === 'off') return '';
+  if (st === 'loading') return 'Team: GitHub is being read for the first time. Nothing is checked yet.';
+  if (st !== 'ok') return `Team: ${TEAM_STATES[st][1].toLowerCase()}.${w ? ` Warnings are from the last read${ago ? ', ' + ago : ''}.` : ' Nothing is checked yet.'}`;
+  if (b.stale === true) return `Team: last read ${ago || 'a while ago'}, so warnings may be out of date.`;
+  if (!w) return '';
+  if (w.identity_known === false) return 'Team: who you are on GitHub is not known yet, so nobody is checked.';
+  return '';
+}
+
+/* Seconds since a person's line was last seen: the board worked it out at the read (age_s, GitHub's clock) and the time since the read is added. null when GitHub gave no clock. */
+function teamWarnAge(w, block) { return teamSeenS({ last_seen_s: w && w.age_s }, block); }
+
+function teamSignalWords(s) {
+  const kind = s && typeof s === 'object' ? s.kind : '';
+  if (kind === 'assigned') return 'assigned on GitHub';
+  if (kind === 'claim') return `holds a claim${teamText(s.status, 20) ? ' (' + teamText(s.status, 20) + ')' : ''}`;
+  if (kind === 'presence') return `live status: ${ownKey(TEAM_SIGNAL_STATE, s.state) ? TEAM_SIGNAL_STATE[s.state] : 'seen'}`;
+  if (kind === 'branch') return `branch ${teamText(s.name, 100)}`;
+  if (kind === 'pr') { const n = teamNum(s.number); return n ? `${s.draft === true ? 'draft ' : ''}PR #${n}` : ''; }
+  return '';
+}
+
+/* One person's warning about one issue: {status, glyph, head, detail}. taken: "#212 is being worked on by @bob since 14:10" (since only from a live status line; a stale one gives "last seen 3 hours ago" instead); recent and stale say how
+   long ago the person was seen. */
+function teamIssueLine(w, block) {
+  const n = teamNum(w.issue);
+  const st = ownKey(TEAM_WARN_WORDS, w.status) ? w.status : 'stale';
+  const who = teamWho(w.person);
+  const ref = n ? `#${n}` : 'This issue';
+  const age = teamWarnAge(w, block);
+  const since = w.since_from === 'presence' ? teamClock(w.since) : '';
+  let head;
+  const stale = st === 'taken' && !since ? teamSeenS({ last_seen_s: w.stale_age_s }, block) : null;
+  if (st === 'taken') head = `${ref} is being worked on by ${who}${since ? ' since ' + since : ''}${stale !== null ? ', last seen ' + teamSpan(stale) : ''}`;
+  else if (st === 'recent') head = `${ref}: ${who} may be working on it, seen ${age === null ? 'lately' : teamSpan(age)}`;
+  else head = `${ref}: ${who} worked on it, ${age === null ? 'not seen lately' : 'last seen ' + teamSpan(age)}`;
+  const detail = (Array.isArray(w.signals) ? w.signals : []).slice(0, 6).map(teamSignalWords).filter(Boolean).join(' · ');
+  return { kind: 'issue', status: st, glyph: TEAM_WARN_WORDS[st][0], head: [head], detail };
+}
+
+/* The chip on a row of the issue picker: "! taken by @bob", "◌ @bob, last seen 3 h ago"; '' when nobody holds the issue. A second person adds ", +1". */
+function teamIssueChip(view, n) {
+  if (!view || !view.warnings || !teamNum(n)) return '';
+  const list = teamWarnList(view.warnings.issues && view.warnings.issues[String(n)]);
+  if (!list.length) return '';
+  const w = list[0];
+  const st = ownKey(TEAM_WARN_WORDS, w.status) ? w.status : 'stale';
+  const who = teamWho(w.person);
+  const age = teamWarnAge(w, view.block);
+  const more = list.length > 1 ? `, +${list.length - 1}` : '';
+  if (st === 'taken') return `! taken by ${who}${more}`;
+  if (st === 'recent') return `◌ ${who}, seen ${age === null ? 'lately' : teamSpan(age)}${more}`;
+  return `◌ ${who}, ${age === null ? 'not seen lately' : 'last seen ' + teamSpan(age)}${more}`;
+}
+
+function teamBranchLine(w, name) {
+  const who = teamWho(w.person);
+  const src = Array.isArray(w.sources) ? w.sources : [];
+  const bits = [];
+  if (src.includes('linked') && teamNum(w.issue)) bits.push(`linked to #${teamNum(w.issue)}`);
+  if (src.includes('pr') && teamNum(w.pr)) bits.push(`PR #${teamNum(w.pr)}`);
+  if (src.includes('pushed') || !bits.length) bits.push('pushed');
+  if (w.at) bits.push(`${teamAgo(w.at)}`);
+  if (w.old === true) bits.push('older than 14 days');
+  return { kind: 'branch', status: 'taken', glyph: '!', head: [`Branch ${teamText(name, 100)} is already on GitHub under ${who}`], detail: bits.join(' · ') };
+}
+
+function teamFilesLine(w) {
+  const pr = w.pr && typeof w.pr === 'object' ? w.pr : {};
+  const n = teamNum(pr.number);
+  const link = n ? teamLink(pr.url, `PR #${n}`, `Open pull request ${n} on GitHub`) : null;
+  if (link) link.classList.add('tm-tl');
+  const files = (Array.isArray(w.files) ? w.files : []).map((f) => teamText(f, 300)).filter(Boolean);
+  const count = Number.isInteger(w.count) && w.count >= files.length ? w.count : files.length;
+  const shown = files.slice(0, TEAM_WARN_FILES);
+  const rest = count - shown.length;
+  return { kind: 'files', status: 'taken', glyph: '!', files: shown,
+    head: [link || 'A pull request', ` by ${teamWho(w.person)}${pr.draft === true ? ' (draft)' : ''} also changes ${count}${w.more === true ? ' or more' : ''} of these files`],
+    detail: rest > 0 ? `and ${rest} more` : (w.more === true ? 'the list of changed files is cut' : '') };
+}
+
+/* Every line the launcher shows for this moment. ctx: {issue: number | null (the picked issue), title: the typed title (its branch is looked up), task: number | null (a task being
+   started: its own issue, branch and files)}. Lines come from the board's warnings only; no line when there is nothing, and a quiet note when "nothing" could be "not known". */
+function teamLaunchLines(view, ctx) {
+  const out = [];
+  if (!view) return out;
+  const w = view.warnings;
+  if (w) {
+    const c = ctx || {};
+    const seen = new Set();
+    const take = (kind, list, make) => {
+      const items = list.slice(0, TEAM_WARN_MAX);
+      for (const x of items) out.push(make(x));
+      if (list.length > items.length) out.push({ kind, status: 'taken', glyph: '!', head: [`and ${list.length - items.length} more`], detail: '' });
+    };
+    const issue = teamNum(c.issue);
+    const tk = teamNum(c.task) && w.tasks && ownKey(w.tasks, String(c.task)) && w.tasks[String(c.task)] && typeof w.tasks[String(c.task)] === 'object' ? w.tasks[String(c.task)] : null;
+    if (issue) { seen.add(issue); take('issue', teamWarnList(w.issues && w.issues[String(issue)]), (x) => teamIssueLine(x, view.block)); }
+    if (tk) take('issue', teamWarnList(tk.issue).filter((x) => !seen.has(teamNum(x.issue))), (x) => teamIssueLine(x, view.block));
+    const bl = [];
+    if (typeof c.title === 'string' && c.title.trim()) {
+      const nm = teamBranchFor(c.title);
+      for (const x of teamWarnList(w.branches && ownKey(w.branches, nm) ? w.branches[nm] : [])) bl.push([x, nm]);
+    }
+    if (tk) for (const x of teamWarnList(tk.branch)) bl.push([x, x.name]);
+    const sb = new Set();
+    take('branch', bl.filter(([x, nm]) => { const k = `${nm}|${x.person && x.person.id}`; if (sb.has(k)) return false; sb.add(k); return true; }), ([x, nm]) => teamBranchLine(x, nm));
+    if (tk) take('files', teamWarnList(tk.files), (x) => teamFilesLine(x));
+  }
+  return out;
+}
+
+/* One line as a node: the glyph, the words (one sentence), then what lies behind it, small. */
+function teamLineNode(l) {
+  return el('p', { class: 'lx-team-l', 'data-kind': l.kind, 'data-status': l.status }, teamSpaced([
+    el('span', { class: 'tm-sg lx-team-g', 'aria-hidden': 'true', text: l.glyph }),
+    el('span', { class: 'lx-team-t' }, l.head),
+    l.files && l.files.length ? el('span', { class: 'lx-team-f mono' }, l.files.map((f, i) => el('span', { class: 'lx-team-file', text: i ? `, ${f}` : f }))) : null,
+    l.detail ? el('span', { class: 'dim lx-team-d', text: l.detail }) : null]));
+}
+
+/* When a task is being started and some teammate pull requests have no file list yet, "no file warning" is not "no overlap": one dim line says so. '' otherwise. */
+function teamPendingNote(view, ctx) {
+  const w = view && view.warnings;
+  const c = ctx || {};
+  const n = w && w.files && typeof w.files === 'object' ? w.files.pending : null;
+  if (!teamNum(c.task) || !Number.isInteger(n) || n <= 0 || n > 1e6) return '';
+  return `Team: the changed files of ${teamPlural(n, 'pull request')} are not read yet, so file overlap is not fully checked.`;
+}
+
+/* Paint the launcher's team block into host (an element the form keeps above Start): the lines, then the quiet note. Returns how many lines. The host is hidden when it has nothing to say.
+   It never touches a button: Start is the same with or without a warning. */
+function teamLaunchPaint(host, view, ctx) {
+  host.textContent = '';
+  const lines = teamLaunchLines(view, ctx);
+  for (const l of lines) host.append(teamLineNode(l));
+  if (view && view.note) host.append(el('p', { class: 'dim lx-team-n', text: view.note }));
+  const pending = teamPendingNote(view, ctx);
+  if (pending) host.append(el('p', { class: 'dim lx-team-n', text: pending }));
+  host.classList.toggle('quiet', !lines.length);
+  host.classList.toggle('hidden', !host.firstChild);
+  return lines.length;
+}
+
+/* The mark on a row of the project page's Team block that collides with this board's own open task (repos[].people[].issues|branches|prs[].collides). The words say what collides. */
+function teamCollideNode(list) {
+  const rows = (Array.isArray(list) ? list : []).filter((c) => c && typeof c === 'object' && (c.kind === 'issue' || c.kind === 'branch' || c.kind === 'files')).slice(0, 3);
+  if (!rows.length) return null;
+  const parts = rows.map((c) => {
+    const t = teamText(c.title, 60);
+    const task = t ? `your task “${t}”` : 'one of your tasks';
+    if (c.kind === 'issue') return `same issue as ${task}`;
+    if (c.kind === 'branch') return `same branch as ${task}`;
+    const files = (Array.isArray(c.files) ? c.files : []).map((f) => teamText(f, 300)).filter(Boolean).slice(0, 3);
+    const count = Number.isInteger(c.count) && c.count >= files.length ? c.count : files.length;
+    return `changes ${teamPlural(count, 'file')} that ${task} changes${files.length ? ': ' + files.join(', ') + (count > files.length || c.more === true ? ', …' : '') : ''}`;
+  });
+  return el('span', { class: 'tm-collide', role: 'note' }, el('span', { class: 'tm-sg', 'aria-hidden': 'true', text: '!' }), ` Collides: ${parts.join('; ')}`);
+}
+
+/* Ask the board for its team view unless it was read lately. One GET of what the board already holds; it makes no GitHub call. */
+async function teamEnsure(maxAgeMs) {
+  if (teamStore.data && Date.now() - teamStore.at <= (Number.isInteger(maxAgeMs) ? maxAgeMs : 20000)) return true;
+  return teamLoad();
 }
 
 /* ---------- the project page's Team tab (pages/project.js pjTeamView) ---------- */
@@ -820,8 +1026,8 @@ function demoTeamFlag() { try { const m = /[?&]team=([a-z]+)/.exec(location.sear
 function demoTeamBlock(r, on) {
   const zero = { people: 0, teammates: 0, issues: 0, branches: 0, prs: 0, unattributed_branches: 0, live: 0 };
   if (on === r.shared) return r;
-  if (!on) return { ...r, shared: false, state: 'off', message: 'Not shared with your team. Nothing is read from GitHub for this repository.', stale: false, read_at: null, age_s: null, gql_at: null, graph_pending: false, private: null, presence: null, people: [], counts: zero };
-  return { ...r, shared: true, state: 'ok', message: '', wait_s: null, stale: false, read_at: new Date().toISOString(), age_s: 0, gql_at: new Date().toISOString(), graph_pending: false, presence: null, people: [], counts: zero };
+  if (!on) return { ...r, shared: false, state: 'off', message: 'Not shared with your team. Nothing is read from GitHub for this repository.', stale: false, read_at: null, age_s: null, gql_at: null, graph_pending: false, private: null, presence: null, warnings: null, people: [], counts: zero };
+  return { ...r, shared: true, state: 'ok', message: '', wait_s: null, stale: false, read_at: new Date().toISOString(), age_s: 0, gql_at: new Date().toISOString(), graph_pending: false, presence: null, warnings: { api: 1, identity_known: true, issues: {}, branches: {}, tasks: {}, files: { checked: 0, pending: 0, capped: false } }, people: [], counts: zero };
 }
 
 const demoPresMade = { repos: {}, paused: null };              // repo_slug -> {publish, private, ok} as the visitor left it; the global pause
@@ -937,4 +1143,5 @@ async function demoTeam(method, path, body) {
 
 const Team = { store: teamStore, load: teamLoad, watch: teamWatch, share: teamShare, refresh: teamRefresh, sig: teamSig, blocks: teamBlocks, blocksFor: teamBlocksFor, blockNode: teamBlockNode,
   personNode: teamPersonNode, shareRow: teamShareRow, projectSection: teamProjectSection, settingsPanel: teamSettingsPanel, text: teamText, link: teamLink, ago: teamAgo,
-  presenceLoad: teamPresenceLoad, publish: teamPublish, setPrivate: teamPrivate, pause: teamPause, liveWord: teamLiveWord };
+  presenceLoad: teamPresenceLoad, publish: teamPublish, setPrivate: teamPrivate, pause: teamPause, liveWord: teamLiveWord,
+  ensure: teamEnsure, launchView: teamLaunchView, launchLines: teamLaunchLines, launchPaint: teamLaunchPaint, issueChip: teamIssueChip, branchFor: teamBranchFor, who: teamWho, collideNode: teamCollideNode };

@@ -11,7 +11,7 @@ The read of one repository (what team_github.py fills, what this module takes):
 
   {slug, status, reason, message, wait_s, read_at, gql_at, graph_error, private, fork, default_branch,
    issues[{number, title, labels[], assignees[{id, login}], updated_at}],                     the open issues somebody is assigned to (pull requests left out)
-   pulls[{number, title, draft, author{id, login}|None, head_ref, head_repo, fork, updated_at, closes[n]|None}],          closes is None until the GraphQL read has run
+   pulls[{number, title, draft, author{id, login}|None, association, head_ref, head_repo, fork, updated_at, closes[n]|None}],          closes is None until the GraphQL read has run
    linked{issue number: [{name, at, author{id, login}|None}]},                                 branches linked to an issue (gh issue develop)
    tips[{name, at, author{id, login}|None}],                                                   recent branch tips with the commit's GitHub author
    claims[{issue, user{id, login}, status, branch, live, updated_at}],                         #148 claim comments, read side only (absent: an empty list)
@@ -27,6 +27,7 @@ import hashlib
 import json
 import re
 import threading
+import unicodedata
 from datetime import datetime, timezone
 from urllib.parse import quote
 
@@ -327,8 +328,9 @@ def presence_live(seq_seen_at, moved: bool, updated_at, server_now, lease_min, a
     return "unconfirmed", age
 
 
-def _presence_person(read: dict, owner: str, name: str) -> list[tuple[dict, dict]]:
-    """(user, board) of every presence line of a read, with its live word; gone lines are left out (gone hides a line, it does not remove it)."""
+def _presence_person(read: dict, owner: str, name: str, keep_gone: bool = False) -> list[tuple[dict, dict]]:
+    """(user, board) of every presence line of a read, with its live word; gone lines are left out (gone hides a line, it does not remove it). `keep_gone` is for the warnings of
+    issue #199, which apply their own rule to every word (a gone line warns nobody)."""
     pres = read.get("presence") if isinstance(read.get("presence"), dict) else None
     if not pres:
         return []
@@ -343,7 +345,7 @@ def _presence_person(read: dict, owner: str, name: str) -> list[tuple[dict, dict
             continue
         active = state in ("running", "needs_you")
         word, age = presence_live(ln.get("seq_seen_at"), ln.get("moved") is True, _epoch(ln.get("updated_at")), server_now, ln.get("lease_min") or PRESENCE_LEASE_MIN, active)
-        if word == "gone":
+        if word == "gone" and not keep_gone:
             continue
         n = number_of(ln.get("issue"))
         b = branch_of(ln.get("branch")) if isinstance(ln.get("branch"), str) else None
@@ -515,10 +517,310 @@ def people_of(read: dict, me_login: str | None, me_id: int | None, owner: str, n
     return people, counts
 
 
+# ---------------------------------------------------------------- warnings (issue #199, Team P3): advice before the owner starts what a teammate already holds
+#
+# Computed from the read Phases 1 and 2 already made (no network, no clock but the one passed in), keyed so the launcher can look a warning up:
+#   warnings.issues[<issue number>]  -> [warning]        one per person: the signals that person has on the issue (assigned, claim, presence, branch, pr)
+#   warnings.branches[<branch name>] -> [branch warning]  one per person: the branch exists on the remote under a teammate, or a teammate linked it to an issue
+#   warnings.tasks[<local task id>]  -> {issue, branch, files}   the same, looked up for one of this board's own open tasks, plus the files an open pull request also changes
+# A warning is advice and nothing else: it carries `advice: true`, no key that could drive a button, a dispatch or a write (`_advice` refuses one), and the owner's own login (and
+# every board under it) never produces one. A stale presence line warns with its age, a gone one and an unknown one warn nobody, and an identity this board does not know yet warns
+# nobody (it could not tell the owner's own work from a teammate's). The local file names come from the owner's own worktrees and go only to the signed-in owner.
+
+WARN_LIVE = ("live", "idle", "unconfirmed", "stale")          # a presence line in any other word (gone, unknown) claims nothing
+FILES_SHOWN = 20                # file names named in one warning
+PATH_MAX = 300
+FILES_PER_PR = 200              # names of one pull request this module takes
+PULLS_FILES_MAX = 100
+LOCAL_TASKS_MAX = 100
+LOCAL_FILES_MAX = 1000
+BRANCH_WARN_MAX = 100
+ISSUE_WARN_MAX = 200
+ADVICE_FORBIDDEN = ("block", "blocks", "blocked", "disable", "disabled", "assign", "assignee", "label", "comment", "write", "action", "lock", "claim_it", "command")
+
+
+def _advice(d: dict) -> dict:
+    """Seal a warning as advice: refuses any key that could drive a control, a dispatch or a write (ValueError), and marks it `advice: true`."""
+    bad = [k for k in d if k in ADVICE_FORBIDDEN] + [k for s in (d.get("signals") or []) if isinstance(s, dict) for k in s if k in ADVICE_FORBIDDEN]
+    if bad:
+        raise ValueError("a warning is advice only: " + ", ".join(sorted(set(bad))))
+    return {**d, "advice": True}
+
+
+def path_of(v) -> str | None:
+    """A repository-relative file path from GitHub or a worktree, or None. Cut before anything else, no control, bidi, zero-width or private-use character, no white space but a plain
+    space inside, not absolute and no `..` segment: it is shown as text and compared as text, never opened or passed to a command."""
+    if not isinstance(v, str) or not v or len(v) > PATH_MAX:
+        return None
+    for ch in v:
+        cat = unicodedata.category(ch)
+        if cat in ("Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp") or (cat == "Zs" and ch != " "):
+            return None
+    if v.startswith("/") or v != v.strip() or ".." in v.split("/"):
+        return None
+    return v
+
+
+def trusted_pull(pr) -> bool:
+    """Does a pull request count for a warning? Only when GitHub says its author may write to the repository (author_association in nodes_epics.ASSOCIATIONS, as for claims and
+    presence) and the author is not a bot. On a public repository anybody can open a pull request, so any other one is shown in the Team block but warns nobody and is not read."""
+    from . import nodes_epics                                  # not at the top: nodes_epics reaches this module through node_state
+    if not isinstance(pr, dict) or pr.get("association") not in nodes_epics.ASSOCIATIONS:
+        return False
+    login = (pr.get("author") or {}).get("login") if isinstance(pr.get("author"), dict) else None
+    return isinstance(login, str) and not login.lower().endswith("[bot]")
+
+
+def same_person(user, me_login: str | None, me_id: int | None) -> bool:
+    """Is `user` ({id, login}) the owner of this board? By the numeric id when both sides have one, else by the login without case."""
+    if not isinstance(user, dict):
+        return False
+    uid, login = user.get("id"), user.get("login")
+    if me_id is not None and uid is not None:
+        return uid == me_id
+    return bool(me_login and login and login.lower() == me_login.lower())
+
+
+def _local_clean(local) -> list[dict]:
+    """This board's own open tasks of one repository, cleaned: [{id, title, issue, branch, files[]|None}] (files None: not known, which is not the same as no files)."""
+    out = []
+    for t in (local if isinstance(local, list) else [])[:LOCAL_TASKS_MAX]:
+        tid = t.get("id") if isinstance(t, dict) else None
+        if isinstance(tid, bool) or not isinstance(tid, int) or tid <= 0:
+            continue
+        files = t.get("files")
+        fl = sorted({q for q in (path_of(x) for x in list(files)[:LOCAL_FILES_MAX]) if q}) if isinstance(files, (list, tuple, set)) else None
+        n = t.get("issue_number")
+        out.append({"id": tid, "title": text(t.get("title"), 100), "issue": number_of(n) if isinstance(n, int) else None,
+                    "branch": branch_of(t.get("branch")) if isinstance(t.get("branch"), str) else None, "files": fl})
+    return out
+
+
+def _users_of(read: dict) -> list[dict]:
+    """Every user object of a read, so one person seen with an id in one place and without in another is one person."""
+    out = []
+    for it in (read.get("issues") or [])[:ISSUE_WARN_MAX] if isinstance(read.get("issues"), list) else []:
+        out += list((it.get("assignees") or [])[:10]) if isinstance(it, dict) else []
+    for key in ("pulls", "tips", "claims"):
+        for x in (read.get(key) or [])[:200] if isinstance(read.get(key), list) else []:
+            if isinstance(x, dict):
+                out.append(x.get("user") if key == "claims" else x.get("author"))
+    for lst in (read.get("linked") or {}).values() if isinstance(read.get("linked"), dict) else []:
+        out += [lb.get("author") for lb in lst[:5] if isinstance(lb, dict)] if isinstance(lst, list) else []
+    pres = read.get("presence") if isinstance(read.get("presence"), dict) else {}
+    out += [ln.get("user") for ln in (pres.get("lines") or [])[:100] if isinstance(ln, dict)]
+    return [u for u in (user_of(x) for x in out) if u]
+
+
+def _epoch_or(v, d=0.0) -> float:
+    e = _epoch(v)
+    return d if e is None else e
+
+
+def _pr_files(read: dict) -> dict:
+    """{pull number: {files[], more}} of the changed-file lists the reader made (cleaned again here; at most FILES_PER_PR names a pull request)."""
+    out = {}
+    pf = read.get("pull_files") if isinstance(read.get("pull_files"), dict) else {}
+    for n, v in list(pf.items())[:PULLS_FILES_MAX]:
+        num = number_of(n) if isinstance(n, int) else number_of(int(n)) if isinstance(n, str) and n.isdigit() else None
+        if num is None or not isinstance(v, dict) or not isinstance(v.get("files"), list):
+            continue
+        out[num] = {"files": sorted({q for q in (path_of(x) for x in v["files"][:FILES_PER_PR]) if q}), "more": v.get("more") is True}
+    return out
+
+
+def conflicts(read: dict, me_login: str | None, me_id: int | None, owner: str, name: str, now: float, lc: list[dict] | None = None) -> tuple[dict, dict]:
+    """(warnings, hits) of one read. `warnings` is what the block carries; `hits` is {pull number: [(task, common files, more)]} for marking the rows of the Team block."""
+    lc = lc or []
+    out = {"api": 1, "identity_known": bool(me_login) or me_id is not None, "issues": {}, "branches": {}, "tasks": {},
+           "files": {"checked": 0, "pending": 0, "capped": False}}
+    hits: dict = {}
+    if not out["identity_known"] or not isinstance(read, dict):
+        return out, hits
+    ppl = _People(me_login, me_id)
+    for u in _users_of(read):
+        if u["id"] is not None and u["login"] is not None:
+            ppl.ids[u["login"].lower()] = u["id"]
+
+    def who(user) -> dict | None:
+        """The teammate a user is, or None: nobody this board can name, or the owner (own boards never warn each other)."""
+        p = ppl.person(user_of(user))
+        if p is None or same_person(p, me_login, me_id):
+            return None
+        return p
+
+    # ---- same issue: one entry per (issue, person), the best of each kind of signal
+    sig: dict = {}
+
+    def add(n: int, p: dict, kind: str, data: dict, rank) -> None:
+        e = sig.setdefault((n, id(p)), {"p": p, "n": n, "kinds": {}})
+        cur = e["kinds"].get(kind)
+        if cur is None or rank(data) < rank(cur):
+            e["kinds"][kind] = data
+
+    issues = {}
+    for it in (read.get("issues") or [])[:ISSUE_WARN_MAX] if isinstance(read.get("issues"), list) else []:
+        n = number_of(it.get("number")) if isinstance(it, dict) else None
+        if n is None:
+            continue
+        issues[n] = it
+        for a in (it.get("assignees") or [])[:10]:
+            p = who(a)
+            if p is not None:
+                add(n, p, "assigned", {"kind": "assigned"}, lambda d: 0)
+    for c in (read.get("claims") or [])[:100] if isinstance(read.get("claims"), list) else []:
+        n = number_of(c.get("issue")) if isinstance(c, dict) else None
+        p = who(c.get("user")) if n is not None else None
+        if p is not None and c.get("live") is True:                  # only a live claim holds the issue; an expired one or one with no clock claims nothing
+            add(n, p, "claim", {"kind": "claim", "status": text(c.get("status"), 20), "branch": branch_of(c.get("branch")), "at": iso_of(c.get("updated_at"))}, lambda d: 0)
+    default = branch_of(read.get("default_branch"))
+    tip_by = {}
+    for tip in (read.get("tips") or [])[:200] if isinstance(read.get("tips"), list) else []:
+        b = branch_of(tip.get("name")) if isinstance(tip, dict) else None
+        if b:
+            tip_by[b] = tip
+    bmap: dict = {}                                                      # (branch, person) -> branch warning data
+
+    def add_branch(b: str, p: dict, source: str, at, issue=None, pr=None) -> None:
+        if not b or b == default or b.startswith(BACKUP_PREFIX):
+            return
+        e = bmap.setdefault((b, id(p)), {"p": p, "name": b, "sources": set(), "issue": None, "pr": None, "at": None})
+        e["sources"].add(source)
+        e["issue"] = e["issue"] or issue
+        e["pr"] = e["pr"] or pr
+        if _epoch_or(at, -1) > _epoch_or(e["at"], -1):
+            e["at"] = iso_of(at)
+
+    for n, branches in (read.get("linked") or {}).items() if isinstance(read.get("linked"), dict) else []:
+        n = number_of(n) if isinstance(n, int) else number_of(int(n)) if isinstance(n, str) and n.isdigit() else None
+        if n is None:
+            continue
+        for lb in branches[:5] if isinstance(branches, list) else []:
+            b = branch_of(lb.get("name")) if isinstance(lb, dict) else None
+            if not b:
+                continue
+            author = user_of(lb.get("author")) or _tip_author(tip_by.get(b) or {})
+            owners = [author] if author else [user_of(a) for a in ((issues.get(n) or {}).get("assignees") or [])[:10]]
+            at = lb.get("at") or (tip_by.get(b) or {}).get("at")
+            for u in owners:
+                p = who(u)
+                if p is None:
+                    continue
+                add_branch(b, p, "linked", at, issue=n)
+                add(n, p, "branch", {"kind": "branch", "name": b, "url": branch_url(owner, name, b), "at": iso_of(at)}, lambda d: -_epoch_or(d["at"]))
+    for b, tip in tip_by.items():
+        p = who(_tip_author(tip))
+        if p is not None:
+            add_branch(b, p, "pushed", tip.get("at"))
+    prs = {}
+    for pr in (read.get("pulls") or [])[:200] if isinstance(read.get("pulls"), list) else []:
+        n = number_of(pr.get("number")) if isinstance(pr, dict) else None
+        p = who(pr.get("author")) if n is not None and trusted_pull(pr) else None
+        if p is None:
+            continue
+        head = branch_of(pr.get("head_ref")) if isinstance(pr.get("head_ref"), str) else None
+        prs[n] = (pr, p)
+        if head and pr.get("fork") is not True:                               # a branch of a fork is not a branch of this repository
+            add_branch(head, p, "pr", pr.get("updated_at"), pr=n)
+        info = {"kind": "pr", "number": n, "title": text(pr.get("title")), "url": pull_url(owner, name, n), "draft": pr.get("draft") is True, "branch": head,
+                "at": iso_of(pr.get("updated_at"))}
+        for c in (pr.get("closes") or [])[:5] if isinstance(pr.get("closes"), list) else []:
+            c = number_of(c)
+            if c is not None:
+                add(c, p, "pr", info, lambda d: (-_epoch_or(d["at"]), d["number"]))
+    for user, board in _presence_person(read, owner, name, keep_gone=True):
+        p = who(user)
+        n = board["issue"]
+        if p is None or n is None or board["live"] not in WARN_LIVE or board["state"] == "ended":          # gone and unknown claim nothing; an ended session holds nothing
+            continue
+        add(n, p, "presence", {"kind": "presence", "live": board["live"], "last_seen_s": board["last_seen_s"], "state": board["state"], "agent": board["agent"],
+                               "since": board["since"], "last": board["last"], "branch": board["branch"], "at": board["updated_at"]},
+            lambda d: (_LIVE_RANK.get(d["live"], 9), d["last_seen_s"] if d["last_seen_s"] is not None else 10 ** 9))
+    order = ("assigned", "claim", "presence", "branch", "pr")
+    by_issue: dict = {}
+    for (n, _), e in sig.items():
+        ks = e["kinds"]
+        pres = ks.get("presence")
+        solid = any(k in ks for k in ("assigned", "claim", "branch", "pr")) or (pres is not None and pres["live"] in ("live", "idle"))
+        status = "taken" if solid else "recent" if pres is not None and pres["live"] == "unconfirmed" else "stale"
+        since = pres["since"] if pres is not None and pres["live"] != "stale" else None          # a stale line says when the session began, not that it still runs: no "since" from it
+        w = _advice({"issue": n, "url": issue_url(owner, name, n), "person": {"id": e["p"]["id"], "login": e["p"]["login"]}, "status": status,
+                     "signals": [ks[k] for k in order if k in ks], "since": since, "since_from": "presence" if since else None,
+                     "age_s": pres["last_seen_s"] if pres else None,
+                     "stale_age_s": pres["last_seen_s"] if status == "taken" and pres is not None and pres["live"] == "stale" else None})          # taken by another signal, its status line old: the age is said
+        by_issue.setdefault(n, []).append(w)
+    rank = {"taken": 0, "recent": 1, "stale": 2}
+    for n in sorted(by_issue)[:ISSUE_WARN_MAX]:
+        out["issues"][str(n)] = sorted(by_issue[n], key=lambda w: (rank[w["status"]], (w["person"]["login"] or "").lower(), w["person"]["id"] or 0))[:10]
+
+    # ---- same branch
+    blist = sorted(bmap.values(), key=lambda e: (-_epoch_or(e["at"]), e["name"], (e["p"]["login"] or "").lower()))[:BRANCH_WARN_MAX]
+    cutoff = now - TIP_DAYS * 86400
+    bw: dict = {}
+    for e in blist:
+        at = _epoch(e["at"])
+        bw.setdefault(e["name"], []).append(_advice({"name": e["name"], "url": branch_url(owner, name, e["name"]), "person": {"id": e["p"]["id"], "login": e["p"]["login"]},
+                                                     "sources": sorted(e["sources"]), "issue": e["issue"], "pr": e["pr"], "at": e["at"], "old": at is not None and at < cutoff}))
+    out["branches"] = bw
+
+    # ---- same files: a teammate's open or draft pull request changes files this board's own open tasks also touch
+    files = _pr_files(read)
+    out["files"] = {"checked": sum(1 for n in prs if n in files), "pending": sum(1 for n in prs if n not in files), "capped": any(files[n]["more"] for n in prs if n in files)}
+    fw: dict = {}
+    for t in lc:
+        if t["files"] is None:
+            continue
+        mine = set(t["files"])
+        for n in sorted(prs):
+            pr, p = prs[n]
+            pf = files.get(n)
+            common = sorted(mine & set(pf["files"])) if pf else []
+            if not common:
+                continue
+            hits.setdefault(n, []).append((t, common, pf["more"]))
+            fw.setdefault(t["id"], []).append(_advice({"task": t["id"], "files": common[:FILES_SHOWN], "count": len(common), "more": pf["more"],
+                                                       "person": {"id": p["id"], "login": p["login"]},
+                                                       "pr": {"number": n, "title": text(pr.get("title")), "url": pull_url(owner, name, n), "draft": pr.get("draft") is True,
+                                                              "branch": branch_of(pr.get("head_ref")) if isinstance(pr.get("head_ref"), str) else None}}))
+
+    # ---- one lookup by local task id
+    for t in lc:
+        ent = {"task": t["id"], "title": t["title"], "issue": out["issues"].get(str(t["issue"]), []) if t["issue"] else [],
+               "branch": bw.get(t["branch"], []) if t["branch"] else [], "files": fw.get(t["id"], [])}
+        if ent["issue"] or ent["branch"] or ent["files"]:
+            out["tasks"][str(t["id"])] = ent
+    return out, hits
+
+
+def mark_rows(people: list[dict], lc: list[dict], hits: dict) -> None:
+    """Mark the rows of the Team block that collide with this board's own open tasks (issue #199): `collides` [{task, title, kind: issue|branch|files, files[], count}] on a
+    teammate's issue, branch or pull request row. Only teammates' rows are marked, and only when there is a collision (no key otherwise)."""
+    if not lc:
+        return
+    for p in people:
+        if p.get("you"):
+            continue
+        for row in p["issues"]:
+            c = [{"task": t["id"], "title": t["title"], "kind": "issue"} for t in lc if t["issue"] == row["number"]]
+            if c:
+                row["collides"] = c
+        for row in p["branches"]:
+            c = [{"task": t["id"], "title": t["title"], "kind": "branch"} for t in lc if t["branch"] and t["branch"] == row["name"]]
+            if c:
+                row["collides"] = c
+        for row in p["prs"]:
+            c = [{"task": t["id"], "title": t["title"], "kind": "issue"} for t in lc if t["issue"] and t["issue"] in (row.get("closes") or [])]
+            c += [{"task": t["id"], "title": t["title"], "kind": "files", "files": common[:FILES_SHOWN], "count": len(common), "more": more} for t, common, more in hits.get(row["number"], [])]
+            if c:
+                row["collides"] = c
+
+
 # ---------------------------------------------------------------- the body
 
-def repo_state(entry: dict, read: dict | None, me_login: str | None, me_id: int | None, now: float) -> dict:
-    """The block of one repository: `entry` is what this board knows of its own repository ({key, slug, local[{project, repo}], shared}), `read` what GitHub said (None: not read)."""
+def repo_state(entry: dict, read: dict | None, me_login: str | None, me_id: int | None, now: float, local=None) -> dict:
+    """The block of one repository: `entry` is what this board knows of its own repository ({key, slug, local[{project, repo}], shared}), `read` what GitHub said (None: not read).
+    `local` is this board's own open tasks of the repository (issue #199: [{id, title, issue_number, branch, files[]|None}], from app/main.py): it only marks rows and fills the
+    task lookup of `warnings`; it is shown to the signed-in person who owns the board and is never published."""
     split = split_key(entry.get("key"))
     owner, name = (split if split else ("", ""))
     spelled = entry.get("slug") if isinstance(entry.get("slug"), str) and "/" in entry["slug"] else f"{owner}/{name}"
@@ -530,7 +832,7 @@ def repo_state(entry: dict, read: dict | None, me_login: str | None, me_id: int 
            "shared": bool(entry.get("shared"))}
     base = {"state": "off", "message": MESSAGES["off"], "wait_s": None, "stale": False, "read_at": None, "age_s": None, "gql_at": None, "graph_pending": False,
             "graph_failed": False, "private": None, "people": [], "counts": {"people": 0, "teammates": 0, "issues": 0, "branches": 0, "prs": 0, "unattributed_branches": 0},
-            "truncated": {"issues": False, "pulls": False, "tips": False}}
+            "truncated": {"issues": False, "pulls": False, "tips": False}, "warnings": None}
     if not out["shared"]:
         return {**out, **base, "presence": None}
     if read is None or read.get("status") == "pending" and not read.get("read_at"):
@@ -539,6 +841,11 @@ def repo_state(entry: dict, read: dict | None, me_login: str | None, me_id: int 
     read_at = read.get("read_at") if isinstance(read.get("read_at"), (int, float)) and not isinstance(read.get("read_at"), bool) else None
     age = max(0, int(now - read_at)) if read_at is not None else None
     people, counts = people_of(read, me_login, me_id, so, sn, now) if read_at is not None else ([], base["counts"])
+    warnings = None
+    if read_at is not None:                                                  # issue #199: the advice for the launcher, from the same read; no network
+        lc = _local_clean(local)
+        warnings, hits = conflicts(read, me_login, me_id, so, sn, now, lc)
+        mark_rows(people, lc, hits)
     wait = read.get("wait_s") if isinstance(read.get("wait_s"), int) and not isinstance(read.get("wait_s"), bool) and read.get("wait_s") > 0 else None
     msg = MESSAGES[status] if status != "rate_limited" or not wait else f"GitHub asked this board to wait {wait} s."
     gql_at = read.get("gql_at") if isinstance(read.get("gql_at"), (int, float)) and not isinstance(read.get("gql_at"), bool) else None
@@ -551,13 +858,14 @@ def repo_state(entry: dict, read: dict | None, me_login: str | None, me_id: int 
     return {**out, "presence": presence, "state": status, "message": msg, "wait_s": wait, "stale": status != "ok" or age is None or age > STALE_S,
             "read_at": _iso_now(read_at) if read_at is not None else None, "age_s": age, "gql_at": _iso_now(gql_at) if gql_at is not None else None,
             "graph_pending": gql_at is None, "graph_failed": bool(read.get("graph_error")), "private": read.get("private") if isinstance(read.get("private"), bool) else None, "people": people, "counts": counts,
-            "truncated": {k: tr.get(k) is True for k in ("issues", "pulls", "tips")}}
+            "truncated": {k: tr.get(k) is True for k in ("issues", "pulls", "tips")}, "warnings": warnings}
 
 
-def build(entries: list[dict], reads: dict, me_login: str | None, me_id: int | None, now: float) -> dict:
+def build(entries: list[dict], reads: dict, me_login: str | None, me_id: int | None, now: float, local=None) -> dict:
     """The body of GET /api/team/state: {api, enabled, me, repos[...], at}. `enabled` is true when at least one repository is shared. `me` is null while the board does not know
     which GitHub login it acts as (unknown, not "nobody")."""
-    repos = [repo_state(e, reads.get(e.get("key")), me_login, me_id, now) for e in entries]
+    loc = local if isinstance(local, dict) else {}
+    repos = [repo_state(e, reads.get(e.get("key")), me_login, me_id, now, loc.get(e.get("key"))) for e in entries]
     repos.sort(key=lambda r: (not r["shared"], r["slug"].lower()))
     return {"api": API, "enabled": any(r["shared"] for r in repos),
             "me": {"login": me_login, "id": me_id} if me_login else None, "repos": repos, "at": _iso_now(now)}

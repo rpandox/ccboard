@@ -1,5 +1,5 @@
 {
- "_note": "Demo answers for /api/team/state (issues #197, #198). ?demo=1 shows base: example/website is shared with alice (you) and bob, the other two repositories are off; bob has two boards that publish a live line. ?team=<name> lays a variant over example/website: body patches the top level, repo patches that repository's block, lines sets the presence of a person by login (null: no line). Names: off, loading, empty, alone, sso, forbidden, notfound, rate, low, stale, nologin, nogh, error, pending, cut, hostile, lineneeds, lineended, lineunconfirmed, linestale, lineunknown, linegone, linenone, lineclosed, lineerror, linecut. Times follow the clock (demoRebase). A repository switched on in the demo answers state ok with nobody else in it, because no GitHub is behind the page.",
+ "_note": "Demo answers for /api/team/state (issues #197, #198). ?demo=1 shows base: example/website is shared with alice (you) and bob, the other two repositories are off; bob has two boards that publish a live line. ?team=<name> lays a variant over example/website: body patches the top level, repo patches that repository's block, lines sets the presence of a person by login (null: no line). Names: off, loading, warnnone, warnnoid, warnempty, warnfiles, empty, alone, sso, forbidden, notfound, rate, low, stale, nologin, nogh, error, pending, cut, hostile, lineneeds, lineended, lineunconfirmed, linestale, lineunknown, linegone, linenone, lineclosed, lineerror, linecut. Times follow the clock (demoRebase). A repository switched on in the demo answers state ok with nobody else in it, because no GitHub is behind the page. Issue #199: every block carries warnings (null: not shared or not read yet); the base block warns about issues 152, 154, 156, 160, 162 and 164 (taken with every kind of sign, recent, stale, a login GitHub text hid, two people), about bob's branches, and about the changed files of bob's pull requests against tasks 4 and 7 of state.json. Open the launcher on phasezero/website (+ task), pick one of those issues, or start task 7. state.json has team.shared, which is what makes the launcher read this view.",
  "demo": {
   "epoch": 1790996400
  },
@@ -104,7 +104,14 @@
         "branches": [
          "bob/coupon-total"
         ],
-        "claim": null
+        "claim": null,
+        "collides": [
+         {
+          "task": 4,
+          "title": "Redesign checkout step 2 for mobile",
+          "kind": "issue"
+         }
+        ]
        },
        {
         "number": 154,
@@ -136,6 +143,27 @@
         "at": "2026-09-30T03:00:00Z",
         "source": "pushed",
         "issue": null
+       },
+       {
+        "name": "worktree-154-add-a-gift-wrap-option",
+        "url": "https://github.com/example/website/tree/worktree-154-add-a-gift-wrap-option",
+        "at": "2026-10-03T02:20:00Z",
+        "source": "pushed",
+        "issue": null
+       },
+       {
+        "name": "worktree-checkout-redesign",
+        "url": "https://github.com/example/website/tree/worktree-checkout-redesign",
+        "at": "2026-10-03T02:05:00Z",
+        "source": "pushed",
+        "issue": null,
+        "collides": [
+         {
+          "task": 4,
+          "title": "Redesign checkout step 2 for mobile",
+          "kind": "branch"
+         }
+        ]
        }
       ],
       "prs": [
@@ -150,7 +178,24 @@
         "closes": [
          152
         ],
-        "updated_at": "2026-10-03T02:35:00Z"
+        "updated_at": "2026-10-03T02:35:00Z",
+        "collides": [
+         {
+          "task": 4,
+          "title": "Redesign checkout step 2 for mobile",
+          "kind": "issue"
+         },
+         {
+          "task": 4,
+          "title": "Redesign checkout step 2 for mobile",
+          "kind": "files",
+          "files": [
+           "src/pages/checkout.tsx"
+          ],
+          "count": 1,
+          "more": false
+         }
+        ]
        },
        {
         "number": 151,
@@ -208,7 +253,7 @@
      "people": 2,
      "teammates": 1,
      "issues": 3,
-     "branches": 3,
+     "branches": 5,
      "prs": 2,
      "unattributed_branches": 0,
      "live": 1
@@ -226,6 +271,492 @@
      "truncated": false,
      "editor_check": "ok",
      "message": ""
+    },
+    "warnings": {
+     "api": 1,
+     "identity_known": true,
+     "issues": {
+      "152": [
+       {
+        "issue": 152,
+        "url": "https://github.com/example/website/issues/152",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "status": "taken",
+        "signals": [
+         {
+          "kind": "assigned"
+         },
+         {
+          "kind": "presence",
+          "live": "live",
+          "last_seen_s": 240,
+          "state": "running",
+          "agent": "claude",
+          "since": "2026-10-03T01:30:00Z",
+          "last": "2026-10-03T02:45:00Z",
+          "branch": "bob/coupon-total",
+          "at": "2026-10-03T02:56:00Z"
+         },
+         {
+          "kind": "branch",
+          "name": "bob/coupon-total",
+          "url": "https://github.com/example/website/tree/bob/coupon-total",
+          "at": "2026-10-03T02:35:00Z"
+         },
+         {
+          "kind": "pr",
+          "number": 158,
+          "title": "Apply coupon codes before tax",
+          "url": "https://github.com/example/website/pull/158",
+          "draft": true,
+          "branch": "bob/coupon-total",
+          "at": "2026-10-03T02:35:00Z"
+         }
+        ],
+        "since": "2026-10-03T01:30:00Z",
+        "since_from": "presence",
+        "age_s": 240,
+        "stale_age_s": null,
+        "advice": true
+       }
+      ],
+      "154": [
+       {
+        "issue": 154,
+        "url": "https://github.com/example/website/issues/154",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "status": "taken",
+        "signals": [
+         {
+          "kind": "assigned"
+         },
+         {
+          "kind": "claim",
+          "status": "running",
+          "branch": "worktree-issue-154",
+          "at": "2026-10-03T02:40:00Z"
+         }
+        ],
+        "since": null,
+        "since_from": null,
+        "age_s": null,
+        "stale_age_s": null,
+        "advice": true
+       }
+      ],
+      "156": [
+       {
+        "issue": 156,
+        "url": "https://github.com/example/website/issues/156",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "status": "recent",
+        "signals": [
+         {
+          "kind": "presence",
+          "live": "unconfirmed",
+          "last_seen_s": 420,
+          "state": "running",
+          "agent": "claude",
+          "since": "2026-10-03T02:40:00Z",
+          "last": "2026-10-03T02:50:00Z",
+          "branch": null,
+          "at": "2026-10-03T02:52:00Z"
+         }
+        ],
+        "since": "2026-10-03T02:40:00Z",
+        "since_from": "presence",
+        "age_s": 420,
+        "stale_age_s": null,
+        "advice": true
+       }
+      ],
+      "160": [
+       {
+        "issue": 160,
+        "url": "https://github.com/example/website/issues/160",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "status": "stale",
+        "signals": [
+         {
+          "kind": "presence",
+          "live": "stale",
+          "last_seen_s": 10800,
+          "state": "idle",
+          "agent": "claude",
+          "since": "2026-10-02T22:00:00Z",
+          "last": "2026-10-02T23:30:00Z",
+          "branch": null,
+          "at": "2026-10-03T00:00:00Z"
+         }
+        ],
+        "since": null,
+        "since_from": null,
+        "age_s": 10800,
+        "stale_age_s": null,
+        "advice": true
+       }
+      ],
+      "162": [
+       {
+        "issue": 162,
+        "url": "https://github.com/example/website/issues/162",
+        "person": {
+         "id": 1005,
+         "login": null
+        },
+        "status": "taken",
+        "signals": [
+         {
+          "kind": "assigned"
+         }
+        ],
+        "since": null,
+        "since_from": null,
+        "age_s": null,
+        "stale_age_s": null,
+        "advice": true
+       }
+      ],
+      "164": [
+       {
+        "issue": 164,
+        "url": "https://github.com/example/website/issues/164",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "status": "taken",
+        "signals": [
+         {
+          "kind": "branch",
+          "name": "bob/refund-email",
+          "url": "https://github.com/example/website/tree/bob/refund-email",
+          "at": "2026-10-03T01:00:00Z"
+         }
+        ],
+        "since": null,
+        "since_from": null,
+        "age_s": null,
+        "stale_age_s": null,
+        "advice": true
+       },
+       {
+        "issue": 164,
+        "url": "https://github.com/example/website/issues/164",
+        "person": {
+         "id": 1005,
+         "login": null
+        },
+        "status": "taken",
+        "signals": [
+         {
+          "kind": "assigned"
+         }
+        ],
+        "since": null,
+        "since_from": null,
+        "age_s": null,
+        "stale_age_s": null,
+        "advice": true
+       }
+      ]
+     },
+     "branches": {
+      "bob/coupon-total": [
+       {
+        "name": "bob/coupon-total",
+        "url": "https://github.com/example/website/tree/bob/coupon-total",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "sources": [
+         "linked",
+         "pr",
+         "pushed"
+        ],
+        "issue": 152,
+        "pr": 158,
+        "at": "2026-10-03T02:35:00Z",
+        "old": false,
+        "advice": true
+       }
+      ],
+      "bob/refund-email": [
+       {
+        "name": "bob/refund-email",
+        "url": "https://github.com/example/website/tree/bob/refund-email",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "sources": [
+         "linked",
+         "pushed"
+        ],
+        "issue": 164,
+        "pr": null,
+        "at": "2026-10-03T01:00:00Z",
+        "old": false,
+        "advice": true
+       }
+      ],
+      "bob/cart-badge": [
+       {
+        "name": "bob/cart-badge",
+        "url": "https://github.com/example/website/tree/bob/cart-badge",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "sources": [
+         "pr"
+        ],
+        "issue": null,
+        "pr": 151,
+        "at": "2026-10-02T02:00:00Z",
+        "old": false,
+        "advice": true
+       }
+      ],
+      "bob/wrap-spike": [
+       {
+        "name": "bob/wrap-spike",
+        "url": "https://github.com/example/website/tree/bob/wrap-spike",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "sources": [
+         "pushed"
+        ],
+        "issue": null,
+        "pr": null,
+        "at": "2026-09-30T03:00:00Z",
+        "old": false,
+        "advice": true
+       }
+      ],
+      "bob/old-spike": [
+       {
+        "name": "bob/old-spike",
+        "url": "https://github.com/example/website/tree/bob/old-spike",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "sources": [
+         "pushed"
+        ],
+        "issue": null,
+        "pr": null,
+        "at": "2026-09-10T03:00:00Z",
+        "old": true,
+        "advice": true
+       }
+      ],
+      "worktree-154-add-a-gift-wrap-option": [
+       {
+        "name": "worktree-154-add-a-gift-wrap-option",
+        "url": "https://github.com/example/website/tree/worktree-154-add-a-gift-wrap-option",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "sources": [
+         "pushed"
+        ],
+        "issue": null,
+        "pr": null,
+        "at": "2026-10-03T02:20:00Z",
+        "old": false,
+        "advice": true
+       }
+      ],
+      "worktree-checkout-redesign": [
+       {
+        "name": "worktree-checkout-redesign",
+        "url": "https://github.com/example/website/tree/worktree-checkout-redesign",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "sources": [
+         "pushed"
+        ],
+        "issue": null,
+        "pr": null,
+        "at": "2026-10-03T02:05:00Z",
+        "old": false,
+        "advice": true
+       }
+      ]
+     },
+     "tasks": {
+      "4": {
+       "task": 4,
+       "title": "Redesign checkout step 2 for mobile",
+       "issue": [
+        {
+         "issue": 152,
+         "url": "https://github.com/example/website/issues/152",
+         "person": {
+          "id": 1002,
+          "login": "bob"
+         },
+         "status": "taken",
+         "signals": [
+          {
+           "kind": "assigned"
+          },
+          {
+           "kind": "presence",
+           "live": "live",
+           "last_seen_s": 240,
+           "state": "running",
+           "agent": "claude",
+           "since": "2026-10-03T01:30:00Z",
+           "last": "2026-10-03T02:45:00Z",
+           "branch": "bob/coupon-total",
+           "at": "2026-10-03T02:56:00Z"
+          },
+          {
+           "kind": "branch",
+           "name": "bob/coupon-total",
+           "url": "https://github.com/example/website/tree/bob/coupon-total",
+           "at": "2026-10-03T02:35:00Z"
+          },
+          {
+           "kind": "pr",
+           "number": 158,
+           "title": "Apply coupon codes before tax",
+           "url": "https://github.com/example/website/pull/158",
+           "draft": true,
+           "branch": "bob/coupon-total",
+           "at": "2026-10-03T02:35:00Z"
+          }
+         ],
+         "since": "2026-10-03T01:30:00Z",
+         "since_from": "presence",
+         "age_s": 240,
+         "stale_age_s": null,
+         "advice": true
+        }
+       ],
+       "branch": [
+        {
+         "name": "worktree-checkout-redesign",
+         "url": "https://github.com/example/website/tree/worktree-checkout-redesign",
+         "person": {
+          "id": 1002,
+          "login": "bob"
+         },
+         "sources": [
+          "pushed"
+         ],
+         "issue": null,
+         "pr": null,
+         "at": "2026-10-03T02:05:00Z",
+         "old": false,
+         "advice": true
+        }
+       ],
+       "files": [
+        {
+         "task": 4,
+         "files": [
+          "src/pages/checkout.tsx"
+         ],
+         "count": 1,
+         "more": false,
+         "person": {
+          "id": 1002,
+          "login": "bob"
+         },
+         "pr": {
+          "number": 158,
+          "title": "Apply coupon codes before tax",
+          "url": "https://github.com/example/website/pull/158",
+          "draft": true,
+          "branch": "bob/coupon-total"
+         },
+         "advice": true
+        }
+       ]
+      },
+      "7": {
+       "task": 7,
+       "title": "Add alt text to the product gallery images",
+       "issue": [],
+       "branch": [],
+       "files": [
+        {
+         "task": 7,
+         "files": [
+          "src/components/ProductGallery.tsx"
+         ],
+         "count": 1,
+         "more": false,
+         "person": {
+          "id": 1002,
+          "login": "bob"
+         },
+         "pr": {
+          "number": 151,
+          "title": "Fix the cart badge count on mobile",
+          "url": "https://github.com/example/website/pull/151",
+          "draft": false,
+          "branch": "bob/cart-badge"
+         },
+         "advice": true
+        },
+        {
+         "task": 7,
+         "files": [
+          "src/components/ProductCard.tsx",
+          "src/components/ProductGallery.tsx",
+          "src/components/Thumbnail.tsx",
+          "src/lib/images.ts",
+          "src/lib/alt-text.ts",
+          "src/pages/product.tsx",
+          "src/styles/gallery.css",
+          "src/styles/card.css"
+         ],
+         "count": 8,
+         "more": false,
+         "person": {
+          "id": 1002,
+          "login": "bob"
+         },
+         "pr": {
+          "number": 158,
+          "title": "Apply coupon codes before tax",
+          "url": "https://github.com/example/website/pull/158",
+          "draft": true,
+          "branch": "bob/coupon-total"
+         },
+         "advice": true
+        }
+       ]
+      }
+     },
+     "files": {
+      "checked": 2,
+      "pending": 1,
+      "capped": false
+     }
     }
    },
    {
@@ -264,7 +795,8 @@
      "tips": false
     },
     "graph_failed": false,
-    "presence": null
+    "presence": null,
+    "warnings": null
    },
    {
     "repo_slug": "github.com/example/ccboard",
@@ -302,7 +834,8 @@
      "tips": false
     },
     "graph_failed": false,
-    "presence": null
+    "presence": null,
+    "warnings": null
    }
   ]
  },
@@ -329,7 +862,8 @@
      "unattributed_branches": 0,
      "live": 0
     },
-    "presence": null
+    "presence": null,
+    "warnings": null
    }
   },
   "loading": {
@@ -350,7 +884,8 @@
      "unattributed_branches": 0,
      "live": 0
     },
-    "presence": null
+    "presence": null,
+    "warnings": null
    }
   },
   "empty": {
@@ -854,6 +1389,422 @@
      "truncated": true,
      "editor_check": "failed",
      "message": ""
+    }
+   }
+  },
+  "warnnone": {
+   "repo": {
+    "warnings": null
+   }
+  },
+  "warnnoid": {
+   "repo": {
+    "warnings": {
+     "api": 1,
+     "identity_known": false,
+     "issues": {},
+     "branches": {},
+     "tasks": {},
+     "files": {
+      "checked": 2,
+      "pending": 0,
+      "capped": false
+     }
+    }
+   }
+  },
+  "warnempty": {
+   "repo": {
+    "warnings": {
+     "api": 1,
+     "identity_known": true,
+     "issues": {},
+     "branches": {},
+     "tasks": {},
+     "files": {
+      "checked": 2,
+      "pending": 0,
+      "capped": false
+     }
+    }
+   }
+  },
+  "warnfiles": {
+   "repo": {
+    "warnings": {
+     "api": 1,
+     "identity_known": true,
+     "issues": {
+      "152": [
+       {
+        "issue": 152,
+        "url": "https://github.com/example/website/issues/152",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "status": "taken",
+        "signals": [
+         {
+          "kind": "assigned"
+         },
+         {
+          "kind": "presence",
+          "live": "live",
+          "last_seen_s": 240,
+          "state": "running",
+          "agent": "claude",
+          "since": "2026-10-03T01:30:00Z",
+          "last": "2026-10-03T02:45:00Z",
+          "branch": "bob/coupon-total",
+          "at": "2026-10-03T02:56:00Z"
+         },
+         {
+          "kind": "branch",
+          "name": "bob/coupon-total",
+          "url": "https://github.com/example/website/tree/bob/coupon-total",
+          "at": "2026-10-03T02:35:00Z"
+         },
+         {
+          "kind": "pr",
+          "number": 158,
+          "title": "Apply coupon codes before tax",
+          "url": "https://github.com/example/website/pull/158",
+          "draft": true,
+          "branch": "bob/coupon-total",
+          "at": "2026-10-03T02:35:00Z"
+         }
+        ],
+        "since": "2026-10-03T01:30:00Z",
+        "since_from": "presence",
+        "age_s": 240,
+        "stale_age_s": null,
+        "advice": true
+       }
+      ],
+      "154": [
+       {
+        "issue": 154,
+        "url": "https://github.com/example/website/issues/154",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "status": "taken",
+        "signals": [
+         {
+          "kind": "assigned"
+         },
+         {
+          "kind": "claim",
+          "status": "running",
+          "branch": "worktree-issue-154",
+          "at": "2026-10-03T02:40:00Z"
+         }
+        ],
+        "since": null,
+        "since_from": null,
+        "age_s": null,
+        "stale_age_s": null,
+        "advice": true
+       }
+      ],
+      "156": [
+       {
+        "issue": 156,
+        "url": "https://github.com/example/website/issues/156",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "status": "recent",
+        "signals": [
+         {
+          "kind": "presence",
+          "live": "unconfirmed",
+          "last_seen_s": 420,
+          "state": "running",
+          "agent": "claude",
+          "since": "2026-10-03T02:40:00Z",
+          "last": "2026-10-03T02:50:00Z",
+          "branch": null,
+          "at": "2026-10-03T02:52:00Z"
+         }
+        ],
+        "since": "2026-10-03T02:40:00Z",
+        "since_from": "presence",
+        "age_s": 420,
+        "stale_age_s": null,
+        "advice": true
+       }
+      ],
+      "160": [
+       {
+        "issue": 160,
+        "url": "https://github.com/example/website/issues/160",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "status": "stale",
+        "signals": [
+         {
+          "kind": "presence",
+          "live": "stale",
+          "last_seen_s": 10800,
+          "state": "idle",
+          "agent": "claude",
+          "since": "2026-10-02T22:00:00Z",
+          "last": "2026-10-02T23:30:00Z",
+          "branch": null,
+          "at": "2026-10-03T00:00:00Z"
+         }
+        ],
+        "since": null,
+        "since_from": null,
+        "age_s": 10800,
+        "stale_age_s": null,
+        "advice": true
+       }
+      ],
+      "162": [
+       {
+        "issue": 162,
+        "url": "https://github.com/example/website/issues/162",
+        "person": {
+         "id": 1005,
+         "login": null
+        },
+        "status": "taken",
+        "signals": [
+         {
+          "kind": "assigned"
+         }
+        ],
+        "since": null,
+        "since_from": null,
+        "age_s": null,
+        "stale_age_s": null,
+        "advice": true
+       }
+      ],
+      "164": [
+       {
+        "issue": 164,
+        "url": "https://github.com/example/website/issues/164",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "status": "taken",
+        "signals": [
+         {
+          "kind": "branch",
+          "name": "bob/refund-email",
+          "url": "https://github.com/example/website/tree/bob/refund-email",
+          "at": "2026-10-03T01:00:00Z"
+         }
+        ],
+        "since": null,
+        "since_from": null,
+        "age_s": null,
+        "stale_age_s": null,
+        "advice": true
+       },
+       {
+        "issue": 164,
+        "url": "https://github.com/example/website/issues/164",
+        "person": {
+         "id": 1005,
+         "login": null
+        },
+        "status": "taken",
+        "signals": [
+         {
+          "kind": "assigned"
+         }
+        ],
+        "since": null,
+        "since_from": null,
+        "age_s": null,
+        "stale_age_s": null,
+        "advice": true
+       }
+      ]
+     },
+     "branches": {
+      "bob/coupon-total": [
+       {
+        "name": "bob/coupon-total",
+        "url": "https://github.com/example/website/tree/bob/coupon-total",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "sources": [
+         "linked",
+         "pr",
+         "pushed"
+        ],
+        "issue": 152,
+        "pr": 158,
+        "at": "2026-10-03T02:35:00Z",
+        "old": false,
+        "advice": true
+       }
+      ],
+      "bob/refund-email": [
+       {
+        "name": "bob/refund-email",
+        "url": "https://github.com/example/website/tree/bob/refund-email",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "sources": [
+         "linked",
+         "pushed"
+        ],
+        "issue": 164,
+        "pr": null,
+        "at": "2026-10-03T01:00:00Z",
+        "old": false,
+        "advice": true
+       }
+      ],
+      "bob/cart-badge": [
+       {
+        "name": "bob/cart-badge",
+        "url": "https://github.com/example/website/tree/bob/cart-badge",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "sources": [
+         "pr"
+        ],
+        "issue": null,
+        "pr": 151,
+        "at": "2026-10-02T02:00:00Z",
+        "old": false,
+        "advice": true
+       }
+      ],
+      "bob/wrap-spike": [
+       {
+        "name": "bob/wrap-spike",
+        "url": "https://github.com/example/website/tree/bob/wrap-spike",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "sources": [
+         "pushed"
+        ],
+        "issue": null,
+        "pr": null,
+        "at": "2026-09-30T03:00:00Z",
+        "old": false,
+        "advice": true
+       }
+      ],
+      "bob/old-spike": [
+       {
+        "name": "bob/old-spike",
+        "url": "https://github.com/example/website/tree/bob/old-spike",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "sources": [
+         "pushed"
+        ],
+        "issue": null,
+        "pr": null,
+        "at": "2026-09-10T03:00:00Z",
+        "old": true,
+        "advice": true
+       }
+      ],
+      "worktree-154-add-a-gift-wrap-option": [
+       {
+        "name": "worktree-154-add-a-gift-wrap-option",
+        "url": "https://github.com/example/website/tree/worktree-154-add-a-gift-wrap-option",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "sources": [
+         "pushed"
+        ],
+        "issue": null,
+        "pr": null,
+        "at": "2026-10-03T02:20:00Z",
+        "old": false,
+        "advice": true
+       }
+      ],
+      "worktree-checkout-redesign": [
+       {
+        "name": "worktree-checkout-redesign",
+        "url": "https://github.com/example/website/tree/worktree-checkout-redesign",
+        "person": {
+         "id": 1002,
+         "login": "bob"
+        },
+        "sources": [
+         "pushed"
+        ],
+        "issue": null,
+        "pr": null,
+        "at": "2026-10-03T02:05:00Z",
+        "old": false,
+        "advice": true
+       }
+      ]
+     },
+     "tasks": {
+      "7": {
+       "task": 7,
+       "title": "Add alt text to the product gallery images",
+       "issue": [],
+       "branch": [],
+       "files": [
+        {
+         "task": 7,
+         "files": [
+          "src/lib/images.ts",
+          "src/lib/alt-text.ts",
+          "src/pages/product.tsx",
+          "src/styles/gallery.css",
+          "src/styles/card.css",
+          "src/components/Thumbnail.tsx",
+          "src/components/ProductCard.tsx",
+          "src/components/ProductGallery.tsx"
+         ],
+         "count": 200,
+         "more": true,
+         "person": {
+          "id": 1002,
+          "login": "bob"
+         },
+         "pr": {
+          "number": 158,
+          "title": "Apply coupon codes before tax",
+          "url": "https://github.com/example/website/pull/158",
+          "draft": true,
+          "branch": "bob/coupon-total"
+         },
+         "advice": true
+        }
+       ]
+      }
+     },
+     "files": {
+      "checked": 2,
+      "pending": 0,
+      "capped": false
+     }
     }
    }
   }

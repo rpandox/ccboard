@@ -9,6 +9,9 @@ What is read for a shared repository (a GET each; GraphQL is the one POST on the
   - open pull requests                     REST, ETag; this is where a teammate's fork shows up (head repository)
   - claim comments of #148                 REST, ETag, only for issues labelled ccboard:in-progress, parsed by nodes_epics.parse_claim; absent is fine
   - linked branches, closing issues, recent branch tips with their author: one GraphQL query per repository, slowly (GQL_S), earlier only when the REST lists changed.
+  - the files a teammate's open or draft pull request changes (issue #199, Team P3): a GET of /pulls/{n}/files per pull request, only for a pull request that is not the owner's own,
+    only when it is new or its `updated_at` moved (or, rarely, to revalidate with the ETag), at most FILES_PRS_MAX pull requests and FILES_PAGES pages of 100 each, and at most
+    FILES_BUDGET points an hour of the poll's BUDGET_PER_HOUR. The lists feed app/team.py's warnings; nothing is written.
 No `git fetch`: the owner's checkout is never touched. No write of any kind.
 
 The poll has the lowest priority: one thread, one call at a time with MIN_GAP between calls, a budget of BUDGET_PER_HOUR points an hour for the whole team poll (a 304 is counted as
@@ -54,6 +57,12 @@ KV_META = "team:meta:"
 IN_PROGRESS = nodes_epics.IN_PROGRESS_LABEL
 REFRESH_MIN_S = 60.0              # the refresh button is answered at most this often
 GQL_COST_GUESS = 2                # points reserved for a GraphQL read before GitHub says what it cost
+FILES_PRS_MAX = 12                # pull requests of one repository whose changed files are read (the most recently updated that are not the owner's)
+FILES_PAGES = 2                   # pages of 100 files a pull request: 200 names at most, then the list is marked as cut
+FILES_PER_CYCLE = 3               # pages one REST cycle of one repository may read (a slow poll: the lists fill in over a few cycles)
+FILES_REVALIDATE_S = 1800.0       # a list whose pull request did not move is asked again (an ETag, so a 304) this often
+FILES_BUDGET = 100               # points an hour of the poll's BUDGET_PER_HOUR that changed-file reads may spend (they count in the whole budget too)
+FILES_RESERVE = 100              # points of the whole hour's budget that changed-file reads leave to the core reads: they stop when fewer than this would remain
 
 REASON_STATE = {"sso": "sso", "no_access": "no_access", "not_found": "not_found", "rate_limited": "rate_limited", "no_login": "no_login", "no_gh": "no_gh"}
 HARD = ("sso", "no_access", "not_found", "no_login", "no_gh")
@@ -234,6 +243,7 @@ def parse_pulls(items, target: str, closes: dict | None = None) -> list[dict]:
         o, _, r = full.partition("/")
         full = full if github.valid_slug(o, r) else ""
         out.append({"number": n, "title": team.text(pr.get("title")), "draft": pr.get("draft") is True, "author": team.user_of(pr.get("user")),
+                    "association": team.text(pr.get("author_association"), 30) or None,
                     "head_ref": team.branch_of(head.get("ref")), "head_repo": full or None, "fork": bool(full) and full.lower() != target.lower(),
                     "updated_at": team.iso_of(pr.get("updated_at")), "closes": (closes or {}).get(n)})
         if len(out) >= PULLS_MAX:
@@ -310,7 +320,22 @@ def parse_claims(comments, issue: int, server_now: float | None) -> list[dict]:
 def new_read(slug: str) -> dict:
     return {"slug": slug, "status": "pending", "reason": None, "message": None, "wait_s": None, "read_at": None, "gql_at": None, "private": None, "fork": None,
             "default_branch": None, "issues": [], "pulls": [], "linked": {}, "tips": [], "claims": [], "closes": {}, "claims_at": 0.0, "graph_error": None,
-            "truncated": {"issues": False, "pulls": False, "tips": False}, "presence": None}
+            "truncated": {"issues": False, "pulls": False, "tips": False}, "presence": None, "pull_files": {}}
+
+
+def parse_pull_files(data) -> tuple[list[str], bool]:
+    """(file names, whether a page was full) of one page of /pulls/{n}/files. Names are GitHub text: a name with a control, bidi or private-use character, an absolute path or a `..`
+    segment is dropped (team.path_of); a renamed file counts under both names. At most PER_PAGE entries of a page are looked at."""
+    out: list[str] = []
+    items = data[:github.PER_PAGE] if isinstance(data, list) else []
+    for f in items:
+        if not isinstance(f, dict):
+            continue
+        for k in ("filename", "previous_filename"):
+            q = team.path_of(f.get(k))
+            if q and q not in out:
+                out.append(q)
+    return out, isinstance(data, list) and len(data) >= github.PER_PAGE
 
 
 # ---------------------------------------------------------------- presence comments (issue #198, Team P2), read side
@@ -388,6 +413,7 @@ class Poller:
         self.reader = reader or github.Reader()
         self.ident = ident
         self.budget = Budget()
+        self.files_budget = Budget(FILES_BUDGET)
         self.lock = threading.RLock()
         self.reads: dict[str, dict] = {}
         self.sched: dict[str, dict] = {}
@@ -410,7 +436,7 @@ class Poller:
     def snapshot(self) -> dict[str, dict]:
         with self.lock:
             return {k: {**v, "issues": list(v["issues"]), "pulls": list(v["pulls"]), "tips": list(v["tips"]), "claims": list(v["claims"]), "linked": dict(v["linked"]),
-                        "truncated": dict(v["truncated"])} for k, v in self.reads.items()}
+                        "truncated": dict(v["truncated"]), "pull_files": dict(v.get("pull_files") or {})} for k, v in self.reads.items()}
 
     def entries(self) -> list[dict]:
         shared = self.db.team_shared()
@@ -747,12 +773,93 @@ class Poller:
                     rd["pulls"] = parse_pulls(pulls_raw, f"{o}/{n}", graph["closes"]) if pulls_raw else rd["pulls"]
                     sc["gql_last"] = now
                     sc["gql"] = now + GQL_S * self._factor()
+            self._files_stage(o, n, rd, now)                                                          # issue #199: the changed files of teammates' pull requests, last and slowest
         except _Defer as d:
             sc["rest"] = now + d.wait
         except _Low as low:
             self._low(now, low.wait)
         except github.GhReadError as err:
             self._fail(key, err, now)
+
+    def _files_room(self) -> bool:
+        """May one more changed-files page be read now? Only when GitHub has not asked anyone on this login to wait, the remainder is not low, the files' own share of the hour is
+        not spent and the poll's whole budget keeps FILES_RESERVE points for the core reads after this one. Never raises: the files are the last thing a cycle does and the first thing to wait."""
+        now = self.mono()
+        if self.reader.wait_left() > 0 or github.reader.wait_left() > 0:
+            return False
+        rem = self._remaining()
+        if rem is not None and rem < STOP_BELOW:
+            return False
+        return self.files_budget.room(now, 1) and self.budget.room(now, 1 + FILES_RESERVE)
+
+    def _files_stage(self, o: str, n: str, rd: dict, now: float) -> None:
+        """Read the changed files of the teammates' open and draft pull requests (issue #199), a few pages a cycle. The owner's own pull requests are not read (their files warn nobody),
+        nor are the ones with no author, a bot, or an author who cannot write to the repository (anybody can open a pull request on a public one). Due: never read, `updated_at` moved, or FILES_REVALIDATE_S old (then a conditional GET). Nothing here raises except a rate limit, which is
+        the repository's state like any other. A failure of one pull request's files (not found, too large, 422, 5xx) marks only that list unknown until FILES_REVALIDATE_S has passed or the
+        pull request moves, and the next one is read; no login or no gh stops the stage and is tried again next cycle."""
+        me_login, me_id = self.me
+        if not me_login and me_id is None:
+            return                                                   # the owner is not known yet: his own pull requests cannot be told from a teammate's, so nothing is read
+        with self.lock:
+            pulls = list(rd["pulls"])
+            have = dict(rd.get("pull_files") or {})
+            live = {p["number"] for p in pulls}
+            for num in [k for k in have if k not in live]:
+                have.pop(num)                                          # a closed pull request's list goes
+            cands = [p for p in pulls if team.trusted_pull(p) and not team.same_person(p["author"], me_login, me_id)]
+        cands.sort(key=lambda p: (p.get("updated_at") or "", p["number"]), reverse=True)
+        cands = cands[:FILES_PRS_MAX]
+        keep = {p["number"] for p in cands}
+        for num in [k for k in have if k not in keep]:
+            have.pop(num)
+        due = []
+        for p in cands:
+            mem = have.get(p["number"])
+            if mem is None:
+                due.append((0, 0.0, p))
+            elif mem["updated_at"] != p.get("updated_at"):
+                due.append((1, mem["checked"], p))
+            elif now - mem["checked"] >= FILES_REVALIDATE_S:
+                due.append((2, mem["checked"], p))
+        due.sort(key=lambda x: (x[0], x[1], x[2]["number"]))
+        pages = 0
+        failure: github.GhReadError | None = None
+        for _, _, p in due:
+            if pages >= FILES_PER_CYCLE or not self._files_room():
+                break
+            names: list[str] = []
+            more = False
+            try:
+                for page in range(1, FILES_PAGES + 1):
+                    if page > 1 and (pages >= FILES_PER_CYCLE or not self._files_room()):
+                        raise _Defer(0.0)                              # the rest of this list waits for the next cycle; what was read is not kept half-way
+                    before = self.calls
+                    try:
+                        rep = self._get(github.pull_files_path(o, n, p["number"], page, github.PER_PAGE))
+                    finally:
+                        pages += 1
+                        if self.calls > before:
+                            self.files_budget.add(self.mono(), self.calls - before)
+                    got, full = parse_pull_files(rep.data)
+                    names += got
+                    has_next = 'rel="next"' in (rep.headers.get("link") or "")
+                    if not (full and has_next):
+                        break
+                    more = page == FILES_PAGES                         # a next page exists and this module reads no further: the list is cut
+            except _Defer:
+                continue
+            except github.GhReadError as err:
+                if err.reason in ("rate_limited", "no_login", "no_gh"):          # these are the whole poll's state, not this pull request's: stop here
+                    if err.reason == "rate_limited":
+                        failure = err
+                    break
+                have[p["number"]] = {"files": None, "more": False, "updated_at": p.get("updated_at"), "checked": now}          # closed, too large, refused or a 5xx on this one: unknown (not "no files"), asked again after the revalidation time, and the next pull request is read
+                continue
+            have[p["number"]] = {"files": names[:team.FILES_PER_PR], "more": more or len(names) > team.FILES_PER_PR, "updated_at": p.get("updated_at"), "checked": now}
+        with self.lock:
+            rd["pull_files"] = have
+        if failure is not None:
+            raise failure
 
     def _presence(self, key: str, o: str, n: str, rd: dict, now: float) -> None:
         """Read the presence comments of the repository's status issue (issue #198): the issue by its label (every PRESENCE_FIND_S), its comments by conditional REST on every

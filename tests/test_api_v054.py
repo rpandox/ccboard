@@ -344,7 +344,7 @@ def test_state_legacy_keys_are_unchanged(board):
 DEMO_SHAPE_ALLOW = {
     "config.backup.repo": "only present once a backup repo is configured",
 }
-DEMO_ONLY_TOP = {"demo", "external"}        # the rebase epoch and the external threads route's data; the real state has neither
+DEMO_ONLY_TOP = {"demo", "external", "team"}        # the rebase epoch, the external threads route's data, and issue #199's team.shared (the real state has the key only while a repository is shared); the real state has none of them here
 
 
 def _json_kind(v):
