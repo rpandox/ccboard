@@ -132,7 +132,11 @@ def _issue_row(i: dict, owner: str | None, me: str | None = None) -> dict:
 def list_issues(cwd: Path, limit: int = 50) -> list[dict]:
     data = _gh_json(["issue", "list", "--state", "open", "--limit", str(limit), "--json", ISSUE_FIELDS], cwd)
     owner, me = origin_owner(cwd), gh_login(cwd)
-    return [_issue_row(i, owner, me) for i in data or [] if isinstance(i, dict)]
+    rows = [_issue_row(i, owner, me) for i in data or [] if isinstance(i, dict)]
+    return [r for r in rows if PRESENCE_LABEL not in r["labels"]]             # the team presence status issue (issue #198) is machinery, never work to pick
+
+
+PRESENCE_LABEL = "ccboard:presence"
 
 
 def view_issue(cwd: Path, number: int) -> dict:

@@ -996,6 +996,56 @@ class DB:
             return True
         return False
 
+    # ---- team presence (issue #198, Team P2), kv rows only, so nothing migrates. The publish switch is separate from the read switch above and, like it, a row exists only while
+    # ON (`team:publish:<origin key>` {on, public_ok, private}); the global pause is one row that exists only while paused; a record (`team:presrec:<repository key>`) exists only
+    # while this board may have a line on GitHub there: the issue, the comment id, the sequence number and the literal body last published ("What I published"). A board
+    # that never publishes has none of these rows.
+    TEAM_PUBLISH = "team:publish:"
+    TEAM_PRESREC = "team:presrec:"
+    TEAM_PAUSE = "team:presence-pause"
+
+    def team_publish(self) -> dict[str, dict]:
+        """{origin key: {on, public_ok, private}} for every repository whose presence publishing is on."""
+        return {k[len(self.TEAM_PUBLISH):]: {"on": True, "public_ok": v.get("public_ok") is True, "private": v.get("private") is True}
+                for k, v, _ in self.kv_list_prefix(self.TEAM_PUBLISH) if isinstance(v, dict) and v.get("on") is True}
+
+    def team_publish_set(self, key: str, row: dict | None) -> bool:
+        """Switch publishing on (a row {public_ok, private}) or off (None removes the row; nothing is written when there was none). True when something changed."""
+        k = self.TEAM_PUBLISH + key
+        have = self.kv_get(k)
+        if row is None:
+            if have is None:
+                return False
+            self.kv_del(k)
+            return True
+        val = {"on": True, "public_ok": row.get("public_ok") is True, "private": row.get("private") is True}
+        if have and have.get("value") == val:
+            return False
+        self.kv_set(k, val)
+        return True
+
+    def team_presence_paused(self) -> bool:
+        got = self.kv_get(self.TEAM_PAUSE)
+        return bool(got and isinstance(got.get("value"), dict) and got["value"].get("on") is True)
+
+    def team_presence_pause_set(self, on: bool) -> bool:
+        if on == self.team_presence_paused():
+            return False
+        if on:
+            self.kv_set(self.TEAM_PAUSE, {"on": True})
+        else:
+            self.kv_del(self.TEAM_PAUSE)
+        return True
+
+    def team_presence_recs(self) -> dict[str, dict]:
+        return {k[len(self.TEAM_PRESREC):]: v for k, v, _ in self.kv_list_prefix(self.TEAM_PRESREC) if isinstance(v, dict)}
+
+    def team_presence_rec_set(self, key: str, rec: dict | None) -> None:
+        if rec is None:
+            self.kv_del(self.TEAM_PRESREC + key)
+        else:
+            self.kv_set(self.TEAM_PRESREC + key, rec)
+
     # ---- nodes epic P3 (issue #135): incoming pairs and the audit. The digest columns never leave app/nodes.py; callers there strip them.
     def node_pair_add(self, **vals) -> int:
         bad = set(vals) - set(NODE_PAIR_COLS)

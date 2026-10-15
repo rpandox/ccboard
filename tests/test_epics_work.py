@@ -1244,7 +1244,8 @@ def test_a_result_that_still_looks_like_a_token_is_dropped_and_the_phase_is_stil
 
 def test_the_writer_gained_no_new_request_shape_for_the_run():
     shapes = {(m, rx.pattern) for m, rx in GW._PATHS}
-    assert len(shapes) == 8, "the same eight shapes as the claim: the comments of the run use the comment path, the release uses the label path"
+    assert len(shapes) == 9, "the eight shapes of the claim (the comments of the run use the comment path, the release uses the label path) and the one of team presence (issue #198)"
+    assert {m for m, p in shapes if p.endswith("/issues")} == {"POST"}, "the ninth is the presence status issue, which an epic request can never use (tests/test_team_presence.py)"
 
 
 # ================================================================ settings: report is phase, summary or none; close is new

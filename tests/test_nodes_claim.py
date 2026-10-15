@@ -198,7 +198,7 @@ def test_every_command_the_writer_can_build_is_on_the_allow_list(monkeypatch):
 
 
 @pytest.mark.parametrize("method,path", [
-    ("GET", "/repos/acme/shop/issues/5/comments"), ("PUT", "/repos/acme/shop/issues/5/comments"), ("PATCH", "/repos/acme/shop/issues/5"), ("POST", "/repos/acme/shop/issues"),
+    ("GET", "/repos/acme/shop/issues/5/comments"), ("PUT", "/repos/acme/shop/issues/5/comments"), ("PATCH", "/repos/acme/shop/issues/5"),
     ("PATCH", "/repos/acme/shop/issues/5/comments"), ("DELETE", "/repos/acme/shop/issues/5"), ("PATCH", "/repos/acme/shop"), ("DELETE", "/repos/acme/shop"),
     ("POST", "/repos/acme/shop/pulls"), ("POST", "/repos/acme/shop/issues/5/lock"), ("PUT", "/repos/acme/shop/issues/5/lock"), ("POST", "/repos/acme/shop/merges"),
     ("PUT", "/repos/acme/shop/collaborators/bob"), ("POST", "/repos/acme/shop/hooks"), ("POST", "/repos/acme/shop/git/refs"), ("PUT", "/repos/acme/shop/contents/x"),

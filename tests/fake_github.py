@@ -24,6 +24,8 @@ from tests import gh_server
 
 REAL_API = github.api
 REAL_GRAPHQL = github.graphql
+REAL_GRAPHQL_EDITORS = github.graphql_editors
+REAL_GRAPHQL_EDITOR = github.graphql_editor
 REAL_IDENTITY = team_github.identity
 REAL_TRANSPORT = github_write.transport
 REAL_GH_LOGIN = nodes_epics._gh_login
@@ -77,6 +79,8 @@ class FakeGitHub:
         monkeypatch.setattr(github_write, "transport", REAL_TRANSPORT)
         monkeypatch.setattr(nodes_epics, "_gh_login", REAL_GH_LOGIN)
         monkeypatch.setattr(github, "graphql", REAL_GRAPHQL)
+        monkeypatch.setattr(github, "graphql_editors", REAL_GRAPHQL_EDITORS)
+        monkeypatch.setattr(github, "graphql_editor", REAL_GRAPHQL_EDITOR)
         monkeypatch.setattr(team_github, "identity", REAL_IDENTITY)
         return self
 
@@ -119,8 +123,28 @@ class FakeGitHub:
                 self.mem_calls[-1]["status"] = resp.status
             headers = {k.lower(): v for k, v in resp.headers.items() if k.lower() in github.SAFE_HEADERS}
             return resp.status, headers, resp.body
+        def graphql_editors(owner, repo, n):
+            if hook is not None:
+                hook("read", "POST", "graphql")
+            with self.mem_lock:
+                self.mem_calls.append({"argv": github.graphql_editors_argv(owner, repo, n, "gh")[1:], "stdin": ""})
+                resp, _ = gh_server.handle_graphql_editors(self.world, owner, repo, n)
+                self.mem_calls[-1]["status"] = resp.status
+            headers = {k.lower(): v for k, v in resp.headers.items() if k.lower() in github.SAFE_HEADERS}
+            return resp.status, headers, resp.body
+        def graphql_editor(node_id):
+            if hook is not None:
+                hook("read", "POST", "graphql")
+            with self.mem_lock:
+                self.mem_calls.append({"argv": github.graphql_editor_argv(node_id, "gh")[1:], "stdin": ""})
+                resp, _ = gh_server.handle_graphql_editor(self.world, node_id)
+                self.mem_calls[-1]["status"] = resp.status
+            headers = {k.lower(): v for k, v in resp.headers.items() if k.lower() in github.SAFE_HEADERS}
+            return resp.status, headers, resp.body
         monkeypatch.setattr(github, "api", api)
         monkeypatch.setattr(github, "graphql", graphql)
+        monkeypatch.setattr(github, "graphql_editors", graphql_editors)
+        monkeypatch.setattr(github, "graphql_editor", graphql_editor)
         monkeypatch.setattr(github_write, "transport", transport)
         monkeypatch.setattr(nodes_epics, "_gh_login", lambda: self.world.get("login"))
 
@@ -300,6 +324,14 @@ class FakeGitHub:
                                                              "assoc": assoc, "user_type": user_type})
         self.save()
         return cid
+
+    def edit_as(self, issue: str, cid: int, body: str, by: str) -> None:
+        """Somebody (`by`, e.g. a maintainer) edits comment `cid` in place: the body changes, `updated_at` moves and GraphQL's `editor` names them (issue #198)."""
+        self.reload()
+        for c in self.world["comments"].get(issue, []):
+            if c["id"] == cid:
+                c["body"], c["updated_at"], c["editor"], c["last_edited_at"] = body, iso(self.world["now"]), by, iso(self.world["now"])
+        self.save()
 
     def junk(self, issue: str, count: int, *, start: float | None = None, user="bob", first_id: int | None = None) -> None:
         """`count` plain comments (no claim), one second apart from `start` (default: a day before the server clock), in one save. `first_id` makes their ids start there

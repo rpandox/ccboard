@@ -191,7 +191,7 @@ def test_people_are_grouped_by_numeric_id_and_the_owner_is_you():
     bob = person(b, "bob")
     assert bob["issues"][0]["branches"] == ["bob/x"] and bob["prs"][0]["state"] == "draft" and bob["prs"][0]["closes"] == [1]
     assert [(x["name"], x["source"], x["issue"]) for x in bob["branches"]] == [("bob/x", "linked", 1)], "a branch that is linked is not listed a second time as pushed"
-    assert b["counts"] == {"people": 2, "teammates": 1, "issues": 2, "branches": 2, "prs": 1, "unattributed_branches": 0}
+    assert b["counts"] == {"people": 2, "teammates": 1, "issues": 2, "branches": 2, "prs": 1, "unattributed_branches": 0, "live": 0}
 
 
 def test_you_is_decided_by_the_id_not_the_login_and_a_rename_is_still_you():
@@ -294,8 +294,8 @@ def test_the_body_has_one_block_per_own_repository_with_shared_ones_first():
     assert team.build([other], {}, None, None, NOW)["enabled"] is False
     assert set(body) == {"api", "enabled", "me", "repos", "at"}
     assert set(body["repos"][0]) == {"repo_slug", "slug", "url", "local", "shared", "state", "message", "wait_s", "stale", "read_at", "age_s", "gql_at", "graph_pending", "graph_failed", "private", "people", "counts",
-                                     "truncated"}
-    assert set(body["repos"][0]["people"][0]) == {"id", "login", "you", "issues", "branches", "prs", "last_active"}
+                                     "truncated", "presence"}
+    assert set(body["repos"][0]["people"][0]) == {"id", "login", "you", "issues", "branches", "prs", "last_active", "presence"}
 
 
 def test_the_etag_ignores_the_clock_and_the_age_and_changes_with_the_content():

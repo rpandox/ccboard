@@ -30,7 +30,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_work, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, team, team_github, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_work, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, team, team_github, team_presence, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import claude_pane, codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -228,6 +228,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.warning("team poll could not be started: %s", e.__class__.__name__)
     try:
+        _presence_publisher().ensure_running()           # issue #198: only a board that publishes presence, or still has a line to take down, starts this thread
+    except Exception as e:
+        log.warning("team presence could not be started: %s", e.__class__.__name__)
+    try:
         _runner().resume()                                # a run that was active when the board stopped goes on; a board with none starts nothing (one key is read)
     except Exception as e:
         log.warning("epic runs could not be resumed: %s", e.__class__.__name__)
@@ -250,6 +254,8 @@ async def lifespan(app: FastAPI):
     taskflow_rt.stop()
     if team_github.poller is not None:
         team_github.poller.stop(5.0)
+    if team_presence.publisher is not None:
+        team_presence.publisher.stop(5.0)
     poller.stop.set()
     sampler.stop()
     cloner.stop.set()
@@ -4745,6 +4751,131 @@ def api_team_refresh(request: Request):
     poller.ensure_running()
     poller.wake(force=True)
     return JSONResponse({"queued": True}, headers={"Cache-Control": "no-store"})
+
+
+# ---------- team presence (issue #198): this board's own line on a shared repository's status issue; off by default per repository; the logic is in app/team_presence.py ----------
+
+def _presence_rows() -> dict:
+    """The local facts the publisher picks from: sessions and tasks with their repository key. Only the fields app/team_presence.py `pick` reads; nothing else leaves this function."""
+    projs = _cached_projects()                            # the scan the page poll already made; a scan of its own only when there is none
+    if projs is None:
+        projs = _scan_entry().get("projects") or []
+    keys = node_state._repo_keys(projs)
+    sessions = []
+    for p, r, s in node_state._groups(projs):
+        if isinstance(s, dict) and s.get("tmux"):
+            sessions.append({"tmux": s.get("tmux"), "repo_slug": keys.get((p, r)), "agent": s.get("agent"), "state": s.get("state"),
+                             "needs_you": bool(s.get("needs_attention")), "since": s.get("state_at"), "created": s.get("created")})
+    tasks = [{"tmux": t.get("tmux_name"), "repo_slug": keys.get((t.get("project"), t.get("repo"))), "issue_number": t.get("issue_number"), "phase": t.get("phase"),
+              "branch": t.get("branch"), "pr_number": t.get("pr_number"), "agent": t.get("agent"), "updated_at": t.get("updated_at")} for t in db.tasks()]
+    return {"sessions": sessions, "tasks": tasks}
+
+
+def _presence_branches(key: str) -> set[str] | None:
+    """Branch names GitHub already showed the team read of repository `key` (tips and same-repository pull request heads); None when it was not read."""
+    tp = team_github.poller
+    rd = tp.snapshot().get(key) if tp is not None else None
+    if not rd:
+        return None
+    return {t["name"] for t in rd.get("tips") or [] if t.get("name")} | {p["head_ref"] for p in rd.get("pulls") or [] if p.get("head_ref") and not p.get("fork")}
+
+
+def _presence_publisher() -> "team_presence.Publisher":
+    return team_presence.get_publisher(db, _team_projects, _presence_rows, _presence_branches)
+
+
+def _presence_view(pub: "team_presence.Publisher") -> dict:
+    projs = _team_projects()
+    entries = team_github.own_repos(projs, list(db.team_publish().keys()))
+    read_on = {e["key"] for e in team_github.own_repos(projs, db.team_shared()) if e["shared"]}
+    snap = team_github.poller.snapshot() if team_github.poller is not None else {}
+    privacy = {k: v.get("private") for k, v in snap.items() if isinstance(v.get("private"), bool)}
+    return pub.view(entries, read_on, privacy)
+
+
+class TeamPresenceRepoIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    publish: StrictBool | None = None
+    private: StrictBool | None = None
+    confirm_public: StrictBool = False
+
+
+class TeamPresencePauseIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    paused: StrictBool
+
+
+@app.get("/api/team/presence")
+def api_team_presence(request: Request):
+    """Settings > Team, presence part (issue #198): {api, paused, me, node, lease_min, heartbeat_s, budget{per_hour, boards, board_share, spent_hour}, repos[{repo_slug, slug, local,
+    read, publish, private, public, public_confirmed, state, message, issue, issue_url, published, last_body, last_at, boards}], opt_in_text, public_lists, audit[...]}. `last_body` is
+    the literal body this board last published ("What I published"). Asks GitHub for nothing. A signed-in person only."""
+    _epic_person(request, "team presence is for a signed-in person")
+    return JSONResponse(_presence_view(_presence_publisher()), headers={"Cache-Control": "no-store"})
+
+
+@app.put("/api/team/presence")
+def api_team_presence_pause(body: TeamPresencePauseIn, request: Request):
+    """The global "Pause team presence": on stops every heartbeat and takes this board's lines down within one turn; off lets the switched-on repositories publish again. A signed-in
+    person only. Answers the presence view."""
+    _epic_person(request, "team presence is paused by a signed-in person")
+    pub = _presence_publisher()
+    if db.team_presence_pause_set(body.paused):
+        nodes.audit("out", "", "presence_pause" if body.paused else "presence_resume", True, None, db=db)
+    pub.ensure_running()
+    pub.wake()
+    return JSONResponse(_presence_view(pub), headers={"Cache-Control": "no-store"})
+
+
+@app.put("/api/team/presence/{owner}/{repo}")
+def api_team_presence_repo(owner: str, repo: str, body: TeamPresenceRepoIn, request: Request):
+    """One repository's presence switches: `publish` (default off; separate from the team read switch), `private` (stop and take this board's line down, keep the switch) and, for a
+    repository GitHub has not said is private, `confirm_public` (the second confirm). 400 for text GitHub would not accept, 404 for a repository that is not one of this board's
+    projects, 409 {needs_confirm, public_lists, next_body} when a public (or not known private) repository is switched on without the confirm. Nothing is written to GitHub by this
+    route: the publisher does that on its next turn. A signed-in person only. Answers that repository's block."""
+    _epic_person(request, "team presence is switched by a signed-in person")
+    if not github.valid_slug(owner, repo):
+        raise projects.BadRequest("not a valid GitHub owner or repository")
+    e = team_github.find_entry(team_github.own_repos(_team_projects(), list(db.team_publish().keys())), owner, repo)
+    if e is None:
+        raise projects.NotFound(f"this board has no project for {owner}/{repo}")
+    if body.publish is None and body.private is None:
+        raise projects.BadRequest("say publish or private")
+    pub = _presence_publisher()
+    rows = db.team_publish()
+    cur = {"public_ok": any(rows.get(m, {}).get("public_ok") for m in e["members"]), "private": any(rows.get(m, {}).get("private") for m in e["members"])}
+    on = any(m in rows for m in e["members"])
+    target = "/".join(team.split_key(e["key"]) or (owner, repo))
+    if body.publish is False:
+        for m in e["members"]:
+            db.team_publish_set(m, None)
+        if on:
+            nodes.audit("out", "", "presence_off", True, None, target=target, db=db)
+    elif body.publish is True or (body.private is not None and on):
+        private_known = pub.privacy(e["slug"])
+        if private_known is None and team_github.poller is not None:
+            rd = team_github.poller.snapshot().get(e["key"]) or {}
+            private_known = rd.get("private") if isinstance(rd.get("private"), bool) else None
+        public_ok = (cur["public_ok"] or body.confirm_public) and private_known is not True      # a confirm for a repository known private is not kept: it must not outlive the repository turning public
+        if body.publish is True and private_known is not True and not public_ok:
+            return JSONResponse({"error": "This repository is public, or GitHub has not said it is private. Confirm to publish.", "needs_confirm": True,
+                                 "public_lists": list(team_presence.PUBLIC_LISTS), "next_body": pub.preview(e["key"], e["slug"], False),
+                                 "opt_in_text": team_presence.OPT_IN_TEXT}, status_code=409, headers={"Cache-Control": "no-store"})
+        private = body.private if body.private is not None else (cur["private"] if on else False)
+        for m in e["members"]:
+            db.team_publish_set(m, {"public_ok": public_ok, "private": private})
+        if not on:
+            nodes.audit("out", "", "presence_on", True, "public_confirmed" if body.confirm_public and private_known is not True else None, target=target, db=db)
+        if body.private is not None and body.private != cur["private"]:
+            nodes.audit("out", "", "presence_private" if body.private else "presence_unprivate", True, None, target=target, db=db)
+    else:
+        raise projects.BadRequest("publishing is off for this repository: switch it on first")
+    pub.ensure_running()
+    pub.wake(e["key"])
+    entries = team_github.own_repos(_team_projects(), list(db.team_publish().keys()))
+    cur_e = next((x for x in entries if set(x["members"]) & set(e["members"])), e)
+    read_on = {x["key"] for x in team_github.own_repos(_team_projects(), db.team_shared()) if x["shared"]}
+    return JSONResponse(pub.block(cur_e, cur_e["key"] in read_on), headers={"Cache-Control": "no-store"})
 
 
 # ---------- epics (issue #147): GitHub's epics read through gh (GET only), per-node progress, this board's pins and pause; the logic is in app/nodes_epics.py ----------

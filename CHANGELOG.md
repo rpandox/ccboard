@@ -2,6 +2,28 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.52 - 2026-10-15
+
+### Added
+- Team P2, publish my status (#198, of #196). In **Settings > Team** each repository gets a **Publish my status** switch (off by default, separate from **Shared with my team**), plus **Private** per repository and one **Pause team presence**. A board that publishes keeps one line of its own, per board, in one comment on one issue titled `ccboard team presence` (label `ccboard:presence`, made on the first opt-in): the issue, the pushed branch, the agent, the state, when it started and the last activity to 15 minutes. Never a title, prompt, reply, transcript, path, host name, account or cost; the keys are a list pinned by a test. A branch appears only in a private repository and only when GitHub already has it. **What I published** shows the literal last body.
+- A teammate's **live line** under their name in the Team block of the project page: `● Live`, `◐ Idle`, `◌ Not confirmed yet`, `! Stale` ("last seen 2 h ago") or `? Unknown`, with the agent, `✽ Running` / `✻ Needs you` / `○ Ended`, the issue and branch as GitHub links, since and last active. Time is GitHub's clock (the `Date` header), never this machine's; a line is hidden after 24 hours. A line whose comment was last edited by someone else, or that GitHub will not vouch for, is left out and the block says so.
+- A public repository, or one GitHub has not said is private, needs a second confirm that lists exactly what becomes public, and publishes no branch. Each blocked state has its own words and next step: Issues off, archived, issue locked, closed or deleted, cannot open issues, cannot add the label, GitHub refused, interaction limits, waiting for GitHub, hourly budget spent. The Doctor row **Team presence published** warns for each public repository that publishes.
+- Writes use the one serial queue of #148 with exactly four new shapes on its closed allow list; at most 240 presence writes an hour per GitHub login across all repositories and boards (measured with the test fake: 9, 51 and 177 an hour for 1, 5 and 20 repositories, two boards). Only the board's own comment is ever edited or deleted, after a fresh read of the thread; a write with an unknown outcome is never sent again. Audit rows record the switches without any login or text.
+- `?demo=1&team=lineneeds|lineended|lineunconfirmed|linestale|lineunknown|linegone|linenone|lineclosed|lineerror|linecut` and `?demo=1&presence=off|paused|private|confirm|waiting|removing|issuesoff|archived|locked|closed|deleted|nocreate|nolabel|forbidden|limited|ratelimit|toolong|budget|error` show every live word and every publishing state without a server; the switches and the second confirm work for the life of the page.
+
+### Changed
+- The Team read switch no longer says "never writes": reading still writes nothing, and the page says that publishing your own status is a separate switch, off by default. README, ROADMAP and the project page text say it. First paint is unchanged (537,564 bytes of script); everything is in the lazy `team` bundle.
+- `GET /api/team/state` gains `people[].presence`, `repos[].presence` and `counts.live`; the epic switch `CCBOARD_EPIC_WRITES` does not govern presence. The team read grows with the presence comments: 97, 485 and 600 points an hour for 1, 5 and 20 shared repositories (cap 600). Known limits: the two-login check on a real private organization repository, what survives a comment delete (edit history), interaction limits and whether a comment edit counts for GitHub's content limit are UNVERIFIED.
+
+### Fixed
+- A presence issue with more than 300 comments is no longer written to blindly: the board stops with the state "Too many comments", writes nothing and says so when it cannot take its line down either. A comment older than the last 50 now has its last editor checked by its own id, so an older teammate's line is no longer dropped and a sibling board's line is no longer lost.
+- Two boards that make a status issue at the same moment meet on the lowest open one (the other is left alone, never closed); a line moves there at the next heartbeat. A repository that turned public is noticed before every write, and the line comes down until you confirm. A confirm given for a repository known to be private is no longer kept.
+- A state change is written at most once in 90 seconds per repository, and waits for the heartbeat when a quarter of the hourly budget is left. A refusal by GitHub (403, 422, interaction limits) is looked at again after 15 minutes instead of 2.
+- A line whose answer was lost is now found by Off and Pause (a record is saved before the first comment). The thread is read again just before every edit and delete, so a line another board of yours added meanwhile is kept. Lines of boards gone for more than a day are dropped on a rewrite, and the newest stay over the cap. A removal may only take out this board's own line.
+- A repository name of 41 characters or more is no longer refused as if it were a secret; that rule now applies to the branch only.
+
+Upgrade: nothing to do.
+
 ## v0.5.51 - 2026-10-15
 
 ### Added

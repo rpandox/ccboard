@@ -899,6 +899,36 @@ def _c_team_gh(db) -> Outcome:
     return _team_outcome(r[1], len(slugs))                                            # type: ignore[arg-type]
 
 
+def _c_team_presence(db) -> Outcome:
+    """Team presence (issue #198): which repositories this board publishes to, and a warning naming each PUBLIC one (anyone can read a comment there). Local facts only: the switch
+    rows and what GitHub said about each repository when the board last published (never a gh call from here)."""
+    from . import team
+    pubs = db.team_publish() if db is not None and hasattr(db, "team_publish") else {}
+    if not pubs:
+        return _skip("no repository publishes team presence, so this board writes nothing about you to GitHub")
+    recs = db.team_presence_recs()
+    public, private, unknown = [], [], []
+    for k, row in sorted(pubs.items()):
+        canon = team.hinted(k)
+        rec = recs.get(canon) or recs.get(k) or {}
+        name = "/".join(team.split_key(canon) or team.split_key(k) or ("?", "?"))
+        if row.get("private"):
+            continue
+        if rec.get("private") is False or (rec.get("private") is None and row.get("public_ok")):
+            public.append(name)
+        elif rec.get("private") is True:
+            private.append(name)
+        else:
+            unknown.append(name)
+    paused = " Presence is paused, so nothing is written now." if db.team_presence_paused() else ""
+    if public:
+        return _warn(f"team presence is published to {len(public)} public {'repository' if len(public) == 1 else 'repositories'}: " + ", ".join(public)
+                     + ". Anyone on the internet can read your login, issue numbers, session states and times there, and the comment's edit history." + paused,
+                     fix("Settings > Team: switch publishing off or press Private for each public repository you do not want to show"))
+    return _pass(f"team presence is published to {len(private) + len(unknown)} private {'repository' if len(private) + len(unknown) == 1 else 'repositories'}" +
+                 (f" ({len(unknown)} not yet checked with GitHub)" if unknown else "") + "." + paused)
+
+
 # ------------------------------------------------------------------ claiming an epic issue (issue #148)
 
 def _claim_probe() -> dict:
@@ -2028,6 +2058,7 @@ register("epic-gh", "box", "Epics from GitHub", _c_epic_gh)   # issue #147
 register("epic-claim", "box", "Claiming epic issues", _c_epic_claim)   # issue #148
 register("gh-login", "box", "GitHub login of this board", _c_gh_login)   # issue #197
 register("team-gh", "box", "Team GitHub access", _c_team_gh)   # issue #197
+register("team-presence", "box", "Team presence published", _c_team_presence)   # issue #198
 
 
 def _c_nodes_health(db) -> Outcome:
