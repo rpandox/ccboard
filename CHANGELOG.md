@@ -2,7 +2,7 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
-## v0.5.53 - 2026-10-16
+## v0.5.53 - 2026-10-15
 
 ### Added
 - Team P3, conflict warnings (#199, of #196). Before you start work a teammate already holds, the board says so, as advice: a chip on a row of the launcher's issue picker (`! taken by @bob`, `◌ @bob, last seen 3 h ago`), and one line above **Start** in the task form (`! #212 is being worked on by @bob since 14:10`, with the signs behind it: assigned, live status, linked branch, live claim, a pull request that closes it). The same issue from one person is one warning, a stale line says how old it is, a gone line and the owner's own boards never warn, and a login GitHub text could not vouch for is "a teammate". Start is the same button; nothing is written to GitHub (no assignee, label or comment).
