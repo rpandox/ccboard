@@ -1,0 +1,533 @@
+{
+ "_note": "Demo answers for /api/team/state (issue #197). ?demo=1 shows base: example/website is shared with alice (you) and bob, the other two repositories are off. ?team=<name> lays a variant over example/website: body patches the top level, repo patches that repository's block. Names: off, loading, empty, alone, sso, forbidden, notfound, rate, low, stale, nologin, nogh, error, pending, cut, hostile. Times follow the clock (demoRebase). A repository switched on in the demo answers state ok with nobody else in it, because no GitHub is behind the page.",
+ "demo": {
+  "epoch": 1790996400
+ },
+ "base": {
+  "api": 1,
+  "enabled": true,
+  "me": {
+   "login": "alice",
+   "id": 1001
+  },
+  "at": "2026-10-03T03:00:00Z",
+  "repos": [
+   {
+    "repo_slug": "github.com/example/website",
+    "slug": "example/website",
+    "url": "https://github.com/example/website",
+    "local": [
+     {
+      "project": "phasezero",
+      "repo": "website"
+     }
+    ],
+    "shared": true,
+    "state": "ok",
+    "message": "",
+    "wait_s": null,
+    "stale": false,
+    "read_at": "2026-10-03T02:59:20Z",
+    "age_s": 40,
+    "gql_at": "2026-10-03T02:56:00Z",
+    "graph_pending": false,
+    "private": true,
+    "people": [
+     {
+      "id": 1001,
+      "login": "alice",
+      "you": true,
+      "last_active": "2026-10-03T02:51:00Z",
+      "issues": [
+       {
+        "number": 148,
+        "title": "Checkout: show the shipping total before payment",
+        "url": "https://github.com/example/website/issues/148",
+        "updated_at": "2026-10-03T01:00:00Z",
+        "labels": [
+         "checkout"
+        ],
+        "branches": [
+         "alice/shipping-total"
+        ],
+        "claim": null
+       }
+      ],
+      "branches": [
+       {
+        "name": "alice/shipping-total",
+        "url": "https://github.com/example/website/tree/alice/shipping-total",
+        "at": "2026-10-03T02:51:00Z",
+        "source": "linked",
+        "issue": 148
+       }
+      ],
+      "prs": []
+     },
+     {
+      "id": 1002,
+      "login": "bob",
+      "you": false,
+      "last_active": "2026-10-03T02:35:00Z",
+      "issues": [
+       {
+        "number": 152,
+        "title": "Coupon codes are not applied to the cart total",
+        "url": "https://github.com/example/website/issues/152",
+        "updated_at": "2026-10-02T22:00:00Z",
+        "labels": [
+         "bug",
+         "checkout"
+        ],
+        "branches": [
+         "bob/coupon-total"
+        ],
+        "claim": null
+       },
+       {
+        "number": 154,
+        "title": "Add a gift wrap option",
+        "url": "https://github.com/example/website/issues/154",
+        "updated_at": "2026-10-02T00:00:00Z",
+        "labels": [
+         "enhancement"
+        ],
+        "branches": [],
+        "claim": {
+         "status": "claimed",
+         "branch": "worktree-issue-154",
+         "live": true
+        }
+       }
+      ],
+      "branches": [
+       {
+        "name": "bob/coupon-total",
+        "url": "https://github.com/example/website/tree/bob/coupon-total",
+        "at": "2026-10-03T02:35:00Z",
+        "source": "linked",
+        "issue": 152
+       },
+       {
+        "name": "bob/wrap-spike",
+        "url": "https://github.com/example/website/tree/bob/wrap-spike",
+        "at": "2026-09-30T03:00:00Z",
+        "source": "pushed",
+        "issue": null
+       }
+      ],
+      "prs": [
+       {
+        "number": 158,
+        "title": "Apply coupon codes before tax",
+        "url": "https://github.com/example/website/pull/158",
+        "draft": true,
+        "state": "draft",
+        "head": "bob/coupon-total",
+        "from_fork": "bob/website",
+        "closes": [
+         152
+        ],
+        "updated_at": "2026-10-03T02:35:00Z"
+       },
+       {
+        "number": 151,
+        "title": "Fix the cart badge count on mobile",
+        "url": "https://github.com/example/website/pull/151",
+        "draft": false,
+        "state": "open",
+        "head": "bob/cart-badge",
+        "from_fork": null,
+        "closes": [],
+        "updated_at": "2026-10-02T02:00:00Z"
+       }
+      ]
+     }
+    ],
+    "counts": {
+     "people": 2,
+     "teammates": 1,
+     "issues": 3,
+     "branches": 3,
+     "prs": 2,
+     "unattributed_branches": 0
+    },
+    "truncated": {
+     "issues": false,
+     "pulls": false,
+     "tips": false
+    },
+    "graph_failed": false
+   },
+   {
+    "repo_slug": "github.com/example/api",
+    "slug": "example/api",
+    "url": "https://github.com/example/api",
+    "local": [
+     {
+      "project": "phasezero",
+      "repo": "NestJs-Ecommerce-Backend"
+     }
+    ],
+    "shared": false,
+    "state": "off",
+    "message": "Not shared with your team. Nothing is read from GitHub for this repository.",
+    "wait_s": null,
+    "stale": false,
+    "read_at": null,
+    "age_s": null,
+    "gql_at": null,
+    "graph_pending": false,
+    "private": null,
+    "people": [],
+    "counts": {
+     "people": 0,
+     "teammates": 0,
+     "issues": 0,
+     "branches": 0,
+     "prs": 0,
+     "unattributed_branches": 0
+    },
+    "truncated": {
+     "issues": false,
+     "pulls": false,
+     "tips": false
+    },
+    "graph_failed": false
+   },
+   {
+    "repo_slug": "github.com/example/ccboard",
+    "slug": "example/ccboard",
+    "url": "https://github.com/example/ccboard",
+    "local": [
+     {
+      "project": "ccboard",
+      "repo": "ccboard"
+     }
+    ],
+    "shared": false,
+    "state": "off",
+    "message": "Not shared with your team. Nothing is read from GitHub for this repository.",
+    "wait_s": null,
+    "stale": false,
+    "read_at": null,
+    "age_s": null,
+    "gql_at": null,
+    "graph_pending": false,
+    "private": null,
+    "people": [],
+    "counts": {
+     "people": 0,
+     "teammates": 0,
+     "issues": 0,
+     "branches": 0,
+     "prs": 0,
+     "unattributed_branches": 0
+    },
+    "truncated": {
+     "issues": false,
+     "pulls": false,
+     "tips": false
+    },
+    "graph_failed": false
+   }
+  ]
+ },
+ "variants": {
+  "off": {
+   "body": {
+    "enabled": false
+   },
+   "repo": {
+    "shared": false,
+    "state": "off",
+    "message": "Not shared with your team. Nothing is read from GitHub for this repository.",
+    "private": null,
+    "read_at": null,
+    "age_s": null,
+    "gql_at": null,
+    "people": [],
+    "counts": {
+     "people": 0,
+     "teammates": 0,
+     "issues": 0,
+     "branches": 0,
+     "prs": 0,
+     "unattributed_branches": 0
+    }
+   }
+  },
+  "loading": {
+   "repo": {
+    "state": "loading",
+    "message": "Reading GitHub for the first time.",
+    "private": null,
+    "read_at": null,
+    "age_s": null,
+    "gql_at": null,
+    "people": [],
+    "counts": {
+     "people": 0,
+     "teammates": 0,
+     "issues": 0,
+     "branches": 0,
+     "prs": 0,
+     "unattributed_branches": 0
+    }
+   }
+  },
+  "empty": {
+   "repo": {
+    "people": [],
+    "counts": {
+     "people": 0,
+     "teammates": 0,
+     "issues": 0,
+     "branches": 0,
+     "prs": 0,
+     "unattributed_branches": 0
+    }
+   }
+  },
+  "alone": {
+   "repo": {
+    "people": [
+     {
+      "id": 1001,
+      "login": "alice",
+      "you": true,
+      "last_active": "2026-10-03T02:51:00Z",
+      "issues": [
+       {
+        "number": 148,
+        "title": "Checkout: show the shipping total before payment",
+        "url": "https://github.com/example/website/issues/148",
+        "updated_at": "2026-10-03T01:00:00Z",
+        "labels": [
+         "checkout"
+        ],
+        "branches": [
+         "alice/shipping-total"
+        ],
+        "claim": null
+       }
+      ],
+      "branches": [
+       {
+        "name": "alice/shipping-total",
+        "url": "https://github.com/example/website/tree/alice/shipping-total",
+        "at": "2026-10-03T02:51:00Z",
+        "source": "linked",
+        "issue": 148
+       }
+      ],
+      "prs": []
+     }
+    ],
+    "counts": {
+     "people": 1,
+     "teammates": 0,
+     "issues": 1,
+     "branches": 1,
+     "prs": 0,
+     "unattributed_branches": 0
+    }
+   }
+  },
+  "sso": {
+   "repo": {
+    "state": "sso",
+    "message": "GitHub needs this token authorised for the organization. Authorise it there, then check again.",
+    "stale": true,
+    "read_at": null,
+    "age_s": null,
+    "gql_at": null,
+    "people": [],
+    "counts": {
+     "people": 0,
+     "teammates": 0,
+     "issues": 0,
+     "branches": 0,
+     "prs": 0,
+     "unattributed_branches": 0
+    }
+   }
+  },
+  "forbidden": {
+   "repo": {
+    "state": "no_access",
+    "message": "This GitHub login cannot read this repository.",
+    "stale": true,
+    "read_at": null,
+    "age_s": null,
+    "gql_at": null,
+    "people": [],
+    "counts": {
+     "people": 0,
+     "teammates": 0,
+     "issues": 0,
+     "branches": 0,
+     "prs": 0,
+     "unattributed_branches": 0
+    }
+   }
+  },
+  "notfound": {
+   "repo": {
+    "state": "not_found",
+    "message": "GitHub says there is no such repository, or this login cannot see it.",
+    "stale": true,
+    "read_at": null,
+    "age_s": null,
+    "gql_at": null,
+    "people": [],
+    "counts": {
+     "people": 0,
+     "teammates": 0,
+     "issues": 0,
+     "branches": 0,
+     "prs": 0,
+     "unattributed_branches": 0
+    }
+   }
+  },
+  "rate": {
+   "repo": {
+    "state": "rate_limited",
+    "message": "GitHub asked this board to wait 540 s.",
+    "wait_s": 540,
+    "stale": true,
+    "read_at": "2026-10-03T02:48:00Z",
+    "age_s": 720
+   }
+  },
+  "low": {
+   "repo": {
+    "state": "low_budget",
+    "message": "This login has few GitHub requests left, so team reads wait.",
+    "stale": true,
+    "read_at": "2026-10-03T02:39:00Z",
+    "age_s": 1260
+   }
+  },
+  "stale": {
+   "repo": {
+    "stale": true,
+    "read_at": "2026-10-03T02:13:00Z",
+    "age_s": 2820,
+    "gql_at": "2026-10-03T02:13:00Z"
+   }
+  },
+  "nologin": {
+   "body": {
+    "me": null
+   },
+   "repo": {
+    "state": "no_login",
+    "message": "gh is not logged in on this board. Log gh in there, then check again.",
+    "stale": true,
+    "read_at": null,
+    "age_s": null,
+    "gql_at": null,
+    "people": [],
+    "counts": {
+     "people": 0,
+     "teammates": 0,
+     "issues": 0,
+     "branches": 0,
+     "prs": 0,
+     "unattributed_branches": 0
+    }
+   }
+  },
+  "nogh": {
+   "body": {
+    "me": null
+   },
+   "repo": {
+    "state": "no_gh",
+    "message": "gh is not installed on this board, so GitHub cannot be read.",
+    "stale": true,
+    "read_at": null,
+    "age_s": null,
+    "gql_at": null,
+    "people": [],
+    "counts": {
+     "people": 0,
+     "teammates": 0,
+     "issues": 0,
+     "branches": 0,
+     "prs": 0,
+     "unattributed_branches": 0
+    }
+   }
+  },
+  "error": {
+   "repo": {
+    "state": "error",
+    "message": "GitHub could not be read just now.",
+    "stale": true,
+    "read_at": "2026-10-03T02:27:00Z",
+    "age_s": 1980
+   }
+  },
+  "pending": {
+   "repo": {
+    "graph_pending": true,
+    "gql_at": null
+   }
+  },
+  "cut": {
+   "repo": {
+    "truncated": {
+     "issues": true,
+     "pulls": false,
+     "tips": true
+    },
+    "counts": {
+     "people": 2,
+     "teammates": 1,
+     "issues": 3,
+     "branches": 3,
+     "prs": 2,
+     "unattributed_branches": 3
+    }
+   }
+  },
+  "hostile": {
+   "repo": {
+    "people": [
+     {
+      "id": 1003,
+      "login": "../x",
+      "you": false,
+      "last_active": "2026-10-03T02:59:00Z",
+      "issues": [
+       {
+        "number": 7,
+        "title": "<img src=x onerror=alert(1)> AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "url": "javascript:alert(1)",
+        "updated_at": "2026-10-03T02:59:00Z",
+        "labels": [
+         "<b>bold</b>"
+        ],
+        "branches": [],
+        "claim": null
+       }
+      ],
+      "branches": [],
+      "prs": []
+     }
+    ],
+    "counts": {
+     "people": 2,
+     "teammates": 1,
+     "issues": 3,
+     "branches": 3,
+     "prs": 2,
+     "unattributed_branches": 0
+    }
+   }
+  }
+ }
+}

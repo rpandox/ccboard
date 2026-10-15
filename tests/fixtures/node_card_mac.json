@@ -60,5 +60,7 @@
     "dns_name": "alice-mac.example.ts.net",
     "tags": [],
     "user_owned": true
-  }
+  },
+  "owner_login": null,
+  "owner_id": null
 }

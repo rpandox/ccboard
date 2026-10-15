@@ -34,6 +34,8 @@ const LAZY_BUNDLES = {
   nodeshub: { js: ['/static/nodes-hub.js', '/static/pages/node.js'], css: [{ href: '/static/pages/nodes.css', rank: 14 }], probe: () => typeof Nodes !== 'undefined' && Nodes.ready },
   // the epic view (issue #147): the page #/epic/<owner>/<repo>/<n>, the Epics list of the Tasks page, the palette's epic rows and the demo's answers for /api/epics
   epic: { js: ['/static/pages/epic.js'], css: [{ href: '/static/pages/epic.css', rank: 15 }], probe: () => typeof epicPage !== 'undefined' },
+  // the Team view (issue #197): the project page's Team tab, Settings > Team and the demo's answers for /api/team; both pages load it on first use, never at first paint
+  team: { js: ['/static/team.js'], css: [{ href: '/static/pages/team.css', rank: 16 }], probe: () => typeof Team !== 'undefined' },
   usage: { js: ['/static/charts.js', '/static/pages/usage.js'], probe: () => typeof Usage !== 'undefined' },
   quad: { needs: ['termkit'], js: ['/static/pages/quad.js'], css: [{ href: '/static/pages/quad.css', rank: 12 }], probe: () => typeof Quad !== 'undefined' },
   onboarding: { needs: ['launcher'], js: ['/static/pages/onboarding.js'], css: [{ href: '/static/pages/onboarding.css', rank: 11 }], probe: () => typeof wizPage !== 'undefined' },

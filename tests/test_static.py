@@ -1279,6 +1279,28 @@ def test_demo_api_maps_a_path_to_every_fixture(name):
     assert f"name = '{name[:-len('.json')]}';" in (STATIC / "core.js").read_text(encoding="utf-8")
 
 
+def test_demo_team_fixture_has_the_shape_of_the_real_team_state_and_every_state_word():
+    """Issue #197: demo/team.json is read by demoTeam (team.js), not by the fixture table of core.js. Every block has the keys app/team.py gives a repository block, every
+    person the keys of a person, and the variants cover every state word the board can answer."""
+    from app import team
+    fx = json.loads((DEMO_DIR / "team.json").read_text(encoding="utf-8"))
+    entry = {"key": "github.com/example/website", "slug": "example/website", "local": [{"project": "p", "repo": "r"}], "shared": True}
+    real = team.repo_state(entry, None, "alice", 1, 0.0)
+    for name, b in [("base", fx["base"]["repos"][0])] + [(n, {**fx["base"]["repos"][0], **(v.get("repo") or {})}) for n, v in fx["variants"].items()]:
+        assert set(b) == set(real), (name, set(b) ^ set(real))
+        assert b["state"] in team.STATES, (name, b["state"])
+    assert set(fx["base"]) == {"api", "enabled", "me", "at", "repos"} == set(team.build([], {}, None, None, 0.0))
+    reached = {(v.get("repo") or {}).get("state") for v in fx["variants"].values()} | {r["state"] for r in fx["base"]["repos"]}
+    assert set(team.STATES) <= reached, sorted(set(team.STATES) - reached)
+    people = [p for r in fx["base"]["repos"] for p in r["people"]]
+    assert {p["login"] for p in people} == {"alice", "bob"} and [p["you"] for p in people] == [True, False]
+    assert all(set(p) == {"id", "login", "you", "issues", "branches", "prs", "last_active"} for p in people)
+    assert fx["demo"]["epoch"] == demo_json("state.json")["demo"]["epoch"], "the times follow the same clock as state.json"
+    text = (DEMO_DIR / "team.json").read_text(encoding="utf-8")
+    for needle in ("/Users/", "/home/", "gmail.com", "ts.net"):
+        assert needle not in text
+
+
 def test_demo_memory_fixture_matches_the_memory_envelope():
     m = demo_json("memory.json")
     assert m["state"] == "up" and len(m["items"]) == 5

@@ -964,6 +964,38 @@ class DB:
         except ValueError:
             return None
 
+    def kv_list_prefix(self, prefix: str) -> list[tuple[str, object, str]]:
+        """(key, value, at) of every kv row whose key starts with `prefix`, by key; a row whose value is not JSON is left out."""
+        with self.lock:
+            rows = self.conn.execute("SELECT key, value, at FROM kv WHERE substr(key, 1, ?) = ? ORDER BY key", (len(prefix), prefix)).fetchall()
+        out = []
+        for k, v, at in rows:
+            try:
+                out.append((k, json.loads(v), at))
+            except ValueError:
+                continue
+        return out
+
+    # ---- team (issue #197): which repositories the owner shared with their team. A row exists only for a repository that is ON; switching it off deletes the row, so a
+    # board that never shares anything has no team row at all. The key is the repository's own origin as `github.com/<owner>/<name>` in lower case.
+    TEAM_SHARE = "team:share:"
+
+    def team_shared(self) -> dict[str, dict]:
+        """{origin key: {"at": when it was switched on}} for every repository that is shared."""
+        return {k[len(self.TEAM_SHARE):]: {"at": at} for k, v, at in self.kv_list_prefix(self.TEAM_SHARE) if isinstance(v, dict) and v.get("on") is True}
+
+    def team_share_set(self, key: str, on: bool) -> bool:
+        """Switch one repository on or off; True when something changed. Off removes the row (and writes nothing when there was none)."""
+        k = self.TEAM_SHARE + key
+        have = self.kv_get(k)
+        if on and not (have and isinstance(have.get("value"), dict) and have["value"].get("on") is True):
+            self.kv_set(k, {"on": True})
+            return True
+        if not on and have is not None:
+            self.kv_del(k)
+            return True
+        return False
+
     # ---- nodes epic P3 (issue #135): incoming pairs and the audit. The digest columns never leave app/nodes.py; callers there strip them.
     def node_pair_add(self, **vals) -> int:
         bad = set(vals) - set(NODE_PAIR_COLS)

@@ -791,6 +791,114 @@ def _c_epic_gh(db) -> Outcome:
     return _epic_outcome(r[1])                                                        # type: ignore[arg-type]
 
 
+# ------------------------------------------------------------------ the GitHub person and the team's read access (issue #197)
+
+TEAM_MIN = ("Least permission to read a shared repository: a classic token needs the repo scope; a fine-grained token needs read access to Issues, Pull requests and Contents "
+            "on the repository, with the organization opted in. An organization with SAML single sign-on also needs the token authorised for it.")
+
+
+def _login_probe() -> dict:
+    """The GitHub login (and numeric id) this board's gh acts as: `gh api user`, cached 600 s. Read only; nothing is written and the token is never read."""
+    from . import team_github
+    try:
+        p = _run(["gh", "--version"])
+        if p.rc != 0:
+            return {"state": "no_gh"}
+    except ToolMissing:
+        return {"state": "no_gh"}
+    except ToolTimeout:
+        pass
+    login, uid = team_github.identity()
+    return {"state": "ok" if login else "no_login", "login": login, "id": uid}
+
+
+def _login_outcome(f: dict) -> Outcome:
+    st = f.get("state")
+    if st == "no_gh":
+        return _skip("gh is not installed, so this board has no GitHub login (the GitHub CLI row says how to install it)")
+    if st != "ok":
+        return _warn("gh did not say which GitHub account it is logged in as (not logged in, or GitHub could not be reached just now)", fix("Log gh in on the box", "gh auth login"))
+    login = f.get("login") or "?"
+    bot = login.endswith("[bot]")
+    num = f" (user id {f['id']})" if f.get("id") else ""
+    if bot:
+        return _warn(f"this board acts on GitHub as {login}{num}; this is a bot or app login, so teammates see the bot, not a person", fix("Use a personal login for the team view", "gh auth login"))
+    return _pass(f"this board acts on GitHub as {login}{num}. The team view marks this login as you; the same login on two boards is one person.")
+
+
+def _c_gh_login(db) -> Outcome:
+    """Which GitHub login does this board act as (issue #197)? A probe thread, like the other gh rows, so a slow GitHub gives the last answer with its age."""
+    pr = _probe_start("gh-login", _login_probe)
+    r = _probe_wait(pr, time.monotonic() + GH_WAIT)
+    if r is None:
+        last = (pr.last[0], _login_outcome(pr.last[1])) if pr.last else None            # type: ignore[arg-type]
+        return _stale("GitHub", last, GH_WAIT, True)
+    if r[0] == "err":
+        raise r[1]                                                                    # type: ignore[misc]
+    return _login_outcome(r[1])                                                       # type: ignore[arg-type]
+
+
+def _team_probe(slugs: list[str]) -> dict:
+    from . import team_github
+    return team_github.doctor_facts(slugs, EPIC_REPOS)
+
+
+def _team_outcome(f: dict | None, shared: int) -> Outcome:
+    """The Team GitHub access row. With nothing shared (`f` is None) GitHub is not asked and the row says so; it still names the least permission a token needs."""
+    if f is None:
+        return _skip(f"no repository is shared with your team, so nothing is read from GitHub. {TEAM_MIN}")
+    st = f.get("state")
+    if st == "no_gh":
+        return _skip("gh is not installed, so the shared repositories cannot be read (the GitHub CLI row says how to install it)")
+    if st == "no_login":
+        return _warn("gh has no login on this board, so the shared repositories cannot be read", fix("Log gh in on the box", "gh auth login"))
+    if st != "ok":
+        reason = str(st).split(":", 1)[-1]
+        if reason == "rate_limited":
+            return _warn(f"GitHub asked this board to wait {f.get('wait_s') or 60} s before the next read", fix(RECHECK_FIX))
+        return _warn("GitHub could not be read just now", fix(RECHECK_FIX))
+    failed = f.get("failed") or {}
+    sso = sorted(k for k, v in failed.items() if v == "sso")
+    if sso:
+        more = f" and {len(sso) - 1} more" if len(sso) > 1 else ""
+        return _warn(f"authorise this token for the organization: GitHub will not let it read {sso[0]}{more} until the token is approved for single sign-on. This is not a missing permission.",
+                     fix("On GitHub open Settings, then Applications or Developer settings > Personal access tokens, choose Configure SSO and authorise the organization; then Re-check"))
+    denied = sorted(k for k, v in failed.items() if v in ("no_access", "not_found"))
+    if denied:
+        more = f" and {len(denied) - 1} more" if len(denied) > 1 else ""
+        return _warn(f"no access to {denied[0]}{more}: this login cannot read it, or GitHub says it does not exist. {TEAM_MIN}", fix("Log gh in with an account that can read the repository", "gh auth login"))
+    if failed:
+        return _warn("GitHub could not be read just now for " + sorted(failed)[0], fix(RECHECK_FIX))
+    scopes = f.get("scopes")
+    if scopes is not None and "repo" not in scopes and "public_repo" not in scopes:
+        return _warn(f"the gh login has no repo scope, so private shared repositories cannot be read. {TEAM_MIN}", fix("Add the repo scope to the gh login", "gh auth refresh -s repo"))
+    left = f"{f['remaining']} of {f['limit']} requests left" if f.get("remaining") is not None and f.get("limit") else "request budget not reported"
+    kind = f"classic token, scopes: {', '.join(scopes)}" if scopes else "fine-grained or app token (GitHub sends no scopes)"
+    return _pass(f"gh can read {f.get('checked', 0)} of {shared} shared repositories ({kind}; {left})")
+
+
+def _c_team_gh(db) -> Outcome:
+    """Can this board read the repositories shared with the team (issue #197)? Nothing shared: no gh call, no probe thread. Otherwise one /rate_limit call and one repository read per
+    shared repository (at most EPIC_REPOS), all GETs, on a probe thread."""
+    from . import team_github
+    shared = db.team_shared() if db is not None and hasattr(db, "team_shared") else {}
+    if not shared:
+        return _team_outcome(None, 0)
+    src = _projects_source
+    entries = [e for e in team_github.own_repos(src() if callable(src) else None, shared) if e["shared"]]
+    if not entries:
+        return _team_outcome(None, 0)
+    slugs = [e["slug"] for e in entries]
+    pr = _probe_start("team-gh", lambda: _team_probe(slugs))
+    r = _probe_wait(pr, time.monotonic() + GH_WAIT)
+    if r is None:
+        last = (pr.last[0], _team_outcome(pr.last[1], len(slugs))) if pr.last else None            # type: ignore[arg-type]
+        return _stale("GitHub", last, GH_WAIT, True)
+    if r[0] == "err":
+        raise r[1]                                                                    # type: ignore[misc]
+    return _team_outcome(r[1], len(slugs))                                            # type: ignore[arg-type]
+
+
 # ------------------------------------------------------------------ claiming an epic issue (issue #148)
 
 def _claim_probe() -> dict:
@@ -1918,6 +2026,8 @@ register("notify-public-url", "notify", "Notification links", _c_notify_public_u
 register("notify-shared", "notify", "One subscription on two nodes", _c_notify_shared)   # issue #151
 register("epic-gh", "box", "Epics from GitHub", _c_epic_gh)   # issue #147
 register("epic-claim", "box", "Claiming epic issues", _c_epic_claim)   # issue #148
+register("gh-login", "box", "GitHub login of this board", _c_gh_login)   # issue #197
+register("team-gh", "box", "Team GitHub access", _c_team_gh)   # issue #197
 
 
 def _c_nodes_health(db) -> Outcome:

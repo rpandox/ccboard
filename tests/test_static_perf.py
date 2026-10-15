@@ -233,3 +233,17 @@ def test_no_term_page_script_uses_what_moved_out_of_components_js():
     term = "".join(_code(f) for f in ("term.js", "termkit.js"))
     for name in ("taskMoveSheet", "taskEditSheet", "taskPortSheet", "openTaskModal", "makeTaskBoard", "diffSideControl"):
         assert not re.search(rf"\b{name}\b", term), f"{name} is used by the terminal page, which has no lazy loader"
+
+
+def test_the_team_view_is_a_lazy_bundle_with_its_own_sheet_and_stays_out_of_the_first_paint():
+    """Issue #197: team.js (the project page's Team tab, Settings > Team and the demo's answers for /api/team) loads on first use. It is in no index.html script, no bundle
+    needs it up front, and its sheet comes after the epic sheet in the cascade order."""
+    m = _manifest()
+    assert m["team"]["js"] == ["/static/team.js"] and m["team"]["css"] == ["/static/pages/team.css"] and m["team"]["needs"] == []
+    assert m["team"]["ranks"][0] > m["epic"]["ranks"][0]
+    assert all("team" not in b["needs"] for b in m.values()), "no bundle needs the team view up front"
+    assert "/static/team.js" not in [a["src"] for t, a in tags("index.html") if t == "script"]
+    index = (STATIC / "index.html").read_text(encoding="utf-8")
+    assert "team.js" not in index and "team.css" not in index
+    assert "demoTeam" in _code("core.js"), "core.js hands /api/team to demoTeam, which is defined in team.js"
+    assert "demoTeam" in _code("team.js") and "demoTeam" not in "".join(_code(n) for n in ("router.js", "shell.js", "main.js"))

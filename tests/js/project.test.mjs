@@ -268,14 +268,14 @@ test('Delete project from the panel needs the same two taps', async () => {
 
 // ---------------------------------------------------------------- tabs
 
-test('tabs: sessions (default), tasks, schedules, files; memory only once the state has it', async () => {
+test('tabs: sessions (default), tasks, schedules, files, team (issue #197); memory only once the state has it', async () => {
   const env = projectWorld();
   const page = await go(env, '#/p/phasezero');
-  assert.deepEqual(tabIds(page), ['sessions', 'tasks', 'schedules', 'files']);
+  assert.deepEqual(tabIds(page), ['sessions', 'tasks', 'schedules', 'files', 'team']);
   assert.deepEqual(selectedTab(page), ['sessions']);
   env.w.ctx.__st = { ...env.state, memory: { enabled: true } };
   env.w.run('state = __st; updateCurrentPage(state)');
-  assert.deepEqual(tabIds(env.page()), ['sessions', 'tasks', 'schedules', 'files', 'memory']);
+  assert.deepEqual(tabIds(env.page()), ['sessions', 'tasks', 'schedules', 'files', 'team', 'memory']);
 });
 
 test('?tab= selects the tab, a hash change within the page takes onRoute (no remount), and a tab click navigates', async () => {
@@ -1097,7 +1097,7 @@ test('the Memory tab shows the worker\'s real reason with Retry when the worker 
   const page = await go(env, '#/p/phasezero?tab=memory');
   assert.match(textOf(page.querySelector('.pj-memory .mem-degraded')), /connection refused: the claude-mem worker is not running/);
   assert.equal(shownButtons(page, /^Retry$/).length, 1);
-  assert.deepEqual(tabIds(page), ['sessions', 'tasks', 'schedules', 'files', 'memory']);
+  assert.deepEqual(tabIds(page), ['sessions', 'tasks', 'schedules', 'files', 'team', 'memory']);
 });
 
 test('a project without claude-mem in the state has neither the Memory tab nor the strip, and nothing is asked', async () => {

@@ -30,7 +30,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_work, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_work, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, team, team_github, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import claude_pane, codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -222,6 +222,12 @@ async def lifespan(app: FastAPI):
     nodes.registry_listener = hub.ensure                  # a node paired later starts the same thread
     hub.ensure()
     try:
+        tp = _team_poller()                               # issue #197: a board with no shared repository starts no thread and asks GitHub for nothing
+        tp.load_hints()
+        tp.ensure_running()
+    except Exception as e:
+        log.warning("team poll could not be started: %s", e.__class__.__name__)
+    try:
         _runner().resume()                                # a run that was active when the board stopped goes on; a board with none starts nothing (one key is read)
     except Exception as e:
         log.warning("epic runs could not be resumed: %s", e.__class__.__name__)
@@ -242,6 +248,8 @@ async def lifespan(app: FastAPI):
     log.info("runtime %s, image %s", settings.runtime, settings.image_version or "-")
     yield
     taskflow_rt.stop()
+    if team_github.poller is not None:
+        team_github.poller.stop(5.0)
     poller.stop.set()
     sampler.stop()
     cloner.stop.set()
@@ -791,7 +799,8 @@ def build_state(user: str) -> dict:
     st["nodes"] = (_hub().summary_rows() if hub_rows else None) or db.kv_get(health.KV_NODES)     # today's shape, built from the hub read model; the v0.4 record is the fallback
     st["backup"] = health.backup_status()
     st["node_name"] = settings.node_name or st["health"]["host"]
-    st["node"] = nodes.card(db, health_snap=st["health"], sessions=None if st.get("tmux_down") else _state_sessions(st["projects"]), full=False)    # the node card without agents and accounts (issue #133)
+    st["node"] = nodes.card(db, health_snap=st["health"], sessions=None if st.get("tmux_down") else _state_sessions(st["projects"]), full=False,
+                            identity=team_github.identity_cached())    # the node card without agents and accounts (issue #133); the login only if it is already known: the page poll never asks gh
     st["claude_defaults"] = {"subagent_model": settings.subagent_model or "inherit", "fable_cap": settings.headless_fable_cap}     # CCBOARD_SUBAGENT_MODEL, CCBOARD_HEADLESS_FABLE_CAP: shown in Settings > Box
     st["rate_limited"] = _rate_limited_view()
     st["scheduler"] = {**scheduler.quota_state(db), "codex": scheduler.quota_state(db, "codex")}      # Codex's own window and back-off ride along: a Codex job never waits on Claude's
@@ -4626,7 +4635,7 @@ def api_node(request: Request):
     relaying for a person, issue #140) is audited, a hub poll is not."""
     nodes_relay.note_inbound(request, "card", db)
     sessions, down = _merged_sessions()
-    return nodes.card(db, health_snap=health.snapshot(consumer="node"), sessions=None if down else sessions.values())
+    return nodes.card(db, health_snap=health.snapshot(consumer="node"), sessions=None if down else sessions.values(), identity=team_github.identity_nowait())          # the login only if it is cached: a cold cache is filled in the background, never waited for
 
 
 @app.get("/api/node/state")
@@ -4654,6 +4663,88 @@ def api_nodes_discover(request: Request, refresh: int = 0):
     if refresh and request.headers.get("x-ccboard") != "1":
         return JSONResponse({"error": "missing X-CCBoard header"}, status_code=403)
     return nodes_discovery.discover(db, refresh=bool(refresh))
+
+
+# ---------- team (issue #197): what GitHub shows about the people working in a shared repository; read only; the logic is in app/team.py and app/team_github.py ----------
+
+def _team_projects() -> list[dict] | None:
+    projs = _cached_projects()
+    return projs if projs is not None else _scan_entry().get("projects")
+
+
+def _team_poller() -> "team_github.Poller":
+    return team_github.get_poller(db, _team_projects)
+
+
+def _team_body(poller: "team_github.Poller", entries: list[dict]) -> dict:
+    me = poller.me if poller.me[0] else team_github.identity_cached()
+    return team.build(entries, poller.snapshot(), me[0], me[1], time.time())
+
+
+class TeamShareIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    shared: StrictBool
+
+
+@app.get("/api/team/state")
+def api_team_state(request: Request):
+    """Who is working on what in the repositories this board shares with its team (issue #197): {api, enabled, me, repos[{repo_slug, slug, url, local, shared, state, message, wait_s,
+    stale, read_at, age_s, gql_at, graph_pending, private, people[...], counts, truncated}], at}. `state` is off, loading, ok or the reason a read failed (sso, no_access, not_found,
+    rate_limited, low_budget, no_login, no_gh, error): an access problem is never "no teammates". One block per repository of this board's own projects; only a shared one is ever read
+    (a GET through gh, no write). With nothing shared this route asks GitHub for nothing and writes nothing. A signed-in person only: the hook token and a node or device token get 403.
+    A weak ETag over the body without `at` and `age_s`; a matching `If-None-Match` answers 304."""
+    _epic_person(request, "the team view is for a signed-in person")
+    poller = _team_poller()
+    body = _team_body(poller, team_github.own_repos(_team_projects(), db.team_shared()))
+    tag = team.etag(body)
+    headers = {"ETag": tag, "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}
+    if node_state.matches(request.headers.get("if-none-match"), tag):
+        return Response(status_code=304, headers=headers)
+    return JSONResponse(body, headers=headers)
+
+
+@app.put("/api/team/repos/{owner}/{repo}")
+def api_team_share(owner: str, repo: str, body: TeamShareIn, request: Request):
+    """Switch one repository of this board's own projects on or off for the team view (default off). On: the team poll starts (a GET per read, nothing is written to GitHub). Off: its read,
+    its schedule and its stored record are gone. `owner/repo` is the repository's slug as the team view names it (case does not matter); 400 for text GitHub would not accept, 404 for a
+    repository that is not one of this board's projects. A signed-in person only. Answers that repository's block, as in /api/team/state."""
+    _epic_person(request, "the team switch is set by a signed-in person")
+    if not github.valid_slug(owner, repo):
+        raise projects.BadRequest("not a valid GitHub owner or repository")
+    entries = team_github.own_repos(_team_projects(), db.team_shared())
+    e = team_github.find_entry(entries, owner, repo)
+    if e is None:
+        raise projects.NotFound(f"this board has no project for {owner}/{repo}")
+    poller = _team_poller()
+    for m in e["members"]:
+        db.team_share_set(m, body.shared)
+    if body.shared:
+        poller.load_hints()
+        poller.ensure_running()
+        poller.wake()
+    else:
+        poller.forget([e["key"]])
+        poller.drop_meta(e["members"])
+    entries = team_github.own_repos(_team_projects(), db.team_shared())
+    cur = next((x for x in entries if set(x["members"]) & set(e["members"])), e)
+    block = team.repo_state(cur, poller.snapshot().get(cur["key"]), *(poller.me if poller.me[0] else team_github.identity_cached()), time.time())
+    return JSONResponse(block, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/team/refresh")
+def api_team_refresh(request: Request):
+    """Read the shared repositories again as soon as GitHub allows (a back-off, a low request budget and a refusal still hold). Answers {queued}: false when nothing is shared; 429 with
+    Retry-After when asked less than a minute after the last time. A signed-in person only."""
+    _epic_person(request, "the team refresh is pressed by a signed-in person")
+    if not db.team_shared():
+        return JSONResponse({"queued": False, "reason": "nothing_shared"}, headers={"Cache-Control": "no-store"})
+    poller = _team_poller()
+    wait = poller.refresh_allowed()
+    if wait:
+        return JSONResponse({"error": f"Asked a moment ago. Try again in {wait} s."}, status_code=429, headers={"Retry-After": str(wait), "Cache-Control": "no-store"})
+    poller.ensure_running()
+    poller.wake(force=True)
+    return JSONResponse({"queued": True}, headers={"Cache-Control": "no-store"})
 
 
 # ---------- epics (issue #147): GitHub's epics read through gh (GET only), per-node progress, this board's pins and pause; the logic is in app/nodes_epics.py ----------

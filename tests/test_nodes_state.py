@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import login_problem, node_state, nodes
+from app import login_problem, node_state, nodes, team
 
 ID = {"Tailscale-User-Login": "alice@example.com", "X-CCBoard": "1"}
 MARK = "MARKER-7f3a9c"
@@ -42,9 +42,12 @@ def board(lite_client, projects_dir, monkeypatch):
     monkeypatch.setattr(projects, "git_info_reused", lambda path, max_age: {"branch": "feat/x" if path.name == "web" else "main", "dirty": path.name == "web", "state": "ok"})
     origins = {"api": "git@github.com:acme/api.git", "web": "https://gitlab.com/acme/web.git"}
     monkeypatch.setattr(node_state, "_origin_url", lambda path: origins.get(path.name))
+    upstreams: dict = {}
+    monkeypatch.setattr(node_state, "_upstream_url", lambda path: upstreams.get(path.name))          # no git process here either
     node_state.slug_cache_clear()
+    team.clear_hints()
     main._invalidate_scan()
-    b = SimpleNamespace(c=lite_client, db=main.db, sessions=sessions, calls=calls, main=main, origins=origins)
+    b = SimpleNamespace(c=lite_client, db=main.db, sessions=sessions, calls=calls, main=main, origins=origins, upstreams=upstreams)
     b.get = lambda **kw: lite_client.get("/api/node/state", headers={**ID, **kw.pop("headers", {})}, **kw)
     return b
 
@@ -78,11 +81,11 @@ def test_the_shape_on_a_seeded_board(board):
                              {"name": "web", "slug": None, "branch": "feat/x", "dirty": True}], "slug is owner/name of a GitHub origin, else null"
     by = {s["tmux"]: s for s in d["sessions"]}
     assert set(by) == {"shop--api--fix-login", "shop--web--ui", "shop--root--lead", "shop--ghost--x"}
-    assert by["shop--api--fix-login"] == {"tmux": "shop--api--fix-login", "project": "shop", "repo": "api", "session": "fix-login", "agent": "claude", "state": "waiting",
+    assert by["shop--api--fix-login"] == {"tmux": "shop--api--fix-login", "project": "shop", "repo": "api", "repo_slug": "github.com/acme/api", "session": "fix-login", "agent": "claude", "state": "waiting",
                                          "needs_you": True, "kind": "task", "since": "2026-10-10T10:00:00+00:00", "model": "opus"}
     assert by["shop--web--ui"]["agent"] == "codex" and by["shop--web--ui"]["kind"] == "user" and by["shop--web--ui"]["model"] == "gpt"
     assert by["shop--root--lead"]["repo"] == "root" and by["shop--ghost--x"]["repo"] == "ghost"
-    assert d["tasks"] == [{"id": tid, "title": "Fix login", "phase": "running", "agent": "claude", "project": "shop", "repo": "api", "branch": "task/fix",
+    assert d["tasks"] == [{"id": tid, "title": "Fix login", "phase": "running", "agent": "claude", "project": "shop", "repo": "api", "repo_slug": "github.com/acme/api", "branch": "task/fix",
                            "tmux": "shop--api--fix", "issue_ref": "#12", "updated_at": d["tasks"][0]["updated_at"]}]
     assert d["needs_you"] == {"permissions": 1, "input": 1, "errors": 0}
     assert set(d["usage"]) == {"claude", "codex"} and set(d["usage"]["claude"]) == {"pct", "resets_at", "backoff_until", "known", "limited"}
