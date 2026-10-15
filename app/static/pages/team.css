@@ -133,3 +133,21 @@ html.force-coarse #page a.tm-open.tm-tl { padding:12px 0; }   /* a touch target 
   #page .tm-switch, #page .tm-pub-s { min-height:var(--tap); }
 }
 html.force-coarse #page a.tm-open, html.force-coarse #page a.tm-set, html.force-coarse #page .tm-recheck, html.force-coarse #page .tm-switch, html.force-coarse #page .tm-pub-s, html.force-coarse #page .tm-confirm-a button { min-height:var(--tap); }
+
+/* Conflict warnings (issue #199). Advice, in the warn colour with words and a glyph, never a red error and never a gate on Start. */
+#page .tm-collide { flex:1 1 100%; display:block; margin:2px 0 2px 1.2em; padding:2px 8px; border-left:2px solid var(--warn); font-size:12px; line-height:1.5; color:var(--warn-fg); overflow-wrap:anywhere; }
+#page .tm-collide .tm-sg { margin-right:2px; }
+@media (max-width:640px) { #page .tm-collide { margin-left:0; } }
+
+/* the launcher's block above Start: the sheet is a dialog outside #page and both task forms use it, so these are not scoped to #page or to .lx-form */
+.lx-team { display:flex; flex-direction:column; gap:4px; min-width:0; margin:0; padding:8px 10px; border:1px solid var(--line); border-left:3px solid var(--warn); border-radius:3px; background:var(--card); font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+.lx-team.quiet { border-left-color:var(--line-strong); background:transparent; }
+.lx-team-l, .lx-team-n { margin:0; min-width:0; }
+.lx-team-l { display:flex; flex-wrap:wrap; align-items:baseline; gap:0 6px; }
+.lx-team-g { flex:none; min-width:1em; font-family:var(--font-glyph); text-align:center; color:var(--warn-fg); }
+.lx-team-t { font-weight:600; min-width:0; }
+.lx-team-f, .lx-team-d { flex:1 1 100%; margin-left:calc(1em + 6px); font-size:12px; min-width:0; }
+.lx-team-n { font-size:12px; }
+.lx-team a { color:var(--fg); text-decoration:underline; text-underline-offset:3px; }
+@media (pointer:coarse) { .lx-team a { padding:12px 0; } }
+html.force-coarse .lx-team a { padding:12px 0; }   /* a link in a warning is a touch target as tall as a row, without changing the line */

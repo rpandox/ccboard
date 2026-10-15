@@ -286,14 +286,20 @@ class FakeGitHub:
         self.world.setdefault("repos", {}).setdefault(slug, {}).update(info)
         self.save()
 
-    def pull(self, repo: str, number: int, title: str = "", *, user="alice", draft=False, head_ref="feature", head_repo=None, closes=(), assignees=(), updated_at=None) -> str:
-        """An open pull request. `head_repo` is the repository its branch is on (a fork: "bob/shop"; default: the repository itself)."""
+    def pull(self, repo: str, number: int, title: str = "", *, user="alice", draft=False, head_ref="feature", head_repo=None, closes=(), assignees=(), updated_at=None, assoc="COLLABORATOR") -> str:
+        """An open pull request. `head_repo` is the repository its branch is on (a fork: "bob/shop"; default: the repository itself). `assoc` is GitHub's author_association."""
         self.reload()
         k = f"{repo}#{number}"
         self.world.setdefault("pulls", {})[k] = {"title": title or f"Pull {number}", "user": user, "draft": draft, "head_ref": head_ref, "head_repo": repo if head_repo is None else head_repo,
-                                                "closes": list(closes), "assignees": list(assignees), "updated_at": updated_at or "2026-10-10T09:00:00Z"}
+                                                "closes": list(closes), "assignees": list(assignees), "updated_at": updated_at or "2026-10-10T09:00:00Z", "assoc": assoc}
         self.save()
         return k
+
+    def pull_files(self, repo: str, number: int, files) -> None:
+        """The changed files of an open pull request (issue #199): names, or {filename, previous_filename} records. A pull request with no entry answers 404."""
+        self.reload()
+        self.world.setdefault("pull_files", {})[f"{repo}#{number}"] = list(files)
+        self.save()
 
     def tip(self, repo: str, name: str, author: str | None = "bob", at: str | None = None) -> None:
         """A branch of the repository: its tip commit's GitHub author (None: a commit email GitHub cannot match to an account) and time."""

@@ -188,7 +188,7 @@ test('assigned, linked branch, pushed branch, draft PR and open PR are different
   assert.match(words(n), /from the fork bob\/website/);
   assert.match(words(n), /closes #152/);
   assert.match(words(n), /claimed, live on worktree-issue-154/);
-  assert.match(words(people[1]), /2 issues, 2 branches, 2 pull requests/);
+  assert.match(words(people[1]), /2 issues, 4 branches, 2 pull requests/);
   for (const it of n.querySelectorAll('.tm-item')) {                            // a row's title (a branch: its name) is its only link: no extra "Open on GitHub" button per row
     const links = it.querySelectorAll('a');
     assert.equal(links.length, 1, text(it));
@@ -543,7 +543,7 @@ test('a teammate who publishes shows a live line per board: liveness, agent, sta
   assert.equal(mine.length, 1);
   assert.doesNotMatch(words(mine[0]), / on node-a/, 'one board: no board name');
   assert.match(words(n), /1 live now/);
-  assert.match(words(n), /nothing on GitHub yet|2 issues, 2 branches, 2 pull requests/);
+  assert.match(words(n), /nothing on GitHub yet|2 issues, 4 branches, 2 pull requests/);
 });
 
 test('every live word and every session state has its own glyph and words, never colour alone', () => {
@@ -887,4 +887,207 @@ test('the presence issue is named as a plain link inside its sentence, not as a 
   const a = [...n.querySelectorAll('a')].find((x) => /presence issue #/.test(text(x)));
   assert.ok(a, 'the block links the presence issue');
   assert.ok(a.classList.contains('tm-tl'));
+});
+
+// ================================================================ issue #199, Team P3: conflict warnings (the builders), the marks in the project page's Team block, and the demo
+
+test('teamBranchFor makes the name git gives the branch of a task with this title (app/tasks.py slugify, then worktree-<slug>)', () => {
+  const w = teamWorld();
+  const f = (t) => w.run(`teamBranchFor(${JSON.stringify(t)})`);
+  assert.equal(f('Fix the login redirect'), 'worktree-fix-the-login-redirect');
+  assert.equal(f('#154 Add a gift wrap option'), 'worktree-154-add-a-gift-wrap-option');
+  assert.equal(f('  --Hello,   World!!  '), 'worktree-hello-world');
+  assert.equal(f(''), 'worktree-task');
+  assert.equal(f('!!!'), 'worktree-task');
+  assert.equal(f(null), 'worktree-task');
+  const long = f('word '.repeat(30));
+  assert.ok(long.length <= 'worktree-'.length + 40 && !long.endsWith('-'), long);
+  assert.equal(f('word '.repeat(30)), 'worktree-' + 'word-'.repeat(8).slice(0, 40).replace(/-+$/, ''), 'cut at 40 characters, then the trailing dash goes');
+});
+
+test('teamWho is @login, or "a teammate" when the login is missing or fails the rule; never "@null"', () => {
+  const w = teamWorld();
+  const who = (p) => w.run(`teamWho(${JSON.stringify(p)})`);
+  assert.equal(who({ id: 1, login: 'bob' }), '@bob');
+  assert.equal(who({ id: 1, login: 'dependabot[bot]' }), '@dependabot[bot]');
+  for (const p of [{ id: 1, login: null }, { id: 1 }, null, 'bob', { id: 1, login: '<img src=x onerror=alert(1)>' }, { id: 1, login: '../x' }, { id: 1, login: 'a'.repeat(80) }]) assert.equal(who(p), 'a teammate');
+});
+
+test('the issue chip and the lines work from the cached block: taken, recent and stale each have a glyph and words, and a read that moved on adds to the age', () => {
+  const w = teamWorld();
+  const view = (b) => { w.ctx.__b = b; return w.run("teamStore.data = { repos: [__b] }; teamLaunchView('phasezero', 'website')"); };
+  const v = view(fresh(block()));
+  const chip = (n) => { w.ctx.__v = v; return w.run(`teamIssueChip(__v, ${n})`); };
+  assert.equal(chip(152), '! taken by @bob');
+  assert.equal(chip(156), '◌ @bob, seen 7 min ago');
+  assert.equal(chip(160), '◌ @bob, last seen 3 h ago');
+  assert.equal(chip(162), '! taken by a teammate');
+  assert.equal(chip(164), '! taken by @bob, +1');
+  assert.equal(chip(47), '');
+  assert.equal(chip(0), '');
+  const later = view(fresh(block(), 3600));                                  // read an hour ago: the stale line is an hour older, never younger
+  w.ctx.__v = later;
+  assert.equal(w.run('teamIssueChip(__v, 160)'), '◌ @bob, last seen 4 h ago');
+  assert.equal(view(fresh({ ...block(), warnings: null })).warnings, null);
+  assert.equal(w.run("teamIssueChip(teamLaunchView('phasezero', 'website'), 152)"), '', 'no warnings, no chip');
+});
+
+test('the lines for a picked issue name the person and the signs; since is shown only when a live status line gave it', () => {
+  const w = teamWorld();
+  w.ctx.__b = fresh(block());
+  w.run('teamStore.data = { repos: [__b] }');
+  const L = (ctx) => { w.ctx.__c = ctx; return plain(w.run("teamLaunchLines(teamLaunchView('phasezero', 'website'), __c).map((l) => ({ kind: l.kind, status: l.status, glyph: l.glyph, detail: l.detail, head: l.head.map((h) => (typeof h === 'string' ? h : h.textContent)) }))")); };
+  const flat = (l) => `${l.glyph} ${l.head.join('')} ${l.detail}`;
+  const a = L({ issue: 152 });
+  assert.equal(a.length, 1);
+  assert.match(flat(a[0]), /^! #152 is being worked on by @bob since .*\d\d:\d\d assigned on GitHub · live status: running · branch bob\/coupon-total · draft PR #158$/);
+  assert.match(flat(L({ issue: 154 })[0]), /^! #154 is being worked on by @bob assigned on GitHub · holds a claim \(running\)$/);
+  assert.deepEqual(L({ issue: 47 }), []);
+  assert.deepEqual(L({}), []);
+  assert.deepEqual(L(null), []);
+  assert.deepEqual(L({ issue: 'x' }), []);
+  const t7 = L({ task: 7 });
+  assert.deepEqual(t7.map((l) => l.kind), ['files', 'files']);
+  assert.deepEqual(L({ task: 99 }), []);
+  const t4 = L({ task: 4 });
+  assert.deepEqual(t4.map((l) => l.kind), ['issue', 'branch', 'files']);
+  assert.equal(L({ task: 4, issue: 152 }).filter((l) => l.kind === 'issue').length, 1, 'the same issue is said once');
+});
+
+test('a taken issue whose status line is stale says "last seen" and never "since"; a live line says since and no age', () => {
+  const w = teamWorld();
+  const b = fresh(block());
+  const taken = b.warnings.issues['154'][0];
+  b.warnings.issues['154'] = [{ ...taken, since: null, since_from: null, stale_age_s: 10800 }];
+  w.ctx.__b = b;
+  w.run('teamStore.data = { repos: [__b] }');
+  const head = (n) => w.run(`teamLaunchLines(teamLaunchView('phasezero', 'website'), { issue: ${n} })[0].head.join('')`);
+  assert.equal(head(154), '#154 is being worked on by @bob, last seen 3 h ago');
+  b.warnings.issues['154'][0].stale_age_s = null;
+  assert.equal(head(154), '#154 is being worked on by @bob', 'no age known: nothing is invented');
+  b.warnings.issues['154'][0].stale_age_s = '10800';
+  assert.equal(head(154), '#154 is being worked on by @bob', 'an age that is not a whole number is ignored');
+  assert.match(head(152), /^#152 is being worked on by @bob since .*\d\d:\d\d$/, 'a live line gives since and no last seen');
+  const later = fresh(block(), 3600);                                       // read an hour ago: the age grows with it
+  later.warnings.issues['154'] = [{ ...taken, since: null, since_from: null, stale_age_s: 10800 }];
+  w.ctx.__b = later;
+  w.run('teamStore.data = { repos: [__b] }');
+  assert.equal(head(154), '#154 is being worked on by @bob, last seen 4 h ago');
+});
+
+test('more than four people on one issue say how many more, a warning that is not sealed as advice is dropped, and a task or branch name that is not an own key is not read', () => {
+  const w = teamWorld();
+  const b = fresh(block());
+  const bob = b.warnings.issues['152'][0];
+  b.warnings.issues['152'] = Array.from({ length: 7 }, (_, i) => ({ ...bob, person: { id: 2000 + i, login: `user${i}` } }));
+  b.warnings.issues['154'][0].advice = false;
+  b.warnings.branches['__proto__'] = [{ ...b.warnings.branches['bob/coupon-total'][0], name: 'x' }];
+  w.ctx.__b = b;
+  w.run('teamStore.data = { repos: [__b] }');
+  const L = (ctx) => { w.ctx.__c = ctx; return plain(w.run("teamLaunchLines(teamLaunchView('phasezero', 'website'), __c).map((l) => ({ kind: l.kind, head: l.head.map(String) }))")); };
+  const l = L({ issue: 152 });
+  assert.equal(l.length, 5);
+  assert.equal(l[4].head.join(''), 'and 3 more');
+  assert.deepEqual(L({ issue: 154 }), [], 'not sealed as advice: not shown');
+  assert.deepEqual(L({ title: '__proto__' }), []);
+  assert.deepEqual(L({ task: 'constructor' }), []);
+});
+
+test('the quiet note says why "no warning" may mean "not known": a first read, a failed read with the last good one, an old read, an unknown login; and nothing for a fresh clean read', () => {
+  const w = teamWorld();
+  const note = (b) => { w.ctx.__b = b; return w.run('teamWarnNote(__b, __b.warnings)'); };
+  assert.equal(note(fresh(block())), '');
+  assert.equal(note(fresh(block('off'))), '');
+  assert.match(note(fresh(block('loading'))), /being read for the first time\. Nothing is checked yet\./);
+  assert.match(note(fresh(block('rate'))), /^Team: waiting for github\. Warnings are from the last read/i);
+  assert.match(note(fresh(block('sso'))), /^Team: authorise the token\. /i);
+  assert.match(note(fresh({ ...block('stale') }, 2800)), /^Team: last read 47 min ago, so warnings may be out of date\.$/);
+  assert.match(note(fresh(block('warnnoid'))), /who you are on GitHub is not known yet/);
+  assert.equal(note(fresh(block('warnnone'))), '');
+  assert.equal(note(fresh(block('warnempty'))), '');
+});
+
+test('every warning is a glyph plus words, in the warn colour and never a red error: no line is drawn with the bad class, and the block of lines carries no role=alert', () => {
+  const w = teamWorld();
+  w.ctx.__b = fresh(block());
+  w.run('teamStore.data = { repos: [__b] }');
+  const host = w.run("document.createElement('div')");
+  w.ctx.__h = host;
+  const n = w.run("teamLaunchPaint(__h, teamLaunchView('phasezero', 'website'), { issue: 164, task: 7, title: '#154 Add a gift wrap option' })");
+  assert.ok(n >= 5);
+  for (const l of host.querySelectorAll('.lx-team-l')) {
+    assert.ok(text(l.querySelector('.lx-team-g')).length >= 1, 'a glyph');
+    assert.ok(words(l).length > 12, 'and words');
+    assert.ok(!l.classList.contains('bad'));
+  }
+  assert.ok(!host.querySelector('[role=alert]'));
+  const css = fs.readFileSync(path.join(STATIC, 'pages', 'team.css'), 'utf8');
+  assert.match(css, /\.lx-team \{[^}]*border-left:3px solid var\(--warn\)/);
+  assert.ok(!/\.lx-team[^{]*\{[^}]*var\(--bad/.test(css), 'never the error colour');
+  assert.match(css, /\.lx-team\.quiet \{/);
+});
+
+test('a row of the project page Team block that collides with one of the owner\'s open tasks is marked with a glyph and words; other rows and the owner\'s own are not', () => {
+  const w = teamWorld();
+  const n = node(w, fresh(block()));
+  const marks = n.querySelectorAll('.tm-collide');
+  assert.equal(marks.length, 3);
+  assert.ok(marks.every((m) => text(m.querySelector('.tm-sg')) === '!' && m.getAttribute('role') === 'note'));
+  const rowOf = (re) => n.querySelectorAll('.tm-item').find((i) => re.test(words(i)));
+  assert.match(words(rowOf(/Coupon codes are not applied/).querySelector('.tm-collide')), /^! Collides: same issue as your task “Redesign checkout step 2 for mobile”$/);
+  assert.match(words(rowOf(/Apply coupon codes before tax/).querySelector('.tm-collide')),
+    /^! Collides: same issue as your task “Redesign checkout step 2 for mobile”; changes 1 file that your task “Redesign checkout step 2 for mobile” changes: src\/pages\/checkout\.tsx$/);
+  assert.match(words(rowOf(/worktree-checkout-redesign/).querySelector('.tm-collide')), /^! Collides: same branch as your task/);
+  assert.equal(rowOf(/Add a gift wrap option/).querySelector('.tm-collide'), null, 'no collision, no mark');
+  assert.equal(n.querySelector('.tm-person[data-you=yes]').querySelectorAll('.tm-collide').length, 0);
+  const plainBlock = fresh(block());
+  for (const p of plainBlock.people) for (const k of ['issues', 'branches', 'prs']) for (const r of p[k]) delete r.collides;
+  assert.equal(node(w, plainBlock).querySelectorAll('.tm-collide').length, 0, 'a block without collisions is what it was');
+});
+
+test('a mark is text: a task title with markup, a file with control characters, and a list of many files are cut; an unknown kind is dropped', () => {
+  const w = teamWorld();
+  const b = fresh(block());
+  const row = b.people[1].prs[0];
+  row.collides = [{ task: 4, title: '<img src=x onerror=alert(1)>\u202e', kind: 'files', files: ['<b>a</b>.py', 'b\u0007.py', 'c.py', 'd.py'], count: 40, more: true }, { task: 5, title: 't', kind: 'weird' }, null];
+  const n = node(w, b);
+  assert.equal(n.querySelectorAll('img').length, 0);
+  const m = words(n.querySelectorAll('.tm-item').find((i) => /Apply coupon/.test(words(i))).querySelector('.tm-collide'));
+  assert.match(m, /changes 40 files that your task “<img src=x onerror=alert\(1\)>” changes: <b>a<\/b>\.py, b \.py, c\.py, …$/);
+});
+
+test('the Team block repaints when the warnings change (the signature carries them)', () => {
+  const w = teamWorld();
+  w.ctx.__b = fresh(block());
+  w.run('teamStore.data = { repos: [__b] }');
+  const s1 = w.run('teamSig()');
+  w.ctx.__b = { ...fresh(block()), warnings: null };
+  w.run('teamStore.data = { repos: [__b] }');
+  assert.notEqual(w.run('teamSig()'), s1);
+});
+
+test('?demo=1 answers every block with warnings: the base block has every form, the variants change what is known, a switched-on repository has an empty set and an off one none', async () => {
+  const d0 = plain(await demoWorld('?demo=1').run("api('GET', '/api/team/state')"));
+  const web = d0.repos[0].warnings;
+  assert.equal(web.api, 1);
+  assert.deepEqual(Object.keys(web.issues), ['152', '154', '156', '160', '162', '164']);
+  assert.deepEqual(d0.repos.slice(1).map((r) => r.warnings), [null, null]);
+  for (const [name, check] of [['warnnone', (x) => x === null], ['warnnoid', (x) => x.identity_known === false], ['warnempty', (x) => Object.keys(x.issues).length === 0], ['off', (x) => x === null],
+    ['loading', (x) => x === null], ['warnfiles', (x) => x.tasks['7'].files[0].more === true]]) {
+    const d = plain(await demoWorld(`?demo=1&team=${name}`).run("api('GET', '/api/team/state')"));
+    assert.ok(check(d.repos[0].warnings), name);
+  }
+  const w = demoWorld('?demo=1');
+  const on = plain(await w.run("api('PUT', '/api/team/repos/example/api', { shared: true })"));
+  assert.deepEqual([on.shared, on.warnings.api, Object.keys(on.warnings.issues)], [true, 1, []]);
+  const off = plain(await w.run("api('PUT', '/api/team/repos/example/website', { shared: false })"));
+  assert.equal(off.warnings, null);
+});
+
+test('in the demo the launcher reads the warnings: state.json says a repository is shared, and the issues it lists include the ones the warnings talk about', () => {
+  const st = JSON.parse(fs.readFileSync(path.join(STATIC, 'demo', 'state.json'), 'utf8'));
+  assert.deepEqual(st.team, { shared: true });
+  const issues = JSON.parse(fs.readFileSync(path.join(STATIC, 'demo', 'issues.json'), 'utf8'));
+  const listed = new Set(issues.issues.map((i) => String(i.number)));
+  for (const n of Object.keys(block().warnings.issues)) assert.ok(listed.has(n) && issues.detail[n], `issue ${n} can be picked in the demo`);
 });

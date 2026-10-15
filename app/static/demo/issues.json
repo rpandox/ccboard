@@ -17,6 +17,60 @@
       "labels": [],
       "author": "stranger",
       "trusted": false
+    },
+    {
+      "number": 152,
+      "title": "Coupon codes are not applied to the cart total",
+      "body": "",
+      "url": "https://github.com/example/website/issues/152",
+      "labels": [],
+      "author": "example",
+      "trusted": true
+    },
+    {
+      "number": 154,
+      "title": "Add a gift wrap option",
+      "body": "",
+      "url": "https://github.com/example/website/issues/154",
+      "labels": [],
+      "author": "example",
+      "trusted": true
+    },
+    {
+      "number": 156,
+      "title": "Shipping rates ignore the island surcharge",
+      "body": "",
+      "url": "https://github.com/example/website/issues/156",
+      "labels": [],
+      "author": "example",
+      "trusted": true
+    },
+    {
+      "number": 160,
+      "title": "Wishlist page loads slowly on mobile",
+      "body": "",
+      "url": "https://github.com/example/website/issues/160",
+      "labels": [],
+      "author": "example",
+      "trusted": true
+    },
+    {
+      "number": 162,
+      "title": "Footer links cannot be reached with the keyboard",
+      "body": "",
+      "url": "https://github.com/example/website/issues/162",
+      "labels": [],
+      "author": "example",
+      "trusted": true
+    },
+    {
+      "number": 164,
+      "title": "Refund email shows the wrong order number",
+      "body": "",
+      "url": "https://github.com/example/website/issues/164",
+      "labels": [],
+      "author": "example",
+      "trusted": true
     }
   ],
   "detail": {
@@ -43,6 +97,66 @@
       "labels": [],
       "author": "stranger",
       "trusted": false,
+      "who": { "claude": null, "codex": null, "default_agent": null, "warnings": [] }
+    },
+    "152": {
+      "number": 152,
+      "title": "Coupon codes are not applied to the cart total",
+      "body": "",
+      "url": "https://github.com/example/website/issues/152",
+      "labels": [],
+      "author": "example",
+      "trusted": true,
+      "who": { "claude": null, "codex": null, "default_agent": null, "warnings": [] }
+    },
+    "154": {
+      "number": 154,
+      "title": "Add a gift wrap option",
+      "body": "",
+      "url": "https://github.com/example/website/issues/154",
+      "labels": [],
+      "author": "example",
+      "trusted": true,
+      "who": { "claude": null, "codex": null, "default_agent": null, "warnings": [] }
+    },
+    "156": {
+      "number": 156,
+      "title": "Shipping rates ignore the island surcharge",
+      "body": "",
+      "url": "https://github.com/example/website/issues/156",
+      "labels": [],
+      "author": "example",
+      "trusted": true,
+      "who": { "claude": null, "codex": null, "default_agent": null, "warnings": [] }
+    },
+    "160": {
+      "number": 160,
+      "title": "Wishlist page loads slowly on mobile",
+      "body": "",
+      "url": "https://github.com/example/website/issues/160",
+      "labels": [],
+      "author": "example",
+      "trusted": true,
+      "who": { "claude": null, "codex": null, "default_agent": null, "warnings": [] }
+    },
+    "162": {
+      "number": 162,
+      "title": "Footer links cannot be reached with the keyboard",
+      "body": "",
+      "url": "https://github.com/example/website/issues/162",
+      "labels": [],
+      "author": "example",
+      "trusted": true,
+      "who": { "claude": null, "codex": null, "default_agent": null, "warnings": [] }
+    },
+    "164": {
+      "number": 164,
+      "title": "Refund email shows the wrong order number",
+      "body": "",
+      "url": "https://github.com/example/website/issues/164",
+      "labels": [],
+      "author": "example",
+      "trusted": true,
       "who": { "claude": null, "codex": null, "default_agent": null, "warnings": [] }
     }
   }

@@ -2,6 +2,27 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.53 - 2026-10-16
+
+### Added
+- Team P3, conflict warnings (#199, of #196). Before you start work a teammate already holds, the board says so, as advice: a chip on a row of the launcher's issue picker (`! taken by @bob`, `◌ @bob, last seen 3 h ago`), and one line above **Start** in the task form (`! #212 is being worked on by @bob since 14:10`, with the signs behind it: assigned, live status, linked branch, live claim, a pull request that closes it). The same issue from one person is one warning, a stale line says how old it is, a gone line and the owner's own boards never warn, and a login GitHub text could not vouch for is "a teammate". Start is the same button; nothing is written to GitHub (no assignee, label or comment).
+- The same branch and the same files. The branch your task would get (`worktree-` and its title) is looked up among the branches teammates have on GitHub (pushed, linked, a pull request head), and a task you start shows `! PR #158 by @bob (draft) also changes 3 of these files` with the first six names and a count. The project page's Team block marks a teammate's row that collides with one of your open tasks (`! Collides: same issue as your task`). File lists of your tasks are compared on the board and never published.
+- One new read: a pull request's changed files, `GET /repos/{owner}/{repo}/pulls/{n}/files`, as one more allowed shape of the read-only reader. Only a teammate's open or draft pull requests, the 12 latest, 3 pages a cycle, 200 names for one (3,000 files are cut and said so), again after 30 minutes or when updated, inside a cap of 100 of the 600 points an hour. Measured with the test fake: 111, 555 and 601 points an hour for 1, 5 and 20 shared repositories (99, 495 and 599 before).
+- `?demo=1` shows every form: open the launcher on `phasezero/website` and the issue list (#152 to #164), start the backlog task "Add alt text to the product gallery images", and open `#/p/phasezero?tab=team`; `&team=warnnone|warnnoid|warnempty|warnfiles` change what is known.
+
+### Changed
+- `GET /api/team/state` gains `warnings` on each shared repository's block and `collides` on a teammate's rows. `GET /api/state` gains `team: {shared: true}` only while a repository is shared, so a board that shares nothing makes no team call and the launcher is what it was. No route was added; none is in `NODE_ROUTES`. First paint is unchanged (537,564 bytes of script): the code is in the lazy `launcher` and `team` bundles.
+- Known limits, UNVERIFIED: the two-login check on a real private organization repository, a real files list with its pagination, whether GitHub counts a 304, and screenshots at 1280, 1024 and 390 pixels. A path git quotes (non-ASCII) does not match GitHub's name. The task-create form has no task yet, so its file warning is by task: starting an existing task shows it.
+
+### Fixed
+- One pull request whose changed files cannot be read (too large, refused, a GitHub error) no longer stops the files of the pull requests after it: its list is marked unknown, asked again after 30 minutes, and the next one is read. Only a rate limit, no login or no gh stops the file reads.
+- The file reads keep file names only: the patch text of a page is dropped before it is cached, so a page of up to 2 MiB no longer sits in the shared cache.
+- Only pull requests by an owner, member or collaborator, and not a bot, make an issue "taken", have their files read or warn about files. On a public repository anybody can open a pull request; the others still show in the Team block.
+- A warning that says "taken" with an old status line now says "last seen 3 h ago" instead of "since 14:10". The file reads stop when fewer than 100 of the 600 points an hour would be left for the other reads.
+- Less work per page poll: the team state looks at the newest 100 tasks, one diff runs at a time for a task (a second poller reuses it), the file cache drops its oldest entry instead of everything, and the check for shared repositories reads a key range instead of the whole table.
+
+Upgrade: nothing to do.
+
 ## v0.5.52 - 2026-10-15
 
 ### Added

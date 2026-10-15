@@ -1449,8 +1449,8 @@
       "chain": null,
       "turns_ahead": 0,
       "limit_hold": null,
-      "issue_number": null,
-      "issue_url": null,
+      "issue_number": 152,
+      "issue_url": "https://github.com/example/website/issues/152",
       "issue_commented_at": null
     },
     {
@@ -2361,5 +2361,8 @@
   "setup": {
     "first_run": false,
     "ok": true
+  },
+  "team": {
+    "shared": true
   }
 }

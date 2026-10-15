@@ -307,6 +307,39 @@ function launcherIssueChoices(who, o) {
   return out;
 }
 
+/* Team warnings in the task forms (issue #199, Team P3). Advice only: a quiet block above Start that says who seems to hold the picked issue, who already has the branch the task would
+   get, or which pull request changes the files of the task being started; the issue picker's rows carry the same word as a chip. It reads the team view the board already holds
+   (GET /api/team/state, no GitHub call) and only on a board that shares a repository (state.team, which /api/state carries only then): with nothing shared this builds an empty node and
+   asks for nothing. The words come from team.js (the lazy 'team' bundle, loaded here on first use); without it the form is exactly what it was. It never reaches Start: no disabled
+   button, no confirm, no request of its own beyond that one read. task: the task being started (dispatch), whose own issue, branch and files are looked up by its id; title: the title
+   the form starts with. A session form has no issue and no title and does not build a kit. */
+function launcherTeamKit(p, r, task, title, off) {
+  const node = el('div', { class: 'lx-team hidden', role: 'group', 'aria-label': 'Team warnings', 'aria-live': 'polite' });
+  const on = off !== true && typeof state !== 'undefined' && !!state && !!state.team && state.team.shared === true;
+  const kit = { node, on, issue: null, title: typeof title === 'string' ? title : '', task: task && Number.isInteger(task.id) ? task.id : null, view: null, subs: [], ready: Promise.resolve() };
+  const live = () => kit.on && typeof Team !== 'undefined' && typeof Team.launchView === 'function';
+  kit.paint = () => {
+    if (!live()) return;
+    kit.view = Team.launchView(p.name, r.name);
+    Team.launchPaint(node, kit.view, { issue: kit.issue, title: kit.title, task: kit.task });
+    for (const fn of kit.subs.slice()) { try { fn(); } catch (_) { /* a label that could not be set */ } }
+  };
+  kit.chip = (n) => (live() && kit.view ? Team.issueChip(kit.view, n) : '');
+  kit.setIssue = (n) => { kit.issue = Number.isInteger(n) ? n : null; kit.paint(); };
+  kit.setTitle = (t) => { kit.title = typeof t === 'string' ? t : ''; kit.paint(); };
+  kit.onChange = (fn) => { kit.subs.push(fn); };
+  if (on) {
+    kit.ready = (async () => {
+      try {
+        if (typeof Team === 'undefined' && typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.team) await Lazy.load('team');
+        if (typeof Team !== 'undefined' && typeof Team.ensure === 'function') await Team.ensure(20000);
+      } catch (_) { /* the form works without the team view */ }
+      kit.paint();
+    })();
+  }
+  return kit;
+}
+
 /* The picker both task forms share: the select (the open issues of the repo, loaded on focus), the quiet "#N by login · open on GitHub" line, the note "from the issue: opus, high,
    acceptEdits" with Reset to my defaults, and the callout + tick for an issue by someone who is not the owner of origin. Picking never starts anything and never grabs the focus.
    hooks: fill(issue) puts the title and the prompt in; apply(choices) preselects (and remembers what it replaced); restore() puts that back; changed() re-checks the Start button;
@@ -330,6 +363,14 @@ function launcherIssuePicker(p, r, hooks) {
     el('div', { class: 'lx-danger-b' }, callText, el('div', { class: 'checks' }, el('label', {}, ack, 'I have read it'))));
   ack.addEventListener('change', () => hooks.changed());
   const node = el('div', { class: 'lx-issue' }, sel, meta, note, callout);
+  const team = hooks.team || null;                                                    // issue #199: the team kit of the form (chip on a row, the block above Start), or nothing
+  const rows = new Map();                                                             // issue number -> its <option>, so a chip that arrives later can be put on it
+  const rowText = (i) => {
+    const base = `#${i.number} ${i.title}`;
+    const chip = team ? team.chip(i.number) : '';
+    return chip ? `${base.slice(0, Math.max(24, 90 - chip.length - 3))} · ${chip}` : base.slice(0, 90);
+  };
+  if (team) team.onChange(() => { for (const i of issues) { const o = rows.get(i.number); if (o) o.textContent = rowText(i); } });
 
   const setNote = (text, withReset) => {
     noteText.textContent = text || '';
@@ -358,6 +399,7 @@ function launcherIssuePicker(p, r, hooks) {
     ack.checked = false;
     setNote('', false);
     paintMeta();
+    if (team) team.setIssue(null);
     hooks.changed();
   };
 
@@ -366,7 +408,7 @@ function launcherIssuePicker(p, r, hooks) {
     try {
       const res = await api('GET', base);
       issues = (res && res.issues) || [];
-      for (const i of issues) sel.append(el('option', { value: String(i.number), text: `#${i.number} ${i.title}`.slice(0, 90) }));
+      for (const i of issues) { const o = el('option', { value: String(i.number), text: rowText(i) }); rows.set(i.number, o); sel.append(o); }
       if (!issues.length) sel.append(el('option', { value: '', text: '(no open issues)' }));
     } catch (e) { sel.append(el('option', { value: '', text: hint(String((e && e.message) || e)).slice(0, 120) })); }
   }, { once: true });
@@ -381,6 +423,7 @@ function launcherIssuePicker(p, r, hooks) {
     setNote('', false);
     paintMeta();
     hooks.fill(i);
+    if (team) team.setIssue(i.number);
     hooks.changed();
     if (!cur.trusted) { setNote("Model and permissions are not taken from someone else's issue.", false); return; }
     try {
@@ -428,11 +471,15 @@ function taskForm(p, r, opts) {
   const status = el('div', { class: 'dim form-status', role: 'status', 'aria-live': 'polite' });
 
   let oldSnap = null;                                                                 // what the issue's model line replaced, for Reset to my defaults
+  const teamKit = launcherTeamKit(p, r, null, carry.title || '');
+  title.addEventListener('input', () => teamKit.setTitle(title.value));
   const setSel = (sel, v) => { sel.value = v; try { sel.dispatchEvent(new Event('change')); } catch (_) { /* no Event constructor */ } };
   const issueKit = launcherIssuePicker(p, r, {
     scope: { agents: ['claude'], installed: lxInstalled },
+    team: teamKit,
     fill: (i) => {
       title.value = `#${i.number} ${i.title}`.slice(0, 120);
+      teamKit.setTitle(title.value);
       promptEl.value = `${i.title}\n\n${i.body || ''}\n\nGitHub issue: ${i.url}\nWhen done, commit with a message that includes "Closes #${i.number}".`;
       composerGrow(promptEl);
     },
@@ -699,6 +746,7 @@ function taskForm(p, r, opts) {
     schedBox,
     options,
     jx.fableRow,
+    teamKit.on ? teamKit.node : null,
     status,
     el('div', { class: 'submit' }, go,
       el('button', { type: 'button', onclick: () => { if (typeof o.onCancel === 'function') o.onCancel(); else { ui.openForm = null; if (typeof renderProjects === 'function') renderProjects(); } }, text: 'Cancel' })));
@@ -2290,14 +2338,17 @@ function launcherForm(o) {
   let nameTyped = !!carry.name;
   const whenSeg = lxSeg(TASK_WHEN, (w) => { T.when = w; whenSeg.set(w); paintAgentSeg(); edit(); focusFine(promptEl); }, 'Run', 'lx-when');      // a mouse moves on to the prompt (an arrow key's own focus move runs after this and wins); touch raises no keyboard
   const lede = el('p', { class: 'dim tf-lede' });
-  const titleIn = text(() => T.title, (x) => { T.title = x; if (T.when === 'schedule' && !nameTyped) autoName(); }, { maxlength: 120, placeholder: 'e.g. Fix the login redirect' });
+  const teamKit = launcherTeamKit(p, r, mode === 'dispatch' ? task : null, T.title, mode === 'session');          // a session form has no issue and no title: its kit is inert
+  const titleIn = text(() => T.title, (x) => { T.title = x; if (T.when === 'schedule' && !nameTyped) autoName(); teamKit.setTitle(x); }, { maxlength: 120, placeholder: 'e.g. Fix the login redirect' });
   const titleField = field('Title', titleIn, 'Optional: the first line of the prompt is used.');
   const ISSUE_KEYS = { claude: ['model', 'model_custom', 'effort', 'permission_mode'], codex: ['model', 'model_custom', 'reasoning', 'cx_mode', 'sandbox', 'approval'] };
   let issueSnap = null;                                                              // what the issue's model line replaced, for Reset to my defaults and for what is remembered
   const issueKit = launcherIssuePicker(p, r, {
     scope: { agents: agentsHere, installed: lxInstalled },
+    team: teamKit,
     fill: (i) => {
       T.title = `#${i.number} ${i.title}`.slice(0, 120);
+      teamKit.setTitle(T.title);
       V.common.prompt = `${i.title}\n\n${i.body || ''}\n\nGitHub issue: ${i.url}\nWhen done, commit with a message that includes "Closes #${i.number}".`;
       titleIn.value = T.title;
       promptEl.value = V.common.prompt;
@@ -2696,6 +2747,7 @@ function launcherForm(o) {
     autoField,
     cmdBox,
     jx.fableRow,
+    teamKit.on ? teamKit.node : null,
     status,
     foot);
   form.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); if (typeof e.stopPropagation === 'function') e.stopPropagation(); cancel.click(); } });

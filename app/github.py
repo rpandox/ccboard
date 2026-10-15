@@ -188,6 +188,26 @@ def open_pulls_path(owner, repo, page: int = 1, per_page: int | None = None) -> 
     return f"/repos/{owner}/{repo}/pulls?state=open&{_page(page, PER_PAGE if per_page is None else per_page)}"
 
 
+# The files one pull request changes (issue #199, Team P3): a plain GET, 100 a page, with an ETag. It is the only cross-person file signal: the list is what every reader of the
+# repository can already see on the pull request. The number and the page are checked, the owner and repository against GitHub's rules.
+_PULL_FILES = re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/pulls/[1-9][0-9]{0,8}/files\?per_page=[0-9]{1,3}&page=[0-9]{1,3}")
+
+
+def pull_files_path(owner, repo, n, page: int = 1, per_page: int | None = None) -> str:
+    """/repos/{owner}/{repo}/pulls/{n}/files: the files of one pull request, one page (a GET like every other path of this module)."""
+    if not valid_slug(owner, repo) or not valid_number(n):
+        raise GhReadError("bad_request")
+    return f"/repos/{owner}/{repo}/pulls/{int(n)}/files?{_page(page, PER_PAGE if per_page is None else per_page)}"
+
+
+def slim_files(path: str, data):
+    """The one answer of this module that is cut before it is kept: a page of /pulls/{n}/files holds `patch` text, up to 2 MiB a page, and only the names are ever read from it, so
+    only `filename` and `previous_filename` stay (and at most PER_PAGE entries). Any other path, and any other shape, is returned as it is."""
+    if not isinstance(data, list) or not _PULL_FILES.fullmatch(path):
+        return data
+    return [{k: f[k] for k in ("filename", "previous_filename") if isinstance(f.get(k), str)} for f in data[:PER_PAGE] if isinstance(f, dict)]
+
+
 def repo_path(owner, repo) -> str:
     """/repos/{owner}/{repo}: the repository itself, read by the doctor for `permissions.push` and `private` (a GET like every other path of this module)."""
     if not valid_slug(owner, repo):
@@ -225,6 +245,9 @@ def allowed_path(path) -> bool:
     t = _TEAM_LIST.fullmatch(path)
     if t:
         return valid_slug(t.group(1), t.group(2))
+    f = _PULL_FILES.fullmatch(path)
+    if f:
+        return valid_slug(f.group(1), f.group(2))
     b = _BRANCH_PATH.fullmatch(path)
     if b:
         return valid_slug(b.group(1), b.group(2)) and valid_branch(b.group(3))
@@ -658,6 +681,7 @@ class Reader:
                 self.cache.move_to_end(path)
                 return Reply(ent.data, ent.headers, ent.server_now, True, False, scopes, "revalidated")
             if 200 <= status < 300 and isinstance(data, (list, dict)):
+                data = slim_files(path, data)                                                                      # a files page is kept (and handed back) as names only, never as patch text
                 tag = headers.get("etag")
                 self.cache[path] = _Entry(tag if isinstance(tag, str) and ETAG_RE.fullmatch(tag) else None, data, headers, server_now, now, scopes)
                 self.cache.move_to_end(path)

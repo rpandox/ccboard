@@ -30,7 +30,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 
-from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_work, notify, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, team, team_github, team_presence, tmux, tree, usage, usage_refresh, usage_summary
+from . import account_store, accounts, agents, autoresume, backup, claude_auth, clonequeue, codex_accounts, cost, deploy, doctor, github, github_write, gitops, health, hooks, login_problem, memory, memory_proxy, node_state, nodes, nodes_discovery, nodes_epics, nodes_hub, nodes_relay, nodes_route, nodes_run, nodes_stream, nodes_work, notify, overlap, permissions, preflight, previews, projects, prpoll, push, recover, samples, scheduler, search, skills, taskflow, tasks, team, team_github, team_presence, tmux, tree, usage, usage_refresh, usage_summary
 from .agents import claude_pane, codex_discovery, codex_pane
 from .agents import monitor as mem_monitor
 from .agents import registry
@@ -812,6 +812,8 @@ def build_state(user: str) -> dict:
     st["scheduler"] = {**scheduler.quota_state(db), "codex": scheduler.quota_state(db, "codex")}      # Codex's own window and back-off ride along: a Codex job never waits on Claude's
     st["version"] = ASSET_VERSION
     st.pop("dev", None)                           # the scan cache hands back the dict a previous call filled in
+    if db.team_shared():                          # issue #199: present only while some repository is shared, so the launcher knows to read the cached team view; absent otherwise (off means off)
+        st["team"] = {"shared": True}
     if settings.dev_bypass_user:                  # present only under the dev bypass (issue #100): scripts/qa-ui.sh refuses a board that says false
         st["dev"] = {"sandboxed": settings.dev_sandboxed()}
     st["setup"] = _setup_state(st)
@@ -4682,9 +4684,35 @@ def _team_poller() -> "team_github.Poller":
     return team_github.get_poller(db, _team_projects)
 
 
+def _team_local(snap: dict) -> dict:
+    """This board's own open tasks per canonical repository key, for the warnings and the collision marks of the team view (issue #199): {key: [{id, title, issue_number, branch,
+    files}]}. Only repositories the team poll has read are looked at, so a board with nothing shared reads no task here. The files of a task (its worktree's diff, cached a minute in
+    app/overlap.py) are looked up only for a repository where a teammate's pull request has its changed files read. Local facts only: no gh call; the names go to the signed-in
+    owner's page and nowhere else."""
+    if not snap:
+        return {}
+    keys = node_state._repo_keys(_team_projects())
+    want_files = {k for k, rd in snap.items() if rd.get("pull_files")}
+    out: dict = {}
+    left = team.LOCAL_TASKS_MAX                                        # the newest tasks only: the model takes no more, so no worktree beyond them is scanned
+    for t in sorted(db.tasks(), key=lambda x: x["id"], reverse=True):
+        if t.get("status") in ("merged", "archived"):
+            continue
+        k = keys.get((t.get("project"), t.get("repo")))
+        if k not in snap:
+            continue
+        if left <= 0:
+            break
+        left -= 1
+        out.setdefault(k, []).append({"id": t["id"], "title": t.get("title"), "issue_number": t.get("issue_number"), "branch": t.get("branch"),
+                                      "files": overlap.task_files(t) if k in want_files else None})
+    return out
+
+
 def _team_body(poller: "team_github.Poller", entries: list[dict]) -> dict:
     me = poller.me if poller.me[0] else team_github.identity_cached()
-    return team.build(entries, poller.snapshot(), me[0], me[1], time.time())
+    snap = poller.snapshot()
+    return team.build(entries, snap, me[0], me[1], time.time(), _team_local(snap))
 
 
 class TeamShareIn(BaseModel):
@@ -4733,7 +4761,8 @@ def api_team_share(owner: str, repo: str, body: TeamShareIn, request: Request):
         poller.drop_meta(e["members"])
     entries = team_github.own_repos(_team_projects(), db.team_shared())
     cur = next((x for x in entries if set(x["members"]) & set(e["members"])), e)
-    block = team.repo_state(cur, poller.snapshot().get(cur["key"]), *(poller.me if poller.me[0] else team_github.identity_cached()), time.time())
+    snap = poller.snapshot()
+    block = team.repo_state(cur, snap.get(cur["key"]), *(poller.me if poller.me[0] else team_github.identity_cached()), time.time(), _team_local(snap).get(cur["key"]))
     return JSONResponse(block, headers={"Cache-Control": "no-store"})
 
 
