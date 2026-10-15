@@ -32,7 +32,7 @@ H = {**ID, "X-CCBoard": "1"}
 UUID = "0b0e7c4c-1a2b-4c3d-8e9f-0123456789ab"
 PEER = "p_0123456789abcdef"
 FILL = {"agent": "claude", "decision": "allow", "handle": "node-b", "jid": "1", "key": "k", "n:int": "1", "name": "p--r--s", "pid": "1", "project": "p",
-        "repo": "r", "rid": "1", "sid": UUID, "tid": "1", "token_id": "t", "peer": PEER, "owner": "o", "n": "1"}
+        "repo": "r", "rid": "1", "sid": UUID, "tid": "1", "token_id": "t", "peer": PEER, "owner": "o", "n": "1", "issue": "1"}
 NO_ID = "no Tailscale identity or not in CCBOARD_ALLOWED_USERS"
 NO_CSRF = "missing X-CCBoard header"
 CLOSED = "this node token does not open that route"

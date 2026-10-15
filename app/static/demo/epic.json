@@ -1,5 +1,5 @@
 {
- "_note": "Fixture of the epic view (issue #147, claims issue #148). details is keyed owner/repo#n in lower case; variants are laid over by ?epic=<name> (nologin noaccess notfound wait stale labels empty norepo none down writesoff offline notasks). `writes` is the board's CCBOARD_EPIC_WRITES; `own_claims` are this board's own claims (held, lost). ?claim=<word> plays a refusal of the Claim button (taken lost unknown writesoff closed done attempts offline scope unconfirmed). Times are GitHub's: the page shows them against server_now, never the browser clock. Issue #149 (work): each child carries author and author_ok, and work (this board's own work record: phase running | waiting | pr | done | failed | cancelled | lost); the detail carries authors {allowed, epic, epic_ok, blocked, text} and the settings report (phase | summary | none), auto_pr, close and plan. ?epic=workrun workwait workfail workcancel plays another phase on #202; ?epic=authors marks #205 as by an author who is not allowed; ?epic=epicauthor marks the epic itself; ?epic=noauthors says no author is known. ?work=<word> plays a refusal of the Work button (the claim's words and nothere author epicauthor unreadable bypass posture lanes launch); lanes is refused until Start anyway is tapped. #205 is the row that can be worked.",
+ "_note": "Fixture of the epic view (issue #147, claims issue #148). details is keyed owner/repo#n in lower case; variants are laid over by ?epic=<name> (nologin noaccess notfound wait stale labels empty norepo none down writesoff offline notasks). `writes` is the board's CCBOARD_EPIC_WRITES; `own_claims` are this board's own claims (held, lost). ?claim=<word> plays a refusal of the Claim button (taken lost unknown writesoff closed done attempts offline scope unconfirmed). Times are GitHub's: the page shows them against server_now, never the browser clock. Issue #149 (work): each child carries author and author_ok, and work (this board's own work record: phase running | waiting | pr | done | failed | cancelled | lost); the detail carries authors {allowed, epic, epic_ok, blocked, text} and the settings report (phase | summary | none), auto_pr, close and plan. ?epic=workrun workwait workfail workcancel plays another phase on #202; ?epic=authors marks #205 as by an author who is not allowed; ?epic=epicauthor marks the epic itself; ?epic=noauthors says no author is known. ?work=<word> plays a refusal of the Work button (the claim's words and nothere author epicauthor unreadable bypass posture lanes launch); lanes is refused until Start anyway is tapped. #205 is the row that can be worked. Issues #150 and #152 (routing): the detail carries route {can_run, blocked, running, paused, by, via, left, started_at, ended, assigned, waiting, held, ...} and, per child, route {state: assigned | waiting | held, text, node, handle, until, code} or null, and the settings max_window_pct, max_window_pct_set, group, mcp_run. ?epic=run (running: #205 sent, #206 waiting for a window, #207 held), runwait (#205 waits for a lane), runpaused, runagent (an agent started it), runfinished, runlimit, nonodes (no node paired), paused, groups (three nodes, a group, a limit, MCP on); writesoff now also blocks Run. ?run=<word> plays a refusal of Run on... for one issue (waiting claimed busy notfound); else the issue is sent to the node and shows running.",
  "list": {
   "epics": [
    {
@@ -147,7 +147,8 @@
       "issue_url": "https://github.com/example/website/issues/201",
       "claim_url": "https://github.com/example/website/issues/201#issuecomment-3101"
      },
-     "phase": "done"
+     "phase": "done",
+     "route": null
     },
     {
      "repo": "example/website",
@@ -219,7 +220,8 @@
       "issue_url": "https://github.com/example/website/issues/202",
       "claim_url": "https://github.com/example/website/issues/202#issuecomment-3102"
      },
-     "phase": "pr"
+     "phase": "pr",
+     "route": null
     },
     {
      "repo": "example/website",
@@ -290,7 +292,8 @@
       "issue_url": "https://github.com/example/website/issues/203",
       "claim_url": "https://github.com/example/website/issues/203#issuecomment-3103"
      },
-     "phase": "lost"
+     "phase": "lost",
+     "route": null
     },
     {
      "repo": "example/website",
@@ -342,7 +345,8 @@
      "author": "maya-r",
      "author_ok": true,
      "work": null,
-     "phase": "failed"
+     "phase": "failed",
+     "route": null
     },
     {
      "repo": "example/website",
@@ -378,7 +382,8 @@
      "author": "maya-r",
      "author_ok": true,
      "work": null,
-     "phase": "open"
+     "phase": "open",
+     "route": null
     },
     {
      "repo": "example/website",
@@ -431,7 +436,8 @@
      "author": "maya-r",
      "author_ok": true,
      "work": null,
-     "phase": "open"
+     "phase": "open",
+     "route": null
     },
     {
      "repo": "example/website",
@@ -465,7 +471,8 @@
      "author": "maya-r",
      "author_ok": true,
      "work": null,
-     "phase": "unknown"
+     "phase": "unknown",
+     "route": null
     }
    ],
    "progress": {
@@ -587,7 +594,31 @@
     "epic_ok": true,
     "blocked": [],
     "text": null
-   }
+   },
+   "route": {
+    "can_run": true,
+    "blocked": null,
+    "running": false,
+    "paused": false,
+    "by": null,
+    "via": null,
+    "left": null,
+    "started_at": null,
+    "ended": null,
+    "ended_at": null,
+    "cycle_at": null,
+    "assigned": {},
+    "waiting": {},
+    "held": {},
+    "error": null,
+    "loop": false,
+    "max_window_pct": 85,
+    "mcp_run": false
+   },
+   "max_window_pct": 85,
+   "max_window_pct_set": false,
+   "group": [],
+   "mcp_run": false
   },
   "example/board#52": {
    "epic": {
@@ -664,7 +695,31 @@
     "report": "Posts short phase comments on each issue: waiting for a person, pull request opened, done or failed. No result text leaves the node.",
     "auto_pr": "Pushes nothing and opens no pull request.",
     "close": "Nothing says Closes #N."
-   }
+   },
+   "route": {
+    "can_run": true,
+    "blocked": null,
+    "running": false,
+    "paused": false,
+    "by": null,
+    "via": null,
+    "left": null,
+    "started_at": null,
+    "ended": null,
+    "ended_at": null,
+    "cycle_at": null,
+    "assigned": {},
+    "waiting": {},
+    "held": {},
+    "error": null,
+    "loop": false,
+    "max_window_pct": 85,
+    "mcp_run": false
+   },
+   "max_window_pct": 85,
+   "max_window_pct_set": false,
+   "group": [],
+   "mcp_run": false
   }
  },
  "blank": {
@@ -734,7 +789,31 @@
    "report": "Posts short phase comments on each issue: waiting for a person, pull request opened, done or failed. No result text leaves the node.",
    "auto_pr": "Pushes nothing and opens no pull request.",
    "close": "Nothing says Closes #N."
-  }
+  },
+  "route": {
+   "can_run": true,
+   "blocked": null,
+   "running": false,
+   "paused": false,
+   "by": null,
+   "via": null,
+   "left": null,
+   "started_at": null,
+   "ended": null,
+   "ended_at": null,
+   "cycle_at": null,
+   "assigned": {},
+   "waiting": {},
+   "held": {},
+   "error": null,
+   "loop": false,
+   "max_window_pct": 85,
+   "mcp_run": false
+  },
+  "max_window_pct": 85,
+  "max_window_pct_set": false,
+  "group": [],
+  "mcp_run": false
  },
  "variants": {
   "nologin": {
@@ -1132,7 +1211,30 @@
   },
   "writesoff": {
    "detail": {
-    "writes": false
+    "writes": false,
+    "route": {
+     "can_run": false,
+     "blocked": {
+      "code": "writes_off",
+      "text": "GitHub writes are off on this board (CCBOARD_EPIC_WRITES), so nothing can be sent to a node. Set CCBOARD_EPIC_WRITES=1 on the box to allow it."
+     },
+     "running": false,
+     "paused": false,
+     "by": null,
+     "via": null,
+     "left": null,
+     "started_at": null,
+     "ended": null,
+     "ended_at": null,
+     "cycle_at": null,
+     "assigned": {},
+     "waiting": {},
+     "held": {},
+     "error": null,
+     "loop": false,
+     "max_window_pct": 85,
+     "mcp_run": false
+    }
    }
   },
   "offline": {
@@ -1310,6 +1412,513 @@
      "epic_ok": null,
      "blocked": [],
      "text": null
+    }
+   }
+  },
+  "run": {
+   "detail": {
+    "route": {
+     "can_run": true,
+     "blocked": null,
+     "running": true,
+     "paused": false,
+     "by": "maya-r",
+     "via": "page",
+     "left": null,
+     "started_at": "2026-10-11T08:59:00Z",
+     "ended": null,
+     "ended_at": null,
+     "cycle_at": "2026-10-11T08:59:30Z",
+     "assigned": {
+      "205": {
+       "handle": "node-b",
+       "node": "node-b",
+       "why": "chose node-b: 2 free lanes, 5-hour window 31 percent",
+       "at": "2026-10-11T08:59:30Z",
+       "task_ref": "node-b:51",
+       "reason": "won"
+      }
+     },
+     "waiting": {
+      "206": {
+       "code": "window",
+       "reason": "node-b 5-hour window is at 90 percent until 14:10",
+       "until": 1791900600,
+       "until_iso": "2026-10-11T14:10:00Z",
+       "pinned": null,
+       "text": "waiting: node-b 5-hour window is at 90 percent until 14:10",
+       "refused": [
+        {
+         "handle": "node-b",
+         "name": "node-b",
+         "code": "window",
+         "text": "5-hour window is at 90 percent until 14:10"
+        }
+       ]
+      }
+     },
+     "held": {
+      "207": {
+       "code": "claim_unknown",
+       "text": "too many comments to read",
+       "until": null
+      }
+     },
+     "error": null,
+     "loop": true,
+     "max_window_pct": 85,
+     "mcp_run": false
+    }
+   },
+   "child": {
+    "205": {
+     "claim": {
+      "alias": "node-b",
+      "node": "node-b",
+      "status": "running",
+      "since": "2026-10-11T08:59:30Z",
+      "renewed_at": "2026-10-11T08:59:30Z",
+      "live": true,
+      "attempt": 1,
+      "seq": 1,
+      "task_ref": "node-b:51",
+      "branch": "worktree-issue-205"
+     },
+     "claim_state": "claimed",
+     "claim_rejected": 0,
+     "claim_note": null,
+     "bucket": {
+      "node": "node-b",
+      "state": "running"
+     },
+     "phase": "running",
+     "task": {
+      "ref": "node-b:51",
+      "phase": "running",
+      "node": "node-b",
+      "node_name": "node-b",
+      "status": "online",
+      "age_s": 0,
+      "updated_at": "2026-10-11T08:59:30Z"
+     },
+     "route": {
+      "state": "assigned",
+      "text": "chose node-b: 2 free lanes, 5-hour window 31 percent",
+      "node": "node-b",
+      "handle": "node-b",
+      "until": null,
+      "code": null,
+      "at": "2026-10-11T08:59:30Z"
+     }
+    },
+    "206": {
+     "claim": null,
+     "claim_state": "none",
+     "pin": null,
+     "label_pin": null,
+     "bucket": {
+      "node": null,
+      "state": "open"
+     },
+     "phase": "open",
+     "route": {
+      "state": "waiting",
+      "text": "waiting: node-b 5-hour window is at 90 percent until 14:10",
+      "until": "2026-10-11T14:10:00Z",
+      "code": "window"
+     }
+    },
+    "207": {
+     "route": {
+      "state": "held",
+      "text": "too many comments to read",
+      "until": null,
+      "code": "claim_unknown"
+     }
+    }
+   }
+  },
+  "runwait": {
+   "detail": {
+    "route": {
+     "can_run": true,
+     "blocked": null,
+     "running": true,
+     "paused": false,
+     "by": "maya-r",
+     "via": "page",
+     "left": null,
+     "started_at": "2026-10-11T08:59:00Z",
+     "ended": null,
+     "ended_at": null,
+     "cycle_at": "2026-10-11T08:59:30Z",
+     "assigned": {},
+     "waiting": {
+      "205": {
+       "code": "lane",
+       "reason": "node-b (pinned by the issue's pin) has no free lane",
+       "until": null,
+       "until_iso": null,
+       "pinned": "node-b",
+       "text": "waiting: node-b (pinned by the issue's pin) has no free lane",
+       "refused": [
+        {
+         "handle": "node-b",
+         "name": "node-b",
+         "code": "lane",
+         "text": "has no free lane"
+        }
+       ]
+      }
+     },
+     "held": {},
+     "error": null,
+     "loop": true,
+     "max_window_pct": 85,
+     "mcp_run": false
+    }
+   },
+   "child": {
+    "205": {
+     "route": {
+      "state": "waiting",
+      "text": "waiting: node-b (pinned by the issue's pin) has no free lane",
+      "until": null,
+      "code": "lane"
+     }
+    }
+   }
+  },
+  "runpaused": {
+   "detail": {
+    "paused": true,
+    "route": {
+     "can_run": true,
+     "blocked": null,
+     "running": true,
+     "paused": true,
+     "by": "maya-r",
+     "via": "page",
+     "left": null,
+     "started_at": "2026-10-11T08:59:00Z",
+     "ended": null,
+     "ended_at": null,
+     "cycle_at": null,
+     "assigned": {
+      "205": {
+       "handle": "node-b",
+       "node": "node-b",
+       "why": "chose node-b: 2 free lanes, 5-hour window 31 percent",
+       "at": "2026-10-11T08:59:30Z",
+       "task_ref": "node-b:51",
+       "reason": "won"
+      }
+     },
+     "waiting": {},
+     "held": {},
+     "error": null,
+     "loop": true,
+     "max_window_pct": 85,
+     "mcp_run": false
+    }
+   },
+   "child": {
+    "205": {
+     "claim": {
+      "alias": "node-b",
+      "node": "node-b",
+      "status": "running",
+      "since": "2026-10-11T08:59:30Z",
+      "renewed_at": "2026-10-11T08:59:30Z",
+      "live": true,
+      "attempt": 1,
+      "seq": 1,
+      "task_ref": "node-b:51",
+      "branch": "worktree-issue-205"
+     },
+     "claim_state": "claimed",
+     "claim_rejected": 0,
+     "claim_note": null,
+     "bucket": {
+      "node": "node-b",
+      "state": "running"
+     },
+     "phase": "running",
+     "task": {
+      "ref": "node-b:51",
+      "phase": "running",
+      "node": "node-b",
+      "node_name": "node-b",
+      "status": "online",
+      "age_s": 0,
+      "updated_at": "2026-10-11T08:59:30Z"
+     },
+     "route": {
+      "state": "assigned",
+      "text": "chose node-b: 2 free lanes, 5-hour window 31 percent",
+      "node": "node-b",
+      "handle": "node-b",
+      "until": null,
+      "code": null,
+      "at": "2026-10-11T08:59:30Z"
+     }
+    }
+   }
+  },
+  "runagent": {
+   "detail": {
+    "mcp_run": true,
+    "route": {
+     "can_run": true,
+     "blocked": null,
+     "running": true,
+     "paused": false,
+     "by": "mcp:laptop-agent",
+     "via": "mcp",
+     "left": 3,
+     "started_at": "2026-10-11T08:59:00Z",
+     "ended": null,
+     "ended_at": null,
+     "cycle_at": "2026-10-11T08:59:30Z",
+     "assigned": {
+      "205": {
+       "handle": "node-b",
+       "node": "node-b",
+       "why": "chose node-b: 2 free lanes, 5-hour window 31 percent",
+       "at": "2026-10-11T08:59:30Z",
+       "task_ref": "node-b:51",
+       "reason": "won"
+      }
+     },
+     "waiting": {},
+     "held": {},
+     "error": null,
+     "loop": true,
+     "max_window_pct": 85,
+     "mcp_run": true
+    }
+   },
+   "child": {
+    "205": {
+     "claim": {
+      "alias": "node-b",
+      "node": "node-b",
+      "status": "running",
+      "since": "2026-10-11T08:59:30Z",
+      "renewed_at": "2026-10-11T08:59:30Z",
+      "live": true,
+      "attempt": 1,
+      "seq": 1,
+      "task_ref": "node-b:51",
+      "branch": "worktree-issue-205"
+     },
+     "claim_state": "claimed",
+     "claim_rejected": 0,
+     "claim_note": null,
+     "bucket": {
+      "node": "node-b",
+      "state": "running"
+     },
+     "phase": "running",
+     "task": {
+      "ref": "node-b:51",
+      "phase": "running",
+      "node": "node-b",
+      "node_name": "node-b",
+      "status": "online",
+      "age_s": 0,
+      "updated_at": "2026-10-11T08:59:30Z"
+     },
+     "route": {
+      "state": "assigned",
+      "text": "chose node-b: 2 free lanes, 5-hour window 31 percent",
+      "node": "node-b",
+      "handle": "node-b",
+      "until": null,
+      "code": null,
+      "at": "2026-10-11T08:59:30Z"
+     }
+    }
+   }
+  },
+  "runfinished": {
+   "detail": {
+    "route": {
+     "can_run": true,
+     "blocked": null,
+     "running": false,
+     "paused": false,
+     "by": "maya-r",
+     "via": "page",
+     "left": null,
+     "started_at": "2026-10-11T08:00:00Z",
+     "ended": "finished",
+     "ended_at": "2026-10-11T08:59:30Z",
+     "cycle_at": null,
+     "assigned": {
+      "205": {
+       "handle": "node-b",
+       "node": "node-b",
+       "why": "chose node-b: 2 free lanes, 5-hour window 31 percent",
+       "at": "2026-10-11T08:59:30Z",
+       "task_ref": "node-b:51",
+       "reason": "won"
+      }
+     },
+     "waiting": {},
+     "held": {},
+     "error": null,
+     "loop": false,
+     "max_window_pct": 85,
+     "mcp_run": false
+    }
+   }
+  },
+  "runlimit": {
+   "detail": {
+    "route": {
+     "can_run": true,
+     "blocked": null,
+     "running": false,
+     "paused": false,
+     "by": "mcp:laptop-agent",
+     "via": "mcp",
+     "left": 0,
+     "started_at": "2026-10-11T08:00:00Z",
+     "ended": "limit",
+     "ended_at": "2026-10-11T08:59:30Z",
+     "cycle_at": null,
+     "assigned": {
+      "205": {
+       "handle": "node-b",
+       "node": "node-b",
+       "why": "chose node-b: 2 free lanes, 5-hour window 31 percent",
+       "at": "2026-10-11T08:59:30Z",
+       "task_ref": "node-b:51",
+       "reason": "won"
+      }
+     },
+     "waiting": {},
+     "held": {},
+     "error": null,
+     "loop": false,
+     "max_window_pct": 85,
+     "mcp_run": false
+    }
+   }
+  },
+  "nonodes": {
+   "detail": {
+    "nodes": [
+     {
+      "handle": "local",
+      "name": "node-a",
+      "status": "online",
+      "age_s": 0
+     }
+    ],
+    "route": {
+     "can_run": false,
+     "blocked": {
+      "code": "no_nodes",
+      "text": "No node is paired with this board, so there is nowhere to send the work."
+     },
+     "running": false,
+     "paused": false,
+     "by": null,
+     "via": null,
+     "left": null,
+     "started_at": null,
+     "ended": null,
+     "ended_at": null,
+     "cycle_at": null,
+     "assigned": {},
+     "waiting": {},
+     "held": {},
+     "error": null,
+     "loop": false,
+     "max_window_pct": 85,
+     "mcp_run": false
+    }
+   }
+  },
+  "paused": {
+   "detail": {
+    "paused": true,
+    "route": {
+     "can_run": true,
+     "blocked": null,
+     "running": false,
+     "paused": true,
+     "by": null,
+     "via": null,
+     "left": null,
+     "started_at": null,
+     "ended": null,
+     "ended_at": null,
+     "cycle_at": null,
+     "assigned": {},
+     "waiting": {},
+     "held": {},
+     "error": null,
+     "loop": false,
+     "max_window_pct": 85,
+     "mcp_run": false
+    }
+   }
+  },
+  "groups": {
+   "detail": {
+    "nodes": [
+     {
+      "handle": "local",
+      "name": "node-a",
+      "status": "online",
+      "age_s": 0
+     },
+     {
+      "handle": "node-b",
+      "name": "node-b",
+      "status": "online",
+      "age_s": 4,
+      "tasks": true
+     },
+     {
+      "handle": "node-c",
+      "name": "node-c",
+      "status": "online",
+      "age_s": 9,
+      "tasks": true
+     }
+    ],
+    "max_window_pct": 70,
+    "max_window_pct_set": true,
+    "group": [
+     [
+      "node-b",
+      "node-c"
+     ]
+    ],
+    "mcp_run": true,
+    "route": {
+     "can_run": true,
+     "blocked": null,
+     "running": false,
+     "paused": false,
+     "by": null,
+     "via": null,
+     "left": null,
+     "started_at": null,
+     "ended": null,
+     "ended_at": null,
+     "cycle_at": null,
+     "assigned": {},
+     "waiting": {},
+     "held": {},
+     "error": null,
+     "loop": false,
+     "max_window_pct": 70,
+     "mcp_run": true
     }
    }
   }

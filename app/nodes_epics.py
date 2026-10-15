@@ -267,6 +267,17 @@ def parse_depends(body, owner: str, repo: str, own: int | None = None) -> list[s
     return out
 
 
+def issue_agent(body) -> str:
+    """The agent an issue asks for in its "Who should do it" block, as app/nodes_work.launch_of picks it when the node has both: claude when it has a claude line, else codex when it has a
+    codex line, else claude. The body is untrusted text and is cut before the parser sees it."""
+    from . import issues
+    try:
+        who = issues.parse_who(body[:8000] if isinstance(body, str) else "")
+    except Exception:
+        return "claude"
+    return who.get("default_agent") if who.get("default_agent") in ("claude", "codex") else "claude"
+
+
 def shape_child(item, owner: str, repo: str, index: int, same_repo: bool = False) -> dict | None | bool:
     """One issue of a list as a child, whitelisted: None for a pull request or anything without a valid number. Nothing of the payload's URLs is kept except the
     repository it names (checked against GitHub's rules). `same_repo` is for a list the board asked of ONE repository (the label list): the child is of that
@@ -285,7 +296,7 @@ def shape_child(item, owner: str, repo: str, index: int, same_repo: bool = False
     cnt = item.get("comments")
     return {"repo": f"{o}/{r}", "owner": o, "name": r, "number": num, "title": github.clean_text(item.get("title"), 200) or f"Issue {num}",
             "state": "closed" if item.get("state") == "closed" else "open", "url": issue_url(o, r, num), "labels": labels,
-            "depends_on_refs": parse_depends(item.get("body"), o, r, num), "order": index,
+            "depends_on_refs": parse_depends(item.get("body"), o, r, num), "order": index, "agent": issue_agent(item.get("body")),
             "comments": cnt if isinstance(cnt, int) and not isinstance(cnt, bool) and cnt >= 0 else None,
             "updated_at": github.clean_ts(item.get("updated_at")), "author": author_of(item), "claims": [], "server_now": None,
             "thread": None, "reason": None, "fresh": False, "read_at": None}               # thread: None (not read), "complete" (every comment read) or "incomplete"; reason: why the claim is unknown (UNKNOWN_TEXT)
@@ -726,6 +737,11 @@ def settings_key(owner: str, repo: str, n) -> str:
 
 REPORTS = ("phase", "summary", "none")       # what a node posts on the issue of this epic (issue #149): phase comments only (the default), also the redacted head of the result, or nothing
 DEFAULTS = {"pins": {}, "epic_pin": None, "paused": False, "report": "phase", "auto_pr": False, "close": False}
+# Routing settings (issue #150) and the switch that lets an agent run the epic (issue #152). They are kept in the same row only when they are not at their default, so a row
+# with none of them looks exactly as it did before: `max_window_pct` (None = CCBOARD_EPIC_MAX_WINDOW_PCT), `group` (lists of node handles that share one subscription, set by hand),
+# `mcp_run` (false: an agent's epic_run is refused). Only a signed-in person on the epic page sets them.
+ROUTING_DEFAULTS = {"max_window_pct": None, "group": [], "mcp_run": False}
+GROUP_MAX, GROUP_MEMBERS_MAX = 8, 8
 
 
 def report_word(v, default: str = "phase") -> str:
@@ -761,7 +777,30 @@ def load_settings(db, owner: str, repo: str, n) -> dict:
             pins[str(int(k))] = h
     ep = v.get("epic_pin")
     return {"pins": pins, "epic_pin": ep if ep == nodes.LOCAL or nodes.valid_handle(ep) else None, "paused": v.get("paused") is True,
-            "report": report_word(v.get("report")), "auto_pr": v.get("auto_pr") is True, "close": v.get("close") is True}
+            "report": report_word(v.get("report")), "auto_pr": v.get("auto_pr") is True, "close": v.get("close") is True,
+            "max_window_pct": window_word(v.get("max_window_pct")), "group": group_word(v.get("group")), "mcp_run": v.get("mcp_run") is True}
+
+
+def window_word(v):
+    """The stored `max_window_pct` as a whole number from 10 to 100, else None (the board's CCBOARD_EPIC_MAX_WINDOW_PCT applies)."""
+    return v if isinstance(v, int) and not isinstance(v, bool) and 10 <= v <= 100 else None
+
+
+def group_word(v) -> list[list[str]]:
+    """The stored manual subscription groups as lists of two to eight distinct node handles (`local` is never a member), at most eight lists, a handle in one list only. Anything else is dropped."""
+    out: list[list[str]] = []
+    seen: set[str] = set()
+    for g in v[:GROUP_MAX] if isinstance(v, list) else []:
+        members = [h for h in dict.fromkeys(g[:GROUP_MEMBERS_MAX] if isinstance(g, list) else []) if nodes.valid_handle(h) and h not in seen]
+        if len(members) >= 2:
+            out.append(members)
+            seen.update(members)
+    return out
+
+
+def max_window_pct(st: dict) -> int:
+    """The window percentage at which routing stops sending this epic's issues to a node: the epic's own setting, else the board's."""
+    return st.get("max_window_pct") or int(getattr(settings, "epic_max_window_pct", 85) or 85)
 
 
 def _handle_ok(h, known: set[str]) -> bool:
@@ -820,11 +859,35 @@ def save_settings(db, owner: str, repo: str, n, patch: dict) -> dict:
         if not (isinstance(v, bool) or (isinstance(v, str) and v in REPORTS)):
             raise projects.BadRequest("report is phase, summary or none")
         cur["report"] = report_word(v)                         # a boolean from an older page is migrated: true is summary, false is phase
+    if "mcp_run" in patch:
+        if not isinstance(patch["mcp_run"], bool):
+            raise projects.BadRequest("mcp_run is true or false")
+        cur["mcp_run"] = patch["mcp_run"]
+    if "max_window_pct" in patch:
+        v = patch["max_window_pct"]
+        if v is None:
+            cur["max_window_pct"] = None
+        elif isinstance(v, int) and not isinstance(v, bool) and 10 <= v <= 100:
+            cur["max_window_pct"] = v
+        else:
+            raise projects.BadRequest("max_window_pct is a whole number from 10 to 100, or null for the board's setting")
+    if "group" in patch:
+        g = [] if patch["group"] is None else patch["group"]
+        if not isinstance(g, list) or len(g) > GROUP_MAX or any(not isinstance(x, list) or len(x) > GROUP_MEMBERS_MAX for x in g):
+            raise projects.BadRequest("group is a list of at most 8 lists of at most 8 node handles")
+        seen: set[str] = set()
+        for x in g:
+            if len(x) < 2 or any(not _handle_ok(h, known) or h == nodes.LOCAL for h in x) or len(set(x)) != len(x) or seen & set(x):
+                raise projects.BadRequest("a group names two or more different paired nodes, and a node is in one group only")
+            seen.update(x)
+        cur["group"] = [list(x) for x in g]
     key = settings_key(owner, repo, n)
-    if cur == DEFAULTS:
+    row = {k: cur[k] for k in DEFAULTS}
+    row.update({k: cur[k] for k in ROUTING_DEFAULTS if cur[k] != ROUTING_DEFAULTS[k]})          # a routing setting at its default is not stored: an old row stays what it was
+    if row == DEFAULTS:
         db.kv_del(key)
     else:
-        db.kv_set(key, cur)
+        db.kv_set(key, row)
     return cur
 
 
@@ -836,7 +899,9 @@ def settings_view(db, owner: str, repo: str, n, records) -> dict:
     st = load_settings(db, owner, repo, n)
     return {"pins": {k: _pin_view(h, "page", known, names) for k, h in st["pins"].items()},
             "epic_pin": _pin_view(st["epic_pin"], "page", known, names) if st["epic_pin"] else None,
-            "paused": st["paused"], "report": st["report"], "auto_pr": st["auto_pr"], "close": st["close"], "plan": work_plan(st), "nodes": node_list(records)}
+            "paused": st["paused"], "report": st["report"], "auto_pr": st["auto_pr"], "close": st["close"], "plan": work_plan(st), "nodes": node_list(records),
+            "max_window_pct": max_window_pct(st), "max_window_pct_set": st["max_window_pct"] is not None, "group": [g for g in st["group"] if all(m in known for m in g)],
+            "mcp_run": st["mcp_run"]}
 
 
 def _alias_map(records, display: str) -> dict[str, str]:
@@ -1025,7 +1090,7 @@ def detail(db, owner: str, repo: str, n: int, records, *, login=None, repos=None
             pr = {"number": tv["pr"]["number"], "url": pull_url(c["owner"], c["name"], tv["pr"]["number"]), "state": tv["pr"]["state"], "draft": tv["pr"]["draft"]}
         out["children"].append({
             "repo": c["repo"], "number": c["number"], "title": c["title"], "state": c["state"], "url": c["url"], "labels": c["labels"], "depends_on": c["depends_on"],
-            "blocked_by": c["blocked_by"], "dependency_cycle": c["dependency_cycle"], "order": c["order"], "updated_at": c["updated_at"],
+            "blocked_by": c["blocked_by"], "dependency_cycle": c["dependency_cycle"], "order": c["order"], "updated_at": c["updated_at"], "agent": c.get("agent") or "claude",
             "claim": None if claim is None else {"alias": claim["alias"], "node": amap.get(claim["alias"].lower()), "status": claim["status"], "since": claim["created_at"],
                                                   "renewed_at": claim["updated_at"], "live": claim["live"], "attempt": claim["attempt"], "seq": claim["seq"],
                                                   "task_ref": claim["task_ref"], "branch": claim["branch"]},

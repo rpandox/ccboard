@@ -279,7 +279,7 @@ body[data-shell=compact] #toasts { bottom:calc(var(--sab) + var(--bnav-h) + 14px
 .toast.info { border-left-color:var(--sig); }
 
 /* ---------- popover menu (components.js menu()): a Blueprint menu, fixed under its button ---------- */
-.bp5-dark .menu-pop, .menu-pop { position:fixed; z-index:50; min-width:200px; max-width:calc(100vw - 16px); padding:4px; background:var(--panel); border:1px solid var(--line); border-radius:2px; box-shadow:0 8px 24px rgba(0,0,0,.5); }
+.bp5-dark .menu-pop, .menu-pop { position:fixed; z-index:50; min-width:240px; max-width:calc(100vw - 16px); padding:4px; background:var(--panel); border:1px solid var(--line); border-radius:2px; box-shadow:0 8px 24px rgba(0,0,0,.5); }
 .menu-pop .menuitem { min-height:var(--tap); align-items:center; gap:10px; padding:4px 10px; color:var(--fg); cursor:pointer; }
 .menu-pop .menuitem:focus { background:var(--card); outline:none; }
 @media (hover:hover) { .menu-pop .menuitem:hover { background:var(--card); } }

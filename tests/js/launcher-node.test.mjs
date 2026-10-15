@@ -59,7 +59,19 @@ const off = (n) => n.disabled || n.hasAttribute('disabled');
 const open = (w, o) => w.run(`openLauncher(${JSON.stringify({ project: 'ccboard', repo: 'ccboard', mode: 'session', ...o })})`);
 const picker = (w) => sheet(w).querySelector('.lx-nodepick');
 const pickBtns = (w) => all(picker(w), 'button');
-const pickNode = (w, label) => { const b = pickBtns(w).find((x) => text(x).trim().startsWith(label)); assert.ok(b, `a picker entry ${label}`); b.click(); return b; };
+const pickNode = (w, label) => {
+  const b = pickBtns(w).find((x) => text(x).trim().startsWith(label));
+  if (!b) {                                                                  // more than four entries (a task form with Auto): the picker is a native select
+    const s = all(picker(w), 'select')[0];
+    const o = s && all(s, 'option').find((x) => text(x).trim().startsWith(label));
+    assert.ok(o, `a picker entry ${label}`);
+    s.value = o.getAttribute('value');
+    s.dispatchEvent({ type: 'change' });
+    return s;
+  }
+  b.click();
+  return b;
+};
 const remote = (w) => sheet(w).querySelector('form.lx-remote');
 const localForm = (w) => all(sheet(w), 'form.lx-form').find((f) => !f.classList.contains('lx-remote'));
 const group = (f, label) => all(f, '.seg-ctl').find((n) => n.getAttribute('aria-label') === label);

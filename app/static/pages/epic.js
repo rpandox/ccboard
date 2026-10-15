@@ -2,8 +2,13 @@
    command palette and the demo's answers for /api/epics. Classic script, definition-only at load: nothing here touches the DOM, the network or a timer until a page, the list
    or the demo asks (registerPage is the one call made at load).
 
-   The page READS GitHub through the board (GET /api/epics, GET /api/epics/<owner>/<repo>/<n>) and never writes to it. Run is shown disabled until the routing phase wires it.
-   It writes three things: this board's own settings, PUT /api/epics/<owner>/<repo>/<n>/settings {pins, epic_pin, paused, report, auto_pr, close}, and, only when the board says
+   The page READS GitHub through the board (GET /api/epics, GET /api/epics/<owner>/<repo>/<n>) and never writes to it.
+   Routing (issues #150 and #152): Run (POST .../run) asks the board to send every ready issue to the node that can take it, one at a time, as lanes and rate-limit windows allow; the board
+   chooses, the page only shows the choice and its reason ("chose node-b: 2 free lanes, 5-hour window 31 percent") or "waiting: <reason> until <time>" per issue (the answer's `route`, and
+   `route` on each child). Pause and Resume (POST .../pause, .../resume) stop and continue new assignments. A row's "Run on..." menu sends that one issue to a node or to Auto (POST
+   .../issues/<n>/run {node}). Run is the one filled primary and is off, with its reason, when GitHub writes are off, no node is paired or the epic is paused. The settings also hold the
+   window limit, one hand-made group of nodes on one subscription and "Let MCP run this epic" (mcp_run, off by default, set only here by a person).
+   It writes three things: this board's own settings, PUT /api/epics/<owner>/<repo>/<n>/settings {pins, epic_pin, report, auto_pr, close, max_window_pct, group, mcp_run}, and, only when the board says
    GitHub writes are on (CCBOARD_EPIC_WRITES), a person's ask to a paired node to claim one issue (POST /api/nodes/<handle>/epics/claim {repo, issue, epic}, issue #148) or to
    work one: claim it, start it as a task on the node and report on the issue (POST /api/nodes/<handle>/epics/work {repo, issue, epic, force?}, issue #149). The node does the
    claiming and the work; this page paints the ask at once and shows the node's answer in plain words (taken, lost, claim not known, writes off, closed, attempts used up,
@@ -39,7 +44,15 @@ const EP_TRUNCATED = 'This epic has more issues than shown: only the first 100 a
 const EP_AUTHORS_NEXT = 'Set CCBOARD_EPIC_AUTHORS, or log gh in on this board. Until then no claim is read and no issue is shown as free.';
 const EP_UNKNOWN_HINT = 'Not every comment of these issues could be read, so a claim may exist. Only "Unclaimed" means free.';
 const EP_EMPTY = 'This epic has no issues yet. Add sub-issues on GitHub.';
-const EP_RUN_WHY = 'available when routing is installed';
+const EP_RUN_IDLE = 'Run sends each ready issue to the node that has a free lane and room in the agent\'s rate-limit window, one at a time. A node that cannot take it is skipped and the reason is shown. Headroom is an estimate: an agent can still reach its limit.';
+const EP_RUN_PAUSED = 'Run is off while this epic is paused. Resume first.';
+const EP_RUN_NONE = 'Run needs a board that can route issues. Update this board.';
+const EP_RUN_ENDED = { finished: 'finished: nothing is left to send', limit: 'stopped: the number of issues the agent was allowed ran out', closed: 'stopped: the epic is closed', stopped: 'stopped: the epic or its repository is not available to this board' };
+const EP_ROUTE_POLL_MS = 10000;     // while a run is going the page asks this often, so the choices and waits show soon
+const EP_RUNON_TITLE = 'Send this one issue to a node you choose, or to Auto. The board checks the same things as Run: online, the repository, the agent, the window and a free lane.';
+const EP_MCP_HINT = 'An agent with the tasks scope may start this epic\'s run with the epic_run tool: up to 10 issues a call and 6 calls an hour, each recorded with the token\'s name. It cannot change settings. Off by default.';
+const EP_WINDOW_HINT = 'Auto routing skips a node whose rate-limit window for the issue\'s agent is at or above this percent. A window that is not known counts as 50. Headroom is an estimate.';
+const EP_GROUP_HINT = 'Two nodes logged in to one subscription share its rate-limit window. Tick the nodes that do, so the board counts that window once.';
 const EP_PAUSE_WHY = 'Pause stops this board routing the epic. Nothing changes on GitHub.';
 const EP_KEY = 'ccboard:epics';
 const EP_LOST_KEY = 'ccboard:epic-lost';
@@ -389,7 +402,9 @@ function epWorkReapply(P) {
     if (!kid || kid.claim || kid.claim_state !== 'none' || Date.now() - w.at > EP_WORKED_MS) { P.worked.delete(key); continue; }
     epWorkPaint(P, kid, w.node);
     epWorkRunning(P, kid, w);
+    if (w.route && !kid.route) kid.route = w.route;
   }
+  for (const key of Array.from(P.rnotes.keys())) { const kid = find(key); if (!kid || kid.claim || kid.state === 'closed') P.rnotes.delete(key); }
 }
 
 /* Ask the paired node to work the issue. The row shows the node holding it at once ("Starting on <node>…", queued); the node's answer replaces it, a refusal (in plain words) puts the
@@ -488,6 +503,38 @@ function epSetReport(P, v) {
   return epWrite(P, { report: v }, () => { P.data.report = v; });
 }
 
+/* The window limit: a whole number from 10 to 100, or empty for the board's own setting. Anything else is said in words and nothing is written. */
+function epSetWindow(P, raw) {
+  const d = P.data;
+  if (!d) return null;
+  const v = String(raw || '').trim();
+  P.winErr = '';
+  if (v === '') {
+    if (d.max_window_pct_set !== true) { epPaint(P); return null; }
+    return epWrite(P, { max_window_pct: null }, () => { d.max_window_pct_set = false; });
+  }
+  const n = Number(v);
+  if (!/^[0-9]{1,3}$/.test(v) || !Number.isInteger(n) || n < 10 || n > 100) { P.winErr = 'Use a whole number from 10 to 100, or leave it empty for the board\'s setting.'; epPaint(P); return null; }
+  if (d.max_window_pct_set === true && d.max_window_pct === n) { epPaint(P); return null; }
+  return epWrite(P, { max_window_pct: n }, () => { d.max_window_pct = n; d.max_window_pct_set = true; });
+}
+
+/* One hand-made group of nodes on one subscription: tick two or more. One ticked node is not a group: nothing is written and the page says so. */
+function epGroupNodes(d) { return (d.nodes || []).filter((n) => n.handle !== 'local'); }
+
+function epSetGroup(P) {
+  const d = P.data;
+  if (!d) return null;
+  const picked = epGroupNodes(d).filter((n) => P.groupBoxes.get(n.handle) && P.groupBoxes.get(n.handle).checked).map((n) => n.handle);
+  P.groupDraft = new Set(picked);
+  P.groupErr = '';
+  if (picked.length === 1) { P.groupErr = 'A group needs two or more nodes. Tick another, or untick this one.'; epPaint(P); return null; }
+  P.groupDraft = null;
+  const next = picked.length ? [picked] : [];
+  if (JSON.stringify(next) === JSON.stringify(d.group || [])) { epPaint(P); return null; }
+  return epWrite(P, { group: next }, () => { d.group = next; });
+}
+
 function epSetFlag(P, key, on) {
   if (!P.data || (P.data[key] === true) === on) return null;
   return epWrite(P, { [key]: on }, () => { P.data[key] = on; });
@@ -515,10 +562,27 @@ function epCfgBuild(P) {
   P.cfgPr = pr.box;
   P.cfgClose = cl.box;
   P.cfgPlan = el('p', { class: 'ep-plan', id: 'ep-plan', 'aria-live': 'polite' });
+  // routing (issues #150 and #152): the window limit, one group of nodes on one subscription, and the switch that lets an agent run this epic
+  P.winIn = el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'off', maxlength: '3', class: 'ep-win', 'data-window': '', 'aria-labelledby': 'ep-cfg-win', 'aria-describedby': 'ep-win-hint ep-win-err',
+    onchange: () => epSetWindow(P, P.winIn.value), onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); epSetWindow(P, P.winIn.value); } } });
+  P.winHint = el('p', { class: 'dim ep-cfg-hint', id: 'ep-win-hint' });
+  P.winErrEl = el('p', { class: 'warn ep-cfg-hint', id: 'ep-win-err', role: 'alert' });
+  P.groupHost = el('div', { class: 'ep-groupbox', role: 'group', 'aria-labelledby': 'ep-cfg-group', 'aria-describedby': 'ep-group-hint ep-group-err' });
+  P.groupHint = el('p', { class: 'dim ep-cfg-hint', id: 'ep-group-hint', text: EP_GROUP_HINT });
+  P.groupErrEl = el('p', { class: 'warn ep-cfg-hint', id: 'ep-group-err', role: 'alert' });
+  const mcp = flag('mcp_run', 'Let MCP run this epic', EP_MCP_HINT);
+  P.cfgMcp = mcp.box;
+  P.groupBoxes = new Map();
+  P.groupRow = el('div', { class: 'ep-cfg-col', 'data-cfg-group': '' }, el('span', { class: 'ep-cfg-l', id: 'ep-cfg-group', text: 'Nodes on one subscription' }), P.groupHost, P.groupHint, P.groupErrEl);
   return el('section', { class: 'ep-sec ep-cfg hidden', 'aria-label': 'When a node works an issue', 'data-cfg': '' },
     el('h2', { class: 'ep-h', text: 'When a node works an issue' }),
     el('div', { class: 'ep-cfg-row' }, el('span', { class: 'ep-cfg-l', id: 'ep-cfg-report', text: 'What it posts on the issue' }), seg),
-    pr.row, cl.row, P.cfgPlan);
+    pr.row, cl.row, P.cfgPlan,
+    el('h3', { class: 'ep-h ep-subh', text: 'Choosing a node' }),
+    el('div', { class: 'ep-cfg-row' }, el('span', { class: 'ep-cfg-l', id: 'ep-cfg-win', text: 'Window limit, percent' }), P.winIn),
+    P.winHint, P.winErrEl, P.groupRow,
+    el('h3', { class: 'ep-h ep-subh', text: 'Agents' }),
+    mcp.row);
 }
 
 function epCfgPaint(P) {
@@ -530,10 +594,46 @@ function epCfgPaint(P) {
   for (const b of P.cfgSeg.querySelectorAll('.seg-btn')) b.setAttribute('aria-pressed', b.getAttribute('data-report') === r ? 'true' : 'false');
   P.cfgPr.checked = d.auto_pr === true;
   P.cfgClose.checked = d.close === true;
+  P.cfgMcp.checked = d.mcp_run === true;
   setText(P.cfgPlan, epPlanText(d));
+  epRoutingCfgPaint(P);
 }
 
-/* Run names what it would skip: the epic's author, or each issue by an author who is not on the allowed list. Run itself stays disabled until routing is installed. */
+/* The routing rows of the settings: the limit (empty = the board's own setting, shown), the group boxes (only with two paired nodes or more) and Let MCP run this epic. */
+function epRoutingCfgPaint(P) {
+  const d = P.data;
+  const set = d.max_window_pct_set === true;
+  const board = Number.isInteger(d.max_window_pct) ? d.max_window_pct : 85;
+  if (typeof document === 'undefined' || document.activeElement !== P.winIn) P.winIn.value = set ? String(board) : '';
+  P.winIn.placeholder = String(board);
+  P.winIn.setAttribute('aria-invalid', P.winErr ? 'true' : 'false');
+  setText(P.winHint, `${set ? `This epic skips a node at ${board} percent or more.` : `Using the board's setting: ${board} percent.`} ${EP_WINDOW_HINT}`);
+  setText(P.winErrEl, P.winErr || '');
+  P.winErrEl.classList.toggle('hidden', !P.winErr);
+  const nodes = epGroupNodes(d);
+  const lists = Array.isArray(d.group) ? d.group : [];
+  P.groupRow.classList.toggle('hidden', nodes.length < 2);
+  if (nodes.length >= 2) {
+    const sig = nodes.map((n) => n.handle + ':' + n.name).join('|');
+    if (P.groupSig !== sig) {                                          // the boxes are rebuilt only when the node list changes, so a poll never takes the focus away
+      P.groupSig = sig;
+      P.groupHost.textContent = '';
+      P.groupBoxes = new Map();
+      for (const n of nodes) {
+        const box = el('input', { type: 'checkbox', 'data-group-node': n.handle, onchange: () => epSetGroup(P) });
+        P.groupBoxes.set(n.handle, box);
+        P.groupHost.append(el('label', { class: 'ep-check ep-check-node' }, box, el('span', { class: 'ep-check-t' }, el('b', { text: n.name }))));
+      }
+    }
+    const many = lists.length > 1;                                      // more than one group came from elsewhere: shown, not edited here
+    const on = P.groupDraft || new Set(lists[0] || []);
+    for (const [h, box] of P.groupBoxes) { box.checked = many ? lists.some((g) => g.includes(h)) : on.has(h); box.disabled = many; }
+    setText(P.groupErrEl, many ? 'Several groups are set for this epic. Change them on the board that set them.' : (P.groupErr || ''));
+    P.groupErrEl.classList.toggle('hidden', !(many || P.groupErr));
+  }
+}
+
+/* Run names what it would skip: the epic's author, or each issue by an author who is not on the allowed list. Run itself is the button above it. */
 function epRunAuthors(d) {
   const a = d.authors && typeof d.authors === 'object' ? d.authors : null;
   if (!a || d.writes !== true) return '';
@@ -579,6 +679,192 @@ function epPinOf(data, child) {
   if (page) return { handle: page.handle, node_name: page.node_name || page.handle, source: 'page', stale: true };
   if (lp) return { handle: null, node_name: lp.alias, source: 'label', stale: true };
   return null;
+}
+
+/* ---------- routing: Run, Pause, Run on... and the choice shown per issue (issues #150 and #152) ---------- */
+
+function epRoute(d) { return d && d.route && typeof d.route === 'object' && !Array.isArray(d.route) ? d.route : null; }
+
+/* Who started the run, in words: a person's login, or an agent's token name. Both are text other people can write: textContent only. */
+function epRunBy(r) {
+  const by = typeof r.by === 'string' && r.by ? r.by : 'you';
+  return r.via === 'mcp' ? `an agent (${by})` : by;
+}
+
+/* What Run is now: {ok, label, text, title, warn}. Run is the one filled primary; it is off, with its reason in words, when nothing can be sent. */
+function epRunState(P) {
+  const d = P.data;
+  const r = epRoute(d);
+  if (!d || !P.loaded) {
+    if (P.failed) return { ok: false, label: 'Run', text: 'Could not reach this board, so Run is off. This page asks again soon.', title: 'Could not reach this board', warn: true };
+    return { ok: false, label: 'Run', text: '', title: 'Loading', warn: false };
+  }
+  if (!r) return { ok: false, label: 'Run', text: EP_RUN_NONE, title: EP_RUN_NONE, warn: false };
+  if (P.runBusy) return { ok: false, label: 'Starting…', text: 'Starting the run: asking the board to send the ready issues.', title: 'Starting the run', warn: false };
+  if (!r.can_run) {                                                       // checked before "running": a run that is recorded but cannot go on is not Running
+    const t0 = r.blocked && typeof r.blocked.text === 'string' && r.blocked.text ? r.blocked.text : 'Run is not available on this board.';
+    const t = r.running ? `${t0} A run is recorded and goes on when this clears.` : t0;
+    return { ok: false, label: 'Run', text: t, title: t0, warn: true };
+  }
+  if (r.running && d.paused) return { ok: false, label: 'Paused', text: 'Paused: no new assignments until Resume. Issues already sent go on.', title: 'Paused. Resume continues the run.', warn: false };
+  if (r.running) {
+    const since = r.started_at ? epSince(r.started_at, d.server_now || d.at) : '';
+    const left = typeof r.left === 'number' ? `, ${r.left} more ${r.left === 1 ? 'issue' : 'issues'} allowed` : '';
+    return { ok: false, label: 'Running', text: `Running${since ? ', started ' + since : ''} by ${epRunBy(r)}${left}. Pause stops new assignments; issues already sent go on.`, title: 'The run is going. Pause stops new assignments.', warn: false };
+  }
+  if (d.paused) return { ok: false, label: 'Run', text: EP_RUN_PAUSED, title: EP_RUN_PAUSED, warn: false };
+  if (d.error && !(d.children || []).length) return { ok: false, label: 'Run', text: 'GitHub could not be read, so there is nothing to send yet.', title: 'GitHub could not be read', warn: true };
+  const last = r.ended && ownKey(EP_RUN_ENDED, r.ended) ? ` The last run ${EP_RUN_ENDED[r.ended]}.` : '';
+  return { ok: true, label: 'Run', text: EP_RUN_IDLE + last, title: 'Send each ready issue to the node that can take it', warn: false };
+}
+
+/* The plain sentence for a refused Run or Run on... `e` is what api() threw: e.body {error, reason, waiting} is the board's own sentence. */
+function epRunSentence(e, what) {
+  const b = e && e.body && typeof e.body === 'object' ? e.body : {};
+  const own = typeof b.error === 'string' && b.error ? b.error : (e && e.message ? String(e.message) : 'the board refused');
+  if (b.reason === 'waiting' && b.waiting && typeof b.waiting.text === 'string' && b.waiting.text) return b.waiting.text;
+  if (e && e.status === 403) return 'Only a signed-in person can do this.';
+  if (e && e.status === 429) return 'Too many requests. Try again in a minute.';
+  return `${what} did not start: ${own.slice(0, 240)}`;
+}
+
+/* Run. The page says Running at once; the board's answer replaces it and a refusal puts the old state back (with the board's words in a toast and under the button). */
+function epRun(P) {
+  if (epicPage.cur !== P || !P.data || P.runBusy || !epRunState(P).ok) return null;
+  const before = P.data.route;
+  P.runBusy = true;
+  P.runNote = null;
+  P.runOpt = { ...before, running: true, ended: null, ended_at: null, via: 'page', by: null, started_at: P.data.server_now || null };
+  P.data.route = P.runOpt;
+  epPaint(P);
+  return api('POST', epPath(P, '/run')).then((r) => {
+    P.runBusy = false;
+    P.runOpt = null;
+    if (epicPage.cur !== P) return;
+    const route = r && r.route && typeof r.route === 'object' ? r.route : null;
+    if (route) { P.data.route = route; if (typeof route.paused === 'boolean') P.data.paused = route.paused; } else P.data.route = { ...before, running: true };
+    toast('Run started: the ready issues go to the nodes that can take them');
+    epPaint(P);
+    epFetch(P);
+  }, (e) => {
+    P.runBusy = false;
+    P.runOpt = null;
+    if (epicPage.cur !== P) return;
+    P.data.route = before;
+    P.runNote = epRunSentence(e, 'Run');
+    toast(P.runNote, { kind: 'bad' });
+    epPaint(P);
+  });
+}
+
+/* Pause and Resume: POST .../pause and .../resume. Painted at once; a refusal puts the old state back. Resume also wakes the loop, which a bare settings write does not. */
+function epPause(P, on) {
+  if (epicPage.cur !== P || !P.data || (P.pausing !== null && P.pausing !== undefined)) return null;
+  const before = { paused: P.data.paused, route: P.data.route };
+  P.pausing = on;
+  P.data.paused = on;
+  if (before.route) P.data.route = { ...before.route, paused: on };
+  epPaint(P);
+  return api('POST', epPath(P, on ? '/pause' : '/resume')).then((r) => {
+    P.pausing = null;
+    if (epicPage.cur !== P) return;
+    if (r && typeof r === 'object') {
+      if (typeof r.paused === 'boolean') P.data.paused = r.paused;
+      if (r.route && typeof r.route === 'object') P.data.route = r.route;
+    }
+    epPaint(P);
+  }, (e) => {
+    P.pausing = null;
+    if (epicPage.cur !== P) return;
+    P.data.paused = before.paused;
+    P.data.route = before.route;
+    epPaint(P);
+    toast(`${(e && e.message) || 'The board refused the change'}. Nothing was saved.`, { kind: 'bad' });
+  });
+}
+
+/* The choice the board made for one issue (or its wait), as the row shows it: a glyph and the board's own words, never a bare spinner and never colour alone. */
+const EP_ROUTE_GLYPH = { assigned: '→', waiting: '✻', held: '⚠', sending: '∙' };
+
+function epRouteBit(c) {
+  const r = c.route;
+  if (!r || typeof r !== 'object' || !ownKey(EP_ROUTE_GLYPH, r.state) || typeof r.text !== 'string' || !r.text) return null;
+  const attn = r.state === 'waiting' || r.state === 'held';
+  const text = r.state === 'held' ? `held: ${r.text}` : r.text;
+  return el('span', { class: 'ep-route' + (attn ? ' warn' : ''), 'data-route': r.state, 'data-route-code': r.code || null, role: r.state === 'sending' ? 'status' : null,
+    title: r.state === 'waiting' ? 'The board asks again by itself and sends the issue as soon as a node can take it.' : r.state === 'held' ? 'The board does not send this issue until this clears.' : null },
+  el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: EP_ROUTE_GLYPH[r.state] + ' ' }), text);
+}
+
+/* The "Run on..." menu of one open, unclaimed issue: Auto first, then every paired node (never this board: routing sends work to nodes). */
+function epRunOnItems(P, c) {
+  const pin = epPinOf(P.data, c);
+  const items = [{ label: 'Auto', sub: pin && !pin.stale ? `follows the pin: ${pin.node_name || pin.handle}` : 'the node with room', onClick: () => epRunIssue(P, c, 'auto') }];
+  for (const n of P.data.nodes || []) {
+    if (n.handle === 'local') continue;
+    items.push({ label: n.name, sub: n.status === 'online' ? 'paired node' : `paired node, ${n.status}`, onClick: () => epRunIssue(P, c, n.handle) });
+  }
+  return items;
+}
+
+function epRunOnBits(P, c) {
+  const r = epRoute(P.data);
+  if (!r || c.state !== 'open' || !epClaimable(P.data, c) || !(P.data.nodes || []).some((n) => n.handle !== 'local')) return [];
+  const key = `${c.repo}#${c.number}`;
+  const busy = P.runon.get(key);
+  const why = !r.can_run && r.blocked && r.blocked.text ? r.blocked.text : null;
+  const btn = el('button', { class: 'small ep-runon-btn', type: 'button', 'data-runon': '', title: why || EP_RUNON_TITLE, 'aria-label': `Run issue #${c.number} on a node`, disabled: !!busy || !r.can_run || null },
+    ic('play'), busy ? 'Sending…' : 'Run on…');
+  if (!busy && r.can_run) menu(btn, () => epRunOnItems(P, c));
+  const out = [btn];
+  const note = P.rnotes.get(key);
+  if (note) out.push(el('span', { class: 'ep-claimhint warn ep-claimnote', role: 'status', 'data-run-note': note.code || 'error', text: note.text }));
+  return out;
+}
+
+/* Send one issue to a node, or to Auto. The row says "Sending to <node>..." (or "Choosing a node...") at once; the board's answer replaces it with the choice and its reason, a wait or a
+   refusal puts the row back as it was and says why in words. The same checks as Run apply to a node you name. */
+function epRunIssue(P, c, which) {
+  const key = `${c.repo}#${c.number}`;
+  if (P.runon.has(key) || epicPage.cur !== P) return null;
+  const node = which === 'auto' ? null : ((P.data.nodes || []).find((x) => x.handle === which) || { handle: which, name: which });
+  const kid = epWorkKid(P, c);
+  const w = { node, snap: kid ? { ...epWorkSnap(kid), route: kid.route } : null };
+  P.runon.set(key, w);
+  P.rnotes.delete(key);
+  P.wnotes.delete(key);
+  P.notes.delete(key);
+  if (kid) kid.route = { state: 'sending', text: node ? `Sending to ${node.name}…` : 'Choosing a node…', node: node ? node.name : null, handle: node ? node.handle : null, until: null, code: null };
+  epPaint(P);
+  const undo = () => { const k = epWorkKid(P, c); if (k && w.snap) Object.assign(k, w.snap); };
+  return api('POST', epPath(P, `/issues/${encodeURIComponent(c.number)}/run`), { node: which }).then((r) => {
+    P.runon.delete(key);
+    if (epicPage.cur !== P) return;
+    if (r && r.ok === true && typeof r.handle === 'string') {
+      const target = (P.data.nodes || []).find((x) => x.handle === r.handle) || { handle: r.handle, name: typeof r.name === 'string' && r.name ? r.name : r.handle };
+      const dd = r.data && typeof r.data === 'object' ? r.data : {};
+      const done = { node: target, ref: typeof dd.task_ref === 'string' ? dd.task_ref : null, branch: typeof dd.branch === 'string' ? dd.branch : null, at: Date.now(),
+        route: { state: 'assigned', text: String(r.why || `chose ${target.name}`).slice(0, 300), node: target.name, handle: target.handle, until: null, code: null, at: P.data.server_now } };
+      const k = epWorkKid(P, c);
+      if (k) { epWorkPaint(P, k, target); epWorkRunning(P, k, done); k.route = done.route; }
+      P.worked.set(key, done);
+      toast(`${target.name} started #${c.number}`);
+    } else {
+      undo();
+      P.rnotes.set(key, { code: 'error', text: epRunSentence({ status: 502, body: {} }, `#${c.number}`) });
+    }
+    epPaint(P);
+    epFetch(P);
+  }, (e) => {
+    P.runon.delete(key);
+    if (epicPage.cur !== P) return;
+    undo();
+    const b = e && e.body && typeof e.body === 'object' ? e.body : {};
+    const text = epRunSentence(e, `#${c.number}`);
+    P.rnotes.set(key, { code: b.reason === 'waiting' && b.waiting ? 'waiting' : (b.reason || 'error'), text });
+    toast(text, { kind: b.reason === 'waiting' ? 'ok' : 'bad' });
+    epPaint(P);
+  });
 }
 
 /* ---------- the progress strip ---------- */
@@ -663,7 +949,9 @@ function epClaimParts(c, nowIso) {
 /* What a row shows, as a string: the row repaints only when this changes (a poll never rebuilds a row that looks the same). */
 function epRowSig(P, c) {
   const key = `${c.repo}#${c.number}`;
-  return JSON.stringify([c, epPinOf(P.data, c), P.data.server_now, P.data.nodes, P.data.writes, epOwn(P.data, c), P.claiming.get(key) || null, P.notes.get(key) || null, P.data.epic_pin, P.working.has(key), P.wnotes.get(key) || null, P.data.authors || null]);
+  const rt = epRoute(P.data);
+  return JSON.stringify([c, epPinOf(P.data, c), P.data.server_now, P.data.nodes, P.data.writes, epOwn(P.data, c), P.claiming.get(key) || null, P.notes.get(key) || null, P.data.epic_pin, P.working.has(key), P.wnotes.get(key) || null, P.data.authors || null,
+    rt ? [rt.can_run, rt.blocked && rt.blocked.code] : null, P.runon.has(key), P.rnotes.get(key) || null]);
 }
 
 function epPinItems(P, current, apply) {
@@ -684,7 +972,7 @@ function epPinBox(P, c) {
     if (pin.stale) text = pin.source === 'page' ? `pinned to ${pin.node_name || pin.handle}, which is no longer paired: ignored` : `label names ${pin.node_name}, which is not paired: ignored`;
     else text = `${pin.source === 'label' ? 'label pin' : 'pinned'}: ${pin.node_name || pin.handle}`;
   }
-  return el('div', { class: 'ep-pinbox' }, btn, text ? el('span', { class: 'ep-pintext' + (pin.stale ? ' warn' : ' dim'), text }) : null, ...epWorkBits(P, c), ...epClaimBits(P, c));
+  return el('div', { class: 'ep-pinbox' }, btn, text ? el('span', { class: 'ep-pintext' + (pin.stale ? ' warn' : ' dim'), text }) : null, ...epRunOnBits(P, c), ...epWorkBits(P, c), ...epClaimBits(P, c));
 }
 
 function epFillRow(P, li, c) {
@@ -720,6 +1008,8 @@ function epFillRow(P, li, c) {
   if (readAgo) meta.append(el('span', { class: 'dim ep-read', title: 'When the board last read this issue\'s comments, by GitHub\'s clock. "Unclaimed" is only true for that moment.', text: `claims read ${readAgo}` }));
   if (c.state === 'open' && c.author_ok === false) meta.append(el('span', { class: 'ep-author warn', 'data-author': 'blocked', title: 'The node runs only issues by an allowed author, because an issue body becomes the prompt of an agent that edits files.' },
     el('span', { class: 'ep-wg', 'aria-hidden': 'true', text: '⚠ ' }), c.author ? `by ${c.author}, ${EP_NOT_ALLOWED}` : 'author not on the allowed list'));
+  const chosen = epRouteBit(c);
+  if (chosen) meta.append(chosen);
   const phase = epWorkPhaseNode(c);
   if (phase) meta.append(phase);
   if (task) meta.append(el('span', { class: 'ep-task', text: task }));
@@ -739,17 +1029,21 @@ function epPath(P, tail) { return `/api/epics/${encodeURIComponent(P.owner)}/${e
 
 function epSettingsUndo(P, snap) {
   P.data.pins = snap.pins; P.data.epic_pin = snap.epic_pin; P.data.paused = snap.paused; P.data.report = snap.report; P.data.auto_pr = snap.auto_pr; P.data.close = snap.close;
+  P.data.max_window_pct = snap.max_window_pct; P.data.max_window_pct_set = snap.max_window_pct_set; P.data.group = snap.group; P.data.mcp_run = snap.mcp_run;
 }
 
 /* One write to this board's settings, painted first: the new value shows at once and a refusal puts the old one back (with the board's words in a toast). */
 function epWrite(P, patch, apply) {
-  const snap = { pins: { ...(P.data.pins || {}) }, epic_pin: P.data.epic_pin, paused: P.data.paused, report: P.data.report, auto_pr: P.data.auto_pr, close: P.data.close };
+  const snap = { pins: { ...(P.data.pins || {}) }, epic_pin: P.data.epic_pin, paused: P.data.paused, report: P.data.report, auto_pr: P.data.auto_pr, close: P.data.close,
+    max_window_pct: P.data.max_window_pct, max_window_pct_set: P.data.max_window_pct_set, group: P.data.group, mcp_run: P.data.mcp_run };
   apply();
   epPaint(P);
   const id = (P.writes = (P.writes || 0) + 1);
   return api('PUT', epPath(P, '/settings'), patch).then((r) => {
     if (epicPage.cur !== P) return;
-    if (r && typeof r === 'object' && r.pins && id === P.writes) { P.data.pins = r.pins; P.data.epic_pin = r.epic_pin || null; P.data.paused = !!r.paused; if (ownKey(r, 'report')) P.data.report = epReportWord(r.report); if (ownKey(r, 'auto_pr')) P.data.auto_pr = r.auto_pr === true; if (ownKey(r, 'close')) P.data.close = r.close === true; if (Array.isArray(r.nodes)) P.data.nodes = r.nodes.map((n) => ({ ...(P.data.nodes || []).find((x) => x.handle === n.handle), ...n })); }
+    if (r && typeof r === 'object' && r.pins && id === P.writes) { P.data.pins = r.pins; P.data.epic_pin = r.epic_pin || null; P.data.paused = !!r.paused; if (ownKey(r, 'report')) P.data.report = epReportWord(r.report); if (ownKey(r, 'auto_pr')) P.data.auto_pr = r.auto_pr === true; if (ownKey(r, 'close')) P.data.close = r.close === true;
+      if (Number.isInteger(r.max_window_pct)) { P.data.max_window_pct = r.max_window_pct; P.data.max_window_pct_set = r.max_window_pct_set === true; } if (Array.isArray(r.group)) P.data.group = r.group; if (ownKey(r, 'mcp_run')) P.data.mcp_run = r.mcp_run === true;
+      if (Array.isArray(r.nodes)) P.data.nodes = r.nodes.map((n) => ({ ...(P.data.nodes || []).find((x) => x.handle === n.handle), ...n })); }
     epPaint(P);
   }, (e) => {
     if (epicPage.cur !== P) return;
@@ -772,10 +1066,6 @@ function epSetEpicPin(P, handle) {
   return epWrite(P, { epic_pin: handle }, () => {
     P.data.epic_pin = handle ? { handle, node_name: epNodeName(P.data, handle), source: 'page', stale: false } : null;
   });
-}
-
-function epSetPaused(P, on) {
-  return epWrite(P, { paused: on }, () => { P.data.paused = on; });
 }
 
 function epRateText(rate) {
@@ -824,10 +1114,21 @@ function epPaint(P) {
   const closed = epNum(prog.closed);
   setText(P.counts, d.error && !(d.children || []).length ? '' : `${open} open, ${closed} closed`);
   setText(P.rate, epRateText(d.rate));
+  const rs = epRunState(P);
+  P.run.textContent = rs.label;
+  P.run.disabled = !rs.ok;
+  if (rs.ok) P.run.removeAttribute('disabled'); else P.run.setAttribute('disabled', '');
+  P.run.setAttribute('title', rs.title);
+  P.run.setAttribute('aria-busy', P.runBusy ? 'true' : 'false');
+  setText(P.runWhy, `${rs.text}${P.runNote ? ' ' + P.runNote : ''}`.trim());
+  P.runWhy.classList.toggle('warn', rs.warn || !!P.runNote);
+  P.runWhy.classList.toggle('dim', !(rs.warn || P.runNote));
   P.pause.textContent = d.paused ? 'Resume' : 'Pause';
   P.pause.setAttribute('aria-pressed', d.paused ? 'true' : 'false');
   P.pause.title = d.paused ? 'Resume routing this epic on this board' : 'Pause routing this epic on this board';
-  setText(P.pauseWhy, d.paused ? 'Paused on this board: it does not route this epic. Nothing changes on GitHub.' : EP_PAUSE_WHY);
+  const rr = epRoute(d);
+  setText(P.pauseWhy, rr && rr.running ? '' : (d.paused ? 'Paused on this board: it does not route this epic. Nothing changes on GitHub.' : EP_PAUSE_WHY));   // a recorded run says what Pause does in its own line
+  P.pauseWhy.classList.toggle('hidden', !!(rr && rr.running));
   P.head.classList.toggle('paused', !!d.paused);
   setText(P.epicPin, epEpicPinText(P));
   const runAuthors = epRunAuthors(d);
@@ -900,6 +1201,8 @@ function epDelay(P) {
   const err = P.data && P.data.error;
   if (err && err.reason === 'rate_limited' && typeof err.wait_s === 'number') return Math.min(EP_WAIT_MAX_MS, Math.max(5000, (err.wait_s + 1) * 1000));
   if (P.failed) return 15000;
+  const rt = epRoute(P.data);
+  if (rt && rt.running) return EP_ROUTE_POLL_MS;                                  // a run is going: its choices and waits show soon
   return EP_POLL_MS;
 }
 
@@ -914,7 +1217,11 @@ function epFetch(P) {
   P.busy = api('GET', epPath(P)).then((d) => {
     if (epicPage.cur !== P) return;
     P.failed = null;
-    if (d && typeof d === 'object' && d.epic) { P.data = d; P.loaded = true; epRemember(); epWorkReapply(P); }
+    if (d && typeof d === 'object' && d.epic) {
+      P.data = d; P.loaded = true; epRemember(); epWorkReapply(P);
+      if (P.runBusy && P.runOpt) P.data.route = P.runOpt;                         // a poll that was out before the Run landed must not take Running back
+      if (P.pausing !== null && P.pausing !== undefined) { P.data.paused = P.pausing; if (P.data.route) P.data.route = { ...P.data.route, paused: P.pausing }; }
+    }
     epPaint(P);
   }, (e) => {
     if (epicPage.cur !== P) return;
@@ -927,19 +1234,22 @@ function epFetch(P) {
 
 function epBlank(P) {
   return { epic: { repo: `${P.owner}/${P.repo}`, owner: P.owner, name: P.repo, number: Number(P.n), title: null, url: `${EP_GH}${P.owner}/${P.repo}/issues/${P.n}`, state: null }, children: [], progress: { by_node: {}, unclaimed: { open: 0, closed: 0 }, unknown: 0, open: 0, closed: 0, total: 0 },
-    pins: {}, epic_pin: null, paused: false, nodes: [], rate: null, server_now: null, error: null, stale_age_s: null, empty: false, writes: null, own_claims: [] };
+    pins: {}, epic_pin: null, paused: false, nodes: [], rate: null, server_now: null, error: null, stale_age_s: null, empty: false, writes: null, own_claims: [],
+    route: null, max_window_pct: 85, max_window_pct_set: false, group: [], mcp_run: false };
 }
 
 function epMount(root, route) {
   const q = route.params || {};
-  const P = { id: ++epicPage.ids, owner: q.owner, repo: q.repo, n: q.n, data: null, failed: null, busy: null, timer: null, sleeping: false, loaded: false, where: new Map(), lists: {}, secs: {}, counts2: {}, writes: 0, claiming: new Map(), notes: new Map(), working: new Map(), worked: new Map(), wnotes: new Map(), toasted: new Set() };
+  const P = { id: ++epicPage.ids, owner: q.owner, repo: q.repo, n: q.n, data: null, failed: null, busy: null, timer: null, sleeping: false, loaded: false, where: new Map(), lists: {}, secs: {}, counts2: {}, writes: 0, claiming: new Map(), notes: new Map(), working: new Map(), worked: new Map(), wnotes: new Map(), toasted: new Set(),
+    runBusy: false, runOpt: null, runNote: null, pausing: null, runon: new Map(), rnotes: new Map(), winErr: '', groupErr: '', groupDraft: null, groupSig: null, groupBoxes: new Map() };
   P.title = el('h1', { class: 'ep-h1', text: `Epic #${P.n}` });
   P.name = el('span', { class: 'ep-name mono' });
   P.counts = el('span', { class: 'ep-counts' });
   P.rate = el('span', { class: 'dim ep-rate' });
-  P.run = el('button', { class: 'primary ep-run', type: 'button', disabled: true, 'aria-describedby': 'ep-run-why', title: EP_RUN_WHY, text: 'Run' });
-  P.pause = el('button', { class: 'ep-pause', type: 'button', 'aria-pressed': 'false', text: 'Pause', onclick: () => { if (P.data) epSetPaused(P, !P.data.paused); } });
-  P.pauseWhy = el('p', { class: 'dim ep-why', text: EP_PAUSE_WHY });
+  P.run = el('button', { class: 'primary ep-run', type: 'button', disabled: true, 'aria-describedby': 'ep-run-why', title: 'Loading', text: 'Run', onclick: () => epRun(P) });
+  P.pause = el('button', { class: 'ep-pause', type: 'button', 'aria-pressed': 'false', text: 'Pause', onclick: () => { if (P.data) epPause(P, !P.data.paused); } });
+  P.pauseWhy = el('p', { class: 'dim ep-why', 'data-pause-why': '', text: EP_PAUSE_WHY });
+  P.runWhy = el('p', { class: 'dim ep-why', id: 'ep-run-why', 'data-run-why': '' });
   P.runAuthors = el('p', { class: 'ep-why warn hidden', 'data-run-authors': '' });
   P.epicPin = el('span', { class: 'dim ep-epicpin', text: 'Epic: no pin' });
   P.epicPinBtn = el('button', { class: 'small ep-pin-btn', type: 'button', title: 'Pin the whole epic to a node (kept on this board only; nothing changes on GitHub)', 'aria-label': 'Pin the whole epic to a node' }, ic('pin'), 'Pin epic');
@@ -948,7 +1258,7 @@ function epMount(root, route) {
     el('div', { class: 'ep-crumb' }, el('a', { class: 'ep-back', href: '#/tasks?tab=epics', text: 'Epics' }), el('span', { class: 'dim', 'aria-hidden': 'true', text: ' / ' }), P.name),
     el('div', { class: 'page-head ep-titlerow' }, P.title, el('div', { class: 'actions ep-actions' }, P.pause, P.run)),
     el('div', { class: 'ep-sub' }, P.counts, P.rate),
-    el('p', { class: 'dim ep-why', id: 'ep-run-why', text: `Run: ${EP_RUN_WHY}.` }),
+    P.runWhy,
     P.runAuthors,
     P.pauseWhy,
     el('div', { class: 'ep-sub' }, P.epicPinBtn, P.epicPin));
@@ -1134,6 +1444,7 @@ function demoEpicClaim(handle, body, fx) {
   return { node: handle, age: 0, data: { claimed: true, reason: 'won', repo: body.repo, issue: body.issue, winner: node ? node.name : handle, attempt: 1 } };
 }
 
+function demoRunFlag() { try { const m = /[?&]run=([a-z]+)/.exec(location.search); return m ? m[1] : ''; } catch (_) { return ''; } }
 function demoEpicFlag() { try { const m = /[?&]epic=([a-z]+)/.exec(location.search); return m ? m[1] : ''; } catch (_) { return ''; } }
 
 async function demoEpics(method, path, body) {
@@ -1150,16 +1461,20 @@ async function demoEpics(method, path, body) {
   if (cm) return demoEpicClaim(decodeURIComponent(cm[1]), body || {}, fx);
   const wm = /^\/api\/nodes\/([^/]+)\/epics\/work$/.exec(bare);
   if (wm) return demoEpicWork(decodeURIComponent(wm[1]), body || {}, fx);
-  const m = /^\/api\/epics\/([^/]+)\/([^/]+)\/([^/]+?)(\/settings)?$/.exec(bare);
+  const m = /^\/api\/epics\/([^/]+)\/([^/]+)\/([^/]+?)(\/settings|\/run|\/pause|\/resume|\/route|\/issues\/[0-9]+\/run)?$/.exec(bare);
   if (!m) return {};
   const key = `${decodeURIComponent(m[1])}/${decodeURIComponent(m[2])}#${m[3]}`.toLowerCase();
   const base = fx.details && ownKey(fx.details, key) ? fx.details[key] : null;
   const shell = (d) => (d.epic && d.epic.number ? d : { ...d, epic: { ...d.epic, repo: `${m[1]}/${m[2]}`, owner: m[1], name: m[2], number: Number(m[3]), url: `${EP_GH}${m[1]}/${m[2]}/issues/${m[3]}` } });
   if (!base && method === 'GET') return shell({ ...fx.blank, error: (((fx.variants || {}).notfound || {}).detail || {}).error || null });
-  const made = demoEpicMade[key] || (demoEpicMade[key] = { pins: { ...(base ? base.pins : {}) }, epic_pin: base ? base.epic_pin : null, paused: base ? base.paused : false,
-    report: epReportWord(base ? base.report : null), auto_pr: !!(base && base.auto_pr), close: !!(base && base.close) });
-  const nodes = (base && base.nodes) || [];
-  if (method === 'PUT') {
+  const eff = { ...(base || {}), ...((v && v.detail) || {}) };                     // the detail as the variant lays it over the base: what the visitor starts from
+  const made = demoEpicMade[key] || (demoEpicMade[key] = { pins: { ...(eff.pins || {}) }, epic_pin: eff.epic_pin || null, paused: !!eff.paused,
+    report: epReportWord(eff.report), auto_pr: !!eff.auto_pr, close: !!eff.close, max_window_pct: Number.isInteger(eff.max_window_pct) ? eff.max_window_pct : 85,
+    max_window_pct_set: eff.max_window_pct_set === true, group: Array.isArray(eff.group) ? eff.group : [], mcp_run: eff.mcp_run === true, run: false, why: {} });
+  const nodes = eff.nodes || [];
+  const tail = m[4] || '';
+  const route0 = () => ({ ...(eff.route || {}), paused: made.paused, max_window_pct: made.max_window_pct, mcp_run: made.mcp_run });
+  if (method === 'PUT' && tail === '/settings') {
     const b = body || {};
     const okHandle = (h) => h === 'local' || nodes.some((n) => n.handle === h);
     for (const [k, h] of Object.entries(b.pins || {})) {
@@ -1174,9 +1489,79 @@ async function demoEpics(method, path, body) {
     if (typeof b.report === 'string' && EP_REPORTS.some(([k]) => k === b.report)) made.report = b.report;
     if (typeof b.auto_pr === 'boolean') made.auto_pr = b.auto_pr;
     if (typeof b.close === 'boolean') made.close = b.close;
-    return { pins: made.pins, epic_pin: made.epic_pin, paused: made.paused, report: made.report, auto_pr: made.auto_pr, close: made.close, plan: null, nodes };
+    if (typeof b.mcp_run === 'boolean') made.mcp_run = b.mcp_run;
+    if (ownKey(b, 'max_window_pct')) {
+      if (b.max_window_pct === null) { made.max_window_pct = 85; made.max_window_pct_set = false; }
+      else if (Number.isInteger(b.max_window_pct) && b.max_window_pct >= 10 && b.max_window_pct <= 100) { made.max_window_pct = b.max_window_pct; made.max_window_pct_set = true; }
+      else throw demoError(400, 'max_window_pct is a whole number from 10 to 100, or null for the board\'s setting');
+    }
+    if (ownKey(b, 'group')) {
+      const g = b.group === null ? [] : b.group;
+      const seen = new Set();
+      let bad = !Array.isArray(g);
+      if (!bad) {
+        for (const x of g) {
+          if (!Array.isArray(x) || x.length < 2 || new Set(x).size !== x.length || x.some((h) => h === 'local' || !nodes.some((n) => n.handle === h) || seen.has(h))) { bad = true; break; }
+          x.forEach((h) => seen.add(h));
+        }
+      }
+      if (bad) throw demoError(400, 'a group names two or more different paired nodes, and a node is in one group only');
+      made.group = g;
+    }
+    return { pins: made.pins, epic_pin: made.epic_pin, paused: made.paused, report: made.report, auto_pr: made.auto_pr, close: made.close, plan: null, nodes,
+      max_window_pct: made.max_window_pct, max_window_pct_set: made.max_window_pct_set, group: made.group, mcp_run: made.mcp_run };
   }
-  const out = shell({ ...base, ...((v && v.detail) || {}), pins: made.pins, epic_pin: made.epic_pin, paused: made.paused, report: made.report, auto_pr: made.auto_pr, close: made.close });
+  const elig = (c) => c.state === 'open' && c.claim_state === 'none' && !c.claim && c.author_ok !== false;
+  const hereNode = () => nodes.find((n) => n.handle !== 'local' && n.status === 'online' && n.tasks !== false) || null;
+  if (method === 'POST' && (tail === '/pause' || tail === '/resume')) {
+    made.paused = tail === '/pause';
+    return { paused: made.paused, route: { ...route0(), running: made.run || (eff.route || {}).running === true } };
+  }
+  if (method === 'POST' && tail === '/run') {
+    const r0 = eff.route || {};
+    if (r0.can_run === false) { const e = demoError(409, 'played'); e.body = { error: (r0.blocked && r0.blocked.text) || 'Run is not available.', reason: (r0.blocked && r0.blocked.code) || 'writes_off' }; throw e; }
+    made.paused = false;                                              // Run lifts a pause, as the board does
+    made.run = true;
+    return { route: { ...route0(), running: true, by: 'you', via: 'page', started_at: eff.server_now || null, ended: null } };
+  }
+  if (method === 'GET' && tail === '/route') return { route: { ...route0(), running: made.run || (eff.route || {}).running === true }, preview: null };
+  const im = /^\/issues\/([0-9]+)\/run$/.exec(tail);
+  if (method === 'POST' && im) {
+    const n = Number(im[1]);
+    const c = (eff.children || []).find((x) => x.number === n);
+    const refuse = (status, error, reason, extra) => { const e = demoError(status, 'played'); e.body = { ok: false, error, reason, ...(extra || {}) }; throw e; };
+    const pick = demoRunFlag();
+    if (!c) refuse(404, 'that issue is not one of the epic\'s issues this board has read', 'not_found');
+    if (pick === 'notfound') refuse(404, 'that issue is not one of the epic\'s issues this board has read', 'not_found');
+    if (pick === 'claimed') refuse(409, `That issue cannot be sent now: held by ${(c.bucket && c.bucket.node) || 'a node'}.`, 'running');
+    if (pick === 'busy') refuse(409, 'The run is busy sending other issues. Try again in a moment.', 'busy');
+    const want = (body && body.node) || 'auto';
+    const pinned = made.pins[String(n)] && !made.pins[String(n)].stale ? made.pins[String(n)].handle : null;
+    const node = want === 'auto' ? (pinned ? nodes.find((x) => x.handle === pinned) : hereNode()) : nodes.find((x) => x.handle === want);
+    const waiting = (text, code, until) => refuse(409, text, 'waiting', { waiting: { code, reason: text.replace(/^waiting: /, ''), until: null, until_iso: until || null, text, pinned: want === 'auto' ? null : want }, refused: [] });
+    if (pick === 'waiting') waiting('waiting: node-b 5-hour window is at 90 percent until 14:10', 'window', '2026-10-11T14:10:00Z');
+    if (!node || node.handle === 'local') waiting(want === 'auto' && !pinned ? 'waiting: no node can take it' : `waiting: ${want} is not a node paired with this board`, 'no_nodes', null);
+    if (node.status !== 'online') waiting(`waiting: ${node.name}${want === 'auto' ? '' : ' (named by you)'} is ${node.status}`, node.status, null);
+    if (node.tasks === false) waiting(`waiting: ${node.name}${want === 'auto' ? '' : ' (named by you)'} has no tasks scope for this board`, 'scope', null);
+    demoEpicWorked[`${c.repo}#${c.number}`] = node.handle;
+    made.why[`${c.repo}#${c.number}`] = `chose ${node.name}: 2 free lanes, 5-hour window 31 percent${want === 'auto' && !pinned ? '' : `, pinned by ${want === 'auto' ? 'the issue\'s pin' : 'you'}`}`;
+    const id = 50 + (n % 50);
+    return { ok: true, handle: node.handle, name: node.name, why: made.why[`${c.repo}#${c.number}`], data: { claimed: true, reason: 'won', task_ref: `${node.handle}:${id}`, id, branch: `worktree-issue-${n}`, tmux: `demo--board--t-issue-${n}`, repo: c.repo, issue: n } };
+  }
+  const route = { ...route0() };
+  let sent = null;
+  if (made.run) {                                                     // a Run in the demo: every ready issue goes to the first online node that holds the tasks scope
+    const nd = hereNode();
+    route.running = true; route.by = 'you'; route.via = 'page'; route.started_at = eff.server_now || null; route.ended = null;
+    if (nd) {
+      sent = {};
+      for (const c of eff.children || []) if (elig(c) && !ownKey(demoEpicWorked, `${c.repo}#${c.number}`)) sent[c.number] = nd;
+      route.assigned = { ...(route.assigned || {}) };
+      for (const [n, h] of Object.entries(sent)) route.assigned[n] = { handle: h.handle, node: h.name, why: `chose ${h.name}: 2 free lanes, 5-hour window 31 percent`, at: eff.server_now || null, task_ref: null, reason: 'won' };
+    }
+  }
+  const out = shell({ ...eff, pins: made.pins, epic_pin: made.epic_pin, paused: made.paused, report: made.report, auto_pr: made.auto_pr, close: made.close, route,
+    max_window_pct: made.max_window_pct, max_window_pct_set: made.max_window_pct_set, group: made.group, mcp_run: made.mcp_run });
   const kids = out.children || [];
   if (!kids.length) return out;
   const patch = (v && v.child) || {};                                   // a variant that changes single children (by issue number) without a copy of all of them
@@ -1184,11 +1569,14 @@ async function demoEpics(method, path, body) {
     const c = ownKey(patch, String(c0.number)) ? { ...c0, ...patch[String(c0.number)] } : c0;
     const k = `${c.repo}#${c.number}`;
     const wh = ownKey(demoEpicWorked, k) ? demoEpicWorked[k] : null;
-    const h = wh || (ownKey(demoEpicClaimed, k) ? demoEpicClaimed[k] : null);
+    const run = !wh && sent && ownKey(sent, String(c.number)) ? sent[String(c.number)] : null;
+    const h = wh || (run && run.handle) || (ownKey(demoEpicClaimed, k) ? demoEpicClaimed[k] : null);
     const n = h ? (out.nodes || []).find((x) => x.handle === h) : null;
     if (!n) return c;
     const claim = { alias: n.name, node: h, status: wh ? 'running' : 'claimed', since: out.server_now, renewed_at: out.server_now, live: true, attempt: 1, seq: 1, task_ref: wh ? `${h}:${50 + (c.number % 50)}` : null, branch: wh ? `worktree-issue-${c.number}` : null };
-    return { ...c, claim_state: 'claimed', claim, bucket: { node: n.name, state: wh ? 'running' : 'queued' }, phase: wh ? 'running' : 'queued',
+    const why = made.why[k] || `chose ${n.name}: 2 free lanes, 5-hour window 31 percent`;
+    const chosen = wh || run ? { route: { state: 'assigned', text: why, node: n.name, handle: h, until: null, code: null, at: out.server_now } } : {};
+    return { ...c, ...chosen, claim_state: 'claimed', claim, bucket: { node: n.name, state: wh ? 'running' : 'queued' }, phase: wh ? 'running' : 'queued',
       task: wh ? { ref: claim.task_ref, phase: 'running', node: h, node_name: n.name, status: 'online', age_s: 0, updated_at: out.server_now } : c.task };
   }) };
 }

@@ -335,12 +335,12 @@ test('the page leaves the claim alone while it is not mounted: an answer that ar
   assert.equal(toasts(w).length, before);
 });
 
-test('Run stays disabled: routing is a later phase, and a claim does not turn it on', async () => {
+test('a claim does not start a run: Run is its own button and the claim sends the one write to a node', async () => {
   const w = await epicWorld();
   claimBtn(w, 205).click();
   await settle();
   const run = page(w).querySelectorAll('button').find((b) => text(b).trim() === 'Run');
-  assert.notEqual(run.getAttribute('disabled'), null);
+  assert.equal(run.getAttribute('disabled'), null, 'Run is on when the board can route');
   assert.deepEqual(posts(w).map((c) => c.path), [CLAIM], 'the one write of this page to a node');
 });
 
@@ -352,7 +352,10 @@ test('the page code writes to no GitHub address, builds nothing with innerHTML o
   assert.ok(!/api\.github\.com|fetch\(/.test(src.replace(/globalThis\.fetch/g, '')) || /demo fixture/.test(src), 'only the demo reads its fixture');
   const posts = src.match(/api\('POST', `[^`]*`/g) || [];
   assert.deepEqual(posts, ["api('POST', `/api/nodes/${encodeURIComponent(node.handle)}/epics/claim`", "api('POST', `/api/nodes/${encodeURIComponent(node.handle)}/epics/work`"]);
-  assert.equal((src.match(/api\('(?:POST|DELETE|PATCH)'/g) || []).length, 2, 'the page makes two writes to a node (claim, work) and no other');
+  assert.equal((src.match(/api\('(?:POST|DELETE|PATCH)', `\/api\/nodes\//g) || []).length, 2, 'the page makes two writes to a node (claim, work) and no other');
+  const board = src.match(/api\('(?:POST|DELETE|PATCH)', epPath\([^)]*\)[^)]*\)/g) || [];
+  assert.equal(board.length, 3, 'and three writes to this board\'s routing routes: Run, Pause or Resume, and Run on... for one issue');
+  assert.ok(!/api\('(?:DELETE|PATCH)'/.test(src), 'no DELETE and no PATCH');
   assert.ok(!src.includes('—'), 'no em-dash in UI text');
 });
 

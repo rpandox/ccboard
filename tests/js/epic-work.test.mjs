@@ -340,7 +340,7 @@ test('the settings start off: phases only, no pull request, no Closes, with one 
   assert.equal(text(cfg(w).querySelector('.ep-plan')), `${FX.details[KEY].plan.report} ${FX.details[KEY].plan.auto_pr} ${FX.details[KEY].plan.close}`, 'the page says what the board says');
   assert.match(text(cfg(w).querySelector('.ep-plan')), /No result text leaves the node\. Pushes nothing and opens no pull request\. Nothing says Closes #N\./);
   assert.equal(cfg(w).querySelector('.seg-ctl').getAttribute('role'), 'group');
-  assert.equal(cfg(w).querySelectorAll('label').length, 2);
+  assert.equal(cfg(w).querySelectorAll('label').length, 3, 'pull request, Closes and Let MCP run this epic; the group boxes need two paired nodes');
   assert.equal(puts(w).length, 0, 'drawing the settings writes nothing');
 });
 

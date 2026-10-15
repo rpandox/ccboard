@@ -1294,6 +1294,8 @@ const MCP_NODES_LEVELS = Object.freeze({
   read: ['read only', 'read', 'Agents on this board may list paired nodes and read their projects and tasks; they cannot start a task there, type into a session, answer a permission or read a screen on another node.'],
   tasks: ['read and start tasks', 'tasks', 'Agents on this board may list paired nodes, read their projects and tasks and start tasks on them in a new session; they can never type into a session, answer a permission or read a screen on another node.'],
 });
+// issues #150 and #152: the two epic tools, in words, under the nodes line. epic_run is a person's switch per epic, never an agent's.
+const MCP_EPIC_NOTE = 'Epic tools: epic_status reads an epic (its issues, claims, the nodes they are on and the run). epic_run starts the run of an epic and works only when you turned on "Let MCP run this epic" on that epic\'s page, the token has the Tasks scope and this board allows tasks: at most 10 issues a call and 6 calls an hour for each token, each call recorded with the token\'s name. An agent cannot turn that switch on.';
 // issue #148: the two settings of an epic claim, shown beside the MCP switch, read only (env, set on the box). One sentence each.
 const EPIC_WRITES_SENTENCE = {
   true: 'This board may claim an epic issue: it comments on it, assigns itself and adds the ccboard:in-progress label, and writes nothing else to GitHub.',
@@ -1461,7 +1463,8 @@ function settingsMcpBlock() {
   const nodesWord = el('b', { class: 'mcp-nodes-s' });
   const nodesEnv = el('code', { class: 'mcp-nodes-env' });
   const nodesNote = el('div', { class: 'dim' });
-  const nodesLine = el('div', { class: 'set-note mcp-nodes hidden', role: 'status' }, el('div', {}, 'Agents on other nodes: ', nodesWord, ' (', nodesEnv, ', set on the box, read only here)'), nodesNote);
+  const nodesLine = el('div', { class: 'set-note mcp-nodes hidden', role: 'status' }, el('div', {}, 'Agents on other nodes: ', nodesWord, ' (', nodesEnv, ', set on the box, read only here)'), nodesNote,
+    el('div', { class: 'dim mcp-epic-tools', text: MCP_EPIC_NOTE }));
   const epWord = el('b', { class: 'mcp-epics-w' });
   const epEnv = el('code', { class: 'mcp-epics-wenv' });
   const epNote = el('div', { class: 'dim' });

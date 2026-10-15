@@ -2,6 +2,26 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.49 - 2026-10-15
+
+### Added
+- Nodes P15, auto node routing by free lanes and rate-limit headroom, with a pin (#150). **Run** on an epic page sends each ready issue to the node that can take it now, one at a time and never above the free lanes, and shows why ("chose node-b: 2 free lanes, 5-hour window 31 percent") or "waiting: <reason> until <time>" instead of a spinner. A node is a candidate only if it is online, holds the `tasks` scope, has the repository and the issue's agent installed and logged in, is not in a back-off, has its window below the limit (an unknown window counts as 50 and says so) and has a free lane after this board's reservations; then more headroom, more free lanes, lower load and the node least recently used decide. A pin (the page's, a `ccboard:node:<alias>` label, the epic's) overrides the ranking and never a filter: a pin to a node that fails one waits and says why. It needs `CCBOARD_EPIC_WRITES=1` and a paired node; without them Run is off with its reason and no thread, row or key exists.
+- On the epic page: **Run** (the one filled primary, **Running** while a run goes), **Pause** and **Resume** as posts that stop or continue new assignments at once, a per-issue **Run on...** menu (Auto or a node, optimistic, refused in the board's own words), the choice or the wait on each row, and in the settings a **Window limit** (10 to 100, default `CCBOARD_EPIC_MAX_WINDOW_PCT`, 85), **Nodes on one subscription** (nodes that share one rate-limit window are counted once) and **Let MCP run this epic** (off by default). A lane is reserved in memory at dispatch until the node's next reading or two poll cycles.
+- The launcher's node picker has an **Auto** cell for a new task: it shows the node and the reason in the command preview before Start, then is that node's own form; when no node can take it, it says "waiting: <reason>", lists the nodes left out and why, and offers Check again.
+- Two MCP tools (#152), now nine in the stdio server and in `/mcp`: `epic_status(repo, number)` reads an epic, and `epic_run(repo, number, max_issues?)` starts its run, only when a person turned on **Let MCP run this epic** for that epic, the token has `tasks`, this board's `CCBOARD_MCP_NODES` is `tasks`, at most 10 issues a call and 6 calls an hour per token, every call audited as `mcp:<token name>` or `local-token`. No tool takes a permission, sandbox, bypass, arguments or keys property. Settings > Agents says it in words.
+- `?demo=1#/epic/example/website/147` shows Run; `&epic=run|runwait|runpaused|runagent|runfinished|runlimit|nonodes|paused|groups|writesoff` show each state, `&run=waiting|claimed|busy|notfound` plays a refusal of Run on..., and a new task in the demo launcher shows the Auto cell (`&auto=wait` plays the wait).
+
+### Changed
+- Pause and Resume on the epic page are posts to `/pause` and `/resume` (Resume wakes the loop) and no longer a settings write; menus are at least 240 px wide. The first-paint script grew by 174 bytes (one demo line in `core.js`); everything else is in the lazy epic, launcher and settings bundles.
+- Known limits, written in the README: nothing here has run on two real nodes yet (the two-node check, #155, does that), which stored field is a stable subscription key is not verified (the manual group is the safe way), routing never picks this board, and a run an agent started reaches the person-only work route under the label `run for mcp:<token name>`.
+
+### Fixed
+- A run an agent started now stops when a person takes the permission back: turning off **Let MCP run this epic**, lowering `CCBOARD_MCP_NODES` below `tasks`, turning GitHub writes off, or revoking the device token that started it ends the run as stopped at its next step, before the next issue is sent, with an audit row that says why. A restart does not bring it back. A run a person started is not ended by any of these, but it now also sends nothing while GitHub writes are off.
+- One node answering "too many requests" no longer holds up every run for up to an hour: only that node is skipped until its wait is over and the next issue goes to another node. Stopping the board no longer waits out a pending wait between calls.
+- A lane cap a node reports as negative, or not a whole number, is now "lanes not known" and not "no limit", and a window percentage outside 0 to 100 counts as unknown (50) when routing picks a node.
+
+Upgrade: nothing to do.
+
 ## v0.5.48 - 2026-10-12
 
 ### Added
