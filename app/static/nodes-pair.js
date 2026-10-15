@@ -77,7 +77,7 @@ NodeView.countdown = function (ms) {
    read first, then the status (a 429 counts the tries of a code), then the board's own words. */
 NodeView.REASON_FIELD = {
   none: 'code', wrong: 'code', expired: 'code', burned: 'code', rate_limited: 'code', bad_url: 'address', callback_mismatch: 'address', unreachable: 'address',
-  bad_request: '', refused: '', store: '',
+  bad_request: '', refused: '', store: '', registry_full: '',
 };
 NodeView.errField = function (status, message, reason) {
   if (typeof reason === 'string' && Object.prototype.hasOwnProperty.call(NodeView.REASON_FIELD, reason)) return NodeView.REASON_FIELD[reason];
@@ -131,8 +131,38 @@ NodeView.peerNote = function (p, { nowMs = Date.now(), incoming = false, rotated
   parts.push(ago ? `${incoming ? 'last used' : 'last reached'} ${ago} ago` : incoming ? 'never used' : 'not reached yet');
   if (p.error && !incoming) parts.push(`last error: ${p.error}`);
   if (p.legacy) parts.push('read only, pair to enable actions');
+  if (p.repair && !incoming) parts.push('needs a new pairing: press Re-pair (Rotate token is off until then)');
   if (rotatedMs && nowMs - rotatedMs < NodeView.ROTATE_GRACE_S * 1000) parts.push(`token rotated, the old one still works for ${NodeView.ROTATE_GRACE_S} s`);
   return parts.join(' · ');
+};
+
+/* The nodes a Refresh found at another address (GET /api/nodes/discover?refresh=1 `moved`, issue #153): [{id, name, from, to}] read loosely, a row without a peer id or with an
+   address outside NodeView.address is dropped. Nothing is applied by reading: Update address (POST /api/nodes/<peer>/address) is the person's press. */
+NodeView.moved = function (answer) {
+  const rows = answer && typeof answer === 'object' && Array.isArray(answer.moved) ? answer.moved.slice(0, 20) : [];
+  const out = [];
+  for (const r of rows) {
+    if (!r || typeof r !== 'object') continue;
+    const id = NodeView.str(r.peer_id, 80);
+    const to = NodeView.address(NodeView.str(r.to_url, 300));
+    if (!id || to.err || out.some((x) => x.id === id)) continue;
+    out.push({ id, name: NodeView.str(r.name || r.handle, 80) || 'this node', from: NodeView.hostOf(NodeView.str(r.from_url, 300)), to: to.url, toHost: NodeView.hostOf(to.url),
+      device: NodeView.str(r.to_device, 60) });
+  }
+  return out;
+};
+
+/* The words of an offer to move a node: where it answers now and that the old address was checked first. */
+NodeView.movedNote = function (m) {
+  return `${m.name} now answers at ${m.toHost}${m.device ? ` (the device ${m.device})` : ''}${m.from ? `, not at ${m.from}` : ''}. The old address was checked once more and did not answer as this node. Nothing changes until you press Update address.`;
+};
+
+/* HH:MM of an epoch in seconds on this device; '' when it is none. */
+NodeView.clock = function (epoch) {
+  const e = NodeView.epoch(epoch);
+  if (e === null) return '';
+  const d = new Date(e * 1000);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
 
 /* A pair as a row, in the shape of the found rows: name (and its handle), chips (state, scopes, flags), a note, and `actions` (elements) at the right. */
@@ -172,6 +202,8 @@ NodeView.AUDIT_WORDS = [
   [/code.*(us|redeem)|redeem/, 'Pairing code used', 'Pairing code refused'],
   [/callback/, 'Callback checked', 'Callback not verified'],
   [/paired?_back|reverse/, 'Paired both ways', 'Pairing both ways failed'],
+  [/rotate_unknown/, 'Token rotation: outcome unknown', 'Token rotation: outcome unknown'],
+  [/address_changed/, 'Address updated', 'Address not updated'],
   [/rotat/, 'Token rotated', 'Token rotation failed'],
   [/supersed/, 'Same node id from another address', 'Same node id from another address'],
   [/kept/, 'Pair kept', 'Pair kept'],
@@ -202,7 +234,7 @@ NodeView.audit = function (row, index) {
   return {
     key: String(r.id !== undefined && r.id !== null ? r.id : `i${index}`), at: NodeView.epoch(r.at), word: NodeView.auditWord(r.action, ok), ok,
     dir: r.direction === 'out' ? 'to' : r.direction === 'in' ? 'from' : '', who: s(r.node_name || r.name || r.peer_name || r.handle, 60),
-    detail: s(r.detail, 140), target: s(r.target, 80), user: s(r.user, 70),
+    detail: s(r.detail, 140), target: s(r.target, 80), user: s(r.user, 70), received: NodeView.epoch(r.received_at),
   };
 };
 
@@ -243,7 +275,9 @@ NodeView.auditChoices = function (seen, current, label) {
 NodeView.auditRow = function (info, nowMs) {
   const ago = info.at !== null ? NodeView.span(info.at, nowMs) : '';
   const by = info.user ? (info.user.startsWith('for ') ? info.user : `by ${info.user}`) : '';       // the acting user: on the peer a claim (`for <login>`), never a proof
-  const where = [info.dir && info.who ? `${info.dir} ${info.who}` : info.who, info.target, by, ago ? `${ago} ago` : ''].filter(Boolean).join(' · ');
+  const rowAt = typeof info.received === 'number' && info.at !== null ? NodeView.clock(info.at) : '';                // the hub's receipt time next to the row's own, where the board gave one
+  const when = rowAt ? `row time ${rowAt}, received ${NodeView.clock(info.received)}` : ago ? `${ago} ago` : '';
+  const where = [info.dir && info.who ? `${info.dir} ${info.who}` : info.who, info.target, by, when].filter(Boolean).join(' · ');
   return el('div', { class: info.ok ? 'nd-audit' : 'nd-audit bad', 'data-key': info.key },
     el('span', { class: 'nd-glyph', 'aria-hidden': 'true', text: info.ok ? '✓' : '✕' }),
     el('div', { class: 'nd-audit-main' },
@@ -288,6 +322,13 @@ function demoNodesWrite(method, path, body, data) {
     demoNodesNote('paired', handle, true, b.both_ways ? 'both ways' : '');
     return row;
   }
+  if (method === 'POST' && (m = /^\/api\/nodes\/([^/]+)\/rotate$/.exec(path)) && demoNodeState() === 'repair') {               // ?nodestate=repair: the answer is lost, nothing is asked again (issue #153)
+    demoNodesNote('rotate_unknown', decodeURIComponent(m[1]), false, 'the rotation answer was lost');
+    const e = demoError(504, 'Outcome unknown: the other board may have rotated the token, and this board will not ask again. Press Re-pair.');
+    e.body = { error: e.message, reason: 'outcome_unknown', needs_repair: true };
+    throw e;
+  }
+  if (method === 'POST' && (m = /^\/api\/nodes\/([^/]+)\/address$/.exec(path))) { demoNodesNote('address_changed', decodeURIComponent(m[1]), true, `to ${NodeView.hostOf(String(b.url || ''))}`); return { peer_id: decodeURIComponent(m[1]), url: String(b.url || ''), ...(b.device ? { device: String(b.device) } : {}) }; }
   if (method === 'POST' && (m = /^\/api\/nodes\/([^/]+)\/rotate$/.exec(path))) { demoNodesNote('rotated', decodeURIComponent(m[1]), true, 'the old token works 60 s more there'); return { rotated: true, grace_s: 60 }; }
   if (method === 'POST' && (m = /^\/api\/nodes\/([^/]+)\/remove-preview$/.exec(path))) {
     const rm = demoRemoval(data, decodeURIComponent(m[1]));

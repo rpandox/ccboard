@@ -1918,6 +1918,15 @@ register("notify-public-url", "notify", "Notification links", _c_notify_public_u
 register("notify-shared", "notify", "One subscription on two nodes", _c_notify_shared)   # issue #151
 register("epic-gh", "box", "Epics from GitHub", _c_epic_gh)   # issue #147
 register("epic-claim", "box", "Claiming epic issues", _c_epic_claim)   # issue #148
+
+
+def _c_nodes_health(db) -> Outcome:
+    """Issue #153: the check lives with the node checks (app/doctor_nodes.py), imported when it runs: that module imports this one."""
+    from . import doctor_nodes
+    return doctor_nodes._c_nodes_health(db)
+
+
+register("nodes-health", "box", "Paired nodes answer", _c_nodes_health)   # issue #153, on every board: the hub is usually the Linux box
 register_provider("memory", MEM_GROUP, memory_checks)       # claude-mem (v0.5.10): one probe, seven checks
 register_provider("codex", CODEX_GROUP, codex_checks)       # the Codex adapter's checks (v0.5.11)
 if plat.IS_MACOS:                                            # issue #117: the macOS checks (app/doctor_macos.py) exist on a Mac only; a Linux board lists none

@@ -16,5 +16,8 @@
      "at": "2026-10-03T02:59:58+00:00", "age": 2, "stale": false},
     {"ts_id": "nPHNDEMO05", "name": "phone", "dns_name": "phone.example.ts.net", "os": "iOS", "online": false, "last_seen": "2026-10-02T21:14:09Z",
      "owner": "user", "tags": [], "state": "offline", "url": null, "node_id": null, "at": null, "age": null, "stale": false}
-  ]
+  ],
+  "variants": {
+    "moved": {"moved": [{"peer_id": "p-build-box", "handle": "build-box", "name": "build-box", "from_url": "https://build-box.example.ts.net:8443", "to_url": "https://build-box-2.example.ts.net:8443"}]}
+  }
 }

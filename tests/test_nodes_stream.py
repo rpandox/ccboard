@@ -659,7 +659,9 @@ def test_an_offline_node_is_one_gone_event_with_no_upstream_call(world, monkeypa
 
 
 @pytest.mark.parametrize("rec,reason,final", [({"status": "unauthorized"}, "repair", True), ({"status": "unpaired"}, "unpaired", True),
-                                              ({"polled_at": None, "last_ok_at": None, "status": "offline"}, "not_read_yet", False)])
+                                              ({"polled_at": None, "last_ok_at": None, "status": "offline"}, "not_read_yet", False),
+                                              ({"status": "unpaired", "error_kind": "identity_changed"}, "unpaired", True),          # issue #153
+                                              ({"status": "incompatible", "error_kind": "api_version", "peer_api": 2}, "incompatible", True)])
 def test_a_node_that_needs_a_new_pair_or_has_not_been_read_is_one_gone_event(world, monkeypatch, rec, reason, final):
     from app import main
     w = world

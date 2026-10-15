@@ -258,8 +258,8 @@ const REFUSALS = [
   [409, { reason: 'claim_refused', why: 'something-new' }, 'node-b did not claim #205: PEER SENTENCE. Nothing was claimed.'],
   [503, { reason: 'offline' }, 'node-b is offline. Nothing was claimed.'],
   [409, { reason: 'scope' }, 'node-b is paired without the tasks scope. Nothing was claimed.'],
-  [504, { reason: 'unconfirmed' }, 'node-b did not answer in time, so it is not known whether #205 was claimed. Check the issue on GitHub. Nothing was retried.'],
-  [502, { reason: 'unconfirmed' }, 'node-b did not answer in time, so it is not known whether #205 was claimed. Check the issue on GitHub. Nothing was retried.'],
+  [504, { reason: 'unconfirmed' }, 'Outcome unknown, check node-b: it did not answer in time, so it is not known whether #205 was claimed. Look at the issue on GitHub. Nothing was retried.'],
+  [502, { reason: 'unconfirmed' }, 'Outcome unknown, check node-b: it did not answer in time, so it is not known whether #205 was claimed. Look at the issue on GitHub. Nothing was retried.'],
   [409, { reason: 'needs_repair' }, 'node-b no longer takes this board\'s token: pair it again in Settings. Nothing was claimed.'],
   [404, { reason: 'unknown_node' }, 'node-b is no longer paired. Nothing was claimed.'],
   [502, { reason: 'unreachable' }, 'node-b could not be reached. Nothing was claimed.'],
@@ -273,8 +273,9 @@ for (const [status, body, sentence] of REFUSALS) {
     claimBtn(w, 205).click();
     await settle();
     const note = rowOf(w, 205).querySelector('.ep-claimnote');
-    assert.equal(text(note), sentence, JSON.stringify(body));
+    assert.equal(text(note).replace(/ See its tasks$/, ''), sentence, JSON.stringify(body));
     assert.equal(note.getAttribute('role'), 'status');
+    assert.equal(!!note.querySelector('a.ep-check'), body.reason === 'unconfirmed', 'only an unknown outcome has the link to the node');
     assert.deepEqual(toasts(w).filter((x) => x.kind === 'bad').map((x) => x.text).filter((t) => !/Lost the claim/.test(t)), [sentence]);
     assert.ok(claimBtn(w, 205), 'the action is back so it can be tried again');
     assert.equal(text(claimBtn(w, 205)).trim(), 'Claim on node-b');

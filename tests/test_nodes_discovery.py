@@ -986,7 +986,9 @@ def test_the_doctor_rows_send_no_request(world):
 
 def test_the_demo_fixture_has_the_endpoint_shape_and_the_four_states():
     d = json.loads((ROOT / "app" / "static" / "demo" / "nodes-discover.json").read_text())
-    assert set(d) == {"at", "tailscale", "rows"} and d["tailscale"]["ok"] is True
+    assert set(d) - {"variants"} == {"at", "tailscale", "rows"} and d["tailscale"]["ok"] is True
+    assert set(d.get("variants", {})) <= {"moved"}, "core.js strips `variants` (demo only, issue #153): it holds only the Update address offer"
+    assert all(set(m) == {"peer_id", "handle", "name", "from_url", "to_url"} for v in d.get("variants", {}).values() for m in v["moved"]), "an offer has the shape of nodes.address_changes"
     assert all(set(r) == ROW_KEYS for r in d["rows"])
     assert {"found", "refuses", "offline", "no_ccboard"} <= {r["state"] for r in d["rows"]}
     assert all(r["state"] in nd.STATES for r in d["rows"])

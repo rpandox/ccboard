@@ -145,7 +145,9 @@ function demoRebase(data) {
 /* The demo's tailnet list (issue #134): the fixture's ISO times (the answer's at, last_seen, a row's at) follow the clock like state.json's (demoRebase), and a Refresh
    (?refresh=1) is answered as if every probe had just run, so the demo shows a stale row at first and a fresh one after the tap. */
 function demoDiscover(data0, refresh) {
-  const data = demoRebase(data0);
+  const { variants: vs, ...rest } = demoRebase(data0);
+  const mv = vs && ownKey(vs, demoNodeState()) ? vs[demoNodeState()] : null;
+  const data = mv && Array.isArray(mv.moved) ? { ...rest, moved: mv.moved } : rest;               // Update address is offered at once in the demo (the board offers it on a Refresh)
   if (!refresh || !data || typeof data !== 'object' || !Array.isArray(data.rows)) return data;
   const iso = new Date().toISOString();
   return { ...data, at: iso, rows: data.rows.map((r) => (r && r.at ? { ...r, at: iso, age: 0, stale: false } : r)) };
@@ -158,11 +160,18 @@ function demoDiscover(data0, refresh) {
 const demoNodesMade = { gone: new Set(), added: [], audit: [], seq: 0 };
 async function demoNodesFixture() {
   const r = await fetch('/static/demo/nodes.json');
-  return r.ok ? demoRebase(await r.json()) : {};
+  return r.ok ? demoNodeVariant(demoRebase(await r.json())) : {};
+}
+/* ?nodestate=<name> (issue #153: unauthorized identity repair incompatible skew offline moved unknown) lays a variant over the demo's build-box: demo/nodes.json `variants` is {name: {hub: {handle: patch}, nodes: {peer_id: patch}}}, nodes-discover.json `variants` {name: {moved: [...]}}. */
+function demoNodeState() { try { const m = /[?&]nodestate=([a-z]+)/.exec(location.search); return m ? m[1] : ''; } catch (_) { return ''; } }
+function demoNodeVariant(data) {
+  const v = data && data.variants && ownKey(data.variants, demoNodeState()) ? data.variants[demoNodeState()] : null;
+  const lay = (rows, key, p) => (Array.isArray(rows) && p ? rows.map((r) => (r && ownKey(p, r[key]) ? { ...r, ...p[r[key]] } : r)) : rows);
+  return v ? { ...data, hub: lay(data.hub, 'handle', v.hub), nodes: lay(data.nodes, 'peer_id', v.nodes) } : data;
 }
 /* The three GETs of demo/nodes.json, shaped like the board's ({nodes, pairs, at}, {pairs, at}, {rows, at}): the fixture's rows (times follow the clock like state.json's), minus the ones removed here, plus the ones paired here, plus the activity made here. */
 function demoNodes(data0, bare) {
-  const data = demoRebase(data0);
+  const data = demoNodeVariant(demoRebase(data0));
   const gone = (r) => demoNodesMade.gone.has(r.peer_id);
   const at = new Date().toISOString();
   const pairs = (data.pairs || []).filter((r) => !gone(r));

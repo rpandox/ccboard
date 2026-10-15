@@ -466,8 +466,8 @@ const REFUSALS = [
   ['missing repo', 404, { error: 'api is not on build-box. Nothing was created.', reason: 'repo_missing', node: 'build-box' }, 'api is not on build-box. Nothing was created.'],
   ['missing repo with a clone hint', 404, { error: 'api is not on build-box. It is example/shop-api on GitHub: clone it in Settings > Projects on build-box. Nothing was cloned or created.', reason: 'repo_missing', node: 'build-box' },
     'api is not on build-box. It is example/shop-api on GitHub: clone it in Settings > Projects on build-box. Nothing was cloned or created.'],
-  ['timeout after sending', 504, { error: 'x', reason: 'unconfirmed', node: 'build-box' }, 'unconfirmed: build-box did not answer in time; check its board before trying again'],
-  ['connection broke', 502, { error: 'x', reason: 'unconfirmed', node: 'build-box' }, 'unconfirmed: the connection to build-box broke; check its board before trying again'],
+  ['timeout after sending', 504, { error: 'x', reason: 'unconfirmed', node: 'build-box' }, 'Outcome unknown, check build-box: it may or may not have got this. It was not retried.'],
+  ['connection broke', 502, { error: 'x', reason: 'unconfirmed', node: 'build-box' }, 'Outcome unknown, check build-box: it may or may not have got this. It was not retried.'],
   ['rate limit', 429, { error: 'slow down', reason: 'rate_limited', node: 'build-box' }, 'Too many requests in a minute. Try again in a moment.'],
   ['the peer\'s own conflict', 409, { error: 'already dispatched', reason: 'refused', node: 'build-box' }, 'already dispatched'],
   ['a guard sentence', 422, { error: 'permission_mode must be default, acceptEdits or plan', reason: 'invalid', node: 'build-box' }, 'permission_mode must be default, acceptEdits or plan'],
@@ -481,7 +481,8 @@ for (const [name, status, data, want] of REFUSALS) {
     typeInto(f.querySelector('textarea'), 'keep this text');
     submit(f);
     await settle();
-    assert.equal(statusOf(f), want);
+    assert.equal(statusOf(f).replace(/ See its tasks$/, ''), want);
+    assert.equal(f.querySelectorAll('a.nd-check').length, /^Outcome unknown/.test(want) ? 1 : 0, 'an unknown outcome has the link to the node, any other refusal has none');
     assert.equal(f.querySelector('textarea').value, 'keep this text');
     assert.equal(plain(w.run("Nodes.tasks('build-box').filter((t) => t.pending)")).length, 0, 'no row left');
     assert.equal(posts(w, /tasks$/).length, 1);

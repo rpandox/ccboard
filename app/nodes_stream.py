@@ -24,7 +24,8 @@ What the browser gets: the events of this module only, written by this module (t
   : ping                            a comment every 15 s while nothing else is sent, so a proxy keeps the connection
   Headers: Content-Type text/event-stream, Cache-Control no-store, X-Accel-Buffering no.
   Reasons: offline, repair, unpaired, not_read_yet, upstream_error, closed (the peer ended it), idle (60 s without a valid event), too_large (a line over 64 KB),
-  revoked (the pair was removed or the peer refused its token), shutdown (this board is stopping).
+  revoked (the pair was removed or the peer refused its token), shutdown (this board is stopping), incompatible (another node API, issue #153; another device
+  at the address ends as unpaired).
   Only `lines` and `tick` cross; any other event, bad JSON, a name outside the asked set, a shape that is not an object is dropped and counted. The hub never
   retries by itself.
 
@@ -71,6 +72,7 @@ MESSAGES = {
     "offline": "{n} is offline",
     "repair": "{n} no longer takes this board's token: re-pair",
     "unpaired": "{n} answers as another node or no longer knows this board: remove it and pair it again",
+    "incompatible": "{n} speaks another node API: update the older board",
     "not_read_yet": "{n} has not been read yet: wait for the first reading",
     "upstream_error": "{n} could not be read",
     "closed": "{n} ended the stream",
@@ -79,7 +81,7 @@ MESSAGES = {
     "revoked": "the pair with {n} was removed",
     "shutdown": "this board is stopping",
 }
-FINAL = frozenset({"repair", "unpaired", "revoked", "shutdown"})      # reconnecting cannot help
+FINAL = frozenset({"repair", "unpaired", "revoked", "shutdown", "incompatible"})      # reconnecting cannot help
 
 
 # ================================================================ leases: the caps and the cleanup
@@ -379,7 +381,8 @@ def _query(request: Request) -> tuple[frozenset, int]:
     return frozenset(wanted or ()), n
 
 
-_GONE_FROM_STATUS = {"needs_repair": "repair", "unpaired": "unpaired", "not_read_yet": "not_read_yet", "offline": "offline"}
+_GONE_FROM_STATUS = {"needs_repair": "repair", "unpaired": "unpaired", "not_read_yet": "not_read_yet", "offline": "offline",
+                     "identity_changed": "unpaired", "incompatible": "incompatible"}          # issue #153: another device at the address, another node API
 
 
 def _open(request: Request, handle: str, db, hub):
@@ -441,7 +444,7 @@ def _open(request: Request, handle: str, db, hub):
     except Gone as g:
         if reg is not None:
             nodes.audit("out", reg.get("peer_id") or "", STREAM_ROW.audit_action, False, f"{g.reason}: {g.message}"[:200], node_name=reg.get("name"), user=user,
-                        target=target, status="refused" if g.reason in ("offline", "repair", "unpaired", "not_read_yet") else "failed", db=db)
+                        target=target, status="refused" if g.reason in ("offline", "repair", "unpaired", "not_read_yet", "incompatible") else "failed", db=db)
         raise
     nodes.audit("out", reg["peer_id"], STREAM_ROW.audit_action, True, None, node_name=reg.get("name"), user=user, target=target, status="ok", db=db)
     return lease, reply.stream, reg, names, nlines

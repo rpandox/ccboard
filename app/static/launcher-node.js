@@ -195,13 +195,15 @@ function lxnErrorText(err, handle, scope) {
   const name = Nodes.nameOf(handle);
   const own = typeof b.error === 'string' && b.error ? b.error : (err && err.message ? String(err.message) : 'the request failed');
   const cut = (t) => String(t).slice(0, 300);
+  if (Nodes.unknown(err)) return Nodes.unknownText(handle);                              // issue #153: the call may have reached the node; the board never sends it again
   switch (b.reason) {
     case 'offline': return typeof b.age === 'number' ? `${name} is offline, last seen ${nhAgo(b.age)} ago` : `${name} has not answered yet`;
     case 'scope': return /^needs the /.test(own) ? cut(own) : `needs the ${scope || 'tasks'} scope on ${name}`;
     case 'needs_repair': return `${name} no longer takes this board's token: re-pair it in Settings, Nodes`;
     case 'unpaired': return `${name} answers as another node or no longer knows this board: remove it and pair it again`;
     case 'not_read_yet': return `${name} has not been read yet: wait a few seconds and try again`;
-    case 'unconfirmed': return err.status === 504 ? `unconfirmed: ${name} did not answer in time; check its board before trying again` : `unconfirmed: the connection to ${name} broke; check its board before trying again`;
+    case 'identity_changed': return `This address now belongs to another device, not ${name}: remove it or pair again`;
+    case 'incompatible': return Nodes.apiWords({ name, handle, peer_api: b.peer_api, api: b.api });
     case 'rate_limited': return 'Too many requests in a minute. Try again in a moment.';
     default: return cut(own);
   }
@@ -441,7 +443,10 @@ function lxnForm(opt, handle, hooks) {
 
   /* ---- submit ---- */
   const wipe = () => { for (const f of [nameField, promptField, issueField]) fieldError(f, ''); formStatus(status, ''); };
-  const fail = (err) => { formStatus(status, lxnErrorText(err, handle, session ? 'sessions' : 'tasks'), true); };
+  const fail = (err) => {
+    formStatus(status, lxnErrorText(err, handle, session ? 'sessions' : 'tasks'), true);
+    if (Nodes.unknown(err)) { const link = Nodes.checkLink(handle); if (link) status.append(' ', link); }          // the outcome is unknown: a link to the node's page, never a second send
+  };
   const finish = () => { if (hooks && typeof hooks.close === 'function') hooks.close(); else { ui.openForm = null; closeSheet(); } };
   const remember = () => {
     const c = R[R.agent];

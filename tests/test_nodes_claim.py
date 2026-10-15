@@ -854,7 +854,8 @@ def test_the_first_nodes_next_fenced_write_is_refused_and_the_task_is_parked(env
     gh = env.gh
     a, b = env.actor("node-a"), env.actor("node-b")
     seen = []
-    nodes_epics.LOST_HOOKS.append(lambda view, reason: seen.append((view, reason)))
+    hook = lambda view, reason: seen.append((view, reason))                       # noqa: E731
+    nodes_epics.LOST_HOOKS.append(hook)
     try:
         ra = env.claim(a, 201)
         assert nodes_epics.attach_task(ra["claim_ref"], 42, actor=a)
@@ -874,7 +875,7 @@ def test_the_first_nodes_next_fenced_write_is_refused_and_the_task_is_parked(env
         assert len(rows) == 1 and rows[0]["target"] == "acme/shop#201" and rows[0]["status"] == "failed" and rows[0]["detail"] == "expired"
         assert not re.search(r"alice|node-a|ghp_|@|/home", json.dumps(rows)), rows
     finally:
-        nodes_epics.LOST_HOOKS.clear()
+        nodes_epics.LOST_HOOKS.remove(hook)                                       # only its own hook: clearing the list took the run phase's hook away from every later test
 
 
 def test_renewal_edits_the_own_comment_moves_updated_at_raises_seq_and_keeps_the_claim_live(env):

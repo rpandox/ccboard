@@ -301,7 +301,7 @@ test('an unauthorized node offers Re-pair to Settings, Nodes as the page\'s one 
   assert.ok(repair.classList.contains('primary'));
   assert.equal(all(p, '.primary').length, 1);
   assert.equal(all(p, 'a.btn').find((a) => text(a) === 'Open board').classList.contains('primary'), false);
-  assert.match(text(p.querySelector('.nd-banner')), /no longer accepts the token this board saved/);
+  assert.match(text(p.querySelector('.nd-banner')), /^revoked removed this pairing, pair again\./);
   const strip = rec('revoked', { status: 'unauthorized' });
   assert.ok(strip);
 });
@@ -719,7 +719,7 @@ test('Settings, Nodes: the read model\'s line under a paired node: status with i
   const line = (h) => w.run(`Nodes.settingsLine(${JSON.stringify(h)})`);
   assert.equal(line('nobody'), null);
   const a = line('alice-mac');
-  assert.match(text(a), /^◐stale 3 minlast reading 3 min agoclock differs by 7 sclaude ready1 account: claude Work 40%$/);
+  assert.match(text(a), /^◐stale 3 minlast reading 3 min ago! clock differs by 7 sclaude ready1 account: claude Work 40%$/);
   const b = line('build-box');
   assert.doesNotMatch(text(b), /clock differs/, 'no warning for an honest clock');
   assert.match(text(b), /^●onlineclaude ready1 account/);

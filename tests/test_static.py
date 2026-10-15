@@ -1757,3 +1757,12 @@ def test_demo_nodes_fixture_carries_the_hub_records():
     for r in d["hub"]:
         assert set(r) == keys, "the record has the keys NodeHub._public gives it"
     assert NodeHub  # the shape above is the one app/nodes_hub.py `_public` builds
+
+
+def test_node_lines_keep_their_pieces_apart():
+    """The Settings line of a paired node is a row of separate pieces (status, age, skew chip, agents, platform, accounts):
+    without a gap they ran together ("stale 3 minlast reading", "codex ready2 accounts"); a chip's glyph also needs its own space."""
+    nodes_css = (STATIC / "pages" / "nodes.css").read_text()
+    assert re.search(r"#page \.nd-set-line \{[^}]*display:flex;[^}]*gap:", nodes_css)
+    assert re.search(r"#page \.nd-head-state \{[^}]*gap:", nodes_css)
+    assert re.search(r"#page \.badge > \.nd-glyph \{[^}]*margin-right:", (STATIC / "pages.css").read_text())

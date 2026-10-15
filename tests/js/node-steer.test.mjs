@@ -131,9 +131,9 @@ test('a refusal says why in a plain sentence in the panel and in a toast, and ke
     [err(409, { error: 'needs the sessions scope on build-box', reason: 'scope' }), 'needs the sessions scope on build-box'],
     [err(503, { error: 'build-box is offline', reason: 'offline', age: 190 }), 'build-box is offline, last seen 3 minutes ago'],
     [err(409, { error: wide, reason: 'refused' }), 'That session runs with wider permissions than another node may use, or its mode cannot be read; start it from its own board.'],
-    [err(504, { error: 'build-box did not answer in 8 s', reason: 'unconfirmed' }), 'Could not confirm whether build-box got this. Check the terminal before answering again.'],
-    [err(502, { error: 'the connection broke', reason: 'unconfirmed' }), 'Could not confirm whether build-box got this. Check the terminal before answering again.'],
-    [Object.assign(new Error('Failed to fetch'), {}), 'Could not confirm whether build-box got this. Check the terminal before answering again.'],
+    [err(504, { error: 'build-box did not answer in 8 s', reason: 'unconfirmed' }), 'Outcome unknown, check build-box: it may or may not have got this. It was not retried.'],
+    [err(502, { error: 'the connection broke', reason: 'unconfirmed' }), 'Outcome unknown, check build-box: it may or may not have got this. It was not retried.'],
+    [Object.assign(new Error('Failed to fetch'), {}), 'Outcome unknown, check build-box: it may or may not have got this. It was not retried.'],
     [err(429, { error: 'too many', reason: 'rate_limited' }), 'Too many prompts in a minute for this session. Try again in a moment.'],
     [err(413, { error: 'the body is over 8 KB', reason: 'too_large' }), 'The text is over 8 KB. Shorten it and send again.'],
     [err(422, { error: 'text: no control characters', reason: 'invalid' }), 'That text has a character a terminal cannot take (a control, format or line-separator character). Tab and newline are fine. Remove it and send again.'],
@@ -151,7 +151,7 @@ test('a refusal says why in a plain sentence in the panel and in a toast, and ke
     h.reply = (m, p) => { if (/\/prompt$/.test(p)) throw e; return undefined; };
     enter(ta);
     await flush();
-    assert.equal(st(w), want, want);
+    assert.equal(st(w).replace(/ See its tasks$/, ''), want, want);
     assert.equal(ta.value, 'keep me', `the draft survives: ${want}`);
     assert.equal(ta.disabled, false);
     assert.equal(h.writes().length, 1, 'nothing is retried');
@@ -223,7 +223,7 @@ test('a node that answers 2xx without ok:true is not "Sent": it is reported as u
   h.reply = (m, p) => (/\/prompt$/.test(p) ? { node: 'build-box', age: 0, data: {} } : undefined);
   enter(ta);
   await flush();
-  assert.match(st(w), /^Could not confirm whether build-box got this/);
+  assert.match(st(w), /^Outcome unknown, check build-box/);
   assert.equal(ta.value, 'hello');
 });
 
@@ -603,8 +603,8 @@ test('a refusal puts the card back with the sentence and its buttons: offline, s
     [err(503, { error: 'build-box is offline', reason: 'offline', age: 65 }), 'build-box is offline, last seen 1 minute ago'],
     [err(409, { error: 'needs the permissions scope on build-box', reason: 'scope' }), 'needs the permissions scope on build-box'],
     [err(429, { error: 'too many', reason: 'rate_limited' }), 'Too many requests in a minute. Try again in a moment.'],
-    [err(504, { error: 'build-box did not answer', reason: 'unconfirmed' }), 'Could not confirm whether build-box got this. Check the terminal before answering again.'],
-    [Object.assign(new Error('Failed to fetch'), {}), 'Could not confirm whether build-box got this. Check the terminal before answering again.'],
+    [err(504, { error: 'build-box did not answer', reason: 'unconfirmed' }), 'Outcome unknown, check build-box: it may or may not have got this. It was not retried.'],
+    [Object.assign(new Error('Failed to fetch'), {}), 'Outcome unknown, check build-box: it may or may not have got this. It was not retried.'],
   ];
   for (const [e, want] of cases) {
     const h = await steerWorld({ perms: PERMS(), board: noLocal(), alone: true });
@@ -615,7 +615,7 @@ test('a refusal puts the card back with the sentence and its buttons: offline, s
     await flush();
     const c = cardOf(w, 41);
     assert.ok(c, `back: ${want}`);
-    assert.equal(text(c.querySelector('.nd-perr')), want);
+    assert.equal(text(c.querySelector('.nd-perr')).replace(/ See its tasks$/, ''), want);
     assert.deepEqual(all(c, 'button').map(text), ['Allow', 'Deny', 'Open terminal on build-box'], 'ready for another try');
     assert.equal(h.writes().length, 1, 'nothing was retried');
     assert.deepEqual(shapes(w), [want]);
@@ -641,7 +641,7 @@ test('an answered, expired or gone request stops being actionable and says so: n
     btn(cardOf(w, 41), 'Deny').click();
     await flush();
     const c = cardOf(w, 41);
-    assert.equal(text(c.querySelector('.nd-perr')), want);
+    assert.equal(text(c.querySelector('.nd-perr')).replace(/ See its tasks$/, ''), want);
     assert.deepEqual(all(c, 'button').map(text), ['Open terminal on build-box'], 'nothing to answer: only the way to the terminal the sentence points at');
     assert.ok(c.classList.contains('closed'));
     assert.ok(all(c, 'a.btn').some((a) => text(a) === 'Open on build-box'), 'a way to the node\'s own board');
@@ -678,7 +678,7 @@ test('a node that answers 2xx with another decision than the one asked is not "A
   h.reply = (m, p) => (/permissions\/41\/allow$/.test(p) ? { node: 'build-box', age: 0, data: { ok: true, id: 41, decision: 'deny' } } : undefined);
   btn(cardOf(w, 41), 'Allow').click();
   await flush();
-  assert.match(text(cardOf(w, 41).querySelector('.nd-perr')), /^Could not confirm whether build-box got this/);
+  assert.match(text(cardOf(w, 41).querySelector('.nd-perr')), /^Outcome unknown, check build-box/);
   assert.deepEqual(shapes(w).filter((t) => /^Allowed/.test(t)), []);
 });
 
@@ -1057,7 +1057,7 @@ test('demo: the peek of build-box/s1 steers: a prompt is sent, Ack clears it, a 
   await wait(260);
   await flush(8);
   assert.equal(st(w), 'Queued on build-box. It is typed when the session is ready.');
-  assert.equal(await prompt('infra--deploy--s2', 'status please'), 'Could not confirm whether build-box got this. Check the terminal before answering again.');
+  assert.equal((await prompt('infra--deploy--s2', 'status please')).replace(/ See its tasks$/, ''), 'Outcome unknown, check build-box: it may or may not have got this. It was not retried.');
   assert.equal(box(w).value, 'status please');
   // keys: one goes, C-c needs the second tap
   await go(w, '#/n/build-box/s/shop--api--s1');

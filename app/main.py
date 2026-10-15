@@ -5130,10 +5130,42 @@ def api_nodes_rotate(peer: str, request: Request):
     except nodes.PairError as e:
         return _pair_failed(e)
     except nodes.PeerError as e:
+        if e.reason == "outcome_unknown":                                   # issue #153: the answer was lost; the pair is marked needs_repair, nothing is asked again
+            doctor.invalidate()
+            return JSONResponse({"error": str(e), "reason": "outcome_unknown", "needs_repair": True}, status_code=504, headers={"Cache-Control": "no-store"})
+        if e.reason == "busy":                                              # another press of Rotate token is still running
+            return JSONResponse({"error": str(e), "reason": "busy"}, status_code=409, headers={"Cache-Control": "no-store"})
+        if e.not_sent:                                                      # the request never left: nothing changed on either side
+            return JSONResponse({"error": str(e), "reason": "not_sent"}, status_code=502, headers={"Cache-Control": "no-store"})
         return JSONResponse({"error": f"the other board did not give a new token ({e}); the saved token is unchanged", "reason": e.reason}, status_code=502,
                             headers={"Cache-Control": "no-store"})
     doctor.invalidate()
     return JSONResponse({"rotated": True, "grace_s": nodes.ROTATE_GRACE}, headers={"Cache-Control": "no-store"})
+
+
+class NodeAddressIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    url: str = Field(min_length=8, max_length=300)
+    device: str | None = Field(default=None, max_length=80)      # the Tailscale device name discovery showed for `url`; shown in the answer, never trusted for anything
+
+
+@app.post("/api/nodes/{peer}/address")
+def api_nodes_address(peer: str, body: NodeAddressIn, request: Request):
+    """Update address (issue #153): move a node this board calls to the address discovery found it at. Never done by itself: the person presses it. The old
+    address is probed once more and must not answer as that node; the new one must answer with the node id this board holds. The token, handle and scopes
+    stay. 404 no such node (or a pair that calls this board, or a legacy row, or one removed meanwhile), 400 an address outside the rule, 409 `still_there` / `unchecked`
+    (the old address still answers or could not be checked) / `other_node` / `same`. The answer is the row, plus `device` when one was given."""
+    _node_manager(request)
+    try:
+        row = nodes.update_address(peer, body.url, db=db, device=body.device)
+    except LookupError:
+        raise projects.NotFound("no such node") from None
+    except nodes.AddressError as e:
+        return JSONResponse({"error": str(e), "reason": e.reason}, status_code=409, headers={"Cache-Control": "no-store"})
+    except ValueError as e:                                                 # PeerUrlError: the address rule
+        raise projects.BadRequest(str(e)) from None
+    doctor.invalidate()
+    return JSONResponse(row, headers={"Cache-Control": "no-store"})
 
 
 class NodeRemoveIn(BaseModel):
@@ -5183,10 +5215,13 @@ def api_node_rotate(request: Request):
         raise projects.Forbidden("this route takes a node token")
     if (getattr(request.state, "node_peer", None) or {}).get("via_previous"):
         return _node_refused(401, "this token was already rotated away; rotate with the current token", **{"WWW-Authenticate": 'Bearer realm="ccboard", error="invalid_token"'})
+    auth = request.headers.get("authorization") or ""
     try:
-        token = nodes.rotate_token(pid, db=db)
+        token = nodes.rotate_token(pid, db=db, presented=auth[7:] if auth[:7].lower() == "bearer " else "")
     except LookupError:
         return _node_refused(401, "this pair is gone")
+    except nodes.AlreadyRotated:                                            # issue #153: a racing second rotation with the same token makes no second token
+        return _node_refused(401, "this token was already rotated away; rotate with the current token", **{"WWW-Authenticate": 'Bearer realm="ccboard", error="invalid_token"'})
     return JSONResponse({"token": token, "grace_s": nodes.ROTATE_GRACE}, headers={"Cache-Control": "no-store"})
 
 

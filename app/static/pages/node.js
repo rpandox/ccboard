@@ -15,6 +15,7 @@
 const NODE_ERR = {
   timeout: 'did not answer in time', refused: 'refused the connection', tls: 'did not give a valid certificate', http_5xx: 'answered with an error',
   bad_body: 'sent an answer this board could not read', too_large: 'sent more than a reading may hold', identity_changed: 'is a different board than the one that was paired',
+  api_version: 'speaks another node API',
 };
 
 /* The plain page for an address no paired node answers to (also what #/n/ shows on a board with no node). */
@@ -35,14 +36,16 @@ function nodeNotes(rec) {
   const M = Nodes.M;
   const v = Nodes.view(rec);
   const out = [];
-  const reauth = v.status === 'unauthorized' || v.status === 'unpaired';
-  if (v.status === 'unauthorized') out.push({ cls: 'bad', text: `${nhName(rec)} no longer accepts the token this board saved (it was revoked or replaced there). Pair it again to see it here.`, repair: true });
-  else if (v.status === 'unpaired') out.push({ cls: 'bad', text: `${nhName(rec)} does not answer as the board that was paired (${rec.error_kind === 'identity_changed' ? 'it is a different board now' : 'it has no node routes'}). Remove it and pair it again.`, repair: true });
+  const hard = Nodes.hardNotice(rec);                                     // issue #153: a refused token, a lost rotation, another device, another node API, each with its own words
+  const reauth = v.status === 'unauthorized' || v.status === 'unpaired' || v.status === 'incompatible';
+  if (hard) out.push({ cls: hard.cls, text: hard.text, repair: hard.repair, remove: hard.remove, key: hard.key });
   if (!reauth && v.status !== 'online') {
-    out.push({ cls: 'warn', text: rec.state ? `Showing the last reading, from ${nodeAge(rec)}. ${rec.error_kind ? nhName(rec) + ' ' + (NODE_ERR[rec.error_kind] || 'did not answer') + '.' : ''}`.trim()
+    const age = Nodes.ageOf(rec);
+    const gone = v.status === 'offline' && age !== null ? `${nhName(rec)} is offline, last seen ${nhAgo(age)} ago. ` : '';
+    out.push({ cls: 'warn', key: v.status, text: rec.state ? `${gone}Showing the last reading, from ${nodeAge(rec)}. ${rec.error_kind ? nhName(rec) + ' ' + (NODE_ERR[rec.error_kind] || 'did not answer') + '.' : ''}`.trim()
       : `Nothing has been read from ${nhName(rec)} yet${rec.error_kind ? `: it ${NODE_ERR[rec.error_kind] || 'did not answer'}` : ''}. It may be asleep or off the tailnet.` });
   } else if (!reauth && rec.error_kind) out.push({ cls: 'warn', text: `The last try failed: ${nhName(rec)} ${NODE_ERR[rec.error_kind] || 'did not answer'}. Showing the reading before it.` });
-  if (rec.skew_warn) out.push({ cls: 'warn', text: `Its clock differs from this board's by ${Math.round(Math.abs(rec.skew_ms || 0) / 1000)} s, so ages from ${nhName(rec)} may be off.` });
+  if (rec.skew_warn) out.push({ cls: 'warn', key: 'skew', text: `Its clock differs from this board's by ${Math.round(Math.abs(rec.skew_ms || 0) / 1000)} s, so ages from ${nhName(rec)} may be off.` });
   if (rec.state && rec.state.truncated) out.push({ cls: 'dim', text: 'The reading is cut to the newest sessions and tasks.' });
   if (M.err) out.push({ cls: 'warn', text: `This page could not refresh (${M.err}). Showing the answer from ${nhSpan((Date.now() - M.recvAt) / 1000)} ago.` });
   return out;
@@ -58,13 +61,17 @@ function nodeHeader(rec) {
   const plat = NodeView.platform(card);
   const repair = notes.some((n) => n.repair);
   const open = nhOpenLink('Open board', rec, '', repair ? 'btn' : 'btn primary') || Nodes.off('Open board', 'the address saved for this node is not an https tailnet address');
-  const acts = Nodes.acts(repair ? el('a', { class: 'btn primary', href: '#/settings?sec=nodes', text: 'Re-pair' }) : null, open, nodeNew(rec, 'task'), nodeNew(rec, 'session'));
+  const remove = notes.some((n) => n.remove);
+  const acts = Nodes.acts(repair ? el('a', { class: 'btn primary', href: '#/settings?sec=nodes', text: 'Re-pair' }) : null, open, remove ? el('a', { class: 'btn', href: '#/settings?sec=nodes', text: 'Remove in Settings' }) : null,
+    nodeNew(rec, 'task'), nodeNew(rec, 'session'));
   return el('header', { class: 'nd-head' },
-    el('div', { class: 'page-head' }, el('h1', { class: 'nd-title', text: nhName(rec) }), nhStatusLine(v)),
+    el('div', { class: 'page-head' }, el('h1', { class: 'nd-title', text: nhName(rec) }),
+      el('span', { class: 'nd-head-state' }, nhStatusLine(v),                     // the status and the skew chip stay together at the end of the line
+        rec.skew_warn ? NodeView.chip(`clock off by ${Math.round(Math.abs(rec.skew_ms || 0) / 1000)} s`, 'warn', '!', 'This node\'s clock differs from this board\'s by more than 5 s, so ages from it may be off.') : null)),
     el('p', { class: 'dim nd-facts', text: facts.join(' · ') }),
     plat.name ? el('div', { class: 'nd-plat' }, NodeView.chip(plat.name, '', '', 'Platform'), el('span', { class: 'dim nd-load', text: `Load: ${plat.load}` }),
       ...Nodes.platNotes(card, plat.name).map((t) => el('p', { class: 'dim nd-note', text: t }))) : null,
-    ...notes.map((n) => el('p', { class: `nd-banner ${n.cls}`, role: 'status', text: n.text })), acts,
+    ...notes.map((n) => el('p', { class: `nd-banner ${n.cls}`, role: 'status', 'data-notice': n.key || null, text: n.text })), acts,
     el('p', { class: 'dim nd-ro', text: 'Read only here, except starting a task or a session, the tail of a session and, with the sessions and permissions scopes, replying to a session, pressing keys, acknowledging, closing it and answering its permission requests.' }));
 }
 
@@ -85,7 +92,7 @@ function nodeLaunch(rec, kind, extra) {
 
 function nodeHeaderSig(rec) {
   const c = rec.card || {};
-  return JSON.stringify([rec.status, rec.name, rec.url, rec.error_kind, rec.skew_warn, rec.scopes, rec.last_ok_at, c.version, c.os, c.runtime, c.load, c.accounts && c.accounts.supported, rec.state && rec.state.truncated,
+  return JSON.stringify([rec.status, rec.name, rec.url, rec.error_kind, rec.skew_warn, rec.skew_ms, rec.needs_repair, rec.peer_api, rec.scopes, rec.last_ok_at, c.version, c.os, c.runtime, c.load, c.accounts && c.accounts.supported, rec.state && rec.state.truncated,
     Nodes.M.err, Math.floor(Date.now() / 60000), Math.floor((Nodes.ageOf(rec) || 0) / 60)]);
 }
 
@@ -196,6 +203,7 @@ function nodePeekBack(rec, tab) {
 const NODE_TAIL_GONE = {
   offline: 'offline', upstream_error: 'could not be reached', closed: 'the stream ended', idle: 'the stream went quiet',
   repair: 'needs a new pairing: its token was refused', unpaired: 'answers as another node now', revoked: 'the pair was removed',
+  identity_changed: 'this address now belongs to another device', incompatible: 'speaks another node API',
   not_read_yet: 'has not been read yet', too_large: 'sent a line that was too long', shutdown: 'this board is stopping',
 };
 function nodeClock(ms) {
@@ -343,14 +351,15 @@ function nodeSteerMake(handle, tmux) {
   const actSec = el('div', { class: 'nd-ssec nd-actions' }, el('h2', { class: 'nd-h', text: 'Session' }), acts, keysBox, why);
   const node = el('section', { class: 'nd-steer', 'aria-label': 'Steer this session' }, permHead, permList, permNote, replySec, noText, actSec);
 
-  function show(kind, text) {
+  function show(kind, text, check) {
     status.className = `nd-steer-st ${kind}`;
-    setTextIfChanged(status, text);
+    if (check && text) { status.textContent = ''; status.append(text, ' ', Nodes.checkLink(check) || ''); }       // the outcome is unknown: the link to the node, no retry
+    else setTextIfChanged(status, text);
     status.classList.toggle('hidden', !text);
     line.classList.toggle('hidden', !text);
   }
   function echoLine(text) { setTextIfChanged(echo, text ? `› ${text}` : ''); echo.classList.toggle('hidden', !text); }
-  function fail(r) { show(r.reason === 'busy' ? 'warn' : 'bad', r.text); Nodes.say(r.text, r.reason === 'busy' || r.reason === 'rate_limited' ? 'warn' : 'bad'); }
+  function fail(r) { show(r.reason === 'busy' ? 'warn' : 'bad', r.text, r.check); Nodes.say(r.text, r.reason === 'busy' || r.reason === 'rate_limited' ? 'warn' : 'bad'); }
 
   /* A prompt: from the box (fromBox: the box is locked while the node answers, emptied only when it confirmed) or from a chip (the draft in the box is left alone). */
   async function sendText(text, fromBox, opts) {
@@ -542,7 +551,7 @@ Nodes.tailTile = function (handle, tmux, opt) {
   const name = () => (T.rec ? nhName(T.rec) : handle);
   const sess = () => String((T.row && T.row.session) || tmux.split('--')[2] || tmux);
 
-  function say(kind, text, url) { T.msg = { kind, text, url: url || null, at: Date.now(), queue: false }; paintLine(); }
+  function say(kind, text, url, check) { T.msg = { kind, text, url: url || null, check: check || '', at: Date.now(), queue: false }; paintLine(); }
 
   function paintLine() {
     const m = T.msg && (T.busy || Date.now() - T.msg.at < NODE_TILE_MSG_MS) ? T.msg : null;
@@ -551,6 +560,7 @@ Nodes.tailTile = function (handle, tmux, opt) {
     line.className = `qr-st ${kind || 'dim'}`.trim();
     st.textContent = '';
     st.append(m ? m.text : T.conn);
+    if (m && m.check) st.append(' ', Nodes.checkLink(m.check) || '');
     if (m && m.url) st.append(' ', el('a', { class: 'qr-fall', href: m.url, target: '_blank', rel: 'noopener noreferrer', text: `Tap to open the terminal on ${name()}` }));
     queue.classList.toggle('hidden', !(m && m.queue));
   }
@@ -572,7 +582,7 @@ Nodes.tailTile = function (handle, tmux, opt) {
   /* The connection in plain words: the hub's reading of the node first (offline since HH:MM, re-pair), then what the stream said. */
   function connWords(rec, v, can, wants) {
     if (!rec) return 'This node is not paired any more. Close the tile, or pair it again in Settings.';
-    if (v.status === 'offline' || v.status === 'unauthorized' || v.status === 'unpaired') return v.word;
+    if (v.status === 'offline' || v.status === 'unauthorized' || v.status === 'unpaired' || v.status === 'incompatible') return v.word;
     if (T.gone) return nodeTailWords(T.gone, nhName(rec));
     if (!wants) return can.why;
     return T.got ? 'Live: updates as the session prints.' : 'Waiting for the first lines…';
@@ -634,7 +644,7 @@ Nodes.tailTile = function (handle, tmux, opt) {
       if (asQueue !== true) { ta.value = ''; if (typeof rowCleared === 'function') rowCleared(ta); }
       say('ok', r.queued ? `Queued on ${name()}. It is typed when the session is ready.` : `Sent through the relay to ${name()}.`);
     } else {
-      say(r.reason === 'busy' || r.reason === 'rate_limited' ? 'warn' : 'bad', r.text);
+      say(r.reason === 'busy' || r.reason === 'rate_limited' ? 'warn' : 'bad', r.text, null, r.check);
       T.msg.queue = !!(r.busy && r.busy.code === 'working');
     }
     paint();

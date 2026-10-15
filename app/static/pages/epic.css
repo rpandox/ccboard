@@ -139,3 +139,8 @@ html.force-coarse #page .ep-work-btn, html.force-coarse #page .ep-work-force, ht
 html.force-coarse #page .ep-runon-btn, html.force-coarse #page .ep-win { min-height:var(--tap); }
 html.force-coarse #page .ep-win { font-size:16px; }
 html.force-coarse #page .ep-check-node { min-height:var(--tap); }
+
+/* The link after a write to a node whose outcome is unknown (issue #153): a look at that node's page, never a retry. */
+#page .ep-check { display:inline-flex; align-items:center; min-height:var(--row-btn); vertical-align:middle; color:inherit; text-decoration:underline; }
+@media (pointer:coarse) { #page .ep-check { min-height:var(--tap); } }
+html.force-coarse #page .ep-check { min-height:var(--tap); }

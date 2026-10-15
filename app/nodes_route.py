@@ -41,7 +41,8 @@ UNKNOWN_PIN = "?"                       # a pin that names no paired node (a lab
 WINDOW_WORD = {"claude": "5-hour window", "codex": "weekly window"}
 AGENTS = ("claude", "codex")
 FILTERS = ("online", "scope", "repo", "agent", "backoff", "window", "lane", "refused")
-STATUS_TEXT = {"offline": "is offline", "stale": "has not answered lately (stale)", "unauthorized": "no longer accepts this board, pair it again", "unpaired": "is not paired any more"}
+STATUS_TEXT = {"offline": "is offline", "stale": "has not answered lately (stale)", "unauthorized": "no longer accepts this board, pair it again", "unpaired": "is not paired any more",
+               "incompatible": "speaks another node API, update the older board"}
 
 
 # ---------------------------------------------------------------- reading a node's record
