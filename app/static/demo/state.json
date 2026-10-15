@@ -2317,6 +2317,8 @@
     "version": "0.5.29",
     "os": {"system": "Linux", "release": "6.8.0-demo", "tailscale_os": "linux"},
     "runtime": "systemd",
+    "owner_login": "alice",
+    "owner_id": 1001,
     "now": "2026-10-03T03:00:00.000+00:00",
     "lanes": {"cap": 3, "running": 1, "free": 2},
     "load": {"load1": 1.32, "cores": 8, "cpu_pct": 18.4, "mem_pct": 43.1, "disk_pct": 41.2},

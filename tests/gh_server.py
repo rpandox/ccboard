@@ -7,6 +7,12 @@ exist on the repository is a 422), label creation. Faults: one-shot overrides (`
 answer was lost; `hang` is a gh that never answers), between-call mutations that add or delete a comment (another node's comment interleaved), and a comment that stays
 hidden from reads until a server time (`hidden_until`, eventual consistency).
 
+Team reads (issue #197, Team P1): the open issues that have an assignee (`assignee=*`, user ids included, a pull request listed among the issues when it has assignees), the open pull
+requests (world["pulls"]: `repo#n` -> title, draft, user, head_ref, head_repo, updated_at, closes), the repository record (`full_name` for a rename, `fork` and `parent`, `default_branch`),
+the access faults of an organisation (world["sso"]: 403 with X-GitHub-SSO and the SAML text; world["forbidden"]: 403; world["hidden"]: 404), a gh that prints only `gh: HTTP 304`
+and exits 1 on a conditional hit (world["bare_304"]), and `gh api graphql` (world["tips"], world["linked"], world["gql_cost"], world["gql_rate"]): the one query of app/github.py answered from the
+same world, with a GraphQL rate limit of its own. Users get a numeric id from world["ids"] or a stable one made from the login (`uid`).
+
 No host name, e-mail address or real account appears here: acme/shop, node-a, example.com.
 """
 from __future__ import annotations
@@ -29,6 +35,27 @@ class Resp(NamedTuple):
 
 def iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def uid(world: dict, login) -> int | None:
+    """The numeric id of a login in the fake world: world["ids"][login], else a stable number made from the name."""
+    if not isinstance(login, str):
+        return None
+    return (world.get("ids") or {}).get(login) or 1000 + sum(ord(c) * (i + 1) for i, c in enumerate(login))
+
+
+SSO_BODY = {"message": "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."}
+
+
+def access_fault(world: dict, slug: str):
+    """A Resp when this login may not read the repository (SSO, forbidden, hidden), else None."""
+    if slug in world.get("sso", []):
+        return Resp(403, {"X-GitHub-SSO": "required; url=https://github.com/orgs/acme/sso?authorization_request=" + "A1B2C3"}, dict(SSO_BODY))
+    if slug in world.get("forbidden", []):
+        return Resp(403, {}, {"message": "Resource not accessible"})
+    if slug in world.get("hidden", []):
+        return Resp(404, {}, {"message": "Not Found"})
+    return None
 
 
 def key(o, r, n):
@@ -203,13 +230,52 @@ def read(world: dict, path: str) -> Resp:
     rp = re.fullmatch(r"/repos/([^/]+)/([^/?]+)", path or "")
     if rp:
         slug = "%s/%s" % rp.groups()
-        if slug in world.get("forbidden", []):
-            return Resp(403, {}, {"message": "Resource not accessible"})
+        fault = access_fault(world, slug)
+        if fault is not None:
+            return fault
         info = (world.get("repos") or {}).get(slug)
         if info is None and not world.get("repos_default", True):
             return Resp(404, {}, {"message": "Not Found"})
         info = info or {}
-        return Resp(200, {}, {"full_name": slug, "private": bool(info.get("private", False)), "permissions": {"admin": False, "push": bool(info.get("push", True)), "pull": True}})
+        body = {"full_name": info.get("full_name", slug), "private": bool(info.get("private", False)), "permissions": {"admin": False, "push": bool(info.get("push", True)), "pull": True}}
+        if "fork" in info:
+            body["fork"] = bool(info["fork"])
+            if info.get("parent"):
+                body["parent"] = {"full_name": info["parent"]}
+        if "default_branch" in info:
+            body["default_branch"] = info["default_branch"]
+        return Resp(200, {}, body)
+    tl = re.fullmatch(r"/repos/([^/]+)/([^/?]+)/(issues|pulls)\?(.*)", path or "")
+    if tl and (tl.group(3) == "pulls" or "assignee=*" in tl.group(4)):
+        o, r, what, query = tl.groups()
+        slug = "%s/%s" % (o, r)
+        fault = access_fault(world, slug)
+        if fault is not None:
+            return fault
+        if what == "issues":
+            ks = [k for k, it in world["issues"].items() if k.startswith(slug + "#") and it.get("state", "open") == "open" and it.get("assignees")]
+            ks.sort(key=lambda k: int(k.split("#")[1]))
+            items = []
+            for k in ks:
+                obj = issue_obj(world, k)
+                obj["assignees"] = [{"login": a["login"], "type": "User", "id": uid(world, a["login"])} for a in obj["assignees"]]
+                items.append(obj)
+            for pk, pr in sorted((world.get("pulls") or {}).items()):
+                if pk.startswith(slug + "#") and pr.get("assignees"):
+                    items.append({"number": int(pk.split("#")[1]), "title": pr.get("title", ""), "state": "open", "labels": [], "pull_request": {"url": "x"},
+                                  "assignees": [{"login": a, "type": "User", "id": uid(world, a)} for a in pr["assignees"]], "updated_at": pr.get("updated_at", "2026-10-01T09:00:00Z")})
+            chunk, extra = paged(world, items, query)
+            return Resp(200, extra, chunk)
+        items = []
+        for pk, pr in sorted(((k, v) for k, v in (world.get("pulls") or {}).items() if k.startswith(slug + "#")), key=lambda kv: int(kv[0].split("#")[1])):
+            head_repo = pr.get("head_repo", slug)
+            items.append({"number": int(pk.split("#")[1]), "title": pr.get("title", "Pull request"), "state": "open", "draft": bool(pr.get("draft", False)),
+                          "user": {"login": pr.get("user", "alice"), "id": uid(world, pr.get("user", "alice")), "type": "User"},
+                          "head": {"ref": pr.get("head_ref", "feature"), "repo": None if head_repo is None else {"full_name": head_repo, "fork": head_repo.lower() != slug.lower()}},
+                          "base": {"repo": {"full_name": slug}}, "html_url": "https://github.com/%s/pull/%s" % (slug, pk.split("#")[1]),
+                          "updated_at": pr.get("updated_at", "2026-10-01T09:00:00Z")})
+        chunk, extra = paged(world, items, query)
+        return Resp(200, extra, chunk)
     if path == "/rate_limit":
         r = rate or {"limit": 5000, "remaining": 5000, "reset": int(now) + 3600}
         return Resp(200, {}, {"resources": {"core": {"limit": r["limit"], "remaining": r["remaining"], "reset": r["reset"]}}})
@@ -244,6 +310,48 @@ def read(world: dict, path: str) -> Resp:
         chunk, extra = paged(world, [issue_obj(world, k) for k in ks], query)
         return Resp(200, extra, chunk)
     return Resp(404, {}, {"message": "Not Found"})
+
+
+def handle_graphql(world: dict, owner: str, name: str) -> tuple[Resp, bool]:
+    """The one team query (app/github.py GQL_TEAM) answered from the world: the linked branches of the assigned issues, the closing issues of the open pull requests and the branch
+    tips. The GraphQL rate limit is its own (world["gql_rate"] {limit, remaining}); every call costs world["gql_cost"] (default 1) points. Always status 200: GraphQL puts errors in the body."""
+    slug = "%s/%s" % (owner, name)
+    rate = world.setdefault("gql_rate", {"limit": 5000, "remaining": 5000, "reset": int(world["now"]) + 3600})
+    cost = int(world.get("gql_cost", 1))
+    headers = {"Date": email.utils.formatdate(world["now"], usegmt=True), "Content-Type": "application/json; charset=utf-8", "x-ratelimit-resource": "graphql",
+               "x-ratelimit-limit": str(rate["limit"]), "x-ratelimit-remaining": str(rate["remaining"]), "x-ratelimit-reset": str(rate["reset"])}
+    if not world.get("login"):
+        return Resp(401, headers, {"message": "Requires authentication"}), False
+    if rate["remaining"] <= 0:
+        return Resp(200, headers, {"data": None, "errors": [{"type": "RATE_LIMITED", "message": "API rate limit exceeded for user ID 1."}]}), False
+    fault = access_fault(world, slug)
+    if fault is not None:
+        if fault.status == 404:
+            return Resp(200, headers, {"data": {"repository": None}, "errors": [{"type": "NOT_FOUND", "message": "Could not resolve to a Repository with the name '%s'." % slug}]}), False
+        msg = SSO_BODY["message"] if slug in world.get("sso", []) else "Resource not accessible by personal access token"
+        return Resp(200, {**headers, **({"X-GitHub-SSO": fault.headers["X-GitHub-SSO"]} if "X-GitHub-SSO" in fault.headers else {})},
+                    {"data": {"repository": None}, "errors": [{"type": "FORBIDDEN", "message": msg}]}), False
+    rate["remaining"] = max(0, rate["remaining"] - cost)
+    headers["x-ratelimit-remaining"] = str(rate["remaining"])
+
+    def user(login):
+        return None if login is None else {"login": login, "databaseId": uid(world, login)}
+
+    def tip(t):
+        return {"name": t["name"], "target": {"committedDate": t.get("at", "2026-10-10T09:00:00Z"), "author": {"user": user(t.get("author"))}}}
+    issues = []
+    for k in sorted((k for k, it in world["issues"].items() if k.startswith(slug + "#") and it.get("state", "open") == "open" and it.get("assignees")), key=lambda k: int(k.split("#")[1])):
+        issues.append({"number": int(k.split("#")[1]), "linkedBranches": {"nodes": [{"ref": tip(t)} for t in (world.get("linked") or {}).get(k, [])]}})
+    prs = []
+    for pk, pr in sorted(((k, v) for k, v in (world.get("pulls") or {}).items() if k.startswith(slug + "#")), key=lambda kv: int(kv[0].split("#")[1])):
+        prs.append({"number": int(pk.split("#")[1]), "isDraft": bool(pr.get("draft")), "isCrossRepository": pr.get("head_repo", slug) != slug, "headRefName": pr.get("head_ref", "feature"),
+                    "author": {"login": pr.get("user", "alice"), "databaseId": uid(world, pr.get("user", "alice"))},
+                    "closingIssuesReferences": {"nodes": [{"number": c} for c in pr.get("closes", [])]}})
+    refs = [tip(t) for t in (world.get("tips") or {}).get(slug, [])][:100]
+    data = {"rateLimit": {"cost": cost, "remaining": rate["remaining"], "resetAt": "2027-01-15T10:00:00Z"},
+            "repository": {"nameWithOwner": slug, "isPrivate": False, "isFork": False, "parent": None, "issues": {"nodes": issues}, "pullRequests": {"nodes": prs},
+                           "refs": {"pageInfo": {"hasNextPage": bool(world.get("tips_more"))}, "nodes": refs}}}
+    return Resp(200, headers, {"data": data}), True
 
 
 def handle(world: dict, method: str, path: str, inm: str | None = None, body=None) -> tuple[Resp, bool]:
@@ -322,12 +430,27 @@ def main(args: list[str], env: dict, stdin, world_path: str, log_path: str, out,
     if args[:2] == ["api", "user"]:
         if not world.get("login"):
             return die(4, "To get started with GitHub CLI, please run:  gh auth login")
-        out.write(json.dumps({"login": world["login"]}) + "\n")
+        out.write(json.dumps({"login": world["login"], "id": uid(world, world["login"])}) + "\n")
         return 0
     if args[:1] != ["api"]:
         return die(1, "unknown command")
     if not world.get("login"):
         return die(4, "To get started with GitHub CLI, please run:  gh auth login")
+    if args[:2] == ["api", "graphql"]:
+        fields, include = {}, False
+        for j, a in enumerate(args[2:], 2):
+            if a == "--include":
+                include = True
+            elif a == "-f" and j + 1 < len(args):
+                k, _, v = args[j + 1].partition("=")
+                fields[k] = v
+        resp, dirty = handle_graphql(world, fields.get("owner", ""), fields.get("name", ""))
+        if dirty:
+            json.dump(world, open(world_path, "w"))
+        text = json.dumps(resp.body) if resp.body is not None else ""
+        head = "HTTP/2.0 %d %s\r\n" % (resp.status, REASONS.get(resp.status, "X")) + "".join("%s: %s\r\n" % kv for kv in resp.headers.items()) + "\r\n"
+        out.write(head + text if include else text)
+        return 0 if resp.status < 300 else 1
     method, inm, path, include, has_input = "GET", None, None, False, False
     i = 1
     while i < len(args):
@@ -362,6 +485,9 @@ def main(args: list[str], env: dict, stdin, world_path: str, log_path: str, out,
         resp, dirty = handle(world, method, path, inm, body)
     if dirty:
         json.dump(world, open(world_path, "w"))
+    if resp.status == 304 and world.get("bare_304"):          # gh 2.87: the 304 is on stderr only, with exit 1, and nothing on stdout
+        err.write("gh: HTTP 304\n")
+        return 1
     if resp.hang:
         import time
         time.sleep(30)

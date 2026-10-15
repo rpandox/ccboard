@@ -1,0 +1,82 @@
+/* The Team view (issue #197), loaded with team.js (lazy.js 'team'): the project page's Team tab and Settings > Team.
+   State is a glyph plus words, never colour alone; amber and rose only mean attention. The block has no button: its only actions are links to GitHub.
+   28 px controls with a mouse, --tap (44 px) on touch; nothing wider than 390 px; no inline styles. */
+#page .pj-team { max-width:960px; }
+#page .tm-lede { margin:0 0 4px; font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+#page .tm-load { margin:8px 0; font-size:13px; overflow-wrap:anywhere; }
+
+#page .tm-repo, #page .tm-srow { margin:16px 0 0; padding:0 0 4px; border-top:1px solid var(--line-soft); }
+#page .tm-repohead { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; padding-top:10px; min-width:0; }
+#page .tm-h { margin:0; font-size:13px; font-weight:600; line-height:1.4; min-width:0; overflow-wrap:anywhere; }
+#page .tm-local, #page .tm-age, #page .tm-priv { font-size:12px; }
+#page .tm-srow .tm-age { font-size:12px; }
+
+/* the repo row: the switch and the one sentence that says what turning it on does (the box is Blueprint's, drawn like Settings' own switches) */
+#page .tm-row { margin:0; }
+#page .tm-switch { display:flex; align-items:flex-start; gap:8px; margin:2px 0 0; padding:4px 0 4px 26px; min-height:var(--tap); font-size:13px; color:var(--fg); cursor:pointer; }
+#page .tm-switch input, #page .tm-switch .bp5-control-indicator { flex:none; }
+#page .tm-switch input:checked ~ .bp5-control-indicator::before { background-image:none; content:''; display:block; box-sizing:border-box; width:5px; height:9px; margin:1px auto 0; border:solid var(--on-sig); border-width:0 2px 2px 0; transform:rotate(45deg); }
+#page .tm-switch-t { display:flex; flex-direction:column; gap:1px; min-width:0; overflow-wrap:anywhere; }
+#page .tm-switch-t > b { font-weight:500; }
+#page .tm-switch-t > .dim { font-size:12px; line-height:1.45; }
+#page .tm-err { margin:2px 0 0 26px; font-size:12px; overflow-wrap:anywhere; }
+
+/* the block */
+#page .tm-block { margin:6px 0 0 26px; min-width:0; }
+#page .tm-status { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; padding:2px 0 6px; font-size:12px; }
+#page .tm-state { display:inline-flex; align-items:baseline; gap:2px; padding:1px 8px; border:1px solid var(--line-strong); border-radius:12px; font-size:12px; line-height:1.5; white-space:nowrap; color:var(--fg-2); }
+#page .tm-sg { display:inline-block; min-width:1em; font-family:var(--font-glyph); text-align:center; }
+#page .tm-state[data-state=ok] { border-color:var(--mute-green-bd); }
+#page .tm-state[data-state=ok] .tm-sg { color:var(--mute-green); }
+#page .tm-state[data-state=sso], #page .tm-state[data-state=rate_limited], #page .tm-state[data-state=low_budget], #page .tm-state[data-state=error] { border-color:var(--warn); color:var(--warn-fg); }
+#page .tm-state[data-state=no_access], #page .tm-state[data-state=not_found], #page .tm-state[data-state=no_login], #page .tm-state[data-state=no_gh] { border-color:var(--bad); color:var(--bad-fg); }
+#page .tm-state[data-state=off], #page .tm-state[data-state=loading] { border-style:dashed; }
+
+#page .tm-note { display:flex; flex-direction:column; gap:2px; margin:4px 0 8px; padding:8px 10px; border:1px solid var(--line); border-left-width:3px; border-radius:3px; background:var(--card); font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+#page .tm-note.warn { border-left-color:var(--warn); }
+#page .tm-note.bad { border-left-color:var(--bad); }
+#page .tm-note.dim { border-left-color:var(--line-strong); background:transparent; }
+#page .tm-note-t { font-weight:600; }
+#page .tm-note-n { font-size:12px; }
+#page a.tm-set { display:inline-flex; align-items:center; min-height:var(--row-btn); text-decoration:underline; text-underline-offset:2px; }
+
+#page .tm-people, #page .tm-items { list-style:none; margin:0; padding:0; }
+#page .tm-people.stale { padding-left:8px; border-left:2px dashed var(--line-strong); }
+#page .tm-person { padding:10px 0 6px; border-top:1px solid var(--line-soft); min-width:0; }
+#page .tm-person:first-child { border-top:0; padding-top:4px; }
+#page .tm-who { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 10px; min-width:0; }
+#page .tm-login { font-size:14px; font-weight:600; overflow-wrap:anywhere; }
+#page .tm-you { max-width:none; }
+#page .tm-sum, #page .tm-act { font-size:12px; }
+#page .tm-items { margin:2px 0 0; }
+#page .tm-item { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; padding:4px 0 4px 8px; min-width:0; font-size:13px; line-height:1.5; }
+#page .tm-g { flex:none; width:1.2em; text-align:center; font-family:var(--font-glyph); }
+#page .tm-kind { flex:none; min-width:6.5em; font-size:12px; font-weight:600; color:var(--fg-2); }
+#page .tm-ref { flex:none; font-size:12px; }
+#page .tm-title { flex:1 1 200px; min-width:0; font-weight:500; overflow-wrap:anywhere; }
+#page .tm-facts, #page .tm-when { font-size:12px; min-width:0; overflow-wrap:anywhere; }
+#page a.tm-open { display:inline-flex; align-items:center; min-height:var(--row-btn); padding:0 8px; border:1px solid var(--line-strong); border-radius:3px; font-size:12px; text-decoration:none; color:var(--fg); white-space:nowrap; }
+#page .tm-foot { margin:6px 0 0; font-size:12px; line-height:1.5; }
+#page .tm-foot p { margin:2px 0; overflow-wrap:anywhere; }
+
+/* Settings > Team */
+#page .tm-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; margin:6px 0 0; font-size:12px; }
+#page .tm-srow .tm-switch { margin-top:0; }
+#page .tm-smsg { margin:0 0 4px 26px; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+#page .tm-doc { margin:0; }
+
+@media (hover:hover) { #page a.tm-open:hover { border-color:var(--fg-2); } }
+#page a.tm-open.tm-tl { display:inline; min-height:0; padding:0; border:0; border-radius:0; font-size:inherit; white-space:normal; color:var(--fg); text-decoration:underline; text-decoration-color:var(--line-strong); text-underline-offset:3px; }   /* a row's title is its link */
+@media (hover:hover) { #page a.tm-open.tm-tl:hover { text-decoration-color:var(--fg); } }
+@media (pointer:coarse) { #page a.tm-open.tm-tl { padding:12px 0; } }
+html.force-coarse #page a.tm-open.tm-tl { padding:12px 0; }   /* a touch target as tall as a row, without changing the line */
+@media (max-width:640px) {
+  #page .tm-block, #page .tm-err, #page .tm-smsg { margin-left:0; }
+  #page .tm-kind { min-width:0; }
+  #page .tm-item { padding-left:0; }
+}
+@media (pointer:coarse) {
+  #page a.tm-open, #page a.tm-set, #page .tm-recheck { min-height:var(--tap); }
+  #page .tm-switch { min-height:var(--tap); }
+}
+html.force-coarse #page a.tm-open, html.force-coarse #page a.tm-set, html.force-coarse #page .tm-recheck, html.force-coarse #page .tm-switch { min-height:var(--tap); }

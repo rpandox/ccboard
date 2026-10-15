@@ -151,14 +151,14 @@ function doctorOnVisible() {
   if (typeof document !== 'undefined' && document.hidden) return;
   if (typeof settingsPage === 'undefined' || !settingsPage.refs) return;
   if (doctorStore.busy || Date.now() - doctorStore.at < DOCTOR_RECENT_MS) return;
-  doctorLoad(settingsPage.active === 'doctor' || settingsPage.active === 'agents');
+  doctorLoad(settingsPage.active === 'doctor' || settingsPage.active === 'agents' || settingsPage.active === 'team');
 }
 
 /* Repaint what shows the checklist: the panel that is open (rebuilt only when its signature moved) and the line under the tabs. */
 function doctorPaint() {
   const r = typeof settingsPage !== 'undefined' ? settingsPage.refs : null;
   if (!r) return;
-  if ((settingsPage.active === 'doctor' || settingsPage.active === 'agents') && typeof settingsFill === 'function') settingsFill(settingsPage.active, false);
+  if ((settingsPage.active === 'doctor' || settingsPage.active === 'agents' || settingsPage.active === 'team') && typeof settingsFill === 'function') settingsFill(settingsPage.active, false);   // team: its two Doctor rows (issue #197)
   doctorLinePaint();
 }
 

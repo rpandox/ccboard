@@ -7,8 +7,9 @@ scan row, so a field a later change gives a session cannot leak by itself):
 
   api, node{id, name, url, version, now}, etag_base
   projects[{name, repos[{name, slug, branch, dirty}]}]     slug = `owner/name` of the repo's `origin` when that is a GitHub remote, else null
-  sessions[{tmux, project, repo, session, agent, state, needs_you, kind, since, model}]      kind = how the session was started (task, user, external ...)
-  tasks[{id, title, phase, agent, project, repo, branch, tmux, issue_ref, updated_at}]       issue_ref = "#<number>" or null
+  sessions[{tmux, project, repo, repo_slug, session, agent, state, needs_you, kind, since, model}]      kind = how the session was started (task, user, external ...)
+  tasks[{id, title, phase, agent, project, repo, repo_slug, branch, tmux, issue_ref, updated_at}]       issue_ref = "#<number>" or null
+  repo_slug = the repository's canonical key `github.com/<owner>/<name>` in lower case (a fork or a renamed repository resolved to the one it belongs to), else null (issue #197)
   needs_you{permissions, input, errors}, usage{claude, codex}, lanes{cap, running, free}, login_problems[agent], truncated
 
 No prompt, reply, result, transcript, account label, e-mail address or path (project and repo names only). Task titles and session names are shown to
@@ -30,7 +31,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import login_problem, nodes, projects, scheduler
+from . import login_problem, nodes, projects, scheduler, team
 from .config import settings
 from .db import iso
 
@@ -104,6 +105,53 @@ def repo_slug(path) -> str | None:
 def slug_cache_clear() -> None:
     with _slug_lock:
         _slug_cache.clear()
+        _key_cache.clear()
+
+
+# ---------------------------------------------------------------- the canonical repository key (issue #197)
+#
+# `repo_slug` above is `owner/name` of `origin`, in GitHub's letter case: two people's boards can spell one repository differently, and a contributor whose `origin` is their
+# own fork says `bob/repo` where the teammate says `org/repo`. The key below is what a row carries so that two boards can join on it: `github.com/<owner>/<name>` in lower case,
+# taken from the `upstream` remote when there is one (a fork's parent), else from `origin`; then a hint from a read GitHub confirmed (app/team.py: a fork's parent, a
+# renamed repository's new name), which exists only for a repository the owner shared. It never asks GitHub: no gh call is made to answer it.
+
+_key_cache: dict[str, tuple[float, str | None]] = {}          # path -> (when, the `upstream` remote's slug)
+
+
+def _upstream_url(path: Path) -> str | None:
+    cp = projects._git(path, "remote", "get-url", "upstream")
+    return cp.stdout.strip() if cp is not None and cp.returncode == 0 else None
+
+
+def remote_slugs(path) -> tuple[str | None, str | None]:
+    """(`origin`'s slug, `upstream`'s slug) of the repo at `path`, each `owner/name` in GitHub's own spelling or None (not GitHub, no such remote). Each is remembered for SLUG_TTL
+    seconds (origin by `repo_slug`, so the page poll still runs one `git remote get-url origin` per repo and ten minutes)."""
+    origin = repo_slug(path)
+    key = str(path)
+    now = time.monotonic()
+    with _slug_lock:
+        hit = _key_cache.get(key)
+        if hit and now - hit[0] < SLUG_TTL:
+            return origin, hit[1]
+    try:
+        upstream = github_slug(_upstream_url(Path(key)))
+    except Exception as e:
+        log.debug("upstream of a repo could not be read: %s", e.__class__.__name__)
+        upstream = None
+    with _slug_lock:
+        if len(_key_cache) >= SLUG_CACHE_MAX:
+            _key_cache.clear()
+        _key_cache[key] = (now, upstream)
+    return origin, upstream
+
+
+def repo_key(path) -> str | None:
+    """The canonical key of the repo at `path` (see above), or None for a repo whose remotes are not on github.com."""
+    origin, upstream = remote_slugs(path)
+    base = upstream or origin
+    if not base:
+        return None
+    return team.hinted(team.key_of(*base.split("/", 1)))
 
 
 def _groups(projs):
@@ -119,19 +167,31 @@ def _groups(projs):
             yield pname, s.get("repo"), s
 
 
-def _session_row(project, repo, s: dict) -> dict:
+def _session_row(project, repo, s: dict, keys: dict | None = None) -> dict:
     stats = s.get("stats") if isinstance(s.get("stats"), dict) else {}
-    return {"tmux": clean(s.get("tmux")), "project": clean(project), "repo": clean(repo), "session": clean(s.get("name")),
+    return {"tmux": clean(s.get("tmux")), "project": clean(project), "repo": clean(repo), "repo_slug": (keys or {}).get((project, repo)), "session": clean(s.get("name")),
             "agent": clean(s.get("agent"), 20), "state": clean(s.get("state"), 20), "needs_you": bool(s.get("needs_attention")),
             "kind": clean(s.get("launcher"), 20), "since": clean(s.get("state_at"), 40), "model": clean(stats.get("model"), 80)}
 
 
-def _task_row(t: dict) -> dict:
+def _task_row(t: dict, keys: dict | None = None) -> dict:
     n = t.get("issue_number")
     return {"id": t.get("id") if isinstance(t.get("id"), int) else None, "title": clean(t.get("title")), "phase": clean(t.get("phase") or "running", 20),
             "agent": clean(t.get("agent") or "claude", 20), "project": clean(t.get("project")), "repo": clean(t.get("repo")),
-            "branch": clean(t.get("branch")), "tmux": clean(t.get("tmux_name")),
+            "repo_slug": (keys or {}).get((t.get("project"), t.get("repo"))), "branch": clean(t.get("branch")), "tmux": clean(t.get("tmux_name")),
             "issue_ref": f"#{n}" if isinstance(n, int) and not isinstance(n, bool) and n > 0 else None, "updated_at": clean(t.get("updated_at"), 40)}
+
+
+def _repo_keys(projs) -> dict:
+    """{(project name, repo folder name): canonical repo key} for the repositories of the scan that have one (a git repo with a GitHub remote)."""
+    out = {}
+    for p in (projs or [])[:PROJECTS_MAX]:
+        for r in (p.get("repos") or [])[:REPOS_MAX]:
+            if r.get("state") == "ok" and r.get("path"):
+                k = repo_key(r["path"])
+                if k:
+                    out[(p.get("name"), r.get("name"))] = k
+    return out
 
 
 def _usage(db) -> dict:
@@ -171,7 +231,8 @@ def build(db, scan: dict) -> dict:
     """The body for `scan` (the scan cache's {tmux_down, projects, ...}); nothing in it is a reference to the scan. Already within the caps."""
     projs = scan.get("projects") or []
     truncated = False
-    sess_all = [_session_row(p, r, s) for p, r, s in _groups(projs)]
+    keys = _repo_keys(projs)
+    sess_all = [_session_row(p, r, s, keys) for p, r, s in _groups(projs)]
     sess_all = [s for s in sess_all if s["tmux"]]
     needs = {"permissions": len(db.perm_pending()),
              "input": sum(1 for s in sess_all if s["needs_you"] and s["state"] in ("waiting", "done")),
@@ -179,7 +240,7 @@ def build(db, scan: dict) -> dict:
     sess = sorted(sess_all, key=lambda s: s["state"] == "ended")             # stable: live sessions first, the scan's order inside each group
     if len(sess) > SESSIONS_MAX:
         sess, truncated = sess[:SESSIONS_MAX], True
-    rows = [_task_row(t) for t in db.tasks()]
+    rows = [_task_row(t, keys) for t in db.tasks()]
     active = [t for t in rows if t["phase"] not in FINISHED]
     finished = sorted((t for t in rows if t["phase"] in FINISHED), key=lambda t: t["updated_at"] or "", reverse=True)
     tasks = (active + finished)

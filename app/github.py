@@ -88,12 +88,13 @@ TIMEOUT = 20.0
 CACHE_MAX = 400                             # entries: a 100-child epic needs about 205 (the parent, the list, a comments path and an issue path per child)
 BACKOFF_MAX = 3600
 BACKOFF_DEFAULT = 60                        # the secondary limit's own advice, when GitHub names no wait
-SAFE_HEADERS = ("etag", "date", "retry-after", "link", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset", "x-oauth-scopes")
+SAFE_HEADERS = ("etag", "date", "retry-after", "link", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset", "x-ratelimit-resource", "x-oauth-scopes", "x-github-sso")
 
 MESSAGES = {
     "no_gh": "gh is not installed on this board, so epics cannot be read from GitHub",
     "no_login": "gh is not logged in on this board: run gh auth login there",
     "no_access": "this gh login cannot read that repository",
+    "sso": "this token must be authorised for the organization that owns the repository (SAML single sign-on)",
     "not_found": "GitHub has no such issue, or this login cannot see it",
     "rate_limited": "GitHub asked us to wait",
     "timeout": "gh did not answer in time",
@@ -172,6 +173,20 @@ def labeled_path(owner, repo, label, state: str = "open", page: int = 1, per_pag
 
 RATE_PATH = "/rate_limit"
 
+# The lists the team reader asks for (issue #197): the open issues somebody is assigned to, and the open pull requests. Both are plain GETs and both can be revalidated with an ETag.
+_TEAM_LIST = re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/(?:issues\?state=open&assignee=\*|pulls\?state=open)&per_page=[0-9]{1,3}&page=[0-9]{1,3}")
+
+
+def assigned_issues_path(owner, repo, page: int = 1, per_page: int | None = None) -> str:
+    """/repos/{owner}/{repo}/issues?state=open&assignee=*: the open issues (and pull requests, which GitHub lists as issues) that have an assignee."""
+    return f"{_check(owner, repo)}?state=open&assignee=*&{_page(page, PER_PAGE if per_page is None else per_page)}"
+
+
+def open_pulls_path(owner, repo, page: int = 1, per_page: int | None = None) -> str:
+    if not valid_slug(owner, repo):
+        raise GhReadError("bad_request")
+    return f"/repos/{owner}/{repo}/pulls?state=open&{_page(page, PER_PAGE if per_page is None else per_page)}"
+
 
 def repo_path(owner, repo) -> str:
     """/repos/{owner}/{repo}: the repository itself, read by the doctor for `permissions.push` and `private` (a GET like every other path of this module)."""
@@ -190,6 +205,9 @@ def allowed_path(path) -> bool:
     r = _REPO_PATH.fullmatch(path)
     if r:
         return valid_slug(r.group(1), r.group(2))
+    t = _TEAM_LIST.fullmatch(path)
+    if t:
+        return valid_slug(t.group(1), t.group(2))
     m = _PATH.fullmatch(path)
     return bool(m) and valid_slug(m.group(1), m.group(2))
 
@@ -264,8 +282,19 @@ def _parse_output(raw: bytes) -> tuple[int | None, dict, bytes]:
     return int(m.group(1)), headers, body.encode("utf-8")
 
 
-def _exec(args: list[str]) -> tuple[int, bytes]:
-    """Run the argv: (exit code, stdout). stderr is only classified, never kept. Raises GhReadError for a missing gh, a missing login, a timeout and an
+_NOT_MODIFIED = re.compile(r"gh: (?:Not Modified \()?HTTP 304\)?(?:\s|$)")
+
+
+def is_not_modified(rc: int, stdout: bytes, stderr_head: str) -> bool:
+    """gh 2.87 answers a conditional read (`If-None-Match`) that GitHub accepted with exit 1, the text `gh: HTTP 304` on stderr and no JSON: that is "not modified", not a failure.
+    True only for exactly that: exit code 1, no HTTP head on stdout, and a stderr line that is gh's own `HTTP 304` (not 3040, not 404, not another 3xx). Any other non-zero exit stays an error."""
+    if rc != 1 or stdout.startswith(b"HTTP/"):
+        return False
+    return any(_NOT_MODIFIED.match(line) is not None for line in stderr_head.splitlines()[:5])
+
+
+def _exec(args: list[str]) -> tuple[int, bytes, bool]:
+    """Run the argv: (exit code, stdout, whether gh said `HTTP 304`). stderr is only classified, never kept. Raises GhReadError for a missing gh, a missing login, a timeout and an
     answer over OUT_CAP."""
     try:
         cp = subprocess.run(args, capture_output=True, timeout=TIMEOUT, stdin=subprocess.DEVNULL,
@@ -276,21 +305,32 @@ def _exec(args: list[str]) -> tuple[int, bytes]:
         raise GhReadError("no_gh") from None
     if len(cp.stdout) > OUT_CAP:
         raise GhReadError("too_large")
-    err = (cp.stderr or b"")[:4096].decode("utf-8", "replace").lower()
+    raw_err = (cp.stderr or b"")[:4096].decode("utf-8", "replace")
+    err = raw_err.lower()
     if (cp.returncode == 4 or "gh auth login" in err) and not cp.stdout.startswith(b"HTTP/"):      # exit 4 is gh's "authentication required"
         raise GhReadError("no_login")
-    return cp.returncode, cp.stdout
+    return cp.returncode, cp.stdout, is_not_modified(cp.returncode, cp.stdout, raw_err)
+
+
+def _date_now() -> str:
+    """This box's clock as an HTTP Date. gh prints no head for a 304, so the reader would otherwise keep the clock of the last 200 for ever; the box's clock is within seconds
+    of GitHub's while NTP runs, and the claim lease it is compared with is minutes."""
+    return email.utils.formatdate(usegmt=True)
 
 
 def api(path: str, etag: str | None = None) -> tuple[int, dict, Any]:
     """GET `path` through `gh api --include`: (status, headers, json). Any HTTP status is returned (a 304 has data None); a failure of gh itself is a
-    GhReadError. `etag` goes out as If-None-Match when it is a plain ETag. The Date header is in headers['date']."""
+    GhReadError. `etag` goes out as If-None-Match when it is a plain ETag. The Date header is in headers['date']. A 304 that gh reports only as exit 1 and
+    `gh: HTTP 304` (no HTTP head) is returned as (304, {'date': now}, None), and only when an ETag was sent: the Date is this box's clock, so a revalidated reply moves the clock on."""
     exe = shutil.which("gh")
     if not exe:
         raise GhReadError("no_gh")
-    rc, out = _exec(argv(path, etag, exe))
+    sent = argv(path, etag, exe)
+    rc, out, not_modified = _exec(sent)
     status, headers, body = _parse_output(out)
     if status is None:
+        if not_modified and any(a.startswith("If-None-Match: ") for a in sent):
+            return 304, {"date": _date_now()}, None
         raise GhReadError("unavailable" if rc != 0 else "bad_answer")
     data = None
     if body.strip() and (200 <= status < 300 or status >= 400):
@@ -300,6 +340,77 @@ def api(path: str, etag: str | None = None) -> tuple[int, dict, Any]:
             if 200 <= status < 300:
                 raise GhReadError("bad_answer") from None
     return status, headers, data
+
+
+# ---- GraphQL, read only (issue #197). GitHub's GraphQL endpoint takes every query as a POST on the wire, and `gh api graphql -f query=...` is how gh sends one; that is
+# unavoidable and it writes nothing: the ONE query below is a constant (it has no mutation and no variable that is not a plain owner or repository name, checked against
+# GitHub's rules first), no `--method` flag is built, and `graphql_argv` builds nothing else. The linked branches of assigned issues, the closing issues of open pull
+# requests and the branch tips come from it, because REST has no 304 path for them and no linked-branch list at all.
+GQL_TEAM = (
+    "query($owner:String!,$name:String!){rateLimit{cost remaining resetAt}"
+    "repository(owner:$owner,name:$name){nameWithOwner isPrivate isFork parent{nameWithOwner}"
+    "issues(states:OPEN,first:30,filterBy:{assignee:\"*\"},orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number "
+    "linkedBranches(first:3){nodes{ref{name target{... on Commit{committedDate author{user{login databaseId}}}}}}}}}"
+    "pullRequests(states:OPEN,first:30,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number isDraft isCrossRepository headRefName "
+    "author{login ... on User{databaseId}} closingIssuesReferences(first:3){nodes{number}}}}"
+    "refs(refPrefix:\"refs/heads/\",first:100){pageInfo{hasNextPage} nodes{name target{... on Commit{committedDate author{user{login databaseId}}}}}}}}"
+)
+GQL_WORDS = ("mutation", "subscription")
+
+
+def graphql_argv(owner, repo, exe: str = "gh") -> list[str]:
+    """`gh api graphql --include -f query=<the constant query> -f owner=<owner> -f name=<repo>`: -f (never -F, which would turn a numeric-looking name into a number), owner and
+    repository checked against GitHub's rules first, nothing else in the command."""
+    if not valid_slug(owner, repo) or any(w in GQL_TEAM.lower() for w in GQL_WORDS):
+        raise GhReadError("bad_request")
+    return [exe, "api", "graphql", "--include", "-f", "query=" + GQL_TEAM, "-f", f"owner={owner}", "-f", f"name={repo}"]
+
+
+def graphql_reason(data) -> str | None:
+    """The fixed reason (a key of MESSAGES) for the errors of a GraphQL answer, None when it has none. GitHub says 200 and puts the error in the body."""
+    errs = data.get("errors") if isinstance(data, dict) else None
+    if not isinstance(errs, list) or not errs:
+        return None
+    for e in errs[:5]:
+        kind = e.get("type") if isinstance(e, dict) else None
+        msg = (e.get("message") if isinstance(e, dict) else "") or ""
+        low = msg.lower() if isinstance(msg, str) else ""
+        if "saml" in low:
+            return "sso"
+        if kind == "RATE_LIMITED" or "rate limit" in low:
+            return "rate_limited"
+        if kind == "NOT_FOUND":
+            return "not_found"
+        if kind == "FORBIDDEN":
+            return "no_access"
+    return "bad_answer"
+
+
+def graphql(owner, repo) -> tuple[int, dict, Any]:
+    """The one team query for a repository: (status, headers, json) like `api`. A failure of gh itself is a GhReadError; GitHub's own errors are in the body (see graphql_reason)."""
+    exe = shutil.which("gh")
+    if not exe:
+        raise GhReadError("no_gh")
+    rc, out, _ = _exec(graphql_argv(owner, repo, exe))
+    status, headers, body = _parse_output(out)
+    if status is None:
+        raise GhReadError("unavailable" if rc != 0 else "bad_answer")
+    data = None
+    if body.strip():
+        try:
+            data = json.loads(body.decode("utf-8", "replace"))
+        except ValueError:
+            if 200 <= status < 300:
+                raise GhReadError("bad_answer") from None
+    return status, headers, data
+
+
+def sso_signal(headers: dict, data) -> bool:
+    """Does a 403 mean "authorise this token for the organization"? GitHub sends `X-GitHub-SSO: required; url=...` (the url is never kept) or says SAML in the message."""
+    if "x-github-sso" in headers:
+        return True
+    msg = data.get("message") if isinstance(data, dict) else None
+    return isinstance(msg, str) and "saml" in msg.lower()
 
 
 def server_time(headers: dict) -> float | None:
@@ -381,6 +492,11 @@ class Reader:
         with self.lock:
             return {"remaining": self.remaining, "limit": self.limit, "reset": epoch_iso(self.reset), "wait_s": self.wait_left() or None}
 
+    def defer_to(self, until: float) -> None:
+        """Stay away until `until` (this reader's monotonic clock) too: another reader on the same login was told to wait."""
+        with self.lock:
+            self.until = max(self.until, until)
+
     def reset_state(self) -> None:
         with self.lock:
             self.cache.clear()
@@ -439,7 +555,7 @@ class Reader:
             if status == 401:
                 raise GhReadError("no_login")
             if status == 403:
-                raise GhReadError("no_access")
+                raise GhReadError("sso" if sso_signal(headers, data) else "no_access")
             if status >= 500:
                 raise GhReadError("unavailable")
             raise GhReadError("bad_answer")

@@ -2,6 +2,26 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.51 - 2026-10-15
+
+### Added
+- Team P1, read-only presence of teammates (#197, of #196). Switch a repository on (**Shared with my team**, off by default) and the board shows who else works in it, from what GitHub already shows: issues assigned to a person, branches linked to them or pushed in the last 14 days, and open or draft pull requests, forks included. A teammate does not need ccboard. Nothing is written to GitHub and nothing of your own sessions leaves the box. The project page has a **Team** tab and Settings has a **Team** panel; the block has no button, only **Open on GitHub** links. The code is the lazy bundle `team.js` (first paint grew by about 490 bytes).
+- Every state has its own words and next step and is never "no teammates": not shared, reading, **authorise this token for the organization** (single sign-on), no access, not found, waiting for GitHub, few requests left, `gh` not logged in or missing, could not be read, and old data (kept on screen with its age). GitHub text is cut, stripped of control characters and drawn as text; a link is shown only if it is a `https://github.com` address of the right shape.
+- A person identity: `owner_login` and `owner_id` on the node card (`gh api user`, cached 10 minutes), two Doctor rows (**GitHub login of this board**, **Team GitHub access** with the least token permission), and `repo_slug` on every session and task row of `/api/node/state`: the lower-cased `github.com/<owner>/<name>`, a fork resolved to its parent, `null` for a non-GitHub remote. `GET /api/team/state`, `PUT /api/team/repos/<owner>/<repo>` and `POST /api/team/refresh` are for a signed-in person only and are in no node scope.
+- `?demo=1` shows `example/website` shared with `alice` (you) and `bob`: open `#/p/phasezero?tab=team` and `#/settings?sec=team`; `&team=loading|empty|alone|sso|forbidden|notfound|rate|low|stale|nologin|nogh|error|pending|cut|off|hostile` shows each state without a server.
+
+### Changed
+- README and ROADMAP no longer say "multi-user" is never: still one board per person and no shared control, read-only presence of teammates exists, opt-in per repository. The README has a Team section (what is read, what is never written, the points an hour measured with the test fake: 67, 335 and 600 for 1, 5 and 20 shared repositories, a 304 counted as a point). The poll is last in line for the login's 5,000 requests an hour: at most 600 an hour for all shared repositories, slower as the limit falls, nothing under 300 left.
+- The project page gains a Team tab (after Files) and Settings gains a Team tab (after Nodes). Known limits: the two-login check on a real private organization repository, a real 304, the GraphQL query against real GitHub and whether a 304 costs a point are UNVERIFIED; the hub view of a paired node does not carry `owner_login` or `repo_slug` yet.
+
+### Fixed
+- Team reads no longer show old data as current. A new issue or pull request list is kept as soon as it is read, so a later failure (or a 304) cannot bring the old list back, and the issues and pull requests show even when the slow branch-links read fails. That part is said in words ("could not be read just now") and is tried again soon. A claim's lease now runs out on a repeated 304 too: the clock moves on with each revalidated reply (the epic view had the same stale clock).
+- The node card never waits on `gh`: it names the login only once it is known, and a cold start asks in the background, once, however many cards are asked for at the same time.
+- A failed GraphQL read is now counted against the team poll's hourly budget. **Check again** keeps the cap off for one round only, and is answered at most once a minute. A repository switched off while GitHub was being asked leaves no stored record behind.
+- A claim comment counts as presence only from an owner, member or collaborator, as in the epic view, so a stranger cannot appear on a public repository. A back-off that GitHub asks of the team poll now holds the epic reader too.
+
+Upgrade: nothing to do.
+
 ## v0.5.50 - 2026-10-15
 
 ### Added

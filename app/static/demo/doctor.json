@@ -2,7 +2,7 @@
   "generated_at": "2026-10-06T08:00:00.000+00:00",
   "ok": false,
   "summary": {
-    "pass": 15,
+    "pass": 17,
     "warn": 4,
     "fail": 2,
     "skip": 1
@@ -85,6 +85,22 @@
         "text": "Log gh in on the box (PRs and clone-from-GitHub need it)",
         "cmd": "gh auth login"
       }
+    },
+    {
+      "id": "gh-login",
+      "group": "box",
+      "label": "GitHub login of this board",
+      "status": "pass",
+      "detail": "this board acts as alice (id 1001); teammates see this login on the Team block",
+      "fix": null
+    },
+    {
+      "id": "team-gh",
+      "group": "box",
+      "label": "Team GitHub access",
+      "status": "pass",
+      "detail": "gh can read 1 of 1 shared repositories (classic token, scopes: repo; 4912 of 5000 requests left)",
+      "fix": null
     },
     {
       "id": "ccusage",

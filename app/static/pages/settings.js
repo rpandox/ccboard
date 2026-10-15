@@ -1,4 +1,5 @@
-/* ccboard settings page (#/settings[?sec=notify|nodes|box|doctor|agents|accounts|app]): the Notify panel (Web Push, ntfy, backup), the Nodes strip, the
+/* ccboard settings page (#/settings[?sec=notify|nodes|team|box|doctor|agents|accounts|app]): the Notify panel (Web Push, ntfy, backup), the Nodes strip, the Team panel (issue #197:
+   the login this board acts as, the Team GitHub access rows of the Doctor and the per-repo "shared with my team" switches, drawn by team.js, a lazy bundle), the
    box health, the Doctor (v0.5.19: the checklist, pages/doctor.js), the agents (v0.5.19: a card each for Claude and Codex with version, login, hooks, the models the launcher offers,
    the doctor's checks and the sessions started outside the board; Log in leads to the Accounts add blocks), the subscription Accounts (v0.5.17b: label, email, plan, windows, last seen, Rename, and how to add another)
    and the App panel (installed or browser, Install, Safari steps, build id, Reload app, shortcuts).
@@ -10,9 +11,9 @@
 'use strict';
 
 const SETTINGS_SECTIONS = [
-  { id: 'notify', label: 'Notifications' }, { id: 'nodes', label: 'Nodes' }, { id: 'box', label: 'Box' }, { id: 'doctor', label: 'Doctor' }, { id: 'agents', label: 'Agents' }, { id: 'accounts', label: 'Accounts' }, { id: 'app', label: 'App' },
+  { id: 'notify', label: 'Notifications' }, { id: 'nodes', label: 'Nodes' }, { id: 'team', label: 'Team' }, { id: 'box', label: 'Box' }, { id: 'doctor', label: 'Doctor' }, { id: 'agents', label: 'Agents' }, { id: 'accounts', label: 'Accounts' }, { id: 'app', label: 'App' },
 ];
-const settingsPage = { refs: null, active: 'notify', acct: { at: 0, full: null }, add: null, seenAt: null, cx: null, cxSeenAt: null, focus: null, wantCx: false, vis: null, ext: null, extAsked: false };         // acct: when GET /api/accounts last ran, and its rows by key (for 'seen 3h ago'); add: the add-account block of this mount; seenAt: the login result already announced; cx / cxSeenAt: the same for the Codex add block (v0.5.17e)
+const settingsPage = { refs: null, active: 'notify', acct: { at: 0, full: null }, add: null, seenAt: null, cx: null, cxSeenAt: null, focus: null, wantCx: false, vis: null, ext: null, extAsked: false, teamStop: null };         // acct: when GET /api/accounts last ran, and its rows by key (for 'seen 3h ago'); add: the add-account block of this mount; seenAt: the login result already announced; cx / cxSeenAt: the same for the Codex add block (v0.5.17e)
 
 /* One setting as the shared .kv row (v0.5.6d): the label in a 120 px column, the value in mono with its helper text under it, the actions at the right
    (under the value on a phone). Buttons, link-buttons and the two-tap pair go to the actions, everything else to the value. row.add() files late
@@ -1083,6 +1084,32 @@ function settingsNdDispose() {
   settingsNd.data = null;
   settingsNd.at = 0;
   settingsNd.err = '';
+}
+
+/* Settings > Team (issue #197): team.js draws the panel. It is a lazy bundle, so the first visit shows a line and asks for it; the panel then watches the board's team view while it is the open
+   tab (a switch, a read that finished) and stops when another tab is opened or the page goes away. */
+function settingsTeam(p) {
+  if (typeof Team !== 'undefined') { Team.settingsPanel(p); return; }
+  p.textContent = '';
+  p.append(el('p', { class: 'dim set-note', role: 'status', text: 'Loading the team settings…' }));
+  settingsTeamOpen();
+}
+
+function settingsTeamOpen() {
+  if (settingsPage.teamStop) return;
+  if (typeof Team === 'undefined') {
+    if (typeof Lazy === 'undefined' || !Lazy.bundles || !Lazy.bundles.team || settingsPage.teamAsked) return;
+    settingsPage.teamAsked = true;
+    Lazy.load('team').then(() => { settingsPage.teamAsked = false; if (settingsPage.refs) { settingsFill('team', true); if (settingsPage.active === 'team') settingsTeamOpen(); } },
+      () => { settingsPage.teamAsked = false; if (settingsPage.refs) { const q = settingsPage.refs.panels.team; q.textContent = ''; q.append(el('p', { class: 'bad set-err', role: 'alert', text: 'The team settings did not load. Reload the page to try again.' })); } });
+    return;
+  }
+  settingsPage.teamStop = Team.watch(() => { if (settingsPage.refs && settingsPage.active === 'team') settingsFill('team', false); });
+}
+
+function settingsTeamClose() {
+  if (settingsPage.teamStop) settingsPage.teamStop();
+  settingsPage.teamStop = null;
 }
 
 function settingsBox(p) {
@@ -2508,7 +2535,7 @@ function settingsApp(p) {
 /* core.js / shell.js call renderAppPanel() when the browser hands over (or withdraws) the install prompt: rebuild the panel if the page is open. */
 function renderAppPanel() { settingsFill('app', true); }
 
-const SETTINGS_BUILD = { notify: settingsNotify, nodes: settingsNodes, box: settingsBox, doctor: (p) => settingsDoctor(p), agents: settingsAgents, accounts: settingsAccounts, app: settingsApp };
+const SETTINGS_BUILD = { notify: settingsNotify, nodes: settingsNodes, team: (p) => settingsTeam(p), box: settingsBox, doctor: (p) => settingsDoctor(p), agents: settingsAgents, accounts: settingsAccounts, app: settingsApp };
 
 /* What a panel shows, as a string: the panel is rebuilt only when it changes. */
 function settingsSig(id, st) {
@@ -2520,6 +2547,7 @@ function settingsSig(id, st) {
     return JSON.stringify([st.nodes, n && [n.node_id, n.name, n.os, n.lanes, n.agents], st.agents, st.node_name, settingsNd.rev, armed, Math.floor(Date.now() / 15000), Nodes.ready ? Nodes.M.rev : 0]);
   }
   if (id === 'box') return JSON.stringify([st.health, st.backup, st.node_name, st.user, st.claude_defaults, minute]);
+  if (id === 'team') return JSON.stringify([typeof Team !== 'undefined' ? Team.sig() : null, doctorSig()]);       // the data of team.js (it repaints this panel through its watch) and the Doctor rows it shows
   if (id === 'accounts') {                                             // identity and labels, not the readings: those move with every statusline and would rebuild the Rename button under a finger (they refresh with the minute)
     const forget = /^((acct|cx)-forget:|cx-logout)/.test(String(ui.confirm || '')) ? ui.confirm : null;      // the two-tap Forget login repaints the row
     return JSON.stringify([st.accounts && st.accounts.current, agentsAccounts(st).map((a) => [a.key, a.label, a.name, a.email, a.plan, !!a.current, !!a.saved]), acctStore(st), acctFlow.busy, forget, minute,
@@ -2555,6 +2583,7 @@ function settingsShow(id) {
   r.tabs.set(id);
   settingsFill(id, false);
   if (id === 'nodes') settingsNdOpen();                              // opening the tab is the ask: one look, never a timer
+  if (id === 'team') settingsTeamOpen(); else settingsTeamClose();     // the Team panel watches the board's team view only while it is the tab in front
   if (id === 'accounts') settingsAcctPatch();                       // a Log in tapped on another page starts the add flow here
   if (typeof doctorLinePaint === 'function') doctorLinePaint();       // the 'Doctor: n checks failing' line is not shown on the Doctor tab itself
 }
@@ -2624,6 +2653,7 @@ registerPage('settings', {
     settingsPage.extAsked = false;
     settingsMcpDispose();                                             // the one-time token dialog never outlives the page
     settingsNdDispose();                                              // an answer from the tailnet list still on its way is dropped
+    settingsTeamClose();                                              // the watch of the team view ends with the page
     settingsPage.refs = null;
   },
 });

@@ -7,6 +7,8 @@
   "version": "0.5.29",
   "os": {"system": "Linux", "release": "6.8.0-demo", "tailscale_os": "linux"},
   "runtime": "systemd",
+  "owner_login": "alice",
+  "owner_id": 1001,
   "now": "2026-10-03T03:00:00.000+00:00",
   "agents": [
     {"id": "claude", "installed": true, "version": "2.1.288", "logged_in": true, "hooks": true, "login_problem": false},

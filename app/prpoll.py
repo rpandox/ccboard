@@ -80,27 +80,45 @@ def origin_owner(cwd: Path) -> str | None:
 
 
 GH_LOGIN_TTL = 600.0
-_gh_login: tuple[float, str | None] | None = None
+_gh_login: tuple[float, str | None, int | None] | None = None          # (valid until, login, numeric user id); tests reset it to None
 _gh_login_lock = threading.Lock()
 
 
-def gh_login(cwd: Path) -> str | None:
-    """The GitHub login gh is authenticated as on this box (`gh api user`), cached for GH_LOGIN_TTL; None when gh cannot say."""
+def gh_identity(cwd: Path) -> tuple[str | None, int | None]:
+    """(login, numeric user id) gh is authenticated as on this box (`gh api user`, a GET), cached for GH_LOGIN_TTL; (None, None) when gh cannot say. The id is
+    what a person is keyed on (a login can be renamed); it is None when GitHub sent none."""
     global _gh_login
     import time
     now = time.monotonic()
     with _gh_login_lock:
         if _gh_login and _gh_login[0] > now:
-            return _gh_login[1]
+            return _gh_login[1], _gh_login[2] if len(_gh_login) > 2 else None
+    uid = None
     try:
         data = _gh_json(["api", "user"], cwd, timeout=20)
         login = data.get("login") if isinstance(data, dict) else None
         login = login if isinstance(login, str) and login.strip() else None
+        raw = data.get("id") if isinstance(data, dict) else None
+        uid = raw if isinstance(raw, int) and not isinstance(raw, bool) and 0 < raw < 10 ** 12 else None
     except gitops.GitError:
         login = None
     with _gh_login_lock:
-        _gh_login = (now + (GH_LOGIN_TTL if login else 30.0), login)          # a failure is retried soon, a login kept for 10 min
-    return login
+        _gh_login = (now + (GH_LOGIN_TTL if login else 30.0), login, uid if login else None)          # a failure is retried soon, a login kept for 10 min
+    return login, uid if login else None
+
+
+def gh_identity_cached() -> tuple[str | None, int | None]:
+    """What the last probe said, with no gh call (None, None when nothing is cached or it has expired)."""
+    import time
+    with _gh_login_lock:
+        if _gh_login and _gh_login[0] > time.monotonic():
+            return _gh_login[1], _gh_login[2] if len(_gh_login) > 2 else None
+    return None, None
+
+
+def gh_login(cwd: Path) -> str | None:
+    """The GitHub login gh is authenticated as on this box (`gh api user`), cached for GH_LOGIN_TTL; None when gh cannot say."""
+    return gh_identity(cwd)[0]
 
 
 def _issue_row(i: dict, owner: str | None, me: str | None = None) -> dict:

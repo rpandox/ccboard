@@ -16,12 +16,15 @@ import os
 import stat
 import sys
 import threading
+import time
 from pathlib import Path
 
-from app import github, github_write, nodes_epics
+from app import github, github_write, nodes_epics, prpoll, team_github
 from tests import gh_server
 
 REAL_API = github.api
+REAL_GRAPHQL = github.graphql
+REAL_IDENTITY = team_github.identity
 REAL_TRANSPORT = github_write.transport
 REAL_GH_LOGIN = nodes_epics._gh_login
 SECRET = "ghp_" + "A1b2C3d4" * 4                    # shaped like a classic token, built by concatenation; the fake leaks it on stderr, the board must never show it
@@ -73,6 +76,8 @@ class FakeGitHub:
         monkeypatch.setattr(github, "api", REAL_API)
         monkeypatch.setattr(github_write, "transport", REAL_TRANSPORT)
         monkeypatch.setattr(nodes_epics, "_gh_login", REAL_GH_LOGIN)
+        monkeypatch.setattr(github, "graphql", REAL_GRAPHQL)
+        monkeypatch.setattr(team_github, "identity", REAL_IDENTITY)
         return self
 
     def use_memory(self, monkeypatch, hook=None) -> "FakeGitHub":
@@ -89,6 +94,7 @@ class FakeGitHub:
             with self.mem_lock:
                 self.mem_calls.append({"argv": ["api", "--method", method, path], "stdin": json.dumps(body) if body is not None else ""})
                 resp, _ = gh_server.handle(self.world, method, path, inm, body)
+                self.mem_calls[-1]["status"] = resp.status
                 return resp
 
         def api(path, etag=None):
@@ -104,9 +110,27 @@ class FakeGitHub:
                 raise github_write.GhWriteError("timeout", unknown=True)
             headers = {k.lower(): v for k, v in resp.headers.items() if k.lower() in github.SAFE_HEADERS}
             return resp.status, headers, resp.body
+        def graphql(owner, repo):
+            if hook is not None:
+                hook("read", "POST", "graphql")
+            with self.mem_lock:
+                self.mem_calls.append({"argv": github.graphql_argv(owner, repo, "gh")[1:], "stdin": ""})
+                resp, _ = gh_server.handle_graphql(self.world, owner, repo)
+                self.mem_calls[-1]["status"] = resp.status
+            headers = {k.lower(): v for k, v in resp.headers.items() if k.lower() in github.SAFE_HEADERS}
+            return resp.status, headers, resp.body
         monkeypatch.setattr(github, "api", api)
+        monkeypatch.setattr(github, "graphql", graphql)
         monkeypatch.setattr(github_write, "transport", transport)
         monkeypatch.setattr(nodes_epics, "_gh_login", lambda: self.world.get("login"))
+
+        def identity():
+            """Like the real probe: the answer, and prpoll's cache filled with it (the node card reads only that cache)."""
+            login = self.world.get("login")
+            got = (login, gh_server.uid(self.world, login)) if login else (None, None)
+            prpoll._gh_login = (time.monotonic() + prpoll.GH_LOGIN_TTL, got[0], got[1])          # conftest restores it after the test
+            return got
+        monkeypatch.setattr(team_github, "identity", identity)
         return self
 
     def save(self) -> None:
@@ -142,8 +166,24 @@ class FakeGitHub:
         return [json.loads(line) for line in self.log_path.read_text().splitlines() if line.strip()]
 
     def paths(self) -> list[str]:
-        """The path of every `gh api` call, in order."""
-        return [c["argv"][-1] for c in self.calls() if c["argv"][:1] == ["api"] and c["argv"][-1] != "user"]
+        """The path of every `gh api` call, in order (a GraphQL call is listed as `graphql:<owner>/<name>`)."""
+        out = []
+        for c in self.calls():
+            a = c["argv"]
+            if a[:2] == ["api", "graphql"]:
+                f = {x.partition("=")[0]: x.partition("=")[2] for x in a if "=" in x and not x.startswith("query=")}
+                out.append("graphql:%s/%s" % (f.get("owner"), f.get("name")))
+            elif a[:1] == ["api"] and a[-1] != "user":
+                out.append(a[-1])
+        return out
+
+    def graph_calls(self) -> list[str]:
+        return [p for p in self.paths() if p.startswith("graphql:")]
+
+    def points(self) -> int:
+        """The points the calls so far cost: one for every REST call (a 304 counted too, because whether it is free is unverified) and the world's `gql_cost` for each GraphQL call."""
+        cost = int(self.world.get("gql_cost", 1))
+        return sum(cost if p.startswith("graphql:") else 1 for p in self.paths())
 
     def clear_calls(self) -> None:
         if self.mem:
@@ -209,6 +249,40 @@ class FakeGitHub:
                                    "summary": summary, "raw": raw or {}, "updated_at": updated_at or "2026-10-01T09:00:00Z"}
         self.save()
         return k
+
+    # ---- the team world (issue #197)
+    def assign(self, issue: str, *logins: str) -> None:
+        self.reload()
+        self.world["issues"][issue]["assignees"] = list(logins)
+        self.save()
+
+    def repo(self, slug: str, **info) -> None:
+        """The repository record: private, push, full_name (a rename), fork, parent ("org/repo"), default_branch."""
+        self.reload()
+        self.world.setdefault("repos", {}).setdefault(slug, {}).update(info)
+        self.save()
+
+    def pull(self, repo: str, number: int, title: str = "", *, user="alice", draft=False, head_ref="feature", head_repo=None, closes=(), assignees=(), updated_at=None) -> str:
+        """An open pull request. `head_repo` is the repository its branch is on (a fork: "bob/shop"; default: the repository itself)."""
+        self.reload()
+        k = f"{repo}#{number}"
+        self.world.setdefault("pulls", {})[k] = {"title": title or f"Pull {number}", "user": user, "draft": draft, "head_ref": head_ref, "head_repo": repo if head_repo is None else head_repo,
+                                                "closes": list(closes), "assignees": list(assignees), "updated_at": updated_at or "2026-10-10T09:00:00Z"}
+        self.save()
+        return k
+
+    def tip(self, repo: str, name: str, author: str | None = "bob", at: str | None = None) -> None:
+        """A branch of the repository: its tip commit's GitHub author (None: a commit email GitHub cannot match to an account) and time."""
+        self.reload()
+        lst = self.world.setdefault("tips", {}).setdefault(repo, [])
+        lst[:] = [t for t in lst if t["name"] != name] + [{"name": name, "author": author, "at": at or iso(self.world["now"] - 3600)}]
+        self.save()
+
+    def linked(self, issue: str, name: str, author: str | None = None, at: str | None = None) -> None:
+        """A branch linked to an issue (gh issue develop)."""
+        self.reload()
+        self.world.setdefault("linked", {}).setdefault(issue, []).append({"name": name, "author": author, "at": at or iso(self.world["now"] - 1800)})
+        self.save()
 
     def link(self, parent: str, child: str) -> None:
         self.reload()

@@ -4,14 +4,15 @@
    sheets with the project and repo preselected), Add repo, code-server for the folder and an overflow menu that opens the repos-and-danger panel
    (Remove repo, Delete project: two taps each, through confirmButton). Tabs: Sessions (the project's rows grouped like Home), Tasks (the kanban
    columns with an empty Backlog first), Schedules (jobs with next and last run and their last three runs), Files (the lazy tree of Tree.mount, a
-   repo switcher and the file preview beside it from 840 px and below it on phones), Memory (only once state.memory exists).
+   repo switcher and the file preview beside it from 840 px and below it on phones), Team (issue #197: the "shared with my team" switch of each repo that has a GitHub remote, off by default, and,
+   for a shared repo, the read-only block of who is working on what, from team.js, a lazy bundle that loads when the tab opens), Memory (only once state.memory exists).
    A route change inside the page (tab, repo, path, even another project) goes through onRoute and never remounts it; leaving the Files tab or the
    page destroys the tree and its timers. A repo in the route (#/p/<project>/<repo>) narrows the lists to that repo (a line says so, with a link
    to all repos), picks the repo of the Files tab and is the one the + buttons preselect. Opening a file in the tree rewrites ?path= and keeps
    the route's repo as it was (none stays none: the Files tab then shows the first repo and the other tabs stay whole-project). */
 'use strict';
 
-const PROJECT_TABS = [['sessions', 'Sessions'], ['tasks', 'Tasks'], ['schedules', 'Schedules'], ['files', 'Files']];
+const PROJECT_TABS = [['sessions', 'Sessions'], ['tasks', 'Tasks'], ['schedules', 'Schedules'], ['files', 'Files'], ['team', 'Team']];
 const PROJECT_FLAGS_KEY = 'ccboard:tree:flags';                    // {hidden, ignored}: the Files tab's two toggles, shared by every repo
 const projectPage = { cur: null, ids: 0 };
 
@@ -663,7 +664,31 @@ function pjFilesView(P, route) {
   };
 }
 
-const PROJECT_VIEWS = { sessions: pjSessionsView, tasks: pjTasksView, schedules: pjSchedulesView, files: pjFilesView, memory: pjMemoryView };
+/* The Team tab (issue #197): team.js (the lazy 'team' bundle) draws a switch per repo of this project that has a GitHub remote, and the read-only block of the shared ones. The tab
+   asks for the bundle when it opens; until it arrives a plain line stands in, and a bundle that fails to load says so. Leaving the tab stops the page's watch of the board. */
+function pjTeamView(P, route) {
+  const host = el('div', { class: 'pj-team' });
+  const wait = el('p', { class: 'dim tm-load', role: 'status', text: 'Loading the team view…' });
+  host.append(wait);
+  let sec = null;
+  let dead = false;
+  const mount = () => {
+    if (dead || sec) return;
+    host.textContent = '';
+    sec = Team.projectSection(host, { project: () => P.project, repo: () => pjParse(P.route, pjState()).repo });
+  };
+  if (typeof Team !== 'undefined') mount();
+  else if (typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.team) Lazy.load('team').then(mount, () => { if (!dead) { host.textContent = ''; host.append(el('p', { class: 'bad', role: 'alert', text: 'The team view did not load. Reload the page to try again.' })); } });
+  else { host.textContent = ''; host.append(el('p', { class: 'bad', text: 'team.js did not load' })); }
+  return {
+    node: host,
+    update() { if (sec) sec.update(); },
+    onRoute() { if (sec) sec.update(); },
+    destroy() { dead = true; if (sec) { sec.destroy(); sec = null; } },
+  };
+}
+
+const PROJECT_VIEWS = { sessions: pjSessionsView, tasks: pjTasksView, schedules: pjSchedulesView, files: pjFilesView, team: pjTeamView, memory: pjMemoryView };
 
 /* ---------- the page ---------- */
 
@@ -688,7 +713,7 @@ function pjSetTabs(P, st, cur) {
   const sig = pjSig(items.map((i) => i.id));
   if (P.tabSig !== sig) {
     P.tabSig = sig;
-    const t = tabs(items.map((i) => (i.id === 'files' || i.id === 'memory' ? i : { ...i, count: 0 })), cur.tab, (id) => {
+    const t = tabs(items.map((i) => (i.id === 'files' || i.id === 'team' || i.id === 'memory' ? i : { ...i, count: 0 })), cur.tab, (id) => {
       const c = pjParse(P.route, pjState());
       pjGo(pjHash(c.project, c.repo, id === 'sessions' ? {} : { tab: id }));
     });

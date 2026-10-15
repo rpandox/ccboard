@@ -61,5 +61,7 @@
     "dns_name": null,
     "tags": null,
     "user_owned": null
-  }
+  },
+  "owner_login": null,
+  "owner_id": null
 }

@@ -472,12 +472,16 @@ def tailscale_view(d: dict | None) -> dict:
     return {"dns_name": dns_name(d), "tags": tags, "user_owned": not tags}
 
 
-def card(db, *, health_snap: dict | None = None, sessions=None, full: bool = True) -> dict:
+def card(db, *, health_snap: dict | None = None, sessions=None, full: bool = True, identity=None) -> dict:
     """The node card. `health_snap` is health.snapshot() (the caller passes the one it already took), `sessions` an iterable of session dicts
-    (None = unreadable). `full` False leaves `agents` and `accounts` out and adds `handle: "local"`: that is `state.node`."""
+    (None = unreadable). `full` False leaves `agents` and `accounts` out and adds `handle: "local"`: that is `state.node`. `identity` is (login, numeric id) of the GitHub
+    account this board's gh acts as, or None when not known (issue #197): `owner_login` and `owner_id` are null then, which says "not known", never "nobody"."""
     d = _ts()
+    login, uid = identity if isinstance(identity, tuple) and len(identity) == 2 else (None, None)
     out = {"app": APP, "api": API_VERSION, "node_id": node_id(), "name": display_name(), "url": public_url(),
            "version": settings.image_version or None, "os": _os_view(d), "runtime": settings.runtime or None,
+           "owner_login": login if isinstance(login, str) and login else None,
+           "owner_id": uid if isinstance(uid, int) and not isinstance(uid, bool) and uid > 0 else None,
            "now": datetime.now(timezone.utc).isoformat(timespec="milliseconds")}
     if full:
         out["agents"] = agents_view(db)

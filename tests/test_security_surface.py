@@ -212,6 +212,9 @@ EXPECTED = {
     ("POST", "/api/nodes/{handle}/permissions/{pid}/{decision}"): "relay",     # allow or deny another node's request: a person's act, no setting, tool or job reaches it
     ("GET", "/api/nodes/{handle}/stream"): "relay",      # an SSE passthrough that parses and re-serialises: only lines, tick and gone leave it (app/nodes_stream.py); a person only, never the hook token
     ("GET", "/api/nodes/discover"): "identity",   # the tailnet devices that may be nodes (issue #134); refresh=1 also needs X-CCBoard (it makes the board send requests), checked in the handler
+    ("GET", "/api/team/state"): "identity",         # issue #197: what GitHub shows about the people in the repositories the owner shared; a signed-in person only (the hook token gets 403 from the handler); never in nodes.NODE_ROUTES
+    ("PUT", "/api/team/repos/{owner}/{repo}"): "identity+csrf",       # the per-repository "shared with my team" switch (default off); a signed-in person only
+    ("POST", "/api/team/refresh"): "identity+csrf",                   # read the shared repositories again; a signed-in person only
     ("GET", "/api/search"): "identity",
     ("POST", "/api/cost/refresh"): "identity+csrf",
     ("POST", "/api/usage/rate-limit/clear"): "identity+csrf",
@@ -369,6 +372,44 @@ def test_the_hook_token_opens_api_but_never_the_token_routes_or_mcp(lite_client)
     assert lite_client.post("/api/mcp/tokens", headers=tok, json={"name": "x"}).status_code == 403
     assert lite_client.put("/api/mcp/remote", headers=tok, json={"enabled": True}).status_code == 403
     assert lite_client.post("/mcp", headers={**ID, **tok}, json={}).status_code == 404       # off; on, it is a 403 (tests/test_mcp_remote.py)
+
+
+TEAM = [("GET", "/api/team/state"), ("PUT", "/api/team/repos/{owner}/{repo}"), ("POST", "/api/team/refresh")]
+
+
+def test_the_team_routes_are_in_the_pinned_table_and_not_in_the_node_routes():
+    """Issue #197: the team view is on the board's own origin for a signed-in person. A paired node never reads it, so no row of nodes.NODE_ROUTES names it."""
+    from app import nodes
+    assert all(k in EXPECTED for k in TEAM)
+    assert {k for k in EXPECTED if k[1].startswith("/api/team")} == set(TEAM), "a new team route is listed here on purpose"
+    assert not [k for k in nodes.NODE_ROUTES if "/team" in k[1]]
+    assert nodes.route_scope("GET", "/api/team/state") is None and nodes.route_scope("PUT", "/api/team/repos/o/r") is None
+
+
+@pytest.mark.parametrize("method,path", TEAM)
+def test_the_team_routes_refuse_the_hook_token_a_node_token_and_a_device_token(lite_client, method, path):
+    from app import hooks, nodes
+    from tests.test_nodes_auth import CLOSED, bearer, mint
+    from app import main
+    r = lite_client.request(method, concrete(path), headers={"X-CCBoard-Token": hooks.ensure_token()}, json={"shared": True})
+    assert r.status_code == 403 and "signed-in person" in r.json()["error"], "local automation (and every agent that holds the hook token) is not a person"
+    _, tok = mint(main.db, nodes.SCOPES)
+    r = send(lite_client, method, path, bearer(tok))
+    assert r.status_code == 403 and r.json()["error"] == CLOSED, "a paired node's token opens the NODE_ROUTES rows and nothing else"
+    r = send(lite_client, method, path, {"Authorization": "Bearer " + "d" * 40, "X-CCBoard": "1"})
+    assert r.status_code == 403 and "device tokens open /mcp only" in r.json()["error"]
+    r = send(lite_client, method, path, {"Authorization": "Bearer ccbnode_" + "x" * 40, "X-CCBoard": "1"})
+    assert r.status_code == 401, "a made-up node token is not a person either"
+    r = send(lite_client, method, path)
+    assert r.status_code == 403 and r.json()["error"] == NO_ID
+
+
+def test_a_signed_in_person_reads_the_team_state_and_the_change_routes_need_the_csrf_header(lite_client):
+    r = lite_client.get("/api/team/state", headers=ID)
+    assert r.status_code == 200 and r.json()["api"] == 1 and r.headers["etag"].startswith('W/"')
+    for method, path in TEAM[1:]:
+        assert send(lite_client, method, path, ID).status_code == 403
+        assert lite_client.request(method, concrete(path), headers={**ID, "Origin": "https://evil.example"}, json={"shared": True}).status_code == 403
 
 
 # ---------------------------------------------------------------- 2. regression tests for the fixed findings
