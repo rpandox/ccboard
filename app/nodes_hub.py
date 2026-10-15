@@ -20,8 +20,10 @@ The record of one node: {peer_id, handle, node_id, name, url, status, polled_at,
             offline       older than that, or never read
             unauthorized  the node answered 401 or 403: the pair was revoked or the token rotated away (the row says "re-pair")
             unpaired      the node answered 404 on a node route, or it reports another node id than the registry holds (error_kind identity_changed)
+            incompatible  the node's state names a node API this board does not speak (error_kind api_version; `peer_api` is its number or null, `api` this
+                          board's): its card is still read and shown, its state is not merged, and every action on it is refused (issue #153)
   error_kind  timeout, refused, tls, http_5xx (any other error status), bad_body (not JSON, wrong shape, a redirect is `refused`), too_large (over 100 KB),
-              identity_changed; null when the last poll was good. A failed poll changes status, age and error_kind only: card and state are kept.
+              identity_changed, api_version; null when the last poll was good. A failed poll changes status, age and error_kind only: card and state are kept.
   skew_ms   the peer's `node.now` minus the midpoint of the request (hub send time + half the round trip); skew_warn is true above 5000 ms. A 304 carries
             the peer's time in `X-CCBoard-Now`, so the skew is refreshed there too.
 
@@ -67,8 +69,10 @@ PERSIST_EVERY = 60.0          # kv node_last is written at most this often
 SKEW_WARN_MS = 5000
 STATE_MAX = node_state.BODY_MAX
 CARD_MAX = 64 * 1024
-STATES = ("online", "stale", "offline", "unauthorized", "unpaired")
-ERROR_KINDS = ("timeout", "refused", "tls", "http_5xx", "bad_body", "too_large", "identity_changed")
+STATES = ("online", "stale", "offline", "unauthorized", "unpaired", "incompatible")
+ERROR_KINDS = ("timeout", "refused", "tls", "http_5xx", "bad_body", "too_large", "identity_changed", "api_version")
+HARD = ("unauthorized", "unpaired", "incompatible")          # statuses a poll sets by itself; the next good poll clears them
+SUPPORTED_API = (nodes.API_VERSION,)                        # the node API numbers this board speaks (issue #153); any other is `incompatible`
 ETAG_RE = re.compile(r'W/"[0-9a-f]{8,64}"')
 NOW_HEADER = "x-ccboard-now"
 
@@ -407,7 +411,7 @@ class NodeHub:
     @staticmethod
     def _blank(row: dict) -> dict:
         return {"hard": None, "error_kind": None, "polled_ts": None, "ok_ts": None, "card_ts": None, "skew_ms": None, "card": None, "state": None,
-                "etag": None, "summary": None, "node_id": row.get("node_id")}
+                "etag": None, "summary": None, "node_id": row.get("node_id"), "peer_api": None}
 
     def _drop_last(self) -> None:
         try:
@@ -417,7 +421,7 @@ class NodeHub:
             log.debug("node_last could not be dropped: %s", e.__class__.__name__)
 
     def status_of(self, rec: dict, now: float) -> str:
-        if rec.get("hard") in ("unauthorized", "unpaired"):
+        if rec.get("hard") in HARD:
             return rec["hard"]
         ok = rec.get("ok_ts")
         if ok is None:
@@ -435,7 +439,7 @@ class NodeHub:
                 "last_ok_at": iso(ok) if ok is not None else None, "age_s": int(max(0.0, now - ok)) if ok is not None else None,
                 "skew_ms": skew, "skew_warn": bool(skew is not None and abs(skew) > SKEW_WARN_MS), "error_kind": rec.get("error_kind"),
                 "card": rec.get("card"), "state": rec.get("state"), "etag": rec.get("etag"), "legacy": bool(row.get("legacy")),
-                "scopes": row.get("scopes") or []}
+                "scopes": row.get("scopes") or [], "peer_api": rec.get("peer_api"), "api": nodes.API_VERSION, "needs_repair": bool(row.get("needs_repair"))}
 
     def records(self, handle: str | None = None) -> list[dict]:
         """Every registry row with its record, in registry order (a row never polled shows offline with nothing in it)."""
@@ -468,7 +472,7 @@ class NodeHub:
         out = {}
         for r in self.records():
             out[r["peer_id"]] = {"status": r["status"], "polled_at": r["polled_at"], "last_ok_at": r["last_ok_at"], "age_s": r["age_s"], "skew_ms": r["skew_ms"],
-                                 "skew_warn": r["skew_warn"], "error_kind": r["error_kind"], "counts": self.counts(r)}
+                                 "skew_warn": r["skew_warn"], "error_kind": r["error_kind"], "counts": self.counts(r), "peer_api": r["peer_api"], "api": r["api"]}
         return out
 
     def summary_rows(self) -> dict | None:
@@ -588,8 +592,13 @@ class NodeHub:
             return {"hard": "unpaired", "error_kind": "identity_changed"}
         except Bad:
             return {"hard": None, "error_kind": "bad_body"}
+        api = state.get("api")
+        if api not in SUPPORTED_API:                              # another node API (or none): the card still reads, the state is not merged, actions are refused
+            card = self._card_update(row, {**rec, "card": None})
+            return {"hard": "incompatible", "error_kind": "api_version", "peer_api": api, "etag": None, **card}
         tag = r.headers.get("etag")
-        out = {"hard": None, "error_kind": None, "ok_ts": self.clock(), "state": state, "etag": tag if isinstance(tag, str) and ETAG_RE.fullmatch(tag) else None}
+        out = {"hard": None, "error_kind": None, "ok_ts": self.clock(), "state": state, "etag": tag if isinstance(tag, str) and ETAG_RE.fullmatch(tag) else None,
+               "peer_api": api}
         sk = self._skew(parse_time(state["node"].get("now")), t_sent, rt)
         if sk is not None:
             out["skew_ms"] = sk
@@ -624,7 +633,7 @@ class NodeHub:
                     continue
                 recs[pid] = {"handle": row.get("handle"), "polled_ts": rec.get("polled_ts"), "ok_ts": rec.get("ok_ts"), "card_ts": rec.get("card_ts"),
                              "hard": rec.get("hard"), "error_kind": rec.get("error_kind"), "skew_ms": rec.get("skew_ms"), "card": rec.get("card"),
-                             "state": rec.get("state"), "etag": rec.get("etag"), "summary": rec.get("summary")}
+                             "state": rec.get("state"), "etag": rec.get("etag"), "summary": rec.get("summary"), "peer_api": rec.get("peer_api")}
         return {"v": 1, "records": recs}
 
     def persist(self, force: bool = False) -> bool:
@@ -675,7 +684,7 @@ class NodeHub:
                           "ok_ts": float(ok) if isinstance(ok, (int, float)) and not isinstance(ok, bool) else None,
                           "polled_ts": float(pt) if isinstance(pt, (int, float)) and not isinstance(pt, bool) else None,
                           "card_ts": float(s["card_ts"]) if isinstance(s.get("card_ts"), (int, float)) and not isinstance(s.get("card_ts"), bool) else None,
-                          "hard": s.get("hard") if s.get("hard") in ("unauthorized", "unpaired") else None,
+                          "hard": s.get("hard") if s.get("hard") in HARD else None,
                           "error_kind": s.get("error_kind") if s.get("error_kind") in ERROR_KINDS else None,
-                          "skew_ms": _i(s.get("skew_ms"))})
+                          "skew_ms": _i(s.get("skew_ms")), "peer_api": _i(s.get("peer_api"))})
             self._rec[pid] = blank

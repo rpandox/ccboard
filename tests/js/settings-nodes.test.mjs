@@ -494,7 +494,16 @@ function pairWorld({ out = [], inn = [], audit = [], over = {}, fail = {}, hold 
       return rec;
     }
     let m = /^\/api\/nodes\/([^/]+)\/rotate$/.exec(bare);
-    if (method === 'POST' && m) { if (hold.rotate) await hold.rotate.p; if (fail.rotate) throw refuse(502, fail.rotate); return { rotated: true, grace_s: server.grace || 60 }; }
+    if (method === 'POST' && m) { if (hold.rotate) await hold.rotate.p; if (fail.rotate) throw refuse(fail.rotateStatus || 502, fail.rotate, fail.rotateReason); return { rotated: true, grace_s: server.grace || 60 }; }
+    m = /^\/api\/nodes\/([^/]+)\/address$/.exec(bare);
+    if (method === 'POST' && m) {
+      if (fail.address) throw refuse(409, fail.address, fail.addressReason);
+      const id = decodeURIComponent(m[1]);
+      const row = server.out.find((x) => x.peer_id === id);
+      server.addressBody = JSON.parse(JSON.stringify(body));
+      if (row) row.url = body.url;
+      return row ? { ...row, ...(body.device ? { device: body.device } : {}) } : {};
+    }
     m = /^\/api\/nodes\/([^/]+)\/remove-preview$/.exec(bare);
     if (method === 'POST' && m) {
       if (hold.preview) await hold.preview.p;
@@ -1632,4 +1641,175 @@ test('the filter code keeps to the page rules: el() and textContent only, no sto
   const block = src.slice(start, start + 9000).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   assert.ok(start > 0);
   assert.doesNotMatch(block, /innerHTML|insertAdjacentHTML|\.style\b|cssText|localStorage|sessionStorage|setTimeout|setInterval/);
+});
+
+
+// ================================================================ failure modes (issue #153)
+// Re-pair, Rotate token off with its reason, the rotation whose answer was lost, Update address (offered after discovery, applied only by a press), the receipt time in Activity, the
+// registry cap in the Add node sheet.
+
+const repairPeer = (over) => peer({ peer_id: 'p3', handle: 'old-laptop', name: 'old-laptop', needs_repair: true, last_error: 'the rotation answer was lost', url: 'https://old-laptop.example.ts.net', ...over });
+
+test('a pair that needs a new pairing leads with Re-pair (tinted, not the page\'s filled primary), Rotate token is off with its reason on touch and keyboard, and Remove stays', async () => {
+  const { w } = pairWorld({ out: [repairPeer()] });
+  await settle();
+  const r = pairedRows(w)[0];
+  const labels = r.querySelectorAll('.nd-act button').map((b) => text(b).trim());
+  assert.deepEqual(labels, ['Re-pair', 'Rotate token', 'Remove']);
+  assert.ok(btn(r, 'Re-pair').classList.contains('tinted'));
+  assert.deepEqual(filledIn(panel(w)), [], 'no second filled primary on the screen');
+  const off = btn(r, 'Rotate token');
+  assert.equal(off.getAttribute('aria-disabled'), 'true');
+  assert.equal(off.disabled, false, 'focusable, so a keyboard and a touch can read why');
+  assert.match(off.getAttribute('title'), /Rotate token is off, it needs a new pairing first, so press Re-pair/);
+  assert.match(text(r.querySelector('.nd-note')), /needs a new pairing: press Re-pair \(Rotate token is off until then\)/);
+  off.click();
+  await settle();
+  assert.deepEqual(writes(w), [], 'nothing is sent');
+  assert.match(lastToast(w).text, /Rotate token for old-laptop is off, it needs a new pairing first, so press Re-pair\./);
+  btn(r, 'Re-pair').click();
+  await settle();
+  assert.equal(dlg(w).querySelector('.nd-addr-in').value, 'https://old-laptop.example.ts.net', 'the Add node sheet opens at the saved address');
+});
+
+// The hub's reading of a node (what Settings > Nodes shows beside the pair), stood in for the test: handle, name, status, the age of its last good reading.
+const reading = (status, ageS) => `Nodes.enabled = () => true; Nodes.ageOf = (r) => r.age_s; Nodes.get = (h) => (h === 'build-box' ? { handle: 'build-box', name: 'build-box', status: '${status}', age_s: ${ageS}, scopes: ['read', 'tasks'] } : null);`;
+
+for (const [status, words] of [['offline', /build-box is offline, last seen 5 minutes ago; Rotate token needs it to answer/], ['stale', /build-box did not answer its last check, last read 1 minute ago; Rotate token needs it to answer/]]) {
+  test(`Rotate token is off with its reason while the node is ${status}, and nothing is sent`, async () => {
+    const { w } = pairWorld({ out: [peer()] });
+    w.load('nodes-hub.js');                                                  // the hub bundle is lazy: the page asks it for the reason
+    w.run(reading(status, status === 'offline' ? 300 : 60));
+    await settle();
+    const r = pairedRows(w)[0];
+    const off = btn(r, 'Rotate token');
+    assert.equal(off.getAttribute('aria-disabled'), 'true');
+    assert.equal(off.disabled, false, 'focusable, so a keyboard and a touch can read why');
+    assert.match(off.getAttribute('title'), words);
+    assert.equal(btn(r, 'Re-pair'), undefined, 'the node is only asleep: the pair is fine');
+    assert.ok(btn(r, 'Remove'), 'Remove stays');
+    off.click();
+    await settle();
+    assert.deepEqual(writes(w), [], 'nothing is sent');
+    assert.match(lastToast(w).text, /^Rotate token for build-box is off\. build-box (is offline|did not answer)/);
+  });
+}
+
+test('Rotate token stays the usual two-tap button while the hub reads the node as online', async () => {
+  const { w } = pairWorld({ out: [peer()] });
+  w.load('nodes-hub.js');
+  w.run(reading('online', 2));
+  await settle();
+  assert.equal(btn(pairedRows(w)[0], 'Rotate token').getAttribute('aria-disabled'), null);
+});
+
+test('a healthy pair has no Re-pair, and Rotate token is the usual two-tap button', async () => {
+  const { w } = pairWorld({ out: [peer()] });
+  await settle();
+  const r = pairedRows(w)[0];
+  assert.equal(btn(r, 'Re-pair'), undefined);
+  assert.equal(btn(r, 'Rotate token').getAttribute('aria-disabled'), null);
+});
+
+test('a rotation whose answer was lost says "Outcome unknown", that the board will not ask again, and to press Re-pair; one call was made', async () => {
+  const { w } = pairWorld({ out: [peer()], fail: { rotate: 'Outcome unknown: the other board may have rotated the token', rotateStatus: 504, rotateReason: 'outcome_unknown' } });
+  await settle();
+  btn(pairedRows(w)[0], 'Rotate token').click();
+  await settle();
+  btn(pairedRows(w)[0], 'Confirm Rotate token').click();
+  await settle();
+  assert.deepEqual(writes(w), ['POST /api/nodes/p1/rotate'], 'never asked twice');
+  assert.deepEqual(lastToast(w), { text: 'Outcome unknown, check build-box: it may have rotated the token, and this board will not ask again. Press Re-pair.', kind: 'warn' });
+});
+
+const MOVED = { peer_id: 'p1', handle: 'build-box', name: 'build-box', from_url: 'https://build-box.example.ts.net:8443', to_url: 'https://build-box-2.example.ts.net:8443' };
+
+test('Update address: offered under the pair discovery found elsewhere, with where it answers now and that the old address was checked; nothing changes until the press', async () => {
+  const { w, server } = pairWorld({ out: [peer(), peer({ peer_id: 'p2', handle: 'alice-mac', name: 'alice-mac', url: 'https://alice-mac.example.ts.net' })], answer: { ...ANSWER, moved: [MOVED] } });
+  await settle();
+  const [a, b] = pairedRows(w);
+  const offer = a.querySelector('.nd-moved');
+  assert.ok(offer);
+  assert.match(text(offer), /^! address changedbuild-box now answers at build-box-2\.example\.ts\.net:8443, not at build-box\.example\.ts\.net:8443\. The old address was checked once more and did not answer as this node\. Nothing changes until you press Update address\.Update address$/);
+  assert.equal(b.querySelector('.nd-moved'), null, 'only the node that moved');
+  assert.deepEqual(writes(w), [], 'reading the offer applies nothing');
+  assert.equal(server.out[0].url, 'https://build-box.example.ts.net:8443');
+  assert.equal(btn(a, 'Update address').getAttribute('aria-label'), 'Update address of build-box to build-box-2.example.ts.net:8443');
+});
+
+test('Update address names the Tailscale device in the offer, sends it with the press, and the confirmation says which device it is', async () => {
+  const { w, server } = pairWorld({ out: [peer()], answer: { ...ANSWER, moved: [{ ...MOVED, to_device: 'build-box-2' }] } });
+  await settle();
+  assert.match(text(pairedRows(w)[0].querySelector('.nd-moved')), /build-box now answers at build-box-2\.example\.ts\.net:8443 \(the device build-box-2\), not at build-box\.example\.ts\.net:8443\./);
+  btn(pairedRows(w)[0], 'Update address').click();
+  await settle();
+  assert.deepEqual(server.addressBody, { url: 'https://build-box-2.example.ts.net:8443', device: 'build-box-2' });
+  assert.deepEqual(lastToast(w), { text: 'build-box now uses build-box-2.example.ts.net:8443 (the device build-box-2).', kind: 'ok' });
+});
+
+test('Update address posts the new address to the pair, says so, the offer goes away and the row shows the new address; a refusal is said in the board\'s words and the row keeps the old one', async () => {
+  const { w, server } = pairWorld({ out: [peer()], answer: { ...ANSWER, moved: [MOVED] } });
+  await settle();
+  btn(pairedRows(w)[0], 'Update address').click();
+  await settle();
+  assert.deepEqual(writes(w), ['POST /api/nodes/p1/address']);
+  assert.deepEqual(server.addressBody, { url: 'https://build-box-2.example.ts.net:8443' });
+  assert.deepEqual(lastToast(w), { text: 'build-box now uses build-box-2.example.ts.net:8443.', kind: 'ok' });
+  assert.equal(pairedRows(w)[0].querySelector('.nd-moved'), null);
+  assert.match(text(pairedRows(w)[0].querySelector('.nd-note')), /^build-box-2\.example\.ts\.net:8443/);
+
+  const { w: w2, server: s2 } = pairWorld({ out: [peer()], answer: { ...ANSWER, moved: [MOVED] }, fail: { address: 'build-box still answers at its old address, so the address was not changed', addressReason: 'still_there' } });
+  await settle();
+  btn(pairedRows(w2)[0], 'Update address').click();
+  await settle();
+  assert.deepEqual(lastToast(w2), { text: 'Address of build-box not changed: build-box still answers at its old address, so the address was not changed', kind: 'warn' });
+  assert.ok(pairedRows(w2)[0].querySelector('.nd-moved'), 'the offer stays so it can be read again');
+  assert.equal(s2.out[0].url, 'https://build-box.example.ts.net:8443');
+});
+
+test('an offer with a bad address or no peer id is dropped, and a hostile name is text', async () => {
+  const { w } = pairWorld({ out: [peer()], answer: { ...ANSWER, moved: [{ ...MOVED, to_url: 'http://evil.example/x' }, { ...MOVED, peer_id: '' }, { ...MOVED, name: '<img src=x onerror=alert(1)>' }] } });
+  await settle();
+  const offer = pairedRows(w)[0].querySelector('.nd-moved');
+  assert.ok(offer.textContent.includes('<img src=x onerror=alert(1)> now answers at'));
+  assert.equal(panel(w).querySelectorAll('img').length, 0);
+});
+
+test('the Activity list shows the row time and the hub\'s receipt time side by side where the board gave one, and the age where it did not', async () => {
+  const at = iso(600);
+  const recv = iso(540);
+  const { w } = pairWorld({ out: [peer()], audit: [{ id: 1, at, received_at: recv, direction: 'in', peer: 'p1', node_name: 'build-box', action: 'read_state', status: 'ok' }, { id: 2, at, direction: 'in', peer: 'p1', node_name: 'build-box', action: 'read_card', status: 'ok' }] });
+  await settle();
+  const rows = panel(w).querySelectorAll('.nd-audit');
+  const clock = (s) => { const d = new Date(Date.parse(s)); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+  assert.match(text(rows[0].querySelector('.nd-audit-where')), new RegExp(`row time ${clock(at)}, received ${clock(recv)}`));
+  assert.match(text(rows[1].querySelector('.nd-audit-where')), /10m ago/);
+});
+
+test('Add node at 12 nodes: the board\'s reason is shown in the sheet, the sheet stays open and nothing is typed away', async () => {
+  const { w } = pairWorld({ fail: { add: 'This board already has 12 paired nodes, the most it keeps. Remove one first.', addStatus: 409, reason: 'registry_full' } });
+  await settle();
+  const d = await openAdd(w);
+  type(d.querySelector('.nd-addr-in'), 'https://node-z.example.ts.net:8443');
+  type(d.querySelector('.nd-code-in'), CODE);
+  submitForm(d);
+  await settle();
+  assert.ok(dlg(w), 'still open');
+  assert.match(text(dlg(w)), /This board already has 12 paired nodes/);
+  assert.equal(d.querySelector('.nd-addr-in').value, 'https://node-z.example.ts.net:8443');
+});
+
+test('demo mode: ?nodestate=repair plays the lost rotation and Update address is played, and neither leaves a credential', async () => {
+  const w = makeWorld({ fetch: async () => ({ ok: true, status: 200, statusText: 'OK', json: async () => JSON.parse(JSON.stringify(demoFile)) }) });
+  w.location.search = '?demo=1&nodestate=repair';
+  w.load('core.js');
+  w.load('nodes.js');
+  w.load('nodes-pair.js');
+  let e = null;
+  try { await w.run("demoNodesWrite('POST', '/api/nodes/p-build-box/rotate', {}, {})"); } catch (x) { e = x; }
+  assert.ok(e && e.status === 504, 'the demo answers like the board');
+  assert.equal(plain(e.body).reason, 'outcome_unknown');
+  const ok = plain(await w.run("demoNodesWrite('POST', '/api/nodes/p-build-box/address', { url: 'https://build-box-2.example.ts.net:8443' }, {})"));
+  assert.equal(ok.peer_id, 'p-build-box');
+  assert.doesNotMatch(JSON.stringify([e.body, ok]), /ccbnode_/);
 });

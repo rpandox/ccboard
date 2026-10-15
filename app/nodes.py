@@ -786,6 +786,7 @@ CODE_MINUTES = (1, 30)
 CODE_DEFAULT_MINUTES = 10
 PAIR_RATE = 20                                                # pair attempts per minute and source address
 ROTATE_GRACE = 60                                             # seconds the old token stays valid after a rotation
+ROTATE_LOST = "the rotation answer was lost"                  # the last_error of a lost rotation; the row's `rotate_lost` flag is what keeps needs_repair until the node is paired again (issue #153)
 AUDIT_DAYS = 90
 AUDIT_DETAIL_MAX = 200
 USED_EVERY = 30                                               # last_used_at / last_seen are written at most this often per pair
@@ -794,6 +795,7 @@ BODY_MAX = 256 * 1024                                         # the largest requ
 RESP_MAX = 512 * 1024                                         # the largest answer a PeerClient reads
 CALL_TIMEOUT = 5.0
 RESERVED_HANDLES = ("local", "self")
+MAX_PEERS = 12                                                # paired nodes a board keeps at most, each way (issue #153); legacy CCBOARD_NODES rows do not count
 
 pair_limiter = _Limiter(PAIR_RATE, 60.0, 2048)               # pair attempts per source address
 refusal_limiter = _Limiter(30, 600.0, 4)                      # audit rows for refused pair attempts, whole board
@@ -812,6 +814,7 @@ _pending: dict[tuple[str, str], float] = {}                   # (this board's no
 _pending_lock = threading.Lock()
 _code_lock = threading.Lock()                                 # one redeem at a time: two requests cannot both spend the code
 _reg_lock = threading.RLock()                                 # the registry is read, changed and written whole
+_rotate_lock = threading.Lock()                               # one rotation at a time: two racing rotations leave exactly one new token (issue #153)
 _tok_lock = threading.Lock()                                  # the token file likewise
 _last_prune: float | None = None
 
@@ -835,7 +838,7 @@ def _db(db=None):
 class PairError(Exception):
     """A pairing that did not happen. `reason` is one word the page can switch on; str() is the sentence for a person; `status` the HTTP code."""
     STATUS = {"none": 403, "wrong": 403, "expired": 403, "burned": 403, "rate_limited": 429, "bad_request": 400, "bad_url": 400,
-              "callback_mismatch": 409, "refused": 502, "unreachable": 502, "store": 500}
+              "callback_mismatch": 409, "refused": 502, "unreachable": 502, "store": 500, "registry_full": 409}
     MESSAGES = {
         "none": "There is no active pairing code on that node. Make a new one there.",
         "wrong": "That code is not right.",
@@ -848,6 +851,7 @@ class PairError(Exception):
         "refused": "The other node refused the pairing.",
         "unreachable": "The other node could not be reached.",
         "store": "The token could not be saved on this node; nothing was paired.",
+        "registry_full": f"This board already has {MAX_PEERS} paired nodes, the most it keeps. Remove one in Settings > Nodes first; nothing was paired.",
     }
 
     def __init__(self, reason: str, retry_after: int = 0, message: str | None = None):
@@ -869,9 +873,10 @@ class PeerError(Exception):
     """An outgoing call that failed before an answer was usable. `reason`: url (the address rule refused it), unresolved, no_token, unreachable,
     redirect, too_large, bad_path, store. str() holds no header, no token and no address of the peer's answer."""
 
-    def __init__(self, reason: str, message: str | None = None, unresolved: bool = False, cause: BaseException | None = None):
+    def __init__(self, reason: str, message: str | None = None, unresolved: bool = False, cause: BaseException | None = None, not_sent: bool = False):
         self.reason = reason
         self.unresolved = unresolved
+        self.not_sent = not_sent            # `unreachable` before the request left (the connection never came up): nothing reached the peer, so even a write may be tried again
         self.cause = cause                  # the transport's own exception for `unreachable` (the hub tells a timeout from a refusal or a TLS failure by its type); never shown
         super().__init__(message or reason)
 
@@ -1166,10 +1171,11 @@ def _handle_for(wanted, name, taken: set[str]) -> str:
     return cand
 
 
-def put_peer(record: dict, db=None) -> dict:
+def put_peer(record: dict, db=None, *, create: bool = True) -> dict:
     """Save a registry row (direction `out`) or change a pair row of an incoming pair (direction `in`, which must exist: only a redeemed code or
     add_incoming creates one). Only the known keys are kept, so a token or a digest in `record` is dropped, never stored. The address rule is
-    applied here (PeerUrlError, a ValueError, when it fails), except for a legacy row, which the old poller reads on its own terms. Returns the view."""
+    applied here (PeerUrlError, a ValueError, when it fails), except for a legacy row, which the old poller reads on its own terms. With `create=False` an
+    outgoing row that is no longer there (removed meanwhile) is not made again: LookupError. A row keeps its `rotate_lost` unless `record` sets it. Returns the view."""
     if not isinstance(record, dict):
         raise ValueError("not a record")
     d = _db(db)
@@ -1209,6 +1215,10 @@ def put_peer(record: dict, db=None) -> dict:
         if not PEER_ID_RE.fullmatch(str(pid)):
             raise ValueError("not a peer id")
         old = next((r for r in rows if r["peer_id"] == pid), None)
+        if old is None and not create:
+            raise LookupError("no such node")
+        if old is None and not legacy and sum(1 for r in rows if not r.get("legacy")) >= MAX_PEERS:
+            raise RegistryFull(PairError.MESSAGES["registry_full"])
         taken = {r.get("handle") for r in rows if r["peer_id"] != pid}
         name = _sanitize_name(record.get("name")) or (old or {}).get("name") or "node"
         handle = record.get("handle") or (old or {}).get("handle")
@@ -1218,9 +1228,32 @@ def put_peer(record: dict, db=None) -> dict:
                "scopes": clean_scopes(record["scopes"]) if record.get("scopes") else ((old or {}).get("scopes") or ["read"]),
                "created_at": (old or {}).get("created_at") or record.get("created_at") or iso(_now()),
                "last_seen": record.get("last_seen", (old or {}).get("last_seen")), "last_error": record.get("last_error", (old or {}).get("last_error")),
-               "needs_repair": bool(record.get("needs_repair", (old or {}).get("needs_repair"))), "legacy": legacy}
+               "needs_repair": bool(record.get("needs_repair", (old or {}).get("needs_repair"))), "legacy": legacy,
+               "rotate_lost": bool(record.get("rotate_lost", (old or {}).get("rotate_lost")))}
         _save_out(d, [new if r["peer_id"] == pid else r for r in rows] if old else rows + [new])
         return _out_view(new)
+
+
+class RegistryFull(ValueError):
+    """put_peer refused a new row: the registry already holds MAX_PEERS paired nodes."""
+
+
+def registry_full(db=None, *, url: str | None = None) -> bool:
+    """Is the registry at MAX_PEERS paired (non-legacy) rows, so a NEW pairing must be refused? A pairing that replaces the row at the same address `url` is not new."""
+    rows = [r for r in _out_rows(_db(db)) if not r.get("legacy")]
+    if url and any(str(r.get("url")).rstrip("/") == str(url).rstrip("/") for r in rows):
+        return False
+    return len(rows) >= MAX_PEERS
+
+
+def incoming_full(db=None, node=None) -> bool:
+    """Does this board already let MAX_PEERS other boards call it (active incoming pairs)? Not when `node` (the caller's claimed card) names an active pair
+    that pairing again replaces: the same node id at the same address (revoke_older_pairs retires it once the id is confirmed), so the count does not grow."""
+    rows = [r for r in _db(db).node_pairs() if not r["revoked_at"]]
+    if len(rows) < MAX_PEERS:
+        return False
+    c = _clean_claim(node)
+    return not (c["node_id"] and any(r["peer_node_id"] == c["node_id"] and _same_address(r["peer_url"], c["url"]) for r in rows))
 
 
 def remove_peer(ident, db=None) -> bool:
@@ -1250,9 +1283,10 @@ def _close_streams(peer_id: str) -> None:
             log.debug("stream closer failed: %s", e.__class__.__name__)
 
 
-def _note(db, peer_id: str, *, ok: bool | None = None, error: str | None = None, repair: bool | None = None) -> None:
+def _note(db, peer_id: str, *, ok: bool | None = None, error: str | None = None, repair: bool | None = None, lost: bool = False) -> None:
     """Record what the last call to a peer showed: last_seen on an answer, last_error on a failure, needs_repair when the peer no longer takes the
-    token. Written only when something changed or the last write is older than USED_EVERY seconds."""
+    token. Written only when something changed or the last write is older than USED_EVERY seconds. `lost` (a rotation whose answer was lost) sets the
+    row's `rotate_lost`, which keeps needs_repair on through any later answer or failure until the node is paired again (put_peer / add_node)."""
     try:
         with _reg_lock:
             rows = _out_rows(db)
@@ -1263,12 +1297,19 @@ def _note(db, peer_id: str, *, ok: bool | None = None, error: str | None = None,
             if ok:
                 if not row.get("last_seen") or iso(_now() - USED_EVERY) > row["last_seen"]:
                     row["last_seen"] = iso(_now())
-                row["last_error"] = None
-                row["needs_repair"] = False
+                if row.get("rotate_lost"):                                # issue #153: a lost rotation answer stays needs_repair until Re-pair: an answer
+                    row["last_error"] = ROTATE_LOST                       # inside the 60 s grace proves nothing about the token after it
+                else:
+                    row["last_error"] = None
+                    row["needs_repair"] = False
             else:
                 row["last_error"] = error
                 if repair is not None:
                     row["needs_repair"] = repair
+                if lost:
+                    row["rotate_lost"] = True
+                if row.get("rotate_lost"):                                # a later failed poll overwrites last_error, never the need to pair again
+                    row["needs_repair"] = True
             if row != before:
                 _save_out(db, rows)
         if repair:
@@ -1402,15 +1443,24 @@ def verify_token(plaintext, *, ip: str | None = None, db=None) -> dict | None:
     return {**_in_view(found), "via_previous": via_prev}
 
 
-def rotate_token(peer_id: str, db=None) -> str:
-    """Rotate an incoming pair's token: the new plaintext is returned once, the old one still works for ROTATE_GRACE seconds."""
+class AlreadyRotated(Exception):
+    """rotate_token was asked with a token that is no longer the pair's current one (a second, racing rotation, or a replay)."""
+
+
+def rotate_token(peer_id: str, db=None, presented: str | None = None) -> str:
+    """Rotate an incoming pair's token: the new plaintext is returned once, the old one still works for ROTATE_GRACE seconds. `presented` is the token the
+    rotate request carried: the rotation happens only while it is still the CURRENT token (checked and written under one lock), so two racing rotations with
+    the same token leave exactly one new token and the second gets AlreadyRotated (the route's 401), never a second token that would orphan the first."""
     d = _db(db)
-    row = d.node_pair_get(peer_id)
-    if row is None or row["revoked_at"]:
-        raise LookupError("no such pair")
-    token = _new_token()
-    d.node_pair_update(peer_id, token_sha256=_digest(token), prev_sha256=row["token_sha256"] or None,
-                       prev_until=iso(_now() + ROTATE_GRACE), rotated_at=iso(_now()))
+    with _rotate_lock:
+        row = d.node_pair_get(peer_id)
+        if row is None or row["revoked_at"]:
+            raise LookupError("no such pair")
+        if presented is not None and not hmac.compare_digest(_digest(str(presented)), row["token_sha256"] or "-"):
+            raise AlreadyRotated("this token was already rotated away")
+        token = _new_token()
+        d.node_pair_update(peer_id, token_sha256=_digest(token), prev_sha256=row["token_sha256"] or None,
+                           prev_until=iso(_now() + ROTATE_GRACE), rotated_at=iso(_now()))
     audit("in", peer_id, "rotated", True, f"the old token works {ROTATE_GRACE} s more", node_name=row["peer_name"], db=d)
     return token
 
@@ -1521,6 +1571,9 @@ def redeem_code(code, caller: str, *, node=None, db=None) -> dict:
             d.kv_set(KV_CODE, {**v, "attempts": tries}, at=_now())
             _audit_refused(d, f"wrong code, try {tries}")
             raise PairError("wrong")
+        if incoming_full(d, node):                                 # issue #153: the code stays; nothing is minted (a re-pair that replaces a pair of the same node is let in)
+            _audit_refused(d, f"pairs full ({MAX_PEERS} nodes)")
+            raise PairError("registry_full")
         d.kv_del(KV_CODE)                                          # spent: a second use of the same code finds none
     scopes = _scopes_of(v.get("scopes")) or list(DEFAULT_SCOPES)
     row, token = add_incoming(node, scopes, callback_unverified=True, db=d)      # a spent code proves nothing about who is calling: unverified until handle_pair says otherwise
@@ -1548,12 +1601,26 @@ class PeerReply:
 _PATH_RE = re.compile(r"/[A-Za-z0-9._~%/-]*(?:\?[A-Za-z0-9._~%=&-]*)?")
 
 
+class NotSent(Exception):
+    """_https could not bring the connection up (a node asleep, a refusal, a TLS failure), so the request never left. `original` is the socket layer's own
+    exception; peer_call turns this into PeerError(not_sent=True) with that exception as the cause."""
+
+    def __init__(self, original: BaseException):
+        super().__init__(original.__class__.__name__)
+        self.original = original
+
+
 def _https(target: PeerTarget, method: str, path: str, headers: dict, body: bytes | None, timeout: float):
-    """One HTTPS exchange over the connection pinned to the validated address (the certificate is checked for the name). No redirect is followed."""
+    """One HTTPS exchange over the connection pinned to the validated address (the certificate is checked for the name). No redirect is followed.
+    The connection is made first, apart from the request, so a failure to connect (NotSent) is told from a failure after the request went out."""
     from .nodes_discovery import _Pinned         # imported here: that module imports this one
     end = time.monotonic() + timeout
     conn = _Pinned(target.host, target.addrs[0], target.port, timeout)
     try:
+        try:
+            conn.connect()
+        except OSError as e:                     # includes a connect timeout and a failed TLS handshake
+            raise NotSent(e) from None
         conn.request(method, path, body=body, headers=headers)
         resp = conn.getresponse()
         buf = b""
@@ -1591,6 +1658,8 @@ def peer_call(url: str, method: str, path: str, *, headers: dict | None = None, 
         hdrs.setdefault("Content-Type", "application/json")
     try:
         status, rh, data = (peer_transport or _https)(target, method.upper(), path, hdrs, raw, timeout)
+    except NotSent as e:
+        raise PeerError("unreachable", f"the peer could not be reached ({e.original.__class__.__name__})", cause=e.original, not_sent=True) from None
     except Exception as e:
         raise PeerError("unreachable", f"the peer could not be reached ({e.__class__.__name__})", cause=e) from None
     if 300 <= status < 400 and status != 304:           # 304 answers a conditional GET (If-None-Match): a status, never a redirect
@@ -1951,6 +2020,10 @@ def handle_pair(body, caller: str, db=None) -> dict:
         reverse_saved = False                                         # the claim was never confirmed: no outgoing row, no token written
         reverse_reason = "callback_unverified"
         audit("in", pid, "reverse_dropped", False, "the caller's address did not confirm its node id", node_name=node["name"], db=d)
+    elif rev is not None and registry_full(d, url=node["url"]):
+        reverse_saved = False                                         # issue #153: this board keeps no 13th node; the pair the caller asked for still stands
+        reverse_reason = "registry_full"
+        audit("in", pid, "reverse_dropped", False, f"registry full ({MAX_PEERS} nodes)", node_name=node["name"], db=d)
     elif rev is not None:
         reverse_saved = False
         try:
@@ -2013,6 +2086,12 @@ def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = F
     target = check_peer_url(url, tailnet_suffix())
     if handle not in (None, ""):
         _handle_for(handle, None, set())                              # refuses a handle that breaks the rule, before anything is sent
+    if registry_full(d, url=target.url):                             # issue #153: refused before the other board spends its code or mints a token
+        audit("out", "", "pair_refused", False, f"registry full ({MAX_PEERS} nodes)", status="refused", db=d)
+        raise PairError("registry_full")
+    if both_ways and incoming_full(d):                                # the reverse token is one more pair that calls this board: refused before anything is sent
+        audit("out", "", "pair_refused", False, f"pairs full ({MAX_PEERS} nodes)", status="refused", db=d)
+        raise PairError("registry_full")
     me = own_claim()
     if not me["url"]:
         raise ValueError("this node does not know its own address, so the other node could not call back; set CCBOARD_PUBLIC_URL")
@@ -2051,7 +2130,7 @@ def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = F
         token = None
         try:
             view = put_peer({"peer_id": pid, "direction": "out", "node_id": theirs["id"], "name": name, "url": target.url, "scopes": scopes,
-                             "handle": (same or {}).get("handle") if same else handle, "legacy": False, "needs_repair": False, "last_error": None}, db=d)
+                             "handle": (same or {}).get("handle") if same else handle, "legacy": False, "needs_repair": False, "rotate_lost": False, "last_error": None}, db=d)
         except Exception:
             tk = _load_outgoing(pid)
             if tk:
@@ -2082,15 +2161,49 @@ def add_node(url: str, code: str, handle: str | None = None, both_ways: bool = F
     return peer(pid, d) or view
 
 
+_rotating: set[str] = set()                                   # peer ids with a rotate_outgoing in flight; a second press meanwhile is refused (busy)
+_rotating_lock = threading.Lock()
+
+
 def rotate_outgoing(ident, db=None) -> dict:
     """Ask the other board for a new token (POST /api/node/rotate with the current one) and keep it. The old token works there for 60 s more.
-    Returns the registry view. LookupError for an unknown pair, PeerError when the other board cannot be reached or does not answer a token,
-    PairError('store') when the new token could not be saved (the pair is then marked needs_repair)."""
+    Returns the registry view. LookupError for an unknown pair, PeerError when the other board cannot be reached (`unreachable`; `not_sent` when the
+    request never left: nothing changed, try again later) or does not answer a token, PeerError('busy') when a rotation of this pair is already running
+    (two presses would send the same token, and the second would be refused as a stale one), PairError('store') when the new token could not be saved
+    (the pair is then marked needs_repair)."""
     d = _db(db)
     p = peer(ident, d)
     if p is None or p["direction"] != "out":
         raise LookupError("no such node")
-    r = PeerClient(p, db=d).post("/api/node/rotate")
+    with _rotating_lock:
+        if p["peer_id"] in _rotating:
+            raise PeerError("busy", "a rotation of this node is already running; wait for it to finish")
+        _rotating.add(p["peer_id"])
+    try:
+        return _rotate_outgoing(p, d)
+    finally:
+        with _rotating_lock:
+            _rotating.discard(p["peer_id"])
+
+
+def _rotate_outgoing(p: dict, d) -> dict:
+    try:
+        r = PeerClient(p, db=d).post("/api/node/rotate")
+    except PeerError as e:
+        if e.reason == "unreachable" and e.not_sent:
+            # The connection never came up (a node asleep, a refusal, a handshake that failed): the request did not leave, so the other board changed nothing
+            # and the token here is still the one it takes. Nothing is marked; the person can try again later.
+            raise PeerError("unreachable", "the other node could not be reached, so nothing was sent and nothing changed; try again later",
+                            cause=e.cause, not_sent=True) from None
+        if e.reason == "unreachable" and isinstance(e.cause, (TimeoutError, socket.timeout, ConnectionResetError, ConnectionAbortedError, BrokenPipeError, EOFError)):
+            # issue #153: the request went out and the answer was lost. The other board may hold a new token now, and the old one would stop there in 60 s: this
+            # board does not guess and does not ask again (a second rotate would use a token that may be the previous one). The pair is marked needs_repair,
+            # and stays so (`rotate_lost`) until the node is paired again.
+            _note(d, p["peer_id"], ok=False, error=ROTATE_LOST, repair=True, lost=True)
+            audit("out", p["peer_id"], "rotate_unknown", False, "the answer was lost: it is not known whether the other node made a new token; re-pair if calls fail",
+                  node_name=p["name"], db=d)
+            raise PeerError("outcome_unknown", "the other node did not answer the rotation, so it is not known whether it made a new token; re-pair it") from None
+        raise
     tok = r.json.get("token") if r.ok and isinstance(r.json, dict) else None
     if not isinstance(tok, str) or not TOKEN_RE.fullmatch(tok):
         audit("out", p["peer_id"], "rotate_failed", False, f"the peer answered {r.status}", node_name=p["name"], db=d)
@@ -2103,6 +2216,94 @@ def rotate_outgoing(ident, db=None) -> dict:
         raise PairError("store") from None
     audit("out", p["peer_id"], "rotated", True, f"the old token works {ROTATE_GRACE} s more there", node_name=p["name"], db=d)
     return peer(p["peer_id"], d) or p
+
+
+# ---------------------------------------------------------------- an address that changed (issue #153)
+
+class AddressError(ValueError):
+    """update_address refused: `reason` still_there (the old address still answers as that node), unchecked (the old address could not be shown to be
+    gone: it answered something unclear, or not at all in time), other_node (the new address does not answer as it), same."""
+
+    def __init__(self, reason: str, message: str):
+        self.reason = reason
+        super().__init__(message)
+
+
+def hello_at(url, timeout: float = 3.0) -> str | None:
+    """The node id the board at `url` gives on GET /api/node/hello (no credential, the address rule applies), or None for anything that is not a ccboard hello."""
+    try:
+        r = peer_call(str(url or ""), "GET", "/api/node/hello", timeout=timeout)
+    except PeerError:
+        return None
+    j = r.json if r.ok and isinstance(r.json, dict) else {}
+    nid = j.get("node_id")
+    return nid if j.get("app") == APP and isinstance(nid, str) and ID_RE.fullmatch(nid) else None
+
+
+def old_address_gone(url, timeout: float = 3.0) -> tuple[bool, str | None]:
+    """Is the board at `url` clearly not the node it was? (gone, node id): (True, None) when the connection is refused, the name no longer resolves or the
+    hello is a 404; (True, id) when a ccboard answers there with an id (the caller compares it). Anything else is not clear and counts as not gone:
+    (False, None) for a timeout, a 429, a 5xx, a redirect, a broken answer or any other failure. Update address fails closed on it."""
+    try:
+        r = peer_call(str(url or ""), "GET", "/api/node/hello", timeout=timeout)
+    except PeerError as e:
+        if e.reason == "url" and e.unresolved:
+            return True, None
+        return (e.reason == "unreachable" and isinstance(e.cause, ConnectionRefusedError)), None
+    if r.status == 404:
+        return True, None
+    j = r.json if r.ok and isinstance(r.json, dict) else {}
+    nid = j.get("node_id")
+    if j.get("app") == APP and isinstance(nid, str) and ID_RE.fullmatch(nid):
+        return True, nid
+    return False, None
+
+
+def address_changes(db, found, probe=None) -> list[dict]:
+    """Registry rows whose node id discovery just found at ANOTHER address: [{peer_id, handle, name, from_url, to_url, to_device?}]. The old address is probed once more
+    first (`probe`, hello_at by default) and a node that still answers there is not offered. Nothing is changed: the person applies one with update_address."""
+    probe = probe or hello_at
+    rows = [r for r in _out_rows(_db(db)) if not r.get("legacy") and r.get("node_id")]
+    out: list[dict] = []
+    for f in found or []:
+        if not isinstance(f, dict) or f.get("state") != "found" or not isinstance(f.get("url"), str) or not isinstance(f.get("node_id"), str):
+            continue
+        for r in rows:
+            if r["node_id"] != f["node_id"] or canon_url(r.get("url")) == canon_url(f["url"]) or any(o["peer_id"] == r["peer_id"] for o in out):
+                continue
+            if probe(r.get("url")) == r["node_id"]:
+                continue                                              # still there: two addresses of one node, not a move
+            device = _sanitize_name(f.get("name")) if isinstance(f.get("name"), str) else None             # the Tailscale device name, when discovery has it
+            out.append({"peer_id": r["peer_id"], "handle": r.get("handle"), "name": r.get("name"), "from_url": r.get("url"), "to_url": f["url"],
+                        **({"to_device": device} if device else {})})
+    return out
+
+
+def update_address(ident, url, db=None, device=None) -> dict:
+    """Move a registry row to the address a person confirmed (Update address): the address rule applies, the old address is probed once more and must be
+    CLEARLY not this node (connection refused, name gone, a 404, or a ccboard with another node id; a timeout, a 429, a 5xx, a redirect or a broken answer
+    is not clear and refuses), and the new one must answer with the row's node id. The token, handle, scopes and the hub's record stay. `device` is the
+    Tailscale device name discovery showed for the new address, kept in the audit row and returned as `device`. Returns the registry view.
+    LookupError (no such node, or a pair that calls this board, or a legacy row, or one removed while the probes ran), PeerUrlError (the address rule),
+    AddressError (still_there, unchecked, other_node, same)."""
+    d = _db(db)
+    p = peer(ident, d)
+    if p is None or p["direction"] != "out" or p.get("legacy") or not p.get("node_id"):
+        raise LookupError("no such node")
+    target = check_peer_url(url, tailnet_suffix())
+    if canon_url(target.url) == canon_url(p["url"]):
+        raise AddressError("same", "that is already the address of this node")
+    gone, there = old_address_gone(p["url"])
+    if there == p["node_id"]:
+        raise AddressError("still_there", f"{p['name']} still answers at its old address, so the address was not changed")
+    if not gone:
+        raise AddressError("unchecked", f"The old address of {p['name']} still answers or could not be checked, so the address was not changed. Try again.")
+    if hello_at(target.url) != p["node_id"]:
+        raise AddressError("other_node", f"the new address does not answer as {p['name']}, so the address was not changed")
+    name = _sanitize_name(device) if isinstance(device, str) else None
+    view = put_peer({"peer_id": p["peer_id"], "direction": "out", "url": target.url}, db=d, create=False)     # a Remove during the probes must not make the row again
+    audit("out", p["peer_id"], "address_changed", True, f"from {p['url']} to {target.url}" + (f" ({name})" if name else ""), node_name=p["name"], db=d)
+    return {**view, "device": name} if name else view
 
 
 def _claimants(d, p: dict) -> tuple[list[dict], list[dict]]:

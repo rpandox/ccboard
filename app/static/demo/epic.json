@@ -1921,6 +1921,105 @@
      "mcp_run": true
     }
    }
+  },
+  "rungithub": {
+   "detail": {
+    "route": {
+     "can_run": true,
+     "blocked": null,
+     "running": true,
+     "paused": false,
+     "by": "maya-r",
+     "via": "page",
+     "left": null,
+     "started_at": "2026-10-11T08:59:00Z",
+     "ended": null,
+     "ended_at": null,
+     "cycle_at": "2026-10-11T08:59:30Z",
+     "assigned": {
+      "205": {
+       "handle": "node-b",
+       "node": "node-b",
+       "why": "chose node-b: 2 free lanes, 5-hour window 31 percent",
+       "at": "2026-10-11T08:59:30Z",
+       "task_ref": "node-b:51",
+       "reason": "won"
+      }
+     },
+     "waiting": {},
+     "held": {
+      "206": {
+       "code": "github_unavailable",
+       "text": "node-b: GitHub is not available there (gh is logged out); trying again around 14:10",
+       "until": "2026-10-11T14:10:00Z"
+      }
+     },
+     "error": "GitHub could not be read just now.",
+     "loop": true,
+     "max_window_pct": 85,
+     "mcp_run": false,
+     "error_code": "github_unavailable",
+     "retry_at": "2026-10-11T14:10:00Z"
+    }
+   },
+   "child": {
+    "205": {
+     "claim": {
+      "alias": "node-b",
+      "node": "node-b",
+      "status": "running",
+      "since": "2026-10-11T08:59:30Z",
+      "renewed_at": "2026-10-11T08:59:30Z",
+      "live": true,
+      "attempt": 1,
+      "seq": 1,
+      "task_ref": "node-b:51",
+      "branch": "worktree-issue-205"
+     },
+     "claim_state": "claimed",
+     "claim_rejected": 0,
+     "claim_note": null,
+     "bucket": {
+      "node": "node-b",
+      "state": "running"
+     },
+     "phase": "running",
+     "task": {
+      "ref": "node-b:51",
+      "phase": "running",
+      "node": "node-b",
+      "node_name": "node-b",
+      "status": "online",
+      "age_s": 0,
+      "updated_at": "2026-10-11T08:59:30Z"
+     },
+     "route": {
+      "state": "assigned",
+      "text": "chose node-b: 2 free lanes, 5-hour window 31 percent",
+      "node": "node-b",
+      "handle": "node-b",
+      "until": null,
+      "code": null,
+      "at": "2026-10-11T08:59:30Z"
+     }
+    },
+    "206": {
+     "route": {
+      "state": "held",
+      "text": "node-b: GitHub is not available there (gh is logged out); trying again around 14:10",
+      "until": "2026-10-11T14:10:00Z",
+      "code": "github_unavailable"
+     }
+    },
+    "207": {
+     "route": {
+      "state": "held",
+      "text": "too many comments to read",
+      "until": null,
+      "code": "claim_unknown"
+     }
+    }
+   }
   }
  }
 }

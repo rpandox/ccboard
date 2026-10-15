@@ -715,6 +715,9 @@ def test_the_real_transport_connects_to_the_validated_address_and_checks_the_nam
         def __init__(self, host, addr, port, timeout):
             seen["ctor"] = (host, addr, port)
 
+        def connect(self):                         # _https connects before it sends, so a connect failure is "not sent"
+            seen["connected"] = True
+
         def request(self, method, path, body=None, headers=None):
             seen["req"] = (method, path, body, dict(headers))
 

@@ -1,4 +1,5 @@
 """The doctor's node checks for a Mac and for WSL2 (issue #154), registered by app/doctor.py on those two systems only; a Linux board lists none.
+Also `nodes-health` (issue #153, HEALTH below), which app/doctor.py registers on EVERY board, because the hub is usually the Linux box.
 
 What these four add to the macOS and WSL checks of issues #117 and #118 is the node's point of view: a sleeping Mac or a distro without its keep-alive
 is not broken, it is a node that other boards see as stale. Every check skips with a plain reason off its system, so a caller that runs one by name
@@ -121,6 +122,76 @@ def _c_gh(db):
         return d._pass("a gh login exists on this machine")
     return d._warn("no gh login on this machine: pull requests and cloning from GitHub fail here",
                    d.fix("Log gh in on this machine (the board only reads the exit code of gh auth status)", "gh auth login"))
+
+
+# ------------------------------------------------------------------ the paired nodes, as the hub last read them (issue #153; every platform, registered by app/doctor.py)
+
+SKEW_TEXT = "turn on automatic time (Linux: timedatectl set-ntp true; macOS: System Settings, General, Date & Time, Set time automatically)"
+
+
+def _age(s) -> str:
+    s = int(s or 0)
+    return f"{s} s" if s < 90 else f"{s // 60} min" if s < 5400 else f"{s // 3600} h" if s < 172800 else f"{s // 86400} days"
+
+
+def _health_rows(regs: list[dict], recs: list[dict]) -> list[tuple[int, str, str, str]]:
+    """(rank, name, problem, fix) for every paired node that is not well, worst first: 0 unauthorized or needs a new pairing, 1 another device at its address
+    (or a node that no longer knows this board), 2 another node API, 3 offline, 4 a clock more than 5 s off. A node that is online (or stale) with a good clock
+    is not listed."""
+    by_id = {r.get("peer_id"): r for r in recs if isinstance(r, dict)}
+    out = []
+    for reg in regs:
+        rec = by_id.get(reg.get("peer_id")) or {}
+        name = reg.get("name") or reg.get("handle") or "a node"
+        status = rec.get("status")
+        if reg.get("needs_repair") or status == "unauthorized":
+            out.append((0, name, f"{name} no longer takes this board's token (the pairing was removed there, or a rotation answer was lost)",
+                        f"Open Settings > Nodes and press Re-pair on {name} (Remove, then Add node with a new code made on {name})"))
+        elif status == "unpaired" and rec.get("error_kind") == "identity_changed":
+            out.append((1, name, f"the address of {name} now belongs to another device (it answers with another node id); nothing of it is shown",
+                        f"Open Settings > Nodes and press Remove on {name}, or pair it again if the device was set up anew"))
+        elif status == "unpaired":
+            out.append((1, name, f"{name} no longer knows this board", f"Open Settings > Nodes and press Remove on {name}, then pair it again"))
+        elif status == "incompatible":
+            theirs = rec.get("peer_api")
+            theirs = theirs if isinstance(theirs, int) and not isinstance(theirs, bool) else "unknown"
+            out.append((2, name, f"{name} speaks node API {theirs}, this board speaks {rec.get('api') or 1}: its card is shown, its actions are refused",
+                        "Update the older board so both run the same ccboard release"))
+        elif status == "offline":
+            age = rec.get("age_s")
+            seen = f"last seen {_age(age)} ago" if isinstance(age, int) and not isinstance(age, bool) else "never answered"
+            out.append((3, name, f"{name} is offline, {seen}",
+                        f"Check that {name} is awake and its board is running (a sleeping Mac, or WSL2 without its keep-alive, goes offline), then wait for the next poll"))
+        ms = rec.get("skew_ms")
+        if rec.get("skew_warn") and status in ("online", "stale") and isinstance(ms, int) and not isinstance(ms, bool):
+            off = f"{abs(ms) // 1000} s {'ahead' if ms > 0 else 'behind'}"
+            out.append((4, name, f"the clock of {name} is {off} (claims use GitHub's clock, so nothing runs twice, but times on {name} read wrong)",
+                        f"On {name}, {SKEW_TEXT}"))
+    return sorted(out, key=lambda x: (x[0], x[1].lower()))
+
+
+def _c_nodes_health(db):
+    """nodes-health: the paired nodes that are offline, unauthorized, at another device, on another node API or with a clock off, worst first, each with its fix.
+    Reads only what the hub already holds (no call to any node, so an offline node cannot make the doctor slow). A board with no paired node skips."""
+    from . import main, nodes
+    try:
+        regs = [r for r in nodes.peers(db=db) if r.get("direction") == "out" and not r.get("legacy")]
+    except Exception as e:
+        return d._warn(f"the paired nodes could not be read ({e.__class__.__name__})", d.fix("Check that the data directory is writable by the board"))
+    if not regs:
+        return d._skip("no node is paired with this board")
+    try:
+        recs = main._hub().records()
+    except Exception as e:
+        return d._skip(f"unknown: the hub's readings could not be read ({e.__class__.__name__})")
+    rows = _health_rows(regs, recs)
+    if not rows:
+        return d._pass(f"{len(regs)} paired node{'s' if len(regs) != 1 else ''}, each answering, on this board's node API and with a clock within 5 s")
+    detail = "; ".join(f"{p} (fix: {f})" for _r, _n, p, f in rows)
+    return d._warn(detail[:1500], d.fix(rows[0][3]))
+
+
+HEALTH = ("nodes-health", "box", "Paired nodes answer", _c_nodes_health)      # registered by app/doctor.py on every board (a wrapper, so either module may be imported first)
 
 
 # ------------------------------------------------------------------ registry

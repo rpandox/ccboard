@@ -102,6 +102,14 @@ function epAgo(s) {
   return `${Math.floor(s / 86400)} d ago`;
 }
 
+/* 14:10, the clock time of an ISO time on this device; '' when it is none. */
+function epClock(iso) {
+  const t = typeof iso === 'string' ? Date.parse(iso) : NaN;
+  if (Number.isNaN(t)) return '';
+  const d = new Date(t);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 /* How long before GitHub's own "now" an ISO time was; '' when either is missing. */
 function epSince(iso, nowIso) {
   const a = Date.parse(iso);
@@ -201,8 +209,8 @@ function epClaimSentence(e, name, n, work) {
   const byReason = {
     offline: `${name} is offline. Nothing was claimed.`,
     scope: `${name} is paired without the tasks scope. Nothing was claimed.`,
-    unconfirmed: work ? `${name} did not answer in time, so it is not known whether it started ${issue}. Check its tasks and the issue on GitHub. Nothing was retried.`
-      : `${name} did not answer in time, so it is not known whether ${issue} was claimed. Check the issue on GitHub. Nothing was retried.`,
+    unconfirmed: work ? `Outcome unknown, check ${name}: it did not answer in time, so it is not known whether it started ${issue}. Look at its tasks and the issue on GitHub. Nothing was retried.`
+      : `Outcome unknown, check ${name}: it did not answer in time, so it is not known whether ${issue} was claimed. Look at the issue on GitHub. Nothing was retried.`,
     needs_repair: `${name} no longer takes this board's token: pair it again in Settings. Nothing was claimed.`,
     unknown_node: `${name} is no longer paired. Nothing was claimed.`,
     unreachable: `${name} could not be reached. Nothing was claimed.`,
@@ -237,6 +245,17 @@ function epWorkSentence(e, name, n) {
   return epClaimSentence({ status: e && e.status, message: e && e.message, body: b.reason === 'work_refused' ? { ...b, reason: 'claim_refused' } : b }, name, n, true);
 }
 
+/* The outcome of a write to a node is unknown (a timeout or a broken connection after the call went out, issue #153): the sentence says so, nothing is sent again, and this link is the way to
+   look: the node's page on this board. Not an unknown outcome: ''. */
+function epUnknown(e, node) {
+  const b = e && e.body && typeof e.body === 'object' ? e.body : {};
+  return b.outcome === 'unknown' || b.reason === 'unconfirmed' ? node.handle : '';
+}
+function epCheckLink(handle, name) {
+  const h = Ref.hash(Ref.node(handle));
+  return h ? el('a', { class: 'ep-check', href: h, 'aria-label': `Check ${name}: its tasks and sessions`, text: 'See its tasks' }) : null;
+}
+
 /* The bits of the claim UI of one row, added under the pin: the action when it is offered, else why not (writes off, offline, no scope, no pin), then the last refusal. */
 function epClaimBits(P, c) {
   const d = P.data;
@@ -256,7 +275,7 @@ function epClaimBits(P, c) {
         disabled: !!busy || null, onclick: () => epClaim(P, c, node), text: busy ? `Claiming on ${node.name}…` : `Claim on ${node.name}` }));
     }
   }
-  if (note) out.push(el('span', { class: 'ep-claimhint warn ep-claimnote', role: 'status', 'data-claim-note': note.why || 'error', text: note.text }));
+  if (note) out.push(el('span', { class: 'ep-claimhint warn ep-claimnote', role: 'status', 'data-claim-note': note.why || 'error' }, note.text, note.check ? [' ', epCheckLink(note.check, note.name || note.check)] : null));
   return out;
 }
 
@@ -290,7 +309,7 @@ function epClaim(P, c, node) {
     P.claiming.delete(key);
     if (epicPage.cur !== P) return;
     const text = epClaimSentence(e, node.name, c.number);
-    P.notes.set(key, { why: (e && e.body && (e.body.why || e.body.reason)) || 'error', text });
+    P.notes.set(key, { why: (e && e.body && (e.body.why || e.body.reason)) || 'error', text, check: epUnknown(e, node), name: node.name });
     toast(text, { kind: 'bad' });
     epPaint(P);
     const b = e && e.body;
@@ -351,7 +370,7 @@ function epWorkBits(P, c) {
     if (!epClaimable(P.data, c) || offer.off === 'author' || offer.off === 'epic_author' || offer.off === 'authors_unknown') out.push(el('span', { class: 'ep-claimhint warn', 'data-work-hint': offer.off, text: offer.text }));
   }
   if (note) {
-    out.push(el('span', { class: 'ep-claimhint warn ep-claimnote', role: 'status', 'data-work-note': note.why || 'error', text: note.text }));
+    out.push(el('span', { class: 'ep-claimhint warn ep-claimnote', role: 'status', 'data-work-note': note.why || 'error' }, note.text, note.check ? [' ', epCheckLink(note.check, note.name || note.check)] : null));
     if (note.why === 'lanes_full' && offer && offer.ok && !busy) {
       out.push(el('button', { class: 'small ep-work-force', type: 'button', 'data-work-force': offer.node.handle, title: 'Start it although the node runs as many tasks as its lane cap advises',
         'aria-label': `Start issue #${c.number} on ${offer.node.name} anyway`, onclick: () => epWork(P, c, offer.node, true), text: 'Start anyway' }));
@@ -443,7 +462,7 @@ function epWork(P, c, node, force) {
     if (epicPage.cur !== P) return;
     undo();
     const text = epWorkSentence(e, node.name, c.number);
-    P.wnotes.set(key, { why: (e && e.body && (e.body.why || e.body.reason)) || 'error', text });
+    P.wnotes.set(key, { why: (e && e.body && (e.body.why || e.body.reason)) || 'error', text, check: epUnknown(e, node), name: node.name });
     toast(text, { kind: 'bad' });
     epPaint(P);
     const b = e && e.body;
@@ -710,7 +729,8 @@ function epRunState(P) {
   if (r.running) {
     const since = r.started_at ? epSince(r.started_at, d.server_now || d.at) : '';
     const left = typeof r.left === 'number' ? `, ${r.left} more ${r.left === 1 ? 'issue' : 'issues'} allowed` : '';
-    return { ok: false, label: 'Running', text: `Running${since ? ', started ' + since : ''} by ${epRunBy(r)}${left}. Pause stops new assignments; issues already sent go on.`, title: 'The run is going. Pause stops new assignments.', warn: false };
+    const gh = r.error_code === 'github_unavailable' ? ` ${typeof r.error === 'string' && r.error ? r.error.slice(0, 160) : 'GitHub is not available.'} The run tries again ${epClock(r.retry_at) ? 'around ' + epClock(r.retry_at) : 'soon'}.` : '';       // issue #153: what is wrong and when it asks again
+    return { ok: false, label: 'Running', text: `Running${since ? ', started ' + since : ''} by ${epRunBy(r)}${left}.${gh} Pause stops new assignments; issues already sent go on.`, title: 'The run is going. Pause stops new assignments.', warn: !!gh };
   }
   if (d.paused) return { ok: false, label: 'Run', text: EP_RUN_PAUSED, title: EP_RUN_PAUSED, warn: false };
   if (d.error && !(d.children || []).length) return { ok: false, label: 'Run', text: 'GitHub could not be read, so there is nothing to send yet.', title: 'GitHub could not be read', warn: true };

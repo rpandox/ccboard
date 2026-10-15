@@ -221,6 +221,10 @@ function settingsNotify(p) {
    confirmed, are listed with an unticked box each, and Remove sends the ones the person ticks as DELETE {also_revoke: [peer_id, ...]}. A pair the node made again from another address is listed under
    Who can control this node as "says it is this node too", still working, with its usual Revoke: a node id is not proof, so nothing points at one pair.
 
+   Failure states (issue #153): a pair that needs a new pairing (a refused token, a lost rotation, another device at its address) leads with Re-pair (the Add node sheet at the saved
+   address) and Rotate token is off with its reason; a rotation whose answer was lost says "Outcome unknown" and is never asked again; a pair that discovery found at another address
+   (GET /api/nodes/discover?refresh=1 `moved`) shows Update address under it (POST /api/nodes/<peer>/address {url}), applied only by that press.
+
    A code is in this file only as the text of the open sheet (settingsNdSheet.code and the output node): it is never put in storage, a URL, a toast or a log, and closing the sheet
    empties every node and the variable. A token is never in this file at all: the board's answers to rotate and add carry none that this page reads. The one timer here is the
    countdown of an open sheet; it is cleared when the sheet closes, the code runs out, or the page goes away. */
@@ -333,9 +337,32 @@ async function settingsNdRotate(p) {
     const grace = r && Number.isFinite(r.grace_s) && r.grace_s > 0 && r.grace_s <= 3600 ? Math.round(r.grace_s) : NodeView.ROTATE_GRACE_S;
     settingsNdPeers.rotated[p.id] = Date.now();
     settingsNdToast(`Token for ${p.name} rotated. The old one still works for ${grace} seconds.`);
-  } catch (e) { settingsNdToast(`Token for ${p.name} not rotated: ${e.message}`, 'warn'); }
+  } catch (e) {
+    const unknown = e && e.body && typeof e.body === 'object' && e.body.reason === 'outcome_unknown';                     // the answer was lost: the board does not ask again, the pair needs Re-pair
+    settingsNdToast(unknown ? `Outcome unknown, check ${p.name}: it may have rotated the token, and this board will not ask again. Press Re-pair.` : `Token for ${p.name} not rotated: ${e.message}`, 'warn');
+  }
   settingsNdBusy(p.id, '');
   await settingsNdLoadPeers();
+}
+
+/* Update address (POST /api/nodes/<peer>/address {url}): the board probes the old address once more and the new one must answer as this node; a refusal is said in the board's own words
+   and nothing changes. The offer goes away once it is applied. */
+async function settingsNdAddress(p, m) {
+  if (settingsNdPeers.act[p.id]) return;
+  settingsNdBusy(p.id, 'address');
+  try {
+    const r = await api('POST', `/api/nodes/${encodeURIComponent(p.id)}/address`, { url: m.to, ...(m.device ? { device: m.device } : {}) });
+    if (settingsNd.data && Array.isArray(settingsNd.data.moved)) settingsNd.data = { ...settingsNd.data, moved: settingsNd.data.moved.filter((x) => x && x.peer_id !== p.id) };
+    const dev = NodeView.str(r && r.device, 60);                                                  // the Tailscale device the board confirmed, when discovery named one
+    settingsNdToast(`${p.name} now uses ${m.toHost}${dev ? ` (the device ${dev})` : ''}.`);
+  } catch (e) { settingsNdToast(`Address of ${p.name} not changed: ${e.message}`, 'warn'); }
+  settingsNdBusy(p.id, '');
+  await settingsNdLoadPeers();
+}
+
+/* The offer for one pair (NodeView.moved of the last discovery answer), or null. */
+function settingsNdMovedFor(id) {
+  return NodeView.moved(settingsNd.data).find((m) => m.id === id) || null;
 }
 
 /* Revoke (a pair that calls this board) is DELETE /api/nodes/<peer>. The board never fails it because the other node is offline. */
@@ -449,8 +476,34 @@ function settingsNdPeerActions(rec, incoming) {
   }
   const rm = el('button', { class: 'danger', type: 'button', title: 'Remove (asks what else would stay)', 'aria-label': `Remove ${p.name}`, text: 'Remove' });
   rm.addEventListener('click', () => settingsNdRemoveSheet(rm, rec));
+  const fix = settingsNdRepairNeed(p);
+  if (fix) {                                                              // issue #153: Re-pair leads; Rotate token is off with its reason (a rotation needs a token that works)
+    const again = el('button', { class: 'primary tinted', type: 'button', 'aria-label': `Re-pair ${p.name}`, title: fix.title, text: 'Re-pair' });
+    again.addEventListener('click', () => settingsNdAddSheet(again, rec.url));
+    const reason = 'needs a new pairing first, so press Re-pair';
+    const off = el('button', { class: 'danger nd-off', type: 'button', 'aria-disabled': 'true', title: `Rotate token is off, it ${reason}`, 'aria-label': `Rotate token for ${p.name} is off, it ${reason}`, text: 'Rotate token',
+      onclick: (e) => { e.preventDefault(); settingsNdToast(`Rotate token for ${p.name} is off, it ${reason}.`, 'warn'); } });
+    return [again, off, busy === 'remove' ? wait('Removing…') : rm];
+  }
+  const rec2 = Nodes.ready && Nodes.enabled() && p.handle ? Nodes.get(p.handle) : null;
+  const down = rec2 ? Nodes.downWhy(rec2) : '';
+  if (down && busy !== 'rotate') {                                         // a rotation sent to a node that is asleep is lost or never leaves: off, with the reason, until it answers
+    const reason = `${down}; Rotate token needs it to answer`;
+    const off = el('button', { class: 'danger nd-off', type: 'button', 'aria-disabled': 'true', title: reason, 'aria-label': `Rotate token for ${p.name} is off. ${reason}`, text: 'Rotate token',
+      onclick: (e) => { e.preventDefault(); settingsNdToast(`Rotate token for ${p.name} is off. ${reason}.`, 'warn'); } });
+    return [off, busy === 'remove' ? wait('Removing…') : rm];
+  }
   return [busy === 'rotate' ? wait('Rotating…') : confirmButton(`node-rot:${p.id}`, 'Rotate token', () => settingsNdRotate(p), false),
     busy === 'remove' ? wait('Removing…') : rm];
+}
+
+/* Does this pair need Re-pair (issue #153)? The registry says so (a refused token, a lost rotation), or the hub's reading does (another device or another node at the address, a token the
+   node no longer takes). {title} or null. Only for a pair this board calls. */
+function settingsNdRepairNeed(p) {
+  const rec = Nodes.ready && Nodes.enabled() && p.handle ? Nodes.get(p.handle) : null;
+  const hard = rec ? Nodes.hardNotice(rec) : null;
+  if (!p.repair && !(hard && hard.repair)) return null;
+  return { title: hard && hard.key === 'identity_changed' ? 'Another device answers at this address: pair again with the right address' : 'Pair again at the same address' };
 }
 
 /* Empty everything the sheet holds, stop its timer, and give the focus back to what opened it (or to Add node when that row was repainted away). */
@@ -775,11 +828,18 @@ function settingsNdPaintPaired(nu, st) {
       if (it.legacy) return JSON.stringify([it.legacy, minute]);
       const id = NodeView.peer(it.rec).id;
       const rot = P.rotated[id] && Date.now() - P.rotated[id] < (NodeView.ROTATE_GRACE_S + 15) * 1000 ? Math.floor(Date.now() / 15000) : 0;
-      return JSON.stringify([it.rec, minute, P.act[id] || '', settingsNdArmed(id), rot, Nodes.ready ? Nodes.M.rev : 0]);
+      return JSON.stringify([it.rec, minute, P.act[id] || '', settingsNdArmed(id), rot, Nodes.ready ? Nodes.M.rev : 0, settingsNdMovedFor(id)]);
     },
     (it) => {
       if (it.legacy) return settingsNdLegacy(it.legacy);
       const row = NodeView.peerRow(it.rec, { nowMs: now, actions: settingsNdPeerActions(it.rec, false), rotatedMs: P.rotated[NodeView.peer(it.rec).id] || 0 });
+      const mv = settingsNdMovedFor(NodeView.peer(it.rec).id);
+      if (mv) {                                                                // found at another address: offered, never applied by itself
+        const pr = NodeView.peer(it.rec);
+        const go = P.act[pr.id] === 'address' ? el('button', { class: 'small', type: 'button', disabled: true, text: 'Updating…' })
+          : el('button', { class: 'small', type: 'button', 'aria-label': `Update address of ${pr.name} to ${mv.toHost}`, text: 'Update address', onclick: () => settingsNdAddress(pr, mv) });
+        row.querySelector('.nd-main').append(el('div', { class: 'nd-moved', 'data-moved': pr.id }, NodeView.chip('address changed', 'warn', '!', 'Discovery found this node at another address.'), el('span', { class: 'dim', text: NodeView.movedNote(mv) }), go));
+      }
       const line = Nodes.ready && Nodes.enabled() ? Nodes.settingsLine(NodeView.peer(it.rec).handle) : null;      // the hub's reading of this node (status and age, clock skew, agents, accounts); nodes-hub.js
       if (line) row.querySelector('.nd-main').append(line);
       return row;
@@ -985,7 +1045,10 @@ async function settingsNdLoad(refresh) {
   }
   if (mine !== settingsNd.seq) return false;
   settingsNd.busy = false;
-  if (d && typeof d === 'object' && Array.isArray(d.rows)) { settingsNd.data = d; settingsNd.at = Date.now(); } else settingsNd.err = 'the board answered without a list';
+  if (d && typeof d === 'object' && Array.isArray(d.rows)) {
+    if (!refresh && !Array.isArray(d.moved) && settingsNd.data && Array.isArray(settingsNd.data.moved)) d = { ...d, moved: settingsNd.data.moved };      // an offer found by a Refresh stays until it is applied (the board checks it again then)
+    settingsNd.data = d; settingsNd.at = Date.now();
+  } else settingsNd.err = 'the board answered without a list';
   settingsNd.rev++;
   settingsFill('nodes', true);
   return true;

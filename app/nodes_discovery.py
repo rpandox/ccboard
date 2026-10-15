@@ -449,7 +449,17 @@ def discover(db, *, refresh: bool = False, transport: Callable | None = None, re
             finally:
                 if not handed:
                     _refresh_lock.release()
-        return {"at": _iso(now), "tailscale": info, "rows": [_out_row(r, cache.get(r["ts_id"]), now, suffix) for r in cand]}
+        rows = [_out_row(r, cache.get(r["ts_id"]), now, suffix) for r in cand]
+        out = {"at": _iso(now), "tailscale": info, "rows": rows}
+        if refresh:                                                   # issue #153: a paired node found at another address is OFFERED (Update address), never moved here
+            try:
+                moved = nodes.address_changes(db, [r for r in rows if r["state"] == "found" and r.get("age") == 0])
+            except Exception as e:
+                log.debug("address check failed: %s", e.__class__.__name__)
+                moved = []
+            if moved:
+                out["moved"] = moved
+        return out
     except Exception as e:
         log.warning("discovery failed: %s", e.__class__.__name__)
         return {"at": _iso(now), "tailscale": {"ok": False, "reason": f"Finding nodes failed ({e.__class__.__name__}); try again", "variant": "unknown"}, "rows": []}

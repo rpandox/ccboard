@@ -50,21 +50,29 @@ Nodes.ageOf = function (rec, nowMs) {
   return rec.age_s + Math.max(0, ((nowMs || Date.now()) - Nodes.M.recvAt) / 1000);
 };
 
-/* The status of a record as words: {status, glyph, word, tone, age}. Glyph and word always travel together (a state is never colour only). */
+/* The status of a record as words: {status, glyph, word, tone, age, repair}. Glyph and word always travel together (a state is never colour only). `repair` is true when the pair needs a
+   new pairing although the node still answers (a rotation whose answer was lost, issue #153): the chip then says "re-pair" and the status stays what the hub read. An unpaired node whose
+   error_kind is identity_changed reads "another device" (the address now belongs to a different device); an incompatible one names its node API number. */
 Nodes.view = function (rec, nowMs) {
   const now = nowMs || Date.now();
   const age = Nodes.ageOf(rec, now);
-  const status = ['online', 'stale', 'offline', 'unauthorized', 'unpaired'].includes(rec && rec.status) ? rec.status : 'offline';
+  const status = ['online', 'stale', 'offline', 'unauthorized', 'unpaired', 'incompatible'].includes(rec && rec.status) ? rec.status : 'offline';
   const since = rec && rec.last_ok_at ? nhClock(rec.last_ok_at, now) : '';
+  const other = status === 'unpaired' && rec && rec.error_kind === 'identity_changed';
   const v = {
     online: { glyph: '●', word: 'online', tone: 'ok' },
     stale: { glyph: '◐', word: age === null ? 'stale' : `stale ${nhSpan(age)}`, tone: 'warn' },
     offline: { glyph: '○', word: since ? `offline since ${since}` : 'offline, never read', tone: '' },
     unauthorized: { glyph: '!', word: 're-pair', tone: 'bad' },
-    unpaired: { glyph: '?', word: 'not paired any more', tone: 'bad' },
+    unpaired: other ? { glyph: '?', word: 'another device', tone: 'bad' } : { glyph: '?', word: 'not paired any more', tone: 'bad' },
+    incompatible: { glyph: '!', word: `incompatible, API ${nhApi(rec && rec.peer_api)}`, tone: 'warn' },
   }[status];
-  return { status, age, ...v };
+  const repair = !!rec && rec.needs_repair === true && (status === 'online' || status === 'stale' || status === 'offline');
+  return { status, age, ...v, ...(repair ? { glyph: '!', word: 're-pair', tone: 'bad' } : {}), repair: repair || status === 'unauthorized', identity: other };
 };
+
+/* The node API number as a word: a whole number, else "unknown". */
+function nhApi(n) { return typeof n === 'number' && Number.isInteger(n) && n >= 0 && n < 1000 ? String(n) : 'unknown'; }
 
 /* ---------- the model ---------- */
 
@@ -176,13 +184,68 @@ Nodes.can = function (rec, scope) {
   const name = nhName(rec);
   if (rec.legacy) return { ok: false, why: `${name} was added without a token: pair it to act on it` };
   if (!(Array.isArray(rec.scopes) && rec.scopes.includes(scope))) return { ok: false, why: `needs the ${scope} scope on ${name}` };
-  if (rec.status === 'unauthorized') return { ok: false, why: `${name} no longer takes this board's token: re-pair it in Settings, Nodes` };
+  if (rec.status === 'unauthorized' || rec.needs_repair === true) return { ok: false, why: `${name} no longer takes this board's token: re-pair it in Settings, Nodes` };
+  if (rec.status === 'unpaired' && rec.error_kind === 'identity_changed') return { ok: false, why: `This address now belongs to another device, not ${name}: remove it or pair again` };
   if (rec.status === 'unpaired') return { ok: false, why: `${name} answers as another node: remove it and pair it again` };
+  if (rec.status === 'incompatible') return { ok: false, why: Nodes.apiWords(rec) };
   if (rec.status === 'offline') {
     const age = Nodes.ageOf(rec);
     return { ok: false, why: age === null ? `${name} has not answered yet` : `${name} is offline, last seen ${nhAgo(age)} ago` };
   }
   return { ok: true, why: '' };
+};
+
+/* Why an action that must reach the node and cannot be sent again safely (Rotate token) is off while the node is offline or its last try failed (stale): the plain sentence, or ''
+   when the node is answering. Nothing is queued for later. */
+Nodes.downWhy = function (rec) {
+  if (!rec) return '';
+  const v = Nodes.view(rec);
+  const name = nhName(rec);
+  if (v.status === 'offline') return v.age === null ? `${name} has not answered yet` : `${name} is offline, last seen ${nhAgo(v.age)} ago`;
+  if (v.status === 'stale') return v.age === null ? `${name} did not answer its last check` : `${name} did not answer its last check, last read ${nhAgo(v.age)} ago`;
+  return '';
+};
+
+/* "build-box speaks node API 2 and this board speaks 1: update the older board" (issue #153): both numbers are named. */
+Nodes.apiWords = function (rec) {
+  const mine = typeof rec.api === 'number' ? rec.api : 1;
+  return `${nhName(rec)} speaks node API ${nhApi(rec.peer_api)} and this board speaks ${nhApi(mine)}: update the older board`;
+};
+
+/* The plain message of a pairing that needs a person (issue #153): {key, cls, text, repair, remove} or null. `repair` offers Re-pair (the Add node sheet at the saved address);
+   `remove` says Remove is the other way out. The order is the relay's: a refused token or a lost rotation, another device at the address, another node, another node API. */
+Nodes.hardNotice = function (rec) {
+  if (!rec) return null;
+  const name = nhName(rec);
+  if (rec.status === 'unauthorized') return { key: 'unauthorized', cls: 'bad', repair: true, remove: false,
+    text: `${name} removed this pairing, pair again. Its token was refused, so nothing can be sent to it until it is paired again.` };
+  if (rec.status === 'unpaired' && rec.error_kind === 'identity_changed') return { key: 'identity_changed', cls: 'bad', repair: true, remove: true,
+    text: `This address now belongs to another device, not ${name}: remove it or pair again. Nothing it says is shown here.` };
+  if (rec.status === 'unpaired') return { key: 'unpaired', cls: 'bad', repair: true, remove: true,
+    text: `${name} does not answer as the board that was paired (it has no node routes). Remove it and pair it again.` };
+  if (rec.needs_repair === true) return { key: 'needs_repair', cls: 'bad', repair: true, remove: false,
+    text: `${name} needs to be paired again: this board could not confirm that it saved the new token, and it will not guess. Press Re-pair.` };
+  if (rec.status === 'incompatible') return { key: 'incompatible', cls: 'warn', repair: false, remove: false,
+    text: `${Nodes.apiWords(rec)}. Its card is still shown; nothing is sent to it.` };
+  return null;
+};
+
+/* The outcome of a write is unknown (issue #153): the call may have reached the node. The hub never repeats it. `err` is what api() threw; a read (what 'perms') is never unknown. */
+Nodes.unknown = function (err, what) {
+  if (what === 'perms') return false;
+  const b = err && err.body && typeof err.body === 'object' ? err.body : {};
+  return b.outcome === 'unknown' || b.reason === 'unconfirmed' || (!b.reason && (!err || !err.status || err.status >= 502));
+};
+
+/* "Outcome unknown, check build-box." The words next to the link below; nothing offers to send it again. */
+Nodes.unknownText = function (handle) {
+  return `Outcome unknown, check ${Nodes.nameOf(handle)}: it may or may not have got this. It was not retried.`;
+};
+
+/* The link to that node's page on this board (its Tasks and Sessions), where a person looks before doing anything again. null when the handle is outside the grammar. */
+Nodes.checkLink = function (handle, cls) {
+  const h = Ref.hash(Ref.node(handle));
+  return h ? el('a', { class: cls || 'nd-check', href: h, 'aria-label': `Check ${Nodes.nameOf(handle)}: its tasks and sessions`, text: 'See its tasks' }) : null;
 };
 
 /* {sessions, working, needs, tasks} of a record, null for each while it has no reading. needs = sessions that need you plus the permission requests waiting (as the hub counts it). */
@@ -207,7 +270,7 @@ Nodes.refreshInfo = function () {
   for (const r of Nodes.M.recs) {
     const v = Nodes.view(r, now);
     keep.add(r.handle);
-    Nodes.info[r.handle] = { name: typeof r.name === 'string' && r.name ? r.name : r.handle, status: v.status, word: v.word, glyph: v.status === 'online' ? '' : v.glyph };
+    Nodes.info[r.handle] = { name: typeof r.name === 'string' && r.name ? r.name : r.handle, status: v.status, word: v.word, glyph: v.status === 'online' && !v.repair ? '' : v.glyph };
   }
   for (const k of Object.keys(Nodes.info)) if (!keep.has(k)) delete Nodes.info[k];
 };
@@ -366,7 +429,8 @@ Nodes.termNote = function (rec) {
   const name = nhName(rec);
   if (v.status === 'offline') return `${name} is ${v.word}. The link is still here and opens once ${name} is back.`;
   if (v.status === 'unauthorized') return `${name} needs a new pairing (re-pair). The terminal link does not use the pairing: it goes to ${name} itself.`;
-  if (v.status === 'unpaired') return `${name} is not paired any more. The terminal link goes to the address saved for it.`;
+  if (v.status === 'unpaired') return v.identity ? `This address now belongs to another device, not ${name}. The terminal link goes to the address saved for it, so check it is the right device.` : `${name} is not paired any more. The terminal link goes to the address saved for it.`;
+  if (v.status === 'incompatible') return `${name} speaks another node API. The terminal link does not use the pairing: it goes to ${name} itself.`;
   if (v.status === 'stale') return `${name} was last read ${nhAgo(v.age === null ? 0 : v.age)} ago. The link goes to ${name} itself.`;
   return '';
 };
@@ -792,7 +856,9 @@ Nodes.settingsLine = function (handle) {
   const v = Nodes.view(rec);
   const kids = [nhStatusLine(v)];
   if (v.age !== null && v.status !== 'online') kids.push(el('span', { class: 'dim', text: `last reading ${nhSpan(v.age)} ago` }));
-  if (rec.skew_warn) kids.push(el('span', { class: 'warn', text: `clock differs by ${Math.round(Math.abs(rec.skew_ms || 0) / 1000)} s` }));
+  if (rec.skew_warn) kids.push(NodeView.chip(`clock differs by ${Math.round(Math.abs(rec.skew_ms || 0) / 1000)} s`, 'warn', '!', 'This node\'s clock differs from this board\'s by more than 5 s, so ages from it may be off.'));
+  const hard = Nodes.hardNotice(rec);
+  if (hard) kids.push(el('span', { class: `nd-set-msg ${hard.cls}`, 'data-notice': hard.key, text: hard.text }));
   const card = rec.card && typeof rec.card === 'object' ? rec.card : null;
   const agents = card && Array.isArray(card.agents) ? card.agents.filter((a) => a && typeof a.id === 'string') : [];
   if (agents.length) kids.push(el('span', { class: 'dim', text: agents.map((a) => `${a.id} ${a.installed ? (a.logged_in ? 'ready' : 'not logged in') : 'not installed'}`).join(', ') }));
@@ -860,13 +926,15 @@ Nodes.errText = function (err, handle, o) {
   const name = Nodes.nameOf(handle);
   const own = typeof b.error === 'string' ? b.error : '';
   const reason = typeof b.reason === 'string' ? b.reason : '';
-  const unsure = `Could not confirm whether ${name} got this. Check the terminal before answering again.`;
+  const unsure = Nodes.unknownText(handle);
   if (!reason && (!err || !err.status || err.status >= 502)) return what === 'perms' ? `${name} could not be reached` : unsure;     // no answer at all, or a proxy's: a write may have gone through
   switch (reason) {
     case 'unconfirmed': return unsure;
     case 'offline': return typeof b.age === 'number' ? `${name} is offline, last seen ${nhAgo(b.age)} ago` : `${name} has not answered yet`;
     case 'scope': return /^needs the /.test(own) ? own.slice(0, 200) : `needs the ${perm ? 'permissions' : 'sessions'} scope on ${name}`;
     case 'needs_repair': return `${name} no longer takes this board's token: re-pair it in Settings, Nodes`;
+    case 'identity_changed': return `This address now belongs to another device, not ${name}: remove it or pair again`;
+    case 'incompatible': return Nodes.apiWords({ name, handle, peer_api: b.peer_api, api: b.api });
     case 'unpaired': return `${name} answers as another node or no longer knows this board: remove it and pair it again`;
     case 'not_read_yet': return `${name} has not been read yet: wait a few seconds and try again`;
     case 'rate_limited': return perm ? 'Too many requests in a minute. Try again in a moment.' : 'Too many prompts in a minute for this session. Try again in a moment.';
@@ -909,6 +977,7 @@ function nsFail(e, handle, what) {
   const b = e && e.body && typeof e.body === 'object' ? e.body : {};
   const out = { ok: false, text: Nodes.errText(e, handle, { what }), reason: typeof b.reason === 'string' ? b.reason : '', status: e && e.status ? e.status : 0 };
   if (out.reason === 'busy') out.busy = { code: typeof b.code === 'string' ? b.code : '', retry: typeof b.retry === 'number' ? b.retry : null };
+  if (Nodes.unknown(e, what)) out.check = handle;                                       // the outcome is unknown: the caller shows the link to the node, never a retry
   return out;
 }
 
@@ -921,7 +990,7 @@ Nodes.sendPrompt = async function (handle, tmux, text, o) {
   try {
     const r = await api('POST', nsPath(handle, tmux, '/prompt'), { text: chk.text, queue: !!(o && o.queue) });
     const d = r && r.data && typeof r.data === 'object' ? r.data : {};
-    if (d.ok !== true) return { ok: false, text: Nodes.errText({ status: 502 }, handle, { what: 'prompt' }), reason: 'unconfirmed' };
+    if (d.ok !== true) return { ok: false, text: Nodes.errText({ status: 502 }, handle, { what: 'prompt' }), reason: 'unconfirmed', check: handle };
     return { ok: true, pasted: d.pasted === true, queued: d.queued === true };
   } catch (e) { return nsFail(e, handle, 'prompt'); }
 };
@@ -934,7 +1003,7 @@ Nodes.sendKey = async function (handle, tmux, key, confirm) {
   if (risky && confirm !== true) return { ok: false, local: true, text: 'C-c needs a second tap to confirm.' };
   try {
     const r = await api('POST', nsPath(handle, tmux, '/keys'), risky ? { key, confirm: true } : { key });
-    if (!r || !r.data || r.data.ok !== true) return { ok: false, text: Nodes.errText({ status: 502 }, handle, { what: 'keys' }), reason: 'unconfirmed' };
+    if (!r || !r.data || r.data.ok !== true) return { ok: false, text: Nodes.errText({ status: 502 }, handle, { what: 'keys' }), reason: 'unconfirmed', check: handle };
     return { ok: true, key };
   } catch (e) { return nsFail(e, handle, 'keys'); }
 };
@@ -1055,7 +1124,7 @@ Nodes.permCards = function () {
         const key = nsKey(rec.handle, p.id);
         if (P.done.has(key)) continue;
         const st = P.st.get(key);
-        cards.push({ ...p, node: rec.handle, key, phase: st ? st.phase : 'ask', decision: st ? st.decision : '', text: st ? st.text : '' });
+        cards.push({ ...p, node: rec.handle, key, phase: st ? st.phase : 'ask', decision: st ? st.decision : '', text: st ? st.text : '', check: st ? st.check || '' : '' });
       }
     } else stubs.push({ stub: true, node: rec.handle, key: `stub:${rec.handle}`, count: n, why: !c.ok ? c.why : got && got.err ? got.err : `reading the requests on ${nhName(rec)}` });
   }
@@ -1092,7 +1161,7 @@ Nodes.permAnswer = async function (card, decision) {
   } catch (e) {
     const f = nsFail(e, card.node, 'perm');
     const final = f.reason === 'answered' || f.reason === 'expired' || f.reason === 'gone' || f.reason === 'not_found';
-    P.st.set(key, { phase: final ? 'closed' : 'failed', decision: '', text: f.text, at: Date.now() });
+    P.st.set(key, { phase: final ? 'closed' : 'failed', decision: '', text: f.text, check: f.check || '', at: Date.now() });
     nsQuiet(f.text, final ? 'warn' : 'bad');
     Nodes.changed(false);
     return f;
@@ -1151,7 +1220,7 @@ function nsPermNode(c) {
       el('div', { class: 'ib-ctx mono', title: c.summary, text: c.summary || c.tool }),
       el('div', { class: 'ib-extra' }, c.tool && !dup ? el('span', { class: 'ib-note dim', text: c.tool }) : null)),
     sub,
-    c.text ? el('p', { class: 'nd-perr ' + (c.phase === 'closed' ? 'warn' : 'bad'), role: 'alert', text: c.text }) : null,
+    c.text ? el('p', { class: 'nd-perr ' + (c.phase === 'closed' ? 'warn' : 'bad'), role: 'alert' }, c.text, c.check ? [' ', Nodes.checkLink(c.check)] : null) : null,
     acts);
 }
 
@@ -1213,7 +1282,15 @@ function demoRelayCan(rec, scope) {
   const h = rec.handle;
   if (!(rec.scopes || []).includes(scope)) throw demoRelayFail(409, 'scope', `needs the ${scope} scope on ${rec.name}`, { node: h });
   if (rec.status === 'offline') throw demoRelayFail(503, 'offline', `${rec.name} is offline; nothing was sent`, { node: h, age: rec.age_s });
-  if (rec.status === 'unauthorized') throw demoRelayFail(409, 'needs_repair', `${rec.name} no longer takes this board's token: re-pair`, { node: h });
+  if (rec.status === 'unauthorized' || rec.needs_repair === true) throw demoRelayFail(409, 'needs_repair', `${rec.name} no longer takes this board's token: re-pair`, { node: h });
+  demoRelayState(rec);
+}
+/* The refusals of a node that answers as another device or speaks another node API, as the relay words them (issue #153). */
+function demoRelayState(rec) {
+  const h = rec.handle;
+  if (rec.status === 'unpaired' && rec.error_kind === 'identity_changed') throw demoRelayFail(409, 'identity_changed', `This address now belongs to another device, not ${rec.name}: remove it or pair again; nothing was sent`, { node: h });
+  if (rec.status === 'unpaired') throw demoRelayFail(409, 'unpaired', `${rec.name} answers as another node: remove it and pair it again`, { node: h });
+  if (rec.status === 'incompatible') throw demoRelayFail(409, 'incompatible', Nodes.apiWords(rec), { node: h, peer_api: rec.peer_api, api: rec.api });
 }
 function demoRelayRead(data, bare) {
   const m = /^\/api\/nodes\/([^/]+)\/(agents|permissions|sessions\/([^/]+)\/pane)$/.exec(bare);
@@ -1281,7 +1358,7 @@ function demoSteerWrite(method, path, body, data) {
   const text = typeof b.text === 'string' ? b.text : '';
   if (!text.trim()) throw demoRelayFail(422, 'invalid', 'text: text is empty', { node: h });
   if (Array.from(text).length > 8192) throw demoRelayFail(413, 'too_large', 'the text is over 8 KB', { node: h });
-  if (rule.prompt === 'unconfirmed') throw demoRelayFail(504, 'unconfirmed', `${rec.name} did not answer in 8 s: it could not be confirmed and it was not retried`, { node: h });
+  if (rule.prompt === 'unconfirmed' || demoNodeState() === 'unknown') throw demoRelayFail(504, 'unconfirmed', `${rec.name} did not answer in 8 s: it could not be confirmed and it was not retried`, { node: h, outcome: 'unknown', check_url: `#/n/${h}` });
   if (row.state === 'working' && b.queue !== true) throw demoRelayFail(409, 'busy', 'the session is working', { node: h, code: 'working', retry: 8, state: 'working', wait_kind: null });
   return { node: h, age: 0, data: { ok: true, pasted: row.state !== 'working', queued: row.state === 'working' } };
 }
@@ -1298,7 +1375,9 @@ function demoRelayWrite(method, path, body, data) {
   if (!(rec.scopes || []).includes(scope)) throw demoRelayFail(409, 'scope', `needs the ${scope} scope on ${rec.name}`, { node: h });
   if (b.mode === 'session' && !(rec.scopes || []).includes('sessions')) throw demoRelayFail(409, 'scope', `needs the sessions scope on ${rec.name}`, { node: h });
   if (rec.status === 'offline') throw demoRelayFail(503, 'offline', `${rec.name} is offline; nothing was sent`, { node: h, age: rec.age_s });
-  if (rec.status === 'unauthorized') throw demoRelayFail(409, 'needs_repair', `${rec.name} no longer takes this board's token: re-pair`, { node: h });
+  if (rec.status === 'unauthorized' || rec.needs_repair === true) throw demoRelayFail(409, 'needs_repair', `${rec.name} no longer takes this board's token: re-pair`, { node: h });
+  demoRelayState(rec);
+  if (demoNodeState() === 'unknown') throw demoRelayFail(504, 'unconfirmed', `${rec.name} did not answer in 8 s: it could not be confirmed whether it started, and it was not retried.`, { node: h, outcome: 'unknown', check_url: `#/n/${h}` });
   const now = new Date().toISOString();
   const slug = (t) => String(t || 'task').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'task';
   if (m[2] === 'sessions') {

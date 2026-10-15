@@ -318,7 +318,7 @@ def test_a_reason_the_node_invents_is_an_error_and_its_extra_fields_are_dropped(
                            "wait_s": -1, "unknown_reason": "has space"})
     b = r.json()
     assert b["why"] == "error" and "winner" not in b and "claim_ref" not in b and "login" not in b and "comment_id" not in b and "attempt" not in b and "wait_s" not in b
-    assert "unknown_reason" not in b
+    assert b.get("unknown_reason") == "unlisted_reason", "the node's own text is dropped; the hub marks a reason it does not know with its own fixed word"
 
 
 @pytest.mark.parametrize("winner", ["a b", "x" * 41, "-x", "../x", "x\ny", "<b>", "wil.low"])

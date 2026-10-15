@@ -837,6 +837,7 @@ html.force-coarse .job-fable .checks label { min-height:var(--tap); }
 .nd-row .nd-chips { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
 .nd-row .nd-chips .badge { max-width:100%; }
 .nd-row .nd-glyph { font-family:var(--font-mono); }
+#page .badge > .nd-glyph { margin-right:.3em; }                                     /* a chip's glyph never touches its words */
 .nd-row .nd-note { font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
 .nd-row .nd-act { display:flex; align-items:center; flex:none; }
 .nd-row .nd-act .bp5-button { min-height:var(--row-btn); }

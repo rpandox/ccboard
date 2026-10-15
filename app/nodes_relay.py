@@ -29,7 +29,8 @@ The hub side: relay(handle, row, params, body, request) checks, in this order, a
   5 the body     validate() with the row's model (extra="forbid") and, for a row with `guard`, guard_launch(): 422 with the same sentences the peer gives
   6 the call     nodes.PeerClient: the address rule at the call, timeout 10 s, request body at most 256 KB, answer at most 512 KB, no redirect. A 401 is
                  `needs_repair` (409), a 403 a scope message (409), 404 stays 404, 429 stays 429 with its Retry-After, a 5xx or a transport failure is 502, a
-                 timeout after the request was sent is 504 `unconfirmed` (never retried: the peer may have done it)
+                 timeout after the request was sent is 504 `unconfirmed` (never retried: the peer may have done it); a write that got a 5xx or a broken
+                 answer carries outcome `unknown` and `check_url` too
   7 the answer   {node: <handle>, age: 0, data: <the peer's JSON, rebuilt from a whitelist by the row's `shape`>}. `age` is how old the answer is (a live relay
                  is 0; an offline refusal carries the age of the last good reading instead). The peer's JSON is nested because the state already has a `node` key.
   Every outcome after the caller is known writes one `out` audit row: time, node, the acting user, action, target, status (ok, failed, refused) and a short reason
@@ -1180,6 +1181,7 @@ _ALIAS_OUT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}")
 CLAIM_PEER_WHY = ("writes_off", "bad_request", "other_repo", "not_epic_child", "authors_unknown", "login_not_allowed", "claim_unknown", "taken", "lost", "closed", "done",
                   "attempts_exhausted", "too_many_claims", "rate_limited", "busy", "no_access", "no_login", "error", "outcome_unknown", "withdraw_failed")      # nodes_epics.CLAIM_TEXT without the two good answers
 CLAIM_GOOD = ("won", "already_held")
+UNLISTED_WHY = "unlisted_reason"          # the `unknown_reason` of a refusal whose `why` this board does not list: it reads as `error`, but is not known to be GitHub's
 
 
 def _claim_facts(src: dict) -> dict:
@@ -1592,8 +1594,15 @@ def _status_check(reg: dict, rec: dict | None, name: str) -> None:
     if reg.get("needs_repair") or (rec or {}).get("status") == "unauthorized":
         raise RelayError(409, "needs_repair", f"{name} no longer takes this board's token: re-pair", kind="refused")
     status = (rec or {}).get("status")
+    if status == "unpaired" and (rec or {}).get("error_kind") == "identity_changed":          # issue #153: another device answers at the registered address; nothing of it was merged
+        raise RelayError(409, "identity_changed", f"This address now belongs to another device, not {name}: remove it or pair again; nothing was sent", kind="refused")
     if status == "unpaired":
         raise RelayError(409, "unpaired", f"{name} answers as another node or no longer knows this board: remove it and pair it again", kind="refused")
+    if status == "incompatible":                                                             # issue #153: its card still reads, its actions are refused
+        theirs = (rec or {}).get("peer_api")
+        theirs = theirs if isinstance(theirs, int) and not isinstance(theirs, bool) else None
+        raise RelayError(409, "incompatible", f"{name} speaks node API {theirs if theirs is not None else 'unknown'} and this board speaks {nodes.API_VERSION}: update the older "
+                                              f"board; nothing was sent", kind="refused", peer_api=theirs, api=nodes.API_VERSION)
     if not rec or not (rec.get("polled_at") or rec.get("last_ok_at")):
         raise RelayError(409, "not_read_yet", f"{name} has not been read yet: wait for the first reading (a few seconds after pairing); nothing was sent", kind="refused")
     if status not in ("online", "stale"):
@@ -1655,12 +1664,22 @@ def _busy_extra(j: dict) -> dict:
             "state": word(j.get("state")), "wait_kind": word(j.get("wait_kind"))}
 
 
+def _known_why(why, known: tuple, facts: dict) -> str:
+    """A peer's refusal reason from this board's closed list. One it does not know (a newer peer) reads as `error`, and `facts` says so with
+    `unknown_reason` UNLISTED_WHY, so the run loop does not take it for a GitHub error (nodes_run)."""
+    if isinstance(why, str) and why in known:
+        return why
+    facts["unknown_reason"] = UNLISTED_WHY
+    return "error"
+
+
 def _map_reply(r, row: Row, reg: dict, clean: dict | None = None) -> dict:
     """The peer's answer as a body, or a RelayError for every status that is not a good answer."""
     name = reg.get("name") or reg.get("handle")
     if r.ok:
         if not isinstance(r.json, dict):
-            raise RelayError(502, "bad_answer", f"{name} answered something that is not a JSON object", kind="failed")
+            extra = _unknown_if_write(row, reg)
+            raise RelayError(502, "bad_answer", f"{name} answered something that is not a JSON object" + _check_note(extra, name), kind="failed", **extra)
         return r.json
     msg = _cut((r.json or {}).get("error") if isinstance(r.json, dict) else "")
     if r.status == 401:
@@ -1679,15 +1698,15 @@ def _map_reply(r, row: Row, reg: dict, clean: dict | None = None) -> dict:
         raise RelayError(404, "gone" if peer_reason == "gone" else "not_found", msg or f"{name} has no such thing", kind="failed")
     if r.status == 409 and peer_reason == "claim_refused" and row.name == "epic_claim":          # the node did not take the issue: the reason comes from a closed list, the sentence is this board's
         why = r.json.get("why") if isinstance(r.json, dict) else None
-        why = why if isinstance(why, str) and why in CLAIM_PEER_WHY else "error"
         facts = _claim_facts(r.json if isinstance(r.json, dict) else {})
+        why = _known_why(why, CLAIM_PEER_WHY, facts)
         from . import nodes_epics
         text = f"{name}: {nodes_epics.CLAIM_TEXT[why]}" + (f" It is {facts['winner']}." if facts.get("winner") and why in ("taken", "lost") else "")
         raise RelayError(409, "claim_refused", text, kind="failed", why=why, **facts)
     if r.status == 409 and peer_reason == "work_refused" and row.name == "epic_work":          # the node did not run the issue: the reason comes from a closed list, the sentence is this board's
         why = r.json.get("why") if isinstance(r.json, dict) else None
-        why = why if isinstance(why, str) and why in WORK_PEER_WHY else "error"
         facts = _work_facts(r.json if isinstance(r.json, dict) else {})
+        why = _known_why(why, WORK_PEER_WHY, facts)
         raise RelayError(409, "work_refused", _work_text(name, why, facts), kind="failed", why=why, **facts)
     if r.status == 409 and peer_reason in ("busy", "answered", "expired"):          # the peer's own state answers, passed on with the words it chose from a closed list
         extra = _busy_extra(r.json) if peer_reason == "busy" else {}
@@ -1701,10 +1720,28 @@ def _map_reply(r, row: Row, reg: dict, clean: dict | None = None) -> dict:
         raise RelayError(413, "too_large", msg or f"{name} did not accept the request", kind="failed")
     if r.status in (400, 409, 411):
         raise RelayError(r.status, "refused", msg or f"{name} did not accept the request", kind="failed")
-    raise RelayError(502, "peer_error", f"{name} answered with an error ({r.status if r.status >= 500 else 'unexpected'})", kind="failed")
+    extra = _unknown_if_write(row, reg) if r.status >= 500 else {}
+    raise RelayError(502, "peer_error", f"{name} answered with an error ({r.status if r.status >= 500 else 'unexpected'})" + _check_note(extra, name), kind="failed", **extra)
 
 
 _MAYBE_SENT = (TimeoutError, socket.timeout, ConnectionResetError, ConnectionAbortedError, BrokenPipeError, http.client.HTTPException, EOFError)
+
+
+def _check_note(extra: dict, name: str) -> str:
+    """The sentence that goes with `_unknown_if_write`: nothing for a read."""
+    return f"; it may have acted, so check {name} before starting again (it was not retried)" if extra else ""
+
+
+def _unknown_if_write(row: Row, reg: dict) -> dict:
+    """The extra fields of a write whose answer was a server error or a broken one (issue #153): the peer may have acted before it failed, so the outcome is unknown and a person
+    looks at the node. A read gets none. The hub never retries either way."""
+    return {"outcome": "unknown", "check_url": _check_url(reg)} if row.rate_class == WRITE or row.peer_method == "POST" else {}
+
+
+def _check_url(reg: dict) -> str | None:
+    """Where a person looks after a write whose outcome is unknown (issue #153): the node's own page on this board (`#/n/<handle>`, its Tasks), built from the registry handle."""
+    h = reg.get("handle")
+    return f"#/n/{h}" if nodes.valid_handle(h) else None
 
 
 def _map_peer_error(e: nodes.PeerError, reg: dict, row: Row | None = None) -> RelayError:
@@ -1720,11 +1757,11 @@ def _map_peer_error(e: nodes.PeerError, reg: dict, row: Row | None = None) -> Re
     if isinstance(e.cause, (TimeoutError, socket.timeout)):
         if row is not None and row.rate_class == WRITE:
             return RelayError(504, "unconfirmed", f"{name} did not answer in {int(row.timeout)} s: it could not be confirmed whether it started, and it was not retried. "
-                                                  f"Check {name} before starting again.", kind="failed")
+                                                  f"Check {name} before starting again.", kind="failed", outcome="unknown", check_url=_check_url(reg))
         return RelayError(504, "unconfirmed", f"{name} did not answer in {int(row.timeout if row is not None else RELAY_TIMEOUT)} s: it could not be confirmed and it was not retried", kind="failed")
     if row is not None and row.rate_class == WRITE and isinstance(e.cause, _MAYBE_SENT):          # the connection broke after the request went out: the peer may have acted
         return RelayError(502, "unconfirmed", f"the connection to {name} broke while it was answering: it could not be confirmed whether it started, and it was not "
-                                              f"retried. Check {name} before starting again.", kind="failed")
+                                              f"retried. Check {name} before starting again.", kind="failed", outcome="unknown", check_url=_check_url(reg))
     return RelayError(502, "unreachable", f"{name} could not be reached", kind="failed")
 
 
@@ -1803,8 +1840,10 @@ def relay(handle, row: Row, params: dict, body, request, *, db=None, hub=None) -
             try:
                 data = redact_tree(shape(data, reg))                  # every free-text field of the peer's answer goes through the redaction
             except nodes_hub.Bad as e:
-                raise RelayError(502, "wrong_node" if "another node" in str(e) else "bad_answer",
-                                 f"{name} answered with something this board will not show", kind="failed") from None
+                wrong = "another node" in str(e)
+                extra = {} if wrong else _unknown_if_write(row, reg)
+                raise RelayError(502, "wrong_node" if wrong else "bad_answer", f"{name} answered with something this board will not show" + _check_note(extra, name), kind="failed",
+                                 **extra) from None
     except RelayError as e:
         if agent is not None:                                         # the sentence an agent reads can hold the node's name and its own words: cut, cleaned and redacted
             e.message = _cut(e.message, mcp_tools.ERROR_MAX) or e.reason

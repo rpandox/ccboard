@@ -154,8 +154,8 @@ test('every refusal of the steer rules shows as its plain sentence in the tile a
     [err(422, { error: typed, reason: 'invalid' }), 'A remote prompt cannot start with / ! or # (those are commands in the terminal); start it from its own board.'],
     [err(409, { error: 'the session is working', reason: 'busy', code: 'working', retry: 8 }), 'The session is working. Try again in 8 seconds.'],
     [err(503, { error: 'build-box is offline', reason: 'offline', age: 190 }), 'build-box is offline, last seen 3 minutes ago'],
-    [err(504, { error: 'build-box did not answer in 8 s', reason: 'unconfirmed' }), 'Could not confirm whether build-box got this. Check the terminal before answering again.'],
-    [Object.assign(new Error('Failed to fetch'), {}), 'Could not confirm whether build-box got this. Check the terminal before answering again.'],
+    [err(504, { error: 'build-box did not answer in 8 s', reason: 'unconfirmed' }), 'Outcome unknown, check build-box: it may or may not have got this. It was not retried.'],
+    [Object.assign(new Error('Failed to fetch'), {}), 'Outcome unknown, check build-box: it may or may not have got this. It was not retried.'],
   ];
   for (const [e, want] of cases) {
     const h = await tWorld();
@@ -167,7 +167,7 @@ test('every refusal of the steer rules shows as its plain sentence in the tile a
     h.reply = (m, p) => { if (/\/prompt$/.test(p)) throw e; return undefined; };
     enter(ta);
     await flush();
-    assert.equal(line(t), want, want);
+    assert.equal(line(t).replace(/ See its tasks$/, ''), want, want);
     assert.equal(ta.value, 'try this', `the draft survives: ${want}`);
     assert.equal(ta.disabled, false, 'ready for another try');
     assert.equal(h.writes().length, 1, 'nothing was retried');

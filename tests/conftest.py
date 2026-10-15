@@ -580,22 +580,184 @@ def write_fake_codex(path, *, login="Logged in using ChatGPT", mcp_rc=0, help_na
 
 # ---- two boards in one process (nodes epic, issue #135) -----------------------------------------------------------------------------
 class FlakyTransport:
-    """Wraps a peer transport (nodes.peer_transport) and fails the first `fail_first` calls it sees with `error` before it lets calls through; a
-    `match` substring limits it to paths holding that text. Counts every call it saw (`seen`) and every failure it made (`failed`). Later phases use it
-    for the offline and slow-peer cases; it never sleeps."""
+    """The chaos harness (issue #153): wraps a peer transport (nodes.peer_transport, usually `two_nodes.transport`) and decides, call by call, what the
+    network does. It never opens a socket and sleeps only for a `delay` shorter than the call's timeout (keep those to a few milliseconds).
+
+    The first form stays: `fail_first` calls whose path holds `match` fail with `error` before they reach the board (`seen`, `failed` count them).
+
+    Actions (a string, or a tuple with its argument):
+      "drop"            the request never arrives (ConnectionRefusedError); the board did nothing
+      "timeout"         the request never arrives and the caller times out (TimeoutError); the board did nothing
+      "lost"            the request ARRIVES and the board acts, then the answer is lost (TimeoutError): the ambiguous write
+      ("delay", s)      the answer comes after s seconds; s at or over the call's timeout is "lost" (the board acted, the caller gave up)
+      ("status", 503)   a proxy in front of the board answers that status; the board did nothing
+      ("truncate", n)   the board acts and answers, and only the first n bytes of the body arrive
+      ("call", fn)      fn() runs first (something happens while the request is on its way, say the pair is removed there), then the call goes through
+      "pass"            the call goes through untouched
+    Where they come from, in this order: a partition (`partition("node-a", "node-b")`: every call between the two named boards, either way, is "drop"
+    until `heal()`), the scripted sequence (`sequence(*actions, match=, method=)`: one action per matching call, in order, then nothing), the rules
+    (`on(action, match=, method=, times=1)`; times -1 = for ever) and `fail_first`. The caller is the board whose code makes the call (settings.node_name,
+    as TwoNodes.transport reads it); the target is the board at the address.
+    Clock offsets: `offset("node-b", 600)` makes node-b's clock 600 s ahead as other boards see it: its card's `now`, its state's `node.now` and the
+    X-CCBoard-Now header of a 304 are shifted in the answer. `attach(two_nodes)` also shifts the clocks of code that runs ON that board (nodes._now and
+    nodes_work.clock while inside `board.enter()`), for claim-ordering tests; `detach()` undoes it (the `chaos` fixture does both).
+    `log` holds one (caller, method, board, path, action) per call, never a header or a body."""
 
     def __init__(self, inner, fail_first=0, error=ConnectionRefusedError, match=None):
         self.inner, self.fail_first, self.error, self.match = inner, fail_first, error, match
         self.seen = 0
         self.failed = 0
+        self.rules: list[dict] = []
+        self.script: list[dict] = []
+        self.partitions: set[frozenset] = set()
+        self.offsets: dict[str, float] = {}
+        self.log: list[tuple] = []
+        self._attached: list = []
 
-    def __call__(self, target, method, path, headers, body, timeout):
+    # ---- the plan
+    def on(self, action, match=None, method=None, times=1):
+        self.rules.append({"action": action, "match": match, "method": method, "times": times})
+        return self
+
+    def sequence(self, *actions, match=None, method=None):
+        self.script.extend({"action": a, "match": match, "method": method} for a in actions)
+        return self
+
+    def partition(self, a: str, b: str):
+        self.partitions.add(frozenset((a, b)))
+        return self
+
+    def heal(self):
+        self.partitions.clear()
+        return self
+
+    def offset(self, board: str, seconds: float):
+        self.offsets[board] = float(seconds)
+        return self
+
+    def clear(self):
+        self.rules.clear()
+        self.script.clear()
+        self.partitions.clear()
+        return self
+
+    # ---- the clocks of code running on a board
+    def attach(self, two):
+        """Shift nodes._now and nodes_work.clock by the board's offset while code runs inside that board's enter() (the offsets are read at each enter)."""
+        from app import nodes, nodes_work
+        for board in (two.a, two.b):
+            orig = board.enter
+
+            @contextlib.contextmanager
+            def enter(_orig=orig, _name=board.name):
+                off = self.offsets.get(_name, 0.0)
+                saved = (nodes._now, nodes_work.clock)
+                if off:
+                    nodes._now = lambda _f=saved[0], _o=off: _f() + _o
+                    nodes_work.clock = lambda _f=saved[1], _o=off: _f() + _o
+                try:
+                    with _orig() as b:
+                        yield b
+                finally:
+                    nodes._now, nodes_work.clock = saved
+            board.enter = enter
+            self._attached.append((board, orig))
+        return self
+
+    def detach(self):
+        for board, orig in self._attached:
+            board.enter = orig
+        self._attached.clear()
+
+    # ---- one call
+    def _board_name(self, target) -> str | None:
+        obj, boards = self.inner, None
+        for _ in range(5):                                   # the inner transport may itself wrap TwoNodes.transport (a counter)
+            boards = getattr(getattr(obj, "__self__", None), "boards", None)
+            if boards is not None or obj is None:
+                break
+            obj = getattr(obj, "inner", None)
+        b = (boards or {}).get((target.host, target.port))
+        return b.name if b is not None else None
+
+    @staticmethod
+    def _fits(r: dict, method: str, path: str) -> bool:
+        return (r["match"] is None or r["match"] in path) and (r["method"] is None or r["method"] == method)
+
+    def _pick(self, caller, board, method, path):
+        if board is not None and frozenset((caller, board)) in self.partitions:
+            return "drop"
+        for i, r in enumerate(self.script):
+            if self._fits(r, method, path):
+                return self.script.pop(i)["action"]
+        for r in self.rules:
+            if r["times"] != 0 and self._fits(r, method, path):
+                if r["times"] > 0:
+                    r["times"] -= 1
+                return r["action"]
         if self.match is None or self.match in path:
             self.seen += 1
             if self.failed < self.fail_first:
                 self.failed += 1
-                raise self.error("flaky transport: planned failure")
-        return self.inner(target, method, path, headers, body, timeout)
+                return "fail_first"
+        return "pass"
+
+    def _shift(self, board, path, status, headers, data):
+        off = self.offsets.get(board or "", 0.0)
+        if not off:
+            return headers, data
+        import json as _json
+        from datetime import datetime, timedelta
+
+        def move(v):
+            try:
+                return (datetime.fromisoformat(v) + timedelta(seconds=off)).isoformat(timespec="milliseconds")
+            except (TypeError, ValueError):
+                return v
+        headers = dict(headers)
+        for k in list(headers):
+            if k.lower() == "x-ccboard-now":
+                headers[k] = move(headers[k])
+        if status == 200 and path.split("?")[0] in ("/api/node", "/api/node/state"):
+            try:
+                j = _json.loads(data)
+            except ValueError:
+                return headers, data
+            if isinstance(j, dict):
+                if isinstance(j.get("now"), str):
+                    j["now"] = move(j["now"])
+                if isinstance(j.get("node"), dict) and isinstance(j["node"].get("now"), str):
+                    j["node"]["now"] = move(j["node"]["now"])
+                data = _json.dumps(j).encode()
+        return headers, data
+
+    def __call__(self, target, method, path, headers, body, timeout):
+        from app.config import settings
+        caller, board = settings.node_name or "?", self._board_name(target)
+        action = self._pick(caller, board, method, path)
+        kind, arg = (action, None) if isinstance(action, str) else (action[0], action[1])
+        if kind == "delay" and arg is not None and arg >= timeout:
+            kind = "lost"
+        self.log.append((caller, method, board, path, kind))
+        if kind == "fail_first":
+            raise self.error("flaky transport: planned failure")
+        if kind == "drop":
+            raise ConnectionRefusedError("flaky transport: dropped")
+        if kind == "timeout":
+            raise TimeoutError("flaky transport: no answer")
+        if kind == "status":
+            return int(arg), {"content-type": "application/json"}, b'{"error":"planned"}'
+        if kind == "delay" and arg:
+            time.sleep(arg)
+        if kind == "call":
+            arg()
+        status, rh, data = self.inner(target, method, path, headers, body, timeout)
+        if kind == "lost":
+            raise TimeoutError("flaky transport: the answer was lost")
+        if kind == "truncate":
+            data = data[: int(arg)]
+        rh, data = self._shift(board, path, status, rh, data)
+        return status, rh, data
 
 
 class Board:
@@ -699,6 +861,60 @@ def two_nodes(tmp_path, monkeypatch, projects_dir):
     main.db = saved_db
     t.a.db.close()
     t.b.db.close()
+
+
+def _sockets() -> int:
+    """How many of this process's file descriptors are sockets now (0 where /dev/fd cannot be listed)."""
+    import stat
+    fd_dir = "/dev/fd" if os.path.isdir("/dev/fd") else f"/proc/{os.getpid()}/fd"
+    n = 0
+    try:
+        names = os.listdir(fd_dir)
+    except OSError:
+        return 0
+    for name in names:
+        try:
+            if stat.S_ISSOCK(os.fstat(int(name)).st_mode):
+                n += 1
+        except (OSError, ValueError):
+            pass
+    return n
+
+
+@pytest.fixture
+def no_leaks(tmp_path, monkeypatch):
+    """Asserts at teardown that the test left no thread, no socket and no temp file behind (issue #153): the threads alive at the end must have been alive
+    at the start (a thread still finishing gets two seconds), the count of open sockets is back where it was, and the temp dir every `tempfile` call uses
+    during the test (a fresh one under tmp_path) is empty."""
+    import tempfile
+    import threading
+    tdir = tmp_path / "tempfiles"
+    tdir.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tdir))
+    before = set(threading.enumerate())
+    socks = _sockets()
+    yield
+    deadline = time.monotonic() + 2.0
+    while True:
+        extra = [t for t in threading.enumerate() if t not in before and t.is_alive()]
+        if not extra or time.monotonic() > deadline:
+            break
+        time.sleep(0.02)
+    assert not extra, f"threads left behind: {[t.name for t in extra]}"
+    assert _sockets() <= socks, "a socket was left open"
+    assert list(tdir.iterdir()) == [], "a temp file was left behind"
+
+
+@pytest.fixture
+def chaos(two_nodes, no_leaks, monkeypatch):
+    """`two_nodes` behind a FlakyTransport (the chaos harness, issue #153): `chaos.net` is the FlakyTransport set as nodes.peer_transport and attached to
+    both boards' clocks; `chaos.a`, `chaos.b` are the boards. Teardown detaches it and checks that nothing (thread, socket, temp file) was left."""
+    from types import SimpleNamespace
+    from app import nodes
+    net = FlakyTransport(two_nodes.transport).attach(two_nodes)
+    monkeypatch.setattr(nodes, "peer_transport", net)
+    yield SimpleNamespace(two=two_nodes, a=two_nodes.a, b=two_nodes.b, net=net)
+    net.detach()
 
 
 @pytest.fixture

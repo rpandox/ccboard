@@ -226,3 +226,11 @@ dialog.nd-sheet .nd-addr code { font-family:var(--font-mono); overflow-wrap:anyw
 dialog.nd-sheet .qr-actions { flex-wrap:wrap; }
 @media (pointer:coarse) { dialog.nd-sheet .field input, dialog.nd-sheet .field select { font-size:16px; } dialog.nd-sheet .nd-code { font-size:24px; } }
 @media (max-width:599px) { dialog.nd-sheet .qr-actions { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); } dialog.nd-sheet .qr-actions > .bp5-button { min-width:0; } }
+
+/* Update address (issue #153, settings.js settingsNdMovedFor): under the pair that discovery found at another address, the chip, one sentence and the button. Nothing is applied until it is pressed. */
+#page .settings-page .nd-moved { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; margin:4px 0 0; }
+#page .settings-page .nd-moved > .dim { flex:1 1 220px; min-width:0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+#page .settings-page .nd-moved > button { min-height:var(--row-btn); }
+#page .settings-page .nd-row .nd-act .nd-off { opacity:.6; cursor:not-allowed; }
+@media (pointer:coarse) { #page .settings-page .nd-moved > button { min-height:var(--tap); } }
+html.force-coarse #page .settings-page .nd-moved > button { min-height:var(--tap); }

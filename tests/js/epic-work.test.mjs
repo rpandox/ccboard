@@ -187,7 +187,7 @@ const REFUSALS = [
   ['error', 409, { reason: 'work_refused', why: 'error' }, /could not claim #205/],
   ['offline', 503, { reason: 'offline' }, /node-b is offline\. Nothing was claimed\./],
   ['scope', 409, { reason: 'scope' }, /paired without the tasks scope/],
-  ['unconfirmed', 504, { reason: 'unconfirmed' }, /did not answer in time, so it is not known whether it started #205\. Check its tasks and the issue on GitHub\. Nothing was retried\./],
+  ['unconfirmed', 504, { reason: 'unconfirmed' }, /Outcome unknown, check node-b: it did not answer in time, so it is not known whether it started #205\. Look at its tasks and the issue on GitHub\. Nothing was retried\./],
 ];
 
 test('every refusal word of the work route is said in plain words, the row goes back as it was, and nothing is retried', async () => {

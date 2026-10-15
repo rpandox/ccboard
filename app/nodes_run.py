@@ -64,12 +64,16 @@ agent_limiter = nodes._Limiter(CALLS_PER_HOUR, 3600.0, 64)
 NODE_WHY = {"lanes_full", "writes_off", "authors_unknown", "login_not_allowed", "no_login", "no_access", "unreadable", "busy", "too_many_claims", "rate_limited", "launch_failed",
             "repo_not_here", "no_gh", "claim_unknown"}
 MOVE_ON = {"taken", "lost"}
+GITHUB_WHY = {"no_login", "rate_limited", "error", "unreadable"}       # a refusal whose cause is GitHub, not the node or the issue: shown as `github_unavailable` (issue #153)
+GITHUB_ERROR_OK = (None, "access_unknown")       # the unknown_reason an `error` may carry and still be GitHub's (a push right that could not be read); the relay marks a reason it does not list with another
+GITHUB_WAIT_S = 300.0                # a node whose GitHub failed is not asked again before this (or the wait GitHub named, when longer)
+GITHUB_TEXT = {"no_login": "gh is logged out", "rate_limited": "GitHub asked to wait", "error": "GitHub did not take the claim", "unreadable": "GitHub could not be read"}
 STILL_OPEN = {"running", "pending", "unclear", "depends", "claim_unknown", "authors_unknown"}      # an open issue with one of these reasons keeps the run going (the others need a person)
 WITHDRAWN = {"mcp_run_off": "A person turned off 'Let MCP run this epic', so the run stopped.", "mcp_off": "This board's MCP access for agents was turned off, so the run stopped.",
              "mcp_level": "This board's MCP level no longer lets agents start tasks, so the run stopped.", "writes_off": "GitHub writes were turned off, so the run stopped.",
              "token_revoked": "The device token that started the run was revoked or expired, so the run stopped."}
 NODE_REASON = {"needs_repair", "unpaired", "offline", "not_read_yet", "scope", "legacy", "unknown_node", "unreachable", "peer_error", "redirect", "bad_address", "self", "repo_not_here",
-              "bad_answer", "wrong_node"}
+              "bad_answer", "wrong_node", "incompatible", "identity_changed"}
 
 
 class RunRefused(Exception):
@@ -342,6 +346,7 @@ class Runner:
             return
         if d["error"]:
             mem["error"] = d["error"].get("message") or "GitHub could not be read just now."
+            mem["error_code"], mem["retry_at"] = "github_unavailable", iso(now() + self.cycle_s())      # issue #153: what is wrong and when the next look is
             if d["error"].get("reason") == "not_found" and not d["children"]:        # an issue that is not there (or that the gh login cannot see) is not worth asking about every cycle
                 self._end(rec, "stopped")
                 return
@@ -395,7 +400,7 @@ class Runner:
                 rec = load(self.db, key) or rec
             elif out["outcome"] == "abort":
                 break
-            elif out["outcome"] in ("held", "unclear"):
+            elif out["outcome"] in ("held", "unclear") or out.get("code") == "github_unavailable":
                 mem["held"][str(c["number"])] = {"code": out["code"], "text": out["text"], "until": iso(out.get("until"))}
         rec = load(self.db, key) or rec
         if rec["active"]:
@@ -565,6 +570,14 @@ class Runner:
         if why in MOVE_ON:
             self.held[(key, n)] = {"until": until, "code": why, "text": text}
             return {"outcome": "held", "code": why, "text": text, "until": until}
+        unk = e.extra.get("unknown_reason") if isinstance(e.extra, dict) else None
+        if why in GITHUB_WHY and (why != "error" or unk in GITHUB_ERROR_OK):          # issue #153: GitHub is the trouble (a gh logout, a rate limit, an outage): that node rests, never a tight loop. An `error` is GitHub's only when it is not a reason the relay could not name
+            wait = e.extra.get("wait_s") if isinstance(e.extra, dict) else None
+            wait = float(wait) if isinstance(wait, (int, float)) and not isinstance(wait, bool) and 0 < wait <= 86400 else 0.0
+            until = t + max(BLOCK_CYCLES * self.cycle_s(), GITHUB_WAIT_S, wait)
+            text = f"{res['name']}: GitHub is not available there ({GITHUB_TEXT[why]}); trying again around {nodes_route.hhmm(until)}"[:240]
+            self.blocked[handle] = {"until": until, "text": text, "code": "github_unavailable"}
+            return {"outcome": "refused", "code": "github_unavailable", "github": why, "text": text, "until": until}
         if why == "lanes_full":                                       # the node's own count says full: believe it until its next readings
             self.reservations.add(handle, until, n=nodes_route.NO_LIMIT, kind="full")
         if why in NODE_WHY or e.reason in NODE_REASON or e.status >= 500:
@@ -604,7 +617,7 @@ class Runner:
         return {"can_run": ok, "blocked": None if ok else {"code": code, "text": text}, "running": bool(rec and rec["active"]), "paused": st["paused"], "by": rec["by"] if rec else None,
                 "via": rec["via"] if rec else None, "left": rec["left"] if rec else None, "started_at": rec["started_at"] if rec else None, "ended": rec["ended"] if rec else None,
                 "ended_at": rec["ended_at"] if rec else None, "cycle_at": mem.get("cycle_at"), "assigned": rec["assigned"] if rec else {}, "waiting": mem.get("waiting") or {},
-                "held": mem.get("held") or {}, "error": mem.get("error"), "loop": self.running(), "max_window_pct": nodes_epics.max_window_pct(st), "mcp_run": st["mcp_run"]}
+                "held": mem.get("held") or {}, "error": mem.get("error"), "error_code": mem.get("error_code"), "retry_at": mem.get("retry_at"), "loop": self.running(), "max_window_pct": nodes_epics.max_window_pct(st), "mcp_run": st["mcp_run"]}
 
     def annotate(self, out: dict, owner: str, repo: str, n: int) -> dict:
         """Add `route` to an epic answer (the run view) and `route` to each child: {state: assigned | waiting | held | running | null, text, node?, until?}."""

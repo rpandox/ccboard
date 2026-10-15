@@ -130,7 +130,8 @@
       "action": "code_used",
       "target": null,
       "status": "ok",
-      "detail": "scopes read"
+      "detail": "scopes read",
+      "received_at": "2026-10-03T02:50:05+00:00"
     },
     {
       "id": 11,
@@ -154,7 +155,8 @@
       "action": "read_task",
       "target": "task 42",
       "status": "ok",
-      "detail": null
+      "detail": null,
+      "received_at": "2026-10-03T02:46:05+00:00"
     },
     {
       "id": 9,
@@ -1153,5 +1155,72 @@
       "lease_min": 30,
       "lease_env": "CCBOARD_EPIC_LEASE_MIN"
     }
+  },
+  "variants": {
+    "_note": "?demo=1&nodestate=<name> lays one of these over build-box (hub: by handle, nodes: by peer_id). unauthorized, identity, repair, incompatible, skew, offline show the states of issue #153; unknown makes every write to a node end in outcome unknown; moved is in nodes-discover.json.",
+    "unauthorized": {
+      "hub": {
+        "build-box": {
+          "status": "unauthorized",
+          "error_kind": null
+        }
+      },
+      "nodes": {
+        "p-build-box": {
+          "needs_repair": true,
+          "last_error": "the saved token was refused (401)"
+        }
+      }
+    },
+    "identity": {
+      "hub": {
+        "build-box": {
+          "status": "unpaired",
+          "error_kind": "identity_changed"
+        }
+      }
+    },
+    "repair": {
+      "hub": {
+        "build-box": {
+          "needs_repair": true
+        }
+      },
+      "nodes": {
+        "p-build-box": {
+          "needs_repair": true,
+          "last_error": "the rotation answer was lost"
+        }
+      }
+    },
+    "incompatible": {
+      "hub": {
+        "build-box": {
+          "status": "incompatible",
+          "error_kind": "api_version",
+          "peer_api": 2,
+          "api": 1
+        }
+      }
+    },
+    "skew": {
+      "hub": {
+        "build-box": {
+          "skew_warn": true,
+          "skew_ms": 12400
+        }
+      }
+    },
+    "offline": {
+      "hub": {
+        "build-box": {
+          "status": "offline",
+          "error_kind": "timeout",
+          "age_s": 5400,
+          "last_ok_at": "2026-10-03T01:30:00+00:00"
+        }
+      }
+    },
+    "unknown": {}
   }
 }
