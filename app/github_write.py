@@ -122,6 +122,7 @@ PHASE_TEXT = {                                                  # the closed lis
     "cancelled": "cancelled",
     "refused_bypass": "refused: the issue asks for bypass",
     "refused_posture": "refused: the issue asks for a permission setting this node does not use",
+    "parked": "parked: waiting for a person for more than 30 minutes, so this node released the claim",          # issue #157: the worker's park rule
 }
 RESULT_MAX = 1500                                               # characters of a result that may be posted, counted after the redaction
 RESULT_IN = 4000                                                # characters of a result the redaction reads: the cap comes BEFORE any pattern runs

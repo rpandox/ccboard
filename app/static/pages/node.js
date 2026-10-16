@@ -159,11 +159,15 @@ function nodePageBuild(host, rec) {
   const sessList = needs.querySelector('.nd-list');
   needs.insertBefore(permNote, sessList);
   needs.insertBefore(permWrap, sessList);
-  host.append(head, needs, sess, tasks, repos, wins);
+  const worker = nodeWorkerSection();
+  host.append(head, worker.slot, needs, sess, tasks, repos, wins);
   let sig = '';
-  return function paint(r) {
+  let last = null;
+  const paint = function (r) {
+    last = r;
     const s = nodeHeaderSig(r);
     if (s !== sig) { sig = s; head.textContent = ''; head.append(nodeHeader(r)); }
+    worker.paint(r, () => { if (last) paint(last); });
     for (const e of Object.values(empties)) {
       const rows = e.rowsOf(r);
       e.list.update(rows);
@@ -180,6 +184,40 @@ function nodePageBuild(host, rec) {
     const word = `${perm} permission request${perm === 1 ? '' : 's'}`;
     setTextIfChanged(permNote, perm && !cards.length ? (can.ok ? `${word} waiting on ${nhName(r)}. Reading ${perm === 1 ? 'it' : 'them'} from the node…` : `${word} waiting on ${nhName(r)}. Allow and Deny: ${can.why}. You can answer on its board (Open board).`) : '');
     permNote.classList.toggle('hidden', !(perm && !cards.length));
+  };
+  return paint;
+}
+
+/* The epic worker of a paired node (issue #157), read only: the node card carries `epic_worker` while the worker is on there. nodes-worker.js (lazy bundle 'worker') draws it; until it is here
+   (or when the card has none) the section stays hidden. The age is the age of the reading plus the time between the worker's view and the card. Stop is on the node's own board. */
+function nodeWorkerSection() {
+  const body = el('div', { class: 'nd-worker-body' });
+  const slot = el('div', { class: 'nd-worker-slot' });                     // the section joins the slot once there is something to show: no heading while the worker is off or unknown
+  const sec = el('section', { class: 'nd-sec nd-worker', 'data-sec': 'worker' }, el('h2', { class: 'nd-h', text: 'Worker' }), body);
+  let panel = null;
+  let asked = false;
+  return {
+    slot,
+    paint(rec, again) {
+      const card = rec && rec.card && typeof rec.card === 'object' ? rec.card : null;
+      const demo = typeof demoOn === 'function' && demoOn();
+      const want = !!(card && card.epic_worker && typeof card.epic_worker === 'object') || demo;
+      if (!want) { if (sec.parentNode) sec.remove(); return; }
+      if (typeof EpicWorker === 'undefined' || (demo && !EpicWorker.fixture)) {
+        if (asked || typeof Lazy === 'undefined' || !Lazy.bundles || !Lazy.bundles.worker) return;
+        asked = true;
+        const warm = () => (typeof EpicWorker !== 'undefined' ? EpicWorker.warm() : null);
+        (typeof EpicWorker !== 'undefined' ? Promise.resolve(warm()) : Lazy.load('worker').then(warm)).then(() => { if (typeof EpicWorker !== 'undefined') { asked = false; again(); } }, () => { asked = false; });      // a bundle that ran without defining EpicWorker is not asked for again in a loop
+        return;
+      }
+      const v = EpicWorker.fromCard(card);
+      if (!v) { if (sec.parentNode) sec.remove(); return; }
+      if (!panel) { panel = EpicWorker.build({ mode: 'node' }); body.append(panel.root); }
+      if (!sec.parentNode) slot.append(sec);
+      const age = Nodes.ageOf(rec);
+      const extra = card && v.at && NodeView.epoch(card.now) !== null && NodeView.epoch(v.at) !== null ? Math.max(0, NodeView.epoch(card.now) - NodeView.epoch(v.at)) : 0;
+      panel.paint(v, { ageText: age === null ? '' : `${nhSpan(age + extra)} ago` });
+    },
   };
 }
 

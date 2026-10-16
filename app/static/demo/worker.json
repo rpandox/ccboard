@@ -1,0 +1,320 @@
+{
+ "_note": "?demo=1&worker=<name> shows one state of the epic worker (issue #157): working (the default), idle, waiting, paused (hourly cap), pausedday, resting, stopped, refused (no repository listed), refusedwrites, refusedauthors, off. base + states[name] (+ its lead decisions before the shared ones) is a view as app/nodes_worker.py Worker.view answers it; tests/test_worker_demo.py holds it to that.",
+ "demo": {
+  "epoch": 1790996400
+ },
+ "off": {
+  "on": false,
+  "state": "off",
+  "reason": null,
+  "text": "The worker is off (CCBOARD_EPIC_WORKER).",
+  "until": null
+ },
+ "base": {
+  "on": true,
+  "state": "idle",
+  "reason": null,
+  "text": "Idle: no ready issue in the listed epics.",
+  "until": null,
+  "issues": [],
+  "repos": [
+   "example/website"
+  ],
+  "authors": [
+   "alice"
+  ],
+  "poll_s": 90,
+  "running": true,
+  "caps": {
+   "hour": {
+    "used": 2,
+    "max": 6,
+    "clears_at": "2026-10-03T03:51:00Z"
+   },
+   "day": {
+    "used": 5,
+    "max": 30,
+    "clears_at": "2026-10-03T23:00:00Z"
+   }
+  },
+  "cycle_at": "2026-10-03T02:59:00Z",
+  "next_at": "2026-10-03T03:01:00Z",
+  "at": "2026-10-03T03:00:00Z",
+  "stopped_at": null,
+  "skipped": {
+   "example/website#15": "window",
+   "example/website#14": "label_by",
+   "example/website#13": "author"
+  }
+ },
+ "decisions": [
+  {
+   "at": "2026-10-03T02:58:00Z",
+   "kind": "skip",
+   "issue": "example/website#15",
+   "reason": "window",
+   "text": "the agent's rate-limit window is at the limit"
+  },
+  {
+   "at": "2026-10-03T02:57:00Z",
+   "kind": "skip",
+   "issue": "example/website#14",
+   "reason": "label_by",
+   "text": "the label ccboard:ready was set by a login that is not allowed"
+  },
+  {
+   "at": "2026-10-03T02:57:00Z",
+   "kind": "skip",
+   "issue": "example/website#13",
+   "reason": "author",
+   "text": "the issue is not by an allowed author"
+  },
+  {
+   "at": "2026-10-03T02:51:00Z",
+   "kind": "start",
+   "issue": "example/website#12",
+   "reason": "started",
+   "text": "Started the issue as a task."
+  },
+  {
+   "at": "2026-10-03T02:51:00Z",
+   "kind": "skip",
+   "issue": "example/website#16",
+   "reason": "depends",
+   "text": "it waits for another issue"
+  },
+  {
+   "at": "2026-10-03T02:46:00Z",
+   "kind": "cap",
+   "issue": null,
+   "reason": "hour",
+   "text": "Paused by the hourly cap."
+  },
+  {
+   "at": "2026-10-03T02:29:00Z",
+   "kind": "park",
+   "issue": "example/website#9",
+   "reason": "waiting_person",
+   "text": "Waited for a person for more than 30 minutes: the claim was released, the task is kept."
+  },
+  {
+   "at": "2026-10-03T02:16:00Z",
+   "kind": "refused",
+   "issue": "example/website#8",
+   "reason": "bypass_refused",
+   "text": "The issue asks for bypass permissions. This node refused to run it and released the claim."
+  },
+  {
+   "at": "2026-10-03T02:08:00Z",
+   "kind": "skip",
+   "issue": "example/website#11",
+   "reason": "claimed",
+   "text": "a node holds it (a claim comment)"
+  },
+  {
+   "at": "2026-10-03T02:08:00Z",
+   "kind": "skip",
+   "issue": "example/website#17",
+   "reason": "not_ready",
+   "text": "it does not carry the label ccboard:ready"
+  },
+  {
+   "at": "2026-10-03T02:02:00Z",
+   "kind": "rest",
+   "issue": null,
+   "reason": "github",
+   "text": "GitHub is not available just now, so the worker rests."
+  },
+  {
+   "at": "2026-10-03T01:45:00Z",
+   "kind": "resume",
+   "issue": null,
+   "reason": "resumed",
+   "text": "Started again by a person."
+  },
+  {
+   "at": "2026-10-03T01:40:00Z",
+   "kind": "stop",
+   "issue": null,
+   "reason": "person",
+   "text": "Stopped by a person."
+  },
+  {
+   "at": "2026-10-03T01:25:00Z",
+   "kind": "wait",
+   "issue": null,
+   "reason": "backoff",
+   "text": "the agent is in a back-off after a rate limit"
+  },
+  {
+   "at": "2026-10-03T01:24:00Z",
+   "kind": "skip",
+   "issue": "example/website#10",
+   "reason": "lane",
+   "text": "this node has no free lane"
+  },
+  {
+   "at": "2026-10-03T01:10:00Z",
+   "kind": "error",
+   "issue": null,
+   "reason": "error",
+   "text": "The cycle failed in an unexpected way."
+  },
+  {
+   "at": "2026-10-03T00:56:00Z",
+   "kind": "skip",
+   "issue": "example/website#7",
+   "reason": "edited",
+   "text": "the text was last edited by a login that is not allowed"
+  },
+  {
+   "at": "2026-10-03T00:50:00Z",
+   "kind": "refused",
+   "issue": "example/website#6",
+   "reason": "changed",
+   "text": "The issue changed after this node's worker checked it, so nothing was started."
+  },
+  {
+   "at": "2026-10-03T00:39:00Z",
+   "kind": "skip",
+   "issue": "example/website#5",
+   "reason": "label_unknown",
+   "text": "who set the label ccboard:ready could not be read"
+  },
+  {
+   "at": "2026-10-03T00:30:00Z",
+   "kind": "start",
+   "issue": "example/website#4",
+   "reason": "started",
+   "text": "Started the issue as a task."
+  }
+ ],
+ "states": {
+  "idle": {
+   "skipped": {}
+  },
+  "working": {
+   "state": "working",
+   "text": "Working on example/website#12.",
+   "issues": [
+    "example/website#12"
+   ],
+   "skipped": {
+    "example/website#16": "depends"
+   }
+  },
+  "waiting": {
+   "state": "waiting",
+   "reason": "window",
+   "until": "2026-10-03T03:32:00Z",
+   "text": "Waiting: the agent's rate-limit window is at the limit, until 03:32 UTC.",
+   "skipped": {
+    "example/website#15": "window"
+   }
+  },
+  "paused": {
+   "state": "paused",
+   "reason": "hour",
+   "until": "2026-10-03T03:41:00Z",
+   "text": "Paused by the hourly cap. It clears at 03:41 UTC.",
+   "caps": {
+    "hour": {
+     "used": 6,
+     "max": 6,
+     "clears_at": "2026-10-03T03:41:00Z"
+    },
+    "day": {
+     "used": 6,
+     "max": 30,
+     "clears_at": "2026-10-03T23:00:00Z"
+    }
+   },
+   "skipped": {}
+  },
+  "pausedday": {
+   "state": "paused",
+   "reason": "day",
+   "until": "2026-10-03T12:00:00Z",
+   "text": "Paused by the daily cap. It clears at 12:00 UTC.",
+   "caps": {
+    "hour": {
+     "used": 3,
+     "max": 6,
+     "clears_at": "2026-10-03T03:51:00Z"
+    },
+    "day": {
+     "used": 30,
+     "max": 30,
+     "clears_at": "2026-10-03T12:00:00Z"
+    }
+   },
+   "skipped": {}
+  },
+  "resting": {
+   "state": "resting",
+   "reason": "github",
+   "until": "2026-10-03T03:06:00Z",
+   "text": "GitHub is not available just now, so the worker rests. It looks again at 03:06 UTC.",
+   "skipped": {},
+   "lead": [
+    {
+     "at": "2026-10-03T02:59:00Z",
+     "kind": "rest",
+     "issue": null,
+     "reason": "github",
+     "text": "GitHub is not available just now, so the worker rests."
+    }
+   ]
+  },
+  "stopped": {
+   "state": "stopped",
+   "reason": "stopped",
+   "text": "A person stopped the worker. It starts nothing until Start is pressed.",
+   "running": false,
+   "stopped_at": "2026-10-03T02:56:00Z",
+   "next_at": null,
+   "skipped": {},
+   "lead": [
+    {
+     "at": "2026-10-03T02:56:00Z",
+     "kind": "stop",
+     "issue": null,
+     "reason": "person",
+     "text": "Stopped by a person."
+    }
+   ]
+  },
+  "refused": {
+   "state": "refused",
+   "reason": "repos_empty",
+   "text": "No repository is listed (CCBOARD_EPIC_REPOS is empty), so the worker refuses to start.",
+   "repos": [],
+   "running": false,
+   "next_at": null,
+   "cycle_at": null,
+   "skipped": {},
+   "decisions": []
+  },
+  "refusedwrites": {
+   "state": "refused",
+   "reason": "writes_off",
+   "text": "GitHub writes are off (CCBOARD_EPIC_WRITES), and the worker starts work only through the work route, which needs them. Set CCBOARD_EPIC_WRITES=1 too.",
+   "running": false,
+   "next_at": null,
+   "cycle_at": null,
+   "skipped": {},
+   "decisions": []
+  },
+  "refusedauthors": {
+   "state": "refused",
+   "reason": "authors_empty",
+   "text": "No allowed author is known (CCBOARD_EPIC_AUTHORS is empty and the gh login is not known), so the worker refuses to start.",
+   "authors": [],
+   "running": false,
+   "next_at": null,
+   "cycle_at": null,
+   "skipped": {},
+   "decisions": []
+  }
+ }
+}

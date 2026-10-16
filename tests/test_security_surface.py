@@ -163,6 +163,9 @@ EXPECTED = {
     ("POST", "/api/epics/{owner}/{repo}/{n}/resume"): "identity+csrf",    # Resume; a signed-in person only
     ("POST", "/api/epics/{owner}/{repo}/{n}/issues/{issue}/run"): "identity+csrf",      # one issue on a named node or on `auto`; the routing filters apply; a signed-in person only
     ("GET", "/api/epics/{owner}/{repo}/{n}/route"): "identity",           # the run as the page shows it, and with ?issue=N what auto routing would do; sends nothing
+    ("GET", "/api/epic-worker"): "identity",                  # the worker's state (issue #157): reads the database only; {on: false} while CCBOARD_EPIC_WORKER is off
+    ("POST", "/api/epic-worker/stop"): "identity+csrf",       # Stop worker: a signed-in person only (403 for the hook token, the hub, a node token and a device token); kept across a restart
+    ("POST", "/api/epic-worker/start"): "identity+csrf",      # Start worker after a Stop: a signed-in person only; refused with the reason when the allowlists or CCBOARD_EPIC_WRITES say no
     ("GET", "/api/route/auto"): "identity",                               # the launcher's Auto: which node would take a new task, and why; sends nothing
     ("GET", "/api/mcp/epics/{owner}/{repo}/{n}"): "identity",             # epic_status for an agent (issue #152): the hook token (the shim) or a person; the level and scope of an agent are checked by the handler
     ("POST", "/api/mcp/epics/{owner}/{repo}/{n}/run"): "identity+csrf",   # epic_run for an agent: the hook token (the shim) or, in process, a device token; a person gets 403 from the handler; guarded by the epic's own switch

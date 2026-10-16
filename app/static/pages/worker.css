@@ -1,0 +1,45 @@
+/* The epic worker panel (issue #157), loaded with nodes-worker.js (lazy.js 'worker'): Settings > Nodes and a paired node's page.
+   State is a glyph plus words, never colour alone; amber and rose only mean attention, the working state wears the signal colour. 28 px controls with a mouse, --tap (44 px) on touch;
+   nothing wider than 390 px; no inline styles. */
+#page .ew { min-width:0; }
+#page .ew-state { display:flex; align-items:baseline; gap:8px; margin:6px 0 0; font-size:14px; font-weight:600; line-height:1.4; color:var(--fg); overflow-wrap:anywhere; }
+#page .ew-glyph { flex:none; min-width:1.2em; font-family:var(--font-glyph); text-align:center; color:var(--dim); }
+#page .ew-state.sig .ew-glyph { color:var(--sig); }
+#page .ew-state.warn, #page .ew-state.warn .ew-glyph { color:var(--warn-fg); }
+#page .ew-state.bad, #page .ew-state.bad .ew-glyph { color:var(--bad-fg); }
+#page .ew-text { margin:2px 0 0 calc(1.2em + 8px); font-size:13px; line-height:1.5; max-width:70ch; overflow-wrap:anywhere; }
+#page .ew-acts { display:flex; flex-wrap:wrap; gap:8px; margin:8px 0 0; }
+#page .ew-btn.busy { opacity:.6; }
+#page .ew-err { margin:6px 0 0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+#page .ew-note { margin:6px 0 0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+
+#page .ew-off { margin:10px 0 0; padding:8px 0 0; border-top:1px solid var(--line-soft); max-width:70ch; }
+#page .ew-off p { margin:0 0 8px; font-size:13px; line-height:1.55; overflow-wrap:anywhere; }
+#page .ew-off .ew-risk { padding-left:8px; border-left:2px solid var(--warn); color:var(--fg); }
+#page .ew-env { margin:0 0 4px; padding:0; list-style:none; display:flex; flex-direction:column; gap:4px; }
+#page .ew-env li { min-width:0; }
+#page .ew-code { font-family:var(--font-mono); font-size:12px; overflow-wrap:anywhere; }
+
+#page .ew-rows { margin:10px 0 0; border-top:1px solid var(--line-soft); }
+#page .ew-row { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 12px; min-width:0; padding:5px 0; border-bottom:1px solid var(--line-soft); font-size:13px; }
+#page .ew-k { flex:0 0 108px; font-weight:500; color:var(--fg-2); }
+#page .ew-v { flex:1 1 200px; display:flex; flex-wrap:wrap; gap:4px 6px; min-width:0; overflow-wrap:anywhere; }
+#page .ew-chip { display:inline-block; max-width:100%; padding:0 8px; border:1px solid var(--line-strong); border-radius:10px; font:12px/20px var(--font-mono); color:var(--fg-2); overflow-wrap:anywhere; }
+#page .ew-risk-short { margin:8px 0 0; font-size:12px; line-height:1.5; max-width:70ch; overflow-wrap:anywhere; }
+
+#page .ew-label { margin:14px 0 2px; font:600 11px/1.4 var(--font-ui); letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+#page .ew-none { margin:6px 0 0; font-size:13px; line-height:1.5; max-width:62ch; }
+#page .ew-dec { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 10px; min-width:0; padding:6px 0; border-bottom:1px solid var(--line-soft); font-size:13px; }
+#page .ew-dec-t { flex:0 0 auto; min-width:3.4em; font-variant-numeric:tabular-nums; font-size:12px; }
+#page .ew-dec-k { flex:0 0 auto; display:inline-flex; align-items:baseline; gap:4px; font-weight:500; }
+#page .ew-dglyph { display:inline-block; min-width:1.1em; font-family:var(--font-glyph); text-align:center; color:var(--dim); }
+#page .ew-dec.start .ew-dglyph { color:var(--sig); }
+#page .ew-dec.refused .ew-dglyph, #page .ew-dec.error .ew-dglyph, #page .ew-dec.cap .ew-dglyph, #page .ew-dec.park .ew-dglyph, #page .ew-dec.rest .ew-dglyph { color:var(--warn-fg); }
+#page .ew-dec.error .ew-dglyph { color:var(--bad-fg); }
+#page .ew-dec-i { flex:0 1 auto; min-width:0; font-family:var(--font-mono); font-size:12px; overflow-wrap:anywhere; }
+#page .ew-dec-r { flex:1 1 100%; margin-left:calc(3.4em + 10px); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+@media (max-width:599px) {
+  #page .ew-k { flex-basis:100%; }
+  #page .ew-dec-r { margin-left:0; }
+  #page .ew-acts > .ew-btn { flex:1 1 140px; }
+}

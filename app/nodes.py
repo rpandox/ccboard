@@ -490,6 +490,13 @@ def card(db, *, health_snap: dict | None = None, sessions=None, full: bool = Tru
                 "capabilities": list(CAPABILITIES), "tailscale": tailscale_view(d)})
     if not full:
         out["handle"] = LOCAL
+    if getattr(settings, "epic_worker", False):                  # issue #157: only while the worker is on (off: the card is exactly what it was)
+        try:
+            from . import main
+            out["epic_worker"] = main._worker().view()
+        except Exception as e:
+            log.debug("worker view for the card failed: %s", e.__class__.__name__)
+            out["epic_worker"] = None
     return out
 
 
