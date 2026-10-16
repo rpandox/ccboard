@@ -68,6 +68,19 @@ test('a long node id is cut in the middle, the full one stays in the title', asy
   assert.equal(v.getAttribute('title'), id);
 });
 
+test('a fallback n_ node id carries a dim "fallback id" note with a title; a Tailscale id carries none', async () => {
+  const idRow = (w) => panel(w).querySelectorAll('.kv').find((r) => text(r.querySelector('.k')) === 'Node id');
+  const fb = nodesWorld({ over: { node: { ...CARD, node_id: 'n_0123456789abcdef' } } });
+  await tick();
+  const note = idRow(fb).querySelector('.kv-main .dim');
+  assert.ok(note, 'the note sits beside the id');
+  assert.equal(text(note), 'fallback id');
+  assert.match(note.getAttribute('title'), /Tailscale was not answering/);
+  const ts = nodesWorld();
+  await tick();
+  assert.equal(idRow(ts).querySelector('.kv-main .dim'), null);
+});
+
 test('a board whose state has no node card says so instead of throwing', async () => {
   const w = nodesWorld({ over: { node: undefined } });
   await tick();

@@ -2,6 +2,16 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.57 - 2026-10-16
+
+### Fixed
+- A paired node that answered `304 Not Modified` to a conditional read was recorded as an error ("the peer answered 304") and its last-seen time did not move. A `304` is now an answer: it moves last-seen and clears the last error (#228). A lost rotation still stays marked until the node is paired again.
+- A board that was first started while Tailscale was signed out keeps a random `n_` node id and nothing said so. The Doctor has a row, **Node id is a Tailscale id**, that warns when the id is that fallback while Tailscale now answers with an id. With no pairs the fix is to remove the `node-id` file in the data folder and restart the board; with pairs, remove the pairs, remove the file, restart, and pair again. The board never changes the id by itself (#229).
+- Settings > Nodes > This node shows a dim "fallback id" note beside a random node id, with a title that explains it.
+- Two tests no longer read this Mac. The installer test for a Mac without Homebrew ran the host's real Homebrew when one was installed, and the card test for session counts while tmux is down used the host's real tmux. They now use a script copy with no Homebrew fallback and an explicit tmux-down answer.
+
+Upgrade: nothing to do.
+
 ## v0.5.56 - 2026-10-16
 
 ### Added

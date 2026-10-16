@@ -660,6 +660,39 @@ def test_a_401_marks_the_pair_needs_repair_and_a_good_answer_clears_it_and_recor
     assert p["needs_repair"] is False and p["last_error"] is None and p["last_seen"] == nodes.iso(clock.t)
 
 
+def test_a_304_is_an_answer_it_leaves_no_error_and_moves_last_seen(db, clock, monkeypatch):
+    v, _ = out_peer(db)
+    monkeypatch.setattr(nodes, "peer_transport", Recorder((304, {}, b"")))
+    nodes._note(db, v["peer_id"], ok=False, error="unreachable")                              # a failed call came before
+    nodes.PeerClient(v, db=db).get("/api/node/state", headers={"If-None-Match": '"abc"'})
+    p = nodes.peer(v["peer_id"], db)
+    assert p["last_error"] is None and p["needs_repair"] is False and p["last_seen"] == nodes.iso(clock.t)
+    clock.t += nodes.USED_EVERY + 5
+    nodes.PeerClient(v, db=db).get("/api/node/state", headers={"If-None-Match": '"abc"'})
+    assert nodes.peer(v["peer_id"], db)["last_seen"] == nodes.iso(clock.t), "a node that only answers 304 stays fresh"
+
+
+def test_a_304_on_a_stream_open_is_an_answer_too(db, clock, monkeypatch):
+    v, _ = out_peer(db)
+    monkeypatch.setattr(nodes, "peer_stream_call", lambda *a, **k: nodes.PeerStreamReply(304, {}, None))
+    nodes._note(db, v["peer_id"], ok=False, error="unreachable")
+    nodes.PeerClient(v, db=db).open_stream("/api/node/stream?names=a")
+    p = nodes.peer(v["peer_id"], db)
+    assert p["last_error"] is None and p["last_seen"] == nodes.iso(clock.t)
+
+
+def test_a_304_never_clears_a_lost_rotation_and_other_statuses_still_fail(db, clock, monkeypatch):
+    v, _ = out_peer(db)
+    nodes._note(db, v["peer_id"], ok=False, error=nodes.ROTATE_LOST, repair=True, lost=True)
+    answers = [(304, {}, b""), (500, {}, b"{}")]
+    monkeypatch.setattr(nodes, "peer_transport", lambda *a: answers.pop(0))
+    nodes.PeerClient(v, db=db).get("/api/node/state")
+    p = nodes.peer(v["peer_id"], db)
+    assert p["last_error"] == nodes.ROTATE_LOST and p["needs_repair"] is True, "a 304 proves nothing about the token after a lost rotation"
+    nodes.PeerClient(v, db=db).get("/api/node/state")
+    assert nodes.peer(v["peer_id"], db)["last_error"] == "the peer answered 500"
+
+
 def test_a_403_or_a_500_is_a_last_error_but_not_a_repair(db, monkeypatch):
     v, _ = out_peer(db)
     monkeypatch.setattr(nodes, "peer_transport", Recorder((403, {}, b"{}")))
