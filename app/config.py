@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import stat
+import sys
 from pathlib import Path
 
 from . import platform as plat
@@ -64,6 +65,73 @@ def parse_node_ports(raw) -> tuple[tuple[int, ...], bool]:
         else:
             bad = True
     return (tuple(out), bad) if out else (DEFAULT_NODE_PORTS, True)
+
+
+NODE_AUTH_MODES = ("token", "whois", "whois+cap")
+_CAP_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+/cap/[a-z0-9][a-z0-9_.-]{0,62}")
+
+
+def uvicorn_host(argv) -> str | None:
+    """The --host of a uvicorn command line, "127.0.0.1" (uvicorn's default) when it names none, None when argv is not a uvicorn command or it listens
+    on a unix socket or a file descriptor (--uds, --fd: no TCP address to judge)."""
+    try:
+        args = [str(a) for a in (argv or [])]
+    except TypeError:
+        return None
+    first = Path(args[0]) if args else None
+    if first is None or not (first.name in ("uvicorn", "uvicorn.exe") or (first.name == "__main__.py" and first.parent.name == "uvicorn")):
+        return None                                   # `python -m uvicorn` shows as .../uvicorn/__main__.py
+    host = "127.0.0.1"
+    for i, a in enumerate(args):
+        if a in ("--uds", "--fd") or a.startswith(("--uds=", "--fd=")):
+            return None
+        if a == "--host" and i + 1 < len(args):
+            host = args[i + 1]
+        elif a.startswith("--host="):
+            host = a.split("=", 1)[1]
+    return host.strip() or None
+
+
+def uvicorn_forwarded_allow(argv) -> str | None:
+    """The --forwarded-allow-ips of a uvicorn command line (the addresses whose X-Forwarded-For uvicorn believes), None when argv is not a uvicorn
+    command or names none (uvicorn then reads FORWARDED_ALLOW_IPS from the environment, else trusts 127.0.0.1 and ::1)."""
+    try:
+        args = [str(a) for a in (argv or [])]
+    except TypeError:
+        return None
+    first = Path(args[0]) if args else None
+    if first is None or not (first.name in ("uvicorn", "uvicorn.exe") or (first.name == "__main__.py" and first.parent.name == "uvicorn")):
+        return None
+    got = None
+    for i, a in enumerate(args):
+        if a == "--forwarded-allow-ips" and i + 1 < len(args):
+            got = args[i + 1]
+        elif a.startswith("--forwarded-allow-ips="):
+            got = a.split("=", 1)[1]
+    return got
+
+
+def parse_node_auth(raw) -> tuple[str, bool]:
+    """CCBOARD_NODE_AUTH (issue #136): `token` (the default: the pair token alone), `whois` (token plus the device it was paired from) or `whois+cap`
+    (that plus a Tailscale app capability). Unset or blank is `token`. Any other text is returned as it was typed (lower case) with True: it is never
+    read as `token`, so a typo cannot quietly turn the check off; app/nodes_whois.py refuses every node call until it is fixed."""
+    text = (raw or "").strip().lower()
+    if not text:
+        return "token", False
+    if text in NODE_AUTH_MODES:
+        return text, False
+    return text[:40], True
+
+
+def parse_node_cap(raw) -> tuple[str, bool]:
+    """CCBOARD_NODE_CAP: the app capability name a grant gives this board, `<a domain you control>/cap/<name>`, lower case. Unset or blank is ""
+    (`whois+cap` then refuses to switch on and says to set it). `tailscale.com` is reserved by Tailscale and refused. Returns (name, bad)."""
+    text = (raw or "").strip().lower()
+    if not text:
+        return "", False
+    if not _CAP_RE.fullmatch(text) or text.split("/", 1)[0] in ("tailscale.com",) or text.split("/", 1)[0].endswith(".tailscale.com"):
+        return "", True
+    return text, False
 
 
 def parse_node_tags(raw) -> tuple[tuple[str, ...], bool]:
@@ -199,6 +267,7 @@ ENV_FILE_KEYS = (
     "CCBOARD_TAILSCALE_PLACEMENT", "CCBOARD_NODE_LANES", "CCBOARD_NODE_PORTS", "CCBOARD_NODE_TAGS", "CCBOARD_NODES_POLL", "CCBOARD_MCP_NODES",
     "CCBOARD_EPIC_AUTHORS", "CCBOARD_EPIC_WRITES", "CCBOARD_EPIC_ALIAS", "CCBOARD_EPIC_LEASE_MIN", "CCBOARD_EPIC_MAX_WINDOW_PCT",
     "CCBOARD_EPIC_WORKER", "CCBOARD_EPIC_REPOS", "CCBOARD_EPIC_WORKER_POLL", "CCBOARD_EPIC_WORKER_MAX_PER_HOUR", "CCBOARD_EPIC_WORKER_MAX_PER_DAY",
+    "CCBOARD_NODE_AUTH", "CCBOARD_NODE_CAP",
 )
 ENV_FILE_MAX = 1 << 20     # bytes read from the settings file
 
@@ -364,6 +433,13 @@ class Settings:
         # "same Tailscale user". Bad items are dropped and the doctor says so; nothing here starts a request.
         self.node_ports, self.node_ports_bad = parse_node_ports(env.get("CCBOARD_NODE_PORTS"))
         self.node_tags, self.node_tags_bad = parse_node_tags(env.get("CCBOARD_NODE_TAGS"))
+        # Issue #136: the optional device binding and app capability for calls from paired nodes (app/nodes_whois.py). Off (`token`) by default.
+        self.node_auth, self.node_auth_bad = parse_node_auth(env.get("CCBOARD_NODE_AUTH"))
+        self.node_cap, self.node_cap_bad = parse_node_cap(env.get("CCBOARD_NODE_CAP"))
+        # The address uvicorn was told to listen on, from this process's own command line (`--host`; uvicorn's default is 127.0.0.1); None when the
+        # board was not started by the uvicorn command (tests, a custom runner). The board-bind check (app/nodes_whois.py) also reads the socket.
+        self.bind_host = uvicorn_host(sys.argv)
+        self.forwarded_allow_argv = uvicorn_forwarded_allow(sys.argv)      # issue #136: a widened uvicorn proxy trust keeps the whois modes off
         self.nodes_raw = env.get("CCBOARD_NODES") or ""
         # The hub read model (issue #138): seconds between two polls of one paired node. Default 20, never below 5; not a number: the default.
         try:

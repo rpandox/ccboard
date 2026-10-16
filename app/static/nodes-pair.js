@@ -111,6 +111,125 @@ NodeView.peer = function (rec) {
     scopes: NodeView.scopeList(r.scopes), seen, unverified: r.callback_unverified === true, repair: r.needs_repair === true, legacy: r.legacy === true,
     revoked: !!r.revoked_at, error: s(r.last_error, 120), direction: r.direction === 'in' ? 'in' : 'out',
     superseded: s(r.superseded_by, 80), supersededHost: NodeView.hostOf(s(r.superseded_by_url, 300)),
+    device: NodeView.deviceOf(r),
+  };
+};
+
+/* The device a pair is bound to (issue #136, the Device check): { bound, id, tags } from device_bound, device_id (the short form the board sends, never the whole StableID) and
+   device_tags. A board that sends none of them (older, or a token-mode pair) is { bound: false }. Read loosely: ids are cut, tags are strings, at most 8. */
+NodeView.deviceOf = function (rec) {
+  const r = rec && typeof rec === 'object' ? rec : {};
+  const tags = Array.isArray(r.device_tags) ? r.device_tags.filter((t) => typeof t === 'string' && t).map((t) => t.slice(0, 40)).slice(0, 8) : [];
+  return { bound: r.device_bound === true, id: NodeView.str(r.device_id, 24), tags };
+};
+
+/* The chips of a pair row about the device check: the bound device (its short id) and its tags. `on` is true while the board checks the device (whois or whois+cap is on and can run):
+   a bound pair says so, and a pair that is not bound says it is refused until the node is paired again. With the check off (token mode) a bound device is still named, and
+   says it is not checked. [] when there is nothing to say (check off, no binding). */
+NodeView.deviceChips = function (p, on) {
+  const d = p.device;
+  if (d.bound) {
+    const name = d.id ? `device ${d.id}` : 'device bound';
+    return [on ? NodeView.chip(name, 'ok', '✓', 'Calls with this token are accepted only from the device that was paired.')
+      : NodeView.chip(`${name}, not checked`, '', '·', 'Saved when it was paired. The device is not checked while CCBOARD_NODE_AUTH is token.'),
+      ...d.tags.map((t) => NodeView.chip(t, '', '', 'A Tailscale tag the device carried when it was paired.'))];
+  }
+  return on ? [NodeView.chip('not bound, pair again', 'warn', '!', 'This pair was made before the device check was on. The board refuses its calls until the node is paired again.')] : [];
+};
+
+/* The demo's Device check (issue #136): demo/nodes-auth.json holds the board's answer for every mode and banner (`states`, each the shape of GET /api/nodes/auth) and the grant and Serve texts
+   they share (`snippet`; a state may carry its own). ?authstate=<name> picks one: token (the default), whois, whois-cap, tagged, bind, old, noserve, down, nocap, badmode, unknown. Check
+   (?check=1) on the token state answers as if Tailscale had been read (`token-checked`). */
+function demoAuthState() { try { const m = /[?&]authstate=([a-z-]+)/.exec(location.search); return m ? m[1] : 'token'; } catch (_) { return 'token'; } }
+function demoAuth(data, check) {
+  const want = demoAuthState();
+  const states = data && data.states && typeof data.states === 'object' ? data.states : {};
+  const name = want === 'token' && check ? 'token-checked' : want;
+  const st = ownKey(states, name) ? states[name] : states.token;
+  return { ...st, snippet: { ...data.snippet, ...(st && st.snippet ? st.snippet : {}) } };
+}
+
+/* ---------------------------------------------------------------- the Device check (issue #136; Settings > Nodes > Device check, GET /api/nodes/auth)
+
+   The optional layer on top of the pair token: the board asks Tailscale who the calling device is (whois) and, in whois+cap, also needs the operation granted in the tailnet policy.
+   These are the words for the board's answer. Pure functions; every string the board sent is cut and shown through textContent. The mode is set in the settings file
+   (CCBOARD_NODE_AUTH), never from the page, and the grant and the Serve command are text to copy: nothing here runs them. A value the board could not read is "to verify", never "fine". */
+NodeView.AUTH_MODES = {
+  token: { title: 'Pair token only', what: 'The default. A node is checked by its pair token alone, so a copied token works from any device on the tailnet. Nothing is asked of Tailscale.' },
+  whois: { title: 'Pair token and device', what: 'The token only works from the device that was paired. The board asks Tailscale who is calling and compares it with the device saved at pairing.' },
+  'whois+cap': { title: 'Pair token, device and permission', what: 'As whois, and the tailnet policy must also grant the operation (read, tasks, sessions or permissions) to the calling device. It can only narrow what the token allows.' },
+};
+NodeView.AUTH_REASONS = {
+  device_mismatch: 'a different device used the token', not_bound: 'a pair made before the device check was on', not_via_serve: 'a call that did not come through Tailscale Serve',
+  tailscale_unavailable: 'Tailscale could not say who was calling', whois_rate_limited: 'too many device lookups in a minute', no_caller_address: 'no caller address from Serve',
+  tag_refused: 'a device without an allowed tag', cap_missing: 'no capability header', cap_invalid: 'a capability header that could not be read',
+  cap_op_missing: 'an operation the policy does not grant', bad_mode: 'CCBOARD_NODE_AUTH is not a known value', board_bind: 'the board listens beyond loopback', proxy_trust: 'the board trusts forwarded addresses from beyond loopback', no_cap_name: 'CCBOARD_NODE_CAP is not set',
+};
+NodeView.AUTH_VERSION_MIN = '1.92';
+
+/* One reading of what the host can do: the value is true, false or null (could not be read); `checked` false means the host was not asked. */
+NodeView.authFact = function (v, checked, yes, no) {
+  if (!checked) return { text: 'not checked, press Check', tone: '', glyph: '·' };
+  if (v === true) return { text: yes, tone: 'ok', glyph: '✓' };
+  if (v === false) return { text: no, tone: 'bad', glyph: '✕' };
+  return { text: 'could not be read (to verify)', tone: 'warn', glyph: '!' };
+};
+
+/* The board's answer as what the section draws:
+   { mode, known, ready, state: {word, tone, glyph}, title, what, banner, rows: [{key, label, text, tone, glyph, note}], tags, snippet: {user, tag, serve, cap, placeholder, min, cmd}, checked, deviceOn }.
+   A mode the board does not know (bad_mode keeps the typed value) is shown as unknown and cannot run; nothing is shown as healthy that was not read. */
+/* When the last refusal happened, the way every other time on the board reads ("3 min ago"); the raw value only when it is not a time. */
+NodeView.authWhen = function (at) {
+  const t = typeof at === 'string' ? Date.parse(at) : NaN;
+  if (Number.isNaN(t)) return typeof at === 'string' ? at.slice(0, 40) : '';
+  return typeof fmtAge === 'function' ? fmtAge(t / 1000) : new Date(t).toISOString().slice(0, 16).replace('T', ' ');
+};
+
+NodeView.authView = function (a) {
+  const r = a && typeof a === 'object' ? a : {};
+  const S = NodeView.str;
+  const known = typeof r.mode === 'string' && Object.prototype.hasOwnProperty.call(NodeView.AUTH_MODES, r.mode);
+  const mode = known ? r.mode : 'unknown';
+  const info = known ? NodeView.AUTH_MODES[mode] : { title: 'Unknown value', what: 'CCBOARD_NODE_AUTH holds a value the board does not know, so every call from a paired node is refused until it is token, whois or whois+cap.' };
+  const ready = r.ready === true;
+  const host = r.host && typeof r.host === 'object' ? r.host : {};
+  const checked = host.checked === true;
+  const cap = r.cap && typeof r.cap === 'object' ? r.cap : {};
+  const bind = r.bind && typeof r.bind === 'object' ? r.bind : {};
+  const sn = r.snippet && typeof r.snippet === 'object' ? r.snippet : {};
+  const token = mode === 'token';
+  const state = token ? { word: 'default', tone: '', glyph: '·' } : known && ready ? { word: 'on', tone: 'ok', glyph: '✓' } : { word: 'cannot run', tone: 'bad', glyph: '✕' };
+  const rows = [];
+  const bindFact = bind.ok === true ? { text: 'loopback only', tone: 'ok', glyph: '✓' } : bind.ok === false ? { text: 'wider than loopback', tone: 'bad', glyph: '✕' } : { text: 'unknown (to verify)', tone: 'warn', glyph: '!' };
+  rows.push({ key: 'bind', label: 'Board address', ...bindFact, note: S(bind.reason, 240) });
+  if (!(token && !checked)) {                                                // in token mode the host is asked nothing until Check is pressed
+    const ver = S(host.version, 24);
+    const verFact = !ver ? NodeView.authFact(null, true)
+      : { text: `${ver}${host.version_ok === true ? `, ${NodeView.AUTH_VERSION_MIN} or newer` : host.version_ok === false ? `, older than ${NodeView.AUTH_VERSION_MIN}` : ', not compared (to verify)'}`,
+        tone: host.version_ok === true ? 'ok' : host.version_ok === false ? 'bad' : 'warn', glyph: host.version_ok === true ? '✓' : host.version_ok === false ? '✕' : '!' };
+    rows.push({ key: 'version', label: 'Tailscale', ...verFact, note: `Only whois+cap needs ${NodeView.AUTH_VERSION_MIN} or newer (the capability header).` });
+    rows.push({ key: 'whois', label: 'Who is calling', ...NodeView.authFact(host.whois, true, 'Tailscale answers', 'Tailscale does not answer'), note: '' });
+    rows.push({ key: 'serve', label: 'Serve passes it on', ...(cap.set !== true ? { text: 'no capability name is set, so nothing to pass', tone: '', glyph: '·' }
+      : NodeView.authFact(host.serve_cap, true, 'yes, with the capability flag', 'no, the capability flag is missing')), note: '' });
+  }
+  if (mode === 'whois+cap' || cap.set === true || cap.bad === true) {
+    rows.push({ key: 'cap', label: 'Capability name', text: cap.set === true ? S(cap.name, 120) : cap.bad === true ? 'the value set is not a capability name' : 'not set',
+      tone: cap.bad === true ? 'bad' : '', glyph: cap.bad === true ? '✕' : '', note: cap.set === true ? '' : 'whois+cap needs one. The grant below shows a placeholder.' });
+  }
+  const tags = Array.isArray(r.tags) ? r.tags.filter((t) => typeof t === 'string' && t).map((t) => t.slice(0, 40)).slice(0, 8) : [];
+  if (!token) {
+    rows.push({ key: 'tags', label: 'Allowed tags', text: tags.length ? tags.join(', ') : 'none', tone: '', glyph: '',
+      note: tags.length ? 'A tagged device must carry one of these (CCBOARD_NODE_TAGS).' : 'CCBOARD_NODE_TAGS is none: only devices of the same user are accepted, a tagged device is refused.' });
+    const ld = r.last_denial && typeof r.last_denial === 'object' ? r.last_denial : null;
+    const why = ld ? S(ld.reason, 40) : '';
+    rows.push({ key: 'last', label: 'Last refusal', text: ld ? (Object.prototype.hasOwnProperty.call(NodeView.AUTH_REASONS, why) ? `${NodeView.AUTH_REASONS[why]} (${why})` : why || 'a refusal') : 'none since the board started',
+      tone: ld ? 'warn' : '', glyph: ld ? '!' : '', note: ld ? NodeView.authWhen(ld.at) : '' });
+  }
+  return {
+    mode, known, ready, state, title: info.title, what: info.what, checked, deviceOn: !token && known && ready,
+    banner: typeof r.banner === 'string' && r.banner ? r.banner.slice(0, 320) : '',
+    rows, tags,
+    snippet: { user: S(sn.user, 2000), tag: S(sn.tag, 2000), serve: S(sn.serve, 400), cap: S(sn.cap, 120), placeholder: sn.placeholder === true, min: S(sn.version_min, 12) || NodeView.AUTH_VERSION_MIN, cmd: S(sn.version_cmd, 40) || 'tailscale version' },
   };
 };
 
@@ -168,7 +287,7 @@ NodeView.clock = function (epoch) {
 /* A pair as a row, in the shape of the found rows: name (and its handle), chips (state, scopes, flags), a note, and `actions` (elements) at the right. */
 NodeView.REPLACED = 'Another pair';
 
-NodeView.peerRow = function (rec, { nowMs = Date.now(), actions = null, incoming = false, rotatedMs = 0 } = {}) {
+NodeView.peerRow = function (rec, { nowMs = Date.now(), actions = null, incoming = false, rotatedMs = 0, deviceCheck = false } = {}) {
   const p = NodeView.peer(rec);
   const st = NodeView.peerState(p, incoming);
   const scopes = NodeView.SCOPES.filter((s) => p.scopes.includes(s.id));
@@ -178,6 +297,7 @@ NodeView.peerRow = function (rec, { nowMs = Date.now(), actions = null, incoming
       el('div', { class: 'nd-head' }, el('b', { class: 'nd-name', text: p.name }), p.handle ? el('span', { class: 'dim nd-handle', text: p.handle }) : null),
       el('div', { class: 'nd-chips' }, NodeView.chip(st.word, st.tone, st.glyph, st.hint),
         scopes.map((s) => NodeView.chip(s.label.toLowerCase(), '', '', s.what)),
+        incoming ? NodeView.deviceChips(p, deviceCheck) : null,
         p.unverified ? NodeView.chip('callback not verified', 'warn', '!', 'That node did not confirm who it is when it was paired. The pair works; its name is not confirmed.') : null,
         replaced ? NodeView.chip('same node id', 'warn', '!', 'A newer pair from another address gave this node\'s id. A node id is only the word of the board at its address, so neither pair was cut.') : null),
       replaced ? el('div', { class: 'nd-replaced', text: `${NodeView.REPLACED}${p.supersededHost ? ` from ${p.supersededHost}` : ''} says it is this node too. A node id is not proof, so both still work: revoke the one you do not recognise.` }) : null,

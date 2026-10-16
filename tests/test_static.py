@@ -677,7 +677,7 @@ def test_index_dialogs_are_empty_in_the_html():
 DEMO_DIR = STATIC / "demo"
 DEMO_FILES = ("state.json", "skills.json", "search.json", "tree.json", "file.json", "series.json", "series_events.json", "usage_summary.json", "memory.json",
               "agents.json", "doctor.json", "memory_health.json", "memory_prefs.json", "memory_observations.json", "memory_summaries.json",
-              "memory_search.json", "memory_timeline.json", "memory_palace.json", "memory_states.json", "node.json", "nodes-discover.json", "nodes.json")
+              "memory_search.json", "memory_timeline.json", "memory_palace.json", "memory_states.json", "node.json", "nodes-discover.json", "nodes.json", "nodes-auth.json")
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+--[A-Za-z0-9_-]+--[A-Za-z0-9_-]+$")
 KANBAN = ("backlog", "in_progress", "needs_you", "done", "pr", "merged")
 DEMO_HEADERS = {"Tailscale-User-Login": "alice@example.com"}
@@ -1415,7 +1415,8 @@ WORKER_URL_RE = re.compile(r":377[0-9]{2}(?![0-9])")                  # demo JSO
 # 127.0.0.1 is allowed in app/static only where it is not the worker: a preview toast naming the dev server's own loopback port, and
 # doctor fixture details about other loopback services. Each entry is (file, a substring of the allowed line).
 LOOPBACK_ALLOWED = {("components.js", "preview at ${r.url}"), ("demo/doctor.json", "ttyd 1.7.7"), ("demo/doctor.json", "listening on 127.0.0.1:8080"),
-                    ("demo/doctor.json", "ntfy answers at http://127.0.0.1:2586")}
+                    ("demo/doctor.json", "ntfy answers at http://127.0.0.1:2586"),
+                    ("demo/nodes-auth.json", "127.0.0.1")}                  # the Device check (issue #136) is about the board's own loopback bind and the Serve command that proxies to it
 
 
 def test_no_worker_address_in_app_static():

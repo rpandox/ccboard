@@ -219,6 +219,11 @@ MIGRATIONS = [
     #      the same node id, the older active pair is not revoked (a node id is only a claim); it is marked with the peer_id of the newer pair, keeps
     #      working, and Settings > Nodes shows it with a prominent Revoke. NULL = not superseded (every old row). Additive: the previous image ignores it.
     "ALTER TABLE node_pairs ADD COLUMN superseded_by TEXT",
+    # ---- issue #136: the device a pair was made from, under CCBOARD_NODE_AUTH=whois or whois+cap: its Tailscale StableNodeID and its tags (a JSON list),
+    #      both from `tailscale whois` of the pairing call's forwarded address. NULL = not bound (every older row, and every pair made in `token` mode).
+    #      Additive: the previous image ignores both.
+    "ALTER TABLE node_pairs ADD COLUMN peer_ts_id TEXT",
+    "ALTER TABLE node_pairs ADD COLUMN peer_tags TEXT",
     # permissions.decision takes allow|deny|tui|interrupt (plus timeout from perm_expire). It has no CHECK constraint,
     # so nothing to migrate: the new values are plain TEXT.
 ]
@@ -243,7 +248,8 @@ JOB_COLS = ("project", "repo", "name", "prompt", "cron", "permission_mode", "max
             "timeout_s", "enabled", "batch_id", "next_run_at", "agent", "opts")
 JOB_REQUIRED = ("project", "repo", "name", "prompt")
 NODE_PAIR_COLS = ("peer_id", "peer_node_id", "peer_name", "peer_url", "token_sha256", "scopes", "created_at", "expires_at", "last_used_at",
-                  "last_ip_hint", "callback_unverified", "revoked_at", "prev_sha256", "prev_until", "rotated_at", "superseded_by")
+                  "last_ip_hint", "callback_unverified", "revoked_at", "prev_sha256", "prev_until", "rotated_at", "superseded_by",
+                  "peer_ts_id", "peer_tags")
 NODE_AUDIT_CAP = 20000
 ACTIVE_TASK_PHASES = ("queued", "running", "done", "failed")
 

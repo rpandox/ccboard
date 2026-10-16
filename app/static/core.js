@@ -343,6 +343,7 @@ async function demoApi(method, path, body) {
   if (bare === '/api/state') name = 'state';
   else if (bare === '/api/node') name = 'node';   // this board's node card (GET /api/node, issue #133): the same shape the route answers
   else if (bare === '/api/nodes' || bare === '/api/nodes/pairs' || bare === '/api/nodes/audit' || bare === '/api/nodes/state' || bare === '/api/mcp/tokens' || /^\/api\/nodes\/[^/]+\/(agents|permissions|sessions\/[^/]+\/pane)$/.test(bare)) name = 'nodes';   // Settings > Nodes > Paired nodes, Who can control this node and Activity (issue #135): one fixture, three answers
+  else if (bare === '/api/nodes/auth') name = 'nodes-auth';   // Settings > Nodes > Device check (issue #136): one fixture, a state per ?authstate=
   else if (bare === '/api/nodes/discover') name = 'nodes-discover';   // Settings > Nodes > Found on your tailnet (issue #134): a found node, a refusing one, an offline one and one with nothing listening
   else if (/^\/api\/sessions\/[^/]+$/.test(bare)) name = 'session';    // the terminal page's own read: the row of state.json with that tmux name (its agent drives Tune and the quick replies)
   else if (bare === '/api/skills') name = 'skills';   // the palette's Skills group (issue #102): the same shape GET /api/skills answers
@@ -386,6 +387,7 @@ async function demoApi(method, path, body) {
   if (name === 'usage_summary' && /[?&]basis=est(&|$)/.test(path)) return { ...demoRebase(data), basis: 'est' };   // the Estimated basis (issue #95): the demo has nothing to estimate, so the same numbers under the other name (rebased like the reported one, or the windows read as rolled over)
   if (name === 'nodes') return demoNodes(data, bare);
   if (name === 'nodes-discover') return demoDiscover(data, /[?&]refresh=1(&|$)/.test(path));
+  if (name === 'nodes-auth') return typeof demoAuth === 'function' ? demoAuth(data, /[?&]check=1(&|$)/.test(path)) : data;   // played in nodes-pair.js (the settings bundle)
   if (name === 'tree' || name === 'file') return demoPick(name, bare, path.slice(bare.length + 1), data);
   if (/^memory_(observations|summaries|search|timeline|palace)$/.test(name)) return demoMemVariant(data, bare);
   if (name === 'series_events' && data && data.demo && data.demo.epoch && Array.isArray(data.events)) {   // keep the fixture's 24 h alive, like state.json

@@ -2103,6 +2103,27 @@ def _c_nodes_health(db) -> Outcome:
 
 
 register("nodes-health", "box", "Paired nodes answer", _c_nodes_health)   # issue #153, on every board: the hub is usually the Linux box
+
+
+def _whois_row(fn) -> Outcome:
+    status, detail, text = fn()
+    return Outcome(status, detail, fix(text) if text else None)
+
+
+def _c_board_bind(db) -> Outcome:
+    """Issue #136: the board listens on loopback only (the uvicorn --host and the socket table). A wider bind fails in a whois mode, which then stays off."""
+    from . import nodes_whois
+    return _whois_row(nodes_whois.doctor_bind)
+
+
+def _c_node_auth(db) -> Outcome:
+    """Issue #136: CCBOARD_NODE_AUTH, the Tailscale version, whether Serve passes the capability, the last refusal. Read only; a skip in token mode."""
+    from . import nodes_whois
+    return _whois_row(nodes_whois.doctor_auth)
+
+
+register("board-bind", "box", "Board listens on loopback only", _c_board_bind)   # issue #136
+register("node-auth", "box", "Device check for paired nodes", _c_node_auth)       # issue #136
 register_provider("memory", MEM_GROUP, memory_checks)       # claude-mem (v0.5.10): one probe, seven checks
 register_provider("codex", CODEX_GROUP, codex_checks)       # the Codex adapter's checks (v0.5.11)
 if plat.IS_MACOS:                                            # issue #117: the macOS checks (app/doctor_macos.py) exist on a Mac only; a Linux board lists none

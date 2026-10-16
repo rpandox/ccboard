@@ -2,6 +2,26 @@
 
 One entry per shipped phase, newest first. The commit that ships a phase adds its entry (see CONTRIBUTING.md). Each entry says in its last line whether you have to rerun `./install.sh` on the box. `Upgrade: nothing to do` means a deploy is enough.
 
+## v0.5.58 - 2026-10-16
+
+### Added
+- The optional device check (#136), **off by default**. `CCBOARD_NODE_AUTH=token` (or nothing set) behaves exactly as before. `whois` makes a node token work only from the device that paired, asked of Tailscale on every call (`403 device_mismatch` for any other); `whois+cap` also needs a permission in your tailnet policy (`CCBOARD_NODE_CAP`, `<a domain you control>/cap/ccboard`) for the operation of the route. The mode is set in the settings file, never from a page.
+- Safe by construction. A node call must arrive on loopback through Serve before `X-Forwarded-For` or the capability header is read, and both modes refuse to switch on while the board listens beyond loopback (`503 board_bind`). It fails closed: Tailscale that cannot answer is `503 tailscale_unavailable`, never the token alone. Every refusal writes an audit row with its reason. Lookups are cached 60 s per address and capped at 20 uncached a minute. The board only reads from `tailscale` and never changes the policy or `serve`.
+- Settings > Nodes > **Device check**: the mode in words, a banner when the mode is stronger than this host can do (not loopback-only, Tailscale older than 1.92, Serve without the capability flag, whois silent), the board's address, the Tailscale version, the last refusal, the grant (your devices or tagged devices, placeholder login and domain) and the `tailscale serve --accept-app-caps` command with a Copy each, and how to switch. Pairs that call this board show the bound device (short StableNodeID) and its tags; a pair with no bound device says "not bound, pair again" while the check is on. `GET /api/nodes/auth`, Doctor rows `board-bind` and `node-auth`.
+- `?demo=1&authstate=whois|whois-cap|tagged|bind|old|noserve|down|nocap|badmode|unknown#/settings?sec=nodes` shows every mode and banner. README: **The device check**, the env rows, the security paragraph and the table of the four runtimes; ROADMAP as-built note.
+
+### Changed
+- A forward-only migration adds `node_pairs.peer_ts_id` and `peer_tags` (empty for older pairs and for token-mode pairs). First paint is 541,070 bytes of script (+322 in `core.js`); the section is in the lazy settings bundle. Known limits, to verify on the two-board check (#155): the `AcceptAppCaps` key, the real Serve header, whois for a tagged peer, and whois in the container and on WSL2. The calling board shows no special line yet for `device_mismatch`; the Linux socket API is not used (command line only).
+
+### Fixed
+- The device check works behind a real `tailscale serve`. uvicorn's default proxy headers already replace the loopback peer with the caller's address, so the first version refused every call as not coming through Serve. The board now checks that the connection arrived on loopback and carried `X-Forwarded-For`, and takes the caller from what uvicorn set; both modes refuse to switch on (`503 proxy_trust`) while `FORWARDED_ALLOW_IPS` or `--forwarded-allow-ips` trusts more than loopback. Tests now run through uvicorn's own middleware.
+- Pairing both ways in a device mode now binds the reverse pair too: the device of the other board is taken when it calls back to confirm the pairing. Without that call the reverse pair stays unbound and its calls are refused.
+- Concurrent device lookups for one address share one `tailscale whois` and one slot of the 20 a minute.
+- A board that cannot read its own Tailscale status no longer lets an untagged device pair (it could not tell whether it is a tagged setup); it refuses with a plain reason and the code stays.
+- README: the device check does not protect against a hostile local user, who can forge the forwarded and capability headers on `127.0.0.1` as they can the sign-in header.
+
+Upgrade: nothing to do.
+
 ## v0.5.57 - 2026-10-16
 
 ### Fixed

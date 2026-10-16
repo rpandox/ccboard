@@ -16,11 +16,15 @@ This module imports only app.platform and app.config, so the doctor, the preview
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import NamedTuple
 
@@ -421,3 +425,174 @@ def serve_path_on_args(https_port: int, path: str, target: str) -> list[str]:
 
 def serve_path_off_args(https_port: int, path: str) -> list[str]:
     return [f"--https={https_port}", "--set-path", path, "off"]
+
+
+# ---------------------------------------------------------------- who is calling (issue #136; read only, never raises)
+
+WHOIS_TTL = 60.0                 # seconds an answer for one address is reused
+WHOIS_RATE = 20                  # lookups that start a process, per WHOIS_WINDOW, for the whole board
+WHOIS_WINDOW = 60.0
+WHOIS_TIMEOUT = 3.0              # seconds one `tailscale whois` may take
+WHOIS_CACHE_MAX = 512            # addresses kept at most
+VERSION_TTL = 300.0
+CAPS_MIN_VERSION = (1, 92)       # `tailscale serve --accept-app-caps` exists from this release on
+_VERSION_RE = re.compile(r"^\s*v?(\d+)\.(\d+)(?:\.(\d+))?")
+_NOT_FOUND = ("peer not found", "not found", "no match")       # the CLI's words for the LocalAPI's 404 (ErrPeerNotFound)
+_TAILNET_V4 = ipaddress.ip_network("100.64.0.0/10")
+_TAILNET_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
+
+_whois_clock = time.monotonic    # the clock of the cache and the rate window; tests replace it
+_whois_lock = threading.Lock()
+_whois_cache: dict[str, tuple[float, dict]] = {}
+_whois_spawns: list[float] = []
+_whois_inflight: dict[str, dict] = {}   # address -> {done: Event, answer}: one lookup per address at a time; concurrent callers wait for it
+_version_cache: list = []        # [(at, text or None)]
+
+
+def whois_forget() -> None:
+    """Forget every cached answer, the rate window and the version reading (tests; the board itself never needs it)."""
+    with _whois_lock:
+        _whois_cache.clear()
+        _whois_spawns.clear()
+        _whois_inflight.clear()
+        _version_cache.clear()
+
+
+def tailnet_ip(ip) -> str | None:
+    """`ip` as a plain tailnet address (100.64.0.0/10 or fd7a:115c:a1e0::/48), else None: a loopback, LAN or public address is never a Serve caller."""
+    try:
+        a = ipaddress.ip_address(str(ip or "").strip())
+    except ValueError:
+        return None
+    if isinstance(a, ipaddress.IPv6Address):
+        return str(a) if a.scope_id is None and a in _TAILNET_V6 else None
+    return str(a) if a in _TAILNET_V4 else None
+
+
+def _str_list(v) -> list[str]:
+    return [x for x in v if isinstance(x, str)][:16] if isinstance(v, list) else []
+
+
+def parse_whois(text: str) -> dict:
+    """`tailscale whois --json` as {ok, stable_id, name, tags, user_login}; {ok: False, reason: 'bad_answer'} when it is not that shape. Node.StableID
+    must be a non-empty string. What UserProfile holds for a tagged device is to verify (issue #155): user_login is "" when it is missing."""
+    d = _json(text)
+    node = d.get("Node") if isinstance(d, dict) else None
+    if not isinstance(node, dict) or not isinstance(node.get("StableID"), str) or not node["StableID"].strip():
+        return {"ok": False, "reason": "bad_answer"}
+    prof = d.get("UserProfile") if isinstance(d.get("UserProfile"), dict) else {}
+    return {"ok": True, "stable_id": node["StableID"].strip()[:128], "name": str(node.get("Name") or "").rstrip(".")[:255],
+            "tags": _str_list(node.get("Tags")), "user_login": str(prof.get("LoginName") or "")[:255]}
+
+
+def whois(ip) -> dict:
+    """Who the tailnet says `ip` is: {ok: True, stable_id, name, tags, user_login} or {ok: False, reason}. Never raises, never changes anything.
+    reason: `not_tailnet` (not a tailnet address: nothing is run), `not_found` (Tailscale answered that it knows no such peer), `rate_limited` (more
+    than WHOIS_RATE uncached lookups in the last minute: nothing is run; `retry_after` says when a slot frees), `unavailable` (no command, no daemon, a
+    denial, a timeout, an answer it cannot read). An answer (ok or not_found) is reused for WHOIS_TTL seconds; `unavailable` is never cached, so a
+    daemon that comes back counts at once, and the rate cap bounds how many processes a flood can start. Calls for one address while its lookup runs
+    wait for that lookup and share its answer (one process, one rate slot). The command is `tailscale whois --json <ip>`,
+    the portable path (the Mac app bundle with TAILSCALE_BE_CLI=1, the container through the mounted socket); the Linux LocalAPI socket is not used."""
+    addr = tailnet_ip(ip)
+    if addr is None:
+        return {"ok": False, "reason": "not_tailnet"}
+    with _whois_lock:
+        now = _whois_clock()
+        hit = _whois_cache.get(addr)
+        if hit is not None and now - hit[0] < WHOIS_TTL:
+            return dict(hit[1])
+        rec = _whois_inflight.get(addr)
+        leader = rec is None
+        if leader:
+            _whois_spawns[:] = [t for t in _whois_spawns if now - t < WHOIS_WINDOW]
+            if len(_whois_spawns) >= WHOIS_RATE:
+                return {"ok": False, "reason": "rate_limited", "retry_after": max(1, int(WHOIS_WINDOW - (now - _whois_spawns[0])) + 1)}
+            _whois_spawns.append(now)
+            rec = _whois_inflight[addr] = {"done": threading.Event(), "answer": None}
+    if not leader:                               # a lookup of this address is running: wait for its answer instead of starting (and counting) another
+        if not rec["done"].wait(WHOIS_TIMEOUT + 2):
+            return {"ok": False, "reason": "unavailable", "detail": "timeout"}
+        return dict(rec["answer"] or {"ok": False, "reason": "unavailable", "detail": "error"})
+    answer = None
+    try:
+        answer = _whois_run(addr)
+    finally:
+        rec["answer"] = answer
+        with _whois_lock:
+            if _whois_inflight.get(addr) is rec:
+                _whois_inflight.pop(addr, None)
+        rec["done"].set()
+    return dict(answer)
+
+
+def _whois_run(addr: str) -> dict:
+    """One `tailscale whois` for whois(): the answer, cached when it is ok or not_found."""
+    try:
+        r = call(["whois", "--json", addr], timeout=WHOIS_TIMEOUT)
+    except Exception as e:                       # call() does not raise; this is the last net for "never raises"
+        return {"ok": False, "reason": "unavailable", "detail": e.__class__.__name__}
+    if r.kind == "ok":
+        out = parse_whois(r.out)
+        if not out["ok"]:
+            return {"ok": False, "reason": "unavailable", "detail": "the answer was not understood"}
+    elif r.kind == "failed" and any(s in f"{r.err}\n{r.out}".lower() for s in _NOT_FOUND):
+        out = {"ok": False, "reason": "not_found"}
+    else:
+        return {"ok": False, "reason": "unavailable", "detail": r.kind}
+    with _whois_lock:
+        _whois_cache[addr] = (_whois_clock(), dict(out))
+        if len(_whois_cache) > WHOIS_CACHE_MAX:
+            for k in sorted(_whois_cache, key=lambda k: _whois_cache[k][0])[:len(_whois_cache) - WHOIS_CACHE_MAX]:
+                _whois_cache.pop(k, None)
+    return dict(out)
+
+
+def parse_version(text) -> tuple[int, int, int] | None:
+    """The first line of `tailscale version` as (major, minor, patch), or None."""
+    lines = str(text or "").strip().splitlines()
+    m = _VERSION_RE.match(lines[0]) if lines else None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)) if m else None
+
+
+def version() -> str | None:
+    """The client's version (`tailscale version`, first line, e.g. "1.104.1"), cached VERSION_TTL seconds; None when it cannot be read. Never raises."""
+    with _whois_lock:
+        if _version_cache and _whois_clock() - _version_cache[0][0] < VERSION_TTL:
+            return _version_cache[0][1]
+    try:
+        r = call(["version"])
+        p = parse_version(r.out) if r.kind == "ok" else None
+    except Exception:
+        p = None
+    v = ".".join(str(x) for x in p) if p else None
+    with _whois_lock:
+        _version_cache[:] = [(_whois_clock(), v)]
+    return v
+
+
+def caps_supported(v) -> bool | None:
+    """Can this client add the app-capability header (`serve --accept-app-caps`, v1.92 and newer)? None when the version is unknown."""
+    p = parse_version(v)
+    return None if p is None else p[:2] >= CAPS_MIN_VERSION
+
+
+def serve_accepts_caps(d: dict | None, https_port, cap: str) -> bool | None:
+    """Does the board's Serve handler pass the capability `cap` on (the --accept-app-caps flag)? Read from `serve status --json`: the "/" handler on
+    any host at <https_port> and its AcceptAppCaps list (the key name is from Tailscale's ServeConfig and is to verify on a real Serve, issue #155).
+    None when the config cannot be read or there is no handler there; False when there is one without the capability."""
+    if not isinstance(d, dict):
+        return None
+    webs = d.get("Web") if isinstance(d.get("Web"), dict) else {}
+    port = str(https_port)
+    found = None
+    for k, web in webs.items():
+        if not isinstance(k, str) or k.rsplit(":", 1)[-1] != port or not isinstance(web, dict):
+            continue
+        handlers = web.get("Handlers")
+        h = handlers.get("/") if isinstance(handlers, dict) else None
+        if not isinstance(h, dict):
+            continue
+        caps = next((v for kk, v in h.items() if isinstance(kk, str) and kk.lower() == "acceptappcaps"), None)
+        got = bool(cap) and isinstance(caps, list) and cap in caps
+        found = got or bool(found)
+    return found
