@@ -104,7 +104,7 @@ MESSAGES = {
     "bad_request": "that is not a GitHub repository or issue this board will ask for",
 }
 _REPO_PATH = re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})")
-_PATH = re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/issues(?:/[1-9][0-9]{0,8}(?:/(?:sub_issues|comments)\?per_page=[0-9]{1,3}&page=[0-9]{1,3})?"
+_PATH = re.compile(r"/repos/([^/?]{1,100})/([^/?]{1,100})/issues(?:/[1-9][0-9]{0,8}(?:/(?:sub_issues|comments|events)\?per_page=[0-9]{1,3}&page=[0-9]{1,3})?"
                    r"|\?labels=[A-Za-z0-9%._-]{1,200}&state=(?:open|closed|all)&per_page=[0-9]{1,3}&page=[0-9]{1,3})")
 
 
@@ -163,6 +163,11 @@ def sub_issues_path(owner, repo, n, page: int = 1, per_page: int | None = None) 
 
 def comments_path(owner, repo, n, page: int = 1, per_page: int | None = None) -> str:
     return f"{_check(owner, repo, n)}/comments?{_page(page, PER_PAGE if per_page is None else per_page)}"
+
+
+def events_path(owner, repo, n, page: int = 1, per_page: int | None = None) -> str:
+    """/repos/{owner}/{repo}/issues/{n}/events: one page of the issue's events (issue #157: who set the label `ccboard:ready`, and who renamed the issue). A GET like every other path."""
+    return f"{_check(owner, repo, n)}/events?{_page(page, PER_PAGE if per_page is None else per_page)}"
 
 
 def labeled_path(owner, repo, label, state: str = "open", page: int = 1, per_page: int | None = None) -> str:
@@ -485,7 +490,8 @@ def _gql_run(build) -> tuple[int, dict, Any]:
 # The same check for ONE comment, by its node id (REST gives every comment a `node_id`): a comment older than the last EDITORS_MAX of its issue is out of the window above and would get
 # no verdict. A third constant query; only the id varies, and it is checked against a narrow rule first.
 GQL_EDITOR = ("query($id:ID!){rateLimit{cost remaining resetAt}node(id:$id){... on IssueComment{databaseId lastEditedAt author{login ... on User{databaseId}} "
-              "editor{login ... on User{databaseId}}}}}")
+              "editor{login ... on User{databaseId}}} ... on Issue{databaseId lastEditedAt author{login ... on User{databaseId}} editor{login ... on User{databaseId}}}}}")
+# Issue #157: the same query answers for an ISSUE's node id too (the worker's check of who last edited an issue's body, which REST does not say). Same fields, same parser.
 NODE_ID_RE = re.compile(r"[A-Za-z0-9_=-]{4,100}")
 
 
@@ -537,7 +543,9 @@ def parse_editor(data, cid) -> dict | None:
     c = d.get("node") if isinstance(d, dict) else None
     if not isinstance(c, dict) or isinstance(cid, bool) or c.get("databaseId") != cid:
         return None
-    return {"author": _gql_uid(c.get("author")), "editor": _gql_uid(c.get("editor")), "edited": c.get("lastEditedAt") is not None or c.get("editor") is not None}
+    ed = c.get("editor")
+    login = ed.get("login") if isinstance(ed, dict) and isinstance(ed.get("login"), str) and OWNER_RE.fullmatch(ed["login"]) else None
+    return {"author": _gql_uid(c.get("author")), "editor": _gql_uid(ed), "edited": c.get("lastEditedAt") is not None or ed is not None, "editor_login": login}
 
 
 def graphql_reason(data) -> str | None:

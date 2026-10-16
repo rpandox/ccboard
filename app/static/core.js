@@ -322,6 +322,7 @@ async function demoMemVariant(data0, bare) {
 async function demoApi(method, path, body) {
   if (path.split('?')[0] === '/api/route/auto' && typeof lxnDemoAuto === 'function') return lxnDemoAuto(path);          // the launcher's Auto (issue #150, launcher-node.js)
   if (/^\/api\/(epics(\/|$)|nodes\/[^/]+\/epics\/(claim|work)$)/.test(path.split('?')[0]) && typeof demoEpics === 'function') return demoEpics(method, path, body);   // the epic view (issue #147, demo/epic.json): its answers and pins are played in pages/epic.js
+  if (/^\/api\/epic-worker(\/|$)/.test(path.split('?')[0]) && typeof demoWorker === 'function') return demoWorker(method, path, body);   // the epic worker (issue #157, demo/worker.json): played in nodes-worker.js
   if (/^\/api\/team\//.test(path.split('?')[0]) && typeof demoTeam === 'function') return demoTeam(method, path, body);   // the Team view (issue #197, demo/team.json): played in team.js
   if (method !== 'GET') {
     await new Promise((resolve) => setTimeout(resolve, 150));

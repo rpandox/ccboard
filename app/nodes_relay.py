@@ -1216,7 +1216,7 @@ def _shape_epic_claim(body, reg):
     return {"claimed": True, "reason": body["reason"], "repo": repo, "issue": issue, **_claim_facts(body)}
 
 
-WORK_PEER_WHY = CLAIM_PEER_WHY + ("author_not_allowed", "epic_author_not_allowed", "unreadable", "bypass_refused", "posture_refused", "lanes_full", "launch_failed")     # nodes_work.REASONS without the two good answers
+WORK_PEER_WHY = CLAIM_PEER_WHY + ("author_not_allowed", "epic_author_not_allowed", "unreadable", "bypass_refused", "posture_refused", "lanes_full", "launch_failed", "changed")     # nodes_work.REASONS without the two good answers
 
 
 def _fill_work(clean: dict, db) -> dict:

@@ -779,6 +779,31 @@ function settingsNdPaintThis(host, st) {
   if (l && Number.isFinite(l.cap) && Number.isFinite(l.free)) host.append(settingsKv('Free lanes', el('span', { class: 'v', text: `${l.free} of ${l.cap}` }), el('span', { class: 'dim', text: 'A lane is a task slot: tasks sent here wait when none is free.' })));
 }
 
+/* The epic worker (issue #157): nodes-worker.js (lazy bundle 'worker') draws it and plays Stop and Start. Until that bundle is here the section stays hidden (Lazy.load below asks for it
+   when the tab opens); the panel is built once and painted in place, so a poll never recreates the button under a finger. */
+function settingsNdPaintWorker(ui, st) {
+  if (typeof EpicWorker === 'undefined') return;
+  if (!ui.worker) {
+    ui.worker = EpicWorker.build({ mode: 'settings', onChange: () => { settingsNd.rev++; settingsFill('nodes', true); } });
+    ui.workerHost.append(ui.worker.root);
+    ui.workerSlot.append(settingsHead('Worker'), ui.workerHost);
+  }
+  ui.worker.paint(EpicWorker.pick(st), {});
+}
+
+function settingsNdWorkerOpen() {
+  const have = typeof EpicWorker !== 'undefined';
+  const demo = typeof demoOn === 'function' && demoOn();
+  if (settingsNd.workerAsked || (have && !(demo && !EpicWorker.fixture))) return;
+  const warm = () => (typeof EpicWorker !== 'undefined' ? EpicWorker.warm() : null);
+  let p = null;
+  if (have) p = warm();
+  else if (typeof Lazy !== 'undefined' && Lazy.bundles && Lazy.bundles.worker) p = Lazy.load('worker').then(warm);
+  if (!p) return;
+  settingsNd.workerAsked = true;
+  p.then(() => { settingsNd.workerAsked = false; settingsNd.rev++; settingsFill('nodes', true); }, () => { settingsNd.workerAsked = false; });
+}
+
 /* Keep a list of keyed rows up to date without recreating the ones that did not change (a button under a finger keeps its node): `sigOf` says what a row shows. */
 function settingsNdPatch(host, items, keyOf, sigOf, build) {
   const old = new Map([...host.children].map((n) => [n.getAttribute('data-key'), n]));
@@ -993,6 +1018,8 @@ function settingsNdUi() {
   if (settingsNd.ui) return settingsNd.ui;
   const ui = {
     thisHost: el('div', { class: 'nd-sec' }),
+    workerHost: el('div', { class: 'nd-sec' }),
+    worker: null,
     pairedStatus: el('div', { class: 'dim nd-pstatus bad hidden', role: 'status' }),
     pairedList: el('div', { class: 'nd-list' }),
     pairedEmpty: el('div', { class: 'dim nd-pempty hidden' }),
@@ -1020,8 +1047,9 @@ function settingsNdUi() {
   ui.codeBtn = el('button', { type: 'button', title: 'Make a one-time code to type on another board', text: 'Create pairing code' });
   ui.codeBtn.addEventListener('click', () => settingsNdCodeSheet(ui.codeBtn));
   ui.reload = el('button', { class: 'minimal', type: 'button', title: 'Read the paired nodes and the activity again', text: 'Reload', onclick: () => settingsNdLoadPeers() });
+  ui.workerSlot = el('div', { class: 'nd-worker' });                                                            // issue #157: the Worker section joins this slot once nodes-worker.js (its lazy bundle) is here
   ui.root = el('div', { class: 'nd-panel' },
-    settingsHead('This node'), ui.thisHost,
+    settingsHead('This node'), ui.thisHost, ui.workerSlot,
     el('div', { class: 'nd-sec-head' }, settingsHead('Paired nodes'), ui.addBtn),
     ui.pairedStatus, ui.pairedList, ui.pairedEmpty,
     el('div', { class: 'nd-sec-head' }, settingsHead('Found on your tailnet'), ui.refresh),
@@ -1040,6 +1068,7 @@ function settingsNodes(p) {
   const ui = settingsNdUi();
   if (ui.root.parentNode !== p) { p.textContent = ''; p.append(ui.root); }
   settingsNdPaintThis(ui.thisHost, state);
+  settingsNdPaintWorker(ui, state);
   settingsNdPaintPaired(ui, state);
   settingsNdPaintFound(ui, state);
   settingsNdPaintIncoming(ui);
@@ -1078,6 +1107,7 @@ async function settingsNdLoad(refresh) {
 /* The tab was opened (mount or a tab switch): look once if nothing was fetched yet or the last answer is older than the stale mark. */
 function settingsNdOpen() {
   settingsNdOpenPeers();
+  settingsNdWorkerOpen();
   if (settingsNd.busy) return;
   if (settingsNd.data && Date.now() - settingsNd.at < NodeView.STALE_S * 1000) return;
   settingsNdLoad(false);
@@ -2564,7 +2594,7 @@ function settingsSig(id, st) {
   if (id === 'nodes') {                                                // the card without its clock ('now' moves with every poll), the CCBOARD_NODES rows, the tailnet list's own revision and a 15 s age bucket
     const n = st.node && typeof st.node === 'object' ? st.node : null;
     const armed = /^node-/.test(String(ui.confirm || '')) ? ui.confirm : null;                 // the two-tap Rotate token, Remove and Revoke repaint their row
-    return JSON.stringify([st.nodes, n && [n.node_id, n.name, n.os, n.lanes, n.agents], st.agents, st.node_name, settingsNd.rev, armed, Math.floor(Date.now() / 15000), Nodes.ready ? Nodes.M.rev : 0]);
+    return JSON.stringify([st.nodes, n && [n.node_id, n.name, n.os, n.lanes, n.agents], st.agents, st.node_name, settingsNd.rev, armed, Math.floor(Date.now() / 15000), Nodes.ready ? Nodes.M.rev : 0, typeof EpicWorker !== 'undefined' ? EpicWorker.sig(st) : null]);
   }
   if (id === 'box') return JSON.stringify([st.health, st.backup, st.node_name, st.user, st.claude_defaults, minute]);
   if (id === 'team') return JSON.stringify([typeof Team !== 'undefined' ? Team.sig() : null, doctorSig()]);       // the data of team.js (it repaints this panel through its watch) and the Doctor rows it shows

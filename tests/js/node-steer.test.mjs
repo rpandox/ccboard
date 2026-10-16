@@ -1139,7 +1139,7 @@ test('the first-paint files grew by a few bytes only: the steering code is in th
   const html = fs.readFileSync(path.join(STATIC, 'index.html'), 'utf8');
   const scripts = [...html.matchAll(/<script[^>]*src="(\/static\/[^"]+)"/g)].map((m) => m[1]);
   const total = scripts.reduce((n, s) => n + fs.statSync(path.join(STATIC, s.slice('/static/'.length))).size, 0);
-  assert.ok(total <= 540000, `${total} bytes of script up front`);                  // 530000 until the epic view (#147) added its Epics switch hook, the #/epic/ address and a demo dispatch line (about 4 KB); the budget of record is tests/test_static_perf.py
+  assert.ok(total <= 541000, `${total} bytes of script up front`);                  // 540000 until the epic worker (#157) added its demo dispatch line and its lazy bundle's line (about 540 bytes); 530000 until the epic view (#147) added its Epics switch hook, the #/epic/ address and a demo dispatch line (about 4 KB); the budget of record is tests/test_static_perf.py
   for (const f of ['nodes-hub.js', 'pages/node.js']) assert.ok(!html.includes(f));
   const eager = fs.readFileSync(path.join(STATIC, 'nodes.js'), 'utf8');
   for (const name of ['permAnswer', 'sendPrompt', 'permsSync', 'sendKey']) assert.ok(!eager.includes(name), `${name} is not in the eager nodes.js`);

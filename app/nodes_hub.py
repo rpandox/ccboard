@@ -139,6 +139,11 @@ def clean_card(card, row: dict) -> dict:
     if row.get("node_id") and card.get("node_id") != row["node_id"]:
         raise Bad("card of another node")
     out = {k: scrub(card[k]) for k in _CARD_KEYS if k in card}
+    if "epic_worker" in card:                                       # issue #157: the peer's worker view, rebuilt from fixed words (never its own text); absent while its worker is off
+        from . import nodes_worker
+        view = nodes_worker.peer_view(card["epic_worker"])
+        if view is not None:
+            out["epic_worker"] = view
     out["name"], out["url"] = row.get("name"), row.get("url")
     if len(json.dumps(out)) > CARD_MAX:
         raise Bad("card too large")
