@@ -480,7 +480,7 @@ def card(db, *, health_snap: dict | None = None, sessions=None, full: bool = Tru
     d = _ts()
     login, uid = identity if isinstance(identity, tuple) and len(identity) == 2 else (None, None)
     out = {"app": APP, "api": API_VERSION, "node_id": node_id(), "name": display_name(), "url": public_url(),
-           "version": settings.image_version or None, "os": _os_view(d), "runtime": settings.runtime or None,
+           "version": settings.version or None, "os": _os_view(d), "runtime": settings.runtime or None,
            "owner_login": login if isinstance(login, str) and login else None,
            "owner_id": uid if isinstance(uid, int) and not isinstance(uid, bool) and uid > 0 else None,
            "now": datetime.now(timezone.utc).isoformat(timespec="milliseconds")}
@@ -940,7 +940,7 @@ def tailnet_suffix() -> str | None:
 
 def own_claim() -> dict:
     """What this board tells another when it pairs: {id, name, url, version}. No path, no address of this machine, no secret."""
-    return {"id": node_id(), "name": display_name(), "url": public_url(), "version": settings.image_version or None}
+    return {"id": node_id(), "name": display_name(), "url": public_url(), "version": settings.version or None}
 
 
 # ---------------------------------------------------------------- the audit

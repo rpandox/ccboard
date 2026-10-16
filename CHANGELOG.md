@@ -6,6 +6,10 @@ One entry per shipped phase, newest first. The commit that ships a phase adds it
 
 ### Fixed
 - A scheduled or headless agent run that times out now ends its whole process tree (#116, slice 8). The run starts in its own process group; on a timeout the board sends SIGTERM to the group, waits 5 seconds, then SIGKILL. Before, only the direct child was killed and its node grandchildren kept running (Linux too). The board never signals its own group. On Windows the child is started in a new process group and killed. Environment handling is unchanged.
+## v0.5.59 - 2026-10-16
+
+### Fixed
+- A native board (launchd on a Mac, systemd, a dev shell) now names its version on its node card and in the hub (#233). It is the newest heading of the checkout's `CHANGELOG.md`, read once at start. The container keeps its baked `CCBOARD_IMAGE_VERSION`. Found in the two-board check (#155): the box showed the Mac's version as unknown.
 
 Upgrade: nothing to do.
 
