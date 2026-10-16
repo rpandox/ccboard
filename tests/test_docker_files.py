@@ -570,7 +570,7 @@ def test_compose_mounts_the_tailnet_resolver_and_install_writes_it():
     assert "TS_FQDN" in body and "search " in body
 
 
-@pytest.mark.parametrize("fqdn,search", [("ubu2.tail1234.ts.net", "search tail1234.ts.net"), ("", None), ("-", None), ("bad name.ts.net", None)])
+@pytest.mark.parametrize("fqdn,search", [("box.tail1234.ts.net", "search tail1234.ts.net"), ("", None), ("-", None), ("bad name.ts.net", None)])
 def test_install_writes_the_resolver_file(tmp_path, fqdn, search):
     text = (ROOT / "install.sh").read_text()
     fn = text[text.index("docker_write_compose() {"):text.index("docker_seed_app() {")]
