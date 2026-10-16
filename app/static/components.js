@@ -763,7 +763,7 @@ function taskDefaultsLine(t, agent) {
   if (typeof TASK_KEY !== 'function') return '';
   const key = TASK_KEY({ name: t.project }, { name: t.repo }) + (agent === 'claude' ? '' : `:${agent}`);
   const v = loadPrefs(key);
-  const bits = agent === 'claude' ? [v.model, v.effort, v.permission_mode] : [v.model, v.reasoning_effort || v.effort, v.sandbox];
+  const bits = agent === 'claude' ? [v.model, v.effort, v.permission_mode === 'manual' ? 'ask' : v.permission_mode] : [v.model, v.reasoning_effort || v.effort, v.sandbox];
   return bits.filter((x) => typeof x === 'string' && x).join(' · ');
 }
 

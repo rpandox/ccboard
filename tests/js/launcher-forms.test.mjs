@@ -438,7 +438,7 @@ test('the schedule form: Claude | Codex segmented; Codex is off with its reason 
   fieldOf(f, /^Prompt$/).querySelector('textarea').value = 'p';
   submit(f);
   await tick();
-  assert.deepEqual(calls(w).filter((c) => c.method === 'POST')[0].body, { name: 'n', prompt: 'p', permission_mode: 'acceptEdits', max_turns: 30, run_now: true }, 'no agent key for Claude: the server default stands');
+  assert.deepEqual(calls(w).filter((c) => c.method === 'POST')[0].body, { name: 'n', prompt: 'p', permission_mode: 'auto', max_turns: 30, run_now: true }, 'no agent key for Claude: the server default stands');
 });
 
 test('the schedule form with Codex: model and reasoning, no turn or budget limit, the body names the agent, the sheet\'s prefs key remembers the choices', async () => {
@@ -518,7 +518,7 @@ test('the batch form with Codex: every job runs with it, no turn or budget is se
   assert.equal(body.agent, 'codex');
   assert.equal(body.model, 'gpt-6-sol');
   assert.ok(!('max_turns' in body) && !('max_budget_usd' in body), 'Codex has neither');
-  assert.deepEqual(JSON.parse(w.localStorage.getItem('ccboard:batch')), { mode: 'acceptEdits', turns: 30, budget: '', agent: 'codex', cx_model: 'gpt-6-sol', cx_reasoning: '' });
+  assert.deepEqual(JSON.parse(w.localStorage.getItem('ccboard:batch')), { mode: 'auto', turns: 30, budget: '', agent: 'codex', cx_model: 'gpt-6-sol', cx_reasoning: '' });
   w.run('closeSheet()');
   open(w, 'batch');
   f = form(w);
